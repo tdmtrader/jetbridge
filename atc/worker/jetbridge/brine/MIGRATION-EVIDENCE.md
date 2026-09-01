@@ -22,19 +22,19 @@ scenario fail is also not evidence.
 
 | quantity | source leaf tests | percentage of 6,857 |
 |---|---:|---:|
-| **fully migrated**: paired failure evidence, no prohibited double, source removed | **923** | **13.46%** |
+| **fully migrated**: paired failure evidence, no prohibited double, source removed | **963** | **14.04%** |
 | strict paired evidence, but source still present | 0 | 0.00% |
 | **runs in Brine but not the full philosophy**: paired failure evidence, but uses a stub, test sink, injected-fault object, fake, or mock | **112** | **1.63%** |
 | of the preceding exception bucket whose source test was removed | 66 | 0.96% |
-| total source tests with paired per-test failure evidence | 1,035 | 15.09% |
-| former claimed tests with no admissible paired evidence | 1,024 | 14.93% |
+| total source tests with paired per-test failure evidence | 1,075 | 15.68% |
+| former claimed tests with no admissible paired evidence | 984 | 14.35% |
 | Brine scenarios | 1,877 | execution count only |
 
-The requested two headline percentages are therefore **13.46% fully migrated**
+The requested two headline percentages are therefore **14.04% fully migrated**
 and **1.63% validated but running outside the full philosophy**. The second is
 not another migration percentage: 46 of its 112 source tests still exist. If
 "migrated" is restricted to removed source tests in both buckets, the figures
-are 13.46% strict and 0.96% philosophy-exception.
+are 14.04% strict and 0.96% philosophy-exception.
 
 ## Admitted evidence ledger
 
@@ -64,7 +64,7 @@ production-logger resource path.
 | `db/resource_config_scope_test.go` real-PostgreSQL resource-scope domain **†** | 23 | 23 | 0 | 23 |
 | `db/container_test.go` strict real-PostgreSQL subset | 17 | 17 | 0 | 17 |
 | `db/component_notifications_test.go` | 21 | 21 | 0 | 21 |
-| `db/notifications_bus_test.go` strict real-PostgreSQL subset **†** | 11 | 11 | 0 | 11 |
+| `db/notifications_bus_test.go` strict real-PostgreSQL subset | 11 | 11 | 0 | 11 |
 | `event/parser_test.go` | 26 | 26 | 0 | 26 |
 | `creds/idtoken/token_generator_test.go` | 15 | 15 | 0 | 15 |
 | `JobFactory.JobsToSchedule` | 15 | 15 | 0 | 15 |
@@ -91,8 +91,8 @@ production-logger resource path.
 | `api/jobs_test.go` strict real-server job API subset | 9 | 9 | 0 | 9 |
 | `api/pipelines_test.go` strict real-server pipeline API subset | 5 | 5 | 0 | 5 |
 | `go-concourse/concourse/pipelines_test.go` strict real-server client subset | 14 | 14 | 0 | 14 |
-| `db/build_in_memory_check_test.go` production in-memory-build domain **†** | 24 | 24 | 0 | 24 |
-| `api/jobs_test.go` production ClearTaskCache API subset **†** | 5 | 5 | 0 | 5 |
+| `db/build_in_memory_check_test.go` production in-memory-build domain | 24 | 24 | 0 | 24 |
+| `api/jobs_test.go` production ClearTaskCache API subset | 5 | 5 | 0 | 5 |
 | `api/jobs_test.go` production manual-build guard subset **†** | 2 | 2 | 0 | 2 |
 | `go-concourse/concourse/builds_test.go` strict real-server client subset | 16 | 16 | 0 | 16 |
 | `api/builds_test.go` strict real-server build API subset | 9 | 9 | 0 | 9 |
@@ -101,7 +101,7 @@ production-logger resource path.
 | `scanner_test.go` | 14 | 0 | 14 | 14 |
 | durable-storage, volume-DaemonSet, and behavioral-permutation campaign | 44 | 0 | 44 | 44 |
 | daemonset-integration and daemon-client retained cases | 46 | 0 | 46 | 0 |
-| **admitted total († rows excluded)** | **1,035** | **923** | **112** | **989** |
+| **admitted total († rows excluded)** | **1,075** | **963** | **112** | **1,029** |
 
 ### Superseded sink-free revalidation
 

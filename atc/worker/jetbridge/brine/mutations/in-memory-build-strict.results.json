@@ -1,7 +1,7 @@
 {
   "manifest": "atc/worker/jetbridge/brine/mutations/in-memory-build-strict.json",
-  "git_head": "109d8190a161d4575d61c8867a35232047b7de26",
-  "completed_at": "2026-09-01T11:25:31Z",
+  "git_head": "1fbb70e183c9711cdd915b821172949e9444198a",
+  "completed_at": "2026-09-01T13:50:10Z",
   "source_tests": 24,
   "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
   "mutation_cases": [

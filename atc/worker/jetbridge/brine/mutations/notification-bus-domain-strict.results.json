@@ -1,7 +1,7 @@
 {
   "manifest": "atc/worker/jetbridge/brine/mutations/notification-bus-domain-strict.json",
-  "git_head": "aa118c85768f8eb61933f1640a02edef60f5675c",
-  "completed_at": "2026-09-01T09:10:27Z",
+  "git_head": "1fbb70e183c9711cdd915b821172949e9444198a",
+  "completed_at": "2026-09-01T13:49:40Z",
   "source_tests": 11,
   "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
   "mutation_cases": [
