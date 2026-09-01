@@ -1,7 +1,7 @@
 {
   "manifest": "atc/worker/jetbridge/brine/mutations/worker-factory-domain-strict.json",
-  "git_head": "cea70aa63bc3ece00b37d6458d7f8d2dea7125ee",
-  "completed_at": "2026-09-01T05:51:48Z",
+  "git_head": "aa118c85768f8eb61933f1640a02edef60f5675c",
+  "completed_at": "2026-09-01T09:24:02Z",
   "source_tests": 20,
   "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
   "mutation_cases": [

@@ -1,7 +1,7 @@
 {
   "manifest": "atc/worker/jetbridge/brine/mutations/idtoken-generator-strict.json",
-  "git_head": "05fef9d4c7188df962fbee09a5eca7ccad9f23dd",
-  "completed_at": "2026-09-01T04:10:34Z",
+  "git_head": "aa118c85768f8eb61933f1640a02edef60f5675c",
+  "completed_at": "2026-09-01T09:02:50Z",
   "source_tests": 15,
   "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
   "mutation_cases": [
