@@ -1,0 +1,218 @@
+{
+  "name": "db-build-strict-subset",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/build_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-build-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_build_strict.go"
+  ],
+  "cases": [
+    {
+      "id": "created-by-is-retained",
+      "source_file": "atc/db/build.go",
+      "old": "func (b *build) CreatedBy() *string               { return b.createdBy }",
+      "new": "func (b *build) CreatedBy() *string               { return nil }",
+      "tests": ["Build created_by should be set"],
+      "scenarios": ["Strict DB build profile <profile> (row 1)"],
+      "failure_contains": "strict DB build observation"
+    },
+    {
+      "id": "new-one-off-build-has-no-plan",
+      "source_file": "atc/db/build.go",
+      "old": "func (b *build) HasPlan() bool                    { return string(*b.publicPlan) != \"{}\" }",
+      "new": "func (b *build) HasPlan() bool                    { return true }",
+      "tests": ["Build has no plan on creation"],
+      "scenarios": ["Strict DB build profile <profile> (row 2)"],
+      "failure_contains": "strict DB build observation"
+    },
+    {
+      "id": "creation-time-comes-from-persisted-build",
+      "source_file": "atc/db/build.go",
+      "old": "func (b *build) CreateTime() time.Time            { return b.createTime }",
+      "new": "func (b *build) CreateTime() time.Time            { return b.createTime.Add(time.Hour) }",
+      "tests": ["Build create_time is current time"],
+      "scenarios": ["Strict DB build profile <profile> (row 3)"],
+      "failure_contains": "strict DB build observation"
+    },
+    {
+      "id": "comment-round-trips-through-postgres",
+      "source_file": "atc/db/build.go",
+      "old": "\t\tValues(b.id, comment).",
+      "new": "\t\tValues(b.id, comment + \"-mutated\").",
+      "tests": ["Build can have it's comment updated"],
+      "scenarios": ["Strict DB build profile <profile> (row 4)"],
+      "failure_contains": "strict DB build observation"
+    },
+    {
+      "id": "run-state-id-includes-build-id",
+      "source_file": "atc/db/build.go",
+      "old": "func (b *build) RunStateID() string               { return fmt.Sprintf(\"build:%v\", b.id) }",
+      "new": "func (b *build) RunStateID() string               { return fmt.Sprintf(\"build-mutated:%v\", b.id) }",
+      "tests": ["Build has run state id"],
+      "scenarios": ["Strict DB build profile <profile> (row 5)"],
+      "failure_contains": "strict DB build observation"
+    },
+    {
+      "id": "associated-team-is-build-team",
+      "source_file": "atc/db/build.go",
+      "old": "func (b *build) AllAssociatedTeamNames() []string { return []string{b.teamName} }",
+      "new": "func (b *build) AllAssociatedTeamNames() []string { return []string{} }",
+      "tests": ["Build all associated teams should be only the team itself"],
+      "scenarios": ["Strict DB build profile <profile> (row 6)"],
+      "failure_contains": "strict DB build observation"
+    },
+    {
+      "id": "resource-cache-user-is-scoped-to-build",
+      "source_file": "atc/db/build.go",
+      "old": "\treturn ForBuild(b.ID())\n}",
+      "new": "\treturn ForBuild(b.ID() + 1)\n}",
+      "tests": ["Build has resource cache user"],
+      "scenarios": ["Strict DB build profile <profile> (row 7)"],
+      "failure_contains": "strict DB build observation"
+    },
+    {
+      "id": "container-owner-retains-build-plan-and-team",
+      "source_file": "atc/db/build.go",
+      "old": "\treturn NewBuildStepContainerOwner(b.ID(), planId, b.TeamID())",
+      "new": "\treturn NewBuildStepContainerOwner(b.ID(), planId + \"-mutated\", b.TeamID())",
+      "tests": ["Build has container owner"],
+      "scenarios": ["Strict DB build profile <profile> (row 8)"],
+      "failure_contains": "strict DB build observation"
+    },
+    {
+      "id": "lager-data-retains-team-context",
+      "source_file": "atc/db/build.go",
+      "old": "\t\t\"team\":     b.teamName,",
+      "new": "\t\t\"team\":     b.teamName + \"-mutated\",",
+      "tests": [
+        "Build LagerData for a one-off build includes build and team info",
+        "Build LagerData for a job build includes build, team, pipeline, and job info",
+        "Build LagerData for a resource build includes build, team, and pipeline"
+      ],
+      "scenarios": [
+        "Strict DB build profile <profile> (row 9)",
+        "Strict DB build profile <profile> (row 10)",
+        "Strict DB build profile <profile> (row 11)"
+      ],
+      "failure_contains": "strict DB build observation"
+    },
+    {
+      "id": "syslog-tag-retains-origin",
+      "source_file": "atc/db/build.go",
+      "old": "\tsegments = append(segments, origin.String())",
+      "new": "\tsegments = append(segments, origin.String() + \"-mutated\")",
+      "tests": [
+        "Build SyslogTag for a one-off build includes build and team info",
+        "Build SyslogTag for a job build includes build, team, pipeline, and job info",
+        "Build SyslogTag for a resource build includes build, team, and pipeline"
+      ],
+      "scenarios": [
+        "Strict DB build profile <profile> (row 12)",
+        "Strict DB build profile <profile> (row 13)",
+        "Strict DB build profile <profile> (row 14)"
+      ],
+      "failure_contains": "strict DB build observation"
+    },
+    {
+      "id": "tracing-attributes-retain-team-context",
+      "source_file": "atc/db/build.go",
+      "old": "\t\t\"team_name\": b.teamName,",
+      "new": "\t\t\"team_name\": b.teamName + \"-mutated\",",
+      "tests": [
+        "Build TracingAttrs for a one-off build includes build and team info",
+        "Build TracingAttrs for a job build includes build, team, pipeline, and job info",
+        "Build TracingAttrs for a resource build includes build, team, and pipeline"
+      ],
+      "scenarios": [
+        "Strict DB build profile <profile> (row 15)",
+        "Strict DB build profile <profile> (row 16)",
+        "Strict DB build profile <profile> (row 17)"
+      ],
+      "failure_contains": "strict DB build observation"
+    },
+    {
+      "id": "reload-reports-found-build",
+      "source_file": "atc/db/build.go",
+      "old": "\terr = tx.Commit()\n\tif err != nil {\n\t\treturn false, err\n\t}\n\n\treturn true, nil\n}\n\nfunc (b *build) Interceptible",
+      "new": "\terr = tx.Commit()\n\tif err != nil {\n\t\treturn false, err\n\t}\n\n\treturn false, nil\n}\n\nfunc (b *build) Interceptible",
+      "tests": ["Build Reload updates the model"],
+      "scenarios": ["Strict DB build profile <profile> (row 18)"],
+      "failure_contains": "strict DB build observation"
+    },
+    {
+      "id": "drained-state-is-exposed",
+      "source_file": "atc/db/build.go",
+      "old": "func (b *build) IsDrained() bool                  { return b.drained }",
+      "new": "func (b *build) IsDrained() bool                  { return !b.drained }",
+      "tests": [
+        "Build Drain defaults drain to false in the beginning",
+        "Build Drain has drain set to true after a drain and a reload"
+      ],
+      "scenarios": [
+        "Strict DB build profile <profile> (row 19)",
+        "Strict DB build profile <profile> (row 20)"
+      ],
+      "failure_contains": "strict DB build observation"
+    },
+    {
+      "id": "aborted-build-does-not-start",
+      "source_file": "atc/db/build.go",
+      "old": "\t\t\t\"status\":  \"pending\",\n\t\t\t\"aborted\": false,",
+      "new": "\t\t\t\"status\":  \"pending\",\n\t\t\t\"aborted\": true,",
+      "tests": [
+        "Build Start build has been aborted does not start the build",
+        "Build Start build has been aborted leaves the build in pending state"
+      ],
+      "scenarios": [
+        "Strict DB build profile <profile> (row 21)",
+        "Strict DB build profile <profile> (row 22)"
+      ],
+      "failure_contains": "strict DB build observation"
+    },
+    {
+      "id": "successful-start-reports-started",
+      "source_file": "atc/db/build.go",
+      "old": "\tif !started {\n\t\treturn false, nil\n\t}",
+      "new": "\tif started {\n\t\treturn false, nil\n\t}",
+      "tests": ["Build Start build has not been aborted starts the build"],
+      "scenarios": ["Strict DB build profile <profile> (row 23)"],
+      "failure_contains": "strict DB build observation"
+    },
+    {
+      "id": "start-emits-started-status-event",
+      "source_file": "atc/db/build.go",
+      "old": "\terr = b.saveEvent(tx, event.Status{\n\t\tStatus: atc.StatusStarted,\n\t\tTime:   startTime.Unix(),\n\t})",
+      "new": "\terr = b.saveEvent(tx, event.Status{\n\t\tStatus: atc.StatusPending,\n\t\tTime:   startTime.Unix(),\n\t})",
+      "tests": ["Build Start build has not been aborted creates Start event"],
+      "scenarios": ["Strict DB build profile <profile> (row 24)"],
+      "failure_contains": "strict DB build observation"
+    },
+    {
+      "id": "start-persists-started-status",
+      "source_file": "atc/db/build.go",
+      "old": "\terr = psql.Update(\"builds\").\n\t\tSet(\"status\", BuildStatusStarted).\n\t\tSet(\"start_time\", sq.Expr(\"now()\")).",
+      "new": "\terr = psql.Update(\"builds\").\n\t\tSet(\"status\", BuildStatusPending).\n\t\tSet(\"start_time\", sq.Expr(\"now()\")).",
+      "tests": ["Build Start build has not been aborted updates build status"],
+      "scenarios": ["Strict DB build profile <profile> (row 25)"],
+      "failure_contains": "strict DB build observation"
+    },
+    {
+      "id": "start-persists-public-plan",
+      "source_file": "atc/db/build.go",
+      "old": "\t\tSet(\"public_plan\", plan.Public()).",
+      "new": "\t\tSet(\"public_plan\", (&atc.Plan{}).Public()).",
+      "tests": ["Build Start build has not been aborted saves the public plan"],
+      "scenarios": ["Strict DB build profile <profile> (row 26)"],
+      "failure_contains": "strict DB build observation"
+    },
+    {
+      "id": "pipeline-lookup-uses-build-pipeline-id",
+      "source_file": "atc/db/pipeline_ref.go",
+      "old": "\t\tWhere(sq.Eq{\"p.id\": r.PipelineID()}).",
+      "new": "\t\tWhere(sq.Eq{\"p.id\": r.PipelineID() + 1}).",
+      "tests": ["Build Pipeline when a job build returns the correct pipeline"],
+      "scenarios": ["Strict DB build profile <profile> (row 27)"],
+      "failure_contains": "strict DB build observation"
+    }
+  ]
+}

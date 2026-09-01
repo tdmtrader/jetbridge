@@ -1,0 +1,226 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-build-strict.json",
+  "git_head": "db3d9653f5ff8c0e92a07774c8fc4c47e08bfdc3",
+  "completed_at": "2026-09-01T04:37:46Z",
+  "source_tests": 27,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "created-by-is-retained",
+      "mutation_sha256": "acfecd9c3a0b2aa22a5c2e40a476bc2f85cbe291234e74f5a664aa6164ba6723",
+      "failed_source_tests": [
+        "Build created_by should be set"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB build profile \u003cprofile\u003e (row 1)"
+      ]
+    },
+    {
+      "id": "new-one-off-build-has-no-plan",
+      "mutation_sha256": "f13f0deae1de4deee6c30457aa107168fd36faae5c49463a7dec9cfc820e1135",
+      "failed_source_tests": [
+        "Build has no plan on creation"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB build profile \u003cprofile\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "creation-time-comes-from-persisted-build",
+      "mutation_sha256": "b7013b650853b0b72608c32ac636383115ed189643b2deb79578c7b91776b977",
+      "failed_source_tests": [
+        "Build create_time is current time"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB build profile \u003cprofile\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "comment-round-trips-through-postgres",
+      "mutation_sha256": "e8f384bedbf0c0a7144f8e14b6144f3e9806bd7c3aaf9f792ebf55c00b743504",
+      "failed_source_tests": [
+        "Build can have it's comment updated"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB build profile \u003cprofile\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "run-state-id-includes-build-id",
+      "mutation_sha256": "e1d38bdf61b66e4b41cb6f489ed3176bc527872d44652cd767c37b42f79cdf70",
+      "failed_source_tests": [
+        "Build has run state id"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB build profile \u003cprofile\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "associated-team-is-build-team",
+      "mutation_sha256": "e297e54753cca2280596421aebc1537529c1933f00dbcddf155a547b8d83b9d6",
+      "failed_source_tests": [
+        "Build all associated teams should be only the team itself"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB build profile \u003cprofile\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "resource-cache-user-is-scoped-to-build",
+      "mutation_sha256": "f96a56b9cb9dd223704ca19a650e131c9c792dfab53d67858077c53329662ae1",
+      "failed_source_tests": [
+        "Build has resource cache user"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB build profile \u003cprofile\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "container-owner-retains-build-plan-and-team",
+      "mutation_sha256": "c9f3e619f430a1b4b4ddf683e267de5c9fe6f48a722d3bb065b17ebba1ff0d0b",
+      "failed_source_tests": [
+        "Build has container owner"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB build profile \u003cprofile\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "lager-data-retains-team-context",
+      "mutation_sha256": "62460f7e595062e52af7a4d5d3c05d132aa24664f6f3c7bb91d947a718db5f35",
+      "failed_source_tests": [
+        "Build LagerData for a job build includes build, team, pipeline, and job info",
+        "Build LagerData for a one-off build includes build and team info",
+        "Build LagerData for a resource build includes build, team, and pipeline"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB build profile \u003cprofile\u003e (row 10)",
+        "Strict DB build profile \u003cprofile\u003e (row 11)",
+        "Strict DB build profile \u003cprofile\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "syslog-tag-retains-origin",
+      "mutation_sha256": "4fa76d89d024fd1f2845bb872d9da77df3de9e0cdc74ed61804425f4000fb58a",
+      "failed_source_tests": [
+        "Build SyslogTag for a job build includes build, team, pipeline, and job info",
+        "Build SyslogTag for a one-off build includes build and team info",
+        "Build SyslogTag for a resource build includes build, team, and pipeline"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB build profile \u003cprofile\u003e (row 12)",
+        "Strict DB build profile \u003cprofile\u003e (row 13)",
+        "Strict DB build profile \u003cprofile\u003e (row 14)"
+      ]
+    },
+    {
+      "id": "tracing-attributes-retain-team-context",
+      "mutation_sha256": "ebff893b13a367d4dbe3c4609fb58be886602f89460973d18aed8e33257a3a3b",
+      "failed_source_tests": [
+        "Build TracingAttrs for a job build includes build, team, pipeline, and job info",
+        "Build TracingAttrs for a one-off build includes build and team info",
+        "Build TracingAttrs for a resource build includes build, team, and pipeline"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB build profile \u003cprofile\u003e (row 15)",
+        "Strict DB build profile \u003cprofile\u003e (row 16)",
+        "Strict DB build profile \u003cprofile\u003e (row 17)"
+      ]
+    },
+    {
+      "id": "reload-reports-found-build",
+      "mutation_sha256": "0aabfbbf91936d12f24ca9a298f66914fcec698f7a253906727386f53cf37ea9",
+      "failed_source_tests": [
+        "Build Reload updates the model"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB build profile \u003cprofile\u003e (row 18)",
+        "Strict DB build profile \u003cprofile\u003e (row 20)",
+        "Strict DB build profile \u003cprofile\u003e (row 22)",
+        "Strict DB build profile \u003cprofile\u003e (row 25)",
+        "Strict DB build profile \u003cprofile\u003e (row 26)"
+      ]
+    },
+    {
+      "id": "drained-state-is-exposed",
+      "mutation_sha256": "1d654b14ab1d226c2278ddf782abe5f1a9dc47154d2f639863782406578c7868",
+      "failed_source_tests": [
+        "Build Drain defaults drain to false in the beginning",
+        "Build Drain has drain set to true after a drain and a reload"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB build profile \u003cprofile\u003e (row 19)",
+        "Strict DB build profile \u003cprofile\u003e (row 20)"
+      ]
+    },
+    {
+      "id": "aborted-build-does-not-start",
+      "mutation_sha256": "bb6d0096b696c538fda796e0a34684293f0f3444d382d1b0e654092a00cfddfa",
+      "failed_source_tests": [
+        "Build Start build has been aborted does not start the build",
+        "Build Start build has been aborted leaves the build in pending state"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB build profile \u003cprofile\u003e (row 18)",
+        "Strict DB build profile \u003cprofile\u003e (row 21)",
+        "Strict DB build profile \u003cprofile\u003e (row 22)",
+        "Strict DB build profile \u003cprofile\u003e (row 23)",
+        "Strict DB build profile \u003cprofile\u003e (row 24)",
+        "Strict DB build profile \u003cprofile\u003e (row 25)",
+        "Strict DB build profile \u003cprofile\u003e (row 26)"
+      ]
+    },
+    {
+      "id": "successful-start-reports-started",
+      "mutation_sha256": "e81094bcc9842d43d96856f0fd200e35d61c0f09098dc3543493a240acc80398",
+      "failed_source_tests": [
+        "Build Start build has not been aborted starts the build"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB build profile \u003cprofile\u003e (row 21)",
+        "Strict DB build profile \u003cprofile\u003e (row 23)"
+      ]
+    },
+    {
+      "id": "start-emits-started-status-event",
+      "mutation_sha256": "586c2c1889cab0180315559b7347582658ba5ee6f58ad4439e525b71a44f4899",
+      "failed_source_tests": [
+        "Build Start build has not been aborted creates Start event"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB build profile \u003cprofile\u003e (row 24)"
+      ]
+    },
+    {
+      "id": "start-persists-started-status",
+      "mutation_sha256": "ee3175db79790c35f7ac9bf2239a25cc6420cd23346fb4cd6f697e09edb557f5",
+      "failed_source_tests": [
+        "Build Start build has not been aborted updates build status"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB build profile \u003cprofile\u003e (row 18)",
+        "Strict DB build profile \u003cprofile\u003e (row 25)"
+      ]
+    },
+    {
+      "id": "start-persists-public-plan",
+      "mutation_sha256": "a5c16e8673fa35fa515e6f150f6d2079548938e30794c8d51c9202ef21dc3886",
+      "failed_source_tests": [
+        "Build Start build has not been aborted saves the public plan"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB build profile \u003cprofile\u003e (row 26)"
+      ]
+    },
+    {
+      "id": "pipeline-lookup-uses-build-pipeline-id",
+      "mutation_sha256": "5fddd876a4fd35b559f223bbe6eccc196a79ae9aa34e42e2179959dcf02415c3",
+      "failed_source_tests": [
+        "Build Pipeline when a job build returns the correct pipeline"
+      ],
+      "failed_brine_scenarios": [
+        "Strict DB build profile \u003cprofile\u003e (row 27)"
+      ]
+    }
+  ]
+}
