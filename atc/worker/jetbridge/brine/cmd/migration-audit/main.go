@@ -245,7 +245,14 @@ func runCase(repo, brineDir, brineBinary, ginkgoBinary string, m manifest, mutat
 	if err := os.WriteFile(filepath.Join(temp, ".brine"), []byte(config), 0o600); err != nil {
 		return caseResult{}, err
 	}
-	brineOutput, brineErr := run(temp, nil, brineBinary, "run", "--mode", "sync", filepath.Join("features", filepath.Base(featureTarget)))
+	var brineOutput string
+	var brineErr error
+	lockErr = withFileLock("/tmp/concourse-migration-audit-brine.lock", func() {
+		brineOutput, brineErr = run(temp, nil, brineBinary, "run", "--mode", "sync", filepath.Join("features", filepath.Base(featureTarget)))
+	})
+	if lockErr != nil {
+		return caseResult{}, fmt.Errorf("serialize Brine invocation: %w", lockErr)
+	}
 	if brineErr == nil {
 		return caseResult{}, fmt.Errorf("Brine stayed green under mutation\n%s", tail(brineOutput, 40))
 	}
