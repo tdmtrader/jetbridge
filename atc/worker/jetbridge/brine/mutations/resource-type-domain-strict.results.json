@@ -1,0 +1,119 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/resource-type-domain-strict.json",
+  "git_head": "df19964cfa056e253fe04c5ba5e6784a03a633bb",
+  "completed_at": "2026-09-01T10:34:33Z",
+  "source_tests": 22,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "resource-types-return-the-persisted-active-collection",
+      "mutation_sha256": "d6c8554f978df35550417e6ecd3a2bc6fec30a2ce722f4bd581ad5ac037ac4a4",
+      "failed_source_tests": [
+        "ResourceType (Pipeline).ResourceTypes Deserialize when base resource type defaults is defined should return original resource types",
+        "ResourceType (Pipeline).ResourceTypes Deserialize when no base resource type defaults defined should return original resource types",
+        "ResourceType (Pipeline).ResourceTypes returns the resource types",
+        "ResourceType (Pipeline).ResourceTypes when a resource type becomes inactive does not return inactive resource types",
+        "ResourceType (Pipeline).ResourceTypes when building the dependency tree from resource types list returns the resource types tree given a resource",
+        "ResourceType (Pipeline).ResourceTypes when the resource types list has resource with same name returns the resource types tree given a resource"
+      ],
+      "failed_brine_scenarios": [
+        "Deserialize merges base resource type defaults and preserves every field",
+        "Deserialize merges custom parent defaults and preserves every field",
+        "Filter follows only the exact persisted dependency tree in its pipeline",
+        "Filter resolves a resource and resource type with the same name",
+        "ResourceTypes excludes resource types made inactive by a pipeline update",
+        "ResourceTypes returns every exact persisted field with unique identifiers"
+      ]
+    },
+    {
+      "id": "resource-type-persists-config-scope",
+      "mutation_sha256": "292141a3e681d8145f1fada335bede531bcd1a1cf10fc1c47f8ce4a6d16ce5c1",
+      "failed_source_tests": [
+        "ResourceType SetResourceConfigScope associates the resource to the config and scope"
+      ],
+      "failed_brine_scenarios": [
+        "ClearVersions deletes the complete resource type version history",
+        "ClearVersions deletes the shared global resource type history",
+        "SetResourceConfigScope persists the exact scope association"
+      ]
+    },
+    {
+      "id": "resource-type-build-persists-started-fields",
+      "mutation_sha256": "8f27932201704e42e7ef66638d3a33b9cd0e78c8b05ef16bce7bd404635a5f1b",
+      "failed_source_tests": [
+        "ResourceType CreateBuild creates a started build for a resource type"
+      ],
+      "failed_brine_scenarios": [
+        "CreateBuild persists every started resource type build field"
+      ]
+    },
+    {
+      "id": "resource-type-build-saves-log-event",
+      "mutation_sha256": "15a899758a2953a8ab9a95efb3dd8e7cbbc097644299bfe0c8914ed5f7162f95",
+      "failed_source_tests": [
+        "ResourceType CreateBuild logs to the check_build_events partition"
+      ],
+      "failed_brine_scenarios": [
+        "CreateBuild writes the created and log events to the check partition"
+      ]
+    },
+    {
+      "id": "resource-type-build-propagates-trace-context",
+      "mutation_sha256": "bbb612ee8c1020e8a3c70b8c81445ee3069cac291fe32e4b9256d9ceafe5b013",
+      "failed_source_tests": [
+        "ResourceType CreateBuild when tracing is configured propagates span context"
+      ],
+      "failed_brine_scenarios": [
+        "CreateBuild propagates the production trace context"
+      ]
+    },
+    {
+      "id": "resource-type-build-concurrency-counts-only-running-builds",
+      "mutation_sha256": "9cdcba9815035cc75bfc6f99b8c0b41b70389357a93e70b5f7a541953d1608c0",
+      "failed_source_tests": [
+        "ResourceType CreateBuild when another running build already exists does not create the second build",
+        "ResourceType CreateBuild when another running build already exists when manually triggered creates a manually triggered resource build",
+        "ResourceType CreateBuild when another running build already exists when the previous build is finished creates the build"
+      ],
+      "failed_brine_scenarios": [
+        "CreateBuild permits an automatic build after the previous build finishes",
+        "CreateBuild permits and marks a manual build while one is running",
+        "CreateBuild refuses a second automatic build while one is running"
+      ]
+    },
+    {
+      "id": "resource-type-check-plan-uses-the-production-image-planner",
+      "mutation_sha256": "ea250674a9eeba7f8509402c4ac523abf90b8b4410c42bdd6f61b26cb1aabb9e",
+      "failed_source_tests": [
+        "ResourceType CheckPlan when skipping the interval when not skipping the interval recursively skips the interval for the resource check, but not for the resource type",
+        "ResourceType CheckPlan when skipping the interval when skipping the interval recursively skips the interval for the resource and resource type checks",
+        "ResourceType CheckPlan when there is a resource type using a base type produces a simple check plan",
+        "ResourceType CheckPlan when there is a resource type using a custom type produces a check plan with nested image steps",
+        "ResourceType CheckPlan when there is a resource type using a custom type with configured check every produces a check plan with interval set as check every for image check",
+        "ResourceType CheckPlan when there is a resource type using a privileged custom type produces a check plan with privileged"
+      ],
+      "failed_brine_scenarios": [
+        "CheckPlan produces the exact base resource type plan",
+        "CheckPlan produces the exact nested image check and get plans",
+        "CheckPlan propagates privileged mode to the type image",
+        "CheckPlan skips both resource and type intervals when recursion is enabled",
+        "CheckPlan skips only the resource interval when recursion is disabled",
+        "CheckPlan uses the custom resource type check interval"
+      ]
+    },
+    {
+      "id": "resource-type-clear-versions-reports-the-deleted-row-count",
+      "mutation_sha256": "5ae03fc6a862ad65f3e9de42b2b2e24cc5800fabe630041f2580f7d432684fd2",
+      "failed_source_tests": [
+        "ResourceType ClearVersions when resource type has no versions deletes zero versions",
+        "ResourceType ClearVersions when there is one resource type with a version history clears the version history for the resource type",
+        "ResourceType ClearVersions with global resources, when there are multiple resource types sharing the same version history clears the version history for the shared resource types"
+      ],
+      "failed_brine_scenarios": [
+        "ClearVersions deletes the complete resource type version history",
+        "ClearVersions deletes the shared global resource type history",
+        "ClearVersions reports zero when the resource type has no versions"
+      ]
+    }
+  ]
+}
