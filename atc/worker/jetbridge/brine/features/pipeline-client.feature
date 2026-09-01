@@ -110,17 +110,19 @@ Feature: The Go Concourse client manages pipelines through the real API
     Then the Go client did not find the resource
     And the Go client returned no error
 
-  Scenario Outline: Pipeline listing scope <scope> decodes real objects
+  Scenario: Pipeline listing scope team decodes real objects
     Given the production Go pipeline client, real API, and PostgreSQL
     And the client team has named pipelines "alpha,beta"
-    When the Go client lists "<scope>" pipelines
+    When the Go client lists "team" pipelines
     Then the client decoded exact persisted pipelines "alpha,beta"
     And the Go client returned no error
 
-    Examples:
-      | scope |
-      | team  |
-      | all   |
+  Scenario: Pipeline listing scope all decodes real objects
+    Given the production Go pipeline client, real API, and PostgreSQL
+    And the client team has named pipelines "alpha,beta"
+    When the Go client lists "all" pipelines
+    Then the client decoded exact persisted pipelines "alpha,beta"
+    And the Go client returned no error
 
   Scenario: Ordering pipelines sends a body accepted and persisted by the API
     Given the production Go pipeline client, real API, and PostgreSQL

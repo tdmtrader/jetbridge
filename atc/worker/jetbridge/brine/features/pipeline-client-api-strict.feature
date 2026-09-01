@@ -39,4 +39,3 @@ Feature: Pipeline client API responses cross production routes and PostgreSQL
     And the client team has instanced pipeline "target"
     When the raw production pipeline API performs "creates a pipeline build"
     Then the raw pipeline API returned the exact created build
-
