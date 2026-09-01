@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
-	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
@@ -39,6 +39,9 @@ func BuildFactoryBehaviorDefinitions() []brine.StepDefinition {
 }
 
 func observeBuildFactory(database JetbridgeDB, profile string) (string, error) {
+	if strings.HasPrefix(profile, "strict-") {
+		return observeStrictBuildFactory(database, strings.TrimPrefix(profile, "strict-"))
+	}
 	team, err := database.TeamFactory.CreateTeam(atc.Team{Name: "factory-team"})
 	if err != nil {
 		return "", err
@@ -50,7 +53,8 @@ func observeBuildFactory(database JetbridgeDB, profile string) (string, error) {
 			return "", err
 		}
 		found, ok, err := database.BuildFactory.Build(created.ID())
-		return fmt.Sprintf("found=%t;same=%t", ok, err == nil && found.ID() == created.ID()), err
+		same := err == nil && ok && found != nil && found.ID() == created.ID()
+		return fmt.Sprintf("found=%t;same=%t", ok, same), err
 	case "one-off-within-grace":
 		return buildFactoryInterceptibility(database, team, true, true)
 	case "one-off-past-grace":
@@ -187,6 +191,236 @@ func observeBuildFactory(database JetbridgeDB, profile string) (string, error) {
 	default:
 		return "", fmt.Errorf("unknown build factory profile %q", profile)
 	}
+}
+
+func observeStrictBuildFactory(database JetbridgeDB, profile string) (string, error) {
+	if profile == "lookup" {
+		return observeBuildFactory(database, "lookup")
+	}
+	if strings.HasPrefix(profile, "one-off-within-") {
+		return buildFactorySingleInterceptibility(database, true, true, db.BuildStatus(strings.TrimPrefix(profile, "one-off-within-")))
+	}
+	if strings.HasPrefix(profile, "one-off-past-") {
+		return buildFactorySingleInterceptibility(database, true, false, db.BuildStatus(strings.TrimPrefix(profile, "one-off-past-")))
+	}
+	if strings.HasPrefix(profile, "pipeline-completed-") {
+		return buildFactorySingleInterceptibility(database, false, false, db.BuildStatus(strings.TrimPrefix(profile, "pipeline-completed-")))
+	}
+	switch profile {
+	case "one-off-running":
+		return observeBuildFactory(database, "one-off-running")
+	case "pipeline-failed-four":
+		value, err := observeBuildFactory(database, "pipeline-failed-immediate")
+		return "interceptible=" + value, err
+	case "pipeline-running":
+		return observeBuildFactory(database, "pipeline-running")
+	case "gc-failed-immediate":
+		team, err := database.TeamFactory.CreateTeam(atc.Team{Name: "strict-factory-gc-team"})
+		if err != nil {
+			return "", err
+		}
+		_, job, err := buildFactoryJob(team, "strict-gc")
+		if err != nil {
+			return "", err
+		}
+		build, err := job.CreateBuild("brine-user")
+		if err != nil {
+			return "", err
+		}
+		if err := build.Finish(db.BuildStatusFailed); err != nil {
+			return "", err
+		}
+		interceptible, err := build.Interceptible()
+		return fmt.Sprintf("interceptible=%t", interceptible), err
+	case "visible", "all", "public":
+		return observeStrictBuildFactoryListing(database, profile)
+	case "drainable":
+		return observeBuildFactory(database, "drainable")
+	case "started":
+		return observeBuildFactory(database, "started")
+	case "date-inside", "date-future", "date-old":
+		return observeStrictBuildFactoryDate(database, strings.TrimPrefix(profile, "date-"))
+	default:
+		return "", fmt.Errorf("unknown strict build factory profile %q", profile)
+	}
+}
+
+func buildFactorySingleInterceptibility(database JetbridgeDB, oneOff, withinGrace bool, status db.BuildStatus) (string, error) {
+	team, err := database.TeamFactory.CreateTeam(atc.Team{Name: fmt.Sprintf("strict-factory-%t-%t-%s", oneOff, withinGrace, status)})
+	if err != nil {
+		return "", err
+	}
+	factory := db.NewBuildFactory(database.Conn, database.LockFactory, 0, 0)
+	if withinGrace {
+		factory = db.NewBuildFactory(database.Conn, database.LockFactory, time.Hour, time.Hour)
+	}
+	var build db.Build
+	if oneOff {
+		build, err = team.CreateOneOffBuild()
+	} else {
+		_, job, jobErr := buildFactoryJob(team, "strict-completed-"+string(status))
+		if jobErr != nil {
+			return "", jobErr
+		}
+		build, err = job.CreateBuild("brine-user")
+	}
+	if err != nil {
+		return "", err
+	}
+	if err := build.Finish(status); err != nil {
+		return "", err
+	}
+	if err := factory.MarkNonInterceptibleBuilds(); err != nil {
+		return "", err
+	}
+	interceptible, err := build.Interceptible()
+	return fmt.Sprintf("interceptible=%t", interceptible), err
+}
+
+type strictBuildFactoryListing struct {
+	oneOff  db.Build
+	private db.Build
+	public  db.Build
+	other   db.Build
+	rerun   db.Build
+}
+
+func setupStrictBuildFactoryListing(database JetbridgeDB, includeRerun bool) (strictBuildFactoryListing, error) {
+	team, err := database.TeamFactory.CreateTeam(atc.Team{Name: "strict-factory-list-team"})
+	if err != nil {
+		return strictBuildFactoryListing{}, err
+	}
+	oneOff, err := team.CreateOneOffBuild()
+	if err != nil {
+		return strictBuildFactoryListing{}, err
+	}
+	_, privateJob, err := buildFactoryJob(team, "strict-private")
+	if err != nil {
+		return strictBuildFactoryListing{}, err
+	}
+	private, err := privateJob.CreateBuild("brine-user")
+	if err != nil {
+		return strictBuildFactoryListing{}, err
+	}
+	publicPipeline, publicJob, err := buildFactoryJob(team, "strict-public")
+	if err != nil {
+		return strictBuildFactoryListing{}, err
+	}
+	if err := publicPipeline.Expose(); err != nil {
+		return strictBuildFactoryListing{}, err
+	}
+	public, err := publicJob.CreateBuild("brine-user")
+	if err != nil {
+		return strictBuildFactoryListing{}, err
+	}
+	otherTeam, err := database.TeamFactory.CreateTeam(atc.Team{Name: "strict-factory-list-other-team"})
+	if err != nil {
+		return strictBuildFactoryListing{}, err
+	}
+	other, err := otherTeam.CreateOneOffBuild()
+	if err != nil {
+		return strictBuildFactoryListing{}, err
+	}
+	var rerun db.Build
+	if includeRerun {
+		rerun, err = privateJob.RerunBuild(private, "brine-user")
+		if err != nil {
+			return strictBuildFactoryListing{}, err
+		}
+	}
+	return strictBuildFactoryListing{oneOff: oneOff, private: private, public: public, other: other, rerun: rerun}, nil
+}
+
+func observeStrictBuildFactoryListing(database JetbridgeDB, profile string) (string, error) {
+	listing, err := setupStrictBuildFactoryListing(database, profile == "visible")
+	if err != nil {
+		return "", err
+	}
+	switch profile {
+	case "visible":
+		builds, _, err := database.BuildFactory.VisibleBuilds([]string{"strict-factory-list-team"}, db.Page{Limit: 10})
+		if err != nil {
+			return "", err
+		}
+		expected := []int{listing.public.ID(), listing.rerun.ID(), listing.private.ID(), listing.oneOff.ID()}
+		actual := make([]int, len(builds))
+		excluded := true
+		for i, build := range builds {
+			actual[i] = build.ID()
+			excluded = excluded && build.ID() != listing.other.ID()
+		}
+		return fmt.Sprintf("count=%d;order=%t;excluded=%t", len(builds), equalIntSequence(actual, expected), excluded), nil
+	case "all":
+		builds, _, err := database.BuildFactory.AllBuilds(db.Page{Limit: 10})
+		if err != nil {
+			return "", err
+		}
+		expected := joinedInts([]int{listing.oneOff.ID(), listing.private.ID(), listing.public.ID(), listing.other.ID()})
+		return fmt.Sprintf("count=%d;match=%t", len(builds), joinedBuildForAPIIDs(builds) == expected), nil
+	case "public":
+		builds, _, err := database.BuildFactory.PublicBuilds(db.Page{Limit: 10})
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("count=%d;match=%t", len(builds), joinedBuildForAPIIDs(builds) == fmt.Sprint(listing.public.ID())), nil
+	default:
+		return "", fmt.Errorf("unknown strict build listing profile %q", profile)
+	}
+}
+
+func equalIntSequence(actual, expected []int) bool {
+	if len(actual) != len(expected) {
+		return false
+	}
+	for i := range actual {
+		if actual[i] != expected[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func observeStrictBuildFactoryDate(database JetbridgeDB, profile string) (string, error) {
+	team, err := database.TeamFactory.CreateTeam(atc.Team{Name: "strict-factory-date-" + profile})
+	if err != nil {
+		return "", err
+	}
+	_, job, err := buildFactoryJob(team, "strict-date-"+profile)
+	if err != nil {
+		return "", err
+	}
+	one, err := team.CreateOneOffBuild()
+	if err != nil {
+		return "", err
+	}
+	two, err := job.CreateBuild("brine-user")
+	if err != nil {
+		return "", err
+	}
+	if _, err := team.CreateOneOffBuild(); err != nil {
+		return "", err
+	}
+	if _, err := one.Start(atc.Plan{}); err != nil {
+		return "", err
+	}
+	if _, err := two.Start(atc.Plan{}); err != nil {
+		return "", err
+	}
+	now := int(time.Now().Unix())
+	page := db.Page{Limit: 10, UseDate: true}
+	switch profile {
+	case "inside":
+		page.From = db.NewIntPtr(now - 10000)
+		page.To = db.NewIntPtr(now + 10)
+	case "future":
+		page.From = db.NewIntPtr(now + 10)
+	case "old":
+		page.To = db.NewIntPtr(now - 10000)
+	default:
+		return "", fmt.Errorf("unknown strict build date profile %q", profile)
+	}
+	builds, _, err := database.BuildFactory.AllBuilds(page)
+	return fmt.Sprintf("count=%d", len(builds)), err
 }
 
 func buildFactoryInterceptibility(database JetbridgeDB, team db.Team, oneOff, withinGrace bool) (string, error) {
@@ -328,7 +562,7 @@ func observeBuildFactoryDrainable(database JetbridgeDB, team db.Team) (string, e
 	}
 	checkFactory := db.NewCheckFactory(database.Conn, database.LockFactory, make(chan db.Build, 1), util.NewSequenceGenerator(1))
 	check, created, err := checkFactory.TryCreateCheck(
-		lagerctx.NewContext(context.Background(), lagertest.NewTestLogger("build-factory-drainable")),
+		lagerctx.NewContext(context.Background(), lager.NewLogger("build-factory-drainable")),
 		resource, resourceTypes, nil, false, false, true,
 	)
 	if err != nil || !created {

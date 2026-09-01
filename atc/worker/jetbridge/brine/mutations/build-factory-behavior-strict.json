@@ -1,0 +1,142 @@
+{
+  "name": "build-factory-behavior-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/build_factory_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/build-factory-behavior-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/build_factory_behavior.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "build-factory-loads-build-by-id",
+      "source_file": "atc/db/build_factory.go",
+      "old": "\treturn build, true, nil\n}\n\nfunc (f *buildFactory) VisibleBuilds",
+      "new": "\treturn nil, false, nil\n}\n\nfunc (f *buildFactory) VisibleBuilds",
+      "tests": [
+        "BuildFactory Build returns the correct build"
+      ],
+      "scenarios": [
+        "Build loads the exact persisted build identity"
+      ]
+    },
+    {
+      "id": "build-interceptibility-returns-the-persisted-policy",
+      "source_file": "atc/db/build.go",
+      "old": "\treturn interceptible, nil\n}\n\nfunc (b *build) Job()",
+      "new": "\treturn !interceptible, nil\n}\n\nfunc (b *build) Job()",
+      "tests": [
+        "BuildFactory MarkNonInterceptibleBuilds one-off builds completed and within grace period succeeded is interceptible",
+        "BuildFactory MarkNonInterceptibleBuilds one-off builds completed and within grace period aborted is non-interceptible (Finish sets it)",
+        "BuildFactory MarkNonInterceptibleBuilds one-off builds completed and within grace period errored is non-interceptible (Finish sets it)",
+        "BuildFactory MarkNonInterceptibleBuilds one-off builds completed and within grace period failed is non-interceptible (Finish sets it)",
+        "BuildFactory MarkNonInterceptibleBuilds one-off builds completed and past the grace period succeeded is non-interceptible",
+        "BuildFactory MarkNonInterceptibleBuilds one-off builds completed and past the grace period aborted is non-interceptible",
+        "BuildFactory MarkNonInterceptibleBuilds one-off builds completed and past the grace period errored is non-interceptible",
+        "BuildFactory MarkNonInterceptibleBuilds one-off builds completed and past the grace period failed is non-interceptible",
+        "BuildFactory MarkNonInterceptibleBuilds one-off builds non-completed is interceptible",
+        "BuildFactory MarkNonInterceptibleBuilds pipeline builds [#139963615] marks non-succeeded builds as non-interceptible via Finish()",
+        "BuildFactory MarkNonInterceptibleBuilds pipeline builds completed builds succeeded is non-interceptible",
+        "BuildFactory MarkNonInterceptibleBuilds pipeline builds completed builds aborted is non-interceptible (Finish sets it)",
+        "BuildFactory MarkNonInterceptibleBuilds pipeline builds completed builds errored is non-interceptible (Finish sets it)",
+        "BuildFactory MarkNonInterceptibleBuilds pipeline builds completed builds failed is non-interceptible (Finish sets it)",
+        "BuildFactory MarkNonInterceptibleBuilds pipeline builds does not mark non-completed builds",
+        "BuildFactory MarkNonInterceptibleBuilds GC failed builds marks failed builds non-interceptible immediately via Finish()"
+      ],
+      "scenarios": [
+        "A succeeded one-off build remains interceptible inside grace",
+        "An aborted one-off build is non-interceptible inside grace",
+        "An errored one-off build is non-interceptible inside grace",
+        "A failed one-off build is non-interceptible inside grace",
+        "A succeeded one-off build is non-interceptible after grace",
+        "An aborted one-off build is non-interceptible after grace",
+        "An errored one-off build is non-interceptible after grace",
+        "A failed one-off build is non-interceptible after grace",
+        "A running one-off build remains interceptible",
+        "Failed builds across pipelines become non-interceptible immediately",
+        "A succeeded pipeline build is non-interceptible when completed",
+        "An aborted pipeline build is non-interceptible when completed",
+        "An errored pipeline build is non-interceptible when completed",
+        "A failed pipeline build is non-interceptible when completed",
+        "Pending and started pipeline builds remain interceptible",
+        "A failed GC candidate becomes non-interceptible immediately"
+      ]
+    },
+    {
+      "id": "visible-builds-filters-by-public-or-authorized-team",
+      "source_file": "atc/db/build_factory.go",
+      "old": "\t\t\tsq.Eq{\"t.name\": teamNames},\n\t\t})",
+      "new": "\t\t\tsq.Eq{\"t.name\": []string{}},\n\t\t})",
+      "tests": [
+        "BuildFactory VisibleBuilds returns visible builds for the given teams"
+      ],
+      "scenarios": [
+        "VisibleBuilds returns exact ordered builds for authorized teams"
+      ]
+    },
+    {
+      "id": "all-builds-returns-the-persisted-build-set",
+      "source_file": "atc/db/build_factory.go",
+      "old": "func (f *buildFactory) AllBuilds(page Page) ([]BuildForAPI, Pagination, error) {\n\tif page.UseDate {\n\t\treturn getBuildsWithDates(buildsQuery, page, f.conn, f.lockFactory)\n\t}\n\treturn getBuildsWithPagination(buildsQuery, page, f.conn, f.lockFactory, false)\n}",
+      "new": "func (f *buildFactory) AllBuilds(page Page) ([]BuildForAPI, Pagination, error) {\n\treturn []BuildForAPI{}, Pagination{}, nil\n}",
+      "tests": [
+        "BuildFactory AllBuilds returns all builds from all teams private and public pipelines"
+      ],
+      "scenarios": [
+        "AllBuilds returns every private and public team build"
+      ]
+    },
+    {
+      "id": "date-builds-apply-both-time-boundaries",
+      "source_file": "atc/db/build_factory.go",
+      "old": "\tif page.UseDate {\n\t\treturn getBuildsWithDates(buildsQuery, page, f.conn, f.lockFactory)\n\t}\n\treturn getBuildsWithPagination(buildsQuery, page, f.conn, f.lockFactory, false)",
+      "new": "\tif page.UseDate {\n\t\treturn getBuildsWithPagination(buildsQuery, Page{Limit: page.Limit}, f.conn, f.lockFactory, false)\n\t}\n\treturn getBuildsWithPagination(buildsQuery, page, f.conn, f.lockFactory, false)",
+      "tests": [
+        "BuildFactory AllBuilds by date returns builds started in the given timespan",
+        "BuildFactory AllBuilds by date with a future date as Page.From should return nothing",
+        "BuildFactory AllBuilds by date with a very old date as Page.To should return nothing"
+      ],
+      "scenarios": [
+        "Date pagination returns only builds inside the requested window",
+        "Date pagination returns nothing after a future lower boundary",
+        "Date pagination returns nothing before an old upper boundary"
+      ]
+    },
+    {
+      "id": "public-builds-filters-for-public-pipelines",
+      "source_file": "atc/db/build_factory.go",
+      "old": "buildsQuery.Where(sq.Eq{\"p.public\": true}), page, f.conn, f.lockFactory, false)",
+      "new": "buildsQuery.Where(sq.Eq{\"p.public\": false}), page, f.conn, f.lockFactory, false)",
+      "tests": [
+        "BuildFactory PublicBuilds returns public builds"
+      ],
+      "scenarios": [
+        "PublicBuilds returns only builds from public pipelines"
+      ]
+    },
+    {
+      "id": "drainable-builds-exclude-resource-checks",
+      "source_file": "atc/db/build_factory.go",
+      "old": "\t\t\t\"b.resource_id\":      nil,\n\t\t\t\"b.resource_type_id\": nil,",
+      "new": "\t\t\t\"b.resource_id\":      sq.NotEq{\"b.resource_id\": nil},\n\t\t\t\"b.resource_type_id\": nil,",
+      "tests": [
+        "BuildFactory GetDrainableBuilds returns all builds that have been completed and not drained and not being check build"
+      ],
+      "scenarios": [
+        "GetDrainableBuilds excludes checks running and drained builds"
+      ]
+    },
+    {
+      "id": "started-builds-filter-for-started-status",
+      "source_file": "atc/db/build_factory.go",
+      "old": "\t\t\"b.status\": BuildStatusStarted,\n\t})",
+      "new": "\t\t\"b.status\": BuildStatusPending,\n\t})",
+      "tests": [
+        "BuildFactory GetAllStartedBuilds returns all builds that have been started, regardless of pipeline"
+      ],
+      "scenarios": [
+        "GetAllStartedBuilds returns started one-off and pipeline builds"
+      ]
+    }
+  ]
+}

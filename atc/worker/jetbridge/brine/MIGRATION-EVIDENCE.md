@@ -22,19 +22,19 @@ scenario fail is also not evidence.
 
 | quantity | source leaf tests | percentage of 6,857 |
 |---|---:|---:|
-| **fully migrated**: paired failure evidence, no prohibited double, source removed | **893** | **13.02%** |
+| **fully migrated**: paired failure evidence, no prohibited double, source removed | **918** | **13.39%** |
 | strict paired evidence, but source still present | 0 | 0.00% |
 | **runs in Brine but not the full philosophy**: paired failure evidence, but uses a stub, test sink, injected-fault object, fake, or mock | **112** | **1.63%** |
 | of the preceding exception bucket whose source test was removed | 66 | 0.96% |
-| total source tests with paired per-test failure evidence | 1,005 | 14.66% |
-| former claimed tests with no admissible paired evidence | 1,054 | 15.37% |
+| total source tests with paired per-test failure evidence | 1,030 | 15.02% |
+| former claimed tests with no admissible paired evidence | 1,029 | 15.01% |
 | Brine scenarios | 1,877 | execution count only |
 
-The requested two headline percentages are therefore **13.02% fully migrated**
+The requested two headline percentages are therefore **13.39% fully migrated**
 and **1.63% validated but running outside the full philosophy**. The second is
 not another migration percentage: 46 of its 112 source tests still exist. If
 "migrated" is restricted to removed source tests in both buckets, the figures
-are 13.02% strict and 0.96% philosophy-exception.
+are 13.39% strict and 0.96% philosophy-exception.
 
 ## Admitted evidence ledger
 
@@ -78,11 +78,12 @@ are 13.02% strict and 0.96% philosophy-exception.
 | `api/wall_test.go` production wall API over real TCP/PostgreSQL | 14 | 14 | 0 | 14 |
 | `go-concourse/concourse/teams_test.go` strict real-server client subset | 9 | 9 | 0 | 9 |
 | `db/resource_type_test.go` production resource-type domain | 22 | 22 | 0 | 22 |
+| `db/build_factory_test.go` production build-factory policy | 25 | 25 | 0 | 25 |
 | `destroyer_test.go` | 8 | 0 | 8 | 8 |
 | `scanner_test.go` | 14 | 0 | 14 | 14 |
 | durable-storage, volume-DaemonSet, and behavioral-permutation campaign | 44 | 0 | 44 | 44 |
 | daemonset-integration and daemon-client retained cases | 46 | 0 | 46 | 0 |
-| **total** | **1,005** | **893** | **112** | **959** |
+| **total** | **1,030** | **918** | **112** | **984** |
 
 ### Completed sink-free revalidation
 

@@ -1,0 +1,124 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/build-factory-behavior-strict.json",
+  "git_head": "485dce9b683abe60b8f49adaa98c3053c7009558",
+  "completed_at": "2026-09-01T10:45:17Z",
+  "source_tests": 25,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "build-factory-loads-build-by-id",
+      "mutation_sha256": "16f9d7e7c3d7eca9f5da2ec7094f0bb81e1bb3122dff299c43956b005b32724c",
+      "failed_source_tests": [
+        "BuildFactory Build returns the correct build"
+      ],
+      "failed_brine_scenarios": [
+        "Build loads the exact persisted build identity"
+      ]
+    },
+    {
+      "id": "build-interceptibility-returns-the-persisted-policy",
+      "mutation_sha256": "024452df04866c1b3493c561d9d6cb3dfa78164db713a369e8fe6cd0356c5240",
+      "failed_source_tests": [
+        "BuildFactory MarkNonInterceptibleBuilds GC failed builds marks failed builds non-interceptible immediately via Finish()",
+        "BuildFactory MarkNonInterceptibleBuilds one-off builds completed and past the grace period aborted is non-interceptible",
+        "BuildFactory MarkNonInterceptibleBuilds one-off builds completed and past the grace period errored is non-interceptible",
+        "BuildFactory MarkNonInterceptibleBuilds one-off builds completed and past the grace period failed is non-interceptible",
+        "BuildFactory MarkNonInterceptibleBuilds one-off builds completed and past the grace period succeeded is non-interceptible",
+        "BuildFactory MarkNonInterceptibleBuilds one-off builds completed and within grace period aborted is non-interceptible (Finish sets it)",
+        "BuildFactory MarkNonInterceptibleBuilds one-off builds completed and within grace period errored is non-interceptible (Finish sets it)",
+        "BuildFactory MarkNonInterceptibleBuilds one-off builds completed and within grace period failed is non-interceptible (Finish sets it)",
+        "BuildFactory MarkNonInterceptibleBuilds one-off builds completed and within grace period succeeded is interceptible",
+        "BuildFactory MarkNonInterceptibleBuilds one-off builds non-completed is interceptible",
+        "BuildFactory MarkNonInterceptibleBuilds pipeline builds [#139963615] marks non-succeeded builds as non-interceptible via Finish()",
+        "BuildFactory MarkNonInterceptibleBuilds pipeline builds completed builds aborted is non-interceptible (Finish sets it)",
+        "BuildFactory MarkNonInterceptibleBuilds pipeline builds completed builds errored is non-interceptible (Finish sets it)",
+        "BuildFactory MarkNonInterceptibleBuilds pipeline builds completed builds failed is non-interceptible (Finish sets it)",
+        "BuildFactory MarkNonInterceptibleBuilds pipeline builds completed builds succeeded is non-interceptible",
+        "BuildFactory MarkNonInterceptibleBuilds pipeline builds does not mark non-completed builds"
+      ],
+      "failed_brine_scenarios": [
+        "A failed GC candidate becomes non-interceptible immediately",
+        "A failed one-off build is non-interceptible after grace",
+        "A failed one-off build is non-interceptible inside grace",
+        "A failed pipeline build is non-interceptible when completed",
+        "A running one-off build remains interceptible",
+        "A succeeded one-off build is non-interceptible after grace",
+        "A succeeded one-off build remains interceptible inside grace",
+        "A succeeded pipeline build is non-interceptible when completed",
+        "An aborted one-off build is non-interceptible after grace",
+        "An aborted one-off build is non-interceptible inside grace",
+        "An aborted pipeline build is non-interceptible when completed",
+        "An errored one-off build is non-interceptible after grace",
+        "An errored one-off build is non-interceptible inside grace",
+        "An errored pipeline build is non-interceptible when completed",
+        "Failed builds across pipelines become non-interceptible immediately",
+        "Pending and started pipeline builds remain interceptible"
+      ]
+    },
+    {
+      "id": "visible-builds-filters-by-public-or-authorized-team",
+      "mutation_sha256": "6f263ecec16161e73444988b9ee438bc9364d411f7981863dc8630e5b03b06e3",
+      "failed_source_tests": [
+        "BuildFactory VisibleBuilds returns visible builds for the given teams"
+      ],
+      "failed_brine_scenarios": [
+        "VisibleBuilds returns exact ordered builds for authorized teams"
+      ]
+    },
+    {
+      "id": "all-builds-returns-the-persisted-build-set",
+      "mutation_sha256": "6e02669baa1c88023edb4ecd17e9a5def686afe551b4aaba58a51d686b971df5",
+      "failed_source_tests": [
+        "BuildFactory AllBuilds returns all builds from all teams private and public pipelines"
+      ],
+      "failed_brine_scenarios": [
+        "AllBuilds returns every private and public team build",
+        "Date pagination returns only builds inside the requested window"
+      ]
+    },
+    {
+      "id": "date-builds-apply-both-time-boundaries",
+      "mutation_sha256": "b2a95d885bead7b4b104a7d5a79eacc2eb32075b2d239478c7e98ed3d1e6caa0",
+      "failed_source_tests": [
+        "BuildFactory AllBuilds by date returns builds started in the given timespan",
+        "BuildFactory AllBuilds by date with a future date as Page.From should return nothing",
+        "BuildFactory AllBuilds by date with a very old date as Page.To should return nothing"
+      ],
+      "failed_brine_scenarios": [
+        "Date pagination returns nothing after a future lower boundary",
+        "Date pagination returns nothing before an old upper boundary",
+        "Date pagination returns only builds inside the requested window"
+      ]
+    },
+    {
+      "id": "public-builds-filters-for-public-pipelines",
+      "mutation_sha256": "e2443239aca24bded6f9eb355777a83d61dd0a688dc89a632c7b0162c4cda13f",
+      "failed_source_tests": [
+        "BuildFactory PublicBuilds returns public builds"
+      ],
+      "failed_brine_scenarios": [
+        "PublicBuilds returns only builds from public pipelines"
+      ]
+    },
+    {
+      "id": "drainable-builds-exclude-resource-checks",
+      "mutation_sha256": "734bf727109f33797ecd8186f5c61527f5c89ed28b882d3d4778850d88fea423",
+      "failed_source_tests": [
+        "BuildFactory GetDrainableBuilds returns all builds that have been completed and not drained and not being check build"
+      ],
+      "failed_brine_scenarios": [
+        "GetDrainableBuilds excludes checks running and drained builds"
+      ]
+    },
+    {
+      "id": "started-builds-filter-for-started-status",
+      "mutation_sha256": "985a26a0344afd0d5def10c5756e71e6f9076c54c78a4f2e34306edae7be731d",
+      "failed_source_tests": [
+        "BuildFactory GetAllStartedBuilds returns all builds that have been started, regardless of pipeline"
+      ],
+      "failed_brine_scenarios": [
+        "GetAllStartedBuilds returns started one-off and pipeline builds"
+      ]
+    }
+  ]
+}
