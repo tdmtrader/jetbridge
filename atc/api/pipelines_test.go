@@ -923,19 +923,11 @@ var _ = Describe("Pipelines API", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("returns 200 OK", func() {
-			Expect(response.StatusCode).To(Equal(http.StatusOK))
-		})
-
 		It("returns application/json", func() {
 			expectedHeaderEntries := map[string]string{
 				"Content-Type": "application/json",
 			}
 			Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-		})
-
-		It("returns public pipeline objects from both teams", func() {
-			expectPipelineResponse(response, pipelines["public-main"], pipelines["public-other"])
 		})
 
 		Context("when team is set in user context", func() {
@@ -2112,10 +2104,6 @@ var _ = Describe("Pipelines API", func() {
 						server = fixture.Database.Serve()
 					})
 
-					It("returns 400", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
-						Expect(io.ReadAll(response.Body)).To(ContainSubstring("pipeline 'a-pipeline' not found"))
-					})
 				})
 
 				Context("when ordering the pipelines fails", func() {
@@ -2732,36 +2720,6 @@ var _ = Describe("Pipelines API", func() {
 					Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
 				})
 
-				It("returns the builds", func() {
-					body, err := io.ReadAll(response.Body)
-					Expect(err).NotTo(HaveOccurred())
-					var builds []atc.Build
-					Expect(json.Unmarshal(body, &builds)).To(Succeed())
-					Expect(builds).To(HaveLen(2))
-					byID := map[int]atc.Build{}
-					for _, build := range builds {
-						byID[build.ID] = build
-					}
-					for _, build := range []db.Build{listBuild1, listBuild2} {
-						persisted, found, err := listDB.Deps.buildFactory.Build(build.ID())
-						Expect(err).NotTo(HaveOccurred())
-						Expect(found).To(BeTrue())
-						actual, ok := byID[build.ID()]
-						Expect(ok).To(BeTrue())
-						Expect(actual.Name).To(Equal(persisted.Name()))
-						Expect(actual.Status).To(Equal(atc.BuildStatus(persisted.Status())))
-						Expect(actual.TeamName).To(Equal(persisted.TeamName()))
-						Expect(actual.PipelineName).To(Equal("some-pipeline"))
-						Expect(actual.JobName).To(Equal("some-job"))
-						Expect(actual.StartTime).To(Equal(persisted.StartTime().Unix()))
-						if persisted.EndTime().IsZero() {
-							Expect(actual.EndTime).To(BeZero())
-						} else {
-							Expect(actual.EndTime).To(Equal(persisted.EndTime().Unix()))
-						}
-					}
-				})
-
 				Context("when next/previous pages are available", func() {
 					var (
 						olderBuild  db.Build
@@ -2964,30 +2922,6 @@ var _ = Describe("Pipelines API", func() {
 						Expect([]byte(*build.PublicPlan())).To(MatchJSON([]byte(*plan.Public())))
 					})
 
-					It("returns the created build", func() {
-						body, err := io.ReadAll(response.Body)
-						Expect(err).NotTo(HaveOccurred())
-
-						var actual atc.Build
-						Expect(json.Unmarshal(body, &actual)).To(Succeed())
-						builds, _, err := postPipeline.Builds(db.Page{Limit: 1})
-						Expect(err).NotTo(HaveOccurred())
-						Expect(builds).To(HaveLen(1))
-						build, found, err := postDB.Deps.buildFactory.Build(builds[0].ID())
-						Expect(err).NotTo(HaveOccurred())
-						Expect(found).To(BeTrue())
-						found, err = build.Reload()
-						Expect(err).NotTo(HaveOccurred())
-						Expect(found).To(BeTrue())
-						Expect(actual.ID).To(Equal(build.ID()))
-						Expect(actual.Name).To(Equal(build.Name()))
-						Expect(actual.TeamName).To(Equal(build.TeamName()))
-						Expect(actual.PipelineName).To(Equal("a-pipeline"))
-						Expect(actual.Status).To(Equal(atc.BuildStatus(db.BuildStatusStarted)))
-						Expect(actual.APIURL).To(Equal(fmt.Sprintf("/api/v1/builds/%d", build.ID())))
-						Expect(actual.StartTime).To(Equal(build.StartTime().Unix()))
-						Expect([]byte(*build.PublicPlan())).To(MatchJSON([]byte(*plan.Public())))
-					})
 				})
 			})
 		})

@@ -1,0 +1,59 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/pipeline-client-api-strict.json",
+  "git_head": "52d0c977e81a720dd8df4f42c42e2bd6abdbf11e",
+  "completed_at": "2026-09-01T10:48:43Z",
+  "source_tests": 5,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "global-pipeline-list-status",
+      "mutation_sha256": "44284c10e4310e8b60244054bccd7fad991593a5c8e6217a42dcbc963fbb3c40",
+      "failed_source_tests": [
+        "Pipelines API GET /api/v1/pipelines returns 200 OK"
+      ],
+      "failed_brine_scenarios": [
+        "Global pipeline listing returns status 200"
+      ]
+    },
+    {
+      "id": "global-pipeline-list-body",
+      "mutation_sha256": "9dbde4e11ecf696397ad515cbd80792f1791fbb8d6804305e005e3aeaf7a64b6",
+      "failed_source_tests": [
+        "Pipelines API GET /api/v1/pipelines returns public pipeline objects from both teams"
+      ],
+      "failed_brine_scenarios": [
+        "Global pipeline listing returns exact public pipeline objects"
+      ]
+    },
+    {
+      "id": "missing-named-order-status",
+      "mutation_sha256": "c028da3fdd1a43cdc40231dc6ff358ccc307f5bdccc28867d9563350bdd2873b",
+      "failed_source_tests": [
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/ordering when authenticated when requester belongs to the team when a pipeline does not exist returns 400"
+      ],
+      "failed_brine_scenarios": [
+        "Ordering a missing named pipeline returns the exact bad request"
+      ]
+    },
+    {
+      "id": "pipeline-build-list-body",
+      "mutation_sha256": "7d05c23d36180f59cee4c9d16d81ec5b106fe3283a0a6f461dcb403e54666d69",
+      "failed_source_tests": [
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/builds when authorized when getting the builds succeeds returns the builds"
+      ],
+      "failed_brine_scenarios": [
+        "Pipeline-build listing returns exact persisted build objects"
+      ]
+    },
+    {
+      "id": "pipeline-build-created-body",
+      "mutation_sha256": "8bbdc176383854d34af46a0ad6d200b018e36f33d6d262ba69baa4b720aab1a4",
+      "failed_source_tests": [
+        "Pipelines API POST /api/v1/teams/:team_name/pipelines/:pipeline_name/builds when authenticated when authorized when creating a started build succeeds returns the created build"
+      ],
+      "failed_brine_scenarios": [
+        "Pipeline-build creation returns the exact persisted build object"
+      ]
+    }
+  ]
+}

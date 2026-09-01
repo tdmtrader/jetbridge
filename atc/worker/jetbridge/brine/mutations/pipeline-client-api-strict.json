@@ -1,0 +1,53 @@
+{
+  "name": "pipeline-client-api-strict",
+  "test_package": "./atc/api",
+  "source_test_file": "atc/api/pipelines_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/pipeline-client-api-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/pipeline_client.go",
+    "atc/worker/jetbridge/brine/steps/pipeline_client_strict_support.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "global-pipeline-list-status",
+      "source_file": "atc/api/pipelineserver/list_all.go",
+      "old": "\tw.Header().Set(\"Content-Type\", \"application/json\")\n\terr = json.NewEncoder(w).Encode(present.Pipelines(pipelines))",
+      "new": "\tw.Header().Set(\"Content-Type\", \"application/json\")\n\tw.WriteHeader(http.StatusAccepted)\n\terr = json.NewEncoder(w).Encode(present.Pipelines(pipelines))",
+      "tests": ["Pipelines API GET /api/v1/pipelines returns 200 OK"],
+      "scenarios": ["Global pipeline listing returns status 200"]
+    },
+    {
+      "id": "global-pipeline-list-body",
+      "source_file": "atc/api/pipelineserver/list_all.go",
+      "old": "\terr = json.NewEncoder(w).Encode(present.Pipelines(pipelines))",
+      "new": "\terr = json.NewEncoder(w).Encode(map[string]any{\"pipelines\": present.Pipelines(pipelines)})",
+      "tests": ["Pipelines API GET /api/v1/pipelines returns public pipeline objects from both teams"],
+      "scenarios": ["Global pipeline listing returns exact public pipeline objects"]
+    },
+    {
+      "id": "missing-named-order-status",
+      "source_file": "atc/api/pipelineserver/order.go",
+      "old": "\t\t\tif errors.As(err, &errNotFound) {\n\t\t\t\tw.WriteHeader(http.StatusBadRequest)\n\t\t\t\tfmt.Fprintln(w, err.Error())",
+      "new": "\t\t\tif errors.As(err, &errNotFound) {\n\t\t\t\tw.WriteHeader(http.StatusUnprocessableEntity)\n\t\t\t\tfmt.Fprintln(w, err.Error())",
+      "tests": ["Pipelines API PUT /api/v1/teams/:team_name/pipelines/ordering when authenticated when requester belongs to the team when a pipeline does not exist returns 400"],
+      "scenarios": ["Ordering a missing named pipeline returns the exact bad request"]
+    },
+    {
+      "id": "pipeline-build-list-body",
+      "source_file": "atc/api/pipelineserver/list_builds.go",
+      "old": "\t\terr = json.NewEncoder(w).Encode(atc)",
+      "new": "\t\terr = json.NewEncoder(w).Encode([]any{})",
+      "tests": ["Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/builds when authorized when getting the builds succeeds returns the builds"],
+      "scenarios": ["Pipeline-build listing returns exact persisted build objects"]
+    },
+    {
+      "id": "pipeline-build-created-body",
+      "source_file": "atc/api/pipelineserver/build.go",
+      "old": "\t\terr = json.NewEncoder(w).Encode(present.Build(build, nil, nil))",
+      "new": "\t\terr = json.NewEncoder(w).Encode(map[string]any{\"build\": present.Build(build, nil, nil)})",
+      "tests": ["Pipelines API POST /api/v1/teams/:team_name/pipelines/:pipeline_name/builds when authenticated when authorized when creating a started build succeeds returns the created build"],
+      "scenarios": ["Pipeline-build creation returns the exact persisted build object"]
+    }
+  ]
+}

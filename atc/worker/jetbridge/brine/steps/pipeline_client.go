@@ -10,19 +10,24 @@ import (
 )
 
 type PipelineClientState struct {
-	API      *PipelineAPI
-	Client   clientapi.Client
-	Team     clientapi.Team
-	Found    bool
-	Err      error
-	Names    []string
-	Warnings int
-	BuildID  int
-	PageNil  bool
+	API        *strictPipelineClientAPI
+	Client     clientapi.Client
+	Team       clientapi.Team
+	Found      bool
+	Err        error
+	Names      []string
+	Pipeline   atc.Pipeline
+	Pipelines  []atc.Pipeline
+	Build      atc.Build
+	Builds     []atc.Build
+	Pagination clientapi.Pagination
+	Warnings   int
+	BuildID    int
+	PageNil    bool
 }
 
 func PipelineClientDefinitions() []brine.StepDefinition {
-	return []brine.StepDefinition{
+	definitions := []brine.StepDefinition{
 		brine.DefineMapUsing[brine.Empty, *PipelineClientState](
 			"the production Go pipeline client, real API, and PostgreSQL",
 			[]string{"jetbridge-db"},
@@ -31,11 +36,11 @@ func PipelineClientDefinitions() []brine.StepDefinition {
 				if !ok {
 					return nil, fmt.Errorf("jetbridge-db resource is %T", resources.Get("jetbridge-db"))
 				}
-				api, err := newPipelineAPI(database, rec)
+				api, err := newStrictPipelineClientAPI(database, rec)
 				if err != nil {
 					return nil, err
 				}
-				client := clientapi.NewClient(api.Server.URL, api.Client, false)
+				client := clientapi.NewClient(api.URL, api.Client, false)
 				return &PipelineClientState{API: api, Client: client, Team: client.Team("api-team")}, nil
 			},
 		),
@@ -61,7 +66,19 @@ func PipelineClientDefinitions() []brine.StepDefinition {
 				if !ok {
 					return in, fmt.Errorf("expected pipeline name")
 				}
-				_, _, err := in.API.Team.SavePipeline(clientPipelineRef(name), atc.Config{Jobs: atc.JobConfigs{{Name: "build"}}}, 0, false)
+				pipeline, _, err := in.API.Team.SavePipeline(
+					clientPipelineRef(name),
+					atc.Config{
+						Jobs:    atc.JobConfigs{{Name: "build"}},
+						Groups:  atc.GroupConfigs{{Name: "all", Jobs: []string{"build"}}},
+						Display: &atc.DisplayConfig{BackgroundImage: "brine-background.jpg"},
+					},
+					0,
+					false,
+				)
+				if err == nil {
+					in.API.Saved[name] = pipeline
+				}
 				return in, err
 			},
 		),
@@ -98,6 +115,7 @@ func PipelineClientDefinitions() []brine.StepDefinition {
 				name, _ := p.GetString(0)
 				pipeline, found, err := in.Team.Pipeline(clientPipelineRef(name))
 				in.Found, in.Err = found, err
+				in.Pipeline = pipeline
 				in.Names = nil
 				if found {
 					in.Names = []string{pipeline.Name}
@@ -121,6 +139,7 @@ func PipelineClientDefinitions() []brine.StepDefinition {
 				for _, pipeline := range pipelines {
 					in.Names = append(in.Names, pipeline.Name)
 				}
+				in.Pipelines = pipelines
 				return in, nil
 			},
 		),
@@ -150,7 +169,7 @@ func PipelineClientDefinitions() []brine.StepDefinition {
 			func(in *PipelineClientState, p brine.Params, _ *brine.Recorder) (*PipelineClientState, error) {
 				name, _ := p.GetString(0)
 				build, err := in.Team.CreatePipelineBuild(clientPipelineRef(name), atc.Plan{ID: "client-plan", Task: &atc.TaskPlan{Config: &atc.TaskConfig{Run: atc.TaskRunConfig{Path: "true"}}}})
-				in.Err, in.BuildID = err, build.ID
+				in.Err, in.BuildID, in.Build = err, build.ID, build
 				return in, nil
 			},
 		),
@@ -160,7 +179,7 @@ func PipelineClientDefinitions() []brine.StepDefinition {
 				name, _ := p.GetString(0)
 				builds, pagination, found, err := in.Team.PipelineBuilds(clientPipelineRef(name), clientapi.Page{})
 				in.Err, in.Found = err, found
-				in.BuildID = len(builds)
+				in.BuildID, in.Builds, in.Pagination = len(builds), builds, pagination
 				in.PageNil = pagination.Previous == nil && pagination.Next == nil
 				return in, nil
 			},
@@ -185,27 +204,8 @@ func PipelineClientDefinitions() []brine.StepDefinition {
 			return nil
 		}),
 		CheckInt[*PipelineClientState]("the Go client returned {int} warning(s)", "client warning count", func(in *PipelineClientState) (int, error) { return in.Warnings, nil }),
-		CheckInt[*PipelineClientState]("the Go client observed {int} build(s)", "client build count", func(in *PipelineClientState) (int, error) { return in.BuildID, nil }),
-		brine.DefineCheck[*PipelineClientState]("the Go client returned a created build", func(in *PipelineClientState, _ brine.Params, _ *brine.Recorder) error {
-			if in.BuildID <= 0 {
-				return fmt.Errorf("client returned invalid build ID %d", in.BuildID)
-			}
-			return nil
-		}),
-		brine.DefineCheck[*PipelineClientState]("the Go client returned pipelines {string}", func(in *PipelineClientState, p brine.Params, _ *brine.Recorder) error {
-			want, _ := p.GetString(0)
-			if strings.Join(in.Names, ",") != want {
-				return fmt.Errorf("expected %q, got %q", want, strings.Join(in.Names, ","))
-			}
-			return nil
-		}),
-		brine.DefineCheck[*PipelineClientState]("the Go client returned empty pagination", func(in *PipelineClientState, _ brine.Params, _ *brine.Recorder) error {
-			if !in.PageNil {
-				return fmt.Errorf("pagination was not empty")
-			}
-			return nil
-		}),
 	}
+	return append(definitions, pipelineClientStrictDefinitions()...)
 }
 
 func clientPipelineRef(name string) atc.PipelineRef {
