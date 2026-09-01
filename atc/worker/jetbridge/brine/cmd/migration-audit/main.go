@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -371,15 +372,32 @@ func expectedAndKnown(actual, expected []string, allowed map[string]bool) error 
 }
 
 func run(dir string, env []string, name string, args ...string) (string, error) {
-	command := exec.Command(name, args...)
+	const commandTimeout = 3 * time.Minute
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+	command := exec.CommandContext(ctx, name, args...)
 	command.Dir = dir
 	if env != nil {
 		command.Env = env
 	}
+	// Mutant Brine runs start an engine, adapter, envtest and PostgreSQL beneath
+	// the CLI. Kill the whole process group on timeout so a blocked scenario
+	// cannot stall the audit or leave those children behind.
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	command.Cancel = func() error {
+		if command.Process == nil {
+			return os.ErrProcessDone
+		}
+		return syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+	}
+	command.WaitDelay = 5 * time.Second
 	var output bytes.Buffer
 	command.Stdout = &output
 	command.Stderr = &output
 	err := command.Run()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return output.String(), fmt.Errorf("command timed out after %s: %s %s", commandTimeout, name, strings.Join(args, " "))
+	}
 	return output.String(), err
 }
 
