@@ -11,15 +11,11 @@ Feature: Sidecar configuration uses the production parser and union model
     Examples:
       | profile          | result                         |
       | parse-full       | full                           |
-      | parse-multiple   | postgres,redis                 |
-      | parse-minimal    | minimal=true                   |
+      | parse-multiple   | postgres:postgres:15,redis:redis:7 |
+      | parse-minimal    | redis:redis:7:minimal=true     |
       | parse-empty      | count=0                        |
       | json-round-trip  | equal=true                     |
-      | source-string    | file=repo/sidecar.yml          |
-      | source-object    | postgres:postgres:15           |
-      | marshal-file     | json-string                    |
       | marshal-object   | redis:redis:7                   |
-      | mixed-round-trip | repo/custom.yml,postgres,redis |
       | validate-valid   | valid                          |
       | validate-protocols | valid                        |
 

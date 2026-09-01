@@ -1,0 +1,149 @@
+{
+  "name": "sidecar-strict",
+  "test_package": "./atc",
+  "source_test_file": "atc/sidecar_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/sidecar-behavior.feature",
+  "step_files": ["atc/worker/jetbridge/brine/steps/sidecar_behavior.go"],
+  "cases": [
+    {
+      "id": "parsed-populated-sidecars-are-discarded",
+      "source_file": "atc/sidecar.go",
+      "old": "\treturn configs, nil\n}",
+      "new": "\treturn []SidecarConfig{}, nil\n}",
+      "tests": [
+        "SidecarConfig ParseSidecarConfigs given a valid single sidecar parses all fields",
+        "SidecarConfig ParseSidecarConfigs given multiple sidecars in one file parses all sidecars",
+        "SidecarConfig ParseSidecarConfigs given a minimal sidecar (name + image only) parses successfully"
+      ],
+      "scenarios": [
+        "Valid sidecar profile <profile> produces <result> (row 1)",
+        "Valid sidecar profile <profile> produces <result> (row 2)",
+        "Valid sidecar profile <profile> produces <result> (row 3)"
+      ]
+    },
+    {
+      "id": "empty-sidecar-list-gains-a-production-entry",
+      "source_file": "atc/sidecar.go",
+      "old": "\treturn configs, nil\n}",
+      "new": "\tif len(configs) == 0 {\n\t\treturn []SidecarConfig{{Name: \"mutated\", Image: \"mutated\"}}, nil\n\t}\n\treturn configs, nil\n}",
+      "tests": [
+        "SidecarConfig ParseSidecarConfigs when the list is empty returns an empty slice"
+      ],
+      "scenarios": [
+        "Valid sidecar profile <profile> produces <result> (row 4)"
+      ]
+    },
+    {
+      "id": "sidecar-validation-errors-are-ignored",
+      "source_file": "atc/sidecar.go",
+      "old": "\tif len(errors) > 0 {\n\t\treturn fmt.Errorf(\"invalid sidecar configuration: %s\", strings.Join(errors, \", \"))\n\t}\n\treturn nil\n}",
+      "new": "\t_ = strings.Join(errors, \", \")\n\treturn nil\n}",
+      "tests": [
+        "SidecarConfig ParseSidecarConfigs when name is missing returns a validation error",
+        "SidecarConfig ParseSidecarConfigs when image is missing returns a validation error",
+        "SidecarConfig ParseSidecarConfigs when name is empty string returns a validation error",
+        "SidecarConfig Validate returns error when name is empty",
+        "SidecarConfig Validate returns error when image is empty",
+        "SidecarConfig Validate rejects invalid port protocols"
+      ],
+      "scenarios": [
+        "Invalid parsed sidecar profile <profile> reports <message> (row 1)",
+        "Invalid parsed sidecar profile <profile> reports <message> (row 2)",
+        "Invalid parsed sidecar profile <profile> reports <message> (row 3)",
+        "Invalid direct validation profile <profile> reports <message> (row 1)",
+        "Invalid direct validation profile <profile> reports <message> (row 2)",
+        "Invalid direct validation profile <profile> reports <message> (row 3)"
+      ]
+    },
+    {
+      "id": "duplicate-sidecar-diagnostic-is-lost",
+      "source_file": "atc/sidecar.go",
+      "old": "return nil, fmt.Errorf(\"invalid sidecar configuration: duplicate sidecar name %q\", sc.Name)",
+      "new": "return nil, fmt.Errorf(\"mutated duplicate diagnostic %q\", sc.Name)",
+      "tests": [
+        "SidecarConfig ParseSidecarConfigs when duplicate names exist returns a validation error"
+      ],
+      "scenarios": [
+        "Invalid parsed sidecar profile <profile> reports <message> (row 4)"
+      ]
+    },
+    {
+      "id": "reserved-sidecar-diagnostic-is-lost",
+      "source_file": "atc/sidecar.go",
+      "old": "return nil, fmt.Errorf(\"invalid sidecar configuration: reserved container name %q\", sc.Name)",
+      "new": "return nil, fmt.Errorf(\"mutated reserved diagnostic %q\", sc.Name)",
+      "tests": [
+        "SidecarConfig ParseSidecarConfigs when a sidecar name conflicts with reserved names returns a validation error for 'main'",
+        "SidecarConfig ParseSidecarConfigs when a sidecar name conflicts with reserved names returns a validation error for 'artifact-helper'"
+      ],
+      "scenarios": [
+        "Invalid parsed sidecar profile <profile> reports <message> (row 5)",
+        "Invalid parsed sidecar profile <profile> reports <message> (row 6)"
+      ]
+    },
+    {
+      "id": "yaml-parser-errors-are-ignored",
+      "source_file": "atc/sidecar.go",
+      "old": "\tif err := yaml.UnmarshalStrict(data, &configs); err != nil {\n\t\treturn nil, fmt.Errorf(\"parsing sidecar config: %w\", err)\n\t}",
+      "new": "\tif err := yaml.UnmarshalStrict(data, &configs); err != nil {\n\t\treturn []SidecarConfig{}, nil\n\t}",
+      "tests": [
+        "SidecarConfig ParseSidecarConfigs when YAML has unknown fields returns an error",
+        "SidecarConfig ParseSidecarConfigs when YAML is invalid returns an error"
+      ],
+      "scenarios": [
+        "Invalid parsed sidecar profile <profile> reports <message> (row 7)",
+        "Invalid parsed sidecar profile <profile> reports <message> (row 8)"
+      ]
+    },
+    {
+      "id": "sidecar-config-command-is-not-serialized",
+      "source_file": "atc/sidecar.go",
+      "old": "Command    []string          `json:\"command,omitempty\"`",
+      "new": "Command    []string          `json:\"-\"`",
+      "tests": [
+        "SidecarConfig JSON round-trip marshals and unmarshals correctly"
+      ],
+      "scenarios": [
+        "Valid sidecar profile <profile> produces <result> (row 5)"
+      ]
+    },
+    {
+      "id": "numeric-sidecar-source-is-accepted",
+      "source_file": "atc/sidecar.go",
+      "old": "\treturn fmt.Errorf(\"sidecar entry must be a string (file path) or object (inline config)\")",
+      "new": "\treturn nil",
+      "tests": [
+        "SidecarConfig SidecarSource JSON unmarshaling when the entry is neither a string nor an object returns an error"
+      ],
+      "scenarios": [
+        "A numeric sidecar source is rejected"
+      ]
+    },
+    {
+      "id": "sidecar-inline-source-marshals-an-empty-config",
+      "source_file": "atc/sidecar.go",
+      "old": "\t\treturn json.Marshal(*s.Config)",
+      "new": "\t\treturn json.Marshal(SidecarConfig{})",
+      "tests": [
+        "SidecarConfig SidecarSource JSON marshaling when it is an inline config marshals as an object"
+      ],
+      "scenarios": [
+        "Valid sidecar profile <profile> produces <result> (row 6)"
+      ]
+    },
+    {
+      "id": "valid-sidecars-are-rejected",
+      "source_file": "atc/sidecar.go",
+      "old": "\tif len(errors) > 0 {\n\t\treturn fmt.Errorf(\"invalid sidecar configuration: %s\", strings.Join(errors, \", \"))\n\t}\n\treturn nil\n}",
+      "new": "\tif len(errors) > 0 {\n\t\treturn fmt.Errorf(\"invalid sidecar configuration: %s\", strings.Join(errors, \", \"))\n\t}\n\treturn fmt.Errorf(\"mutated valid sidecar rejection\")\n}",
+      "tests": [
+        "SidecarConfig Validate returns nil for a valid config",
+        "SidecarConfig Validate accepts valid port protocols"
+      ],
+      "scenarios": [
+        "Valid sidecar profile <profile> produces <result> (row 7)",
+        "Valid sidecar profile <profile> produces <result> (row 8)"
+      ]
+    }
+  ]
+}

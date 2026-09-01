@@ -1,0 +1,136 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/sidecar-strict.json",
+  "git_head": "80c45c987ab261a8a5c7ac998cbc3187e207e758",
+  "completed_at": "2026-09-01T05:02:06Z",
+  "source_tests": 20,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "parsed-populated-sidecars-are-discarded",
+      "mutation_sha256": "4372eba08facecc148d8994b8f5e0af0a48e56ee4171bf46ccd76a8735caabf3",
+      "failed_source_tests": [
+        "SidecarConfig ParseSidecarConfigs given a minimal sidecar (name + image only) parses successfully",
+        "SidecarConfig ParseSidecarConfigs given a valid single sidecar parses all fields",
+        "SidecarConfig ParseSidecarConfigs given multiple sidecars in one file parses all sidecars"
+      ],
+      "failed_brine_scenarios": [
+        "Valid sidecar profile \u003cprofile\u003e produces \u003cresult\u003e (row 1)",
+        "Valid sidecar profile \u003cprofile\u003e produces \u003cresult\u003e (row 2)",
+        "Valid sidecar profile \u003cprofile\u003e produces \u003cresult\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "empty-sidecar-list-gains-a-production-entry",
+      "mutation_sha256": "123c7db5ee2ce8f890e94befd603e06dddc5e09bc433a79fa7317c5753a9b503",
+      "failed_source_tests": [
+        "SidecarConfig ParseSidecarConfigs when the list is empty returns an empty slice"
+      ],
+      "failed_brine_scenarios": [
+        "Valid sidecar profile \u003cprofile\u003e produces \u003cresult\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "sidecar-validation-errors-are-ignored",
+      "mutation_sha256": "621900416ca0dff163ccbb7458779ffc314e7e98711e6ae025c894c6ab3a81c6",
+      "failed_source_tests": [
+        "SidecarConfig ParseSidecarConfigs when image is missing returns a validation error",
+        "SidecarConfig ParseSidecarConfigs when name is empty string returns a validation error",
+        "SidecarConfig ParseSidecarConfigs when name is missing returns a validation error",
+        "SidecarConfig Validate rejects invalid port protocols",
+        "SidecarConfig Validate returns error when image is empty",
+        "SidecarConfig Validate returns error when name is empty"
+      ],
+      "failed_brine_scenarios": [
+        "Invalid direct validation profile \u003cprofile\u003e reports \u003cmessage\u003e (row 1)",
+        "Invalid direct validation profile \u003cprofile\u003e reports \u003cmessage\u003e (row 2)",
+        "Invalid direct validation profile \u003cprofile\u003e reports \u003cmessage\u003e (row 3)",
+        "Invalid parsed sidecar profile \u003cprofile\u003e reports \u003cmessage\u003e (row 1)",
+        "Invalid parsed sidecar profile \u003cprofile\u003e reports \u003cmessage\u003e (row 2)",
+        "Invalid parsed sidecar profile \u003cprofile\u003e reports \u003cmessage\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "duplicate-sidecar-diagnostic-is-lost",
+      "mutation_sha256": "26f5a9efce84d2556e2e585295765ded77aa00f38c4563991e6ffc900a6c1a30",
+      "failed_source_tests": [
+        "SidecarConfig ParseSidecarConfigs when duplicate names exist returns a validation error"
+      ],
+      "failed_brine_scenarios": [
+        "Invalid parsed sidecar profile \u003cprofile\u003e reports \u003cmessage\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "reserved-sidecar-diagnostic-is-lost",
+      "mutation_sha256": "54fc1702d8fa6608d291f5eae16cfecaeb70c7d2ff4708fd9255c9591a014860",
+      "failed_source_tests": [
+        "SidecarConfig ParseSidecarConfigs when a sidecar name conflicts with reserved names returns a validation error for 'artifact-helper'",
+        "SidecarConfig ParseSidecarConfigs when a sidecar name conflicts with reserved names returns a validation error for 'main'"
+      ],
+      "failed_brine_scenarios": [
+        "Invalid parsed sidecar profile \u003cprofile\u003e reports \u003cmessage\u003e (row 5)",
+        "Invalid parsed sidecar profile \u003cprofile\u003e reports \u003cmessage\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "yaml-parser-errors-are-ignored",
+      "mutation_sha256": "9f053f2090111ecc2f198330c0fa7288f56ef30ae4a080391c7d6677618b6e23",
+      "failed_source_tests": [
+        "SidecarConfig ParseSidecarConfigs when YAML has unknown fields returns an error",
+        "SidecarConfig ParseSidecarConfigs when YAML is invalid returns an error"
+      ],
+      "failed_brine_scenarios": [
+        "Invalid parsed sidecar profile \u003cprofile\u003e reports \u003cmessage\u003e (row 7)",
+        "Invalid parsed sidecar profile \u003cprofile\u003e reports \u003cmessage\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "sidecar-config-command-is-not-serialized",
+      "mutation_sha256": "e37152c0c6cb9203dc7417b8d7685d13da4421467a91fd475e3622ac41157551",
+      "failed_source_tests": [
+        "SidecarConfig JSON round-trip marshals and unmarshals correctly"
+      ],
+      "failed_brine_scenarios": [
+        "Valid sidecar profile \u003cprofile\u003e produces \u003cresult\u003e (row 1)",
+        "Valid sidecar profile \u003cprofile\u003e produces \u003cresult\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "numeric-sidecar-source-is-accepted",
+      "mutation_sha256": "82cc257e11f2cf81d45accf8a52e3f2ace93e65a858d192044da7ce44b5cc8da",
+      "failed_source_tests": [
+        "SidecarConfig SidecarSource JSON unmarshaling when the entry is neither a string nor an object returns an error"
+      ],
+      "failed_brine_scenarios": [
+        "A numeric sidecar source is rejected"
+      ]
+    },
+    {
+      "id": "sidecar-inline-source-marshals-an-empty-config",
+      "mutation_sha256": "a3ac3d59bf6ac5337d47f9422d922e9b57c9c126241c7796a9708e684d1ded96",
+      "failed_source_tests": [
+        "SidecarConfig SidecarSource JSON marshaling when it is an inline config marshals as an object"
+      ],
+      "failed_brine_scenarios": [
+        "Valid sidecar profile \u003cprofile\u003e produces \u003cresult\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "valid-sidecars-are-rejected",
+      "mutation_sha256": "54be80dfda2cbccd0a353dd2c3dad43d9fa4cd03776b4526888842f6515f67bf",
+      "failed_source_tests": [
+        "SidecarConfig Validate accepts valid port protocols",
+        "SidecarConfig Validate returns nil for a valid config"
+      ],
+      "failed_brine_scenarios": [
+        "Invalid parsed sidecar profile \u003cprofile\u003e reports \u003cmessage\u003e (row 4)",
+        "Invalid parsed sidecar profile \u003cprofile\u003e reports \u003cmessage\u003e (row 5)",
+        "Invalid parsed sidecar profile \u003cprofile\u003e reports \u003cmessage\u003e (row 6)",
+        "Valid sidecar profile \u003cprofile\u003e produces \u003cresult\u003e (row 1)",
+        "Valid sidecar profile \u003cprofile\u003e produces \u003cresult\u003e (row 2)",
+        "Valid sidecar profile \u003cprofile\u003e produces \u003cresult\u003e (row 3)",
+        "Valid sidecar profile \u003cprofile\u003e produces \u003cresult\u003e (row 7)",
+        "Valid sidecar profile \u003cprofile\u003e produces \u003cresult\u003e (row 8)"
+      ]
+    }
+  ]
+}

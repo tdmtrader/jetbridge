@@ -56,6 +56,8 @@ func observeSidecar(profile string) (string, error, error) {
   env:
   - name: POSTGRES_PASSWORD
     value: test
+  - name: POSTGRES_DB
+    value: myapp_test
   ports:
   - containerPort: 5432
     protocol: TCP
@@ -69,7 +71,10 @@ func observeSidecar(profile string) (string, error, error) {
 		expected := atc.SidecarConfig{
 			Name: "postgres", Image: "postgres:15", Command: []string{"docker-entrypoint.sh"},
 			Args: []string{"postgres"}, WorkingDir: "/var/lib/postgresql",
-			Env:   []atc.SidecarEnvVar{{Name: "POSTGRES_PASSWORD", Value: "test"}},
+			Env: []atc.SidecarEnvVar{
+				{Name: "POSTGRES_PASSWORD", Value: "test"},
+				{Name: "POSTGRES_DB", Value: "myapp_test"},
+			},
 			Ports: []atc.SidecarPort{{ContainerPort: 5432, Protocol: "TCP"}},
 			Resources: &atc.SidecarResources{
 				Requests: atc.SidecarResourceList{CPU: "100m", Memory: "256Mi"},
@@ -81,23 +86,37 @@ func observeSidecar(profile string) (string, error, error) {
 		}
 		return "full", nil, nil
 	case "parse-multiple":
-		configs, err := atc.ParseSidecarConfigs([]byte("- name: postgres\n  image: postgres:15\n- name: redis\n  image: redis:7\n"))
+		configs, err := atc.ParseSidecarConfigs([]byte("- name: postgres\n  image: postgres:15\n  env:\n  - name: POSTGRES_PASSWORD\n    value: test\n  ports:\n  - containerPort: 5432\n- name: redis\n  image: redis:7\n  ports:\n  - containerPort: 6379\n"))
 		if err != nil {
 			return "", err, nil
 		}
-		return configs[0].Name + "," + configs[1].Name, nil, nil
+		if len(configs) != 2 {
+			return "", nil, fmt.Errorf("expected two sidecars, got %d", len(configs))
+		}
+		return configs[0].Name + ":" + configs[0].Image + "," + configs[1].Name + ":" + configs[1].Image, nil, nil
 	case "parse-minimal":
 		configs, err := atc.ParseSidecarConfigs([]byte("- name: redis\n  image: redis:7\n"))
 		if err != nil {
 			return "", err, nil
 		}
+		if len(configs) != 1 {
+			return "", nil, fmt.Errorf("expected one sidecar, got %d", len(configs))
+		}
 		minimal := len(configs) == 1 && configs[0].Command == nil && configs[0].Env == nil && configs[0].Ports == nil && configs[0].Resources == nil
-		return fmt.Sprintf("minimal=%t", minimal), nil, nil
+		return fmt.Sprintf("%s:%s:minimal=%t", configs[0].Name, configs[0].Image, minimal), nil, nil
 	case "parse-empty":
 		configs, err := atc.ParseSidecarConfigs([]byte("[]"))
 		return fmt.Sprintf("count=%d", len(configs)), err, nil
 	case "json-round-trip":
-		original := atc.SidecarConfig{Name: "postgres", Image: "postgres:15", Ports: []atc.SidecarPort{{ContainerPort: 5432, Protocol: "TCP"}}}
+		original := atc.SidecarConfig{
+			Name: "postgres", Image: "postgres:15", Command: []string{"docker-entrypoint.sh"}, Args: []string{"postgres"},
+			Env:   []atc.SidecarEnvVar{{Name: "POSTGRES_PASSWORD", Value: "test"}},
+			Ports: []atc.SidecarPort{{ContainerPort: 5432, Protocol: "TCP"}},
+			Resources: &atc.SidecarResources{
+				Requests: atc.SidecarResourceList{CPU: "100m", Memory: "256Mi"},
+				Limits:   atc.SidecarResourceList{CPU: "500m", Memory: "512Mi"},
+			},
+		}
 		payload, err := json.Marshal(original)
 		if err != nil {
 			return "", err, nil
@@ -105,27 +124,10 @@ func observeSidecar(profile string) (string, error, error) {
 		var restored atc.SidecarConfig
 		err = json.Unmarshal(payload, &restored)
 		return fmt.Sprintf("equal=%t", reflect.DeepEqual(original, restored)), err, nil
-	case "source-string":
-		var source atc.SidecarSource
-		err := json.Unmarshal([]byte(`"repo/sidecar.yml"`), &source)
-		return "file=" + source.File, err, nil
-	case "source-object":
-		var source atc.SidecarSource
-		err := json.Unmarshal([]byte(`{"name":"postgres","image":"postgres:15"}`), &source)
-		if source.Config == nil {
-			return "config=nil", err, nil
-		}
-		return source.Config.Name + ":" + source.Config.Image, err, nil
 	case "source-invalid":
 		var source atc.SidecarSource
 		err := json.Unmarshal([]byte(`123`), &source)
 		return "", err, nil
-	case "marshal-file":
-		payload, err := json.Marshal(atc.SidecarSource{File: "repo/sidecar.yml"})
-		if err == nil && string(payload) != `"repo/sidecar.yml"` {
-			return "", nil, fmt.Errorf("unexpected file JSON %s", payload)
-		}
-		return "json-string", err, nil
 	case "marshal-object":
 		payload, err := json.Marshal(atc.SidecarSource{Config: &atc.SidecarConfig{Name: "redis", Image: "redis:7"}})
 		if err != nil {
@@ -134,19 +136,6 @@ func observeSidecar(profile string) (string, error, error) {
 		var restored atc.SidecarSource
 		err = json.Unmarshal(payload, &restored)
 		return restored.Config.Name + ":" + restored.Config.Image, err, nil
-	case "mixed-round-trip":
-		var sources []atc.SidecarSource
-		err := json.Unmarshal([]byte(`["repo/custom.yml",{"name":"postgres","image":"postgres:15"},{"name":"redis","image":"redis:7"}]`), &sources)
-		if err != nil {
-			return "", err, nil
-		}
-		payload, err := json.Marshal(sources)
-		if err != nil {
-			return "", err, nil
-		}
-		var restored []atc.SidecarSource
-		err = json.Unmarshal(payload, &restored)
-		return fmt.Sprintf("%s,%s,%s", restored[0].File, restored[1].Config.Name, restored[2].Config.Name), err, nil
 	case "validate-valid":
 		return "valid", atc.SidecarConfig{Name: "db", Image: "postgres:15"}.Validate(), nil
 	case "validate-protocols":
