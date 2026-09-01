@@ -1,0 +1,177 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/worker-factory-domain-strict.json",
+  "git_head": "cea70aa63bc3ece00b37d6458d7f8d2dea7125ee",
+  "completed_at": "2026-09-01T05:51:48Z",
+  "source_tests": 20,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "worker-resource-types-round-trip",
+      "mutation_sha256": "4cae778aba9658ebdadbff433b985622d5f28d7aa79a043c37a608b8b9d4cafd",
+      "failed_source_tests": [
+        "WorkerFactory GetWorker when the worker is present finds the worker",
+        "WorkerFactory SaveWorker when the worker already exists saves resource types"
+      ],
+      "failed_brine_scenarios": [
+        "Worker factory profile \u003cprofile\u003e produces \u003cresult\u003e (row 1)",
+        "Worker factory profile \u003cprofile\u003e produces \u003cresult\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "save-worker-removes-obsolete-resource-types",
+      "mutation_sha256": "c093bfa4595548fab4311a0585f8aba87e7b45701cb58ee2739f2a39879b7e66",
+      "failed_source_tests": [
+        "WorkerFactory SaveWorker when the worker already exists removes old worker resource type"
+      ],
+      "failed_brine_scenarios": [
+        "Worker factory profile \u003cprofile\u003e produces \u003cresult\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "resource-type-image-participates-in-identity",
+      "mutation_sha256": "592ccd0480f57d78f5d16f711bb533012e77d1df22d613ac5e519c6e90ff63ce",
+      "failed_source_tests": [
+        "WorkerFactory SaveWorker when the worker already exists replaces outdated worker resource type image"
+      ],
+      "failed_brine_scenarios": [
+        "Worker factory profile \u003cprofile\u003e produces \u003cresult\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "resource-type-version-participates-in-identity",
+      "mutation_sha256": "8cb28efbc715b0ce73e1253d90ac22a9f7ad8948e7fad94bc2ea676fb1377369",
+      "failed_source_tests": [
+        "WorkerFactory SaveWorker when the worker already exists replaces outdated worker resource type version"
+      ],
+      "failed_brine_scenarios": [
+        "Worker factory profile \u003cprofile\u003e produces \u003cresult\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "save-worker-preserves-version",
+      "mutation_sha256": "80e26d6947c7b218e37496ae648ac007d64f8f7778ab2f3524e1b480e7c09e6b",
+      "failed_source_tests": [
+        "WorkerFactory SaveWorker no worker with same name exists saves worker",
+        "WorkerFactory SaveWorker when the worker already exists when the worker has a new version updates the version of the worker"
+      ],
+      "failed_brine_scenarios": [
+        "Worker factory profile \u003cprofile\u003e produces \u003cresult\u003e (row 5)",
+        "Worker factory profile \u003cprofile\u003e produces \u003cresult\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "save-worker-persists-base-resource-type-rows",
+      "mutation_sha256": "89956707f896153ddbf883c7105b4b80bf687b280e0a48a103140401f1fa4f72",
+      "failed_source_tests": [
+        "WorkerFactory SaveWorker no worker with same name exists saves worker resource types as base resource types"
+      ],
+      "failed_brine_scenarios": [
+        "Worker factory profile \u003cprofile\u003e produces \u003cresult\u003e (row 14)",
+        "Worker factory profile \u003cprofile\u003e produces \u003cresult\u003e (row 2)",
+        "Worker factory profile \u003cprofile\u003e produces \u003cresult\u003e (row 20)",
+        "Worker factory profile \u003cprofile\u003e produces \u003cresult\u003e (row 3)",
+        "Worker factory profile \u003cprofile\u003e produces \u003cresult\u003e (row 4)",
+        "Worker factory profile \u003cprofile\u003e produces \u003cresult\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "get-worker-reports-missing",
+      "mutation_sha256": "1e88af0fbd0f2c2c907b20767580aee8d38dd8da6bed4ae97d060551241d6b3c",
+      "failed_source_tests": [
+        "WorkerFactory GetWorker when the worker is not present returns false but no error"
+      ],
+      "failed_brine_scenarios": [
+        "Worker factory profile \u003cprofile\u003e produces \u003cresult\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "visible-workers-includes-global-workers",
+      "mutation_sha256": "41f9743807598a643e9da54b48b514cf47d7606b3e6023b5b90c2c90d5ff876b",
+      "failed_source_tests": [
+        "WorkerFactory VisibleWorkers when there are public and private workers on multiple teams finds visble workers for the given teams"
+      ],
+      "failed_brine_scenarios": [
+        "Worker factory profile \u003cprofile\u003e produces \u003cresult\u003e (row 10)"
+      ]
+    },
+    {
+      "id": "visible-workers-empty-means-empty",
+      "mutation_sha256": "a5dcf2fc8068b3dd42e4413401d49f47319bc94d95092a95f889b85780dc44eb",
+      "failed_source_tests": [
+        "WorkerFactory VisibleWorkers when there are no workers returns an error"
+      ],
+      "failed_brine_scenarios": [
+        "Worker factory profile \u003cprofile\u003e produces \u003cresult\u003e (row 10)",
+        "Worker factory profile \u003cprofile\u003e produces \u003cresult\u003e (row 11)"
+      ]
+    },
+    {
+      "id": "workers-returns-every-worker",
+      "mutation_sha256": "de0cd126fecba3b5327aff85200882702393098aaa77460e4782d3ab80c0980e",
+      "failed_source_tests": [
+        "WorkerFactory Workers when there are workers finds them without error"
+      ],
+      "failed_brine_scenarios": [
+        "Worker factory profile \u003cprofile\u003e produces \u003cresult\u003e (row 12)"
+      ]
+    },
+    {
+      "id": "workers-empty-means-empty",
+      "mutation_sha256": "54812a7cd959462130a1d017804bc4fb0f96d7f2fd9fdbc7a55f9f0df8ca085f",
+      "failed_source_tests": [
+        "WorkerFactory Workers when there are no workers returns an error"
+      ],
+      "failed_brine_scenarios": [
+        "Worker factory profile \u003cprofile\u003e produces \u003cresult\u003e (row 13)"
+      ]
+    },
+    {
+      "id": "owner-query-finds-matching-containers",
+      "mutation_sha256": "9ff9645ea5cd56b51a4cb3bbe2158c0f128c5fa94cb28c315ac4455821645ef6",
+      "failed_source_tests": [
+        "WorkerFactory FindWorkerForContainerByOwner when there are build containers when there is a created container returns it",
+        "WorkerFactory FindWorkerForContainerByOwner when there are build containers when there is a creating container returns it",
+        "WorkerFactory FindWorkerForContainerByOwner when there are check containers when there are multiple of the same containers on the global, team and tagged worker should find all the workers that have the same container"
+      ],
+      "failed_brine_scenarios": [
+        "Worker factory profile \u003cprofile\u003e produces \u003cresult\u003e (row 14)",
+        "Worker factory profile \u003cprofile\u003e produces \u003cresult\u003e (row 15)",
+        "Worker factory profile \u003cprofile\u003e produces \u003cresult\u003e (row 17)"
+      ]
+    },
+    {
+      "id": "owner-query-preserves-team-boundary",
+      "mutation_sha256": "30cbf2e9b69002a1b2a6fd5ca5df956dca85d029b31ac565ece1a1b26fddd5ba",
+      "failed_source_tests": [
+        "WorkerFactory FindWorkerForContainerByOwner when there are build containers when there is a created container does not find container for another team",
+        "WorkerFactory FindWorkerForContainerByOwner when there are build containers when there is a creating container does not find container for another team"
+      ],
+      "failed_brine_scenarios": [
+        "Worker factory profile \u003cprofile\u003e produces \u003cresult\u003e (row 16)",
+        "Worker factory profile \u003cprofile\u003e produces \u003cresult\u003e (row 18)"
+      ]
+    },
+    {
+      "id": "missing-owner-returns-no-workers",
+      "mutation_sha256": "6a5ea48f18ccfeb3b652c3bc1471fad6e8a123170b3860d9ce9aeb83fd496516",
+      "failed_source_tests": [
+        "WorkerFactory FindWorkerForContainerByOwner when there are build containers when there is no container returns nil"
+      ],
+      "failed_brine_scenarios": [
+        "Worker factory profile \u003cprofile\u003e produces \u003cresult\u003e (row 16)",
+        "Worker factory profile \u003cprofile\u003e produces \u003cresult\u003e (row 18)",
+        "Worker factory profile \u003cprofile\u003e produces \u003cresult\u003e (row 19)"
+      ]
+    },
+    {
+      "id": "build-container-count-excludes-non-build-containers",
+      "mutation_sha256": "5873ee4b24fa2271e22c4639a855d22e27d404a8b1bf63379270dca77f0990d6",
+      "failed_source_tests": [
+        "WorkerFactory BuildContainersCountPerWorker returns a map of worker to number of active build containers"
+      ],
+      "failed_brine_scenarios": [
+        "Worker factory profile \u003cprofile\u003e produces \u003cresult\u003e (row 20)"
+      ]
+    }
+  ]
+}

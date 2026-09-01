@@ -1,0 +1,173 @@
+{
+  "name": "worker-factory-domain-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/worker_factory_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/worker-factory-domain.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/worker_factory_domain.go",
+    "atc/worker/jetbridge/brine/steps/worker_factory_domain_strict.go"
+  ],
+  "cases": [
+    {
+      "id": "worker-resource-types-round-trip",
+      "source_file": "atc/db/worker_factory.go",
+      "old": "\terr = json.Unmarshal(resourceTypes, &worker.resourceTypes)\n\tif err != nil {",
+      "new": "\terr = json.Unmarshal([]byte(\"[]\"), &worker.resourceTypes)\n\tif err != nil {",
+      "tests": [
+        "WorkerFactory SaveWorker when the worker already exists saves resource types",
+        "WorkerFactory GetWorker when the worker is present finds the worker"
+      ],
+      "scenarios": [
+        "Worker factory profile <profile> produces <result> (row 1)",
+        "Worker factory profile <profile> produces <result> (row 8)"
+      ],
+      "failure_contains": "worker factory result"
+    },
+    {
+      "id": "save-worker-removes-obsolete-resource-types",
+      "source_file": "atc/db/worker_factory.go",
+      "old": "\t\tWhere(sq.Eq{\n\t\t\t\"worker_name\": atcWorker.Name,\n\t\t}).\n\t\tWhere(sq.NotEq{",
+      "new": "\t\tWhere(sq.Eq{\n\t\t\t\"worker_name\": atcWorker.Name + \"-mutated\",\n\t\t}).\n\t\tWhere(sq.NotEq{",
+      "tests": ["WorkerFactory SaveWorker when the worker already exists removes old worker resource type"],
+      "scenarios": ["Worker factory profile <profile> produces <result> (row 2)"],
+      "failure_contains": "worker factory result"
+    },
+    {
+      "id": "resource-type-image-participates-in-identity",
+      "source_file": "atc/db/worker_factory.go",
+      "old": "\t\t\tImage:   resourceType.Image,\n\t\t\tVersion: resourceType.Version,",
+      "new": "\t\t\tImage:   \"\",\n\t\t\tVersion: resourceType.Version,",
+      "tests": ["WorkerFactory SaveWorker when the worker already exists replaces outdated worker resource type image"],
+      "scenarios": ["Worker factory profile <profile> produces <result> (row 3)"],
+      "failure_contains": "worker factory result"
+    },
+    {
+      "id": "resource-type-version-participates-in-identity",
+      "source_file": "atc/db/worker_factory.go",
+      "old": "\t\t\tImage:   resourceType.Image,\n\t\t\tVersion: resourceType.Version,",
+      "new": "\t\t\tImage:   resourceType.Image,\n\t\t\tVersion: \"\",",
+      "tests": ["WorkerFactory SaveWorker when the worker already exists replaces outdated worker resource type version"],
+      "scenarios": ["Worker factory profile <profile> produces <result> (row 4)"],
+      "failure_contains": "worker factory result"
+    },
+    {
+      "id": "save-worker-preserves-version",
+      "source_file": "atc/db/worker_factory.go",
+      "old": "\tif atcWorker.Version != \"\" {\n\t\tworkerVersion = &atcWorker.Version\n\t}",
+      "new": "\tif false && atcWorker.Version != \"\" {\n\t\tworkerVersion = &atcWorker.Version\n\t}",
+      "tests": [
+        "WorkerFactory SaveWorker when the worker already exists when the worker has a new version updates the version of the worker",
+        "WorkerFactory SaveWorker no worker with same name exists saves worker"
+      ],
+      "scenarios": [
+        "Worker factory profile <profile> produces <result> (row 5)",
+        "Worker factory profile <profile> produces <result> (row 6)"
+      ],
+      "failure_contains": "worker factory result"
+    },
+    {
+      "id": "save-worker-persists-base-resource-type-rows",
+      "source_file": "atc/db/worker_factory.go",
+      "old": "\tfor _, resourceType := range atcWorker.ResourceTypes {\n\t\tworkerResourceType := WorkerResourceType{",
+      "new": "\tfor _, resourceType := range atcWorker.ResourceTypes[:0] {\n\t\tworkerResourceType := WorkerResourceType{",
+      "tests": ["WorkerFactory SaveWorker no worker with same name exists saves worker resource types as base resource types"],
+      "scenarios": ["Worker factory profile <profile> produces <result> (row 7)"],
+      "failure_contains": "worker factory result"
+    },
+    {
+      "id": "get-worker-reports-missing",
+      "source_file": "atc/db/worker_factory.go",
+      "old": "\treturn nil, false, nil\n}\n\nfunc (f *workerFactory) VisibleWorkers",
+      "new": "\treturn nil, true, nil\n}\n\nfunc (f *workerFactory) VisibleWorkers",
+      "tests": ["WorkerFactory GetWorker when the worker is not present returns false but no error"],
+      "scenarios": ["Worker factory profile <profile> produces <result> (row 9)"],
+      "failure_contains": "worker factory result"
+    },
+    {
+      "id": "visible-workers-includes-global-workers",
+      "source_file": "atc/db/worker_factory.go",
+      "old": "\t\tif worker.TeamID() == 0 {\n\t\t\treturn true\n\t\t}",
+      "new": "\t\tif worker.TeamID() == 0 {\n\t\t\treturn false\n\t\t}",
+      "tests": ["WorkerFactory VisibleWorkers when there are public and private workers on multiple teams finds visble workers for the given teams"],
+      "scenarios": ["Worker factory profile <profile> produces <result> (row 10)"],
+      "failure_contains": "worker factory result"
+    },
+    {
+      "id": "visible-workers-empty-means-empty",
+      "source_file": "atc/db/worker_factory.go",
+      "old": "\tvisibleWorkers := []Worker{}\n\tfor _, worker := range workers {",
+      "new": "\tvisibleWorkers := []Worker{&worker{name: \"mutated\", conn: f.conn}}\n\tfor _, worker := range workers {",
+      "tests": ["WorkerFactory VisibleWorkers when there are no workers returns an error"],
+      "scenarios": ["Worker factory profile <profile> produces <result> (row 11)"],
+      "failure_contains": "worker factory result"
+    },
+    {
+      "id": "workers-returns-every-worker",
+      "source_file": "atc/db/worker_factory.go",
+      "old": "func (f *workerFactory) Workers() ([]Worker, error) {\n\treturn f.cache.Workers()\n}",
+      "new": "func (f *workerFactory) Workers() ([]Worker, error) {\n\tworkers, err := f.cache.Workers()\n\tif len(workers) > 1 {\n\t\tworkers = workers[:1]\n\t}\n\treturn workers, err\n}",
+      "tests": ["WorkerFactory Workers when there are workers finds them without error"],
+      "scenarios": ["Worker factory profile <profile> produces <result> (row 12)"],
+      "failure_contains": "worker factory result"
+    },
+    {
+      "id": "workers-empty-means-empty",
+      "source_file": "atc/db/worker_factory.go",
+      "old": "func (f *workerFactory) Workers() ([]Worker, error) {\n\treturn f.cache.Workers()\n}",
+      "new": "func (f *workerFactory) Workers() ([]Worker, error) {\n\tworkers, err := f.cache.Workers()\n\tif len(workers) == 0 {\n\t\tworkers = []Worker{&worker{name: \"mutated\", conn: f.conn}}\n\t}\n\treturn workers, err\n}",
+      "tests": ["WorkerFactory Workers when there are no workers returns an error"],
+      "scenarios": ["Worker factory profile <profile> produces <result> (row 13)"],
+      "failure_contains": "worker factory result"
+    },
+    {
+      "id": "owner-query-finds-matching-containers",
+      "source_file": "atc/db/worker_factory.go",
+      "old": "\tworkers, err := getWorkers(f.conn, workersQuery.Join(\"containers c ON c.worker_name = w.name\").Where(sq.And{\n\t\townerEq,\n\t}))",
+      "new": "\tworkers, err := getWorkers(f.conn, workersQuery.Join(\"containers c ON c.worker_name = w.name\").Where(sq.And{\n\t\townerEq,\n\t\tsq.Eq{\"w.name\": \"__missing__\"},\n\t}))",
+      "tests": [
+        "WorkerFactory FindWorkerForContainerByOwner when there are check containers when there are multiple of the same containers on the global, team and tagged worker should find all the workers that have the same container",
+        "WorkerFactory FindWorkerForContainerByOwner when there are build containers when there is a creating container returns it",
+        "WorkerFactory FindWorkerForContainerByOwner when there are build containers when there is a created container returns it"
+      ],
+      "scenarios": [
+        "Worker factory profile <profile> produces <result> (row 14)",
+        "Worker factory profile <profile> produces <result> (row 15)",
+        "Worker factory profile <profile> produces <result> (row 17)"
+      ],
+      "failure_contains": "worker factory result"
+    },
+    {
+      "id": "owner-query-preserves-team-boundary",
+      "source_file": "atc/db/worker_factory.go",
+      "old": "\tfor k, v := range ownerQuery {\n\t\townerEq[\"c.\"+k] = v\n\t}",
+      "new": "\tfor k, v := range ownerQuery {\n\t\tif k == \"team_id\" {\n\t\t\tcontinue\n\t\t}\n\t\townerEq[\"c.\"+k] = v\n\t}",
+      "tests": [
+        "WorkerFactory FindWorkerForContainerByOwner when there are build containers when there is a creating container does not find container for another team",
+        "WorkerFactory FindWorkerForContainerByOwner when there are build containers when there is a created container does not find container for another team"
+      ],
+      "scenarios": [
+        "Worker factory profile <profile> produces <result> (row 16)",
+        "Worker factory profile <profile> produces <result> (row 18)"
+      ],
+      "failure_contains": "worker factory result"
+    },
+    {
+      "id": "missing-owner-returns-no-workers",
+      "source_file": "atc/db/worker_factory.go",
+      "old": "\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\treturn workers, nil\n}\n\nfunc (f *workerFactory) BuildContainersCountPerWorker",
+      "new": "\tif err != nil {\n\t\treturn nil, err\n\t}\n\tif len(workers) == 0 {\n\t\treturn f.cache.Workers()\n\t}\n\n\treturn workers, nil\n}\n\nfunc (f *workerFactory) BuildContainersCountPerWorker",
+      "tests": ["WorkerFactory FindWorkerForContainerByOwner when there are build containers when there is no container returns nil"],
+      "scenarios": ["Worker factory profile <profile> produces <result> (row 19)"],
+      "failure_contains": "worker factory result"
+    },
+    {
+      "id": "build-container-count-excludes-non-build-containers",
+      "source_file": "atc/db/worker_cache.go",
+      "old": "\t\tWhere(\"build_id IS NOT NULL\").\n\t\tGroupBy(\"worker_name\").",
+      "new": "\t\tWhere(\"FALSE\").\n\t\tGroupBy(\"worker_name\").",
+      "tests": ["WorkerFactory BuildContainersCountPerWorker returns a map of worker to number of active build containers"],
+      "scenarios": ["Worker factory profile <profile> produces <result> (row 20)"],
+      "failure_contains": "worker factory result"
+    }
+  ]
+}

@@ -24,7 +24,7 @@ func WorkerFactoryDomainDefinitions() []brine.StepDefinition {
 					return WorkerFactoryObservation{}, fmt.Errorf("jetbridge-db resource is %T", resources.Get("jetbridge-db"))
 				}
 				profile, _ := p.GetString(0)
-				value, err := observeWorkerFactory(database, profile)
+				value, err := observeStrictWorkerFactory(database, profile)
 				return WorkerFactoryObservation{Value: value}, err
 			},
 		),
