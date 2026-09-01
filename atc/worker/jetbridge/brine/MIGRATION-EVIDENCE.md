@@ -28,7 +28,7 @@ scenario fail is also not evidence.
 | of the preceding exception bucket whose source test was removed | 66 | 0.96% |
 | total source tests with paired per-test failure evidence | 1,144 | 16.68% |
 | former claimed tests with no admissible paired evidence | 915 | 13.34% |
-| Brine scenarios | 1,877 | execution count only |
+| Brine scenarios | 1,977 | execution count only |
 
 The requested two headline percentages are therefore **15.05% fully migrated**
 and **1.63% validated but running outside the full philosophy**. The second is
@@ -121,6 +121,13 @@ resource correction: 17 cases and 29 exact leaves, followed by survivor runs
 of 138/138 client specs and 622/622 API specs and clean Brine runs of 16/16,
 9/9, and 4/4. No pre-correction result contributes to the strict total.
 
+An independent final audit found all 36 result files terminal and fresh: 353
+mutation cases and 591 exact source leaves in total. It also checked every
+manifest/result case ID and count, expected scenario, source-test name, commit
+ancestry, and the absence of unclaimed collateral failures. The final
+surviving `atc/db` Ginkgo suite passed 750/750 under the isolated Ginkgo
+runner.
+
 The accessor correction uses a natural mutation of the production user-ID
 match branch. Its historical "granted the same role multiple times" source
 leaf asserts only that the role is present when both user and group
@@ -168,13 +175,14 @@ candidates.
 
 ## Execution verification (not equivalence evidence)
 
-- `brine check`: 1,877/1,877 valid.
+- `brine check`: 1,977/1,977 valid.
 - the exact 18 affected features: 421/421 passed with terminal `run_end`
   records, runs `01M1E5MX8D7NR3EX4KVZ0EBPE5` through
   `01M1E5S44R2JSA4GYSBBPVC9EH`.
-- the all-feature run executed 1,877 scenarios and finished 1,875/1,877; its
-  two failures are in newly prepared, not-yet-validated pipeline coverage.
-  This document does not claim a globally green full run.
+- a historical all-feature run, before the current 1,977-scenario catalog,
+  executed 1,877 scenarios and finished 1,875/1,877. That run is not evidence
+  about the current catalog, and this document does not claim a globally green
+  full run.
 - adapter build and `go test ./steps`: passed.
 - `go test ./go-concourse/concourse`: passed.
 - `git diff --check`: passed.

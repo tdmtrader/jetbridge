@@ -21,7 +21,6 @@ type PipelineClientState struct {
 	Build      atc.Build
 	Builds     []atc.Build
 	Pagination clientapi.Pagination
-	Warnings   int
 	BuildID    int
 	PageNil    bool
 }
@@ -158,9 +157,7 @@ func PipelineClientDefinitions() []brine.StepDefinition {
 				if err != nil {
 					return in, err
 				}
-				var warnings []clientapi.ConfigWarning
-				in.Found, warnings, in.Err = in.Team.RenamePipeline(oldName, newName)
-				in.Warnings = len(warnings)
+				in.Found, _, in.Err = in.Team.RenamePipeline(oldName, newName)
 				return in, nil
 			},
 		),
@@ -197,13 +194,6 @@ func PipelineClientDefinitions() []brine.StepDefinition {
 			return nil
 		}),
 		brine.DefineCheck[*PipelineClientState]("the Go client returned no error", func(in *PipelineClientState, _ brine.Params, _ *brine.Recorder) error { return in.Err }),
-		brine.DefineCheck[*PipelineClientState]("the Go client returned an error", func(in *PipelineClientState, _ brine.Params, _ *brine.Recorder) error {
-			if in.Err == nil {
-				return fmt.Errorf("client returned no error")
-			}
-			return nil
-		}),
-		CheckInt[*PipelineClientState]("the Go client returned {int} warning(s)", "client warning count", func(in *PipelineClientState) (int, error) { return in.Warnings, nil }),
 	}
 	return append(definitions, pipelineClientStrictDefinitions()...)
 }
