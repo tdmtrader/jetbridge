@@ -1,7 +1,7 @@
 {
   "manifest": "atc/worker/jetbridge/brine/mutations/build-factory-behavior-strict.json",
-  "git_head": "485dce9b683abe60b8f49adaa98c3053c7009558",
-  "completed_at": "2026-09-01T10:45:17Z",
+  "git_head": "5acbebd524012aa3733dae6f01b20a5fdebdccda",
+  "completed_at": "2026-09-01T13:25:02Z",
   "source_tests": 25,
   "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
   "mutation_cases": [
