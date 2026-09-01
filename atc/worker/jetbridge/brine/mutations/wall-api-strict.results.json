@@ -1,0 +1,125 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/wall-api-strict.json",
+  "git_head": "3e2d074ccf4f195e1a9a30e9ad29edfc16087e37",
+  "completed_at": "2026-09-01T08:18:32Z",
+  "source_tests": 14,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "wall-get-success-status-is-changed",
+      "mutation_sha256": "48b7eb447b8795f4b4fcca078338443d13ea09d53c2c627159b36cbc59e538bc",
+      "failed_source_tests": [
+        "Wall API Gets a wall message returns 200"
+      ],
+      "failed_brine_scenarios": [
+        "Getting a persisted wall message succeeds"
+      ]
+    },
+    {
+      "id": "wall-get-content-type-is-changed",
+      "mutation_sha256": "b4f25798c8704b4cd19d363e9d0f8dbcec4001bd6cf9409be68cd53d785508cf",
+      "failed_source_tests": [
+        "Wall API Gets a wall message returns Content-Type 'application/json'"
+      ],
+      "failed_brine_scenarios": [
+        "Getting a persisted wall message returns the JSON content type"
+      ]
+    },
+    {
+      "id": "wall-get-document-is-emptied",
+      "mutation_sha256": "813d196bd5b40eb3bc296c19b97e322aecb69b88d41a16ad5e39cb7b891c01ad",
+      "failed_source_tests": [
+        "Wall API Gets a wall message and the message does expire returns the expiration with the message",
+        "Wall API Gets a wall message the message does not expire returns only message"
+      ],
+      "failed_brine_scenarios": [
+        "Getting a permanent wall message returns only its exact message",
+        "Getting an expiring wall message returns its message and remaining TTL"
+      ]
+    },
+    {
+      "id": "wall-set-success-status-is-changed",
+      "mutation_sha256": "fef5c9e1c536669ad37eaf184b648dc9796e967bce0ed870617ee1e81defe77b",
+      "failed_source_tests": [
+        "Wall API Sets a wall message when authenticated and is admin returns 200"
+      ],
+      "failed_brine_scenarios": [
+        "An administrator can set a wall message"
+      ]
+    },
+    {
+      "id": "wall-set-drops-expiration",
+      "mutation_sha256": "8283af66d17a4cadd1e2d56366fc1c11db0a77fb00b8232cb5e3370cabd5f49a",
+      "failed_source_tests": [
+        "Wall API Sets a wall message when authenticated and is admin sets the message and expiration"
+      ],
+      "failed_brine_scenarios": [
+        "Setting a wall message persists its message and expiration"
+      ]
+    },
+    {
+      "id": "empty-wall-validation-document-is-changed",
+      "mutation_sha256": "00aaab72378f1d531202fb8316cb3edb1056a00ba5039bd3bcff27fb80cb289b",
+      "failed_source_tests": [
+        "Wall API Sets a wall message when authenticated and is admin when message is empty returns 400 Bad Request"
+      ],
+      "failed_brine_scenarios": [
+        "Setting an empty wall message returns the exact bad request"
+      ]
+    },
+    {
+      "id": "empty-wall-validation-persists-unexpected-wall",
+      "mutation_sha256": "a2bee1596a99ddb29ea7857f8356c7b99570ab5ba18f2c3d0dfa0bafd204a5e7",
+      "failed_source_tests": [
+        "Wall API Sets a wall message when authenticated and is admin when message is empty stores nothing"
+      ],
+      "failed_brine_scenarios": [
+        "Setting an empty wall message stores no wall"
+      ]
+    },
+    {
+      "id": "wall-clear-success-status-is-changed",
+      "mutation_sha256": "fd5f2fe289adb566041d992e5a24265e481805b41492b7aff9761630182b3405",
+      "failed_source_tests": [
+        "Wall API Clears the wall message when authenticated is an admin returns 200"
+      ],
+      "failed_brine_scenarios": [
+        "An administrator can clear a wall message"
+      ]
+    },
+    {
+      "id": "wall-clear-does-not-remove-state",
+      "mutation_sha256": "fe99de808893ff26c93be1d63bf489d59b78257a8f313d1c0e8f78ae0af38890",
+      "failed_source_tests": [
+        "Wall API Clears the wall message when authenticated is an admin clears the stored banner"
+      ],
+      "failed_brine_scenarios": [
+        "Clearing a wall message removes the persisted banner"
+      ]
+    },
+    {
+      "id": "wall-admin-guard-forbidden-is-changed",
+      "mutation_sha256": "86323ec56e5ebc6daf81949edd57912330bc495699d3c6e6137d292dbc73d313",
+      "failed_source_tests": [
+        "Wall API Clears the wall message when authenticated is not an admin returns 403",
+        "Wall API Sets a wall message when authenticated and is not admin returns 403"
+      ],
+      "failed_brine_scenarios": [
+        "A non-administrator cannot clear a wall message",
+        "A non-administrator cannot set a wall message"
+      ]
+    },
+    {
+      "id": "wall-admin-guard-unauthorized-is-changed",
+      "mutation_sha256": "8b980684c6bd915bd60b1f40a943cb5fb2d88db02556f578c2f0fa02825d342f",
+      "failed_source_tests": [
+        "Wall API Clears the wall message when not authenticated returns 401",
+        "Wall API Sets a wall message when not authenticated returns 401"
+      ],
+      "failed_brine_scenarios": [
+        "An unauthenticated request cannot clear a wall message",
+        "An unauthenticated request cannot set a wall message"
+      ]
+    }
+  ]
+}

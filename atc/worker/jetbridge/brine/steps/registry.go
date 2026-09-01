@@ -125,7 +125,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, TeamClientDefinitions()...)
 	defs = append(defs, CCAPIDefinitions()...)
 	defs = append(defs, CCAPIStrictDefinitions()...)
-	defs = append(defs, WallAPIDefinitions()...)
+	defs = append(defs, WallAPIStrictDefinitions()...)
 	defs = append(defs, UsersAPIDefinitions()...)
 	defs = append(defs, CLIAPIDefinitions()...)
 	defs = append(defs, SmallClientDefinitions()...)

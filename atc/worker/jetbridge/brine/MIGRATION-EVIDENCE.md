@@ -22,19 +22,19 @@ scenario fail is also not evidence.
 
 | quantity | source leaf tests | percentage of 6,857 |
 |---|---:|---:|
-| **fully migrated**: paired failure evidence, no prohibited double, source removed | **848** | **12.37%** |
+| **fully migrated**: paired failure evidence, no prohibited double, source removed | **862** | **12.57%** |
 | strict paired evidence, but source still present | 0 | 0.00% |
 | **runs in Brine but not the full philosophy**: paired failure evidence, but uses a stub, test sink, injected-fault object, fake, or mock | **112** | **1.63%** |
 | of the preceding exception bucket whose source test was removed | 66 | 0.96% |
-| total source tests with paired per-test failure evidence | 960 | 14.00% |
-| former claimed tests with no admissible paired evidence | 1,099 | 16.03% |
-| Brine scenarios | 1,857 | execution count only |
+| total source tests with paired per-test failure evidence | 974 | 14.20% |
+| former claimed tests with no admissible paired evidence | 1,085 | 15.82% |
+| Brine scenarios | 1,863 | execution count only |
 
-The requested two headline percentages are therefore **12.37% fully migrated**
+The requested two headline percentages are therefore **12.57% fully migrated**
 and **1.63% validated but running outside the full philosophy**. The second is
 not another migration percentage: 46 of its 112 source tests still exist. If
 "migrated" is restricted to removed source tests in both buckets, the figures
-are 12.37% strict and 0.96% philosophy-exception.
+are 12.57% strict and 0.96% philosophy-exception.
 
 ## Admitted evidence ledger
 
@@ -75,11 +75,12 @@ are 12.37% strict and 0.96% philosophy-exception.
 | `api/users_test.go` production users serialization/filter subset | 12 | 12 | 0 | 12 |
 | `api/cli_test.go` production CLI downloads | 12 | 12 | 0 | 12 |
 | `api/cc_test.go` production CC XML over real TCP/PostgreSQL | 14 | 14 | 0 | 14 |
+| `api/wall_test.go` production wall API over real TCP/PostgreSQL | 14 | 14 | 0 | 14 |
 | `destroyer_test.go` | 8 | 0 | 8 | 8 |
 | `scanner_test.go` | 14 | 0 | 14 | 14 |
 | durable-storage, volume-DaemonSet, and behavioral-permutation campaign | 44 | 0 | 44 | 44 |
 | daemonset-integration and daemon-client retained cases | 46 | 0 | 46 | 0 |
-| **total** | **960** | **848** | **112** | **914** |
+| **total** | **974** | **862** | **112** | **928** |
 
 Why the exception rows are exceptions:
 
@@ -96,7 +97,7 @@ component.
 
 ## What does not count
 
-The other 1,099 tests in the former numerator have source references and green
+The other 1,085 tests in the former numerator have source references and green
 scenarios, but no admissible record of the individual old test and its Brine
 replacement failing on the same production defect. This includes all recent
 client/API/domain cross-layer counts, exact-status claims, and the 39 source

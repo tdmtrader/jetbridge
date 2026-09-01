@@ -1,0 +1,147 @@
+{
+  "name": "wall-api-strict",
+  "test_package": "./atc/api",
+  "source_test_file": "atc/api/wall_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/wall-api.feature",
+  "step_files": ["atc/worker/jetbridge/brine/steps/wall_api_strict.go"],
+  "cases": [
+    {
+      "id": "wall-get-success-status-is-changed",
+      "source_file": "atc/api/wallserver/wall.go",
+      "old": "\twall, err := s.wall.GetWall()\n\tif err != nil {",
+      "new": "\twall, err := s.wall.GetWall()\n\tw.WriteHeader(http.StatusAccepted)\n\tif err != nil {",
+      "tests": [
+        "Wall API Gets a wall message returns 200"
+      ],
+      "scenarios": [
+        "Getting a persisted wall message succeeds"
+      ]
+    },
+    {
+      "id": "wall-get-content-type-is-changed",
+      "source_file": "atc/api/wallserver/wall.go",
+      "old": "\tw.Header().Set(\"Content-Type\", \"application/json\")",
+      "new": "\tw.Header().Set(\"Content-Type\", \"text/plain\")",
+      "tests": [
+        "Wall API Gets a wall message returns Content-Type 'application/json'"
+      ],
+      "scenarios": [
+        "Getting a persisted wall message returns the JSON content type"
+      ]
+    },
+    {
+      "id": "wall-get-document-is-emptied",
+      "source_file": "atc/api/wallserver/wall.go",
+      "old": "\terr = json.NewEncoder(w).Encode(wall)",
+      "new": "\twall = atc.Wall{}\n\terr = json.NewEncoder(w).Encode(wall)",
+      "tests": [
+        "Wall API Gets a wall message the message does not expire returns only message",
+        "Wall API Gets a wall message and the message does expire returns the expiration with the message"
+      ],
+      "scenarios": [
+        "Getting a permanent wall message returns only its exact message",
+        "Getting an expiring wall message returns its message and remaining TTL"
+      ]
+    },
+    {
+      "id": "wall-set-success-status-is-changed",
+      "source_file": "atc/api/wallserver/wall.go",
+      "old": "\terr = s.wall.SetWall(wall)\n\tif err != nil {",
+      "new": "\tw.WriteHeader(http.StatusAccepted)\n\terr = s.wall.SetWall(wall)\n\tif err != nil {",
+      "tests": [
+        "Wall API Sets a wall message when authenticated and is admin returns 200"
+      ],
+      "scenarios": [
+        "An administrator can set a wall message"
+      ]
+    },
+    {
+      "id": "wall-set-drops-expiration",
+      "source_file": "atc/api/wallserver/wall.go",
+      "old": "\terr = s.wall.SetWall(wall)",
+      "new": "\terr = s.wall.SetWall(atc.Wall{Message: wall.Message})",
+      "tests": [
+        "Wall API Sets a wall message when authenticated and is admin sets the message and expiration"
+      ],
+      "scenarios": [
+        "Setting a wall message persists its message and expiration"
+      ]
+    },
+    {
+      "id": "empty-wall-validation-document-is-changed",
+      "source_file": "atc/api/wallserver/wall.go",
+      "old": "\t\tfmt.Fprint(w, \"Wall message cannot be empty\")",
+      "new": "\t\tfmt.Fprint(w, \"wall message is required\")",
+      "tests": [
+        "Wall API Sets a wall message when authenticated and is admin when message is empty returns 400 Bad Request"
+      ],
+      "scenarios": [
+        "Setting an empty wall message returns the exact bad request"
+      ]
+    },
+    {
+      "id": "empty-wall-validation-persists-unexpected-wall",
+      "source_file": "atc/api/wallserver/wall.go",
+      "old": "\tif wall.Message == \"\" {\n\t\tlogger.Error(\"empty-message-string\", nil)",
+      "new": "\tif wall.Message == \"\" {\n\t\t_ = s.wall.SetWall(atc.Wall{Message: \"unexpected\"})\n\t\tlogger.Error(\"empty-message-string\", nil)",
+      "tests": [
+        "Wall API Sets a wall message when authenticated and is admin when message is empty stores nothing"
+      ],
+      "scenarios": [
+        "Setting an empty wall message stores no wall"
+      ]
+    },
+    {
+      "id": "wall-clear-success-status-is-changed",
+      "source_file": "atc/api/wallserver/wall.go",
+      "old": "\tlogger := s.logger.Session(\"wall\")\n\terr := s.wall.Clear()",
+      "new": "\tlogger := s.logger.Session(\"wall\")\n\tw.WriteHeader(http.StatusAccepted)\n\terr := s.wall.Clear()",
+      "tests": [
+        "Wall API Clears the wall message when authenticated is an admin returns 200"
+      ],
+      "scenarios": [
+        "An administrator can clear a wall message"
+      ]
+    },
+    {
+      "id": "wall-clear-does-not-remove-state",
+      "source_file": "atc/api/wallserver/wall.go",
+      "old": "\terr := s.wall.Clear()",
+      "new": "\terr := error(nil)",
+      "tests": [
+        "Wall API Clears the wall message when authenticated is an admin clears the stored banner"
+      ],
+      "scenarios": [
+        "Clearing a wall message removes the persisted banner"
+      ]
+    },
+    {
+      "id": "wall-admin-guard-forbidden-is-changed",
+      "source_file": "atc/api/auth/check_admin_handler.go",
+      "old": "\t\t\th.rejector.Forbidden(w, r)",
+      "new": "\t\t\th.rejector.Unauthorized(w, r)",
+      "tests": [
+        "Wall API Sets a wall message when authenticated and is not admin returns 403",
+        "Wall API Clears the wall message when authenticated is not an admin returns 403"
+      ],
+      "scenarios": [
+        "A non-administrator cannot set a wall message",
+        "A non-administrator cannot clear a wall message"
+      ]
+    },
+    {
+      "id": "wall-admin-guard-unauthorized-is-changed",
+      "source_file": "atc/api/auth/check_admin_handler.go",
+      "old": "\t\th.rejector.Unauthorized(w, r)",
+      "new": "\t\th.rejector.Forbidden(w, r)",
+      "tests": [
+        "Wall API Sets a wall message when not authenticated returns 401",
+        "Wall API Clears the wall message when not authenticated returns 401"
+      ],
+      "scenarios": [
+        "An unauthenticated request cannot set a wall message",
+        "An unauthenticated request cannot clear a wall message"
+      ]
+    }
+  ]
+}

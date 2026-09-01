@@ -1,51 +1,62 @@
-Feature: Cluster wall messages round-trip through the Go client and API
+Feature: Wall API behavior through the production HTTP and PostgreSQL boundary
 
-  Source: 10 success/validation specs in atc/api/wall_test.go, all 3 specs
-  in go-concourse/concourse/wall_test.go, and all 9 specs in atc/db/wall_test.go,
-  for 22 specs over real PostgreSQL. The API/client scenarios also cover seven
-  database wall specs through the same object. The two final scenarios use a
-  fixed production Clock to make expiry and replacement deterministic.
+  Source: all 14 leaf specs in atc/api/wall_test.go. Every scenario uses a
+  real TCP listener, http.Server, production route, accessor/authentication
+  handlers, wall server, and PostgreSQL wall object.
 
-  Scenario: A permanent wall message returns JSON over the API
-    When the real wall API handles profile "get-message"
+  Scenario: Getting a persisted wall message succeeds
+    When the production wall API handles profile "get-status"
     Then the wall API returned status 200
-    And the wall API content type is "application/json"
-    And the stored wall message is "test message"
 
-  Scenario: An expiring wall message returns its remaining TTL
-    When the real wall API handles profile "get-expiring"
-    Then the stored wall message is "test message"
-    And the wall TTL is close to one minute
+  Scenario: Getting a persisted wall message returns the JSON content type
+    When the production wall API handles profile "get-content-type"
+    Then the wall API content type is "application/json"
 
-  Scenario: The Go client decodes the wall response
-    When the real wall API handles profile "client-get"
-    Then the stored wall message is "test message"
-    And the wall TTL is close to one minute
-    And the wall client returned no error
+  Scenario: Getting a permanent wall message returns only its exact message
+    When the production wall API handles profile "get-permanent-document"
+    Then the returned wall document contains the permanent message only
 
-  Scenario: The Go client sets and persists a wall message
-    When the real wall API handles profile "client-set"
-    Then the stored wall message is "set message"
-    And the wall TTL is close to one minute
-    And the wall client returned no error
+  Scenario: Getting an expiring wall message returns its message and remaining TTL
+    When the production wall API handles profile "get-expiring-document"
+    Then the returned wall document contains the expiring message and a bounded TTL
 
-  Scenario: An empty wall message is rejected and stores nothing
-    When the real wall API handles profile "invalid-empty"
+  Scenario: An administrator can set a wall message
+    When the production wall API handles profile "set-status"
+    Then the wall API returned status 200
+
+  Scenario: Setting a wall message persists its message and expiration
+    When the production wall API handles profile "set-state"
+    Then the persisted wall has a bounded one minute TTL
+
+  Scenario: Setting an empty wall message returns the exact bad request
+    When the production wall API handles profile "set-invalid-response"
     Then the wall API returned status 400
-    And the stored wall message is ""
-    And the wall client returned no error
+    And the wall API returned the exact body "Wall message cannot be empty"
 
-  Scenario: The Go client clears the persisted wall
-    When the real wall API handles profile "client-clear"
-    Then the stored wall message is ""
-    And the wall client returned no error
+  Scenario: Setting an empty wall message stores no wall
+    When the production wall API handles profile "set-invalid-state"
+    Then the persisted wall message is ""
 
-  Scenario: An expired database wall is absent at the clock that reads it
-    When the real wall API handles profile "db-expired"
-    Then the stored wall message is ""
-    And the wall client returned no error
+  Scenario: A non-administrator cannot set a wall message
+    When the production wall API handles profile "set-forbidden"
+    Then the wall API returned status 403
 
-  Scenario: Replacing a database wall leaves only the last message
-    When the real wall API handles profile "db-last"
-    Then the stored wall message is "third"
-    And the wall client returned no error
+  Scenario: An unauthenticated request cannot set a wall message
+    When the production wall API handles profile "set-unauthorized"
+    Then the wall API returned status 401
+
+  Scenario: An administrator can clear a wall message
+    When the production wall API handles profile "clear-status"
+    Then the wall API returned status 200
+
+  Scenario: Clearing a wall message removes the persisted banner
+    When the production wall API handles profile "clear-state"
+    Then the persisted wall message is ""
+
+  Scenario: A non-administrator cannot clear a wall message
+    When the production wall API handles profile "clear-forbidden"
+    Then the wall API returned status 403
+
+  Scenario: An unauthenticated request cannot clear a wall message
+    When the production wall API handles profile "clear-unauthorized"
+    Then the wall API returned status 401
