@@ -91,14 +91,13 @@ COPY --from=brine /brine/target/release/brine        /usr/local/bin/brine
 COPY --from=brine /brine/target/release/brine-engine /usr/local/bin/brine-engine
 COPY --from=brine /brine-commit                      /etc/brine-commit
 
-# The adapter module reaches github.com/brine-dev/brine-go through a `replace`
-# pointing at an absolute path on ONE developer's Mac. That module is not
-# published, so a clean CI clone cannot resolve it and `go build` fails with
-# "replacement directory /Users/... does not exist" -- exactly the case the
-# adapter's own go.mod header calls out as unsolved. Ship the module here and
-# let the task override the replace with a go.work; nothing in the repo has to
-# carry a machine-specific path.
-COPY --from=brine /brine/runners/implementations/go /opt/brine-go
+# brine-go is deliberately NOT shipped here. The adapter's go.mod now replaces it
+# with a module path into the private repository, so the task fetches it at a
+# pinned pseudo-version using GOPRIVATE and a credential. Baking a copy of
+# someone else's private source into an image was the wrong shape: it duplicated
+# the module, and pinned it to whenever this image happened to be built rather
+# than to what the checkout asks for.
+ENV GOPRIVATE=github.com/MarkDucommun/*
 
 # envtest assets back the brine `real-cluster` resource; without them every
 # scenario using it fails with "no envtest assets" before running anything.
