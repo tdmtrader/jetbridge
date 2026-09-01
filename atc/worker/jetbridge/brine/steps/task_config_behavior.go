@@ -147,9 +147,7 @@ func observeTaskConfig(profile string) (string, error) {
 		config.Run.Path = ""
 		return taskValidation(config), nil
 	case "image/nil":
-		var image *atc.ImageResource
-		image.ApplySourceDefaults(nil)
-		return "nil", nil
+		return observeNilImageDefaults(), nil
 	case "image/no-defaults":
 		return observeImageDefaults(nil, nil), nil
 	case "image/base-defaults":
@@ -248,4 +246,15 @@ func observeImageDefaults(base map[string]atc.Source, custom atc.ResourceTypes) 
 		parts = append(parts, key+"="+fmt.Sprint(image.Source[key]))
 	}
 	return strings.Join(parts, ";")
+}
+
+func observeNilImageDefaults() (observation string) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			observation = fmt.Sprintf("panic:%v", recovered)
+		}
+	}()
+	var image *atc.ImageResource
+	image.ApplySourceDefaults(nil)
+	return "nil"
 }

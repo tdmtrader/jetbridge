@@ -1,0 +1,344 @@
+{
+  "name": "task-config",
+  "test_package": "./atc",
+  "source_test_file": "atc/task_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/task-config-behavior.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/task_config_behavior.go"
+  ],
+  "cases": [
+    {
+      "id": "decode-basic-fields",
+      "source_file": "atc/task.go",
+      "old": "\treturn config, nil\n}",
+      "new": "\tif config.Platform == \"beos\" && config.Inputs != nil && len(config.Inputs) == 0 {\n\t\tconfig.Run.Path = \"mutated/path\"\n\t}\n\treturn config, nil\n}",
+      "tests": ["TaskConfig validating decode task yaml given a valid task config works"],
+      "scenarios": ["Task config profile <profile> (row 1)"],
+      "failure_contains": "mutated/path"
+    },
+    {
+      "id": "param-bool-coercion",
+      "source_file": "atc/task.go",
+      "old": "\t*te = m\n\n\treturn nil\n}",
+      "new": "\tif m[\"testParam\"] == \"true\" {\n\t\tm[\"testParam\"] = \"mutated-bool\"\n\t}\n\t*te = m\n\n\treturn nil\n}",
+      "tests": ["TaskConfig validating decode task yaml given a valid task config converts yaml booleans to strings in params"],
+      "scenarios": ["Task config profile <profile> (row 2)"],
+      "failure_contains": "mutated-bool"
+    },
+    {
+      "id": "param-int-coercion",
+      "source_file": "atc/task.go",
+      "old": "\t*te = m\n\n\treturn nil\n}",
+      "new": "\tif m[\"testParam\"] == \"1059262\" {\n\t\tm[\"testParam\"] = \"mutated-int\"\n\t}\n\t*te = m\n\n\treturn nil\n}",
+      "tests": ["TaskConfig validating decode task yaml given a valid task config converts yaml ints to the correct string in params"],
+      "scenarios": ["Task config profile <profile> (row 3)"],
+      "failure_contains": "mutated-int"
+    },
+    {
+      "id": "param-large-int-coercion",
+      "source_file": "atc/task.go",
+      "old": "\t*te = m\n\n\treturn nil\n}",
+      "new": "\tif m[\"testParam\"] == \"18446744073709551615\" {\n\t\tm[\"testParam\"] = \"mutated-large-int\"\n\t}\n\t*te = m\n\n\treturn nil\n}",
+      "tests": ["TaskConfig validating decode task yaml given a valid task config converts large yaml ints to the correct string in params"],
+      "scenarios": ["Task config profile <profile> (row 4)"],
+      "failure_contains": "mutated-large-int"
+    },
+    {
+      "id": "param-unquoted-scientific-coercion",
+      "source_file": "atc/task.go",
+      "old": "\t*te = m\n\n\treturn nil\n}",
+      "new": "\tif m[\"testParam\"] == \"18446744000000000000\" {\n\t\tm[\"testParam\"] = \"mutated-unquoted-scientific\"\n\t}\n\t*te = m\n\n\treturn nil\n}",
+      "tests": ["TaskConfig validating decode task yaml given a valid task config does not preserve unquoted float notation"],
+      "scenarios": ["Task config profile <profile> (row 5)"],
+      "failure_contains": "mutated-unquoted-scientific"
+    },
+    {
+      "id": "param-quoted-scientific-preservation",
+      "source_file": "atc/task.go",
+      "old": "\t*te = m\n\n\treturn nil\n}",
+      "new": "\tif m[\"testParam\"] == \"1.8446744e+19\" {\n\t\tm[\"testParam\"] = \"mutated-quoted-scientific\"\n\t}\n\t*te = m\n\n\treturn nil\n}",
+      "tests": ["TaskConfig validating decode task yaml given a valid task config (obviously) preserves quoted float notation"],
+      "scenarios": ["Task config profile <profile> (row 6)"],
+      "failure_contains": "mutated-quoted-scientific"
+    },
+    {
+      "id": "param-float-coercion",
+      "source_file": "atc/task.go",
+      "old": "\t*te = m\n\n\treturn nil\n}",
+      "new": "\tif m[\"testParam\"] == \"1059262.123123123\" {\n\t\tm[\"testParam\"] = \"mutated-float\"\n\t}\n\t*te = m\n\n\treturn nil\n}",
+      "tests": ["TaskConfig validating decode task yaml given a valid task config converts yaml floats to the correct string in params"],
+      "scenarios": ["Task config profile <profile> (row 7)"],
+      "failure_contains": "mutated-float"
+    },
+    {
+      "id": "param-map-json-coercion",
+      "source_file": "atc/task.go",
+      "old": "\t*te = m\n\n\treturn nil\n}",
+      "new": "\tif m[\"testParam\"] == `{\"foo\":\"bar\"}` {\n\t\tm[\"testParam\"] = `{\"foo\":\"mutated-map\"}`\n\t}\n\t*te = m\n\n\treturn nil\n}",
+      "tests": ["TaskConfig validating decode task yaml given a valid task config converts maps to json in params"],
+      "scenarios": ["Task config profile <profile> (row 8)"],
+      "failure_contains": "eyJmb28iOiJtdXRhdGVkLW1hcCJ9"
+    },
+    {
+      "id": "param-empty-coercion",
+      "source_file": "atc/task.go",
+      "old": "\t*te = m\n\n\treturn nil\n}",
+      "new": "\tif value, found := m[\"testParam\"]; found && value == \"\" {\n\t\tm[\"testParam\"] = \"mutated-empty\"\n\t}\n\t*te = m\n\n\treturn nil\n}",
+      "tests": ["TaskConfig validating decode task yaml given a valid task config converts empty values to empty string in params"],
+      "scenarios": ["Task config profile <profile> (row 9)"],
+      "failure_contains": "mutated-empty"
+    },
+    {
+      "id": "numeric-environment-coercion",
+      "source_file": "atc/task.go",
+      "old": "\t*te = m\n\n\treturn nil\n}",
+      "new": "\tif m[\"FOO\"] == \"1\" {\n\t\tm[\"FOO\"] = \"mutated-numeric-env\"\n\t}\n\t*te = m\n\n\treturn nil\n}",
+      "tests": ["TaskConfig validating decode task yaml given a valid task config with numeric params works"],
+      "scenarios": ["Task config profile <profile> (row 10)"],
+      "failure_contains": "mutated-numeric-env"
+    },
+    {
+      "id": "unknown-key-rejection",
+      "source_file": "atc/task.go",
+      "old": "\terr := yaml.UnmarshalStrict(configBytes, &config, yaml.DisallowUnknownFields)",
+      "new": "\tconfigBytes = bytes.ReplaceAll(configBytes, []byte(\"intputs\"), []byte(\"inputs\"))\n\terr := yaml.UnmarshalStrict(configBytes, &config, yaml.DisallowUnknownFields)",
+      "tests": ["TaskConfig validating decode task yaml given a valid task config with extra keys returns an error"],
+      "scenarios": ["Task config profile <profile> (row 11)"],
+      "failure_contains": "no-error"
+    },
+    {
+      "id": "invalid-input-output-rejection",
+      "source_file": "atc/task.go",
+      "old": "\terr := yaml.UnmarshalStrict(configBytes, &config, yaml.DisallowUnknownFields)",
+      "new": "\tconfigBytes = bytes.ReplaceAll(configBytes, []byte(\"inputs: ['a/b/c']\"), []byte(\"inputs: [{name: a}]\"))\n\tconfigBytes = bytes.ReplaceAll(configBytes, []byte(\"outputs: ['a/b/c']\"), []byte(\"outputs: [{name: a}]\"))\n\terr := yaml.UnmarshalStrict(configBytes, &config, yaml.DisallowUnknownFields)",
+      "tests": ["TaskConfig validating decode task yaml given an invalid task config errors on validation"],
+      "scenarios": ["Task config profile <profile> (row 12)"],
+      "failure_contains": "no-error"
+    },
+    {
+      "id": "missing-platform-validation",
+      "source_file": "atc/task.go",
+      "old": "\tif config.Platform == \"\" {\n\t\terrors = append(errors, \"missing 'platform'\")\n\t}",
+      "new": "\tif config.Platform == \"__mutated_missing_platform__\" {\n\t\terrors = append(errors, \"missing 'platform'\")\n\t}",
+      "tests": ["TaskConfig validating when platform is missing returns an error"],
+      "scenarios": ["Task config profile <profile> (row 13)"],
+      "failure_contains": "valid"
+    },
+    {
+      "id": "limits-both-with-unit",
+      "source_file": "atc/task.go",
+      "old": "\treturn config, nil\n}",
+      "new": "\tif config.Limits != nil && config.Limits.CPU != nil && config.Limits.Memory != nil && *config.Limits.CPU == 1024 && *config.Limits.Memory == 1024 {\n\t\t*config.Limits.Memory = 1025\n\t}\n\treturn config, nil\n}",
+      "tests": ["TaskConfig validating when container limits are specified when memory and cpu limits are correctly specified successfully parses the limits with memory units"],
+      "scenarios": ["Task config profile <profile> (row 14)"],
+      "failure_contains": "memory:1025"
+    },
+    {
+      "id": "limits-both-without-unit",
+      "source_file": "atc/task.go",
+      "old": "\treturn config, nil\n}",
+      "new": "\tif config.Limits != nil && config.Limits.CPU != nil && config.Limits.Memory != nil && *config.Limits.CPU == 1024 && *config.Limits.Memory == 209715200 {\n\t\t*config.Limits.Memory = 209715201\n\t}\n\treturn config, nil\n}",
+      "tests": ["TaskConfig validating when container limits are specified when memory and cpu limits are correctly specified successfully parses the limits without memory units"],
+      "scenarios": ["Task config profile <profile> (row 15)"],
+      "failure_contains": "memory:209715201"
+    },
+    {
+      "id": "limits-memory-only",
+      "source_file": "atc/task.go",
+      "old": "\treturn config, nil\n}",
+      "new": "\tif config.Limits != nil && config.Limits.CPU == nil && config.Limits.Memory != nil && *config.Limits.Memory == 1024 {\n\t\t*config.Limits.Memory = 1025\n\t}\n\treturn config, nil\n}",
+      "tests": ["TaskConfig validating when container limits are specified when either one of memory or cpu is correctly specified parses the provided memory limit without any errors"],
+      "scenarios": ["Task config profile <profile> (row 16)"],
+      "failure_contains": "memory:1025"
+    },
+    {
+      "id": "limits-cpu-only",
+      "source_file": "atc/task.go",
+      "old": "\treturn config, nil\n}",
+      "new": "\tif config.Limits != nil && config.Limits.CPU != nil && config.Limits.Memory == nil && *config.Limits.CPU == 355 {\n\t\t*config.Limits.CPU = 356\n\t}\n\treturn config, nil\n}",
+      "tests": ["TaskConfig validating when container limits are specified when either one of memory or cpu is correctly specified parses the provided cpu limit without any errors"],
+      "scenarios": ["Task config profile <profile> (row 17)"],
+      "failure_contains": "cpu:356"
+    },
+    {
+      "id": "limits-invalid-memory",
+      "source_file": "atc/container_limits.go",
+      "old": "\tmatches := memoryRegex.FindStringSubmatch(limit)",
+      "new": "\tif limit == \"abc1000kb\" {\n\t\treturn 1000, nil\n\t}\n\tmatches := memoryRegex.FindStringSubmatch(limit)",
+      "tests": ["TaskConfig validating when container limits are specified when invalid memory limit value is provided throws an error and does not continue"],
+      "scenarios": ["Task config profile <profile> (row 18)"],
+      "failure_contains": "limits=cpu:1024,memory:1000"
+    },
+    {
+      "id": "limits-invalid-cpu",
+      "source_file": "atc/container_limits.go",
+      "old": "\tvar target float64\n\tif err := json.Unmarshal(data, &target); err != nil {",
+      "new": "\tvar target float64\n\tif string(data) == `\"str1ng-cpu-l1mit\"` {\n\t\t*c = 999\n\t\treturn nil\n\t}\n\tif err := json.Unmarshal(data, &target); err != nil {",
+      "tests": ["TaskConfig validating when container limits are specified when invalid cpu limit value is provided throws an error and does not continue"],
+      "scenarios": ["Task config profile <profile> (row 19)"],
+      "failure_contains": "limits=cpu:999"
+    },
+    {
+      "id": "inputs-valid",
+      "source_file": "atc/task.go",
+      "old": "func (config TaskConfig) validateInputContainsNames() []string {\n\tmessages := []string{}",
+      "new": "func (config TaskConfig) validateInputContainsNames() []string {\n\tmessages := []string{}\n\tif len(config.Inputs) == 1 {\n\t\tmessages = append(messages, \"mutated single input rejection\")\n\t}",
+      "tests": ["TaskConfig validating when the task has inputs is valid"],
+      "scenarios": ["Task config profile <profile> (row 20)"],
+      "failure_contains": "mutated single input rejection"
+    },
+    {
+      "id": "inputs-one-missing-name",
+      "source_file": "atc/task.go",
+      "old": "\t\tif input.Name == \"\" {\n\t\t\tmessages = append(messages, fmt.Sprintf(\"  input in position %d is missing a name\", i))\n\t\t}",
+      "new": "\t\tif input.Name == \"\" {\n\t\t\tif len(config.Inputs) == 2 {\n\t\t\t\tmessages = append(messages, fmt.Sprintf(\"  mutated input in position %d\", i))\n\t\t\t} else {\n\t\t\t\tmessages = append(messages, fmt.Sprintf(\"  input in position %d is missing a name\", i))\n\t\t\t}\n\t\t}",
+      "tests": ["TaskConfig validating when the task has inputs when input.name is missing returns an error"],
+      "scenarios": ["Task config profile <profile> (row 21)"],
+      "failure_contains": "mutated input in position 1"
+    },
+    {
+      "id": "inputs-two-missing-names",
+      "source_file": "atc/task.go",
+      "old": "\t\tif input.Name == \"\" {\n\t\t\tmessages = append(messages, fmt.Sprintf(\"  input in position %d is missing a name\", i))\n\t\t}",
+      "new": "\t\tif input.Name == \"\" && !(len(config.Inputs) == 3 && i == 2) {\n\t\t\tmessages = append(messages, fmt.Sprintf(\"  input in position %d is missing a name\", i))\n\t\t}",
+      "tests": ["TaskConfig validating when the task has inputs when input.name is missing multiple times returns an error"],
+      "scenarios": ["Task config profile <profile> (row 22)"],
+      "failure_contains": "input in position 1 is missing a name"
+    },
+    {
+      "id": "outputs-valid",
+      "source_file": "atc/task.go",
+      "old": "func (config TaskConfig) validateOutputContainsNames() []string {\n\tvar messages []string",
+      "new": "func (config TaskConfig) validateOutputContainsNames() []string {\n\tvar messages []string\n\tif len(config.Outputs) == 1 {\n\t\tmessages = append(messages, \"mutated single output rejection\")\n\t}",
+      "tests": ["TaskConfig validating when the task has outputs is valid"],
+      "scenarios": ["Task config profile <profile> (row 23)"],
+      "failure_contains": "mutated single output rejection"
+    },
+    {
+      "id": "outputs-one-missing-name",
+      "source_file": "atc/task.go",
+      "old": "\t\tif output.Name == \"\" {\n\t\t\tmessages = append(messages, fmt.Sprintf(\"  output in position %d is missing a name\", i))\n\t\t}",
+      "new": "\t\tif output.Name == \"\" {\n\t\t\tif len(config.Outputs) == 2 {\n\t\t\t\tmessages = append(messages, fmt.Sprintf(\"  mutated output in position %d\", i))\n\t\t\t} else {\n\t\t\t\tmessages = append(messages, fmt.Sprintf(\"  output in position %d is missing a name\", i))\n\t\t\t}\n\t\t}",
+      "tests": ["TaskConfig validating when the task has outputs when output.name is missing returns an error"],
+      "scenarios": ["Task config profile <profile> (row 24)"],
+      "failure_contains": "mutated output in position 1"
+    },
+    {
+      "id": "outputs-two-missing-names",
+      "source_file": "atc/task.go",
+      "old": "\t\tif output.Name == \"\" {\n\t\t\tmessages = append(messages, fmt.Sprintf(\"  output in position %d is missing a name\", i))\n\t\t}",
+      "new": "\t\tif output.Name == \"\" && !(len(config.Outputs) == 3 && i == 2) {\n\t\t\tmessages = append(messages, fmt.Sprintf(\"  output in position %d is missing a name\", i))\n\t\t}",
+      "tests": ["TaskConfig validating when the task has outputs when output.name is missing multiple times returns an error"],
+      "scenarios": ["Task config profile <profile> (row 25)"],
+      "failure_contains": "output in position 1 is missing a name"
+    },
+    {
+      "id": "requests-both",
+      "source_file": "atc/task.go",
+      "old": "\treturn config, nil\n}",
+      "new": "\tif config.Requests != nil && config.Limits == nil && config.Requests.CPU != nil && config.Requests.Memory != nil && *config.Requests.CPU == 512 && *config.Requests.Memory == 1073741824 {\n\t\t*config.Requests.CPU = 513\n\t}\n\treturn config, nil\n}",
+      "tests": ["TaskConfig validating when container requests are specified when both cpu and memory requests are set successfully parses the requests"],
+      "scenarios": ["Task config profile <profile> (row 26)"],
+      "failure_contains": "cpu:513"
+    },
+    {
+      "id": "requests-memory-only",
+      "source_file": "atc/task.go",
+      "old": "\treturn config, nil\n}",
+      "new": "\tif config.Requests != nil && config.Requests.CPU == nil && config.Requests.Memory != nil && *config.Requests.Memory == 268435456 {\n\t\t*config.Requests.Memory = 268435457\n\t}\n\treturn config, nil\n}",
+      "tests": ["TaskConfig validating when container requests are specified when only memory request is set parses the provided memory request"],
+      "scenarios": ["Task config profile <profile> (row 27)"],
+      "failure_contains": "memory:268435457"
+    },
+    {
+      "id": "requests-with-limits",
+      "source_file": "atc/task.go",
+      "old": "\treturn config, nil\n}",
+      "new": "\tif config.Requests != nil && config.Limits != nil && config.Requests.CPU != nil && *config.Requests.CPU == 512 {\n\t\t*config.Requests.CPU = 513\n\t}\n\treturn config, nil\n}",
+      "tests": ["TaskConfig validating when container requests are specified when both limits and requests are set parses both independently"],
+      "scenarios": ["Task config profile <profile> (row 28)"],
+      "failure_contains": "requests=cpu:513"
+    },
+    {
+      "id": "requests-without-limits",
+      "source_file": "atc/task.go",
+      "old": "\treturn config, nil\n}",
+      "new": "\tif config.Requests != nil && config.Limits == nil && config.Requests.CPU != nil && config.Requests.Memory != nil && *config.Requests.CPU == 256 && *config.Requests.Memory == 536870912 {\n\t\tconfig.Limits = &ContainerLimits{}\n\t}\n\treturn config, nil\n}",
+      "tests": ["TaskConfig validating when container requests are specified when requests are set but limits are not parses requests with nil limits"],
+      "scenarios": ["Task config profile <profile> (row 29)"],
+      "failure_contains": "limits=cpu:nil,memory:nil"
+    },
+    {
+      "id": "scratch-two-paths",
+      "source_file": "atc/task.go",
+      "old": "\treturn config, nil\n}",
+      "new": "\tif len(config.ScratchPaths) == 2 {\n\t\tconfig.ScratchPaths[1].Path = \"/mutated/workspace\"\n\t}\n\treturn config, nil\n}",
+      "tests": ["TaskConfig validating when scratch_paths are specified parses scratch_paths from YAML"],
+      "scenarios": ["Task config profile <profile> (row 30)"],
+      "failure_contains": "/mutated/workspace"
+    },
+    {
+      "id": "scratch-empty-list",
+      "source_file": "atc/task.go",
+      "old": "\treturn config, nil\n}",
+      "new": "\tif config.ScratchPaths != nil && len(config.ScratchPaths) == 0 {\n\t\tconfig.ScratchPaths = append(config.ScratchPaths, TaskScratchConfig{Path: \"/mutated/scratch\"})\n\t}\n\treturn config, nil\n}",
+      "tests": ["TaskConfig validating when scratch_paths are specified parses an empty scratch_paths list"],
+      "scenarios": ["Task config profile <profile> (row 31)"],
+      "failure_contains": "scratch-count=1"
+    },
+    {
+      "id": "scratch-coexists-with-cache",
+      "source_file": "atc/task.go",
+      "old": "\treturn config, nil\n}",
+      "new": "\tif len(config.ScratchPaths) == 1 && len(config.Caches) == 1 {\n\t\tconfig.Caches[0].Path = \"/mutated/cache\"\n\t}\n\treturn config, nil\n}",
+      "tests": ["TaskConfig validating when scratch_paths are specified coexists with caches"],
+      "scenarios": ["Task config profile <profile> (row 32)"],
+      "failure_contains": "/mutated/cache"
+    },
+    {
+      "id": "missing-run-remains-valid",
+      "source_file": "atc/task.go",
+      "old": "\tif config.Platform == \"\" {\n\t\terrors = append(errors, \"missing 'platform'\")\n\t}",
+      "new": "\tif config.Platform == \"\" {\n\t\terrors = append(errors, \"missing 'platform'\")\n\t}\n\tif config.Run.Path == \"\" {\n\t\terrors = append(errors, \"mutated missing 'run.path'\")\n\t}",
+      "tests": ["TaskConfig validating when run is missing does not return an error"],
+      "scenarios": ["Task config profile <profile> (row 33)"],
+      "failure_contains": "mutated missing 'run.path'"
+    },
+    {
+      "id": "image-nil-receiver",
+      "source_file": "atc/task.go",
+      "old": "\tif ir == nil {\n\t\treturn\n\t}",
+      "new": "\tif ir == nil {\n\t\tpanic(\"mutated nil image resource\")\n\t}",
+      "tests": ["ImageResource ApplySourceDefaults when imageResource is nil should not fail"],
+      "scenarios": ["Task config profile <profile> (row 34)"],
+      "failure_contains": "panic:mutated nil image resource"
+    },
+    {
+      "id": "image-without-defaults",
+      "source_file": "atc/task.go",
+      "old": "\t\tif found {\n\t\t\tir.Source = brtDefaults.Merge(ir.Source)\n\t\t}\n\t}",
+      "new": "\t\tif found {\n\t\t\tir.Source = brtDefaults.Merge(ir.Source)\n\t\t} else {\n\t\t\tir.Source[\"mutated-default\"] = \"present\"\n\t\t}\n\t}",
+      "tests": ["ImageResource ApplySourceDefaults when imageResource is initialized resourceTypes is empty, and no base resource type defaults configured applied source should be identical to the original"],
+      "scenarios": ["Task config profile <profile> (row 35)"],
+      "failure_contains": "mutated-default=present"
+    },
+    {
+      "id": "image-base-defaults",
+      "source_file": "atc/task.go",
+      "old": "\t\t\tir.Source = brtDefaults.Merge(ir.Source)",
+      "new": "\t\t\tir.Source = brtDefaults.Merge(ir.Source)\n\t\t\tir.Source[\"some-key\"] = \"mutated-base-default\"",
+      "tests": ["ImageResource ApplySourceDefaults when imageResource is initialized resourceTypes is empty, and base resource type defaults configured defaults should be added to image source"],
+      "scenarios": ["Task config profile <profile> (row 36)"],
+      "failure_contains": "some-key=mutated-base-default"
+    },
+    {
+      "id": "image-custom-type-defaults",
+      "source_file": "atc/task.go",
+      "old": "\t\tir.Source = parentType.Defaults.Merge(ir.Source)",
+      "new": "\t\tir.Source = parentType.Defaults.Merge(ir.Source)\n\t\tir.Source[\"some-key\"] = \"mutated-custom-default\"",
+      "tests": ["ImageResource ApplySourceDefaults when imageResource is initialized resourceTypes contains image source type defaults should be added to image source"],
+      "scenarios": ["Task config profile <profile> (row 37)"],
+      "failure_contains": "some-key=mutated-custom-default"
+    }
+  ]
+}

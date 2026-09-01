@@ -1,0 +1,379 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/task-config.json",
+  "git_head": "65344b4566056d9e9cfc07a00807b952d0698b70",
+  "completed_at": "2026-09-01T03:41:58Z",
+  "source_tests": 37,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "decode-basic-fields",
+      "mutation_sha256": "2751bb505aea2d80d4786389c49ae07cbebcdc9c68df99d4866767c9efa50ed3",
+      "failed_source_tests": [
+        "TaskConfig validating decode task yaml given a valid task config works"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 1)"
+      ]
+    },
+    {
+      "id": "param-bool-coercion",
+      "mutation_sha256": "666f9382ee553c7a179af7efbac41eddebf02d59fd00898ce958db71874fadbb",
+      "failed_source_tests": [
+        "TaskConfig validating decode task yaml given a valid task config converts yaml booleans to strings in params"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "param-int-coercion",
+      "mutation_sha256": "84e4409142a7ac9b9d7230e0000c520a75b6fb9f25d53d37dd633399fdaf7baa",
+      "failed_source_tests": [
+        "TaskConfig validating decode task yaml given a valid task config converts yaml ints to the correct string in params"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "param-large-int-coercion",
+      "mutation_sha256": "046e0d2b39809ffa3012c43dc4c235e59977132e4e03347114219e11c6cd9b1c",
+      "failed_source_tests": [
+        "TaskConfig validating decode task yaml given a valid task config converts large yaml ints to the correct string in params"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "param-unquoted-scientific-coercion",
+      "mutation_sha256": "41346fd6b264b1190349f72d5eacf33711b5d9682dfc63c873eee1c674f63c5b",
+      "failed_source_tests": [
+        "TaskConfig validating decode task yaml given a valid task config does not preserve unquoted float notation"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "param-quoted-scientific-preservation",
+      "mutation_sha256": "4a05d15ec4a3ddd00d1a206774b2e775acbbadc99ee80bd8197ba6de9d90e414",
+      "failed_source_tests": [
+        "TaskConfig validating decode task yaml given a valid task config (obviously) preserves quoted float notation"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "param-float-coercion",
+      "mutation_sha256": "4883769ac4a873dc6ae1c1b207dcd5e9d2332b71e7619f9d0e75473f45d5a3fe",
+      "failed_source_tests": [
+        "TaskConfig validating decode task yaml given a valid task config converts yaml floats to the correct string in params"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "param-map-json-coercion",
+      "mutation_sha256": "41f62110a22a271c15cc7bbf5952abb2fcf90505b92d7bcc02aeea9bdab599ff",
+      "failed_source_tests": [
+        "TaskConfig validating decode task yaml given a valid task config converts maps to json in params"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "param-empty-coercion",
+      "mutation_sha256": "3c663d9433e92c0bd40da964ad3b2fee5502a0b65e91d8901b6cc74626129dcf",
+      "failed_source_tests": [
+        "TaskConfig validating decode task yaml given a valid task config converts empty values to empty string in params"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "numeric-environment-coercion",
+      "mutation_sha256": "63e403d3e2db0b8519196786a469905423f739d20a5325f41dc294211d579e42",
+      "failed_source_tests": [
+        "TaskConfig validating decode task yaml given a valid task config with numeric params works"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 10)"
+      ]
+    },
+    {
+      "id": "unknown-key-rejection",
+      "mutation_sha256": "00d9b542c07f3cbd27b48a9bf0433ec80870150209afd49a9933a82579960771",
+      "failed_source_tests": [
+        "TaskConfig validating decode task yaml given a valid task config with extra keys returns an error"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 11)"
+      ]
+    },
+    {
+      "id": "invalid-input-output-rejection",
+      "mutation_sha256": "61abbbc35d9e65fe1f63fd077409476d64485245a4b94f046ebb1cff5f1ad180",
+      "failed_source_tests": [
+        "TaskConfig validating decode task yaml given an invalid task config errors on validation"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 12)"
+      ]
+    },
+    {
+      "id": "missing-platform-validation",
+      "mutation_sha256": "aa292b4d1047bc0cb3799edf742a189c0681192f30e9a3020982726462a84bd5",
+      "failed_source_tests": [
+        "TaskConfig validating when platform is missing returns an error"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 13)"
+      ]
+    },
+    {
+      "id": "limits-both-with-unit",
+      "mutation_sha256": "ac260a79cce4e639fbb746134e70b9a59d203c3ab41232abb1be9c9eee75ca72",
+      "failed_source_tests": [
+        "TaskConfig validating when container limits are specified when memory and cpu limits are correctly specified successfully parses the limits with memory units"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 14)"
+      ]
+    },
+    {
+      "id": "limits-both-without-unit",
+      "mutation_sha256": "3acc1dd55a35cc5ba25fead83d119a9155d7bc4bf9be41f62482eab668d59117",
+      "failed_source_tests": [
+        "TaskConfig validating when container limits are specified when memory and cpu limits are correctly specified successfully parses the limits without memory units"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 15)"
+      ]
+    },
+    {
+      "id": "limits-memory-only",
+      "mutation_sha256": "825615b4243f4cebdf517ce7114e2e29df10ff64555d358d2e2969473c1bae67",
+      "failed_source_tests": [
+        "TaskConfig validating when container limits are specified when either one of memory or cpu is correctly specified parses the provided memory limit without any errors"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 16)"
+      ]
+    },
+    {
+      "id": "limits-cpu-only",
+      "mutation_sha256": "d9ab54eaac4297535debb138bd0730ea7130247fe70e111d627928f484087cb8",
+      "failed_source_tests": [
+        "TaskConfig validating when container limits are specified when either one of memory or cpu is correctly specified parses the provided cpu limit without any errors"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 17)"
+      ]
+    },
+    {
+      "id": "limits-invalid-memory",
+      "mutation_sha256": "3ab63d1bd435d0555e90cd984555e1f05b9304cfcc0fe48739176d4e5625a993",
+      "failed_source_tests": [
+        "TaskConfig validating when container limits are specified when invalid memory limit value is provided throws an error and does not continue"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 18)"
+      ]
+    },
+    {
+      "id": "limits-invalid-cpu",
+      "mutation_sha256": "f0613221b8715b5bd6a3da1a0a333934a3980c3e732d37e5d0886f65718b7a67",
+      "failed_source_tests": [
+        "TaskConfig validating when container limits are specified when invalid cpu limit value is provided throws an error and does not continue"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 19)"
+      ]
+    },
+    {
+      "id": "inputs-valid",
+      "mutation_sha256": "bc13faabe5ccbe91c4fc78d65fbb0af2bf80e55431dbcebf91242f07c8387d31",
+      "failed_source_tests": [
+        "TaskConfig validating when the task has inputs is valid"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 20)"
+      ]
+    },
+    {
+      "id": "inputs-one-missing-name",
+      "mutation_sha256": "65b4adef5ed87f73c01a9c787b7df8c422b875c36f90efcc01509ad49ecffae9",
+      "failed_source_tests": [
+        "TaskConfig validating when the task has inputs when input.name is missing returns an error"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 21)"
+      ]
+    },
+    {
+      "id": "inputs-two-missing-names",
+      "mutation_sha256": "e8c60b52698c1025f5700baab306e2b2994664c1adce7d644b21562178e09a92",
+      "failed_source_tests": [
+        "TaskConfig validating when the task has inputs when input.name is missing multiple times returns an error"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 22)"
+      ]
+    },
+    {
+      "id": "outputs-valid",
+      "mutation_sha256": "02d6b98c4dbd54ecedc55b0bd5a228af345ab7421e00fec4f12844d74f665fdb",
+      "failed_source_tests": [
+        "TaskConfig validating when the task has outputs is valid"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 23)"
+      ]
+    },
+    {
+      "id": "outputs-one-missing-name",
+      "mutation_sha256": "b2aa8360eca2ac52926517ad1a809d6170f33d35d9ba8a4e28ea6aa047f049ea",
+      "failed_source_tests": [
+        "TaskConfig validating when the task has outputs when output.name is missing returns an error"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 24)"
+      ]
+    },
+    {
+      "id": "outputs-two-missing-names",
+      "mutation_sha256": "99659a881e5aafff53769804b01ffba8e821fd0687b663e21020bd0625ecc745",
+      "failed_source_tests": [
+        "TaskConfig validating when the task has outputs when output.name is missing multiple times returns an error"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 25)"
+      ]
+    },
+    {
+      "id": "requests-both",
+      "mutation_sha256": "9325c78d5b8b6136bcbeb24c9beb1bfa79a131a701c8061e2264259fad3274fe",
+      "failed_source_tests": [
+        "TaskConfig validating when container requests are specified when both cpu and memory requests are set successfully parses the requests"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 26)"
+      ]
+    },
+    {
+      "id": "requests-memory-only",
+      "mutation_sha256": "23d71cc7ffe97d2518901a5de61b3d9c2439823f0ace340eb5306d4c39965057",
+      "failed_source_tests": [
+        "TaskConfig validating when container requests are specified when only memory request is set parses the provided memory request"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 27)"
+      ]
+    },
+    {
+      "id": "requests-with-limits",
+      "mutation_sha256": "8332287f5fd90745feb6850742bd25ef72785b866fc2a642618b169955bb4886",
+      "failed_source_tests": [
+        "TaskConfig validating when container requests are specified when both limits and requests are set parses both independently"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 28)"
+      ]
+    },
+    {
+      "id": "requests-without-limits",
+      "mutation_sha256": "23e4b94514234bff23e30b90f305fa8520a9fd243a81fd9cebad65811991d37d",
+      "failed_source_tests": [
+        "TaskConfig validating when container requests are specified when requests are set but limits are not parses requests with nil limits"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 29)"
+      ]
+    },
+    {
+      "id": "scratch-two-paths",
+      "mutation_sha256": "2117062085ef162e0808e19ce2b734b9864dc165e620534027ace6ae527b3292",
+      "failed_source_tests": [
+        "TaskConfig validating when scratch_paths are specified parses scratch_paths from YAML"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 30)"
+      ]
+    },
+    {
+      "id": "scratch-empty-list",
+      "mutation_sha256": "d1be2a2b6a75e1be59d5203dfb599919609e219660dc867ebaa325e99120ce01",
+      "failed_source_tests": [
+        "TaskConfig validating when scratch_paths are specified parses an empty scratch_paths list"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 31)"
+      ]
+    },
+    {
+      "id": "scratch-coexists-with-cache",
+      "mutation_sha256": "a1d099d6191e146d8209096ae2d03ca76fc987e863999b586f8f24adc1795c3a",
+      "failed_source_tests": [
+        "TaskConfig validating when scratch_paths are specified coexists with caches"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 32)"
+      ]
+    },
+    {
+      "id": "missing-run-remains-valid",
+      "mutation_sha256": "f09b2b61a3d969c0cd3f48542e351a5d2c5e5c25ddd13b786d1759f531371b62",
+      "failed_source_tests": [
+        "TaskConfig validating when run is missing does not return an error"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 33)"
+      ]
+    },
+    {
+      "id": "image-nil-receiver",
+      "mutation_sha256": "77f87d9f20a004990dfc8e153d50ec8c0fa1b91d44d93bedf215c8f6d71ecf2e",
+      "failed_source_tests": [
+        "ImageResource ApplySourceDefaults when imageResource is nil should not fail"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 34)"
+      ]
+    },
+    {
+      "id": "image-without-defaults",
+      "mutation_sha256": "f2898c25c2db4a093e5614f36b647547cbef4256ff2002f99f9709c606ae3c12",
+      "failed_source_tests": [
+        "ImageResource ApplySourceDefaults when imageResource is initialized resourceTypes is empty, and no base resource type defaults configured applied source should be identical to the original"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 35)"
+      ]
+    },
+    {
+      "id": "image-base-defaults",
+      "mutation_sha256": "4d528df83f25d00947b8612b74a7f8acba3b42e1b502d21274c6d1838ead624a",
+      "failed_source_tests": [
+        "ImageResource ApplySourceDefaults when imageResource is initialized resourceTypes is empty, and base resource type defaults configured defaults should be added to image source"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 36)"
+      ]
+    },
+    {
+      "id": "image-custom-type-defaults",
+      "mutation_sha256": "cfc6463b3846b496ef1e0fc663d393abd4a99dbdaf766599e48f5106119481b0",
+      "failed_source_tests": [
+        "ImageResource ApplySourceDefaults when imageResource is initialized resourceTypes contains image source type defaults should be added to image source"
+      ],
+      "failed_brine_scenarios": [
+        "Task config profile \u003cprofile\u003e (row 37)"
+      ]
+    }
+  ]
+}
