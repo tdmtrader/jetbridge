@@ -1,7 +1,7 @@
 {
   "manifest": "atc/worker/jetbridge/brine/mutations/job-domain-strict.json",
-  "git_head": "aa118c85768f8eb61933f1640a02edef60f5675c",
-  "completed_at": "2026-09-01T08:46:30Z",
+  "git_head": "3582b8eb50592b9195b0f100c3cafd09c5c674ae",
+  "completed_at": "2026-09-01T13:39:21Z",
   "source_tests": 35,
   "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
   "mutation_cases": [
