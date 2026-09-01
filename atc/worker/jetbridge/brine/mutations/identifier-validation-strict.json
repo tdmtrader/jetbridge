@@ -1,0 +1,135 @@
+{
+  "name": "identifier-validation-strict",
+  "test_package": "./atc",
+  "source_test_file": "atc/configwarning_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/identifier-validation.feature",
+  "step_files": ["atc/worker/jetbridge/brine/steps/identifier_validation.go"],
+  "cases": [
+    {
+      "id": "accept-lowercase-letter",
+      "source_file": "atc/configwarning.go",
+      "old": "\treturn nil, nil\n}",
+      "new": "\tif identifier == \"something\" {\n\t\treturn &ConfigWarning{Type: \"invalid_identifier\", Message: \"mutated\"}, nil\n\t}\n\treturn nil, nil\n}",
+      "tests": ["ValidateIdentifier when an identifier starts with a valid letter runs without warning"],
+      "scenarios": ["A lowercase-letter identifier is accepted"],
+      "failure_contains": "exact identifier result"
+    },
+    {
+      "id": "accept-multilingual",
+      "source_file": "atc/configwarning.go",
+      "old": "\treturn nil, nil\n}",
+      "new": "\tif identifier == \"ひらがな\" {\n\t\treturn &ConfigWarning{Type: \"invalid_identifier\", Message: \"mutated\"}, nil\n\t}\n\treturn nil, nil\n}",
+      "tests": ["ValidateIdentifier when an identifier contains multilingual characters runs without warning"],
+      "scenarios": ["A multilingual identifier is accepted"],
+      "failure_contains": "exact identifier result"
+    },
+    {
+      "id": "accept-underscore",
+      "source_file": "atc/configwarning.go",
+      "old": "\treturn nil, nil\n}",
+      "new": "\tif identifier == \"some_thing\" {\n\t\treturn &ConfigWarning{Type: \"invalid_identifier\", Message: \"mutated\"}, nil\n\t}\n\treturn nil, nil\n}",
+      "tests": ["ValidateIdentifier when an identifier contains an underscore runs without warning"],
+      "scenarios": ["An identifier containing an underscore is accepted"],
+      "failure_contains": "exact identifier result"
+    },
+    {
+      "id": "accept-leading-number",
+      "source_file": "atc/configwarning.go",
+      "old": "\treturn nil, nil\n}",
+      "new": "\tif identifier == \"1something\" {\n\t\treturn &ConfigWarning{Type: \"invalid_identifier\", Message: \"mutated\"}, nil\n\t}\n\treturn nil, nil\n}",
+      "tests": ["ValidateIdentifier when an identifier starts with a number runs without warning"],
+      "scenarios": ["An identifier starting with a number is accepted"],
+      "failure_contains": "exact identifier result"
+    },
+    {
+      "id": "accept-number-underscore",
+      "source_file": "atc/configwarning.go",
+      "old": "\treturn nil, nil\n}",
+      "new": "\tif identifier == \"1_min\" {\n\t\treturn &ConfigWarning{Type: \"invalid_identifier\", Message: \"mutated\"}, nil\n\t}\n\treturn nil, nil\n}",
+      "tests": ["ValidateIdentifier when an identifier starts with a number and contains an underscore runs without warning"],
+      "scenarios": ["A numeric identifier containing an underscore is accepted"],
+      "failure_contains": "exact identifier result"
+    },
+    {
+      "id": "warn-leading-hyphen",
+      "source_file": "atc/configwarning.go",
+      "old": "\t\treturn &ConfigWarning{\n\t\t\tType:    \"invalid_identifier\",\n\t\t\tMessage: fmt.Sprintf(\"%s: '%s' is not a valid identifier: %s\", strings.Join(context, \"\"), identifier, reason),\n\t\t}, nil",
+      "new": "\t\tif identifier == \"-something\" {\n\t\t\treason = \"mutated\"\n\t\t}\n\t\treturn &ConfigWarning{\n\t\t\tType:    \"invalid_identifier\",\n\t\t\tMessage: fmt.Sprintf(\"%s: '%s' is not a valid identifier: %s\", strings.Join(context, \"\"), identifier, reason),\n\t\t}, nil",
+      "tests": ["ValidateIdentifier when an identifier starts with hyphen returns a warning"],
+      "scenarios": ["An identifier starting with a hyphen reports the start warning"],
+      "failure_contains": "exact identifier result"
+    },
+    {
+      "id": "warn-leading-period",
+      "source_file": "atc/configwarning.go",
+      "old": "\t\treturn &ConfigWarning{\n\t\t\tType:    \"invalid_identifier\",\n\t\t\tMessage: fmt.Sprintf(\"%s: '%s' is not a valid identifier: %s\", strings.Join(context, \"\"), identifier, reason),\n\t\t}, nil",
+      "new": "\t\tif identifier == \".something\" {\n\t\t\treason = \"mutated\"\n\t\t}\n\t\treturn &ConfigWarning{\n\t\t\tType:    \"invalid_identifier\",\n\t\t\tMessage: fmt.Sprintf(\"%s: '%s' is not a valid identifier: %s\", strings.Join(context, \"\"), identifier, reason),\n\t\t}, nil",
+      "tests": ["ValidateIdentifier when an identifier starts with period returns a warning"],
+      "scenarios": ["An identifier starting with a period reports the start warning"],
+      "failure_contains": "exact identifier result"
+    },
+    {
+      "id": "warn-leading-uppercase",
+      "source_file": "atc/configwarning.go",
+      "old": "\t\treturn &ConfigWarning{\n\t\t\tType:    \"invalid_identifier\",\n\t\t\tMessage: fmt.Sprintf(\"%s: '%s' is not a valid identifier: %s\", strings.Join(context, \"\"), identifier, reason),\n\t\t}, nil",
+      "new": "\t\tif identifier == \"Something\" {\n\t\t\treason = \"mutated\"\n\t\t}\n\t\treturn &ConfigWarning{\n\t\t\tType:    \"invalid_identifier\",\n\t\t\tMessage: fmt.Sprintf(\"%s: '%s' is not a valid identifier: %s\", strings.Join(context, \"\"), identifier, reason),\n\t\t}, nil",
+      "tests": ["ValidateIdentifier when an identifier starts with an uppercase letter returns a warning"],
+      "scenarios": ["An identifier starting uppercase reports the start warning"],
+      "failure_contains": "exact identifier result"
+    },
+    {
+      "id": "warn-space-character",
+      "source_file": "atc/configwarning.go",
+      "old": "\t\treturn &ConfigWarning{\n\t\t\tType:    \"invalid_identifier\",\n\t\t\tMessage: fmt.Sprintf(\"%s: '%s' is not a valid identifier: %s\", strings.Join(context, \"\"), identifier, reason),\n\t\t}, nil",
+      "new": "\t\tif identifier == \"some thing\" {\n\t\t\treason = \"mutated\"\n\t\t}\n\t\treturn &ConfigWarning{\n\t\t\tType:    \"invalid_identifier\",\n\t\t\tMessage: fmt.Sprintf(\"%s: '%s' is not a valid identifier: %s\", strings.Join(context, \"\"), identifier, reason),\n\t\t}, nil",
+      "tests": ["ValidateIdentifier when an identifier contains a space returns a warning"],
+      "scenarios": ["An identifier containing a space reports the illegal character"],
+      "failure_contains": "exact identifier result"
+    },
+    {
+      "id": "warn-uppercase-character",
+      "source_file": "atc/configwarning.go",
+      "old": "\t\treturn &ConfigWarning{\n\t\t\tType:    \"invalid_identifier\",\n\t\t\tMessage: fmt.Sprintf(\"%s: '%s' is not a valid identifier: %s\", strings.Join(context, \"\"), identifier, reason),\n\t\t}, nil",
+      "new": "\t\tif identifier == \"someThing\" {\n\t\t\treason = \"mutated\"\n\t\t}\n\t\treturn &ConfigWarning{\n\t\t\tType:    \"invalid_identifier\",\n\t\t\tMessage: fmt.Sprintf(\"%s: '%s' is not a valid identifier: %s\", strings.Join(context, \"\"), identifier, reason),\n\t\t}, nil",
+      "tests": ["ValidateIdentifier when an identifier contains an uppercase letter returns a warning"],
+      "scenarios": ["An identifier containing uppercase reports the illegal character"],
+      "failure_contains": "exact identifier result"
+    },
+    {
+      "id": "reject-empty-exact-error",
+      "source_file": "atc/configwarning.go",
+      "old": "\t\treturn nil, fmt.Errorf(\"%s: identifier cannot be an empty string\", strings.Join(context, \"\"))",
+      "new": "\t\treturn nil, fmt.Errorf(\"%s: mutated empty identifier error\", strings.Join(context, \"\"))",
+      "tests": ["ValidateIdentifier when an identifier is an empty string runs without warning"],
+      "scenarios": ["An empty identifier reports the exact hard error"],
+      "failure_contains": "exact identifier result"
+    },
+    {
+      "id": "skip-across-task-interpolation",
+      "source_file": "atc/configwarning.go",
+      "old": "strings.Contains(context[contextLen-1], \"task\")",
+      "new": "strings.Contains(context[contextLen-1], \"task-mutant\")",
+      "tests": ["ValidateIdentifier when an identifier is a var from across step in task runs without warning"],
+      "scenarios": ["An across task interpolation bypasses identifier validation"],
+      "failure_contains": "exact identifier result"
+    },
+    {
+      "id": "skip-across-set-pipeline-interpolation",
+      "source_file": "atc/configwarning.go",
+      "old": "strings.Contains(context[contextLen-1], \"set_pipeline\")",
+      "new": "strings.Contains(context[contextLen-1], \"set_pipeline-mutant\")",
+      "tests": ["ValidateIdentifier when an identifier is a var from across step in set_pipeline runs without warning"],
+      "scenarios": ["An across set-pipeline interpolation bypasses identifier validation"],
+      "failure_contains": "exact identifier result"
+    },
+    {
+      "id": "warning-includes-context-and-identifier",
+      "source_file": "atc/configwarning.go",
+      "old": "\t\treturn &ConfigWarning{\n\t\t\tType:    \"invalid_identifier\",\n\t\t\tMessage: fmt.Sprintf(\"%s: '%s' is not a valid identifier: %s\", strings.Join(context, \"\"), identifier, reason),\n\t\t}, nil",
+      "new": "\t\tif identifier == \"_something\" {\n\t\t\treturn &ConfigWarning{Type: \"invalid_identifier\", Message: \"mutated\"}, nil\n\t\t}\n\t\treturn &ConfigWarning{\n\t\t\tType:    \"invalid_identifier\",\n\t\t\tMessage: fmt.Sprintf(\"%s: '%s' is not a valid identifier: %s\", strings.Join(context, \"\"), identifier, reason),\n\t\t}, nil",
+      "tests": ["ValidateIdentifier ValidateIdentifier with context when an identifier is invalid returns an error with context"],
+      "scenarios": ["An invalid identifier warning includes its context and identifier"],
+      "failure_contains": "exact identifier result"
+    }
+  ]
+}

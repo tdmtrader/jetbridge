@@ -1,0 +1,149 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/identifier-validation-strict.json",
+  "git_head": "cea70aa63bc3ece00b37d6458d7f8d2dea7125ee",
+  "completed_at": "2026-09-01T05:44:37Z",
+  "source_tests": 14,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "accept-lowercase-letter",
+      "mutation_sha256": "e31f520bc19c79a021bca1afbf528cb033296606eb339f5e3f70fbe9266e0bda",
+      "failed_source_tests": [
+        "ValidateIdentifier when an identifier starts with a valid letter runs without warning"
+      ],
+      "failed_brine_scenarios": [
+        "A lowercase-letter identifier is accepted"
+      ]
+    },
+    {
+      "id": "accept-multilingual",
+      "mutation_sha256": "8cc3cd8d8bca82a7b0f520f1da709e86393e91fd653e1ac319dbb7b78ebd68bb",
+      "failed_source_tests": [
+        "ValidateIdentifier when an identifier contains multilingual characters runs without warning"
+      ],
+      "failed_brine_scenarios": [
+        "A multilingual identifier is accepted"
+      ]
+    },
+    {
+      "id": "accept-underscore",
+      "mutation_sha256": "d5f77deb9eba0d03f02a215af69bb9c6fdaad022038d0d397881bf7607998b47",
+      "failed_source_tests": [
+        "ValidateIdentifier when an identifier contains an underscore runs without warning"
+      ],
+      "failed_brine_scenarios": [
+        "An identifier containing an underscore is accepted"
+      ]
+    },
+    {
+      "id": "accept-leading-number",
+      "mutation_sha256": "2d4b323a2b564e33f70a9e7f68d3aaaf50573e45f80181b20c93ebe2ee41b935",
+      "failed_source_tests": [
+        "ValidateIdentifier when an identifier starts with a number runs without warning"
+      ],
+      "failed_brine_scenarios": [
+        "An identifier starting with a number is accepted"
+      ]
+    },
+    {
+      "id": "accept-number-underscore",
+      "mutation_sha256": "ba357be351af7cdacfdf22e857e1e13f3a14a70492dd2658a2b889a229354237",
+      "failed_source_tests": [
+        "ValidateIdentifier when an identifier starts with a number and contains an underscore runs without warning"
+      ],
+      "failed_brine_scenarios": [
+        "A numeric identifier containing an underscore is accepted"
+      ]
+    },
+    {
+      "id": "warn-leading-hyphen",
+      "mutation_sha256": "18196c8e90897c6dbf19289e072d15e1352c0f085c231a1551025e2ba6dd7bee",
+      "failed_source_tests": [
+        "ValidateIdentifier when an identifier starts with hyphen returns a warning"
+      ],
+      "failed_brine_scenarios": [
+        "An identifier starting with a hyphen reports the start warning"
+      ]
+    },
+    {
+      "id": "warn-leading-period",
+      "mutation_sha256": "6fcdcb6f9353e2b0de0b263a0ec4bb2bfa16cad73a33d6d02e8b027f3674969c",
+      "failed_source_tests": [
+        "ValidateIdentifier when an identifier starts with period returns a warning"
+      ],
+      "failed_brine_scenarios": [
+        "An identifier starting with a period reports the start warning"
+      ]
+    },
+    {
+      "id": "warn-leading-uppercase",
+      "mutation_sha256": "eda6e3e878e6d06f553118ea24e2ce3b8c0f95639ac04d780ef3f73c56233559",
+      "failed_source_tests": [
+        "ValidateIdentifier when an identifier starts with an uppercase letter returns a warning"
+      ],
+      "failed_brine_scenarios": [
+        "An identifier starting uppercase reports the start warning"
+      ]
+    },
+    {
+      "id": "warn-space-character",
+      "mutation_sha256": "0bdc2fa779f0a28baac2062417823febda23f0e09b66d5f91bb08778c7d7958a",
+      "failed_source_tests": [
+        "ValidateIdentifier when an identifier contains a space returns a warning"
+      ],
+      "failed_brine_scenarios": [
+        "An identifier containing a space reports the illegal character"
+      ]
+    },
+    {
+      "id": "warn-uppercase-character",
+      "mutation_sha256": "0a9dab13dc58d91c134390d0585fdba538b8a67c5026326da69ab01b1e1e651b",
+      "failed_source_tests": [
+        "ValidateIdentifier when an identifier contains an uppercase letter returns a warning"
+      ],
+      "failed_brine_scenarios": [
+        "An identifier containing uppercase reports the illegal character"
+      ]
+    },
+    {
+      "id": "reject-empty-exact-error",
+      "mutation_sha256": "c8279d0519632735e7ca466370460aa994c1a6280bb931f5750c8a3b7644dce8",
+      "failed_source_tests": [
+        "ValidateIdentifier when an identifier is an empty string runs without warning"
+      ],
+      "failed_brine_scenarios": [
+        "An empty identifier reports the exact hard error"
+      ]
+    },
+    {
+      "id": "skip-across-task-interpolation",
+      "mutation_sha256": "a7f5faf49d9760c04176db4b8013c8eacbcccd45743133fcab930e6cf19b3202",
+      "failed_source_tests": [
+        "ValidateIdentifier when an identifier is a var from across step in task runs without warning"
+      ],
+      "failed_brine_scenarios": [
+        "An across task interpolation bypasses identifier validation"
+      ]
+    },
+    {
+      "id": "skip-across-set-pipeline-interpolation",
+      "mutation_sha256": "5103dff57bbb54e582e491d5ccd7ef9cc90a83ed56db016146f15c0aa4d7ef03",
+      "failed_source_tests": [
+        "ValidateIdentifier when an identifier is a var from across step in set_pipeline runs without warning"
+      ],
+      "failed_brine_scenarios": [
+        "An across set-pipeline interpolation bypasses identifier validation"
+      ]
+    },
+    {
+      "id": "warning-includes-context-and-identifier",
+      "mutation_sha256": "e4505442acf281b38a9b3eb5a1f0338aafd03216786e93b495f1ee69cc91d805",
+      "failed_source_tests": [
+        "ValidateIdentifier ValidateIdentifier with context when an identifier is invalid returns an error with context"
+      ],
+      "failed_brine_scenarios": [
+        "An invalid identifier warning includes its context and identifier"
+      ]
+    }
+  ]
+}
