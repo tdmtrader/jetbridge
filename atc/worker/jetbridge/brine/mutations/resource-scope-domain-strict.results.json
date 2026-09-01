@@ -1,0 +1,173 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/resource-scope-domain-strict.json",
+  "git_head": "b4059638613b184bd928b7a22bca65e1928a619d",
+  "completed_at": "2026-09-01T06:41:31Z",
+  "source_tests": 23,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "only-the-last-save-result-controls-new-version-effects",
+      "mutation_sha256": "e505bebb31d195cd947b328be2261adf77c0e2a607e768a662769f2f6e82fade",
+      "failed_source_tests": [
+        "Resource Config Scope SaveVersions ensures versioned resources have the correct check_order",
+        "Resource Config Scope SaveVersions when the versions already exists when a new version is added requests schedule on the jobs that use the resource"
+      ],
+      "failed_brine_scenarios": [
+        "A new version requests scheduling for a direct consumer",
+        "Saving new and existing versions advances their check order"
+      ]
+    },
+    {
+      "id": "existing-versions-are-reordered",
+      "mutation_sha256": "2ff91c364c43acda444d7fc204bd103b83a9a833389ad9db5888e946c700a1fb",
+      "failed_source_tests": [
+        "Resource Config Scope SaveVersions when the versions already exists does not change the check order"
+      ],
+      "failed_brine_scenarios": [
+        "Saving only existing versions preserves their check order"
+      ]
+    },
+    {
+      "id": "passed-constraint-consumers-are-scheduled",
+      "mutation_sha256": "7e9687356a2d77fd822353d6e3f69a0ccef6de87120d8bb176f33829cd12bf88",
+      "failed_source_tests": [
+        "Resource Config Scope SaveVersions when the versions already exists when a new version is added does not request schedule on the jobs that use the resource but through passed constraints"
+      ],
+      "failed_brine_scenarios": [
+        "A new version does not schedule a passed-constraint consumer"
+      ]
+    },
+    {
+      "id": "unrelated-jobs-are-scheduled",
+      "mutation_sha256": "587f1bea0a1f8187de9485eca4c9d1ed04d9fa158409f792520e6792f08bb6f2",
+      "failed_source_tests": [
+        "Resource Config Scope SaveVersions when the versions already exists when a new version is added does not request schedule on the jobs that do not use the resource"
+      ],
+      "failed_brine_scenarios": [
+        "A new version does not schedule an unrelated job"
+      ]
+    },
+    {
+      "id": "empty-version-validation-message-is-changed",
+      "mutation_sha256": "23ca129bfff2b06aebc25be7ad629063997c47293aab013f6a06ef202c50edd3",
+      "failed_source_tests": [
+        "Resource Config Scope SaveVersions when a version is empty returns an error"
+      ],
+      "failed_brine_scenarios": [
+        "An empty version returns the production validation error"
+      ]
+    },
+    {
+      "id": "latest-version-uses-oldest-check-order",
+      "mutation_sha256": "ccdc7951fb7470dbc7de01843a64cadca36f4cfa56436418d895ba0c2eda1b0c",
+      "failed_source_tests": [
+        "Resource Config Scope LatestVersion when the resource config exists disabled versions do not affect fetching the latest version",
+        "Resource Config Scope LatestVersion when the resource config exists gets latest version of resource",
+        "Resource Config Scope LatestVersion when the resource config exists saving versioned resources updates the latest versioned resource"
+      ],
+      "failed_brine_scenarios": [
+        "A new version does not schedule a passed-constraint consumer",
+        "A new version does not schedule an unrelated job",
+        "A new version requests scheduling for a direct consumer",
+        "Disabling a version does not change LatestVersion",
+        "LatestVersion returns the highest check order",
+        "Saving new and existing versions advances their check order",
+        "Saving new versions updates LatestVersion",
+        "Saving only existing versions preserves their check order"
+      ]
+    },
+    {
+      "id": "exact-version-lookup-inverts-the-digest-comparison",
+      "mutation_sha256": "1f08b8686dc5adb8ed87057bf509a207dc45f2ff9266f6867ccf063b55fcd91e",
+      "failed_source_tests": [
+        "Resource Config Scope FindVersion when the version does not exist does not get the version of resource",
+        "Resource Config Scope FindVersion when the version exists gets the version of resource"
+      ],
+      "failed_brine_scenarios": [
+        "FindVersion reports a missing exact version",
+        "FindVersion returns an existing exact version"
+      ]
+    },
+    {
+      "id": "check-start-discards-the-build-id",
+      "mutation_sha256": "0dc92bf64bccf8eb44aacf0171c23a73687dc49ecf28103eb060435dcd30026c",
+      "failed_source_tests": [
+        "Resource Config Scope UpdateLastCheckStartTime updates last check start time"
+      ],
+      "failed_brine_scenarios": [
+        "Updating check start records time build and public plan"
+      ]
+    },
+    {
+      "id": "check-end-does-not-advance-the-time",
+      "mutation_sha256": "2f7928d89022a05d698338cf21094b5e804a4054c8661ddea5f414cdbdb5f8fb",
+      "failed_source_tests": [
+        "Resource Config Scope UpdateLastCheckEndTime updates last check end time"
+      ],
+      "failed_brine_scenarios": [
+        "Updating check end records a later completion time"
+      ]
+    },
+    {
+      "id": "config-change-forgets-the-deprecated-resource",
+      "mutation_sha256": "25933d6705fd8c233bbbde6903653452b633020c547ad7ae0e1a4e3a60124ba0",
+      "failed_source_tests": [
+        "Resource Config Scope DeprecatedScopes returns deprecated scopes for a resource after config change",
+        "Resource Config Scope Full History Migration Lifecycle preserves version history across a config change via deprecation + copy",
+        "Resource Config Scope Scope Deprecation on Config Change soft-deletes old scope when FindOrCreateScope is called with a different config"
+      ],
+      "failed_brine_scenarios": [
+        "A config change soft deletes the old scope without losing versions",
+        "A config-change migration preserves complete version history",
+        "DeprecatedScopes returns the old scope after a config change"
+      ]
+    },
+    {
+      "id": "deprecated-scopes-invents-an-empty-result",
+      "mutation_sha256": "2dfb89227ffa3f4811e96962e471ff47c8ea8a7bd293e59a72d4f343d07cdbeb",
+      "failed_source_tests": [
+        "Resource Config Scope DeprecatedScopes returns empty slice when no deprecated scopes exist"
+      ],
+      "failed_brine_scenarios": [
+        "DeprecatedScopes is empty before a config change"
+      ]
+    },
+    {
+      "id": "version-copy-omits-v2",
+      "mutation_sha256": "eaf605f8255e5668f016799f98aff66c2fd4641b8012b0d528d816f4346fa575",
+      "failed_source_tests": [
+        "Resource Config Scope CopyVersionsFrom copies versions from a source scope to the target scope",
+        "Resource Config Scope CopyVersionsFrom skips duplicates with ON CONFLICT DO NOTHING"
+      ],
+      "failed_brine_scenarios": [
+        "A config-change migration preserves complete version history",
+        "CopyVersionsFrom copies every source version into an empty target",
+        "CopyVersionsFrom skips a version already present in the target"
+      ]
+    },
+    {
+      "id": "self-copy-reports-a-phantom-version",
+      "mutation_sha256": "864aa3804dd236efecb8909b1d69f58263a338c412a57a4863d49d898b2d123f",
+      "failed_source_tests": [
+        "Resource Config Scope CopyVersionsFrom returns 0 when all source versions already exist in target"
+      ],
+      "failed_brine_scenarios": [
+        "CopyVersionsFrom returns zero for a self copy"
+      ]
+    },
+    {
+      "id": "resource-checking-lock-is-released-before-return",
+      "mutation_sha256": "0ad75f13b6010ab92e6f53d7997c55f522625c78dc5aa26e303bb6fb41f7fea6",
+      "failed_source_tests": [
+        "Resource Config Scope AcquireResourceCheckingLock when there has been a check recently and the lock gets released gets the lock",
+        "Resource Config Scope AcquireResourceCheckingLock when there has been a check recently does not get the lock",
+        "Resource Config Scope AcquireResourceCheckingLock when there has not been a check recently gets and keeps the lock and stops others from periodically getting it"
+      ],
+      "failed_brine_scenarios": [
+        "A held resource-checking lock blocks periodic contenders until release",
+        "A held resource-checking lock rejects a contender",
+        "A released resource-checking lock can be reacquired"
+      ]
+    }
+  ]
+}

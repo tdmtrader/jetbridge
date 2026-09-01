@@ -1,0 +1,195 @@
+{
+  "name": "resource-scope-domain-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/resource_config_scope_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/resource-scope-domain.feature",
+  "step_files": ["atc/worker/jetbridge/brine/steps/resource_scope_domain.go"],
+  "cases": [
+    {
+      "id": "only-the-last-save-result-controls-new-version-effects",
+      "source_file": "atc/db/resource_config_scope.go",
+      "old": "\t\tcontainsNewVersion = containsNewVersion || newVersion",
+      "new": "\t\tcontainsNewVersion = newVersion",
+      "tests": [
+        "Resource Config Scope SaveVersions ensures versioned resources have the correct check_order",
+        "Resource Config Scope SaveVersions when the versions already exists when a new version is added requests schedule on the jobs that use the resource"
+      ],
+      "scenarios": [
+        "Saving new and existing versions advances their check order",
+        "A new version requests scheduling for a direct consumer"
+      ]
+    },
+    {
+      "id": "existing-versions-are-reordered",
+      "source_file": "atc/db/resource_config_scope.go",
+      "old": "\tif containsNewVersion {\n\t\t// bump the check order of all the versions returned by the check if there",
+      "new": "\tif len(versions) > 0 {\n\t\t// bump the check order of all the versions returned by the check if there",
+      "tests": [
+        "Resource Config Scope SaveVersions when the versions already exists does not change the check order"
+      ],
+      "scenarios": [
+        "Saving only existing versions preserves their check order"
+      ]
+    },
+    {
+      "id": "passed-constraint-consumers-are-scheduled",
+      "source_file": "atc/db/resource_config_scope.go",
+      "old": "\t\t\t\"j.passed_job_id\":            nil,\n",
+      "new": "",
+      "tests": [
+        "Resource Config Scope SaveVersions when the versions already exists when a new version is added does not request schedule on the jobs that use the resource but through passed constraints"
+      ],
+      "scenarios": [
+        "A new version does not schedule a passed-constraint consumer"
+      ]
+    },
+    {
+      "id": "unrelated-jobs-are-scheduled",
+      "source_file": "atc/db/resource_config_scope.go",
+      "old": "\trows, err := psql.Select(\"DISTINCT j.job_id\").\n\t\tFrom(\"job_inputs j\").\n\t\tJoin(\"resources r ON r.id = j.resource_id\").\n\t\tWhere(sq.Eq{\n\t\t\t\"r.resource_config_scope_id\": rcsID,\n\t\t\t\"j.passed_job_id\":            nil,\n\t\t}).\n\t\tOrderBy(\"j.job_id DESC\")",
+      "new": "\trows, err := psql.Select(\"DISTINCT j.id\").\n\t\tFrom(\"jobs j\").\n\t\tLeftJoin(\"job_inputs i ON i.job_id = j.id\").\n\t\tLeftJoin(\"resources r ON r.id = i.resource_id\").\n\t\tWhere(sq.Or{sq.Eq{\"r.resource_config_scope_id\": rcsID}, sq.Eq{\"i.resource_id\": nil}}).\n\t\tWhere(sq.Eq{\"i.passed_job_id\": nil}).\n\t\tOrderBy(\"j.id DESC\")",
+      "tests": [
+        "Resource Config Scope SaveVersions when the versions already exists when a new version is added does not request schedule on the jobs that do not use the resource"
+      ],
+      "scenarios": [
+        "A new version does not schedule an unrelated job"
+      ]
+    },
+    {
+      "id": "empty-version-validation-message-is-changed",
+      "source_file": "atc/db/resource_config_scope.go",
+      "old": "return false, errors.New(\"resource output version is empty. Version must contain at least one key-value pair\")",
+      "new": "return false, errors.New(\"resource output version is invalid\")",
+      "tests": [
+        "Resource Config Scope SaveVersions when a version is empty returns an error"
+      ],
+      "scenarios": [
+        "An empty version returns the production validation error"
+      ]
+    },
+    {
+      "id": "latest-version-uses-oldest-check-order",
+      "source_file": "atc/db/resource_config_scope.go",
+      "old": "\t\tOrderBy(\"v.check_order DESC\").",
+      "new": "\t\tOrderBy(\"v.check_order ASC\").",
+      "tests": [
+        "Resource Config Scope LatestVersion when the resource config exists gets latest version of resource",
+        "Resource Config Scope LatestVersion when the resource config exists disabled versions do not affect fetching the latest version",
+        "Resource Config Scope LatestVersion when the resource config exists saving versioned resources updates the latest versioned resource"
+      ],
+      "scenarios": [
+        "LatestVersion returns the highest check order",
+        "Disabling a version does not change LatestVersion",
+        "Saving new versions updates LatestVersion"
+      ]
+    },
+    {
+      "id": "exact-version-lookup-inverts-the-digest-comparison",
+      "source_file": "atc/db/resource_config_scope.go",
+      "old": "\t\tWhere(sq.Expr(\"v.version_sha256 = encode(digest(?, 'sha256'), 'hex')\", versionByte)).",
+      "new": "\t\tWhere(sq.Expr(\"v.version_sha256 <> encode(digest(?, 'sha256'), 'hex')\", versionByte)).",
+      "tests": [
+        "Resource Config Scope FindVersion when the version exists gets the version of resource",
+        "Resource Config Scope FindVersion when the version does not exist does not get the version of resource"
+      ],
+      "scenarios": [
+        "FindVersion returns an existing exact version",
+        "FindVersion reports a missing exact version"
+      ]
+    },
+    {
+      "id": "check-start-discards-the-build-id",
+      "source_file": "atc/db/resource_config_scope.go",
+      "old": "SET last_check_start_time = now(), last_check_build_id = $1, last_check_build_plan = $2",
+      "new": "SET last_check_start_time = now(), last_check_build_id = $1 + 1, last_check_build_plan = $2",
+      "tests": [
+        "Resource Config Scope UpdateLastCheckStartTime updates last check start time"
+      ],
+      "scenarios": [
+        "Updating check start records time build and public plan"
+      ]
+    },
+    {
+      "id": "check-end-does-not-advance-the-time",
+      "source_file": "atc/db/resource_config_scope.go",
+      "old": "SET last_check_end_time = now(), last_check_succeeded = $1",
+      "new": "SET last_check_end_time = last_check_end_time, last_check_succeeded = $1",
+      "tests": [
+        "Resource Config Scope UpdateLastCheckEndTime updates last check end time"
+      ],
+      "scenarios": [
+        "Updating check end records a later completion time"
+      ]
+    },
+    {
+      "id": "config-change-forgets-the-deprecated-resource",
+      "source_file": "atc/db/resource_config.go",
+      "old": "\t\t\tSet(\"deprecated_from_resource_id\", *uniqueResourceID).",
+      "new": "\t\t\tSet(\"deprecated_from_resource_id\", nil).",
+      "tests": [
+        "Resource Config Scope Scope Deprecation on Config Change soft-deletes old scope when FindOrCreateScope is called with a different config",
+        "Resource Config Scope DeprecatedScopes returns deprecated scopes for a resource after config change",
+        "Resource Config Scope Full History Migration Lifecycle preserves version history across a config change via deprecation + copy"
+      ],
+      "scenarios": [
+        "A config change soft deletes the old scope without losing versions",
+        "DeprecatedScopes returns the old scope after a config change",
+        "A config-change migration preserves complete version history"
+      ]
+    },
+    {
+      "id": "deprecated-scopes-invents-an-empty-result",
+      "source_file": "atc/db/resource.go",
+      "old": "\treturn scopes, nil\n}\n\n// CopyVersionsFromScope copies all resource config versions",
+      "new": "\tif len(scopes) == 0 {\n\t\treturn []DeprecatedScope{{ID: -1}}, nil\n\t}\n\treturn scopes, nil\n}\n\n// CopyVersionsFromScope copies all resource config versions",
+      "tests": [
+        "Resource Config Scope DeprecatedScopes returns empty slice when no deprecated scopes exist"
+      ],
+      "scenarios": [
+        "DeprecatedScopes is empty before a config change"
+      ]
+    },
+    {
+      "id": "version-copy-omits-v2",
+      "source_file": "atc/db/resource_config_scope.go",
+      "old": "\t\tWHERE resource_config_scope_id = $2\n\t\tON CONFLICT (resource_config_scope_id, version_sha256) DO NOTHING",
+      "new": "\t\tWHERE resource_config_scope_id = $2\n\t\tAND version->>'ref' <> 'v2'\n\t\tON CONFLICT (resource_config_scope_id, version_sha256) DO NOTHING",
+      "tests": [
+        "Resource Config Scope CopyVersionsFrom copies versions from a source scope to the target scope",
+        "Resource Config Scope CopyVersionsFrom skips duplicates with ON CONFLICT DO NOTHING"
+      ],
+      "scenarios": [
+        "CopyVersionsFrom copies every source version into an empty target",
+        "CopyVersionsFrom skips a version already present in the target"
+      ]
+    },
+    {
+      "id": "self-copy-reports-a-phantom-version",
+      "source_file": "atc/db/resource_config_scope.go",
+      "old": "func (r *resourceConfigScope) CopyVersionsFrom(sourceScopeID int) (int, error) {\n\tresult, err := r.conn.Exec(`",
+      "new": "func (r *resourceConfigScope) CopyVersionsFrom(sourceScopeID int) (int, error) {\n\tif sourceScopeID == r.id {\n\t\treturn 1, nil\n\t}\n\tresult, err := r.conn.Exec(`",
+      "tests": [
+        "Resource Config Scope CopyVersionsFrom returns 0 when all source versions already exist in target"
+      ],
+      "scenarios": [
+        "CopyVersionsFrom returns zero for a self copy"
+      ]
+    },
+    {
+      "id": "resource-checking-lock-is-released-before-return",
+      "source_file": "atc/db/resource_config_scope.go",
+      "old": "func (r *resourceConfigScope) AcquireResourceCheckingLock(\n\tlogger lager.Logger,\n) (lock.Lock, bool, error) {\n\treturn r.lockFactory.Acquire(\n\t\tlogger,\n\t\tlock.NewResourceConfigCheckingLockID(r.resourceConfig.ID()),\n\t)\n}",
+      "new": "func (r *resourceConfigScope) AcquireResourceCheckingLock(\n\tlogger lager.Logger,\n) (lock.Lock, bool, error) {\n\theld, acquired, err := r.lockFactory.Acquire(\n\t\tlogger,\n\t\tlock.NewResourceConfigCheckingLockID(r.resourceConfig.ID()),\n\t)\n\tif acquired {\n\t\t_ = held.Release()\n\t}\n\treturn held, acquired, err\n}",
+      "tests": [
+        "Resource Config Scope AcquireResourceCheckingLock when there has been a check recently does not get the lock",
+        "Resource Config Scope AcquireResourceCheckingLock when there has been a check recently and the lock gets released gets the lock",
+        "Resource Config Scope AcquireResourceCheckingLock when there has not been a check recently gets and keeps the lock and stops others from periodically getting it"
+      ],
+      "scenarios": [
+        "A held resource-checking lock rejects a contender",
+        "A released resource-checking lock can be reacquired",
+        "A held resource-checking lock blocks periodic contenders until release"
+      ]
+    }
+  ]
+}
