@@ -180,6 +180,22 @@ require (
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
-replace github.com/brine-dev/brine-go => /Users/tdmtrader/brine-private/runners/implementations/go
+// brine-go is not published, so it is reached by replacing the module path with
+// the private repository that actually holds it. This used to be an absolute
+// path on one developer's Mac, which meant the module could only be built there:
+// CI, the devpod and any fresh worktree all failed with "replacement directory
+// /Users/... does not exist", and each needed its own uncommitted go.work to
+// work around it.
+//
+// Go does NOT require a replacement's declared module path to match the path it
+// was fetched from, so no change to brine-private is needed -- it still declares
+// itself as github.com/brine-dev/brine-go. Consumers need
+// GOPRIVATE=github.com/MarkDucommun/* (to skip the public proxy and checksum
+// database, which cannot see private code) and credentials for that repository.
+//
+// The pseudo-version's timestamp must be the commit's real commit date; it
+// cannot be hand-written. Re-pin with:
+//   go get github.com/MarkDucommun/brine-private/runners/implementations/go@<sha>
+replace github.com/brine-dev/brine-go => github.com/MarkDucommun/brine-private/runners/implementations/go v0.0.0-20260823044001-8289e541f77b
 
 replace github.com/concourse/concourse => ../../../..
