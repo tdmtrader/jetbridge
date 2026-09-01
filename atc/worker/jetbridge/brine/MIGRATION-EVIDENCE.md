@@ -1,3 +1,108 @@
+# Strict spec-count migration status (2026-09-01)
+
+The former 2,059 / 6,857 (30.03%) claim is withdrawn. It counted a source
+reference in a feature header as coverage. That is an inventory of intent, not
+evidence that the replacement discriminates the behavior the source test did.
+
+A source leaf test counts as strict Brine coverage only when the first three
+conditions are true, and as fully migrated only when all four are true:
+
+1. a named production mutation was run against the individual source test;
+2. the same mutation made a named Brine scenario fail on the corresponding
+   assertion;
+3. the current Brine path uses no stub, recording sink, injected-fault object,
+   fake implementation, or mock; and
+4. for **fully migrated**, the source test has actually been removed.
+
+A green Brine run proves only that a scenario executes. It does not satisfy
+the first two rules. A mutation that makes some test and some unrelated
+scenario fail is also not evidence.
+
+## Revised result
+
+| quantity | source leaf tests | percentage of 6,857 |
+|---|---:|---:|
+| **fully migrated**: paired failure evidence, no prohibited double, source removed | **41** | **0.60%** |
+| strict paired evidence, but source still present | 15 | 0.22% |
+| **runs in Brine but not the full philosophy**: paired failure evidence, but uses a stub, test sink, injected-fault object, fake, or mock | **112** | **1.63%** |
+| of the preceding exception bucket whose source test was removed | 66 | 0.96% |
+| total source tests with paired per-test failure evidence | 168 | 2.45% |
+| former claimed tests with no admissible paired evidence | 1,891 | 27.58% |
+| Brine scenarios | 1,527 | execution count only |
+
+The requested two headline percentages are therefore **0.60% fully migrated**
+and **1.63% validated but running outside the full philosophy**. The second is
+not another migration percentage: 46 of its 112 source tests still exist. If
+"migrated" is restricted to removed source tests in both buckets, the figures
+are 0.60% strict and 0.96% philosophy-exception.
+
+## Admitted evidence ledger
+
+| cohort | paired source/Brine failures | strict | exception | source removed |
+|---|---:|---:|---:|---:|
+| gc/lidar disposition, excluding scanner and Destroyer | 36 | 36 | 0 | 36 |
+| `artifact_locator_test.go` | 5 | 5 | 0 | 5 |
+| `JobFactory.JobsToSchedule` | 15 | 15 | 0 | 0 |
+| `destroyer_test.go` | 8 | 0 | 8 | 8 |
+| `scanner_test.go` | 14 | 0 | 14 | 14 |
+| durable-storage, volume-DaemonSet, and behavioral-permutation campaign | 44 | 0 | 44 | 44 |
+| daemonset-integration and daemon-client retained cases | 46 | 0 | 46 | 0 |
+| **total** | **168** | **56** | **112** | **107** |
+
+Why the exception rows are exceptions:
+
+- the scanner scenarios use the hand-written `imageRegistry` resolver and
+  scope-deletion wrappers;
+- the Destroyer scenarios construct `lagertest.NewTestLogger`, a test sink;
+- the JetBridge daemon/storage scenarios use one or more of a fake Kubernetes
+  clientset, `httptest` stand-in daemon, or in-process shell executor.
+
+This classification is deliberately conservative. A row is not promoted to
+strict merely because a later refactor made part of its journey real; it needs
+scenario-level proof that the paired path no longer reaches the prohibited
+component.
+
+## What does not count
+
+The other 1,891 tests in the former numerator have source references and green
+scenarios, but no admissible record of the individual old test and its Brine
+replacement failing on the same production defect. This includes all recent
+client/API/domain cross-layer counts, exact-status claims, and the 39 source
+tests named by `pipeline-retention.feature`; that feature explicitly records
+that its Ginkgo half was never run.
+
+The starting 300-odd Brine scenarios are not all in that numerator merely
+because they were mutation-tested. They were tested for scenario
+falsifiability, and the source suites were subjected to deletion batteries,
+but the early batteries sometimes paired a red source suite with an unrelated
+red Brine scenario. The later 102-mutation JetBridge campaign corrected that
+protocol and explicitly records per-test attribution for 95 source tests; those
+95 are admitted above. The remainder of the original scenario set has no
+equivalent corrected per-source-test result and therefore does not count here.
+
+No migrated suite has been shown to require these crutches. The fake
+Kubernetes paths can use envtest or a real cluster, the hand-written resolver
+can use a real OCI registry, the test logger can use an ordinary production
+logger, and the stand-in daemon can be replaced by the daemon process. Tests
+whose only assertion is a call record or a no-op/absence with no observable
+outcome are different: they should stay as Go unit tests and are not migration
+candidates.
+
+## Execution verification (not equivalence evidence)
+
+- `brine check`: 1,527/1,527 valid.
+- `brine run --mode sync`: 80 features, 1,527/1,527 passed, terminal
+  `run_end`, run `01M1D36GHSK0Z4MADV1GA9RJWD`.
+- adapter build and `go test ./steps`: passed.
+- `go test ./go-concourse/concourse`: passed.
+- `git diff --check`: passed.
+
+The sections below preserve the earlier line-deletion and mutation-testing
+analysis. Their older scenario totals are historical; where an older section
+uses a looser definition, this strict status takes precedence.
+
+---
+
 # What the Go suites still cover, and how that was measured
 
 Final state 2026-08-29. brine 375/375, `go test` 184, ginkgo 19/19.
