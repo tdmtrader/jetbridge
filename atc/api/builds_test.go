@@ -638,58 +638,6 @@ var _ = Describe("Builds API", func() {
 				})
 
 				Context("when creating a started build succeeds", func() {
-					It("returns 201 Created", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusCreated))
-					})
-
-					It("returns Content-Type 'application/json'", func() {
-						expectedHeaderEntries := map[string]string{
-							"Content-Type": "application/json",
-						}
-						Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-					})
-
-					It("creates a started build", func() {
-						var actual atc.Build
-						Expect(json.NewDecoder(response.Body).Decode(&actual)).To(Succeed())
-
-						persisted, found, err := database.Deps.buildFactory.Build(actual.ID)
-						Expect(err).NotTo(HaveOccurred())
-						Expect(found).To(BeTrue())
-						Expect(persisted.ID()).To(Equal(actual.ID))
-						Expect(persisted.TeamID()).To(Equal(team.ID()))
-						Expect(persisted.TeamName()).To(Equal(team.Name()))
-						Expect(persisted.Status()).To(Equal(db.BuildStatusStarted))
-						Expect(persisted.IsRunning()).To(BeTrue())
-						Expect(persisted.StartTime()).NotTo(BeZero())
-						Expect(persisted.Schema()).To(Equal("exec.v2"))
-						Expect(persisted.PrivatePlan()).To(Equal(plan))
-						Expect(persisted.PublicPlan()).To(Equal(plan.Public()))
-						Expect(buildsAPIRequireTeamBuilds(team)).To(HaveLen(buildCount + 1))
-					})
-
-					It("returns the created build", func() {
-						body, err := io.ReadAll(response.Body)
-						Expect(err).NotTo(HaveOccurred())
-
-						var actual atc.Build
-						Expect(json.Unmarshal(body, &actual)).To(Succeed())
-
-						persisted, found, err := deps.buildFactory.BuildForAPI(actual.ID)
-						Expect(err).NotTo(HaveOccurred())
-						Expect(found).To(BeTrue())
-						expected, err := json.Marshal(atc.Build{
-							ID:        persisted.ID(),
-							Name:      persisted.Name(),
-							TeamName:  persisted.TeamName(),
-							Status:    atc.StatusStarted,
-							APIURL:    fmt.Sprintf("/api/v1/builds/%d", persisted.ID()),
-							StartTime: persisted.StartTime().Unix(),
-						})
-						Expect(err).NotTo(HaveOccurred())
-						Expect(body).To(MatchJSON(expected))
-					})
-
 				})
 			})
 		})
@@ -916,10 +864,6 @@ var _ = Describe("Builds API", func() {
 			})
 
 			Context("when getting the builds succeeds", func() {
-				It("returns 200 OK", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
-				})
-
 				It("returns Content-Type 'application/json'", func() {
 					expectedHeaderEntries := map[string]string{
 						"Content-Type": "application/json",
@@ -1014,10 +958,6 @@ var _ = Describe("Builds API", func() {
 			})
 
 			Context("when getting the builds succeeds", func() {
-				It("returns 200 OK", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
-				})
-
 				It("returns Content-Type 'application/json'", func() {
 					expectedHeaderEntries := map[string]string{
 						"Content-Type": "application/json",
@@ -1252,21 +1192,6 @@ var _ = Describe("Builds API", func() {
 							Expect(response.StatusCode).To(Equal(http.StatusOK))
 						})
 
-						It("returns Content-Type 'application/json'", func() {
-							expectedHeaderEntries := map[string]string{
-								"Content-Type": "application/json",
-							}
-							Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-						})
-
-						It("returns the build with the given build_id", func() {
-							Expect(factoryState.buildForAPICalls()).To(Equal([]int{persistedBuild.ID()}))
-							actual := buildsAPIExpectBuildResponse(response, persistedBuild)
-							Expect(actual.ID).To(Equal(persistedBuild.ID()))
-							Expect(actual.PipelineID).To(Equal(pipeline.ID()))
-							Expect(actual.StartTime).To(Equal(persistedBuild.StartTime().Unix()))
-							Expect(actual.EndTime).To(Equal(persistedBuild.EndTime().Unix()))
-						})
 					})
 				})
 			})
@@ -1809,7 +1734,6 @@ var _ = Describe("Builds API", func() {
 			buildState       *buildsAPIBuildState
 
 			persistedBuild db.BuildForAPI
-			initialStatus  db.BuildStatus
 			missingBuildID int
 			requestBuildID string
 
@@ -1838,7 +1762,6 @@ var _ = Describe("Builds API", func() {
 			Expect(persistedBuild.PipelineID()).To(BeZero())
 			Expect(persistedBuild.Status()).To(Equal(db.BuildStatusStarted))
 			Expect(buildsAPIRequireBuild(realBuildFactory, persistedBuild.ID()).IsAborted()).To(BeFalse())
-			initialStatus = persistedBuild.Status()
 
 			missingBuildID = persistedBuild.ID() + 1_000_000
 			_, found, err := realBuildFactory.BuildForAPI(missingBuildID)
@@ -1944,12 +1867,6 @@ var _ = Describe("Builds API", func() {
 					})
 
 					Context("when aborting succeeds", func() {
-						It("returns 204", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusNoContent))
-							reloaded := buildsAPIRequireBuild(realBuildFactory, persistedBuild.ID())
-							Expect(reloaded.IsAborted()).To(BeTrue())
-							Expect(reloaded.Status()).To(Equal(initialStatus))
-						})
 					})
 				})
 			})

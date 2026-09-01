@@ -1,0 +1,91 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/build-client-api-strict.json",
+  "git_head": "aef6c0fe7de7d42a59ef137289956b20cf7a7568",
+  "completed_at": "2026-09-01T12:57:51Z",
+  "source_tests": 9,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "create-api-returns-created",
+      "mutation_sha256": "b9c6708ff103ca45fd6e9004db442185a90fc6bde54450af39050ac45da8b1ff",
+      "failed_source_tests": [
+        "Builds API POST /api/v1/builds when authenticated when authorized when creating a started build succeeds returns 201 Created"
+      ],
+      "failed_brine_scenarios": [
+        "The create-build API returns Created for a real started build"
+      ]
+    },
+    {
+      "id": "create-api-returns-json-content-type",
+      "mutation_sha256": "e729e023fb6b36526d38331e87163d74583f4feee6b97014834e88cb511df366",
+      "failed_source_tests": [
+        "Builds API POST /api/v1/builds when authenticated when authorized when creating a started build succeeds returns Content-Type 'application/json'"
+      ],
+      "failed_brine_scenarios": [
+        "The create-build API returns the production JSON content type"
+      ]
+    },
+    {
+      "id": "create-api-persists-exact-started-plan",
+      "mutation_sha256": "63173a4804221bbf1ec421dfc577eb2a5089282986a8799b2eca7d7f69982437",
+      "failed_source_tests": [
+        "Builds API POST /api/v1/builds when authenticated when authorized when creating a started build succeeds creates a started build"
+      ],
+      "failed_brine_scenarios": [
+        "The create-build API persists the exact plan and started state"
+      ]
+    },
+    {
+      "id": "create-api-presents-persisted-build",
+      "mutation_sha256": "5285d544a7643ca3f84430471770d8e6739c35213259db0245dbc84693409f98",
+      "failed_source_tests": [
+        "Builds API POST /api/v1/builds when authenticated when authorized when creating a started build succeeds returns the created build"
+      ],
+      "failed_brine_scenarios": [
+        "The create-build API returns the exact persisted build body"
+      ]
+    },
+    {
+      "id": "global-list-api-returns-ok",
+      "mutation_sha256": "d912d253c9a53a197bd2e94ce7f2129acd9a197e1ac048058f294a8cf5da10e1",
+      "failed_source_tests": [
+        "Builds API GET /api/v1/builds when authenticated when getting the builds succeeds returns 200 OK",
+        "Builds API GET /api/v1/builds when not authenticated when getting the builds succeeds returns 200 OK"
+      ],
+      "failed_brine_scenarios": [
+        "The authenticated global-build API returns OK for visible persisted builds",
+        "The global-build API returns OK for visible persisted builds"
+      ]
+    },
+    {
+      "id": "exact-build-api-returns-json-content-type",
+      "mutation_sha256": "dfda43650671a43e218139701d5eebc37aa14ec5c15d27d92f5cd8671571a3c1",
+      "failed_source_tests": [
+        "Builds API GET /api/v1/builds/:build_id when parsing the build_id succeeds when the build can be found when authenticated when user is authorized returns Content-Type 'application/json'"
+      ],
+      "failed_brine_scenarios": [
+        "The exact-build API returns the production JSON content type"
+      ]
+    },
+    {
+      "id": "exact-build-api-presents-build",
+      "mutation_sha256": "a7119e7fbd685dfb4d54d4def720355da91202a6a2976e51fd90a7aa6625f956",
+      "failed_source_tests": [
+        "Builds API GET /api/v1/builds/:build_id when parsing the build_id succeeds when the build can be found when authenticated when user is authorized returns the build with the given build_id"
+      ],
+      "failed_brine_scenarios": [
+        "The exact-build API returns the exact persisted build body"
+      ]
+    },
+    {
+      "id": "abort-api-returns-no-content",
+      "mutation_sha256": "a16660339576d7faffdfc89d7e3d26299fac2ecd45299e91bb5a014273bd6ed0",
+      "failed_source_tests": [
+        "Builds API PUT /api/v1/builds/:build_id/abort when authenticated when the build is found when authorized when aborting succeeds returns 204"
+      ],
+      "failed_brine_scenarios": [
+        "The abort-build API persists abort and returns No Content"
+      ]
+    }
+  ]
+}

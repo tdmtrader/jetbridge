@@ -1,0 +1,88 @@
+{
+  "name": "build-client-strict",
+  "test_package": "./go-concourse/concourse",
+  "source_test_file": "go-concourse/concourse/builds_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/build-client-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/build_client_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "create-one-off-returns-decoded-build",
+      "source_file": "go-concourse/concourse/builds.go",
+      "old": "\treturn build, err\n}\n\nfunc (team *team) CreateJobBuild",
+      "new": "\treturn atc.Build{}, err\n}\n\nfunc (team *team) CreateJobBuild",
+      "tests": ["ATC Handler Builds CreateBuild takes a plan and creates the build"],
+      "scenarios": ["CreateBuild sends the exact plan and decodes the persisted started build"]
+    },
+    {
+      "id": "create-job-returns-decoded-build",
+      "source_file": "go-concourse/concourse/builds.go",
+      "old": "\treturn build, err\n}\n\nfunc (team *team) RerunJobBuild",
+      "new": "\treturn atc.Build{}, err\n}\n\nfunc (team *team) RerunJobBuild",
+      "tests": ["ATC Handler Builds CreateJobBuild takes a pipeline and a job and creates the build"],
+      "scenarios": ["CreateJobBuild sends the instanced pipeline query and decodes the pending build"]
+    },
+    {
+      "id": "job-build-existing-returns-decoded-build",
+      "source_file": "go-concourse/concourse/builds.go",
+      "old": "\tswitch err.(type) {\n\tcase nil:\n\t\treturn build, true, nil\n\tcase internal.ResourceNotFoundError:\n\t\treturn build, false, nil\n\tdefault:\n\t\treturn build, false, err\n\t}\n}\n\nfunc (client *client) Build(buildID string)",
+      "new": "\tswitch err.(type) {\n\tcase nil:\n\t\treturn atc.Build{}, true, nil\n\tcase internal.ResourceNotFoundError:\n\t\treturn build, false, nil\n\tdefault:\n\t\treturn build, false, err\n\t}\n}\n\nfunc (client *client) Build(buildID string)",
+      "tests": ["ATC Handler Builds JobBuild when build exists returns the given build"],
+      "scenarios": ["JobBuild decodes the exact persisted job build"]
+    },
+    {
+      "id": "global-build-existing-returns-decoded-build",
+      "source_file": "go-concourse/concourse/builds.go",
+      "old": "\tswitch err.(type) {\n\tcase nil:\n\t\treturn build, true, nil\n\tcase internal.ResourceNotFoundError:\n\t\treturn build, false, nil\n\tdefault:\n\t\treturn build, false, err\n\t}\n}\n\nfunc (client *client) Builds",
+      "new": "\tswitch err.(type) {\n\tcase nil:\n\t\treturn atc.Build{}, true, nil\n\tcase internal.ResourceNotFoundError:\n\t\treturn build, false, nil\n\tdefault:\n\t\treturn build, false, err\n\t}\n}\n\nfunc (client *client) Builds",
+      "tests": ["ATC Handler Builds Build when build exists returns the given build"],
+      "scenarios": ["Build decodes the exact persisted global build"]
+    },
+    {
+      "id": "page-encodes-all-supported-cursors",
+      "source_file": "go-concourse/concourse/pagination.go",
+      "old": "func (p Page) QueryParams() url.Values {\n\tqueryParams := url.Values{}\n\tif p.From > 0 {\n\t\tqueryParams.Add(\"from\", strconv.Itoa(p.From))\n\t}\n\n\tif p.To > 0 {\n\t\tqueryParams.Add(\"to\", strconv.Itoa(p.To))\n\t}\n\n\tif p.Limit > 0 {\n\t\tqueryParams.Add(\"limit\", strconv.Itoa(p.Limit))\n\t}\n\n\tif p.Timestamps {\n\t\tqueryParams.Add(\"timestamps\", \"true\")\n\t}\n\n\treturn queryParams\n}",
+      "new": "func (p Page) QueryParams() url.Values {\n\treturn url.Values{}\n}",
+      "tests": [
+        "ATC Handler Builds client.Builds when from is specified calls to get all builds from that id",
+        "ATC Handler Builds team.Builds when from is specified calls to get all builds from that id",
+        "ATC Handler Builds client.Builds when from and limit is specified appends limit to the url",
+        "ATC Handler Builds team.Builds when from and limit is specified appends limit to the url",
+        "ATC Handler Builds client.Builds when to is specified calls to get all builds to that id",
+        "ATC Handler Builds team.Builds when to is specified calls to get all builds to that id",
+        "ATC Handler Builds client.Builds when to and limit is specified appends limit to the url",
+        "ATC Handler Builds team.Builds when to and limit is specified appends limit to the url",
+        "ATC Handler Builds client.Builds when from and to are both specified sends both the from and the to",
+        "ATC Handler Builds team.Builds when from and to are both specified sends both the from and the to"
+      ],
+      "scenarios": [
+        "Global Builds applies the from cursor to real persisted rows",
+        "Team Builds applies the from cursor to real persisted rows",
+        "Global Builds applies the from cursor and limit to real persisted rows",
+        "Team Builds applies the from cursor and limit to real persisted rows",
+        "Global Builds applies the to cursor to real persisted rows",
+        "Team Builds applies the to cursor to real persisted rows",
+        "Global Builds applies the to cursor and limit to real persisted rows",
+        "Team Builds applies the to cursor and limit to real persisted rows",
+        "Global Builds applies both cursor bounds to real persisted rows",
+        "Team Builds applies both cursor bounds to real persisted rows"
+      ]
+    },
+    {
+      "id": "empty-link-header-yields-nil-pagination",
+      "source_file": "go-concourse/concourse/pagination.go",
+      "old": "\treturn pagination, nil\n}\n\ntype Page struct",
+      "new": "\tif pagination.Next == nil && pagination.Previous == nil { pagination.Next = &Page{To: 1} }\n\treturn pagination, nil\n}\n\ntype Page struct",
+      "tests": [
+        "ATC Handler Builds client.Builds without a link header returns pagination data with nil pages",
+        "ATC Handler Builds team.Builds without a link header returns pagination data with nil pages"
+      ],
+      "scenarios": [
+        "Global Builds returns nil pagination when production emits no Link header",
+        "Team Builds returns nil pagination when production emits no Link header"
+      ]
+    }
+  ]
+}

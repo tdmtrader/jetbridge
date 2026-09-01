@@ -54,24 +54,15 @@ var _ = Describe("ATC Handler Builds", func() {
 			)
 		})
 
-		It("takes a plan and creates the build", func() {
-			build, err := team.CreateBuild(plan)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(build).To(Equal(expectedBuild))
-		})
 	})
 
 	Describe("CreateJobBuild", func() {
 		var (
-			pipelineRef   atc.PipelineRef
 			queryParams   string
-			jobName       string
 			expectedBuild atc.Build
 		)
 		BeforeEach(func() {
 			queryParams = "vars.branch=%22master%22"
-			pipelineRef = atc.PipelineRef{Name: "mypipeline", InstanceVars: atc.InstanceVars{"branch": "master"}}
-			jobName = "myjob"
 
 			expectedBuild = atc.Build{
 				ID:      123,
@@ -90,11 +81,6 @@ var _ = Describe("ATC Handler Builds", func() {
 			)
 		})
 
-		It("takes a pipeline and a job and creates the build", func() {
-			build, err := team.CreateJobBuild(pipelineRef, jobName)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(build).To(Equal(expectedBuild))
-		})
 	})
 
 	Describe("RerunJobBuild", func() {
@@ -168,12 +154,6 @@ var _ = Describe("ATC Handler Builds", func() {
 				)
 			})
 
-			It("returns the given build", func() {
-				build, found, err := team.JobBuild(pipelineRef, "myjob", "mybuild")
-				Expect(err).NotTo(HaveOccurred())
-				Expect(found).To(BeTrue())
-				Expect(build).To(Equal(expectedBuild))
-			})
 		})
 
 		Context("when build does not exist", func() {
@@ -214,12 +194,6 @@ var _ = Describe("ATC Handler Builds", func() {
 				)
 			})
 
-			It("returns the given build", func() {
-				build, found, err := client.Build("123")
-				Expect(err).NotTo(HaveOccurred())
-				Expect(found).To(BeTrue())
-				Expect(build).To(Equal(expectedBuild))
-			})
 		})
 
 		Context("when build does not exists", func() {
@@ -306,10 +280,6 @@ var _ = Describe("ATC Handler Builds", func() {
 				)
 			})
 
-			It("calls to get all builds from that id", func() {
-				Expect(clientErr).NotTo(HaveOccurred())
-				Expect(builds).To(Equal(expectedBuilds))
-			})
 		})
 
 		Context("when from and limit is specified", func() {
@@ -324,10 +294,6 @@ var _ = Describe("ATC Handler Builds", func() {
 				)
 			})
 
-			It("appends limit to the url", func() {
-				Expect(clientErr).NotTo(HaveOccurred())
-				Expect(builds).To(Equal(expectedBuilds))
-			})
 		})
 
 		Context("when to is specified", func() {
@@ -342,10 +308,6 @@ var _ = Describe("ATC Handler Builds", func() {
 				)
 			})
 
-			It("calls to get all builds to that id", func() {
-				Expect(clientErr).NotTo(HaveOccurred())
-				Expect(builds).To(Equal(expectedBuilds))
-			})
 		})
 
 		Context("when to and limit is specified", func() {
@@ -360,10 +322,6 @@ var _ = Describe("ATC Handler Builds", func() {
 				)
 			})
 
-			It("appends limit to the url", func() {
-				Expect(clientErr).NotTo(HaveOccurred())
-				Expect(builds).To(Equal(expectedBuilds))
-			})
 		})
 
 		Context("when from and to are both specified", func() {
@@ -378,10 +336,6 @@ var _ = Describe("ATC Handler Builds", func() {
 				)
 			})
 
-			It("sends both the from and the to", func() {
-				Expect(clientErr).NotTo(HaveOccurred())
-				Expect(builds).To(Equal(expectedBuilds))
-			})
 		})
 
 		Context("when the server returns an error", func() {
@@ -437,11 +391,6 @@ var _ = Describe("ATC Handler Builds", func() {
 				)
 			})
 
-			It("returns pagination data with nil pages", func() {
-				Expect(clientErr).ToNot(HaveOccurred())
-				Expect(pagination.Previous).To(BeNil())
-				Expect(pagination.Next).To(BeNil())
-			})
 		})
 	})
 
@@ -533,10 +482,6 @@ var _ = Describe("ATC Handler Builds", func() {
 				)
 			})
 
-			It("calls to get all builds from that id", func() {
-				Expect(teamErr).NotTo(HaveOccurred())
-				Expect(builds).To(Equal(expectedBuilds))
-			})
 		})
 
 		Context("when from and limit is specified", func() {
@@ -551,10 +496,6 @@ var _ = Describe("ATC Handler Builds", func() {
 				)
 			})
 
-			It("appends limit to the url", func() {
-				Expect(teamErr).NotTo(HaveOccurred())
-				Expect(builds).To(Equal(expectedBuilds))
-			})
 		})
 
 		Context("when to is specified", func() {
@@ -569,10 +510,6 @@ var _ = Describe("ATC Handler Builds", func() {
 				)
 			})
 
-			It("calls to get all builds to that id", func() {
-				Expect(teamErr).NotTo(HaveOccurred())
-				Expect(builds).To(Equal(expectedBuilds))
-			})
 		})
 
 		Context("when to and limit is specified", func() {
@@ -587,10 +524,6 @@ var _ = Describe("ATC Handler Builds", func() {
 				)
 			})
 
-			It("appends limit to the url", func() {
-				Expect(teamErr).NotTo(HaveOccurred())
-				Expect(builds).To(Equal(expectedBuilds))
-			})
 		})
 
 		Context("when from and to are both specified", func() {
@@ -605,10 +538,6 @@ var _ = Describe("ATC Handler Builds", func() {
 				)
 			})
 
-			It("sends both the from and the to", func() {
-				Expect(teamErr).NotTo(HaveOccurred())
-				Expect(builds).To(Equal(expectedBuilds))
-			})
 		})
 
 		Context("when the server returns an error", func() {
@@ -660,11 +589,6 @@ var _ = Describe("ATC Handler Builds", func() {
 				)
 			})
 
-			It("returns pagination data with nil pages", func() {
-				Expect(teamErr).ToNot(HaveOccurred())
-				Expect(pagination.Previous).To(BeNil())
-				Expect(pagination.Next).To(BeNil())
-			})
 		})
 	})
 })

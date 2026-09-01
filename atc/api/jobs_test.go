@@ -1454,76 +1454,6 @@ var _ = Describe("Jobs API", func() {
 			fakeAccess.UserInfoReturns(atc.UserInfo{DisplayUserId: "api-user"})
 		})
 
-		It("persists exactly one pending build and schedules a real check from the persisted pin", func() {
-			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, manualConfig(false))
-			pinnedVersion := atc.Version{"ref": "pinned"}
-			fixture.Scenario.Run(fixture.Builder.WithResourceVersions("some-input", pinnedVersion))
-
-			resource := fixture.Scenario.Resource("some-input")
-			pinned, err := resource.PinVersion(fixture.Scenario.ResourceVersion("some-input", pinnedVersion).ID())
-			Expect(err).NotTo(HaveOccurred())
-			Expect(pinned).To(BeTrue())
-			found, err := resource.Reload()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-			Expect(resource.CurrentPinnedVersion()).To(Equal(pinnedVersion))
-
-			var checksBefore int
-			Expect(fixture.Real.Conn.QueryRow(
-				`SELECT count(*) FROM builds WHERE resource_id = $1`, resource.ID(),
-			).Scan(&checksBefore)).To(Succeed())
-
-			recorder := &recordingJobsCheckFactory{CheckFactory: fixture.Real.Deps.checkFactory}
-			fixture.Real.Deps.checkFactory = recorder
-			server = fixture.Serve()
-			response := jobsAPIPost(server, path)
-			Expect(response.StatusCode).To(Equal(http.StatusOK))
-			Expect(response).To(IncludeHeaderEntries(map[string]string{"Content-Type": "application/json"}))
-
-			actual := decodeJobsAPIResponse[atc.Build](response)
-			job := fixture.Job("some-job")
-			persisted, found, err := job.Build(actual.Name)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-			expectJobsAPIBuild(actual, persisted)
-			Expect(actual.ID).To(BeNumerically(">", 0))
-			Expect(actual.Name).NotTo(BeEmpty())
-			Expect(actual.PipelineName).To(Equal("some-pipeline"))
-			Expect(actual.TeamName).To(Equal("some-team"))
-			Expect(actual.CreatedBy).NotTo(BeNil())
-			Expect(*actual.CreatedBy).To(Equal("api-user"))
-			Expect(actual.Status).To(Equal(atc.StatusPending))
-			Expect(actual.StartTime).To(BeZero())
-			Expect(actual.EndTime).To(BeZero())
-
-			var jobBuilds int
-			Expect(fixture.Real.Conn.QueryRow(
-				`SELECT count(*) FROM builds WHERE job_id = $1`, job.ID(),
-			).Scan(&jobBuilds)).To(Succeed())
-			Expect(jobBuilds).To(Equal(1))
-
-			calls := recorder.Calls()
-			Expect(calls).To(HaveLen(1))
-			call := calls[0]
-			Expect(call.checkable.(db.Resource).ID()).To(Equal(resource.ID()))
-			Expect(call.resourceTypes).To(HaveLen(1))
-			Expect(call.resourceTypes[0].Name()).To(Equal("some-type"))
-			Expect(call.from).To(Equal(pinnedVersion))
-			Expect(call.manuallyTriggered).To(BeTrue())
-			Expect(call.skipIntervalRecursively).To(BeTrue())
-			Expect(call.toDB).To(BeTrue())
-			Expect(call.build).NotTo(BeNil())
-			Expect(call.created).To(BeTrue())
-			Expect(call.err).NotTo(HaveOccurred())
-
-			var checksAfter int
-			Expect(fixture.Real.Conn.QueryRow(
-				`SELECT count(*) FROM builds WHERE resource_id = $1`, resource.ID(),
-			).Scan(&checksAfter)).To(Succeed())
-			Expect(checksAfter).To(Equal(checksBefore + 1))
-			Expect(call.build.ID()).To(BeNumerically(">", 0))
-		})
-
 		It("returns 500 when the real job create fails on its closed connection", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, manualConfig(false))
 			doomed := fixture.doomedJob("some-job")
@@ -1817,16 +1747,6 @@ var _ = Describe("Jobs API", func() {
 		})
 
 		Context("when authorized", func() {
-			It("returns the exact persisted build named in the request", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusOK))
-				Expect(response.Header.Get("Content-Type")).To(Equal("application/json"))
-				actual := decodeJobsAPIResponse[atc.Build](response)
-				expectJobsAPIBuild(actual, persisted)
-				Expect(actual.Name).To(Equal(buildName))
-				Expect(actual.PipelineName).To(Equal("some-pipeline"))
-				Expect(actual.EndTime).NotTo(BeZero())
-			})
-
 			Context("when the build is naturally absent", func() {
 				BeforeEach(func() {
 					setup = func(fixture *jobsAPIFixture) {
@@ -1835,9 +1755,6 @@ var _ = Describe("Jobs API", func() {
 					}
 				})
 
-				It("returns 404", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-				})
 			})
 
 			Context("when querying the real job for the build fails", func() {
@@ -1921,11 +1838,6 @@ var _ = Describe("Jobs API", func() {
 					expose = true
 				})
 
-				It("returns the requested persisted build", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
-					actual := decodeJobsAPIResponse[atc.Build](response)
-					expectJobsAPIBuild(actual, persisted)
-				})
 			})
 		})
 	})

@@ -1,0 +1,82 @@
+{
+  "name": "build-client-api-strict",
+  "test_package": "./atc/api",
+  "source_test_file": "atc/api/builds_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/build-client-api-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/build_client_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "create-api-returns-created",
+      "source_file": "atc/api/buildserver/create.go",
+      "old": "\t\tw.WriteHeader(http.StatusCreated)\n\n\t\terr = json.NewEncoder(w).Encode",
+      "new": "\t\tw.WriteHeader(http.StatusOK)\n\n\t\terr = json.NewEncoder(w).Encode",
+      "tests": ["Builds API POST /api/v1/builds when authenticated when authorized when creating a started build succeeds returns 201 Created"],
+      "scenarios": ["The create-build API returns Created for a real started build"]
+    },
+    {
+      "id": "create-api-returns-json-content-type",
+      "source_file": "atc/api/buildserver/create.go",
+      "old": "\t\tw.Header().Set(\"Content-Type\", \"application/json\")\n\t\tw.WriteHeader(http.StatusCreated)",
+      "new": "\t\tw.WriteHeader(http.StatusCreated)",
+      "tests": ["Builds API POST /api/v1/builds when authenticated when authorized when creating a started build succeeds returns Content-Type 'application/json'"],
+      "scenarios": ["The create-build API returns the production JSON content type"]
+    },
+    {
+      "id": "create-api-persists-exact-started-plan",
+      "source_file": "atc/api/buildserver/create.go",
+      "old": "\t\tbuild, err := team.CreateStartedBuild(plan)",
+      "new": "\t\tbuild, err := team.CreateStartedBuild(atc.Plan{ID: plan.ID})",
+      "tests": ["Builds API POST /api/v1/builds when authenticated when authorized when creating a started build succeeds creates a started build"],
+      "scenarios": ["The create-build API persists the exact plan and started state"]
+    },
+    {
+      "id": "create-api-presents-persisted-build",
+      "source_file": "atc/api/buildserver/create.go",
+      "old": "\t\terr = json.NewEncoder(w).Encode(present.Build(build, nil, nil))",
+      "new": "\t\tpresented := present.Build(build, nil, nil)\n\t\tpresented.APIURL = \"\"\n\t\terr = json.NewEncoder(w).Encode(presented)",
+      "tests": ["Builds API POST /api/v1/builds when authenticated when authorized when creating a started build succeeds returns the created build"],
+      "scenarios": ["The create-build API returns the exact persisted build body"]
+    },
+    {
+      "id": "global-list-api-returns-ok",
+      "source_file": "atc/api/buildserver/list.go",
+      "old": "\tw.WriteHeader(http.StatusOK)\n\n\tatc := make([]atc.Build, len(builds))",
+      "new": "\tw.WriteHeader(http.StatusCreated)\n\n\tatc := make([]atc.Build, len(builds))",
+      "tests": [
+        "Builds API GET /api/v1/builds when not authenticated when getting the builds succeeds returns 200 OK",
+        "Builds API GET /api/v1/builds when authenticated when getting the builds succeeds returns 200 OK"
+      ],
+      "scenarios": [
+        "The global-build API returns OK for visible persisted builds",
+        "The authenticated global-build API returns OK for visible persisted builds"
+      ]
+    },
+    {
+      "id": "exact-build-api-returns-json-content-type",
+      "source_file": "atc/api/buildserver/get.go",
+      "old": "\t\tw.Header().Set(\"Content-Type\", \"application/json\")\n\t\tw.WriteHeader(http.StatusOK)",
+      "new": "\t\tw.WriteHeader(http.StatusOK)",
+      "tests": ["Builds API GET /api/v1/builds/:build_id when parsing the build_id succeeds when the build can be found when authenticated when user is authorized returns Content-Type 'application/json'"],
+      "scenarios": ["The exact-build API returns the production JSON content type"]
+    },
+    {
+      "id": "exact-build-api-presents-build",
+      "source_file": "atc/api/buildserver/get.go",
+      "old": "\t\terr := json.NewEncoder(w).Encode(present.Build(build, job, access))",
+      "new": "\t\terr := json.NewEncoder(w).Encode(map[string]any{\"build\": present.Build(build, job, access)})",
+      "tests": ["Builds API GET /api/v1/builds/:build_id when parsing the build_id succeeds when the build can be found when authenticated when user is authorized returns the build with the given build_id"],
+      "scenarios": ["The exact-build API returns the exact persisted build body"]
+    },
+    {
+      "id": "abort-api-returns-no-content",
+      "source_file": "atc/api/buildserver/abort.go",
+      "old": "\t\tw.WriteHeader(http.StatusNoContent)",
+      "new": "\t\tw.WriteHeader(http.StatusOK)",
+      "tests": ["Builds API PUT /api/v1/builds/:build_id/abort when authenticated when the build is found when authorized when aborting succeeds returns 204"],
+      "scenarios": ["The abort-build API persists abort and returns No Content"]
+    }
+  ]
+}

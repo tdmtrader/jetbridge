@@ -1,0 +1,41 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/build-client-job-api-strict.json",
+  "git_head": "aef6c0fe7de7d42a59ef137289956b20cf7a7568",
+  "completed_at": "2026-09-01T13:01:15Z",
+  "source_tests": 4,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "manual-job-build-uses-pinned-version",
+      "mutation_sha256": "44088f1dbc80deb34439272bfb4341a934b728b7cf8bf885965a1c6a33cab279",
+      "failed_source_tests": [
+        "Jobs API POST /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/builds persists exactly one pending build and schedules a real check from the persisted pin"
+      ],
+      "failed_brine_scenarios": [
+        "The manual-job API persists one pending build and schedules a real pinned check"
+      ]
+    },
+    {
+      "id": "exact-job-build-api-serializes-json-presentation",
+      "mutation_sha256": "143423e71bbfd3723a8b6eeebe1c8b3f4a495f1d735c64c2bf57914f09eb42cf",
+      "failed_source_tests": [
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/builds/:build_name when authorized returns the exact persisted build named in the request",
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/builds/:build_name when not authorized and the pipeline is public returns the requested persisted build"
+      ],
+      "failed_brine_scenarios": [
+        "The authorized exact-job-build API returns JSON content type and the exact persisted build",
+        "The public exact-job-build API returns the exact persisted build to an authenticated outsider"
+      ]
+    },
+    {
+      "id": "missing-job-build-api-returns-not-found",
+      "mutation_sha256": "bdbec19f38fbccd2a20669608ead96abd325d594a79323a7466f9b48d352a994",
+      "failed_source_tests": [
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/builds/:build_name when authorized when the build is naturally absent returns 404"
+      ],
+      "failed_brine_scenarios": [
+        "The exact-job-build API returns Not Found for a naturally absent build"
+      ]
+    }
+  ]
+}

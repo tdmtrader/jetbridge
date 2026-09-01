@@ -1,0 +1,89 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/build-client-strict.json",
+  "git_head": "aef6c0fe7de7d42a59ef137289956b20cf7a7568",
+  "completed_at": "2026-09-01T12:55:58Z",
+  "source_tests": 16,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "create-one-off-returns-decoded-build",
+      "mutation_sha256": "2842eff9a4ef30808e392187ffff1fa290231cecffd048f99b805cfe4c461817",
+      "failed_source_tests": [
+        "ATC Handler Builds CreateBuild takes a plan and creates the build"
+      ],
+      "failed_brine_scenarios": [
+        "CreateBuild sends the exact plan and decodes the persisted started build"
+      ]
+    },
+    {
+      "id": "create-job-returns-decoded-build",
+      "mutation_sha256": "f6f2072a42dfbc76b53210098a181bf5d515a3ce30d6aa7c72d2d1757b780b48",
+      "failed_source_tests": [
+        "ATC Handler Builds CreateJobBuild takes a pipeline and a job and creates the build"
+      ],
+      "failed_brine_scenarios": [
+        "CreateJobBuild sends the instanced pipeline query and decodes the pending build"
+      ]
+    },
+    {
+      "id": "job-build-existing-returns-decoded-build",
+      "mutation_sha256": "131fcdfe6f6c0b1362f871efefda35bb0a7916f26d377e90611b60d984460fc6",
+      "failed_source_tests": [
+        "ATC Handler Builds JobBuild when build exists returns the given build"
+      ],
+      "failed_brine_scenarios": [
+        "JobBuild decodes the exact persisted job build"
+      ]
+    },
+    {
+      "id": "global-build-existing-returns-decoded-build",
+      "mutation_sha256": "2e128a7ef20d9fe1bc105831aec1a13d222e8856fe34902f65ea6b987801b599",
+      "failed_source_tests": [
+        "ATC Handler Builds Build when build exists returns the given build"
+      ],
+      "failed_brine_scenarios": [
+        "Build decodes the exact persisted global build"
+      ]
+    },
+    {
+      "id": "page-encodes-all-supported-cursors",
+      "mutation_sha256": "4f63fa7f0acb1f2b5007e7e3761dccc3f7225ed8a860a77f08f4049e6d3f7c3d",
+      "failed_source_tests": [
+        "ATC Handler Builds client.Builds when from and limit is specified appends limit to the url",
+        "ATC Handler Builds client.Builds when from and to are both specified sends both the from and the to",
+        "ATC Handler Builds client.Builds when from is specified calls to get all builds from that id",
+        "ATC Handler Builds client.Builds when to and limit is specified appends limit to the url",
+        "ATC Handler Builds client.Builds when to is specified calls to get all builds to that id",
+        "ATC Handler Builds team.Builds when from and limit is specified appends limit to the url",
+        "ATC Handler Builds team.Builds when from and to are both specified sends both the from and the to",
+        "ATC Handler Builds team.Builds when from is specified calls to get all builds from that id",
+        "ATC Handler Builds team.Builds when to and limit is specified appends limit to the url",
+        "ATC Handler Builds team.Builds when to is specified calls to get all builds to that id"
+      ],
+      "failed_brine_scenarios": [
+        "Global Builds applies both cursor bounds to real persisted rows",
+        "Global Builds applies the from cursor and limit to real persisted rows",
+        "Global Builds applies the from cursor to real persisted rows",
+        "Global Builds applies the to cursor and limit to real persisted rows",
+        "Global Builds applies the to cursor to real persisted rows",
+        "Team Builds applies both cursor bounds to real persisted rows",
+        "Team Builds applies the from cursor and limit to real persisted rows",
+        "Team Builds applies the from cursor to real persisted rows",
+        "Team Builds applies the to cursor and limit to real persisted rows",
+        "Team Builds applies the to cursor to real persisted rows"
+      ]
+    },
+    {
+      "id": "empty-link-header-yields-nil-pagination",
+      "mutation_sha256": "39f8a2e3c801e68fa92050c9daa2b5eea7465245165c159232293b3cfeba85a2",
+      "failed_source_tests": [
+        "ATC Handler Builds client.Builds without a link header returns pagination data with nil pages",
+        "ATC Handler Builds team.Builds without a link header returns pagination data with nil pages"
+      ],
+      "failed_brine_scenarios": [
+        "Global Builds returns nil pagination when production emits no Link header",
+        "Team Builds returns nil pagination when production emits no Link header"
+      ]
+    }
+  ]
+}
