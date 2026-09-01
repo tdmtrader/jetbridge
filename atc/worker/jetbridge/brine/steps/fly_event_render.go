@@ -2,13 +2,16 @@ package steps
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
-	"net/http/httptest"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
@@ -22,15 +25,16 @@ import (
 )
 
 type FlyRenderOutcome struct {
-	Output       string
-	Exit         int
-	HasTimestamp bool
+	Output string
+	Exit   int
 }
+
+var flyRenderColorMu sync.Mutex
 
 func FlyEventRenderDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 		brine.DefineMap[brine.Empty, FlyRenderOutcome](
-			"fly renders the real SSE event profile {string}",
+			"fly renders the production SSE profile {string}",
 			func(_ brine.Empty, p brine.Params, _ *brine.Recorder) (FlyRenderOutcome, error) {
 				profile, ok := p.GetString(0)
 				if !ok {
@@ -39,76 +43,59 @@ func FlyEventRenderDefinitions() []brine.StepDefinition {
 				return renderFlyEventProfile(profile)
 			},
 		),
-		CheckContains[FlyRenderOutcome]("fly output contains {string}", "Fly output",
-			func(in FlyRenderOutcome) (string, error) { return in.Output, nil }),
 		brine.DefineCheck[FlyRenderOutcome](
-			"fly output does not contain {string}",
+			"fly terminal bytes match expectation {string}",
 			func(in FlyRenderOutcome, p brine.Params, _ *brine.Recorder) error {
-				unexpected, ok := p.GetString(0)
+				name, ok := p.GetString(0)
 				if !ok {
-					return fmt.Errorf("expected excluded Fly output")
+					return fmt.Errorf("expected Fly terminal expectation name")
 				}
-				if strings.Contains(in.Output, unexpected) {
-					return fmt.Errorf("Fly output %q contains %q", in.Output, unexpected)
+				expected, timestamped, err := expectedFlyTerminal(name)
+				if err != nil {
+					return err
+				}
+				if timestamped {
+					pattern := `^\d{2}:\d{2}:\d{2}  ` + regexp.QuoteMeta(expected) + `$`
+					if !regexp.MustCompile(pattern).MatchString(in.Output) {
+						return fmt.Errorf("Fly terminal bytes %q do not match %q", in.Output, pattern)
+					}
+					return nil
+				}
+				if in.Output != expected {
+					return fmt.Errorf("Fly terminal bytes %q, expected %q", in.Output, expected)
 				}
 				return nil
 			},
 		),
 		CheckInt[FlyRenderOutcome]("fly exits with status {int}", "Fly exit status",
 			func(in FlyRenderOutcome) (int, error) { return in.Exit, nil }),
-		brine.DefineCheck[FlyRenderOutcome](
-			"fly output has a timestamp prefix",
-			func(in FlyRenderOutcome, _ brine.Params, _ *brine.Recorder) error {
-				if !in.HasTimestamp {
-					return fmt.Errorf("Fly output has no timestamp prefix: %q", in.Output)
-				}
-				return nil
-			},
-		),
-		brine.DefineCheck[FlyRenderOutcome](
-			"fly output has a blank timestamp prefix",
-			func(in FlyRenderOutcome, _ brine.Params, _ *brine.Recorder) error {
-				if !regexp.MustCompile(`(?m)^\s{10}\S`).MatchString(in.Output) {
-					return fmt.Errorf("Fly output has no blank timestamp prefix: %q", in.Output)
-				}
-				return nil
-			},
-		),
-		brine.DefineCheck[FlyRenderOutcome](
-			"fly renders {string} with status color {string}",
-			func(in FlyRenderOutcome, p brine.Params, _ *brine.Recorder) error {
-				text, colorName, err := twoParams("fly renders {string} with status color {string}", p)
-				if err != nil {
-					return err
-				}
-				var colored string
-				switch colorName {
-				case "green":
-					colored = ui.SucceededColor.Sprint(text)
-				case "red":
-					colored = ui.FailedColor.Sprint(text)
-				case "bold-red":
-					colored = ui.ErroredColor.Sprint(text)
-				case "magenta":
-					colored = ui.AbortedColor.Sprint(text)
-				default:
-					return fmt.Errorf("unknown status color %q", colorName)
-				}
-				if !strings.Contains(in.Output, colored) {
-					return fmt.Errorf("Fly output %q does not contain %q", in.Output, colored)
-				}
-				return nil
-			},
-		),
 	}
 }
 
 func renderFlyEventProfile(profile string) (FlyRenderOutcome, error) {
+	flyRenderColorMu.Lock()
+	defer flyRenderColorMu.Unlock()
+	previousNoColor := color.NoColor
 	color.NoColor = false
+	ui.SucceededColor.EnableColor()
+	ui.FailedColor.EnableColor()
+	ui.ErroredColor.EnableColor()
+	ui.AbortedColor.EnableColor()
+	defer func() {
+		ui.SucceededColor.DisableColor()
+		ui.FailedColor.DisableColor()
+		ui.ErroredColor.DisableColor()
+		ui.AbortedColor.DisableColor()
+		color.NoColor = previousNoColor
+	}()
+
 	now := time.Unix(1710000000, 0).Unix()
-	showTimestamp := strings.HasSuffix(profile, "/time")
-	ignoreErrors := strings.HasSuffix(profile, "/ignore")
-	base := strings.TrimSuffix(strings.TrimSuffix(profile, "/time"), "/ignore")
+	showTimestamp := strings.HasSuffix(profile, "-time")
+	ignoreErrors := strings.HasSuffix(profile, "-ignore")
+	base := profile
+	for _, suffix := range []string{"-output", "-exit", "-time", "-ignore"} {
+		base = strings.TrimSuffix(base, suffix)
+	}
 	frames := []sse.Event{}
 	writeEvent := func(ev atc.Event) error {
 		payload, err := json.Marshal(event.Message{Event: ev})
@@ -142,7 +129,7 @@ func renderFlyEventProfile(profile string) (FlyRenderOutcome, error) {
 		err = writeEvent(event.FinishTask{ExitStatus: 42})
 	case "finish-status":
 		if err = writeEvent(event.FinishTask{ExitStatus: 42}); err == nil {
-			err = writeEvent(event.Status{Status: atc.StatusSucceeded, Time: now})
+			err = writeEvent(event.Status{Status: atc.StatusSucceeded})
 		}
 	case "status-succeeded":
 		err = writeEvent(event.Status{Status: atc.StatusSucceeded, Time: now})
@@ -156,7 +143,7 @@ func renderFlyEventProfile(profile string) (FlyRenderOutcome, error) {
 		err = writeEvent(event.WaitingForWorker{Time: now})
 	case "selected":
 		err = writeEvent(event.SelectedWorker{Time: now, WorkerName: "some-worker"})
-	case "sidecar-attached", "sidecar-log", "sidecar-main-log":
+	case "sidecar-attached", "sidecar-log", "sidecar-main":
 		planBytes, marshalErr := json.Marshal(atc.Plan{ID: "abc123/sidecar/log-emitter", Sidecar: &atc.SidecarPlan{Name: "log-emitter", Image: "alpine:latest"}})
 		if marshalErr != nil {
 			return FlyRenderOutcome{}, marshalErr
@@ -166,13 +153,13 @@ func renderFlyEventProfile(profile string) (FlyRenderOutcome, error) {
 		if err == nil && base == "sidecar-log" {
 			err = writeEvent(event.Log{Time: now, Origin: event.Origin{ID: "abc123/sidecar/log-emitter"}, Payload: "hello from sidecar\n"})
 		}
-		if err == nil && base == "sidecar-main-log" {
+		if err == nil && base == "sidecar-main" {
 			err = writeEvent(event.Log{Time: now, Origin: event.Origin{ID: "abc123"}, Payload: "hello from main\n"})
 		}
-	case "unknown-event":
+	case "unknown":
 		writeRaw(`{"data":{},"event":"some-event","version":"1.0"}`)
 		writeRaw(`{"data":{},"event":"status","version":"9.0"}`)
-	case "missing-data":
+	case "missing":
 		writeRaw(`{"event":"some-event","version":"1.0"}`)
 		writeRaw(`{"event":"log","version":"5.1"}`)
 	default:
@@ -191,22 +178,138 @@ func renderFlyEventProfile(profile string) (FlyRenderOutcome, error) {
 	if err := (sse.Event{ID: strconv.Itoa(len(frames)), Name: "end"}).Write(&body); err != nil {
 		return FlyRenderOutcome{}, err
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
-		_, _ = w.Write(body.Bytes())
-	}))
-	defer server.Close()
-	source, err := sse.Connect(server.Client(), time.Second, func() *http.Request {
-		req, _ := http.NewRequest(http.MethodGet, server.URL, nil)
-		return req
-	})
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		return FlyRenderOutcome{}, err
 	}
+	handlerDone := make(chan error, 1)
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != "/events" {
+			w.WriteHeader(http.StatusNotFound)
+			handlerDone <- fmt.Errorf("unexpected SSE request %s %s", request.Method, request.URL.Path)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+		_, writeErr := w.Write(body.Bytes())
+		handlerDone <- writeErr
+	})}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve(listener) }()
+	stopServer := func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		shutdownErr := server.Shutdown(ctx)
+		serveErr := <-serveDone
+		if shutdownErr != nil {
+			return shutdownErr
+		}
+		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			return serveErr
+		}
+		return nil
+	}
+
+	transport := &http.Transport{Proxy: nil}
+	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+	request, err := http.NewRequest(http.MethodGet, "http://"+listener.Addr().String()+"/events", nil)
+	if err != nil {
+		_ = stopServer()
+		return FlyRenderOutcome{}, err
+	}
+	source, err := sse.Connect(client, time.Second, func() *http.Request {
+		return request.Clone(context.Background())
+	})
+	if err != nil {
+		_ = stopServer()
+		return FlyRenderOutcome{}, err
+	}
 	stream := clientstream.NewSSEEventStream(source)
-	defer stream.Close()
 	var output bytes.Buffer
 	exit := flyeventstream.Render(&output, stream, flyeventstream.RenderOptions{ShowTimestamp: showTimestamp, IgnoreEventParsingErrors: ignoreErrors})
-	text := output.String()
-	return FlyRenderOutcome{Output: text, Exit: exit, HasTimestamp: regexp.MustCompile(`\d{2}:\d{2}:\d{2}\s{2}`).MatchString(text)}, nil
+	writeErr := <-handlerDone
+	closeErr := stream.Close()
+	transport.CloseIdleConnections()
+	serverErr := stopServer()
+	if writeErr != nil {
+		return FlyRenderOutcome{}, writeErr
+	}
+	if closeErr != nil {
+		return FlyRenderOutcome{}, closeErr
+	}
+	if serverErr != nil {
+		return FlyRenderOutcome{}, serverErr
+	}
+	return FlyRenderOutcome{Output: output.String(), Exit: exit}, nil
+}
+
+func expectedFlyTerminal(name string) (string, bool, error) {
+	const (
+		bold      = "\x1b[1m"
+		green     = "\x1b[32m"
+		red       = "\x1b[31m"
+		boldRed   = "\x1b[31;1m"
+		magenta   = "\x1b[35m"
+		reset     = "\x1b[0m"
+		boldReset = "\x1b[0;22m"
+		blank     = "          "
+		attached  = bold + "sidecar 'log-emitter' attached" + reset + "\n"
+	)
+	switch name {
+	case "log-output":
+		return "hello", false, nil
+	case "log-time":
+		return "hello", true, nil
+	case "error-output":
+		return boldRed + "oh no!" + boldReset + "\n", false, nil
+	case "error-time":
+		return blank + boldRed + "oh no!" + boldReset + "\n", false, nil
+	case "initialize-output":
+		return bold + "initializing" + reset + "\n", false, nil
+	case "initialize-time":
+		return bold + "initializing" + reset + "\n", true, nil
+	case "start-output":
+		return bold + "running /some/script arg1 arg2" + reset + "\n", false, nil
+	case "start-time":
+		return bold + "running /some/script arg1 arg2" + reset + "\n", true, nil
+	case "finish-status-output":
+		return green + "succeeded" + reset + "\n", false, nil
+	case "finish-status-time":
+		return blank + green + "succeeded" + reset + "\n", false, nil
+	case "status-succeeded-output":
+		return green + "succeeded" + reset + "\n", false, nil
+	case "status-succeeded-time":
+		return green + "succeeded" + reset + "\n", true, nil
+	case "status-failed-output":
+		return red + "failed" + reset + "\n", false, nil
+	case "status-failed-time":
+		return red + "failed" + reset + "\n", true, nil
+	case "status-errored-output":
+		return boldRed + "errored" + boldReset + "\n", false, nil
+	case "status-errored-time":
+		return boldRed + "errored" + boldReset + "\n", true, nil
+	case "status-aborted-output":
+		return magenta + "aborted" + reset + "\n", false, nil
+	case "status-aborted-time":
+		return magenta + "aborted" + reset + "\n", true, nil
+	case "waiting-output":
+		return bold + "no suitable workers found, waiting for worker..." + reset + "\n", false, nil
+	case "waiting-time":
+		return bold + "no suitable workers found, waiting for worker..." + reset + "\n", true, nil
+	case "selected-output":
+		return bold + "selected worker:" + reset + " some-worker\n", false, nil
+	case "selected-time":
+		return bold + "selected worker:" + reset + " some-worker\n", true, nil
+	case "sidecar-attached-output":
+		return attached, false, nil
+	case "sidecar-log-output":
+		return attached + "[log-emitter] hello from sidecar\n", false, nil
+	case "sidecar-main-output":
+		return attached + "hello from main\n", false, nil
+	case "unknown-output":
+		return "failed to parse next event: " + boldRed + "unknown event type: some-event" + boldReset + "\n", false, nil
+	case "missing-output":
+		return "failed to parse next event: " + boldRed + "missing event data: some-event version 1.0" + boldReset + "\n", false, nil
+	default:
+		return "", false, fmt.Errorf("unknown Fly terminal expectation %q", name)
+	}
 }

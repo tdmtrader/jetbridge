@@ -1,0 +1,243 @@
+{
+  "name": "fly-event-rendering-strict",
+  "test_package": "./fly/eventstream",
+  "source_test_file": "fly/eventstream/render_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/fly-event-rendering.feature",
+  "step_files": ["atc/worker/jetbridge/brine/steps/fly_event_render.go"],
+  "cases": [
+    {
+      "id": "timestamps-are-disabled",
+      "source_file": "fly/eventstream/render.go",
+      "old": "dstImpl := NewTimestampedWriter(dst, options.ShowTimestamp)",
+      "new": "dstImpl := NewTimestampedWriter(dst, false)",
+      "tests": [
+        "V1.0 Renderer when a Log event is received and time configuration is enabled prints its payload with a timestamp",
+        "V1.0 Renderer when an Error event is received and time configuration is enabled empty space is prefixed",
+        "V1.0 Renderer when an InitializeTask event is received and time configuration is enabled timestamp is prefixed",
+        "V1.0 Renderer and a StartTask event is received and time configuration enabled timestamp is prefixed",
+        "V1.0 Renderer when a FinishTask event is received and a Status event is received and time configuration is enabled empty string is prefixed",
+        "V1.0 Renderer receiving a Status event with status 'succeeded' and time configuration is enabled timestamp is prefixed",
+        "V1.0 Renderer receiving a Status event with status 'failed' and time configuration is enabled timestamp is prefixed",
+        "V1.0 Renderer receiving a Status event with status 'errored' and time configuration is enabled timestamp is prefixed",
+        "V1.0 Renderer receiving a Status event with status 'aborted' and time configuration is enabled timestamp is prefixed",
+        "V1.0 Renderer when a WaitingForWorker event is received and time configuration enabled timestamp is prefixed",
+        "V1.0 Renderer when a SelectedWorker event is received and time configuration enabled timestamp is prefixed"
+      ],
+      "scenarios": [
+        "Timestamped log payload stays on the timestamped line",
+        "Error message reserves a blank timestamp column",
+        "Initialize task output is timestamped",
+        "Start task output is timestamped",
+        "Zero-time status after finish reserves a blank timestamp column",
+        "Succeeded status output is timestamped",
+        "Failed status output is timestamped",
+        "Errored status output is timestamped",
+        "Aborted status output is timestamped",
+        "Waiting for worker output is timestamped",
+        "Selected worker output is timestamped"
+      ]
+    },
+    {
+      "id": "main-log-payload-is-replaced",
+      "source_file": "fly/eventstream/render.go",
+      "old": "fmt.Fprintf(dstImpl, \"%s\", e.Payload)",
+      "new": "fmt.Fprintf(dstImpl, \"%s\", \"mutated log payload\")",
+      "tests": [
+        "V1.0 Renderer when a Log event is received prints its payload"
+      ],
+      "scenarios": [
+        "Log payload is rendered exactly"
+      ]
+    },
+    {
+      "id": "error-color-and-newline-are-removed",
+      "source_file": "fly/eventstream/render.go",
+      "old": "\t\tcase event.Error:\n\t\t\terrCol := ui.ErroredColor.SprintFunc()\n\t\t\tdstImpl.SetTimestamp(0)\n\t\t\tfmt.Fprintf(dstImpl, \"%s\\n\", errCol(e.Message))",
+      "new": "\t\tcase event.Error:\n\t\t\tdstImpl.SetTimestamp(0)\n\t\t\tfmt.Fprintf(dstImpl, \"%s\", e.Message)",
+      "tests": [
+        "V1.0 Renderer when an Error event is received prints its message in bold red, followed by a linebreak"
+      ],
+      "scenarios": [
+        "Error message is bold red and newline terminated"
+      ]
+    },
+    {
+      "id": "initialize-task-text-is-replaced",
+      "source_file": "fly/eventstream/render.go",
+      "old": "fmt.Fprintf(dstImpl, \"\\x1b[1minitializing\\x1b[0m\\n\")",
+      "new": "fmt.Fprintf(dstImpl, \"\\x1b[1mmutated initialization\\x1b[0m\\n\")",
+      "tests": [
+        "V1.0 Renderer when an InitializeTask event is received prints initializing"
+      ],
+      "scenarios": [
+        "Initialize task output is bold and newline terminated"
+      ]
+    },
+    {
+      "id": "start-task-command-is-replaced",
+      "source_file": "fly/eventstream/render.go",
+      "old": "argv := strings.Join(append([]string{buildConfig.Run.Path}, buildConfig.Run.Args...), \" \")",
+      "new": "argv := strings.Join([]string{\"mutated-command\", buildConfig.Run.Path}, \" \")",
+      "tests": [
+        "V1.0 Renderer and a StartTask event is received prints the build's run script"
+      ],
+      "scenarios": [
+        "Start task output contains the complete bold command"
+      ]
+    },
+    {
+      "id": "finish-task-exit-is-discarded",
+      "source_file": "fly/eventstream/render.go",
+      "old": "exitStatus = e.ExitStatus",
+      "new": "exitStatus = 0",
+      "tests": [
+        "V1.0 Renderer when a FinishTask event is received returns its exit status",
+        "V1.0 Renderer when a FinishTask event is received and a Status event is received exits with the status from the FinishTask event"
+      ],
+      "scenarios": [
+        "Finish task returns its task exit status",
+        "Status after finish preserves the task exit status"
+      ]
+    },
+    {
+      "id": "status-text-is-replaced",
+      "source_file": "fly/eventstream/render.go",
+      "old": "fmt.Fprintf(dstImpl, \"%s\\n\", printColorFunc(e.Status))",
+      "new": "fmt.Fprintf(dstImpl, \"%s\\n\", printColorFunc(\"mutated-status\"))",
+      "tests": [
+        "V1.0 Renderer when a FinishTask event is received and a Status event is received still processes it",
+        "V1.0 Renderer receiving a Status event with status 'succeeded' prints it in green",
+        "V1.0 Renderer receiving a Status event with status 'failed' prints it in red",
+        "V1.0 Renderer receiving a Status event with status 'errored' prints it in bold red",
+        "V1.0 Renderer receiving a Status event with status 'aborted' prints it in yellow"
+      ],
+      "scenarios": [
+        "Status after finish is still rendered",
+        "Succeeded status is green and newline terminated",
+        "Failed status is red and newline terminated",
+        "Errored status is bold red and newline terminated",
+        "Aborted status uses the production magenta color and a newline"
+      ]
+    },
+    {
+      "id": "succeeded-status-sets-a-nonzero-exit",
+      "source_file": "fly/eventstream/render.go",
+      "old": "\t\t\tcase \"succeeded\":\n\t\t\t\tprintColor = ui.SucceededColor",
+      "new": "\t\t\tcase \"succeeded\":\n\t\t\t\tprintColor = ui.SucceededColor\n\t\t\t\tif exitStatus == 0 {\n\t\t\t\t\texitStatus = 9\n\t\t\t\t}",
+      "tests": [
+        "V1.0 Renderer receiving a Status event with status 'succeeded' exits 0"
+      ],
+      "scenarios": [
+        "Succeeded status exits zero"
+      ]
+    },
+    {
+      "id": "failure-status-exits-are-corrupted",
+      "source_file": "fly/eventstream/render.go",
+      "old": "\t\t\tcase \"failed\":\n\t\t\t\tprintColor = ui.FailedColor\n\n\t\t\t\tif exitStatus == 0 {\n\t\t\t\t\texitStatus = 1\n\t\t\t\t}\n\t\t\tcase \"errored\":\n\t\t\t\tprintColor = ui.ErroredColor\n\n\t\t\t\tif exitStatus == 0 {\n\t\t\t\t\texitStatus = 2\n\t\t\t\t}\n\t\t\tcase \"aborted\":\n\t\t\t\tprintColor = ui.AbortedColor\n\n\t\t\t\tif exitStatus == 0 {\n\t\t\t\t\texitStatus = 3\n\t\t\t\t}",
+      "new": "\t\t\tcase \"failed\":\n\t\t\t\tprintColor = ui.FailedColor\n\n\t\t\t\tif exitStatus == 0 {\n\t\t\t\t\texitStatus = 9\n\t\t\t\t}\n\t\t\tcase \"errored\":\n\t\t\t\tprintColor = ui.ErroredColor\n\n\t\t\t\tif exitStatus == 0 {\n\t\t\t\t\texitStatus = 9\n\t\t\t\t}\n\t\t\tcase \"aborted\":\n\t\t\t\tprintColor = ui.AbortedColor\n\n\t\t\t\tif exitStatus == 0 {\n\t\t\t\t\texitStatus = 9\n\t\t\t\t}",
+      "tests": [
+        "V1.0 Renderer receiving a Status event with status 'failed' exits 1",
+        "V1.0 Renderer receiving a Status event with status 'errored' exits 2",
+        "V1.0 Renderer receiving a Status event with status 'aborted' exits 3"
+      ],
+      "scenarios": [
+        "Failed status exits one",
+        "Errored status exits two",
+        "Aborted status exits three"
+      ]
+    },
+    {
+      "id": "waiting-message-is-replaced",
+      "source_file": "fly/eventstream/render.go",
+      "old": "fmt.Fprintf(dstImpl, \"\\x1b[1mno suitable workers found, waiting for worker...\\x1b[0m\\n\")",
+      "new": "fmt.Fprintf(dstImpl, \"\\x1b[1mmutated waiting message\\x1b[0m\\n\")",
+      "tests": [
+        "V1.0 Renderer when a WaitingForWorker event is received prints the build's run script"
+      ],
+      "scenarios": [
+        "Waiting for worker output is bold and newline terminated"
+      ]
+    },
+    {
+      "id": "selected-worker-is-replaced",
+      "source_file": "fly/eventstream/render.go",
+      "old": "fmt.Fprintf(dstImpl, \"\\x1b[1mselected worker:\\x1b[0m %s\\n\", e.WorkerName)",
+      "new": "fmt.Fprintf(dstImpl, \"\\x1b[1mselected worker:\\x1b[0m mutated-worker\\n\")",
+      "tests": [
+        "V1.0 Renderer when a SelectedWorker event is received prints the build's run script"
+      ],
+      "scenarios": [
+        "Selected worker output includes the bold label and worker name"
+      ]
+    },
+    {
+      "id": "sidecar-header-is-replaced",
+      "source_file": "fly/eventstream/render.go",
+      "old": "fmt.Fprintf(dstImpl, \"\\x1b[1msidecar '%s' attached\\x1b[0m\\n\", name)",
+      "new": "fmt.Fprintf(dstImpl, \"\\x1b[1mmutated sidecar '%s'\\x1b[0m\\n\", name)",
+      "tests": [
+        "V1.0 Renderer when a Sidecar event is received prints a sidecar attached header"
+      ],
+      "scenarios": [
+        "Sidecar attachment renders its bold header"
+      ]
+    },
+    {
+      "id": "sidecar-origin-map-uses-parent-id",
+      "source_file": "fly/eventstream/render.go",
+      "old": "sidecarNames[string(plan.ID)] = name",
+      "new": "sidecarNames[string(e.Origin.ID)] = name",
+      "tests": [
+        "V1.0 Renderer when a Sidecar event is received and a Log event is received from the sidecar prefixes the log line with the sidecar name",
+        "V1.0 Renderer when a Sidecar event is received and a Log event is received from the main container does not prefix the log line with a sidecar name"
+      ],
+      "scenarios": [
+        "Sidecar log includes its name prefix and payload",
+        "Main container log keeps its payload and has no sidecar prefix"
+      ]
+    },
+    {
+      "id": "parse-failure-prefix-is-replaced",
+      "source_file": "fly/eventstream/render.go",
+      "old": "fmt.Fprintf(dstImpl, \"failed to parse next event: %s\\n\", ui.ErroredColor.Sprint(err))",
+      "new": "fmt.Fprintf(dstImpl, \"mutated event parse failure: %s\\n\", ui.ErroredColor.Sprint(err))",
+      "tests": [
+        "V1.0 Renderer when an UnknownEventTypeError or UnknownEventVersionError is received prints the build's run script",
+        "V1.0 Renderer when an event with no data is received reports it as a parse failure"
+      ],
+      "scenarios": [
+        "Unknown event reports a colored parse failure",
+        "Missing event data reports generic and detailed parse failure"
+      ]
+    },
+    {
+      "id": "parse-failure-exit-is-corrupted",
+      "source_file": "fly/eventstream/render.go",
+      "old": "\t\t\t\tdstImpl.SetTimestamp(0)\n\t\t\t\tfmt.Fprintf(dstImpl, \"failed to parse next event: %s\\n\", ui.ErroredColor.Sprint(err))\n\t\t\t\treturn 255",
+      "new": "\t\t\t\tdstImpl.SetTimestamp(0)\n\t\t\t\tfmt.Fprintf(dstImpl, \"failed to parse next event: %s\\n\", ui.ErroredColor.Sprint(err))\n\t\t\t\treturn 254",
+      "tests": [
+        "V1.0 Renderer when an UnknownEventTypeError or UnknownEventVersionError is received exits with 255 exit code",
+        "V1.0 Renderer when an event with no data is received exits with 255 exit code"
+      ],
+      "scenarios": [
+        "Unknown event exits 255",
+        "Missing event data exits 255"
+      ]
+    },
+    {
+      "id": "ignore-parse-errors-option-is-disabled",
+      "source_file": "fly/eventstream/render.go",
+      "old": "options.IgnoreEventParsingErrors && isEventParseError(err)",
+      "new": "options.IgnoreEventParsingErrors && false && isEventParseError(err)",
+      "tests": [
+        "V1.0 Renderer when an UnknownEventTypeError or UnknownEventVersionError is received when IgnoreEventParsingErrors is configured exits with 0 exit code",
+        "V1.0 Renderer when an event with no data is received when IgnoreEventParsingErrors is configured exits with 0 exit code"
+      ],
+      "scenarios": [
+        "Ignored unknown event errors exit zero",
+        "Ignored missing-data errors exit zero"
+      ]
+    }
+  ]
+}

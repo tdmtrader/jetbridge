@@ -1,0 +1,225 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/fly-event-rendering-strict.json",
+  "git_head": "cea70aa63bc3ece00b37d6458d7f8d2dea7125ee",
+  "completed_at": "2026-09-01T05:47:14Z",
+  "source_tests": 37,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "timestamps-are-disabled",
+      "mutation_sha256": "515640c0e22f305a9c7771c6109f0665a437445e41979ceaa9fd24908bebdd8f",
+      "failed_source_tests": [
+        "V1.0 Renderer and a StartTask event is received and time configuration enabled timestamp is prefixed",
+        "V1.0 Renderer receiving a Status event with status 'aborted' and time configuration is enabled timestamp is prefixed",
+        "V1.0 Renderer receiving a Status event with status 'errored' and time configuration is enabled timestamp is prefixed",
+        "V1.0 Renderer receiving a Status event with status 'failed' and time configuration is enabled timestamp is prefixed",
+        "V1.0 Renderer receiving a Status event with status 'succeeded' and time configuration is enabled timestamp is prefixed",
+        "V1.0 Renderer when a FinishTask event is received and a Status event is received and time configuration is enabled empty string is prefixed",
+        "V1.0 Renderer when a Log event is received and time configuration is enabled prints its payload with a timestamp",
+        "V1.0 Renderer when a SelectedWorker event is received and time configuration enabled timestamp is prefixed",
+        "V1.0 Renderer when a WaitingForWorker event is received and time configuration enabled timestamp is prefixed",
+        "V1.0 Renderer when an Error event is received and time configuration is enabled empty space is prefixed",
+        "V1.0 Renderer when an InitializeTask event is received and time configuration is enabled timestamp is prefixed"
+      ],
+      "failed_brine_scenarios": [
+        "Aborted status output is timestamped",
+        "Error message reserves a blank timestamp column",
+        "Errored status output is timestamped",
+        "Failed status output is timestamped",
+        "Initialize task output is timestamped",
+        "Selected worker output is timestamped",
+        "Start task output is timestamped",
+        "Succeeded status output is timestamped",
+        "Timestamped log payload stays on the timestamped line",
+        "Waiting for worker output is timestamped",
+        "Zero-time status after finish reserves a blank timestamp column"
+      ]
+    },
+    {
+      "id": "main-log-payload-is-replaced",
+      "mutation_sha256": "ac3057122ba780569cbe627d2e2bb72afd2f0d5c115465740f5019164c45144b",
+      "failed_source_tests": [
+        "V1.0 Renderer when a Log event is received prints its payload"
+      ],
+      "failed_brine_scenarios": [
+        "Log payload is rendered exactly",
+        "Main container log keeps its payload and has no sidecar prefix",
+        "Timestamped log payload stays on the timestamped line"
+      ]
+    },
+    {
+      "id": "error-color-and-newline-are-removed",
+      "mutation_sha256": "bd8ef75edb2259e1da25a7e711acea658fd2d3a035ae54354c7b98e81e48483e",
+      "failed_source_tests": [
+        "V1.0 Renderer when an Error event is received prints its message in bold red, followed by a linebreak"
+      ],
+      "failed_brine_scenarios": [
+        "Error message is bold red and newline terminated",
+        "Error message reserves a blank timestamp column"
+      ]
+    },
+    {
+      "id": "initialize-task-text-is-replaced",
+      "mutation_sha256": "6576c8a672ae90b5cc970b74abc57c4fda9ec7ca036ba1f34d85c87e941946c4",
+      "failed_source_tests": [
+        "V1.0 Renderer when an InitializeTask event is received prints initializing"
+      ],
+      "failed_brine_scenarios": [
+        "Initialize task output is bold and newline terminated",
+        "Initialize task output is timestamped"
+      ]
+    },
+    {
+      "id": "start-task-command-is-replaced",
+      "mutation_sha256": "2443743726b85b0873cc251894abccaa29aab2d317d817aacc27691d11f4f23c",
+      "failed_source_tests": [
+        "V1.0 Renderer and a StartTask event is received prints the build's run script"
+      ],
+      "failed_brine_scenarios": [
+        "Start task output contains the complete bold command",
+        "Start task output is timestamped"
+      ]
+    },
+    {
+      "id": "finish-task-exit-is-discarded",
+      "mutation_sha256": "1b4e5c478f92a9041e733234842315cfee77fc698ba38a9950040a665ee0b80e",
+      "failed_source_tests": [
+        "V1.0 Renderer when a FinishTask event is received and a Status event is received exits with the status from the FinishTask event",
+        "V1.0 Renderer when a FinishTask event is received returns its exit status"
+      ],
+      "failed_brine_scenarios": [
+        "Finish task returns its task exit status",
+        "Status after finish preserves the task exit status"
+      ]
+    },
+    {
+      "id": "status-text-is-replaced",
+      "mutation_sha256": "913b65366329f1590a41983b30c7ab94a213290eec95bad735141d0b841c64eb",
+      "failed_source_tests": [
+        "V1.0 Renderer receiving a Status event with status 'aborted' prints it in yellow",
+        "V1.0 Renderer receiving a Status event with status 'errored' prints it in bold red",
+        "V1.0 Renderer receiving a Status event with status 'failed' prints it in red",
+        "V1.0 Renderer receiving a Status event with status 'succeeded' prints it in green",
+        "V1.0 Renderer when a FinishTask event is received and a Status event is received still processes it"
+      ],
+      "failed_brine_scenarios": [
+        "Aborted status output is timestamped",
+        "Aborted status uses the production magenta color and a newline",
+        "Errored status is bold red and newline terminated",
+        "Errored status output is timestamped",
+        "Failed status is red and newline terminated",
+        "Failed status output is timestamped",
+        "Status after finish is still rendered",
+        "Succeeded status is green and newline terminated",
+        "Succeeded status output is timestamped",
+        "Zero-time status after finish reserves a blank timestamp column"
+      ]
+    },
+    {
+      "id": "succeeded-status-sets-a-nonzero-exit",
+      "mutation_sha256": "ad1a66e274527872d697fe9a64526d2f0b51075922b44c9d22f3e8d0a7c29eec",
+      "failed_source_tests": [
+        "V1.0 Renderer receiving a Status event with status 'succeeded' exits 0"
+      ],
+      "failed_brine_scenarios": [
+        "Succeeded status exits zero"
+      ]
+    },
+    {
+      "id": "failure-status-exits-are-corrupted",
+      "mutation_sha256": "73bdebb3d7f1a10d37cc7acbe49bb020f07f54c434bd67942db2db905950d8d9",
+      "failed_source_tests": [
+        "V1.0 Renderer receiving a Status event with status 'aborted' exits 3",
+        "V1.0 Renderer receiving a Status event with status 'errored' exits 2",
+        "V1.0 Renderer receiving a Status event with status 'failed' exits 1"
+      ],
+      "failed_brine_scenarios": [
+        "Aborted status exits three",
+        "Errored status exits two",
+        "Failed status exits one"
+      ]
+    },
+    {
+      "id": "waiting-message-is-replaced",
+      "mutation_sha256": "fe6827a956d5c27329c7c49a0ac0fae5ed2e023e357199b66ff6a9fbacf22c49",
+      "failed_source_tests": [
+        "V1.0 Renderer when a WaitingForWorker event is received prints the build's run script"
+      ],
+      "failed_brine_scenarios": [
+        "Waiting for worker output is bold and newline terminated",
+        "Waiting for worker output is timestamped"
+      ]
+    },
+    {
+      "id": "selected-worker-is-replaced",
+      "mutation_sha256": "8a4b443b1e5507c15ffc3d53b0a80f15aab509a7d0c70935c0c5088cda21b046",
+      "failed_source_tests": [
+        "V1.0 Renderer when a SelectedWorker event is received prints the build's run script"
+      ],
+      "failed_brine_scenarios": [
+        "Selected worker output includes the bold label and worker name",
+        "Selected worker output is timestamped"
+      ]
+    },
+    {
+      "id": "sidecar-header-is-replaced",
+      "mutation_sha256": "c3df501516617824b8b03410aa2d8d1b3b8c679350c1c6489cc0f3f7ae895d7e",
+      "failed_source_tests": [
+        "V1.0 Renderer when a Sidecar event is received prints a sidecar attached header"
+      ],
+      "failed_brine_scenarios": [
+        "Main container log keeps its payload and has no sidecar prefix",
+        "Sidecar attachment renders its bold header",
+        "Sidecar log includes its name prefix and payload"
+      ]
+    },
+    {
+      "id": "sidecar-origin-map-uses-parent-id",
+      "mutation_sha256": "85518eb331bb956d1c0b93a1aa17889017750bc07e6ed16c4c6e71b2efc6ad5a",
+      "failed_source_tests": [
+        "V1.0 Renderer when a Sidecar event is received and a Log event is received from the main container does not prefix the log line with a sidecar name",
+        "V1.0 Renderer when a Sidecar event is received and a Log event is received from the sidecar prefixes the log line with the sidecar name"
+      ],
+      "failed_brine_scenarios": [
+        "Main container log keeps its payload and has no sidecar prefix",
+        "Sidecar log includes its name prefix and payload"
+      ]
+    },
+    {
+      "id": "parse-failure-prefix-is-replaced",
+      "mutation_sha256": "3f1878919985edebebe4eda3de8a166aa33dba7533eb4f5cbc2d00b7b3dd2762",
+      "failed_source_tests": [
+        "V1.0 Renderer when an UnknownEventTypeError or UnknownEventVersionError is received prints the build's run script",
+        "V1.0 Renderer when an event with no data is received reports it as a parse failure"
+      ],
+      "failed_brine_scenarios": [
+        "Missing event data reports generic and detailed parse failure",
+        "Unknown event reports a colored parse failure"
+      ]
+    },
+    {
+      "id": "parse-failure-exit-is-corrupted",
+      "mutation_sha256": "f34a31de8d948438777dcb3b5b230d8773f2ab2a7c0e04969c71802ab314ab91",
+      "failed_source_tests": [
+        "V1.0 Renderer when an UnknownEventTypeError or UnknownEventVersionError is received exits with 255 exit code",
+        "V1.0 Renderer when an event with no data is received exits with 255 exit code"
+      ],
+      "failed_brine_scenarios": [
+        "Missing event data exits 255",
+        "Unknown event exits 255"
+      ]
+    },
+    {
+      "id": "ignore-parse-errors-option-is-disabled",
+      "mutation_sha256": "b64f8e2fd524e06668b357db9972c07e47fd9a1abb2b1b63ba01dade7a4e6a86",
+      "failed_source_tests": [
+        "V1.0 Renderer when an UnknownEventTypeError or UnknownEventVersionError is received when IgnoreEventParsingErrors is configured exits with 0 exit code",
+        "V1.0 Renderer when an event with no data is received when IgnoreEventParsingErrors is configured exits with 0 exit code"
+      ],
+      "failed_brine_scenarios": [
+        "Ignored missing-data errors exit zero",
+        "Ignored unknown event errors exit zero"
+      ]
+    }
+  ]
+}
