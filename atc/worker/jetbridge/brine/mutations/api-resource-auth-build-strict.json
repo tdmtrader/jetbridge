@@ -1,0 +1,60 @@
+{
+  "name": "api-resource-auth-build-strict",
+  "test_package": "./atc/api/auth",
+  "source_test_file": "atc/api/auth/check_build_write_access_handler_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/api-resource-auth.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/api_resource_auth.go",
+    "atc/worker/jetbridge/brine/steps/api_resource_auth_strict.go"
+  ],
+  "cases": [
+    {
+      "id": "same-team-build-write-is-authorized",
+      "source_file": "atc/api/auth/check_build_write_access_handler.go",
+      "old": "\t\tif acc.IsAuthorized(team) {",
+      "new": "\t\tif false && acc.IsAuthorized(team) {",
+      "tests": [
+        "CheckBuildWriteAccessHandler when authenticated and accessing same team's build when build exists returns 200 ok",
+        "CheckBuildWriteAccessHandler when authenticated and accessing same team's build when build exists calls delegate with the build context"
+      ],
+      "scenarios": [
+        "Strict resource authorization profile <profile> preserves <source> (row 10)",
+        "Strict resource authorization profile <profile> preserves <source> (row 11)"
+      ],
+      "failure_contains": "strict resource authorization result"
+    },
+    {
+      "id": "missing-build-write-is-not-found",
+      "source_file": "atc/api/auth/check_build_write_access_handler.go",
+      "old": "\tif !found {\n\t\tw.WriteHeader(http.StatusNotFound)\n\t\treturn\n\t}",
+      "new": "\tif !found {\n\t\tw.WriteHeader(http.StatusInternalServerError)\n\t\treturn\n\t}",
+      "tests": ["CheckBuildWriteAccessHandler when authenticated and accessing same team's build when build is not found returns 404"],
+      "scenarios": ["Strict resource authorization profile <profile> preserves <source> (row 12)"],
+      "failure_contains": "strict resource authorization result"
+    },
+    {
+      "id": "unauthorized-build-teams-stay-forbidden",
+      "source_file": "atc/api/auth/check_build_write_access_handler.go",
+      "old": "\tauthorized := false",
+      "new": "\tauthorized := true",
+      "tests": [
+        "CheckBuildWriteAccessHandler when authenticated but accessing different team's build returns 403",
+        "CheckBuildWriteAccessHandler when authenticated with too weak a role for the team returns 403"
+      ],
+      "scenarios": [
+        "Strict resource authorization profile <profile> preserves <source> (row 13)",
+        "Strict resource authorization profile <profile> preserves <source> (row 14)"
+      ],
+      "failure_contains": "strict resource authorization result"
+    },
+    {
+      "id": "anonymous-build-write-is-unauthorized",
+      "source_file": "atc/api/auth/check_build_write_access_handler.go",
+      "old": "\tif !acc.IsAuthenticated() {",
+      "new": "\tif !acc.IsAuthenticated() && false {",
+      "tests": ["CheckBuildWriteAccessHandler when not authenticated returns 401"],
+      "scenarios": ["Strict resource authorization profile <profile> preserves <source> (row 15)"],
+      "failure_contains": "strict resource authorization result"
+    }
+  ]
+}

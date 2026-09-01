@@ -84,27 +84,6 @@ var _ = Describe("CheckBuildWriteAccessHandler", func() {
 			grantRole(team, accessor.OperatorRole)
 		})
 
-		Context("when build exists", func() {
-			It("returns 200 ok", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusOK))
-			})
-
-			It("calls delegate with the build context", func() {
-				Expect(delegate.IsCalled).To(BeTrue())
-				Expect(delegate.ContextBuild.ID()).To(Equal(build.ID()))
-			})
-		})
-
-		Context("when build is not found", func() {
-			BeforeEach(func() {
-				requestedID = build.ID() + 1000
-			})
-
-			It("returns 404", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-			})
-		})
-
 		Context("when getting build fails", func() {
 			BeforeEach(func() {
 				factory = doomedBuildFactory()
@@ -113,38 +92,6 @@ var _ = Describe("CheckBuildWriteAccessHandler", func() {
 			It("returns 500", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 			})
-		})
-	})
-
-	Context("when authenticated but accessing different team's build", func() {
-		BeforeEach(func() {
-			authorization = validAccessToken()
-			grantRole(createTeam("some-other-team"), accessor.OperatorRole)
-		})
-
-		It("returns 403", func() {
-			Expect(response.StatusCode).To(Equal(http.StatusForbidden))
-		})
-	})
-
-	Context("when authenticated with too weak a role for the team", func() {
-		BeforeEach(func() {
-			authorization = validAccessToken()
-			grantRole(team, accessor.ViewerRole)
-		})
-
-		It("returns 403", func() {
-			Expect(response.StatusCode).To(Equal(http.StatusForbidden))
-		})
-	})
-
-	Context("when not authenticated", func() {
-		BeforeEach(func() {
-			grantRole(team, accessor.OperatorRole)
-		})
-
-		It("returns 401", func() {
-			Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
 		})
 	})
 })

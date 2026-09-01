@@ -1,0 +1,93 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/api-resource-auth-worker-strict.json",
+  "git_head": "7bd9c0816fe6ba3779a949fd3f4c88d216941f47",
+  "completed_at": "2026-09-01T07:41:15Z",
+  "source_tests": 14,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "anonymous-worker-request-stops-before-downstream",
+      "mutation_sha256": "137a243e1ee25267d8dcf215ae5d34cbfc980c570e07617af69d486a99a8cc48",
+      "failed_source_tests": [
+        "CheckWorkerTeamAccessHandler when not authenticated does not call the scoped handler",
+        "CheckWorkerTeamAccessHandler when not authenticated returns 401"
+      ],
+      "failed_brine_scenarios": [
+        "Strict resource authorization profile \u003cprofile\u003e preserves \u003csource\u003e (row 16)",
+        "Strict resource authorization profile \u003cprofile\u003e preserves \u003csource\u003e (row 17)"
+      ]
+    },
+    {
+      "id": "administrator-worker-request-crosses-downstream",
+      "mutation_sha256": "443d206b0a6c9ffe77591e11d2d8cfb786180ef4d702f75cebde1665ec67e1f8",
+      "failed_source_tests": [
+        "CheckWorkerTeamAccessHandler when authenticated when worker exists and belongs to a team when user is admin/system calls worker delegate",
+        "CheckWorkerTeamAccessHandler when authenticated when worker exists and belongs to a team when user is admin/system returns 200",
+        "CheckWorkerTeamAccessHandler when authenticated when worker is not owned by a team when user is admin/system calls worker delegate",
+        "CheckWorkerTeamAccessHandler when authenticated when worker is not owned by a team when user is admin/system returns 200"
+      ],
+      "failed_brine_scenarios": [
+        "Strict resource authorization profile \u003cprofile\u003e preserves \u003csource\u003e (row 18)",
+        "Strict resource authorization profile \u003cprofile\u003e preserves \u003csource\u003e (row 19)",
+        "Strict resource authorization profile \u003cprofile\u003e preserves \u003csource\u003e (row 24)",
+        "Strict resource authorization profile \u003cprofile\u003e preserves \u003csource\u003e (row 25)"
+      ]
+    },
+    {
+      "id": "system-claim-worker-request-crosses-downstream",
+      "mutation_sha256": "83e91655c28ce7d967c7e925e896c85439edcffdc8c6f548c93f9ce769076da1",
+      "failed_source_tests": [
+        "CheckWorkerTeamAccessHandler when authenticated when worker exists and belongs to a team when the token carries the system claim calls worker delegate"
+      ],
+      "failed_brine_scenarios": [
+        "Strict resource authorization profile \u003cprofile\u003e preserves \u003csource\u003e (row 20)"
+      ]
+    },
+    {
+      "id": "matching-worker-team-is-authorized",
+      "mutation_sha256": "5a922df1baa7827ff59600c39544fb7ca6db427d8b40e083357add04eb8fb38a",
+      "failed_source_tests": [
+        "CheckWorkerTeamAccessHandler when authenticated when worker exists and belongs to a team when team in auth matches worker team calls worker delegate"
+      ],
+      "failed_brine_scenarios": [
+        "Strict resource authorization profile \u003cprofile\u003e preserves \u003csource\u003e (row 21)"
+      ]
+    },
+    {
+      "id": "other-worker-team-is-forbidden",
+      "mutation_sha256": "db9931eb0949df6ac7ed25cb52f7a09aa5cbe891dd053327a1f7cdee0d4424b2",
+      "failed_source_tests": [
+        "CheckWorkerTeamAccessHandler when authenticated when worker exists and belongs to a team when team in auth does not match worker team does not call worker delegate",
+        "CheckWorkerTeamAccessHandler when authenticated when worker exists and belongs to a team when team in auth does not match worker team returns 403 Forbidden"
+      ],
+      "failed_brine_scenarios": [
+        "Strict resource authorization profile \u003cprofile\u003e preserves \u003csource\u003e (row 22)",
+        "Strict resource authorization profile \u003cprofile\u003e preserves \u003csource\u003e (row 23)"
+      ]
+    },
+    {
+      "id": "global-worker-requires-admin-or-system",
+      "mutation_sha256": "ab1703bcd494a32e012b83e8aec5ed619d45d55f5beca02868e2d4cc611e948e",
+      "failed_source_tests": [
+        "CheckWorkerTeamAccessHandler when authenticated when worker is not owned by a team when user is not admin/system does not call worker delegate",
+        "CheckWorkerTeamAccessHandler when authenticated when worker is not owned by a team when user is not admin/system returns 403 Forbidden"
+      ],
+      "failed_brine_scenarios": [
+        "Strict resource authorization profile \u003cprofile\u003e preserves \u003csource\u003e (row 26)",
+        "Strict resource authorization profile \u003cprofile\u003e preserves \u003csource\u003e (row 27)"
+      ]
+    },
+    {
+      "id": "missing-worker-stops-before-downstream",
+      "mutation_sha256": "66a6a338755bcd6b661d051ab421ae4bc14b472f9fd6bdc66daf6499c7165e10",
+      "failed_source_tests": [
+        "CheckWorkerTeamAccessHandler when authenticated when worker does not exist does not call worker delegate",
+        "CheckWorkerTeamAccessHandler when authenticated when worker does not exist returns 404 Not found"
+      ],
+      "failed_brine_scenarios": [
+        "Strict resource authorization profile \u003cprofile\u003e preserves \u003csource\u003e (row 28)",
+        "Strict resource authorization profile \u003cprofile\u003e preserves \u003csource\u003e (row 29)"
+      ]
+    }
+  ]
+}

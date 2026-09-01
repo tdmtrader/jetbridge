@@ -1,0 +1,109 @@
+{
+  "name": "api-resource-auth-worker-strict",
+  "test_package": "./atc/api/auth",
+  "source_test_file": "atc/api/auth/check_worker_team_access_handler_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/api-resource-auth.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/api_resource_auth.go",
+    "atc/worker/jetbridge/brine/steps/api_resource_auth_strict.go"
+  ],
+  "cases": [
+    {
+      "id": "anonymous-worker-request-stops-before-downstream",
+      "source_file": "atc/api/auth/check_worker_team_access_handler.go",
+      "old": "\tif !acc.IsAuthenticated() {\n\t\th.rejector.Unauthorized(w, r)\n\t\treturn\n\t}",
+      "new": "\tif !acc.IsAuthenticated() {\n\t\th.delegateHandler.ServeHTTP(w, r)\n\t\treturn\n\t}",
+      "tests": [
+        "CheckWorkerTeamAccessHandler when not authenticated returns 401",
+        "CheckWorkerTeamAccessHandler when not authenticated does not call the scoped handler"
+      ],
+      "scenarios": [
+        "Strict resource authorization profile <profile> preserves <source> (row 16)",
+        "Strict resource authorization profile <profile> preserves <source> (row 17)"
+      ],
+      "failure_contains": "strict resource authorization result"
+    },
+    {
+      "id": "administrator-worker-request-crosses-downstream",
+      "source_file": "atc/api/auth/check_worker_team_access_handler.go",
+      "old": "\tif acc.IsSystem() || acc.IsAdmin() {\n\t\th.delegateHandler.ServeHTTP(w, r)\n\t\treturn\n\t}",
+      "new": "\tif acc.IsAdmin() {\n\t\th.rejector.Forbidden(w, r)\n\t\treturn\n\t}\n\tif acc.IsSystem() {\n\t\th.delegateHandler.ServeHTTP(w, r)\n\t\treturn\n\t}",
+      "tests": [
+        "CheckWorkerTeamAccessHandler when authenticated when worker exists and belongs to a team when user is admin/system calls worker delegate",
+        "CheckWorkerTeamAccessHandler when authenticated when worker exists and belongs to a team when user is admin/system returns 200",
+        "CheckWorkerTeamAccessHandler when authenticated when worker is not owned by a team when user is admin/system calls worker delegate",
+        "CheckWorkerTeamAccessHandler when authenticated when worker is not owned by a team when user is admin/system returns 200"
+      ],
+      "scenarios": [
+        "Strict resource authorization profile <profile> preserves <source> (row 18)",
+        "Strict resource authorization profile <profile> preserves <source> (row 19)",
+        "Strict resource authorization profile <profile> preserves <source> (row 24)",
+        "Strict resource authorization profile <profile> preserves <source> (row 25)"
+      ],
+      "failure_contains": "strict resource authorization result"
+    },
+    {
+      "id": "system-claim-worker-request-crosses-downstream",
+      "source_file": "atc/api/auth/check_worker_team_access_handler.go",
+      "old": "\tif acc.IsSystem() || acc.IsAdmin() {",
+      "new": "\tif acc.IsAdmin() {",
+      "tests": ["CheckWorkerTeamAccessHandler when authenticated when worker exists and belongs to a team when the token carries the system claim calls worker delegate"],
+      "scenarios": ["Strict resource authorization profile <profile> preserves <source> (row 20)"],
+      "failure_contains": "strict resource authorization result"
+    },
+    {
+      "id": "matching-worker-team-is-authorized",
+      "source_file": "atc/api/auth/check_worker_team_access_handler.go",
+      "old": "\tif worker.TeamName() != \"\" && acc.IsAuthorized(worker.TeamName()) {",
+      "new": "\tif worker.TeamName() != \"\" && false && acc.IsAuthorized(worker.TeamName()) {",
+      "tests": ["CheckWorkerTeamAccessHandler when authenticated when worker exists and belongs to a team when team in auth matches worker team calls worker delegate"],
+      "scenarios": ["Strict resource authorization profile <profile> preserves <source> (row 21)"],
+      "failure_contains": "strict resource authorization result"
+    },
+    {
+      "id": "other-worker-team-is-forbidden",
+      "source_file": "atc/api/auth/check_worker_team_access_handler.go",
+      "old": "\tif worker.TeamName() != \"\" && acc.IsAuthorized(worker.TeamName()) {",
+      "new": "\tif worker.TeamName() != \"\" {",
+      "tests": [
+        "CheckWorkerTeamAccessHandler when authenticated when worker exists and belongs to a team when team in auth does not match worker team does not call worker delegate",
+        "CheckWorkerTeamAccessHandler when authenticated when worker exists and belongs to a team when team in auth does not match worker team returns 403 Forbidden"
+      ],
+      "scenarios": [
+        "Strict resource authorization profile <profile> preserves <source> (row 22)",
+        "Strict resource authorization profile <profile> preserves <source> (row 23)"
+      ],
+      "failure_contains": "strict resource authorization result"
+    },
+    {
+      "id": "global-worker-requires-admin-or-system",
+      "source_file": "atc/api/auth/check_worker_team_access_handler.go",
+      "old": "\tif worker.TeamName() != \"\" && acc.IsAuthorized(worker.TeamName()) {",
+      "new": "\tif worker.TeamName() == \"\" || (worker.TeamName() != \"\" && acc.IsAuthorized(worker.TeamName())) {",
+      "tests": [
+        "CheckWorkerTeamAccessHandler when authenticated when worker is not owned by a team when user is not admin/system does not call worker delegate",
+        "CheckWorkerTeamAccessHandler when authenticated when worker is not owned by a team when user is not admin/system returns 403 Forbidden"
+      ],
+      "scenarios": [
+        "Strict resource authorization profile <profile> preserves <source> (row 26)",
+        "Strict resource authorization profile <profile> preserves <source> (row 27)"
+      ],
+      "failure_contains": "strict resource authorization result"
+    },
+    {
+      "id": "missing-worker-stops-before-downstream",
+      "source_file": "atc/api/auth/check_worker_team_access_handler.go",
+      "old": "\tif !found {\n\t\tw.WriteHeader(http.StatusNotFound)\n\t\treturn\n\t}",
+      "new": "\tif !found {\n\t\th.delegateHandler.ServeHTTP(w, r)\n\t\treturn\n\t}",
+      "tests": [
+        "CheckWorkerTeamAccessHandler when authenticated when worker does not exist does not call worker delegate",
+        "CheckWorkerTeamAccessHandler when authenticated when worker does not exist returns 404 Not found"
+      ],
+      "scenarios": [
+        "Strict resource authorization profile <profile> preserves <source> (row 28)",
+        "Strict resource authorization profile <profile> preserves <source> (row 29)"
+      ],
+      "failure_contains": "strict resource authorization result"
+    }
+  ]
+}

@@ -1,0 +1,75 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/api-resource-auth-pipeline-strict.json",
+  "git_head": "7bd9c0816fe6ba3779a949fd3f4c88d216941f47",
+  "completed_at": "2026-09-01T07:37:45Z",
+  "source_tests": 9,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "pipeline-team-missing-is-not-found",
+      "mutation_sha256": "3769a434a33e1f909918a168142ecb4b852f72d5089ebb64a2f1d62f69037ff2",
+      "failed_source_tests": [
+        "CheckPipelineAccessHandler When team is not returned when team is not found returns not found error"
+      ],
+      "failed_brine_scenarios": [
+        "Strict resource authorization profile \u003cprofile\u003e preserves \u003csource\u003e (row 1)"
+      ]
+    },
+    {
+      "id": "public-pipeline-crosses-access-boundary",
+      "mutation_sha256": "e67e3439daefe354fea1487fcaf72a8560f4a58de767f2b334c192dbce8dd18e",
+      "failed_source_tests": [
+        "CheckPipelineAccessHandler when pipeline exists when pipeline is public calls pipelineScopedHandler with pipelineDB in context",
+        "CheckPipelineAccessHandler when pipeline exists when pipeline is public returns 200 OK"
+      ],
+      "failed_brine_scenarios": [
+        "Strict resource authorization profile \u003cprofile\u003e preserves \u003csource\u003e (row 2)",
+        "Strict resource authorization profile \u003cprofile\u003e preserves \u003csource\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "authorized-private-pipeline-crosses-access-boundary",
+      "mutation_sha256": "1eb0e3e20379a7cde65dbcea76f9c0f203fb200738744e70d18f1aebb2391dad",
+      "failed_source_tests": [
+        "CheckPipelineAccessHandler when pipeline exists when pipeline is private and authorized calls pipelineScopedHandler with pipelineDB in context",
+        "CheckPipelineAccessHandler when pipeline exists when pipeline is private and authorized returns 200 OK"
+      ],
+      "failed_brine_scenarios": [
+        "Strict resource authorization profile \u003cprofile\u003e preserves \u003csource\u003e (row 4)",
+        "Strict resource authorization profile \u003cprofile\u003e preserves \u003csource\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "authenticated-private-pipeline-denial-is-forbidden",
+      "mutation_sha256": "6c657b5f85d23ed3bee6a25a9a9b7ffeb1e17df75ba4af18459395f1611f13a9",
+      "failed_source_tests": [
+        "CheckPipelineAccessHandler when pipeline exists when pipeline is private and unauthorized and is authenticated returns 403 Forbidden"
+      ],
+      "failed_brine_scenarios": [
+        "Strict resource authorization profile \u003cprofile\u003e preserves \u003csource\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "anonymous-private-pipeline-denial-is-unauthorized",
+      "mutation_sha256": "0a13f90b3f40ee38fe498e36195eb342e9d0771e06b135e11b652cc6e3271c29",
+      "failed_source_tests": [
+        "CheckPipelineAccessHandler when pipeline exists when pipeline is private and unauthorized and not authenticated returns 401 Unauthorized"
+      ],
+      "failed_brine_scenarios": [
+        "Strict resource authorization profile \u003cprofile\u003e preserves \u003csource\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "missing-pipeline-stops-before-downstream",
+      "mutation_sha256": "50ffe928941b27949745a2f27022e241c350d0ad34c845c87247ece04f1a49cb",
+      "failed_source_tests": [
+        "CheckPipelineAccessHandler when pipeline does not exist does not call the scoped handler",
+        "CheckPipelineAccessHandler when pipeline does not exist returns 404"
+      ],
+      "failed_brine_scenarios": [
+        "Strict resource authorization profile \u003cprofile\u003e preserves \u003csource\u003e (row 8)",
+        "Strict resource authorization profile \u003cprofile\u003e preserves \u003csource\u003e (row 9)"
+      ]
+    }
+  ]
+}

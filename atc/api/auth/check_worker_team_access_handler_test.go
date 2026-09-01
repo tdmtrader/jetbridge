@@ -3,7 +3,6 @@ package auth_test
 import (
 	"net/http"
 	"net/http/httptest"
-	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
@@ -82,134 +81,9 @@ var _ = Describe("CheckWorkerTeamAccessHandler", func() {
 		server.Close()
 	})
 
-	Context("when not authenticated", func() {
-		It("returns 401", func() {
-			Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-		})
-
-		It("does not call the scoped handler", func() {
-			Expect(delegate.IsCalled).To(BeFalse())
-		})
-	})
-
 	Context("when authenticated", func() {
 		BeforeEach(func() {
 			authorization = validAccessToken()
-		})
-
-		Context("when worker exists and belongs to a team", func() {
-			var team db.Team
-
-			BeforeEach(func() {
-				// A worker saved through a team is owned by it; that ownership is
-				// the column the handler authorizes against.
-				team = createTeam("some-team")
-				_, err := team.SaveWorker(
-					atc.Worker{Name: "some-worker", Platform: "linux"}, 5*time.Minute,
-				)
-				Expect(err).NotTo(HaveOccurred())
-			})
-
-			Context("when user is admin/system", func() {
-				BeforeEach(func() {
-					makeAdmin(team)
-				})
-
-				It("calls worker delegate", func() {
-					Expect(delegate.IsCalled).To(BeTrue())
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
-				})
-				It("returns 200", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
-				})
-			})
-
-			Context("when the token carries the system claim", func() {
-				BeforeEach(func() {
-					authorization = systemAccessToken()
-				})
-
-				It("calls worker delegate", func() {
-					Expect(delegate.IsCalled).To(BeTrue())
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
-				})
-			})
-
-			Context("when team in auth matches worker team", func() {
-				BeforeEach(func() {
-					grantRole(team, accessor.MemberRole)
-				})
-
-				It("calls worker delegate", func() {
-					Expect(delegate.IsCalled).To(BeTrue())
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
-				})
-			})
-
-			Context("when team in auth does not match worker team", func() {
-				BeforeEach(func() {
-					grantRole(createTeam("some-other-team"), accessor.MemberRole)
-				})
-
-				It("does not call worker delegate", func() {
-					Expect(delegate.IsCalled).To(BeFalse())
-				})
-
-				It("returns 403 Forbidden", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
-				})
-			})
-		})
-
-		Context("when worker is not owned by a team", func() {
-			BeforeEach(func() {
-				// Saved through the factory rather than a team: a global worker,
-				// belonging to no one.
-				_, err := workerFactory.SaveWorker(
-					atc.Worker{Name: "some-worker", Platform: "linux"}, 5*time.Minute,
-				)
-				Expect(err).NotTo(HaveOccurred())
-			})
-
-			Context("when user is admin/system", func() {
-				BeforeEach(func() {
-					makeAdmin(createTeam("some-team"))
-				})
-
-				It("calls worker delegate", func() {
-					Expect(delegate.IsCalled).To(BeTrue())
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
-				})
-				It("returns 200", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
-				})
-			})
-
-			Context("when user is not admin/system", func() {
-				BeforeEach(func() {
-					grantRole(createTeam("some-team"), accessor.MemberRole)
-				})
-
-				It("does not call worker delegate", func() {
-					Expect(delegate.IsCalled).To(BeFalse())
-				})
-
-				It("returns 403 Forbidden", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
-				})
-			})
-		})
-
-		Context("when worker does not exist", func() {
-			// No worker is registered, so the lookup misses.
-
-			It("does not call worker delegate", func() {
-				Expect(delegate.IsCalled).To(BeFalse())
-			})
-
-			It("returns 404 Not found", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-			})
 		})
 
 		Context("when getting worker fails", func() {

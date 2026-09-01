@@ -20,8 +20,6 @@ var _ = Describe("CheckPipelineAccessHandler", func() {
 		server   *httptest.Server
 		delegate *pipelineDelegateHandler
 		factory  db.TeamFactory
-		team     db.Team
-		pipeline db.Pipeline
 		handler  http.Handler
 
 		// set by a Context to give the request a token; "" leaves it anonymous
@@ -32,8 +30,7 @@ var _ = Describe("CheckPipelineAccessHandler", func() {
 		// The handler resolves ?:team_name and ?:pipeline_name against rows, so
 		// each Context sets up (or omits) what those names should find.
 		factory = teamFactory
-		team = createTeam("some-team")
-		pipeline = nil
+		createTeam("some-team")
 		authorization = ""
 
 		delegate = &pipelineDelegateHandler{}
@@ -81,99 +78,6 @@ var _ = Describe("CheckPipelineAccessHandler", func() {
 			It("returns an internal server error", func() {
 				Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 			})
-		})
-		Context("when team is not found", func() {
-			BeforeEach(func() {
-				Expect(team.Delete()).To(Succeed())
-			})
-			It("returns not found error", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-			})
-		})
-
-	})
-
-	Context("when pipeline exists", func() {
-		BeforeEach(func() {
-			pipeline = createPipeline(team, "some-pipeline")
-		})
-
-		Context("when pipeline is public", func() {
-			BeforeEach(func() {
-				// Visibility is a column, not a config field: Expose() is what
-				// makes a pipeline public.
-				Expect(pipeline.Expose()).To(Succeed())
-			})
-
-			It("calls pipelineScopedHandler with pipelineDB in context", func() {
-				Expect(delegate.IsCalled).To(BeTrue())
-				Expect(delegate.ContextPipelineDB.ID()).To(Equal(pipeline.ID()))
-			})
-
-			It("returns 200 OK", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusOK))
-			})
-		})
-
-		Context("when pipeline is private", func() {
-			BeforeEach(func() {
-				Expect(pipeline.Hide()).To(Succeed())
-			})
-
-			Context("and authorized", func() {
-				BeforeEach(func() {
-					authorization = validAccessToken()
-					grantRole(team, accessor.ViewerRole)
-				})
-
-				It("calls pipelineScopedHandler with pipelineDB in context", func() {
-					Expect(delegate.IsCalled).To(BeTrue())
-					Expect(delegate.ContextPipelineDB.ID()).To(Equal(pipeline.ID()))
-				})
-
-				It("returns 200 OK", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
-				})
-			})
-
-			Context("and unauthorized", func() {
-				BeforeEach(func() {
-					// The role is granted on another team entirely, so the
-					// request's team resolves to no role at all.
-					grantRole(createTeam("some-other-team"), accessor.ViewerRole)
-				})
-
-				Context("and is authenticated", func() {
-					BeforeEach(func() {
-						authorization = validAccessToken()
-					})
-
-					It("returns 403 Forbidden", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusForbidden))
-					})
-				})
-
-				Context("and not authenticated", func() {
-					It("returns 401 Unauthorized", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-					})
-				})
-			})
-		})
-	})
-
-	Context("when pipeline does not exist", func() {
-		BeforeEach(func() {
-			// The team owns a differently-named pipeline, so the lookup misses.
-			createPipeline(team, "some-other-pipeline")
-		})
-
-		It("returns 404", func() {
-			Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-		})
-
-		It("does not call the scoped handler", func() {
-			Expect(delegate.IsCalled).To(BeFalse())
 		})
 	})
 

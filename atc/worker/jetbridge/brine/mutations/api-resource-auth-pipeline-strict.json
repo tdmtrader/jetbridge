@@ -1,0 +1,84 @@
+{
+  "name": "api-resource-auth-pipeline-strict",
+  "test_package": "./atc/api/auth",
+  "source_test_file": "atc/api/auth/check_pipeline_access_handler_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/api-resource-auth.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/api_resource_auth.go",
+    "atc/worker/jetbridge/brine/steps/api_resource_auth_strict.go"
+  ],
+  "cases": [
+    {
+      "id": "pipeline-team-missing-is-not-found",
+      "source_file": "atc/api/auth/check_pipeline_access_handler.go",
+      "old": "\tif !found {\n\t\tw.WriteHeader(http.StatusNotFound)\n\t\treturn\n\t}\n\n\tpipeline, found, err := team.Pipeline(pipelineRef)",
+      "new": "\tif !found {\n\t\tw.WriteHeader(http.StatusInternalServerError)\n\t\treturn\n\t}\n\n\tpipeline, found, err := team.Pipeline(pipelineRef)",
+      "tests": ["CheckPipelineAccessHandler When team is not returned when team is not found returns not found error"],
+      "scenarios": ["Strict resource authorization profile <profile> preserves <source> (row 1)"],
+      "failure_contains": "strict resource authorization result"
+    },
+    {
+      "id": "public-pipeline-crosses-access-boundary",
+      "source_file": "atc/api/auth/check_pipeline_access_handler.go",
+      "old": "\tif acc.IsAuthorized(teamName) || pipeline.Public() {",
+      "new": "\tif acc.IsAuthorized(teamName) {",
+      "tests": [
+        "CheckPipelineAccessHandler when pipeline exists when pipeline is public calls pipelineScopedHandler with pipelineDB in context",
+        "CheckPipelineAccessHandler when pipeline exists when pipeline is public returns 200 OK"
+      ],
+      "scenarios": [
+        "Strict resource authorization profile <profile> preserves <source> (row 2)",
+        "Strict resource authorization profile <profile> preserves <source> (row 3)"
+      ],
+      "failure_contains": "strict resource authorization result"
+    },
+    {
+      "id": "authorized-private-pipeline-crosses-access-boundary",
+      "source_file": "atc/api/auth/check_pipeline_access_handler.go",
+      "old": "\tif acc.IsAuthorized(teamName) || pipeline.Public() {",
+      "new": "\tif pipeline.Public() {",
+      "tests": [
+        "CheckPipelineAccessHandler when pipeline exists when pipeline is private and authorized calls pipelineScopedHandler with pipelineDB in context",
+        "CheckPipelineAccessHandler when pipeline exists when pipeline is private and authorized returns 200 OK"
+      ],
+      "scenarios": [
+        "Strict resource authorization profile <profile> preserves <source> (row 4)",
+        "Strict resource authorization profile <profile> preserves <source> (row 5)"
+      ],
+      "failure_contains": "strict resource authorization result"
+    },
+    {
+      "id": "authenticated-private-pipeline-denial-is-forbidden",
+      "source_file": "atc/api/auth/check_pipeline_access_handler.go",
+      "old": "\th.rejector.Forbidden(w, r)\n}",
+      "new": "\th.rejector.Unauthorized(w, r)\n}",
+      "tests": ["CheckPipelineAccessHandler when pipeline exists when pipeline is private and unauthorized and is authenticated returns 403 Forbidden"],
+      "scenarios": ["Strict resource authorization profile <profile> preserves <source> (row 6)"],
+      "failure_contains": "strict resource authorization result"
+    },
+    {
+      "id": "anonymous-private-pipeline-denial-is-unauthorized",
+      "source_file": "atc/api/auth/check_pipeline_access_handler.go",
+      "old": "\tif !acc.IsAuthenticated() {\n\t\th.rejector.Unauthorized(w, r)\n\t\treturn\n\t}",
+      "new": "\tif !acc.IsAuthenticated() {\n\t\th.rejector.Forbidden(w, r)\n\t\treturn\n\t}",
+      "tests": ["CheckPipelineAccessHandler when pipeline exists when pipeline is private and unauthorized and not authenticated returns 401 Unauthorized"],
+      "scenarios": ["Strict resource authorization profile <profile> preserves <source> (row 7)"],
+      "failure_contains": "strict resource authorization result"
+    },
+    {
+      "id": "missing-pipeline-stops-before-downstream",
+      "source_file": "atc/api/auth/check_pipeline_access_handler.go",
+      "old": "\tpipeline, found, err := team.Pipeline(pipelineRef)\n\tif err != nil {\n\t\tw.WriteHeader(http.StatusInternalServerError)\n\t\treturn\n\t}\n\n\tif !found {\n\t\tw.WriteHeader(http.StatusNotFound)\n\t\treturn\n\t}",
+      "new": "\tpipeline, found, err := team.Pipeline(pipelineRef)\n\tif err != nil {\n\t\tw.WriteHeader(http.StatusInternalServerError)\n\t\treturn\n\t}\n\n\tif !found {\n\t\tw.WriteHeader(http.StatusInternalServerError)\n\t\th.delegateHandler.ServeHTTP(w, r)\n\t\treturn\n\t}",
+      "tests": [
+        "CheckPipelineAccessHandler when pipeline does not exist returns 404",
+        "CheckPipelineAccessHandler when pipeline does not exist does not call the scoped handler"
+      ],
+      "scenarios": [
+        "Strict resource authorization profile <profile> preserves <source> (row 8)",
+        "Strict resource authorization profile <profile> preserves <source> (row 9)"
+      ],
+      "failure_contains": "strict resource authorization result"
+    }
+  ]
+}
