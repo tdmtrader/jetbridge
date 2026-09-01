@@ -22,19 +22,19 @@ scenario fail is also not evidence.
 
 | quantity | source leaf tests | percentage of 6,857 |
 |---|---:|---:|
-| **fully migrated**: paired failure evidence, no prohibited double, source removed | **963** | **14.04%** |
+| **fully migrated**: paired failure evidence, no prohibited double, source removed | **965** | **14.07%** |
 | strict paired evidence, but source still present | 0 | 0.00% |
 | **runs in Brine but not the full philosophy**: paired failure evidence, but uses a stub, test sink, injected-fault object, fake, or mock | **112** | **1.63%** |
 | of the preceding exception bucket whose source test was removed | 66 | 0.96% |
-| total source tests with paired per-test failure evidence | 1,075 | 15.68% |
-| former claimed tests with no admissible paired evidence | 984 | 14.35% |
+| total source tests with paired per-test failure evidence | 1,077 | 15.71% |
+| former claimed tests with no admissible paired evidence | 982 | 14.32% |
 | Brine scenarios | 1,877 | execution count only |
 
-The requested two headline percentages are therefore **14.04% fully migrated**
+The requested two headline percentages are therefore **14.07% fully migrated**
 and **1.63% validated but running outside the full philosophy**. The second is
 not another migration percentage: 46 of its 112 source tests still exist. If
 "migrated" is restricted to removed source tests in both buckets, the figures
-are 14.04% strict and 0.96% philosophy-exception.
+are 14.07% strict and 0.96% philosophy-exception.
 
 ## Admitted evidence ledger
 
@@ -93,7 +93,7 @@ production-logger resource path.
 | `go-concourse/concourse/pipelines_test.go` strict real-server client subset | 14 | 14 | 0 | 14 |
 | `db/build_in_memory_check_test.go` production in-memory-build domain | 24 | 24 | 0 | 24 |
 | `api/jobs_test.go` production ClearTaskCache API subset | 5 | 5 | 0 | 5 |
-| `api/jobs_test.go` production manual-build guard subset **†** | 2 | 2 | 0 | 2 |
+| `api/jobs_test.go` production manual-build guard subset | 2 | 2 | 0 | 2 |
 | `go-concourse/concourse/builds_test.go` strict real-server client subset | 16 | 16 | 0 | 16 |
 | `api/builds_test.go` strict real-server build API subset | 9 | 9 | 0 | 9 |
 | `api/jobs_test.go` strict real-server exact-build API subset | 4 | 4 | 0 | 4 |
@@ -101,7 +101,7 @@ production-logger resource path.
 | `scanner_test.go` | 14 | 0 | 14 | 14 |
 | durable-storage, volume-DaemonSet, and behavioral-permutation campaign | 44 | 0 | 44 | 44 |
 | daemonset-integration and daemon-client retained cases | 46 | 0 | 46 | 0 |
-| **admitted total († rows excluded)** | **1,075** | **963** | **112** | **1,029** |
+| **admitted total († rows excluded)** | **1,077** | **965** | **112** | **1,031** |
 
 ### Superseded sink-free revalidation
 

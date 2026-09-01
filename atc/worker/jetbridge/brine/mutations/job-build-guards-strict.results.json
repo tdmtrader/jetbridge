@@ -1,7 +1,7 @@
 {
   "manifest": "atc/worker/jetbridge/brine/mutations/job-build-guards-strict.json",
-  "git_head": "7905430ec793d4bc5e79d4ba332e90706e07ff77",
-  "completed_at": "2026-09-01T11:56:09Z",
+  "git_head": "f09d5d9366e1100fe9568bf01e88ce1eb7997f92",
+  "completed_at": "2026-09-01T13:59:51Z",
   "source_tests": 2,
   "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
   "mutation_cases": [
