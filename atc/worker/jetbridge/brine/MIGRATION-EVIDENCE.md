@@ -22,27 +22,21 @@ scenario fail is also not evidence.
 
 | quantity | source leaf tests | percentage of 6,857 |
 |---|---:|---:|
-| **fully migrated**: paired failure evidence, no prohibited double, source removed | **1,012** | **14.76%** |
+| **fully migrated**: paired failure evidence, no prohibited double, source removed | **1,032** | **15.05%** |
 | strict paired evidence, but source still present | 0 | 0.00% |
 | **runs in Brine but not the full philosophy**: paired failure evidence, but uses a stub, test sink, injected-fault object, fake, or mock | **112** | **1.63%** |
 | of the preceding exception bucket whose source test was removed | 66 | 0.96% |
-| total source tests with paired per-test failure evidence | 1,124 | 16.39% |
-| former claimed tests with no admissible paired evidence | 935 | 13.64% |
+| total source tests with paired per-test failure evidence | 1,144 | 16.68% |
+| former claimed tests with no admissible paired evidence | 915 | 13.34% |
 | Brine scenarios | 1,877 | execution count only |
 
-The requested two headline percentages are therefore **14.76% fully migrated**
+The requested two headline percentages are therefore **15.05% fully migrated**
 and **1.63% validated but running outside the full philosophy**. The second is
 not another migration percentage: 46 of its 112 source tests still exist. If
 "migrated" is restricted to removed source tests in both buckets, the figures
-are 14.76% strict and 0.96% philosophy-exception.
+are 15.05% strict and 0.96% philosophy-exception.
 
 ## Admitted evidence ledger
-
-Rows marked **†** had exact mutation pairing, but are temporarily excluded
-from the totals. Their Brine resource path was later found to instantiate
-`lagertest.NewTestLogger` transitively through `postgresrunner.OpenConn`.
-They return to the admitted total only after complete revalidation against the
-production-logger resource path.
 
 | cohort | paired source/Brine failures | strict | exception | source removed |
 |---|---:|---:|---:|---:|
@@ -60,7 +54,7 @@ production-logger resource path.
 | `db/build_test.go` strict real-PostgreSQL subset | 27 | 27 | 0 | 27 |
 | `db/pipeline_test.go` strict real-PostgreSQL subset | 24 | 24 | 0 | 24 |
 | `db/job_test.go` strict real-PostgreSQL subset | 35 | 35 | 0 | 35 |
-| `db/worker_factory_test.go` real-PostgreSQL production-cache suite **†** | 20 | 20 | 0 | 20 |
+| `db/worker_factory_test.go` real-PostgreSQL production-cache suite | 20 | 20 | 0 | 20 |
 | `db/resource_config_scope_test.go` real-PostgreSQL resource-scope domain | 23 | 23 | 0 | 23 |
 | `db/container_test.go` strict real-PostgreSQL subset | 17 | 17 | 0 | 17 |
 | `db/component_notifications_test.go` | 21 | 21 | 0 | 21 |
@@ -101,46 +95,31 @@ production-logger resource path.
 | `scanner_test.go` | 14 | 0 | 14 | 14 |
 | durable-storage, volume-DaemonSet, and behavioral-permutation campaign | 44 | 0 | 44 | 44 |
 | daemonset-integration and daemon-client retained cases | 46 | 0 | 46 | 0 |
-| **admitted total († rows excluded)** | **1,124** | **1,012** | **112** | **1,078** |
+| **total** | **1,144** | **1,032** | **112** | **1,098** |
 
-### Superseded sink-free revalidation
+### Completed production-logger revalidation
 
-The scenario-scoped `jetbridge-db` resource previously called
-`dbtest.NewBuilder`, which constructed a `lagertest` logger even when the
-scenario's own step never used the Builder. The resource now constructs the
-same exported Builder factory surface with an ordinary production logger and
-`db.NewWorkerCache`. All exact 22 affected manifests were rerun in full from
-mutation case 1 against restored historical source leaves and the sink-free
-resource plane. The three terminal batches recorded 243 production mutation
-cases and 421 individually paired source/Brine failures: batch A, 82 cases
-(`192179406`); batch B, 69 cases (`e3029c15e`); and batch C, 92 cases
-(`ff59ff22d`). That campaign did not trace the independent
-`postgresrunner.OpenConn` call, which still instantiated a test logger for the
-scenario connection. Its results are therefore withdrawn pending a complete
-rerun through `db.Open` with a production logger. The affected manifests are:
+A dependency-closure review found that scenario-scoped `jetbridge-db` still
+called `postgresrunner.OpenConn`, which instantiated
+`lagertest.NewTestLogger` even after the earlier Builder correction. Commit
+`aef6c0fe7` changed both scenario and clone connections to call production
+`db.Open` with an ordinary `lager.NewLogger`; Brine no longer traverses the
+Ginkgo connection wrapper or its join validator.
 
-- `accessor-profiles-strict.results.json` (38)
-- `api-auth-admin-strict.results.json` (4)
-- `api-auth-authentication-strict.results.json` (10)
-- `api-auth-authorization-strict.results.json` (4)
-- `api-config-strict.results.json` (73)
-- `api-resource-auth-build-strict.results.json` (6)
-- `api-resource-auth-pipeline-strict.results.json` (9)
-- `api-resource-auth-worker-strict.results.json` (14)
-- `cc-api-strict.results.json` (14)
-- `cli-api-strict.results.json` (12)
-- `component-notifications-strict.results.json` (21)
-- `container-domain-strict.results.json` (17)
-- `db-build-strict.results.json` (27)
-- `db-team-strict.results.json` (18)
-- `idtoken-generator-strict.results.json` (15)
-- `job-domain-strict.results.json` (35)
-- `notification-bus-domain-strict.results.json` (11)
-- `pipeline-domain-strict.results.json` (24)
-- `resource-scope-domain-strict.results.json` (23)
-- `users-api-strict.results.json` (12)
-- `wall-api-strict.results.json` (14)
-- `worker-factory-domain-strict.results.json` (20)
+All 33 previously admitted DB-backed manifests were then rerun completely
+from mutation case 1 against restored historical source leaves. The three
+terminal batches recorded 336 production mutation cases and 562 individually
+paired source/Brine failures, with exact dry-run name checks before every
+manifest and clean reversal of every temporary source overlay:
+
+- API/auth batch: 12 manifests, 80 cases, 210 leaves;
+- database/domain batch: 10 manifests, 163 cases, 211 leaves; and
+- recent client/domain batch: 11 manifests, 93 cases, 141 leaves.
+
+The three new build-client manifests were independently rerun after the same
+resource correction: 17 cases and 29 exact leaves, followed by survivor runs
+of 138/138 client specs and 622/622 API specs and clean Brine runs of 16/16,
+9/9, and 4/4. No pre-correction result contributes to the strict total.
 
 The accessor correction uses a natural mutation of the production user-ID
 match branch. Its historical "granted the same role multiple times" source
@@ -148,12 +127,6 @@ leaf asserts only that the role is present when both user and group
 authorization match; it does not prove uniqueness. The corrected manifest and
 evidence claim that actual role-presence behavior, not a stronger deduplication
 property.
-
-After the mutation reruns, all 18 affected features were executed against the
-clean adapter and passed 421/421 with terminal `run_end` records in
-`.brine-runs` (runs `01M1E5MX8D7NR3EX4KVZ0EBPE5` through
-`01M1E5S44R2JSA4GYSBBPVC9EH`). This targeted run is the execution check for
-the promoted cohorts.
 
 Why the exception rows are exceptions:
 
@@ -170,12 +143,11 @@ component.
 
 ## What does not count
 
-The other 1,085 tests in the former numerator have source references and green
+The other 915 tests in the former numerator have source references and green
 scenarios, but no admissible record of the individual old test and its Brine
-replacement failing on the same production defect. This includes all recent
-client/API/domain cross-layer counts, exact-status claims, and the 39 source
-tests named by `pipeline-retention.feature`; that feature explicitly records
-that its Ginkgo half was never run.
+replacement failing on the same production defect. The 39 source tests named
+by `pipeline-retention.feature` remain an example: that feature explicitly
+records that its Ginkgo half was never run.
 
 The starting 300-odd Brine scenarios are not all in that numerator merely
 because they were mutation-tested. They were tested for scenario
