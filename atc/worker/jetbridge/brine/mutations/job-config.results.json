@@ -1,0 +1,111 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/job-config.json",
+  "git_head": "e04145c3f98e90a91f641601ee77113321ada38d",
+  "completed_at": "2026-09-01T03:05:49Z",
+  "source_tests": 23,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "mutation_cases": [
+    {
+      "id": "raw-max-in-flight-is-returned",
+      "mutation_sha256": "3f67cdfb9bf4690e53fd8e1132f85b90645e7ac820a7032043d32d273d89bbc1",
+      "failed_source_tests": [
+        "JobConfig MaxInFlight returns the raw MaxInFlight if set"
+      ],
+      "failed_brine_scenarios": [
+        "Max-in-flight profile \u003cprofile\u003e returns \u003cresult\u003e (row 1)"
+      ]
+    },
+    {
+      "id": "serial-settings-limit-concurrency",
+      "mutation_sha256": "d88bf620525d5df4bcee18696e46ee96455d34c5745b3d15b257d478b412e1f4",
+      "failed_source_tests": [
+        "JobConfig MaxInFlight returns 1 if Serial is true or SerialGroups has items in it",
+        "JobConfig MaxInFlight returns 1 if Serial is true or SerialGroups has items in it, even if raw MaxInFlight is set"
+      ],
+      "failed_brine_scenarios": [
+        "Max-in-flight profile \u003cprofile\u003e returns \u003cresult\u003e (row 2)",
+        "Max-in-flight profile \u003cprofile\u003e returns \u003cresult\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "unset-max-in-flight-is-unlimited",
+      "mutation_sha256": "b40f5bc5da98dd228415d34bce15e4d535db815a4884b752a0cd7547fad84ce0",
+      "failed_source_tests": [
+        "JobConfig MaxInFlight returns 0 if MaxInFlight is not set, Serial is false, and SerialGroups is empty"
+      ],
+      "failed_brine_scenarios": [
+        "Max-in-flight profile \u003cprofile\u003e returns \u003cresult\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "input-get-fields-are-preserved",
+      "mutation_sha256": "f49ecc84bd3d0ba18870ddfe179d755f73ec2e9181d1fdb5f77cf3a45057ab4b",
+      "failed_source_tests": [
+        "JobConfig Inputs with a build plan when a job has a failure hook returns an input config for all get plans",
+        "JobConfig Inputs with a build plan when a job has a success hook returns an input config for all get plans",
+        "JobConfig Inputs with a build plan when a job has an abort hook returns an input config for all get plans",
+        "JobConfig Inputs with a build plan when a job has an ensure hook returns an input config for all get plans",
+        "JobConfig Inputs with a build plan when a job has an error hook returns an input config for all get plans",
+        "JobConfig Inputs with a build plan when a plan has a version on a get returns an input config with the version",
+        "JobConfig Inputs with a build plan when a resource is specified uses it as resource in the input config",
+        "JobConfig Inputs with a build plan when a simple in_parallel plan is the first step returns an input config for all get plans",
+        "JobConfig Inputs with a build plan with two serial gets uses both for inputs"
+      ],
+      "failed_brine_scenarios": [
+        "Input profile \u003cprofile\u003e derives \u003cinputs\u003e (row 10)",
+        "Input profile \u003cprofile\u003e derives \u003cinputs\u003e (row 2)",
+        "Input profile \u003cprofile\u003e derives \u003cinputs\u003e (row 3)",
+        "Input profile \u003cprofile\u003e derives \u003cinputs\u003e (row 4)",
+        "Input profile \u003cprofile\u003e derives \u003cinputs\u003e (row 5)",
+        "Input profile \u003cprofile\u003e derives \u003cinputs\u003e (row 6)",
+        "Input profile \u003cprofile\u003e derives \u003cinputs\u003e (row 7)",
+        "Input profile \u003cprofile\u003e derives \u003cinputs\u003e (row 8)",
+        "Input profile \u003cprofile\u003e derives \u003cinputs\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "plans-without-gets-have-no-inputs",
+      "mutation_sha256": "f1ea6600e40b05a15b2f1139ac9e37dda86a3d5cbd8d79836116680d1920ebd2",
+      "failed_source_tests": [
+        "JobConfig Inputs with a build plan when there are no gets in the plan returns an empty set of inputs",
+        "JobConfig Inputs with a build plan with an empty plan returns an empty set of inputs"
+      ],
+      "failed_brine_scenarios": [
+        "Input profile \u003cprofile\u003e derives \u003cinputs\u003e (row 1)",
+        "Input profile \u003cprofile\u003e derives \u003cinputs\u003e (row 11)"
+      ]
+    },
+    {
+      "id": "output-put-fields-are-preserved",
+      "mutation_sha256": "4e8cd478355fa6e40bf9fbfaab17927b611d45d7a9eaeabf8ba49e5c04ba155d",
+      "failed_source_tests": [
+        "JobConfig Outputs when a job has a failure hook returns an input config for all get plans",
+        "JobConfig Outputs when a job has a success hook returns an input config for all get plans",
+        "JobConfig Outputs when a job has an abort hook returns an input config for all get plans",
+        "JobConfig Outputs when a job has an ensure hook returns an input config for all get plans",
+        "JobConfig Outputs when a job has an error hook returns an input config for all get plans",
+        "JobConfig Outputs with a build plan when a simple plan is configured returns an output for all of the put plans present"
+      ],
+      "failed_brine_scenarios": [
+        "Output profile \u003cprofile\u003e derives \u003coutputs\u003e (row 2)",
+        "Output profile \u003cprofile\u003e derives \u003coutputs\u003e (row 3)",
+        "Output profile \u003cprofile\u003e derives \u003coutputs\u003e (row 4)",
+        "Output profile \u003cprofile\u003e derives \u003coutputs\u003e (row 5)",
+        "Output profile \u003cprofile\u003e derives \u003coutputs\u003e (row 6)",
+        "Output profile \u003cprofile\u003e derives \u003coutputs\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "plans-without-puts-have-no-outputs",
+      "mutation_sha256": "3f88c33d64dd19ed0caf5c33d8bf6ddb44caafd67e7ef25d4154c5a54a027b17",
+      "failed_source_tests": [
+        "JobConfig Outputs when the plan contains no puts steps returns an empty set of outputs",
+        "JobConfig Outputs with a build plan with an empty plan returns an empty set of outputs"
+      ],
+      "failed_brine_scenarios": [
+        "Output profile \u003cprofile\u003e derives \u003coutputs\u003e (row 1)",
+        "Output profile \u003cprofile\u003e derives \u003coutputs\u003e (row 8)"
+      ]
+    }
+  ]
+}

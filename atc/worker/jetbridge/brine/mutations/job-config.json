@@ -1,0 +1,134 @@
+{
+  "name": "job-config-behavior",
+  "test_package": "./atc",
+  "source_test_file": "atc/job_config_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/job-config-behavior.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/job_config_behavior.go"
+  ],
+  "cases": [
+    {
+      "id": "raw-max-in-flight-is-returned",
+      "source_file": "atc/job_config.go",
+      "old": "return config.RawMaxInFlight\n",
+      "new": "return config.RawMaxInFlight + 1\n",
+      "tests": [
+        "JobConfig MaxInFlight returns the raw MaxInFlight if set"
+      ],
+      "scenarios": [
+        "Max-in-flight profile <profile> returns <result> (row 1)"
+      ],
+      "failure_contains": "expected job config result"
+    },
+    {
+      "id": "serial-settings-limit-concurrency",
+      "source_file": "atc/job_config.go",
+      "old": "if config.Serial || len(config.SerialGroups) > 0 {\n\t\treturn 1\n\t}",
+      "new": "if config.Serial || len(config.SerialGroups) > 0 {\n\t\treturn 2\n\t}",
+      "tests": [
+        "JobConfig MaxInFlight returns 1 if Serial is true or SerialGroups has items in it",
+        "JobConfig MaxInFlight returns 1 if Serial is true or SerialGroups has items in it, even if raw MaxInFlight is set"
+      ],
+      "scenarios": [
+        "Max-in-flight profile <profile> returns <result> (row 2)",
+        "Max-in-flight profile <profile> returns <result> (row 3)"
+      ],
+      "failure_contains": "expected job config result"
+    },
+    {
+      "id": "unset-max-in-flight-is-unlimited",
+      "source_file": "atc/job_config.go",
+      "old": "\treturn 0\n}\n\nfunc (config JobConfig) Inputs()",
+      "new": "\treturn -1\n}\n\nfunc (config JobConfig) Inputs()",
+      "tests": [
+        "JobConfig MaxInFlight returns 0 if MaxInFlight is not set, Serial is false, and SerialGroups is empty"
+      ],
+      "scenarios": [
+        "Max-in-flight profile <profile> returns <result> (row 4)"
+      ],
+      "failure_contains": "expected job config result"
+    },
+    {
+      "id": "input-get-fields-are-preserved",
+      "source_file": "atc/job_config.go",
+      "old": "\t\t\t\t\tResource: step.ResourceName(),\n\t\t\t\t\tPassed:   step.Passed,",
+      "new": "\t\t\t\t\tResource: \"\",\n\t\t\t\t\tPassed:   step.Passed,",
+      "tests": [
+        "JobConfig Inputs with a build plan with two serial gets uses both for inputs",
+        "JobConfig Inputs with a build plan when a plan has a version on a get returns an input config with the version",
+        "JobConfig Inputs with a build plan when a job has an ensure hook returns an input config for all get plans",
+        "JobConfig Inputs with a build plan when a job has a success hook returns an input config for all get plans",
+        "JobConfig Inputs with a build plan when a job has a failure hook returns an input config for all get plans",
+        "JobConfig Inputs with a build plan when a job has an abort hook returns an input config for all get plans",
+        "JobConfig Inputs with a build plan when a job has an error hook returns an input config for all get plans",
+        "JobConfig Inputs with a build plan when a resource is specified uses it as resource in the input config",
+        "JobConfig Inputs with a build plan when a simple in_parallel plan is the first step returns an input config for all get plans"
+      ],
+      "scenarios": [
+        "Input profile <profile> derives <inputs> (row 2)",
+        "Input profile <profile> derives <inputs> (row 3)",
+        "Input profile <profile> derives <inputs> (row 4)",
+        "Input profile <profile> derives <inputs> (row 5)",
+        "Input profile <profile> derives <inputs> (row 6)",
+        "Input profile <profile> derives <inputs> (row 7)",
+        "Input profile <profile> derives <inputs> (row 8)",
+        "Input profile <profile> derives <inputs> (row 9)",
+        "Input profile <profile> derives <inputs> (row 10)"
+      ],
+      "failure_contains": "expected job config result"
+    },
+    {
+      "id": "plans-without-gets-have-no-inputs",
+      "source_file": "atc/job_config.go",
+      "old": "\treturn inputs\n}\n\nfunc (config JobConfig) Outputs()",
+      "new": "\tif len(inputs) == 0 {\n\t\treturn []JobInputParams{{JobInput: JobInput{Name: \"unexpected\", Resource: \"unexpected\"}}}\n\t}\n\treturn inputs\n}\n\nfunc (config JobConfig) Outputs()",
+      "tests": [
+        "JobConfig Inputs with a build plan with an empty plan returns an empty set of inputs",
+        "JobConfig Inputs with a build plan when there are no gets in the plan returns an empty set of inputs"
+      ],
+      "scenarios": [
+        "Input profile <profile> derives <inputs> (row 1)",
+        "Input profile <profile> derives <inputs> (row 11)"
+      ],
+      "failure_contains": "expected job config result"
+    },
+    {
+      "id": "output-put-fields-are-preserved",
+      "source_file": "atc/job_config.go",
+      "old": "\t\t\t\tName:     step.Name,\n\t\t\t\tResource: step.ResourceName(),",
+      "new": "\t\t\t\tName:     step.Name,\n\t\t\t\tResource: \"\",",
+      "tests": [
+        "JobConfig Outputs with a build plan when a simple plan is configured returns an output for all of the put plans present",
+        "JobConfig Outputs when a job has an ensure hook returns an input config for all get plans",
+        "JobConfig Outputs when a job has a success hook returns an input config for all get plans",
+        "JobConfig Outputs when a job has a failure hook returns an input config for all get plans",
+        "JobConfig Outputs when a job has an abort hook returns an input config for all get plans",
+        "JobConfig Outputs when a job has an error hook returns an input config for all get plans"
+      ],
+      "scenarios": [
+        "Output profile <profile> derives <outputs> (row 2)",
+        "Output profile <profile> derives <outputs> (row 3)",
+        "Output profile <profile> derives <outputs> (row 4)",
+        "Output profile <profile> derives <outputs> (row 5)",
+        "Output profile <profile> derives <outputs> (row 6)",
+        "Output profile <profile> derives <outputs> (row 7)"
+      ],
+      "failure_contains": "expected job config result"
+    },
+    {
+      "id": "plans-without-puts-have-no-outputs",
+      "source_file": "atc/job_config.go",
+      "old": "\treturn outputs\n}\n",
+      "new": "\tif len(outputs) == 0 {\n\t\treturn []JobOutput{{Name: \"unexpected\", Resource: \"unexpected\"}}\n\t}\n\treturn outputs\n}\n",
+      "tests": [
+        "JobConfig Outputs with a build plan with an empty plan returns an empty set of outputs",
+        "JobConfig Outputs when the plan contains no puts steps returns an empty set of outputs"
+      ],
+      "scenarios": [
+        "Output profile <profile> derives <outputs> (row 1)",
+        "Output profile <profile> derives <outputs> (row 8)"
+      ],
+      "failure_contains": "expected job config result"
+    }
+  ]
+}
