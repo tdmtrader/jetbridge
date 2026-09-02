@@ -1,0 +1,70 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/otel-build-lifecycle-strict.json",
+  "git_head": "43e14777d093e578a5be963831cc45ac6f286905",
+  "completed_at": "2026-09-02T21:59:59Z",
+  "source_tests": 5,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/metric/otel_build_lifecycle.go": "74cc9eb375b1148e3d7c3cff61235f10439e7c4e4a0ea61e06d2bfe01d1b9a3e",
+    "atc/metric/otel_build_lifecycle_test.go": "09bdca72f62171baa2ae395ffcbd8bead43061926c218ab4f4f8401015d1e32d",
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/main.go": "f1077dbb582d4a3ad64725c5a79cbb19aacc73f43e16da24c8db9d42a94cca9f",
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/registry.go": "015ce7cfd27776c4469ec0127e2e9ebbdb75f804072d0492499c539ea37fb161",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/otel-metrics.feature": "f8139794feec2770a14faba152d9db7a303143ca3ec6e02cbb8ba4f5e74def0e",
+    "atc/worker/jetbridge/brine/mutations/otel-build-lifecycle-strict.json": "05af4daedd2ed577ad740e3a62f38065c9f7b92c7abd81afa6007571015b28de",
+    "atc/worker/jetbridge/brine/steps/otel_metrics.go": "671ca95e3eb24bf75a872f69862a721cfdf4115fa1749b41d8998e74e21c0614",
+    "atc/worker/jetbridge/brine/steps/registry.go": "644e8403be0d109208da50fdd5b6b809c4c8788d7b2cb556ebcc1ccaa0872e72"
+  },
+  "mutation_cases": [
+    {
+      "id": "builds-started-instrument-name",
+      "mutation_sha256": "e3762cedbee71ba5f5711b73aa2ed5d5a01bacb96406b16b2355bd6653fdea41",
+      "failed_source_tests": [
+        "OTel Build Lifecycle records builds started"
+      ],
+      "failed_brine_scenarios": [
+        "OTel profile \u003cprofile\u003e exports its production measurement (row 13)"
+      ]
+    },
+    {
+      "id": "builds-running-instrument-name",
+      "mutation_sha256": "8b32b9aaee5d3121835f098e67ee57252f30e07678c5031a8f0695339bc42a9a",
+      "failed_source_tests": [
+        "OTel Build Lifecycle records builds running"
+      ],
+      "failed_brine_scenarios": [
+        "OTel profile \u003cprofile\u003e exports its production measurement (row 14)"
+      ]
+    },
+    {
+      "id": "build-finished-status-attribute",
+      "mutation_sha256": "8ef3bdb432263481537d8fc114249edd42f5d2bef78a7181a2620ae4d61a876e",
+      "failed_source_tests": [
+        "OTel Build Lifecycle records build finished with status attribute"
+      ],
+      "failed_brine_scenarios": [
+        "OTel profile \u003cprofile\u003e exports its production measurement (row 15)"
+      ]
+    },
+    {
+      "id": "check-builds-started-instrument-name",
+      "mutation_sha256": "6ea02e75b24827c47dacbe88782321e6dd068684702a3975a947bf19cd3c9211",
+      "failed_source_tests": [
+        "OTel Build Lifecycle records check builds started"
+      ],
+      "failed_brine_scenarios": [
+        "OTel profile \u003cprofile\u003e exports its production measurement (row 16)"
+      ]
+    },
+    {
+      "id": "check-builds-running-instrument-name",
+      "mutation_sha256": "a94ca19bd82b3d285444798899c5847d347e2b875c4f1ddea9d86c58803f2f40",
+      "failed_source_tests": [
+        "OTel Build Lifecycle records check builds running"
+      ],
+      "failed_brine_scenarios": [
+        "OTel profile \u003cprofile\u003e exports its production measurement (row 17)"
+      ]
+    }
+  ]
+}
