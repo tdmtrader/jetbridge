@@ -9,7 +9,7 @@
       "id": "resolver-discards-successful-render",
       "source_file": "vars/template_resolver.go",
       "old": "\treturn bytes, nil",
-      "new": "\treturn nil, nil",
+      "new": "\treturn bytes[:0], nil",
       "tests": [
         "Template Evaluate when all of the variables are defined evaluates all params",
         "Template Evaluate when not all of the variables are defined evaluates only given params if expectAllKeys = false",
