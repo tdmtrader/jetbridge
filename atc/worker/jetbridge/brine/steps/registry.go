@@ -107,6 +107,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, BuildDomainDefinitions()...)
 	defs = append(defs, DBBuildStrictDefinitions()...)
 	defs = append(defs, DBBuildRemainingStrictDefinitions()...)
+	defs = append(defs, DBBuildFinalStrictDefinitions()...)
 	defs = append(defs, DBVolumeRepositoryStrictDefinitions()...)
 	defs = append(defs, APIResourcesStrictDefinitions()...)
 	defs = append(defs, APIWorkersStrictDefinitions()...)
