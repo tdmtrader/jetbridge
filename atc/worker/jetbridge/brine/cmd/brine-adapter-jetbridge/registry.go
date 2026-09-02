@@ -14,7 +14,7 @@ func buildAppRegistry() brine.StepRegistry {
 func buildAppResources(args []string) (*brine.ResourceRegistry, error) {
 	definitions := steps.ResourceDefinitions()
 	features, _, _ := parseRunFlags(args)
-	if len(features) == 1 && filepath.Base(features[0]) == "db-job-final-strict.feature" {
+	if len(features) == 1 && (filepath.Base(features[0]) == "db-job-final-strict.feature" || filepath.Base(features[0]) == "migration-add-global-users-strict.feature") {
 		postgresOnly := definitions[:0]
 		for _, definition := range definitions {
 			if definition.Name == "postgres" {
