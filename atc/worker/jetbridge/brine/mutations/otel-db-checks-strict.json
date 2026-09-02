@@ -1,0 +1,56 @@
+{
+  "name": "otel-db-checks-strict",
+  "test_package": "./atc/metric",
+  "source_test_file": "atc/metric/otel_db_checks_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/otel-metrics.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/otel_metrics.go"
+  ],
+  "cases": [
+    {
+      "id": "database-queries-record-whole-count",
+      "source_file": "atc/metric/otel_db_checks.go",
+      "old": "dbQueriesCounter.Add(ctx, count)",
+      "new": "dbQueriesCounter.Add(ctx, count/1000)",
+      "tests": ["OTel DB and Checks Metrics RecordDBQueries records database query count"],
+      "scenarios": ["OTel profile <profile> exports its production measurement (row 18)"],
+      "failure_contains": "metric concourse.db.queries did not export"
+    },
+    {
+      "id": "database-connections-keep-name-attribute",
+      "source_file": "atc/metric/otel_db_checks.go",
+      "old": "attribute.String(\"db.name\", dbName)",
+      "new": "attribute.String(\"db.instance.name\", dbName)",
+      "tests": ["OTel DB and Checks Metrics RecordDBConnections records database connections with db.name attribute"],
+      "scenarios": ["OTel profile <profile> exports its production measurement (row 19)"],
+      "failure_contains": "metric concourse.db.connections did not export"
+    },
+    {
+      "id": "checks-started-record-whole-count",
+      "source_file": "atc/metric/otel_db_checks.go",
+      "old": "checksStartedCounter.Add(ctx, count)",
+      "new": "checksStartedCounter.Add(ctx, count/1000)",
+      "tests": ["OTel DB and Checks Metrics RecordChecksStarted records checks started count"],
+      "scenarios": ["OTel profile <profile> exports its production measurement (row 20)"],
+      "failure_contains": "metric concourse.checks.started did not export"
+    },
+    {
+      "id": "checks-finished-keep-status-attribute",
+      "source_file": "atc/metric/otel_db_checks.go",
+      "old": "attribute.String(\"status\", status)",
+      "new": "attribute.String(\"check.status\", status)",
+      "tests": ["OTel DB and Checks Metrics RecordChecksFinished records checks finished with status attribute"],
+      "scenarios": ["OTel profile <profile> exports its production measurement (row 21)"],
+      "failure_contains": "metric concourse.checks.finished did not export"
+    },
+    {
+      "id": "checks-enqueued-record-whole-count",
+      "source_file": "atc/metric/otel_db_checks.go",
+      "old": "checksEnqueuedCounter.Add(ctx, count)",
+      "new": "checksEnqueuedCounter.Add(ctx, count/1000)",
+      "tests": ["OTel DB and Checks Metrics RecordChecksEnqueued records checks enqueued count"],
+      "scenarios": ["OTel profile <profile> exports its production measurement (row 22)"],
+      "failure_contains": "metric concourse.checks.enqueued did not export"
+    }
+  ]
+}
