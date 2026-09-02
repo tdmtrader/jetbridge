@@ -1,0 +1,309 @@
+{
+  "name": "remaining strict pipelines API behavior",
+  "test_package": "./atc/api",
+  "source_test_file": "atc/api/pipelines_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/api-pipelines-next-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/api_pipelines_next_strict.go",
+    "atc/worker/jetbridge/brine/steps/pipeline_client_strict_support.go",
+    "atc/worker/jetbridge/brine/steps/assert.go",
+    "atc/worker/jetbridge/brine/steps/registry.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "unauthorized-pipeline-requests-use-forbidden-status",
+      "source_file": "atc/api/auth/unauthorized_rejector.go",
+      "old": "\tw.WriteHeader(http.StatusUnauthorized)",
+      "new": "\tw.WriteHeader(http.StatusForbidden)",
+      "tests": [
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name when not authenticated returns 401",
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name when not authenticated at all and the pipeline is private returns 401",
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/badge when not authorized and the pipeline is private when user is not authenticated returns 401",
+        "Pipelines API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name when the user is not logged in returns 401 Unauthorized",
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/pause when not authenticated returns 401",
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/archive when not authenticated returns 401",
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/unpause when not authenticated returns 401 Unauthorized",
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/expose when not authenticated returns 401 Unauthorized",
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/hide when not authorized returns 401 Unauthorized",
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/ordering when not authenticated returns 401 Unauthorized",
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/ordering when not authenticated returns 401 Unauthorized",
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/versions-db when not authenticated returns 401 Unauthorized",
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/rename when not authenticated returns 401 Unauthorized",
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/builds when not authenticated and the pipeline is private returns 401",
+        "Pipelines API POST /api/v1/teams/:team_name/pipelines/:pipeline_name/builds when not authenticated returns 401 without creating a build"
+      ],
+      "scenarios": [
+        "The remaining pipelines API behavior is exact for <profile> (row 1)",
+        "The remaining pipelines API behavior is exact for <profile> (row 2)",
+        "The remaining pipelines API behavior is exact for <profile> (row 3)",
+        "The remaining pipelines API behavior is exact for <profile> (row 4)",
+        "The remaining pipelines API behavior is exact for <profile> (row 5)",
+        "The remaining pipelines API behavior is exact for <profile> (row 6)",
+        "The remaining pipelines API behavior is exact for <profile> (row 7)",
+        "The remaining pipelines API behavior is exact for <profile> (row 8)",
+        "The remaining pipelines API behavior is exact for <profile> (row 9)",
+        "The remaining pipelines API behavior is exact for <profile> (row 10)",
+        "The remaining pipelines API behavior is exact for <profile> (row 11)",
+        "The remaining pipelines API behavior is exact for <profile> (row 12)",
+        "The remaining pipelines API behavior is exact for <profile> (row 13)",
+        "The remaining pipelines API behavior is exact for <profile> (row 14)",
+        "The remaining pipelines API behavior is exact for <profile> (row 15)"
+      ]
+    },
+    {
+      "id": "forbidden-pipeline-requests-use-unauthorized-status",
+      "source_file": "atc/api/auth/unauthorized_rejector.go",
+      "old": "\tw.WriteHeader(http.StatusForbidden)",
+      "new": "\tw.WriteHeader(http.StatusUnauthorized)",
+      "tests": [
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name when authenticated as another team and the pipeline is private returns 403",
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/badge when not authorized and the pipeline is private when user is authenticated returns 403",
+        "Pipelines API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name when authenticated when requester does not belong to the team returns 403",
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/pause when authenticated when requester does not belong to the team returns 403",
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/unpause when authenticated when requester does not belong to the team returns 403",
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/expose when authenticated when requester does not belong to the team returns 403",
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/hide when authenticated when requester does not belong to the team returns 403 Forbidden",
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/ordering when authenticated when requester does not belong to the team returns 403",
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/ordering when authenticated when requester does not belong to the team returns 403",
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/rename when authenticated when requester does not belong to the team returns 403 Forbidden",
+        "Pipelines API POST /api/v1/teams/:team_name/pipelines/:pipeline_name/builds when authenticated when not authorized returns 403 without creating a build"
+      ],
+      "scenarios": [
+        "The remaining pipelines API behavior is exact for <profile> (row 16)",
+        "The remaining pipelines API behavior is exact for <profile> (row 17)",
+        "The remaining pipelines API behavior is exact for <profile> (row 18)",
+        "The remaining pipelines API behavior is exact for <profile> (row 19)",
+        "The remaining pipelines API behavior is exact for <profile> (row 20)",
+        "The remaining pipelines API behavior is exact for <profile> (row 21)",
+        "The remaining pipelines API behavior is exact for <profile> (row 22)",
+        "The remaining pipelines API behavior is exact for <profile> (row 23)",
+        "The remaining pipelines API behavior is exact for <profile> (row 24)",
+        "The remaining pipelines API behavior is exact for <profile> (row 25)",
+        "The remaining pipelines API behavior is exact for <profile> (row 26)"
+      ]
+    },
+    {
+      "id": "global-list-content-type-is-changed",
+      "source_file": "atc/api/pipelineserver/list_all.go",
+      "old": "\tw.Header().Set(\"Content-Type\", \"application/json\")",
+      "new": "\tw.Header().Set(\"Content-Type\", \"text/plain\")",
+      "tests": ["Pipelines API GET /api/v1/pipelines returns application/json"],
+      "scenarios": ["The remaining pipelines API behavior is exact for <profile> (row 27)"]
+    },
+    {
+      "id": "team-list-content-type-is-changed",
+      "source_file": "atc/api/pipelineserver/list.go",
+      "old": "\tw.Header().Set(\"Content-Type\", \"application/json\")",
+      "new": "\tw.Header().Set(\"Content-Type\", \"text/plain\")",
+      "tests": ["Pipelines API GET /api/v1/teams/:team_name/pipelines when authenticated as requested team returns application/json"],
+      "scenarios": ["The remaining pipelines API behavior is exact for <profile> (row 28)"]
+    },
+    {
+      "id": "get-pipeline-content-type-is-changed",
+      "source_file": "atc/api/pipelineserver/get.go",
+      "old": "\t\tw.Header().Set(\"Content-Type\", \"application/json\")",
+      "new": "\t\tw.Header().Set(\"Content-Type\", \"text/plain\")",
+      "tests": ["Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name when authenticated as requested team returns application/json"],
+      "scenarios": ["The remaining pipelines API behavior is exact for <profile> (row 29)"]
+    },
+    {
+      "id": "versions-content-type-is-changed",
+      "source_file": "atc/api/pipelineserver/get_versions_db.go",
+      "old": "\t\tw.Header().Set(\"Content-Type\", \"application/json\")",
+      "new": "\t\tw.Header().Set(\"Content-Type\", \"text/plain\")",
+      "tests": ["Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/versions-db when authenticated when getting the debug versions db works returns application/json"],
+      "scenarios": ["The remaining pipelines API behavior is exact for <profile> (row 30)"]
+    },
+    {
+      "id": "pipeline-build-list-content-type-is-changed",
+      "source_file": "atc/api/pipelineserver/list_builds.go",
+      "old": "\t\tw.Header().Set(\"Content-Type\", \"application/json\")",
+      "new": "\t\tw.Header().Set(\"Content-Type\", \"text/plain\")",
+      "tests": ["Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/builds when authorized when getting the builds succeeds returns Content-Type 'application/json'"],
+      "scenarios": ["The remaining pipelines API behavior is exact for <profile> (row 31)"]
+    },
+    {
+      "id": "pipeline-build-create-content-type-is-changed",
+      "source_file": "atc/api/pipelineserver/build.go",
+      "old": "\t\tw.Header().Set(\"Content-Type\", \"application/json\")",
+      "new": "\t\tw.Header().Set(\"Content-Type\", \"text/plain\")",
+      "tests": ["Pipelines API POST /api/v1/teams/:team_name/pipelines/:pipeline_name/builds when authenticated when authorized when creating a started build succeeds returns Content-Type 'application/json'"],
+      "scenarios": ["The remaining pipelines API behavior is exact for <profile> (row 32)"]
+    },
+    {
+      "id": "pipeline-badge-success-status-is-accepted",
+      "source_file": "atc/api/pipelineserver/badge.go",
+      "old": "\t\tw.WriteHeader(http.StatusOK)",
+      "new": "\t\tw.WriteHeader(http.StatusAccepted)",
+      "tests": [
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/badge when not authorized and the pipeline is public returns 200 OK",
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/badge when authorized when the pipeline has no finished builds returns 200 OK"
+      ],
+      "scenarios": [
+        "The remaining pipelines API behavior is exact for <profile> (row 33)",
+        "The remaining pipelines API behavior is exact for <profile> (row 34)"
+      ]
+    },
+    {
+      "id": "pause-success-status-is-accepted",
+      "source_file": "atc/api/pipelineserver/pause.go",
+      "old": "\t\tw.WriteHeader(http.StatusOK)",
+      "new": "\t\tw.WriteHeader(http.StatusAccepted)",
+      "tests": ["Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/pause when authenticated when requester belongs to the team when pausing the pipeline succeeds returns 200"],
+      "scenarios": ["The remaining pipelines API behavior is exact for <profile> (row 35)"]
+    },
+    {
+      "id": "unpause-success-status-is-accepted",
+      "source_file": "atc/api/pipelineserver/unpause.go",
+      "old": "\t\tw.WriteHeader(http.StatusOK)",
+      "new": "\t\tw.WriteHeader(http.StatusAccepted)",
+      "tests": ["Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/unpause when authenticated when requester belongs to the team when unpausing the pipeline succeeds returns 200"],
+      "scenarios": ["The remaining pipelines API behavior is exact for <profile> (row 36)"]
+    },
+    {
+      "id": "expose-success-status-is-accepted",
+      "source_file": "atc/api/pipelineserver/expose.go",
+      "old": "\t\tw.WriteHeader(http.StatusOK)",
+      "new": "\t\tw.WriteHeader(http.StatusAccepted)",
+      "tests": ["Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/expose when authenticated when requester belongs to the team when exposing the pipeline succeeds returns 200"],
+      "scenarios": ["The remaining pipelines API behavior is exact for <profile> (row 37)"]
+    },
+    {
+      "id": "hide-success-status-is-accepted",
+      "source_file": "atc/api/pipelineserver/hide.go",
+      "old": "\t\tw.WriteHeader(http.StatusOK)",
+      "new": "\t\tw.WriteHeader(http.StatusAccepted)",
+      "tests": ["Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/hide when authenticated when requester belongs to the team when hiding the pipeline succeeds returns 200"],
+      "scenarios": ["The remaining pipelines API behavior is exact for <profile> (row 38)"]
+    },
+    {
+      "id": "global-order-success-status-is-accepted",
+      "source_file": "atc/api/pipelineserver/order.go",
+      "old": "\t\tw.WriteHeader(http.StatusOK)",
+      "new": "\t\tw.WriteHeader(http.StatusAccepted)",
+      "tests": ["Pipelines API PUT /api/v1/teams/:team_name/pipelines/ordering when authenticated when requester belongs to the team when ordering the pipelines succeeds returns 200"],
+      "scenarios": ["The remaining pipelines API behavior is exact for <profile> (row 39)"]
+    },
+    {
+      "id": "instance-order-success-status-is-accepted",
+      "source_file": "atc/api/pipelineserver/order_within_group.go",
+      "old": "\t\tw.WriteHeader(http.StatusOK)",
+      "new": "\t\tw.WriteHeader(http.StatusAccepted)",
+      "tests": ["Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/ordering when authenticated when requester belongs to the team when ordering the pipelines succeeds returns 200"],
+      "scenarios": ["The remaining pipelines API behavior is exact for <profile> (row 40)"]
+    },
+    {
+      "id": "pipeline-build-list-success-status-is-accepted",
+      "source_file": "atc/api/pipelineserver/list_builds.go",
+      "old": "\t\tw.WriteHeader(http.StatusOK)",
+      "new": "\t\tw.WriteHeader(http.StatusAccepted)",
+      "tests": [
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/builds when authorized when getting the builds succeeds returns 200 OK",
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/builds when not authenticated and the pipeline is public returns 200 OK",
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/builds when authorized when all the params are passed applies each of from, to, and limit to persisted builds"
+      ],
+      "scenarios": [
+        "The remaining pipelines API behavior is exact for <profile> (row 41)",
+        "The remaining pipelines API behavior is exact for <profile> (row 54)",
+        "The remaining pipelines API behavior is exact for <profile> (row 55)"
+      ]
+    },
+    {
+      "id": "pipeline-build-create-success-status-is-accepted",
+      "source_file": "atc/api/pipelineserver/build.go",
+      "old": "\t\tw.WriteHeader(http.StatusCreated)",
+      "new": "\t\tw.WriteHeader(http.StatusAccepted)",
+      "tests": ["Pipelines API POST /api/v1/teams/:team_name/pipelines/:pipeline_name/builds when authenticated when authorized when creating a started build succeeds returns 201 Created"],
+      "scenarios": ["The remaining pipelines API behavior is exact for <profile> (row 42)"]
+    },
+    {
+      "id": "missing-instance-order-status-is-not-found",
+      "source_file": "atc/api/pipelineserver/order_within_group.go",
+      "old": "\t\t\t\tw.WriteHeader(http.StatusBadRequest)",
+      "new": "\t\t\t\tw.WriteHeader(http.StatusNotFound)",
+      "tests": ["Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/ordering when authenticated when requester belongs to the team when a pipeline does not exist returns 400"],
+      "scenarios": ["The remaining pipelines API behavior is exact for <profile> (row 43)"]
+    },
+    {
+      "id": "missing-rename-status-is-gone",
+      "source_file": "atc/api/pipelineserver/rename.go",
+      "old": "\t\t\tw.WriteHeader(http.StatusNotFound)",
+      "new": "\t\t\tw.WriteHeader(http.StatusGone)",
+      "tests": ["Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/rename when authenticated when authorized when the pipeline does not exist returns a 404"],
+      "scenarios": ["The remaining pipelines API behavior is exact for <profile> (row 44)"]
+    },
+    {
+      "id": "empty-rename-status-is-unprocessable",
+      "source_file": "atc/api/helpers/helpers.go",
+      "old": "\tw.WriteHeader(http.StatusBadRequest)",
+      "new": "\tw.WriteHeader(http.StatusUnprocessableEntity)",
+      "tests": ["Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/rename when authenticated when authorized when the new name is an invalid identifier and is an empty string returns 400 Bad Request and an error in the response body"],
+      "scenarios": ["The remaining pipelines API behavior is exact for <profile> (row 45)"]
+    },
+    {
+      "id": "successful-rename-status-is-accepted",
+      "source_file": "atc/api/pipelineserver/rename.go",
+      "old": "\t\tw.Header().Set(\"Content-Type\", \"application/json\")",
+      "new": "\t\tw.Header().Set(\"Content-Type\", \"application/json\")\n\t\tw.WriteHeader(http.StatusAccepted)",
+      "tests": ["Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/rename when authenticated when authorized when renaming succeeds returns 200 and renames the pipeline in PostgreSQL"],
+      "scenarios": ["The remaining pipelines API behavior is exact for <profile> (row 46)"]
+    },
+    {
+      "id": "rename-warning-is-omitted",
+      "source_file": "atc/api/pipelineserver/rename.go",
+      "old": "\t\t\twarnings = append(warnings, *warning)",
+      "new": "\t\t\twarnings = nil",
+      "tests": ["Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/rename when authenticated when authorized when the new name is an invalid identifier and is a string returns a warning in the response body"],
+      "scenarios": ["The remaining pipelines API behavior is exact for <profile> (row 47)"]
+    },
+    {
+      "id": "pipeline-badge-content-type-is-changed",
+      "source_file": "atc/api/pipelineserver/badge.go",
+      "old": "\t\tw.Header().Set(\"Content-type\", \"image/svg+xml\")",
+      "new": "\t\tw.Header().Set(\"Content-type\", \"text/plain\")",
+      "tests": ["Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/badge when authorized when the pipeline has no finished builds returns Content-Type as image/svg+xml and disables caching"],
+      "scenarios": ["The remaining pipelines API behavior is exact for <profile> (row 48)"]
+    },
+    {
+      "id": "unknown-pipeline-badge-is-passing",
+      "source_file": "atc/api/jobserver/badge.go",
+      "old": "\tcase build == nil:\n\t\treturn badgeUnknown",
+      "new": "\tcase build == nil:\n\t\treturn badgePassing",
+      "tests": ["Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/badge when authorized when the pipeline has no finished builds returns an unknown badge"],
+      "scenarios": ["The remaining pipelines API behavior is exact for <profile> (row 49)"]
+    },
+    {
+      "id": "successful-pipeline-badge-is-unknown",
+      "source_file": "atc/api/jobserver/badge.go",
+      "old": "\t\treturn badgePassing",
+      "new": "\t\treturn badgeUnknown",
+      "tests": ["Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/badge when authorized when the pipeline has a successful build returns a successful badge"],
+      "scenarios": ["The remaining pipelines API behavior is exact for <profile> (row 50)"]
+    },
+    {
+      "id": "aborted-pipeline-badge-is-unknown",
+      "source_file": "atc/api/jobserver/badge.go",
+      "old": "\t\treturn badgeAborted",
+      "new": "\t\treturn badgeUnknown",
+      "tests": ["Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/badge when authorized when the pipeline has an aborted build returns an aborted badge"],
+      "scenarios": ["The remaining pipelines API behavior is exact for <profile> (row 51)"]
+    },
+    {
+      "id": "errored-pipeline-badge-is-unknown",
+      "source_file": "atc/api/jobserver/badge.go",
+      "old": "\t\treturn badgeErrored",
+      "new": "\t\treturn badgeUnknown",
+      "tests": ["Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/badge when authorized when the pipeline has an errored build returns an errored badge"],
+      "scenarios": ["The remaining pipelines API behavior is exact for <profile> (row 52)"]
+    },
+    {
+      "id": "failed-pipeline-badge-is-unknown",
+      "source_file": "atc/api/jobserver/badge.go",
+      "old": "\t\treturn badgeFailing",
+      "new": "\t\treturn badgeUnknown",
+      "tests": ["Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/badge when authorized when the pipeline has a failed build returns a failed badge"],
+      "scenarios": ["The remaining pipelines API behavior is exact for <profile> (row 53)"]
+    }
+  ]
+}

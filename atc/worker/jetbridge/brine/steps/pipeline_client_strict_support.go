@@ -120,19 +120,22 @@ func newStrictPipelineClientAPI(database JetbridgeDB, rec *brine.Recorder) (*str
 	pipelineHandlerFactory := pipelineserver.NewScopedHandlerFactory(database.TeamFactory)
 	teamHandlerFactory := api.NewTeamScopedHandlerFactory(logger, database.TeamFactory)
 	handlers := rata.Handlers{
-		atc.ListAllPipelines:    http.HandlerFunc(pipelineServer.ListAllPipelines),
-		atc.ListPipelines:       http.HandlerFunc(pipelineServer.ListPipelines),
-		atc.GetPipeline:         pipelineHandlerFactory.HandlerFor(pipelineServer.GetPipeline),
-		atc.DeletePipeline:      pipelineHandlerFactory.HandlerFor(pipelineServer.DeletePipeline),
-		atc.OrderPipelines:      teamHandlerFactory.HandlerFor(pipelineServer.OrderPipelines),
-		atc.PausePipeline:       pipelineHandlerFactory.HandlerFor(pipelineServer.PausePipeline),
-		atc.ArchivePipeline:     pipelineHandlerFactory.HandlerFor(pipelineServer.ArchivePipeline),
-		atc.UnpausePipeline:     pipelineHandlerFactory.HandlerFor(pipelineServer.UnpausePipeline),
-		atc.ExposePipeline:      pipelineHandlerFactory.HandlerFor(pipelineServer.ExposePipeline),
-		atc.HidePipeline:        pipelineHandlerFactory.HandlerFor(pipelineServer.HidePipeline),
-		atc.RenamePipeline:      teamHandlerFactory.HandlerFor(pipelineServer.RenamePipeline),
-		atc.ListPipelineBuilds:  pipelineHandlerFactory.HandlerFor(pipelineServer.ListPipelineBuilds),
-		atc.CreatePipelineBuild: pipelineHandlerFactory.HandlerFor(pipelineServer.CreateBuild),
+		atc.ListAllPipelines:          http.HandlerFunc(pipelineServer.ListAllPipelines),
+		atc.ListPipelines:             http.HandlerFunc(pipelineServer.ListPipelines),
+		atc.GetPipeline:               pipelineHandlerFactory.HandlerFor(pipelineServer.GetPipeline),
+		atc.PipelineBadge:             pipelineHandlerFactory.HandlerFor(pipelineServer.PipelineBadge),
+		atc.GetVersionsDB:             pipelineHandlerFactory.HandlerFor(pipelineServer.GetVersionsDB),
+		atc.DeletePipeline:            pipelineHandlerFactory.HandlerFor(pipelineServer.DeletePipeline),
+		atc.OrderPipelines:            teamHandlerFactory.HandlerFor(pipelineServer.OrderPipelines),
+		atc.OrderPipelinesWithinGroup: teamHandlerFactory.HandlerFor(pipelineServer.OrderPipelinesWithinGroup),
+		atc.PausePipeline:             pipelineHandlerFactory.HandlerFor(pipelineServer.PausePipeline),
+		atc.ArchivePipeline:           pipelineHandlerFactory.HandlerFor(pipelineServer.ArchivePipeline),
+		atc.UnpausePipeline:           pipelineHandlerFactory.HandlerFor(pipelineServer.UnpausePipeline),
+		atc.ExposePipeline:            pipelineHandlerFactory.HandlerFor(pipelineServer.ExposePipeline),
+		atc.HidePipeline:              pipelineHandlerFactory.HandlerFor(pipelineServer.HidePipeline),
+		atc.RenamePipeline:            teamHandlerFactory.HandlerFor(pipelineServer.RenamePipeline),
+		atc.ListPipelineBuilds:        pipelineHandlerFactory.HandlerFor(pipelineServer.ListPipelineBuilds),
+		atc.CreatePipelineBuild:       pipelineHandlerFactory.HandlerFor(pipelineServer.CreateBuild),
 	}
 	var routes rata.Routes
 	for _, route := range atc.Routes {

@@ -1,0 +1,371 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/api-pipelines-next-strict.json",
+  "git_head": "49e04a3c0c64fafef4e1d686d00c24312496f29c",
+  "completed_at": "2026-09-02T18:01:52Z",
+  "source_tests": 55,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/api/auth/unauthorized_rejector.go": "2a6abb22cc135a08d295ea535e026627f8fde17a134ea3fb73a8ef0ed8e1e80c",
+    "atc/api/helpers/helpers.go": "8487dc592a36175807295b5e968c4236197d6b718314b84a1129f0090492ebc3",
+    "atc/api/jobserver/badge.go": "d4af0718b4ebdff8488668b53fb268a92c58e0e639741983093f7080dcbe718a",
+    "atc/api/pipelines_test.go": "2a35e7fcebf20e0bdef433125573c40a8df056938d515b04bb15dd197d5ed571",
+    "atc/api/pipelineserver/badge.go": "3c8e32ceef3dc0e5a4d99e2cde5d2e553c835ec8b9ad2e52d2e1201087c1b4b6",
+    "atc/api/pipelineserver/build.go": "9130895f73667db4bc3ef7fe2873e72f6fcb8b2553806640b25d3b616302dd11",
+    "atc/api/pipelineserver/expose.go": "c90616ce84d57beae9b7626feee9c5a76ca13f8a24f241b5b019a163471f5027",
+    "atc/api/pipelineserver/get.go": "7c9ded704819839c0540bc80558a771ea5958f7b580b852d2b6a3475b2a2213b",
+    "atc/api/pipelineserver/get_versions_db.go": "829544648490d2fed93b20c7876fd3055fcd098902544af5250f4b4b3ca272c6",
+    "atc/api/pipelineserver/hide.go": "ae5072295cdd326c60a021e08a794bd562514b0682196e874bdd1f0bc8980b89",
+    "atc/api/pipelineserver/list.go": "5f3ffc7d45cd42c3823338e1f4e875ea90a92b736cc67875261ad8e22b2e6d54",
+    "atc/api/pipelineserver/list_all.go": "5889528e74a54254d703bf13056f07af9a2ec81f2a1c6f9eea0f15b2ba00254b",
+    "atc/api/pipelineserver/list_builds.go": "3e0ac7776ce00f05ecc0bcaaad2977e12f603a9336c49da7a767c29033854778",
+    "atc/api/pipelineserver/order.go": "68762ee6b451c01db59ad12664c22347dd3914c3718227ce3130a8fe76d035e7",
+    "atc/api/pipelineserver/order_within_group.go": "65355bce4c2c5cee962421edcaaf9afd9295cc39000c4f88a489c2aefbbdee19",
+    "atc/api/pipelineserver/pause.go": "916175ac12d1503639643540a6f94c515982e3cb545e6721900f9ce1d1d0e2bb",
+    "atc/api/pipelineserver/rename.go": "aa8c42e7dad309149f749f24fdb6cdc831de8b6b28bc1340c6056636c879cf35",
+    "atc/api/pipelineserver/unpause.go": "5e9a7b88973dd5a39d85b91f3be848785fe54a8be896b0e14dd69c543deab081",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/api-pipelines-next-strict.feature": "84d31a939fb70684740d8be58c708203d62a9633b13ab7ac04f688e0a3ade5c0",
+    "atc/worker/jetbridge/brine/mutations/api-pipelines-next-strict.json": "96abf08c004ba72d525e20c29b8528a34f68922b5f3adc1785c25bd4c4240e9e",
+    "atc/worker/jetbridge/brine/steps/api_pipelines_next_strict.go": "73866cbc882b0d233940755fb4a7c490362cd91843dc49c774f2d1be80cff9d8",
+    "atc/worker/jetbridge/brine/steps/assert.go": "eac0b7b4dc864f54ffb5aab471451e3b62da518e5a8b10ba26e742d83298861f",
+    "atc/worker/jetbridge/brine/steps/pipeline_client_strict_support.go": "63a6173da793a664f03235df5677ddb01b53052b667e011d756bc2a76a001a6c",
+    "atc/worker/jetbridge/brine/steps/registry.go": "1e045cf53c1187c4f3cbd00c99b3edf5920190bdedd068e024f57dfa225fcb35",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8"
+  },
+  "mutation_cases": [
+    {
+      "id": "unauthorized-pipeline-requests-use-forbidden-status",
+      "mutation_sha256": "920551eb4e7d2279a55e62a559d4d91d02b3d12ab149505ca0db96e88dfebb2a",
+      "failed_source_tests": [
+        "Pipelines API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name when the user is not logged in returns 401 Unauthorized",
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name when not authenticated at all and the pipeline is private returns 401",
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name when not authenticated returns 401",
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/badge when not authorized and the pipeline is private when user is not authenticated returns 401",
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/builds when not authenticated and the pipeline is private returns 401",
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/versions-db when not authenticated returns 401 Unauthorized",
+        "Pipelines API POST /api/v1/teams/:team_name/pipelines/:pipeline_name/builds when not authenticated returns 401 without creating a build",
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/archive when not authenticated returns 401",
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/expose when not authenticated returns 401 Unauthorized",
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/hide when not authorized returns 401 Unauthorized",
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/ordering when not authenticated returns 401 Unauthorized",
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/pause when not authenticated returns 401",
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/rename when not authenticated returns 401 Unauthorized",
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/unpause when not authenticated returns 401 Unauthorized",
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/ordering when not authenticated returns 401 Unauthorized"
+      ],
+      "failed_brine_scenarios": [
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 1)",
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 10)",
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 11)",
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 12)",
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 13)",
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 14)",
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 15)",
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 2)",
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 3)",
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 4)",
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 5)",
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 6)",
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 7)",
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 8)",
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "forbidden-pipeline-requests-use-unauthorized-status",
+      "mutation_sha256": "82b937dcd8f7ad2e19ded7a4b0cd8d4472cad6507498a55fe6ef0f3872499e6a",
+      "failed_source_tests": [
+        "Pipelines API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name when authenticated when requester does not belong to the team returns 403",
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name when authenticated as another team and the pipeline is private returns 403",
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/badge when not authorized and the pipeline is private when user is authenticated returns 403",
+        "Pipelines API POST /api/v1/teams/:team_name/pipelines/:pipeline_name/builds when authenticated when not authorized returns 403 without creating a build",
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/expose when authenticated when requester does not belong to the team returns 403",
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/hide when authenticated when requester does not belong to the team returns 403 Forbidden",
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/ordering when authenticated when requester does not belong to the team returns 403",
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/pause when authenticated when requester does not belong to the team returns 403",
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/rename when authenticated when requester does not belong to the team returns 403 Forbidden",
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/unpause when authenticated when requester does not belong to the team returns 403",
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/ordering when authenticated when requester does not belong to the team returns 403"
+      ],
+      "failed_brine_scenarios": [
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 16)",
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 17)",
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 18)",
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 19)",
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 20)",
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 21)",
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 22)",
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 23)",
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 24)",
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 25)",
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 26)"
+      ]
+    },
+    {
+      "id": "global-list-content-type-is-changed",
+      "mutation_sha256": "8cac5a3a3a08a8ed9107e3fcf0ae28c73fa8ff530afe1afa45aa2b00df234d7f",
+      "failed_source_tests": [
+        "Pipelines API GET /api/v1/pipelines returns application/json"
+      ],
+      "failed_brine_scenarios": [
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 27)"
+      ]
+    },
+    {
+      "id": "team-list-content-type-is-changed",
+      "mutation_sha256": "c822e54110e7a651569a541408683916e5cc7a3fd97e2c6d41b2689a1d654a84",
+      "failed_source_tests": [
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines when authenticated as requested team returns application/json"
+      ],
+      "failed_brine_scenarios": [
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 28)"
+      ]
+    },
+    {
+      "id": "get-pipeline-content-type-is-changed",
+      "mutation_sha256": "b6fc51b2ff411c676917f009a5418936daf325ce868fc7b891c83ce038b3fa6d",
+      "failed_source_tests": [
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name when authenticated as requested team returns application/json"
+      ],
+      "failed_brine_scenarios": [
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 29)"
+      ]
+    },
+    {
+      "id": "versions-content-type-is-changed",
+      "mutation_sha256": "f73fe57f90e563b64eeed63e7048392ee5fcc52dc12c8e1398b0917e92c4d929",
+      "failed_source_tests": [
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/versions-db when authenticated when getting the debug versions db works returns application/json"
+      ],
+      "failed_brine_scenarios": [
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 30)"
+      ]
+    },
+    {
+      "id": "pipeline-build-list-content-type-is-changed",
+      "mutation_sha256": "d2f91b26a3ef1f09c323962fa4413d2a228194b93cc0da7c9f3846fd3cbfd371",
+      "failed_source_tests": [
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/builds when authorized when getting the builds succeeds returns Content-Type 'application/json'"
+      ],
+      "failed_brine_scenarios": [
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 31)"
+      ]
+    },
+    {
+      "id": "pipeline-build-create-content-type-is-changed",
+      "mutation_sha256": "0c5bb9df949be3f34e9f69a2c2ca283878f37abf7d339874a484a0c24a69ffb5",
+      "failed_source_tests": [
+        "Pipelines API POST /api/v1/teams/:team_name/pipelines/:pipeline_name/builds when authenticated when authorized when creating a started build succeeds returns Content-Type 'application/json'"
+      ],
+      "failed_brine_scenarios": [
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 32)"
+      ]
+    },
+    {
+      "id": "pipeline-badge-success-status-is-accepted",
+      "mutation_sha256": "369f24705e3e1cbcb4b921a9ac76b3c4934444438b72eb68a79b76123c2e73a0",
+      "failed_source_tests": [
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/badge when authorized when the pipeline has no finished builds returns 200 OK",
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/badge when not authorized and the pipeline is public returns 200 OK"
+      ],
+      "failed_brine_scenarios": [
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 33)",
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 34)"
+      ]
+    },
+    {
+      "id": "pause-success-status-is-accepted",
+      "mutation_sha256": "3853f017416fb894ad5cd10092118b38163b5ab26dc11f2f7ead29e6604b7f87",
+      "failed_source_tests": [
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/pause when authenticated when requester belongs to the team when pausing the pipeline succeeds returns 200"
+      ],
+      "failed_brine_scenarios": [
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 35)"
+      ]
+    },
+    {
+      "id": "unpause-success-status-is-accepted",
+      "mutation_sha256": "9c8935e93625c2cc7c638d56b6a0f0462f7fce836bd4e93c4e19d058a0045257",
+      "failed_source_tests": [
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/unpause when authenticated when requester belongs to the team when unpausing the pipeline succeeds returns 200"
+      ],
+      "failed_brine_scenarios": [
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 36)"
+      ]
+    },
+    {
+      "id": "expose-success-status-is-accepted",
+      "mutation_sha256": "7706867a7b1967330a6cd5f2a1f8bbd2fa915ef5ba8bb447076edc4295c217fc",
+      "failed_source_tests": [
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/expose when authenticated when requester belongs to the team when exposing the pipeline succeeds returns 200"
+      ],
+      "failed_brine_scenarios": [
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 37)"
+      ]
+    },
+    {
+      "id": "hide-success-status-is-accepted",
+      "mutation_sha256": "9b0c40bbf0b220de9a9ef4033626d0895ca3d0ac8a781882c88c638adf479c2d",
+      "failed_source_tests": [
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/hide when authenticated when requester belongs to the team when hiding the pipeline succeeds returns 200"
+      ],
+      "failed_brine_scenarios": [
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 38)"
+      ]
+    },
+    {
+      "id": "global-order-success-status-is-accepted",
+      "mutation_sha256": "82ee8d0e26200a1c9cf3f577207a3de7938359829558bb6fcfbf40f7aa6cb26c",
+      "failed_source_tests": [
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/ordering when authenticated when requester belongs to the team when ordering the pipelines succeeds returns 200"
+      ],
+      "failed_brine_scenarios": [
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 39)"
+      ]
+    },
+    {
+      "id": "instance-order-success-status-is-accepted",
+      "mutation_sha256": "bd777c8c6b2c1741f2c4a5a619b49eec15158f88e08e33c445c7ad1d83cf13da",
+      "failed_source_tests": [
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/ordering when authenticated when requester belongs to the team when ordering the pipelines succeeds returns 200"
+      ],
+      "failed_brine_scenarios": [
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 40)"
+      ]
+    },
+    {
+      "id": "pipeline-build-list-success-status-is-accepted",
+      "mutation_sha256": "8fffb11692df3e9c343d395596ee4464913d8701837ea7147089b890393242a4",
+      "failed_source_tests": [
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/builds when authorized when all the params are passed applies each of from, to, and limit to persisted builds",
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/builds when authorized when getting the builds succeeds returns 200 OK",
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/builds when not authenticated and the pipeline is public returns 200 OK"
+      ],
+      "failed_brine_scenarios": [
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 41)",
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 54)",
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 55)"
+      ]
+    },
+    {
+      "id": "pipeline-build-create-success-status-is-accepted",
+      "mutation_sha256": "ea97eed73acaf3edbc5e73e3c7c87a886519f479c4236ee87dfa55d0d0f49bdc",
+      "failed_source_tests": [
+        "Pipelines API POST /api/v1/teams/:team_name/pipelines/:pipeline_name/builds when authenticated when authorized when creating a started build succeeds returns 201 Created"
+      ],
+      "failed_brine_scenarios": [
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 42)"
+      ]
+    },
+    {
+      "id": "missing-instance-order-status-is-not-found",
+      "mutation_sha256": "2f540769f71fc272f8008a4086ef9d4df3f8b15bb9d748b826be5c30994a7270",
+      "failed_source_tests": [
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/ordering when authenticated when requester belongs to the team when a pipeline does not exist returns 400"
+      ],
+      "failed_brine_scenarios": [
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 43)"
+      ]
+    },
+    {
+      "id": "missing-rename-status-is-gone",
+      "mutation_sha256": "02a4eec8cb5682ab5286f846f02a08c197efc2c79d13038b22db0d185b898e76",
+      "failed_source_tests": [
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/rename when authenticated when authorized when the pipeline does not exist returns a 404"
+      ],
+      "failed_brine_scenarios": [
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 44)"
+      ]
+    },
+    {
+      "id": "empty-rename-status-is-unprocessable",
+      "mutation_sha256": "64d8b55737d6b2b942c28714c711c46ca7ce04f8ecd56382a4146e5602f8d8fe",
+      "failed_source_tests": [
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/rename when authenticated when authorized when the new name is an invalid identifier and is an empty string returns 400 Bad Request and an error in the response body"
+      ],
+      "failed_brine_scenarios": [
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 45)"
+      ]
+    },
+    {
+      "id": "successful-rename-status-is-accepted",
+      "mutation_sha256": "3ece75bde955e3bfe63da01b70c35115d723881ef7f56b29a496594d6cd12163",
+      "failed_source_tests": [
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/rename when authenticated when authorized when renaming succeeds returns 200 and renames the pipeline in PostgreSQL"
+      ],
+      "failed_brine_scenarios": [
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 46)"
+      ]
+    },
+    {
+      "id": "rename-warning-is-omitted",
+      "mutation_sha256": "0db52d0a983a0c6360274375a428b5fa324672cd1b8ffe818b860f21dc877afe",
+      "failed_source_tests": [
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/rename when authenticated when authorized when the new name is an invalid identifier and is a string returns a warning in the response body"
+      ],
+      "failed_brine_scenarios": [
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 47)"
+      ]
+    },
+    {
+      "id": "pipeline-badge-content-type-is-changed",
+      "mutation_sha256": "317559be6d04f3e6ea6c5bed8f8704a30f9238576698043f798a7a4f51e5eec9",
+      "failed_source_tests": [
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/badge when authorized when the pipeline has no finished builds returns Content-Type as image/svg+xml and disables caching"
+      ],
+      "failed_brine_scenarios": [
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 48)"
+      ]
+    },
+    {
+      "id": "unknown-pipeline-badge-is-passing",
+      "mutation_sha256": "3021777f2576ffbcdccc5c1acf0f855283a477e3030ba56c1cfe96ebd486297b",
+      "failed_source_tests": [
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/badge when authorized when the pipeline has no finished builds returns an unknown badge"
+      ],
+      "failed_brine_scenarios": [
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 49)"
+      ]
+    },
+    {
+      "id": "successful-pipeline-badge-is-unknown",
+      "mutation_sha256": "32681c8a7ae13dbca26e765458b6585c78e61b66a11b3f30c78b3a7b2efbae92",
+      "failed_source_tests": [
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/badge when authorized when the pipeline has a successful build returns a successful badge"
+      ],
+      "failed_brine_scenarios": [
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 50)"
+      ]
+    },
+    {
+      "id": "aborted-pipeline-badge-is-unknown",
+      "mutation_sha256": "349eda18c1a1f9cafe2d4ecc354d18fdbf905ca386d3456389201df5f2964e63",
+      "failed_source_tests": [
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/badge when authorized when the pipeline has an aborted build returns an aborted badge"
+      ],
+      "failed_brine_scenarios": [
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 51)"
+      ]
+    },
+    {
+      "id": "errored-pipeline-badge-is-unknown",
+      "mutation_sha256": "49dcbb5614f9f631d324dd443258b8de8777876050fdfd0d16ce43e247beb356",
+      "failed_source_tests": [
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/badge when authorized when the pipeline has an errored build returns an errored badge"
+      ],
+      "failed_brine_scenarios": [
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 52)"
+      ]
+    },
+    {
+      "id": "failed-pipeline-badge-is-unknown",
+      "mutation_sha256": "8a2cfb3aa95862606e04d0073ad3721df55cfa9a56b72e8e1f9d6410d9519c3a",
+      "failed_source_tests": [
+        "Pipelines API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/badge when authorized when the pipeline has a failed build returns a failed badge"
+      ],
+      "failed_brine_scenarios": [
+        "The remaining pipelines API behavior is exact for \u003cprofile\u003e (row 53)"
+      ]
+    }
+  ]
+}
