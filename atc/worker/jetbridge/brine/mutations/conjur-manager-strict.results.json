@@ -1,0 +1,30 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/conjur-manager-strict.json",
+  "git_head": "a9e22fd0cebcc81fef53fe51b5c3b249c057eda0",
+  "completed_at": "2026-09-02T21:13:30Z",
+  "source_tests": 2,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/creds/conjur/manager.go": "4a8b9586204abc12a2ea67472ba1113d4b07b8b52ccb086b84aa83415e6bf478",
+    "atc/creds/conjur/manager_test.go": "e7a3f61e221c72a0c791ec410c88141b0babae529b1a9390665c041216d00d50",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/conjur-manager-strict.feature": "1b9b4eccba6d9219c7e9099ca917ea1c34e4036a7d3d04d2424f0d72d5a1a457",
+    "atc/worker/jetbridge/brine/mutations/conjur-manager-strict.json": "b91a79732c8c0247f872eadb4e44220740dd6f39b9f84fd96b21f6cc3f3978f0",
+    "atc/worker/jetbridge/brine/steps/conjur_manager_strict.go": "1168cfa52d7b4f800ad72b4b68e289b4806007e532cd2dd4403728c76c6f6677",
+    "atc/worker/jetbridge/brine/steps/registry.go": "0c24cb12746979edf51119cc7f65b8d5e5e5b4643e62494ee6e722a9faf1813d"
+  },
+  "mutation_cases": [
+    {
+      "id": "conjur-configuration-requires-appliance-url",
+      "mutation_sha256": "30504a6ee983fc847897a5fe1456bd140b24a443168cfb14082d1a3332713da8",
+      "failed_source_tests": [
+        "Manager IsConfigured() fails on empty Manager",
+        "Manager IsConfigured() passes if ConjurApplianceURL is set"
+      ],
+      "failed_brine_scenarios": [
+        "Production Conjur manager configuration profile \u003cprofile\u003e is \u003cconfigured\u003e (row 1)",
+        "Production Conjur manager configuration profile \u003cprofile\u003e is \u003cconfigured\u003e (row 2)"
+      ]
+    }
+  ]
+}
