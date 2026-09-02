@@ -199,6 +199,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, IDTokenManagerStrictDefinitions()...)
 	defs = append(defs, DBJobFinalStrictDefinitions()...)
 	defs = append(defs, AddGlobalUsersMigrationStrictDefinitions()...)
+	defs = append(defs, MigrationFixBuildPlanStrictDefinitions()...)
 	return defs
 }
 

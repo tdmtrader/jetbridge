@@ -1,0 +1,59 @@
+{
+  "name": "migration-fix-build-private-plan-strict",
+  "test_package": "./atc/db/migration",
+  "source_test_file": "atc/db/migration/fix_build_private_plan_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/migration-fix-build-private-plan-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/migration_fix_build_private_plan_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go",
+    "atc/worker/jetbridge/brine/steps/registry.go",
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/registry.go",
+    "atc/postgresrunner/postgresrunner.go"
+  ],
+  "cases": [
+    {
+      "id": "up-ignores-null-private-plans",
+      "source_file": "atc/db/migration/migrations/1551384520_fix_build_private_plan.up.go",
+      "old": "rows, err := tx.Query(\"SELECT id, private_plan, nonce FROM builds WHERE private_plan IS NOT NULL\")",
+      "new": "rows, err := tx.Query(\"SELECT id, private_plan, nonce FROM builds WHERE private_plan IS NULL\")",
+      "tests": ["Fix Build Private Plan Up ignores NULL plans"],
+      "scenarios": ["Up migration ignores NULL plans"]
+    },
+    {
+      "id": "up-removes-plan-wrapper",
+      "source_file": "atc/db/migration/migrations/1551384520_fix_build_private_plan.up.go",
+      "old": "\t\tfixed, err := json.Marshal(payload[\"plan\"])",
+      "new": "\t\tfixed, err := json.Marshal(payload)",
+      "tests": [
+        "Fix Build Private Plan Up removes the 'plan' key",
+        "Fix Build Private Plan Up updates multiple plans"
+      ],
+      "scenarios": [
+        "Up migration removes the plan key",
+        "Up migration updates multiple plans"
+      ]
+    },
+    {
+      "id": "down-ignores-null-private-plans",
+      "source_file": "atc/db/migration/migrations/1551384520_fix_build_private_plan.down.go",
+      "old": "rows, err := tx.Query(\"SELECT id, private_plan, nonce FROM builds WHERE private_plan IS NOT NULL\")",
+      "new": "rows, err := tx.Query(\"SELECT id, private_plan, nonce FROM builds WHERE private_plan IS NULL\")",
+      "tests": ["Fix Build Private Plan Down ignores NULL plans"],
+      "scenarios": ["Down migration ignores NULL plans"]
+    },
+    {
+      "id": "down-restores-plan-wrapper",
+      "source_file": "atc/db/migration/migrations/1551384520_fix_build_private_plan.down.go",
+      "old": "\t\tfixed, err := json.Marshal(map[string]any{\"plan\": payload})",
+      "new": "\t\tfixed, err := json.Marshal(payload)",
+      "tests": [
+        "Fix Build Private Plan Down nests the plan under a 'plan' key",
+        "Fix Build Private Plan Down updates multiple plans"
+      ],
+      "scenarios": [
+        "Down migration nests the plan under a plan key",
+        "Down migration updates multiple plans"
+      ]
+    }
+  ]
+}
