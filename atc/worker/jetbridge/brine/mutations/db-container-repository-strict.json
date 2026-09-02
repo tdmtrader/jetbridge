@@ -1,0 +1,156 @@
+{
+  "name": "db-container-repository-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/container_repository_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-container-repository-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_container_repository_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go",
+    "atc/worker/jetbridge/brine/steps/task_command.go",
+    "atc/worker/jetbridge/brine/steps/envtest.go",
+    "atc/postgresrunner/postgresrunner.go",
+    "atc/postgresrunner/ginkgo.go",
+    "atc/postgresrunner/join_limit_conn.go",
+    "atc/db/container_repository.go"
+  ],
+  "cases": [
+    {
+      "id": "failed-containers-are-not-transitioned",
+      "source_file": "atc/db/container_repository.go",
+      "old": "\t\tWhere(sq.Eq{\"state\": string(atc.ContainerStateFailed)}).",
+      "new": "\t\tWhere(sq.Eq{\"state\": string(atc.ContainerStateCreated)}).",
+      "tests": [
+        "ContainerRepository DestroyFailedContainers when there are failed containers returns all failed containers"
+      ],
+      "scenarios": [
+        "Container repository profile <profile> has observation <observation> (row 1)"
+      ]
+    },
+    {
+      "id": "destroying-list-selects-created-state",
+      "source_file": "atc/db/container_repository.go",
+      "old": "\tdestroyingContainers, err := repository.queryContainerHandles(\n\t\ttx,\n\t\tsq.Eq{\n\t\t\t\"state\":       atc.ContainerStateDestroying,",
+      "new": "\tdestroyingContainers, err := repository.queryContainerHandles(\n\t\ttx,\n\t\tsq.Eq{\n\t\t\t\"state\":       atc.ContainerStateCreated,",
+      "tests": [
+        "ContainerRepository FindDestroyingContainers when there are destroying containers returns all destroying containers"
+      ],
+      "scenarios": [
+        "Container repository profile <profile> has observation <observation> (row 2)"
+      ]
+    },
+    {
+      "id": "missing-grace-comparison-inverted",
+      "source_file": "atc/db/container_repository.go",
+      "old": "sq.Expr(fmt.Sprintf(\"NOW() - missing_since > '%s'\", fmt.Sprintf(\"%.0f seconds\", gracePeriod.Seconds()))),",
+      "new": "sq.Expr(fmt.Sprintf(\"NOW() - missing_since < '%s'\", fmt.Sprintf(\"%.0f seconds\", gracePeriod.Seconds()))),",
+      "tests": [
+        "ContainerRepository RemoveMissingContainers when no created/failed containers have expired affects no containers",
+        "ContainerRepository RemoveMissingContainers when some created containers have expired affects the right containers and deletes created-handle-2",
+        "ContainerRepository RemoveMissingContainers when worker is in stalled state deletes containers missing for more than grace period, on running (unstalled) workers",
+        "ContainerRepository RemoveMissingContainers when worker is in stalled state does not delete containers on stalled workers"
+      ],
+      "scenarios": [
+        "Container repository profile <profile> has observation <observation> (row 3)",
+        "Container repository profile <profile> has observation <observation> (row 4)",
+        "Container repository profile <profile> has observation <observation> (row 5)",
+        "Container repository profile <profile> has observation <observation> (row 6)"
+      ]
+    },
+    {
+      "id": "destroy-removal-includes-ignored-handles",
+      "source_file": "atc/db/container_repository.go",
+      "old": "\t\t\t\tsq.NotEq{\n\t\t\t\t\t\"handle\": handlesToIgnore,\n\t\t\t\t},",
+      "new": "\t\t\t\tsq.Eq{\n\t\t\t\t\t\"handle\": handlesToIgnore,\n\t\t\t\t},",
+      "tests": [
+        "ContainerRepository RemoveDestroyingContainers when there are containers to destroy when container is in destroying state should destroy",
+        "ContainerRepository RemoveDestroyingContainers when there are containers to destroy when container is in destroying state returns the correct number of rows removed",
+        "ContainerRepository RemoveDestroyingContainers when there are containers to destroy when handles are empty list should destroy",
+        "ContainerRepository RemoveDestroyingContainers when there are containers to destroy when handles are empty list returns the correct number of rows removed",
+        "ContainerRepository RemoveDestroyingContainers when there are no containers to destroy doesn't destroy containers that are in handles",
+        "ContainerRepository RemoveDestroyingContainers when there are no containers to destroy returns the correct number of rows removed"
+      ],
+      "scenarios": [
+        "Container repository profile <profile> has observation <observation> (row 7)",
+        "Container repository profile <profile> has observation <observation> (row 8)",
+        "Container repository profile <profile> has observation <observation> (row 9)",
+        "Container repository profile <profile> has observation <observation> (row 10)",
+        "Container repository profile <profile> has observation <observation> (row 13)",
+        "Container repository profile <profile> has observation <observation> (row 14)"
+      ]
+    },
+    {
+      "id": "destroy-removal-omits-state-guard",
+      "source_file": "atc/db/container_repository.go",
+      "old": "\t\t\t\tsq.NotEq{\n\t\t\t\t\t\"handle\": handlesToIgnore,\n\t\t\t\t},\n\t\t\t\tsq.Eq{\n\t\t\t\t\t\"state\": atc.ContainerStateDestroying,\n\t\t\t\t},",
+      "new": "\t\t\t\tsq.NotEq{\n\t\t\t\t\t\"handle\": handlesToIgnore,\n\t\t\t\t},",
+      "tests": [
+        "ContainerRepository RemoveDestroyingContainers when there are containers to destroy when container is in create/creating state should not destroy",
+        "ContainerRepository RemoveDestroyingContainers when there are containers to destroy when container is in create/creating state returns the correct number of rows removed"
+      ],
+      "scenarios": [
+        "Container repository profile <profile> has observation <observation> (row 11)",
+        "Container repository profile <profile> has observation <observation> (row 12)"
+      ]
+    },
+    {
+      "id": "reported-containers-remain-missing",
+      "source_file": "atc/db/container_repository.go",
+      "old": "\t\tSet(\"missing_since\", nil).\n\t\tWhere(\n\t\t\tsq.And{\n\t\t\t\tsq.NotEq{\n\t\t\t\t\t\"missing_since\": nil,\n\t\t\t\t},\n\t\t\t\tsq.Eq{\n\t\t\t\t\t\"handle\": reportedHandles,\n\t\t\t\t},\n\t\t\t},\n\t\t).ToSql()",
+      "new": "\t\tSet(\"missing_since\", sq.Expr(\"now()\")).\n\t\tWhere(sq.Eq{\"handle\": reportedHandles}).ToSql()",
+      "tests": [
+        "ContainerRepository UpdateContainersMissingSince when the reported handles is a subset should mark containers not in the subset and not already marked as missing",
+        "ContainerRepository UpdateContainersMissingSince when the reported handles is the full set should not update",
+        "ContainerRepository UpdateContainersMissingSince when the reported handles includes a container marked as missing should mark the previously missing container as not missing"
+      ],
+      "scenarios": [
+        "Container repository profile <profile> has observation <observation> (row 16)",
+        "Container repository profile <profile> has observation <observation> (row 17)",
+        "Container repository profile <profile> has observation <observation> (row 18)"
+      ]
+    },
+    {
+      "id": "creating-containers-can-be-marked-missing",
+      "source_file": "atc/db/container_repository.go",
+      "old": "\t\tWhere(sq.And{\n\t\t\tsq.Eq{\"handle\": handles},\n\t\t\tsq.NotEq{\"state\": atc.ContainerStateCreating},\n\t\t}).ToSql()",
+      "new": "\t\tWhere(sq.And{\n\t\t\tsq.Eq{\"handle\": handles},\n\t\t}).ToSql()",
+      "tests": [
+        "ContainerRepository UpdateContainersMissingSince when the reported handles is a subset having the containers in the creating state in the db does not mark as missing"
+      ],
+      "scenarios": [
+        "Container repository profile <profile> has observation <observation> (row 15)"
+      ]
+    },
+    {
+      "id": "unknown-container-empty-branch-inverted",
+      "source_file": "atc/db/container_repository.go",
+      "old": "\tif len(unknownHandles) == 0 {\n\t\treturn 0, nil\n\t}",
+      "new": "\tif len(unknownHandles) != 0 {\n\t\treturn 0, nil\n\t}",
+      "tests": [
+        "ContainerRepository DestroyUnknownContainers when there are containers on the worker that are not in the db adds new destroying containers to the database",
+        "ContainerRepository DestroyUnknownContainers when there are no unknown containers on the worker should not try to destroy anything"
+      ],
+      "scenarios": [
+        "Container repository profile <profile> has observation <observation> (row 19)",
+        "Container repository profile <profile> has observation <observation> (row 20)"
+      ]
+    },
+    {
+      "id": "excess-check-threshold-off-by-one",
+      "source_file": "atc/db/container_repository.go",
+      "old": "\t\tAND ranked.rn > $1",
+      "new": "\t\tAND ranked.rn >= $1",
+      "tests": [
+        "ContainerRepository DestroyExcessCheckContainers when there are 4 check containers for the same resource config marks the oldest containers as destroying, keeping only 2",
+        "ContainerRepository DestroyExcessCheckContainers when the oldest container is recently hijacked exempts the hijacked container from destruction",
+        "ContainerRepository DestroyExcessCheckContainers when containers belong to different resource configs caps independently per resource config",
+        "ContainerRepository DestroyExcessCheckContainers when there are 2 or fewer check containers does not destroy any containers"
+      ],
+      "scenarios": [
+        "Container repository profile <profile> has observation <observation> (row 21)",
+        "Container repository profile <profile> has observation <observation> (row 22)",
+        "Container repository profile <profile> has observation <observation> (row 23)",
+        "Container repository profile <profile> has observation <observation> (row 24)"
+      ]
+    }
+  ]
+}

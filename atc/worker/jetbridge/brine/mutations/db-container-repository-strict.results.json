@@ -1,0 +1,143 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-container-repository-strict.json",
+  "git_head": "93311c1d1ccdde7c02cd054c99ca0c72599fd06e",
+  "completed_at": "2026-09-02T14:38:48Z",
+  "source_tests": 24,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/container_repository.go": "3e44a27574bc05335c3e9c63d6821865d6ed5e68e4d777cb12fad68beb6e96d8",
+    "atc/db/container_repository_test.go": "ab951b2130ba0197390c99f1ff296c9b64119c46d6023a28b8524b5980bb6016",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/db-container-repository-strict.feature": "992303fe652eb4fc9ebb5d8096a347a21245d0d93c3fb37fc8d0fac96f98625a",
+    "atc/worker/jetbridge/brine/mutations/db-container-repository-strict.json": "a12b63de7fd179ab42816fc91190a6081cc42d32e826b39360d167db0cb57924",
+    "atc/worker/jetbridge/brine/steps/db_container_repository_strict.go": "696ac8ef8cb959d81e0234fa0e3c602152b0eb5f3ae41323682c412122636df1",
+    "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e"
+  },
+  "mutation_cases": [
+    {
+      "id": "failed-containers-are-not-transitioned",
+      "mutation_sha256": "ac72d2d17aa08cf7b68f1aaea1eca2ab7fe6398d2009cd57ab7be0b090328fd4",
+      "failed_source_tests": [
+        "ContainerRepository DestroyFailedContainers when there are failed containers returns all failed containers"
+      ],
+      "failed_brine_scenarios": [
+        "Container repository profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 1)"
+      ]
+    },
+    {
+      "id": "destroying-list-selects-created-state",
+      "mutation_sha256": "b8c261a47b6ba087ea00744ab021629b170c7b0a921a5ace74a0a90805755250",
+      "failed_source_tests": [
+        "ContainerRepository FindDestroyingContainers when there are destroying containers returns all destroying containers"
+      ],
+      "failed_brine_scenarios": [
+        "Container repository profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "missing-grace-comparison-inverted",
+      "mutation_sha256": "10edb8591d1029e2b1c1332f3ee5830c78f72498dab2e9a3f7cebd66bf6c659c",
+      "failed_source_tests": [
+        "ContainerRepository RemoveMissingContainers when no created/failed containers have expired affects no containers",
+        "ContainerRepository RemoveMissingContainers when some created containers have expired affects the right containers and deletes created-handle-2",
+        "ContainerRepository RemoveMissingContainers when worker is in stalled state deletes containers missing for more than grace period, on running (unstalled) workers",
+        "ContainerRepository RemoveMissingContainers when worker is in stalled state does not delete containers on stalled workers"
+      ],
+      "failed_brine_scenarios": [
+        "Container repository profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 3)",
+        "Container repository profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 4)",
+        "Container repository profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 5)",
+        "Container repository profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "destroy-removal-includes-ignored-handles",
+      "mutation_sha256": "1ed540cee7a8a29b512368e597d2feef40d894762fa79f7954ef1de9eacef46e",
+      "failed_source_tests": [
+        "ContainerRepository RemoveDestroyingContainers when there are containers to destroy when container is in destroying state returns the correct number of rows removed",
+        "ContainerRepository RemoveDestroyingContainers when there are containers to destroy when container is in destroying state should destroy",
+        "ContainerRepository RemoveDestroyingContainers when there are containers to destroy when handles are empty list returns the correct number of rows removed",
+        "ContainerRepository RemoveDestroyingContainers when there are containers to destroy when handles are empty list should destroy",
+        "ContainerRepository RemoveDestroyingContainers when there are no containers to destroy doesn't destroy containers that are in handles",
+        "ContainerRepository RemoveDestroyingContainers when there are no containers to destroy returns the correct number of rows removed"
+      ],
+      "failed_brine_scenarios": [
+        "Container repository profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 10)",
+        "Container repository profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 13)",
+        "Container repository profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 14)",
+        "Container repository profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 7)",
+        "Container repository profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 8)",
+        "Container repository profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "destroy-removal-omits-state-guard",
+      "mutation_sha256": "3c65364a2b13c1035718759ed4dce54be803e78318cb7b1d844c2d1342246e2b",
+      "failed_source_tests": [
+        "ContainerRepository RemoveDestroyingContainers when there are containers to destroy when container is in create/creating state returns the correct number of rows removed",
+        "ContainerRepository RemoveDestroyingContainers when there are containers to destroy when container is in create/creating state should not destroy"
+      ],
+      "failed_brine_scenarios": [
+        "Container repository profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 11)",
+        "Container repository profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 12)"
+      ]
+    },
+    {
+      "id": "reported-containers-remain-missing",
+      "mutation_sha256": "50985c2fa8d7de69c847982fd0c0aa5ff3d79c68508f1d2d9467ab2d017499d5",
+      "failed_source_tests": [
+        "ContainerRepository UpdateContainersMissingSince when the reported handles includes a container marked as missing should mark the previously missing container as not missing",
+        "ContainerRepository UpdateContainersMissingSince when the reported handles is a subset should mark containers not in the subset and not already marked as missing",
+        "ContainerRepository UpdateContainersMissingSince when the reported handles is the full set should not update"
+      ],
+      "failed_brine_scenarios": [
+        "Container repository profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 16)",
+        "Container repository profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 17)",
+        "Container repository profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 18)"
+      ]
+    },
+    {
+      "id": "creating-containers-can-be-marked-missing",
+      "mutation_sha256": "964d9e4ab6fafdf613e230b495e46ae8246088271383f509f39b72a50c886714",
+      "failed_source_tests": [
+        "ContainerRepository UpdateContainersMissingSince when the reported handles is a subset having the containers in the creating state in the db does not mark as missing"
+      ],
+      "failed_brine_scenarios": [
+        "Container repository profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 15)"
+      ]
+    },
+    {
+      "id": "unknown-container-empty-branch-inverted",
+      "mutation_sha256": "599e95216cea50f5c33c6800effb04ed42863c8590d12f14488f3d199d1567c7",
+      "failed_source_tests": [
+        "ContainerRepository DestroyUnknownContainers when there are containers on the worker that are not in the db adds new destroying containers to the database",
+        "ContainerRepository DestroyUnknownContainers when there are no unknown containers on the worker should not try to destroy anything"
+      ],
+      "failed_brine_scenarios": [
+        "Container repository profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 19)",
+        "Container repository profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 20)"
+      ]
+    },
+    {
+      "id": "excess-check-threshold-off-by-one",
+      "mutation_sha256": "30eb398e6c7da0b7cab00e0feea1966245defa7a6ff703a672434db092cfb9fc",
+      "failed_source_tests": [
+        "ContainerRepository DestroyExcessCheckContainers when containers belong to different resource configs caps independently per resource config",
+        "ContainerRepository DestroyExcessCheckContainers when the oldest container is recently hijacked exempts the hijacked container from destruction",
+        "ContainerRepository DestroyExcessCheckContainers when there are 2 or fewer check containers does not destroy any containers",
+        "ContainerRepository DestroyExcessCheckContainers when there are 4 check containers for the same resource config marks the oldest containers as destroying, keeping only 2"
+      ],
+      "failed_brine_scenarios": [
+        "Container repository profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 21)",
+        "Container repository profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 22)",
+        "Container repository profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 23)",
+        "Container repository profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 24)"
+      ]
+    }
+  ]
+}
