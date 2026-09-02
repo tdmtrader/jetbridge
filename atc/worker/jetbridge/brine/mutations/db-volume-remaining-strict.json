@@ -16,8 +16,8 @@
     {
       "id": "duplicate-cache-volume-absorbs-unique-conflict",
       "source_file": "atc/db/volume.go",
-      "old": "\t\tif pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == pgerrcode.UniqueViolation {\n\t\t\t// another volume was 'blessed' as the cache volume - leave this one",
-      "new": "\t\tif pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == pgerrcode.ForeignKeyViolation {\n\t\t\t// another volume was 'blessed' as the cache volume - leave this one",
+      "old": "\trows, err := psql.Update(\"volumes\").\n\t\tSet(\"worker_resource_cache_id\", workerResourceCache.ID).\n\t\tSet(\"team_id\", nil).\n\t\tWhere(sq.Eq{\"id\": volume.id}).\n\t\tRunWith(tx).\n\t\tExec()\n\tif err != nil {\n\t\tif pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == pgerrcode.UniqueViolation {",
+      "new": "\trows, err := psql.Update(\"volumes\").\n\t\tSet(\"worker_resource_cache_id\", workerResourceCache.ID).\n\t\tSet(\"team_id\", nil).\n\t\tWhere(sq.Eq{\"id\": volume.id}).\n\t\tRunWith(tx).\n\t\tExec()\n\tif err != nil {\n\t\tif pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == pgerrcode.ForeignKeyViolation {",
       "tests": [
         "Volume createdVolume.InitializeResourceCache when initialize created resource cache when there's already an initialized resource cache on the same worker leaves the volume owned by the container"
       ],
