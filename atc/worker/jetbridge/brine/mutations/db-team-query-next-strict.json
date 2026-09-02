@@ -42,8 +42,8 @@
     {
       "id": "find-container-returns-created-container",
       "source_file": "atc/db/team.go",
-      "old": "func (t *team) FindContainerByHandle(\n\thandle string,\n) (Container, bool, error) {\n\tcreatingContainer, createdContainer, err := t.findContainer(sq.Eq{\"handle\": handle})\n\tif err != nil {\n\t\treturn nil, false, err\n\t}\n\n\tif creatingContainer != nil {\n\t\treturn creatingContainer, true, nil\n\t}\n\n\tif createdContainer != nil {",
-      "new": "func (t *team) FindContainerByHandle(\n\thandle string,\n) (Container, bool, error) {\n\tcreatingContainer, createdContainer, err := t.findContainer(sq.Eq{\"handle\": handle})\n\tif err != nil {\n\t\treturn nil, false, err\n\t}\n\n\tif creatingContainer != nil {\n\t\treturn creatingContainer, true, nil\n\t}\n\n\tif createdContainer == nil {",
+      "old": "func (t *team) FindContainerByHandle(\n\thandle string,\n) (Container, bool, error) {\n\tcreatingContainer, createdContainer, err := t.findContainer(sq.Eq{\"handle\": handle})\n\tif err != nil {\n\t\treturn nil, false, err\n\t}\n\n\tif creatingContainer != nil {\n\t\treturn creatingContainer, true, nil\n\t}\n\n\tif createdContainer != nil {\n\t\treturn createdContainer, true, nil\n\t}",
+      "new": "func (t *team) FindContainerByHandle(\n\thandle string,\n) (Container, bool, error) {\n\tcreatingContainer, createdContainer, err := t.findContainer(sq.Eq{\"handle\": handle})\n\tif err != nil {\n\t\treturn nil, false, err\n\t}\n\n\tif creatingContainer != nil {\n\t\treturn creatingContainer, true, nil\n\t}\n\n\tif createdContainer != nil {\n\t\treturn createdContainer, false, nil\n\t}",
       "tests": ["Team FindContainerByHandle finds a container for the team"],
       "scenarios": ["Remaining DB team query behavior — <profile> (row 5)"]
     },
@@ -185,7 +185,7 @@
       "id": "stalled-cache-worker-is-not-returned",
       "source_file": "atc/db/team.go",
       "old": "sq.Eq{\"w.state\": WorkerStateRunning},",
-      "new": "sq.NotEq{\"w.state\": \"\"},",
+      "new": "sq.Or{sq.Eq{\"w.state\": WorkerStateRunning}, sq.Eq{\"w.state\": WorkerStateStalled}},",
       "tests": ["Team FindWorkersForResourceCache when the worker is stalled should not find the worker"],
       "scenarios": ["Remaining DB team query behavior — <profile> (row 23)"]
     },
