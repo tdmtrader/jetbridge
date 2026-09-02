@@ -1,0 +1,137 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/migration-add-global-users-strict.json",
+  "git_head": "4e07192bbec12c1ef0608048dc5b10bcfc84d253",
+  "completed_at": "2026-09-02T21:42:09Z",
+  "source_tests": 12,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/migration/add_global_users_test.go": "a80f7034e3c0ee895be9bbf9915ce752dc76965b8293209748aca752b42978c7",
+    "atc/db/migration/migrations/1528470872_add_global_users.down.go": "f75ab84d38459b42e21ccc261911fb4a27c5d2fa6d8e44b86c13a2be01d32488",
+    "atc/db/migration/migrations/1528470872_add_global_users.up.go": "1124cfecf369f04e05b3f1fcfe77f17049e6f33a32d46e55e805217af33db8a6",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/main.go": "f1077dbb582d4a3ad64725c5a79cbb19aacc73f43e16da24c8db9d42a94cca9f",
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/registry.go": "86dcc596f088e7eb35fe55cbb83491321b0675b4efdc871d77127011c516ff2e",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/migration-add-global-users-strict.feature": "43163c73c05ae75887c935392cb2e4eb0f0bab361b49fdb38a0118342aca12ec",
+    "atc/worker/jetbridge/brine/mutations/migration-add-global-users-strict.json": "d781c7a7dee578ac6673a7676a6c3f10b6cd07f5824108f51c863ae320892a17",
+    "atc/worker/jetbridge/brine/steps/migration_add_global_users_strict.go": "28a82d8e6221d4075f02b8929d5c88f98d6b87c0be33f20fb2e0ab9ec990e43e",
+    "atc/worker/jetbridge/brine/steps/registry.go": "14653757059717386b00adf0ac282d350880457590c108867ecb78e21745229d",
+    "atc/worker/jetbridge/brine/steps/resources.go": "f594ee3b1828c61ca1dd1ef9dd8024ecbb440898b57644b50a80d86bad475691"
+  },
+  "mutation_cases": [
+    {
+      "id": "github-users-use-provider-prefix",
+      "mutation_sha256": "de0f4774ce98eda29b678b51f22347172f57acad8506f91859d4ab5e66cfda67",
+      "failed_source_tests": [
+        "Add global users Up migrates github data to users/groups format"
+      ],
+      "failed_brine_scenarios": [
+        "Production add-global-users migration — \u003cprofile\u003e (row 1)"
+      ]
+    },
+    {
+      "id": "basic-users-use-local-prefix",
+      "mutation_sha256": "e214532c68684dc968613e121bf16c5c7306b4413a80358b22a7c563667de040",
+      "failed_source_tests": [
+        "Add global users Up migrates basic auth data to users/groups format"
+      ],
+      "failed_brine_scenarios": [
+        "Production add-global-users migration — \u003cprofile\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "uaa-spaces-use-cf-prefix",
+      "mutation_sha256": "3a36e9ca21f93cf37859a0fb6105ad3b0cb75c6fb4c029a6b425bab4268b59d0",
+      "failed_source_tests": [
+        "Add global users Up migrates uaa data to users/groups format"
+      ],
+      "failed_brine_scenarios": [
+        "Production add-global-users migration — \u003cprofile\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "gitlab-groups-use-provider-prefix",
+      "mutation_sha256": "77559c063b43a211f59871a1d27cdc267ad38f01a742872a6d8c4b139d41f7d0",
+      "failed_source_tests": [
+        "Add global users Up migrates gitlab data to users/groups format"
+      ],
+      "failed_brine_scenarios": [
+        "Production add-global-users migration — \u003cprofile\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "oauth-scope-uses-provider-prefix",
+      "mutation_sha256": "95d7f5550ec5a719b3e16482e20a8395cac60547c1e94c500e4dbdbcf008e63a",
+      "failed_source_tests": [
+        "Add global users Up migrates oauth data to users/groups format"
+      ],
+      "failed_brine_scenarios": [
+        "Production add-global-users migration — \u003cprofile\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "oidc-users-use-provider-prefix",
+      "mutation_sha256": "52429fc5fb58f6e54c4b8c4cbe41d7635ebdbf8eb1f01d3fe72207f4701e3b44",
+      "failed_source_tests": [
+        "Add global users Up migrates oidc data to users/groups format"
+      ],
+      "failed_brine_scenarios": [
+        "Production add-global-users migration — \u003cprofile\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "bitbucket-cloud-remains-unsupported",
+      "mutation_sha256": "d37803721094a35a076ea6a0223d66f12253f34cc21eae8003f9ea95787673cd",
+      "failed_source_tests": [
+        "Add global users Up fails to migrate if bitbucket cloud is present"
+      ],
+      "failed_brine_scenarios": [
+        "Production add-global-users migration — \u003cprofile\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "bitbucket-server-remains-unsupported",
+      "mutation_sha256": "e62a58b25afb995272dbad6505c816c1399632b3bde523f359898fd415e2db24",
+      "failed_source_tests": [
+        "Add global users Up fails to migrate if bitbucket server is present"
+      ],
+      "failed_brine_scenarios": [
+        "Production add-global-users migration — \u003cprofile\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "uaa-provider-settings-must-match-across-teams",
+      "mutation_sha256": "dc39c2aeebccd449ff925c8eea73b97fb1c6912f4b88fa27329c56bbbfff1642",
+      "failed_source_tests": [
+        "Add global users Up fails to migrate uaa if teams are using different providers of the same type"
+      ],
+      "failed_brine_scenarios": [
+        "Production add-global-users migration — \u003cprofile\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "basic-usernames-must-be-unique-across-teams",
+      "mutation_sha256": "50914b8f5c4cab95a2d7c1190da21d21ed33245a7cdb70f4b126c5d4aea91338",
+      "failed_source_tests": [
+        "Add global users Up fails to migrate if two teams have the same basic auth username"
+      ],
+      "failed_brine_scenarios": [
+        "Production add-global-users migration — \u003cprofile\u003e (row 10)"
+      ]
+    },
+    {
+      "id": "downgrade-only-ignores-changed-main-team",
+      "mutation_sha256": "2b7f9af062cd15074a528dd69841c0639462da84d62e0a6427d681d057da3329",
+      "failed_source_tests": [
+        "Add global users Down fails when non-main teams have changed auth",
+        "Add global users Down works when only main team has changed auth"
+      ],
+      "failed_brine_scenarios": [
+        "Production add-global-users migration — \u003cprofile\u003e (row 11)",
+        "Production add-global-users migration — \u003cprofile\u003e (row 12)"
+      ]
+    }
+  ]
+}
