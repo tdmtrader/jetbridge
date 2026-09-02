@@ -1,0 +1,64 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/config-client-strict.json",
+  "git_head": "5207d0e692700feb38401a48c65cdc1f599ce8cb",
+  "completed_at": "2026-09-02T19:24:24Z",
+  "source_tests": 7,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/config-client.feature": "3581b93f8f0b3e1378e6d6a2f1553e4873c6f36e69c21c41ad35c4e797eb2c35",
+    "atc/worker/jetbridge/brine/mutations/config-client-strict.json": "cf48b4ed7a703695398a6812454278afb6f0c09db7fab7a25aca9b94869c1794",
+    "atc/worker/jetbridge/brine/steps/config_client.go": "bf291072059772ec0b323ea716d9dac98c947de8028b1bf1bfc378f7dde67ed3",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "go-concourse/concourse/configs.go": "a96fcc3104840a7fd0c4e66602236452a1c7ebc42195b1017c367de81a5e5ee1",
+    "go-concourse/concourse/configs_test.go": "acdeca3f7e8ee7f140d2a3f96c7d89396b52333f5d305a8c08108ee1f22abf0a"
+  },
+  "mutation_cases": [
+    {
+      "id": "pipeline-config-returns-decoded-config",
+      "mutation_sha256": "51cdd8f24a4dcf56422a8c3562f82f4493bef69928c42c7a23f9328af73fc383",
+      "failed_source_tests": [
+        "ATC Handler Configs PipelineConfig ATC returns the correct response when it exists returns the given config and version for that pipeline",
+        "ATC Handler Configs PipelineConfig ATC returns the correct response when it exists when specifying instance vars returns the given config and version for that pipeline instance"
+      ],
+      "failed_brine_scenarios": [
+        "PipelineConfig returns the exact persisted instanced config and version",
+        "PipelineConfig returns the exact persisted ordinary config and version"
+      ]
+    },
+    {
+      "id": "pipeline-config-maps-not-found-without-error",
+      "mutation_sha256": "31f460ae5e18fd2e3d7734fe9f656fc946b9c2a68d177810c784e4e16835f804",
+      "failed_source_tests": [
+        "ATC Handler Configs PipelineConfig when pipeline does not exist returns false and no error"
+      ],
+      "failed_brine_scenarios": [
+        "PipelineConfig maps the production missing response to not found without error"
+      ]
+    },
+    {
+      "id": "create-update-decodes-production-warnings",
+      "mutation_sha256": "e8a99556c49ce1bec641e8945d718a54b017d03edf3d5a19a97801835b6f6bcc",
+      "failed_source_tests": [
+        "ATC Handler Configs CreateOrUpdatePipelineConfig when creating a new config returns true for created and false for updated",
+        "ATC Handler Configs CreateOrUpdatePipelineConfig when updating a config returns false for created and true for updated"
+      ],
+      "failed_brine_scenarios": [
+        "CreateOrUpdatePipelineConfig reports created and decodes production warnings",
+        "CreateOrUpdatePipelineConfig reports updated and decodes production warnings"
+      ]
+    },
+    {
+      "id": "create-update-preserves-instance-vars-query",
+      "mutation_sha256": "ae30e092addf3fe7d726c425a2c24f92c0f01b6800d3c7379e83b0a19634590e",
+      "failed_source_tests": [
+        "ATC Handler Configs CreateOrUpdatePipelineConfig when creating a new config when instance vars are specified submits with vars.xxx query params set",
+        "ATC Handler Configs CreateOrUpdatePipelineConfig when updating a config when instance vars are specified submits with vars.xxx query params set"
+      ],
+      "failed_brine_scenarios": [
+        "CreateOrUpdatePipelineConfig sends instance vars while creating",
+        "CreateOrUpdatePipelineConfig sends instance vars while updating"
+      ]
+    }
+  ]
+}
