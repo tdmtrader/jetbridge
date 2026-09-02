@@ -1,0 +1,69 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/otel-artifact-upload-strict.json",
+  "git_head": "04072605cd08080d3bbb9babfaaa099d68d302b4",
+  "completed_at": "2026-09-02T21:58:52Z",
+  "source_tests": 5,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/metric/otel_artifact_upload.go": "5e1a5800e3491310cb79e7e072a8c5e6087a6acbdd2b434448c328cf86b419ba",
+    "atc/metric/otel_artifact_upload_test.go": "13a4cf6b2b9d92a8c0850e921609aecfa370bfc9543563cf09af15f06460dffc",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/otel-metrics.feature": "f8139794feec2770a14faba152d9db7a303143ca3ec6e02cbb8ba4f5e74def0e",
+    "atc/worker/jetbridge/brine/mutations/otel-artifact-upload-strict.json": "7ec83ad06f96339dacaed4d75a5b3e79b69fee6158bcac5e802c5d6bcd57fdfa",
+    "atc/worker/jetbridge/brine/steps/assert.go": "eac0b7b4dc864f54ffb5aab471451e3b62da518e5a8b10ba26e742d83298861f",
+    "atc/worker/jetbridge/brine/steps/otel_metrics.go": "671ca95e3eb24bf75a872f69862a721cfdf4115fa1749b41d8998e74e21c0614",
+    "atc/worker/jetbridge/brine/steps/registry.go": "9de59465438c24dc672e3cf91aeeb7940af36c4165fa2d5f9c5c9f1c6c54f9c2"
+  },
+  "mutation_cases": [
+    {
+      "id": "artifact-upload-records-total-duration",
+      "mutation_sha256": "363feeaabbf0480df314c39c7bf2e7091a13c1897fca620be57763d2df6cb7d7",
+      "failed_source_tests": [
+        "OTel Artifact Upload Metrics records artifact upload duration"
+      ],
+      "failed_brine_scenarios": [
+        "OTel profile \u003cprofile\u003e exports its production measurement (row 8)"
+      ]
+    },
+    {
+      "id": "artifact-upload-records-byte-size",
+      "mutation_sha256": "d0d71dfc05fa681ce1c8764c8a9683b33ee26cf59967958ff6e3b574c8ed3bfb",
+      "failed_source_tests": [
+        "OTel Artifact Upload Metrics records artifact upload size"
+      ],
+      "failed_brine_scenarios": [
+        "OTel profile \u003cprofile\u003e exports its production measurement (row 9)"
+      ]
+    },
+    {
+      "id": "artifact-upload-records-file-count",
+      "mutation_sha256": "c934b95a30e4d11f93841d51aaf6dfec9fe26df7b510abfd827344da1fe41d73",
+      "failed_source_tests": [
+        "OTel Artifact Upload Metrics records artifact file count"
+      ],
+      "failed_brine_scenarios": [
+        "OTel profile \u003cprofile\u003e exports its production measurement (row 10)"
+      ]
+    },
+    {
+      "id": "artifact-upload-records-tar-phase-duration",
+      "mutation_sha256": "3b01184f447168724e686d026a4a07b609f5ffda7216208d25b240f62d260aac",
+      "failed_source_tests": [
+        "OTel Artifact Upload Metrics records tar and transfer durations separately"
+      ],
+      "failed_brine_scenarios": [
+        "OTel profile \u003cprofile\u003e exports its production measurement (row 11)"
+      ]
+    },
+    {
+      "id": "artifact-upload-records-type-attribute",
+      "mutation_sha256": "11a54568b0f92dc22dc3930b63ff4401912d210e3f837f7a2ffcdda4b38be458",
+      "failed_source_tests": [
+        "OTel Artifact Upload Metrics records correct attributes on duration metric"
+      ],
+      "failed_brine_scenarios": [
+        "OTel profile \u003cprofile\u003e exports its production measurement (row 12)"
+      ]
+    }
+  ]
+}
