@@ -80,8 +80,10 @@ func observeStrictVersionsAPI(database JetbridgeDB, profile string) string {
 	if err != nil {
 		return err.Error()
 	}
-	if err := grantAPIAuthRole(team, accessor.OwnerRole); err != nil {
-		return err.Error()
+	if profile != "list-private-metadata-authenticated" {
+		if err := grantAPIAuthRole(team, accessor.OwnerRole); err != nil {
+			return err.Error()
+		}
 	}
 	if len(profile) >= len("clear-") && profile[:len("clear-")] == "clear-" {
 		if err := makeAPIAuthAdmin(database, team); err != nil {
@@ -99,11 +101,13 @@ func observeStrictVersionsAPI(database JetbridgeDB, profile string) string {
 	if err != nil {
 		return err.Error()
 	}
-	if profile == "list-private-metadata-anonymous" {
+	if profile == "list-private-metadata-anonymous" || profile == "list-private-metadata-authenticated" || profile == "list-public-status" || profile == "list-public-content-type" {
 		if err := pipeline.Expose(); err != nil {
 			return err.Error()
 		}
-		authorization = ""
+		if profile != "list-private-metadata-authenticated" {
+			authorization = ""
+		}
 	}
 
 	request := func(action string, params rata.Params, query url.Values) (strictVersionsHTTPResponse, error) {
@@ -114,6 +118,54 @@ func observeStrictVersionsAPI(database JetbridgeDB, profile string) string {
 	}
 
 	switch profile {
+	case "list-empty-status", "list-public-status", "list-public-content-type", "list-authorized-status", "list-authorized-content-type":
+		if profile == "list-authorized-status" || profile == "list-authorized-content-type" {
+			resource, err := strictVersionsResource(pipeline, "resource")
+			if err != nil {
+				return err.Error()
+			}
+			if _, err := strictSaveResourceVersions(database, resource, []atc.Version{{"ref": "one"}}); err != nil {
+				return err.Error()
+			}
+		}
+		response, err := request(atc.ListResourceVersions, resourceParams("resource"), nil)
+		if err != nil {
+			return err.Error()
+		}
+		if profile == "list-public-content-type" || profile == "list-authorized-content-type" {
+			if response.ContentType != "application/json" {
+				return fail("content type=%q", response.ContentType)
+			}
+		} else if response.Status != http.StatusOK {
+			return fail("list status=%d", response.Status)
+		}
+	case "list-resource-not-found":
+		response, err := request(atc.ListResourceVersions, resourceParams("missing-resource"), nil)
+		if err != nil || response.Status != http.StatusNotFound {
+			return fail("missing resource status=%d err=%v", response.Status, err)
+		}
+	case "list-private-metadata-authenticated":
+		resource, err := strictVersionsResource(pipeline, "resource")
+		if err != nil {
+			return err.Error()
+		}
+		version := atc.Version{"ref": "private"}
+		if _, err := strictSaveResourceVersions(database, resource, []atc.Version{version}); err != nil {
+			return err.Error()
+		}
+		metadata := atc.Metadata{{Name: "secret", Value: "value"}}
+		updated, err := resource.UpdateMetadata(version, db.NewResourceConfigMetadataFields(metadata))
+		if err != nil || !updated {
+			return fail("update metadata changed=%t err=%v", updated, err)
+		}
+		response, err := request(atc.ListResourceVersions, resourceParams("resource"), nil)
+		if err != nil {
+			return err.Error()
+		}
+		got, err := strictDecodeVersions(response)
+		if err != nil || len(got) != 1 || got[0].Metadata != nil {
+			return fail("private metadata=%#v err=%v", got, err)
+		}
 	case "list-filter-all":
 		resource, err := strictVersionsResource(pipeline, "resource")
 		if err != nil {
@@ -256,7 +308,7 @@ func observeStrictVersionsAPI(database JetbridgeDB, profile string) string {
 		if err != nil || !reflect.DeepEqual(got, want) {
 			return fail("metadata listing got=%#v want=%#v err=%v", got, want, err)
 		}
-	case "enable-exact", "disable-exact", "pin-exact", "pin-success":
+	case "enable-exact", "disable-exact", "pin-exact", "pin-success", "enable-finds-resource", "enable-status", "disable-finds-resource", "disable-status", "pin-status":
 		resource, err := strictVersionsResource(pipeline, "resource")
 		if err != nil {
 			return err.Error()
@@ -267,14 +319,14 @@ func observeStrictVersionsAPI(database JetbridgeDB, profile string) string {
 			return err.Error()
 		}
 		action := atc.EnableResourceVersion
-		if profile == "enable-exact" {
+		if profile == "enable-exact" || profile == "enable-finds-resource" || profile == "enable-status" {
 			if err := resource.DisableVersion(ids[0]); err != nil {
 				return err.Error()
 			}
 			if err := resource.DisableVersion(ids[1]); err != nil {
 				return err.Error()
 			}
-		} else if profile == "disable-exact" {
+		} else if profile == "disable-exact" || profile == "disable-finds-resource" || profile == "disable-status" {
 			action = atc.DisableResourceVersion
 		} else {
 			action = atc.PinResourceVersion
@@ -304,7 +356,7 @@ func observeStrictVersionsAPI(database JetbridgeDB, profile string) string {
 		if err != nil {
 			return err.Error()
 		}
-		if profile == "enable-exact" || profile == "disable-exact" {
+		if profile == "enable-exact" || profile == "disable-exact" || profile == "enable-finds-resource" || profile == "enable-status" || profile == "disable-finds-resource" || profile == "disable-status" {
 			got, err := strictListResourceVersions(resource)
 			if err != nil {
 				return err.Error()
@@ -313,14 +365,27 @@ func observeStrictVersionsAPI(database JetbridgeDB, profile string) string {
 			for _, version := range got {
 				enabled[version.ID] = version.Enabled
 			}
-			wantTarget := profile == "enable-exact"
+			wantTarget := profile == "enable-exact" || profile == "enable-finds-resource" || profile == "enable-status"
 			if enabled[ids[0]] != wantTarget || enabled[ids[1]] != !wantTarget {
 				return fail("enabled states target=%t decoy=%t", enabled[ids[0]], enabled[ids[1]])
 			}
 		} else if !reflect.DeepEqual(resource.CurrentPinnedVersion(), values[0]) {
 			return fail("pinned version=%v want=%v", resource.CurrentPinnedVersion(), values[0])
 		}
-	case "clear-resource-count", "clear-resource-target", "clear-resource-scope":
+	case "enable-resource-not-found", "disable-resource-not-found", "pin-resource-not-found":
+		action := atc.EnableResourceVersion
+		if profile == "disable-resource-not-found" {
+			action = atc.DisableResourceVersion
+		} else if profile == "pin-resource-not-found" {
+			action = atc.PinResourceVersion
+		}
+		params := resourceParams("missing-resource")
+		params["resource_config_version_id"] = "1"
+		response, err := request(action, params, nil)
+		if err != nil || response.Status != http.StatusNotFound {
+			return fail("missing mutation resource status=%d err=%v", response.Status, err)
+		}
+	case "clear-resource-count", "clear-resource-target", "clear-resource-scope", "clear-resource-status", "clear-resource-content-type":
 		target, err := strictVersionsResource(pipeline, "resource")
 		if err != nil {
 			return err.Error()
@@ -340,6 +405,14 @@ func observeStrictVersionsAPI(database JetbridgeDB, profile string) string {
 			return fail("clear resource status=%d err=%v", response.Status, err)
 		}
 		switch profile {
+		case "clear-resource-status":
+			if response.Status != http.StatusOK {
+				return fail("clear resource status=%d", response.Status)
+			}
+		case "clear-resource-content-type":
+			if response.ContentType != "application/json" {
+				return fail("clear resource content type=%q", response.ContentType)
+			}
 		case "clear-resource-count":
 			var body atc.ClearVersionsResponse
 			if err := json.Unmarshal(response.Body, &body); err != nil || body.VersionsRemoved != 3 {
@@ -356,7 +429,12 @@ func observeStrictVersionsAPI(database JetbridgeDB, profile string) string {
 				return fail("decoy versions=%v err=%v", strictVersionFieldValues(got, "ref"), err)
 			}
 		}
-	case "clear-type-count", "clear-type-target", "clear-type-scope":
+	case "clear-resource-not-found":
+		response, err := request(atc.ClearResourceVersions, resourceParams("missing-resource"), nil)
+		if err != nil || response.Status != http.StatusNotFound {
+			return fail("clear missing resource status=%d err=%v", response.Status, err)
+		}
+	case "clear-type-count", "clear-type-target", "clear-type-scope", "clear-type-status", "clear-type-content-type":
 		target, err := strictVersionsResourceType(pipeline, "resource-type")
 		if err != nil {
 			return err.Error()
@@ -379,6 +457,14 @@ func observeStrictVersionsAPI(database JetbridgeDB, profile string) string {
 			return fail("clear resource type status=%d err=%v", response.Status, err)
 		}
 		switch profile {
+		case "clear-type-status":
+			if response.Status != http.StatusOK {
+				return fail("clear resource type status=%d", response.Status)
+			}
+		case "clear-type-content-type":
+			if response.ContentType != "application/json" {
+				return fail("clear resource type content type=%q", response.ContentType)
+			}
 		case "clear-type-count":
 			var body atc.ClearVersionsResponse
 			if err := json.Unmarshal(response.Body, &body); err != nil || body.VersionsRemoved != 3 {
@@ -396,6 +482,12 @@ func observeStrictVersionsAPI(database JetbridgeDB, profile string) string {
 			if err != nil || !found {
 				return fail("decoy version found=%t err=%v", found, err)
 			}
+		}
+	case "clear-type-not-found":
+		params := rata.Params{"team_name": team.Name(), "pipeline_name": pipeline.Name(), "resource_type_name": "missing-resource-type"}
+		response, err := request(atc.ClearResourceTypeVersions, params, nil)
+		if err != nil || response.Status != http.StatusNotFound {
+			return fail("clear missing resource type status=%d err=%v", response.Status, err)
 		}
 	default:
 		return fail("unknown versions API profile %q", profile)

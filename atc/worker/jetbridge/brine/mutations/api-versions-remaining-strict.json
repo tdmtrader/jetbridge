@@ -1,0 +1,146 @@
+{
+  "name": "api-versions-remaining-strict",
+  "test_package": "./atc/api",
+  "source_test_file": "atc/api/versions_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/api-versions-remaining-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/api_versions_strict.go",
+    "atc/worker/jetbridge/brine/steps/api_auth.go",
+    "atc/worker/jetbridge/brine/steps/api_resource_auth.go",
+    "atc/worker/jetbridge/brine/steps/registry.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "list-success-status",
+      "source_file": "atc/api/resourceserver/versionserver/list.go",
+      "old": "\t\tw.WriteHeader(http.StatusOK)\n\n\t\tacc := accessor.GetAccessor(r)",
+      "new": "\t\tw.WriteHeader(http.StatusCreated)\n\n\t\tacc := accessor.GetAccessor(r)",
+      "tests": [
+        "Versions API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when not authorized and the pipeline is public returns 200 OK",
+        "Versions API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authorized finds the resource",
+        "Versions API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authorized when finding the resource succeeds when getting the versions succeeds returns 200 OK"
+      ],
+      "scenarios": ["Remaining production versions API behavior — <profile> (row 1)", "Remaining production versions API behavior — <profile> (row 2)", "Remaining production versions API behavior — <profile> (row 3)"]
+    },
+    {
+      "id": "list-json-content-type",
+      "source_file": "atc/api/resourceserver/versionserver/list.go",
+      "old": "\t\tw.Header().Set(\"Content-Type\", \"application/json\")\n\n\t\tw.WriteHeader(http.StatusOK)",
+      "new": "\t\tw.Header().Set(\"Content-Type\", \"text/plain\")\n\n\t\tw.WriteHeader(http.StatusOK)",
+      "tests": [
+        "Versions API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when not authorized and the pipeline is public returns content type application/json",
+        "Versions API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authorized when finding the resource succeeds when getting the versions succeeds returns content type application/json"
+      ],
+      "scenarios": ["Remaining production versions API behavior — <profile> (row 4)", "Remaining production versions API behavior — <profile> (row 5)"]
+    },
+    {
+      "id": "list-resource-not-found-status",
+      "source_file": "atc/api/resourceserver/versionserver/list.go",
+      "old": "\t\tif !found {\n\t\t\tlogger.Info(\"resource-not-found\", lager.Data{\"resource-name\": resourceName})\n\t\t\tw.WriteHeader(http.StatusNotFound)\n\t\t\treturn\n\t\t}",
+      "new": "\t\tif !found {\n\t\t\tlogger.Info(\"resource-not-found\", lager.Data{\"resource-name\": resourceName})\n\t\t\tw.WriteHeader(http.StatusGone)\n\t\t\treturn\n\t\t}",
+      "tests": ["Versions API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authorized when the resource is not found returns 404 not found"],
+      "scenarios": ["Remaining production versions API behavior — <profile> (row 6)"]
+    },
+    {
+      "id": "list-hides-private-metadata-from-authenticated-outsider",
+      "source_file": "atc/api/resourceserver/versionserver/list.go",
+      "old": "\t\thideMetadata := !resource.Public() && !acc.IsAuthorized(teamName)",
+      "new": "\t\thideMetadata := !resource.Public() && !acc.IsAuthenticated()",
+      "tests": ["Versions API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when not authorized and the pipeline is public when resource is not public when the user is authenticated returns the json without version metadata"],
+      "scenarios": ["Remaining production versions API behavior — <profile> (row 7)"]
+    },
+    {
+      "id": "enable-success-status",
+      "source_file": "atc/api/resourceserver/versionserver/enable_version.go",
+      "old": "\t\tw.WriteHeader(http.StatusOK)",
+      "new": "\t\tw.WriteHeader(http.StatusCreated)",
+      "tests": [
+        "Versions API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/enable when authenticated when authorized finds the configured resource",
+        "Versions API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/enable when authenticated when authorized when finding the resource succeeds when enabling the resource succeeds returns 200"
+      ],
+      "scenarios": ["Remaining production versions API behavior — <profile> (row 8)", "Remaining production versions API behavior — <profile> (row 9)"]
+    },
+    {
+      "id": "enable-resource-not-found-status",
+      "source_file": "atc/api/resourceserver/versionserver/enable_version.go",
+      "old": "\t\tif !found {\n\t\t\tlogger.Debug(\"resource-not-found\", lager.Data{\"resource\": resourceName})\n\t\t\tw.WriteHeader(http.StatusNotFound)\n\t\t\treturn\n\t\t}",
+      "new": "\t\tif !found {\n\t\t\tlogger.Debug(\"resource-not-found\", lager.Data{\"resource\": resourceName})\n\t\t\tw.WriteHeader(http.StatusGone)\n\t\t\treturn\n\t\t}",
+      "tests": ["Versions API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/enable when authenticated when authorized when the resource is not found returns not found"],
+      "scenarios": ["Remaining production versions API behavior — <profile> (row 10)"]
+    },
+    {
+      "id": "disable-success-status",
+      "source_file": "atc/api/resourceserver/versionserver/disable_version.go",
+      "old": "\t\tw.WriteHeader(http.StatusOK)",
+      "new": "\t\tw.WriteHeader(http.StatusCreated)",
+      "tests": [
+        "Versions API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/disable when authenticated  when authorized finds the configured resource",
+        "Versions API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/disable when authenticated  when authorized when finding the resource succeeds when disabling the resource version succeeds returns 200"
+      ],
+      "scenarios": ["Remaining production versions API behavior — <profile> (row 11)", "Remaining production versions API behavior — <profile> (row 12)"]
+    },
+    {
+      "id": "disable-resource-not-found-status",
+      "source_file": "atc/api/resourceserver/versionserver/disable_version.go",
+      "old": "\t\tif !found {\n\t\t\tlogger.Debug(\"resource-not-found\", lager.Data{\"resource\": resourceName})\n\t\t\tw.WriteHeader(http.StatusNotFound)\n\t\t\treturn\n\t\t}",
+      "new": "\t\tif !found {\n\t\t\tlogger.Debug(\"resource-not-found\", lager.Data{\"resource\": resourceName})\n\t\t\tw.WriteHeader(http.StatusGone)\n\t\t\treturn\n\t\t}",
+      "tests": ["Versions API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/disable when authenticated  when authorized when the resource is not found returns not found"],
+      "scenarios": ["Remaining production versions API behavior — <profile> (row 13)"]
+    },
+    {
+      "id": "pin-success-status",
+      "source_file": "atc/api/resourceserver/versionserver/pin_version.go",
+      "old": "\t\tif !found {\n\t\t\tlogger.Debug(\"resource-version-id-not-found\", lager.Data{\"resource_config_version_id\": resourceConfigVersionID})\n\t\t\tw.WriteHeader(http.StatusNotFound)\n\t\t}",
+      "new": "\t\tif !found {\n\t\t\tlogger.Debug(\"resource-version-id-not-found\", lager.Data{\"resource_config_version_id\": resourceConfigVersionID})\n\t\t\tw.WriteHeader(http.StatusNotFound)\n\t\t} else {\n\t\t\tw.WriteHeader(http.StatusCreated)\n\t\t}",
+      "tests": ["Versions API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/pin when authenticated when authorized finds the configured resource"],
+      "scenarios": ["Remaining production versions API behavior — <profile> (row 14)"]
+    },
+    {
+      "id": "pin-resource-not-found-status",
+      "source_file": "atc/api/resourceserver/versionserver/pin_version.go",
+      "old": "\t\tif !found {\n\t\t\tlogger.Debug(\"resource-not-found\", lager.Data{\"resource\": resourceName})\n\t\t\tw.WriteHeader(http.StatusNotFound)\n\t\t\treturn\n\t\t}",
+      "new": "\t\tif !found {\n\t\t\tlogger.Debug(\"resource-not-found\", lager.Data{\"resource\": resourceName})\n\t\t\tw.WriteHeader(http.StatusGone)\n\t\t\treturn\n\t\t}",
+      "tests": ["Versions API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/pin when authenticated when authorized when the resource is not found returns not found"],
+      "scenarios": ["Remaining production versions API behavior — <profile> (row 15)"]
+    },
+    {
+      "id": "clear-success-status",
+      "source_file": "atc/api/resourceserver/versionserver/clear_resource_versions.go",
+      "old": "\tw.WriteHeader(http.StatusOK)\n\n\tresponseJSON, err := json.Marshal(obj)",
+      "new": "\tw.WriteHeader(http.StatusCreated)\n\n\tresponseJSON, err := json.Marshal(obj)",
+      "tests": [
+        "Versions API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authenticated when the user is an admin returns 200",
+        "Versions API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resource-types/:resource_type_name/versions when authenticated when the user is an admin returns 200"
+      ],
+      "scenarios": ["Remaining production versions API behavior — <profile> (row 16)", "Remaining production versions API behavior — <profile> (row 19)"]
+    },
+    {
+      "id": "clear-json-content-type",
+      "source_file": "atc/api/resourceserver/versionserver/clear_resource_versions.go",
+      "old": "\tw.Header().Set(\"Content-Type\", \"application/json\")",
+      "new": "\tw.Header().Set(\"Content-Type\", \"text/plain\")",
+      "tests": [
+        "Versions API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authenticated when the user is an admin returns Content-Type 'application/json'",
+        "Versions API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resource-types/:resource_type_name/versions when authenticated when the user is an admin returns Content-Type 'application/json'"
+      ],
+      "scenarios": ["Remaining production versions API behavior — <profile> (row 17)", "Remaining production versions API behavior — <profile> (row 20)"]
+    },
+    {
+      "id": "clear-resource-not-found-status",
+      "source_file": "atc/api/resourceserver/versionserver/clear_resource_versions.go",
+      "old": "\t\tif !found {\n\t\t\tlogger.Debug(\"resource-not-found\", lager.Data{\"resource-name\": resourceName})\n\t\t\tw.WriteHeader(http.StatusNotFound)\n\t\t\treturn\n\t\t}",
+      "new": "\t\tif !found {\n\t\t\tlogger.Debug(\"resource-not-found\", lager.Data{\"resource-name\": resourceName})\n\t\t\tw.WriteHeader(http.StatusGone)\n\t\t\treturn\n\t\t}",
+      "tests": ["Versions API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authenticated when the user is an admin when the resource is not found returns 404"],
+      "scenarios": ["Remaining production versions API behavior — <profile> (row 18)"]
+    },
+    {
+      "id": "clear-resource-type-not-found-status",
+      "source_file": "atc/api/resourceserver/versionserver/clear_resource_type_versions.go",
+      "old": "\t\tif !found {\n\t\t\tlogger.Debug(\"resource-type-not-found\")\n\t\t\tw.WriteHeader(http.StatusNotFound)\n\t\t\treturn\n\t\t}",
+      "new": "\t\tif !found {\n\t\t\tlogger.Debug(\"resource-type-not-found\")\n\t\t\tw.WriteHeader(http.StatusGone)\n\t\t\treturn\n\t\t}",
+      "tests": ["Versions API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resource-types/:resource_type_name/versions when authenticated when the user is an admin when the resource type is not found returns 404"],
+      "scenarios": ["Remaining production versions API behavior — <profile> (row 21)"]
+    }
+  ]
+}
