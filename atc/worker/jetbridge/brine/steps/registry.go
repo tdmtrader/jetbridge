@@ -96,6 +96,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, VariableTemplateDefinitions()...)
 	defs = append(defs, StaticVariableDefinitions()...)
 	defs = append(defs, VariableReferenceDefinitions()...)
+	defs = append(defs, VariableSourceDefinitions()...)
 	defs = append(defs, ATCConfigBehaviorDefinitions()...)
 	defs = append(defs, ConfigDiffBehaviorDefinitions()...)
 	defs = append(defs, FlyEventRenderDefinitions()...)
