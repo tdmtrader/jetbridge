@@ -1,0 +1,104 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-build-final-strict.json",
+  "git_head": "f19c36e763ef9a341d5f9a9d3dc9f24b7b16c42e",
+  "completed_at": "2026-09-02T20:15:57Z",
+  "source_tests": 10,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/build.go": "9b329576f1999f210fc2f5a41d566ef96acb2e47c349db680d6b7fa0df305fdd",
+    "atc/db/build_event_source.go": "d692d01f6cc69024d7b7f3dea843aabf415896311b464139cd53e58dd1afbaba",
+    "atc/db/build_test.go": "1ab89b11e629b8b0cf2353178bb780f27ad328f7108c9333d6086dbd81c4998f",
+    "atc/db/versions_db.go": "36dffef99ae7fd96d4e36901312b7411094c97d36f83125d0a4274d713132f64",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/db-build-final-strict.feature": "7cc73b1a144c05f9666d8c5c6e702ee54ada995177a3f1d278f43a3782ddd8a6",
+    "atc/worker/jetbridge/brine/mutations/db-build-final-strict.json": "1176d8b22b0e01adfb3bd93b4237da5978c1b351e064f70dc1e38e64697a2d2a",
+    "atc/worker/jetbridge/brine/steps/db_build_final_strict.go": "0ddb599e2cae86df6de01efa0bf1540bc172db6d2c5225ea1b439f8508c26776",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8"
+  },
+  "mutation_cases": [
+    {
+      "id": "finished-status-accessor-preserves-persisted-status",
+      "mutation_sha256": "03515d8c4c0fbe82249ec0cb57d7513f2b325c63c63f3280396ea87b0fa7db3c",
+      "failed_source_tests": [
+        "Build Finish creates Finish event",
+        "Build Finish updates build status"
+      ],
+      "failed_brine_scenarios": [
+        "Finish emits the exact persisted successful status event",
+        "Finish persists the requested terminal status"
+      ]
+    },
+    {
+      "id": "finish-clears-private-plan",
+      "mutation_sha256": "b1a4a193b3ec31fea22173f132d53157b6e0e55bb73ffa8111c6992376c36b8e",
+      "failed_source_tests": [
+        "Build Finish clears out the private plan"
+      ],
+      "failed_brine_scenarios": [
+        "Finish clears the private execution plan"
+      ]
+    },
+    {
+      "id": "successful-build-outputs-preserve-resource-id",
+      "mutation_sha256": "c1b396158bcd16b57170f85bf89ef687d3e56c1458d0dc2c7c58d874b82b64ce",
+      "failed_source_tests": [
+        "Build Finish inserts inputs and outputs into successful build versions"
+      ],
+      "failed_brine_scenarios": [
+        "Finish persists successful input and output versions"
+      ]
+    },
+    {
+      "id": "completed-event-stream-returns-terminal-sentinel",
+      "mutation_sha256": "1c22955411e4f5af9fb36415510a58326f0bf6b495af5d8f2fb09a10f58a2815",
+      "failed_source_tests": [
+        "Build Events saves and emits status events"
+      ],
+      "failed_brine_scenarios": [
+        "Events emits started and finished states then reaches the real end"
+      ]
+    },
+    {
+      "id": "events-preserve-legacy-row-payload",
+      "mutation_sha256": "270d29adff07e750aa8c6a08fe0513bf6167eb9f116df7d8333bfbe1d9837207",
+      "failed_source_tests": [
+        "Build Events emits pre-bigint migration events"
+      ],
+      "failed_brine_scenarios": [
+        "Events reads rows written before the bigint build ID migration"
+      ]
+    },
+    {
+      "id": "event-stream-preserves-log-payloads",
+      "mutation_sha256": "963511294fb22695dfa96c451ed55c22d2049682d1efe2a2b430b7b9f7529a7b",
+      "failed_source_tests": [
+        "Build SaveEvent saves and propagates events correctly"
+      ],
+      "failed_brine_scenarios": [
+        "SaveEvent persists ordered logs supports offsets wakes subscribers and closes"
+      ]
+    },
+    {
+      "id": "resources-return-all-build-outputs",
+      "mutation_sha256": "b096b807705a403cf65779aab1c645f2fb064b575f3859069c86e17508982d70",
+      "failed_source_tests": [
+        "Build Resources returns build inputs and outputs"
+      ],
+      "failed_brine_scenarios": [
+        "Resources returns the exact persisted build inputs and outputs"
+      ]
+    },
+    {
+      "id": "resources-derive-first-occurrence-from-prior-builds",
+      "mutation_sha256": "ae5e90d498c72686508719eef9ff04a5de55376a659c4b15e1ca52d061790a8d",
+      "failed_source_tests": [
+        "Build Resources when the first occurrence is empty determines the first occurrence to be true",
+        "Build Resources when the first occurrence is empty when the a build with those inputs already exist determines the first occurrence to be false"
+      ],
+      "failed_brine_scenarios": [
+        "Resources derives false after an earlier build used the version",
+        "Resources derives true for a first version occurrence"
+      ]
+    }
+  ]
+}
