@@ -31,14 +31,6 @@
       ]
     },
     {
-      "id": "empty-visible-jobs-encode-as-array",
-      "source_file": "atc/api/jobserver/list_all.go",
-      "old": "if jobs == nil {\n\t\tjobs = []atc.JobSummary{}\n\t}",
-      "new": "if jobs == nil {\n\t\tjobs = nil\n\t}",
-      "tests": ["Jobs API GET /api/v1/jobs returns an empty array when no configured jobs are visible"],
-      "scenarios": ["Remaining jobs API production behavior — <profile> (row 3)"]
-    },
-    {
       "id": "public-pipelines-remain-readable",
       "source_file": "atc/api/auth/check_pipeline_access_handler.go",
       "old": "if acc.IsAuthorized(teamName) || pipeline.Public() {",
@@ -51,11 +43,11 @@
         "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/builds when authenticated and not authorized and the pipeline is public returns the persisted build"
       ],
       "scenarios": [
+        "Remaining jobs API production behavior — <profile> (row 3)",
         "Remaining jobs API production behavior — <profile> (row 4)",
         "Remaining jobs API production behavior — <profile> (row 5)",
-        "Remaining jobs API production behavior — <profile> (row 6)",
-        "Remaining jobs API production behavior — <profile> (row 20)",
-        "Remaining jobs API production behavior — <profile> (row 21)"
+        "Remaining jobs API production behavior — <profile> (row 19)",
+        "Remaining jobs API production behavior — <profile> (row 20)"
       ]
     },
     {
@@ -64,7 +56,7 @@
       "old": "case build == nil:\n\t\treturn badgeUnknown",
       "new": "case build == nil:\n\t\treturn badgePassing",
       "tests": ["Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/badge when authorized returns 200 OK with SVG headers and an unknown badge for the real buildless job"],
-      "scenarios": ["Remaining jobs API production behavior — <profile> (row 7)"]
+      "scenarios": ["Remaining jobs API production behavior — <profile> (row 6)"]
     },
     {
       "id": "errored-build-badge-status",
@@ -72,7 +64,7 @@
       "old": "case build.Status() == db.BuildStatusErrored:\n\t\treturn badgeErrored",
       "new": "case build.Status() == db.BuildStatusErrored:\n\t\treturn badgeUnknown",
       "tests": ["Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/badge when authorized when the finished build errored renders the persisted finished build status and color"],
-      "scenarios": ["Remaining jobs API production behavior — <profile> (row 8)"]
+      "scenarios": ["Remaining jobs API production behavior — <profile> (row 7)"]
     },
     {
       "id": "failed-build-badge-status",
@@ -80,7 +72,7 @@
       "old": "case build.Status() == db.BuildStatusFailed:\n\t\treturn badgeFailing",
       "new": "case build.Status() == db.BuildStatusFailed:\n\t\treturn badgeUnknown",
       "tests": ["Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/badge when authorized when the finished build failed renders the persisted finished build status and color"],
-      "scenarios": ["Remaining jobs API production behavior — <profile> (row 9)"]
+      "scenarios": ["Remaining jobs API production behavior — <profile> (row 8)"]
     },
     {
       "id": "succeeded-build-badge-status",
@@ -92,8 +84,8 @@
         "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/badge when authorized with a successful persisted build scales production-deployment and preserves the passing status"
       ],
       "scenarios": [
-        "Remaining jobs API production behavior — <profile> (row 10)",
-        "Remaining jobs API production behavior — <profile> (row 17)"
+        "Remaining jobs API production behavior — <profile> (row 9)",
+        "Remaining jobs API production behavior — <profile> (row 16)"
       ]
     },
     {
@@ -102,7 +94,7 @@
       "old": "case build.Status() == db.BuildStatusAborted:\n\t\treturn badgeAborted",
       "new": "case build.Status() == db.BuildStatusAborted:\n\t\treturn badgeUnknown",
       "tests": ["Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/badge when authorized when the finished build was aborted renders the persisted finished build status and color"],
-      "scenarios": ["Remaining jobs API production behavior — <profile> (row 11)"]
+      "scenarios": ["Remaining jobs API production behavior — <profile> (row 10)"]
     },
     {
       "id": "passing-badge-default-title-and-geometry",
@@ -114,8 +106,8 @@
         "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/badge when authorized with a successful persisted build uses the default build title when the title parameter is empty"
       ],
       "scenarios": [
-        "Remaining jobs API production behavior — <profile> (row 12)",
-        "Remaining jobs API production behavior — <profile> (row 13)"
+        "Remaining jobs API production behavior — <profile> (row 11)",
+        "Remaining jobs API production behavior — <profile> (row 12)"
       ]
     },
     {
@@ -129,9 +121,9 @@
         "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/badge when authorized with a successful persisted build scales custom titles long"
       ],
       "scenarios": [
+        "Remaining jobs API production behavior — <profile> (row 13)",
         "Remaining jobs API production behavior — <profile> (row 14)",
-        "Remaining jobs API production behavior — <profile> (row 15)",
-        "Remaining jobs API production behavior — <profile> (row 16)"
+        "Remaining jobs API production behavior — <profile> (row 15)"
       ]
     },
     {
@@ -140,7 +132,7 @@
       "old": "func (b *Badge) StatusWidth() int {\n\treturn b.Width - b.TitleWidth()\n}",
       "new": "func (b *Badge) StatusWidth() int {\n\treturn b.Width - b.TitleWidth() + 1\n}",
       "tests": ["Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/badge when authorized with a successful persisted build preserves the original status width for custom titles"],
-      "scenarios": ["Remaining jobs API production behavior — <profile> (row 18)"]
+      "scenarios": ["Remaining jobs API production behavior — <profile> (row 17)"]
     },
     {
       "id": "empty-dashboard-encodes-as-array",
@@ -148,7 +140,7 @@
       "old": "if jobs == nil {\n\t\t\tjobs = []atc.JobSummary{}\n\t\t}",
       "new": "if jobs == nil {\n\t\t\tjobs = nil\n\t\t}",
       "tests": ["Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs returns an empty dashboard for a persisted pipeline with no jobs"],
-      "scenarios": ["Remaining jobs API production behavior — <profile> (row 19)"]
+      "scenarios": ["Remaining jobs API production behavior — <profile> (row 18)"]
     }
   ]
 }

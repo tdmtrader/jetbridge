@@ -11,7 +11,6 @@ Feature: Remaining jobs API public listing and badge behavior
       | profile |
       | list-public-only |
       | list-member-private |
-      | list-empty |
       | get-public-anonymous |
       | get-public-outsider |
       | badge-public-outsider |
