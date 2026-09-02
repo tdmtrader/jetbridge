@@ -1,0 +1,83 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/variable-reference-strict.json",
+  "git_head": "22654dd2a72dd93ce3f67ac6e2a5a279a390c672",
+  "completed_at": "2026-09-02T18:37:34Z",
+  "source_tests": 17,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/variable-reference-strict.feature": "28b25158c7c0ebec2f42fa1635db499576945b752d40df64d75d0db268f8f617",
+    "atc/worker/jetbridge/brine/mutations/variable-reference-strict.json": "c4cf972fcba611a5712eff585e37acdaf2657a7bbdd3079a1dbaa49cbfd99d78",
+    "atc/worker/jetbridge/brine/steps/variable_reference_strict.go": "fcac65aaf817cba86100339d385a9a88f4d414d26e5c77fd1e8707f42df061b3",
+    "vars/reference_test.go": "07c2655a688bd92ed005e4ba64e978db356cd04fb5e8045049ae917e1aeb3c48",
+    "vars/variables.go": "e75368afc42152bfbe16aecaa892b00f6df4615533ff99acdabbe46c38ae9760"
+  },
+  "mutation_cases": [
+    {
+      "id": "reference-string-discards-rendered-value",
+      "mutation_sha256": "39e8927ef129d95b2f89df23f9063d8b629e3f2d6ebf95cd56b3e0d4dd1c8923",
+      "failed_source_tests": [
+        "Reference String path",
+        "Reference String path with fields",
+        "Reference String quotes every special path segment",
+        "Reference String quotes mixed special path segments",
+        "Reference String var source"
+      ],
+      "failed_brine_scenarios": [
+        "Variable reference profile \u003cprofile\u003e (row 1)",
+        "Variable reference profile \u003cprofile\u003e (row 2)",
+        "Variable reference profile \u003cprofile\u003e (row 3)",
+        "Variable reference profile \u003cprofile\u003e (row 4)",
+        "Variable reference profile \u003cprofile\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "parse-reference-discards-successful-result",
+      "mutation_sha256": "93ccf9797ecb0cee06c2b8d8dafc593e85052ba27ec9bf1e37effd5206f15bc2",
+      "failed_source_tests": [
+        "Reference ParseReference does not trim spaces in quoted segments",
+        "Reference ParseReference parses every quoted special path segment",
+        "Reference ParseReference parses mixed quoted special path segments",
+        "Reference ParseReference path",
+        "Reference ParseReference path with colon and no var source",
+        "Reference ParseReference path with fields",
+        "Reference ParseReference trims spaces in path segments",
+        "Reference ParseReference var source"
+      ],
+      "failed_brine_scenarios": [
+        "Variable reference profile \u003cprofile\u003e (row 10)",
+        "Variable reference profile \u003cprofile\u003e (row 11)",
+        "Variable reference profile \u003cprofile\u003e (row 16)",
+        "Variable reference profile \u003cprofile\u003e (row 17)",
+        "Variable reference profile \u003cprofile\u003e (row 6)",
+        "Variable reference profile \u003cprofile\u003e (row 7)",
+        "Variable reference profile \u003cprofile\u003e (row 8)",
+        "Variable reference profile \u003cprofile\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "quoted-source-loses-specific-diagnostic",
+      "mutation_sha256": "45c084c9cdf00a50641b1944107382ccde467362e6251cf8582eac49043aa8fe",
+      "failed_source_tests": [
+        "Reference ParseReference quoted var source"
+      ],
+      "failed_brine_scenarios": [
+        "Variable reference profile \u003cprofile\u003e (row 12)"
+      ]
+    },
+    {
+      "id": "empty-fields-lose-specific-diagnostic",
+      "mutation_sha256": "2312b6b7200f401279b200bd2d700533ca53bf3d712025b621718aff9f33d347",
+      "failed_source_tests": [
+        "Reference ParseReference empty path segment",
+        "Reference ParseReference empty quoted path segment",
+        "Reference ParseReference no path segments"
+      ],
+      "failed_brine_scenarios": [
+        "Variable reference profile \u003cprofile\u003e (row 13)",
+        "Variable reference profile \u003cprofile\u003e (row 14)",
+        "Variable reference profile \u003cprofile\u003e (row 15)"
+      ]
+    }
+  ]
+}
