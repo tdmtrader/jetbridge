@@ -52,15 +52,17 @@ type JobStrictObservation struct {
 }
 
 type strictJobBoundary struct {
-	database   JetbridgeDB
-	team       db.Team
-	pipeline   db.Pipeline
-	job        db.Job
-	ref        atc.PipelineRef
-	url        string
-	httpClient *http.Client
-	client     clientapi.Client
-	clientTeam clientapi.Team
+	database     JetbridgeDB
+	team         db.Team
+	pipeline     db.Pipeline
+	job          db.Job
+	ref          atc.PipelineRef
+	url          string
+	httpClient   *http.Client
+	outsiderHTTP *http.Client
+	publicHTTP   *http.Client
+	client       clientapi.Client
+	clientTeam   clientapi.Team
 }
 
 func JobClientStrictDefinitions() []brine.StepDefinition {
@@ -160,6 +162,22 @@ func newStrictJobBoundary(database JetbridgeDB, rec *brine.Recorder) (*strictJob
 	if err := db.NewAccessTokenFactory(database.Conn).CreateAccessToken(token, claims); err != nil {
 		return nil, fmt.Errorf("persist job client access token: %w", err)
 	}
+	outsiderToken := "brine-job-outsider-token"
+	outsiderPayload, err := json.Marshal(map[string]any{
+		"sub": "brine-job-outsider", "preferred_username": "brine-job-outsider",
+		"aud": []any{jobStrictAudience}, "exp": time.Now().Add(time.Hour).Unix(),
+		"federated_claims": map[string]any{"connector_id": jobStrictConnector, "user_id": "brine-job-outsider"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	var outsiderClaims db.Claims
+	if err := json.Unmarshal(outsiderPayload, &outsiderClaims); err != nil {
+		return nil, err
+	}
+	if err := db.NewAccessTokenFactory(database.Conn).CreateAccessToken(outsiderToken, outsiderClaims); err != nil {
+		return nil, fmt.Errorf("persist job outsider access token: %w", err)
+	}
 
 	display, err := skycmd.NewSkyDisplayUserIdGenerator(map[string]string{})
 	if err != nil {
@@ -191,13 +209,17 @@ func newStrictJobBoundary(database JetbridgeDB, rec *brine.Recorder) (*strictJob
 	server := jobserver.NewServer(logger, "https://concourse.invalid", nil, jobFactory, checkFactory)
 	scoped := pipelineserver.NewScopedHandlerFactory(database.TeamFactory)
 	handlers := rata.Handlers{
-		atc.ListAllJobs:   http.HandlerFunc(server.ListAllJobs),
-		atc.ListJobs:      scoped.HandlerFor(server.ListJobs),
-		atc.GetJob:        scoped.HandlerFor(server.GetJob),
-		atc.ListJobBuilds: scoped.HandlerFor(server.ListJobBuilds),
-		atc.PauseJob:      scoped.HandlerFor(server.PauseJob),
-		atc.UnpauseJob:    scoped.HandlerFor(server.UnpauseJob),
-		atc.ScheduleJob:   scoped.HandlerFor(server.ScheduleJob),
+		atc.ListAllJobs:    http.HandlerFunc(server.ListAllJobs),
+		atc.ListJobs:       scoped.HandlerFor(server.ListJobs),
+		atc.GetJob:         scoped.HandlerFor(server.GetJob),
+		atc.ListJobBuilds:  scoped.HandlerFor(server.ListJobBuilds),
+		atc.PauseJob:       scoped.HandlerFor(server.PauseJob),
+		atc.UnpauseJob:     scoped.HandlerFor(server.UnpauseJob),
+		atc.ScheduleJob:    scoped.HandlerFor(server.ScheduleJob),
+		atc.JobBadge:       scoped.HandlerFor(server.JobBadge),
+		atc.ListJobInputs:  scoped.HandlerFor(server.ListJobInputs),
+		atc.GetJobBuild:    scoped.HandlerFor(server.GetJobBuild),
+		atc.ClearTaskCache: scoped.HandlerFor(server.ClearTaskCache),
 	}
 	var routes rata.Routes
 	for _, route := range atc.Routes {
@@ -219,8 +241,15 @@ func newStrictJobBoundary(database JetbridgeDB, rec *brine.Recorder) (*strictJob
 		AccessToken: token, TokenType: "Bearer",
 	}))
 	httpClient.Timeout = 30 * time.Second
+	outsiderHTTP := oauth2.NewClient(context.Background(), oauth2.StaticTokenSource(&oauth2.Token{
+		AccessToken: outsiderToken, TokenType: "Bearer",
+	}))
+	outsiderHTTP.Timeout = 30 * time.Second
+	publicHTTP := &http.Client{Timeout: 30 * time.Second}
 	rec.RegisterDisposer(func() {
 		httpClient.CloseIdleConnections()
+		outsiderHTTP.CloseIdleConnections()
+		publicHTTP.CloseIdleConnections()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := httpServer.Shutdown(ctx); err != nil {
@@ -232,7 +261,8 @@ func newStrictJobBoundary(database JetbridgeDB, rec *brine.Recorder) (*strictJob
 	client := clientapi.NewClient(url, httpClient, false)
 	return &strictJobBoundary{
 		database: database, team: team, pipeline: pipeline, job: job, ref: ref,
-		url: url, httpClient: httpClient, client: client, clientTeam: client.Team(jobStrictTeamName),
+		url: url, httpClient: httpClient, outsiderHTTP: outsiderHTTP, publicHTTP: publicHTTP,
+		client: client, clientTeam: client.Team(jobStrictTeamName),
 	}, nil
 }
 
@@ -282,10 +312,73 @@ func (boundary *strictJobBoundary) observe(profile string) (JobStrictObservation
 		if err := boundary.observeRawAPI(&observation); err != nil {
 			return observation, err
 		}
+	case "jobs-get-unauthorized", "jobs-get-forbidden", "jobs-badge-forbidden",
+		"jobs-list-unauthorized", "jobs-builds-forbidden", "jobs-inputs-unauthorized",
+		"jobs-inputs-forbidden", "jobs-build-unauthorized", "jobs-build-forbidden",
+		"jobs-pause-unauthorized", "jobs-unpause-unauthorized", "jobs-cache-unauthorized",
+		"jobs-schedule-unauthorized":
+		if err := boundary.observeAuthorization(&observation); err != nil {
+			return observation, err
+		}
 	default:
 		return observation, fmt.Errorf("unknown strict job profile %q", profile)
 	}
 	return observation, nil
+}
+
+func (boundary *strictJobBoundary) observeAuthorization(observation *JobStrictObservation) error {
+	profile := observation.Profile
+	client := boundary.publicHTTP
+	wantStatus := http.StatusUnauthorized
+	if strings.HasSuffix(profile, "forbidden") {
+		client = boundary.outsiderHTTP
+		wantStatus = http.StatusForbidden
+	}
+	method := http.MethodGet
+	path := boundary.jobPath("build", "")
+	switch {
+	case strings.Contains(profile, "badge"):
+		path = boundary.jobPath("build", "/badge")
+	case strings.Contains(profile, "list-"):
+		path = fmt.Sprintf("/api/v1/teams/%s/pipelines/%s/jobs?%s", jobStrictTeamName, boundary.ref.Name, boundary.ref.QueryParams().Encode())
+	case strings.Contains(profile, "builds-"):
+		path = boundary.jobPath("build", "/builds")
+	case strings.Contains(profile, "inputs-"):
+		path = boundary.jobPath("build", "/inputs")
+	case strings.Contains(profile, "build-"):
+		build, err := boundary.job.CreateBuild(jobStrictUserID)
+		if err != nil {
+			return err
+		}
+		path = boundary.jobPath("build", "/builds/"+build.Name())
+	case strings.Contains(profile, "unpause-"):
+		method, path = http.MethodPut, boundary.jobPath("build", "/unpause")
+	case strings.Contains(profile, "pause-"):
+		method, path = http.MethodPut, boundary.jobPath("build", "/pause")
+	case strings.Contains(profile, "cache-"):
+		method, path = http.MethodDelete, boundary.jobPath("build", "/tasks/compile/cache")
+	case strings.Contains(profile, "schedule-"):
+		method, path = http.MethodPut, boundary.jobPath("build", "/schedule")
+	}
+	request, err := http.NewRequestWithContext(context.Background(), method, boundary.url+path, nil)
+	if err != nil {
+		return err
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return err
+	}
+	observation.Status = response.StatusCode
+	observation.Body = body
+	if response.StatusCode != wantStatus {
+		return fmt.Errorf("job authorization status got %d, want %d (body %q)", response.StatusCode, wantStatus, string(body))
+	}
+	return nil
 }
 
 func (boundary *strictJobBoundary) createBuilds(observation *JobStrictObservation, count int) error {

@@ -1,0 +1,59 @@
+{
+  "name": "api-jobs-remaining-strict",
+  "test_package": "./atc/api",
+  "source_test_file": "atc/api/jobs_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/api-jobs-remaining-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/api_jobs_remaining_strict.go",
+    "atc/worker/jetbridge/brine/steps/job_client_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "jobs-api-unauthorized-status-is-forbidden",
+      "source_file": "atc/api/auth/unauthorized_rejector.go",
+      "old": "\tw.WriteHeader(http.StatusUnauthorized)\n\tfmt.Fprintf(w, \"not authorized\")",
+      "new": "\tw.WriteHeader(http.StatusForbidden)\n\tfmt.Fprintf(w, \"not authorized\")",
+      "tests": [
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name when not authenticated returns 401 for a private pipeline",
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs returns 401 for an unauthenticated private persisted pipeline",
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/inputs returns 401 when unauthenticated",
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/builds/:build_name when not authorized and the pipeline is private when not authenticated returns 401",
+        "Jobs API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/pause returns 401 without authentication",
+        "Jobs API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/unpause returns 401 without authentication",
+        "Jobs API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/tasks/:step_name/cache returns 401 without authentication",
+        "Jobs API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/schedule returns 401 without authentication"
+      ],
+      "scenarios": [
+        "The jobs API enforces its exact authorization boundary (row 1)",
+        "The jobs API enforces its exact authorization boundary (row 4)",
+        "The jobs API enforces its exact authorization boundary (row 6)",
+        "The jobs API enforces its exact authorization boundary (row 8)",
+        "The jobs API enforces its exact authorization boundary (row 10)",
+        "The jobs API enforces its exact authorization boundary (row 11)",
+        "The jobs API enforces its exact authorization boundary (row 12)",
+        "The jobs API enforces its exact authorization boundary (row 13)"
+      ]
+    },
+    {
+      "id": "jobs-api-forbidden-status-is-unauthorized",
+      "source_file": "atc/api/auth/unauthorized_rejector.go",
+      "old": "\tw.WriteHeader(http.StatusForbidden)\n\tfmt.Fprintf(w, \"forbidden\")",
+      "new": "\tw.WriteHeader(http.StatusUnauthorized)\n\tfmt.Fprintf(w, \"forbidden\")",
+      "tests": [
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name when authenticated and not authorized returns 403 for a private pipeline",
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/badge when authenticated and not authorized and the pipeline is private returns 403",
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/builds when authenticated and not authorized returns 403 for a private pipeline",
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/inputs returns 403 when authenticated but unauthorized",
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/builds/:build_name when not authorized and the pipeline is private when authenticated returns 403"
+      ],
+      "scenarios": [
+        "The jobs API enforces its exact authorization boundary (row 2)",
+        "The jobs API enforces its exact authorization boundary (row 3)",
+        "The jobs API enforces its exact authorization boundary (row 5)",
+        "The jobs API enforces its exact authorization boundary (row 7)",
+        "The jobs API enforces its exact authorization boundary (row 9)"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,61 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/api-jobs-remaining-strict.json",
+  "git_head": "8dfe92d94d613a34c60f3f26d6dd914bd72c5683",
+  "completed_at": "2026-09-02T16:11:14Z",
+  "source_tests": 13,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/api/auth/unauthorized_rejector.go": "2a6abb22cc135a08d295ea535e026627f8fde17a134ea3fb73a8ef0ed8e1e80c",
+    "atc/api/jobs_test.go": "f88301440e04994c7237b5359787152f05910bded030d40f47de6a063785bbe6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/api-jobs-remaining-strict.feature": "90b87d35254ad6baab073344250c21d20faeb0571904831794b294d06dfa6eb3",
+    "atc/worker/jetbridge/brine/mutations/api-jobs-remaining-strict.json": "4f2f7d054afe741dc4a90ece31911e3e6ea9312aad175020b6fa7cb350a5cca1",
+    "atc/worker/jetbridge/brine/steps/api_jobs_remaining_strict.go": "de09b05d6447919f52f98fd551f0c3e21c00fc368078c31e9c301a7a74e2f6b3",
+    "atc/worker/jetbridge/brine/steps/job_client_strict.go": "452bb9cde42b5912a8df3168d75556619800c29af8f5cca22e079a1c99532165",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8"
+  },
+  "mutation_cases": [
+    {
+      "id": "jobs-api-unauthorized-status-is-forbidden",
+      "mutation_sha256": "920551eb4e7d2279a55e62a559d4d91d02b3d12ab149505ca0db96e88dfebb2a",
+      "failed_source_tests": [
+        "Jobs API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/tasks/:step_name/cache returns 401 without authentication",
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs returns 401 for an unauthenticated private persisted pipeline",
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name when not authenticated returns 401 for a private pipeline",
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/builds/:build_name when not authorized and the pipeline is private when not authenticated returns 401",
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/inputs returns 401 when unauthenticated",
+        "Jobs API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/pause returns 401 without authentication",
+        "Jobs API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/schedule returns 401 without authentication",
+        "Jobs API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/unpause returns 401 without authentication"
+      ],
+      "failed_brine_scenarios": [
+        "The jobs API enforces its exact authorization boundary (row 1)",
+        "The jobs API enforces its exact authorization boundary (row 10)",
+        "The jobs API enforces its exact authorization boundary (row 11)",
+        "The jobs API enforces its exact authorization boundary (row 12)",
+        "The jobs API enforces its exact authorization boundary (row 13)",
+        "The jobs API enforces its exact authorization boundary (row 4)",
+        "The jobs API enforces its exact authorization boundary (row 6)",
+        "The jobs API enforces its exact authorization boundary (row 8)"
+      ]
+    },
+    {
+      "id": "jobs-api-forbidden-status-is-unauthorized",
+      "mutation_sha256": "82b937dcd8f7ad2e19ded7a4b0cd8d4472cad6507498a55fe6ef0f3872499e6a",
+      "failed_source_tests": [
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name when authenticated and not authorized returns 403 for a private pipeline",
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/badge when authenticated and not authorized and the pipeline is private returns 403",
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/builds when authenticated and not authorized returns 403 for a private pipeline",
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/builds/:build_name when not authorized and the pipeline is private when authenticated returns 403",
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/inputs returns 403 when authenticated but unauthorized"
+      ],
+      "failed_brine_scenarios": [
+        "The jobs API enforces its exact authorization boundary (row 2)",
+        "The jobs API enforces its exact authorization boundary (row 3)",
+        "The jobs API enforces its exact authorization boundary (row 5)",
+        "The jobs API enforces its exact authorization boundary (row 7)",
+        "The jobs API enforces its exact authorization boundary (row 9)"
+      ]
+    }
+  ]
+}

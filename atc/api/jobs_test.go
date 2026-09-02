@@ -652,10 +652,6 @@ var _ = Describe("Jobs API", func() {
 				fakeAccess.IsAuthorizedReturns(false)
 			})
 
-			It("returns 401 for a private pipeline", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-			})
-
 			Context("and the pipeline is public", func() {
 				BeforeEach(func() {
 					exposePipeline = true
@@ -671,10 +667,6 @@ var _ = Describe("Jobs API", func() {
 			BeforeEach(func() {
 				fakeAccess.IsAuthenticatedReturns(true)
 				fakeAccess.IsAuthorizedReturns(false)
-			})
-
-			It("returns 403 for a private pipeline", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusForbidden))
 			})
 
 			Context("and the pipeline is public", func() {
@@ -894,9 +886,6 @@ var _ = Describe("Jobs API", func() {
 			})
 
 			Context("and the pipeline is private", func() {
-				It("returns 403", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
-				})
 			})
 
 			Context("and the pipeline is public", func() {
@@ -1120,16 +1109,6 @@ var _ = Describe("Jobs API", func() {
 			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 		})
 
-		It("returns 401 for an unauthenticated private persisted pipeline", func() {
-			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, dashboardConfig())
-			fakeAccess.IsAuthenticatedReturns(false)
-			fakeAccess.IsAuthorizedReturns(false)
-			Expect(fixture.Pipeline.Hide()).To(Succeed())
-			server = fixture.Serve()
-			response := jobsAPIGet(server, "/api/v1/teams/some-team/pipelines/some-pipeline/jobs")
-			Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-		})
-
 		It("returns a public persisted dashboard without authentication", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, dashboardConfig())
 			fakeAccess.IsAuthenticatedReturns(false)
@@ -1188,10 +1167,6 @@ var _ = Describe("Jobs API", func() {
 			BeforeEach(func() {
 				fakeAccess.IsAuthenticatedReturns(true)
 				fakeAccess.IsAuthorizedReturns(false)
-			})
-
-			It("returns 403 for a private pipeline", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusForbidden))
 			})
 
 			Context("and the pipeline is public", func() {
@@ -1555,22 +1530,6 @@ var _ = Describe("Jobs API", func() {
 			fakeAccess.IsAuthorizedReturns(true)
 		})
 
-		It("returns 401 when unauthenticated", func() {
-			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, inputConfig())
-			fakeAccess.IsAuthenticatedReturns(false)
-			server = fixture.Serve()
-			response := jobsAPIGet(server, path)
-			Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-		})
-
-		It("returns 403 when authenticated but unauthorized", func() {
-			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, inputConfig())
-			fakeAccess.IsAuthorizedReturns(false)
-			server = fixture.Serve()
-			response := jobsAPIGet(server, path)
-			Expect(response.StatusCode).To(Equal(http.StatusForbidden))
-		})
-
 		It("returns 500 when the real pipeline job lookup fails", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, inputConfig())
 			server = fixture.ServePipeline(fixture.doomedPipeline())
@@ -1808,9 +1767,6 @@ var _ = Describe("Jobs API", func() {
 						fakeAccess.IsAuthenticatedReturns(false)
 					})
 
-					It("returns 401", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-					})
 				})
 
 				Context("when authenticated", func() {
@@ -1818,9 +1774,6 @@ var _ = Describe("Jobs API", func() {
 						fakeAccess.IsAuthenticatedReturns(true)
 					})
 
-					It("returns 403", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusForbidden))
-					})
 				})
 			})
 
@@ -2010,13 +1963,6 @@ var _ = Describe("Jobs API", func() {
 			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 		})
 
-		It("returns 401 without authentication", func() {
-			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
-			fakeAccess.IsAuthenticatedReturns(false)
-			server = fixture.Serve()
-			response := jobsAPIRequest(server, http.MethodPut, path)
-			Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-		})
 	})
 
 	Describe("PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/unpause", func() {
@@ -2046,13 +1992,6 @@ var _ = Describe("Jobs API", func() {
 			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 		})
 
-		It("returns 401 without authentication", func() {
-			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
-			fakeAccess.IsAuthenticatedReturns(false)
-			server = fixture.Serve()
-			response := jobsAPIRequest(server, http.MethodPut, path)
-			Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-		})
 	})
 
 	Describe("DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/tasks/:step_name/cache", func() {
@@ -2079,13 +2018,6 @@ var _ = Describe("Jobs API", func() {
 			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 		})
 
-		It("returns 401 without authentication", func() {
-			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
-			fakeAccess.IsAuthenticatedReturns(false)
-			server = fixture.Serve()
-			response := jobsAPIRequest(server, http.MethodDelete, basePath)
-			Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-		})
 	})
 
 	Describe("PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/schedule", func() {
@@ -2112,12 +2044,5 @@ var _ = Describe("Jobs API", func() {
 			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 		})
 
-		It("returns 401 without authentication", func() {
-			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, config)
-			fakeAccess.IsAuthenticatedReturns(false)
-			server = fixture.Serve()
-			response := jobsAPIRequest(server, http.MethodPut, path)
-			Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-		})
 	})
 })
