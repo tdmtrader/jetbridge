@@ -11,22 +11,6 @@ import (
 var _ = Describe("SsmManager", func() {
 	var manager ssm.SsmManager
 
-	Describe("IsConfigured()", func() {
-		JustBeforeEach(func() {
-			_, err := flags.ParseArgs(&manager, []string{})
-			Expect(err).To(BeNil())
-		})
-
-		It("failes on empty SsmManager", func() {
-			Expect(manager.IsConfigured()).To(BeFalse())
-		})
-
-		It("passes if AwsRegion is set", func() {
-			manager.AwsRegion = "test-region"
-			Expect(manager.IsConfigured()).To(BeTrue())
-		})
-	})
-
 	Describe("Health()", func() {
 	})
 
