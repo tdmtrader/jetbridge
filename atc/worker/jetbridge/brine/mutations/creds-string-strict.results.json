@@ -1,0 +1,32 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/creds-string-strict.json",
+  "git_head": "50ee526c5bc228ac1e2c8842e2f815df19239a2e",
+  "completed_at": "2026-09-02T21:27:29Z",
+  "source_tests": 3,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/creds/string.go": "22e9c7744829d9075a0d1a6ca6b5d6901caf03c683ac1afcc0f14638ca654e4b",
+    "atc/creds/string_test.go": "19fed641b8e81b9ebd86c876b5e53deba2523d210c9d39dc9f0c7e73dbd12d83",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/creds-values-strict.feature": "620812069b532d33506e0b2d08b59f2b6303023bba1b80c726fa4e8ff3158b5f",
+    "atc/worker/jetbridge/brine/mutations/creds-string-strict.json": "1b764fcf2eb914d1088445890b14caec878c77ec60e17cb983c59bbc9ea55aa8",
+    "atc/worker/jetbridge/brine/steps/creds_values_strict.go": "899518f51ea7bf8f5a2eea53fc7741a21d4a07a3878e437e39b54c76662581d2",
+    "atc/worker/jetbridge/brine/steps/registry.go": "1e33d009317428049981f031cc989f1976796602f660a814929a66f698c74685"
+  },
+  "mutation_cases": [
+    {
+      "id": "constructor-preserves-raw-string",
+      "mutation_sha256": "41d0da2fc7e8b6a8994ab3fde479feb23be2023b4698444237df0389a30de0d5",
+      "failed_source_tests": [
+        "String Evaluate interpolates variables in the string",
+        "String Evaluate passes through strings without variables",
+        "String Evaluate returns the raw string on error"
+      ],
+      "failed_brine_scenarios": [
+        "Production credential value behavior — \u003cprofile\u003e (row 1)",
+        "Production credential value behavior — \u003cprofile\u003e (row 2)",
+        "Production credential value behavior — \u003cprofile\u003e (row 3)"
+      ]
+    }
+  ]
+}
