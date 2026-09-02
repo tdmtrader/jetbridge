@@ -1,15 +1,17 @@
 {
   "manifest": "atc/worker/jetbridge/brine/mutations/otel-artifact-upload-strict.json",
-  "git_head": "04072605cd08080d3bbb9babfaaa099d68d302b4",
-  "completed_at": "2026-09-02T21:58:52Z",
+  "git_head": "bc93e098e12e1510d0f073f75ed0df9f0f89e802",
+  "completed_at": "2026-09-02T22:05:32Z",
   "source_tests": 5,
   "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
   "input_sha256": {
     "atc/metric/otel_artifact_upload.go": "5e1a5800e3491310cb79e7e072a8c5e6087a6acbdd2b434448c328cf86b419ba",
     "atc/metric/otel_artifact_upload_test.go": "13a4cf6b2b9d92a8c0850e921609aecfa370bfc9543563cf09af15f06460dffc",
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/main.go": "f1077dbb582d4a3ad64725c5a79cbb19aacc73f43e16da24c8db9d42a94cca9f",
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/registry.go": "c8de534c8b09ad20e5fa70a782ddd10de12c4af763236adb7f3cd2190e4d6082",
     "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
     "atc/worker/jetbridge/brine/features/otel-metrics.feature": "f8139794feec2770a14faba152d9db7a303143ca3ec6e02cbb8ba4f5e74def0e",
-    "atc/worker/jetbridge/brine/mutations/otel-artifact-upload-strict.json": "7ec83ad06f96339dacaed4d75a5b3e79b69fee6158bcac5e802c5d6bcd57fdfa",
+    "atc/worker/jetbridge/brine/mutations/otel-artifact-upload-strict.json": "231a54f5ba22cc97815e0da3158402a0adf5053d6e1b3901b929ad79b536fda8",
     "atc/worker/jetbridge/brine/steps/assert.go": "eac0b7b4dc864f54ffb5aab471451e3b62da518e5a8b10ba26e742d83298861f",
     "atc/worker/jetbridge/brine/steps/otel_metrics.go": "671ca95e3eb24bf75a872f69862a721cfdf4115fa1749b41d8998e74e21c0614",
     "atc/worker/jetbridge/brine/steps/registry.go": "9de59465438c24dc672e3cf91aeeb7940af36c4165fa2d5f9c5c9f1c6c54f9c2"
