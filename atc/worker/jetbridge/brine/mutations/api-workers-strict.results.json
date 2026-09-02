@@ -1,0 +1,157 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/api-workers-strict.json",
+  "git_head": "9d922ecddd82cb4c3adc4d5eacb852082f5c7a7f",
+  "completed_at": "2026-09-02T16:59:48Z",
+  "source_tests": 15,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/api/workers_test.go": "d5b07c35b57aa3532ae65efb4f22e89081de0a0c646e6f16fc07458eb670811d",
+    "atc/api/workerserver/delete.go": "9d1d16914ad688f10e9111409f1e55a5eca7274eb9536dc5c9854469a3f8d776",
+    "atc/api/workerserver/register.go": "5c397c133bdb67218b7f8f9172007fb3793dd8c497919577791c3e7d4bd9e7e5",
+    "atc/db/worker.go": "b4389b7d8d4147a62770e73197ee65f09e6b95f87cf5602e17d9fb7286837845",
+    "atc/db/worker_factory.go": "7affe6bc9f632280cc2046a0cdd7aab22a2ba17a66735251f643074739299d3d",
+    "atc/worker.go": "d603bd28f4ce4f7ed80226bec61f04d06e761229754543f7cdfc7b5949b6ccd4",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/api-workers-strict.feature": "08a4e971ecd69de39c4406e172ec5acca01c015f480414ee4179336cdc126546",
+    "atc/worker/jetbridge/brine/mutations/api-workers-strict.json": "8e8a0a4e41fe7fc6bd343c03eb75579390a9bc837cc0f6f8da358297ea6b219f",
+    "atc/worker/jetbridge/brine/steps/api_workers_strict.go": "4cbc8c4011df4af9ec2ee5d2e8246e9eb7227f5a74ab0db81563c6f565a50c20",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "atc/wrappa/api_auth_wrappa.go": "4874403081de1ea59fbafeec81f10cce713be7d82eb36158c393300897572a1d"
+  },
+  "mutation_cases": [
+    {
+      "id": "visible-workers-include-global-workers",
+      "mutation_sha256": "41f9743807598a643e9da54b48b514cf47d7606b3e6023b5b90c2c90d5ff876b",
+      "failed_source_tests": [
+        "Workers API GET /api/v1/workers shows global and authorized-team workers"
+      ],
+      "failed_brine_scenarios": [
+        "Worker listing includes global and authorized team workers"
+      ]
+    },
+    {
+      "id": "administrator-list-is-not-visibility-filtered",
+      "mutation_sha256": "58992d0e06202bfa71efadab9aef7485ca3fc2d24c353705c1c3098f8ce6fa0b",
+      "failed_source_tests": [
+        "Workers API GET /api/v1/workers when the user is an admin shows all workers"
+      ],
+      "failed_brine_scenarios": [
+        "Administrator worker listing includes every persisted worker"
+      ]
+    },
+    {
+      "id": "worker-list-requires-authentication",
+      "mutation_sha256": "9ab212938d4f3e1cf31bb139f3523f6890f32cb75fda5deead086872a2259a9c",
+      "failed_source_tests": [
+        "Workers API GET /api/v1/workers when not authenticated returns 401"
+      ],
+      "failed_brine_scenarios": [
+        "Worker listing rejects an unauthenticated request"
+      ]
+    },
+    {
+      "id": "global-registration-preserves-ttl",
+      "mutation_sha256": "e8d3bcafca9ac4a8cfe5e7a7aed3d69d85982885798cca4611ffb8d7f3c81b52",
+      "failed_source_tests": [
+        "Workers API POST /api/v1/workers for a global worker persists worker registration through PostgreSQL"
+      ],
+      "failed_brine_scenarios": [
+        "Global worker registration persists the exact production fields and TTL"
+      ]
+    },
+    {
+      "id": "team-registration-preserves-team-id",
+      "mutation_sha256": "0c3b3aaeece083efedd16b2fa8a76f4f8a95243563b0931230e2c32d256a6097",
+      "failed_source_tests": [
+        "Workers API POST /api/v1/workers for a team worker persists the worker with its team"
+      ],
+      "failed_brine_scenarios": [
+        "Team worker registration persists the exact team association"
+      ]
+    },
+    {
+      "id": "missing-team-is-bad-request",
+      "mutation_sha256": "781e7bbe669e75897484fbec6325d7b4494a38c99f858f8f1118158022d38381",
+      "failed_source_tests": [
+        "Workers API POST /api/v1/workers when the team does not exist returns 400"
+      ],
+      "failed_brine_scenarios": [
+        "Worker registration rejects a missing team"
+      ]
+    },
+    {
+      "id": "registration-requires-system-caller",
+      "mutation_sha256": "2701f2b63cc024d16a0b9339d6d6c3283f889f3acc6ad9ff828f3abe9faff9d9",
+      "failed_source_tests": [
+        "Workers API POST /api/v1/workers when request is not from tsa return 403"
+      ],
+      "failed_brine_scenarios": [
+        "Worker registration rejects a non-system caller"
+      ]
+    },
+    {
+      "id": "registration-requires-worker-name",
+      "mutation_sha256": "ec524e810a9cf502afd7dcf9dc0f625559c0d896c35d638e24a24702df524092",
+      "failed_source_tests": [
+        "Workers API POST /api/v1/workers when the worker has no name returns 400 without saving it"
+      ],
+      "failed_brine_scenarios": [
+        "Worker registration rejects an empty worker name without persistence"
+      ]
+    },
+    {
+      "id": "invalid-ttl-is-bad-request",
+      "mutation_sha256": "a1d19b85c681a4b5b0c1b873d1549667af43f638edb4128521104f14827dafad",
+      "failed_source_tests": [
+        "Workers API POST /api/v1/workers when the TTL is invalid returns 400 without persisting the worker"
+      ],
+      "failed_brine_scenarios": [
+        "Worker registration rejects an invalid TTL without persistence"
+      ]
+    },
+    {
+      "id": "worker-version-remains-numeric",
+      "mutation_sha256": "a9a88a2f63016ba647727cb157ac365b58a55704e3d2c40eaa23b1e154e35577",
+      "failed_source_tests": [
+        "Workers API POST /api/v1/workers when worker version is invalid returns 400 without persisting the worker"
+      ],
+      "failed_brine_scenarios": [
+        "Worker registration rejects an invalid version without persistence"
+      ]
+    },
+    {
+      "id": "worker-registration-requires-authentication",
+      "mutation_sha256": "540f88e8b72557df89cd82ccf89145fa2eff4d0bd091f97daa27254462e0edea",
+      "failed_source_tests": [
+        "Workers API POST /api/v1/workers when not authenticated returns 401 without saving the worker"
+      ],
+      "failed_brine_scenarios": [
+        "Worker registration rejects an unauthenticated request without persistence"
+      ]
+    },
+    {
+      "id": "delete-removes-the-selected-worker",
+      "mutation_sha256": "d5131bd1206adcb0d9db73bebcc0739bbf25bbe0bc65e551b1b4b39808fe9990",
+      "failed_source_tests": [
+        "Workers API DELETE /api/v1/workers/:worker_name when the user is an admin deletes a global worker",
+        "Workers API DELETE /api/v1/workers/:worker_name when the user is authorized for its team deletes a team worker",
+        "Workers API DELETE /api/v1/workers/:worker_name when the user is system deletes a global worker"
+      ],
+      "failed_brine_scenarios": [
+        "Administrator deletes a global persisted worker",
+        "Authorized team caller deletes its persisted worker",
+        "System caller deletes a global persisted worker"
+      ]
+    },
+    {
+      "id": "missing-worker-delete-is-server-error",
+      "mutation_sha256": "b205ac653678b343f0c24050374a7fe15cd3c745bd0091256afe201dffe11fe5",
+      "failed_source_tests": [
+        "Workers API DELETE /api/v1/workers/:worker_name when the worker has already been deleted returns 500"
+      ],
+      "failed_brine_scenarios": [
+        "Deleting an absent worker returns a server error"
+      ]
+    }
+  ]
+}
