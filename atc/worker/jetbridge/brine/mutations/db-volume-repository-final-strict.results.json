@@ -1,0 +1,68 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-volume-repository-final-strict.json",
+  "git_head": "df3e3d766eac39e57d2077fa31aac405b86ddf85",
+  "completed_at": "2026-09-02T20:38:49Z",
+  "source_tests": 9,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/volume_repository.go": "f4648ec5912fa40137011e7dbb52a63aa498b9145bba440e898c877aff0f10b2",
+    "atc/db/volume_repository_test.go": "98a99f7b77b87250bff894bf8fa3b7205e9ba5c804c5227536a45344187e1c6d",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/db-volume-repository-final-strict.feature": "55cdd0be8b0d0082be1aabf1b5d59d59a2ba5954b8d03e554eac77ff4bfc7b74",
+    "atc/worker/jetbridge/brine/mutations/db-volume-repository-final-strict.json": "2abbb8011e861b86be4c4b152783435d126d7c1598152f12f3c0420f0c5d4b9a",
+    "atc/worker/jetbridge/brine/steps/db_volume_repository_final_strict.go": "06800268009cfb855deddea4fa52d57314645eb0035e056e064273b26b2c9b11",
+    "atc/worker/jetbridge/brine/steps/resources.go": "2ac1a1657298bd317c8502c327bc678c0019edf6e754bf3cc3c794d6f37ef08a"
+  },
+  "mutation_cases": [
+    {
+      "id": "destroying-volume-query-uses-real-volume-table",
+      "mutation_sha256": "201a8724776e5471b1c5b9da2f72df40fa947f35dd92a2b53b6bb8d9dc5846ae",
+      "failed_source_tests": [
+        "VolumeRepository GetDestroyingVolumes when worker has detroying volumes when worker doesn't have detroying volume returns empty volumes"
+      ],
+      "failed_brine_scenarios": [
+        "Destroying volume lookup is empty after the persisted volume is destroyed"
+      ]
+    },
+    {
+      "id": "base-resource-type-volume-does-not-persist-zero-team",
+      "mutation_sha256": "b76dda22a8de01450e0cc0f3e9c6a01b6ca14ad6203eaf89c007e207517dcc51",
+      "failed_source_tests": [
+        "VolumeRepository CreateBaseResourceTypeVolume creates a CreatingVolume with no team ID set"
+      ],
+      "failed_brine_scenarios": [
+        "Base resource type volume persists without a team"
+      ]
+    },
+    {
+      "id": "remove-destroying-uses-persisted-volumes-table",
+      "mutation_sha256": "3ce122d808480bbb1bcefd5a2fe39b89bf831b7f30140c929c01d112642a3410",
+      "failed_source_tests": [
+        "VolumeRepository RemoveDestroyingVolumes when there are no volumes to destroy does not return an error",
+        "VolumeRepository RemoveDestroyingVolumes when there are volumes to destroy when handles are empty list does not return an error",
+        "VolumeRepository RemoveDestroyingVolumes when there are volumes to destroy when volume is in create/creating state does not return an error",
+        "VolumeRepository RemoveDestroyingVolumes when there are volumes to destroy when volume is in destroying state does not return an error"
+      ],
+      "failed_brine_scenarios": [
+        "Removing destroying volumes ignores creating rows without error",
+        "Removing destroying volumes protects reported rows without error",
+        "Removing destroying volumes with an empty report returns no error",
+        "Removing unreported destroying volumes returns no error"
+      ]
+    },
+    {
+      "id": "update-missing-uses-persisted-volumes-table",
+      "mutation_sha256": "e77b2a4355b0bf874c32012a990fda82323dacda0cc57de45cc5a4fac8c3d34d",
+      "failed_source_tests": [
+        "VolumeRepository UpdateVolumesMissingSince when the reported handles includes a volume marked as missing does not return an error",
+        "VolumeRepository UpdateVolumesMissingSince when the reported handles is a subset does not return an error",
+        "VolumeRepository UpdateVolumesMissingSince when the reported handles is the full set does not return an error"
+      ],
+      "failed_brine_scenarios": [
+        "Updating missing times clears a reported missing volume without error",
+        "Updating missing times for a subset returns no error",
+        "Updating missing times for the full report returns no error"
+      ]
+    }
+  ]
+}
