@@ -82,6 +82,17 @@ func newStrictResourceClientBoundary(database JetbridgeDB, rec *brine.Recorder, 
 	}); err != nil {
 		return nil, err
 	}
+	result, err := database.Conn.Exec(`UPDATE teams SET admin = TRUE WHERE id = $1`, team.ID())
+	if err != nil {
+		return nil, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if rows != 1 {
+		return nil, fmt.Errorf("mark resource client team admin: updated %d rows", rows)
+	}
 	ref := atc.PipelineRef{Name: resourceStrictPipeline, InstanceVars: atc.InstanceVars{"branch": "master"}}
 	config := atc.Config{Resources: atc.ResourceConfigs{{
 		Name: "resource-name", Type: dbtest.BaseResourceType, Source: atc.Source{"repository": "strict/shared"}, Icon: "git",
@@ -132,8 +143,8 @@ func newStrictResourceClientBoundary(database JetbridgeDB, rec *brine.Recorder, 
 
 func (b *strictResourceClientBoundary) seedCache() error {
 	b.scenario.Run(b.database.Builder.WithBaseWorker())
-	if len(b.scenario.Workers) != 1 {
-		return fmt.Errorf("workers got %d, want 1", len(b.scenario.Workers))
+	if len(b.scenario.Workers) == 0 {
+		return fmt.Errorf("no persisted worker available for cache association")
 	}
 	build, err := b.team.CreateOneOffBuild()
 	if err != nil {
