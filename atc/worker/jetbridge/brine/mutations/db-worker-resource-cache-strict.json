@@ -1,0 +1,70 @@
+{
+  "name": "db-worker-resource-cache-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/worker_resource_caches_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-worker-resource-cache-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_worker_resource_cache_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go",
+    "atc/worker/jetbridge/brine/steps/assert.go",
+    "atc/worker/jetbridge/brine/steps/registry.go"
+  ],
+  "cases": [
+    {
+      "id": "new-worker-cache-reports-created",
+      "source_file": "atc/db/worker_resource_cache.go",
+      "old": "\treturn &UsedWorkerResourceCache{\n\t\tID:                       id,\n\t\tWorkerBaseResourceTypeID: sourceWorkerBaseResourceTypeID,\n\t}, true, nil",
+      "new": "\treturn &UsedWorkerResourceCache{\n\t\tID:                       id,\n\t\tWorkerBaseResourceTypeID: sourceWorkerBaseResourceTypeID,\n\t}, false, nil",
+      "tests": [
+        "WorkerResourceCaches FindOrCreate() Create a worker resource cache on worker0 with it's own base resource type should create a cache",
+        "WorkerResourceCaches FindOrCreate() Create a worker resource cache on worker0 with it's own base resource type Create a worker resource cache on worker1 with worker0's base base resource type should create a cache",
+        "WorkerResourceCaches FindOrCreate() Create a worker resource cache on worker0 with it's own base resource type Create a worker resource cache on worker1 with worker0's base base resource type Delete worker0 Create a worker resource cache on worker1 with worker2's base base resource type should create a cache"
+      ],
+      "scenarios": [
+        "Worker resource cache profile <profile> has its exact result (row 1)",
+        "Worker resource cache profile <profile> has its exact result (row 4)",
+        "Worker resource cache profile <profile> has its exact result (row 7)"
+      ],
+      "failure_contains": "worker resource cache result"
+    },
+    {
+      "id": "existing-cache-validates-source-identity",
+      "source_file": "atc/db/worker_resource_cache.go",
+      "old": "\t\tvalid := sourceWorkerBaseResourceTypeID == uwrc.WorkerBaseResourceTypeID",
+      "new": "\t\tvalid := sourceWorkerBaseResourceTypeID != uwrc.WorkerBaseResourceTypeID",
+      "tests": [
+        "WorkerResourceCaches FindOrCreate() Create a worker resource cache on worker0 with it's own base resource type Create a worker resource cache again on worker0 again with it's own base resource type should find a cache",
+        "WorkerResourceCaches FindOrCreate() Create a worker resource cache on worker0 with it's own base resource type Create a worker resource cache again on worker0 with worker1's base resource type should not create a cache, but find the existing cache"
+      ],
+      "scenarios": [
+        "Worker resource cache profile <profile> has its exact result (row 2)",
+        "Worker resource cache profile <profile> has its exact result (row 3)"
+      ],
+      "failure_contains": "worker resource cache result"
+    },
+    {
+      "id": "invalidated-cache-respects-build-start-time",
+      "source_file": "atc/db/worker_resource_cache.go",
+      "old": "\tif volumeShouldBeValidBefore == nil || invalidSince.Valid && invalidSince.Time.Before(*volumeShouldBeValidBefore) {",
+      "new": "\tif volumeShouldBeValidBefore == nil || invalidSince.Valid && invalidSince.Time.After(*volumeShouldBeValidBefore) {",
+      "tests": [
+        "WorkerResourceCaches FindOrCreate() Create a worker resource cache on worker0 with it's own base resource type Create a worker resource cache on worker1 with worker0's base base resource type Delete worker0 Invalidated cache when build started before cache invalidated should still find an invalidated cache on worker1",
+        "WorkerResourceCaches FindOrCreate() Create a worker resource cache on worker0 with it's own base resource type Create a worker resource cache on worker1 with worker0's base base resource type Delete worker0 Invalidated cache when build started after cache invalidated should not find an invalidated cache on worker1"
+      ],
+      "scenarios": [
+        "Worker resource cache profile <profile> has its exact result (row 5)",
+        "Worker resource cache profile <profile> has its exact result (row 6)"
+      ],
+      "failure_contains": "worker resource cache result"
+    },
+    {
+      "id": "invalidated-cache-reports-zero-source",
+      "source_file": "atc/db/worker_resource_cache.go",
+      "old": "\tvar workerBasedResourceTypeID int\n\tif sqWorkerBaseResourceTypeID.Valid {",
+      "new": "\tworkerBasedResourceTypeID := -1\n\tif sqWorkerBaseResourceTypeID.Valid {",
+      "tests": ["WorkerResourceCaches FindOrCreate() Create a worker resource cache on worker0 with it's own base resource type Create a worker resource cache on worker1 with worker0's base base resource type Delete worker0 Create a worker resource cache on worker1 with worker2's base base resource type should invalidated cache still be there"],
+      "scenarios": ["Worker resource cache profile <profile> has its exact result (row 8)"],
+      "failure_contains": "worker resource cache result"
+    }
+  ]
+}
