@@ -1,0 +1,30 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/ssm-manager-strict.json",
+  "git_head": "caf2aa57e0d67f75664fe7d068501043fa7dd55d",
+  "completed_at": "2026-09-02T21:18:45Z",
+  "source_tests": 2,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/creds/ssm/manager.go": "52879fbf73c651dd64e539c8ccbeaabc971bf6b119a5d8fc9c466abbe584dff7",
+    "atc/creds/ssm/manager_test.go": "cd806c17560a64ab86fcd0ab3fbfc2f257dc5aa1837b29c1a98d774f0abfbc52",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/ssm-manager-strict.feature": "ff1b08bf44d5abdb50d3df3898936ed3d79f66ba8a7e99a7d3ff40e908f3e065",
+    "atc/worker/jetbridge/brine/mutations/ssm-manager-strict.json": "fc76a817877f6afc9e9a7ec1fadb1e9842bf03dc53662f8a244ef58b7b8c1ec1",
+    "atc/worker/jetbridge/brine/steps/registry.go": "5bc880e5b521bef7b4f7b0545d6a166b88a9cd71850d31dbd31c4781ed8133f3",
+    "atc/worker/jetbridge/brine/steps/ssm_manager_strict.go": "f338319bafe869b5fe15ccb6f3e954ca9920fb7de64d9d967b1ab2dd461a044f"
+  },
+  "mutation_cases": [
+    {
+      "id": "region-controls-configuration",
+      "mutation_sha256": "38b55fda082835e3b566fe85425998c04fb0928a44f357074f23619263102e8d",
+      "failed_source_tests": [
+        "SsmManager IsConfigured() failes on empty SsmManager",
+        "SsmManager IsConfigured() passes if AwsRegion is set"
+      ],
+      "failed_brine_scenarios": [
+        "Production SSM manager configuration — \u003cprofile\u003e (row 1)",
+        "Production SSM manager configuration — \u003cprofile\u003e (row 2)"
+      ]
+    }
+  ]
+}
