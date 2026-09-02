@@ -1,0 +1,140 @@
+{
+  "name": "db-resource-final-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/resource_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-resource-final-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_resource_final_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "resource-scope-persists-both-association-ids",
+      "source_file": "atc/db/resource.go",
+      "old": "\t\tSet(\"resource_config_id\", scope.ResourceConfig().ID()).\n\t\tSet(\"resource_config_scope_id\", scope.ID()).",
+      "new": "\t\tSet(\"resource_config_id\", nil).\n\t\tSet(\"resource_config_scope_id\", scope.ID()).",
+      "tests": ["Resource SetResourceConfigScope associates the resource to the config and scope"],
+      "scenarios": ["SetResourceConfigScope persists the exact resource association"]
+    },
+    {
+      "id": "resource-scope-schedules-downstream-jobs",
+      "source_file": "atc/db/resource.go",
+      "old": "\terr = requestScheduleForJobsUsingResource(tx, resourceID)\n\tif err != nil {\n\t\treturn false, err\n\t}",
+      "new": "\terr = nil\n\tif err != nil {\n\t\treturn false, err\n\t}",
+      "tests": ["Resource SetResourceConfigScope requests scheduling for downstream jobs"],
+      "scenarios": ["SetResourceConfigScope schedules only the consuming job"]
+    },
+    {
+      "id": "resource-build-persists-started-fields",
+      "source_file": "atc/db/resource.go",
+      "old": "\t\tName:              CheckBuildName,\n\t\tPipelineID:        r.pipelineID,",
+      "new": "\t\tName:              \"incorrect-resource-build\",\n\t\tPipelineID:        r.pipelineID,",
+      "tests": ["Resource CreateBuild creates a started build for a resource"],
+      "scenarios": ["CreateBuild persists every started resource build field"]
+    },
+    {
+      "id": "resource-build-saves-log-event",
+      "source_file": "atc/db/build.go",
+      "old": "\terr = b.saveEvent(tx, event)\n\tif err != nil {\n\t\treturn err\n\t}",
+      "new": "\terr = nil\n\tif err != nil {\n\t\treturn err\n\t}",
+      "tests": ["Resource CreateBuild logs to the check_build_events partition"],
+      "scenarios": ["CreateBuild writes created and log events to the check partition"]
+    },
+    {
+      "id": "resource-build-concurrency-counts-only-running-builds",
+      "source_file": "atc/db/resource.go",
+      "old": "\t\t\tWhere(sq.Eq{\"resource_id\": r.id, \"completed\": false}).",
+      "new": "\t\t\tWhere(sq.Eq{\"resource_id\": r.id, \"completed\": true}).",
+      "tests": [
+        "Resource CreateBuild when another running build already exists does not create the second build",
+        "Resource CreateBuild when another running build already exists when manually triggered creates a manually triggered resource build",
+        "Resource CreateBuild when another running build already exists when the previous build is finished creates the build"
+      ],
+      "scenarios": [
+        "CreateBuild refuses a second automatic build while one is running",
+        "CreateBuild permits and marks a manual build while one is running",
+        "CreateBuild permits an automatic build after the previous build finishes"
+      ]
+    },
+    {
+      "id": "resource-in-memory-build-uses-transient-constructor",
+      "source_file": "atc/db/resource.go",
+      "old": "\treturn newRunningInMemoryCheckBuild(r.conn, r.lockFactory, r, plan, NewSpanContext(ctx), seqGen)",
+      "new": "\tbuild, _, err := r.CreateBuild(ctx, false, plan)\n\treturn build, err",
+      "tests": [
+        "Resource CreateInMemoryBuild creates a started build for a resource",
+        "Resource CreateInMemoryBuild should not log to the check_build_events partition"
+      ],
+      "scenarios": [
+        "CreateInMemoryBuild preserves every transient resource build field",
+        "CreateInMemoryBuild keeps check events out of PostgreSQL"
+      ]
+    },
+    {
+      "id": "resource-clear-versions-reports-deleted-row-count",
+      "source_file": "atc/db/resource.go",
+      "old": "\treturn rowsDeleted, err\n}\n\nfunc (r *resource) Versions",
+      "new": "\treturn rowsDeleted + 1, err\n}\n\nfunc (r *resource) Versions",
+      "tests": [
+        "Resource ClearVersions when resource has no versions deletes zero versions",
+        "Resource ClearVersions when there is one resource with a version history clears the version history for the resource",
+        "Resource ClearVersions when there is one resource with a version history when there are pinned/disabled versions keeps the state of pinned/disabled versions even after deleting the version history",
+        "Resource ClearVersions with global resources, when there are multiple resources sharing the same version history clears the version history for the shared resources"
+      ],
+      "scenarios": [
+        "ClearVersions reports zero for an empty resource history",
+        "ClearVersions deletes the complete resource version history",
+        "ClearVersions preserves disabled and pinned state for recreated versions",
+        "ClearVersions deletes shared global resource history"
+      ]
+    },
+    {
+      "id": "resource-check-plan-uses-production-image-planner",
+      "source_file": "atc/db/resource.go",
+      "old": "\tplan.Check.TypeImage = imagePlanner.ImageForType(plan.ID, r.type_, r.config.Tags, skipInterval && skipIntervalRecursively)",
+      "new": "\tplan.Check.TypeImage = atc.TypeImage{}",
+      "tests": [
+        "Resource CheckPlan when there is a resource using a base type produces a simple check plan",
+        "Resource CheckPlan when there is a resource using a custom type produces a check plan with nested image steps",
+        "Resource CheckPlan when there is a resource using a custom type with configured check every produces a check plan with interval set as check every for image check",
+        "Resource CheckPlan when there is a resource using a privileged custom type produces a check plan with privileged",
+        "Resource CheckPlan when skipping the interval when not skipping the interval recursively skips the interval for the resource check, but not for the resource type",
+        "Resource CheckPlan when skipping the interval when skipping the interval recursively skips the interval for the resource and resource type checks"
+      ],
+      "scenarios": [
+        "CheckPlan produces the exact base resource plan",
+        "CheckPlan produces exact nested image check and get plans",
+        "CheckPlan uses the custom resource type check interval",
+        "CheckPlan propagates privileged mode to the type image",
+        "CheckPlan skips only the resource interval without recursion",
+        "CheckPlan skips both resource and type intervals recursively"
+      ]
+    },
+    {
+      "id": "resource-build-summary-does-not-invent-empty-summary",
+      "source_file": "atc/db/resource.go",
+      "old": "func (r *resource) BuildSummary() *atc.BuildSummary {\n\treturn r.buildSummary\n}",
+      "new": "func (r *resource) BuildSummary() *atc.BuildSummary {\n\tif r.buildSummary == nil {\n\t\treturn &atc.BuildSummary{}\n\t}\n\treturn r.buildSummary\n}",
+      "tests": ["Resource BuildSummary when there is no check build has no build summary"],
+      "scenarios": ["BuildSummary is absent before any resource check starts"]
+    },
+    {
+      "id": "resource-build-summary-returns-current-check-state",
+      "source_file": "atc/db/resource.go",
+      "old": "func (r *resource) BuildSummary() *atc.BuildSummary {\n\treturn r.buildSummary\n}",
+      "new": "func (r *resource) BuildSummary() *atc.BuildSummary {\n\tif r.buildSummary != nil {\n\t\treturn nil\n\t}\n\treturn r.buildSummary\n}",
+      "tests": [
+        "Resource BuildSummary when first check build starts, not set a scope yet has build summary",
+        "Resource BuildSummary when first check build starts, not set a scope yet when a scope is set has build summary",
+        "Resource BuildSummary when first check build starts, not set a scope yet when a scope is set when other resource ran a check build for the scope has build summary",
+        "Resource BuildSummary when first check build starts, not set a scope yet when a scope is set when other resource ran a check build for the scope when the resource starts a new build has build summary"
+      ],
+      "scenarios": [
+        "BuildSummary reflects the current in-memory started check",
+        "BuildSummary reflects a failed persisted scope check",
+        "BuildSummary reflects another successful check sharing the scope",
+        "BuildSummary returns to the resource's newest started check"
+      ]
+    }
+  ]
+}
