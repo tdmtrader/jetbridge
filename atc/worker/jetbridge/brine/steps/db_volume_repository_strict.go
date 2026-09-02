@@ -55,13 +55,13 @@ func observeDBVolumeRepository(database JetbridgeDB, profile string) (string, er
 	case strings.HasPrefix(profile, "find/"):
 		return observeVolumeFind(database, profile)
 	case strings.HasPrefix(profile, "remove-destroying/"):
-		return observeRemoveDestroying(database, profile)
+		return observeVolumeRemoveDestroying(database, profile)
 	case strings.HasPrefix(profile, "remove-missing/"):
-		return observeRemoveMissing(database, profile)
+		return observeVolumeRemoveMissing(database, profile)
 	case strings.HasPrefix(profile, "update-missing/"):
-		return observeUpdateMissing(database, profile)
+		return observeVolumeUpdateMissing(database, profile)
 	case strings.HasPrefix(profile, "unknown/"):
-		return observeDestroyUnknown(database, profile)
+		return observeVolumeDestroyUnknown(database, profile)
 	default:
 		return "", fmt.Errorf("unknown volume repository profile %q", profile)
 	}
@@ -362,7 +362,7 @@ func observeVolumeFind(database JetbridgeDB, profile string) (string, error) {
 	return fmt.Sprintf("found=%t;handle=%t", found, foundVolume != nil && foundVolume.Handle() == created.Handle()), nil
 }
 
-func observeRemoveDestroying(database JetbridgeDB, profile string) (string, error) {
+func observeVolumeRemoveDestroying(database JetbridgeDB, profile string) (string, error) {
 	env, err := newStrictVolumeEnvironment(database, strings.ReplaceAll(profile, "/", "-"), false)
 	if err != nil {
 		return "", err
@@ -406,7 +406,7 @@ func setStrictVolumeMissing(database JetbridgeDB, handle string, at time.Time) e
 	return err
 }
 
-func observeRemoveMissing(database JetbridgeDB, profile string) (string, error) {
+func observeVolumeRemoveMissing(database JetbridgeDB, profile string) (string, error) {
 	env, err := newStrictVolumeEnvironment(database, strings.ReplaceAll(profile, "/", "-"), false)
 	if err != nil {
 		return "", err
@@ -494,7 +494,7 @@ func strictAllVolumeHandles(database JetbridgeDB) ([]string, error) {
 	return handles, rows.Err()
 }
 
-func observeUpdateMissing(database JetbridgeDB, profile string) (string, error) {
+func observeVolumeUpdateMissing(database JetbridgeDB, profile string) (string, error) {
 	env, err := newStrictVolumeEnvironment(database, strings.ReplaceAll(profile, "/", "-"), false)
 	if err != nil {
 		return "", err
@@ -560,7 +560,7 @@ func strictMissingSince(database JetbridgeDB, handle string) (bool, time.Time, e
 	return missing.Valid, missing.Time, err
 }
 
-func observeDestroyUnknown(database JetbridgeDB, profile string) (string, error) {
+func observeVolumeDestroyUnknown(database JetbridgeDB, profile string) (string, error) {
 	env, err := newStrictVolumeEnvironment(database, strings.ReplaceAll(profile, "/", "-"), false)
 	if err != nil {
 		return "", err
