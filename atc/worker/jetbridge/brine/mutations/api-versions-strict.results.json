@@ -1,0 +1,134 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/api-versions-strict.json",
+  "git_head": "400fb13effe9b1ce3de5380e42ac97c48e9918cd",
+  "completed_at": "2026-09-02T15:52:21Z",
+  "source_tests": 18,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/api/resourceserver/versionserver/disable_version.go": "32b5ef2f9b4e17dfd860ca95803f91e78db24f2f313fb430a09ac1800c6331c1",
+    "atc/api/resourceserver/versionserver/enable_version.go": "2742724f482375a00bc919dc6bab63cb1e25b60686cf19465485affc9aa3c0f5",
+    "atc/api/resourceserver/versionserver/list.go": "c9e47491e5d3ee938671ca9d6ac8307b92676bc0acd5694b18263361dc5b1006",
+    "atc/api/resourceserver/versionserver/pin_version.go": "dd180026acb5870d7e22a0371156ad131fdd825facef0820fc9061018d279e04",
+    "atc/api/versions_test.go": "f4c2ab7f0c257d71793bc77dd668a77fce8e087e90e1e8483dba375aea15caa6",
+    "atc/db/resource.go": "d3751a41f45f7416db10a157948b1218f2fcbd299ed100a5b8ec01fb99aa038f",
+    "atc/db/resource_type.go": "86ad6213f3a1e8eeb2fdba9249c5a465421897ba5c975d93bb27452ed962c2c3",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/api-versions-strict.feature": "92b3a6aed12affb07e76686b8992fb49abef54378afbe8f433e10cc0c31820d8",
+    "atc/worker/jetbridge/brine/mutations/api-versions-strict.json": "a84bf36698756647a5e982cf00f559a64a02da3e5b35046d558f3b953648b3cd",
+    "atc/worker/jetbridge/brine/steps/api_auth.go": "eba916c51c18a178748f5c0dd95f85cc7d094bc1fad778e327d88e52e2a971e0",
+    "atc/worker/jetbridge/brine/steps/api_resource_auth.go": "428e6b2cabd1f2833b88f6a9f05e36f41ba1207246afeeefe0a40bd9bd4dea64",
+    "atc/worker/jetbridge/brine/steps/api_versions_strict.go": "6699657bcf61953d09881cbf37b2a24376d5ce75f65129d204828286aeb02881",
+    "atc/worker/jetbridge/brine/steps/registry.go": "12767f5918b924578c8293620f728c9a7bdab1dcf6ec92738496ffeca45f5fcd",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8"
+  },
+  "mutation_cases": [
+    {
+      "id": "list-uses-each-valid-filter-value",
+      "mutation_sha256": "45886b5a83d1c5a2b2153b5812197554a362dc5790b99efe620e46b872b0578a",
+      "failed_source_tests": [
+        "Versions API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authorized when finding the resource succeeds when all the params are passed passes them through",
+        "Versions API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authorized when finding the resource succeeds when params includes version filter has special char % char passes them through",
+        "Versions API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authorized when finding the resource succeeds when params includes version filter has special char : char passes them through by splitting on first colon",
+        "Versions API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authorized when finding the resource succeeds when params includes version filter has special char space char passes them through"
+      ],
+      "failed_brine_scenarios": [
+        "Production versions API behavior — \u003cprofile\u003e (row 1)",
+        "Production versions API behavior — \u003cprofile\u003e (row 2)",
+        "Production versions API behavior — \u003cprofile\u003e (row 3)",
+        "Production versions API behavior — \u003cprofile\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "list-ignores-filter-without-separator",
+      "mutation_sha256": "4eba16d9b92d23bf5dbaeadf98a4cad534d93c6f42b28f34f542e1c4d786121a",
+      "failed_source_tests": [
+        "Versions API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authorized when finding the resource succeeds when params includes version filter has special char if there is no :  set no filter when fetching versions"
+      ],
+      "failed_brine_scenarios": [
+        "Production versions API behavior — \u003cprofile\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "list-defaults-only-limit",
+      "mutation_sha256": "d3816fbb922ea5eb8a015d1855f249d078fa22fec6a05eb9054ce660f4378eea",
+      "failed_source_tests": [
+        "Versions API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authorized when finding the resource succeeds when no params are passed does not set defaults for since and until"
+      ],
+      "failed_brine_scenarios": [
+        "Production versions API behavior — \u003cprofile\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "list-keeps-metadata-for-authorized-user",
+      "mutation_sha256": "dae41f9c4fdf06ac734e60fbd5b34c4811cb47876f5e4eba0b1c08f009873527",
+      "failed_source_tests": [
+        "Versions API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authorized when finding the resource succeeds when getting the versions succeeds returns the json",
+        "Versions API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when not authorized and the pipeline is public when resource is not public when the user is not authenticated returns the json without version metadata"
+      ],
+      "failed_brine_scenarios": [
+        "Production versions API behavior — \u003cprofile\u003e (row 18)",
+        "Production versions API behavior — \u003cprofile\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "enable-uses-version-id-from-url",
+      "mutation_sha256": "e7c9240d2b3db2b3f03ca03d803ce22bc0d8def40ab57adce7452b35eb1f90a8",
+      "failed_source_tests": [
+        "Versions API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/enable when authenticated when authorized when finding the resource succeeds enables the exact persisted resource version from the URL"
+      ],
+      "failed_brine_scenarios": [
+        "Production versions API behavior — \u003cprofile\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "disable-uses-version-id-from-url",
+      "mutation_sha256": "2e9815acf41d4923d6ebbd1eacf8e6b26c23b68f1472cfa152e0c27984c2470b",
+      "failed_source_tests": [
+        "Versions API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/disable when authenticated  when authorized when finding the resource succeeds disables the exact persisted resource version from the URL"
+      ],
+      "failed_brine_scenarios": [
+        "Production versions API behavior — \u003cprofile\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "pin-uses-version-id-from-url",
+      "mutation_sha256": "0612ce8dc43d0fad0d0996a0d611813028ffbdf1fb12a6d9e87c7b94f6135391",
+      "failed_source_tests": [
+        "Versions API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/pin when authenticated when authorized when finding the resource succeeds pins the exact persisted resource version from the URL",
+        "Versions API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/pin when authenticated when authorized when finding the resource succeeds when pinning the resource succeeds returns 200"
+      ],
+      "failed_brine_scenarios": [
+        "Production versions API behavior — \u003cprofile\u003e (row 10)",
+        "Production versions API behavior — \u003cprofile\u003e (row 11)"
+      ]
+    },
+    {
+      "id": "clear-resource-versions-is-scope-specific",
+      "mutation_sha256": "2ef7cb25fcecffaea05c9f0611669f6cb66ab57961d78221daaddc8730ab161f",
+      "failed_source_tests": [
+        "Versions API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authenticated when the user is an admin clears the persisted resource versions",
+        "Versions API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authenticated when the user is an admin preserves versions in a different resource scope",
+        "Versions API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authenticated when the user is an admin returns the persisted deletion count"
+      ],
+      "failed_brine_scenarios": [
+        "Production versions API behavior — \u003cprofile\u003e (row 12)",
+        "Production versions API behavior — \u003cprofile\u003e (row 13)",
+        "Production versions API behavior — \u003cprofile\u003e (row 14)"
+      ]
+    },
+    {
+      "id": "clear-resource-type-versions-is-scope-specific",
+      "mutation_sha256": "4f68ed874ba26f0d9443af4dd5e3eb85f369da5a369baaa4a06cf752a828372c",
+      "failed_source_tests": [
+        "Versions API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resource-types/:resource_type_name/versions when authenticated when the user is an admin clears the persisted resource type versions",
+        "Versions API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resource-types/:resource_type_name/versions when authenticated when the user is an admin preserves versions in a distinct resource type scope",
+        "Versions API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resource-types/:resource_type_name/versions when authenticated when the user is an admin returns the persisted deletion count"
+      ],
+      "failed_brine_scenarios": [
+        "Production versions API behavior — \u003cprofile\u003e (row 15)",
+        "Production versions API behavior — \u003cprofile\u003e (row 16)",
+        "Production versions API behavior — \u003cprofile\u003e (row 17)"
+      ]
+    }
+  ]
+}

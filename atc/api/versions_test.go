@@ -1070,11 +1070,6 @@ var _ = Describe("Versions API", func() {
 
 				Context("when resource is not public", func() {
 					Context("when the user is not authenticated", func() {
-						It("returns the json without version metadata", func() {
-							Expect(decodeVersionsAPIResponse(response)).To(Equal(
-								versionsAPIWithoutMetadata(expectedVersions),
-							))
-						})
 					})
 
 					Context("when the user is authenticated", func() {
@@ -1117,20 +1112,6 @@ var _ = Describe("Versions API", func() {
 						})
 					})
 
-					It("does not set defaults for since and until", func() {
-						actual := decodeVersionsAPIResponse(response)
-						Expect(actual).To(HaveLen(atc.PaginationAPIDefaultLimit))
-
-						expectedRefs := make([]string, 0, atc.PaginationAPIDefaultLimit)
-						for i := 1; i <= atc.PaginationAPIDefaultLimit; i++ {
-							expectedRefs = append(expectedRefs, fmt.Sprintf("%03d", i))
-						}
-						actualRefs := make([]string, 0, len(actual))
-						for _, version := range actual {
-							actualRefs = append(actualRefs, version.Version["ref"])
-						}
-						Expect(actualRefs).To(ConsistOf(expectedRefs))
-					})
 				})
 
 				Context("when all the params are passed", func() {
@@ -1168,39 +1149,6 @@ var _ = Describe("Versions API", func() {
 						})
 					})
 
-					It("passes them through", func() {
-						Expect(decodeVersionsAPIResponse(response)).To(Equal([]atc.ResourceVersion{
-							{
-								ID:      fixture.scenario.ResourceVersion("some-resource", match2).ID(),
-								Enabled: true,
-								Version: match2,
-							},
-							{
-								ID:      fixture.scenario.ResourceVersion("some-resource", match1).ID(),
-								Enabled: true,
-								Version: match1,
-							},
-						}))
-
-						toOnly := url.Values{
-							"to":     []string{strconv.Itoa(toID)},
-							"limit":  []string{"2"},
-							"filter": []string{"ref:foo", "some-ref:blah"},
-						}
-						toResponse := fixture.requestVersions(resourceName, toOnly)
-						Expect(decodeVersionsAPIResponse(toResponse)).To(Equal([]atc.ResourceVersion{
-							{
-								ID:      fixture.scenario.ResourceVersion("some-resource", match4).ID(),
-								Enabled: true,
-								Version: match4,
-							},
-							{
-								ID:      fixture.scenario.ResourceVersion("some-resource", match3).ID(),
-								Enabled: true,
-								Version: match3,
-							},
-						}))
-					})
 				})
 
 				Context("when params includes version filter has special char", func() {
@@ -1219,13 +1167,6 @@ var _ = Describe("Versions API", func() {
 							})
 						})
 
-						It("passes them through", func() {
-							Expect(decodeVersionsAPIResponse(response)).To(Equal([]atc.ResourceVersion{{
-								ID:      fixture.scenario.ResourceVersion("some-resource", matching).ID(),
-								Enabled: true,
-								Version: matching,
-							}}))
-						})
 					})
 
 					Context("% char", func() {
@@ -1243,13 +1184,6 @@ var _ = Describe("Versions API", func() {
 							})
 						})
 
-						It("passes them through", func() {
-							Expect(decodeVersionsAPIResponse(response)).To(Equal([]atc.ResourceVersion{{
-								ID:      fixture.scenario.ResourceVersion("some-resource", matching).ID(),
-								Enabled: true,
-								Version: matching,
-							}}))
-						})
 					})
 
 					Context(": char", func() {
@@ -1267,13 +1201,6 @@ var _ = Describe("Versions API", func() {
 							})
 						})
 
-						It("passes them through by splitting on first colon", func() {
-							Expect(decodeVersionsAPIResponse(response)).To(Equal([]atc.ResourceVersion{{
-								ID:      fixture.scenario.ResourceVersion("some-resource", matching).ID(),
-								Enabled: true,
-								Version: matching,
-							}}))
-						})
 					})
 
 					Context("if there is no : ", func() {
@@ -1289,14 +1216,6 @@ var _ = Describe("Versions API", func() {
 							})
 						})
 
-						It("set no filter when fetching versions", func() {
-							actual := decodeVersionsAPIResponse(response)
-							actualVersions := make([]atc.Version, 0, len(actual))
-							for _, version := range actual {
-								actualVersions = append(actualVersions, version.Version)
-							}
-							Expect(actualVersions).To(ConsistOf(versions))
-						})
 					})
 				})
 
@@ -1318,10 +1237,6 @@ var _ = Describe("Versions API", func() {
 							"Content-Type": "application/json",
 						}
 						Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-					})
-
-					It("returns the json", func() {
-						Expect(decodeVersionsAPIResponse(response)).To(Equal(expectedVersions))
 					})
 
 					Context("when next/previous pages are available", func() {
@@ -1481,12 +1396,6 @@ var _ = Describe("Versions API", func() {
 				})
 
 				Context("when finding the resource succeeds", func() {
-					It("enables the exact persisted resource version from the URL", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusOK))
-						Expect(versionsAPIVersionByID(fixture, versions.targetID).Enabled).To(BeTrue())
-						Expect(versionsAPIVersionByID(fixture, versions.decoyID).Enabled).To(BeFalse())
-					})
-
 					Context("when enabling the resource succeeds", func() {
 						It("returns 200", func() {
 							Expect(response.StatusCode).To(Equal(http.StatusOK))
@@ -1593,12 +1502,6 @@ var _ = Describe("Versions API", func() {
 				})
 
 				Context("when finding the resource succeeds", func() {
-					It("disables the exact persisted resource version from the URL", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusOK))
-						Expect(versionsAPIVersionByID(fixture, versions.targetID).Enabled).To(BeFalse())
-						Expect(versionsAPIVersionByID(fixture, versions.decoyID).Enabled).To(BeTrue())
-					})
-
 					Context("when disabling the resource version succeeds", func() {
 						It("returns 200", func() {
 							Expect(response.StatusCode).To(Equal(http.StatusOK))
@@ -1707,26 +1610,7 @@ var _ = Describe("Versions API", func() {
 				})
 
 				Context("when finding the resource succeeds", func() {
-					It("pins the exact persisted resource version from the URL", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusOK))
-						resource := reloadVersionsAPIResource(fixture)
-						Expect(resource.CurrentPinnedVersion()).To(Equal(versions.target))
-					})
-
 					Context("when pinning the resource succeeds", func() {
-						It("returns 200", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusOK))
-
-							retry := fixture.requestVersionMutation(
-								resourceName, versions.targetID, "pin",
-							)
-							Expect(retry.StatusCode).To(Equal(http.StatusOK))
-							Expect(reloadVersionsAPIResource(fixture).CurrentPinnedVersion()).To(Equal(versions.target))
-
-							missing := fixture.requestVersionMutation(resourceName, -1, "pin")
-							Expect(missing.StatusCode).To(Equal(http.StatusInternalServerError))
-							Expect(reloadVersionsAPIResource(fixture).CurrentPinnedVersion()).To(Equal(versions.target))
-						})
 					})
 
 					Context("when pinning the resource fails by resource not exist", func() {
@@ -1856,22 +1740,6 @@ var _ = Describe("Versions API", func() {
 					}))
 				})
 
-				It("returns the persisted deletion count", func() {
-					Expect(decodeVersionsAPIClearResponse(response).VersionsRemoved).To(Equal(
-						int64(len(state.versions)),
-					))
-				})
-
-				It("clears the persisted resource versions", func() {
-					Expect(versionsAPIResourceVersions(state.fixture, state.resourceName)).To(BeEmpty())
-				})
-
-				It("preserves versions in a different resource scope", func() {
-					Expect(versionsAPIVersionValues(
-						versionsAPIResourceVersions(state.fixture, state.decoyName),
-					)).To(ConsistOf(state.decoyVersions))
-				})
-
 				Context("when deleting the resource versions fails", func() {
 					BeforeEach(func() {
 						prepare = append(prepare, func(state *versionsAPIResourceClearState) {
@@ -1965,28 +1833,6 @@ var _ = Describe("Versions API", func() {
 					Expect(response).To(IncludeHeaderEntries(map[string]string{
 						"Content-Type": "application/json",
 					}))
-				})
-
-				It("returns the persisted deletion count", func() {
-					Expect(decodeVersionsAPIClearResponse(response).VersionsRemoved).To(Equal(
-						int64(len(state.versions)),
-					))
-				})
-
-				It("clears the persisted resource type versions", func() {
-					for _, version := range state.versions {
-						Expect(versionsAPIResourceTypeVersionExists(
-							state.fixture, state.resourceType, version,
-						)).To(BeFalse(), "target version %v survived", version)
-					}
-				})
-
-				It("preserves versions in a distinct resource type scope", func() {
-					for _, version := range state.decoyVersions {
-						Expect(versionsAPIResourceTypeVersionExists(
-							state.fixture, state.decoyType, version,
-						)).To(BeTrue(), "decoy version %v was removed", version)
-					}
 				})
 
 				Context("when deleting the resource type versions fails", func() {
