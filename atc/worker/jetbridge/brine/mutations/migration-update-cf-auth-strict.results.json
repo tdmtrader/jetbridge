@@ -1,0 +1,62 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/migration-update-cf-auth-strict.json",
+  "git_head": "c8b4dbce69a384d3ad68d9a0512d6160a597d1c9",
+  "completed_at": "2026-09-02T21:46:57Z",
+  "source_tests": 5,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/migration/migrations/1572899256_update_cf_auth.down.sql": "336cb60517d4accf85986952e29efe7fced314c0bba27e1341bf3016ece4fb49",
+    "atc/db/migration/migrations/1572899256_update_cf_auth.up.sql": "3c6b657e80b4a1b7ec9d010797e56cba161b11c2e9b13bc529cbcf4a16ff9fe2",
+    "atc/db/migration/update_cf_auth_test.go": "6ef6ff8f2cbc98200867f9466995de6f15104b745ac5f145ab12300688414de0",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/migration-update-cf-auth-strict.feature": "e80e2eacff1039f60491237de83861b60687db0c8ceb15f76b135e61bc7fb198",
+    "atc/worker/jetbridge/brine/mutations/migration-update-cf-auth-strict.json": "b786238d41a9673dd415ff9861e80c79ecddf2945ab6528086a577144e31a462",
+    "atc/worker/jetbridge/brine/steps/migration_update_cf_auth_strict.go": "7f37d69899692f800332ec3a3f8da5af8100ce8cfb5703fffa5afc0db522b762",
+    "atc/worker/jetbridge/brine/steps/resources.go": "f594ee3b1828c61ca1dd1ef9dd8024ecbb440898b57644b50a80d86bad475691"
+  },
+  "mutation_cases": [
+    {
+      "id": "up-appends-developer-role",
+      "mutation_sha256": "f9dce79453160d3001357e51a82c8f6fcb38d9921ca1875e2252de2c46796097",
+      "failed_source_tests": [
+        "Update cf auth Up migrates cf auth with a bunch of different cf:cf combinations",
+        "Update cf auth Up migrates cf auth with form ORG:SPACE to ORG:SPACE:developer"
+      ],
+      "failed_brine_scenarios": [
+        "Up migration adds developer to an organization and space group",
+        "Up migration handles each supported Cloud Foundry group shape"
+      ]
+    },
+    {
+      "id": "up-restricts-provider-to-cloud-foundry",
+      "mutation_sha256": "b30486b6d74e923652eb6c54257a91250ca840f8889cefd48f2f432d42e3662b",
+      "failed_source_tests": [
+        "Update cf auth Up does not migrate any pivotal-cf github orgs"
+      ],
+      "failed_brine_scenarios": [
+        "Up migration leaves GitHub pivotal-cf groups unchanged"
+      ]
+    },
+    {
+      "id": "down-removes-developer-role",
+      "mutation_sha256": "86050477ce820d9df3bc9dc25b03b743ba96780e4de70165f4f4e7c4c4ad74ad",
+      "failed_source_tests": [
+        "Update cf auth Down migrate cf auth with form ORG:SPACE:developer to ORG:SPACE"
+      ],
+      "failed_brine_scenarios": [
+        "Down migration removes the developer role"
+      ]
+    },
+    {
+      "id": "down-preserves-non-developer-roles",
+      "mutation_sha256": "1f37914cbfc1c2d1afdeec39ded01524bfa2d2b30a5bcc2c612bfc9dc114c310",
+      "failed_source_tests": [
+        "Update cf auth Down does not migrate auditor and manager roles"
+      ],
+      "failed_brine_scenarios": [
+        "Down migration leaves auditor and manager roles unchanged"
+      ]
+    }
+  ]
+}
