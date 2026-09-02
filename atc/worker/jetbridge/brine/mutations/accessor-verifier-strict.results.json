@@ -1,0 +1,112 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/accessor-verifier-strict.json",
+  "git_head": "2d5ad855baa15bf0125e1013dcb6738ffd81e318",
+  "completed_at": "2026-09-02T19:36:26Z",
+  "source_tests": 11,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/api/accessor/verifier.go": "73584e95b02d267fc19a5cfa617fff22240019991091fcf0158264725e2b9859",
+    "atc/api/accessor/verifier_test.go": "065d98fd88bcbc106ace84dcfd65b6b11daef99ed601a5a8ab34d268fd039c9f",
+    "atc/db/access_token.go": "665cd2199241806610acda1d5723d7e539d54b167c336920f7b185da7f2c0766",
+    "atc/db/access_token_factory.go": "3bcd5e9d0696a028c64cf415058f25c1253cb9d58fc38081b035f75c8d9d8f2f",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/accessor-verifier-strict.feature": "956bc4fdb72b4f742aaedd9a60516f67fe5d9484e6e5a68b9b5111837cafb855",
+    "atc/worker/jetbridge/brine/mutations/accessor-verifier-strict.json": "08ceb974a87f3fd912fb263353e5952854b7021a3c9c338179379f3aeaf9215e",
+    "atc/worker/jetbridge/brine/steps/accessor_verifier_strict.go": "ad72d4f04fd277c4f163143d39d748bcd9c800fa0e89c03d2fd738d3c1b66d5b",
+    "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
+    "atc/worker/jetbridge/brine/steps/registry.go": "c83502d2ac92b4e1b316c4012de772a7b938ab95d19f112fd17ea83d69cf30fd",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e"
+  },
+  "mutation_cases": [
+    {
+      "id": "missing-authorization-is-distinct",
+      "mutation_sha256": "bbf0c6634303ad074863ffd68d872debbd36d0cbce4d84a6a75c73d891fdaa22",
+      "failed_source_tests": [
+        "Verifier Verify when request has no token fails with no token"
+      ],
+      "failed_brine_scenarios": [
+        "Production access-token behavior — \u003cprofile\u003e (row 1)"
+      ]
+    },
+    {
+      "id": "malformed-and-non-bearer-headers-are-invalid",
+      "mutation_sha256": "c022c9a406ea3e73abc689b5040fe9c8149765562eef006f34c02f368ab06d03",
+      "failed_source_tests": [
+        "Verifier Verify when request has an invalid auth header fails verification",
+        "Verifier Verify when request has an invalid token type fails verification"
+      ],
+      "failed_brine_scenarios": [
+        "Production access-token behavior — \u003cprofile\u003e (row 2)",
+        "Production access-token behavior — \u003cprofile\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "unknown-database-token-is-invalid",
+      "mutation_sha256": "9546f31bc8d977ebcae63a20919dcd9422601067185b9a0dff974c68739a3551",
+      "failed_source_tests": [
+        "Verifier Verify when the token is not found in the DB fails verification"
+      ],
+      "failed_brine_scenarios": [
+        "Production access-token behavior — \u003cprofile\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "expired-claims-have-expired-error",
+      "mutation_sha256": "642b61aca9acc4061892f27f519e44d9620130fc796b075b41cd5c6439949904",
+      "failed_source_tests": [
+        "Verifier Verify when the claims have expired fails verification"
+      ],
+      "failed_brine_scenarios": [
+        "Production access-token behavior — \u003cprofile\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "wrong-audience-has-audience-error",
+      "mutation_sha256": "d63b7164ff95d90068d1050d28e56a40a86bac51b8e792c06829316b19810702",
+      "failed_source_tests": [
+        "Verifier Verify when the claims have invalid audience fails verification"
+      ],
+      "failed_brine_scenarios": [
+        "Production access-token behavior — \u003cprofile\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "valid-audience-returns-raw-claims",
+      "mutation_sha256": "b0384dd1b234acdf76a598e6210484bcf482e72f776125d7e20169aeca8ecb94",
+      "failed_source_tests": [
+        "Verifier Verify when the claims are valid returns the claims as they came back out of the database",
+        "Verifier Verify when the claims are valid succeeds"
+      ],
+      "failed_brine_scenarios": [
+        "Production access-token behavior — \u003cprofile\u003e (row 7)",
+        "Production access-token behavior — \u003cprofile\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "delete-removes-the-selected-token",
+      "mutation_sha256": "b22a2ed5552440de270d57ec8c54aa2b6eae3c5bf268e1f6fb1256a81c8249a1",
+      "failed_source_tests": [
+        "AccessTokenFactory reports a deleted token as not found"
+      ],
+      "failed_brine_scenarios": [
+        "Production access-token behavior — \u003cprofile\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "email-is-reconstructed-from-raw-claims",
+      "mutation_sha256": "3446066a5d42ae9d14d5ae84a802ea583a8dfb392384d9ba03d4d58c380c8ac2",
+      "failed_source_tests": [
+        "AccessTokenFactory round trips claims that were never written as typed fields",
+        "Verifier Verify when the claims are valid reconstructs the expiry and audience the validation depends on"
+      ],
+      "failed_brine_scenarios": [
+        "Production access-token behavior — \u003cprofile\u003e (row 10)",
+        "Production access-token behavior — \u003cprofile\u003e (row 11)"
+      ]
+    }
+  ]
+}
