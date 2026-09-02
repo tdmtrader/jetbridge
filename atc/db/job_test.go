@@ -335,90 +335,6 @@ var _ = Describe("Job", func() {
 		})
 	})
 
-	Describe("RerunBuild", func() {
-		var firstBuild db.Build
-		var rerunErr error
-		var rerunBuild db.Build
-		var buildToRerun db.Build
-
-		JustBeforeEach(func() {
-			rerunBuild, rerunErr = job.RerunBuild(buildToRerun, defaultBuildCreatedBy)
-		})
-
-		Context("when the first build exists", func() {
-			BeforeEach(func() {
-				var err error
-				firstBuild, err = job.CreateBuild(defaultBuildCreatedBy)
-				Expect(err).NotTo(HaveOccurred())
-
-				buildToRerun = firstBuild
-			})
-
-			It("finds the build", func() {
-				Expect(rerunErr).ToNot(HaveOccurred())
-				Expect(rerunBuild.Name()).To(Equal(fmt.Sprintf("%s.1", firstBuild.Name())))
-				Expect(rerunBuild.RerunNumber()).To(Equal(1))
-
-				build, found, err := job.Build(rerunBuild.Name())
-				Expect(err).NotTo(HaveOccurred())
-				Expect(found).To(BeTrue())
-				Expect(build.ID()).To(Equal(rerunBuild.ID()))
-				Expect(build.Status()).To(Equal(rerunBuild.Status()))
-			})
-
-			It("requests schedule on the job", func() {
-				requestedSchedule := job.ScheduleRequestedTime()
-
-				_, err := job.RerunBuild(buildToRerun, defaultBuildCreatedBy)
-				Expect(err).NotTo(HaveOccurred())
-
-				found, err := job.Reload()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(found).To(BeTrue())
-
-				Expect(job.ScheduleRequestedTime()).Should(BeTemporally(">", requestedSchedule))
-			})
-
-			Context("when there is an existing rerun build", func() {
-				var rerun1 db.Build
-
-				BeforeEach(func() {
-					var err error
-					rerun1, err = job.RerunBuild(buildToRerun, defaultBuildCreatedBy)
-					Expect(err).ToNot(HaveOccurred())
-					Expect(rerun1.Name()).To(Equal(fmt.Sprintf("%s.1", firstBuild.Name())))
-					Expect(rerun1.RerunNumber()).To(Equal(1))
-				})
-
-				It("increments the rerun build number", func() {
-					Expect(rerunErr).ToNot(HaveOccurred())
-					Expect(rerunBuild.Name()).To(Equal(fmt.Sprintf("%s.2", firstBuild.Name())))
-					Expect(rerunBuild.RerunNumber()).To(Equal(rerun1.RerunNumber() + 1))
-				})
-			})
-
-			Context("when we try to rerun a rerun build", func() {
-				var rerun1 db.Build
-
-				BeforeEach(func() {
-					var err error
-					rerun1, err = job.RerunBuild(buildToRerun, defaultBuildCreatedBy)
-					Expect(err).ToNot(HaveOccurred())
-					Expect(rerun1.Name()).To(Equal(fmt.Sprintf("%s.1", firstBuild.Name())))
-					Expect(rerun1.RerunNumber()).To(Equal(1))
-
-					buildToRerun = rerun1
-				})
-
-				It("keeps the name of original build and increments the rerun build number", func() {
-					Expect(rerunErr).ToNot(HaveOccurred())
-					Expect(rerunBuild.Name()).To(Equal(fmt.Sprintf("%s.2", firstBuild.Name())))
-					Expect(rerunBuild.RerunNumber()).To(Equal(rerun1.RerunNumber() + 1))
-				})
-			})
-		})
-	})
-
 	Describe("ScheduleBuild", func() {
 		var (
 			schedulingBuild            db.Build
@@ -1768,17 +1684,6 @@ var _ = Describe("Job", func() {
 					Expect(err).NotTo(HaveOccurred())
 				})
 
-				It("deletes a row from the task_caches table", func() {
-					Expect(rowsDeleted).To(Equal(int64(1)))
-				})
-
-				It("removes the task cache", func() {
-					usedTaskCache, found, err := taskCacheFactory.Find(job.ID(), "some-task", "some-path")
-					Expect(err).ToNot(HaveOccurred())
-					Expect(usedTaskCache).To(BeNil())
-					Expect(found).To(BeFalse())
-				})
-
 				It("doesn't remove other jobs caches", func() {
 					otherUsedTaskCache, found, err := taskCacheFactory.Find(someOtherJob.ID(), "some-other-task", "some-other-path")
 					Expect(err).ToNot(HaveOccurred())
@@ -1838,16 +1743,6 @@ var _ = Describe("Job", func() {
 						var err error
 						rowsDeleted, err = job.ClearTaskCache("some-task", "")
 						Expect(err).NotTo(HaveOccurred())
-					})
-
-					It("deletes a row from the task_caches table", func() {
-						Expect(rowsDeleted).To(Equal(int64(1)))
-					})
-
-					It("removes the task cache", func() {
-						_, found, err := taskCacheFactory.Find(job.ID(), "some-task", "some-path")
-						Expect(found).To(BeFalse())
-						Expect(err).ToNot(HaveOccurred())
 					})
 
 					It("doesn't remove other jobs caches", func() {

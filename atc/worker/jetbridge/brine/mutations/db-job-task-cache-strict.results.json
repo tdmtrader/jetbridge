@@ -1,0 +1,42 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-job-task-cache-strict.json",
+  "git_head": "fca999c2d17f99532e832a2da2d72cd9ec59c533",
+  "completed_at": "2026-09-02T14:28:44Z",
+  "source_tests": 4,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/job.go": "397afafef081c96aa2a2ee75d2f94788be0f3e4be8415c3f1e533c4cfd41ecda",
+    "atc/db/job_test.go": "986d9e47584ae8d3a1310a39225d86a124d2cddfa0c04d38360180fcaa504ed3",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/db-job-task-cache-strict.feature": "c3b40011215c27cfb28058d4133ecc11e3e655c097c98ae94af7eba45b90ef87",
+    "atc/worker/jetbridge/brine/mutations/db-job-task-cache-strict.json": "89800c3dad8abaaa5ab0d5cfa3490620070151be32f72652feec34cf6187098a",
+    "atc/worker/jetbridge/brine/steps/assert.go": "eac0b7b4dc864f54ffb5aab471451e3b62da518e5a8b10ba26e742d83298861f",
+    "atc/worker/jetbridge/brine/steps/db_job_input_output_strict.go": "2b6ddbe9d5004cd801c429d06c3fbc8a6062802966bd6fa749ba0da02052e747",
+    "atc/worker/jetbridge/brine/steps/db_job_task_cache_strict.go": "18c1fe892f6f4248f1212d10f2525acb876699fccf5ddb91139d782bd4a3b369",
+    "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
+    "atc/worker/jetbridge/brine/steps/registry.go": "007ecd53195ed223c952dd65b07228bf64e4a5cbfb8676a81dea987193c2d892",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e"
+  },
+  "mutation_cases": [
+    {
+      "id": "clear-task-cache-targets-owning-job",
+      "mutation_sha256": "aaa7c415e8859e19fcf990fa551d8da019ab8532a23ea8a8f8847e6ddc3b8c14",
+      "failed_source_tests": [
+        "Job Clear task cache when task cache exists when a path is not provided when an existing step-name is provided deletes a row from the task_caches table",
+        "Job Clear task cache when task cache exists when a path is not provided when an existing step-name is provided removes the task cache",
+        "Job Clear task cache when task cache exists when a path is provided deletes a row from the task_caches table",
+        "Job Clear task cache when task cache exists when a path is provided removes the task cache"
+      ],
+      "failed_brine_scenarios": [
+        "Job task-cache behavior — \u003cprofile\u003e (row 1)",
+        "Job task-cache behavior — \u003cprofile\u003e (row 2)",
+        "Job task-cache behavior — \u003cprofile\u003e (row 3)",
+        "Job task-cache behavior — \u003cprofile\u003e (row 4)"
+      ]
+    }
+  ]
+}

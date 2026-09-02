@@ -1,0 +1,38 @@
+{
+  "name": "db-job-task-cache-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/job_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-job-task-cache-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_job_task_cache_strict.go",
+    "atc/worker/jetbridge/brine/steps/db_job_input_output_strict.go",
+    "atc/worker/jetbridge/brine/steps/registry.go",
+    "atc/worker/jetbridge/brine/steps/assert.go",
+    "atc/worker/jetbridge/brine/steps/resources.go",
+    "atc/worker/jetbridge/brine/steps/task_command.go",
+    "atc/worker/jetbridge/brine/steps/envtest.go",
+    "atc/postgresrunner/postgresrunner.go",
+    "atc/postgresrunner/ginkgo.go",
+    "atc/postgresrunner/join_limit_conn.go"
+  ],
+  "cases": [
+    {
+      "id": "clear-task-cache-targets-owning-job",
+      "source_file": "atc/db/job.go",
+      "old": "\t\tWhere(sq.Eq{\n\t\t\t\"job_id\":    j.id,\n\t\t\t\"step_name\": stepName,\n\t\t})",
+      "new": "\t\tWhere(sq.Eq{\n\t\t\t\"job_id\":    -1,\n\t\t\t\"step_name\": stepName,\n\t\t})",
+      "tests": [
+        "Job Clear task cache when task cache exists when a path is provided deletes a row from the task_caches table",
+        "Job Clear task cache when task cache exists when a path is provided removes the task cache",
+        "Job Clear task cache when task cache exists when a path is not provided when an existing step-name is provided deletes a row from the task_caches table",
+        "Job Clear task cache when task cache exists when a path is not provided when an existing step-name is provided removes the task cache"
+      ],
+      "scenarios": [
+        "Job task-cache behavior — <profile> (row 1)",
+        "Job task-cache behavior — <profile> (row 2)",
+        "Job task-cache behavior — <profile> (row 3)",
+        "Job task-cache behavior — <profile> (row 4)"
+      ]
+    }
+  ]
+}

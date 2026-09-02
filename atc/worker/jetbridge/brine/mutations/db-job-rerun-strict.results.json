@@ -1,0 +1,50 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-job-rerun-strict.json",
+  "git_head": "fca999c2d17f99532e832a2da2d72cd9ec59c533",
+  "completed_at": "2026-09-02T14:24:54Z",
+  "source_tests": 4,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/job.go": "397afafef081c96aa2a2ee75d2f94788be0f3e4be8415c3f1e533c4cfd41ecda",
+    "atc/db/job_test.go": "eca075ab57fc2e96b5b6bd81892c7b5841fe11e0c692f7f9fad0e37705361767",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/db-job-rerun-strict.feature": "af7cda45b55c67709f50b1fe5058587d6be23c60b5ea94426e3c3559a9caf5ed",
+    "atc/worker/jetbridge/brine/mutations/db-job-rerun-strict.json": "421a47ca047d32419364f526e01d35b35c4f2b5c4c45432d2778ebc66f066f15",
+    "atc/worker/jetbridge/brine/steps/assert.go": "eac0b7b4dc864f54ffb5aab471451e3b62da518e5a8b10ba26e742d83298861f",
+    "atc/worker/jetbridge/brine/steps/db_job_input_output_strict.go": "2b6ddbe9d5004cd801c429d06c3fbc8a6062802966bd6fa749ba0da02052e747",
+    "atc/worker/jetbridge/brine/steps/db_job_rerun_strict.go": "e22aeefab614259d85c847ff09cfd880f03801391a0890c61380a3e598d443d4",
+    "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
+    "atc/worker/jetbridge/brine/steps/registry.go": "f667985c496af049cd1cb5e5abb4c975b7aa12325e6ac9d7a5447330ea2c3712",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e"
+  },
+  "mutation_cases": [
+    {
+      "id": "rerun-number-starts-at-one",
+      "mutation_sha256": "7b6d78092e30a3210b25a785c59a5360850462eeb83b3556679a50c8de9a952d",
+      "failed_source_tests": [
+        "Job RerunBuild when the first build exists finds the build",
+        "Job RerunBuild when the first build exists when there is an existing rerun build increments the rerun build number",
+        "Job RerunBuild when the first build exists when we try to rerun a rerun build keeps the name of original build and increments the rerun build number"
+      ],
+      "failed_brine_scenarios": [
+        "Job rerun behavior — \u003cprofile\u003e (row 1)",
+        "Job rerun behavior — \u003cprofile\u003e (row 3)",
+        "Job rerun behavior — \u003cprofile\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "rerun-advances-schedule-request-time",
+      "mutation_sha256": "4d18b52401aced0094fab85a152c54efd18b3177452b3d402215dd260d1d3233",
+      "failed_source_tests": [
+        "Job RerunBuild when the first build exists requests schedule on the job"
+      ],
+      "failed_brine_scenarios": [
+        "Job rerun behavior — \u003cprofile\u003e (row 2)"
+      ]
+    }
+  ]
+}
