@@ -1,0 +1,65 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/migration-add-global-resource-versions-strict.json",
+  "git_head": "e8e35fa16fc0afa6667c8aed7010da2327df6a91",
+  "completed_at": "2026-09-02T21:53:44Z",
+  "source_tests": 4,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/migration/add_global_resource_versions_test.go": "d69caee2cb97a4a2ab8639fecc782998160a838e026cd0a207c555652cdfd818",
+    "atc/db/migration/migrations/1537546150_global_resource_version_history.down.go": "7187617d49bfde14bc75b2aaba090e96017f9bdcee71cfaa3cbc619c01557787",
+    "atc/db/migration/migrations/1537546150_global_resource_version_history.up.sql": "40db45ac1b1b51903e3c183fd0daa957eeb33061110a6102c8940304623ac8ab",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/main.go": "f1077dbb582d4a3ad64725c5a79cbb19aacc73f43e16da24c8db9d42a94cca9f",
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/registry.go": "a21f2226e2f8222fe40016d6e91ea74b04934f4467d57b55b08057ac78b17e06",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/migration-add-global-resource-versions-strict.feature": "9c29d80a16cc55140710e5cb410b6305f977cb436dbe0b1dd3085ebd38e82ad4",
+    "atc/worker/jetbridge/brine/mutations/migration-add-global-resource-versions-strict.json": "c3d2f70106b6b7295ba7e810f2f13d1ebb2081f76ca9051d5321e4c105628656",
+    "atc/worker/jetbridge/brine/steps/migration_add_global_resource_versions_strict.go": "cabfde943972977840c6133a21526c79e6a16575127842980e3f3d4295c011b7",
+    "atc/worker/jetbridge/brine/steps/registry.go": "9866ca2b97e929d0e75551538f4caddae0bbaab0049cc185da6867a5921abe27",
+    "atc/worker/jetbridge/brine/steps/resources.go": "f594ee3b1828c61ca1dd1ef9dd8024ecbb440898b57644b50a80d86bad475691"
+  },
+  "mutation_cases": [
+    {
+      "id": "disabled-version-migration-selects-disabled-rows",
+      "mutation_sha256": "d33929240f22ce7988a6f2f88f34d1429d592058f5a4df9798eebfd0a0bf5bf1",
+      "failed_source_tests": [
+        "Add global resource versions Up migrates disabled resource versions to new resource disabled versions table"
+      ],
+      "failed_brine_scenarios": [
+        "Production add-global-resource-versions migration — \u003cprofile\u003e (row 1)"
+      ]
+    },
+    {
+      "id": "build-input-migration-preserves-input-name",
+      "mutation_sha256": "8aa09b3210829434129f90969faeb5b5cbd30b92374f2f01d44566c317de48f6",
+      "failed_source_tests": [
+        "Add global resource versions Up migrates the build inputs into the new build resource config version inputs table"
+      ],
+      "failed_brine_scenarios": [
+        "Production add-global-resource-versions migration — \u003cprofile\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "build-output-migration-preserves-resource-name",
+      "mutation_sha256": "9782b725bfeb8443bdced175bffccd4d913ac09962a53cba069a069350fc7964",
+      "failed_source_tests": [
+        "Add global resource versions Up migrates the build outputs into the new build resource config version outputs table"
+      ],
+      "failed_brine_scenarios": [
+        "Production add-global-resource-versions migration — \u003cprofile\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "downgrade-reconstructs-enabled-state",
+      "mutation_sha256": "fca0c3cc5f1d70492085ef979f28597684d031562b28e016ab4d78df4e0c6fbe",
+      "failed_source_tests": [
+        "Add global resource versions Down saves all versions (disabled and enabled) into the versioned resources table"
+      ],
+      "failed_brine_scenarios": [
+        "Production add-global-resource-versions migration — \u003cprofile\u003e (row 4)"
+      ]
+    }
+  ]
+}
