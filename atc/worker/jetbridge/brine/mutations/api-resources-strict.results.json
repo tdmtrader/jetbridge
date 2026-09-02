@@ -1,0 +1,178 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/api-resources-strict.json",
+  "git_head": "a79b8ac11c8957959308c137f97a7b0af27180d6",
+  "completed_at": "2026-09-02T16:24:50Z",
+  "source_tests": 16,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/api/present/resource.go": "9d86e8c6a1126acffcd318f7f22cf18f6ead6ff1d39ab9e789e472e0ccfcbf28",
+    "atc/api/resources_test.go": "eb63acad8953ce4a894c63f54d1d8f502f079687610ac77b596043f653456c6a",
+    "atc/api/resourceserver/clear_resource_cache.go": "40cb2c0db1acd5ce457c3a30b4cf2620e0ab1e0bcab54dd228b4458b1cf15077",
+    "atc/api/resourceserver/get.go": "01af9b655d11aa7db60a5b9801a92c3833dda7b492adf9f7dcebf5ea5de78b02",
+    "atc/api/resourceserver/list.go": "0e7234db12dd0cdd078a1ccf83db9bf6785b060991cb8ae6458b56d213ae6717",
+    "atc/api/resourceserver/set_pin_comment.go": "979e83aee1f800cc530cc4e2f4c08807f3dbe72158f0ca90c33e2caf6e95736b",
+    "atc/api/resourceserver/unpin.go": "44604bdb35ea6ba4540efdd686425e554a459c3e1560880d649c69147f0e5981",
+    "atc/db/resource.go": "d3751a41f45f7416db10a157948b1218f2fcbd299ed100a5b8ec01fb99aa038f",
+    "atc/db/resource_factory.go": "29ac8997e3cd0ca4a58085f6f4a60f8a21ab5e00b4e24d86cfda4f10e1e7bb2c",
+    "atc/db/resource_type.go": "86ad6213f3a1e8eeb2fdba9249c5a465421897ba5c975d93bb27452ed962c2c3",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/api-resources-strict.feature": "0961202a1b4a6c105c4988567ad696d0674d1eed8d1e33fda09bb7408b9bd2a2",
+    "atc/worker/jetbridge/brine/mutations/api-resources-strict.json": "648c14ff714a1a6c57f934a06483e32746e2171966bcef1767677817abac14f2",
+    "atc/worker/jetbridge/brine/steps/api_resources_strict.go": "7fa7cd81c95cc97b775ca4af7a465ac7239b8f4cf451672946dc8a8e20e16d9f",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8"
+  },
+  "mutation_cases": [
+    {
+      "id": "visible-resources-require-public-pipelines",
+      "mutation_sha256": "c0f3de752045dab7b7f41c8e03580b3f8c4c0a2f13d5a7a54ab0e53b847b4f5d",
+      "failed_source_tests": [
+        "Resources API GET /api/v1/resources returns only the exposed resource to an anonymous user",
+        "Resources API GET /api/v1/resources returns the persisted public and authorized-private resources with their real build state"
+      ],
+      "failed_brine_scenarios": [
+        "Anonymous global resources include only exposed persisted state",
+        "Global resources include authorized private and public persisted state"
+      ]
+    },
+    {
+      "id": "administrator-list-uses-all-resources",
+      "mutation_sha256": "6687845c013aece3f5c868028c64403330094ccef36de6f58eed9f498f183505",
+      "failed_source_tests": [
+        "Resources API GET /api/v1/resources returns every persisted resource to an administrator"
+      ],
+      "failed_brine_scenarios": [
+        "Administrators receive every persisted resource"
+      ]
+    },
+    {
+      "id": "pipeline-resource-list-preserves-last-checked",
+      "mutation_sha256": "9bac1b4cd43331fcc1bc7b7a9cfcb823b828c88eb5c80d56acbe7ee78c928227",
+      "failed_source_tests": [
+        "Resources API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources returns resources read from the authorized private pipeline"
+      ],
+      "failed_brine_scenarios": [
+        "Pipeline resources serialize exact persisted check state"
+      ]
+    },
+    {
+      "id": "resource-types-preserve-check-interval",
+      "mutation_sha256": "ab229922dc991dd13910fb18600ef55ab69e1981d31214ba65510d704ab2045f",
+      "failed_source_tests": [
+        "Resources API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resource-types returns the resource types stored in the authorized pipeline"
+      ],
+      "failed_brine_scenarios": [
+        "Pipeline resource types serialize exact persisted configuration"
+      ]
+    },
+    {
+      "id": "resource-detail-preserves-icon",
+      "mutation_sha256": "c361437b6f65850492bf5fcaae3e4cea37f5a860d3570ceb3ec6131e743265a4",
+      "failed_source_tests": [
+        "Resources API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name returns the persisted resource, last check, and completed check build"
+      ],
+      "failed_brine_scenarios": [
+        "Resource detail returns persisted check and build state"
+      ]
+    },
+    {
+      "id": "configured-pin-marked-in-config",
+      "mutation_sha256": "7b3f6b64f0a8d0f7c653ba32bd08fb78dee2f07bd2e397bbc8d3bb575b3a2045",
+      "failed_source_tests": [
+        "Resources API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name reports a version pinned through persisted pipeline config"
+      ],
+      "failed_brine_scenarios": [
+        "Resource detail reports a pipeline-config pin"
+      ]
+    },
+    {
+      "id": "api-pin-preserves-comment",
+      "mutation_sha256": "9bb5caea61babf75d72c1249d5775254898a63d9231c5cc83ac70fd63f3dea3a",
+      "failed_source_tests": [
+        "Resources API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name reports a real API pin and pin comment"
+      ],
+      "failed_brine_scenarios": [
+        "Resource detail reports an API pin and its comment"
+      ]
+    },
+    {
+      "id": "missing-resource-maps-to-not-found",
+      "mutation_sha256": "a09af320eed42b38cf77e5c889968e084421e6da57e77cc4acb00f6b0ad2c7f8",
+      "failed_source_tests": [
+        "Resources API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name returns 404 for a resource absent from the persisted pipeline"
+      ],
+      "failed_brine_scenarios": [
+        "Missing resource detail returns not found"
+      ]
+    },
+    {
+      "id": "unpin-deletes-the-selected-resource-pin",
+      "mutation_sha256": "f648209610c61750699bff81b942e3a9b29406b8ce59e5cf4d996c7c890c14ba",
+      "failed_source_tests": [
+        "Resources API PUT resource pin mutations unpins the persisted API pin"
+      ],
+      "failed_brine_scenarios": [
+        "Unpin removes the persisted API pin"
+      ]
+    },
+    {
+      "id": "unpin-no-row-remains-an-error",
+      "mutation_sha256": "27edcf579396424904698ec5cb0fa6f9491f8195081afa2d4c85ea911734f3f2",
+      "failed_source_tests": [
+        "Resources API PUT resource pin mutations returns 500 when no persisted pin row can be removed"
+      ],
+      "failed_brine_scenarios": [
+        "Unpin without a persisted pin reports a server error"
+      ]
+    },
+    {
+      "id": "pin-comment-persists-request-value",
+      "mutation_sha256": "82e5d33d1d93ae381e37f43a90a490e4a9d5a88c9cfc525a747a5d619a5de4da",
+      "failed_source_tests": [
+        "Resources API PUT resource pin mutations sets a comment on an existing persisted pin"
+      ],
+      "failed_brine_scenarios": [
+        "Pin comment is persisted without changing the pin"
+      ]
+    },
+    {
+      "id": "malformed-pin-comment-is-bad-request",
+      "mutation_sha256": "51a0fdbf5e6d5737e22a30a64c519a8552828ddc6b7ae51f3c77563ad7ba8bba",
+      "failed_source_tests": [
+        "Resources API PUT resource pin mutations returns 400 for malformed pin-comment JSON"
+      ],
+      "failed_brine_scenarios": [
+        "Malformed pin comment JSON returns bad request"
+      ]
+    },
+    {
+      "id": "version-cache-delete-uses-equal-digest",
+      "mutation_sha256": "1b13619b343e1bb01ad747661e3929831643cd4823881d7497b94b7027640671",
+      "failed_source_tests": [
+        "Resources API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/cache removes only the worker-cache association matching the requested version"
+      ],
+      "failed_brine_scenarios": [
+        "Version-scoped cache deletion preserves the decoy association"
+      ]
+    },
+    {
+      "id": "unscoped-cache-delete-has-no-row-limit",
+      "mutation_sha256": "e8ae496f367244d27b42db9ab339f03cc928b24648d643e87679f71df26be92f",
+      "failed_source_tests": [
+        "Resources API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/cache removes every persisted worker-cache association when no version is supplied"
+      ],
+      "failed_brine_scenarios": [
+        "Unscoped cache deletion removes every persisted association"
+      ]
+    },
+    {
+      "id": "malformed-cache-request-is-bad-request",
+      "mutation_sha256": "01b33a913e1edd4f0fe7c8c4010a673566c4efd03559a9d3c751eb6c705b4d67",
+      "failed_source_tests": [
+        "Resources API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/cache returns 400 for malformed JSON and 404 for an absent resource"
+      ],
+      "failed_brine_scenarios": [
+        "Cache deletion preserves malformed and missing statuses"
+      ]
+    }
+  ]
+}

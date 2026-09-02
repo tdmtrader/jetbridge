@@ -1,0 +1,194 @@
+{
+  "name": "api-resources-strict",
+  "test_package": "./atc/api",
+  "source_test_file": "atc/api/resources_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/api-resources-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/api_resources_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "visible-resources-require-public-pipelines",
+      "source_file": "atc/db/resource_factory.go",
+      "old": "\t\t\t\tsq.Eq{\"p.public\": true},",
+      "new": "\t\t\t\tsq.Eq{\"p.public\": false},",
+      "tests": [
+        "Resources API GET /api/v1/resources returns the persisted public and authorized-private resources with their real build state",
+        "Resources API GET /api/v1/resources returns only the exposed resource to an anonymous user"
+      ],
+      "scenarios": [
+        "Global resources include authorized private and public persisted state",
+        "Anonymous global resources include only exposed persisted state"
+      ]
+    },
+    {
+      "id": "administrator-list-uses-all-resources",
+      "source_file": "atc/db/resource_factory.go",
+      "old": "func (r *resourceFactory) AllResources() ([]Resource, error) {\n\trows, err := resourcesQuery.\n\t\tOrderBy(\"r.id ASC\").",
+      "new": "func (r *resourceFactory) AllResources() ([]Resource, error) {\n\trows, err := resourcesQuery.\n\t\tWhere(sq.Eq{\"p.public\": true}).\n\t\tOrderBy(\"r.id ASC\").",
+      "tests": [
+        "Resources API GET /api/v1/resources returns every persisted resource to an administrator"
+      ],
+      "scenarios": [
+        "Administrators receive every persisted resource"
+      ]
+    },
+    {
+      "id": "pipeline-resource-list-preserves-last-checked",
+      "source_file": "atc/api/resourceserver/list.go",
+      "old": "\t\t\tpresentedResources = append(\n\t\t\t\tpresentedResources,\n\t\t\t\tpresent.Resource(resource),\n\t\t\t)",
+      "new": "\t\t\tpresented := present.Resource(resource)\n\t\t\tpresented.LastChecked = 0\n\t\t\tpresentedResources = append(presentedResources, presented)",
+      "tests": [
+        "Resources API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources returns resources read from the authorized private pipeline"
+      ],
+      "scenarios": [
+        "Pipeline resources serialize exact persisted check state"
+      ]
+    },
+    {
+      "id": "resource-types-preserve-check-interval",
+      "source_file": "atc/db/resource_type.go",
+      "old": "\t\t\tCheckEvery: t.CheckEvery(),",
+      "new": "\t\t\tCheckEvery: nil,",
+      "tests": [
+        "Resources API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resource-types returns the resource types stored in the authorized pipeline"
+      ],
+      "scenarios": [
+        "Pipeline resource types serialize exact persisted configuration"
+      ]
+    },
+    {
+      "id": "resource-detail-preserves-icon",
+      "source_file": "atc/api/present/resource.go",
+      "old": "\t\tIcon:                 resource.Icon(),",
+      "new": "\t\tIcon:                 \"\",",
+      "tests": [
+        "Resources API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name returns the persisted resource, last check, and completed check build"
+      ],
+      "scenarios": [
+        "Resource detail returns persisted check and build state"
+      ]
+    },
+    {
+      "id": "configured-pin-marked-in-config",
+      "source_file": "atc/api/present/resource.go",
+      "old": "\t\tatcResource.PinnedInConfig = true",
+      "new": "\t\tatcResource.PinnedInConfig = false",
+      "tests": [
+        "Resources API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name reports a version pinned through persisted pipeline config"
+      ],
+      "scenarios": [
+        "Resource detail reports a pipeline-config pin"
+      ]
+    },
+    {
+      "id": "api-pin-preserves-comment",
+      "source_file": "atc/api/present/resource.go",
+      "old": "\t\tPinComment: resource.PinComment(),",
+      "new": "\t\tPinComment: \"\",",
+      "tests": [
+        "Resources API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name reports a real API pin and pin comment"
+      ],
+      "scenarios": [
+        "Resource detail reports an API pin and its comment"
+      ]
+    },
+    {
+      "id": "missing-resource-maps-to-not-found",
+      "source_file": "atc/api/resourceserver/get.go",
+      "old": "\t\t\tw.WriteHeader(http.StatusNotFound)",
+      "new": "\t\t\tw.WriteHeader(http.StatusGone)",
+      "tests": [
+        "Resources API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name returns 404 for a resource absent from the persisted pipeline"
+      ],
+      "scenarios": [
+        "Missing resource detail returns not found"
+      ]
+    },
+    {
+      "id": "unpin-deletes-the-selected-resource-pin",
+      "source_file": "atc/db/resource.go",
+      "old": "\t\tWhere(sq.Eq{\"resource_pins.resource_id\": r.id}).",
+      "new": "\t\tWhere(sq.Eq{\"resource_pins.resource_id\": r.id + 1}).",
+      "tests": [
+        "Resources API PUT resource pin mutations unpins the persisted API pin"
+      ],
+      "scenarios": [
+        "Unpin removes the persisted API pin"
+      ]
+    },
+    {
+      "id": "unpin-no-row-remains-an-error",
+      "source_file": "atc/api/resourceserver/unpin.go",
+      "old": "\t\tif err != nil {\n\t\t\tlogger.Error(\"failed-to-unpin-resource-version\", err)\n\t\t\tw.WriteHeader(http.StatusInternalServerError)\n\t\t\treturn\n\t\t}",
+      "new": "\t\tif err != nil {\n\t\t\tlogger.Error(\"failed-to-unpin-resource-version\", err)\n\t\t\tw.WriteHeader(http.StatusOK)\n\t\t\treturn\n\t\t}",
+      "tests": [
+        "Resources API PUT resource pin mutations returns 500 when no persisted pin row can be removed"
+      ],
+      "scenarios": [
+        "Unpin without a persisted pin reports a server error"
+      ]
+    },
+    {
+      "id": "pin-comment-persists-request-value",
+      "source_file": "atc/api/resourceserver/set_pin_comment.go",
+      "old": "\t\terr = resource.SetPinComment(reqBody.PinComment)",
+      "new": "\t\terr = resource.SetPinComment(\"\")",
+      "tests": [
+        "Resources API PUT resource pin mutations sets a comment on an existing persisted pin"
+      ],
+      "scenarios": [
+        "Pin comment is persisted without changing the pin"
+      ]
+    },
+    {
+      "id": "malformed-pin-comment-is-bad-request",
+      "source_file": "atc/api/resourceserver/set_pin_comment.go",
+      "old": "\t\t\tw.WriteHeader(http.StatusBadRequest)",
+      "new": "\t\t\tw.WriteHeader(http.StatusUnprocessableEntity)",
+      "tests": [
+        "Resources API PUT resource pin mutations returns 400 for malformed pin-comment JSON"
+      ],
+      "scenarios": [
+        "Malformed pin comment JSON returns bad request"
+      ]
+    },
+    {
+      "id": "version-cache-delete-uses-equal-digest",
+      "source_file": "atc/db/resource.go",
+      "old": "\t\t\tsq.Expr(\"version_digest = encode(digest(?, 'sha256'), 'hex')\", versionJson),",
+      "new": "\t\t\tsq.Expr(\"version_digest <> encode(digest(?, 'sha256'), 'hex')\", versionJson),",
+      "tests": [
+        "Resources API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/cache removes only the worker-cache association matching the requested version"
+      ],
+      "scenarios": [
+        "Version-scoped cache deletion preserves the decoy association"
+      ]
+    },
+    {
+      "id": "unscoped-cache-delete-has-no-row-limit",
+      "source_file": "atc/db/resource.go",
+      "old": "\tselectStatement := psql.Select(\"id\").\n\t\tFrom(\"resource_caches\").\n\t\tWhere(sq.Eq{\n\t\t\t\"resource_config_id\": r.resourceConfigID,\n\t\t})",
+      "new": "\tselectStatement := psql.Select(\"id\").\n\t\tFrom(\"resource_caches\").\n\t\tWhere(sq.Eq{\n\t\t\t\"resource_config_id\": r.resourceConfigID,\n\t\t}).\n\t\tLimit(1)",
+      "tests": [
+        "Resources API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/cache removes every persisted worker-cache association when no version is supplied"
+      ],
+      "scenarios": [
+        "Unscoped cache deletion removes every persisted association"
+      ]
+    },
+    {
+      "id": "malformed-cache-request-is-bad-request",
+      "source_file": "atc/api/resourceserver/clear_resource_cache.go",
+      "old": "\t\t\tw.WriteHeader(http.StatusBadRequest)",
+      "new": "\t\t\tw.WriteHeader(http.StatusUnprocessableEntity)",
+      "tests": [
+        "Resources API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/cache returns 400 for malformed JSON and 404 for an absent resource"
+      ],
+      "scenarios": [
+        "Cache deletion preserves malformed and missing statuses"
+      ]
+    }
+  ]
+}

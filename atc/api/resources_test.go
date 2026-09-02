@@ -489,58 +489,6 @@ var _ = Describe("Resources API", func() {
 	})
 
 	Describe("GET /api/v1/resources", func() {
-		It("returns the persisted public and authorized-private resources with their real build state", func() {
-			resources := persistResourceListingGraph(fixture)
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.TeamNamesReturns([]string{fixture.team.Name()})
-
-			response := requestResourceAPI(fixture, http.MethodGet, "/api/v1/resources", nil)
-			Expect(response.StatusCode).To(Equal(http.StatusOK))
-			Expect(response.Header.Get("Content-Type")).To(Equal("application/json"))
-			presented := decodeResourceAPIResponse[[]atc.Resource](response)
-			Expect(presented).To(HaveLen(2))
-			Expect([]string{presented[0].Name, presented[1].Name}).To(ConsistOf(
-				resources["authorized"].Name(), resources["public"].Name(),
-			))
-			Expect([]string{presented[0].Name, presented[1].Name}).NotTo(ContainElement(
-				resources["private"].Name(),
-			))
-
-			authorized := resourceByName(presented, resources["authorized"].Name())
-			Expect(authorized.PipelineID).To(Equal(fixture.pipeline.ID()))
-			Expect(authorized.PipelineName).To(Equal(fixture.pipeline.Name()))
-			Expect(authorized.TeamName).To(Equal(fixture.team.Name()))
-			Expect(authorized.Type).To(Equal(dbtest.BaseResourceType))
-			Expect(authorized.LastChecked).To(BeNumerically(">", 0))
-			Expect(authorized.Build).NotTo(BeNil())
-			Expect(authorized.Build.Status).To(Equal(atc.StatusSucceeded))
-			Expect(authorized.Build.TeamName).To(Equal(fixture.team.Name()))
-		})
-
-		It("returns only the exposed resource to an anonymous user", func() {
-			resources := persistResourceListingGraph(fixture)
-			fakeAccess.IsAuthenticatedReturns(false)
-			fakeAccess.TeamNamesReturns(nil)
-
-			response := requestResourceAPI(fixture, http.MethodGet, "/api/v1/resources", nil)
-			Expect(response.StatusCode).To(Equal(http.StatusOK))
-			presented := decodeResourceAPIResponse[[]atc.Resource](response)
-			Expect(presented).To(HaveLen(1))
-			Expect(presented[0].Name).To(Equal(resources["public"].Name()))
-		})
-
-		It("returns every persisted resource to an administrator", func() {
-			resources := persistResourceListingGraph(fixture)
-			fakeAccess.IsAdminReturns(true)
-
-			response := requestResourceAPI(fixture, http.MethodGet, "/api/v1/resources", nil)
-			presented := decodeResourceAPIResponse[[]atc.Resource](response)
-			Expect(presented).To(HaveLen(3))
-			Expect([]string{presented[0].Name, presented[1].Name, presented[2].Name}).To(ConsistOf(
-				resources["authorized"].Name(), resources["public"].Name(), resources["private"].Name(),
-			))
-		})
-
 		It("returns an empty JSON array when no resource rows exist", func() {
 			fixture.updatePipeline(atc.Config{})
 			fakeAccess.TeamNamesReturns([]string{fixture.team.Name()})
@@ -558,24 +506,6 @@ var _ = Describe("Resources API", func() {
 
 	Describe("GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources", func() {
 		const path = "/api/v1/teams/a-team/pipelines/a-pipeline/resources"
-
-		It("returns resources read from the authorized private pipeline", func() {
-			fixture.scenario.Run(fixture.builder.WithResourceVersions(
-				"resource-name", atc.Version{"ref": "persisted"},
-			))
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
-
-			response := requestResourceAPI(fixture, http.MethodGet, path, nil)
-			Expect(response.StatusCode).To(Equal(http.StatusOK))
-			Expect(response.Header.Get("Content-Type")).To(Equal("application/json"))
-			resources := decodeResourceAPIResponse[[]atc.Resource](response)
-			Expect(resources).To(HaveLen(1))
-			Expect(resources[0].Name).To(Equal("resource-name"))
-			Expect(resources[0].PipelineID).To(Equal(fixture.pipeline.ID()))
-			Expect(resources[0].TeamName).To(Equal(fixture.team.Name()))
-			Expect(resources[0].LastChecked).To(BeNumerically(">", 0))
-		})
 
 		It("permits anonymous reads only after the persisted pipeline is exposed", func() {
 			fakeAccess.IsAuthenticatedReturns(false)
@@ -609,28 +539,6 @@ var _ = Describe("Resources API", func() {
 
 	Describe("GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resource-types", func() {
 		const path = "/api/v1/teams/a-team/pipelines/a-pipeline/resource-types"
-
-		It("returns the resource types stored in the authorized pipeline", func() {
-			config := defaultResourceAPIConfig()
-			config.ResourceTypes[0].CheckEvery = &atc.CheckEvery{Interval: 10 * time.Millisecond}
-			fixture.updatePipeline(config)
-			fakeAccess.IsAuthenticatedReturns(true)
-			fakeAccess.IsAuthorizedReturns(true)
-			response := requestResourceAPI(fixture, http.MethodGet, path, nil)
-			Expect(response.StatusCode).To(Equal(http.StatusOK))
-			Expect(response.Header.Get("Content-Type")).To(Equal("application/json"))
-			resourceTypes := decodeResourceAPIResponse[atc.ResourceTypes](response)
-			Expect(resourceTypes).To(ConsistOf(atc.ResourceType{
-				Name:       "resource-type-name",
-				Type:       dbtest.BaseResourceType,
-				Source:     atc.Source{"repository": "resource-type"},
-				Defaults:   atc.Source{"branch": "main"},
-				Privileged: true,
-				CheckEvery: &atc.CheckEvery{Interval: 10 * time.Millisecond},
-				Tags:       atc.Tags{"resource-type-worker"},
-				Params:     atc.Params{"resource-type-param": "persisted"},
-			}))
-		})
 
 		It("permits anonymous reads only for an exposed pipeline", func() {
 			fakeAccess.IsAuthenticatedReturns(false)
@@ -668,58 +576,6 @@ var _ = Describe("Resources API", func() {
 			fakeAccess.IsAuthorizedReturns(true)
 		})
 
-		It("returns the persisted resource, last check, and completed check build", func() {
-			fixture.scenario.Run(fixture.builder.WithResourceVersions(
-				"resource-name", atc.Version{"ref": "persisted"},
-			))
-			response := requestResourceAPI(fixture, http.MethodGet, path, nil)
-			Expect(response.StatusCode).To(Equal(http.StatusOK))
-			Expect(response.Header.Get("Content-Type")).To(Equal("application/json"))
-			resource := decodeResourceAPIResponse[atc.Resource](response)
-			Expect(resource.Name).To(Equal("resource-name"))
-			Expect(resource.PipelineID).To(Equal(fixture.pipeline.ID()))
-			Expect(resource.TeamName).To(Equal(fixture.team.Name()))
-			Expect(resource.Type).To(Equal(dbtest.BaseResourceType))
-			Expect(resource.Icon).To(Equal("git"))
-			Expect(resource.LastChecked).To(BeNumerically(">", 0))
-			Expect(resource.Build).NotTo(BeNil())
-			Expect(resource.Build.Status).To(Equal(atc.StatusSucceeded))
-		})
-
-		It("reports a version pinned through persisted pipeline config", func() {
-			config := defaultResourceAPIConfig()
-			config.Resources[0].Version = atc.Version{"ref": "configured"}
-			fixture.updatePipeline(config)
-			response := requestResourceAPI(fixture, http.MethodGet, path, nil)
-			resource := decodeResourceAPIResponse[atc.Resource](response)
-			Expect(resource.PinnedVersion).To(Equal(atc.Version{"ref": "configured"}))
-			Expect(resource.PinnedInConfig).To(BeTrue())
-		})
-
-		It("reports a real API pin and pin comment", func() {
-			version := atc.Version{"ref": "api-pinned"}
-			fixture.scenario.Run(fixture.builder.WithResourceVersions("resource-name", version))
-			resource := fixture.scenario.Resource("resource-name")
-			pinned, err := resource.PinVersion(fixture.scenario.ResourceVersion("resource-name", version).ID())
-			Expect(err).NotTo(HaveOccurred())
-			Expect(pinned).To(BeTrue())
-			Expect(resource.SetPinComment("release candidate")).To(Succeed())
-
-			response := requestResourceAPI(fixture, http.MethodGet, path, nil)
-			presented := decodeResourceAPIResponse[atc.Resource](response)
-			Expect(presented.PinnedVersion).To(Equal(version))
-			Expect(presented.PinnedInConfig).To(BeFalse())
-			Expect(presented.PinComment).To(Equal("release candidate"))
-		})
-
-		It("returns 404 for a resource absent from the persisted pipeline", func() {
-			response := requestResourceAPI(
-				fixture, http.MethodGet,
-				"/api/v1/teams/a-team/pipelines/a-pipeline/resources/missing", nil,
-			)
-			Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-		})
-
 		It("returns 500 when the production resource lookup connection is closed", func() {
 			fixture.overridePipeline(fixture.doomedPipeline())
 			response := requestResourceAPI(fixture, http.MethodGet, path, nil)
@@ -751,56 +607,10 @@ var _ = Describe("Resources API", func() {
 			fakeAccess.IsAuthorizedReturns(true)
 		})
 
-		It("unpins the persisted API pin", func() {
-			version := atc.Version{"ref": "pinned"}
-			fixture.scenario.Run(fixture.builder.WithResourceVersions("resource-name", version))
-			resource := fixture.scenario.Resource("resource-name")
-			pinned, err := resource.PinVersion(fixture.scenario.ResourceVersion("resource-name", version).ID())
-			Expect(err).NotTo(HaveOccurred())
-			Expect(pinned).To(BeTrue())
-
-			response := requestResourceAPI(fixture, http.MethodPut, unpinPath, nil)
-			Expect(response.StatusCode).To(Equal(http.StatusOK))
-			found, err := resource.Reload()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-			Expect(resource.APIPinnedVersion()).To(BeNil())
-		})
-
-		It("returns 500 when no persisted pin row can be removed", func() {
-			response := requestResourceAPI(fixture, http.MethodPut, unpinPath, nil)
-			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-		})
-
 		It("returns 500 when the production unpin resource lookup fails", func() {
 			fixture.overridePipeline(fixture.doomedPipeline())
 			response := requestResourceAPI(fixture, http.MethodPut, unpinPath, nil)
 			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
-		})
-
-		It("sets a comment on an existing persisted pin", func() {
-			version := atc.Version{"ref": "commented"}
-			fixture.scenario.Run(fixture.builder.WithResourceVersions("resource-name", version))
-			resource := fixture.scenario.Resource("resource-name")
-			pinned, err := resource.PinVersion(fixture.scenario.ResourceVersion("resource-name", version).ID())
-			Expect(err).NotTo(HaveOccurred())
-			Expect(pinned).To(BeTrue())
-
-			response := requestResourceAPI(
-				fixture, http.MethodPut, commentPath,
-				resourceAPIJSONBody(atc.SetPinCommentRequestBody{PinComment: "promote after soak"}),
-			)
-			Expect(response.StatusCode).To(Equal(http.StatusOK))
-			found, err := resource.Reload()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-			Expect(resource.APIPinnedVersion()).To(Equal(version))
-			Expect(resource.PinComment()).To(Equal("promote after soak"))
-		})
-
-		It("returns 400 for malformed pin-comment JSON", func() {
-			response := requestResourceAPI(fixture, http.MethodPut, commentPath, strings.NewReader("{"))
-			Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
 		})
 
 		It("returns 500 when a preloaded real resource loses its connection", func() {
@@ -857,54 +667,6 @@ var _ = Describe("Resources API", func() {
 			fakeAccess.IsAuthorizedReturns(true)
 		})
 
-		It("removes only the worker-cache association matching the requested version", func() {
-			fixture.scenario.Run(fixture.builder.WithResourceVersions(
-				"resource-name", atc.Version{"ref": "scope"},
-			))
-			resource := fixture.scenario.Resource("resource-name")
-			worker := fixture.scenario.Workers[0]
-			matchingVersion := atc.Version{"ref": "matching"}
-			matching := persistResourceCacheAssociation(fixture, worker, resource, matchingVersion, "matching-cache-volume")
-			decoy := persistResourceCacheAssociation(
-				fixture, worker, resource, atc.Version{"ref": "decoy"}, "decoy-cache-volume",
-			)
-			expectResourceCacheAssociationCount(fixture, matching, 1)
-			expectResourceCacheAssociationCount(fixture, decoy, 1)
-
-			response := requestResourceAPI(
-				fixture, http.MethodDelete, path,
-				resourceAPIJSONBody(atc.VersionDeleteBody{Version: matchingVersion}),
-			)
-			Expect(response.StatusCode).To(Equal(http.StatusOK))
-			Expect(response.Header.Get("Content-Type")).To(Equal("application/json"))
-			Expect(decodeResourceAPIResponse[atc.ClearResourceCacheResponse](response).CachesRemoved).To(Equal(int64(1)))
-			expectResourceCacheAssociationCount(fixture, matching, 0)
-			expectResourceCacheAssociationCount(fixture, decoy, 1)
-		})
-
-		It("removes every persisted worker-cache association when no version is supplied", func() {
-			fixture.scenario.Run(fixture.builder.WithResourceVersions(
-				"resource-name", atc.Version{"ref": "scope"},
-			))
-			resource := fixture.scenario.Resource("resource-name")
-			worker := fixture.scenario.Workers[0]
-			first := persistResourceCacheAssociation(
-				fixture, worker, resource, atc.Version{"ref": "first"}, "all-cache-volume-first",
-			)
-			second := persistResourceCacheAssociation(
-				fixture, worker, resource, atc.Version{"ref": "second"}, "all-cache-volume-second",
-			)
-			expectResourceCacheAssociationCount(fixture, first, 1)
-			expectResourceCacheAssociationCount(fixture, second, 1)
-
-			response := requestResourceAPI(fixture, http.MethodDelete, path, nil)
-			Expect(response.StatusCode).To(Equal(http.StatusOK))
-			Expect(response.Header.Get("Content-Type")).To(Equal("application/json"))
-			Expect(decodeResourceAPIResponse[atc.ClearResourceCacheResponse](response).CachesRemoved).To(Equal(int64(2)))
-			expectResourceCacheAssociationCount(fixture, first, 0)
-			expectResourceCacheAssociationCount(fixture, second, 0)
-		})
-
 		It("returns zero when no persisted worker cache matches", func() {
 			response := requestResourceAPI(fixture, http.MethodDelete, path, nil)
 			Expect(response.StatusCode).To(Equal(http.StatusOK))
@@ -934,11 +696,6 @@ var _ = Describe("Resources API", func() {
 			Expect(requestResourceAPI(fixture, http.MethodDelete, path, nil).StatusCode).To(Equal(http.StatusUnauthorized))
 		})
 
-		It("returns 400 for malformed JSON and 404 for an absent resource", func() {
-			Expect(requestResourceAPI(fixture, http.MethodDelete, path, strings.NewReader("{")).StatusCode).To(Equal(http.StatusBadRequest))
-			missing := "/api/v1/teams/a-team/pipelines/a-pipeline/resources/missing/cache"
-			Expect(requestResourceAPI(fixture, http.MethodDelete, missing, nil).StatusCode).To(Equal(http.StatusNotFound))
-		})
 	})
 
 	Describe("manual resource, resource-type, and prototype checks", func() {
