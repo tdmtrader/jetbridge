@@ -1,0 +1,55 @@
+{
+  "name": "db-team-factory-final-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/team_factory_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-team-factory-final-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_team_factory_final_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "team-create-preserves-auth",
+      "source_file": "atc/db/team_factory.go",
+      "old": "\tauth, err := json.Marshal(t.Auth)",
+      "new": "\tauth, err := json.Marshal(atc.TeamAuth{})",
+      "tests": [
+        "Team Factory CreateTeam creates the correct team",
+        "Team Factory FindTeam when the team exists finds the correct team",
+        "Team Factory GetTeams when there is one team returns the team",
+        "Team Factory GetTeams when there is more than one team returns both teams"
+      ],
+      "scenarios": [
+        "Creating a team preserves its exact name auth and identity",
+        "Finding an existing team preserves its exact name and auth",
+        "Listing one team returns its exact persisted name and auth",
+        "Listing two teams returns both in production name order"
+      ],
+      "failure_contains": "team factory observation"
+    },
+    {
+      "id": "find-missing-reports-not-found",
+      "source_file": "atc/db/team_factory.go",
+      "old": "\t\t\treturn nil, false, nil",
+      "new": "\t\t\treturn team, true, nil",
+      "tests": [
+        "Team Factory FindTeam when the team does not exist returns not found",
+        "Team Factory CreateDefaultTeamIfNotExists creates the default team"
+      ],
+      "scenarios": [
+        "Finding a missing team returns nil and not found",
+        "Creating the default team promotes the persisted team to admin"
+      ],
+      "failure_contains": "team factory observation"
+    },
+    {
+      "id": "default-team-does-not-duplicate-existing-row",
+      "source_file": "atc/db/team_factory.go",
+      "old": "\tif found {\n\t\treturn t, nil\n\t}",
+      "new": "\tif found {\n\t\treturn factory.createTeam(atc.Team{Name: t.Name()}, true)\n\t}",
+      "tests": ["Team Factory CreateDefaultTeamIfNotExists when the default team already exists does not duplicate the default team"],
+      "scenarios": ["Creating the default team twice reuses its identity"],
+      "failure_contains": "team factory observation"
+    }
+  ]
+}
