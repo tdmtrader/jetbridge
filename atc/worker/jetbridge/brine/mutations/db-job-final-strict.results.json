@@ -1,0 +1,149 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-job-final-strict.json",
+  "git_head": "b4babcf0e032dc210aa7ed2b57205a4d36528f69",
+  "completed_at": "2026-09-02T21:19:29Z",
+  "source_tests": 16,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/build.go": "9b329576f1999f210fc2f5a41d566ef96acb2e47c349db680d6b7fa0df305fdd",
+    "atc/db/job.go": "397afafef081c96aa2a2ee75d2f94788be0f3e4be8415c3f1e533c4cfd41ecda",
+    "atc/db/job_test.go": "46f68ce7ade789054dff98ecc43f63a7cb99023d11f704242b785d1cf775efe4",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/main.go": "f1077dbb582d4a3ad64725c5a79cbb19aacc73f43e16da24c8db9d42a94cca9f",
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/registry.go": "9268f5830472cb0aefd4936585d2c534437bd700e27b31f3cfc5edf312a694ca",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/db-job-final-strict.feature": "2eba2345fc7ba3a9dd6570fec763c1f0f37ef6af6eb096c1316f5b7e1321329e",
+    "atc/worker/jetbridge/brine/mutations/db-job-final-strict.json": "e5e909397066d2007c47fae5404d87d16c3e0b6e66101b48eb7941ba4ad2ac32",
+    "atc/worker/jetbridge/brine/steps/assert.go": "eac0b7b4dc864f54ffb5aab471451e3b62da518e5a8b10ba26e742d83298861f",
+    "atc/worker/jetbridge/brine/steps/db_job_final_strict.go": "5e6a1911b0edbe7ac1a68e183bb28c6bbe1933f7c541ac03756e77b30cfdc179",
+    "atc/worker/jetbridge/brine/steps/db_job_input_output_strict.go": "2b6ddbe9d5004cd801c429d06c3fbc8a6062802966bd6fa749ba0da02052e747",
+    "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
+    "atc/worker/jetbridge/brine/steps/registry.go": "29f64c9010b661d4e80342998b6063af5822fcecc3a8212d067b30064959b743",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e"
+  },
+  "mutation_cases": [
+    {
+      "id": "schedule-build-persists-scheduled-state",
+      "mutation_sha256": "84a9adc9181b872c4da4177f34dbdc1c52b5a52f63145705178ac86baec26258",
+      "failed_source_tests": [
+        "Job ScheduleBuild when the scheduling build is created first when the job config doesn't specify max in flight when build exists when the pipeline and job is not paused sets the build to scheduled"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB job behavior — \u003cprofile\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "schedule-build-honors-pipeline-pause",
+      "mutation_sha256": "491bd0d492b945b360053eab4472ba4da92c560ab59a6af7ecb19f06e8010b2b",
+      "failed_source_tests": [
+        "Job ScheduleBuild when the scheduling build is created first when the job config doesn't specify max in flight when build exists when the pipeline is paused returns false"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB job behavior — \u003cprofile\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "schedule-build-honors-job-pause",
+      "mutation_sha256": "15fb6f3a860b5dc170a1b4e54dbbf13aca62e9eda569538196148e6a59af1a08",
+      "failed_source_tests": [
+        "Job ScheduleBuild when the scheduling build is created first when the job config doesn't specify max in flight when build exists when the job is paused returns false"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB job behavior — \u003cprofile\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "schedule-build-rejects-missing-build",
+      "mutation_sha256": "2ee9d64d215342d8850b6620ee8557c498ae3873f94aa68856d70c4e6cbcca4c",
+      "failed_source_tests": [
+        "Job ScheduleBuild when the scheduling build is created first when the job config doesn't specify max in flight when the build does not exist returns false"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB job behavior — \u003cprofile\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "pending-builds-are-job-scoped",
+      "mutation_sha256": "5872a7c1d0ea945fbabec57d5fac3f004bce42116d4152111e7d7c9a9747f7bb",
+      "failed_source_tests": [
+        "Job a build is created for a job and another build for a different pipeline is created with the same job name does not change the next pending build for job"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB job behavior — \u003cprofile\u003e (row 10)"
+      ]
+    },
+    {
+      "id": "scheduled-builds-remain-pending",
+      "mutation_sha256": "3f5926c77813faef821dfd0106b4aede1577afc0bb4fd04688a58745f9368058",
+      "failed_source_tests": [
+        "Job a build is created for a job when scheduled remains the next pending build for job"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB job behavior — \u003cprofile\u003e (row 11)"
+      ]
+    },
+    {
+      "id": "pending-builds-preserve-rerun-order",
+      "mutation_sha256": "f700eadb29fa53413b2d366915d262035958189a5d5be3fef968d979b03110d3",
+      "failed_source_tests": [
+        "Job a build is created for a job and another is created for the same job the first build remains the next pending build",
+        "Job a build is created for a job when there are multiple reruns for multiple pending builds orders the builds with ascending reruns following original builds",
+        "Job a build is created for a job when there is a rerun build created for an old build orders the builds with regular build first and then rerun of old build",
+        "Job a build is created for a job when there is a rerun build created for the newest build orders the builds with rerun of new build"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB job behavior — \u003cprofile\u003e (row 12)",
+        "Remaining DB job behavior — \u003cprofile\u003e (row 13)",
+        "Remaining DB job behavior — \u003cprofile\u003e (row 14)",
+        "Remaining DB job behavior — \u003cprofile\u003e (row 15)"
+      ]
+    },
+    {
+      "id": "start-persists-current-schema",
+      "mutation_sha256": "4cf02d07ae008673a45b6ca29b923287d0bb3bbdab3430b3ef2fd693a718cf7e",
+      "failed_source_tests": [
+        "Job a build is created for a job when started saves the updated status, and the schema and private plan"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB job behavior — \u003cprofile\u003e (row 16)"
+      ]
+    },
+    {
+      "id": "start-persists-current-time",
+      "mutation_sha256": "b64005862386dc897b403d5dbd8d63a3990b3632f8e047af5883969cdd2a09bb",
+      "failed_source_tests": [
+        "Job a build is created for a job when started saves the build's start time"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB job behavior — \u003cprofile\u003e (row 17)"
+      ]
+    },
+    {
+      "id": "finish-persists-status-and-time",
+      "mutation_sha256": "2c1ce8bd28a877e93cc2349191112ff3c921905891c3ace295f0f64d889c4bcd",
+      "failed_source_tests": [
+        "Job a build is created for a job when the build finishes sets the build's status and end time"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB job behavior — \u003cprofile\u003e (row 18)"
+      ]
+    },
+    {
+      "id": "clear-task-cache-honors-job-and-step",
+      "mutation_sha256": "b69167f4a53ffee4c4763bc3ab268ce42d2bba1ab0ce08dabcc90b3b7a721af1",
+      "failed_source_tests": [
+        "Job Clear task cache when task cache exists when a path is not provided when a non-existent step-name is provided does not delete any rows from the task_caches table",
+        "Job Clear task cache when task cache exists when a path is not provided when a non-existent step-name is provided should not delete any task steps",
+        "Job Clear task cache when task cache exists when a path is not provided when an existing step-name is provided doesn't remove other jobs caches"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB job behavior — \u003cprofile\u003e (row 20)",
+        "Remaining DB job behavior — \u003cprofile\u003e (row 21)",
+        "Remaining DB job behavior — \u003cprofile\u003e (row 22)"
+      ]
+    }
+  ]
+}
