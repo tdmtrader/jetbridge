@@ -1,0 +1,39 @@
+{
+  "name": "named-variables-strict",
+  "test_package": "./vars",
+  "source_test_file": "vars/named_vars_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/named-variables-strict.feature",
+  "step_files": ["atc/worker/jetbridge/brine/steps/variable_sources_strict.go"],
+  "cases": [
+    {
+      "id": "unqualified-lookups-are-not-rejected",
+      "source_file": "vars/named_vars.go",
+      "old": "\tif ref.Source == \"\" {\n\t\treturn nil, false, nil\n\t}\n\n",
+      "new": "",
+      "tests": [
+        "NamedVariables Get return no value and not found if there are no sources",
+        "NamedVariables Get return no value and not found if var source name is not specified"
+      ],
+      "scenarios": [
+        "Named variable profile <profile> (row 1)",
+        "Named variable profile <profile> (row 3)"
+      ]
+    },
+    {
+      "id": "missing-source-error-is-suppressed",
+      "source_file": "vars/named_vars.go",
+      "old": "\treturn nil, false, MissingSourceError{Name: ref.String(), Source: ref.Source}",
+      "new": "\treturn nil, false, nil",
+      "tests": ["NamedVariables Get return no value, not found and an error if var source name doesn't exist"],
+      "scenarios": ["Named variable profile <profile> (row 2)"]
+    },
+    {
+      "id": "list-drops-qualified-references",
+      "source_file": "vars/named_vars.go",
+      "old": "\t\tallRefs = append(allRefs, refs...)",
+      "new": "\t\t_ = refs",
+      "tests": ["NamedVariables List returns list of names from multiple vars with duplicates"],
+      "scenarios": ["Named variable profile <profile> (row 4)"]
+    }
+  ]
+}
