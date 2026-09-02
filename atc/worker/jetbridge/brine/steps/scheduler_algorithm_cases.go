@@ -1,13 +1,8 @@
-package algorithm_test
+package steps
 
-import (
-	. "github.com/onsi/ginkgo/v2"
-)
+var schedulerAlgorithmExamples = map[string]Example{
 
-var _ = DescribeTable("Input resolving",
-	(Example).Run,
-
-	Entry("can fan-in", Example{
+	"can fan-in": {
 		DB: DB{
 			BuildOutputs: []DBRow{
 				// pass a and b
@@ -34,9 +29,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv1",
 			},
 		},
-	}),
+	},
 
-	Entry("propagates resources together", Example{
+	"propagates resources together": {
 		DB: DB{
 			BuildOutputs: []DBRow{
 				{Job: "simple-a", BuildID: 1, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -56,9 +51,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-y": "ryv1",
 			},
 		},
-	}),
+	},
 
-	Entry("correlates inputs by build, allowing resources to skip jobs", Example{
+	"correlates inputs by build, allowing resources to skip jobs": {
 		DB: DB{
 			BuildOutputs: []DBRow{
 				{Job: "simple-a", BuildID: 1, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -85,9 +80,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-y": "ryv1",
 			},
 		},
-	}),
+	},
 
-	Entry("resolve a resource when it has versions", Example{
+	"resolve a resource when it has versions": {
 		DB: DB{
 			Resources: []DBRow{
 				{Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -108,9 +103,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv1",
 			},
 		},
-	}),
+	},
 
-	Entry("does not resolve a resource when it does not have any versions", Example{
+	"does not resolve a resource when it does not have any versions": {
 		Inputs: Inputs{
 			{
 				Name:     "resource-x",
@@ -123,9 +118,9 @@ var _ = DescribeTable("Input resolving",
 			OK:     false,
 			Errors: map[string]string{"resource-x": "pinned version ver:rxv2 not found"},
 		},
-	}),
+	},
 
-	Entry("finds only versions that passed through together", Example{
+	"finds only versions that passed through together": {
 		DB: DB{
 			BuildOutputs: []DBRow{
 				{Job: "simple-a", BuildID: 1, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -165,9 +160,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-y": []int{3, 4},
 			},
 		},
-	}),
+	},
 
-	Entry("can collect distinct versions of resources without correlating by job", Example{
+	"can collect distinct versions of resources without correlating by job": {
 		DB: DB{
 			BuildOutputs: []DBRow{
 				{Job: "simple-a", BuildID: 1, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -188,9 +183,9 @@ var _ = DescribeTable("Input resolving",
 				"simple-b-resource-x": "rxv2",
 			},
 		},
-	}),
+	},
 
-	Entry("resolves passed constraints with common jobs", Example{
+	"resolves passed constraints with common jobs": {
 		DB: DB{
 			BuildOutputs: []DBRow{
 				{Job: "shared-job", BuildID: 1, Resource: "resource-1", Version: "r1-common-to-shared-and-j1", CheckOrder: 1},
@@ -220,9 +215,9 @@ var _ = DescribeTable("Input resolving",
 				"input-2": "r2-common-to-shared-and-j2",
 			},
 		},
-	}),
+	},
 
-	Entry("resolves passed constraints with common jobs, skipping versions that are not common to builds of all jobs", Example{
+	"resolves passed constraints with common jobs, skipping versions that are not common to builds of all jobs": {
 		DB: DB{
 			BuildOutputs: []DBRow{
 				{Job: "shared-job", BuildID: 1, Resource: "resource-1", Version: "r1-common-to-shared-and-j1", CheckOrder: 1},
@@ -256,9 +251,9 @@ var _ = DescribeTable("Input resolving",
 				"input-2": "r2-common-to-shared-and-j2",
 			},
 		},
-	}),
+	},
 
-	Entry("finds the latest version for inputs with no passed constraints", Example{
+	"finds the latest version for inputs with no passed constraints": {
 		DB: DB{
 			BuildOutputs: []DBRow{
 				// build outputs
@@ -307,9 +302,9 @@ var _ = DescribeTable("Input resolving",
 			},
 			// IC: map[string]bool{},
 		},
-	}),
+	},
 
-	Entry("finds the non-disabled latest version for inputs with no passed constraints", Example{
+	"finds the non-disabled latest version for inputs with no passed constraints": {
 		DB: DB{
 			Resources: []DBRow{
 				{Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -333,9 +328,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv4",
 			},
 		},
-	}),
+	},
 
-	Entry("returns a missing input reason when no input version satisfies the passed constraint", Example{
+	"returns a missing input reason when no input version satisfies the passed constraint": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 1, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -374,9 +369,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-y": "no satisfiable builds from passed jobs found for set of inputs",
 			},
 		},
-	}),
+	},
 
-	Entry("finds next version for inputs that use every version when there is a build for that resource", Example{
+	"finds next version for inputs that use every version when there is a build for that resource": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 4, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -404,9 +399,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv2",
 			},
 		},
-	}),
+	},
 
-	Entry("finds next non-disabled version for inputs that use every version when there is a build for that resource", Example{
+	"finds next non-disabled version for inputs that use every version when there is a build for that resource": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 4, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -434,9 +429,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv3",
 			},
 		},
-	}),
+	},
 
-	Entry("finds current non-disabled version if all later versions are disabled for inputs that use every version when there is a build for that resource", Example{
+	"finds current non-disabled version if all later versions are disabled for inputs that use every version when there is a build for that resource": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 4, Resource: "resource-x", Version: "rxv3", CheckOrder: 3},
@@ -464,9 +459,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv3",
 			},
 		},
-	}),
+	},
 
-	Entry("finds last non-disabled version if all later and current versions are disabled for inputs that use every version when there is a build for that resource", Example{
+	"finds last non-disabled version if all later and current versions are disabled for inputs that use every version when there is a build for that resource": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 4, Resource: "resource-x", Version: "rxv3", CheckOrder: 3},
@@ -494,9 +489,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv2",
 			},
 		},
-	}),
+	},
 
-	Entry("finds last enabled version for inputs that use every version when there is no builds for that resource", Example{
+	"finds last enabled version for inputs that use every version when there is no builds for that resource": {
 		DB: DB{
 			Resources: []DBRow{
 				{Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -535,9 +530,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-z": "rzv1",
 			},
 		},
-	}),
+	},
 
-	Entry("finds last version for inputs that use every version when there is no builds for that resource", Example{
+	"finds last version for inputs that use every version when there is no builds for that resource": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 4, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -574,9 +569,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-y": "ryv3",
 			},
 		},
-	}),
+	},
 
-	Entry("finds next version that passed constraints for inputs that use every version", Example{
+	"finds next version that passed constraints for inputs that use every version": {
 		DB: DB{
 			BuildOutputs: []DBRow{
 				{Job: "simple-a", BuildID: 1, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -606,9 +601,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv3",
 			},
 		},
-	}),
+	},
 
-	Entry("returns the first common version when the current job has no builds and there are multiple passed constraints with version every", Example{
+	"returns the first common version when the current job has no builds and there are multiple passed constraints with version every": {
 		DB: DB{
 			BuildOutputs: []DBRow{
 				{Job: "simple-a", BuildID: 1, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -639,9 +634,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv1",
 			},
 		},
-	}),
+	},
 
-	Entry("does not find candidates when the current job has no builds, there are multiple passed constraints with version every, and a passed job has no builds", Example{
+	"does not find candidates when the current job has no builds, there are multiple passed constraints with version every, and a passed job has no builds": {
 		DB: DB{
 			BuildOutputs: []DBRow{
 				{Job: "simple-a", BuildID: 1, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -670,9 +665,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "no satisfiable builds from passed jobs found for set of inputs",
 			},
 		},
-	}),
+	},
 
-	Entry("returns the next version when there is a passed constraint with version every", Example{
+	"returns the next version when there is a passed constraint with version every": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 1, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -710,9 +705,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv2",
 			},
 		},
-	}),
+	},
 
-	Entry("returns current version if there is no version after it that satisifies constraints", Example{
+	"returns current version if there is no version after it that satisifies constraints": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 1, Resource: "resource-x", Version: "rxv2", CheckOrder: 1},
@@ -748,9 +743,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv2",
 			},
 		},
-	}),
+	},
 
-	Entry("returns the common version when there are multiple passed constraints with version every", Example{
+	"returns the common version when there are multiple passed constraints with version every": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 1, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -791,9 +786,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv1",
 			},
 		},
-	}),
+	},
 
-	Entry("returns the first version that satisfies constraints when using every version", Example{
+	"returns the first version that satisfies constraints when using every version": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 1, Resource: "resource-x", Version: "rxv2", CheckOrder: 3},
@@ -846,9 +841,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-y": "ryv1",
 			},
 		},
-	}),
+	},
 
-	Entry("does not find candidates when there are multiple passed constraints with version every, and one passed job has no builds", Example{
+	"does not find candidates when there are multiple passed constraints with version every, and one passed job has no builds": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 1, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -886,9 +881,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "no satisfiable builds from passed jobs found for set of inputs",
 			},
 		},
-	}),
+	},
 
-	Entry("returns the latest enabled version when the current job has no builds, and there is a passed constraint with version every", Example{
+	"returns the latest enabled version when the current job has no builds, and there is a passed constraint with version every": {
 		DB: DB{
 			BuildOutputs: []DBRow{
 				{Job: "simple-a", BuildID: 1, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -918,9 +913,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv2",
 			},
 		},
-	}),
+	},
 
-	Entry("returns the current enabled version when there is a passed constraint with version every, and all later verisons are disabled", Example{
+	"returns the current enabled version when there is a passed constraint with version every, and all later verisons are disabled": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 1, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -958,9 +953,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv1",
 			},
 		},
-	}),
+	},
 
-	Entry("returns the latest set of versions that satisfy all passed constraint with version every, and the current job has no builds", Example{
+	"returns the latest set of versions that satisfy all passed constraint with version every, and the current job has no builds": {
 		DB: DB{
 			BuildOutputs: []DBRow{
 				{Job: "simple-a", BuildID: 1, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -1010,9 +1005,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-y": "ryv2",
 			},
 		},
-	}),
+	},
 
-	Entry("returns the latest enabled set of versions that satisfy all passed constraint with version every, and the current job has no builds", Example{
+	"returns the latest enabled set of versions that satisfy all passed constraint with version every, and the current job has no builds": {
 		DB: DB{
 			BuildOutputs: []DBRow{
 				{Job: "simple-a", BuildID: 1, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -1059,9 +1054,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-y": "ryv1",
 			},
 		},
-	}),
+	},
 
-	Entry("returns latest build outputs for the passed job that has not run with the current job when using every version", Example{
+	"returns latest build outputs for the passed job that has not run with the current job when using every version": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 100, Resource: "resource-x", Version: "rxv1", CheckOrder: 1}, // resource-y does not have build already
@@ -1133,9 +1128,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-y": "ryv4",
 			},
 		},
-	}),
+	},
 
-	Entry("finds next version that satisfies common constraints when using every version", Example{
+	"finds next version that satisfies common constraints when using every version": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 100, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -1196,9 +1191,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-y": "ryv1",
 			},
 		},
-	}),
+	},
 
-	Entry("returns the only set of versions that satisfy constraints when the set is one that has already run", Example{
+	"returns the only set of versions that satisfy constraints when the set is one that has already run": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 100, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -1269,9 +1264,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-y": []int{5, 9},
 			},
 		},
-	}),
+	},
 
-	Entry("returns the next set of versions that satisfy constraints when using every version", Example{
+	"returns the next set of versions that satisfy constraints when using every version": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 100, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -1343,9 +1338,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-y": "ryv2",
 			},
 		},
-	}),
+	},
 
-	Entry("returns earliest set of versions that satisfy the multiple passed constraints with version every when the current job latest build has un-ordered versions independent of the ordering (build ids ordered lowest to highest starting with shared-job)", Example{
+	"returns earliest set of versions that satisfy the multiple passed constraints with version every when the current job latest build has un-ordered versions independent of the ordering (build ids ordered lowest to highest starting with shared-job)": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 10, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -1407,9 +1402,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-y": "ryv2",
 			},
 		},
-	}),
+	},
 
-	Entry("returns earliest set of versions that satisfy the multiple passed constraints with version every when the current job latest build has un-ordered versions independent of the ordering (build ids ordered lowest to highest starting with simple-a)", Example{
+	"returns earliest set of versions that satisfy the multiple passed constraints with version every when the current job latest build has un-ordered versions independent of the ordering (build ids ordered lowest to highest starting with simple-a)": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 1, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -1471,9 +1466,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-y": "ryv2",
 			},
 		},
-	}),
+	},
 
-	Entry("returns earliest set of versions that satisfy the multiple passed constraints with version every when one of the passed jobs skipped a version", Example{
+	"returns earliest set of versions that satisfy the multiple passed constraints with version every when one of the passed jobs skipped a version": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 1, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -1534,9 +1529,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-y": "ryv3",
 			},
 		},
-	}),
+	},
 
-	Entry("returns the current set of versions that satisfy the multiple passed constraints with version every when one of the passed job has no newer versions", Example{
+	"returns the current set of versions that satisfy the multiple passed constraints with version every when one of the passed job has no newer versions": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 1, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -1596,9 +1591,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-y": "ryv1",
 			},
 		},
-	}),
+	},
 
-	Entry("returns an older set of versions that satisfy the multiple passed constraints with version every when the passed job versions are older than the current set", Example{
+	"returns an older set of versions that satisfy the multiple passed constraints with version every when the passed job versions are older than the current set": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 1, Resource: "resource-x", Version: "rxv2", CheckOrder: 1},
@@ -1656,9 +1651,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-y": "ryv1",
 			},
 		},
-	}),
+	},
 
-	Entry("returns the earliest non-disabled version that satisfies constraints when several versions do not satisfy when using every version", Example{
+	"returns the earliest non-disabled version that satisfies constraints when several versions do not satisfy when using every version": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 100, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -1730,9 +1725,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-y": "ryv3",
 			},
 		},
-	}),
+	},
 
-	Entry("when a passed constraint is added to a job that has already run before, it finds the latest", Example{
+	"when a passed constraint is added to a job that has already run before, it finds the latest": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 1, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -1766,9 +1761,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv3",
 			},
 		},
-	}),
+	},
 
-	Entry("returns a missing input reason when no input version satisfies the shared passed constraints", Example{
+	"returns a missing input reason when no input version satisfies the shared passed constraints": {
 		DB: DB{
 			BuildOutputs: []DBRow{
 				{Job: "shared-job", BuildID: 1, Resource: "resource-1", Version: "r1-common-to-shared-and-j1", CheckOrder: 1},
@@ -1805,9 +1800,9 @@ var _ = DescribeTable("Input resolving",
 				"input-2": "no satisfiable builds from passed jobs found for set of inputs",
 			},
 		},
-	}),
+	},
 
-	Entry("resolves to the pinned version when it exists", Example{
+	"resolves to the pinned version when it exists": {
 		DB: DB{
 			Resources: []DBRow{
 				{Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -1831,9 +1826,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv2",
 			},
 		},
-	}),
+	},
 
-	Entry("does not resolve a version when the pinned version is not in Versions DB (version is disabled or no builds succeeded)", Example{
+	"does not resolve a version when the pinned version is not in Versions DB (version is disabled or no builds succeeded)": {
 		DB: DB{
 			Resources: []DBRow{
 				{Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -1855,9 +1850,9 @@ var _ = DescribeTable("Input resolving",
 			OK:     false,
 			Errors: map[string]string{"resource-x": "pinned version ver:rxv2 not found"},
 		},
-	}),
+	},
 
-	Entry("resolves the version that is pinned with passed", Example{
+	"resolves the version that is pinned with passed": {
 		DB: DB{
 			BuildOutputs: []DBRow{
 				{Job: "some-job", BuildID: 1, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -1889,9 +1884,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv2",
 			},
 		},
-	}),
+	},
 
-	Entry("does not resolve a version when the pinned version has not passed the constraint", Example{
+	"does not resolve a version when the pinned version has not passed the constraint": {
 		DB: DB{
 			BuildOutputs: []DBRow{
 				{Job: "some-job", BuildID: 1, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -1920,9 +1915,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "no satisfiable builds from passed jobs found for set of inputs",
 			},
 		},
-	}),
+	},
 
-	Entry("uses the build that includes the pinned with passed while there are multiple inputs", Example{
+	"uses the build that includes the pinned with passed while there are multiple inputs": {
 		DB: DB{
 			BuildOutputs: []DBRow{
 				{Job: "shared-job", BuildID: 1, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -1973,9 +1968,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-y": "ryv1",
 			},
 		},
-	}),
+	},
 
-	Entry("check orders take precedence over version ID", Example{
+	"check orders take precedence over version ID": {
 		DB: DB{
 			Resources: []DBRow{
 				{Resource: "resource-x", Version: "rxv2", CheckOrder: 2},
@@ -1993,9 +1988,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv2",
 			},
 		},
-	}),
+	},
 
-	Entry("waiting on upstream job for shared version (ryv3)", Example{
+	"waiting on upstream job for shared version (ryv3)": {
 		DB: DB{
 			BuildOutputs: []DBRow{
 				{Job: "shared-job", BuildID: 1, Resource: "resource-x", Version: "rxv3", CheckOrder: 1},
@@ -2036,9 +2031,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-y": "no satisfiable builds from passed jobs found for set of inputs",
 			},
 		},
-	}),
+	},
 
-	Entry("reconfigure passed constraints for job with missing upstream dependency (simple-c)", Example{
+	"reconfigure passed constraints for job with missing upstream dependency (simple-c)": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 100, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -2133,9 +2128,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-w": "no satisfiable builds from passed jobs found for set of inputs",
 			},
 		},
-	}),
+	},
 
-	Entry("finds a suitable candidate for any inputs resolved before an unresolveable candidates", Example{
+	"finds a suitable candidate for any inputs resolved before an unresolveable candidates": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 100, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -2264,9 +2259,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-b": "no satisfiable builds from passed jobs found for set of inputs",
 			},
 		},
-	}),
+	},
 
-	Entry("uses partially resolved candidates when there is an error with no passed", Example{
+	"uses partially resolved candidates when there is an error with no passed": {
 		DB: DB{
 			Resources: []DBRow{
 				{Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -2293,9 +2288,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-y": "version of resource not found",
 			},
 		},
-	}),
+	},
 
-	Entry("finds the next every version scoped to a resource", Example{
+	"finds the next every version scoped to a resource": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 1, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -2323,9 +2318,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv1",
 			},
 		},
-	}),
+	},
 
-	Entry("finds successful candidates when there are multiple outputs from passed constraints that are identical", Example{
+	"finds successful candidates when there are multiple outputs from passed constraints that are identical": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 100, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -2370,9 +2365,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv1",
 			},
 		},
-	}),
+	},
 
-	Entry("only uses the first build output/input to set a version candidate and disregards the other (it should use the output version first)", Example{
+	"only uses the first build output/input to set a version candidate and disregards the other (it should use the output version first)": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: "simple-a", BuildID: 1, Resource: "version", Version: "5.5.6-rc.23", CheckOrder: 1},
@@ -2498,9 +2493,9 @@ var _ = DescribeTable("Input resolving",
 
 		// run this test enough times to shake out any non-deterministic ordering issues
 		Iterations: 100,
-	}),
+	},
 
-	Entry("with every and passed, with one rerun build, new versions are passed to downstream", Example{
+	"with every and passed, with one rerun build, new versions are passed to downstream": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 100, Resource: "resource-x", Version: "rxv4", CheckOrder: 4},
@@ -2543,9 +2538,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv5",
 			},
 		},
-	}),
+	},
 
-	Entry("with every and passed, it does not use retrigger builds as latest build", Example{
+	"with every and passed, it does not use retrigger builds as latest build": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 100, Resource: "resource-x", Version: "rxv4", CheckOrder: 4},
@@ -2586,9 +2581,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv4",
 			},
 		},
-	}),
+	},
 
-	Entry("with every and passed, it does not use retrigger builds as latest build when there are multiple passed jobs", Example{
+	"with every and passed, it does not use retrigger builds as latest build when there are multiple passed jobs": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 100, Resource: "resource-x", Version: "rxv4", CheckOrder: 4},
@@ -2636,9 +2631,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv4",
 			},
 		},
-	}),
+	},
 
-	Entry("with passed constraints, it does not use the retrigger build as latest build", Example{
+	"with passed constraints, it does not use the retrigger build as latest build": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 100, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -2678,9 +2673,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv4",
 			},
 		},
-	}),
+	},
 
-	Entry("with multiple passed constraints, it does not use retrigger builds as latest build when there are multiple passed jobs", Example{
+	"with multiple passed constraints, it does not use retrigger builds as latest build when there are multiple passed jobs": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 100, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -2727,9 +2722,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv4",
 			},
 		},
-	}),
+	},
 
-	Entry("with a build that has a disabled input of the same resource, still uses the other inputs to resolve", Example{
+	"with a build that has a disabled input of the same resource, still uses the other inputs to resolve": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 100, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -2765,9 +2760,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv2",
 			},
 		},
-	}),
+	},
 
-	Entry("with version every and passed and unused builds, has next is true", Example{
+	"with version every and passed and unused builds, has next is true": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 100, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -2806,9 +2801,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv2",
 			},
 		},
-	}),
+	},
 
-	Entry("with version every and passed and no unused builds, has next is false", Example{
+	"with version every and passed and no unused builds, has next is false": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 100, Resource: "resource-x", Version: "rxv3", CheckOrder: 3},
@@ -2847,9 +2842,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv3",
 			},
 		},
-	}),
+	},
 
-	Entry("with version every and passed and the unused builds is not satisfiable, has next is false", Example{
+	"with version every and passed and the unused builds is not satisfiable, has next is false": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 100, Resource: "resource-x", Version: "rxv2", CheckOrder: 2},
@@ -2888,9 +2883,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv2",
 			},
 		},
-	}),
+	},
 
-	Entry("with version every and passed and multiple jobs with one that has unused builds, has next is true", Example{
+	"with version every and passed and multiple jobs with one that has unused builds, has next is true": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 100, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -2949,9 +2944,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-y": "ryv2",
 			},
 		},
-	}),
+	},
 
-	Entry("with version every and unused versions, has next is true", Example{
+	"with version every and unused versions, has next is true": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 100, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -2979,9 +2974,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv2",
 			},
 		},
-	}),
+	},
 
-	Entry("with version every and no unused versions, has next is false", Example{
+	"with version every and no unused versions, has next is false": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 100, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -3008,9 +3003,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv2",
 			},
 		},
-	}),
+	},
 
-	Entry("with version every but has never used the version before, has next is false", Example{
+	"with version every but has never used the version before, has next is false": {
 		DB: DB{
 			Resources: []DBRow{
 				{Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -3033,9 +3028,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv2",
 			},
 		},
-	}),
+	},
 
-	Entry("with both version every and version every with passed inputs, the has next value is recognized", Example{
+	"with both version every and version every with passed inputs, the has next value is recognized": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 100, Resource: "resource-y", Version: "ryv1", CheckOrder: 1},
@@ -3081,9 +3076,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-y": "ryv2",
 			},
 		},
-	}),
+	},
 
-	Entry("when the resource does not have it's resource config scope set, it should error", Example{
+	"when the resource does not have it's resource config scope set, it should error": {
 		DB: DB{
 			Resources: []DBRow{
 				{Resource: "resource-x", Version: "rxv1", CheckOrder: 1, NoResourceConfigScope: true},
@@ -3103,9 +3098,9 @@ var _ = DescribeTable("Input resolving",
 			HasNext: false,
 			Errors:  map[string]string{"resource-x": "latest version of resource not found"},
 		},
-	}),
+	},
 
-	Entry("with version every and passed using an old version, it finds latest version ran by job", Example{
+	"with version every and passed using an old version, it finds latest version ran by job": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 100, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -3150,9 +3145,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv3",
 			},
 		},
-	}),
+	},
 
-	Entry("with version every without passed using an old version, it finds latest version ran by job", Example{
+	"with version every without passed using an old version, it finds latest version ran by job": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 100, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -3183,9 +3178,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv3",
 			},
 		},
-	}),
+	},
 
-	Entry("if another job uses the same resource, that does not affect the next version found for the current job", Example{
+	"if another job uses the same resource, that does not affect the next version found for the current job": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: CurrentJobName, BuildID: 100, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -3219,9 +3214,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv3",
 			},
 		},
-	}),
+	},
 
-	Entry("if the chosen version for an input with passed constraints does not exist, it will not select that version", Example{
+	"if the chosen version for an input with passed constraints does not exist, it will not select that version": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: "another-job", BuildID: 100, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -3246,9 +3241,9 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": "rxv1",
 			},
 		},
-	}),
+	},
 
-	Entry("if there are multiple inputs with the same passed constraint job and the chosen version from a build does not exist, it will not use that build", Example{
+	"if there are multiple inputs with the same passed constraint job and the chosen version from a build does not exist, it will not use that build": {
 		DB: DB{
 			BuildInputs: []DBRow{
 				{Job: "another-job", BuildID: 100, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
@@ -3285,13 +3280,13 @@ var _ = DescribeTable("Input resolving",
 				"resource-y": "ryv1",
 			},
 		},
-	}),
+	},
 
 	// PC-02: Deterministic job ordering — verifies that passed jobs are iterated
 	// in sorted numerical order, producing deterministic PassedBuildIDs regardless
 	// of map iteration order. With three passed jobs (simple-a, simple-b, simple-c),
 	// the resolver must iterate them in job ID order to produce consistent results.
-	Entry("resolves passed constraints deterministically across multiple jobs", Example{
+	"resolves passed constraints deterministically across multiple jobs": {
 		DB: DB{
 			BuildOutputs: []DBRow{
 				// All three jobs output the same version in the same build
@@ -3320,14 +3315,14 @@ var _ = DescribeTable("Input resolving",
 				"resource-x": []int{1, 2, 3},
 			},
 		},
-	}),
+	},
 
 	// PC-08: Doom detection — when recursive resolution repeatedly fails with the
 	// same candidate set, the doom mechanism prevents infinite loops. This scenario
 	// creates a situation where the group resolver finds candidates that satisfy
 	// one input but fail recursive resolution for another, then encounters the same
 	// candidates again (triggering candidatesAreDoomed).
-	Entry("doom detection prevents infinite recursion on unsatisfiable passed constraints", Example{
+	"doom detection prevents infinite recursion on unsatisfiable passed constraints": {
 		DB: DB{
 			BuildOutputs: []DBRow{
 				// job-a produces resource-x v1 and resource-y v1 in build 1
@@ -3360,5 +3355,5 @@ var _ = DescribeTable("Input resolving",
 				"resource-y": "no satisfiable builds from passed jobs found for set of inputs",
 			},
 		},
-	}),
-)
+	},
+}

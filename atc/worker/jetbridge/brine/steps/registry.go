@@ -131,6 +131,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, UsersAPIDefinitions()...)
 	defs = append(defs, CLIAPIDefinitions()...)
 	defs = append(defs, SmallClientDefinitions()...)
+	defs = append(defs, SchedulerAlgorithmStrictDefinitions()...)
 	return defs
 }
 
