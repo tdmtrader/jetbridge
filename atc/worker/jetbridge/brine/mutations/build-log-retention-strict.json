@@ -1,0 +1,51 @@
+{
+  "name": "build-log-retention-strict",
+  "test_package": "./atc/gc",
+  "source_test_file": "atc/gc/build_log_retention_calculator_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/build-log-retention-strict.feature",
+  "step_files": ["atc/worker/jetbridge/brine/steps/build_log_retention_strict.go"],
+  "cases": [
+    {
+      "id": "unbounded-policy-increments-build-retention",
+      "source_file": "atc/gc/build_log_retention_calculator.go",
+      "old": "\t\tlogRetention.Builds = buildLogsToRetain\n\t\tlogRetention.MinimumSucceededBuilds = minSuccessBuildLogsToRetain",
+      "new": "\t\tlogRetention.Builds = buildLogsToRetain + 1\n\t\tlogRetention.MinimumSucceededBuilds = minSuccessBuildLogsToRetain",
+      "tests": [
+        "BuildLogRetentionCalculator nothing set returns zeros",
+        "BuildLogRetentionCalculator no default or max set, returns job values",
+        "BuildLogRetentionCalculator default set gives default",
+        "BuildLogRetentionCalculator default and job set gives job"
+      ],
+      "scenarios": [
+        "Build log retention profile <profile> (row 1)",
+        "Build log retention profile <profile> (row 2)",
+        "Build log retention profile <profile> (row 3)",
+        "Build log retention profile <profile> (row 4)"
+      ]
+    },
+    {
+      "id": "bounded-policy-discards-calculated-retention",
+      "source_file": "atc/gc/build_log_retention_calculator.go",
+      "old": "\treturn logRetention\n\n}",
+      "new": "\treturn atc.BuildLogRetention{}\n\n}",
+      "tests": [
+        "BuildLogRetentionCalculator default, max, and job set, gives max if lower",
+        "BuildLogRetentionCalculator max only set gives max",
+        "BuildLogRetentionCalculator mix of count and days with max",
+        "BuildLogRetentionCalculator min success builds equals to builds",
+        "BuildLogRetentionCalculator min success builds greater than builds",
+        "BuildLogRetentionCalculator when only max builds is set and job build and days are set",
+        "BuildLogRetentionCalculator when only max days is set and job build and days are set"
+      ],
+      "scenarios": [
+        "Build log retention profile <profile> (row 5)",
+        "Build log retention profile <profile> (row 6)",
+        "Build log retention profile <profile> (row 7)",
+        "Build log retention profile <profile> (row 8)",
+        "Build log retention profile <profile> (row 9)",
+        "Build log retention profile <profile> (row 10)",
+        "Build log retention profile <profile> (row 11)"
+      ]
+    }
+  ]
+}
