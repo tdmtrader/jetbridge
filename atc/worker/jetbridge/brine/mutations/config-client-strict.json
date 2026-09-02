@@ -1,0 +1,66 @@
+{
+  "name": "config-client-strict",
+  "test_package": "./go-concourse/concourse",
+  "source_test_file": "go-concourse/concourse/configs_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/config-client.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/config_client.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "pipeline-config-returns-decoded-config",
+      "source_file": "go-concourse/concourse/configs.go",
+      "old": "\tcase nil:\n\t\treturn configResponse.Config,\n\t\t\tresponseHeaders.Get(atc.ConfigVersionHeader),",
+      "new": "\tcase nil:\n\t\treturn atc.Config{},\n\t\t\tresponseHeaders.Get(atc.ConfigVersionHeader),",
+      "tests": [
+        "ATC Handler Configs PipelineConfig ATC returns the correct response when it exists returns the given config and version for that pipeline",
+        "ATC Handler Configs PipelineConfig ATC returns the correct response when it exists when specifying instance vars returns the given config and version for that pipeline instance"
+      ],
+      "scenarios": [
+        "PipelineConfig returns the exact persisted ordinary config and version",
+        "PipelineConfig returns the exact persisted instanced config and version"
+      ]
+    },
+    {
+      "id": "pipeline-config-maps-not-found-without-error",
+      "source_file": "go-concourse/concourse/configs.go",
+      "old": "\tcase internal.ResourceNotFoundError:\n\t\treturn atc.Config{}, \"\", false, nil",
+      "new": "\tcase internal.ResourceNotFoundError:\n\t\treturn atc.Config{}, \"\", false, err",
+      "tests": [
+        "ATC Handler Configs PipelineConfig when pipeline does not exist returns false and no error"
+      ],
+      "scenarios": [
+        "PipelineConfig maps the production missing response to not found without error"
+      ]
+    },
+    {
+      "id": "create-update-decodes-production-warnings",
+      "source_file": "go-concourse/concourse/configs.go",
+      "old": "\t\treturn created, !created, configResponse.Warnings, nil",
+      "new": "\t\treturn created, !created, nil, nil",
+      "tests": [
+        "ATC Handler Configs CreateOrUpdatePipelineConfig when creating a new config returns true for created and false for updated",
+        "ATC Handler Configs CreateOrUpdatePipelineConfig when updating a config returns false for created and true for updated"
+      ],
+      "scenarios": [
+        "CreateOrUpdatePipelineConfig reports created and decodes production warnings",
+        "CreateOrUpdatePipelineConfig reports updated and decodes production warnings"
+      ]
+    },
+    {
+      "id": "create-update-preserves-instance-vars-query",
+      "source_file": "go-concourse/concourse/configs.go",
+      "old": "\t\tQuery:              merge(queryParams, pipelineRef.QueryParams()),",
+      "new": "\t\tQuery:              queryParams,",
+      "tests": [
+        "ATC Handler Configs CreateOrUpdatePipelineConfig when creating a new config when instance vars are specified submits with vars.xxx query params set",
+        "ATC Handler Configs CreateOrUpdatePipelineConfig when updating a config when instance vars are specified submits with vars.xxx query params set"
+      ],
+      "scenarios": [
+        "CreateOrUpdatePipelineConfig sends instance vars while creating",
+        "CreateOrUpdatePipelineConfig sends instance vars while updating"
+      ]
+    }
+  ]
+}
