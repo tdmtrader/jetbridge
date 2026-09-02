@@ -1,0 +1,23 @@
+{
+  "name": "creds-list-strict",
+  "test_package": "./atc/creds",
+  "source_test_file": "atc/creds/list_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/creds-values-strict.feature",
+  "step_files": ["atc/worker/jetbridge/brine/steps/creds_values_strict.go", "atc/worker/jetbridge/brine/steps/registry.go"],
+  "cases": [
+    {
+      "id": "evaluation-does-not-append-values",
+      "source_file": "atc/creds/list.go",
+      "old": "\treturn list, nil",
+      "new": "\treturn append(list, \"wrong\"), nil",
+      "tests": [
+        "Evaluate interpolates the full list",
+        "Evaluate interpolates within a list"
+      ],
+      "scenarios": [
+        "Production credential value behavior — <profile> (row 4)",
+        "Production credential value behavior — <profile> (row 5)"
+      ]
+    }
+  ]
+}

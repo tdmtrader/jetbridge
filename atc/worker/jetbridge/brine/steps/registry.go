@@ -98,6 +98,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, SecretsManagerStrictDefinitions()...)
 	defs = append(defs, SSMManagerStrictDefinitions()...)
 	defs = append(defs, StepMetadataStrictDefinitions()...)
+	defs = append(defs, CredsValuesStrictDefinitions()...)
 	defs = append(defs, VariableTemplateDefinitions()...)
 	defs = append(defs, StaticVariableDefinitions()...)
 	defs = append(defs, VariableReferenceDefinitions()...)
