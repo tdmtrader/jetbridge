@@ -1,0 +1,94 @@
+{
+  "name": "db-resource-cache-durable-key-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/resource_cache_durable_key_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-resource-cache-durable-key-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_resource_cache_durable_key_strict.go",
+    "atc/worker/jetbridge/brine/steps/registry.go",
+    "atc/worker/jetbridge/brine/steps/resources.go",
+    "atc/worker/jetbridge/brine/steps/task_command.go",
+    "atc/worker/jetbridge/brine/steps/envtest.go",
+    "atc/postgresrunner/postgresrunner.go",
+    "atc/postgresrunner/ginkgo.go",
+    "atc/postgresrunner/join_limit_conn.go"
+  ],
+  "cases": [
+    {
+      "id": "durable-key-is-content-not-row-identity",
+      "source_file": "atc/db/resource_cache_factory.go",
+      "old": "\t\tdurableKey:     durableKey,",
+      "new": "\t\tdurableKey:     \"rc-\" + mapHash(map[string]any{\"resource-cache-id\": id}),",
+      "tests": [
+        "ResourceCache DurableKey survives the row being deleted and recreated",
+        "ResourceCache DurableKey is readable on a cache loaded by id",
+        "ResourceCache DurableKey backfills a row that predates the column"
+      ],
+      "scenarios": [
+        "Production resource cache durable-key behavior — <profile> (row 1)",
+        "Production resource cache durable-key behavior — <profile> (row 6)",
+        "Production resource cache durable-key behavior — <profile> (row 7)"
+      ]
+    },
+    {
+      "id": "parameterized-cache-version-contributes-to-key",
+      "source_file": "atc/db/resource_cache.go",
+      "old": "\tmarshaledVersion, _ := json.Marshal(version)",
+      "new": "\tversionForKey := version\n\tif params != nil {\n\t\tversionForKey = nil\n\t}\n\tmarshaledVersion, _ := json.Marshal(versionForKey)",
+      "tests": [
+        "ResourceCache DurableKey distinguishes caches that hold different bytes a different version"
+      ],
+      "scenarios": [
+        "Production resource cache durable-key behavior — <profile> (row 2)"
+      ]
+    },
+    {
+      "id": "source-contributes-to-key",
+      "source_file": "atc/db/resource_cache.go",
+      "old": "\t\tmapHash(source),",
+      "new": "\t\tmapHash(nil),",
+      "tests": [
+        "ResourceCache DurableKey distinguishes caches that hold different bytes a different source"
+      ],
+      "scenarios": [
+        "Production resource cache durable-key behavior — <profile> (row 3)"
+      ]
+    },
+    {
+      "id": "params-contribute-to-key",
+      "source_file": "atc/db/resource_cache.go",
+      "old": "\t\tparamsHash(params),",
+      "new": "\t\tparamsHash(nil),",
+      "tests": [
+        "ResourceCache DurableKey distinguishes caches that hold different bytes different params"
+      ],
+      "scenarios": [
+        "Production resource cache durable-key behavior — <profile> (row 4)"
+      ]
+    },
+    {
+      "id": "custom-type-parent-contributes-to-key",
+      "source_file": "atc/db/resource_cache.go",
+      "old": "\tif parent != nil {\n\t\tparentKey = parent.DurableKey()",
+      "new": "\tif parent != nil {\n\t\tparentKey = \"\"",
+      "tests": [
+        "ResourceCache DurableKey distinguishes two versions of the same custom type"
+      ],
+      "scenarios": [
+        "Production resource cache durable-key behavior — <profile> (row 5)"
+      ]
+    },
+    {
+      "id": "artifact-daemon-key-prefix-is-preserved",
+      "source_file": "atc/db/resource_cache.go",
+      "old": "\treturn fmt.Sprintf(\"rc-%x\", sha256.Sum256([]byte(identity)))",
+      "new": "\treturn fmt.Sprintf(\"cache-%x\", sha256.Sum256([]byte(identity)))",
+      "tests": [
+        "ResourceCache DurableKey is a key the artifact daemon will accept"
+      ],
+      "scenarios": [
+        "Production resource cache durable-key behavior — <profile> (row 8)"
+      ]
+    }
+  ]
+}
