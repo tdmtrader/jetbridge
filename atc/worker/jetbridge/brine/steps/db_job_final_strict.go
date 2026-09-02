@@ -141,13 +141,16 @@ func finalScheduleConfig(profile string) atc.Config {
 }
 
 func observeFinalSchedule(database strictJobDatabase, profile string) string {
-	_, pipeline, job, err := createFinalJob(database, finalScheduleConfig(profile), "job")
+	team, pipeline, job, err := createFinalJob(database, atc.Config{Jobs: atc.JobConfigs{{Name: "job"}, {Name: "peer"}}}, "job")
 	if err != nil {
 		return err.Error()
 	}
-	candidate, err := job.CreateBuild("brine")
-	if err != nil {
-		return err.Error()
+	var candidate db.Build
+	if profile != "schedule-serial-succeeded-ignored" {
+		candidate, err = job.CreateBuild("brine")
+		if err != nil {
+			return err.Error()
+		}
 	}
 
 	if profile == "schedule-pipeline-paused" {
@@ -162,6 +165,10 @@ func observeFinalSchedule(database strictJobDatabase, profile string) string {
 			}
 		}
 		if err := job.Pause("brine"); err != nil {
+			return err.Error()
+		}
+		job, _, err = pipeline.Job("job")
+		if err != nil {
 			return err.Error()
 		}
 	}
@@ -182,17 +189,22 @@ func observeFinalSchedule(database strictJobDatabase, profile string) string {
 		if started, err := running.Start(atc.Plan{}); err != nil || !started {
 			return fmt.Sprintf("start running=%t err=%v", started, err)
 		}
+		pipeline, _, err = team.SavePipeline(atc.PipelineRef{Name: "job-final-pipeline"}, finalScheduleConfig(profile), pipeline.ConfigVersion(), false)
+		if err != nil {
+			return err.Error()
+		}
+		job, _, err = pipeline.Job("job")
+		if err != nil {
+			return err.Error()
+		}
+		if err := job.SaveNextInputMapping(nil, true); err != nil {
+			return err.Error()
+		}
 	}
 	if strings.Contains(profile, "serial-") {
 		peer, found, err := pipeline.Job("peer")
 		if err != nil || !found {
 			return fmt.Sprintf("peer found=%t err=%v", found, err)
-		}
-		if err := job.SaveNextInputMapping(nil, true); err != nil {
-			return err.Error()
-		}
-		if err := peer.SaveNextInputMapping(nil, true); err != nil {
-			return err.Error()
 		}
 		switch profile {
 		case "schedule-serial-finished-allowed":
@@ -218,6 +230,24 @@ func observeFinalSchedule(database strictJobDatabase, profile string) string {
 			if err := peerBuild.Finish(db.BuildStatusSucceeded); err != nil {
 				return err.Error()
 			}
+			candidate, err = job.CreateBuild("brine")
+			if err != nil {
+				return err.Error()
+			}
+		}
+		if err := job.SaveNextInputMapping(nil, true); err != nil {
+			return err.Error()
+		}
+		if err := peer.SaveNextInputMapping(nil, true); err != nil {
+			return err.Error()
+		}
+		pipeline, _, err = team.SavePipeline(atc.PipelineRef{Name: "job-final-pipeline"}, finalScheduleConfig(profile), pipeline.ConfigVersion(), false)
+		if err != nil {
+			return err.Error()
+		}
+		job, found, err = pipeline.Job("job")
+		if err != nil || !found {
+			return fmt.Sprintf("job found=%t err=%v", found, err)
 		}
 	}
 
