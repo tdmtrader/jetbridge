@@ -1,0 +1,82 @@
+{
+  "name": "db-worker-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/worker_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-worker-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_worker_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go",
+    "atc/worker/jetbridge/brine/steps/assert.go",
+    "atc/worker/jetbridge/brine/steps/registry.go"
+  ],
+  "cases": [
+    {
+      "id": "worker-delete-removes-named-row",
+      "source_file": "atc/db/worker.go",
+      "old": "\t\tWhere(sq.Eq{\n\t\t\t\"name\": worker.name,\n\t\t}).",
+      "new": "\t\tWhere(sq.Eq{\n\t\t\t\"name\": worker.name + \"-other\",\n\t\t}).",
+      "tests": ["Worker Delete deletes the record for the worker"],
+      "scenarios": ["Worker persistence profile <profile> has its exact result (row 1)"],
+      "failure_contains": "worker persistence result"
+    },
+    {
+      "id": "worker-find-returns-matching-container-state",
+      "source_file": "atc/db/worker.go",
+      "old": "\tif destroying != nil {\n\t\treturn nil, nil, nil\n\t}\n\n\treturn creating, created, nil",
+      "new": "\tif destroying == nil {\n\t\treturn nil, nil, nil\n\t}\n\n\treturn creating, created, nil",
+      "tests": [
+        "Worker FindContainer/CreateContainer when there is a creating container returns it",
+        "Worker FindContainer/CreateContainer when there is a creating container when there is a created container returns it",
+        "Worker Find/CreateContainer, fixed handle uses the specified handle for the container"
+      ],
+      "scenarios": [
+        "Worker persistence profile <profile> has its exact result (row 2)",
+        "Worker persistence profile <profile> has its exact result (row 4)",
+        "Worker persistence profile <profile> has its exact result (row 9)"
+      ],
+      "failure_contains": "worker persistence result"
+    },
+    {
+      "id": "worker-find-retains-worker-scope",
+      "source_file": "atc/db/worker.go",
+      "old": "\treturn worker.findContainer(sq.And{\n\t\tsq.Eq{\"worker_name\": worker.name},\n\t\townerQuery,\n\t})",
+      "new": "\treturn worker.findContainer(sq.And{\n\t\townerQuery,\n\t})",
+      "tests": [
+        "Worker FindContainer/CreateContainer when there is a creating container when finding on another worker does not find it",
+        "Worker FindContainer/CreateContainer when there is a creating container when there is a created container when finding on another worker does not find it"
+      ],
+      "scenarios": [
+        "Worker persistence profile <profile> has its exact result (row 3)",
+        "Worker persistence profile <profile> has its exact result (row 5)"
+      ],
+      "failure_contains": "worker persistence result"
+    },
+    {
+      "id": "check-session-create-reuses-natural-key",
+      "source_file": "atc/db/container_owner.go",
+      "old": "\t\t\tON CONFLICT (resource_config_id, worker_base_resource_type_id) DO UPDATE SET\n\t\t\t\tresource_config_id = ?,\n\t\t\t\tworker_base_resource_type_id = ?\n\t\t\tRETURNING id\n\t\t`, c.resourceConfigID, wbrtID).",
+      "new": "\t\t\tON CONFLICT (resource_config_id, worker_base_resource_type_id) DO NOTHING\n\t\t\tRETURNING id\n\t\t`).",
+      "tests": ["Worker FindContainer/CreateContainer when there is a creating container when the creating container is failed and gced and we create a new container does not duplicate the resource config check session"],
+      "scenarios": ["Worker persistence profile <profile> has its exact result (row 6)"],
+      "failure_contains": "worker persistence"
+    },
+    {
+      "id": "check-containers-remain-global",
+      "source_file": "atc/db/container_owner.go",
+      "old": "\treturn map[string]any{\n\t\t\"resource_config_check_session_id\": rccsID,\n\t}, nil",
+      "new": "\treturn map[string]any{\n\t\t\"resource_config_check_session_id\": rccsID,\n\t\t\"team_id\": wbrtID,\n\t}, nil",
+      "tests": ["Worker FindContainer/CreateContainer when the container has a meta type when the meta type is check returns a container with empty team id"],
+      "scenarios": ["Worker persistence profile <profile> has its exact result (row 7)"],
+      "failure_contains": "worker persistence result"
+    },
+    {
+      "id": "build-containers-retain-owner-team",
+      "source_file": "atc/db/container_owner.go",
+      "old": "\t\t\"team_id\":  c.TeamID,",
+      "new": "\t\t\"team_id\":  nil,",
+      "tests": ["Worker FindContainer/CreateContainer when the container has a meta type when the meta type is not check returns a container with a team id"],
+      "scenarios": ["Worker persistence profile <profile> has its exact result (row 8)"],
+      "failure_contains": "worker persistence result"
+    }
+  ]
+}
