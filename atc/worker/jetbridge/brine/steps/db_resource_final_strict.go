@@ -240,6 +240,12 @@ func observeDBResourceFinalClear(database JetbridgeDB, profile string) (string, 
 			return "", err
 		}
 	}
+	if _, err := resource.Reload(); err != nil {
+		return "", err
+	}
+	if _, err := other.Reload(); err != nil {
+		return "", err
+	}
 	versions := []atc.Version{{"ref": "v0"}, {"ref": "v1"}, {"ref": "v2"}}
 	if err := scope.SaveVersions(db.SpanContext{}, versions); err != nil {
 		return "", err
@@ -352,7 +358,7 @@ func observeDBResourceFinalPlan(database JetbridgeDB, profile string) (string, e
 	version := atc.Version{"version": "from"}
 	actual := resource.CheckPlan(atc.NewPlanFactory(0), atc.ResourceTypes{parent}, version, atc.CheckEvery{Interval: time.Hour}, nil, skip, recursive)
 	checkID := atc.PlanID("1/image-check")
-	expected := atc.Plan{ID: "1", Check: &atc.CheckPlan{Name: "resource", Type: "custom-type", Source: resourceConfig.Source, Tags: tags, TypeImage: atc.TypeImage{BaseType: parent.Type, Privileged: privileged, CheckPlan: &atc.Plan{ID: checkID, Check: &atc.CheckPlan{Name: parent.Name, ResourceType: parent.Name, Type: parent.Type, Interval: atc.CheckEvery{Interval: parentInterval}, Source: parent.Source, SkipInterval: skip && recursive, TypeImage: atc.TypeImage{BaseType: parent.Type}, Tags: tags}}, GetPlan: &atc.Plan{ID: "1/image-get", Get: &atc.GetPlan{Name: parent.Name, Type: parent.Type, Source: parent.Source, TypeImage: atc.TypeImage{BaseType: parent.Type}, Tags: tags, VersionFrom: &checkID}}}, FromVersion: version, Resource: "resource", Interval: atc.CheckEvery{Interval: time.Hour}, SkipInterval: skip}}
+	expected := atc.Plan{ID: "1", Check: &atc.CheckPlan{Name: "resource", Type: "custom-type", Source: resourceConfig.Source, Tags: tags, TypeImage: atc.TypeImage{BaseType: parent.Type, Privileged: privileged, CheckPlan: &atc.Plan{ID: checkID, Check: &atc.CheckPlan{Name: parent.Name, ResourceType: parent.Name, Type: parent.Type, Interval: atc.CheckEvery{Interval: parentInterval}, Source: parent.Source, SkipInterval: skip && recursive, TypeImage: atc.TypeImage{BaseType: parent.Type}, Tags: tags}}, GetPlan: &atc.Plan{ID: "1/image-get", Get: &atc.GetPlan{Name: parent.Name, Type: parent.Type, Source: parent.Source, TypeImage: atc.TypeImage{BaseType: parent.Type}, Tags: tags, VersionFrom: &checkID, SkipDownload: true}}}, FromVersion: version, Resource: "resource", Interval: atc.CheckEvery{Interval: time.Hour}, SkipInterval: skip}}
 	return fmt.Sprintf("exact=%t", reflect.DeepEqual(actual, expected)), nil
 }
 
