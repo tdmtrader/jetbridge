@@ -402,8 +402,11 @@ func observeStrictVersionsAPI(database JetbridgeDB, profile string) string {
 			return err.Error()
 		}
 		response, err := request(atc.ClearResourceVersions, resourceParams("resource"), nil)
-		if err != nil || response.Status != http.StatusOK {
+		if err != nil {
 			return fail("clear resource status=%d err=%v", response.Status, err)
+		}
+		if profile != "clear-resource-content-type" && profile != "clear-resource-status" && response.Status != http.StatusOK {
+			return fail("clear resource status=%d", response.Status)
 		}
 		switch profile {
 		case "clear-resource-status":
@@ -454,8 +457,11 @@ func observeStrictVersionsAPI(database JetbridgeDB, profile string) string {
 		}
 		params := rata.Params{"team_name": team.Name(), "pipeline_name": pipeline.Name(), "resource_type_name": "resource-type"}
 		response, err := request(atc.ClearResourceTypeVersions, params, nil)
-		if err != nil || response.Status != http.StatusOK {
+		if err != nil {
 			return fail("clear resource type status=%d err=%v", response.Status, err)
+		}
+		if profile != "clear-type-content-type" && profile != "clear-type-status" && response.Status != http.StatusOK {
+			return fail("clear resource type status=%d", response.Status)
 		}
 		switch profile {
 		case "clear-type-status":
