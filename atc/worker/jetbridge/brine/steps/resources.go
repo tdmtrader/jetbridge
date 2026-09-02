@@ -105,6 +105,10 @@ func (builder JetbridgeBuilder) WithResourceTypeVersions(resourceTypeName string
 	return builder.testBuilder().WithResourceTypeVersions(resourceTypeName, versions...)
 }
 
+func (builder JetbridgeBuilder) WithJobBuild(assign *db.Build, jobName string, inputs dbtest.JobInputs, outputs dbtest.JobOutputs) dbtest.SetupFunc {
+	return builder.testBuilder().WithJobBuild(assign, jobName, inputs, outputs)
+}
+
 // PersistNamedWorker mirrors the ginkgo suite helper of the same name.
 func (j JetbridgeDB) PersistNamedWorker(name string) (db.Worker, error) {
 	_, err := j.WorkerFactory.SaveWorker(atc.Worker{
