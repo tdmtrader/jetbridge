@@ -1,0 +1,112 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-pipeline-query-strict.json",
+  "git_head": "3fc51fb8100679b73c13d6f4b41a6b19d425d141",
+  "completed_at": "2026-09-02T15:24:06Z",
+  "source_tests": 11,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/build_factory.go": "3de99eec4ef6a037b9fa87717a38865a897354c50f995e1c4875e21cf683aae1",
+    "atc/db/pipeline.go": "db557d6c09a3c852e68d775fbbbb53bb3e38a17ba09be542c30e3d2bd9765fe8",
+    "atc/db/pipeline_test.go": "f72333f74bda172ae6e0477587ed87fab6f6f989aa1b14482c1598cf9d5e2010",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/db-pipeline-query-strict.feature": "fe7b0fcb07fdde9cb637cd361cf894e15a97e4f69a279a8ea49ca81d72e6c3db",
+    "atc/worker/jetbridge/brine/mutations/db-pipeline-query-strict.json": "04ea9ec1cfa2ef1848da126449946dfcf9943401310cf17c312b2d0c924a412d",
+    "atc/worker/jetbridge/brine/steps/assert.go": "eac0b7b4dc864f54ffb5aab471451e3b62da518e5a8b10ba26e742d83298861f",
+    "atc/worker/jetbridge/brine/steps/db_pipeline_query_strict.go": "8a9a021acbdd7dc0b3d9a0da1dcfe7e0df59c112400ca40f2a9412141c1a9950",
+    "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
+    "atc/worker/jetbridge/brine/steps/registry.go": "9a00937e7b2e0f3b68bd43b6c4eb367ac3e613108b63736bf0b92218d265e31e",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e"
+  },
+  "mutation_cases": [
+    {
+      "id": "resource-version-enabled-state",
+      "mutation_sha256": "b3f943425ccb9d0d906fc8b628d6edba1b8b52a05d23ad3a1db4a8c7bb2fd872",
+      "failed_source_tests": [
+        "Pipeline ResourceVersion when a resource is enabled should return the version with enabled set to true",
+        "Pipeline ResourceVersion when a resource is not enabled should return the version with enabled set to false"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline query behavior — \u003cprofile\u003e (row 1)",
+        "Production pipeline query behavior — \u003cprofile\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "builds-with-time-respects-limit",
+      "mutation_sha256": "d40de575699787c1ab360f8b1889213354f4d1d6801f4e7e7eb7e669a089bd9c",
+      "failed_source_tests": [
+        "Pipeline BuildsWithTime when not providing boundaries with a limit specified returns a subset of the builds",
+        "Pipeline BuildsWithTime when not providing boundaries without a limit specified returns no builds"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline query behavior — \u003cprofile\u003e (row 3)",
+        "Production pipeline query behavior — \u003cprofile\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "builds-with-time-applies-upper-bound-alone",
+      "mutation_sha256": "8445ea3bbeb42606f372a008c3d96ea7708185bb1410be2e3dc4794af7aba7d0",
+      "failed_source_tests": [
+        "Pipeline BuildsWithTime when providing boundaries only to returns only those before and including to"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline query behavior — \u003cprofile\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "builds-with-time-applies-lower-bound-alone",
+      "mutation_sha256": "129aed4b2344d290ceede7fb3c3d78f5bfb32547e2abd157e224e999459da6d0",
+      "failed_source_tests": [
+        "Pipeline BuildsWithTime when providing boundaries only from returns only those after from"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline query behavior — \u003cprofile\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "builds-with-time-applies-lower-bound-in-range",
+      "mutation_sha256": "0ac74e489c7d6f52b40bdaba8fe3e6cd95f92c04d190c9e7254ec90906aef15e",
+      "failed_source_tests": [
+        "Pipeline BuildsWithTime when providing boundaries from and to returns only elements in the range"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline query behavior — \u003cprofile\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "set-parent-persists-fields",
+      "mutation_sha256": "c1be7dc41332f792bbb97c7f31476a8e7b9a47e63878fe53cc4e38d66ee26c05",
+      "failed_source_tests": [
+        "Pipeline SetParentIDs pipeline was previously saved by team.SavePipeline successfully updates the parent build and job IDs",
+        "Pipeline SetParentIDs sets the parent_job_id and parent_build_id fields"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline query behavior — \u003cprofile\u003e (row 11)",
+        "Production pipeline query behavior — \u003cprofile\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "set-parent-rejects-zero",
+      "mutation_sha256": "4b4f5812735334de7be22a3df9bb4401b5105ac63b7c6092876ff7f2c7e25e2e",
+      "failed_source_tests": [
+        "Pipeline SetParentIDs returns an error if job or build ID are less than or equal to zero"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline query behavior — \u003cprofile\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "set-parent-refuses-older-build",
+      "mutation_sha256": "7df2fc247a7f4463d509e4161444197979eebf35c116b002c944976127a4360b",
+      "failed_source_tests": [
+        "Pipeline SetParentIDs pipeline was saved by a newer build returns ErrSetByNewerBuild"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline query behavior — \u003cprofile\u003e (row 10)"
+      ]
+    }
+  ]
+}
