@@ -1,0 +1,199 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/resourceversions-client-strict.json",
+  "git_head": "8c1aed6cc9c841d9d8e27c1505f0eae66e5e50bd",
+  "completed_at": "2026-09-02T18:24:48Z",
+  "source_tests": 24,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/resourceversions-client-strict.feature": "b415a3c33424ae6dd0bdeb2d5fad77af18f8f8b98c22305f62ab1a8921331372",
+    "atc/worker/jetbridge/brine/mutations/resourceversions-client-strict.json": "7d5ad6ed7f3d065645ea9920b98dd2580ecff23c1daa64fab55f80d8391b91b2",
+    "atc/worker/jetbridge/brine/steps/api_auth.go": "eba916c51c18a178748f5c0dd95f85cc7d094bc1fad778e327d88e52e2a971e0",
+    "atc/worker/jetbridge/brine/steps/api_resource_auth.go": "428e6b2cabd1f2833b88f6a9f05e36f41ba1207246afeeefe0a40bd9bd4dea64",
+    "atc/worker/jetbridge/brine/steps/api_versions_strict.go": "3b01b8fd52d61267b2e40b9f660df7bbe6bfce60314e7b08252b3db7727e88c2",
+    "atc/worker/jetbridge/brine/steps/registry.go": "59b9446cc05e49c1c63ad6c0e40f485e1306518a1f4624d54335f8d04b280605",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "atc/worker/jetbridge/brine/steps/resourceversions_client_strict.go": "73ba7b4eecf3106c63e366fafc2b98bae2e4d9d6306fafb9a87a9b0d0c54ef0c",
+    "go-concourse/concourse/pagination.go": "7bb9f4ad9591ca7a483af7e12ff0e934a04ac5b505256be9e777f3da8783acf7",
+    "go-concourse/concourse/resourceversions.go": "54d84171107af2f7257ddaded342d55a253f58b8b328e1cdd899e54b1f7e128f",
+    "go-concourse/concourse/resourceversions_test.go": "4521d4c98d25140e4458b6844a1147fa77f119ef8fde9474107f540bda9f279f"
+  },
+  "mutation_cases": [
+    {
+      "id": "page-encodes-bounds-and-limit",
+      "mutation_sha256": "91fc7dae40d5b38d7f6d83737cc45df273bf05c1d0a2715875f83927aa65c9af",
+      "failed_source_tests": [
+        "ATC Handler Resource Versions ResourceVersions when from and limit is specified appends limit to the url",
+        "ATC Handler Resource Versions ResourceVersions when from and to are both specified sends both from and the to",
+        "ATC Handler Resource Versions ResourceVersions when from is specified calls to get all versions from that id",
+        "ATC Handler Resource Versions ResourceVersions when to and limit is specified appends limit to the url",
+        "ATC Handler Resource Versions ResourceVersions when to is specified calls to get all versions to that id"
+      ],
+      "failed_brine_scenarios": [
+        "Strict resource-version client behavior — \u003cprofile\u003e (row 2)",
+        "Strict resource-version client behavior — \u003cprofile\u003e (row 3)",
+        "Strict resource-version client behavior — \u003cprofile\u003e (row 4)",
+        "Strict resource-version client behavior — \u003cprofile\u003e (row 5)",
+        "Strict resource-version client behavior — \u003cprofile\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "list-encodes-filter",
+      "mutation_sha256": "0c2519a9d9ec136890d32ddb157508572cec340c2ecdb22ed354d5cbe5f709b9",
+      "failed_source_tests": [
+        "ATC Handler Resource Versions ResourceVersions when filter is specified sends filters as url params"
+      ],
+      "failed_brine_scenarios": [
+        "Strict resource-version client behavior — \u003cprofile\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "list-maps-not-found",
+      "mutation_sha256": "39a1dd26cfa94da7779ecc0e93b6ce9e9a904d48118947aab135a0040209692e",
+      "failed_source_tests": [
+        "ATC Handler Resource Versions ResourceVersions when the server returns not found returns false and no error"
+      ],
+      "failed_brine_scenarios": [
+        "Strict resource-version client behavior — \u003cprofile\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "list-parses-pagination-links",
+      "mutation_sha256": "b09d36dff8845daeffe3fd6ad46379402bf7ef820fa93c34564e72ffe5d6e54c",
+      "failed_source_tests": [
+        "ATC Handler Resource Versions ResourceVersions pagination data with a link header returns the pagination data from the header"
+      ],
+      "failed_brine_scenarios": [
+        "Strict resource-version client behavior — \u003cprofile\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "list-leaves-empty-pagination-nil",
+      "mutation_sha256": "1c0e5968a980966a126a631428940676b608452823963c3b61c75ac8f8799f66",
+      "failed_source_tests": [
+        "ATC Handler Resource Versions ResourceVersions without a link header returns pagination data with nil pages"
+      ],
+      "failed_brine_scenarios": [
+        "Strict resource-version client behavior — \u003cprofile\u003e (row 10)"
+      ]
+    },
+    {
+      "id": "version-mutations-report-success",
+      "mutation_sha256": "7d860a71834151b68713ecbd9e1257c21443b211817ff890725ca3792ebc9f9b",
+      "failed_source_tests": [
+        "ATC Handler Resource Versions DisableResourceVersion when the resource exists and there are no issues calls the disable resource and returns no error",
+        "ATC Handler Resource Versions EnableResourceVersion when the resource exists and there are no issues calls the enable resource and returns no error",
+        "ATC Handler Resource Versions PinResourceVersion When the resource exists and there are no issues calls the pin resource and returns no error"
+      ],
+      "failed_brine_scenarios": [
+        "Strict resource-version client behavior — \u003cprofile\u003e (row 11)",
+        "Strict resource-version client behavior — \u003cprofile\u003e (row 13)",
+        "Strict resource-version client behavior — \u003cprofile\u003e (row 15)"
+      ]
+    },
+    {
+      "id": "version-mutations-map-not-found",
+      "mutation_sha256": "bc3afc04fd6ee2a6f3c10a1af5b482db4b627fdb0c958c312293a049b03deb5e",
+      "failed_source_tests": [
+        "ATC Handler Resource Versions DisableResourceVersion when the resource does not exist calls the disable resource and returns an error",
+        "ATC Handler Resource Versions EnableResourceVersion when the resource does not exist calls the enable resource and returns an error",
+        "ATC Handler Resource Versions PinResourceVersion when the resource does not exist calls the pin resource and returns an error"
+      ],
+      "failed_brine_scenarios": [
+        "Strict resource-version client behavior — \u003cprofile\u003e (row 12)",
+        "Strict resource-version client behavior — \u003cprofile\u003e (row 14)",
+        "Strict resource-version client behavior — \u003cprofile\u003e (row 16)"
+      ]
+    },
+    {
+      "id": "pin-preserves-server-error",
+      "mutation_sha256": "c29082ad7161c33d2a2613be606732fa84e3229426d1c74bf0f52fe0d3ae1a5e",
+      "failed_source_tests": [
+        "ATC Handler Resource Versions PinResourceVersion when the pin resource call fails calls the pin resource and returns an error"
+      ],
+      "failed_brine_scenarios": [
+        "Strict resource-version client behavior — \u003cprofile\u003e (row 17)"
+      ]
+    },
+    {
+      "id": "unpin-reports-success",
+      "mutation_sha256": "04508139c4607642b86a916963e9cbe37b673f5ba04cb0e3b9b79ff81c553819",
+      "failed_source_tests": [
+        "ATC Handler Resource Versions UnpinResource When the resource exists and there are no issues calls the unpin resource and returns no error"
+      ],
+      "failed_brine_scenarios": [
+        "Strict resource-version client behavior — \u003cprofile\u003e (row 18)"
+      ]
+    },
+    {
+      "id": "unpin-maps-not-found",
+      "mutation_sha256": "52181c5d64cc23dc9e6c6664146917e29b38e0d57c0b8328d985c9e9cc896250",
+      "failed_source_tests": [
+        "ATC Handler Resource Versions UnpinResource when the resource does not exist calls the unpin resource and returns an error"
+      ],
+      "failed_brine_scenarios": [
+        "Strict resource-version client behavior — \u003cprofile\u003e (row 19)"
+      ]
+    },
+    {
+      "id": "comment-reports-success",
+      "mutation_sha256": "12f76d731a5ced98dcd6c3fd4789202663ca446f48ae9b59c5bb7fbec4f370be",
+      "failed_source_tests": [
+        "ATC Handler Resource Versions SetPinComment When the resource exists and there are no issues when setting pin comment calls set pin comment and returns no error"
+      ],
+      "failed_brine_scenarios": [
+        "Strict resource-version client behavior — \u003cprofile\u003e (row 20)"
+      ]
+    },
+    {
+      "id": "comment-maps-not-found",
+      "mutation_sha256": "7ab18edcbc746664c1e059cacf65cee3e4adc48f33ce3cdf4c5f694ce496f097",
+      "failed_source_tests": [
+        "ATC Handler Resource Versions SetPinComment when the resource does not exist calls the pin comment and returns an error"
+      ],
+      "failed_brine_scenarios": [
+        "Strict resource-version client behavior — \u003cprofile\u003e (row 21)"
+      ]
+    },
+    {
+      "id": "clear-resource-returns-count",
+      "mutation_sha256": "5a9148e068545fb9ca3747c2158b1254aae1a5c7eda95482e234bf33dd75b54b",
+      "failed_source_tests": [
+        "ATC Handler Resource Versions ClearResourceVersions when the API call succeeds return no error"
+      ],
+      "failed_brine_scenarios": [
+        "Strict resource-version client behavior — \u003cprofile\u003e (row 22)"
+      ]
+    },
+    {
+      "id": "clear-resource-preserves-error",
+      "mutation_sha256": "6c56f5fd668568bde205f9d71bd0d0d54660de423e52a31ab701eb8c3839d1b5",
+      "failed_source_tests": [
+        "ATC Handler Resource Versions ClearResourceVersions when the API call errors returns error"
+      ],
+      "failed_brine_scenarios": [
+        "Strict resource-version client behavior — \u003cprofile\u003e (row 23)"
+      ]
+    },
+    {
+      "id": "clear-type-returns-count",
+      "mutation_sha256": "6e8d6362c0d094d11b08e9eee050807ffd65c7a34cf711cf688b4f81b9110995",
+      "failed_source_tests": [
+        "ATC Handler Resource Versions ClearResourceTypeVersions when the API call succeeds return no error"
+      ],
+      "failed_brine_scenarios": [
+        "Strict resource-version client behavior — \u003cprofile\u003e (row 24)"
+      ]
+    },
+    {
+      "id": "clear-type-preserves-error",
+      "mutation_sha256": "af3a0d4b4258a519e40692a6cb601878d33808f2cb15170c83561788575c09b8",
+      "failed_source_tests": [
+        "ATC Handler Resource Versions ClearResourceTypeVersions when the API call errors returns error"
+      ],
+      "failed_brine_scenarios": [
+        "Strict resource-version client behavior — \u003cprofile\u003e (row 25)"
+      ]
+    }
+  ]
+}
