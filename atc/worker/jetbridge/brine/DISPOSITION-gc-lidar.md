@@ -57,7 +57,7 @@ BRINE_STRONGER = brine discriminates where the Go test does not; removed.
 
 **[DELETED]** leaves a created orphan hijacked within the grace period alone
   - mutation: atc/gc/container_collector.go:132 — the whole `if time.Since(createdContainer.LastHijack()) > c.hijackContainerGracePeriod {` guard removed, so every created orphan is transitioned unconditionally. (overlay M1b)
-  - brine: FAIL  A container is reclaimed once its build is finished, unless somebody is still inside it (12/13 steps, 60ms) — `Step FAILED: And the container "fresh-hijack" is still created` / `Error: expected the containers still in the created state to include "fresh-hijack", found [live-build]`. The other 
+  - brine: FAIL  A container is reclaimed once its build is finished, unless somebody is still inside it (12/13 steps, 60ms) — `Step FAILED: And the container "fresh-hijack" is still created` / `Error: expected the containers still in the created state to include "fresh-hijack", found [live-build]`. The other
   - skeptic: Reproduced under my own overlay M1b (guard block removed, transition unconditional). Go: `Ran 1 of 109 Specs` / `FAIL! -- 0 Passed | 1 Failed`, `Expected <string>: destroying to equal <string>: created` at container_collector_test.go:168. brine: 9 passed 1 failed, `the container "fresh-hijack" is still created | expected the containers still in the created state to include "fresh-hijack", found [l
 
 **[DELETED]** leaves an excess check container hijacked within the grace period alone
@@ -103,7 +103,7 @@ BRINE_STRONGER = brine discriminates where the Go test does not; removed.
   - skeptic: REFUTED, same gap. `Expect(err).To(MatchError(ContainSubstring("nope")))` at container_collector_test.go:336 is uncovered. Under overlay E: Go `Ran 1 of 109 Specs` / `FAIL! -- 0 Passed | 1 Failed` with the failure at :336; brine gc-containers.feature `"scenarios":10,"passed":10,"failed":0`. The claim's M10 pairing itself reproduces (Go `[FAILED] Expected <string>: created to equal <string>: destro
 
 **[INERT]** succeeds with nothing to collect
-  - mutation: Three honest mutations tried, none reddened it. (a) atc/gc/container_collector.go:132 `time.Since(createdContainer.LastHijack()) > c.hijackContainerGracePeriod` -> `<`. (b) atc/db/container_repository.go:235 `sq.Eq{"b.interceptible": false}` -> `sq.Expr("1=1")`. (c) atc/db/container_repository.go:365 `Where(sq.Eq{"state": string(atc.ContainerStateFailed)})` -> `...ContainerStateCreated)`. It pins 
+  - mutation: Three honest mutations tried, none reddened it. (a) atc/gc/container_collector.go:132 `time.Since(createdContainer.LastHijack()) > c.hijackContainerGracePeriod` -> `<`. (b) atc/db/container_repository.go:235 `sq.Eq{"b.interceptible": false}` -> `sq.Expr("1=1")`. (c) atc/db/container_repository.go:365 `Where(sq.Eq{"state": string(atc.ContainerStateFailed)})` -> `...ContainerStateCreated)`. It pins
 
 
 ## deprecated_scope_collector_test.go
@@ -120,7 +120,7 @@ BRINE_STRONGER = brine discriminates where the Go test does not; removed.
 **[DELETED]** Destroyer DestroyContainers does nothing when the handle list is nil
   - mutation: M_C — atc/gc/destroyer.go:46-48: the `if currentHandles == nil { return nil }` guard deleted from DestroyContainers (and the matching one in DestroyVolumes)
   - brine: gc-reclamation.feature, Scenario "A report that never arrived is not a report of nothing" — `FAIL (6/7 steps)` / `Step FAILED: And the container "survivor-container" survived the sweep`
-  - skeptic: Re-run, because the claimed mutation M_C deleted the nil guard from BOTH DestroyContainers and DestroyVolumes and so could not attribute the reddening to either. I built the container-only version (deleted `if currentHandles == nil { return nil }` from DestroyContainers only, volume guard untouched). Go, focused on both nil-guard Its: `Ran 2 of 109 Specs in 1.072 seconds` / `FAIL! -- 1 Passed | 1 
+  - skeptic: Re-run, because the claimed mutation M_C deleted the nil guard from BOTH DestroyContainers and DestroyVolumes and so could not attribute the reddening to either. I built the container-only version (deleted `if currentHandles == nil { return nil }` from DestroyContainers only, volume guard untouched). Go, focused on both nil-guard Its: `Ran 2 of 109 Specs in 1.072 seconds` / `FAIL! -- 1 Passed | 1
 
 **[DELETED]** Destroyer DestroyContainers leaves containers on a different worker alone
   - mutation: M_I — atc/db/container_repository.go:199-201 (RemoveDestroyingContainers): the `sq.Eq{"worker_name": workerName}` predicate replaced with `sq.Expr("1=1")`, so the sweep reaches across workers
@@ -130,12 +130,12 @@ BRINE_STRONGER = brine discriminates where the Go test does not; removed.
 **[DELETED]** Destroyer DestroyContainers removes every destroying container when the worker reports an empty list
   - mutation: M_A — atc/db/container_repository.go:202-204 (RemoveDestroyingContainers): `sq.NotEq{"handle": handlesToIgnore}` -> `sq.Eq{"handle": handlesToIgnore}`
   - brine: gc-reclamation.feature, Scenario "A worker that reports holding nothing loses its own destroying rows and nobody else's" — `FAIL (8/11 steps)` / `Step FAILED: And the container "gone-container" has been reclaimed`
-  - skeptic: Not independently re-run, but everything checkable holds. The It text resolves to exactly 1 of the 109 specs (verified by ginkgo dry-run enumeration: `Ran 109 of 109 Specs`, 1 exact / 1 substring match), so the claimed `Ran 1 of 109` is not a zero-match artifact. The It body has one behavioural assertion — `Expect(containerHandles()).NotTo(ContainElement(gone.Handle()))` — and brine's paired step 
+  - skeptic: Not independently re-run, but everything checkable holds. The It text resolves to exactly 1 of the 109 specs (verified by ginkgo dry-run enumeration: `Ran 109 of 109 Specs`, 1 exact / 1 substring match), so the claimed `Ran 1 of 109` is not a zero-match artifact. The It body has one behavioural assertion — `Expect(containerHandles()).NotTo(ContainElement(gone.Handle()))` — and brine's paired step
 
 **[DELETED]** Destroyer DestroyContainers removes the destroying containers the worker no longer reports
   - mutation: M_A — atc/db/container_repository.go:202-204 (RemoveDestroyingContainers): `sq.NotEq{"handle": handlesToIgnore}` -> `sq.Eq{"handle": handlesToIgnore}` (the keep-list becomes a kill-list)
   - brine: gc-reclamation.feature, Scenario "The destroying rows a worker no longer reports are reclaimed, and the ones it reports are kept" — `FAIL (8/11 steps)` / `Step FAILED: And the container "gone-container" has been reclaimed` (run: 9 passed, 2 failed, 11 scenario lines)
-  - skeptic: I re-ran this one specifically because the claim pairs mismatched halves: the Go test failed at destroyer_test.go:120 (the KEPT container), while the brine scenario failed at step 8 on the GONE container. That is the exact 'reddens for a different reason' shape, so I built a narrower mutation to isolate the kept half — atc/db/container_repository.go RemoveDestroyingContainers, `sq.NotEq{"handle": 
+  - skeptic: I re-ran this one specifically because the claim pairs mismatched halves: the Go test failed at destroyer_test.go:120 (the KEPT container), while the brine scenario failed at step 8 on the GONE container. That is the exact 'reddens for a different reason' shape, so I built a narrower mutation to isolate the kept half — atc/db/container_repository.go RemoveDestroyingContainers, `sq.NotEq{"handle":
 
 **[DELETED]** Destroyer DestroyVolumes does nothing when the handle list is nil
   - mutation: M_C2 — atc/gc/destroyer.go:68-70: the `if currentHandles == nil { return nil }` guard deleted from DestroyVolumes ONLY (container guard left intact, so attribution is unambiguous)
@@ -155,7 +155,7 @@ BRINE_STRONGER = brine discriminates where the Go test does not; removed.
 **[DELETED]** Destroyer FindDestroyingVolumesForGc returns the handles of the destroying volumes
   - mutation: M_G — atc/gc/destroyer.go:100: `return destroyingVolumesHandles, nil` -> `return nil, nil`
   - brine: gc-reclamation.feature, Scenario "Only this worker's volumes, and only the ones being destroyed, are offered for reclamation" — `FAIL (7/11 steps)` / `Step FAILED: Then 2 volumes are waiting to be reclaimed`
-  - skeptic: Not re-run. The It asserts `ConsistOf(first.Handle(), second.Handle())` — an exact two-element set. brine's scenario asserts strictly more over the same answer: `Then 2 volumes are waiting to be reclaimed` (CheckCount), `first-to-go is waiting`, `second-to-go is waiting` (CheckMember), plus two negatives (`still-in-use` and `neighbours-volume` not waiting) that the ginkgo It does not have at all. 
+  - skeptic: Not re-run. The It asserts `ConsistOf(first.Handle(), second.Handle())` — an exact two-element set. brine's scenario asserts strictly more over the same answer: `Then 2 volumes are waiting to be reclaimed` (CheckCount), `first-to-go is waiting`, `second-to-go is waiting` (CheckMember), plus two negatives (`still-in-use` and `neighbours-volume` not waiting) that the ginkgo It does not have at all.
 
 **[REFUTED]** Destroyer DestroyContainers when the container repository fails returns the error and destroys nothing
   - mutation: M_F_c — atc/gc/destroyer.go:53: `return err` -> `return nil` after RemoveDestroyingContainers fails
@@ -167,15 +167,15 @@ BRINE_STRONGER = brine discriminates where the Go test does not; removed.
 
 **[REFUTED]** Destroyer DestroyVolumes when the volume repository fails returns the error and destroys nothing
   - mutation: M_F_v — atc/gc/destroyer.go:75: `return err` -> `return nil` after RemoveDestroyingVolumes fails
-  - skeptic: REFUTED — same substantive gap as the container twin. The It injects `failRemoveDestroyingVolumes` returning `errors.New("I am le tired")` and asserts `MatchError("I am le tired")` exactly, which is an assertion that the destroyer does not wrap the repository's error; brine asserts only that the refusal contains "closed". Mutation: `return err` -> `return fmt.Errorf("destroy volumes on worker %s: 
+  - skeptic: REFUTED — same substantive gap as the container twin. The It injects `failRemoveDestroyingVolumes` returning `errors.New("I am le tired")` and asserts `MatchError("I am le tired")` exactly, which is an assertion that the destroyer does not wrap the repository's error; brine asserts only that the refusal contains "closed". Mutation: `return err` -> `return fmt.Errorf("destroy volumes on worker %s:
 
 **[REFUTED]** Destroyer DestroyVolumes when the worker name is not provided returns an error and destroys nothing
   - mutation: M_E_v — atc/gc/destroyer.go:61-66: the `if workerName == "" { ... return err }` guard deleted from DestroyVolumes only
-  - skeptic: REFUTED — same gap as the DestroyContainers twin. `MatchError("worker-name-must-be-provided")` is exact equality; brine's `And reclaiming the volumes was refused, saying "worker-name-must-be-provided"` is a substring check. Mutation: `err := fmt.Errorf("cannot sweep volumes: %w", errors.New("worker-name-must-be-provided"))` at destroyer.go:61-66. Go: `Ran 2 of 109 Specs in 0.975 seconds` / `FAIL! 
+  - skeptic: REFUTED — same gap as the DestroyContainers twin. `MatchError("worker-name-must-be-provided")` is exact equality; brine's `And reclaiming the volumes was refused, saying "worker-name-must-be-provided"` is a substring check. Mutation: `err := fmt.Errorf("cannot sweep volumes: %w", errors.New("worker-name-must-be-provided"))` at destroyer.go:61-66. Go: `Ran 2 of 109 Specs in 0.975 seconds` / `FAIL!
 
 **[REFUTED]** Destroyer FindDestroyingVolumesForGc when the volume repository fails returns the error
   - mutation: M_H — atc/gc/destroyer.go:87: `return nil, err` -> `return nil, nil` after GetDestroyingVolumes fails (a failed read becomes "nothing to reclaim")
-  - skeptic: REFUTED — old red, brine green. The It uses `failGetDestroyingVolumes` returning `errors.New("some-bad-err")` and asserts `MatchError("some-bad-err")` exactly; brine asserts the refusal contains "closed". Mutation: `return nil, err` -> `return nil, fmt.Errorf("get destroying volumes on worker %s: %w", workerName, err)` at destroyer.go:87. Go mutated: `Ran 3 of 109 Specs in 1.458 seconds` / `FAIL! 
+  - skeptic: REFUTED — old red, brine green. The It uses `failGetDestroyingVolumes` returning `errors.New("some-bad-err")` and asserts `MatchError("some-bad-err")` exactly; brine asserts the refusal contains "closed". Mutation: `return nil, err` -> `return nil, fmt.Errorf("get destroying volumes on worker %s: %w", workerName, err)` at destroyer.go:87. Go mutated: `Ran 3 of 109 Specs in 1.458 seconds` / `FAIL!
 
 **[INERT]** Destroyer FindDestroyingVolumesForGc returns nothing when the worker has no destroying volumes
   - mutation: Two honest mutations, both leaving it green. M_G — atc/gc/destroyer.go:100: `return destroyingVolumesHandles, nil` -> `return nil, nil`. M_G2 — atc/db/volume_repository.go:632-635 (GetDestroyingVolumes): the `"state": string(VolumeStateDestroying)` predicate dropped, so every volume on the worker is offered to the reaper.
@@ -203,12 +203,12 @@ BRINE_STRONGER = brine discriminates where the Go test does not; removed.
 
 **[DELETED]** ResourceCacheCollector Run resource caches when the cache is no longer in use when the cache is an image resource version for a job build when another build of a different job exists with a different image cache when the second build succeeds [It] keeps the new cache and the old one
   - mutation: M5 — atc/db/build.go:654-656, dropped `sq.Eq{"job_id": b.jobID}` from Finish's build_image_resource_caches delete, so any job's successful build discards every other job's image record.
-  - brine: RED, 18 passed / 1 failed. Scenario "A job build's image cache is released only when a later build of the same job succeeds — <case> (row 3)" — failing step: `And the cache "first-image" survived the sweep` -> "expected the resource cache rows still in the database to include \"first-image\", found 
+  - brine: RED, 18 passed / 1 failed. Scenario "A job build's image cache is released only when a later build of the same job succeeds — <case> (row 3)" — failing step: `And the cache "first-image" survived the sweep` -> "expected the resource cache rows still in the database to include \"first-image\", found
   - skeptic: Rebuilt M5 (dropped `sq.Eq{"job_id": b.jobID}`). Go: `Ran 16 of 109 Specs in 2.930 seconds` / `FAIL! -- 15 Passed | 1 Failed`, this It alone at resource_cache_collector_test.go:251. brine: 18/1, image row 3 on `And the cache "first-image" survived the sweep` -> "expected the resource cache rows still in the database to include \"first-image\", found [second-image]". The It's second assertion (`sec
 
 **[DELETED]** ResourceCacheCollector Run resource caches when the cache is no longer in use when the cache is an image resource version for a job build when another build of the same job exists with a different image cache when the second build fails [It] keeps the new cache and the old one
   - mutation: M6 — atc/db/build.go:651, dropped the success guard on the build_image_resource_caches delete: it now runs under `if b.jobID != 0 {` instead of `if b.jobID != 0 && status == BuildStatusSucceeded {`, so a FAILING build discards the image of its own last good build. (The rest of the success-only block is left guarded, so only that one predicate moves.)
-  - brine: RED, 18 passed / 1 failed. Scenario "A job build's image cache is released only when a later build of the same job succeeds — <case> (row 2)" — failing step: `And the cache "first-image" survived the sweep` -> "expected the resource cache rows still in the database to include \"first-image\", found 
+  - brine: RED, 18 passed / 1 failed. Scenario "A job build's image cache is released only when a later build of the same job succeeds — <case> (row 2)" — failing step: `And the cache "first-image" survived the sweep` -> "expected the resource cache rows still in the database to include \"first-image\", found
   - skeptic: Rebuilt M6 (delete moved out of the `status == BuildStatusSucceeded` guard, the rest of the block left guarded). Go: `Ran 16 of 109 Specs in 3.097 seconds` / `FAIL! -- 15 Passed | 1 Failed`, this It alone at resource_cache_collector_test.go:216. brine: 18/1, image row 2 on `And the cache "first-image" survived the sweep` -> "expected the resource cache rows still in the database to include \"first
 
 **[DELETED]** ResourceCacheCollector Run resource caches when the cache is no longer in use when the cache is an image resource version for a job build when another build of the same job exists with a different image cache when the second build succeeds [It] keeps the new cache and removes the old one
@@ -224,12 +224,12 @@ BRINE_STRONGER = brine discriminates where the Go test does not; removed.
 **[DELETED]** ResourceCacheCollector Run resource caches when the cache is no longer in use when the cache is an image resource version for a one-off build when the build finished recently [It] leaves it alone
   - mutation: M10 — atc/db/resource_cache_lifecycle.go:34, narrowed CleanBuildImageResourceCaches' cutoff from `'24 HOURS'::INTERVAL` to `'0 SECONDS'::INTERVAL`, so a one-off's image record is released the moment the build ends.
   - brine: RED, 18 passed / 1 failed. Scenario "A one-off build's image cache is released a day after the build ended — <case> (row 1)" — failing step: `And the cache "one-off-image" survived the sweep` -> "expected the resource cache rows still in the database to include \"one-off-image\", found [job-image]"
-  - skeptic: Rebuilt M10 ('24 HOURS' -> '0 SECONDS'). Go: `Ran 16 of 109 Specs in 3.080 seconds` / `FAIL! -- 15 Passed | 1 Failed`, this It alone at resource_cache_collector_test.go:277. brine: 18/1, "A one-off build's image cache is released a day after the build ended — <case> (row 1)" on `And the cache "one-off-image" survived the sweep` -> "expected the resource cache rows still in the database to include 
+  - skeptic: Rebuilt M10 ('24 HOURS' -> '0 SECONDS'). Go: `Ran 16 of 109 Specs in 3.080 seconds` / `FAIL! -- 15 Passed | 1 Failed`, this It alone at resource_cache_collector_test.go:277. brine: 18/1, "A one-off build's image cache is released a day after the build ended — <case> (row 1)" on `And the cache "one-off-image" survived the sweep` -> "expected the resource cache rows still in the database to include
 
 **[DELETED]** ResourceCacheCollector Run resource caches when the cache is no longer in use when the cache is an input to a job when pipeline is not paused [It] leaves it alone
   - mutation: M3 — atc/db/resource_cache_lifecycle.go:125, replaced `Where(sq.Expr("p.paused = false"))` with `Where("1 = 0")` in the version_sha256 next-build-inputs subquery, so that arm of the UNION protects nothing.
   - brine: RED, 18 passed / 1 failed. Scenario "A cache the scheduler still needs as an input is kept unless the pipeline is paused — <case> (row 1)" — failing step: `And the cache "input-cache" survived the sweep` -> "expected the resource cache rows still in the database to include \"input-cache\", found [in
-  - skeptic: Rebuilt M3. Go: `Ran 16 of 109 Specs in 3.350 seconds` / `FAIL! -- 15 Passed | 1 Failed`, this It alone at resource_cache_collector_test.go:161. brine: 18/1, "A cache the scheduler still needs as an input is kept unless the pipeline is paused — <case> (row 1)" on `And the cache "input-cache" survived the sweep` -> "expected the resource cache rows still in the database to include \"input-cache\", 
+  - skeptic: Rebuilt M3. Go: `Ran 16 of 109 Specs in 3.350 seconds` / `FAIL! -- 15 Passed | 1 Failed`, this It alone at resource_cache_collector_test.go:161. brine: 18/1, "A cache the scheduler still needs as an input is kept unless the pipeline is paused — <case> (row 1)" on `And the cache "input-cache" survived the sweep` -> "expected the resource cache rows still in the database to include \"input-cache\",
 
 **[DELETED]** ResourceCacheCollector Run resource caches when the cache is no longer in use when the cache is an input to a job when pipeline is paused [It] removes the cache
   - mutation: M2 — atc/db/resource_cache_lifecycle.go:125, deleted `Where(sq.Expr("p.paused = false"))` from the version_sha256 next-build-inputs subquery, so a paused pipeline's scheduler claim still protects the cache.
@@ -275,7 +275,7 @@ BRINE_STRONGER = brine discriminates where the Go test does not; removed.
 
 **[REFUTED]** ResourceCacheUseCollector Run cache uses when the build is for a job when a later build of the same job has succeeded [It] cleans up the uses
   - mutation: M11 — atc/db/resource_cache_lifecycle.go:41-50, CleanUsesForFinishedBuilds replaced with `return nil`. Also reddened by M12 (line 45, `b.interceptible = false` dropped), which breaks its intermediate `Expect(countResourceCacheUses()).NotTo(BeZero())` because the second build's uses go too.
-  - skeptic: REFUTED by direct measurement — old RED, brine GREEN. Mutation CP1, a single honest predicate change in CleanUsesForFinishedBuilds (atc/db/resource_cache_lifecycle.go:45): `sq.Expr("b.interceptible = false")` -> `sq.Expr("(b.interceptible = false OR b.job_id IS NOT NULL)")`, i.e. a job build's uses are released regardless of interceptibility. Go: `Ran 16 of 109 Specs in 3.098 seconds` / `FAIL! -- 
+  - skeptic: REFUTED by direct measurement — old RED, brine GREEN. Mutation CP1, a single honest predicate change in CleanUsesForFinishedBuilds (atc/db/resource_cache_lifecycle.go:45): `sq.Expr("b.interceptible = false")` -> `sq.Expr("(b.interceptible = false OR b.job_id IS NOT NULL)")`, i.e. a job build's uses are released regardless of interceptibility. Go: `Ran 16 of 109 Specs in 3.098 seconds` / `FAIL! --
 
 
 ## resource_config_check_session_collector_test.go
@@ -345,7 +345,7 @@ BRINE_STRONGER = brine discriminates where the Go test does not; removed.
 
 **[DELETED]** Scanner > forwards a nil pin from an unpinned persisted resource
   - mutation: m7c_unpinned_gets_version — atc/lidar/scanner.go:449, the pin lookup is kept but a version is invented when there is none: `version := checkable.CurrentPinnedVersion(); if version == nil { version = atc.Version{"ref": "invented"} }`. This breaks ONLY the unpinned half, leaving the pinned half correct, which is what isolates this It from its sibling.
-  - brine: RED, on the unpinned clause specifically. Scenario "A pinned resource is checked from its pin and an unpinned one from nothing" failed at step `And the check plan for "unpinned-resource" starts from the version "nothing"` -> "expected the version the check plan starts from for \"unpinned-resource\" 
+  - brine: RED, on the unpinned clause specifically. Scenario "A pinned resource is checked from its pin and an unpinned one from nothing" failed at step `And the check plan for "unpinned-resource" starts from the version "nothing"` -> "expected the version the check plan starts from for \"unpinned-resource\"
   - skeptic: Stands. The It is short — `factory.Calls()` len 1, the resource id, `Expect(factory.Calls()[0].from).To(BeNil())`, and a build finish — and brine's `And the check plan for "unpinned-resource" starts from the version "nothing"` covers the load-bearing clause, in a scenario that carries the pinned sibling alongside it. Notably this It does NOT assert the argument flags, so E1 left it green, confirmi
 
 **[DELETED]** Scanner > naturally excludes a persisted check_every never resource
@@ -391,7 +391,7 @@ BRINE_STRONGER = brine discriminates where the Go test does not; removed.
 **[DELETED]** Scanner Resource Type Resolution > does not persist a version when the resolver fails
   - mutation: m14_rt_resolve_err — atc/lidar/scanner.go:189-192, drop the `return` from the `if err != nil` branch after `s.resolver.Resolve(...)` in resolveResourceType, so a registry outage writes an empty digest into the version instead of leaving the row alone for the next tick.
   - brine: RED. Scenario Outline "A resource type is not resolved when <case>" row 1 ("the registry cannot answer for it") failed at step `And the resource type "quiet-type" was left unresolved` -> "expected the resource types the scan attached to a config not to include \"quiet-type\", but it does: [bystander
-  - skeptic: Stands. The It asserts `ResolveCallCount()` equals 1 (the registry was asked) and `ResourceConfigScopeID()` is zero; brine's outline row 1 arranges a genuine refusal ("quiet-type reads missing/type:latest instead") and asserts `And the resource type "quiet-type" was left unresolved` with a resolved bystander beside it, so the absence is not vacuous. E7 left this It green because it asserts a call 
+  - skeptic: Stands. The It asserts `ResolveCallCount()` equals 1 (the registry was asked) and `ResourceConfigScopeID()` is zero; brine's outline row 1 arranges a genuine refusal ("quiet-type reads missing/type:latest instead") and asserts `And the resource type "quiet-type" was left unresolved` with a resolved bystander beside it, so the absence is not vacuous. E7 left this It green because it asserts a call
 
 **[DELETED]** Scanner Resource Type Resolution > passes persisted basic-auth credentials to the resolver
   - mutation: m10_rt_auth — atc/lidar/scanner.go:178-185, delete the `if username, ok := source["username"].(string); ok && username != ""` block from resolveResourceType so `auth` stays nil and every private resource-type image in the cluster stops resolving.
@@ -420,7 +420,7 @@ BRINE_STRONGER = brine discriminates where the Go test does not; removed.
 
 **[REFUTED]** Scanner Native Resource Resolution > skips a persisted native resource with check_every never
   - mutation: m12b_rs_never — atc/lidar/scanner.go:343-346, delete the `if rs.CheckEvery() != nil && rs.CheckEvery().Never { ... return }` skip from resolveResource.
-  - skeptic: REFUTED — the It asserts `Expect(resolver.ResolveCallCount()).To(BeZero())` and brine's outline row asserts only `And the resource "quiet-image" was left unresolved`, a `CheckNotMember` over `attachedResources()` that cannot see a registry request whose answer is thrown away. MEASURED (E7) — the two skip guards in resolveResource (`CheckEvery().Never` and the interval check) moved from before the 
+  - skeptic: REFUTED — the It asserts `Expect(resolver.ResolveCallCount()).To(BeZero())` and brine's outline row asserts only `And the resource "quiet-image" was left unresolved`, a `CheckNotMember` over `attachedResources()` that cannot see a registry request whose answer is thrown away. MEASURED (E7) — the two skip guards in resolveResource (`CheckEvery().Never` and the interval check) moved from before the
 
 **[REFUTED]** Scanner Native Resource Resolution > treats a scope deletion during native version save as a debug-level race
   - mutation: m17f_rs_fk_only — atc/lidar/scanner.go:423-429, drop ONLY the FK arm's `return` after `scope.SaveVersions` in resolveResource (the non-FK arm keeps its return), so a resource whose scope was collected mid-save falls through to the stamp, the success log and the metric. The split half of m17b.
@@ -428,7 +428,7 @@ BRINE_STRONGER = brine discriminates where the Go test does not; removed.
 
 **[REFUTED]** Scanner Resource Type Resolution > persists the resolved digest, scope, and check end time
   - mutation: m22_resolved_image_colon — atc/db/resource_type.go:269, `return repo + "@" + digest` becomes `return repo + ":" + digest`, so a resolved type is pulled by a tag-shaped reference instead of by digest and a pod gets whatever moved under the tag since the scan. Also independently reddened by m21_rt_no_endtime (scanner.go:247-251, delete the `scope.UpdateLastCheckEndTime(true)` call).
-  - skeptic: REFUTED — the It asserts the identity of the resource_config row, which brine deliberately dropped, and that omission is reddenable. The It pins `Expect(freshType.ResourceConfigID()).To(Equal(expectedConfig.ID()))` where expectedConfig is `FindOrCreateResourceConfig("registry-image", config.Source, nil)` — i.e. the config must be keyed on the type's own full source. The feature file's DISPOSITION 
+  - skeptic: REFUTED — the It asserts the identity of the resource_config row, which brine deliberately dropped, and that omission is reddenable. The It pins `Expect(freshType.ResourceConfigID()).To(Equal(expectedConfig.ID()))` where expectedConfig is `FindOrCreateResourceConfig("registry-image", config.Source, nil)` — i.e. the config must be keyed on the type's own full source. The feature file's DISPOSITION
 
 **[REFUTED]** Scanner Resource Type Resolution > resolves persisted resource types across independent pipelines
   - mutation: m15_first_pipeline_only — atc/lidar/scanner.go:74-76, add `break` to the `for _, types := range resourceTypesMap` loop in scanResourceTypes so only one pipeline's types are collected, freezing every other team's custom types at whatever image they were first set to.
@@ -512,7 +512,7 @@ BRINE_STRONGER = brine discriminates where the Go test does not; removed.
 **[DELETED]** WorkerCollector Run leaves an ephemeral worker that is still heartbeating
   - mutation: M_K — atc/db/worker_lifecycle.go:27 (DeleteUnresponsiveEphemeralWorkers): `.Where(sq.Expr("expires < NOW()"))` deleted, leaving only the `ephemeral` predicate
   - brine: gc-reclamation.feature, Scenario Outline "A worker is reclaimed only when it is both ephemeral and unresponsive — <case>" (row 2, `disposable but alive`) — `FAIL (6/7 steps)` / `Step FAILED: And the worker "live-ephemeral" is still registered`
-  - skeptic: Not re-run. The mutation is narrow and one layer down (drop `expires < NOW()` from DeleteUnresponsiveEphemeralWorkers), and it can only redden the row whose worker is ephemeral-but-live — which is exactly outline row 2. The It's assertion (`found` is true for live-ephemeral) and brine's `And the worker "live-ephemeral" is still registered` read the same fact off the same table; brine additionally 
+  - skeptic: Not re-run. The mutation is narrow and one layer down (drop `expires < NOW()` from DeleteUnresponsiveEphemeralWorkers), and it can only redden the row whose worker is ephemeral-but-live — which is exactly outline row 2. The It's assertion (`found` is true for live-ephemeral) and brine's `And the worker "live-ephemeral" is still registered` read the same fact off the same table; brine additionally
 
 **[DELETED]** WorkerCollector Run removes an ephemeral worker that has stopped heartbeating
   - mutation: M_J — atc/gc/worker_collector.go:36: `affected, err := wc.workerLifecycle.DeleteUnresponsiveEphemeralWorkers()` replaced with `var affected []string; var err error`, i.e. the collector never makes the call
