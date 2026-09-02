@@ -21,6 +21,8 @@ func buildAppResources(args []string) (*brine.ResourceRegistry, error) {
 			allowedResources = map[string]bool{"postgres": true}
 		case "db-team-remaining-strict.feature":
 			allowedResources = map[string]bool{"postgres": true, "jetbridge-db": true}
+		case "concurrent-request-policy-strict.feature":
+			allowedResources = map[string]bool{}
 		}
 	}
 	if allowedResources != nil {

@@ -1,0 +1,61 @@
+{
+  "name": "concurrent-request-policy-strict",
+  "test_package": "./atc/wrappa",
+  "source_test_file": "atc/wrappa/concurrent_request_policy_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/concurrent-request-policy-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/concurrent_request_policy_strict.go",
+    "atc/worker/jetbridge/brine/steps/registry.go",
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/registry.go"
+  ],
+  "cases": [
+    {
+      "id": "limited-route-accepts-supported-action",
+      "source_file": "atc/wrappa/concurrent_request_policy.go",
+      "old": "var supportedActions = []LimitedRoute{LimitedRoute(atc.ListAllJobs)}",
+      "new": "var supportedActions = []LimitedRoute{}",
+      "tests": ["Concurrent Request Policy LimitedRoute#UnmarshalFlag unmarshals ListAllJobs"],
+      "scenarios": ["LimitedRoute unmarshals a supported action"]
+    },
+    {
+      "id": "unsupported-error-names-action",
+      "source_file": "atc/wrappa/concurrent_request_policy.go",
+      "old": "\treturn fmt.Errorf(\n\t\t\"action '%s' is not supported. Supported actions are: %v\",\n\t\tvalue,\n\t\tsupportedActions,\n\t)",
+      "new": "\treturn fmt.Errorf(\n\t\t\"action is not supported. Supported actions are: %v\",\n\t\tsupportedActions,\n\t)",
+      "tests": ["Concurrent Request Policy LimitedRoute#UnmarshalFlag raises an error when the action is not supported"],
+      "scenarios": ["LimitedRoute unsupported error names the action"]
+    },
+    {
+      "id": "unsupported-error-lists-supported-actions",
+      "source_file": "atc/wrappa/concurrent_request_policy.go",
+      "old": "action '%s' is not supported. Supported actions are: %v",
+      "new": "action '%s' is not supported. Available routes: %v",
+      "tests": ["Concurrent Request Policy LimitedRoute#UnmarshalFlag error message describes supported actions"],
+      "scenarios": ["LimitedRoute unsupported error describes supported actions"]
+    },
+    {
+      "id": "handler-pool-reports-limited-action",
+      "source_file": "atc/wrappa/concurrent_request_policy.go",
+      "old": "\treturn pool, found",
+      "new": "\treturn pool, false",
+      "tests": ["Concurrent Request Policy ConcurrentRequestPolicy#HandlerPool returns true when an action is limited"],
+      "scenarios": ["HandlerPool finds a limited action"]
+    },
+    {
+      "id": "handler-pool-reports-unlimited-action-missing",
+      "source_file": "atc/wrappa/concurrent_request_policy.go",
+      "old": "\treturn pool, found",
+      "new": "\treturn pool, true",
+      "tests": ["Concurrent Request Policy ConcurrentRequestPolicy#HandlerPool returns false when an action is not limited"],
+      "scenarios": ["HandlerPool does not find an unlimited action"]
+    },
+    {
+      "id": "handler-pool-preserves-pool-reference",
+      "source_file": "atc/wrappa/concurrent_request_policy.go",
+      "old": "\treturn pool, found",
+      "new": "\tif found {\n\t\treturn NewPool(pool.Size()), found\n\t}\n\treturn pool, found",
+      "tests": ["Concurrent Request Policy ConcurrentRequestPolicy#HandlerPool holds a reference to its pool"],
+      "scenarios": ["HandlerPool returns the shared pool"]
+    }
+  ]
+}
