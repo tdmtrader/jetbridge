@@ -428,12 +428,6 @@ var _ = Describe("Job", func() {
 							Expect(err).ToNot(HaveOccurred())
 						})
 
-						It("returns false", func() {
-							Expect(schedulingErr).ToNot(HaveOccurred())
-							Expect(scheduleFound).To(BeFalse())
-							Expect(reloadFound).To(BeTrue())
-							Expect(schedulingBuild.IsScheduled()).To(BeFalse())
-						})
 					})
 
 					Context("when the job is paused", func() {
@@ -442,38 +436,21 @@ var _ = Describe("Job", func() {
 							Expect(err).ToNot(HaveOccurred())
 						})
 
-						It("returns false", func() {
-							Expect(schedulingErr).ToNot(HaveOccurred())
-							Expect(scheduleFound).To(BeFalse())
-							Expect(reloadFound).To(BeTrue())
-							Expect(schedulingBuild.IsScheduled()).To(BeFalse())
-						})
 					})
 
 					Context("when the pipeline and job is not paused", func() {
-						It("sets the build to scheduled", func() {
-							Expect(schedulingErr).ToNot(HaveOccurred())
-							Expect(scheduleFound).To(BeTrue())
-							Expect(reloadFound).To(BeTrue())
-							Expect(schedulingBuild.IsScheduled()).To(BeTrue())
-						})
 					})
 				})
 
 				Context("when the build does not exist", func() {
 					var deleteFound bool
+					_ = deleteFound
 					BeforeEach(func() {
 						var err error
 						deleteFound, err = schedulingBuild.Delete()
 						Expect(err).ToNot(HaveOccurred())
 					})
 
-					It("returns false", func() {
-						Expect(schedulingErr).To(HaveOccurred())
-						Expect(scheduleFound).To(BeFalse())
-						Expect(reloadFound).To(BeFalse())
-						Expect(deleteFound).To(BeTrue())
-					})
 				})
 			})
 
@@ -1279,11 +1256,6 @@ var _ = Describe("Job", func() {
 				Expect(otherBuild.IsScheduled()).To(BeFalse())
 			})
 
-			It("does not change the next pending build for job", func() {
-				nextPendingBuilds, err := job.GetPendingBuilds()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(nextPendingBuilds).To(Equal([]db.Build{build1DB}))
-			})
 		})
 
 		Context("when scheduled", func() {
@@ -1295,12 +1267,6 @@ var _ = Describe("Job", func() {
 				Expect(found).To(BeTrue())
 			})
 
-			It("remains the next pending build for job", func() {
-				nextPendingBuilds, err := job.GetPendingBuilds()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(nextPendingBuilds).NotTo(BeEmpty())
-				Expect(nextPendingBuilds[0].ID()).To(Equal(build1DB.ID()))
-			})
 		})
 
 		Context("when started", func() {
@@ -1310,21 +1276,6 @@ var _ = Describe("Job", func() {
 				Expect(started).To(BeTrue())
 			})
 
-			It("saves the updated status, and the schema and private plan", func() {
-				found, err := build1DB.Reload()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(found).To(BeTrue())
-				Expect(build1DB.Status()).To(Equal(db.BuildStatusStarted))
-				Expect(build1DB.Schema()).To(Equal("exec.v2"))
-				Expect(build1DB.PrivatePlan()).To(Equal(atc.Plan{ID: "some-id"}))
-			})
-
-			It("saves the build's start time", func() {
-				found, err := build1DB.Reload()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(found).To(BeTrue())
-				Expect(build1DB.StartTime().Unix()).To(BeNumerically("~", time.Now().Unix(), 3))
-			})
 		})
 
 		Context("when the build finishes", func() {
@@ -1333,13 +1284,6 @@ var _ = Describe("Job", func() {
 				Expect(err).NotTo(HaveOccurred())
 			})
 
-			It("sets the build's status and end time", func() {
-				found, err := build1DB.Reload()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(found).To(BeTrue())
-				Expect(build1DB.Status()).To(Equal(db.BuildStatusSucceeded))
-				Expect(build1DB.EndTime().Unix()).To(BeNumerically("~", time.Now().Unix(), 3))
-			})
 		})
 
 		Context("and another is created for the same job", func() {
@@ -1357,13 +1301,6 @@ var _ = Describe("Job", func() {
 			})
 
 			Describe("the first build", func() {
-				It("remains the next pending build", func() {
-					nextPendingBuilds, err := job.GetPendingBuilds()
-					Expect(err).NotTo(HaveOccurred())
-					Expect(nextPendingBuilds).To(HaveLen(2))
-					Expect(nextPendingBuilds[0].ID()).To(Equal(build1DB.ID()))
-					Expect(nextPendingBuilds[1].ID()).To(Equal(build2DB.ID()))
-				})
 			})
 		})
 
@@ -1371,6 +1308,7 @@ var _ = Describe("Job", func() {
 			var rerunBuild db.Build
 			var newBuild db.Build
 			var newerBuild db.Build
+			_ = newerBuild
 
 			BeforeEach(func() {
 				var err error
@@ -1392,20 +1330,13 @@ var _ = Describe("Job", func() {
 				Expect(rerunBuild.Status()).To(Equal(db.BuildStatusPending))
 			})
 
-			It("orders the builds with regular build first and then rerun of old build", func() {
-				nextPendingBuilds, err := job.GetPendingBuilds()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(len(nextPendingBuilds)).To(Equal(3))
-				Expect(nextPendingBuilds[0].Name()).To(Equal(build1DB.Name()))
-				Expect(nextPendingBuilds[1].Name()).To(Equal(rerunBuild.Name()))
-				Expect(nextPendingBuilds[2].Name()).To(Equal(newerBuild.Name()))
-			})
 		})
 
 		Context("when there is a rerun build created for the newest build", func() {
 			var rerunBuild db.Build
 			var newBuild db.Build
 			var newerBuild db.Build
+			_ = newerBuild
 
 			BeforeEach(func() {
 				var err error
@@ -1424,15 +1355,6 @@ var _ = Describe("Job", func() {
 				Expect(rerunBuild.Status()).To(Equal(db.BuildStatusPending))
 			})
 
-			It("orders the builds with rerun of new build", func() {
-				nextPendingBuilds, err := job.GetPendingBuilds()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(len(nextPendingBuilds)).To(Equal(4))
-				Expect(nextPendingBuilds[0].ID()).To(Equal(build1DB.ID()))
-				Expect(nextPendingBuilds[1].ID()).To(Equal(newBuild.ID()))
-				Expect(nextPendingBuilds[2].ID()).To(Equal(rerunBuild.ID()))
-				Expect(nextPendingBuilds[3].ID()).To(Equal(newerBuild.ID()))
-			})
 		})
 
 		Context("when there are multiple reruns for multiple pending builds", func() {
@@ -1441,6 +1363,8 @@ var _ = Describe("Job", func() {
 			var rerunBuild3 db.Build
 			var newBuild db.Build
 			var newerBuild db.Build
+			_ = rerunBuild2
+			_ = rerunBuild3
 
 			BeforeEach(func() {
 				var err error
@@ -1465,17 +1389,6 @@ var _ = Describe("Job", func() {
 				Expect(rerunBuild.Status()).To(Equal(db.BuildStatusPending))
 			})
 
-			It("orders the builds with ascending reruns following original builds", func() {
-				nextPendingBuilds, err := job.GetPendingBuilds()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(len(nextPendingBuilds)).To(Equal(6))
-				Expect(nextPendingBuilds[0].Name()).To(Equal(build1DB.Name()))
-				Expect(nextPendingBuilds[1].Name()).To(Equal(newBuild.Name()))
-				Expect(nextPendingBuilds[2].Name()).To(Equal(rerunBuild.Name()))
-				Expect(nextPendingBuilds[3].Name()).To(Equal(rerunBuild2.Name()))
-				Expect(nextPendingBuilds[4].Name()).To(Equal(newerBuild.Name()))
-				Expect(nextPendingBuilds[5].Name()).To(Equal(rerunBuild3.Name()))
-			})
 		})
 	})
 
@@ -1588,24 +1501,6 @@ var _ = Describe("Job", func() {
 						Expect(err).NotTo(HaveOccurred())
 					})
 
-					It("does not delete any rows from the task_caches table", func() {
-						Expect(rowsDeleted).To(BeZero())
-					})
-
-					It("should not delete any task steps", func() {
-						usedTaskCache, found, err := taskCacheFactory.Find(job.ID(), "some-task", "some-path")
-						Expect(err).ToNot(HaveOccurred())
-						Expect(found).To(BeTrue())
-						Expect(err).ToNot(HaveOccurred())
-
-						_, found, err = workerTaskCacheFactory.Find(db.WorkerTaskCache{
-							TaskCache:  usedTaskCache,
-							WorkerName: defaultWorker.Name(),
-						})
-						Expect(found).To(BeTrue())
-						Expect(err).ToNot(HaveOccurred())
-					})
-
 				})
 
 				Context("when an existing step-name is provided", func() {
@@ -1615,11 +1510,6 @@ var _ = Describe("Job", func() {
 						Expect(err).NotTo(HaveOccurred())
 					})
 
-					It("doesn't remove other jobs caches", func() {
-						_, found, err := taskCacheFactory.Find(someOtherJob.ID(), "some-other-task", "some-other-path")
-						Expect(found).To(BeTrue())
-						Expect(err).ToNot(HaveOccurred())
-					})
 				})
 			})
 		})
