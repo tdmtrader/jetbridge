@@ -1,0 +1,65 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/opa-result-strict.json",
+  "git_head": "7c440262b327c59adb6e0b1920cc4e683be6bce2",
+  "completed_at": "2026-09-02T18:45:51Z",
+  "source_tests": 8,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/policy/opa/result.go": "d5b39e43152a130baf562951d007db16e7ef50855452f43db3c7fe53298bacdd",
+    "atc/policy/opa/result_test.go": "3c727be4677c7df97be9b8eb0e338dc6f37e666816d1d7496ca5e22ec3f88b84",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/opa-result-strict.feature": "d2f80d8052d3dba7f06f4db9700ca85fa32dd726569fae7e58f054920f0c57f1",
+    "atc/worker/jetbridge/brine/mutations/opa-result-strict.json": "935e5d942ad01e7c72312490343655078b5f32a3640f884d053953cb920e137c",
+    "atc/worker/jetbridge/brine/steps/opa_result_strict.go": "c7326b31f5d85f0cbc81a279c8217dbeb8f5885e0c36a790f5f25437b8c12647"
+  },
+  "mutation_cases": [
+    {
+      "id": "missing-allowed-key-loses-diagnostic",
+      "mutation_sha256": "f3dfde2f473842c4cc0df16bbe04c1026852fd5fc17f9ef27cdd47926341cbd7",
+      "failed_source_tests": [
+        "OPA Result ParseOpaResult when result string doesn't contain the key of allowed should fail"
+      ],
+      "failed_brine_scenarios": [
+        "OPA result profile \u003cprofile\u003e (row 1)"
+      ]
+    },
+    {
+      "id": "nonboolean-allowed-key-loses-diagnostic",
+      "mutation_sha256": "13f203ca61d515158e720a8cc8f6655f76024e7204fc3a4f73f0cbbea0a3b965",
+      "failed_source_tests": [
+        "OPA Result ParseOpaResult when result string contain the key of allowed but type is not bool should fail",
+        "OPA Result ParseOpaResult when result string contain the key of allowed with too few parts should fail"
+      ],
+      "failed_brine_scenarios": [
+        "OPA result profile \u003cprofile\u003e (row 2)",
+        "OPA result profile \u003cprofile\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "allowed-traversal-error-loses-context",
+      "mutation_sha256": "3dba5303eb89d45f9d286bc120d425eebb029ce2c5e5565b6a52398dd85804cc",
+      "failed_source_tests": [
+        "OPA Result ParseOpaResult when result string contain the key of allowed with too much parts should fail"
+      ],
+      "failed_brine_scenarios": [
+        "OPA result profile \u003cprofile\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "successful-policy-inverts-allowed-decision",
+      "mutation_sha256": "5de73f4358cf333ddf5821c244c7d233497ce0ab9f77968cc60d921f7d162081",
+      "failed_source_tests": [
+        "OPA Result ParseOpaResult when result string contain all keys should succeed",
+        "OPA Result ParseOpaResult when result string contain the key of allowed and shouldBlock should succeed",
+        "OPA Result ParseOpaResult when result string contain the key of allowed but other keys should succeed with shouldBlock being false",
+        "OPA Result ParseOpaResult when result string contain the key of allowed with false value should succeed with shouldBlock being true"
+      ],
+      "failed_brine_scenarios": [
+        "OPA result profile \u003cprofile\u003e (row 5)",
+        "OPA result profile \u003cprofile\u003e (row 6)",
+        "OPA result profile \u003cprofile\u003e (row 7)",
+        "OPA result profile \u003cprofile\u003e (row 8)"
+      ]
+    }
+  ]
+}
