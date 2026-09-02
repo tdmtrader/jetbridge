@@ -26,6 +26,7 @@ type manifest struct {
 	SourceTestFile string         `json:"source_test_file"`
 	Feature        string         `json:"feature"`
 	StepFiles      []string       `json:"step_files"`
+	GinkgoProcs    int            `json:"ginkgo_procs,omitempty"`
 	Cases          []mutationCase `json:"cases"`
 }
 
@@ -226,15 +227,19 @@ func runCase(repo, brineDir, brineBinary, ginkgoBinary string, m manifest, mutat
 
 	testReport := filepath.Join(temp, "ginkgo.json")
 	testEnv := append(os.Environ(), "GOFLAGS=-overlay="+overlayPath)
+	ginkgoArgs := []string{
+		"--focus-file=^" + regexp.QuoteMeta(absolute(repo, m.SourceTestFile)) + "$",
+		"--fail-on-empty",
+		"--json-report=" + testReport,
+	}
+	if m.GinkgoProcs > 1 {
+		ginkgoArgs = append(ginkgoArgs, fmt.Sprintf("--procs=%d", m.GinkgoProcs))
+	}
+	ginkgoArgs = append(ginkgoArgs, m.TestPackage)
 	var testOutput string
 	var testErr error
 	lockErr := withFileLock("/tmp/concourse-migration-audit-ginkgo.lock", func() {
-		testOutput, testErr = run(repo, testEnv, ginkgoBinary,
-			"--focus-file=^"+regexp.QuoteMeta(absolute(repo, m.SourceTestFile))+"$",
-			"--fail-on-empty",
-			"--json-report="+testReport,
-			m.TestPackage,
-		)
+		testOutput, testErr = run(repo, testEnv, ginkgoBinary, ginkgoArgs...)
 	})
 	if lockErr != nil {
 		return caseResult{}, fmt.Errorf("serialize Ginkgo invocation: %w", lockErr)
