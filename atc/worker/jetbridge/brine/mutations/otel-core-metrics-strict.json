@@ -1,0 +1,74 @@
+{
+  "name": "otel-core-metrics-strict",
+  "test_package": "./atc/metric",
+  "source_test_file": "atc/metric/otel_metrics_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/otel-metrics.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/otel_metrics.go"
+  ],
+  "cases": [
+    {
+      "id": "build-duration-keeps-team-attribute",
+      "source_file": "atc/metric/otel_metrics.go",
+      "old": "attribute.String(\"build.team\", team)",
+      "new": "attribute.String(\"build.team_name\", team)",
+      "tests": ["OTel Core Metrics build duration histogram records build duration with attributes"],
+      "scenarios": ["OTel profile <profile> exports its production measurement (row 1)"],
+      "failure_contains": "metric concourse.build.duration did not export"
+    },
+    {
+      "id": "http-duration-keeps-method-attribute",
+      "source_file": "atc/metric/otel_metrics.go",
+      "old": "attribute.String(\"http.method\", method)",
+      "new": "attribute.String(\"http.request.method\", method)",
+      "tests": ["OTel Core Metrics HTTP response time histogram records HTTP response time with attributes"],
+      "scenarios": ["OTel profile <profile> exports its production measurement (row 2)"],
+      "failure_contains": "metric concourse.http.response_time did not export"
+    },
+    {
+      "id": "pod-startup-duration-uses-seconds",
+      "source_file": "atc/metric/otel_metrics.go",
+      "old": "k8sPodStartupHistogram.Record(ctx, duration.Seconds())",
+      "new": "k8sPodStartupHistogram.Record(ctx, duration.Minutes())",
+      "tests": ["OTel Core Metrics K8s pod startup duration histogram records pod startup duration"],
+      "scenarios": ["OTel profile <profile> exports its production measurement (row 3)"],
+      "failure_contains": "metric concourse.k8s.pod_startup_duration did not export"
+    },
+    {
+      "id": "containers-created-records-whole-count",
+      "source_file": "atc/metric/otel_metrics.go",
+      "old": "containersCreatedCounter.Add(ctx, count)",
+      "new": "containersCreatedCounter.Add(ctx, count/1000)",
+      "tests": ["OTel Core Metrics container and volume counters records containers created"],
+      "scenarios": ["OTel profile <profile> exports its production measurement (row 4)"],
+      "failure_contains": "metric concourse.containers.created did not export"
+    },
+    {
+      "id": "volumes-created-records-whole-count",
+      "source_file": "atc/metric/otel_metrics.go",
+      "old": "volumesCreatedCounter.Add(ctx, count)",
+      "new": "volumesCreatedCounter.Add(ctx, count/1000)",
+      "tests": ["OTel Core Metrics container and volume counters records volumes created"],
+      "scenarios": ["OTel profile <profile> exports its production measurement (row 5)"],
+      "failure_contains": "metric concourse.volumes.created did not export"
+    },
+    {
+      "id": "volume-operation-duration-uses-seconds",
+      "source_file": "atc/metric/otel_metrics.go",
+      "old": "volumeOperationDurationHist.Record(ctx, duration.Seconds(),",
+      "new": "volumeOperationDurationHist.Record(ctx, duration.Minutes(),",
+      "tests": ["OTel Core Metrics volume operation duration histogram records the duration with an op attribute"],
+      "scenarios": ["OTel profile <profile> exports its production measurement (row 6)"],
+      "failure_contains": "metric concourse.k8s.volume_operation_duration did not export"
+    },
+    {
+      "id": "volume-operation-preserves-operation-label",
+      "source_file": "atc/metric/otel_metrics.go",
+      "old": "attribute.String(\"op\", op)",
+      "new": "attribute.String(\"op\", \"stream_in\")",
+      "tests": ["OTel Core Metrics volume operation duration histogram distinguishes operations by the op label"],
+      "scenarios": ["OTel profile <profile> exports its production measurement (row 7)"],
+      "failure_contains": "metric concourse.k8s.volume_operation_duration did not export"
+    }
+  ]
+}
