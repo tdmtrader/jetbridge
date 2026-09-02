@@ -1,7 +1,7 @@
 {
   "manifest": "atc/worker/jetbridge/brine/mutations/db-volume-repository-strict.json",
-  "git_head": "d3c1221cec26885efdc55b1dab2998f7fa327f61",
-  "completed_at": "2026-09-02T15:31:39Z",
+  "git_head": "95b40573e30fa6965d1028717388ad8bba0f3945",
+  "completed_at": "2026-09-02T15:57:03Z",
   "source_tests": 31,
   "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
   "input_sha256": {
@@ -10,7 +10,7 @@
     "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
     "atc/worker/jetbridge/brine/features/db-volume-repository-strict.feature": "22524c5c6b449ad7ff5949c2eb62433d0f320a2e9a053ddf22e0ed9882cc4731",
     "atc/worker/jetbridge/brine/mutations/db-volume-repository-strict.json": "ae1991819692d93d58cea17b29e9d6c4251def26263d9511c401980434abe312",
-    "atc/worker/jetbridge/brine/steps/db_volume_repository_strict.go": "a9ba82b2d1febc9f59638a2d4402dd6072a64ae85b3b63e6e739df7a159483a8",
+    "atc/worker/jetbridge/brine/steps/db_volume_repository_strict.go": "d26f3b3a06b8c1ae6c07f16a208c2dac6501e7936025388750891f68449ff547",
     "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8"
   },
   "mutation_cases": [
