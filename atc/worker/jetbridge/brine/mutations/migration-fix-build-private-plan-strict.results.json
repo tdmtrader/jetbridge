@@ -1,0 +1,66 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/migration-fix-build-private-plan-strict.json",
+  "git_head": "541a9c3d8ac10792290b2614ad6c5020ac13876a",
+  "completed_at": "2026-09-02T21:45:09Z",
+  "source_tests": 6,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/migration/fix_build_private_plan_test.go": "e42b6648cccd1b8f27b3007714057d16c06092bd25a2723710059226131cf52c",
+    "atc/db/migration/migrations/1551384520_fix_build_private_plan.down.go": "fc1deaf73774e5e5e037956f6405e9cc3770f6061c9d28e8403254e0f77b5d73",
+    "atc/db/migration/migrations/1551384520_fix_build_private_plan.up.go": "ad1bdecc3b801442b5773164548affa1e81505ba2db17016dc42539f58e70abe",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/registry.go": "4e814a74fb020c719ffd12270d5b7add4e703a117e8563f4a2b9df692181978c",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/migration-fix-build-private-plan-strict.feature": "592f63e8a90d35cadf94233c3a47d694b009e51559639d25ed455d562c504bb9",
+    "atc/worker/jetbridge/brine/mutations/migration-fix-build-private-plan-strict.json": "a2e34dee0584af83cf7096fe6002e650f6c26d7ad239ee8807599c23bd7b800e",
+    "atc/worker/jetbridge/brine/steps/migration_fix_build_private_plan_strict.go": "f3cb1d650c0336bfa14a92ce0b1d1d0880846533d6e746bf88b8c9028d34a84a",
+    "atc/worker/jetbridge/brine/steps/registry.go": "04e57482ec58601b1b1dc3bf9afa9ecb944513f9a89c881591faea432295a04c",
+    "atc/worker/jetbridge/brine/steps/resources.go": "f594ee3b1828c61ca1dd1ef9dd8024ecbb440898b57644b50a80d86bad475691"
+  },
+  "mutation_cases": [
+    {
+      "id": "up-ignores-null-private-plans",
+      "mutation_sha256": "445e0678e264da1ed7de470e5cbf820617a538d32ae89d144d0dfcaf8090adc9",
+      "failed_source_tests": [
+        "Fix Build Private Plan Up ignores NULL plans"
+      ],
+      "failed_brine_scenarios": [
+        "Up migration ignores NULL plans"
+      ]
+    },
+    {
+      "id": "up-removes-plan-wrapper",
+      "mutation_sha256": "d68c4b945307b0ee10512915182a544d91ad8e799e8a126f41bf2e494f7c28eb",
+      "failed_source_tests": [
+        "Fix Build Private Plan Up removes the 'plan' key",
+        "Fix Build Private Plan Up updates multiple plans"
+      ],
+      "failed_brine_scenarios": [
+        "Up migration removes the plan key",
+        "Up migration updates multiple plans"
+      ]
+    },
+    {
+      "id": "down-ignores-null-private-plans",
+      "mutation_sha256": "3fa69d0aaad302e957f25ef09b4718a5da5fd72df88a397616fd8e80025dba61",
+      "failed_source_tests": [
+        "Fix Build Private Plan Down ignores NULL plans"
+      ],
+      "failed_brine_scenarios": [
+        "Down migration ignores NULL plans"
+      ]
+    },
+    {
+      "id": "down-restores-plan-wrapper",
+      "mutation_sha256": "194e9cc498cff4e6459c3e3e1192ee96201fe1c1d96bb307fdc24fddbce49ee1",
+      "failed_source_tests": [
+        "Fix Build Private Plan Down nests the plan under a 'plan' key",
+        "Fix Build Private Plan Down updates multiple plans"
+      ],
+      "failed_brine_scenarios": [
+        "Down migration nests the plan under a plan key",
+        "Down migration updates multiple plans"
+      ]
+    }
+  ]
+}
