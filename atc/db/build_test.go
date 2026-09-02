@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"strconv"
 	"time"
 
 	"code.cloudfoundry.org/clock"
@@ -458,40 +457,6 @@ var _ = Describe("Build", func() {
 			})
 
 			Context("build is successful", func() {
-				It("archives pipelines no longer set by the job", func() {
-					By("no longer setting the child pipeline")
-					build2, _ := defaultJob.CreateBuild(defaultBuildCreatedBy)
-					build2.Finish(db.BuildStatusSucceeded)
-
-					childPipeline.Reload()
-					Expect(childPipeline.Archived()).To(BeTrue())
-				})
-
-				Context("chain of pipelines setting each other... like a russian doll set...", func() {
-					It("archives all descendent pipelines", func() {
-						childPipelines := []db.Pipeline{childPipeline}
-
-						By("creating a chain of pipelines, previous pipeline setting the next pipeline")
-						for i := 0; i < 5; i++ {
-							job, _, _ := childPipeline.Job("some-job")
-							build, _ := job.CreateBuild(defaultBuildCreatedBy)
-							childPipeline, _, _ = build.SavePipeline(atc.PipelineRef{Name: "child-pipeline-" + strconv.Itoa(i)}, defaultTeam.ID(), defaultPipelineConfig, db.ConfigVersion(0), false)
-							build.Finish(db.BuildStatusSucceeded)
-							childPipelines = append(childPipelines, childPipeline)
-						}
-
-						By("parent pipeline no longer sets child pipeline in most recent build")
-						build, _ := defaultJob.CreateBuild(defaultBuildCreatedBy)
-						build.Finish(db.BuildStatusSucceeded)
-
-						for _, pipeline := range childPipelines {
-							pipeline.Reload()
-							Expect(pipeline.Archived()).To(BeTrue())
-						}
-
-					})
-				})
-
 				Context("when the pipeline is not set by build", func() {
 					It("never gets archived", func() {
 						build, _ := defaultJob.CreateBuild(defaultBuildCreatedBy)
@@ -620,44 +585,6 @@ var _ = Describe("Build", func() {
 			Expect(build.IsAborted()).To(BeTrue())
 		})
 
-		Context("request job rescheudle", func() {
-			JustBeforeEach(func() {
-				found, err := job.Reload()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(found).To(BeTrue())
-			})
-
-			Context("when build is in pending state", func() {
-				BeforeEach(func() {
-					time.Sleep(1 * time.Second)
-				})
-
-				It("requests the job to reschedule immediately", func() {
-					Expect(job.ScheduleRequestedTime()).Should(BeTemporally("~", time.Now(), time.Second))
-				})
-			})
-
-			Context("when build is not in pending state", func() {
-				var firstRequestTime time.Time
-
-				BeforeEach(func() {
-					firstRequestTime = time.Now()
-
-					time.Sleep(1 * time.Second)
-
-					err := build.Finish(db.BuildStatusFailed)
-					Expect(err).NotTo(HaveOccurred())
-
-					found, err := build.Reload()
-					Expect(err).NotTo(HaveOccurred())
-					Expect(found).To(BeTrue())
-				})
-
-				It("does not request reschedule", func() {
-					Expect(job.ScheduleRequestedTime()).Should(BeTemporally("~", firstRequestTime, time.Second))
-				})
-			})
-		})
 	})
 
 	Describe("Events", func() {
@@ -1966,160 +1893,7 @@ var _ = Describe("Build", func() {
 	})
 
 	Describe("SavePipeline", func() {
-		It("saves the parent job and build ids", func() {
-			By("creating a build")
-			build, err := defaultJob.CreateBuild(defaultBuildCreatedBy)
-			Expect(err).ToNot(HaveOccurred())
-
-			By("saving a pipeline with the build")
-			pipeline, _, err := build.SavePipeline(atc.PipelineRef{Name: "other-pipeline"}, build.TeamID(), atc.Config{
-				Jobs: atc.JobConfigs{
-					{
-						Name: "some-job",
-					},
-				},
-				Resources: atc.ResourceConfigs{
-					{
-						Name: "some-resource",
-						Type: "some-base-resource-type",
-						Source: atc.Source{
-							"some": "source",
-						},
-					},
-				},
-				ResourceTypes: atc.ResourceTypes{
-					{
-						Name: "some-type",
-						Type: "some-base-resource-type",
-						Source: atc.Source{
-							"some-type": "source",
-						},
-					},
-				},
-			}, db.ConfigVersion(0), false)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(pipeline.ParentJobID()).To(Equal(build.JobID()))
-			Expect(pipeline.ParentBuildID()).To(Equal(build.ID()))
-		})
-
-		It("only saves the pipeline if it is the latest build", func() {
-			By("creating two builds")
-			buildOne, err := defaultJob.CreateBuild(defaultBuildCreatedBy)
-			Expect(err).ToNot(HaveOccurred())
-			buildTwo, err := defaultJob.CreateBuild(defaultBuildCreatedBy)
-			Expect(err).ToNot(HaveOccurred())
-
-			By("saving a pipeline with the second build")
-			pipeline, _, err := buildTwo.SavePipeline(atc.PipelineRef{Name: "other-pipeline"}, buildTwo.TeamID(), atc.Config{
-				Jobs: atc.JobConfigs{
-					{
-						Name: "some-job",
-					},
-				},
-				Resources: atc.ResourceConfigs{
-					{
-						Name: "some-resource",
-						Type: "some-base-resource-type",
-						Source: atc.Source{
-							"some": "source",
-						},
-					},
-				},
-				ResourceTypes: atc.ResourceTypes{
-					{
-						Name: "some-type",
-						Type: "some-base-resource-type",
-						Source: atc.Source{
-							"some-type": "source",
-						},
-					},
-				},
-			}, db.ConfigVersion(0), false)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(pipeline.ParentJobID()).To(Equal(buildTwo.JobID()))
-			Expect(pipeline.ParentBuildID()).To(Equal(buildTwo.ID()))
-
-			By("saving a pipeline with the first build")
-			_, _, err = buildOne.SavePipeline(atc.PipelineRef{Name: "other-pipeline"}, buildOne.TeamID(), atc.Config{
-				Jobs: atc.JobConfigs{
-					{
-						Name: "some-job",
-					},
-				},
-				Resources: atc.ResourceConfigs{
-					{
-						Name: "some-resource",
-						Type: "some-base-resource-type",
-						Source: atc.Source{
-							"some": "source",
-						},
-					},
-				},
-				ResourceTypes: atc.ResourceTypes{
-					{
-						Name: "some-type",
-						Type: "some-base-resource-type",
-						Source: atc.Source{
-							"some-type": "source",
-						},
-					},
-				},
-			}, pipeline.ConfigVersion(), false)
-			Expect(err).To(Equal(db.ErrSetByNewerBuild))
-		})
-
 		Context("a pipeline is previously saved by team.SavePipeline", func() {
-			It("the parent job and build ID are updated", func() {
-				By("creating a build")
-				build, err := defaultJob.CreateBuild(defaultBuildCreatedBy)
-				Expect(err).ToNot(HaveOccurred())
-
-				By("re-saving the default pipeline with the build")
-				pipeline, _, err := build.SavePipeline(defaultPipelineRef, build.TeamID(), defaultPipelineConfig, db.ConfigVersion(1), false)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(pipeline.ParentJobID()).To(Equal(build.JobID()))
-				Expect(pipeline.ParentBuildID()).To(Equal(build.ID()))
-			})
-		})
-
-		It("unpauses the pipeline if it was previously archived", func() {
-			By("creating and archiving a pipeline")
-			pipeline, _, err := defaultTeam.SavePipeline(defaultPipelineRef, defaultPipelineConfig, db.ConfigVersion(1), false)
-			Expect(err).ToNot(HaveOccurred())
-
-			err = pipeline.Archive()
-			Expect(err).ToNot(HaveOccurred())
-
-			_, err = pipeline.Reload()
-			Expect(err).ToNot(HaveOccurred())
-
-			By("setting the pipeline again via a build")
-			build, err := defaultJob.CreateBuild(defaultBuildCreatedBy)
-			Expect(err).ToNot(HaveOccurred())
-			pipeline, _, err = build.SavePipeline(defaultPipelineRef, build.TeamID(), defaultPipelineConfig, pipeline.ConfigVersion(), false)
-			Expect(err).ToNot(HaveOccurred())
-
-			Expect(pipeline.Paused()).To(BeFalse())
-		})
-
-		It("does not unpause the pipeline if it was previously paused", func() {
-			By("creating and pausing a pipeline")
-			pipeline, _, err := defaultTeam.SavePipeline(defaultPipelineRef, defaultPipelineConfig, db.ConfigVersion(1), false)
-			Expect(err).ToNot(HaveOccurred())
-
-			err = pipeline.Pause("")
-			Expect(err).ToNot(HaveOccurred())
-
-			_, err = pipeline.Reload()
-			Expect(err).ToNot(HaveOccurred())
-
-			By("setting the pipeline again via a build")
-			build, err := defaultJob.CreateBuild(defaultBuildCreatedBy)
-			Expect(err).ToNot(HaveOccurred())
-			pipeline, _, err = build.SavePipeline(defaultPipelineRef, build.TeamID(), defaultPipelineConfig, pipeline.ConfigVersion(), false)
-			Expect(err).ToNot(HaveOccurred())
-
-			Expect(pipeline.Paused()).To(BeTrue())
 		})
 	})
 })

@@ -1,0 +1,69 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-build-remaining-strict.json",
+  "git_head": "a0cbbb42a0f0a67f08b68d8428117adbcd354095",
+  "completed_at": "2026-09-02T14:28:16Z",
+  "source_tests": 9,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/build.go": "9b329576f1999f210fc2f5a41d566ef96acb2e47c349db680d6b7fa0df305fdd",
+    "atc/db/build_test.go": "9abdaea9f0ace8a6d82d9133d296f703414a298bef89c74ad7208cd63d28de8f",
+    "atc/db/team.go": "0f44893708836914e40066140ac396ed0cd9531f2ff4aca02c6a25797562e761",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/db-build-remaining-strict.feature": "6b7b682e469cbf7fb31475b638ce9d4cb47af288e5c897187814d17c603bcca4",
+    "atc/worker/jetbridge/brine/mutations/db-build-remaining-strict.json": "44de6a4db994c98e8e8f52dbe517a622cbd616813f3fe7d5c9f33d895968f81d",
+    "atc/worker/jetbridge/brine/steps/db_build_remaining_strict.go": "a52c74fa1390c53f400fae50f102115edb520c8c4d556a01f3953e5a5d139870",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8"
+  },
+  "mutation_cases": [
+    {
+      "id": "new-pipeline-retains-parent-build",
+      "mutation_sha256": "eda5c465841ba7aad048bf8797cf563cf0c2f16b03a0c2b93684443be9103e34",
+      "failed_source_tests": [
+        "Build Finish archiving pipelines build is successful archives pipelines no longer set by the job",
+        "Build Finish archiving pipelines build is successful chain of pipelines setting each other... like a russian doll set... archives all descendent pipelines",
+        "Build SavePipeline only saves the pipeline if it is the latest build",
+        "Build SavePipeline saves the parent job and build ids"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB build profile \u003cprofile\u003e has its exact result (row 1)",
+        "Remaining DB build profile \u003cprofile\u003e has its exact result (row 2)",
+        "Remaining DB build profile \u003cprofile\u003e has its exact result (row 8)",
+        "Remaining DB build profile \u003cprofile\u003e has its exact result (row 9)"
+      ]
+    },
+    {
+      "id": "existing-pipeline-updates-parent-build",
+      "mutation_sha256": "14a95d6ba74a7194d59f183e9489dd1f5662dcf8d12440d3e5e799ff8c8774e0",
+      "failed_source_tests": [
+        "Build SavePipeline a pipeline is previously saved by team.SavePipeline the parent job and build ID are updated"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB build profile \u003cprofile\u003e has its exact result (row 3)"
+      ]
+    },
+    {
+      "id": "set-pipeline-distinguishes-archived-from-paused",
+      "mutation_sha256": "88e57e12dcbf318f1b4b70e5f1f21c9ae900a624e98123fff4e5367878067145",
+      "failed_source_tests": [
+        "Build SavePipeline does not unpause the pipeline if it was previously paused",
+        "Build SavePipeline unpauses the pipeline if it was previously archived"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB build profile \u003cprofile\u003e has its exact result (row 4)",
+        "Remaining DB build profile \u003cprofile\u003e has its exact result (row 5)"
+      ]
+    },
+    {
+      "id": "only-pending-aborts-request-schedule",
+      "mutation_sha256": "0e7ff486e0845037e8c6dc1f610c7677eb3bdc9624f3dbc8e595eab03820a943",
+      "failed_source_tests": [
+        "Build Abort request job rescheudle when build is in pending state requests the job to reschedule immediately",
+        "Build Abort request job rescheudle when build is not in pending state does not request reschedule"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB build profile \u003cprofile\u003e has its exact result (row 6)",
+        "Remaining DB build profile \u003cprofile\u003e has its exact result (row 7)"
+      ]
+    }
+  ]
+}

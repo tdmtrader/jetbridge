@@ -1,0 +1,70 @@
+{
+  "name": "db-build-remaining-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/build_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-build-remaining-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_build_remaining_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "new-pipeline-retains-parent-build",
+      "source_file": "atc/db/team.go",
+      "old": "\t\t\t\"parent_job_id\":   jobID,\n\t\t\t\"parent_build_id\": buildID,",
+      "new": "\t\t\t\"parent_job_id\":   nil,\n\t\t\t\"parent_build_id\": nil,",
+      "tests": [
+        "Build SavePipeline saves the parent job and build ids",
+        "Build SavePipeline only saves the pipeline if it is the latest build",
+        "Build Finish archiving pipelines build is successful archives pipelines no longer set by the job",
+        "Build Finish archiving pipelines build is successful chain of pipelines setting each other... like a russian doll set... archives all descendent pipelines"
+      ],
+      "scenarios": [
+        "Remaining DB build profile <profile> has its exact result (row 1)",
+        "Remaining DB build profile <profile> has its exact result (row 2)",
+        "Remaining DB build profile <profile> has its exact result (row 8)",
+        "Remaining DB build profile <profile> has its exact result (row 9)"
+      ],
+      "failure_contains": "remaining DB build observation"
+    },
+    {
+      "id": "existing-pipeline-updates-parent-build",
+      "source_file": "atc/db/team.go",
+      "old": "\t\t\tSet(\"parent_job_id\", jobID).\n\t\t\tSet(\"parent_build_id\", buildID).",
+      "new": "\t\t\tSet(\"parent_job_id\", nil).\n\t\t\tSet(\"parent_build_id\", nil).",
+      "tests": ["Build SavePipeline a pipeline is previously saved by team.SavePipeline the parent job and build ID are updated"],
+      "scenarios": ["Remaining DB build profile <profile> has its exact result (row 3)"],
+      "failure_contains": "remaining DB build observation"
+    },
+    {
+      "id": "set-pipeline-distinguishes-archived-from-paused",
+      "source_file": "atc/db/team.go",
+      "old": "\t\t\tq = q.Set(\"paused\", sq.Expr(\"paused AND NOT archived\"))",
+      "new": "\t\t\tq = q.Set(\"paused\", sq.Expr(\"paused AND archived\"))",
+      "tests": [
+        "Build SavePipeline unpauses the pipeline if it was previously archived",
+        "Build SavePipeline does not unpause the pipeline if it was previously paused"
+      ],
+      "scenarios": [
+        "Remaining DB build profile <profile> has its exact result (row 4)",
+        "Remaining DB build profile <profile> has its exact result (row 5)"
+      ],
+      "failure_contains": "remaining DB build observation"
+    },
+    {
+      "id": "only-pending-aborts-request-schedule",
+      "source_file": "atc/db/build.go",
+      "old": "\tif b.status == BuildStatusPending {\n\t\terr = requestSchedule(tx, b.jobID)",
+      "new": "\tif b.status != BuildStatusPending {\n\t\terr = requestSchedule(tx, b.jobID)",
+      "tests": [
+        "Build Abort request job rescheudle when build is in pending state requests the job to reschedule immediately",
+        "Build Abort request job rescheudle when build is not in pending state does not request reschedule"
+      ],
+      "scenarios": [
+        "Remaining DB build profile <profile> has its exact result (row 6)",
+        "Remaining DB build profile <profile> has its exact result (row 7)"
+      ],
+      "failure_contains": "remaining DB build observation"
+    }
+  ]
+}
