@@ -1,0 +1,117 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-team-remaining-strict.json",
+  "git_head": "34483cbf6daaf44c63c4993b87d666d7df01d7fe",
+  "completed_at": "2026-09-02T13:44:21Z",
+  "source_tests": 14,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/team.go": "0f44893708836914e40066140ac396ed0cd9531f2ff4aca02c6a25797562e761",
+    "atc/db/team_test.go": "163d040e449fe534aafb0241a27ccd4f0a0eb9311e55ec84b8092d4ff2379b88",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/db-team-remaining-strict.feature": "d9dc79f8b29b998b6fe5da9adafae7fa124721de9ff5cb6c0565f7dbb2a856b7",
+    "atc/worker/jetbridge/brine/mutations/db-team-remaining-strict.json": "adf3116c484fbead9795ddea89d3e01dc63660dfcc74e3057efa08555bb2a564",
+    "atc/worker/jetbridge/brine/steps/assert.go": "eac0b7b4dc864f54ffb5aab471451e3b62da518e5a8b10ba26e742d83298861f",
+    "atc/worker/jetbridge/brine/steps/db_team_remaining_strict.go": "194eb48006ad86103b5d6feba7e8edda3268cde58d8158ffb9cd5477aca5b932",
+    "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
+    "atc/worker/jetbridge/brine/steps/registry.go": "4aac97dcc19594e09c8064a4329e64eb8b0be5d22a8ff7acae82cb23db17d84a",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e"
+  },
+  "mutation_cases": [
+    {
+      "id": "provider-auth-must-persist-owner",
+      "mutation_sha256": "91766ec5a01ebf3a027bae37be70f9c660aef3f3b3a218534904c07dbbd002af",
+      "failed_source_tests": [
+        "Team Updating Auth UpdateProviderAuth saves auth team info to the existing team",
+        "Team Updating Auth UpdateProviderAuth when team auth is already set overrides the existing auth with the new config"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team source behavior — \u003cprofile\u003e (row 4)",
+        "Remaining DB team source behavior — \u003cprofile\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "provider-auth-must-clear-legacy",
+      "mutation_sha256": "4b799e10b78e33da3934a6e3171e937bf68b05a800974d5805f08cf71d81d6f8",
+      "failed_source_tests": [
+        "Team Updating Auth UpdateProviderAuth resets legacy_auth to NULL"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team source behavior — \u003cprofile\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "one-off-build-starts-pending",
+      "mutation_sha256": "f3b14140a0855609ce917a586e212fa7dcf7f11a1e5b51de43fe87b9006c97ac",
+      "failed_source_tests": [
+        "Team CreateOneOffBuild can create one-off builds"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team source behavior — \u003cprofile\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "started-build-has-started-status",
+      "mutation_sha256": "798fedc5162748f7dd51f0ac3e0654a8490199231b82da2fac9a5d99595cbd63",
+      "failed_source_tests": [
+        "Team CreateStartedBuild can create started builds with plans"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team source behavior — \u003cprofile\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "started-build-persists-public-plan",
+      "mutation_sha256": "58a7db4565b7abb02e4fcd08b4f9f69f6275ce0831d22bbc4300e09e045c1969",
+      "failed_source_tests": [
+        "Team CreateStartedBuild saves the public plan"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team source behavior — \u003cprofile\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "started-build-emits-start-event",
+      "mutation_sha256": "382b266255e3f0ba5d6df4c1af44641466749c45bd1eb3e6905b2e2834618b73",
+      "failed_source_tests": [
+        "Team CreateStartedBuild creates Start event"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team source behavior — \u003cprofile\u003e (row 10)"
+      ]
+    },
+    {
+      "id": "save-pipeline-created-polarity",
+      "mutation_sha256": "289330a70cb3e01ae12bb99e6f29bc05af12f5655494e08f2e7f391ab0ad76f4",
+      "failed_source_tests": [
+        "Team SavePipeline it returns created as false when updated",
+        "Team SavePipeline returns true for created"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team source behavior — \u003cprofile\u003e (row 11)",
+        "Remaining DB team source behavior — \u003cprofile\u003e (row 16)"
+      ]
+    },
+    {
+      "id": "save-pipeline-honors-initial-pause",
+      "mutation_sha256": "43c0a57d0be08a52cf2ff4124c04d0982bfa2d202a8ac6589d9efc02df8bf559",
+      "failed_source_tests": [
+        "Team SavePipeline can be saved as paused",
+        "Team SavePipeline can be saved as unpaused",
+        "Team SavePipeline updating an existing pipeline maintains paused if the pipeline is paused",
+        "Team SavePipeline updating an existing pipeline maintains unpaused if the pipeline is unpaused",
+        "Team SavePipeline when there are multiple teams can allow pipelines with the same name across teams"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team source behavior — \u003cprofile\u003e (row 13)",
+        "Remaining DB team source behavior — \u003cprofile\u003e (row 14)",
+        "Remaining DB team source behavior — \u003cprofile\u003e (row 17)",
+        "Remaining DB team source behavior — \u003cprofile\u003e (row 18)",
+        "Remaining DB team source behavior — \u003cprofile\u003e (row 21)"
+      ]
+    }
+  ]
+}

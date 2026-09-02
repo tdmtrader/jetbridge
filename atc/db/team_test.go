@@ -15,7 +15,6 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
-	"github.com/concourse/concourse/atc/event"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -861,169 +860,6 @@ var _ = Describe("Team", func() {
 		})
 	})
 
-	Describe("Updating Auth", func() {
-		var (
-			authProvider atc.TeamAuth
-		)
-
-		BeforeEach(func() {
-			authProvider = atc.TeamAuth{
-				"owner": {"users": []string{"local:username"}},
-			}
-		})
-
-		Describe("UpdateProviderAuth", func() {
-			It("saves auth team info to the existing team", func() {
-				err := team.UpdateProviderAuth(authProvider)
-				Expect(err).ToNot(HaveOccurred())
-
-				Expect(team.Auth()).To(Equal(authProvider))
-			})
-
-			It("resets legacy_auth to NULL", func() {
-				oldLegacyAuth := `{"basicauth": {"username": "u", "password": "p"}}`
-				_, err := dbConn.Exec("UPDATE teams SET legacy_auth = $1 WHERE id = $2", oldLegacyAuth, team.ID())
-				Expect(err).ToNot(HaveOccurred())
-				team.UpdateProviderAuth(authProvider)
-
-				var newLegacyAuth sql.NullString
-				err = dbConn.QueryRow("SELECT legacy_auth FROM teams WHERE id = $1", team.ID()).Scan(&newLegacyAuth)
-				Expect(err).ToNot(HaveOccurred())
-
-				value, err := newLegacyAuth.Value()
-				Expect(err).ToNot(HaveOccurred())
-				Expect(value).To(BeNil())
-			})
-
-			Context("when team auth is already set", func() {
-				BeforeEach(func() {
-					team.UpdateProviderAuth(atc.TeamAuth{
-						"owner":  {"users": []string{"local:somebody"}},
-						"viewer": {"users": []string{"local:someone"}},
-					})
-				})
-
-				It("overrides the existing auth with the new config", func() {
-					err := team.UpdateProviderAuth(authProvider)
-					Expect(err).ToNot(HaveOccurred())
-
-					Expect(team.Auth()).To(Equal(authProvider))
-				})
-			})
-		})
-	})
-
-	Describe("CreateOneOffBuild", func() {
-		var (
-			oneOffBuild db.Build
-			err         error
-		)
-
-		BeforeEach(func() {
-			oneOffBuild, err = team.CreateOneOffBuild()
-			Expect(err).ToNot(HaveOccurred())
-		})
-
-		It("can create one-off builds", func() {
-			Expect(oneOffBuild.ID()).ToNot(BeZero())
-			Expect(oneOffBuild.JobName()).To(BeZero())
-			Expect(oneOffBuild.PipelineName()).To(BeZero())
-			Expect(oneOffBuild.Name()).To(Equal("1"))
-			Expect(oneOffBuild.TeamName()).To(Equal(team.Name()))
-			Expect(oneOffBuild.Status()).To(Equal(db.BuildStatusPending))
-		})
-	})
-
-	Describe("CreateStartedBuild", func() {
-		var (
-			plan         atc.Plan
-			startedBuild db.Build
-			err          error
-		)
-
-		BeforeEach(func() {
-			imageCheckPlanID := atc.PlanID("image-check")
-
-			plan = atc.Plan{
-				ID: atc.PlanID("56"),
-				Get: &atc.GetPlan{
-					Type:     "some-type",
-					Name:     "some-name",
-					Resource: "some-resource",
-					Source:   atc.Source{"some": "source"},
-					Params:   atc.Params{"some": "params"},
-					Version:  &atc.Version{"some": "version"},
-					Tags:     atc.Tags{"some-tags"},
-					TypeImage: atc.TypeImage{
-						BaseType: "some-type",
-						CheckPlan: &atc.Plan{
-							ID: imageCheckPlanID,
-							Check: &atc.CheckPlan{
-								Name:   "some-name",
-								Source: atc.Source{"some": "source"},
-								Type:   "some-type",
-								TypeImage: atc.TypeImage{
-									BaseType:   "some-type",
-									Privileged: true,
-								},
-								Tags: atc.Tags{"some-tags"},
-							},
-						},
-						GetPlan: &atc.Plan{
-							ID: "image-get",
-							Get: &atc.GetPlan{
-								Name:   "some-name",
-								Source: atc.Source{"some": "source"},
-								Type:   "some-type",
-								TypeImage: atc.TypeImage{
-									BaseType:   "some-type",
-									Privileged: true,
-								},
-								Tags:        atc.Tags{"some-tags"},
-								VersionFrom: &imageCheckPlanID,
-							},
-						},
-					},
-				},
-			}
-
-			startedBuild, err = team.CreateStartedBuild(plan)
-			Expect(err).ToNot(HaveOccurred())
-		})
-
-		It("can create started builds with plans", func() {
-			Expect(startedBuild.ID()).ToNot(BeZero())
-			Expect(startedBuild.JobName()).To(BeZero())
-			Expect(startedBuild.PipelineName()).To(BeZero())
-			Expect(startedBuild.Name()).To(Equal("1"))
-			Expect(startedBuild.TeamName()).To(Equal(team.Name()))
-			Expect(startedBuild.Status()).To(Equal(db.BuildStatusStarted))
-		})
-
-		It("saves the public plan", func() {
-			found, err := startedBuild.Reload()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-			Expect(startedBuild.PublicPlan()).To(Equal(plan.Public()))
-		})
-
-		It("creates Start event", func() {
-			found, err := startedBuild.Reload()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-
-			events, err := startedBuild.Events(0)
-			Expect(err).NotTo(HaveOccurred())
-
-			defer db.Close(events)
-
-			Expect(events.Next()).To(Equal(envelope(event.Status{
-				Status: atc.StatusStarted,
-				Time:   startedBuild.StartTime().Unix(),
-			}, "0")))
-		})
-	})
-
 	Describe("PrivateAndPublicBuilds", func() {
 		Context("when there are no builds", func() {
 			It("returns an empty list of builds", func() {
@@ -1589,12 +1425,6 @@ var _ = Describe("Team", func() {
 			pipelineRef = atc.PipelineRef{Name: pipelineName}
 		})
 
-		It("returns true for created", func() {
-			_, created, err := team.SavePipeline(pipelineRef, config, 0, false)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(created).To(BeTrue())
-		})
-
 		It("caches the team id", func() {
 			_, _, err := team.SavePipeline(pipelineRef, config, 0, false)
 			Expect(err).ToNot(HaveOccurred())
@@ -1603,28 +1433,6 @@ var _ = Describe("Team", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeTrue())
 			Expect(pipeline.TeamID()).To(Equal(team.ID()))
-		})
-
-		It("can be saved as paused", func() {
-			_, _, err := team.SavePipeline(pipelineRef, config, 0, true)
-			Expect(err).ToNot(HaveOccurred())
-
-			pipeline, found, err := team.Pipeline(pipelineRef)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(found).To(BeTrue())
-
-			Expect(pipeline.Paused()).To(BeTrue())
-		})
-
-		It("can be saved as unpaused", func() {
-			_, _, err := team.SavePipeline(pipelineRef, config, 0, false)
-			Expect(err).ToNot(HaveOccurred())
-
-			pipeline, found, err := team.Pipeline(pipelineRef)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(found).To(BeTrue())
-
-			Expect(pipeline.Paused()).To(BeFalse())
 		})
 
 		It("is not archived by default", func() {
@@ -2664,15 +2472,6 @@ var _ = Describe("Team", func() {
 			Expect(job.Tags()).To(ConsistOf([]string{"some-another-group", "some-other-group"}))
 		})
 
-		It("it returns created as false when updated", func() {
-			pipeline, _, err := team.SavePipeline(pipelineRef, config, 0, false)
-			Expect(err).ToNot(HaveOccurred())
-
-			_, created, err := team.SavePipeline(pipelineRef, config, pipeline.ConfigVersion(), false)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(created).To(BeFalse())
-		})
-
 		It("deletes old job pipes and inserts new ones", func() {
 			config = atc.Config{
 				Groups: atc.GroupConfigs{
@@ -2979,42 +2778,6 @@ var _ = Describe("Team", func() {
 		})
 
 		Context("updating an existing pipeline", func() {
-			It("maintains paused if the pipeline is paused", func() {
-				_, _, err := team.SavePipeline(pipelineRef, config, 0, true)
-				Expect(err).ToNot(HaveOccurred())
-
-				pipeline, found, err := team.Pipeline(pipelineRef)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(found).To(BeTrue())
-				Expect(pipeline.Paused()).To(BeTrue())
-
-				_, _, err = team.SavePipeline(pipelineRef, config, pipeline.ConfigVersion(), false)
-				Expect(err).ToNot(HaveOccurred())
-
-				pipeline, found, err = team.Pipeline(pipelineRef)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(found).To(BeTrue())
-				Expect(pipeline.Paused()).To(BeTrue())
-			})
-
-			It("maintains unpaused if the pipeline is unpaused", func() {
-				_, _, err := team.SavePipeline(pipelineRef, config, 0, false)
-				Expect(err).ToNot(HaveOccurred())
-
-				pipeline, found, err := team.Pipeline(pipelineRef)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(found).To(BeTrue())
-				Expect(pipeline.Paused()).To(BeFalse())
-
-				_, _, err = team.SavePipeline(pipelineRef, config, pipeline.ConfigVersion(), true)
-				Expect(err).ToNot(HaveOccurred())
-
-				pipeline, found, err = team.Pipeline(pipelineRef)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(found).To(BeTrue())
-				Expect(pipeline.Paused()).To(BeFalse())
-			})
-
 			It("resets to unarchived", func() {
 				team.SavePipeline(pipelineRef, config, 0, false)
 				pipeline, _, _ := team.Pipeline(pipelineRef)
@@ -3249,35 +3012,6 @@ var _ = Describe("Team", func() {
 			rConfigs := resources.Configs()
 			Expect(rConfigs[0].Name).To(Equal(config.Resources[1].Name)) // "new-resource"
 			Expect(rConfigs[1].Name).To(Equal(config.Resources[0].Name)) // "some-resource"
-		})
-
-		Context("when there are multiple teams", func() {
-			It("can allow pipelines with the same name across teams", func() {
-				pipelineRef := atc.PipelineRef{Name: "steve"}
-
-				teamPipeline, _, err := team.SavePipeline(pipelineRef, config, 0, true)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(teamPipeline.Paused()).To(BeTrue())
-
-				By("allowing you to save a pipeline with the same name in another team")
-				otherTeamPipeline, _, err := otherTeam.SavePipeline(pipelineRef, otherConfig, 0, true)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(otherTeamPipeline.Paused()).To(BeTrue())
-
-				By("updating the pipeline config for the correct team's pipeline")
-				_, _, err = team.SavePipeline(pipelineRef, otherConfig, teamPipeline.ConfigVersion(), false)
-				Expect(err).ToNot(HaveOccurred())
-
-				_, _, err = otherTeam.SavePipeline(pipelineRef, config, otherTeamPipeline.ConfigVersion(), false)
-				Expect(err).ToNot(HaveOccurred())
-
-				By("cannot cross update configs")
-				_, _, err = team.SavePipeline(pipelineRef, otherConfig, otherTeamPipeline.ConfigVersion(), false)
-				Expect(err).To(HaveOccurred())
-
-				_, _, err = team.SavePipeline(pipelineRef, otherConfig, otherTeamPipeline.ConfigVersion(), true)
-				Expect(err).To(HaveOccurred())
-			})
 		})
 
 		It("does not deadlock when concurrently setting pipelines and running checks/gets", func() {
