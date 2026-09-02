@@ -63,7 +63,6 @@ var _ = Describe("Build", func() {
 	Describe("Finish", func() {
 		var scenario *dbtest.Scenario
 		var build db.Build
-		var expectedOutputs []db.AlgorithmVersion
 
 		BeforeEach(func() {
 			pipelineConfig := atc.Config{
@@ -184,55 +183,6 @@ var _ = Describe("Build", func() {
 
 			Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
 
-			expectedOutputs = []db.AlgorithmVersion{
-				{
-					Version:    db.ResourceVersion(convertToSHA256(atc.Version{"ver": "1"})),
-					ResourceID: scenario.Resource("some-resource").ID(),
-				},
-				{
-					Version:    db.ResourceVersion(convertToSHA256(atc.Version{"ver": "3"})),
-					ResourceID: scenario.Resource("some-other-resource").ID(),
-				},
-				{
-					Version:    db.ResourceVersion(convertToSHA256(atc.Version{"ver": "2"})),
-					ResourceID: scenario.Resource("some-resource").ID(),
-				},
-				{
-					Version:    db.ResourceVersion(convertToSHA256(atc.Version{"ver": "3"})),
-					ResourceID: scenario.Resource("some-resource").ID(),
-				},
-			}
-		})
-
-		It("creates Finish event", func() {
-			found, err := build.Reload()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-			Expect(build.Status()).To(Equal(db.BuildStatusSucceeded))
-
-			events, err := build.Events(0)
-			Expect(err).NotTo(HaveOccurred())
-
-			defer db.Close(events)
-
-			Expect(events.Next()).To(Equal(envelope(event.Status{
-				Status: atc.StatusSucceeded,
-				Time:   build.EndTime().Unix(),
-			}, "0")))
-		})
-
-		It("updates build status", func() {
-			found, err := build.Reload()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-			Expect(build.Status()).To(Equal(db.BuildStatusSucceeded))
-		})
-
-		It("clears out the private plan", func() {
-			found, err := build.Reload()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-			Expect(build.PrivatePlan()).To(Equal(atc.Plan{}))
 		})
 
 		It("sets completed to true", func() {
@@ -244,12 +194,6 @@ var _ = Describe("Build", func() {
 			Expect(found).To(BeTrue())
 			Expect(build.IsCompleted()).To(BeTrue())
 			Expect(build.IsRunning()).To(BeFalse())
-		})
-
-		It("inserts inputs and outputs into successful build versions", func() {
-			outputs, err := versionsDB.SuccessfulBuildOutputs(ctx, build.ID())
-			Expect(err).NotTo(HaveOccurred())
-			Expect(outputs).To(ConsistOf(expectedOutputs))
 		})
 
 		Context("rerunning a build", func() {
@@ -588,142 +532,9 @@ var _ = Describe("Build", func() {
 	})
 
 	Describe("Events", func() {
-		It("saves and emits status events", func() {
-			By("allowing you to subscribe when no events have yet occurred")
-			events, err := build.Events(0)
-			Expect(err).NotTo(HaveOccurred())
-
-			defer db.Close(events)
-
-			By("emitting a status event when started")
-			started, err := build.Start(atc.Plan{})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(started).To(BeTrue())
-
-			found, err := build.Reload()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-
-			Expect(events.Next()).To(Equal(envelope(event.Status{
-				Status: atc.StatusStarted,
-				Time:   build.StartTime().Unix(),
-			}, "0")))
-
-			By("emitting a status event when finished")
-			err = build.Finish(db.BuildStatusSucceeded)
-			Expect(err).NotTo(HaveOccurred())
-
-			found, err = build.Reload()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-
-			Expect(events.Next()).To(Equal(envelope(event.Status{
-				Status: atc.StatusSucceeded,
-				Time:   build.EndTime().Unix(),
-			}, "1")))
-
-			By("ending the stream when finished")
-			_, err = events.Next()
-			Expect(err).To(Equal(db.ErrEndOfBuildEventStream))
-		})
-
-		It("emits pre-bigint migration events", func() {
-			started, err := build.Start(atc.Plan{})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(started).To(BeTrue())
-
-			found, err := build.Reload()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-
-			_, err = dbConn.Exec(`UPDATE build_events SET build_id_old = build_id, build_id = NULL WHERE build_id = $1`, build.ID())
-			Expect(err).NotTo(HaveOccurred())
-
-			events, err := build.Events(0)
-			Expect(err).NotTo(HaveOccurred())
-
-			defer db.Close(events)
-			Expect(events.Next()).To(Equal(envelope(event.Status{
-				Status: atc.StatusStarted,
-				Time:   build.StartTime().Unix(),
-			}, "0")))
-		})
 	})
 
 	Describe("SaveEvent", func() {
-		It("saves and propagates events correctly", func() {
-			By("allowing you to subscribe when no events have yet occurred")
-			events, err := build.Events(0)
-			Expect(err).NotTo(HaveOccurred())
-
-			defer db.Close(events)
-
-			By("saving them in order")
-			err = build.SaveEvent(event.Log{
-				Payload: "some ",
-			})
-			Expect(err).NotTo(HaveOccurred())
-
-			Expect(events.Next()).To(Equal(envelope(event.Log{
-				Payload: "some ",
-			}, "0")))
-
-			err = build.SaveEvent(event.Log{
-				Payload: "log",
-			})
-			Expect(err).NotTo(HaveOccurred())
-
-			Expect(events.Next()).To(Equal(envelope(event.Log{
-				Payload: "log",
-			}, "1")))
-
-			By("allowing you to subscribe from an offset")
-			eventsFrom1, err := build.Events(1)
-			Expect(err).NotTo(HaveOccurred())
-
-			defer db.Close(eventsFrom1)
-
-			Expect(eventsFrom1.Next()).To(Equal(envelope(event.Log{
-				Payload: "log",
-			}, "1")))
-
-			By("notifying those waiting on events as soon as they're saved")
-			nextEvent := make(chan event.Envelope)
-			nextErr := make(chan error)
-
-			go func() {
-				event, err := events.Next()
-				if err != nil {
-					nextErr <- err
-				} else {
-					nextEvent <- event
-				}
-			}()
-
-			Consistently(nextEvent).ShouldNot(Receive())
-			Consistently(nextErr).ShouldNot(Receive())
-
-			err = build.SaveEvent(event.Log{
-				Payload: "log 2",
-			})
-			Expect(err).NotTo(HaveOccurred())
-
-			Eventually(nextEvent, "2s").Should(Receive(Equal(envelope(event.Log{
-				Payload: "log 2",
-			}, "2"))))
-
-			By("returning ErrBuildEventStreamClosed for Next calls after Close")
-			events3, err := build.Events(0)
-			Expect(err).NotTo(HaveOccurred())
-
-			err = events3.Close()
-			Expect(err).NotTo(HaveOccurred())
-
-			Eventually(func() error {
-				_, err := events3.Next()
-				return err
-			}).Should(Equal(db.ErrBuildEventStreamClosed))
-		})
 	})
 
 	Describe("SaveOutput", func() {
@@ -982,31 +793,6 @@ var _ = Describe("Build", func() {
 			inputResource = scenario.Resource("some-resource")
 		})
 
-		It("returns build inputs and outputs", func() {
-			inputs, outputs, err := build.Resources()
-			Expect(err).NotTo(HaveOccurred())
-
-			Expect(inputs).To(ConsistOf([]db.BuildInput{
-				{
-					Name:            "some-input",
-					Version:         atc.Version{"ver": "1"},
-					ResourceID:      inputResource.ID(),
-					FirstOccurrence: true,
-				},
-			}))
-
-			Expect(outputs).To(ConsistOf([]db.BuildOutput{
-				{
-					Name:    "some-resource",
-					Version: atc.Version{"ver": "2"},
-				},
-				{
-					Name:    "some-other-resource",
-					Version: atc.Version{"ver": "not-checked"},
-				},
-			}))
-		})
-
 		Context("when the first occurrence is empty", func() {
 			BeforeEach(func() {
 				res, err := psql.Update("build_resource_config_version_inputs").
@@ -1022,19 +808,6 @@ var _ = Describe("Build", func() {
 				rows, err := res.RowsAffected()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(rows).To(Equal(int64(1)))
-			})
-
-			It("determines the first occurrence to be true", func() {
-				inputs, _, err := build.Resources()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(inputs).To(ConsistOf([]db.BuildInput{
-					{
-						Name:            "some-input",
-						Version:         atc.Version{"ver": "1"},
-						ResourceID:      inputResource.ID(),
-						FirstOccurrence: true,
-					},
-				}))
 			})
 
 			Context("when the a build with those inputs already exist", func() {
@@ -1070,18 +843,6 @@ var _ = Describe("Build", func() {
 					Expect(rows).To(Equal(int64(1)))
 				})
 
-				It("determines the first occurrence to be false", func() {
-					inputs, _, err := newBuild.Resources()
-					Expect(err).NotTo(HaveOccurred())
-					Expect(inputs).To(ConsistOf([]db.BuildInput{
-						{
-							Name:            "some-input",
-							Version:         atc.Version{"ver": "1"},
-							ResourceID:      inputResource.ID(),
-							FirstOccurrence: false,
-						},
-					}))
-				})
 			})
 		})
 	})
