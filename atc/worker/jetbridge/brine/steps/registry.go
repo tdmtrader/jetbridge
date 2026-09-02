@@ -203,6 +203,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, AddGlobalUsersMigrationStrictDefinitions()...)
 	defs = append(defs, MigrationFixBuildPlanStrictDefinitions()...)
 	defs = append(defs, AddGlobalResourceVersionsMigrationStrictDefinitions()...)
+	defs = append(defs, ConcurrentRequestPolicyStrictDefinitions()...)
 	return defs
 }
 
