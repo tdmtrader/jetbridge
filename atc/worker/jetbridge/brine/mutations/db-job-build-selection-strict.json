@@ -1,0 +1,44 @@
+{
+  "name": "db-job-build-selection-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/job_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-job-build-selection-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_job_build_selection_strict.go",
+    "atc/worker/jetbridge/brine/steps/db_job_input_output_strict.go",
+    "atc/worker/jetbridge/brine/steps/registry.go",
+    "atc/worker/jetbridge/brine/steps/assert.go",
+    "atc/worker/jetbridge/brine/steps/resources.go",
+    "atc/worker/jetbridge/brine/steps/task_command.go",
+    "atc/worker/jetbridge/brine/steps/envtest.go",
+    "atc/postgresrunner/postgresrunner.go",
+    "atc/postgresrunner/ginkgo.go",
+    "atc/postgresrunner/join_limit_conn.go"
+  ],
+  "cases": [
+    {
+      "id": "finished-and-next-are-not-swapped",
+      "source_file": "atc/db/job.go",
+      "old": "\treturn finished, next, nil",
+      "new": "\treturn next, finished, nil",
+      "tests": [
+        "Job FinishedAndNextBuild can report a job's latest running and finished builds"
+      ],
+      "scenarios": [
+        "Job build selection behavior — <profile> (row 1)"
+      ]
+    },
+    {
+      "id": "chrono-builds-uses-chronological-ordering",
+      "source_file": "atc/db/job.go",
+      "old": "\treturn getBuildsWithPagination(newBuildsQuery, page, j.conn, j.lockFactory, true)",
+      "new": "\treturn getBuildsWithPagination(newBuildsQuery, page, j.conn, j.lockFactory, false)",
+      "tests": [
+        "Job ChronoBuilds when there is rerun build of first build that created after second build returns the builds in chronological order"
+      ],
+      "scenarios": [
+        "Job build selection behavior — <profile> (row 2)"
+      ]
+    }
+  ]
+}

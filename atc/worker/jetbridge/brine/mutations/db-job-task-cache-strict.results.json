@@ -1,12 +1,12 @@
 {
   "manifest": "atc/worker/jetbridge/brine/mutations/db-job-task-cache-strict.json",
-  "git_head": "fca999c2d17f99532e832a2da2d72cd9ec59c533",
-  "completed_at": "2026-09-02T14:28:44Z",
+  "git_head": "0a3f88644d336928a67b94494b14fade04f5c157",
+  "completed_at": "2026-09-02T14:39:14Z",
   "source_tests": 4,
   "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
   "input_sha256": {
     "atc/db/job.go": "397afafef081c96aa2a2ee75d2f94788be0f3e4be8415c3f1e533c4cfd41ecda",
-    "atc/db/job_test.go": "986d9e47584ae8d3a1310a39225d86a124d2cddfa0c04d38360180fcaa504ed3",
+    "atc/db/job_test.go": "eca075ab57fc2e96b5b6bd81892c7b5841fe11e0c692f7f9fad0e37705361767",
     "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
     "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
     "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
@@ -17,7 +17,7 @@
     "atc/worker/jetbridge/brine/steps/db_job_input_output_strict.go": "2b6ddbe9d5004cd801c429d06c3fbc8a6062802966bd6fa749ba0da02052e747",
     "atc/worker/jetbridge/brine/steps/db_job_task_cache_strict.go": "18c1fe892f6f4248f1212d10f2525acb876699fccf5ddb91139d782bd4a3b369",
     "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
-    "atc/worker/jetbridge/brine/steps/registry.go": "007ecd53195ed223c952dd65b07228bf64e4a5cbfb8676a81dea987193c2d892",
+    "atc/worker/jetbridge/brine/steps/registry.go": "1376cab7086899e135b49da83ab62487a90f5972067138e661f7fad81c6fad27",
     "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
     "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e"
   },

@@ -1,7 +1,7 @@
 {
   "manifest": "atc/worker/jetbridge/brine/mutations/db-job-rerun-strict.json",
-  "git_head": "fca999c2d17f99532e832a2da2d72cd9ec59c533",
-  "completed_at": "2026-09-02T14:24:54Z",
+  "git_head": "0a3f88644d336928a67b94494b14fade04f5c157",
+  "completed_at": "2026-09-02T14:38:19Z",
   "source_tests": 4,
   "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
   "input_sha256": {
@@ -17,7 +17,7 @@
     "atc/worker/jetbridge/brine/steps/db_job_input_output_strict.go": "2b6ddbe9d5004cd801c429d06c3fbc8a6062802966bd6fa749ba0da02052e747",
     "atc/worker/jetbridge/brine/steps/db_job_rerun_strict.go": "e22aeefab614259d85c847ff09cfd880f03801391a0890c61380a3e598d443d4",
     "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
-    "atc/worker/jetbridge/brine/steps/registry.go": "f667985c496af049cd1cb5e5abb4c975b7aa12325e6ac9d7a5447330ea2c3712",
+    "atc/worker/jetbridge/brine/steps/registry.go": "1376cab7086899e135b49da83ab62487a90f5972067138e661f7fad81c6fad27",
     "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
     "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e"
   },

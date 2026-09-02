@@ -1,0 +1,46 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-job-build-selection-strict.json",
+  "git_head": "e12289ced40e39a1b7241b51da524710cd784e7c",
+  "completed_at": "2026-09-02T14:33:02Z",
+  "source_tests": 2,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/job.go": "397afafef081c96aa2a2ee75d2f94788be0f3e4be8415c3f1e533c4cfd41ecda",
+    "atc/db/job_test.go": "69d6e4b0a0b09d60f4b57989e9e2cbec8403cbc42001bb3148b81ebc4865e4b7",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/db-job-build-selection-strict.feature": "a25746ba94b300f81744082ce5c75b721b203898815cf193612edd671fcde09a",
+    "atc/worker/jetbridge/brine/mutations/db-job-build-selection-strict.json": "fb17093b4de67d6d23a1912b7a090cc5cfc8f5a663608ca1964cc638b717bfa3",
+    "atc/worker/jetbridge/brine/steps/assert.go": "eac0b7b4dc864f54ffb5aab471451e3b62da518e5a8b10ba26e742d83298861f",
+    "atc/worker/jetbridge/brine/steps/db_job_build_selection_strict.go": "ca204b301c46ff0d4b332d404c9e1f5c3e3c3712e2cbdc8f592e2cf71a9ba814",
+    "atc/worker/jetbridge/brine/steps/db_job_input_output_strict.go": "2b6ddbe9d5004cd801c429d06c3fbc8a6062802966bd6fa749ba0da02052e747",
+    "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
+    "atc/worker/jetbridge/brine/steps/registry.go": "1376cab7086899e135b49da83ab62487a90f5972067138e661f7fad81c6fad27",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e"
+  },
+  "mutation_cases": [
+    {
+      "id": "finished-and-next-are-not-swapped",
+      "mutation_sha256": "851d76f57cacd88218ad2b7e58b52168218132e7759518946accccc83dffee45",
+      "failed_source_tests": [
+        "Job FinishedAndNextBuild can report a job's latest running and finished builds"
+      ],
+      "failed_brine_scenarios": [
+        "Job build selection behavior — \u003cprofile\u003e (row 1)"
+      ]
+    },
+    {
+      "id": "chrono-builds-uses-chronological-ordering",
+      "mutation_sha256": "3a9fbbadb01cf54ca2e750190684e1d97cf166acb7661aa1fe68569873736e26",
+      "failed_source_tests": [
+        "Job ChronoBuilds when there is rerun build of first build that created after second build returns the builds in chronological order"
+      ],
+      "failed_brine_scenarios": [
+        "Job build selection behavior — \u003cprofile\u003e (row 2)"
+      ]
+    }
+  ]
+}
