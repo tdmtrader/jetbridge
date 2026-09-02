@@ -1,0 +1,79 @@
+{
+  "name": "variable-reference-strict",
+  "test_package": "./vars",
+  "source_test_file": "vars/reference_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/variable-reference-strict.feature",
+  "step_files": ["atc/worker/jetbridge/brine/steps/variable_reference_strict.go"],
+  "cases": [
+    {
+      "id": "reference-string-discards-rendered-value",
+      "source_file": "vars/variables.go",
+      "old": "\treturn s.String()",
+      "new": "\treturn s.String()[:0]",
+      "tests": [
+        "Reference String path",
+        "Reference String path with fields",
+        "Reference String quotes every special path segment",
+        "Reference String quotes mixed special path segments",
+        "Reference String var source"
+      ],
+      "scenarios": [
+        "Variable reference profile <profile> (row 1)",
+        "Variable reference profile <profile> (row 2)",
+        "Variable reference profile <profile> (row 3)",
+        "Variable reference profile <profile> (row 4)",
+        "Variable reference profile <profile> (row 5)"
+      ]
+    },
+    {
+      "id": "parse-reference-discards-successful-result",
+      "source_file": "vars/variables.go",
+      "old": "\treturn ref, nil\n}\n\nfunc findUnquoted",
+      "new": "\treturn Reference{}, nil\n}\n\nfunc findUnquoted",
+      "tests": [
+        "Reference ParseReference path",
+        "Reference ParseReference path with fields",
+        "Reference ParseReference parses every quoted special path segment",
+        "Reference ParseReference parses mixed quoted special path segments",
+        "Reference ParseReference var source",
+        "Reference ParseReference path with colon and no var source",
+        "Reference ParseReference trims spaces in path segments",
+        "Reference ParseReference does not trim spaces in quoted segments"
+      ],
+      "scenarios": [
+        "Variable reference profile <profile> (row 6)",
+        "Variable reference profile <profile> (row 7)",
+        "Variable reference profile <profile> (row 8)",
+        "Variable reference profile <profile> (row 9)",
+        "Variable reference profile <profile> (row 10)",
+        "Variable reference profile <profile> (row 11)",
+        "Variable reference profile <profile> (row 16)",
+        "Variable reference profile <profile> (row 17)"
+      ]
+    },
+    {
+      "id": "quoted-source-loses-specific-diagnostic",
+      "source_file": "vars/variables.go",
+      "old": "\t\t\treturn Reference{}, fmt.Errorf(\"invalid var '%s': source must not be quoted\", name)",
+      "new": "\t\t\treturn Reference{}, fmt.Errorf(\"invalid var '%s': mutated source diagnostic\", name)",
+      "tests": ["Reference ParseReference quoted var source"],
+      "scenarios": ["Variable reference profile <profile> (row 12)"]
+    },
+    {
+      "id": "empty-fields-lose-specific-diagnostic",
+      "source_file": "vars/variables.go",
+      "old": "\t\t\treturn Reference{}, fmt.Errorf(\"invalid var '%s': empty field\", name)",
+      "new": "\t\t\treturn Reference{}, fmt.Errorf(\"invalid var '%s': mutated empty field\", name)",
+      "tests": [
+        "Reference ParseReference empty path segment",
+        "Reference ParseReference empty quoted path segment",
+        "Reference ParseReference no path segments"
+      ],
+      "scenarios": [
+        "Variable reference profile <profile> (row 13)",
+        "Variable reference profile <profile> (row 14)",
+        "Variable reference profile <profile> (row 15)"
+      ]
+    }
+  ]
+}
