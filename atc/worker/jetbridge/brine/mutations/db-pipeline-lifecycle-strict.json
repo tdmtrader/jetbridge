@@ -1,0 +1,116 @@
+{
+  "name": "db-pipeline-lifecycle-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/pipeline_lifecycle_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-pipeline-lifecycle-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_pipeline_lifecycle_strict.go",
+    "atc/worker/jetbridge/brine/steps/registry.go",
+    "atc/worker/jetbridge/brine/steps/resources.go",
+    "atc/worker/jetbridge/brine/steps/task_command.go",
+    "atc/worker/jetbridge/brine/steps/envtest.go",
+    "atc/postgresrunner/postgresrunner.go",
+    "atc/postgresrunner/ginkgo.go",
+    "atc/postgresrunner/join_limit_conn.go"
+  ],
+  "cases": [
+    {
+      "id": "destroyed-parent-is-orphaned",
+      "source_file": "atc/db/pipeline_lifecycle.go",
+      "old": "\t\t\t\tsq.Eq{\"j.id\": nil},",
+      "new": "\t\t\t\tsq.Eq{\"j.id\": -1},",
+      "tests": [
+        "PipelineLifecycle ArchiveAbandonedPipelines child pipeline is set by a job in a pipeline parent pipeline is destroyed should archive all child pipelines"
+      ],
+      "scenarios": ["Production pipeline lifecycle behavior — <profile> (row 2)"]
+    },
+    {
+      "id": "already-archived-child-is-not-selected",
+      "source_file": "atc/db/pipeline_lifecycle.go",
+      "old": "\t\t\tsq.Eq{\"p.archived\": false},",
+      "new": "\t\t\tsq.Expr(\"TRUE\"),",
+      "tests": [
+        "PipelineLifecycle ArchiveAbandonedPipelines child pipeline is set by a job in a pipeline needs to be archived but is already archived should not rearchive pipeline if it is already archived"
+      ],
+      "scenarios": ["Production pipeline lifecycle behavior — <profile> (row 3)"]
+    },
+    {
+      "id": "latest-build-comparison-inverted",
+      "source_file": "atc/db/pipeline_lifecycle.go",
+      "old": "\t\t\t\t\tsq.Expr(\"p.parent_build_id < j.latest_completed_build_id\"),",
+      "new": "\t\t\t\t\tsq.Expr(\"p.parent_build_id > j.latest_completed_build_id\"),",
+      "tests": [
+        "PipelineLifecycle ArchiveAbandonedPipelines child pipeline is set by a job in a pipeline when build that set child pipeline is later than latest completed build should not archive child pipeline"
+      ],
+      "scenarios": ["Production pipeline lifecycle behavior — <profile> (row 6)"]
+    },
+    {
+      "id": "archived-parent-is-orphaned",
+      "source_file": "atc/db/pipeline_lifecycle.go",
+      "old": "\t\t\t\tsq.Eq{\"parent.archived\": true},",
+      "new": "\t\t\t\tsq.Expr(\"FALSE\"),",
+      "tests": [
+        "PipelineLifecycle ArchiveAbandonedPipelines child pipeline is set by a job in a pipeline parent pipeline is archived should archive all child pipelines"
+      ],
+      "scenarios": ["Production pipeline lifecycle behavior — <profile> (row 4)"]
+    },
+    {
+      "id": "inactive-parent-job-is-orphaned",
+      "source_file": "atc/db/pipeline_lifecycle.go",
+      "old": "\t\t\t\tsq.Eq{\"j.active\": false},",
+      "new": "\t\t\t\tsq.Expr(\"FALSE\"),",
+      "tests": [
+        "PipelineLifecycle ArchiveAbandonedPipelines child pipeline is set by a job in a pipeline job is removed from the parent pipeline archives all child pipelines set by the deleted job"
+      ],
+      "scenarios": ["Production pipeline lifecycle behavior — <profile> (row 5)"]
+    },
+    {
+      "id": "failed-latest-build-does-not-orphan",
+      "source_file": "atc/db/pipeline_lifecycle.go",
+      "old": "\t\t\t\t\t\tAND lb.status = ?",
+      "new": "\t\t\t\t\t\tAND (lb.status = ? OR lb.status = 'failed')",
+      "tests": [
+        "PipelineLifecycle ArchiveAbandonedPipelines child pipeline is set by a job in a pipeline when build that set child pipeline is not most recent but was not successful should not archive child pipeline"
+      ],
+      "scenarios": ["Production pipeline lifecycle behavior — <profile> (row 7)"]
+    },
+    {
+      "id": "unowned-pipeline-is-not-orphaned",
+      "source_file": "atc/db/pipeline_lifecycle.go",
+      "old": "\t\t\tsq.NotEq{\"p.parent_job_id\": nil},",
+      "new": "\t\t\tsq.Expr(\"TRUE\"),",
+      "tests": [
+        "PipelineLifecycle ArchiveAbandonedPipelines child pipeline is set by a job in a pipeline parent and child pipelines happily exist neither pipeline should be archived",
+        "PipelineLifecycle ArchiveAbandonedPipelines pipeline does not have a parent job and build ID Should not archive the pipeline"
+      ],
+      "scenarios": [
+        "Production pipeline lifecycle behavior — <profile> (row 1)",
+        "Production pipeline lifecycle behavior — <profile> (row 8)"
+      ]
+    },
+    {
+      "id": "event-table-drop-target-changed",
+      "source_file": "atc/db/pipeline_lifecycle.go",
+      "old": "fmt.Sprintf(\"DROP TABLE IF EXISTS pipeline_build_events_%d\", id)",
+      "new": "fmt.Sprintf(\"DROP TABLE IF EXISTS pipeline_build_events_missing_%d\", id)",
+      "tests": ["PipelineLifecycle RemoveBuildEventsForDeletedPipelines drops the pipeline_build_events_x table for each deleted pipeline"],
+      "scenarios": ["Production pipeline lifecycle behavior — <profile> (row 9)"]
+    },
+    {
+      "id": "deleted-pipeline-rows-not-cleared",
+      "source_file": "atc/db/pipeline_lifecycle.go",
+      "old": "\t\tWhere(sq.Eq{\"id\": idsToDelete}).",
+      "new": "\t\tWhere(sq.Eq{\"id\": -1}).",
+      "tests": ["PipelineLifecycle RemoveBuildEventsForDeletedPipelines clears the deleted_pipelines table"],
+      "scenarios": ["Production pipeline lifecycle behavior — <profile> (row 10)"]
+    },
+    {
+      "id": "missing-event-table-not-tolerated",
+      "source_file": "atc/db/pipeline_lifecycle.go",
+      "old": "fmt.Sprintf(\"DROP TABLE IF EXISTS pipeline_build_events_%d\", id)",
+      "new": "fmt.Sprintf(\"DROP TABLE pipeline_build_events_%d\", id)",
+      "tests": ["PipelineLifecycle RemoveBuildEventsForDeletedPipelines is resilient to pipeline_build_events_x tables not existing"],
+      "scenarios": ["Production pipeline lifecycle behavior — <profile> (row 11)"]
+    }
+  ]
+}
