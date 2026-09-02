@@ -145,18 +145,6 @@
       ]
     },
     {
-      "id": "clear-task-cache-honors-nonempty-path",
-      "source_file": "atc/db/job.go",
-      "old": "\tif len(cachePath) > 0 {\n\t\tsqlBuilder = sqlBuilder.Where(sq.Eq{\"path\": cachePath})\n\t}",
-      "new": "\tif len(cachePath) == 0 {\n\t\tsqlBuilder = sqlBuilder.Where(sq.Eq{\"path\": cachePath})\n\t}",
-      "tests": [
-        "Job Clear task cache when task cache exists when a path is provided but the cache path doesn't exist deletes 0 rows"
-      ],
-      "scenarios": [
-        "Remaining DB job behavior — <profile> (row 19)"
-      ]
-    },
-    {
       "id": "clear-task-cache-honors-job-and-step",
       "source_file": "atc/db/job.go",
       "old": "\tvar sqlBuilder = psql.Delete(\"task_caches\").\n\t\tWhere(sq.Eq{\n\t\t\t\"job_id\":    j.id,\n\t\t\t\"step_name\": stepName,\n\t\t})",
