@@ -1,0 +1,141 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-volume-core-strict.json",
+  "git_head": "dc3f08dbf5114ed1da6fca53bdf92cacb8c9e024",
+  "completed_at": "2026-09-02T15:01:23Z",
+  "source_tests": 17,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/volume.go": "cf3f9da135f41525cab059121b9c13987e537639b3149eee9621b95d3234f742",
+    "atc/db/volume_repository.go": "f4648ec5912fa40137011e7dbb52a63aa498b9145bba440e898c877aff0f10b2",
+    "atc/db/volume_test.go": "3bde7bcbd8eaf43a3aefbfdbea847727f6e2e2c440ebcdc918c29eb238a48e99",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/db-volume-core-strict.feature": "7878359b4d61313ce19f59a270c30f96a37da7f5954c4c037e2b96a229119143",
+    "atc/worker/jetbridge/brine/mutations/db-volume-core-strict.json": "18daa6dedfd22ad4c58669e0feed618789126300aa77cae58d3382b6eee5223a",
+    "atc/worker/jetbridge/brine/steps/assert.go": "eac0b7b4dc864f54ffb5aab471451e3b62da518e5a8b10ba26e742d83298861f",
+    "atc/worker/jetbridge/brine/steps/db_job_input_output_strict.go": "2b6ddbe9d5004cd801c429d06c3fbc8a6062802966bd6fa749ba0da02052e747",
+    "atc/worker/jetbridge/brine/steps/db_volume_core_strict.go": "22d0ae3935f61e6b8a07ede094b6db21590b77d13620a8f6a22aa0e80c8ddacb",
+    "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
+    "atc/worker/jetbridge/brine/steps/registry.go": "1ba59f006b7c3f671d7b3dac5dacb9d1f5cd4412ee8b04563cfea630a47ab73b",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e"
+  },
+  "mutation_cases": [
+    {
+      "id": "failed-transition-reports-failed-state",
+      "mutation_sha256": "2409ec2e5d8a354ed139f2278915f740d2a37f8679fd2d10448719fdcd5c598a",
+      "failed_source_tests": [
+        "Volume creatingVolume.Failed the database query fails there is no such id in the table returns the correct error",
+        "Volume creatingVolume.Failed the database query fails when the volume is not in creating or failed state returns the correct error"
+      ],
+      "failed_brine_scenarios": [
+        "Production volume behavior — \u003cprofile\u003e (row 1)",
+        "Production volume behavior — \u003cprofile\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "created-transition-reports-volume-handle",
+      "mutation_sha256": "abfd9f557708a67045bad5340ed1a64c0ec1af94e1abd871bab125d901abbe37",
+      "failed_source_tests": [
+        "Volume creatingVolume.Created the database query fails there is no such id in the table returns the correct error",
+        "Volume creatingVolume.Created the database query fails when the volume is not in creating or created state returns the correct error"
+      ],
+      "failed_brine_scenarios": [
+        "Production volume behavior — \u003cprofile\u003e (row 5)",
+        "Production volume behavior — \u003cprofile\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "created-and-failed-transitions-are-idempotent",
+      "mutation_sha256": "b1cbed0aaec130e753b958ba3ffb002ac855c09dbf5bf13fd62c385566ee0e4e",
+      "failed_source_tests": [
+        "Volume creatingVolume.Created the database query succeeds when volume is already in provided state returns a createdVolume and no error",
+        "Volume creatingVolume.Failed the database query succeeds when the volume is already in the failed state does not fail to transition",
+        "Volume creatingVolume.Failed the database query succeeds when the volume is already in the failed state returns the failed volume"
+      ],
+      "failed_brine_scenarios": [
+        "Production volume behavior — \u003cprofile\u003e (row 3)",
+        "Production volume behavior — \u003cprofile\u003e (row 4)",
+        "Production volume behavior — \u003cprofile\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "initialize-artifact-persists-name",
+      "mutation_sha256": "c46056bf41937bdc4a99950bc90c9a8780a52d52ddfcdfb962b65fb6574f4476",
+      "failed_source_tests": [
+        "Volume createdVolume.InitializeArtifact initializes the worker artifact"
+      ],
+      "failed_brine_scenarios": [
+        "Production volume behavior — \u003cprofile\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "initialize-artifact-associates-volume",
+      "mutation_sha256": "c8e576643350a5fec1e601c81f54e32c2382c1821ed650a0ac70f53af3c3834d",
+      "failed_source_tests": [
+        "Volume createdVolume.InitializeArtifact associates worker artifact with the volume"
+      ],
+      "failed_brine_scenarios": [
+        "Production volume behavior — \u003cprofile\u003e (row 10)"
+      ]
+    },
+    {
+      "id": "initialize-task-cache-releases-previous-volume",
+      "mutation_sha256": "ab56ee8367fa8257376ce6ee493dc897748c547104c68ac85d564b918695ba8c",
+      "failed_source_tests": [
+        "Volume createdVolume.InitializeTaskCache when there is a volume that belongs to worker task cache sets current volume as worker task cache volume"
+      ],
+      "failed_brine_scenarios": [
+        "Production volume behavior — \u003cprofile\u003e (row 11)"
+      ]
+    },
+    {
+      "id": "container-volume-persists-mount-path",
+      "mutation_sha256": "b9b15e4c689d1f7be98e504027dff584897bcc70071a3b46e4fb753722026746",
+      "failed_source_tests": [
+        "Volume Container volumes returns volume type, container handle, mount path",
+        "Volume creatingVolume.Created the database query succeeds updates the record to be `created`"
+      ],
+      "failed_brine_scenarios": [
+        "Production volume behavior — \u003cprofile\u003e (row 12)",
+        "Production volume behavior — \u003cprofile\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "child-volume-retains-parent-link",
+      "mutation_sha256": "39cc55bc166cc97ff9c6a2482932374a846a9cb31ea138d02beb0289dd0b3da5",
+      "failed_source_tests": [
+        "Volume Volumes created from a parent prevents the parent from being destroyed",
+        "Volume Volumes created from a parent returns parent handle",
+        "Volume createdVolume.CreateChildForContainer creates volume for parent volume"
+      ],
+      "failed_brine_scenarios": [
+        "Production volume behavior — \u003cprofile\u003e (row 13)",
+        "Production volume behavior — \u003cprofile\u003e (row 14)",
+        "Production volume behavior — \u003cprofile\u003e (row 17)"
+      ]
+    },
+    {
+      "id": "base-resource-type-volume-returns-version",
+      "mutation_sha256": "2bed11c05aef7fb32ab925d2e269bf94278c32b93169ba27f8c9573b67aa13b1",
+      "failed_source_tests": [
+        "Volume Resource type volumes returns volume type, base resource type name, base resource type version"
+      ],
+      "failed_brine_scenarios": [
+        "Production volume behavior — \u003cprofile\u003e (row 15)"
+      ]
+    },
+    {
+      "id": "task-cache-volume-returns-step-name",
+      "mutation_sha256": "0ab5971193969d22d51fab7c6050f58dcaeada0a1d72f23c1f313e4fab18eb13",
+      "failed_source_tests": [
+        "Volume Task cache volumes returns volume type and task identifier"
+      ],
+      "failed_brine_scenarios": [
+        "Production volume behavior — \u003cprofile\u003e (row 16)"
+      ]
+    }
+  ]
+}
