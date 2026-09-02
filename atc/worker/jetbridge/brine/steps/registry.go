@@ -193,6 +193,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, DBPipelineFactoryStrictDefinitions()...)
 	defs = append(defs, DBPipelinePauserStrictDefinitions()...)
 	defs = append(defs, IDTokenManagerStrictDefinitions()...)
+	defs = append(defs, DBJobFinalStrictDefinitions()...)
 	return defs
 }
 
