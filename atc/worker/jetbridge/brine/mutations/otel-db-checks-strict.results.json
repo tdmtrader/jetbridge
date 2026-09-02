@@ -1,0 +1,67 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/otel-db-checks-strict.json",
+  "git_head": "ee736f9df06fc967e4f16ff64560d3ff185a5b06",
+  "completed_at": "2026-09-02T22:02:31Z",
+  "source_tests": 5,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/metric/otel_db_checks.go": "f1e0c9cceb9e126e4665161a162fd4caed251d7688966d62d3feddbd2984a3f9",
+    "atc/metric/otel_db_checks_test.go": "01fd295b3b436bbfffa359b91faf617c365ca817f8574c2cbf190f7dd6ee7d02",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/otel-metrics.feature": "f8139794feec2770a14faba152d9db7a303143ca3ec6e02cbb8ba4f5e74def0e",
+    "atc/worker/jetbridge/brine/mutations/otel-db-checks-strict.json": "f42ad57a3ea542d3f3c6a396021253fed060c685214a3f5ec07e453210e09486",
+    "atc/worker/jetbridge/brine/steps/otel_metrics.go": "671ca95e3eb24bf75a872f69862a721cfdf4115fa1749b41d8998e74e21c0614"
+  },
+  "mutation_cases": [
+    {
+      "id": "database-queries-record-whole-count",
+      "mutation_sha256": "b170518826cfd5d3b15fcc5e33c021e48dbb8eaab248e58efacfd806816a2acf",
+      "failed_source_tests": [
+        "OTel DB and Checks Metrics RecordDBQueries records database query count"
+      ],
+      "failed_brine_scenarios": [
+        "OTel profile \u003cprofile\u003e exports its production measurement (row 18)"
+      ]
+    },
+    {
+      "id": "database-connections-keep-name-attribute",
+      "mutation_sha256": "054e97f8b843f3a56dd21057a5548b052f637f0bef5c463f8f2d3ce04398a4be",
+      "failed_source_tests": [
+        "OTel DB and Checks Metrics RecordDBConnections records database connections with db.name attribute"
+      ],
+      "failed_brine_scenarios": [
+        "OTel profile \u003cprofile\u003e exports its production measurement (row 19)"
+      ]
+    },
+    {
+      "id": "checks-started-record-whole-count",
+      "mutation_sha256": "c5222b241ee1a68a9aa4867576be58a11d20f0e66958af3968062f906068ed69",
+      "failed_source_tests": [
+        "OTel DB and Checks Metrics RecordChecksStarted records checks started count"
+      ],
+      "failed_brine_scenarios": [
+        "OTel profile \u003cprofile\u003e exports its production measurement (row 20)"
+      ]
+    },
+    {
+      "id": "checks-finished-keep-status-attribute",
+      "mutation_sha256": "c0b218838a408b2d287488911760ba4f08f9b92eb30b9dba9ac30eb79226f84f",
+      "failed_source_tests": [
+        "OTel DB and Checks Metrics RecordChecksFinished records checks finished with status attribute"
+      ],
+      "failed_brine_scenarios": [
+        "OTel profile \u003cprofile\u003e exports its production measurement (row 21)"
+      ]
+    },
+    {
+      "id": "checks-enqueued-record-whole-count",
+      "mutation_sha256": "78ae73eee8f3df0e4f27d3801dbb2b74af73e60c52824d3180b11ee222dc2d21",
+      "failed_source_tests": [
+        "OTel DB and Checks Metrics RecordChecksEnqueued records checks enqueued count"
+      ],
+      "failed_brine_scenarios": [
+        "OTel profile \u003cprofile\u003e exports its production measurement (row 22)"
+      ]
+    }
+  ]
+}
