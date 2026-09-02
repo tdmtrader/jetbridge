@@ -1,0 +1,34 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-pipeline-dashboard-strict.json",
+  "git_head": "9d434aff8175d75f0a7a67da2dbb9163d81e337c",
+  "completed_at": "2026-09-02T20:48:35Z",
+  "source_tests": 1,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/job_factory.go": "b70aa5372868b692b70f1ebe2ee036de7efc332ff722c363bc7b7eb502c825ea",
+    "atc/db/pipeline_test.go": "b20eef76fa62d3e21c727132f0d50d78462a1759ce3ae110ec2ac517bfb500d6",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/db-pipeline-dashboard-strict.feature": "0b990a097ff61730e34592944a539ad8a571ad28e010d9adcd9b57575c2c6b04",
+    "atc/worker/jetbridge/brine/mutations/db-pipeline-dashboard-strict.json": "f5f719d729e43cf535ee8280eb866f8e9498fd1e2ae54a506fe2257df5a1d8b8",
+    "atc/worker/jetbridge/brine/steps/db_pipeline_dashboard_strict.go": "fece9bafe6edcc40fccab472bc82fb85c02a7520a79bbec467f19628793d9f21",
+    "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
+    "atc/worker/jetbridge/brine/steps/registry.go": "9d01408bd597ad64357c36ba8d8590121921835a4154d340c1b3ac6ac96f7869",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e"
+  },
+  "mutation_cases": [
+    {
+      "id": "pipeline-dashboard-preserves-job-order",
+      "mutation_sha256": "849d72f31df4a0c751fc021a4a4cc33f83083af35f4490dc48fe5b321430e29f",
+      "failed_source_tests": [
+        "Pipeline Dashboard returns a Dashboard object with a DashboardJob corresponding to each configured job"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline dashboard preserves configured jobs and current build summaries"
+      ]
+    }
+  ]
+}
