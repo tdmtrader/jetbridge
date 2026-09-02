@@ -1,0 +1,95 @@
+{
+  "name": "api-pipelines-state-strict",
+  "test_package": "./atc/api",
+  "source_test_file": "atc/api/pipelines_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/api-pipelines-state-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/api_pipelines_state_strict.go",
+    "atc/worker/jetbridge/brine/steps/api_auth.go",
+    "atc/worker/jetbridge/brine/steps/api_resource_auth.go",
+    "atc/worker/jetbridge/brine/steps/registry.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "delete-removes-the-persisted-pipeline",
+      "source_file": "atc/db/pipeline.go",
+      "old": "func (p *pipeline) Destroy() error {\n\t_, err := psql.Delete(\"pipelines\").\n\t\tWhere(sq.Eq{\n\t\t\t\"id\": p.id,\n\t\t}).",
+      "new": "func (p *pipeline) Destroy() error {\n\t_, err := psql.Delete(\"pipelines\").\n\t\tWhere(sq.Eq{\n\t\t\t\"id\": p.id + 1,\n\t\t}).",
+      "tests": [
+        "Pipelines API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name when authenticated when requester belongs to the team when deleting succeeds returns 204 and removes the named pipeline from PostgreSQL"
+      ],
+      "scenarios": ["Production pipeline state API behavior — <profile> (row 1)"]
+    },
+    {
+      "id": "pause-persists-requesting-user",
+      "source_file": "atc/api/pipelineserver/pause.go",
+      "old": "\t\tuser := acc.UserInfo().DisplayUserId\n\n\t\terr := pipelineDB.Pause(user)",
+      "new": "\t\tuser := acc.UserInfo().DisplayUserId\n\t\tuser = \"\"\n\n\t\terr := pipelineDB.Pause(user)",
+      "tests": [
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/pause when authenticated when requester belongs to the team when pausing the pipeline succeeds persists pipeline pause through PostgreSQL"
+      ],
+      "scenarios": ["Production pipeline state API behavior — <profile> (row 2)"]
+    },
+    {
+      "id": "archive-keeps-archived-pipeline-paused",
+      "source_file": "atc/api/pipelineserver/archive.go",
+      "old": "\t\terr := pipelineDB.Archive()\n\t\tif err != nil {",
+      "new": "\t\terr := pipelineDB.Archive()\n\t\tif err == nil {\n\t\t\terr = pipelineDB.Unpause()\n\t\t}\n\t\tif err != nil {",
+      "tests": [
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/archive when archiving succeeds returns 200 and archives the pipeline in PostgreSQL"
+      ],
+      "scenarios": ["Production pipeline state API behavior — <profile> (row 3)"]
+    },
+    {
+      "id": "unpause-clears-paused-state",
+      "source_file": "atc/db/pipeline.go",
+      "old": "\t_, err = psql.Update(\"pipelines\").\n\t\tSet(\"paused\", false).\n\t\tSet(\"paused_by\", nil).\n\t\tSet(\"paused_at\", nil).\n\t\tWhere(sq.Eq{\"id\": p.id, \"paused\": true}).",
+      "new": "\t_, err = psql.Update(\"pipelines\").\n\t\tSet(\"paused\", true).\n\t\tSet(\"paused_by\", nil).\n\t\tSet(\"paused_at\", nil).\n\t\tWhere(sq.Eq{\"id\": p.id, \"paused\": true}).",
+      "tests": [
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/unpause when authenticated when requester belongs to the team when unpausing the pipeline succeeds persists the unpaused state"
+      ],
+      "scenarios": ["Production pipeline state API behavior — <profile> (row 4)"]
+    },
+    {
+      "id": "expose-persists-public-state",
+      "source_file": "atc/api/pipelineserver/expose.go",
+      "old": "\t\terr := pipeline.Expose()\n\t\tif err != nil {",
+      "new": "\t\terr := pipeline.Expose()\n\t\tif err == nil {\n\t\t\terr = pipeline.Hide()\n\t\t}\n\t\tif err != nil {",
+      "tests": [
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/expose when authenticated when requester belongs to the team when exposing the pipeline succeeds persists public visibility"
+      ],
+      "scenarios": ["Production pipeline state API behavior — <profile> (row 5)"]
+    },
+    {
+      "id": "hide-persists-private-state",
+      "source_file": "atc/api/pipelineserver/hide.go",
+      "old": "\t\terr := pipelineDB.Hide()\n\t\tif err != nil {",
+      "new": "\t\terr := pipelineDB.Hide()\n\t\tif err == nil {\n\t\t\terr = pipelineDB.Expose()\n\t\t}\n\t\tif err != nil {",
+      "tests": [
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/hide when authenticated when requester belongs to the team when hiding the pipeline succeeds persists private visibility"
+      ],
+      "scenarios": ["Production pipeline state API behavior — <profile> (row 6)"]
+    },
+    {
+      "id": "order-pipelines-persists-request-order",
+      "source_file": "atc/db/team.go",
+      "old": "for i, name := range names {\n\t\tpipelineUpdate, err := psql.Update(\"pipelines\").\n\t\t\tSet(\"ordering\", i).",
+      "new": "for i, name := range names {\n\t\tpipelineUpdate, err := psql.Update(\"pipelines\").\n\t\t\tSet(\"ordering\", len(names)-i).",
+      "tests": [
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/ordering when authenticated when requester belongs to the team when ordering the pipelines succeeds persists the requested order from a deliberately different initial order"
+      ],
+      "scenarios": ["Production pipeline state API behavior — <profile> (row 7)"]
+    },
+    {
+      "id": "order-instances-persists-request-order",
+      "source_file": "atc/db/team.go",
+      "old": "pipelineUpdate, err := psql.Update(\"pipelines\").\n\t\t\tSet(\"secondary_ordering\", i+1).",
+      "new": "pipelineUpdate, err := psql.Update(\"pipelines\").\n\t\t\tSet(\"secondary_ordering\", len(instanceVars)-i).",
+      "tests": [
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/ordering when authenticated when requester belongs to the team when ordering the pipelines succeeds persists the requested instance order from a deliberately different initial order"
+      ],
+      "scenarios": ["Production pipeline state API behavior — <profile> (row 8)"]
+    }
+  ]
+}

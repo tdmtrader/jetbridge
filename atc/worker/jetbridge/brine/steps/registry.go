@@ -153,6 +153,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, DBPipelineQueryStrictDefinitions()...)
 	defs = append(defs, VersionsAPIStrictDefinitions()...)
 	defs = append(defs, DBPipelineLifecycleStrictDefinitions()...)
+	defs = append(defs, PipelineAPIStateStrictDefinitions()...)
 	return defs
 }
 
