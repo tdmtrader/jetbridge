@@ -1,0 +1,106 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/api-pipelines-state-strict.json",
+  "git_head": "5588589ed49292d20b009ebfc637a42e37f75d72",
+  "completed_at": "2026-09-02T16:24:07Z",
+  "source_tests": 8,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/api/pipelines_test.go": "b54c51f79e490d439f5de98b0428104644db576476d655e63ea10bfe8269470d",
+    "atc/api/pipelineserver/archive.go": "acf1a48a7ab71fc4c97ee12cf79966cf6bc65a10453556cd5b562a89a406ac3c",
+    "atc/api/pipelineserver/expose.go": "c90616ce84d57beae9b7626feee9c5a76ca13f8a24f241b5b019a163471f5027",
+    "atc/api/pipelineserver/hide.go": "ae5072295cdd326c60a021e08a794bd562514b0682196e874bdd1f0bc8980b89",
+    "atc/api/pipelineserver/pause.go": "916175ac12d1503639643540a6f94c515982e3cb545e6721900f9ce1d1d0e2bb",
+    "atc/db/pipeline.go": "db557d6c09a3c852e68d775fbbbb53bb3e38a17ba09be542c30e3d2bd9765fe8",
+    "atc/db/team.go": "0f44893708836914e40066140ac396ed0cd9531f2ff4aca02c6a25797562e761",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/api-pipelines-state-strict.feature": "2a07f83651a019692f62afc7378fe0465e7599a558fadca8c67cd76a1ac0fe50",
+    "atc/worker/jetbridge/brine/mutations/api-pipelines-state-strict.json": "0d29e1a5e78e557771ef924787f08fed56d97f808691621e7adb1c0f859ecfc9",
+    "atc/worker/jetbridge/brine/steps/api_auth.go": "eba916c51c18a178748f5c0dd95f85cc7d094bc1fad778e327d88e52e2a971e0",
+    "atc/worker/jetbridge/brine/steps/api_pipelines_state_strict.go": "d2b585f24079c8cc4c2ee71a7a297b6b6337c65930d0057653b2fe9b9e30c382",
+    "atc/worker/jetbridge/brine/steps/api_resource_auth.go": "428e6b2cabd1f2833b88f6a9f05e36f41ba1207246afeeefe0a40bd9bd4dea64",
+    "atc/worker/jetbridge/brine/steps/registry.go": "87dddfca1f2cdd869c7ac8c879897a875b2ff38c143da611ecf154a3dde5586f",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8"
+  },
+  "mutation_cases": [
+    {
+      "id": "delete-removes-the-persisted-pipeline",
+      "mutation_sha256": "a499b90b7d6fa13736e4f8b2ca8c1d9d3fcc6034bdbf3f56e2a3f63a68bd8174",
+      "failed_source_tests": [
+        "Pipelines API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name when authenticated when requester belongs to the team when deleting succeeds returns 204 and removes the named pipeline from PostgreSQL"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline state API behavior — \u003cprofile\u003e (row 1)"
+      ]
+    },
+    {
+      "id": "pause-persists-requesting-user",
+      "mutation_sha256": "73d00202971347cb8bf544a023deda68c105c4031c58e50206cafe4d1746acaa",
+      "failed_source_tests": [
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/pause when authenticated when requester belongs to the team when pausing the pipeline succeeds persists pipeline pause through PostgreSQL"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline state API behavior — \u003cprofile\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "archive-keeps-archived-pipeline-paused",
+      "mutation_sha256": "007367294c67201713d68f0340db66ac1a089addbe771bddfabdc50ca87ea39b",
+      "failed_source_tests": [
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/archive when archiving succeeds returns 200 and archives the pipeline in PostgreSQL"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline state API behavior — \u003cprofile\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "unpause-clears-paused-state",
+      "mutation_sha256": "2c010b61e2ec926c23b12b9b308eeaa50ba10df7aec79ce35f6720277c3d3d94",
+      "failed_source_tests": [
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/unpause when authenticated when requester belongs to the team when unpausing the pipeline succeeds persists the unpaused state"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline state API behavior — \u003cprofile\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "expose-persists-public-state",
+      "mutation_sha256": "8c7d3955c799eaa0cbaf5b0cbbc4f6a5dc31369cdb6a1d7d9dd09a3427daaf54",
+      "failed_source_tests": [
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/expose when authenticated when requester belongs to the team when exposing the pipeline succeeds persists public visibility"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline state API behavior — \u003cprofile\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "hide-persists-private-state",
+      "mutation_sha256": "def45da4075bfe3d9a6d54c47b831d9f802334246699323f31b65aa395f840fd",
+      "failed_source_tests": [
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/hide when authenticated when requester belongs to the team when hiding the pipeline succeeds persists private visibility"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline state API behavior — \u003cprofile\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "order-pipelines-persists-request-order",
+      "mutation_sha256": "0dfefe5295b10bca8d35bbdd23c817d6423a1b1bd06c5eb867dd5ba5edead9a8",
+      "failed_source_tests": [
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/ordering when authenticated when requester belongs to the team when ordering the pipelines succeeds persists the requested order from a deliberately different initial order"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline state API behavior — \u003cprofile\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "order-instances-persists-request-order",
+      "mutation_sha256": "8ea739f0d6a5b834afe0a4c6ab0bd27492ec21a29a9b2d74f43369eec73fa89e",
+      "failed_source_tests": [
+        "Pipelines API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/ordering when authenticated when requester belongs to the team when ordering the pipelines succeeds persists the requested instance order from a deliberately different initial order"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline state API behavior — \u003cprofile\u003e (row 8)"
+      ]
+    }
+  ]
+}
