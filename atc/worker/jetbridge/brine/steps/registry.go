@@ -176,6 +176,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, DBResourceFinalStrictDefinitions()...)
 	defs = append(defs, DBVersionsFinalStrictDefinitions()...)
 	defs = append(defs, DBResourceConfigCheckSessionLifecycleStrictDefinitions()...)
+	defs = append(defs, DBResourceConfigFactoryStrictDefinitions()...)
 	return defs
 }
 
