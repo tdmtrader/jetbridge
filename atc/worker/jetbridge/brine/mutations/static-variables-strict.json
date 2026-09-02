@@ -1,0 +1,75 @@
+{
+  "name": "static-variables-strict",
+  "test_package": "./vars",
+  "source_test_file": "vars/static_vars_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/static-variables-strict.feature",
+  "step_files": ["atc/worker/jetbridge/brine/steps/static_variables_strict.go"],
+  "cases": [
+    {
+      "id": "source-qualified-lookups-are-not-rejected",
+      "source_file": "vars/static_vars.go",
+      "old": "\tif ref.Source != \"\" {\n\t\treturn nil, false, nil\n\t}\n\n",
+      "new": "",
+      "tests": [
+        "StaticVariables Get returns nil and not found if source is from local vars",
+        "StaticVariables Get returns nil and not found if source is from var source"
+      ],
+      "scenarios": [
+        "Static variable profile <profile> (row 3)",
+        "Static variable profile <profile> (row 4)"
+      ]
+    },
+    {
+      "id": "lookup-uses-the-wrong-path",
+      "source_file": "vars/static_vars.go",
+      "old": "\tval, found := v[ref.Path]",
+      "new": "\tval, found := v[ref.Path+\"-missing\"]",
+      "tests": [
+        "StaticVariables Get returns value and found if key is found",
+        "StaticVariables Get follows fields",
+        "StaticVariables Get when fields don't exist errors with a MissingFieldError error",
+        "StaticVariables Get when fields cannot be recursed errors with an InvalidFieldError error"
+      ],
+      "scenarios": [
+        "Static variable profile <profile> (row 1)",
+        "Static variable profile <profile> (row 5)",
+        "Static variable profile <profile> (row 6)",
+        "Static variable profile <profile> (row 7)"
+      ]
+    },
+    {
+      "id": "list-drops-variable-names",
+      "source_file": "vars/static_vars.go",
+      "old": "\t\trefs = append(refs, Reference{Path: name})",
+      "new": "\t\t_ = name",
+      "tests": ["StaticVariables List returns list of names"],
+      "scenarios": ["Static variable profile <profile> (row 8)"]
+    },
+    {
+      "id": "flatten-discards-produced-pairs",
+      "source_file": "vars/static_vars.go",
+      "old": "\treturn flat\n}\n\nfunc flatten(path string, fields []string, value any) KVPairs {",
+      "new": "\treturn nil\n}\n\nfunc flatten(path string, fields []string, value any) KVPairs {",
+      "tests": ["StaticVariables Flatten flattens recursively"],
+      "scenarios": ["Static variable profile <profile> (row 9)"]
+    },
+    {
+      "id": "expand-skips-every-pair",
+      "source_file": "vars/static_vars.go",
+      "old": "\tfor _, pair := range p {\n\t\tupsert(out, pair.Ref.Path, pair.Ref.Fields, pair.Value)\n\t}",
+      "new": "\tfor range p {\n\t}",
+      "tests": [
+        "StaticVariables Expand merges flat elements into map",
+        "StaticVariables Expand merges recurses through fields",
+        "StaticVariables Expand overwrites full nodes",
+        "StaticVariables Expand overwrites non-map nodes"
+      ],
+      "scenarios": [
+        "Static variable profile <profile> (row 10)",
+        "Static variable profile <profile> (row 11)",
+        "Static variable profile <profile> (row 13)",
+        "Static variable profile <profile> (row 12)"
+      ]
+    }
+  ]
+}
