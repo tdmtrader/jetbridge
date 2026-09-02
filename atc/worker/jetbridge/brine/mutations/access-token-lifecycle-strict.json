@@ -1,0 +1,34 @@
+{
+  "name": "access-token-lifecycle-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/access_token_lifecycle_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/access-token-db-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/access_token_db_strict.go",
+    "atc/worker/jetbridge/brine/steps/registry.go",
+    "atc/worker/jetbridge/brine/steps/resources.go",
+    "atc/worker/jetbridge/brine/steps/task_command.go",
+    "atc/worker/jetbridge/brine/steps/envtest.go",
+    "atc/postgresrunner/postgresrunner.go",
+    "atc/postgresrunner/ginkgo.go",
+    "atc/postgresrunner/join_limit_conn.go"
+  ],
+  "cases": [
+    {
+      "id": "expired-only-predicate",
+      "source_file": "atc/db/access_token_lifecycle.go",
+      "old": "fmt.Sprintf(\"expires_at < now() - '%d seconds'::interval\", int(leeway.Seconds()))",
+      "new": "fmt.Sprintf(\"expires_at > now() - '%d seconds'::interval\", int(leeway.Seconds()))",
+      "tests": ["Access Token Lifecycle removes expired access tokens"],
+      "scenarios": ["Production access-token database behavior — <profile> (row 3)"]
+    },
+    {
+      "id": "expiration-leeway-contributes-to-cutoff",
+      "source_file": "atc/db/access_token_lifecycle.go",
+      "old": "int(leeway.Seconds())",
+      "new": "0",
+      "tests": ["Access Token Lifecycle respects the leeway for expiration time"],
+      "scenarios": ["Production access-token database behavior — <profile> (row 4)"]
+    }
+  ]
+}
