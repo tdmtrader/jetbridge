@@ -19,10 +19,10 @@
   ],
   "cases": [
     {
-      "id": "schedule-build-persists-scheduled-state",
+      "id": "schedule-build-returns-scheduled-state",
       "source_file": "atc/db/job.go",
-      "old": "\t\tresult, err = psql.Update(\"builds\").\n\t\t\tSet(\"scheduled\", true).\n\t\t\tWhere(sq.Eq{\"id\": build.ID()}).",
-      "new": "\t\tresult, err = psql.Update(\"builds\").\n\t\t\tSet(\"scheduled\", false).\n\t\t\tWhere(sq.Eq{\"id\": build.ID()}).",
+      "old": "\t\tscheduled = true\n\t}\n\n\terr = tx.Commit()",
+      "new": "\t\tscheduled = false\n\t}\n\n\terr = tx.Commit()",
       "tests": [
         "Job ScheduleBuild when the scheduling build is created first when the job config doesn't specify max in flight schedules the build",
         "Job ScheduleBuild when the scheduling build is created first when the job config doesn't specify max in flight when build exists when the pipeline and job is not paused sets the build to scheduled",
