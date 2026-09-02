@@ -1,0 +1,52 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/atc-job-public-strict.json",
+  "git_head": "6c6bc1859b7089eba01b7c35a7892b784690d5d6",
+  "completed_at": "2026-09-02T21:37:49Z",
+  "source_tests": 5,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/atc_test.go": "30be24256f5d541754028474286baac334fa4dd873a589a0f15bde5d877f6da4",
+    "atc/config.go": "25deecbce8ff61ba771a4266f7aafc59e704220b5c8c550036ae2889cac72f8e",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/atc-job-public-strict.feature": "81d3c8f51dc97d206d7d6f5b3d6933a70b79363c768b1552435432f2b31d8dfe",
+    "atc/worker/jetbridge/brine/mutations/atc-job-public-strict.json": "450274b3fed5e8f81366c03a4f7b5c357630a0bdaf924bc13a42311424652ea0",
+    "atc/worker/jetbridge/brine/steps/atc_job_public_strict.go": "6f22816da54be60581ea44b55278f3e04c8e483b45ea692723540bb0fca7d6ed",
+    "atc/worker/jetbridge/brine/steps/registry.go": "fd53415d0337079d556c00bfb483690d45d71a16c537fff56c5714818ee2e106"
+  },
+  "mutation_cases": [
+    {
+      "id": "job-visibility-uses-public-field",
+      "mutation_sha256": "a3dbf61e606e398284d3416e1d4c6dcd18639f9f265da1f203bdb0695f24931c",
+      "failed_source_tests": [
+        "Config determining if a job's builds are publically viewable when the job is not publically viewable returns false",
+        "Config determining if a job's builds are publically viewable when the job is publically viewable returns true"
+      ],
+      "failed_brine_scenarios": [
+        "A private job is reported private",
+        "A public job is reported public"
+      ]
+    },
+    {
+      "id": "successful-job-lookup-has-no-error",
+      "mutation_sha256": "b1a65c712b9b21f0c3573518cd76e4a7a456682cea91676680ded442984d86d2",
+      "failed_source_tests": [
+        "Config determining if a job's builds are publically viewable when the job is not publically viewable does not error",
+        "Config determining if a job's builds are publically viewable when the job is publically viewable does not error"
+      ],
+      "failed_brine_scenarios": [
+        "Looking up a private job succeeds",
+        "Looking up a public job succeeds"
+      ]
+    },
+    {
+      "id": "missing-job-returns-an-error",
+      "mutation_sha256": "facbb9e87b99582d2b4c3b6c0c025e230f4f5d440159b5105d0a963fc2029a2c",
+      "failed_source_tests": [
+        "Config determining if a job's builds are publically viewable when the job with the given name can't be found errors"
+      ],
+      "failed_brine_scenarios": [
+        "Looking up a missing job fails"
+      ]
+    }
+  ]
+}
