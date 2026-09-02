@@ -1,7 +1,7 @@
 {
   "manifest": "atc/worker/jetbridge/brine/mutations/api-pipelines-state-strict.json",
-  "git_head": "5588589ed49292d20b009ebfc637a42e37f75d72",
-  "completed_at": "2026-09-02T16:24:07Z",
+  "git_head": "1479de77c69e37b0aad655b647a8a277a1780a31",
+  "completed_at": "2026-09-02T16:33:22Z",
   "source_tests": 8,
   "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
   "input_sha256": {
@@ -16,7 +16,7 @@
     "atc/worker/jetbridge/brine/features/api-pipelines-state-strict.feature": "2a07f83651a019692f62afc7378fe0465e7599a558fadca8c67cd76a1ac0fe50",
     "atc/worker/jetbridge/brine/mutations/api-pipelines-state-strict.json": "0d29e1a5e78e557771ef924787f08fed56d97f808691621e7adb1c0f859ecfc9",
     "atc/worker/jetbridge/brine/steps/api_auth.go": "eba916c51c18a178748f5c0dd95f85cc7d094bc1fad778e327d88e52e2a971e0",
-    "atc/worker/jetbridge/brine/steps/api_pipelines_state_strict.go": "d2b585f24079c8cc4c2ee71a7a297b6b6337c65930d0057653b2fe9b9e30c382",
+    "atc/worker/jetbridge/brine/steps/api_pipelines_state_strict.go": "a8846288aa724ab43bb4a55c14cc164ce24d578cc355b4fe68b32b8d68e15e97",
     "atc/worker/jetbridge/brine/steps/api_resource_auth.go": "428e6b2cabd1f2833b88f6a9f05e36f41ba1207246afeeefe0a40bd9bd4dea64",
     "atc/worker/jetbridge/brine/steps/registry.go": "87dddfca1f2cdd869c7ac8c879897a875b2ff38c143da611ecf154a3dde5586f",
     "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8"
