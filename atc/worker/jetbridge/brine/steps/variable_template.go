@@ -1,20 +1,36 @@
 package steps
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
 	concoursevars "github.com/concourse/concourse/vars"
+	"sigs.k8s.io/yaml"
 )
 
 type VariableTemplateObservation struct{ Value string }
+type TemplateResolverObservation struct{ Value string }
 
 // VariableTemplateDefinitions exercises the pipeline variable interpolator
 // with concrete StaticVariables/NamedVariables. The only source case omitted
 // is the one whose sole purpose is propagating an error from FakeVariables.
 func VariableTemplateDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
+		brine.DefineMap[brine.Empty, TemplateResolverObservation](
+			"the production template resolver evaluates profile {string}",
+			func(_ brine.Empty, p brine.Params, _ *brine.Recorder) (TemplateResolverObservation, error) {
+				profile, ok := p.GetString(0)
+				if !ok {
+					return TemplateResolverObservation{}, fmt.Errorf("expected template resolver profile")
+				}
+				value, err := observeTemplateResolver(profile)
+				return TemplateResolverObservation{Value: value}, err
+			},
+		),
+		CheckString[TemplateResolverObservation]("the template resolver observation is {string}", "template resolver observation",
+			func(in TemplateResolverObservation) (string, error) { return in.Value, nil }),
 		brine.DefineMap[brine.Empty, VariableTemplateObservation](
 			"the production variable template evaluates profile {string}",
 			func(_ brine.Empty, p brine.Params, _ *brine.Recorder) (VariableTemplateObservation, error) {
@@ -43,6 +59,76 @@ func VariableTemplateDefinitions() []brine.StepDefinition {
 				return nil
 			},
 		),
+	}
+}
+
+func observeTemplateResolver(profile string) (string, error) {
+	params := concoursevars.StaticVariables{
+		"secret": map[string]any{"concourse_repo": map[string]any{"private_key": "some-private-key"}},
+		"env":    "some-env", "env-tags": []string{"speedy"},
+	}
+	resolve := func(payload string, sources []concoursevars.Variables, required bool) string {
+		result, err := concoursevars.NewTemplateResolver([]byte(payload), sources).Resolve(required)
+		if err != nil {
+			return "error:" + normalizeTemplateText(err.Error())
+		}
+		return normalizeTemplateText(string(result))
+	}
+
+	switch profile {
+	case "all-defined":
+		payload := "resources:\n- name: my-repo\n  source:\n    private_key: ((secret.concourse_repo.private_key))\n- name: env-state\n  source:\n    bucket: ((env))-ci\njobs:\n- name: do-some-stuff\n  plan:\n  - task: build-thing\n    tags: ((env-tags))\n"
+		want := "resources:\n- name: my-repo\n  source:\n    private_key: some-private-key\n- name: env-state\n  source:\n    bucket: some-env-ci\njobs:\n- name: do-some-stuff\n  plan:\n  - task: build-thing\n    tags:\n    - speedy\n"
+		optional := resolve(payload, []concoursevars.Variables{params}, false)
+		required := resolve(payload, []concoursevars.Variables{params}, true)
+		optionalJSON, optionalErr := yaml.YAMLToJSON([]byte(strings.ReplaceAll(optional, `\n`, "\n")))
+		requiredJSON, requiredErr := yaml.YAMLToJSON([]byte(strings.ReplaceAll(required, `\n`, "\n")))
+		wantJSON, wantErr := yaml.YAMLToJSON([]byte(want))
+		if optionalErr != nil || requiredErr != nil || wantErr != nil || !bytes.Equal(optionalJSON, wantJSON) || !bytes.Equal(requiredJSON, wantJSON) {
+			return "all-defined-mismatch", nil
+		}
+		return "all-defined", nil
+	case "partial-tolerated", "partial-required":
+		payload := "resources:\n- name: my-repo\n  source:\n    private_key: ((secret.concourse_repo.private_key))\n- name: env-state\n  source:\n    bucket: ((bucket))\n    key: ((state))\n"
+		return resolve(payload, []concoursevars.Variables{params}, profile == "partial-required"), nil
+	case "source-order":
+		payload := "private_key: ((secret.concourse_repo.private_key))\nenv: ((env))\ntags: ((env-tags))\n"
+		override := concoursevars.StaticVariables{
+			"secret": map[string]any{"concourse_repo": map[string]any{"private_key": "some-private-key-override"}},
+			"env":    "some-env-override",
+		}
+		forward := "env: some-env\nprivate_key: some-private-key\ntags:\n- speedy\n"
+		reverse := "env: some-env-override\nprivate_key: some-private-key-override\ntags:\n- speedy\n"
+		if resolve(payload, []concoursevars.Variables{params, override}, false) != normalizeTemplateText(forward) || resolve(payload, []concoursevars.Variables{override, params}, false) != normalizeTemplateText(reverse) {
+			return "source-order-mismatch", nil
+		}
+		return "source-order-preserved", nil
+	case "byte-slice":
+		return resolve("((key))", []concoursevars.Variables{concoursevars.StaticVariables{"key": "foo"}}, false), nil
+	case "multiple-values":
+		return resolve("((key))=((value))", []concoursevars.Variables{concoursevars.StaticVariables{"key": "foo", "value": "bar"}}, false), nil
+	case "unicode-value":
+		return resolve("((Ω))", []concoursevars.Variables{concoursevars.StaticVariables{"Ω": "☃"}}, false), nil
+	case "punctuated-keys":
+		return resolve("((with-a-dash)) = ((with_an_underscore))", []concoursevars.Variables{concoursevars.StaticVariables{"with-a-dash": "dash", "with_an_underscore": "underscore"}}, false), nil
+	case "repeated-value":
+		return resolve("((key))=((key))", []concoursevars.Variables{concoursevars.StaticVariables{"key": "foo"}}, false), nil
+	case "local-source":
+		return resolve("((key))=((.:key))", []concoursevars.Variables{concoursevars.StaticVariables{"key": "foo"}}, false), nil
+	case "named-source":
+		return resolve("((key))=((source:key))", []concoursevars.Variables{concoursevars.StaticVariables{"key": "foo"}}, false), nil
+	case "multiline":
+		got := resolve("((key))", []concoursevars.Variables{concoursevars.StaticVariables{"key": "this\nhas\nmany\nlines"}}, false)
+		if got != normalizeTemplateText("|-\n  this\n  has\n  many\n  lines\n") {
+			return "resolver-multiline-yaml-mismatch", nil
+		}
+		return "resolver-multiline-yaml-preserved", nil
+	case "undefined-list":
+		return resolve("((not-specified-one))((not-specified-two))", []concoursevars.Variables{concoursevars.StaticVariables{}}, true), nil
+	case "invalid-expression":
+		return resolve("(()", []concoursevars.Variables{concoursevars.StaticVariables{}}, false), nil
+	default:
+		return "", fmt.Errorf("unknown template resolver profile %q", profile)
 	}
 }
 

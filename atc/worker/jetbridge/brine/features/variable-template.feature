@@ -45,3 +45,24 @@ Feature: Pipeline variables interpolate into YAML without losing type or path se
       | subkey                       | is         | e\n                                                                   |
       | subkey-variable-missing      | contains   | undefined vars: key                                                   |
       | subkey-field-missing         | contains   | missing field 'subkey_not_found' in var: key.subkey_not_found         |
+
+  Scenario Outline: Template resolver profile <profile>
+    Given the production template resolver evaluates profile "<profile>"
+    Then the template resolver observation is "<expected>"
+
+    Examples:
+      | profile            | expected                                                                                                                                                                                                 |
+      | all-defined        | all-defined                                                                                                                                                                                              |
+      | partial-tolerated  | resources:\n- name: my-repo\n  source:\n    private_key: some-private-key\n- name: env-state\n  source:\n    bucket: ((bucket))\n    key: ((state))\n                                                                       |
+      | partial-required   | error:undefined vars: bucket, state                                                                                                                                                                       |
+      | source-order       | source-order-preserved                                                                                                                                                                                    |
+      | byte-slice         | foo\n                                                                                                                                                                                                    |
+      | multiple-values    | foo=bar\n                                                                                                                                                                                                |
+      | unicode-value      | ☃\n                                                                                                                                                                                                      |
+      | punctuated-keys    | dash = underscore\n                                                                                                                                                                                    |
+      | repeated-value     | foo=foo\n                                                                                                                                                                                                |
+      | local-source       | foo=((.:key))\n                                                                                                                                                                                      |
+      | named-source       | foo=((source:key))\n                                                                                                                                                                                  |
+      | multiline          | resolver-multiline-yaml-preserved                                                                                                                                                                       |
+      | undefined-list     | error:undefined vars: not-specified-one, not-specified-two                                                                                                                                               |
+      | invalid-expression | (()\n                                                                                                                                                                                                    |
