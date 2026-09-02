@@ -1,0 +1,125 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/task-config-source-strict.json",
+  "git_head": "1a145be22e32d58d361df073e8604550d8b14890",
+  "completed_at": "2026-09-02T13:45:43Z",
+  "source_tests": 18,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/exec/task_config_source.go": "d02997be96f890ed2d4504bc0908a3e76b07f0fa690c63730c90a5f6ee96f9f1",
+    "atc/exec/task_config_source_test.go": "9e6011e10600c9a162d602a3f41833d296b6dc69857524565aaa16441e490d0b",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/task-config-source-strict.feature": "37d85c04e0882e9cb310a8ae95bfa7474b49bd035ce4f60c9257ccd1f142f33f",
+    "atc/worker/jetbridge/brine/mutations/task-config-source-strict.json": "f7da02ca9027b98f756220e13f8df439114b2c0eb194b2f2d3dcc22c81fb7cdd",
+    "atc/worker/jetbridge/brine/steps/task_config_source_strict.go": "d7dbfe95d6f2afa02ce613fd4487823e30832ee7372407ed745fedbfa2d63acc"
+  },
+  "mutation_cases": [
+    {
+      "id": "static-nil-guard-is-required",
+      "mutation_sha256": "901cc0b6a07769d94b274bc913cfcae8170319348b9c3612c5e920458fa3723c",
+      "failed_source_tests": [
+        "TaskConfigSource StaticConfigSource fetches config of nil task successfully"
+      ],
+      "failed_brine_scenarios": [
+        "Task config source profile \u003cprofile\u003e produces its exact observable result (row 1)"
+      ]
+    },
+    {
+      "id": "parameter-overrides-preserve-existing-map",
+      "mutation_sha256": "2a7fd4b96b7df951047a5a01c8ad53905fd142c0a9729c6ab81fa391f1182e3d",
+      "failed_source_tests": [
+        "TaskConfigSource OverrideParamsConfigSource when override params are specified returns a deprecation warning",
+        "TaskConfigSource OverrideParamsConfigSource when override params are specified returns the config with overridden parameters",
+        "TaskConfigSource OverrideParamsConfigSource when there are no params to override returns the same config"
+      ],
+      "failed_brine_scenarios": [
+        "Task config source profile \u003cprofile\u003e produces its exact observable result (row 2)",
+        "Task config source profile \u003cprofile\u003e produces its exact observable result (row 3)",
+        "Task config source profile \u003cprofile\u003e produces its exact observable result (row 4)"
+      ]
+    },
+    {
+      "id": "new-limit-container-is-initialized",
+      "mutation_sha256": "d7d53ed9aa71dbeaf582bdc542243c6821e22416348500339191dd482521d3f5",
+      "failed_source_tests": [
+        "TaskConfigSource OverrideContainerLimitsSource when override container limits are specified but no configuration container limits returns the config with overridden limits",
+        "TaskConfigSource OverrideContainerLimitsSource when override container limits are specified but no configuration container limits succeeds"
+      ],
+      "failed_brine_scenarios": [
+        "Task config source profile \u003cprofile\u003e produces its exact observable result (row 5)",
+        "Task config source profile \u003cprofile\u003e produces its exact observable result (row 6)"
+      ]
+    },
+    {
+      "id": "existing-limit-cpu-is-overwritten",
+      "mutation_sha256": "b25216dc105e7e8032f278bbf29837e9b1c5ac718d0a971a71ff546b648897c0",
+      "failed_source_tests": [
+        "TaskConfigSource OverrideContainerLimitsSource when both override limits and requests are specified overrides both independently",
+        "TaskConfigSource OverrideContainerLimitsSource when override container limits are specified returns the config with overridden limits"
+      ],
+      "failed_brine_scenarios": [
+        "Task config source profile \u003cprofile\u003e produces its exact observable result (row 7)",
+        "Task config source profile \u003cprofile\u003e produces its exact observable result (row 9)"
+      ]
+    },
+    {
+      "id": "request-memory-is-copied",
+      "mutation_sha256": "9d651786c099e5f40a9e5a785701977c8b63a38acc73eee68a1827e9d96bcd15",
+      "failed_source_tests": [
+        "TaskConfigSource OverrideContainerLimitsSource when override container requests are specified sets requests without affecting limits",
+        "TaskConfigSource OverrideContainerLimitsSource when override requests are specified but task has no existing requests creates requests from scratch"
+      ],
+      "failed_brine_scenarios": [
+        "Task config source profile \u003cprofile\u003e produces its exact observable result (row 10)",
+        "Task config source profile \u003cprofile\u003e produces its exact observable result (row 8)"
+      ]
+    },
+    {
+      "id": "validation-rejects-only-invalid-config",
+      "mutation_sha256": "6e6fc6bd3ab1cbda73c616cc2e6b6ab64451382196ccb71cc442bb82a93c4962",
+      "failed_source_tests": [
+        "TaskConfigSource ValidatingConfigSource when the config is invalid returns the validation error",
+        "TaskConfigSource ValidatingConfigSource when the config is valid returns the config and no error"
+      ],
+      "failed_brine_scenarios": [
+        "Task config source profile \u003cprofile\u003e produces its exact observable result (row 11)",
+        "Task config source profile \u003cprofile\u003e produces its exact observable result (row 12)"
+      ]
+    },
+    {
+      "id": "interpolation-uses-provided-variables",
+      "mutation_sha256": "6634dd81995169f1f3e1f7729bbf8ecd8c2dab5e65d005046d704002a200eb6b",
+      "failed_source_tests": [
+        "TaskConfigSource InterpolateTemplateConfigSource when expect all keys fetches task config successfully",
+        "TaskConfigSource InterpolateTemplateConfigSource when expect all keys resolves task config parameters successfully"
+      ],
+      "failed_brine_scenarios": [
+        "Task config source profile \u003cprofile\u003e produces its exact observable result (row 13)",
+        "Task config source profile \u003cprofile\u003e produces its exact observable result (row 14)"
+      ]
+    },
+    {
+      "id": "missing-interpolation-keys-are-allowed",
+      "mutation_sha256": "941d64a759e46a8744804bb21e75f924c537a618eac1d5bceb02ddde7c969d7e",
+      "failed_source_tests": [
+        "TaskConfigSource InterpolateTemplateConfigSource when not expect all keys fetches task config successfully",
+        "TaskConfigSource InterpolateTemplateConfigSource when not expect all keys resolves task config parameters successfully"
+      ],
+      "failed_brine_scenarios": [
+        "Task config source profile \u003cprofile\u003e produces its exact observable result (row 15)",
+        "Task config source profile \u003cprofile\u003e produces its exact observable result (row 16)"
+      ]
+    },
+    {
+      "id": "resource-type-defaults-are-applied",
+      "mutation_sha256": "503ed4898188194d9ee611c98556c849452aafac00a6dfae7ca4cd8454f4ee5a",
+      "failed_source_tests": [
+        "TaskConfigSource BaseResourceTypeDefaultsApplySource resourceTypes contains image source type defaults should be added to image source",
+        "TaskConfigSource BaseResourceTypeDefaultsApplySource resourceTypes is empty, and base resource type defaults configured defaults should be added to image source"
+      ],
+      "failed_brine_scenarios": [
+        "Task config source profile \u003cprofile\u003e produces its exact observable result (row 17)",
+        "Task config source profile \u003cprofile\u003e produces its exact observable result (row 18)"
+      ]
+    }
+  ]
+}

@@ -87,6 +87,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, ConfigValidationDefinitions()...)
 	defs = append(defs, ConfigvalidateBehaviorDefinitions()...)
 	defs = append(defs, TaskConfigBehaviorDefinitions()...)
+	defs = append(defs, TaskConfigSourceStrictDefinitions()...)
 	defs = append(defs, IDTokenGeneratorStrictDefinitions()...)
 	defs = append(defs, VariableTemplateDefinitions()...)
 	defs = append(defs, ATCConfigBehaviorDefinitions()...)

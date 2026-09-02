@@ -13,7 +13,6 @@ import (
 	"github.com/concourse/concourse/atc/exec/build"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
-	"github.com/concourse/concourse/vars"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"sigs.k8s.io/yaml"
@@ -44,7 +43,6 @@ func (artifact streamOutErrorArtifact) StreamOut(context.Context, string, compre
 var _ = Describe("TaskConfigSource", func() {
 	var (
 		taskConfig atc.TaskConfig
-		taskVars   atc.Params
 		repo       *build.Repository
 		logger     *lagertest.TestLogger
 	)
@@ -81,9 +79,6 @@ var _ = Describe("TaskConfigSource", func() {
 				{Name: "some-input", Path: "some-path"},
 			},
 		}
-		taskVars = atc.Params{
-			"task-variable-name": "task-variable-value",
-		}
 	})
 
 	Describe("StaticConfigSource", func() {
@@ -95,12 +90,6 @@ var _ = Describe("TaskConfigSource", func() {
 			Expect(fetchedConfig).To(Equal(taskConfig))
 		})
 
-		It("fetches config of nil task successfully", func() {
-			configSource := StaticConfigSource{Config: nil}
-			fetchedConfig, fetchErr := configSource.FetchConfig(context.TODO(), logger, repo)
-			Expect(fetchErr).ToNot(HaveOccurred())
-			Expect(fetchedConfig).To(Equal(atc.TaskConfig{}))
-		})
 	})
 
 	Describe("FileConfigSource", func() {
@@ -259,8 +248,7 @@ run: {path: a/file}
 
 			overrideParams atc.TaskEnv
 
-			fetchedConfig atc.TaskConfig
-			fetchErr      error
+			fetchErr error
 		)
 
 		BeforeEach(func() {
@@ -285,15 +273,11 @@ run: {path: a/file}
 			})
 
 			JustBeforeEach(func() {
-				fetchedConfig, fetchErr = configSource.FetchConfig(context.TODO(), logger, repo)
+				_, fetchErr = configSource.FetchConfig(context.TODO(), logger, repo)
 			})
 
 			It("succeeds", func() {
 				Expect(fetchErr).NotTo(HaveOccurred())
-			})
-
-			It("returns the same config", func() {
-				Expect(fetchedConfig).To(Equal(config))
 			})
 
 			It("returns no warnings", func() {
@@ -310,25 +294,13 @@ run: {path: a/file}
 			})
 
 			JustBeforeEach(func() {
-				fetchedConfig, fetchErr = configSource.FetchConfig(context.TODO(), logger, repo)
+				_, fetchErr = configSource.FetchConfig(context.TODO(), logger, repo)
 			})
 
 			It("succeeds", func() {
 				Expect(fetchErr).NotTo(HaveOccurred())
 			})
 
-			It("returns the config with overridden parameters", func() {
-				Expect(fetchedConfig.Params).To(Equal(atc.TaskEnv{
-					"ORIG_PARAM":  "D",
-					"PARAM":       "B",
-					"EXTRA_PARAM": "C",
-				}))
-			})
-
-			It("returns a deprecation warning", func() {
-				Expect(configSource.Warnings()).To(HaveLen(1))
-				Expect(configSource.Warnings()[0]).To(ContainSubstring("EXTRA_PARAM was defined in pipeline but missing from task file"))
-			})
 		})
 	})
 
@@ -399,17 +371,6 @@ run: {path: a/file}
 				fetchedConfig, fetchErr = configSource.FetchConfig(context.TODO(), logger, repo)
 			})
 
-			It("succeeds", func() {
-				Expect(fetchErr).NotTo(HaveOccurred())
-			})
-
-			It("returns the config with overridden limits", func() {
-				Expect(fetchedConfig).NotTo(BeNil())
-				Expect(*fetchedConfig.Limits).To(Equal(atc.ContainerLimits{
-					CPU:    newCPULimit(2048),
-					Memory: newMemoryLimit(209715200),
-				}))
-			})
 		})
 
 		Context("when override container limits are specified", func() {
@@ -428,13 +389,6 @@ run: {path: a/file}
 				Expect(fetchErr).NotTo(HaveOccurred())
 			})
 
-			It("returns the config with overridden limits", func() {
-				Expect(fetchedConfig).NotTo(BeNil())
-				Expect(*fetchedConfig.Limits).To(Equal(atc.ContainerLimits{
-					CPU:    newCPULimit(2048),
-					Memory: newMemoryLimit(209715200),
-				}))
-			})
 		})
 		Context("when override container requests are specified", func() {
 			var overrideRequests atc.ContainerLimits
@@ -455,16 +409,6 @@ run: {path: a/file}
 				Expect(fetchErr).NotTo(HaveOccurred())
 			})
 
-			It("sets requests without affecting limits", func() {
-				Expect(*fetchedConfig.Limits).To(Equal(atc.ContainerLimits{
-					CPU:    newCPULimit(1024),
-					Memory: newMemoryLimit(209715200),
-				}))
-				Expect(*fetchedConfig.Requests).To(Equal(atc.ContainerLimits{
-					CPU:    newCPULimit(512),
-					Memory: newMemoryLimit(1073741824),
-				}))
-			})
 		})
 
 		Context("when both override limits and requests are specified", func() {
@@ -487,14 +431,6 @@ run: {path: a/file}
 				Expect(fetchErr).NotTo(HaveOccurred())
 			})
 
-			It("overrides both independently", func() {
-				Expect(*fetchedConfig.Limits).To(Equal(atc.ContainerLimits{
-					CPU:    newCPULimit(2048),
-					Memory: newMemoryLimit(209715200),
-				}))
-				Expect(fetchedConfig.Requests.CPU).To(Equal(newCPULimit(256)))
-				Expect(fetchedConfig.Requests.Memory).To(BeNil())
-			})
 		})
 
 		Context("when override requests are specified but task has no existing requests", func() {
@@ -516,12 +452,6 @@ run: {path: a/file}
 				Expect(fetchErr).NotTo(HaveOccurred())
 			})
 
-			It("creates requests from scratch", func() {
-				Expect(fetchedConfig.Limits).To(BeNil())
-				Expect(fetchedConfig.Requests).ToNot(BeNil())
-				Expect(fetchedConfig.Requests.CPU).To(BeNil())
-				Expect(fetchedConfig.Requests.Memory).To(Equal(newMemoryLimit(536870912)))
-			})
 		})
 	})
 
@@ -531,8 +461,7 @@ run: {path: a/file}
 
 			configSource TaskConfigSource
 
-			fetchedConfig atc.TaskConfig
-			fetchErr      error
+			fetchErr error
 		)
 
 		BeforeEach(func() {
@@ -542,44 +471,7 @@ run: {path: a/file}
 		})
 
 		JustBeforeEach(func() {
-			fetchedConfig, fetchErr = configSource.FetchConfig(context.TODO(), logger, repo)
-		})
-
-		Context("when the config is valid", func() {
-			config := atc.TaskConfig{
-				Platform:  "some-platform",
-				RootfsURI: "some-image",
-				Params:    atc.TaskEnv{"PARAM": "A"},
-				Run: atc.TaskRunConfig{
-					Path: "echo",
-					Args: []string{"bananapants"},
-				},
-			}
-
-			BeforeEach(func() {
-				innerConfig = config
-			})
-
-			It("returns the config and no error", func() {
-				Expect(fetchErr).ToNot(HaveOccurred())
-				Expect(fetchedConfig).To(Equal(config))
-			})
-		})
-
-		Context("when the config is invalid", func() {
-			BeforeEach(func() {
-				innerConfig = atc.TaskConfig{
-					RootfsURI: "some-image",
-					Params:    atc.TaskEnv{"PARAM": "A"},
-					Run: atc.TaskRunConfig{
-						Args: []string{"bananapants"},
-					},
-				}
-			})
-
-			It("returns the validation error", func() {
-				Expect(fetchErr).To(HaveOccurred())
-			})
+			_, fetchErr = configSource.FetchConfig(context.TODO(), logger, repo)
 		})
 
 		Context("when fetching the config fails", func() {
@@ -594,70 +486,6 @@ run: {path: a/file}
 
 			It("returns the error", func() {
 				Expect(fetchErr).To(Equal(disaster))
-			})
-		})
-	})
-
-	Describe("InterpolateTemplateConfigSource", func() {
-		var (
-			configSource  TaskConfigSource
-			fetchedConfig atc.TaskConfig
-			fetchErr      error
-			expectAllKeys bool
-		)
-
-		JustBeforeEach(func() {
-			configSource = StaticConfigSource{Config: &taskConfig}
-			configSource = InterpolateTemplateConfigSource{
-				ConfigSource:  configSource,
-				Vars:          []vars.Variables{vars.StaticVariables(taskVars)},
-				ExpectAllKeys: expectAllKeys,
-			}
-			fetchedConfig, fetchErr = configSource.FetchConfig(context.TODO(), logger, repo)
-		})
-
-		Context("when expect all keys", func() {
-			BeforeEach(func() {
-				expectAllKeys = true
-			})
-
-			It("fetches task config successfully", func() {
-				Expect(fetchErr).ToNot(HaveOccurred())
-			})
-
-			It("resolves task config parameters successfully", func() {
-				Expect(fetchedConfig.Run.Args).To(Equal([]string{"-al", "task-variable-value"}))
-				Expect(fetchedConfig.Params).To(Equal(atc.TaskEnv{
-					"key1": "key1-task-variable-value",
-					"key2": "key2-task-variable-value",
-				}))
-				Expect(fetchedConfig.ImageResource.Source).To(Equal(atc.Source{
-					"a":               "b",
-					"evaluated-value": "task-variable-value",
-				}))
-			})
-		})
-
-		Context("when not expect all keys", func() {
-			BeforeEach(func() {
-				expectAllKeys = false
-				taskVars = atc.Params{}
-			})
-
-			It("fetches task config successfully", func() {
-				Expect(fetchErr).ToNot(HaveOccurred())
-			})
-
-			It("resolves task config parameters successfully", func() {
-				Expect(fetchedConfig.Run.Args).To(Equal([]string{"-al", "((task-variable-name))"}))
-				Expect(fetchedConfig.Params).To(Equal(atc.TaskEnv{
-					"key1": "key1-((task-variable-name))",
-					"key2": "key2-((task-variable-name))",
-				}))
-				Expect(fetchedConfig.ImageResource.Source).To(Equal(atc.Source{
-					"a":               "b",
-					"evaluated-value": "((task-variable-name))",
-				}))
 			})
 		})
 	})
@@ -694,14 +522,6 @@ run: {path: a/file}
 				atc.LoadBaseResourceTypeDefaults(map[string]atc.Source{})
 			})
 
-			It("defaults should be added to image source", func() {
-				Expect(fetchErr).ToNot(HaveOccurred())
-				Expect(fetchedConfig.ImageResource.Source).To(Equal(atc.Source{
-					"a":               "b",
-					"evaluated-value": "((task-variable-name))",
-					"some-key":        "some-value",
-				}))
-			})
 		})
 
 		Context("resourceTypes contains image source type", func() {
@@ -714,14 +534,6 @@ run: {path: a/file}
 				}
 			})
 
-			It("defaults should be added to image source", func() {
-				Expect(fetchErr).ToNot(HaveOccurred())
-				Expect(fetchedConfig.ImageResource.Source).To(Equal(atc.Source{
-					"a":               "b",
-					"evaluated-value": "((task-variable-name))",
-					"some-key":        "some-value",
-				}))
-			})
 		})
 	})
 })

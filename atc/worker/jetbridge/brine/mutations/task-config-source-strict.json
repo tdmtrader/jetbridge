@@ -1,0 +1,137 @@
+{
+  "name": "task-config-source-strict",
+  "test_package": "./atc/exec",
+  "source_test_file": "atc/exec/task_config_source_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/task-config-source-strict.feature",
+  "step_files": ["atc/worker/jetbridge/brine/steps/task_config_source_strict.go"],
+  "cases": [
+    {
+      "id": "static-nil-guard-is-required",
+      "source_file": "atc/exec/task_config_source.go",
+      "old": "\ttaskConfig := atc.TaskConfig{}\n\tif configSource.Config != nil {\n\t\ttaskConfig = *configSource.Config\n\t}\n\treturn taskConfig, nil",
+      "new": "\tif configSource.Config == nil {\n\t\treturn atc.TaskConfig{}, fmt.Errorf(\"task config is required\")\n\t}\n\treturn *configSource.Config, nil",
+      "tests": ["TaskConfigSource StaticConfigSource fetches config of nil task successfully"],
+      "scenarios": ["Task config source profile <profile> produces its exact observable result (row 1)"],
+      "failure_contains": "task config source observation"
+    },
+    {
+      "id": "parameter-overrides-preserve-existing-map",
+      "source_file": "atc/exec/task_config_source.go",
+      "old": "\tif taskConfig.Params == nil {\n\t\ttaskConfig.Params = atc.TaskEnv{}\n\t}",
+      "new": "\ttaskConfig.Params = atc.TaskEnv{}",
+      "tests": [
+        "TaskConfigSource OverrideParamsConfigSource when there are no params to override returns the same config",
+        "TaskConfigSource OverrideParamsConfigSource when override params are specified returns the config with overridden parameters",
+        "TaskConfigSource OverrideParamsConfigSource when override params are specified returns a deprecation warning"
+      ],
+      "scenarios": [
+        "Task config source profile <profile> produces its exact observable result (row 2)",
+        "Task config source profile <profile> produces its exact observable result (row 3)",
+        "Task config source profile <profile> produces its exact observable result (row 4)"
+      ],
+      "failure_contains": "task config source observation"
+    },
+    {
+      "id": "new-limit-container-is-initialized",
+      "source_file": "atc/exec/task_config_source.go",
+      "old": "\t\tif taskConfig.Limits == nil {\n\t\t\ttaskConfig.Limits = &atc.ContainerLimits{}\n\t\t}\n",
+      "new": "\t\tif taskConfig.Limits == nil {\n\t\t\treturn atc.TaskConfig{}, fmt.Errorf(\"task config limits are required\")\n\t\t}\n",
+      "tests": [
+        "TaskConfigSource OverrideContainerLimitsSource when override container limits are specified but no configuration container limits succeeds",
+        "TaskConfigSource OverrideContainerLimitsSource when override container limits are specified but no configuration container limits returns the config with overridden limits"
+      ],
+      "scenarios": [
+        "Task config source profile <profile> produces its exact observable result (row 5)",
+        "Task config source profile <profile> produces its exact observable result (row 6)"
+      ]
+    },
+    {
+      "id": "existing-limit-cpu-is-overwritten",
+      "source_file": "atc/exec/task_config_source.go",
+      "old": "\t\tif configSource.Limits.CPU != nil {\n\t\t\ttaskConfig.Limits.CPU = configSource.Limits.CPU\n\t\t}",
+      "new": "\t\tif configSource.Limits.CPU != nil && taskConfig.Limits.CPU == nil {\n\t\t\ttaskConfig.Limits.CPU = configSource.Limits.CPU\n\t\t}",
+      "tests": [
+        "TaskConfigSource OverrideContainerLimitsSource when override container limits are specified returns the config with overridden limits",
+        "TaskConfigSource OverrideContainerLimitsSource when both override limits and requests are specified overrides both independently"
+      ],
+      "scenarios": [
+        "Task config source profile <profile> produces its exact observable result (row 7)",
+        "Task config source profile <profile> produces its exact observable result (row 9)"
+      ],
+      "failure_contains": "task config source observation"
+    },
+    {
+      "id": "request-memory-is-copied",
+      "source_file": "atc/exec/task_config_source.go",
+      "old": "\t\tif configSource.Requests.Memory != nil {\n\t\t\ttaskConfig.Requests.Memory = configSource.Requests.Memory\n\t\t}\n",
+      "new": "",
+      "tests": [
+        "TaskConfigSource OverrideContainerLimitsSource when override container requests are specified sets requests without affecting limits",
+        "TaskConfigSource OverrideContainerLimitsSource when override requests are specified but task has no existing requests creates requests from scratch"
+      ],
+      "scenarios": [
+        "Task config source profile <profile> produces its exact observable result (row 8)",
+        "Task config source profile <profile> produces its exact observable result (row 10)"
+      ],
+      "failure_contains": "task config source observation"
+    },
+    {
+      "id": "validation-rejects-only-invalid-config",
+      "source_file": "atc/exec/task_config_source.go",
+      "old": "\tif err := config.Validate(); err != nil {",
+      "new": "\tif err := config.Validate(); err == nil {",
+      "tests": [
+        "TaskConfigSource ValidatingConfigSource when the config is valid returns the config and no error",
+        "TaskConfigSource ValidatingConfigSource when the config is invalid returns the validation error"
+      ],
+      "scenarios": [
+        "Task config source profile <profile> produces its exact observable result (row 11)",
+        "Task config source profile <profile> produces its exact observable result (row 12)"
+      ],
+      "failure_contains": "task config source observation"
+    },
+    {
+      "id": "interpolation-uses-provided-variables",
+      "source_file": "atc/exec/task_config_source.go",
+      "old": "vars.NewTemplateResolver(byteConfig, configSource.Vars).Resolve(configSource.ExpectAllKeys)",
+      "new": "vars.NewTemplateResolver(byteConfig, nil).Resolve(configSource.ExpectAllKeys)",
+      "tests": [
+        "TaskConfigSource InterpolateTemplateConfigSource when expect all keys fetches task config successfully",
+        "TaskConfigSource InterpolateTemplateConfigSource when expect all keys resolves task config parameters successfully"
+      ],
+      "scenarios": [
+        "Task config source profile <profile> produces its exact observable result (row 13)",
+        "Task config source profile <profile> produces its exact observable result (row 14)"
+      ]
+    },
+    {
+      "id": "missing-interpolation-keys-are-allowed",
+      "source_file": "atc/exec/task_config_source.go",
+      "old": "vars.NewTemplateResolver(byteConfig, configSource.Vars).Resolve(configSource.ExpectAllKeys)",
+      "new": "vars.NewTemplateResolver(byteConfig, configSource.Vars).Resolve(!configSource.ExpectAllKeys)",
+      "tests": [
+        "TaskConfigSource InterpolateTemplateConfigSource when not expect all keys fetches task config successfully",
+        "TaskConfigSource InterpolateTemplateConfigSource when not expect all keys resolves task config parameters successfully"
+      ],
+      "scenarios": [
+        "Task config source profile <profile> produces its exact observable result (row 15)",
+        "Task config source profile <profile> produces its exact observable result (row 16)"
+      ]
+    },
+    {
+      "id": "resource-type-defaults-are-applied",
+      "source_file": "atc/exec/task_config_source.go",
+      "old": "\tconfig.ImageResource.ApplySourceDefaults(configSource.ResourceTypes)\n",
+      "new": "",
+      "tests": [
+        "TaskConfigSource BaseResourceTypeDefaultsApplySource resourceTypes is empty, and base resource type defaults configured defaults should be added to image source",
+        "TaskConfigSource BaseResourceTypeDefaultsApplySource resourceTypes contains image source type defaults should be added to image source"
+      ],
+      "scenarios": [
+        "Task config source profile <profile> produces its exact observable result (row 17)",
+        "Task config source profile <profile> produces its exact observable result (row 18)"
+      ],
+      "failure_contains": "task config source observation"
+    }
+  ]
+}

@@ -22,19 +22,19 @@ scenario fail is also not evidence.
 
 | quantity | source leaf tests | percentage of 6,857 |
 |---|---:|---:|
-| **fully migrated**: paired failure evidence, no prohibited double, source removed | **1,182** | **17.24%** |
+| **fully migrated**: paired failure evidence, no prohibited double, source removed | **1,200** | **17.50%** |
 | strict paired evidence, but source still present | 0 | 0.00% |
 | **runs in Brine but not the full philosophy**: paired failure evidence, but uses a stub, test sink, injected-fault object, fake, or mock | **112** | **1.63%** |
 | of the preceding exception bucket whose source test was removed | 66 | 0.96% |
-| total source tests with paired per-test failure evidence | 1,294 | 18.87% |
-| former claimed tests with no admissible paired evidence | 765 | 11.16% |
-| Brine scenarios | 2,079 | execution count only |
+| total source tests with paired per-test failure evidence | 1,312 | 19.13% |
+| former claimed tests with no admissible paired evidence | 747 | 10.89% |
+| Brine scenarios | 2,097 | execution count only |
 
-The current two headline percentages are therefore **17.24% fully migrated**
+The current two headline percentages are therefore **17.50% fully migrated**
 and **1.63% validated but running outside the full philosophy**. The second is
 not another migration percentage: 46 of its 112 source tests still exist. If
 "migrated" is restricted to removed source tests in both buckets, the figures
-are 17.24% strict and 0.96% philosophy-exception.
+are 17.50% strict and 0.96% philosophy-exception.
 
 ## Admitted evidence ledger
 
@@ -76,6 +76,7 @@ are 17.24% strict and 0.96% philosophy-exception.
 | `api/accessor/accessor_test.go` persisted admin-team authorization matrices | 48 | 48 | 0 | 48 |
 | `scheduler/algorithm/algorithm_test.go` production input resolution matrix | 77 | 77 | 0 | 77 |
 | `exec/run_state_test.go` production RunState value behavior | 25 | 25 | 0 | 25 |
+| `exec/task_config_source_test.go` strict production config-source subset | 18 | 18 | 0 | 18 |
 | `api/users_test.go` production users serialization/filter subset | 12 | 12 | 0 | 12 |
 | `api/cli_test.go` production CLI downloads | 12 | 12 | 0 | 12 |
 | `api/cc_test.go` production CC XML over real TCP/PostgreSQL | 14 | 14 | 0 | 14 |
@@ -98,7 +99,7 @@ are 17.24% strict and 0.96% philosophy-exception.
 | `scanner_test.go` | 14 | 0 | 14 | 14 |
 | durable-storage, volume-DaemonSet, and behavioral-permutation campaign | 44 | 0 | 44 | 44 |
 | daemonset-integration and daemon-client retained cases | 46 | 0 | 46 | 0 |
-| **total** | **1,294** | **1,182** | **112** | **1,248** |
+| **total** | **1,312** | **1,200** | **112** | **1,266** |
 
 ### Completed production-logger revalidation
 
@@ -153,7 +154,7 @@ component.
 
 ## What does not count
 
-The other 765 tests in the former numerator have source references and green
+The other 747 tests in the former numerator have source references and green
 scenarios, but no admissible record of the individual old test and its Brine
 replacement failing on the same production defect. The 39 source tests named
 by `pipeline-retention.feature` remain an example: that feature explicitly
@@ -178,7 +179,10 @@ candidates.
 
 ## Execution verification (not equivalence evidence)
 
-- `brine check`: 2,079/2,079 valid.
+- `brine check`: 2,097/2,097 valid.
+- `task-config-source-strict.feature`: 18/18 passed after nine natural
+  production mutations; 24 call-record, injected-error, or otherwise
+  non-discriminating leaves remain in Go.
 - `run-state-strict.feature`: 25/25 passed after 11 natural production
   mutations exactly paired every admitted leaf; four scripted-step leaves
   remain in Go.
