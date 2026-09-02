@@ -1,0 +1,87 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/otel-core-metrics-strict.json",
+  "git_head": "7a01eaa045b33362349fbed45bd39844f3ce321e",
+  "completed_at": "2026-09-02T21:55:09Z",
+  "source_tests": 7,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/metric/otel_metrics.go": "f85955ffba0e8f7abd1088f0e0f0e35525aa4b30cea5789a6edfdaab1d7ad816",
+    "atc/metric/otel_metrics_test.go": "b123f7ec9b03cf6e5675914a703c77bfbd6db76330cbfef18ca91b09d6dad021",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/otel-metrics.feature": "f8139794feec2770a14faba152d9db7a303143ca3ec6e02cbb8ba4f5e74def0e",
+    "atc/worker/jetbridge/brine/mutations/otel-core-metrics-strict.json": "84171e7c0576b9e5f6fb74807539955feeff01ba2e4220114c721dfaacbd5996",
+    "atc/worker/jetbridge/brine/steps/otel_metrics.go": "671ca95e3eb24bf75a872f69862a721cfdf4115fa1749b41d8998e74e21c0614"
+  },
+  "mutation_cases": [
+    {
+      "id": "build-duration-keeps-team-attribute",
+      "mutation_sha256": "54242a3f1358212869c00c5ac946ef1617bc30b925419ead5206e32ce58f5036",
+      "failed_source_tests": [
+        "OTel Core Metrics build duration histogram records build duration with attributes"
+      ],
+      "failed_brine_scenarios": [
+        "OTel profile \u003cprofile\u003e exports its production measurement (row 1)"
+      ]
+    },
+    {
+      "id": "http-duration-keeps-method-attribute",
+      "mutation_sha256": "71bc7fc6730eef9bb0803376416fcc2ddb2c66ede541976bccac53e98480cbdf",
+      "failed_source_tests": [
+        "OTel Core Metrics HTTP response time histogram records HTTP response time with attributes"
+      ],
+      "failed_brine_scenarios": [
+        "OTel profile \u003cprofile\u003e exports its production measurement (row 2)"
+      ]
+    },
+    {
+      "id": "pod-startup-duration-uses-seconds",
+      "mutation_sha256": "ae02d0a446638c6b7ee43303a44f4901e1f0a544f32cd73c72f701e581ce5f0e",
+      "failed_source_tests": [
+        "OTel Core Metrics K8s pod startup duration histogram records pod startup duration"
+      ],
+      "failed_brine_scenarios": [
+        "OTel profile \u003cprofile\u003e exports its production measurement (row 3)"
+      ]
+    },
+    {
+      "id": "containers-created-records-whole-count",
+      "mutation_sha256": "141ae493f95811e0abfef4ec3a95ae7d05c5d5b3ff9801b757be74f2c619b1b1",
+      "failed_source_tests": [
+        "OTel Core Metrics container and volume counters records containers created"
+      ],
+      "failed_brine_scenarios": [
+        "OTel profile \u003cprofile\u003e exports its production measurement (row 4)"
+      ]
+    },
+    {
+      "id": "volumes-created-records-whole-count",
+      "mutation_sha256": "d103d7cfc7a9eaed6da18b718d89ea771e49fb693adbe6c5d73da72334364a0e",
+      "failed_source_tests": [
+        "OTel Core Metrics container and volume counters records volumes created"
+      ],
+      "failed_brine_scenarios": [
+        "OTel profile \u003cprofile\u003e exports its production measurement (row 5)"
+      ]
+    },
+    {
+      "id": "volume-operation-duration-uses-seconds",
+      "mutation_sha256": "2de416ffe40c91acbf5174348287b62f0e21e9b288285f91b41d3cafc4fb7125",
+      "failed_source_tests": [
+        "OTel Core Metrics volume operation duration histogram records the duration with an op attribute"
+      ],
+      "failed_brine_scenarios": [
+        "OTel profile \u003cprofile\u003e exports its production measurement (row 6)"
+      ]
+    },
+    {
+      "id": "volume-operation-preserves-operation-label",
+      "mutation_sha256": "6223b4992735dec87b65f9320f28ca039351e54ecfdef35d32c5fb5863ecccd1",
+      "failed_source_tests": [
+        "OTel Core Metrics volume operation duration histogram distinguishes operations by the op label"
+      ],
+      "failed_brine_scenarios": [
+        "OTel profile \u003cprofile\u003e exports its production measurement (row 7)"
+      ]
+    }
+  ]
+}
