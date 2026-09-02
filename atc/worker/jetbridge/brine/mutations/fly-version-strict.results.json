@@ -1,0 +1,52 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/fly-version-strict.json",
+  "git_head": "4d9bb3d898937bf1e661431a29f017105443ac42",
+  "completed_at": "2026-09-02T21:31:13Z",
+  "source_tests": 5,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/fly-version-strict.feature": "8a35a4ecdf669ab8ffa63fc7e0d499e58f83b2c1cc6a53bbfdf59a2d6a797e9e",
+    "atc/worker/jetbridge/brine/mutations/fly-version-strict.json": "708f23b26e90f5a2bf6f87cdd5ce74eb84900dae3056c0ebe0cbb59c9abf77e2",
+    "atc/worker/jetbridge/brine/steps/fly_version_strict.go": "e270c5b67294184e2b7640fa119e848186135cb13d6502c84208df0a4d516799",
+    "atc/worker/jetbridge/brine/steps/registry.go": "f0f97d8e6b98d71511cdcb297d230f43a0320498058aa13ca36e09a498444452",
+    "fly/version/version.go": "0df420cc97a145c02cb9f31b67e88554fc1aab109168bebaa8a79afe45ee91eb",
+    "fly/version/version_test.go": "4c71625f8d70fff28b071036767b78618623318170af3a16f0dbc949e3c86f48"
+  },
+  "mutation_cases": [
+    {
+      "id": "release-major-uses-first-component",
+      "mutation_sha256": "59016c547e7fdcedd6fe487c3b74a38f9c78e2b7609c196f815297de45778239",
+      "failed_source_tests": [
+        "Version parses post-release versions",
+        "Version parses pre-release versions",
+        "Version parses versions"
+      ],
+      "failed_brine_scenarios": [
+        "GetSemver parses a post-release",
+        "GetSemver parses a pre-release",
+        "GetSemver parses a stable release"
+      ]
+    },
+    {
+      "id": "short-release-reports-component-error",
+      "mutation_sha256": "306ddb36599bb8fecd0b0284e9a4a1a7bf4351948f22adf65173f772a73e6cdd",
+      "failed_source_tests": [
+        "Version returns an error for non-parsable versions"
+      ],
+      "failed_brine_scenarios": [
+        "GetSemver rejects malformed release components"
+      ]
+    },
+    {
+      "id": "development-detection-scans-pre-release-components",
+      "mutation_sha256": "83b7db48e22c17ea5f0eed4ab5d288a38259496188b336c86dceeaaffb14f67d",
+      "failed_source_tests": [
+        "Version can detect development versions"
+      ],
+      "failed_brine_scenarios": [
+        "IsDev detects only development version components"
+      ]
+    }
+  ]
+}
