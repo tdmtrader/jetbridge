@@ -1,0 +1,146 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/api-jobs-next-strict.json",
+  "git_head": "255d166c8bd814f7a8d3fc89e01c7ade69d7dbc7",
+  "completed_at": "2026-09-02T19:37:11Z",
+  "source_tests": 19,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/api/auth/check_pipeline_access_handler.go": "c14c084284f559ad4b7c4f9ec80bd60026aa86845906b2f401fd1eeb09fb5551",
+    "atc/api/jobs_test.go": "cbf3073b7536306686966a85c0320a98890c4c08b54f457b9b46c4965d0f7768",
+    "atc/api/jobserver/badge.go": "d4af0718b4ebdff8488668b53fb268a92c58e0e639741983093f7080dcbe718a",
+    "atc/db/job_factory.go": "b70aa5372868b692b70f1ebe2ee036de7efc332ff722c363bc7b7eb502c825ea",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/api-jobs-next-strict.feature": "ea56adc3146b4fd965c424dc1de4e7740a378e08724ed052bf6217299aecfc00",
+    "atc/worker/jetbridge/brine/mutations/api-jobs-next-strict.json": "944f21697773725fd14afb4243bf2dd4bd5e083537505fd8bee3e3a524e84cf9",
+    "atc/worker/jetbridge/brine/steps/api_jobs_next_strict.go": "01dc15190e58eecf84102a9880e7287f8b3214ae5251c48f5f9c54f35806c9a1",
+    "atc/worker/jetbridge/brine/steps/assert.go": "eac0b7b4dc864f54ffb5aab471451e3b62da518e5a8b10ba26e742d83298861f",
+    "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
+    "atc/worker/jetbridge/brine/steps/job_client_strict.go": "452bb9cde42b5912a8df3168d75556619800c29af8f5cca22e079a1c99532165",
+    "atc/worker/jetbridge/brine/steps/registry.go": "e7ccc2e3acf1fd095addbe0a8b65a25547f048ba3b963373a23334f3435052db",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e"
+  },
+  "mutation_cases": [
+    {
+      "id": "visible-jobs-include-public-and-member-teams",
+      "mutation_sha256": "d18a9238fc96a8e603dfd8a67f64bad7d7e4fce7e16dd52bfa4b5a0932c9483b",
+      "failed_source_tests": [
+        "Jobs API GET /api/v1/jobs adds persisted private jobs for authenticated team membership",
+        "Jobs API GET /api/v1/jobs returns only jobs in persisted public pipelines without authentication"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining jobs API production behavior — \u003cprofile\u003e (row 1)",
+        "Remaining jobs API production behavior — \u003cprofile\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "public-pipelines-remain-readable",
+      "mutation_sha256": "e67e3439daefe354fea1487fcaf72a8560f4a58de767f2b334c192dbce8dd18e",
+      "failed_source_tests": [
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs returns a public persisted dashboard without authentication",
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name when authenticated and not authorized and the pipeline is public returns 200",
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name when not authenticated and the pipeline is public returns 200",
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/badge when authenticated and not authorized and the pipeline is public returns 200 OK",
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/builds when authenticated and not authorized and the pipeline is public returns the persisted build"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining jobs API production behavior — \u003cprofile\u003e (row 18)",
+        "Remaining jobs API production behavior — \u003cprofile\u003e (row 19)",
+        "Remaining jobs API production behavior — \u003cprofile\u003e (row 3)",
+        "Remaining jobs API production behavior — \u003cprofile\u003e (row 4)",
+        "Remaining jobs API production behavior — \u003cprofile\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "buildless-badge-is-unknown",
+      "mutation_sha256": "3021777f2576ffbcdccc5c1acf0f855283a477e3030ba56c1cfe96ebd486297b",
+      "failed_source_tests": [
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/badge when authorized returns 200 OK with SVG headers and an unknown badge for the real buildless job"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining jobs API production behavior — \u003cprofile\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "errored-build-badge-status",
+      "mutation_sha256": "49dcbb5614f9f631d324dd443258b8de8777876050fdfd0d16ce43e247beb356",
+      "failed_source_tests": [
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/badge when authorized when the finished build errored renders the persisted finished build status and color"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining jobs API production behavior — \u003cprofile\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "failed-build-badge-status",
+      "mutation_sha256": "8a2cfb3aa95862606e04d0073ad3721df55cfa9a56b72e8e1f9d6410d9519c3a",
+      "failed_source_tests": [
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/badge when authorized when the finished build failed renders the persisted finished build status and color"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining jobs API production behavior — \u003cprofile\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "succeeded-build-badge-status",
+      "mutation_sha256": "4ae0c977664435d136a26e9696b4033e8018c576553f8dc03f2cc1274e034f86",
+      "failed_source_tests": [
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/badge when authorized when the finished build succeeded renders the persisted finished build status and color",
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/badge when authorized with a successful persisted build scales production-deployment and preserves the passing status"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining jobs API production behavior — \u003cprofile\u003e (row 16)",
+        "Remaining jobs API production behavior — \u003cprofile\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "aborted-build-badge-status",
+      "mutation_sha256": "349eda18c1a1f9cafe2d4ecc354d18fdbf905ca386d3456389201df5f2964e63",
+      "failed_source_tests": [
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/badge when authorized when the finished build was aborted renders the persisted finished build status and color"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining jobs API production behavior — \u003cprofile\u003e (row 10)"
+      ]
+    },
+    {
+      "id": "passing-badge-default-title-and-geometry",
+      "mutation_sha256": "ce967cfec1d8ebb2b9e0508cc11d0b06a01ddac45b14aadfe45cabb306c9ca6f",
+      "failed_source_tests": [
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/badge when authorized with a successful persisted build uses the default build title when the title parameter is empty",
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/badge when authorized with a successful persisted build uses the default title and dimensions when the title is omitted"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining jobs API production behavior — \u003cprofile\u003e (row 11)",
+        "Remaining jobs API production behavior — \u003cprofile\u003e (row 12)"
+      ]
+    },
+    {
+      "id": "custom-badge-title-width-scales-by-character",
+      "mutation_sha256": "e126430afd7abb80c09a512bc5838411c9fef007a8b3eb5b6477724ca8cfb561",
+      "failed_source_tests": [
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/badge when authorized with a successful persisted build scales custom titles long",
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/badge when authorized with a successful persisted build scales custom titles medium",
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/badge when authorized with a successful persisted build scales custom titles short"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining jobs API production behavior — \u003cprofile\u003e (row 13)",
+        "Remaining jobs API production behavior — \u003cprofile\u003e (row 14)",
+        "Remaining jobs API production behavior — \u003cprofile\u003e (row 15)"
+      ]
+    },
+    {
+      "id": "custom-badge-preserves-status-width",
+      "mutation_sha256": "321b87749845482c6807eae8e20a2dac345ccfed1c084377819212c5c3c5d74e",
+      "failed_source_tests": [
+        "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/badge when authorized with a successful persisted build preserves the original status width for custom titles"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining jobs API production behavior — \u003cprofile\u003e (row 17)"
+      ]
+    }
+  ]
+}
