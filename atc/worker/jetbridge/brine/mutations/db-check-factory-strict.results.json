@@ -1,0 +1,208 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-check-factory-strict.json",
+  "git_head": "afc06d4db805d7951e2420ebea81bf683f6d4e30",
+  "completed_at": "2026-09-02T15:25:09Z",
+  "source_tests": 23,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/build.go": "9b329576f1999f210fc2f5a41d566ef96acb2e47c349db680d6b7fa0df305fdd",
+    "atc/db/check_factory.go": "3339ef0c50147e7a59245e70218e8a166ba53777421622ca46ae8f4b96596f85",
+    "atc/db/check_factory_test.go": "a8f5221f1ca91bac6658265a0a91d9830ece0bfbc2575903bdaccf3e44cc7a28",
+    "atc/db/resource.go": "d3751a41f45f7416db10a157948b1218f2fcbd299ed100a5b8ec01fb99aa038f",
+    "atc/db/resource_type.go": "86ad6213f3a1e8eeb2fdba9249c5a465421897ba5c975d93bb27452ed962c2c3",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/db-check-factory-strict.feature": "a3f2c90d3e5a5c5cda2620fc886e8c7248bc0e87e65d3b6c785d88dcbc0f8033",
+    "atc/worker/jetbridge/brine/mutations/db-check-factory-strict.json": "3fc9fd27e3d3fa613da7e3bd092078349ad5a0133f6b0fb58ac88d2934dcf3a9",
+    "atc/worker/jetbridge/brine/steps/db_check_factory_strict.go": "ce247e0ca2121fdf56c65cae105d01ff654a5629bc64f31879a91981c162c083",
+    "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e"
+  },
+  "mutation_cases": [
+    {
+      "id": "build-resource-accessor-uses-resource-type",
+      "mutation_sha256": "908fd4c415efeef9d30321793553079e461d04177d9384fbd78b0b9cc54a42fe",
+      "failed_source_tests": [
+        "CheckFactory TryCreateCheck when it is run on a resource when the resource has a parent type returns the build",
+        "CheckFactory TryCreateCheck when it is run on a resource when the resource parent type is not a custom type when build is created in db returns the build"
+      ],
+      "failed_brine_scenarios": [
+        "Check factory profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 1)",
+        "Check factory profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 11)"
+      ]
+    },
+    {
+      "id": "resource-check-plan-omits-resource-reference",
+      "mutation_sha256": "687658c49f1bdb57de061f5ddf8fa8f2ff9a9f7090c92e2b536086b30a277648",
+      "failed_source_tests": [
+        "CheckFactory TryCreateCheck when it is run on a resource when the resource has a parent type starts the build with the check plan",
+        "CheckFactory TryCreateCheck when it is run on a resource when the resource parent type is not a custom type when build is created in db starts the build with the check plan"
+      ],
+      "failed_brine_scenarios": [
+        "Check factory profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 12)",
+        "Check factory profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "check-interval-history-ignored",
+      "mutation_sha256": "bc1d288bef173e2d737130ba65cdf98d3311809f1ceb5782cc9daba227f48b61",
+      "failed_source_tests": [
+        "CheckFactory TryCreateCheck when it is run on a resource when the resource has a webhook configured when the default webhook interval has not elapsed does not create a build for the resource",
+        "CheckFactory TryCreateCheck when it is run on a resource when the resource parent type is not a custom type when the interval has not elapsed does not create a build for the resource"
+      ],
+      "failed_brine_scenarios": [
+        "Check factory profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 3)",
+        "Check factory profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "manual-trigger-loses-interval-bypass",
+      "mutation_sha256": "74ead6a42cb7ee017a342877eb1a6b05df4425cd9c451d3da1156984e9cbb0d8",
+      "failed_source_tests": [
+        "CheckFactory TryCreateCheck when it is run on a resource when the resource parent type is not a custom type when the interval has not elapsed but the check is manually triggered creates the build anyway"
+      ],
+      "failed_brine_scenarios": [
+        "Check factory profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "running-resource-build-guard-inverted",
+      "mutation_sha256": "b93b5a7d60e5a270e703ff9e2cbc7fb50a6d95ab918146b38ea4dc91ab8232de",
+      "failed_source_tests": [
+        "CheckFactory TryCreateCheck when it is run on a resource when the resource parent type is not a custom type when a check build is already running for the resource returns false"
+      ],
+      "failed_brine_scenarios": [
+        "Check factory profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "webhook-interval-doubled",
+      "mutation_sha256": "1e4c337e4059e044ba3c9ef238727ce98d03ea5a5c32107b4de93de4e9ca6228",
+      "failed_source_tests": [
+        "CheckFactory TryCreateCheck when it is run on a resource when the resource has a webhook configured creates a check plan with the default webhook interval"
+      ],
+      "failed_brine_scenarios": [
+        "Check factory profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "configured-check-every-ignored",
+      "mutation_sha256": "669d46b41651db622dc025d6edb49443cf646f065dae9cc9b18fccf189d4f123",
+      "failed_source_tests": [
+        "CheckFactory TryCreateCheck when it is run on a resource when CheckEvery is never sets it in the check plan",
+        "CheckFactory TryCreateCheck when it is run on a resource when an interval is specified sets it in the check plan"
+      ],
+      "failed_brine_scenarios": [
+        "Check factory profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 8)",
+        "Check factory profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "parent-resource-defaults-not-merged",
+      "mutation_sha256": "db07f33c4e6557987d5f4d678f9a64439eb44d2d93c5d287a4849cd67f2c063e",
+      "failed_source_tests": [
+        "CheckFactory TryCreateCheck when it is run on a resource when the resource has a parent type creates a check plan with the parent type's defaults and image"
+      ],
+      "failed_brine_scenarios": [
+        "Check factory profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 10)"
+      ]
+    },
+    {
+      "id": "resource-type-plan-omits-target",
+      "mutation_sha256": "1da844c4d7f0155642d37017f1abbc32f7cf0f781682f2e54fa67820a0709d50",
+      "failed_source_tests": [
+        "CheckFactory TryCreateCheck when it is run for a resource type when build is created in db creates a check plan"
+      ],
+      "failed_brine_scenarios": [
+        "Check factory profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 13)"
+      ]
+    },
+    {
+      "id": "resource-type-check-build-loses-name",
+      "mutation_sha256": "76ad924c259a024c9a466712a1891fa3218fd79d0dd584b6237e74952f507bca",
+      "failed_source_tests": [
+        "CheckFactory TryCreateCheck when it is run for a resource type when build is created in db returns the build"
+      ],
+      "failed_brine_scenarios": [
+        "Check factory profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 14)"
+      ]
+    },
+    {
+      "id": "resource-type-check-build-loses-association",
+      "mutation_sha256": "ca3769f4473e19663514b061fd89a08071e30ed822f17fdb309d1e2e70973504",
+      "failed_source_tests": [
+        "CheckFactory TryCreateCheck when it is run for a resource type when build is created in db starts the build with the check plan"
+      ],
+      "failed_brine_scenarios": [
+        "Check factory profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 15)"
+      ]
+    },
+    {
+      "id": "put-only-success-predicate-inverted",
+      "mutation_sha256": "b762eda1d6dc915966f1ac7d0620f165f5fd89704eb7ae39585cc0185882bbcb",
+      "failed_source_tests": [
+        "CheckFactory Resources include only resources-in-use in return",
+        "CheckFactory Resources when a put-only resource has NOT errored returns does not return the resource",
+        "CheckFactory Resources when a put-only resource has failed to check last time returns the resource"
+      ],
+      "failed_brine_scenarios": [
+        "Check factory profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 16)",
+        "Check factory profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 19)",
+        "Check factory profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 20)"
+      ]
+    },
+    {
+      "id": "resource-active-filter-omitted",
+      "mutation_sha256": "98cf63f820edf5fcc922ebe753b59df455f108bd44647143a34300b88846387a",
+      "failed_source_tests": [
+        "CheckFactory Resources when the resource is not active does not return the resource"
+      ],
+      "failed_brine_scenarios": [
+        "Check factory profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 17)"
+      ]
+    },
+    {
+      "id": "resource-paused-filter-omitted",
+      "mutation_sha256": "004466cbe46e4143fc8aab6079f21687039b2e37a0b5c11da7e6d33b3e708f5e",
+      "failed_source_tests": [
+        "CheckFactory Resources when the resource pipeline is paused does not return the resource"
+      ],
+      "failed_brine_scenarios": [
+        "Check factory profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 18)"
+      ]
+    },
+    {
+      "id": "resource-type-enumeration-limited",
+      "mutation_sha256": "6f3014dcb80bd4b05165b451bb7d89c0d0e0df6382da4bf5fe9aa5a8892d658d",
+      "failed_source_tests": [
+        "CheckFactory ResourceTypes include resource types in return"
+      ],
+      "failed_brine_scenarios": [
+        "Check factory profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 21)"
+      ]
+    },
+    {
+      "id": "resource-type-active-filter-omitted",
+      "mutation_sha256": "44f5bc14b9b1eba493ff2ad0e8cd2357383b25f8f9170334210237d6939c489b",
+      "failed_source_tests": [
+        "CheckFactory ResourceTypes when the resource type is not active does not return the resource type"
+      ],
+      "failed_brine_scenarios": [
+        "Check factory profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 22)"
+      ]
+    },
+    {
+      "id": "resource-type-paused-filter-omitted",
+      "mutation_sha256": "85f57be65a5c8e36f6157b797df840d8e91eabc36216b65adb29ff697da614f9",
+      "failed_source_tests": [
+        "CheckFactory ResourceTypes when the pipeline is paused does not return resource types from paused pipelines"
+      ],
+      "failed_brine_scenarios": [
+        "Check factory profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 23)"
+      ]
+    }
+  ]
+}

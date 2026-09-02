@@ -1,0 +1,237 @@
+{
+  "name": "db-check-factory-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/check_factory_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-check-factory-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_check_factory_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go",
+    "atc/worker/jetbridge/brine/steps/task_command.go",
+    "atc/worker/jetbridge/brine/steps/envtest.go",
+    "atc/postgresrunner/postgresrunner.go",
+    "atc/postgresrunner/ginkgo.go",
+    "atc/postgresrunner/join_limit_conn.go",
+    "atc/db/check_factory.go",
+    "atc/db/resource.go",
+    "atc/db/resource_type.go",
+    "atc/db/build.go"
+  ],
+  "cases": [
+    {
+      "id": "build-resource-accessor-uses-resource-type",
+      "source_file": "atc/db/build.go",
+      "old": "func (b *build) ResourceID() int                  { return b.resourceID }",
+      "new": "func (b *build) ResourceID() int                  { return b.resourceTypeID }",
+      "tests": [
+        "CheckFactory TryCreateCheck when it is run on a resource when the resource parent type is not a custom type when build is created in db returns the build",
+        "CheckFactory TryCreateCheck when it is run on a resource when the resource has a parent type returns the build"
+      ],
+      "scenarios": [
+        "Check factory profile <profile> has observation <observation> (row 1)",
+        "Check factory profile <profile> has observation <observation> (row 11)"
+      ]
+    },
+    {
+      "id": "resource-check-plan-omits-resource-reference",
+      "source_file": "atc/db/resource.go",
+      "old": "\t\tResource: r.name,",
+      "new": "\t\tResource: \"\",",
+      "tests": [
+        "CheckFactory TryCreateCheck when it is run on a resource when the resource parent type is not a custom type when build is created in db starts the build with the check plan",
+        "CheckFactory TryCreateCheck when it is run on a resource when the resource has a parent type starts the build with the check plan"
+      ],
+      "scenarios": [
+        "Check factory profile <profile> has observation <observation> (row 2)",
+        "Check factory profile <profile> has observation <observation> (row 12)"
+      ]
+    },
+    {
+      "id": "check-interval-history-ignored",
+      "source_file": "atc/db/check_factory.go",
+      "old": "checkable.LastCheckEndTime().Add(interval.Interval)",
+      "new": "checkable.LastCheckEndTime().Add(0)",
+      "tests": [
+        "CheckFactory TryCreateCheck when it is run on a resource when the resource parent type is not a custom type when the interval has not elapsed does not create a build for the resource",
+        "CheckFactory TryCreateCheck when it is run on a resource when the resource has a webhook configured when the default webhook interval has not elapsed does not create a build for the resource"
+      ],
+      "scenarios": [
+        "Check factory profile <profile> has observation <observation> (row 3)",
+        "Check factory profile <profile> has observation <observation> (row 7)"
+      ]
+    },
+    {
+      "id": "manual-trigger-loses-interval-bypass",
+      "source_file": "atc/db/check_factory.go",
+      "old": "\tskipInterval := manuallyTriggered",
+      "new": "\tskipInterval := false",
+      "tests": [
+        "CheckFactory TryCreateCheck when it is run on a resource when the resource parent type is not a custom type when the interval has not elapsed but the check is manually triggered creates the build anyway"
+      ],
+      "scenarios": [
+        "Check factory profile <profile> has observation <observation> (row 4)"
+      ]
+    },
+    {
+      "id": "running-resource-build-guard-inverted",
+      "source_file": "atc/db/resource.go",
+      "old": "\t\tif numRunningBuilds > 0 {\n\t\t\t// a build is already running; leave it be\n\t\t\treturn nil, false, nil\n\t\t}",
+      "new": "\t\tif numRunningBuilds < 0 {\n\t\t\t// a build is already running; leave it be\n\t\t\treturn nil, false, nil\n\t\t}",
+      "tests": [
+        "CheckFactory TryCreateCheck when it is run on a resource when the resource parent type is not a custom type when a check build is already running for the resource returns false"
+      ],
+      "scenarios": [
+        "Check factory profile <profile> has observation <observation> (row 5)"
+      ]
+    },
+    {
+      "id": "webhook-interval-doubled",
+      "source_file": "atc/db/check_factory.go",
+      "old": "\t\tinterval.Interval = atc.DefaultWebhookInterval",
+      "new": "\t\tinterval.Interval = 2 * atc.DefaultWebhookInterval",
+      "tests": [
+        "CheckFactory TryCreateCheck when it is run on a resource when the resource has a webhook configured creates a check plan with the default webhook interval"
+      ],
+      "scenarios": [
+        "Check factory profile <profile> has observation <observation> (row 6)"
+      ]
+    },
+    {
+      "id": "configured-check-every-ignored",
+      "source_file": "atc/db/check_factory.go",
+      "old": "\n\tif checkable.CheckEvery() != nil {\n\t\tinterval = *checkable.CheckEvery()\n\t}\n",
+      "new": "\n",
+      "tests": [
+        "CheckFactory TryCreateCheck when it is run on a resource when an interval is specified sets it in the check plan",
+        "CheckFactory TryCreateCheck when it is run on a resource when CheckEvery is never sets it in the check plan"
+      ],
+      "scenarios": [
+        "Check factory profile <profile> has observation <observation> (row 8)",
+        "Check factory profile <profile> has observation <observation> (row 9)"
+      ]
+    },
+    {
+      "id": "parent-resource-defaults-not-merged",
+      "source_file": "atc/db/resource.go",
+      "old": "\t\tSource:  sourceDefaults.Merge(r.config.Source),",
+      "new": "\t\tSource:  r.config.Source,",
+      "tests": [
+        "CheckFactory TryCreateCheck when it is run on a resource when the resource has a parent type creates a check plan with the parent type's defaults and image"
+      ],
+      "scenarios": [
+        "Check factory profile <profile> has observation <observation> (row 10)"
+      ]
+    },
+    {
+      "id": "resource-type-plan-omits-target",
+      "source_file": "atc/db/resource_type.go",
+      "old": "\t\tResourceType: r.name,",
+      "new": "\t\tResourceType: \"\",",
+      "tests": [
+        "CheckFactory TryCreateCheck when it is run for a resource type when build is created in db creates a check plan"
+      ],
+      "scenarios": [
+        "Check factory profile <profile> has observation <observation> (row 13)"
+      ]
+    },
+    {
+      "id": "resource-type-check-build-loses-name",
+      "source_file": "atc/db/resource_type.go",
+      "old": "\t\tName:              CheckBuildName,\n\t\tPipelineID:        r.pipelineID,",
+      "new": "\t\tName:              \"\",\n\t\tPipelineID:        r.pipelineID,",
+      "tests": [
+        "CheckFactory TryCreateCheck when it is run for a resource type when build is created in db returns the build"
+      ],
+      "scenarios": [
+        "Check factory profile <profile> has observation <observation> (row 14)"
+      ]
+    },
+    {
+      "id": "resource-type-check-build-loses-association",
+      "source_file": "atc/db/resource_type.go",
+      "old": "\t\tExtraValues: map[string]any{\n\t\t\t\"resource_type_id\": r.id,\n\t\t},",
+      "new": "\t\tExtraValues: map[string]any{},",
+      "tests": [
+        "CheckFactory TryCreateCheck when it is run for a resource type when build is created in db starts the build with the check plan"
+      ],
+      "scenarios": [
+        "Check factory profile <profile> has observation <observation> (row 15)"
+      ]
+    },
+    {
+      "id": "put-only-success-predicate-inverted",
+      "source_file": "atc/db/check_factory.go",
+      "old": "\t\t\t\t\tsq.Eq{\"rs.last_check_succeeded\": false},",
+      "new": "\t\t\t\t\tsq.Eq{\"rs.last_check_succeeded\": true},",
+      "tests": [
+        "CheckFactory Resources include only resources-in-use in return",
+        "CheckFactory Resources when a put-only resource has failed to check last time returns the resource",
+        "CheckFactory Resources when a put-only resource has NOT errored returns does not return the resource"
+      ],
+      "scenarios": [
+        "Check factory profile <profile> has observation <observation> (row 16)",
+        "Check factory profile <profile> has observation <observation> (row 19)",
+        "Check factory profile <profile> has observation <observation> (row 20)"
+      ]
+    },
+    {
+      "id": "resource-active-filter-omitted",
+      "source_file": "atc/db/resource.go",
+      "old": "\t\tLeftJoin(\"resource_pins rp ON rp.resource_id = r.id\").\n\t\tWhere(sq.Eq{\"r.active\": true})",
+      "new": "\t\tLeftJoin(\"resource_pins rp ON rp.resource_id = r.id\")",
+      "tests": [
+        "CheckFactory Resources when the resource is not active does not return the resource"
+      ],
+      "scenarios": [
+        "Check factory profile <profile> has observation <observation> (row 17)"
+      ]
+    },
+    {
+      "id": "resource-paused-filter-omitted",
+      "source_file": "atc/db/check_factory.go",
+      "old": "\t\tLeftJoin(\"(select DISTINCT(resource_id) FROM job_outputs) jo ON jo.resource_id = r.id\").\n\t\tWhere(sq.And{\n\t\t\tsq.Eq{\"p.paused\": false},\n\t\t}).\n\t\tWhere(sq.Or{",
+      "new": "\t\tLeftJoin(\"(select DISTINCT(resource_id) FROM job_outputs) jo ON jo.resource_id = r.id\").\n\t\tWhere(sq.Or{",
+      "tests": [
+        "CheckFactory Resources when the resource pipeline is paused does not return the resource"
+      ],
+      "scenarios": [
+        "Check factory profile <profile> has observation <observation> (row 18)"
+      ]
+    },
+    {
+      "id": "resource-type-enumeration-limited",
+      "source_file": "atc/db/check_factory.go",
+      "old": "\trows, err := resourceTypesQuery.\n\t\tWhere(sq.And{\n\t\t\tsq.Eq{\"p.paused\": false},\n\t\t}).\n\t\tOrderBy(\"r.id ASC\").\n\t\tRunWith(c.conn).",
+      "new": "\trows, err := resourceTypesQuery.\n\t\tWhere(sq.And{\n\t\t\tsq.Eq{\"p.paused\": false},\n\t\t}).\n\t\tOrderBy(\"r.id ASC\").\n\t\tLimit(1).\n\t\tRunWith(c.conn).",
+      "tests": [
+        "CheckFactory ResourceTypes include resource types in return"
+      ],
+      "scenarios": [
+        "Check factory profile <profile> has observation <observation> (row 21)"
+      ]
+    },
+    {
+      "id": "resource-type-active-filter-omitted",
+      "source_file": "atc/db/resource_type.go",
+      "old": "\tLeftJoin(\"resource_config_scopes ro ON ro.resource_config_id = c.id\").\n\tWhere(sq.Eq{\"r.active\": true})",
+      "new": "\tLeftJoin(\"resource_config_scopes ro ON ro.resource_config_id = c.id\")",
+      "tests": [
+        "CheckFactory ResourceTypes when the resource type is not active does not return the resource type"
+      ],
+      "scenarios": [
+        "Check factory profile <profile> has observation <observation> (row 22)"
+      ]
+    },
+    {
+      "id": "resource-type-paused-filter-omitted",
+      "source_file": "atc/db/check_factory.go",
+      "old": "\trows, err := resourceTypesQuery.\n\t\tWhere(sq.And{\n\t\t\tsq.Eq{\"p.paused\": false},\n\t\t}).\n\t\tOrderBy(\"r.id ASC\").",
+      "new": "\trows, err := resourceTypesQuery.\n\t\tOrderBy(\"r.id ASC\").",
+      "tests": [
+        "CheckFactory ResourceTypes when the pipeline is paused does not return resource types from paused pipelines"
+      ],
+      "scenarios": [
+        "Check factory profile <profile> has observation <observation> (row 23)"
+      ]
+    }
+  ]
+}

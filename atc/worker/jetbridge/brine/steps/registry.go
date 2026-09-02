@@ -84,6 +84,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, DBResourceRemainingStrictDefinitions()...)
 	defs = append(defs, DBContainerRepositoryStrictDefinitions()...)
 	defs = append(defs, DBContainerOrphansStrictDefinitions()...)
+	defs = append(defs, DBCheckFactoryStrictDefinitions()...)
 	defs = append(defs, FlyTeamErrorDefinitions()...)
 	defs = append(defs, APIAuthDefinitions()...)
 	defs = append(defs, APIResourceAuthDefinitions()...)
