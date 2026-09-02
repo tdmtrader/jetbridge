@@ -37,7 +37,7 @@
       "id": "handler-pool-reports-limited-action",
       "source_file": "atc/wrappa/concurrent_request_policy.go",
       "old": "\treturn pool, found",
-      "new": "\treturn pool, false",
+      "new": "\treturn pool, found && false",
       "tests": ["Concurrent Request Policy ConcurrentRequestPolicy#HandlerPool returns true when an action is limited"],
       "scenarios": ["HandlerPool finds a limited action"]
     },
@@ -45,7 +45,7 @@
       "id": "handler-pool-reports-unlimited-action-missing",
       "source_file": "atc/wrappa/concurrent_request_policy.go",
       "old": "\treturn pool, found",
-      "new": "\treturn pool, true",
+      "new": "\treturn pool, found || true",
       "tests": ["Concurrent Request Policy ConcurrentRequestPolicy#HandlerPool returns false when an action is not limited"],
       "scenarios": ["HandlerPool does not find an unlimited action"]
     },
