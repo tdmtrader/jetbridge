@@ -1,0 +1,56 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-container-repository-final-strict.json",
+  "git_head": "111e110725493f3ca81e949d071014a47d597635",
+  "completed_at": "2026-09-02T21:02:31Z",
+  "source_tests": 4,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/container_repository.go": "3e44a27574bc05335c3e9c63d6821865d6ed5e68e4d777cb12fad68beb6e96d8",
+    "atc/db/container_repository_test.go": "abf731085455c7661bd00352c921c15647db6f882c92d87f86782c5eac4d05a2",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/db-container-repository-final-strict.feature": "808f93ab24a5377a249962297e49d6e435f14af1de918fdae0b0860f6017a317",
+    "atc/worker/jetbridge/brine/mutations/db-container-repository-final-strict.json": "f305651a1187700cf7ff714688758ca0eeccbbe5c4e75284b29b06d5da4cf81d",
+    "atc/worker/jetbridge/brine/steps/db_container_repository_final_strict.go": "c2c0300012bacefad798f2f4b5502db3d6fe7e559fa7259e54b0bac688abdce4",
+    "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
+    "atc/worker/jetbridge/brine/steps/registry.go": "703af4bff3755a73d8e191ef5e8a67b05e7e53b1c8b9c02b24e65f14fa95884a",
+    "atc/worker/jetbridge/brine/steps/resources.go": "f594ee3b1828c61ca1dd1ef9dd8024ecbb440898b57644b50a80d86bad475691",
+    "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e"
+  },
+  "mutation_cases": [
+    {
+      "id": "live-check-sessions-are-not-orphans",
+      "mutation_sha256": "8e8ee21b3e86b15a08973be141434ca0ef6763bb2b60350ff667f78f04bb73f6",
+      "failed_source_tests": [
+        "ContainerRepository FindOrphanedContainers check containers when check container best if use by date did not expire does not find the container for deletion",
+        "ContainerRepository FindOrphanedContainers check containers when the same worker base resource type is saved does not find the container for deletion"
+      ],
+      "failed_brine_scenarios": [
+        "Live container repository profile \u003cprofile\u003e preserves \u003cobservation\u003e (row 1)",
+        "Live container repository profile \u003cprofile\u003e preserves \u003cobservation\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "destroy-failed-reports-exact-affected-count",
+      "mutation_sha256": "bc5cbebd35d55b94ac7db2432308b7db5a7931e8fe49b9b35b246312f7de21b5",
+      "failed_source_tests": [
+        "ContainerRepository DestroyFailedContainers when there are no failed containers returns an empty array"
+      ],
+      "failed_brine_scenarios": [
+        "Live container repository profile \u003cprofile\u003e preserves \u003cobservation\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "unknown-containers-enter-destroying-state",
+      "mutation_sha256": "be5f4664e743f15097b18be374b919261881c4c2420bcf90322e7fd199c82f2d",
+      "failed_source_tests": [
+        "ContainerRepository DestroyUnknownContainers when there are containers on the worker that are not in the db does not affect containers in any other state"
+      ],
+      "failed_brine_scenarios": [
+        "Live container repository profile \u003cprofile\u003e preserves \u003cobservation\u003e (row 4)"
+      ]
+    }
+  ]
+}
