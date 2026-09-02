@@ -14,21 +14,23 @@ func buildAppRegistry() brine.StepRegistry {
 func buildAppResources(args []string) (*brine.ResourceRegistry, error) {
 	definitions := steps.ResourceDefinitions()
 	features, _, _ := parseRunFlags(args)
-	postgresOnlyFeature := false
+	var allowedResources map[string]bool
 	if len(features) == 1 {
 		switch filepath.Base(features[0]) {
 		case "db-job-final-strict.feature", "migration-build-events-bigint-strict.feature":
-			postgresOnlyFeature = true
+			allowedResources = map[string]bool{"postgres": true}
+		case "db-team-remaining-strict.feature":
+			allowedResources = map[string]bool{"postgres": true, "jetbridge-db": true}
 		}
 	}
-	if postgresOnlyFeature {
-		postgresOnly := definitions[:0]
+	if allowedResources != nil {
+		selected := definitions[:0]
 		for _, definition := range definitions {
-			if definition.Name == "postgres" {
-				postgresOnly = append(postgresOnly, definition)
+			if allowedResources[definition.Name] {
+				selected = append(selected, definition)
 			}
 		}
-		definitions = postgresOnly
+		definitions = selected
 	}
 	return brine.NewResourceRegistry(definitions)
 }

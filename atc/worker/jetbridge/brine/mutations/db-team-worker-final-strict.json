@@ -1,0 +1,43 @@
+{
+  "name": "db-team-worker-final-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/team_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-team-remaining-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_team_remaining_strict.go",
+    "atc/worker/jetbridge/brine/steps/registry.go",
+    "atc/worker/jetbridge/brine/steps/assert.go",
+    "atc/worker/jetbridge/brine/steps/resources.go",
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/main.go",
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/registry.go",
+    "atc/postgresrunner/postgresrunner.go",
+    "atc/postgresrunner/ginkgo.go",
+    "atc/postgresrunner/join_limit_conn.go"
+  ],
+  "cases": [
+    {
+      "id": "team-worker-save-returns-running-state",
+      "source_file": "atc/db/worker_factory.go",
+      "old": "\t\tstate:            workerState,",
+      "new": "\t\tstate:            WorkerStateStalled,",
+      "tests": [
+        "Team SaveWorker the worker already exists the worker is not in stalled state the team_id of the new worker is the same overwrites all the data"
+      ],
+      "scenarios": [
+        "Remaining DB team source behavior — <profile> (row 1)"
+      ]
+    },
+    {
+      "id": "team-worker-save-rejects-cross-team-conflict",
+      "source_file": "atc/db/worker_factory.go",
+      "old": "\tif count == 0 {",
+      "new": "\tif count < 0 {",
+      "tests": [
+        "Team SaveWorker the worker already exists the worker is not in stalled state the team_id of the new worker is different errors"
+      ],
+      "scenarios": [
+        "Remaining DB team source behavior — <profile> (row 2)"
+      ]
+    }
+  ]
+}
