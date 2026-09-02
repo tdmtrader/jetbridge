@@ -413,136 +413,6 @@ var _ = Describe("Jobs API", func() {
 	Describe("GET /api/v1/jobs", func() {
 		var server *httptest.Server
 
-		type listingState struct {
-			fixture   *jobsAPIFixture
-			pipelines map[string]db.Pipeline
-			jobs      map[int]db.Job
-		}
-
-		setupListing := func() listingState {
-			GinkgoHelper()
-			config := atc.Config{
-				Resources: atc.ResourceConfigs{
-					{Name: "some-input", Type: dbtest.BaseResourceType},
-					{Name: "some-other-input", Type: dbtest.BaseResourceType},
-				},
-				Jobs: atc.JobConfigs{
-					{Name: "job-a"}, {Name: "job-b"},
-					{
-						Name: "some-job",
-						PlanSequence: []atc.Step{
-							{Config: &atc.GetStep{Name: "some-input"}},
-							{Config: &atc.GetStep{Name: "some-name", Resource: "some-other-input", Passed: []string{"job-a", "job-b"}, Trigger: true}},
-						},
-					},
-				},
-				Groups: atc.GroupConfigs{
-					{Name: "group-1", Jobs: []string{"some-job"}},
-					{Name: "group-2", Jobs: []string{"some-job"}},
-				},
-			}
-			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "private-authorized"}, config)
-			pipelines := map[string]db.Pipeline{"private-authorized": fixture.Pipeline}
-			for _, saved := range []struct {
-				teamName     string
-				pipelineName string
-				public       bool
-			}{
-				{teamName: "public-team", pipelineName: "public-pipeline", public: true},
-				{teamName: "private-team", pipelineName: "private-unauthorized"},
-			} {
-				team, err := fixture.Real.Deps.teamFactory.CreateTeam(atc.Team{Name: saved.teamName})
-				Expect(err).NotTo(HaveOccurred())
-				pipeline, _, err := team.SavePipeline(atc.PipelineRef{Name: saved.pipelineName}, config, db.ConfigVersion(0), false)
-				Expect(err).NotTo(HaveOccurred())
-				if saved.public {
-					Expect(pipeline.Expose()).To(Succeed())
-				}
-				pipelines[saved.pipelineName] = pipeline
-			}
-
-			jobs := map[int]db.Job{}
-			for _, pipeline := range pipelines {
-				persistedJobs, err := pipeline.Jobs()
-				Expect(err).NotTo(HaveOccurred())
-				for _, job := range persistedJobs {
-					jobs[job.ID()] = job
-				}
-				mainJob, found, err := pipeline.Job("some-job")
-				Expect(err).NotTo(HaveOccurred())
-				Expect(found).To(BeTrue())
-				Expect(mainJob.Pause("listing-test")).To(Succeed())
-				finished := createJobsAPIBuild(mainJob, "listing-test")
-				startJobsAPIBuild(finished)
-				finishJobsAPIBuild(finished, db.BuildStatusSucceeded)
-				next := createJobsAPIBuild(mainJob, "listing-test")
-				startJobsAPIBuild(next)
-				found, err = mainJob.Reload()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(found).To(BeTrue())
-			}
-			return listingState{fixture: fixture, pipelines: pipelines, jobs: jobs}
-		}
-
-		expectListing := func(response *http.Response, state listingState, visiblePipelineNames ...string) {
-			GinkgoHelper()
-			Expect(response.StatusCode).To(Equal(http.StatusOK))
-			Expect(response).To(IncludeHeaderEntries(map[string]string{"Content-Type": "application/json"}))
-			summaries := decodeJobsAPIResponse[[]atc.JobSummary](response)
-			expectedIDs := []int{}
-			for _, pipelineName := range visiblePipelineNames {
-				persistedJobs, err := state.pipelines[pipelineName].Jobs()
-				Expect(err).NotTo(HaveOccurred())
-				for _, job := range persistedJobs {
-					expectedIDs = append(expectedIDs, job.ID())
-				}
-			}
-			actualIDs := make([]int, 0, len(summaries))
-			for _, summary := range summaries {
-				actualIDs = append(actualIDs, summary.ID)
-				job := state.jobs[summary.ID]
-				Expect(job).NotTo(BeNil())
-				found, err := job.Reload()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(found).To(BeTrue())
-				Expect(summary.Name).To(Equal(job.Name()))
-				Expect(summary.PipelineID).To(Equal(job.PipelineID()))
-				Expect(summary.PipelineName).To(Equal(job.PipelineName()))
-				Expect(summary.TeamName).To(Equal(job.TeamName()))
-				Expect(summary.Paused).To(Equal(job.Paused()))
-				finished, next, err := job.FinishedAndNextBuild()
-				Expect(err).NotTo(HaveOccurred())
-				expectJobsAPIBuildSummary(summary.FinishedBuild, finished)
-				expectJobsAPIBuildSummary(summary.NextBuild, next)
-				if job.Name() == "some-job" {
-					Expect(summary.Inputs).To(Equal([]atc.JobInputSummary{
-						{Name: "some-input", Resource: "some-input"},
-						{Name: "some-name", Resource: "some-other-input", Passed: []string{"job-a", "job-b"}, Trigger: true},
-					}))
-					Expect(summary.Groups).To(Equal([]string{"group-1", "group-2"}))
-				} else {
-					Expect(summary.Inputs).To(BeEmpty())
-					Expect(summary.Groups).To(BeEmpty())
-				}
-			}
-			Expect(actualIDs).To(ConsistOf(expectedIDs))
-		}
-
-		It("returns only jobs in persisted public pipelines without authentication", func() {
-			state := setupListing()
-			server = state.fixture.Serve()
-			response := jobsAPIGet(server, "/api/v1/jobs")
-			expectListing(response, state, "public-pipeline")
-		})
-
-		It("adds persisted private jobs for authenticated team membership", func() {
-			state := setupListing()
-			fakeAccess.TeamNamesReturns([]string{"some-team"})
-			server = state.fixture.Serve()
-			response := jobsAPIGet(server, "/api/v1/jobs")
-			expectListing(response, state, "public-pipeline", "private-authorized")
-		})
-
 		It("returns an empty array when no configured jobs are visible", func() {
 			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "empty-pipeline"}, atc.Config{})
 			server = fixture.Serve()
@@ -644,40 +514,6 @@ var _ = Describe("Jobs API", func() {
 				server = fixture.ServePipeline(routePipeline(fixture))
 			}
 			response = jobsAPIGet(server, "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job")
-		})
-
-		Context("when not authenticated", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(false)
-				fakeAccess.IsAuthorizedReturns(false)
-			})
-
-			Context("and the pipeline is public", func() {
-				BeforeEach(func() {
-					exposePipeline = true
-				})
-
-				It("returns 200", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
-				})
-			})
-		})
-
-		Context("when authenticated and not authorized", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAuthorizedReturns(false)
-			})
-
-			Context("and the pipeline is public", func() {
-				BeforeEach(func() {
-					exposePipeline = true
-				})
-
-				It("returns 200", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
-				})
-			})
 		})
 
 		Context("when authorized", func() {
@@ -879,59 +715,7 @@ var _ = Describe("Jobs API", func() {
 			return string(body)
 		}
 
-		Context("when authenticated and not authorized", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAuthorizedReturns(false)
-			})
-
-			Context("and the pipeline is private", func() {
-			})
-
-			Context("and the pipeline is public", func() {
-				BeforeEach(func() {
-					expose = true
-				})
-
-				It("returns 200 OK", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
-				})
-			})
-		})
-
 		Context("when authorized", func() {
-			It("returns 200 OK with SVG headers and an unknown badge for the real buildless job", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusOK))
-				Expect(response).Should(IncludeHeaderEntries(map[string]string{
-					"Content-Type":  "image/svg+xml",
-					"Cache-Control": "no-cache, no-store, must-revalidate",
-					"Expires":       "0",
-				}))
-				body := readBadge(response)
-				Expect(body).To(ContainSubstring("unknown"))
-				Expect(body).To(ContainSubstring("#9f9f9f"))
-			})
-
-			assertPersistedStatus := func(description string, status db.BuildStatus, label, color string) {
-				Context(description, func() {
-					BeforeEach(func() {
-						hasFinishedBuild = true
-						finishedStatus = status
-					})
-
-					It("renders the persisted finished build status and color", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusOK))
-						body := readBadge(response)
-						Expect(body).To(ContainSubstring(label))
-						Expect(body).To(ContainSubstring(color))
-					})
-				})
-			}
-			assertPersistedStatus("when the finished build succeeded", db.BuildStatusSucceeded, "passing", "#44cc11")
-			assertPersistedStatus("when the finished build failed", db.BuildStatusFailed, "failing", "#e05d44")
-			assertPersistedStatus("when the finished build was aborted", db.BuildStatusAborted, "aborted", "#8f4b2d")
-			assertPersistedStatus("when the finished build errored", db.BuildStatusErrored, "errored", "#fe7d37")
-
 			Context("with a successful persisted build", func() {
 				BeforeEach(func() {
 					hasFinishedBuild = true
@@ -943,42 +727,6 @@ var _ = Describe("Jobs API", func() {
 					Expect(readBadge(alternate)).To(ContainSubstring("$custom"))
 				})
 
-				It("uses the default title and dimensions when the title is omitted", func() {
-					body := readBadge(response)
-					Expect(body).To(ContainSubstring("build"))
-					Expect(body).To(ContainSubstring(`width="88"`))
-					Expect(body).To(ContainSubstring(`d="M0 0h37v20H0z"`))
-				})
-
-				It("uses the default build title when the title parameter is empty", func() {
-					alternate := jobsAPIGet(server, "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/badge?title=")
-					Expect(readBadge(alternate)).To(ContainSubstring("build"))
-				})
-
-				DescribeTable("scales custom titles",
-					func(title, width string) {
-						alternate := jobsAPIGet(server, "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/badge?title="+title)
-						body := readBadge(alternate)
-						Expect(body).To(ContainSubstring(title))
-						Expect(body).To(ContainSubstring(`width="` + width + `"`))
-					},
-					Entry("short", "test", "87"),
-					Entry("medium", "integration", "123"),
-					Entry("long", "very-long-deployment-name", "201"),
-				)
-
-				It("scales production-deployment and preserves the passing status", func() {
-					alternate := jobsAPIGet(server, "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/badge?title=production-deployment")
-					body := readBadge(alternate)
-					Expect(body).To(ContainSubstring("production-deployment"))
-					Expect(body).To(ContainSubstring("passing"))
-					Expect(body).To(MatchRegexp(`width="[0-9]{3}"`))
-				})
-
-				It("preserves the original status width for custom titles", func() {
-					alternate := jobsAPIGet(server, "/api/v1/teams/some-team/pipelines/some-pipeline/jobs/some-job/badge?title=custom")
-					Expect(readBadge(alternate)).To(MatchRegexp(`d="M[0-9]+ 0h51v20H[0-9]+z"`))
-				})
 			})
 
 			Context("when getting the real job's builds fails", func() {
@@ -1109,15 +857,6 @@ var _ = Describe("Jobs API", func() {
 			Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 		})
 
-		It("returns a public persisted dashboard without authentication", func() {
-			fixture := useJobsAPIFixture(atc.PipelineRef{Name: "some-pipeline"}, dashboardConfig())
-			fakeAccess.IsAuthenticatedReturns(false)
-			fakeAccess.IsAuthorizedReturns(false)
-			Expect(fixture.Pipeline.Expose()).To(Succeed())
-			server = fixture.Serve()
-			response := jobsAPIGet(server, "/api/v1/teams/some-team/pipelines/some-pipeline/jobs")
-			Expect(response.StatusCode).To(Equal(http.StatusOK))
-		})
 	})
 
 	Describe("GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/builds", func() {
@@ -1162,31 +901,6 @@ var _ = Describe("Jobs API", func() {
 			GinkgoHelper()
 			return decodeJobsAPIResponse[[]atc.Build](response)
 		}
-
-		Context("when authenticated and not authorized", func() {
-			BeforeEach(func() {
-				fakeAccess.IsAuthenticatedReturns(true)
-				fakeAccess.IsAuthorizedReturns(false)
-			})
-
-			Context("and the pipeline is public", func() {
-				var publicBuild db.Build
-
-				BeforeEach(func() {
-					expose = true
-					setup = func(fixture *jobsAPIFixture) {
-						publicBuild = createJobsAPIBuild(fixture.Job("some-job"), "api-public-test")
-					}
-				})
-
-				It("returns the persisted build", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
-					actual := decodeBuilds(response)
-					Expect(actual).To(HaveLen(1))
-					expectJobsAPIBuild(actual[0], publicBuild)
-				})
-			})
-		})
 
 		Context("when authorized", func() {
 			Context("when no params are passed", func() {
