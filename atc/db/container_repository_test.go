@@ -1,10 +1,7 @@
 package db_test
 
 import (
-	"context"
 	"time"
-
-	"github.com/concourse/concourse/atc/util"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/atc"
@@ -18,8 +15,7 @@ var _ = Describe("ContainerRepository", func() {
 	Describe("FindOrphanedContainers", func() {
 		Describe("check containers", func() {
 			var (
-				creatingContainer db.CreatingContainer
-				resourceConfig    db.ResourceConfig
+				resourceConfig db.ResourceConfig
 			)
 
 			expiries := db.ContainerOwnerExpiries{
@@ -36,7 +32,7 @@ var _ = Describe("ContainerRepository", func() {
 				)
 				Expect(err).NotTo(HaveOccurred())
 
-				creatingContainer, err = defaultWorker.CreateContainer(
+				_, err = defaultWorker.CreateContainer(
 					db.NewResourceConfigCheckSessionContainerOwner(
 						resourceConfig.ID(),
 						resourceConfig.OriginBaseResourceType().ID,
@@ -50,69 +46,6 @@ var _ = Describe("ContainerRepository", func() {
 			JustBeforeEach(func() {
 				err := resourceConfigCheckSessionLifecycle.CleanExpiredResourceConfigCheckSessions()
 				Expect(err).NotTo(HaveOccurred())
-			})
-
-			Context("when check container best if use by date is expired", func() {
-				BeforeEach(func() {
-					var rccsID int
-					err := psql.Select("id").From("resource_config_check_sessions").
-						Where(sq.Eq{"resource_config_id": resourceConfig.ID()}).RunWith(dbConn).QueryRow().Scan(&rccsID)
-					Expect(err).NotTo(HaveOccurred())
-
-					_, err = psql.Update("resource_config_check_sessions").
-						Set("expires_at", sq.Expr("NOW() - '1 second'::INTERVAL")).
-						Where(sq.Eq{"id": rccsID}).
-						RunWith(dbConn).Exec()
-					Expect(err).NotTo(HaveOccurred())
-				})
-
-				Context("when container is creating", func() {
-					It("finds the container for deletion", func() {
-						creatingContainers, createdContainers, destroyingContainers, err := containerRepository.FindOrphanedContainers()
-						Expect(err).NotTo(HaveOccurred())
-
-						Expect(creatingContainers).To(HaveLen(1))
-						Expect(creatingContainers[0].Handle()).To(Equal(creatingContainer.Handle()))
-						Expect(createdContainers).To(BeEmpty())
-						Expect(destroyingContainers).To(BeEmpty())
-					})
-				})
-
-				Context("when container is created", func() {
-					BeforeEach(func() {
-						_, err := creatingContainer.Created()
-						Expect(err).NotTo(HaveOccurred())
-					})
-
-					It("finds the container for deletion", func() {
-						creatingContainers, createdContainers, destroyingContainers, err := containerRepository.FindOrphanedContainers()
-						Expect(err).NotTo(HaveOccurred())
-
-						Expect(creatingContainers).To(BeEmpty())
-						Expect(createdContainers).To(HaveLen(1))
-						Expect(createdContainers[0].Handle()).To(Equal(creatingContainer.Handle()))
-						Expect(destroyingContainers).To(BeEmpty())
-					})
-				})
-
-				Context("when container is destroying", func() {
-					BeforeEach(func() {
-						createdContainer, err := creatingContainer.Created()
-						Expect(err).NotTo(HaveOccurred())
-						_, err = createdContainer.Destroying()
-						Expect(err).NotTo(HaveOccurred())
-					})
-
-					It("finds the container for deletion", func() {
-						creatingContainers, createdContainers, destroyingContainers, err := containerRepository.FindOrphanedContainers()
-						Expect(err).NotTo(HaveOccurred())
-
-						Expect(creatingContainers).To(BeEmpty())
-						Expect(createdContainers).To(BeEmpty())
-						Expect(destroyingContainers).To(HaveLen(1))
-						Expect(destroyingContainers[0].Handle()).To(Equal(creatingContainer.Handle()))
-					})
-				})
 			})
 
 			Context("when check container best if use by date did not expire", func() {
@@ -139,49 +72,6 @@ var _ = Describe("ContainerRepository", func() {
 				})
 			})
 
-			Context("when resource configs are cleaned up", func() {
-				BeforeEach(func() {
-					_, err := psql.Delete("resource_config_check_sessions").
-						RunWith(dbConn).Exec()
-					Expect(err).NotTo(HaveOccurred())
-
-					err = resourceConfigFactory.CleanUnreferencedConfigs(0)
-					Expect(err).NotTo(HaveOccurred())
-				})
-
-				It("finds the container for deletion", func() {
-					creatingContainers, createdContainers, destroyingContainers, err := containerRepository.FindOrphanedContainers()
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(creatingContainers).To(HaveLen(1))
-					Expect(creatingContainers[0].Handle()).To(Equal(creatingContainer.Handle()))
-					Expect(createdContainers).To(BeEmpty())
-					Expect(destroyingContainers).To(BeEmpty())
-				})
-			})
-
-			Context("when the worker base resource type has a new version", func() {
-				BeforeEach(func() {
-					var err error
-					newlyUpdatedWorker := defaultWorkerPayload
-					newlyUpdatedResource := defaultWorkerPayload.ResourceTypes[0]
-					newlyUpdatedResource.Version = newlyUpdatedResource.Version + "-new"
-					newlyUpdatedWorker.ResourceTypes = []atc.WorkerResourceType{newlyUpdatedResource}
-
-					defaultWorker, err = workerFactory.SaveWorker(newlyUpdatedWorker, 0)
-					Expect(err).NotTo(HaveOccurred())
-				})
-
-				It("finds the container for deletion", func() {
-					creatingContainers, createdContainers, destroyingContainers, err := containerRepository.FindOrphanedContainers()
-					Expect(err).NotTo(HaveOccurred())
-					Expect(creatingContainers).To(HaveLen(1))
-					Expect(creatingContainers[0].Handle()).To(Equal(creatingContainer.Handle()))
-					Expect(createdContainers).To(HaveLen(0))
-					Expect(destroyingContainers).To(BeEmpty())
-				})
-			})
-
 			Context("when the same worker base resource type is saved", func() {
 				BeforeEach(func() {
 					var err error
@@ -202,161 +92,6 @@ var _ = Describe("ContainerRepository", func() {
 			})
 		})
 
-		Describe("containers owned by a build", func() {
-			var (
-				creatingContainer db.CreatingContainer
-				build             db.Build
-			)
-
-			BeforeEach(func() {
-				var err error
-				build, err = defaultJob.CreateBuild(defaultBuildCreatedBy)
-				Expect(err).NotTo(HaveOccurred())
-
-				creatingContainer, err = defaultWorker.CreateContainer(
-					db.NewBuildStepContainerOwner(build.ID(), "simple-plan", defaultTeam.ID()),
-					fullMetadata,
-				)
-				Expect(err).NotTo(HaveOccurred())
-			})
-
-			Context("when the build is interceptible", func() {
-				BeforeEach(func() {
-					err := build.SetInterceptible(true)
-					Expect(err).NotTo(HaveOccurred())
-				})
-
-				It("does not find container for deletion", func() {
-					creatingContainers, createdContainers, destroyingContainers, err := containerRepository.FindOrphanedContainers()
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(creatingContainers).To(BeEmpty())
-					Expect(createdContainers).To(BeEmpty())
-					Expect(destroyingContainers).To(BeEmpty())
-				})
-			})
-
-			Context("when the build is marked as non-interceptible", func() {
-				BeforeEach(func() {
-					err := build.SetInterceptible(false)
-					Expect(err).NotTo(HaveOccurred())
-				})
-
-				Context("when the container is creating", func() {
-					It("finds container for deletion", func() {
-						creatingContainers, createdContainers, destroyingContainers, err := containerRepository.FindOrphanedContainers()
-						Expect(err).NotTo(HaveOccurred())
-
-						Expect(creatingContainers).To(HaveLen(1))
-						Expect(creatingContainers[0].Handle()).To(Equal(creatingContainer.Handle()))
-						Expect(createdContainers).To(BeEmpty())
-						Expect(destroyingContainers).To(BeEmpty())
-					})
-				})
-
-				Context("when the container is created", func() {
-					BeforeEach(func() {
-						_, err := creatingContainer.Created()
-						Expect(err).NotTo(HaveOccurred())
-					})
-
-					It("finds container for deletion", func() {
-						creatingContainers, createdContainers, destroyingContainers, err := containerRepository.FindOrphanedContainers()
-						Expect(err).NotTo(HaveOccurred())
-
-						Expect(creatingContainers).To(BeEmpty())
-						Expect(createdContainers).To(HaveLen(1))
-						Expect(createdContainers[0].Handle()).To(Equal(creatingContainer.Handle()))
-						Expect(destroyingContainers).To(BeEmpty())
-					})
-				})
-
-				Context("when the container is destroying", func() {
-					BeforeEach(func() {
-						createdContainer, err := creatingContainer.Created()
-						Expect(err).NotTo(HaveOccurred())
-						_, err = createdContainer.Destroying()
-						Expect(err).NotTo(HaveOccurred())
-					})
-
-					It("finds container for deletion", func() {
-						creatingContainers, createdContainers, destroyingContainers, err := containerRepository.FindOrphanedContainers()
-						Expect(err).NotTo(HaveOccurred())
-
-						Expect(creatingContainers).To(BeEmpty())
-						Expect(createdContainers).To(BeEmpty())
-						Expect(destroyingContainers).To(HaveLen(1))
-						Expect(destroyingContainers[0].Handle()).To(Equal(creatingContainer.Handle()))
-					})
-				})
-			})
-
-			Context("when build is deleted", func() {
-				BeforeEach(func() {
-					err := defaultPipeline.Destroy()
-					Expect(err).NotTo(HaveOccurred())
-				})
-
-				It("finds container for deletion", func() {
-					creatingContainers, createdContainers, destroyingContainers, err := containerRepository.FindOrphanedContainers()
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(creatingContainers).To(HaveLen(1))
-					Expect(creatingContainers[0].Handle()).To(Equal(creatingContainer.Handle()))
-					Expect(createdContainers).To(BeEmpty())
-					Expect(destroyingContainers).To(BeEmpty())
-				})
-			})
-		})
-
-		Describe("containers owned by a in-memory build", func() {
-			var (
-				build db.Build
-			)
-
-			BeforeEach(func() {
-				var err error
-				build, err = defaultResource.CreateInMemoryBuild(context.Background(), atc.Plan{}, util.NewSequenceGenerator(1))
-				Expect(err).NotTo(HaveOccurred())
-
-				err = build.OnCheckBuildStart()
-				Expect(err).NotTo(HaveOccurred())
-
-				_, err = defaultWorker.CreateContainer(
-					build.ContainerOwner("simple-plan"),
-					fullMetadata,
-				)
-				Expect(err).NotTo(HaveOccurred())
-			})
-
-			Context("when the build is running", func() {
-				It("does not find container for deletion", func() {
-					creatingContainers, createdContainers, destroyingContainers, err := containerRepository.FindOrphanedContainers()
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(creatingContainers).To(BeEmpty())
-					Expect(createdContainers).To(BeEmpty())
-					Expect(destroyingContainers).To(BeEmpty())
-				})
-			})
-
-			Context("when build is finished", func() {
-				BeforeEach(func() {
-					err := build.Finish(db.BuildStatusSucceeded)
-					Expect(err).NotTo(HaveOccurred())
-				})
-
-				It("transitions container to destroying state for Reaper cleanup", func() {
-					creatingContainers, createdContainers, destroyingContainers, err := containerRepository.FindOrphanedContainers()
-					Expect(err).NotTo(HaveOccurred())
-
-					Expect(creatingContainers).To(BeEmpty())
-					Expect(createdContainers).To(BeEmpty())
-					By("container is now in destroying state (orphaned with nil in_memory_build_id)")
-					Expect(destroyingContainers).To(HaveLen(1))
-				})
-			})
-		})
 	})
 
 	Describe("DestroyFailedContainers", func() {

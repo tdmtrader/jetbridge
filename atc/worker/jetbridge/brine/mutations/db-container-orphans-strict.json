@@ -1,0 +1,74 @@
+{
+  "name": "db-container-orphans-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/container_repository_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-container-orphans-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_container_orphans_strict.go",
+    "atc/worker/jetbridge/brine/steps/db_container_repository_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go",
+    "atc/worker/jetbridge/brine/steps/task_command.go",
+    "atc/worker/jetbridge/brine/steps/envtest.go",
+    "atc/postgresrunner/postgresrunner.go",
+    "atc/postgresrunner/ginkgo.go",
+    "atc/postgresrunner/join_limit_conn.go",
+    "atc/db/container_repository.go",
+    "atc/db/resource_config_check_session_lifecycle.go"
+  ],
+  "cases": [
+    {
+      "id": "orphan-query-requires-live-build",
+      "source_file": "atc/db/container_repository.go",
+      "old": "\t\tLeftJoin(\"builds b ON b.id = c.build_id\").",
+      "new": "\t\tJoin(\"builds b ON b.id = c.build_id\").",
+      "tests": [
+        "ContainerRepository FindOrphanedContainers check containers when check container best if use by date is expired when container is creating finds the container for deletion",
+        "ContainerRepository FindOrphanedContainers check containers when check container best if use by date is expired when container is created finds the container for deletion",
+        "ContainerRepository FindOrphanedContainers check containers when check container best if use by date is expired when container is destroying finds the container for deletion",
+        "ContainerRepository FindOrphanedContainers check containers when resource configs are cleaned up finds the container for deletion",
+        "ContainerRepository FindOrphanedContainers check containers when the worker base resource type has a new version finds the container for deletion",
+        "ContainerRepository FindOrphanedContainers containers owned by a build when build is deleted finds container for deletion",
+        "ContainerRepository FindOrphanedContainers containers owned by a in-memory build when build is finished transitions container to destroying state for Reaper cleanup"
+      ],
+      "scenarios": [
+        "Orphan profile <profile> has observation <observation> (row 1)",
+        "Orphan profile <profile> has observation <observation> (row 2)",
+        "Orphan profile <profile> has observation <observation> (row 3)",
+        "Orphan profile <profile> has observation <observation> (row 4)",
+        "Orphan profile <profile> has observation <observation> (row 5)",
+        "Orphan profile <profile> has observation <observation> (row 10)",
+        "Orphan profile <profile> has observation <observation> (row 12)"
+      ]
+    },
+    {
+      "id": "interceptibility-predicate-inverted",
+      "source_file": "atc/db/container_repository.go",
+      "old": "\t\t\t\tsq.Eq{\"b.interceptible\": false},",
+      "new": "\t\t\t\tsq.Eq{\"b.interceptible\": true},",
+      "tests": [
+        "ContainerRepository FindOrphanedContainers containers owned by a build when the build is interceptible does not find container for deletion",
+        "ContainerRepository FindOrphanedContainers containers owned by a build when the build is marked as non-interceptible when the container is creating finds container for deletion",
+        "ContainerRepository FindOrphanedContainers containers owned by a build when the build is marked as non-interceptible when the container is created finds container for deletion",
+        "ContainerRepository FindOrphanedContainers containers owned by a build when the build is marked as non-interceptible when the container is destroying finds container for deletion"
+      ],
+      "scenarios": [
+        "Orphan profile <profile> has observation <observation> (row 6)",
+        "Orphan profile <profile> has observation <observation> (row 7)",
+        "Orphan profile <profile> has observation <observation> (row 8)",
+        "Orphan profile <profile> has observation <observation> (row 9)"
+      ]
+    },
+    {
+      "id": "in-memory-owner-guard-omitted",
+      "source_file": "atc/db/container_repository.go",
+      "old": "\t\t\t\t\"c.resource_config_check_session_id\": nil,\n\t\t\t\t\"c.in_memory_build_id\":               nil,",
+      "new": "\t\t\t\t\"c.resource_config_check_session_id\": nil,",
+      "tests": [
+        "ContainerRepository FindOrphanedContainers containers owned by a in-memory build when the build is running does not find container for deletion"
+      ],
+      "scenarios": [
+        "Orphan profile <profile> has observation <observation> (row 11)"
+      ]
+    }
+  ]
+}

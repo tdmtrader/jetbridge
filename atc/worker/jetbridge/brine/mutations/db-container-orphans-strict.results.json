@@ -1,0 +1,73 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-container-orphans-strict.json",
+  "git_head": "f68a343c0e01b2d67c96773e316bb5a5eb127fc7",
+  "completed_at": "2026-09-02T14:55:53Z",
+  "source_tests": 12,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/container_repository.go": "3e44a27574bc05335c3e9c63d6821865d6ed5e68e4d777cb12fad68beb6e96d8",
+    "atc/db/container_repository_test.go": "e23ba9902febf4959feb4b73c81da8ed436e27b3e053751cdfdfe283587ed62c",
+    "atc/db/resource_config_check_session_lifecycle.go": "cc391376262a13bf5f9816ff8089be0458dbe07775d0275391c2d934f9d7b87d",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/db-container-orphans-strict.feature": "bb33a03fd8aa8435fd83cfde0014306558d4951c925de5aed6c7ef0b8acfab4b",
+    "atc/worker/jetbridge/brine/mutations/db-container-orphans-strict.json": "05f6f12d1ff40f4be5a3ff6a290f52c71e53d278c246572bcb12f337234cded9",
+    "atc/worker/jetbridge/brine/steps/db_container_orphans_strict.go": "4dd5ec0a1eb5e78314eac17e6f49e6c1673812927a76476eeea037e35039b9b6",
+    "atc/worker/jetbridge/brine/steps/db_container_repository_strict.go": "696ac8ef8cb959d81e0234fa0e3c602152b0eb5f3ae41323682c412122636df1",
+    "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e"
+  },
+  "mutation_cases": [
+    {
+      "id": "orphan-query-requires-live-build",
+      "mutation_sha256": "4082650cd1e593a272342a62fcf4c85aa7b0577b3ba0dbd3b0289228b0f72914",
+      "failed_source_tests": [
+        "ContainerRepository FindOrphanedContainers check containers when check container best if use by date is expired when container is created finds the container for deletion",
+        "ContainerRepository FindOrphanedContainers check containers when check container best if use by date is expired when container is creating finds the container for deletion",
+        "ContainerRepository FindOrphanedContainers check containers when check container best if use by date is expired when container is destroying finds the container for deletion",
+        "ContainerRepository FindOrphanedContainers check containers when resource configs are cleaned up finds the container for deletion",
+        "ContainerRepository FindOrphanedContainers check containers when the worker base resource type has a new version finds the container for deletion",
+        "ContainerRepository FindOrphanedContainers containers owned by a build when build is deleted finds container for deletion",
+        "ContainerRepository FindOrphanedContainers containers owned by a in-memory build when build is finished transitions container to destroying state for Reaper cleanup"
+      ],
+      "failed_brine_scenarios": [
+        "Orphan profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 1)",
+        "Orphan profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 10)",
+        "Orphan profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 12)",
+        "Orphan profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 2)",
+        "Orphan profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 3)",
+        "Orphan profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 4)",
+        "Orphan profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "interceptibility-predicate-inverted",
+      "mutation_sha256": "1381e9e4a6804a2f7d1c887c27aed59d2a56fc00d4b7bfd1c664e8d7e5933b05",
+      "failed_source_tests": [
+        "ContainerRepository FindOrphanedContainers containers owned by a build when the build is interceptible does not find container for deletion",
+        "ContainerRepository FindOrphanedContainers containers owned by a build when the build is marked as non-interceptible when the container is created finds container for deletion",
+        "ContainerRepository FindOrphanedContainers containers owned by a build when the build is marked as non-interceptible when the container is creating finds container for deletion",
+        "ContainerRepository FindOrphanedContainers containers owned by a build when the build is marked as non-interceptible when the container is destroying finds container for deletion"
+      ],
+      "failed_brine_scenarios": [
+        "Orphan profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 6)",
+        "Orphan profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 7)",
+        "Orphan profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 8)",
+        "Orphan profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "in-memory-owner-guard-omitted",
+      "mutation_sha256": "e6d21076c40c285e64cd906a14db90fa45f8b55e71819a01e3ff4f82547d915b",
+      "failed_source_tests": [
+        "ContainerRepository FindOrphanedContainers containers owned by a in-memory build when the build is running does not find container for deletion"
+      ],
+      "failed_brine_scenarios": [
+        "Orphan profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 11)"
+      ]
+    }
+  ]
+}
