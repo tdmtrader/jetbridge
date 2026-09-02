@@ -1,0 +1,96 @@
+{
+  "name": "db-build-final-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/build_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-build-final-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_build_final_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "finished-status-accessor-preserves-persisted-status",
+      "source_file": "atc/db/build.go",
+      "old": "func (b *build) Status() BuildStatus              { return b.status }",
+      "new": "func (b *build) Status() BuildStatus              { return BuildStatusFailed }",
+      "tests": [
+        "Build Finish creates Finish event",
+        "Build Finish updates build status"
+      ],
+      "scenarios": [
+        "Finish emits the exact persisted successful status event",
+        "Finish persists the requested terminal status"
+      ],
+      "failure_contains": "final DB build observation"
+    },
+    {
+      "id": "finish-clears-private-plan",
+      "source_file": "atc/db/build.go",
+      "old": "func (b *build) PrivatePlan() atc.Plan            { return b.privatePlan }",
+      "new": "func (b *build) PrivatePlan() atc.Plan            { return atc.Plan{ID: \"mutated\"} }",
+      "tests": ["Build Finish clears out the private plan"],
+      "scenarios": ["Finish clears the private execution plan"],
+      "failure_contains": "final DB build observation"
+    },
+    {
+      "id": "successful-build-outputs-preserve-resource-id",
+      "source_file": "atc/db/versions_db.go",
+      "old": "\t\t\talgorithmOutputs = append(algorithmOutputs, AlgorithmVersion{\n\t\t\t\tResourceID: outputs.ResourceID,\n\t\t\t\tVersion:    ResourceVersion(version),",
+      "new": "\t\t\talgorithmOutputs = append(algorithmOutputs, AlgorithmVersion{\n\t\t\t\tResourceID: outputs.ResourceID + 1,\n\t\t\t\tVersion:    ResourceVersion(version),",
+      "tests": ["Build Finish inserts inputs and outputs into successful build versions"],
+      "scenarios": ["Finish persists successful input and output versions"],
+      "failure_contains": "final DB build observation"
+    },
+    {
+      "id": "completed-event-stream-returns-terminal-sentinel",
+      "source_file": "atc/db/build_event_source.go",
+      "old": "\t\tif completed {\n\t\t\tsource.err = ErrEndOfBuildEventStream\n\t\t\tclose(source.events)",
+      "new": "\t\tif completed {\n\t\t\tsource.err = ErrBuildEventStreamClosed\n\t\t\tclose(source.events)",
+      "tests": ["Build Events saves and emits status events"],
+      "scenarios": ["Events emits started and finished states then reaches the real end"],
+      "failure_contains": "final DB build observation"
+    },
+    {
+      "id": "events-preserve-legacy-row-payload",
+      "source_file": "atc/db/build_event_source.go",
+      "old": "\t\teventsQuery := psql.Select(\"event_id\", \"type\", \"version\", \"payload\").",
+      "new": "\t\teventsQuery := psql.Select(\"event_id\", \"type\", \"version\", \"CASE WHEN build_id IS NULL THEN '{}' ELSE payload END AS payload\").",
+      "tests": ["Build Events emits pre-bigint migration events"],
+      "scenarios": ["Events reads rows written before the bigint build ID migration"],
+      "failure_contains": "final DB build observation"
+    },
+    {
+      "id": "event-stream-preserves-log-payloads",
+      "source_file": "atc/db/build_event_source.go",
+      "old": "\t\teventsQuery := psql.Select(\"event_id\", \"type\", \"version\", \"payload\").",
+      "new": "\t\teventsQuery := psql.Select(\"event_id\", \"type\", \"version\", \"CASE WHEN type = 'log' THEN '{}' ELSE payload END AS payload\").",
+      "tests": ["Build SaveEvent saves and propagates events correctly"],
+      "scenarios": ["SaveEvent persists ordered logs supports offsets wakes subscribers and closes"],
+      "failure_contains": "final DB build observation"
+    },
+    {
+      "id": "resources-return-all-build-outputs",
+      "source_file": "atc/db/build.go",
+      "old": "\t\tWhere(sq.Expr(\"resources.resource_config_scope_id = versions.resource_config_scope_id\")).\n\t\tRunWith(tx).\n\t\tQuery()",
+      "new": "\t\tWhere(sq.Expr(\"resources.resource_config_scope_id = versions.resource_config_scope_id\")).\n\t\tLimit(1).\n\t\tRunWith(tx).\n\t\tQuery()",
+      "tests": ["Build Resources returns build inputs and outputs"],
+      "scenarios": ["Resources returns the exact persisted build inputs and outputs"],
+      "failure_contains": "final DB build observation"
+    },
+    {
+      "id": "resources-derive-first-occurrence-from-prior-builds",
+      "source_file": "atc/db/build.go",
+      "old": "\trows, err := psql.Select(\"inputs.name\", \"resources.id\", \"versions.version\", `COALESCE(inputs.first_occurrence, NOT EXISTS (",
+      "new": "\trows, err := psql.Select(\"inputs.name\", \"resources.id\", \"versions.version\", `COALESCE(inputs.first_occurrence, EXISTS (",
+      "tests": [
+        "Build Resources when the first occurrence is empty determines the first occurrence to be true",
+        "Build Resources when the first occurrence is empty when the a build with those inputs already exist determines the first occurrence to be false"
+      ],
+      "scenarios": [
+        "Resources derives true for a first version occurrence",
+        "Resources derives false after an earlier build used the version"
+      ],
+      "failure_contains": "final DB build observation"
+    }
+  ]
+}
