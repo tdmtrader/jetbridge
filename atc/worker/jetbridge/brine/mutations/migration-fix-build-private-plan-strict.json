@@ -15,7 +15,7 @@
       "id": "up-ignores-null-private-plans",
       "source_file": "atc/db/migration/migrations/1551384520_fix_build_private_plan.up.go",
       "old": "rows, err := tx.Query(\"SELECT id, private_plan, nonce FROM builds WHERE private_plan IS NOT NULL\")",
-      "new": "rows, err := tx.Query(\"SELECT id, private_plan, nonce FROM builds WHERE private_plan IS NULL\")",
+      "new": "rows, err := tx.Query(\"SELECT id, COALESCE(private_plan, ''), nonce FROM builds\")",
       "tests": ["Fix Build Private Plan Up ignores NULL plans"],
       "scenarios": ["Up migration ignores NULL plans"]
     },
@@ -37,7 +37,7 @@
       "id": "down-ignores-null-private-plans",
       "source_file": "atc/db/migration/migrations/1551384520_fix_build_private_plan.down.go",
       "old": "rows, err := tx.Query(\"SELECT id, private_plan, nonce FROM builds WHERE private_plan IS NOT NULL\")",
-      "new": "rows, err := tx.Query(\"SELECT id, private_plan, nonce FROM builds WHERE private_plan IS NULL\")",
+      "new": "rows, err := tx.Query(\"SELECT id, COALESCE(private_plan, ''), nonce FROM builds\")",
       "tests": ["Fix Build Private Plan Down ignores NULL plans"],
       "scenarios": ["Down migration ignores NULL plans"]
     },
