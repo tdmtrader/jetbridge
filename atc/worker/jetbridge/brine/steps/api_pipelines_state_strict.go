@@ -116,7 +116,7 @@ func observeStrictPipelineStateAPI(database JetbridgeDB, profile string) string 
 			Groups: atc.GroupConfigs{{Name: "release", Jobs: []string{"ship"}, Resources: []string{"artifact"}}},
 			Jobs:   atc.JobConfigs{{Name: "ship"}},
 			Resources: atc.ResourceConfigs{{
-				Name: "artifact", Type: "mock", Source: atc.Source{"uri": "archive://artifact"},
+				Name: "artifact", Type: "registry-image", Source: atc.Source{"repository": "example.invalid/archive"},
 			}},
 			Display: &atc.DisplayConfig{BackgroundImage: "archive.jpg"},
 		}
