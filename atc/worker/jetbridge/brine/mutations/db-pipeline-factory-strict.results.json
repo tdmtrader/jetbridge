@@ -1,0 +1,62 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-pipeline-factory-strict.json",
+  "git_head": "45f46d02f5b80051d9cf7e68bbc2823b0352d199",
+  "completed_at": "2026-09-02T20:33:27Z",
+  "source_tests": 7,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/pipeline_factory.go": "c53fef88b9d21798c1a60e29cb76619345ab34a59f3ac1d4e853c29539a972c5",
+    "atc/db/pipeline_factory_test.go": "dda76d06179d9a81bfe37ecdc1992f1606dd74f39d63ed2b420b50408fb0200f",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/db-pipeline-factory-strict.feature": "ad0150fa207d75887831f9af138d4b0f44b68ef41d524abc7e2198e4597ffe08",
+    "atc/worker/jetbridge/brine/mutations/db-pipeline-factory-strict.json": "26526bcd794752742c5d29cbcef303fee39814f94980cd230e8f0e6a08a67a2d",
+    "atc/worker/jetbridge/brine/steps/db_pipeline_factory_strict.go": "c5d53a65a421adb2cd04472391e1204f30abaae61e730416d507b13e3a9c3f96",
+    "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
+    "atc/worker/jetbridge/brine/steps/registry.go": "c96e6410197cb940da2981b65c0e9db7cb03101c75149098b1c0f4c1967860a8",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e"
+  },
+  "mutation_cases": [
+    {
+      "id": "empty-team-input-does-not-grant-team-visibility",
+      "mutation_sha256": "dad4cdcac902bd6da4a7ff4154865438637cd5a1caa37833a7eb1a099c127e19",
+      "failed_source_tests": [
+        "Pipeline Factory VisiblePipelines returns all pipelines visible when empty team name provided",
+        "Pipeline Factory VisiblePipelines returns all pipelines visible when empty teams provided",
+        "Pipeline Factory VisiblePipelines returns all pipelines visible when nil teams provided"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline factory behavior — \u003cprofile\u003e (row 2)",
+        "Production pipeline factory behavior — \u003cprofile\u003e (row 3)",
+        "Production pipeline factory behavior — \u003cprofile\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "visible-pipelines-use-secondary-order",
+      "mutation_sha256": "fe81072beea8f6fe7a254ab8f1164b7c25528e8e240aeea8b243225d2e20e15a",
+      "failed_source_tests": [
+        "Pipeline Factory VisiblePipelines When instance pipeline ordered is change Should keep the right order",
+        "Pipeline Factory VisiblePipelines returns all pipelines visible for the given teams"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline factory behavior — \u003cprofile\u003e (row 1)",
+        "Production pipeline factory behavior — \u003cprofile\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "all-pipelines-use-secondary-order",
+      "mutation_sha256": "6e81b48617506d30258b99a76a162f014e0dd6035f5573f5565adff7694225df",
+      "failed_source_tests": [
+        "Pipeline Factory AllPipelines When instance pipeline ordered is change Should keep the right order",
+        "Pipeline Factory AllPipelines returns all pipelines ordered by team id -\u003e ordering -\u003e secondary_ordering"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline factory behavior — \u003cprofile\u003e (row 6)",
+        "Production pipeline factory behavior — \u003cprofile\u003e (row 7)"
+      ]
+    }
+  ]
+}
