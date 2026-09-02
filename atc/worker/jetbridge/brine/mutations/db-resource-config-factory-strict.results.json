@@ -1,0 +1,97 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-resource-config-factory-strict.json",
+  "git_head": "bf0eb68be098f805b0d60ad9940d3f434b784a8e",
+  "completed_at": "2026-09-02T20:18:14Z",
+  "source_tests": 8,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/resource_config.go": "f31923511e9ed028e727552c100e9e8063720bc27bbb9b3c95a8bfbba52db999",
+    "atc/db/resource_config_factory.go": "9ba54fac0c3823751b1f6024fc5c3f9ebacdfb9e6df7eadfb2472cb53011de14",
+    "atc/db/resource_config_factory_test.go": "bd7b163799df815dea672c23e120b67ca16c49ef71058a45dc88c6f656b01e0d",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/db-resource-config-factory-strict.feature": "73316d3af9728b0a84f7d11f55b6c7d284130eabafd9ae6b14f7f966325d044f",
+    "atc/worker/jetbridge/brine/mutations/db-resource-config-factory-strict.json": "df965ff819c5d3d3083dd60687726682d1a33a33805edebec75a2586948dd4c9",
+    "atc/worker/jetbridge/brine/steps/db_resource_config_factory_strict.go": "3a716e23542375daf5fdf314019e145d221c945e2aeb390b0700f151cb2a1a9d",
+    "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
+    "atc/worker/jetbridge/brine/steps/registry.go": "ea3c81dca4119d71433c70eb7c87cf4be1ddad2b5713658b9aca6d2f2feed14e",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e"
+  },
+  "mutation_cases": [
+    {
+      "id": "new-config-reference-time-is-current",
+      "mutation_sha256": "d69e548db5ea42d60f69e6a5160cd913f4c6eddfd91d068264e043d360c5af38",
+      "failed_source_tests": [
+        "ResourceConfigFactory when a config is created has a recent 'last referenced' value"
+      ],
+      "failed_brine_scenarios": [
+        "Production resource config factory behavior — \u003cprofile\u003e (row 1)"
+      ]
+    },
+    {
+      "id": "recent-config-is-not-retouched",
+      "mutation_sha256": "b7340497d689b7b1252c823552341f1a92477615cc16e226278e9485d777de7c",
+      "failed_source_tests": [
+        "ResourceConfigFactory when a config is created and created again returns the same config, but with the same 'last referenced' time because we only update last_referenced once a minute",
+        "ResourceConfigFactory when the resource config is concurrently deleted and created consistently is able to be used"
+      ],
+      "failed_brine_scenarios": [
+        "Production resource config factory behavior — \u003cprofile\u003e (row 2)",
+        "Production resource config factory behavior — \u003cprofile\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "zero-grace-does-not-gain-a-second",
+      "mutation_sha256": "d27426aedbd191b1e2334b3c78be063d7c859461c142f6b143cc8e3379bf0619",
+      "failed_source_tests": [
+        "ResourceConfigFactory when a config is created when cleaning up with no grace period removes the config immediately"
+      ],
+      "failed_brine_scenarios": [
+        "Production resource config factory behavior — \u003cprofile\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "configured-grace-period-is-honored",
+      "mutation_sha256": "7e29f6a2d7d8f30d02919b1baac5dc3e7263509b07ae693d083f20601c15deca",
+      "failed_source_tests": [
+        "ResourceConfigFactory when a config is created when cleaning up with a grace period spares the config"
+      ],
+      "failed_brine_scenarios": [
+        "Production resource config factory behavior — \u003cprofile\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "base-config-reloads-its-base-type",
+      "mutation_sha256": "d2f2ef922ae4fda5a3491b650510864fa69d411ab1a2f08d7272b453169719e5",
+      "failed_source_tests": [
+        "ResourceConfigFactory FindResourceConfigByID when the resource config does exist when the resource config uses a base resource type should find the resource config using the resource's config id"
+      ],
+      "failed_brine_scenarios": [
+        "Production resource config factory behavior — \u003cprofile\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "custom-config-reloads-its-resource-cache",
+      "mutation_sha256": "5516cfcf10f6373911bd13df3376463c1bc41ed5f6785909d32be39fe491aed6",
+      "failed_source_tests": [
+        "ResourceConfigFactory FindResourceConfigByID when the resource config does exist when the resource config uses a custom resource type should find the resource config using the resource's config id"
+      ],
+      "failed_brine_scenarios": [
+        "Production resource config factory behavior — \u003cprofile\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "missing-config-is-not-reported-found",
+      "mutation_sha256": "130dc8ffa05ca3c29d445684c8d0053b1343b7969c2324d759f7dbd17a4b1dea",
+      "failed_source_tests": [
+        "ResourceConfigFactory FindResourceConfigByID when the resource config id does not exist should not find the resource config"
+      ],
+      "failed_brine_scenarios": [
+        "Production resource config factory behavior — \u003cprofile\u003e (row 7)"
+      ]
+    }
+  ]
+}
