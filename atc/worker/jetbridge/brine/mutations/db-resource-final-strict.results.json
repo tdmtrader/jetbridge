@@ -1,0 +1,115 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-resource-final-strict.json",
+  "git_head": "3be05b46f42fc7926705d351588668c172553341",
+  "completed_at": "2026-09-02T19:15:04Z",
+  "source_tests": 16,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/build.go": "9b329576f1999f210fc2f5a41d566ef96acb2e47c349db680d6b7fa0df305fdd",
+    "atc/db/resource.go": "d3751a41f45f7416db10a157948b1218f2fcbd299ed100a5b8ec01fb99aa038f",
+    "atc/db/resource_test.go": "bbc99699d32dcba45ae91143bd1b591b0245739546de12b4705be965b8e9de5c",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/db-resource-final-strict.feature": "3d595cb16627c6ba300b2606a36926820e78ab2a6cab6c3edc1f3ed3358c425b",
+    "atc/worker/jetbridge/brine/mutations/db-resource-final-strict.json": "d278f5fff6730066de101c88a07736fe35d975df89e870efa797f6ab9e24aaa5",
+    "atc/worker/jetbridge/brine/steps/db_resource_final_strict.go": "d8dcda563f8518f5062d903923e05b8ba90445bc1ff62164a58b03e1b619c10a",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8"
+  },
+  "mutation_cases": [
+    {
+      "id": "resource-scope-schedules-downstream-jobs",
+      "mutation_sha256": "eedf4e9bea6a0ea66300d24bd33cfac847decf1ca5b23d24213f8d760ec58d9f",
+      "failed_source_tests": [
+        "Resource SetResourceConfigScope requests scheduling for downstream jobs"
+      ],
+      "failed_brine_scenarios": [
+        "SetResourceConfigScope schedules only the consuming job"
+      ]
+    },
+    {
+      "id": "resource-build-persists-started-fields",
+      "mutation_sha256": "4709905aae6e973fb9bfe79b1e295a59adc12f391cc397fb114ae6ab092e404e",
+      "failed_source_tests": [
+        "Resource CreateBuild creates a started build for a resource"
+      ],
+      "failed_brine_scenarios": [
+        "CreateBuild persists every started resource build field"
+      ]
+    },
+    {
+      "id": "resource-build-saves-log-event",
+      "mutation_sha256": "15a899758a2953a8ab9a95efb3dd8e7cbbc097644299bfe0c8914ed5f7162f95",
+      "failed_source_tests": [
+        "Resource CreateBuild logs to the check_build_events partition"
+      ],
+      "failed_brine_scenarios": [
+        "CreateBuild writes created and log events to the check partition"
+      ]
+    },
+    {
+      "id": "resource-build-running-guard-rejects-first-conflict",
+      "mutation_sha256": "291253db6511dee4a391804290dc1e9e182973b1fa7df9c99d8e9c3f23aac4e1",
+      "failed_source_tests": [
+        "Resource CreateBuild when another running build already exists does not create the second build"
+      ],
+      "failed_brine_scenarios": [
+        "CreateBuild refuses a second automatic build while one is running"
+      ]
+    },
+    {
+      "id": "resource-build-manual-trigger-bypasses-running-guard",
+      "mutation_sha256": "611cff88be46d5b93262c53ed14254f58222d965a2f7165b68c15fd7c47b070f",
+      "failed_source_tests": [
+        "Resource CreateBuild when another running build already exists when manually triggered creates a manually triggered resource build"
+      ],
+      "failed_brine_scenarios": [
+        "CreateBuild permits and marks a manual build while one is running"
+      ]
+    },
+    {
+      "id": "resource-clear-versions-reports-deleted-row-count",
+      "mutation_sha256": "847a123a4df0b47d82a50a456bf06f81c0ed48064bcd1edde319d8003158c0cb",
+      "failed_source_tests": [
+        "Resource ClearVersions when resource has no versions deletes zero versions",
+        "Resource ClearVersions when there is one resource with a version history clears the version history for the resource",
+        "Resource ClearVersions when there is one resource with a version history when there are pinned/disabled versions keeps the state of pinned/disabled versions even after deleting the version history",
+        "Resource ClearVersions with global resources, when there are multiple resources sharing the same version history clears the version history for the shared resources"
+      ],
+      "failed_brine_scenarios": [
+        "ClearVersions deletes shared global resource history",
+        "ClearVersions deletes the complete resource version history",
+        "ClearVersions preserves disabled and pinned state for recreated versions",
+        "ClearVersions reports zero for an empty resource history"
+      ]
+    },
+    {
+      "id": "resource-check-plan-uses-production-image-planner",
+      "mutation_sha256": "79f58c08e9c7209ac18b6618747bdcc467da0ee86c83fbfcfd2e29bfcaab8fbf",
+      "failed_source_tests": [
+        "Resource CheckPlan when skipping the interval when not skipping the interval recursively skips the interval for the resource check, but not for the resource type",
+        "Resource CheckPlan when skipping the interval when skipping the interval recursively skips the interval for the resource and resource type checks",
+        "Resource CheckPlan when there is a resource using a base type produces a simple check plan",
+        "Resource CheckPlan when there is a resource using a custom type produces a check plan with nested image steps",
+        "Resource CheckPlan when there is a resource using a custom type with configured check every produces a check plan with interval set as check every for image check",
+        "Resource CheckPlan when there is a resource using a privileged custom type produces a check plan with privileged"
+      ],
+      "failed_brine_scenarios": [
+        "CheckPlan produces exact nested image check and get plans",
+        "CheckPlan produces the exact base resource plan",
+        "CheckPlan propagates privileged mode to the type image",
+        "CheckPlan skips both resource and type intervals recursively",
+        "CheckPlan skips only the resource interval without recursion",
+        "CheckPlan uses the custom resource type check interval"
+      ]
+    },
+    {
+      "id": "resource-build-summary-does-not-invent-empty-summary",
+      "mutation_sha256": "9fa8f99aeefd82d29aadf2f1a9edf317f08cfd0429bcbf0a18ec6b4a84076220",
+      "failed_source_tests": [
+        "Resource BuildSummary when there is no check build has no build summary"
+      ],
+      "failed_brine_scenarios": [
+        "BuildSummary is absent before any resource check starts"
+      ]
+    }
+  ]
+}
