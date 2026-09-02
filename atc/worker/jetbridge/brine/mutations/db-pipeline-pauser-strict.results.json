@@ -1,0 +1,54 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-pipeline-pauser-strict.json",
+  "git_head": "ae3d5d2cda8cddf214a1547f90927d473374f9c3",
+  "completed_at": "2026-09-02T20:48:18Z",
+  "source_tests": 7,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/pipeline_pauser.go": "7fef38b984438ed601ad11a9b4165fe43d27aa3d6552e48fc25f8222a86b9b5d",
+    "atc/db/pipeline_pauser_test.go": "f577fd12c2a6f54879f1501ab6f7119b6ce0bc7aff7d100d8315149fc90ab4ef",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/db-pipeline-pauser-strict.feature": "ae7b23e3d636439147cc5530d8657261a843a3553e303ebe947265504f2526f7",
+    "atc/worker/jetbridge/brine/mutations/db-pipeline-pauser-strict.json": "3350dff6498af51d76daea3115e3578f1448e752f8663a1fee3b19fffb468366",
+    "atc/worker/jetbridge/brine/steps/db_pipeline_pauser_strict.go": "f6fc925e2bd7046a789714694fc01c7f446175aa3851cd3659c8712bf8b813d6",
+    "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
+    "atc/worker/jetbridge/brine/steps/registry.go": "da32a07f8ee271d4677e49e042d9716b6f2b1f3518190510d588953914a5fbab",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e"
+  },
+  "mutation_cases": [
+    {
+      "id": "recent-or-running-build-membership-is-not-inverted",
+      "mutation_sha256": "e474ac3bb1a7f6d326b3495d6eb18044844f977a088127d502fdaf9fd4e0274e",
+      "failed_source_tests": [
+        "PipelinePauser PausePipelines that haven't run in more than 10 days last run was 15 days ago all jobs have builds should be paused",
+        "PipelinePauser PausePipelines that haven't run in more than 10 days last run was 15 days ago and one job has zero builds should be paused",
+        "PipelinePauser PausePipelines that haven't run in more than 10 days last run was 15 days ago should say the pipeline was paused by 'automatic-pipeline-pauser'"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline pauser behavior — \u003cprofile\u003e (row 1)",
+        "Production pipeline pauser behavior — \u003cprofile\u003e (row 2)",
+        "Production pipeline pauser behavior — \u003cprofile\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "pause-selection-guards-are-conjunctive",
+      "mutation_sha256": "f8c38b3c748ea873cd7ed25861debaa7fc8c8f532de53c929bb9373d4ee91578",
+      "failed_source_tests": [
+        "PipelinePauser PausePipelines that haven't run in more than 10 days last run was 1 day ago should not be paused",
+        "PipelinePauser PausePipelines that haven't run in more than 10 days last run was 10 days ago should not be paused",
+        "PipelinePauser newly set pipeline whose jobs have no builds should not be paused if all of its jobs have no builds",
+        "PipelinePauser pipeline with a build currently running should not be paused"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline pauser behavior — \u003cprofile\u003e (row 4)",
+        "Production pipeline pauser behavior — \u003cprofile\u003e (row 5)",
+        "Production pipeline pauser behavior — \u003cprofile\u003e (row 6)",
+        "Production pipeline pauser behavior — \u003cprofile\u003e (row 7)"
+      ]
+    }
+  ]
+}
