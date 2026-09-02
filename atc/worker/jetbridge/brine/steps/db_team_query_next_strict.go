@@ -314,6 +314,7 @@ func observeQueryNextBuilds(team, other db.Team, profile string) string {
 		if err != nil {
 			return err.Error()
 		}
+		sort.Sort(sort.Reverse(sort.IntSlice(mine)))
 		if !sameInts(buildAPIIDs(got), mine) {
 			return fail("ids got=%v want=%v", buildAPIIDs(got), mine)
 		}
