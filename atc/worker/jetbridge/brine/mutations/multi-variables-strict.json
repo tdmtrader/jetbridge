@@ -1,0 +1,31 @@
+{
+  "name": "multi-variables-strict",
+  "test_package": "./vars",
+  "source_test_file": "vars/multi_vars_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/multi-variables-strict.feature",
+  "step_files": ["atc/worker/jetbridge/brine/steps/variable_sources_strict.go"],
+  "cases": [
+    {
+      "id": "missing-lookups-report-found",
+      "source_file": "vars/multi_vars.go",
+      "old": "\treturn nil, false, nil\n}\n\nfunc (m MultiVars) GetSecretRef",
+      "new": "\treturn nil, true, nil\n}\n\nfunc (m MultiVars) GetSecretRef",
+      "tests": [
+        "MultiVariables Get return no value and not found if there are no sources",
+        "MultiVariables Get return no value and not found if variable is not found in any of the sources"
+      ],
+      "scenarios": [
+        "Multi variable profile <profile> (row 1)",
+        "Multi variable profile <profile> (row 2)"
+      ]
+    },
+    {
+      "id": "list-drops-source-references",
+      "source_file": "vars/multi_vars.go",
+      "old": "\t\tallRefs = append(allRefs, defs...)",
+      "new": "\t\t_ = defs",
+      "tests": ["MultiVariables List returns list of names from multiple vars with duplicates"],
+      "scenarios": ["Multi variable profile <profile> (row 3)"]
+    }
+  ]
+}
