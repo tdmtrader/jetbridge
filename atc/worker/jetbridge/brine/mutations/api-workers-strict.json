@@ -1,0 +1,124 @@
+{
+  "name": "api-workers-strict",
+  "test_package": "./atc/api",
+  "source_test_file": "atc/api/workers_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/api-workers-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/api_workers_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "visible-workers-include-global-workers",
+      "source_file": "atc/db/worker_factory.go",
+      "old": "\t\tif worker.TeamID() == 0 {\n\t\t\treturn true\n\t\t}",
+      "new": "\t\tif worker.TeamID() == 0 {\n\t\t\treturn false\n\t\t}",
+      "tests": ["Workers API GET /api/v1/workers shows global and authorized-team workers"],
+      "scenarios": ["Worker listing includes global and authorized team workers"]
+    },
+    {
+      "id": "administrator-list-is-not-visibility-filtered",
+      "source_file": "atc/db/worker_factory.go",
+      "old": "func (f *workerFactory) Workers() ([]Worker, error) {\n\treturn f.cache.Workers()\n}",
+      "new": "func (f *workerFactory) Workers() ([]Worker, error) {\n\treturn f.VisibleWorkers(nil)\n}",
+      "tests": ["Workers API GET /api/v1/workers when the user is an admin shows all workers"],
+      "scenarios": ["Administrator worker listing includes every persisted worker"]
+    },
+    {
+      "id": "worker-list-requires-authentication",
+      "source_file": "atc/wrappa/api_auth_wrappa.go",
+      "old": "\t\tcase atc.ListWorkers,\n\t\t\tatc.RegisterWorker,\n\t\t\tatc.DeleteWorker,\n\t\t\tatc.ListTeamBuilds,\n\t\t\tatc.GetUser:\n\t\t\tnewHandler = auth.CheckAuthenticationHandler(handler, rejector)",
+      "new": "\t\tcase atc.ListWorkers:\n\t\t\tnewHandler = auth.CheckAuthenticationIfProvidedHandler(handler, rejector)\n\t\tcase atc.RegisterWorker,\n\t\t\tatc.DeleteWorker,\n\t\t\tatc.ListTeamBuilds,\n\t\t\tatc.GetUser:\n\t\t\tnewHandler = auth.CheckAuthenticationHandler(handler, rejector)",
+      "tests": ["Workers API GET /api/v1/workers when not authenticated returns 401"],
+      "scenarios": ["Worker listing rejects an unauthenticated request"]
+    },
+    {
+      "id": "global-registration-preserves-ttl",
+      "source_file": "atc/db/worker_factory.go",
+      "old": "\tsavedWorker, err := saveWorker(tx, atcWorker, nil, ttl, f.conn)",
+      "new": "\tsavedWorker, err := saveWorker(tx, atcWorker, nil, 0, f.conn)",
+      "tests": ["Workers API POST /api/v1/workers for a global worker persists worker registration through PostgreSQL"],
+      "scenarios": ["Global worker registration persists the exact production fields and TTL"]
+    },
+    {
+      "id": "team-registration-preserves-team-id",
+      "source_file": "atc/db/team.go",
+      "old": "\tsavedWorker, err := saveWorker(tx, atcWorker, &t.id, ttl, t.conn)",
+      "new": "\tsavedWorker, err := saveWorker(tx, atcWorker, nil, ttl, t.conn)",
+      "tests": ["Workers API POST /api/v1/workers for a team worker persists the worker with its team"],
+      "scenarios": ["Team worker registration persists the exact team association"]
+    },
+    {
+      "id": "missing-team-is-bad-request",
+      "source_file": "atc/api/workerserver/register.go",
+      "old": "\t\tif !found {\n\t\t\tlogger.Error(\"team-not-found\", errors.New(\"team-not-found\"), lager.Data{\"team-name\": registration.Team})\n\t\t\tw.WriteHeader(http.StatusBadRequest)\n\t\t\treturn\n\t\t}",
+      "new": "\t\tif !found {\n\t\t\tlogger.Error(\"team-not-found\", errors.New(\"team-not-found\"), lager.Data{\"team-name\": registration.Team})\n\t\t\tw.WriteHeader(http.StatusNotFound)\n\t\t\treturn\n\t\t}",
+      "tests": ["Workers API POST /api/v1/workers when the team does not exist returns 400"],
+      "scenarios": ["Worker registration rejects a missing team"]
+    },
+    {
+      "id": "registration-requires-system-caller",
+      "source_file": "atc/api/workerserver/register.go",
+      "old": "\tif !acc.IsSystem() {\n\t\tw.WriteHeader(http.StatusForbidden)\n\t\treturn\n\t}",
+      "new": "\tif !acc.IsSystem() {\n\t\tw.WriteHeader(http.StatusUnauthorized)\n\t\treturn\n\t}",
+      "tests": ["Workers API POST /api/v1/workers when request is not from tsa return 403"],
+      "scenarios": ["Worker registration rejects a non-system caller"]
+    },
+    {
+      "id": "registration-requires-worker-name",
+      "source_file": "atc/api/workerserver/register.go",
+      "old": "\tif registration.Name == \"\" {",
+      "new": "\tif registration.Name == \"missing-name\" {",
+      "tests": ["Workers API POST /api/v1/workers when the worker has no name returns 400 without saving it"],
+      "scenarios": ["Worker registration rejects an empty worker name without persistence"]
+    },
+    {
+      "id": "invalid-ttl-is-bad-request",
+      "source_file": "atc/api/workerserver/register.go",
+      "old": "\t\tif err != nil {\n\t\t\tw.WriteHeader(http.StatusBadRequest)\n\t\t\tfmt.Fprintf(w, \"malformed ttl\")\n\t\t\treturn\n\t\t}",
+      "new": "\t\tif err != nil {\n\t\t\tw.WriteHeader(http.StatusUnprocessableEntity)\n\t\t\tfmt.Fprintf(w, \"malformed ttl\")\n\t\t\treturn\n\t\t}",
+      "tests": ["Workers API POST /api/v1/workers when the TTL is invalid returns 400 without persisting the worker"],
+      "scenarios": ["Worker registration rejects an invalid TTL without persistence"]
+    },
+    {
+      "id": "worker-version-remains-numeric",
+      "source_file": "atc/worker.go",
+      "old": "regexp.MustCompile(`^[0-9\\.]+$`)",
+      "new": "regexp.MustCompile(`^[a-z0-9\\.]+$`)",
+      "tests": ["Workers API POST /api/v1/workers when worker version is invalid returns 400 without persisting the worker"],
+      "scenarios": ["Worker registration rejects an invalid version without persistence"]
+    },
+    {
+      "id": "worker-registration-requires-authentication",
+      "source_file": "atc/wrappa/api_auth_wrappa.go",
+      "old": "\t\tcase atc.ListWorkers,\n\t\t\tatc.RegisterWorker,\n\t\t\tatc.DeleteWorker,\n\t\t\tatc.ListTeamBuilds,\n\t\t\tatc.GetUser:\n\t\t\tnewHandler = auth.CheckAuthenticationHandler(handler, rejector)",
+      "new": "\t\tcase atc.RegisterWorker:\n\t\t\tnewHandler = auth.CheckAuthenticationIfProvidedHandler(handler, rejector)\n\t\tcase atc.ListWorkers,\n\t\t\tatc.DeleteWorker,\n\t\t\tatc.ListTeamBuilds,\n\t\t\tatc.GetUser:\n\t\t\tnewHandler = auth.CheckAuthenticationHandler(handler, rejector)",
+      "tests": ["Workers API POST /api/v1/workers when not authenticated returns 401 without saving the worker"],
+      "scenarios": ["Worker registration rejects an unauthenticated request without persistence"]
+    },
+    {
+      "id": "delete-removes-the-selected-worker",
+      "source_file": "atc/db/worker.go",
+      "old": "\t\t\t\"name\": worker.name,",
+      "new": "\t\t\t\"name\": worker.name + \"-other\",",
+      "tests": [
+        "Workers API DELETE /api/v1/workers/:worker_name when the user is system deletes a global worker",
+        "Workers API DELETE /api/v1/workers/:worker_name when the user is an admin deletes a global worker",
+        "Workers API DELETE /api/v1/workers/:worker_name when the user is authorized for its team deletes a team worker"
+      ],
+      "scenarios": [
+        "System caller deletes a global persisted worker",
+        "Administrator deletes a global persisted worker",
+        "Authorized team caller deletes its persisted worker"
+      ]
+    },
+    {
+      "id": "missing-worker-delete-is-server-error",
+      "source_file": "atc/api/workerserver/delete.go",
+      "old": "\tif err != nil || !found {\n\t\tlogger.Error(\"failed-finding-worker-to-delete\", err)\n\t\tw.WriteHeader(http.StatusInternalServerError)\n\t\treturn\n\t}",
+      "new": "\tif err != nil || !found {\n\t\tlogger.Error(\"failed-finding-worker-to-delete\", err)\n\t\tw.WriteHeader(http.StatusNotFound)\n\t\treturn\n\t}",
+      "tests": ["Workers API DELETE /api/v1/workers/:worker_name when the worker has already been deleted returns 500"],
+      "scenarios": ["Deleting an absent worker returns a server error"]
+    }
+  ]
+}
