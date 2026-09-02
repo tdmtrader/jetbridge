@@ -1,0 +1,86 @@
+{
+  "name": "accessor-verifier-strict",
+  "test_package": "./atc/api/accessor",
+  "source_test_file": "atc/api/accessor/verifier_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/accessor-verifier-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/accessor_verifier_strict.go",
+    "atc/worker/jetbridge/brine/steps/registry.go",
+    "atc/worker/jetbridge/brine/steps/resources.go",
+    "atc/worker/jetbridge/brine/steps/task_command.go",
+    "atc/worker/jetbridge/brine/steps/envtest.go",
+    "atc/postgresrunner/postgresrunner.go",
+    "atc/postgresrunner/ginkgo.go",
+    "atc/postgresrunner/join_limit_conn.go"
+  ],
+  "cases": [
+    {
+      "id": "missing-authorization-is-distinct",
+      "source_file": "atc/api/accessor/verifier.go",
+      "old": "\tif header == \"\" {",
+      "new": "\tif header == \"never-missing\" {",
+      "tests": ["Verifier Verify when request has no token fails with no token"],
+      "scenarios": ["Production access-token behavior — <profile> (row 1)"]
+    },
+    {
+      "id": "malformed-and-non-bearer-headers-are-invalid",
+      "source_file": "atc/api/accessor/verifier.go",
+      "old": "\t\treturn nil, ErrVerificationInvalidToken\n\t}\n\n\treturn v.verify(parts[1])",
+      "new": "\t\treturn nil, ErrVerificationNoToken\n\t}\n\n\treturn v.verify(parts[1])",
+      "tests": [
+        "Verifier Verify when request has an invalid auth header fails verification",
+        "Verifier Verify when request has an invalid token type fails verification"
+      ],
+      "scenarios": [
+        "Production access-token behavior — <profile> (row 2)",
+        "Production access-token behavior — <profile> (row 3)"
+      ]
+    },
+    {
+      "id": "unknown-database-token-is-invalid",
+      "source_file": "atc/api/accessor/verifier.go",
+      "old": "\tif !found {\n\t\treturn nil, ErrVerificationInvalidToken",
+      "new": "\tif !found {\n\t\treturn nil, ErrVerificationNoToken",
+      "tests": ["Verifier Verify when the token is not found in the DB fails verification"],
+      "scenarios": ["Production access-token behavior — <profile> (row 4)"]
+    },
+    {
+      "id": "expired-claims-have-expired-error",
+      "source_file": "atc/api/accessor/verifier.go",
+      "old": "\t\treturn nil, ErrVerificationTokenExpired",
+      "new": "\t\treturn nil, ErrVerificationInvalidToken",
+      "tests": ["Verifier Verify when the claims have expired fails verification"],
+      "scenarios": ["Production access-token behavior — <profile> (row 5)"]
+    },
+    {
+      "id": "wrong-audience-has-audience-error",
+      "source_file": "atc/api/accessor/verifier.go",
+      "old": "\treturn nil, ErrVerificationInvalidAudience",
+      "new": "\treturn nil, ErrVerificationInvalidToken",
+      "tests": ["Verifier Verify when the claims have invalid audience fails verification"],
+      "scenarios": ["Production access-token behavior — <profile> (row 6)"]
+    },
+    {
+      "id": "valid-audience-returns-raw-claims",
+      "source_file": "atc/api/accessor/verifier.go",
+      "old": "\t\t\treturn claims.RawClaims, nil",
+      "new": "\t\t\treturn nil, ErrVerificationInvalidAudience",
+      "tests": [
+        "Verifier Verify when the claims are valid succeeds",
+        "Verifier Verify when the claims are valid returns the claims as they came back out of the database"
+      ],
+      "scenarios": [
+        "Production access-token behavior — <profile> (row 7)",
+        "Production access-token behavior — <profile> (row 8)"
+      ]
+    },
+    {
+      "id": "delete-removes-the-selected-token",
+      "source_file": "atc/db/access_token_factory.go",
+      "old": "\t\tWhere(sq.Eq{\"token\": token}).\n\t\tRunWith(a.conn).\n\t\tExec()",
+      "new": "\t\tWhere(sq.Eq{\"token\": \"never-issued\"}).\n\t\tRunWith(a.conn).\n\t\tExec()",
+      "tests": ["AccessTokenFactory reports a deleted token as not found"],
+      "scenarios": ["Production access-token behavior — <profile> (row 9)"]
+    }
+  ]
+}
