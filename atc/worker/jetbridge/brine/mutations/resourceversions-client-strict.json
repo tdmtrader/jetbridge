@@ -1,0 +1,211 @@
+{
+  "name": "resourceversions-client-strict",
+  "test_package": "./go-concourse/concourse",
+  "source_test_file": "go-concourse/concourse/resourceversions_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/resourceversions-client-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/resourceversions_client_strict.go",
+    "atc/worker/jetbridge/brine/steps/api_versions_strict.go",
+    "atc/worker/jetbridge/brine/steps/api_auth.go",
+    "atc/worker/jetbridge/brine/steps/api_resource_auth.go",
+    "atc/worker/jetbridge/brine/steps/registry.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "page-encodes-from",
+      "source_file": "go-concourse/concourse/pagination.go",
+      "old": "\t\tqueryParams.Add(\"from\", strconv.Itoa(p.From))",
+      "new": "\t\tqueryParams.Add(\"from\", strconv.Itoa(p.From+1))",
+      "tests": [
+        "ATC Handler Resource Versions ResourceVersions when from is specified calls to get all versions from that id",
+        "ATC Handler Resource Versions ResourceVersions when from and limit is specified appends limit to the url",
+        "ATC Handler Resource Versions ResourceVersions when from and to are both specified sends both from and the to"
+      ],
+      "scenarios": ["Strict resource-version client behavior — <profile> (row 2)", "Strict resource-version client behavior — <profile> (row 3)", "Strict resource-version client behavior — <profile> (row 6)"]
+    },
+    {
+      "id": "page-encodes-to",
+      "source_file": "go-concourse/concourse/pagination.go",
+      "old": "\t\tqueryParams.Add(\"to\", strconv.Itoa(p.To))",
+      "new": "\t\tqueryParams.Add(\"to\", strconv.Itoa(p.To+1))",
+      "tests": [
+        "ATC Handler Resource Versions ResourceVersions when to is specified calls to get all versions to that id",
+        "ATC Handler Resource Versions ResourceVersions when to and limit is specified appends limit to the url",
+        "ATC Handler Resource Versions ResourceVersions when from and to are both specified sends both from and the to"
+      ],
+      "scenarios": ["Strict resource-version client behavior — <profile> (row 4)", "Strict resource-version client behavior — <profile> (row 5)", "Strict resource-version client behavior — <profile> (row 6)"]
+    },
+    {
+      "id": "page-encodes-limit",
+      "source_file": "go-concourse/concourse/pagination.go",
+      "old": "\t\tqueryParams.Add(\"limit\", strconv.Itoa(p.Limit))",
+      "new": "\t\tqueryParams.Add(\"limit\", strconv.Itoa(p.Limit+1))",
+      "tests": [
+        "ATC Handler Resource Versions ResourceVersions when from and limit is specified appends limit to the url",
+        "ATC Handler Resource Versions ResourceVersions when to and limit is specified appends limit to the url"
+      ],
+      "scenarios": ["Strict resource-version client behavior — <profile> (row 3)", "Strict resource-version client behavior — <profile> (row 5)"]
+    },
+    {
+      "id": "list-decodes-resource-versions",
+      "source_file": "go-concourse/concourse/resourceversions.go",
+      "old": "\t\tResult:  &resourceVersions,",
+      "new": "\t\tResult:  nil,",
+      "tests": [
+        "ATC Handler Resource Versions ResourceVersions when from, to, and limit are 0 calls to get all versions",
+        "ATC Handler Resource Versions ResourceVersions when from is specified calls to get all versions from that id",
+        "ATC Handler Resource Versions ResourceVersions when from and limit is specified appends limit to the url",
+        "ATC Handler Resource Versions ResourceVersions when to is specified calls to get all versions to that id",
+        "ATC Handler Resource Versions ResourceVersions when to and limit is specified appends limit to the url",
+        "ATC Handler Resource Versions ResourceVersions when from and to are both specified sends both from and the to",
+        "ATC Handler Resource Versions ResourceVersions when filter is specified sends filters as url params"
+      ],
+      "scenarios": ["Strict resource-version client behavior — <profile> (row 1)", "Strict resource-version client behavior — <profile> (row 2)", "Strict resource-version client behavior — <profile> (row 3)", "Strict resource-version client behavior — <profile> (row 4)", "Strict resource-version client behavior — <profile> (row 5)", "Strict resource-version client behavior — <profile> (row 6)", "Strict resource-version client behavior — <profile> (row 7)"]
+    },
+    {
+      "id": "list-reports-found",
+      "source_file": "go-concourse/concourse/resourceversions.go",
+      "old": "\t\treturn resourceVersions, pagination, true, nil",
+      "new": "\t\treturn resourceVersions, pagination, false, nil",
+      "tests": [
+        "ATC Handler Resource Versions ResourceVersions when from, to, and limit are 0 calls to get all versions",
+        "ATC Handler Resource Versions ResourceVersions when from is specified calls to get all versions from that id",
+        "ATC Handler Resource Versions ResourceVersions when from and limit is specified appends limit to the url",
+        "ATC Handler Resource Versions ResourceVersions when to is specified calls to get all versions to that id",
+        "ATC Handler Resource Versions ResourceVersions when to and limit is specified appends limit to the url",
+        "ATC Handler Resource Versions ResourceVersions when from and to are both specified sends both from and the to",
+        "ATC Handler Resource Versions ResourceVersions when filter is specified sends filters as url params"
+      ],
+      "scenarios": ["Strict resource-version client behavior — <profile> (row 1)", "Strict resource-version client behavior — <profile> (row 2)", "Strict resource-version client behavior — <profile> (row 3)", "Strict resource-version client behavior — <profile> (row 4)", "Strict resource-version client behavior — <profile> (row 5)", "Strict resource-version client behavior — <profile> (row 6)", "Strict resource-version client behavior — <profile> (row 7)"]
+    },
+    {
+      "id": "list-encodes-filter",
+      "source_file": "go-concourse/concourse/resourceversions.go",
+      "old": "\t\tqueryParams.Add(\"filter\", fmt.Sprintf(\"%s:%s\", k, v))",
+      "new": "\t\tqueryParams.Add(\"filter\", fmt.Sprintf(\"%s:%s-mutated\", k, v))",
+      "tests": ["ATC Handler Resource Versions ResourceVersions when filter is specified sends filters as url params"],
+      "scenarios": ["Strict resource-version client behavior — <profile> (row 7)"]
+    },
+    {
+      "id": "list-maps-not-found",
+      "source_file": "go-concourse/concourse/resourceversions.go",
+      "old": "\tcase internal.ResourceNotFoundError:\n\t\treturn resourceVersions, Pagination{}, false, nil",
+      "new": "\tcase internal.ResourceNotFoundError:\n\t\treturn resourceVersions, Pagination{}, true, nil",
+      "tests": ["ATC Handler Resource Versions ResourceVersions when the server returns not found returns false and no error"],
+      "scenarios": ["Strict resource-version client behavior — <profile> (row 8)"]
+    },
+    {
+      "id": "list-parses-pagination-links",
+      "source_file": "go-concourse/concourse/resourceversions.go",
+      "old": "\t\tpagination, err := paginationFromHeaders(headers)",
+      "new": "\t\tpagination, err := paginationFromHeaders(http.Header{})",
+      "tests": ["ATC Handler Resource Versions ResourceVersions pagination data with a link header returns the pagination data from the header"],
+      "scenarios": ["Strict resource-version client behavior — <profile> (row 9)"]
+    },
+    {
+      "id": "list-leaves-empty-pagination-nil",
+      "source_file": "go-concourse/concourse/pagination.go",
+      "old": "\treturn pagination, nil\n}",
+      "new": "\tif pagination.Next == nil && pagination.Previous == nil {\n\t\tpagination.Next = &Page{}\n\t}\n\treturn pagination, nil\n}",
+      "tests": ["ATC Handler Resource Versions ResourceVersions without a link header returns pagination data with nil pages"],
+      "scenarios": ["Strict resource-version client behavior — <profile> (row 10)"]
+    },
+    {
+      "id": "version-mutations-report-success",
+      "source_file": "go-concourse/concourse/resourceversions.go",
+      "old": "\tcase nil:\n\t\treturn true, nil\n\tcase internal.ResourceNotFoundError:\n\t\treturn false, nil\n\tdefault:\n\t\treturn false, err\n\t}\n}",
+      "new": "\tcase nil:\n\t\treturn false, nil\n\tcase internal.ResourceNotFoundError:\n\t\treturn false, nil\n\tdefault:\n\t\treturn false, err\n\t}\n}",
+      "tests": [
+        "ATC Handler Resource Versions DisableResourceVersion when the resource exists and there are no issues calls the disable resource and returns no error",
+        "ATC Handler Resource Versions EnableResourceVersion when the resource exists and there are no issues calls the enable resource and returns no error",
+        "ATC Handler Resource Versions PinResourceVersion When the resource exists and there are no issues calls the pin resource and returns no error"
+      ],
+      "scenarios": ["Strict resource-version client behavior — <profile> (row 11)", "Strict resource-version client behavior — <profile> (row 13)", "Strict resource-version client behavior — <profile> (row 15)"]
+    },
+    {
+      "id": "version-mutations-map-not-found",
+      "source_file": "go-concourse/concourse/resourceversions.go",
+      "old": "\tcase internal.ResourceNotFoundError:\n\t\treturn false, nil\n\tdefault:\n\t\treturn false, err\n\t}\n}",
+      "new": "\tcase internal.ResourceNotFoundError:\n\t\treturn true, nil\n\tdefault:\n\t\treturn false, err\n\t}\n}",
+      "tests": [
+        "ATC Handler Resource Versions DisableResourceVersion when the resource does not exist calls the disable resource and returns an error",
+        "ATC Handler Resource Versions EnableResourceVersion when the resource does not exist calls the enable resource and returns an error",
+        "ATC Handler Resource Versions PinResourceVersion when the resource does not exist calls the pin resource and returns an error"
+      ],
+      "scenarios": ["Strict resource-version client behavior — <profile> (row 12)", "Strict resource-version client behavior — <profile> (row 14)", "Strict resource-version client behavior — <profile> (row 16)"]
+    },
+    {
+      "id": "pin-preserves-server-error",
+      "source_file": "go-concourse/concourse/resourceversions.go",
+      "old": "func (team *team) PinResourceVersion(pipelineRef atc.PipelineRef, resourceName string, resourceVersionID int) (bool, error) {\n\treturn team.sendResourceVersion(pipelineRef, resourceName, resourceVersionID, atc.PinResourceVersion)\n}",
+      "new": "func (team *team) PinResourceVersion(pipelineRef atc.PipelineRef, resourceName string, resourceVersionID int) (bool, error) {\n\tpinned, _ := team.sendResourceVersion(pipelineRef, resourceName, resourceVersionID, atc.PinResourceVersion)\n\treturn pinned, nil\n}",
+      "tests": ["ATC Handler Resource Versions PinResourceVersion when the pin resource call fails calls the pin resource and returns an error"],
+      "scenarios": ["Strict resource-version client behavior — <profile> (row 17)"]
+    },
+    {
+      "id": "unpin-reports-success",
+      "source_file": "go-concourse/concourse/resourceversions.go",
+      "old": "func (team *team) UnpinResource(pipelineRef atc.PipelineRef, resourceName string) (bool, error) {\n\tparams := rata.Params{\n\t\t\"pipeline_name\": pipelineRef.Name,\n\t\t\"resource_name\": resourceName,\n\t\t\"team_name\":     team.Name(),\n\t}\n\n\terr := team.connection.Send(internal.Request{\n\t\tRequestName: atc.UnpinResource,\n\t\tParams:      params,\n\t\tQuery:       pipelineRef.QueryParams(),\n\t}, nil)\n\n\tswitch err.(type) {\n\tcase nil:\n\t\treturn true, nil",
+      "new": "func (team *team) UnpinResource(pipelineRef atc.PipelineRef, resourceName string) (bool, error) {\n\tparams := rata.Params{\n\t\t\"pipeline_name\": pipelineRef.Name,\n\t\t\"resource_name\": resourceName,\n\t\t\"team_name\":     team.Name(),\n\t}\n\n\terr := team.connection.Send(internal.Request{\n\t\tRequestName: atc.UnpinResource,\n\t\tParams:      params,\n\t\tQuery:       pipelineRef.QueryParams(),\n\t}, nil)\n\n\tswitch err.(type) {\n\tcase nil:\n\t\treturn false, nil",
+      "tests": ["ATC Handler Resource Versions UnpinResource When the resource exists and there are no issues calls the unpin resource and returns no error"],
+      "scenarios": ["Strict resource-version client behavior — <profile> (row 18)"]
+    },
+    {
+      "id": "unpin-maps-not-found",
+      "source_file": "go-concourse/concourse/resourceversions.go",
+      "old": "func (team *team) UnpinResource(pipelineRef atc.PipelineRef, resourceName string) (bool, error) {\n\tparams := rata.Params{\n\t\t\"pipeline_name\": pipelineRef.Name,\n\t\t\"resource_name\": resourceName,\n\t\t\"team_name\":     team.Name(),\n\t}\n\n\terr := team.connection.Send(internal.Request{\n\t\tRequestName: atc.UnpinResource,\n\t\tParams:      params,\n\t\tQuery:       pipelineRef.QueryParams(),\n\t}, nil)\n\n\tswitch err.(type) {\n\tcase nil:\n\t\treturn true, nil\n\tcase internal.ResourceNotFoundError:\n\t\treturn false, nil",
+      "new": "func (team *team) UnpinResource(pipelineRef atc.PipelineRef, resourceName string) (bool, error) {\n\tparams := rata.Params{\n\t\t\"pipeline_name\": pipelineRef.Name,\n\t\t\"resource_name\": resourceName,\n\t\t\"team_name\":     team.Name(),\n\t}\n\n\terr := team.connection.Send(internal.Request{\n\t\tRequestName: atc.UnpinResource,\n\t\tParams:      params,\n\t\tQuery:       pipelineRef.QueryParams(),\n\t}, nil)\n\n\tswitch err.(type) {\n\tcase nil:\n\t\treturn true, nil\n\tcase internal.ResourceNotFoundError:\n\t\treturn true, nil",
+      "tests": ["ATC Handler Resource Versions UnpinResource when the resource does not exist calls the unpin resource and returns an error"],
+      "scenarios": ["Strict resource-version client behavior — <profile> (row 19)"]
+    },
+    {
+      "id": "comment-reports-success",
+      "source_file": "go-concourse/concourse/resourceversions.go",
+      "old": "func (team *team) SetPinComment(pipelineRef atc.PipelineRef, resourceName string, comment string) (bool, error) {\n\tparams := rata.Params{",
+      "new": "func (team *team) SetPinComment(pipelineRef atc.PipelineRef, resourceName string, comment string) (bool, error) {\n\tcomment = comment + \"-mutated\"\n\tparams := rata.Params{",
+      "tests": ["ATC Handler Resource Versions SetPinComment When the resource exists and there are no issues when setting pin comment calls set pin comment and returns no error"],
+      "scenarios": ["Strict resource-version client behavior — <profile> (row 20)"]
+    },
+    {
+      "id": "comment-maps-not-found",
+      "source_file": "go-concourse/concourse/resourceversions.go",
+      "old": "\tcase internal.ResourceNotFoundError:\n\t\treturn false, nil\n\tdefault:\n\t\treturn false, err\n\t}\n\n}",
+      "new": "\tcase internal.ResourceNotFoundError:\n\t\treturn true, nil\n\tdefault:\n\t\treturn false, err\n\t}\n\n}",
+      "tests": ["ATC Handler Resource Versions SetPinComment when the resource does not exist calls the pin comment and returns an error"],
+      "scenarios": ["Strict resource-version client behavior — <profile> (row 21)"]
+    },
+    {
+      "id": "clear-resource-returns-count",
+      "source_file": "go-concourse/concourse/resourceversions.go",
+      "old": "\t\treturn crvResponse.VersionsRemoved, nil\n\t}\n}\n\nfunc (team *team) CopyResourceVersions",
+      "new": "\t\treturn crvResponse.VersionsRemoved + 1, nil\n\t}\n}\n\nfunc (team *team) CopyResourceVersions",
+      "tests": ["ATC Handler Resource Versions ClearResourceVersions when the API call succeeds return no error"],
+      "scenarios": ["Strict resource-version client behavior — <profile> (row 22)"]
+    },
+    {
+      "id": "clear-resource-preserves-error",
+      "source_file": "go-concourse/concourse/resourceversions.go",
+      "old": "\terr := team.connection.Send(request, &response)\n\tif err != nil {\n\t\treturn 0, err\n\t} else {\n\t\treturn crvResponse.VersionsRemoved, nil\n\t}\n}\n\nfunc (team *team) CopyResourceVersions",
+      "new": "\terr := team.connection.Send(request, &response)\n\tif err != nil {\n\t\treturn 0, nil\n\t} else {\n\t\treturn crvResponse.VersionsRemoved, nil\n\t}\n}\n\nfunc (team *team) CopyResourceVersions",
+      "tests": ["ATC Handler Resource Versions ClearResourceVersions when the API call errors returns error"],
+      "scenarios": ["Strict resource-version client behavior — <profile> (row 23)"]
+    },
+    {
+      "id": "clear-type-returns-count",
+      "source_file": "go-concourse/concourse/resourceversions.go",
+      "old": "\t\treturn crvResponse.VersionsRemoved, nil\n\t}\n}",
+      "new": "\t\treturn crvResponse.VersionsRemoved + 1, nil\n\t}\n}",
+      "tests": ["ATC Handler Resource Versions ClearResourceTypeVersions when the API call succeeds return no error"],
+      "scenarios": ["Strict resource-version client behavior — <profile> (row 24)"]
+    },
+    {
+      "id": "clear-type-preserves-error",
+      "source_file": "go-concourse/concourse/resourceversions.go",
+      "old": "func (team *team) ClearResourceTypeVersions(pipelineRef atc.PipelineRef, resourceTypeName string) (int64, error) {\n\tparams := rata.Params{\n\t\t\"team_name\":          team.Name(),\n\t\t\"pipeline_name\":      pipelineRef.Name,\n\t\t\"resource_type_name\": resourceTypeName,\n\t}\n\n\tqueryParams := url.Values{}\n\tvar crvResponse atc.ClearVersionsResponse\n\tresponseHeaders := http.Header{}\n\tresponse := internal.Response{\n\t\tHeaders: &responseHeaders,\n\t\tResult:  &crvResponse,\n\t}\n\trequest := internal.Request{\n\t\tRequestName: atc.ClearResourceTypeVersions,\n\t\tParams:      params,\n\t\tQuery:       merge(queryParams, pipelineRef.QueryParams()),\n\t\tHeader:      http.Header{\"Content-Type\": []string{\"application/json\"}},\n\t}\n\terr := team.connection.Send(request, &response)\n\tif err != nil {\n\t\treturn 0, err",
+      "new": "func (team *team) ClearResourceTypeVersions(pipelineRef atc.PipelineRef, resourceTypeName string) (int64, error) {\n\tparams := rata.Params{\n\t\t\"team_name\":          team.Name(),\n\t\t\"pipeline_name\":      pipelineRef.Name,\n\t\t\"resource_type_name\": resourceTypeName,\n\t}\n\n\tqueryParams := url.Values{}\n\tvar crvResponse atc.ClearVersionsResponse\n\tresponseHeaders := http.Header{}\n\tresponse := internal.Response{\n\t\tHeaders: &responseHeaders,\n\t\tResult:  &crvResponse,\n\t}\n\trequest := internal.Request{\n\t\tRequestName: atc.ClearResourceTypeVersions,\n\t\tParams:      params,\n\t\tQuery:       merge(queryParams, pipelineRef.QueryParams()),\n\t\tHeader:      http.Header{\"Content-Type\": []string{\"application/json\"}},\n\t}\n\terr := team.connection.Send(request, &response)\n\tif err != nil {\n\t\treturn 0, nil",
+      "tests": ["ATC Handler Resource Versions ClearResourceTypeVersions when the API call errors returns error"],
+      "scenarios": ["Strict resource-version client behavior — <profile> (row 25)"]
+    }
+  ]
+}
