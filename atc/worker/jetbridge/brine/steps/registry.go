@@ -169,6 +169,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, DBResourceCacheDurableKeyStrictDefinitions()...)
 	defs = append(defs, FlyRCTargetsStrictDefinitions()...)
 	defs = append(defs, DBResourceFinalStrictDefinitions()...)
+	defs = append(defs, DBVersionsFinalStrictDefinitions()...)
 	return defs
 }
 

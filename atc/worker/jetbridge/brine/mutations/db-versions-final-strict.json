@@ -1,0 +1,66 @@
+{
+  "name": "db-versions-final-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/versions_db_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-versions-final-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_versions_final_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "successful-builds-filter-by-success-status",
+      "source_file": "atc/db/versions_db.go",
+      "old": "func (versions VersionsDB) SuccessfulBuilds(ctx context.Context, jobID int) PaginatedBuilds {\n\tbuilder := psql.Select(\"id\", \"COALESCE(rerun_of, rerun_of_old) AS rerun_of\").\n\t\tFrom(\"builds\").\n\t\tWhere(sq.Eq{\n\t\t\t\"job_id\": jobID,\n\t\t\t\"status\": \"succeeded\",\n\t\t})",
+      "new": "func (versions VersionsDB) SuccessfulBuilds(ctx context.Context, jobID int) PaginatedBuilds {\n\tbuilder := psql.Select(\"id\", \"COALESCE(rerun_of, rerun_of_old) AS rerun_of\").\n\t\tFrom(\"builds\").\n\t\tWhere(sq.Eq{\n\t\t\t\"job_id\": jobID,\n\t\t\t\"status\": \"failed\",\n\t\t})",
+      "tests": [
+        "VersionsDB SuccessfulBuilds with one build returns the build and finishes",
+        "VersionsDB SuccessfulBuilds with the same number of builds as the page limit returns all of the builds, newest first, and then finishes",
+        "VersionsDB SuccessfulBuilds with a page of filler and then rerun builds created after their original builds returns all of the builds, newest first, with reruns relative to original build's order, and then finishes",
+        "VersionsDB SuccessfulBuilds with rerun builds created after their original (failing) build returns all of the builds, newest first, with reruns relative to original build's order, and then finishes",
+        "VersionsDB SuccessfulBuilds with a rerun build of a failed build on the page limit boundary finishes after the rerun",
+        "VersionsDB SuccessfulBuilds with a rerun build of a succeeded build on the page limit boundary returns the original build after the rerun",
+        "VersionsDB SuccessfulBuilds with multiple reruns of the same build crossing the page limit boundary returns all builds, and then all three reruns, and finishes"
+      ],
+      "scenarios": [
+        "SuccessfulBuilds returns its sole build and a zero-valued end marker",
+        "SuccessfulBuilds returns a full page newest first and then ends",
+        "SuccessfulBuilds keeps reruns with their failed original across a filler page",
+        "SuccessfulBuilds orders successful reruns relative to their failed original",
+        "SuccessfulBuilds ends after a successful rerun of a failed boundary build",
+        "SuccessfulBuilds returns a succeeded boundary original after its rerun",
+        "SuccessfulBuilds returns every rerun that crosses the page boundary"
+      ]
+    },
+    {
+      "id": "unused-builds-includes-cursor",
+      "source_file": "atc/db/versions_db.go",
+      "old": "\t\t\tsq.Or{\n\t\t\t\tsq.Eq{\"id\": lastUsedBuild.ID},\n\t\t\t\tlastUsedBuild.OlderBuilds(\"id\"),\n\t\t\t},\n\t\t}).\n\t\tOrderBy(\"COALESCE(rerun_of, rerun_of_old, id) DESC, id DESC\")",
+      "new": "\t\t\tsq.Or{\n\t\t\t\tsq.Gt{\"id\": lastUsedBuild.ID},\n\t\t\t\tlastUsedBuild.OlderBuilds(\"id\"),\n\t\t\t},\n\t\t}).\n\t\tOrderBy(\"COALESCE(rerun_of, rerun_of_old, id) DESC, id DESC\")",
+      "tests": [
+        "VersionsDB UnusedBuilds with one build, which was last used returns the build and finishes",
+        "VersionsDB UnusedBuilds with some older builds and some newer builds returns newer builds, oldest to newest, followed by the cursor build and older builds, newest to oldest",
+        "VersionsDB UnusedBuilds with some older builds and some newer builds and some reruns of the cursor returns the newer builds, oldest to newest, followed by the cursor build and older builds, newest to oldest",
+        "VersionsDB UnusedBuilds when the last used build was a rerun and there is another rerun before and after it returns newer rerun, the newer builds, followed by the given rerun, the older rerun, and the older builds"
+      ],
+      "scenarios": [
+        "UnusedBuilds returns its sole cursor build and a zero-valued end marker",
+        "UnusedBuilds returns newer builds ascending then cursor and older builds descending",
+        "UnusedBuilds excludes reruns of a non-rerun cursor",
+        "UnusedBuilds orders builds around a rerun cursor"
+      ]
+    },
+    {
+      "id": "find-resource-version-uses-partial-containment",
+      "source_file": "atc/db/versions_db.go",
+      "old": "\t\tWhere(sq.Expr(\"rcv.version @> ?\", versionJSON)).\n\t\tRunWith(versions.conn)",
+      "new": "\t\tWhere(sq.Expr(\"rcv.version = ?\", versionJSON)).\n\t\tRunWith(versions.conn)",
+      "tests": [
+        "VersionsDB FindVersionOfResource when trying to find version by providing a matched partial version return the version sha256"
+      ],
+      "scenarios": [
+        "FindVersionOfResource matches a partial version and returns its SHA256 digest"
+      ]
+    }
+  ]
+}
