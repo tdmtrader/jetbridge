@@ -1,0 +1,44 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/access-token-factory-strict.json",
+  "git_head": "98cfe27bc13bad0f327bcfbfdb963d5eecf96152",
+  "completed_at": "2026-09-02T19:45:36Z",
+  "source_tests": 2,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/access_token_factory.go": "3bcd5e9d0696a028c64cf415058f25c1253cb9d58fc38081b035f75c8d9d8f2f",
+    "atc/db/access_token_factory_test.go": "cfcc6d7a0a083a64c0445d3cf4cd184a67641ac99c6d309bd8c604f1b2c3cb31",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/access-token-db-strict.feature": "39d6e76fa571559be2cae994c96d143b65ce0031194e3b86334c796e2a9ec630",
+    "atc/worker/jetbridge/brine/mutations/access-token-factory-strict.json": "fddc6679a09cad676d2ba9987cd156a8e5139e55cde14cb76b7bebfff927ad48",
+    "atc/worker/jetbridge/brine/steps/access_token_db_strict.go": "0aa648634ba55d37691ca556d6b40263ea3a83c82e00f7e22112919bf9a4778e",
+    "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
+    "atc/worker/jetbridge/brine/steps/registry.go": "6cb195a77919aa92197bb086cee71b5c5ec1fa7b343f870b2e243b8ded7eac80",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e"
+  },
+  "mutation_cases": [
+    {
+      "id": "create-persists-claims",
+      "mutation_sha256": "2be91ac4c25d523ce35bd2a836b499df6e1ec23ed7b69033173fa04489d00792",
+      "failed_source_tests": [
+        "Access Token Factory can create and fetch access tokens"
+      ],
+      "failed_brine_scenarios": [
+        "Production access-token database behavior — \u003cprofile\u003e (row 1)"
+      ]
+    },
+    {
+      "id": "delete-selects-requested-token",
+      "mutation_sha256": "b22a2ed5552440de270d57ec8c54aa2b6eae3c5bf268e1f6fb1256a81c8249a1",
+      "failed_source_tests": [
+        "Access Token Factory can delete access tokens"
+      ],
+      "failed_brine_scenarios": [
+        "Production access-token database behavior — \u003cprofile\u003e (row 2)"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/access-token-lifecycle-strict.json",
+  "git_head": "52da6a77fa2ad49f6217e37329312cde98821989",
+  "completed_at": "2026-09-02T19:48:03Z",
+  "source_tests": 2,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/access_token_lifecycle.go": "48bc3f48641119e5e0212fdf5c567a25b715dec498d7695ab9b7d344f7306ec4",
+    "atc/db/access_token_lifecycle_test.go": "48138ef28a6e59fff9072f7a26e07e6ca1b57fd90125a6d7a751a9238206f81c",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/access-token-db-strict.feature": "39d6e76fa571559be2cae994c96d143b65ce0031194e3b86334c796e2a9ec630",
+    "atc/worker/jetbridge/brine/mutations/access-token-lifecycle-strict.json": "93e374aa2b6d91fbf0901fe66b5e254429ec7228588db0cdbe2ddcbf0bbe5e13",
+    "atc/worker/jetbridge/brine/steps/access_token_db_strict.go": "0aa648634ba55d37691ca556d6b40263ea3a83c82e00f7e22112919bf9a4778e",
+    "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
+    "atc/worker/jetbridge/brine/steps/registry.go": "6cb195a77919aa92197bb086cee71b5c5ec1fa7b343f870b2e243b8ded7eac80",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e"
+  },
+  "mutation_cases": [
+    {
+      "id": "expired-only-predicate",
+      "mutation_sha256": "cb5536f69fd35e46dddba5ea4c270374babee917f0369a8ca011c286d4398833",
+      "failed_source_tests": [
+        "Access Token Lifecycle removes expired access tokens"
+      ],
+      "failed_brine_scenarios": [
+        "Production access-token database behavior — \u003cprofile\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "expiration-leeway-contributes-to-cutoff",
+      "mutation_sha256": "4ee965ce10798b44621d6d28778f42f1b2273b1ccece7ae6655f57be9e65b92f",
+      "failed_source_tests": [
+        "Access Token Lifecycle respects the leeway for expiration time"
+      ],
+      "failed_brine_scenarios": [
+        "Production access-token database behavior — \u003cprofile\u003e (row 4)"
+      ]
+    }
+  ]
+}
