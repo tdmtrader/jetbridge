@@ -1,0 +1,66 @@
+{
+  "name": "db-volume-repository-final-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/volume_repository_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-volume-repository-final-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_volume_repository_final_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "destroying-volume-query-uses-real-volume-table",
+      "source_file": "atc/db/volume_repository.go",
+      "old": "\t\t\t\"state\":       string(VolumeStateDestroying),\n\t\t\t\"worker_name\": workerName,",
+      "new": "\t\t\t\"state\":       string(VolumeStateDestroying),\n\t\t\t\"worker_names\": workerName,",
+      "tests": ["VolumeRepository GetDestroyingVolumes when worker has detroying volumes when worker doesn't have detroying volume returns empty volumes"],
+      "scenarios": ["Destroying volume lookup is empty after the persisted volume is destroyed"],
+      "failure_contains": "final volume repository observation"
+    },
+    {
+      "id": "base-resource-type-volume-does-not-persist-zero-team",
+      "source_file": "atc/db/volume_repository.go",
+      "old": "\tif teamID != 0 {\n\t\tvalues[\"team_id\"] = teamID\n\t}",
+      "new": "\tif teamID == 0 {\n\t\tvalues[\"team_id\"] = teamID\n\t}",
+      "tests": ["VolumeRepository CreateBaseResourceTypeVolume creates a CreatingVolume with no team ID set"],
+      "scenarios": ["Base resource type volume persists without a team"],
+      "failure_contains": "final volume repository observation"
+    },
+    {
+      "id": "remove-destroying-uses-persisted-volumes-table",
+      "source_file": "atc/db/volume_repository.go",
+      "old": "\trows, err := psql.Delete(\"volumes\").\n\t\tWhere(",
+      "new": "\trows, err := psql.Delete(\"volume\").\n\t\tWhere(",
+      "tests": [
+        "VolumeRepository RemoveDestroyingVolumes when there are volumes to destroy when volume is in destroying state does not return an error",
+        "VolumeRepository RemoveDestroyingVolumes when there are volumes to destroy when handles are empty list does not return an error",
+        "VolumeRepository RemoveDestroyingVolumes when there are volumes to destroy when volume is in create/creating state does not return an error",
+        "VolumeRepository RemoveDestroyingVolumes when there are no volumes to destroy does not return an error"
+      ],
+      "scenarios": [
+        "Removing unreported destroying volumes returns no error",
+        "Removing destroying volumes with an empty report returns no error",
+        "Removing destroying volumes ignores creating rows without error",
+        "Removing destroying volumes protects reported rows without error"
+      ],
+      "failure_contains": "final volume repository observation"
+    },
+    {
+      "id": "update-missing-uses-persisted-volumes-table",
+      "source_file": "atc/db/volume_repository.go",
+      "old": "\t// clear out missing_since for reported volumes\n\tquery, args, err := psql.Update(\"volumes\").",
+      "new": "\t// clear out missing_since for reported volumes\n\tquery, args, err := psql.Update(\"volume\").",
+      "tests": [
+        "VolumeRepository UpdateVolumesMissingSince when the reported handles is a subset does not return an error",
+        "VolumeRepository UpdateVolumesMissingSince when the reported handles is the full set does not return an error",
+        "VolumeRepository UpdateVolumesMissingSince when the reported handles includes a volume marked as missing does not return an error"
+      ],
+      "scenarios": [
+        "Updating missing times for a subset returns no error",
+        "Updating missing times for the full report returns no error",
+        "Updating missing times clears a reported missing volume without error"
+      ],
+      "failure_contains": "final volume repository observation"
+    }
+  ]
+}

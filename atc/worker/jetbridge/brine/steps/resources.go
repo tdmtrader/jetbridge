@@ -47,7 +47,7 @@ type postmaster struct {
 type JetbridgeDB struct {
 	Conn                db.DbConn
 	LockFactory         lock.LockFactory
-	Builder             dbtest.Builder
+	Builder             JetbridgeBuilder
 	TeamFactory         db.TeamFactory
 	WorkerFactory       db.WorkerFactory
 	VolumeRepository    db.VolumeRepository
@@ -56,6 +56,53 @@ type JetbridgeDB struct {
 
 	lockConns [lock.FactoryCount]*sql.DB
 	runner    *postgresrunner.Runner
+}
+
+// JetbridgeBuilder preserves the legacy scenario-builder surface without
+// constructing a dbtest.Builder for every Brine scenario. The adapter creates
+// all scenario resources eagerly; deferring the test builder until one of its
+// methods is actually called keeps production-only DB scenarios on production
+// factories end to end.
+type JetbridgeBuilder struct {
+	TeamFactory            db.TeamFactory
+	WorkerFactory          db.WorkerFactory
+	ResourceConfigFactory  db.ResourceConfigFactory
+	VolumeRepo             db.VolumeRepository
+	ResourceCacheFactory   db.ResourceCacheFactory
+	TaskCacheFactory       db.TaskCacheFactory
+	WorkerTaskCacheFactory db.WorkerTaskCacheFactory
+}
+
+func (builder JetbridgeBuilder) testBuilder() dbtest.Builder {
+	return dbtest.Builder{
+		TeamFactory:            builder.TeamFactory,
+		WorkerFactory:          builder.WorkerFactory,
+		ResourceConfigFactory:  builder.ResourceConfigFactory,
+		VolumeRepo:             builder.VolumeRepo,
+		ResourceCacheFactory:   builder.ResourceCacheFactory,
+		TaskCacheFactory:       builder.TaskCacheFactory,
+		WorkerTaskCacheFactory: builder.WorkerTaskCacheFactory,
+	}
+}
+
+func (builder JetbridgeBuilder) WithTeam(teamName string) dbtest.SetupFunc {
+	return builder.testBuilder().WithTeam(teamName)
+}
+
+func (builder JetbridgeBuilder) WithPipeline(config atc.Config) dbtest.SetupFunc {
+	return builder.testBuilder().WithPipeline(config)
+}
+
+func (builder JetbridgeBuilder) WithBaseWorker() dbtest.SetupFunc {
+	return builder.testBuilder().WithBaseWorker()
+}
+
+func (builder JetbridgeBuilder) WithResourceVersions(resourceName string, versions ...atc.Version) dbtest.SetupFunc {
+	return builder.testBuilder().WithResourceVersions(resourceName, versions...)
+}
+
+func (builder JetbridgeBuilder) WithResourceTypeVersions(resourceTypeName string, versions ...atc.Version) dbtest.SetupFunc {
+	return builder.testBuilder().WithResourceTypeVersions(resourceTypeName, versions...)
 }
 
 // PersistNamedWorker mirrors the ginkgo suite helper of the same name.
@@ -189,7 +236,7 @@ func ResourceDefinitions() []brine.ResourceDefinition {
 					return nil, fmt.Errorf("construct production worker cache: %w", err)
 				}
 				workerFactory := db.NewWorkerFactory(conn, workerCache)
-				builder := dbtest.Builder{
+				builder := JetbridgeBuilder{
 					TeamFactory:            db.NewTeamFactory(conn, lockFactory),
 					WorkerFactory:          workerFactory,
 					ResourceConfigFactory:  db.NewResourceConfigFactory(conn, lockFactory),
