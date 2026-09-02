@@ -1,17 +1,20 @@
 package steps
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
-	"code.cloudfoundry.org/lager/v3/lagertest"
+	"code.cloudfoundry.org/lager/v3"
 	"github.com/brine-dev/brine-go/pkg/brine"
+	conc "github.com/concourse/concourse"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api"
 	"github.com/concourse/concourse/atc/api/accessor"
@@ -20,12 +23,16 @@ import (
 	"github.com/concourse/concourse/atc/auditor"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/fly/rc"
+	clientapi "github.com/concourse/concourse/go-concourse/concourse"
+	"github.com/concourse/concourse/skymarshal/skycmd"
 	"github.com/tedsuo/rata"
+	"golang.org/x/oauth2"
 )
 
 type FlyTeamError struct {
-	Server   *httptest.Server
 	Home     string
+	URL      string
+	Token    string
 	TeamName string
 	Kind     string
 	ExitCode int
@@ -95,6 +102,19 @@ func FlyTeamErrorDefinitions() []brine.StepDefinition {
 				if !strings.Contains(in.Stderr, want) {
 					return fmt.Errorf("expected fly error to contain %q, got %q", want, in.Stderr)
 				}
+				// Exercise the same production client branch in-process as well. The
+				// mutation audit overlays this adapter, while the separately built fly
+				// process proves that every command actually reaches that branch.
+				httpClient := oauth2.NewClient(context.Background(), oauth2.StaticTokenSource(&oauth2.Token{
+					AccessToken: in.Token,
+					TokenType:   "Bearer",
+				}))
+				httpClient.Timeout = 30 * time.Second
+				defer httpClient.CloseIdleConnections()
+				_, err := clientapi.NewClient(in.URL, httpClient, false).FindTeam(in.TeamName)
+				if err == nil || err.Error() != want {
+					return fmt.Errorf("production FindTeam error = %v, want %q", err, want)
+				}
 				return nil
 			},
 		),
@@ -102,8 +122,12 @@ func FlyTeamErrorDefinitions() []brine.StepDefinition {
 }
 
 func newFlyTeamError(database JetbridgeDB, kind string, rec *brine.Recorder) (*FlyTeamError, error) {
-	logger := lagertest.NewTestLogger("brine-fly-team")
-	var teams []db.Team
+	logger := lager.NewLogger("brine-fly-team")
+	const (
+		token    = "brine-fly-team-token"
+		audience = "brine-fly-team-audience"
+		user     = "brine-fly-team-user"
+	)
 	teamName := "doesnotexist"
 	switch kind {
 	case "missing":
@@ -114,10 +138,9 @@ func newFlyTeamError(database JetbridgeDB, kind string, rec *brine.Recorder) (*F
 		if err := adminTeam.UpdateProviderAuth(atc.TeamAuth{accessor.OwnerRole: {}}); err != nil {
 			return nil, err
 		}
-		teams = []db.Team{adminTeam}
 	case "forbidden":
 		teamName = "other-team"
-		team, err := database.TeamFactory.CreateTeam(atc.Team{
+		_, err := database.TeamFactory.CreateTeam(atc.Team{
 			Name: teamName,
 			Auth: atc.TeamAuth{accessor.ViewerRole: {
 				"users": {"some-connector:someone-else"},
@@ -126,17 +149,40 @@ func newFlyTeamError(database JetbridgeDB, kind string, rec *brine.Recorder) (*F
 		if err != nil {
 			return nil, err
 		}
-		teams = []db.Team{team}
 	default:
 		return nil, fmt.Errorf("unknown team API result %q", kind)
 	}
+	payload, err := json.Marshal(map[string]any{
+		"sub": user, "preferred_username": user, "aud": []any{audience},
+		"exp":              time.Now().Add(time.Hour).Unix(),
+		"federated_claims": map[string]any{"connector_id": "brine", "user_id": user},
+	})
+	if err != nil {
+		return nil, err
+	}
+	var claims db.Claims
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return nil, err
+	}
+	accessTokens := db.NewAccessTokenFactory(database.Conn)
+	if err := accessTokens.CreateAccessToken(token, claims); err != nil {
+		return nil, err
+	}
+	display, err := skycmd.NewSkyDisplayUserIdGenerator(map[string]string{})
+	if err != nil {
+		return nil, err
+	}
+	accessFactory := accessor.NewAccessFactory(
+		accessor.NewVerifier(accessTokens, []string{audience}),
+		database.TeamFactory, "sub", nil, display,
+	)
 
 	teamServer := teamserver.NewServer(logger, database.TeamFactory, "https://example.invalid")
 	teamHandler := api.NewTeamScopedHandlerFactory(logger, database.TeamFactory).HandlerFor(teamServer.GetTeam)
 	var handler http.Handler = auth.CheckAuthorizationHandler(teamHandler, auth.UnauthorizedRejector{})
 	handler = accessor.NewHandler(
 		logger, atc.GetTeam, handler,
-		pipelineAPIAccessFactory{teams: teams},
+		accessFactory,
 		auditor.NewAuditor(false, false, false, false, false, false, false, false, false, logger),
 		map[string]string{},
 	)
@@ -151,15 +197,26 @@ func newFlyTeamError(database JetbridgeDB, kind string, rec *brine.Recorder) (*F
 		atc.GetTeam: handler,
 		atc.GetInfo: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(atc.Info{Version: "0.0.0"})
+			_ = json.NewEncoder(w).Encode(atc.Info{Version: conc.Version})
 		}),
 	}
 	router, err := rata.NewRouter(routes, handlers)
 	if err != nil {
 		return nil, fmt.Errorf("build fly team router: %w", err)
 	}
-	server := httptest.NewServer(router)
-	rec.RegisterDisposer(server.Close)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, err
+	}
+	server := &http.Server{Handler: router, ReadHeaderTimeout: 5 * time.Second}
+	go func() { _ = server.Serve(listener) }()
+	rec.RegisterDisposer(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := server.Shutdown(ctx); err != nil {
+			_ = server.Close()
+		}
+	})
 
 	home, err := os.MkdirTemp("", "brine-fly-home-*")
 	if err != nil {
@@ -168,8 +225,8 @@ func newFlyTeamError(database JetbridgeDB, kind string, rec *brine.Recorder) (*F
 	rec.RegisterDisposer(func() { _ = os.RemoveAll(home) })
 	rcBytes, err := json.Marshal(rc.RC{Targets: rc.Targets{
 		"brine": rc.TargetProps{
-			API: server.URL, TeamName: atc.DefaultTeamName,
-			Token: &rc.TargetToken{Type: "Bearer", Value: "brine-token"},
+			API: "http://" + listener.Addr().String(), TeamName: atc.DefaultTeamName,
+			Token: &rc.TargetToken{Type: "Bearer", Value: token},
 		},
 	}})
 	if err != nil {
@@ -178,7 +235,10 @@ func newFlyTeamError(database JetbridgeDB, kind string, rec *brine.Recorder) (*F
 	if err := os.WriteFile(filepath.Join(home, ".flyrc"), rcBytes, 0600); err != nil {
 		return nil, err
 	}
-	return &FlyTeamError{Server: server, Home: home, TeamName: teamName, Kind: kind}, nil
+	return &FlyTeamError{
+		Home: home, URL: "http://" + listener.Addr().String(), Token: token,
+		TeamName: teamName, Kind: kind,
+	}, nil
 }
 
 func flyTeamCommand(name, team string) ([]string, error) {
@@ -217,7 +277,7 @@ func flyTeamCommand(name, team string) ([]string, error) {
 }
 
 func flyEnvironment(home string) []string {
-	env := []string{"HOME=" + home, "FAKE_FLY_VERSION=0.0.0"}
+	env := []string{"HOME=" + home}
 	for _, item := range os.Environ() {
 		if !strings.HasPrefix(item, "HOME=") && !strings.HasPrefix(item, "FAKE_FLY_VERSION=") {
 			env = append(env, item)

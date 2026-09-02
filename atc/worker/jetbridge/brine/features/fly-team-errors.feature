@@ -2,9 +2,10 @@ Feature: Fly rejects a team before attempting the requested operation
 
   Source: the two 25-row tables in fly/integration/error_handling_test.go.
   These are 50 initial specs. Fly is the real compiled CLI; GET team crosses a
-  real rata route, production accessor and authorization handler, team-scoped
-  handler, and PostgreSQL. The only small HTTP fixture is GET info, which is
-  version negotiation scaffolding and not the behavior under test.
+  real TCP listener and rata route, production token verifier, accessor and
+  authorization handler, team-scoped handler, and PostgreSQL. GET info is
+  served by that same real HTTP server and reports the compiled production
+  version used by fly.
 
   Scenario Outline: Every team-aware command explains a missing team — <command>
     Given fly targets a team the real API reports as "missing"
