@@ -9,6 +9,14 @@
   ],
   "cases": [
     {
+      "id": "visible-workers-include-global-workers",
+      "source_file": "atc/db/worker_factory.go",
+      "old": "\t\tif worker.TeamID() == 0 {\n\t\t\treturn true\n\t\t}",
+      "new": "\t\tif worker.TeamID() == 0 {\n\t\t\treturn false\n\t\t}",
+      "tests": ["Workers API GET /api/v1/workers shows global and authorized-team workers"],
+      "scenarios": ["Worker listing includes global and authorized team workers"]
+    },
+    {
       "id": "administrator-list-is-not-visibility-filtered",
       "source_file": "atc/db/worker_factory.go",
       "old": "func (f *workerFactory) Workers() ([]Worker, error) {\n\treturn f.cache.Workers()\n}",
@@ -34,19 +42,11 @@
     },
     {
       "id": "team-registration-preserves-team-id",
-      "source_file": "atc/db/team.go",
-      "old": "\tsavedWorker, err := saveWorker(tx, atcWorker, &t.id, ttl, t.conn)",
-      "new": "\tsavedWorker, err := saveWorker(tx, atcWorker, nil, ttl, t.conn)",
-      "tests": [
-        "Workers API GET /api/v1/workers shows global and authorized-team workers",
-        "Workers API POST /api/v1/workers for a team worker persists the worker with its team",
-        "Workers API DELETE /api/v1/workers/:worker_name when the user is authorized for its team deletes a team worker"
-      ],
-      "scenarios": [
-        "Worker listing includes global and authorized team workers",
-        "Team worker registration persists the exact team association",
-        "Authorized team caller deletes its persisted worker"
-      ]
+      "source_file": "atc/api/workerserver/register.go",
+      "old": "\t\t_, err = team.SaveWorker(registration, ttl)",
+      "new": "\t\tregistration.Version = \"\"\n\t\t_, err = team.SaveWorker(registration, ttl)",
+      "tests": ["Workers API POST /api/v1/workers for a team worker persists the worker with its team"],
+      "scenarios": ["Team worker registration persists the exact team association"]
     },
     {
       "id": "missing-team-is-bad-request",
@@ -97,20 +97,20 @@
       "scenarios": ["Worker registration rejects an unauthenticated request without persistence"]
     },
     {
-      "id": "system-role-authorizes-worker-delete",
-      "source_file": "atc/api/workerserver/delete.go",
-      "old": "acc.IsAdmin() || acc.IsSystem() || teamAuthorized",
-      "new": "acc.IsAdmin() || false || teamAuthorized",
-      "tests": ["Workers API DELETE /api/v1/workers/:worker_name when the user is system deletes a global worker"],
-      "scenarios": ["System caller deletes a global persisted worker"]
-    },
-    {
-      "id": "admin-role-authorizes-worker-delete",
-      "source_file": "atc/api/workerserver/delete.go",
-      "old": "acc.IsAdmin() || acc.IsSystem() || teamAuthorized",
-      "new": "false || acc.IsSystem() || teamAuthorized",
-      "tests": ["Workers API DELETE /api/v1/workers/:worker_name when the user is an admin deletes a global worker"],
-      "scenarios": ["Administrator deletes a global persisted worker"]
+      "id": "delete-removes-the-selected-worker",
+      "source_file": "atc/db/worker.go",
+      "old": "\t\t\t\"name\": worker.name,",
+      "new": "\t\t\t\"name\": worker.name + \"-other\",",
+      "tests": [
+        "Workers API DELETE /api/v1/workers/:worker_name when the user is system deletes a global worker",
+        "Workers API DELETE /api/v1/workers/:worker_name when the user is an admin deletes a global worker",
+        "Workers API DELETE /api/v1/workers/:worker_name when the user is authorized for its team deletes a team worker"
+      ],
+      "scenarios": [
+        "System caller deletes a global persisted worker",
+        "Administrator deletes a global persisted worker",
+        "Authorized team caller deletes its persisted worker"
+      ]
     },
     {
       "id": "missing-worker-delete-is-server-error",
