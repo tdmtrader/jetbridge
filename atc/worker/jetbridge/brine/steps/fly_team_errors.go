@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -31,6 +32,7 @@ import (
 
 type FlyTeamError struct {
 	Home     string
+	Fly      string
 	URL      string
 	Token    string
 	TeamName string
@@ -68,12 +70,8 @@ func FlyTeamErrorDefinitions() []brine.StepDefinition {
 				if err != nil {
 					return in, err
 				}
-				executable, err := os.Executable()
-				if err != nil {
-					return in, err
-				}
-				cmd := exec.Command(filepath.Join(filepath.Dir(executable), "fly"), append([]string{"-t", "brine"}, args...)...)
-				cmd.Dir = filepath.Clean(filepath.Join(filepath.Dir(executable), "../../../../.."))
+				cmd := exec.Command(in.Fly, append([]string{"-t", "brine"}, args...)...)
+				cmd.Dir = filepath.Clean(filepath.Join(filepath.Dir(in.Fly), "../../../../.."))
 				cmd.Env = flyEnvironment(in.Home)
 				output, runErr := cmd.CombinedOutput()
 				in.Stderr = string(output)
@@ -123,6 +121,10 @@ func FlyTeamErrorDefinitions() []brine.StepDefinition {
 
 func newFlyTeamError(database JetbridgeDB, kind string, rec *brine.Recorder) (*FlyTeamError, error) {
 	logger := lager.NewLogger("brine-fly-team")
+	flyBinary, err := productionFlyBinary()
+	if err != nil {
+		return nil, err
+	}
 	const (
 		token    = "brine-fly-team-token"
 		audience = "brine-fly-team-audience"
@@ -236,9 +238,25 @@ func newFlyTeamError(database JetbridgeDB, kind string, rec *brine.Recorder) (*F
 		return nil, err
 	}
 	return &FlyTeamError{
-		Home: home, URL: "http://" + listener.Addr().String(), Token: token,
+		Home: home, Fly: flyBinary, URL: "http://" + listener.Addr().String(), Token: token,
 		TeamName: teamName, Kind: kind,
 	}, nil
+}
+
+func productionFlyBinary() (string, error) {
+	_, source, _, ok := runtime.Caller(0)
+	if !ok {
+		return "", fmt.Errorf("locate fly: runtime caller unavailable")
+	}
+	path := filepath.Join(filepath.Dir(source), "..", ".build", "fly")
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("locate production fly binary at %s: %w", path, err)
+	}
+	if info.IsDir() || info.Mode()&0o111 == 0 {
+		return "", fmt.Errorf("production fly path is not executable: %s", path)
+	}
+	return filepath.Clean(path), nil
 }
 
 func flyTeamCommand(name, team string) ([]string, error) {
