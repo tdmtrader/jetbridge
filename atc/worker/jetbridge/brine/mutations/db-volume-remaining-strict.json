@@ -1,0 +1,107 @@
+{
+  "name": "db-volume-remaining-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/volume_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-volume-remaining-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_volume_remaining_strict.go",
+    "atc/worker/jetbridge/brine/steps/registry.go",
+    "atc/worker/jetbridge/brine/steps/resources.go",
+    "atc/worker/jetbridge/brine/steps/envtest.go",
+    "atc/postgresrunner/postgresrunner.go",
+    "atc/postgresrunner/ginkgo.go",
+    "atc/postgresrunner/join_limit_conn.go"
+  ],
+  "cases": [
+    {
+      "id": "duplicate-cache-volume-absorbs-unique-conflict",
+      "source_file": "atc/db/volume.go",
+      "old": "\t\tif pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == pgerrcode.UniqueViolation {\n\t\t\t// another volume was 'blessed' as the cache volume - leave this one",
+      "new": "\t\tif pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == pgerrcode.ForeignKeyViolation {\n\t\t\t// another volume was 'blessed' as the cache volume - leave this one",
+      "tests": [
+        "Volume createdVolume.InitializeResourceCache when initialize created resource cache when there's already an initialized resource cache on the same worker leaves the volume owned by the container"
+      ],
+      "scenarios": [
+        "A duplicate cache volume remains container-owned"
+      ]
+    },
+    {
+      "id": "resource-cache-volume-respects-invalidation-time",
+      "source_file": "atc/db/worker_resource_cache.go",
+      "old": "\tif volumeShouldBeValidBefore == nil || invalidSince.Valid && invalidSince.Time.Before(*volumeShouldBeValidBefore) {",
+      "new": "\tif volumeShouldBeValidBefore == nil || invalidSince.Valid && invalidSince.Time.After(*volumeShouldBeValidBefore) {",
+      "tests": [
+        "Volume createdVolume.InitializeResourceCache when initialize streamed resource cache when a streamed resource cache is streamed to another worker when the original base resource type is invalidated when build started before original invalidated should be still usable when the original base resource type is invalidated",
+        "Volume createdVolume.InitializeResourceCache when initialize streamed resource cache when a streamed resource cache is streamed to another worker when the original base resource type is invalidated when build started after original invalidated should not be usable when the original base resource type is invalidated"
+      ],
+      "scenarios": [
+        "An invalidated stream chain remains usable for an earlier build",
+        "An invalidated stream chain is unavailable to a later build"
+      ]
+    },
+    {
+      "id": "team-cache-worker-respects-invalidation-time",
+      "source_file": "atc/db/team.go",
+      "old": "\t\t\t\t\tsq.Expr(\"wrc.invalid_since > to_timestamp(?)\", shouldBeValidBefore.Unix()),",
+      "new": "\t\t\t\t\tsq.Expr(\"wrc.invalid_since < to_timestamp(?)\", shouldBeValidBefore.Unix()),",
+      "tests": [
+        "Volume createdVolume.InitializeResourceCache when streaming a volume cache that has been invalidated on the source worker when build started before cache is invalidated should still found the resource cache because source is invalidated",
+        "Volume createdVolume.InitializeResourceCache when streaming a volume cache that has been invalidated on the source worker when build started after cache is invalidated should still found the resource cache because source is invalidated"
+      ],
+      "scenarios": [
+        "An invalidated source worker is returned to an earlier build",
+        "An invalidated source worker is hidden from a later build"
+      ]
+    },
+    {
+      "id": "invalid-stream-source-is-rejected",
+      "source_file": "atc/db/volume.go",
+      "old": "\tif sourceWorkerResourceCache.WorkerBaseResourceTypeID == 0 {",
+      "new": "\tif sourceWorkerResourceCache.WorkerBaseResourceTypeID < 0 {",
+      "tests": [
+        "Volume createdVolume.InitializeResourceCache when streaming a volume cache that has been invalidated on the source worker InitializeStreamedResourceCache should not fail"
+      ],
+      "scenarios": [
+        "A stream from an invalid source remains container-owned without error"
+      ]
+    },
+    {
+      "id": "worker-delete-invalidates-caches-and-cascades-volumes",
+      "source_file": "atc/db/worker.go",
+      "old": "\t\tWhere(sq.Eq{\n\t\t\t\"name\": worker.name,\n\t\t}).",
+      "new": "\t\tWhere(sq.Eq{\n\t\t\t\"addr\": worker.name,\n\t\t}).",
+      "tests": [
+        "Volume createdVolume.InitializeResourceCache when a streamed resource cache is invalidated initializing resource cache on the new volume should succeed",
+        "Volume createdVolume.InitializeResourceCache when a streamed resource cache is invalidated new volume owned by the resource",
+        "Volume createdVolume.InitializeResourceCache when a streamed resource cache is invalidated when build started before the cache is invalidated resource cache volume should be found on both worker1",
+        "Volume createdVolume.InitializeResourceCache when a streamed resource cache is invalidated when build started before the cache is invalidated there is an invalid worker resource cache on worker1",
+        "Volume createdVolume.InitializeResourceCache when a streamed resource cache is invalidated when build started after the cache is invalidated resource cache volume should be found on worker1",
+        "Volume createdVolume.InitializeResourceCache when a streamed resource cache is invalidated when build started after the cache is invalidated there is an invalid worker resource cache on worker1",
+        "Volume when worker is no longer in database the container goes away from the db"
+      ],
+      "scenarios": [
+        "A deleted source permits a replacement cache record",
+        "A replacement cache volume becomes resource-owned",
+        "An earlier build finds the replacement cache volume",
+        "An earlier build can inspect the invalidated streamed cache record",
+        "A later build finds the replacement cache volume",
+        "A later build can inspect the invalidated streamed cache record",
+        "Deleting a worker cascades its container volume"
+      ]
+    },
+    {
+      "id": "resource-volume-reports-resource-version",
+      "source_file": "atc/db/volume.go",
+      "old": "\t\treturn &VolumeResourceType{\n\t\t\tResourceType: resourceType,\n\t\t\tVersion:      version,\n\t\t}, nil",
+      "new": "\t\treturn &VolumeResourceType{\n\t\t\tResourceType: resourceType,\n\t\t\tVersion:      atc.Version{},\n\t\t}, nil",
+      "tests": [
+        "Volume Resource cache volumes returns volume type, resource type, resource version",
+        "Volume Resource cache volumes returns volume type from streamed source volume"
+      ],
+      "scenarios": [
+        "A local resource volume reports the nested resource type and versions",
+        "A streamed resource volume reports the nested resource type and versions"
+      ]
+    }
+  ]
+}
