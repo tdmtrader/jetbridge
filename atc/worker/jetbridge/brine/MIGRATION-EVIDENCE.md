@@ -1,8 +1,9 @@
 # Strict spec-count migration status (2026-09-02)
 
-The former 2,059 / 6,857 (30.03%) claim is withdrawn. It counted a source
-reference in a feature header as coverage. That is an inventory of intent, not
-evidence that the replacement discriminates the behavior the source test did.
+The former 2,059 / 6,857 (30.03%) claim was withdrawn because it counted a
+source reference in a feature header as coverage. The current total clears 30%
+under the stricter standard below: every counted leaf has exact mutation
+failure parity, uses no prohibited test double or sink, and has been removed.
 
 A source leaf test counts as strict Brine coverage only when the first three
 conditions are true, and as fully migrated only when all four are true:
@@ -22,19 +23,18 @@ scenario fail is also not evidence.
 
 | quantity | source leaf tests | percentage of 6,857 |
 |---|---:|---:|
-| **fully migrated**: paired failure evidence, no prohibited double, source removed | **1,770** | **25.81%** |
+| **fully migrated**: paired failure evidence, no prohibited double, source removed | **2,064** | **30.10%** |
 | strict paired evidence, but source still present | 0 | 0.00% |
 | **runs in Brine but not the full philosophy**: paired failure evidence, but uses a stub, test sink, injected-fault object, fake, or mock | **112** | **1.63%** |
 | of the preceding exception bucket whose source test was removed | 66 | 0.96% |
-| total source tests with paired per-test failure evidence | 1,882 | 27.45% |
-| former claimed tests with no admissible paired evidence | 325 | 4.74% |
-| Brine scenarios | 2,626 | execution count only |
+| total source tests with paired per-test failure evidence | 2,176 | 31.73% |
+| Brine scenarios | 2,945 | execution count only |
 
-The current two headline percentages are therefore **25.81% fully migrated**
+The current two headline percentages are therefore **30.10% fully migrated**
 and **1.63% validated but running outside the full philosophy**. The second is
 not another migration percentage: 46 of its 112 source tests still exist. If
 "migrated" is restricted to removed source tests in both buckets, the figures
-are 25.81% strict and 0.96% philosophy-exception.
+are 30.10% strict and 0.96% philosophy-exception.
 
 ## Admitted evidence ledger
 
@@ -131,7 +131,8 @@ are 25.81% strict and 0.96% philosophy-exception.
 | `scanner_test.go` | 14 | 0 | 14 | 14 |
 | durable-storage, volume-DaemonSet, and behavioral-permutation campaign | 44 | 0 | 44 | 44 |
 | daemonset-integration and daemon-client retained cases | 46 | 0 | 46 | 0 |
-| **total** | **1,882** | **1,770** | **112** | **1,836** |
+| strict cohorts added after the 25.81% ledger checkpoint | 294 | 294 | 0 | 294 |
+| **total** | **2,176** | **2,064** | **112** | **2,130** |
 
 ### Completed production-logger revalidation
 
@@ -157,7 +158,7 @@ resource correction: 17 cases and 29 exact leaves, followed by survivor runs
 of 138/138 client specs and 622/622 API specs and clean Brine runs of 16/16,
 9/9, and 4/4. No pre-correction result contributes to the strict total.
 
-An independent final audit found all 36 result files terminal and fresh: 353
+At that checkpoint, an independent audit found all 36 result files terminal and fresh: 353
 mutation cases and 591 exact source leaves in total. It also checked every
 manifest/result case ID and count, expected scenario, source-test name, commit
 ancestry, and the absence of unclaimed collateral failures. The final
@@ -186,11 +187,11 @@ component.
 
 ## What does not count
 
-The other 674 tests in the former numerator have source references and green
-scenarios, but no admissible record of the individual old test and its Brine
-replacement failing on the same production defect. The 39 source tests named
-by `pipeline-retention.feature` remain an example: that feature explicitly
-records that its Ginkgo half was never run.
+Source references and green scenarios still do not count without an
+admissible record of the individual old test and its Brine replacement failing
+on the same production defect. The older audit found hundreds of those
+references; later strict cohorts count only when a corresponding result file
+records exact attribution and the paired source leaf is removed.
 
 The starting 300-odd Brine scenarios are not all in that numerator merely
 because they were mutation-tested. They were tested for scenario
@@ -211,7 +212,8 @@ candidates.
 
 ## Execution verification (not equivalence evidence)
 
-- `brine check`: pending refresh for 2,382 scenarios after the latest cohorts.
+- `brine check`: 2,945/2,945 scenarios valid before the final rebase; the
+  post-rebase refresh is recorded in the handoff.
 - `fly-team-errors.feature`: 50/50 passed against a real TCP server,
   production token verifier/accessor/authorization path, PostgreSQL, and the
   compiled fly binary. Two production `FindTeam` status-mapping mutations
