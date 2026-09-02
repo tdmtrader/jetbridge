@@ -1,0 +1,45 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-team-worker-final-strict.json",
+  "git_head": "90786cf54094e05f935cab99c7e3c840e04f0638",
+  "completed_at": "2026-09-02T21:38:11Z",
+  "source_tests": 2,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/team_test.go": "e5e395f79daa65f5b6b9cf88250bc30377bc7de221553cf844e7305f072ba5e0",
+    "atc/db/worker_factory.go": "7affe6bc9f632280cc2046a0cdd7aab22a2ba17a66735251f643074739299d3d",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/main.go": "f1077dbb582d4a3ad64725c5a79cbb19aacc73f43e16da24c8db9d42a94cca9f",
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/registry.go": "c501eef759544abaec0a8d96b4d7b2326126a74c844439d0338b2fcf7751c8f8",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/db-team-remaining-strict.feature": "d9dc79f8b29b998b6fe5da9adafae7fa124721de9ff5cb6c0565f7dbb2a856b7",
+    "atc/worker/jetbridge/brine/mutations/db-team-worker-final-strict.json": "5399ede5f9136d7aaeabf81d43fda7bb2ad42256e3b4ae7d7a6b033ba253d596",
+    "atc/worker/jetbridge/brine/steps/assert.go": "eac0b7b4dc864f54ffb5aab471451e3b62da518e5a8b10ba26e742d83298861f",
+    "atc/worker/jetbridge/brine/steps/db_team_remaining_strict.go": "194eb48006ad86103b5d6feba7e8edda3268cde58d8158ffb9cd5477aca5b932",
+    "atc/worker/jetbridge/brine/steps/registry.go": "65d881fadfb42755b24ad77ca77abf11f7c7cec91f430347c86c4143a1ad82ae",
+    "atc/worker/jetbridge/brine/steps/resources.go": "f594ee3b1828c61ca1dd1ef9dd8024ecbb440898b57644b50a80d86bad475691"
+  },
+  "mutation_cases": [
+    {
+      "id": "team-worker-save-returns-running-state",
+      "mutation_sha256": "ea7002ad2f81149a7ffea0c21aa7d22a1652a0dc929a3e36891f7ca6e424ba19",
+      "failed_source_tests": [
+        "Team SaveWorker the worker already exists the worker is not in stalled state the team_id of the new worker is the same overwrites all the data"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team source behavior — \u003cprofile\u003e (row 1)"
+      ]
+    },
+    {
+      "id": "team-worker-save-rejects-cross-team-conflict",
+      "mutation_sha256": "ff0976956ebd2945089206b58bd560f56100736249e6a7a7e61e99b15bd99556",
+      "failed_source_tests": [
+        "Team SaveWorker the worker already exists the worker is not in stalled state the team_id of the new worker is different errors"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team source behavior — \u003cprofile\u003e (row 2)"
+      ]
+    }
+  ]
+}
