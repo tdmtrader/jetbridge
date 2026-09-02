@@ -15,3 +15,5 @@ Feature: Access token verification over real PostgreSQL
       | valid-token-succeeds    |
       | valid-token-claims      |
       | deleted-token-not-found |
+      | typed-claims-reconstructed |
+      | untyped-claims-round-trip  |

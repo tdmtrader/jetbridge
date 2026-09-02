@@ -84,6 +84,48 @@ func observeAccessorVerifier(database JetbridgeDB, profile string) string {
 		}
 		return ""
 	}
+	if profile == "typed-claims-reconstructed" {
+		expiry := float64(time.Now().Add(time.Hour).Unix())
+		if err := persist("typed-token", map[string]any{
+			"sub": "some-sub", "aud": []any{"some-aud"}, "exp": expiry,
+			"email": "some-user@example.com",
+		}); err != nil {
+			return err.Error()
+		}
+		stored, found, err := factory.GetAccessToken("typed-token")
+		if err != nil {
+			return err.Error()
+		}
+		if !found || stored.Token != "typed-token" {
+			return fail("typed token found=%t token=%q", found, stored.Token)
+		}
+		if len(stored.Claims.Audience) != 1 || stored.Claims.Audience[0] != "some-aud" ||
+			stored.Claims.Expiry == nil || stored.Claims.Expiry.Time().Unix() != int64(expiry) ||
+			stored.Claims.Email != "some-user@example.com" {
+			return fail("typed claims audience=%v expiry=%v email=%q", stored.Claims.Audience, stored.Claims.Expiry, stored.Claims.Email)
+		}
+		return ""
+	}
+	if profile == "untyped-claims-round-trip" {
+		raw := map[string]any{
+			"sub": "some-sub", "name": "some-user", "preferred_username": "some-preferred-username",
+			"email":            "some-user@example.com",
+			"federated_claims": map[string]any{"connector_id": "some-connector", "user_id": "some-user-id"},
+		}
+		if err := persist("round-trip-token", raw); err != nil {
+			return err.Error()
+		}
+		stored, found, err := factory.GetAccessToken("round-trip-token")
+		if err != nil {
+			return err.Error()
+		}
+		if !found || stored.Claims.Subject != "some-sub" || stored.Claims.Username != "some-user" ||
+			stored.Claims.PreferredUsername != "some-preferred-username" || stored.Claims.Email != "some-user@example.com" ||
+			stored.Claims.Connector != "some-connector" || stored.Claims.UserID != "some-user-id" {
+			return fail("round-trip claims found=%t claims=%+v", found, stored.Claims)
+		}
+		return ""
+	}
 
 	audience := "some-aud"
 	raw := map[string]any{

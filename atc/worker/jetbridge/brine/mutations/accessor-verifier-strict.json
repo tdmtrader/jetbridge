@@ -81,6 +81,20 @@
       "new": "\t\tWhere(sq.Eq{\"token\": \"never-issued\"}).\n\t\tRunWith(a.conn).\n\t\tExec()",
       "tests": ["AccessTokenFactory reports a deleted token as not found"],
       "scenarios": ["Production access-token behavior — <profile> (row 9)"]
+    },
+    {
+      "id": "email-is-reconstructed-from-raw-claims",
+      "source_file": "atc/db/access_token.go",
+      "old": "\tEmail             string         `json:\"email\"`",
+      "new": "\tEmail             string         `json:\"mail\"`",
+      "tests": [
+        "Verifier Verify when the claims are valid reconstructs the expiry and audience the validation depends on",
+        "AccessTokenFactory round trips claims that were never written as typed fields"
+      ],
+      "scenarios": [
+        "Production access-token behavior — <profile> (row 10)",
+        "Production access-token behavior — <profile> (row 11)"
+      ]
     }
   ]
 }
