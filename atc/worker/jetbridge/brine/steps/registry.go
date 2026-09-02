@@ -106,6 +106,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, BuildLogRetentionDefinitions()...)
 	defs = append(defs, OPAResultDefinitions()...)
 	defs = append(defs, ATCConfigBehaviorDefinitions()...)
+	defs = append(defs, ATCJobPublicStrictDefinitions()...)
 	defs = append(defs, ConfigDiffBehaviorDefinitions()...)
 	defs = append(defs, FlyEventRenderDefinitions()...)
 	defs = append(defs, FlyVersionStrictDefinitions()...)
