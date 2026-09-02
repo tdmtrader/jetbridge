@@ -1,0 +1,222 @@
+{
+  "name": "db-volume-repository-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/volume_repository_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-volume-repository-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_volume_repository_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "team-volume-query-uses-requested-team",
+      "source_file": "atc/db/volume_repository.go",
+      "old": "\t\t\t\t\"v.team_id\": teamID,",
+      "new": "\t\t\t\t\"v.team_id\": teamID + 1,",
+      "tests": [
+        "VolumeRepository GetTeamVolumes returns task cache volumes",
+        "VolumeRepository GetTeamVolumes with container volumes returns only the matching defaultTeam's volumes",
+        "VolumeRepository GetTeamVolumes with container volumes when worker has expired returns volumes"
+      ],
+      "scenarios": [
+        "Volume repository profile <profile> has its exact result (row 1)",
+        "Volume repository profile <profile> has its exact result (row 2)",
+        "Volume repository profile <profile> has its exact result (row 3)"
+      ],
+      "failure_contains": "volume repository observation"
+    },
+    {
+      "id": "orphan-query-excludes-parent-with-child",
+      "source_file": "atc/db/volume_repository.go",
+      "old": "\t\t\t\t\"cv.id\":                          nil,",
+      "new": "\t\t\t\t\"v.id\":                           nil,",
+      "tests": [
+        "VolumeRepository GetOrphanedVolumes returns orphaned volumes",
+        "VolumeRepository GetOrphanedVolumes does not return volume with a child"
+      ],
+      "scenarios": [
+        "Volume repository profile <profile> has its exact result (row 4)",
+        "Volume repository profile <profile> has its exact result (row 5)"
+      ],
+      "failure_contains": "volume repository observation"
+    },
+    {
+      "id": "failed-volume-destruction-selects-failed-state",
+      "source_file": "atc/db/volume_repository.go",
+      "old": "\t\t\t\"v.state\": string(VolumeStateFailed),",
+      "new": "\t\t\t\"v.state\": string(VolumeStateDestroying),",
+      "tests": ["VolumeRepository DestroyFailedVolumes returns length of failed volumes"],
+      "scenarios": ["Volume repository profile <profile> has its exact result (row 6)"],
+      "failure_contains": "volume repository observation"
+    },
+    {
+      "id": "destroying-volume-query-uses-worker",
+      "source_file": "atc/db/volume_repository.go",
+      "old": "\t\tsq.Eq{\n\t\t\t\"state\":       string(VolumeStateDestroying),\n\t\t\t\"worker_name\": workerName,\n\t\t},",
+      "new": "\t\tsq.Eq{\n\t\t\t\"state\":       string(VolumeStateDestroying),\n\t\t\t\"worker_name\": workerName + \"-other\",\n\t\t},",
+      "tests": ["VolumeRepository GetDestroyingVolumes when worker has detroying volumes returns destroying volumes"],
+      "scenarios": ["Volume repository profile <profile> has its exact result (row 7)"],
+      "failure_contains": "volume repository observation"
+    },
+    {
+      "id": "generic-volume-retains-team-scope",
+      "source_file": "atc/db/volume_repository.go",
+      "old": "func (repository *volumeRepository) CreateVolume(teamID int, workerName string, volumeType VolumeType) (CreatingVolume, error) {\n\tvolume, err := repository.createVolume(\n\t\tteamID,",
+      "new": "func (repository *volumeRepository) CreateVolume(teamID int, workerName string, volumeType VolumeType) (CreatingVolume, error) {\n\tvolume, err := repository.createVolume(\n\t\tnoTeam,",
+      "tests": ["VolumeRepository CreateVolume creates a CreatingVolume of the given type with a teamID"],
+      "scenarios": ["Volume repository profile <profile> has its exact result (row 8)"],
+      "failure_contains": "volume repository observation"
+    },
+    {
+      "id": "base-resource-type-find-uses-association",
+      "source_file": "atc/db/volume_repository.go",
+      "old": "\t\t\"v.worker_base_resource_type_id\": uwbrt.ID,",
+      "new": "\t\t\"v.worker_base_resource_type_id\": uwbrt.ID + 1,",
+      "tests": [
+        "VolumeRepository FindBaseResourceTypeVolume when there is a created volume for base resource type returns created volume",
+        "VolumeRepository FindBaseResourceTypeVolume when there is a creating volume for base resource type returns creating volume"
+      ],
+      "scenarios": [
+        "Volume repository profile <profile> has its exact result (row 9)",
+        "Volume repository profile <profile> has its exact result (row 10)"
+      ],
+      "failure_contains": "volume repository observation"
+    },
+    {
+      "id": "resource-cache-find-uses-worker-cache-association",
+      "source_file": "atc/db/volume_repository.go",
+      "old": "\t\t\"v.worker_resource_cache_id\": workerResourceCache.ID,",
+      "new": "\t\t\"v.worker_resource_cache_id\": workerResourceCache.ID + 1,",
+      "tests": ["VolumeRepository FindResourceCacheVolume when there is a created volume for resource cache returns created volume"],
+      "scenarios": ["Volume repository profile <profile> has its exact result (row 11)"],
+      "failure_contains": "volume repository observation"
+    },
+    {
+      "id": "remove-destroying-protects-reported-handles",
+      "source_file": "atc/db/volume_repository.go",
+      "old": "\t\t\t\tsq.NotEq{\n\t\t\t\t\t\"handle\": handles,\n\t\t\t\t},",
+      "new": "\t\t\t\tsq.Eq{\n\t\t\t\t\t\"handle\": handles,\n\t\t\t\t},",
+      "tests": [
+        "VolumeRepository RemoveDestroyingVolumes when there are volumes to destroy when volume is in destroying state should destroy",
+        "VolumeRepository RemoveDestroyingVolumes when there are volumes to destroy when volume is in destroying state returns the correct number of rows removed",
+        "VolumeRepository RemoveDestroyingVolumes when there are volumes to destroy when handles are empty list should destroy",
+        "VolumeRepository RemoveDestroyingVolumes when there are volumes to destroy when handles are empty list returns the correct number of rows removed",
+        "VolumeRepository RemoveDestroyingVolumes when there are no volumes to destroy doesn't destroy volumes that are in handles",
+        "VolumeRepository RemoveDestroyingVolumes when there are no volumes to destroy returns the correct number of rows removed"
+      ],
+      "scenarios": [
+        "Volume repository profile <profile> has its exact result (row 12)",
+        "Volume repository profile <profile> has its exact result (row 13)",
+        "Volume repository profile <profile> has its exact result (row 14)",
+        "Volume repository profile <profile> has its exact result (row 15)",
+        "Volume repository profile <profile> has its exact result (row 18)",
+        "Volume repository profile <profile> has its exact result (row 19)"
+      ],
+      "failure_contains": "volume repository observation"
+    },
+    {
+      "id": "remove-destroying-requires-destroying-state",
+      "source_file": "atc/db/volume_repository.go",
+      "old": "\t\t\t\tsq.Eq{\n\t\t\t\t\t\"state\": VolumeStateDestroying,\n\t\t\t\t},",
+      "new": "\t\t\t\tsq.NotEq{\n\t\t\t\t\t\"state\": VolumeStateFailed,\n\t\t\t\t},",
+      "tests": [
+        "VolumeRepository RemoveDestroyingVolumes when there are volumes to destroy when volume is in create/creating state should not destroy",
+        "VolumeRepository RemoveDestroyingVolumes when there are volumes to destroy when volume is in create/creating state returns the correct number of rows removed"
+      ],
+      "scenarios": [
+        "Volume repository profile <profile> has its exact result (row 16)",
+        "Volume repository profile <profile> has its exact result (row 17)"
+      ],
+      "failure_contains": "volume repository observation"
+    },
+    {
+      "id": "missing-volume-grace-period-is-not-halved",
+      "source_file": "atc/db/volume_repository.go",
+      "old": "fmt.Sprintf(\"%.0f seconds\", gracePeriod.Seconds()), VolumeStateCreated, VolumeStateFailed)",
+      "new": "fmt.Sprintf(\"%.0f seconds\", gracePeriod.Seconds()/2), VolumeStateCreated, VolumeStateFailed)",
+      "tests": ["VolumeRepository RemoveMissingVolumes when there are multiple volumes with varying missing since times when no created/failed volumes have expired affects no volumes"],
+      "scenarios": ["Volume repository profile <profile> has its exact result (row 20)"],
+      "failure_contains": "volume repository observation"
+    },
+    {
+      "id": "missing-volume-removal-includes-failed-state",
+      "source_file": "atc/db/volume_repository.go",
+      "old": "VolumeStateCreated, VolumeStateFailed)",
+      "new": "VolumeStateCreated, VolumeStateCreated)",
+      "tests": [
+        "VolumeRepository RemoveMissingVolumes when there are multiple volumes with varying missing since times when some created/failed volumes have expired affects some volumes",
+        "VolumeRepository RemoveMissingVolumes when there are multiple volumes with varying missing since times when some created/failed volumes have expired affects the right volumes"
+      ],
+      "scenarios": [
+        "Volume repository profile <profile> has its exact result (row 21)",
+        "Volume repository profile <profile> has its exact result (row 22)"
+      ],
+      "failure_contains": "volume repository observation"
+    },
+    {
+      "id": "missing-volume-removal-recurses-through-children",
+      "source_file": "atc/db/volume_repository.go",
+      "old": "\t\tSELECT v.id FROM missing m, volumes v WHERE v.parent_id = m.id",
+      "new": "\t\tSELECT v.id FROM missing m, volumes v WHERE v.parent_id = m.id + 1",
+      "tests": [
+        "VolumeRepository RemoveMissingVolumes when there is a missing parent volume affects some volumes",
+        "VolumeRepository RemoveMissingVolumes when there is a missing parent volume removes the child and missing parent volume"
+      ],
+      "scenarios": [
+        "Volume repository profile <profile> has its exact result (row 23)",
+        "Volume repository profile <profile> has its exact result (row 24)"
+      ],
+      "failure_contains": "volumes_parent_id_fkey"
+    },
+    {
+      "id": "creating-volumes-are-not-marked-missing",
+      "source_file": "atc/db/volume_repository.go",
+      "old": "\t\t\tsq.NotEq{\"state\": VolumeStateCreating},",
+      "new": "\t\t\tsq.NotEq{\"state\": VolumeStateFailed},",
+      "tests": ["VolumeRepository UpdateVolumesMissingSince when the reported handles is a subset having the volumes in the creating state in the db does not mark as missing"],
+      "scenarios": ["Volume repository profile <profile> has its exact result (row 25)"],
+      "failure_contains": "volume repository observation"
+    },
+    {
+      "id": "reported-handles-are-subtracted-before-marking-missing",
+      "source_file": "atc/db/volume_repository.go",
+      "old": "\thandles := diff(dbHandles, reportedHandles)",
+      "new": "\thandles := dbHandles",
+      "tests": [
+        "VolumeRepository UpdateVolumesMissingSince when the reported handles is a subset should mark volumes not in the subset and not already marked as missing",
+        "VolumeRepository UpdateVolumesMissingSince when the reported handles is the full set should not update",
+        "VolumeRepository UpdateVolumesMissingSince when the reported handles includes a volume marked as missing should mark the previously missing volume as not missing"
+      ],
+      "scenarios": [
+        "Volume repository profile <profile> has its exact result (row 26)",
+        "Volume repository profile <profile> has its exact result (row 27)",
+        "Volume repository profile <profile> has its exact result (row 28)"
+      ],
+      "failure_contains": "volume repository observation"
+    },
+    {
+      "id": "unknown-volume-diff-uses-worker-report-as-left-side",
+      "source_file": "atc/db/volume_repository.go",
+      "old": "\tunknownHandles := diff(reportedHandles, dbHandles)",
+      "new": "\tunknownHandles := diff(dbHandles, reportedHandles)",
+      "tests": [
+        "VolumeRepository DestroyUnknownVolumes when there are volumes on the worker that are not in the db adds new destroying volumes to the database",
+        "VolumeRepository DestroyUnknownVolumes when there are volumes on the worker that are not in the db does not affect volumes in any other state"
+      ],
+      "scenarios": [
+        "Volume repository profile <profile> has its exact result (row 29)",
+        "Volume repository profile <profile> has its exact result (row 30)"
+      ],
+      "failure_contains": "volumes_worker_name_handle_key"
+    },
+    {
+      "id": "unknown-volume-empty-set-returns-before-insert",
+      "source_file": "atc/db/volume_repository.go",
+      "old": "\tif len(unknownHandles) == 0 {\n\t\treturn 0, nil\n\t}\n",
+      "new": "",
+      "tests": ["VolumeRepository DestroyUnknownVolumes when there are no unknown volumes on the worker should not try to destroy anything"],
+      "scenarios": ["Volume repository profile <profile> has its exact result (row 31)"],
+      "failure_contains": "insert statements must have at least one set of values"
+    }
+  ]
+}

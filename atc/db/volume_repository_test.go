@@ -1,7 +1,6 @@
 package db_test
 
 import (
-	"database/sql"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
@@ -55,30 +54,6 @@ var _ = Describe("VolumeRepository", func() {
 			team2handles []string
 		)
 
-		It("returns task cache volumes", func() {
-			taskCache, err := taskCacheFactory.FindOrCreate(defaultJob.ID(), "some-step", "some-path")
-			Expect(err).NotTo(HaveOccurred())
-
-			usedWorkerTaskCache, err := workerTaskCacheFactory.FindOrCreate(db.WorkerTaskCache{
-				TaskCache:  taskCache,
-				WorkerName: defaultWorker.Name(),
-			})
-			Expect(err).NotTo(HaveOccurred())
-
-			creatingVolume, err := volumeRepository.CreateTaskCacheVolume(defaultTeam.ID(), usedWorkerTaskCache)
-			Expect(err).NotTo(HaveOccurred())
-
-			createdVolume, err := creatingVolume.Created()
-			Expect(err).NotTo(HaveOccurred())
-
-			volumes, err := volumeRepository.GetTeamVolumes(defaultTeam.ID())
-			Expect(err).NotTo(HaveOccurred())
-
-			Expect(volumes).To(HaveLen(1))
-			Expect(volumes[0].Handle()).To(Equal(createdVolume.Handle()))
-			Expect(volumes[0].Type()).To(Equal(db.VolumeTypeTaskCache))
-		})
-
 		Context("with container volumes", func() {
 			JustBeforeEach(func() {
 				creatingContainer, err := defaultWorker.CreateContainer(db.NewBuildStepContainerOwner(build.ID(), "some-plan", defaultTeam.ID()), db.ContainerMetadata{
@@ -112,24 +87,6 @@ var _ = Describe("VolumeRepository", func() {
 				team2handles = append(team2handles, createdVolume3.Handle())
 			})
 
-			It("returns only the matching defaultTeam's volumes", func() {
-				createdVolumes, err := volumeRepository.GetTeamVolumes(defaultTeam.ID())
-				Expect(err).NotTo(HaveOccurred())
-				createdHandles := []string{}
-				for _, vol := range createdVolumes {
-					createdHandles = append(createdHandles, vol.Handle())
-				}
-				Expect(createdHandles).To(Equal(team1handles))
-
-				createdVolumes2, err := volumeRepository.GetTeamVolumes(team2.ID())
-				Expect(err).NotTo(HaveOccurred())
-				createdHandles2 := []string{}
-				for _, vol := range createdVolumes2 {
-					createdHandles2 = append(createdHandles2, vol.Handle())
-				}
-				Expect(createdHandles2).To(Equal(team2handles))
-			})
-
 			Context("when worker has expired", func() {
 				BeforeEach(func() {
 					var err error
@@ -137,23 +94,6 @@ var _ = Describe("VolumeRepository", func() {
 					Expect(err).NotTo(HaveOccurred())
 				})
 
-				It("returns volumes", func() {
-					createdVolumes, err := volumeRepository.GetTeamVolumes(defaultTeam.ID())
-					Expect(err).NotTo(HaveOccurred())
-					createdHandles := []string{}
-					for _, vol := range createdVolumes {
-						createdHandles = append(createdHandles, vol.Handle())
-					}
-					Expect(createdHandles).To(Equal(team1handles))
-
-					createdVolumes2, err := volumeRepository.GetTeamVolumes(team2.ID())
-					Expect(err).NotTo(HaveOccurred())
-					createdHandles2 := []string{}
-					for _, vol := range createdVolumes2 {
-						createdHandles2 = append(createdHandles2, vol.Handle())
-					}
-					Expect(createdHandles2).To(Equal(team2handles))
-				})
 			})
 		})
 	})
@@ -162,7 +102,6 @@ var _ = Describe("VolumeRepository", func() {
 		var (
 			expectedCreatedHandles      []string
 			expectedDestroyingHandles   []string
-			certsVolumeHandle           string
 			childVolume, createdVolume2 db.CreatedVolume
 		)
 
@@ -257,7 +196,7 @@ var _ = Describe("VolumeRepository", func() {
 			certsVolume, err := volumeRepository.CreateResourceCertsVolume(defaultWorker.Name(), workerResourceCerts)
 			Expect(err).NotTo(HaveOccurred())
 
-			certsVolumeHandle = certsVolume.Handle()
+			_ = certsVolume.Handle()
 
 			deleted, err := build.Delete()
 			Expect(err).NotTo(HaveOccurred())
@@ -279,30 +218,6 @@ var _ = Describe("VolumeRepository", func() {
 			Expect(destroyed).To(BeTrue())
 		})
 
-		It("returns orphaned volumes", func() {
-			createdVolumes, err := volumeRepository.GetOrphanedVolumes()
-			Expect(err).NotTo(HaveOccurred())
-			createdHandles := []string{}
-
-			for _, vol := range createdVolumes {
-				createdHandles = append(createdHandles, vol.Handle())
-			}
-			Expect(createdHandles).To(ConsistOf(expectedCreatedHandles))
-			Expect(createdHandles).ToNot(ContainElement(certsVolumeHandle))
-		})
-
-		It("does not return volume with a child", func() {
-			createdVolumes, err := volumeRepository.GetOrphanedVolumes()
-			Expect(err).NotTo(HaveOccurred())
-			createdHandles := []string{}
-
-			for _, vol := range createdVolumes {
-				createdHandles = append(createdHandles, vol.Handle())
-			}
-			Expect(createdHandles).ToNot(ContainElement(createdVolume2.Handle()))
-			Expect(createdHandles).To(ContainElement(childVolume.Handle()))
-		})
-
 	})
 
 	Describe("DestroyFailedVolumes", func() {
@@ -319,11 +234,6 @@ var _ = Describe("VolumeRepository", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("returns length of failed volumes", func() {
-			failedVolumes, err := volumeRepository.DestroyFailedVolumes()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(failedVolumes).To(Equal(1))
-		})
 	})
 
 	Describe("GetDestroyingVolumes", func() {
@@ -352,11 +262,6 @@ var _ = Describe("VolumeRepository", func() {
 				expectedDestroyingHandles = append(expectedDestroyingHandles, destroyingVol.Handle())
 			})
 
-			It("returns destroying volumes", func() {
-				destroyingVolumes, err := volumeRepository.GetDestroyingVolumes(defaultWorker.Name())
-				Expect(err).NotTo(HaveOccurred())
-				Expect(destroyingVolumes).To(Equal(expectedDestroyingHandles))
-			})
 			Context("when worker doesn't have detroying volume", func() {
 				BeforeEach(func() {
 					deleted, err := destroyingVol.Destroy()
@@ -396,25 +301,9 @@ var _ = Describe("VolumeRepository", func() {
 	})
 
 	Describe("CreateVolume", func() {
-		It("creates a CreatingVolume of the given type with a teamID", func() {
-			volume, err := volumeRepository.CreateVolume(defaultTeam.ID(), defaultWorker.Name(), db.VolumeTypeArtifact)
-			Expect(err).NotTo(HaveOccurred())
-			var teamID int
-			var workerName string
-			err = psql.Select("team_id, worker_name").From("volumes").
-				Where(sq.Eq{"handle": volume.Handle()}).RunWith(dbConn).QueryRow().Scan(&teamID, &workerName)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(teamID).To(Equal(defaultTeam.ID()))
-			Expect(workerName).To(Equal(defaultWorker.Name()))
-		})
 	})
 
 	Describe("CreateVolumeWithHandle", func() {
-		It("creates a CreatingVolume with a fixed handle", func() {
-			volume, err := volumeRepository.CreateVolumeWithHandle("my-handle", defaultTeam.ID(), defaultWorker.Name(), db.VolumeTypeArtifact)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(volume.Handle()).To(Equal("my-handle"))
-		})
 	})
 
 	Describe("FindBaseResourceTypeVolume", func() {
@@ -429,41 +318,23 @@ var _ = Describe("VolumeRepository", func() {
 		})
 
 		Context("when there is a created volume for base resource type", func() {
-			var existingVolume db.CreatedVolume
-
 			BeforeEach(func() {
 				var err error
 				volume, err := volumeRepository.CreateBaseResourceTypeVolume(usedWorkerBaseResourceType)
 				Expect(err).NotTo(HaveOccurred())
-				existingVolume, err = volume.Created()
+				_, err = volume.Created()
 				Expect(err).NotTo(HaveOccurred())
 			})
 
-			It("returns created volume", func() {
-				creatingVolume, createdVolume, err := volumeRepository.FindBaseResourceTypeVolume(usedWorkerBaseResourceType)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(creatingVolume).To(BeNil())
-				Expect(createdVolume).ToNot(BeNil())
-				Expect(createdVolume.Handle()).To(Equal(existingVolume.Handle()))
-			})
 		})
 
 		Context("when there is a creating volume for base resource type", func() {
-			var existingVolume db.CreatingVolume
-
 			BeforeEach(func() {
 				var err error
-				existingVolume, err = volumeRepository.CreateBaseResourceTypeVolume(usedWorkerBaseResourceType)
+				_, err = volumeRepository.CreateBaseResourceTypeVolume(usedWorkerBaseResourceType)
 				Expect(err).NotTo(HaveOccurred())
 			})
 
-			It("returns creating volume", func() {
-				creatingVolume, createdVolume, err := volumeRepository.FindBaseResourceTypeVolume(usedWorkerBaseResourceType)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(creatingVolume).ToNot(BeNil())
-				Expect(creatingVolume.Handle()).To(Equal(existingVolume.Handle()))
-				Expect(createdVolume).To(BeNil())
-			})
 		})
 	})
 
@@ -508,22 +379,15 @@ var _ = Describe("VolumeRepository", func() {
 				Expect(err).NotTo(HaveOccurred())
 			})
 
-			It("returns created volume", func() {
-				createdVolume, found, err := volumeRepository.FindResourceCacheVolume(defaultWorker.Name(), usedResourceCache, time.Now())
-				Expect(err).NotTo(HaveOccurred())
-				Expect(createdVolume.Handle()).To(Equal(existingVolume.Handle()))
-				Expect(found).To(BeTrue())
-			})
 		})
 	})
 
 	Describe("RemoveDestroyingVolumes", func() {
 		var failedErr error
-		var numDeleted int
 		var handles []string
 
 		JustBeforeEach(func() {
-			numDeleted, failedErr = volumeRepository.RemoveDestroyingVolumes(defaultWorker.Name(), handles)
+			_, failedErr = volumeRepository.RemoveDestroyingVolumes(defaultWorker.Name(), handles)
 		})
 
 		Context("when there are volumes to destroy", func() {
@@ -539,16 +403,6 @@ var _ = Describe("VolumeRepository", func() {
 
 					Expect(err).ToNot(HaveOccurred())
 					Expect(result.RowsAffected()).To(Equal(int64(1)))
-				})
-				It("should destroy", func() {
-					result, err := psql.Select("*").From("volumes").
-						Where(sq.Eq{"handle": "123-456-abc-def"}).RunWith(dbConn).Exec()
-
-					Expect(err).ToNot(HaveOccurred())
-					Expect(result.RowsAffected()).To(Equal(int64(0)))
-				})
-				It("returns the correct number of rows removed", func() {
-					Expect(numDeleted).To(Equal(1))
 				})
 				It("does not return an error", func() {
 					Expect(failedErr).ToNot(HaveOccurred())
@@ -567,16 +421,6 @@ var _ = Describe("VolumeRepository", func() {
 					Expect(err).ToNot(HaveOccurred())
 					Expect(result.RowsAffected()).To(Equal(int64(1)))
 				})
-				It("should destroy", func() {
-					result, err := psql.Select("*").From("volumes").
-						Where(sq.Eq{"handle": "123-456-abc-def"}).RunWith(dbConn).Exec()
-
-					Expect(err).ToNot(HaveOccurred())
-					Expect(result.RowsAffected()).To(Equal(int64(0)))
-				})
-				It("returns the correct number of rows removed", func() {
-					Expect(numDeleted).To(Equal(1))
-				})
 				It("does not return an error", func() {
 					Expect(failedErr).ToNot(HaveOccurred())
 				})
@@ -593,16 +437,6 @@ var _ = Describe("VolumeRepository", func() {
 
 					Expect(err).ToNot(HaveOccurred())
 					Expect(result.RowsAffected()).To(Equal(int64(1)))
-				})
-				It("should not destroy", func() {
-					result, err := psql.Select("*").From("volumes").
-						Where(sq.Eq{"handle": "123-456-abc-def"}).RunWith(dbConn).Exec()
-
-					Expect(err).ToNot(HaveOccurred())
-					Expect(result.RowsAffected()).To(Equal(int64(1)))
-				})
-				It("returns the correct number of rows removed", func() {
-					Expect(numDeleted).To(Equal(0))
 				})
 				It("does not return an error", func() {
 					Expect(failedErr).ToNot(HaveOccurred())
@@ -635,33 +469,21 @@ var _ = Describe("VolumeRepository", func() {
 				Expect(result.RowsAffected()).To(Equal(int64(1)))
 			})
 
-			It("doesn't destroy volumes that are in handles", func() {
-				result, err := psql.Select("*").From("volumes").
-					Where(sq.Eq{"handle": handles}).RunWith(dbConn).Exec()
-
-				Expect(err).ToNot(HaveOccurred())
-				Expect(result.RowsAffected()).To(Equal(int64(2)))
-			})
-
 			It("does not return an error", func() {
 				Expect(failedErr).ToNot(HaveOccurred())
-			})
-			It("returns the correct number of rows removed", func() {
-				Expect(numDeleted).To(Equal(0))
 			})
 		})
 	})
 
 	Describe("RemoveMissingVolumes", func() {
 		var (
-			today        time.Time
-			gracePeriod  time.Duration
-			rowsAffected int
-			err          error
+			today       time.Time
+			gracePeriod time.Duration
+			err         error
 		)
 
 		JustBeforeEach(func() {
-			rowsAffected, err = volumeRepository.RemoveMissingVolumes(gracePeriod)
+			_, err = volumeRepository.RemoveMissingVolumes(gracePeriod)
 		})
 
 		Context("when there are multiple volumes with varying missing since times", func() {
@@ -705,10 +527,6 @@ var _ = Describe("VolumeRepository", func() {
 					gracePeriod = 7 * time.Minute
 				})
 
-				It("affects no volumes", func() {
-					Expect(err).ToNot(HaveOccurred())
-					Expect(rowsAffected).To(Equal(0))
-				})
 			})
 
 			Context("when some created/failed volumes have expired", func() {
@@ -716,32 +534,6 @@ var _ = Describe("VolumeRepository", func() {
 					gracePeriod = 3 * time.Minute
 				})
 
-				It("affects some volumes", func() {
-					Expect(err).ToNot(HaveOccurred())
-					Expect(rowsAffected).To(Equal(1))
-				})
-
-				It("affects the right volumes", func() {
-					result, err := psql.Select("*").From("volumes").
-						RunWith(dbConn).Exec()
-					Expect(err).ToNot(HaveOccurred())
-					Expect(result.RowsAffected()).To(Equal(int64(3)))
-
-					result, err = psql.Select("*").From("volumes").
-						Where(sq.Eq{"handle": "some-handle-1"}).RunWith(dbConn).Exec()
-					Expect(err).ToNot(HaveOccurred())
-					Expect(result.RowsAffected()).To(Equal(int64(1)))
-
-					result, err = psql.Select("*").From("volumes").
-						Where(sq.Eq{"handle": "some-handle-2"}).RunWith(dbConn).Exec()
-					Expect(err).ToNot(HaveOccurred())
-					Expect(result.RowsAffected()).To(Equal(int64(1)))
-
-					result, err = psql.Select("*").From("volumes").
-						Where(sq.Eq{"handle": "some-handle-4"}).RunWith(dbConn).Exec()
-					Expect(err).ToNot(HaveOccurred())
-					Expect(result.RowsAffected()).To(Equal(int64(1)))
-				})
 			})
 		})
 
@@ -776,36 +568,14 @@ var _ = Describe("VolumeRepository", func() {
 				gracePeriod = 3 * time.Minute
 			})
 
-			It("affects some volumes", func() {
-				Expect(err).ToNot(HaveOccurred())
-				Expect(rowsAffected).To(Equal(2))
-			})
-
-			It("removes the child and missing parent volume", func() {
-				var volumeCount int
-				err = psql.Select("COUNT(id)").From("volumes").RunWith(dbConn).QueryRow().Scan(&volumeCount)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(volumeCount).To(Equal(1))
-
-				result, err := psql.Select("*").From("volumes").
-					Where(sq.Eq{"handle": "parent-handle"}).RunWith(dbConn).Exec()
-				Expect(err).ToNot(HaveOccurred())
-				Expect(result.RowsAffected()).To(Equal(int64(0)))
-
-				result, err = psql.Select("*").From("volumes").
-					Where(sq.Eq{"handle": "child-handle"}).RunWith(dbConn).Exec()
-				Expect(err).ToNot(HaveOccurred())
-				Expect(result.RowsAffected()).To(Equal(int64(0)))
-			})
 		})
 	})
 
 	Describe("UpdateVolumesMissingSince", func() {
 		var (
-			today        time.Time
-			err          error
-			handles      []string
-			missingSince sql.NullTime
+			today   time.Time
+			err     error
+			handles []string
 		)
 
 		BeforeEach(func() {
@@ -862,30 +632,6 @@ var _ = Describe("VolumeRepository", func() {
 					Expect(result.RowsAffected()).To(Equal(int64(1)))
 				})
 
-				It("does not mark as missing", func() {
-					err = psql.Select("missing_since").From("volumes").
-						Where(sq.Eq{"handle": "some-handle3"}).RunWith(dbConn).QueryRow().Scan(&missingSince)
-					Expect(err).ToNot(HaveOccurred())
-					Expect(missingSince.Valid).To(BeFalse())
-				})
-			})
-
-			It("should mark volumes not in the subset and not already marked as missing", func() {
-				err = psql.Select("missing_since").From("volumes").
-					Where(sq.Eq{"handle": "some-handle1"}).RunWith(dbConn).QueryRow().Scan(&missingSince)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(missingSince.Valid).To(BeFalse())
-
-				err = psql.Select("missing_since").From("volumes").
-					Where(sq.Eq{"handle": "some-handle2"}).RunWith(dbConn).QueryRow().Scan(&missingSince)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(missingSince.Valid).To(BeTrue())
-
-				err = psql.Select("missing_since").From("volumes").
-					Where(sq.Eq{"handle": "some-handle3"}).RunWith(dbConn).QueryRow().Scan(&missingSince)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(missingSince.Valid).To(BeTrue())
-				Expect(missingSince.Time.Unix()).To(Equal(today.Unix()))
 			})
 
 			It("does not return an error", func() {
@@ -898,18 +644,6 @@ var _ = Describe("VolumeRepository", func() {
 				handles = []string{"some-handle1", "some-handle2"}
 			})
 
-			It("should not update", func() {
-				err = psql.Select("missing_since").From("volumes").
-					Where(sq.Eq{"handle": "some-handle1"}).RunWith(dbConn).QueryRow().Scan(&missingSince)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(missingSince.Valid).To(BeFalse())
-
-				err = psql.Select("missing_since").From("volumes").
-					Where(sq.Eq{"handle": "some-handle2"}).RunWith(dbConn).QueryRow().Scan(&missingSince)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(missingSince.Valid).To(BeFalse())
-			})
-
 			It("does not return an error", func() {
 				Expect(err).ToNot(HaveOccurred())
 			})
@@ -918,23 +652,6 @@ var _ = Describe("VolumeRepository", func() {
 		Context("when the reported handles includes a volume marked as missing", func() {
 			BeforeEach(func() {
 				handles = []string{"some-handle1", "some-handle2", "some-handle3"}
-			})
-
-			It("should mark the previously missing volume as not missing", func() {
-				err = psql.Select("missing_since").From("volumes").
-					Where(sq.Eq{"handle": "some-handle1"}).RunWith(dbConn).QueryRow().Scan(&missingSince)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(missingSince.Valid).To(BeFalse())
-
-				err = psql.Select("missing_since").From("volumes").
-					Where(sq.Eq{"handle": "some-handle2"}).RunWith(dbConn).QueryRow().Scan(&missingSince)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(missingSince.Valid).To(BeFalse())
-
-				err = psql.Select("missing_since").From("volumes").
-					Where(sq.Eq{"handle": "some-handle3"}).RunWith(dbConn).QueryRow().Scan(&missingSince)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(missingSince.Valid).To(BeFalse())
 			})
 
 			It("does not return an error", func() {
@@ -947,7 +664,6 @@ var _ = Describe("VolumeRepository", func() {
 		var (
 			err                   error
 			workerReportedHandles []string
-			num                   int
 		)
 
 		BeforeEach(func() {
@@ -971,44 +687,15 @@ var _ = Describe("VolumeRepository", func() {
 		})
 
 		JustBeforeEach(func() {
-			num, err = volumeRepository.DestroyUnknownVolumes(defaultWorker.Name(), workerReportedHandles)
+			_, err = volumeRepository.DestroyUnknownVolumes(defaultWorker.Name(), workerReportedHandles)
 			Expect(err).ToNot(HaveOccurred())
 		})
 
 		Context("when there are volumes on the worker that are not in the db", func() {
-			var destroyingVolumeHandles []string
 			BeforeEach(func() {
 				workerReportedHandles = []string{"some-handle3", "some-handle4"}
-				destroyingVolumeHandles = append(workerReportedHandles, "some-handle1")
 			})
 
-			It("adds new destroying volumes to the database", func() {
-				result, err := psql.Select("handle").
-					From("volumes").
-					Where(sq.Eq{"state": db.VolumeStateDestroying}).
-					RunWith(dbConn).Query()
-
-				Expect(err).ToNot(HaveOccurred())
-
-				var handle string
-				for result.Next() {
-					err = result.Scan(&handle)
-					Expect(err).ToNot(HaveOccurred())
-					Expect(handle).Should(BeElementOf(destroyingVolumeHandles))
-				}
-				Expect(num).To(Equal(2))
-			})
-
-			It("does not affect volumes in any other state", func() {
-				result, err := psql.Select("*").
-					From("volumes").
-					Where(sq.Eq{"state": db.VolumeStateCreated}).
-					RunWith(dbConn).Exec()
-
-				Expect(err).ToNot(HaveOccurred())
-				Expect(result.RowsAffected()).To(Equal(int64(1)))
-				Expect(num).To(Equal(2))
-			})
 		})
 
 		Context("when there are no unknown volumes on the worker", func() {
@@ -1016,16 +703,6 @@ var _ = Describe("VolumeRepository", func() {
 				workerReportedHandles = []string{"some-handle1", "some-handle2"}
 			})
 
-			It("should not try to destroy anything", func() {
-				Expect(num).To(Equal(0))
-				result, err := psql.Select("handle, state").
-					From("volumes").
-					Where(sq.Eq{"state": db.VolumeStateDestroying}).
-					RunWith(dbConn).Exec()
-
-				Expect(err).ToNot(HaveOccurred())
-				Expect(result.RowsAffected()).To(Equal(int64(1)))
-			})
 		})
 	})
 })

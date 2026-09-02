@@ -1,0 +1,21 @@
+{
+  "name": "db-volume-repository-handle-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/volume_repository_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-volume-repository-handle-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_volume_repository_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "fixed-volume-handle-is-retained",
+      "source_file": "atc/db/volume_repository.go",
+      "old": "func (repository *volumeRepository) CreateVolumeWithHandle(handle string, teamID int, workerName string, volumeType VolumeType) (CreatingVolume, error) {\n\tvolume, err := repository.createVolumeWithHandle(\n\t\thandle,",
+      "new": "func (repository *volumeRepository) CreateVolumeWithHandle(handle string, teamID int, workerName string, volumeType VolumeType) (CreatingVolume, error) {\n\tvolume, err := repository.createVolumeWithHandle(\n\t\thandle + \"-mutated\",",
+      "tests": ["VolumeRepository CreateVolumeWithHandle creates a CreatingVolume with a fixed handle"],
+      "scenarios": ["A fixed volume handle is retained"],
+      "failure_contains": "volume repository observation"
+    }
+  ]
+}

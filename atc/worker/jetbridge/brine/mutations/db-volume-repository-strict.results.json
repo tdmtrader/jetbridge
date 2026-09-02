@@ -1,0 +1,208 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-volume-repository-strict.json",
+  "git_head": "d3c1221cec26885efdc55b1dab2998f7fa327f61",
+  "completed_at": "2026-09-02T15:31:39Z",
+  "source_tests": 31,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/volume_repository.go": "f4648ec5912fa40137011e7dbb52a63aa498b9145bba440e898c877aff0f10b2",
+    "atc/db/volume_repository_test.go": "dfefb3c90fcf5310aaa752fbfcba12fe5919fc6f9af9ad8c29fbf99feb1b7069",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/db-volume-repository-strict.feature": "22524c5c6b449ad7ff5949c2eb62433d0f320a2e9a053ddf22e0ed9882cc4731",
+    "atc/worker/jetbridge/brine/mutations/db-volume-repository-strict.json": "ae1991819692d93d58cea17b29e9d6c4251def26263d9511c401980434abe312",
+    "atc/worker/jetbridge/brine/steps/db_volume_repository_strict.go": "a9ba82b2d1febc9f59638a2d4402dd6072a64ae85b3b63e6e739df7a159483a8",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8"
+  },
+  "mutation_cases": [
+    {
+      "id": "team-volume-query-uses-requested-team",
+      "mutation_sha256": "802c0c25377fe62f35d9dc2d3a6fd2f9226cd5c2d714133d24ef1c106841162a",
+      "failed_source_tests": [
+        "VolumeRepository GetTeamVolumes returns task cache volumes",
+        "VolumeRepository GetTeamVolumes with container volumes returns only the matching defaultTeam's volumes",
+        "VolumeRepository GetTeamVolumes with container volumes when worker has expired returns volumes"
+      ],
+      "failed_brine_scenarios": [
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 1)",
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 2)",
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 3)"
+      ]
+    },
+    {
+      "id": "orphan-query-excludes-parent-with-child",
+      "mutation_sha256": "4611d4b6226849e4a4763275d29fca3da3587609ebc46ee30bade84232a15b0d",
+      "failed_source_tests": [
+        "VolumeRepository GetOrphanedVolumes does not return volume with a child",
+        "VolumeRepository GetOrphanedVolumes returns orphaned volumes"
+      ],
+      "failed_brine_scenarios": [
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 4)",
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 5)"
+      ]
+    },
+    {
+      "id": "failed-volume-destruction-selects-failed-state",
+      "mutation_sha256": "fc7ae629c4450c003030538ff7c271381ce85cbb4acb7a11d8463a58e1049ee0",
+      "failed_source_tests": [
+        "VolumeRepository DestroyFailedVolumes returns length of failed volumes"
+      ],
+      "failed_brine_scenarios": [
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 6)"
+      ]
+    },
+    {
+      "id": "destroying-volume-query-uses-worker",
+      "mutation_sha256": "c4148101fa257ae7913ed8eb0a1376dda485f31220d41b16ca8d6fe5bb10ae92",
+      "failed_source_tests": [
+        "VolumeRepository GetDestroyingVolumes when worker has detroying volumes returns destroying volumes"
+      ],
+      "failed_brine_scenarios": [
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 7)"
+      ]
+    },
+    {
+      "id": "generic-volume-retains-team-scope",
+      "mutation_sha256": "0954163103a04d5ed23276cbd2ca28779f16b7a2db80b5f405588a38859ee7bf",
+      "failed_source_tests": [
+        "VolumeRepository CreateVolume creates a CreatingVolume of the given type with a teamID"
+      ],
+      "failed_brine_scenarios": [
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 8)"
+      ]
+    },
+    {
+      "id": "base-resource-type-find-uses-association",
+      "mutation_sha256": "51a18a10dfe5677de9840bb936e48d09dc965e5daeb6347e0522e67554f748f2",
+      "failed_source_tests": [
+        "VolumeRepository FindBaseResourceTypeVolume when there is a created volume for base resource type returns created volume",
+        "VolumeRepository FindBaseResourceTypeVolume when there is a creating volume for base resource type returns creating volume"
+      ],
+      "failed_brine_scenarios": [
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 10)",
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 9)"
+      ]
+    },
+    {
+      "id": "resource-cache-find-uses-worker-cache-association",
+      "mutation_sha256": "93c5f418ddc8f082355dddf221ee7bb91ec04a7f292f9e9a3d7dfff22b083ff3",
+      "failed_source_tests": [
+        "VolumeRepository FindResourceCacheVolume when there is a created volume for resource cache returns created volume"
+      ],
+      "failed_brine_scenarios": [
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 11)"
+      ]
+    },
+    {
+      "id": "remove-destroying-protects-reported-handles",
+      "mutation_sha256": "e015710ac28852e8b62dcb8c87805bb187f338e3b2214e86977f56223046684a",
+      "failed_source_tests": [
+        "VolumeRepository RemoveDestroyingVolumes when there are no volumes to destroy doesn't destroy volumes that are in handles",
+        "VolumeRepository RemoveDestroyingVolumes when there are no volumes to destroy returns the correct number of rows removed",
+        "VolumeRepository RemoveDestroyingVolumes when there are volumes to destroy when handles are empty list returns the correct number of rows removed",
+        "VolumeRepository RemoveDestroyingVolumes when there are volumes to destroy when handles are empty list should destroy",
+        "VolumeRepository RemoveDestroyingVolumes when there are volumes to destroy when volume is in destroying state returns the correct number of rows removed",
+        "VolumeRepository RemoveDestroyingVolumes when there are volumes to destroy when volume is in destroying state should destroy"
+      ],
+      "failed_brine_scenarios": [
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 12)",
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 13)",
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 14)",
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 15)",
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 18)",
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 19)"
+      ]
+    },
+    {
+      "id": "remove-destroying-requires-destroying-state",
+      "mutation_sha256": "d03d4d8233ff87a10a33a50d06faf54c481e71983bc1c45190aeb2a2af8ad71e",
+      "failed_source_tests": [
+        "VolumeRepository RemoveDestroyingVolumes when there are volumes to destroy when volume is in create/creating state returns the correct number of rows removed",
+        "VolumeRepository RemoveDestroyingVolumes when there are volumes to destroy when volume is in create/creating state should not destroy"
+      ],
+      "failed_brine_scenarios": [
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 16)",
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 17)"
+      ]
+    },
+    {
+      "id": "missing-volume-grace-period-is-not-halved",
+      "mutation_sha256": "0e5da30a111cdb3247275a6bd50b12a3656991fa26db5328b10b6b5fb9db6baa",
+      "failed_source_tests": [
+        "VolumeRepository RemoveMissingVolumes when there are multiple volumes with varying missing since times when no created/failed volumes have expired affects no volumes"
+      ],
+      "failed_brine_scenarios": [
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 20)"
+      ]
+    },
+    {
+      "id": "missing-volume-removal-includes-failed-state",
+      "mutation_sha256": "ed8db10bb48fc4fdd6cb5540d657ddb3504b321c36bb9f6fed917a8ce3836b8e",
+      "failed_source_tests": [
+        "VolumeRepository RemoveMissingVolumes when there are multiple volumes with varying missing since times when some created/failed volumes have expired affects some volumes",
+        "VolumeRepository RemoveMissingVolumes when there are multiple volumes with varying missing since times when some created/failed volumes have expired affects the right volumes"
+      ],
+      "failed_brine_scenarios": [
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 21)",
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 22)"
+      ]
+    },
+    {
+      "id": "missing-volume-removal-recurses-through-children",
+      "mutation_sha256": "527f4d496dc1af7ac7935455c6f98aaa6efae2c49e68dd9e533c2e0dd0968a8d",
+      "failed_source_tests": [
+        "VolumeRepository RemoveMissingVolumes when there is a missing parent volume affects some volumes",
+        "VolumeRepository RemoveMissingVolumes when there is a missing parent volume removes the child and missing parent volume"
+      ],
+      "failed_brine_scenarios": [
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 23)",
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 24)"
+      ]
+    },
+    {
+      "id": "creating-volumes-are-not-marked-missing",
+      "mutation_sha256": "cb6978256713a0ef125342d781f6e2b7df263e6ff15cc59b0f9c9b540749db11",
+      "failed_source_tests": [
+        "VolumeRepository UpdateVolumesMissingSince when the reported handles is a subset having the volumes in the creating state in the db does not mark as missing"
+      ],
+      "failed_brine_scenarios": [
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 25)"
+      ]
+    },
+    {
+      "id": "reported-handles-are-subtracted-before-marking-missing",
+      "mutation_sha256": "094fa29885d353eb43e1fb50043af35479d11bb7045cf643341b906ab4eaa48c",
+      "failed_source_tests": [
+        "VolumeRepository UpdateVolumesMissingSince when the reported handles includes a volume marked as missing should mark the previously missing volume as not missing",
+        "VolumeRepository UpdateVolumesMissingSince when the reported handles is a subset should mark volumes not in the subset and not already marked as missing",
+        "VolumeRepository UpdateVolumesMissingSince when the reported handles is the full set should not update"
+      ],
+      "failed_brine_scenarios": [
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 26)",
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 27)",
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 28)"
+      ]
+    },
+    {
+      "id": "unknown-volume-diff-uses-worker-report-as-left-side",
+      "mutation_sha256": "936ddda9e2ed9f72bc21db6b82921182ddd3b7783f121402c578224c2d31915e",
+      "failed_source_tests": [
+        "VolumeRepository DestroyUnknownVolumes when there are volumes on the worker that are not in the db adds new destroying volumes to the database",
+        "VolumeRepository DestroyUnknownVolumes when there are volumes on the worker that are not in the db does not affect volumes in any other state"
+      ],
+      "failed_brine_scenarios": [
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 29)",
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 30)"
+      ]
+    },
+    {
+      "id": "unknown-volume-empty-set-returns-before-insert",
+      "mutation_sha256": "05b7b086be75071d2ffc5d015ff30d004dbc642843d122257e1d34d86f53a6e7",
+      "failed_source_tests": [
+        "VolumeRepository DestroyUnknownVolumes when there are no unknown volumes on the worker should not try to destroy anything"
+      ],
+      "failed_brine_scenarios": [
+        "Volume repository profile \u003cprofile\u003e has its exact result (row 31)"
+      ]
+    }
+  ]
+}
