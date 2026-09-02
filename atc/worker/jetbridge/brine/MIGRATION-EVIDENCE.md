@@ -22,19 +22,19 @@ scenario fail is also not evidence.
 
 | quantity | source leaf tests | percentage of 6,857 |
 |---|---:|---:|
-| **fully migrated**: paired failure evidence, no prohibited double, source removed | **1,538** | **22.43%** |
+| **fully migrated**: paired failure evidence, no prohibited double, source removed | **1,572** | **22.93%** |
 | strict paired evidence, but source still present | 0 | 0.00% |
 | **runs in Brine but not the full philosophy**: paired failure evidence, but uses a stub, test sink, injected-fault object, fake, or mock | **112** | **1.63%** |
 | of the preceding exception bucket whose source test was removed | 66 | 0.96% |
-| total source tests with paired per-test failure evidence | 1,650 | 24.06% |
-| former claimed tests with no admissible paired evidence | 409 | 5.96% |
-| Brine scenarios | 2,442 | execution count only |
+| total source tests with paired per-test failure evidence | 1,684 | 24.56% |
+| former claimed tests with no admissible paired evidence | 375 | 5.47% |
+| Brine scenarios | 2,476 | execution count only |
 
-The current two headline percentages are therefore **22.43% fully migrated**
+The current two headline percentages are therefore **22.93% fully migrated**
 and **1.63% validated but running outside the full philosophy**. The second is
 not another migration percentage: 46 of its 112 source tests still exist. If
 "migrated" is restricted to removed source tests in both buckets, the figures
-are 22.43% strict and 0.96% philosophy-exception.
+are 22.93% strict and 0.96% philosophy-exception.
 
 ## Admitted evidence ledger
 
@@ -97,6 +97,8 @@ are 22.43% strict and 0.96% philosophy-exception.
 | `api/containers_test.go` real-server list/get subset | 10 | 10 | 0 | 10 |
 | `db/resource_cache_lifecycle_test.go` production lifecycle subset | 8 | 8 | 0 | 8 |
 | `api/workers_test.go` real-server production subset | 15 | 15 | 0 | 15 |
+| `api/versions_test.go` remaining real-server production subset | 21 | 21 | 0 | 21 |
+| `fly/rc/targets_test.go` production filesystem subset | 13 | 13 | 0 | 13 |
 | `api/users_test.go` production users serialization/filter subset | 12 | 12 | 0 | 12 |
 | `api/cli_test.go` production CLI downloads | 12 | 12 | 0 | 12 |
 | `api/cc_test.go` production CC XML over real TCP/PostgreSQL | 14 | 14 | 0 | 14 |
@@ -119,7 +121,7 @@ are 22.43% strict and 0.96% philosophy-exception.
 | `scanner_test.go` | 14 | 0 | 14 | 14 |
 | durable-storage, volume-DaemonSet, and behavioral-permutation campaign | 44 | 0 | 44 | 44 |
 | daemonset-integration and daemon-client retained cases | 46 | 0 | 46 | 0 |
-| **total** | **1,650** | **1,538** | **112** | **1,604** |
+| **total** | **1,684** | **1,572** | **112** | **1,638** |
 
 ### Completed production-logger revalidation
 
