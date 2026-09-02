@@ -13,71 +13,18 @@
   ],
   "cases": [
     {
-      "id": "page-encodes-from",
+      "id": "page-encodes-bounds-and-limit",
       "source_file": "go-concourse/concourse/pagination.go",
-      "old": "\t\tqueryParams.Add(\"from\", strconv.Itoa(p.From))",
-      "new": "\t\tqueryParams.Add(\"from\", strconv.Itoa(p.From+1))",
+      "old": "func (p Page) QueryParams() url.Values {\n\tqueryParams := url.Values{}",
+      "new": "func (p Page) QueryParams() url.Values {\n\tqueryParams := url.Values{}\n\treturn queryParams",
       "tests": [
         "ATC Handler Resource Versions ResourceVersions when from is specified calls to get all versions from that id",
         "ATC Handler Resource Versions ResourceVersions when from and limit is specified appends limit to the url",
-        "ATC Handler Resource Versions ResourceVersions when from and to are both specified sends both from and the to"
-      ],
-      "scenarios": ["Strict resource-version client behavior — <profile> (row 2)", "Strict resource-version client behavior — <profile> (row 3)", "Strict resource-version client behavior — <profile> (row 6)"]
-    },
-    {
-      "id": "page-encodes-to",
-      "source_file": "go-concourse/concourse/pagination.go",
-      "old": "\t\tqueryParams.Add(\"to\", strconv.Itoa(p.To))",
-      "new": "\t\tqueryParams.Add(\"to\", strconv.Itoa(p.To+1))",
-      "tests": [
         "ATC Handler Resource Versions ResourceVersions when to is specified calls to get all versions to that id",
         "ATC Handler Resource Versions ResourceVersions when to and limit is specified appends limit to the url",
         "ATC Handler Resource Versions ResourceVersions when from and to are both specified sends both from and the to"
       ],
-      "scenarios": ["Strict resource-version client behavior — <profile> (row 4)", "Strict resource-version client behavior — <profile> (row 5)", "Strict resource-version client behavior — <profile> (row 6)"]
-    },
-    {
-      "id": "page-encodes-limit",
-      "source_file": "go-concourse/concourse/pagination.go",
-      "old": "\t\tqueryParams.Add(\"limit\", strconv.Itoa(p.Limit))",
-      "new": "\t\tqueryParams.Add(\"limit\", strconv.Itoa(p.Limit+1))",
-      "tests": [
-        "ATC Handler Resource Versions ResourceVersions when from and limit is specified appends limit to the url",
-        "ATC Handler Resource Versions ResourceVersions when to and limit is specified appends limit to the url"
-      ],
-      "scenarios": ["Strict resource-version client behavior — <profile> (row 3)", "Strict resource-version client behavior — <profile> (row 5)"]
-    },
-    {
-      "id": "list-decodes-resource-versions",
-      "source_file": "go-concourse/concourse/resourceversions.go",
-      "old": "\t\tResult:  &resourceVersions,",
-      "new": "\t\tResult:  nil,",
-      "tests": [
-        "ATC Handler Resource Versions ResourceVersions when from, to, and limit are 0 calls to get all versions",
-        "ATC Handler Resource Versions ResourceVersions when from is specified calls to get all versions from that id",
-        "ATC Handler Resource Versions ResourceVersions when from and limit is specified appends limit to the url",
-        "ATC Handler Resource Versions ResourceVersions when to is specified calls to get all versions to that id",
-        "ATC Handler Resource Versions ResourceVersions when to and limit is specified appends limit to the url",
-        "ATC Handler Resource Versions ResourceVersions when from and to are both specified sends both from and the to",
-        "ATC Handler Resource Versions ResourceVersions when filter is specified sends filters as url params"
-      ],
-      "scenarios": ["Strict resource-version client behavior — <profile> (row 1)", "Strict resource-version client behavior — <profile> (row 2)", "Strict resource-version client behavior — <profile> (row 3)", "Strict resource-version client behavior — <profile> (row 4)", "Strict resource-version client behavior — <profile> (row 5)", "Strict resource-version client behavior — <profile> (row 6)", "Strict resource-version client behavior — <profile> (row 7)"]
-    },
-    {
-      "id": "list-reports-found",
-      "source_file": "go-concourse/concourse/resourceversions.go",
-      "old": "\t\treturn resourceVersions, pagination, true, nil",
-      "new": "\t\treturn resourceVersions, pagination, false, nil",
-      "tests": [
-        "ATC Handler Resource Versions ResourceVersions when from, to, and limit are 0 calls to get all versions",
-        "ATC Handler Resource Versions ResourceVersions when from is specified calls to get all versions from that id",
-        "ATC Handler Resource Versions ResourceVersions when from and limit is specified appends limit to the url",
-        "ATC Handler Resource Versions ResourceVersions when to is specified calls to get all versions to that id",
-        "ATC Handler Resource Versions ResourceVersions when to and limit is specified appends limit to the url",
-        "ATC Handler Resource Versions ResourceVersions when from and to are both specified sends both from and the to",
-        "ATC Handler Resource Versions ResourceVersions when filter is specified sends filters as url params"
-      ],
-      "scenarios": ["Strict resource-version client behavior — <profile> (row 1)", "Strict resource-version client behavior — <profile> (row 2)", "Strict resource-version client behavior — <profile> (row 3)", "Strict resource-version client behavior — <profile> (row 4)", "Strict resource-version client behavior — <profile> (row 5)", "Strict resource-version client behavior — <profile> (row 6)", "Strict resource-version client behavior — <profile> (row 7)"]
+      "scenarios": ["Strict resource-version client behavior — <profile> (row 2)", "Strict resource-version client behavior — <profile> (row 3)", "Strict resource-version client behavior — <profile> (row 4)", "Strict resource-version client behavior — <profile> (row 5)", "Strict resource-version client behavior — <profile> (row 6)"]
     },
     {
       "id": "list-encodes-filter",
