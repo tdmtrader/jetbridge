@@ -1,0 +1,62 @@
+{
+  "name": "db-pipeline-factory-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/pipeline_factory_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-pipeline-factory-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_pipeline_factory_strict.go",
+    "atc/worker/jetbridge/brine/steps/registry.go",
+    "atc/worker/jetbridge/brine/steps/resources.go",
+    "atc/worker/jetbridge/brine/steps/task_command.go",
+    "atc/worker/jetbridge/brine/steps/envtest.go",
+    "atc/postgresrunner/postgresrunner.go",
+    "atc/postgresrunner/ginkgo.go",
+    "atc/postgresrunner/join_limit_conn.go"
+  ],
+  "cases": [
+    {
+      "id": "empty-team-input-does-not-grant-team-visibility",
+      "source_file": "atc/db/pipeline_factory.go",
+      "old": "func (f *pipelineFactory) VisiblePipelines(teamNames []string) ([]Pipeline, error) {\n\ttx, err := f.conn.Begin()",
+      "new": "func (f *pipelineFactory) VisiblePipelines(teamNames []string) ([]Pipeline, error) {\n\tif len(teamNames) == 0 || teamNames[0] == \"\" {\n\t\tteamNames = []string{\"some-team\"}\n\t}\n\ttx, err := f.conn.Begin()",
+      "tests": [
+        "Pipeline Factory VisiblePipelines returns all pipelines visible when empty team name provided",
+        "Pipeline Factory VisiblePipelines returns all pipelines visible when empty teams provided",
+        "Pipeline Factory VisiblePipelines returns all pipelines visible when nil teams provided"
+      ],
+      "scenarios": [
+        "Production pipeline factory behavior — <profile> (row 2)",
+        "Production pipeline factory behavior — <profile> (row 3)",
+        "Production pipeline factory behavior — <profile> (row 4)"
+      ]
+    },
+    {
+      "id": "visible-pipelines-use-secondary-order",
+      "source_file": "atc/db/pipeline_factory.go",
+      "old": "\t\tWhere(sq.Eq{\"t.name\": teamNames}).\n\t\tOrderBy(\"t.name ASC\", \"p.ordering ASC\", \"p.secondary_ordering ASC\").",
+      "new": "\t\tWhere(sq.Eq{\"t.name\": teamNames}).\n\t\tOrderBy(\"t.name ASC\", \"p.ordering ASC\", \"p.secondary_ordering DESC\").",
+      "tests": [
+        "Pipeline Factory VisiblePipelines returns all pipelines visible for the given teams",
+        "Pipeline Factory VisiblePipelines When instance pipeline ordered is change Should keep the right order"
+      ],
+      "scenarios": [
+        "Production pipeline factory behavior — <profile> (row 1)",
+        "Production pipeline factory behavior — <profile> (row 5)"
+      ]
+    },
+    {
+      "id": "all-pipelines-use-secondary-order",
+      "source_file": "atc/db/pipeline_factory.go",
+      "old": "func (f *pipelineFactory) AllPipelines() ([]Pipeline, error) {\n\trows, err := pipelinesQuery.\n\t\tOrderBy(\"t.name ASC\", \"p.ordering ASC\", \"p.secondary_ordering ASC\").",
+      "new": "func (f *pipelineFactory) AllPipelines() ([]Pipeline, error) {\n\trows, err := pipelinesQuery.\n\t\tOrderBy(\"t.name ASC\", \"p.ordering ASC\", \"p.secondary_ordering DESC\").",
+      "tests": [
+        "Pipeline Factory AllPipelines returns all pipelines ordered by team id -> ordering -> secondary_ordering",
+        "Pipeline Factory AllPipelines When instance pipeline ordered is change Should keep the right order"
+      ],
+      "scenarios": [
+        "Production pipeline factory behavior — <profile> (row 6)",
+        "Production pipeline factory behavior — <profile> (row 7)"
+      ]
+    }
+  ]
+}
