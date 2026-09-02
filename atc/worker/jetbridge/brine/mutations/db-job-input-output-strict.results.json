@@ -1,0 +1,67 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-job-input-output-strict.json",
+  "git_head": "c330324a5867ec967711652b485a8131411faefd",
+  "completed_at": "2026-09-02T14:15:37Z",
+  "source_tests": 9,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/job.go": "397afafef081c96aa2a2ee75d2f94788be0f3e4be8415c3f1e533c4cfd41ecda",
+    "atc/db/job_test.go": "ba9fc54c7a45019608639ba391c15b6d70f8bf3b4537e89b3888fcaa40dbee6d",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/db-job-input-output-strict.feature": "8aeeddb233c5eb603fb26507054a34cfa1f643637ea668575351671c73c626b0",
+    "atc/worker/jetbridge/brine/mutations/db-job-input-output-strict.json": "25ddca09cd3e1344563823af4423d0a619a77d0af122013d6c3ea6d470e94b11",
+    "atc/worker/jetbridge/brine/steps/assert.go": "eac0b7b4dc864f54ffb5aab471451e3b62da518e5a8b10ba26e742d83298861f",
+    "atc/worker/jetbridge/brine/steps/db_job_input_output_strict.go": "2b6ddbe9d5004cd801c429d06c3fbc8a6062802966bd6fa749ba0da02052e747",
+    "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
+    "atc/worker/jetbridge/brine/steps/registry.go": "852a2755ce379c380692b0366a7121389e62f4dbcaaa339e50d922140a51fc9c",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e"
+  },
+  "mutation_cases": [
+    {
+      "id": "algorithm-inputs-remain-job-scoped",
+      "mutation_sha256": "ec4801ee775f7ba72d3cc0f353ebc1c4228d7362a9108387b6e3554a32e63400",
+      "failed_source_tests": [
+        "Job AlgorithmInputs when the input is pinned through the api pins the inputs to that version",
+        "Job AlgorithmInputs when the input is pinned through the get step pins the inputs to that version",
+        "Job AlgorithmInputs when the input is pinned through the get step when the input is also pinned through the api resolves the pinned version to the version pinned through the get step",
+        "Job AlgorithmInputs when the input is pinned through the resource config pins the inputs to that version",
+        "Job AlgorithmInputs when the job has puts and tasks only returns the gets (inputs to the job)",
+        "Job AlgorithmInputs when there are multiple inputs returns all the inputs correctly",
+        "Job AlgorithmInputs when there is an input configured for the job returns the input for the job"
+      ],
+      "failed_brine_scenarios": [
+        "Job input or output behavior — \u003cprofile\u003e (row 1)",
+        "Job input or output behavior — \u003cprofile\u003e (row 2)",
+        "Job input or output behavior — \u003cprofile\u003e (row 3)",
+        "Job input or output behavior — \u003cprofile\u003e (row 4)",
+        "Job input or output behavior — \u003cprofile\u003e (row 5)",
+        "Job input or output behavior — \u003cprofile\u003e (row 6)",
+        "Job input or output behavior — \u003cprofile\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "inputs-remain-job-scoped",
+      "mutation_sha256": "bc3b815897ad1b3d802cd257e2503889a75558d5f9539fa0fd58906b922ecd2b",
+      "failed_source_tests": [
+        "Job Inputs returns inputs for the job"
+      ],
+      "failed_brine_scenarios": [
+        "Job input or output behavior — \u003cprofile\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "outputs-remain-job-scoped",
+      "mutation_sha256": "b9b84a70681c62b31e7e142020192946bfc2605ac1e5c0f5751cb85036abfb6c",
+      "failed_source_tests": [
+        "Job Outputs returns outputs for the job"
+      ],
+      "failed_brine_scenarios": [
+        "Job input or output behavior — \u003cprofile\u003e (row 9)"
+      ]
+    }
+  ]
+}
