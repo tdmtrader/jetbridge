@@ -1,0 +1,81 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/static-variables-strict.json",
+  "git_head": "cbea88260aacf25f403aeb30a17d5625a96f9f68",
+  "completed_at": "2026-09-02T18:33:47Z",
+  "source_tests": 12,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/static-variables-strict.feature": "c1c6dc4707851d6e58a08519e6a3faa1cc3951c452eec8d44257fee7ba791cb1",
+    "atc/worker/jetbridge/brine/mutations/static-variables-strict.json": "c6f4e9ddcf0b38c1ce76f73d0157c6577c8e7a109ea7677785aa4ffb9700afdf",
+    "atc/worker/jetbridge/brine/steps/static_variables_strict.go": "a6f134f318fd1188cfa41c6479848d6a9e831f45f89ef5fac166fea20f8cc251",
+    "vars/static_vars.go": "17b17ff5a1922085559c5d9a8a966b02fe784584bf470755a6796696995ce4f0",
+    "vars/static_vars_test.go": "3c2e356e1a91cfe70e0c0389179a7b0d9bc00123fa72725aa3b31c7ff9487050"
+  },
+  "mutation_cases": [
+    {
+      "id": "source-qualified-lookups-are-not-rejected",
+      "mutation_sha256": "dbfc6f8f40b56b69333bd79b83de9bc8cf577fc94e7d9bcca03b45d117b2c385",
+      "failed_source_tests": [
+        "StaticVariables Get returns nil and not found if source is from local vars",
+        "StaticVariables Get returns nil and not found if source is from var source"
+      ],
+      "failed_brine_scenarios": [
+        "Static variable profile \u003cprofile\u003e (row 3)",
+        "Static variable profile \u003cprofile\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "lookup-uses-the-wrong-path",
+      "mutation_sha256": "a23854400b244d9b85fd94f44c2cb5f2e657bab26998d2eef5aa9a534c22e939",
+      "failed_source_tests": [
+        "StaticVariables Get follows fields",
+        "StaticVariables Get returns value and found if key is found",
+        "StaticVariables Get when fields cannot be recursed errors with an InvalidFieldError error",
+        "StaticVariables Get when fields don't exist errors with a MissingFieldError error"
+      ],
+      "failed_brine_scenarios": [
+        "Static variable profile \u003cprofile\u003e (row 1)",
+        "Static variable profile \u003cprofile\u003e (row 5)",
+        "Static variable profile \u003cprofile\u003e (row 6)",
+        "Static variable profile \u003cprofile\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "list-drops-variable-names",
+      "mutation_sha256": "2b5abf2a4230e2066e2aacf6472038d71d3f33fe814e01ee02b593d0844d65b8",
+      "failed_source_tests": [
+        "StaticVariables List returns list of names"
+      ],
+      "failed_brine_scenarios": [
+        "Static variable profile \u003cprofile\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "flatten-discards-produced-pairs",
+      "mutation_sha256": "385422aef1a278361b6f1937572f4e84a0a642d0f73b32859ea789dc14725d8c",
+      "failed_source_tests": [
+        "StaticVariables Flatten flattens recursively"
+      ],
+      "failed_brine_scenarios": [
+        "Static variable profile \u003cprofile\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "expand-skips-every-pair",
+      "mutation_sha256": "a4050f4a8f430a4058c90b0364608b915e35059277ac7f78cc43fd8e69c998ee",
+      "failed_source_tests": [
+        "StaticVariables Expand merges flat elements into map",
+        "StaticVariables Expand merges recurses through fields",
+        "StaticVariables Expand overwrites full nodes",
+        "StaticVariables Expand overwrites non-map nodes"
+      ],
+      "failed_brine_scenarios": [
+        "Static variable profile \u003cprofile\u003e (row 10)",
+        "Static variable profile \u003cprofile\u003e (row 11)",
+        "Static variable profile \u003cprofile\u003e (row 12)",
+        "Static variable profile \u003cprofile\u003e (row 13)"
+      ]
+    }
+  ]
+}
