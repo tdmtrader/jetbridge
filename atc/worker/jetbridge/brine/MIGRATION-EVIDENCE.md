@@ -22,19 +22,19 @@ scenario fail is also not evidence.
 
 | quantity | source leaf tests | percentage of 6,857 |
 |---|---:|---:|
-| **fully migrated**: paired failure evidence, no prohibited double, source removed | **1,641** | **23.93%** |
+| **fully migrated**: paired failure evidence, no prohibited double, source removed | **1,665** | **24.28%** |
 | strict paired evidence, but source still present | 0 | 0.00% |
 | **runs in Brine but not the full philosophy**: paired failure evidence, but uses a stub, test sink, injected-fault object, fake, or mock | **112** | **1.63%** |
 | of the preceding exception bucket whose source test was removed | 66 | 0.96% |
-| total source tests with paired per-test failure evidence | 1,753 | 25.57% |
+| total source tests with paired per-test failure evidence | 1,777 | 25.92% |
 | former claimed tests with no admissible paired evidence | 375 | 5.47% |
-| Brine scenarios | 2,545 | execution count only |
+| Brine scenarios | 2,570 | execution count only |
 
-The current two headline percentages are therefore **23.93% fully migrated**
+The current two headline percentages are therefore **24.28% fully migrated**
 and **1.63% validated but running outside the full philosophy**. The second is
 not another migration percentage: 46 of its 112 source tests still exist. If
 "migrated" is restricted to removed source tests in both buckets, the figures
-are 23.93% strict and 0.96% philosophy-exception.
+are 24.28% strict and 0.96% philosophy-exception.
 
 ## Admitted evidence ledger
 
@@ -117,13 +117,14 @@ are 23.93% strict and 0.96% philosophy-exception.
 | `api/jobs_test.go` production ClearTaskCache API subset | 5 | 5 | 0 | 5 |
 | `api/jobs_test.go` production manual-build guard subset | 2 | 2 | 0 | 2 |
 | `go-concourse/concourse/builds_test.go` strict real-server client subset | 16 | 16 | 0 | 16 |
+| `go-concourse/concourse/resourceversions_test.go` real-server client subset | 24 | 24 | 0 | 24 |
 | `api/builds_test.go` strict real-server build API subset | 9 | 9 | 0 | 9 |
 | `api/jobs_test.go` strict real-server exact-build API subset | 4 | 4 | 0 | 4 |
 | `destroyer_test.go` | 8 | 0 | 8 | 8 |
 | `scanner_test.go` | 14 | 0 | 14 | 14 |
 | durable-storage, volume-DaemonSet, and behavioral-permutation campaign | 44 | 0 | 44 | 44 |
 | daemonset-integration and daemon-client retained cases | 46 | 0 | 46 | 0 |
-| **total** | **1,753** | **1,641** | **112** | **1,707** |
+| **total** | **1,777** | **1,665** | **112** | **1,731** |
 
 ### Completed production-logger revalidation
 
@@ -210,6 +211,9 @@ candidates.
 - `api-pipelines-next-strict.feature`: 55/55 passed after 28 natural
   production mutations exactly partitioned all 55 admitted leaves; the 454
   retained package leaves passed after removal.
+- `resourceversions-client-strict.feature`: 25/25 passed; 16 natural client
+  mutations exactly partitioned 24 admitted leaves before removal. Five
+  fault-dependent or non-isolatable leaves remain in Go.
 - `api-versions-strict.feature`: 18/18 passed after nine natural production
   mutations exactly paired all 18 admitted leaves; 73 source leaves remain.
 - `api-builds-remaining-strict.feature`: 20/20 passed after two natural
