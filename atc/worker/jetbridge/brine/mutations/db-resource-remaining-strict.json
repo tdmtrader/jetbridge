@@ -1,0 +1,119 @@
+{
+  "name": "db-resource-remaining-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/resource_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-resource-remaining-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_resource_remaining_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go",
+    "atc/worker/jetbridge/brine/steps/task_command.go",
+    "atc/worker/jetbridge/brine/steps/envtest.go",
+    "atc/postgresrunner/postgresrunner.go",
+    "atc/postgresrunner/ginkgo.go",
+    "atc/postgresrunner/join_limit_conn.go",
+    "atc/db/resource.go",
+    "atc/db/pipeline.go"
+  ],
+  "cases": [
+    {
+      "id": "missing-resource-reported-found",
+      "source_file": "atc/db/pipeline.go",
+      "old": "\t\tif err == sql.ErrNoRows {\n\t\t\treturn nil, false, nil\n\t\t}\n\n\t\treturn nil, false, err\n\t}\n\n\treturn resource, true, nil\n}\n\nfunc (p *pipeline) Builds",
+      "new": "\t\tif err == sql.ErrNoRows {\n\t\t\treturn resource, true, nil\n\t\t}\n\n\t\treturn nil, false, err\n\t}\n\n\treturn resource, true, nil\n}\n\nfunc (p *pipeline) Builds",
+      "tests": [
+        "Resource (Pipeline).Resource when the resource does not exist returns nil"
+      ],
+      "scenarios": [
+        "Resource database profile <profile> has observation <observation> (row 1)"
+      ]
+    },
+    {
+      "id": "resource-public-flag-inverted",
+      "source_file": "atc/db/resource.go",
+      "old": "func (r *resource) Public() bool                     { return r.config.Public }",
+      "new": "func (r *resource) Public() bool                     { return !r.config.Public }",
+      "tests": [
+        "Resource Public when public is not set in the config returns false",
+        "Resource Public when public is set to true in the config returns true",
+        "Resource Public when public is set to false in the config returns false"
+      ],
+      "scenarios": [
+        "Resource database profile <profile> has observation <observation> (row 2)",
+        "Resource database profile <profile> has observation <observation> (row 3)",
+        "Resource database profile <profile> has observation <observation> (row 4)"
+      ]
+    },
+    {
+      "id": "version-filter-serializes-empty-filter",
+      "source_file": "atc/db/resource.go",
+      "old": "\t\tfilterBytes, err := json.Marshal(versionFilter)",
+      "new": "\t\tfilterBytes, err := json.Marshal(atc.Version{})",
+      "tests": [
+        "Resource Versions with version filters when filter include one field that matches return version that matches field filter",
+        "Resource Versions with version filters when filter include one field that doesn't match return no version",
+        "Resource Versions with version filters when filter include two fields that match return version",
+        "Resource Versions with version filters when filter include two fields and one of them does not match return no version"
+      ],
+      "scenarios": [
+        "Resource database profile <profile> has observation <observation> (row 5)",
+        "Resource database profile <profile> has observation <observation> (row 6)",
+        "Resource database profile <profile> has observation <observation> (row 7)",
+        "Resource database profile <profile> has observation <observation> (row 8)"
+      ]
+    },
+    {
+      "id": "latest-version-query-orders-oldest-first",
+      "source_file": "atc/db/resource.go",
+      "old": "\t\t\tAND version @> $3\n\t\t\tORDER BY v.check_order DESC\n\t\t\tLIMIT $2",
+      "new": "\t\t\tAND version @> $3\n\t\t\tORDER BY v.check_order ASC\n\t\t\tLIMIT $2",
+      "tests": [
+        "Resource Versions when resource has versions created in order of check order with no from/to returns the first page, with the given limit, and a next page",
+        "Resource Versions when resource has versions created in order of check order when the version has metadata returns the metadata in the version history",
+        "Resource Versions when resource has versions created in order of check order when the version has metadata maintains existing metadata after same version is saved with no metadata",
+        "Resource Versions when resource has versions created in order of check order when the version has metadata updates metadata after same version is saved with different metadata",
+        "Resource Versions when resource has versions created in order of check order when a version is disabled returns a disabled version",
+        "Resource Versions when resource has versions created in order of check order when the version metadata is updated returns a version with metadata updated",
+        "Resource Versions when check orders are different than versions ids with no from/to returns versions ordered by check order"
+      ],
+      "scenarios": [
+        "Resource database profile <profile> has observation <observation> (row 9)",
+        "Resource database profile <profile> has observation <observation> (row 13)",
+        "Resource database profile <profile> has observation <observation> (row 14)",
+        "Resource database profile <profile> has observation <observation> (row 15)",
+        "Resource database profile <profile> has observation <observation> (row 16)",
+        "Resource database profile <profile> has observation <observation> (row 17)",
+        "Resource database profile <profile> has observation <observation> (row 18)"
+      ]
+    },
+    {
+      "id": "to-page-orders-oldest-first",
+      "source_file": "atc/db/resource.go",
+      "old": "\t\t\t\tAND version @> $4\n\t\t\t\tAND v.check_order <= (SELECT check_order FROM resource_config_versions WHERE id = $2)\n\t\t\tORDER BY v.check_order DESC\n\t\t\tLIMIT $3",
+      "new": "\t\t\t\tAND version @> $4\n\t\t\t\tAND v.check_order <= (SELECT check_order FROM resource_config_versions WHERE id = $2)\n\t\t\tORDER BY v.check_order ASC\n\t\t\tLIMIT $3",
+      "tests": [
+        "Resource Versions when resource has versions created in order of check order with a to that places it in the middle of the versions returns the versions, with previous/next pages",
+        "Resource Versions when resource has versions created in order of check order with a to that places it to the oldest version returns the versions, with no next page",
+        "Resource Versions when check orders are different than versions ids with to returns the builds, with previous/next pages including to"
+      ],
+      "scenarios": [
+        "Resource database profile <profile> has observation <observation> (row 10)",
+        "Resource database profile <profile> has observation <observation> (row 11)",
+        "Resource database profile <profile> has observation <observation> (row 20)"
+      ]
+    },
+    {
+      "id": "from-page-orders-newest-first",
+      "source_file": "atc/db/resource.go",
+      "old": "\t\t\t\t\tAND version @> $4\n\t\t\t\t\tAND v.check_order >= (SELECT check_order FROM resource_config_versions WHERE id = $2)\n\t\t\t\tORDER BY v.check_order ASC\n\t\t\t\tLIMIT $3",
+      "new": "\t\t\t\t\tAND version @> $4\n\t\t\t\t\tAND v.check_order >= (SELECT check_order FROM resource_config_versions WHERE id = $2)\n\t\t\t\tORDER BY v.check_order DESC\n\t\t\t\tLIMIT $3",
+      "tests": [
+        "Resource Versions when resource has versions created in order of check order with a from that places it in the middle of the versions returns the versions, with previous/next pages",
+        "Resource Versions when check orders are different than versions ids with from returns the versions, with previous/next pages including from"
+      ],
+      "scenarios": [
+        "Resource database profile <profile> has observation <observation> (row 12)",
+        "Resource database profile <profile> has observation <observation> (row 19)"
+      ]
+    }
+  ]
+}

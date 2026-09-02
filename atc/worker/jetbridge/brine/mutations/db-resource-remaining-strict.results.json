@@ -1,0 +1,112 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-resource-remaining-strict.json",
+  "git_head": "fb13b7b20ec184f987a63b8e62c4c5aa1921b578",
+  "completed_at": "2026-09-02T14:12:36Z",
+  "source_tests": 20,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/pipeline.go": "db557d6c09a3c852e68d775fbbbb53bb3e38a17ba09be542c30e3d2bd9765fe8",
+    "atc/db/resource.go": "d3751a41f45f7416db10a157948b1218f2fcbd299ed100a5b8ec01fb99aa038f",
+    "atc/db/resource_test.go": "384fdfb6d6578f1b2bf324235fe0a5ae0f7086ea3c38cf7c1eb0172d47ceb50b",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/db-resource-remaining-strict.feature": "0d92382833b15bdf474376a9db1484dbe19608629f908b3611ed1d5060026b57",
+    "atc/worker/jetbridge/brine/mutations/db-resource-remaining-strict.json": "11879ac435f6340863d032fb44f802d2dc734e32f913ddc15cc85db1be2e2eee",
+    "atc/worker/jetbridge/brine/steps/db_resource_remaining_strict.go": "b3b3b189fcb105135888931cba69ed667d5763f3a6cb0649d2b7360ca47a361e",
+    "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e"
+  },
+  "mutation_cases": [
+    {
+      "id": "missing-resource-reported-found",
+      "mutation_sha256": "6b206fbad6aa3572836bd4f544aa1cfa49386c68a1cb0dbbba47d552bc645aa9",
+      "failed_source_tests": [
+        "Resource (Pipeline).Resource when the resource does not exist returns nil"
+      ],
+      "failed_brine_scenarios": [
+        "Resource database profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 1)"
+      ]
+    },
+    {
+      "id": "resource-public-flag-inverted",
+      "mutation_sha256": "ee15a6b05f1a34d34032e583d74c72240156f42ff773df6dec9c42f0012b9b71",
+      "failed_source_tests": [
+        "Resource Public when public is not set in the config returns false",
+        "Resource Public when public is set to false in the config returns false",
+        "Resource Public when public is set to true in the config returns true"
+      ],
+      "failed_brine_scenarios": [
+        "Resource database profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 2)",
+        "Resource database profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 3)",
+        "Resource database profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "version-filter-serializes-empty-filter",
+      "mutation_sha256": "ddcb9547dff42f7925968d45b09929ea28f02186f2d59d514627cb6b63c51c75",
+      "failed_source_tests": [
+        "Resource Versions with version filters when filter include one field that doesn't match return no version",
+        "Resource Versions with version filters when filter include one field that matches return version that matches field filter",
+        "Resource Versions with version filters when filter include two fields and one of them does not match return no version",
+        "Resource Versions with version filters when filter include two fields that match return version"
+      ],
+      "failed_brine_scenarios": [
+        "Resource database profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 5)",
+        "Resource database profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 6)",
+        "Resource database profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 7)",
+        "Resource database profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "latest-version-query-orders-oldest-first",
+      "mutation_sha256": "5790bee4e01f9521ce0f922a42c9b1281851df121da74aed9c21606d33435138",
+      "failed_source_tests": [
+        "Resource Versions when check orders are different than versions ids with no from/to returns versions ordered by check order",
+        "Resource Versions when resource has versions created in order of check order when a version is disabled returns a disabled version",
+        "Resource Versions when resource has versions created in order of check order when the version has metadata maintains existing metadata after same version is saved with no metadata",
+        "Resource Versions when resource has versions created in order of check order when the version has metadata returns the metadata in the version history",
+        "Resource Versions when resource has versions created in order of check order when the version has metadata updates metadata after same version is saved with different metadata",
+        "Resource Versions when resource has versions created in order of check order when the version metadata is updated returns a version with metadata updated",
+        "Resource Versions when resource has versions created in order of check order with no from/to returns the first page, with the given limit, and a next page"
+      ],
+      "failed_brine_scenarios": [
+        "Resource database profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 13)",
+        "Resource database profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 14)",
+        "Resource database profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 15)",
+        "Resource database profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 16)",
+        "Resource database profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 17)",
+        "Resource database profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 18)",
+        "Resource database profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "to-page-orders-oldest-first",
+      "mutation_sha256": "5d77f8d81d269c350ab1b0ebf2fedc7e2b84e00383f8d283ca29884a28b25c1e",
+      "failed_source_tests": [
+        "Resource Versions when check orders are different than versions ids with to returns the builds, with previous/next pages including to",
+        "Resource Versions when resource has versions created in order of check order with a to that places it in the middle of the versions returns the versions, with previous/next pages",
+        "Resource Versions when resource has versions created in order of check order with a to that places it to the oldest version returns the versions, with no next page"
+      ],
+      "failed_brine_scenarios": [
+        "Resource database profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 10)",
+        "Resource database profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 11)",
+        "Resource database profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 20)"
+      ]
+    },
+    {
+      "id": "from-page-orders-newest-first",
+      "mutation_sha256": "2fa373238116813f049d17a78a425589f976ac20e4e9661e4cd48c09b1e71ef5",
+      "failed_source_tests": [
+        "Resource Versions when check orders are different than versions ids with from returns the versions, with previous/next pages including from",
+        "Resource Versions when resource has versions created in order of check order with a from that places it in the middle of the versions returns the versions, with previous/next pages"
+      ],
+      "failed_brine_scenarios": [
+        "Resource database profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 12)",
+        "Resource database profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 19)"
+      ]
+    }
+  ]
+}
