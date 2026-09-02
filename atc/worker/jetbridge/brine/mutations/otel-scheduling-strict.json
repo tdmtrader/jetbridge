@@ -1,0 +1,38 @@
+{
+  "name": "otel-scheduling-strict",
+  "test_package": "./atc/metric",
+  "source_test_file": "atc/metric/otel_scheduling_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/otel-metrics.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/main.go",
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/registry.go",
+    "atc/worker/jetbridge/brine/steps/otel_metrics.go",
+    "atc/worker/jetbridge/brine/steps/registry.go"
+  ],
+  "cases": [
+    {
+      "id": "jobs-scheduled-instrument-name",
+      "source_file": "atc/metric/otel_scheduling.go",
+      "old": "\t\t\"concourse.jobs.scheduled\",",
+      "new": "\t\t\"concourse.jobs.schedule\",",
+      "tests": ["OTel Scheduling records jobs scheduled"],
+      "scenarios": ["OTel profile <profile> exports its production measurement (row 23)"]
+    },
+    {
+      "id": "jobs-scheduling-instrument-name",
+      "source_file": "atc/metric/otel_scheduling.go",
+      "old": "\t\t\"concourse.jobs.scheduling\",",
+      "new": "\t\t\"concourse.jobs.scheduling_current\",",
+      "tests": ["OTel Scheduling records jobs scheduling"],
+      "scenarios": ["OTel profile <profile> exports its production measurement (row 24)"]
+    },
+    {
+      "id": "scheduling-duration-pipeline-attribute",
+      "source_file": "atc/metric/otel_scheduling.go",
+      "old": "\t\t\tattribute.String(\"pipeline\", pipeline),",
+      "new": "\t\t\tattribute.String(\"pipeline.name\", pipeline),",
+      "tests": ["OTel Scheduling records scheduling job duration with attributes"],
+      "scenarios": ["OTel profile <profile> exports its production measurement (row 25)"]
+    }
+  ]
+}
