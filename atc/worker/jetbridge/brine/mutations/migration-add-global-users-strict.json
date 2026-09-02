@@ -1,0 +1,112 @@
+{
+  "name": "migration-add-global-users-strict",
+  "test_package": "./atc/db/migration",
+  "source_test_file": "atc/db/migration/add_global_users_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/migration-add-global-users-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/main.go",
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/registry.go",
+    "atc/worker/jetbridge/brine/steps/migration_add_global_users_strict.go",
+    "atc/worker/jetbridge/brine/steps/registry.go",
+    "atc/worker/jetbridge/brine/steps/resources.go",
+    "atc/postgresrunner/postgresrunner.go",
+    "atc/postgresrunner/ginkgo.go",
+    "atc/postgresrunner/join_limit_conn.go"
+  ],
+  "cases": [
+    {
+      "id": "github-users-use-provider-prefix",
+      "source_file": "atc/db/migration/migrations/1528470872_add_global_users.up.go",
+      "old": "\t\t\t\t\tnewUsers = append(newUsers, provider+\":\"+user)",
+      "new": "\t\t\t\t\tnewUsers = append(newUsers, provider+\"-\"+user)",
+      "tests": ["Add global users Up migrates github data to users/groups format"],
+      "scenarios": ["Production add-global-users migration — <profile> (row 1)"]
+    },
+    {
+      "id": "basic-users-use-local-prefix",
+      "source_file": "atc/db/migration/migrations/1528470872_add_global_users.up.go",
+      "old": "\t\t\t\tnewUsers = append(newUsers, \"local:\"+config.Username)",
+      "new": "\t\t\t\tnewUsers = append(newUsers, \"local-\"+config.Username)",
+      "tests": ["Add global users Up migrates basic auth data to users/groups format"],
+      "scenarios": ["Production add-global-users migration — <profile> (row 2)"]
+    },
+    {
+      "id": "uaa-spaces-use-cf-prefix",
+      "source_file": "atc/db/migration/migrations/1528470872_add_global_users.up.go",
+      "old": "\t\t\t\t\tnewGroups = append(newGroups, \"cf:\"+space)",
+      "new": "\t\t\t\t\tnewGroups = append(newGroups, \"cf-\"+space)",
+      "tests": ["Add global users Up migrates uaa data to users/groups format"],
+      "scenarios": ["Production add-global-users migration — <profile> (row 3)"]
+    },
+    {
+      "id": "gitlab-groups-use-provider-prefix",
+      "source_file": "atc/db/migration/migrations/1528470872_add_global_users.up.go",
+      "old": "\t\t\t\t\tnewGroups = append(newGroups, \"gitlab:\"+group)",
+      "new": "\t\t\t\t\tnewGroups = append(newGroups, \"gitlab-\"+group)",
+      "tests": ["Add global users Up migrates gitlab data to users/groups format"],
+      "scenarios": ["Production add-global-users migration — <profile> (row 4)"]
+    },
+    {
+      "id": "oauth-scope-uses-provider-prefix",
+      "source_file": "atc/db/migration/migrations/1528470872_add_global_users.up.go",
+      "old": "\t\t\t\tnewGroups = append(newGroups, \"oauth:\"+config.Scope)",
+      "new": "\t\t\t\tnewGroups = append(newGroups, \"oauth-\"+config.Scope)",
+      "tests": ["Add global users Up migrates oauth data to users/groups format"],
+      "scenarios": ["Production add-global-users migration — <profile> (row 5)"]
+    },
+    {
+      "id": "oidc-users-use-provider-prefix",
+      "source_file": "atc/db/migration/migrations/1528470872_add_global_users.up.go",
+      "old": "\t\t\t\t\tnewUsers = append(newUsers, \"oidc:\"+user)",
+      "new": "\t\t\t\t\tnewUsers = append(newUsers, \"oidc-\"+user)",
+      "tests": ["Add global users Up migrates oidc data to users/groups format"],
+      "scenarios": ["Production add-global-users migration — <profile> (row 6)"]
+    },
+    {
+      "id": "bitbucket-cloud-remains-unsupported",
+      "source_file": "atc/db/migration/migrations/1528470872_add_global_users.up.go",
+      "old": "\t\t\tcase \"bitbucket-server\", \"bitbucket-cloud\":",
+      "new": "\t\t\tcase \"bitbucket-server\", \"bitbucket-cloud-disabled\":",
+      "tests": ["Add global users Up fails to migrate if bitbucket cloud is present"],
+      "scenarios": ["Production add-global-users migration — <profile> (row 7)"]
+    },
+    {
+      "id": "bitbucket-server-remains-unsupported",
+      "source_file": "atc/db/migration/migrations/1528470872_add_global_users.up.go",
+      "old": "\t\t\tcase \"bitbucket-server\", \"bitbucket-cloud\":",
+      "new": "\t\t\tcase \"bitbucket-server-disabled\", \"bitbucket-cloud\":",
+      "tests": ["Add global users Up fails to migrate if bitbucket server is present"],
+      "scenarios": ["Production add-global-users migration — <profile> (row 8)"]
+    },
+    {
+      "id": "uaa-provider-settings-must-match-across-teams",
+      "source_file": "atc/db/migration/migrations/1528470872_add_global_users.up.go",
+      "old": "\t\t\"uaa\": map[string]map[string][]string{",
+      "new": "\t\t\"uaa-disabled\": map[string]map[string][]string{",
+      "tests": ["Add global users Up fails to migrate uaa if teams are using different providers of the same type"],
+      "scenarios": ["Production add-global-users migration — <profile> (row 9)"]
+    },
+    {
+      "id": "basic-usernames-must-be-unique-across-teams",
+      "source_file": "atc/db/migration/migrations/1528470872_add_global_users.up.go",
+      "old": "\t\t\"basicauth\": map[string]map[string][]string{",
+      "new": "\t\t\"basicauth-disabled\": map[string]map[string][]string{",
+      "tests": ["Add global users Up fails to migrate if two teams have the same basic auth username"],
+      "scenarios": ["Production add-global-users migration — <profile> (row 10)"]
+    },
+    {
+      "id": "downgrade-only-ignores-changed-main-team",
+      "source_file": "atc/db/migration/migrations/1528470872_add_global_users.down.go",
+      "old": "\terr := tx.QueryRow(\"SELECT count(*) FROM teams WHERE legacy_auth IS NULL AND name != 'main'\").Scan(&count)",
+      "new": "\terr := tx.QueryRow(\"SELECT count(*) FROM teams WHERE legacy_auth IS NULL AND name = 'main'\").Scan(&count)",
+      "tests": [
+        "Add global users Down works when only main team has changed auth",
+        "Add global users Down fails when non-main teams have changed auth"
+      ],
+      "scenarios": [
+        "Production add-global-users migration — <profile> (row 11)",
+        "Production add-global-users migration — <profile> (row 12)"
+      ]
+    }
+  ]
+}

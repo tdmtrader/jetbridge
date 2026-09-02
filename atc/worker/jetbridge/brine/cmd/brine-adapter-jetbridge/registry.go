@@ -17,7 +17,7 @@ func buildAppResources(args []string) (*brine.ResourceRegistry, error) {
 	var allowedResources map[string]bool
 	if len(features) == 1 {
 		switch filepath.Base(features[0]) {
-		case "db-job-final-strict.feature", "migration-build-events-bigint-strict.feature":
+		case "db-job-final-strict.feature", "migration-build-events-bigint-strict.feature", "migration-add-global-users-strict.feature":
 			allowedResources = map[string]bool{"postgres": true}
 		case "db-team-remaining-strict.feature":
 			allowedResources = map[string]bool{"postgres": true, "jetbridge-db": true}
