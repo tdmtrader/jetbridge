@@ -1,0 +1,79 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/concurrent-request-policy-strict.json",
+  "git_head": "67a9f89b216ad54bf87e92bcc69331e98e562cb8",
+  "completed_at": "2026-09-02T21:58:21Z",
+  "source_tests": 6,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/registry.go": "bcf4b88f553aac3fa84a91d61703daf0810c7a17cab4182d231b4a49439f3a7d",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/concurrent-request-policy-strict.feature": "c98e98840c88980602094cb6896480c70b2f58cb83217e045f1b8391556afe3d",
+    "atc/worker/jetbridge/brine/mutations/concurrent-request-policy-strict.json": "b003f63a3d0070a22642ebe014319bb61478bd17545cdcc4693c367d786898ed",
+    "atc/worker/jetbridge/brine/steps/concurrent_request_policy_strict.go": "30931614410acfa9da55b4785a30308191f25221f7df2b9c1e94e192735e3150",
+    "atc/worker/jetbridge/brine/steps/registry.go": "74e23e205197eb71ddfba8fba01b89d66e7469b0d4400ecd0a964617a72ab7c8",
+    "atc/wrappa/concurrent_request_policy.go": "a604526ec3f8aadcea0336068863d0093f24543813f401f819c49a877823ad85",
+    "atc/wrappa/concurrent_request_policy_test.go": "ce95a68e7b68c962160298d0d22f5e8dd6ddb56a459f1ec2198bdc1423d9c5f8"
+  },
+  "mutation_cases": [
+    {
+      "id": "limited-route-accepts-supported-action",
+      "mutation_sha256": "b44cf8c38084060927be15e8d6f376319725aa23aed75b78d567aa9566b3869e",
+      "failed_source_tests": [
+        "Concurrent Request Policy LimitedRoute#UnmarshalFlag unmarshals ListAllJobs"
+      ],
+      "failed_brine_scenarios": [
+        "LimitedRoute unmarshals a supported action"
+      ]
+    },
+    {
+      "id": "unsupported-error-names-action",
+      "mutation_sha256": "4800d3b7c2bffc8d4b0a67ee5d2c241ba7ecec13a0d3f82f274464b39054447f",
+      "failed_source_tests": [
+        "Concurrent Request Policy LimitedRoute#UnmarshalFlag raises an error when the action is not supported"
+      ],
+      "failed_brine_scenarios": [
+        "LimitedRoute unsupported error names the action"
+      ]
+    },
+    {
+      "id": "unsupported-error-lists-supported-actions",
+      "mutation_sha256": "989bcc44d176edc24b39e8962f40904f5d9259c983df6c7d7a5f24ae15db78d6",
+      "failed_source_tests": [
+        "Concurrent Request Policy LimitedRoute#UnmarshalFlag error message describes supported actions"
+      ],
+      "failed_brine_scenarios": [
+        "LimitedRoute unsupported error describes supported actions"
+      ]
+    },
+    {
+      "id": "handler-pool-reports-limited-action",
+      "mutation_sha256": "2ce56bb1dcb70938de2eac4254b31b23b0955b6e241a23e989b01c404e8a1ea0",
+      "failed_source_tests": [
+        "Concurrent Request Policy ConcurrentRequestPolicy#HandlerPool returns true when an action is limited"
+      ],
+      "failed_brine_scenarios": [
+        "HandlerPool finds a limited action"
+      ]
+    },
+    {
+      "id": "handler-pool-reports-unlimited-action-missing",
+      "mutation_sha256": "6175e4df4778f23ea71d39632e6ea145504b0ee67add2ffeca700700fdf57ad4",
+      "failed_source_tests": [
+        "Concurrent Request Policy ConcurrentRequestPolicy#HandlerPool returns false when an action is not limited"
+      ],
+      "failed_brine_scenarios": [
+        "HandlerPool does not find an unlimited action"
+      ]
+    },
+    {
+      "id": "handler-pool-preserves-pool-reference",
+      "mutation_sha256": "4556e535deaef4dd7f4bc822722aa60d5498f0237e46ee6da8e9be4721e54ae4",
+      "failed_source_tests": [
+        "Concurrent Request Policy ConcurrentRequestPolicy#HandlerPool holds a reference to its pool"
+      ],
+      "failed_brine_scenarios": [
+        "HandlerPool returns the shared pool"
+      ]
+    }
+  ]
+}
