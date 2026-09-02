@@ -162,7 +162,8 @@ func observeStrictVersionsAPI(database JetbridgeDB, profile string) string {
 		if err != nil {
 			return err.Error()
 		}
-		got, err := strictDecodeVersions(response)
+		var got []atc.ResourceVersion
+		err = json.Unmarshal(response.Body, &got)
 		if err != nil || len(got) != 1 || got[0].Metadata != nil {
 			return fail("private metadata=%#v err=%v", got, err)
 		}
