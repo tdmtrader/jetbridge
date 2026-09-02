@@ -22,19 +22,19 @@ scenario fail is also not evidence.
 
 | quantity | source leaf tests | percentage of 6,857 |
 |---|---:|---:|
-| **fully migrated**: paired failure evidence, no prohibited double, source removed | **1,720** | **25.08%** |
+| **fully migrated**: paired failure evidence, no prohibited double, source removed | **1,770** | **25.81%** |
 | strict paired evidence, but source still present | 0 | 0.00% |
 | **runs in Brine but not the full philosophy**: paired failure evidence, but uses a stub, test sink, injected-fault object, fake, or mock | **112** | **1.63%** |
 | of the preceding exception bucket whose source test was removed | 66 | 0.96% |
-| total source tests with paired per-test failure evidence | 1,832 | 26.72% |
-| former claimed tests with no admissible paired evidence | 375 | 5.47% |
+| total source tests with paired per-test failure evidence | 1,882 | 27.45% |
+| former claimed tests with no admissible paired evidence | 325 | 4.74% |
 | Brine scenarios | 2,626 | execution count only |
 
-The current two headline percentages are therefore **25.08% fully migrated**
+The current two headline percentages are therefore **25.81% fully migrated**
 and **1.63% validated but running outside the full philosophy**. The second is
 not another migration percentage: 46 of its 112 source tests still exist. If
 "migrated" is restricted to removed source tests in both buckets, the figures
-are 25.08% strict and 0.96% philosophy-exception.
+are 25.81% strict and 0.96% philosophy-exception.
 
 ## Admitted evidence ledger
 
@@ -126,11 +126,12 @@ are 25.08% strict and 0.96% philosophy-exception.
 | `go-concourse/concourse/resourceversions_test.go` real-server client subset | 24 | 24 | 0 | 24 |
 | `api/builds_test.go` strict real-server build API subset | 9 | 9 | 0 | 9 |
 | `api/jobs_test.go` strict real-server exact-build API subset | 4 | 4 | 0 | 4 |
+| `fly/integration/error_handling_test.go` production-backed team-error tables | 50 | 50 | 0 | 50 |
 | `destroyer_test.go` | 8 | 0 | 8 | 8 |
 | `scanner_test.go` | 14 | 0 | 14 | 14 |
 | durable-storage, volume-DaemonSet, and behavioral-permutation campaign | 44 | 0 | 44 | 44 |
 | daemonset-integration and daemon-client retained cases | 46 | 0 | 46 | 0 |
-| **total** | **1,832** | **1,720** | **112** | **1,786** |
+| **total** | **1,882** | **1,770** | **112** | **1,836** |
 
 ### Completed production-logger revalidation
 
@@ -211,6 +212,11 @@ candidates.
 ## Execution verification (not equivalence evidence)
 
 - `brine check`: pending refresh for 2,382 scenarios after the latest cohorts.
+- `fly-team-errors.feature`: 50/50 passed against a real TCP server,
+  production token verifier/accessor/authorization path, PostgreSQL, and the
+  compiled fly binary. Two production `FindTeam` status-mapping mutations
+  partitioned the original two 25-row command tables exactly; the three
+  unrelated source leaves passed after those rows were removed.
 - `variable-template.feature`: 48/48 passed; two natural resolver mutations
   partitioned all 14 `template_resolver_test.go` leaves into exact 12-success
   and 2-required-error failure sets before the source file was removed.
