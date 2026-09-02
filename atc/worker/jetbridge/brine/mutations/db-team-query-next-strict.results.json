@@ -1,0 +1,264 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-team-query-next-strict.json",
+  "git_head": "b633c8c9448379dafb72c0ac7ce6cd841b283d08",
+  "completed_at": "2026-09-02T20:09:29Z",
+  "source_tests": 30,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/build_factory.go": "3de99eec4ef6a037b9fa87717a38865a897354c50f995e1c4875e21cf683aae1",
+    "atc/db/team.go": "0f44893708836914e40066140ac396ed0cd9531f2ff4aca02c6a25797562e761",
+    "atc/db/team_test.go": "4c9527564c77e1605269395aa223007e6228be40d10adc2abf571de57f3b2531",
+    "atc/db/volume.go": "cf3f9da135f41525cab059121b9c13987e537639b3149eee9621b95d3234f742",
+    "atc/db/worker_resource_cache.go": "a2b9c616bb351ebcb8bd91e611f1dea8611094d366d8379fbf65d5bcf92c3fb2",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/db-team-query-next-strict.feature": "d104ab5da95a810dd5ea4c0293789aff7e56decc3d755f2339c25fb6c4bad553",
+    "atc/worker/jetbridge/brine/mutations/db-team-query-next-strict.json": "723810a3006087f9a5a14eacb61cccf6258d2cf0a5110be62b76d3e7efdb4887",
+    "atc/worker/jetbridge/brine/steps/assert.go": "eac0b7b4dc864f54ffb5aab471451e3b62da518e5a8b10ba26e742d83298861f",
+    "atc/worker/jetbridge/brine/steps/db_team_query_next_strict.go": "ae9d8d29cbd842860ce9978213044f7b8fa9a8d73efc55fc70c5bd9f651eb8be",
+    "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
+    "atc/worker/jetbridge/brine/steps/registry.go": "0ecc1c511a3d3457d7c067bb851a177040aa09d3f30840cf8c393dae2029f5f0",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e"
+  },
+  "mutation_cases": [
+    {
+      "id": "metadata-query-remains-team-scoped",
+      "mutation_sha256": "d6150fdd73b2b54d15bea258b3a5b4581fdf6f8b8535742a4a89746bbaad39fa",
+      "failed_source_tests": [
+        "Team FindContainersByMetadata finds all containers for the team when given empty metadata",
+        "Team FindContainersByMetadata finds containers for the team, matching partial metadata",
+        "Team FindContainersByMetadata finds creating, created, and destroying containers for the team, matching the metadata in full"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team query behavior — \u003cprofile\u003e (row 1)",
+        "Remaining DB team query behavior — \u003cprofile\u003e (row 2)",
+        "Remaining DB team query behavior — \u003cprofile\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "metadata-query-does-not-cross-team-boundary",
+      "mutation_sha256": "f4c4ec5cf99c2e0c337d300fd5f679e12df04d8ded88ff4f29963341df561b67",
+      "failed_source_tests": [
+        "Team FindContainersByMetadata does not find containers for other teams"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team query behavior — \u003cprofile\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "find-container-returns-created-container",
+      "mutation_sha256": "60f7dcbb4dfde4e4d2d654ad43cc3b4c5691326ce7c6f960acc28adb8636a63e",
+      "failed_source_tests": [
+        "Team FindContainerByHandle finds a container for the team"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team query behavior — \u003cprofile\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "artifact-volume-respects-team",
+      "mutation_sha256": "5cf44c5e859579b306533aff1d87c14d6f53e0678d5724828e38b43c29e69f68",
+      "failed_source_tests": [
+        "Team FindVolumeForWorkerArtifact when the artifact exists when the associated volume exists returns the volume"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team query behavior — \u003cprofile\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "container-worker-join-uses-equal-name",
+      "mutation_sha256": "6a92220a5d5d5129ac54685badb511e276b58dc1ef40e4b87129164a59dc79d6",
+      "failed_source_tests": [
+        "Team FindWorkerForContainer when there is a created container returns it",
+        "Team FindWorkerForContainer when there is a creating container returns it"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team query behavior — \u003cprofile\u003e (row 7)",
+        "Remaining DB team query behavior — \u003cprofile\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "private-builds-remain-team-scoped",
+      "mutation_sha256": "6d22cff885a8828e6452123c150f917ca263a7ad2647961cf8c5cf1b92a0837b",
+      "failed_source_tests": [
+        "Team PrivateAndPublicBuilds when there are builds when there are builds that belong to different teams when other team builds are private returns only builds for requested team"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team query behavior — \u003cprofile\u003e (row 10)"
+      ]
+    },
+    {
+      "id": "from-pagination-is-inclusive-in-correct-direction",
+      "mutation_sha256": "88a7e75ff8d969f76cf930bc9e1089f57b30e350e69e98cb600fe65c8ef688cc",
+      "failed_source_tests": [
+        "Team Builds when limiting the range of build ids specifying from greater than the biggest ID in the database returns no rows error",
+        "Team PrivateAndPublicBuilds when there are builds returns all team builds with correct pagination"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team query behavior — \u003cprofile\u003e (row 12)",
+        "Remaining DB team query behavior — \u003cprofile\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "time-builds-zero-limit-stays-empty",
+      "mutation_sha256": "d40de575699787c1ab360f8b1889213354f4d1d6801f4e7e7eb7e669a089bd9c",
+      "failed_source_tests": [
+        "Team BuildsWithTime When not providing boundaries without a limit specified returns no builds"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team query behavior — \u003cprofile\u003e (row 11)"
+      ]
+    },
+    {
+      "id": "build-pagination-rejects-descending-range",
+      "mutation_sha256": "9f22272e02bc187c14a6cfb4dc35f3fed2b465681bae6bb4083147e6dd6eb383",
+      "failed_source_tests": [
+        "Team Builds when limiting the range of build ids specifying invalid boundaries should fail"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team query behavior — \u003cprofile\u003e (row 13)"
+      ]
+    },
+    {
+      "id": "check-container-query-uses-resource-config",
+      "mutation_sha256": "27e0079901012e441c265f8d4a8b550ceb25260a86a67ddb08d764dfe13b2578",
+      "failed_source_tests": [
+        "Team FindCheckContainers when pipeline exists when resource exists when check container for resource exists returns check container for resource",
+        "Team FindCheckContainers when pipeline exists when resource exists when check container for resource exists when there are multiple resources with the same resource config returns the same check container"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team query behavior — \u003cprofile\u003e (row 14)",
+        "Remaining DB team query behavior — \u003cprofile\u003e (row 15)"
+      ]
+    },
+    {
+      "id": "check-container-classification-tests-non-null-session",
+      "mutation_sha256": "753c78c72c4d9f54c196ca51d11f25140bcdcf6f0e59446a3af7892c6149ea8d",
+      "failed_source_tests": [
+        "Team IsCheckContainer when the container is associated with a resource config check session returns true",
+        "Team IsCheckContainer when the container is owned by a team returns false"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team query behavior — \u003cprofile\u003e (row 16)",
+        "Remaining DB team query behavior — \u003cprofile\u003e (row 17)"
+      ]
+    },
+    {
+      "id": "check-container-positive-team-scope",
+      "mutation_sha256": "580706e277cb45bb3fa172a08251674bff6719f178561825287ec0d8d7083636",
+      "failed_source_tests": [
+        "Team IsContainerWithinTeam when the container is a check container when the container does belong on the team finds the container for the team"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team query behavior — \u003cprofile\u003e (row 18)"
+      ]
+    },
+    {
+      "id": "check-container-negative-team-scope",
+      "mutation_sha256": "8604014559e6346ed9c5884923a8fc4845453c58abff0ab77a051eb5c6210527",
+      "failed_source_tests": [
+        "Team IsContainerWithinTeam when the container is a check container when the container does not belong on the team finds the container for the team"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team query behavior — \u003cprofile\u003e (row 19)"
+      ]
+    },
+    {
+      "id": "task-container-positive-team-scope",
+      "mutation_sha256": "2f7c61beff0f3235287777c3e46ec4accaa852808473b28432bef93e1b8b8b34",
+      "failed_source_tests": [
+        "Team IsContainerWithinTeam when the container is owned by a team when the container does belong on the team finds the container for the team"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team query behavior — \u003cprofile\u003e (row 20)"
+      ]
+    },
+    {
+      "id": "task-container-negative-team-scope",
+      "mutation_sha256": "8d6035fdfecce198c3fe8abb0aa669011bbd79975fe23f6f103b401bd2ee77ae",
+      "failed_source_tests": [
+        "Team IsContainerWithinTeam when the container is owned by a team when the container does not belong on the team finds the container for the team"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team query behavior — \u003cprofile\u003e (row 21)"
+      ]
+    },
+    {
+      "id": "valid-cache-uses-non-null-base-type",
+      "mutation_sha256": "cd17cd0a14f4e98ebf4c0bc9115fd844408bdc377cbc5f80d504c77151846e94",
+      "failed_source_tests": [
+        "Team FindWorkersForResourceCache when the worker is running should find the worker",
+        "Team FindWorkersForResourceCache when there is a second worker when the workers are running should find both workers"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team query behavior — \u003cprofile\u003e (row 22)",
+        "Remaining DB team query behavior — \u003cprofile\u003e (row 24)"
+      ]
+    },
+    {
+      "id": "stalled-cache-worker-is-not-returned",
+      "mutation_sha256": "fbf034fde29ea7cb3698a10b940ba1d20e24e35aabeb44113790db37ce0f3782",
+      "failed_source_tests": [
+        "Team FindWorkersForResourceCache when the worker is stalled should not find the worker"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team query behavior — \u003cprofile\u003e (row 23)"
+      ]
+    },
+    {
+      "id": "pre-prune-build-can-use-invalidated-cache",
+      "mutation_sha256": "d758bde6aa815dfeb0d1c33adac75a5364cedd1ad3e4bf7db06c0919ba391af9",
+      "failed_source_tests": [
+        "Team FindWorkersForResourceCache when there is a second worker when the workers are running when worker1 is deleted when build started before worker1 is pruned should still find worker2"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team query behavior — \u003cprofile\u003e (row 25)"
+      ]
+    },
+    {
+      "id": "post-prune-build-cannot-use-invalidated-cache",
+      "mutation_sha256": "b6fd66ebd38c003375db29bc0e06dcb5abd64053af7641a6aace6c9008a0444f",
+      "failed_source_tests": [
+        "Team FindWorkersForResourceCache when there is a second worker when the workers are running when worker1 is deleted when build started after worker1 is pruned should not find any worker"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team query behavior — \u003cprofile\u003e (row 28)"
+      ]
+    },
+    {
+      "id": "pre-prune-volume-lookup-accepts-invalidated-cache",
+      "mutation_sha256": "3053e2cedc961262b04bf56d0cb19c118248f6ebf2a74ee6b24bc3de0d6382d3",
+      "failed_source_tests": [
+        "Team FindWorkersForResourceCache when there is a second worker when the workers are running when worker1 is deleted when build started before worker1 is pruned cached volume should found on worker2"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team query behavior — \u003cprofile\u003e (row 26)"
+      ]
+    },
+    {
+      "id": "post-prune-volume-lookup-rejects-invalidated-cache",
+      "mutation_sha256": "5fb0fe265deb5dbe80e5db02ce124feb31ea1cca86f3c72dc88b18811b11e8ce",
+      "failed_source_tests": [
+        "Team FindWorkersForResourceCache when there is a second worker when the workers are running when worker1 is deleted when build started after worker1 is pruned cached volume should not found on worker2"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team query behavior — \u003cprofile\u003e (row 29)"
+      ]
+    },
+    {
+      "id": "streamed-volume-retains-cache-reference",
+      "mutation_sha256": "6ced1a2187435538c37c7c26cb5aabb1fa888699e2d22df8248cdebc98d081e2",
+      "failed_source_tests": [
+        "Team FindWorkersForResourceCache when there is a second worker when the workers are running when worker1 is deleted when build started after worker1 is pruned but the volume should be still there",
+        "Team FindWorkersForResourceCache when there is a second worker when the workers are running when worker1 is deleted when build started before worker1 is pruned the volume should be still there"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining DB team query behavior — \u003cprofile\u003e (row 27)",
+        "Remaining DB team query behavior — \u003cprofile\u003e (row 30)"
+      ]
+    }
+  ]
+}
