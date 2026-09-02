@@ -1,0 +1,140 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/flyrc-targets-strict.json",
+  "git_head": "f55127510930a23ff5be8ac276ecb593cea99036",
+  "completed_at": "2026-09-02T17:26:40Z",
+  "source_tests": 13,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/flyrc-targets-strict.feature": "2db8c3c05dee4078f4586965b59fbc57c1c92140b806ddda3f8fc44aee26b624",
+    "atc/worker/jetbridge/brine/mutations/flyrc-targets-strict.json": "dd8a934016bb2c5afe4f3eb853487b455867917d4521c93a5d7650751b9a1780",
+    "atc/worker/jetbridge/brine/steps/flyrc_targets_strict.go": "99efb8018e699328e2a9c6d381df983c59425ff13545bd552147076b0d17ce58",
+    "atc/worker/jetbridge/brine/steps/registry.go": "a2283a965e3b5792230cecf732558c3ba95bff79166a4b915eb91c4faa0b2cbd",
+    "fly/rc/targets.go": "ac2b31c4c9cd8cbf46b6ee4e7935b4479deb392f17b98edde2f6b2c9fd5474b3",
+    "fly/rc/targets_test.go": "c2453f6683fcc1b39a0fde526bd39924f7145adc3b6085450a5f3d42904cf8d2"
+  },
+  "mutation_cases": [
+    {
+      "id": "missing-team-defaults-to-main",
+      "mutation_sha256": "d278000ae7fc74fdb7c61f6c2aef8943b27f52121790670d37a9e71ee7c95a4a",
+      "failed_source_tests": [
+        "Targets LoadTargets when config file does not have team loads target with default team"
+      ],
+      "failed_brine_scenarios": [
+        "Production flyrc target behavior — \u003cprofile\u003e (row 1)"
+      ]
+    },
+    {
+      "id": "fly-home-has-precedence",
+      "mutation_sha256": "d237f9d73fd73164691d37cf7a764a2f98dea7f3256ee9a930973707a9ad97be",
+      "failed_source_tests": [
+        "Targets LoadTargets hierarchy of loading config file when FLY_HOME is set loads from the path set in FLY_HOME in preference to HOME"
+      ],
+      "failed_brine_scenarios": [
+        "Production flyrc target behavior — \u003cprofile\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "delete-selected-target",
+      "mutation_sha256": "cb1826048f43382cd25848379f82dffc6434bbbecea06bccd0fcff10279f9f6c",
+      "failed_source_tests": [
+        "Targets Deleting Target DeleteTarget when provided with target name to delete should delete target from flyrc"
+      ],
+      "failed_brine_scenarios": [
+        "Production flyrc target behavior — \u003cprofile\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "delete-all-writes-empty-map",
+      "mutation_sha256": "5c5116232b39bc5cf09c574568c456ac8d6fdc344c687f945f661ca868b0b957",
+      "failed_source_tests": [
+        "Targets Deleting Target DeleteAllTargets when deleting all targets should delete all targets from flyrc"
+      ],
+      "failed_brine_scenarios": [
+        "Production flyrc target behavior — \u003cprofile\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "update-target-api",
+      "mutation_sha256": "55577880f73624da135e3046f80f80cf63e2d62ef010d5f3eae9bd02e745af7b",
+      "failed_source_tests": [
+        "Targets UpdateTarget when props are provided for update should update target to specified prop attributes"
+      ],
+      "failed_brine_scenarios": [
+        "Production flyrc target behavior — \u003cprofile\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "rename-target-executes",
+      "mutation_sha256": "bae3d315a21ecaa952f9758f8817c399d978597b77861cbb4bf9c5cb37502071",
+      "failed_source_tests": [
+        "Targets UpdateTarget when target name is provided for update should update target name and keep old prop attributes"
+      ],
+      "failed_brine_scenarios": [
+        "Production flyrc target behavior — \u003cprofile\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "new-target-file-is-private",
+      "mutation_sha256": "a743c75d01e3b107c826f745e35534b95b48927e8d4b799176d39f066e46bc15",
+      "failed_source_tests": [
+        "Targets SaveTarget when managing .flyrc creates any new file with 0600 permissions"
+      ],
+      "failed_brine_scenarios": [
+        "Production flyrc target behavior — \u003cprofile\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "existing-target-permissions-are-preserved",
+      "mutation_sha256": "46de0232ce758d9384832028a15ffc6ec2fe5e5503b235b589c2087431a012af",
+      "failed_source_tests": [
+        "Targets SaveTarget when managing .flyrc when the file exists with 0755 permissions preserves those permissions"
+      ],
+      "failed_brine_scenarios": [
+        "Production flyrc target behavior — \u003cprofile\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "ca-certificate-round-trips",
+      "mutation_sha256": "29b2ba1884ee93ff82109fee991045b9a38c3ed3c63602d4ccd9854d4d7c6fea",
+      "failed_source_tests": [
+        "Targets SaveTarget CA Cert Flag when 'ca_cert' is set in the flyrc returns the rc insecure flag as true"
+      ],
+      "failed_brine_scenarios": [
+        "Production flyrc target behavior — \u003cprofile\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "insecure-flag-round-trips",
+      "mutation_sha256": "7813f088bbe50805c16f264703081b0641e8a5d93eb18ebf3507f639eaa83838",
+      "failed_source_tests": [
+        "Targets SaveTarget Insecure Flag when 'insecure' is set to false in the flyrc returns the rc insecure flag as false",
+        "Targets SaveTarget Insecure Flag when 'insecure' is set to true in the flyrc returns the rc insecure flag as true"
+      ],
+      "failed_brine_scenarios": [
+        "Production flyrc target behavior — \u003cprofile\u003e (row 10)",
+        "Production flyrc target behavior — \u003cprofile\u003e (row 11)"
+      ]
+    },
+    {
+      "id": "unknown-target-has-specific-error",
+      "mutation_sha256": "95574d117de6be810ee2279694da86127138e652ff004ab3a0f1b1e7841a4179",
+      "failed_source_tests": [
+        "Targets SaveTarget when selecting a target that does not exist returns UnknownTargetError"
+      ],
+      "failed_brine_scenarios": [
+        "Production flyrc target behavior — \u003cprofile\u003e (row 12)"
+      ]
+    },
+    {
+      "id": "empty-selection-has-specific-error",
+      "mutation_sha256": "c5e66a68570d9a467c846bd1c5d00d910a454512a8f83f3c4733f32e56ee9ef3",
+      "failed_source_tests": [
+        "Targets SaveTarget when a target is not specified returns ErrNoTargetSpecified"
+      ],
+      "failed_brine_scenarios": [
+        "Production flyrc target behavior — \u003cprofile\u003e (row 13)"
+      ]
+    }
+  ]
+}
