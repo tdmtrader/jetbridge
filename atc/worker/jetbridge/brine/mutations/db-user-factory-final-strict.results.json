@@ -1,0 +1,52 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-user-factory-final-strict.json",
+  "git_head": "6c18633af715898b19a68486df0d30028aeedf4b",
+  "completed_at": "2026-09-02T21:13:59Z",
+  "source_tests": 5,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/user_factory.go": "8b654d20afd081abf7d6c738cda004948b31bcd654d16ff55d9d48ec267f91ff",
+    "atc/db/user_factory_test.go": "c984dd4db734df9bff2b60265395e03e63e60d65c1fa53f27daad0c1d31aa8e7",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/db-user-factory-final-strict.feature": "30374abeb6d3643803c7bca65e4bacf8e491e0a7ca1dc9c8345ce02c91d9e57d",
+    "atc/worker/jetbridge/brine/mutations/db-user-factory-final-strict.json": "7ebc9664d04c0a2f0fe24398df53e0f5e702ca40254b50b0a6c87a312bfc2d8a",
+    "atc/worker/jetbridge/brine/steps/db_user_factory_final_strict.go": "9934c35e96266300d4077b0ee0d64fc42669bea64de582cb49e64ec748b6e485",
+    "atc/worker/jetbridge/brine/steps/resources.go": "f594ee3b1828c61ca1dd1ef9dd8024ecbb440898b57644b50a80d86bad475691"
+  },
+  "mutation_cases": [
+    {
+      "id": "user-name-is-persisted-exactly",
+      "mutation_sha256": "f1e226dbb2d0ec94e33308e4e6960be70c9be514079512aa87524953d9b9907a",
+      "failed_source_tests": [
+        "User Factory when user doesn't exist Insert a user with last_login now()",
+        "User Factory when username exists and with the same connector Doesn't create a new record"
+      ],
+      "failed_brine_scenarios": [
+        "Creating a new user preserves its name and current login time",
+        "Repeating the same subject preserves its exact username"
+      ]
+    },
+    {
+      "id": "connector-specific-subjects-remain-distinct",
+      "mutation_sha256": "bb744dfea5846da0e19ec8731755293bfc80d9c8a5da930319a6a6a8f513db8b",
+      "failed_source_tests": [
+        "User Factory when username exists but with different connector Creates a different user"
+      ],
+      "failed_brine_scenarios": [
+        "The same username through different connectors creates distinct users"
+      ]
+    },
+    {
+      "id": "same-subject-updates-one-row",
+      "mutation_sha256": "d6165d623891080afb1359384979923fec76efca80a36646e3e9765e5be18313",
+      "failed_source_tests": [
+        "User Factory when username exists and with the same connector Doesn't create a different user",
+        "User Factory when username exists and with the same connector Update the last_login time"
+      ],
+      "failed_brine_scenarios": [
+        "Repeating the same subject keeps one user",
+        "Repeating the same subject updates its login time"
+      ]
+    }
+  ]
+}
