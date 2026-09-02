@@ -1,0 +1,33 @@
+{
+  "name": "db-resource-config-final-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/resource_config_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-resource-config-final-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_resource_config_final_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "scope-retains-its-resource-config",
+      "source_file": "atc/db/resource_config.go",
+      "old": "\t\tresourceConfig: resourceConfig,",
+      "new": "\t\tresourceConfig: nil,",
+      "tests": [
+        "ResourceConfig when non-unique FindOrCreateScope given no resource finds or creates a global scope",
+        "ResourceConfig when non-unique FindOrCreateScope given a resource with global resources disabled finds or creates a unique scope",
+        "ResourceConfig when non-unique FindOrCreateScope given a resource with global resources enabled finds or creates a global scope",
+        "ResourceConfig when using a unique base resource type FindOrCreateScope given no resource finds or creates a global scope",
+        "ResourceConfig when using a unique base resource type FindOrCreateScope given a resource finds or creates a unique scope"
+      ],
+      "scenarios": [
+        "A non-unique config without a resource reuses one global scope",
+        "Global resources disabled gives each resource its own scope",
+        "Global resources enabled shares a non-unique config scope",
+        "A unique base config without a resource reuses one global scope",
+        "A unique base config keeps a resource-specific scope"
+      ],
+      "failure_contains": "resource config scope observation"
+    }
+  ]
+}

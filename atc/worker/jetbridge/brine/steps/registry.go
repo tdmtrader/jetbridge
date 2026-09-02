@@ -184,6 +184,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, DBVersionsFinalStrictDefinitions()...)
 	defs = append(defs, DBResourceConfigCheckSessionLifecycleStrictDefinitions()...)
 	defs = append(defs, DBResourceConfigFactoryStrictDefinitions()...)
+	defs = append(defs, DBResourceConfigFinalStrictDefinitions()...)
 	defs = append(defs, DBPipelineFactoryStrictDefinitions()...)
 	defs = append(defs, DBPipelinePauserStrictDefinitions()...)
 	defs = append(defs, IDTokenManagerStrictDefinitions()...)
