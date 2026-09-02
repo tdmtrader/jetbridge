@@ -1,0 +1,49 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/named-variables-strict.json",
+  "git_head": "847e6e881c126a6969171aa37d8d5571c6bda1d8",
+  "completed_at": "2026-09-02T18:41:21Z",
+  "source_tests": 4,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/named-variables-strict.feature": "de4478053e561cef6f569b9f2c805d16d63c9be21a68f40d2661ff6cf0a79964",
+    "atc/worker/jetbridge/brine/mutations/named-variables-strict.json": "f901935e5e448cbc80e4d479b79b7c5308f33c79b5965e523f3917b4d4659376",
+    "atc/worker/jetbridge/brine/steps/variable_sources_strict.go": "62cf9a95ae8412c277fe21e2d13b09832672ccbd9698a56a35be9d1e1cc5e5b0",
+    "vars/named_vars.go": "3b70745e3234c58308865afed1f562536cd2e9610c43fb8b99d3f23b82ec6053",
+    "vars/named_vars_test.go": "444cd3521f2b8f30a1a76d11c7c22094e690b9b16fc50e381c43db6f06370954"
+  },
+  "mutation_cases": [
+    {
+      "id": "unqualified-lookups-are-not-rejected",
+      "mutation_sha256": "b8b98249c798436d67dea655c6363c28c771dd57a1430835c017f5daca545465",
+      "failed_source_tests": [
+        "NamedVariables Get return no value and not found if there are no sources",
+        "NamedVariables Get return no value and not found if var source name is not specified"
+      ],
+      "failed_brine_scenarios": [
+        "Named variable profile \u003cprofile\u003e (row 1)",
+        "Named variable profile \u003cprofile\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "missing-source-error-is-suppressed",
+      "mutation_sha256": "c6d793d1f16fab6072461a00d94b7c7110750b1efc5dbd4606ab17cbeb18b1bf",
+      "failed_source_tests": [
+        "NamedVariables Get return no value, not found and an error if var source name doesn't exist"
+      ],
+      "failed_brine_scenarios": [
+        "Named variable profile \u003cprofile\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "list-drops-qualified-references",
+      "mutation_sha256": "4591b4be33da56196e40fac210f3f45294c6012d082a3a3b2511c9234271bf46",
+      "failed_source_tests": [
+        "NamedVariables List returns list of names from multiple vars with duplicates"
+      ],
+      "failed_brine_scenarios": [
+        "Named variable profile \u003cprofile\u003e (row 4)"
+      ]
+    }
+  ]
+}
