@@ -1,0 +1,104 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-volume-remaining-strict.json",
+  "git_head": "2ab69c4936c674ccef485c3b66df3059e75c7c05",
+  "completed_at": "2026-09-02T20:33:30Z",
+  "source_tests": 15,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/team.go": "0f44893708836914e40066140ac396ed0cd9531f2ff4aca02c6a25797562e761",
+    "atc/db/volume.go": "cf3f9da135f41525cab059121b9c13987e537639b3149eee9621b95d3234f742",
+    "atc/db/volume_test.go": "bde445aaf3055443a03f0c145237eeda6e1a7d3a97ffe55e85fbfe9f1947452e",
+    "atc/db/worker.go": "b4389b7d8d4147a62770e73197ee65f09e6b95f87cf5602e17d9fb7286837845",
+    "atc/db/worker_resource_cache.go": "a2b9c616bb351ebcb8bd91e611f1dea8611094d366d8379fbf65d5bcf92c3fb2",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/db-volume-remaining-strict.feature": "b09b9b03dd560643e10d9455eaf3772c6403042ee358e4deeb417b0f89eaa813",
+    "atc/worker/jetbridge/brine/mutations/db-volume-remaining-strict.json": "b97daf487316e43f669a27d0e5f746e675f9d35ce3904e05816ffcd2faa9acb1",
+    "atc/worker/jetbridge/brine/steps/db_volume_remaining_strict.go": "44ea738a8776fdd908eb7f32babae71aeccae071f1791de79bfac1218d839423",
+    "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
+    "atc/worker/jetbridge/brine/steps/registry.go": "c33e4c407063aedbded1087f9f8a05ced4b1cd41d8289e0736565e95fecc653d",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8"
+  },
+  "mutation_cases": [
+    {
+      "id": "duplicate-cache-volume-absorbs-unique-conflict",
+      "mutation_sha256": "ad70459028098049ba0ccff41448bf29818ecdcaa1c85ae1969e647834377cbb",
+      "failed_source_tests": [
+        "Volume createdVolume.InitializeResourceCache when initialize created resource cache when there's already an initialized resource cache on the same worker leaves the volume owned by the container"
+      ],
+      "failed_brine_scenarios": [
+        "A duplicate cache volume remains container-owned"
+      ]
+    },
+    {
+      "id": "resource-cache-volume-respects-invalidation-time",
+      "mutation_sha256": "33abd49597febb1aaf83e776c12fe118c8d7e43e14841022c550e2a7d2100199",
+      "failed_source_tests": [
+        "Volume createdVolume.InitializeResourceCache when initialize streamed resource cache when a streamed resource cache is streamed to another worker when the original base resource type is invalidated when build started after original invalidated should not be usable when the original base resource type is invalidated",
+        "Volume createdVolume.InitializeResourceCache when initialize streamed resource cache when a streamed resource cache is streamed to another worker when the original base resource type is invalidated when build started before original invalidated should be still usable when the original base resource type is invalidated"
+      ],
+      "failed_brine_scenarios": [
+        "An invalidated stream chain is unavailable to a later build",
+        "An invalidated stream chain remains usable for an earlier build"
+      ]
+    },
+    {
+      "id": "team-cache-worker-respects-invalidation-time",
+      "mutation_sha256": "d93d5b4f05eb0010de316f01ed1dc043df3830fd550c4ba25a15eb43a7b4f6cc",
+      "failed_source_tests": [
+        "Volume createdVolume.InitializeResourceCache when streaming a volume cache that has been invalidated on the source worker when build started after cache is invalidated should still found the resource cache because source is invalidated",
+        "Volume createdVolume.InitializeResourceCache when streaming a volume cache that has been invalidated on the source worker when build started before cache is invalidated should still found the resource cache because source is invalidated"
+      ],
+      "failed_brine_scenarios": [
+        "An invalidated source worker is hidden from a later build",
+        "An invalidated source worker is returned to an earlier build"
+      ]
+    },
+    {
+      "id": "invalid-stream-source-is-rejected",
+      "mutation_sha256": "fa793b69e7d0f4d508a42298de357ade81f8fe61373aea2300b9800124ca1f98",
+      "failed_source_tests": [
+        "Volume createdVolume.InitializeResourceCache when streaming a volume cache that has been invalidated on the source worker InitializeStreamedResourceCache should not fail"
+      ],
+      "failed_brine_scenarios": [
+        "A stream from an invalid source remains container-owned without error"
+      ]
+    },
+    {
+      "id": "worker-delete-invalidates-caches-and-cascades-volumes",
+      "mutation_sha256": "f4f56fde5c573fc7c807ad5121fdd6887eef5b334436e6b6b25b4bb6d559028a",
+      "failed_source_tests": [
+        "Volume createdVolume.InitializeResourceCache when a streamed resource cache is invalidated initializing resource cache on the new volume should succeed",
+        "Volume createdVolume.InitializeResourceCache when a streamed resource cache is invalidated new volume owned by the resource",
+        "Volume createdVolume.InitializeResourceCache when a streamed resource cache is invalidated when build started after the cache is invalidated resource cache volume should be found on worker1",
+        "Volume createdVolume.InitializeResourceCache when a streamed resource cache is invalidated when build started after the cache is invalidated there is an invalid worker resource cache on worker1",
+        "Volume createdVolume.InitializeResourceCache when a streamed resource cache is invalidated when build started before the cache is invalidated resource cache volume should be found on both worker1",
+        "Volume createdVolume.InitializeResourceCache when a streamed resource cache is invalidated when build started before the cache is invalidated there is an invalid worker resource cache on worker1",
+        "Volume when worker is no longer in database the container goes away from the db"
+      ],
+      "failed_brine_scenarios": [
+        "A deleted source permits a replacement cache record",
+        "A later build can inspect the invalidated streamed cache record",
+        "A later build finds the replacement cache volume",
+        "A replacement cache volume becomes resource-owned",
+        "An earlier build can inspect the invalidated streamed cache record",
+        "An earlier build finds the replacement cache volume",
+        "Deleting a worker cascades its container volume"
+      ]
+    },
+    {
+      "id": "resource-volume-reports-resource-version",
+      "mutation_sha256": "8bd97fc40b347b6eec07382b81db0602ce998d266171f817c992719a54ddcfd1",
+      "failed_source_tests": [
+        "Volume Resource cache volumes returns volume type from streamed source volume",
+        "Volume Resource cache volumes returns volume type, resource type, resource version"
+      ],
+      "failed_brine_scenarios": [
+        "A local resource volume reports the nested resource type and versions",
+        "A streamed resource volume reports the nested resource type and versions"
+      ]
+    }
+  ]
+}
