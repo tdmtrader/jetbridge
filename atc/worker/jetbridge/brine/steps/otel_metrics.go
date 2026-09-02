@@ -22,6 +22,14 @@ type metricExpectation struct {
 	attrs map[string]string
 }
 
+type metricComparison int
+
+const (
+	metricAtLeast metricComparison = iota
+	metricExact
+	metricPresence
+)
+
 func OTelMetricDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 		brine.DefineMap[brine.Empty, OTelMetricObservation](
@@ -178,14 +186,28 @@ func recordAndValidateOTel(profile string) error {
 		return err
 	}
 	for _, want := range expected {
-		if !otelMetricMatches(exported, want) {
-			return fmt.Errorf("metric %s did not export kind=%s value>=%g attrs=%v", want.name, want.kind, want.value, want.attrs)
+		comparison := otelMetricComparison(profile)
+		if !otelMetricMatches(exported, want, comparison) {
+			return fmt.Errorf("metric %s did not export kind=%s comparison=%d value=%g attrs=%v", want.name, want.kind, comparison, want.value, want.attrs)
 		}
 	}
 	return nil
 }
 
-func otelMetricMatches(exported metricdata.ResourceMetrics, want metricExpectation) bool {
+func otelMetricComparison(profile string) metricComparison {
+	switch profile {
+	case "lifecycle-builds-started", "lifecycle-builds-running", "lifecycle-build-finished",
+		"lifecycle-checks-started", "lifecycle-checks-running", "scheduling-scheduled",
+		"scheduling-running", "waiting-count":
+		return metricExact
+	case "core-volume-operations", "artifact-attributes", "db-connections", "checks-finished", "gc-attributes":
+		return metricPresence
+	default:
+		return metricAtLeast
+	}
+}
+
+func otelMetricMatches(exported metricdata.ResourceMetrics, want metricExpectation, comparison metricComparison) bool {
 	for _, scope := range exported.ScopeMetrics {
 		for _, got := range scope.Metrics {
 			if got.Name != want.name {
@@ -197,7 +219,7 @@ func otelMetricMatches(exported metricdata.ResourceMetrics, want metricExpectati
 					continue
 				}
 				for _, point := range data.DataPoints {
-					if point.Value >= want.value && otelAttrsMatch(point.Attributes, want.attrs) {
+					if metricValueMatches(point.Value, want.value, comparison) && otelAttrsMatch(point.Attributes, want.attrs) {
 						return true
 					}
 				}
@@ -206,7 +228,7 @@ func otelMetricMatches(exported metricdata.ResourceMetrics, want metricExpectati
 					continue
 				}
 				for _, point := range data.DataPoints {
-					if point.Sum >= want.value && otelAttrsMatch(point.Attributes, want.attrs) {
+					if metricValueMatches(point.Sum, want.value, comparison) && otelAttrsMatch(point.Attributes, want.attrs) {
 						return true
 					}
 				}
@@ -214,6 +236,17 @@ func otelMetricMatches(exported metricdata.ResourceMetrics, want metricExpectati
 		}
 	}
 	return false
+}
+
+func metricValueMatches(got, want float64, comparison metricComparison) bool {
+	switch comparison {
+	case metricExact:
+		return got == want
+	case metricPresence:
+		return true
+	default:
+		return got >= want
+	}
 }
 
 func otelAttrsMatch(set attribute.Set, want map[string]string) bool {

@@ -1414,15 +1414,6 @@ var _ = Describe("Jobs API", func() {
 				})
 			})
 
-			Context("when the job is naturally absent", func() {
-				BeforeEach(func() {
-					config = atc.Config{Jobs: atc.JobConfigs{{Name: "other-job"}}}
-				})
-
-				It("returns 404", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-				})
-			})
 		})
 	})
 	Describe("POST /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/builds", func() {

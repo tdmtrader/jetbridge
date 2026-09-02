@@ -196,14 +196,12 @@ func runCase(repo, brineDir, brineBinary, ginkgoBinary string, m manifest, mutat
 	writeJSON(overlayPath, map[string]any{"Replace": map[string]string{sourcePath: mutantPath}})
 
 	testReport := filepath.Join(temp, "ginkgo.json")
-	focus := exactAlternation(mutation.Tests)
 	testEnv := append(os.Environ(), "GOFLAGS=-overlay="+overlayPath)
 	var testOutput string
 	var testErr error
 	lockErr := withFileLock("/tmp/concourse-migration-audit-ginkgo.lock", func() {
 		testOutput, testErr = run(repo, testEnv, ginkgoBinary,
 			"--focus-file=^"+regexp.QuoteMeta(absolute(repo, m.SourceTestFile))+"$",
-			"--focus="+focus,
 			"--fail-on-empty",
 			"--json-report="+testReport,
 			m.TestPackage,
@@ -333,17 +331,6 @@ func failedBrineScenarios(output string) ([]string, map[string]string, bool, err
 	}
 	sort.Strings(failed)
 	return failed, errorsByScenario, runEnded, nil
-}
-
-func exactAlternation(values []string) string {
-	escaped := make([]string, len(values))
-	for i, value := range values {
-		escaped[i] = regexp.QuoteMeta(value)
-	}
-	// Ginkgo matches -focus against "<suite description> <spec text>".  The
-	// manifest stores the exact spec text reported by its JSON output, without
-	// that suite-description prefix, so require an exact suffix here.
-	return `(?:^| )(?:` + strings.Join(escaped, "|") + `)$`
 }
 
 func equalSets(actual, expected []string) error {
