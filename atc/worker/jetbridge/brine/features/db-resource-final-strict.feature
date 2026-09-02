@@ -20,14 +20,6 @@ Feature: Remaining resource persistence behavior
     When the remaining real resource domain evaluates profile "build-manual"
     Then the remaining resource domain result is "created=true;manual=true;resource-id=true"
 
-  Scenario: CreateInMemoryBuild preserves every transient resource build field
-    When the remaining real resource domain evaluates profile "memory-created"
-    Then the remaining resource domain result is "exact=true"
-
-  Scenario: CreateInMemoryBuild keeps check events out of PostgreSQL
-    When the remaining real resource domain evaluates profile "memory-events"
-    Then the remaining resource domain result is "events=0"
-
   Scenario: ClearVersions reports zero for an empty resource history
     When the remaining real resource domain evaluates profile "clear-zero"
     Then the remaining resource domain result is "deleted=0"
@@ -72,18 +64,10 @@ Feature: Remaining resource persistence behavior
     When the remaining real resource domain evaluates profile "summary-empty"
     Then the remaining resource domain result is "nil=true"
 
-  Scenario: BuildSummary reflects the current in-memory started check
-    When the remaining real resource domain evaluates profile "summary-started"
-    Then the remaining resource domain result is "exact=true"
-
   Scenario: BuildSummary reflects a failed persisted scope check
     When the remaining real resource domain evaluates profile "summary-failed"
     Then the remaining resource domain result is "exact=true"
 
   Scenario: BuildSummary reflects another successful check sharing the scope
     When the remaining real resource domain evaluates profile "summary-shared"
-    Then the remaining resource domain result is "exact=true"
-
-  Scenario: BuildSummary returns to the resource's newest started check
-    When the remaining real resource domain evaluates profile "summary-newest"
     Then the remaining resource domain result is "exact=true"

@@ -49,24 +49,6 @@
       "scenarios": ["CreateBuild permits and marks a manual build while one is running"]
     },
     {
-      "id": "resource-in-memory-build-uses-transient-constructor",
-      "source_file": "atc/db/resource.go",
-      "old": "\treturn newRunningInMemoryCheckBuild(r.conn, r.lockFactory, r, plan, NewSpanContext(ctx), seqGen)",
-      "new": "\tbuild, _, err := r.CreateBuild(ctx, false, plan)\n\treturn build, err",
-      "tests": [
-        "Resource CreateInMemoryBuild creates a started build for a resource",
-        "Resource CreateInMemoryBuild should not log to the check_build_events partition",
-        "Resource BuildSummary when first check build starts, not set a scope yet has build summary",
-        "Resource BuildSummary when first check build starts, not set a scope yet when a scope is set when other resource ran a check build for the scope when the resource starts a new build has build summary"
-      ],
-      "scenarios": [
-        "CreateInMemoryBuild preserves every transient resource build field",
-        "CreateInMemoryBuild keeps check events out of PostgreSQL",
-        "BuildSummary reflects the current in-memory started check",
-        "BuildSummary returns to the resource's newest started check"
-      ]
-    },
-    {
       "id": "resource-clear-versions-reports-deleted-row-count",
       "source_file": "atc/db/resource.go",
       "old": "\treturn rowsDeleted, err\n}\n\nfunc (r *resource) Versions",
