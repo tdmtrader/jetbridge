@@ -83,5 +83,11 @@ func observeVariableReference(profile string) (string, error) {
 		}
 		return "error:" + err.Error(), nil
 	}
+	if profile == "parse-preserve-quoted-space" {
+		if ref.Source != "" || ref.Path != " hello " || strings.Join(ref.Fields, ",") != "world " {
+			return profile + "-mismatch", nil
+		}
+		return profile + "-preserved", nil
+	}
 	return fmt.Sprintf("source=%s;path=%s;fields=%s", ref.Source, ref.Path, strings.Join(ref.Fields, ",")), nil
 }
