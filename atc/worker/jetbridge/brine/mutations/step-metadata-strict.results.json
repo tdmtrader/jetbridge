@@ -1,0 +1,68 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/step-metadata-strict.json",
+  "git_head": "08245d2f259da43f4aafac8211eafa00e6986516",
+  "completed_at": "2026-09-02T21:16:21Z",
+  "source_tests": 5,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/exec/step_metadata.go": "8987b6399cb1806424d753a8218eaa3871d2864d697b57bd2dc7864fc178fcf6",
+    "atc/exec/step_metadata_test.go": "e29b0e1c5310a125a7a0174c60226b81384fd7cc3082f22878430c76528f77d7",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/step-metadata-strict.feature": "6a332525aee56011a0a7f787d6612010ce4d2c066256a877612fe504f69d4825",
+    "atc/worker/jetbridge/brine/mutations/step-metadata-strict.json": "02c284ea09c6637682275023466c3446be847c84117002ab4f8dc2463ef686e9",
+    "atc/worker/jetbridge/brine/steps/registry.go": "565214b4fbeec1bd7a86f1b556a853ffdc3fa6700ec2ff2adb91529d632e4bcd",
+    "atc/worker/jetbridge/brine/steps/step_metadata_strict.go": "37f3e7acf10d2b735e8e5e73d53783e977dfd33b7eeb49f19fb617811bc0b3f4"
+  },
+  "mutation_cases": [
+    {
+      "id": "created-by-is-exposed",
+      "mutation_sha256": "0d4c40cc2b9e94ee7ee12ebeac4d8fd53a42ccbf938355915a70a09a38cdd35f",
+      "failed_source_tests": [
+        "StepMetadata Env when populating fields returns the specified values"
+      ],
+      "failed_brine_scenarios": [
+        "Production step metadata behavior — \u003cprofile\u003e (row 1)"
+      ]
+    },
+    {
+      "id": "instance-vars-query-is-appended",
+      "mutation_sha256": "81f699eda8a4a36fc96c1884ea4d3e582644005b6a8b5003a30afcb8da9f9ae0",
+      "failed_source_tests": [
+        "StepMetadata Env when pipeline instance vars are set includes instance vars in URLs as query parameters"
+      ],
+      "failed_brine_scenarios": [
+        "Production step metadata behavior — \u003cprofile\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "empty-build-name-is-omitted",
+      "mutation_sha256": "ee70c049fbc28694c5c3c93c6415fe08ad13630d911a52172a138c7802208baa",
+      "failed_source_tests": [
+        "StepMetadata Env when fields are empty does not include fields that are not set"
+      ],
+      "failed_brine_scenarios": [
+        "Production step metadata behavior — \u003cprofile\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "task-team-name-is-exposed",
+      "mutation_sha256": "aa98cda530ddbfdb524a5f64723bdbb95755cbe6aeeabbeb9025c696e6935cf0",
+      "failed_source_tests": [
+        "StepMetadata TaskEnv when populating fields returns build identity env for tasks"
+      ],
+      "failed_brine_scenarios": [
+        "Production step metadata behavior — \u003cprofile\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "zero-task-build-id-is-omitted",
+      "mutation_sha256": "8b95cd0cafb191bb4c9b8e79b6af4a36480d6f4deddbe9214872dad3053bb6ed",
+      "failed_source_tests": [
+        "StepMetadata TaskEnv when fields are empty returns an empty list"
+      ],
+      "failed_brine_scenarios": [
+        "Production step metadata behavior — \u003cprofile\u003e (row 5)"
+      ]
+    }
+  ]
+}
