@@ -17,8 +17,8 @@
     {
       "id": "expired-only-predicate",
       "source_file": "atc/db/access_token_lifecycle.go",
-      "old": "fmt.Sprintf(\"expires_at < now() - '%d seconds'::interval\", int(leeway.Seconds()))",
-      "new": "fmt.Sprintf(\"expires_at > now() - '%d seconds'::interval\", int(leeway.Seconds()))",
+      "old": "func (a accessTokenLifecycle) RemoveExpiredAccessTokens(leeway time.Duration) (int, error) {\n\tres, err := sq.Delete",
+      "new": "func (a accessTokenLifecycle) RemoveExpiredAccessTokens(leeway time.Duration) (int, error) {\n\tif leeway == 0 {\n\t\tleeway = 25 * time.Hour\n\t}\n\tres, err := sq.Delete",
       "tests": ["Access Token Lifecycle removes expired access tokens"],
       "scenarios": ["Production access-token database behavior — <profile> (row 3)"]
     },
