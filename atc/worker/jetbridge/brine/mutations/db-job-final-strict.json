@@ -1,0 +1,188 @@
+{
+  "name": "db-job-final-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/job_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-job-final-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/main.go",
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/registry.go",
+    "atc/worker/jetbridge/brine/steps/db_job_final_strict.go",
+    "atc/worker/jetbridge/brine/steps/db_job_input_output_strict.go",
+    "atc/worker/jetbridge/brine/steps/registry.go",
+    "atc/worker/jetbridge/brine/steps/assert.go",
+    "atc/worker/jetbridge/brine/steps/resources.go",
+    "atc/worker/jetbridge/brine/steps/task_command.go",
+    "atc/worker/jetbridge/brine/steps/envtest.go",
+    "atc/postgresrunner/postgresrunner.go",
+    "atc/postgresrunner/ginkgo.go",
+    "atc/postgresrunner/join_limit_conn.go"
+  ],
+  "cases": [
+    {
+      "id": "schedule-build-persists-scheduled-state",
+      "source_file": "atc/db/job.go",
+      "old": "\t\tresult, err = psql.Update(\"builds\").\n\t\t\tSet(\"scheduled\", true).\n\t\t\tWhere(sq.Eq{\"id\": build.ID()}).",
+      "new": "\t\tresult, err = psql.Update(\"builds\").\n\t\t\tSet(\"scheduled\", false).\n\t\t\tWhere(sq.Eq{\"id\": build.ID()}).",
+      "tests": [
+        "Job ScheduleBuild when the scheduling build is created first when the job config doesn't specify max in flight schedules the build",
+        "Job ScheduleBuild when the scheduling build is created first when the job config doesn't specify max in flight when build exists when the pipeline and job is not paused sets the build to scheduled",
+        "Job ScheduleBuild when the scheduling build is created first when the job config specifies max in flight = 2 when there is 1 build running schedules the build",
+        "Job ScheduleBuild when the scheduling build is created first when the job is in serial groups when no jobs in the serial groups are running does schedule the build",
+        "Job ScheduleBuild when the scheduling build is not the first one created (with serial groups) when the scheduling build has it's inputs determined and created earlier does schedule the build",
+        "Job ScheduleBuild when the scheduling build is not the first one created (with serial groups) when there are other succeeded builds within the same serial group does schedule builds because we only care about running or pending builds"
+      ],
+      "scenarios": [
+        "Remaining DB job behavior — <profile> (row 1)",
+        "Remaining DB job behavior — <profile> (row 2)",
+        "Remaining DB job behavior — <profile> (row 3)",
+        "Remaining DB job behavior — <profile> (row 4)",
+        "Remaining DB job behavior — <profile> (row 5)",
+        "Remaining DB job behavior — <profile> (row 6)"
+      ]
+    },
+    {
+      "id": "schedule-build-honors-pipeline-pause",
+      "source_file": "atc/db/job.go",
+      "old": "\treturn paused, nil\n}",
+      "new": "\treturn false, nil\n}",
+      "tests": [
+        "Job ScheduleBuild when the scheduling build is created first when the job config doesn't specify max in flight when build exists when the pipeline is paused returns false"
+      ],
+      "scenarios": [
+        "Remaining DB job behavior — <profile> (row 7)"
+      ]
+    },
+    {
+      "id": "schedule-build-honors-job-pause",
+      "source_file": "atc/db/job.go",
+      "old": "\tif j.paused {\n\t\treturn true, nil\n\t}\n\n\tvar paused bool",
+      "new": "\tif j.paused {\n\t\treturn false, nil\n\t}\n\n\tvar paused bool",
+      "tests": [
+        "Job ScheduleBuild when the scheduling build is created first when the job config doesn't specify max in flight when build exists when the job is paused returns false",
+        "Job ScheduleBuild when the scheduling build is not the first one created (with serial groups) when the job is paused but has inputs determined does not schedule the build"
+      ],
+      "scenarios": [
+        "Remaining DB job behavior — <profile> (row 8)",
+        "Remaining DB job behavior — <profile> (row 9)"
+      ]
+    },
+    {
+      "id": "schedule-build-rejects-missing-build",
+      "source_file": "atc/db/job.go",
+      "old": "\t\tif rowsAffected != 1 {\n\t\t\treturn false, NonOneRowAffectedError{rowsAffected}\n\t\t}\n\n\t\tscheduled = true",
+      "new": "\t\tif rowsAffected > 1 {\n\t\t\treturn false, NonOneRowAffectedError{rowsAffected}\n\t\t}\n\n\t\tscheduled = true",
+      "tests": [
+        "Job ScheduleBuild when the scheduling build is created first when the job config doesn't specify max in flight when the build does not exist returns false"
+      ],
+      "scenarios": [
+        "Remaining DB job behavior — <profile> (row 10)"
+      ]
+    },
+    {
+      "id": "pending-builds-are-job-scoped",
+      "source_file": "atc/db/job.go",
+      "old": "\t\tWhere(sq.Eq{\n\t\t\t\"b.job_id\": j.id,\n\t\t\t\"b.status\": BuildStatusPending,\n\t\t}).",
+      "new": "\t\tWhere(sq.Eq{\n\t\t\t\"b.status\": BuildStatusPending,\n\t\t}).",
+      "tests": [
+        "Job a build is created for a job and another build for a different pipeline is created with the same job name does not change the next pending build for job"
+      ],
+      "scenarios": [
+        "Remaining DB job behavior — <profile> (row 11)"
+      ]
+    },
+    {
+      "id": "scheduled-builds-remain-pending",
+      "source_file": "atc/db/job.go",
+      "old": "\t\t\t\"b.status\": BuildStatusPending,\n\t\t}).\n\t\tOrderBy",
+      "new": "\t\t\t\"b.status\":    BuildStatusPending,\n\t\t\t\"b.scheduled\": false,\n\t\t}).\n\t\tOrderBy",
+      "tests": [
+        "Job a build is created for a job when scheduled remains the next pending build for job"
+      ],
+      "scenarios": [
+        "Remaining DB job behavior — <profile> (row 12)"
+      ]
+    },
+    {
+      "id": "pending-builds-preserve-rerun-order",
+      "source_file": "atc/db/job.go",
+      "old": "\t\tOrderBy(\"COALESCE(b.rerun_of, b.rerun_of_old, b.id) ASC, b.id ASC\").",
+      "new": "\t\tOrderBy(\"COALESCE(b.rerun_of, b.rerun_of_old, b.id) DESC, b.id DESC\").",
+      "tests": [
+        "Job a build is created for a job and another is created for the same job the first build remains the next pending build",
+        "Job a build is created for a job when there is a rerun build created for an old build orders the builds with regular build first and then rerun of old build",
+        "Job a build is created for a job when there is a rerun build created for the newest build orders the builds with rerun of new build",
+        "Job a build is created for a job when there are multiple reruns for multiple pending builds orders the builds with ascending reruns following original builds"
+      ],
+      "scenarios": [
+        "Remaining DB job behavior — <profile> (row 13)",
+        "Remaining DB job behavior — <profile> (row 14)",
+        "Remaining DB job behavior — <profile> (row 15)",
+        "Remaining DB job behavior — <profile> (row 16)"
+      ]
+    },
+    {
+      "id": "start-persists-current-schema",
+      "source_file": "atc/db/build.go",
+      "old": "\t\tSet(\"schema\", schema).\n\t\tSet(\"private_plan\", encryptedPlan).",
+      "new": "\t\tSet(\"schema\", \"exec.v1\").\n\t\tSet(\"private_plan\", encryptedPlan).",
+      "tests": [
+        "Job a build is created for a job when started saves the updated status, and the schema and private plan"
+      ],
+      "scenarios": [
+        "Remaining DB job behavior — <profile> (row 17)"
+      ]
+    },
+    {
+      "id": "start-persists-current-time",
+      "source_file": "atc/db/build.go",
+      "old": "\t\tSet(\"start_time\", sq.Expr(\"now()\")).\n\t\tSet(\"schema\", schema).",
+      "new": "\t\tSet(\"start_time\", sq.Expr(\"'1970-01-01 00:00:00+00'\")).\n\t\tSet(\"schema\", schema).",
+      "tests": [
+        "Job a build is created for a job when started saves the build's start time"
+      ],
+      "scenarios": [
+        "Remaining DB job behavior — <profile> (row 18)"
+      ]
+    },
+    {
+      "id": "finish-persists-status-and-time",
+      "source_file": "atc/db/build.go",
+      "old": "\tupdateBuilder := psql.Update(\"builds\").\n\t\tSet(\"status\", status).\n\t\tSet(\"end_time\", sq.Expr(\"now()\")).",
+      "new": "\tupdateBuilder := psql.Update(\"builds\").\n\t\tSet(\"status\", BuildStatusFailed).\n\t\tSet(\"end_time\", sq.Expr(\"now()\")).",
+      "tests": [
+        "Job a build is created for a job when the build finishes sets the build's status and end time"
+      ],
+      "scenarios": [
+        "Remaining DB job behavior — <profile> (row 19)"
+      ]
+    },
+    {
+      "id": "clear-task-cache-honors-nonempty-path",
+      "source_file": "atc/db/job.go",
+      "old": "\tif len(cachePath) > 0 {\n\t\tsqlBuilder = sqlBuilder.Where(sq.Eq{\"path\": cachePath})\n\t}",
+      "new": "\tif len(cachePath) == 0 {\n\t\tsqlBuilder = sqlBuilder.Where(sq.Eq{\"path\": cachePath})\n\t}",
+      "tests": [
+        "Job Clear task cache when task cache exists when a path is provided but the cache path doesn't exist deletes 0 rows"
+      ],
+      "scenarios": [
+        "Remaining DB job behavior — <profile> (row 20)"
+      ]
+    },
+    {
+      "id": "clear-task-cache-honors-job-and-step",
+      "source_file": "atc/db/job.go",
+      "old": "\tvar sqlBuilder = psql.Delete(\"task_caches\").\n\t\tWhere(sq.Eq{\n\t\t\t\"job_id\":    j.id,\n\t\t\t\"step_name\": stepName,\n\t\t})",
+      "new": "\tvar sqlBuilder = psql.Delete(\"task_caches\")",
+      "tests": [
+        "Job Clear task cache when task cache exists when a path is not provided when a non-existent step-name is provided does not delete any rows from the task_caches table",
+        "Job Clear task cache when task cache exists when a path is not provided when a non-existent step-name is provided should not delete any task steps",
+        "Job Clear task cache when task cache exists when a path is not provided when an existing step-name is provided doesn't remove other jobs caches"
+      ],
+      "scenarios": [
+        "Remaining DB job behavior — <profile> (row 21)",
+        "Remaining DB job behavior — <profile> (row 22)",
+        "Remaining DB job behavior — <profile> (row 23)"
+      ]
+    }
+  ]
+}

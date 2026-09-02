@@ -60,7 +60,7 @@ func main() {
 	// eager per-scope acquisition, handles to using-steps, LIFO disposal at
 	// scope exits (SIGTERM cancellation included), unknown-resource
 	// validation on the check path.
-	resourceRegistry, err := buildAppResources()
+	resourceRegistry, err := buildAppResources(os.Args[2:])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "brine-adapter-jetbridge: resource registry error: %v\n", err)
 		os.Exit(2)
