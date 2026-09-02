@@ -1,0 +1,183 @@
+{
+  "name": "run-state-strict",
+  "test_package": "./atc/exec",
+  "source_test_file": "atc/exec/run_state_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/run-state-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/run_state_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go",
+    "atc/worker/jetbridge/brine/steps/task_command.go",
+    "atc/worker/jetbridge/brine/steps/envtest.go",
+    "atc/postgresrunner/postgresrunner.go",
+    "atc/postgresrunner/ginkgo.go",
+    "atc/postgresrunner/join_limit_conn.go",
+    "atc/exec/run_state.go",
+    "atc/exec/build_vars.go",
+    "atc/exec/build/repository.go",
+    "vars/variables.go",
+    "vars/static_vars.go",
+    "vars/tracker.go"
+  ],
+  "cases": [
+    {
+      "id": "absent-results-report-zero-value-success",
+      "source_file": "atc/exec/run_state.go",
+      "old": "\tif !ok {\n\t\treturn false\n\t}",
+      "new": "\tif !ok {\n\t\treflect.ValueOf(to).Elem().Set(reflect.Zero(reflect.TypeOf(to).Elem()))\n\t\treturn true\n\t}",
+      "tests": [
+        "RunState Result when no result is present returns false",
+        "RunState Result when no result is present does not mutate the var",
+        "RunState Result when a result under a different id is present returns false",
+        "RunState Result when a result under a different id is present does not mutate the var"
+      ],
+      "scenarios": [
+        "RunState profile <profile> has observation <observation> (row 1)",
+        "RunState profile <profile> has observation <observation> (row 2)",
+        "RunState profile <profile> has observation <observation> (row 3)",
+        "RunState profile <profile> has observation <observation> (row 4)"
+      ]
+    },
+    {
+      "id": "compatible-results-report-not-found",
+      "source_file": "atc/exec/run_state.go",
+      "old": "\t\treflect.ValueOf(to).Elem().Set(reflect.ValueOf(val))\n\t\treturn true",
+      "new": "\t\treflect.ValueOf(to).Elem().Set(reflect.ValueOf(val))\n\t\treturn false",
+      "tests": [
+        "RunState Result when a result under the given id is present returns true"
+      ],
+      "scenarios": [
+        "RunState profile <profile> has observation <observation> (row 5)"
+      ]
+    },
+    {
+      "id": "compatible-results-copy-existing-destination",
+      "source_file": "atc/exec/run_state.go",
+      "old": "\t\treflect.ValueOf(to).Elem().Set(reflect.ValueOf(val))",
+      "new": "\t\treflect.ValueOf(to).Elem().Set(reflect.ValueOf(to).Elem())",
+      "tests": [
+        "RunState Result when a result under the given id is present mutates the var",
+        "RunState NewLocalScope results set in parent scope are accessible in child",
+        "RunState NewLocalScope results set in child scope are accessible in parent"
+      ],
+      "scenarios": [
+        "RunState profile <profile> has observation <observation> (row 6)",
+        "RunState profile <profile> has observation <observation> (row 22)",
+        "RunState profile <profile> has observation <observation> (row 23)"
+      ]
+    },
+    {
+      "id": "incompatible-results-report-zero-value-success",
+      "source_file": "atc/exec/run_state.go",
+      "old": "\treturn false\n}\n\nfunc (state *runState) StoreResult",
+      "new": "\treflect.ValueOf(to).Elem().Set(reflect.Zero(reflect.TypeOf(to).Elem()))\n\treturn true\n}\n\nfunc (state *runState) StoreResult",
+      "tests": [
+        "RunState Result when a result under the given id is present but with a different type returns false",
+        "RunState Result when a result under the given id is present but with a different type does not mutate the var"
+      ],
+      "scenarios": [
+        "RunState profile <profile> has observation <observation> (row 7)",
+        "RunState profile <profile> has observation <observation> (row 8)"
+      ]
+    },
+    {
+      "id": "get-discards-local-source-qualifier",
+      "source_file": "atc/exec/run_state.go",
+      "old": "\treturn state.vars.Get(ref)\n}\n\nfunc (state *runState) List",
+      "new": "\treturn state.vars.Get(ref.WithoutSource())\n}\n\nfunc (state *runState) List",
+      "tests": [
+        "RunState Get when local var subfield does not exist errors",
+        "RunState AddLocalVar redact should get local value",
+        "RunState NewLocalScope can access local vars from parent scope",
+        "RunState NewLocalScope local vars added after creating the subscope are accessible",
+        "RunState NewLocalScope current scope is preferred over parent scope"
+      ],
+      "scenarios": [
+        "RunState profile <profile> has observation <observation> (row 10)",
+        "RunState profile <profile> has observation <observation> (row 14)",
+        "RunState profile <profile> has observation <observation> (row 17)",
+        "RunState profile <profile> has observation <observation> (row 20)",
+        "RunState profile <profile> has observation <observation> (row 21)"
+      ]
+    },
+    {
+      "id": "credential-lookups-use-local-store",
+      "source_file": "vars/tracker.go",
+      "old": "\tval, found, err := t.CredVars.Get(ref)",
+      "new": "\tval, found, err := t.CredVars.Get(Reference{Source: ref.Source, Path: ref.Source, Fields: ref.Fields})",
+      "tests": [
+        "RunState Get fetches from cred vars",
+        "RunState Get when redaction is enabled fetched variables are tracked",
+        "RunState NewLocalScope shares the underlying non-local variables"
+      ],
+      "scenarios": [
+        "RunState profile <profile> has observation <observation> (row 9)",
+        "RunState profile <profile> has observation <observation> (row 11)",
+        "RunState profile <profile> has observation <observation> (row 19)"
+      ]
+    },
+    {
+      "id": "list-drops-first-definition",
+      "source_file": "atc/exec/build_vars.go",
+      "old": "\treturn list, nil\n}\n\nfunc (b *buildVariables) IterateInterpolatedCreds",
+      "new": "\tif len(list) > 0 {\n\t\tlist = list[1:]\n\t}\n\treturn list, nil\n}\n\nfunc (b *buildVariables) IterateInterpolatedCreds",
+      "tests": [
+        "RunState List returns list of names from multiple vars with duplicates",
+        "RunState List includes all local vars"
+      ],
+      "scenarios": [
+        "RunState profile <profile> has observation <observation> (row 12)",
+        "RunState profile <profile> has observation <observation> (row 13)"
+      ]
+    },
+    {
+      "id": "redaction-tracking-condition-inverted",
+      "source_file": "atc/exec/build_vars.go",
+      "old": "\tif redact {\n\t\tb.tracker.Track(vars.Reference{Source: \".\", Path: name}, val)\n\t}",
+      "new": "\tif !redact {\n\t\tb.tracker.Track(vars.Reference{Source: \".\", Path: name}, val)\n\t}",
+      "tests": [
+        "RunState AddLocalVar redact fetched variables are tracked when added",
+        "RunState NewLocalScope TrackedVarsMap prefers the value set in the current scope over the parent scope"
+      ],
+      "scenarios": [
+        "RunState profile <profile> has observation <observation> (row 15)",
+        "RunState profile <profile> has observation <observation> (row 25)"
+      ]
+    },
+    {
+      "id": "local-scope-reuses-parent-variable-store",
+      "source_file": "atc/exec/run_state.go",
+      "old": "\tclone.vars = state.vars.NewLocalScope()",
+      "new": "\tclone.vars = state.vars",
+      "tests": [
+        "RunState NewLocalScope adding local vars does not affect the original tracker"
+      ],
+      "scenarios": [
+        "RunState profile <profile> has observation <observation> (row 18)"
+      ]
+    },
+    {
+      "id": "local-scope-skips-immediate-parent",
+      "source_file": "atc/exec/run_state.go",
+      "old": "\tclone.parent = state",
+      "new": "\tclone.parent = state.parent",
+      "tests": [
+        "RunState NewLocalScope maintains a reference to the parent"
+      ],
+      "scenarios": [
+        "RunState profile <profile> has observation <observation> (row 16)"
+      ]
+    },
+    {
+      "id": "local-scope-reuses-parent-artifact-repository",
+      "source_file": "atc/exec/run_state.go",
+      "old": "\tclone.artifacts = state.artifacts.NewLocalScope()",
+      "new": "\tclone.artifacts = state.artifacts",
+      "tests": [
+        "RunState NewLocalScope has a local artifact scope inheriting from the outer scope"
+      ],
+      "scenarios": [
+        "RunState profile <profile> has observation <observation> (row 24)"
+      ]
+    }
+  ]
+}

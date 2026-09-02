@@ -1,0 +1,166 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/run-state-strict.json",
+  "git_head": "3fa8b11fafc13045cc816c8e0dfc0b3231f0f12c",
+  "completed_at": "2026-09-02T13:27:07Z",
+  "source_tests": 25,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/exec/build/repository.go": "ee160071e57fee1fac8ee32139865b413d444867f813f88d7283c632bec0a0aa",
+    "atc/exec/build_vars.go": "d44804a884506fda04897dbdcfacb2a103af07f06952d7f6ebab7ab7ae59ca23",
+    "atc/exec/run_state.go": "f371c4d89cda35b6e64dd2f85a38da09f988b597f066597b3122176658cb3b82",
+    "atc/exec/run_state_test.go": "78fcb06579e1c8949766dc7cfb498dc08ec726df8aade89638da5e1114115afb",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/run-state-strict.feature": "ce8b946580c2e3e5d0a248dace655426181dcc7a42560976e38f5c5ff1fea3f6",
+    "atc/worker/jetbridge/brine/mutations/run-state-strict.json": "f35873f3b8e1c8110df45ea29bfa26cec1f7cd6b1e3bd8c83bece340f6ff2d8b",
+    "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "atc/worker/jetbridge/brine/steps/run_state_strict.go": "e471ff49b9b59d6bbab2f81e374f3e6d5edd6384df3e2d03bd912994eaf36785",
+    "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e",
+    "vars/static_vars.go": "17b17ff5a1922085559c5d9a8a966b02fe784584bf470755a6796696995ce4f0",
+    "vars/tracker.go": "cdd10e077593d3e6382834f481df5e27eb85f73ad91268c0f6a86c8865d34866",
+    "vars/variables.go": "e75368afc42152bfbe16aecaa892b00f6df4615533ff99acdabbe46c38ae9760"
+  },
+  "mutation_cases": [
+    {
+      "id": "absent-results-report-zero-value-success",
+      "mutation_sha256": "f18da00eed9b22f04059d260e434ceaeca4dd6bbae04ac839e10a535476ae47c",
+      "failed_source_tests": [
+        "RunState Result when a result under a different id is present does not mutate the var",
+        "RunState Result when a result under a different id is present returns false",
+        "RunState Result when no result is present does not mutate the var",
+        "RunState Result when no result is present returns false"
+      ],
+      "failed_brine_scenarios": [
+        "RunState profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 1)",
+        "RunState profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 2)",
+        "RunState profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 3)",
+        "RunState profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "compatible-results-report-not-found",
+      "mutation_sha256": "cab2108f4f7bad064de5976018f0438d8fcce938e5e6dbd59b0424795da31425",
+      "failed_source_tests": [
+        "RunState Result when a result under the given id is present returns true"
+      ],
+      "failed_brine_scenarios": [
+        "RunState profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "compatible-results-copy-existing-destination",
+      "mutation_sha256": "4f9be924960b40d3217a495b32c6bd13a4369bc1b893604d32c31dc72fae536e",
+      "failed_source_tests": [
+        "RunState NewLocalScope results set in child scope are accessible in parent",
+        "RunState NewLocalScope results set in parent scope are accessible in child",
+        "RunState Result when a result under the given id is present mutates the var"
+      ],
+      "failed_brine_scenarios": [
+        "RunState profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 22)",
+        "RunState profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 23)",
+        "RunState profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "incompatible-results-report-zero-value-success",
+      "mutation_sha256": "cf4d7ff15fae76a6da84ae8bae6bd4528852ed2ac83c36b2ecd4b2eb6162e9eb",
+      "failed_source_tests": [
+        "RunState Result when a result under the given id is present but with a different type does not mutate the var",
+        "RunState Result when a result under the given id is present but with a different type returns false"
+      ],
+      "failed_brine_scenarios": [
+        "RunState profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 7)",
+        "RunState profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "get-discards-local-source-qualifier",
+      "mutation_sha256": "4fd15460f09f7217942cac7122ff3b196fd72ab4e1af4171f1b78155aa2839e5",
+      "failed_source_tests": [
+        "RunState AddLocalVar redact should get local value",
+        "RunState Get when local var subfield does not exist errors",
+        "RunState NewLocalScope can access local vars from parent scope",
+        "RunState NewLocalScope current scope is preferred over parent scope",
+        "RunState NewLocalScope local vars added after creating the subscope are accessible"
+      ],
+      "failed_brine_scenarios": [
+        "RunState profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 10)",
+        "RunState profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 14)",
+        "RunState profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 17)",
+        "RunState profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 20)",
+        "RunState profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 21)"
+      ]
+    },
+    {
+      "id": "credential-lookups-use-local-store",
+      "mutation_sha256": "012c539944d66548f0ebd21bcecf24c93583f19c71a8548fca8faf533256b374",
+      "failed_source_tests": [
+        "RunState Get fetches from cred vars",
+        "RunState Get when redaction is enabled fetched variables are tracked",
+        "RunState NewLocalScope shares the underlying non-local variables"
+      ],
+      "failed_brine_scenarios": [
+        "RunState profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 11)",
+        "RunState profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 19)",
+        "RunState profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "list-drops-first-definition",
+      "mutation_sha256": "6119f034cf0f6b10d3979231897c52b205961e464055ad075c18a349cf2cc4f4",
+      "failed_source_tests": [
+        "RunState List includes all local vars",
+        "RunState List returns list of names from multiple vars with duplicates"
+      ],
+      "failed_brine_scenarios": [
+        "RunState profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 12)",
+        "RunState profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 13)"
+      ]
+    },
+    {
+      "id": "redaction-tracking-condition-inverted",
+      "mutation_sha256": "b963bfc112fda9ee92d25fff19915c2bd12e7ff9971a9f6663b574bb4e000631",
+      "failed_source_tests": [
+        "RunState AddLocalVar redact fetched variables are tracked when added",
+        "RunState NewLocalScope TrackedVarsMap prefers the value set in the current scope over the parent scope"
+      ],
+      "failed_brine_scenarios": [
+        "RunState profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 15)",
+        "RunState profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 25)"
+      ]
+    },
+    {
+      "id": "local-scope-reuses-parent-variable-store",
+      "mutation_sha256": "71fada487b317379e523a6674efb2f5f977dd6a99fa6175e443c124cae51061c",
+      "failed_source_tests": [
+        "RunState NewLocalScope adding local vars does not affect the original tracker"
+      ],
+      "failed_brine_scenarios": [
+        "RunState profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 18)"
+      ]
+    },
+    {
+      "id": "local-scope-skips-immediate-parent",
+      "mutation_sha256": "0144fd7e1a070c35b867f135e2628eeb8d36b186436abbb6ad986183e967e906",
+      "failed_source_tests": [
+        "RunState NewLocalScope maintains a reference to the parent"
+      ],
+      "failed_brine_scenarios": [
+        "RunState profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 16)"
+      ]
+    },
+    {
+      "id": "local-scope-reuses-parent-artifact-repository",
+      "mutation_sha256": "30cc3f85f7947443e033f78e91405ce7373321f6f30f97e78fb3cafe602b0b51",
+      "failed_source_tests": [
+        "RunState NewLocalScope has a local artifact scope inheriting from the outer scope"
+      ],
+      "failed_brine_scenarios": [
+        "RunState profile \u003cprofile\u003e has observation \u003cobservation\u003e (row 24)"
+      ]
+    }
+  ]
+}
