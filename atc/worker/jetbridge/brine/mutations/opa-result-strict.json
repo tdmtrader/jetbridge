@@ -1,0 +1,57 @@
+{
+  "name": "opa-result-strict",
+  "test_package": "./atc/policy/opa",
+  "source_test_file": "atc/policy/opa/result_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/opa-result-strict.feature",
+  "step_files": ["atc/worker/jetbridge/brine/steps/opa_result_strict.go"],
+  "cases": [
+    {
+      "id": "missing-allowed-key-loses-diagnostic",
+      "source_file": "atc/policy/opa/result.go",
+      "old": "\t\treturn opaResult{}, fmt.Errorf(\"allowed: key '%s' not found\", opaConfig.ResultAllowedKey)",
+      "new": "\t\treturn opaResult{}, fmt.Errorf(\"allowed: mutated missing key '%s'\", opaConfig.ResultAllowedKey)",
+      "tests": ["OPA Result ParseOpaResult when result string doesn't contain the key of allowed should fail"],
+      "scenarios": ["OPA result profile <profile> (row 1)"]
+    },
+    {
+      "id": "nonboolean-allowed-key-loses-diagnostic",
+      "source_file": "atc/policy/opa/result.go",
+      "old": "\t\treturn opaResult{}, fmt.Errorf(\"allowed: key '%s' must have a boolean value\", opaConfig.ResultAllowedKey)",
+      "new": "\t\treturn opaResult{}, fmt.Errorf(\"allowed: mutated non-boolean key '%s'\", opaConfig.ResultAllowedKey)",
+      "tests": [
+        "OPA Result ParseOpaResult when result string contain the key of allowed but type is not bool should fail",
+        "OPA Result ParseOpaResult when result string contain the key of allowed with too few parts should fail"
+      ],
+      "scenarios": [
+        "OPA result profile <profile> (row 2)",
+        "OPA result profile <profile> (row 3)"
+      ]
+    },
+    {
+      "id": "allowed-traversal-error-loses-context",
+      "source_file": "atc/policy/opa/result.go",
+      "old": "\t\treturn opaResult{}, fmt.Errorf(\"allowed: %w\", err)",
+      "new": "\t\treturn opaResult{}, fmt.Errorf(\"mutated allowed traversal: %w\", err)",
+      "tests": ["OPA Result ParseOpaResult when result string contain the key of allowed with too much parts should fail"],
+      "scenarios": ["OPA result profile <profile> (row 4)"]
+    },
+    {
+      "id": "successful-policy-inverts-allowed-decision",
+      "source_file": "atc/policy/opa/result.go",
+      "old": "\treturn opaResult{allowed, shouldBlock, messages}, nil",
+      "new": "\treturn opaResult{!allowed, shouldBlock, messages}, nil",
+      "tests": [
+        "OPA Result ParseOpaResult when result string contain the key of allowed but other keys should succeed with shouldBlock being false",
+        "OPA Result ParseOpaResult when result string contain the key of allowed with false value should succeed with shouldBlock being true",
+        "OPA Result ParseOpaResult when result string contain the key of allowed and shouldBlock should succeed",
+        "OPA Result ParseOpaResult when result string contain all keys should succeed"
+      ],
+      "scenarios": [
+        "OPA result profile <profile> (row 5)",
+        "OPA result profile <profile> (row 6)",
+        "OPA result profile <profile> (row 7)",
+        "OPA result profile <profile> (row 8)"
+      ]
+    }
+  ]
+}
