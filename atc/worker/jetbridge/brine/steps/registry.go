@@ -202,6 +202,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, DBJobFinalStrictDefinitions()...)
 	defs = append(defs, AddGlobalUsersMigrationStrictDefinitions()...)
 	defs = append(defs, MigrationFixBuildPlanStrictDefinitions()...)
+	defs = append(defs, AddGlobalResourceVersionsMigrationStrictDefinitions()...)
 	return defs
 }
 

@@ -1,0 +1,50 @@
+{
+  "name": "migration-add-global-resource-versions-strict",
+  "test_package": "./atc/db/migration",
+  "source_test_file": "atc/db/migration/add_global_resource_versions_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/migration-add-global-resource-versions-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/main.go",
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/registry.go",
+    "atc/worker/jetbridge/brine/steps/migration_add_global_resource_versions_strict.go",
+    "atc/worker/jetbridge/brine/steps/registry.go",
+    "atc/worker/jetbridge/brine/steps/resources.go",
+    "atc/postgresrunner/postgresrunner.go",
+    "atc/postgresrunner/ginkgo.go",
+    "atc/postgresrunner/join_limit_conn.go"
+  ],
+  "cases": [
+    {
+      "id": "disabled-version-migration-selects-disabled-rows",
+      "source_file": "atc/db/migration/migrations/1537546150_global_resource_version_history.up.sql",
+      "old": "WHERE NOT enabled",
+      "new": "WHERE enabled",
+      "tests": ["Add global resource versions Up migrates disabled resource versions to new resource disabled versions table"],
+      "scenarios": ["Production add-global-resource-versions migration — <profile> (row 1)"]
+    },
+    {
+      "id": "build-input-migration-preserves-input-name",
+      "source_file": "atc/db/migration/migrations/1537546150_global_resource_version_history.up.sql",
+      "old": "SELECT bi.build_id, vr.resource_id, md5(vr.version), bi.name",
+      "new": "SELECT bi.build_id, vr.resource_id, md5(vr.version), bi.name || '-legacy'",
+      "tests": ["Add global resource versions Up migrates the build inputs into the new build resource config version inputs table"],
+      "scenarios": ["Production add-global-resource-versions migration — <profile> (row 2)"]
+    },
+    {
+      "id": "build-output-migration-preserves-resource-name",
+      "source_file": "atc/db/migration/migrations/1537546150_global_resource_version_history.up.sql",
+      "old": "SELECT bo.build_id, vr.resource_id, md5(vr.version), r.name",
+      "new": "SELECT bo.build_id, vr.resource_id, md5(vr.version), r.name || '-legacy'",
+      "tests": ["Add global resource versions Up migrates the build outputs into the new build resource config version outputs table"],
+      "scenarios": ["Production add-global-resource-versions migration — <profile> (row 3)"]
+    },
+    {
+      "id": "downgrade-reconstructs-enabled-state",
+      "source_file": "atc/db/migration/migrations/1537546150_global_resource_version_history.down.go",
+      "old": "\t\tNOT EXISTS ( SELECT 1 FROM resource_disabled_versions d WHERE d.version_md5 = rcv.version_md5 AND d.resource_id = r.id )",
+      "new": "\t\tEXISTS ( SELECT 1 FROM resource_disabled_versions d WHERE d.version_md5 = rcv.version_md5 AND d.resource_id = r.id )",
+      "tests": ["Add global resource versions Down saves all versions (disabled and enabled) into the versioned resources table"],
+      "scenarios": ["Production add-global-resource-versions migration — <profile> (row 4)"]
+    }
+  ]
+}
