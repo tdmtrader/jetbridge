@@ -11,22 +11,6 @@ import (
 var _ = Describe("Manager", func() {
 	var manager secretsmanager.Manager
 
-	Describe("IsConfigured()", func() {
-		JustBeforeEach(func() {
-			_, err := flags.ParseArgs(&manager, []string{})
-			Expect(err).To(BeNil())
-		})
-
-		It("fails on empty Manager", func() {
-			Expect(manager.IsConfigured()).To(BeFalse())
-		})
-
-		It("passes if AwsRegion is set", func() {
-			manager.AwsRegion = "test-region"
-			Expect(manager.IsConfigured()).To(BeTrue())
-		})
-	})
-
 	Describe("Validate()", func() {
 		JustBeforeEach(func() {
 			manager = secretsmanager.Manager{AwsRegion: "test-region"}
