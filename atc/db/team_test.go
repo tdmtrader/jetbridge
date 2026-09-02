@@ -996,27 +996,6 @@ var _ = Describe("Team", func() {
 					})
 				})
 
-				Context("when other team builds are public", func() {
-					BeforeEach(func() {
-						err := pipeline.Expose()
-						Expect(err).ToNot(HaveOccurred())
-					})
-
-					It("returns builds for requested team and public builds", func() {
-						builds, _, err := caseInsensitiveTeamA.PrivateAndPublicBuilds(db.Page{Limit: 10})
-						Expect(err).ToNot(HaveOccurred())
-
-						Expect(builds).To(HaveLen(5))
-						expectedBuilds := []db.Build{}
-						for _, b := range teamABuilds {
-							expectedBuilds = append(expectedBuilds, b)
-						}
-						for _, b := range pipelineBuilds {
-							expectedBuilds = append(expectedBuilds, b)
-						}
-						Expect(builds).To(ConsistOf(expectedBuilds))
-					})
-				})
 			})
 		})
 	})
@@ -1073,55 +1052,6 @@ var _ = Describe("Team", func() {
 					Expect(returnedBuilds).To(BeEmpty())
 				})
 			})
-
-			Context("when a limit specified", func() {
-				It("returns a subset of the builds", func() {
-					returnedBuilds, _, err := team.BuildsWithTime(db.Page{
-						Limit: 2,
-					})
-					Expect(err).NotTo(HaveOccurred())
-					Expect(returnedBuilds).To(ConsistOf(builds[3], builds[2]))
-				})
-			})
-
-		})
-
-		Context("When providing boundaries", func() {
-			Context("only to", func() {
-				It("returns only those before to", func() {
-					returnedBuilds, _, err := team.BuildsWithTime(db.Page{
-						To:    db.NewIntPtr(int(builds[2].StartTime().Unix())),
-						Limit: 50,
-					})
-
-					Expect(err).NotTo(HaveOccurred())
-					Expect(returnedBuilds).To(ConsistOf(builds[0], builds[1], builds[2]))
-				})
-			})
-
-			Context("only from", func() {
-				It("returns only those after from", func() {
-					returnedBuilds, _, err := team.BuildsWithTime(db.Page{
-						From:  db.NewIntPtr(int(builds[1].StartTime().Unix())),
-						Limit: 50,
-					})
-
-					Expect(err).NotTo(HaveOccurred())
-					Expect(returnedBuilds).To(ConsistOf(builds[1], builds[2], builds[3]))
-				})
-			})
-
-			Context("from and to", func() {
-				It("returns only elements in the range", func() {
-					returnedBuilds, _, err := team.BuildsWithTime(db.Page{
-						From:  db.NewIntPtr(int(builds[1].StartTime().Unix())),
-						To:    db.NewIntPtr(int(builds[2].StartTime().Unix())),
-						Limit: 50,
-					})
-					Expect(err).NotTo(HaveOccurred())
-					Expect(returnedBuilds).To(ConsistOf(builds[1], builds[2]))
-				})
-			})
 		})
 	})
 
@@ -1173,37 +1103,7 @@ var _ = Describe("Team", func() {
 			expectedBuilds = append(expectedBuilds, thirdBuild)
 		})
 
-		It("returns builds for the current team", func() {
-			builds, _, err := team.Builds(db.Page{Limit: 10})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(builds).To(ConsistOf(expectedBuilds))
-		})
-
 		Context("when limiting the range of build ids", func() {
-			Context("specifying only from", func() {
-				It("returns all builds after and including the specified id", func() {
-					builds, _, err := team.Builds(db.Page{Limit: 50, From: db.NewIntPtr(secondBuild.ID())})
-					Expect(err).NotTo(HaveOccurred())
-					Expect(builds).To(ConsistOf(secondBuild, thirdBuild))
-				})
-			})
-
-			Context("specifying only to", func() {
-				It("returns all builds before and including the specified id", func() {
-					builds, _, err := team.Builds(db.Page{Limit: 50, To: db.NewIntPtr(secondBuild.ID())})
-					Expect(err).NotTo(HaveOccurred())
-					Expect(builds).To(ConsistOf(oneOffBuild, build, secondBuild))
-				})
-			})
-
-			Context("specifying both from and to", func() {
-				It("returns all builds within range of ids", func() {
-					builds, _, err := team.Builds(db.Page{Limit: 50, From: db.NewIntPtr(build.ID()), To: db.NewIntPtr(thirdBuild.ID())})
-					Expect(err).NotTo(HaveOccurred())
-					Expect(builds).To(ConsistOf(build, secondBuild, thirdBuild))
-				})
-			})
-
 			Context("specifying from greater than the biggest ID in the database", func() {
 				It("returns no rows error", func() {
 					builds, _, err := team.Builds(db.Page{Limit: 50, From: db.NewIntPtr(thirdBuild.ID() + 1)})
@@ -1252,42 +1152,6 @@ var _ = Describe("Team", func() {
 				}
 			})
 
-			Context("when other team builds are private", func() {
-				It("returns only builds for requested team", func() {
-					builds, _, err := caseInsensitiveTeamA.Builds(db.Page{Limit: 10})
-					Expect(err).ToNot(HaveOccurred())
-
-					Expect(len(builds)).To(Equal(3))
-					Expect(builds).To(ConsistOf(teamABuilds))
-
-					builds, _, err = caseInsensitiveTeamB.Builds(db.Page{Limit: 10})
-					Expect(err).ToNot(HaveOccurred())
-
-					Expect(len(builds)).To(Equal(3))
-					Expect(builds).To(ConsistOf(teamBBuilds))
-				})
-			})
-
-			Context("when other team builds are public", func() {
-				BeforeEach(func() {
-					err := pipeline.Expose()
-					Expect(err).ToNot(HaveOccurred())
-				})
-
-				It("returns only builds for requested team", func() {
-					builds, _, err := caseInsensitiveTeamA.Builds(db.Page{Limit: 10})
-					Expect(err).ToNot(HaveOccurred())
-
-					Expect(len(builds)).To(Equal(3))
-					Expect(builds).To(ConsistOf(teamABuilds))
-
-					builds, _, err = caseInsensitiveTeamB.Builds(db.Page{Limit: 10})
-					Expect(err).ToNot(HaveOccurred())
-
-					Expect(len(builds)).To(Equal(3))
-					Expect(builds).To(ConsistOf(teamBBuilds))
-				})
-			})
 		})
 	})
 

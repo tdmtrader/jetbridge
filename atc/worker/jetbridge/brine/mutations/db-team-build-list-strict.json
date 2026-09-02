@@ -1,0 +1,71 @@
+{
+  "name": "db-team-build-list-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/team_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-team-build-list-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_team_build_list_strict.go",
+    "atc/worker/jetbridge/brine/steps/registry.go",
+    "atc/worker/jetbridge/brine/steps/assert.go",
+    "atc/worker/jetbridge/brine/steps/resources.go",
+    "atc/worker/jetbridge/brine/steps/task_command.go",
+    "atc/worker/jetbridge/brine/steps/envtest.go",
+    "atc/postgresrunner/postgresrunner.go",
+    "atc/postgresrunner/ginkgo.go",
+    "atc/postgresrunner/join_limit_conn.go"
+  ],
+  "cases": [
+    {
+      "id": "private-and-public-builds-retains-public-visibility",
+      "source_file": "atc/db/team.go",
+      "old": "\t\tWhere(sq.Or{sq.Eq{\"p.public\": true}, sq.Eq{\"t.id\": t.id}})",
+      "new": "\t\tWhere(sq.Eq{\"t.id\": t.id})",
+      "tests": [
+        "Team PrivateAndPublicBuilds when there are builds when there are builds that belong to different teams when other team builds are public returns builds for requested team and public builds"
+      ],
+      "scenarios": [
+        "Team build list behavior — <profile> (row 1)"
+      ]
+    },
+    {
+      "id": "builds-with-time-remains-team-scoped",
+      "source_file": "atc/db/team.go",
+      "old": "\treturn getBuildsWithDates(buildsQuery.Where(sq.Eq{\"t.id\": t.id}), page, t.conn, t.lockFactory)",
+      "new": "\treturn getBuildsWithDates(buildsQuery.Where(sq.Eq{\"t.id\": -1}), page, t.conn, t.lockFactory)",
+      "tests": [
+        "Team BuildsWithTime When not providing boundaries when a limit specified returns a subset of the builds",
+        "Team BuildsWithTime When providing boundaries only to returns only those before to",
+        "Team BuildsWithTime When providing boundaries only from returns only those after from",
+        "Team BuildsWithTime When providing boundaries from and to returns only elements in the range"
+      ],
+      "scenarios": [
+        "Team build list behavior — <profile> (row 2)",
+        "Team build list behavior — <profile> (row 3)",
+        "Team build list behavior — <profile> (row 4)",
+        "Team build list behavior — <profile> (row 5)"
+      ]
+    },
+    {
+      "id": "builds-remains-team-scoped",
+      "source_file": "atc/db/team.go",
+      "old": "\treturn getBuildsWithPagination(buildsQuery.Where(sq.Eq{\"t.id\": t.id}), page, t.conn, t.lockFactory, false)",
+      "new": "\treturn getBuildsWithPagination(buildsQuery.Where(sq.Eq{\"t.id\": -1}), page, t.conn, t.lockFactory, false)",
+      "tests": [
+        "Team Builds returns builds for the current team",
+        "Team Builds when limiting the range of build ids specifying only from returns all builds after and including the specified id",
+        "Team Builds when limiting the range of build ids specifying only to returns all builds before and including the specified id",
+        "Team Builds when limiting the range of build ids specifying both from and to returns all builds within range of ids",
+        "Team Builds when there are builds that belong to different teams when other team builds are private returns only builds for requested team",
+        "Team Builds when there are builds that belong to different teams when other team builds are public returns only builds for requested team"
+      ],
+      "scenarios": [
+        "Team build list behavior — <profile> (row 6)",
+        "Team build list behavior — <profile> (row 7)",
+        "Team build list behavior — <profile> (row 8)",
+        "Team build list behavior — <profile> (row 9)",
+        "Team build list behavior — <profile> (row 10)",
+        "Team build list behavior — <profile> (row 11)"
+      ]
+    }
+  ]
+}

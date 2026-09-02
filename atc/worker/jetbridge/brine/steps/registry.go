@@ -135,6 +135,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, SmallClientDefinitions()...)
 	defs = append(defs, SchedulerAlgorithmStrictDefinitions()...)
 	defs = append(defs, DBTeamRemainingStrictDefinitions()...)
+	defs = append(defs, DBTeamBuildListStrictDefinitions()...)
 	return defs
 }
 

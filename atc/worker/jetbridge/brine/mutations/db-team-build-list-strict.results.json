@@ -1,0 +1,71 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-team-build-list-strict.json",
+  "git_head": "3df5a90b73197ba4b5b93a647c7735de259c95e0",
+  "completed_at": "2026-09-02T14:03:28Z",
+  "source_tests": 11,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/team.go": "0f44893708836914e40066140ac396ed0cd9531f2ff4aca02c6a25797562e761",
+    "atc/db/team_test.go": "cc44cca8266fe6c567acb8c03db1e93d9a1d783c83e34e37132ceac5f36cabe9",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/db-team-build-list-strict.feature": "131adf695eb1771f4bbb3257ea1b3b664953fabcd0aa409b61475b9b678bde14",
+    "atc/worker/jetbridge/brine/mutations/db-team-build-list-strict.json": "b218ac8a3716e4c7925dc96877585d1d2f310f6ede73067076cdcba6c561de9d",
+    "atc/worker/jetbridge/brine/steps/assert.go": "eac0b7b4dc864f54ffb5aab471451e3b62da518e5a8b10ba26e742d83298861f",
+    "atc/worker/jetbridge/brine/steps/db_team_build_list_strict.go": "7b8d1efa98ace5e2602f0aaf8c8f325cb732a124e461fef6f026093b84061a29",
+    "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
+    "atc/worker/jetbridge/brine/steps/registry.go": "1d0d105b05f9140dec89799d9f367e87e56b686cd5c80a1f053e5fe8c4543a9e",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e"
+  },
+  "mutation_cases": [
+    {
+      "id": "private-and-public-builds-retains-public-visibility",
+      "mutation_sha256": "3e8e5aeea72edc8fb62caf703bbf5f0b0cc26d7591b845da74d7d0b150e52729",
+      "failed_source_tests": [
+        "Team PrivateAndPublicBuilds when there are builds when there are builds that belong to different teams when other team builds are public returns builds for requested team and public builds"
+      ],
+      "failed_brine_scenarios": [
+        "Team build list behavior — \u003cprofile\u003e (row 1)"
+      ]
+    },
+    {
+      "id": "builds-with-time-remains-team-scoped",
+      "mutation_sha256": "fdc31d40472cac8bd4b6c73868e1150aeb810f7762d3544304052ad9670447b3",
+      "failed_source_tests": [
+        "Team BuildsWithTime When not providing boundaries when a limit specified returns a subset of the builds",
+        "Team BuildsWithTime When providing boundaries from and to returns only elements in the range",
+        "Team BuildsWithTime When providing boundaries only from returns only those after from",
+        "Team BuildsWithTime When providing boundaries only to returns only those before to"
+      ],
+      "failed_brine_scenarios": [
+        "Team build list behavior — \u003cprofile\u003e (row 2)",
+        "Team build list behavior — \u003cprofile\u003e (row 3)",
+        "Team build list behavior — \u003cprofile\u003e (row 4)",
+        "Team build list behavior — \u003cprofile\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "builds-remains-team-scoped",
+      "mutation_sha256": "0060a035b4aca028c381c8bdaaaf856d2aee4b839d87b3d7305bbb177f349e3e",
+      "failed_source_tests": [
+        "Team Builds returns builds for the current team",
+        "Team Builds when limiting the range of build ids specifying both from and to returns all builds within range of ids",
+        "Team Builds when limiting the range of build ids specifying only from returns all builds after and including the specified id",
+        "Team Builds when limiting the range of build ids specifying only to returns all builds before and including the specified id",
+        "Team Builds when there are builds that belong to different teams when other team builds are private returns only builds for requested team",
+        "Team Builds when there are builds that belong to different teams when other team builds are public returns only builds for requested team"
+      ],
+      "failed_brine_scenarios": [
+        "Team build list behavior — \u003cprofile\u003e (row 10)",
+        "Team build list behavior — \u003cprofile\u003e (row 11)",
+        "Team build list behavior — \u003cprofile\u003e (row 6)",
+        "Team build list behavior — \u003cprofile\u003e (row 7)",
+        "Team build list behavior — \u003cprofile\u003e (row 8)",
+        "Team build list behavior — \u003cprofile\u003e (row 9)"
+      ]
+    }
+  ]
+}
