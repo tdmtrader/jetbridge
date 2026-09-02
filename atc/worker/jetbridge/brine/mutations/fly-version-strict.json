@@ -1,0 +1,52 @@
+{
+  "name": "fly-version-strict",
+  "test_package": "./fly/version",
+  "source_test_file": "fly/version/version_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/fly-version-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/fly_version_strict.go",
+    "atc/worker/jetbridge/brine/steps/registry.go"
+  ],
+  "cases": [
+    {
+      "id": "release-major-uses-first-component",
+      "source_file": "fly/version/version.go",
+      "old": "\t\tmajor = version.Release.Components[0].(semver.VerSegCompInt).I",
+      "new": "\t\tmajor = version.Release.Components[1].(semver.VerSegCompInt).I",
+      "tests": [
+        "Version parses versions",
+        "Version parses pre-release versions",
+        "Version parses post-release versions"
+      ],
+      "scenarios": [
+        "GetSemver parses a stable release",
+        "GetSemver parses a pre-release",
+        "GetSemver parses a post-release"
+      ]
+    },
+    {
+      "id": "short-release-reports-component-error",
+      "source_file": "fly/version/version.go",
+      "old": "\t\terr = fmt.Errorf(\"Wrong number of components\")",
+      "new": "\t\terr = nil",
+      "tests": [
+        "Version returns an error for non-parsable versions"
+      ],
+      "scenarios": [
+        "GetSemver rejects malformed release components"
+      ]
+    },
+    {
+      "id": "development-detection-scans-pre-release-components",
+      "source_file": "fly/version/version.go",
+      "old": "\tfor _, item := range version.PreRelease.Components {",
+      "new": "\tfor _, item := range version.PostRelease.Components {",
+      "tests": [
+        "Version can detect development versions"
+      ],
+      "scenarios": [
+        "IsDev detects only development version components"
+      ]
+    }
+  ]
+}
