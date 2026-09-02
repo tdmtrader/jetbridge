@@ -1,0 +1,26 @@
+{
+  "name": "ssm-manager-strict",
+  "test_package": "./atc/creds/ssm",
+  "source_test_file": "atc/creds/ssm/manager_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/ssm-manager-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/ssm_manager_strict.go",
+    "atc/worker/jetbridge/brine/steps/registry.go"
+  ],
+  "cases": [
+    {
+      "id": "region-controls-configuration",
+      "source_file": "atc/creds/ssm/manager.go",
+      "old": "\treturn manager.AwsRegion != \"\"",
+      "new": "\treturn manager.AwsRegion == \"\"",
+      "tests": [
+        "SsmManager IsConfigured() failes on empty SsmManager",
+        "SsmManager IsConfigured() passes if AwsRegion is set"
+      ],
+      "scenarios": [
+        "Production SSM manager configuration — <profile> (row 1)",
+        "Production SSM manager configuration — <profile> (row 2)"
+      ]
+    }
+  ]
+}
