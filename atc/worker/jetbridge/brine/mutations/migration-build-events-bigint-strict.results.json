@@ -1,0 +1,110 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/migration-build-events-bigint-strict.json",
+  "git_head": "132fe5db60a0179e4dd74a9917f3f93eaafd04ba",
+  "completed_at": "2026-09-02T21:35:48Z",
+  "source_tests": 9,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/migration/build_events_bigint_test.go": "d7e6be81d3e57e3422ad63c2715595983382a96787ba596c390e91aa534dc4ee",
+    "atc/db/migration/migrations/1606068653_build_events_partitions_bigint.down.sql": "7d6f5d77b2346d3bf41e8997ad67556b9ce6b912cc687e978b5ac22ef2c387e5",
+    "atc/db/migration/migrations/1606068653_build_events_partitions_bigint.up.sql": "e007e1eefa4bbe67c8742bf9c26928d84d6e25d81913f15b5ced344958e3ef3d",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/migration-build-events-bigint-strict.feature": "529b5f71def9e7bdc5f19244120ccdc44237e11db0daf07fb9fe75442bed2d1d",
+    "atc/worker/jetbridge/brine/mutations/migration-build-events-bigint-strict.json": "2b20c7bbfcd4d0851e29955a9f59ddb862bd323923ca98f912f6b337fe0a41ea",
+    "atc/worker/jetbridge/brine/steps/migration_build_events_bigint_strict.go": "113ebdbfaa923632254676610dd0b37839d8f8cef03e0817b8accd7e06307247",
+    "atc/worker/jetbridge/brine/steps/resources.go": "f594ee3b1828c61ca1dd1ef9dd8024ecbb440898b57644b50a80d86bad475691"
+  },
+  "mutation_cases": [
+    {
+      "id": "up-existing-pipeline-new-id-indexes-build-id",
+      "mutation_sha256": "b499ca694f094ade8a4c808331827bd4597ff3b0831f8d6211478ce63dd2b88e",
+      "failed_source_tests": [
+        "build_events bigint indexes Up has indexes for both build_id_old and build_id in pipeline partitions"
+      ],
+      "failed_brine_scenarios": [
+        "Up migration indexes both existing pipeline partition columns"
+      ]
+    },
+    {
+      "id": "up-existing-team-indexes-build-id",
+      "mutation_sha256": "17903d1d30da99fc589543adfd94d393eb674133ecd367584397b6d4e2e35af7",
+      "failed_source_tests": [
+        "build_events bigint indexes Up has indexes for only build_id in team partitions"
+      ],
+      "failed_brine_scenarios": [
+        "Up migration indexes only the new column on existing team partitions"
+      ]
+    },
+    {
+      "id": "up-new-team-trigger-indexes-build-id",
+      "mutation_sha256": "0da17d56d06a5fc3b065876e6bd47f5893b9a62ac74c951a2c3d3999f9016c82",
+      "failed_source_tests": [
+        "build_events bigint indexes Up has indexes for newly created team partitions"
+      ],
+      "failed_brine_scenarios": [
+        "Up migration installs the new index trigger for new teams"
+      ]
+    },
+    {
+      "id": "up-new-pipeline-trigger-indexes-build-id",
+      "mutation_sha256": "9e968507bab140da57e933f3b0aadcc2d558a076f6a7be942bcf36f283466e35",
+      "failed_source_tests": [
+        "build_events bigint indexes Up has indexes for both build_id and build_id_old in newly created pipeline partitions"
+      ],
+      "failed_brine_scenarios": [
+        "Up migration installs both index triggers for new pipelines"
+      ]
+    },
+    {
+      "id": "down-existing-pipeline-restores-old-id-index",
+      "mutation_sha256": "5ac0952998eb4f98043c82eed2bdb2cae66e2ace5dc400c28bcb9acf767af3d0",
+      "failed_source_tests": [
+        "build_events bigint indexes Down has index for build_id_old in pipeline partitions"
+      ],
+      "failed_brine_scenarios": [
+        "Down migration restores the old ID index on existing pipeline partitions"
+      ]
+    },
+    {
+      "id": "down-existing-pipeline-removes-new-id-index",
+      "mutation_sha256": "1b1c393086a51f254004859c4c7b4542e575ad47cc950edc152d2c38b63084bd",
+      "failed_source_tests": [
+        "build_events bigint indexes Down does not have index for build_id in pipeline partitions"
+      ],
+      "failed_brine_scenarios": [
+        "Down migration removes the new ID index from existing pipeline partitions"
+      ]
+    },
+    {
+      "id": "down-existing-team-removes-new-id-index",
+      "mutation_sha256": "faccbc03a4b698002df2c2bd2960ee63e4d7fc8f7ab41046a9ea296d75c05986",
+      "failed_source_tests": [
+        "build_events bigint indexes Down does not have index for build_id in team partitions"
+      ],
+      "failed_brine_scenarios": [
+        "Down migration removes the new ID index from existing team partitions"
+      ]
+    },
+    {
+      "id": "down-new-team-trigger-omits-build-id-index",
+      "mutation_sha256": "95f171ece65787ece045cb7eca8a2145a19a341b4c62375b4dc9fe92b51d685f",
+      "failed_source_tests": [
+        "build_events bigint indexes Down does not have index for build_id in newly created team partitions"
+      ],
+      "failed_brine_scenarios": [
+        "Down migration leaves new team partitions without a build ID index"
+      ]
+    },
+    {
+      "id": "down-new-pipeline-trigger-indexes-build-id",
+      "mutation_sha256": "1a98da1b9a1a8cc320387325bf4e36b4f988aad0a987c028644f3c0b07f8332c",
+      "failed_source_tests": [
+        "build_events bigint indexes Down has index for build_id in newly created pipeline partitions"
+      ],
+      "failed_brine_scenarios": [
+        "Down migration keeps the build ID index trigger for new pipelines"
+      ]
+    }
+  ]
+}
