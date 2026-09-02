@@ -17,6 +17,8 @@ func buildAppResources(args []string) (*brine.ResourceRegistry, error) {
 	var allowedResources map[string]bool
 	if len(features) == 1 {
 		switch filepath.Base(features[0]) {
+		case "otel-metrics.feature":
+			allowedResources = map[string]bool{}
 		case "db-job-final-strict.feature", "migration-build-events-bigint-strict.feature", "migration-add-global-users-strict.feature", "migration-fix-build-private-plan-strict.feature", "migration-update-cf-auth-strict.feature":
 			allowedResources = map[string]bool{"postgres": true}
 		case "db-team-remaining-strict.feature":
