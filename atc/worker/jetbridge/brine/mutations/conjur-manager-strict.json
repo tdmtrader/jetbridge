@@ -1,0 +1,27 @@
+{
+  "name": "conjur-manager-strict",
+  "test_package": "./atc/creds/conjur",
+  "source_test_file": "atc/creds/conjur/manager_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/conjur-manager-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/conjur_manager_strict.go",
+    "atc/worker/jetbridge/brine/steps/registry.go"
+  ],
+  "cases": [
+    {
+      "id": "conjur-configuration-requires-appliance-url",
+      "source_file": "atc/creds/conjur/manager.go",
+      "old": "\treturn manager.ConjurApplianceUrl != \"\"",
+      "new": "\treturn manager.ConjurApplianceUrl == \"\"",
+      "tests": [
+        "Manager IsConfigured() fails on empty Manager",
+        "Manager IsConfigured() passes if ConjurApplianceURL is set"
+      ],
+      "scenarios": [
+        "Production Conjur manager configuration profile <profile> is <configured> (row 1)",
+        "Production Conjur manager configuration profile <profile> is <configured> (row 2)"
+      ],
+      "failure_contains": "Conjur configured result"
+    }
+  ]
+}
