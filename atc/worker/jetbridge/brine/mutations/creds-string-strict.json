@@ -1,0 +1,25 @@
+{
+  "name": "creds-string-strict",
+  "test_package": "./atc/creds",
+  "source_test_file": "atc/creds/string_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/creds-values-strict.feature",
+  "step_files": ["atc/worker/jetbridge/brine/steps/creds_values_strict.go", "atc/worker/jetbridge/brine/steps/registry.go"],
+  "cases": [
+    {
+      "id": "constructor-preserves-raw-string",
+      "source_file": "atc/creds/string.go",
+      "old": "\t\trawCredString:     credString,",
+      "new": "\t\trawCredString:     credString + \"-wrong\",",
+      "tests": [
+        "String Evaluate interpolates variables in the string",
+        "String Evaluate returns the raw string on error",
+        "String Evaluate passes through strings without variables"
+      ],
+      "scenarios": [
+        "Production credential value behavior — <profile> (row 1)",
+        "Production credential value behavior — <profile> (row 2)",
+        "Production credential value behavior — <profile> (row 3)"
+      ]
+    }
+  ]
+}
