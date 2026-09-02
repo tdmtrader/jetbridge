@@ -1,0 +1,55 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/build-log-retention-strict.json",
+  "git_head": "79b854f39bdc6cc49c9da4cf8049f3cdc9131a84",
+  "completed_at": "2026-09-02T18:44:06Z",
+  "source_tests": 11,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/gc/build_log_retention_calculator.go": "4c4f0d65d86b412fc932e6309901539db33bafa6613fd8b20c33cdc76a9e5856",
+    "atc/gc/build_log_retention_calculator_test.go": "c14c583740e90ffe9449435a9adeab6e84ca39e3986eb8b34dc188ed1cf55e5c",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/build-log-retention-strict.feature": "4c8ddb5ec89e3f860404985bfcdc42486222d0a7ef7948e7b4d509c405825f54",
+    "atc/worker/jetbridge/brine/mutations/build-log-retention-strict.json": "6f5d65ec6b00dde0e5f749fcda8c9a8b141ceb3ed214e7610cf530fe5ddbf523",
+    "atc/worker/jetbridge/brine/steps/build_log_retention_strict.go": "d1d2a5f332eda53378585ac8e15d2354a7d6b69e769eb1103d225359d0f4166d"
+  },
+  "mutation_cases": [
+    {
+      "id": "unbounded-policy-increments-build-retention",
+      "mutation_sha256": "a8680a40f777872a7ec53dcfbed7d1805d90999323a3fc3b9c41719fd8830f78",
+      "failed_source_tests": [
+        "BuildLogRetentionCalculator default and job set gives job",
+        "BuildLogRetentionCalculator default set gives default",
+        "BuildLogRetentionCalculator no default or max set, returns job values",
+        "BuildLogRetentionCalculator nothing set returns zeros"
+      ],
+      "failed_brine_scenarios": [
+        "Build log retention profile \u003cprofile\u003e (row 1)",
+        "Build log retention profile \u003cprofile\u003e (row 2)",
+        "Build log retention profile \u003cprofile\u003e (row 3)",
+        "Build log retention profile \u003cprofile\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "bounded-policy-discards-calculated-retention",
+      "mutation_sha256": "2ef7aaa81ec05db6d3d74e2ba8d4288fe47a613ab31de4843c02c9514d8aa3f3",
+      "failed_source_tests": [
+        "BuildLogRetentionCalculator default, max, and job set, gives max if lower",
+        "BuildLogRetentionCalculator max only set gives max",
+        "BuildLogRetentionCalculator min success builds equals to builds",
+        "BuildLogRetentionCalculator min success builds greater than builds",
+        "BuildLogRetentionCalculator mix of count and days with max",
+        "BuildLogRetentionCalculator when only max builds is set and job build and days are set",
+        "BuildLogRetentionCalculator when only max days is set and job build and days are set"
+      ],
+      "failed_brine_scenarios": [
+        "Build log retention profile \u003cprofile\u003e (row 10)",
+        "Build log retention profile \u003cprofile\u003e (row 11)",
+        "Build log retention profile \u003cprofile\u003e (row 5)",
+        "Build log retention profile \u003cprofile\u003e (row 6)",
+        "Build log retention profile \u003cprofile\u003e (row 7)",
+        "Build log retention profile \u003cprofile\u003e (row 8)",
+        "Build log retention profile \u003cprofile\u003e (row 9)"
+      ]
+    }
+  ]
+}
