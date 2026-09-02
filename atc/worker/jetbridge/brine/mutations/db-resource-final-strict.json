@@ -55,11 +55,15 @@
       "new": "\tbuild, _, err := r.CreateBuild(ctx, false, plan)\n\treturn build, err",
       "tests": [
         "Resource CreateInMemoryBuild creates a started build for a resource",
-        "Resource CreateInMemoryBuild should not log to the check_build_events partition"
+        "Resource CreateInMemoryBuild should not log to the check_build_events partition",
+        "Resource BuildSummary when first check build starts, not set a scope yet has build summary",
+        "Resource BuildSummary when first check build starts, not set a scope yet when a scope is set when other resource ran a check build for the scope when the resource starts a new build has build summary"
       ],
       "scenarios": [
         "CreateInMemoryBuild preserves every transient resource build field",
-        "CreateInMemoryBuild keeps check events out of PostgreSQL"
+        "CreateInMemoryBuild keeps check events out of PostgreSQL",
+        "BuildSummary reflects the current in-memory started check",
+        "BuildSummary returns to the resource's newest started check"
       ]
     },
     {
@@ -116,16 +120,12 @@
       "old": "func (r *resource) BuildSummary() *atc.BuildSummary {\n\treturn r.buildSummary\n}",
       "new": "func (r *resource) BuildSummary() *atc.BuildSummary {\n\tif r.buildSummary != nil {\n\t\treturn nil\n\t}\n\treturn r.buildSummary\n}",
       "tests": [
-        "Resource BuildSummary when first check build starts, not set a scope yet has build summary",
         "Resource BuildSummary when first check build starts, not set a scope yet when a scope is set has build summary",
-        "Resource BuildSummary when first check build starts, not set a scope yet when a scope is set when other resource ran a check build for the scope has build summary",
-        "Resource BuildSummary when first check build starts, not set a scope yet when a scope is set when other resource ran a check build for the scope when the resource starts a new build has build summary"
+        "Resource BuildSummary when first check build starts, not set a scope yet when a scope is set when other resource ran a check build for the scope has build summary"
       ],
       "scenarios": [
-        "BuildSummary reflects the current in-memory started check",
         "BuildSummary reflects a failed persisted scope check",
-        "BuildSummary reflects another successful check sharing the scope",
-        "BuildSummary returns to the resource's newest started check"
+        "BuildSummary reflects another successful check sharing the scope"
       ]
     }
   ]
