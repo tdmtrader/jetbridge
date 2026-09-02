@@ -1,0 +1,31 @@
+{
+  "name": "db-pipeline-dashboard-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/pipeline_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-pipeline-dashboard-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_pipeline_dashboard_strict.go",
+    "atc/worker/jetbridge/brine/steps/registry.go",
+    "atc/worker/jetbridge/brine/steps/resources.go",
+    "atc/worker/jetbridge/brine/steps/task_command.go",
+    "atc/worker/jetbridge/brine/steps/envtest.go",
+    "atc/postgresrunner/postgresrunner.go",
+    "atc/postgresrunner/ginkgo.go",
+    "atc/postgresrunner/join_limit_conn.go"
+  ],
+  "cases": [
+    {
+      "id": "pipeline-dashboard-preserves-job-order",
+      "source_file": "atc/db/job_factory.go",
+      "old": "\t\tOrderBy(\"j.id ASC\").",
+      "new": "\t\tOrderBy(\"j.id DESC\").",
+      "tests": [
+        "Pipeline Dashboard returns a Dashboard object with a DashboardJob corresponding to each configured job"
+      ],
+      "scenarios": [
+        "Production pipeline dashboard preserves configured jobs and current build summaries"
+      ],
+      "failure_contains": "configured job order"
+    }
+  ]
+}
