@@ -1,0 +1,56 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-team-factory-final-strict.json",
+  "git_head": "1703acefdaaafa9f6c4e23a3a68267b36ec6c714",
+  "completed_at": "2026-09-02T20:58:10Z",
+  "source_tests": 7,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/team_factory.go": "e8cb622cedbff14994a1af7e8f298104f747b885c078791daf22d514e4481cc6",
+    "atc/db/team_factory_test.go": "79383216ca9283dce74932ce929c1ce7dad98621bcee54c5f8a59ddfcc829fac",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/db-team-factory-final-strict.feature": "b84298c8eaaf1edee8d2aa45ffde296ebd0af7db9fec6dc65ea33452bc819ba1",
+    "atc/worker/jetbridge/brine/mutations/db-team-factory-final-strict.json": "690968393abc1875801ec2abf4f4646b80b714b8c378c0a19b42fcfd7c9d5d63",
+    "atc/worker/jetbridge/brine/steps/db_team_factory_final_strict.go": "55c6b60cade42cb5c9a773d10d8572491276b23458ae78d58bc83537df083bef",
+    "atc/worker/jetbridge/brine/steps/resources.go": "f594ee3b1828c61ca1dd1ef9dd8024ecbb440898b57644b50a80d86bad475691"
+  },
+  "mutation_cases": [
+    {
+      "id": "team-create-preserves-auth",
+      "mutation_sha256": "2c331b0e58171c6c3601b8febaa1a71dd98883532b29c2f562ff04e243f83d34",
+      "failed_source_tests": [
+        "Team Factory CreateTeam creates the correct team",
+        "Team Factory FindTeam when the team exists finds the correct team",
+        "Team Factory GetTeams when there is more than one team returns both teams",
+        "Team Factory GetTeams when there is one team returns the team"
+      ],
+      "failed_brine_scenarios": [
+        "Creating a team preserves its exact name auth and identity",
+        "Finding an existing team preserves its exact name and auth",
+        "Listing one team returns its exact persisted name and auth",
+        "Listing two teams returns both in production name order"
+      ]
+    },
+    {
+      "id": "find-missing-reports-not-found",
+      "mutation_sha256": "60e18c75b87619fb8b95500ec5cd30b4295ff3cc9a682230f2c5c1a4fb23ae9f",
+      "failed_source_tests": [
+        "Team Factory CreateDefaultTeamIfNotExists creates the default team",
+        "Team Factory FindTeam when the team does not exist returns not found"
+      ],
+      "failed_brine_scenarios": [
+        "Creating the default team promotes the persisted team to admin",
+        "Finding a missing team returns nil and not found"
+      ]
+    },
+    {
+      "id": "default-team-does-not-duplicate-existing-row",
+      "mutation_sha256": "6a5dd2d7d1bf71b21b4240fd4b63fb98d6029350ce66d9df2998f5e70ca3df73",
+      "failed_source_tests": [
+        "Team Factory CreateDefaultTeamIfNotExists when the default team already exists does not duplicate the default team"
+      ],
+      "failed_brine_scenarios": [
+        "Creating the default team twice reuses its identity"
+      ]
+    }
+  ]
+}
