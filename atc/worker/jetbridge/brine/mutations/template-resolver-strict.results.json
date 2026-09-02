@@ -1,0 +1,61 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/template-resolver-strict.json",
+  "git_head": "4758a9870abebfa186dc545ee562d4611069c2ad",
+  "completed_at": "2026-09-02T17:45:54Z",
+  "source_tests": 14,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/variable-template.feature": "30e25d77bb5e839d7e59da241283cf8c037480a3fafa6d40fe58591be6aa7043",
+    "atc/worker/jetbridge/brine/mutations/template-resolver-strict.json": "b56c9102f2a9c90a062c5034afed1080c0945c92ee95ee1102b188d9f01b4e93",
+    "atc/worker/jetbridge/brine/steps/variable_template.go": "dfa548e6b300c1b2982d63aa96b81ffd98eb53e155cac599c6b7e839fabe3461",
+    "vars/template_resolver.go": "eda5c0de9226d362fd96ddd65a654151ba7c7577fa6d3028aa7ef275b2d8e526",
+    "vars/template_resolver_test.go": "96a7606c533bd74f9109ea9fd853976aeebfa5bcce37c14b10a7fd7a5f0e682a"
+  },
+  "mutation_cases": [
+    {
+      "id": "resolver-discards-successful-render",
+      "mutation_sha256": "1425e2989b68f5bb4cd402500d431c2010998610f6d82aee1b1cc01123f5d248",
+      "failed_source_tests": [
+        "Template Evaluate when all of the variables are defined evaluates all params",
+        "Template Evaluate when multiple variable sources are given evaluates params using param sources in the given order",
+        "Template Evaluate when not all of the variables are defined evaluates only given params if expectAllKeys = false",
+        "Template can template keys with dashes and underscores into a byte slice",
+        "Template can template multiple values into a byte slice",
+        "Template can template the same value multiple times into a byte slice",
+        "Template can template unicode values into a byte slice",
+        "Template can template values into a byte slice",
+        "Template ignores an invalid input",
+        "Template ignores values referencing local var sources",
+        "Template ignores values referencing var sources",
+        "Template templates values with newlines into '|-' blocks"
+      ],
+      "failed_brine_scenarios": [
+        "Template resolver profile \u003cprofile\u003e (row 1)",
+        "Template resolver profile \u003cprofile\u003e (row 10)",
+        "Template resolver profile \u003cprofile\u003e (row 11)",
+        "Template resolver profile \u003cprofile\u003e (row 12)",
+        "Template resolver profile \u003cprofile\u003e (row 14)",
+        "Template resolver profile \u003cprofile\u003e (row 2)",
+        "Template resolver profile \u003cprofile\u003e (row 4)",
+        "Template resolver profile \u003cprofile\u003e (row 5)",
+        "Template resolver profile \u003cprofile\u003e (row 6)",
+        "Template resolver profile \u003cprofile\u003e (row 7)",
+        "Template resolver profile \u003cprofile\u003e (row 8)",
+        "Template resolver profile \u003cprofile\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "resolver-ignores-required-keys-option",
+      "mutation_sha256": "2dc62ba2644573e975cfc2dfe7eaf6f14e10f98f957e8921ff5ff1f2dc7ba472",
+      "failed_source_tests": [
+        "Template Evaluate when not all of the variables are defined fails with an error if expectAllKeys = true",
+        "Template raises an error for each variable that is undefined"
+      ],
+      "failed_brine_scenarios": [
+        "Template resolver profile \u003cprofile\u003e (row 13)",
+        "Template resolver profile \u003cprofile\u003e (row 3)"
+      ]
+    }
+  ]
+}
