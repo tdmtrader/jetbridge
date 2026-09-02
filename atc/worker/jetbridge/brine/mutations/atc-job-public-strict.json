@@ -1,0 +1,52 @@
+{
+  "name": "atc-job-public-strict",
+  "test_package": "./atc",
+  "source_test_file": "atc/atc_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/atc-job-public-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/atc_job_public_strict.go",
+    "atc/worker/jetbridge/brine/steps/registry.go"
+  ],
+  "cases": [
+    {
+      "id": "job-visibility-uses-public-field",
+      "source_file": "atc/config.go",
+      "old": "\treturn job.Public, nil",
+      "new": "\treturn !job.Public, nil",
+      "tests": [
+        "Config determining if a job's builds are publically viewable when the job is publically viewable returns true",
+        "Config determining if a job's builds are publically viewable when the job is not publically viewable returns false"
+      ],
+      "scenarios": [
+        "A public job is reported public",
+        "A private job is reported private"
+      ]
+    },
+    {
+      "id": "successful-job-lookup-has-no-error",
+      "source_file": "atc/config.go",
+      "old": "\treturn job.Public, nil",
+      "new": "\treturn job.Public, fmt.Errorf(\"job visibility unavailable\")",
+      "tests": [
+        "Config determining if a job's builds are publically viewable when the job is publically viewable does not error",
+        "Config determining if a job's builds are publically viewable when the job is not publically viewable does not error"
+      ],
+      "scenarios": [
+        "Looking up a public job succeeds",
+        "Looking up a private job succeeds"
+      ]
+    },
+    {
+      "id": "missing-job-returns-an-error",
+      "source_file": "atc/config.go",
+      "old": "\t\treturn false, fmt.Errorf(\"cannot find job with job name '%s'\", jobName)",
+      "new": "\t\treturn false, nil",
+      "tests": [
+        "Config determining if a job's builds are publically viewable when the job with the given name can't be found errors"
+      ],
+      "scenarios": [
+        "Looking up a missing job fails"
+      ]
+    }
+  ]
+}
