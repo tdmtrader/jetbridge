@@ -1,0 +1,55 @@
+{
+  "name": "migration-update-cf-auth-strict",
+  "test_package": "./atc/db/migration",
+  "source_test_file": "atc/db/migration/update_cf_auth_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/migration-update-cf-auth-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/migration_update_cf_auth_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go",
+    "atc/postgresrunner/postgresrunner.go"
+  ],
+  "cases": [
+    {
+      "id": "up-appends-developer-role",
+      "source_file": "atc/db/migration/migrations/1572899256_update_cf_auth.up.sql",
+      "old": "'\"cf:\\1:\\2:developer\"'",
+      "new": "'\"cf:\\1:\\2:auditor\"'",
+      "tests": [
+        "Update cf auth Up migrates cf auth with form ORG:SPACE to ORG:SPACE:developer",
+        "Update cf auth Up migrates cf auth with a bunch of different cf:cf combinations"
+      ],
+      "scenarios": [
+        "Up migration adds developer to an organization and space group",
+        "Up migration handles each supported Cloud Foundry group shape"
+      ],
+      "failure_contains": "Cloud Foundry authorization migration observation"
+    },
+    {
+      "id": "up-restricts-provider-to-cloud-foundry",
+      "source_file": "atc/db/migration/migrations/1572899256_update_cf_auth.up.sql",
+      "old": "regexp_replace(auth, '\"cf:([^\"]*):([^\"]*)\"', '\"cf:\\1:\\2:developer\"', 'g')",
+      "new": "regexp_replace(auth, '\"([^\"]*):([^\"]*):([^\"]*)\"', '\"\\1:\\2:\\3:developer\"', 'g')",
+      "tests": ["Update cf auth Up does not migrate any pivotal-cf github orgs"],
+      "scenarios": ["Up migration leaves GitHub pivotal-cf groups unchanged"],
+      "failure_contains": "Cloud Foundry authorization migration observation"
+    },
+    {
+      "id": "down-removes-developer-role",
+      "source_file": "atc/db/migration/migrations/1572899256_update_cf_auth.down.sql",
+      "old": "'\"cf:\\1:\\2\"'",
+      "new": "'\"cf:\\1:\\2:auditor\"'",
+      "tests": ["Update cf auth Down migrate cf auth with form ORG:SPACE:developer to ORG:SPACE"],
+      "scenarios": ["Down migration removes the developer role"],
+      "failure_contains": "Cloud Foundry authorization migration observation"
+    },
+    {
+      "id": "down-preserves-non-developer-roles",
+      "source_file": "atc/db/migration/migrations/1572899256_update_cf_auth.down.sql",
+      "old": "\"cf:([^\"]*):([^\"]*):developer\"",
+      "new": "\"cf:([^\"]*):([^\"]*):[^\"]*\"",
+      "tests": ["Update cf auth Down does not migrate auditor and manager roles"],
+      "scenarios": ["Down migration leaves auditor and manager roles unchanged"],
+      "failure_contains": "Cloud Foundry authorization migration observation"
+    }
+  ]
+}
