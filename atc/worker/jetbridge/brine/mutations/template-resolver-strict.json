@@ -6,14 +6,13 @@
   "step_files": ["atc/worker/jetbridge/brine/steps/variable_template.go"],
   "cases": [
     {
-      "id": "constructor-drops-variable-sources",
+      "id": "resolver-discards-successful-render",
       "source_file": "vars/template_resolver.go",
-      "old": "\t\tparams:        params,",
-      "new": "\t\tparams:        nil,",
+      "old": "\treturn bytes, nil",
+      "new": "\treturn nil, nil",
       "tests": [
         "Template Evaluate when all of the variables are defined evaluates all params",
         "Template Evaluate when not all of the variables are defined evaluates only given params if expectAllKeys = false",
-        "Template Evaluate when not all of the variables are defined fails with an error if expectAllKeys = true",
         "Template Evaluate when multiple variable sources are given evaluates params using param sources in the given order",
         "Template can template values into a byte slice",
         "Template can template multiple values into a byte slice",
@@ -22,12 +21,12 @@
         "Template can template the same value multiple times into a byte slice",
         "Template ignores values referencing local var sources",
         "Template ignores values referencing var sources",
-        "Template templates values with newlines into '|-' blocks"
+        "Template templates values with newlines into '|-' blocks",
+        "Template ignores an invalid input"
       ],
       "scenarios": [
         "Template resolver profile <profile> (row 1)",
         "Template resolver profile <profile> (row 2)",
-        "Template resolver profile <profile> (row 3)",
         "Template resolver profile <profile> (row 4)",
         "Template resolver profile <profile> (row 5)",
         "Template resolver profile <profile> (row 6)",
@@ -36,7 +35,8 @@
         "Template resolver profile <profile> (row 9)",
         "Template resolver profile <profile> (row 10)",
         "Template resolver profile <profile> (row 11)",
-        "Template resolver profile <profile> (row 12)"
+        "Template resolver profile <profile> (row 12)",
+        "Template resolver profile <profile> (row 14)"
       ]
     },
     {
