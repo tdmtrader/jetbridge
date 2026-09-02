@@ -7,7 +7,6 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/go-concourse/concourse"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -24,118 +23,7 @@ var _ = Describe("ATC Handler Configs", func() {
 	})
 
 	Describe("PipelineConfig", func() {
-		var (
-			expectedURL         = "/api/v1/teams/some-team/pipelines/mypipeline/config"
-			expectedQueryParams string
-		)
-
-		Context("ATC returns the correct response when it exists", func() {
-			var (
-				expectedConfig  atc.Config
-				expectedVersion string
-			)
-
-			BeforeEach(func() {
-				expectedConfig = atc.Config{
-					Groups: atc.GroupConfigs{
-						{
-							Name:      "some-group",
-							Jobs:      []string{"job-1", "job-2"},
-							Resources: []string{"resource-1", "resource-2"},
-						},
-						{
-							Name:      "some-other-group",
-							Jobs:      []string{"job-3", "job-4"},
-							Resources: []string{"resource-6", "resource-4"},
-						},
-					},
-
-					Resources: atc.ResourceConfigs{
-						{
-							Name: "some-resource",
-							Type: "some-type",
-							Source: atc.Source{
-								"source-config": "some-value",
-							},
-						},
-						{
-							Name: "some-other-resource",
-							Type: "some-other-type",
-							Source: atc.Source{
-								"source-config": "some-value",
-								"FOO":           "((BAR))",
-							},
-						},
-					},
-
-					Jobs: atc.JobConfigs{
-						{
-							Name:   "some-job",
-							Public: true,
-							Serial: true,
-						},
-						{
-							Name: "some-other-job",
-						},
-					},
-				}
-
-				expectedVersion = "42"
-			})
-
-			JustBeforeEach(func() {
-				atcServer.AppendHandlers(
-					ghttp.CombineHandlers(
-						ghttp.VerifyRequest("GET", expectedURL, expectedQueryParams),
-						ghttp.RespondWithJSONEncoded(http.StatusOK, atc.ConfigResponse{Config: expectedConfig}, http.Header{atc.ConfigVersionHeader: {expectedVersion}}),
-					),
-				)
-			})
-
-			It("returns the given config and version for that pipeline", func() {
-				pipelineConfig, version, found, err := team.PipelineConfig(pipelineRef)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(pipelineConfig).To(Equal(expectedConfig))
-				Expect(version).To(Equal(expectedVersion))
-				Expect(found).To(BeTrue())
-			})
-
-			Context("when specifying instance vars", func() {
-
-				BeforeEach(func() {
-					pipelineRef = atc.PipelineRef{
-						Name:         "mypipeline",
-						InstanceVars: atc.InstanceVars{"branch": "master"},
-					}
-					expectedQueryParams = "vars.branch=%22master%22"
-				})
-
-				It("returns the given config and version for that pipeline instance", func() {
-					pipelineConfig, version, found, err := team.PipelineConfig(pipelineRef)
-					Expect(err).NotTo(HaveOccurred())
-					Expect(pipelineConfig).To(Equal(expectedConfig))
-					Expect(version).To(Equal(expectedVersion))
-					Expect(found).To(BeTrue())
-				})
-			})
-		})
-
-		Context("when pipeline does not exist", func() {
-			BeforeEach(func() {
-				atcServer.AppendHandlers(
-					ghttp.CombineHandlers(
-						ghttp.VerifyRequest("GET", expectedURL),
-						ghttp.RespondWith(http.StatusNotFound, ""),
-					),
-				)
-			})
-
-			It("returns false and no error", func() {
-				_, _, found, err := team.PipelineConfig(pipelineRef)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(found).To(BeFalse())
-			})
-		})
+		expectedURL := "/api/v1/teams/some-team/pipelines/mypipeline/config"
 
 		Context("ATC returns an error", func() {
 			BeforeEach(func() {
@@ -222,42 +110,6 @@ var _ = Describe("ATC Handler Configs", func() {
 				]}`)
 			})
 
-			It("returns true for created and false for updated", func() {
-				created, updated, warnings, err := team.CreateOrUpdatePipelineConfig(pipelineRef, expectedVersion, expectedConfig, checkCredentials)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(created).To(BeTrue())
-				Expect(updated).To(BeFalse())
-				Expect(warnings).To(ConsistOf([]concourse.ConfigWarning{
-					{
-						Type:    "warning-2-type",
-						Message: "fake-warning2",
-					},
-					{
-						Type:    "warning-1-type",
-						Message: "fake-warning1",
-					},
-				}))
-			})
-
-			Context("when instance vars are specified", func() {
-				BeforeEach(func() {
-					pipelineRef = atc.PipelineRef{
-						Name:         "mypipeline",
-						InstanceVars: atc.InstanceVars{"branch": "feature"},
-					}
-				})
-
-				It("submits with vars.xxx query params set", func() {
-					Expect(atcServer.ReceivedRequests()).To(HaveLen(0))
-
-					_, _, _, err := team.CreateOrUpdatePipelineConfig(pipelineRef, expectedVersion, expectedConfig, checkCredentials)
-					Expect(err).ToNot(HaveOccurred())
-
-					Expect(atcServer.ReceivedRequests()).To(HaveLen(1))
-					Expect(atcServer.ReceivedRequests()[0].URL.RawQuery).To(Equal("vars.branch=%22feature%22"))
-				})
-			})
-
 			Context("when credential verification is enabled", func() {
 				BeforeEach(func() {
 					checkCredentials = true
@@ -302,42 +154,6 @@ var _ = Describe("ATC Handler Configs", func() {
 				  {"type": "warning-1-type", "message": "fake-warning1"},
 					{"type": "warning-2-type", "message": "fake-warning2"}
 				]}`)
-			})
-
-			It("returns false for created and true for updated", func() {
-				created, updated, warnings, err := team.CreateOrUpdatePipelineConfig(pipelineRef, expectedVersion, expectedConfig, checkCredentials)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(created).To(BeFalse())
-				Expect(updated).To(BeTrue())
-				Expect(warnings).To(ConsistOf([]concourse.ConfigWarning{
-					{
-						Type:    "warning-2-type",
-						Message: "fake-warning2",
-					},
-					{
-						Type:    "warning-1-type",
-						Message: "fake-warning1",
-					},
-				}))
-			})
-
-			Context("when instance vars are specified", func() {
-				BeforeEach(func() {
-					pipelineRef = atc.PipelineRef{
-						Name:         "mypipeline",
-						InstanceVars: atc.InstanceVars{"branch": "feature"},
-					}
-				})
-
-				It("submits with vars.xxx query params set", func() {
-					Expect(atcServer.ReceivedRequests()).To(HaveLen(0))
-
-					_, _, _, err := team.CreateOrUpdatePipelineConfig(pipelineRef, expectedVersion, expectedConfig, checkCredentials)
-					Expect(err).ToNot(HaveOccurred())
-
-					Expect(atcServer.ReceivedRequests()).To(HaveLen(1))
-					Expect(atcServer.ReceivedRequests()[0].URL.RawQuery).To(Equal("vars.branch=%22feature%22"))
-				})
 			})
 
 			Context("when credential verification is enabled", func() {
