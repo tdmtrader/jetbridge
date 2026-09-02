@@ -1,0 +1,94 @@
+{
+  "name": "migration-build-events-bigint-strict",
+  "test_package": "./atc/db/migration",
+  "source_test_file": "atc/db/migration/build_events_bigint_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/migration-build-events-bigint-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/migration_build_events_bigint_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go",
+    "atc/postgresrunner/postgresrunner.go"
+  ],
+  "cases": [
+    {
+      "id": "up-existing-pipeline-new-id-indexes-build-id",
+      "source_file": "atc/db/migration/migrations/1606068653_build_events_partitions_bigint.up.sql",
+      "old": "    EXECUTE format('CREATE UNIQUE INDEX IF NOT EXISTS pipeline_build_events_%s_build_id_event_id ON pipeline_build_events_%s (build_id, event_id)', pipeline.id, pipeline.id);",
+      "new": "    EXECUTE format('CREATE UNIQUE INDEX IF NOT EXISTS pipeline_build_events_%s_build_id_event_id ON pipeline_build_events_%s (event_id)', pipeline.id, pipeline.id);",
+      "tests": ["build_events bigint indexes Up has indexes for both build_id_old and build_id in pipeline partitions"],
+      "scenarios": ["Up migration indexes both existing pipeline partition columns"],
+      "failure_contains": "build event bigint migration observation"
+    },
+    {
+      "id": "up-existing-team-indexes-build-id",
+      "source_file": "atc/db/migration/migrations/1606068653_build_events_partitions_bigint.up.sql",
+      "old": "  EXECUTE format('CREATE UNIQUE INDEX team_build_events_%s_build_id_event_id ON team_build_events_%s (build_id, event_id)', team.id, team.id);",
+      "new": "  EXECUTE format('CREATE UNIQUE INDEX team_build_events_%s_build_id_event_id ON team_build_events_%s (event_id)', team.id, team.id);",
+      "tests": ["build_events bigint indexes Up has indexes for only build_id in team partitions"],
+      "scenarios": ["Up migration indexes only the new column on existing team partitions"],
+      "failure_contains": "build event bigint migration observation"
+    },
+    {
+      "id": "up-new-team-trigger-indexes-build-id",
+      "source_file": "atc/db/migration/migrations/1606068653_build_events_partitions_bigint.up.sql",
+      "old": "  EXECUTE format('CREATE UNIQUE INDEX team_build_events_%s_build_id_event_id ON team_build_events_%s (build_id, event_id)', NEW.id, NEW.id);",
+      "new": "  EXECUTE format('CREATE UNIQUE INDEX team_build_events_%s_build_id_event_id ON team_build_events_%s (event_id)', NEW.id, NEW.id);",
+      "tests": ["build_events bigint indexes Up has indexes for newly created team partitions"],
+      "scenarios": ["Up migration installs the new index trigger for new teams"],
+      "failure_contains": "build event bigint migration observation"
+    },
+    {
+      "id": "up-new-pipeline-trigger-indexes-build-id",
+      "source_file": "atc/db/migration/migrations/1606068653_build_events_partitions_bigint.up.sql",
+      "old": "  EXECUTE format('CREATE UNIQUE INDEX pipeline_build_events_%s_build_id_event_id ON pipeline_build_events_%s (build_id, event_id)', NEW.id, NEW.id);",
+      "new": "  EXECUTE format('CREATE UNIQUE INDEX pipeline_build_events_%s_build_id_event_id ON pipeline_build_events_%s (event_id)', NEW.id, NEW.id);",
+      "tests": ["build_events bigint indexes Up has indexes for both build_id and build_id_old in newly created pipeline partitions"],
+      "scenarios": ["Up migration installs both index triggers for new pipelines"],
+      "failure_contains": "build event bigint migration observation"
+    },
+    {
+      "id": "down-existing-pipeline-restores-old-id-index",
+      "source_file": "atc/db/migration/migrations/1606068653_build_events_partitions_bigint.down.sql",
+      "old": "  EXECUTE format('CREATE INDEX pipeline_build_events_%s_build_id ON pipeline_build_events_%s (build_id_old)', pipeline.id, pipeline.id);\n  EXECUTE format('ALTER INDEX pipeline_build_events_%s_build_id_old_event_id RENAME TO pipeline_build_events_%s_build_id_event_id', pipeline.id, pipeline.id);",
+      "new": "  EXECUTE format('CREATE INDEX pipeline_build_events_%s_build_id ON pipeline_build_events_%s (event_id)', pipeline.id, pipeline.id);\n  EXECUTE format('DROP INDEX pipeline_build_events_%s_build_id_old_event_id', pipeline.id);",
+      "tests": ["build_events bigint indexes Down has index for build_id_old in pipeline partitions"],
+      "scenarios": ["Down migration restores the old ID index on existing pipeline partitions"],
+      "failure_contains": "build event bigint migration observation"
+    },
+    {
+      "id": "down-existing-pipeline-removes-new-id-index",
+      "source_file": "atc/db/migration/migrations/1606068653_build_events_partitions_bigint.down.sql",
+      "old": "  EXECUTE format('DROP INDEX pipeline_build_events_%s_build_id_event_id', pipeline.id);",
+      "new": "  EXECUTE format('ALTER INDEX pipeline_build_events_%s_build_id_event_id RENAME TO pipeline_build_events_%s_obsolete_build_id_event_id', pipeline.id, pipeline.id);",
+      "tests": ["build_events bigint indexes Down does not have index for build_id in pipeline partitions"],
+      "scenarios": ["Down migration removes the new ID index from existing pipeline partitions"],
+      "failure_contains": "build event bigint migration observation"
+    },
+    {
+      "id": "down-existing-team-removes-new-id-index",
+      "source_file": "atc/db/migration/migrations/1606068653_build_events_partitions_bigint.down.sql",
+      "old": "  EXECUTE format('DROP INDEX team_build_events_%s_build_id_event_id', team.id);",
+      "new": "  EXECUTE format('ALTER INDEX team_build_events_%s_build_id_event_id RENAME TO team_build_events_%s_obsolete_build_id_event_id', team.id, team.id);",
+      "tests": ["build_events bigint indexes Down does not have index for build_id in team partitions"],
+      "scenarios": ["Down migration removes the new ID index from existing team partitions"],
+      "failure_contains": "build event bigint migration observation"
+    },
+    {
+      "id": "down-new-team-trigger-omits-build-id-index",
+      "source_file": "atc/db/migration/migrations/1606068653_build_events_partitions_bigint.down.sql",
+      "old": "  EXECUTE format('CREATE TABLE IF NOT EXISTS team_build_events_%s () INHERITS (build_events)', NEW.id);\n  RETURN NULL;",
+      "new": "  EXECUTE format('CREATE TABLE IF NOT EXISTS team_build_events_%s () INHERITS (build_events)', NEW.id);\n  EXECUTE format('CREATE INDEX team_build_events_%s_build_id ON team_build_events_%s (build_id)', NEW.id, NEW.id);\n  RETURN NULL;",
+      "tests": ["build_events bigint indexes Down does not have index for build_id in newly created team partitions"],
+      "scenarios": ["Down migration leaves new team partitions without a build ID index"],
+      "failure_contains": "build event bigint migration observation"
+    },
+    {
+      "id": "down-new-pipeline-trigger-indexes-build-id",
+      "source_file": "atc/db/migration/migrations/1606068653_build_events_partitions_bigint.down.sql",
+      "old": "  EXECUTE format('CREATE INDEX pipeline_build_events_%s_build_id ON pipeline_build_events_%s (build_id)', NEW.id, NEW.id);\n  EXECUTE format('CREATE UNIQUE INDEX pipeline_build_events_%s_build_id_event_id ON pipeline_build_events_%s (build_id, event_id)', NEW.id, NEW.id);",
+      "new": "  EXECUTE format('CREATE INDEX pipeline_build_events_%s_build_id ON pipeline_build_events_%s (event_id)', NEW.id, NEW.id);\n  EXECUTE format('CREATE UNIQUE INDEX pipeline_build_events_%s_build_id_event_id ON pipeline_build_events_%s (event_id)', NEW.id, NEW.id);",
+      "tests": ["build_events bigint indexes Down has index for build_id in newly created pipeline partitions"],
+      "scenarios": ["Down migration keeps the build ID index trigger for new pipelines"],
+      "failure_contains": "build event bigint migration observation"
+    }
+  ]
+}
