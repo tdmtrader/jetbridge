@@ -595,11 +595,6 @@ var _ = Describe("Builds API", func() {
 				fakeAccess.IsAuthenticatedReturns(false)
 			})
 
-			It("returns 401", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-				Expect(buildsAPIRequireTeamBuilds(team)).To(HaveLen(buildCount))
-			})
-
 			It("does not trigger a build", func() {
 				Expect(buildsAPIRequireTeamBuilds(team)).To(HaveLen(buildCount))
 			})
@@ -615,10 +610,6 @@ var _ = Describe("Builds API", func() {
 					fakeAccess.IsAuthorizedReturns(false)
 				})
 
-				It("returns 403", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
-					Expect(buildsAPIRequireTeamBuilds(team)).To(HaveLen(buildCount))
-				})
 			})
 
 			Context("when authorized", func() {
@@ -1132,9 +1123,6 @@ var _ = Describe("Builds API", func() {
 							requestBuildID = fmt.Sprintf("%d", persistedBuild.ID())
 						})
 
-						It("returns 401", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-						})
 					})
 
 					Context("and the pipeline is not found", func() {
@@ -1156,9 +1144,6 @@ var _ = Describe("Builds API", func() {
 							Expect(pipeline.Public()).To(BeFalse())
 						})
 
-						It("returns 401", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-						})
 					})
 
 					Context("and the pipeline is public", func() {
@@ -1328,15 +1313,9 @@ var _ = Describe("Builds API", func() {
 						requestBuildID = fmt.Sprintf("%d", persistedBuild.ID())
 					})
 
-					It("returns 401", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-					})
 				})
 
 				Context("and the pipeline is private", func() {
-					It("returns 401", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-					})
 				})
 
 				Context("and the pipeline is public", func() {
@@ -1360,9 +1339,6 @@ var _ = Describe("Builds API", func() {
 					fakeAccess.IsAuthorizedReturns(false)
 				})
 
-				It("returns 403", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
-				})
 			})
 
 			Context("when authenticated and authorized", func() {
@@ -1597,9 +1573,6 @@ var _ = Describe("Builds API", func() {
 					fakeAccess.IsAuthorizedReturns(false)
 				})
 
-				It("returns 403", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
-				})
 			})
 
 			Context("when authorized", func() {
@@ -1628,9 +1601,6 @@ var _ = Describe("Builds API", func() {
 				})
 
 				Context("and the pipeline is private", func() {
-					It("returns 401", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-					})
 				})
 
 				Context("and the pipeline is public", func() {
@@ -1644,9 +1614,6 @@ var _ = Describe("Builds API", func() {
 
 					Context("when the job is found", func() {
 						Context("and the job is private", func() {
-							It("returns 401", func() {
-								Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-							})
 						})
 
 						Context("and the job is public", func() {
@@ -1800,11 +1767,6 @@ var _ = Describe("Builds API", func() {
 				fakeAccess.IsAuthenticatedReturns(false)
 			})
 
-			It("returns 401", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-				reloaded := buildsAPIRequireBuild(realBuildFactory, persistedBuild.ID())
-				Expect(reloaded.IsAborted()).To(BeFalse())
-			})
 		})
 
 		Context("when authenticated", func() {
@@ -1842,11 +1804,6 @@ var _ = Describe("Builds API", func() {
 						fakeAccess.IsAuthorizedReturns(false)
 					})
 
-					It("returns 403", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusForbidden))
-						reloaded := buildsAPIRequireBuild(realBuildFactory, persistedBuild.ID())
-						Expect(reloaded.IsAborted()).To(BeFalse())
-					})
 				})
 
 				Context("when authorized", func() {
@@ -2057,9 +2014,6 @@ var _ = Describe("Builds API", func() {
 					fakeAccess.IsAuthorizedReturns(false)
 				})
 
-				It("returns 403", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
-				})
 			})
 
 			Context("when not authenticated", func() {
@@ -2073,15 +2027,9 @@ var _ = Describe("Builds API", func() {
 						requestBuildID = fmt.Sprintf("%d", persistedBuild.ID())
 					})
 
-					It("returns 401", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-					})
 				})
 
 				Context("and the pipeline is private", func() {
-					It("returns 401", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-					})
 				})
 
 				Context("and the pipeline is public", func() {
@@ -2095,9 +2043,6 @@ var _ = Describe("Builds API", func() {
 
 					Context("when the job is found", func() {
 						Context("when job is private", func() {
-							It("returns 401", func() {
-								Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-							})
 						})
 
 						Context("when job is public", func() {
@@ -2362,9 +2307,6 @@ var _ = Describe("Builds API", func() {
 					fakeAccess.IsAuthorizedReturns(false)
 				})
 
-				It("returns 403", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
-				})
 			})
 
 			Context("when not authenticated", func() {
@@ -2378,15 +2320,9 @@ var _ = Describe("Builds API", func() {
 						requestBuildID = fmt.Sprintf("%d", persistedBuild.ID())
 					})
 
-					It("returns 401", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-					})
 				})
 
 				Context("and the pipeline is private", func() {
-					It("returns 401", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-					})
 				})
 
 				Context("and the pipeline is public", func() {
@@ -2439,9 +2375,6 @@ var _ = Describe("Builds API", func() {
 						})
 
 						Context("and the job is private", func() {
-							It("returns 401", func() {
-								Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
-							})
 						})
 					})
 				})

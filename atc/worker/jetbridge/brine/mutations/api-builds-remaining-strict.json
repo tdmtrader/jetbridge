@@ -1,0 +1,73 @@
+{
+  "name": "api-builds-remaining-strict",
+  "test_package": "./atc/api",
+  "source_test_file": "atc/api/builds_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/api-builds-remaining-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/api_builds_remaining_strict.go",
+    "atc/worker/jetbridge/brine/steps/build_client_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "builds-api-unauthorized-status-is-forbidden",
+      "source_file": "atc/api/auth/unauthorized_rejector.go",
+      "old": "\tw.WriteHeader(http.StatusUnauthorized)\n\tfmt.Fprintf(w, \"not authorized\")",
+      "new": "\tw.WriteHeader(http.StatusForbidden)\n\tfmt.Fprintf(w, \"not authorized\")",
+      "tests": [
+        "Builds API POST /api/v1/builds when not authenticated returns 401",
+        "Builds API GET /api/v1/builds/:build_id when parsing the build_id succeeds when the build can be found when not authenticated and build is one off returns 401",
+        "Builds API GET /api/v1/builds/:build_id when parsing the build_id succeeds when the build can be found when not authenticated and the pipeline is private returns 401",
+        "Builds API GET /api/v1/builds/:build_id/resources when the build is found when not authenticated and build is one off returns 401",
+        "Builds API GET /api/v1/builds/:build_id/resources when the build is found when not authenticated and the pipeline is private returns 401",
+        "Builds API GET /api/v1/builds/:build_id/events when the build can be found when not authenticated and the pipeline is private returns 401",
+        "Builds API GET /api/v1/builds/:build_id/events when the build can be found when not authenticated and the pipeline is public when the job is found and the job is private returns 401",
+        "Builds API PUT /api/v1/builds/:build_id/abort when not authenticated returns 401",
+        "Builds API GET /api/v1/builds/:build_id/preparation when the build is found when not authenticated and build is one off returns 401",
+        "Builds API GET /api/v1/builds/:build_id/preparation when the build is found when not authenticated and the pipeline is private returns 401",
+        "Builds API GET /api/v1/builds/:build_id/preparation when the build is found when not authenticated and the pipeline is public when the job is found when job is private returns 401",
+        "Builds API GET /api/v1/builds/:build_id/plan when the build is found when not authenticated and build is one off returns 401",
+        "Builds API GET /api/v1/builds/:build_id/plan when the build is found when not authenticated and the pipeline is private returns 401",
+        "Builds API GET /api/v1/builds/:build_id/plan when the build is found when not authenticated and the pipeline is public when the job exists and the job is private returns 401"
+      ],
+      "scenarios": [
+        "The builds API enforces its exact authorization boundary (row 1)",
+        "The builds API enforces its exact authorization boundary (row 3)",
+        "The builds API enforces its exact authorization boundary (row 4)",
+        "The builds API enforces its exact authorization boundary (row 5)",
+        "The builds API enforces its exact authorization boundary (row 6)",
+        "The builds API enforces its exact authorization boundary (row 9)",
+        "The builds API enforces its exact authorization boundary (row 10)",
+        "The builds API enforces its exact authorization boundary (row 11)",
+        "The builds API enforces its exact authorization boundary (row 14)",
+        "The builds API enforces its exact authorization boundary (row 15)",
+        "The builds API enforces its exact authorization boundary (row 16)",
+        "The builds API enforces its exact authorization boundary (row 18)",
+        "The builds API enforces its exact authorization boundary (row 19)",
+        "The builds API enforces its exact authorization boundary (row 20)"
+      ]
+    },
+    {
+      "id": "builds-api-forbidden-status-is-unauthorized",
+      "source_file": "atc/api/auth/unauthorized_rejector.go",
+      "old": "\tw.WriteHeader(http.StatusForbidden)\n\tfmt.Fprintf(w, \"forbidden\")",
+      "new": "\tw.WriteHeader(http.StatusUnauthorized)\n\tfmt.Fprintf(w, \"forbidden\")",
+      "tests": [
+        "Builds API POST /api/v1/builds when authenticated when not authorized returns 403",
+        "Builds API GET /api/v1/builds/:build_id/resources when the build is found when authenticated, but not authorized returns 403",
+        "Builds API GET /api/v1/builds/:build_id/events when the build can be found when authenticated, but not authorized returns 403",
+        "Builds API PUT /api/v1/builds/:build_id/abort when authenticated when the build is found when not authorized returns 403",
+        "Builds API GET /api/v1/builds/:build_id/preparation when the build is found when authenticated, but not authorized returns 403",
+        "Builds API GET /api/v1/builds/:build_id/plan when the build is found when authenticated, but not authorized returns 403"
+      ],
+      "scenarios": [
+        "The builds API enforces its exact authorization boundary (row 2)",
+        "The builds API enforces its exact authorization boundary (row 7)",
+        "The builds API enforces its exact authorization boundary (row 8)",
+        "The builds API enforces its exact authorization boundary (row 12)",
+        "The builds API enforces its exact authorization boundary (row 13)",
+        "The builds API enforces its exact authorization boundary (row 17)"
+      ]
+    }
+  ]
+}

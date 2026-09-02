@@ -1,0 +1,75 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/api-builds-remaining-strict.json",
+  "git_head": "d137f227bdf5822225968c0b1423e8d58db4d3e6",
+  "completed_at": "2026-09-02T15:56:03Z",
+  "source_tests": 20,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/api/auth/unauthorized_rejector.go": "2a6abb22cc135a08d295ea535e026627f8fde17a134ea3fb73a8ef0ed8e1e80c",
+    "atc/api/builds_test.go": "6e2da49c1cea55452a3f753b04201bee1d2c01885d7c2eaf085e3672bf6dba1e",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/api-builds-remaining-strict.feature": "c421d354c8916388df91029ed3e92b0f51091bb24c4408f409ca45c22a17f5dc",
+    "atc/worker/jetbridge/brine/mutations/api-builds-remaining-strict.json": "fbc661a41a5b3a62b53b6c26c8642e2cc5d360fae398ad8ba864db98847aaf62",
+    "atc/worker/jetbridge/brine/steps/api_builds_remaining_strict.go": "1439a581f8add6a04712eefef19a74b30e80fc49573e2e464ad77186ebedb425",
+    "atc/worker/jetbridge/brine/steps/build_client_strict.go": "1d255028b0716e6e2a61fa8bc6473d1a792f9c91321c603ca85106c4aa3a7cba",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8"
+  },
+  "mutation_cases": [
+    {
+      "id": "builds-api-unauthorized-status-is-forbidden",
+      "mutation_sha256": "920551eb4e7d2279a55e62a559d4d91d02b3d12ab149505ca0db96e88dfebb2a",
+      "failed_source_tests": [
+        "Builds API GET /api/v1/builds/:build_id when parsing the build_id succeeds when the build can be found when not authenticated and build is one off returns 401",
+        "Builds API GET /api/v1/builds/:build_id when parsing the build_id succeeds when the build can be found when not authenticated and the pipeline is private returns 401",
+        "Builds API GET /api/v1/builds/:build_id/events when the build can be found when not authenticated and the pipeline is private returns 401",
+        "Builds API GET /api/v1/builds/:build_id/events when the build can be found when not authenticated and the pipeline is public when the job is found and the job is private returns 401",
+        "Builds API GET /api/v1/builds/:build_id/plan when the build is found when not authenticated and build is one off returns 401",
+        "Builds API GET /api/v1/builds/:build_id/plan when the build is found when not authenticated and the pipeline is private returns 401",
+        "Builds API GET /api/v1/builds/:build_id/plan when the build is found when not authenticated and the pipeline is public when the job exists and the job is private returns 401",
+        "Builds API GET /api/v1/builds/:build_id/preparation when the build is found when not authenticated and build is one off returns 401",
+        "Builds API GET /api/v1/builds/:build_id/preparation when the build is found when not authenticated and the pipeline is private returns 401",
+        "Builds API GET /api/v1/builds/:build_id/preparation when the build is found when not authenticated and the pipeline is public when the job is found when job is private returns 401",
+        "Builds API GET /api/v1/builds/:build_id/resources when the build is found when not authenticated and build is one off returns 401",
+        "Builds API GET /api/v1/builds/:build_id/resources when the build is found when not authenticated and the pipeline is private returns 401",
+        "Builds API POST /api/v1/builds when not authenticated returns 401",
+        "Builds API PUT /api/v1/builds/:build_id/abort when not authenticated returns 401"
+      ],
+      "failed_brine_scenarios": [
+        "The builds API enforces its exact authorization boundary (row 1)",
+        "The builds API enforces its exact authorization boundary (row 10)",
+        "The builds API enforces its exact authorization boundary (row 11)",
+        "The builds API enforces its exact authorization boundary (row 14)",
+        "The builds API enforces its exact authorization boundary (row 15)",
+        "The builds API enforces its exact authorization boundary (row 16)",
+        "The builds API enforces its exact authorization boundary (row 18)",
+        "The builds API enforces its exact authorization boundary (row 19)",
+        "The builds API enforces its exact authorization boundary (row 20)",
+        "The builds API enforces its exact authorization boundary (row 3)",
+        "The builds API enforces its exact authorization boundary (row 4)",
+        "The builds API enforces its exact authorization boundary (row 5)",
+        "The builds API enforces its exact authorization boundary (row 6)",
+        "The builds API enforces its exact authorization boundary (row 9)"
+      ]
+    },
+    {
+      "id": "builds-api-forbidden-status-is-unauthorized",
+      "mutation_sha256": "82b937dcd8f7ad2e19ded7a4b0cd8d4472cad6507498a55fe6ef0f3872499e6a",
+      "failed_source_tests": [
+        "Builds API GET /api/v1/builds/:build_id/events when the build can be found when authenticated, but not authorized returns 403",
+        "Builds API GET /api/v1/builds/:build_id/plan when the build is found when authenticated, but not authorized returns 403",
+        "Builds API GET /api/v1/builds/:build_id/preparation when the build is found when authenticated, but not authorized returns 403",
+        "Builds API GET /api/v1/builds/:build_id/resources when the build is found when authenticated, but not authorized returns 403",
+        "Builds API POST /api/v1/builds when authenticated when not authorized returns 403",
+        "Builds API PUT /api/v1/builds/:build_id/abort when authenticated when the build is found when not authorized returns 403"
+      ],
+      "failed_brine_scenarios": [
+        "The builds API enforces its exact authorization boundary (row 12)",
+        "The builds API enforces its exact authorization boundary (row 13)",
+        "The builds API enforces its exact authorization boundary (row 17)",
+        "The builds API enforces its exact authorization boundary (row 2)",
+        "The builds API enforces its exact authorization boundary (row 7)",
+        "The builds API enforces its exact authorization boundary (row 8)"
+      ]
+    }
+  ]
+}

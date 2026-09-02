@@ -118,6 +118,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, PipelineClientDefinitions()...)
 	defs = append(defs, JobClientStrictDefinitions()...)
 	defs = append(defs, BuildClientDefinitions()...)
+	defs = append(defs, APIBuildsRemainingStrictDefinitions()...)
 	defs = append(defs, ConfigClientDefinitions()...)
 	defs = append(defs, EventParserDefinitions()...)
 	defs = append(defs, SidecarBehaviorDefinitions()...)

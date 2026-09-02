@@ -138,7 +138,7 @@ func newStrictBuildBoundaryForProfile(database JetbridgeDB, rec *brine.Recorder,
 	if err != nil {
 		return nil, fmt.Errorf("save build pipeline: %w", err)
 	}
-	if profile == "api-job-public-existing" || profile == "api-list-status" {
+	if profile == "api-job-public-existing" || profile == "api-list-status" || strings.Contains(profile, "public-job-private") {
 		if err := pipeline.Expose(); err != nil {
 			return nil, fmt.Errorf("expose build pipeline for outsider read: %w", err)
 		}
@@ -243,13 +243,17 @@ func newStrictBuildBoundaryForProfile(database JetbridgeDB, rec *brine.Recorder,
 	buildScoped := buildserver.NewScopedHandlerFactory(logger)
 	teamScoped := api.NewTeamScopedHandlerFactory(logger, database.TeamFactory)
 	handlers := rata.Handlers{
-		atc.CreateBuild:    teamScoped.HandlerFor(buildServer.CreateBuild),
-		atc.ListBuilds:     http.HandlerFunc(buildServer.ListBuilds),
-		atc.GetBuild:       buildScoped.HandlerFor(buildServer.GetBuild),
-		atc.AbortBuild:     buildScoped.HandlerFor(buildServer.AbortBuild),
-		atc.ListTeamBuilds: teamScoped.HandlerFor(teamServer.ListTeamBuilds),
-		atc.CreateJobBuild: pipelineScoped.HandlerFor(jobServer.CreateJobBuild),
-		atc.GetJobBuild:    pipelineScoped.HandlerFor(jobServer.GetJobBuild),
+		atc.CreateBuild:         teamScoped.HandlerFor(buildServer.CreateBuild),
+		atc.ListBuilds:          http.HandlerFunc(buildServer.ListBuilds),
+		atc.GetBuild:            buildScoped.HandlerFor(buildServer.GetBuild),
+		atc.AbortBuild:          buildScoped.HandlerFor(buildServer.AbortBuild),
+		atc.BuildResources:      buildScoped.HandlerFor(buildServer.BuildResources),
+		atc.BuildEvents:         buildScoped.HandlerFor(buildServer.BuildEvents),
+		atc.GetBuildPreparation: buildScoped.HandlerFor(buildServer.GetBuildPreparation),
+		atc.GetBuildPlan:        buildScoped.HandlerFor(buildServer.GetBuildPlan),
+		atc.ListTeamBuilds:      teamScoped.HandlerFor(teamServer.ListTeamBuilds),
+		atc.CreateJobBuild:      pipelineScoped.HandlerFor(jobServer.CreateJobBuild),
+		atc.GetJobBuild:         pipelineScoped.HandlerFor(jobServer.GetJobBuild),
 	}
 	var routes rata.Routes
 	for _, route := range atc.Routes {
@@ -321,6 +325,14 @@ func (b *strictBuildBoundary) observe(profile string) string {
 		err = b.observeAPICreateJob()
 	case "api-job-existing", "api-job-public-existing", "api-job-missing":
 		err = b.observeAPIJobGet(profile)
+	case "builds-post-unauthorized", "builds-post-forbidden",
+		"builds-get-one-off-unauthorized", "builds-get-private-unauthorized",
+		"builds-resources-one-off-unauthorized", "builds-resources-private-unauthorized", "builds-resources-forbidden",
+		"builds-events-forbidden", "builds-events-private-unauthorized", "builds-events-public-job-private-unauthorized",
+		"builds-abort-unauthorized", "builds-abort-forbidden",
+		"builds-preparation-forbidden", "builds-preparation-one-off-unauthorized", "builds-preparation-private-unauthorized", "builds-preparation-public-job-private-unauthorized",
+		"builds-plan-forbidden", "builds-plan-one-off-unauthorized", "builds-plan-private-unauthorized", "builds-plan-public-job-private-unauthorized":
+		err = b.observeBuildsAuthorization(profile)
 	default:
 		err = fmt.Errorf("unknown strict build profile %q", profile)
 	}
@@ -328,6 +340,86 @@ func (b *strictBuildBoundary) observe(profile string) string {
 		return err.Error()
 	}
 	return ""
+}
+
+func (b *strictBuildBoundary) observeBuildsAuthorization(profile string) error {
+	client := b.publicHTTP
+	wantStatus := http.StatusUnauthorized
+	if strings.HasSuffix(profile, "forbidden") {
+		client = b.outsiderHTTP
+		wantStatus = http.StatusForbidden
+	}
+
+	path := ""
+	method := http.MethodGet
+	var body []byte
+	var protectedBuild db.Build
+	var buildsBefore int
+
+	if strings.HasPrefix(profile, "builds-post-") {
+		method = http.MethodPost
+		path = "/api/v1/teams/" + buildStrictTeamName + "/builds"
+		plan := atc.Plan{ID: "authorization-create", Task: &atc.TaskPlan{Config: &atc.TaskConfig{Run: atc.TaskRunConfig{Path: "true"}}}}
+		var err error
+		body, err = json.Marshal(plan)
+		if err != nil {
+			return err
+		}
+		if err := b.database.Conn.QueryRow(`SELECT count(*) FROM builds WHERE team_id = $1`, b.team.ID()).Scan(&buildsBefore); err != nil {
+			return err
+		}
+	} else {
+		var err error
+		if strings.Contains(profile, "one-off") {
+			protectedBuild, err = b.team.CreateOneOffBuild()
+		} else {
+			protectedBuild, err = b.job.CreateBuild(buildStrictUserID)
+		}
+		if err != nil {
+			return err
+		}
+		path = "/api/v1/builds/" + strconv.Itoa(protectedBuild.ID())
+		switch {
+		case strings.Contains(profile, "resources"):
+			path += "/resources"
+		case strings.Contains(profile, "events"):
+			path += "/events"
+		case strings.Contains(profile, "abort"):
+			method = http.MethodPut
+			path += "/abort"
+		case strings.Contains(profile, "preparation"):
+			path += "/preparation"
+		case strings.Contains(profile, "plan"):
+			path += "/plan"
+		}
+	}
+
+	response, raw, err := b.request(client, method, path, body)
+	if err != nil {
+		return err
+	}
+	if response.StatusCode != wantStatus {
+		return fmt.Errorf("authorization status got %d, want %d (body %q)", response.StatusCode, wantStatus, string(raw))
+	}
+	if strings.HasPrefix(profile, "builds-post-") {
+		var buildsAfter int
+		if err := b.database.Conn.QueryRow(`SELECT count(*) FROM builds WHERE team_id = $1`, b.team.ID()).Scan(&buildsAfter); err != nil {
+			return err
+		}
+		if buildsAfter != buildsBefore {
+			return fmt.Errorf("rejected create changed build count %d -> %d", buildsBefore, buildsAfter)
+		}
+	}
+	if strings.Contains(profile, "abort") {
+		found, err := protectedBuild.Reload()
+		if err != nil || !found {
+			return firstError(err, fmt.Errorf("rejected abort build disappeared"))
+		}
+		if protectedBuild.IsAborted() {
+			return fmt.Errorf("rejected abort persisted aborted=true")
+		}
+	}
+	return nil
 }
 
 func (b *strictBuildBoundary) observeClientCreateOneOff() error {
