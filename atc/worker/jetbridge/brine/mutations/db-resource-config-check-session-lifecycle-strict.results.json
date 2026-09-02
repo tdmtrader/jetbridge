@@ -1,0 +1,98 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-resource-config-check-session-lifecycle-strict.json",
+  "git_head": "f93085d1bac6524de722dcdc51f00301b6923661",
+  "completed_at": "2026-09-02T20:10:05Z",
+  "source_tests": 9,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/resource_config_check_session_lifecycle.go": "cc391376262a13bf5f9816ff8089be0458dbe07775d0275391c2d934f9d7b87d",
+    "atc/db/resource_config_check_session_lifecycle_test.go": "711f4c2dc2e3c8afb257f0df47cb39ee981dce9c453a93362d5b9ba8060a6be0",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/db-resource-config-check-session-lifecycle-strict.feature": "93fd853d612aca23e0639f4ad8b0f66b9055385589caedb6ebf130843f82e633",
+    "atc/worker/jetbridge/brine/mutations/db-resource-config-check-session-lifecycle-strict.json": "49bd5d2b82a6fee1973b7451d882664d4c09109b6f164c79757a5d0b9be3237e",
+    "atc/worker/jetbridge/brine/steps/db_resource_config_check_session_lifecycle_strict.go": "8d011f5d688d27ae470b21682488fce728dbb297a3c6cda2cf05e63a21442a44",
+    "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
+    "atc/worker/jetbridge/brine/steps/registry.go": "9a5ef20cd47706ecddfd1526da4aa11b3de3faf6fe9422519cdd0aa4361d41d1",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e"
+  },
+  "mutation_cases": [
+    {
+      "id": "active-sessions-are-preserved",
+      "mutation_sha256": "89a679905ba4c6fc7173b1561278f197c6c87f100830a139c71dc4ca90db1e3d",
+      "failed_source_tests": [
+        "ResourceConfigCheckSessionLifecycle CleanInactiveResourceConfigCheckSessions for prototypes keeps check sessions for active prototypes",
+        "ResourceConfigCheckSessionLifecycle CleanInactiveResourceConfigCheckSessions for resource types keeps check sessions for active resource types",
+        "ResourceConfigCheckSessionLifecycle CleanInactiveResourceConfigCheckSessions for resources keeps check sessions for active resources"
+      ],
+      "failed_brine_scenarios": [
+        "Production inactive check-session cleanup — \u003cprofile\u003e (row 1)",
+        "Production inactive check-session cleanup — \u003cprofile\u003e (row 4)",
+        "Production inactive check-session cleanup — \u003cprofile\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "inactive-resource-is-not-considered-in-use",
+      "mutation_sha256": "6a787e2193b98f580e82860ed350e706f409617391feda2a4fbc521a119702c5",
+      "failed_source_tests": [
+        "ResourceConfigCheckSessionLifecycle CleanInactiveResourceConfigCheckSessions for resources removes check sessions for inactive resources"
+      ],
+      "failed_brine_scenarios": [
+        "Production inactive check-session cleanup — \u003cprofile\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "paused-resource-is-not-considered-in-use",
+      "mutation_sha256": "dbfbad48fde5810a0cdac4bb5b7a32269a2c479f09318318b93bf7a5cb564b14",
+      "failed_source_tests": [
+        "ResourceConfigCheckSessionLifecycle CleanInactiveResourceConfigCheckSessions for resources removes check sessions for resources in paused pipelines"
+      ],
+      "failed_brine_scenarios": [
+        "Production inactive check-session cleanup — \u003cprofile\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "inactive-resource-type-is-not-considered-in-use",
+      "mutation_sha256": "f104ca6b6da4b93b2bd93e91d077a26945f1a110d1d911f36075c89730df47bb",
+      "failed_source_tests": [
+        "ResourceConfigCheckSessionLifecycle CleanInactiveResourceConfigCheckSessions for resource types removes check sessions for inactive resource types"
+      ],
+      "failed_brine_scenarios": [
+        "Production inactive check-session cleanup — \u003cprofile\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "paused-resource-type-is-not-considered-in-use",
+      "mutation_sha256": "336f59b7a24e00e7bcee7eb5155696c9e38f70705a70797f4a32437f4adceae5",
+      "failed_source_tests": [
+        "ResourceConfigCheckSessionLifecycle CleanInactiveResourceConfigCheckSessions for resource types removes check sessions for resource types in paused pipelines"
+      ],
+      "failed_brine_scenarios": [
+        "Production inactive check-session cleanup — \u003cprofile\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "inactive-prototype-is-not-considered-in-use",
+      "mutation_sha256": "9e4d658f8323a82ac4090e20917a85c5fbbc102fbb3a53863b71c6132aa2fd5c",
+      "failed_source_tests": [
+        "ResourceConfigCheckSessionLifecycle CleanInactiveResourceConfigCheckSessions for prototypes removes check sessions for inactive prototypes"
+      ],
+      "failed_brine_scenarios": [
+        "Production inactive check-session cleanup — \u003cprofile\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "paused-prototype-is-not-considered-in-use",
+      "mutation_sha256": "5f24fb356273be15633c1948b4de6b512692fbe0ab9c4bd21783f27f6f17bfbb",
+      "failed_source_tests": [
+        "ResourceConfigCheckSessionLifecycle CleanInactiveResourceConfigCheckSessions for prototypes removes check sessions for resource types in paused pipelines"
+      ],
+      "failed_brine_scenarios": [
+        "Production inactive check-session cleanup — \u003cprofile\u003e (row 9)"
+      ]
+    }
+  ]
+}
