@@ -1,0 +1,141 @@
+{
+  "name": "api-versions-strict",
+  "test_package": "./atc/api",
+  "source_test_file": "atc/api/versions_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/api-versions-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/api_versions_strict.go",
+    "atc/worker/jetbridge/brine/steps/api_auth.go",
+    "atc/worker/jetbridge/brine/steps/api_resource_auth.go",
+    "atc/worker/jetbridge/brine/steps/registry.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "list-uses-each-valid-filter-value",
+      "source_file": "atc/api/resourceserver/versionserver/list.go",
+      "old": "\t\t\tversionFilter[vs[0]] = vs[1]",
+      "new": "\t\t\tversionFilter[vs[0]] = vs[1] + \"-mutated\"",
+      "tests": [
+        "Versions API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authorized when finding the resource succeeds when all the params are passed passes them through",
+        "Versions API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authorized when finding the resource succeeds when params includes version filter has special char space char passes them through",
+        "Versions API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authorized when finding the resource succeeds when params includes version filter has special char % char passes them through",
+        "Versions API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authorized when finding the resource succeeds when params includes version filter has special char : char passes them through by splitting on first colon"
+      ],
+      "scenarios": [
+        "Production versions API behavior — <profile> (row 1)",
+        "Production versions API behavior — <profile> (row 2)",
+        "Production versions API behavior — <profile> (row 3)",
+        "Production versions API behavior — <profile> (row 4)"
+      ]
+    },
+    {
+      "id": "list-ignores-filter-without-separator",
+      "source_file": "atc/api/resourceserver/versionserver/list.go",
+      "old": "\t\t\tif len(vs) == 2 {\n\t\t\t\tversionFilter[vs[0]] = vs[1]\n\t\t\t}",
+      "new": "\t\t\tif len(vs) == 2 {\n\t\t\t\tversionFilter[vs[0]] = vs[1]\n\t\t\t}\n\t\t\tif len(vs) == 1 {\n\t\t\t\tversionFilter[vs[0]] = \"\"\n\t\t\t}",
+      "tests": [
+        "Versions API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authorized when finding the resource succeeds when params includes version filter has special char if there is no :  set no filter when fetching versions"
+      ],
+      "scenarios": [
+        "Production versions API behavior — <profile> (row 5)"
+      ]
+    },
+    {
+      "id": "list-defaults-only-limit",
+      "source_file": "atc/api/resourceserver/versionserver/list.go",
+      "old": "\t\tif limit == 0 {\n\t\t\tlimit = atc.PaginationAPIDefaultLimit\n\t\t}",
+      "new": "\t\tif limit == 0 {\n\t\t\tlimit = atc.PaginationAPIDefaultLimit + 1\n\t\t}",
+      "tests": [
+        "Versions API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authorized when finding the resource succeeds when no params are passed does not set defaults for since and until"
+      ],
+      "scenarios": [
+        "Production versions API behavior — <profile> (row 6)"
+      ]
+    },
+    {
+      "id": "list-keeps-metadata-for-authorized-user",
+      "source_file": "atc/api/resourceserver/versionserver/list.go",
+      "old": "\t\thideMetadata := !resource.Public() && !acc.IsAuthorized(teamName)",
+      "new": "\t\thideMetadata := !resource.Public() && acc.IsAuthenticated()",
+      "tests": [
+        "Versions API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authorized when finding the resource succeeds when getting the versions succeeds returns the json",
+        "Versions API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when not authorized and the pipeline is public when resource is not public when the user is not authenticated returns the json without version metadata"
+      ],
+      "scenarios": [
+        "Production versions API behavior — <profile> (row 7)",
+        "Production versions API behavior — <profile> (row 18)"
+      ]
+    },
+    {
+      "id": "enable-uses-version-id-from-url",
+      "source_file": "atc/api/resourceserver/versionserver/enable_version.go",
+      "old": "\t\terr = resource.EnableVersion(resourceConfigVersionID)",
+      "new": "\t\terr = resource.EnableVersion(resourceConfigVersionID + 1)",
+      "tests": [
+        "Versions API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/enable when authenticated when authorized when finding the resource succeeds enables the exact persisted resource version from the URL"
+      ],
+      "scenarios": [
+        "Production versions API behavior — <profile> (row 8)"
+      ]
+    },
+    {
+      "id": "disable-uses-version-id-from-url",
+      "source_file": "atc/api/resourceserver/versionserver/disable_version.go",
+      "old": "\t\terr = resource.DisableVersion(resourceConfigVersionID)",
+      "new": "\t\terr = resource.DisableVersion(resourceConfigVersionID + 1)",
+      "tests": [
+        "Versions API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/disable when authenticated  when authorized when finding the resource succeeds disables the exact persisted resource version from the URL"
+      ],
+      "scenarios": [
+        "Production versions API behavior — <profile> (row 9)"
+      ]
+    },
+    {
+      "id": "pin-uses-version-id-from-url",
+      "source_file": "atc/api/resourceserver/versionserver/pin_version.go",
+      "old": "\t\tfound, err = resource.PinVersion(resourceConfigVersionID)",
+      "new": "\t\tfound, err = resource.PinVersion(resourceConfigVersionID + 1)",
+      "tests": [
+        "Versions API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/pin when authenticated when authorized when finding the resource succeeds pins the exact persisted resource version from the URL",
+        "Versions API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/pin when authenticated when authorized when finding the resource succeeds when pinning the resource succeeds returns 200"
+      ],
+      "scenarios": [
+        "Production versions API behavior — <profile> (row 10)",
+        "Production versions API behavior — <profile> (row 11)"
+      ]
+    },
+    {
+      "id": "clear-resource-versions-is-scope-specific",
+      "source_file": "atc/db/resource.go",
+      "old": "func (r *resource) ClearVersions() (int64, error) {\n\tresults, err := psql.Delete(\"resource_config_versions\").\n\t\tWhere(sq.Eq{\n\t\t\t\"resource_config_scope_id\": r.resourceConfigScopeID,\n\t\t}).",
+      "new": "func (r *resource) ClearVersions() (int64, error) {\n\tresults, err := psql.Delete(\"resource_config_versions\").\n\t\tWhere(sq.Eq{\n\t\t\t\"resource_config_scope_id\": r.resourceConfigScopeID + 1,\n\t\t}).",
+      "tests": [
+        "Versions API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authenticated when the user is an admin returns the persisted deletion count",
+        "Versions API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authenticated when the user is an admin clears the persisted resource versions",
+        "Versions API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authenticated when the user is an admin preserves versions in a different resource scope"
+      ],
+      "scenarios": [
+        "Production versions API behavior — <profile> (row 12)",
+        "Production versions API behavior — <profile> (row 13)",
+        "Production versions API behavior — <profile> (row 14)"
+      ]
+    },
+    {
+      "id": "clear-resource-type-versions-is-scope-specific",
+      "source_file": "atc/db/resource_type.go",
+      "old": "func (r *resourceType) ClearVersions() (int64, error) {\n\tresults, err := psql.Delete(\"resource_config_versions\").\n\t\tWhere(sq.Eq{\n\t\t\t\"resource_config_scope_id\": r.resourceConfigScopeID,\n\t\t}).",
+      "new": "func (r *resourceType) ClearVersions() (int64, error) {\n\tresults, err := psql.Delete(\"resource_config_versions\").\n\t\tWhere(sq.Eq{\n\t\t\t\"resource_config_scope_id\": r.resourceConfigScopeID + 1,\n\t\t}).",
+      "tests": [
+        "Versions API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resource-types/:resource_type_name/versions when authenticated when the user is an admin returns the persisted deletion count",
+        "Versions API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resource-types/:resource_type_name/versions when authenticated when the user is an admin clears the persisted resource type versions",
+        "Versions API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resource-types/:resource_type_name/versions when authenticated when the user is an admin preserves versions in a distinct resource type scope"
+      ],
+      "scenarios": [
+        "Production versions API behavior — <profile> (row 15)",
+        "Production versions API behavior — <profile> (row 16)",
+        "Production versions API behavior — <profile> (row 17)"
+      ]
+    }
+  ]
+}
