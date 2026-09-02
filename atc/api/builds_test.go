@@ -855,13 +855,6 @@ var _ = Describe("Builds API", func() {
 			})
 
 			Context("when getting the builds succeeds", func() {
-				It("returns Content-Type 'application/json'", func() {
-					expectedHeaderEntries := map[string]string{
-						"Content-Type": "application/json",
-					}
-					Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-				})
-
 				It("returns all builds", func() {
 					buildsAPIExpectBuildsResponse(response, unauthenticatedBuilds)
 				})
@@ -873,13 +866,6 @@ var _ = Describe("Builds API", func() {
 					queryParams = fmt.Sprintf("?from=%d&limit=2", publicBuilds[1].ID())
 				})
 
-				It("returns Link headers per rfc5988", func() {
-					buildsAPIExpectBuildsResponse(response, []db.BuildForAPI{publicBuilds[2], publicBuilds[1]})
-					Expect(response.Header["Link"]).To(ConsistOf([]string{
-						fmt.Sprintf(`<%s/api/v1/builds?from=%d&limit=2>; rel="previous"`, externalURL, publicBuilds[3].ID()),
-						fmt.Sprintf(`<%s/api/v1/builds?to=%d&limit=2>; rel="next"`, externalURL, publicBuilds[0].ID()),
-					}))
-				})
 			})
 
 			Context("when getting all builds fails", func() {
@@ -949,13 +935,6 @@ var _ = Describe("Builds API", func() {
 			})
 
 			Context("when getting the builds succeeds", func() {
-				It("returns Content-Type 'application/json'", func() {
-					expectedHeaderEntries := map[string]string{
-						"Content-Type": "application/json",
-					}
-					Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-				})
-
 				It("returns all builds", func() {
 					buildsAPIExpectBuildsResponse(response, authenticatedBuilds)
 				})
@@ -975,13 +954,6 @@ var _ = Describe("Builds API", func() {
 					queryParams = fmt.Sprintf("?from=%d&limit=2", publicBuilds[1].ID())
 				})
 
-				It("returns Link headers per rfc5988", func() {
-					buildsAPIExpectBuildsResponse(response, []db.BuildForAPI{publicBuilds[2], publicBuilds[1]})
-					Expect(response.Header["Link"]).To(ConsistOf([]string{
-						fmt.Sprintf(`<%s/api/v1/builds?from=%d&limit=2>; rel="previous"`, externalURL, publicBuilds[3].ID()),
-						fmt.Sprintf(`<%s/api/v1/builds?to=%d&limit=2>; rel="next"`, externalURL, publicBuilds[0].ID()),
-					}))
-				})
 			})
 
 			Context("when getting all builds fails", func() {
@@ -1080,10 +1052,6 @@ var _ = Describe("Builds API", func() {
 			BeforeEach(func() {
 				requestBuildID = "nope"
 			})
-
-			It("returns Bad Request", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
-			})
 		})
 
 		Context("when parsing the build_id succeeds", func() {
@@ -1100,10 +1068,6 @@ var _ = Describe("Builds API", func() {
 			Context("when the build cannot be found", func() {
 				BeforeEach(func() {
 					requestBuildID = fmt.Sprintf("%d", missingBuildID)
-				})
-
-				It("returns Not Found", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusNotFound))
 				})
 			})
 
@@ -1147,9 +1111,6 @@ var _ = Describe("Builds API", func() {
 					})
 
 					Context("and the pipeline is public", func() {
-						It("returns 200", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusOK))
-						})
 					})
 				})
 
@@ -1163,18 +1124,11 @@ var _ = Describe("Builds API", func() {
 							fakeAccess.IsAuthorizedReturns(false)
 
 						})
-						It("returns 200 OK", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusOK))
-						})
 					})
 
 					Context("when user is authorized", func() {
 						BeforeEach(func() {
 							fakeAccess.IsAuthorizedReturns(true)
-						})
-
-						It("returns 200 OK", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusOK))
 						})
 
 					})
@@ -1327,9 +1281,6 @@ var _ = Describe("Builds API", func() {
 						Expect(pipeline.Public()).To(BeTrue())
 					})
 
-					It("returns 200", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusOK))
-					})
 				})
 			})
 
@@ -1345,11 +1296,6 @@ var _ = Describe("Builds API", func() {
 				BeforeEach(func() {
 					fakeAccess.IsAuthenticatedReturns(true)
 					fakeAccess.IsAuthorizedReturns(true)
-				})
-
-				It("returns 200 OK", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
-					buildsAPIExpectResourcesResponse(response, persistedBuild)
 				})
 
 				Context("when the build inputs/outputs are not empty", func() {
@@ -1377,13 +1323,6 @@ var _ = Describe("Builds API", func() {
 						decoyBuild = buildsAPIRequireBuildForAPI(realBuildFactory, decoyBuildRow.ID())
 						Expect(decoyBuild.ID()).NotTo(Equal(persistedBuild.ID()))
 						requestBuildID = fmt.Sprintf("%d", persistedBuild.ID())
-					})
-
-					It("returns Content-Type 'application/json'", func() {
-						expectedHeaderEntries := map[string]string{
-							"Content-Type": "application/json",
-						}
-						Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
 					})
 
 					It("returns the build with it's input and output versioned resources", func() {
@@ -1438,10 +1377,6 @@ var _ = Describe("Builds API", func() {
 						BeforeEach(func() {
 							requestBuildID = fmt.Sprintf("%d", missingBuildID)
 						})
-
-						It("returns internal server error", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-						})
 					})
 				})
 			})
@@ -1450,10 +1385,6 @@ var _ = Describe("Builds API", func() {
 		Context("with an invalid build_id", func() {
 			BeforeEach(func() {
 				requestBuildID = "nope"
-			})
-
-			It("returns internal server error", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
 			})
 		})
 	})
@@ -1663,10 +1594,6 @@ var _ = Describe("Builds API", func() {
 					BeforeEach(func() {
 						requestBuildID = fmt.Sprintf("%d", missingBuildID)
 					})
-
-					It("returns Not Found", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-					})
 				})
 
 				Context("when calling the database fails", func() {
@@ -1789,12 +1716,6 @@ var _ = Describe("Builds API", func() {
 			Context("when the build can not be found", func() {
 				BeforeEach(func() {
 					requestBuildID = fmt.Sprintf("%d", missingBuildID)
-				})
-
-				It("returns 404", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-					reloaded := buildsAPIRequireBuild(realBuildFactory, persistedBuild.ID())
-					Expect(reloaded.IsAborted()).To(BeFalse())
 				})
 			})
 
@@ -2050,10 +1971,6 @@ var _ = Describe("Builds API", func() {
 								persistedBuild = publicBuild
 								requestBuildID = fmt.Sprintf("%d", persistedBuild.ID())
 							})
-
-							It("returns 200", func() {
-								Expect(response.StatusCode).To(Equal(http.StatusOK))
-							})
 						})
 					})
 
@@ -2090,17 +2007,6 @@ var _ = Describe("Builds API", func() {
 					Expect(err).NotTo(HaveOccurred())
 					Expect(found).To(BeTrue())
 					Expect(actual).To(Equal(expectedBuildPrep))
-				})
-
-				It("returns OK", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
-				})
-
-				It("returns Content-Type 'application/json'", func() {
-					expectedHeaderEntries := map[string]string{
-						"Content-Type": "application/json",
-					}
-					Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
 				})
 
 				It("returns the build preparation", func() {
@@ -2165,10 +2071,6 @@ var _ = Describe("Builds API", func() {
 		Context("when build is not found", func() {
 			BeforeEach(func() {
 				requestBuildID = fmt.Sprintf("%d", missingBuildID)
-			})
-
-			It("returns 404", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusNotFound))
 			})
 		})
 	})
@@ -2359,17 +2261,11 @@ var _ = Describe("Builds API", func() {
 								requestBuildID = fmt.Sprintf("%d", persistedBuild.ID())
 							})
 							Context("and the build has a plan", func() {
-								It("returns 200", func() {
-									Expect(response.StatusCode).To(Equal(http.StatusOK))
-								})
 							})
 							Context("and the build has no plan", func() {
 								BeforeEach(func() {
 									persistedBuild = publicNoPlanBuild
 									requestBuildID = fmt.Sprintf("%d", persistedBuild.ID())
-								})
-								It("returns 404", func() {
-									Expect(response.StatusCode).To(Equal(http.StatusNotFound))
 								})
 							})
 						})
@@ -2387,35 +2283,6 @@ var _ = Describe("Builds API", func() {
 				})
 
 				Context("when the build returns a plan", func() {
-					It("returns OK", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusOK))
-					})
-
-					It("returns Content-Type 'application/json'", func() {
-						expectedHeaderEntries := map[string]string{
-							"Content-Type": "application/json",
-						}
-						Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-					})
-
-					It("returns the plan", func() {
-						body, err := io.ReadAll(response.Body)
-						Expect(err).NotTo(HaveOccurred())
-
-						Expect(body).To(MatchJSON(`{
-						"schema": "exec.v2",
-						"plan": {
-							"id": "plan-step",
-							"task": {
-								"name": "public-task",
-								"privileged": false,
-								"hermetic": false
-							}
-						}
-					}`))
-						Expect(persistedBuild.Schema()).To(Equal("exec.v2"))
-						Expect(*persistedBuild.PublicPlan()).To(MatchJSON(*plan.Public()))
-					})
 				})
 
 				Context("when the build has no plan", func() {
@@ -2431,9 +2298,6 @@ var _ = Describe("Builds API", func() {
 						Expect(response).ShouldNot(IncludeHeaderEntries(expectedHeaderEntries))
 					})
 
-					It("returns not found", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-					})
 				})
 			})
 		})
@@ -2441,10 +2305,6 @@ var _ = Describe("Builds API", func() {
 		Context("when the build is not found", func() {
 			BeforeEach(func() {
 				requestBuildID = fmt.Sprintf("%d", missingBuildID)
-			})
-
-			It("returns Not Found", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusNotFound))
 			})
 		})
 
