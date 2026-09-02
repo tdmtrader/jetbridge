@@ -1,0 +1,81 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/resource-client-strict.json",
+  "git_head": "70539000a29cffb458a595498f75ae4eb7f65cfb",
+  "completed_at": "2026-09-02T19:32:29Z",
+  "source_tests": 6,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/resource-client-strict.feature": "69369c8e86d524c4df04dc617a29009dcd44ea82b6827754e36abef9553f69b5",
+    "atc/worker/jetbridge/brine/mutations/resource-client-strict.json": "ae7213643e55fa62a17e1617a4e2919f889020e56c9273ff46f402d522749e35",
+    "atc/worker/jetbridge/brine/steps/api_resource_auth.go": "428e6b2cabd1f2833b88f6a9f05e36f41ba1207246afeeefe0a40bd9bd4dea64",
+    "atc/worker/jetbridge/brine/steps/api_resources_strict.go": "7fa7cd81c95cc97b775ca4af7a465ac7239b8f4cf451672946dc8a8e20e16d9f",
+    "atc/worker/jetbridge/brine/steps/registry.go": "3be22f69925c14e3f3f13e6ea1539f0c583193b21e9ccbd5870417ae46bb388d",
+    "atc/worker/jetbridge/brine/steps/resource_client_strict.go": "2d4725d27afd677d7fcbf06d82d77a94fa51c3ba68fd8e148b5b87d089637834",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "go-concourse/concourse/resource.go": "e2cb1fbcb6bf49a413896b707ec94203f1f7be870a2e9da8d2b13425969fd614",
+    "go-concourse/concourse/resource_test.go": "582e5ad59dc8aae846592af75247a4ac93d001079196c93e456cebddc447630d"
+  },
+  "mutation_cases": [
+    {
+      "id": "list-resources-selects-instance-vars",
+      "mutation_sha256": "24d167cf1cc363755fd48553a72cc3ee3b15ea3ccfd7aec8b7b78e99f7cd6959",
+      "failed_source_tests": [
+        "ATC Handler Resource team.ListResources returns resources that belong to the pipeline"
+      ],
+      "failed_brine_scenarios": [
+        "The resource client selects an instanced pipeline when listing resources"
+      ]
+    },
+    {
+      "id": "resource-reports-success",
+      "mutation_sha256": "4e366e64ac24c5abc4f1881981382aa88e9ff892280293675e0544729f2be149",
+      "failed_source_tests": [
+        "ATC Handler Resource Resource when the server returns the resource returns the resource"
+      ],
+      "failed_brine_scenarios": [
+        "The resource client returns a persisted resource"
+      ]
+    },
+    {
+      "id": "resource-maps-not-found",
+      "mutation_sha256": "5fbc8d14099141b9a193f7c8902a50819f521a9d640b9e636ec3da7b1ac23b9e",
+      "failed_source_tests": [
+        "ATC Handler Resource Resource when the server returns a 404 returns false for found and a nil error"
+      ],
+      "failed_brine_scenarios": [
+        "The resource client maps a missing resource to not found"
+      ]
+    },
+    {
+      "id": "clear-cache-returns-count",
+      "mutation_sha256": "0ffd9a6ebc6dd3546398f163dad7f6d4a386e04276d136aebd926d28da6d2367",
+      "failed_source_tests": [
+        "ATC Handler Resource ClearResourceCache when the API call succeeds return no error"
+      ],
+      "failed_brine_scenarios": [
+        "The resource client reports and persists one cleared cache association"
+      ]
+    },
+    {
+      "id": "shared-resource-reports-success",
+      "mutation_sha256": "446432aac1bc28f0ac9a8b5ae4d58d0de6f291789c3f7423dc2d6153f4e9c65f",
+      "failed_source_tests": [
+        "ATC Handler Resource ListSharedForResource when the server returns the shared resources and resource types returns the shared resources/resource-types"
+      ],
+      "failed_brine_scenarios": [
+        "The resource client returns resources sharing the persisted scope"
+      ]
+    },
+    {
+      "id": "shared-resource-maps-not-found",
+      "mutation_sha256": "342e4c4f0eacc836fa880eaad2c8ebd830b42d609567d16902e31c256dc06548",
+      "failed_source_tests": [
+        "ATC Handler Resource ListSharedForResource when the server returns a 404 returns a nil error and not found"
+      ],
+      "failed_brine_scenarios": [
+        "The resource client maps missing shared-resource state to not found"
+      ]
+    }
+  ]
+}
