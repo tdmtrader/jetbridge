@@ -1,0 +1,30 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/creds-list-strict.json",
+  "git_head": "50ee526c5bc228ac1e2c8842e2f815df19239a2e",
+  "completed_at": "2026-09-02T21:30:44Z",
+  "source_tests": 2,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/creds/list.go": "63c141ab58772291186658aafd8614430f2d03a7e4d29545be8464a604be084e",
+    "atc/creds/list_test.go": "c832a2c253c8cf913da3d062382f2e1cae83a37fb4c2248679f85963711fe4fe",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/creds-values-strict.feature": "620812069b532d33506e0b2d08b59f2b6303023bba1b80c726fa4e8ff3158b5f",
+    "atc/worker/jetbridge/brine/mutations/creds-list-strict.json": "d590f76bb9eb240644b44cbeff6b3639f1c9e4592a1e68449181808f6ed102fc",
+    "atc/worker/jetbridge/brine/steps/creds_values_strict.go": "899518f51ea7bf8f5a2eea53fc7741a21d4a07a3878e437e39b54c76662581d2",
+    "atc/worker/jetbridge/brine/steps/registry.go": "1e33d009317428049981f031cc989f1976796602f660a814929a66f698c74685"
+  },
+  "mutation_cases": [
+    {
+      "id": "evaluation-does-not-append-values",
+      "mutation_sha256": "d025f85f1d340a190d159a81ad359dcdc6e1ccd3f913c6fd6790bbdbf1e61717",
+      "failed_source_tests": [
+        "Evaluate interpolates the full list",
+        "Evaluate interpolates within a list"
+      ],
+      "failed_brine_scenarios": [
+        "Production credential value behavior — \u003cprofile\u003e (row 4)",
+        "Production credential value behavior — \u003cprofile\u003e (row 5)"
+      ]
+    }
+  ]
+}
