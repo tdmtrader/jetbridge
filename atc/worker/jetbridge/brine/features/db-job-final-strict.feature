@@ -18,7 +18,6 @@ Feature: Remaining job scheduling and lifecycle state uses durable PostgreSQL be
       | schedule-serial-succeeded-ignored |
       | schedule-pipeline-paused |
       | schedule-job-paused |
-      | schedule-job-paused-inputs |
       | schedule-missing-build |
       | lifecycle-cross-pipeline-scope |
       | lifecycle-scheduled-remains-pending |
