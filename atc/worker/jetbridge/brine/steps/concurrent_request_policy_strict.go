@@ -67,15 +67,15 @@ func observeConcurrentRequestPolicy(profile string) (string, error) {
 		policy := wrappa.NewConcurrentRequestPolicy(map[wrappa.LimitedRoute]int{
 			wrappa.LimitedRoute(atc.CreateJobBuild): 1,
 		})
-		first, found := policy.HandlerPool(atc.CreateJobBuild)
-		if !found || first == nil {
+		first, _ := policy.HandlerPool(atc.CreateJobBuild)
+		if first == nil {
 			return "first-pool-missing", nil
 		}
 		if !first.TryAcquire() {
 			return "first-acquire=false", nil
 		}
-		second, found := policy.HandlerPool(atc.CreateJobBuild)
-		if !found || second == nil {
+		second, _ := policy.HandlerPool(atc.CreateJobBuild)
+		if second == nil {
 			return "second-pool-missing", nil
 		}
 		return fmt.Sprintf("second-acquire=%t", second.TryAcquire()), nil
