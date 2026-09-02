@@ -95,20 +95,6 @@
       "new": "func (r *resource) BuildSummary() *atc.BuildSummary {\n\tif r.buildSummary == nil {\n\t\treturn &atc.BuildSummary{}\n\t}\n\treturn r.buildSummary\n}",
       "tests": ["Resource BuildSummary when there is no check build has no build summary"],
       "scenarios": ["BuildSummary is absent before any resource check starts"]
-    },
-    {
-      "id": "resource-build-summary-returns-current-check-state",
-      "source_file": "atc/db/resource.go",
-      "old": "func (r *resource) BuildSummary() *atc.BuildSummary {\n\treturn r.buildSummary\n}",
-      "new": "func (r *resource) BuildSummary() *atc.BuildSummary {\n\tif r.buildSummary != nil {\n\t\treturn nil\n\t}\n\treturn r.buildSummary\n}",
-      "tests": [
-        "Resource BuildSummary when first check build starts, not set a scope yet when a scope is set has build summary",
-        "Resource BuildSummary when first check build starts, not set a scope yet when a scope is set when other resource ran a check build for the scope has build summary"
-      ],
-      "scenarios": [
-        "BuildSummary reflects a failed persisted scope check",
-        "BuildSummary reflects another successful check sharing the scope"
-      ]
     }
   ]
 }

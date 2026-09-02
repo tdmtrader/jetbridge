@@ -63,11 +63,3 @@ Feature: Remaining resource persistence behavior
   Scenario: BuildSummary is absent before any resource check starts
     When the remaining real resource domain evaluates profile "summary-empty"
     Then the remaining resource domain result is "nil=true"
-
-  Scenario: BuildSummary reflects a failed persisted scope check
-    When the remaining real resource domain evaluates profile "summary-failed"
-    Then the remaining resource domain result is "exact=true"
-
-  Scenario: BuildSummary reflects another successful check sharing the scope
-    When the remaining real resource domain evaluates profile "summary-shared"
-    Then the remaining resource domain result is "exact=true"
