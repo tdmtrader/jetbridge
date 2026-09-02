@@ -1,0 +1,239 @@
+{
+  "name": "db-team-query-next-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/team_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-team-query-next-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_team_query_next_strict.go",
+    "atc/worker/jetbridge/brine/steps/registry.go",
+    "atc/worker/jetbridge/brine/steps/assert.go",
+    "atc/worker/jetbridge/brine/steps/resources.go",
+    "atc/worker/jetbridge/brine/steps/task_command.go",
+    "atc/worker/jetbridge/brine/steps/envtest.go",
+    "atc/postgresrunner/postgresrunner.go",
+    "atc/postgresrunner/ginkgo.go",
+    "atc/postgresrunner/join_limit_conn.go"
+  ],
+  "cases": [
+    {
+      "id": "metadata-query-remains-team-scoped",
+      "source_file": "atc/db/team.go",
+      "old": "eq[\"team_id\"] = t.id\n\n\trows, err := selectContainers().",
+      "new": "eq[\"team_id\"] = -1\n\n\trows, err := selectContainers().",
+      "tests": [
+        "Team FindContainersByMetadata finds creating, created, and destroying containers for the team, matching the metadata in full",
+        "Team FindContainersByMetadata finds containers for the team, matching partial metadata",
+        "Team FindContainersByMetadata finds all containers for the team when given empty metadata"
+      ],
+      "scenarios": [
+        "Remaining DB team query behavior — <profile> (row 1)",
+        "Remaining DB team query behavior — <profile> (row 2)",
+        "Remaining DB team query behavior — <profile> (row 3)"
+      ]
+    },
+    {
+      "id": "metadata-query-does-not-cross-team-boundary",
+      "source_file": "atc/db/team.go",
+      "old": "eq := sq.Eq(metadata.SQLMap())\n\teq[\"team_id\"] = t.id",
+      "new": "eq := sq.Eq(metadata.SQLMap())\n\t// missing team ownership predicate",
+      "tests": ["Team FindContainersByMetadata does not find containers for other teams"],
+      "scenarios": ["Remaining DB team query behavior — <profile> (row 4)"]
+    },
+    {
+      "id": "find-container-returns-created-container",
+      "source_file": "atc/db/team.go",
+      "old": "func (t *team) FindContainerByHandle(\n\thandle string,\n) (Container, bool, error) {\n\tcreatingContainer, createdContainer, err := t.findContainer(sq.Eq{\"handle\": handle})\n\tif err != nil {\n\t\treturn nil, false, err\n\t}\n\n\tif creatingContainer != nil {\n\t\treturn creatingContainer, true, nil\n\t}\n\n\tif createdContainer != nil {",
+      "new": "func (t *team) FindContainerByHandle(\n\thandle string,\n) (Container, bool, error) {\n\tcreatingContainer, createdContainer, err := t.findContainer(sq.Eq{\"handle\": handle})\n\tif err != nil {\n\t\treturn nil, false, err\n\t}\n\n\tif creatingContainer != nil {\n\t\treturn creatingContainer, true, nil\n\t}\n\n\tif createdContainer == nil {",
+      "tests": ["Team FindContainerByHandle finds a container for the team"],
+      "scenarios": ["Remaining DB team query behavior — <profile> (row 5)"]
+    },
+    {
+      "id": "artifact-volume-respects-team",
+      "source_file": "atc/db/team.go",
+      "old": "return artifact.Volume(t.ID())",
+      "new": "return artifact.Volume(-1)",
+      "tests": ["Team FindVolumeForWorkerArtifact when the artifact exists when the associated volume exists returns the volume"],
+      "scenarios": ["Remaining DB team query behavior — <profile> (row 6)"]
+    },
+    {
+      "id": "container-worker-join-uses-equal-name",
+      "source_file": "atc/db/team.go",
+      "old": "workersQuery.Join(\"containers c ON c.worker_name = w.name\")",
+      "new": "workersQuery.Join(\"containers c ON c.worker_name <> w.name\")",
+      "tests": [
+        "Team FindWorkerForContainer when there is a creating container returns it",
+        "Team FindWorkerForContainer when there is a created container returns it"
+      ],
+      "scenarios": [
+        "Remaining DB team query behavior — <profile> (row 7)",
+        "Remaining DB team query behavior — <profile> (row 8)"
+      ]
+    },
+    {
+      "id": "private-builds-remain-team-scoped",
+      "source_file": "atc/db/team.go",
+      "old": "newBuildsQuery := buildsQuery.\n\t\tWhere(sq.Or{sq.Eq{\"p.public\": true}, sq.Eq{\"t.id\": t.id}})",
+      "new": "newBuildsQuery := buildsQuery",
+      "tests": ["Team PrivateAndPublicBuilds when there are builds when there are builds that belong to different teams when other team builds are private returns only builds for requested team"],
+      "scenarios": ["Remaining DB team query behavior — <profile> (row 10)"]
+    },
+    {
+      "id": "from-pagination-is-inclusive-in-correct-direction",
+      "source_file": "atc/db/build_factory.go",
+      "old": "Where(sq.GtOrEq{\"b.id\": uint64(*page.From)}).\n\t\t\tOrderBy(asc)",
+      "new": "Where(sq.LtOrEq{\"b.id\": uint64(*page.From)}).\n\t\t\tOrderBy(asc)",
+      "tests": [
+        "Team PrivateAndPublicBuilds when there are builds returns all team builds with correct pagination",
+        "Team Builds when limiting the range of build ids specifying from greater than the biggest ID in the database returns no rows error"
+      ],
+      "scenarios": [
+        "Remaining DB team query behavior — <profile> (row 9)",
+        "Remaining DB team query behavior — <profile> (row 12)"
+      ]
+    },
+    {
+      "id": "time-builds-zero-limit-stays-empty",
+      "source_file": "atc/db/build_factory.go",
+      "old": "OrderBy(\"COALESCE(b.rerun_of, b.rerun_of_old, b.id) DESC, b.id DESC\").\n\t\tLimit(uint64(page.Limit))",
+      "new": "OrderBy(\"COALESCE(b.rerun_of, b.rerun_of_old, b.id) DESC, b.id DESC\").\n\t\tLimit(uint64(page.Limit + 1))",
+      "tests": ["Team BuildsWithTime When not providing boundaries without a limit specified returns no builds"],
+      "scenarios": ["Remaining DB team query behavior — <profile> (row 11)"]
+    },
+    {
+      "id": "build-pagination-rejects-descending-range",
+      "source_file": "atc/db/build_factory.go",
+      "old": "if *page.From > *page.To {\n\t\t\treturn nil, Pagination{}, fmt.Errorf(\"invalid range boundaries\")\n\t\t}",
+      "new": "if *page.From < *page.To {\n\t\t\treturn nil, Pagination{}, fmt.Errorf(\"invalid range boundaries\")\n\t\t}",
+      "tests": ["Team Builds when limiting the range of build ids specifying invalid boundaries should fail"],
+      "scenarios": ["Remaining DB team query behavior — <profile> (row 13)"]
+    },
+    {
+      "id": "check-container-query-uses-resource-config",
+      "source_file": "atc/db/team.go",
+      "old": "rows, err := selectContainers(\"c\").\n\t\tJoin(\"resource_config_check_sessions rccs ON rccs.id = c.resource_config_check_session_id\").\n\t\tWhere(sq.Eq{\n\t\t\t\"rccs.resource_config_id\": resource.ResourceConfigID(),\n\t\t}).\n\t\tDistinct().",
+      "new": "rows, err := selectContainers(\"c\").\n\t\tJoin(\"resource_config_check_sessions rccs ON rccs.id = c.resource_config_check_session_id\").\n\t\tWhere(sq.Eq{\n\t\t\t\"rccs.resource_config_id\": -1,\n\t\t}).\n\t\tDistinct().",
+      "tests": [
+        "Team FindCheckContainers when pipeline exists when resource exists when check container for resource exists returns check container for resource",
+        "Team FindCheckContainers when pipeline exists when resource exists when check container for resource exists when there are multiple resources with the same resource config returns the same check container"
+      ],
+      "scenarios": [
+        "Remaining DB team query behavior — <profile> (row 14)",
+        "Remaining DB team query behavior — <profile> (row 15)"
+      ]
+    },
+    {
+      "id": "check-container-classification-tests-non-null-session",
+      "source_file": "atc/db/team.go",
+      "old": "Where(sq.NotEq{\n\t\t\t\"resource_config_check_session_id\": nil,\n\t\t})",
+      "new": "Where(sq.Eq{\n\t\t\t\"resource_config_check_session_id\": nil,\n\t\t})",
+      "tests": [
+        "Team IsCheckContainer when the container is associated with a resource config check session returns true",
+        "Team IsCheckContainer when the container is owned by a team returns false"
+      ],
+      "scenarios": [
+        "Remaining DB team query behavior — <profile> (row 16)",
+        "Remaining DB team query behavior — <profile> (row 17)"
+      ]
+    },
+    {
+      "id": "check-container-positive-team-scope",
+      "source_file": "atc/db/team.go",
+      "old": "\"c.handle\":  handle,\n\t\t\t\t\"p.team_id\": t.id,",
+      "new": "\"c.handle\":  handle,\n\t\t\t\t\"p.team_id\": -1,",
+      "tests": ["Team IsContainerWithinTeam when the container is a check container when the container does belong on the team finds the container for the team"],
+      "scenarios": ["Remaining DB team query behavior — <profile> (row 18)"]
+    },
+    {
+      "id": "check-container-negative-team-scope",
+      "source_file": "atc/db/team.go",
+      "old": "\"c.handle\":  handle,\n\t\t\t\t\"p.team_id\": t.id,",
+      "new": "\"c.handle\": handle,",
+      "tests": ["Team IsContainerWithinTeam when the container is a check container when the container does not belong on the team finds the container for the team"],
+      "scenarios": ["Remaining DB team query behavior — <profile> (row 19)"]
+    },
+    {
+      "id": "task-container-positive-team-scope",
+      "source_file": "atc/db/team.go",
+      "old": "\"c.team_id\": t.id,\n\t\t\t\t\"c.handle\":  handle,",
+      "new": "\"c.team_id\": -1,\n\t\t\t\t\"c.handle\":  handle,",
+      "tests": ["Team IsContainerWithinTeam when the container is owned by a team when the container does belong on the team finds the container for the team"],
+      "scenarios": ["Remaining DB team query behavior — <profile> (row 20)"]
+    },
+    {
+      "id": "task-container-negative-team-scope",
+      "source_file": "atc/db/team.go",
+      "old": "\"c.team_id\": t.id,\n\t\t\t\t\"c.handle\":  handle,",
+      "new": "\"c.handle\": handle,",
+      "tests": ["Team IsContainerWithinTeam when the container is owned by a team when the container does not belong on the team finds the container for the team"],
+      "scenarios": ["Remaining DB team query behavior — <profile> (row 21)"]
+    },
+    {
+      "id": "valid-cache-uses-non-null-base-type",
+      "source_file": "atc/db/team.go",
+      "old": "sq.NotEq{\"wrc.worker_base_resource_type_id\": nil},",
+      "new": "sq.Eq{\"wrc.worker_base_resource_type_id\": 0},",
+      "tests": [
+        "Team FindWorkersForResourceCache when the worker is running should find the worker",
+        "Team FindWorkersForResourceCache when there is a second worker when the workers are running should find both workers"
+      ],
+      "scenarios": [
+        "Remaining DB team query behavior — <profile> (row 22)",
+        "Remaining DB team query behavior — <profile> (row 24)"
+      ]
+    },
+    {
+      "id": "stalled-cache-worker-is-not-returned",
+      "source_file": "atc/db/team.go",
+      "old": "sq.Eq{\"w.state\": WorkerStateRunning},",
+      "new": "sq.NotEq{\"w.state\": \"\"},",
+      "tests": ["Team FindWorkersForResourceCache when the worker is stalled should not find the worker"],
+      "scenarios": ["Remaining DB team query behavior — <profile> (row 23)"]
+    },
+    {
+      "id": "pre-prune-build-can-use-invalidated-cache",
+      "source_file": "atc/db/team.go",
+      "old": "sq.Or{\n\t\t\t\t\tsq.NotEq{\"wrc.worker_base_resource_type_id\": nil},\n\t\t\t\t\tsq.Expr(\"wrc.invalid_since > to_timestamp(?)\", shouldBeValidBefore.Unix()),\n\t\t\t\t},",
+      "new": "sq.NotEq{\"wrc.worker_base_resource_type_id\": nil},",
+      "tests": ["Team FindWorkersForResourceCache when there is a second worker when the workers are running when worker1 is deleted when build started before worker1 is pruned should still find worker2"],
+      "scenarios": ["Remaining DB team query behavior — <profile> (row 25)"]
+    },
+    {
+      "id": "post-prune-build-cannot-use-invalidated-cache",
+      "source_file": "atc/db/team.go",
+      "old": "sq.Expr(\"wrc.invalid_since > to_timestamp(?)\", shouldBeValidBefore.Unix()),",
+      "new": "sq.NotEq{\"wrc.invalid_since\": nil},",
+      "tests": ["Team FindWorkersForResourceCache when there is a second worker when the workers are running when worker1 is deleted when build started after worker1 is pruned should not find any worker"],
+      "scenarios": ["Remaining DB team query behavior — <profile> (row 28)"]
+    },
+    {
+      "id": "pre-prune-volume-lookup-accepts-invalidated-cache",
+      "source_file": "atc/db/worker_resource_cache.go",
+      "old": "if volumeShouldBeValidBefore == nil || invalidSince.Valid && invalidSince.Time.Before(*volumeShouldBeValidBefore) {",
+      "new": "if volumeShouldBeValidBefore == nil || invalidSince.Valid {",
+      "tests": ["Team FindWorkersForResourceCache when there is a second worker when the workers are running when worker1 is deleted when build started before worker1 is pruned cached volume should found on worker2"],
+      "scenarios": ["Remaining DB team query behavior — <profile> (row 26)"]
+    },
+    {
+      "id": "post-prune-volume-lookup-rejects-invalidated-cache",
+      "source_file": "atc/db/worker_resource_cache.go",
+      "old": "if volumeShouldBeValidBefore == nil || invalidSince.Valid && invalidSince.Time.Before(*volumeShouldBeValidBefore) {",
+      "new": "if volumeShouldBeValidBefore == nil {",
+      "tests": ["Team FindWorkersForResourceCache when there is a second worker when the workers are running when worker1 is deleted when build started after worker1 is pruned cached volume should not found on worker2"],
+      "scenarios": ["Remaining DB team query behavior — <profile> (row 29)"]
+    },
+    {
+      "id": "streamed-volume-retains-cache-reference",
+      "source_file": "atc/db/volume.go",
+      "old": "func (volume *createdVolume) WorkerResourceCacheID() int { return volume.workerResourceCacheID }",
+      "new": "func (volume *createdVolume) WorkerResourceCacheID() int { return volume.workerResourceCacheID + 1 }",
+      "tests": [
+        "Team FindWorkersForResourceCache when there is a second worker when the workers are running when worker1 is deleted when build started before worker1 is pruned the volume should be still there",
+        "Team FindWorkersForResourceCache when there is a second worker when the workers are running when worker1 is deleted when build started after worker1 is pruned but the volume should be still there"
+      ],
+      "scenarios": [
+        "Remaining DB team query behavior — <profile> (row 27)",
+        "Remaining DB team query behavior — <profile> (row 30)"
+      ]
+    }
+  ]
+}

@@ -157,6 +157,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, SchedulerAlgorithmStrictDefinitions()...)
 	defs = append(defs, DBTeamRemainingStrictDefinitions()...)
 	defs = append(defs, DBTeamBuildListStrictDefinitions()...)
+	defs = append(defs, DBTeamQueryNextStrictDefinitions()...)
 	defs = append(defs, DBJobInputOutputStrictDefinitions()...)
 	defs = append(defs, DBJobRerunStrictDefinitions()...)
 	defs = append(defs, DBJobTaskCacheStrictDefinitions()...)
