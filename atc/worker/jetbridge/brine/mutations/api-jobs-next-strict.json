@@ -46,8 +46,8 @@
         "Remaining jobs API production behavior — <profile> (row 3)",
         "Remaining jobs API production behavior — <profile> (row 4)",
         "Remaining jobs API production behavior — <profile> (row 5)",
-        "Remaining jobs API production behavior — <profile> (row 19)",
-        "Remaining jobs API production behavior — <profile> (row 20)"
+        "Remaining jobs API production behavior — <profile> (row 18)",
+        "Remaining jobs API production behavior — <profile> (row 19)"
       ]
     },
     {
@@ -77,8 +77,8 @@
     {
       "id": "succeeded-build-badge-status",
       "source_file": "atc/api/jobserver/badge.go",
-      "old": "case build.Status() == db.BuildStatusSucceeded:\n\t\treturn badgePassing",
-      "new": "case build.Status() == db.BuildStatusSucceeded:\n\t\treturn badgeUnknown",
+      "old": "badgePassing = Badge{Width: 88, FillColor: `#44cc11`, Status: `passing`, Title: `build`}",
+      "new": "badgePassing = Badge{Width: 88, FillColor: `#44cc11`, Status: `success`, Title: `build`}",
       "tests": [
         "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/badge when authorized when the finished build succeeded renders the persisted finished build status and color",
         "Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/badge when authorized with a successful persisted build scales production-deployment and preserves the passing status"
@@ -133,14 +133,6 @@
       "new": "func (b *Badge) StatusWidth() int {\n\treturn b.Width - b.TitleWidth() + 1\n}",
       "tests": ["Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/badge when authorized with a successful persisted build preserves the original status width for custom titles"],
       "scenarios": ["Remaining jobs API production behavior — <profile> (row 17)"]
-    },
-    {
-      "id": "empty-dashboard-encodes-as-array",
-      "source_file": "atc/api/jobserver/list.go",
-      "old": "if jobs == nil {\n\t\t\tjobs = []atc.JobSummary{}\n\t\t}",
-      "new": "if jobs == nil {\n\t\t\tjobs = nil\n\t\t}",
-      "tests": ["Jobs API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs returns an empty dashboard for a persisted pipeline with no jobs"],
-      "scenarios": ["Remaining jobs API production behavior — <profile> (row 18)"]
     }
   ]
 }

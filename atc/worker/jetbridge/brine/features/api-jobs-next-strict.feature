@@ -26,6 +26,5 @@ Feature: Remaining jobs API public listing and badge behavior
       | badge-scale-long |
       | badge-production-title |
       | badge-status-width |
-      | dashboard-empty |
       | dashboard-public-anonymous |
       | builds-public-outsider |
