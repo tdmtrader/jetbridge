@@ -1,0 +1,68 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-worker-resource-cache-strict.json",
+  "git_head": "cb409534fa6d2f4a2c8fe45135b57abfdad9431e",
+  "completed_at": "2026-09-02T20:16:52Z",
+  "source_tests": 8,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/worker_resource_cache.go": "a2b9c616bb351ebcb8bd91e611f1dea8611094d366d8379fbf65d5bcf92c3fb2",
+    "atc/db/worker_resource_caches_test.go": "6d168c8104a7c745a11b137a8f6d69eba1e2484172975769ca13d5e14c0333de",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/db-worker-resource-cache-strict.feature": "f03a56c40c4e2a3f3f2f29af6a7e4cef69beab5a33c1cb0dc6fa2d6f6ecc9317",
+    "atc/worker/jetbridge/brine/mutations/db-worker-resource-cache-strict.json": "7073eea4d27f7e13d599befde20d70f18997cda9183b33f9e4d42c5ef19c2745",
+    "atc/worker/jetbridge/brine/steps/assert.go": "eac0b7b4dc864f54ffb5aab471451e3b62da518e5a8b10ba26e742d83298861f",
+    "atc/worker/jetbridge/brine/steps/db_worker_resource_cache_strict.go": "a53e88430c7091701433ea0c16d4b67e9f44997b69119ca90b16ffbb9f3588f2",
+    "atc/worker/jetbridge/brine/steps/registry.go": "25bb8c30d979adca532de2e7cafd84856593bae24c93aba0e05e58c03728087f",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8"
+  },
+  "mutation_cases": [
+    {
+      "id": "new-worker-cache-reports-created",
+      "mutation_sha256": "461a9aca4a6138ace2449898008c4105e8be2d3a4367394ed61671e873b155c8",
+      "failed_source_tests": [
+        "WorkerResourceCaches FindOrCreate() Create a worker resource cache on worker0 with it's own base resource type Create a worker resource cache on worker1 with worker0's base base resource type Delete worker0 Create a worker resource cache on worker1 with worker2's base base resource type should create a cache",
+        "WorkerResourceCaches FindOrCreate() Create a worker resource cache on worker0 with it's own base resource type Create a worker resource cache on worker1 with worker0's base base resource type should create a cache",
+        "WorkerResourceCaches FindOrCreate() Create a worker resource cache on worker0 with it's own base resource type should create a cache"
+      ],
+      "failed_brine_scenarios": [
+        "Worker resource cache profile \u003cprofile\u003e has its exact result (row 1)",
+        "Worker resource cache profile \u003cprofile\u003e has its exact result (row 4)",
+        "Worker resource cache profile \u003cprofile\u003e has its exact result (row 7)"
+      ]
+    },
+    {
+      "id": "existing-cache-validates-source-identity",
+      "mutation_sha256": "32702e91e6a57e0d74ffcc36cf3ef0c63cb99cf103aa9a853f2bee94b0377e03",
+      "failed_source_tests": [
+        "WorkerResourceCaches FindOrCreate() Create a worker resource cache on worker0 with it's own base resource type Create a worker resource cache again on worker0 again with it's own base resource type should find a cache",
+        "WorkerResourceCaches FindOrCreate() Create a worker resource cache on worker0 with it's own base resource type Create a worker resource cache again on worker0 with worker1's base resource type should not create a cache, but find the existing cache"
+      ],
+      "failed_brine_scenarios": [
+        "Worker resource cache profile \u003cprofile\u003e has its exact result (row 2)",
+        "Worker resource cache profile \u003cprofile\u003e has its exact result (row 3)"
+      ]
+    },
+    {
+      "id": "invalidated-cache-respects-build-start-time",
+      "mutation_sha256": "33abd49597febb1aaf83e776c12fe118c8d7e43e14841022c550e2a7d2100199",
+      "failed_source_tests": [
+        "WorkerResourceCaches FindOrCreate() Create a worker resource cache on worker0 with it's own base resource type Create a worker resource cache on worker1 with worker0's base base resource type Delete worker0 Invalidated cache when build started after cache invalidated should not find an invalidated cache on worker1",
+        "WorkerResourceCaches FindOrCreate() Create a worker resource cache on worker0 with it's own base resource type Create a worker resource cache on worker1 with worker0's base base resource type Delete worker0 Invalidated cache when build started before cache invalidated should still find an invalidated cache on worker1"
+      ],
+      "failed_brine_scenarios": [
+        "Worker resource cache profile \u003cprofile\u003e has its exact result (row 5)",
+        "Worker resource cache profile \u003cprofile\u003e has its exact result (row 6)"
+      ]
+    },
+    {
+      "id": "invalidated-cache-reports-zero-source",
+      "mutation_sha256": "481c557b59f9b6eb56bc6b4165605957fc87acdb5a25fd9cb79080bd89634ef4",
+      "failed_source_tests": [
+        "WorkerResourceCaches FindOrCreate() Create a worker resource cache on worker0 with it's own base resource type Create a worker resource cache on worker1 with worker0's base base resource type Delete worker0 Create a worker resource cache on worker1 with worker2's base base resource type should invalidated cache still be there"
+      ],
+      "failed_brine_scenarios": [
+        "Worker resource cache profile \u003cprofile\u003e has its exact result (row 8)"
+      ]
+    }
+  ]
+}
