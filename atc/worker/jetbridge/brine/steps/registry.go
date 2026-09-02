@@ -119,6 +119,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, MetricPrimitiveDefinitions()...)
 	defs = append(defs, RuntimeMetricDefinitions()...)
 	defs = append(defs, ResourceClientJourneyDefinitions()...)
+	defs = append(defs, ResourceClientStrictDefinitions()...)
 	defs = append(defs, InMemoryBuildDefinitions()...)
 	defs = append(defs, ResourceScopeDomainDefinitions()...)
 	defs = append(defs, ResourceTypeDomainDefinitions()...)

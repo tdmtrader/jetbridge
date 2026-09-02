@@ -1,0 +1,63 @@
+{
+  "name": "resource-client-strict",
+  "test_package": "./go-concourse/concourse",
+  "source_test_file": "go-concourse/concourse/resource_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/resource-client-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/resource_client_strict.go",
+    "atc/worker/jetbridge/brine/steps/api_resources_strict.go",
+    "atc/worker/jetbridge/brine/steps/api_resource_auth.go",
+    "atc/worker/jetbridge/brine/steps/registry.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "list-resources-selects-instance-vars",
+      "source_file": "go-concourse/concourse/resource.go",
+      "old": "func (team *team) ListResources(pipelineRef atc.PipelineRef) ([]atc.Resource, error) {\n\tparams := rata.Params{\n\t\t\"pipeline_name\": pipelineRef.Name,\n\t\t\"team_name\":     team.Name(),\n\t}\n\n\tvar resources []atc.Resource\n\terr := team.connection.Send(internal.Request{\n\t\tRequestName: atc.ListResources,\n\t\tParams:      params,\n\t\tQuery:       pipelineRef.QueryParams(),",
+      "new": "func (team *team) ListResources(pipelineRef atc.PipelineRef) ([]atc.Resource, error) {\n\tparams := rata.Params{\n\t\t\"pipeline_name\": pipelineRef.Name,\n\t\t\"team_name\":     team.Name(),\n\t}\n\n\tvar resources []atc.Resource\n\terr := team.connection.Send(internal.Request{\n\t\tRequestName: atc.ListResources,\n\t\tParams:      params,\n\t\tQuery:       nil,",
+      "tests": ["ATC Handler Resource team.ListResources returns resources that belong to the pipeline"],
+      "scenarios": ["The resource client selects an instanced pipeline when listing resources"]
+    },
+    {
+      "id": "resource-reports-success",
+      "source_file": "go-concourse/concourse/resource.go",
+      "old": "func (team *team) Resource(pipelineRef atc.PipelineRef, resourceName string) (atc.Resource, bool, error) {\n\tparams := rata.Params{\n\t\t\"pipeline_name\": pipelineRef.Name,\n\t\t\"resource_name\": resourceName,\n\t\t\"team_name\":     team.Name(),\n\t}\n\n\tvar resource atc.Resource\n\terr := team.connection.Send(internal.Request{\n\t\tRequestName: atc.GetResource,\n\t\tParams:      params,\n\t\tQuery:       pipelineRef.QueryParams(),\n\t}, &internal.Response{\n\t\tResult: &resource,\n\t})\n\tswitch err.(type) {\n\tcase nil:\n\t\treturn resource, true, nil",
+      "new": "func (team *team) Resource(pipelineRef atc.PipelineRef, resourceName string) (atc.Resource, bool, error) {\n\tparams := rata.Params{\n\t\t\"pipeline_name\": pipelineRef.Name,\n\t\t\"resource_name\": resourceName,\n\t\t\"team_name\":     team.Name(),\n\t}\n\n\tvar resource atc.Resource\n\terr := team.connection.Send(internal.Request{\n\t\tRequestName: atc.GetResource,\n\t\tParams:      params,\n\t\tQuery:       pipelineRef.QueryParams(),\n\t}, &internal.Response{\n\t\tResult: &resource,\n\t})\n\tswitch err.(type) {\n\tcase nil:\n\t\treturn resource, false, nil",
+      "tests": ["ATC Handler Resource Resource when the server returns the resource returns the resource"],
+      "scenarios": ["The resource client returns a persisted resource"]
+    },
+    {
+      "id": "resource-maps-not-found",
+      "source_file": "go-concourse/concourse/resource.go",
+      "old": "\tcase internal.ResourceNotFoundError:\n\t\treturn resource, false, nil\n\tdefault:\n\t\treturn resource, false, err\n\t}\n}\n\nfunc (team *team) ListResources",
+      "new": "\tcase internal.ResourceNotFoundError:\n\t\treturn resource, true, nil\n\tdefault:\n\t\treturn resource, false, err\n\t}\n}\n\nfunc (team *team) ListResources",
+      "tests": ["ATC Handler Resource Resource when the server returns a 404 returns false for found and a nil error"],
+      "scenarios": ["The resource client maps a missing resource to not found"]
+    },
+    {
+      "id": "clear-cache-returns-count",
+      "source_file": "go-concourse/concourse/resource.go",
+      "old": "\t} else {\n\t\treturn crcResponse.CachesRemoved, nil\n\t}\n}\n\nfunc (team *team) ListSharedForResource",
+      "new": "\t} else {\n\t\treturn crcResponse.CachesRemoved + 1, nil\n\t}\n}\n\nfunc (team *team) ListSharedForResource",
+      "tests": ["ATC Handler Resource ClearResourceCache when the API call succeeds return no error"],
+      "scenarios": ["The resource client reports and persists one cleared cache association"]
+    },
+    {
+      "id": "shared-resource-reports-success",
+      "source_file": "go-concourse/concourse/resource.go",
+      "old": "func (team *team) ListSharedForResource(pipelineRef atc.PipelineRef, resourceName string) (atc.ResourcesAndTypes, bool, error) {\n\tparams := rata.Params{\n\t\t\"pipeline_name\": pipelineRef.Name,\n\t\t\"resource_name\": resourceName,\n\t\t\"team_name\":     team.Name(),\n\t}\n\n\tvar shared atc.ResourcesAndTypes\n\terr := team.connection.Send(internal.Request{\n\t\tRequestName: atc.ListSharedForResource,\n\t\tParams:      params,\n\t\tQuery:       pipelineRef.QueryParams(),\n\t}, &internal.Response{\n\t\tResult: &shared,\n\t})\n\tswitch err.(type) {\n\tcase nil:\n\t\treturn shared, true, nil",
+      "new": "func (team *team) ListSharedForResource(pipelineRef atc.PipelineRef, resourceName string) (atc.ResourcesAndTypes, bool, error) {\n\tparams := rata.Params{\n\t\t\"pipeline_name\": pipelineRef.Name,\n\t\t\"resource_name\": resourceName,\n\t\t\"team_name\":     team.Name(),\n\t}\n\n\tvar shared atc.ResourcesAndTypes\n\terr := team.connection.Send(internal.Request{\n\t\tRequestName: atc.ListSharedForResource,\n\t\tParams:      params,\n\t\tQuery:       pipelineRef.QueryParams(),\n\t}, &internal.Response{\n\t\tResult: &shared,\n\t})\n\tswitch err.(type) {\n\tcase nil:\n\t\treturn shared, false, nil",
+      "tests": ["ATC Handler Resource ListSharedForResource when the server returns the shared resources and resource types returns the shared resources/resource-types"],
+      "scenarios": ["The resource client returns resources sharing the persisted scope"]
+    },
+    {
+      "id": "shared-resource-maps-not-found",
+      "source_file": "go-concourse/concourse/resource.go",
+      "old": "\tcase internal.ResourceNotFoundError:\n\t\treturn shared, false, nil\n\tdefault:\n\t\treturn shared, false, err\n\t}\n}",
+      "new": "\tcase internal.ResourceNotFoundError:\n\t\treturn shared, true, nil\n\tdefault:\n\t\treturn shared, false, err\n\t}\n}",
+      "tests": ["ATC Handler Resource ListSharedForResource when the server returns a 404 returns a nil error and not found"],
+      "scenarios": ["The resource client maps missing shared-resource state to not found"]
+    }
+  ]
+}
