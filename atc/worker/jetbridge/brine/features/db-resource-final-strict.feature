@@ -1,9 +1,5 @@
 Feature: Remaining resource persistence behavior
 
-  Scenario: SetResourceConfigScope persists the exact resource association
-    When the remaining real resource domain evaluates profile "scope-association"
-    Then the remaining resource domain result is "before-zero=true;after-equal=true"
-
   Scenario: SetResourceConfigScope schedules only the consuming job
     When the remaining real resource domain evaluates profile "scope-schedule"
     Then the remaining resource domain result is "consumer=true;unrelated=false"

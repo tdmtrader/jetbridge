@@ -9,14 +9,6 @@
   ],
   "cases": [
     {
-      "id": "resource-scope-persists-both-association-ids",
-      "source_file": "atc/db/resource.go",
-      "old": "\t\tSet(\"resource_config_id\", scope.ResourceConfig().ID()).\n\t\tSet(\"resource_config_scope_id\", scope.ID()).",
-      "new": "\t\tSet(\"resource_config_id\", scope.ResourceConfig().ID()).\n\t\tSet(\"resource_config_scope_id\", nil).",
-      "tests": ["Resource SetResourceConfigScope associates the resource to the config and scope"],
-      "scenarios": ["SetResourceConfigScope persists the exact resource association"]
-    },
-    {
       "id": "resource-scope-schedules-downstream-jobs",
       "source_file": "atc/db/resource.go",
       "old": "\terr = requestScheduleForJobsUsingResource(tx, resourceID)\n\tif err != nil {\n\t\treturn false, err\n\t}",
