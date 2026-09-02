@@ -1,0 +1,191 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/api-builds-next-strict.json",
+  "git_head": "7885cac42fe16fd844c30b16942034a1d694e88d",
+  "completed_at": "2026-09-02T16:43:35Z",
+  "source_tests": 27,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/api/auth/check_build_read_access_handler.go": "dc0884e97650ce58b71e80ef673c651003928604b7748cbfe91f8b2a9ed8044f",
+    "atc/api/auth/check_build_write_access_handler.go": "6753f5a06766e0eae00dd1ba337e7a38fda3348b0499fbea30d72af2b6e7aef9",
+    "atc/api/builds_test.go": "91f348a4c6ab0cbbd92c6627250076d0f3f10d595e3b1be0a6520c5a16e308c2",
+    "atc/api/buildserver/get.go": "a9c20f2e420941e99e5d13b4620a8c9302f3e315bdb0da69714b9f229ea04927",
+    "atc/api/buildserver/list.go": "7c3f4a5057b75dc5e7a908ba186e7851888bd87f6c7d07be4587ae33ea42c5f3",
+    "atc/api/buildserver/plan.go": "11a129e25629d0c9c2e10f70bf6be3554d87e15089c210107b387e1898f1ba40",
+    "atc/api/buildserver/preparation.go": "9d2df4868ef81f4c12d766b90c08284b4f3ef2baca858812ac3ffb14369c79c7",
+    "atc/api/buildserver/resources.go": "95c5b7bf04f7a13ca2349bf6ab7006792556ecff4d54f421a33be591b53b7a1f",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/api-builds-next-strict.feature": "e8f10501a477415ff10ea30d3e9a64bd9b91d6f3f28e32e25eb8cd61ce244458",
+    "atc/worker/jetbridge/brine/mutations/api-builds-next-strict.json": "638a03993d7b1dee0f0eb409b93ee061fb7dc2ec21a56d835202e06a06e18859",
+    "atc/worker/jetbridge/brine/steps/api_builds_next_strict.go": "babf5f6f26048db65b2068403452b520011ee64189a6077abc169e68be65abb4",
+    "atc/worker/jetbridge/brine/steps/build_client_strict.go": "da6346ebf1e6e3b1f4adb7278a0f07fe0ded1caabe2b8d9e21006f34c74723eb",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8"
+  },
+  "mutation_cases": [
+    {
+      "id": "build-list-json-content-type-is-changed",
+      "mutation_sha256": "a6f871feb2ae1884e73ff3002c521c2c52074dde3efc87b3b19ffb46b32b1e27",
+      "failed_source_tests": [
+        "Builds API GET /api/v1/builds when authenticated when getting the builds succeeds returns Content-Type 'application/json'",
+        "Builds API GET /api/v1/builds when not authenticated when getting the builds succeeds returns Content-Type 'application/json'"
+      ],
+      "failed_brine_scenarios": [
+        "The additional builds API behavior is exact for \u003cprofile\u003e (row 1)",
+        "The additional builds API behavior is exact for \u003cprofile\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "build-list-next-link-relation-is-previous",
+      "mutation_sha256": "af7113ed885cec3672b7d3d9c1c81deb985edc91687a20a0ab87d192c35a4278",
+      "failed_source_tests": [
+        "Builds API GET /api/v1/builds when authenticated when next/previous pages are available returns Link headers per rfc5988",
+        "Builds API GET /api/v1/builds when not authenticated when next/previous pages are available returns Link headers per rfc5988"
+      ],
+      "failed_brine_scenarios": [
+        "The additional builds API behavior is exact for \u003cprofile\u003e (row 3)",
+        "The additional builds API behavior is exact for \u003cprofile\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "build-read-invalid-id-status-is-unprocessable",
+      "mutation_sha256": "5f42aa4591a347d29270135e248fc8350d2963e704b4bae5a7ed11fc6aed8703",
+      "failed_source_tests": [
+        "Builds API GET /api/v1/builds/:build_id when parsing the build_id fails returns Bad Request",
+        "Builds API GET /api/v1/builds/:build_id/resources with an invalid build_id returns internal server error"
+      ],
+      "failed_brine_scenarios": [
+        "The additional builds API behavior is exact for \u003cprofile\u003e (row 5)",
+        "The additional builds API behavior is exact for \u003cprofile\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "build-read-missing-status-is-gone",
+      "mutation_sha256": "b8c19bb46ddf34cd7af687f5a0a37f9d6120acca4406955e2bc51b73caa0e3e0",
+      "failed_source_tests": [
+        "Builds API GET /api/v1/builds/:build_id when parsing the build_id succeeds when the build cannot be found returns Not Found",
+        "Builds API GET /api/v1/builds/:build_id/events when the build can be found when not authenticated when the build can not be found returns Not Found",
+        "Builds API GET /api/v1/builds/:build_id/plan when the build is not found returns Not Found",
+        "Builds API GET /api/v1/builds/:build_id/preparation when build is not found returns 404",
+        "Builds API GET /api/v1/builds/:build_id/resources when the build is found when authenticated and authorized with an invalid build when the build does not exist returns internal server error"
+      ],
+      "failed_brine_scenarios": [
+        "The additional builds API behavior is exact for \u003cprofile\u003e (row 10)",
+        "The additional builds API behavior is exact for \u003cprofile\u003e (row 11)",
+        "The additional builds API behavior is exact for \u003cprofile\u003e (row 7)",
+        "The additional builds API behavior is exact for \u003cprofile\u003e (row 8)",
+        "The additional builds API behavior is exact for \u003cprofile\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "build-write-missing-status-is-gone",
+      "mutation_sha256": "2094a09b0fb3274fa88fd530f525c2d6bd40d772ab09f243d900980ee0efc036",
+      "failed_source_tests": [
+        "Builds API PUT /api/v1/builds/:build_id/abort when authenticated when the build can not be found returns 404"
+      ],
+      "failed_brine_scenarios": [
+        "The additional builds API behavior is exact for \u003cprofile\u003e (row 12)"
+      ]
+    },
+    {
+      "id": "build-get-success-status-is-accepted",
+      "mutation_sha256": "66e254ffca703952007a8ddac1424f1bde844462b979649ad8af46a6fa959fb7",
+      "failed_source_tests": [
+        "Builds API GET /api/v1/builds/:build_id when parsing the build_id succeeds when the build can be found when authenticated when user is authorized returns 200 OK",
+        "Builds API GET /api/v1/builds/:build_id when parsing the build_id succeeds when the build can be found when authenticated when user is not authorized returns 200 OK",
+        "Builds API GET /api/v1/builds/:build_id when parsing the build_id succeeds when the build can be found when not authenticated and the pipeline is public returns 200"
+      ],
+      "failed_brine_scenarios": [
+        "The additional builds API behavior is exact for \u003cprofile\u003e (row 13)",
+        "The additional builds API behavior is exact for \u003cprofile\u003e (row 14)",
+        "The additional builds API behavior is exact for \u003cprofile\u003e (row 15)"
+      ]
+    },
+    {
+      "id": "build-resources-success-status-is-accepted",
+      "mutation_sha256": "821acb0546d04b460728555702e300f841f4af69ba28b5502dc88de33faca970",
+      "failed_source_tests": [
+        "Builds API GET /api/v1/builds/:build_id/resources when the build is found when authenticated and authorized returns 200 OK",
+        "Builds API GET /api/v1/builds/:build_id/resources when the build is found when not authenticated and the pipeline is public returns 200"
+      ],
+      "failed_brine_scenarios": [
+        "The additional builds API behavior is exact for \u003cprofile\u003e (row 16)",
+        "The additional builds API behavior is exact for \u003cprofile\u003e (row 17)"
+      ]
+    },
+    {
+      "id": "build-resources-content-type-is-changed",
+      "mutation_sha256": "33b4df0b6c9f4b719aac9c449197bf2f34b5a091be57317939317292db424dbb",
+      "failed_source_tests": [
+        "Builds API GET /api/v1/builds/:build_id/resources when the build is found when authenticated and authorized when the build inputs/outputs are not empty returns Content-Type 'application/json'"
+      ],
+      "failed_brine_scenarios": [
+        "The additional builds API behavior is exact for \u003cprofile\u003e (row 18)"
+      ]
+    },
+    {
+      "id": "build-preparation-success-status-is-accepted",
+      "mutation_sha256": "8db1658ecf7722590b7576982a16fbf99d4372a4956fa32274e5689ded66830b",
+      "failed_source_tests": [
+        "Builds API GET /api/v1/builds/:build_id/preparation when the build is found when authenticated returns OK",
+        "Builds API GET /api/v1/builds/:build_id/preparation when the build is found when not authenticated and the pipeline is public when the job is found when job is public returns 200"
+      ],
+      "failed_brine_scenarios": [
+        "The additional builds API behavior is exact for \u003cprofile\u003e (row 19)",
+        "The additional builds API behavior is exact for \u003cprofile\u003e (row 20)"
+      ]
+    },
+    {
+      "id": "build-preparation-content-type-is-changed",
+      "mutation_sha256": "443a4981e67308c7a64fb673ce99c1d18eab18afc83d201a2e3df1a937071b5d",
+      "failed_source_tests": [
+        "Builds API GET /api/v1/builds/:build_id/preparation when the build is found when authenticated returns Content-Type 'application/json'"
+      ],
+      "failed_brine_scenarios": [
+        "The additional builds API behavior is exact for \u003cprofile\u003e (row 21)"
+      ]
+    },
+    {
+      "id": "build-plan-success-status-is-accepted",
+      "mutation_sha256": "09ce6042387b782fd4f0766b8f5a1437dcc9c20f899b8287f3817da51953ce4d",
+      "failed_source_tests": [
+        "Builds API GET /api/v1/builds/:build_id/plan when the build is found when authenticated when the build returns a plan returns OK",
+        "Builds API GET /api/v1/builds/:build_id/plan when the build is found when not authenticated and the pipeline is public when the job exists and the job is public and the build has a plan returns 200"
+      ],
+      "failed_brine_scenarios": [
+        "The additional builds API behavior is exact for \u003cprofile\u003e (row 22)",
+        "The additional builds API behavior is exact for \u003cprofile\u003e (row 23)"
+      ]
+    },
+    {
+      "id": "build-plan-content-type-is-changed",
+      "mutation_sha256": "e7252562a840323755c4bd9f3ed8d95fc30caf202d2278bc73a6947d187dff5f",
+      "failed_source_tests": [
+        "Builds API GET /api/v1/builds/:build_id/plan when the build is found when authenticated when the build returns a plan returns Content-Type 'application/json'"
+      ],
+      "failed_brine_scenarios": [
+        "The additional builds API behavior is exact for \u003cprofile\u003e (row 24)"
+      ]
+    },
+    {
+      "id": "build-plan-schema-is-omitted",
+      "mutation_sha256": "b590a11a2deab2730a3b4b0c824c87d95d56fa002ee9e03c70bf08e604cb7258",
+      "failed_source_tests": [
+        "Builds API GET /api/v1/builds/:build_id/plan when the build is found when authenticated when the build returns a plan returns the plan"
+      ],
+      "failed_brine_scenarios": [
+        "The additional builds API behavior is exact for \u003cprofile\u003e (row 25)"
+      ]
+    },
+    {
+      "id": "build-plan-missing-status-is-gone",
+      "mutation_sha256": "dc5948e2d56f9374d8a9b8e48bd5df57e66fdb4bacd03b34fc411da4e12aa2bb",
+      "failed_source_tests": [
+        "Builds API GET /api/v1/builds/:build_id/plan when the build is found when authenticated when the build has no plan returns not found",
+        "Builds API GET /api/v1/builds/:build_id/plan when the build is found when not authenticated and the pipeline is public when the job exists and the job is public and the build has no plan returns 404"
+      ],
+      "failed_brine_scenarios": [
+        "The additional builds API behavior is exact for \u003cprofile\u003e (row 26)",
+        "The additional builds API behavior is exact for \u003cprofile\u003e (row 27)"
+      ]
+    }
+  ]
+}

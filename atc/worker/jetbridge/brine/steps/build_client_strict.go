@@ -123,6 +123,7 @@ func newStrictBuildBoundaryForProfile(database JetbridgeDB, rec *brine.Recorder,
 	if strings.HasPrefix(profile, "client-") {
 		ref.InstanceVars = atc.InstanceVars{"branch": "master"}
 	}
+	jobPublic := strings.Contains(profile, "builds-next-preparation-public") || strings.Contains(profile, "builds-next-plan-public")
 	pipeline, _, err := team.SavePipeline(ref, atc.Config{
 		ResourceTypes: atc.ResourceTypes{{
 			Name: "some-type", Type: "global-base-type", Source: atc.Source{"repository": "resource-type"},
@@ -132,13 +133,14 @@ func newStrictBuildBoundaryForProfile(database JetbridgeDB, rec *brine.Recorder,
 		}},
 		Jobs: atc.JobConfigs{{
 			Name:         "build",
+			Public:       jobPublic,
 			PlanSequence: []atc.Step{{Config: &atc.GetStep{Name: "some-input", Resource: "some-input"}}},
 		}},
 	}, 0, false)
 	if err != nil {
 		return nil, fmt.Errorf("save build pipeline: %w", err)
 	}
-	if profile == "api-job-public-existing" || profile == "api-list-status" || strings.Contains(profile, "public-job-private") {
+	if profile == "api-job-public-existing" || profile == "api-list-status" || strings.Contains(profile, "public-job-private") || strings.Contains(profile, "builds-next-list-public") || strings.Contains(profile, "builds-next-get-") || strings.Contains(profile, "builds-next-resources-public") || strings.Contains(profile, "builds-next-preparation-public") || strings.Contains(profile, "builds-next-plan-public") {
 		if err := pipeline.Expose(); err != nil {
 			return nil, fmt.Errorf("expose build pipeline for outsider read: %w", err)
 		}

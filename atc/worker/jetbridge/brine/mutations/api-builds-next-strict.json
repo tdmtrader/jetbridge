@@ -1,0 +1,189 @@
+{
+  "name": "api-builds-next-strict",
+  "test_package": "./atc/api",
+  "source_test_file": "atc/api/builds_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/api-builds-next-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/api_builds_next_strict.go",
+    "atc/worker/jetbridge/brine/steps/build_client_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "build-list-json-content-type-is-changed",
+      "source_file": "atc/api/buildserver/list.go",
+      "old": "\tw.Header().Set(\"Content-Type\", \"application/json\")",
+      "new": "\tw.Header().Set(\"Content-Type\", \"text/plain\")",
+      "tests": [
+        "Builds API GET /api/v1/builds when not authenticated when getting the builds succeeds returns Content-Type 'application/json'",
+        "Builds API GET /api/v1/builds when authenticated when getting the builds succeeds returns Content-Type 'application/json'"
+      ],
+      "scenarios": [
+        "The additional builds API behavior is exact for <profile> (row 1)",
+        "The additional builds API behavior is exact for <profile> (row 2)"
+      ]
+    },
+    {
+      "id": "build-list-next-link-relation-is-previous",
+      "source_file": "atc/api/buildserver/list.go",
+      "old": "\t\tatc.LinkRelNext,\n\t))",
+      "new": "\t\tatc.LinkRelPrevious,\n\t))",
+      "tests": [
+        "Builds API GET /api/v1/builds when not authenticated when next/previous pages are available returns Link headers per rfc5988",
+        "Builds API GET /api/v1/builds when authenticated when next/previous pages are available returns Link headers per rfc5988"
+      ],
+      "scenarios": [
+        "The additional builds API behavior is exact for <profile> (row 3)",
+        "The additional builds API behavior is exact for <profile> (row 4)"
+      ]
+    },
+    {
+      "id": "build-read-invalid-id-status-is-unprocessable",
+      "source_file": "atc/api/auth/check_build_read_access_handler.go",
+      "old": "\t\tw.WriteHeader(http.StatusBadRequest)\n\t\treturn",
+      "new": "\t\tw.WriteHeader(http.StatusUnprocessableEntity)\n\t\treturn",
+      "tests": [
+        "Builds API GET /api/v1/builds/:build_id when parsing the build_id fails returns Bad Request",
+        "Builds API GET /api/v1/builds/:build_id/resources with an invalid build_id returns internal server error"
+      ],
+      "scenarios": [
+        "The additional builds API behavior is exact for <profile> (row 5)",
+        "The additional builds API behavior is exact for <profile> (row 6)"
+      ]
+    },
+    {
+      "id": "build-read-missing-status-is-gone",
+      "source_file": "atc/api/auth/check_build_read_access_handler.go",
+      "old": "\tif !found {\n\t\tw.WriteHeader(http.StatusNotFound)\n\t\treturn\n\t}",
+      "new": "\tif !found {\n\t\tw.WriteHeader(http.StatusGone)\n\t\treturn\n\t}",
+      "tests": [
+        "Builds API GET /api/v1/builds/:build_id when parsing the build_id succeeds when the build cannot be found returns Not Found",
+        "Builds API GET /api/v1/builds/:build_id/resources when the build is found when authenticated and authorized with an invalid build when the build does not exist returns internal server error",
+        "Builds API GET /api/v1/builds/:build_id/events when the build can be found when not authenticated when the build can not be found returns Not Found",
+        "Builds API GET /api/v1/builds/:build_id/preparation when build is not found returns 404",
+        "Builds API GET /api/v1/builds/:build_id/plan when the build is not found returns Not Found"
+      ],
+      "scenarios": [
+        "The additional builds API behavior is exact for <profile> (row 7)",
+        "The additional builds API behavior is exact for <profile> (row 8)",
+        "The additional builds API behavior is exact for <profile> (row 9)",
+        "The additional builds API behavior is exact for <profile> (row 10)",
+        "The additional builds API behavior is exact for <profile> (row 11)"
+      ]
+    },
+    {
+      "id": "build-write-missing-status-is-gone",
+      "source_file": "atc/api/auth/check_build_write_access_handler.go",
+      "old": "\tif !found {\n\t\tw.WriteHeader(http.StatusNotFound)\n\t\treturn\n\t}",
+      "new": "\tif !found {\n\t\tw.WriteHeader(http.StatusGone)\n\t\treturn\n\t}",
+      "tests": [
+        "Builds API PUT /api/v1/builds/:build_id/abort when authenticated when the build can not be found returns 404"
+      ],
+      "scenarios": ["The additional builds API behavior is exact for <profile> (row 12)"]
+    },
+    {
+      "id": "build-get-success-status-is-accepted",
+      "source_file": "atc/api/buildserver/get.go",
+      "old": "\t\tw.WriteHeader(http.StatusOK)",
+      "new": "\t\tw.WriteHeader(http.StatusAccepted)",
+      "tests": [
+        "Builds API GET /api/v1/builds/:build_id when parsing the build_id succeeds when the build can be found when not authenticated and the pipeline is public returns 200",
+        "Builds API GET /api/v1/builds/:build_id when parsing the build_id succeeds when the build can be found when authenticated when user is not authorized returns 200 OK",
+        "Builds API GET /api/v1/builds/:build_id when parsing the build_id succeeds when the build can be found when authenticated when user is authorized returns 200 OK"
+      ],
+      "scenarios": [
+        "The additional builds API behavior is exact for <profile> (row 13)",
+        "The additional builds API behavior is exact for <profile> (row 14)",
+        "The additional builds API behavior is exact for <profile> (row 15)"
+      ]
+    },
+    {
+      "id": "build-resources-success-status-is-accepted",
+      "source_file": "atc/api/buildserver/resources.go",
+      "old": "\t\tw.WriteHeader(http.StatusOK)",
+      "new": "\t\tw.WriteHeader(http.StatusAccepted)",
+      "tests": [
+        "Builds API GET /api/v1/builds/:build_id/resources when the build is found when not authenticated and the pipeline is public returns 200",
+        "Builds API GET /api/v1/builds/:build_id/resources when the build is found when authenticated and authorized returns 200 OK"
+      ],
+      "scenarios": [
+        "The additional builds API behavior is exact for <profile> (row 16)",
+        "The additional builds API behavior is exact for <profile> (row 17)"
+      ]
+    },
+    {
+      "id": "build-resources-content-type-is-changed",
+      "source_file": "atc/api/buildserver/resources.go",
+      "old": "\t\tw.Header().Set(\"Content-Type\", \"application/json\")",
+      "new": "\t\tw.Header().Set(\"Content-Type\", \"text/plain\")",
+      "tests": ["Builds API GET /api/v1/builds/:build_id/resources when the build is found when authenticated and authorized when the build inputs/outputs are not empty returns Content-Type 'application/json'"],
+      "scenarios": ["The additional builds API behavior is exact for <profile> (row 18)"]
+    },
+    {
+      "id": "build-preparation-success-status-is-accepted",
+      "source_file": "atc/api/buildserver/preparation.go",
+      "old": "\t\tw.Header().Set(\"Content-Type\", \"application/json\")\n\t\terr = json.NewEncoder(w).Encode(present.BuildPreparation(prep))",
+      "new": "\t\tw.Header().Set(\"Content-Type\", \"application/json\")\n\t\tw.WriteHeader(http.StatusAccepted)\n\t\terr = json.NewEncoder(w).Encode(present.BuildPreparation(prep))",
+      "tests": [
+        "Builds API GET /api/v1/builds/:build_id/preparation when the build is found when not authenticated and the pipeline is public when the job is found when job is public returns 200",
+        "Builds API GET /api/v1/builds/:build_id/preparation when the build is found when authenticated returns OK"
+      ],
+      "scenarios": [
+        "The additional builds API behavior is exact for <profile> (row 19)",
+        "The additional builds API behavior is exact for <profile> (row 20)"
+      ]
+    },
+    {
+      "id": "build-preparation-content-type-is-changed",
+      "source_file": "atc/api/buildserver/preparation.go",
+      "old": "\t\tw.Header().Set(\"Content-Type\", \"application/json\")",
+      "new": "\t\tw.Header().Set(\"Content-Type\", \"text/plain\")",
+      "tests": ["Builds API GET /api/v1/builds/:build_id/preparation when the build is found when authenticated returns Content-Type 'application/json'"],
+      "scenarios": ["The additional builds API behavior is exact for <profile> (row 21)"]
+    },
+    {
+      "id": "build-plan-success-status-is-accepted",
+      "source_file": "atc/api/buildserver/plan.go",
+      "old": "\t\tw.Header().Set(\"Content-Type\", \"application/json\")\n\t\terr := json.NewEncoder(w).Encode(atc.PublicBuildPlan{",
+      "new": "\t\tw.Header().Set(\"Content-Type\", \"application/json\")\n\t\tw.WriteHeader(http.StatusAccepted)\n\t\terr := json.NewEncoder(w).Encode(atc.PublicBuildPlan{",
+      "tests": [
+        "Builds API GET /api/v1/builds/:build_id/plan when the build is found when not authenticated and the pipeline is public when the job exists and the job is public and the build has a plan returns 200",
+        "Builds API GET /api/v1/builds/:build_id/plan when the build is found when authenticated when the build returns a plan returns OK"
+      ],
+      "scenarios": [
+        "The additional builds API behavior is exact for <profile> (row 22)",
+        "The additional builds API behavior is exact for <profile> (row 23)"
+      ]
+    },
+    {
+      "id": "build-plan-content-type-is-changed",
+      "source_file": "atc/api/buildserver/plan.go",
+      "old": "\t\tw.Header().Set(\"Content-Type\", \"application/json\")",
+      "new": "\t\tw.Header().Set(\"Content-Type\", \"text/plain\")",
+      "tests": ["Builds API GET /api/v1/builds/:build_id/plan when the build is found when authenticated when the build returns a plan returns Content-Type 'application/json'"],
+      "scenarios": ["The additional builds API behavior is exact for <profile> (row 24)"]
+    },
+    {
+      "id": "build-plan-schema-is-omitted",
+      "source_file": "atc/api/buildserver/plan.go",
+      "old": "\t\t\tSchema: build.Schema(),",
+      "new": "\t\t\tSchema: \"\",",
+      "tests": ["Builds API GET /api/v1/builds/:build_id/plan when the build is found when authenticated when the build returns a plan returns the plan"],
+      "scenarios": ["The additional builds API behavior is exact for <profile> (row 25)"]
+    },
+    {
+      "id": "build-plan-missing-status-is-gone",
+      "source_file": "atc/api/buildserver/plan.go",
+      "old": "\t\tif !build.HasPlan() {\n\t\t\tw.WriteHeader(http.StatusNotFound)",
+      "new": "\t\tif !build.HasPlan() {\n\t\t\tw.WriteHeader(http.StatusGone)",
+      "tests": [
+        "Builds API GET /api/v1/builds/:build_id/plan when the build is found when not authenticated and the pipeline is public when the job exists and the job is public and the build has no plan returns 404",
+        "Builds API GET /api/v1/builds/:build_id/plan when the build is found when authenticated when the build has no plan returns not found"
+      ],
+      "scenarios": [
+        "The additional builds API behavior is exact for <profile> (row 26)",
+        "The additional builds API behavior is exact for <profile> (row 27)"
+      ]
+    }
+  ]
+}
