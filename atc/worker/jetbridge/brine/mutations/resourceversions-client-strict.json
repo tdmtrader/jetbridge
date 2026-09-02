@@ -15,8 +15,8 @@
     {
       "id": "page-encodes-bounds-and-limit",
       "source_file": "go-concourse/concourse/pagination.go",
-      "old": "func (p Page) QueryParams() url.Values {\n\tqueryParams := url.Values{}",
-      "new": "func (p Page) QueryParams() url.Values {\n\tqueryParams := url.Values{}\n\treturn queryParams",
+      "old": "func (p Page) QueryParams() url.Values {\n\tqueryParams := url.Values{}\n\tif p.From > 0 {\n\t\tqueryParams.Add(\"from\", strconv.Itoa(p.From))\n\t}\n\n\tif p.To > 0 {\n\t\tqueryParams.Add(\"to\", strconv.Itoa(p.To))\n\t}\n\n\tif p.Limit > 0 {\n\t\tqueryParams.Add(\"limit\", strconv.Itoa(p.Limit))\n\t}",
+      "new": "func (p Page) QueryParams() url.Values {\n\tqueryParams := url.Values{}\n\tif p.From > 0 {\n\t\tqueryParams.Add(\"from\", strconv.Itoa(p.From+1))\n\t}\n\n\tif p.To > 0 {\n\t\tqueryParams.Add(\"to\", strconv.Itoa(p.To+1))\n\t}\n\n\tif p.Limit > 0 {\n\t\tqueryParams.Add(\"limit\", strconv.Itoa(p.Limit+1))\n\t}",
       "tests": [
         "ATC Handler Resource Versions ResourceVersions when from is specified calls to get all versions from that id",
         "ATC Handler Resource Versions ResourceVersions when from and limit is specified appends limit to the url",
@@ -61,8 +61,8 @@
     {
       "id": "version-mutations-report-success",
       "source_file": "go-concourse/concourse/resourceversions.go",
-      "old": "\tcase nil:\n\t\treturn true, nil\n\tcase internal.ResourceNotFoundError:\n\t\treturn false, nil\n\tdefault:\n\t\treturn false, err\n\t}\n}",
-      "new": "\tcase nil:\n\t\treturn false, nil\n\tcase internal.ResourceNotFoundError:\n\t\treturn false, nil\n\tdefault:\n\t\treturn false, err\n\t}\n}",
+      "old": "func (team *team) sendResourceVersion(pipelineRef atc.PipelineRef, resourceName string, resourceVersionID int, resourceVersionReq string) (bool, error) {\n\tparams := rata.Params{\n\t\t\"pipeline_name\":              pipelineRef.Name,\n\t\t\"resource_name\":              resourceName,\n\t\t\"resource_config_version_id\": strconv.Itoa(resourceVersionID),\n\t\t\"team_name\":                  team.Name(),\n\t}\n\n\terr := team.connection.Send(internal.Request{\n\t\tRequestName: resourceVersionReq,\n\t\tParams:      params,\n\t\tQuery:       pipelineRef.QueryParams(),\n\t}, nil)\n\n\tswitch err.(type) {\n\tcase nil:\n\t\treturn true, nil",
+      "new": "func (team *team) sendResourceVersion(pipelineRef atc.PipelineRef, resourceName string, resourceVersionID int, resourceVersionReq string) (bool, error) {\n\tparams := rata.Params{\n\t\t\"pipeline_name\":              pipelineRef.Name,\n\t\t\"resource_name\":              resourceName,\n\t\t\"resource_config_version_id\": strconv.Itoa(resourceVersionID),\n\t\t\"team_name\":                  team.Name(),\n\t}\n\n\terr := team.connection.Send(internal.Request{\n\t\tRequestName: resourceVersionReq,\n\t\tParams:      params,\n\t\tQuery:       pipelineRef.QueryParams(),\n\t}, nil)\n\n\tswitch err.(type) {\n\tcase nil:\n\t\treturn false, nil",
       "tests": [
         "ATC Handler Resource Versions DisableResourceVersion when the resource exists and there are no issues calls the disable resource and returns no error",
         "ATC Handler Resource Versions EnableResourceVersion when the resource exists and there are no issues calls the enable resource and returns no error",
@@ -73,8 +73,8 @@
     {
       "id": "version-mutations-map-not-found",
       "source_file": "go-concourse/concourse/resourceversions.go",
-      "old": "\tcase internal.ResourceNotFoundError:\n\t\treturn false, nil\n\tdefault:\n\t\treturn false, err\n\t}\n}",
-      "new": "\tcase internal.ResourceNotFoundError:\n\t\treturn true, nil\n\tdefault:\n\t\treturn false, err\n\t}\n}",
+      "old": "func (team *team) sendResourceVersion(pipelineRef atc.PipelineRef, resourceName string, resourceVersionID int, resourceVersionReq string) (bool, error) {\n\tparams := rata.Params{\n\t\t\"pipeline_name\":              pipelineRef.Name,\n\t\t\"resource_name\":              resourceName,\n\t\t\"resource_config_version_id\": strconv.Itoa(resourceVersionID),\n\t\t\"team_name\":                  team.Name(),\n\t}\n\n\terr := team.connection.Send(internal.Request{\n\t\tRequestName: resourceVersionReq,\n\t\tParams:      params,\n\t\tQuery:       pipelineRef.QueryParams(),\n\t}, nil)\n\n\tswitch err.(type) {\n\tcase nil:\n\t\treturn true, nil\n\tcase internal.ResourceNotFoundError:\n\t\treturn false, nil",
+      "new": "func (team *team) sendResourceVersion(pipelineRef atc.PipelineRef, resourceName string, resourceVersionID int, resourceVersionReq string) (bool, error) {\n\tparams := rata.Params{\n\t\t\"pipeline_name\":              pipelineRef.Name,\n\t\t\"resource_name\":              resourceName,\n\t\t\"resource_config_version_id\": strconv.Itoa(resourceVersionID),\n\t\t\"team_name\":                  team.Name(),\n\t}\n\n\terr := team.connection.Send(internal.Request{\n\t\tRequestName: resourceVersionReq,\n\t\tParams:      params,\n\t\tQuery:       pipelineRef.QueryParams(),\n\t}, nil)\n\n\tswitch err.(type) {\n\tcase nil:\n\t\treturn true, nil\n\tcase internal.ResourceNotFoundError:\n\t\treturn true, nil",
       "tests": [
         "ATC Handler Resource Versions DisableResourceVersion when the resource does not exist calls the disable resource and returns an error",
         "ATC Handler Resource Versions EnableResourceVersion when the resource does not exist calls the enable resource and returns an error",
@@ -141,8 +141,8 @@
     {
       "id": "clear-type-returns-count",
       "source_file": "go-concourse/concourse/resourceversions.go",
-      "old": "\t\treturn crvResponse.VersionsRemoved, nil\n\t}\n}",
-      "new": "\t\treturn crvResponse.VersionsRemoved + 1, nil\n\t}\n}",
+      "old": "func (team *team) ClearResourceTypeVersions(pipelineRef atc.PipelineRef, resourceTypeName string) (int64, error) {\n\tparams := rata.Params{\n\t\t\"team_name\":          team.Name(),\n\t\t\"pipeline_name\":      pipelineRef.Name,\n\t\t\"resource_type_name\": resourceTypeName,\n\t}\n\n\tqueryParams := url.Values{}\n\tvar crvResponse atc.ClearVersionsResponse\n\tresponseHeaders := http.Header{}\n\tresponse := internal.Response{\n\t\tHeaders: &responseHeaders,\n\t\tResult:  &crvResponse,\n\t}\n\trequest := internal.Request{\n\t\tRequestName: atc.ClearResourceTypeVersions,\n\t\tParams:      params,\n\t\tQuery:       merge(queryParams, pipelineRef.QueryParams()),\n\t\tHeader:      http.Header{\"Content-Type\": []string{\"application/json\"}},\n\t}\n\terr := team.connection.Send(request, &response)\n\tif err != nil {\n\t\treturn 0, err\n\t} else {\n\t\treturn crvResponse.VersionsRemoved, nil",
+      "new": "func (team *team) ClearResourceTypeVersions(pipelineRef atc.PipelineRef, resourceTypeName string) (int64, error) {\n\tparams := rata.Params{\n\t\t\"team_name\":          team.Name(),\n\t\t\"pipeline_name\":      pipelineRef.Name,\n\t\t\"resource_type_name\": resourceTypeName,\n\t}\n\n\tqueryParams := url.Values{}\n\tvar crvResponse atc.ClearVersionsResponse\n\tresponseHeaders := http.Header{}\n\tresponse := internal.Response{\n\t\tHeaders: &responseHeaders,\n\t\tResult:  &crvResponse,\n\t}\n\trequest := internal.Request{\n\t\tRequestName: atc.ClearResourceTypeVersions,\n\t\tParams:      params,\n\t\tQuery:       merge(queryParams, pipelineRef.QueryParams()),\n\t\tHeader:      http.Header{\"Content-Type\": []string{\"application/json\"}},\n\t}\n\terr := team.connection.Send(request, &response)\n\tif err != nil {\n\t\treturn 0, err\n\t} else {\n\t\treturn crvResponse.VersionsRemoved + 1, nil",
       "tests": ["ATC Handler Resource Versions ClearResourceTypeVersions when the API call succeeds return no error"],
       "scenarios": ["Strict resource-version client behavior — <profile> (row 24)"]
     },
