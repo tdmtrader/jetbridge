@@ -1,0 +1,53 @@
+{
+  "name": "otel-artifact-upload-strict",
+  "test_package": "./atc/metric",
+  "source_test_file": "atc/metric/otel_artifact_upload_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/otel-metrics.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/otel_metrics.go",
+    "atc/worker/jetbridge/brine/steps/registry.go",
+    "atc/worker/jetbridge/brine/steps/assert.go"
+  ],
+  "cases": [
+    {
+      "id": "artifact-upload-records-total-duration",
+      "source_file": "atc/metric/otel_artifact_upload.go",
+      "old": "\t\tartifactUploadDurationHistogram.Record(ctx, totalDuration.Seconds(), attrs)",
+      "new": "\t\tartifactUploadDurationHistogram.Record(ctx, 0, attrs)",
+      "tests": ["OTel Artifact Upload Metrics records artifact upload duration"],
+      "scenarios": ["OTel profile <profile> exports its production measurement (row 8)"]
+    },
+    {
+      "id": "artifact-upload-records-byte-size",
+      "source_file": "atc/metric/otel_artifact_upload.go",
+      "old": "\t\tartifactUploadSizeHistogram.Record(ctx, float64(sizeBytes), attrs)",
+      "new": "\t\tartifactUploadSizeHistogram.Record(ctx, 0, attrs)",
+      "tests": ["OTel Artifact Upload Metrics records artifact upload size"],
+      "scenarios": ["OTel profile <profile> exports its production measurement (row 9)"]
+    },
+    {
+      "id": "artifact-upload-records-file-count",
+      "source_file": "atc/metric/otel_artifact_upload.go",
+      "old": "\t\tartifactFileCountHistogram.Record(ctx, float64(fileCount), attrs)",
+      "new": "\t\tartifactFileCountHistogram.Record(ctx, 0, attrs)",
+      "tests": ["OTel Artifact Upload Metrics records artifact file count"],
+      "scenarios": ["OTel profile <profile> exports its production measurement (row 10)"]
+    },
+    {
+      "id": "artifact-upload-records-tar-phase-duration",
+      "source_file": "atc/metric/otel_artifact_upload.go",
+      "old": "\t\tartifactTarDurationHistogram.Record(ctx, tarDuration.Seconds(), attrs)",
+      "new": "\t\tartifactTarDurationHistogram.Record(ctx, 0, attrs)",
+      "tests": ["OTel Artifact Upload Metrics records tar and transfer durations separately"],
+      "scenarios": ["OTel profile <profile> exports its production measurement (row 11)"]
+    },
+    {
+      "id": "artifact-upload-records-type-attribute",
+      "source_file": "atc/metric/otel_artifact_upload.go",
+      "old": "\t\tattribute.String(\"artifact.type\", artifactType),",
+      "new": "\t\tattribute.String(\"artifact.kind\", artifactType),",
+      "tests": ["OTel Artifact Upload Metrics records correct attributes on duration metric"],
+      "scenarios": ["OTel profile <profile> exports its production measurement (row 12)"]
+    }
+  ]
+}
