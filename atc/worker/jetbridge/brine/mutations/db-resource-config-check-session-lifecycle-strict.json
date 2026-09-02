@@ -1,0 +1,106 @@
+{
+  "name": "db-resource-config-check-session-lifecycle-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/resource_config_check_session_lifecycle_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-resource-config-check-session-lifecycle-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_resource_config_check_session_lifecycle_strict.go",
+    "atc/worker/jetbridge/brine/steps/registry.go",
+    "atc/worker/jetbridge/brine/steps/resources.go",
+    "atc/worker/jetbridge/brine/steps/task_command.go",
+    "atc/worker/jetbridge/brine/steps/envtest.go",
+    "atc/postgresrunner/postgresrunner.go",
+    "atc/postgresrunner/ginkgo.go",
+    "atc/postgresrunner/join_limit_conn.go"
+  ],
+  "cases": [
+    {
+      "id": "active-sessions-are-preserved",
+      "source_file": "atc/db/resource_config_check_session_lifecycle.go",
+      "old": "\t_, err = sq.Delete(\"resource_config_check_sessions\").\n\t\tWhere(\"id NOT IN (\" +\n\t\t\tusedByActiveUnpausedResources + \" UNION \" +\n\t\t\tusedByActiveUnpausedResourceTypes + \" UNION \" +\n\t\t\tusedByActiveUnpausedPrototypes + \")\").\n\t\tPlaceholderFormat(sq.Dollar).\n\t\tRunWith(lifecycle.conn).\n\t\tExec()",
+      "new": "\t_, err = sq.Delete(\"resource_config_check_sessions\").\n\t\tWhere(\"id NOT IN (\" +\n\t\t\tusedByActiveUnpausedResources + \" UNION \" +\n\t\t\tusedByActiveUnpausedResourceTypes + \" UNION \" +\n\t\t\tusedByActiveUnpausedPrototypes + \") OR id IN (\" +\n\t\t\tusedByActiveUnpausedResources + \" UNION \" +\n\t\t\tusedByActiveUnpausedResourceTypes + \" UNION \" +\n\t\t\tusedByActiveUnpausedPrototypes + \")\").\n\t\tPlaceholderFormat(sq.Dollar).\n\t\tRunWith(lifecycle.conn).\n\t\tExec()",
+      "tests": [
+        "ResourceConfigCheckSessionLifecycle CleanInactiveResourceConfigCheckSessions for resources keeps check sessions for active resources",
+        "ResourceConfigCheckSessionLifecycle CleanInactiveResourceConfigCheckSessions for resource types keeps check sessions for active resource types",
+        "ResourceConfigCheckSessionLifecycle CleanInactiveResourceConfigCheckSessions for prototypes keeps check sessions for active prototypes"
+      ],
+      "scenarios": [
+        "Production inactive check-session cleanup — <profile> (row 1)",
+        "Production inactive check-session cleanup — <profile> (row 4)",
+        "Production inactive check-session cleanup — <profile> (row 7)"
+      ]
+    },
+    {
+      "id": "inactive-resource-is-not-considered-in-use",
+      "source_file": "atc/db/resource_config_check_session_lifecycle.go",
+      "old": "\t\tJoin(\"resources r ON r.resource_config_id = rc.id\").\n\t\tJoin(\"pipelines p ON p.id = r.pipeline_id\").\n\t\tWhere(sq.Expr(\"r.active AND NOT p.paused\")).\n\t\tToSql()",
+      "new": "\t\tJoin(\"resources r ON r.resource_config_id = rc.id\").\n\t\tJoin(\"pipelines p ON p.id = r.pipeline_id\").\n\t\tWhere(sq.Expr(\"NOT p.paused\")).\n\t\tToSql()",
+      "tests": [
+        "ResourceConfigCheckSessionLifecycle CleanInactiveResourceConfigCheckSessions for resources removes check sessions for inactive resources"
+      ],
+      "scenarios": [
+        "Production inactive check-session cleanup — <profile> (row 2)"
+      ]
+    },
+    {
+      "id": "paused-resource-is-not-considered-in-use",
+      "source_file": "atc/db/resource_config_check_session_lifecycle.go",
+      "old": "\t\tJoin(\"resources r ON r.resource_config_id = rc.id\").\n\t\tJoin(\"pipelines p ON p.id = r.pipeline_id\").\n\t\tWhere(sq.Expr(\"r.active AND NOT p.paused\")).\n\t\tToSql()",
+      "new": "\t\tJoin(\"resources r ON r.resource_config_id = rc.id\").\n\t\tJoin(\"pipelines p ON p.id = r.pipeline_id\").\n\t\tWhere(sq.Expr(\"r.active\")).\n\t\tToSql()",
+      "tests": [
+        "ResourceConfigCheckSessionLifecycle CleanInactiveResourceConfigCheckSessions for resources removes check sessions for resources in paused pipelines"
+      ],
+      "scenarios": [
+        "Production inactive check-session cleanup — <profile> (row 3)"
+      ]
+    },
+    {
+      "id": "inactive-resource-type-is-not-considered-in-use",
+      "source_file": "atc/db/resource_config_check_session_lifecycle.go",
+      "old": "\t\tJoin(\"resource_types rt ON rt.resource_config_id = rc.id\").\n\t\tJoin(\"pipelines p ON p.id = rt.pipeline_id\").\n\t\tWhere(sq.Expr(\"rt.active AND NOT p.paused\")).\n\t\tToSql()",
+      "new": "\t\tJoin(\"resource_types rt ON rt.resource_config_id = rc.id\").\n\t\tJoin(\"pipelines p ON p.id = rt.pipeline_id\").\n\t\tWhere(sq.Expr(\"NOT p.paused\")).\n\t\tToSql()",
+      "tests": [
+        "ResourceConfigCheckSessionLifecycle CleanInactiveResourceConfigCheckSessions for resource types removes check sessions for inactive resource types"
+      ],
+      "scenarios": [
+        "Production inactive check-session cleanup — <profile> (row 5)"
+      ]
+    },
+    {
+      "id": "paused-resource-type-is-not-considered-in-use",
+      "source_file": "atc/db/resource_config_check_session_lifecycle.go",
+      "old": "\t\tJoin(\"resource_types rt ON rt.resource_config_id = rc.id\").\n\t\tJoin(\"pipelines p ON p.id = rt.pipeline_id\").\n\t\tWhere(sq.Expr(\"rt.active AND NOT p.paused\")).\n\t\tToSql()",
+      "new": "\t\tJoin(\"resource_types rt ON rt.resource_config_id = rc.id\").\n\t\tJoin(\"pipelines p ON p.id = rt.pipeline_id\").\n\t\tWhere(sq.Expr(\"rt.active\")).\n\t\tToSql()",
+      "tests": [
+        "ResourceConfigCheckSessionLifecycle CleanInactiveResourceConfigCheckSessions for resource types removes check sessions for resource types in paused pipelines"
+      ],
+      "scenarios": [
+        "Production inactive check-session cleanup — <profile> (row 6)"
+      ]
+    },
+    {
+      "id": "inactive-prototype-is-not-considered-in-use",
+      "source_file": "atc/db/resource_config_check_session_lifecycle.go",
+      "old": "\t\tJoin(\"prototypes pt ON pt.resource_config_id = rc.id\").\n\t\tJoin(\"pipelines p ON p.id = pt.pipeline_id\").\n\t\tWhere(sq.Expr(\"pt.active AND NOT p.paused\")).\n\t\tToSql()",
+      "new": "\t\tJoin(\"prototypes pt ON pt.resource_config_id = rc.id\").\n\t\tJoin(\"pipelines p ON p.id = pt.pipeline_id\").\n\t\tWhere(sq.Expr(\"NOT p.paused\")).\n\t\tToSql()",
+      "tests": [
+        "ResourceConfigCheckSessionLifecycle CleanInactiveResourceConfigCheckSessions for prototypes removes check sessions for inactive prototypes"
+      ],
+      "scenarios": [
+        "Production inactive check-session cleanup — <profile> (row 8)"
+      ]
+    },
+    {
+      "id": "paused-prototype-is-not-considered-in-use",
+      "source_file": "atc/db/resource_config_check_session_lifecycle.go",
+      "old": "\t\tJoin(\"prototypes pt ON pt.resource_config_id = rc.id\").\n\t\tJoin(\"pipelines p ON p.id = pt.pipeline_id\").\n\t\tWhere(sq.Expr(\"pt.active AND NOT p.paused\")).\n\t\tToSql()",
+      "new": "\t\tJoin(\"prototypes pt ON pt.resource_config_id = rc.id\").\n\t\tJoin(\"pipelines p ON p.id = pt.pipeline_id\").\n\t\tWhere(sq.Expr(\"pt.active\")).\n\t\tToSql()",
+      "tests": [
+        "ResourceConfigCheckSessionLifecycle CleanInactiveResourceConfigCheckSessions for prototypes removes check sessions for resource types in paused pipelines"
+      ],
+      "scenarios": [
+        "Production inactive check-session cleanup — <profile> (row 9)"
+      ]
+    }
+  ]
+}
