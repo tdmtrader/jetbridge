@@ -78,28 +78,14 @@ func (s SpanCapture) EventNames(spanName string) ([]string, bool) {
 	return nil, false
 }
 
-// TracingResourceDefinition is scenario-scoped because the trace provider is
-// process-global: two scenarios sharing one recorder would see each other's
-// spans.
-func TracingResourceDefinition() brine.ResourceDefinition {
-	return brine.ResourceDefinition{
-		Name:  "span-capture",
-		Scope: brine.ScopeScenario,
-		Factory: func(map[string]any) (any, error) {
-			recorder := new(tracetest.SpanRecorder)
-			tp := sdktrace.NewTracerProvider(
-				sdktrace.WithSpanProcessor(recorder),
-				sdktrace.WithSyncer(tracetest.NewInMemoryExporter()),
-			)
-			tracing.ConfigureTraceProvider(tp)
-			return SpanCapture{Recorder: recorder}, nil
-		},
-		Disposer: func(any) error {
-			// The ginkgo suite's AfterEach. Here the machinery owns it.
-			tracing.Configured = false
-			return nil
-		},
-	}
+func activateSpanCapture() SpanCapture {
+	recorder := new(tracetest.SpanRecorder)
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSpanProcessor(recorder),
+		sdktrace.WithSyncer(tracetest.NewInMemoryExporter()),
+	)
+	tracing.ConfigureTraceProvider(tp)
+	return SpanCapture{Recorder: recorder}
 }
 
 // ObservabilityDefinitions carries the OE family.
@@ -112,10 +98,11 @@ func ObservabilityDefinitions() []brine.StepDefinition {
 			"a jetbridge worker whose spans are recorded",
 			[]string{"jetbridge-db", "span-capture"},
 			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder, res brine.Resources) (ExecClusterReady, error) {
-				capture, ok := res.Get("span-capture").(SpanCapture)
+				_, ok := res.Get("span-capture").(spanCaptureToken)
 				if !ok {
 					return ExecClusterReady{}, fmt.Errorf("span-capture resource is %T", res.Get("span-capture"))
 				}
+				capture := activateSpanCapture()
 
 				cluster, err := NewCluster(res, WithExecutor(execStub{}))
 				if err != nil {

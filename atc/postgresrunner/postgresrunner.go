@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"syscall"
 
-	"code.cloudfoundry.org/lager/v3/lagertest"
+	"code.cloudfoundry.org/lager/v3"
 
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/migration"
@@ -171,8 +171,17 @@ func (runner *Runner) OpenConn() db.DbConn {
 }
 
 func (runner *Runner) openConn(dbName string) db.DbConn {
+	dbConn, err := runner.openRawConn(dbName)
+	Expect(err).NotTo(HaveOccurred())
+	return joinLimitValidatorConn{dbConn}
+}
+
+// openRawConn opens the same real PostgreSQL connection without the Ginkgo
+// query-shape validator. Template initialization and external harnesses use
+// this path so their production behavior is not mediated by a test decorator.
+func (runner *Runner) openRawConn(dbName string) (db.DbConn, error) {
 	dbConn, err := db.Open(
-		lagertest.NewTestLogger("postgres-runner"),
+		lager.NewLogger("postgres-runner"),
 		"pgx",
 		runner.dataSourceName(dbName),
 		nil,
@@ -180,14 +189,16 @@ func (runner *Runner) openConn(dbName string) db.DbConn {
 		"postgresrunner",
 		nil,
 	)
-	Expect(err).NotTo(HaveOccurred())
+	if err != nil {
+		return nil, err
+	}
 
 	// only allow one connection so that we can detect any code paths that
 	// require more than one, which will deadlock if it's at the limit
 	dbConn.SetMaxOpenConns(1)
 	dbConn.SetMaxIdleConns(1)
 
-	return joinLimitValidatorConn{dbConn}
+	return dbConn, nil
 }
 
 func (runner *Runner) OpenSingleton() *sql.DB {
@@ -245,8 +256,9 @@ func (runner *Runner) InitializeTestDBTemplate() {
 	}
 
 	// to run the migration
-	conn := runner.openConn("testdb_template")
-	err := conn.Close()
+	conn, err := runner.openRawConn("testdb_template")
+	Expect(err).NotTo(HaveOccurred())
+	err = conn.Close()
 	Expect(err).ToNot(HaveOccurred())
 
 	// Optimize for non-durability: https://www.postgresql.org/docs/13/non-durability.html

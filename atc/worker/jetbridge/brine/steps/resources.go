@@ -14,6 +14,7 @@ import (
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/postgresrunner"
+	"github.com/concourse/concourse/tracing"
 	"github.com/onsi/gomega"
 	"github.com/tedsuo/ifrit"
 )
@@ -123,7 +124,7 @@ func RegisterGomegaFailHandler() {
 // ResourceDefinitions is the adapter's resource plan.
 func ResourceDefinitions() []brine.ResourceDefinition {
 	return append([]brine.ResourceDefinition{
-		TracingResourceDefinition(),
+		spanCaptureResourceDefinition(),
 		TaskWorkspaceResourceDefinition(),
 		RealClusterResourceDefinition(),
 	}, []brine.ResourceDefinition{
@@ -228,4 +229,24 @@ func ResourceDefinitions() []brine.ResourceDefinition {
 			},
 		},
 	}...)
+}
+
+type spanCaptureToken struct{}
+
+// spanCaptureResourceDefinition reserves the resource name without installing
+// a recorder. Brine eagerly acquires every scenario-scoped resource, so the
+// observability step activates its test-only recorder only when that step is
+// actually dispatched.
+func spanCaptureResourceDefinition() brine.ResourceDefinition {
+	return brine.ResourceDefinition{
+		Name:  "span-capture",
+		Scope: brine.ScopeScenario,
+		Factory: func(map[string]any) (any, error) {
+			return spanCaptureToken{}, nil
+		},
+		Disposer: func(any) error {
+			tracing.Configured = false
+			return nil
+		},
+	}
 }

@@ -40,12 +40,13 @@ type mutationCase struct {
 }
 
 type resultFile struct {
-	Manifest      string       `json:"manifest"`
-	GitHead       string       `json:"git_head"`
-	CompletedAt   string       `json:"completed_at"`
-	SourceTests   int          `json:"source_tests"`
-	Philosophy    string       `json:"philosophy"`
-	MutationCases []caseResult `json:"mutation_cases"`
+	Manifest      string            `json:"manifest"`
+	GitHead       string            `json:"git_head"`
+	CompletedAt   string            `json:"completed_at"`
+	SourceTests   int               `json:"source_tests"`
+	Philosophy    string            `json:"philosophy"`
+	InputSHA256   map[string]string `json:"input_sha256"`
+	MutationCases []caseResult      `json:"mutation_cases"`
 }
 
 type caseResult struct {
@@ -99,6 +100,7 @@ func main() {
 		GitHead:     gitHead,
 		CompletedAt: time.Now().UTC().Format(time.RFC3339),
 		Philosophy:  "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+		InputSHA256: hashInputs(repo, manifestAbs, m),
 	}
 	seenTests := map[string]bool{}
 	seenScenarios := map[string]bool{}
@@ -129,6 +131,33 @@ func main() {
 	results.SourceTests = len(seenTests)
 	writeJSON(absolute(repo, resultPath), results)
 	fmt.Printf("PASS: %d individually paired source tests; results written to %s\n", results.SourceTests, resultPath)
+}
+
+func hashInputs(repo, manifestPath string, m manifest) map[string]string {
+	paths := []string{
+		relative(repo, manifestPath),
+		m.SourceTestFile,
+		m.Feature,
+		"atc/worker/jetbridge/brine/cmd/migration-audit/main.go",
+	}
+	paths = append(paths, m.StepFiles...)
+	for _, mutation := range m.Cases {
+		paths = append(paths, mutation.SourceFile)
+	}
+
+	hashes := map[string]string{}
+	for _, path := range paths {
+		if _, seen := hashes[path]; seen {
+			continue
+		}
+		data, err := os.ReadFile(absolute(repo, path))
+		if err != nil {
+			fatalf("hash audit input %s: %v", path, err)
+		}
+		digest := sha256.Sum256(data)
+		hashes[path] = hex.EncodeToString(digest[:])
+	}
+	return hashes
 }
 
 func validateManifest(repo string, m manifest) {

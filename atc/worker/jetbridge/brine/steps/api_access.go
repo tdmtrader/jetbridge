@@ -162,9 +162,19 @@ func newAccessProbe(resources brine.Resources, auth atc.TeamAuth, withGroup bool
 	if !ok {
 		return nil, fmt.Errorf("jetbridge-db resource is %T", resources.Get("jetbridge-db"))
 	}
-	team, err := database.TeamFactory.CreateTeam(atc.Team{Name: "access-team", Auth: auth})
+	team, err := database.TeamFactory.CreateDefaultTeamIfNotExists()
 	if err != nil {
-		return nil, fmt.Errorf("create access team: %w", err)
+		return nil, fmt.Errorf("create admin access team: %w", err)
+	}
+	if err := team.UpdateProviderAuth(auth); err != nil {
+		return nil, fmt.Errorf("persist admin access team auth: %w", err)
+	}
+	team, found, err := database.TeamFactory.FindTeam(team.Name())
+	if err != nil {
+		return nil, fmt.Errorf("reload admin access team: %w", err)
+	}
+	if !found {
+		return nil, fmt.Errorf("admin access team disappeared after auth update")
 	}
 	claims := map[string]any{
 		"federated_claims": map[string]any{
