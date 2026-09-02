@@ -63,7 +63,7 @@
         "Job ScheduleBuild when the scheduling build is created first when the job config doesn't specify max in flight when the build does not exist returns false"
       ],
       "scenarios": [
-        "Remaining DB job behavior — <profile> (row 10)"
+        "Remaining DB job behavior — <profile> (row 9)"
       ]
     },
     {
@@ -75,7 +75,7 @@
         "Job a build is created for a job and another build for a different pipeline is created with the same job name does not change the next pending build for job"
       ],
       "scenarios": [
-        "Remaining DB job behavior — <profile> (row 11)"
+        "Remaining DB job behavior — <profile> (row 10)"
       ]
     },
     {
@@ -87,7 +87,7 @@
         "Job a build is created for a job when scheduled remains the next pending build for job"
       ],
       "scenarios": [
-        "Remaining DB job behavior — <profile> (row 12)"
+        "Remaining DB job behavior — <profile> (row 11)"
       ]
     },
     {
@@ -102,10 +102,10 @@
         "Job a build is created for a job when there are multiple reruns for multiple pending builds orders the builds with ascending reruns following original builds"
       ],
       "scenarios": [
+        "Remaining DB job behavior — <profile> (row 12)",
         "Remaining DB job behavior — <profile> (row 13)",
         "Remaining DB job behavior — <profile> (row 14)",
-        "Remaining DB job behavior — <profile> (row 15)",
-        "Remaining DB job behavior — <profile> (row 16)"
+        "Remaining DB job behavior — <profile> (row 15)"
       ]
     },
     {
@@ -117,7 +117,7 @@
         "Job a build is created for a job when started saves the updated status, and the schema and private plan"
       ],
       "scenarios": [
-        "Remaining DB job behavior — <profile> (row 17)"
+        "Remaining DB job behavior — <profile> (row 16)"
       ]
     },
     {
@@ -129,7 +129,7 @@
         "Job a build is created for a job when started saves the build's start time"
       ],
       "scenarios": [
-        "Remaining DB job behavior — <profile> (row 18)"
+        "Remaining DB job behavior — <profile> (row 17)"
       ]
     },
     {
@@ -141,7 +141,7 @@
         "Job a build is created for a job when the build finishes sets the build's status and end time"
       ],
       "scenarios": [
-        "Remaining DB job behavior — <profile> (row 19)"
+        "Remaining DB job behavior — <profile> (row 18)"
       ]
     },
     {
@@ -153,7 +153,7 @@
         "Job Clear task cache when task cache exists when a path is provided but the cache path doesn't exist deletes 0 rows"
       ],
       "scenarios": [
-        "Remaining DB job behavior — <profile> (row 20)"
+        "Remaining DB job behavior — <profile> (row 19)"
       ]
     },
     {
@@ -167,9 +167,9 @@
         "Job Clear task cache when task cache exists when a path is not provided when an existing step-name is provided doesn't remove other jobs caches"
       ],
       "scenarios": [
+        "Remaining DB job behavior — <profile> (row 20)",
         "Remaining DB job behavior — <profile> (row 21)",
-        "Remaining DB job behavior — <profile> (row 22)",
-        "Remaining DB job behavior — <profile> (row 23)"
+        "Remaining DB job behavior — <profile> (row 22)"
       ]
     }
   ]
