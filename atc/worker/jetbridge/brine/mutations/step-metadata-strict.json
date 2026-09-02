@@ -1,0 +1,52 @@
+{
+  "name": "step-metadata-strict",
+  "test_package": "./atc/exec",
+  "source_test_file": "atc/exec/step_metadata_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/step-metadata-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/step_metadata_strict.go",
+    "atc/worker/jetbridge/brine/steps/registry.go"
+  ],
+  "cases": [
+    {
+      "id": "created-by-is-exposed",
+      "source_file": "atc/exec/step_metadata.go",
+      "old": "\tif metadata.CreatedBy != \"\" {",
+      "new": "\tif false && metadata.CreatedBy != \"\" {",
+      "tests": ["StepMetadata Env when populating fields returns the specified values"],
+      "scenarios": ["Production step metadata behavior — <profile> (row 1)"]
+    },
+    {
+      "id": "instance-vars-query-is-appended",
+      "source_file": "atc/exec/step_metadata.go",
+      "old": "\t\t\t\t\tbuildURL += \"?\" + metadata.InstanceVarsQuery.Encode()",
+      "new": "\t\t\t\t\tbuildURL += \"\"",
+      "tests": ["StepMetadata Env when pipeline instance vars are set includes instance vars in URLs as query parameters"],
+      "scenarios": ["Production step metadata behavior — <profile> (row 2)"]
+    },
+    {
+      "id": "empty-build-name-is-omitted",
+      "source_file": "atc/exec/step_metadata.go",
+      "old": "\tif metadata.BuildName != \"\" {\n\t\tenv = append(env, \"BUILD_NAME=\"+metadata.BuildName)\n\t}\n\n\tif metadata.TeamID != 0 {",
+      "new": "\tif true || metadata.BuildName != \"\" {\n\t\tenv = append(env, \"BUILD_NAME=\"+metadata.BuildName)\n\t}\n\n\tif metadata.TeamID != 0 {",
+      "tests": ["StepMetadata Env when fields are empty does not include fields that are not set"],
+      "scenarios": ["Production step metadata behavior — <profile> (row 3)"]
+    },
+    {
+      "id": "task-team-name-is-exposed",
+      "source_file": "atc/exec/step_metadata.go",
+      "old": "\tif metadata.TeamName != \"\" {\n\t\tenv = append(env, \"BUILD_TEAM_NAME=\"+metadata.TeamName)\n\t}\n\tif metadata.JobName != \"\" {",
+      "new": "\tif false && metadata.TeamName != \"\" {\n\t\tenv = append(env, \"BUILD_TEAM_NAME=\"+metadata.TeamName)\n\t}\n\tif metadata.JobName != \"\" {",
+      "tests": ["StepMetadata TaskEnv when populating fields returns build identity env for tasks"],
+      "scenarios": ["Production step metadata behavior — <profile> (row 4)"]
+    },
+    {
+      "id": "zero-task-build-id-is-omitted",
+      "source_file": "atc/exec/step_metadata.go",
+      "old": "func (metadata StepMetadata) TaskEnv() []string {\n\tenv := []string{}\n\tif metadata.BuildID != 0 {",
+      "new": "func (metadata StepMetadata) TaskEnv() []string {\n\tenv := []string{}\n\tif true || metadata.BuildID != 0 {",
+      "tests": ["StepMetadata TaskEnv when fields are empty returns an empty list"],
+      "scenarios": ["Production step metadata behavior — <profile> (row 5)"]
+    }
+  ]
+}
