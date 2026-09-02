@@ -24,12 +24,12 @@ var _ = Describe("Reference", func() {
 				result: "hello.a.b",
 			},
 			{
-				desc:   "segments contain special chars",
+				desc:   "quotes every special path segment",
 				ref:    vars.Reference{Path: "hello.world", Fields: []string{"a.b", "foo:bar"}},
 				result: `"hello.world"."a.b"."foo:bar"`,
 			},
 			{
-				desc:   "segments contain special chars",
+				desc:   "quotes mixed special path segments",
 				ref:    vars.Reference{Path: "hello.world", Fields: []string{"a", "foo:bar", "other field", "another/field"}},
 				result: `"hello.world".a."foo:bar"."other field"."another/field"`,
 			},
@@ -65,12 +65,12 @@ var _ = Describe("Reference", func() {
 				ref:  vars.Reference{Path: "hello", Fields: []string{"a", "b"}},
 			},
 			{
-				desc: "segments contain special chars",
+				desc: "parses every quoted special path segment",
 				raw:  `"hello.world"."a.b"."foo:bar"`,
 				ref:  vars.Reference{Path: "hello.world", Fields: []string{"a.b", "foo:bar"}},
 			},
 			{
-				desc: "segments contain special chars",
+				desc: "parses mixed quoted special path segments",
 				raw:  `"hello.world".a."foo:bar"`,
 				ref:  vars.Reference{Path: "hello.world", Fields: []string{"a", "foo:bar"}},
 			},
