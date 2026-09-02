@@ -1,0 +1,114 @@
+{
+  "name": "flyrc-targets-strict",
+  "test_package": "./fly/rc",
+  "source_test_file": "fly/rc/targets_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/flyrc-targets-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/flyrc_targets_strict.go",
+    "atc/worker/jetbridge/brine/steps/registry.go"
+  ],
+  "cases": [
+    {
+      "id": "missing-team-defaults-to-main",
+      "source_file": "fly/rc/targets.go",
+      "old": "targetProps.TeamName = atc.DefaultTeamName",
+      "new": "targetProps.TeamName = atc.DefaultTeamName + \"-mutation\"",
+      "tests": ["Targets LoadTargets when config file does not have team loads target with default team"],
+      "scenarios": ["Production flyrc target behavior — <profile> (row 1)"]
+    },
+    {
+      "id": "fly-home-has-precedence",
+      "source_file": "fly/rc/targets.go",
+      "old": "home := os.Getenv(\"FLY_HOME\")",
+      "new": "home := os.Getenv(\"FLY_HOME_MUTATED\")",
+      "tests": ["Targets LoadTargets hierarchy of loading config file when FLY_HOME is set loads from the path set in FLY_HOME in preference to HOME"],
+      "scenarios": ["Production flyrc target behavior — <profile> (row 2)"]
+    },
+    {
+      "id": "delete-selected-target",
+      "source_file": "fly/rc/targets.go",
+      "old": "func DeleteTarget(targetName TargetName) error {\n\tflyTargets, err := LoadTargets()\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tdelete(flyTargets, targetName)",
+      "new": "func DeleteTarget(targetName TargetName) error {\n\tflyTargets, err := LoadTargets()\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tdelete(flyTargets, TargetName(\"mutation-target\"))",
+      "tests": ["Targets Deleting Target DeleteTarget when provided with target name to delete should delete target from flyrc"],
+      "scenarios": ["Production flyrc target behavior — <profile> (row 3)"]
+    },
+    {
+      "id": "delete-all-writes-empty-map",
+      "source_file": "fly/rc/targets.go",
+      "old": "return writeTargets(flyrcPath(), Targets{})",
+      "new": "return nil",
+      "tests": ["Targets Deleting Target DeleteAllTargets when deleting all targets should delete all targets from flyrc"],
+      "scenarios": ["Production flyrc target behavior — <profile> (row 4)"]
+    },
+    {
+      "id": "update-target-api",
+      "source_file": "fly/rc/targets.go",
+      "old": "target.API = targetProps.API",
+      "new": "target.API = \"mutation-api\"",
+      "tests": ["Targets UpdateTarget when props are provided for update should update target to specified prop attributes"],
+      "scenarios": ["Production flyrc target behavior — <profile> (row 5)"]
+    },
+    {
+      "id": "rename-target-executes",
+      "source_file": "fly/rc/targets.go",
+      "old": "if newTargetName != \"\" {",
+      "new": "if false {",
+      "tests": ["Targets UpdateTarget when target name is provided for update should update target name and keep old prop attributes"],
+      "scenarios": ["Production flyrc target behavior — <profile> (row 6)"]
+    },
+    {
+      "id": "new-target-file-is-private",
+      "source_file": "fly/rc/targets.go",
+      "old": "os.FileMode(0600)",
+      "new": "os.FileMode(0644)",
+      "tests": ["Targets SaveTarget when managing .flyrc creates any new file with 0600 permissions"],
+      "scenarios": ["Production flyrc target behavior — <profile> (row 7)"]
+    },
+    {
+      "id": "existing-target-permissions-are-preserved",
+      "source_file": "fly/rc/targets.go",
+      "old": "\terr = os.WriteFile(configFileLocation, yamlBytes, os.FileMode(0600))\n\tif err != nil {\n\t\treturn err\n\t}\n\n\treturn nil",
+      "new": "\terr = os.WriteFile(configFileLocation, yamlBytes, os.FileMode(0600))\n\tif err != nil {\n\t\treturn err\n\t}\n\n\treturn os.Chmod(configFileLocation, os.FileMode(0600))",
+      "tests": ["Targets SaveTarget when managing .flyrc when the file exists with 0755 permissions preserves those permissions"],
+      "scenarios": ["Production flyrc target behavior — <profile> (row 8)"]
+    },
+    {
+      "id": "ca-certificate-round-trips",
+      "source_file": "fly/rc/targets.go",
+      "old": "newInfo.CACert = caCert",
+      "new": "if caCert != \"\" { newInfo.CACert = caCert + \"\\n\" } else { newInfo.CACert = caCert }",
+      "tests": ["Targets SaveTarget CA Cert Flag when 'ca_cert' is set in the flyrc returns the rc insecure flag as true"],
+      "scenarios": ["Production flyrc target behavior — <profile> (row 9)"]
+    },
+    {
+      "id": "insecure-flag-round-trips",
+      "source_file": "fly/rc/targets.go",
+      "old": "newInfo.Insecure = insecure",
+      "new": "newInfo.Insecure = !insecure",
+      "tests": [
+        "Targets SaveTarget Insecure Flag when 'insecure' is set to false in the flyrc returns the rc insecure flag as false",
+        "Targets SaveTarget Insecure Flag when 'insecure' is set to true in the flyrc returns the rc insecure flag as true"
+      ],
+      "scenarios": [
+        "Production flyrc target behavior — <profile> (row 10)",
+        "Production flyrc target behavior — <profile> (row 11)"
+      ]
+    },
+    {
+      "id": "unknown-target-has-specific-error",
+      "source_file": "fly/rc/targets.go",
+      "old": "return TargetProps{}, UnknownTargetError{selectedTarget}",
+      "new": "return TargetProps{}, ErrNoTargetSpecified",
+      "tests": ["Targets SaveTarget when selecting a target that does not exist returns UnknownTargetError"],
+      "scenarios": ["Production flyrc target behavior — <profile> (row 12)"]
+    },
+    {
+      "id": "empty-selection-has-specific-error",
+      "source_file": "fly/rc/targets.go",
+      "old": "return TargetProps{}, ErrNoTargetSpecified",
+      "new": "return TargetProps{}, UnknownTargetError{selectedTarget}",
+      "tests": ["Targets SaveTarget when a target is not specified returns ErrNoTargetSpecified"],
+      "scenarios": ["Production flyrc target behavior — <profile> (row 13)"]
+    }
+  ]
+}

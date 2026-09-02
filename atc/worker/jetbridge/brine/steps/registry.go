@@ -158,6 +158,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, PipelineAPIStateStrictDefinitions()...)
 	defs = append(defs, ContainersAPIStateStrictDefinitions()...)
 	defs = append(defs, DBResourceCacheLifecycleStrictDefinitions()...)
+	defs = append(defs, FlyRCTargetsStrictDefinitions()...)
 	return defs
 }
 
