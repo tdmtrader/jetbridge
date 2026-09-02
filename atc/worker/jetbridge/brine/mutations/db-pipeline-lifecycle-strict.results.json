@@ -1,0 +1,126 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-pipeline-lifecycle-strict.json",
+  "git_head": "01b3e0e28e31f57a4bed88c3055fbd7a9d74f9f5",
+  "completed_at": "2026-09-02T16:13:33Z",
+  "source_tests": 11,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/pipeline_lifecycle.go": "4adb383066b4844c516a40c134a02a1b6e0a9a1976c731fe56ae4a9a5830df2e",
+    "atc/db/pipeline_lifecycle_test.go": "1c702b2b9d9c87c0d5989c57a553354074705d2f59f37cf2c0d23727326bc9cd",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/db-pipeline-lifecycle-strict.feature": "ac3f3950f9eaef9e6f4c5e607fc91352b01ea98fcd2d324951f5a05b5d0b454e",
+    "atc/worker/jetbridge/brine/mutations/db-pipeline-lifecycle-strict.json": "9f38812e770b14440b064e2b883f9566e03f655eebcee79bab544f14eb777386",
+    "atc/worker/jetbridge/brine/steps/db_pipeline_lifecycle_strict.go": "d1cb87727f242fb57e11a707fa673e621193ecd912f554ed0548594d02d81baa",
+    "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
+    "atc/worker/jetbridge/brine/steps/registry.go": "25ed1ac7b1f81bca2e974ea7235c23726b40b9e106e41fa7716190288e8a5ac7",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e"
+  },
+  "mutation_cases": [
+    {
+      "id": "destroyed-parent-is-orphaned",
+      "mutation_sha256": "70162f4259523408ec82ff66cda2f570c4ef6c1d4863f729dec287cdbef75963",
+      "failed_source_tests": [
+        "PipelineLifecycle ArchiveAbandonedPipelines child pipeline is set by a job in a pipeline parent pipeline is destroyed should archive all child pipelines"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline lifecycle behavior — \u003cprofile\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "already-archived-child-is-not-selected",
+      "mutation_sha256": "beacfe82a7961efbd2bd6dab71e516dd3ade41a501e7f68b7ba74853678a7156",
+      "failed_source_tests": [
+        "PipelineLifecycle ArchiveAbandonedPipelines child pipeline is set by a job in a pipeline needs to be archived but is already archived should not rearchive pipeline if it is already archived"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline lifecycle behavior — \u003cprofile\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "latest-build-comparison-inverted",
+      "mutation_sha256": "68ae3b4a6db55dcc27a140c51a484e6d0cbf28de9615481801300e81b4baa90f",
+      "failed_source_tests": [
+        "PipelineLifecycle ArchiveAbandonedPipelines child pipeline is set by a job in a pipeline when build that set child pipeline is later than latest completed build should not archive child pipeline"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline lifecycle behavior — \u003cprofile\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "archived-parent-is-orphaned",
+      "mutation_sha256": "2f815fd13bc7e17ee70b61634558e288db9f9b8755ab2ec2a0660902050d1ab1",
+      "failed_source_tests": [
+        "PipelineLifecycle ArchiveAbandonedPipelines child pipeline is set by a job in a pipeline parent pipeline is archived should archive all child pipelines"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline lifecycle behavior — \u003cprofile\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "inactive-parent-job-is-orphaned",
+      "mutation_sha256": "1077d66a16e12e80875624da76b60b4a0aedceaf8cd95d2c30c75077924224da",
+      "failed_source_tests": [
+        "PipelineLifecycle ArchiveAbandonedPipelines child pipeline is set by a job in a pipeline job is removed from the parent pipeline archives all child pipelines set by the deleted job"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline lifecycle behavior — \u003cprofile\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "failed-latest-build-does-not-orphan",
+      "mutation_sha256": "34c4c91f7d93f188a9f282ae3c543b20c54854b8f0e25f50b19a26fca373ac31",
+      "failed_source_tests": [
+        "PipelineLifecycle ArchiveAbandonedPipelines child pipeline is set by a job in a pipeline when build that set child pipeline is not most recent but was not successful should not archive child pipeline"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline lifecycle behavior — \u003cprofile\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "unowned-pipeline-is-not-orphaned",
+      "mutation_sha256": "cab0c1a7037887810adcad6fca3e200238e17f5fc9cc7c4c40b46c9a45050345",
+      "failed_source_tests": [
+        "PipelineLifecycle ArchiveAbandonedPipelines child pipeline is set by a job in a pipeline parent and child pipelines happily exist neither pipeline should be archived",
+        "PipelineLifecycle ArchiveAbandonedPipelines pipeline does not have a parent job and build ID Should not archive the pipeline"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline lifecycle behavior — \u003cprofile\u003e (row 1)",
+        "Production pipeline lifecycle behavior — \u003cprofile\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "event-table-drop-target-changed",
+      "mutation_sha256": "4ba3722f8d94381d1d7539ab97b8a3790a85660ab2417a088c40f43ad0d979de",
+      "failed_source_tests": [
+        "PipelineLifecycle RemoveBuildEventsForDeletedPipelines drops the pipeline_build_events_x table for each deleted pipeline"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline lifecycle behavior — \u003cprofile\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "deleted-pipeline-rows-not-cleared",
+      "mutation_sha256": "ea345c8ab6e4907ac1fa606b2221b019540f79af26379685ee3e96987a403022",
+      "failed_source_tests": [
+        "PipelineLifecycle RemoveBuildEventsForDeletedPipelines clears the deleted_pipelines table"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline lifecycle behavior — \u003cprofile\u003e (row 10)"
+      ]
+    },
+    {
+      "id": "missing-event-table-not-tolerated",
+      "mutation_sha256": "18dedcf7437a8a623dc6ffc519fc1ebd39ea2caa471fdc4d875d8c0626f50409",
+      "failed_source_tests": [
+        "PipelineLifecycle RemoveBuildEventsForDeletedPipelines is resilient to pipeline_build_events_x tables not existing"
+      ],
+      "failed_brine_scenarios": [
+        "Production pipeline lifecycle behavior — \u003cprofile\u003e (row 11)"
+      ]
+    }
+  ]
+}
