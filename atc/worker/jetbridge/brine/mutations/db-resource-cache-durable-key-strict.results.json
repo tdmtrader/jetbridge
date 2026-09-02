@@ -1,0 +1,89 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-resource-cache-durable-key-strict.json",
+  "git_head": "8f23b113e4c974775e0c465ca317ef9e41c39be6",
+  "completed_at": "2026-09-02T19:23:47Z",
+  "source_tests": 8,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/resource_cache.go": "1e90587b627eee3200a26e5c98943ece06694b73e679a4a0e8a62c25e2c7ddbd",
+    "atc/db/resource_cache_durable_key_test.go": "a4c208d48583b70bb8d3025b39a41b12397c36f5ecd3b67c730c903567a840af",
+    "atc/db/resource_cache_factory.go": "0de6e796a65af0be17fa86d0c540765dadf669f36c75064c3e95f2df7ddc1e66",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/db-resource-cache-durable-key-strict.feature": "e68d6128bca42a7039cfa3ad4c7d77d3ee6bf2e59ca18ba49b56754113c0a0e9",
+    "atc/worker/jetbridge/brine/mutations/db-resource-cache-durable-key-strict.json": "fc9493555cf7e853ee84c925ec833021a3c1bf49d8f85523ce057308e4992ddd",
+    "atc/worker/jetbridge/brine/steps/db_resource_cache_durable_key_strict.go": "43bc2395aeebb9ac8e50a29e104feb1d120f67d7ecf746b82bfec89cc613f01f",
+    "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
+    "atc/worker/jetbridge/brine/steps/registry.go": "74ed36b48b8184447ab4c550d37cf4738abe4e48253ecbb5b883ec99b19394dd",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e"
+  },
+  "mutation_cases": [
+    {
+      "id": "durable-key-is-content-not-row-identity",
+      "mutation_sha256": "800963898d9134a8a568b705243971b59f935c5b35479aa5ea61a5dfbad2658e",
+      "failed_source_tests": [
+        "ResourceCache DurableKey backfills a row that predates the column",
+        "ResourceCache DurableKey is readable on a cache loaded by id",
+        "ResourceCache DurableKey survives the row being deleted and recreated"
+      ],
+      "failed_brine_scenarios": [
+        "Production resource cache durable-key behavior — \u003cprofile\u003e (row 1)",
+        "Production resource cache durable-key behavior — \u003cprofile\u003e (row 6)",
+        "Production resource cache durable-key behavior — \u003cprofile\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "parameterized-cache-version-contributes-to-key",
+      "mutation_sha256": "c92b0e219e4d8a88b1a0ca2e7166f89e658462a2c54d3572343860f9e515cbbb",
+      "failed_source_tests": [
+        "ResourceCache DurableKey distinguishes caches that hold different bytes a different version"
+      ],
+      "failed_brine_scenarios": [
+        "Production resource cache durable-key behavior — \u003cprofile\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "source-contributes-to-key",
+      "mutation_sha256": "d7f9bd0e2900994cedd16672b97fa2eff81f2d6263832e640e372e340806111d",
+      "failed_source_tests": [
+        "ResourceCache DurableKey distinguishes caches that hold different bytes a different source"
+      ],
+      "failed_brine_scenarios": [
+        "Production resource cache durable-key behavior — \u003cprofile\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "params-contribute-to-key",
+      "mutation_sha256": "7f946b50f614a4a041322747fb006bbb0aab5f213b6f1950f5c607af8b6c35ca",
+      "failed_source_tests": [
+        "ResourceCache DurableKey distinguishes caches that hold different bytes different params"
+      ],
+      "failed_brine_scenarios": [
+        "Production resource cache durable-key behavior — \u003cprofile\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "custom-type-parent-contributes-to-key",
+      "mutation_sha256": "6731b119585cee8ce50e6ec96b71e6613e3052f020115c11fe98fb56654a7165",
+      "failed_source_tests": [
+        "ResourceCache DurableKey distinguishes two versions of the same custom type"
+      ],
+      "failed_brine_scenarios": [
+        "Production resource cache durable-key behavior — \u003cprofile\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "artifact-daemon-key-prefix-is-preserved",
+      "mutation_sha256": "35c591c173b868cff1bb1cb40f7ffd824a3449be551df4a1bb80481f84fc2b9d",
+      "failed_source_tests": [
+        "ResourceCache DurableKey is a key the artifact daemon will accept"
+      ],
+      "failed_brine_scenarios": [
+        "Production resource cache durable-key behavior — \u003cprofile\u003e (row 8)"
+      ]
+    }
+  ]
+}
