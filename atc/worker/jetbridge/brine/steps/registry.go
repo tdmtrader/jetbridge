@@ -90,6 +90,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, APIAuthDefinitions()...)
 	defs = append(defs, APIResourceAuthDefinitions()...)
 	defs = append(defs, ConfigValidationDefinitions()...)
+	defs = append(defs, ConjurManagerStrictDefinitions()...)
 	defs = append(defs, ConfigvalidateBehaviorDefinitions()...)
 	defs = append(defs, TaskConfigBehaviorDefinitions()...)
 	defs = append(defs, TaskConfigSourceStrictDefinitions()...)
