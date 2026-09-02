@@ -119,6 +119,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, DBBuildRemainingStrictDefinitions()...)
 	defs = append(defs, DBBuildFinalStrictDefinitions()...)
 	defs = append(defs, MigrationBuildEventsBigintStrictDefinitions()...)
+	defs = append(defs, MigrationUpdateAuthProvidersStrictDefinitions()...)
 	defs = append(defs, DBVolumeRepositoryStrictDefinitions()...)
 	defs = append(defs, DBVolumeRepositoryFinalStrictDefinitions()...)
 	defs = append(defs, APIResourcesStrictDefinitions()...)

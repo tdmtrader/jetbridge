@@ -1,0 +1,90 @@
+{
+  "name": "migration-update-auth-providers-strict",
+  "test_package": "./atc/db/migration",
+  "source_test_file": "atc/db/migration/update_auth_providers_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/migration-update-auth-providers-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/migration_update_auth_providers_strict.go",
+    "atc/worker/jetbridge/brine/steps/registry.go",
+    "atc/worker/jetbridge/brine/steps/resources.go",
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/main.go",
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/registry.go",
+    "atc/postgresrunner/postgresrunner.go"
+  ],
+  "cases": [
+    {
+      "id": "down-migrates-basic-username",
+      "source_file": "atc/db/migration/migrations/1516643303_update_auth_providers.down.go",
+      "old": "\t\t\t\tbasicAuthConfig[\"basic_auth_username\"] = configMap[\"username\"].(string)",
+      "new": "\t\t\t\tbasicAuthConfig[\"basic_auth_username\"] = configMap[\"password\"].(string)",
+      "tests": ["Update auth providers Down migrates basic auth data to separate field"],
+      "scenarios": ["Down migration moves basic credentials to the legacy fields"]
+    },
+    {
+      "id": "down-preserves-other-providers",
+      "source_file": "atc/db/migration/migrations/1516643303_update_auth_providers.down.go",
+      "old": "\t\tnewAuth, err := json.Marshal(authConfig)",
+      "new": "\t\tnewAuth, err := json.Marshal(map[string]any{})",
+      "tests": ["Update auth providers Down does not modify existing providers"],
+      "scenarios": ["Down migration preserves an existing GitHub provider"]
+    },
+    {
+      "id": "down-removes-basic-provider",
+      "source_file": "atc/db/migration/migrations/1516643303_update_auth_providers.down.go",
+      "old": "\t\tdelete(authConfig, \"basicauth\")",
+      "new": "\t\tdelete(authConfig, \"noauth\")",
+      "tests": ["Update auth providers Down removes the basicauth provider from providers list"],
+      "scenarios": ["Down migration removes the basic provider from auth"]
+    },
+    {
+      "id": "down-removes-noauth-provider",
+      "source_file": "atc/db/migration/migrations/1516643303_update_auth_providers.down.go",
+      "old": "\t\tdelete(authConfig, \"noauth\")",
+      "new": "\t\tdelete(authConfig, \"basicauth\")",
+      "tests": ["Update auth providers Down removes the noauth provider from providers list"],
+      "scenarios": ["Down migration removes the no-auth provider from auth"]
+    },
+    {
+      "id": "up-recognizes-legacy-basic-keys",
+      "source_file": "atc/db/migration/migrations/1516643303_update_auth_providers.up.go",
+      "old": "\t\tusername := basicAuthConfig[\"basic_auth_username\"]\n\t\tpassword := basicAuthConfig[\"basic_auth_password\"]",
+      "new": "\t\tusername := basicAuthConfig[\"u\"]\n\t\tpassword := basicAuthConfig[\"p\"]",
+      "tests": [
+        "Update auth providers Up migrates basic auth data to empty providers",
+        "Update auth providers Up migrates basic auth data to null providers",
+        "Update auth providers Up merges basic auth data with existing providers",
+        "Update auth providers Up does not migrate malformed basic auth data",
+        "Update auth providers Up does not add noauth provider when basic auth is configured"
+      ],
+      "scenarios": [
+        "Up migration moves basic credentials into empty auth",
+        "Up migration moves basic credentials into null auth",
+        "Up migration merges basic credentials with an existing GitHub provider",
+        "Up migration rejects malformed basic credential keys",
+        "Up migration does not add no-auth beside basic credentials"
+      ]
+    },
+    {
+      "id": "up-null-basic-auth-stays-unconfigured",
+      "source_file": "atc/db/migration/migrations/1516643303_update_auth_providers.up.go",
+      "old": "\t\tif basicAuthConfig == nil {\n\t\t\tbasicAuthConfig = map[string]string{}\n\t\t}",
+      "new": "\t\tif basicAuthConfig == nil {\n\t\t\tbasicAuthConfig = map[string]string{\"basic_auth_username\": \"default\", \"basic_auth_password\": \"default\"}\n\t\t}",
+      "tests": [
+        "Update auth providers Up does not migrate empty json basic auth data",
+        "Update auth providers Up adds noauth provider when no other auth methods are configured"
+      ],
+      "scenarios": [
+        "Up migration rejects empty and null basic credentials",
+        "Up migration adds no-auth when no method is configured"
+      ]
+    },
+    {
+      "id": "up-existing-provider-prevents-noauth",
+      "source_file": "atc/db/migration/migrations/1516643303_update_auth_providers.up.go",
+      "old": "\t\tif len(authConfig) == 0 {",
+      "new": "\t\tif len(authConfig) == 0 || authConfig[\"basicauth\"] == nil {",
+      "tests": ["Update auth providers Up does not add noauth provider when there are existing providers"],
+      "scenarios": ["Up migration does not add no-auth beside an existing provider"]
+    }
+  ]
+}
