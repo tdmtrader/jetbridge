@@ -21,7 +21,6 @@ import (
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
-	. "github.com/concourse/concourse/atc/testhelpers"
 	"github.com/gorilla/websocket"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -424,16 +423,11 @@ var _ = Describe("Containers API", func() {
 
 			Context("with no params", func() {
 				Context("when no errors are returned", func() {
-					var (
-						firstFixture  containersAPIFixture
-						secondFixture containersAPIFixture
-					)
-
 					BeforeEach(func() {
-						firstFixture = createContainersAPIBuildStepContainer(
+						createContainersAPIBuildStepContainer(
 							deps, team, "some-worker-name", "some-plan", fullMetadata, false,
 						)
-						secondFixture = createContainersAPIBuildStepContainer(
+						createContainersAPIBuildStepContainer(
 							deps, team, "some-other-worker-name", "some-other-plan",
 							func(buildID int) db.ContainerMetadata {
 								return db.ContainerMetadata{
@@ -451,60 +445,9 @@ var _ = Describe("Containers API", func() {
 						)
 					})
 
-					It("returns 200", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusOK))
-					})
-
-					It("returns Content-Type application/json", func() {
-						expectedHeaderEntries := map[string]string{
-							"Content-Type": "application/json",
-						}
-						Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-					})
-
-					It("returns all containers", func() {
-						body, err := io.ReadAll(response.Body)
-						Expect(err).NotTo(HaveOccurred())
-						var presented []json.RawMessage
-						Expect(json.Unmarshal(body, &presented)).To(Succeed())
-
-						firstExpected, err := json.Marshal(atc.Container{
-							ID: firstFixture.container.Handle(), WorkerName: "some-worker-name",
-							State: atc.ContainerStateCreating, Type: string(stepType),
-							StepName: stepName, Attempt: attempt,
-							PipelineID: pipelineID, JobID: jobID, BuildID: firstFixture.build.ID(),
-							WorkingDirectory: workingDirectory, User: user,
-						})
-						Expect(err).NotTo(HaveOccurred())
-						secondExpected, err := json.Marshal(atc.Container{
-							ID: secondFixture.container.Handle(), WorkerName: "some-other-worker-name",
-							State: atc.ContainerStateCreated, Type: string(stepType),
-							StepName: stepName + "-other", Attempt: attempt + ".1",
-							PipelineID: pipelineID + 1, JobID: jobID + 1, BuildID: secondFixture.build.ID(),
-							WorkingDirectory: workingDirectory + "/other", User: user + "-other",
-						})
-						Expect(err).NotTo(HaveOccurred())
-
-						Expect(presented).To(ConsistOf(
-							MatchJSON(firstExpected),
-							MatchJSON(secondExpected),
-						))
-					})
 				})
 
 				Context("when no containers are found", func() {
-					It("returns 200", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusOK))
-					})
-
-					It("returns an empty array", func() {
-						body, err := io.ReadAll(response.Body)
-						Expect(err).NotTo(HaveOccurred())
-
-						Expect(body).To(MatchJSON(`
-						  []
-						`))
-					})
 				})
 
 				Context("when there is an error", func() {
@@ -758,40 +701,12 @@ var _ = Describe("Containers API", func() {
 					Expect(destroyed).To(BeTrue())
 				})
 
-				It("returns 404 Not Found", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-				})
 			})
 
 			Context("when the container is found", func() {
 				Context("when the container is within the team", func() {
-					It("returns 200 OK", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusOK))
-					})
-
-					It("returns Content-Type application/json", func() {
-						expectedHeaderEntries := map[string]string{
-							"Content-Type": "application/json",
-						}
-						Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-					})
-
 					It("performs lookup by id", func() {
 						Expect(routeTeam.findContainerByHandleCallSnapshot()).To(Equal([]string{handle}))
-					})
-
-					It("returns the container", func() {
-						body, err := io.ReadAll(response.Body)
-						Expect(err).NotTo(HaveOccurred())
-						expected, err := json.Marshal(atc.Container{
-							ID: fixture.container.Handle(), WorkerName: "get-worker",
-							State: atc.ContainerStateCreated, Type: string(stepType),
-							StepName: stepName, Attempt: attempt,
-							PipelineID: pipelineID, JobID: jobID, BuildID: fixture.build.ID(),
-							WorkingDirectory: workingDirectory, User: user,
-						})
-						Expect(err).NotTo(HaveOccurred())
-						Expect(body).To(MatchJSON(expected))
 					})
 				})
 
@@ -805,9 +720,6 @@ var _ = Describe("Containers API", func() {
 						handle = outsideFixture.container.Handle()
 					})
 
-					It("returns 404 Not Found", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-					})
 				})
 			})
 

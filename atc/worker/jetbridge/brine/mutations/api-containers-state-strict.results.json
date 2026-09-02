@@ -1,0 +1,114 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/api-containers-state-strict.json",
+  "git_head": "2bebaa5f7b56a62fd16765ecfce753e753ab47e3",
+  "completed_at": "2026-09-02T16:49:54Z",
+  "source_tests": 10,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/api/containers_test.go": "cc1dbf3d8b8649163cd3b75baaebc95a193b5f6b39ba0e5243090f82faa39094",
+    "atc/api/containerserver/get.go": "bcd1b094164fc29ab97d9673b517e1a16e0fde852d7568fcd796250f8901b8d5",
+    "atc/api/containerserver/list.go": "d16acda35bb5e69d325bd340f323ffc4800027ec70dfa40f27518d6608b9068f",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/api-containers-state-strict.feature": "bb1abc88d1e1f2bfc875a452da782fa886136e7fc2dd8f467a33ab4b82e5f79b",
+    "atc/worker/jetbridge/brine/mutations/api-containers-state-strict.json": "898dff6bbb8382dea449f6a6a0f01939fd0f223f6ea79c35e185ce9790bb42c8",
+    "atc/worker/jetbridge/brine/steps/api_auth.go": "eba916c51c18a178748f5c0dd95f85cc7d094bc1fad778e327d88e52e2a971e0",
+    "atc/worker/jetbridge/brine/steps/api_containers_state_strict.go": "99ff983bfd8faab7c9288b11eaf1b9c0f8c250530d2c81d7d9353e200e9c6e0e",
+    "atc/worker/jetbridge/brine/steps/api_resource_auth.go": "428e6b2cabd1f2833b88f6a9f05e36f41ba1207246afeeefe0a40bd9bd4dea64",
+    "atc/worker/jetbridge/brine/steps/registry.go": "0c0a233e4b0d320086be562a7a513c9527ccf85d74c7a9ab78e77e0746f20a13",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8"
+  },
+  "mutation_cases": [
+    {
+      "id": "list-success-uses-ok-status",
+      "mutation_sha256": "c8fdb36dd7706f3d9c493f28b61682735864054b5ae1aa79b4a6808bb6588099",
+      "failed_source_tests": [
+        "Containers API GET /api/v1/teams/a-team/containers when authenticated with no params when no containers are found returns 200",
+        "Containers API GET /api/v1/teams/a-team/containers when authenticated with no params when no errors are returned returns 200"
+      ],
+      "failed_brine_scenarios": [
+        "Production container query API behavior — \u003cprofile\u003e (row 1)",
+        "Production container query API behavior — \u003cprofile\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "list-uses-json-content-type",
+      "mutation_sha256": "6cb33963716729b33f2b88854e0ef52de533724356eae299ff51618fa95d16a8",
+      "failed_source_tests": [
+        "Containers API GET /api/v1/teams/a-team/containers when authenticated with no params when no errors are returned returns Content-Type application/json"
+      ],
+      "failed_brine_scenarios": [
+        "Production container query API behavior — \u003cprofile\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "list-presents-persisted-container-fields",
+      "mutation_sha256": "cc995c434e009a778de3a560251fcc3105aed70ca0b2703899b529745e009db5",
+      "failed_source_tests": [
+        "Containers API GET /api/v1/teams/a-team/containers when authenticated with no params when no errors are returned returns all containers"
+      ],
+      "failed_brine_scenarios": [
+        "Production container query API behavior — \u003cprofile\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "list-encodes-empty-array-not-null",
+      "mutation_sha256": "53cfcdacb3aae294294ee6450a2ecb8e38855727682b5d497f64382da34b42a0",
+      "failed_source_tests": [
+        "Containers API GET /api/v1/teams/a-team/containers when authenticated with no params when no containers are found returns an empty array"
+      ],
+      "failed_brine_scenarios": [
+        "Production container query API behavior — \u003cprofile\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "get-missing-container-uses-not-found",
+      "mutation_sha256": "8ad014d826866d3fd686d9638587b94f5d060052ccce9c0dc1b9c52486436328",
+      "failed_source_tests": [
+        "Containers API GET /api/v1/containers/:id when authenticated when the container is not found returns 404 Not Found"
+      ],
+      "failed_brine_scenarios": [
+        "Production container query API behavior — \u003cprofile\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "get-found-container-uses-ok-status",
+      "mutation_sha256": "c11044204e645edbeeb6cfc1a91c1097e0baaae531514950fccf746ed4490ac0",
+      "failed_source_tests": [
+        "Containers API GET /api/v1/containers/:id when authenticated when the container is found when the container is within the team returns 200 OK"
+      ],
+      "failed_brine_scenarios": [
+        "Production container query API behavior — \u003cprofile\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "get-uses-json-content-type",
+      "mutation_sha256": "b95d955d419973a3b6db73bfc02c1ac0999faae12d55c126bbae66332e039776",
+      "failed_source_tests": [
+        "Containers API GET /api/v1/containers/:id when authenticated when the container is found when the container is within the team returns Content-Type application/json"
+      ],
+      "failed_brine_scenarios": [
+        "Production container query API behavior — \u003cprofile\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "get-presents-persisted-container-fields",
+      "mutation_sha256": "4eb00d16df16c1be4a5d48f6c7795ce7d2f0bc5788053552c8928cb981270620",
+      "failed_source_tests": [
+        "Containers API GET /api/v1/containers/:id when authenticated when the container is found when the container is within the team returns the container"
+      ],
+      "failed_brine_scenarios": [
+        "Production container query API behavior — \u003cprofile\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "get-outside-team-container-uses-not-found",
+      "mutation_sha256": "e8bf90e74b0ec249311ffb08c5f87603bb9fa110d4aea79c3182e82657b850ef",
+      "failed_source_tests": [
+        "Containers API GET /api/v1/containers/:id when authenticated when the container is found when the container is not within the team returns 404 Not Found"
+      ],
+      "failed_brine_scenarios": [
+        "Production container query API behavior — \u003cprofile\u003e (row 10)"
+      ]
+    }
+  ]
+}
