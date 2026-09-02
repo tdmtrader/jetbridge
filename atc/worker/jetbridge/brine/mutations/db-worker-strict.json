@@ -58,7 +58,7 @@
       "new": "\t\t\tON CONFLICT (resource_config_id, worker_base_resource_type_id) DO NOTHING\n\t\t\tRETURNING id\n\t\t`).",
       "tests": ["Worker FindContainer/CreateContainer when there is a creating container when the creating container is failed and gced and we create a new container does not duplicate the resource config check session"],
       "scenarios": ["Worker persistence profile <profile> has its exact result (row 6)"],
-      "failure_contains": "worker persistence"
+      "failure_contains": "upsert resource config check session"
     },
     {
       "id": "check-containers-remain-global",
