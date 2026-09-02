@@ -1,0 +1,50 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/otel-scheduling-strict.json",
+  "git_head": "4143969ed6535181e964e30a913b4c9dcc26e933",
+  "completed_at": "2026-09-02T22:05:23Z",
+  "source_tests": 3,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/metric/otel_scheduling.go": "9f46b631aaf4a9fee0f6e5d6b8e92af855597631dd8b6c0e0dc9a8197f53a585",
+    "atc/metric/otel_scheduling_test.go": "6cb3e740b8f3b0a327d6c593e0e6daf09084c928d3414a567014bdb3820cb874",
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/main.go": "f1077dbb582d4a3ad64725c5a79cbb19aacc73f43e16da24c8db9d42a94cca9f",
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/registry.go": "dd3e71d36df711f433b0480e5d836bdc2c124107737164ae554d7b7474d68847",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/otel-metrics.feature": "f8139794feec2770a14faba152d9db7a303143ca3ec6e02cbb8ba4f5e74def0e",
+    "atc/worker/jetbridge/brine/mutations/otel-scheduling-strict.json": "2f04f0a3ccc1db7dfb4f0608a0f17682bf56767f0c7662f2ae5fba12c54d0e4f",
+    "atc/worker/jetbridge/brine/steps/otel_metrics.go": "671ca95e3eb24bf75a872f69862a721cfdf4115fa1749b41d8998e74e21c0614",
+    "atc/worker/jetbridge/brine/steps/registry.go": "ce4363adda5b6fef9b894350fe33ab672290ff87aab58086fbea63d603d88ab4"
+  },
+  "mutation_cases": [
+    {
+      "id": "jobs-scheduled-instrument-name",
+      "mutation_sha256": "956acea62e749111f3374339aa3f77a9914009fed45c5c048dc6ae2917ea0d63",
+      "failed_source_tests": [
+        "OTel Scheduling records jobs scheduled"
+      ],
+      "failed_brine_scenarios": [
+        "OTel profile \u003cprofile\u003e exports its production measurement (row 23)"
+      ]
+    },
+    {
+      "id": "jobs-scheduling-instrument-name",
+      "mutation_sha256": "85e05513814ebf0ec3aafd4ec32d51df514b3d7762b4c97f7393f0e6b45405c8",
+      "failed_source_tests": [
+        "OTel Scheduling records jobs scheduling"
+      ],
+      "failed_brine_scenarios": [
+        "OTel profile \u003cprofile\u003e exports its production measurement (row 24)"
+      ]
+    },
+    {
+      "id": "scheduling-duration-pipeline-attribute",
+      "mutation_sha256": "cf4c06bbc2e18179136bcca57fa5f2a1c8c9bcf6b808c8dd1564397a768081fe",
+      "failed_source_tests": [
+        "OTel Scheduling records scheduling job duration with attributes"
+      ],
+      "failed_brine_scenarios": [
+        "OTel profile \u003cprofile\u003e exports its production measurement (row 25)"
+      ]
+    }
+  ]
+}
