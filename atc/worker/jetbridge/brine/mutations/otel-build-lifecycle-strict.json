@@ -1,0 +1,54 @@
+{
+  "name": "otel-build-lifecycle-strict",
+  "test_package": "./atc/metric",
+  "source_test_file": "atc/metric/otel_build_lifecycle_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/otel-metrics.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/main.go",
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/registry.go",
+    "atc/worker/jetbridge/brine/steps/otel_metrics.go",
+    "atc/worker/jetbridge/brine/steps/registry.go"
+  ],
+  "cases": [
+    {
+      "id": "builds-started-instrument-name",
+      "source_file": "atc/metric/otel_build_lifecycle.go",
+      "old": "\t\t\"concourse.builds.started\",",
+      "new": "\t\t\"concourse.builds.start\",",
+      "tests": ["OTel Build Lifecycle records builds started"],
+      "scenarios": ["OTel profile <profile> exports its production measurement (row 13)"]
+    },
+    {
+      "id": "builds-running-instrument-name",
+      "source_file": "atc/metric/otel_build_lifecycle.go",
+      "old": "\t\t\"concourse.builds.running\",",
+      "new": "\t\t\"concourse.builds.run\",",
+      "tests": ["OTel Build Lifecycle records builds running"],
+      "scenarios": ["OTel profile <profile> exports its production measurement (row 14)"]
+    },
+    {
+      "id": "build-finished-status-attribute",
+      "source_file": "atc/metric/otel_build_lifecycle.go",
+      "old": "\t\t\tattribute.String(\"build.status\", status),",
+      "new": "\t\t\tattribute.String(\"build.state\", status),",
+      "tests": ["OTel Build Lifecycle records build finished with status attribute"],
+      "scenarios": ["OTel profile <profile> exports its production measurement (row 15)"]
+    },
+    {
+      "id": "check-builds-started-instrument-name",
+      "source_file": "atc/metric/otel_build_lifecycle.go",
+      "old": "\t\t\"concourse.check_builds.started\",",
+      "new": "\t\t\"concourse.check_builds.start\",",
+      "tests": ["OTel Build Lifecycle records check builds started"],
+      "scenarios": ["OTel profile <profile> exports its production measurement (row 16)"]
+    },
+    {
+      "id": "check-builds-running-instrument-name",
+      "source_file": "atc/metric/otel_build_lifecycle.go",
+      "old": "\t\t\"concourse.check_builds.running\",",
+      "new": "\t\t\"concourse.check_builds.run\",",
+      "tests": ["OTel Build Lifecycle records check builds running"],
+      "scenarios": ["OTel profile <profile> exports its production measurement (row 17)"]
+    }
+  ]
+}
