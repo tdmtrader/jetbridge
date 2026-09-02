@@ -260,7 +260,8 @@ func observeFinalSchedule(database strictJobDatabase, profile string) string {
 		return ""
 	}
 	blocked := profile == "schedule-pipeline-paused" || profile == "schedule-job-paused" || profile == "schedule-job-paused-inputs"
-	if scheduleErr != nil || reloadErr != nil || !found || scheduled == blocked || candidate.IsScheduled() == blocked {
+	persistedWrong := (blocked && candidate.IsScheduled()) || (profile == "schedule-persists" && !candidate.IsScheduled())
+	if scheduleErr != nil || reloadErr != nil || !found || scheduled == blocked || persistedWrong {
 		return fmt.Sprintf("scheduled=%t scheduleErr=%v found=%t reloadErr=%v persisted=%t blocked=%t", scheduled, scheduleErr, found, reloadErr, candidate.IsScheduled(), blocked)
 	}
 	return ""

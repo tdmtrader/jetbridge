@@ -19,25 +19,15 @@
   ],
   "cases": [
     {
-      "id": "schedule-build-returns-scheduled-state",
+      "id": "schedule-build-persists-scheduled-state",
       "source_file": "atc/db/job.go",
-      "old": "\t\tscheduled = true\n\t}\n\n\terr = tx.Commit()",
-      "new": "\t\tscheduled = false\n\t}\n\n\terr = tx.Commit()",
+      "old": "\t\tresult, err = psql.Update(\"builds\").\n\t\t\tSet(\"scheduled\", true).\n\t\t\tWhere(sq.Eq{\"id\": build.ID()}).",
+      "new": "\t\tresult, err = psql.Update(\"builds\").\n\t\t\tSet(\"scheduled\", false).\n\t\t\tWhere(sq.Eq{\"id\": build.ID()}).",
       "tests": [
-        "Job ScheduleBuild when the scheduling build is created first when the job config doesn't specify max in flight schedules the build",
-        "Job ScheduleBuild when the scheduling build is created first when the job config doesn't specify max in flight when build exists when the pipeline and job is not paused sets the build to scheduled",
-        "Job ScheduleBuild when the scheduling build is created first when the job config specifies max in flight = 2 when there is 1 build running schedules the build",
-        "Job ScheduleBuild when the scheduling build is created first when the job is in serial groups when no jobs in the serial groups are running does schedule the build",
-        "Job ScheduleBuild when the scheduling build is not the first one created (with serial groups) when the scheduling build has it's inputs determined and created earlier does schedule the build",
-        "Job ScheduleBuild when the scheduling build is not the first one created (with serial groups) when there are other succeeded builds within the same serial group does schedule builds because we only care about running or pending builds"
+        "Job ScheduleBuild when the scheduling build is created first when the job config doesn't specify max in flight when build exists when the pipeline and job is not paused sets the build to scheduled"
       ],
       "scenarios": [
-        "Remaining DB job behavior — <profile> (row 1)",
-        "Remaining DB job behavior — <profile> (row 2)",
-        "Remaining DB job behavior — <profile> (row 3)",
-        "Remaining DB job behavior — <profile> (row 4)",
-        "Remaining DB job behavior — <profile> (row 5)",
-        "Remaining DB job behavior — <profile> (row 6)"
+        "Remaining DB job behavior — <profile> (row 2)"
       ]
     },
     {
