@@ -1,0 +1,121 @@
+{
+  "name": "db-pipeline-query-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/pipeline_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-pipeline-query-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_pipeline_query_strict.go",
+    "atc/worker/jetbridge/brine/steps/registry.go",
+    "atc/worker/jetbridge/brine/steps/assert.go",
+    "atc/worker/jetbridge/brine/steps/resources.go",
+    "atc/worker/jetbridge/brine/steps/task_command.go",
+    "atc/worker/jetbridge/brine/steps/envtest.go",
+    "atc/postgresrunner/postgresrunner.go",
+    "atc/postgresrunner/ginkgo.go",
+    "atc/postgresrunner/join_limit_conn.go"
+  ],
+  "cases": [
+    {
+      "id": "resource-version-enabled-state",
+      "source_file": "atc/db/pipeline.go",
+      "old": "\tenabled := `\n\t\tNOT EXISTS (",
+      "new": "\tenabled := `\n\t\tEXISTS (",
+      "tests": [
+        "Pipeline ResourceVersion when a resource is enabled should return the version with enabled set to true",
+        "Pipeline ResourceVersion when a resource is not enabled should return the version with enabled set to false"
+      ],
+      "scenarios": [
+        "Production pipeline query behavior — <profile> (row 1)",
+        "Production pipeline query behavior — <profile> (row 2)"
+      ]
+    },
+    {
+      "id": "builds-with-time-respects-limit",
+      "source_file": "atc/db/build_factory.go",
+      "old": "\tbuildsQuery = buildsQuery.\n\t\tOrderBy(\"COALESCE(b.rerun_of, b.rerun_of_old, b.id) DESC, b.id DESC\").\n\t\tLimit(uint64(page.Limit))",
+      "new": "\tbuildsQuery = buildsQuery.\n\t\tOrderBy(\"COALESCE(b.rerun_of, b.rerun_of_old, b.id) DESC, b.id DESC\").\n\t\tLimit(uint64(page.Limit + 1))",
+      "tests": [
+        "Pipeline BuildsWithTime when not providing boundaries without a limit specified returns no builds",
+        "Pipeline BuildsWithTime when not providing boundaries with a limit specified returns a subset of the builds"
+      ],
+      "scenarios": [
+        "Production pipeline query behavior — <profile> (row 3)",
+        "Production pipeline query behavior — <profile> (row 4)"
+      ]
+    },
+    {
+      "id": "builds-with-time-applies-upper-bound-alone",
+      "source_file": "atc/db/build_factory.go",
+      "old": "\tif page.To != nil {\n\t\tbuildsQuery = buildsQuery.Where(sq.Expr(\"b.start_time <= to_timestamp(?)\", *page.To))\n\t}",
+      "new": "\tif page.To != nil && page.From != nil {\n\t\tbuildsQuery = buildsQuery.Where(sq.Expr(\"b.start_time <= to_timestamp(?)\", *page.To))\n\t}",
+      "tests": [
+        "Pipeline BuildsWithTime when providing boundaries only to returns only those before and including to"
+      ],
+      "scenarios": [
+        "Production pipeline query behavior — <profile> (row 5)"
+      ]
+    },
+    {
+      "id": "builds-with-time-applies-lower-bound-alone",
+      "source_file": "atc/db/build_factory.go",
+      "old": "\tif page.From != nil {\n\t\tbuildsQuery = buildsQuery.Where(sq.Expr(\"b.start_time >= to_timestamp(?)\", *page.From))\n\t}",
+      "new": "\tif page.From != nil && page.To != nil {\n\t\tbuildsQuery = buildsQuery.Where(sq.Expr(\"b.start_time >= to_timestamp(?)\", *page.From))\n\t}",
+      "tests": [
+        "Pipeline BuildsWithTime when providing boundaries only from returns only those after from"
+      ],
+      "scenarios": [
+        "Production pipeline query behavior — <profile> (row 6)"
+      ]
+    },
+    {
+      "id": "builds-with-time-applies-lower-bound-in-range",
+      "source_file": "atc/db/build_factory.go",
+      "old": "\tif page.From != nil {\n\t\tbuildsQuery = buildsQuery.Where(sq.Expr(\"b.start_time >= to_timestamp(?)\", *page.From))\n\t}",
+      "new": "\tif page.From != nil && page.To == nil {\n\t\tbuildsQuery = buildsQuery.Where(sq.Expr(\"b.start_time >= to_timestamp(?)\", *page.From))\n\t}",
+      "tests": [
+        "Pipeline BuildsWithTime when providing boundaries from and to returns only elements in the range"
+      ],
+      "scenarios": [
+        "Production pipeline query behavior — <profile> (row 7)"
+      ]
+    },
+    {
+      "id": "set-parent-persists-fields",
+      "source_file": "atc/db/pipeline.go",
+      "old": "\tresult, err := psql.Update(\"pipelines\").\n\t\tSet(\"parent_job_id\", jobID).\n\t\tSet(\"parent_build_id\", buildID).",
+      "new": "\tresult, err := psql.Update(\"pipelines\").\n\t\tSet(\"parent_job_id\", buildID).\n\t\tSet(\"parent_build_id\", buildID).",
+      "tests": [
+        "Pipeline SetParentIDs sets the parent_job_id and parent_build_id fields",
+        "Pipeline SetParentIDs pipeline was previously saved by team.SavePipeline successfully updates the parent build and job IDs"
+      ],
+      "scenarios": [
+        "Production pipeline query behavior — <profile> (row 8)",
+        "Production pipeline query behavior — <profile> (row 11)"
+      ]
+    },
+    {
+      "id": "set-parent-rejects-zero",
+      "source_file": "atc/db/pipeline.go",
+      "old": "\tif jobID <= 0 || buildID <= 0 {",
+      "new": "\tif jobID < 0 || buildID < 0 {",
+      "tests": [
+        "Pipeline SetParentIDs returns an error if job or build ID are less than or equal to zero"
+      ],
+      "scenarios": [
+        "Production pipeline query behavior — <profile> (row 9)"
+      ]
+    },
+    {
+      "id": "set-parent-refuses-older-build",
+      "source_file": "atc/db/pipeline.go",
+      "old": "\t\tWhere(sq.Or{sq.Lt{\"parent_build_id\": buildID}, sq.Eq{\"parent_build_id\": nil}}).",
+      "new": "\t\tWhere(sq.Or{sq.Gt{\"parent_build_id\": buildID}, sq.Eq{\"parent_build_id\": nil}}).",
+      "tests": [
+        "Pipeline SetParentIDs pipeline was saved by a newer build returns ErrSetByNewerBuild"
+      ],
+      "scenarios": [
+        "Production pipeline query behavior — <profile> (row 10)"
+      ]
+    }
+  ]
+}
