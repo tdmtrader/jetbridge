@@ -1,0 +1,55 @@
+{
+  "name": "db-user-factory-final-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/user_factory_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-user-factory-final-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_user_factory_final_strict.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "user-name-is-persisted-exactly",
+      "source_file": "atc/db/user_factory.go",
+      "old": "\t\tValues(username, connector, sub)",
+      "new": "\t\tValues(username + \"-wrong\", connector, sub)",
+      "tests": [
+        "User Factory when user doesn't exist Insert a user with last_login now()",
+        "User Factory when username exists and with the same connector Doesn't create a new record"
+      ],
+      "scenarios": [
+        "Creating a new user preserves its name and current login time",
+        "Repeating the same subject preserves its exact username"
+      ],
+      "failure_contains": "user factory observation"
+    },
+    {
+      "id": "connector-specific-subjects-remain-distinct",
+      "source_file": "atc/db/user_factory.go",
+      "old": "\t\tValues(username, connector, sub)",
+      "new": "\t\tValues(username, connector, username)",
+      "tests": [
+        "User Factory when username exists but with different connector Creates a different user"
+      ],
+      "scenarios": [
+        "The same username through different connectors creates distinct users"
+      ],
+      "failure_contains": "user factory observation"
+    },
+    {
+      "id": "same-subject-updates-one-row",
+      "source_file": "atc/db/user_factory.go",
+      "old": "\t\tValues(username, connector, sub)",
+      "new": "\t\tValues(username, connector, sub + time.Now().String())",
+      "tests": [
+        "User Factory when username exists and with the same connector Doesn't create a different user",
+        "User Factory when username exists and with the same connector Update the last_login time"
+      ],
+      "scenarios": [
+        "Repeating the same subject keeps one user",
+        "Repeating the same subject updates its login time"
+      ],
+      "failure_contains": "user factory observation"
+    }
+  ]
+}
