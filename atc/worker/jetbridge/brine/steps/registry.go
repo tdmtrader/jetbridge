@@ -94,6 +94,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, TaskConfigSourceStrictDefinitions()...)
 	defs = append(defs, IDTokenGeneratorStrictDefinitions()...)
 	defs = append(defs, VariableTemplateDefinitions()...)
+	defs = append(defs, OPAResultDefinitions()...)
 	defs = append(defs, ATCConfigBehaviorDefinitions()...)
 	defs = append(defs, ConfigDiffBehaviorDefinitions()...)
 	defs = append(defs, FlyEventRenderDefinitions()...)
