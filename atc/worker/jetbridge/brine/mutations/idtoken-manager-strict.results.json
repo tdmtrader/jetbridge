@@ -1,0 +1,114 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/idtoken-manager-strict.json",
+  "git_head": "4a0d33dad1d8101c01961c69fa65fd3f3e0e330d",
+  "completed_at": "2026-09-02T21:03:41Z",
+  "source_tests": 9,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/creds/idtoken/manager.go": "700f89f3c0d965da017b71058612beeeb0a87e4a8f07bac8edb7dcd5f1bd8ebd",
+    "atc/creds/idtoken/manager_test.go": "7a2741e0547ee161a51c9a8937d73980b4e9551edad26fbe2ae3e3675e75eb7e",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/idtoken-manager-strict.feature": "cb2d59ab756a11c577cb785bc627c35c336b7ee33a5f1fac4f25408e4d01e2ea",
+    "atc/worker/jetbridge/brine/mutations/idtoken-manager-strict.json": "86fdc7281b775a833bf244298a83483020a786d32b68125fc131d31e81901307",
+    "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
+    "atc/worker/jetbridge/brine/steps/idtoken_manager_strict.go": "f2155353562de0080a404a039ab4c51ba31ed63b2ad2fae5c15444857a7cb7ed",
+    "atc/worker/jetbridge/brine/steps/registry.go": "b33bbcb5352d520d4cb770fd32523da88e4e381c313d0ca3cf8e6c758bc1054a",
+    "atc/worker/jetbridge/brine/steps/resources.go": "f594ee3b1828c61ca1dd1ef9dd8024ecbb440898b57644b50a80d86bad475691",
+    "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e"
+  },
+  "mutation_cases": [
+    {
+      "id": "issuer-is-preserved",
+      "mutation_sha256": "28ca90f6d665d5341ccbcceb2c0d814759c21218e3c7ccb4bfa4a57c56be5c22",
+      "failed_source_tests": [
+        "IDToken Manager accepts valid configuration"
+      ],
+      "failed_brine_scenarios": [
+        "Production ID token manager behavior — \u003cprofile\u003e (row 1)"
+      ]
+    },
+    {
+      "id": "audience-must-be-a-list",
+      "mutation_sha256": "9275e0fd75aab73922e80e10a42b29005f36ea78a11d9c9ff1077c7ef9bbab08",
+      "failed_source_tests": [
+        "IDToken Manager rejects malformed audience"
+      ],
+      "failed_brine_scenarios": [
+        "Production ID token manager behavior — \u003cprofile\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "subject-scope-must-be-a-string",
+      "mutation_sha256": "d41c8bc6a78e6e7c2ee3c8329d2d5be855dfcc4c648ada401c5d8d41ac1b5a1f",
+      "failed_source_tests": [
+        "IDToken Manager rejects malformed subject_scope"
+      ],
+      "failed_brine_scenarios": [
+        "Production ID token manager behavior — \u003cprofile\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "expires-in-must-parse",
+      "mutation_sha256": "1fb0d860d19239e9c3d42bd41784a5b2cb33aed5e1d04a0c43ea9c7f8cea8c81",
+      "failed_source_tests": [
+        "IDToken Manager rejects malformed expires_in"
+      ],
+      "failed_brine_scenarios": [
+        "Production ID token manager behavior — \u003cprofile\u003e (row 4)"
+      ]
+    },
+    {
+      "id": "algorithm-must-be-a-string",
+      "mutation_sha256": "6b8ea557d908593b6135fc2254880ffc91a7324815b6064b685e3abda606a6c1",
+      "failed_source_tests": [
+        "IDToken Manager rejects malformed algorithm"
+      ],
+      "failed_brine_scenarios": [
+        "Production ID token manager behavior — \u003cprofile\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "unknown-settings-are-rejected",
+      "mutation_sha256": "453f2eebf45b38e56c1596bf0cc433d24a42f760906a5c5a0fb13c4ffb571cc4",
+      "failed_source_tests": [
+        "IDToken Manager rejects unknown settings"
+      ],
+      "failed_brine_scenarios": [
+        "Production ID token manager behavior — \u003cprofile\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "unknown-subject-scope-is-rejected",
+      "mutation_sha256": "111711fa47b53297f389e7fc821ddcbedcb41f72f9dc5138ddf8b065aed39fa5",
+      "failed_source_tests": [
+        "IDToken Manager rejects unknown subject_scope"
+      ],
+      "failed_brine_scenarios": [
+        "Production ID token manager behavior — \u003cprofile\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "expiration-is-capped-at-24-hours",
+      "mutation_sha256": "e818c9a2a6dda06cb05e8f48b9e24613ced25800426efa604a45f22c731fbd59",
+      "failed_source_tests": [
+        "IDToken Manager rejects expires_in if larger then 24h"
+      ],
+      "failed_brine_scenarios": [
+        "Production ID token manager behavior — \u003cprofile\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "unknown-signing-algorithm-is-rejected",
+      "mutation_sha256": "38c176a157a8648e9cbb8c96d69b9a6930cc992d349a21d1173f8c4f0631412c",
+      "failed_source_tests": [
+        "IDToken Manager rejects unknown algorithm"
+      ],
+      "failed_brine_scenarios": [
+        "Production ID token manager behavior — \u003cprofile\u003e (row 9)"
+      ]
+    }
+  ]
+}
