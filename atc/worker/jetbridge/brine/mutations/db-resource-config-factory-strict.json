@@ -1,0 +1,104 @@
+{
+  "name": "db-resource-config-factory-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/resource_config_factory_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-resource-config-factory-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_resource_config_factory_strict.go",
+    "atc/worker/jetbridge/brine/steps/registry.go",
+    "atc/worker/jetbridge/brine/steps/resources.go",
+    "atc/worker/jetbridge/brine/steps/task_command.go",
+    "atc/worker/jetbridge/brine/steps/envtest.go",
+    "atc/postgresrunner/postgresrunner.go",
+    "atc/postgresrunner/ginkgo.go",
+    "atc/postgresrunner/join_limit_conn.go"
+  ],
+  "cases": [
+    {
+      "id": "new-config-reference-time-is-current",
+      "source_file": "atc/db/resource_config.go",
+      "old": "func (r *resourceConfig) LastReferenced() time.Time {\n\treturn r.lastReferenced\n}",
+      "new": "func (r *resourceConfig) LastReferenced() time.Time {\n\treturn r.lastReferenced.Add(-2 * time.Hour)\n}",
+      "tests": [
+        "ResourceConfigFactory when a config is created has a recent 'last referenced' value"
+      ],
+      "scenarios": [
+        "Production resource config factory behavior — <profile> (row 1)"
+      ]
+    },
+    {
+      "id": "recent-config-is-not-retouched",
+      "source_file": "atc/db/resource_config_factory.go",
+      "old": "\t\tif found && rc.lastReferenced.Add(time.Minute).Before(time.Now()) {",
+      "new": "\t\tif found && rc.lastReferenced.Add(-time.Minute).Before(time.Now()) {",
+      "tests": [
+        "ResourceConfigFactory when a config is created and created again returns the same config, but with the same 'last referenced' time because we only update last_referenced once a minute",
+        "ResourceConfigFactory when the resource config is concurrently deleted and created consistently is able to be used"
+      ],
+      "scenarios": [
+        "Production resource config factory behavior — <profile> (row 2)",
+        "Production resource config factory behavior — <profile> (row 8)"
+      ]
+    },
+    {
+      "id": "zero-grace-does-not-gain-a-second",
+      "source_file": "atc/db/resource_config_factory.go",
+      "old": "\t\tWhere(sq.Expr(fmt.Sprintf(\"now() - last_referenced > '%d seconds'::interval\", int(gracePeriod.Seconds())))).",
+      "new": "\t\tWhere(sq.Expr(fmt.Sprintf(\"now() - last_referenced > '%d seconds'::interval\", int(gracePeriod.Seconds())+1))).",
+      "tests": [
+        "ResourceConfigFactory when a config is created when cleaning up with no grace period removes the config immediately"
+      ],
+      "scenarios": [
+        "Production resource config factory behavior — <profile> (row 3)"
+      ]
+    },
+    {
+      "id": "configured-grace-period-is-honored",
+      "source_file": "atc/db/resource_config_factory.go",
+      "old": "\t\tWhere(sq.Expr(fmt.Sprintf(\"now() - last_referenced > '%d seconds'::interval\", int(gracePeriod.Seconds())))).",
+      "new": "\t\tWhere(sq.Expr(fmt.Sprintf(\"now() - last_referenced > '%d seconds'::interval\", int(gracePeriod.Seconds())*0))).",
+      "tests": [
+        "ResourceConfigFactory when a config is created when cleaning up with a grace period spares the config"
+      ],
+      "scenarios": [
+        "Production resource config factory behavior — <profile> (row 4)"
+      ]
+    },
+    {
+      "id": "base-config-reloads-its-base-type",
+      "source_file": "atc/db/resource_config_factory.go",
+      "old": "\t\trc.createdByBaseResourceType = &UsedBaseResourceType{brtID, brtName, unique}",
+      "new": "\t\trc.createdByBaseResourceType = &UsedBaseResourceType{brtID, brtName + \"-wrong\", unique}",
+      "tests": [
+        "ResourceConfigFactory FindResourceConfigByID when the resource config does exist when the resource config uses a base resource type should find the resource config using the resource's config id"
+      ],
+      "scenarios": [
+        "Production resource config factory behavior — <profile> (row 5)"
+      ]
+    },
+    {
+      "id": "custom-config-reloads-its-resource-cache",
+      "source_file": "atc/db/resource_config_factory.go",
+      "old": "\t\tusedByResourceCache, found, err := findResourceCacheByID(tx, cacheID, lockFactory, conn)",
+      "new": "\t\tusedByResourceCache, found, err := findResourceCacheByID(tx, cacheID+1, lockFactory, conn)",
+      "tests": [
+        "ResourceConfigFactory FindResourceConfigByID when the resource config does exist when the resource config uses a custom resource type should find the resource config using the resource's config id"
+      ],
+      "scenarios": [
+        "Production resource config factory behavior — <profile> (row 6)"
+      ]
+    },
+    {
+      "id": "missing-config-is-not-reported-found",
+      "source_file": "atc/db/resource_config_factory.go",
+      "old": "\t\tif err == sql.ErrNoRows {\n\t\t\treturn nil, false, nil\n\t\t}",
+      "new": "\t\tif err == sql.ErrNoRows {\n\t\t\treturn &resourceConfig{id: resourceConfigID, lockFactory: lockFactory, conn: conn}, true, nil\n\t\t}",
+      "tests": [
+        "ResourceConfigFactory FindResourceConfigByID when the resource config id does not exist should not find the resource config"
+      ],
+      "scenarios": [
+        "Production resource config factory behavior — <profile> (row 7)"
+      ]
+    }
+  ]
+}
