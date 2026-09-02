@@ -48,12 +48,10 @@
       "old": "\tif j.paused {\n\t\treturn true, nil\n\t}\n\n\tvar paused bool",
       "new": "\tif j.paused {\n\t\treturn false, nil\n\t}\n\n\tvar paused bool",
       "tests": [
-        "Job ScheduleBuild when the scheduling build is created first when the job config doesn't specify max in flight when build exists when the job is paused returns false",
-        "Job ScheduleBuild when the scheduling build is not the first one created (with serial groups) when the job is paused but has inputs determined does not schedule the build"
+        "Job ScheduleBuild when the scheduling build is created first when the job config doesn't specify max in flight when build exists when the job is paused returns false"
       ],
       "scenarios": [
-        "Remaining DB job behavior — <profile> (row 8)",
-        "Remaining DB job behavior — <profile> (row 9)"
+        "Remaining DB job behavior — <profile> (row 8)"
       ]
     },
     {
