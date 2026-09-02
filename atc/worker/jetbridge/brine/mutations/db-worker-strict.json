@@ -64,7 +64,7 @@
       "id": "check-containers-remain-global",
       "source_file": "atc/db/container_owner.go",
       "old": "\treturn map[string]any{\n\t\t\"resource_config_check_session_id\": rccsID,\n\t}, nil",
-      "new": "\treturn map[string]any{\n\t\t\"resource_config_check_session_id\": rccsID,\n\t\t\"team_id\": wbrtID,\n\t}, nil",
+      "new": "\treturn map[string]any{\n\t\t\"resource_config_check_session_id\": rccsID,\n\t\t\"team_id\": sq.Expr(\"(SELECT id FROM teams ORDER BY id LIMIT 1)\"),\n\t}, nil",
       "tests": ["Worker FindContainer/CreateContainer when the container has a meta type when the meta type is check returns a container with empty team id"],
       "scenarios": ["Worker persistence profile <profile> has its exact result (row 7)"],
       "failure_contains": "worker persistence result"
