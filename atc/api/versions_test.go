@@ -1047,17 +1047,6 @@ var _ = Describe("Versions API", func() {
 					})
 				})
 
-				It("returns 200 OK", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
-				})
-
-				It("returns content type application/json", func() {
-					expectedHeaderEntries := map[string]string{
-						"Content-Type": "application/json",
-					}
-					Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-				})
-
 				Context("when resource is public", func() {
 					BeforeEach(func() {
 						resourcePublic = true
@@ -1077,11 +1066,6 @@ var _ = Describe("Versions API", func() {
 							fakeAccess.IsAuthenticatedReturns(true)
 						})
 
-						It("returns the json without version metadata", func() {
-							Expect(decodeVersionsAPIResponse(response)).To(Equal(
-								versionsAPIWithoutMetadata(expectedVersions),
-							))
-						})
 					})
 				})
 			})
@@ -1091,11 +1075,6 @@ var _ = Describe("Versions API", func() {
 			BeforeEach(func() {
 				fakeAccess.IsAuthenticatedReturns(true)
 				fakeAccess.IsAuthorizedReturns(true)
-			})
-
-			It("finds the resource", func() {
-				Expect(response.StatusCode).To(Equal(http.StatusOK))
-				Expect(decodeVersionsAPIResponse(response)).To(BeEmpty())
 			})
 
 			Context("when finding the resource succeeds", func() {
@@ -1228,17 +1207,6 @@ var _ = Describe("Versions API", func() {
 						})
 					})
 
-					It("returns 200 OK", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusOK))
-					})
-
-					It("returns content type application/json", func() {
-						expectedHeaderEntries := map[string]string{
-							"Content-Type": "application/json",
-						}
-						Expect(response).Should(IncludeHeaderEntries(expectedHeaderEntries))
-					})
-
 					Context("when next/previous pages are available", func() {
 						var (
 							olderCursorID int
@@ -1346,9 +1314,6 @@ var _ = Describe("Versions API", func() {
 					resourceName = "missing-resource"
 				})
 
-				It("returns 404 not found", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-				})
 			})
 		})
 	})
@@ -1391,15 +1356,8 @@ var _ = Describe("Versions API", func() {
 					fakeAccess.IsAuthorizedReturns(true)
 				})
 
-				It("finds the configured resource", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
-				})
-
 				Context("when finding the resource succeeds", func() {
 					Context("when enabling the resource succeeds", func() {
-						It("returns 200", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusOK))
-						})
 					})
 
 					Context("when enabling the resource fails", func() {
@@ -1435,9 +1393,6 @@ var _ = Describe("Versions API", func() {
 						resourceName = "missing-resource"
 					})
 
-					It("returns not found", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-					})
 				})
 			})
 
@@ -1497,15 +1452,8 @@ var _ = Describe("Versions API", func() {
 					fakeAccess.IsAuthorizedReturns(true)
 				})
 
-				It("finds the configured resource", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
-				})
-
 				Context("when finding the resource succeeds", func() {
 					Context("when disabling the resource version succeeds", func() {
-						It("returns 200", func() {
-							Expect(response.StatusCode).To(Equal(http.StatusOK))
-						})
 					})
 
 					Context("when disabling the resource fails", func() {
@@ -1541,9 +1489,6 @@ var _ = Describe("Versions API", func() {
 						resourceName = "missing-resource"
 					})
 
-					It("returns not found", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-					})
 				})
 			})
 			Context("when not authorized", func() {
@@ -1605,10 +1550,6 @@ var _ = Describe("Versions API", func() {
 					fakeAccess.IsAuthorizedReturns(true)
 				})
 
-				It("finds the configured resource", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
-				})
-
 				Context("when finding the resource succeeds", func() {
 					Context("when pinning the resource succeeds", func() {
 					})
@@ -1665,9 +1606,6 @@ var _ = Describe("Versions API", func() {
 						resourceName = "missing-resource"
 					})
 
-					It("returns not found", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-					})
 				})
 			})
 
@@ -1730,16 +1668,6 @@ var _ = Describe("Versions API", func() {
 					fakeAccess.IsAdminReturns(true)
 				})
 
-				It("returns 200", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
-				})
-
-				It("returns Content-Type 'application/json'", func() {
-					Expect(response).To(IncludeHeaderEntries(map[string]string{
-						"Content-Type": "application/json",
-					}))
-				})
-
 				Context("when deleting the resource versions fails", func() {
 					BeforeEach(func() {
 						prepare = append(prepare, func(state *versionsAPIResourceClearState) {
@@ -1760,9 +1688,6 @@ var _ = Describe("Versions API", func() {
 						resourceName = "missing-resource"
 					})
 
-					It("returns 404", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-					})
 				})
 
 				Context("when finding the resource errors", func() {
@@ -1825,16 +1750,6 @@ var _ = Describe("Versions API", func() {
 					fakeAccess.IsAdminReturns(true)
 				})
 
-				It("returns 200", func() {
-					Expect(response.StatusCode).To(Equal(http.StatusOK))
-				})
-
-				It("returns Content-Type 'application/json'", func() {
-					Expect(response).To(IncludeHeaderEntries(map[string]string{
-						"Content-Type": "application/json",
-					}))
-				})
-
 				Context("when deleting the resource type versions fails", func() {
 					BeforeEach(func() {
 						prepare = append(prepare, func(state *versionsAPIResourceTypeClearState) {
@@ -1859,9 +1774,6 @@ var _ = Describe("Versions API", func() {
 						resourceTypeName = "missing-resource-type"
 					})
 
-					It("returns 404", func() {
-						Expect(response.StatusCode).To(Equal(http.StatusNotFound))
-					})
 				})
 
 				Context("when finding the resource type errors", func() {

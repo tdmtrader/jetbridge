@@ -1,0 +1,180 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/api-versions-remaining-strict.json",
+  "git_head": "83bed21152746a6adaef705fde50da278ac551ef",
+  "completed_at": "2026-09-02T17:19:21Z",
+  "source_tests": 21,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/api/resourceserver/versionserver/clear_resource_type_versions.go": "fe8f9e40841c1e1b1f0afc7ad619e70d7fec68bc64afa2cc55e2040b13b5b6a2",
+    "atc/api/resourceserver/versionserver/clear_resource_versions.go": "21afbcae649ec5ee5ea7bfcdce55dda3beed24d2fc13b38f7b131bb00ff0962f",
+    "atc/api/resourceserver/versionserver/disable_version.go": "32b5ef2f9b4e17dfd860ca95803f91e78db24f2f313fb430a09ac1800c6331c1",
+    "atc/api/resourceserver/versionserver/enable_version.go": "2742724f482375a00bc919dc6bab63cb1e25b60686cf19465485affc9aa3c0f5",
+    "atc/api/resourceserver/versionserver/list.go": "c9e47491e5d3ee938671ca9d6ac8307b92676bc0acd5694b18263361dc5b1006",
+    "atc/api/resourceserver/versionserver/pin_version.go": "dd180026acb5870d7e22a0371156ad131fdd825facef0820fc9061018d279e04",
+    "atc/api/versions_test.go": "c2125b5db2d6f187869c397ed659d395a552bd44dba1940077cbeed97b5d6963",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/api-versions-remaining-strict.feature": "32e446d0aa43a1d8b63beb7251a36fd0b468a3ba2e2c73312b876fc2d6f4e405",
+    "atc/worker/jetbridge/brine/mutations/api-versions-remaining-strict.json": "40ea36b75b6d5533b2372f61d13dd4508af74a7ece64bf6040800e64865d24e9",
+    "atc/worker/jetbridge/brine/steps/api_auth.go": "eba916c51c18a178748f5c0dd95f85cc7d094bc1fad778e327d88e52e2a971e0",
+    "atc/worker/jetbridge/brine/steps/api_resource_auth.go": "428e6b2cabd1f2833b88f6a9f05e36f41ba1207246afeeefe0a40bd9bd4dea64",
+    "atc/worker/jetbridge/brine/steps/api_versions_strict.go": "3b01b8fd52d61267b2e40b9f660df7bbe6bfce60314e7b08252b3db7727e88c2",
+    "atc/worker/jetbridge/brine/steps/registry.go": "8b36420f2dd67c9b82aed08eead8131e99df15fa4d96bb4057f0064559691b83",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8"
+  },
+  "mutation_cases": [
+    {
+      "id": "list-success-status",
+      "mutation_sha256": "60bb1fed87efbabc0ad3e2a8ac744da3cc09656f01a69bde9faf0eb8c7ca113b",
+      "failed_source_tests": [
+        "Versions API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authorized finds the resource",
+        "Versions API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authorized when finding the resource succeeds when getting the versions succeeds returns 200 OK",
+        "Versions API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when not authorized and the pipeline is public returns 200 OK"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining production versions API behavior — \u003cprofile\u003e (row 1)",
+        "Remaining production versions API behavior — \u003cprofile\u003e (row 2)",
+        "Remaining production versions API behavior — \u003cprofile\u003e (row 3)"
+      ]
+    },
+    {
+      "id": "list-json-content-type",
+      "mutation_sha256": "b00d03505902903757b3f492543a3123130cc4869f9fee4dce7984c7712cc9d0",
+      "failed_source_tests": [
+        "Versions API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authorized when finding the resource succeeds when getting the versions succeeds returns content type application/json",
+        "Versions API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when not authorized and the pipeline is public returns content type application/json"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining production versions API behavior — \u003cprofile\u003e (row 4)",
+        "Remaining production versions API behavior — \u003cprofile\u003e (row 5)"
+      ]
+    },
+    {
+      "id": "list-resource-not-found-status",
+      "mutation_sha256": "0ec5b94c1eaedae0893ee04070b6f48f9b478f67776921a7f70abea601b21146",
+      "failed_source_tests": [
+        "Versions API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authorized when the resource is not found returns 404 not found"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining production versions API behavior — \u003cprofile\u003e (row 6)"
+      ]
+    },
+    {
+      "id": "list-hides-private-metadata-from-authenticated-outsider",
+      "mutation_sha256": "5a7f3bea460d5a1135431b59f04d3c12aa5f92cc7a23209261fb1f96d70f2542",
+      "failed_source_tests": [
+        "Versions API GET /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when not authorized and the pipeline is public when resource is not public when the user is authenticated returns the json without version metadata"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining production versions API behavior — \u003cprofile\u003e (row 7)"
+      ]
+    },
+    {
+      "id": "enable-success-status",
+      "mutation_sha256": "1e6966597ffb2209f5458c736ea78bf5bc487c181f51e6ba695c7af392184d58",
+      "failed_source_tests": [
+        "Versions API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/enable when authenticated when authorized finds the configured resource",
+        "Versions API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/enable when authenticated when authorized when finding the resource succeeds when enabling the resource succeeds returns 200"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining production versions API behavior — \u003cprofile\u003e (row 8)",
+        "Remaining production versions API behavior — \u003cprofile\u003e (row 9)"
+      ]
+    },
+    {
+      "id": "enable-resource-not-found-status",
+      "mutation_sha256": "ee3acd6bb7301a79141877cc39bea5d51431b8279cade69ede4671307db718f3",
+      "failed_source_tests": [
+        "Versions API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/enable when authenticated when authorized when the resource is not found returns not found"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining production versions API behavior — \u003cprofile\u003e (row 10)"
+      ]
+    },
+    {
+      "id": "disable-success-status",
+      "mutation_sha256": "b7735256aebba5608dd866fa010756c3aaafce947f1a74340a7f5f6960062a72",
+      "failed_source_tests": [
+        "Versions API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/disable when authenticated  when authorized finds the configured resource",
+        "Versions API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/disable when authenticated  when authorized when finding the resource succeeds when disabling the resource version succeeds returns 200"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining production versions API behavior — \u003cprofile\u003e (row 11)",
+        "Remaining production versions API behavior — \u003cprofile\u003e (row 12)"
+      ]
+    },
+    {
+      "id": "disable-resource-not-found-status",
+      "mutation_sha256": "1ac9c52acdf19bb68306cd358a66d6dbf0a6fab7327845f614b5703c668cdbe5",
+      "failed_source_tests": [
+        "Versions API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/disable when authenticated  when authorized when the resource is not found returns not found"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining production versions API behavior — \u003cprofile\u003e (row 13)"
+      ]
+    },
+    {
+      "id": "pin-success-status",
+      "mutation_sha256": "fefc5ac50feb6eba18f6f1d3ec3f4db320e179c59ccb78953847162605fd1833",
+      "failed_source_tests": [
+        "Versions API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/pin when authenticated when authorized finds the configured resource"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining production versions API behavior — \u003cprofile\u003e (row 14)"
+      ]
+    },
+    {
+      "id": "pin-resource-not-found-status",
+      "mutation_sha256": "20776e89d4fe932348587feced5df0eb391c6d592c8566ae85322b14354685fa",
+      "failed_source_tests": [
+        "Versions API PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions/:resource_version_id/pin when authenticated when authorized when the resource is not found returns not found"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining production versions API behavior — \u003cprofile\u003e (row 15)"
+      ]
+    },
+    {
+      "id": "clear-success-status",
+      "mutation_sha256": "67a0be171c27751f596a8e7ebd2e02f39f811ebd087a6850b1f632bfb8aadd76",
+      "failed_source_tests": [
+        "Versions API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resource-types/:resource_type_name/versions when authenticated when the user is an admin returns 200",
+        "Versions API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authenticated when the user is an admin returns 200"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining production versions API behavior — \u003cprofile\u003e (row 16)",
+        "Remaining production versions API behavior — \u003cprofile\u003e (row 19)"
+      ]
+    },
+    {
+      "id": "clear-json-content-type",
+      "mutation_sha256": "85432a43f2603c7f2e7ec74710b865a92a19135fd49aeedb5d0c54b6d7e6358c",
+      "failed_source_tests": [
+        "Versions API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resource-types/:resource_type_name/versions when authenticated when the user is an admin returns Content-Type 'application/json'",
+        "Versions API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authenticated when the user is an admin returns Content-Type 'application/json'"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining production versions API behavior — \u003cprofile\u003e (row 17)",
+        "Remaining production versions API behavior — \u003cprofile\u003e (row 20)"
+      ]
+    },
+    {
+      "id": "clear-resource-not-found-status",
+      "mutation_sha256": "cfa528bf39f4f685b0191a0d7f21ff35eab8ea30f7a47c4f3d7cad21c4ee9d7f",
+      "failed_source_tests": [
+        "Versions API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/versions when authenticated when the user is an admin when the resource is not found returns 404"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining production versions API behavior — \u003cprofile\u003e (row 18)"
+      ]
+    },
+    {
+      "id": "clear-resource-type-not-found-status",
+      "mutation_sha256": "d7c5fd7e838e50a1e8326a0bce23b6473f10c172eb2987a69e8abd2f53505592",
+      "failed_source_tests": [
+        "Versions API DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name/resource-types/:resource_type_name/versions when authenticated when the user is an admin when the resource type is not found returns 404"
+      ],
+      "failed_brine_scenarios": [
+        "Remaining production versions API behavior — \u003cprofile\u003e (row 21)"
+      ]
+    }
+  ]
+}
