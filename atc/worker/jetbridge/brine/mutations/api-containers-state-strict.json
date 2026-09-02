@@ -1,0 +1,109 @@
+{
+  "name": "api-containers-state-strict",
+  "test_package": "./atc/api",
+  "source_test_file": "atc/api/containers_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/api-containers-state-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/api_containers_state_strict.go",
+    "atc/worker/jetbridge/brine/steps/api_auth.go",
+    "atc/worker/jetbridge/brine/steps/api_resource_auth.go",
+    "atc/worker/jetbridge/brine/steps/registry.go",
+    "atc/worker/jetbridge/brine/steps/resources.go"
+  ],
+  "cases": [
+    {
+      "id": "list-success-uses-ok-status",
+      "source_file": "atc/api/containerserver/list.go",
+      "old": "\t\terr = json.NewEncoder(w).Encode(presentedContainers)",
+      "new": "\t\tw.WriteHeader(http.StatusCreated)\n\t\terr = json.NewEncoder(w).Encode(presentedContainers)",
+      "tests": [
+        "Containers API GET /api/v1/teams/a-team/containers when authenticated with no params when no errors are returned returns 200",
+        "Containers API GET /api/v1/teams/a-team/containers when authenticated with no params when no containers are found returns 200"
+      ],
+      "scenarios": [
+        "Production container query API behavior — <profile> (row 1)",
+        "Production container query API behavior — <profile> (row 4)"
+      ]
+    },
+    {
+      "id": "list-uses-json-content-type",
+      "source_file": "atc/api/containerserver/list.go",
+      "old": "\t\tw.Header().Set(\"Content-Type\", \"application/json\")",
+      "new": "\t\tw.Header().Set(\"Content-Type\", \"text/plain\")",
+      "tests": [
+        "Containers API GET /api/v1/teams/a-team/containers when authenticated with no params when no errors are returned returns Content-Type application/json"
+      ],
+      "scenarios": ["Production container query API behavior — <profile> (row 2)"]
+    },
+    {
+      "id": "list-presents-persisted-container-fields",
+      "source_file": "atc/api/containerserver/list.go",
+      "old": "\t\t\tpresentedContainers[i] = present.Container(container, checkContainersExpiresAt[container.ID()])",
+      "new": "\t\t\tpresentedContainers[i] = present.Container(container, checkContainersExpiresAt[container.ID()])\n\t\t\tpresentedContainers[i].User = \"\"",
+      "tests": [
+        "Containers API GET /api/v1/teams/a-team/containers when authenticated with no params when no errors are returned returns all containers"
+      ],
+      "scenarios": ["Production container query API behavior — <profile> (row 3)"]
+    },
+    {
+      "id": "list-encodes-empty-array-not-null",
+      "source_file": "atc/api/containerserver/list.go",
+      "old": "\t\tpresentedContainers := make([]atc.Container, len(containers))\n\t\tfor i := 0; i < len(containers); i++ {",
+      "new": "\t\tpresentedContainers := make([]atc.Container, len(containers))\n\t\tif len(containers) == 0 {\n\t\t\tpresentedContainers = nil\n\t\t}\n\t\tfor i := 0; i < len(containers); i++ {",
+      "tests": [
+        "Containers API GET /api/v1/teams/a-team/containers when authenticated with no params when no containers are found returns an empty array"
+      ],
+      "scenarios": ["Production container query API behavior — <profile> (row 5)"]
+    },
+    {
+      "id": "get-missing-container-uses-not-found",
+      "source_file": "atc/api/containerserver/get.go",
+      "old": "\t\tif !found {\n\t\t\thLog.Debug(\"container-not-found\")\n\t\t\tw.WriteHeader(http.StatusNotFound)\n\t\t\treturn\n\t\t}",
+      "new": "\t\tif !found {\n\t\t\thLog.Debug(\"container-not-found\")\n\t\t\tw.WriteHeader(http.StatusGone)\n\t\t\treturn\n\t\t}",
+      "tests": [
+        "Containers API GET /api/v1/containers/:id when authenticated when the container is not found returns 404 Not Found"
+      ],
+      "scenarios": ["Production container query API behavior — <profile> (row 6)"]
+    },
+    {
+      "id": "get-found-container-uses-ok-status",
+      "source_file": "atc/api/containerserver/get.go",
+      "old": "\t\tw.Header().Set(\"Content-Type\", \"application/json\")\n\t\terr = json.NewEncoder(w).Encode(presentedContainer)",
+      "new": "\t\tw.Header().Set(\"Content-Type\", \"application/json\")\n\t\tw.WriteHeader(http.StatusCreated)\n\t\terr = json.NewEncoder(w).Encode(presentedContainer)",
+      "tests": [
+        "Containers API GET /api/v1/containers/:id when authenticated when the container is found when the container is within the team returns 200 OK"
+      ],
+      "scenarios": ["Production container query API behavior — <profile> (row 7)"]
+    },
+    {
+      "id": "get-uses-json-content-type",
+      "source_file": "atc/api/containerserver/get.go",
+      "old": "\t\tw.Header().Set(\"Content-Type\", \"application/json\")",
+      "new": "\t\tw.Header().Set(\"Content-Type\", \"text/plain\")",
+      "tests": [
+        "Containers API GET /api/v1/containers/:id when authenticated when the container is found when the container is within the team returns Content-Type application/json"
+      ],
+      "scenarios": ["Production container query API behavior — <profile> (row 8)"]
+    },
+    {
+      "id": "get-presents-persisted-container-fields",
+      "source_file": "atc/api/containerserver/get.go",
+      "old": "\t\tpresentedContainer := present.Container(container, time.Time{})",
+      "new": "\t\tpresentedContainer := present.Container(container, time.Time{})\n\t\tpresentedContainer.User = \"\"",
+      "tests": [
+        "Containers API GET /api/v1/containers/:id when authenticated when the container is found when the container is within the team returns the container"
+      ],
+      "scenarios": ["Production container query API behavior — <profile> (row 9)"]
+    },
+    {
+      "id": "get-outside-team-container-uses-not-found",
+      "source_file": "atc/api/containerserver/get.go",
+      "old": "\t\tif !ok {\n\t\t\thLog.Error(\"container-not-found-within-team\", err)\n\t\t\tw.WriteHeader(http.StatusNotFound)\n\t\t\treturn\n\t\t}",
+      "new": "\t\tif !ok {\n\t\t\thLog.Error(\"container-not-found-within-team\", err)\n\t\t\tw.WriteHeader(http.StatusForbidden)\n\t\t\treturn\n\t\t}",
+      "tests": [
+        "Containers API GET /api/v1/containers/:id when authenticated when the container is found when the container is not within the team returns 404 Not Found"
+      ],
+      "scenarios": ["Production container query API behavior — <profile> (row 10)"]
+    }
+  ]
+}
