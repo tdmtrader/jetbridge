@@ -1,0 +1,87 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-worker-strict.json",
+  "git_head": "74588430cfc526ddd321c5379c00879867695137",
+  "completed_at": "2026-09-02T20:04:04Z",
+  "source_tests": 9,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/container_owner.go": "868ff58a206280198407e5360d2833c7f069767a78f3056f9575ed267fbe3ae3",
+    "atc/db/worker.go": "b4389b7d8d4147a62770e73197ee65f09e6b95f87cf5602e17d9fb7286837845",
+    "atc/db/worker_test.go": "f81c64c5f59d0c961231e98c56791cc1db047d30fccbbe110d35e1a51010df72",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/db-worker-strict.feature": "82d772c5379739c0879fa34e2b5493c1ec18dbe52c4547e4ff9b4bdb2e7f12e7",
+    "atc/worker/jetbridge/brine/mutations/db-worker-strict.json": "2446b1e33cdfe53a6dc1c71cd6c8a8d5cb677daa02dc1669feeb5c48d635be2a",
+    "atc/worker/jetbridge/brine/steps/assert.go": "eac0b7b4dc864f54ffb5aab471451e3b62da518e5a8b10ba26e742d83298861f",
+    "atc/worker/jetbridge/brine/steps/db_worker_strict.go": "e3c0e5a3274387fb074ae1368ae31d3403f75c83ecd27519e677aef7e63ea758",
+    "atc/worker/jetbridge/brine/steps/registry.go": "33aa268460fa532980c25249359851f5d328eeb01c24237950fac331d276e1c5",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8"
+  },
+  "mutation_cases": [
+    {
+      "id": "worker-delete-removes-named-row",
+      "mutation_sha256": "d5131bd1206adcb0d9db73bebcc0739bbf25bbe0bc65e551b1b4b39808fe9990",
+      "failed_source_tests": [
+        "Worker Delete deletes the record for the worker"
+      ],
+      "failed_brine_scenarios": [
+        "Worker persistence profile \u003cprofile\u003e has its exact result (row 1)"
+      ]
+    },
+    {
+      "id": "worker-find-returns-matching-container-state",
+      "mutation_sha256": "9fc6e477c5bc3e802cb48278c7c9cd71e6dc515ebcbfc7dfb59a1cac8fec509c",
+      "failed_source_tests": [
+        "Worker Find/CreateContainer, fixed handle uses the specified handle for the container",
+        "Worker FindContainer/CreateContainer when there is a creating container returns it",
+        "Worker FindContainer/CreateContainer when there is a creating container when there is a created container returns it"
+      ],
+      "failed_brine_scenarios": [
+        "Worker persistence profile \u003cprofile\u003e has its exact result (row 2)",
+        "Worker persistence profile \u003cprofile\u003e has its exact result (row 4)",
+        "Worker persistence profile \u003cprofile\u003e has its exact result (row 9)"
+      ]
+    },
+    {
+      "id": "worker-find-retains-worker-scope",
+      "mutation_sha256": "0544dacc887e437d2fdaa973064d9b7c45be372b60efb7fd2bd2b8147fcc3787",
+      "failed_source_tests": [
+        "Worker FindContainer/CreateContainer when there is a creating container when finding on another worker does not find it",
+        "Worker FindContainer/CreateContainer when there is a creating container when there is a created container when finding on another worker does not find it"
+      ],
+      "failed_brine_scenarios": [
+        "Worker persistence profile \u003cprofile\u003e has its exact result (row 3)",
+        "Worker persistence profile \u003cprofile\u003e has its exact result (row 5)"
+      ]
+    },
+    {
+      "id": "check-session-create-reuses-natural-key",
+      "mutation_sha256": "74c5a9d3217aa5b2dd48114c24e4ac1b1e33d117889839a2a1b7f70d0b534860",
+      "failed_source_tests": [
+        "Worker FindContainer/CreateContainer when there is a creating container when the creating container is failed and gced and we create a new container does not duplicate the resource config check session"
+      ],
+      "failed_brine_scenarios": [
+        "Worker persistence profile \u003cprofile\u003e has its exact result (row 6)"
+      ]
+    },
+    {
+      "id": "check-containers-remain-global",
+      "mutation_sha256": "fc3cc8e1b5df38f06ae12331aa60e55da63ca2007a3e95dd2fa069626b57c83b",
+      "failed_source_tests": [
+        "Worker FindContainer/CreateContainer when the container has a meta type when the meta type is check returns a container with empty team id"
+      ],
+      "failed_brine_scenarios": [
+        "Worker persistence profile \u003cprofile\u003e has its exact result (row 7)"
+      ]
+    },
+    {
+      "id": "build-containers-retain-owner-team",
+      "mutation_sha256": "422ccc40ea0069eefbd495fd18d57ab86f09a8e5a0bad5e01ba0735240d7467c",
+      "failed_source_tests": [
+        "Worker FindContainer/CreateContainer when the container has a meta type when the meta type is not check returns a container with a team id"
+      ],
+      "failed_brine_scenarios": [
+        "Worker persistence profile \u003cprofile\u003e has its exact result (row 8)"
+      ]
+    }
+  ]
+}
