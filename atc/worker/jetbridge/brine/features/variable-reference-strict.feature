@@ -25,4 +25,4 @@ Feature: Variable references parse and render production syntax
       | parse-empty-quoted-field    | parse-empty-quoted-field-preserved                                      |
       | parse-empty-path            | error:invalid var 'vault:': empty field                                |
       | parse-trim-unquoted         | source=;path=hello;fields=world                                         |
-      | parse-preserve-quoted-space | source=;path= hello ;fields=world                                      |
+      | parse-preserve-quoted-space | parse-preserve-quoted-space-preserved                                  |
