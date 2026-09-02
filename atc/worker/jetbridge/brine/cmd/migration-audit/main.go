@@ -101,19 +101,19 @@ func main() {
 		Philosophy:  "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
 	}
 	seenTests := map[string]bool{}
-	allowedScenarios := map[string]bool{}
+	seenScenarios := map[string]bool{}
 	for _, mutation := range m.Cases {
 		for _, scenario := range mutation.Scenarios {
-			if allowedScenarios[scenario] {
+			if seenScenarios[scenario] {
 				fatalf("scenario %q is claimed by more than one mutation", scenario)
 			}
-			allowedScenarios[scenario] = true
+			seenScenarios[scenario] = true
 		}
 	}
 
 	for index, mutation := range m.Cases {
 		fmt.Printf("[%d/%d] %s\n", index+1, len(m.Cases), mutation.ID)
-		caseResult, err := runCase(repo, brineDir, brineBinary, ginkgoBinary, m, mutation, allowedScenarios)
+		caseResult, err := runCase(repo, brineDir, brineBinary, ginkgoBinary, m, mutation)
 		if err != nil {
 			fatalf("%s: %v", mutation.ID, err)
 		}
@@ -172,7 +172,7 @@ func checkPhilosophy(repo string, files []string) {
 	}
 }
 
-func runCase(repo, brineDir, brineBinary, ginkgoBinary string, m manifest, mutation mutationCase, allowedScenarios map[string]bool) (caseResult, error) {
+func runCase(repo, brineDir, brineBinary, ginkgoBinary string, m manifest, mutation mutationCase) (caseResult, error) {
 	temp, err := os.MkdirTemp("", "brine-mutation-"+safeName(mutation.ID)+"-")
 	if err != nil {
 		return caseResult{}, err
@@ -261,7 +261,7 @@ func runCase(repo, brineDir, brineBinary, ginkgoBinary string, m manifest, mutat
 	if !runEnded {
 		return caseResult{}, errors.New("Brine did not emit a terminal run_end event")
 	}
-	if err := expectedAndKnown(failedScenarios, mutation.Scenarios, allowedScenarios); err != nil {
+	if err := equalSets(failedScenarios, mutation.Scenarios); err != nil {
 		return caseResult{}, fmt.Errorf("Brine failure attribution: %w\n%s", err, tail(brineOutput, 60))
 	}
 	if mutation.FailureContain != "" {
@@ -344,22 +344,6 @@ func equalSets(actual, expected []string) error {
 	for i := range a {
 		if a[i] != e[i] {
 			return fmt.Errorf("got failures %q, want %q", a, e)
-		}
-	}
-	return nil
-}
-
-func expectedAndKnown(actual, expected []string, allowed map[string]bool) error {
-	actualSet := map[string]bool{}
-	for _, name := range actual {
-		actualSet[name] = true
-		if !allowed[name] {
-			return fmt.Errorf("unclaimed scenario %q also failed; actual failures %q", name, actual)
-		}
-	}
-	for _, name := range expected {
-		if !actualSet[name] {
-			return fmt.Errorf("expected scenario %q did not fail; actual failures %q", name, actual)
 		}
 	}
 	return nil
