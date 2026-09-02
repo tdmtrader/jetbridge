@@ -144,6 +144,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, DBJobRerunStrictDefinitions()...)
 	defs = append(defs, DBJobTaskCacheStrictDefinitions()...)
 	defs = append(defs, DBJobBuildSelectionStrictDefinitions()...)
+	defs = append(defs, DBVolumeCoreStrictDefinitions()...)
 	return defs
 }
 

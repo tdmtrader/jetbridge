@@ -1,0 +1,154 @@
+{
+  "name": "db-volume-core-strict",
+  "test_package": "./atc/db",
+  "source_test_file": "atc/db/volume_test.go",
+  "feature": "atc/worker/jetbridge/brine/features/db-volume-core-strict.feature",
+  "step_files": [
+    "atc/worker/jetbridge/brine/steps/db_volume_core_strict.go",
+    "atc/worker/jetbridge/brine/steps/db_job_input_output_strict.go",
+    "atc/worker/jetbridge/brine/steps/registry.go",
+    "atc/worker/jetbridge/brine/steps/assert.go",
+    "atc/worker/jetbridge/brine/steps/resources.go",
+    "atc/worker/jetbridge/brine/steps/task_command.go",
+    "atc/worker/jetbridge/brine/steps/envtest.go",
+    "atc/postgresrunner/postgresrunner.go",
+    "atc/postgresrunner/ginkgo.go",
+    "atc/postgresrunner/join_limit_conn.go"
+  ],
+  "cases": [
+    {
+      "id": "failed-transition-reports-failed-state",
+      "source_file": "atc/db/volume.go",
+      "old": "\t\t\treturn nil, ErrVolumeMarkStateFailed{VolumeStateFailed}",
+      "new": "\t\t\treturn nil, ErrVolumeMarkStateFailed{VolumeStateCreating}",
+      "tests": [
+        "Volume creatingVolume.Failed the database query fails when the volume is not in creating or failed state returns the correct error",
+        "Volume creatingVolume.Failed the database query fails there is no such id in the table returns the correct error"
+      ],
+      "scenarios": [
+        "Production volume behavior — <profile> (row 1)",
+        "Production volume behavior — <profile> (row 2)"
+      ]
+    },
+    {
+      "id": "created-transition-reports-volume-handle",
+      "source_file": "atc/db/volume.go",
+      "old": "\t\t\treturn nil, ErrVolumeMarkCreatedFailed{Handle: volume.handle}",
+      "new": "\t\t\treturn nil, ErrVolumeMarkCreatedFailed{Handle: \"\"}",
+      "tests": [
+        "Volume creatingVolume.Created the database query fails when the volume is not in creating or created state returns the correct error",
+        "Volume creatingVolume.Created the database query fails there is no such id in the table returns the correct error"
+      ],
+      "scenarios": [
+        "Production volume behavior — <profile> (row 5)",
+        "Production volume behavior — <profile> (row 6)"
+      ]
+    },
+    {
+      "id": "created-and-failed-transitions-are-idempotent",
+      "source_file": "atc/db/volume.go",
+      "old": "\t\t\tsq.Or{\n\t\t\t\tsq.Eq{\"state\": string(from)},\n\t\t\t\tsq.Eq{\"state\": string(to)},\n\t\t\t},",
+      "new": "\t\t\tsq.Or{\n\t\t\t\tsq.Eq{\"state\": string(from)},\n\t\t\t\tsq.Eq{\"state\": string(from)},\n\t\t\t},",
+      "tests": [
+        "Volume creatingVolume.Failed the database query succeeds when the volume is already in the failed state returns the failed volume",
+        "Volume creatingVolume.Failed the database query succeeds when the volume is already in the failed state does not fail to transition",
+        "Volume creatingVolume.Created the database query succeeds when volume is already in provided state returns a createdVolume and no error"
+      ],
+      "scenarios": [
+        "Production volume behavior — <profile> (row 3)",
+        "Production volume behavior — <profile> (row 4)",
+        "Production volume behavior — <profile> (row 8)"
+      ]
+    },
+    {
+      "id": "initialize-artifact-persists-name",
+      "source_file": "atc/db/volume.go",
+      "old": "\t\tName:    name,\n\t\tBuildID: buildID,",
+      "new": "\t\tName:    \"\",\n\t\tBuildID: buildID,",
+      "tests": [
+        "Volume createdVolume.InitializeArtifact initializes the worker artifact"
+      ],
+      "scenarios": [
+        "Production volume behavior — <profile> (row 9)"
+      ]
+    },
+    {
+      "id": "initialize-artifact-associates-volume",
+      "source_file": "atc/db/volume.go",
+      "old": "\t\tSet(\"worker_artifact_id\", workerArtifact.ID()).",
+      "new": "\t\tSet(\"worker_artifact_id\", nil).",
+      "tests": [
+        "Volume createdVolume.InitializeArtifact associates worker artifact with the volume"
+      ],
+      "scenarios": [
+        "Production volume behavior — <profile> (row 10)"
+      ]
+    },
+    {
+      "id": "initialize-task-cache-releases-previous-volume",
+      "source_file": "atc/db/volume.go",
+      "old": "\t\tWhere(sq.Eq{\"worker_task_cache_id\": usedWorkerTaskCache.ID}).",
+      "new": "\t\tWhere(sq.Eq{\"id\": volume.id}).",
+      "tests": [
+        "Volume createdVolume.InitializeTaskCache when there is a volume that belongs to worker task cache sets current volume as worker task cache volume"
+      ],
+      "scenarios": [
+        "Production volume behavior — <profile> (row 11)"
+      ]
+    },
+    {
+      "id": "container-volume-persists-mount-path",
+      "source_file": "atc/db/volume_repository.go",
+      "old": "\t\t\t\"container_id\": container.ID(),\n\t\t\t\"path\":         mountPath,",
+      "new": "\t\t\t\"container_id\": container.ID(),\n\t\t\t\"path\":         \"\",",
+      "tests": [
+        "Volume creatingVolume.Created the database query succeeds updates the record to be `created`",
+        "Volume Container volumes returns volume type, container handle, mount path"
+      ],
+      "scenarios": [
+        "Production volume behavior — <profile> (row 7)",
+        "Production volume behavior — <profile> (row 12)"
+      ]
+    },
+    {
+      "id": "child-volume-retains-parent-link",
+      "source_file": "atc/db/volume.go",
+      "old": "\tcolumnValues := []any{\n\t\tvolume.workerName,\n\t\tvolume.id,\n\t\tVolumeStateCreated,",
+      "new": "\tcolumnValues := []any{\n\t\tvolume.workerName,\n\t\tnil,\n\t\tVolumeStateCreated,",
+      "tests": [
+        "Volume Volumes created from a parent returns parent handle",
+        "Volume Volumes created from a parent prevents the parent from being destroyed",
+        "Volume createdVolume.CreateChildForContainer creates volume for parent volume"
+      ],
+      "scenarios": [
+        "Production volume behavior — <profile> (row 13)",
+        "Production volume behavior — <profile> (row 14)",
+        "Production volume behavior — <profile> (row 17)"
+      ]
+    },
+    {
+      "id": "base-resource-type-volume-returns-version",
+      "source_file": "atc/db/volume.go",
+      "old": "\treturn &UsedWorkerBaseResourceType{\n\t\tID:         workerBaseResourceTypeID,\n\t\tName:       name,\n\t\tVersion:    version,\n\t\tWorkerName: volume.workerName,\n\t}, nil",
+      "new": "\treturn &UsedWorkerBaseResourceType{\n\t\tID:         workerBaseResourceTypeID,\n\t\tName:       name,\n\t\tVersion:    \"\",\n\t\tWorkerName: volume.workerName,\n\t}, nil",
+      "tests": [
+        "Volume Resource type volumes returns volume type, base resource type name, base resource type version"
+      ],
+      "scenarios": [
+        "Production volume behavior — <profile> (row 15)"
+      ]
+    },
+    {
+      "id": "task-cache-volume-returns-step-name",
+      "source_file": "atc/db/volume.go",
+      "old": "\treturn pipelineID, pipelineRef, jobName, stepName, nil",
+      "new": "\treturn pipelineID, pipelineRef, jobName, \"\", nil",
+      "tests": [
+        "Volume Task cache volumes returns volume type and task identifier"
+      ],
+      "scenarios": [
+        "Production volume behavior — <profile> (row 16)"
+      ]
+    }
+  ]
+}
