@@ -27,8 +27,8 @@
     {
       "id": "short-release-reports-component-error",
       "source_file": "fly/version/version.go",
-      "old": "\t\terr = fmt.Errorf(\"Wrong number of components\")",
-      "new": "\t\terr = nil",
+      "old": "\t} else {",
+      "new": "\t} else if len(version.Release.Components) == 3 {",
       "tests": [
         "Version returns an error for non-parsable versions"
       ],
