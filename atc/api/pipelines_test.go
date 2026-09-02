@@ -1520,6 +1520,13 @@ var _ = Describe("Pipelines API", func() {
 						requestTeam = "main"
 					})
 
+					It("returns 204 and removes the named pipeline from PostgreSQL", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusNoContent))
+						pipeline, found, err := deleteDB.Main.Pipeline(atc.PipelineRef{Name: "a-pipeline-name"})
+						Expect(err).NotTo(HaveOccurred())
+						Expect(found).To(BeFalse())
+						Expect(pipeline).To(BeNil())
+					})
 				})
 
 				Context("when an error occurs destroying the pipeline", func() {
@@ -1560,9 +1567,10 @@ var _ = Describe("Pipelines API", func() {
 
 	Describe("PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/pause", func() {
 		var (
-			response    *http.Response
-			realdb      *realDB
-			requestTeam = "a-team"
+			response          *http.Response
+			realdb            *realDB
+			persistedPipeline db.Pipeline
+			requestTeam       = "a-team"
 		)
 
 		BeforeEach(func() {
@@ -1592,7 +1600,7 @@ var _ = Describe("Pipelines API", func() {
 				Context("when pausing the pipeline succeeds", func() {
 					BeforeEach(func() {
 						realdb = useRealDB()
-						realdb.SavePipeline(realdb.Main, "a-pipeline", atc.Config{
+						persistedPipeline = realdb.SavePipeline(realdb.Main, "a-pipeline", atc.Config{
 							Jobs: atc.JobConfigs{{Name: "job"}},
 						})
 						server = realdb.Serve()
@@ -1604,6 +1612,14 @@ var _ = Describe("Pipelines API", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusOK))
 					})
 
+					It("persists pipeline pause through PostgreSQL", func() {
+						found, err := persistedPipeline.Reload()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(found).To(BeTrue())
+						Expect(persistedPipeline.Paused()).To(BeTrue())
+						Expect(persistedPipeline.PausedBy()).To(Equal("api-user"))
+						Expect(persistedPipeline.PausedAt()).NotTo(BeZero())
+					})
 				})
 
 				Context("when pausing the pipeline fails", func() {
@@ -1644,10 +1660,12 @@ var _ = Describe("Pipelines API", func() {
 
 	Describe("PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/archive", func() {
 		var (
-			response      *http.Response
-			archiveDB     *realDB
-			archiveConfig atc.Config
-			requestTeam   = "a-team"
+			response         *http.Response
+			archiveDB        *realDB
+			archivedPipeline db.Pipeline
+			archiveConfig    atc.Config
+			requestedAt      time.Time
+			requestTeam      = "a-team"
 		)
 
 		BeforeEach(func() {
@@ -1674,11 +1692,26 @@ var _ = Describe("Pipelines API", func() {
 					}},
 					Display: &atc.DisplayConfig{BackgroundImage: "archive.jpg"},
 				}
-				archiveDB.SavePipeline(archiveDB.Main, "a-pipeline", archiveConfig)
+				archivedPipeline = archiveDB.SavePipeline(archiveDB.Main, "a-pipeline", archiveConfig)
 				server = archiveDB.Serve()
 				requestTeam = "main"
+				requestedAt = time.Now()
 			})
 
+			It("returns 200 and archives the pipeline in PostgreSQL", func() {
+				Expect(response.StatusCode).To(Equal(http.StatusOK))
+				found, err := archivedPipeline.Reload()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+				Expect(archivedPipeline.Archived()).To(BeTrue())
+				Expect(archivedPipeline.Paused()).To(BeTrue())
+				Expect(archivedPipeline.PausedBy()).To(Equal("automatic-pipeline-archiver"))
+				Expect(archivedPipeline.PausedAt()).To(BeTemporally(">=", requestedAt))
+				Expect(archivedPipeline.LastUpdated()).To(BeTemporally(">=", requestedAt))
+				Expect(archivedPipeline.Groups()).To(Equal(archiveConfig.Groups))
+				Expect(archivedPipeline.Display()).To(Equal(archiveConfig.Display))
+				expectPersistedPipelineShape(archivedPipeline, archiveConfig)
+			})
 		})
 
 		Context("when archiving the pipeline fails due to the DB", func() {
@@ -1749,6 +1782,14 @@ var _ = Describe("Pipelines API", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusOK))
 					})
 
+					It("persists the unpaused state", func() {
+						found, err := unpausedPipeline.Reload()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(found).To(BeTrue())
+						Expect(unpausedPipeline.Paused()).To(BeFalse())
+						Expect(unpausedPipeline.PausedBy()).To(BeEmpty())
+						Expect(unpausedPipeline.PausedAt()).To(BeZero())
+					})
 				})
 
 				Context("when unpausing the pipeline fails for an unknown reason", func() {
@@ -1789,9 +1830,10 @@ var _ = Describe("Pipelines API", func() {
 
 	Describe("PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/expose", func() {
 		var (
-			response    *http.Response
-			exposeDB    *realDB
-			requestTeam = "a-team"
+			response        *http.Response
+			exposeDB        *realDB
+			exposedPipeline db.Pipeline
+			requestTeam     = "a-team"
 		)
 
 		BeforeEach(func() {
@@ -1821,7 +1863,7 @@ var _ = Describe("Pipelines API", func() {
 				Context("when exposing the pipeline succeeds", func() {
 					BeforeEach(func() {
 						exposeDB = useRealDB()
-						exposeDB.SavePipeline(exposeDB.Main, "a-pipeline", atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}})
+						exposedPipeline = exposeDB.SavePipeline(exposeDB.Main, "a-pipeline", atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}})
 						server = exposeDB.Serve()
 						requestTeam = "main"
 					})
@@ -1830,6 +1872,12 @@ var _ = Describe("Pipelines API", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusOK))
 					})
 
+					It("persists public visibility", func() {
+						found, err := exposedPipeline.Reload()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(found).To(BeTrue())
+						Expect(exposedPipeline.Public()).To(BeTrue())
+					})
 				})
 
 				Context("when exposing the pipeline fails", func() {
@@ -1912,6 +1960,12 @@ var _ = Describe("Pipelines API", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusOK))
 					})
 
+					It("persists private visibility", func() {
+						found, err := hiddenPipeline.Reload()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(found).To(BeTrue())
+						Expect(hiddenPipeline.Public()).To(BeFalse())
+					})
 				})
 
 				Context("when hiding the pipeline fails", func() {
@@ -2014,6 +2068,24 @@ var _ = Describe("Pipelines API", func() {
 							initialNames[i] = pipeline.Name()
 						}
 						server = orderingDB.Serve()
+					})
+
+					It("persists the requested order from a deliberately different initial order", func() {
+						Expect(initialNames).To(Equal([]string{
+							"just-kidding",
+							"a-pipeline",
+							"one-final-pipeline",
+							"yet-another-pipeline",
+							"another-pipeline",
+						}))
+						pipelines, err := orderingTeam.Pipelines()
+						Expect(err).NotTo(HaveOccurred())
+						actualNames := make([]string, len(pipelines))
+						for i, pipeline := range pipelines {
+							actualNames[i] = pipeline.Name()
+						}
+						Expect(actualNames).To(Equal(pipelineNames))
+						Expect(actualNames).NotTo(Equal(initialNames))
 					})
 
 					It("returns 200", func() {
@@ -2132,6 +2204,14 @@ var _ = Describe("Pipelines API", func() {
 							{"branch": "test"},
 						}))
 						server = withinDB.Serve()
+					})
+
+					It("persists the requested instance order from a deliberately different initial order", func() {
+						pipelines, err := withinTeam.Pipelines()
+						Expect(err).NotTo(HaveOccurred())
+						actualInstanceVars := normalizedInstanceVars(pipelines, "a-pipeline")
+						Expect(actualInstanceVars).To(Equal(instanceVars))
+						Expect(actualInstanceVars).NotTo(Equal(initialInstanceVars))
 					})
 
 					It("returns 200", func() {
