@@ -1,0 +1,39 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/multi-variables-strict.json",
+  "git_head": "374b1b740ca5271111a71e5912dd2b6d1dc7ab1a",
+  "completed_at": "2026-09-02T18:39:52Z",
+  "source_tests": 3,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/multi-variables-strict.feature": "2de5daca63ddaa052ee0856400ce308cb9196c614818815aa217694e371a65ad",
+    "atc/worker/jetbridge/brine/mutations/multi-variables-strict.json": "74d8fcd3be757e4012bfae0833263efca5ac202a63be07e802e6b6d2995b5ce1",
+    "atc/worker/jetbridge/brine/steps/variable_sources_strict.go": "62cf9a95ae8412c277fe21e2d13b09832672ccbd9698a56a35be9d1e1cc5e5b0",
+    "vars/multi_vars.go": "e9a2b12951e69f2495ab8fcdf3f8db7a99e0ef8e96e4a6ca06395739b1314bf3",
+    "vars/multi_vars_test.go": "b8cb4a73cf42780c7cad9be0885009c7c7b8cbad9ec577e38c2b51a75ece7514"
+  },
+  "mutation_cases": [
+    {
+      "id": "missing-lookups-report-found",
+      "mutation_sha256": "3ae443ef4f422bcc942f0b2d0257f3ee4f14118e6290d7ab278f9901c894055d",
+      "failed_source_tests": [
+        "MultiVariables Get return no value and not found if there are no sources",
+        "MultiVariables Get return no value and not found if variable is not found in any of the sources"
+      ],
+      "failed_brine_scenarios": [
+        "Multi variable profile \u003cprofile\u003e (row 1)",
+        "Multi variable profile \u003cprofile\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "list-drops-source-references",
+      "mutation_sha256": "bb880effd2a76e821bd3344d4745621afe3b3b29d21b7920abbf7f9f6dd63150",
+      "failed_source_tests": [
+        "MultiVariables List returns list of names from multiple vars with duplicates"
+      ],
+      "failed_brine_scenarios": [
+        "Multi variable profile \u003cprofile\u003e (row 3)"
+      ]
+    }
+  ]
+}
