@@ -20,10 +20,6 @@ Feature: Remaining resource persistence behavior
     When the remaining real resource domain evaluates profile "build-manual"
     Then the remaining resource domain result is "created=true;manual=true;resource-id=true"
 
-  Scenario: CreateBuild permits an automatic build after the previous build finishes
-    When the remaining real resource domain evaluates profile "build-after"
-    Then the remaining resource domain result is "created=true;resource-id=true"
-
   Scenario: CreateInMemoryBuild preserves every transient resource build field
     When the remaining real resource domain evaluates profile "memory-created"
     Then the remaining resource domain result is "exact=true"

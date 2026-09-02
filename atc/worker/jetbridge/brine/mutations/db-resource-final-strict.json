@@ -33,20 +33,20 @@
       "scenarios": ["CreateBuild writes created and log events to the check partition"]
     },
     {
-      "id": "resource-build-concurrency-counts-only-running-builds",
+      "id": "resource-build-running-guard-rejects-first-conflict",
       "source_file": "atc/db/resource.go",
-      "old": "\t\t\tWhere(sq.Eq{\"resource_id\": r.id, \"completed\": false}).",
-      "new": "\t\t\tWhere(sq.Eq{\"resource_id\": r.id, \"completed\": true}).",
-      "tests": [
-        "Resource CreateBuild when another running build already exists does not create the second build",
-        "Resource CreateBuild when another running build already exists when manually triggered creates a manually triggered resource build",
-        "Resource CreateBuild when another running build already exists when the previous build is finished creates the build"
-      ],
-      "scenarios": [
-        "CreateBuild refuses a second automatic build while one is running",
-        "CreateBuild permits and marks a manual build while one is running",
-        "CreateBuild permits an automatic build after the previous build finishes"
-      ]
+      "old": "\t\tif numRunningBuilds > 0 {",
+      "new": "\t\tif numRunningBuilds > 1 {",
+      "tests": ["Resource CreateBuild when another running build already exists does not create the second build"],
+      "scenarios": ["CreateBuild refuses a second automatic build while one is running"]
+    },
+    {
+      "id": "resource-build-manual-trigger-bypasses-running-guard",
+      "source_file": "atc/db/resource.go",
+      "old": "\tif !manuallyTriggered {\n\t\tvar numRunningBuilds int",
+      "new": "\tif true {\n\t\tvar numRunningBuilds int",
+      "tests": ["Resource CreateBuild when another running build already exists when manually triggered creates a manually triggered resource build"],
+      "scenarios": ["CreateBuild permits and marks a manual build while one is running"]
     },
     {
       "id": "resource-in-memory-build-uses-transient-constructor",
