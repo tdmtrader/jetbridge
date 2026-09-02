@@ -1,0 +1,103 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/migration-update-auth-providers-strict.json",
+  "git_head": "03aa63a9fd5c27b244db4253e7a611fea0ec4fb7",
+  "completed_at": "2026-09-02T21:50:54Z",
+  "source_tests": 12,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/migration/migrations/1516643303_update_auth_providers.down.go": "39c255a30f4e6b4c464e37fa3425675a5179ce2bd7d8f9f22844ce8cc75120da",
+    "atc/db/migration/migrations/1516643303_update_auth_providers.up.go": "3b0a375deb2aaa084864897c24ce27f3a0e4fc4cfec3aaaffe274dbcf96053f0",
+    "atc/db/migration/update_auth_providers_test.go": "d1903429026217e69bfe7029815e69e2034b5fcb96c31df234c58c5b1aa4c9ed",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/main.go": "f1077dbb582d4a3ad64725c5a79cbb19aacc73f43e16da24c8db9d42a94cca9f",
+    "atc/worker/jetbridge/brine/cmd/brine-adapter-jetbridge/registry.go": "9180fb8c25e12bf64c4dfda86cbcc6bc4b66e739ee5480245f42d5f00d07c4db",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/migration-update-auth-providers-strict.feature": "ecd223afe6ba4d412fe604c3f88066dc4c3d7a2a6c995b76ebc7e0c219c2f46c",
+    "atc/worker/jetbridge/brine/mutations/migration-update-auth-providers-strict.json": "cd7fa5ba9df5b3862a4718f57b8d46ae1b71751c01254e7c34fcb896874bcfe2",
+    "atc/worker/jetbridge/brine/steps/migration_update_auth_providers_strict.go": "196efe894124642931bd476356920c2436bf6dcc2b981153f617ff3d44881d69",
+    "atc/worker/jetbridge/brine/steps/registry.go": "1a789156b4e49b6014017481287fb17649ca5eaf12f1ecaac3bc32ff79058518",
+    "atc/worker/jetbridge/brine/steps/resources.go": "f594ee3b1828c61ca1dd1ef9dd8024ecbb440898b57644b50a80d86bad475691"
+  },
+  "mutation_cases": [
+    {
+      "id": "down-migrates-basic-username",
+      "mutation_sha256": "12411d22e7d6920a1c6cfdad3dfc0f291ecd713d4cc68946da60d7989d51939f",
+      "failed_source_tests": [
+        "Update auth providers Down migrates basic auth data to separate field"
+      ],
+      "failed_brine_scenarios": [
+        "Down migration moves basic credentials to the legacy fields"
+      ]
+    },
+    {
+      "id": "down-preserves-other-providers",
+      "mutation_sha256": "9c574b54bc23733995be0a510cf14f867861fbdd2593a9806cac3d4a016b97ac",
+      "failed_source_tests": [
+        "Update auth providers Down does not modify existing providers"
+      ],
+      "failed_brine_scenarios": [
+        "Down migration preserves an existing GitHub provider"
+      ]
+    },
+    {
+      "id": "down-removes-basic-provider",
+      "mutation_sha256": "75014a98bab577ff908cfe639c09640461080c09e8bb3810a2d3e37c26e42e94",
+      "failed_source_tests": [
+        "Update auth providers Down removes the basicauth provider from providers list"
+      ],
+      "failed_brine_scenarios": [
+        "Down migration removes the basic provider from auth"
+      ]
+    },
+    {
+      "id": "down-removes-noauth-provider",
+      "mutation_sha256": "910c62d8323de973e7b12b39adfbf2d9563805f923eb87e161228b5865832ab2",
+      "failed_source_tests": [
+        "Update auth providers Down removes the noauth provider from providers list"
+      ],
+      "failed_brine_scenarios": [
+        "Down migration removes the no-auth provider from auth"
+      ]
+    },
+    {
+      "id": "up-recognizes-legacy-basic-keys",
+      "mutation_sha256": "8906143aab40149555eed0a8216abf3cb9c469c25de2cb184b74354a2fd6c85d",
+      "failed_source_tests": [
+        "Update auth providers Up does not add noauth provider when basic auth is configured",
+        "Update auth providers Up does not migrate malformed basic auth data",
+        "Update auth providers Up merges basic auth data with existing providers",
+        "Update auth providers Up migrates basic auth data to empty providers",
+        "Update auth providers Up migrates basic auth data to null providers"
+      ],
+      "failed_brine_scenarios": [
+        "Up migration does not add no-auth beside basic credentials",
+        "Up migration merges basic credentials with an existing GitHub provider",
+        "Up migration moves basic credentials into empty auth",
+        "Up migration moves basic credentials into null auth",
+        "Up migration rejects malformed basic credential keys"
+      ]
+    },
+    {
+      "id": "up-null-basic-auth-stays-unconfigured",
+      "mutation_sha256": "b0ddb62b2ecb64b2016923ea2326eadec4aa6740fb8e70417ae9355724a38b26",
+      "failed_source_tests": [
+        "Update auth providers Up adds noauth provider when no other auth methods are configured",
+        "Update auth providers Up does not migrate empty json basic auth data"
+      ],
+      "failed_brine_scenarios": [
+        "Up migration adds no-auth when no method is configured",
+        "Up migration rejects empty and null basic credentials"
+      ]
+    },
+    {
+      "id": "up-existing-provider-prevents-noauth",
+      "mutation_sha256": "4e76b660b8467dd2bccc5fb013e7314fb786855c9148e755d69c114b826c8892",
+      "failed_source_tests": [
+        "Update auth providers Up does not add noauth provider when there are existing providers"
+      ],
+      "failed_brine_scenarios": [
+        "Up migration does not add no-auth beside an existing provider"
+      ]
+    }
+  ]
+}
