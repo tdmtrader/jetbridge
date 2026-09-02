@@ -1,0 +1,66 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-versions-final-strict.json",
+  "git_head": "722a5f03db48c72ad861e9729d3978b2652f1642",
+  "completed_at": "2026-09-02T19:34:15Z",
+  "source_tests": 12,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/versions_db.go": "36dffef99ae7fd96d4e36901312b7411094c97d36f83125d0a4274d713132f64",
+    "atc/db/versions_db_test.go": "e76da0a1095a42baead4a906993fa0995dadd19befb8d283e26e9cb23118f926",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e738c29f6de7f358ac1bd829e3ee2d4486a52f85745c87772378915302e3e1fa",
+    "atc/worker/jetbridge/brine/features/db-versions-final-strict.feature": "67a5e5861ba0a46c733ccafb9976264f7e20646e553b5819fa3bb1ec49b9cf8d",
+    "atc/worker/jetbridge/brine/mutations/db-versions-final-strict.json": "40fa0dddab16dc62e09902a66374f9145a3ef55f55f1f009ba55072012e56edb",
+    "atc/worker/jetbridge/brine/steps/db_versions_final_strict.go": "a2f1bf52c75239510569e8930054645e4f83e3cd4e5b67b939f94d13dfa29baa",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8"
+  },
+  "mutation_cases": [
+    {
+      "id": "successful-builds-filter-by-success-status",
+      "mutation_sha256": "5984c6885c1e317d831daba8a7fa67d342cf7b207d81027905c176d1e0807eb6",
+      "failed_source_tests": [
+        "VersionsDB SuccessfulBuilds with a page of filler and then rerun builds created after their original builds returns all of the builds, newest first, with reruns relative to original build's order, and then finishes",
+        "VersionsDB SuccessfulBuilds with a rerun build of a failed build on the page limit boundary finishes after the rerun",
+        "VersionsDB SuccessfulBuilds with a rerun build of a succeeded build on the page limit boundary returns the original build after the rerun",
+        "VersionsDB SuccessfulBuilds with multiple reruns of the same build crossing the page limit boundary returns all builds, and then all three reruns, and finishes",
+        "VersionsDB SuccessfulBuilds with one build returns the build and finishes",
+        "VersionsDB SuccessfulBuilds with rerun builds created after their original (failing) build returns all of the builds, newest first, with reruns relative to original build's order, and then finishes",
+        "VersionsDB SuccessfulBuilds with the same number of builds as the page limit returns all of the builds, newest first, and then finishes"
+      ],
+      "failed_brine_scenarios": [
+        "SuccessfulBuilds ends after a successful rerun of a failed boundary build",
+        "SuccessfulBuilds keeps reruns with their failed original across a filler page",
+        "SuccessfulBuilds orders successful reruns relative to their failed original",
+        "SuccessfulBuilds returns a full page newest first and then ends",
+        "SuccessfulBuilds returns a succeeded boundary original after its rerun",
+        "SuccessfulBuilds returns every rerun that crosses the page boundary",
+        "SuccessfulBuilds returns its sole build and a zero-valued end marker"
+      ]
+    },
+    {
+      "id": "unused-builds-includes-cursor",
+      "mutation_sha256": "b949461f27d8ecc8809a9efdbfbd08dbc7bdab767e5eabb95ccd2c4b315cd443",
+      "failed_source_tests": [
+        "VersionsDB UnusedBuilds when the last used build was a rerun and there is another rerun before and after it returns newer rerun, the newer builds, followed by the given rerun, the older rerun, and the older builds",
+        "VersionsDB UnusedBuilds with one build, which was last used returns the build and finishes",
+        "VersionsDB UnusedBuilds with some older builds and some newer builds and some reruns of the cursor returns the newer builds, oldest to newest, followed by the cursor build and older builds, newest to oldest",
+        "VersionsDB UnusedBuilds with some older builds and some newer builds returns newer builds, oldest to newest, followed by the cursor build and older builds, newest to oldest"
+      ],
+      "failed_brine_scenarios": [
+        "UnusedBuilds excludes reruns of a non-rerun cursor",
+        "UnusedBuilds orders builds around a rerun cursor",
+        "UnusedBuilds returns its sole cursor build and a zero-valued end marker",
+        "UnusedBuilds returns newer builds ascending then cursor and older builds descending"
+      ]
+    },
+    {
+      "id": "find-resource-version-uses-partial-containment",
+      "mutation_sha256": "a7fb34e21d4da9130aa7a43f8ab32eb9a81fc49e4d4450b96cc439faaf1d23f2",
+      "failed_source_tests": [
+        "VersionsDB FindVersionOfResource when trying to find version by providing a matched partial version return the version sha256"
+      ],
+      "failed_brine_scenarios": [
+        "FindVersionOfResource matches a partial version and returns its SHA256 digest"
+      ]
+    }
+  ]
+}
