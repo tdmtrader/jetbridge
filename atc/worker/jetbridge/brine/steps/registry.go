@@ -96,6 +96,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, TaskConfigSourceStrictDefinitions()...)
 	defs = append(defs, IDTokenGeneratorStrictDefinitions()...)
 	defs = append(defs, SecretsManagerStrictDefinitions()...)
+	defs = append(defs, SSMManagerStrictDefinitions()...)
 	defs = append(defs, VariableTemplateDefinitions()...)
 	defs = append(defs, StaticVariableDefinitions()...)
 	defs = append(defs, VariableReferenceDefinitions()...)
