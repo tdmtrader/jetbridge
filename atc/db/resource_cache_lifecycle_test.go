@@ -21,56 +21,6 @@ var _ = Describe("ResourceCacheLifecycle", func() {
 		resourceCacheLifecycle = db.NewResourceCacheLifecycle(dbConn)
 	})
 
-	Describe("CleanDirtyInMemoryBuilds", func() {
-		Context("not in-memory build used cache", func() {
-			BeforeEach(func() {
-				resourceCacheForJobBuild()
-				Expect(countResourceCaches()).To(Equal(1))
-			})
-
-			It("should not clean up the use", func() {
-				err := resourceCacheLifecycle.CleanDirtyInMemoryBuildUses(logger)
-				Expect(err).ToNot(HaveOccurred())
-				err = resourceCacheLifecycle.CleanUpInvalidCaches(logger)
-				Expect(err).ToNot(HaveOccurred())
-
-				Expect(countResourceCaches()).To(Equal(1))
-			})
-		})
-
-		Context("in-memory build used cache with 24 hours", func() {
-			BeforeEach(func() {
-				resourceCacheForInMemoryBuild(99, time.Now().Add(-time.Hour))
-				Expect(countResourceCaches()).To(Equal(1))
-			})
-
-			It("should not clean up the use", func() {
-				err := resourceCacheLifecycle.CleanDirtyInMemoryBuildUses(logger)
-				Expect(err).ToNot(HaveOccurred())
-				err = resourceCacheLifecycle.CleanUpInvalidCaches(logger)
-				Expect(err).ToNot(HaveOccurred())
-
-				Expect(countResourceCaches()).To(Equal(1))
-			})
-		})
-
-		Context("in-memory build used cache earlier than 24 hours", func() {
-			BeforeEach(func() {
-				resourceCacheForInMemoryBuild(99, time.Now().Add(-25*time.Hour))
-				Expect(countResourceCaches()).To(Equal(1))
-			})
-
-			It("should not clean up the use", func() {
-				err := resourceCacheLifecycle.CleanDirtyInMemoryBuildUses(logger)
-				Expect(err).ToNot(HaveOccurred())
-				err = resourceCacheLifecycle.CleanUpInvalidCaches(logger)
-				Expect(err).ToNot(HaveOccurred())
-
-				Expect(countResourceCaches()).To(Equal(0))
-			})
-		})
-	})
-
 	Describe("CleanUpInvalidCaches", func() {
 		Context("the resource cache is used by a build", func() {
 
@@ -81,24 +31,6 @@ var _ = Describe("ResourceCacheLifecycle", func() {
 					err := resourceCacheLifecycle.CleanUpInvalidCaches(logger.Session("resource-cache-lifecycle"))
 					Expect(err).ToNot(HaveOccurred())
 					Expect(countResourceCaches()).ToNot(BeZero())
-				})
-
-				Context("when the build goes away", func() {
-					BeforeEach(func() {
-						_, build := resourceCacheForOneOffBuild()
-
-						_, err := build.Delete()
-						Expect(err).ToNot(HaveOccurred())
-
-						Expect(countResourceCaches()).ToNot(BeZero())
-
-						err = resourceCacheLifecycle.CleanUpInvalidCaches(logger.Session("resource-cache-lifecycle"))
-						Expect(err).ToNot(HaveOccurred())
-					})
-
-					It("deletes the resource cache", func() {
-						Expect(countResourceCaches()).To(BeZero())
-					})
 				})
 
 				Context("when the cache is for a saved image resource version for a finished build", func() {
@@ -175,18 +107,6 @@ var _ = Describe("ResourceCacheLifecycle", func() {
 							Expect(countResourceCaches()).To(Equal(1))
 						})
 
-						It("removes resource caches for previous finished builds", func() {
-							resourceCache1, _ := setBuildStatus(db.BuildStatusFailed)
-							resourceCache2, _ := setBuildStatus(db.BuildStatusSucceeded)
-							Expect(resourceCache1.ID()).ToNot(Equal(resourceCache2.ID()))
-
-							Expect(countResourceCaches()).To(Equal(2))
-
-							err := resourceCacheLifecycle.CleanUpInvalidCaches(logger.Session("resource-cache-lifecycle"))
-							Expect(err).ToNot(HaveOccurred())
-
-							Expect(countResourceCaches()).To(Equal(1))
-						})
 						It("does not remove the resource caches from other jobs", func() {
 							By("creating a second pipeline")
 							secondPipeline, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "second-pipeline"}, atc.Config{
@@ -276,143 +196,6 @@ var _ = Describe("ResourceCacheLifecycle", func() {
 				Expect(err).ToNot(HaveOccurred())
 
 				Expect(countResourceCaches()).ToNot(BeZero())
-			})
-
-			It("removes the cache if the type is no longer configured", func() {
-				imageResourceCache, build := resourceCacheForJobBuild()
-
-				err := build.SetInterceptible(false)
-				Expect(err).ToNot(HaveOccurred())
-
-				By("removing the resource cache use for the build id")
-				err = resourceCacheLifecycle.CleanUsesForFinishedBuilds(logger)
-				Expect(err).ToNot(HaveOccurred())
-
-				_, err = resourceConfigFactory.FindOrCreateResourceConfig(
-					"some-type",
-					atc.Source{
-						"some": "source",
-					},
-					imageResourceCache,
-				)
-				Expect(err).ToNot(HaveOccurred())
-
-				err = resourceConfigCheckSessionLifecycle.CleanInactiveResourceConfigCheckSessions()
-				Expect(err).ToNot(HaveOccurred())
-
-				err = resourceConfigFactory.CleanUnreferencedConfigs(0)
-				Expect(err).ToNot(HaveOccurred())
-
-				Expect(countResourceCaches()).ToNot(BeZero())
-
-				err = resourceCacheLifecycle.CleanUpInvalidCaches(logger.Session("resource-cache-lifecycle"))
-				Expect(err).ToNot(HaveOccurred())
-
-				Expect(countResourceCaches()).To(BeZero())
-			})
-		})
-
-		Context("when the cache is for a resource version used as an input for the next build of a job", func() {
-			It("does not remove the cache", func() {
-				scenario := dbtest.Setup(
-					builder.WithPipeline(atc.Config{
-						Resources: atc.ResourceConfigs{
-							{
-								Name: "some-resource",
-								Type: "some-base-resource-type",
-								Source: atc.Source{
-									"some": "source",
-								},
-							},
-						},
-					}),
-					builder.WithResourceVersions("some-resource", atc.Version{"some": "version"}),
-				)
-
-				rc, found, err := resourceConfigFactory.FindResourceConfigByID(scenario.Resource("some-resource").ResourceConfigID())
-				Expect(found).To(BeTrue())
-				Expect(err).ToNot(HaveOccurred())
-
-				resourceConfigScope, err := rc.FindOrCreateScope(intptr(scenario.Resource("some-resource").ID()))
-				Expect(err).ToNot(HaveOccurred())
-
-				build, err := defaultJob.CreateBuild(defaultBuildCreatedBy)
-				Expect(err).NotTo(HaveOccurred())
-
-				_ = createResourceCacheWithUser(db.ForBuild(build.ID()))
-
-				resourceConfigVersion, found, err := resourceConfigScope.FindVersion(atc.Version{"some": "version"})
-				Expect(found).To(BeTrue())
-				Expect(err).ToNot(HaveOccurred())
-
-				err = defaultJob.SaveNextInputMapping(db.InputMapping{
-					"some-resource": db.InputResult{
-						Input: &db.AlgorithmInput{
-							AlgorithmVersion: db.AlgorithmVersion{
-								Version:    db.ResourceVersion(convertToSHA256(atc.Version(resourceConfigVersion.Version()))),
-								ResourceID: scenario.Resource("some-resource").ID(),
-							},
-						},
-						PassedBuildIDs: []int{},
-					},
-				}, true)
-				Expect(err).ToNot(HaveOccurred())
-
-				Expect(countResourceCaches()).ToNot(BeZero())
-
-				err = build.Finish(db.BuildStatus(db.BuildStatusSucceeded))
-				Expect(err).ToNot(HaveOccurred())
-
-				err = build.SetInterceptible(false)
-				Expect(err).ToNot(HaveOccurred())
-
-				err = resourceCacheLifecycle.CleanUsesForFinishedBuilds(logger.Session("resource-cache-lifecycle"))
-				Expect(err).ToNot(HaveOccurred())
-
-				err = resourceCacheLifecycle.CleanUpInvalidCaches(logger.Session("resource-cache-lifecycle"))
-				Expect(err).ToNot(HaveOccurred())
-
-				Expect(countResourceCaches()).ToNot(BeZero())
-			})
-
-			Context("when the build finishes successfully", func() {
-				It("gcs the resource cache for the resource", func() {
-					_ = dbtest.Setup(
-						builder.WithPipeline(atc.Config{
-							Resources: atc.ResourceConfigs{
-								{
-									Name: "some-resource",
-									Type: "some-base-resource-type",
-									Source: atc.Source{
-										"some": "source",
-									},
-								},
-							},
-						}),
-						builder.WithResourceVersions("some-resource", atc.Version{"some": "version"}),
-					)
-
-					build, err := defaultJob.CreateBuild(defaultBuildCreatedBy)
-					Expect(err).NotTo(HaveOccurred())
-
-					_ = createResourceCacheWithUser(db.ForBuild(build.ID()))
-
-					Expect(countResourceCaches()).ToNot(BeZero())
-
-					err = build.Finish(db.BuildStatus(db.BuildStatusSucceeded))
-					Expect(err).ToNot(HaveOccurred())
-
-					err = build.SetInterceptible(false)
-					Expect(err).ToNot(HaveOccurred())
-
-					err = resourceCacheLifecycle.CleanUsesForFinishedBuilds(logger.Session("resource-cache-lifecycle"))
-					Expect(err).ToNot(HaveOccurred())
-
-					err = resourceCacheLifecycle.CleanUpInvalidCaches(logger.Session("resource-cache-lifecycle"))
-					Expect(err).ToNot(HaveOccurred())
-
-					Expect(countResourceCaches()).To(BeZero())
-				})
 			})
 		})
 	})
@@ -579,10 +362,6 @@ func resourceCacheForJobBuild() (db.ResourceCache, db.Build) {
 	build, err := defaultJob.CreateBuild(defaultBuildCreatedBy)
 	Expect(err).ToNot(HaveOccurred())
 	return createResourceCacheWithUser(db.ForBuild(build.ID())), build
-}
-
-func resourceCacheForInMemoryBuild(buildId int, createTime time.Time) {
-	createResourceCacheWithUser(db.ForInMemoryBuild(buildId, createTime))
 }
 
 func countResourceCaches() int {

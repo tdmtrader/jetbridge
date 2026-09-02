@@ -1,0 +1,65 @@
+{
+  "manifest": "atc/worker/jetbridge/brine/mutations/db-resource-cache-lifecycle-strict.json",
+  "git_head": "5b60e0870d35cb46369d290a36466543ec0edd5b",
+  "completed_at": "2026-09-02T16:57:33Z",
+  "source_tests": 8,
+  "philosophy": "no-stub-no-sink-no-injected-fault-no-fake-no-mock",
+  "input_sha256": {
+    "atc/db/resource_cache_lifecycle.go": "1918a1f56ed4b60f263c69c7e1e986bb2e773f2914f713819f5eda7e0758e531",
+    "atc/db/resource_cache_lifecycle_test.go": "7f9c093141ca7bb1ab98c2db51fa1354dadfd3a286141dc8752e18eca4ff870e",
+    "atc/postgresrunner/ginkgo.go": "de529433fa2661ed070c03d5cf48587369430eba9c2878afdd44366373aae6b9",
+    "atc/postgresrunner/join_limit_conn.go": "5075a9755f00df3771966a46e8abe76eda16bcceda4415fe31e0a5d1c7244de2",
+    "atc/postgresrunner/postgresrunner.go": "57db5df736fc477ca5d42567d238b0e1a09589f720cc3d5cdec464846ba0c3f6",
+    "atc/worker/jetbridge/brine/cmd/migration-audit/main.go": "e1288a28666b5525281073b1c91d411306b52462c25b730dfd79e58ff615dead",
+    "atc/worker/jetbridge/brine/features/db-resource-cache-lifecycle-strict.feature": "876aecdc16f854e997fbfd0fce2a3395d7ed54a26dc8d22bc099b9913f508b83",
+    "atc/worker/jetbridge/brine/mutations/db-resource-cache-lifecycle-strict.json": "d97d774455537dda778f51fc6d852037d12bfc65327e9a504292fc5e657b27ef",
+    "atc/worker/jetbridge/brine/steps/db_resource_cache_lifecycle_strict.go": "65f3663dfe46036b9db5fb65bcea974a5da550b5e3abfc4e3aa02ac70f22a50f",
+    "atc/worker/jetbridge/brine/steps/envtest.go": "6a356ad13d601ba174e6e96dd7621a15dd4dca738acb766f712bdfb3f3e62a84",
+    "atc/worker/jetbridge/brine/steps/gc_caches.go": "c5d93225aea82f0ff8a06c829231b7b01c2e826dddc6c8adb512718009790173",
+    "atc/worker/jetbridge/brine/steps/registry.go": "600ce1210ef96260b967a576dd30c264bef0e2d0785ae35b91aed373a51308c7",
+    "atc/worker/jetbridge/brine/steps/resources.go": "fbb24a52e89dffe86e9cb051a78b1adb281ec962eae43026a85c02382f1133b8",
+    "atc/worker/jetbridge/brine/steps/task_command.go": "0c6ea8eabd6a3bfd837ae62f1cd1bf2540af08f9bf113b69a49b158dd0a34d0e"
+  },
+  "mutation_cases": [
+    {
+      "id": "dirty-clean-keeps-nonexpired-uses",
+      "mutation_sha256": "5f1aa5fce1afc5347be0eaa54630faf4784b9181dc703449256bcca8bb510464",
+      "failed_source_tests": [
+        "ResourceCacheLifecycle CleanDirtyInMemoryBuilds in-memory build used cache with 24 hours should not clean up the use",
+        "ResourceCacheLifecycle CleanDirtyInMemoryBuilds not in-memory build used cache should not clean up the use"
+      ],
+      "failed_brine_scenarios": [
+        "Production resource cache lifecycle behavior — \u003cprofile\u003e (row 1)",
+        "Production resource cache lifecycle behavior — \u003cprofile\u003e (row 2)"
+      ]
+    },
+    {
+      "id": "invalid-cache-delete-executes",
+      "mutation_sha256": "a858eac663ad1b715d1686395c8569b2a9ddedd9d4ea475e5bf9190ab39d1a64",
+      "failed_source_tests": [
+        "ResourceCacheLifecycle CleanDirtyInMemoryBuilds in-memory build used cache earlier than 24 hours should not clean up the use",
+        "ResourceCacheLifecycle CleanUpInvalidCaches the resource cache is used by a build when its a build of a job in a pipeline when the cache is for a saved image resource version for a finished build when the build has succeeded removes resource caches for previous finished builds",
+        "ResourceCacheLifecycle CleanUpInvalidCaches the resource cache is used by a build when its a one off build when the build goes away deletes the resource cache",
+        "ResourceCacheLifecycle CleanUpInvalidCaches when the cache is for a custom resource type removes the cache if the type is no longer configured",
+        "ResourceCacheLifecycle CleanUpInvalidCaches when the cache is for a resource version used as an input for the next build of a job when the build finishes successfully gcs the resource cache for the resource"
+      ],
+      "failed_brine_scenarios": [
+        "Production resource cache lifecycle behavior — \u003cprofile\u003e (row 3)",
+        "Production resource cache lifecycle behavior — \u003cprofile\u003e (row 4)",
+        "Production resource cache lifecycle behavior — \u003cprofile\u003e (row 5)",
+        "Production resource cache lifecycle behavior — \u003cprofile\u003e (row 6)",
+        "Production resource cache lifecycle behavior — \u003cprofile\u003e (row 8)"
+      ]
+    },
+    {
+      "id": "next-input-reference-protects-cache",
+      "mutation_sha256": "e36eb8e2d349401db66fff35e4357a6c9fb92819552f667d0b25d5b731f2f861",
+      "failed_source_tests": [
+        "ResourceCacheLifecycle CleanUpInvalidCaches when the cache is for a resource version used as an input for the next build of a job does not remove the cache"
+      ],
+      "failed_brine_scenarios": [
+        "Production resource cache lifecycle behavior — \u003cprofile\u003e (row 7)"
+      ]
+    }
+  ]
+}
