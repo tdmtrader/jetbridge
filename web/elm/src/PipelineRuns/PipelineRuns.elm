@@ -284,26 +284,24 @@ viewField model schema =
             fieldId ++ "-error"
         describedBy =
             if Maybe.map .fieldId model.validation == Just (Just fieldId) then descriptionId ++ " " ++ errorId else descriptionId
+        common =
+            [ id fieldId
+            , value (RunForm.value schema.name model.form)
+            , onInput (SetPipelineRunParam schema.name)
+            , attribute "aria-describedby" describedBy
+            , disabled model.pending
+            ]
+                ++ (if schema.required then [ attribute "aria-required" "true" ] else [])
+        prompt =
+            if schema.default == Nothing then [ Html.option [ value "" ] [ Html.text ("Select " ++ schema.name) ] ] else []
         field =
-            if schema.type_ == Concourse.EnumParam then
-                Html.select
-                    [ id fieldId
-                    , value (RunForm.value schema.name model.form)
-                    , onInput (SetPipelineRunParam schema.name)
-                    , attribute "aria-describedby" describedBy
-                    , disabled model.pending
-                    ]
-                    ((if schema.default == Nothing then [ Html.option [ value "" ] [ Html.text ("Select " ++ schema.name) ] ] else []) ++ List.map (\option -> Html.option [ value (jsonText option) ] [ Html.text (jsonText option) ]) schema.values)
-            else
-                Html.input
-                    [ id fieldId
-                    , type_ (inputType schema.type_)
-                    , value (RunForm.value schema.name model.form)
-                    , onInput (SetPipelineRunParam schema.name)
-                    , attribute "aria-describedby" describedBy
-                    , disabled model.pending
-                    ]
-                    []
+            case schema.type_ of
+                Concourse.EnumParam ->
+                    Html.select common (prompt ++ List.map (\option -> Html.option [ value (jsonText option) ] [ Html.text (jsonText option) ]) schema.values)
+                Concourse.BoolParam ->
+                    Html.select common (prompt ++ List.map (\option -> Html.option [ value option ] [ Html.text option ]) [ "true", "false" ])
+                _ ->
+                    Html.input (type_ (inputType schema.type_) :: common) []
     in
     Html.div [ style "margin" "10px 0" ]
         [ Html.label [ Html.Attributes.for fieldId ] [ Html.text schema.name ]
@@ -315,7 +313,6 @@ inputType : Concourse.ParamType -> String
 inputType paramType =
     case paramType of
         Concourse.NumberParam -> "number"
-        Concourse.BoolParam -> "text"
         _ -> "text"
 jsonText : Concourse.JsonValue -> String
 jsonText json =
