@@ -388,7 +388,7 @@ pagerLink label pipelineId maybePage =
     case maybePage of
         Just page ->
             let route = Routes.PipelineRuns { id = pipelineId, page = Just page } in
-            Html.a [ href (Routes.toString route), StrictEvents.onLeftClick (GoToRoute route), attribute "aria-label" label, style "outline" "auto" ] [ Html.text label ]
+            Html.a [ href (Routes.toString route), StrictEvents.onLeftClick (GoToRoute route), attribute "aria-label" label ] [ Html.text label ]
         Nothing ->
             Html.span [] []
 httpMessage : Http.Error -> String -> String
