@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/concourse/concourse/atc"
@@ -305,6 +306,51 @@ var _ = Describe("Prototype", func() {
 				traceParent := buildContext.Get("traceparent")
 				Expect(traceParent).To(ContainSubstring(traceID))
 			})
+		})
+	})
+
+	Describe("CreateBuild inside a run payload", func() {
+		var payload db.Pipeline
+		var payloadID int
+
+		BeforeEach(func() {
+			var templateID, runID int
+			Expect(dbConn.QueryRow(`INSERT INTO pipelines(team_id, name, template, secondary_ordering) VALUES ($1, 'proto-template', true, 1) RETURNING id`, defaultTeam.ID()).Scan(&templateID)).To(Succeed())
+
+			tx, err := dbConn.Begin()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(tx.QueryRow(`INSERT INTO pipeline_runs(template_pipeline_id, number, params, status, created_by, config_hash) VALUES ($1, 1, '{}', 'running', 'creator', 'hash') RETURNING id`, templateID).Scan(&runID)).To(Succeed())
+			Expect(tx.QueryRow(`INSERT INTO pipelines(team_id, name, instance_vars, pipeline_run_id, secondary_ordering) VALUES ($1, 'proto-template', '{"run":1}', $2, 1) RETURNING id`, defaultTeam.ID(), runID).Scan(&payloadID)).To(Succeed())
+			Expect(tx.Commit()).To(Succeed())
+
+			_, err = dbConn.Exec(`INSERT INTO prototypes(pipeline_id, name, type, config, active) VALUES ($1, 'payload-proto', 'registry-image', '{"name":"payload-proto","type":"registry-image"}', true)`, payloadID)
+			Expect(err).ToNot(HaveOccurred())
+
+			var found bool
+			payload, found, err = defaultTeam.Pipeline(atc.PipelineRef{Name: "proto-template", InstanceVars: atc.InstanceVars{"run": float64(1)}})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+		})
+
+		It("writes its events to the team partition rather than a payload partition that is never created", func() {
+			var partitionExists bool
+			Expect(dbConn.QueryRow(`SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = $1)`, fmt.Sprintf("pipeline_build_events_%d", payloadID)).Scan(&partitionExists)).To(Succeed())
+			Expect(partitionExists).To(BeFalse())
+
+			prototype, found, err := payload.Prototype("payload-proto")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+
+			build, created, err := prototype.CreateBuild(context.TODO(), false, atc.Plan{
+				ID:    "some-plan",
+				Check: &atc.CheckPlan{Name: "wreck"},
+			})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(created).To(BeTrue())
+
+			var events int
+			Expect(dbConn.QueryRow(fmt.Sprintf(`SELECT count(*) FROM team_build_events_%d WHERE build_id = $1`, defaultTeam.ID()), build.ID()).Scan(&events)).To(Succeed())
+			Expect(events).To(Equal(1))
 		})
 	})
 })
