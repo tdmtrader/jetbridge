@@ -56,6 +56,8 @@ type PrometheusEmitter struct {
 	gcArtifactCollectorDuration                   prometheus.Histogram
 	gcContainerCollectorDuration                  prometheus.Histogram
 	gcVolumeCollectorDuration                     prometheus.Histogram
+	pipelineRunReclaimBacklog                     prometheus.Gauge
+	pipelineRunReclaimDuration                    prometheus.Histogram
 
 	checkBuildsAborted   prometheus.Counter
 	checkBuildsErrored   prometheus.Counter
@@ -809,6 +811,34 @@ func (config *PrometheusConfig) NewEmitter(attributes map[string]string) (metric
 	)
 	prometheus.MustRegister(gcVolumeCollectorDuration)
 
+	// The backlog is a level, not a rate: it is what is waiting right now, and
+	// it can fall as well as rise. A counter could not express that.
+	pipelineRunReclaimBacklog := prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace:   "concourse",
+			Subsystem:   "gc",
+			Name:        "pipeline_run_reclaim_backlog",
+			Help:        "Pipeline runs currently eligible for reclamation",
+			ConstLabels: attributes,
+		},
+	)
+	prometheus.MustRegister(pipelineRunReclaimBacklog)
+
+	// The reclaimer runs once a minute, so the buckets are tighter than the
+	// shared collector buckets: the question is whether a pass fits inside its
+	// own interval, which the coarse buckets could not answer.
+	pipelineRunReclaimDuration := prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Namespace:   "concourse",
+			Subsystem:   "gc",
+			Name:        "pipeline_run_reclaim_duration",
+			Help:        "Duration of one pipeline run reclaimer pass (ms)",
+			ConstLabels: attributes,
+			Buckets:     []float64{1, 10, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000, 60000, 120000},
+		},
+	)
+	prometheus.MustRegister(pipelineRunReclaimDuration)
+
 	getStepCacheHits := prometheus.NewCounter(
 		prometheus.CounterOpts{
 			Namespace:   "concourse",
@@ -867,6 +897,8 @@ func (config *PrometheusConfig) NewEmitter(attributes map[string]string) (metric
 		gcArtifactCollectorDuration:                   gcArtifactCollectorDuration,
 		gcContainerCollectorDuration:                  gcContainerCollectorDuration,
 		gcVolumeCollectorDuration:                     gcVolumeCollectorDuration,
+		pipelineRunReclaimBacklog:                     pipelineRunReclaimBacklog,
+		pipelineRunReclaimDuration:                    pipelineRunReclaimDuration,
 
 		buildDurationsVec: buildDurationsVec,
 		buildsAborted:     buildsAborted,
@@ -1039,6 +1071,10 @@ func (emitter *PrometheusEmitter) Emit(logger lager.Logger, event metric.Event) 
 		emitter.gcContainerCollectorDuration.Observe(event.Value)
 	case "gc: volume collector duration (ms)":
 		emitter.gcVolumeCollectorDuration.Observe(event.Value)
+	case "pipeline run reclaim backlog":
+		emitter.pipelineRunReclaimBacklog.Set(event.Value)
+	case "gc: pipeline run reclaim duration (ms)":
+		emitter.pipelineRunReclaimDuration.Observe(event.Value)
 	case "http response time":
 		emitter.httpResponseTimeMetrics(logger, event)
 	case "database queries":

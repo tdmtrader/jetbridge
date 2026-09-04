@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/atccmd"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/gc"
 	"github.com/concourse/flag/v2"
 	"github.com/jessevdk/go-flags"
 	"github.com/stretchr/testify/require"
@@ -80,7 +82,7 @@ func (s *CommandSuite) TestBuildTrackerIntervalFlagRemoved() {
 }
 
 func (s *CommandSuite) TestPipelineRunReclaimerComponentIsBoundedAndPeriodic() {
-	component := atccmd.NewPipelineRunReclaimerComponentForTest(commandRunReclaimLifecycle{}, time.Now)
+	component := atccmd.NewPipelineRunReclaimerComponentForTest(commandRunReclaimLifecycle{}, time.Now, gc.DefaultPipelineRunReclaimBatchSize)
 	s.Equal(atc.ComponentReclaimerPipelineRuns, component.Component.Name)
 	s.Equal(time.Minute, component.Interval)
 	s.NotNil(component.Runnable)
@@ -89,10 +91,28 @@ func (s *CommandSuite) TestPipelineRunReclaimerComponentIsBoundedAndPeriodic() {
 type commandRunReclaimLifecycle struct{}
 
 func (commandRunReclaimLifecycle) ReclaimCandidateRunIDs(int) ([]int, error) { return nil, nil }
+func (commandRunReclaimLifecycle) ReclaimBacklog() (int, error)              { return 0, nil }
 func (commandRunReclaimLifecycle) DestroyReclaimableRun(int) (bool, error)   { return false, nil }
 func (commandRunReclaimLifecycle) DeferRunReclaim(int, time.Time) error      { return nil }
 
 var _ db.PipelineRunReclaimLifecycle = commandRunReclaimLifecycle{}
+
+// The batch size is operator-tunable because the backlog metric can show the
+// reclaimer failing to keep up with its one-minute interval, and there is no
+// other lever. A default that drifted from the code's own would make that
+// diagnosis wrong.
+func (s *CommandSuite) TestPipelineRunReclaimBatchFlagDefaultsToTheCodeDefault() {
+	cmd := &atccmd.ATCCommand{}
+	parser := flags.NewParser(cmd, flags.Default)
+	parser.NamespaceDelimiter = "-"
+
+	runCmd := parser.Find("run")
+	s.NotNil(runCmd, "run subcommand should exist")
+
+	opt := runCmd.FindOptionByLongName("pipeline-run-reclaim-batch")
+	s.NotNil(opt, "--pipeline-run-reclaim-batch should exist")
+	s.Equal([]string{strconv.Itoa(gc.DefaultPipelineRunReclaimBatchSize)}, opt.Default)
+}
 
 func (s *CommandSuite) TestKubernetesFieldsExistOnRunCommand() {
 	cmd := &atccmd.RunCommand{}

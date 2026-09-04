@@ -211,6 +211,44 @@ func (event VolumeCollectorDuration) Emit(logger lager.Logger) {
 	RecordGCCollectorDuration(context.Background(), "volume", ms(event.Duration))
 }
 
+// PipelineRunReclaimBacklog is the number of pipeline runs eligible for
+// reclamation at the start of a reclaimer pass, counted without the batch
+// bound. Read it against the batch size: a backlog that stays above the batch
+// pass after pass is a reclaimer that will never catch up, and every run in it
+// is a payload pipeline, its jobs and its build rows still on disk.
+type PipelineRunReclaimBacklog struct {
+	Runs int
+}
+
+func (event PipelineRunReclaimBacklog) Emit(logger lager.Logger) {
+	Metrics.emit(
+		logger.Session("pipeline-run-reclaim-backlog"),
+		Event{
+			Name:  "pipeline run reclaim backlog",
+			Value: float64(event.Runs),
+		},
+	)
+}
+
+// PipelineRunReclaimDuration is how long one reclaimer pass took, batch
+// included. It is per-batch rather than per-run so that it stays comparable
+// with the component's own interval: a pass that outlasts the interval is the
+// other half of the backlog story.
+type PipelineRunReclaimDuration struct {
+	Duration time.Duration
+}
+
+func (event PipelineRunReclaimDuration) Emit(logger lager.Logger) {
+	Metrics.emit(
+		logger.Session("pipeline-run-reclaim-duration"),
+		Event{
+			Name:  "gc: pipeline run reclaim duration (ms)",
+			Value: ms(event.Duration),
+		},
+	)
+	RecordGCCollectorDuration(context.Background(), "pipeline-run-reclaim", ms(event.Duration))
+}
+
 type SchedulingJobDuration struct {
 	PipelineName string
 	JobName      string
