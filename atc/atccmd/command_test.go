@@ -186,6 +186,18 @@ func (s *CommandSuite) TestCustomRolesAcceptEqualOrStrongerRunCreation() {
 	s.NoError(atccmd.ValidateCustomRolesForTest(together))
 }
 
+func (s *CommandSuite) TestCustomRolesReloadWhenThePathChangesAfterAnEmptyLoad() {
+	cmd := &atccmd.RunCommand{}
+	s.NoError(atccmd.ValidateCustomRolesForTest(cmd), "no RBAC file is a valid configuration")
+
+	withFile := s.writeRBACConfig("viewer:\n- NotSaveConfig\n")
+	cmd.ConfigRBAC = withFile.ConfigRBAC
+
+	err := atccmd.ValidateCustomRolesForTest(cmd)
+	s.Error(err, "a path set after an earlier empty load must be parsed, not served from cache")
+	s.Contains(err.Error(), "unknown action NotSaveConfig")
+}
+
 func (s *CommandSuite) TestCustomRolesRefuseDuplicateRunCreationAssignments() {
 	cmd := s.writeRBACConfig("owner:\n- CreatePipelineRun\npipeline-operator:\n- CreatePipelineRun\n")
 

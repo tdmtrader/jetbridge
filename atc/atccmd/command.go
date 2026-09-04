@@ -121,8 +121,11 @@ type RunCommand struct {
 	varSourcePool creds.VarSourcePool
 
 	// customRoles is loaded during validation and reused by the API so the
-	// security check and enforcement always operate on the same mapping.
-	customRoles map[string]string
+	// security check and enforcement always operate on the same mapping. It is
+	// keyed on the path it was parsed from, so a path set after an earlier
+	// load (as the integration suite does) is never shadowed by a stale entry.
+	customRoles     map[string]string
+	customRolesPath string
 
 	// k8sArtifactLocator is shared between the Reaper and Worker factory
 	// for DaemonSet mode. Created in backendComponents, used in constructPool.
@@ -1562,7 +1565,8 @@ func (cmd *RunCommand) validateCustomRoles() error {
 }
 
 func (cmd *RunCommand) loadCustomRoles() (map[string]string, error) {
-	if cmd.customRoles != nil {
+	path := cmd.ConfigRBAC.Path()
+	if cmd.customRoles != nil && cmd.customRolesPath == path {
 		return cmd.customRoles, nil
 	}
 
@@ -1576,6 +1580,7 @@ func (cmd *RunCommand) loadCustomRoles() (map[string]string, error) {
 	}
 
 	cmd.customRoles = mapping
+	cmd.customRolesPath = path
 	return cmd.customRoles, nil
 }
 
