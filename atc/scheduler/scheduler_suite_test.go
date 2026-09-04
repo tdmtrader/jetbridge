@@ -189,6 +189,16 @@ func (job setHasNewInputsFailsJob) SetHasNewInputs(bool) error {
 	return job.err
 }
 
+type pendingBuildsCountingJob struct {
+	db.Job
+	calls *int
+}
+
+func (job pendingBuildsCountingJob) GetPendingBuilds() ([]db.Build, error) {
+	*job.calls++
+	return job.Job.GetPendingBuilds()
+}
+
 type pendingBuildsFailsJob struct {
 	db.Job
 	err error

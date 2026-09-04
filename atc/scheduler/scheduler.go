@@ -28,7 +28,6 @@ type Scheduler struct {
 
 type ScheduleResult struct {
 	NeedsRetry bool
-	NoBuild    bool
 }
 
 func (s *Scheduler) Schedule(
@@ -58,13 +57,13 @@ func (s *Scheduler) Schedule(
 		return ScheduleResult{}, fmt.Errorf("save next input mapping: %w", err)
 	}
 
-	buildFound, err := s.ensurePendingBuildExists(ctx, logger, job, jobInputs)
+	err = s.ensurePendingBuildExists(ctx, logger, job, jobInputs)
 	if err != nil {
 		return ScheduleResult{}, err
 	}
 
 	needsRetry, err := s.BuildStarter.TryStartPendingBuildsForJob(ctx, logger, job, jobInputs)
-	return ScheduleResult{NeedsRetry: needsRetry, NoBuild: !buildFound}, err
+	return ScheduleResult{NeedsRetry: needsRetry}, err
 }
 
 func (s *Scheduler) ensurePendingBuildExists(
@@ -72,21 +71,15 @@ func (s *Scheduler) ensurePendingBuildExists(
 	logger lager.Logger,
 	job db.SchedulerJob,
 	jobInputs db.InputConfigs,
-) (bool, error) {
-	pendingBuilds, err := job.GetPendingBuilds()
-	if err != nil {
-		return false, fmt.Errorf("get pending builds: %w", err)
-	}
-	buildFound := len(pendingBuilds) > 0
-
+) error {
 	buildInputs, satisfiableInputs, err := job.GetFullNextBuildInputs()
 	if err != nil {
-		return false, fmt.Errorf("get next build inputs: %w", err)
+		return fmt.Errorf("get next build inputs: %w", err)
 	}
 
 	if !satisfiableInputs {
 		logger.Debug("next-build-inputs-not-determined")
-		return buildFound, nil
+		return nil
 	}
 
 	inputMapping := map[string]db.BuildInput{}
@@ -117,9 +110,8 @@ func (s *Scheduler) ensurePendingBuildExists(
 				)
 				err := job.EnsurePendingBuildExists(spanCtx)
 				if err != nil {
-					return false, fmt.Errorf("ensure pending build exists: %w", err)
+					return fmt.Errorf("ensure pending build exists: %w", err)
 				}
-				buildFound = true
 
 				break
 			}
@@ -128,9 +120,9 @@ func (s *Scheduler) ensurePendingBuildExists(
 
 	if hasNewInputs != job.HasNewInputs() {
 		if err := job.SetHasNewInputs(hasNewInputs); err != nil {
-			return false, fmt.Errorf("set has new inputs: %w", err)
+			return fmt.Errorf("set has new inputs: %w", err)
 		}
 	}
 
-	return buildFound, nil
+	return nil
 }

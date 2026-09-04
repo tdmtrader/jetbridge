@@ -151,7 +151,7 @@ func (s *Runner) scheduleJob(ctx context.Context, logger lager.Logger, job db.Sc
 
 	span.SetAttributes(attribute.Bool("needs-retry", result.NeedsRetry))
 	if !result.NeedsRetry {
-		err = job.ConsumeScheduleRequest(requestedTime, result.NoBuild)
+		err = job.ConsumeScheduleRequest(requestedTime)
 		if err != nil {
 			logger.Error("failed-to-consume-schedule-request", err, lager.Data{"job": job.Name()})
 			return fmt.Errorf("consume schedule request: %w", err)

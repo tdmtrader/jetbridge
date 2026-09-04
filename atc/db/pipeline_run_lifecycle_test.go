@@ -96,12 +96,12 @@ func pendingRunBuild(job db.Job) db.Build {
 	return builds[0]
 }
 
-func consumeObservedSchedule(job db.Job, noBuild bool) {
+func consumeObservedSchedule(job db.Job) {
 	GinkgoHelper()
 	found, err := job.Reload()
 	Expect(err).NotTo(HaveOccurred())
 	Expect(found).To(BeTrue())
-	Expect(job.ConsumeScheduleRequest(job.ScheduleRequestedTime(), noBuild)).To(Succeed())
+	Expect(job.ConsumeScheduleRequest(job.ScheduleRequestedTime())).To(Succeed())
 }
 
 func requestOutstandingSchedule(job db.Job) {
@@ -149,13 +149,13 @@ var _ = Describe("Pipeline run lifecycle", func() {
 		entry := fixture.jobs["entry"]
 		build := pendingRunBuild(entry)
 
-		consumeObservedSchedule(entry, true)
+		consumeObservedSchedule(entry)
 		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusRunning))
 
 		started, err := build.Start(atc.Plan{})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(started).To(BeTrue())
-		consumeObservedSchedule(entry, true)
+		consumeObservedSchedule(entry)
 		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusRunning))
 	})
 
@@ -164,7 +164,7 @@ var _ = Describe("Pipeline run lifecycle", func() {
 		_, err := dbConn.Exec("DELETE FROM builds WHERE pipeline_run_id = $1", fixture.run.ID())
 		Expect(err).NotTo(HaveOccurred())
 
-		consumeObservedSchedule(fixture.jobs["entry"], true)
+		consumeObservedSchedule(fixture.jobs["entry"])
 		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusRunning))
 	})
 
@@ -173,12 +173,12 @@ var _ = Describe("Pipeline run lifecycle", func() {
 		entry := fixture.jobs["entry"]
 		downstream := fixture.jobs["downstream"]
 		build := pendingRunBuild(entry)
-		consumeObservedSchedule(entry, false)
+		consumeObservedSchedule(entry)
 
 		Expect(build.Finish(db.BuildStatusFailed)).To(Succeed())
 		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusRunning))
 
-		consumeObservedSchedule(downstream, true)
+		consumeObservedSchedule(downstream)
 		run := fixture.reloadRun()
 		Expect(run.Status()).To(Equal(atc.RunStatusFailed))
 		Expect(run.CompletedAt()).NotTo(BeNil())
@@ -195,8 +195,8 @@ var _ = Describe("Pipeline run lifecycle", func() {
 		Expect(build.Finish(db.BuildStatusAborted)).To(Succeed())
 		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusRunning))
 
-		By("consuming the request from a pass that reports noBuild=false, because it found the build")
-		consumeObservedSchedule(entry, false)
+		By("consuming the request from a pass that found the build it would otherwise have reported")
+		consumeObservedSchedule(entry)
 
 		run := fixture.reloadRun()
 		Expect(run.Status()).To(Equal(atc.RunStatusAborted), "the scheduler's no-build hint must not gate run completion")
@@ -224,9 +224,9 @@ var _ = Describe("Pipeline run lifecycle", func() {
 			return requested
 		}).Should(BeTemporally(">", observed))
 
-		Expect(entry.ConsumeScheduleRequest(observed, true)).To(Succeed())
+		Expect(entry.ConsumeScheduleRequest(observed)).To(Succeed())
 		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusRunning))
-		consumeObservedSchedule(entry, true)
+		consumeObservedSchedule(entry)
 		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusFailed))
 	})
 
@@ -234,10 +234,10 @@ var _ = Describe("Pipeline run lifecycle", func() {
 		fixture := createRunLifecycleFixture(downstreamRunConfig("downstream"))
 		entry := fixture.jobs["entry"]
 		build := pendingRunBuild(entry)
-		consumeObservedSchedule(entry, false)
+		consumeObservedSchedule(entry)
 
 		Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
-		consumeObservedSchedule(fixture.jobs["downstream"], true)
+		consumeObservedSchedule(fixture.jobs["downstream"])
 		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusRunning))
 	})
 
@@ -245,10 +245,10 @@ var _ = Describe("Pipeline run lifecycle", func() {
 		fixture := createRunLifecycleFixture(downstreamRunConfig("downstream"))
 		entry := fixture.jobs["entry"]
 		build := pendingRunBuild(entry)
-		consumeObservedSchedule(entry, false)
+		consumeObservedSchedule(entry)
 
 		Expect(build.Finish(db.BuildStatusErrored)).To(Succeed())
-		consumeObservedSchedule(fixture.jobs["downstream"], true)
+		consumeObservedSchedule(fixture.jobs["downstream"])
 		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusErrored))
 	})
 
@@ -256,7 +256,7 @@ var _ = Describe("Pipeline run lifecycle", func() {
 		fixture := createRunLifecycleFixture(basicRunConfig("entry"))
 		entry := fixture.jobs["entry"]
 		build := pendingRunBuild(entry)
-		consumeObservedSchedule(entry, false)
+		consumeObservedSchedule(entry)
 		requestOutstandingSchedule(entry)
 
 		Expect(build.Finish(db.BuildStatusFailed)).To(Succeed())
@@ -274,7 +274,7 @@ var _ = Describe("Pipeline run lifecycle", func() {
 		fixture := createRunLifecycleFixture(basicRunConfig("entry"))
 		entry := fixture.jobs["entry"]
 		build := pendingRunBuild(entry)
-		consumeObservedSchedule(entry, false)
+		consumeObservedSchedule(entry)
 		requestOutstandingSchedule(entry)
 
 		Expect(build.Finish(db.BuildStatusFailed)).To(Succeed())
@@ -296,7 +296,7 @@ var _ = Describe("Pipeline run lifecycle", func() {
 			}
 			fixture := createRunLifecycleFixture(basicRunConfig(names...))
 			for _, name := range names {
-				consumeObservedSchedule(fixture.jobs[name], false)
+				consumeObservedSchedule(fixture.jobs[name])
 			}
 			for index, name := range names {
 				Expect(pendingRunBuild(fixture.jobs[name]).Finish(statuses[index])).To(Succeed())
@@ -312,13 +312,13 @@ var _ = Describe("Pipeline run lifecycle", func() {
 		fixture := createRunLifecycleFixture(basicRunConfig("entry"))
 		entry := fixture.jobs["entry"]
 		original := pendingRunBuild(entry)
-		consumeObservedSchedule(entry, false)
+		consumeObservedSchedule(entry)
 		Expect(original.Finish(db.BuildStatusFailed)).To(Succeed())
 		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusFailed))
 
 		rerun, err := entry.RerunBuild(original, "rerun-user")
 		Expect(err).NotTo(HaveOccurred())
-		consumeObservedSchedule(entry, false)
+		consumeObservedSchedule(entry)
 		Expect(rerun.Finish(db.BuildStatusSucceeded)).To(Succeed())
 		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusSucceeded))
 	})
@@ -326,7 +326,7 @@ var _ = Describe("Pipeline run lifecycle", func() {
 	It("pauses a completed payload with internal attribution", func() {
 		fixture := createRunLifecycleFixture(basicRunConfig("entry"))
 		entry := fixture.jobs["entry"]
-		consumeObservedSchedule(entry, false)
+		consumeObservedSchedule(entry)
 		Expect(pendingRunBuild(entry).Finish(db.BuildStatusSucceeded)).To(Succeed())
 
 		found, err := fixture.payload.Reload()
@@ -339,7 +339,7 @@ var _ = Describe("Pipeline run lifecycle", func() {
 	It("preserves user pause attribution when completing", func() {
 		fixture := createRunLifecycleFixture(basicRunConfig("entry"))
 		entry := fixture.jobs["entry"]
-		consumeObservedSchedule(entry, false)
+		consumeObservedSchedule(entry)
 		Expect(fixture.payload.Pause("alice")).To(Succeed())
 		Expect(pendingRunBuild(entry).Finish(db.BuildStatusFailed)).To(Succeed())
 
@@ -355,7 +355,7 @@ var _ = Describe("Pipeline run lifecycle", func() {
 		func(pausedBy string) {
 			fixture := createRunLifecycleFixture(basicRunConfig("entry"))
 			entry := fixture.jobs["entry"]
-			consumeObservedSchedule(entry, false)
+			consumeObservedSchedule(entry)
 			if pausedBy != "run-completed" {
 				Expect(fixture.payload.Pause(pausedBy)).To(Succeed())
 			}
@@ -386,10 +386,10 @@ var _ = Describe("Pipeline run lifecycle", func() {
 	It("atomically reopens for a manual build, discards stale debt, and creates one fresh request", func() {
 		fixture := createRunLifecycleFixture(downstreamRunConfig("manual", "stale"))
 		entry := fixture.jobs["entry"]
-		consumeObservedSchedule(entry, false)
+		consumeObservedSchedule(entry)
 		Expect(pendingRunBuild(entry).Finish(db.BuildStatusFailed)).To(Succeed())
-		consumeObservedSchedule(fixture.jobs["manual"], true)
-		consumeObservedSchedule(fixture.jobs["stale"], true)
+		consumeObservedSchedule(fixture.jobs["manual"])
+		consumeObservedSchedule(fixture.jobs["stale"])
 		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusFailed))
 
 		Expect(fixture.jobs["stale"].RequestSchedule()).To(Succeed())
@@ -416,7 +416,7 @@ var _ = Describe("Pipeline run lifecycle", func() {
 		fixture := createRunLifecycleFixture(basicRunConfig("entry"))
 		entry := fixture.jobs["entry"]
 		original := pendingRunBuild(entry)
-		consumeObservedSchedule(entry, false)
+		consumeObservedSchedule(entry)
 		Expect(original.Finish(db.BuildStatusFailed)).To(Succeed())
 
 		rerun, err := entry.RerunBuild(original, "rerun-user")
@@ -430,7 +430,7 @@ var _ = Describe("Pipeline run lifecycle", func() {
 	It("clears only the internal pause during manual reopen", func() {
 		fixture := createRunLifecycleFixture(basicRunConfig("entry"))
 		entry := fixture.jobs["entry"]
-		consumeObservedSchedule(entry, false)
+		consumeObservedSchedule(entry)
 		Expect(fixture.payload.Pause("alice")).To(Succeed())
 		Expect(pendingRunBuild(entry).Finish(db.BuildStatusFailed)).To(Succeed())
 
@@ -446,7 +446,7 @@ var _ = Describe("Pipeline run lifecycle", func() {
 	It("clears an automatic-pauser pause during manual reopen", func() {
 		fixture := createRunLifecycleFixture(basicRunConfig("entry"))
 		entry := fixture.jobs["entry"]
-		consumeObservedSchedule(entry, false)
+		consumeObservedSchedule(entry)
 		Expect(fixture.payload.Pause("automatic-pipeline-pauser")).To(Succeed())
 		Expect(pendingRunBuild(entry).Finish(db.BuildStatusFailed)).To(Succeed())
 
@@ -464,7 +464,7 @@ var _ = Describe("Pipeline run lifecycle", func() {
 		fixture := createRunLifecycleFixture(basicRunConfig("entry"))
 		entry := fixture.jobs["entry"]
 		original := pendingRunBuild(entry)
-		consumeObservedSchedule(entry, false)
+		consumeObservedSchedule(entry)
 		Expect(original.Finish(db.BuildStatusFailed)).To(Succeed())
 		reclaimRunPayloadForTest(fixture.template, fixture.run)
 
@@ -479,7 +479,7 @@ var _ = Describe("Pipeline run lifecycle", func() {
 		fixture := createRunLifecycleFixture(basicRunConfig("entry"))
 		entry := fixture.jobs["entry"]
 		build := pendingRunBuild(entry)
-		consumeObservedSchedule(entry, false)
+		consumeObservedSchedule(entry)
 
 		gateConn := openRunLifecycleConn()
 		inspectorConn := openRunLifecycleConn()
@@ -506,7 +506,7 @@ var _ = Describe("Pipeline run lifecycle", func() {
 		fixture := createRunLifecycleFixture(basicRunConfig("entry"))
 		entry := fixture.jobs["entry"]
 		finishing := pendingRunBuild(entry)
-		consumeObservedSchedule(entry, false)
+		consumeObservedSchedule(entry)
 		gateConn := openRunLifecycleConn()
 		admissionConn := openRunLifecycleConn()
 		finishConn := openRunLifecycleConn()
@@ -538,7 +538,7 @@ var _ = Describe("Pipeline run lifecycle", func() {
 		fixture := createRunLifecycleFixture(basicRunConfig("entry"))
 		entry := fixture.jobs["entry"]
 		finishing := pendingRunBuild(entry)
-		consumeObservedSchedule(entry, false)
+		consumeObservedSchedule(entry)
 		gateConn := openRunLifecycleConn()
 		admissionConn := openRunLifecycleConn()
 		finishConn := openRunLifecycleConn()
@@ -598,7 +598,7 @@ var _ = Describe("Pipeline run lifecycle structural guard", func() {
 		Expect(consumeEnd).To(BeNumerically(">", 0), "guard must bound schedule consumption")
 		consumeBody := string(jobSource)[consumeStart : consumeStart+consumeEnd]
 		Expect(consumeBody).To(ContainSubstring("attemptRunCompletion("), "schedule consumption must be the second completion call site")
-		Expect(consumeBody).NotTo(ContainSubstring("noBuild &&"), "schedule consumption must not gate completion on the scheduler's no-build hint")
+		Expect(consumeBody).NotTo(ContainSubstring("noBuild"), "schedule consumption must not gate completion on a scheduler no-build hint")
 		Expect(string(jobSource)).NotTo(ContainSubstring("UpdateLastScheduled"), "the obsolete independent consumer must be removed")
 
 		pauseStart := strings.Index(string(pipelineSource), "func (p *pipeline) Pause(pausedBy string)")
