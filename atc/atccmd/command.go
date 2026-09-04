@@ -291,6 +291,14 @@ type RunCommand struct {
 	DefaultTaskTimeout time.Duration `long:"default-task-timeout" description:"Default timeout of task steps"`
 
 	DisableRedactSecrets bool `long:"disable-redact-secrets" description:"Disables secret redaction in build logs."`
+
+	// Deliberately not a member of the "Feature Flags" group above: the
+	// three fields in that group are exactly the keys of atc.FeatureFlags(),
+	// which atc/api/infoserver serves anonymously on atc.GetInfo. Whether
+	// this server holds durable run creation is not an anonymous fact.
+	// DisableRedactSecrets is the existing precedent for a process-wide
+	// boolean that is deliberately outside the group and outside the map.
+	EnablePipelineRunCreation bool `long:"enable-pipeline-run-creation" description:"Admit public creation of durable pipeline runs. Off by default: run creation is held until the durable run contract lands."`
 }
 
 type Migration struct {
@@ -569,6 +577,7 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 	atc.DefaultWebhookInterval = cmd.ResourceWithWebhookCheckingInterval
 	atc.DefaultResourceTypeInterval = cmd.ResourceTypeCheckingInterval
 	atc.DisableRedactSecrets = cmd.DisableRedactSecrets
+	atc.EnablePipelineRunCreation = cmd.EnablePipelineRunCreation
 
 	if cmd.BaseResourceTypeDefaults.Path() != "" {
 		content, err := os.ReadFile(cmd.BaseResourceTypeDefaults.Path())
