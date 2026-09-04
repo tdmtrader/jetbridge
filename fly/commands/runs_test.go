@@ -28,6 +28,34 @@ func (client *recordingRunLister) PipelineRuns(name string, page concourse.Page)
 	return client.runs, concourse.Pagination{}, client.err
 }
 
+type pagedRunResponse struct {
+	runs       []atc.PipelineRun
+	pagination concourse.Pagination
+}
+
+type pagedRunLister struct {
+	responses []pagedRunResponse
+	requested []concourse.Page
+}
+
+func (client *pagedRunLister) PipelineRuns(_ string, page concourse.Page) ([]atc.PipelineRun, concourse.Pagination, error) {
+	client.requested = append(client.requested, page)
+	if len(client.responses) == 0 {
+		return nil, concourse.Pagination{}, errors.New("asked for a page the server was never scripted to answer")
+	}
+	response := client.responses[0]
+	client.responses = client.responses[1:]
+	return response.runs, response.pagination, nil
+}
+
+func numberedRuns(highest, count int) []atc.PipelineRun {
+	runs := make([]atc.PipelineRun, count)
+	for i := range runs {
+		runs[i] = atc.PipelineRun{Number: highest - i, Status: atc.RunStatusSucceeded}
+	}
+	return runs
+}
+
 var _ = Describe("RunsCommand", func() {
 	It("registers runs without an alias", func() {
 		parser := flags.NewParser(&FlyCommand{}, flags.HelpFlag)
@@ -92,6 +120,47 @@ var _ = Describe("RunsCommand", func() {
 			InstanceVars: atc.InstanceVars{"branch": "main"},
 		}}),
 	)
+
+	It("pages past the server's limit cap instead of returning a short list", func() {
+		// This fails if -c above atc.PaginationAPIMaxLimit is sent through as
+		// one limit: the server clamps it without saying so, and the user gets
+		// 500 rows that look like the whole answer.
+		client := &pagedRunLister{responses: []pagedRunResponse{
+			{runs: numberedRuns(600, 500), pagination: concourse.Pagination{Next: &concourse.Page{To: 101, Limit: 500}}},
+			{runs: numberedRuns(100, 100), pagination: concourse.Pagination{Next: &concourse.Page{To: 1, Limit: 500}}},
+		}}
+		output := new(bytes.Buffer)
+		command := &RunsCommand{Count: 600, Pipeline: flaghelpers.PipelineFlag{Name: "template"}}
+
+		Expect(command.run(client, output)).To(Succeed())
+		Expect(client.requested).To(Equal([]concourse.Page{
+			{Limit: atc.PaginationAPIMaxLimit},
+			{To: 101, Limit: 100},
+		}))
+		Expect(bytes.Count(output.Bytes(), []byte("\n"))).To(Equal(600))
+	})
+
+	It("stops once the requested count is collected", func() {
+		client := &pagedRunLister{responses: []pagedRunResponse{
+			{runs: numberedRuns(10, 3), pagination: concourse.Pagination{Next: &concourse.Page{To: 7, Limit: 3}}},
+		}}
+		command := &RunsCommand{Count: 3, Pipeline: flaghelpers.PipelineFlag{Name: "template"}}
+
+		Expect(command.run(client, new(bytes.Buffer))).To(Succeed())
+		Expect(client.requested).To(HaveLen(1))
+	})
+
+	It("stops when the server has no further page", func() {
+		client := &pagedRunLister{responses: []pagedRunResponse{
+			{runs: numberedRuns(200, 200)},
+		}}
+		output := new(bytes.Buffer)
+		command := &RunsCommand{Count: 600, Pipeline: flaghelpers.PipelineFlag{Name: "template"}}
+
+		Expect(command.run(client, output)).To(Succeed())
+		Expect(client.requested).To(HaveLen(1))
+		Expect(bytes.Count(output.Bytes(), []byte("\n"))).To(Equal(200))
+	})
 
 	It("returns a client error unchanged", func() {
 		apiErr := errors.New("server says no")
