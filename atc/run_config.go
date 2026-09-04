@@ -33,11 +33,11 @@ func MaterializeRunConfig(config Config, identity RunIdentity, params RunParams)
 	}
 
 	resolvedPayload, err := vars.NewTemplateResolver(payload, []vars.Variables{
-		vars.StaticVariables{
+		runScopedVariables{vars.StaticVariables{
 			"run":    identity.Number,
 			"run_id": identity.ID,
-		},
-		vars.StaticVariables(runParamsForInterpolation(normalizedParams)),
+		}},
+		runScopedVariables{vars.StaticVariables(runParamsForInterpolation(normalizedParams))},
 	}).Resolve(false)
 	if err != nil {
 		return RunMaterialization{}, err
@@ -79,6 +79,24 @@ func MaterializeRunConfig(config Config, identity RunIdentity, params RunParams)
 		ExpectedJobNames:   expectedJobNames(materialized.Jobs, entries),
 		PolicyKeyByJobName: policyKeys,
 	}, nil
+}
+
+// runScopedVariables resolves only whole-word references. A dotted reference
+// such as ((db.password)) or ((run.foo)) is an ordinary Concourse variable even
+// when its first segment names a declared parameter or a reserved run value --
+// template_placeholders.go and vars.NewExactReferenceExclusion both document
+// that materialization leaves it entirely alone -- so it must be reported as
+// absent for a runtime var source to resolve, rather than traversed into a
+// scalar and rejected with a field error.
+type runScopedVariables struct {
+	vars.StaticVariables
+}
+
+func (v runScopedVariables) Get(ref vars.Reference) (any, bool, error) {
+	if len(ref.Fields) > 0 {
+		return nil, false, nil
+	}
+	return v.StaticVariables.Get(ref)
 }
 
 func runParamsForInterpolation(params RunParams) RunParams {
