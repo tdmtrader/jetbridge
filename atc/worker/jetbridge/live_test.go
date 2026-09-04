@@ -160,6 +160,13 @@ func adoptDaemonTLS(t *testing.T, clientset kubernetes.Interface, cfg *jetbridge
 		paths[key] = path
 	}
 
+	// The daemon authenticates every resolve with an HMAC capability the
+	// caller mints, so a config without the signing key produces tokens the
+	// daemon rejects and the fetch returns nothing. The real web gets this key
+	// from the same Secret the chart mounts; adopt it here for the same reason
+	// the certificates are adopted.
+	adoptResolveCapability(t, clientset, cfg, dsNamespace, daemon)
+
 	cfg.ArtifactDaemonTLSEnabled = true
 	cfg.ArtifactDaemonTLSCACert = paths["ca.crt"]
 	cfg.ArtifactDaemonTLSCert = paths["client.crt"]
@@ -482,4 +489,61 @@ func isExecExitError(err error, target **jetbridge.ExecExitError) bool {
 		return true
 	}
 	return false
+}
+
+// adoptResolveCapability copies the daemon's resolve-capability HMAC key into
+// the live config.
+//
+// The daemon authenticates every /resolve-batch with a short-lived capability
+// the caller signs, so a config with no key mints tokens the daemon refuses.
+// The failure is quiet in the worst way: the init container still exits 0 and
+// the step pod still starts, but the requested artifact never lands, so the
+// step fails later with a missing file rather than a fetch error.
+//
+// The key name comes from the daemon's own --resolve-capability-key flag so
+// this follows a chart rename, and the Secret is found via the daemon's
+// resolve-capability volume rather than a hardcoded name.
+func adoptResolveCapability(
+	t *testing.T,
+	clientset kubernetes.Interface,
+	cfg *jetbridge.Config,
+	namespace string,
+	daemon appsv1.DaemonSet,
+) {
+	t.Helper()
+
+	var secretName string
+	for _, volume := range daemon.Spec.Template.Spec.Volumes {
+		if volume.Name == "resolve-capability" && volume.Secret != nil {
+			secretName = volume.Secret.SecretName
+			break
+		}
+	}
+	if secretName == "" {
+		return
+	}
+
+	keyName := "resolve.key"
+	for _, arg := range daemon.Spec.Template.Spec.Containers[0].Command {
+		if rest, found := strings.CutPrefix(arg, "--resolve-capability-key="); found {
+			if base := rest[strings.LastIndex(rest, "/")+1:]; base != "" {
+				keyName = base
+			}
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	secret, err := clientset.CoreV1().Secrets(namespace).Get(ctx, secretName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("daemon resolve capability secret %s/%s is unreadable: %v", namespace, secretName, err)
+	}
+	key, found := secret.Data[keyName]
+	if !found {
+		t.Fatalf("resolve capability secret %s/%s has no %s", namespace, secretName, keyName)
+	}
+
+	cfg.ArtifactDaemonResolveCapabilityKey = key
+	t.Logf("resolve capability adopted from %s/%s (%s, %d bytes)", namespace, secretName, keyName, len(key))
 }
