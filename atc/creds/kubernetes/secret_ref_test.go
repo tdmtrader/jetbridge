@@ -38,7 +38,7 @@ var _ = Describe("SecretRefProvider", func() {
 		})
 
 		It("returns the correct namespace, name, and key for a valid path", func() {
-			ref, found := provider.GetSecretRef("prefix-main/my-secret")
+			ref, found := provider.GetSecretRef("prefix-main/my-secret", nil)
 			Expect(found).To(BeTrue())
 			Expect(ref).To(Equal(&creds.K8sSecretRef{
 				Namespace: "prefix-main",
@@ -48,7 +48,7 @@ var _ = Describe("SecretRefProvider", func() {
 		})
 
 		It("returns the correct ref for pipeline-scoped secrets", func() {
-			ref, found := provider.GetSecretRef("prefix-team/my-pipeline.db-password")
+			ref, found := provider.GetSecretRef("prefix-team/my-pipeline.db-password", nil)
 			Expect(found).To(BeTrue())
 			Expect(ref).To(Equal(&creds.K8sSecretRef{
 				Namespace: "prefix-team",
@@ -57,14 +57,24 @@ var _ = Describe("SecretRefProvider", func() {
 			}))
 		})
 
+		It("uses the reference's field as the key", func() {
+			ref, found := provider.GetSecretRef("prefix-main/db", []string{"password"})
+			Expect(found).To(BeTrue())
+			Expect(ref).To(Equal(&creds.K8sSecretRef{
+				Namespace: "prefix-main",
+				Name:      "db",
+				Key:       "password",
+			}))
+		})
+
 		It("returns false for paths that cannot be split into namespace/name", func() {
-			ref, found := provider.GetSecretRef("no-slash-here")
+			ref, found := provider.GetSecretRef("no-slash-here", nil)
 			Expect(found).To(BeFalse())
 			Expect(ref).To(BeNil())
 		})
 
 		It("returns false for empty paths", func() {
-			ref, found := provider.GetSecretRef("")
+			ref, found := provider.GetSecretRef("", nil)
 			Expect(found).To(BeFalse())
 			Expect(ref).To(BeNil())
 		})

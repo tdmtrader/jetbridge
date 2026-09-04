@@ -59,6 +59,19 @@ var _ = Describe("VariableLookupFromSecrets SecretRefResolver", func() {
 				}))
 			})
 
+			It("reports the field as the secret's key", func() {
+				fakeSecrets.data["concourse-main/db"] = map[string]any{"password": "s3cret"}
+
+				resolver := variables.(vars.SecretRefResolver)
+				ref, found := resolver.GetSecretRef(vars.Reference{Path: "db", Fields: []string{"password"}})
+				Expect(found).To(BeTrue())
+				Expect(ref).To(Equal(&vars.SecretRef{
+					Namespace: "concourse-main",
+					Name:      "db",
+					Key:       "password",
+				}))
+			})
+
 			It("returns false when the secret is not found at any path", func() {
 				resolver := variables.(vars.SecretRefResolver)
 				ref, found := resolver.GetSecretRef(vars.Reference{Path: "nonexistent"})
@@ -137,15 +150,19 @@ func (f *fakeSecretsWithRef) NewSecretLookupPaths(teamName string, pipelineName 
 	return lookupPaths
 }
 
-func (f *fakeSecretsWithRef) GetSecretRef(path string) (*vars.SecretRef, bool) {
+func (f *fakeSecretsWithRef) GetSecretRef(path string, fields []string) (*vars.SecretRef, bool) {
 	parts := splitPath(path)
 	if len(parts) != 2 {
 		return nil, false
 	}
+	key := "value"
+	if len(fields) > 0 {
+		key = fields[len(fields)-1]
+	}
 	return &vars.SecretRef{
 		Namespace: parts[0],
 		Name:      parts[1],
-		Key:       "value",
+		Key:       key,
 	}, true
 }
 

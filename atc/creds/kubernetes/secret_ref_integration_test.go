@@ -74,6 +74,37 @@ var _ = Describe("K8s Secret Ref Integration", func() {
 		Expect(ref.Key).To(Equal("value"))
 	})
 
+	It("tracks a field-qualified reference under the same key as its value, keyed on the field", func() {
+		fakeClientset.CoreV1().Secrets("prefix-some-team").Create(
+			context.TODO(),
+			&v1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "db"},
+				Data: map[string][]byte{
+					"password": []byte("s3cret-value"),
+					"user":     []byte("admin"),
+				},
+			},
+			metav1.CreateOptions{},
+		)
+
+		val, found, err := tracker.Get(vars.Reference{Path: "db", Fields: []string{"password"}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(val).To(Equal("s3cret-value"))
+
+		credValues := vars.TrackedVarsMap{}
+		tracker.IterateInterpolatedCreds(credValues)
+		Expect(credValues).To(HaveKeyWithValue("db.password", "s3cret-value"))
+
+		secretRefs := map[string]vars.SecretRef{}
+		tracker.IterateSecretRefs(secretRefIterator(secretRefs))
+		Expect(secretRefs).To(HaveKeyWithValue("db.password", vars.SecretRef{
+			Namespace: "prefix-some-team",
+			Name:      "db",
+			Key:       "password",
+		}))
+	})
+
 	It("does not track a secret ref for variables that are not found", func() {
 		_, found, err := tracker.Get(vars.Reference{Path: "nonexistent"})
 		Expect(err).NotTo(HaveOccurred())

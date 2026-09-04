@@ -32,7 +32,7 @@ var _ = Describe("SecretRefProvider", func() {
 			},
 		}
 
-		ref, found := provider.GetSecretRef("concourse-main/my-secret")
+		ref, found := provider.GetSecretRef("concourse-main/my-secret", nil)
 		Expect(found).To(BeTrue())
 		Expect(ref.Namespace).To(Equal("concourse-main"))
 		Expect(ref.Name).To(Equal("my-secret"))
@@ -44,7 +44,7 @@ var _ = Describe("SecretRefProvider", func() {
 			refs: map[string]*creds.K8sSecretRef{},
 		}
 
-		ref, found := provider.GetSecretRef("concourse-main/nonexistent")
+		ref, found := provider.GetSecretRef("concourse-main/nonexistent", nil)
 		Expect(found).To(BeFalse())
 		Expect(ref).To(BeNil())
 	})
@@ -54,7 +54,7 @@ type fakeSecretRefProvider struct {
 	refs map[string]*creds.K8sSecretRef
 }
 
-func (f *fakeSecretRefProvider) GetSecretRef(path string) (*creds.K8sSecretRef, bool) {
+func (f *fakeSecretRefProvider) GetSecretRef(path string, fields []string) (*creds.K8sSecretRef, bool) {
 	ref, ok := f.refs[path]
 	return ref, ok
 }
