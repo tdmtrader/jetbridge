@@ -12,6 +12,7 @@ import Expect
 import Html
 import Html.Attributes as Attr
 import Http
+import Json.Encode
 import Message.Callback exposing (Callback(..))
 import Message.Effects as Effects
 import Message.Message exposing (DomID(..), Message(..))
@@ -144,6 +145,36 @@ all =
                         [ Query.has [ containing [ tag "option", attribute <| Attr.value "" ] ]
                         , Query.hasNot [ containing [ tag "option", attribute <| Attr.value "", attribute <| Attr.disabled True ] ]
                         ]
+        , test "offers a true/false choice for a Boolean parameter" <|
+            \_ ->
+                openedFor boolTemplate
+                    |> Common.queryView
+                    |> Query.find [ id "run-param-enabled" ]
+                    |> Expect.all
+                        [ Query.has [ tag "select" ]
+                        , Query.has [ containing [ tag "option", attribute <| Attr.value "true", text "true" ] ]
+                        , Query.has [ containing [ tag "option", attribute <| Attr.value "false", text "false" ] ]
+                        ]
+        , test "marks required parameters without handing validation to the browser" <|
+            \_ ->
+                openedFor boolTemplate
+                    |> Common.queryView
+                    |> Expect.all
+                        [ Query.find [ id "run-param-enabled" ]
+                            >> Query.has [ attribute <| Attr.attribute "aria-required" "true" ]
+                        , Query.find [ id "run-param-notes" ]
+                            >> Query.hasNot [ attribute <| Attr.attribute "aria-required" "true" ]
+                        , Query.hasNot [ attribute <| Attr.required True ]
+                        ]
+        , test "submits the chosen Boolean as a typed value" <|
+            \_ ->
+                openedFor boolTemplate
+                    |> Application.update (Update (SetPipelineRunParam "enabled" "true"))
+                    |> Tuple.first
+                    |> Application.update (Update SubmitPipelineRun)
+                    |> Tuple.second
+                    |> List.filterMap createdVars
+                    |> Expect.equal [ "{\"enabled\":true}" ]
         , test "uses a native pretty link only when the server gives an instance reference" <|
             \_ ->
                 pageWithRuns
@@ -560,6 +591,33 @@ optionalEnumTemplate =
     { template
         | paramsSchema = [ { name = "environment", type_ = Concourse.EnumParam, required = False, default = Nothing, values = [ Concourse.JsonString "staging" ], description = Nothing } ]
     }
+
+
+boolTemplate : Concourse.Pipeline
+boolTemplate =
+    { template
+        | paramsSchema =
+            [ { name = "enabled", type_ = Concourse.BoolParam, required = True, default = Nothing, values = [], description = Nothing }
+            , { name = "notes", type_ = Concourse.StringParam, required = False, default = Nothing, values = [], description = Nothing }
+            ]
+    }
+
+
+openedFor : Concourse.Pipeline -> Application.Model
+openedFor pipeline =
+    pageFor pipeline
+        |> Application.update (Update OpenPipelineRunForm)
+        |> Tuple.first
+
+
+createdVars : Effects.Effect -> Maybe String
+createdVars effect =
+    case effect of
+        Effects.CreatePipelineRun _ vars ->
+            Just (Json.Encode.encode 0 (Concourse.encodeInstanceVars vars))
+
+        _ ->
+            Nothing
 
 
 pageFor : Concourse.Pipeline -> Application.Model
