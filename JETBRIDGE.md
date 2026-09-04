@@ -303,12 +303,10 @@ Source: `atc/atccmd/command.go` (RunCommand.Kubernetes struct)
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--gc-interval` | `30s` | Interval between GC runs. |
 | `--gc-one-off-grace-period` | `5m` | Grace period before GC of one-off build containers. |
 | `--gc-missing-grace-period` | `5m` | Grace period for containers that went missing from the worker. |
 | `--gc-hijack-grace-period` | `5m` | Grace period before GC of hijacked containers. |
 | `--gc-failed-grace-period` | `120h` | Grace period before GC of failed containers. |
-| `--gc-check-recycle-period` | `1m` | Interval for reaping completed checks. |
 | `--gc-var-source-recycle-period` | `5m` | Interval for reaping unused credential/var sources. |
 
 Source: `atc/atccmd/command.go` (RunCommand.GC struct)
@@ -518,9 +516,9 @@ period (`--gc-hijack-grace-period`) or intercept while the build is still runnin
 
 **Symptoms**: Old pods accumulate in the namespace.
 
-The reaper runs every `--gc-interval` (default 30s). Check that the web pod
-is healthy and can reach the Kubernetes API server. Verify RBAC permissions
-include `delete` on pods.
+The reaper runs every 10 seconds, the default component interval; there is no
+flag for it. Check that the web pod is healthy and can reach the Kubernetes
+API server. Verify RBAC permissions include `delete` on pods.
 
 ```bash
 kubectl -n concourse get pods -l concourse.ci/worker --sort-by=.metadata.creationTimestamp
