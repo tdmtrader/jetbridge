@@ -21,6 +21,11 @@ func (c credVars) GetSecretRef(ref vars.Reference) (*vars.SecretRef, bool) {
 	if !found {
 		return nil, false
 	}
+	// Like the Kubernetes credential manager, the key within the secret is the
+	// field the variable reference selected, defaulting to "value".
+	if len(ref.Fields) > 0 {
+		secretRef.Key = ref.Fields[len(ref.Fields)-1]
+	}
 	return &secretRef, true
 }
 
@@ -41,7 +46,7 @@ var _ = Describe("BuildSecretEnv", func() {
 			refs: map[string]vars.SecretRef{
 				"db-password": {Namespace: "concourse-main", Name: "db-password", Key: "value"},
 				"api-key":     {Namespace: "concourse-main", Name: "api-key", Key: "value"},
-				"db":          {Namespace: "concourse-main", Name: "db", Key: "password"},
+				"db":          {Namespace: "concourse-main", Name: "db", Key: "value"},
 			},
 		})
 	})
@@ -103,20 +108,17 @@ var _ = Describe("BuildSecretEnv", func() {
 		Expect(result).To(BeNil())
 	})
 
-	// This pins a known defect rather than the desired behaviour: Tracker keys
-	// interpolated creds on path plus fields but secret refs on path alone, so
-	// the lookup here misses and the literal secret is written into the pod env.
-	// Fixing it needs two changes together -- the tracker keys, and a resolver
-	// that reports the field as the secret's key. kubernetes.Secrets.GetSecretRef
-	// takes only a path and hardcodes Key: "value", and VariableLookupFromSecrets
-	// drops Fields before calling it, so the tracker change alone would produce a
-	// ref to the wrong key, which is worse than the leak.
-	It("returns nil for a param resolved from a field of a credential", func() {
+	It("maps a param resolved from a field of a credential to that field's key", func() {
 		params = atc.TaskEnv{"DB_PASS": "s3cret"}
 
 		resolve(vars.Reference{Path: "db", Fields: []string{"password"}})
 
 		result := exec.BuildSecretEnv(params, state)
-		Expect(result).To(BeNil())
+		Expect(result).To(HaveLen(1))
+		Expect(result["DB_PASS"]).To(Equal(vars.SecretRef{
+			Namespace: "concourse-main",
+			Name:      "db",
+			Key:       "password",
+		}))
 	})
 })

@@ -82,17 +82,24 @@ func (secrets Secrets) getValueFromSecret(secret *v1.Secret) (any, *time.Time, b
 }
 
 // GetSecretRef returns the Kubernetes Secret coordinates for a given secret
-// path. The path must be in the form "namespace/name". The key is always
-// "value" which matches the convention used by Secrets.Get.
-func (secrets Secrets) GetSecretRef(path string) (*creds.K8sSecretRef, bool) {
+// path. The path must be in the form "namespace/name".
+//
+// The key is the last of fields, mirroring getValueFromSecret: a reference
+// with fields resolved to secret.Data[field], so that is the key the pod must
+// read. With no fields the key is "value", the single-value convention.
+func (secrets Secrets) GetSecretRef(path string, fields []string) (*creds.K8sSecretRef, bool) {
 	parts := strings.Split(path, "/")
 	if len(parts) != 2 {
 		return nil, false
 	}
+	key := "value"
+	if len(fields) > 0 {
+		key = fields[len(fields)-1]
+	}
 	return &creds.K8sSecretRef{
 		Namespace: parts[0],
 		Name:      parts[1],
-		Key:       "value",
+		Key:       key,
 	}, true
 }
 

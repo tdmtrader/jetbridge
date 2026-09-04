@@ -72,7 +72,7 @@ func (sl VariableLookupFromSecrets) GetSecretRef(ref vars.Reference) (*vars.Secr
 		if err != nil || !found {
 			return nil, false
 		}
-		return provider.GetSecretRef(ref.Path)
+		return provider.GetSecretRef(ref.Path, ref.Fields)
 	}
 
 	for _, rule := range sl.LookupPaths {
@@ -84,7 +84,7 @@ func (sl VariableLookupFromSecrets) GetSecretRef(ref vars.Reference) (*vars.Secr
 		if err != nil || !found {
 			continue
 		}
-		return provider.GetSecretRef(secretPath)
+		return provider.GetSecretRef(secretPath, ref.Fields)
 	}
 	return nil, false
 }

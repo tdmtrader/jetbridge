@@ -67,9 +67,7 @@ func (t *Tracker) track(varRef Reference, val any) {
 			}, vv)
 		}
 	case string:
-		paths := append([]string{varRef.Path}, varRef.Fields...)
-
-		t.interpolatedCreds[strings.Join(paths, ".")] = v
+		t.interpolatedCreds[trackerKey(varRef)] = v
 	default:
 		// Do nothing
 	}
@@ -79,7 +77,15 @@ func (t *Tracker) TrackSecretRef(varRef Reference, ref SecretRef) {
 	t.lock.Lock()
 	defer t.lock.Unlock()
 
-	t.secretRefs[varRef.Path] = ref
+	t.secretRefs[trackerKey(varRef)] = ref
+}
+
+// trackerKey is the key under which a reference's value and its secret ref are
+// both recorded. Both maps must agree: BuildSecretEnv joins them by key, so a
+// ref keyed on the path alone can never be matched to a field-qualified value
+// and the literal secret is written into the pod env instead.
+func trackerKey(varRef Reference) string {
+	return strings.Join(append([]string{varRef.Path}, varRef.Fields...), ".")
 }
 
 func (t *Tracker) IterateInterpolatedCreds(iter TrackedVarsIterator) {

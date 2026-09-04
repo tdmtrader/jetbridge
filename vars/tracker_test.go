@@ -33,6 +33,17 @@ var _ = Describe("Tracker SecretRef tracking", func() {
 			Expect(refs).To(HaveKeyWithValue("my-var", ref2))
 		})
 
+		It("keys a ref on path and fields, matching the interpolated creds key", func() {
+			// Interpolated creds are keyed "db.password"; a secret ref keyed on
+			// the path alone can never be matched up with its value, and the
+			// literal secret ends up in the pod env instead of a SecretKeyRef.
+			ref := SecretRef{Namespace: "concourse-main", Name: "db", Key: "password"}
+			tracker.TrackSecretRef(Reference{Path: "db", Fields: []string{"password"}}, ref)
+
+			refs := collectSecretRefs(tracker)
+			Expect(refs).To(HaveKeyWithValue("db.password", ref))
+		})
+
 		It("tracks multiple different refs", func() {
 			ref1 := SecretRef{Namespace: "ns", Name: "s1", Key: "value"}
 			ref2 := SecretRef{Namespace: "ns", Name: "s2", Key: "value"}
