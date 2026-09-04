@@ -13,6 +13,7 @@ import Html.Events exposing (onClick, onInput, onSubmit)
 import Http
 import Json.Decode
 import Json.Encode
+import Login.Login as Login
 import Message.Callback exposing (Callback(..))
 import Message.Effects exposing (Effect(..))
 import Message.Message exposing (Message(..))
@@ -27,7 +28,9 @@ import Time
 import Tooltip
 import UpdateMsg exposing (UpdateMsg(..))
 import Views.Styles as ViewStyles
+import Views.TopBar as TopBar
 type alias Model =
+    Login.Model
     { pipelineId : Concourse.PipelineIdentifier
     , page : Page
     , template : WebData Concourse.Pipeline
@@ -41,6 +44,7 @@ type alias Model =
     , validation : Maybe RunForm.ValidationError
     , now : Maybe Time.Posix
     }
+
 pageLimit : Int
 pageLimit =
     50
@@ -62,6 +66,7 @@ init flags =
       , error = Nothing
       , validation = Nothing
       , now = Nothing
+      , isUserMenuExpanded = False
       }
     , [ FetchPipeline flags.id, FetchPipelineRuns flags.id page, GetCurrentTime ]
     )
@@ -178,9 +183,9 @@ tooltip _ _ =
 view : Session -> Model -> Html Message
 view session model =
     let route = Routes.PipelineRuns { id = model.pipelineId, page = Just model.page } in
-    Html.div [ style "height" "100%" ]
-        [ Html.div (id "page-including-top-bar" :: ViewStyles.pageIncludingTopBar)
-            [ Html.div (id "top-bar-app" :: ViewStyles.topBar False) [ SideBar.sideBarIcon session, Html.div [ id "breadcrumbs" ] [ Html.text (model.pipelineId.pipelineName ++ " runs") ] ] ]
+    Html.div (id "page-including-top-bar" :: ViewStyles.pageIncludingTopBar)
+        [ Html.div (id "top-bar-app" :: ViewStyles.topBar False)
+            (SideBar.sideBarIcon session :: TopBar.breadcrumbs session route ++ [ Login.view session.userState model ])
         , Html.div (id "page-below-top-bar" :: ViewStyles.pageBelowTopBar route)
             [ SideBar.view session (Just model.pipelineId), viewBody model ]
         ]

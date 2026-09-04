@@ -14,7 +14,7 @@ import Html.Attributes as Attr
 import Http
 import Message.Callback exposing (Callback(..))
 import Message.Effects as Effects
-import Message.Message exposing (Message(..))
+import Message.Message exposing (DomID(..), Message(..))
 import Message.Subscription exposing (Delivery(..), Interval(..))
 import Message.TopLevelMessage exposing (TopLevelMessage(..))
 import PipelineRuns.PipelineRuns as PipelineRuns
@@ -46,6 +46,37 @@ all =
                     |> Query.find [ id "page-below-top-bar" ]
                     |> Query.children [ id "pipeline-runs" ]
                     |> Query.count (Expect.equal 1)
+        , test "nests the page body inside the top-bar shell" <|
+            \_ ->
+                pageWithTemplate
+                    |> Common.queryView
+                    |> Query.find [ id "page-including-top-bar" ]
+                    |> Query.children [ id "page-below-top-bar" ]
+                    |> Query.count (Expect.equal 1)
+        , test "links home and back to the template from the top bar" <|
+            \_ ->
+                pageWithBreadcrumbs
+                    |> Common.queryView
+                    |> Query.find [ id "top-bar-app" ]
+                    |> Expect.all
+                        [ Query.has [ tag "a", attribute <| Attr.href "/" ]
+                        , Query.find [ id "breadcrumbs" ]
+                            >> Query.has [ id "breadcrumb-pipeline", id "breadcrumb-runs", text "runs" ]
+                        ]
+        , test "renders the login control" <|
+            \_ ->
+                pageWithTemplate
+                    |> Common.queryView
+                    |> Query.has [ id "login-component" ]
+        , test "opens the user menu from the runs page" <|
+            \_ ->
+                pageWithTemplate
+                    |> Application.handleCallback (UserFetched (Ok sampleUser))
+                    |> Tuple.first
+                    |> Application.update (Update (Click UserMenu))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.has [ id "logout-button" ]
         , test "fetches the template and newest fifty runs on initialization" <|
             \_ ->
                 PipelineRuns.init { id = Data.shortPipelineId, page = Nothing }
@@ -402,6 +433,18 @@ pageWithTemplate =
     Common.init "/teams/team/pipelines/pipeline/runs"
         |> Application.handleCallback (PipelineFetched (Ok template))
         |> Tuple.first
+
+
+pageWithBreadcrumbs : Application.Model
+pageWithBreadcrumbs =
+    pageWithTemplate
+        |> Application.handleCallback (AllPipelinesFetched (Ok [ Data.pipeline "team" 1 |> Data.withName "pipeline" ]))
+        |> Tuple.first
+
+
+sampleUser : Concourse.User
+sampleUser =
+    { id = "1", userName = "test", name = "Bob", isAdmin = False, email = "bob@bob.com", teams = Dict.empty, displayUserId = "displayUserIdTest" }
 
 
 pageWithRuns : Application.Model

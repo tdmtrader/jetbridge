@@ -266,6 +266,7 @@ handleCallback callback session =
                         handleLoggedOut
                         handleLoggedOut
                         handleLoggedOut
+                        >> updatePipelineRuns handleLoggedOut
 
                 _ ->
                     identity
@@ -313,7 +314,7 @@ update session msg =
         (Login.update msg)
         (Login.update msg >> FlySuccess.update msg)
         (Login.update msg >> DownloadFly.update msg)
-        >> updatePipelineRuns (PipelineRuns.update msg)
+        >> updatePipelineRuns (Login.update msg >> PipelineRuns.update msg)
         >> (case msg of
                 GoToRoute route ->
                     handleGoToRoute route
