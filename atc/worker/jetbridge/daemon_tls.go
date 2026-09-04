@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -20,13 +21,53 @@ func daemonURLScheme(cfg Config) string {
 	return "http"
 }
 
+// DaemonTLSConfigured is the single predicate for "the ATC speaks mTLS to the
+// artifact daemon": all three of the client certificate, its key, and the
+// daemon CA must be named. Every site that decides whether TLS is on -- the
+// scheme the ATC dials, the http.Client it dials with, the DaemonClient, and
+// the ArtifactDaemonTLSEnabled the ATC derives at startup -- asks this
+// function. When they were separate predicates a cert-only config made the ATC
+// dial https at a plaintext daemon while presenting no certificate.
+func DaemonTLSConfigured(certPath, keyPath, caCertPath string) bool {
+	return certPath != "" && keyPath != "" && caCertPath != ""
+}
+
+// ValidateDaemonTLSFlags refuses at STARTUP a daemon TLS configuration that
+// names some but not all of the triple. Such a config has no honest reading:
+// mTLS cannot be established without all three, and silently falling back to
+// plaintext would send artifact traffic in the clear to an operator who asked
+// for TLS. The error names exactly the flags left unset.
+func ValidateDaemonTLSFlags(certPath, keyPath, caCertPath string) error {
+	var missing []string
+	for _, f := range []struct {
+		flag, value string
+	}{
+		{"kubernetes-artifact-daemon-tls-cert", certPath},
+		{"kubernetes-artifact-daemon-tls-key", keyPath},
+		{"kubernetes-artifact-daemon-tls-ca-cert", caCertPath},
+	} {
+		if f.value == "" {
+			missing = append(missing, "--"+f.flag)
+		}
+	}
+	if len(missing) == 0 || len(missing) == 3 {
+		// All three set (mTLS) or none set (plaintext) are both coherent.
+		return nil
+	}
+	return fmt.Errorf(
+		"artifact daemon TLS is partially configured: %s must also be set. "+
+			"mTLS with the artifact daemon needs the client certificate, its key, and the daemon CA together; "+
+			"with only part of them the ATC would dial https at a daemon that may be listening in plaintext, "+
+			"presenting no client certificate",
+		strings.Join(missing, " and "),
+	)
+}
+
 // daemonClientTLSConfigured reports whether the config has a complete set of
 // client certificate paths for mTLS with the artifact daemon.
 func daemonClientTLSConfigured(cfg Config) bool {
 	return cfg.ArtifactDaemonTLSEnabled &&
-		cfg.ArtifactDaemonTLSCert != "" &&
-		cfg.ArtifactDaemonTLSKey != "" &&
-		cfg.ArtifactDaemonTLSCACert != ""
+		DaemonTLSConfigured(cfg.ArtifactDaemonTLSCert, cfg.ArtifactDaemonTLSKey, cfg.ArtifactDaemonTLSCACert)
 }
 
 // daemonTLSServerName returns the DNS name to verify the daemon's server

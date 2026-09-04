@@ -74,6 +74,73 @@ func tlsDaemonConfig(t *testing.T) Config {
 	return cfg
 }
 
+// DaemonTLSConfigured is the one predicate for "the ATC speaks mTLS to the
+// artifact daemon". It used to be four: atccmd derived TLSEnabled from the
+// cert alone, daemonClientTLSConfigured required all three paths, and
+// NewDaemonClient carried its own inline copy. A cert-only config therefore
+// dialled https at a plaintext daemon, presenting no client certificate.
+func TestDaemonTLSConfiguredRequiresTheWholeTriple(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		cert, key, caCrt string
+		want             bool
+	}{
+		{name: "all three", cert: "c", key: "k", caCrt: "a", want: true},
+		{name: "nothing", want: false},
+		{name: "cert only", cert: "c", want: false},
+		{name: "key only", key: "k", want: false},
+		{name: "ca only", caCrt: "a", want: false},
+		{name: "cert and key, no ca", cert: "c", key: "k", want: false},
+		{name: "cert and ca, no key", cert: "c", caCrt: "a", want: false},
+	} {
+		if got := DaemonTLSConfigured(tc.cert, tc.key, tc.caCrt); got != tc.want {
+			t.Errorf("%s: DaemonTLSConfigured(%q, %q, %q) = %v, want %v", tc.name, tc.cert, tc.key, tc.caCrt, got, tc.want)
+		}
+	}
+}
+
+// The scheme the ATC dials and the client it dials with come from the same
+// predicate, so they cannot disagree: https always presents a certificate.
+func TestDaemonSchemeAndClientNeverDisagree(t *testing.T) {
+	for _, tc := range []struct{ name, cert, key, caCrt string }{
+		{name: "cert only", cert: "/etc/tls/client.crt"},
+		{name: "cert and key", cert: "/etc/tls/client.crt", key: "/etc/tls/client.key"},
+		{name: "nothing"},
+	} {
+		cfg := testDaemonConfig()
+		cfg.ArtifactDaemonTLSCert = tc.cert
+		cfg.ArtifactDaemonTLSKey = tc.key
+		cfg.ArtifactDaemonTLSCACert = tc.caCrt
+		cfg.ArtifactDaemonTLSEnabled = DaemonTLSConfigured(tc.cert, tc.key, tc.caCrt)
+
+		if daemonURLScheme(cfg) == "https" && !daemonClientTLSConfigured(cfg) {
+			t.Errorf("%s: ATC dials https but presents no client certificate", tc.name)
+		}
+	}
+}
+
+func TestValidateDaemonTLSFlags(t *testing.T) {
+	if err := ValidateDaemonTLSFlags("", "", ""); err != nil {
+		t.Errorf("plaintext daemon traffic refused: %v", err)
+	}
+	if err := ValidateDaemonTLSFlags("c", "k", "a"); err != nil {
+		t.Errorf("complete triple refused: %v", err)
+	}
+
+	err := ValidateDaemonTLSFlags("c", "", "")
+	if err == nil {
+		t.Fatal("a cert without a key or CA was accepted; the ATC would dial https at a plaintext daemon")
+	}
+	for _, want := range []string{"kubernetes-artifact-daemon-tls-key", "kubernetes-artifact-daemon-tls-ca-cert"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name the missing flag --%s", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "kubernetes-artifact-daemon-tls-cert") {
+		t.Errorf("error %q names --kubernetes-artifact-daemon-tls-cert, which was in fact set", err)
+	}
+}
+
 func TestDaemonURLScheme(t *testing.T) {
 	if got := daemonURLScheme(testDaemonConfig()); got != "http" {
 		t.Errorf("TLS disabled: expected scheme http, got %q", got)

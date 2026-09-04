@@ -120,6 +120,45 @@ func (s *CommandSuite) TestK8sRuntimeValidationSkippedWhenK8sDisabled() {
 	s.NoError(err, "expected validation to be a no-op when --kubernetes-namespace is empty")
 }
 
+// The artifact daemon speaks mTLS or plaintext, never a mix. A cert without a
+// key and CA used to set ArtifactDaemonTLSEnabled anyway, so the ATC dialled
+// https at a plaintext daemon while presenting no client certificate, with
+// nothing failing until the first artifact read.
+
+func (s *CommandSuite) TestK8sRuntimeRefusesPartialDaemonTLSTriple() {
+	cmd := &atccmd.RunCommand{}
+	cmd.Kubernetes.Namespace = "concourse"
+	cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+	cmd.Kubernetes.ArtifactDaemonTLSCert = "/etc/tls/client.crt"
+	// Key and CA cert intentionally left empty.
+
+	err := atccmd.ValidateK8sRuntimeForTest(cmd)
+	s.Error(err, "expected validation to fail when only part of the daemon TLS triple is set")
+	s.Contains(err.Error(), "kubernetes-artifact-daemon-tls-key")
+	s.Contains(err.Error(), "kubernetes-artifact-daemon-tls-ca-cert")
+}
+
+func (s *CommandSuite) TestK8sRuntimeAcceptsCompleteDaemonTLSTriple() {
+	cmd := &atccmd.RunCommand{}
+	cmd.Kubernetes.Namespace = "concourse"
+	cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+	cmd.Kubernetes.ArtifactDaemonTLSCert = "/etc/tls/client.crt"
+	cmd.Kubernetes.ArtifactDaemonTLSKey = "/etc/tls/client.key"
+	cmd.Kubernetes.ArtifactDaemonTLSCACert = "/etc/tls/ca.crt"
+
+	err := atccmd.ValidateK8sRuntimeForTest(cmd)
+	s.NoError(err, "expected a complete daemon TLS triple to be accepted")
+}
+
+func (s *CommandSuite) TestK8sRuntimeAcceptsNoDaemonTLSAtAll() {
+	cmd := &atccmd.RunCommand{}
+	cmd.Kubernetes.Namespace = "concourse"
+	cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+
+	err := atccmd.ValidateK8sRuntimeForTest(cmd)
+	s.NoError(err, "expected plaintext daemon traffic to remain a valid configuration")
+}
+
 func TestSuite(t *testing.T) {
 	suite.Run(t, &CommandSuite{
 		Assertions: require.New(t),
