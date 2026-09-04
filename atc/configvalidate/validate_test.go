@@ -2879,6 +2879,9 @@ var _ = Describe("Template parameter schema and run retention configuration", fu
 		Entry("wrong enum member scalar", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "env", Type: atc.ParamTypeEnum, Values: []any{"staging", true}}), "parameter env enum values must have one scalar type"),
 		Entry("non-scalar enum member", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "env", Type: atc.ParamTypeEnum, Values: []any{"staging", map[string]any{"name": "production"}}}), "parameter env enum values must be string, number, or bool"),
 		Entry("wrong enum default scalar", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "env", Type: atc.ParamTypeEnum, Values: []any{"staging", "production"}, Default: true}), "parameter env default must have the enum value type"),
+		Entry("enum default outside the declared values", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "env", Type: atc.ParamTypeEnum, Values: []any{"staging", "production"}, Default: "dev"}), "parameter env default must be one of the declared enum values"),
+		Entry("enum default outside the declared values after numeric normalization", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "count", Type: atc.ParamTypeEnum, Values: []any{1, 2}, Default: json.Number("3")}), "parameter count default must be one of the declared enum values"),
+		Entry("enum default matching a declared value after numeric normalization", atc.PipelineRef{Name: "template"}, templateWith(atc.ParamSchema{Name: "count", Type: atc.ParamTypeEnum, Values: []any{1, 2}, Default: json.Number("2.0")}), ""),
 		Entry("dynamic identities", atc.PipelineRef{Name: "template"}, dynamicTemplateConfig(), ""),
 		Entry("parameter in a map key", atc.PipelineRef{Name: "template"}, func() atc.Config {
 			config := dynamicTemplateConfig()

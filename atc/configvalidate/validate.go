@@ -146,8 +146,28 @@ func validateParamSchema(schema atc.ParamSchema) error {
 			}
 			seen = append(seen, key)
 		}
-		if schema.Default != nil && scalarType(schema.Default) != valueType {
-			return fmt.Errorf("parameter %s default must have the enum value type", schema.Name)
+		if schema.Default != nil {
+			if scalarType(schema.Default) != valueType {
+				return fmt.Errorf("parameter %s default must have the enum value type", schema.Name)
+			}
+			// A default outside the declared values is a contradiction the
+			// template can never satisfy: run creation applies it and then
+			// fails ValidateRunParams membership, naming a parameter the
+			// caller never supplied. Refuse it where it is declared.
+			defaultKey, ok := paramScalarKey(schema.Default)
+			if !ok {
+				return fmt.Errorf("parameter %s default must be a finite number no larger than %.0f in magnitude", schema.Name, atc.MaxSafeParamNumber)
+			}
+			member := false
+			for _, existing := range seen {
+				if existing == defaultKey {
+					member = true
+					break
+				}
+			}
+			if !member {
+				return fmt.Errorf("parameter %s default must be one of the declared enum values", schema.Name)
+			}
 		}
 	default:
 		return fmt.Errorf("parameter %s has invalid type %q", schema.Name, schema.Type)
