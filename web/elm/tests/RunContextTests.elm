@@ -15,14 +15,16 @@ import Message.Effects exposing (Effect(..))
 import Message.Message exposing (Message(..))
 import Message.Subscription exposing (Delivery(..), Interval(..))
 import Pipeline.Pipeline as Pipeline
+import Pipeline.Styles as PipelineStyles
 import Routes
 import SubPage.SubPage as SubPage
 import Test exposing (Test, describe, test)
 import Test.Html.Query as Query
-import Test.Html.Selector exposing (id, text)
+import Test.Html.Selector exposing (id, style, text)
 import Time
 import UpdateMsg exposing (UpdateMsg(..))
 import Views.RunContext as RunContext
+import Views.Styles as ViewStyles
 
 
 all : Test
@@ -195,6 +197,31 @@ all =
                     |> Pipeline.handleCallback (PipelineFetched (Ok ordinaryRunShaped))
                     |> Tuple.second
                     |> expectNoEffect (ModifyUrl "/teams/team/pipelines/renamed-template/runs/42")
+        , test "lays the run page out beside the sidebar" <|
+            \_ ->
+                Html.div (ViewStyles.pageBelowTopBar (Routes.PipelineRun { template = template, number = 42 })) []
+                    |> Query.fromHtml
+                    |> Query.has
+                        [ style "box-sizing" "border-box"
+                        , style "height" "100%"
+                        , style "display" "flex"
+                        ]
+        , test "grows the run wrapper so the payload keeps its height" <|
+            \_ ->
+                Html.div PipelineStyles.runPage []
+                    |> Query.fromHtml
+                    |> Query.has
+                        [ style "display" "flex"
+                        , style "flex-direction" "column"
+                        , style "flex-grow" "1"
+                        ]
+        , test "seats the run payload inside the growing wrapper" <|
+            \_ ->
+                livePage
+                    |> Common.queryView
+                    |> Query.find [ id "run-page" ]
+                    |> Query.children [ id "pipeline-container" ]
+                    |> Query.count (Expect.equal 1)
         ]
 
 
@@ -289,4 +316,11 @@ runPage : Application.Model
 runPage =
     Common.initRoute (Routes.PipelineRun { template = template, number = 42 })
         |> Application.handleCallback (PipelineRunFetched (Ok liveRun))
+        |> Tuple.first
+
+
+livePage : Application.Model
+livePage =
+    runPage
+        |> Application.handleCallback (PipelineFetched (Ok payload))
         |> Tuple.first

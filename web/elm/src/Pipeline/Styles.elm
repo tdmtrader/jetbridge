@@ -6,12 +6,21 @@ module Pipeline.Styles exposing
     , groupsBar
     , pauseToggle
     , pipelineBackground
+    , runPage
     )
 
 import Assets
 import Colors
 import Html
 import Html.Attributes exposing (style)
+
+
+runPage : List (Html.Attribute msg)
+runPage =
+    [ style "display" "flex"
+    , style "flex-direction" "column"
+    , style "flex-grow" "1"
+    ]
 
 
 groupsBar : List (Html.Attribute msg)

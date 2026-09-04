@@ -9,6 +9,7 @@ import Concourse.PipelineRun
 import Data
 import Dict
 import Expect
+import Html
 import Html.Attributes as Attr
 import Http
 import Message.Callback exposing (Callback(..))
@@ -21,14 +22,31 @@ import Routes
 import SubPage.SubPage as SubPage
 import Test exposing (Test, describe, test)
 import Test.Html.Query as Query
-import Test.Html.Selector exposing (attribute, containing, id, tag, text)
+import Test.Html.Selector exposing (attribute, containing, id, style, tag, text)
 import Time
+import Views.Styles as ViewStyles
 
 
 all : Test
 all =
     describe "pipeline runs page"
-        [ test "fetches the template and newest fifty runs on initialization" <|
+        [ test "lays the runs page out beside the sidebar" <|
+            \_ ->
+                Html.div (ViewStyles.pageBelowTopBar (Routes.PipelineRuns { id = Data.pipelineId, page = Nothing })) []
+                    |> Query.fromHtml
+                    |> Query.has
+                        [ style "box-sizing" "border-box"
+                        , style "height" "100%"
+                        , style "display" "flex"
+                        ]
+        , test "seats the runs body beside the sidebar" <|
+            \_ ->
+                pageWithTemplate
+                    |> Common.queryView
+                    |> Query.find [ id "page-below-top-bar" ]
+                    |> Query.children [ id "pipeline-runs" ]
+                    |> Query.count (Expect.equal 1)
+        , test "fetches the template and newest fifty runs on initialization" <|
             \_ ->
                 PipelineRuns.init { id = Data.shortPipelineId, page = Nothing }
                     |> Tuple.second
