@@ -288,6 +288,26 @@ var _ = Describe("Pipeline run lifecycle", func() {
 		Expect(entry.PausedBy()).To(Equal("alice"))
 	})
 
+	It("pauses a run job whose run has already terminalised", func() {
+		// Pausing creates no build, so it must not be refused by the
+		// build-admission seam's running-status assertion.
+		fixture := createRunLifecycleFixture(basicRunConfig("entry"))
+		entry := fixture.jobs["entry"]
+		build := pendingRunBuild(entry)
+		consumeObservedSchedule(entry)
+
+		Expect(build.Finish(db.BuildStatusFailed)).To(Succeed())
+		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusFailed))
+
+		Expect(entry.Pause("alice")).To(Succeed())
+		found, err := entry.Reload()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(entry.Paused()).To(BeTrue())
+		Expect(entry.PausedBy()).To(Equal("alice"))
+		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusFailed), "pausing must not reopen or re-settle a terminal run")
+	})
+
 	DescribeTable("aggregates the rerun-aware latest status with lifecycle severity",
 		func(statuses []db.BuildStatus, expected atc.RunStatus) {
 			names := make([]string, len(statuses))
@@ -614,7 +634,8 @@ var _ = Describe("Pipeline run lifecycle structural guard", func() {
 		jobPauseEnd := strings.Index(string(jobSource)[jobPauseStart:], "\nfunc ")
 		Expect(jobPauseEnd).To(BeNumerically(">", 0), "guard must bound run job pause")
 		jobPauseBody := string(jobSource)[jobPauseStart : jobPauseStart+jobPauseEnd]
-		Expect(jobPauseBody).To(ContainSubstring("lockJobBuildAdmission("), "run job pause must lock its durable admission")
+		Expect(jobPauseBody).To(ContainSubstring("lockPipelineRunForPayload("), "run job pause must lock its durable run without asserting admission")
+		Expect(jobPauseBody).NotTo(ContainSubstring("lockJobBuildAdmission("), "pausing creates no build, so it must not go through the build-admission seam")
 		Expect(jobPauseBody).To(ContainSubstring("attemptRunCompletion("), "run job pause must settle cleared schedule debt")
 
 		unpauseStart := strings.Index(string(pipelineSource), "func (p *pipeline) Unpause")
