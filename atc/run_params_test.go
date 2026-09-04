@@ -61,8 +61,33 @@ var _ = Describe("Run parameter validation", func() {
 		Entry("unknown", []ParamSchema{{Name: "environment", Type: ParamTypeString}}, RunParams{"unknown": "x"}, "unknown parameter unknown"),
 		Entry("missing required", []ParamSchema{{Name: "environment", Type: ParamTypeString, Required: true}}, RunParams{}, "parameter environment is required"),
 		Entry("wrong type", []ParamSchema{{Name: "dry_run", Type: ParamTypeBool}}, RunParams{"dry_run": "not-a-bool"}, "parameter dry_run must be a bool"),
-		Entry("enum member with a different scalar type", []ParamSchema{{Name: "retries", Type: ParamTypeEnum, Values: []any{1, 2}}}, RunParams{"retries": "2"}, "parameter retries must be one of"),
+		Entry("enum value outside the declared set", []ParamSchema{{Name: "retries", Type: ParamTypeEnum, Values: []any{1, 2}}}, RunParams{"retries": "3"}, "parameter retries must be one of 1, 2"),
+		Entry("string enum given a JSON number", []ParamSchema{{Name: "retries", Type: ParamTypeEnum, Values: []any{"1", "2"}}}, RunParams{"retries": float64(2)}, "parameter retries must be one of 1, 2"),
 	)
+
+	DescribeTable("coerces a supplied enum string to the declared member type",
+		func(values []any, supplied string, expected any) {
+			// This fails if a number or bool enum is unreachable through fly's
+			// -v, which sends every value as a string.
+			result, err := ValidateRunParams([]ParamSchema{{Name: "value", Type: ParamTypeEnum, Values: values}}, RunParams{"value": supplied})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(RunParams{"value": expected}))
+		},
+		Entry("number members", []any{1, 2, 3}, "2", float64(2)),
+		Entry("fractional number members", []any{1.5, 2.5}, "2.5", float64(2.5)),
+		Entry("bool members", []any{true, false}, "true", true),
+		Entry("string members", []any{"staging", "production"}, "production", "production"),
+	)
+
+	It("leaves a declared enum default untouched", func() {
+		// This fails if the string coercion is applied to a default, which the
+		// schema already guarantees carries the enum's member type.
+		result, err := ValidateRunParams([]ParamSchema{
+			{Name: "replicas", Type: ParamTypeEnum, Values: []any{1, 2, 3}, Default: 2},
+		}, RunParams{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(RunParams{"replicas": float64(2)}))
+	})
 	It("keeps a required parameter required even when the schema also declares a default", func() {
 		// This fails if the default is assigned before the required check, which
 		// silently downgrades `required: true` to optional.
