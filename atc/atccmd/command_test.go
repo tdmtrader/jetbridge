@@ -2,12 +2,15 @@ package atccmd_test
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/atccmd"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/flag/v2"
 	"github.com/jessevdk/go-flags"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -135,6 +138,58 @@ func (s *CommandSuite) TestK8sRuntimeValidationSkippedWhenK8sDisabled() {
 
 	err := atccmd.ValidateK8sRuntimeForTest(cmd)
 	s.NoError(err, "expected validation to be a no-op when --kubernetes-namespace is empty")
+}
+
+// A run parameter value is interpolated verbatim into the materialized payload
+// config, so creating a run carries the same trust as setting a pipeline. An
+// RBAC config that grants run creation to a weaker role than SaveConfig turns
+// that equivalence into a credential-read escalation, so startup must refuse it.
+
+func (s *CommandSuite) writeRBACConfig(body string) atccmd.RunCommand {
+	dir := s.T().TempDir()
+	path := filepath.Join(dir, "rbac.yml")
+	s.NoError(os.WriteFile(path, []byte(body), 0644))
+
+	cmd := atccmd.RunCommand{}
+	cmd.ConfigRBAC = flag.File(path)
+	return cmd
+}
+
+func (s *CommandSuite) TestCustomRolesRefuseWeakerRunCreationThanSetPipeline() {
+	cmd := s.writeRBACConfig("pipeline-operator:\n- CreatePipelineRun\n")
+
+	err := atccmd.ValidateCustomRolesForTest(&cmd)
+	s.Error(err, "expected startup to refuse run creation weaker than set-pipeline")
+	s.Contains(err.Error(), atc.CreatePipelineRun)
+	s.Contains(err.Error(), atc.SaveConfig)
+	s.Contains(err.Error(), "pipeline-operator")
+	s.Contains(err.Error(), "member")
+}
+
+func (s *CommandSuite) TestCustomRolesRefuseRaisedSetPipelineWithDefaultRunCreation() {
+	cmd := s.writeRBACConfig("owner:\n- SaveConfig\n")
+
+	err := atccmd.ValidateCustomRolesForTest(&cmd)
+	s.Error(err, "raising set-pipeline alone leaves run creation weaker than it")
+	s.Contains(err.Error(), atc.CreatePipelineRun)
+	s.Contains(err.Error(), atc.SaveConfig)
+}
+
+func (s *CommandSuite) TestCustomRolesAcceptEqualOrStrongerRunCreation() {
+	equal := s.writeRBACConfig("member:\n- CreatePipelineRun\n")
+	s.NoError(atccmd.ValidateCustomRolesForTest(&equal))
+
+	stronger := s.writeRBACConfig("owner:\n- CreatePipelineRun\n")
+	s.NoError(atccmd.ValidateCustomRolesForTest(&stronger))
+
+	together := s.writeRBACConfig("pipeline-operator:\n- CreatePipelineRun\n- SaveConfig\n")
+	s.NoError(atccmd.ValidateCustomRolesForTest(&together))
+}
+
+func (s *CommandSuite) TestCustomRolesAcceptTheStockConfiguration() {
+	cmd := atccmd.RunCommand{}
+
+	s.NoError(atccmd.ValidateCustomRolesForTest(&cmd), "no --config-rbac must leave the defaults in force")
 }
 
 func TestSuite(t *testing.T) {

@@ -15,3 +15,9 @@ func ValidateK8sRuntimeForTest(cmd *RunCommand) error {
 func NewPipelineRunReclaimerComponentForTest(lifecycle db.PipelineRunReclaimLifecycle, now func() time.Time) RunnableComponent {
 	return newPipelineRunReclaimerComponent(lifecycle, now)
 }
+
+// ValidateCustomRolesForTest exports the private validateCustomRoles method for
+// external test packages. See command_test.go.
+func ValidateCustomRolesForTest(cmd *RunCommand) error {
+	return cmd.validateCustomRoles()
+}

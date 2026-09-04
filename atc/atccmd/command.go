@@ -1548,6 +1548,7 @@ func (cmd *RunCommand) validateCustomRoles() error {
 		allKnownRoles[roleName] = true
 	}
 
+	assigned := map[string]string{}
 	for role, actions := range data {
 		if _, ok := allKnownRoles[role]; !ok {
 			return fmt.Errorf("failed to customize roles: %w", fmt.Errorf("unknown role %s", role))
@@ -1557,7 +1558,12 @@ func (cmd *RunCommand) validateCustomRoles() error {
 			if _, ok := accessor.DefaultRoles[action]; !ok {
 				return fmt.Errorf("failed to customize roles: %w", fmt.Errorf("unknown action %s", action))
 			}
+			assigned[action] = role
 		}
+	}
+
+	if err = accessor.ValidateCustomRoles(assigned); err != nil {
+		return fmt.Errorf("failed to customize roles: %w", err)
 	}
 
 	return nil

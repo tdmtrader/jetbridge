@@ -64,13 +64,8 @@ func (h *accessorHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func RequiredRole(ctx context.Context, action string) string {
-	if customRoles, ok := ctx.Value(customRolesContextKey).(map[string]string); ok {
-		if role := customRoles[action]; role != "" {
-			return role
-		}
-	}
-
-	return DefaultRoles[action]
+	customRoles, _ := ctx.Value(customRolesContextKey).(map[string]string)
+	return EffectiveRole(customRoles, action)
 }
 
 func GetAccessor(r *http.Request) Access {
