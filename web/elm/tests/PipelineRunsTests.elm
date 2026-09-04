@@ -406,6 +406,12 @@ all =
                     |> Common.queryView
                     |> Query.find [ tag "a", attribute <| Attr.href (Routes.toString <| Routes.PipelineRuns { id = Data.pipelineId, page = Just { direction = Pagination.To 10, limit = 50 } }) ]
                     |> Query.has [ attribute <| Attr.attribute "aria-label" "Next page" ]
+        , test "leaves the pager focus ring to the browser" <|
+            \_ ->
+                pagedRuns
+                    |> Common.queryView
+                    |> Query.find [ tag "a", attribute <| Attr.attribute "aria-label" "Next page" ]
+                    |> Query.hasNot [ style "outline" "auto" ]
         , test "keeps the server error in the permanently mounted live region during a refresh hold" <|
             \_ ->
                 submitted
