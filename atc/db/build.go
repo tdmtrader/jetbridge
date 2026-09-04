@@ -94,6 +94,7 @@ var buildsQuery = psql.Select(`
 		(SELECT template_pipeline_id FROM pipeline_runs WHERE id = COALESCE(b.pipeline_run_id, p.pipeline_run_id)),
 		(SELECT name FROM pipelines WHERE id = (SELECT template_pipeline_id FROM pipeline_runs WHERE id = COALESCE(b.pipeline_run_id, p.pipeline_run_id))),
 		b.pipeline_run_id,
+		p.pipeline_run_id AS payload_pipeline_run_id,
 		b.run_job_name,
 		b.run_job_key,
 		t.name,
@@ -248,6 +249,8 @@ type build struct {
 	resourceName string
 
 	resourceTypeID int
+
+	payloadPipelineRunID int
 
 	isManuallyTriggered bool
 
@@ -1946,7 +1949,7 @@ func scanBuild(b *build, row scannable, encryptionStrategy encryption.Strategy) 
 		drained, aborted, completed                                                       bool
 		status                                                                            string
 		pipelineInstanceVars, comment, basePipelineName, runJobName, runJobKey            sql.NullString
-		basePipelineID, buildPipelineRunID                                                sql.NullInt64
+		basePipelineID, buildPipelineRunID, payloadPipelineRunID                          sql.NullInt64
 	)
 
 	err := row.Scan(
@@ -1975,6 +1978,7 @@ func scanBuild(b *build, row scannable, encryptionStrategy encryption.Strategy) 
 		&basePipelineID,
 		&basePipelineName,
 		&buildPipelineRunID,
+		&payloadPipelineRunID,
 		&runJobName,
 		&runJobKey,
 		&b.teamName,
@@ -2007,6 +2011,7 @@ func scanBuild(b *build, row scannable, encryptionStrategy encryption.Strategy) 
 	if buildPipelineRunID.Valid {
 		b.pipelineRunID = int(buildPipelineRunID.Int64)
 	}
+	b.payloadPipelineRunID = int(payloadPipelineRunID.Int64)
 	b.runJobName = runJobName.String
 	b.runJobKey = runJobKey.String
 	b.schema = schema.String
@@ -2101,7 +2106,10 @@ func (b *build) eventsTable() string {
 	if b.isForCheck() {
 		return "check_build_events"
 	}
-	if b.pipelineRunID != 0 {
+	// A run payload has no pipeline_build_events partition of its own, so any
+	// build living in one — including a prototype check, which stamps no run id
+	// on the build row — belongs in the team partition.
+	if b.pipelineRunID != 0 || b.payloadPipelineRunID != 0 {
 		return fmt.Sprintf("team_build_events_%d", b.teamID)
 	}
 	if b.pipelineID != 0 {
