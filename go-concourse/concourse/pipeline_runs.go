@@ -3,6 +3,7 @@ package concourse
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -28,7 +29,7 @@ func (team *team) CreatePipelineRun(pipelineName string, vars map[string]any) (a
 
 	err = team.connection.SendHTTPRequest(request, false, &internal.Response{Result: &run})
 
-	return run, err
+	return run, pipelineRunError(err)
 }
 
 func (team *team) PipelineRuns(pipelineName string, page Page) ([]atc.PipelineRun, Pagination, error) {
@@ -46,7 +47,7 @@ func (team *team) PipelineRuns(pipelineName string, page Page) ([]atc.PipelineRu
 		Headers: &headers,
 	})
 	if err != nil {
-		return nil, Pagination{}, err
+		return nil, Pagination{}, pipelineRunError(err)
 	}
 
 	pagination, err := paginationFromHeaders(headers)
@@ -72,8 +73,30 @@ func (team *team) PipelineRun(pipelineName string, number int) (atc.PipelineRun,
 	case internal.ResourceNotFoundError:
 		return run, false, nil
 	default:
-		return run, false, err
+		return run, false, pipelineRunError(err)
 	}
+}
+
+// pipelineRunError unwraps the run API's JSON error envelope, so a refusal the
+// server took care to phrase reaches the user as its own message rather than as
+// a raw body inside "Unexpected Response". The sibling config write path does
+// the same (see CreateOrUpdatePipelineConfig); the connection this path still
+// goes through has already consumed the response, so the envelope is
+// recognised by decoding it rather than by the Content-Type it arrived with.
+func pipelineRunError(err error) error {
+	var unexpected internal.UnexpectedResponseError
+	if !errors.As(err, &unexpected) {
+		return err
+	}
+	if unexpected.StatusCode != http.StatusBadRequest && unexpected.StatusCode != http.StatusConflict {
+		return err
+	}
+
+	var envelope atc.SaveConfigResponse
+	if json.Unmarshal([]byte(unexpected.Body), &envelope) != nil || len(envelope.Errors) == 0 {
+		return err
+	}
+	return InvalidPipelineRunError{Errors: envelope.Errors}
 }
 
 func (team *team) pipelineRunsURL(pipelineName string) string {

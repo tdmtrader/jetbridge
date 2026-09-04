@@ -34,3 +34,15 @@ type InvalidConfigError struct {
 func (c InvalidConfigError) Error() string {
 	return fmt.Sprintf("invalid pipeline config:\n%s", strings.Join(c.Errors, "\n"))
 }
+
+// InvalidPipelineRunError is returned when the run API refuses a request with
+// the reasons it phrased, i.e. a 400 or 409 carrying the atc.SaveConfigResponse
+// envelope.
+type InvalidPipelineRunError struct {
+	Errors []string `json:"errors"`
+}
+
+// Error lists the reasons the run was refused, one per line.
+func (c InvalidPipelineRunError) Error() string {
+	return strings.Join(c.Errors, "\n")
+}

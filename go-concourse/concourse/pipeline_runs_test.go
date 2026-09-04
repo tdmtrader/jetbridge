@@ -49,25 +49,42 @@ var _ = Describe("Pipeline runs client", func() {
 			Expect((*run.Params)["branch"]).To(Equal("main"))
 		})
 
-		DescribeTable("preserves actionable failure responses",
-			func(status int, body string) {
+		DescribeTable("unwraps the server's JSON error envelope into the message it phrased",
+			// This fails if a refusal reaches the user as a raw JSON body
+			// wrapped in "Unexpected Response" instead of as its own message.
+			func(status int) {
 				atcServer.AppendHandlers(ghttp.CombineHandlers(
 					ghttp.VerifyRequest("POST", collectionPath),
-					ghttp.RespondWith(status, body),
+					ghttp.RespondWithJSONEncoded(status, atc.SaveConfigResponse{
+						Errors: []string{"parameter environment is required", "unknown parameter colour"},
+					}),
 				))
 
 				_, err := team.CreatePipelineRun("template", map[string]any{})
 
-				Expect(err).To(MatchError(ContainSubstring(body)))
-				Expect(err).To(Equal(internal.UnexpectedResponseError{
-					StatusCode: status,
-					Status:     statusText(status),
-					Body:       body,
+				Expect(err).To(Equal(concourse.InvalidPipelineRunError{
+					Errors: []string{"parameter environment is required", "unknown parameter colour"},
 				}))
+				Expect(err.Error()).To(Equal("parameter environment is required\nunknown parameter colour"))
 			},
-			Entry("bad parameters", http.StatusBadRequest, "parameter branch must be a string"),
-			Entry("template conflict", http.StatusConflict, "pipeline is paused"),
+			Entry("bad parameters", http.StatusBadRequest),
+			Entry("template conflict", http.StatusConflict),
 		)
+
+		It("preserves a failure body that is not the error envelope", func() {
+			atcServer.AppendHandlers(ghttp.CombineHandlers(
+				ghttp.VerifyRequest("POST", collectionPath),
+				ghttp.RespondWith(http.StatusBadRequest, "invalid pipeline run request"),
+			))
+
+			_, err := team.CreatePipelineRun("template", map[string]any{})
+
+			Expect(err).To(Equal(internal.UnexpectedResponseError{
+				StatusCode: http.StatusBadRequest,
+				Status:     statusText(http.StatusBadRequest),
+				Body:       "invalid pipeline run request",
+			}))
+		})
 	})
 
 	Describe("PipelineRuns", func() {
@@ -87,6 +104,21 @@ var _ = Describe("Pipeline runs client", func() {
 			Expect(*pagination.Next).To(Equal(concourse.Page{From: 2, Limit: 50}))
 			Expect(pagination.Previous).NotTo(BeNil())
 			Expect(*pagination.Previous).To(Equal(concourse.Page{To: 5, Limit: 50}))
+		})
+
+		It("unwraps the server's JSON error envelope", func() {
+			atcServer.AppendHandlers(ghttp.CombineHandlers(
+				ghttp.VerifyRequest("GET", collectionPath),
+				ghttp.RespondWithJSONEncoded(http.StatusConflict, atc.SaveConfigResponse{
+					Errors: []string{"template pipeline cannot have instance vars"},
+				}),
+			))
+
+			_, _, err := team.PipelineRuns("template", concourse.Page{})
+
+			Expect(err).To(Equal(concourse.InvalidPipelineRunError{
+				Errors: []string{"template pipeline cannot have instance vars"},
+			}))
 		})
 
 		It("forwards explicit keyset page values", func() {
@@ -155,7 +187,23 @@ var _ = Describe("Pipeline runs client", func() {
 			Expect(found).To(BeFalse())
 		})
 
-		It("returns non-404 errors with their response body", func() {
+		It("returns non-404 errors with the message the server phrased", func() {
+			atcServer.AppendHandlers(ghttp.CombineHandlers(
+				ghttp.VerifyRequest("GET", collectionPath+"/9"),
+				ghttp.RespondWithJSONEncoded(http.StatusConflict, atc.SaveConfigResponse{
+					Errors: []string{"payload is being reclaimed"},
+				}),
+			))
+
+			_, found, err := team.PipelineRun("template", 9)
+
+			Expect(found).To(BeFalse())
+			Expect(err).To(Equal(concourse.InvalidPipelineRunError{
+				Errors: []string{"payload is being reclaimed"},
+			}))
+		})
+
+		It("returns a non-envelope failure body unchanged", func() {
 			atcServer.AppendHandlers(ghttp.CombineHandlers(
 				ghttp.VerifyRequest("GET", collectionPath+"/9"),
 				ghttp.RespondWith(http.StatusConflict, "payload is being reclaimed"),
