@@ -230,7 +230,7 @@ func (f *pipelineRunFactory) effectiveConfig(tx Tx, base *pipeline, override *at
 	if err != nil {
 		return atc.Config{}, err
 	}
-	return atc.Config{Groups: base.Groups(), VarSources: base.VarSources(), Resources: Resources(resources).Configs(), ResourceTypes: resourceTypes.Configs(), Prototypes: prototypes.Configs(), Jobs: jobConfigs, Display: base.Display(), Template: base.Template(), Params: base.Params(), RunRetention: base.RunRetention()}, nil
+	return atc.Config{Groups: base.Groups(), VarSources: base.VarSources(), Resources: Resources(resources).Configs(), ResourceTypes: resourceTypes.Configs(), Prototypes: prototypes.Configs(), Jobs: jobConfigs, Display: base.Display(), Template: base.Template(), Params: base.Params(), RunRetention: base.RunRetention(), CacheScope: base.CacheScope()}, nil
 }
 
 func (f *pipelineRunFactory) resourceTypesInTx(tx Tx, pipelineID int) (ResourceTypes, error) {

@@ -561,6 +561,10 @@ func savePipelineWithOptions(
 		keepLast = config.RunRetention.KeepLast
 		ttlDays = config.RunRetention.TTLDays
 	}
+	var cacheScope any
+	if config.CacheScope != "" {
+		cacheScope = config.CacheScope
+	}
 
 	if existingConfig {
 		var template, hasRuns, hasOrdinaryJobState bool
@@ -629,6 +633,7 @@ func savePipelineWithOptions(
 			values["params"] = paramsPayload
 			values["run_retention_keep_last"] = keepLast
 			values["run_retention_ttl_days"] = ttlDays
+			values["cache_scope"] = cacheScope
 		}
 		if options.pipelineRunID.Valid {
 			values["pipeline_run_id"] = options.pipelineRunID
@@ -682,7 +687,8 @@ func savePipelineWithOptions(
 			q = q.Set("template", config.Template).
 				Set("params", paramsPayload).
 				Set("run_retention_keep_last", keepLast).
-				Set("run_retention_ttl_days", ttlDays)
+				Set("run_retention_ttl_days", ttlDays).
+				Set("cache_scope", cacheScope)
 		}
 
 		if !initiallyPaused {
@@ -1533,12 +1539,13 @@ func scanPipeline(p *pipeline, scan scannable) error {
 		params           sql.NullString
 		keepLast         sql.NullInt64
 		ttlDays          sql.NullInt64
+		cacheScope       sql.NullString
 		pipelineRunID    sql.NullInt64
 		basePipelineID   sql.NullInt64
 		runNumber        sql.NullInt64
 		basePipelineName sql.NullString
 	)
-	err := scan.Scan(&p.id, &p.name, &groups, &varSources, &display, &nonce, &p.configVersion, &p.teamID, &p.teamName, &p.paused, &p.public, &p.archived, &lastUpdated, &parentJobID, &parentBuildID, &instanceVars, &pausedBy, &pausedAt, &p.template, &params, &keepLast, &ttlDays, &p.lastRunNumber, &pipelineRunID, &basePipelineID, &runNumber, &basePipelineName)
+	err := scan.Scan(&p.id, &p.name, &groups, &varSources, &display, &nonce, &p.configVersion, &p.teamID, &p.teamName, &p.paused, &p.public, &p.archived, &lastUpdated, &parentJobID, &parentBuildID, &instanceVars, &pausedBy, &pausedAt, &p.template, &params, &keepLast, &ttlDays, &cacheScope, &p.lastRunNumber, &pipelineRunID, &basePipelineID, &runNumber, &basePipelineName)
 	if err != nil {
 		return err
 	}
@@ -1550,6 +1557,7 @@ func scanPipeline(p *pipeline, scan scannable) error {
 	p.basePipelineID = int(basePipelineID.Int64)
 	p.runNumber = int(runNumber.Int64)
 	p.basePipelineName = basePipelineName.String
+	p.cacheScope = cacheScope.String
 	if params.Valid {
 		if err := json.Unmarshal([]byte(params.String), &p.params); err != nil {
 			return err

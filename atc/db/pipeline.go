@@ -68,6 +68,7 @@ type Pipeline interface {
 	Template() bool
 	Params() []atc.ParamSchema
 	RunRetention() *atc.RunRetentionConfig
+	CacheScope() string
 	LastRunNumber() int
 	LastUpdated() time.Time
 	PipelineRef() atc.PipelineRef
@@ -157,6 +158,7 @@ type pipeline struct {
 	template         bool
 	params           []atc.ParamSchema
 	runRetention     *atc.RunRetentionConfig
+	cacheScope       string
 	lastRunNumber    int
 	lastUpdated      time.Time
 	pipelineRunID    int
@@ -194,6 +196,7 @@ var pipelinesQuery = psql.Select(`
 		p.params,
 		p.run_retention_keep_last,
 		p.run_retention_ttl_days,
+		p.cache_scope,
 		p.last_run_number,
 		p.pipeline_run_id,
 		pr.template_pipeline_id,
@@ -230,6 +233,7 @@ func (p *pipeline) Archived() bool                        { return p.archived }
 func (p *pipeline) Template() bool                        { return p.template }
 func (p *pipeline) Params() []atc.ParamSchema             { return p.params }
 func (p *pipeline) RunRetention() *atc.RunRetentionConfig { return p.runRetention }
+func (p *pipeline) CacheScope() string                    { return p.cacheScope }
 func (p *pipeline) LastRunNumber() int                    { return p.lastRunNumber }
 func (p *pipeline) LastUpdated() time.Time                { return p.lastUpdated }
 func (p *pipeline) PipelineRef() atc.PipelineRef {
@@ -314,6 +318,7 @@ func (p *pipeline) Config() (atc.Config, error) {
 		Template:      p.Template(),
 		Params:        p.Params(),
 		RunRetention:  p.RunRetention(),
+		CacheScope:    p.CacheScope(),
 	}
 
 	return config, nil

@@ -58,6 +58,7 @@ func MaterializeRunConfig(config Config, identity RunIdentity, params RunParams)
 	// not have, so `fly get-pipeline` on a run emits a config that
 	// configvalidate.ValidateTemplateDeclaration refuses.
 	materialized.Template = false
+	materialized.CacheScope = ""
 	materialized.Params = nil
 	materialized.RunRetention = nil
 	clearUnpassedTriggers(materialized.Jobs)

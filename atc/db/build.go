@@ -93,6 +93,7 @@ var buildsQuery = psql.Select(`
 		p.instance_vars,
 		(SELECT template_pipeline_id FROM pipeline_runs WHERE id = COALESCE(b.pipeline_run_id, p.pipeline_run_id)),
 		(SELECT name FROM pipelines WHERE id = (SELECT template_pipeline_id FROM pipeline_runs WHERE id = COALESCE(b.pipeline_run_id, p.pipeline_run_id))),
+		(SELECT cache_scope FROM pipelines WHERE id = (SELECT template_pipeline_id FROM pipeline_runs WHERE id = COALESCE(b.pipeline_run_id, p.pipeline_run_id))),
 		b.pipeline_run_id,
 		p.pipeline_run_id AS payload_pipeline_run_id,
 		b.run_job_name,
@@ -258,6 +259,11 @@ type build struct {
 	runJobName string
 	runJobKey  string
 
+	// baseCacheScope is the cache_scope declared by this build's base
+	// template, carried inline because TaskCacheIdentity is on the step-build
+	// path and must not pay for a second read.
+	baseCacheScope string
+
 	rerunOf     int
 	rerunOfName string
 	rerunNumber int
@@ -402,8 +408,24 @@ func (b *build) RerunNumber() int                 { return b.rerunNumber }
 func (b *build) CreatedBy() *string               { return b.createdBy }
 func (b *build) RunJobName() string               { return b.runJobName }
 func (b *build) RunJobKey() string                { return b.runJobKey }
+// TaskCacheIdentity reports the scope a task cache created by this build is
+// keyed on, and whether it has one at all.
+//
+// A run payload has one only when its base template opts in with
+// `cache_scope: template`. The run scope is keyed on template identity, so it
+// is shared by every run of that template and nothing ever reclaims the bytes
+// behind it -- the artifact daemon's sweeper does not walk /caches/, and the
+// task cache collector deletes rows, not directories. Defaulting run payloads
+// to no scope means a template that declares `caches:` gets ephemeral per-pod
+// cache directories (registerCaches does not run, and the container falls
+// through to emptyDir) instead of unbounded node-disk growth.
+//
+// Ordinary pipelines are untouched: their caches stay keyed on their own job.
 func (b *build) TaskCacheIdentity() (atc.TaskCacheIdentity, bool) {
 	if b.pipelineRunID != 0 && b.basePipelineID != 0 && b.runJobName != "" {
+		if b.baseCacheScope != atc.CacheScopeTemplate {
+			return atc.TaskCacheIdentity{}, false
+		}
 		return atc.TaskCacheIdentity{
 			TeamID:             b.teamID,
 			TemplatePipelineID: b.basePipelineID,
@@ -1949,6 +1971,7 @@ func scanBuild(b *build, row scannable, encryptionStrategy encryption.Strategy) 
 		drained, aborted, completed                                                       bool
 		status                                                                            string
 		pipelineInstanceVars, comment, basePipelineName, runJobName, runJobKey            sql.NullString
+		baseCacheScope                                                                    sql.NullString
 		basePipelineID, buildPipelineRunID, payloadPipelineRunID                          sql.NullInt64
 	)
 
@@ -1977,6 +2000,7 @@ func scanBuild(b *build, row scannable, encryptionStrategy encryption.Strategy) 
 		&pipelineInstanceVars,
 		&basePipelineID,
 		&basePipelineName,
+		&baseCacheScope,
 		&buildPipelineRunID,
 		&payloadPipelineRunID,
 		&runJobName,
@@ -2008,6 +2032,7 @@ func scanBuild(b *build, row scannable, encryptionStrategy encryption.Strategy) 
 	b.pipelineRunID = 0
 	b.basePipelineID = int(basePipelineID.Int64)
 	b.basePipelineName = basePipelineName.String
+	b.baseCacheScope = baseCacheScope.String
 	if buildPipelineRunID.Valid {
 		b.pipelineRunID = int(buildPipelineRunID.Int64)
 	}

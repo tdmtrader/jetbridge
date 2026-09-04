@@ -53,7 +53,9 @@ var _ = Describe("PipelineRun", func() {
 
 	It("hydrates a detached run build's base template from its durable run identity", func() {
 		var templateID, runID, childID, jobID, buildID int
-		Expect(dbConn.QueryRow(`INSERT INTO pipelines(team_id, name, template, secondary_ordering) VALUES ($1, 'detached-base', true, 1) RETURNING id`, defaultTeam.ID()).Scan(&templateID)).To(Succeed())
+		// cache_scope is what gives a run payload a task cache scope at all;
+		// this spec is about hydrating that scope, so the template opts in.
+		Expect(dbConn.QueryRow(`INSERT INTO pipelines(team_id, name, template, cache_scope, secondary_ordering) VALUES ($1, 'detached-base', true, 'template', 1) RETURNING id`, defaultTeam.ID()).Scan(&templateID)).To(Succeed())
 
 		tx, err := dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
