@@ -66,9 +66,17 @@ all =
             \_ ->
                 Pipeline.initRun { template = template, number = 42 }
                     |> Pipeline.handleCallback (PipelineRunFetched (Ok liveRun))
+                    |> withoutEffects
                     |> Pipeline.handleCallback (PipelineFetched Data.httpNotFound)
-                    |> Tuple.second
-                    |> expectEffect (FetchPipelineRun template 42)
+                    |> Expect.all
+                        [ Tuple.second >> Expect.equal [ FetchPipelineRun template 42 ]
+                        , withoutEffects
+                            >> Pipeline.handleCallback (PipelineRunFetched (Ok liveRun))
+                            >> Expect.all
+                                [ Tuple.second >> Expect.equal []
+                                , Tuple.first >> .runContext >> Expect.equal (Just (RunContext.RecordOnly liveRun))
+                                ]
+                        ]
         , test "retries transient payload failures against the returned reference" <|
             \_ ->
                 Pipeline.initRun { template = template, number = 42 }
@@ -111,20 +119,35 @@ all =
                     |> Expect.all [ expectEffect (FetchPipelineRun template 42), expectNoEffect (FetchPipeline template) ]
         , test "does not poll a reclaimed record" <|
             \_ ->
+                let
+                    reclaimedRun =
+                        { liveRun | reclaimed = True, instanceRef = Nothing }
+                in
                 Pipeline.initRun { template = template, number = 42 }
-                    |> Pipeline.handleCallback (PipelineRunFetched (Ok { liveRun | reclaimed = True, instanceRef = Nothing }))
+                    |> Pipeline.handleCallback (PipelineRunFetched (Ok reclaimedRun))
+                    |> withoutEffects
                     |> Pipeline.handleDelivery (ClockTicked FiveSeconds (Time.millisToPosix 0))
+                    |> Pipeline.handleCallback (PipelineRunFetched (Ok reclaimedRun))
                     |> Tuple.second
-                    |> expectNoEffect (FetchPipeline template)
+                    |> Expect.equal [ FetchPipelineRun template 42 ]
         , test "polls the durable header after a completed payload" <|
             \_ ->
+                let
+                    completedRun =
+                        { liveRun | status = BuildStatus.BuildStatusSucceeded }
+                in
                 Pipeline.initRun { template = template, number = 42 }
-                    |> Pipeline.handleCallback (PipelineRunFetched (Ok { liveRun | status = BuildStatus.BuildStatusSucceeded }))
+                    |> Pipeline.handleCallback (PipelineRunFetched (Ok completedRun))
                     |> Pipeline.handleCallback (PipelineFetched (Ok payload))
                     |> withoutEffects
                     |> Pipeline.handleDelivery (ClockTicked FiveSeconds (Time.millisToPosix 0))
-                    |> Tuple.second
-                    |> Expect.all [ expectEffect (FetchPipelineRun template 42), expectNoEffect (FetchPipeline returnedRef) ]
+                    |> Expect.all
+                        [ Tuple.second >> Expect.equal [ FetchPipelineRun template 42 ]
+                        , Pipeline.handleCallback (PipelineRunFetched (Ok completedRun))
+                            >> Tuple.first
+                            >> .pipeline
+                            >> Expect.equal (RemoteData.Success payload)
+                        ]
         , test "keeps the loaded payload across a header poll" <|
             \_ ->
                 Pipeline.initRun { template = template, number = 42 }
@@ -171,12 +194,17 @@ all =
                     |> expectEffect (FetchPipelineRun template 42)
         , test "polls the durable header for a record-only run" <|
             \_ ->
+                let
+                    recordOnlyRun =
+                        { liveRun | instanceRef = Nothing }
+                in
                 Pipeline.initRun { template = template, number = 42 }
-                    |> Pipeline.handleCallback (PipelineRunFetched (Ok { liveRun | instanceRef = Nothing }))
+                    |> Pipeline.handleCallback (PipelineRunFetched (Ok recordOnlyRun))
                     |> withoutEffects
                     |> Pipeline.handleDelivery (ClockTicked FiveSeconds (Time.millisToPosix 0))
+                    |> Pipeline.handleCallback (PipelineRunFetched (Ok recordOnlyRun))
                     |> Tuple.second
-                    |> Expect.all [ expectEffect (FetchPipelineRun template 42), expectNoEffect (FetchPipeline returnedRef) ]
+                    |> Expect.equal [ FetchPipelineRun template 42 ]
         , test "renders text for every durable context state" <|
             \_ ->
                 let
