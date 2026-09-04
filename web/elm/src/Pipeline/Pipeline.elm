@@ -248,6 +248,8 @@ handleCallback callback ( model, effects ) =
                 | pipeline = RemoteData.Success pipeline
                 , pipelineLocator = locator
                 , runContext = context
+                , refetchedRunHeader = False
+                , missingPayloadRef = Nothing
               }
             , effects
                 ++ canonicalRoute
@@ -477,7 +479,9 @@ handleDelivery delivery ( model, effects ) =
         ClockTicked FiveSeconds _ ->
             case model.runTemplate of
                 Just _ ->
-                    retryRunHeader model effects
+                    retryRunHeader
+                        { model | refetchedRunHeader = False, missingPayloadRef = Nothing }
+                        effects
 
                 Nothing ->
                     ( model, effects ++ [ FetchPipeline model.pipelineLocator, FetchAllPipelines ] )
