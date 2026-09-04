@@ -261,6 +261,19 @@ var agenticCoreReach = map[string][]string{
 	// compose with core's handlers rather than re-implement them, and this pin
 	// should stay empty.
 	"atc/api/mcpserver": {},
+
+	// v4's first package, and the first consumer of core's run-admission port.
+	//
+	// Exactly two: atc for shared value types, atc/runs for admission. That is
+	// the whole point of the port -- CreateRunInTx is an atc/db seam, and a
+	// package that called it directly would pin atc/db here on its first
+	// commit and inherit the coupling mcpserver's entry above exists to warn
+	// about.
+	//
+	// The set is exact in both directions: an import that is not listed fails,
+	// and a listed import that is gone fails. So widening this is an edit with
+	// a reason, not an accident.
+	"atc/agent/composition": {"atc", "atc/runs"},
 }
 
 // unpinnedAgenticPackages closes the opt-in hole in the ratchet below.

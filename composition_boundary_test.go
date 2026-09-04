@@ -162,3 +162,40 @@ func TestThePortIsUsableWithoutTheDatabaseLayer(t *testing.T) {
 		t.Errorf("%s does not import the port at all, so it is not exercising it.", consumer)
 	}
 }
+
+// TestThePortDoesNotReadTheConsumersTables is A11 part 2's source half.
+//
+// The port's contract-key check is presence and nothing else. The call record
+// the key identifies lives in the consumer's own tables, and a SELECT from
+// core into one of those would be core reading the agentic layer's state --
+// the boundary breached from the inside, where no import graph would show it.
+//
+// This is a name scan rather than a query scan because there is nothing
+// legitimate for the port to do with those names at all: not read them, not
+// write them, not mention them in a query it builds.
+func TestThePortDoesNotReadTheConsumersTables(t *testing.T) {
+	consumerTables := []string{"composition_calls", "composition_iterations"}
+
+	portFiles := 0
+	walkGoFiles(t, func(path, contents string) {
+		if !strings.HasPrefix(path, "atc/runs/") {
+			return
+		}
+		portFiles++
+
+		for _, table := range consumerTables {
+			if strings.Contains(contents, table) {
+				t.Errorf("%s names the consumer table %q.\n"+
+					"The port checks that a contract key is present and stops there. "+
+					"The record it identifies is the consumer's, and core reading it "+
+					"would breach the boundary from the inside, where no import graph "+
+					"would show it.", path, table)
+			}
+		}
+	})
+
+	if portFiles == 0 {
+		t.Fatalf("the scan read no file under atc/runs/, so it proves nothing. " +
+			"If the port moved, move this assertion with it.")
+	}
+}
