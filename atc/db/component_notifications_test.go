@@ -1,8 +1,9 @@
 package db_test
 
 import (
-	"os"
-	"strings"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"time"
 
 	"github.com/concourse/concourse/atc"
@@ -490,19 +491,31 @@ var _ = Describe("Pipeline run completion notifications", func() {
 		// A new completion site that forgets to announce costs a walker a full
 		// poll interval and fails no test, so the count is guarded here rather
 		// than left to whoever adds the fifth site.
+		//
+		// The guard reads the parsed syntax tree rather than the file text,
+		// because prose is not behaviour: the doc comment on the helper names
+		// both channels, so a text scan stayed green when the helper itself
+		// announced only one of them.
+		announced, attempted := 0, 0
 		for _, name := range []string{"build.go", "job.go", "pipeline.go"} {
-			source, err := os.ReadFile(name)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(strings.Count(string(source), "announceRunCompletion(")).To(
-				Equal(strings.Count(string(source), "attemptRunCompletion(")),
+			file := parseCompletionSource(name)
+			announces := callsToFunc(file, "announceRunCompletion")
+			attempts := callsToFunc(file, "attemptRunCompletion")
+			Expect(announces).To(
+				Equal(attempts),
 				name+" must announce every run completion it can cause",
 			)
+			announced += announces
+			attempted += attempts
 		}
+		Expect(attempted).To(BeNumerically(">=", 4), "the four known completion sites must still be calling attemptRunCompletion")
+		Expect(announced).To(Equal(attempted))
 
-		lifecycle, err := os.ReadFile("pipeline_run_lifecycle.go")
-		Expect(err).NotTo(HaveOccurred())
-		Expect(string(lifecycle)).To(ContainSubstring("atc.PipelineRunCompletedChannel"), "the helper must announce the dedicated completion channel")
-		Expect(string(lifecycle)).To(ContainSubstring("atc.ComponentReclaimerPipelineRuns"), "the helper must keep waking the reclaimer")
+		lifecycle := parseCompletionSource("pipeline_run_lifecycle.go")
+		Expect(channelsNotifiedBy(lifecycle, "announceRunCompletion")).To(ConsistOf(
+			"atc.ComponentReclaimerPipelineRuns",
+			"atc.PipelineRunCompletedChannel",
+		), "the helper must keep waking the reclaimer and announce the dedicated completion channel")
 	})
 
 	It("does not notify while the run is still running", func() {
@@ -519,3 +532,64 @@ var _ = Describe("Pipeline run completion notifications", func() {
 		Expect(received()).To(BeFalse(), "a run with work still outstanding must not announce completion")
 	})
 })
+
+// parseCompletionSource parses one file of the package under test. Ginkgo runs
+// with the package directory as the working directory, and the guard below
+// needs the syntax tree rather than the bytes: a comment naming a helper or a
+// channel is not a call to it.
+func parseCompletionSource(name string) *ast.File {
+	GinkgoHelper()
+	file, err := parser.ParseFile(token.NewFileSet(), name, nil, 0)
+	Expect(err).NotTo(HaveOccurred())
+	return file
+}
+
+// callsToFunc counts calls to an unqualified function in the parsed file.
+func callsToFunc(file *ast.File, name string) int {
+	count := 0
+	ast.Inspect(file, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if fn, ok := call.Fun.(*ast.Ident); ok && fn.Name == name {
+			count++
+		}
+		return true
+	})
+	return count
+}
+
+// channelsNotifiedBy renders the argument of every `<x>.Notify(pkg.Channel)`
+// call made inside the named function, so the guard sees what the code
+// announces rather than what its comment says it announces.
+func channelsNotifiedBy(file *ast.File, funcName string) []string {
+	channels := []string{}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != funcName || fn.Body == nil {
+			continue
+		}
+		ast.Inspect(fn.Body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok || len(call.Args) != 1 {
+				return true
+			}
+			method, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || method.Sel.Name != "Notify" {
+				return true
+			}
+			arg, ok := call.Args[0].(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			pkg, ok := arg.X.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			channels = append(channels, pkg.Name+"."+arg.Sel.Name)
+			return true
+		})
+	}
+	return channels
+}
