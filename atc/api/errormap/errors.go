@@ -17,7 +17,9 @@ func Status(err error) (int, bool) {
 		return http.StatusBadRequest, true
 	}
 	var cacheConflict db.TaskCacheIdentityConflictError
-	if errors.As(err, &cacheConflict) || errors.Is(err, db.ErrPipelineRunNotTemplate) ||
+	var templateInvalid db.ErrPipelineTemplateInvalid
+	if errors.As(err, &cacheConflict) || errors.As(err, &templateInvalid) ||
+		errors.Is(err, db.ErrPipelineRunNotTemplate) ||
 		errors.Is(err, db.ErrPipelineRunInstanced) || errors.Is(err, db.ErrPipelineRunPaused) ||
 		errors.Is(err, db.ErrPipelineRunArchived) || errors.Is(err, db.ErrPipelineRunPayloadMutation) ||
 		errors.Is(err, db.ErrPipelineTemplateHasRuns) || errors.Is(err, db.ErrPipelineTemplateHasRunHistory) ||

@@ -96,7 +96,7 @@ func (f *pipelineRunFactory) CreateRunInTx(_ context.Context, tx Tx, base Pipeli
 		return RunCreation{}, err
 	}
 	if err = configvalidate.ValidateTemplateConfig(effective); err != nil {
-		return RunCreation{}, err
+		return RunCreation{}, ErrPipelineTemplateInvalid{Err: err}
 	}
 	normalized, err := atc.ValidateRunParams(effective.Params, params.Vars)
 	if err != nil {

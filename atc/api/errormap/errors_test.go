@@ -42,7 +42,23 @@ var _ = Describe("Mutation error status", func() {
 		Entry("template build", db.ErrPipelineTemplateBuild),
 		Entry("template check", db.ErrPipelineTemplateCheck),
 		Entry("ambiguous template cache", db.TaskCacheIdentityConflictError{JobName: "deploy-((environment))"}),
+		Entry("stored template that no longer validates", db.ErrPipelineTemplateInvalid{Err: errors.New("template must contain at least one entry job")}),
 	)
+
+	It("carries the stored template's defect to the client", func() {
+		// This fails if a template that fails re-validation at run time falls
+		// through to a bare 500, so the operator sees a server error rather
+		// than the reason the template cannot produce a run.
+		writer := httptest.NewRecorder()
+		Expect(errormap.Write(writer, db.ErrPipelineTemplateInvalid{
+			Err: errors.New("template must contain at least one entry job"),
+		})).To(BeTrue())
+		Expect(writer.Code).To(Equal(http.StatusConflict))
+
+		var decoded atc.SaveConfigResponse
+		Expect(json.Unmarshal(writer.Body.Bytes(), &decoded)).To(Succeed())
+		Expect(decoded.Errors).To(ConsistOf(ContainSubstring("template must contain at least one entry job")))
+	})
 
 	It("leaves unknown errors for the existing internal-error paths", func() {
 		// This fails if unrelated storage failures are incorrectly reported as user conflicts.
