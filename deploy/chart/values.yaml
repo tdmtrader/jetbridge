@@ -109,6 +109,14 @@ web:
   # -- Additional CLI args for the web command
   extraArgs: []
 
+  # -- Admit public creation of durable pipeline runs. Creation is held by
+  # default, and this committed value is the only supported way to enable it.
+  # Honest caveat: it is not the only *possible* way. Every flag has a
+  # CONCOURSE_-prefixed environment twin, and this chart accepts arbitrary
+  # `web.env`, so a cluster can be put into the admitting state without this
+  # value ever changing. That is unsupported, not prevented.
+  enablePipelineRunCreation: false
+
   # -- Extra volume mounts for the web container (e.g. custom CA bundles, credential files)
   extraVolumeMounts: []
   # -- Extra volumes for the web pod
