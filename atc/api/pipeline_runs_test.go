@@ -21,6 +21,13 @@ var _ = Describe("Pipeline Runs API", func() {
 	)
 
 	BeforeEach(func() {
+		// These specs are about the run route and the run lifecycle, not about
+		// the operator gate: every one of them needs a run to exist. The gate
+		// itself is proven in atc/integration, against a real booted ATC in
+		// both states.
+		atc.EnablePipelineRunCreation = true
+		DeferCleanup(func() { atc.EnablePipelineRunCreation = false })
+
 		database = useRealDB()
 		template = database.SavePipeline(database.Main, "release", atc.Config{
 			Template: true,
