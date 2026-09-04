@@ -47,15 +47,31 @@ func (f usedTaskCache) findOrCreate(tx Tx) (UsedTaskCache, error) {
 		conflict = "(template_pipeline_id, run_job_name, step_name, path) WHERE template_pipeline_id IS NOT NULL DO UPDATE SET template_pipeline_id = EXCLUDED.template_pipeline_id"
 	}
 
+	// The upsert already identifies the row, so it also returns the run
+	// identity's owning team rather than paying for a second read whose
+	// not-found result the caller would receive as a nil UsedTaskCache.
+	returning := "id"
+	if f.identity.JobID == 0 {
+		returning = "id, (SELECT team_id FROM pipelines WHERE id = task_caches.template_pipeline_id)"
+	}
+
 	var id int
+	var teamID sql.NullInt64
+	scanned := []any{&id}
+	if f.identity.JobID == 0 {
+		scanned = append(scanned, &teamID)
+	}
 	err = psql.Insert("task_caches").Columns(columns...).Values(values...).
-		Suffix("ON CONFLICT " + conflict + " RETURNING id").RunWith(tx).QueryRow().Scan(&id)
+		Suffix("ON CONFLICT " + conflict + " RETURNING " + returning).RunWith(tx).QueryRow().Scan(scanned...)
 	if err != nil {
 		return nil, err
 	}
 
-	utc, _, findErr := f.find(tx)
-	return utc, findErr
+	f.id = id
+	if f.identity.JobID == 0 {
+		f.identity.TeamID = int(teamID.Int64)
+	}
+	return &f, nil
 }
 
 func (f usedTaskCache) find(runner sq.Runner) (UsedTaskCache, bool, error) {

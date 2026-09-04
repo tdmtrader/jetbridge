@@ -1,12 +1,40 @@
 package db_test
 
 import (
+	"strings"
+
+	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
+
+// countingTaskCacheTx records every statement a task-cache transaction issues,
+// so a test can assert how many round trips one creation costs.
+type countingTaskCacheTx struct {
+	db.Tx
+	statements *[]string
+}
+
+func (tx countingTaskCacheTx) QueryRow(query string, args ...any) sq.RowScanner {
+	*tx.statements = append(*tx.statements, query)
+	return tx.Tx.QueryRow(query, args...)
+}
+
+type countingTaskCacheConn struct {
+	db.DbConn
+	statements *[]string
+}
+
+func (conn countingTaskCacheConn) Begin() (db.Tx, error) {
+	tx, err := conn.DbConn.Begin()
+	if err != nil {
+		return nil, err
+	}
+	return countingTaskCacheTx{Tx: tx, statements: conn.statements}, nil
+}
 
 var _ = Describe("TaskCacheFactory", func() {
 
@@ -100,6 +128,33 @@ var _ = Describe("TaskCacheFactory", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(second.ID()).To(Equal(first.ID()))
 			Expect(second.Identity()).To(Equal(identity))
+		})
+
+		It("takes the created row's identity from its own upsert", func() {
+			// This fails if creation re-reads a row the INSERT ... RETURNING
+			// already identified: the extra read costs a round trip on every
+			// task-cache initialisation and, because its found flag is
+			// discarded, a miss would hand the caller a nil UsedTaskCache.
+			template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "upsert-cache-template"}, atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "entry"}}}, 0, false)
+			Expect(err).NotTo(HaveOccurred())
+
+			var statements []string
+			factory := db.NewTaskCacheFactory(countingTaskCacheConn{DbConn: dbConn, statements: &statements})
+			identity := atc.TaskCacheIdentity{TeamID: defaultTeam.ID(), TemplatePipelineID: template.ID(), RunJobName: "deploy-staging"}
+
+			created, err := factory.FindOrCreate(identity, "task", "cache")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(created).NotTo(BeNil())
+			Expect(created.ID()).To(BeNumerically(">", 0))
+			Expect(created.Identity()).To(Equal(identity))
+
+			reads := 0
+			for _, statement := range statements {
+				if strings.HasPrefix(statement, "SELECT") {
+					reads++
+				}
+			}
+			Expect(reads).To(Equal(1), "creation must read once to look for the row, then trust its own upsert")
 		})
 
 		It("keeps template and materialized job names separate", func() {
