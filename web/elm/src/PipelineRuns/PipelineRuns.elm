@@ -132,7 +132,13 @@ update message ( model, effects ) =
         OpenPipelineRunForm ->
             ( { model | formOpen = True, error = Nothing, validation = Nothing }, effects )
         SetPipelineRunParam name input ->
-            ( { model | form = RunForm.set name input model.form, validation = Nothing }, effects )
+            ( { model
+                | form = RunForm.set name input model.form
+                , validation = Nothing
+                , error = if model.validation == Nothing then model.error else Nothing
+              }
+            , effects
+            )
         SubmitPipelineRun ->
             submit model effects
         RetryPipelineRuns ->
