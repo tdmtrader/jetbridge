@@ -99,8 +99,11 @@ handleCallback callback ( model, effects ) =
             )
         PipelineFetched (Err err) ->
             ( { model | template = RemoteData.Failure err, refreshing = False }, effects )
-        PipelineRunsFetched (Ok ( _, runs )) ->
-            ( { model | runs = RemoteData.Success runs, error = if model.refreshing then model.error else Nothing }, effects )
+        PipelineRunsFetched (Ok ( page, runs )) ->
+            if page /= model.page then
+                ( model, effects )
+            else
+                ( { model | runs = RemoteData.Success runs, error = if model.refreshing then model.error else Nothing }, effects )
         PipelineRunsFetched (Err err) ->
             ( { model | runs = RemoteData.Failure err, error = if model.refreshing then model.error else Just "Unable to load run history." }, effects )
         PipelineRunCreated (Ok run) ->

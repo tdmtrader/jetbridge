@@ -467,6 +467,23 @@ all =
                     |> Application.update (Update SubmitPipelineRun)
                     |> Tuple.second
                     |> Expect.equal [ Effects.Focus "run-form-error" ]
+        , test "ignores a history response for a page it has moved off" <|
+            \_ ->
+                pagedRuns
+                    |> Application.handleCallback
+                        (PipelineRunsFetched
+                            (Ok
+                                ( { direction = Pagination.To 10, limit = 50 }
+                                , { content = [ completedRun ], pagination = { previousPage = Nothing, nextPage = Nothing } }
+                                )
+                            )
+                        )
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Expect.all
+                        [ Query.has [ text "#42" ]
+                        , Query.hasNot [ text "#40" ]
+                        ]
         , test "keeps reclaimed numbers out of the anchor tab order" <|
             \_ ->
                 pageWithRuns
