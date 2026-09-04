@@ -3,7 +3,6 @@ package concourse
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -77,26 +76,14 @@ func (team *team) PipelineRun(pipelineName string, number int) (atc.PipelineRun,
 	}
 }
 
-// pipelineRunError unwraps the run API's JSON error envelope, so a refusal the
-// server took care to phrase reaches the user as its own message rather than as
-// a raw body inside "Unexpected Response". The sibling config write path does
-// the same (see CreateOrUpdatePipelineConfig); the connection this path still
-// goes through has already consumed the response, so the envelope is
-// recognised by decoding it rather than by the Content-Type it arrived with.
+// pipelineRunError names a refusal the run API phrased, so it reaches the user
+// as its own message rather than as a raw body inside "Unexpected Response".
+// The sibling config write path does the same (see CreateOrUpdatePipelineConfig).
 func pipelineRunError(err error) error {
-	var unexpected internal.UnexpectedResponseError
-	if !errors.As(err, &unexpected) {
-		return err
+	if reasons, refused := refusalEnvelope(err); refused {
+		return InvalidPipelineRunError{Errors: reasons}
 	}
-	if unexpected.StatusCode != http.StatusBadRequest && unexpected.StatusCode != http.StatusConflict {
-		return err
-	}
-
-	var envelope atc.SaveConfigResponse
-	if json.Unmarshal([]byte(unexpected.Body), &envelope) != nil || len(envelope.Errors) == 0 {
-		return err
-	}
-	return InvalidPipelineRunError{Errors: envelope.Errors}
+	return err
 }
 
 func (team *team) pipelineRunsURL(pipelineName string) string {
