@@ -240,6 +240,27 @@ var _ = Describe("Pipeline Runs API", func() {
 		Expect(string(body)).To(ContainSubstring("paused"))
 	})
 
+	It("names the defect when a stored template no longer validates", func() {
+		// This fails if a template row that predates save-time validation (an
+		// upgrade, a direct DB edit) answers a bare 500 instead of saying why
+		// it cannot produce a run. Saved through the DB layer, which is the
+		// only way such a row exists once the save route validates.
+		updated, _, err := database.Main.SavePipeline(template.PipelineRef(), atc.Config{
+			Template: true,
+			Params:   []atc.ParamSchema{{Name: "environment", Type: atc.ParamTypeString, Required: true}},
+		}, template.ConfigVersion(), false)
+		Expect(err).NotTo(HaveOccurred())
+		template = updated
+
+		response := create(map[string]any{"environment": "production"})
+		body, err := io.ReadAll(response.Body)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(response.Body.Close()).To(Succeed())
+		Expect(response.StatusCode).To(Equal(http.StatusConflict))
+		Expect(response.Header.Get("Content-Type")).To(Equal("application/json"))
+		Expect(string(body)).To(ContainSubstring("template must contain at least one entry job"))
+	})
+
 	It("rejects materialized job-name collisions as invalid run parameters", func() {
 		assertMaterializationConflict(atc.Config{
 			Template: true,
