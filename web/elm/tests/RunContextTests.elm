@@ -16,6 +16,7 @@ import Message.Message exposing (Message(..))
 import Message.Subscription exposing (Delivery(..), Interval(..))
 import Pipeline.Pipeline as Pipeline
 import Pipeline.Styles as PipelineStyles
+import RemoteData
 import Routes
 import SubPage.SubPage as SubPage
 import Test exposing (Test, describe, test)
@@ -124,6 +125,29 @@ all =
                     |> Pipeline.handleDelivery (ClockTicked FiveSeconds (Time.millisToPosix 0))
                     |> Tuple.second
                     |> Expect.all [ expectEffect (FetchPipelineRun template 42), expectNoEffect (FetchPipeline returnedRef) ]
+        , test "keeps the loaded payload across a header poll" <|
+            \_ ->
+                Pipeline.initRun { template = template, number = 42 }
+                    |> Pipeline.handleCallback (PipelineRunFetched (Ok liveRun))
+                    |> Pipeline.handleCallback (PipelineFetched (Ok payload))
+                    |> withoutEffects
+                    |> Pipeline.handleDelivery (ClockTicked FiveSeconds (Time.millisToPosix 0))
+                    |> Pipeline.handleCallback (PipelineRunFetched (Ok liveRun))
+                    |> Expect.all
+                        [ Tuple.first >> .pipeline >> Expect.equal (RemoteData.Success payload)
+                        , Tuple.second >> Expect.equal [ FetchPipelineRun template 42, FetchPipeline returnedRef ]
+                        ]
+        , test "reloads the payload when the header moves to another reference" <|
+            \_ ->
+                Pipeline.initRun { template = template, number = 42 }
+                    |> Pipeline.handleCallback (PipelineRunFetched (Ok liveRun))
+                    |> Pipeline.handleCallback (PipelineFetched (Ok payload))
+                    |> withoutEffects
+                    |> Pipeline.handleCallback (PipelineRunFetched (Ok { liveRun | instanceRef = Just template }))
+                    |> Expect.all
+                        [ Tuple.first >> .pipeline >> Expect.equal RemoteData.Loading
+                        , Tuple.second >> Expect.equal [ FetchPipeline template ]
+                        ]
         , test "polls the durable header for a record-only run" <|
             \_ ->
                 Pipeline.initRun { template = template, number = 42 }
@@ -257,7 +281,7 @@ pipelineFlags =
 payload : Concourse.Pipeline
 payload =
     Data.pipeline "team" 2
-        |> Data.withName "payload"
+        |> Data.withName returnedRef.pipelineName
         |> Data.withInstanceVars returnedRef.pipelineInstanceVars
         |> (\pipeline ->
                 { pipeline
