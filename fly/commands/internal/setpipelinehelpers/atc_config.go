@@ -1,6 +1,7 @@
 package setpipelinehelpers
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -67,6 +68,15 @@ func (atcConfig ATCConfig) Set(yamlTemplateWithParams templatehelpers.YamlTempla
 			Type:    w.Type,
 			Message: w.Message,
 		})
+	}
+
+	// The template declaration rules are the server's other gate on a saved
+	// config (atc/api/configserver/save.go), so refuse here rather than
+	// printing a diff -- or a clean --dry-run -- for a file SaveConfig will
+	// answer with a 400.
+	if err := configvalidate.ValidateTemplateDeclaration(atcConfig.PipelineRef, newConfig); err != nil {
+		displayhelpers.ShowErrors("Error loading existing config", []string{err.Error()})
+		return errors.New("configuration invalid")
 	}
 
 	diffExists := diff(existingConfig, newConfig)

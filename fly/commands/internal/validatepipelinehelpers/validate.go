@@ -32,6 +32,14 @@ func Validate(yamlTemplate templatehelpers.YamlTemplateWithParams, strict bool, 
 
 	warnings, errorMessages := configvalidate.Validate(unmarshalledTemplate)
 
+	// The template declaration rules are the server's other gate on a saved
+	// config (atc/api/configserver/save.go), so run them here too rather than
+	// printing "looks good" for a file SaveConfig will answer with a 400. The
+	// ref is empty because validate-pipeline names no pipeline.
+	if err := configvalidate.ValidateTemplateDeclaration(atc.PipelineRef{}, unmarshalledTemplate); err != nil {
+		errorMessages = append(errorMessages, err.Error())
+	}
+
 	if len(warnings) > 0 {
 		configWarnings := make([]concourse.ConfigWarning, len(warnings))
 		for idx, warning := range warnings {
