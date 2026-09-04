@@ -148,6 +148,27 @@ all =
                         [ Tuple.first >> .pipeline >> Expect.equal RemoteData.Loading
                         , Tuple.second >> Expect.equal [ FetchPipeline template ]
                         ]
+        , test "retries the payload on the next poll after a record-only fallback" <|
+            \_ ->
+                Pipeline.initRun { template = template, number = 42 }
+                    |> Pipeline.handleCallback (PipelineRunFetched (Ok liveRun))
+                    |> Pipeline.handleCallback (PipelineFetched Data.httpNotFound)
+                    |> Pipeline.handleCallback (PipelineRunFetched (Ok liveRun))
+                    |> withoutEffects
+                    |> Pipeline.handleDelivery (ClockTicked FiveSeconds (Time.millisToPosix 0))
+                    |> Pipeline.handleCallback (PipelineRunFetched (Ok liveRun))
+                    |> Tuple.second
+                    |> expectEffect (FetchPipeline returnedRef)
+        , test "a recovered payload re-arms the one-shot header refetch" <|
+            \_ ->
+                Pipeline.initRun { template = template, number = 42 }
+                    |> Pipeline.handleCallback (PipelineRunFetched (Ok liveRun))
+                    |> Pipeline.handleCallback (PipelineFetched Data.httpNotFound)
+                    |> Pipeline.handleCallback (PipelineFetched (Ok payload))
+                    |> withoutEffects
+                    |> Pipeline.handleCallback (PipelineFetched Data.httpNotFound)
+                    |> Tuple.second
+                    |> expectEffect (FetchPipelineRun template 42)
         , test "polls the durable header for a record-only run" <|
             \_ ->
                 Pipeline.initRun { template = template, number = 42 }
