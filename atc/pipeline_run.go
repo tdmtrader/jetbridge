@@ -15,6 +15,25 @@ const (
 	RunStatusAborted   RunStatus = "aborted"
 )
 
+// PipelineRunCompletedChannel is the Postgres NOTIFY channel a run's
+// transition to a terminal status is announced on. It exists so a walker can
+// react to completion the instant it happens instead of discovering it on its
+// next sweep.
+//
+// It is a wake-up, not a message. The channel carries no payload, the
+// in-process bus coalesces every notification for a channel into one signal
+// per waiting listener, and NotifySignal drops a signal outright when a
+// listener's buffer is already full. A missed wake-up is therefore normal and
+// unremarkable. Polling remains the source of truth: anything listening here
+// must still do a full scan on its own interval and must be correct with the
+// notification never arriving at all.
+//
+// It is deliberately separate from ComponentReclaimerPipelineRuns. That
+// channel wakes one specific component on its own schedule; this one names the
+// event, so a second consumer can listen without being mistaken for the
+// reclaimer.
+const PipelineRunCompletedChannel = "pipeline_run_completed"
+
 type PipelineRun struct {
 	ID                 int                 `json:"id"`
 	TemplatePipelineID int                 `json:"template_pipeline_id"`

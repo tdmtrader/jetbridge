@@ -894,7 +894,7 @@ WITH RECURSIVE pipelines_to_archive AS (
 		return err
 	}
 	if completedRun {
-		b.conn.Bus().Notify(atc.ComponentReclaimerPipelineRuns)
+		announceRunCompletion(b.conn.Bus())
 	}
 
 	err = b.conn.Bus().Notify(buildEventsChannel(b.id))

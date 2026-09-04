@@ -1,6 +1,8 @@
 package db_test
 
 import (
+	"os"
+	"strings"
 	"time"
 
 	"github.com/concourse/concourse/atc"
@@ -434,5 +436,86 @@ var _ = Describe("Component Notifications", func() {
 
 			Expect(received()).To(BeFalse(), "did not expect scanner notification when ResourceType scope is unchanged")
 		})
+	})
+})
+
+var _ = Describe("Pipeline run completion notifications", func() {
+	// A run reaching a terminal status is announced on its own channel so a
+	// walker can be event-driven. Poll stays the source of truth -- the bus
+	// coalesces and silently drops -- but a completion that notifies nothing
+	// forces every consumer to wait out a full sweep interval.
+	listenForCompletion := func() func() bool {
+		signal, err := dbConn.Bus().ListenSignal(atc.PipelineRunCompletedChannel)
+		Expect(err).NotTo(HaveOccurred())
+
+		return func() bool {
+			defer dbConn.Bus().UnlistenSignal(atc.PipelineRunCompletedChannel, signal)
+			select {
+			case <-signal.C():
+				return true
+			case <-time.After(2 * time.Second):
+				return false
+			}
+		}
+	}
+
+	It("notifies when a finished build terminalises the run", func() {
+		fixture := createRunLifecycleFixture(basicRunConfig("entry"))
+		entry := fixture.jobs["entry"]
+		consumeObservedSchedule(entry)
+
+		received := listenForCompletion()
+
+		Expect(pendingRunBuild(entry).Finish(db.BuildStatusSucceeded)).To(Succeed())
+		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusSucceeded))
+
+		Expect(received()).To(BeTrue(), "expected a run completion notification once the run reached a terminal status")
+	})
+
+	It("notifies when consuming a schedule request settles the last outstanding debt", func() {
+		fixture := createRunLifecycleFixture(basicRunConfig("entry"))
+		entry := fixture.jobs["entry"]
+		Expect(pendingRunBuild(entry).Finish(db.BuildStatusFailed)).To(Succeed())
+		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusRunning), "schedule debt still blocks completion")
+
+		received := listenForCompletion()
+
+		consumeObservedSchedule(entry)
+		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusFailed))
+
+		Expect(received()).To(BeTrue(), "the scheduler's own completion attempt must announce the run too")
+	})
+
+	It("announces every completion site through the one notification helper", func() {
+		// A new completion site that forgets to announce costs a walker a full
+		// poll interval and fails no test, so the count is guarded here rather
+		// than left to whoever adds the fifth site.
+		for _, name := range []string{"build.go", "job.go", "pipeline.go"} {
+			source, err := os.ReadFile(name)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.Count(string(source), "announceRunCompletion(")).To(
+				Equal(strings.Count(string(source), "attemptRunCompletion(")),
+				name+" must announce every run completion it can cause",
+			)
+		}
+
+		lifecycle, err := os.ReadFile("pipeline_run_lifecycle.go")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(lifecycle)).To(ContainSubstring("atc.PipelineRunCompletedChannel"), "the helper must announce the dedicated completion channel")
+		Expect(string(lifecycle)).To(ContainSubstring("atc.ComponentReclaimerPipelineRuns"), "the helper must keep waking the reclaimer")
+	})
+
+	It("does not notify while the run is still running", func() {
+		fixture := createRunLifecycleFixture(basicRunConfig("entry", "other"))
+		entry := fixture.jobs["entry"]
+		consumeObservedSchedule(entry)
+		consumeObservedSchedule(fixture.jobs["other"])
+
+		received := listenForCompletion()
+
+		Expect(pendingRunBuild(entry).Finish(db.BuildStatusSucceeded)).To(Succeed())
+		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusRunning))
+
+		Expect(received()).To(BeFalse(), "a run with work still outstanding must not announce completion")
 	})
 })
