@@ -6,15 +6,15 @@
 // composition feature rests on, and every one of its non-stdlib parameters and
 // refusals is an atc/db type. A package that called it directly would import
 // atc/db, and that is exactly the coupling architecture_test.go's ratchet
-// exists to stop the agentic layer inheriting -- mcpserver's pin records what
+// exists to keep out of the layers above core -- mcpserver's pin records what
 // happens when a second caller reaches past core's handlers into its database:
 // its authorization drifted from the route it shadowed until it no longer
 // enforced the same rules.
 //
-// So this package sits on the seam. It is core: it matches no agentic prefix,
-// and it may import atc/db freely. What it publishes is the seam re-expressed
-// in types a caller that cannot see atc/db can name -- its own transaction
-// interfaces, its own run struct, its own typed refusals.
+// So this package sits on the seam. It is core, classified as core by
+// architecture_test.go, and it may import atc/db freely. What it publishes is
+// the seam re-expressed in types a caller that cannot see atc/db can name --
+// its own transaction interfaces, its own run struct, its own typed refusals.
 //
 // # The rule, stated exactly
 //
