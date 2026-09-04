@@ -144,20 +144,60 @@ func normalizeRunParam(schema ParamSchema, value any, supplied bool) (any, error
 		}
 		return nil, fmt.Errorf("parameter %s must be a bool", schema.Name)
 	case ParamTypeEnum:
-		return normalizeEnumRunParam(schema, value)
+		return normalizeEnumRunParam(schema, value, supplied)
 	default:
 		return nil, fmt.Errorf("parameter %s has invalid type %q", schema.Name, schema.Type)
 	}
 }
 
-func normalizeEnumRunParam(schema ParamSchema, value any) (any, error) {
+func normalizeEnumRunParam(schema ParamSchema, value any, supplied bool) (any, error) {
+	value = coerceSuppliedEnumString(schema, value, supplied)
+
 	for _, allowed := range schema.Values {
 		if normalized, equal := equalRunParamScalars(value, allowed); equal {
 			return normalized, nil
 		}
 	}
 
-	return nil, fmt.Errorf("parameter %s must be one of the declared enum values", schema.Name)
+	return nil, fmt.Errorf("parameter %s must be one of %s", schema.Name, declaredEnumValues(schema))
+}
+
+// coerceSuppliedEnumString reads a supplied string as the enum's declared
+// member type, the way the number and bool branches already do. Fly sends every
+// -v value as a string, so without this a number or bool enum is reachable only
+// through --json-var. The declaration guarantees the members share one scalar
+// type (configvalidate), so the first member decides how to read the string
+// unambiguously. A default is not coerced: the schema already guarantees it
+// carries the member type.
+func coerceSuppliedEnumString(schema ParamSchema, value any, supplied bool) any {
+	stringValue, isString := value.(string)
+	if !supplied || !isString || len(schema.Values) == 0 {
+		return value
+	}
+
+	switch schema.Values[0].(type) {
+	case string:
+		return value
+	case bool:
+		if parsed, err := strconv.ParseBool(stringValue); err == nil {
+			return parsed
+		}
+	default:
+		if parsed, err := strconv.ParseFloat(stringValue, 64); err == nil {
+			return parsed
+		}
+	}
+	return value
+}
+
+// declaredEnumValues names the alternatives a refused value could have been,
+// so the message does not leave the caller to go and read the template.
+func declaredEnumValues(schema ParamSchema) string {
+	formatted := make([]string, len(schema.Values))
+	for i, allowed := range schema.Values {
+		formatted[i] = fmt.Sprintf("%v", allowed)
+	}
+	return strings.Join(formatted, ", ")
 }
 
 func equalRunParamScalars(value, allowed any) (any, bool) {
