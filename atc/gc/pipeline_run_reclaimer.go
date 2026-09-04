@@ -30,6 +30,14 @@ func NewPipelineRunReclaimer(lifecycle db.PipelineRunReclaimLifecycle, now func(
 	return &pipelineRunReclaimer{lifecycle: lifecycle, now: now, batchSize: batchSize}
 }
 
+// BatchSize is the bound this reclaimer will ask its lifecycle for. It is
+// exported because the value comes from an operator flag several hops away,
+// and a flag that never reaches its component is indistinguishable from a
+// flag that works until someone reads the batch the component actually got.
+func (r *pipelineRunReclaimer) BatchSize() int {
+	return r.batchSize
+}
+
 func (r *pipelineRunReclaimer) Run(ctx context.Context) error {
 	logger := lagerctx.FromContext(ctx).Session("pipeline-run-reclaimer")
 

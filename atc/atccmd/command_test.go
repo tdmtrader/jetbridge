@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/atccmd"
 	"github.com/concourse/concourse/atc/db"
@@ -112,6 +113,35 @@ func (s *CommandSuite) TestPipelineRunReclaimBatchFlagDefaultsToTheCodeDefault()
 	opt := runCmd.FindOptionByLongName("pipeline-run-reclaim-batch")
 	s.NotNil(opt, "--pipeline-run-reclaim-batch should exist")
 	s.Equal([]string{strconv.Itoa(gc.DefaultPipelineRunReclaimBatchSize)}, opt.Default)
+}
+
+// The default is pinned above and the reclaimer honours whatever batch it is
+// constructed with, but until this spec nothing joined the two: gcComponents
+// could hand the constructor the package default and every test in the tree
+// stayed green, which is exactly the "the flag exists but is dead" failure the
+// flag was added to avoid.
+func (s *CommandSuite) TestPipelineRunReclaimBatchFlagReachesTheComponent() {
+	const configured = 5
+	s.NotEqual(gc.DefaultPipelineRunReclaimBatchSize, configured, "the fixture has to differ from the default it is guarding against")
+
+	cmd := &atccmd.RunCommand{}
+	cmd.PipelineRunReclaimBatch = configured
+
+	components, err := atccmd.GCComponentsForTest(cmd, lagertest.NewTestLogger("test"), nil, nil)
+	s.NoError(err)
+
+	var reclaimer atccmd.RunnableComponent
+	var found bool
+	for _, component := range components {
+		if component.Component.Name == atc.ComponentReclaimerPipelineRuns {
+			reclaimer, found = component, true
+		}
+	}
+	s.True(found, "gc components should include the pipeline run reclaimer")
+
+	sized, ok := reclaimer.Runnable.(interface{ BatchSize() int })
+	s.True(ok, "the reclaimer should report the batch it was built with")
+	s.Equal(configured, sized.BatchSize(), "the reclaimer must run on the configured batch, not the package default")
 }
 
 func (s *CommandSuite) TestKubernetesFieldsExistOnRunCommand() {
