@@ -41,11 +41,13 @@ func (team *team) CheckResource(pipelineRef atc.PipelineRef, resourceName string
 	case internal.ResourceNotFoundError:
 		return build, false, nil
 	case internal.UnexpectedResponseError:
+		if reasons, refused := refusalEnvelope(err); refused {
+			return build, false, APIRefusalError{Errors: reasons}
+		}
 		if e.StatusCode == http.StatusInternalServerError {
 			return build, false, GenericError{e.Body}
-		} else {
-			return build, false, err
 		}
+		return build, false, err
 	default:
 		return build, false, err
 	}

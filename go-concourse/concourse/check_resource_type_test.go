@@ -85,4 +85,26 @@ var _ = Describe("CheckResourceType", func() {
 		})
 	})
 
+	Context("when the template guard refuses the check", func() {
+		BeforeEach(func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("POST", expectedURL, expectedQuery),
+					ghttp.RespondWithJSONEncoded(http.StatusConflict, atc.SaveConfigResponse{
+						Errors: []string{"pipeline templates cannot be checked directly"},
+					}),
+				),
+			)
+		})
+
+		It("returns the sentence the server phrased rather than a raw body", func() {
+			// This fails if the 409 envelope reaches fly wrapped in
+			// "Unexpected Response", which prints the JSON at the user.
+			_, _, err := team.CheckResourceType(pipelineRef, "myresource", atc.Version{"ref": "fake-ref"}, true)
+			Expect(err).To(Equal(concourse.APIRefusalError{
+				Errors: []string{"pipeline templates cannot be checked directly"},
+			}))
+			Expect(err.Error()).To(Equal("pipeline templates cannot be checked directly"))
+		})
+	})
 })
