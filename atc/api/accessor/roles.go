@@ -1,6 +1,8 @@
 package accessor
 
 import (
+	"fmt"
+
 	"github.com/concourse/concourse/atc"
 )
 
@@ -108,4 +110,38 @@ var DefaultRoles = map[string]string{
 	// making the route admin-only. (The atc/integration suite's login
 	// user is on the main team and therefore admin, so it would not
 	// catch a regression here.)
+}
+
+// EffectiveRole reports the role an action requires once custom assignments
+// are layered over the defaults. It is the one rule RequiredRole enforces at
+// request time, so validation and enforcement cannot drift apart.
+func EffectiveRole(customRoles map[string]string, action string) string {
+	if role := customRoles[action]; role != "" {
+		return role
+	}
+	return DefaultRoles[action]
+}
+
+// ValidateCustomRoles refuses an assignment that would make creating a
+// pipeline run a weaker capability than setting a pipeline config.
+//
+// A run parameter value is interpolated verbatim into the materialized payload
+// config (atc/run_config.go), which is then saved and credential-evaluated as
+// an ordinary pipeline. A ((...)) reference supplied as a parameter value
+// therefore resolves against the team's own secrets at check/get/put time, so
+// creating a run carries exactly the trust that setting a pipeline does. The
+// stock roles already agree; this refuses the one configuration that would
+// turn that equivalence into a privilege escalation.
+func ValidateCustomRoles(customRoles map[string]string) error {
+	runRole := EffectiveRole(customRoles, atc.CreatePipelineRun)
+	saveRole := EffectiveRole(customRoles, atc.SaveConfig)
+
+	if !RoleHasRequiredRole(runRole, saveRole) {
+		return fmt.Errorf(
+			"%s may not require a weaker role (%s) than %s (%s): a run parameter value is interpolated verbatim into the materialized pipeline config, so creating a run carries the same trust as setting one",
+			atc.CreatePipelineRun, runRole, atc.SaveConfig, saveRole,
+		)
+	}
+
+	return nil
 }

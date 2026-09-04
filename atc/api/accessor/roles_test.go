@@ -23,4 +23,44 @@ var _ = Describe("Pipeline run roles", func() {
 		}
 		Expect(matched).To(Equal(3))
 	})
+
+	Describe("ValidateCustomRoles", func() {
+		It("accepts the stock roles", func() {
+			Expect(accessor.ValidateCustomRoles(nil)).To(Succeed())
+			Expect(accessor.ValidateCustomRoles(map[string]string{})).To(Succeed())
+		})
+
+		It("accepts a run creation role equal to or stronger than set-pipeline", func() {
+			Expect(accessor.ValidateCustomRoles(map[string]string{
+				atc.CreatePipelineRun: accessor.MemberRole,
+			})).To(Succeed())
+			Expect(accessor.ValidateCustomRoles(map[string]string{
+				atc.CreatePipelineRun: accessor.OwnerRole,
+			})).To(Succeed())
+			Expect(accessor.ValidateCustomRoles(map[string]string{
+				atc.CreatePipelineRun: accessor.OperatorRole,
+				atc.SaveConfig:        accessor.OperatorRole,
+			})).To(Succeed())
+		})
+
+		DescribeTable("refuses a run creation role weaker than set-pipeline",
+			func(customRoles map[string]string, runRole, saveRole string) {
+				err := accessor.ValidateCustomRoles(customRoles)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring(atc.CreatePipelineRun))
+				Expect(err.Error()).To(ContainSubstring(atc.SaveConfig))
+				Expect(err.Error()).To(ContainSubstring(runRole))
+				Expect(err.Error()).To(ContainSubstring(saveRole))
+			},
+			Entry("operator run creation against the default member set-pipeline",
+				map[string]string{atc.CreatePipelineRun: accessor.OperatorRole},
+				accessor.OperatorRole, accessor.MemberRole),
+			Entry("viewer run creation against the default member set-pipeline",
+				map[string]string{atc.CreatePipelineRun: accessor.ViewerRole},
+				accessor.ViewerRole, accessor.MemberRole),
+			Entry("default member run creation against a raised owner set-pipeline",
+				map[string]string{atc.SaveConfig: accessor.OwnerRole},
+				accessor.MemberRole, accessor.OwnerRole),
+		)
+	})
 })

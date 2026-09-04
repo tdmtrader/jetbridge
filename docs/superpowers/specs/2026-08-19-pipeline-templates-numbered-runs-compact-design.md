@@ -524,10 +524,15 @@ only while the payload exists and the viewer may enter it. It is read from the
 actual child pipeline rather than synthesized from the template's current
 name, so renaming a template does not break links to older live payloads.
 
-Run creation requires the template team's write role. List/detail access is
-based on the durable template. Public viewers may see structural identity and
-status but not params, parameter schema, or config hash. Payloads retain normal
-pipeline authorization and do not silently inherit template publicity.
+Run creation requires the template team's write role. Because a supplied
+parameter value is interpolated verbatim into the materialized payload config,
+which is then saved and credential-evaluated as an ordinary pipeline, creating a
+run carries set-pipeline-equivalent trust: `CreatePipelineRun` may never be
+assigned a weaker role than `SaveConfig`, and the ATC refuses such an RBAC
+config at startup. List/detail access is based on the durable template. Public
+viewers may see structural identity and status but not params, parameter schema,
+or config hash. Payloads retain normal pipeline authorization and do not
+silently inherit template publicity.
 
 Fly adds:
 
