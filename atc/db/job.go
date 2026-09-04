@@ -491,8 +491,10 @@ func (j *job) Pause(pausedBy string) error {
 			return err
 		}
 		defer Rollback(tx)
-		admission, err := lockJobBuildAdmission(tx, j.id, j.pipelineRunID, false)
-		if err != nil {
+		// Pausing admits no build, so it takes the run lock directly rather
+		// than through the build-admission seam, whose running-status
+		// assertion would refuse a benign pause once the run terminalises.
+		if _, _, err = lockPipelineRunForPayload(tx, j.pipelineID, j.pipelineRunID); err != nil {
 			return err
 		}
 		if _, err = psql.Update("jobs").
@@ -504,7 +506,7 @@ func (j *job) Pause(pausedBy string) error {
 			Exec(); err != nil {
 			return err
 		}
-		completedRun, err := attemptRunCompletion(tx, admission.runID)
+		completedRun, err := attemptRunCompletion(tx, j.pipelineRunID)
 		if err != nil {
 			return err
 		}
