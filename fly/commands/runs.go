@@ -54,7 +54,7 @@ func (command *RunsCommand) run(client pipelineRunLister, output io.Writer) erro
 		return err
 	}
 
-	runs, _, err := client.PipelineRuns(command.Pipeline.Name, concourse.Page{Limit: command.Count})
+	runs, err := command.list(client)
 	if err != nil {
 		return err
 	}
@@ -77,6 +77,36 @@ func (command *RunsCommand) run(client pipelineRunLister, output io.Writer) erro
 	}
 
 	return table.Render(output, Fly.PrintTableHeaders)
+}
+
+// list collects the requested count a page at a time. The server clamps a
+// caller-supplied limit to atc.PaginationAPIMaxLimit without saying so, so
+// sending -c straight through returned a short list that looked complete. The
+// user asked for N rows and the keyset cursors exist for exactly this, so
+// follow Pagination.Next rather than capping locally.
+func (command *RunsCommand) list(client pipelineRunLister) ([]atc.PipelineRun, error) {
+	var runs []atc.PipelineRun
+	page := concourse.Page{Limit: min(command.Count, atc.PaginationAPIMaxLimit)}
+	for {
+		batch, pagination, err := client.PipelineRuns(command.Pipeline.Name, page)
+		if err != nil {
+			return nil, err
+		}
+		runs = append(runs, batch...)
+
+		remaining := command.Count - len(runs)
+		if remaining <= 0 || len(batch) == 0 || pagination.Next == nil {
+			break
+		}
+		page = *pagination.Next
+		page.Limit = min(remaining, atc.PaginationAPIMaxLimit)
+	}
+	// A server that answered a larger page than asked for must not turn -c
+	// into a floor.
+	if len(runs) > command.Count {
+		runs = runs[:command.Count]
+	}
+	return runs, nil
 }
 
 func (command *RunsCommand) validate() error {
