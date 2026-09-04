@@ -20,6 +20,7 @@ var _ = Describe("Validate Pipeline", func() {
 		var goodPipeline templatehelpers.YamlTemplateWithParams
 		var unknownKeyPipeline templatehelpers.YamlTemplateWithParams
 		var dupkeyPipeline templatehelpers.YamlTemplateWithParams
+		var badTemplatePipeline templatehelpers.YamlTemplateWithParams
 
 		BeforeEach(func() {
 			var err error
@@ -143,9 +144,34 @@ jobs:
 			)
 			Expect(err).NotTo(HaveOccurred())
 
+			err = os.WriteFile(
+				filepath.Join(tmpdir, "bad-template-pipeline.yml"),
+				[]byte(`---
+template: true
+params:
+- name: run
+  type: string
+jobs:
+- name: hello-world
+  plan:
+  - task: say-hello
+    config:
+      platform: linux
+      image_resource:
+        type: registry-image
+        source: {repository: ubuntu}
+      run:
+        path: echo
+        args: ["Hello, world!"]
+`),
+				0644,
+			)
+			Expect(err).NotTo(HaveOccurred())
+
 			goodPipeline = templatehelpers.NewYamlTemplateWithParams(atc.PathFlag(filepath.Join(tmpdir, "good-pipeline.yml")), nil, nil, nil, nil)
 			unknownKeyPipeline = templatehelpers.NewYamlTemplateWithParams(atc.PathFlag(filepath.Join(tmpdir, "unknown-key-pipeline.yml")), nil, nil, nil, nil)
 			dupkeyPipeline = templatehelpers.NewYamlTemplateWithParams(atc.PathFlag(filepath.Join(tmpdir, "dupkey-pipeline.yml")), nil, nil, nil, nil)
+			badTemplatePipeline = templatehelpers.NewYamlTemplateWithParams(atc.PathFlag(filepath.Join(tmpdir, "bad-template-pipeline.yml")), nil, nil, nil, nil)
 		})
 
 		AfterEach(func() {
@@ -171,6 +197,11 @@ jobs:
 		It("fails to validate a pipeline with unknown keys with strict", func() {
 			err := validatepipelinehelpers.Validate(unknownKeyPipeline, true, false)
 			Expect(err.Error()).To(ContainSubstring(`json: unknown field "anchors"`))
+		})
+		It("fails to validate a template whose declaration the server would reject", func() {
+			err := validatepipelinehelpers.Validate(badTemplatePipeline, false, false)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("configuration invalid"))
 		})
 		It("validates a pipeline with unknown keys", func() {
 			err := validatepipelinehelpers.Validate(unknownKeyPipeline, false, false)

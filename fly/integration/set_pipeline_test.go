@@ -1198,6 +1198,26 @@ this is super secure
 			})
 		})
 
+		Context("when the config declares an invalid template", func() {
+			BeforeEach(func() {
+				changedConfig.Template = true
+				changedConfig.Params = []atc.ParamSchema{{Name: "run", Type: atc.ParamTypeString}}
+			})
+
+			It("fails locally instead of leaving the template rules to the server", func() {
+				flyCmd := exec.Command(flyPath, "-t", targetName, "set-pipeline", "-p", "awesome-pipeline", "-c", configFile.Name(), "-d")
+
+				sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+				Expect(err).NotTo(HaveOccurred())
+
+				Eventually(sess.Err).Should(gbytes.Say("parameter name run is reserved"))
+
+				<-sess.Exited
+				Expect(sess.ExitCode()).To(Equal(1))
+				Expect(sess.Out).NotTo(gbytes.Say("Dry-run mode was set, exiting."))
+			})
+		})
+
 		Context("when dry-run mode has been enabled whilst setting a pipeline", func() {
 			BeforeEach(func() {
 				path, err := atc.Routes.CreatePathForRoute(atc.SaveConfig, rata.Params{"pipeline_name": "awesome-pipeline", "team_name": "main"})
