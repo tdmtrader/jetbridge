@@ -376,10 +376,19 @@ handleRunHeader run model effects =
                 if model.refetchedRunHeader && model.missingPayloadRef == Just ref then
                     ( { model | runHeader = Just run, runContext = Just <| RunContext.RecordOnly run, runError = Nothing }, effects )
                 else
+                    let
+                        keepsPayload =
+                            ref == model.pipelineLocator && RemoteData.isSuccess model.pipeline
+                    in
                     ( { model
                         | runHeader = Just run
                         , pipelineLocator = ref
-                        , pipeline = RemoteData.Loading
+                        , pipeline =
+                            if keepsPayload then
+                                model.pipeline
+
+                            else
+                                RemoteData.Loading
                         , runError = Nothing
                       }
                     , effects ++ [ FetchPipeline ref ]
