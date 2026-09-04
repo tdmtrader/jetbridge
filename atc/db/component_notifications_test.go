@@ -531,6 +531,60 @@ var _ = Describe("Pipeline run completion notifications", func() {
 
 		Expect(received()).To(BeFalse(), "a run with work still outstanding must not announce completion")
 	})
+
+	It("does not announce a completion whose transaction fails at commit", func() {
+		// The announce is a wake-up for listeners that will then read the run
+		// back, so it has to follow the commit: a listener woken by a
+		// completion that rolled back reads a running run and either drops the
+		// event or, worse, acts on the stale one it can still see. Ordering is
+		// the whole content of the claim, and no spec that only watches a
+		// successful commit can see it -- both orders look identical there.
+		//
+		// A DEFERRABLE INITIALLY DEFERRED constraint trigger is what makes the
+		// difference observable: it fires at COMMIT, long after
+		// attemptRunCompletion has already flipped the row inside the
+		// transaction, so an announce placed before tx.Commit() has already
+		// gone out by the time the commit is refused.
+		//
+		// Two connections, because that announce would otherwise be issued
+		// while this spec's own transaction still holds the suite's single
+		// pooled connection, and database/sql would wait for it forever --
+		// hanging the suite instead of failing this spec.
+		dbConn.SetMaxOpenConns(2)
+		DeferCleanup(func() { dbConn.SetMaxOpenConns(1) })
+
+		fixture := createRunLifecycleFixture(basicRunConfig("entry"))
+		entry := fixture.jobs["entry"]
+		consumeObservedSchedule(entry)
+
+		_, err := dbConn.Exec(`
+			CREATE OR REPLACE FUNCTION refuse_terminal_run() RETURNS trigger AS $$
+			BEGIN
+				IF NEW.status <> 'running' THEN
+					RAISE EXCEPTION 'refusing terminal run at commit';
+				END IF;
+				RETURN NEW;
+			END $$ LANGUAGE plpgsql;
+			CREATE CONSTRAINT TRIGGER refuse_terminal_run
+				AFTER UPDATE ON pipeline_runs
+				DEFERRABLE INITIALLY DEFERRED
+				FOR EACH ROW EXECUTE FUNCTION refuse_terminal_run();
+		`)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() {
+			_, err := dbConn.Exec(`DROP TRIGGER IF EXISTS refuse_terminal_run ON pipeline_runs; DROP FUNCTION IF EXISTS refuse_terminal_run()`)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		received := listenForCompletion()
+
+		err = pendingRunBuild(entry).Finish(db.BuildStatusSucceeded)
+		Expect(err).To(HaveOccurred(), "the commit must have been refused")
+		Expect(err.Error()).To(ContainSubstring("refusing terminal run at commit"))
+		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusRunning), "rolled back: the run is still running")
+
+		Expect(received()).To(BeFalse(), "a completion that never committed must not be announced")
+	})
 })
 
 // parseCompletionSource parses one file of the package under test. Ginkgo runs
