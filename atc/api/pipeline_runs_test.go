@@ -146,11 +146,66 @@ var _ = Describe("Pipeline Runs API", func() {
 		Expect(runs[1].Number).To(Equal(3))
 	})
 
-	It("rejects a reversed pagination range before querying durable history", func() {
-		response, err := client.Get(pipelineRunsURL(server, template.Name()) + "?from=5&to=3")
-		Expect(err).NotTo(HaveOccurred())
-		defer response.Body.Close()
-		Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
+	It("answers every client error with the same JSON envelope the rest of the API uses", func() {
+		// This fails if a malformed request is refused with http.Error, which
+		// stamps text/plain on handlers whose every other response is JSON, so
+		// a client that decodes atc.SaveConfigResponse cannot read the reason.
+		for _, badRequest := range []struct {
+			description string
+			request     func() *http.Request
+			reason      string
+		}{
+			{
+				description: "malformed create body",
+				request: func() *http.Request {
+					request, err := http.NewRequest(http.MethodPost, pipelineRunsURL(server, template.Name()), bytes.NewBufferString("not json"))
+					Expect(err).NotTo(HaveOccurred())
+					request.Header.Set("Content-Type", "application/json")
+					return request
+				},
+				reason: "invalid pipeline run request",
+			},
+			{
+				description: "malformed pagination limit",
+				request: func() *http.Request {
+					request, err := http.NewRequest(http.MethodGet, pipelineRunsURL(server, template.Name())+"?limit=banana", nil)
+					Expect(err).NotTo(HaveOccurred())
+					return request
+				},
+				reason: "invalid limit pagination value",
+			},
+			{
+				description: "reversed pagination range",
+				request: func() *http.Request {
+					request, err := http.NewRequest(http.MethodGet, pipelineRunsURL(server, template.Name())+"?from=5&to=3", nil)
+					Expect(err).NotTo(HaveOccurred())
+					return request
+				},
+				reason: "invalid range boundaries",
+			},
+			{
+				description: "malformed run number",
+				request: func() *http.Request {
+					request, err := http.NewRequest(http.MethodGet, pipelineRunsURL(server, template.Name())+"/not-a-number", nil)
+					Expect(err).NotTo(HaveOccurred())
+					return request
+				},
+				reason: "invalid pipeline run number",
+			},
+		} {
+			By(badRequest.description)
+			response, err := client.Do(badRequest.request())
+			Expect(err).NotTo(HaveOccurred())
+			body, err := io.ReadAll(response.Body)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(response.Body.Close()).To(Succeed())
+
+			Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
+			Expect(response.Header.Get("Content-Type")).To(Equal("application/json"))
+			var envelope atc.SaveConfigResponse
+			Expect(json.Unmarshal(body, &envelope)).To(Succeed())
+			Expect(envelope.Errors).To(ConsistOf(badRequest.reason))
+		}
 	})
 
 	It("returns a durable detail and leaves a missing number as not found", func() {

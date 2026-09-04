@@ -10,6 +10,7 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/errormap"
+	"github.com/concourse/concourse/atc/api/helpers"
 	"github.com/concourse/concourse/atc/api/present"
 	"github.com/concourse/concourse/atc/db"
 )
@@ -70,7 +71,7 @@ func (s *Server) CreatePipelineRun(pipeline db.Pipeline) http.Handler {
 
 		var request atc.CreatePipelineRunRequest
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			http.Error(w, "invalid pipeline run request", http.StatusBadRequest)
+			helpers.HandleBadRequest(w, "invalid pipeline run request")
 			return
 		}
 
@@ -97,7 +98,7 @@ func (s *Server) ListPipelineRuns(pipeline db.Pipeline) http.Handler {
 
 		page, err := pipelineRunPage(r)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			helpers.HandleBadRequest(w, err.Error())
 			return
 		}
 
@@ -146,7 +147,7 @@ func (s *Server) GetPipelineRun(pipeline db.Pipeline) http.Handler {
 
 		number, err := strconv.Atoi(r.FormValue(":number"))
 		if err != nil || number < 1 {
-			http.Error(w, "invalid pipeline run number", http.StatusBadRequest)
+			helpers.HandleBadRequest(w, "invalid pipeline run number")
 			return
 		}
 
