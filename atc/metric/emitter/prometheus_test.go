@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -46,6 +47,18 @@ func scrapedValue(page, name string) string {
 	return ""
 }
 
+// scrapedFloat is scrapedValue parsed, for the samples whose value is the
+// assertion rather than a label: a histogram that was registered but never
+// observed still publishes its _count and _sum, both zero.
+func scrapedFloat(page, name string) float64 {
+	GinkgoHelper()
+	raw := scrapedValue(page, name)
+	Expect(raw).NotTo(BeEmpty(), name+" is not on the page at all")
+	value, err := strconv.ParseFloat(raw, 64)
+	Expect(err).NotTo(HaveOccurred(), name+" published a value that is not a number: "+raw)
+	return value
+}
+
 var scrapeConfig *emitter.PrometheusConfig
 
 var _ = Describe("PrometheusEmitter", Ordered, func() {
@@ -83,7 +96,22 @@ var _ = Describe("PrometheusEmitter", Ordered, func() {
 			ContainSubstring("concourse_gc_pipeline_run_reclaim_backlog"),
 			ContainSubstring("concourse_gc_pipeline_run_reclaim_duration_count"),
 		))
-		Expect(scrapedValue(scrape(), "concourse_gc_pipeline_run_reclaim_backlog")).To(Equal("7"))
+		page := scrape()
+		Expect(scrapedValue(page, "concourse_gc_pipeline_run_reclaim_backlog")).To(Equal("7"))
+
+		// A registered histogram is already on the page reading _count 0, so
+		// the name appearing there proves only that it was declared. What a
+		// scrape has to show is the pass itself: one observation, carrying the
+		// time it took. Without these two the whole duration arm can be
+		// deleted and the spec stays green.
+		Expect(scrapedFloat(page, "concourse_gc_pipeline_run_reclaim_duration_count")).To(
+			BeNumerically(">=", 1),
+			"the histogram must have observed a pass, not merely been registered",
+		)
+		Expect(scrapedFloat(page, "concourse_gc_pipeline_run_reclaim_duration_sum")).To(
+			BeNumerically("==", 42),
+			"the observation must carry the duration it was handed",
+		)
 
 		// A gauge, not a counter: a shrinking backlog must be able to say so.
 		prometheusEmitter.Emit(logger, metric.Event{Name: "pipeline run reclaim backlog", Value: 2})
