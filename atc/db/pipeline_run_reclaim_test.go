@@ -152,6 +152,43 @@ var _ = Describe("Pipeline run reclamation", func() {
 		Expect(ids).To(ConsistOf(shared.run.ID(), ageOnly.run.ID()))
 	})
 
+	It("counts a run past both retention policies once", func() {
+		// The backlog is a count of runs, not of matched predicates, and the
+		// two arms overlap by construction: a run old enough to be past the
+		// TTL is usually also outside the keep-last window. Summing them
+		// instead of UNIONing them would double every such run and report a
+		// backlog twice its true size against a batch size that is not.
+		keepLast, ttlDays := 1, 1
+		template := newReclaimTemplate("both-policies-backlog", &keepLast, &ttlDays)
+		old := time.Now().Add(-48 * time.Hour)
+		fresh := time.Now().Add(-time.Hour)
+		newReclaimRun(template, &old)
+		newReclaimRun(template, &old)
+		newReclaimRun(template, &fresh)
+
+		backlog, err := lifecycle.ReclaimBacklog()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(backlog).To(Equal(2), "the two older runs are past both policies and are two runs, not four")
+	})
+
+	It("counts runs a template retains only by age", func() {
+		// A cluster that expresses retention purely as a TTL declares no
+		// keep-last at all, so the number arm matches nothing there. Without
+		// the age arm the backlog would read zero on exactly the cluster whose
+		// reclaimer it is meant to be watching.
+		ttlDays := 1
+		template := newReclaimTemplate("ttl-only-backlog", nil, &ttlDays)
+		old := time.Now().Add(-48 * time.Hour)
+		fresh := time.Now().Add(-time.Hour)
+		newReclaimRun(template, &old)
+		newReclaimRun(template, &old)
+		newReclaimRun(template, &fresh)
+
+		backlog, err := lifecycle.ReclaimBacklog()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(backlog).To(Equal(2), "both elapsed runs are eligible on age alone")
+	})
+
 	It("skips an unelapsed retry deadline", func() {
 		keepLast := 1
 		template := newReclaimTemplate("retry-deadline", &keepLast, nil)
