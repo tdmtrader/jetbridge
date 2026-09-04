@@ -150,7 +150,6 @@ type RunCommand struct {
 	CredentialManagers   creds.Managers
 
 	SigningKey struct {
-		CheckInterval  time.Duration `long:"check-interval" default:"10m" description:"How often to check for outdated or expired signing keys for the idtoken secrets provider"`
 		RotationPeriod time.Duration `long:"rotation-period" default:"168h" description:"After which time a new signing key for the idtoken secrets provider should be generated. 0 turns off generation of new keys"`
 		GracePeriod    time.Duration `long:"grace-period" default:"24h" description:"How long a key should still be published for the idtoken secrets provider after a new key has been generated"`
 	} `group:"Pipeline Identity Tokens" namespace:"signing-key"`
@@ -227,13 +226,10 @@ type RunCommand struct {
 	LogClusterName bool `long:"log-cluster-name" description:"Log cluster name."`
 
 	GC struct {
-		Interval time.Duration `long:"interval" default:"30s" description:"Interval on which to perform garbage collection."`
-
 		OneOffBuildGracePeriod     time.Duration `long:"one-off-grace-period" default:"5m" description:"Period after which one-off build containers will be garbage-collected."`
 		MissingGracePeriod         time.Duration `long:"missing-grace-period" default:"5m" description:"Period after which to reap containers and volumes that were created but went missing from the worker."`
 		HijackGracePeriod          time.Duration `long:"hijack-grace-period" default:"5m" description:"Period after which hijacked containers will be garbage collected"`
 		FailedGracePeriod          time.Duration `long:"failed-grace-period" default:"120h" description:"Period after which failed containers will be garbage collected"`
-		CheckRecyclePeriod         time.Duration `long:"check-recycle-period" default:"1m" description:"Period after which to reap checks that are completed."`
 		VarSourceRecyclePeriod     time.Duration `long:"var-source-recycle-period" default:"5m" description:"Period after which to reap var_sources that are not used."`
 		DeprecatedScopeGracePeriod time.Duration `long:"deprecated-scope-grace-period" default:"720h" description:"Period after which deprecated resource config scopes (from resource type/source changes) will be garbage collected. Default 30 days."`
 	} `group:"Garbage Collection" namespace:"gc"`
