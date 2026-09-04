@@ -124,6 +124,10 @@ var _ = Describe("public run creation gate", func() {
 		Expect(archived.ContentType).To(HavePrefix("text/plain"))
 	})
 
+	It("reports a capability that agrees with its own admission decision", func() {
+		assertCapabilityAgreesWithAdmission(member)
+	})
+
 	Context("when the operator has enabled run creation", func() {
 		BeforeEach(func() {
 			cmd.EnablePipelineRunCreation = true
@@ -138,6 +142,10 @@ var _ = Describe("public run creation gate", func() {
 			Expect(run.InstanceRef.PipelineName).To(Equal(runTemplateRef.Name))
 
 			Expect(countRows("SELECT count(*) FROM pipeline_runs")).To(Equal(1))
+		})
+
+		It("reports a capability that agrees with its own admission decision", func() {
+			assertCapabilityAgreesWithAdmission(member)
 		})
 
 		It("still answers each template-shape refusal in its own words", func() {
@@ -304,4 +312,82 @@ func countRows(query string) int {
 	var count int
 	Expect(conn.QueryRow(query).Scan(&count)).To(Succeed())
 	return count
+}
+
+// assertCapabilityAgreesWithAdmission is the one clause no presenter-level
+// test can carry: whatever this server tells an authorized caller about
+// can_create_run, on each of the three payloads that emit it, must be what the
+// same server does with that caller's request, in the same boot.
+//
+// It must be authenticated. canCreatePipelineRun answers false for an
+// unauthenticated caller before it ever reaches the gate, so an anonymous
+// comparison agrees in both states and would hold even if the presenter
+// ignored the gate entirely.
+func assertCapabilityAgreesWithAdmission(httpClient *http.Client) {
+	GinkgoHelper()
+
+	reported := runTemplateCapability(httpClient)
+	admitted := postCreateRun(httpClient, "run-team", runTemplateRef.Name, runVars).Status == http.StatusCreated
+
+	for route, canCreate := range reported {
+		Expect(canCreate).To(Equal(admitted), "can_create_run on "+route+" disagrees with what the same server did with the request")
+	}
+}
+
+// runTemplateCapability reads can_create_run for the fixture template from
+// each of the three routes that emit it, keyed by route name.
+func runTemplateCapability(httpClient *http.Client) map[string]bool {
+	GinkgoHelper()
+
+	reported := map[string]bool{}
+
+	detailPath, err := atc.Routes.CreatePathForRoute(atc.GetPipeline, rata.Params{
+		"team_name":     "run-team",
+		"pipeline_name": runTemplateRef.Name,
+	})
+	Expect(err).NotTo(HaveOccurred())
+
+	var detail atc.Pipeline
+	Expect(json.Unmarshal(getCaptured(httpClient, atcURL+detailPath).Body, &detail)).To(Succeed())
+	Expect(detail.CanCreateRun).NotTo(BeNil())
+	reported[atc.GetPipeline] = *detail.CanCreateRun
+
+	for _, collection := range []struct {
+		name   string
+		params rata.Params
+	}{
+		{name: atc.ListPipelines, params: rata.Params{"team_name": "run-team"}},
+		{name: atc.ListAllPipelines, params: rata.Params{}},
+	} {
+		path, err := atc.Routes.CreatePathForRoute(collection.name, collection.params)
+		Expect(err).NotTo(HaveOccurred())
+
+		var pipelines []atc.Pipeline
+		Expect(json.Unmarshal(getCaptured(httpClient, atcURL+path).Body, &pipelines)).To(Succeed())
+
+		found := false
+		for _, pipeline := range pipelines {
+			// Skip a run's payload pipeline, which shares the template's name.
+			if pipeline.Name != runTemplateRef.Name || pipeline.TeamName != "run-team" || len(pipeline.InstanceVars) > 0 {
+				continue
+			}
+			Expect(pipeline.CanCreateRun).NotTo(BeNil())
+			reported[collection.name] = *pipeline.CanCreateRun
+			found = true
+		}
+		Expect(found).To(BeTrue(), "the fixture template is absent from "+collection.name+"; the comparison would be vacuous")
+	}
+
+	return reported
+}
+
+func getCaptured(httpClient *http.Client, url string) capturedResponse {
+	GinkgoHelper()
+
+	request, err := http.NewRequest(http.MethodGet, url, nil)
+	Expect(err).NotTo(HaveOccurred())
+
+	response := capture(httpClient, request)
+	Expect(response.Status).To(Equal(http.StatusOK), url)
+	return response
 }

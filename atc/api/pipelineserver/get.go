@@ -33,6 +33,12 @@ func pipelineOptions(r *http.Request, acc accessor.Access, pipeline db.Pipeline)
 }
 
 func canCreatePipelineRun(acc accessor.Access, teamName string, requiredRole string) bool {
+	// The operator gate narrows this field and never widens it: with creation
+	// held, no role can create a run, so no caller may be told it can. One
+	// edit, three payloads -- this is the only place the field is computed.
+	if !atc.EnablePipelineRunCreation {
+		return false
+	}
 	if !acc.IsAuthenticated() {
 		return false
 	}

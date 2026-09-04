@@ -20,6 +20,14 @@ import (
 
 var _ = Describe("Pipeline presenter matrix", func() {
 	It("reports run creation capability using the configured route role", func() {
+		// The `gate: true` rows are about the role, not about the operator
+		// gate: they assert a role behaviour that only exists while creation
+		// is admitted. The `gate: false` rows below them are this track's
+		// check -- the gate narrows the field for every caller, whatever
+		// their role.
+		original := atc.EnablePipelineRunCreation
+		DeferCleanup(func() { atc.EnablePipelineRunCreation = original })
+
 		for i, tc := range []struct {
 			name         string
 			requiredRole string
@@ -28,20 +36,26 @@ var _ = Describe("Pipeline presenter matrix", func() {
 			unauth       bool
 			otherTeam    bool
 			hold         string
+			gate         bool
 			canCreate    bool
 		}{
-			{name: "default member", role: accessor.MemberRole, canCreate: true},
-			{name: "custom operator", requiredRole: accessor.OperatorRole, role: accessor.OperatorRole, canCreate: true},
-			{name: "custom viewer", requiredRole: accessor.ViewerRole, role: accessor.ViewerRole, canCreate: true},
-			{name: "custom owner denies member", requiredRole: accessor.OwnerRole, role: accessor.MemberRole, canCreate: false},
-			{name: "admin", requiredRole: accessor.OwnerRole, role: accessor.OwnerRole, admin: true, canCreate: true},
-			{name: "unrelated team", role: accessor.MemberRole, otherTeam: true, canCreate: false},
-			{name: "unauthenticated public viewer", requiredRole: accessor.ViewerRole, role: accessor.ViewerRole, unauth: true, canCreate: false},
-			{name: "paused", role: accessor.MemberRole, hold: "paused", canCreate: true},
-			{name: "archived", role: accessor.MemberRole, hold: "archived", canCreate: true},
+			{name: "default member", role: accessor.MemberRole, gate: true, canCreate: true},
+			{name: "custom operator", requiredRole: accessor.OperatorRole, role: accessor.OperatorRole, gate: true, canCreate: true},
+			{name: "custom viewer", requiredRole: accessor.ViewerRole, role: accessor.ViewerRole, gate: true, canCreate: true},
+			{name: "custom owner denies member", requiredRole: accessor.OwnerRole, role: accessor.MemberRole, gate: true, canCreate: false},
+			{name: "admin", requiredRole: accessor.OwnerRole, role: accessor.OwnerRole, admin: true, gate: true, canCreate: true},
+			{name: "unrelated team", role: accessor.MemberRole, otherTeam: true, gate: true, canCreate: false},
+			{name: "unauthenticated public viewer", requiredRole: accessor.ViewerRole, role: accessor.ViewerRole, unauth: true, gate: true, canCreate: false},
+			{name: "paused", role: accessor.MemberRole, hold: "paused", gate: true, canCreate: true},
+			{name: "archived", role: accessor.MemberRole, hold: "archived", gate: true, canCreate: true},
+
+			{name: "gate held, admin", requiredRole: accessor.OwnerRole, role: accessor.OwnerRole, admin: true, canCreate: false},
+			{name: "gate held, team owner", requiredRole: accessor.OwnerRole, role: accessor.OwnerRole, canCreate: false},
+			{name: "gate held, team member", role: accessor.MemberRole, canCreate: false},
 		} {
 			tc := tc
 			By(tc.name)
+			atc.EnablePipelineRunCreation = tc.gate
 			auth := atc.TeamAuth{tc.role: {"users": {"test:user"}}}
 			if tc.unauth {
 				auth = atc.TeamAuth{accessor.ViewerRole: {}}
@@ -114,6 +128,12 @@ var _ = Describe("Pipeline presenter matrix", func() {
 	})
 
 	It("uses the configured run role in both pipeline collections", func() {
+		// Both collections, in both gate states: a change that gates the
+		// detail payload while the two list payloads keep answering true is
+		// the failure this spec exists to catch.
+		original := atc.EnablePipelineRunCreation
+		DeferCleanup(func() { atc.EnablePipelineRunCreation = original })
+
 		team, err := teamFactory.CreateTeam(atc.Team{
 			Name: "operator-team",
 			Auth: atc.TeamAuth{accessor.OperatorRole: {"users": {"test:user"}}},
@@ -136,40 +156,45 @@ var _ = Describe("Pipeline presenter matrix", func() {
 		listRequest := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
 		listRequest.Form = url.Values{":team_name": {team.Name()}}
 
-		for _, tc := range []struct {
-			action  string
-			handler http.Handler
-			request *http.Request
-		}{
-			{
-				action:  atc.ListPipelines,
-				handler: http.HandlerFunc(server.ListPipelines),
-				request: listRequest,
-			},
-			{
-				action:  atc.ListAllPipelines,
-				handler: http.HandlerFunc(server.ListAllPipelines),
-				request: httptest.NewRequest(http.MethodGet, "http://example.com", nil),
-			},
-		} {
-			response := httptest.NewRecorder()
-			accessFactory := &accessorfakes.FakeAccessFactory{}
-			accessFactory.CreateReturns(access, nil)
-			accessor.NewHandler(
-				lagertest.NewTestLogger("test"),
-				tc.action,
-				tc.handler,
-				accessFactory,
-				auditor.NewAuditor(false, false, false, false, false, false, false, false, false, lagertest.NewTestLogger("audit")),
-				map[string]string{atc.CreatePipelineRun: accessor.OperatorRole},
-			).ServeHTTP(response, tc.request)
-			Expect(response.Code).To(Equal(http.StatusOK))
+		for _, gate := range []bool{true, false} {
+			atc.EnablePipelineRunCreation = gate
+			By(fmt.Sprintf("with run creation admitted: %t", gate))
 
-			var presented []atc.Pipeline
-			Expect(json.Unmarshal(response.Body.Bytes(), &presented)).To(Succeed())
-			Expect(presented).To(HaveLen(1))
-			Expect(presented[0].CanCreateRun).NotTo(BeNil())
-			Expect(*presented[0].CanCreateRun).To(BeTrue())
+			for _, tc := range []struct {
+				action  string
+				handler http.Handler
+				request *http.Request
+			}{
+				{
+					action:  atc.ListPipelines,
+					handler: http.HandlerFunc(server.ListPipelines),
+					request: listRequest,
+				},
+				{
+					action:  atc.ListAllPipelines,
+					handler: http.HandlerFunc(server.ListAllPipelines),
+					request: httptest.NewRequest(http.MethodGet, "http://example.com", nil),
+				},
+			} {
+				response := httptest.NewRecorder()
+				accessFactory := &accessorfakes.FakeAccessFactory{}
+				accessFactory.CreateReturns(access, nil)
+				accessor.NewHandler(
+					lagertest.NewTestLogger("test"),
+					tc.action,
+					tc.handler,
+					accessFactory,
+					auditor.NewAuditor(false, false, false, false, false, false, false, false, false, lagertest.NewTestLogger("audit")),
+					map[string]string{atc.CreatePipelineRun: accessor.OperatorRole},
+				).ServeHTTP(response, tc.request)
+				Expect(response.Code).To(Equal(http.StatusOK))
+
+				var presented []atc.Pipeline
+				Expect(json.Unmarshal(response.Body.Bytes(), &presented)).To(Succeed())
+				Expect(presented).To(HaveLen(1))
+				Expect(presented[0].CanCreateRun).NotTo(BeNil())
+				Expect(*presented[0].CanCreateRun).To(Equal(gate), tc.action)
+			}
 		}
 	})
 })
