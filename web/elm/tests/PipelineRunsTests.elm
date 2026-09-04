@@ -12,6 +12,7 @@ import Expect
 import Html
 import Html.Attributes as Attr
 import Http
+import Json.Decode
 import Json.Encode
 import Message.Callback exposing (Callback(..))
 import Message.Effects as Effects
@@ -362,6 +363,30 @@ all =
                     |> Common.queryView
                     |> Query.find [ id "run-param-environment" ]
                     |> Query.hasNot [ attribute <| Attr.disabled True ]
+        , test "shows the server's own words when creation is held" <|
+            \_ ->
+                submitted
+                    |> Application.handleCallback (PipelineRunCreated (Err gateConflict))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ id "run-form-error" ]
+                    |> Query.has [ text heldRunCreation ]
+        , test "renders no creation action for a decoded template the server says cannot run" <|
+            \_ ->
+                -- Decoded from JSON rather than record-built: this is the shape
+                -- a gated server actually sends, and the decoder's default for
+                -- a missing field would hide a decoder change.
+                case Json.Decode.decodeString Concourse.decodePipeline gatedTemplateJson of
+                    Ok gatedTemplate ->
+                        pageFor gatedTemplate
+                            |> Expect.all
+                                [ Common.queryView >> Query.hasNot [ text "Start a run" ]
+                                , Common.queryView >> Query.hasNot [ tag "form" ]
+                                , Common.queryView >> Query.hasNot [ tag "button", text "Start run" ]
+                                ]
+
+                    Err err ->
+                        Expect.fail (Json.Decode.errorToString err)
         , test "does not render a creation action for a non-writer" <|
             \_ ->
                 pageFor nonWriterTemplate
@@ -609,6 +634,23 @@ nonWriterTemplate =
     { template | canCreateRun = False }
 
 
+gatedTemplateJson : String
+gatedTemplateJson =
+    """
+    { "id": 1
+    , "name": "pipeline"
+    , "paused": false
+    , "archived": false
+    , "public": true
+    , "team_name": "team"
+    , "last_updated": 0
+    , "template": true
+    , "can_create_run": false
+    , "params_schema": [ { "name": "environment", "type": "string", "required": true } ]
+    }
+    """
+
+
 optionalEnumTemplate : Concourse.Pipeline
 optionalEnumTemplate =
     { template
@@ -702,6 +744,26 @@ serverConflict =
         , headers = Dict.empty
         , body = " environment must be approved for this template \n"
         }
+
+gateConflict : Http.Error
+gateConflict =
+    Http.BadStatus
+        { url = "http://example.com"
+        , status = { code = 409, message = "Conflict" }
+        , headers = Dict.empty
+        , body = "{\"errors\":[\"" ++ heldRunCreation ++ "\"]}"
+        }
+
+
+-- heldRunCreation is atc.ErrPipelineRunCreationDisabled's text, from
+-- atc/pipeline_run_creation.go. It is written out rather than generated so
+-- that this fixture describes a server's answer; keep the two in step.
+
+
+heldRunCreation : String
+heldRunCreation =
+    "durable run creation is disabled on this server; an operator must enable it before runs can be created"
+
 
 jsonConflict : Http.Error
 jsonConflict =
