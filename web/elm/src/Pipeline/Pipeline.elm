@@ -667,7 +667,8 @@ viewRunPage session model =
                     Html.main_ [ id "run-record" ] [ RunContext.view model.runError context ]
 
                 _ ->
-                    Html.div [] [ RunContext.view model.runError context, viewSubPage session model ]
+                    Html.div (id "run-page" :: Styles.runPage)
+                        [ RunContext.view model.runError context, viewSubPage session model ]
 
         Nothing ->
             if model.runTemplate /= Nothing then
