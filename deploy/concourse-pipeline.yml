@@ -56,6 +56,13 @@ jobs:
                  ./atc/scheduler/... ./atc/metric/... ./atc/creds/... \
                  ./skymarshal/token/... ./skymarshal/skyserver/...
           echo "=== Vet passed ==="
+          echo ""
+          # The live-tagged suites only run in k8s-live-tests, at the end of the
+          # pipeline. Compiling them here catches an API drift the moment it
+          # lands, instead of the month later when the live tier next runs.
+          echo "=== Compiling live-tagged suites ==="
+          go vet -tags live ./atc/worker/jetbridge/...
+          echo "=== Live-tagged suites compile ==="
 
 
 - name: unit-tests

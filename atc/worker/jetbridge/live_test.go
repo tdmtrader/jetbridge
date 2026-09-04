@@ -16,21 +16,50 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/postgresrunner"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
+	"github.com/onsi/gomega"
+	"github.com/tedsuo/ifrit"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
 
-var livePostgresRunner postgresrunner.StandardTestRunner
+// livePostgresRunner is the package's one postmaster; each test that needs a
+// database gets a fresh copy of the migrated template from it.
+//
+// postgresrunner.Runner asserts with Gomega, which panics unless a fail
+// handler is registered; these are plain testing.T tests with no Ginkgo suite
+// to supply one, so TestMain registers a handler that panics with the message.
+// A bootstrap failure then kills the run loudly instead of leaving every test
+// to fail on a connection it never got.
+var livePostgresRunner postgresrunner.Runner
 
 func TestMain(m *testing.M) {
-	os.Exit(livePostgresRunner.Main(m))
+	os.Exit(runLive(m))
+}
+
+func runLive(m *testing.M) int {
+	gomega.RegisterFailHandler(func(message string, _ ...int) {
+		panic("postgresrunner: " + message)
+	})
+
+	livePostgresRunner = postgresrunner.Runner{Port: postgresrunner.PickPort()}
+	process := ifrit.Invoke(livePostgresRunner)
+	livePostgresRunner.InitializeTestDBTemplate()
+
+	code := m.Run()
+
+	process.Signal(os.Interrupt)
+	<-process.Wait()
+	return code
 }
 
 func useLiveJetbridgeDB(t *testing.T) jetbridgeDB {
 	t.Helper()
-	conn := livePostgresRunner.OpenConn(t)
+	livePostgresRunner.CreateTestDBFromTemplate()
+	t.Cleanup(livePostgresRunner.DropTestDB)
+	conn := livePostgresRunner.OpenConn()
+	t.Cleanup(func() { _ = conn.Close() })
 	return jetbridgeDB{WorkerFactory: db.NewWorkerFactory(
 		conn,
 		db.NewStaticWorkerCache(lager.NewLogger("live-jetbridge-test"), conn, 0),

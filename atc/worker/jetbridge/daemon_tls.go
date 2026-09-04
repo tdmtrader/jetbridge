@@ -36,10 +36,14 @@ func daemonClientTLSConfigured(cfg Config) bool {
 // against that SAN regardless of the IP dialed. Returns "" when the service or
 // namespace is unknown (verification then falls back to the dial host).
 func daemonTLSServerName(cfg Config) string {
-	if cfg.ArtifactDaemonService == "" || cfg.Namespace == "" {
+	namespace := cfg.ArtifactDaemonNamespace
+	if namespace == "" {
+		namespace = cfg.Namespace
+	}
+	if cfg.ArtifactDaemonService == "" || namespace == "" {
 		return ""
 	}
-	return fmt.Sprintf("%s.%s.svc", cfg.ArtifactDaemonService, cfg.Namespace)
+	return fmt.Sprintf("%s.%s.svc", cfg.ArtifactDaemonService, namespace)
 }
 
 // loadDaemonClientTLS builds a *tls.Config that presents the configured client
