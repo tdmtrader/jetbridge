@@ -9,6 +9,7 @@ import (
 
 type PipelineRunReclaimLifecycle interface {
 	ReclaimCandidateRunIDs(limit int) ([]int, error)
+	ReclaimBacklog() (int, error)
 	DestroyReclaimableRun(runID int) (bool, error)
 	DeferRunReclaim(runID int, retryAt time.Time) error
 }
@@ -71,6 +72,40 @@ func (l *pipelineRunReclaimLifecycle) ReclaimCandidateRunIDs(limit int) ([]int, 
 		}
 	}
 	return ids, nil
+}
+
+// ReclaimBacklog counts every run currently eligible for reclamation,
+// deliberately unbounded by the batch size. The batch is what one pass takes;
+// the backlog is what is waiting, and the two diverge exactly when the
+// reclaimer has stopped keeping up -- which is the only thing worth alerting
+// on. A count capped at the batch size could never say so.
+//
+// The two retention predicates are UNIONed on run id rather than summed,
+// because a run past both the keep-last window and the TTL is one run.
+func (l *pipelineRunReclaimLifecycle) ReclaimBacklog() (int, error) {
+	var count int
+	err := l.conn.QueryRow(`
+		SELECT count(*) FROM (
+			SELECT r.id
+			FROM pipeline_runs r
+			JOIN pipelines template ON template.id = r.template_pipeline_id
+			WHERE template.run_retention_keep_last IS NOT NULL
+			  AND r.status IN ('succeeded', 'failed', 'errored', 'aborted')
+			  AND r.number <= template.last_run_number - template.run_retention_keep_last
+			  AND (r.reclaim_retry_after IS NULL OR r.reclaim_retry_after <= now())
+			  AND EXISTS (SELECT 1 FROM pipelines child WHERE child.pipeline_run_id = r.id)
+			UNION
+			SELECT r.id
+			FROM pipeline_runs r
+			JOIN pipelines template ON template.id = r.template_pipeline_id
+			WHERE template.run_retention_ttl_days IS NOT NULL
+			  AND r.status IN ('succeeded', 'failed', 'errored', 'aborted')
+			  AND r.completed_at < now() - template.run_retention_ttl_days * interval '1 day'
+			  AND (r.reclaim_retry_after IS NULL OR r.reclaim_retry_after <= now())
+			  AND EXISTS (SELECT 1 FROM pipelines child WHERE child.pipeline_run_id = r.id)
+		) eligible
+	`).Scan(&count)
+	return count, err
 }
 
 func (l *pipelineRunReclaimLifecycle) candidateIDs(query string, limit int) ([]int, error) {

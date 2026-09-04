@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -13,6 +14,39 @@ import (
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/metric/emitter"
 )
+
+// scrape and scrapedValue read the emitter's own /metrics page, because the
+// question these specs ask is what a Prometheus server would see.
+func scrape() string {
+	req, _ := http.NewRequest("GET", fmt.Sprintf("http://%s:%s/metrics", scrapeConfig.BindIP, scrapeConfig.BindPort), nil)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	return string(body)
+}
+
+// scrapedValue returns the value of the first non-comment sample line whose
+// metric name matches, or "" when the page carries no such sample.
+func scrapedValue(page, name string) string {
+	for _, line := range strings.Split(page, "\n") {
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		metricName, value, found := strings.Cut(line, " ")
+		if !found {
+			continue
+		}
+		if metricName == name || strings.HasPrefix(metricName, name+"{") {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+var scrapeConfig *emitter.PrometheusConfig
 
 var _ = Describe("PrometheusEmitter", Ordered, func() {
 	var (
@@ -35,6 +69,25 @@ var _ = Describe("PrometheusEmitter", Ordered, func() {
 			"_prefix_testtwo__": "baz",
 		})
 		Expect(err).To(BeNil())
+		scrapeConfig = prometheusConfig
+	})
+
+	It("exposes the pipeline run reclaimer's backlog and duration", func() {
+		// Both are new surfaces on the /metrics page rather than internal
+		// counters, so this asserts what a scrape actually sees: a backlog
+		// that reads back the last level set, and a duration histogram.
+		prometheusEmitter.Emit(logger, metric.Event{Name: "pipeline run reclaim backlog", Value: 7})
+		prometheusEmitter.Emit(logger, metric.Event{Name: "gc: pipeline run reclaim duration (ms)", Value: 42})
+
+		Eventually(scrape).Should(SatisfyAll(
+			ContainSubstring("concourse_gc_pipeline_run_reclaim_backlog"),
+			ContainSubstring("concourse_gc_pipeline_run_reclaim_duration_count"),
+		))
+		Expect(scrapedValue(scrape(), "concourse_gc_pipeline_run_reclaim_backlog")).To(Equal("7"))
+
+		// A gauge, not a counter: a shrinking backlog must be able to say so.
+		prometheusEmitter.Emit(logger, metric.Event{Name: "pipeline run reclaim backlog", Value: 2})
+		Eventually(func() string { return scrapedValue(scrape(), "concourse_gc_pipeline_run_reclaim_backlog") }).Should(Equal("2"))
 	})
 
 	It("attaches trace ID exemplar to build duration histogram", func() {

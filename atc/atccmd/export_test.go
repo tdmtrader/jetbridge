@@ -12,8 +12,8 @@ func ValidateK8sRuntimeForTest(cmd *RunCommand) error {
 	return cmd.validateK8sRuntime()
 }
 
-func NewPipelineRunReclaimerComponentForTest(lifecycle db.PipelineRunReclaimLifecycle, now func() time.Time) RunnableComponent {
-	return newPipelineRunReclaimerComponent(lifecycle, now)
+func NewPipelineRunReclaimerComponentForTest(lifecycle db.PipelineRunReclaimLifecycle, now func() time.Time, batchSize int) RunnableComponent {
+	return newPipelineRunReclaimerComponent(lifecycle, now, batchSize)
 }
 
 // ValidateCustomRolesForTest exports the private validateCustomRoles method for

@@ -241,6 +241,8 @@ type RunCommand struct {
 
 	JobSchedulingMaxInFlight uint64 `long:"job-scheduling-max-in-flight" default:"32" description:"Maximum number of jobs to be scheduling at the same time"`
 
+	PipelineRunReclaimBatch int `long:"pipeline-run-reclaim-batch" default:"20" description:"Maximum number of reclaimable pipeline runs to destroy per reclaimer pass."`
+
 	DefaultCpuLimit    *int    `long:"default-task-cpu-limit" description:"Default max number of cpu shares per task, 0 means unlimited"`
 	DefaultMemoryLimit *string `long:"default-task-memory-limit" description:"Default maximum memory per task, 0 means unlimited"`
 
@@ -1514,15 +1516,15 @@ func (cmd *RunCommand) gcComponents(
 			Runnable: collector,
 		})
 	}
-	components = append(components, newPipelineRunReclaimerComponent(dbPipelineRunReclaimLifecycle, time.Now))
+	components = append(components, newPipelineRunReclaimerComponent(dbPipelineRunReclaimLifecycle, time.Now, cmd.PipelineRunReclaimBatch))
 
 	return components, nil
 }
 
-func newPipelineRunReclaimerComponent(lifecycle db.PipelineRunReclaimLifecycle, now func() time.Time) RunnableComponent {
+func newPipelineRunReclaimerComponent(lifecycle db.PipelineRunReclaimLifecycle, now func() time.Time, batchSize int) RunnableComponent {
 	return RunnableComponent{
 		Component: atc.Component{Name: atc.ComponentReclaimerPipelineRuns},
-		Runnable:  gc.NewPipelineRunReclaimer(lifecycle, now),
+		Runnable:  gc.NewPipelineRunReclaimer(lifecycle, now, batchSize),
 		Interval:  time.Minute,
 	}
 }
