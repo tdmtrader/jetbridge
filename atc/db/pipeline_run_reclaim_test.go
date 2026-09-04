@@ -188,7 +188,7 @@ var _ = Describe("Pipeline run reclamation", func() {
 		entry, found, err := payload.Job("entry")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
-		Expect(entry.ConsumeScheduleRequest(entry.ScheduleRequestedTime(), false)).To(Succeed())
+		Expect(entry.ConsumeScheduleRequest(entry.ScheduleRequestedTime())).To(Succeed())
 		build, found, err := buildFactory.Build(fixture.buildID)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())

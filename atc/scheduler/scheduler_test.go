@@ -151,16 +151,16 @@ var _ = Describe("Scheduler", func() {
 			Expect(actualInputs).To(BeNil())
 		})
 
-		It("reports explicitly whether the pass found a pending build", func() {
-			result, err := scheduler.Schedule(context.Background(), lagertest.NewTestLogger("test"), db.SchedulerJob{Job: job})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result.NoBuild).To(BeTrue())
+		It("does not query pending builds for a flag nobody reads", func() {
+			// ConsumeScheduleRequest deliberately ignores the scheduler's
+			// no-build hint, so a scheduling pass must not pay for a second
+			// GetPendingBuilds on top of the one the build starter makes.
+			calls := 0
+			counting := pendingBuildsCountingJob{Job: job, calls: &calls}
 
-			_, err = job.CreateBuild("manual-user")
+			_, err := scheduler.Schedule(context.Background(), lagertest.NewTestLogger("test"), db.SchedulerJob{Job: counting})
 			Expect(err).NotTo(HaveOccurred())
-			result, err = scheduler.Schedule(context.Background(), lagertest.NewTestLogger("test"), db.SchedulerJob{Job: job})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result.NoBuild).To(BeFalse())
+			Expect(calls).To(BeZero())
 		})
 
 		It("returns the error when the job inputs fail to fetch", func() {
@@ -272,9 +272,8 @@ var _ = Describe("Scheduler", func() {
 		}
 
 		fakeAlgorithm.ComputeReturns(db.InputMapping{}, false, false, nil)
-		result, err := scheduler.Schedule(context.Background(), lagertest.NewTestLogger("test"), schedulerJob)
+		_, err = scheduler.Schedule(context.Background(), lagertest.NewTestLogger("test"), schedulerJob)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(result.NoBuild).To(BeFalse())
 		pending := schedulerPendingBuilds(job)
 		Expect(pending).To(HaveLen(1))
 		Expect(pending[0].Status()).To(Equal(db.BuildStatusPending))
@@ -289,9 +288,8 @@ var _ = Describe("Scheduler", func() {
 		fakePlanner := new(schedulerfakes.FakeBuildPlanner)
 		scheduler.BuildStarter = NewBuildStarter(fakePlanner, fakeAlgorithm)
 
-		result, err = scheduler.Schedule(context.Background(), lagertest.NewTestLogger("test"), schedulerJob)
+		_, err = scheduler.Schedule(context.Background(), lagertest.NewTestLogger("test"), schedulerJob)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(result.NoBuild).To(BeFalse())
 		started, found, err := fixture.BuildFactory.Build(pending[0].ID())
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())

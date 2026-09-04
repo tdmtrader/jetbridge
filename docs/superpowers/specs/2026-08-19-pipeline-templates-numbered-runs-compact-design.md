@@ -310,9 +310,13 @@ pending build before, or atomically with, advancing `last_scheduled`. A newer
 concurrent request remains visible because the scheduler advances only to the
 token it observed.
 
-When a scheduler pass consumes the last request without creating a build, it
-invokes the run completion predicate. This lets a quiescent failed run settle
-promptly; successful coverage still keeps an unresolved expected job running.
+Every scheduler pass that consumes a request for a run job invokes the run
+completion predicate. The predicate is stateless and no-ops unless the run is
+genuinely quiescent, so it is not gated on whether the pass created a build --
+a pass that finished its own build in flight would otherwise clear the last
+schedule debt with nobody left to notice quiescence. This lets a quiescent
+failed run settle promptly; successful coverage still keeps an unresolved
+expected job running.
 
 ## 8. Lifecycle and concurrency
 

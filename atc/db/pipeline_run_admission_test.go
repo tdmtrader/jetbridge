@@ -344,7 +344,7 @@ var _ = Describe("template checking and scheduling", func() {
 var _ = Describe("pending build before schedule consumption", func() {
 	It("advances only to the observed token and preserves a newer request", func() {
 		type scheduleRequestConsumer interface {
-			ConsumeScheduleRequest(time.Time, bool) error
+			ConsumeScheduleRequest(time.Time) error
 		}
 
 		Expect(defaultJob.RequestSchedule()).To(Succeed())
@@ -362,15 +362,15 @@ var _ = Describe("pending build before schedule consumption", func() {
 
 		consumer, ok := defaultJob.(scheduleRequestConsumer)
 		Expect(ok).To(BeTrue(), "jobs must expose atomic observed-token consumption")
-		Expect(consumer.ConsumeScheduleRequest(observed, false)).To(Succeed())
+		Expect(consumer.ConsumeScheduleRequest(observed)).To(Succeed())
 
 		var requested, lastScheduled time.Time
 		Expect(dbConn.QueryRow("SELECT schedule_requested, last_scheduled FROM jobs WHERE id = $1", defaultJob.ID()).Scan(&requested, &lastScheduled)).To(Succeed())
 		Expect(lastScheduled).To(Equal(observed))
 		Expect(requested).To(BeTemporally(">", lastScheduled))
 
-		Expect(consumer.ConsumeScheduleRequest(requested, false)).To(Succeed())
-		Expect(consumer.ConsumeScheduleRequest(observed, true)).To(Succeed())
+		Expect(consumer.ConsumeScheduleRequest(requested)).To(Succeed())
+		Expect(consumer.ConsumeScheduleRequest(observed)).To(Succeed())
 		Expect(dbConn.QueryRow("SELECT last_scheduled FROM jobs WHERE id = $1", defaultJob.ID()).Scan(&lastScheduled)).To(Succeed())
 		Expect(lastScheduled).To(Equal(requested))
 	})

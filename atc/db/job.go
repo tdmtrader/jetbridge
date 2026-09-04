@@ -91,7 +91,7 @@ type Job interface {
 	RerunBuild(build Build, createdBy string) (Build, error)
 
 	RequestSchedule() error
-	ConsumeScheduleRequest(time.Time, bool) error
+	ConsumeScheduleRequest(time.Time) error
 
 	ChronoBuilds(page Page) ([]BuildForAPI, Pagination, error)
 	Builds(page Page) ([]BuildForAPI, Pagination, error)
@@ -1129,7 +1129,7 @@ func (j *job) RequestSchedule() error {
 	return tx.Commit()
 }
 
-func (j *job) ConsumeScheduleRequest(observed time.Time, noBuild bool) error {
+func (j *job) ConsumeScheduleRequest(observed time.Time) error {
 	tx, err := j.conn.Begin()
 	if err != nil {
 		return err
@@ -1160,14 +1160,13 @@ func (j *job) ConsumeScheduleRequest(observed time.Time, noBuild bool) error {
 	if err != nil {
 		return err
 	}
-	// noBuild is advisory only and deliberately does NOT gate this hook. The
-	// scheduler computes it as "this pass found no pending build when it
-	// started" (atc/scheduler/scheduler.go:67, NoBuild: !buildFound), which is
-	// false whenever the pass's own build was finished DURING the pass — the
-	// abort path finishes a pending build in-pass, and Build.Finish's own
-	// completion attempt is blocked at that instant by this job's
-	// still-outstanding schedule debt. Gating here cleared the debt with
-	// nobody left to notice quiescence, and the run stayed 'running' forever.
+	// Completion is deliberately NOT gated on "this pass created no build".
+	// That hint was false whenever the pass's own build was finished DURING the
+	// pass — the abort path finishes a pending build in-pass, and Build.Finish's
+	// own completion attempt is blocked at that instant by this job's
+	// still-outstanding schedule debt. Gating here cleared the debt with nobody
+	// left to notice quiescence, and the run stayed 'running' forever, so the
+	// scheduler no longer computes the hint at all.
 	//
 	// attemptRunCompletion is a stateless predicate that no-ops unless the run
 	// is genuinely quiescent, so running it on every consumed request for a
