@@ -26,9 +26,27 @@ type Config struct {
 	Jobs          JobConfigs          `json:"jobs,omitempty"`
 	Display       *DisplayConfig      `json:"display,omitempty"`
 	Template      bool                `json:"template,omitempty"`
+	CacheScope    string              `json:"cache_scope,omitempty"`
 	Params        []ParamSchema       `json:"params,omitempty"`
 	RunRetention  *RunRetentionConfig `json:"run_retention,omitempty"`
 }
+
+// A run payload's task caches are keyed on template identity, not on the
+// payload's disposable job rows, so every run of a template that declares
+// `caches:` writes into one directory shared by every run of that template.
+// Nothing reclaims it: the artifact daemon's sweeper skips /caches/ outright
+// and the task cache collector deletes only the database rows that name it. A
+// template therefore has to ask for that shared, permanently-growing scope
+// before its runs get one -- CacheScopeNone, the default, gives run payloads
+// ephemeral per-pod cache directories instead.
+//
+// This governs run payloads only. An ordinary pipeline's caches stay keyed on
+// its own job, which the existing job-scoped collector already reclaims, and
+// are unaffected.
+const (
+	CacheScopeTemplate = "template"
+	CacheScopeNone     = "none"
+)
 
 func UnmarshalConfig(payload []byte, config any) error {
 	// a 'skeleton' of Config, specifying only the toplevel fields
@@ -41,6 +59,7 @@ func UnmarshalConfig(payload []byte, config any) error {
 		Jobs          any `json:"jobs,omitempty"`
 		Display       any `json:"display,omitempty"`
 		Template      any `json:"template,omitempty"`
+		CacheScope    any `json:"cache_scope,omitempty"`
 		Params        any `json:"params,omitempty"`
 		RunRetention  any `json:"run_retention,omitempty"`
 	}

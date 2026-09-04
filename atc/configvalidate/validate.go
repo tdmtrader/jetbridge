@@ -22,6 +22,9 @@ func ValidateTemplateDeclaration(ref atc.PipelineRef, config atc.Config) error {
 		if config.RunRetention != nil {
 			return errors.New("run_retention is only valid on templates")
 		}
+		if config.CacheScope != "" {
+			return errors.New("cache_scope is only valid on templates")
+		}
 		return nil
 	}
 
@@ -69,6 +72,12 @@ func ValidateTemplateConfig(config atc.Config) error {
 		if err := validateRunRetention(*config.RunRetention); err != nil {
 			return err
 		}
+	}
+
+	switch config.CacheScope {
+	case "", atc.CacheScopeTemplate, atc.CacheScopeNone:
+	default:
+		return fmt.Errorf("cache_scope must be %q or %q", atc.CacheScopeTemplate, atc.CacheScopeNone)
 	}
 
 	if err := atc.ValidateTemplatePlaceholders(config); err != nil {
