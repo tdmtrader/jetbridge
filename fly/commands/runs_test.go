@@ -2,7 +2,10 @@ package commands
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"io"
+	"os"
 	"time"
 
 	"github.com/concourse/concourse/atc"
@@ -56,6 +59,29 @@ func numberedRuns(highest, count int) []atc.PipelineRun {
 	return runs
 }
 
+// captureRunsStdout collects what displayhelpers.JsonPrint writes, which goes
+// to os.Stdout rather than the writer command.run renders its table into.
+func captureRunsStdout(run func()) string {
+	GinkgoHelper()
+
+	reader, writer, err := os.Pipe()
+	Expect(err).NotTo(HaveOccurred())
+	original := os.Stdout
+	os.Stdout = writer
+	defer func() { os.Stdout = original }()
+
+	collected := make(chan string, 1)
+	go func() {
+		var buffer bytes.Buffer
+		_, _ = io.Copy(&buffer, reader)
+		collected <- buffer.String()
+	}()
+
+	run()
+	Expect(writer.Close()).To(Succeed())
+	return <-collected
+}
+
 var _ = Describe("RunsCommand", func() {
 	It("registers runs without an alias", func() {
 		parser := flags.NewParser(&FlyCommand{}, flags.HelpFlag)
@@ -106,6 +132,62 @@ var _ = Describe("RunsCommand", func() {
 
 		Expect(command.run(client, output)).To(Succeed())
 		Expect(output.String()).To(Equal("11  a:1,z:two  running    2026-08-19@11:58:45+0000  1m15s+\n10  n/a        succeeded  2026-08-19@11:58:00+0000  1m30s \n"))
+	})
+
+	It("prints a supplied number parameter as supplied, not in scientific notation", func() {
+		// This fails if params are formatted with %v: fmt renders float64(1e6)
+		// as "1e+06", and the table is the only place the value is shown.
+		now := time.Date(2026, time.August, 19, 12, 0, 0, 0, time.UTC)
+		client := &recordingRunLister{runs: []atc.PipelineRun{{
+			Number: 3,
+			Params: &atc.Params{
+				"build_id": float64(1000000),
+				"ratio":    float64(0.000001),
+				"count":    json.Number("1000000"),
+				"name":     "release",
+			},
+			Status:      atc.RunStatusSucceeded,
+			CreatedAt:   now,
+			CompletedAt: &now,
+		}}}
+		output := new(bytes.Buffer)
+		command := &RunsCommand{
+			Count:    50,
+			Pipeline: flaghelpers.PipelineFlag{Name: "template"},
+			now:      func() time.Time { return now },
+		}
+
+		Expect(command.run(client, output)).To(Succeed())
+		Expect(output.String()).To(ContainSubstring("build_id:1000000,count:1000000,name:release,ratio:0.000001"))
+	})
+
+	It("prints the runs as JSON and renders no table when --json is set", func() {
+		now := time.Date(2026, time.August, 19, 12, 0, 0, 0, time.UTC)
+		client := &recordingRunLister{runs: []atc.PipelineRun{{
+			ID:        42,
+			Number:    3,
+			Params:    &atc.Params{"build_id": float64(1000000)},
+			Status:    atc.RunStatusSucceeded,
+			CreatedBy: "creator",
+			CreatedAt: now,
+		}}}
+		output := new(bytes.Buffer)
+		command := &RunsCommand{
+			Count:    50,
+			Json:     true,
+			Pipeline: flaghelpers.PipelineFlag{Name: "template"},
+			now:      func() time.Time { return now },
+		}
+
+		var runErr error
+		printed := captureRunsStdout(func() { runErr = command.run(client, output) })
+		Expect(runErr).To(Succeed())
+		Expect(output.String()).To(BeEmpty(), "the table must not be rendered alongside JSON")
+
+		var decoded []atc.PipelineRun
+		Expect(json.Unmarshal([]byte(printed), &decoded)).To(Succeed())
+		Expect(decoded).To(Equal(client.runs))
+		Expect(printed).To(ContainSubstring(`"build_id": 1000000`))
 	})
 
 	DescribeTable("rejects invalid input without calling the client",

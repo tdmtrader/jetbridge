@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/fly/commands/internal/displayhelpers"
 	"github.com/concourse/concourse/fly/commands/internal/flaghelpers"
 	"github.com/concourse/concourse/fly/rc"
 	"github.com/concourse/concourse/fly/ui"
@@ -23,6 +25,7 @@ type pipelineRunLister interface {
 
 type RunsCommand struct {
 	Count    int                      `short:"c" long:"count" default:"50" description:"Number of runs to return"`
+	Json     bool                     `long:"json" description:"Print command result as JSON"`
 	Pipeline flaghelpers.PipelineFlag `short:"p" long:"pipeline" required:"true" description:"Name of the template pipeline"`
 	Team     flaghelpers.TeamFlag     `long:"team" description:"Name of the team to which the pipeline belongs, if different from the target default"`
 
@@ -57,6 +60,12 @@ func (command *RunsCommand) run(client pipelineRunLister, output io.Writer) erro
 	runs, err := command.list(client)
 	if err != nil {
 		return err
+	}
+
+	// The table cannot show ids, timestamps, config hash or reclaimed state, so
+	// JSON is the only path a script has to the run record.
+	if command.Json {
+		return displayhelpers.JsonPrint(runs)
 	}
 
 	table := ui.Table{Headers: ui.TableRow{
@@ -127,10 +136,24 @@ func pipelineRunParams(params *atc.Params) string {
 
 	fields := make([]string, 0, len(*params))
 	for name, value := range *params {
-		fields = append(fields, fmt.Sprintf("%s:%v", name, value))
+		fields = append(fields, fmt.Sprintf("%s:%s", name, pipelineRunParamValue(value)))
 	}
 	sort.Strings(fields)
 	return strings.Join(fields, ",")
+}
+
+// pipelineRunParamValue renders a scalar the way it was supplied. Params decode
+// out of the run record as float64, and %v prints float64(1e6) as "1e+06", so a
+// number outside ~1e-5..1e21 was unreadable in the only column that shows it.
+func pipelineRunParamValue(value any) string {
+	switch typed := value.(type) {
+	case float64:
+		return strconv.FormatFloat(typed, 'f', -1, 64)
+	case json.Number:
+		return typed.String()
+	default:
+		return fmt.Sprintf("%v", value)
+	}
 }
 
 func pipelineRunStart(start time.Time) string {
