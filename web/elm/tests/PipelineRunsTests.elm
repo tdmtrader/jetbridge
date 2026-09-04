@@ -244,6 +244,28 @@ all =
                     |> Common.queryView
                     |> Query.find [ id "run-param-environment-error" ]
                     |> Query.has [ text "environment is required" ]
+        , test "clears the live region once the invalid field is corrected" <|
+            \_ ->
+                pageWithTemplate
+                    |> Application.update (Update OpenPipelineRunForm)
+                    |> Tuple.first
+                    |> Application.update (Update SubmitPipelineRun)
+                    |> Tuple.first
+                    |> Application.update (Update (SetPipelineRunParam "environment" "staging"))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ id "run-form-error" ]
+                    |> Query.hasNot [ text "environment is required" ]
+        , test "keeps a server error in the live region while the form is edited" <|
+            \_ ->
+                submitted
+                    |> Application.handleCallback (PipelineRunCreated (Err serverConflict))
+                    |> Tuple.first
+                    |> Application.update (Update (SetPipelineRunParam "environment" "production"))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ id "run-form-error" ]
+                    |> Query.has [ text "environment must be approved for this template" ]
         , test "shows a deterministic age for an active run" <|
             \_ ->
                 pageWithRuns
