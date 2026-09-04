@@ -738,7 +738,7 @@ func (p *pipeline) Pause(pausedBy string) error {
 		return err
 	}
 	if completedRun {
-		p.conn.Bus().Notify(atc.ComponentReclaimerPipelineRuns)
+		announceRunCompletion(p.conn.Bus())
 	}
 	p.conn.Bus().Notify(atc.ComponentCollectorTaskCaches)
 	return nil

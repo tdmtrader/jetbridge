@@ -514,7 +514,7 @@ func (j *job) Pause(pausedBy string) error {
 			return err
 		}
 		if completedRun {
-			j.conn.Bus().Notify(atc.ComponentReclaimerPipelineRuns)
+			announceRunCompletion(j.conn.Bus())
 		}
 		return nil
 	}
@@ -1183,7 +1183,7 @@ func (j *job) ConsumeScheduleRequest(observed time.Time) error {
 		return err
 	}
 	if completedRun {
-		j.conn.Bus().Notify(atc.ComponentReclaimerPipelineRuns)
+		announceRunCompletion(j.conn.Bus())
 	}
 	return nil
 }
