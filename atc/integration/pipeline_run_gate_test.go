@@ -6,12 +6,17 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	concourse "github.com/concourse/concourse/go-concourse/concourse"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/tedsuo/ifrit"
 	"github.com/tedsuo/rata"
 	"golang.org/x/oauth2"
 )
@@ -390,4 +395,157 @@ func getCaptured(httpClient *http.Client, url string) capturedResponse {
 	response := capture(httpClient, request)
 	Expect(response.Status).To(Equal(http.StatusOK), url)
 	return response
+}
+
+var _ = Describe("run creation surfaces and read paths", func() {
+	var (
+		memberClient concourse.Client
+		member       *http.Client
+	)
+
+	JustBeforeEach(func() {
+		givenARunnableTemplate()
+		memberClient = login(atcURL, "m-user", "m-user")
+		member = authedHTTPClient(atcURL, "m-user", "m-user")
+	})
+
+	It("refuses every POST .../runs route the route table declares", func() {
+		// Derived from the route table rather than from the handler symbol, so
+		// a second creation route of the same shape is covered the day it is
+		// added. It asserts no count: an exact count would pass on a tree that
+		// deleted the route.
+		creationRoutes := postRunRoutes()
+		Expect(creationRoutes).NotTo(BeEmpty(), "no POST .../runs route found; this guard is watching nothing")
+
+		for _, route := range creationRoutes {
+			By(route.Name)
+
+			path, err := atc.Routes.CreatePathForRoute(route.Name, rata.Params{
+				"team_name":     "run-team",
+				"pipeline_name": runTemplateRef.Name,
+			})
+			Expect(err).NotTo(HaveOccurred(), "route %s takes a parameter this sweep does not supply", route.Name)
+
+			// The identical request the gate-on context admits: same fixture,
+			// same body, same member token. Without that identity the sweep
+			// could be passing on a refusal the branch already answered.
+			response := postCreateRunAt(member, atcURL+path, runVars)
+			Expect(response.Status).To(Equal(http.StatusConflict), describeRoutes(creationRoutes))
+			Expect(response.ContentType).To(Equal("application/json"), describeRoutes(creationRoutes))
+			Expect(errorsFrom(response)).To(ConsistOf(atc.ErrPipelineRunCreationDisabled.Error()), describeRoutes(creationRoutes))
+
+			Expect(countRows("SELECT count(*) FROM pipeline_runs")).To(Equal(0), describeRoutes(creationRoutes))
+		}
+	})
+
+	Context("when runs were created while the gate was open", func() {
+		BeforeEach(func() {
+			cmd.EnablePipelineRunCreation = true
+		})
+
+		It("keeps reading them identically once the gate is closed again", func() {
+			first, err := memberClient.Team("run-team").CreatePipelineRun(runTemplateRef.Name, runVars)
+			Expect(err).NotTo(HaveOccurred())
+			second, err := memberClient.Team("run-team").CreatePipelineRun(runTemplateRef.Name, map[string]any{"environment": "production"})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Let both runs reach a terminal state first. Their status moves
+			// from running to succeeded on its own, and a body captured
+			// mid-flight would differ across the restart for a reason that has
+			// nothing to do with the gate.
+			Eventually(func() int {
+				return countRows("SELECT count(*) FROM pipeline_runs WHERE completed_at IS NOT NULL")
+			}, time.Minute).Should(Equal(2), "the runs never settled; the comparison below would be measuring scheduler progress, not the gate")
+
+			reads := []string{
+				runsPath("run-team", runTemplateRef.Name),
+				// A page size the fixture overflows, so the Link headers this
+				// comparison covers actually exist.
+				runsPath("run-team", runTemplateRef.Name) + "?limit=1",
+				runsPath("run-team", runTemplateRef.Name) + "/" + strconv.Itoa(first.Number),
+				runsPath("run-team", runTemplateRef.Name) + "/" + strconv.Itoa(second.Number),
+			}
+
+			open := map[string]capturedResponse{}
+			for _, url := range reads {
+				open[url] = getCaptured(member, url)
+			}
+			Expect(open[reads[1]].Header.Values("Link")).NotTo(BeEmpty(), "the paginated read produced no Link headers; the header comparison below would be vacuous")
+
+			restartATCWithGate(false)
+			member = authedHTTPClient(atcURL, "m-user", "m-user")
+
+			// The gate is closed now, and creation is refused again.
+			Expect(postCreateRun(member, "run-team", runTemplateRef.Name, runVars).Status).To(Equal(http.StatusConflict))
+
+			for _, url := range reads {
+				held := getCaptured(member, url)
+				Expect(held.Status).To(Equal(open[url].Status), url)
+				Expect(string(held.Body)).To(Equal(string(open[url].Body)), url)
+				Expect(held.Header.Values("Link")).To(Equal(open[url].Header.Values("Link")), url)
+			}
+
+			// And the same reads through the client fly itself uses.
+			heldClient := login(atcURL, "m-user", "m-user")
+			runs, _, err := heldClient.Team("run-team").PipelineRuns(runTemplateRef.Name, concourse.Page{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(runs).To(HaveLen(2))
+
+			detail, found, err := heldClient.Team("run-team").PipelineRun(runTemplateRef.Name, first.Number)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(detail.ID).To(Equal(first.ID))
+		})
+	})
+})
+
+// postRunRoutes derives the creation surface from the route table: every
+// declared POST whose path ends in /runs.
+func postRunRoutes() rata.Routes {
+	derived := rata.Routes{}
+	for _, route := range atc.Routes {
+		if route.Method == http.MethodPost && strings.HasSuffix(route.Path, "/runs") {
+			derived = append(derived, route)
+		}
+	}
+	return derived
+}
+
+// describeRoutes names the derived set in a failure, so a second POST .../runs
+// route appears in the output rather than merely being counted.
+func describeRoutes(routes rata.Routes) string {
+	described := make([]string, 0, len(routes))
+	for _, route := range routes {
+		described = append(described, route.Name+" "+route.Method+" "+route.Path)
+	}
+	return "derived POST .../runs routes: " + strings.Join(described, ", ")
+}
+
+// restartATCWithGate stops the running ATC and boots a new one from the same
+// command object against the same database, so row ids and timestamps are
+// identical across the two boots and a byte comparison between them means
+// something. It reassigns the package-level atcProcess, so the suite's
+// AfterEach still shuts the replacement down.
+func restartATCWithGate(enabled bool) {
+	GinkgoHelper()
+
+	atcProcess.Signal(os.Interrupt)
+	Expect(<-atcProcess.Wait()).NotTo(HaveOccurred())
+
+	// Same workaround the suite's BeforeEach carries: handlers are registered
+	// on the default mux, and a second boot in one process would panic on the
+	// duplicate registration.
+	http.DefaultServeMux = new(http.ServeMux)
+
+	cmd.EnablePipelineRunCreation = enabled
+
+	runner, err := cmd.Runner([]string{})
+	Expect(err).NotTo(HaveOccurred())
+
+	atcProcess = ifrit.Invoke(runner)
+
+	Eventually(func() error {
+		_, err := http.Get(atcURL + "/api/v1/info")
+		return err
+	}, 20*time.Second).ShouldNot(HaveOccurred())
 }
