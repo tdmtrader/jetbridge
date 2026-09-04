@@ -46,7 +46,7 @@ func NewDaemonClient(logger lager.Logger, clientset kubernetes.Interface, namesp
 	scheme := "http"
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 
-	if tlsCfg != nil && tlsCfg.CertPath != "" && tlsCfg.KeyPath != "" && tlsCfg.CACertPath != "" {
+	if tlsCfg != nil && DaemonTLSConfigured(tlsCfg.CertPath, tlsCfg.KeyPath, tlsCfg.CACertPath) {
 		serverName := ""
 		if service != "" && namespace != "" {
 			serverName = fmt.Sprintf("%s.%s.svc", service, namespace)

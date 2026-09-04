@@ -1305,7 +1305,11 @@ func (cmd *RunCommand) backendComponents(
 		k8sCfg.ArtifactDaemonTLSCert = cmd.Kubernetes.ArtifactDaemonTLSCert
 		k8sCfg.ArtifactDaemonTLSKey = cmd.Kubernetes.ArtifactDaemonTLSKey
 		k8sCfg.ArtifactDaemonTLSCACert = cmd.Kubernetes.ArtifactDaemonTLSCACert
-		k8sCfg.ArtifactDaemonTLSEnabled = cmd.Kubernetes.ArtifactDaemonTLSCert != ""
+		k8sCfg.ArtifactDaemonTLSEnabled = jetbridge.DaemonTLSConfigured(
+			cmd.Kubernetes.ArtifactDaemonTLSCert,
+			cmd.Kubernetes.ArtifactDaemonTLSKey,
+			cmd.Kubernetes.ArtifactDaemonTLSCACert,
+		)
 		if cmd.Kubernetes.CacheStore != "" && !jetbridge.ValidCacheStores[cmd.Kubernetes.CacheStore] {
 			return nil, fmt.Errorf("invalid --kubernetes-cache-store value %q (valid: hostpath, emptydir)", cmd.Kubernetes.CacheStore)
 		}
@@ -1435,7 +1439,11 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 		k8sCfg.ArtifactDaemonTLSCert = cmd.Kubernetes.ArtifactDaemonTLSCert
 		k8sCfg.ArtifactDaemonTLSKey = cmd.Kubernetes.ArtifactDaemonTLSKey
 		k8sCfg.ArtifactDaemonTLSCACert = cmd.Kubernetes.ArtifactDaemonTLSCACert
-		k8sCfg.ArtifactDaemonTLSEnabled = cmd.Kubernetes.ArtifactDaemonTLSCert != ""
+		k8sCfg.ArtifactDaemonTLSEnabled = jetbridge.DaemonTLSConfigured(
+			cmd.Kubernetes.ArtifactDaemonTLSCert,
+			cmd.Kubernetes.ArtifactDaemonTLSKey,
+			cmd.Kubernetes.ArtifactDaemonTLSCACert,
+		)
 		if cmd.Kubernetes.ImageRegistryPrefix != "" || cmd.Kubernetes.ImageRegistrySecret != "" {
 			k8sCfg.ImageRegistry = &jetbridge.ImageRegistryConfig{
 				Prefix:     cmd.Kubernetes.ImageRegistryPrefix,
@@ -1467,7 +1475,7 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 			dcLogger.RegisterSink(lager.NewWriterSink(os.Stderr, lager.INFO))
 
 			var daemonTLSCfg *jetbridge.DaemonClientTLSConfig
-			if k8sCfg.ArtifactDaemonTLSCert != "" {
+			if k8sCfg.ArtifactDaemonTLSEnabled {
 				daemonTLSCfg = &jetbridge.DaemonClientTLSConfig{
 					CertPath:   k8sCfg.ArtifactDaemonTLSCert,
 					KeyPath:    k8sCfg.ArtifactDaemonTLSKey,
@@ -1930,6 +1938,13 @@ func (cmd *RunCommand) validateK8sRuntime() error {
 		return errors.New("--kubernetes-artifact-daemon-host-path is required when --kubernetes-namespace is set: " +
 			"the DaemonSet artifact cache is mandatory for the K8s runtime, because downstream artifact reads " +
 			"must not exec into the producing pod (which is reaped as soon as the step finishes)")
+	}
+	if err := jetbridge.ValidateDaemonTLSFlags(
+		cmd.Kubernetes.ArtifactDaemonTLSCert,
+		cmd.Kubernetes.ArtifactDaemonTLSKey,
+		cmd.Kubernetes.ArtifactDaemonTLSCACert,
+	); err != nil {
+		return err
 	}
 	return nil
 }
