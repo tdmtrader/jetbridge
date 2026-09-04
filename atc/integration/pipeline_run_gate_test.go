@@ -286,6 +286,13 @@ func capture(httpClient *http.Client, request *http.Request) capturedResponse {
 
 	response, err := httpClient.Do(request)
 	Expect(err).NotTo(HaveOccurred())
+
+	return readResponse(response)
+}
+
+func readResponse(response *http.Response) capturedResponse {
+	GinkgoHelper()
+
 	defer response.Body.Close()
 
 	body, err := io.ReadAll(response.Body)
