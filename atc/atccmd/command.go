@@ -120,6 +120,10 @@ type RunCommand struct {
 
 	varSourcePool creds.VarSourcePool
 
+	// customRoles is loaded during validation and reused by the API so the
+	// security check and enforcement always operate on the same mapping.
+	customRoles map[string]string
+
 	// k8sArtifactLocator is shared between the Reaper and Worker factory
 	// for DaemonSet mode. Created in backendComponents, used in constructPool.
 	k8sArtifactLocator *jetbridge.ArtifactLocator
@@ -1553,45 +1557,26 @@ func newPipelineRunReclaimerComponent(lifecycle db.PipelineRunReclaimLifecycle, 
 }
 
 func (cmd *RunCommand) validateCustomRoles() error {
-	path := cmd.ConfigRBAC.Path()
-	if path == "" {
-		return nil
+	_, err := cmd.loadCustomRoles()
+	return err
+}
+
+func (cmd *RunCommand) loadCustomRoles() (map[string]string, error) {
+	if cmd.customRoles != nil {
+		return cmd.customRoles, nil
 	}
 
-	content, err := os.ReadFile(path)
+	mapping, err := cmd.parseCustomRoles()
 	if err != nil {
-		return fmt.Errorf("failed to open RBAC config file (%s): %w", cmd.ConfigRBAC, err)
+		return nil, err
 	}
 
-	var data map[string][]string
-	if err = yaml.Unmarshal(content, &data); err != nil {
-		return fmt.Errorf("failed to parse RBAC config file (%s): %w", cmd.ConfigRBAC, err)
+	if err = accessor.ValidateCustomRoles(mapping); err != nil {
+		return nil, fmt.Errorf("failed to customize roles: %w", err)
 	}
 
-	allKnownRoles := map[string]bool{}
-	for _, roleName := range accessor.DefaultRoles {
-		allKnownRoles[roleName] = true
-	}
-
-	assigned := map[string]string{}
-	for role, actions := range data {
-		if _, ok := allKnownRoles[role]; !ok {
-			return fmt.Errorf("failed to customize roles: %w", fmt.Errorf("unknown role %s", role))
-		}
-
-		for _, action := range actions {
-			if _, ok := accessor.DefaultRoles[action]; !ok {
-				return fmt.Errorf("failed to customize roles: %w", fmt.Errorf("unknown action %s", action))
-			}
-			assigned[action] = role
-		}
-	}
-
-	if err = accessor.ValidateCustomRoles(assigned); err != nil {
-		return fmt.Errorf("failed to customize roles: %w", err)
-	}
-
-	return nil
+	cmd.customRoles = mapping
+	return cmd.customRoles, nil
 }
 
 func (cmd *RunCommand) parseCustomRoles() (map[string]string, error) {
@@ -1604,16 +1589,36 @@ func (cmd *RunCommand) parseCustomRoles() (map[string]string, error) {
 
 	content, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to open RBAC config file (%s): %w", cmd.ConfigRBAC, err)
 	}
 
 	var data map[string][]string
 	if err = yaml.Unmarshal(content, &data); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to parse RBAC config file (%s): %w", cmd.ConfigRBAC, err)
+	}
+
+	allKnownRoles := map[string]bool{}
+	for _, roleName := range accessor.DefaultRoles {
+		allKnownRoles[roleName] = true
 	}
 
 	for role, actions := range data {
+		if _, ok := allKnownRoles[role]; !ok {
+			return nil, fmt.Errorf("failed to customize roles: %w", fmt.Errorf("unknown role %s", role))
+		}
+
 		for _, action := range actions {
+			if _, ok := accessor.DefaultRoles[action]; !ok {
+				return nil, fmt.Errorf("failed to customize roles: %w", fmt.Errorf("unknown action %s", action))
+			}
+			if assignedRole, assigned := mapping[action]; assigned {
+				return nil, fmt.Errorf(
+					"failed to customize roles: action %s is assigned more than once (roles %s and %s)",
+					action,
+					assignedRole,
+					role,
+				)
+			}
 			mapping[action] = role
 		}
 	}
@@ -2273,7 +2278,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		logger,
 	)
 
-	customRoles, err := cmd.parseCustomRoles()
+	customRoles, err := cmd.loadCustomRoles()
 	if err != nil {
 		return nil, err
 	}

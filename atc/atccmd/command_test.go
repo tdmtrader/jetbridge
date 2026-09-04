@@ -145,12 +145,12 @@ func (s *CommandSuite) TestK8sRuntimeValidationSkippedWhenK8sDisabled() {
 // RBAC config that grants run creation to a weaker role than SaveConfig turns
 // that equivalence into a credential-read escalation, so startup must refuse it.
 
-func (s *CommandSuite) writeRBACConfig(body string) atccmd.RunCommand {
+func (s *CommandSuite) writeRBACConfig(body string) *atccmd.RunCommand {
 	dir := s.T().TempDir()
 	path := filepath.Join(dir, "rbac.yml")
 	s.NoError(os.WriteFile(path, []byte(body), 0644))
 
-	cmd := atccmd.RunCommand{}
+	cmd := &atccmd.RunCommand{}
 	cmd.ConfigRBAC = flag.File(path)
 	return cmd
 }
@@ -158,7 +158,7 @@ func (s *CommandSuite) writeRBACConfig(body string) atccmd.RunCommand {
 func (s *CommandSuite) TestCustomRolesRefuseWeakerRunCreationThanSetPipeline() {
 	cmd := s.writeRBACConfig("pipeline-operator:\n- CreatePipelineRun\n")
 
-	err := atccmd.ValidateCustomRolesForTest(&cmd)
+	err := atccmd.ValidateCustomRolesForTest(cmd)
 	s.Error(err, "expected startup to refuse run creation weaker than set-pipeline")
 	s.Contains(err.Error(), atc.CreatePipelineRun)
 	s.Contains(err.Error(), atc.SaveConfig)
@@ -169,7 +169,7 @@ func (s *CommandSuite) TestCustomRolesRefuseWeakerRunCreationThanSetPipeline() {
 func (s *CommandSuite) TestCustomRolesRefuseRaisedSetPipelineWithDefaultRunCreation() {
 	cmd := s.writeRBACConfig("owner:\n- SaveConfig\n")
 
-	err := atccmd.ValidateCustomRolesForTest(&cmd)
+	err := atccmd.ValidateCustomRolesForTest(cmd)
 	s.Error(err, "raising set-pipeline alone leaves run creation weaker than it")
 	s.Contains(err.Error(), atc.CreatePipelineRun)
 	s.Contains(err.Error(), atc.SaveConfig)
@@ -177,13 +177,31 @@ func (s *CommandSuite) TestCustomRolesRefuseRaisedSetPipelineWithDefaultRunCreat
 
 func (s *CommandSuite) TestCustomRolesAcceptEqualOrStrongerRunCreation() {
 	equal := s.writeRBACConfig("member:\n- CreatePipelineRun\n")
-	s.NoError(atccmd.ValidateCustomRolesForTest(&equal))
+	s.NoError(atccmd.ValidateCustomRolesForTest(equal))
 
 	stronger := s.writeRBACConfig("owner:\n- CreatePipelineRun\n")
-	s.NoError(atccmd.ValidateCustomRolesForTest(&stronger))
+	s.NoError(atccmd.ValidateCustomRolesForTest(stronger))
 
 	together := s.writeRBACConfig("pipeline-operator:\n- CreatePipelineRun\n- SaveConfig\n")
-	s.NoError(atccmd.ValidateCustomRolesForTest(&together))
+	s.NoError(atccmd.ValidateCustomRolesForTest(together))
+}
+
+func (s *CommandSuite) TestCustomRolesRefuseDuplicateRunCreationAssignments() {
+	cmd := s.writeRBACConfig("owner:\n- CreatePipelineRun\npipeline-operator:\n- CreatePipelineRun\n")
+
+	err := atccmd.ValidateCustomRolesForTest(cmd)
+	s.Error(err, "expected startup to refuse an action assigned to multiple roles")
+	s.Contains(err.Error(), atc.CreatePipelineRun)
+	s.Contains(err.Error(), "assigned more than once")
+}
+
+func (s *CommandSuite) TestCustomRolesRefuseDuplicateSaveConfigAssignments() {
+	cmd := s.writeRBACConfig("owner:\n- SaveConfig\nmember:\n- SaveConfig\n")
+
+	err := atccmd.ValidateCustomRolesForTest(cmd)
+	s.Error(err, "expected startup to refuse an action assigned to multiple roles")
+	s.Contains(err.Error(), atc.SaveConfig)
+	s.Contains(err.Error(), "assigned more than once")
 }
 
 func (s *CommandSuite) TestCustomRolesAcceptTheStockConfiguration() {
