@@ -39,6 +39,35 @@ var _ = Describe("Run config materialization", func() {
 		Expect(result.CanonicalJSON).To(MatchJSON(`{"jobs":[{"name":"deploy-staging-12-99","plan":[{"task":"deploy-staging","config":{"platform":"linux","run":{"path":"echo","args":["((runtime:token))"]}}}]}]}`))
 	})
 
+	It("leaves a dotted reference alone even when its root names a declared parameter", func() {
+		// This fails if run materialization traverses into a parameter value:
+		// ((db.password)) is an ordinary credential reference that a runtime var
+		// source resolves, and ((run.foo)) is likewise not a run value, so both
+		// must survive untouched rather than raise a field-traversal error.
+		config := Config{
+			Template: true,
+			Params:   []ParamSchema{{Name: "db", Type: ParamTypeString, Default: "primary"}},
+			Resources: ResourceConfigs{{
+				Name:   "creds",
+				Type:   "registry-image",
+				Source: Source{"host": "((db))", "password": "((db.password))", "tag": "((run.foo))"},
+			}},
+			Jobs: JobConfigs{{
+				Name:         "entry",
+				PlanSequence: []Step{{Config: &GetStep{Name: "creds"}}},
+			}},
+		}
+
+		result, err := MaterializeRunConfig(config, RunIdentity{Number: 3, ID: 7}, RunParams{})
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.Config.Resources[0].Source).To(Equal(Source{
+			"host":     "primary",
+			"password": "((db.password))",
+			"tag":      "((run.foo))",
+		}))
+	})
+
 	It("clears source triggers but preserves passed triggers in the materialized graph", func() {
 		// This fails if a run can be automatically started by a new source version,
 		// or if a passed edge no longer triggers its reachable job.
