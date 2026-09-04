@@ -7,6 +7,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
+	"github.com/concourse/concourse/atc/api/errormap"
 	"github.com/concourse/concourse/atc/api/present"
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/db"
@@ -22,6 +23,15 @@ func (s *Server) CheckResourceWebHook(dbPipeline db.Pipeline) http.Handler {
 		logger := s.logger.Session("check-resource-webhook", lager.Data{
 			"resource": resourceName,
 		})
+
+		// A template is never checked: its resource sources still carry
+		// ((param)) placeholders that only run materialization substitutes, so
+		// a check would look each one up as a credential and leave a failing
+		// check build on a pipeline the design says is never checked.
+		if dbPipeline.Template() {
+			errormap.Write(w, db.ErrPipelineTemplateCheck)
+			return
+		}
 
 		if webhookToken == "" {
 			logger.Info("no-webhook-token", lager.Data{"error": "missing webhook_token"})

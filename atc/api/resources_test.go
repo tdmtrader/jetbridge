@@ -66,6 +66,14 @@ type resourceAPIPipeline struct {
 	resourceTypeOverrideName string
 }
 
+// resourceAPITemplatePipeline presents a persisted pipeline as a template so
+// the check handlers see the one field they must refuse on.
+type resourceAPITemplatePipeline struct {
+	db.Pipeline
+}
+
+func (resourceAPITemplatePipeline) Template() bool { return true }
+
 func (pipeline resourceAPIPipeline) Resource(name string) (db.Resource, bool, error) {
 	if pipeline.resource != nil && name == pipeline.resourceOverrideName {
 		return pipeline.resource, true, nil
@@ -1107,6 +1115,26 @@ var _ = Describe("Resources API", func() {
 			),
 		)
 
+		DescribeTable("refuses a manual check on a template pipeline",
+			func(path string) {
+				factory := &resourceAPICheckFactory{CheckFactory: fixture.database.Deps.checkFactory}
+				fixture.database.Deps.checkFactory = factory
+				fixture.overridePipeline(resourceAPITemplatePipeline{Pipeline: fixture.pipeline})
+				response := requestResourceAPI(
+					fixture, http.MethodPost, path, resourceAPIJSONBody(atc.CheckRequestBody{}),
+				)
+				Expect(response.StatusCode).To(Equal(http.StatusConflict))
+				Expect(response.Header.Get("Content-Type")).To(Equal("application/json"))
+				Expect(factory.Calls()).To(BeEmpty())
+				var builds int
+				Expect(fixture.database.Conn.QueryRow(`SELECT count(*) FROM builds`).Scan(&builds)).To(Succeed())
+				Expect(builds).To(BeZero())
+			},
+			Entry("resource", "/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/check"),
+			Entry("resource type", "/api/v1/teams/a-team/pipelines/a-pipeline/resource-types/resource-type-name/check"),
+			Entry("prototype", "/api/v1/teams/a-team/pipelines/a-pipeline/prototypes/prototype-name/check"),
+		)
+
 		It("returns 400 for malformed resource-check JSON", func() {
 			path := "/api/v1/teams/a-team/pipelines/a-pipeline/resources/resource-name/check"
 			Expect(requestResourceAPI(fixture, http.MethodPost, path, strings.NewReader("{")).StatusCode).To(Equal(http.StatusBadRequest))
@@ -1171,6 +1199,17 @@ var _ = Describe("Resources API", func() {
 			Expect(requestResourceAPI(
 				fixture, http.MethodPost, basePath+"?webhook_token=wrong", nil,
 			).StatusCode).To(Equal(http.StatusUnauthorized))
+		})
+
+		It("refuses a webhook check on a template pipeline", func() {
+			factory := &resourceAPICheckFactory{CheckFactory: fixture.database.Deps.checkFactory}
+			fixture.database.Deps.checkFactory = factory
+			fixture.overridePipeline(resourceAPITemplatePipeline{Pipeline: fixture.pipeline})
+			response := requestResourceAPI(
+				fixture, http.MethodPost, basePath+"?webhook_token=webhook-token", nil,
+			)
+			Expect(response.StatusCode).To(Equal(http.StatusConflict))
+			Expect(factory.Calls()).To(BeEmpty())
 		})
 
 		It("returns 500 when the production webhook resource lookup fails", func() {

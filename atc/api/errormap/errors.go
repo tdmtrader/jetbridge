@@ -23,7 +23,8 @@ func Status(err error) (int, bool) {
 		errors.Is(err, db.ErrPipelineTemplateHasRuns) || errors.Is(err, db.ErrPipelineTemplateHasRunHistory) ||
 		errors.Is(err, db.ErrPipelineTemplateHasOrdinaryJobState) ||
 		errors.Is(err, db.ErrPipelineRunNotRunning) || errors.Is(err, db.ErrPipelineRunPayloadGone) ||
-		errors.Is(err, db.ErrPipelineRunOneOffBuild) || errors.Is(err, db.ErrPipelineTemplateBuild) {
+		errors.Is(err, db.ErrPipelineRunOneOffBuild) || errors.Is(err, db.ErrPipelineTemplateBuild) ||
+		errors.Is(err, db.ErrPipelineTemplateCheck) {
 		return http.StatusConflict, true
 	}
 	return 0, false

@@ -11,5 +11,6 @@ var (
 	ErrPipelineRunPayloadMutation          = errors.New("pipeline run payload cannot be mutated directly")
 	ErrPipelineTemplateHasRunHistory       = errors.New("template with durable run history cannot be destroyed")
 	ErrPipelineTemplateBuild               = errors.New("pipeline templates cannot create builds directly")
+	ErrPipelineTemplateCheck               = errors.New("pipeline templates cannot be checked directly")
 	ErrPipelineTemplateHasOrdinaryJobState = errors.New("pipeline with ordinary job history or task caches cannot become a template")
 )

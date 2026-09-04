@@ -40,6 +40,7 @@ var _ = Describe("Mutation error status", func() {
 		Entry("reclaimed payload", db.ErrPipelineRunPayloadGone),
 		Entry("one-off run payload", db.ErrPipelineRunOneOffBuild),
 		Entry("template build", db.ErrPipelineTemplateBuild),
+		Entry("template check", db.ErrPipelineTemplateCheck),
 		Entry("ambiguous template cache", db.TaskCacheIdentityConflictError{JobName: "deploy-((environment))"}),
 	)
 
