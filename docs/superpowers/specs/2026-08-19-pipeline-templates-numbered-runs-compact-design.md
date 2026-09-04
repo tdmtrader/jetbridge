@@ -538,8 +538,9 @@ Fly adds:
 
 - `fly run-pipeline -p NAME [-v NAME=STRING] [--json-var NAME=JSON]`
   with the existing `--team` selector;
-- `fly runs -p NAME [-c COUNT]` with the existing `--team` selector,
-  rendering the newest page of number, params, status, start, and duration.
+- `fly runs -p NAME [-c COUNT] [--json]` with the existing `--team` selector,
+  rendering the newest page of number, params, status, start, and duration, or
+  the whole run records as JSON.
 
 Both commands reject instanced pipeline flags. The authorized creation response
 always includes the new payload's actual `instance_ref`; `run-pipeline`
