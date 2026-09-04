@@ -6,6 +6,7 @@ package jetbridge_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"os"
 	"strconv"
 	"strings"
@@ -28,6 +29,9 @@ import (
 //   - ARTIFACT_DAEMON_HOST_PATH (e.g. /var/concourse/artifacts)
 //   - ARTIFACT_DAEMON_PORT (default 7780)
 //   - ARTIFACT_DAEMON_SERVICE (the daemon's headless Service)
+//   - ARTIFACT_RESOLVE_CAPABILITY_KEY_B64 (the deployed daemon's resolve key,
+//     base64; without it any test that fetches an input fails at the init
+//     container, since the daemon rejects an unsigned or mis-signed capability)
 //
 // ARTIFACT_HELPER_IMAGE (default alpine:latest) is a true override: the helper
 // is the suite's own choice, not something the daemon dictates.
@@ -75,6 +79,19 @@ func setupLiveWorkerWithLocatorAndDatabase(t *testing.T, _ string, locator *jetb
 	if img := os.Getenv("ARTIFACT_HELPER_IMAGE"); img != "" {
 		cfg.ArtifactHelperImage = img
 	}
+	// Sign resolve capabilities with the deployed daemon's own key. The init
+	// container fetches inputs from the node-local daemon, which verifies the
+	// capability against the key it was started with, so any other value fails
+	// the fetch just as an absent one does. Base64 so the raw 32 bytes survive
+	// the trip through the environment.
+	if encoded := os.Getenv("ARTIFACT_RESOLVE_CAPABILITY_KEY_B64"); encoded != "" && cfg.ArtifactDaemonResolveCapabilityKey == nil {
+		key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
+		if err != nil {
+			t.Fatalf("decoding ARTIFACT_RESOLVE_CAPABILITY_KEY_B64: %v", err)
+		}
+		cfg.ArtifactDaemonResolveCapabilityKey = key
+	}
+
 	restConfig, err := jetbridge.RestConfig(*cfg)
 	if err != nil {
 		t.Fatalf("creating rest config: %v", err)
