@@ -1,0 +1,113 @@
+package runs
+
+import "errors"
+
+// The port's refusals, re-expressed.
+//
+// Every one of these has a counterpart the run factory raises as an atc/db
+// value. Re-declaring them here is the point: a consumer distinguishes them
+// without importing atc/db, and the port -- not the consumer -- owns the
+// mapping. Sentinels where the refusal is a flag; wrapping structs where the
+// reason has to reach the caller.
+//
+// ErrTemplateNotFound is the one refusal with no counterpart, and its absence
+// downstream is the reason it exists. The run factory maps sql.ErrNoRows from
+// its FOR UPDATE OF p scan onto "not a template", so "no such pipeline" and
+// "that pipeline is not a template" arrive as one value. This port resolves
+// the template from a reference before admitting, so it sees not-found first
+// and does not inherit the conflation.
+var (
+	// ErrTemplateNotFound means no pipeline of that name exists on that team.
+	// It is never reported to a principal who is not authorized for the team:
+	// see ErrUnauthorized.
+	ErrTemplateNotFound = errors.New("template pipeline not found")
+
+	// ErrNotATemplate means the pipeline exists but is not a template.
+	//
+	// It also covers the narrow race in which a pipeline resolved a moment ago
+	// was deleted or stopped being a template before admission locked it.
+	ErrNotATemplate = errors.New("pipeline is not a template")
+
+	// ErrTemplateInstanced means the named pipeline is an instance, which
+	// cannot be a template.
+	ErrTemplateInstanced = errors.New("template pipeline cannot have instance vars")
+
+	// ErrTemplateArchived means the template is archived. It is never
+	// collapsed into paused or into not-found.
+	ErrTemplateArchived = errors.New("template pipeline is archived")
+
+	// ErrTemplatePaused means the template is paused.
+	//
+	// Called out because a consumer decision turns on it: a waiting parent
+	// whose re-admission hits a paused template is meant to keep waiting
+	// rather than to fail, and that is only expressible if paused is
+	// distinguishable from archived and from gone.
+	ErrTemplatePaused = errors.New("template pipeline is paused")
+
+	// ErrUnauthorized means the principal is not authorized to create runs on
+	// the team named in the reference.
+	//
+	// It is also the answer when the team does not exist, and when the
+	// template does not exist but the principal could not have been told
+	// either way: admission must not be an existence oracle for another team's
+	// pipeline names. It is never collapsed into paused or archived, because
+	// those are answers a caller is entitled to act on.
+	ErrUnauthorized = errors.New("not authorized to create runs for this team")
+
+	// ErrMissingContractKey means the admission carried no contract key.
+	//
+	// Presence is the whole of the port's check. It does not verify the key
+	// was recorded anywhere -- the record lives in a consumer table, and a
+	// SELECT from core into one would breach the boundary this package draws.
+	ErrMissingContractKey = errors.New("admission requires a non-empty contract key")
+)
+
+// TemplateConfigInvalidError reports a stored template config that no longer
+// satisfies template validation at admission time -- a row written before
+// save-time validation existed, or edited around it. Not the caller's mistake,
+// but the reason has to reach them all the same.
+type TemplateConfigInvalidError struct{ Err error }
+
+func (e TemplateConfigInvalidError) Error() string {
+	return "invalid pipeline template: " + e.Err.Error()
+}
+
+func (e TemplateConfigInvalidError) Unwrap() error { return e.Err }
+
+// InvalidParamsError reports run parameters that do not satisfy the template's
+// declared schema. The reason names the parameter, so it wraps rather than
+// flattening to a sentinel.
+type InvalidParamsError struct{ Err error }
+
+func (e InvalidParamsError) Error() string { return e.Err.Error() }
+
+func (e InvalidParamsError) Unwrap() error { return e.Err }
+
+// CustomRolesInvalidError reports an operator role mapping the port refuses to
+// honour -- one that would make creating a run a weaker capability than
+// setting a pipeline config.
+//
+// It is raised at admission rather than at construction so that the refusal is
+// observable as an admission outcome. In production atccmd validates the same
+// map at startup, so this is a guarantee the port owns rather than a second
+// copy of a check it does not.
+type CustomRolesInvalidError struct{ Err error }
+
+func (e CustomRolesInvalidError) Error() string {
+	return "invalid custom role assignment: " + e.Err.Error()
+}
+
+func (e CustomRolesInvalidError) Unwrap() error { return e.Err }
+
+// ForeignTransactionError reports a Tx the port did not open.
+//
+// AdmitRun has to hand its Tx back to the run factory, which names the
+// concrete transaction type, so there is exactly one place where the port
+// bridges its own interface back. A value that arrived from somewhere else
+// fails there. Refusing is better than panicking: a boundary that crashes the
+// process on a misuse is a worse boundary than one that says what happened.
+type ForeignTransactionError struct{}
+
+func (ForeignTransactionError) Error() string {
+	return "transaction was not opened by this port; use Admitter.Begin"
+}
