@@ -94,6 +94,15 @@ distinct daemon outcomes and every non-success prevents task startup. This is
 deliberately different from durable resource caches, where unavailable or bad
 durable data degrades to a cache miss because the bytes can be reproduced.
 
+Materialization is bounded node-wide: a daemon runs at most four
+materialization requests at once, and refuses further ones with `503` rather
+than queueing them. The init container retries `503` a bounded number of times,
+so ordinary bursts pass; the bound exists because the route is not
+mTLS-protected, and each item is a whole tree open, capture, and verified copy
+into the daemon's scratch volume. A refusal is counted in
+`artifact_daemon_refusals_total` with `reason="overloaded"`, distinct from the
+`unavailable` reason used for store and infrastructure failures.
+
 Node-IP TLS encrypts the init-to-daemon request, but the current init client
 does not verify the daemon's server identity. Do not describe this path as
 server-authenticated mTLS. The independently verified, read-only local receipt

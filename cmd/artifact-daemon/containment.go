@@ -1006,6 +1006,7 @@ const (
 	reasonConflict         = "conflict"
 	reasonTreeVerification = "tree_verification"
 	reasonUnavailable      = "unavailable"
+	reasonOverloaded       = "overloaded"
 )
 
 // refusalRoute is the bounded route label for a refusal.

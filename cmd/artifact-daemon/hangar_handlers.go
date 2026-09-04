@@ -215,6 +215,23 @@ func (s *Server) handleHangarMaterializations(w http.ResponseWriter, r *http.Req
 			return
 		}
 	}
+	// Bounded AFTER the batch is authorized and BEFORE any of it runs. After,
+	// so an unauthenticated caller cannot occupy a slot or measure the node's
+	// load; before, so the whole batch either runs or is refused, which is the
+	// same all-or-nothing the authorization loop above establishes.
+	//
+	// A full channel refuses rather than waits — see hangarSem in server.go.
+	// The 503 is the status the init container already retries, and it is the
+	// same status and body every other Hangar infrastructure refusal returns,
+	// so overload is not a distinguishable signal to an unauthenticated caller.
+	select {
+	case s.hangarSem <- struct{}{}:
+	default:
+		s.refuse(w, r, http.StatusServiceUnavailable, reasonOverloaded, errors.New("service unavailable"))
+		return
+	}
+	defer func() { <-s.hangarSem }()
+
 	for _, item := range request.Items {
 		if err := service.Materializer.Materialize(r.Context(), item.Ref, item.Handle, item.Volume); err != nil {
 			s.refuseHangar(w, r, err)
