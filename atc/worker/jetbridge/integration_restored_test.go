@@ -13,6 +13,7 @@ package jetbridge_test
 import (
 	"bytes"
 	"context"
+	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
@@ -22,7 +23,9 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 // Integration tests exercise full workflows through the jetbridge package,
@@ -80,6 +83,77 @@ var _ = Describe("Integration", func() {
 		_, err = fakeClientset.CoreV1().Pods("ci-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
 		Expect(err).ToNot(HaveOccurred())
 	}
+
+	// KEPT FROM CORE 2a9355e1e6 (added to integration_test.go after this
+	// branch's merge-base). No brine evidence exists for it, so it is carried
+	// here rather than deleted with the rest of the file. Core's sibling It in
+	// this Describe -- "returns an error when the context is cancelled during
+	// exec-mode task" -- is not carried: that one predates the merge-base and
+	// its own disposition row stands.
+	Describe("build cancellation", func() {
+		// A task step runs under the in-pod supervisor, which keeps the
+		// command alive through the teardown of the exec stream. Leaving the
+		// pause pod behind for the reaper therefore leaves the task itself
+		// running -- for an aborted build, until the pod's own 24h sleep ends.
+		It("deletes the pause pod when the step's own context is cancelled", func() {
+			abortCtx, abort := context.WithCancel(ctx)
+			defer abort()
+
+			var deleteOptions []metav1.DeleteOptions
+			fakeClientset.PrependReactor("delete", "pods", func(action k8stesting.Action) (bool, apiruntime.Object, error) {
+				deleteOptions = append(deleteOptions, action.(k8stesting.DeleteActionImpl).DeleteOptions)
+				return false, nil, nil
+			})
+
+			// The supervised command outlives the exec stream, so the exec
+			// only comes back when the step is abandoned.
+			execing := make(chan struct{})
+			fakeExecutor.execFunc = func() error {
+				close(execing)
+				<-abortCtx.Done()
+				return abortCtx.Err()
+			}
+
+			container := createContainer("abort-task", db.ContainerTypeTask, runtime.ContainerSpec{
+				TeamID:    1,
+				ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+			})
+
+			process, err := container.Run(abortCtx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "trap '' TERM; sleep 600"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			By("simulating the Pod reaching Running state")
+			simulatePodRunning("abort-task")
+
+			waited := make(chan error, 1)
+			go func() {
+				defer GinkgoRecover()
+				_, waitErr := process.Wait(abortCtx)
+				waited <- waitErr
+			}()
+
+			By("aborting the build with the command running")
+			Eventually(execing).Should(BeClosed())
+			abort()
+
+			var waitErr error
+			Eventually(waited, 10*time.Second).Should(Receive(&waitErr))
+			Expect(waitErr).To(MatchError(ContainSubstring("context canceled")))
+
+			By("verifying the abandoned pause Pod is gone")
+			pods, err := fakeClientset.CoreV1().Pods("ci-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pods.Items).To(BeEmpty(), "abandoned pause Pod should be deleted, not left to the reaper")
+
+			By("verifying it is not given a grace period it can sit out")
+			Expect(deleteOptions).To(HaveLen(1))
+			Expect(deleteOptions[0].GracePeriodSeconds).ToNot(BeNil())
+			Expect(*deleteOptions[0].GracePeriodSeconds).To(BeEquivalentTo(0))
+		})
+	})
 
 	Describe("simple task pipeline", func() {
 		It("runs a task step end-to-end: create container → run → wait → exit", func() {

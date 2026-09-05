@@ -18,6 +18,9 @@ plainly where the evidence is thin rather than dressing it up.
 - **INERT** — no mutation reddened it at all. The test is BACK, recorded as a
   defect in the test itself rather than as coverage.
 - **UNMEASURABLE** — the pairing could not be measured either way.
+- **KEPT** — the test was never part of the campaign: core added it after the
+  rebase base, so no evidence was ever offered against it. It is carried, not
+  deleted. See the last section of this file.
 
 ## Evidence granularity, and why the word matters
 
@@ -2117,3 +2120,38 @@ the pod does not define`. `JB-worker-037` therefore uses a duplicate-volume
 mutation, and the discrimination was checked explicitly: under it the preceding
 cache-location assertion PASSED and only the new step failed.
 
+
+## Tests core added after the rebase base (kept, no brine evidence)
+
+The branch was rebased a second time on 2026-09-05, onto `c1c3e70e7c`. In
+between, core landed `2a9355e1e6` ("fix(jetbridge): tear down a supervised
+step's pod when its context ends"), which added one It to each of three files
+this branch deletes: `container_test.go`, `integration_test.go` and
+`process_test.go`. The rebase hit them as modify/delete conflicts and took the
+deletion, which is right for the file's HISTORY and wrong for these three
+tests: the campaign never measured them, so there is no both-red pairing for
+them and no brine scenario that inherits them. The protocol says a Go test may
+be deleted only with both-red evidence recorded here. They have none, so they
+are KEPT — appended to the matching `*_restored_test.go`, adapted only where
+the surrounding fixture had been pruned.
+
+Each was run in isolation after the move and passes (`Ran 1 of 89 Specs`,
+`SUCCESS! -- 1 Passed | 0 Failed`).
+
+**[KEPT]** Container Run into existing pod (fly hijack) leaves the pod alone when the hijack session's context ends  `JB-kept-000`
+  - source: core `2a9355e1e6`, `atc/worker/jetbridge/container_test.go`
+  - recorded evidence: NONE — the test postdates the rebase base `09faf11a50`, so it was never classified, never measured, and no brine scenario was offered in its place.
+  - what it holds: the teardown `2a9355e1e6` added to `(*execProcess).Wait` must NOT fire for a looked-up Container. A hijack session's context ends when the operator closes the window, and the pod belongs to the step being debugged, not to the session.
+  - carried to: `atc/worker/jetbridge/container_restored_test.go`, inside the existing `Describe("Run into existing pod (fly hijack)")`, whose `hijackContainer`/`hijackExecutor` fixture the restored file already keeps. Verbatim but for the `// KEPT FROM CORE` header comment.
+
+**[KEPT]** Integration build cancellation deletes the pause pod when the step's own context is cancelled  `JB-kept-001`
+  - source: core `2a9355e1e6`, `atc/worker/jetbridge/integration_test.go`
+  - recorded evidence: NONE — postdates the rebase base `09faf11a50`.
+  - what it holds: an aborted supervised task's pause pod is deleted from `Wait`, with `GracePeriodSeconds: 0`, rather than left to the reaper — whose fast path only deletes pods carrying an exit-status annotation, which an abandoned step never records.
+  - carried to: `atc/worker/jetbridge/integration_restored_test.go`. Its `Describe("build cancellation")` had been pruned entirely (its one pre-existing It, `JB-integration-004`, stays deleted on its own evidence), so the Describe is reintroduced as a wrapper holding only this It. The It itself is verbatim; it uses the `createContainer`, `simulatePodRunning`, `fakeExecutor` and `fakeClientset` fixtures the restored file already keeps.
+
+**[KEPT]** Process execProcess failure state detection deletes a supervised task's pause pod when context is cancelled  `JB-kept-002`
+  - source: core `2a9355e1e6`, `atc/worker/jetbridge/process_test.go`
+  - recorded evidence: NONE — postdates the rebase base `09faf11a50`.
+  - what it holds: the same teardown at the unit seam, and its exclusion — core placed it beside `preserves the pause pod when context is cancelled (for fly hijack)` (a get step, whose command dies with the exec stream) so the two read as a pair. That sibling is `JB-process-027` and stays deleted on its own evidence; only the supervised half is carried.
+  - carried to: `atc/worker/jetbridge/process_restored_test.go`, under a new `Describe("supervised step teardown on context end")`. The It is verbatim; the exec-mode fixture it needed (`fakeExecExecutor` + `execWorker` with the executor set) is reproduced from core's `Describe("execProcess failure state detection")` BeforeEach, minus the `execContainer` that only the deleted siblings used.

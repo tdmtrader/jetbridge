@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/compression"
@@ -1322,6 +1323,44 @@ var _ = Describe("Container", func() {
 			Expect(hijackExecutor.execCalls).To(HaveLen(1))
 			expectSupervisedExec(hijackExecutor.execCalls[0].command, `'/bin/bash' '-l'`)
 			Expect(hijackExecutor.execCalls[0].podName).To(Equal("hijack-pod"))
+		})
+
+		// KEPT FROM CORE 2a9355e1e6 (added to container_test.go after this
+		// branch's merge-base). No brine evidence exists for it, so it is
+		// carried here rather than deleted with the rest of the file.
+		//
+		// The hijack session's context ends when the operator closes the
+		// window, and the pod is the step's, not the session's -- deleting it
+		// would kill whatever was being debugged.
+		It("leaves the pod alone when the hijack session's context ends", func() {
+			hijackCtx, endSession := context.WithCancel(ctx)
+			defer endSession()
+
+			hijackExecutor.execFunc = func() error {
+				<-hijackCtx.Done()
+				return hijackCtx.Err()
+			}
+
+			process, err := hijackContainer.Run(hijackCtx, runtime.ProcessSpec{
+				Path: "/bin/bash",
+				Args: []string{"-l"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			waited := make(chan error, 1)
+			go func() {
+				defer GinkgoRecover()
+				_, waitErr := process.Wait(hijackCtx)
+				waited <- waitErr
+			}()
+
+			endSession()
+			Eventually(waited, 10*time.Second).Should(Receive(HaveOccurred()))
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pods.Items).To(HaveLen(1))
+			Expect(pods.Items[0].Name).To(Equal("hijack-pod"))
 		})
 
 		It("passes TTY flag through to executor for interactive sessions", func() {

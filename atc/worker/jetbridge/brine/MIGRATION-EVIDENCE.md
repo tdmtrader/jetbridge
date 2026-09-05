@@ -481,6 +481,17 @@ existing assertion alive, and the assertion was already gone. It was NOT right
 for the helper `assertAllPodMountsResolve(pod)` and its call site, which are new
 coverage core wrote. That is ported (below), not discarded.
 
+Rebased again on 2026-09-05 onto `c1c3e70e7c` (91 commits replayed; three
+modify/delete conflicts this time — `container_test.go`, `process_test.go` and
+`integration_test.go`, all three from core's `2a9355e1e6` rather than
+`0d336e062b`, whose own conflicts are now below the base — each resolved by
+taking the deletion), and the three Its `2a9355e1e6` had added to those files
+(the hijack session's context, a step's own cancelled context, and a supervised
+task's pause pod) postdate the previous base `09faf11a50`, carry no both-red
+evidence at all, and were therefore carried into the matching
+`*_restored_test.go` rather than deleted with the files (see the last section
+of `DISPOSITION-jetbridge.md`).
+
 Five commits exist only because core moved under the suite:
 
 - `cf555ffa59` — `atc/scheduler.Scheduler.Schedule` returns `ScheduleResult`
