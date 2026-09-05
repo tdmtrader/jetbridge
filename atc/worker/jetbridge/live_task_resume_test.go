@@ -16,12 +16,24 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// TestLiveTaskResume verifies that a task step survives a web restart: the
-// first web's exec session is severed mid-command (simulating SIGTERM during
-// a rolling upgrade), the task pod and the HUP-shielded command keep running,
-// and a second web — a fresh Worker/Container for the same handle — takes
-// over via the attachOrRun path, receives the remaining output, and reports
-// the command's real exit code without the command ever restarting.
+// TestLiveTaskResume verifies that a task step survives a web restart: web 1
+// stops waiting on its exec mid-command (simulating SIGTERM during a rolling
+// upgrade), the task pod and the HUP-shielded command keep running, and a
+// second web — a fresh Worker/Container for the same handle — takes over via
+// the attachOrRun path, receives the remaining output, and reports the
+// command's real exit code without the command ever restarting.
+//
+// Note what web 1's death is NOT modelled as: cancelling the step's context.
+// A real restart never does that. A build's context is rooted at
+// context.Background() (atc/builds/tracker.go), and Engine.Drain closes the
+// release channel rather than cancelling — engineBuild.Run returns on that
+// arm and the plan's goroutine simply dies with the process, so the step's
+// context is never marked done. Cancelling here would model an abort, which
+// legitimately tears the pause pod down (process.go), and the test would be
+// asserting the opposite of the runtime's actual contract. The closest an
+// in-process test can get is to abandon the result and stop reading, which
+// leaves the same thing under test: web 2's re-exec resuming the running
+// command instead of starting a second copy.
 //
 // Run against a THROWAWAY namespace (never cicd/concourse):
 //
@@ -66,6 +78,10 @@ func TestLiveTaskResume(t *testing.T) {
 		t.Fatalf("web1 FindOrCreateContainer: %v", err)
 	}
 
+	// web1Ctx stands in for the build context the first web would hold. It
+	// stays live for the whole test: see the note above on why a restart
+	// does not cancel it. The deferred cancel is only there so the abandoned
+	// Wait cannot outlive the test.
 	web1Ctx, cancelWeb1 := context.WithCancel(ctx)
 	defer cancelWeb1()
 
@@ -98,11 +114,11 @@ func TestLiveTaskResume(t *testing.T) {
 			t.Fatalf("timed out waiting for command to start; web1 output: %q", web1Out.String())
 		}
 	}
-	t.Logf("web1 saw the command start; severing the exec session")
-	cancelWeb1()
-	if waitErr := <-web1Done; waitErr == nil {
-		t.Fatalf("web1 Wait unexpectedly succeeded; want severed-session error")
-	}
+	t.Logf("web1 saw the command start; abandoning its exec session")
+
+	// web1 is "gone": nothing reads web1Done from here on, exactly as the
+	// engine's plan goroutine stops existing when the web process dies.
+	// Everything below belongs to web2.
 
 	// The pod must survive web1's death.
 	if _, err := clientset.CoreV1().Pods(cfg.Namespace).Get(ctx, handle, metav1.GetOptions{}); err != nil {

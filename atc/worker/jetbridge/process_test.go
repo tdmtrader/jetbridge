@@ -20,6 +20,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
@@ -1120,6 +1121,11 @@ var _ = Describe("Process", func() {
 			Expect(err.Error()).To(ContainSubstring("pod terminated before exec could run"))
 		})
 
+		// This is a get step: its command runs on the exec stream and dies
+		// with it, so a cancelled context leaves nothing running and the pod
+		// is worth keeping for fly hijack. Only supervised task steps, whose
+		// command outlives the stream, are torn down (see the sibling spec
+		// below and integration_test.go).
 		It("preserves the pause pod when context is cancelled (for fly hijack)", func() {
 			process, err := execContainer.Run(ctx, runtime.ProcessSpec{
 				Path: "/opt/resource/in",
@@ -1142,6 +1148,49 @@ var _ = Describe("Process", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(pods.Items).To(HaveLen(1))
 			Expect(pods.Items[0].Name).To(Equal("exec-fail-handle"))
+		})
+
+		// The same cancellation on a supervised task step, whose command was
+		// started with SIGHUP ignored and so would otherwise keep running.
+		It("deletes a supervised task's pause pod when context is cancelled", func() {
+			taskContainer, _, err := execWorker.FindOrCreateContainer(
+				ctx,
+				db.NewFixedHandleContainerOwner("exec-task-handle"),
+				db.ContainerMetadata{Type: db.ContainerTypeTask},
+				runtime.ContainerSpec{
+					TeamID:    1,
+					ImageSpec: runtime.ImageSpec{ImageURL: "busybox:latest"},
+				},
+				delegate,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			var deleteOptions []metav1.DeleteOptions
+			fakeClientset.PrependReactor("delete", "pods", func(action k8stesting.Action) (bool, apiruntime.Object, error) {
+				deleteOptions = append(deleteOptions, action.(k8stesting.DeleteActionImpl).DeleteOptions)
+				return false, nil, nil
+			})
+
+			// No Stdin: this is what makes the step supervised.
+			process, err := taskContainer.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "trap '' TERM; sleep 600"},
+			}, runtime.ProcessIO{Stdout: new(bytes.Buffer)})
+			Expect(err).ToNot(HaveOccurred())
+
+			cancelCtx, cancel := context.WithCancel(ctx)
+			cancel()
+
+			_, err = process.Wait(cancelCtx)
+			Expect(err).To(HaveOccurred())
+
+			By("verifying the abandoned pause pod was deleted, with no grace period")
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "exec-task-handle", metav1.GetOptions{})
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "expected the task's pause pod to be gone")
+
+			Expect(deleteOptions).To(HaveLen(1))
+			Expect(deleteOptions[0].GracePeriodSeconds).ToNot(BeNil())
+			Expect(*deleteOptions[0].GracePeriodSeconds).To(BeEquivalentTo(0))
 		})
 	})
 

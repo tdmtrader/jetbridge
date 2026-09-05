@@ -768,9 +768,29 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	var spanErr error
 	defer func() { tracing.End(span, spanErr) }()
 
-	// NOTE: The pause Pod is intentionally NOT deleted on context cancellation.
-	// Pod cleanup is handled by the GC system (reaper), which enables
-	// fly hijack to exec into the still-running pod for debugging.
+	// The pause Pod is normally left behind when Wait returns: the reaper
+	// collects it, and until it does, fly hijack can exec into it.
+	//
+	// A supervised step whose context has ended is the exception. Its
+	// command was started in a background subshell with SIGHUP ignored, so
+	// that a web restart cannot kill it (see supervisor.go) — which means
+	// the teardown of the exec stream does not kill it either. When the
+	// context ends the step has been abandoned (abort) or has run out of
+	// time (timeout), nobody is coming back for it, and the reaper's fast
+	// path skips it because it never recorded an exit status. Left alone it
+	// runs until the pause pod's own 24h sleep is up. So delete it, on
+	// whichever path Wait returns.
+	//
+	// Only supervised steps: a get/put/check command dies with the SPDY
+	// stream on its own, so deleting its pod would cost fly hijack into an
+	// aborted build's resource containers and buy nothing. And never for a
+	// looked-up Container — that is a fly hijack session on somebody else's
+	// pod, ending when the operator closes the window.
+	defer func() {
+		if ctx.Err() != nil && p.supervised() && !p.container.lookedUp {
+			p.deleteAbandonedPod(logger)
+		}
+	}()
 
 	// Wait for the Pod to be running before exec-ing.
 	waitCtx, waitSpan := tracing.StartSpan(ctx, "k8s.exec-process.wait-for-running", tracing.Attrs{
@@ -890,12 +910,6 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	case <-time.After(5 * time.Second):
 	}
 
-	// NOTE: The pause Pod is intentionally NOT deleted on normal completion.
-	// Pod cleanup is handled by the GC system (reaper), which enables
-	// fly hijack to exec into the still-running pod for debugging.
-	// However, on context cancellation (abort), the pod is deleted immediately
-	// since the build is being abandoned.
-
 	if err != nil {
 		var exitErr *ExecExitError
 		if errors.As(err, &exitErr) {
@@ -933,6 +947,24 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	p.annotateExitStatus(ctx, 0)
 	span.SetAttributes(attribute.String("exit-code", "0"))
 	return runtime.ProcessResult{ExitStatus: 0}, nil
+}
+
+// deleteAbandonedPod deletes the pause Pod of a step whose context has ended.
+// The deletion runs on its own bounded context because the step's context is
+// already done, and with no grace period: a task that ignores SIGTERM — a
+// privileged nested dockerd, say — would otherwise sit out the pod's
+// termination grace period before anything actually stopped.
+func (p *execProcess) deleteAbandonedPod(logger lager.Logger) {
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cleanupCancel()
+
+	noGrace := int64(0)
+	err := p.clientset.CoreV1().Pods(p.config.Namespace).Delete(
+		cleanupCtx, p.podName, metav1.DeleteOptions{GracePeriodSeconds: &noGrace},
+	)
+	if err != nil && !apierrors.IsNotFound(err) {
+		logger.Error("failed-to-delete-abandoned-pod", err)
+	}
 }
 
 // streamInputs is a no-op — all inputs are handled by init containers
