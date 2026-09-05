@@ -471,17 +471,44 @@ jobs:
           kubectl cp artifact-daemon-linux-amd64 cicd/${BUILDER_POD}:/tmp/artifact-daemon-linux-amd64
           kubectl cp fly-assets cicd/${BUILDER_POD}:/tmp/fly-assets
 
-          echo "=== Copying Dockerfile to builder pod ==="
-          cat <<'DOCKERFILE' > /tmp/Dockerfile
+          # The runtime base (ubuntu + ca-certificates + dumb-init) is built
+          # once per change to its Dockerfile and pushed as
+          # jetbridge-base:jammy-<hash>. Every runtime build then starts FROM
+          # that image and never touches apt. Before this, each build ran
+          # apt-get update against archive.ubuntu.com; on 2026-09-04 the
+          # mirrors degraded and build-image took 29 minutes, after one run
+          # died at 16 (#520, #521). The hash is of the base Dockerfile's
+          # bytes, so editing it below rebuilds the base exactly once.
+          echo "=== Ensuring runtime base image ==="
+          cat <<'BASEDOCKERFILE' > /tmp/Dockerfile.base
           FROM ubuntu:22.04
-          RUN apt-get update && \
-              apt-get install -y ca-certificates dumb-init && \
+          RUN apt-get -o Acquire::Retries=5 update && \
+              apt-get -o Acquire::Retries=5 install -y --no-install-recommends ca-certificates dumb-init && \
               rm -rf /var/lib/apt/lists/*
+          BASEDOCKERFILE
+          BASE_TAG="jammy-$(sha256sum /tmp/Dockerfile.base | cut -c1-12)"
+          BASE_IMAGE="registry.home/jetbridge-base:${BASE_TAG}"
+          if curl -sf -o /dev/null -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+               "http://registry.home/v2/jetbridge-base/manifests/${BASE_TAG}"; then
+            echo "base ${BASE_IMAGE} already present"
+          else
+            echo "=== Building runtime base ${BASE_IMAGE} ==="
+            kubectl cp /tmp/Dockerfile.base cicd/${BUILDER_POD}:/tmp/Dockerfile.base
+            kubectl exec -n cicd ${BUILDER_POD} -- \
+              docker build -t "${BASE_IMAGE}" -t "${REGISTRY}/jetbridge-base:${BASE_TAG}" \
+                -f /tmp/Dockerfile.base /tmp/
+            kubectl exec -n cicd ${BUILDER_POD} -- docker push "${BASE_IMAGE}"
+            kubectl exec -n cicd ${BUILDER_POD} -- docker push "${REGISTRY}/jetbridge-base:${BASE_TAG}"
+          fi
+
+          echo "=== Copying Dockerfile to builder pod ==="
+          cat <<DOCKERFILE > /tmp/Dockerfile
+          FROM ${BASE_IMAGE}
           COPY concourse-linux-amd64 /usr/local/concourse/bin/concourse
           COPY artifact-daemon-linux-amd64 /usr/local/concourse/bin/artifact-daemon
           COPY fly-assets /usr/local/concourse/fly-assets
           RUN chmod +x /usr/local/concourse/bin/concourse /usr/local/concourse/bin/artifact-daemon
-          ENV PATH="/usr/local/concourse/bin:${PATH}"
+          ENV PATH="/usr/local/concourse/bin:\${PATH}"
           ENTRYPOINT ["dumb-init", "concourse"]
           DOCKERFILE
           kubectl cp /tmp/Dockerfile cicd/${BUILDER_POD}:/tmp/Dockerfile
