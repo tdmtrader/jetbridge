@@ -592,10 +592,27 @@ jobs:
         - |
           cd repo
           VERSION=$(tr -d '[:space:]' < VERSION)
-          SHORT_SHA=$(git rev-parse --short HEAD)
-          CANDIDATE="registry.home/jetbridge:${VERSION}-rc-${SHORT_SHA}"
           REGISTRY="registry-docker-registry.cicd.svc.cluster.local:5000"
           DIND_POD="k8s-container-dind-$$"
+
+          # build-image names the candidate ${VERSION}-rc-$(git rev-parse --short HEAD)
+          # from a full clone, where git chose 9 hex digits; this shallow clone
+          # abbreviates to 7, so re-deriving the tag here does not match (#1
+          # failed that way). Resolve it from the registry instead: the rc tag
+          # for this version whose digits prefix the full SHA.
+          FULL_SHA=$(git rev-parse HEAD)
+          CANDIDATE_TAG=""
+          for tag in $(curl -sf http://registry.home/v2/jetbridge/tags/list \
+                       | tr ',[]{}"' '\n\n\n\n\n\n' | grep -E "^${VERSION}-rc-[0-9a-f]+$"); do
+            case "${FULL_SHA}" in
+              "${tag#${VERSION}-rc-}"*) CANDIDATE_TAG="${tag}" ;;
+            esac
+          done
+          if [ -z "${CANDIDATE_TAG}" ]; then
+            echo "FATAL: no ${VERSION}-rc-<sha> tag in registry.home for ${FULL_SHA}; has build-image run for this commit?" >&2
+            exit 1
+          fi
+          CANDIDATE="registry.home/jetbridge:${CANDIDATE_TAG}"
 
           cleanup_dind() { kubectl delete pod -n cicd ${DIND_POD} --grace-period=0 --force 2>/dev/null || true; }
           trap cleanup_dind EXIT
