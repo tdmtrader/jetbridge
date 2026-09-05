@@ -65,7 +65,7 @@ jobs:
               env:
               - name: DOCKER_TLS_CERTDIR
                 value: ""
-              command: ["dockerd", "--host=unix:///var/run/docker.sock", "--insecure-registry=${REGISTRY}", "--insecure-registry=registry.home"]
+              command: ["dockerd", "--host=unix:///var/run/docker.sock", "--mtu=1450", "--insecure-registry=${REGISTRY}", "--insecure-registry=registry.home"]
               resources:
                 requests:
                   memory: "4Gi"
