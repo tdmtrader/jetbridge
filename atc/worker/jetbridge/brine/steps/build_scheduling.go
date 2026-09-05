@@ -671,12 +671,12 @@ func (s SchedulingJob) schedule() (SchedulingPass, error) {
 			"expected this job to be waiting to be scheduled, the scheduler found %d jobs", len(toSchedule))
 	}
 
-	needsRetry, err := s.Scheduler.Schedule(s.Ctx, lagertest.NewTestLogger("scheduler"), toSchedule[0])
+	result, err := s.Scheduler.Schedule(s.Ctx, lagertest.NewTestLogger("scheduler"), toSchedule[0])
 	if err != nil {
 		return SchedulingPass{}, fmt.Errorf("the scheduling pass failed: %w", err)
 	}
 
-	return SchedulingPass{Job: s, NeedsRetry: needsRetry, Queue: queue}, nil
+	return SchedulingPass{Job: s, NeedsRetry: result.NeedsRetry, Queue: queue}, nil
 }
 
 func (p SchedulingPass) head() (string, error) {
