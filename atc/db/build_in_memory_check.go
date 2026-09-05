@@ -565,6 +565,12 @@ func (b *inMemoryCheckBuild) AbortSignal() (*NotifySignal, func(), error) {
 	return nil, nil, nil
 }
 
+// IsAbortedInDB has no row to read: an in-memory check build is never marked
+// as aborted, which is why AbortSignal returns no signal to watch.
+func (b *inMemoryCheckBuild) IsAbortedInDB() (bool, error) {
+	return false, nil
+}
+
 // ResourceCacheUser will use in-memory build's preId as key in order to avoid unnecessary
 // db init. To ensure preId is unique across all ATCs, also use build's create time in
 // the key.

@@ -194,8 +194,8 @@ func (b *engineBuild) Run(ctx context.Context) {
 		// read the flag once here: a build aborted while no web was tracking
 		// it — across a restart, or before a re-track following a retriable
 		// step error — is invisible to the listener and would otherwise run
-		// to completion. Done on this goroutine, before the plan starts, so
-		// that it does not race the row the build is still reading.
+		// to completion. Read on this goroutine, before the plan starts, so
+		// that an already-aborted build never gets as far as creating a pod.
 		if b.abortRequested(logger) {
 			logger.Info("aborting")
 			cancel()
@@ -204,7 +204,7 @@ func (b *engineBuild) Run(ctx context.Context) {
 				// NotifySignal coalesces: a wake-up says only that something
 				// changed, so the flag is re-read on every one of them. A
 				// single check would let the first wake-up that is not an
-				// abort — a listener reconnect, a Reload that failed — cost
+				// abort — a listener reconnect, or a read that failed — cost
 				// the build every abort that follows.
 				for {
 					select {
@@ -270,18 +270,20 @@ func (b *engineBuild) Run(ctx context.Context) {
 	}
 }
 
-// abortRequested reports whether the build has been marked as aborted,
-// reloading the row first because the in-memory value is stale from when the
-// build was first loaded. A failed reload reports "not aborted": the caller
-// is watching a signal that will bring it back here.
+// abortRequested reports whether the build has been marked as aborted. It
+// reads the flag from the database rather than trusting the in-memory row,
+// which is stale from when the build was first loaded, and rather than
+// Reload, which would write that row while the goroutine running the plan is
+// reading it. A failed read reports "not aborted": the caller is watching a
+// signal that will bring it back here.
 func (b *engineBuild) abortRequested(logger lager.Logger) bool {
-	found, err := b.build.Reload()
+	aborted, err := b.build.IsAbortedInDB()
 	if err != nil {
-		logger.Error("failed-to-reload-build-for-abort", err)
+		logger.Error("failed-to-read-aborted-flag", err)
 		return false
 	}
 
-	return found && b.build.IsAborted()
+	return aborted
 }
 
 func (b *engineBuild) buildStepErrored(logger lager.Logger, message string) {

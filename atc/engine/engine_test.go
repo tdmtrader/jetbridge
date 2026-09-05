@@ -42,17 +42,20 @@ func (b trackingLockErrorBuild) AcquireTrackingLock(lager.Logger, time.Duration)
 // Unlistening leaves no trace on the build, so record it around the real
 // listener; err injects the listen failure a healthy bus cannot produce.
 // The signal itself is handed back to the test so a wake-up that is not an
-// abort can be delivered on purpose, and reloads are counted so the test can
-// tell that such a wake-up has been fully processed.
+// abort can be delivered on purpose, and the watcher's reads of the aborted
+// flag are counted so the test can tell that such a wake-up has been fully
+// processed. Both routes to that flag are counted — reading the row directly
+// and reloading the build — so the barrier holds whichever one the watcher
+// uses.
 type abortListenerRecordingBuild struct {
 	db.Build
 
 	err        error
 	unlistened bool
 
-	mu      sync.Mutex
-	signal  *db.NotifySignal
-	reloads int
+	mu        sync.Mutex
+	signal    *db.NotifySignal
+	flagReads int
 }
 
 func (b *abortListenerRecordingBuild) AbortSignal() (*db.NotifySignal, func(), error) {
@@ -72,20 +75,28 @@ func (b *abortListenerRecordingBuild) AbortSignal() (*db.NotifySignal, func(), e
 	}, err
 }
 
+func (b *abortListenerRecordingBuild) IsAbortedInDB() (bool, error) {
+	aborted, err := b.Build.IsAbortedInDB()
+	b.countFlagRead()
+	return aborted, err
+}
+
 func (b *abortListenerRecordingBuild) Reload() (bool, error) {
 	found, err := b.Build.Reload()
-
-	b.mu.Lock()
-	b.reloads++
-	b.mu.Unlock()
-
+	b.countFlagRead()
 	return found, err
 }
 
-func (b *abortListenerRecordingBuild) reloadCount() int {
+func (b *abortListenerRecordingBuild) countFlagRead() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.reloads
+	b.flagReads++
+}
+
+func (b *abortListenerRecordingBuild) flagReadCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.flagReads
 }
 
 func (b *abortListenerRecordingBuild) abortSignal() *db.NotifySignal {
@@ -483,9 +494,9 @@ var _ = Describe("Engine", func() {
 									fakeStep.RunStub = func(ctx context.Context, _ exec.RunState) (bool, error) {
 										defer GinkgoRecover()
 
-										reloadsBefore := aborts.reloadCount()
+										readsBefore := aborts.flagReadCount()
 										aborts.abortSignal().Signal()
-										Eventually(aborts.reloadCount).Should(BeNumerically(">", reloadsBefore))
+										Eventually(aborts.flagReadCount).Should(BeNumerically(">", readsBefore))
 
 										abortHandle, found, err := fixture.BuildFactory.Build(realBuild.ID())
 										Expect(err).NotTo(HaveOccurred())

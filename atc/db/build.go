@@ -208,6 +208,7 @@ type Build interface {
 	Delete() (bool, error)
 	MarkAsAborted() error
 	IsAborted() bool
+	IsAbortedInDB() (bool, error)
 	AbortSignal() (signal *NotifySignal, unlisten func(), err error)
 
 	IsDrained() bool
@@ -990,10 +991,33 @@ func (b *build) MarkAsAborted() error {
 	return b.conn.Bus().Notify(buildAbortChannel(b.id))
 }
 
+// IsAbortedInDB reads the build's aborted flag straight from the database.
+//
+// It is the read a signal watcher wants: unlike Reload it writes nothing back
+// to the build, so it is safe to call repeatedly while another goroutine is
+// reading the same build, and unlike IsAborted it does not answer from a row
+// loaded before the abort happened.
+func (b *build) IsAbortedInDB() (bool, error) {
+	var aborted bool
+	err := psql.Select("aborted").
+		From("builds").
+		Where(sq.Eq{"id": b.id}).
+		RunWith(b.conn).
+		QueryRow().
+		Scan(&aborted)
+	if err != nil {
+		return false, err
+	}
+
+	return aborted, nil
+}
+
 // AbortSignal returns a NotifySignal that fires when the build is marked as
-// aborted. The caller should check IsAborted() after each signal to confirm
-// the abort, since signals may be spurious. The returned unlisten function
-// must be called when done to clean up the listener.
+// aborted. The caller should check IsAbortedInDB() after each signal to
+// confirm the abort, since signals may be spurious, and once before waiting,
+// since the signal only carries aborts that arrive after it was registered.
+// The returned unlisten function must be called when done to clean up the
+// listener.
 func (b *build) AbortSignal() (*NotifySignal, func(), error) {
 	channel := buildAbortChannel(b.id)
 	signal, err := b.conn.Bus().ListenSignal(channel)
