@@ -198,6 +198,47 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 				return nil
 			}),
 
+		// Every VolumeMount in the pod — the step's own container and every
+		// init container before it — must name exactly one of the volumes the
+		// pod declares.
+		//
+		// This is not a restatement of the mount assertions around it. Those
+		// ask where the step SEES a directory, and they answer by finding the
+		// FIRST volume of that name. This asks whether the pod is admissible
+		// at all: the API server rejects a mount naming a volume the pod does
+		// not declare, and it rejects a volume name declared twice, so either
+		// one turns a pod spec that satisfies every other check in this file
+		// into a step that never starts — with the error on the pod object
+		// rather than in the build log, which is where anyone would look.
+		//
+		// Nothing else here counts volumes BY NAME, which is what makes the
+		// duplicate half of this reachable only from here.
+		CheckThat[PodCreated]("every mount in the pod names exactly one of its volumes",
+			func(in PodCreated) error {
+				declared := map[string]int{}
+				for _, v := range in.Pod.Spec.Volumes {
+					declared[v.Name]++
+				}
+				containers := append([]corev1.Container{}, in.Pod.Spec.InitContainers...)
+				containers = append(containers, in.Pod.Spec.Containers...)
+				for _, c := range containers {
+					for _, m := range c.VolumeMounts {
+						switch declared[m.Name] {
+						case 1:
+						case 0:
+							return fmt.Errorf(
+								"container %q mounts volume %q at %q, and the pod declares no volume by that name",
+								c.Name, m.Name, m.MountPath)
+						default:
+							return fmt.Errorf(
+								"container %q mounts volume %q at %q, and the pod declares %d volumes by that name",
+								c.Name, m.Name, m.MountPath, declared[m.Name])
+						}
+					}
+				}
+				return nil
+			}),
+
 		// These two keep their own bodies: the parameter is a lookup key, not a
 		// value to compare against, and the two ways they fail are different
 		// diagnoses — nothing is mounted there at all, or something is but the

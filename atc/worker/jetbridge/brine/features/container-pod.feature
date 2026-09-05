@@ -24,6 +24,7 @@ Feature: What a step's pod actually looks like
     And the step sees a volume mounted at "/tmp/build/workdir/input-a"
     And the step sees a volume mounted at "/tmp/build/workdir/input-b"
     And every volume is ephemeral
+    And every mount in the pod names exactly one of its volumes
 
   # CO-05. An output written into an input's directory must not get a second
   # volume, or the step would write into one and the next step would read the
@@ -38,6 +39,7 @@ Feature: What a step's pod actually looks like
     When the container runs
     Then the pod has 2 volumes
     And the step sees a volume mounted at "/tmp/build/workdir/shared"
+    And every mount in the pod names exactly one of its volumes
 
   @CO-05
   Scenario: An output on its own path gets its own volume
@@ -50,6 +52,7 @@ Feature: What a step's pod actually looks like
     Then the pod has 3 volumes
     And the step sees a volume mounted at "/tmp/build/workdir/in"
     And the step sees a volume mounted at "/tmp/build/workdir/out"
+    And every mount in the pod names exactly one of its volumes
 
   # CO-08. Scratch space is ephemeral by design — persisting it across pods
   # would leak one build's temporary state into the next.
@@ -74,6 +77,7 @@ Feature: What a step's pod actually looks like
     Then the pod has 3 volumes
     And the step sees a volume mounted at "/tmp/cache"
     And the step sees a volume mounted at "/tmp/scratch"
+    And every mount in the pod names exactly one of its volumes
 
   # PE-07. The QoS class is what the kubelet uses to decide which pods to evict
   # first when a node runs out of memory, so it is the observable consequence
@@ -278,6 +282,7 @@ Feature: What a step's pod actually looks like
     And it caches "/tmp/build/workdir/.cache"
     When the container runs
     Then the cache at "/tmp/build/workdir/.cache" is kept on the node under "/var/concourse/cache/job-7-compile-"
+    And every mount in the pod names exactly one of its volumes
 
   # A one-off build (`fly execute`) has no job to key on, so there is nothing
   # stable to file a cache under and it falls back to ephemeral storage.
@@ -410,6 +415,7 @@ Feature: What a step's pod actually looks like
     And it works in "/tmp/build/workdir"
     When the container runs with an input and the output "repo-modified" both at "/tmp/build/workdir/repo"
     Then the volume mounted at "/tmp/build/workdir/repo" is the node directory recorded for the output "repo-modified"
+    And every mount in the pod names exactly one of its volumes
 
   # CO-08. A scratch path may be written relative to the step's working
   # directory, and it means a directory inside it. Resolved against the
@@ -449,6 +455,7 @@ Feature: What a step's pod actually looks like
     And it caches "/tmp/build/workdir/.cache"
     When the container runs
     Then the cache at "/tmp/build/workdir/.cache" is kept on the node under "/var/concourse/artifacts/caches/job-7-compile-"
+    And every mount in the pod names exactly one of its volumes
 
   # THE ORDER OF THE INIT CONTAINERS IS THE BEHAVIOUR. Kubernetes runs them in
   # the order the spec lists them, to completion, one after another. The
