@@ -95,6 +95,42 @@ var _ = Describe("PgxListener", func() {
 		})
 	})
 
+	Context("when the connection is lost", func() {
+		It("reports the disconnect and listens again on the new connection", func(ctx context.Context) {
+			err = listener.Listen("test")
+			Expect(err).ToNot(HaveOccurred())
+
+			c := listener.NotificationChannel()
+
+			By("dropping the listener's backend out from under it")
+			_, err = notifierConn.Exec(`
+				SELECT pg_terminate_backend(pid)
+				FROM pg_stat_activity
+				WHERE datname = current_database()
+				  AND pid <> pg_backend_pid()
+				  AND query = 'LISTEN test'`)
+			Expect(err).ToNot(HaveOccurred())
+
+			By("delivering the disconnect notice, since anything notified meanwhile is gone")
+			var notification *pgconn.Notification
+			Eventually(ctx, c).WithTimeout(30 * time.Second).Should(Receive(&notification))
+			Expect(notification).To(BeNil())
+
+			By("delivering notifications again on the reconnected connection")
+			Eventually(ctx, func() bool {
+				_, notifyErr := notifierConn.Exec("select pg_notify('test', $1)", testPayload)
+				Expect(notifyErr).ToNot(HaveOccurred())
+
+				select {
+				case n := <-c:
+					return n != nil && n.Payload == testPayload
+				case <-time.After(200 * time.Millisecond):
+					return false
+				}
+			}).WithTimeout(30 * time.Second).Should(BeTrue())
+		})
+	})
+
 	Context("Unlisten()", func() {
 		It("succeeds after listening on a channel", func(ctx context.Context) {
 			err = listener.Listen("test")

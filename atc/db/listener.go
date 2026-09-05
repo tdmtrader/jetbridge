@@ -128,6 +128,14 @@ func (l *PgxListener) listenerLoop() {
 				for channel, _ := range l.channels {
 					l.conn.Exec(ctx, fmt.Sprintf("LISTEN %s", channel))
 				}
+
+				// Every NOTIFY sent while the connection was down is gone,
+				// and re-LISTEN does not replay them. A nil notification is
+				// the bus's disconnect notice: it wakes every listener so
+				// they re-read the state their missed notification was
+				// about — a build's aborted flag, say — instead of waiting
+				// forever for a signal that has already been and gone.
+				l.notify <- nil
 			}
 			cancel()
 			continue
