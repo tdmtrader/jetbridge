@@ -1,30 +1,40 @@
 // The brine adapter is a SEPARATE MODULE on purpose.
 //
 // It depends on github.com/brine-dev/brine-go, which is not published — it
-// lives in a private repository and is reached through a local `replace`.
+// lives in a private repository and is reached through a `replace`.
 // Putting that requirement in the root go.mod made `go build ./...`,
 // `go mod download` and the release pipeline all depend on a directory that
 // exists on exactly one machine. Nesting the module keeps that blast radius
 // inside this directory: the root module builds with no knowledge of brine.
 //
 // The concourse replace is relative, so it moves with the checkout. The
-// brine-go replace is the one that still needs a real answer when this is
-// promoted beyond one developer's machine (vendor it, or wait for the
-// module to be published).
+// brine-go replace now names a module PATH rather than one laptop's
+// directory: github.com/MarkDucommun/brine-private/runners/implementations/go
+// at a pseudo-version pinning brine-private commit 8289e541 -- the same
+// revision the CI image registry.home/concourse-test-runner:v9 built its
+// brine CLI and engine from. That repository is private, so the fetch needs
+// GOPRIVATE=github.com/MarkDucommun/* (bypassing proxy.golang.org and the
+// checksum database) plus a git credential for github.com: the osxkeychain
+// helper on a developer machine, and in CI a url.insteadOf rewrite carrying
+// ((github-token)). Nothing is vendored: this repository's origin is public,
+// and someone else's private source does not belong in artefacts it ships.
 module github.com/concourse/concourse/atc/worker/jetbridge/brine
 
-go 1.26.0
+go 1.25.6
 
 require (
+	code.cloudfoundry.org/clock v1.57.0
 	code.cloudfoundry.org/lager/v3 v3.57.0
 	github.com/brine-dev/brine-go v0.0.0
 	github.com/concourse/concourse v0.0.0
 	github.com/creack/pty v1.1.24
 	github.com/klauspost/compress v1.18.4
 	github.com/onsi/gomega v1.39.0
+	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/tedsuo/ifrit v0.0.0-20230516164442-7862c310ad26
 	go.opentelemetry.io/otel/sdk v1.44.0
 	golang.org/x/sys v0.46.0
+	golang.org/x/time v0.15.0
 	k8s.io/api v0.35.0
 	k8s.io/apimachinery v0.35.0
 	k8s.io/client-go v0.35.0
@@ -36,7 +46,6 @@ require (
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	cloud.google.com/go/trace v1.16.0 // indirect
-	code.cloudfoundry.org/clock v1.57.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/trace v1.30.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.57.0 // indirect
 	github.com/Masterminds/semver/v3 v3.4.0 // indirect
@@ -111,7 +120,6 @@ require (
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/openzipkin/zipkin-go v0.4.3 // indirect
-	github.com/patrickmn/go-cache v2.1.0+incompatible // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/prometheus/client_golang v1.23.2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
@@ -143,7 +151,6 @@ require (
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/term v0.44.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
-	golang.org/x/time v0.15.0 // indirect
 	golang.org/x/tools v0.45.0 // indirect
 	google.golang.org/api v0.287.1 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260630182238-925bb5da69e7 // indirect
@@ -162,6 +169,6 @@ require (
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
-replace github.com/brine-dev/brine-go => /Users/tdmtrader/brine-private/runners/implementations/go
+replace github.com/brine-dev/brine-go => github.com/MarkDucommun/brine-private/runners/implementations/go v0.0.0-20260823044001-8289e541f77b
 
 replace github.com/concourse/concourse => ../../../..
