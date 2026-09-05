@@ -212,7 +212,7 @@ var admissionChanges = []struct {
 	// schedule_requested < last_scheduled: the scheduler has already been
 	// round since the job asked.
 	{"was scheduled after it asked", func(in JobAdmission, j *admittedJob) error {
-		if err := j.Job.UpdateLastScheduled(time.Now().Add(time.Minute)); err != nil {
+		if err := j.Job.ConsumeScheduleRequest(time.Now().Add(time.Minute)); err != nil {
 			return fmt.Errorf("record a later scheduling pass: %w", err)
 		}
 		requested, scheduled, err := in.scheduleTimes(j)
@@ -234,7 +234,7 @@ var admissionChanges = []struct {
 		if _, err := j.Job.Reload(); err != nil {
 			return fmt.Errorf("reload the job: %w", err)
 		}
-		if err := j.Job.UpdateLastScheduled(j.Job.ScheduleRequestedTime()); err != nil {
+		if err := j.Job.ConsumeScheduleRequest(j.Job.ScheduleRequestedTime()); err != nil {
 			return fmt.Errorf("record a scheduling pass at the requested time: %w", err)
 		}
 		requested, scheduled, err := in.scheduleTimes(j)
