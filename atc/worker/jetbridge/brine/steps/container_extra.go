@@ -958,14 +958,15 @@ func runExtraSpecFromDraft(in ContainerDraft) runtime.ContainerSpec {
 	}
 
 	spec := runtime.ContainerSpec{
-		TeamID:       1,
-		Dir:          in.Dir,
-		ImageSpec:    runtime.ImageSpec{ImageURL: in.ImageURL, Privileged: in.Privileged},
-		Env:          in.ContainerEnv,
-		Inputs:       inputs,
-		Caches:       in.Caches,
-		ScratchPaths: in.Scratch,
-		Sidecars:     in.Sidecars,
+		TeamID:            1,
+		Dir:               in.Dir,
+		ImageSpec:         runtime.ImageSpec{ImageURL: in.ImageURL, Privileged: in.Privileged},
+		Env:               in.ContainerEnv,
+		Inputs:            inputs,
+		Caches:            in.Caches,
+		TaskCacheIdentity: in.taskCacheIdentity(),
+		ScratchPaths:      in.Scratch,
+		Sidecars:          in.Sidecars,
 		Limits: runtime.ContainerLimits{
 			CPU:           in.LimitCPU,
 			Memory:        in.LimitMemory,

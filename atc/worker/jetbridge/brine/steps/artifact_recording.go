@@ -544,6 +544,12 @@ func (d *storeDaemon) fetch(ctx context.Context, path string) ([]byte, error) {
 // The producing step and the consuming step are both described into this one
 // state, because the whole point of the family is the hand-off between them:
 // what one leaves in the index is what the other's pod is built from.
+// cachedStepJobID is the job the one scenario that keeps a task cache belongs
+// to. Its value is arbitrary and unread: nothing here asserts the key, only
+// which tree on the node the cache lands in. It exists because a cache cannot
+// be node-local without a job to key it under.
+const cachedStepJobID = 7
+
 type ArtifactCluster struct {
 	Ctx       context.Context
 	Namespace string
@@ -572,6 +578,11 @@ type ArtifactCluster struct {
 	// asked for one.
 	Peer     *storeDaemon
 	NodeName string
+
+	// CacheIdentity is the job a described task cache belongs to, set by the
+	// sentence that asks for a cache. Nil everywhere else, which is what a
+	// step with no cache to keep carries in production.
+	CacheIdentity *atc.TaskCacheIdentity
 
 	// The producing step under description.
 	Handle  string
@@ -1112,12 +1123,13 @@ func artifactPodDefinitions() []brine.StepDefinition {
 				}
 
 				spec := runtime.ContainerSpec{
-					TeamID:    in.Team.ID(),
-					Dir:       "/tmp/build/workdir",
-					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-					Inputs:    inputs,
-					Caches:    in.Caches,
-					Type:      in.ConsumerType,
+					TeamID:            in.Team.ID(),
+					Dir:               "/tmp/build/workdir",
+					ImageSpec:         runtime.ImageSpec{ImageURL: "docker:///busybox"},
+					Inputs:            inputs,
+					Caches:            in.Caches,
+					TaskCacheIdentity: in.CacheIdentity,
+					Type:              in.ConsumerType,
 				}
 
 				owner := db.NewFixedHandleContainerOwner(in.Consumer)
@@ -1324,6 +1336,14 @@ func artifactSchedulingDefinitions() []brine.StepDefinition {
 		Refine[ArtifactCluster]("it keeps a task cache at {string}",
 			func(in ArtifactCluster, a Args) ArtifactCluster {
 				in.Caches = append(in.Caches, a.String(0))
+				// A task cache belongs to a job. Since 0d336e062b the
+				// ContainerSpec's TaskCacheIdentity is the only thing that
+				// selects node-local cache storage, and a step without one
+				// gets an emptyDir that dies with the pod — which is the
+				// right answer for a one-off build and the wrong one for the
+				// step this sentence describes, whose whole point is a cache
+				// that outlives the pod and has to land somewhere on the node.
+				in.CacheIdentity = &atc.TaskCacheIdentity{JobID: cachedStepJobID}
 				return in
 			}),
 

@@ -107,6 +107,23 @@ type ContainerDraft struct {
 	TeamID int
 }
 
+// taskCacheIdentity is what the described step's ContainerSpec must carry for
+// its caches to be kept on the node.
+//
+// Since 0d336e062b the choice is the ContainerSpec's alone: hostPath cache
+// storage is selected only when TaskCacheIdentity is set, and an explicit
+// hostPath choice is downgraded to an emptyDir without one. The container
+// METADATA's JobID, which is what these drafts used to lean on, no longer
+// reaches the decision at all. A draft that never said which job it belongs to
+// is a one-off build, which has no stable thing to key a cache under, so it
+// keeps getting nil and its cache keeps dying with the pod.
+func (d ContainerDraft) taskCacheIdentity() *atc.TaskCacheIdentity {
+	if d.JobID == 0 {
+		return nil
+	}
+	return &atc.TaskCacheIdentity{JobID: d.JobID}
+}
+
 // PodCreated is the state after a described container has run and its pod has
 // been read back from the cluster. Check steps assert over the pod spec.
 type PodCreated struct {
