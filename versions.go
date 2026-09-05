@@ -15,7 +15,7 @@ var Version = "0.0.0-dev"
 // automatically. The comment here used to claim "kept in sync with the VERSION
 // file by the CI bump step" -- no such step has ever existed, and all three
 // values sat at 0.2.80 across every release the fork ever cut.
-var JetBridgeVersion = "0.3.1"
+var JetBridgeVersion = "0.3.2"
 
 // ConcourseVersion is the upstream Concourse version this fork is based on.
 var ConcourseVersion = "8.0.1"
