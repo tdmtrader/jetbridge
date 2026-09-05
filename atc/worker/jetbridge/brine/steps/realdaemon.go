@@ -224,6 +224,16 @@ func (s RealDaemonState) tarEntries() ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("the daemon's answer is not a readable tar: %w", err)
 		}
+		// FILES, which is what both sentences over this say. Since
+		// 65e1f31228 folded the two egress tar producers into one, the
+		// archive also carries a TypeDir header for every directory it
+		// walks through; counting those made "the archive carries 2
+		// files" fail on an archive that carries exactly the two files
+		// it names. core's own daemon tests read a tar the same way,
+		// collecting only tar.TypeReg members.
+		if h.Typeflag != tar.TypeReg {
+			continue
+		}
 		names = append(names, h.Name)
 	}
 	return names, nil
