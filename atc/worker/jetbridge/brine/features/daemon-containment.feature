@@ -172,20 +172,26 @@ Feature: What the artifact daemon refuses
   # os.RemoveAll(dest) first, so dest == the storage root writes into the
   # root's parent (a host directory in production) and then removes the entire
   # store. Rel reports "." for that case, and the first cut of the validator
-  # accepted it — which is why "the root itself" is its own act with its own
-  # refusal text rather than being folded into the outside-the-root one.
+  # accepted it — which is why "the root itself" is its own act rather than
+  # being folded into the outside-the-root one.
+  #
+  # It no longer has its own refusal TEXT. 559921ef96 made lexicalRel the one
+  # computation of where a destination goes, and it treats a "." relative path
+  # the same way it treats a ".." one: neither is a location inside the root,
+  # and both are refused with that sentence. The acts stay separate because
+  # what they do to the store if they get through is not the same thing.
   Scenario: A resolve destination outside the storage root is refused, and the root itself is not a destination
     Given a real artifact daemon guarding its storage root
     And a directory outside that root holding a file that reads "original"
     And the store holds a file "steps/srcbuild/out/payload.txt" reading "PAYLOAD"
     When the ATC asks it to resolve "srcbuild/out" into a destination outside the storage root
     Then the daemon replies with 400
-    And the refusal says "resolves outside the storage root"
+    And the refusal says "is not a location inside the storage root"
     And nothing was created at that destination outside the root
     And the file outside the storage root still reads "original"
     When the ATC asks it to resolve "srcbuild/out" into the storage root itself
     Then the daemon replies with 400
-    And the refusal says "is the storage root itself"
+    And the refusal says "is not a location inside the storage root"
     And the store's file "steps/srcbuild/out/payload.txt" reads "PAYLOAD"
     When the ATC asks it to resolve "srcbuild/out" into the stored destination "resolved/input"
     Then the daemon replies with 200
@@ -207,7 +213,7 @@ Feature: What the artifact daemon refuses
     When the ATC asks it to resolve "batchsrc/out" into the stored destination "resolved/first" and into a destination outside the storage root
     Then the daemon replies with 400
     And the refusal says "item 1"
-    And the refusal says "resolves outside the storage root"
+    And the refusal says "is not a location inside the storage root"
     And the store has nothing at "resolved/first"
     And nothing was created at that destination outside the root
     When the ATC asks it to resolve "batchsrc/out" into the stored destinations "resolved/first" and "resolved/second"
