@@ -437,3 +437,19 @@ func lidarConfigWithGets(resources atc.ResourceConfigs, resourceTypes atc.Resour
 		}},
 	}
 }
+
+// RESTORED 2026-09-05 (rebase onto core for 0.3.2) alongside row GL-064's It in
+// scanner_test.go, which is the only caller. Verbatim from the merge-base
+// aef2244a63; attachLidarNativeResourceScope above is a different helper.
+func attachLidarResourceScope(fixture *lidarDB, resource db.Resource) db.ResourceConfigScope {
+	GinkgoHelper()
+	config, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(
+		resource.Type(), resource.Source(), nil,
+	)
+	Expect(err).NotTo(HaveOccurred())
+	resourceID := resource.ID()
+	scope, err := config.FindOrCreateScope(&resourceID)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(resource.SetResourceConfigScope(scope)).To(Succeed())
+	return scope
+}

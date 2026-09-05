@@ -178,6 +178,65 @@ var _ = Describe("Scanner", func() {
 		Expect(build.PrivatePlan().Check.FromVersion).To(Equal(version))
 		Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
 	})
+
+	// RESTORED 2026-09-05 (rebase onto core for 0.3.2). Row GL-064 of
+	// DISPOSITION-gc-lidar.md was recorded DELETED; the re-verification's
+	// skeptic REFUTED that pairing. The brine scenario
+	// resource-checking.feature "Every resource is checked even when there are
+	// four times as many as there are workers" creates its resources with no
+	// resource_config_scope, so (*checkFactory).TryCreateCheck's in-flight
+	// dedup guard is inert there. This It attaches a scope to all 20 resources
+	// first, so it covers the steady state the scenario structurally cannot
+	// reach: under a dedup keyed on the pipeline instead of the scope, this
+	// goes red and brine stays green.
+	It("checks all persisted resources beyond the worker concurrency limit", func() {
+		fixture := useLidarDB()
+		resources := make(atc.ResourceConfigs, 0, 20)
+		for i := range 20 {
+			resources = append(resources, atc.ResourceConfig{
+				Name:   fmt.Sprintf("resource-%02d", i),
+				Type:   dbtest.BaseResourceType,
+				Source: atc.Source{"index": fmt.Sprintf("%02d", i)},
+			})
+		}
+		_, pipeline := persistLidarPipeline(
+			fixture, teamName, pipelineName, lidarConfigWithGets(resources, nil),
+		)
+		persisted, err := pipeline.Resources()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(persisted).To(HaveLen(20))
+		scopeIDs := make(map[int]struct{}, 20)
+		for _, resource := range persisted {
+			scope := attachLidarResourceScope(fixture, resource)
+			Expect(scope.ID()).NotTo(BeZero())
+			scopeIDs[scope.ID()] = struct{}{}
+		}
+		Expect(scopeIDs).To(HaveLen(20))
+		factory := observeLidarCheckFactory(fixture.CheckFactory)
+
+		Expect(newScanner(factory, 5).Run(context.Background())).To(Succeed())
+		Expect(factory.Calls()).To(HaveLen(20))
+		builds := drainLidarCheckBuilds(fixture, 20)
+		seenIDs := make(map[int]struct{}, 20)
+		seenNames := make(map[string]struct{}, 20)
+		for _, build := range builds {
+			seenIDs[build.ResourceID()] = struct{}{}
+			seenNames[build.ResourceName()] = struct{}{}
+			Expect(build.PrivatePlan().Check.Resource).To(Equal(build.ResourceName()))
+			Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
+		}
+		Expect(seenIDs).To(HaveLen(20))
+		Expect(seenNames).To(HaveLen(20))
+		persisted, err = pipeline.Resources()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(persisted).To(HaveLen(20))
+		freshScopeIDs := make(map[int]struct{}, 20)
+		for _, resource := range persisted {
+			Expect(resource.ResourceConfigScopeID()).NotTo(BeZero())
+			freshScopeIDs[resource.ResourceConfigScopeID()] = struct{}{}
+		}
+		Expect(freshScopeIDs).To(Equal(scopeIDs))
+	})
 })
 
 var _ = Describe("Scanner Resource Type Resolution", func() {
