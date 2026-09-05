@@ -461,3 +461,165 @@ of the single thing no laptop can check: **whether `((github-token))` can read
 `MarkDucommun/brine-private`.** Everything else was verified against a fresh
 `GOMODCACHE`. Promotion after one green manual run is two lines: add
 `trigger: true`, and add `brine` to tag-rc's `passed:` list.
+
+
+# Rebase onto core for 0.3.2 (2026-09-04/05)
+
+## The rebase
+
+74 commits replayed onto `core`. Two conflicts, both modify/delete, both the
+same shape: a file this branch deleted, modified on core by `0d336e062b`
+("propagate opaque task cache identity").
+
+| replayed | file | resolution |
+|---|---|---|
+| `c67193f78f` (30/74) | `atc/worker/jetbridge/container_test.go` | took the deletion |
+| `6d2589a43a` (56/74) | `atc/worker/jetbridge/behavioral_permutations_test.go` | took the deletion |
+
+Taking the deletion was right for the fixture edits core made — those keep an
+existing assertion alive, and the assertion was already gone. It was NOT right
+for the helper `assertAllPodMountsResolve(pod)` and its call site, which are new
+coverage core wrote. That is ported (below), not discarded.
+
+Five commits exist only because core moved under the suite:
+
+- `cf555ffa59` — `atc/scheduler.Scheduler.Schedule` returns `ScheduleResult`
+  now, not a bare `bool` (`a107ff233a`, `6c0f2f606b`).
+- `72753e4377` — `db.Job.UpdateLastScheduled` was removed (`bb0b6ea126`);
+  `ConsumeScheduleRequest` is what production calls.
+- `81d13b7020` — `0d336e062b` made `ContainerSpec.TaskCacheIdentity` the only
+  thing that selects node-local cache storage. Four scenarios asserting where a
+  cache lands were silently getting emptyDirs.
+- `001cd0a974` — `65e1f31228` folded the daemon's two egress tar producers into
+  one, and the survivor emits a `TypeDir` header per directory.
+- `27ca45f79c` — the one **expectation change**. `559921ef96` made `lexicalRel`
+  the single computation of where a destination goes, and it answers `is not a
+  location inside the storage root` for a relative path of `.` exactly as for
+  `..`. Three assertions in `daemon-containment.feature` pinned the two older
+  strings (`resolves outside the storage root`, `is the storage root itself`).
+  The refusals, the 400s, the untouched files and the before-any-copy ordering
+  are all still asserted; only the wording moved, and the old string is still
+  asserted on the `/register` path in the same feature.
+
+## What the rebase could have invalidated: 463 rows classified
+
+Every deletion this branch made that a rebase could quietly hollow out — 62
+gc/lidar rows whose verdict removed a test, and all 401 deleted jetbridge tests
+— was classified against four criteria: **(a)** the recorded mutation target
+changed on core; **(b)** the named brine scenario or its step file changed;
+**(c)** a symbol either artefact reads changed; **(d)** a core commit touched
+the same behaviour.
+
+- **149 impacted**, 314 not.
+- By criterion (a row can trip several): (a) 26, (b) 125, (c) 92, (d) 16.
+- A completeness critic re-read all 463 afterwards and **flipped 30** rows from
+  not-impacted to impacted — 25 jetbridge, 5 gc/lidar — every one of them a case
+  where the classifier argued a change was inert instead of applying (b) as
+  written. All 30 were then measured.
+
+## Re-verification: 149 measured, 85 did not survive
+
+Each impacted row was re-measured from scratch in its own detached worktree:
+recorded mutation re-applied (or remapped and the remapping justified), brine
+run, the Go test restored from the merge-base and run, then handed to a skeptic
+whose job was to break the pairing with one honest mutation.
+
+| outcome | count |
+|---|---|
+| HOLDS | 64 |
+| REFUTED | 63 |
+| GAP | 19 |
+| INERT | 3 |
+| UNMEASURABLE | 0 |
+
+**REFUTED (63)** — a skeptic found an honest mutation that reddens the Go test
+while brine stays green:
+GL-064; JB-behavioral_permutations-000, -002, -003, -004, -006, -007, -009,
+-010, -011, -014, -017, -018; JB-behavioral_runtime_spec-007, -009, -031;
+JB-container-000, -002, -004, -005, -006, -007, -008, -009, -010, -015, -016,
+-022, -024, -025, -026, -028, -030, -035, -041, -042, -044, -045, -046, -052,
+-055, -056, -065, -066, -068; JB-integration-000, -011, -012; JB-process-023;
+JB-volume-000, -002, -003, -005, -006, -011, -014, -015, -016, -019, -021;
+JB-volume_daemonset-011, -012, -013.
+
+**GAP (19)** — the Go test reddens, brine does not, and brine owes a scenario:
+JB-behavioral_permutations-008, -016; JB-behavioral_runtime_spec-008;
+JB-container-018, -034, -038, -040, -062, -063, -067, -071, -072;
+JB-volume-004, -007, -009, -010, -013, -017, -020.
+
+**INERT (3)** — no mutation reddened the Go test at all; these are recorded as
+defects in the tests, not as coverage:
+JB-behavioral_runtime_spec-010, JB-container-011, JB-container-061.
+
+**UNMEASURABLE: none.** Every impacted row was measurable one way or the other.
+
+Per-row evidence lives in `DISPOSITION-gc-lidar.md` (the 11 gc/lidar rows) and
+`DISPOSITION-jetbridge.md` (the 138 jetbridge rows).
+
+## 85 tests restored
+
+Restoring is always acceptable; deleting on inference is not. Every row that did
+not end HOLDS got its test back.
+
+- `atc/lidar/scanner_test.go` — the GL-064 It, plus its helper
+  `attachLidarResourceScope` in `lidar_suite_test.go`. Ginkgo specs 21 -> 22.
+- `atc/worker/jetbridge/*_restored_test.go` — seven files, one per deleted file
+  the tests came from, each headed with the row ids and why they are back.
+  Ginkgo specs 19 -> 86 (+67), plain `Test` funcs 190 -> 207 (+17).
+- `atc/gc` unchanged at 84 specs: no gc row failed re-verification.
+
+Sibling tests whose evidence held were cut free cleanly in every case, so
+nothing was restored as a consequence of subtree restoration. Where the cut left
+a helper or a local with no caller it is marked `// PRUNE-ADAPT:`; where core's
+own fixture edits from `0d336e062b` ride along they are marked `// PORT-ADAPT:`.
+
+## Coverage ported from core (2026-09-04)
+
+Three commits — `ff25608c18`, `ae548d0cb6`, `27d81692fa` — put into brine what
+resolving the two modify/delete conflicts as deletions dropped:
+
+1. `assertAllPodMountsResolve` becomes a reusable step, `every mount in the pod
+   names exactly one of its volumes`, over the seven pod-shape scenarios that
+   assemble more than one kind of volume. It walks `InitContainers` too.
+2. A new scenario for the run-identity cache key, pinning the key **whole**
+   (`/var/concourse/cache/run-17-23-build-assets-34a6ec221a61`) so a change to
+   the hash CONTENT reddens it, not only a change to the key format.
+3. A new scenario for the downgrade: an explicit `CacheStore=hostpath` with no
+   `TaskCacheIdentity` still gets an emptyDir.
+
+Five of the six measurements were both-red; one was INERT and is recorded as
+INERT. Suite 566 -> 568 scenarios, all green. The honest limit: of the mount
+invariant's two halves, only the DUPLICATE half is new — a dangling mount was
+already caught by `volumeAt`. Full evidence in `DISPOSITION-jetbridge.md`.
+
+## CI
+
+Unchanged from the section above, *CI: how the private dependency is reached
+(2026-09-04)*. That section is the record: module-path replace, `GOPRIVATE`,
+the `brine` job manual until `((github-token))` is proven able to read
+`MarkDucommun/brine-private`, and the two-line promotion once it is.
+
+## What still owes a scenario
+
+The 19 GAP rows above. They cluster, and the clusters say what is missing:
+
+- **What a stream actually execs, and what it carries.** JB-volume-004, -009,
+  -013 pin the `tar` invocation, its container and its path; JB-volume-007, -010
+  pin the purpose and mount path in `ExecAttrs`. No scenario asserts either.
+- **That a returned `Volume` can stream at all.** JB-container-034, -038,
+  JB-volume-017, -020: brine asserts what a pod spec SAYS; it does not assert
+  that the `Volume` handed back to the engine has an executor wired up, nor
+  that data moves from one to another.
+- **Sidecar field mapping and exec-mode sidecars.** JB-container-067, -071, -072
+  — the K8s container spec a sidecar becomes, the pause-pod variant, and image
+  prefix stripping for sidecars.
+- **Concurrency.** JB-container-062, -063: brine has no way to say "two of these
+  at once".
+- **Negative and default cases.** JB-behavioral_permutations-008 (check
+  container volume set), -016 (no init containers without a DaemonSet),
+  JB-behavioral_runtime_spec-008 (`TTY=false` when `ProcessSpec.TTY` is nil),
+  JB-container-018 (explicit `CacheStore=emptydir`), -040 (input streaming is a
+  no-op because init containers do it).
+
+Until those exist, the restored Go tests are the only thing covering them, which
+is precisely why they are restored rather than deleted.
