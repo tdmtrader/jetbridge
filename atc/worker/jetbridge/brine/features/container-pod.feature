@@ -284,6 +284,30 @@ Feature: What a step's pod actually looks like
     Then the cache at "/tmp/build/workdir/.cache" is kept on the node under "/var/concourse/cache/job-7-compile-"
     And every mount in the pod names exactly one of its volumes
 
+  # The same rule for a step inside a materialized run. A run's pipeline is
+  # created for that run and dropped when it ends, so its job id is a new
+  # number every time; key a cache under it and the directory is empty on
+  # every run — the same silent failure as above, reached by another route.
+  # What two runs of the same job share is the team, the template the run was
+  # instanced from, and the job's name inside that template, so those are what
+  # the key is made of.
+  #
+  # The key is asserted whole, digest included, because the digest IS the
+  # cache's identity: a run finds its predecessor's work only at the exact
+  # path the predecessor wrote to. Change what goes into the hash and every
+  # cache directory on every node is orphaned at once, with no error anywhere
+  # and no symptom but builds that stopped getting faster.
+  @CO-07 @CF-04
+  Scenario: A run job's cache is keyed on the template it came from, not on its per-run pipeline
+    Given a jetbridge worker keeping caches on the node under "/var/concourse/cache"
+    And a task container "cache-run-identity-handle" built from image "docker:///busybox"
+    And it works in "/tmp/build/workdir"
+    And it belongs to run job "deploy-staging" of template pipeline 23 in team 17, step "build.assets"
+    And it caches "/work/cache"
+    When the container runs
+    Then the cache at "/work/cache" is kept on the node under "/var/concourse/cache/run-17-23-build-assets-34a6ec221a61"
+    And every mount in the pod names exactly one of its volumes
+
   # A one-off build (`fly execute`) has no job to key on, so there is nothing
   # stable to file a cache under and it falls back to ephemeral storage.
   @CO-07

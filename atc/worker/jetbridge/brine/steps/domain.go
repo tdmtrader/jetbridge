@@ -90,6 +90,14 @@ type ContainerDraft struct {
 	RequestEphemeral *uint64
 	JobID            int
 	StepName         string
+
+	// A materialized run job has no JobID of its own — its pipeline is
+	// created and destroyed per run — so it names itself by the template and
+	// the job name inside it, which are what stay the same from one run to
+	// the next.
+	RunJobName            string
+	RunTemplatePipelineID int
+	RunTeamID             int
 	Privileged       bool
 	Sidecars         []atc.SidecarConfig
 
@@ -117,7 +125,19 @@ type ContainerDraft struct {
 // reaches the decision at all. A draft that never said which job it belongs to
 // is a one-off build, which has no stable thing to key a cache under, so it
 // keeps getting nil and its cache keeps dying with the pod.
+//
+// A materialized run job takes the other arm. Its pipeline exists only for the
+// life of the run, so its JobID is new every time and would key a cache nobody
+// ever reads again; what persists is the template it came from and the job's
+// name within it.
 func (d ContainerDraft) taskCacheIdentity() *atc.TaskCacheIdentity {
+	if d.RunJobName != "" {
+		return &atc.TaskCacheIdentity{
+			TeamID:             d.RunTeamID,
+			TemplatePipelineID: d.RunTemplatePipelineID,
+			RunJobName:         d.RunJobName,
+		}
+	}
 	if d.JobID == 0 {
 		return nil
 	}

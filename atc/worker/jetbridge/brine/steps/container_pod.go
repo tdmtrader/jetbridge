@@ -715,6 +715,20 @@ func CacheStorageDefinitions() []brine.StepDefinition {
 				return in
 			}),
 
+		// The same sentence for a step inside a materialized run. A run's
+		// pipeline is created for the run and destroyed with it, so its JobID
+		// is a different number every time and names nothing that outlives the
+		// build. The team, the template it was instanced from and the job's
+		// name within that template are what two runs of the same job share.
+		Refine[ContainerDraft]("it belongs to run job {string} of template pipeline {int} in team {int}, step {string}",
+			func(in ContainerDraft, a Args) ContainerDraft {
+				in.RunJobName = a.String(0)
+				in.RunTemplatePipelineID = a.Int(1)
+				in.RunTeamID = a.Int(2)
+				in.StepName = a.String(3)
+				return in
+			}),
+
 		// Keeps its own body: it pins three separate properties, and each
 		// failure explains the rule it broke — survives the pod, filed under a
 		// stable key, created when absent.
