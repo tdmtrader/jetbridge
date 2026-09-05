@@ -185,7 +185,7 @@ jobs:
           mount -t tmpfs -o size=8G tmpfs /var/lib/docker 2>/dev/null || true
           # --dns=8.8.8.8 ensures nested containers (K3s) can resolve
           # external hostnames for pulling system images (CoreDNS, etc.)
-          /usr/local/bin/dockerd --host=unix:///var/run/docker.sock \
+          /usr/local/bin/dockerd --host=unix:///var/run/docker.sock --mtu=1450 \
                   --dns=8.8.8.8 \
                   --log-level=warn &
           DOCKERD_PID=$!
@@ -292,7 +292,7 @@ jobs:
           mount -t tmpfs -o size=8G tmpfs /var/lib/docker 2>/dev/null || true
           # --dns=8.8.8.8 ensures nested containers (K3s) can resolve
           # external hostnames for pulling system images (CoreDNS, etc.)
-          /usr/local/bin/dockerd --host=unix:///var/run/docker.sock \
+          /usr/local/bin/dockerd --host=unix:///var/run/docker.sock --mtu=1450 \
                   --dns=8.8.8.8 \
                   --log-level=warn &
           DOCKERD_PID=$!
