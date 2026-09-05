@@ -428,3 +428,36 @@ And `atc/api`'s worth-it figure is **zero**: 379 of its 640 movable Its are
 3.15-line status assertions, and its 255-row authorization table is reddened
 ~150 rows at a time by deleting a single wrapper — coverage that discriminates
 once.
+
+
+# CI: how the private dependency is reached (2026-09-04)
+
+The replace line is a module path now, not a directory:
+
+    replace github.com/brine-dev/brine-go =>
+      github.com/MarkDucommun/brine-private/runners/implementations/go v0.0.0-20260823044001-8289e541f77b
+
+It used to point at `/Users/tdmtrader/brine-private/...`, so every number above
+was reproducible on exactly one laptop. The new form needs
+`GOPRIVATE=github.com/MarkDucommun/*` — keeping the request off proxy.golang.org
+and the checksum database — plus a git credential for github.com: the osxkeychain
+helper locally, a `url.insteadOf` rewrite carrying `((github-token))` in CI.
+
+Not vendoring, and that is a decision rather than an omission: this repository's
+origin is public, and core commit e005b84563 already refused to bake someone
+else's private source into artefacts this repository ships.
+
+The pseudo-version pins brine-private 8289e541 — the revision
+`registry.home/concourse-test-runner:v9` records in `/etc/brine-commit`, having
+built the `brine` CLI and engine it carries from it. Adapter and engine cannot
+drift apart. v9 also brings Go 1.25.14 (this module's `go` directive is 1.25.6,
+so no toolchain download), `GOPRIVATE` preset, and a warm root module cache.
+
+The pipeline's `brine` job runs the CLI, never `adapter run`: the adapter without
+`--features` executes zero scenarios and exits 0, and only the CLI's verdict
+folds in `budgets.undefined: 0` and unsatisfied wiring. The job is deliberately
+manual — no `trigger: true` on its get, no downstream `passed: [brine]` — because
+of the single thing no laptop can check: **whether `((github-token))` can read
+`MarkDucommun/brine-private`.** Everything else was verified against a fresh
+`GOMODCACHE`. Promotion after one green manual run is two lines: add
+`trigger: true`, and add `brine` to tag-rc's `passed:` list.
