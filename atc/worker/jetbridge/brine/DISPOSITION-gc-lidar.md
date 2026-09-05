@@ -9,7 +9,9 @@ Verdicts: DELETED = both-red, survived refutation, removed.
 REFUTED = a skeptic broke the pairing; the test STAYS.
 GAP = the Go test reddens and brine does not; the test STAYS and brine owes a scenario.
 INERT = no mutation reddened it; the test STAYS, recorded as a defect in the existing suite.
-BRINE_STRONGER = brine discriminates where the Go test does not; removed.
+DELETED (brine stronger) = brine discriminates where the Go test does not;
+removed. (This is the tag as it appears on the rows below. An earlier draft of
+this legend called the verdict BRINE_STRONGER; the tag is the name.)
 
 Verdict counts, 108 rows: DELETED 57, DELETED (brine stronger) 4, REFUTED 25,
 GAP 18, INERT 4. (Was DELETED 58 / REFUTED 24 before 2026-09-05; GL-064 moved.)
@@ -20,9 +22,10 @@ This branch was rebased onto `core` (74 commits replayed). Every row here was
 classified for rebase impact against the four criteria the owner set: (a) the
 recorded mutation target changed on core, (b) the named brine scenario or its
 step file changed, (c) a symbol either artefact reads changed, (d) a core commit
-touched the same behaviour. Only the 62 rows whose verdict removed a test
-(58 DELETED + 4 BRINE_STRONGER) were in scope — a REFUTED, GAP or INERT row
-already keeps its test, so nothing about it can be made worse by the rebase.
+touched the same behaviour. Only the 62 rows whose verdict removed a test —
+58 `DELETED` plus 4 `DELETED (brine stronger)` — were in scope; a REFUTED, GAP
+or INERT row already keeps its test, so nothing about it can be made worse by
+the rebase.
 
 **11 of those 62 came out impacted and were re-measured from scratch**, each in
 its own detached worktree, mutation re-applied and both artefacts re-run. Their

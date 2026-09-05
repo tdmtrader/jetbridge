@@ -521,31 +521,53 @@ the same behaviour.
 
 Each impacted row was re-measured from scratch in its own detached worktree:
 recorded mutation re-applied (or remapped and the remapping justified), brine
-run, the Go test restored from the merge-base and run, then handed to a skeptic
-whose job was to break the pairing with one honest mutation.
+run, the Go test restored from the merge-base and run.
+
+**129 of the 149 were then handed to a skeptic** whose job was to break the
+pairing with one honest mutation. The other 20 were not. A skeptic can only move
+a row against the branch, and those 20 were already there: 17 the verifier had
+called GAP and 3 it had called INERT, all of which restore their test whatever a
+skeptic finds. Every row whose verifier verdict would have left a test deleted —
+all 129 of them — got one, which is the safe direction. The 20 without one are
+`JB-behavioral_permutations-016`, `JB-behavioral_runtime_spec-008`,
+`JB-container-018`, `-034`, `-038`, `-040`, `-062`, `-063`, `-067`, `-071`,
+`-072`, `JB-volume-004`, `-007`, `-009`, `-010`, `-013`, `-017`, `-020` (GAP)
+and `JB-behavioral_runtime_spec-010`, `JB-container-011`, `JB-container-061`
+(INERT). Their rows say `skeptic: not reached`.
 
 | outcome | count |
 |---|---|
 | HOLDS | 64 |
-| REFUTED | 63 |
-| GAP | 19 |
+| REFUTED | 61 |
+| GAP | 21 |
 | INERT | 3 |
 | UNMEASURABLE | 0 |
 
-**REFUTED (63)** — a skeptic found an honest mutation that reddens the Go test
+**REFUTED (61)** — a skeptic found an honest mutation that reddens the Go test
 while brine stays green:
 GL-064; JB-behavioral_permutations-000, -002, -003, -004, -006, -007, -009,
--010, -011, -014, -017, -018; JB-behavioral_runtime_spec-007, -009, -031;
+-010, -011, -014, -018; JB-behavioral_runtime_spec-007, -009, -031;
 JB-container-000, -002, -004, -005, -006, -007, -008, -009, -010, -015, -016,
 -022, -024, -025, -026, -028, -030, -035, -041, -042, -044, -045, -046, -052,
 -055, -056, -065, -066, -068; JB-integration-000, -011, -012; JB-process-023;
 JB-volume-000, -002, -003, -005, -006, -011, -014, -015, -016, -019, -021;
-JB-volume_daemonset-011, -012, -013.
+JB-volume_daemonset-011, -013.
 
-**GAP (19)** — the Go test reddens, brine does not, and brine owes a scenario:
-JB-behavioral_permutations-008, -016; JB-behavioral_runtime_spec-008;
+**GAP (21)** — the Go test reddens, brine does not, and brine owes a scenario:
+JB-behavioral_permutations-008, -016, -017; JB-behavioral_runtime_spec-008;
 JB-container-018, -034, -038, -040, -062, -063, -067, -071, -072;
-JB-volume-004, -007, -009, -010, -013, -017, -020.
+JB-volume-004, -007, -009, -010, -013, -017, -020;
+JB-volume_daemonset-012.
+
+Two of those 21 arrived by a route worth naming, because an earlier draft of
+this file and of `DISPOSITION-jetbridge.md` had them as REFUTED.
+`JB-behavioral_permutations-017` and `JB-volume_daemonset-012` are the two rows
+where the skeptic's `refuted` flag is true — a mutation did break the
+verifier's pairing — but the skeptic's own final verdict is **GAP**, because the
+behaviour the mutation exposed is not covered by any brine scenario anywhere.
+The counts were derived from the flag rather than from the verdict, and the
+flag is the weaker of the two: REFUTED and GAP both restore the test, but only
+GAP says brine still owes something. Corrected here and in the per-row file.
 
 **INERT (3)** — no mutation reddened the Go test at all; these are recorded as
 defects in the tests, not as coverage:
@@ -601,7 +623,7 @@ the `brine` job manual until `((github-token))` is proven able to read
 
 ## What still owes a scenario
 
-The 19 GAP rows above. They cluster, and the clusters say what is missing:
+The 21 GAP rows above. They cluster, and the clusters say what is missing:
 
 - **What a stream actually execs, and what it carries.** JB-volume-004, -009,
   -013 pin the `tar` invocation, its container and its path; JB-volume-007, -010
@@ -620,6 +642,19 @@ The 19 GAP rows above. They cluster, and the clusters say what is missing:
   JB-behavioral_runtime_spec-008 (`TTY=false` when `ProcessSpec.TTY` is nil),
   JB-container-018 (explicit `CacheStore=emptydir`), -040 (input streaming is a
   no-op because init containers do it).
+- **Exactness, as opposed to membership.** JB-behavioral_permutations-017: the
+  Go test pins the pod's mount COUNT, and brine's mount steps are all
+  membership — "the step sees a volume mounted at X", and a name-based
+  resolution check that a duplicate mount satisfies. Duplicating every input's
+  mount is Go-red and green across all 44 container-pod scenarios and the one
+  exact count in `step-integration.feature`, which counts a different
+  implementation's mounts.
+- **That the peer probe actually RAN.** JB-volume_daemonset-012: the fallback's
+  refused-producer scenario gives the "peer" the same closed port as the
+  producer, so deleting the probe leaves every observable identical, and the
+  mirror handler answers HEAD and GET alike, so turning the probe into a full
+  body fetch is invisible too. Closing it needs a peer that is UP and answers
+  404, and a way to tell a HEAD from a GET.
 
 Until those exist, the restored Go tests are the only thing covering them, which
 is precisely why they are restored rather than deleted.

@@ -58,6 +58,26 @@ A row marked NOT IMPACTED is a claim about the REBASE, not a re-endorsement of
 its original evidence. Where that evidence was per-file, it is still per-file,
 and this file says so on every such row.
 
+Across both disposition files the 149 re-measured rows end HOLDS 64, REFUTED
+61, GAP 21, INERT 3 — of which 138 are the jetbridge rows below (HOLDS 54,
+REFUTED 60, GAP 21, INERT 3) and 11 are in `DISPOSITION-gc-lidar.md`.
+
+**Correction, 2026-09-05.** Two rows were published here as REFUTED and are
+GAP: `JB-behavioral_permutations-017` and `JB-volume_daemonset-012`. In both,
+the skeptic's mutation did break the verifier's pairing — so the mechanical
+"refuted" flag on the record is true — but the skeptic's own final verdict was
+GAP, because the behaviour the mutation exposed is covered by no brine scenario
+at all. The tags were derived from the flag instead of the verdict. Both
+verdicts restore the test, so nothing about the branch's contents changes; what
+changes is the debt, because a GAP says brine still owes a scenario and a
+REFUTED does not. Both are now in the owed inventory in `MIGRATION-EVIDENCE.md`.
+
+129 of the 149 rows were handed to a skeptic. The 20 that were not are the 17
+the verifier already called GAP and the 3 it already called INERT: those keep
+their test whatever a skeptic finds, so the adversarial pass could only have
+been redundant. Every row whose verifier verdict would have left a test deleted
+got one. Rows in that group read `skeptic: not reached`.
+
 
 ## artifact_locator_test.go
 
@@ -366,10 +386,10 @@ Restored tests from this file live in `atc/worker/jetbridge/behavioral_permutati
   - re-verified 2026-09-05 (rebase onto core): GAP — mutation atc/worker/jetbridge/container.go, (*Container).buildArtifactInitContainers (line 515-519 on core 27d81692fa):; brine GREEN: none — 44 scenario_end events, all status "passed", under the recorded mutation. Re-run under the sharper variant (a spurious `probe-init` init container injected into every no-storage-backend pod):…; go RED: behavioral_permutations_test.go:904: expected nil init containers in non-DaemonSet mode, got 0 --- FAIL: TestBuildArtifactInitContainers_NoDaemonSet_ReturnsNil (0.00s) FAIL github.com/concourse/conco…; skeptic: not reached — the verifier stopped at GAP
   - **the test is restored** — `atc/worker/jetbridge/behavioral_permutations_restored_test.go`
 
-**[REFUTED]** TestBuildVolumeMounts_EmptyDirMode_AllEmptyDir  `JB-behavioral_permutations-017`
+**[GAP]** TestBuildVolumeMounts_EmptyDirMode_AllEmptyDir  `JB-behavioral_permutations-017`
   - recorded evidence: PER-FILE (deletion commit `6d2589a43a`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c) conflict file and rule (b) container-pod.feature step churn. It runs with no storage backend and no caches, so neither the cache-mode narrowing (0d336e062b) nor the capability signing (1e023e7ca4) can reach it — (a) and (d) do not apply.
-  - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/container.go :: (*Container).buildVolumeMounts — input loop (line 943 on 27d81692fa), skip the last input:; brine RED: Then the pod has 3 volumes (line 22) — status "failed", error: expected 3 volumes, found 2: [dir-0 input-1]; go RED: behavioral_permutations_test.go:928: expected 3 volumes, got 2 --- FAIL: TestBuildVolumeMounts_EmptyDirMode_AllEmptyDir (0.00s); skeptic: Ran four attacks: (1) red-by-adaptation control, (2) unrelated/flaky brine red control, (3) reproduce the recorded mutation, (4) narrower mutations isolating each of the deleted test's three claims —… → REFUTED (the pairing broke)
+  - re-verified 2026-09-05 (rebase onto core): GAP — mutation atc/worker/jetbridge/container.go :: (*Container).buildVolumeMounts — input loop (line 943 on 27d81692fa), skip the last input:; brine RED: Then the pod has 3 volumes (line 22) — status "failed", error: expected 3 volumes, found 2: [dir-0 input-1]; go RED: behavioral_permutations_test.go:928: expected 3 volumes, got 2 --- FAIL: TestBuildVolumeMounts_EmptyDirMode_AllEmptyDir (0.00s); skeptic: Ran four attacks: (1) red-by-adaptation control, (2) unrelated/flaky brine red control, (3) reproduce the recorded mutation, (4) narrower mutations isolating each of the deleted test's three claims. Attacks 1-3 failed. Attack 4 split the test: the ephemerality claim IS independently both-red (closing the verifier's declared honest limit), but the MOUNT-COUNT claim is not covered anywhere — duplicating each input's VolumeMount is Go-red (`expected 3 mounts, got 4`) and leaves all 44 container-pod scenarios green, and `step-integration.feature`'s one exact mount count is over a parallel implementation in worker.go → GAP (the pairing broke on a claim no brine scenario owns)
   - **the test is restored** — `atc/worker/jetbridge/behavioral_permutations_restored_test.go`
 
 **[REFUTED]** TestBuildVolumeMounts_RelativeScratchPath  `JB-behavioral_permutations-018`
@@ -1148,6 +1168,7 @@ Restored tests from this file live in `atc/worker/jetbridge/container_restored_t
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): it migrated to container-run.feature 'An intercepted command's exit code reaches the operator', and container-run.feature's draft-to-ContainerSpec builder changed in the rebase (steps/container_extra.go, steps/domain.go).
   - re-verified 2026-09-05 (rebase onto core): HOLDS — mutation atc/worker/jetbridge/process.go, func (*execProcess).Wait — the ExecExitError branch (now line 959 on 27d81692fa; recorded as line 758 at the merge-base):; brine RED: Then the intercepted command exits 130 (line 201) — status "failed", error: `the interception failed: process exited with code 130`. Baseline (mutation reverted, adapter rebuilt): same scenario statu…; go RED: container_test.go:2030 — `Expect(err).ToNot(HaveOccurred())` after `result, err := process.Wait(ctx)`: [FAILED] Unexpected error: <*jetbridge.ExecExitError | 0x1400059a400>: process exited with code…; skeptic: Three attacks run, all failed to refute: (1) NARROWER MUTATION, value clause only — `return runtime.ProcessResult{}, nil` (exit code swallowed, error still nil), to test whether brine pins the NUMBER… → HOLDS
+  - correction to the recorded brine command note: it read `(exit 1 mutated; exit 1 baseline)`, which contradicts the baseline line above — the baseline scenario PASSED. What was measured is `exit 1 mutated; baseline green`. Mutated, `container-run.feature` is 17 of 19: the target scenario plus its exit-code neighbour "A failed step's pod is kept for the operator". Unmutated, the target passes and the suite is 568/568; the verifier's baseline exit 1 was one unrelated scenario ("A step's output can be read back out of the volume afterwards"), which the skeptic saw pass in two of three later runs and judged environmental. The verdict does not move: the target's red is mutation-caused either way.
 
 **[DELETED]** Container Run replaces terminal pod replaces a Succeeded pod with a new pause pod  `JB-container-048`
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
@@ -1825,10 +1846,10 @@ Restored tests from this file live in `atc/worker/jetbridge/volume_daemonset_res
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/volume_daemonset.go :: (*DaemonSetVolume).fetchArtifactWithPeerFallback — recorded mutation applied verbatim (3 inserted lines after the `if fetchErr == nil && resp.StatusCode ==…; brine RED: Then the artifact "release.tgz" containing "mirrored to a peer" is there -> status failed, error: reading the volume failed: Get "http://127.0.0.1:56813/artifacts/step-output": EOF (scenario_end: sta…; go RED: volume_daemonset_test.go:511: expected fallback to peer to succeed, got: Get "http://10.0.0.1:7780/artifacts/h/o": connection refused: 10.0.0.1:7780 --> --- FAIL: TestDaemonSetVolume_StreamOut_FallsB…; skeptic: different-behaviour pairing, attacked with a narrower honest mutation (plus red-by-adaptation and unrelated-brine-red controls) → REFUTED (the pairing broke)
   - **the test is restored** — `atc/worker/jetbridge/volume_daemonset_restored_test.go`
 
-**[REFUTED]** TestDaemonSetVolume_StreamOut_FallsBack_PreservesNotFoundOnProbeMiss  `JB-volume_daemonset-012`
+**[GAP]** TestDaemonSetVolume_StreamOut_FallsBack_PreservesNotFoundOnProbeMiss  `JB-volume_daemonset-012`
   - recorded evidence: PER-FILE (deletion commit `5be07a572c`; nothing names this test alone)
   - rebase impact: IMPACTED (b) — [CRITIC REVISION → impacted by rule (b)] Same (b) collision: the 'or any peer' evidence is a volume-streaming.feature gap-closing scenario, and that feature is in features_affected. || original reason: The "or any peer" error text and the probe-actually-ran assertion sit in fetchArtifactWithPeerFallback and DaemonClie…
-  - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/volume_daemonset.go : func (*DaemonSetVolume) fetchArtifactWithPeerFallback — the probe-miss error message (line 328, inside `if !found {` after `ProbeStepArtifact`) replaced by…; brine RED: And the failure names the node and its peers rather than the refused connection (line 205) — error: expected the failure to say the artifact was on neither the node nor any peer — which is the only t…; go RED: volume_daemonset_test.go:556: error should not be raw connection-refused after fallback; got: fetch artifact from http://10.0.0.1:7780/artifacts/h/o: Get "http://10.0.0.1:7780/artifacts/h/o": connect…; skeptic: Ran four attacks: (1) red-by-adaptation, (2) unrelated/flaky brine red, (3) different-behaviour pairing via a NARROWER mutation that breaks only the Go assertion, (4) assertion-not-covered — two muta… → REFUTED (the pairing broke)
+  - re-verified 2026-09-05 (rebase onto core): GAP — mutation atc/worker/jetbridge/volume_daemonset.go : func (*DaemonSetVolume) fetchArtifactWithPeerFallback — the probe-miss error message (line 328, inside `if !found {` after `ProbeStepArtifact`) replaced by…; brine RED: And the failure names the node and its peers rather than the refused connection (line 205) — error: expected the failure to say the artifact was on neither the node nor any peer — which is the only t…; go RED: volume_daemonset_test.go:556: error should not be raw connection-refused after fallback; got: fetch artifact from http://10.0.0.1:7780/artifacts/h/o: Get "http://10.0.0.1:7780/artifacts/h/o": connect…; skeptic: Ran four attacks: (1) red-by-adaptation, (2) unrelated/flaky brine red, (3) different-behaviour pairing via a NARROWER mutation that breaks only the Go assertion, (4) assertion-not-covered — two mutations aimed at the test's SECOND assertion (that the peer probe actually ran), which the verifier skipped. Attacks 1-3 failed — the error-text pairing is genuine. Attack 4 succeeded: deleting the probe, and turning its HEAD into a GET, each redden the Go test while volume-streaming.feature (20/20) and artifact-daemon.feature (25/25) stay green, because the refused-producer scenario gives the peer the same closed port as the producer and the mirror handler answers HEAD and GET alike → GAP (the pairing broke on a claim no brine scenario owns)
   - **the test is restored** — `atc/worker/jetbridge/volume_daemonset_restored_test.go`
 
 **[REFUTED]** TestDaemonSetVolume_StreamOut_HappyPath_PerformsZeroPeerProbes  `JB-volume_daemonset-013`
@@ -2026,7 +2047,18 @@ into brine instead, each measured both-red before it was committed.
 
 ### Both-red evidence for each
 
-**[BOTH_RED]** row 1
+These six rows carry ids `JB-worker-037` .. `JB-worker-042`. They continue the
+numbering of `worker_test.go` above only because they are the last rows in this
+file; they are NOT worker_test.go tests, and they are NOT part of the 401-row
+deletion inventory, which ends at `JB-worker-036`. Each is a MEASUREMENT taken
+to justify a brine addition — a named production mutation run against core's
+own It (or an existing branch test) and against the brine scenario written to
+replace it — so its verdict is `BOTH_RED` or `INERT` rather than DELETED /
+REFUTED / GAP, and no test was deleted on any of them. A reconciler counting
+deleted tests should exclude all six; one auditing the ported coverage should
+read exactly these six.
+
+**[BOTH_RED]** ported coverage: every pod mount names exactly one volume (the duplicate half)  `JB-worker-037`
   - go test: Container / Run with cache hostPath configured / when CacheHostPath is set / It uses hostPath volumes with stable keys for caches — the It that 0d336e062b added `assertAllPodMountsResolve(pod)` to
   - source: core revision 5133d0ddbc, atc/worker/jetbridge/container_test.go (the file the rebase resolved as a delete). Copied verbatim, together with assertAllPodMountsResolve, into a TEMPORARY atc/worker/jetbridge/zz_port_probe_test.go under Describe("PortProbe Container"); deleted after measurement, never committed (`ls atc/w…
   - mutation: atc/worker/jetbridge/container.go:(*Container).buildVolumeMounts — in the standalone CacheHostPath cache arm (the `else` branch of `case CacheStoreHostPath:`), one line inserted after the cache VolumeMount append: `volumes = append(volumes, volumes[len(volumes)-1]) // MUTATION M1`. The cache volume NAME is now declared twice; every mount still resolves by lookup, and the pod is rejected by the API server.
@@ -2034,7 +2066,7 @@ into brine instead, each measured both-red before it was committed.
   - brine scenario: container-pod.feature — "A cache is kept on the node, under a key stable across builds" (and, same mutation, "A run job's cache is keyed on the template it came from, not on its per-run pipeline")
   - brine: RED. run_end 44 scenarios, 42 passed, 2 failed. `Step FAILED: And every mount in the pod names exactly one of its volumes` / `error: container "main" mounts volume "cache-1" at "/tmp/build/workdir/.cache", and the pod declares 2 volumes by that name` (second scenario: `... at "/work/cache", and the pod declares 2 volumes by that name`). DISCRIMINATION: the preceding step `Then the cache at "/tmp/build/workdir/.cache…
 
-**[BOTH_RED]** row 2
+**[BOTH_RED]** ported coverage: a run job's cache key SHAPE  `JB-worker-038`
   - go test: TestDaemonSetMode_CachesAreDirectHostPath; TestDaemonSetBackend_CacheVolume_UsesRunIdentityInsteadOfEphemeralIDs
   - source: Already present on the branch — atc/worker/jetbridge/daemonset_integration_test.go:556 and atc/worker/jetbridge/storage_daemonset_test.go:194. No restore needed: the run arm of the key was never covered by the deleted container_test.go, which only ever exercised the JobID arm. Measured in place with `go test -count=1…
   - mutation: atc/worker/jetbridge/container.go:stableCacheKey — the run arm's return, `return fmt.Sprintf("run-%d-%d-%s-%s", identity.TeamID, identity.TemplatePipelineID, safe, hash)` -> `return fmt.Sprintf("job-%d-%s-%s", identity.JobID, safe, hash) // MUTATION M2a`. A run job's cache is filed under the ordinary-job key shape with a JobID of 0, so every run job in the cluster shares one directory.
@@ -2042,7 +2074,7 @@ into brine instead, each measured both-red before it was committed.
   - brine scenario: container-pod.feature — "A run job's cache is keyed on the template it came from, not on its per-run pipeline"
   - brine: RED. run_end 44 scenarios, 43 passed, 1 failed. `Step FAILED: Then the cache at "/work/cache" is kept on the node under "/var/concourse/cache/run-17-23-build-assets-34a6ec221a61"` / `error: expected the cache filed under "/var/concourse/cache/run-17-23-build-assets-34a6ec221a61" so the next build finds it; it is at "/var/concourse/cache/job-0-build-assets-34a6ec221a61"`.
 
-**[BOTH_RED]** row 3
+**[BOTH_RED]** ported coverage: a run job's cache key HASH INPUT  `JB-worker-039`
   - go test: TestDaemonSetMode_CachesAreDirectHostPath; TestDaemonSetBackend_CacheVolume_UsesRunIdentityInsteadOfEphemeralIDs
   - source: Already present on the branch — atc/worker/jetbridge/daemonset_integration_test.go:556 and atc/worker/jetbridge/storage_daemonset_test.go:194. Measured in place.
   - mutation: atc/worker/jetbridge/container.go:stableCacheKey — the run arm's HASH INPUT, `fmt.Fprintf(h, "run-task-cache/v1\x00%d\x00%d\x00%s\x00%s\x00%s", identity.TeamID, identity.TemplatePipelineID, identity.RunJobName, stepName, cachePath)` -> `fmt.Fprintf(h, "%d\x00%s\x00%s", identity.JobID, stepName, cachePath) // MUTATION M2b`. The key KEEPS its run- shape and its team/template segments; only the digest changes, so two d…
@@ -2050,7 +2082,7 @@ into brine instead, each measured both-red before it was committed.
   - brine scenario: container-pod.feature — "A run job's cache is keyed on the template it came from, not on its per-run pipeline"
   - brine: RED. run_end 44 scenarios, 43 passed, 1 failed. `Step FAILED: Then the cache at "/work/cache" is kept on the node under "/var/concourse/cache/run-17-23-build-assets-34a6ec221a61"` / `error: expected the cache filed under "/var/concourse/cache/run-17-23-build-assets-34a6ec221a61" so the next build finds it; it is at "/var/concourse/cache/run-17-23-build-assets-44750e2ea35a"`.
 
-**[BOTH_RED]** row 4
+**[BOTH_RED]** ported coverage: an explicit hostpath cache store downgrades without an identity  `JB-worker-040`
   - go test: Container / Run with cache hostPath configured / when CacheHostPath is set but JobID is 0 (one-off build) / It falls back to emptyDir for one-off builds — the It 0d336e062b turned into the downgrade test by adding `cfgWithHostPath.CacheStore = jetbridge.Cache…
   - source: core revision 5133d0ddbc, atc/worker/jetbridge/container_test.go. Copied verbatim into the TEMPORARY atc/worker/jetbridge/zz_port_probe_test.go; deleted after measurement, never committed.
   - mutation: atc/worker/jetbridge/container.go:(*Container).buildVolumeMounts — the downgrade block `if cacheMode == CacheStoreHostPath && c.containerSpec.TaskCacheIdentity == nil { cacheMode = CacheStoreEmptyDir }` with its body replaced by `c.containerSpec.TaskCacheIdentity = &atc.TaskCacheIdentity{} // MUTATION M3`. The downgrade never happens: a keyless step keeps node-local storage and is filed under the degenerate key run-…
@@ -2058,7 +2090,7 @@ into brine instead, each measured both-red before it was committed.
   - brine scenario: container-pod.feature — "An explicit node-local cache store is refused a step with nothing to key on"
   - brine: RED, and isolated. run_end 44 scenarios, 43 passed, 1 failed. `Step FAILED: Then the volume mounted at "/tmp/build/workdir/.cache" is lost with the pod` / `error: expected the volume at "/tmp/build/workdir/.cache" to be ephemeral, it is node-local storage`. No other scenario moved: the existing one-off scenario reaches EmptyDir by auto-detect rather than by the downgrade, so this mutation touches only the new scenar…
 
-**[INERT]** row 5
+**[INERT]** ported coverage: the identity gate on the two auto-detect cache arms  `JB-worker-041`
   - go test: Container / Run with cache hostPath configured — BOTH Its (uses hostPath volumes with stable keys for caches; falls back to emptyDir for one-off builds)
   - source: core revision 5133d0ddbc, atc/worker/jetbridge/container_test.go, in the TEMPORARY zz_port_probe_test.go (deleted after measurement).
   - mutation: atc/worker/jetbridge/container.go:(*Container).buildVolumeMounts — THE IDENTITY GATE REMOVED, i.e. the `&& c.containerSpec.TaskCacheIdentity != nil` conjunct deleted from both auto-detect cases: `case c.storageBackend != nil && len(resolvedCaches) > 0 && c.containerSpec.TaskCacheIdentity != nil:` -> `case c.storageBackend != nil && len(resolvedCaches) > 0:` and `case c.config.CacheHostPath != "" && c.containerSpec.T…
@@ -2066,7 +2098,7 @@ into brine instead, each measured both-red before it was committed.
   - brine scenario: container-pod.feature (all 44, including the four described-cache scenarios 81d13b70 repaired) and artifact-recording.feature — "A task cache is not filed among the step data the daemon sweeps"
   - brine: GREEN. container-pod.feature run_end `44 scenarios, 44 passed, 0 failed`; artifact-recording.feature run_end `22 scenarios, 22 passed, 0 failed`. No step moved.
 
-**[BOTH_RED]** row 6
+**[BOTH_RED]** ported coverage: an identity can still select node-local cache storage  `JB-worker-042`
   - go test: Container / Run with cache hostPath configured / when CacheHostPath is set / It uses hostPath volumes with stable keys for caches
   - source: core revision 5133d0ddbc, atc/worker/jetbridge/container_test.go, in the TEMPORARY zz_port_probe_test.go (deleted after measurement).
   - mutation: atc/worker/jetbridge/container.go:(*Container).buildVolumeMounts — the downgrade's guard widened to fire for every step: `if cacheMode == CacheStoreHostPath && c.containerSpec.TaskCacheIdentity == nil {` -> `if cacheMode == CacheStoreHostPath { // MUTATION M5`. The ContainerSpec's identity can no longer select node-local cache storage at all. This is the regression the rebase's identity fix 81d13b70 exists for, expr…
@@ -2081,7 +2113,7 @@ green with no probe file present.
 One honest limit, recorded rather than buried: the mount invariant has two
 halves and only the DUPLICATE half is new coverage. A DANGLING mount was
 already caught by `volumeAt`, which answers `mount %q names volume %q, which
-the pod does not define`. Row 1 therefore uses a duplicate-volume mutation and
-the discrimination was checked explicitly: under it the preceding
+the pod does not define`. `JB-worker-037` therefore uses a duplicate-volume
+mutation, and the discrimination was checked explicitly: under it the preceding
 cache-location assertion PASSED and only the new step failed.
 
