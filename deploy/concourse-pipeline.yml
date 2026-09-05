@@ -149,6 +149,66 @@ jobs:
           go test -v -count=1 -timeout 5m ./atc/worker/jetbridge/...
           echo "=== All jetbridge tests passed ==="
 
+# The brine suite: 566 scenarios across 35 feature files, driven by the Rust
+# CLI in `--mode sync` against the jetbridge adapter built from
+# atc/worker/jetbridge/brine. The CLI's verdict is the one that counts -- it
+# folds in the manifest's `budgets.undefined: 0` and any unsatisfied wiring,
+# neither of which the adapter's own exit code can see. v9 already ships
+# /usr/local/bin/brine and its engine, built from the same brine-private
+# revision this module's replace pins.
+#
+# MANUAL UNTIL THE CREDENTIAL IS CONFIRMED. That replace fetches brine-go from
+# github.com/MarkDucommun/brine-private, a private repository this project does
+# not own. Whether ((github-token)) can read it has never been tested, and a
+# token that cannot would turn the pipeline red on the module fetch before a
+# single scenario ran. So this job's get has no `trigger: true`, and no job
+# downstream carries `passed: [brine]`. It starts only when a person starts it,
+# and the only build it can redden is its own.
+#
+# PROMOTION, once one manual run is green: add `trigger: true` to this job's
+# get, and add `brine` to the `passed:` list on tag-rc's get. Two lines.
+- name: brine
+  serial: true
+  serial_groups: [pipeline]
+  plan:
+  - get: repo
+    params: {depth: 1}
+    passed: [unit-tests]
+  - task: brine-suite
+    timeout: 30m
+    attempts: 2
+    config:
+      platform: linux
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v9
+      inputs:
+      - name: repo
+      params:
+        GITHUB_TOKEN: ((github-token))
+        GOPRIVATE: github.com/MarkDucommun/*
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          # GOPRIVATE (above, and baked into v9) keeps the fetch off
+          # proxy.golang.org and the checksum database. It does not
+          # authenticate anything -- this rewrite does.
+          git config --global \
+            url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf \
+            "https://github.com/"
+
+          cd repo/atc/worker/jetbridge/brine
+
+          # Rebuild the adapter every time. The CLI executes this binary, not
+          # the sources next to it, so a stale one silently tests old steps.
+          go build -o .build/brine-adapter-jetbridge ./cmd/brine-adapter-jetbridge
+          go vet ./...
+
+          # Run through the CLI, never `adapter run` -- the adapter without
+          # --features executes zero scenarios and exits 0, which is a green
+          # build that tested nothing.
+          brine run --mode sync
+
 - name: tag-rc
   serial_groups: [pipeline]
   plan:
