@@ -6,9 +6,11 @@ package jetbridge_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -54,16 +56,72 @@ func runLive(m *testing.M) int {
 	return code
 }
 
+// liveDBs hands each test exactly one database for its whole lifetime. The
+// runner names the test database once ("testdb"), so a test that asks twice —
+// TestLiveTaskResume builds two webs over one schema — must get the same
+// connection back, not a second CREATE DATABASE that fails on the first.
+var (
+	liveDBsMu sync.Mutex
+	liveDBs   = map[*testing.T]db.DbConn{}
+)
+
 func useLiveJetbridgeDB(t *testing.T) jetbridgeDB {
 	t.Helper()
-	livePostgresRunner.CreateTestDBFromTemplate()
-	t.Cleanup(livePostgresRunner.DropTestDB)
-	conn := livePostgresRunner.OpenConn()
-	t.Cleanup(func() { _ = conn.Close() })
+
+	liveDBsMu.Lock()
+	defer liveDBsMu.Unlock()
+
+	conn, ok := liveDBs[t]
+	if !ok {
+		conn = openLiveDB(t)
+		liveDBs[t] = conn
+		t.Cleanup(func() {
+			liveDBsMu.Lock()
+			delete(liveDBs, t)
+			liveDBsMu.Unlock()
+			_ = conn.Close()
+			// A worker goroutine can still hold a connection here; the runner
+			// asserts the drop succeeded and the fail handler panics. Losing
+			// one database's cleanup must not take the rest of the run with it.
+			runnerQuietly(func() { livePostgresRunner.DropTestDB() }, func(msg string) {
+				t.Logf("dropping the test database: %s", msg)
+			})
+		})
+	}
 	return jetbridgeDB{WorkerFactory: db.NewWorkerFactory(
 		conn,
 		db.NewStaticWorkerCache(lager.NewLogger("live-jetbridge-test"), conn, 0),
 	)}
+}
+
+// openLiveDB creates the test database from the template. A leftover from a
+// test whose drop failed makes the create fail; drop and try once more before
+// giving up, so one leaked connection costs a log line, not the whole tier.
+func openLiveDB(t *testing.T) db.DbConn {
+	t.Helper()
+	created := false
+	runnerQuietly(func() { livePostgresRunner.CreateTestDBFromTemplate(); created = true }, func(msg string) {
+		t.Logf("creating the test database: %s; dropping the leftover and retrying", msg)
+	})
+	if !created {
+		runnerQuietly(func() { livePostgresRunner.DropTestDB() }, func(msg string) {
+			t.Logf("dropping the leftover test database: %s", msg)
+		})
+		livePostgresRunner.CreateTestDBFromTemplate()
+	}
+	return livePostgresRunner.OpenConn()
+}
+
+// runnerQuietly runs a postgresrunner call whose Gomega assertion would panic
+// through the fail handler registered in TestMain, and reports the message to
+// onFail instead of unwinding the test.
+func runnerQuietly(run func(), onFail func(msg string)) {
+	defer func() {
+		if r := recover(); r != nil {
+			onFail(fmt.Sprint(r))
+		}
+	}()
+	run()
 }
 
 func liveTestNamespace() string {
