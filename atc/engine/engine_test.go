@@ -41,11 +41,18 @@ func (b trackingLockErrorBuild) AcquireTrackingLock(lager.Logger, time.Duration)
 
 // Unlistening leaves no trace on the build, so record it around the real
 // listener; err injects the listen failure a healthy bus cannot produce.
+// The signal itself is handed back to the test so a wake-up that is not an
+// abort can be delivered on purpose, and reloads are counted so the test can
+// tell that such a wake-up has been fully processed.
 type abortListenerRecordingBuild struct {
 	db.Build
 
 	err        error
 	unlistened bool
+
+	mu      sync.Mutex
+	signal  *db.NotifySignal
+	reloads int
 }
 
 func (b *abortListenerRecordingBuild) AbortSignal() (*db.NotifySignal, func(), error) {
@@ -54,10 +61,37 @@ func (b *abortListenerRecordingBuild) AbortSignal() (*db.NotifySignal, func(), e
 	}
 
 	signal, unlisten, err := b.Build.AbortSignal()
+
+	b.mu.Lock()
+	b.signal = signal
+	b.mu.Unlock()
+
 	return signal, func() {
 		b.unlistened = true
 		unlisten()
 	}, err
+}
+
+func (b *abortListenerRecordingBuild) Reload() (bool, error) {
+	found, err := b.Build.Reload()
+
+	b.mu.Lock()
+	b.reloads++
+	b.mu.Unlock()
+
+	return found, err
+}
+
+func (b *abortListenerRecordingBuild) reloadCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.reloads
+}
+
+func (b *abortListenerRecordingBuild) abortSignal() *db.NotifySignal {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.signal
 }
 
 // A build whose pipeline resolves cannot fail only the credential lookup.
@@ -394,6 +428,81 @@ var _ = Describe("Engine", func() {
 								It("cancels the context given to the step", func() {
 									waitGroup.Wait()
 									Expect(<-aborted).NotTo(HaveOccurred())
+									stepCtx, _ := fakeStep.RunArgsForCall(0)
+									Expect(stepCtx.Done()).To(BeClosed())
+								})
+							})
+
+							// The abort signal only fires for aborts that
+							// happen after the listener is registered, so a
+							// build aborted while no web was tracking it —
+							// across a restart, or a re-track after a
+							// retriable step error — is only discoverable
+							// from the flag on the row.
+							Context("when the build was aborted before tracking began", func() {
+								BeforeEach(func() {
+									startRow := prepareRow
+									prepareRow = func() {
+										startRow()
+
+										abortHandle, found, err := fixture.BuildFactory.Build(realBuild.ID())
+										Expect(err).NotTo(HaveOccurred())
+										Expect(found).To(BeTrue())
+										Expect(abortHandle.MarkAsAborted()).To(Succeed())
+									}
+
+									fakeStep.RunStub = func(ctx context.Context, _ exec.RunState) (bool, error) {
+										select {
+										case <-ctx.Done():
+											return false, ctx.Err()
+										case <-time.After(10 * time.Second):
+										}
+										return true, nil
+									}
+								})
+
+								It("cancels the context given to the step", func() {
+									waitGroup.Wait()
+									stepCtx, _ := fakeStep.RunArgsForCall(0)
+									Expect(stepCtx.Done()).To(BeClosed())
+								})
+
+								It("finishes the build as aborted", func() {
+									waitGroup.Wait()
+									Expect(realBuild.Reload()).To(BeTrue())
+									Expect(realBuild.Status()).To(Equal(db.BuildStatusAborted))
+								})
+							})
+
+							// NotifySignal coalesces, so a wake-up says only
+							// that something changed. One that turns out not
+							// to be an abort — a listener reconnect, say —
+							// must not cost the build every abort after it.
+							Context("when a wake-up that is not an abort arrives first", func() {
+								BeforeEach(func() {
+									fakeStep.RunStub = func(ctx context.Context, _ exec.RunState) (bool, error) {
+										defer GinkgoRecover()
+
+										reloadsBefore := aborts.reloadCount()
+										aborts.abortSignal().Signal()
+										Eventually(aborts.reloadCount).Should(BeNumerically(">", reloadsBefore))
+
+										abortHandle, found, err := fixture.BuildFactory.Build(realBuild.ID())
+										Expect(err).NotTo(HaveOccurred())
+										Expect(found).To(BeTrue())
+										Expect(abortHandle.MarkAsAborted()).To(Succeed())
+
+										select {
+										case <-ctx.Done():
+											return false, ctx.Err()
+										case <-time.After(10 * time.Second):
+										}
+										return true, nil
+									}
+								})
+
+								It("still cancels the context given to the step", func() {
+									waitGroup.Wait()
 									stepCtx, _ := fakeStep.RunArgsForCall(0)
 									Expect(stepCtx.Done()).To(BeClosed())
 								})

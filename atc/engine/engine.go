@@ -190,19 +190,36 @@ func (b *engineBuild) Run(ctx context.Context) {
 		noleak := make(chan bool)
 		defer close(noleak)
 
-		go func() {
-			select {
-			case <-noleak:
-			case <-abortSignal.C():
-				// Reload from DB to get the current aborted flag,
-				// since the in-memory value is stale from when the
-				// build was first loaded.
-				if ok, err := b.build.Reload(); err == nil && ok && b.build.IsAborted() {
-					logger.Info("aborting")
-					cancel()
+		// The signal only fires for aborts that arrive after ListenSignal, so
+		// read the flag once here: a build aborted while no web was tracking
+		// it — across a restart, or before a re-track following a retriable
+		// step error — is invisible to the listener and would otherwise run
+		// to completion. Done on this goroutine, before the plan starts, so
+		// that it does not race the row the build is still reading.
+		if b.abortRequested(logger) {
+			logger.Info("aborting")
+			cancel()
+		} else {
+			go func() {
+				// NotifySignal coalesces: a wake-up says only that something
+				// changed, so the flag is re-read on every one of them. A
+				// single check would let the first wake-up that is not an
+				// abort — a listener reconnect, a Reload that failed — cost
+				// the build every abort that follows.
+				for {
+					select {
+					case <-noleak:
+						return
+					case <-abortSignal.C():
+						if b.abortRequested(logger) {
+							logger.Info("aborting")
+							cancel()
+							return
+						}
+					}
 				}
-			}
-		}()
+			}()
+		}
 	}
 
 	var succeeded bool
@@ -251,6 +268,20 @@ func (b *engineBuild) Run(ctx context.Context) {
 		// LogError wrapper on job builds); a panic did not.
 		b.finish(logger.Session("finish").WithData(b.build.LagerData()), runErr, succeeded, !panicked)
 	}
+}
+
+// abortRequested reports whether the build has been marked as aborted,
+// reloading the row first because the in-memory value is stale from when the
+// build was first loaded. A failed reload reports "not aborted": the caller
+// is watching a signal that will bring it back here.
+func (b *engineBuild) abortRequested(logger lager.Logger) bool {
+	found, err := b.build.Reload()
+	if err != nil {
+		logger.Error("failed-to-reload-build-for-abort", err)
+		return false
+	}
+
+	return found && b.build.IsAborted()
 }
 
 func (b *engineBuild) buildStepErrored(logger lager.Logger, message string) {
