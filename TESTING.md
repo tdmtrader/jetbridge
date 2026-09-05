@@ -62,6 +62,18 @@ ginkgo -r -p ./atc/integration/
 
 ### 5. K8s Integration Tests (`make test-k8s-integration`)
 
+In CI this tier is the `k8s-e2e` pipeline (`deploy/k8s-e2e-pipeline.yml`): `build-kind-runner`
+→ `k8s-integration-tests` → `k8s-behavioral-tests`, on a 24 h timer and on every `core` commit.
+The jetbridge pipeline's `k8s-live-tests` job is a different thing: the `-tags live` suites in
+`atc/worker/jetbridge`, which run after `self-upgrade` against the cluster's *deployed* artifact
+daemon (hostPath, node-IP dialing, mTLS SANs, capability key) as a post-upgrade acceptance check.
+
+Two properties of the CI node these tiers depend on, both learned the hard way on 2026-09-04:
+every `dockerd` started inside a pod (the DinD builders and the in-task daemon here) must run with
+`--mtu=1450` or full-size segments from package mirrors are dropped and apt "times out"; and
+`fs.inotify.max_user_instances` must be raised from Ubuntu's 128 (home-infra pins 1024) or the
+kubelet fails every follow-logs stream, which is how testcontainers waits for K3s to be ready.
+
 Creates a K3s cluster from inside the suite via `testcontainers-go/modules/k3s`, then deploys Concourse via Helm.
 
 - **Time:** ~23 minutes (including cluster creation/teardown)
