@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os/exec"
 	"strconv"
+	"time"
 
 	"github.com/concourse/concourse/atc/postgresrunner"
 	"github.com/onsi/gomega/gbytes"
@@ -58,7 +59,12 @@ var _ = Describe("Web Command", func() {
 	})
 
 	AfterEach(func() {
-		ginkgomon.Interrupt(concourseProcess)
+		// ginkgomon's default gives the web one second to exit after
+		// SIGINT. A web mid-startup is still wiring its DB pool and
+		// components, and on a loaded CI node that shutdown took longer
+		// than a second twice in a row (unit-tests #970, #971), failing
+		// the suite in AfterEach with nothing wrong in the test itself.
+		ginkgomon.Interrupt(concourseProcess, 30*time.Second)
 		<-concourseProcess.Wait()
 		postgresRunner.DropTestDB()
 
