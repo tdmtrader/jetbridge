@@ -336,6 +336,28 @@ Feature: What a step's pod actually looks like
       | hostpath | survives the pod      |
       | emptydir | is lost with the pod  |
 
+  # ...and the outline's hostpath row holds only because that step named a job.
+  # An operator who writes --kubernetes-cache-store=hostpath has said what
+  # STORAGE to use; they have not supplied what a cache is FILED UNDER, and
+  # that comes from the step. A one-off build has no job and a run job that
+  # has not been materialized has no template, so there is nothing to key on,
+  # and the explicit choice is refused rather than honoured.
+  #
+  # Honouring it is worse than ignoring it, which is why this is worth a
+  # scenario of its own. Every keyless step in the cluster would agree on the
+  # same degenerate directory: one `fly execute` writing its node_modules over
+  # another's, on every node, with no error and no way to tell from the build
+  # log that anything shared it.
+  @CO-07 @CF-04
+  Scenario: An explicit node-local cache store is refused a step with nothing to key on
+    Given a jetbridge worker with an artifact store, told to keep caches "hostpath"
+    And a task container "cache-keyless-hostpath-handle" built from image "docker:///busybox"
+    And it works in "/tmp/build/workdir"
+    And it caches "/tmp/build/workdir/.cache"
+    When the container runs
+    Then the volume mounted at "/tmp/build/workdir/.cache" is lost with the pod
+    And every mount in the pod names exactly one of its volumes
+
   # A check container's working directory must be ephemeral EVEN WHEN the
   # worker keeps step data on the node. The same container handle is reused
   # for every check of a resource, so node-local storage would carry one
