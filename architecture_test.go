@@ -94,6 +94,13 @@ type importGraph struct {
 // indirect dependency here and its richer modes type-check, which costs far
 // more than this test is worth. Direct edges are the whole check -- transitive
 // reachability is meaningless when nearly everything reaches atc/api anyway.
+//
+// One consequence to know before you trust a green: the graph comes from a
+// subprocess, and Go's test cache does not track it. Edit a package these rules
+// cover and `go test .` can report `ok ... (cached)` from the previous graph,
+// which reads exactly like the guard declining to fire. Use `go test -count=1 .`
+// -- or ginkgo, which compiles and runs the binary every time and is what
+// `make test-unit` does -- when you are checking whether a guard still bites.
 func loadImportGraph(t *testing.T) importGraph {
 	t.Helper()
 

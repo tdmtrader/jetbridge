@@ -19,9 +19,13 @@ type authorization struct {
 	// createdBy is the display identity to record as the run's creator.
 	createdBy string
 
+	// isAdmin is the accessor's own verdict, which short-circuits every team
+	// check. It is carried because it changes which refusal an unresolvable
+	// team deserves: see resolveTemplate.
+	isAdmin bool
+
 	// team is the team the reference named, when it exists. Nil is reachable
-	// only for an admin, whom accessor.IsAuthorized passes for teams that are
-	// not there.
+	// only for an admin, who is authorized for teams that are not there.
 	team db.Team
 }
 
@@ -74,6 +78,7 @@ func (a *admitter) authorize(tx db.Tx, teamName string, principal Principal) (au
 	return authorization{
 		// The same value the HTTP handler records as created_by.
 		createdBy: access.UserInfo().DisplayUserId,
+		isAdmin:   access.IsAdmin(),
 		team:      findTeam(teams, teamName),
 	}, nil
 }

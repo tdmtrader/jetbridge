@@ -160,11 +160,20 @@ var _ = Describe("a consumer that cannot see atc/db", func() {
 			return err
 		}
 
+		// BeIdenticalTo rather than MatchError wherever the port's sentinel
+		// shares its message with the atc/db value it re-expresses (here,
+		// ErrNotATemplate and db.ErrPipelineRunNotTemplate are both "pipeline
+		// is not a template"). MatchError compares the error values and so
+		// succeeds for two errors.New sentinels of equal text, which makes it
+		// blind to a raw atc/db error leaking through untranslated -- the one
+		// failure these specs exist to catch. Pointer identity is not blind to
+		// it. This file cannot name the atc/db value to assert the difference
+		// directly, which is exactly why it asserts the port's own by identity.
 		It("distinguishes an unknown template from one that is not a template", func() {
 			Expect(refusalFor(runs.Admission{Template: unknownRef, Principal: memberPrincipal})).
-				To(MatchError(runs.ErrTemplateNotFound))
+				To(BeIdenticalTo(runs.ErrTemplateNotFound))
 			Expect(refusalFor(runs.Admission{Template: ordinaryRef, Principal: memberPrincipal})).
-				To(MatchError(runs.ErrNotATemplate))
+				To(BeIdenticalTo(runs.ErrNotATemplate))
 		})
 
 		// D3 rules that a waiting parent whose re-admission hits a paused
@@ -175,11 +184,11 @@ var _ = Describe("a consumer that cannot see atc/db", func() {
 			paused := refusalFor(runs.Admission{Template: pausedRef, Principal: memberPrincipal})
 			archived := refusalFor(runs.Admission{Template: archivedRef, Principal: memberPrincipal})
 
-			Expect(paused).To(MatchError(runs.ErrTemplatePaused))
+			Expect(paused).To(BeIdenticalTo(runs.ErrTemplatePaused))
 			Expect(paused).NotTo(MatchError(runs.ErrTemplateArchived))
 			Expect(paused).NotTo(MatchError(runs.ErrTemplateNotFound))
 
-			Expect(archived).To(MatchError(runs.ErrTemplateArchived))
+			Expect(archived).To(BeIdenticalTo(runs.ErrTemplateArchived))
 			Expect(archived).NotTo(MatchError(runs.ErrTemplatePaused))
 			Expect(archived).NotTo(MatchError(runs.ErrTemplateNotFound))
 		})

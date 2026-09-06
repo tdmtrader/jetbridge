@@ -45,13 +45,21 @@ var (
 	memberPrincipal runs.Principal
 	viewerPrincipal runs.Principal
 
+	// adminPrincipal is an owner of a team marked admin, which is the one
+	// principal accessor.IsAuthorized short-circuits for. It is here because
+	// that short-circuit is what makes an unresolvable team reachable after
+	// authorization has already passed.
+	adminPrincipal runs.Principal
+
 	templateRef  runs.TemplateRef // a valid, runnable template
 	paramsRef    runs.TemplateRef // a template declaring one required parameter
 	pausedRef    runs.TemplateRef // a template pipeline that is paused
 	archivedRef  runs.TemplateRef // a template pipeline that is archived
+	instancedRef runs.TemplateRef // a template pipeline carrying instance vars
 	ordinaryRef  runs.TemplateRef // a pipeline that is not a template at all
 	unknownRef   runs.TemplateRef // no such pipeline, on a team the principal is a member of
 	otherTeamRef runs.TemplateRef // a template on a team nobody here is a member of
+	missingTeam  runs.TemplateRef // a team that does not exist at all
 )
 
 // scratchTable is a table of the consumer's own, so that A10 can demonstrate a
@@ -114,6 +122,19 @@ var _ = BeforeEach(func() {
 	})
 	Expect(err).NotTo(HaveOccurred())
 
+	// A real admin team, made admin the only way there is: CreateTeam writes
+	// the auth, CreateDefaultTeamIfNotExists sets the admin flag on the
+	// default-named team. Nothing here is a double either -- the accessor
+	// computes isAdmin from these rows exactly as it does in production.
+	_, err = teamFactory.CreateTeam(atc.Team{
+		Name: atc.DefaultTeamName,
+		Auth: atc.TeamAuth{"owner": {"users": []string{"local:admin-user"}}},
+	})
+	Expect(err).NotTo(HaveOccurred())
+
+	_, err = teamFactory.CreateDefaultTeamIfNotExists()
+	Expect(err).NotTo(HaveOccurred())
+
 	displayUserIds, err := skycmd.NewSkyDisplayUserIdGenerator(map[string]string{"local": "user_id"})
 	Expect(err).NotTo(HaveOccurred())
 
@@ -121,6 +142,7 @@ var _ = BeforeEach(func() {
 
 	memberPrincipal = runs.Principal{Claims: claimsFor("member-user", "member-id")}
 	viewerPrincipal = runs.Principal{Claims: claimsFor("viewer-user", "viewer-id")}
+	adminPrincipal = runs.Principal{Claims: claimsFor("admin-user", "admin-id")}
 
 	savePipeline(defaultTeam, "runnable", templateConfig(nil))
 	templateRef = runs.TemplateRef{Team: defaultTeam.Name(), Pipeline: atc.PipelineRef{Name: "runnable"}}
@@ -138,12 +160,27 @@ var _ = BeforeEach(func() {
 	Expect(archived.Archive()).To(Succeed())
 	archivedRef = runs.TemplateRef{Team: defaultTeam.Name(), Pipeline: atc.PipelineRef{Name: "archived-template"}}
 
+	// A pipeline carrying instance vars. It cannot also be a template: the
+	// schema forbids the combination outright (the check constraint
+	// pipelines_templates_are_not_instances), and a fixture that tried was
+	// refused by it. That is precisely why "instanced" is a refusal of its own
+	// rather than a shade of "not a template" -- admission answers it first,
+	// and a caller pointed at an instance is told what it actually is.
+	instancedConfig := templateConfig(nil)
+	instancedConfig.Template = false
+	instanced := atc.PipelineRef{Name: "instanced", InstanceVars: atc.InstanceVars{"branch": "main"}}
+	_, _, err = defaultTeam.SavePipeline(instanced, instancedConfig, db.ConfigVersion(0), false)
+	Expect(err).NotTo(HaveOccurred())
+	instancedRef = runs.TemplateRef{Team: defaultTeam.Name(), Pipeline: instanced}
+
 	ordinary := templateConfig(nil)
 	ordinary.Template = false
 	savePipeline(defaultTeam, "ordinary", ordinary)
 	ordinaryRef = runs.TemplateRef{Team: defaultTeam.Name(), Pipeline: atc.PipelineRef{Name: "ordinary"}}
 
 	unknownRef = runs.TemplateRef{Team: defaultTeam.Name(), Pipeline: atc.PipelineRef{Name: "no-such-pipeline"}}
+
+	missingTeam = runs.TemplateRef{Team: "no-such-team", Pipeline: atc.PipelineRef{Name: "whatever"}}
 
 	savePipeline(otherTeam, "secret", templateConfig(nil))
 	otherTeamRef = runs.TemplateRef{Team: otherTeam.Name(), Pipeline: atc.PipelineRef{Name: "secret"}}

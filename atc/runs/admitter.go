@@ -148,11 +148,19 @@ func (a *admitter) AdmitRun(ctx context.Context, tx Tx, adm Admission) (Run, err
 //
 // A nil team is reachable for exactly one principal: an admin, because
 // accessor.IsAuthorized short-circuits on isAdmin and so passes for a team name
-// that is not there at all. It is reported as ErrUnauthorized rather than
-// ErrTemplateNotFound so that admission cannot answer a question about another
-// team's names.
+// that is not there at all. Telling that principal the team does not exist
+// gives nothing away -- an admin is entitled to the answer for every team --
+// so it gets ErrTemplateNotFound rather than a refusal that would send them
+// looking for a permissions problem they do not have. For anyone else a nil
+// team is unreachable, since a name with no team has no roles; ErrUnauthorized
+// is what it would deserve if that ever stopped being true, so that is what it
+// keeps.
 func (a *admitter) resolveTemplate(tx db.Tx, auth authorization, ref TemplateRef) (db.Pipeline, error) {
 	if auth.team == nil {
+		if auth.isAdmin {
+			return nil, ErrTemplateNotFound
+		}
+
 		return nil, ErrUnauthorized
 	}
 

@@ -109,6 +109,84 @@ var _ = Describe("the port's own checks", func() {
 		})
 	})
 
+	// The admin short-circuit is the one way authorization can pass for a team
+	// that is not there: accessor.IsAuthorized returns true on isAdmin without
+	// looking the name up at all. So resolution has to answer for a team it
+	// cannot find, and the answer it gives is the finding.
+	Describe("a team that does not exist", func() {
+		It("refuses an ordinary principal without saying whether it exists", func() {
+			_, err := admitWith(admitter, runs.Admission{
+				Template:    missingTeam,
+				Principal:   memberPrincipal,
+				ContractKey: contractKey,
+			})
+			Expect(err).To(MatchError(runs.ErrUnauthorized))
+		})
+
+		// Not ErrUnauthorized: an admin is authorized for every team there is,
+		// so telling them "unauthorized" is both false and actively misleading
+		// -- it sends the one principal who cannot have a permissions problem
+		// looking for one. There is no oracle to protect here; they are
+		// entitled to the answer.
+		It("tells an admin the template is not there, because they are entitled to the answer", func() {
+			_, err := admitWith(admitter, runs.Admission{
+				Template:    missingTeam,
+				Principal:   adminPrincipal,
+				ContractKey: contractKey,
+			})
+			Expect(err).To(MatchError(runs.ErrTemplateNotFound))
+			Expect(err).NotTo(MatchError(runs.ErrUnauthorized))
+		})
+
+		// The premise of the spec above: this principal really is an admin, so
+		// it is the short-circuit being exercised and not some accident of the
+		// fixture. An admin admits on a team whose auth never names them.
+		It("is an admin for the purposes above, on a team whose auth does not name them", func() {
+			run, err := admitWith(admitter, runs.Admission{
+				Template:    templateRef,
+				Principal:   adminPrincipal,
+				ContractKey: contractKey,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(run.CreatedBy).To(Equal("admin-id"))
+		})
+	})
+
+	// nit-3's other half, TemplateConfigInvalidError, has no spec here and
+	// that is deliberate: it reports a stored template config that fails
+	// template validation at admission time, and save-time validation refuses
+	// exactly those configs, so there is no public path that writes one. It is
+	// reachable only by a row written before that validation existed or edited
+	// around it -- neither of which a spec can produce without writing the row
+	// behind the API's back, which would test the fixture rather than the port.
+	Describe("a reference that names an instance", func() {
+		// BeIdenticalTo and not MatchError, and this is worth knowing before
+		// writing any other spec over these refusals. Several of the port's
+		// sentinels carry the same *message* as the atc/db value they
+		// re-express -- ErrTemplateInstanced and db.ErrPipelineRunInstanced are
+		// both "template pipeline cannot have instance vars" -- and Gomega's
+		// MatchError falls back to comparing the error values, which for two
+		// errors.New sentinels of equal text succeeds. So MatchError cannot
+		// tell a translated refusal from an untranslated one leaking through:
+		// deleting the translation from refusal() left this spec green.
+		// Pointer identity can, and does.
+		It("is the port's own refusal and not the database layer's", func() {
+			_, err := admitWith(admitter, runs.Admission{
+				Template:    instancedRef,
+				Principal:   memberPrincipal,
+				ContractKey: contractKey,
+			})
+			Expect(err).To(BeIdenticalTo(runs.ErrTemplateInstanced))
+
+			// And "instanced" rather than "not a template", which is the
+			// distinction the ordering inside CreateRunInTx exists to make:
+			// the schema forbids a pipeline being both, so an instance is
+			// never a degenerate template.
+			Expect(err).NotTo(BeIdenticalTo(runs.ErrNotATemplate))
+			Expect(err).NotTo(BeIdenticalTo(runs.ErrTemplateNotFound))
+		})
+	})
+
 	Describe("the contract key", func() {
 		It("refuses an admission with no key and creates no row", func() {
 			before := countRunRows()
