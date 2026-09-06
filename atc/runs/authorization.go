@@ -1,9 +1,29 @@
 package runs
 
 import (
+	"strings"
+
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
+	"github.com/concourse/concourse/atc/db"
 )
+
+// authorization is what one admission's authorization step decided.
+//
+// It carries the resolved team as well as the verdict because both come out of
+// the same single read of the teams table. Keeping them together is not a
+// convenience: it is what makes resolution and authorization agree by
+// construction, since they are answered from one snapshot rather than from two
+// reads a deletion could land between.
+type authorization struct {
+	// createdBy is the display identity to record as the run's creator.
+	createdBy string
+
+	// team is the team the reference named, when it exists. Nil is reachable
+	// only for an admin, whom accessor.IsAuthorized passes for teams that are
+	// not there.
+	team db.Team
+}
 
 // authorize decides whether the principal may create runs on the named team,
 // and returns the display identity to record as the run's creator.
@@ -21,17 +41,20 @@ import (
 // The second consequence is that no double is needed to test it. A spec builds
 // a real team with a real atc.TeamAuth, real claims and the real display-user-id
 // generator, and the verdict it observes is the production verdict.
-func (a *admitter) authorize(teamName string, principal Principal) (string, error) {
+//
+// It reads through the caller's transaction, which is the whole of the port's
+// connection budget: see AdmitRun.
+func (a *admitter) authorize(tx db.Tx, teamName string, principal Principal) (authorization, error) {
 	// Refused at admission rather than at construction so the refusal is an
 	// admission outcome a caller can observe. atccmd validates the same map at
 	// startup; this is the port's own guarantee, not a second copy of that one.
 	if err := accessor.ValidateCustomRoles(a.customRoles); err != nil {
-		return "", CustomRolesInvalidError{Err: err}
+		return authorization{}, CustomRolesInvalidError{Err: err}
 	}
 
-	teams, err := a.teamFactory.GetTeams()
+	teams, err := a.teamFactory.GetTeamsInTx(tx)
 	if err != nil {
-		return "", err
+		return authorization{}, err
 	}
 
 	// HasToken and IsTokenValid are true because the caller has already
@@ -45,9 +68,30 @@ func (a *admitter) authorize(teamName string, principal Principal) (string, erro
 	)
 
 	if !access.IsAuthorized(teamName) {
-		return "", ErrUnauthorized
+		return authorization{}, ErrUnauthorized
 	}
 
-	// The same value the HTTP handler records as created_by.
-	return access.UserInfo().DisplayUserId, nil
+	return authorization{
+		// The same value the HTTP handler records as created_by.
+		createdBy: access.UserInfo().DisplayUserId,
+		team:      findTeam(teams, teamName),
+	}, nil
+}
+
+// findTeam picks the named team out of the list authorization was decided
+// from, so that resolving a template costs no second read.
+//
+// Case-insensitively, because that is how TeamFactory.FindTeam matches and this
+// stands in for it. Note that the accessor's own verdict is case-*sensitive*
+// (it keys a map by team name), so for a non-admin the fold can only ever match
+// the name that already authorized; it is the admin short-circuit that makes
+// the difference observable.
+func findTeam(teams []db.Team, name string) db.Team {
+	for _, team := range teams {
+		if strings.EqualFold(team.Name(), name) {
+			return team
+		}
+	}
+
+	return nil
 }

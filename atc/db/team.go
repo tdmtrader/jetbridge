@@ -50,6 +50,12 @@ type Team interface {
 	RenamePipeline(oldName string, newName string) (bool, error)
 
 	Pipeline(pipelineRef atc.PipelineRef) (Pipeline, bool, error)
+
+	// PipelineInTx is Pipeline read through a transaction the caller already
+	// holds a connection for. See TeamFactory.GetTeamsInTx for why a caller
+	// inside a transaction must not read on the pool.
+	PipelineInTx(tx Tx, pipelineRef atc.PipelineRef) (Pipeline, bool, error)
+
 	Pipelines() ([]Pipeline, error)
 	PublicPipelines() ([]Pipeline, error)
 	OrderPipelines([]string) error
@@ -861,6 +867,17 @@ func (t *team) RenamePipeline(oldName, newName string) (bool, error) {
 }
 
 func (t *team) Pipeline(pipelineRef atc.PipelineRef) (Pipeline, bool, error) {
+	return t.pipeline(t.conn, pipelineRef)
+}
+
+func (t *team) PipelineInTx(tx Tx, pipelineRef atc.PipelineRef) (Pipeline, bool, error) {
+	return t.pipeline(tx, pipelineRef)
+}
+
+// pipeline is the one declaration of the read, over whichever runner the caller
+// has. The Pipeline it builds still carries the team's conn, because that is
+// what the model's own later methods use; nothing in this read touches it.
+func (t *team) pipeline(runner sq.Runner, pipelineRef atc.PipelineRef) (Pipeline, bool, error) {
 	pipeline := newPipeline(t.conn, t.lockFactory)
 
 	var instanceVars sql.NullString
@@ -880,7 +897,7 @@ func (t *team) Pipeline(pipelineRef atc.PipelineRef) (Pipeline, bool, error) {
 				"p.name":          pipelineRef.Name,
 				"p.instance_vars": instanceVars,
 			}).
-			RunWith(t.conn).
+			RunWith(runner).
 			QueryRow(),
 	)
 

@@ -80,36 +80,44 @@ func (a *admitter) Begin(ctx context.Context) (Transaction, error) {
 //  3. only then is the template resolved, which is what lets not-found be its
 //     own refusal rather than arriving as "not a template".
 //
-// Steps 2 and 3 read on the connection pool rather than on tx, exactly as the
-// HTTP create path does -- there the accessor is built and the pipeline
-// resolved before the run factory opens its transaction at all. The
-// consequence is worth stating: while a caller holds a transaction from Begin,
-// this call needs a second connection from the same pool. Production sizes the
-// pool from --max-conns; a test that pins it to one connection deadlocks here,
-// which is the tripwire working, not a defect to route around.
+// Every read those steps make goes through tx, and that is a correctness
+// requirement rather than tidiness. The caller has held a pooled connection
+// since Begin and will hold it until it commits, so a read on the pool from
+// here would want a *second* connection while the first is still checked out.
+// N concurrent admissions against a pool of N would then each hold one and wait
+// for another that nobody is going to release, and because the factories' pool
+// reads take no context, nothing would time out: the process would stop rather
+// than fail. This is not the shape of the HTTP create path and cannot be --
+// there the accessor is built and the pipeline resolved before any transaction
+// exists at all. atc/runs/connection_budget_test.go pins the budget at one
+// connection.
 func (a *admitter) AdmitRun(ctx context.Context, tx Tx, adm Admission) (Run, error) {
 	if adm.ContractKey == "" {
 		return Run{}, ErrMissingContractKey
 	}
 
-	createdBy, err := a.authorize(adm.Template.Team, adm.Principal)
-	if err != nil {
-		return Run{}, err
-	}
-
-	pipeline, err := a.resolveTemplate(adm.Template)
-	if err != nil {
-		return Run{}, err
-	}
-
 	// The one place the port bridges its own interface back to the concrete
-	// transaction type the run factory names. Keeping it to one line, and
-	// refusing rather than panicking, is what makes a foreign Tx a diagnosable
-	// mistake instead of a crash.
+	// transaction type the run factory and the tx-scoped reads name. Keeping it
+	// to one line, and refusing rather than panicking, is what makes a foreign
+	// Tx a diagnosable mistake instead of a crash. It comes before the reads
+	// because they need it too, and a foreign transaction should be refused
+	// before anything is read on the caller's behalf.
 	dbTx, ok := tx.(db.Tx)
 	if !ok {
 		return Run{}, ForeignTransactionError{}
 	}
+
+	auth, err := a.authorize(dbTx, adm.Template.Team, adm.Principal)
+	if err != nil {
+		return Run{}, err
+	}
+
+	pipeline, err := a.resolveTemplate(dbTx, auth, adm.Template)
+	if err != nil {
+		return Run{}, err
+	}
+
+	createdBy := auth.createdBy
 
 	opts := db.RunCreationOpts{}
 	if adm.BeforeCommit != nil {
@@ -134,21 +142,21 @@ func (a *admitter) AdmitRun(ctx context.Context, tx Tx, adm Admission) (Run, err
 
 // resolveTemplate turns a reference into the pipeline to admit against.
 //
-// It runs after authorization, so a missing team here is unreachable in
-// practice -- an unresolvable team has no roles and cannot authorize. It is
-// still reported as ErrUnauthorized rather than ErrTemplateNotFound, so that
-// the one path that could reach it (a team deleted between the two reads)
-// cannot answer a question the principal was not entitled to ask.
-func (a *admitter) resolveTemplate(ref TemplateRef) (db.Pipeline, error) {
-	team, found, err := a.teamFactory.FindTeam(ref.Team)
-	if err != nil {
-		return nil, err
-	}
-	if !found {
+// The team it resolves against is the one authorization already picked out of
+// its single read, so there is no second read and no window for the two to
+// disagree.
+//
+// A nil team is reachable for exactly one principal: an admin, because
+// accessor.IsAuthorized short-circuits on isAdmin and so passes for a team name
+// that is not there at all. It is reported as ErrUnauthorized rather than
+// ErrTemplateNotFound so that admission cannot answer a question about another
+// team's names.
+func (a *admitter) resolveTemplate(tx db.Tx, auth authorization, ref TemplateRef) (db.Pipeline, error) {
+	if auth.team == nil {
 		return nil, ErrUnauthorized
 	}
 
-	pipeline, found, err := team.Pipeline(ref.Pipeline)
+	pipeline, found, err := auth.team.PipelineInTx(tx, ref.Pipeline)
 	if err != nil {
 		return nil, err
 	}

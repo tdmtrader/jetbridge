@@ -64,11 +64,11 @@ var _ = BeforeEach(func() {
 	})
 
 	dbConn = postgresRunner.OpenConn()
-	// The port authorizes and resolves the template on the pool while the
-	// consumer holds its transaction -- the same shape the HTTP create path
-	// has. postgresrunner pins the pool to one connection to catch paths that
-	// need two; this one legitimately does, and says so on AdmitRun.
-	dbConn.SetMaxOpenConns(5)
+	// Left at postgresrunner's one-connection default. The consumer holds one
+	// transaction across its claim, its admission and its commit, so the whole
+	// of Admit has to fit in a single connection -- and that is what this
+	// suite is riding on every spec. Raising the limit would hide a port that
+	// reached for a second one.
 	DeferCleanup(func() {
 		Expect(dbConn.Close()).To(Succeed())
 	})

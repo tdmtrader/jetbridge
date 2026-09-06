@@ -70,16 +70,12 @@ var _ = BeforeEach(func() {
 	})
 
 	dbConn = postgresRunner.OpenConn()
-	// postgresrunner pins the pool to one connection so that a code path
-	// needing two is caught rather than tolerated. This one legitimately
-	// needs two, and the port says so: AdmitRun authorizes and resolves the
-	// template on the pool while the caller holds a transaction, which is
-	// exactly what the HTTP create path does -- accessor built and pipeline
-	// resolved before the run factory opens its transaction. Raising the
-	// limit here is the same acknowledgement atc/db's own specs make
-	// (component_notifications_test.go, team_test.go); it changes the pool
-	// size, not the database.
-	dbConn.SetMaxOpenConns(5)
+	// Left at postgresrunner's one-connection default, deliberately. That
+	// default exists to catch a code path that needs two connections at once,
+	// and admission is exactly such a path if any of its reads goes to the
+	// pool while the caller holds the transaction Begin handed out. Raising
+	// the limit here would silence the whole suite's evidence for the port's
+	// connection budget; connection_budget_test.go asserts it head-on.
 	DeferCleanup(func() {
 		Expect(dbConn.Close()).To(Succeed())
 	})

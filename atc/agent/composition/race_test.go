@@ -68,9 +68,10 @@ var _ = Describe("two admissions of the same call, racing on two connections", f
 		for i := range services {
 			// A connection of its own, not a second handle on the suite's:
 			// two goroutines sharing one pool would serialize on it and the
-			// race would never happen.
+			// race would never happen. One connection each, which is also the
+			// budget an admission has to fit in -- so this is two racing
+			// admissions on exactly two connections, not two on a slack pool.
 			conn := postgresRunner.OpenConn()
-			conn.SetMaxOpenConns(5)
 			DeferCleanup(func() {
 				Expect(conn.Close()).To(Succeed())
 			})
