@@ -9,8 +9,12 @@ import (
 	"path"
 )
 
-// tarOfOneFile builds the archive a caller would hand to StreamIn.
-func tarOfOneFile(name, content string) (io.Reader, error) {
+// plainTarOfOneFile builds the UNCOMPRESSED tar: the body an artifact daemon
+// serves off a node's disk, and the bytes a step must start from when it
+// applies its own encoding. Anything that encodes must use this rather than
+// tarOfOneFile, or it ships a doubly-compressed stream and StreamIn's
+// decompressor uncovers an archive tar itself still has to decode.
+func plainTarOfOneFile(name, content string) ([]byte, error) {
 	var raw bytes.Buffer
 	tw := tar.NewWriter(&raw)
 	if err := tw.WriteHeader(&tar.Header{
@@ -24,10 +28,20 @@ func tarOfOneFile(name, content string) (io.Reader, error) {
 	if err := tw.Close(); err != nil {
 		return nil, fmt.Errorf("close tar: %w", err)
 	}
+	return raw.Bytes(), nil
+}
+
+// tarOfOneFile builds the gzipped archive a caller would hand to StreamIn.
+func tarOfOneFile(name, content string) (io.Reader, error) {
+	plain, err := plainTarOfOneFile(name, content)
+	if err != nil {
+		return nil, err
+	}
+	raw := bytes.NewReader(plain)
 
 	var gzipped bytes.Buffer
 	zw := gzip.NewWriter(&gzipped)
-	if _, err := io.Copy(zw, &raw); err != nil {
+	if _, err := io.Copy(zw, raw); err != nil {
 		return nil, fmt.Errorf("gzip: %w", err)
 	}
 	if err := zw.Close(); err != nil {

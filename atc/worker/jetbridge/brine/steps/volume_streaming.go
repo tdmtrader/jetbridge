@@ -1,7 +1,6 @@
 package steps
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"errors"
@@ -87,8 +86,20 @@ func (l *localExecAdapter) ExecInPod(
 	// not anything the runtime does, so switch it off at the source rather
 	// than filtering it out of the assertion.
 	cmd.Env = append(os.Environ(), "COPYFILE_DISABLE=1")
+	// StreamIn and StreamOut hand tar a nil stderr, so a failing tar would
+	// otherwise report nothing but "exit status 2" and leave the reason on the
+	// floor. Keep whatever the caller supplied; capture only when it supplied
+	// nothing, and put the message in the error where a failing scenario shows
+	// it.
+	var captured bytes.Buffer
+	if stderr == nil {
+		stderr = &captured
+	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
 	if err := cmd.Run(); err != nil {
+		if said := strings.TrimSpace(captured.String()); said != "" {
+			return fmt.Errorf("exec %v: %w: %s", translated, err, said)
+		}
 		return fmt.Errorf("exec %v: %w", translated, err)
 	}
 	return nil
@@ -261,13 +272,17 @@ func VolumeStreamingDefinitions() []brine.StepDefinition {
 					return VolumeSet{}, err
 				}
 
-				plain, err := tarOfOneFile(name, content)
+				// The PLAIN tar, not the gzipped one: a Streamer applies
+				// exactly one encoding, and s2-wrapping an already-gzipped tar
+				// would leave tar itself facing a gzip stream after StreamIn
+				// decompressed the s2 layer. bsdtar hides that by
+				// auto-detecting gzip; GNU tar reading a pipe does not
+				// auto-detect at all and exits 2 with "Archive is compressed.
+				// Use -z option", which is how this scenario failed on Linux
+				// while passing on macOS.
+				raw, err := plainTarOfOneFile(name, content)
 				if err != nil {
 					return VolumeSet{}, err
-				}
-				raw, err := io.ReadAll(plain)
-				if err != nil {
-					return VolumeSet{}, fmt.Errorf("read tar: %w", err)
 				}
 
 				// compression.Compression only reads; the Streamer compresses
@@ -1093,24 +1108,4 @@ func inputPlacementDefinitions() []brine.StepDefinition {
 				return named[0], nil
 			}),
 	}
-}
-
-// plainTarOfOneFile builds the uncompressed tar an artifact daemon serves off
-// a node's disk. tarOfOneFile gzips, which is what a StreamIn caller hands
-// over; the daemon's own body is raw.
-func plainTarOfOneFile(name, content string) ([]byte, error) {
-	var raw bytes.Buffer
-	tw := tar.NewWriter(&raw)
-	if err := tw.WriteHeader(&tar.Header{
-		Name: name, Mode: 0o644, Size: int64(len(content)), Typeflag: tar.TypeReg,
-	}); err != nil {
-		return nil, fmt.Errorf("write tar header: %w", err)
-	}
-	if _, err := tw.Write([]byte(content)); err != nil {
-		return nil, fmt.Errorf("write tar body: %w", err)
-	}
-	if err := tw.Close(); err != nil {
-		return nil, fmt.Errorf("close tar: %w", err)
-	}
-	return raw.Bytes(), nil
 }
