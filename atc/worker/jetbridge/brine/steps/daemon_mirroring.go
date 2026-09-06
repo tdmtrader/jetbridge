@@ -31,15 +31,24 @@ package steps
 //	           copy on. It only has to receive and serve.
 //
 // One TCP forwarder sits between them, and routeToPeer's comment says why: a
-// daemon PUTs to peers on its OWN --port (main.go passes *port to NewMirror)
-// and binds the wildcard, so two daemons on one host can only be told apart by
-// the address they answer on. In a cluster the problem does not exist — every
-// pod has its own netns and every daemon is 7780 on its own address. The
-// forwarder parses nothing, answers nothing and records nothing; it is the
-// network, not a daemon. verifyPeerRoute fetches an artifact only the peer
-// holds, through the published address, before a scenario's first step runs —
-// so a host that will not let the two listeners coexist says so in one
-// sentence instead of leaving six scenarios to fail as "the copy never came".
+// daemon PUTs to peers on its OWN --port (main.go passes *port to NewMirror),
+// so two daemons on one host can only be told apart by the address they answer
+// on. In a cluster the problem does not exist — every pod has its own netns and
+// every daemon is 7780 on its own address. The forwarder parses nothing,
+// answers nothing and records nothing; it is the network, not a daemon.
+//
+// The producer is therefore started with onlyLoopback — --listen-address
+// 127.0.0.1 — and the forwarder holds the producer's port at the routable
+// address the EndpointSlice publishes. Two specific addresses, one port. The
+// wildcard the daemon binds by default cannot share a port with anything on
+// Linux, whatever address the other listener names, and these six scenarios
+// were green on macOS and EADDRINUSE in CI until the producer was moved off
+// it; daemon_cross_node.go's header has the kernel rules.
+//
+// verifyPeerRoute fetches an artifact only the peer holds, through the
+// published address, before a scenario's first step runs — so a host that will
+// not let the two listeners coexist says so in one sentence instead of leaving
+// six scenarios to fail as "the copy never came".
 //
 // WHAT IS ASSERTED IS THE ARTIFACT ON THE OTHER NODE'S DISK. Every check reads
 // the peer: whether it serves the key, which files came with it, what they say.
@@ -305,7 +314,8 @@ func mirroringGiven(pattern string, toldItsOwnAddress bool, producerArgs ...stri
 				"--node-name", nodeName,
 				"--namespace", "default",
 				"--service-name", service,
-			}, producerArgs...)
+			}, onlyLoopback...)
+			args = append(args, producerArgs...)
 
 			// The one thing that cannot be passed as a flag. brine runs one
 			// scenario at a time in a process — a parallel run is a separate

@@ -32,22 +32,44 @@ package steps
 //
 // THE SCAFFOLDING is one TCP forwarder, and it is worth being exact about why
 // it has to exist. A daemon derives the port it probes peers on from its OWN
-// --port (main.go passes *port to NewPeerResolver), and it binds the wildcard.
-// So for the local daemon to reach the peer, the peer must answer on the
-// LOCAL daemon's port number — and two processes on one host cannot both hold
-// one port. In a cluster this problem does not exist: every pod has its own
+// --port (main.go passes *port to NewPeerResolver). So for the local daemon to
+// reach the peer, the peer must answer on the LOCAL daemon's port number, at
+// some OTHER address — one host cannot give two processes one port at one
+// address. In a cluster the problem does not exist: every pod has its own
 // network namespace and every daemon is 7780 on its own address.
 //
 // The forwarder restores that. It binds the published address at the local
-// daemon's port and moves bytes to the peer's port. A specific-address
-// listener takes precedence over a wildcard one on the same port, so the
-// local daemon's own listener never sees these connections. The forwarder
-// reads nothing, answers nothing and counts nothing: it is the network, not a
-// daemon. Both ends of every request in this file are real daemon processes.
+// daemon's port and moves bytes to the peer's port. It reads nothing, answers
+// nothing and counts nothing: it is the network, not a daemon. Both ends of
+// every request in this file are real daemon processes.
 //
-// If a host will not let those two listeners coexist, the Given says so in
-// one sentence instead of leaving six scenarios to fail as "the artifact did
-// not arrive" — verifyPeerRoute fetches, through the published address, an
+// WHICH ADDRESS THE LOCAL DAEMON HOLDS is what makes room for that listener,
+// and it took a CI run on Linux to find out, because the two kernels answer
+// differently. The daemon binds every address by default (":7780"), and this
+// file used to leave it there and bind the forwarder at <routable IP>:PORT
+// beside it. On BSD that is legal: SO_REUSEADDR, which Go sets on every
+// listener, is defined there to permit a specific-address bind next to an
+// existing wildcard bind of the same port, and the more specific listener
+// takes the connection. Linux does not have that rule. A listening socket at
+// *:PORT conflicts with a bind of ANY address at PORT — SO_REUSEADDR is
+// disregarded once the holder is in LISTEN, and only SO_REUSEPORT set on BOTH
+// sockets would lift it, which is not available here because one of the two
+// sockets belongs to the daemon process. All twelve scenarios in this feature
+// and daemon-mirroring.feature died in their Given with EADDRINUSE.
+//
+// So the local daemon is started with --listen-address 127.0.0.1 and holds
+// loopback only. Two listeners on one port at two DIFFERENT specific
+// addresses are a conflict on no kernel — that is per-address virtual hosting
+// — and Linux's listener lookup matches the exact destination address before
+// it ever consults the wildcard bucket, so nothing about which connection
+// lands where is left to a tie-break. The local daemon is reached on
+// 127.0.0.1, which is the address realDaemon.URL already used, and where it
+// listens says nothing about its outbound work: the API server, the peer
+// probe and the tar fetch are all connections it opens.
+//
+// If a host still will not let those two listeners coexist, the Given says so
+// in one sentence instead of leaving six scenarios to fail as "the artifact
+// did not arrive" — verifyPeerRoute fetches, through the published address, an
 // artifact only the peer holds, before any scenario runs.
 //
 // WHY THE DAEMONS ARE STARTED IN THE GIVEN and not registered as brine
@@ -234,19 +256,32 @@ func daemonPort(d *realDaemon) (int, error) {
 	return n, nil
 }
 
+// onlyLoopback keeps the ASKING daemon — the one wired to the API server, the
+// one whose --port the forwarder has to reuse — off every address but
+// loopback, so the forwarder can hold that port at the routable address the
+// EndpointSlice publishes.
+//
+// It is the local half of a two-listener arrangement the kernel has to accept,
+// and Linux only accepts it when neither listener is the wildcard: see the
+// file header. Nothing about the daemon under test changes — it answers the
+// consumer on 127.0.0.1, which is where realDaemon.URL points, and it reaches
+// the API server and its peers by dialling out.
+var onlyLoopback = []string{"--listen-address", "127.0.0.1"}
+
 // routeToPeer binds listenAddr and forwards every connection to targetAddr.
 //
 // This is the network between two nodes, not a stand-in for either of them:
 // it never parses a request, never produces a response and never records
 // anything. See the file header for why it is unavoidable — the daemon probes
-// peers on its own --port and binds the wildcard, so on one host the two
-// daemons can only be told apart by the address they answer on.
+// peers on its own --port, so on one host the two daemons can only be told
+// apart by the address they answer on.
 func routeToPeer(listenAddr, targetAddr string) (net.Listener, error) {
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return nil, fmt.Errorf(
-			"listen on %s to publish the peer there: %w (the asking daemon holds the same port on "+
-				"the wildcard address; this host will not let a specific-address listener sit beside it)",
+			"listen on %s to publish the peer there: %w (the asking daemon is started with "+
+				"--listen-address 127.0.0.1 precisely so this port is free at every other address; "+
+				"something else on this host holds it)",
 			listenAddr, err)
 	}
 	go func() {
@@ -311,8 +346,9 @@ func verifyPeerRoute(peer *realDaemon, host string, port int) error {
 		return fmt.Errorf(
 			"the address published for the peer (%s:%d) answered %d for an artifact only the peer holds — "+
 				"the request reached the ASKING daemon instead. Two daemons on one host are told apart only "+
-				"by the address they answer on, because the daemon probes peers on its own --port and binds "+
-				"the wildcard, and this host is routing the connection to the wildcard listener",
+				"by the address they answer on, because the daemon probes peers on its own --port; the "+
+				"asking daemon should be holding 127.0.0.1 alone (--listen-address) and leaving this "+
+				"address to the forwarder",
 			host, port, resp.StatusCode)
 	}
 	return nil
@@ -397,7 +433,7 @@ func DaemonCrossNodeDefinitions() []brine.StepDefinition {
 				}
 				rec.RegisterDisposer(func() { _ = peer.stop() })
 
-				local, err := startRealDaemon(
+				local, err := startRealDaemon(append([]string{
 					"--kubeconfig", kubeconfig,
 					"--node-name", nodeName,
 					"--namespace", "default",
@@ -406,7 +442,7 @@ func DaemonCrossNodeDefinitions() []brine.StepDefinition {
 					// would put a second cross-node mechanism in the same
 					// scenario as the one under test.
 					"--mirror-replicas", "0",
-				)
+				}, onlyLoopback...)...)
 				if err != nil {
 					return CrossNode{}, fmt.Errorf("start this node's daemon: %w", err)
 				}

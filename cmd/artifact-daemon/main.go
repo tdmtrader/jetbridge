@@ -7,9 +7,11 @@ import (
 	"flag"
 	"fmt"
 	"github.com/concourse/concourse/artifactcap"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -21,6 +23,7 @@ import (
 
 func main() {
 	port := flag.Int("port", 7780, "HTTP server port")
+	listenAddress := flag.String("listen-address", "", "Address to bind the HTTP server to. Empty means every address, which is what the daemon does in a pod: one network namespace, one address, one daemon. Set it to hold a single address instead — for running two daemons on one host, where the kernel will only let two listeners share a port if each holds a different, specific address.")
 	storagePath := flag.String("storage-path", "/var/concourse/artifacts", "Path to artifact storage directory")
 	ttl := flag.Duration("ttl", 2*time.Hour, "TTL for artifact cleanup sweep")
 	resolveCapabilityKeyFile := flag.String("resolve-capability-key", "", "Path to the raw 32-byte key required to authorize resolve operations")
@@ -267,8 +270,10 @@ func main() {
 		handlerOpts = append(handlerOpts, WithTLS())
 	}
 
+	// An empty --listen-address keeps the address the daemon has always had:
+	// net.JoinHostPort("", "7780") is ":7780", every address on the host.
 	httpServer := &http.Server{
-		Addr:    fmt.Sprintf(":%d", *port),
+		Addr:    net.JoinHostPort(*listenAddress, strconv.Itoa(*port)),
 		Handler: server.Handler(handlerOpts...),
 	}
 
@@ -307,12 +312,13 @@ func main() {
 	errCh := make(chan error, 1)
 	go func() {
 		logger.Info("starting", lager.Data{
-			"port":         *port,
-			"storage-path": *storagePath,
-			"node-name":    *nodeName,
-			"namespace":    *namespace,
-			"ttl":          ttl.String(),
-			"tls":          tlsEnabled,
+			"port":           *port,
+			"listen-address": *listenAddress,
+			"storage-path":   *storagePath,
+			"node-name":      *nodeName,
+			"namespace":      *namespace,
+			"ttl":            ttl.String(),
+			"tls":            tlsEnabled,
 		})
 		if tlsEnabled {
 			// Cert/key already loaded into TLSConfig; pass empty strings.
