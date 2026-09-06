@@ -149,7 +149,7 @@ jobs:
           go test -v -count=1 -timeout 5m ./atc/worker/jetbridge/...
           echo "=== All jetbridge tests passed ==="
 
-# The brine suite: 566 scenarios across 35 feature files, driven by the Rust
+# The brine suite: 568 scenarios across 35 feature files, driven by the Rust
 # CLI in `--mode sync` against the jetbridge adapter built from
 # atc/worker/jetbridge/brine. The CLI's verdict is the one that counts -- it
 # folds in the manifest's `budgets.undefined: 0` and any unsatisfied wiring,
@@ -157,21 +157,24 @@ jobs:
 # /usr/local/bin/brine and its engine, built from the same brine-private
 # revision this module's replace pins.
 #
-# MANUAL UNTIL THE CREDENTIAL IS CONFIRMED. That replace fetches brine-go from
-# github.com/MarkDucommun/brine-private, a private repository this project does
-# not own. Whether ((github-token)) can read it has never been tested, and a
-# token that cannot would turn the pipeline red on the module fetch before a
-# single scenario ran. So this job's get has no `trigger: true`, and no job
-# downstream carries `passed: [brine]`. It starts only when a person starts it,
-# and the only build it can redden is its own.
+# The module fetch reaches github.com/MarkDucommun/brine-private, a private
+# repository this project does not own, through ((github-token)). That was the
+# open question when this job was first written, so it started out manual.
+# It is answered: on 2026-09-06 a scoped copy of this chain (repo -> build-and-vet
+# -> unit-tests -> brine, pipeline `brine-validate`, build brine/2) fetched the
+# module, built the adapter and ran 568/568 on the v9 runner in 3m08s. The
+# first run had exposed two macOS-only assumptions in the step infrastructure
+# (a peer daemon binding beside a wildcard listener; an s2 payload that was
+# also gzipped), both fixed on this branch before the green run.
 #
-# PROMOTION, once one manual run is green: add `trigger: true` to this job's
-# get, and add `brine` to the `passed:` list on tag-rc's get. Two lines.
+# So the job triggers like its neighbours, and tag-rc waits for it: a red brine
+# suite now holds the release chain, which is the point of running it.
 - name: brine
   serial: true
   serial_groups: [pipeline]
   plan:
   - get: repo
+    trigger: true
     params: {depth: 1}
     passed: [unit-tests]
   - task: brine-suite
@@ -215,7 +218,7 @@ jobs:
   - get: repo
     trigger: true
     params: {depth: 0, fetch_tags: true}
-    passed: [k8s-runtime-tests]
+    passed: [k8s-runtime-tests, brine]
   - task: create-rc-tag
     timeout: 10m
     attempts: 2

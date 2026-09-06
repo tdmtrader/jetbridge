@@ -669,3 +669,30 @@ The 21 GAP rows above. They cluster, and the clusters say what is missing:
 
 Until those exist, the restored Go tests are the only thing covering them, which
 is precisely why they are restored rather than deleted.
+
+## CI: verified and promoted (2026-09-06)
+
+The credential question above is closed. A scoped copy of the chain
+(`repo` on this branch -> build-and-vet -> unit-tests -> brine; pipeline
+`brine-validate`) ran on the live Concourse:
+
+| build | result |
+|---|---|
+| brine-validate/brine/1 (branch head ce765605b9) | module fetched, adapter built, suite ran: 555/568, 13 failed, identical on both attempts |
+| brine-validate/brine/2 (branch head 9525b9fcef) | 568/568, verdict passed, 3m08s |
+
+The 13 failures were macOS-only assumptions in the step infrastructure, not
+in the migration or in brine: twelve scenarios (daemon-cross-node,
+daemon-mirroring) started a peer forwarder on `<pod-ip>:<port>` beside the
+daemon's wildcard listener on the same port, which BSD permits and Linux
+refuses (dd42fab6f1 — the daemon gained an additive `--listen-address` flag,
+default unchanged, and the local daemon in those scenarios now binds
+127.0.0.1); one scenario (volume-streaming, s2) fed `s2(gzip(tar))` so tar
+received a gzip stream, which bsdtar auto-detects on stdin and GNU tar
+rejects with exit 2 (9525b9fcef — the step now starts from a plain tar; the
+whole suite was re-run locally under GNU tar as well).
+
+With that proven, the `brine` job is promoted: its get carries
+`trigger: true`, and `tag-rc` waits on `passed: [k8s-runtime-tests, brine]`.
+A red brine suite now holds the release chain.
+
