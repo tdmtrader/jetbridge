@@ -196,22 +196,41 @@ var _ = AfterEach(func() {
 		"a run exists that no composition_iterations row accounts for")
 
 	if runsAdmitted > 0 {
-		invariantSawRuns = true
+		AddReportEntry(admittedRunsEntry, runsAdmitted, ReportEntryVisibilityNever)
 	}
 })
 
-// invariantSawRuns is how the check above proves it is not vacuous.
+// admittedRunsEntry is how the check above proves it is not vacuous.
 //
 // Every assertion in it is satisfied by an empty database, and an empty
 // database is exactly what it would see if the per-spec drop were ever
 // reordered ahead of it. So record whether it ever looked at a populated one,
 // and fail the suite if it never did.
-var invariantSawRuns bool
+//
+// A package-level bool cannot carry that record. Under `ginkgo -p` -- which is
+// how the unit tier runs -- the ReportAfterSuite below runs in one process
+// while the specs ran in others, so a bool set by the AfterEach is false
+// wherever the report is assembled. That is a parallel-only red on a suite
+// whose every spec passed, and it is exactly what the first full `make
+// test-unit` on this branch hit. A report entry is the Ginkgo-native carrier
+// instead: it travels with the spec report from whichever process ran the
+// spec, and Ginkgo aggregates those into the Report the node below receives.
+// Visibility Never keeps it out of the console; it is still in the report.
+const admittedRunsEntry = "composition: the consumer invariant saw admitted runs"
 
 // ReportAfterSuite rather than AfterSuite: postgresrunner.GinkgoRunner already
 // defines the suite's one permitted AfterSuite, and reports may be many.
-var _ = ReportAfterSuite("the consumer invariant looked at something", func(Report) {
-	Expect(invariantSawRuns).To(BeTrue(),
+var _ = ReportAfterSuite("the consumer invariant looked at something", func(report Report) {
+	var specsThatAdmitted int
+	for _, spec := range report.SpecReports {
+		for _, entry := range spec.ReportEntries {
+			if entry.Name == admittedRunsEntry {
+				specsThatAdmitted++
+			}
+		}
+	}
+
+	Expect(specsThatAdmitted).To(BeNumerically(">", 0),
 		"the consumer invariant never saw a single admitted run, so every run of it "+
 			"passed over an empty database. Either no spec admits any more, or the "+
 			"per-spec database drop was reordered ahead of the AfterEach that checks it.")
