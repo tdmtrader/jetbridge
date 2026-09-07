@@ -1003,14 +1003,16 @@ store-less worker emits no fetch init container whatever the input carries and
 the dedup is keyed on the destination path. Full suite at `4b99af4c71`:
 **567/567, verdict passed** (35 features, 200s, `brine run --mode sync`).
 
-Both `input.Artifact == nil` guards in `storage_daemonset.go` are KEPT, each now
-carrying a comment saying which caller needs it. The one in
-`BuildFetchInitContainers` is unreachable from `buildPod` but is still called
-directly by `TestDaemonSetBackend_BuildFetchInitContainers_SkipsNilArtifact`.
-The one in `preferredInputNode` is not dead code at all: a Hangar tree input
-passes `validateInputs` with a nil `Artifact`, so deleting that guard would nil
--dereference `input.Artifact.Handle()` for every Hangar input — the item's claim
-that both were unreachable was wrong about this one.
+The two `input.Artifact == nil` guards in `storage_daemonset.go` went different
+ways. The one in `preferredInputNode` is not dead code at all: a Hangar tree
+input passes `validateInputs` with a nil `Artifact`, so deleting it would
+nil-dereference `input.Artifact.Handle()` for every Hangar input — the item's
+claim that both were unreachable was wrong about this one; it stays, with a
+comment saying so. The one in `BuildFetchInitContainers` was unreachable from
+`buildPod` and pinned only by a Go test asserting the same impossible state the
+deleted scenario did; under the same ruling, the silent skip became a refusal
+(`input %q has no artifact to fetch`) and the test now asserts the refusal
+(`TestDaemonSetBackend_BuildFetchInitContainers_RefusesNilArtifact`).
 
 
 ## Test results at head 52f85901f0 (31 with the notes commit) (this worktree unless said otherwise)

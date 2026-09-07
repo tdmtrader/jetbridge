@@ -198,13 +198,14 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 			continue
 		}
 
-		// Unreachable from a pod — (*Container).validateInputs rejects an
-		// input with neither an Artifact nor a HangarTree before buildPod gets
-		// here — but this is an exported StorageBackend method, and
-		// TestDaemonSetBackend_BuildFetchInitContainers_SkipsNilArtifact calls
-		// it directly with an unvalidated spec.
+		// (*Container).validateInputs refuses an input with neither an
+		// Artifact nor a HangarTree before buildPod gets here, and neither
+		// producer of runtime.Input can emit one. This is an exported method,
+		// so it refuses too, rather than skipping: a silently skipped input
+		// arrives as an empty directory with nothing in the build log to say
+		// why.
 		if input.Artifact == nil {
-			continue
+			return nil, fmt.Errorf("input %q has no artifact to fetch", input.DestinationPath)
 		}
 
 		volumeName := volumeNameForMountPath(mainMounts, input.DestinationPath)

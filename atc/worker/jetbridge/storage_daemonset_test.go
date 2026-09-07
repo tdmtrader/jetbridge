@@ -302,7 +302,7 @@ func TestDaemonSetBackend_BuildFetchInitContainers_MultipleInputs(t *testing.T) 
 	}
 }
 
-func TestDaemonSetBackend_BuildFetchInitContainers_SkipsNilArtifact(t *testing.T) {
+func TestDaemonSetBackend_BuildFetchInitContainers_RefusesNilArtifact(t *testing.T) {
 	b := testBackend(nil)
 	inputs := []runtime.Input{
 		{Artifact: &testArtifact{handle: "vol-a"}, DestinationPath: "/tmp/input-a"},
@@ -318,16 +318,18 @@ func TestDaemonSetBackend_BuildFetchInitContainers_SkipsNilArtifact(t *testing.T
 		b.StepVolume("input-1", "handle", "input-1"),
 	}
 
+	// No pipeline can emit an input without an artifact, and the pod builder
+	// refuses one before it gets here; the backend refuses too rather than
+	// quietly fetching everything but that input.
 	inits, err := b.BuildFetchInitContainers("handle", inputs, volumes, mounts)
-	if err != nil {
-		t.Fatalf("BuildFetchInitContainers: %v", err)
+	if err == nil {
+		t.Fatalf("expected an artifact-less input to be refused, got %d init containers", len(inits))
 	}
-	if len(inits) != 1 {
-		t.Fatalf("expected 1 init container (nil artifact skipped), got %d", len(inits))
+	if !strings.Contains(err.Error(), `"/tmp/input-b"`) || !strings.Contains(err.Error(), "no artifact") {
+		t.Errorf("expected the error to name the artifact-less input, got %q", err)
 	}
-	// Single valid artifact — should still use batch container name.
-	if inits[0].Name != "fetch-inputs" {
-		t.Errorf("expected fetch-inputs, got %s", inits[0].Name)
+	if inits != nil {
+		t.Errorf("expected no init containers alongside the refusal, got %d", len(inits))
 	}
 }
 

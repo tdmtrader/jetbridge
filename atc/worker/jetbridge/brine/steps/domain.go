@@ -104,8 +104,8 @@ type ContainerDraft struct {
 	RunJobName            string
 	RunTemplatePipelineID int
 	RunTeamID             int
-	Privileged       bool
-	Sidecars         []atc.SidecarConfig
+	Privileged            bool
+	Sidecars              []atc.SidecarConfig
 
 	// ContainerType is empty for the task containers every scenario written
 	// before check containers existed assumes; draftContainerType defaults it.
