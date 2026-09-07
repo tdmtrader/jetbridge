@@ -146,11 +146,16 @@ func runExtraDirectDefinitions() []brine.StepDefinition {
 					return RunExtraDirectRun{}, fmt.Errorf("expected a command parameter")
 				}
 
+				spec, err := runExtraSpecFromDraft(in)
+				if err != nil {
+					return RunExtraDirectRun{}, err
+				}
+
 				container, _, err := in.Worker.FindOrCreateContainer(
 					in.Ctx,
 					db.NewFixedHandleContainerOwner(in.Handle),
 					db.ContainerMetadata{Type: db.ContainerTypeTask},
-					runExtraSpecFromDraft(in),
+					spec,
 					&noopDelegate{},
 				)
 				if err != nil {
@@ -352,11 +357,16 @@ func runExtraMountDefinitions() []brine.StepDefinition {
 				// stubs (covered separately in volume-streaming.feature).
 				in.Worker.SetExecutor(execStub{})
 
+				spec, err := runExtraSpecFromDraft(in)
+				if err != nil {
+					return RunExtraMounts{}, err
+				}
+
 				container, mounts, err := in.Worker.FindOrCreateContainer(
 					in.Ctx,
 					db.NewFixedHandleContainerOwner(in.Handle),
 					db.ContainerMetadata{Type: db.ContainerTypeTask},
-					runExtraSpecFromDraft(in),
+					spec,
 					&noopDelegate{},
 				)
 				if err != nil {
@@ -947,10 +957,10 @@ func runExtraRequest(database JetbridgeDB, dbWorker db.Worker, handle string) Ru
 // runExtraSpecFromDraft mirrors the spec container_spec.go's "the container
 // runs" builds, so a draft refined by the shared Given steps means the same
 // thing on this path.
-func runExtraSpecFromDraft(in ContainerDraft) runtime.ContainerSpec {
-	var inputs []runtime.Input
-	for _, path := range in.Inputs {
-		inputs = append(inputs, runtime.Input{DestinationPath: path})
+func runExtraSpecFromDraft(in ContainerDraft) (runtime.ContainerSpec, error) {
+	inputs, err := draftInputs(in)
+	if err != nil {
+		return runtime.ContainerSpec{}, err
 	}
 	outputs := runtime.OutputPaths{}
 	for i, path := range in.Outputs {
@@ -977,7 +987,7 @@ func runExtraSpecFromDraft(in ContainerDraft) runtime.ContainerSpec {
 	if len(outputs) > 0 {
 		spec.Outputs = outputs
 	}
-	return spec
+	return spec, nil
 }
 
 func runExtraTheOnlyPod(ctx context.Context, clientset *fake.Clientset, namespace string) (*corev1.Pod, error) {

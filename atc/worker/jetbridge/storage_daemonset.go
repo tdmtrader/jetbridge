@@ -198,6 +198,11 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 			continue
 		}
 
+		// Unreachable from a pod — (*Container).validateInputs rejects an
+		// input with neither an Artifact nor a HangarTree before buildPod gets
+		// here — but this is an exported StorageBackend method, and
+		// TestDaemonSetBackend_BuildFetchInitContainers_SkipsNilArtifact calls
+		// it directly with an unvalidated spec.
 		if input.Artifact == nil {
 			continue
 		}
@@ -591,6 +596,8 @@ func (b *DaemonSetBackend) preferredInputNode(inputs []runtime.Input) string {
 	}
 	counts := make(map[string]int)
 	for _, input := range inputs {
+		// Not dead code: a Hangar tree input passes validateInputs with a nil
+		// Artifact, and it is not located by artifact key at all.
 		if input.Artifact == nil {
 			continue
 		}
