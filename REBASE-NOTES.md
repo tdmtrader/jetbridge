@@ -972,6 +972,47 @@ Items 2, 3, 6 and 10 stand unchanged; nothing in core's 95 commits went near the
     is probably obsolete — but deleting another campaign's deliberately-written
     scenario, in a rebase, on my own judgement, is not a call I should make.
 
+### Item 12 — closed 2026-09-07
+
+The owner ruled on both halves, and `4b99af4c71` carries the result.
+
+1. **The fifteenth scenario is removed.** `An input with nothing to fetch is
+   skipped, not fatal to the rest` describes a state production cannot reach —
+   re-verified here: `atc/exec/put_inputs.go:115` and `atc/exec/task_step.go:490`
+   both `continue` when the artifact repository has no artifact for a name, so
+   no pipeline emits an input with a nil `Artifact`. A DISPOSITION comment in
+   `container-pod.feature` replaces it, and the three sentences only it used go
+   with it.
+
+2. **The rest are reconciled by collapsing the vocabulary**, so brine can only
+   express an input production can produce. `ContainerDraft.Inputs` and
+   `ContainerDraft.ArtifactInputs` become one field; every input path gets a
+   real artifact volume. The qualified phrase `... produced by an earlier step`
+   is deleted — in JetBridge every input IS produced by an earlier step, so once
+   the artifact-less form ceased to exist the qualifier carried no information.
+
+The measured set was TEN failing scenarios, not the fifteen this item predicted
+by static enumeration: the five in `container-run.feature`, `step-integration
+.feature:101` and `volume-streaming.feature` that only create the container and
+never run it never reach `buildPod`, so `validateInputs` never sees them.
+
+**No assertion changed.** The pod-shape sentences that could have moved — `the
+pod has 3 volumes`, `every volume is ephemeral`, `the pod runs 2 containers`,
+`handed 5 volumes in all`, and both dedup scenarios — all hold, because a
+store-less worker emits no fetch init container whatever the input carries and
+the dedup is keyed on the destination path. Full suite at `4b99af4c71`:
+**567/567, verdict passed** (35 features, 200s, `brine run --mode sync`).
+
+Both `input.Artifact == nil` guards in `storage_daemonset.go` are KEPT, each now
+carrying a comment saying which caller needs it. The one in
+`BuildFetchInitContainers` is unreachable from `buildPod` but is still called
+directly by `TestDaemonSetBackend_BuildFetchInitContainers_SkipsNilArtifact`.
+The one in `preferredInputNode` is not dead code at all: a Hangar tree input
+passes `validateInputs` with a nil `Artifact`, so deleting that guard would nil
+-dereference `input.Artifact.Handle()` for every Hangar input — the item's claim
+that both were unreachable was wrong about this one.
+
+
 ## Test results at head 52f85901f0 (31 with the notes commit) (this worktree unless said otherwise)
 
     $ go build ./...                                        # clean
