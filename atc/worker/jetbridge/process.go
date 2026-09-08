@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -758,6 +759,18 @@ type execProcess struct {
 	processSpec    runtime.ProcessSpec
 	processIO      runtime.ProcessIO
 	storageBackend StorageBackend
+
+	// pausePodRecreated is the one-shot guard shared by both paths that
+	// replace a dead pause pod (waitForRunning, and the exec retry loop).
+	// One replacement per step, whichever path spends it: a pod that dies
+	// twice is not losing a race, it is telling us something.
+	pausePodRecreated bool
+
+	// execTransportLive records that the exec transport actually carried
+	// bytes — the command's own input was read, or its output was written.
+	// Past that point the step has started and must never be exec'd a
+	// second time, whatever happens to the pod.
+	execTransportLive atomic.Bool
 }
 
 func newExecProcess(
@@ -888,12 +901,19 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		command = supervisorCommand(p.id, p.processSpec)
 	}
 
-	// Exec with retry: if the SPDY exec fails because the pause pod was
-	// terminated (e.g. GC reaper cleaned up a previous check's container),
-	// recreate the pod and retry. This handles the race where the pod
-	// transitions from Running → Succeeded between waitForRunning and exec.
+	// Exec with retry: if the SPDY dial fails because the pause pod was
+	// terminated (the GC reaper collecting a previous check's container, a
+	// drain, an eviction), replace the pod and retry. This handles the race
+	// where the pod goes terminal between waitForRunning and the exec, in
+	// whichever phase it lands.
 	const maxExecRetries = 2
 	var err error
+	// The transport is handed watched copies of the step's own streams, so
+	// that a retry can tell "the dial never connected" from "the command
+	// has started talking". Only the first is safe to run again.
+	execStdin := p.watchExecReader(p.processIO.Stdin)
+	execStdout := p.watchExecWriter(p.processIO.Stdout)
+	execStderr := p.watchExecWriter(p.processIO.Stderr)
 	for attempt := 0; attempt <= maxExecRetries; attempt++ {
 		execCtx, execSpan := tracing.StartSpan(ctx, "k8s.exec-process.exec", tracing.Attrs{
 			"pod-name": p.podName,
@@ -905,9 +925,9 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 			p.podName,
 			mainContainerName,
 			command,
-			p.processIO.Stdin,
-			p.processIO.Stdout,
-			p.processIO.Stderr,
+			execStdin,
+			execStdout,
+			execStderr,
 			p.processSpec.TTY != nil,
 			ExecAttrs{Purpose: "step-command"},
 		)
@@ -930,9 +950,13 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 			"attempt": attempt + 1,
 			"error":   err.Error(),
 		})
-		// Recreate the pause pod if it's in a terminal state.
-		if recreateErr := p.recreatePausePodIfTerminal(ctx); recreateErr != nil {
-			logger.Error("failed-to-recreate-pause-pod", recreateErr)
+		// The dial never connected, so nothing of the step has run: replace
+		// the dead pause pod and try again.
+		if recreateErr := p.recreatePausePod(ctx, nil); recreateErr != nil {
+			logger.Info("not-recreating-pause-pod", lager.Data{
+				"pod": p.podName,
+				"why": recreateErr.Error(),
+			})
 			break
 		}
 		// Wait for the new pod to be Running before retrying exec.
@@ -1058,39 +1082,146 @@ func (p *execProcess) SetTTY(_ runtime.TTYSpec) error {
 	return nil
 }
 
-// recreatePausePodIfTerminal checks if the pause pod terminated cleanly
-// (PodSucceeded) and recreates it. This handles the race where the GC
-// reaper terminates a check pod between waitForRunning and the SPDY exec.
-// Only PodSucceeded triggers recreation — PodFailed indicates a genuine
-// container failure (OOM, crash, etc.) that should not be retried.
-func (p *execProcess) recreatePausePodIfTerminal(ctx context.Context) error {
-	pod, err := p.clientset.CoreV1().Pods(p.config.Namespace).Get(ctx, p.podName, metav1.GetOptions{})
-	if err != nil {
-		// Pod doesn't exist — create a new one.
-		if p.container != nil {
-			_, createErr := p.container.createPausePod(ctx, p.processSpec)
-			return createErr
+// recreatePausePod replaces a pause pod that died before the step's process
+// could start. Both paths that can find the pod dead call it — waitForRunning,
+// when the pod goes terminal before it ever reached Running, and the exec
+// retry loop, when the SPDY dial cannot connect — so that they cannot come to
+// different conclusions about the same pod.
+//
+// The phase is not the signal. A pause pod the GC reaper collects or a node
+// drain stops exits 0 and is Succeeded; an evicted or preempted one is Failed
+// with a Reason; an OOM of the pause process is Failed as well. In every one
+// of those the step has run nothing yet, so replacing the pod costs a pod
+// creation and refusing costs the user a failed build. It is what has happened
+// to the STEP, not what phase the pod is in, that decides: the pod is replaced
+// exactly once, and never once the exec transport has carried a byte, because
+// a second exec would run the command's side effects a second time.
+//
+// pod may be nil, in which case the current pod is fetched. It returns an
+// error describing why no replacement was made; callers report that and fall
+// back to their own diagnostics.
+func (p *execProcess) recreatePausePod(ctx context.Context, pod *corev1.Pod) error {
+	if p.container == nil {
+		return fmt.Errorf("no container reference to recreate pause pod %s", p.podName)
+	}
+	if p.execTransportLive.Load() {
+		return fmt.Errorf("pause pod %s died after the step's command started — not re-running it", p.podName)
+	}
+	if p.pausePodRecreated {
+		return fmt.Errorf("pause pod %s has already been replaced once", p.podName)
+	}
+
+	if pod == nil {
+		fetched, err := p.clientset.CoreV1().Pods(p.config.Namespace).Get(ctx, p.podName, metav1.GetOptions{})
+		if err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("get pause pod %s: %w", p.podName, err)
 		}
-		return fmt.Errorf("pod not found and no container to recreate: %w", err)
+		pod = fetched // nil when the pod is already gone
 	}
-	if pod.Status.Phase != corev1.PodSucceeded {
-		return fmt.Errorf("pod %s is %s, not cleanly terminated — cannot recreate", p.podName, pod.Status.Phase)
+
+	// A pod whose own init container failed did not die — it never came up.
+	// Its inputs could not be staged, and a replacement would fail the same
+	// way while replacing the only explanation the user has with a startup
+	// timeout. Leave it for the caller's diagnostics.
+	if name, exitCode, failed := failedInitContainer(pod); failed {
+		return fmt.Errorf("pause pod %s did not die, its init container %q exited %d", p.podName, name, exitCode)
 	}
-	// Delete the terminal pod and create a fresh pause pod.
-	_ = p.clientset.CoreV1().Pods(p.config.Namespace).Delete(ctx, p.podName, metav1.DeleteOptions{})
-	// Wait for the old pod to be fully removed before creating a new one.
-	for i := 0; i < 30; i++ {
-		_, getErr := p.clientset.CoreV1().Pods(p.config.Namespace).Get(ctx, p.podName, metav1.GetOptions{})
-		if getErr != nil {
-			break // pod is gone
+
+	logger := lagerctx.FromContext(ctx).Session("recreate-pause-pod")
+	phase, reason := "NotFound", ""
+	if pod != nil {
+		phase = string(pod.Status.Phase)
+		reason = pod.Status.Reason
+	}
+	logger.Info("replacing-dead-pause-pod", lager.Data{
+		"pod":    p.podName,
+		"phase":  phase,
+		"reason": reason,
+	})
+
+	// The replacement destroys the evidence, so write the post-mortem first.
+	// Only for a pod that FAILED: a Succeeded pause pod is the reaper doing
+	// its job, and diagnostics for it would be noise in every build log.
+	if pod != nil && pod.Status.Phase == corev1.PodFailed {
+		writePodDiagnostics(pod, p.processIO.Stderr)
+		writeNodeDiagnostics(ctx, p.clientset, pod, p.processIO.Stderr)
+	}
+
+	// Spent whether or not the creation succeeds: one replacement per step.
+	p.pausePodRecreated = true
+
+	if pod != nil {
+		_ = p.clientset.CoreV1().Pods(p.config.Namespace).Delete(ctx, p.podName, metav1.DeleteOptions{})
+		// Wait for the old pod to be fully removed before creating a new one.
+		for i := 0; i < 30; i++ {
+			_, getErr := p.clientset.CoreV1().Pods(p.config.Namespace).Get(ctx, p.podName, metav1.GetOptions{})
+			if getErr != nil {
+				break // pod is gone
+			}
+			time.Sleep(500 * time.Millisecond)
 		}
-		time.Sleep(500 * time.Millisecond)
 	}
-	if p.container != nil {
-		_, createErr := p.container.createPausePod(ctx, p.processSpec)
-		return createErr
+
+	if _, createErr := p.container.createPausePod(ctx, p.processSpec); createErr != nil {
+		return fmt.Errorf("recreate pause pod %s: %w", p.podName, createErr)
 	}
-	return fmt.Errorf("no container reference to recreate pause pod")
+	return nil
+}
+
+// failedInitContainer reports the first init container that terminated
+// non-zero, which is the step's own setup failing rather than the pause pod
+// being taken away from it.
+func failedInitContainer(pod *corev1.Pod) (name string, exitCode int32, failed bool) {
+	if pod == nil {
+		return "", 0, false
+	}
+	for _, cs := range pod.Status.InitContainerStatuses {
+		if cs.State.Terminated != nil && cs.State.Terminated.ExitCode != 0 {
+			return cs.Name, cs.State.Terminated.ExitCode, true
+		}
+	}
+	return "", 0, false
+}
+
+// watchExecReader and watchExecWriter wrap the step's own streams so that the
+// first byte the exec transport carries in either direction marks the command
+// as started. A nil stream stays nil: the executors check for it.
+func (p *execProcess) watchExecReader(r io.Reader) io.Reader {
+	if r == nil {
+		return nil
+	}
+	return &liveExecReader{r: r, live: &p.execTransportLive}
+}
+
+func (p *execProcess) watchExecWriter(w io.Writer) io.Writer {
+	if w == nil {
+		return nil
+	}
+	return &liveExecWriter{w: w, live: &p.execTransportLive}
+}
+
+type liveExecReader struct {
+	r    io.Reader
+	live *atomic.Bool
+}
+
+func (l *liveExecReader) Read(b []byte) (int, error) {
+	// The transport reads the command's stdin only once it is connected, and
+	// a drained reader cannot be replayed into a second exec anyway.
+	l.live.Store(true)
+	return l.r.Read(b)
+}
+
+type liveExecWriter struct {
+	w    io.Writer
+	live *atomic.Bool
+}
+
+func (l *liveExecWriter) Write(b []byte) (int, error) {
+	if len(b) > 0 {
+		l.live.Store(true)
+	}
+	return l.w.Write(b)
 }
 
 // fetchPodNodeName retrieves the node name where this pod is running.
@@ -1159,7 +1290,6 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 	var unschedulableFirstSeen time.Time
 	var unschedulableNotified bool
 	countsSet := false
-	podRecreated := false
 	tracker := newPodEventTracker()
 	for {
 		pod, err := watcher.Next(timeoutCtx)
@@ -1208,6 +1338,29 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 
 		tracker.emitPodLifecycleEvents(ctx, pod)
 
+		// The pause pod reached a terminal phase without ever running the
+		// step. Whatever took it — the reaper, a drain (Succeeded), an
+		// eviction or preemption (Failed, with a Reason), an OOM of the
+		// pause process (Failed) — replace it once and keep waiting. This
+		// runs before the failure classification below so that a pod which
+		// died before the step started is retried rather than reported;
+		// once the one replacement is spent, the classification stands.
+		if pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded {
+			recreateErr := p.recreatePausePod(ctx, pod)
+			if recreateErr == nil {
+				// Restart the watcher on the fresh pod.
+				watcher.Stop()
+				watcher = NewPodWatcher(p.clientset, p.config.Namespace, p.podName)
+				continue
+			}
+			lagerctx.FromContext(ctx).Session("wait-for-running").Info("not-recreating-pause-pod", lager.Data{
+				"pod":    p.podName,
+				"phase":  string(pod.Status.Phase),
+				"reason": pod.Status.Reason,
+				"why":    recreateErr.Error(),
+			})
+		}
+
 		// Check for terminal failure states BEFORE checking Running phase,
 		// because CrashLoopBackOff can occur while the pod phase is Running.
 		// OOM check first — more actionable than generic CrashLoopBackOff.
@@ -1253,37 +1406,8 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 		}
 
 		if pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded {
-			// The pause pod was terminated by an external actor (e.g. GC
-			// reaper cleaned up a previous check's container). Attempt to
-			// recreate it once before giving up. Only recreate for PodFailed
-			// — PodSucceeded means the container ran to completion, which
-			// should not be retried.
-			if pod.Status.Phase == corev1.PodFailed && p.container != nil && !podRecreated {
-				logger := lagerctx.FromContext(ctx).Session("wait-for-running-recreate")
-				logger.Info("pod-terminal-recreating", lager.Data{
-					"pod":   p.podName,
-					"phase": string(pod.Status.Phase),
-				})
-				_ = p.clientset.CoreV1().Pods(p.config.Namespace).Delete(ctx, p.podName, metav1.DeleteOptions{})
-				for i := 0; i < 30; i++ {
-					_, getErr := p.clientset.CoreV1().Pods(p.config.Namespace).Get(ctx, p.podName, metav1.GetOptions{})
-					if getErr != nil {
-						break
-					}
-					time.Sleep(500 * time.Millisecond)
-				}
-				if _, createErr := p.container.createPausePod(ctx, p.processSpec); createErr != nil {
-					return fmt.Errorf("recreate pause pod after terminal: %w", createErr)
-				}
-				// Restart the watcher on the fresh pod.
-				watcher.Stop()
-				watcher = NewPodWatcher(p.clientset, p.config.Namespace, p.podName)
-				podRecreated = true // prevent infinite recreation loop
-				continue
-			}
-
-			// No container reference to recreate — report the error with
-			// init container diagnostics.
+			// The replacement above was not available or not appropriate —
+			// report the death, with init container diagnostics.
 			var initStatuses []string
 			for _, cs := range pod.Status.InitContainerStatuses {
 				state := "unknown"
