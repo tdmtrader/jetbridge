@@ -37,6 +37,7 @@ var _ = Describe("Mutation error status", func() {
 		Entry("template history", db.ErrPipelineTemplateHasRunHistory),
 		Entry("ordinary template transition state", db.ErrPipelineTemplateHasOrdinaryJobState),
 		Entry("completed run", db.ErrPipelineRunNotRunning),
+		Entry("build into a terminal run", db.ErrPipelineRunTerminal{Number: 7, Status: atc.RunStatusFailed}),
 		Entry("reclaimed payload", db.ErrPipelineRunPayloadGone),
 		Entry("one-off run payload", db.ErrPipelineRunOneOffBuild),
 		Entry("template build", db.ErrPipelineTemplateBuild),
@@ -44,6 +45,22 @@ var _ = Describe("Mutation error status", func() {
 		Entry("ambiguous template cache", db.TaskCacheIdentityConflictError{JobName: "deploy-((environment))"}),
 		Entry("stored template that no longer validates", db.ErrPipelineTemplateInvalid{Err: errors.New("template must contain at least one entry job")}),
 	)
+
+	It("tells the client which run is closed and what to do instead", func() {
+		// This fails if the terminal-run refusal reaches a manual trigger as a
+		// bare 500, or as a 409 whose body does not say which run refused or
+		// that running the template again is the way forward.
+		writer := httptest.NewRecorder()
+		Expect(errormap.Write(writer, db.ErrPipelineRunTerminal{
+			Number: 7, Status: atc.RunStatusFailed,
+		})).To(BeTrue())
+		Expect(writer.Code).To(Equal(http.StatusConflict))
+		Expect(writer.Header().Get("Content-Type")).To(Equal("application/json"))
+
+		var decoded atc.SaveConfigResponse
+		Expect(json.Unmarshal(writer.Body.Bytes(), &decoded)).To(Succeed())
+		Expect(decoded.Errors).To(ConsistOf("run #7 is complete (failed); run the template again"))
+	})
 
 	It("carries the stored template's defect to the client", func() {
 		// This fails if a template that fails re-validation at run time falls

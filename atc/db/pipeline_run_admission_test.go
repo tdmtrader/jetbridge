@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,6 +27,7 @@ var _ = Describe("run build admission", func() {
 	)
 	const (
 		runNotRunningMessage = "pipeline run is not running"
+		runTerminalMessage   = "run #1 is complete (succeeded); run the template again"
 		runOneOffMessage     = "pipeline run payload cannot create one-off builds"
 		templateBuildMessage = "pipeline templates cannot create builds directly"
 	)
@@ -116,16 +118,39 @@ var _ = Describe("run build admission", func() {
 		assertIdentity(build, "renamed-work", "renamed-policy")
 	})
 
-	It("refuses non-manual terminal admission and defensively refuses a pending build start", func() {
+	It("refuses every door into a terminal run and defensively refuses a pending build start", func() {
+		// Every way a build can be asked for goes through one admission seam,
+		// and a settled run turns all of them away with the same typed error.
+		// The manual doors are the ones that used to reopen the run: a manual
+		// trigger, the web's + button and a webhook all land on CreateBuild,
+		// and `fly rerun-build` lands on RerunBuild.
 		pending, err := workJob.CreateBuild("manual-user")
 		Expect(err).NotTo(HaveOccurred())
 		_, err = dbConn.Exec("UPDATE pipeline_runs SET status = 'succeeded', completed_at = now() WHERE id = $1", run.ID())
 		Expect(err).NotTo(HaveOccurred())
 
+		manual, err := workJob.CreateBuild("manual-user")
+		Expect(manual).To(BeNil())
+		Expect(err).To(MatchError(runTerminalMessage))
+		Expect(err).To(BeAssignableToTypeOf(db.ErrPipelineRunTerminal{}))
+		rerun, err := workJob.RerunBuild(pending, "rerun-user")
+		Expect(rerun).To(BeNil())
+		Expect(err).To(MatchError(runTerminalMessage))
 		_, err = payload.(legacyJobBuildPipeline).CreateJobBuild("work")
-		Expect(err).To(MatchError(runNotRunningMessage))
-		Expect(workJob.EnsurePendingBuildExists(context.Background())).To(MatchError(runNotRunningMessage))
+		Expect(err).To(MatchError(runTerminalMessage))
+		Expect(workJob.EnsurePendingBuildExists(context.Background())).To(MatchError(runTerminalMessage))
 
+		var builds int
+		Expect(dbConn.QueryRow("SELECT count(*) FROM builds WHERE job_id = $1", workJob.ID()).Scan(&builds)).To(Succeed())
+		Expect(builds).To(Equal(1), "no refused door may leave a build row behind")
+		var status string
+		var completedAt sql.NullTime
+		Expect(dbConn.QueryRow("SELECT status, completed_at FROM pipeline_runs WHERE id = $1", run.ID()).Scan(&status, &completedAt)).To(Succeed())
+		Expect(status).To(Equal("succeeded"))
+		Expect(completedAt.Valid).To(BeTrue())
+
+		// Build.Start is not an admission seam -- the build already exists --
+		// so it keeps its own error for the run that settled underneath it.
 		started, err := pending.Start(atc.Plan{})
 		Expect(err).To(MatchError(runNotRunningMessage))
 		Expect(started).To(BeFalse())
@@ -146,7 +171,7 @@ var _ = Describe("run build admission", func() {
 		_, err = tx.Exec("UPDATE pipeline_runs SET status = 'failed', completed_at = now() WHERE id = $1", run.ID())
 		Expect(err).NotTo(HaveOccurred())
 		Expect(tx.Commit()).To(Succeed())
-		Eventually(result).WithTimeout(3 * time.Second).Should(Receive(MatchError(runNotRunningMessage)))
+		Eventually(result).WithTimeout(3 * time.Second).Should(Receive(MatchError("run #1 is complete (failed); run the template again")))
 	})
 
 	It("refuses a stale job after its terminal payload has been reclaimed", func() {

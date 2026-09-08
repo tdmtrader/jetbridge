@@ -37,7 +37,6 @@ type jobBuildArgs struct {
 	Values          map[string]any
 	NextBuildName   bool
 	OnlyIfNoPending bool
-	ReopenTerminal  bool
 	ObservedRunID   int
 }
 
@@ -55,7 +54,7 @@ type jobBuildAdmission struct {
 // resolves identity in the caller transaction and treats supplied run labels
 // as untrusted input.
 func createJobBuild(tx Tx, build *build, jobID int, args jobBuildArgs) (bool, error) {
-	admission, err := lockJobBuildAdmission(tx, jobID, args.ObservedRunID, args.ReopenTerminal)
+	admission, err := lockJobBuildAdmission(tx, jobID, args.ObservedRunID)
 	if err != nil {
 		return false, err
 	}
@@ -118,7 +117,7 @@ func createAdmittedJobBuild(tx Tx, build *build, admission jobBuildAdmission, ar
 	return true, nil
 }
 
-func lockJobBuildAdmission(tx Tx, jobID, hydratedRunID int, reopenTerminal bool) (jobBuildAdmission, error) {
+func lockJobBuildAdmission(tx Tx, jobID, hydratedRunID int) (jobBuildAdmission, error) {
 	var observedRunID sql.NullInt64
 	err := tx.QueryRow(`
 		SELECT p.pipeline_run_id
@@ -206,12 +205,17 @@ func lockJobBuildAdmission(tx Tx, jobID, hydratedRunID int, reopenTerminal bool)
 	if !found || payloadID != admission.pipelineID {
 		return jobBuildAdmission{}, ErrPipelineRunPayloadGone
 	}
+	// A settled run admits nothing more, whoever is asking. The scheduler
+	// reaches here after losing a race with completion; a manual trigger, the
+	// web's + button, a webhook and `fly rerun-build` all reach it deliberately,
+	// and used to reopen the run -- flipping status back to 'running', clearing
+	// completed_at, and letting one run number complete twice with two sets of
+	// builds under it. Running the work again is a new run of the same template
+	// with its own number, so the refusal is typed and names the run.
 	if lockedRun.Status() != atc.RunStatusRunning {
-		if !reopenTerminal {
-			return jobBuildAdmission{}, ErrPipelineRunNotRunning
-		}
-		if err = reopenPipelineRun(tx, admission.runID, admission.pipelineID); err != nil {
-			return jobBuildAdmission{}, err
+		return jobBuildAdmission{}, ErrPipelineRunTerminal{
+			Number: lockedRun.Number(),
+			Status: lockedRun.Status(),
 		}
 	}
 	return admission, nil

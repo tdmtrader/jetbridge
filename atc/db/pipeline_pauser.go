@@ -12,11 +12,11 @@ import (
 )
 
 // pipelinePauserAttribution is the paused_by this sweep writes. It is a
-// platform attribution, not a user one: reopenPipelineRun clears it alongside
-// 'run-completed', so a run payload auto-paused here is always recoverable --
-// by pipeline.Unpause while the run is still 'running', and by a manual job
-// trigger once it is terminal. Do not reuse this string for a pause a user
-// asked for; a user pause is meant to survive reopen.
+// platform attribution, not a user one, and it is recoverable the only way a
+// pause on a live run payload needs to be: pipeline.Unpause, while the run is
+// still 'running'. Once the run has settled the pause is moot -- a settled run
+// admits no further builds at all (ErrPipelineRunTerminal) -- so there is
+// nothing to recover. Do not reuse this string for a pause a user asked for.
 const pipelinePauserAttribution = "automatic-pipeline-pauser"
 
 type PipelinePauser interface {
@@ -57,12 +57,11 @@ func (p *pipelinePauser) PausePipelines(ctx context.Context, daysSinceLastBuild 
 			// pipelineRunReclaimLifecycle -- which requires a terminal status
 			// -- never collects it, and checkFactory.Resources, which filters
 			// on p.paused = false, keeps lidar checking its resources forever.
-			// Nothing else can stop that. The pause is reversible from both
-			// ends: pipeline.Unpause is permitted while the run is still
-			// 'running', and reopenPipelineRun clears
-			// pipelinePauserAttribution alongside 'run-completed' when a
-			// manual trigger reopens a terminal run. Unlike a template pause
-			// this costs no log reaping: buildLogCollector walks
+			// Nothing else can stop that. The pause is reversible while it
+			// matters: pipeline.Unpause is permitted for as long as the run is
+			// 'running', which is exactly as long as the run can still admit a
+			// build. Unlike a template pause this costs no log reaping:
+			// buildLogCollector walks
 			// pipelineFactory.AllPipelines, which excludes payloads outright.
 		},
 		// subquery returns a list of pipelines who jobs ran WITHIN the range.

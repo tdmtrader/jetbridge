@@ -1,6 +1,11 @@
 package db
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+
+	"github.com/concourse/concourse/atc"
+)
 
 var (
 	ErrPipelineRunNotTemplate              = errors.New("pipeline is not a template")
@@ -27,3 +32,23 @@ func (e ErrPipelineTemplateInvalid) Error() string {
 }
 
 func (e ErrPipelineTemplateInvalid) Unwrap() error { return e.Err }
+
+// ErrPipelineRunTerminal reports a build refused admission into a run that has
+// already completed. A run is one execution of a template: it carries a number,
+// the parameters it was created with, and the outputs those produced, and once
+// it has settled that record is closed. Running the work again is a NEW run of
+// the same template -- its own number, its own outputs -- not a second pass
+// under an existing number, which would leave the run's status, its completion
+// time and its build list describing two different executions at once.
+//
+// It carries the number and the settled status because the refusal is answered
+// to a person who asked for a build by job name and has no other way to learn
+// which run their job belonged to.
+type ErrPipelineRunTerminal struct {
+	Number int
+	Status atc.RunStatus
+}
+
+func (e ErrPipelineRunTerminal) Error() string {
+	return fmt.Sprintf("run #%d is complete (%s); run the template again", e.Number, e.Status)
+}

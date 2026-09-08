@@ -287,6 +287,11 @@ Run: `git add atc/db atc/scheduler && git commit -m "feat(scheduler): admit run 
 
 ### Task 6: Completion and manual reopen
 
+> SUPERSEDED: the reopen half of this task was removed. A terminal run admits
+> no further builds; manual trigger and rerun are refused with
+> `ErrPipelineRunTerminal` (409). Read every "reopen" below as history, not as
+> the contract. See design §8.4.
+
 **Files:**
 - Create: `atc/db/pipeline_run_lifecycle.go`, `atc/db/pipeline_run_lifecycle_test.go`
 - Modify: `atc/db/build.go`, `atc/db/job.go`, `atc/db/pipeline.go`, and focused tests

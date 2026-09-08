@@ -897,9 +897,8 @@ func (j *job) CreateBuild(createdBy string) (_ Build, err error) {
 
 	build := newEmptyBuild(j.conn, j.lockFactory)
 	_, err = createJobBuild(tx, build, j.id, jobBuildArgs{
-		NextBuildName:  true,
-		ReopenTerminal: true,
-		ObservedRunID:  j.pipelineRunID,
+		NextBuildName: true,
+		ObservedRunID: j.pipelineRunID,
 		Values: map[string]any{
 			"status": BuildStatusPending, "manually_triggered": true, "created_by": createdBy,
 		},
@@ -959,7 +958,7 @@ func (j *job) tryRerunBuild(buildToRerun Build, createdBy string) (Build, error)
 		buildToRerunID = buildToRerun.RerunOf()
 	}
 
-	admission, err := lockJobBuildAdmission(tx, j.id, j.pipelineRunID, true)
+	admission, err := lockJobBuildAdmission(tx, j.id, j.pipelineRunID)
 	if err != nil {
 		return nil, err
 	}
