@@ -168,6 +168,33 @@ func (diff TemplateDiff) Render(to io.Writer) {
 	)
 }
 
+// CacheScopeDiff renders a change to a template's task cache scope. It is
+// rendered like the other template-only fields because turning the scope on
+// commits the cluster to node-local cache directories nothing reclaims, and
+// turning it off silently orphans whatever the previous scope wrote.
+type CacheScopeDiff struct {
+	Before string
+	After  string
+}
+
+func (diff CacheScopeDiff) Render(to io.Writer) {
+	fmt.Fprintln(to, ansi.Color("cache scope has changed:", "yellow"))
+
+	renderDiff(to,
+		fmt.Sprintf("cache_scope: %s\n", cacheScopeLabel(diff.Before)),
+		fmt.Sprintf("cache_scope: %s\n", cacheScopeLabel(diff.After)),
+	)
+}
+
+// An undeclared cache scope means CacheScopeNone, so the diff says so rather
+// than rendering a blank line the reader has to interpret.
+func cacheScopeLabel(scope string) string {
+	if scope == "" {
+		return CacheScopeNone
+	}
+	return scope
+}
+
 // RunRetentionDiff renders a change to a template's run retention policy.
 type RunRetentionDiff struct {
 	Before *RunRetentionConfig
@@ -419,6 +446,11 @@ func (c Config) Diff(out io.Writer, newConfig Config) bool {
 	if c.Template != newConfig.Template {
 		diffExists = true
 		TemplateDiff{Before: c.Template, After: newConfig.Template}.Render(indent)
+	}
+
+	if cacheScopeLabel(c.CacheScope) != cacheScopeLabel(newConfig.CacheScope) {
+		diffExists = true
+		CacheScopeDiff{Before: c.CacheScope, After: newConfig.CacheScope}.Render(indent)
 	}
 
 	paramDiffs := diffIndices(ParamIndex(c.Params), ParamIndex(newConfig.Params))

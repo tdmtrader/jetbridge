@@ -1,6 +1,9 @@
 package db_test
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"time"
 
 	"github.com/concourse/concourse/atc"
@@ -436,3 +439,211 @@ var _ = Describe("Component Notifications", func() {
 		})
 	})
 })
+
+var _ = Describe("Pipeline run completion notifications", func() {
+	// A run reaching a terminal status is announced on its own channel so a
+	// walker can be event-driven. Poll stays the source of truth -- the bus
+	// coalesces and silently drops -- but a completion that notifies nothing
+	// forces every consumer to wait out a full sweep interval.
+	listenForCompletion := func() func() bool {
+		signal, err := dbConn.Bus().ListenSignal(atc.PipelineRunCompletedChannel)
+		Expect(err).NotTo(HaveOccurred())
+
+		return func() bool {
+			defer dbConn.Bus().UnlistenSignal(atc.PipelineRunCompletedChannel, signal)
+			select {
+			case <-signal.C():
+				return true
+			case <-time.After(2 * time.Second):
+				return false
+			}
+		}
+	}
+
+	It("notifies when a finished build terminalises the run", func() {
+		fixture := createRunLifecycleFixture(basicRunConfig("entry"))
+		entry := fixture.jobs["entry"]
+		consumeObservedSchedule(entry)
+
+		received := listenForCompletion()
+
+		Expect(pendingRunBuild(entry).Finish(db.BuildStatusSucceeded)).To(Succeed())
+		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusSucceeded))
+
+		Expect(received()).To(BeTrue(), "expected a run completion notification once the run reached a terminal status")
+	})
+
+	It("notifies when consuming a schedule request settles the last outstanding debt", func() {
+		fixture := createRunLifecycleFixture(basicRunConfig("entry"))
+		entry := fixture.jobs["entry"]
+		Expect(pendingRunBuild(entry).Finish(db.BuildStatusFailed)).To(Succeed())
+		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusRunning), "schedule debt still blocks completion")
+
+		received := listenForCompletion()
+
+		consumeObservedSchedule(entry)
+		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusFailed))
+
+		Expect(received()).To(BeTrue(), "the scheduler's own completion attempt must announce the run too")
+	})
+
+	It("announces every completion site through the one notification helper", func() {
+		// A new completion site that forgets to announce costs a walker a full
+		// poll interval and fails no test, so the count is guarded here rather
+		// than left to whoever adds the fifth site.
+		//
+		// The guard reads the parsed syntax tree rather than the file text,
+		// because prose is not behaviour: the doc comment on the helper names
+		// both channels, so a text scan stayed green when the helper itself
+		// announced only one of them.
+		announced, attempted := 0, 0
+		for _, name := range []string{"build.go", "job.go", "pipeline.go"} {
+			file := parseCompletionSource(name)
+			announces := callsToFunc(file, "announceRunCompletion")
+			attempts := callsToFunc(file, "attemptRunCompletion")
+			Expect(announces).To(
+				Equal(attempts),
+				name+" must announce every run completion it can cause",
+			)
+			announced += announces
+			attempted += attempts
+		}
+		Expect(attempted).To(BeNumerically(">=", 4), "the four known completion sites must still be calling attemptRunCompletion")
+		Expect(announced).To(Equal(attempted))
+
+		lifecycle := parseCompletionSource("pipeline_run_lifecycle.go")
+		Expect(channelsNotifiedBy(lifecycle, "announceRunCompletion")).To(ConsistOf(
+			"atc.ComponentReclaimerPipelineRuns",
+			"atc.PipelineRunCompletedChannel",
+		), "the helper must keep waking the reclaimer and announce the dedicated completion channel")
+	})
+
+	It("does not notify while the run is still running", func() {
+		fixture := createRunLifecycleFixture(basicRunConfig("entry", "other"))
+		entry := fixture.jobs["entry"]
+		consumeObservedSchedule(entry)
+		consumeObservedSchedule(fixture.jobs["other"])
+
+		received := listenForCompletion()
+
+		Expect(pendingRunBuild(entry).Finish(db.BuildStatusSucceeded)).To(Succeed())
+		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusRunning))
+
+		Expect(received()).To(BeFalse(), "a run with work still outstanding must not announce completion")
+	})
+
+	It("does not announce a completion whose transaction fails at commit", func() {
+		// The announce is a wake-up for listeners that will then read the run
+		// back, so it has to follow the commit: a listener woken by a
+		// completion that rolled back reads a running run and either drops the
+		// event or, worse, acts on the stale one it can still see. Ordering is
+		// the whole content of the claim, and no spec that only watches a
+		// successful commit can see it -- both orders look identical there.
+		//
+		// A DEFERRABLE INITIALLY DEFERRED constraint trigger is what makes the
+		// difference observable: it fires at COMMIT, long after
+		// attemptRunCompletion has already flipped the row inside the
+		// transaction, so an announce placed before tx.Commit() has already
+		// gone out by the time the commit is refused.
+		//
+		// Two connections, because that announce would otherwise be issued
+		// while this spec's own transaction still holds the suite's single
+		// pooled connection, and database/sql would wait for it forever --
+		// hanging the suite instead of failing this spec.
+		dbConn.SetMaxOpenConns(2)
+		DeferCleanup(func() { dbConn.SetMaxOpenConns(1) })
+
+		fixture := createRunLifecycleFixture(basicRunConfig("entry"))
+		entry := fixture.jobs["entry"]
+		consumeObservedSchedule(entry)
+
+		_, err := dbConn.Exec(`
+			CREATE OR REPLACE FUNCTION refuse_terminal_run() RETURNS trigger AS $$
+			BEGIN
+				IF NEW.status <> 'running' THEN
+					RAISE EXCEPTION 'refusing terminal run at commit';
+				END IF;
+				RETURN NEW;
+			END $$ LANGUAGE plpgsql;
+			CREATE CONSTRAINT TRIGGER refuse_terminal_run
+				AFTER UPDATE ON pipeline_runs
+				DEFERRABLE INITIALLY DEFERRED
+				FOR EACH ROW EXECUTE FUNCTION refuse_terminal_run();
+		`)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() {
+			_, err := dbConn.Exec(`DROP TRIGGER IF EXISTS refuse_terminal_run ON pipeline_runs; DROP FUNCTION IF EXISTS refuse_terminal_run()`)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		received := listenForCompletion()
+
+		err = pendingRunBuild(entry).Finish(db.BuildStatusSucceeded)
+		Expect(err).To(HaveOccurred(), "the commit must have been refused")
+		Expect(err.Error()).To(ContainSubstring("refusing terminal run at commit"))
+		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusRunning), "rolled back: the run is still running")
+
+		Expect(received()).To(BeFalse(), "a completion that never committed must not be announced")
+	})
+})
+
+// parseCompletionSource parses one file of the package under test. Ginkgo runs
+// with the package directory as the working directory, and the guard below
+// needs the syntax tree rather than the bytes: a comment naming a helper or a
+// channel is not a call to it.
+func parseCompletionSource(name string) *ast.File {
+	GinkgoHelper()
+	file, err := parser.ParseFile(token.NewFileSet(), name, nil, 0)
+	Expect(err).NotTo(HaveOccurred())
+	return file
+}
+
+// callsToFunc counts calls to an unqualified function in the parsed file.
+func callsToFunc(file *ast.File, name string) int {
+	count := 0
+	ast.Inspect(file, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if fn, ok := call.Fun.(*ast.Ident); ok && fn.Name == name {
+			count++
+		}
+		return true
+	})
+	return count
+}
+
+// channelsNotifiedBy renders the argument of every `<x>.Notify(pkg.Channel)`
+// call made inside the named function, so the guard sees what the code
+// announces rather than what its comment says it announces.
+func channelsNotifiedBy(file *ast.File, funcName string) []string {
+	channels := []string{}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != funcName || fn.Body == nil {
+			continue
+		}
+		ast.Inspect(fn.Body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok || len(call.Args) != 1 {
+				return true
+			}
+			method, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || method.Sel.Name != "Notify" {
+				return true
+			}
+			arg, ok := call.Args[0].(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			pkg, ok := arg.X.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			channels = append(channels, pkg.Name+"."+arg.Sel.Name)
+			return true
+		})
+	}
+	return channels
+}

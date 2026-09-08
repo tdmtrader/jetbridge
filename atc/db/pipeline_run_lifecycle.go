@@ -6,6 +6,23 @@ import (
 	"github.com/concourse/concourse/atc"
 )
 
+// announceRunCompletion wakes everything that cares that a run just reached a
+// terminal status. Every caller of attemptRunCompletion routes its true result
+// here so the set of channels stays in one place.
+//
+// Both notifications are best-effort wake-ups after the completing
+// transaction commits, so both are fire-and-forget. The bus coalesces
+// notifications per channel and NotifySignal drops a signal when a listener's
+// buffer is already full, which means a listener can miss one entirely.
+// Nothing here may be treated as delivery: every consumer -- the reclaimer on
+// its interval, and any future walker on
+// atc.PipelineRunCompletedChannel -- must still poll, and must be correct
+// when no notification ever arrives.
+func announceRunCompletion(bus NotificationsBus) {
+	bus.Notify(atc.ComponentReclaimerPipelineRuns)
+	bus.Notify(atc.PipelineRunCompletedChannel)
+}
+
 func attemptRunCompletion(tx Tx, runID int) (bool, error) {
 	run, err := lockPipelineRun(tx, runID)
 	if err != nil {
