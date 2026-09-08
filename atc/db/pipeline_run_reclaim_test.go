@@ -254,16 +254,16 @@ var _ = Describe("Pipeline run reclamation", func() {
 		expectPipelineExists(victim.payload.ID(), true)
 	})
 
-	It("rechecks a concurrent reopen after waiting for the template lock", func() {
+	It("rechecks a run that stopped being terminal after waiting for the template lock", func() {
 		keepLast := 1
-		template := newReclaimTemplate("reopen-race", &keepLast, nil)
+		template := newReclaimTemplate("revived-race", &keepLast, nil)
 		completed := time.Now().Add(-time.Hour)
 		victim := newReclaimRun(template, &completed)
 		newReclaimRun(template, &completed)
 
 		gateConn := openRunLifecycleConn()
 		reclaimConn := openRunLifecycleConn()
-		reopenConn := openRunLifecycleConn()
+		revivedConn := openRunLifecycleConn()
 		gate, err := gateConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(func() { _ = gate.Rollback() })
@@ -276,11 +276,11 @@ var _ = Describe("Pipeline run reclamation", func() {
 		}()
 		Consistently(result, 150*time.Millisecond).ShouldNot(Receive())
 
-		reopen, err := reopenConn.Begin()
+		revived, err := revivedConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
-		_, err = reopen.Exec(`UPDATE pipeline_runs SET status = 'running', completed_at = NULL WHERE id = $1`, victim.run.ID())
+		_, err = revived.Exec(`UPDATE pipeline_runs SET status = 'running', completed_at = NULL WHERE id = $1`, victim.run.ID())
 		Expect(err).NotTo(HaveOccurred())
-		Expect(reopen.Commit()).To(Succeed())
+		Expect(revived.Commit()).To(Succeed())
 		Expect(gate.Rollback()).To(Succeed())
 		Eventually(result).WithTimeout(3 * time.Second).Should(Receive(BeFalse()))
 		expectPipelineExists(victim.payload.ID(), true)
@@ -326,7 +326,7 @@ var _ = Describe("Pipeline run reclamation", func() {
 		Expect(checkExists).To(BeFalse(), "disposable non-stamped checks follow the payload cascade")
 	})
 
-	It("treats policy withdrawal, reopen, active stamped builds, and a missing child as normal misses", func() {
+	It("treats policy withdrawal, a non-terminal run, active stamped builds, and a missing child as normal misses", func() {
 		keepLast := 1
 		completed := time.Now().Add(-time.Hour)
 
@@ -339,12 +339,12 @@ var _ = Describe("Pipeline run reclamation", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(destroyed).To(BeFalse())
 
-		reopenedTemplate := newReclaimTemplate("reopened", &keepLast, nil)
-		reopened := newReclaimRun(reopenedTemplate, &completed)
-		newReclaimRun(reopenedTemplate, &completed)
-		_, err = dbConn.Exec(`UPDATE pipeline_runs SET status = 'running', completed_at = NULL WHERE id = $1`, reopened.run.ID())
+		revivedTemplate := newReclaimTemplate("revived", &keepLast, nil)
+		revived := newReclaimRun(revivedTemplate, &completed)
+		newReclaimRun(revivedTemplate, &completed)
+		_, err = dbConn.Exec(`UPDATE pipeline_runs SET status = 'running', completed_at = NULL WHERE id = $1`, revived.run.ID())
 		Expect(err).NotTo(HaveOccurred())
-		destroyed, err = lifecycle.DestroyReclaimableRun(reopened.run.ID())
+		destroyed, err = lifecycle.DestroyReclaimableRun(revived.run.ID())
 		Expect(err).NotTo(HaveOccurred())
 		Expect(destroyed).To(BeFalse())
 
@@ -371,7 +371,7 @@ var _ = Describe("Pipeline run reclamation", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(candidateIDs).NotTo(ContainElement(missing.run.ID()), "headers without a live child must not consume the bounded batch")
 
-		for _, runID := range []int{withdrawn.run.ID(), reopened.run.ID(), blocked.run.ID(), missing.run.ID()} {
+		for _, runID := range []int{withdrawn.run.ID(), revived.run.ID(), blocked.run.ID(), missing.run.ID()} {
 			var retry sql.NullTime
 			Expect(dbConn.QueryRow(`SELECT reclaim_retry_after FROM pipeline_runs WHERE id = $1`, runID).Scan(&retry)).To(Succeed())
 			Expect(retry.Valid).To(BeFalse(), "ordinary recheck misses must not accrue retry debt")
@@ -410,7 +410,13 @@ var _ = Describe("Pipeline run reclamation", func() {
 		expectPipelineExists(victim.payload.ID(), true)
 	})
 
-	It("serializes manual reopen before reclaim on the durable run lock", func() {
+	It("serializes a refused manual admission before reclaim on the durable run lock", func() {
+		// Admission and reclaim contend for the same durable run lock, and this
+		// pins the order: admission queued first makes reclaim wait. What
+		// changes at the end of the queue is the outcome. A manual trigger used
+		// to reopen the run here and so save the payload from a reclaim that
+		// was already eligible; now it is refused, the run stays settled, and
+		// reclaim proceeds against the run it was always entitled to collect.
 		keepLast := 1
 		template := newReclaimTemplate("admission-first", &keepLast, nil)
 		completed := time.Now().Add(-time.Hour)
@@ -442,9 +448,11 @@ var _ = Describe("Pipeline run reclamation", func() {
 		}()
 		Consistently(reclaimed, 100*time.Millisecond).ShouldNot(Receive())
 		Expect(gate.Rollback()).To(Succeed())
-		Eventually(admitted).WithTimeout(3 * time.Second).Should(Receive(BeNil()))
-		Eventually(reclaimed).WithTimeout(3 * time.Second).Should(Receive(BeFalse()))
-		expectPipelineExists(victim.payload.ID(), true)
+		var admissionErr error
+		Eventually(admitted).WithTimeout(3 * time.Second).Should(Receive(&admissionErr))
+		Expect(admissionErr).To(BeAssignableToTypeOf(db.ErrPipelineRunTerminal{}))
+		Eventually(reclaimed).WithTimeout(3 * time.Second).Should(Receive(BeTrue()))
+		expectPipelineExists(victim.payload.ID(), false)
 	})
 
 	It("serializes reclaim before already-hydrated admission on the durable run lock", func() {

@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"time"
@@ -52,6 +53,35 @@ func createRunLifecycleFixture(config atc.Config) runLifecycleFixture {
 	return runLifecycleFixture{
 		factory: factory, template: template, run: creation.Run, payload: payload, jobs: jobs,
 	}
+}
+
+// expectTerminalRefusal asserts the refusal a settled run answers every new
+// build with. The type is the assertion that matters: errormap classifies it
+// into a 409 by type, so an untyped refusal reaches a manual trigger as a 500.
+func expectTerminalRefusal(err error, number int, status atc.RunStatus) {
+	GinkgoHelper()
+	var terminal db.ErrPipelineRunTerminal
+	Expect(errors.As(err, &terminal)).To(BeTrue(), "refusal must be typed, got %v", err)
+	Expect(terminal.Number).To(Equal(number))
+	Expect(terminal.Status).To(Equal(status))
+	Expect(terminal.Error()).To(ContainSubstring("run the template again"))
+}
+
+// runSettlement is the whole of what a refused build must leave alone: a run
+// that stays settled at the same status, at the same instant, with the same
+// builds under it.
+type runSettlement struct {
+	status      atc.RunStatus
+	completedAt *time.Time
+	builds      int
+}
+
+func (fixture runLifecycleFixture) settlement() runSettlement {
+	GinkgoHelper()
+	run := fixture.reloadRun()
+	var builds int
+	Expect(dbConn.QueryRow(`SELECT count(*) FROM builds WHERE pipeline_run_id = $1`, fixture.run.ID()).Scan(&builds)).To(Succeed())
+	return runSettlement{status: run.Status(), completedAt: run.CompletedAt(), builds: builds}
 }
 
 func (fixture runLifecycleFixture) reloadRun() db.PipelineRun {
@@ -305,7 +335,7 @@ var _ = Describe("Pipeline run lifecycle", func() {
 		Expect(found).To(BeTrue())
 		Expect(entry.Paused()).To(BeTrue())
 		Expect(entry.PausedBy()).To(Equal("alice"))
-		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusFailed), "pausing must not reopen or re-settle a terminal run")
+		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusFailed), "pausing must not revive or re-settle a terminal run")
 	})
 
 	DescribeTable("aggregates the rerun-aware latest status with lifecycle severity",
@@ -329,17 +359,24 @@ var _ = Describe("Pipeline run lifecycle", func() {
 	)
 
 	It("uses the newest rerun result for a job", func() {
-		fixture := createRunLifecycleFixture(basicRunConfig("entry"))
-		entry := fixture.jobs["entry"]
+		// The rerun happens while a sibling job is still outstanding, which is
+		// the only time a rerun is admitted at all: once the run has settled it
+		// is refused. The claim is unchanged -- the run's status follows the
+		// newest build of a job, not its first.
+		fixture := createRunLifecycleFixture(basicRunConfig("entry", "sibling"))
+		entry, sibling := fixture.jobs["entry"], fixture.jobs["sibling"]
 		original := pendingRunBuild(entry)
 		consumeObservedSchedule(entry)
 		Expect(original.Finish(db.BuildStatusFailed)).To(Succeed())
-		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusFailed))
+		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusRunning))
 
 		rerun, err := entry.RerunBuild(original, "rerun-user")
 		Expect(err).NotTo(HaveOccurred())
 		consumeObservedSchedule(entry)
 		Expect(rerun.Finish(db.BuildStatusSucceeded)).To(Succeed())
+
+		consumeObservedSchedule(sibling)
+		Expect(pendingRunBuild(sibling).Finish(db.BuildStatusSucceeded)).To(Succeed())
 		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusSucceeded))
 	})
 
@@ -403,7 +440,12 @@ var _ = Describe("Pipeline run lifecycle", func() {
 		Expect(fixture.payload.Paused()).To(BeFalse())
 	})
 
-	It("atomically reopens for a manual build, discards stale debt, and creates one fresh request", func() {
+	It("refuses a manual build into a terminal run and leaves it settled", func() {
+		// The run is the unit of immutability. A manual trigger on any job
+		// inside a settled run used to reopen it, so one run number ended up
+		// describing two executions -- two completion times, two sets of
+		// builds, one status. The trigger is refused instead, and everything
+		// the run had settled on stays exactly as it was.
 		fixture := createRunLifecycleFixture(downstreamRunConfig("manual", "stale"))
 		entry := fixture.jobs["entry"]
 		consumeObservedSchedule(entry)
@@ -411,76 +453,87 @@ var _ = Describe("Pipeline run lifecycle", func() {
 		consumeObservedSchedule(fixture.jobs["manual"])
 		consumeObservedSchedule(fixture.jobs["stale"])
 		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusFailed))
+		before := fixture.settlement()
+		Expect(before.completedAt).NotTo(BeNil())
 
-		Expect(fixture.jobs["stale"].RequestSchedule()).To(Succeed())
 		manualBuild, err := fixture.jobs["manual"].CreateBuild("manual-user")
-		Expect(err).NotTo(HaveOccurred())
-		Expect(manualBuild.Status()).To(Equal(db.BuildStatusPending))
+		expectTerminalRefusal(err, fixture.run.Number(), atc.RunStatusFailed)
+		Expect(manualBuild).To(BeNil())
+		Expect(fixture.settlement()).To(Equal(before), "a refused trigger must not touch the run's status, completion or builds")
 
-		run := fixture.reloadRun()
-		Expect(run.Status()).To(Equal(atc.RunStatusRunning))
-		Expect(run.CompletedAt()).To(BeNil())
 		found, err := fixture.payload.Reload()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
-		Expect(fixture.payload.Paused()).To(BeFalse())
-
-		var manualDebt, staleDebt bool
-		Expect(dbConn.QueryRow(`SELECT schedule_requested > last_scheduled FROM jobs WHERE id = $1`, fixture.jobs["manual"].ID()).Scan(&manualDebt)).To(Succeed())
-		Expect(dbConn.QueryRow(`SELECT schedule_requested > last_scheduled FROM jobs WHERE id = $1`, fixture.jobs["stale"].ID()).Scan(&staleDebt)).To(Succeed())
-		Expect(manualDebt).To(BeTrue(), "the admitted build must create exactly one fresh request")
-		Expect(staleDebt).To(BeFalse(), "terminal schedule debt must not survive reopen")
+		Expect(fixture.payload.Paused()).To(BeTrue(), "the completion pause must not be lifted by a refused trigger")
 	})
 
-	It("reopens for a rerun in the same transaction", func() {
+	It("refuses a rerun of a build belonging to a terminal run", func() {
+		// `fly rerun-build` reaches the same admission seam as a manual
+		// trigger, so it is refused by the same rule and with the same error.
 		fixture := createRunLifecycleFixture(basicRunConfig("entry"))
 		entry := fixture.jobs["entry"]
 		original := pendingRunBuild(entry)
 		consumeObservedSchedule(entry)
 		Expect(original.Finish(db.BuildStatusFailed)).To(Succeed())
+		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusFailed))
+		before := fixture.settlement()
 
 		rerun, err := entry.RerunBuild(original, "rerun-user")
-		Expect(err).NotTo(HaveOccurred())
-		Expect(rerun.RerunOf()).To(Equal(original.ID()))
-		run := fixture.reloadRun()
-		Expect(run.Status()).To(Equal(atc.RunStatusRunning))
-		Expect(run.CompletedAt()).To(BeNil())
+		expectTerminalRefusal(err, fixture.run.Number(), atc.RunStatusFailed)
+		Expect(rerun).To(BeNil())
+		Expect(fixture.settlement()).To(Equal(before), "a refused rerun must not touch the run's status, completion or builds")
 	})
 
-	It("clears only the internal pause during manual reopen", func() {
-		fixture := createRunLifecycleFixture(basicRunConfig("entry"))
-		entry := fixture.jobs["entry"]
-		consumeObservedSchedule(entry)
-		Expect(fixture.payload.Pause("alice")).To(Succeed())
-		Expect(pendingRunBuild(entry).Finish(db.BuildStatusFailed)).To(Succeed())
+	DescribeTable("leaves every payload pause attribution alone when refusing",
+		func(pausedBy string) {
+			// Reopen used to dissolve the platform attributions so the build it
+			// had just admitted could schedule. With no build admitted there is
+			// nothing to unblock, and a settled run's payload stays paused
+			// however it came to be paused.
+			fixture := createRunLifecycleFixture(basicRunConfig("entry"))
+			entry := fixture.jobs["entry"]
+			consumeObservedSchedule(entry)
+			if pausedBy != "run-completed" {
+				Expect(fixture.payload.Pause(pausedBy)).To(Succeed())
+			}
+			Expect(pendingRunBuild(entry).Finish(db.BuildStatusFailed)).To(Succeed())
+			before := fixture.settlement()
 
-		_, err := entry.CreateBuild("manual-user")
+			_, err := entry.CreateBuild("manual-user")
+			expectTerminalRefusal(err, fixture.run.Number(), atc.RunStatusFailed)
+
+			found, err := fixture.payload.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(fixture.payload.Paused()).To(BeTrue())
+			Expect(fixture.payload.PausedBy()).To(Equal(pausedBy))
+			Expect(fixture.settlement()).To(Equal(before))
+		},
+		Entry("internal completion", "run-completed"),
+		Entry("user pause", "alice"),
+		Entry("automatic pause", "automatic-pipeline-pauser"),
+	)
+
+	It("still builds an ordinary pipeline's job after it has completed", func() {
+		// The refusal belongs to runs, not to pipelines. An ordinary pipeline
+		// has no run header at all, so a job in it keeps building for ever --
+		// this is the spec that fails if the terminal check is ever hoisted out
+		// of the run branch of the admission seam.
+		first, err := defaultJob.CreateBuild("someone")
 		Expect(err).NotTo(HaveOccurred())
-		found, err := fixture.payload.Reload()
+		Expect(first.Finish(db.BuildStatusSucceeded)).To(Succeed())
+
+		second, err := defaultJob.CreateBuild("someone")
 		Expect(err).NotTo(HaveOccurred())
-		Expect(found).To(BeTrue())
-		Expect(fixture.payload.Paused()).To(BeTrue())
-		Expect(fixture.payload.PausedBy()).To(Equal("alice"))
-		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusRunning))
+		Expect(second.Status()).To(Equal(db.BuildStatusPending))
+		Expect(second.ID()).NotTo(Equal(first.ID()))
+
+		rerun, err := defaultJob.RerunBuild(first, "someone")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(rerun.RerunOf()).To(Equal(first.ID()))
 	})
-	It("clears an automatic-pauser pause during manual reopen", func() {
-		fixture := createRunLifecycleFixture(basicRunConfig("entry"))
-		entry := fixture.jobs["entry"]
-		consumeObservedSchedule(entry)
-		Expect(fixture.payload.Pause("automatic-pipeline-pauser")).To(Succeed())
-		Expect(pendingRunBuild(entry).Finish(db.BuildStatusFailed)).To(Succeed())
 
-		_, err := entry.CreateBuild("manual-user")
-		Expect(err).NotTo(HaveOccurred())
-		found, err := fixture.payload.Reload()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(found).To(BeTrue())
-		Expect(fixture.payload.Paused()).To(BeFalse(), "a platform pause must dissolve on reopen or the admitted build never schedules")
-		Expect(fixture.payload.PausedBy()).To(BeEmpty())
-		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusRunning))
-	})
-
-	It("refuses manual and rerun reopen after payload reclamation", func() {
+	It("refuses a manual trigger and a rerun after payload reclamation", func() {
 		fixture := createRunLifecycleFixture(basicRunConfig("entry"))
 		entry := fixture.jobs["entry"]
 		original := pendingRunBuild(entry)
@@ -582,13 +635,15 @@ var _ = Describe("Pipeline run lifecycle", func() {
 
 		Expect(gate.Rollback()).To(Succeed())
 		Eventually(finished).WithTimeout(3 * time.Second).Should(Receive(BeNil()))
-		Eventually(admitted).WithTimeout(3 * time.Second).Should(Receive(MatchError(db.ErrPipelineRunNotRunning)))
+		var admissionErr error
+		Eventually(admitted).WithTimeout(3 * time.Second).Should(Receive(&admissionErr))
+		expectTerminalRefusal(admissionErr, fixture.run.Number(), atc.RunStatusSucceeded)
 		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusSucceeded))
 	})
 })
 
 var _ = Describe("Pipeline run lifecycle structural guard", func() {
-	It("finds every lock, completion, unpause, and reopen seam", func() {
+	It("finds every lock, completion, unpause, and refusal seam", func() {
 		buildSource, err := os.ReadFile("build.go")
 		Expect(err).NotTo(HaveOccurred())
 		jobSource, err := os.ReadFile("job.go")
@@ -644,8 +699,17 @@ var _ = Describe("Pipeline run lifecycle structural guard", func() {
 		Expect(unpauseEnd).To(BeNumerically(">", 0), "guard must bound payload unpause")
 		Expect(string(pipelineSource)[unpauseStart : unpauseStart+unpauseEnd]).To(ContainSubstring("lockPipelineRunForPayload("))
 
-		Expect(string(lockSource)).To(ContainSubstring("ReopenTerminal"), "canonical admission must own terminal reopen")
-		Expect(string(lockSource)).To(ContainSubstring("reopenPipelineRun("), "canonical admission must call the one reopen transaction body")
+		Expect(string(lockSource)).To(ContainSubstring("ErrPipelineRunTerminal{"), "canonical admission must own the terminal refusal")
+		Expect(string(lockSource)).NotTo(ContainSubstring("ReopenTerminal"), "no caller may opt out of the terminal refusal")
+		for name, source := range map[string][]byte{
+			"pipeline_run_lock.go":      lockSource,
+			"pipeline_run_lifecycle.go": lifecycleSource,
+			"job.go":                    jobSource,
+			"build.go":                  buildSource,
+			"pipeline.go":               pipelineSource,
+		} {
+			Expect(string(source)).NotTo(ContainSubstring("reopenPipelineRun"), "a settled run has no reopen seam ("+name+")")
+		}
 		Expect(string(lifecycleSource)).To(ContainSubstring("func attemptRunCompletion("), "guard must find the single stateless completion predicate")
 	})
 })
