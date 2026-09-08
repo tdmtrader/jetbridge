@@ -3,14 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/concourse/concourse/hangar"
@@ -86,97 +84,6 @@ func (s *Server) handleHangarPublish(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}
 	_ = json.NewEncoder(w).Encode(attributes)
-}
-
-func (s *Server) handleHangarOpen(w http.ResponseWriter, r *http.Request) {
-	service := s.hangar
-	if service == nil {
-		http.NotFound(w, r)
-		return
-	}
-	ref, err := hangarRefFromRequest(r)
-	if err != nil {
-		s.refuseHangarMalformed(w, r)
-		return
-	}
-	reader, attributes, err := service.Store.OpenTree(r.Context(), ref, service.MaxArchiveBytes)
-	if err != nil {
-		s.refuseHangar(w, r, err)
-		return
-	}
-	if reader == nil {
-		s.refuseHangar(w, r, hangar.ErrCorrupt)
-		return
-	}
-
-	spool, err := os.CreateTemp(service.Canonicalizer.TempDir, "hangar-response-*.tar")
-	if err != nil {
-		_ = reader.Close()
-		s.refuseHangar(w, r, hangar.ErrInfrastructure)
-		return
-	}
-	spoolName := spool.Name()
-	defer func() {
-		_ = spool.Close()
-		_ = os.Remove(spoolName)
-	}()
-	hasher := sha256.New()
-	n, copyErr := io.Copy(io.MultiWriter(spool, hasher), io.LimitReader(reader, service.MaxArchiveBytes+1))
-	closeErr := reader.Close()
-	streamErr := errors.Join(normalizeHangarIOError(copyErr), normalizeHangarIOError(closeErr))
-	if streamErr != nil {
-		s.refuseHangar(w, r, streamErr)
-		return
-	}
-	if n > service.MaxArchiveBytes {
-		s.refuseHangar(w, r, hangar.ErrLimitExceeded)
-		return
-	}
-	actualDigest := hangar.Digest(fmt.Sprintf("sha256:%x", hasher.Sum(nil)))
-	if attributes.Ref != ref || attributes.LogicalBytes != n || actualDigest != ref.Digest {
-		s.refuseHangar(w, r, hangar.ErrCorrupt)
-		return
-	}
-	if _, err := spool.Seek(0, io.SeekStart); err != nil {
-		s.refuseHangar(w, r, hangar.ErrInfrastructure)
-		return
-	}
-	w.Header().Set("Content-Type", "application/x-tar")
-	w.Header().Set("Content-Length", strconv.FormatInt(n, 10))
-	w.WriteHeader(http.StatusOK)
-	if _, err := io.Copy(w, spool); err != nil {
-		panic(http.ErrAbortHandler)
-	}
-}
-
-func normalizeHangarIOError(err error) error {
-	if err == nil {
-		return nil
-	}
-	if multi, ok := err.(interface{ Unwrap() []error }); ok {
-		children := multi.Unwrap()
-		if len(children) == 0 {
-			return errors.Join(hangar.ErrInfrastructure, err)
-		}
-		normalized := make([]error, 0, len(children))
-		for _, child := range children {
-			normalized = append(normalized, normalizeHangarIOError(child))
-		}
-		return errors.Join(normalized...)
-	}
-	if hangarTypedError(err) {
-		return err
-	}
-	return errors.Join(hangar.ErrInfrastructure, err)
-}
-
-func hangarRefFromRequest(r *http.Request) (hangar.TreeRef, error) {
-	generationText := r.PathValue("generation")
-	generation, err := strconv.ParseInt(generationText, 10, 64)
-	if err != nil || strconv.FormatInt(generation, 10) != generationText {
-		return hangar.TreeRef{}, fmt.Errorf("invalid generation")
-	}
-	return hangar.NewTreeRef(hangar.Scope(r.PathValue("scope")), hangar.Digest("sha256:"+r.PathValue("digest")), generation)
 }
 
 func (s *Server) handleHangarMaterializations(w http.ResponseWriter, r *http.Request) {
@@ -383,11 +290,4 @@ func (s *Server) refuseHangar(w http.ResponseWriter, r *http.Request, err error)
 		status, message, reason = http.StatusNotFound, "not found", reasonNotFound
 	}
 	s.refuse(w, r, status, reason, errors.New(message))
-}
-
-func hangarTypedError(err error) bool {
-	return errors.Is(err, hangar.ErrInfrastructure) || errors.Is(err, hangar.ErrUnauthorized) ||
-		errors.Is(err, hangar.ErrCorrupt) || errors.Is(err, hangar.ErrLimitExceeded) ||
-		errors.Is(err, hangar.ErrConflict) || errors.Is(err, hangar.ErrNotFound) ||
-		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }

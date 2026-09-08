@@ -369,7 +369,6 @@ func (s *Server) Handler(opts ...HandlerOption) http.Handler {
 	mux.HandleFunc("GET /resource-caches/", protect(s.handleGetResourceCache))
 	if s.hangar != nil {
 		mux.HandleFunc("POST /hangar/v1/scopes/{scope}/trees", protect(s.handleHangarPublish))
-		mux.HandleFunc("GET /hangar/v1/scopes/{scope}/trees/sha256/{digest}/generations/{generation}", protect(s.handleHangarOpen))
 		mux.HandleFunc("POST /hangar/v1/materializations", s.handleHangarMaterializations)
 	}
 

@@ -8,7 +8,6 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -130,7 +129,6 @@ func TestHangarDisabledRoutesAre404(t *testing.T) {
 	}
 	for _, request := range []struct{ method, path string }{
 		{http.MethodPost, "/hangar/v1/scopes/ci/trees"},
-		{http.MethodGet, "/hangar/v1/scopes/ci/trees/sha256/" + strings.Repeat("a", 64) + "/generations/1"},
 		{http.MethodPost, "/hangar/v1/materializations"},
 	} {
 		recorder := httptest.NewRecorder()
@@ -201,156 +199,6 @@ func TestHangarPublishCanonicalizesAndReturnsExactAttributes(t *testing.T) {
 		if got.Ref.Generation != 7 || got.Ref.Digest != digest || got.Ref.Scope != "ci" || got.StoredBytes != 91 || got.LogicalBytes != int64(len(canonical)) || !got.CreatedAt.Equal(createdAt) {
 			t.Fatalf("attributes = %#v", got)
 		}
-	}
-}
-
-type failingReadCloser struct{ closeErr error }
-
-func (*failingReadCloser) Read([]byte) (int, error) {
-	return 0, fmt.Errorf("corrupt after open: %w", hangar.ErrCorrupt)
-}
-func (reader *failingReadCloser) Close() error { return reader.closeErr }
-
-func TestHangarOpenFullyVerifiesBeforeWritingSuccess(t *testing.T) {
-	digest := hangar.Digest("sha256:" + strings.Repeat("a", 64))
-	ref := hangar.TreeRef{Scope: "ci", Digest: digest, Generation: 9}
-	store := &hangarStoreStub{ensure: func(context.Context, hangar.Scope, hangar.Digest, io.Reader, int64) (hangar.TreeAttributes, bool, error) {
-		panic("unexpected")
-	}}
-	store.open = func(context.Context, hangar.TreeRef, int64) (io.ReadCloser, hangar.TreeAttributes, error) {
-		return &failingReadCloser{}, hangar.TreeAttributes{Ref: ref}, nil
-	}
-	server, _, _ := newHangarTestServer(t, store)
-	recorder := httptest.NewRecorder()
-	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/hangar/v1/scopes/ci/trees/sha256/"+strings.Repeat("a", 64)+"/generations/9", nil))
-	if recorder.Code != http.StatusUnprocessableEntity || strings.Contains(recorder.Body.String(), "corrupt after open") {
-		t.Fatalf("open = %d %q, want sanitized 422", recorder.Code, recorder.Body.String())
-	}
-}
-
-func TestHangarOpenHashesActualSpooledBytesBeforeSuccess(t *testing.T) {
-	raw := rawHangarTar(t, "x", "payload")
-	canonical, digest := canonicalHangarTree(t, t.TempDir(), raw)
-	mutated := append([]byte(nil), canonical...)
-	mutated[len(mutated)/2] ^= 0x01
-	ref := hangar.TreeRef{Scope: "ci", Digest: digest, Generation: 4}
-	store := &hangarStoreStub{ensure: func(context.Context, hangar.Scope, hangar.Digest, io.Reader, int64) (hangar.TreeAttributes, bool, error) {
-		panic("unexpected")
-	}}
-	store.open = func(context.Context, hangar.TreeRef, int64) (io.ReadCloser, hangar.TreeAttributes, error) {
-		return io.NopCloser(bytes.NewReader(mutated)), hangar.TreeAttributes{Ref: ref, LogicalBytes: int64(len(mutated))}, nil
-	}
-	server, _, _ := newHangarTestServer(t, store)
-	recorder := httptest.NewRecorder()
-	path := "/hangar/v1/scopes/ci/trees/sha256/" + strings.TrimPrefix(string(digest), "sha256:") + "/generations/4"
-	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
-	if recorder.Code != http.StatusUnprocessableEntity || recorder.Body.String() != "tree verification failed\n" {
-		t.Fatalf("same-length mutation = %d %q, want sanitized 422", recorder.Code, recorder.Body.String())
-	}
-}
-
-type hangarErrorReader struct{ err error }
-
-func (reader hangarErrorReader) Read([]byte) (int, error) { return 0, reader.err }
-func (hangarErrorReader) Close() error                    { return nil }
-
-type hangarReadCloseErrorReader struct {
-	readErr  error
-	closeErr error
-}
-
-func (reader hangarReadCloseErrorReader) Read([]byte) (int, error) { return 0, reader.readErr }
-func (reader hangarReadCloseErrorReader) Close() error             { return reader.closeErr }
-
-func TestHangarOpenClassifiesReadAndCloseFailuresTogether(t *testing.T) {
-	digest := hangar.Digest("sha256:" + strings.Repeat("d", 64))
-	ref := hangar.TreeRef{Scope: "ci", Digest: digest, Generation: 6}
-	for _, tc := range []struct {
-		name     string
-		readErr  error
-		closeErr error
-		status   int
-		body     string
-	}{
-		{"not-found-read-infrastructure-close", hangar.ErrNotFound, hangar.ErrInfrastructure, 503, "service unavailable\n"},
-		{"corrupt-read-context-close", hangar.ErrCorrupt, context.Canceled, 503, "service unavailable\n"},
-		{"untyped-read-conflict-close", errors.New("local spool read"), hangar.ErrConflict, 503, "service unavailable\n"},
-		{"not-found-read-untyped-close", hangar.ErrNotFound, errors.New("local close"), 503, "service unavailable\n"},
-		{"joined-not-found-and-untyped-read", errors.Join(hangar.ErrNotFound, errors.New("backend read failed")), nil, 503, "service unavailable\n"},
-		{"joined-conflict-and-untyped-close", io.EOF, errors.Join(hangar.ErrConflict, errors.New("backend close failed")), 503, "service unavailable\n"},
-		{"high-precedence-typed-alone", hangar.ErrCorrupt, nil, 422, "tree verification failed\n"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			store := &hangarStoreStub{ensure: func(context.Context, hangar.Scope, hangar.Digest, io.Reader, int64) (hangar.TreeAttributes, bool, error) {
-				panic("unexpected")
-			}}
-			store.open = func(context.Context, hangar.TreeRef, int64) (io.ReadCloser, hangar.TreeAttributes, error) {
-				return hangarReadCloseErrorReader{readErr: tc.readErr, closeErr: tc.closeErr}, hangar.TreeAttributes{Ref: ref}, nil
-			}
-			server, _, _ := newHangarTestServer(t, store)
-			recorder := httptest.NewRecorder()
-			server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/hangar/v1/scopes/ci/trees/sha256/"+strings.Repeat("d", 64)+"/generations/6", nil))
-			if recorder.Code != tc.status || recorder.Body.String() != tc.body {
-				t.Fatalf("status=%d body=%q, want sanitized %d %q", recorder.Code, recorder.Body.String(), tc.status, tc.body)
-			}
-		})
-	}
-}
-
-func TestHangarOpenPreservesTypedReadAndCloseFailures(t *testing.T) {
-	digest := hangar.Digest("sha256:" + strings.Repeat("c", 64))
-	ref := hangar.TreeRef{Scope: "ci", Digest: digest, Generation: 5}
-	for _, tc := range []struct {
-		name   string
-		reader io.ReadCloser
-		want   int
-	}{
-		{"infrastructure-read", hangarErrorReader{err: errors.Join(hangar.ErrInfrastructure, errors.New("backend"))}, 503},
-		{"context-read", hangarErrorReader{err: context.Canceled}, 503},
-		{"close", &closeErrorReader{Reader: bytes.NewReader(nil), err: hangar.ErrInfrastructure}, 503},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			store := &hangarStoreStub{ensure: func(context.Context, hangar.Scope, hangar.Digest, io.Reader, int64) (hangar.TreeAttributes, bool, error) {
-				panic("unexpected")
-			}}
-			store.open = func(context.Context, hangar.TreeRef, int64) (io.ReadCloser, hangar.TreeAttributes, error) {
-				return tc.reader, hangar.TreeAttributes{Ref: ref}, nil
-			}
-			server, _, _ := newHangarTestServer(t, store)
-			recorder := httptest.NewRecorder()
-			server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/hangar/v1/scopes/ci/trees/sha256/"+strings.Repeat("c", 64)+"/generations/5", nil))
-			if recorder.Code != tc.want || recorder.Body.String() != "service unavailable\n" {
-				t.Fatalf("status=%d body=%q", recorder.Code, recorder.Body.String())
-			}
-		})
-	}
-}
-
-type closeErrorReader struct {
-	*bytes.Reader
-	err error
-}
-
-func (reader *closeErrorReader) Close() error { return reader.err }
-
-func TestHangarOpenExactGeneration(t *testing.T) {
-	raw := rawHangarTar(t, "x", "y")
-	canonical, digest := canonicalHangarTree(t, t.TempDir(), raw)
-	ref := hangar.TreeRef{Scope: "ci", Digest: digest, Generation: 3}
-	store := &hangarStoreStub{ensure: func(context.Context, hangar.Scope, hangar.Digest, io.Reader, int64) (hangar.TreeAttributes, bool, error) {
-		panic("unexpected")
-	}}
-	store.open = func(_ context.Context, got hangar.TreeRef, _ int64) (io.ReadCloser, hangar.TreeAttributes, error) {
-		if got != ref {
-			t.Fatalf("ref = %#v, want %#v", got, ref)
-		}
-		return io.NopCloser(bytes.NewReader(canonical)), hangar.TreeAttributes{Ref: ref, LogicalBytes: int64(len(canonical))}, nil
-	}
-	server, _, _ := newHangarTestServer(t, store)
-	recorder := httptest.NewRecorder()
-	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/hangar/v1/scopes/ci/trees/sha256/"+strings.TrimPrefix(string(digest), "sha256:")+"/generations/3", nil))
-	if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Type") != "application/x-tar" || recorder.Header().Get("Content-Length") == "" || !bytes.Equal(recorder.Body.Bytes(), canonical) {
-		t.Fatalf("open = %d headers=%v exact=%v body=%q", recorder.Code, recorder.Header(), bytes.Equal(recorder.Body.Bytes(), canonical), recorder.Body.String())
 	}
 }
 
@@ -432,13 +280,9 @@ func TestHangarProtectedTreeRoutesRequireMTLSButMaterializationDoesNot(t *testin
 		panic("unexpected")
 	}}
 	server, _, _ := newHangarTestServer(t, store)
-	for _, path := range []string{"/hangar/v1/scopes/ci/trees", "/hangar/v1/scopes/ci/trees/sha256/" + strings.Repeat("a", 64) + "/generations/1"} {
-		method := http.MethodPost
-		if strings.Contains(path, "/sha256/") {
-			method = http.MethodGet
-		}
+	for _, path := range []string{"/hangar/v1/scopes/ci/trees"} {
 		recorder := httptest.NewRecorder()
-		server.Handler(WithTLS()).ServeHTTP(recorder, httptest.NewRequest(method, path, nil))
+		server.Handler(WithTLS()).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, path, nil))
 		if recorder.Code != http.StatusUnauthorized {
 			t.Errorf("%s = %d, want 401", path, recorder.Code)
 		}
@@ -608,30 +452,6 @@ func TestHangarMaterializationRejectsAbsoluteAndInvalidSegments(t *testing.T) {
 	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/hangar/v1/materializations", strings.NewReader(`{"items":[],"destination":"/tmp/escape"}`)))
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("absolute destination field = %d", recorder.Code)
-	}
-}
-
-func TestHangarOpenRejectsEveryInvalidRouteSegment(t *testing.T) {
-	store := &hangarStoreStub{ensure: func(context.Context, hangar.Scope, hangar.Digest, io.Reader, int64) (hangar.TreeAttributes, bool, error) {
-		panic("unexpected")
-	}}
-	store.open = func(context.Context, hangar.TreeRef, int64) (io.ReadCloser, hangar.TreeAttributes, error) {
-		panic("invalid route reached store")
-	}
-	server, _, _ := newHangarTestServer(t, store)
-	validDigest := strings.Repeat("a", 64)
-	for _, path := range []string{
-		"/hangar/v1/scopes/INVALID/trees/sha256/" + validDigest + "/generations/1",
-		"/hangar/v1/scopes/ci/trees/sha256/" + strings.Repeat("A", 64) + "/generations/1",
-		"/hangar/v1/scopes/ci/trees/sha256/" + validDigest[:63] + "/generations/1",
-		"/hangar/v1/scopes/ci/trees/sha256/" + validDigest + "/generations/0",
-		"/hangar/v1/scopes/ci/trees/sha256/" + validDigest + "/generations/01",
-	} {
-		recorder := httptest.NewRecorder()
-		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
-		if recorder.Code != http.StatusBadRequest {
-			t.Errorf("%s = %d, want 400", path, recorder.Code)
-		}
 	}
 }
 

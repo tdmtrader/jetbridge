@@ -303,7 +303,7 @@ func TestHangarDaemonStrictGCSFullTreeFlowFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server, _, key := newHangarTestServer(t, store)
+	server, service, key := newHangarTestServer(t, store)
 	handler := server.Handler(WithTLS())
 
 	publish := httptest.NewRequest(http.MethodPost, "/hangar/v1/scopes/ci/trees", bytes.NewReader(raw))
@@ -328,15 +328,22 @@ func TestHangarDaemonStrictGCSFullTreeFlowFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	digestHex := strings.TrimPrefix(string(attributes.Ref.Digest), "sha256:")
-	open := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/hangar/v1/scopes/%s/trees/sha256/%s/generations/%d", attributes.Ref.Scope, digestHex, attributes.Ref.Generation), nil)
-	open.TLS = verifiedTestTLSState()
-	opened := httptest.NewRecorder()
-	handler.ServeHTTP(opened, open)
-	if opened.Code != http.StatusOK {
-		t.Fatalf("exact generation GET status=%d body=%q", opened.Code, opened.Body.String())
+	// There is no HTTP tree-read route; the published object is read back the
+	// only way anything reads it, in process through the store, which is also
+	// the path materialization below takes.
+	reader, opened, err := store.OpenTree(context.Background(), attributes.Ref, service.MaxArchiveBytes)
+	if err != nil {
+		t.Fatalf("open exact generation: %v", err)
 	}
-	assertCanonicalTreeArchive(t, opened.Body.Bytes())
+	stored, readErr := io.ReadAll(reader)
+	closeErr := reader.Close()
+	if readErr != nil || closeErr != nil {
+		t.Fatalf("read exact generation: read=%v close=%v", readErr, closeErr)
+	}
+	if opened.Ref != attributes.Ref || opened.LogicalBytes != attributes.LogicalBytes {
+		t.Fatalf("opened = %#v, want the published attributes %#v", opened, attributes)
+	}
+	assertCanonicalTreeArchive(t, stored)
 
 	baseline := fake.snapshot(t)
 	fake.mu.Lock()
