@@ -10,6 +10,7 @@ Running notes for the next release; rewritten into full notes at cut time.
 
 ## Behaviour changes
 
+- A completed pipeline run no longer accepts new builds. Triggering a job inside a finished run (`fly trigger-job`, the web's + button, a webhook), or running `fly rerun-build` on one of its builds, used to reopen the run: its status went back to running, its completion time was cleared, and the run completed a second time under the same number with two sets of builds behind one status. All of those are now refused with a 409 reading `run #N is complete (<status>); run the template again`. A run is one execution of a template, so running the work again means creating a new run — its own number, its own parameters, its own outputs. Ordinary (non-run) pipelines are unaffected: their jobs keep building after they complete, as they always have.
 - A task step that times out or is aborted no longer leaves its pod behind, so `fly hijack` into it afterwards is not possible; hijack a running step instead. This is what makes the runaway command actually stop.
 - Note on `timeout:` with `attempts:`: `timeout` is a task field and `attempts` wraps the task, so each attempt gets the full timeout and a timed-out attempt is retried. This is stock Concourse behaviour and unchanged.
 

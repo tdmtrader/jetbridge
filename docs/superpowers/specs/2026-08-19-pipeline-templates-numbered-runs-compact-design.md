@@ -28,7 +28,7 @@ The feature-specific seams are limited to:
 1. Template validation, run parameter validation, and materialization.
 2. Atomic run-number allocation and creation.
 3. Durable run ownership and lifecycle locking.
-4. Run completion, manual reopen, and payload reclamation.
+4. Run completion, terminal refusal, and payload reclamation.
 5. Run collection APIs, Fly commands, and the lean UI.
 6. Team-partition event routing and template-scoped task-cache identity.
 7. Applying ordinary build-log retention across builds of the same logical job
@@ -332,7 +332,7 @@ Most lifecycle operations do not need the template and begin at the run row.
 No transaction may acquire a template row after holding a run row.
 
 The durable run-row lock is used by run job build admission, defensive build
-start, build finish/completion, manual reopen, and reclamation. Ordinary
+start, build finish/completion, manual admission, and reclamation. Ordinary
 pipeline builds perform only the nullable run-identity check.
 
 ### 8.2 Build admission
@@ -378,16 +378,28 @@ without a build—invokes the predicate. A newly discovered path must first add
 that same hook and a crash-recovery test rather than introduce a scanning work
 queue.
 
-### 8.4 Manual reopen
+### 8.4 Terminal runs are closed
 
-Manual trigger and rerun are the only terminal-to-running doors. They lock the
-run, require a live payload, clear `completed_at`, set status to running,
-discard scheduling requests accumulated while the payload was completed,
-create the requested build, and unpause atomically.
+A run is one execution of a template, and its number is the record of it.
+There is no terminal-to-running door. Admission of a build into a run that is
+not `running` is refused with `ErrPipelineRunTerminal`, which names the run and
+its settled status and reaches the API as a 409; running the work again means
+creating a new run of the same template, with its own number, parameters and
+outputs.
+
+The refusal is uniform across every door -- manual trigger, `fly rerun-build`,
+the legacy pipeline-scoped create, pending-build assurance, and a scheduler
+that arrives after losing the race with completion -- because a settled run
+that could be revived by any one of them would have two completion instants and
+two sets of builds behind a single status.
 
 Direct unpause of an automatically completed payload returns conflict. Normal
-pause/unpause remains valid while the run is active. A reclaimed run cannot be
-reopened.
+pause/unpause remains valid while the run is active, which is exactly as long
+as the run can still admit a build.
+
+(Superseded design: manual trigger and rerun originally reopened a terminal
+run, clearing `completed_at` and discarding accumulated scheduling requests.
+That door is removed.)
 
 Generic set, rename, archive, and destroy operations refuse run payloads.
 Reclamation is their only ordinary delete path. Pipeline-scoped one-off
@@ -652,7 +664,7 @@ The minimum matrix is:
 5. Expected-job fixed point: entry, reachable trigger chain, manual branch,
    disconnected cycle, unresolved input, and later version arrival.
 6. Completion aggregation and coverage for success/failure/error/abort/rerun.
-7. Choreographed build admission versus completion, reopen, and reclaim using
+7. Choreographed build admission versus completion, refusal, and reclaim using
    independent database connections.
 8. Atomic reclaim, the structural payload-delete guard, retained build
    identity, payload absence, check cleanup, rollback, and team purge.
@@ -705,7 +717,7 @@ ordering; it is not answered by adding a feature-specific ledger by default.
 - Run numbers are monotonic but not dense when `{run: N}` is preoccupied.
 - Durable run IDs are sequence-backed and may gap on rollback.
 - Current template policies are retroactive; deleted logs are irreversible.
-- Reclaimed runs cannot be reopened and expose no historical DAG in the lean
-  version.
+- Terminal runs admit no further builds, and reclaimed runs additionally expose
+  no historical DAG in the lean version.
 - Templates with durable runs are archiveable but not destroyable until a
   separate purge-history contract exists.
