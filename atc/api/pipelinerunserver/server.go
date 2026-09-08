@@ -65,6 +65,15 @@ func (s *Server) writeRun(w http.ResponseWriter, pipeline db.Pipeline, run db.Pi
 
 func (s *Server) CreatePipelineRun(pipeline db.Pipeline) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// First, before the body is read and before any factory call: the
+		// operator hold is a property of the server, not of the request, and
+		// refusing here is what makes "no row, no number, no payload, no
+		// notification" true by construction rather than by assertion.
+		if !atc.EnablePipelineRunCreation {
+			errormap.Write(w, atc.ErrPipelineRunCreationDisabled)
+			return
+		}
+
 		if rejectInstancedPipelineRun(w, pipeline) {
 			return
 		}
