@@ -490,11 +490,32 @@ func integrationStepDefinitions() []brine.StepDefinition {
 				return in
 			}),
 
-		Refine[StepDraft]("the step takes an input at {string}",
-			func(in StepDraft, a Args) StepDraft {
-				in.Spec.Inputs = append(in.Spec.Inputs, runtime.Input{DestinationPath: a.String(0)})
-				return in
-			}),
+		// Some input, freshly created for the occasion, as opposed to the
+		// sibling sentence below that names an artifact the scenario made
+		// earlier. This one says only "the step has an input here"; where it
+		// came from is not what the scenario is about. It still carries a real
+		// artifact volume, because that is the only kind of input a pipeline
+		// can produce — both producers of runtime.Input skip a name the
+		// artifact repository has nothing for.
+		brine.DefineMap[StepDraft, StepDraft](
+			"the step takes an input at {string}",
+			func(in StepDraft, p brine.Params, _ *brine.Recorder) (StepDraft, error) {
+				path, ok := p.GetString(0)
+				if !ok {
+					return StepDraft{}, fmt.Errorf("expected a path")
+				}
+				vol, _, err := in.Cluster.Worker.CreateVolumeForArtifact(
+					in.Cluster.Ctx, in.Cluster.Team.ID())
+				if err != nil {
+					return StepDraft{}, fmt.Errorf("create artifact for input %q: %w", path, err)
+				}
+				in.Spec.Inputs = append(in.Spec.Inputs, runtime.Input{
+					Artifact:        vol,
+					DestinationPath: path,
+				})
+				return in, nil
+			},
+		),
 
 		brine.DefineMap[StepDraft, StepDraft](
 			"the step takes the artifact {string} as an input at {string}",

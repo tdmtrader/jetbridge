@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/concourse/concourse/hangar"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -185,16 +186,15 @@ type Config struct {
 	// on each node when using the DaemonSet backend.
 	ArtifactDaemonHostPath string
 
+	// ArtifactDaemonNamespace is the namespace the artifact daemon runs in,
+	// when that differs from the namespace this config schedules pods into.
+	// It only affects which SAN the daemon's server certificate is verified
+	// against; empty means the daemon shares Namespace.
+	ArtifactDaemonNamespace string
+
 	// ArtifactDaemonService is the headless Service name for per-pod DNS
 	// resolution of the DaemonSet pods.
 	ArtifactDaemonService string
-
-	// ArtifactDaemonNamespace is the namespace the artifact daemon runs in,
-	// when that differs from Namespace. It only affects TLS verification: the
-	// daemon's server certificate names <service>.<namespace>.svc, and a
-	// caller scheduling pods into another namespace (the live tests do) must
-	// still verify against the daemon's own. Empty means Namespace.
-	ArtifactDaemonNamespace string
 
 	// ArtifactDaemonTLSCert is the path to the client certificate for mTLS
 	// connections to the artifact daemon.
@@ -221,6 +221,14 @@ type Config struct {
 	// ArtifactDaemonTLSEnabled indicates whether TLS is enabled for daemon
 	// communication. Derived from the presence of TLS cert/key/CA paths.
 	ArtifactDaemonTLSEnabled bool
+
+	// HangarEnabled permits exact immutable Hangar tree inputs.
+	HangarEnabled bool
+
+	// HangarGrantSigner mints short-lived grants bound to an exact tree,
+	// container handle, and input volume. The raw signing key is never passed
+	// to task pods.
+	HangarGrantSigner *hangar.GrantSigner
 }
 
 // ImageRegistryConfig holds configuration for a container image registry

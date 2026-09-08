@@ -27,8 +27,9 @@ spec:
     # Allow traffic from Concourse task/check pods (labeled by the K8s runtime)
     - from:
         - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: {{ include "concourse.name" . }}
+            matchExpressions:
+              - key: concourse.ci/worker
+                operator: Exists
       ports:
         - protocol: TCP
           port: {{ .Values.artifactDaemon.port | default 7780 }}
@@ -61,4 +62,24 @@ spec:
     - ports:
         - protocol: TCP
           port: 443
+    # GKE standard/Calico (GKE 1.21+) metadata server — required for
+    # Workload Identity token refresh.
+    - to:
+        - ipBlock:
+            cidr: 169.254.169.252/32
+      ports:
+        - protocol: TCP
+          port: 987
+        - protocol: TCP
+          port: 988
+    # GKE Dataplane V2 metadata server. Both current profiles are included
+    # because Helm cannot infer the cluster's network policy provider.
+    - to:
+        - ipBlock:
+            cidr: 169.254.169.254/32
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 8080
 {{- end }}

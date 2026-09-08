@@ -60,16 +60,9 @@ func ContainerSpecDefinitions() []brine.StepDefinition {
 		brine.DefineMap[ContainerDraft, PodCreated](
 			"the container runs",
 			func(in ContainerDraft, _ brine.Params, _ *brine.Recorder) (PodCreated, error) {
-				var inputs []runtime.Input
-				for _, path := range in.ArtifactInputs {
-					vol, _, err := in.Worker.CreateVolumeForArtifact(in.Ctx, in.TeamID)
-					if err != nil {
-						return PodCreated{}, fmt.Errorf("create artifact for input %q: %w", path, err)
-					}
-					inputs = append(inputs, runtime.Input{Artifact: vol, DestinationPath: path})
-				}
-				for _, path := range in.Inputs {
-					inputs = append(inputs, runtime.Input{DestinationPath: path})
+				inputs, err := draftInputs(in)
+				if err != nil {
+					return PodCreated{}, err
 				}
 				outputs := runtime.OutputPaths{}
 				for i, path := range in.Outputs {

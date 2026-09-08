@@ -105,15 +105,6 @@ func ContainerGapDefinitions() []brine.StepDefinition {
 		// A container whose row already exists is REUSED, and a reused
 		// container's pod has to clear the workspace the previous run left on
 		// the node before anything else starts.
-		// An input that carries a real artifact, rather than just a mount
-		// path. The backend only emits a fetch init container for inputs it
-		// can actually locate.
-		Refine[ContainerDraft]("it takes an input at {string} produced by an earlier step",
-			func(in ContainerDraft, a Args) ContainerDraft {
-				in.ArtifactInputs = append(in.ArtifactInputs, a.String(0))
-				return in
-			}),
-
 		Refine[ContainerDraft]("the container has run before on this worker",
 			func(in ContainerDraft, _ Args) ContainerDraft {
 				in.RanBefore = true
@@ -210,12 +201,18 @@ func ContainerGapDefinitions() []brine.StepDefinition {
 				if !ok {
 					return PodCreated{}, fmt.Errorf("expected an output name and a path")
 				}
+				// The input carries a real artifact, like every input a
+				// pipeline produces.
+				vol, _, err := in.Worker.CreateVolumeForArtifact(in.Ctx, in.TeamID)
+				if err != nil {
+					return PodCreated{}, fmt.Errorf("create artifact for input %q: %w", path, err)
+				}
 				kind := draftContainerType(in.ContainerType)
 				return runDraft(in, kind, runtime.ContainerSpec{
 					TeamID:    in.TeamID,
 					Dir:       in.Dir,
 					ImageSpec: runtime.ImageSpec{ImageURL: in.ImageURL},
-					Inputs:    []runtime.Input{{DestinationPath: path}},
+					Inputs:    []runtime.Input{{Artifact: vol, DestinationPath: path}},
 					Outputs:   runtime.OutputPaths{name: path},
 					Type:      kind,
 				}, false)
@@ -317,7 +314,7 @@ func ContainerGapDefinitions() []brine.StepDefinition {
 				// loudly rather than have them silently dropped by a spec
 				// that does not carry them.
 				if n := len(in.Inputs) + len(in.Outputs) + len(in.Caches) +
-					len(in.Scratch) + len(in.ArtifactInputs); n > 0 {
+					len(in.Scratch); n > 0 {
 					return PodCreated{}, fmt.Errorf(
 						"a check container has no inputs, outputs, caches or scratch, but %q was "+
 							"described with %d of them and this sentence would drop them", in.Handle, n)
@@ -412,7 +409,7 @@ func ContainerGapDefinitions() []brine.StepDefinition {
 						"this sentence describes a get container running; %q is a %s", in.Handle, kind)
 				}
 				if n := len(in.Inputs) + len(in.Outputs) + len(in.Caches) +
-					len(in.Scratch) + len(in.ArtifactInputs); n > 0 {
+					len(in.Scratch); n > 0 {
 					return PodCreated{}, fmt.Errorf(
 						"a get container's output is its working directory, and its spec carries no "+
 							"inputs, outputs, caches or scratch; %q was described with %d of them and "+
@@ -531,33 +528,23 @@ func ContainerGapDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// Which of the step's inputs the pod actually fetches.
-		//
-		// All three read the same list — the destination paths the
-		// fetch-inputs init container mounts, which is exactly the set of
-		// inputs it was built to write into — so the getter reports the
-		// absence of that container rather than returning an empty list.
-		// A sentence about which inputs are fetched presumes some are; left
-		// as "none", the negative check below would pass on a pod that
-		// fetches nothing at all, which is the failure it exists to catch.
-		CheckCount[PodCreated]("the pod fetches exactly {int} of the step's inputs",
-			"inputs fetched before the step starts", fetchedInputPaths),
-
-		CheckMember[PodCreated]("the pod fetches the input at {string}",
-			"the inputs fetched before the step starts", fetchedInputPaths),
-
-		CheckNotMember[PodCreated]("the pod does not fetch the input at {string}",
-			"the inputs fetched before the step starts", fetchedInputPaths),
+		// Three sentences about WHICH of a step's inputs the pod fetches used
+		// to live here — a count, a member and a non-member over the paths the
+		// fetch-inputs init container mounts. Their only scenario was "An
+		// input with nothing to fetch is skipped, not fatal to the rest",
+		// which described a step with one artifact-bearing input and one
+		// artifact-less sibling and asked that only the first be fetched.
+		// Production cannot build that step, so the scenario went, and with
+		// no scenario left to say them the sentences went too: every input a
+		// pod carries is now fetched, which "the pod fetches its inputs before
+		// the step starts" already says.
 	}
 }
 
-// The names production gives the two pod fixtures these checks read back.
-// Both are unexported in the jetbridge package; this file already reads
-// "cleanup-stale" the same way, and the container-spec family reads "main".
-const (
-	podArtifactStoreVolumeName  = "artifact-daemon-hostpath"
-	podFetchInputsContainerName = "fetch-inputs"
-)
+// The name production gives the pod fixture these checks read back. It is
+// unexported in the jetbridge package; this file already reads "cleanup-stale"
+// the same way, and the container-spec family reads "main".
+const podArtifactStoreVolumeName = "artifact-daemon-hostpath"
 
 // storeRootOf returns the node directory the pod's artifact store is mounted
 // from — the root every step's data is served out of.
@@ -585,37 +572,6 @@ func storeRootOf(pod *corev1.Pod, handle string) (string, error) {
 		"the pod for %q carries no artifact store volume, so no directory in it is served to "+
 			"any later step — this sentence is about where the daemon serves a directory from, "+
 			"and this worker keeps nothing on the node", handle)
-}
-
-// fetchedInputPaths is where in the step's workspace the fetch init container
-// writes: one mount per input it was given an artifact for, plus the
-// read-only store mount, which is the container's window onto the node and
-// not one of the step's inputs.
-func fetchedInputPaths(in PodCreated) ([]string, error) {
-	if in.Pod == nil {
-		return nil, fmt.Errorf("no pod was created")
-	}
-	var names []string
-	for _, c := range in.Pod.Spec.InitContainers {
-		names = append(names, c.Name)
-		if c.Name != podFetchInputsContainerName {
-			continue
-		}
-		var paths []string
-		for _, m := range c.VolumeMounts {
-			if m.Name == podArtifactStoreVolumeName {
-				continue
-			}
-			paths = append(paths, m.MountPath)
-		}
-		return paths, nil
-	}
-	return nil, fmt.Errorf(
-		"the pod for %q has no %q init container, so nothing is fetched into its workspace at "+
-			"all: every input the step was promised arrives as an empty directory and the "+
-			"command fails on a file the pipeline plainly handed it, with nothing in the build "+
-			"log to say why (init containers: %v)",
-		in.Handle, podFetchInputsContainerName, names)
 }
 
 // runDraft builds the pod through the worker the way the ATC does, then reads

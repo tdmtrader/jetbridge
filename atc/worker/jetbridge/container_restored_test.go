@@ -180,9 +180,11 @@ var _ = Describe("Container", func() {
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					Inputs: []runtime.Input{
 						{
+							Artifact:        &fakeArtifact{handle: "input-a"},
 							DestinationPath: "/tmp/build/workdir/input-a",
 						},
 						{
+							Artifact:        &fakeArtifact{handle: "input-b"},
 							DestinationPath: "/tmp/build/workdir/input-b",
 						},
 					},
@@ -294,7 +296,7 @@ var _ = Describe("Container", func() {
 					Dir:       "/tmp/build/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					Inputs: []runtime.Input{
-						{DestinationPath: "/tmp/build/workdir/repo"},
+						{Artifact: &fakeArtifact{handle: "repo"}, DestinationPath: "/tmp/build/workdir/repo"},
 					},
 					Outputs: runtime.OutputPaths{
 						"repo": "/tmp/build/workdir/repo/",
@@ -371,7 +373,7 @@ var _ = Describe("Container", func() {
 					Dir:       "/tmp/build/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					Inputs: []runtime.Input{
-						{DestinationPath: "/tmp/build/workdir/source"},
+						{Artifact: &fakeArtifact{handle: "source"}, DestinationPath: "/tmp/build/workdir/source"},
 					},
 					Outputs: runtime.OutputPaths{
 						"binary": "/tmp/build/workdir/binary/",
@@ -1015,8 +1017,8 @@ var _ = Describe("Container", func() {
 						Dir:       "/tmp/build/workdir",
 						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 						Inputs: []runtime.Input{
-							{DestinationPath: "/tmp/build/workdir/my-input"},
-							{DestinationPath: "/tmp/build/workdir/other-input"},
+							{Artifact: &fakeArtifact{handle: "my-input"}, DestinationPath: "/tmp/build/workdir/my-input"},
+							{Artifact: &fakeArtifact{handle: "other-input"}, DestinationPath: "/tmp/build/workdir/other-input"},
 						},
 					},
 					delegate,
@@ -1747,7 +1749,7 @@ var _ = Describe("Run with sidecar containers", func() {
 					Dir:       "/tmp/build/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					Inputs: []runtime.Input{
-						{DestinationPath: "/tmp/build/workdir/my-repo"},
+						{Artifact: &fakeArtifact{handle: "my-repo"}, DestinationPath: "/tmp/build/workdir/my-repo"},
 					},
 					Sidecars: []atc.SidecarConfig{
 						{
@@ -1941,7 +1943,7 @@ var _ = Describe("Run with sidecar containers", func() {
 					Dir:       "/tmp/build/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					Inputs: []runtime.Input{
-						{DestinationPath: "/tmp/build/workdir/my-input"},
+						{Artifact: &fakeArtifact{handle: "my-input"}, DestinationPath: "/tmp/build/workdir/my-input"},
 					},
 					Sidecars: []atc.SidecarConfig{
 						{

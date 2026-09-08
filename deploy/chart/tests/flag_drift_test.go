@@ -116,6 +116,9 @@ func TestChartRendersOnlyFlagsTheBinaryAccepts(t *testing.T) {
 		t.Fatalf("resolve repo root: %v", err)
 	}
 	binDir := t.TempDir()
+	if len(flagSurfaces) == 0 {
+		t.Fatal("flag drift test has no chart surfaces to inspect")
+	}
 
 	for _, surface := range flagSurfaces {
 		t.Run(surface.template, func(t *testing.T) {
@@ -137,6 +140,9 @@ func TestChartRendersOnlyFlagsTheBinaryAccepts(t *testing.T) {
 			}
 
 			for subcommand, rendered := range bySubcommand {
+				if len(rendered) == 0 {
+					t.Fatalf("%s matched a command surface but no flags", surface.template)
+				}
 				accepted := binaryFlags(t, binary, subcommand)
 
 				var missing []string

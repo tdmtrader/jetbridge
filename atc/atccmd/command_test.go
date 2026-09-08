@@ -2,6 +2,7 @@ package atccmd_test
 
 import (
 	"fmt"
+	"github.com/concourse/concourse/hangar"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -337,4 +338,114 @@ func TestSuite(t *testing.T) {
 	suite.Run(t, &CommandSuite{
 		Assertions: require.New(t),
 	})
+}
+
+func (s *CommandSuite) TestHangarRuntimeRequiresCompleteDaemonTLSAndExactCapabilityKey() {
+	validKey := filepath.Join(s.T().TempDir(), "hangar.key")
+	s.Require().NoError(os.WriteFile(validKey, []byte("0123456789abcdef0123456789abcdef"), 0600))
+
+	tests := map[string]struct {
+		configure func(*atccmd.RunCommand)
+		want      string
+	}{
+		"daemon hostPath": {
+			configure: func(cmd *atccmd.RunCommand) { cmd.Kubernetes.ArtifactDaemonHostPath = "" },
+			want:      "kubernetes-artifact-daemon-host-path",
+		},
+		// A partial triple is refused before Hangar's own check runs, by the
+		// one daemon-TLS predicate every site shares; Hangar's "complete TLS"
+		// refusal is reached only when no TLS is configured at all.
+		"TLS certificate": {
+			configure: func(cmd *atccmd.RunCommand) { cmd.Kubernetes.ArtifactDaemonTLSCert = "" },
+			want:      "partially configured",
+		},
+		"TLS private key": {
+			configure: func(cmd *atccmd.RunCommand) { cmd.Kubernetes.ArtifactDaemonTLSKey = "" },
+			want:      "partially configured",
+		},
+		"TLS CA": {
+			configure: func(cmd *atccmd.RunCommand) { cmd.Kubernetes.ArtifactDaemonTLSCACert = "" },
+			want:      "partially configured",
+		},
+		"no TLS at all": {
+			configure: func(cmd *atccmd.RunCommand) {
+				cmd.Kubernetes.ArtifactDaemonTLSCert = ""
+				cmd.Kubernetes.ArtifactDaemonTLSKey = ""
+				cmd.Kubernetes.ArtifactDaemonTLSCACert = ""
+			},
+			want: "complete artifact daemon TLS",
+		},
+		"capability key path": {
+			configure: func(cmd *atccmd.RunCommand) { cmd.Kubernetes.HangarCapabilityKey = "" },
+			want:      "kubernetes-hangar-capability-key",
+		},
+		"exact raw key": {
+			configure: func(cmd *atccmd.RunCommand) {
+				shortKey := filepath.Join(s.T().TempDir(), "short.key")
+				s.Require().NoError(os.WriteFile(shortKey, []byte("too-short"), 0600))
+				cmd.Kubernetes.HangarCapabilityKey = shortKey
+			},
+			want: "exactly 32 raw bytes",
+		},
+	}
+
+	for name, test := range tests {
+		s.Run(name, func() {
+			cmd := &atccmd.RunCommand{}
+			cmd.Kubernetes.Namespace = "concourse"
+			cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+			cmd.Kubernetes.ArtifactDaemonTLSCert = "/tls/client.crt"
+			cmd.Kubernetes.ArtifactDaemonTLSKey = "/tls/client.key"
+			cmd.Kubernetes.ArtifactDaemonTLSCACert = "/tls/ca.crt"
+			cmd.Kubernetes.HangarEnabled = true
+			cmd.Kubernetes.HangarCapabilityKey = validKey
+			cmd.Kubernetes.HangarCapabilityTTL = 15 * time.Minute
+			test.configure(cmd)
+
+			err := atccmd.ValidateK8sRuntimeForTest(cmd)
+			s.Error(err)
+			s.Contains(err.Error(), test.want)
+		})
+	}
+}
+
+func (s *CommandSuite) TestHangarRuntimeAcceptsCompleteConfigurationAndDisabledCompatibility() {
+	validKey := filepath.Join(s.T().TempDir(), "hangar.key")
+	s.Require().NoError(os.WriteFile(validKey, []byte("0123456789abcdef0123456789abcdef"), 0600))
+
+	enabled := &atccmd.RunCommand{}
+	enabled.Kubernetes.Namespace = "concourse"
+	enabled.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+	enabled.Kubernetes.ArtifactDaemonTLSCert = "/tls/client.crt"
+	enabled.Kubernetes.ArtifactDaemonTLSKey = "/tls/client.key"
+	enabled.Kubernetes.ArtifactDaemonTLSCACert = "/tls/ca.crt"
+	enabled.Kubernetes.HangarEnabled = true
+	enabled.Kubernetes.HangarCapabilityKey = validKey
+	enabled.Kubernetes.HangarCapabilityTTL = 15 * time.Minute
+	s.NoError(atccmd.ValidateK8sRuntimeForTest(enabled))
+
+	disabled := &atccmd.RunCommand{}
+	disabled.Kubernetes.Namespace = "concourse"
+	disabled.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+	disabled.Kubernetes.HangarCapabilityKey = "/does/not/exist"
+	s.NoError(atccmd.ValidateK8sRuntimeForTest(disabled), "disabled Hangar must not load or require its key")
+}
+
+func (s *CommandSuite) TestHangarRuntimeRejectsCapabilityTTLOutsideCoreBound() {
+	validKey := filepath.Join(s.T().TempDir(), "hangar.key")
+	s.Require().NoError(os.WriteFile(validKey, []byte("0123456789abcdef0123456789abcdef"), 0600))
+	for _, ttl := range []time.Duration{0, -time.Second, hangar.MaxGrantTTL + time.Nanosecond} {
+		cmd := &atccmd.RunCommand{}
+		cmd.Kubernetes.Namespace = "concourse"
+		cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+		cmd.Kubernetes.ArtifactDaemonTLSCert = "/tls/client.crt"
+		cmd.Kubernetes.ArtifactDaemonTLSKey = "/tls/client.key"
+		cmd.Kubernetes.ArtifactDaemonTLSCACert = "/tls/ca.crt"
+		cmd.Kubernetes.HangarEnabled = true
+		cmd.Kubernetes.HangarCapabilityKey = validKey
+		cmd.Kubernetes.HangarCapabilityTTL = ttl
+		err := atccmd.ValidateK8sRuntimeForTest(cmd)
+		s.Error(err)
+		s.Contains(err.Error(), "kubernetes-hangar-capability-ttl")
+	}
 }

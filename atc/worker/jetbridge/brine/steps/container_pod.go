@@ -27,6 +27,13 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 		// --- Draft refinements. In and Out are the same type, so these
 		// compose freely and in any order before the container runs. ---
 
+		// One input, carrying a real artifact volume — the only kind of input
+		// there is. This sentence used to have a longer twin, "... produced by
+		// an earlier step", for the input that carried an artifact, leaving
+		// the plain form to mean an input with none. That distinction is gone:
+		// in JetBridge every input is produced by an earlier step, a get or a
+		// task, so once the artifact-less form ceased to exist the qualifier
+		// named the only case there was and carried no information.
 		Refine[ContainerDraft]("it takes an input at {string}",
 			func(in ContainerDraft, a Args) ContainerDraft {
 				in.Inputs = append(in.Inputs, a.String(0))

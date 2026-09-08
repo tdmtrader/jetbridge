@@ -84,11 +84,20 @@ func failureDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
 		// Empty -> ClusterReady. Uses the scenario-scoped database.
+		//
+		// It persists volumes and owns a real team for the same reason the
+		// artifact-store worker does: every input a step declares carries an
+		// artifact, and an artifact volume is a row in the volumes table with
+		// a foreign key onto teams. Nothing else about the worker changes —
+		// volumeRepo is read only by CreateVolumeForArtifact and LookupVolume,
+		// and with no artifact locator this worker still has no storage
+		// backend, so its pods keep their emptyDir volumes and no fetch init
+		// container.
 		brine.DefineMapUsing[brine.Empty, ClusterReady](
 			"a jetbridge worker on a fake Kubernetes cluster",
 			[]string{"jetbridge-db"},
 			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder, res brine.Resources) (ClusterReady, error) {
-				cluster, err := NewCluster(res)
+				cluster, err := NewCluster(res, WithVolumeRepo(), WithTeam())
 				if err != nil {
 					return ClusterReady{}, err
 				}

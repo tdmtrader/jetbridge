@@ -2,23 +2,27 @@ package jetbridge
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
+	"github.com/concourse/concourse/hangar"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -298,7 +302,7 @@ func TestDaemonSetBackend_BuildFetchInitContainers_MultipleInputs(t *testing.T) 
 	}
 }
 
-func TestDaemonSetBackend_BuildFetchInitContainers_SkipsNilArtifact(t *testing.T) {
+func TestDaemonSetBackend_BuildFetchInitContainers_RefusesNilArtifact(t *testing.T) {
 	b := testBackend(nil)
 	inputs := []runtime.Input{
 		{Artifact: &testArtifact{handle: "vol-a"}, DestinationPath: "/tmp/input-a"},
@@ -314,16 +318,18 @@ func TestDaemonSetBackend_BuildFetchInitContainers_SkipsNilArtifact(t *testing.T
 		b.StepVolume("input-1", "handle", "input-1"),
 	}
 
+	// No pipeline can emit an input without an artifact, and the pod builder
+	// refuses one before it gets here; the backend refuses too rather than
+	// quietly fetching everything but that input.
 	inits, err := b.BuildFetchInitContainers("handle", inputs, volumes, mounts)
-	if err != nil {
-		t.Fatalf("BuildFetchInitContainers: %v", err)
+	if err == nil {
+		t.Fatalf("expected an artifact-less input to be refused, got %d init containers", len(inits))
 	}
-	if len(inits) != 1 {
-		t.Fatalf("expected 1 init container (nil artifact skipped), got %d", len(inits))
+	if !strings.Contains(err.Error(), `"/tmp/input-b"`) || !strings.Contains(err.Error(), "no artifact") {
+		t.Errorf("expected the error to name the artifact-less input, got %q", err)
 	}
-	// Single valid artifact — should still use batch container name.
-	if inits[0].Name != "fetch-inputs" {
-		t.Errorf("expected fetch-inputs, got %s", inits[0].Name)
+	if inits != nil {
+		t.Errorf("expected no init containers alongside the refusal, got %d", len(inits))
 	}
 }
 
@@ -365,6 +371,444 @@ func TestDaemonSetBackend_BuildFetchInitContainers_NoInputs(t *testing.T) {
 	}
 	if len(inits) != 0 {
 		t.Errorf("expected 0 init containers for nil inputs, got %d", len(inits))
+	}
+}
+
+func TestDaemonSetBackend_BuildFetchInitContainers_AppendsExactHangarBatch(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	signer, err := hangar.NewGrantSigner(key, hangar.MaxGrantTTL, func() time.Time {
+		return time.Unix(1_800_000_000, 0).UTC()
+	})
+	if err != nil {
+		t.Fatalf("new grant signer: %v", err)
+	}
+	verifier, err := hangar.NewGrantVerifier(key, hangar.MaxGrantTTL, func() time.Time {
+		return time.Unix(1_800_000_001, 0).UTC()
+	})
+	if err != nil {
+		t.Fatalf("new grant verifier: %v", err)
+	}
+
+	cfg := testDaemonConfig()
+	cfg.HangarEnabled = true
+	cfg.HangarGrantSigner = signer
+	b := NewDaemonSetBackend(cfg, nil, nil)
+	ref := hangar.TreeRef{
+		Scope:      "builds",
+		Digest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Generation: 7,
+	}
+	inputs := []runtime.Input{
+		{Artifact: &testArtifact{handle: "ordinary"}, DestinationPath: "/work/ordinary"},
+		{HangarTree: &ref, DestinationPath: "/work/exact"},
+	}
+	mounts := []corev1.VolumeMount{
+		{Name: "input-0", MountPath: "/work/ordinary"},
+		{Name: "input-1", MountPath: "/work/exact", ReadOnly: true},
+	}
+	volumes := []corev1.Volume{
+		b.StepVolume("input-0", "task-handle", "input-0"),
+		b.StepVolume("input-1", "task-handle", "input-1"),
+	}
+	volumes = append(volumes, *b.ArtifactStoreVolume(db.ContainerTypeTask))
+
+	inits, err := b.BuildFetchInitContainers("task-handle", inputs, volumes, mounts)
+	if err != nil {
+		t.Fatalf("build fetch init containers: %v", err)
+	}
+	if len(inits) != 2 {
+		t.Fatalf("expected ordered ordinary and Hangar init containers, got %d", len(inits))
+	}
+	if inits[0].Name != "fetch-inputs" || inits[1].Name != "materialize-hangar-inputs" {
+		t.Fatalf("unexpected init order: %q then %q", inits[0].Name, inits[1].Name)
+	}
+
+	command := strings.Join(inits[1].Command, " ")
+	const prefix = "REQUEST_B64='"
+	start := strings.Index(command, prefix)
+	if start < 0 {
+		t.Fatalf("Hangar command has no base64 request marker")
+	}
+	start += len(prefix)
+	end := strings.Index(command[start:], "'")
+	if end < 0 {
+		t.Fatalf("Hangar command has an unterminated base64 request")
+	}
+	payload, err := base64.StdEncoding.DecodeString(command[start : start+end])
+	if err != nil {
+		t.Fatalf("decode Hangar request: %v", err)
+	}
+	var request struct {
+		Items []struct {
+			Ref    hangar.TreeRef `json:"ref"`
+			Handle string         `json:"handle"`
+			Volume string         `json:"volume"`
+			Grant  string         `json:"grant"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(payload, &request); err != nil {
+		t.Fatalf("decode Hangar request JSON: %v", err)
+	}
+	if len(request.Items) != 1 {
+		t.Fatalf("expected one Hangar request item, got %d", len(request.Items))
+	}
+	item := request.Items[0]
+	if item.Ref != ref || item.Handle != "task-handle" || item.Volume != "input-1" {
+		t.Fatalf("unexpected exact request binding: %+v", item)
+	}
+	token := strings.TrimPrefix(item.Grant, "Bearer ")
+	if token == item.Grant || verifier.Verify(token, ref, "task-handle", "input-1") != nil {
+		t.Fatal("Hangar item did not carry a valid exact bearer grant")
+	}
+	if strings.Contains(command, string(key)) {
+		t.Fatal("capability signing key entered the init command")
+	}
+	for _, env := range inits[1].Env {
+		if strings.Contains(env.Value, string(key)) {
+			t.Fatal("capability signing key entered the init environment")
+		}
+	}
+	encodedPodSurface, err := json.Marshal(struct {
+		Init    corev1.Container `json:"init"`
+		Volumes []corev1.Volume  `json:"volumes"`
+	}{Init: inits[1], Volumes: volumes})
+	if err != nil {
+		t.Fatalf("marshal strict init Pod surface: %v", err)
+	}
+	if strings.Contains(string(encodedPodSurface), string(key)) || strings.Contains(string(encodedPodSurface), base64.StdEncoding.EncodeToString(key)) {
+		t.Fatal("long-lived capability key entered the strict init Pod spec")
+	}
+	if len(inits[1].VolumeMounts) != 1 || inits[1].VolumeMounts[0].Name != "input-1" {
+		t.Fatalf("strict init must reuse its input volume, got %+v", inits[1].VolumeMounts)
+	}
+	if inits[1].VolumeMounts[0].MountPath != "/hangar-inputs/input-0" || !inits[1].VolumeMounts[0].ReadOnly {
+		t.Fatalf("strict init must use a fixed read-only verification mount, got %+v", inits[1].VolumeMounts[0])
+	}
+	assertContainerMountsResolve(t, inits, volumes)
+}
+
+func TestDaemonSetBackend_HangarInitRequiresExactResponseAndReceipt(t *testing.T) {
+	ref := hangar.TreeRef{
+		Scope:      "builds",
+		Digest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Generation: 7,
+	}
+	wrongRef := ref
+	wrongRef.Digest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	wrongGeneration := ref
+	wrongGeneration.Generation++
+	exactReceipt, _ := json.Marshal(ref)
+	wrongRefReceipt, _ := json.Marshal(wrongRef)
+	wrongGenerationReceipt, _ := json.Marshal(wrongGeneration)
+
+	tests := []struct {
+		name         string
+		sequence     string
+		body         string
+		wgetExit     string
+		receipt      []byte
+		receiptKind  string
+		rootKind     string
+		rootMode     os.FileMode
+		receiptMode  os.FileMode
+		wantSuccess  bool
+		wantAttempts int
+	}{
+		{name: "exact 204 and exact receipt", sequence: "204", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantSuccess: true, wantAttempts: 1},
+		{name: "false 204 missing receipt", sequence: "204", receiptKind: "missing", rootMode: 0555, receiptMode: 0444, wantAttempts: 1},
+		{name: "false 204 wrong ref", sequence: "204", receipt: wrongRefReceipt, rootMode: 0555, receiptMode: 0444, wantAttempts: 1},
+		{name: "false 204 wrong generation", sequence: "204", receipt: wrongGenerationReceipt, rootMode: 0555, receiptMode: 0444, wantAttempts: 1},
+		{name: "false 204 malformed receipt", sequence: "204", receipt: []byte(`{"scope":`), rootMode: 0555, receiptMode: 0444, wantAttempts: 1},
+		{name: "false 204 trailing receipt bytes", sequence: "204", receipt: append(append([]byte{}, exactReceipt...), '\n'), rootMode: 0555, receiptMode: 0444, wantAttempts: 1},
+		{name: "false 204 symlink receipt", sequence: "204", receipt: exactReceipt, receiptKind: "symlink", rootMode: 0555, receiptMode: 0444, wantAttempts: 1},
+		{name: "false 204 symlink root", sequence: "204", receipt: exactReceipt, rootKind: "symlink", rootMode: 0555, receiptMode: 0444, wantAttempts: 1},
+		{name: "false 204 wrong receipt mode", sequence: "204", receipt: exactReceipt, rootMode: 0555, receiptMode: 0644, wantAttempts: 1},
+		{name: "false 204 wrong root mode", sequence: "204", receipt: exactReceipt, rootMode: 0755, receiptMode: 0444, wantAttempts: 1},
+		{name: "status 200", sequence: "200", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantAttempts: 1},
+		{name: "status 201", sequence: "201", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantAttempts: 1},
+		{name: "204 whitespace body", sequence: "204", body: " ", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantAttempts: 1},
+		{name: "204 truncated body", sequence: "204", body: "{", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantAttempts: 1},
+		{name: "204 HTML body", sequence: "204", body: "<html></html>", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantAttempts: 1},
+		{name: "wget failure with 204", sequence: "204", wgetExit: "1", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantAttempts: 1},
+		{name: "retry no status only", sequence: "none,204", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantSuccess: true, wantAttempts: 2},
+		{name: "retry exact 503 only", sequence: "503,204", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantSuccess: true, wantAttempts: 2},
+		{name: "no status retry is bounded", sequence: "none", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantAttempts: 5},
+		{name: "503 retry is bounded", sequence: "503,503,503,503,503", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantAttempts: 5},
+		{name: "other status is terminal", sequence: "500,204", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantAttempts: 1},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := runHangarInitShell(t, ref, hangarShellFixture{
+				sequence: test.sequence, body: test.body, wgetExit: test.wgetExit,
+				receipt: test.receipt, receiptKind: test.receiptKind, rootKind: test.rootKind,
+				rootMode: test.rootMode, receiptMode: test.receiptMode,
+			})
+			if (result.err == nil) != test.wantSuccess {
+				t.Fatalf("exit error = %v, want success %t; output=%q", result.err, test.wantSuccess, result.output)
+			}
+			if result.attempts != test.wantAttempts {
+				t.Fatalf("attempts = %d, want %d", result.attempts, test.wantAttempts)
+			}
+		})
+	}
+}
+
+func TestDaemonSetBackend_HangarInitUsesOneFixedReadOnlyVerificationMountPerTree(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	signer, err := hangar.NewGrantSigner(key, hangar.MaxGrantTTL, func() time.Time {
+		return time.Unix(1_800_000_000, 0).UTC()
+	})
+	if err != nil {
+		t.Fatalf("new grant signer: %v", err)
+	}
+	cfg := testDaemonConfig()
+	cfg.HangarEnabled = true
+	cfg.HangarGrantSigner = signer
+	b := NewDaemonSetBackend(cfg, nil, nil)
+	refs := []hangar.TreeRef{
+		{Scope: "builds", Digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Generation: 7},
+		{Scope: "builds", Digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Generation: 8},
+	}
+	inputs := []runtime.Input{
+		{HangarTree: &refs[0], DestinationPath: "/work/user-a"},
+		{HangarTree: &refs[1], DestinationPath: "/work/user-b"},
+	}
+	mounts := []corev1.VolumeMount{
+		{Name: "input-0", MountPath: "/work/user-a", ReadOnly: true},
+		{Name: "input-1", MountPath: "/work/user-b", ReadOnly: true},
+	}
+	volumes := []corev1.Volume{
+		b.StepVolume("input-0", "task-handle", "input-0"),
+		b.StepVolume("input-1", "task-handle", "input-1"),
+	}
+	inits, err := b.BuildFetchInitContainers("task-handle", inputs, volumes, mounts)
+	if err != nil || len(inits) != 1 {
+		t.Fatalf("build two-tree strict init: containers=%d err=%v", len(inits), err)
+	}
+	if len(inits[0].VolumeMounts) != 2 {
+		t.Fatalf("strict verification mounts = %+v", inits[0].VolumeMounts)
+	}
+	for index, mount := range inits[0].VolumeMounts {
+		wantPath := "/hangar-inputs/input-" + strconv.Itoa(index)
+		if mount.Name != "input-"+strconv.Itoa(index) || mount.MountPath != wantPath || !mount.ReadOnly {
+			t.Errorf("verification mount %d = %+v, want fixed read-only %s", index, mount, wantPath)
+		}
+	}
+	command := strings.Join(inits[0].Command, " ")
+	if strings.Contains(command, "/work/user-a") || strings.Contains(command, "/work/user-b") {
+		t.Fatal("user-controlled destination entered strict verification command")
+	}
+	for _, ref := range refs {
+		receipt, _ := json.Marshal(ref)
+		if !strings.Contains(command, base64.StdEncoding.EncodeToString(receipt)) {
+			t.Errorf("strict command is missing exact expected receipt for %+v", ref)
+		}
+	}
+	assertContainerMountsResolve(t, inits, volumes)
+}
+
+func TestDaemonSetBackend_HangarInitSignalsCleanUpAndFail(t *testing.T) {
+	ref := hangar.TreeRef{
+		Scope:      "builds",
+		Digest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Generation: 7,
+	}
+	receipt, _ := json.Marshal(ref)
+	for _, signal := range []string{"HUP", "INT", "TERM"} {
+		for _, phase := range []string{"wget", "retry"} {
+			t.Run(signal+" during "+phase, func(t *testing.T) {
+				fixture := hangarShellFixture{sequence: "signal", signal: signal, receipt: receipt, rootMode: 0555, receiptMode: 0444}
+				if phase == "retry" {
+					fixture.sequence = "none,204"
+					fixture.signalSleep = true
+				}
+				result := runHangarInitShell(t, ref, fixture)
+				if result.err == nil {
+					t.Fatal("signal must terminate the init script nonzero")
+				}
+				if len(result.leftovers) != 0 {
+					t.Fatalf("signal left private temporary directories: %v", result.leftovers)
+				}
+			})
+		}
+	}
+}
+
+type hangarShellFixture struct {
+	sequence    string
+	body        string
+	wgetExit    string
+	receipt     []byte
+	receiptKind string
+	rootKind    string
+	rootMode    os.FileMode
+	receiptMode os.FileMode
+	signalSleep bool
+	signal      string
+}
+
+type hangarShellResult struct {
+	err       error
+	output    string
+	attempts  int
+	leftovers []string
+}
+
+func runHangarInitShell(t *testing.T, ref hangar.TreeRef, fixture hangarShellFixture) hangarShellResult {
+	t.Helper()
+	key := []byte("0123456789abcdef0123456789abcdef")
+	signer, err := hangar.NewGrantSigner(key, hangar.MaxGrantTTL, func() time.Time {
+		return time.Unix(1_800_000_000, 0).UTC()
+	})
+	if err != nil {
+		t.Fatalf("new grant signer: %v", err)
+	}
+	cfg := testDaemonConfig()
+	cfg.HangarEnabled = true
+	cfg.HangarGrantSigner = signer
+	b := NewDaemonSetBackend(cfg, nil, nil)
+	inputs := []runtime.Input{{HangarTree: &ref, DestinationPath: "/work/exact"}}
+	mounts := []corev1.VolumeMount{{Name: "input-0", MountPath: "/work/exact", ReadOnly: true}}
+	volumes := []corev1.Volume{b.StepVolume("input-0", "task-handle", "input-0")}
+	inits, err := b.BuildFetchInitContainers("task-handle", inputs, volumes, mounts)
+	if err != nil || len(inits) != 1 {
+		t.Fatalf("build strict init: containers=%d err=%v", len(inits), err)
+	}
+
+	mountBase := filepath.Join(t.TempDir(), "hangar-inputs")
+	root := filepath.Join(mountBase, "input-0")
+	rootTarget := root
+	if fixture.rootKind == "symlink" {
+		rootTarget = t.TempDir()
+		if err := os.MkdirAll(mountBase, 0755); err != nil {
+			t.Fatalf("make receipt mount base: %v", err)
+		}
+		if err := os.Symlink(rootTarget, root); err != nil {
+			t.Fatalf("symlink receipt root: %v", err)
+		}
+	} else if err := os.MkdirAll(root, 0755); err != nil {
+		t.Fatalf("make receipt root: %v", err)
+	}
+	receiptPath := filepath.Join(root, ".hangar-materialized")
+	switch fixture.receiptKind {
+	case "missing":
+	case "symlink":
+		target := filepath.Join(t.TempDir(), "receipt-target")
+		if err := os.WriteFile(target, fixture.receipt, 0444); err != nil {
+			t.Fatalf("write receipt target: %v", err)
+		}
+		if err := os.Symlink(target, receiptPath); err != nil {
+			t.Fatalf("symlink receipt: %v", err)
+		}
+	default:
+		if err := os.WriteFile(receiptPath, fixture.receipt, fixture.receiptMode); err != nil {
+			t.Fatalf("write receipt: %v", err)
+		}
+		if err := os.Chmod(receiptPath, fixture.receiptMode); err != nil {
+			t.Fatalf("chmod receipt: %v", err)
+		}
+	}
+	if err := os.Chmod(rootTarget, fixture.rootMode); err != nil {
+		t.Fatalf("chmod receipt root: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(rootTarget, 0755) })
+
+	stateDir := t.TempDir()
+	binDir := t.TempDir()
+	writeExecutable(t, filepath.Join(binDir, "wget"), `#!/bin/sh
+OUTPUT=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -O) OUTPUT=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+ATTEMPTS_FILE="$TEST_STATE/attempts"
+ATTEMPT=0
+if [ -f "$ATTEMPTS_FILE" ]; then ATTEMPT=$(cat "$ATTEMPTS_FILE"); fi
+ATTEMPT=$((ATTEMPT + 1))
+printf '%s' "$ATTEMPT" >"$ATTEMPTS_FILE"
+OUTCOME=$(printf '%s' "$TEST_SEQUENCE" | cut -d, -f"$ATTEMPT")
+case "$OUTCOME" in
+  none) : >"$OUTPUT"; exit 1 ;;
+  signal) kill -"$TEST_SIGNAL" "$PPID"; /bin/sleep 0.1; exit 1 ;;
+  503) printf '  HTTP/1.1 503 Service Unavailable\n' >&2; : >"$OUTPUT"; exit 1 ;;
+  *) printf '  HTTP/1.1 %s Result\n' "$OUTCOME" >&2; printf '%s' "$TEST_BODY" >"$OUTPUT"; exit "${TEST_WGET_EXIT:-0}" ;;
+esac
+`)
+	writeExecutable(t, filepath.Join(binDir, "sleep"), `#!/bin/sh
+if [ "${TEST_SIGNAL_SLEEP:-}" = 1 ]; then kill -"$TEST_SIGNAL" "$PPID"; /bin/sleep 0.1; fi
+exit 0
+`)
+
+	scriptTmp := t.TempDir()
+	script := strings.ReplaceAll(inits[0].Command[2], "/hangar-inputs", mountBase)
+	cmd := exec.Command("/bin/sh", "-c", script)
+	signalSleep := ""
+	if fixture.signalSleep {
+		signalSleep = "1"
+	}
+	cmd.Env = append(os.Environ(),
+		"HOST_IP=127.0.0.1",
+		"PATH="+binDir+":"+os.Getenv("PATH"),
+		"TMPDIR="+scriptTmp,
+		"TEST_STATE="+stateDir,
+		"TEST_SEQUENCE="+fixture.sequence,
+		"TEST_BODY="+fixture.body,
+		"TEST_WGET_EXIT="+fixture.wgetExit,
+		"TEST_SIGNAL_SLEEP="+signalSleep,
+		"TEST_SIGNAL="+fixture.signal,
+	)
+	output, runErr := cmd.CombinedOutput()
+	attemptBytes, _ := os.ReadFile(filepath.Join(stateDir, "attempts"))
+	attempts, _ := strconv.Atoi(string(attemptBytes))
+	leftovers, _ := filepath.Glob(filepath.Join(scriptTmp, "hangar-materialize.*"))
+	return hangarShellResult{err: runErr, output: string(output), attempts: attempts, leftovers: leftovers}
+}
+
+func writeExecutable(t *testing.T, path, contents string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(contents), 0755); err != nil {
+		t.Fatalf("write executable %s: %v", path, err)
+	}
+}
+
+func TestDaemonSetBackend_BuildFetchInitContainers_RejectsDisabledOrUnsignableHangar(t *testing.T) {
+	ref := hangar.TreeRef{
+		Scope:      "builds",
+		Digest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Generation: 1,
+	}
+	inputs := []runtime.Input{{HangarTree: &ref, DestinationPath: "/work/exact"}}
+	mounts := []corev1.VolumeMount{{Name: "input-0", MountPath: "/work/exact", ReadOnly: true}}
+
+	for name, cfg := range map[string]Config{
+		"disabled":       testDaemonConfig(),
+		"missing signer": func() Config { c := testDaemonConfig(); c.HangarEnabled = true; return c }(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			b := NewDaemonSetBackend(cfg, nil, nil)
+			volumes := []corev1.Volume{b.StepVolume("input-0", "task-handle", "input-0")}
+			if _, err := b.BuildFetchInitContainers("task-handle", inputs, volumes, mounts); err == nil {
+				t.Fatal("expected strict input construction to fail closed")
+			}
+		})
+	}
+}
+
+func assertContainerMountsResolve(t *testing.T, containers []corev1.Container, volumes []corev1.Volume) {
+	t.Helper()
+	declared := make(map[string]struct{}, len(volumes))
+	for _, volume := range volumes {
+		declared[volume.Name] = struct{}{}
+	}
+	for _, container := range containers {
+		for _, mount := range container.VolumeMounts {
+			if _, found := declared[mount.Name]; !found {
+				t.Errorf("container %q mount %q has no Pod volume", container.Name, mount.Name)
+			}
+		}
 	}
 }
 

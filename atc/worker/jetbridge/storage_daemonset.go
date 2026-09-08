@@ -2,6 +2,7 @@ package jetbridge
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"github.com/concourse/concourse/artifactcap"
@@ -15,10 +16,16 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
+	"github.com/concourse/concourse/hangar"
 	corev1 "k8s.io/api/core/v1"
 )
 
 const artifactDaemonHostPathVolumeName = "artifact-daemon-hostpath"
+
+const (
+	maxHangarMaterializationItems = 64
+	maxHangarMaterializationBytes = 64 << 10
+)
 
 // Compile-time check that DaemonSetBackend satisfies StorageBackend.
 var _ StorageBackend = (*DaemonSetBackend)(nil)
@@ -128,6 +135,17 @@ type batchItem struct {
 	Capability string `json:"capability,omitempty"`
 }
 
+type hangarMaterializationItem struct {
+	Ref    hangar.TreeRef `json:"ref"`
+	Handle string         `json:"handle"`
+	Volume string         `json:"volume"`
+	Grant  string         `json:"grant"`
+}
+
+type hangarMaterializationRequest struct {
+	Items []hangarMaterializationItem `json:"items"`
+}
+
 func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runtime.Input, podVolumes []corev1.Volume, mainMounts []corev1.VolumeMount) ([]corev1.Container, error) {
 	helperImage := b.helperImage()
 	allowEscalation := false
@@ -135,10 +153,59 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 	var items []batchItem
 	var mounts []corev1.VolumeMount
 	seenVolumes := map[string]bool{}
+	var hangarItems []hangarMaterializationItem
+	var hangarMounts []corev1.VolumeMount
+	var hangarReceiptBytes []string
+	seenHangarVolumes := map[string]bool{}
 
 	for _, input := range inputs {
-		if input.Artifact == nil {
+		if input.HangarTree != nil {
+			if !b.config.HangarEnabled {
+				return nil, fmt.Errorf("Hangar tree input requires Hangar to be enabled")
+			}
+			if b.config.HangarGrantSigner == nil {
+				return nil, fmt.Errorf("Hangar tree input requires a materialization grant signer")
+			}
+			if err := input.HangarTree.Validate(); err != nil {
+				return nil, fmt.Errorf("invalid Hangar tree input: %w", err)
+			}
+			volumeName := volumeNameForMountPath(mainMounts, input.DestinationPath)
+			if volumeName == "" {
+				return nil, fmt.Errorf("Hangar tree input %q has no task volume mount", input.DestinationPath)
+			}
+			expectedHostPath := filepath.Join(b.config.ArtifactDaemonHostPath, "steps", handle, volumeName)
+			if actualHostPath := hostPathForVolume(podVolumes, volumeName); actualHostPath != expectedHostPath {
+				return nil, fmt.Errorf("Hangar tree input %q volume does not resolve to its exact node-local destination", input.DestinationPath)
+			}
+			grant, err := b.config.HangarGrantSigner.Sign(*input.HangarTree, handle, volumeName)
+			if err != nil {
+				return nil, fmt.Errorf("sign Hangar tree input grant: %w", err)
+			}
+			hangarItems = append(hangarItems, hangarMaterializationItem{
+				Ref: *input.HangarTree, Handle: handle, Volume: volumeName, Grant: "Bearer " + grant,
+			})
+			receipt, err := json.Marshal(*input.HangarTree)
+			if err != nil {
+				return nil, fmt.Errorf("marshal expected Hangar materialization receipt: %w", err)
+			}
+			hangarReceiptBytes = append(hangarReceiptBytes, base64.StdEncoding.EncodeToString(receipt))
+			if !seenHangarVolumes[volumeName] {
+				seenHangarVolumes[volumeName] = true
+				hangarMounts = append(hangarMounts, corev1.VolumeMount{
+					Name: volumeName, MountPath: fmt.Sprintf("/hangar-inputs/input-%d", len(hangarMounts)), ReadOnly: true,
+				})
+			}
 			continue
+		}
+
+		// (*Container).validateInputs refuses an input with neither an
+		// Artifact nor a HangarTree before buildPod gets here, and neither
+		// producer of runtime.Input can emit one. This is an exported method,
+		// so it refuses too, rather than skipping: a silently skipped input
+		// arrives as an empty directory with nothing in the build log to say
+		// why.
+		if input.Artifact == nil {
+			return nil, fmt.Errorf("input %q has no artifact to fetch", input.DestinationPath)
 		}
 
 		volumeName := volumeNameForMountPath(mainMounts, input.DestinationPath)
@@ -173,9 +240,7 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 		}
 	}
 
-	if len(items) == 0 {
-		return nil, nil
-	}
+	var initContainers []corev1.Container
 
 	// Prepend the hostpath volume mount.
 	allMounts := append([]corev1.VolumeMount{
@@ -191,16 +256,14 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 		},
 	}
 
-	// Note: when TLS is enabled the init container reaches the daemon over
-	// HTTPS at ${HOST_IP}:7780 (the node IP, via hostPort). The node IP cannot
-	// be a certificate SAN, so BusyBox wget can't verify the hostname; the
-	// resolve command uses --no-check-certificate instead. The connection is
-	// still TLS-encrypted, and /resolve(-batch) is an exempt, same-node,
-	// NetworkPolicy-protected control path — artifact data flows via the shared
-	// hostPath, not over this HTTP call. No CA cert mount is needed.
+	// The init reaches the same-node daemon through ${HOST_IP}:7780. BusyBox wget
+	// cannot authenticate the node-IP endpoint because it is not a certificate
+	// SAN, and NetworkPolicy enforcement is optional and CNI-dependent. Strict
+	// Hangar success therefore does not trust the transport response alone: the
+	// init verifies the daemon's sealed receipt through the read-only input mount.
 
-	return []corev1.Container{
-		{
+	if len(items) > 0 {
+		initContainers = append(initContainers, corev1.Container{
 			Name:            "fetch-inputs",
 			Image:           helperImage,
 			Command:         b.daemonResolveBatchCommand(items),
@@ -210,8 +273,127 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 			SecurityContext: &corev1.SecurityContext{
 				AllowPrivilegeEscalation: &allowEscalation,
 			},
-		},
-	}, nil
+		})
+	}
+
+	if len(hangarItems) > 0 {
+		if len(hangarItems) > maxHangarMaterializationItems {
+			return nil, fmt.Errorf("Hangar materialization batch exceeds %d items", maxHangarMaterializationItems)
+		}
+		payload, err := json.Marshal(hangarMaterializationRequest{Items: hangarItems})
+		if err != nil {
+			return nil, fmt.Errorf("marshal Hangar materialization batch: %w", err)
+		}
+		if len(payload) > maxHangarMaterializationBytes {
+			return nil, fmt.Errorf("Hangar materialization batch exceeds %d bytes", maxHangarMaterializationBytes)
+		}
+		initContainers = append(initContainers, corev1.Container{
+			Name:            "materialize-hangar-inputs",
+			Image:           helperImage,
+			Command:         b.daemonHangarMaterializationCommand(payload, hangarReceiptBytes),
+			Env:             envVars,
+			VolumeMounts:    hangarMounts,
+			ImagePullPolicy: corev1.PullIfNotPresent,
+			SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: &allowEscalation},
+		})
+	}
+
+	return initContainers, nil
+}
+
+func (b *DaemonSetBackend) daemonHangarMaterializationCommand(payload []byte, expectedReceipts []string) []string {
+	port := b.config.ArtifactDaemonPort
+	if port == 0 {
+		port = 7780
+	}
+	request := base64.StdEncoding.EncodeToString(payload)
+	var receiptChecks strings.Builder
+	for index, expected := range expectedReceipts {
+		fmt.Fprintf(&receiptChecks, "verify_receipt '/hangar-inputs/input-%d' '%s' '%d'\n", index, expected, index)
+	}
+	script := fmt.Sprintf(`
+set -u
+umask 077
+PORT=%d
+DAEMON="%s://${HOST_IP}:${PORT}"
+WGET_OPTS="%s"
+REQUEST_B64='%s'
+TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/hangar-materialize.XXXXXX") || exit 1
+cleanup_files() {
+  rm -rf "$TMP_DIR"
+}
+on_exit() {
+  STATUS=$?
+  trap - 0
+  cleanup_files
+  exit "$STATUS"
+}
+on_signal() {
+  trap - 0 1 2 15
+  cleanup_files
+  exit 1
+}
+trap on_exit 0
+trap on_signal 1 2 15
+REQUEST="$TMP_DIR/request.json"
+RESPONSE="$TMP_DIR/response"
+HEADERS="$TMP_DIR/headers"
+if ! printf '%%s' "$REQUEST_B64" | base64 -d >"$REQUEST"; then
+  printf 'hangar materialization request preparation failed\n' >&2
+  exit 1
+fi
+ATTEMPT=0
+MAX_ATTEMPTS=5
+while [ "$ATTEMPT" -lt "$MAX_ATTEMPTS" ]; do
+  ATTEMPT=$((ATTEMPT + 1))
+  : >"$RESPONSE"
+  : >"$HEADERS"
+  wget ${WGET_OPTS} -S -q -O "$RESPONSE" -T 180 --header='Content-Type: application/json' --post-file="$REQUEST" "${DAEMON}/hangar/v1/materializations" 2>"$HEADERS"
+  WGET_STATUS=$?
+  HTTP_STATUS=$(sed -n 's/^[[:space:]]*HTTP\/[0-9.]* \([0-9][0-9][0-9]\).*/\1/p' "$HEADERS" | tail -n 1)
+  if [ -z "$HTTP_STATUS" ] || [ "$HTTP_STATUS" = 503 ]; then
+    if [ "$ATTEMPT" -ge "$MAX_ATTEMPTS" ]; then
+      printf 'hangar materialization unavailable after %%s attempts\n' "$MAX_ATTEMPTS" >&2
+      exit 1
+    fi
+    sleep 2
+    continue
+  fi
+  if [ "$WGET_STATUS" -ne 0 ] || [ "$HTTP_STATUS" != 204 ] || [ -s "$RESPONSE" ]; then
+    printf 'hangar materialization did not return an exact empty HTTP 204\n' >&2
+    exit 1
+  fi
+  break
+done
+mode_of() {
+  stat -c '%%a' "$1" 2>/dev/null || stat -f '%%Lp' "$1" 2>/dev/null
+}
+verify_receipt() {
+  ROOT=$1
+  EXPECTED_B64=$2
+  INDEX=$3
+  RECEIPT="$ROOT/.hangar-materialized"
+  EXPECTED="$TMP_DIR/expected-$INDEX.json"
+  if [ -L "$ROOT" ] || [ ! -d "$ROOT" ] || [ "$(mode_of "$ROOT")" != 555 ]; then
+    printf 'hangar materialization root verification failed\n' >&2
+    exit 1
+  fi
+  if [ -L "$RECEIPT" ] || [ ! -f "$RECEIPT" ] || [ "$(mode_of "$RECEIPT")" != 444 ]; then
+    printf 'hangar materialization receipt verification failed\n' >&2
+    exit 1
+  fi
+  if ! printf '%%s' "$EXPECTED_B64" | base64 -d >"$EXPECTED"; then
+    printf 'hangar materialization receipt expectation preparation failed\n' >&2
+    exit 1
+  fi
+  if ! cmp "$RECEIPT" "$EXPECTED" >/dev/null 2>&1; then
+    printf 'hangar materialization receipt did not match the exact tree reference\n' >&2
+    exit 1
+  fi
+}
+%sexit 0
+`, port, b.daemonScheme(), b.wgetTLSOpts(), request, receiptChecks.String())
+	return []string{"sh", "-c", script}
 }
 
 func (b *DaemonSetBackend) daemonScheme() string {
@@ -220,9 +402,9 @@ func (b *DaemonSetBackend) daemonScheme() string {
 
 // wgetTLSOpts returns extra BusyBox wget options for daemon HTTPS calls. When
 // TLS is enabled it adds --no-check-certificate: the init container dials the
-// daemon by node IP (HOST_IP), which is not a cert SAN, so hostname
-// verification cannot succeed. The connection is still encrypted; /resolve is
-// an exempt, same-node, NetworkPolicy-protected control path.
+// daemon by node IP (HOST_IP), which is not a cert SAN, so server authentication
+// cannot succeed. Strict Hangar calls verify the sealed materialization receipt
+// as their outcome boundary; authenticated local transport is future hardening.
 func (b *DaemonSetBackend) wgetTLSOpts() string {
 	if b.config.ArtifactDaemonTLSEnabled {
 		return "--no-check-certificate"
@@ -357,18 +539,29 @@ func (b *DaemonSetBackend) BuildCleanupInitContainer(handle string, containerTyp
 }
 
 func (b *DaemonSetBackend) BuildAffinity(inputs []runtime.Input) *corev1.Affinity {
+	requiredExpressions := []corev1.NodeSelectorRequirement{
+		{
+			Key:      "concourse.dev/artifact-cache",
+			Operator: corev1.NodeSelectorOpIn,
+			Values:   []string{"ready"},
+		},
+	}
+	for _, input := range inputs {
+		if input.HangarTree != nil {
+			requiredExpressions = append(requiredExpressions, corev1.NodeSelectorRequirement{
+				Key:      "concourse.dev/hangar-v1",
+				Operator: corev1.NodeSelectorOpIn,
+				Values:   []string{"ready"},
+			})
+			break
+		}
+	}
 	affinity := &corev1.Affinity{
 		NodeAffinity: &corev1.NodeAffinity{
 			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
 				NodeSelectorTerms: []corev1.NodeSelectorTerm{
 					{
-						MatchExpressions: []corev1.NodeSelectorRequirement{
-							{
-								Key:      "concourse.dev/artifact-cache",
-								Operator: corev1.NodeSelectorOpIn,
-								Values:   []string{"ready"},
-							},
-						},
+						MatchExpressions: requiredExpressions,
 					},
 				},
 			},
@@ -404,6 +597,8 @@ func (b *DaemonSetBackend) preferredInputNode(inputs []runtime.Input) string {
 	}
 	counts := make(map[string]int)
 	for _, input := range inputs {
+		// Not dead code: a Hangar tree input passes validateInputs with a nil
+		// Artifact, and it is not located by artifact key at all.
 		if input.Artifact == nil {
 			continue
 		}

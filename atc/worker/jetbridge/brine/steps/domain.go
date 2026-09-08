@@ -78,6 +78,12 @@ type ContainerDraft struct {
 	ContainerEnv []string
 	ProcessEnv   []string
 
+	// Inputs are destination paths, each of which gets a real artifact volume
+	// when the container runs. There is no artifact-less form: production's
+	// two producers of runtime.Input — atc/exec/put_inputs.go and
+	// atc/exec/task_step.go — both skip a name the artifact repository has no
+	// artifact for, so an input with a nil Artifact is a state no pipeline can
+	// reach, and the runtime now rejects one outright.
 	Inputs           []string
 	Outputs          []string
 	Caches           []string
@@ -98,8 +104,8 @@ type ContainerDraft struct {
 	RunJobName            string
 	RunTemplatePipelineID int
 	RunTeamID             int
-	Privileged       bool
-	Sidecars         []atc.SidecarConfig
+	Privileged            bool
+	Sidecars              []atc.SidecarConfig
 
 	// ContainerType is empty for the task containers every scenario written
 	// before check containers existed assumes; draftContainerType defaults it.
@@ -107,9 +113,6 @@ type ContainerDraft struct {
 	// RanBefore makes the run step create the container row once first, so
 	// the run under test finds it already created and is REUSED.
 	RanBefore bool
-	// ArtifactInputs are destination paths whose input carries a real
-	// artifact, which is what makes the backend emit a fetch init container.
-	ArtifactInputs []string
 	// TeamID carried from ClusterReady, so artifact volumes satisfy the
 	// volumes table's foreign key onto teams.
 	TeamID int
@@ -142,6 +145,27 @@ func (d ContainerDraft) taskCacheIdentity() *atc.TaskCacheIdentity {
 		return nil
 	}
 	return &atc.TaskCacheIdentity{JobID: d.JobID}
+}
+
+// draftInputs turns the draft's input paths into the runtime.Inputs the ATC
+// would hand the worker: one real artifact volume per path, created against
+// the draft's team so the volumes table's foreign key onto teams is satisfied.
+//
+// Every path gets an artifact because that is the only kind of input
+// production emits. Both producers of runtime.Input skip an input the artifact
+// repository has nothing for, and the runtime refuses one that carries neither
+// an Artifact nor a HangarTree, so a draft cannot describe an input without an
+// artifact even to see what would happen.
+func draftInputs(d ContainerDraft) ([]runtime.Input, error) {
+	var inputs []runtime.Input
+	for _, path := range d.Inputs {
+		vol, _, err := d.Worker.CreateVolumeForArtifact(d.Ctx, d.TeamID)
+		if err != nil {
+			return nil, fmt.Errorf("create artifact for input %q: %w", path, err)
+		}
+		inputs = append(inputs, runtime.Input{Artifact: vol, DestinationPath: path})
+	}
+	return inputs, nil
 }
 
 // PodCreated is the state after a described container has run and its pod has

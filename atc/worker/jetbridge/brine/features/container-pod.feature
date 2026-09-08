@@ -429,7 +429,7 @@ Feature: What a step's pod actually looks like
     Given a jetbridge worker with an artifact store, told to keep caches "node"
     And a task container "fetch-handle" built from image "docker:///busybox"
     And it works in "/tmp/build/workdir"
-    And it takes an input at "/tmp/build/workdir/from-earlier" produced by an earlier step
+    And it takes an input at "/tmp/build/workdir/from-earlier"
     When the container runs
     Then the pod fetches its inputs before the step starts
 
@@ -518,7 +518,7 @@ Feature: What a step's pod actually looks like
     Given a jetbridge worker with an artifact store
     And a task container "order-handle" built from image "docker:///busybox"
     And it works in "/tmp/build/workdir"
-    And it takes an input at "/tmp/build/workdir/from-earlier" produced by an earlier step
+    And it takes an input at "/tmp/build/workdir/from-earlier"
     And the container has run before on this worker
     When the container runs
     Then the pod clears the workspace before it fetches its inputs
@@ -571,34 +571,16 @@ Feature: What a step's pod actually looks like
   # green. One scenario each.
   # ==========================================================================
 
-  # MUTATION: the `continue` that skips an artifact-less input in
-  # BuildFetchInitContainers becomes `return nil`.
-  #
-  # Not every input a step declares has something to fetch. An input the web
-  # could not locate, or one a preceding step chose not to produce, arrives
-  # with no artifact behind it; it still gets its directory, there is simply
-  # nothing to put in it, so the batch skips it and carries on with the rest.
-  #
-  # Abandoning the batch at that point is the quietest failure in this file.
-  # The step keeps every mount it asked for, the pod is created, no error is
-  # logged anywhere — and the inputs that DID have artifacts silently arrive
-  # empty too, because one artifact-less sibling took the whole batch down
-  # with it. The task then fails on a file it was handed, and nothing
-  # distinguishes that from a producing step that emitted nothing.
-  #
-  # "A step's inputs are fetched before its command runs" above cannot see it:
-  # that step has one input and it carries an artifact, so the skip is never
-  # reached. The mixture is the whole scenario.
-  Scenario: An input with nothing to fetch is skipped, not fatal to the rest
-    Given a jetbridge worker with an artifact store
-    And a task container "mixed-inputs-handle" built from image "docker:///busybox"
-    And it works in "/tmp/build/workdir"
-    And it takes an input at "/tmp/build/workdir/from-earlier" produced by an earlier step
-    And it takes an input at "/tmp/build/workdir/no-artifact"
-    When the container runs
-    Then the pod fetches exactly 1 of the step's inputs
-    And the pod fetches the input at "/tmp/build/workdir/from-earlier"
-    And the pod does not fetch the input at "/tmp/build/workdir/no-artifact"
+  # DISPOSITION — "An input with nothing to fetch is skipped, not fatal to the
+  # rest" lived here. It described a step with one artifact-bearing input and
+  # one artifact-less sibling, and asked that the fetch batch skip the sibling
+  # and carry on. Production cannot build that step: both producers of
+  # runtime.Input — atc/exec/put_inputs.go and atc/exec/task_step.go — skip a
+  # name the artifact repository has no artifact for, so no pipeline emits an
+  # input with a nil Artifact, and the runtime now rejects one at pod build
+  # time rather than skipping it later. The `continue` the scenario was written
+  # against is unreachable from a step, and the scenario described a state
+  # nothing can reach.
 
   # MUTATION: a get container is given no volume and no mount for its working
   # directory, so its pod carries zero step volumes instead of one.

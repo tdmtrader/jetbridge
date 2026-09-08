@@ -38,6 +38,7 @@ type Server struct {
 	metrics       *metrics
 	guard         *ReadGuard
 	durable       *DurableTier
+	hangar        *HangarService
 
 	// restoreFlight collapses concurrent durable restores of one key.
 	restoreFlight singleflight.Group
@@ -53,6 +54,21 @@ type Server struct {
 	// cancellable (the copy checks its request context per entry), so a caller
 	// that gives up releases the slot instead of pinning it for the whole copy.
 	resolveSem chan struct{}
+	// hangarSem bounds concurrent Hangar materializations, for the same reason
+	// resolveSem bounds resolves: POST /hangar/v1/materializations is the third
+	// mTLS-exempt route, and each of its items is a whole store open, capture
+	// and verified copy through scratch. Its own channel rather than a share of
+	// resolveSem, because the two routes exhaust different things — a resolve
+	// copies inside storage, a materialization spools a tree into the scratch
+	// emptyDir — and one queue would let either starve the other.
+	//
+	// Unlike resolveSem this one is NOT waited on: a full channel refuses with
+	// 503 instead of parking the request. The caller is the init container in
+	// storage_daemonset.go, which already retries 503 a bounded number of times
+	// with a delay, so backpressure reaches the client that exists, and a
+	// daemon under load is not also holding a connection and a goroutine per
+	// waiting caller.
+	hangarSem chan struct{}
 	// destLocks serialises resolves by DESTINATION. The read guard inside
 	// copyArtifactGuarded keys on the SOURCE handle, so two items with
 	// different keys and the same dest raced on RemoveAll(dest) and Rename —
@@ -161,6 +177,13 @@ const maxConcurrentDurableUploads = 4
 // 180s per-attempt timeout, so this is invisible to legitimate traffic.
 const maxConcurrentBatchResolves = 4
 
+// maxConcurrentHangarMaterializations caps in-flight Hangar materializations
+// node-wide. Sized like maxConcurrentBatchResolves and for the same traffic:
+// one batch per pod init, single-digit items each, against the init container's
+// 180s per-attempt timeout and its bounded retry on 503. Production never
+// queues here; an amplification attempt does.
+const maxConcurrentHangarMaterializations = 4
+
 // maxJSONBodyBytes caps the JSON control-plane bodies. Deliberately NOT applied
 // to PUT /stream-in/ or PUT /artifacts/, which stream whole artifacts: every
 // mirror push and ATC upload goes through those, and a cap there would break
@@ -190,6 +213,7 @@ func NewServer(logger lager.Logger, storagePath, nodeName string) (*Server, erro
 		guard:       NewReadGuard(),
 		uploadSem:   make(chan struct{}, maxConcurrentDurableUploads),
 		resolveSem:  make(chan struct{}, maxConcurrentBatchResolves),
+		hangarSem:   make(chan struct{}, maxConcurrentHangarMaterializations),
 		destLocks:   make(map[string]*destLock),
 		root:        root,
 	}, nil
@@ -200,6 +224,12 @@ func NewServer(logger lager.Logger, storagePath, nodeName string) (*Server, erro
 // is simply a miss.
 func (s *Server) SetDurableTier(tier *DurableTier) {
 	s.durable = tier
+}
+
+// SetHangarService enables strict immutable-tree routes. A nil service keeps
+// the routes absent, so disabled daemons retain their pre-Hangar 404 surface.
+func (s *Server) SetHangarService(service *HangarService) {
+	s.hangar = service
 }
 
 // Guard returns the read/sweep coordination guard. The sweeper takes its
@@ -337,6 +367,10 @@ func (s *Server) Handler(opts ...HandlerOption) http.Handler {
 	mux.HandleFunc("POST /durable/restore", protect(s.handleDurableRestore))
 	mux.HandleFunc("HEAD /resource-caches/", protect(s.handleHeadResourceCache))
 	mux.HandleFunc("GET /resource-caches/", protect(s.handleGetResourceCache))
+	if s.hangar != nil {
+		mux.HandleFunc("POST /hangar/v1/scopes/{scope}/trees", protect(s.handleHangarPublish))
+		mux.HandleFunc("POST /hangar/v1/materializations", s.handleHangarMaterializations)
+	}
 
 	return mux
 }

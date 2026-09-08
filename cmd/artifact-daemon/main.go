@@ -4,9 +4,9 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"flag"
 	"fmt"
-	"github.com/concourse/concourse/artifactcap"
 	"net"
 	"net/http"
 	"os"
@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"syscall"
 	"time"
+
+	"github.com/concourse/concourse/artifactcap"
 
 	"code.cloudfoundry.org/lager/v3"
 	"k8s.io/client-go/kubernetes"
@@ -60,6 +62,15 @@ func main() {
 	flag.Var(&durableRetention, "durable-retention", "Retention for one class of durable artifact, as CLASS=DURATION (e.g. resource-caches=720h). Repeatable. A class with no entry is never reclaimed.")
 	durableMaxBytes := flag.Int64("durable-max-bytes", 5<<30, "Largest single artifact to store durably; 0 disables the limit")
 
+	// Hangar is a strict immutable-tree service composed beside the fail-open
+	// cache tier. It deliberately reuses only the GCS connection settings.
+	hangarEnabled := flag.Bool("hangar-enabled", false, "Enable strict Hangar tree publication and materialization")
+	hangarScratchDir := flag.String("hangar-scratch-dir", "/var/concourse/hangar-scratch", "Absolute private scratch directory for Hangar verification")
+	hangarCapabilityKey := flag.String("hangar-capability-key", "", "Path to the raw 32-byte materialization capability key")
+	hangarCapabilityTTL := flag.Duration("hangar-capability-ttl", 15*time.Minute, "Maximum accepted Hangar materialization grant lifetime")
+	hangarMaxContentBytes := flag.Int64("hangar-max-content-bytes", 10<<30, "Maximum regular-file content admitted in one Hangar tree")
+	hangarMaxEntries := flag.Int64("hangar-max-entries", 100000, "Maximum filesystem entries admitted in one Hangar tree")
+
 	flag.Parse()
 
 	logger := lager.NewLogger("artifact-daemon")
@@ -67,19 +78,23 @@ func main() {
 
 	// Build K8s client for node labeling.
 	var labeler *NodeLabeler
+	var hangarLabeler *NodeLabeler
+	var k8sClient kubernetes.Interface
 	if *nodeName != "" {
-		k8sClient, err := buildK8sClient(*kubeconfig)
+		var err error
+		k8sClient, err = buildK8sClient(*kubeconfig)
 		if err != nil {
 			logger.Error("failed-to-create-k8s-client", err)
 			os.Exit(1)
 		}
 
 		labeler = NewNodeLabeler(logger, k8sClient, *nodeName, *labelKey)
+		hangarLabeler = NewNodeLabeler(logger, k8sClient, *nodeName, HangarReadyLabel)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := labeler.AddLabel(ctx); err != nil {
+		if err := prepareDaemonLabels(ctx, *labelKey, hangarLabeler, labeler); err != nil {
 			cancel()
-			logger.Error("failed-to-label-node", err)
+			logger.Error("failed-to-prepare-node-labels", err)
 			os.Exit(1)
 		}
 		cancel()
@@ -95,14 +110,21 @@ func main() {
 	// normally makes it — this covers the cases where it has not.
 	if err := os.MkdirAll(*storagePath, 0755); err != nil {
 		logger.Error("failed-to-create-storage-path", err, lager.Data{"path": *storagePath})
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = cleanupDaemonServices(cleanupCtx, hangarLabeler, labeler, nil, func() error { return nil })
+		cleanupCancel()
 		os.Exit(1)
 	}
 
 	server, err := NewServer(logger, *storagePath, *nodeName)
 	if err != nil {
 		logger.Error("failed-to-open-storage-root", err, lager.Data{"path": *storagePath})
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = cleanupDaemonServices(cleanupCtx, hangarLabeler, labeler, nil, func() error { return nil })
+		cleanupCancel()
 		os.Exit(1)
 	}
+	closeHangar := func() error { return nil }
 
 	// Set up alias persistence so volume-handle mappings survive restarts.
 	aliasStore := NewAliasStore(logger, *storagePath, server.Root())
@@ -156,6 +178,9 @@ func main() {
 	if *durableStore != "" && *durableTimeout >= *ttl {
 		logger.Error("durable-timeout-exceeds-ttl", fmt.Errorf(
 			"--durable-timeout (%s) must be less than --ttl (%s)", *durableTimeout, *ttl))
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = cleanupDaemonServices(cleanupCtx, hangarLabeler, labeler, nil, closeHangar)
+		cleanupCancel()
 		os.Exit(1)
 	}
 
@@ -173,6 +198,9 @@ func main() {
 		// durable store and silently did not get one would discover it as a
 		// mysteriously cold cache months later.
 		logger.Error("durable-store-config-invalid", err)
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = cleanupDaemonServices(cleanupCtx, hangarLabeler, labeler, nil, closeHangar)
+		cleanupCancel()
 		os.Exit(1)
 	} else if tier != nil {
 		server.SetDurableTier(tier)
@@ -194,10 +222,40 @@ func main() {
 		}
 	}
 
+	tlsEnabled := *tlsCert != "" && *tlsKey != "" && *tlsCACert != ""
+	var tlsCfg *tls.Config
+	if tlsEnabled {
+		var err error
+		tlsCfg, err = BuildTLSConfig(*tlsCert, *tlsKey, *tlsCACert)
+		if err != nil {
+			logger.Error("failed-to-build-tls-config", err)
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			_ = cleanupDaemonServices(cleanupCtx, hangarLabeler, labeler, nil, closeHangar)
+			cleanupCancel()
+			os.Exit(1)
+		}
+	}
+
+	hangarService, hangarClose, err := buildHangarService(context.Background(), logger, *storagePath, hangarOptions{
+		Enabled: *hangarEnabled, ScratchDir: *hangarScratchDir, CapabilityKey: *hangarCapabilityKey,
+		MaxContentBytes: *hangarMaxContentBytes, MaxEntries: *hangarMaxEntries, CapabilityTTL: *hangarCapabilityTTL,
+		DurableKind: *durableStore, Bucket: *durableBucket, Prefix: *durablePrefix, Endpoint: *durableEndpoint, Timeout: *durableTimeout,
+		TLSCert: *tlsCert, TLSKey: *tlsKey, TLSCACert: *tlsCACert,
+	})
+	if err != nil {
+		logger.Error("hangar-config-invalid", err)
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = cleanupDaemonServices(cleanupCtx, hangarLabeler, labeler, nil, closeHangar)
+		cleanupCancel()
+		os.Exit(1)
+	}
+	if hangarService != nil {
+		server.SetHangarService(hangarService)
+		closeHangar = hangarClose
+	}
+
 	sweeper := NewSweeper(logger, *storagePath, *ttl, 5*time.Minute, server.Registry())
 	sweeper.SetGuard(server.Guard())
-
-	tlsEnabled := *tlsCert != "" && *tlsKey != "" && *tlsCACert != ""
 
 	// Set up peer resolver for cross-node artifact resolution.
 	var mirror *Mirror
@@ -301,12 +359,25 @@ func main() {
 	}
 
 	if tlsEnabled {
-		tlsCfg, err := BuildTLSConfig(*tlsCert, *tlsKey, *tlsCACert)
-		if err != nil {
-			logger.Error("failed-to-build-tls-config", err)
-			os.Exit(1)
-		}
 		httpServer.TLSConfig = tlsCfg
+	}
+
+	var readinessLabeler *NodeLabeler
+	if hangarService != nil {
+		readinessLabeler = hangarLabeler
+	}
+	bindCtx, bindCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	listener, err := listenAndAdvertiseHangar(bindCtx, httpServer.Addr, readinessLabeler, net.Listen)
+	bindCancel()
+	if err != nil {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		cleanupErr := cleanupDaemonServices(cleanupCtx, hangarLabeler, labeler, nil, closeHangar)
+		cleanupCancel()
+		logger.Error("failed-to-bind-or-advertise", errors.Join(err, cleanupErr))
+		os.Exit(1)
+	}
+	if readinessLabeler != nil {
+		logger.Info("hangar-node-labeled", lager.Data{"node": *nodeName, "label": HangarReadyLabel})
 	}
 
 	errCh := make(chan error, 1)
@@ -321,22 +392,24 @@ func main() {
 			"tls":            tlsEnabled,
 		})
 		if tlsEnabled {
-			// Cert/key already loaded into TLSConfig; pass empty strings.
-			errCh <- httpServer.ListenAndServeTLS("", "")
+			// The listener is already bound so readiness is truthful; ServeTLS
+			// still owns TLS negotiation and HTTP/2 setup.
+			errCh <- httpServer.ServeTLS(listener, "", "")
 		} else {
-			errCh <- httpServer.ListenAndServe()
+			errCh <- httpServer.Serve(listener)
 		}
 	}()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
+	var serverFailure error
 	select {
 	case sig := <-sigCh:
 		logger.Info("shutting-down", lager.Data{"signal": sig.String()})
 	case err := <-errCh:
 		logger.Error("server-failed", err)
-		os.Exit(1)
+		serverFailure = err
 	}
 
 	// Cancel the preemption watcher's poll loop so it exits cleanly.
@@ -352,22 +425,14 @@ func main() {
 	close(sweepDone)
 	maintenanceCancel()
 
-	// Remove node label before shutting down.
-	if labeler != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := labeler.RemoveLabel(ctx); err != nil {
-			logger.Error("failed-to-remove-node-label", err)
-		} else {
-			logger.Info("node-label-removed")
-		}
-		cancel()
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
-	if err := httpServer.Shutdown(ctx); err != nil {
-		logger.Error("shutdown-error", err)
+	cleanupErr := cleanupDaemonServices(ctx, hangarLabeler, labeler, func() error { return httpServer.Shutdown(ctx) }, closeHangar)
+	if cleanupErr != nil {
+		logger.Error("shutdown-error", cleanupErr)
+		os.Exit(1)
+	}
+	if serverFailure != nil && !errors.Is(serverFailure, http.ErrServerClosed) {
 		os.Exit(1)
 	}
 

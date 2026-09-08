@@ -191,9 +191,35 @@ directories or ephemeral emptyDirs.
 | `artifactDaemon.hostPath` | `/var/concourse/artifacts` | Node directory the daemon stores artifacts in. |
 | `artifactDaemon.port` | `7780` | Port the daemon serves on. |
 | `artifactDaemon.ttl` | `2h` | How long an artifact is retained before the daemon sweeps it. |
+| `artifactDaemon.hangar.enabled` | `false` | Enable fail-closed exact immutable tree inputs. Requires TLS and native GCS. |
+| `artifactDaemon.hangar.webEnabled` | `false` | Enable web emission after daemon support is ready. Requires `enabled`. |
+| `artifactDaemon.hangar.allowGeneratedKey` | `false` | Allow live Helm to generate/persist `hangar.key`; unsupported for offline/GitOps rendering. |
+| `artifactDaemon.hangar.scratchPath` | `/var/concourse/hangar-scratch` | Private daemon-only `emptyDir` mount, disjoint from `hostPath`. |
+| `artifactDaemon.hangar.maxContentBytes` | `10737418240` | Maximum regular-file content in one exact tree. |
+| `artifactDaemon.hangar.maxEntries` | `100000` | Maximum filesystem entries in one exact tree. |
+| `artifactDaemon.hangar.capabilityTTL` | `900s` | Shared web/daemon grant TTL in positive whole seconds, at most 900s. |
 
 `artifactDaemon` also carries `mirror`, `preemption`, `tls` and `networkPolicy`
 blocks; see [`values.yaml`](values.yaml) for those.
+
+Hangar reuses `artifactDaemon.durable`'s GCS bucket, prefix, endpoint, timeout,
+and Workload Identity; S3-compatible and filesystem stores are unsupported.
+When `artifactDaemon.tls.existingSecret` is set, that Secret must include
+`hangar.key` containing exactly 32 raw bytes after base64 decoding. The key is
+mounted only into web and artifact-daemon Pods, never task Pods. See
+[`docs/hangar.md`](../../docs/hangar.md) for rollout order, sizing, security,
+and fail-closed behavior.
+
+`artifactDaemon.durable.existingSecret` is only for S3-compatible credentials;
+the chart rejects it with `store: gcs`. Native GCS uses Application Default
+Credentials/Workload Identity.
+
+The opt-in artifact-daemon NetworkPolicy includes both current GKE Workload
+Identity metadata profiles: standard/Calico (GKE 1.21+) at
+`169.254.169.252/32` TCP 987/988 and Dataplane V2 at
+`169.254.169.254/32` TCP 80/8080. Enforcement and routing depend on the
+cluster CNI; validate this allowlist for the target environment. The obsolete
+pre-1.21 loopback profile is not included.
 
 ### PostgreSQL
 

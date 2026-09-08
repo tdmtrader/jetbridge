@@ -1,3 +1,51 @@
+{{- $hangarEnabled := .Values.artifactDaemon.hangar.enabled | default false }}
+{{- $hangarWebEnabled := .Values.artifactDaemon.hangar.webEnabled | default false }}
+{{- if and $hangarWebEnabled (not $hangarEnabled) }}
+  {{- fail "artifactDaemon.hangar.webEnabled requires artifactDaemon.hangar.enabled" }}
+{{- end }}
+{{- if and .Values.artifactDaemon.enabled (eq .Values.artifactDaemon.durable.store "gcs") (not (empty .Values.artifactDaemon.durable.existingSecret)) }}
+  {{- fail "artifactDaemon.durable.existingSecret supplies s3 credentials and must be empty for gcs; use Workload Identity/Application Default Credentials" }}
+{{- end }}
+{{- if $hangarEnabled }}
+  {{- if not .Values.artifactDaemon.enabled }}
+    {{- fail "artifactDaemon.enabled must be true when artifactDaemon.hangar.enabled is true" }}
+  {{- end }}
+  {{- if not (.Values.artifactDaemon.tls.enabled | default false) }}
+    {{- fail "artifactDaemon.tls.enabled must be true when artifactDaemon.hangar.enabled is true" }}
+  {{- end }}
+  {{- if ne .Values.artifactDaemon.durable.store "gcs" }}
+    {{- fail "artifactDaemon.durable.store must be gcs when Hangar is enabled" }}
+  {{- end }}
+  {{- if empty .Values.artifactDaemon.durable.bucket }}
+    {{- fail "artifactDaemon.durable.bucket is required when Hangar is enabled" }}
+  {{- end }}
+  {{- if and (empty .Values.artifactDaemon.tls.existingSecret) (not (.Values.artifactDaemon.hangar.allowGeneratedKey | default false)) }}
+    {{- fail "artifactDaemon.hangar.allowGeneratedKey=true is required to generate hangar.key; offline/GitOps rendering must use artifactDaemon.tls.existingSecret" }}
+  {{- end }}
+  {{- $scratch := clean .Values.artifactDaemon.hangar.scratchPath }}
+  {{- $storage := clean (.Values.artifactDaemon.hostPath | default "/var/concourse/artifacts") }}
+  {{- if or (not (hasPrefix "/" $scratch)) (eq $scratch "/") }}
+    {{- fail "artifactDaemon.hangar.scratchPath must be an absolute non-root path" }}
+  {{- end }}
+  {{- if or (eq $storage "/") (eq $scratch $storage) (hasPrefix (printf "%s/" $storage) $scratch) (hasPrefix (printf "%s/" $scratch) $storage) }}
+    {{- fail "artifactDaemon.hangar.scratchPath and artifactDaemon.hostPath must be disjoint" }}
+  {{- end }}
+  {{- if or (le (int64 .Values.artifactDaemon.hangar.maxContentBytes) 0) (le (int64 .Values.artifactDaemon.hangar.maxEntries) 0) }}
+    {{- fail "artifactDaemon.hangar content and entry limits must be positive" }}
+  {{- end }}
+  {{- $ttl := toString .Values.artifactDaemon.hangar.capabilityTTL }}
+  {{- if not (regexMatch "^[1-9][0-9]*s$" $ttl) }}
+    {{- fail "artifactDaemon.hangar.capabilityTTL must use positive whole seconds (for example 900s)" }}
+  {{- end }}
+  {{- $ttlDigits := trimSuffix "s" $ttl }}
+  {{- if gt (len $ttlDigits) 3 }}
+    {{- fail "artifactDaemon.hangar.capabilityTTL must be no greater than 900s" }}
+  {{- end }}
+  {{- $ttlSeconds := atoi $ttlDigits }}
+  {{- if gt $ttlSeconds 900 }}
+    {{- fail "artifactDaemon.hangar.capabilityTTL must be no greater than 900s" }}
+  {{- end }}
+{{- end }}
 {{- if .Values.artifactDaemon.enabled }}
 {{- $tlsEnabled := .Values.artifactDaemon.tls.enabled | default false }}
 {{- $tlsSecretName := .Values.artifactDaemon.tls.existingSecret | default (printf "%s-artifact-daemon-tls" (include "concourse.fullname" .)) }}
@@ -73,6 +121,16 @@ spec:
             - --tls-key=/etc/concourse/daemon-tls/tls.key
             - --tls-ca-cert=/etc/concourse/daemon-tls/ca.crt
             {{- end }}
+            {{- if $hangarEnabled }}
+            # The daemon adds concourse.dev/hangar-v1=ready to its node only
+            # after strict GCS, key, TLS, and scratch validation succeeds.
+            - --hangar-enabled
+            - --hangar-scratch-dir={{ .Values.artifactDaemon.hangar.scratchPath }}
+            - --hangar-capability-key=/etc/concourse/daemon-tls/hangar.key
+            - --hangar-capability-ttl={{ .Values.artifactDaemon.hangar.capabilityTTL }}
+            - --hangar-max-content-bytes={{ .Values.artifactDaemon.hangar.maxContentBytes | int64 }}
+            - --hangar-max-entries={{ .Values.artifactDaemon.hangar.maxEntries | int64 }}
+            {{- end }}
             - --mirror-replicas={{ $mirrorReplicas }}
             - --mirror-concurrency={{ .Values.artifactDaemon.mirror.concurrency | default 4 }}
             - --mirror-timeout={{ .Values.artifactDaemon.mirror.timeout | default "5m" }}
@@ -109,7 +167,7 @@ spec:
             {{- end }}
             {{- end }}
           {{- with .Values.artifactDaemon.durable }}
-          {{- if and .store .existingSecret }}
+          {{- if and (eq .store "s3") .existingSecret }}
           envFrom:
             # Bucket credentials as AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY.
             # Prefer IRSA or Workload Identity on a managed cluster and leave
@@ -151,6 +209,8 @@ spec:
             initialDelaySeconds: 2
             periodSeconds: 5
           securityContext:
+            runAsUser: 0
+            privileged: false
             allowPrivilegeEscalation: false
             capabilities:
               drop:
@@ -174,6 +234,10 @@ spec:
               mountPath: /etc/concourse/resolve-capability
               readOnly: true
             {{- end }}
+            {{- if $hangarEnabled }}
+            - name: hangar-scratch
+              mountPath: {{ .Values.artifactDaemon.hangar.scratchPath }}
+            {{- end }}
       volumes:
         - name: artifact-storage
           hostPath:
@@ -183,6 +247,21 @@ spec:
         - name: daemon-tls
           secret:
             secretName: {{ $tlsSecretName }}
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+              - key: ca.crt
+                path: ca.crt
+              {{- if $hangarEnabled }}
+              - key: hangar.key
+                path: hangar.key
+              {{- end }}
+        {{- end }}
+        {{- if $hangarEnabled }}
+        - name: hangar-scratch
+          emptyDir: {}
         {{- end }}
         {{- with .Values.artifactDaemon.resolveCapability.existingSecret }}
         - name: resolve-capability
