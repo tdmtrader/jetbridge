@@ -1015,6 +1015,163 @@ deleted scenario did; under the same ruling, the silent skip became a refusal
 (`TestDaemonSetBackend_BuildFetchInitContainers_RefusesNilArtifact`).
 
 
+### Round-1 fixes applied 2026-09-07 (h6, h11, h5)
+
+Three findings from the branch audit, each ruled on by the owner and each its
+own commit on top of `ff73c5dec1`.
+
+**`f61211e39b` — h6: the HTTP tree-read route is deleted.**
+`GET /hangar/v1/scopes/{scope}/trees/sha256/{digest}/generations/{generation}`
+had no consumer: materialization opens the store in process, and nothing in the
+tree, the chart or the init container ever issued that request. Owner's
+reasoning for deleting rather than keeping it: no consumer; the handler spooled
+the whole tree through `Canonicalizer.TempDir` to verify the digest before the
+first byte, so every open doubled scratch use for a tree up to
+`--hangar-max-content-bytes` (10 GiB default) with no concurrency bound at all,
+where the materialization route has a semaphore; and a future consumer should
+stream, hash and abort on mismatch with the client verifying, which shares no
+code with the spool. `handleHangarOpen` went with the route, and with it
+`normalizeHangarIOError`, `hangarRefFromRequest` and `hangarTypedError`, none of
+which had another caller.
+
+Tests deleted, and where each thing they proved is proved now:
+
+| deleted | what it proved | now proved by |
+| --- | --- | --- |
+| `TestHangarOpenExactGeneration` | the route returned the exact canonical bytes | `TestHangarDaemonStrictGCSFullTreeFlowFailsClosed`, which now reads the published object back through `Store.OpenTree` in process — the same path materialization takes — and still asserts the canonical archive entry by entry after the producer tree is deleted |
+| `TestHangarOpenFullyVerifiesBeforeWritingSuccess`, `TestHangarOpenHashesActualSpooledBytesBeforeSuccess` | a corrupt object is 422 and never partially written | `hangar/materializer_test.go:234` and `:577` for `ErrCorrupt` off the store, `TestHangarTypedStatuses` for the 422 mapping |
+| `TestHangarOpenClassifiesReadAndCloseFailuresTogether`, `TestHangarOpenPreservesTypedReadAndCloseFailures` | `normalizeHangarIOError`'s classification | nothing — the function they tested is gone with its only caller |
+| `TestHangarOpenRejectsEveryInvalidRouteSegment` | a malformed ref is refused | `hangar/ref_test.go`'s `TestTreeRefValidate` for the rejection itself; `Materializer.Materialize` validates the ref before touching the store |
+
+Also trimmed: the route's entry in `TestHangarDisabledRoutesAre404` and in
+`TestHangarProtectedTreeRoutesRequireMTLSButMaterializationDoesNot` (the
+publish route still carries the mTLS assertion), and the four reader stubs
+`failingReadCloser`, `hangarErrorReader`, `hangarReadCloseErrorReader` and
+`closeErrorReader`. The `hangar-scratch` emptyDir and `--hangar-scratch-dir`
+are untouched: materialization still stages through them. `docs/hangar.md`
+never documented the route, so it needed no change for h6.
+
+**`4241c67ee4` — h11: the GCS client is out of the web binary.**
+`gcs.go` and its two test files move to `hangar/gcs`, which only
+`cmd/artifact-daemon` imports; `hangar` keeps the `Store` interface, the ref
+types, the grant signer and verifier, the canonicalizer, the materializer and
+the option types. Exported names are unchanged (`gcs.NewGCSStore`,
+`gcs.GCSConfig`, `gcs.NewStorageClient`) so the change reads as a move.
+
+Measured on this box, all three trees `git status --porcelain` clean, with
+`origin/core` 74aaa83d7e checked out in its own detached worktree:
+
+                                    before          after       origin/core
+    go list -deps ./cmd/concourse    1515           1348           1347
+      cloud.google.com/go/storage       5              0              0
+      cloud.google.com/* (all)         37             23             23
+    go build ./cmd/concourse   146,976,274    126,854,514    126,836,146
+
+The branch now costs the web binary **18,368 bytes and one package** — itself,
+`github.com/concourse/concourse/hangar`, the only line `comm -13` reports
+against core's dep list — instead of 168 packages and 20,140,128 bytes
+(+15.9%).
+
+One correction to the audit's acceptance criterion: `grep -c cloud.google.com`
+cannot be 0, because it is **23 on `origin/core` too**. Those are the
+Stackdriver trace exporter's auth and trace packages, which core already links.
+The chain this change actually removes is the 14 packages `comm` reports, of
+which 5 match `cloud.google.com/go/storage`. That count is 0 on both sides now.
+
+Two guards, since a measurement is not a rule:
+
+  - `hangar/architecture_test.go` gains `TestArchitectureHangarPackageIsALeaf` —
+    no file directly in `hangar/` may import `cloud.google.com/...` or
+    `google.golang.org/api`, nor any first-party package but `hangar` itself,
+    which is what "`go list -deps ./hangar/ | grep concourse` prints only
+    `hangar`" means. It reads the directory rather than walking it, because
+    `hangar/gcs` is expected to import both and scanning it would invert the
+    rule.
+  - the root `architecture_test.go` gains
+    `TestHangarGCSStoreIsImportedOnlyByTheDaemon`, reusing that file's existing
+    `loadImportGraph`: only `cmd/artifact-daemon` may name `hangar/gcs`, test
+    imports counted. This is the one that catches the regression that matters,
+    an import from `atc`.
+
+Mutation-checked both ways. Adding `_ "cloud.google.com/go/storage"` to
+`hangar/store.go` reddens the first guard; adding `_ ".../hangar/gcs"` to
+`atc/runtime/types.go` reddens the second naming `atc/runtime`, and puts the 5
+storage packages straight back into `./cmd/concourse`. Both reverted.
+
+One piece of coupling had to be resolved rather than moved: `gcs.go` used
+`hangar`'s unexported `contextReader` and `closeReadCloserOnCancel`. They carry
+no hangar semantics — context cancellation applied to an `io.Reader` — so they
+are copied into `hangar/gcs` with a comment saying why, rather than exported
+from the package the split exists to keep narrow. The GCS tests likewise carry
+their own five-line `errorReader` instead of `tree_test.go`'s. Nothing else in
+`gcs.go` needed anything unexported, so the split was otherwise a file move and
+an import qualification.
+
+**`a9d91521e7` — h5: a 503 is not a refusal.**
+`refuseHangar` routed `hangar.ErrInfrastructure`, `context.Canceled` and
+`context.DeadlineExceeded` — and, via the switch's default, every unclassified
+error — through `s.refuse` with reason `unavailable`, so a bucket that would
+not answer incremented `artifact_daemon_refusals_total` alongside malformed
+requests. One metric meant two things: a Hangar outage read as a wave of bad
+requests, and the malformed-request rate could not be read out of it at all.
+
+Core's precedent is followed exactly: `handleDurableRestore` writes its
+normal-outcome 404 with `http.Error` and is listed in
+`refusal_visibility_test.go`'s `known` map so the refusal-visibility guard
+still recognises it. The 503 branch now does the same through
+`hangarUnavailable`, the second entry in that map.
+
+Unchanged: the status, the body (`service unavailable`, a fixed classification
+and never `err.Error()`, because a Hangar error can carry a scope, a digest or
+a store message), and the case order — `ErrInfrastructure` and the context
+errors are still tested FIRST, so `errors.Join(ErrNotFound, ErrInfrastructure)`
+is still 503 and not 404 and
+`TestHangarStatusPrecedenceNeverDowngradesCompoundFailuresToNotFound` passes
+untouched. The event is still logged, now as `hangar-unavailable` with the same
+bounded route label; only the counter and the word "refused" are withdrawn.
+`reasonUnavailable` is deleted from the bounded reason set with its last use,
+and `docs/hangar.md`'s overload paragraph — which described "the `unavailable`
+reason used for store and infrastructure failures" — is corrected.
+`reason="overloaded"` stays a refusal: the daemon really did turn the caller
+away.
+
+The test is `TestHangarInfrastructureFailureIsNotCountedAsARefusal`: a signed
+materialization against a store whose `OpenTree` returns `ErrInfrastructure`
+must give a sanitized 503, must not move `refusals_total`, and must log the
+fault; then, on the same server and the same route, a malformed body must give
+400 **and** raise `refusals_total` by one — so the first assertion is not just
+a counter that stopped moving. Mutation-checked: routing `hangarUnavailable`
+back through `s.refuse` reddens it with `a 503 raised refusals_total by 1, want
+0 — labels seen: [POST /hangar/v1/materializations unavailable]`.
+
+**Verification after all three, in this worktree, `git status --porcelain`
+showing only the one expected `??` line:**
+
+    $ gofmt -l cmd/ hangar/ atc/                            # clean
+    $ go build ./...                                        # clean
+    $ go vet ./...                                          # clean
+    $ go vet -tags live        ./atc/worker/jetbridge/      # clean
+    $ go vet -tags hangar_live ./atc/worker/jetbridge/      # clean
+    $ ginkgo ./cmd/artifact-daemon/...                      2 suites passed
+    $ ginkgo ./cmd/artifact-daemon/durable/...              passed
+    $ go test ./hangar/...                                  hangar ok, hangar/gcs ok
+    $ go test ./                                            ok (the new import rule)
+    $ ginkgo ./deploy/chart/tests/...                       passed
+    $ ginkgo ./atc/atccmd/...                               passed
+    $ ginkgo -p ./atc/worker/jetbridge/                     89 of 89 passed
+    $ (cd atc/worker/jetbridge/brine && go build ./... && go vet ./... && go test ./...)
+                                                            build, vet clean; steps ok
+
+The nested brine module needed **no** `go.mod`/`go.sum` change. Its indirect
+`cloud.google.com/go/storage` requirement is still there and still correct: it
+`replace`s the root module, whose `go.mod` still requires the storage chain for
+`hangar/gcs` and `cmd/artifact-daemon`. h11 moved the import between packages
+of the same module; it did not remove the module's dependency. This is the
+opposite of the third rebase's near-miss recorded under Housekeeping — there a
+`go.mod` rewrite was the real fix and was wrongly reverted; here no rewrite was
+offered, and none was forced.
+
+
 ## Test results at head 52f85901f0 (31 with the notes commit) (this worktree unless said otherwise)
 
     $ go build ./...                                        # clean
