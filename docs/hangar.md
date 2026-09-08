@@ -100,8 +100,13 @@ than queueing them. The init container retries `503` a bounded number of times,
 so ordinary bursts pass; the bound exists because the route is not
 mTLS-protected, and each item is a whole tree open, capture, and verified copy
 into the daemon's scratch volume. A refusal is counted in
-`artifact_daemon_refusals_total` with `reason="overloaded"`, distinct from the
-`unavailable` reason used for store and infrastructure failures.
+`artifact_daemon_refusals_total` with `reason="overloaded"`: the daemon turned
+the caller away, which is what that counter measures. Store and infrastructure
+failures answer with the same `503` and the same body, deliberately, but are
+NOT counted there and are not called refusals — they are the daemon failing,
+not the client, and counting both made a bucket outage read as a wave of bad
+requests. They are logged as `hangar-unavailable` with the same bounded route
+label.
 
 Node-IP TLS encrypts the init-to-daemon request, but the current init client
 does not verify the daemon's server identity. Do not describe this path as

@@ -434,6 +434,63 @@ func TestHangarMaterializationStoreFailureLeavesTargetUntouched(t *testing.T) {
 	}
 }
 
+// artifact_daemon_refusals_total means "the client did something we rejected".
+// A store that will not answer is the daemon failing, and while it went through
+// s.refuse a bucket outage looked, on the dashboard, exactly like a wave of
+// malformed requests.
+func TestHangarInfrastructureFailureIsNotCountedAsARefusal(t *testing.T) {
+	digest := hangar.Digest("sha256:" + strings.Repeat("b", 64))
+	ref := hangar.TreeRef{Scope: "ci", Digest: digest, Generation: 2}
+	store := &hangarStoreStub{ensure: func(context.Context, hangar.Scope, hangar.Digest, io.Reader, int64) (hangar.TreeAttributes, bool, error) {
+		panic("unexpected")
+	}}
+	store.open = func(context.Context, hangar.TreeRef, int64) (io.ReadCloser, hangar.TreeAttributes, error) {
+		return nil, hangar.TreeAttributes{}, hangar.ErrInfrastructure
+	}
+	logger := lagertest.NewTestLogger("hangar-fault")
+	server, _, key := newHangarTestServerWithLogger(t, store, logger)
+	signer, err := hangar.NewGrantSigner(key, time.Minute, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := signer.Sign(ref, "handle", "volume")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(map[string]any{"items": []any{map[string]any{
+		"ref": ref, "handle": "handle", "volume": "volume", "grant": "Bearer " + token,
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	before := refusalCount(t, server)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/hangar/v1/materializations", bytes.NewReader(body)))
+	if recorder.Code != http.StatusServiceUnavailable || recorder.Body.String() != "service unavailable\n" {
+		t.Fatalf("store infrastructure failure = %d %q, want a sanitized 503", recorder.Code, recorder.Body.String())
+	}
+	if got := refusalCount(t, server) - before; got != 0 {
+		t.Errorf("a 503 raised refusals_total by %v, want 0 — labels seen: %v", got, labelsOf(t, server))
+	}
+	if !strings.Contains(string(logger.Buffer().Contents()), "hangar-unavailable") {
+		t.Error("the fault was answered but not logged")
+	}
+
+	// The same route, the same server: a request the CLIENT got wrong is still
+	// counted, so the assertion above is not just a metric that stopped moving.
+	before = refusalCount(t, server)
+	recorder = httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/hangar/v1/materializations",
+		strings.NewReader(`{"items":[{"ref":{"scope":"ci","digest":"`+string(digest)+`","generation":1},"handle":"handle","volume":"volume","grant":"Bearer t","extra":true}]}`)))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("malformed request = %d %q, want 400", recorder.Code, recorder.Body.String())
+	}
+	if got := refusalCount(t, server) - before; got != 1 {
+		t.Errorf("a malformed request raised refusals_total by %v, want 1 — labels seen: %v", got, labelsOf(t, server))
+	}
+}
+
 func TestHangarMaterializationRejectsAbsoluteAndInvalidSegments(t *testing.T) {
 	digest := "sha256:" + strings.Repeat("e", 64)
 	store := &hangarStoreStub{ensure: func(context.Context, hangar.Scope, hangar.Digest, io.Reader, int64) (hangar.TreeAttributes, bool, error) {

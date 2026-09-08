@@ -11,6 +11,8 @@ import (
 	"os"
 	"strings"
 
+	"code.cloudfoundry.org/lager/v3"
+
 	"github.com/concourse/concourse/hangar"
 )
 
@@ -272,22 +274,52 @@ func (s *Server) refuseHangarMalformed(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) refuseHangar(w http.ResponseWriter, r *http.Request, err error) {
-	status := http.StatusServiceUnavailable
-	message := "service unavailable"
-	reason := reasonUnavailable
 	switch {
+	// First, so a wrapped infrastructure failure is never reported as a client
+	// fault. It is also the one branch that is not a refusal at all.
 	case errors.Is(err, hangar.ErrInfrastructure), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-		status, message, reason = http.StatusServiceUnavailable, "service unavailable", reasonUnavailable
+		s.hangarUnavailable(w, r)
 	case errors.Is(err, hangar.ErrUnauthorized):
-		status, message, reason = http.StatusUnauthorized, "unauthorized", reasonCapability
+		s.refuse(w, r, http.StatusUnauthorized, reasonCapability, errors.New("unauthorized"))
 	case errors.Is(err, hangar.ErrCorrupt):
-		status, message, reason = http.StatusUnprocessableEntity, "tree verification failed", reasonTreeVerification
+		s.refuse(w, r, http.StatusUnprocessableEntity, reasonTreeVerification, errors.New("tree verification failed"))
 	case errors.Is(err, hangar.ErrLimitExceeded):
-		status, message, reason = http.StatusRequestEntityTooLarge, "request too large", reasonLimitExceeded
+		s.refuse(w, r, http.StatusRequestEntityTooLarge, reasonLimitExceeded, errors.New("request too large"))
 	case errors.Is(err, hangar.ErrConflict):
-		status, message, reason = http.StatusConflict, "conflict", reasonConflict
+		s.refuse(w, r, http.StatusConflict, reasonConflict, errors.New("conflict"))
 	case errors.Is(err, hangar.ErrNotFound):
-		status, message, reason = http.StatusNotFound, "not found", reasonNotFound
+		s.refuse(w, r, http.StatusNotFound, reasonNotFound, errors.New("not found"))
+	default:
+		// Unclassified. Still ours: an error the store did not label is a
+		// daemon-side fault until someone proves otherwise, and reporting it
+		// as a client fault is how a bucket outage gets read as bad pipelines.
+		s.hangarUnavailable(w, r)
 	}
-	s.refuse(w, r, status, reason, errors.New(message))
+}
+
+// hangarUnavailable answers the daemon's own failures.
+//
+// artifact_daemon_refusals_total answers one question: how often did the daemon
+// turn a client away for something the CLIENT did. A bucket that will not
+// answer, a request whose context was cancelled or timed out, and an error the
+// store did not classify are none of those — routing them through s.refuse made
+// one metric mean two things, so a Hangar outage looked like a wave of bad
+// requests, and the malformed-request rate an operator actually wants to alert
+// on could not be read at all.
+//
+// Core already draws this line: handleDurableRestore writes its normal-outcome
+// 404 with http.Error rather than s.refuse, and is listed in
+// refusal_visibility_test.go's `known` map for exactly that reason. This is the
+// second entry there.
+//
+// Status and body are unchanged — a fixed classification, never err.Error(),
+// because a Hangar error can carry a scope, a digest or a store message. The
+// event is still logged, with the same bounded route label the refusal path
+// uses; only the counter, and the word "refused", are withdrawn.
+func (s *Server) hangarUnavailable(w http.ResponseWriter, r *http.Request) {
+	s.logger.Info("hangar-unavailable", lager.Data{
+		"route":  refusalRoute(r),
+		"status": http.StatusServiceUnavailable,
+	})
+	http.Error(w, "service unavailable", http.StatusServiceUnavailable)
 }

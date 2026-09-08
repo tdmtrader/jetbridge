@@ -1005,7 +1005,6 @@ const (
 	reasonLimitExceeded    = "limit_exceeded"
 	reasonConflict         = "conflict"
 	reasonTreeVerification = "tree_verification"
-	reasonUnavailable      = "unavailable"
 	reasonOverloaded       = "overloaded"
 )
 

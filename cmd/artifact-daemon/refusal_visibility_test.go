@@ -126,6 +126,7 @@ func TestArchitecture_HandlersRefuseThroughOnePath(t *testing.T) {
 	known := map[string]string{
 		"server.go:Server.refuse":                         "IS the one path",
 		"durable_handlers.go:Server.handleDurableRestore": "its 404 is a durable-store MISS, a normal outcome, not a refused request",
+		"hangar_handlers.go:Server.hangarUnavailable":     "its 503 is the DAEMON failing — a bucket outage, a cancelled context, an unclassified store error — not a request the client got wrong",
 	}
 
 	scanned := 0
