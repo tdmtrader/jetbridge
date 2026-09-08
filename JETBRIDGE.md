@@ -82,6 +82,28 @@ stderr separation, which standard Concourse gets from Garden's process API.
 This is what makes `fly intercept` work — the pause pod stays running after
 the command exits, and `fly intercept` execs a new shell into it.
 
+#### When the pause pod dies before the step starts
+
+A pause pod can be taken away between being created and being exec'd into: the
+reaper collects the previous check's pod, a node drain stops it (both leave it
+`Succeeded`, because the pause command traps `SIGTERM` and exits 0), or an
+eviction, a preemption or an OOM kills it (`Failed`, usually with a
+`Status.Reason` such as `Evicted`, or a `DisruptionTarget` condition). Agent
+steps hold a pod for minutes to hours, which is exactly when those happen.
+
+The phase does not distinguish them and is not used to decide. If the step's
+command has not started — the pod went terminal before it ever reached
+`Running`, or the SPDY dial never connected — the pod is replaced once,
+whatever the phase, and the step carries on. It is replaced only once: a pod
+that dies twice is reported rather than replaced again. And it is never
+replaced once the exec transport has carried a byte, because a second exec
+would run the command's side effects a second time. A `Failed` pod's
+diagnostics are written to the build log before the replacement destroys them,
+and the phase and reason are logged as `replacing-dead-pause-pod`.
+
+A pod whose own init container failed is not replaced: its inputs could not be
+staged, so a replacement would fail the same way while hiding why.
+
 ### Garbage collection
 
 A reaper component runs every 10 seconds and:
