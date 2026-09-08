@@ -15,6 +15,17 @@ type TeamFactory interface {
 	CreateTeam(atc.Team) (Team, error)
 	FindTeam(string) (Team, bool, error)
 	GetTeams() ([]Team, error)
+
+	// GetTeamsInTx is GetTeams read through a transaction the caller already
+	// holds a connection for.
+	//
+	// It exists because a caller that is inside a transaction cannot use the
+	// pool: its own connection is checked out for as long as the transaction
+	// lives, so a pool read from there needs a second one, and N such callers
+	// on a pool of N wait on each other forever. The reads take no context, so
+	// nothing would time out. atc/runs.AdmitRun is the caller this is for; see
+	// atc/runs/connection_budget_test.go.
+	GetTeamsInTx(Tx) ([]Team, error)
 	GetByID(teamID int) Team
 	CreateDefaultTeamIfNotExists() (Team, error)
 	NotifyResourceScanner() error
@@ -108,10 +119,21 @@ func (factory *teamFactory) FindTeam(teamName string) (Team, bool, error) {
 }
 
 func (factory *teamFactory) GetTeams() ([]Team, error) {
+	return factory.getTeams(factory.conn)
+}
+
+func (factory *teamFactory) GetTeamsInTx(tx Tx) ([]Team, error) {
+	return factory.getTeams(tx)
+}
+
+// getTeams is the one declaration of the read, over whichever runner the caller
+// has. The Team values it builds still carry the factory's conn, because that
+// is what their own later methods use; nothing in this read touches it.
+func (factory *teamFactory) getTeams(runner sq.Runner) ([]Team, error) {
 	rows, err := psql.Select("id, name, admin, auth").
 		From("teams").
 		OrderBy("name ASC").
-		RunWith(factory.conn).
+		RunWith(runner).
 		Query()
 	if err != nil {
 		return nil, err

@@ -80,9 +80,8 @@ type goListPackage struct {
 // add without thinking.
 //
 // "The agentic layer must not reach further into core" counts production
-// imports only. mcpserver's tests import atc/db/dbfakes, which says something
-// about the mock cleanup not having reached that package -- but it is not a
-// coupling v4 would inherit, and pinning it here would just be noise.
+// imports only. A test reaching for a helper is not a coupling v4 would
+// inherit, and pinning it here would just be noise.
 type importGraph struct {
 	prod map[string][]string
 	all  map[string][]string
@@ -95,6 +94,13 @@ type importGraph struct {
 // indirect dependency here and its richer modes type-check, which costs far
 // more than this test is worth. Direct edges are the whole check -- transitive
 // reachability is meaningless when nearly everything reaches atc/api anyway.
+//
+// One consequence to know before you trust a green: the graph comes from a
+// subprocess, and Go's test cache does not track it. Edit a package these rules
+// cover and `go test .` can report `ok ... (cached)` from the previous graph,
+// which reads exactly like the guard declining to fire. Use `go test -count=1 .`
+// -- or ginkgo, which compiles and runs the binary every time and is what
+// `make test-unit` does -- when you are checking whether a guard still bites.
 func loadImportGraph(t *testing.T) importGraph {
 	t.Helper()
 
@@ -262,10 +268,87 @@ var agenticCoreReach = map[string][]string{
 	// compose with core's handlers rather than re-implement them, and this pin
 	// should stay empty.
 	"atc/api/mcpserver": {},
+
+	// v4's first package, and the first consumer of core's run-admission port.
+	//
+	// Exactly two: atc for shared value types, atc/runs for admission. That is
+	// the whole point of the port -- CreateRunInTx is an atc/db seam, and a
+	// package that called it directly would pin atc/db here on its first
+	// commit and inherit the coupling mcpserver's entry above exists to warn
+	// about.
+	//
+	// The set is exact in both directions: an import that is not listed fails,
+	// and a listed import that is gone fails. So widening this is an edit with
+	// a reason, not an accident.
+	"atc/agent/composition": {"atc", "atc/runs"},
+}
+
+// unpinnedAgenticPackages closes the opt-in hole in the ratchet below.
+//
+// The pins are a map, and the loop that reads them iterates over its keys. So
+// an agentic package nobody remembered to pin is not a failure -- it is simply
+// never visited. Creating atc/agent/<anything> and forgetting the pin was
+// therefore legal and silent, which is the opposite of what a ratchet is for:
+// the first commit of a new agentic package is exactly when its reach is
+// cheapest to bound, and exactly when it is easiest to forget.
+//
+// This walks the graph from the other end. Every package the classifier calls
+// agentic must appear as a key in the pins, whether or not anyone thought to
+// add it.
+//
+// It takes the graph, the classifier and the pins as arguments rather than
+// reading the package-level globals, so that A6 can drive it with a fixture and
+// prove it objects to a scan that classified nothing. A guard that silently
+// matches zero packages passes forever (AGENTS.md, Repo conventions); this one
+// reports the empty scan as its first problem. It deliberately asserts no exact
+// number of agentic packages -- only that there is at least one, and that each
+// of them is pinned.
+func unpinnedAgenticPackages(graph importGraph, agentic func(string) bool, pins map[string][]string) []string {
+	var (
+		problems   []string
+		classified []string
+	)
+
+	// Production edges only, matching the scope of the ratchet this feeds.
+	for pkg := range graph.prod {
+		if agentic(pkg) {
+			classified = append(classified, pkg)
+		}
+	}
+	sort.Strings(classified)
+
+	if len(classified) == 0 {
+		problems = append(problems,
+			"the agentic classification matched no package in the import graph. "+
+				"Either agenticPackages/agenticPrefixes stopped describing the tree, "+
+				"or the listing failed -- and every pin check below would pass "+
+				"vacuously either way.")
+
+		return problems
+	}
+
+	for _, pkg := range classified {
+		if _, pinned := pins[pkg]; !pinned {
+			problems = append(problems, "agentic package "+pkg+" is not pinned in "+
+				"agenticCoreReach. Every core package the agent layer touches is a "+
+				"coupling v4 inherits, so a new agentic package declares its reach on "+
+				"its first commit -- when it is one line -- rather than accumulating "+
+				"couplings nobody recorded. Add the pin, listing exactly the in-module "+
+				"core packages it imports.")
+		}
+	}
+
+	return problems
 }
 
 func TestAgenticLayerDoesNotReachIntoCoreInternals(t *testing.T) {
 	graph := loadImportGraph(t)
+
+	// Every agentic package must be pinned, not just every pin visited. Without
+	// this the loop below is opt-in and an unpinned package is invisible to it.
+	for _, problem := range unpinnedAgenticPackages(graph, isAgentic, agenticCoreReach) {
+		t.Errorf("%s", problem)
+	}
 
 	for pkg, pinned := range agenticCoreReach {
 		imports, ok := graph.prod[pkg]
@@ -313,4 +396,90 @@ func TestAgenticLayerDoesNotReachIntoCoreInternals(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestUnpinnedAgenticPackagesGuardFailsOnAnEmptyScan is A6, and it is the reason
+// the D9 assertion is a pure function over an injected graph and classifier
+// rather than a loop over package-level globals.
+//
+// The failure this guards against is the one AGENTS.md names: a structural test
+// that silently matches zero packages passes forever. If `agenticPrefixes` were
+// mistyped, or `go list` returned a listing in which nothing classified as
+// agentic, the "every agentic package is pinned" rule would be vacuously true
+// and would report success for the rest of its life. So the helper is driven
+// here with a classifier that deliberately matches nothing, and it must object.
+//
+// The fixture is the test's own -- no `go list`, no edit to the tree -- which is
+// what makes this committable, unlike A5, A7, A8 and A9.
+func TestUnpinnedAgenticPackagesGuardFailsOnAnEmptyScan(t *testing.T) {
+	graph := importGraph{
+		prod: map[string][]string{
+			"atc/agent/one":   {"atc", "atc/runs"},
+			"atc/agent/two":   {"atc"},
+			"atc/agent/three": {"atc"},
+			"atc/db":          {"atc"},
+		},
+		all: map[string][]string{},
+	}
+
+	matchesNothing := func(string) bool { return false }
+	matches := func(pkgs ...string) func(string) bool {
+		set := map[string]bool{}
+		for _, p := range pkgs {
+			set[p] = true
+		}
+
+		return func(pkg string) bool { return set[pkg] }
+	}
+
+	t.Run("objects when the classification matched no package", func(t *testing.T) {
+		problems := unpinnedAgenticPackages(graph, matchesNothing, map[string][]string{})
+		if len(problems) == 0 {
+			t.Fatalf("the guard passed on a scan that classified no package at all. " +
+				"That is the vacuous green this assertion exists to prevent.")
+		}
+		if !strings.Contains(problems[0], "matched no package") {
+			t.Errorf("first problem should name the empty scan, got: %q", problems[0])
+		}
+	})
+
+	t.Run("is silent when every classified package is pinned", func(t *testing.T) {
+		problems := unpinnedAgenticPackages(graph,
+			matches("atc/agent/one", "atc/agent/two"),
+			map[string][]string{
+				"atc/agent/one": {"atc", "atc/runs"},
+				"atc/agent/two": {"atc"},
+			})
+		if len(problems) != 0 {
+			t.Errorf("expected no problems, got %v", problems)
+		}
+	})
+
+	// The same, with a different number of packages. The guard must not encode
+	// how many agentic packages there are -- only that there is at least one and
+	// that each of them is pinned.
+	t.Run("is silent for a different number of pinned packages", func(t *testing.T) {
+		problems := unpinnedAgenticPackages(graph,
+			matches("atc/agent/one", "atc/agent/two", "atc/agent/three"),
+			map[string][]string{
+				"atc/agent/one":   {"atc", "atc/runs"},
+				"atc/agent/two":   {"atc"},
+				"atc/agent/three": {"atc"},
+			})
+		if len(problems) != 0 {
+			t.Errorf("expected no problems, got %v", problems)
+		}
+	})
+
+	t.Run("names a classified package that is not pinned", func(t *testing.T) {
+		problems := unpinnedAgenticPackages(graph,
+			matches("atc/agent/one", "atc/agent/two"),
+			map[string][]string{"atc/agent/one": {"atc", "atc/runs"}})
+		if len(problems) != 1 {
+			t.Fatalf("expected exactly the one unpinned package to be reported, got %v", problems)
+		}
+		if !strings.Contains(problems[0], "atc/agent/two") {
+			t.Errorf("problem should name the unpinned package, got: %q", problems[0])
+		}
+	})
 }
