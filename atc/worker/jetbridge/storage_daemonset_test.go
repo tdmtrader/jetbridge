@@ -9,11 +9,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -744,6 +746,14 @@ exit 0
 
 	scriptTmp := t.TempDir()
 	script := strings.ReplaceAll(inits[0].Command[2], "/hangar-inputs", mountBase)
+	// A non-interactive POSIX shell cannot trap a signal that was ignored when
+	// it started, and the CI task tree starts with SIGHUP ignored (reproducible
+	// locally with `trap '' HUP` around go test). Catching it here for the
+	// duration means the child is exec'd with the default disposition, so the
+	// script's `trap on_signal 1` is honoured the way it is in a real pod.
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	defer signal.Stop(hup)
 	cmd := exec.Command("/bin/sh", "-c", script)
 	signalSleep := ""
 	if fixture.signalSleep {
