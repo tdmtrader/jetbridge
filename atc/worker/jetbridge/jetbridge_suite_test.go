@@ -202,6 +202,23 @@ type fakeExecExecutor struct {
 	execErr    error
 	execStdout []byte
 	execFunc   func() error // per-call error function; takes priority over execErr when set
+	// execFuncIO is execFunc with the step's own streams in hand, for the
+	// specs that turn on what the transport carried before it broke. It takes
+	// priority over both, and stdin is handed over undrained: reading it is
+	// itself evidence that the transport was up.
+	execFuncIO func(stdin io.Reader, stdout, stderr io.Writer) error
+}
+
+func (f *fakeExecExecutor) setExecFuncIO(fn func(stdin io.Reader, stdout, stderr io.Writer) error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.execFuncIO = fn
+}
+
+func (f *fakeExecExecutor) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.execCalls)
 }
 
 type execCall struct {
@@ -223,6 +240,23 @@ func (f *fakeExecExecutor) ExecInPod(
 	tty bool,
 	attrs jetbridge.ExecAttrs,
 ) error {
+	f.mu.Lock()
+	ioFunc := f.execFuncIO
+	f.mu.Unlock()
+	if ioFunc != nil {
+		f.mu.Lock()
+		f.execCalls = append(f.execCalls, execCall{
+			podName:       podName,
+			namespace:     namespace,
+			containerName: containerName,
+			command:       command,
+			tty:           tty,
+			attrs:         attrs,
+		})
+		f.mu.Unlock()
+		return ioFunc(stdin, stdout, stderr)
+	}
+
 	// Consume stdin into a buffer (mimics real executor behavior and
 	// unblocks io.Pipe writers used by streaming StreamOut).
 	var stdinBuf io.Reader

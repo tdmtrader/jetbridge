@@ -52,7 +52,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 // ClosingDefinitions is the single entry point this file exports.
@@ -257,22 +259,37 @@ func closingStepDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// The node takes the pod away before the command can run. The ginkgo
-		// case asserted this is a TYPED, retryable interruption rather than a
-		// plain failure — a different build classification — and no feature
-		// file says so yet.
+		// The node takes the pod away before the command can run, and keeps
+		// doing it. The ginkgo case asserted this is a TYPED, retryable
+		// interruption rather than a plain failure — a different build
+		// classification — and no feature file says so yet.
+		//
+		// It has to keep doing it: a single eviction before the command runs
+		// is now absorbed by the one pause-pod replacement the runtime is
+		// allowed, so a node that evicts once no longer reaches the build at
+		// all. The classification is what the scenario is about, and it is
+		// the SECOND eviction that carries it.
 		brine.DefineMap[ClosingCluster, ClosingRun](
-			"the node evicts the step {string} before its command runs",
+			"the node keeps evicting the step {string} before its command runs",
 			func(in ClosingCluster, p brine.Params, _ *brine.Recorder) (ClosingRun, error) {
 				handle, ok := p.GetString(0)
 				if !ok {
 					return ClosingRun{}, fmt.Errorf("expected a handle parameter")
 				}
-				return closingRunStep(in, handle, "echo unreachable", nil, func(pod *corev1.Pod) {
+				evict := func(pod *corev1.Pod) {
 					pod.Status.Phase = corev1.PodFailed
 					pod.Status.Reason = "Evicted"
 					pod.Status.Message = "The node was low on resource: memory."
-				})
+				}
+				// Every pod this node is given, including the replacement.
+				in.ClosingClientset.PrependReactor("create", "pods",
+					func(action k8stesting.Action) (bool, apiruntime.Object, error) {
+						if pod, ok := action.(k8stesting.CreateActionImpl).GetObject().(*corev1.Pod); ok {
+							evict(pod)
+						}
+						return false, nil, nil
+					})
+				return closingRunStep(in, handle, "echo unreachable", nil, evict)
 			},
 		),
 

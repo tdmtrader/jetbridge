@@ -74,9 +74,11 @@ Feature: Closing the loop — a whole step, the durable tier, and the artifact i
   # already have those — it is that an eviction is a TYPED, RETRYABLE
   # interruption rather than a plain error. That is a different build
   # classification, and no feature file said so before this one.
+  # The node has to keep evicting: one eviction before the command runs is now
+  # absorbed by the single pause-pod replacement the runtime is allowed.
   Scenario: An evicted step is a retryable interruption, not a failed build
     Given a jetbridge worker driving a whole step from end to end
-    When the node evicts the step "get-evicted" before its command runs
+    When the node keeps evicting the step "get-evicted" before its command runs
     Then the step was interrupted rather than failed, because it was "evicted"
     And the diagnostics in the build log explain "Pod Failure Diagnostics"
     And the diagnostics in the build log explain "Evicted"

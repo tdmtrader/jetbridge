@@ -723,7 +723,14 @@ func newSeveringWorker(
 	res brine.Resources,
 	sever func(context.Context, *fake.Clientset, string, string) error,
 ) (ClusterReady, error) {
-	ready, err := newConfiguredWorker(res, func(*jetbridge.Config) {})
+	// Short deadlines: a severed dial now costs one pause-pod replacement,
+	// and the replacement never reaches Running on a fake cluster, so the
+	// scenario would otherwise sit out the production startup timeout before
+	// reporting the death the diagnostics are about.
+	ready, err := newConfiguredWorker(res, func(cfg *jetbridge.Config) {
+		cfg.PodStartupTimeout = 200 * time.Millisecond
+		cfg.PodSchedulingTimeout = 200 * time.Millisecond
+	})
 	if err != nil {
 		return ClusterReady{}, err
 	}
