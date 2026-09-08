@@ -1,4 +1,4 @@
-package hangar
+package gcs
 
 import (
 	"bytes"
@@ -28,9 +28,11 @@ import (
 	"google.golang.org/api/googleapi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/concourse/concourse/hangar"
 )
 
-const testScope Scope = "build-artifacts"
+const testScope hangar.Scope = "build-artifacts"
 
 func TestGCSStoreValidatesConfigurationAndDefaultsCompression(t *testing.T) {
 	t.Parallel()
@@ -67,7 +69,7 @@ func TestGCSEnsureTreeCreatesConditionallyWithExactMetadata(t *testing.T) {
 	attrs, created, err := store.EnsureTree(context.Background(), testScope, digest, bytes.NewReader(content), int64(len(content)))
 	require.NoError(t, err)
 	require.True(t, created)
-	require.Equal(t, TreeRef{Scope: testScope, Digest: digest, Generation: 1}, attrs.Ref)
+	require.Equal(t, hangar.TreeRef{Scope: testScope, Digest: digest, Generation: 1}, attrs.Ref)
 	require.Equal(t, int64(len(content)), attrs.LogicalBytes)
 	require.Equal(t, []storage.Conditions{{DoesNotExist: true}}, objects.writeConditions)
 	key := "deployment/blue/hangar/v1/scopes/build-artifacts/trees/sha256/" + string(digest)[7:] + ".tar.zst"
@@ -82,12 +84,12 @@ func TestGCSEnsureTreeRejectsUnverifiedOrOversizedSourceBeforeUpload(t *testing.
 	tests := []struct {
 		name    string
 		content []byte
-		digest  Digest
+		digest  hangar.Digest
 		limit   int64
 		wantErr error
 	}{
-		{name: "digest mismatch", content: []byte("actual"), digest: digestFor([]byte("expected")), limit: 64, wantErr: ErrCorrupt},
-		{name: "logical size overflow", content: []byte("too large"), digest: digestFor([]byte("too large")), limit: 3, wantErr: ErrLimitExceeded},
+		{name: "digest mismatch", content: []byte("actual"), digest: digestFor([]byte("expected")), limit: 64, wantErr: hangar.ErrCorrupt},
+		{name: "logical size overflow", content: []byte("too large"), digest: digestFor([]byte("too large")), limit: 3, wantErr: hangar.ErrLimitExceeded},
 	}
 	for _, test := range tests {
 		test := test
@@ -120,7 +122,7 @@ func TestGCSEnsureTreeRejectsOversizedCompressedScratchBeforeCreatingWriter(t *t
 
 	attrs, created, err := store.EnsureTree(context.Background(), testScope, digest, bytes.NewReader(content), 64)
 
-	require.ErrorIs(t, err, ErrLimitExceeded)
+	require.ErrorIs(t, err, hangar.ErrLimitExceeded)
 	require.Zero(t, attrs)
 	require.False(t, created)
 	require.Empty(t, objects.writeConditions)
@@ -146,13 +148,13 @@ func TestGCSEnsureTreeIsIdempotentOnlyForFullyVerifiedExistingObject(t *testing.
 	t.Run("same key unverifiable object", func(t *testing.T) {
 		t.Parallel()
 		store, objects, scratch := newTestGCSStore(t)
-		key, err := TreeKey(store.config.Prefix, testScope, digest)
+		key, err := hangar.TreeKey(store.config.Prefix, testScope, digest)
 		require.NoError(t, err)
 		objects.putRaw(key, []byte("not zstd"), metadataFor(digest, int64(len(content))), int64(len("not zstd")))
 		attrs, created, err := store.EnsureTree(context.Background(), testScope, digest, bytes.NewReader(content), int64(len(content)))
-		require.ErrorIs(t, err, ErrConflict)
-		require.NotErrorIs(t, err, ErrCorrupt)
-		require.NotErrorIs(t, err, ErrNotFound)
+		require.ErrorIs(t, err, hangar.ErrConflict)
+		require.NotErrorIs(t, err, hangar.ErrCorrupt)
+		require.NotErrorIs(t, err, hangar.ErrNotFound)
 		require.Zero(t, attrs)
 		require.False(t, created)
 		requireScratchEmpty(t, scratch)
@@ -165,7 +167,7 @@ func TestGCSConcurrentIdenticalEnsureHasOneCreator(t *testing.T) {
 	content := bytes.Repeat([]byte("same immutable tree\n"), 64)
 	digest := digestFor(content)
 	type result struct {
-		attrs   TreeAttributes
+		attrs   hangar.TreeAttributes
 		created bool
 		err     error
 	}
@@ -242,9 +244,9 @@ func TestGCSOfficialClientPinsGenerationAndConditionsDeleteQuery(t *testing.T) {
 	content := []byte("official JSON client boundary")
 	digest := digestFor(content)
 	compressed := compressTest(t, content)
-	key, err := TreeKey("deployment/blue", testScope, digest)
+	key, err := hangar.TreeKey("deployment/blue", testScope, digest)
 	require.NoError(t, err)
-	ref, err := NewTreeRef(testScope, digest, generation)
+	ref, err := hangar.NewTreeRef(testScope, digest, generation)
 	require.NoError(t, err)
 	type requestRecord struct {
 		method, path string
@@ -306,7 +308,7 @@ func TestGCSOfficialClientConditionalUploadWriteConflictVerifiesExistingGenerati
 		state = state*1664525 + 1013904223
 		content[index] = byte(state >> 24)
 	}
-	digest := Digest("sha256:93ce83b42df1b49ec1e81266bbc0dd22982a7323278479473c26ef8206ac293f")
+	digest := hangar.Digest("sha256:93ce83b42df1b49ec1e81266bbc0dd22982a7323278479473c26ef8206ac293f")
 	compressed := compressTest(t, content)
 	type requestRecord struct {
 		method, path string
@@ -392,7 +394,7 @@ func TestGCSOfficialClientConditionalUploadWriteConflictVerifiesExistingGenerati
 	require.True(t, isPreconditionFailed(writeErrors[0]))
 	require.NoError(t, ensureErr)
 	require.False(t, created)
-	require.Equal(t, TreeRef{Scope: testScope, Digest: digest, Generation: 91}, attrs.Ref)
+	require.Equal(t, hangar.TreeRef{Scope: testScope, Digest: digest, Generation: 91}, attrs.Ref)
 	require.Equal(t, int64(len(content)), attrs.LogicalBytes)
 	require.Equal(t, int64(len(compressed)), attrs.StoredBytes)
 	requireScratchEmpty(t, scratch)
@@ -461,13 +463,13 @@ func TestGCSOpenTreeRejectsCorruptionBeforeReturningReader(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			store, objects, scratch := newTestGCSStore(t)
-			key, err := TreeKey(store.config.Prefix, testScope, digest)
+			key, err := hangar.TreeKey(store.config.Prefix, testScope, digest)
 			require.NoError(t, err)
 			generation := objects.putRaw(key, test.data, test.metadata, test.size)
-			ref, err := NewTreeRef(testScope, digest, generation)
+			ref, err := hangar.NewTreeRef(testScope, digest, generation)
 			require.NoError(t, err)
 			reader, _, err := store.OpenTree(context.Background(), ref, test.limit)
-			require.ErrorIs(t, err, ErrCorrupt)
+			require.ErrorIs(t, err, hangar.ErrCorrupt)
 			require.Nil(t, reader)
 			requireScratchEmpty(t, scratch)
 		})
@@ -488,9 +490,9 @@ func TestGCSOpenTreeSeparatesBackendAndScratchFailuresFromCorruption(t *testing.
 		ref := putLogical(t, objects, store.config.Prefix, testScope, digest, content)
 		objects.newReaderErr = sentinel
 		reader, _, err := store.OpenTree(context.Background(), ref, int64(len(content)))
-		require.ErrorIs(t, err, ErrInfrastructure)
+		require.ErrorIs(t, err, hangar.ErrInfrastructure)
 		require.ErrorIs(t, err, sentinel)
-		require.NotErrorIs(t, err, ErrCorrupt)
+		require.NotErrorIs(t, err, hangar.ErrCorrupt)
 		require.Nil(t, reader)
 		requireScratchEmpty(t, scratch)
 	})
@@ -501,9 +503,9 @@ func TestGCSOpenTreeSeparatesBackendAndScratchFailuresFromCorruption(t *testing.
 		ref := putLogical(t, objects, store.config.Prefix, testScope, digest, content)
 		objects.readErr = sentinel
 		reader, _, err := store.OpenTree(context.Background(), ref, int64(len(content)))
-		require.ErrorIs(t, err, ErrInfrastructure)
+		require.ErrorIs(t, err, hangar.ErrInfrastructure)
 		require.ErrorIs(t, err, sentinel)
-		require.NotErrorIs(t, err, ErrCorrupt)
+		require.NotErrorIs(t, err, hangar.ErrCorrupt)
 		require.Nil(t, reader)
 		requireScratchEmpty(t, scratch)
 	})
@@ -512,14 +514,14 @@ func TestGCSOpenTreeSeparatesBackendAndScratchFailuresFromCorruption(t *testing.
 		t.Parallel()
 		store, objects, scratch := newTestGCSStore(t)
 		ref := putLogical(t, objects, store.config.Prefix, testScope, digest, content)
-		key, err := TreeKey(store.config.Prefix, testScope, digest)
+		key, err := hangar.TreeKey(store.config.Prefix, testScope, digest)
 		require.NoError(t, err)
 		objects.readErr = sentinel
 		objects.readErrAfter = len(objects.objects[key].data) / 2
 		reader, _, err := store.OpenTree(context.Background(), ref, int64(len(content)))
-		require.ErrorIs(t, err, ErrInfrastructure)
+		require.ErrorIs(t, err, hangar.ErrInfrastructure)
 		require.ErrorIs(t, err, sentinel)
-		require.NotErrorIs(t, err, ErrCorrupt)
+		require.NotErrorIs(t, err, hangar.ErrCorrupt)
 		require.Nil(t, reader)
 		requireScratchEmpty(t, scratch)
 	})
@@ -537,8 +539,8 @@ func TestGCSOpenTreeSeparatesBackendAndScratchFailuresFromCorruption(t *testing.
 		}
 		reader, _, err := store.OpenTree(context.Background(), ref, int64(len(content)))
 		require.ErrorIs(t, err, syscall.ENOSPC)
-		require.ErrorIs(t, err, ErrInfrastructure)
-		require.NotErrorIs(t, err, ErrCorrupt)
+		require.ErrorIs(t, err, hangar.ErrInfrastructure)
+		require.NotErrorIs(t, err, hangar.ErrCorrupt)
 		require.Nil(t, reader)
 		requireScratchEmpty(t, scratch)
 	})
@@ -554,15 +556,15 @@ func TestGCSOpenTreeCapsCompressedBodyBeforeDecoder(t *testing.T) {
 	binary.LittleEndian.PutUint32(skippable[:4], 0x184d2a50)
 	binary.LittleEndian.PutUint32(skippable[4:8], 128)
 	data := append(compressed, skippable...)
-	key, err := TreeKey(store.config.Prefix, testScope, digest)
+	key, err := hangar.TreeKey(store.config.Prefix, testScope, digest)
 	require.NoError(t, err)
 	generation := objects.putRaw(key, data, metadataFor(digest, 1), int64(len(compressed)))
-	ref, err := NewTreeRef(testScope, digest, generation)
+	ref, err := hangar.NewTreeRef(testScope, digest, generation)
 	require.NoError(t, err)
 
 	reader, _, err := store.OpenTree(context.Background(), ref, 64)
 
-	require.ErrorIs(t, err, ErrCorrupt)
+	require.ErrorIs(t, err, hangar.ErrCorrupt)
 	require.Nil(t, reader)
 	require.LessOrEqual(t, objects.readBytes, int64(37))
 	requireScratchEmpty(t, scratch)
@@ -578,8 +580,8 @@ func TestGCSCallerLogicalLimitViolationsAreTypedAndDeclaredSizeBoundsSpooling(t 
 		digest := digestFor(content)
 		ref := putLogical(t, objects, store.config.Prefix, testScope, digest, content)
 		reader, _, err := store.OpenTree(context.Background(), ref, 4)
-		require.ErrorIs(t, err, ErrLimitExceeded)
-		require.NotErrorIs(t, err, ErrCorrupt)
+		require.ErrorIs(t, err, hangar.ErrLimitExceeded)
+		require.NotErrorIs(t, err, hangar.ErrCorrupt)
 		require.Nil(t, reader)
 		requireScratchEmpty(t, scratch)
 	})
@@ -590,14 +592,14 @@ func TestGCSCallerLogicalLimitViolationsAreTypedAndDeclaredSizeBoundsSpooling(t 
 		content := []byte("1234")
 		digest := digestFor(content)
 		compressed := compressTest(t, content)
-		key, err := TreeKey(store.config.Prefix, testScope, digest)
+		key, err := hangar.TreeKey(store.config.Prefix, testScope, digest)
 		require.NoError(t, err)
 		generation := objects.putRaw(key, compressed, metadataFor(digest, 3), int64(len(compressed)))
-		ref, err := NewTreeRef(testScope, digest, generation)
+		ref, err := hangar.NewTreeRef(testScope, digest, generation)
 		require.NoError(t, err)
 		reader, _, err := store.OpenTree(context.Background(), ref, 3)
-		require.ErrorIs(t, err, ErrLimitExceeded)
-		require.NotErrorIs(t, err, ErrCorrupt)
+		require.ErrorIs(t, err, hangar.ErrLimitExceeded)
+		require.NotErrorIs(t, err, hangar.ErrCorrupt)
 		require.Nil(t, reader)
 		requireScratchEmpty(t, scratch)
 	})
@@ -608,14 +610,14 @@ func TestGCSCallerLogicalLimitViolationsAreTypedAndDeclaredSizeBoundsSpooling(t 
 		content := []byte("1234")
 		digest := digestFor(content)
 		compressed := compressTest(t, content)
-		key, err := TreeKey(store.config.Prefix, testScope, digest)
+		key, err := hangar.TreeKey(store.config.Prefix, testScope, digest)
 		require.NoError(t, err)
 		generation := objects.putRaw(key, compressed, metadataFor(digest, 3), int64(len(compressed)))
-		ref, err := NewTreeRef(testScope, digest, generation)
+		ref, err := hangar.NewTreeRef(testScope, digest, generation)
 		require.NoError(t, err)
 		reader, _, err := store.OpenTree(context.Background(), ref, 10)
-		require.ErrorIs(t, err, ErrCorrupt)
-		require.NotErrorIs(t, err, ErrLimitExceeded)
+		require.ErrorIs(t, err, hangar.ErrCorrupt)
+		require.NotErrorIs(t, err, hangar.ErrLimitExceeded)
 		require.Nil(t, reader)
 		requireScratchEmpty(t, scratch)
 	})
@@ -626,10 +628,10 @@ func TestGCSCallerLogicalLimitViolationsAreTypedAndDeclaredSizeBoundsSpooling(t 
 		content := bytes.Repeat([]byte("x"), 100)
 		digest := digestFor(content)
 		compressed := compressTest(t, content)
-		key, err := TreeKey(store.config.Prefix, testScope, digest)
+		key, err := hangar.TreeKey(store.config.Prefix, testScope, digest)
 		require.NoError(t, err)
 		generation := objects.putRaw(key, compressed, metadataFor(digest, 3), int64(len(compressed)))
-		ref, err := NewTreeRef(testScope, digest, generation)
+		ref, err := hangar.NewTreeRef(testScope, digest, generation)
 		require.NoError(t, err)
 		var observed *countingScratch
 		store.createScratch = func(directory, pattern string) (scratchFile, error) {
@@ -641,7 +643,7 @@ func TestGCSCallerLogicalLimitViolationsAreTypedAndDeclaredSizeBoundsSpooling(t 
 			return observed, nil
 		}
 		reader, _, err := store.OpenTree(context.Background(), ref, 100)
-		require.ErrorIs(t, err, ErrCorrupt)
+		require.ErrorIs(t, err, hangar.ErrCorrupt)
 		require.Nil(t, reader)
 		require.NotNil(t, observed)
 		require.LessOrEqual(t, observed.written, int64(4))
@@ -660,9 +662,9 @@ func TestGCSEnsureTreeKeepsConflictVerificationTransportFailureAsInfrastructure(
 
 	attrs, created, err := store.EnsureTree(context.Background(), testScope, digest, bytes.NewReader(content), int64(len(content)))
 
-	require.ErrorIs(t, err, ErrInfrastructure)
+	require.ErrorIs(t, err, hangar.ErrInfrastructure)
 	require.ErrorIs(t, err, sentinel)
-	require.NotErrorIs(t, err, ErrConflict)
+	require.NotErrorIs(t, err, hangar.ErrConflict)
 	require.Zero(t, attrs)
 	require.False(t, created)
 	requireScratchEmpty(t, scratch)
@@ -673,11 +675,11 @@ func TestGCSMissingTreeIsTypedNotFound(t *testing.T) {
 	store, _, scratch := newTestGCSStore(t)
 	digest := digestFor([]byte("missing"))
 	_, err := store.InspectTree(context.Background(), testScope, digest, 64)
-	require.ErrorIs(t, err, ErrNotFound)
-	ref, err := NewTreeRef(testScope, digest, 99)
+	require.ErrorIs(t, err, hangar.ErrNotFound)
+	ref, err := hangar.NewTreeRef(testScope, digest, 99)
 	require.NoError(t, err)
 	reader, _, err := store.OpenTree(context.Background(), ref, 64)
-	require.ErrorIs(t, err, ErrNotFound)
+	require.ErrorIs(t, err, hangar.ErrNotFound)
 	require.Nil(t, reader)
 	requireScratchEmpty(t, scratch)
 }
@@ -704,12 +706,12 @@ func TestGCSInspectTreeRechecksGenerationAndMetageneration(t *testing.T) {
 			t.Parallel()
 			store, objects, scratch := newTestGCSStore(t)
 			ref := putLogical(t, objects, store.config.Prefix, testScope, digest, content)
-			key, err := TreeKey(store.config.Prefix, testScope, digest)
+			key, err := hangar.TreeKey(store.config.Prefix, testScope, digest)
 			require.NoError(t, err)
 			compressed := objects.objects[key].data
 			test.mutate(objects, key, compressed, metadataFor(digest, int64(len(content))))
 			_, err = store.InspectTree(context.Background(), testScope, digest, int64(len(content)))
-			require.ErrorIs(t, err, ErrConflict)
+			require.ErrorIs(t, err, hangar.ErrConflict)
 			require.Equal(t, []int64{ref.Generation}, objects.readGenerations)
 			requireScratchEmpty(t, scratch)
 		})
@@ -727,7 +729,7 @@ func TestGCSDeleteTreeUsesGenerationCondition(t *testing.T) {
 	require.NoError(t, store.DeleteTree(context.Background(), ref))
 	ref = putLogical(t, objects, store.config.Prefix, testScope, digest, content)
 	ref.Generation++
-	require.ErrorIs(t, store.DeleteTree(context.Background(), ref), ErrConflict)
+	require.ErrorIs(t, store.DeleteTree(context.Background(), ref), hangar.ErrConflict)
 }
 
 func TestGCSMapsBackendErrorsToInfrastructureWithoutHidingCause(t *testing.T) {
@@ -736,14 +738,14 @@ func TestGCSMapsBackendErrorsToInfrastructureWithoutHidingCause(t *testing.T) {
 	store, objects, scratch := newTestGCSStore(t)
 	objects.attrsErr = sentinel
 	_, err := store.InspectTree(context.Background(), testScope, digestFor([]byte("missing")), 64)
-	require.ErrorIs(t, err, ErrInfrastructure)
+	require.ErrorIs(t, err, hangar.ErrInfrastructure)
 	require.ErrorIs(t, err, sentinel)
 	requireScratchEmpty(t, scratch)
 	objects.attrsErr = nil
 	ref := putLogical(t, objects, store.config.Prefix, testScope, digestFor([]byte("x")), []byte("x"))
 	objects.deleteErr = sentinel
 	err = store.DeleteTree(context.Background(), ref)
-	require.ErrorIs(t, err, ErrInfrastructure)
+	require.ErrorIs(t, err, hangar.ErrInfrastructure)
 	require.ErrorIs(t, err, sentinel)
 }
 
@@ -808,9 +810,9 @@ func TestGCSClassifiesUnauthorizedAcrossBackendOperations(t *testing.T) {
 				t.Parallel()
 				store, objects, scratch := newTestGCSStore(t)
 				err := operation.run(t, store, objects, authorizationError.err)
-				require.ErrorIs(t, err, ErrUnauthorized)
+				require.ErrorIs(t, err, hangar.ErrUnauthorized)
 				require.ErrorIs(t, err, authorizationError.err)
-				require.NotErrorIs(t, err, ErrInfrastructure)
+				require.NotErrorIs(t, err, hangar.ErrInfrastructure)
 				requireScratchEmpty(t, scratch)
 			})
 		}
@@ -823,7 +825,7 @@ func TestGCSDoesNotReclassifyContextErrorsAsInfrastructure(t *testing.T) {
 	objects.attrsErr = context.Canceled
 	_, err := store.InspectTree(context.Background(), testScope, digestFor([]byte("missing")), 64)
 	require.ErrorIs(t, err, context.Canceled)
-	require.NotErrorIs(t, err, ErrInfrastructure)
+	require.NotErrorIs(t, err, hangar.ErrInfrastructure)
 	requireScratchEmpty(t, scratch)
 }
 
@@ -855,7 +857,7 @@ func TestGCSCancellationAndInterruptedWritesLeaveNoVisibleObjectOrScratch(t *tes
 		store, objects, scratch := newTestGCSStore(t)
 		objects.writeErr = io.ErrUnexpectedEOF
 		attrs, created, err := store.EnsureTree(context.Background(), testScope, digest, bytes.NewReader(content), 64)
-		require.ErrorIs(t, err, ErrInfrastructure)
+		require.ErrorIs(t, err, hangar.ErrInfrastructure)
 		require.ErrorIs(t, err, io.ErrUnexpectedEOF)
 		require.Zero(t, attrs)
 		require.False(t, created)
@@ -868,7 +870,7 @@ func TestGCSCancellationAndInterruptedWritesLeaveNoVisibleObjectOrScratch(t *tes
 		objects.blockWrite = true
 		_, _, err := store.EnsureTree(context.Background(), testScope, digest, bytes.NewReader(content), 64)
 		require.ErrorIs(t, err, context.DeadlineExceeded)
-		require.NotErrorIs(t, err, ErrInfrastructure)
+		require.NotErrorIs(t, err, hangar.ErrInfrastructure)
 		require.Empty(t, objects.objects)
 		requireScratchEmpty(t, scratch)
 	})
@@ -879,7 +881,7 @@ func TestGCSCancellationAndInterruptedWritesLeaveNoVisibleObjectOrScratch(t *tes
 		objects.blockReadBody = true
 		reader, _, err := store.OpenTree(context.Background(), ref, 64)
 		require.ErrorIs(t, err, context.DeadlineExceeded)
-		require.NotErrorIs(t, err, ErrCorrupt)
+		require.NotErrorIs(t, err, hangar.ErrCorrupt)
 		require.Nil(t, reader)
 		requireScratchEmpty(t, scratch)
 	})
@@ -895,7 +897,7 @@ func TestGCSCancellationAndInterruptedWritesLeaveNoVisibleObjectOrScratch(t *tes
 		}
 		_, _, err := store.EnsureTree(context.Background(), testScope, digest, bytes.NewReader(content), 64)
 		require.ErrorIs(t, err, syscall.ENOSPC)
-		require.ErrorIs(t, err, ErrInfrastructure)
+		require.ErrorIs(t, err, hangar.ErrInfrastructure)
 		require.Contains(t, err.Error(), "write compressed scratch")
 		require.NotContains(t, err.Error(), "read logical source")
 		require.Empty(t, objects.objects)
@@ -907,7 +909,7 @@ func TestGCSCancellationAndInterruptedWritesLeaveNoVisibleObjectOrScratch(t *tes
 		sourceErr := errors.New("source unavailable")
 		_, _, err := store.EnsureTree(context.Background(), testScope, digest, &errorReader{err: sourceErr}, 64)
 		require.ErrorIs(t, err, sourceErr)
-		require.ErrorIs(t, err, ErrInfrastructure)
+		require.ErrorIs(t, err, hangar.ErrInfrastructure)
 		require.Contains(t, err.Error(), "read logical source")
 		require.NotContains(t, err.Error(), "write compressed scratch")
 		require.Empty(t, objects.objects)
@@ -921,7 +923,7 @@ func TestGCSRecognizesTypedConditionalErrors(t *testing.T) {
 	content := []byte("typed")
 	ref := putLogical(t, objects, store.config.Prefix, testScope, digestFor(content), content)
 	objects.deleteErr = status.Error(codes.FailedPrecondition, "generation mismatch")
-	require.ErrorIs(t, store.DeleteTree(context.Background(), ref), ErrConflict)
+	require.ErrorIs(t, store.DeleteTree(context.Background(), ref), hangar.ErrConflict)
 }
 
 func withGCSConfig(config GCSConfig, mutate func(*GCSConfig)) GCSConfig {
@@ -940,20 +942,20 @@ func newTestGCSStoreWithTimeouts(t *testing.T, readTimeout, writeTimeout time.Du
 	require.NoError(t, err)
 	return store, objects, scratch
 }
-func digestFor(content []byte) Digest {
+func digestFor(content []byte) hangar.Digest {
 	sum := sha256.Sum256(content)
-	return Digest(fmt.Sprintf("sha256:%x", sum))
+	return hangar.Digest(fmt.Sprintf("sha256:%x", sum))
 }
-func metadataFor(digest Digest, size int64) map[string]string {
+func metadataFor(digest hangar.Digest, size int64) map[string]string {
 	return map[string]string{"concourse-uncompressed-sha256": string(digest), "concourse-uncompressed-bytes": strconv.FormatInt(size, 10), "concourse-representation": "zstd"}
 }
-func putLogical(t *testing.T, objects *memoryObjectClient, prefix string, scope Scope, digest Digest, content []byte) TreeRef {
+func putLogical(t *testing.T, objects *memoryObjectClient, prefix string, scope hangar.Scope, digest hangar.Digest, content []byte) hangar.TreeRef {
 	t.Helper()
-	key, err := TreeKey(prefix, scope, digest)
+	key, err := hangar.TreeKey(prefix, scope, digest)
 	require.NoError(t, err)
 	compressed := compressTest(t, content)
 	generation := objects.putRaw(key, compressed, metadataFor(digest, int64(len(content))), int64(len(compressed)))
-	ref, err := NewTreeRef(scope, digest, generation)
+	ref, err := hangar.NewTreeRef(scope, digest, generation)
 	require.NoError(t, err)
 	return ref
 }
@@ -990,3 +992,9 @@ func requireScratchEmpty(t *testing.T, directory string) {
 	t.Helper()
 	require.Empty(t, scratchEntries(t, directory))
 }
+
+type errorReader struct {
+	err error
+}
+
+func (r *errorReader) Read([]byte) (int, error) { return 0, r.err }

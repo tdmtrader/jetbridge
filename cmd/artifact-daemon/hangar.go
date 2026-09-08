@@ -13,6 +13,7 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 
 	"github.com/concourse/concourse/hangar"
+	hangargcs "github.com/concourse/concourse/hangar/gcs"
 )
 
 const (
@@ -169,12 +170,12 @@ func buildHangarService(ctx context.Context, logger lager.Logger, storagePath st
 	if err != nil {
 		return nil, nil, err
 	}
-	client, err := hangar.NewStorageClient(ctx, opts.Endpoint)
+	client, err := hangargcs.NewStorageClient(ctx, opts.Endpoint)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create Hangar GCS client: %w", err)
 	}
 	closeClient := func() error { return client.Close() }
-	store, err := hangar.NewGCSStore(client, hangar.GCSConfig{
+	store, err := hangargcs.NewGCSStore(client, hangargcs.GCSConfig{
 		Bucket: opts.Bucket, Prefix: opts.Prefix, ScratchDir: opts.ScratchDir,
 		ReadTimeout: opts.Timeout, WriteTimeout: opts.Timeout,
 	})

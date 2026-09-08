@@ -1,4 +1,4 @@
-package hangar
+package gcs
 
 import (
 	"bytes"

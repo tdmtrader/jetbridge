@@ -314,3 +314,55 @@ func TestAgenticLayerDoesNotReachIntoCoreInternals(t *testing.T) {
 		}
 	}
 }
+
+// hangarGCSPackage is the Google Cloud Storage implementation of hangar.Store.
+// It is a daemon-side implementation detail, and this is the second half of the
+// rule stated in hangar/architecture_test.go: that one keeps the cloud client
+// out of package hangar, this one keeps it out of everything that is not the
+// daemon.
+//
+// The cost of losing it is measurable rather than theoretical. hangar is
+// imported by atc/runtime, atc/atccmd and atc/worker/jetbridge; while the GCS
+// store lived in package hangar it linked cloud.google.com/go/storage into
+// ./cmd/concourse, taking that binary from 1347 to 1515 packages and from
+// 126,836,146 to 146,976,274 bytes. One convenient import from atc puts all of
+// it back.
+const hangarGCSPackage = "hangar/gcs"
+
+// hangarGCSImporters are the packages allowed to name it, each with the reason.
+var hangarGCSImporters = map[string]string{
+	"cmd/artifact-daemon": "the daemon is the only process that talks to the bucket",
+}
+
+func TestHangarGCSStoreIsImportedOnlyByTheDaemon(t *testing.T) {
+	graph := loadImportGraph(t)
+
+	if _, ok := graph.all[hangarGCSPackage]; !ok {
+		t.Fatalf("%s does not exist; this rule would pass vacuously", hangarGCSPackage)
+	}
+	for importer := range hangarGCSImporters {
+		if _, ok := graph.all[importer]; !ok {
+			t.Errorf("allowed importer %q does not exist; the exemption is stale", importer)
+		}
+	}
+
+	// Test imports count. A test dependency links the package into nothing,
+	// but it is how the production import arrives a week later.
+	for pkg, imports := range graph.all {
+		if pkg == hangarGCSPackage {
+			continue
+		}
+		for _, imported := range imports {
+			if imported != hangarGCSPackage {
+				continue
+			}
+			if reason, ok := hangarGCSImporters[pkg]; ok {
+				t.Logf("allowed: %s imports %s — %s", pkg, hangarGCSPackage, reason)
+				continue
+			}
+			t.Errorf("%s imports %s. The GCS client is a daemon-side detail: depend on the "+
+				"hangar.Store interface instead, or add %s above with the reason it must link a "+
+				"cloud client.", pkg, hangarGCSPackage, pkg)
+		}
+	}
+}

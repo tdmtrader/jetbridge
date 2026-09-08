@@ -1,4 +1,4 @@
-package hangar
+package gcs
 
 import (
 	"context"
@@ -21,6 +21,8 @@ import (
 	"google.golang.org/api/option"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/concourse/concourse/hangar"
 )
 
 const (
@@ -90,7 +92,7 @@ func newGCSStore(objects objectClient, config GCSConfig) (*GCSStore, error) {
 	if strings.TrimSpace(config.Bucket) == "" {
 		return nil, fmt.Errorf("hangar: GCS bucket is required")
 	}
-	if err := ValidateDeploymentPrefix(config.Prefix); err != nil {
+	if err := hangar.ValidateDeploymentPrefix(config.Prefix); err != nil {
 		return nil, fmt.Errorf("hangar: GCS prefix: %w", err)
 	}
 	if !filepath.IsAbs(config.ScratchDir) {
@@ -123,30 +125,30 @@ func newGCSStore(objects objectClient, config GCSConfig) (*GCSStore, error) {
 	return &GCSStore{objects: objects, config: config, createScratch: func(directory, pattern string) (scratchFile, error) { return os.CreateTemp(directory, pattern) }, removeScratch: os.Remove}, nil
 }
 
-func (store *GCSStore) EnsureTree(ctx context.Context, scope Scope, digest Digest, source io.Reader, maxLogicalBytes int64) (attributes TreeAttributes, created bool, err error) {
+func (store *GCSStore) EnsureTree(ctx context.Context, scope hangar.Scope, digest hangar.Digest, source io.Reader, maxLogicalBytes int64) (attributes hangar.TreeAttributes, created bool, err error) {
 	if source == nil {
-		return TreeAttributes{}, false, fmt.Errorf("hangar: ensure source is required")
+		return hangar.TreeAttributes{}, false, fmt.Errorf("hangar: ensure source is required")
 	}
-	key, err := TreeKey(store.config.Prefix, scope, digest)
+	key, err := hangar.TreeKey(store.config.Prefix, scope, digest)
 	if err != nil {
-		return TreeAttributes{}, false, fmt.Errorf("hangar: ensure tree identity: %w", err)
+		return hangar.TreeAttributes{}, false, fmt.Errorf("hangar: ensure tree identity: %w", err)
 	}
 	if err := validateGCSLimit(maxLogicalBytes); err != nil {
-		return TreeAttributes{}, false, err
+		return hangar.TreeAttributes{}, false, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, store.config.WriteTimeout)
 	defer cancel()
 	if err := ctx.Err(); err != nil {
-		return TreeAttributes{}, false, err
+		return hangar.TreeAttributes{}, false, err
 	}
 
 	scratch, cleanup, err := store.newScratch("hangar-ensure-*.tar.zst")
 	if err != nil {
-		return TreeAttributes{}, false, err
+		return hangar.TreeAttributes{}, false, err
 	}
 	defer func() {
 		if cleanupErr := cleanup(); cleanupErr != nil {
-			attributes = TreeAttributes{}
+			attributes = hangar.TreeAttributes{}
 			created = false
 			err = errors.Join(err, cleanupErr)
 		}
@@ -155,7 +157,7 @@ func (store *GCSStore) EnsureTree(ctx context.Context, scope Scope, digest Diges
 	trackedScratch := &errorTrackingWriter{writer: scratch}
 	encoder, err := zstd.NewWriter(trackedScratch, zstd.WithEncoderLevel(store.config.ZstdLevel), zstd.WithEncoderConcurrency(1), zstd.WithEncoderCRC(true))
 	if err != nil {
-		return TreeAttributes{}, false, infrastructure("create zstd encoder", err)
+		return hangar.TreeAttributes{}, false, infrastructure("create zstd encoder", err)
 	}
 	stopClose := closeReadCloserOnCancel(ctx, source)
 	defer stopClose()
@@ -164,45 +166,45 @@ func (store *GCSStore) EnsureTree(ctx context.Context, scope Scope, digest Diges
 	closeErr := encoder.Close()
 	if copyErr != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return TreeAttributes{}, false, ctxErr
+			return hangar.TreeAttributes{}, false, ctxErr
 		}
 		if trackedScratch.err != nil {
-			return TreeAttributes{}, false, infrastructure("write compressed scratch", trackedScratch.err)
+			return hangar.TreeAttributes{}, false, infrastructure("write compressed scratch", trackedScratch.err)
 		}
-		return TreeAttributes{}, false, infrastructure("read logical source", copyErr)
+		return hangar.TreeAttributes{}, false, infrastructure("read logical source", copyErr)
 	}
 	if closeErr != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return TreeAttributes{}, false, ctxErr
+			return hangar.TreeAttributes{}, false, ctxErr
 		}
 		if trackedScratch.err != nil {
-			return TreeAttributes{}, false, infrastructure("write compressed scratch", trackedScratch.err)
+			return hangar.TreeAttributes{}, false, infrastructure("write compressed scratch", trackedScratch.err)
 		}
-		return TreeAttributes{}, false, infrastructure("finish zstd source", closeErr)
+		return hangar.TreeAttributes{}, false, infrastructure("finish zstd source", closeErr)
 	}
 	if logicalBytes > maxLogicalBytes {
-		return TreeAttributes{}, false, fmt.Errorf("%w: logical object exceeds %d-byte limit", ErrLimitExceeded, maxLogicalBytes)
+		return hangar.TreeAttributes{}, false, fmt.Errorf("%w: logical object exceeds %d-byte limit", hangar.ErrLimitExceeded, maxLogicalBytes)
 	}
-	actualDigest := Digest(fmt.Sprintf("sha256:%x", hasher.Sum(nil)))
+	actualDigest := hangar.Digest(fmt.Sprintf("sha256:%x", hasher.Sum(nil)))
 	if actualDigest != digest {
-		return TreeAttributes{}, false, fmt.Errorf("%w: supplied digest %s does not match source digest %s", ErrCorrupt, digest, actualDigest)
+		return hangar.TreeAttributes{}, false, fmt.Errorf("%w: supplied digest %s does not match source digest %s", hangar.ErrCorrupt, digest, actualDigest)
 	}
 	if err := ctx.Err(); err != nil {
-		return TreeAttributes{}, false, err
+		return hangar.TreeAttributes{}, false, err
 	}
 	storedBytes, err := scratch.Seek(0, io.SeekEnd)
 	if err != nil {
-		return TreeAttributes{}, false, infrastructure("inspect compressed scratch", err)
+		return hangar.TreeAttributes{}, false, infrastructure("inspect compressed scratch", err)
 	}
 	maxStoredBytes, err := maxCompressedRepresentation(logicalBytes)
 	if err != nil {
-		return TreeAttributes{}, false, fmt.Errorf("hangar: derive compressed scratch limit: %w", err)
+		return hangar.TreeAttributes{}, false, fmt.Errorf("hangar: derive compressed scratch limit: %w", err)
 	}
 	if storedBytes > maxStoredBytes {
-		return TreeAttributes{}, false, fmt.Errorf("%w: compressed scratch size %d exceeds %d-byte representation limit", ErrLimitExceeded, storedBytes, maxStoredBytes)
+		return hangar.TreeAttributes{}, false, fmt.Errorf("%w: compressed scratch size %d exceeds %d-byte representation limit", hangar.ErrLimitExceeded, storedBytes, maxStoredBytes)
 	}
 	if _, err := scratch.Seek(0, io.SeekStart); err != nil {
-		return TreeAttributes{}, false, infrastructure("rewind compressed scratch", err)
+		return hangar.TreeAttributes{}, false, infrastructure("rewind compressed scratch", err)
 	}
 
 	handle := store.objects.Object(store.config.Bucket, key).If(storage.Conditions{DoesNotExist: true})
@@ -220,74 +222,74 @@ func (store *GCSStore) EnsureTree(ctx context.Context, scope Scope, digest Diges
 			copyErr = errors.Join(copyErr, abortErr)
 		}
 		if ctxErr != nil {
-			return TreeAttributes{}, false, ctxErr
+			return hangar.TreeAttributes{}, false, ctxErr
 		}
-		return TreeAttributes{}, false, infrastructure("upload compressed tree", copyErr)
+		return hangar.TreeAttributes{}, false, infrastructure("upload compressed tree", copyErr)
 	}
 	if err := writer.Close(); err != nil {
 		if isPreconditionFailed(err) {
 			return store.inspectAfterCreateConflict(ctx, scope, digest, maxLogicalBytes)
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return TreeAttributes{}, false, ctxErr
+			return hangar.TreeAttributes{}, false, ctxErr
 		}
-		return TreeAttributes{}, false, infrastructure("commit compressed tree", err)
+		return hangar.TreeAttributes{}, false, infrastructure("commit compressed tree", err)
 	}
 	uploaded := writer.Attrs()
 	if uploaded.Generation <= 0 {
-		return TreeAttributes{}, false, infrastructure("commit compressed tree", fmt.Errorf("invalid generation %d", uploaded.Generation))
+		return hangar.TreeAttributes{}, false, infrastructure("commit compressed tree", fmt.Errorf("invalid generation %d", uploaded.Generation))
 	}
 	if uploaded.Size != storedBytes {
-		return TreeAttributes{}, false, infrastructure("commit compressed tree", fmt.Errorf("object size %d does not match upload size %d", uploaded.Size, storedBytes))
+		return hangar.TreeAttributes{}, false, infrastructure("commit compressed tree", fmt.Errorf("object size %d does not match upload size %d", uploaded.Size, storedBytes))
 	}
-	ref, err := NewTreeRef(scope, digest, uploaded.Generation)
+	ref, err := hangar.NewTreeRef(scope, digest, uploaded.Generation)
 	if err != nil {
-		return TreeAttributes{}, false, infrastructure("construct committed tree reference", err)
+		return hangar.TreeAttributes{}, false, infrastructure("construct committed tree reference", err)
 	}
-	return TreeAttributes{Ref: ref, StoredBytes: uploaded.Size, LogicalBytes: logicalBytes, CreatedAt: uploaded.Created}, true, nil
+	return hangar.TreeAttributes{Ref: ref, StoredBytes: uploaded.Size, LogicalBytes: logicalBytes, CreatedAt: uploaded.Created}, true, nil
 }
 
-func (store *GCSStore) InspectTree(ctx context.Context, scope Scope, digest Digest, maxLogicalBytes int64) (TreeAttributes, error) {
-	key, err := TreeKey(store.config.Prefix, scope, digest)
+func (store *GCSStore) InspectTree(ctx context.Context, scope hangar.Scope, digest hangar.Digest, maxLogicalBytes int64) (hangar.TreeAttributes, error) {
+	key, err := hangar.TreeKey(store.config.Prefix, scope, digest)
 	if err != nil {
-		return TreeAttributes{}, fmt.Errorf("hangar: inspect tree identity: %w", err)
+		return hangar.TreeAttributes{}, fmt.Errorf("hangar: inspect tree identity: %w", err)
 	}
 	if err := validateGCSLimit(maxLogicalBytes); err != nil {
-		return TreeAttributes{}, err
+		return hangar.TreeAttributes{}, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, store.config.ReadTimeout)
 	defer cancel()
 	reader, attrs, err := store.inspect(ctx, scope, digest, key, maxLogicalBytes)
 	if err != nil {
-		return TreeAttributes{}, err
+		return hangar.TreeAttributes{}, err
 	}
 	if err := reader.Close(); err != nil {
-		return TreeAttributes{}, infrastructure("close verified inspect scratch", err)
+		return hangar.TreeAttributes{}, infrastructure("close verified inspect scratch", err)
 	}
 	return attrs, nil
 }
 
-func (store *GCSStore) OpenTree(ctx context.Context, ref TreeRef, maxLogicalBytes int64) (io.ReadCloser, TreeAttributes, error) {
+func (store *GCSStore) OpenTree(ctx context.Context, ref hangar.TreeRef, maxLogicalBytes int64) (io.ReadCloser, hangar.TreeAttributes, error) {
 	if err := ref.Validate(); err != nil {
-		return nil, TreeAttributes{}, fmt.Errorf("hangar: open tree reference: %w", err)
+		return nil, hangar.TreeAttributes{}, fmt.Errorf("hangar: open tree reference: %w", err)
 	}
 	if err := validateGCSLimit(maxLogicalBytes); err != nil {
-		return nil, TreeAttributes{}, err
+		return nil, hangar.TreeAttributes{}, err
 	}
-	key, err := TreeKey(store.config.Prefix, ref.Scope, ref.Digest)
+	key, err := hangar.TreeKey(store.config.Prefix, ref.Scope, ref.Digest)
 	if err != nil {
-		return nil, TreeAttributes{}, fmt.Errorf("hangar: open tree identity: %w", err)
+		return nil, hangar.TreeAttributes{}, fmt.Errorf("hangar: open tree identity: %w", err)
 	}
 	ctx, cancel := context.WithTimeout(ctx, store.config.ReadTimeout)
 	defer cancel()
 	return store.openVerified(ctx, store.objects.Object(store.config.Bucket, key).Generation(ref.Generation), ref, maxLogicalBytes, false)
 }
 
-func (store *GCSStore) DeleteTree(ctx context.Context, ref TreeRef) error {
+func (store *GCSStore) DeleteTree(ctx context.Context, ref hangar.TreeRef) error {
 	if err := ref.Validate(); err != nil {
 		return fmt.Errorf("hangar: delete tree reference: %w", err)
 	}
-	key, err := TreeKey(store.config.Prefix, ref.Scope, ref.Digest)
+	key, err := hangar.TreeKey(store.config.Prefix, ref.Scope, ref.Digest)
 	if err != nil {
 		return fmt.Errorf("hangar: delete tree identity: %w", err)
 	}
@@ -298,7 +300,7 @@ func (store *GCSStore) DeleteTree(ctx context.Context, ref TreeRef) error {
 		return nil
 	}
 	if isPreconditionFailed(err) {
-		return wrapSentinel(ErrConflict, "delete generation no longer matches", err)
+		return wrapSentinel(hangar.ErrConflict, "delete generation no longer matches", err)
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
@@ -306,43 +308,43 @@ func (store *GCSStore) DeleteTree(ctx context.Context, ref TreeRef) error {
 	return infrastructure("delete tree", err)
 }
 
-func (store *GCSStore) inspectAfterCreateConflict(ctx context.Context, scope Scope, digest Digest, maxLogicalBytes int64) (TreeAttributes, bool, error) {
-	key, err := TreeKey(store.config.Prefix, scope, digest)
+func (store *GCSStore) inspectAfterCreateConflict(ctx context.Context, scope hangar.Scope, digest hangar.Digest, maxLogicalBytes int64) (hangar.TreeAttributes, bool, error) {
+	key, err := hangar.TreeKey(store.config.Prefix, scope, digest)
 	if err != nil {
-		return TreeAttributes{}, false, err
+		return hangar.TreeAttributes{}, false, err
 	}
 	reader, attrs, err := store.inspect(ctx, scope, digest, key, maxLogicalBytes)
 	if err != nil {
-		if errors.Is(err, ErrCorrupt) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrConflict) {
-			return TreeAttributes{}, false, fmt.Errorf("%w: existing immutable tree failed verification: %v", ErrConflict, err)
+		if errors.Is(err, hangar.ErrCorrupt) || errors.Is(err, hangar.ErrNotFound) || errors.Is(err, hangar.ErrConflict) {
+			return hangar.TreeAttributes{}, false, fmt.Errorf("%w: existing immutable tree failed verification: %v", hangar.ErrConflict, err)
 		}
-		return TreeAttributes{}, false, err
+		return hangar.TreeAttributes{}, false, err
 	}
 	if err := reader.Close(); err != nil {
-		return TreeAttributes{}, false, infrastructure("close verified conflict scratch", err)
+		return hangar.TreeAttributes{}, false, infrastructure("close verified conflict scratch", err)
 	}
 	return attrs, false, nil
 }
 
-func (store *GCSStore) inspect(ctx context.Context, scope Scope, digest Digest, key string, maxLogicalBytes int64) (io.ReadCloser, TreeAttributes, error) {
+func (store *GCSStore) inspect(ctx context.Context, scope hangar.Scope, digest hangar.Digest, key string, maxLogicalBytes int64) (io.ReadCloser, hangar.TreeAttributes, error) {
 	handle := store.objects.Object(store.config.Bucket, key)
 	current, err := handle.Attrs(ctx)
 	if err != nil {
 		if isNotFound(err) {
-			return nil, TreeAttributes{}, wrapSentinel(ErrNotFound, "inspect tree", err)
+			return nil, hangar.TreeAttributes{}, wrapSentinel(hangar.ErrNotFound, "inspect tree", err)
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, TreeAttributes{}, ctxErr
+			return nil, hangar.TreeAttributes{}, ctxErr
 		}
-		return nil, TreeAttributes{}, infrastructure("inspect tree attributes", err)
+		return nil, hangar.TreeAttributes{}, infrastructure("inspect tree attributes", err)
 	}
-	ref, err := NewTreeRef(scope, digest, current.Generation)
+	ref, err := hangar.NewTreeRef(scope, digest, current.Generation)
 	if err != nil {
-		return nil, TreeAttributes{}, fmt.Errorf("%w: invalid stored generation: %v", ErrCorrupt, err)
+		return nil, hangar.TreeAttributes{}, fmt.Errorf("%w: invalid stored generation: %v", hangar.ErrCorrupt, err)
 	}
 	reader, attrs, err := store.openVerified(ctx, handle.Generation(current.Generation), ref, maxLogicalBytes, true)
 	if err != nil {
-		return nil, TreeAttributes{}, err
+		return nil, hangar.TreeAttributes{}, err
 	}
 	latest, err := handle.Attrs(ctx)
 	if err != nil {
@@ -351,70 +353,70 @@ func (store *GCSStore) inspect(ctx context.Context, scope Scope, digest Digest, 
 			err = errors.Join(err, closeErr)
 		}
 		if isNotFound(err) || isPreconditionFailed(err) {
-			return nil, TreeAttributes{}, wrapSentinel(ErrConflict, "tree changed during generation-pinned verification", err)
+			return nil, hangar.TreeAttributes{}, wrapSentinel(hangar.ErrConflict, "tree changed during generation-pinned verification", err)
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, TreeAttributes{}, errors.Join(ctxErr, closeErr)
+			return nil, hangar.TreeAttributes{}, errors.Join(ctxErr, closeErr)
 		}
-		return nil, TreeAttributes{}, infrastructure("recheck tree after generation-pinned verification", err)
+		return nil, hangar.TreeAttributes{}, infrastructure("recheck tree after generation-pinned verification", err)
 	}
 	if latest.Generation != current.Generation || latest.Metageneration != current.Metageneration {
 		closeErr := reader.Close()
-		conflictErr := fmt.Errorf("%w: tree generation changed from %d/%d to %d/%d during verification", ErrConflict, current.Generation, current.Metageneration, latest.Generation, latest.Metageneration)
-		return nil, TreeAttributes{}, errors.Join(conflictErr, closeErr)
+		conflictErr := fmt.Errorf("%w: tree generation changed from %d/%d to %d/%d during verification", hangar.ErrConflict, current.Generation, current.Metageneration, latest.Generation, latest.Metageneration)
+		return nil, hangar.TreeAttributes{}, errors.Join(conflictErr, closeErr)
 	}
 	return reader, attrs, nil
 }
 
-func (store *GCSStore) openVerified(ctx context.Context, handle objectHandle, ref TreeRef, maxLogicalBytes int64, replacementIsConflict bool) (reader io.ReadCloser, attributes TreeAttributes, err error) {
+func (store *GCSStore) openVerified(ctx context.Context, handle objectHandle, ref hangar.TreeRef, maxLogicalBytes int64, replacementIsConflict bool) (reader io.ReadCloser, attributes hangar.TreeAttributes, err error) {
 	stored, err := handle.Attrs(ctx)
 	if err != nil {
 		if isNotFound(err) {
 			if replacementIsConflict {
-				return nil, TreeAttributes{}, wrapSentinel(ErrConflict, "tree changed after generation lookup", err)
+				return nil, hangar.TreeAttributes{}, wrapSentinel(hangar.ErrConflict, "tree changed after generation lookup", err)
 			}
-			return nil, TreeAttributes{}, wrapSentinel(ErrNotFound, "open tree", err)
+			return nil, hangar.TreeAttributes{}, wrapSentinel(hangar.ErrNotFound, "open tree", err)
 		}
 		if isPreconditionFailed(err) {
-			return nil, TreeAttributes{}, wrapSentinel(ErrConflict, "open tree generation", err)
+			return nil, hangar.TreeAttributes{}, wrapSentinel(hangar.ErrConflict, "open tree generation", err)
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, TreeAttributes{}, ctxErr
+			return nil, hangar.TreeAttributes{}, ctxErr
 		}
-		return nil, TreeAttributes{}, infrastructure("read tree attributes", err)
+		return nil, hangar.TreeAttributes{}, infrastructure("read tree attributes", err)
 	}
 	if stored.Generation != ref.Generation {
-		return nil, TreeAttributes{}, fmt.Errorf("%w: requested generation %d resolved to generation %d", ErrConflict, ref.Generation, stored.Generation)
+		return nil, hangar.TreeAttributes{}, fmt.Errorf("%w: requested generation %d resolved to generation %d", hangar.ErrConflict, ref.Generation, stored.Generation)
 	}
 	logicalBytes, err := validateStoredMetadata(stored.Metadata, ref.Digest, maxLogicalBytes)
 	if err != nil {
-		return nil, TreeAttributes{}, err
+		return nil, hangar.TreeAttributes{}, err
 	}
 	if stored.Size < 0 {
-		return nil, TreeAttributes{}, fmt.Errorf("%w: compressed tree has negative size", ErrCorrupt)
+		return nil, hangar.TreeAttributes{}, fmt.Errorf("%w: compressed tree has negative size", hangar.ErrCorrupt)
 	}
 	maxStoredBytes, err := maxCompressedRepresentation(logicalBytes)
 	if err != nil {
-		return nil, TreeAttributes{}, fmt.Errorf("%w: derive compressed representation limit: %v", ErrCorrupt, err)
+		return nil, hangar.TreeAttributes{}, fmt.Errorf("%w: derive compressed representation limit: %v", hangar.ErrCorrupt, err)
 	}
 	if stored.Size > maxStoredBytes {
-		return nil, TreeAttributes{}, fmt.Errorf("%w: compressed tree size %d exceeds %d-byte representation limit", ErrCorrupt, stored.Size, maxStoredBytes)
+		return nil, hangar.TreeAttributes{}, fmt.Errorf("%w: compressed tree size %d exceeds %d-byte representation limit", hangar.ErrCorrupt, stored.Size, maxStoredBytes)
 	}
 	compressed, err := handle.NewReader(ctx)
 	if err != nil {
 		if isNotFound(err) {
 			if replacementIsConflict {
-				return nil, TreeAttributes{}, wrapSentinel(ErrConflict, "tree changed before generation-pinned read", err)
+				return nil, hangar.TreeAttributes{}, wrapSentinel(hangar.ErrConflict, "tree changed before generation-pinned read", err)
 			}
-			return nil, TreeAttributes{}, wrapSentinel(ErrNotFound, "open tree bytes", err)
+			return nil, hangar.TreeAttributes{}, wrapSentinel(hangar.ErrNotFound, "open tree bytes", err)
 		}
 		if isPreconditionFailed(err) {
-			return nil, TreeAttributes{}, wrapSentinel(ErrConflict, "generation-pinned read failed", err)
+			return nil, hangar.TreeAttributes{}, wrapSentinel(hangar.ErrConflict, "generation-pinned read failed", err)
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, TreeAttributes{}, ctxErr
+			return nil, hangar.TreeAttributes{}, ctxErr
 		}
-		return nil, TreeAttributes{}, infrastructure("open compressed tree", err)
+		return nil, hangar.TreeAttributes{}, infrastructure("open compressed tree", err)
 	}
 	compressedClosed := false
 	defer func() {
@@ -428,12 +430,12 @@ func (store *GCSStore) openVerified(ctx context.Context, handle objectHandle, re
 	decoder, err := zstd.NewReader(countedCompressed, zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxMemory(decoderMaxMemory))
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, TreeAttributes{}, ctxErr
+			return nil, hangar.TreeAttributes{}, ctxErr
 		}
 		if countedCompressed.err != nil {
-			return nil, TreeAttributes{}, infrastructure("read compressed tree", countedCompressed.err)
+			return nil, hangar.TreeAttributes{}, infrastructure("read compressed tree", countedCompressed.err)
 		}
-		return nil, TreeAttributes{}, wrapSentinel(ErrCorrupt, "initialize zstd decoder", err)
+		return nil, hangar.TreeAttributes{}, wrapSentinel(hangar.ErrCorrupt, "initialize zstd decoder", err)
 	}
 	decoderClosed := false
 	defer func() {
@@ -443,7 +445,7 @@ func (store *GCSStore) openVerified(ctx context.Context, handle objectHandle, re
 	}()
 	scratch, cleanup, err := store.newScratch("hangar-open-*.tar")
 	if err != nil {
-		return nil, TreeAttributes{}, err
+		return nil, hangar.TreeAttributes{}, err
 	}
 	keepScratch := false
 	defer func() {
@@ -456,69 +458,69 @@ func (store *GCSStore) openVerified(ctx context.Context, handle objectHandle, re
 	actualBytes, err := io.Copy(io.MultiWriter(trackedScratch, hasher), io.LimitReader(decoder, logicalBytes+1))
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, TreeAttributes{}, ctxErr
+			return nil, hangar.TreeAttributes{}, ctxErr
 		}
 		if countedCompressed.err != nil {
-			return nil, TreeAttributes{}, infrastructure("read compressed tree", countedCompressed.err)
+			return nil, hangar.TreeAttributes{}, infrastructure("read compressed tree", countedCompressed.err)
 		}
 		if trackedScratch.err != nil {
-			return nil, TreeAttributes{}, infrastructure("write verified scratch", trackedScratch.err)
+			return nil, hangar.TreeAttributes{}, infrastructure("write verified scratch", trackedScratch.err)
 		}
-		return nil, TreeAttributes{}, wrapSentinel(ErrCorrupt, "decompress tree", err)
+		return nil, hangar.TreeAttributes{}, wrapSentinel(hangar.ErrCorrupt, "decompress tree", err)
 	}
 	if actualBytes > maxLogicalBytes {
-		return nil, TreeAttributes{}, fmt.Errorf("%w: logical tree exceeds %d-byte limit", ErrLimitExceeded, maxLogicalBytes)
+		return nil, hangar.TreeAttributes{}, fmt.Errorf("%w: logical tree exceeds %d-byte limit", hangar.ErrLimitExceeded, maxLogicalBytes)
 	}
 	if actualBytes != logicalBytes {
-		return nil, TreeAttributes{}, fmt.Errorf("%w: logical byte count %d does not match metadata %d", ErrCorrupt, actualBytes, logicalBytes)
+		return nil, hangar.TreeAttributes{}, fmt.Errorf("%w: logical byte count %d does not match metadata %d", hangar.ErrCorrupt, actualBytes, logicalBytes)
 	}
 	if countedCompressed.bytes > maxStoredBytes {
-		return nil, TreeAttributes{}, fmt.Errorf("%w: compressed tree body exceeds %d-byte representation limit", ErrCorrupt, maxStoredBytes)
+		return nil, hangar.TreeAttributes{}, fmt.Errorf("%w: compressed tree body exceeds %d-byte representation limit", hangar.ErrCorrupt, maxStoredBytes)
 	}
 	if countedCompressed.bytes != stored.Size {
-		return nil, TreeAttributes{}, fmt.Errorf("%w: compressed byte count %d does not match object size %d", ErrCorrupt, countedCompressed.bytes, stored.Size)
+		return nil, hangar.TreeAttributes{}, fmt.Errorf("%w: compressed byte count %d does not match object size %d", hangar.ErrCorrupt, countedCompressed.bytes, stored.Size)
 	}
-	actualDigest := Digest(fmt.Sprintf("sha256:%x", hasher.Sum(nil)))
+	actualDigest := hangar.Digest(fmt.Sprintf("sha256:%x", hasher.Sum(nil)))
 	if actualDigest != ref.Digest {
-		return nil, TreeAttributes{}, fmt.Errorf("%w: tree digest %s does not match requested digest %s", ErrCorrupt, actualDigest, ref.Digest)
+		return nil, hangar.TreeAttributes{}, fmt.Errorf("%w: tree digest %s does not match requested digest %s", hangar.ErrCorrupt, actualDigest, ref.Digest)
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, TreeAttributes{}, err
+		return nil, hangar.TreeAttributes{}, err
 	}
 	decoder.Close()
 	decoderClosed = true
 	closeErr := compressed.Close()
 	compressedClosed = true
 	if closeErr != nil {
-		return nil, TreeAttributes{}, infrastructure("close compressed tree", closeErr)
+		return nil, hangar.TreeAttributes{}, infrastructure("close compressed tree", closeErr)
 	}
 	if _, err := scratch.Seek(0, io.SeekStart); err != nil {
-		return nil, TreeAttributes{}, infrastructure("rewind verified scratch", err)
+		return nil, hangar.TreeAttributes{}, infrastructure("rewind verified scratch", err)
 	}
 	keepScratch = true
-	return &scratchReadCloser{file: scratch, path: scratch.Name(), remove: store.removeScratch}, TreeAttributes{Ref: ref, StoredBytes: stored.Size, LogicalBytes: actualBytes, CreatedAt: stored.Created}, nil
+	return &scratchReadCloser{file: scratch, path: scratch.Name(), remove: store.removeScratch}, hangar.TreeAttributes{Ref: ref, StoredBytes: stored.Size, LogicalBytes: actualBytes, CreatedAt: stored.Created}, nil
 }
 
-func validateStoredMetadata(metadata map[string]string, digest Digest, maxLogicalBytes int64) (int64, error) {
+func validateStoredMetadata(metadata map[string]string, digest hangar.Digest, maxLogicalBytes int64) (int64, error) {
 	if len(metadata) != 3 {
-		return 0, fmt.Errorf("%w: tree metadata vocabulary is not exact", ErrCorrupt)
+		return 0, fmt.Errorf("%w: tree metadata vocabulary is not exact", hangar.ErrCorrupt)
 	}
 	if metadata[metadataRepresentation] != representationZstd {
-		return 0, fmt.Errorf("%w: tree representation metadata is not zstd", ErrCorrupt)
+		return 0, fmt.Errorf("%w: tree representation metadata is not zstd", hangar.ErrCorrupt)
 	}
 	if metadata[metadataLogicalSHA256] != string(digest) {
-		return 0, fmt.Errorf("%w: tree digest metadata does not match key", ErrCorrupt)
+		return 0, fmt.Errorf("%w: tree digest metadata does not match key", hangar.ErrCorrupt)
 	}
 	rawSize, found := metadata[metadataLogicalBytes]
 	if !found {
-		return 0, fmt.Errorf("%w: tree is missing logical byte metadata", ErrCorrupt)
+		return 0, fmt.Errorf("%w: tree is missing logical byte metadata", hangar.ErrCorrupt)
 	}
 	size, err := strconv.ParseInt(rawSize, 10, 64)
 	if err != nil || size < 0 || strconv.FormatInt(size, 10) != rawSize {
-		return 0, fmt.Errorf("%w: invalid logical byte metadata", ErrCorrupt)
+		return 0, fmt.Errorf("%w: invalid logical byte metadata", hangar.ErrCorrupt)
 	}
 	if size > maxLogicalBytes {
-		return 0, fmt.Errorf("%w: declared logical size exceeds %d-byte limit", ErrLimitExceeded, maxLogicalBytes)
+		return 0, fmt.Errorf("%w: declared logical size exceeds %d-byte limit", hangar.ErrLimitExceeded, maxLogicalBytes)
 	}
 	return size, nil
 }
@@ -594,12 +596,12 @@ func wrapSentinel(sentinel error, message string, cause error) error {
 }
 func infrastructure(message string, cause error) error {
 	if isUnauthorized(cause) {
-		return wrapSentinel(ErrUnauthorized, message, cause)
+		return wrapSentinel(hangar.ErrUnauthorized, message, cause)
 	}
 	if errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
 		return cause
 	}
-	return wrapSentinel(ErrInfrastructure, message, cause)
+	return wrapSentinel(hangar.ErrInfrastructure, message, cause)
 }
 
 type countingReader struct {
@@ -729,4 +731,45 @@ func attrsFromStorage(attrs *storage.ObjectAttrs) objectAttrs {
 	return objectAttrs{Generation: attrs.Generation, Metageneration: attrs.Metageneration, Size: attrs.Size, Created: attrs.Created, Metadata: attrs.Metadata}
 }
 
-var _ Store = (*GCSStore)(nil)
+var _ hangar.Store = (*GCSStore)(nil)
+
+// contextReader and closeReadCloserOnCancel are deliberate copies of the
+// hangar package's unexported helpers rather than an export of them. They
+// carry no hangar semantics — they are context cancellation applied to an
+// io.Reader — and exporting them would widen the interface package this
+// store was split out of precisely to keep narrow.
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	n, err := r.reader.Read(p)
+	if ctxErr := r.ctx.Err(); ctxErr != nil {
+		return n, ctxErr
+	}
+	return n, err
+}
+
+func closeReadCloserOnCancel(ctx context.Context, reader io.Reader) func() {
+	closer, ok := reader.(io.ReadCloser)
+	if !ok {
+		return func() {}
+	}
+	done := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		defer close(done)
+		_ = closer.Close()
+	})
+	var stopOnce sync.Once
+	return func() {
+		stopOnce.Do(func() {
+			if !stop() {
+				<-done
+			}
+		})
+	}
+}
