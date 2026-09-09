@@ -39,15 +39,23 @@ package steps
 // before EVERY scenario in the corpus, and a daemon registered that way cost
 // 70 seconds to serve five scenarios.
 //
-// TODO(hangar-output, Phase 2/3 Green): the OUTPUT plane is a separate binary
-// against a bucket that is never the durable cache bucket (Req 20), and its
-// endpoint and bucket flags do not exist yet. hangarOutputDaemonFlags below is
-// the one place that changes: when cmd/hangar-output-daemon lands with
-// --output-endpoint and --output-bucket, the Phase 2 Green doer points them at
-// the same emulator and bucket this fixture already creates, and every phrase
-// and scenario above it is unchanged. Until then the fixture drives the
-// strict-input Hangar surface the daemon already has, which is enough to prove
-// the daemon is up, authenticated and talking to the emulator.
+// TODO(hangar-output, Phase 3 Green): the OUTPUT plane is a separate binary
+// against a bucket that is never the durable cache bucket (Req 20).
+// hangarOutputDaemonFlags below is the one place that changes.
+//
+// Half of what that hook was waiting for now exists. Phase 2 added
+// cmd/hangar-output-daemon with --output-endpoint, --output-bucket,
+// --output-prefix, --output-tenant and its own receipt key, and its publish
+// path creates a marked object and signs a receipt. The hook is still not
+// flipped, and the reason is precise rather than a matter of taste: the fixture
+// starts a daemon and polls it for readiness over HTTP, and the output daemon
+// serves no HTTP at all. The plan puts its route table in Phase 3 Green ("Add
+// protected versioned output-daemon endpoints ... establish/inspect hold ...
+// publish sealed tree") and says of Phase 2 Green "Do not add readiness yet".
+//
+// So the flip is Phase 3's first act, and it is two lines: return the four
+// flags below, and point the readiness poll at the output daemon's own health
+// route once it has one. Everything above this comment is unchanged by it.
 
 import (
 	"context"
@@ -119,10 +127,17 @@ type HangarDaemon struct {
 // hangarOutputDaemonFlags is the single place the output plane's endpoint is
 // wired. See the TODO at the head of this file.
 func hangarOutputDaemonFlags(endpoint, bucket string) []string {
-	// TODO(hangar-output, Phase 2/3 Green): return
-	//   []string{"--output-endpoint", endpoint, "--output-bucket", bucket}
-	// once cmd/hangar-output-daemon declares them. Today the strict-input
-	// Hangar surface is what exists, and it is wired below.
+	// TODO(hangar-output, Phase 3 Green): return
+	//   []string{"--output-endpoint", endpoint, "--output-bucket", bucket,
+	//            "--output-prefix", …, "--output-tenant", …}
+	// and start cmd/hangar-output-daemon instead of cmd/artifact-daemon.
+	//
+	// The flags exist as of Phase 2; the daemon that would serve this fixture's
+	// requests does not, because its route table and readiness are Phase 3
+	// Green. Returning them now would put four flags on a binary that would
+	// then be polled for a readiness endpoint it does not have, which is a
+	// fixture death rather than a scenario failure -- the least useful shape a
+	// red can take.
 	_, _ = endpoint, bucket
 	return nil
 }
