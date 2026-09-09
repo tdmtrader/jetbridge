@@ -203,3 +203,37 @@ The profile and exact denominator remain unchanged after the final audit.
   goal.
 
 There are no remaining in-scope implementation or verification steps.
+
+## Rebase onto core b0d2d7adfa (2026-09-08)
+
+The figures above were measured at the starting commit's parent, 74aaa83d7e.
+Core moved 79 commits before this branch was rebased, and two of them change
+what the numbers mean:
+
+- 4b99af4c71 / ff73c5dec1: an input always carries an artifact. The "input
+  with nothing to fetch" scenario and its three sentences left the vocabulary
+  on core; the conflict resolutions in `container_gaps.go`, `container_extra.go`
+  and the restored Go tests take core's `draftInputs` / real-artifact form.
+- a83e4a0ef4: a pause pod that dies before the step's command runs is replaced
+  exactly once. The production-execution rows of the pod-lifecycle eviction and
+  OOM outlines, and step-closing's eviction scenario, therefore have to keep
+  killing the pod (`settleProcessOnEveryPod`, "the node keeps evicting"); a
+  single terminal pod no longer reaches the build, it waits out the startup
+  timeout.
+
+Re-measured after the rebase, on the same machine, with the CI command
+(`sh scripts/coverage`, which runs the full CLI):
+
+| Measure | Above | Rebased |
+|---|---:|---:|
+| Full Brine CLI cases | 578 | 577 (core's removal, above) |
+| Normal full CLI wall time | 169.203s | 126.887s |
+| Brine-only production statement coverage | 1,762/2,241 = 78.63% | 1,838/2,368 = 77.62% |
+| Scoped counted code lines (`brine-census`) | 12,079 | 12,090 |
+| Registered definitions used in scope | 288 | 284 |
+| Root Ginkgo `./atc/worker/jetbridge` | 85 | 99 (core added specs) |
+
+The counted-line total is now 8 lines over the 12,082 ceiling stated above.
+The eleven added lines are the create-pod reactor the replacement rule
+requires and its comment; nothing was moved out of the module to compensate.
+The denominator grew because core's production package grew.
