@@ -180,11 +180,13 @@ var destructiveInventory = map[string]struct {
 
 	// ---- the output daemon's own authority ----
 
-	"hangar-output-daemon/source_ledger.go | SourceLedger.AcknowledgeRelease | ledger.steps.RemoveAll(incarnationDir())": {1, admission{
-		guard: "ReleaseIntentID",
+	"hangar-output-daemon/source_ledger.go | SourceLedger.finishRelease | ledger.steps.RemoveAll(incarnationDir())": {1, admission{
+		guard: "ReleaseIntentID", guardedIn: "SourceLedger.AcknowledgeRelease",
 		why: "the output plane destroying its OWN source, and the only place that may. It is " +
 			"admitted by the release intent the control plane issued, and the record is " +
-			"written released before the bytes go.",
+			"written released before the bytes go. It sits in finishRelease because the " +
+			"replay path has to be able to re-run it: a crash between the record and the gate " +
+			"close leaves an execution that is never cleanup-eligible again.",
 	}},
 	"hangar-output-daemon/control_store.go | controlStore.put | store.root.Rename(temp)": {1, admission{
 		why: "the ledger's own atomic record replacement. This IS the writer authority the " +
