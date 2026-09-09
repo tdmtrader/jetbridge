@@ -105,11 +105,24 @@ func (fixture *routeFixture) call(t *testing.T, path string, facet executioncont
 	operation string, body any) (int, []byte) {
 	t.Helper()
 
+	return fixture.callAs(t, identity(1), path, facet, operation, body)
+}
+
+// callAs is call for a capability minted for an execution the test names.
+//
+// The default is the fixture's one execution; a cross-execution row needs a
+// token that is valid for a DIFFERENT one, because the finding it is about is
+// a route that verifies the capability against the identity in the body and
+// then acts on a handoff that identity has nothing to do with.
+func (fixture *routeFixture) callAs(t *testing.T, as executioncontrol.Identity, path string,
+	facet executioncontrol.Facet, operation string, body any) (int, []byte) {
+	t.Helper()
+
 	fixture.nonce++
 	token, err := fixture.minter.Mint(executioncontrol.CapabilityClaims{
 		Facet:           facet,
 		Operation:       operation,
-		Identity:        identity(1),
+		Identity:        as,
 		ActivationEpoch: fixture.epoch,
 	}, "nonce-"+strings.ReplaceAll(path, "/", "-")+"-"+operation+"-"+strconv.Itoa(fixture.nonce))
 	if err != nil {
@@ -537,5 +550,106 @@ func TestTheHandshakeNamesTheProtocolLedgerKeyAndEpoch(t *testing.T) {
 		if strings.Contains(string(body), forbidden) {
 			t.Errorf("the unauthenticated handshake mentions %q: %s", forbidden, body)
 		}
+	}
+}
+
+// A capability minted for one execution must not act on another's handoff.
+//
+// The middleware reads the identity out of the body and checks the capability
+// against it, and five capture routes then act on facts derived from that same
+// identity. Three did not: inspect-hold and inspect-seal took the handoff
+// straight out of the body, and confirm-seal read its execution out of the
+// caller-supplied SealStarted rather than out of the identity the token was
+// bound to. So execution B, holding nothing, presenting a capability minted
+// for B, read A's hold and A's captured drain set -- and moved A's source to
+// `sealed`, which is the state that admits a canonical read.
+//
+// The control is asserted first, and it is the same three routes answering for
+// the execution they belong to.
+func TestACapabilityForOneExecutionCannotActOnAnothersHandoff(t *testing.T) {
+	fixture := newRoutes(t, "")
+	admitted(t, &fixture.ledgerFixture)
+
+	// A holds and seals.
+	status, body := fixture.call(t, "/capture/v1/hold", output.CaptureFacet, "hold", admission())
+	if status != http.StatusOK {
+		t.Fatalf("A's hold was refused: %d %s", status, body)
+	}
+	var hold output.CaptureAcknowledgement
+	if err := json.Unmarshal(body, &hold); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if status, body := fixture.call(t, "/capture/v1/seal", output.CaptureFacet, "begin-seal",
+		output.SealRequest{
+			ProtocolVersion: output.ProtocolVersion,
+			Execution:       identity(1),
+			ActivationEpoch: fixture.epoch,
+			HandoffID:       testHandoff,
+			Incarnation:     hold.Incarnation,
+			CaptureFence:    captureFence,
+			DeadlineAt:      output.NewTimestamp(fixedNow().Add(time.Hour)),
+		}); status != http.StatusOK {
+		t.Fatalf("A's seal was refused: %d %s", status, body)
+	}
+	started, err := fixture.source.InspectSeal(testHandoff)
+	if err != nil {
+		t.Fatalf("inspecting A's seal: %v", err)
+	}
+
+	query := map[string]any{"execution": identity(1), "handoff_id": testHandoff}
+	// The controls: A's own capability, at A's own handoff.
+	for path, operation := range map[string]string{
+		"/capture/v1/hold/inspect": "inspect-hold",
+		"/capture/v1/seal/inspect": "inspect-seal",
+	} {
+		if status, body := fixture.call(t, path, output.CaptureFacet, operation,
+			query); status != http.StatusOK {
+			t.Fatalf("%s refused the execution it belongs to: %d %s", path, status, body)
+		}
+	}
+
+	// B is a real, admitted execution on this node. It holds no source.
+	b := executioncontrol.Identity{
+		ExecutionID: "55555555-5555-4555-8555-555555555555", Fence: 1,
+	}
+	if err := fixture.ledger.Admit(executioncontrol.Envelope{
+		ProtocolVersion: executioncontrol.ProtocolVersion,
+		Identity:        b,
+		ActivationEpoch: testEpoch,
+		NodeUID:         testNode,
+		PodUID:          testPod,
+		Capability:      "opaque-capability",
+	}); err != nil {
+		t.Fatalf("admitting B: %v", err)
+	}
+
+	crossQuery := map[string]any{"execution": b, "handoff_id": testHandoff}
+	crossConfirmation := map[string]any{
+		"execution":     b,
+		"started":       started,
+		"capture_fence": captureFence,
+		"observed_at":   output.NewTimestamp(fixedNow()),
+	}
+
+	for _, row := range []struct {
+		path, operation string
+		body            any
+	}{
+		{"/capture/v1/hold/inspect", "inspect-hold", crossQuery},
+		{"/capture/v1/seal/inspect", "inspect-seal", crossQuery},
+		{"/capture/v1/seal/confirm", "confirm-seal", crossConfirmation},
+	} {
+		status, body := fixture.callAs(t, b, row.path, output.CaptureFacet, row.operation, row.body)
+		if status != http.StatusForbidden {
+			t.Errorf("%s served execution B a fact about A's handoff: %d %s",
+				row.path, status, body)
+		}
+	}
+
+	// And A's source is still A's: not sealed by B, and A can still confirm.
+	if _, err := fixture.source.ConfirmSeal(t.Context(), output.SealConfirmation{
+		Started: started, CaptureFence: captureFence, ObservedAt: output.NewTimestamp(fixedNow()),
+	}); err != nil {
+		t.Errorf("A could not confirm its own seal afterwards: %v", err)
 	}
 }
