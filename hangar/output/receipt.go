@@ -24,12 +24,10 @@ const ReceiptAlgorithm = "ed25519"
 // cannot be replayed for another capture, source, output or fence -- which is
 // exactly what binding all of those together buys.
 //
-// Attributes is the foundation's own hangar.TreeAttributes rather than a copy.
-// One consequence is worth knowing for a non-Go implementation: its CreatedAt
-// is encoded by Go's RFC 3339 with trailing zeros trimmed, unlike the
-// nine-digit Timestamp used everywhere else here, so an implementation must
-// accept both widths on that one field. Duplicating the type to make it uniform
-// would have been a second attribute model, which is worse.
+// Attributes is the wire projection of the foundation's hangar.TreeAttributes,
+// declared below. The projection exists for exactly one reason: the foundation
+// encodes its CreatedAt with trailing zeros trimmed, so one instant has several
+// spellings, and every other claim a verifier must match here has one.
 type ReceiptClaims struct {
 	ProtocolVersion      string                           `json:"protocol_version"`
 	ReceiptVersion       string                           `json:"receipt_version"`
@@ -43,7 +41,7 @@ type ReceiptClaims struct {
 	CaptureFence         CaptureFence                     `json:"capture_fence"`
 	WriterFence          WriterFence                      `json:"writer_fence"`
 	Ref                  hangar.TreeRef                   `json:"ref"`
-	Attributes           hangar.TreeAttributes            `json:"attributes"`
+	Attributes           TreeAttributes                   `json:"attributes"`
 	MarkerVersion        string                           `json:"marker_version"`
 	SignedAt             Timestamp                        `json:"signed_at"`
 }
@@ -144,3 +142,61 @@ func (receipt Receipt) Validate() error {
 // Ref is the exact reference this receipt is about. It exists so callers stop
 // reaching two levels into the claims for the one field they always want.
 func (receipt Receipt) Ref() hangar.TreeRef { return receipt.Claims.Ref }
+
+// TreeAttributes is the wire projection of hangar.TreeAttributes.
+//
+// It declares no new fact. Every field is the foundation's, in the foundation's
+// order, and AttributesFromFoundation / Foundation convert between them without
+// loss -- so nothing has to decide which of the two is authoritative. In-process
+// callers keep using hangar.TreeAttributes; this exists for the one place the
+// value is signed.
+//
+// The single difference is CreatedAt. The foundation's is a time.Time, and Go's
+// RFC 3339 encoding trims trailing zeros, so one instant has several wire
+// spellings -- `…23Z`, `…23.4Z`, `…23.418927631Z`. Every other claim in a
+// receipt has exactly one, and a verifier in another language must not have to
+// accept two widths on the one field that would then differ. Timestamp fixes
+// the width at nine digits and requires UTC, the way the rest of this protocol
+// already does.
+//
+// Duplicating the *type* to make the width uniform would be a second attribute
+// model. Projecting it at the wire boundary is not: the projection is where an
+// encoding decision belongs.
+type TreeAttributes struct {
+	Ref          hangar.TreeRef `json:"ref"`
+	StoredBytes  int64          `json:"stored_bytes"`
+	LogicalBytes int64          `json:"logical_bytes"`
+	CreatedAt    Timestamp      `json:"created_at"`
+}
+
+// AttributesFromFoundation projects the foundation's value onto the wire.
+func AttributesFromFoundation(attributes hangar.TreeAttributes) TreeAttributes {
+	return TreeAttributes{
+		Ref:          attributes.Ref,
+		StoredBytes:  attributes.StoredBytes,
+		LogicalBytes: attributes.LogicalBytes,
+		CreatedAt:    NewTimestamp(attributes.CreatedAt),
+	}
+}
+
+// Foundation projects back. It normalizes the location to UTC, which is the
+// point of the projection, and never moves the instant.
+func (attributes TreeAttributes) Foundation() hangar.TreeAttributes {
+	return hangar.TreeAttributes{
+		Ref:          attributes.Ref,
+		StoredBytes:  attributes.StoredBytes,
+		LogicalBytes: attributes.LogicalBytes,
+		CreatedAt:    attributes.CreatedAt.Time,
+	}
+}
+
+func (attributes TreeAttributes) Validate() error {
+	if err := attributes.Ref.Validate(); err != nil {
+		return err
+	}
+	if attributes.StoredBytes < 0 || attributes.LogicalBytes < 0 {
+		return fmt.Errorf("%w: attributes report a negative size", ErrCorrupt)
+	}
+
+	return attributes.CreatedAt.Validate()
+}
