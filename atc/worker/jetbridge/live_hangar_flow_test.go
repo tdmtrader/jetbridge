@@ -1,4 +1,11 @@
-//go:build live || hangar_live
+// hangar_live only, never live: this contract relabels a cluster node
+// (concourse.dev/artifact-cache, concourse.dev/hangar-v1) to schedule its
+// generated Pod, which is fine on a disposable cluster with a cluster-admin
+// service account and wrong on the deployed cluster the live tier runs
+// against, where the task's namespaced account cannot list nodes and must not
+// relabel the production node even if it could. It has no CI home yet; the
+// kind-based k8s-e2e tier is where it belongs.
+//go:build hangar_live
 
 package jetbridge
 

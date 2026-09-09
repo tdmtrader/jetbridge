@@ -62,6 +62,10 @@ jobs:
           # lands, instead of the month later when the live tier next runs.
           echo "=== Compiling live-tagged suites ==="
           go vet -tags live ./atc/worker/jetbridge/...
+          # The Hangar generated-Pod contract is hangar_live only: it relabels
+          # a node, so it cannot run against the deployed cluster and has no
+          # CI home until the kind tier hosts it. Compiling it keeps it honest.
+          go vet -tags hangar_live ./atc/worker/jetbridge/...
           echo "=== Live-tagged suites compile ==="
 
 
@@ -863,8 +867,6 @@ jobs:
           echo "These tests create real K8s pods against the live cluster."
           echo "Artifact daemon: hostPath=$ARTIFACT_DAEMON_HOST_PATH port=$ARTIFACT_DAEMON_PORT"
           echo ""
-          echo "=== Running focused Hangar generated-Pod contract ==="
-          go test -tags hangar_live -v -count=1 -timeout 5m -run '^TestLiveHangarGeneratedPodMaterializesStrictTree$' ./atc/worker/jetbridge/...
           go test -tags live -v -count=1 -timeout 5m ./atc/worker/jetbridge/...
           echo "=== Live integration tests passed ==="
 
