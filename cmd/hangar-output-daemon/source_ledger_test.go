@@ -523,3 +523,135 @@ func sameCaptureStatement(left, right output.CaptureAcknowledgement) bool {
 
 	return left.Signature == right.Signature && unsigned(left) == unsigned(right)
 }
+
+// crashOnPut makes the Nth durable record write fail, and nothing before it.
+//
+// The stage is the FIRST one in a put, so a crash there leaves the previous
+// record whole -- which is the point: what these two tests are about is not a
+// torn record but a step that is two records and a crash between them.
+func crashOnPut(fixture *sourceFixture, nth int) {
+	seen := 0
+	fixture.store.fault = func(at faultStage) error {
+		if at != faultBeforeTempWrite {
+			return nil
+		}
+		seen++
+		if seen == nth {
+			return errInjectedCrash
+		}
+
+		return nil
+	}
+}
+
+// A hold is a record AND a cleanup gate, and a crash between them must not
+// leave a held source that cleanup may destroy.
+//
+// The record is written first and the gate second, so a crash in between leaves
+// a `held` record with no gate -- and the replay path returns the stored hold
+// without re-opening it. `CleanupEligible` then says yes over a source this
+// node is still holding, which is the one answer that cannot be taken back:
+// Req 3's "the hold prevents cleanup", failing open.
+//
+// The pair is the assertion after the replay: the gate is back, and the source
+// is still on the node.
+func TestAHoldReplayedAfterACrashStillGatesCleanup(t *testing.T) {
+	fixture := newSourceLedger(t)
+	admitted(t, &fixture.ledgerFixture)
+
+	crashOnPut(fixture, 2)
+	if _, err := fixture.source.AcknowledgeHold(context.Background(), admission(),
+		output.SourceIncarnation{}); !errors.Is(err, errInjectedCrash) {
+		t.Fatalf("the injected crash between the hold record and its gate was not reported: %v", err)
+	}
+	fixture.store.fault = nil
+
+	// A restart is the only reader that matters: the process that crashed has
+	// no memory left.
+	fixture.restart(t)
+
+	replayed, err := fixture.source.AcknowledgeHold(context.Background(), admission(),
+		output.SourceIncarnation{})
+	if err != nil {
+		t.Fatalf("replaying the hold after the crash: %v", err)
+	}
+	if !fixture.source.Holds(replayed.Incarnation) {
+		t.Fatal("the replayed hold names an incarnation this node does not hold")
+	}
+
+	if _, err := fixture.ledger.RecordStart(identity(1), testPod, "proc-1"); err != nil {
+		t.Fatalf("starting: %v", err)
+	}
+	if _, err := fixture.ledger.RecordOutcome(identity(1),
+		executioncontrol.AcknowledgementFinish, executioncontrol.ExitOutcome{ExitCode: 0}); err != nil {
+		t.Fatalf("finishing: %v", err)
+	}
+	eligible, err := fixture.ledger.CleanupEligible(identity(1))
+	if err != nil {
+		t.Fatalf("asking about cleanup: %v", err)
+	}
+	if eligible.Eligible {
+		t.Errorf("a source held across a crash was cleanup-eligible: gates %v", eligible.OpenExtensionGates)
+	}
+	if len(eligible.OpenExtensionGates) != 1 || eligible.OpenExtensionGates[0] != SourceHoldGate {
+		t.Errorf("the hold's gate did not survive the crash: %v", eligible.OpenExtensionGates)
+	}
+}
+
+// The mirror, and it fails the other way: closed and stuck.
+//
+// A release writes the released record, removes the bytes and closes the gate.
+// A crash before the close leaves the gate open over a source that is gone, and
+// the replay returns the stored statement without closing it -- so the
+// execution is never cleanup-eligible again, for a hold nothing holds.
+func TestAReleaseReplayedAfterACrashStillClosesTheGate(t *testing.T) {
+	fixture := newSourceLedger(t)
+	hold := held(t, fixture)
+
+	if _, err := fixture.ledger.RecordStart(identity(1), testPod, "proc-1"); err != nil {
+		t.Fatalf("starting: %v", err)
+	}
+	if _, err := fixture.ledger.RecordOutcome(identity(1),
+		executioncontrol.AcknowledgementFinish, executioncontrol.ExitOutcome{ExitCode: 0}); err != nil {
+		t.Fatalf("finishing: %v", err)
+	}
+
+	intent := output.ReleaseIntent{
+		ProtocolVersion: output.ProtocolVersion,
+		Disposition:     output.DispositionCapture,
+		Execution:       identity(1),
+		ActivationEpoch: testEpoch,
+		HandoffID:       testHandoff,
+		SourceLeaseID:   testLease,
+		ReleaseIntentID: testIntent,
+		Incarnation:     hold.Incarnation,
+	}
+
+	crashOnPut(fixture, 2)
+	if _, err := fixture.source.AcknowledgeRelease(context.Background(), intent); !errors.Is(err, errInjectedCrash) {
+		t.Fatalf("the injected crash between the release record and the gate close was not "+
+			"reported: %v", err)
+	}
+	fixture.store.fault = nil
+	fixture.restart(t)
+
+	replayed, err := fixture.source.AcknowledgeRelease(context.Background(), intent)
+	if err != nil {
+		t.Fatalf("replaying the release after the crash: %v", err)
+	}
+	if replayed.ReleaseIntentID != testIntent {
+		t.Errorf("the replayed release names intent %s", replayed.ReleaseIntentID)
+	}
+	if fixture.source.Holds(hold.Incarnation) {
+		t.Error("the released source is still on the node after the replay")
+	}
+
+	eligible, err := fixture.ledger.CleanupEligible(identity(1))
+	if err != nil {
+		t.Fatalf("asking about cleanup: %v", err)
+	}
+	if !eligible.Eligible {
+		t.Errorf("a released source's gate was never closed: %s (gates %v)",
+			eligible.WithheldReason, eligible.OpenExtensionGates)
+	}
+}
