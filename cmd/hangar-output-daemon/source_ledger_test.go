@@ -332,6 +332,37 @@ func TestNoSourceControlOperationAcceptsAPathAndASwappedSymlinkIsRefused(t *test
 	} else if !strings.Contains(err.Error(), "containment") {
 		t.Errorf("the refusal does not say what it was: %v", err)
 	}
+
+	// And the harder half: a RELATIVE symlink to a location inside the tree.
+	//
+	// os.Root refuses the escape above on its own -- and it refuses any
+	// absolute link, whatever it points at -- so neither of those rows
+	// distinguishes a resolution that lstats from one that stats. This one
+	// does: a relative link inside the root is a link os.Root will happily
+	// follow, and a stat here reports a perfectly good directory that is
+	// somebody else's bytes about to be sealed as this capture's.
+	inside := filepath.Join(fixture.dir, "steps", "somebody-elses")
+	if err := os.MkdirAll(inside, 0o700); err != nil {
+		t.Fatalf("creating a sibling: %v", err)
+	}
+	if err := os.Remove(root); err != nil {
+		t.Fatalf("removing the link: %v", err)
+	}
+	relative, err := filepath.Rel(filepath.Dir(root), inside)
+	if err != nil {
+		t.Fatalf("computing a relative link: %v", err)
+	}
+	if err := os.Symlink(relative, root); err != nil {
+		t.Fatalf("linking inside the tree: %v", err)
+	}
+	if resolved, err := fixture.source.ResolveIncarnation(hold.Incarnation); err == nil {
+		t.Errorf("a symlink to %s inside the managed tree resolved to %s", inside, resolved)
+	} else if !strings.Contains(err.Error(), "symbolic link") {
+		t.Errorf("the refusal does not name the link: %v", err)
+	}
+	if fixture.source.Holds(hold.Incarnation) {
+		t.Error("the daemon reports it holds a source that is a link to somebody else's")
+	}
 }
 
 // The fenced release pair, both halves.
