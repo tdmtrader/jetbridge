@@ -36,6 +36,8 @@ Feature: What a sealed source becomes, and what the bucket then holds
     Then the daemon's refusal says "server-derived"
     When the publish request also carries a caller-chosen "key"
     Then the daemon's refusal says "server-derived"
+    When the publish request also carries a caller-chosen "prefix"
+    Then the daemon's refusal says "server-derived"
 
   # Assert the receipt WHOLE — scope, digest, generation, epoch and key id — not
   # `contains`, which is convention 8 and what the GAP rows warn about.

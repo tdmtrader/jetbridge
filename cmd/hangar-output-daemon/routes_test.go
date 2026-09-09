@@ -190,24 +190,34 @@ func (fixture *routeFixture) callWith(t *testing.T, path string,
 	return response.StatusCode, answer
 }
 
-// A base control capability cannot hold, seal or publish.
+// What the route table has that no scenario can reach.
 //
-// The control is the SAME token succeeding at its own operation, asserted
-// first, so this cannot go green on a daemon that rejects the token outright.
-func TestABaseControlCapabilityCannotHoldSealOrPublish(t *testing.T) {
+// `A base control capability cannot hold, seal or publish` pins the facet rule
+// over the wire, at hold, seal and publish, with the same token succeeding at
+// its own operation first. This used to repeat all three of those rows and the
+// checkpoint's clause says no Go test here duplicates an answer a scenario
+// already pins, so what is left is the three things the scenario cannot say:
+//
+//   - the FLAT identity body. The base protocol's frozen types embed Identity,
+//     so an Envelope carries execution_id and fence at the top level while the
+//     extension's types nest them under `execution`. The middleware reads both,
+//     and nothing else in the tree exercises the flat one.
+//   - the MIRROR: a capture capability at a base route. The fixture speaks the
+//     capture facet; it has no phrase for presenting one at /execution/v1.
+//   - the two capture routes the scenario does not name -- the writer ticket
+//     and the release -- because a facet check that was data per route could
+//     be true of three routes and not of five.
+func TestTheRouteTableReadsBothIdentityShapesAndNoFacetCrosses(t *testing.T) {
 	fixture := newRoutes(t, "")
 	admitted(t, &fixture.ledgerFixture)
 
-	// The control.
-	status, body := fixture.call(t, "/execution/v1/classify",
-		executioncontrol.BaseFacet, "classify", identifiedBy(identity(1)))
-	if status != http.StatusOK {
+	// The control: the base capability at its own operation.
+	if status, body := fixture.call(t, "/execution/v1/classify",
+		executioncontrol.BaseFacet, "classify", identifiedBy(identity(1))); status != http.StatusOK {
 		t.Fatalf("the base capability was refused at its own operation: %d %s", status, body)
 	}
 
-	// The base surface's own admit/start/outcome routes, over HTTP: the whole
-	// point of the middleware reading two body shapes is that the frozen types
-	// embed Identity, and nothing else exercises that.
+	// The flat identity body, over HTTP.
 	flattened := newRoutes(t, "")
 	if status, body := flattened.call(t, "/execution/v1/admit",
 		executioncontrol.BaseFacet, "admit", executioncontrol.Envelope{
@@ -221,12 +231,9 @@ func TestABaseControlCapabilityCannotHoldSealOrPublish(t *testing.T) {
 		t.Fatalf("the admit route refused an envelope with a flat identity: %d %s", status, body)
 	}
 
-	// And now the same facet, at the extension's routes.
+	// The two capture routes no scenario names.
 	for path, operation := range map[string]string{
-		"/capture/v1/hold":          "hold",
 		"/capture/v1/writer-ticket": "issue-writer-ticket",
-		"/capture/v1/seal":          "begin-seal",
-		"/capture/v1/publish":       "publish",
 		"/capture/v1/release":       "release-hold",
 	} {
 		status, body := fixture.call(t, path, executioncontrol.BaseFacet, operation,
@@ -240,9 +247,8 @@ func TestABaseControlCapabilityCannotHoldSealOrPublish(t *testing.T) {
 	}
 
 	// The mirror: a capture capability at a base route.
-	status, body = fixture.call(t, "/execution/v1/classify",
-		output.CaptureFacet, "classify", identifiedBy(identity(1)))
-	if status != http.StatusForbidden {
+	if status, body := fixture.call(t, "/execution/v1/classify",
+		output.CaptureFacet, "classify", identifiedBy(identity(1))); status != http.StatusForbidden {
 		t.Errorf("a capture capability was admitted at a base route: %d %s", status, body)
 	}
 }
@@ -459,86 +465,6 @@ func TestTheCaptureRoutesHoldSealAndPublishASealedTree(t *testing.T) {
 	// request has no field that could have said it.
 	if result.Ref.Scope != fixture.daemon.Namespace().Scope() {
 		t.Errorf("the object landed in scope %q", result.Ref.Scope)
-	}
-}
-
-// A caller-supplied bucket, scope or key is refused, and the server-derived one
-// is served. The control is the line above: the same publish with no
-// caller-chosen field succeeds.
-func TestACallerSuppliedNamespaceIsRefusedByThePublishRoute(t *testing.T) {
-	fixture := newRoutes(t, "")
-	admitted(t, &fixture.ledgerFixture)
-
-	status, body := fixture.call(t, "/capture/v1/hold", output.CaptureFacet, "hold", admission())
-	if status != http.StatusOK {
-		t.Fatalf("the hold was refused: %d %s", status, body)
-	}
-	var hold output.CaptureAcknowledgement
-	if err := json.Unmarshal(body, &hold); err != nil {
-		t.Fatalf("decoding: %v", err)
-	}
-	root, err := fixture.source.ResolveIncarnation(hold.Incarnation)
-	if err != nil {
-		t.Fatalf("resolving: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "artifact.txt"), []byte("the bytes"), 0o600); err != nil {
-		t.Fatalf("writing: %v", err)
-	}
-	if status, body := fixture.call(t, "/capture/v1/seal", output.CaptureFacet, "begin-seal",
-		output.SealRequest{
-			ProtocolVersion: output.ProtocolVersion,
-			Execution:       identity(1),
-			ActivationEpoch: fixture.epoch,
-			HandoffID:       testHandoff,
-			Incarnation:     hold.Incarnation,
-			CaptureFence:    captureFence,
-			DeadlineAt:      output.NewTimestamp(fixedNow().Add(time.Hour)),
-		}); status != http.StatusOK {
-		t.Fatalf("sealing: %d %s", status, body)
-	}
-	started, err := fixture.source.InspectSeal(testHandoff, identity(1))
-	if err != nil {
-		t.Fatalf("inspecting: %v", err)
-	}
-	if _, err := fixture.source.ConfirmSeal(t.Context(), output.SealConfirmation{
-		Started: started, CaptureFence: captureFence, ObservedAt: output.NewTimestamp(fixedNow()),
-	}); err != nil {
-		t.Fatalf("confirming: %v", err)
-	}
-
-	publication := output.PublicationRequest{
-		ProtocolVersion: output.ProtocolVersion,
-		Execution:       identity(1),
-		ActivationEpoch: fixture.epoch,
-		HandoffID:       testHandoff,
-		ReservationID:   "44444444-4444-4444-8444-444444444444",
-		CaptureFence:    captureFence,
-	}
-
-	// The control, first.
-	if status, body := fixture.call(t, "/capture/v1/publish",
-		output.CaptureFacet, "publish", publication); status != http.StatusOK {
-		t.Fatalf("the publication with no caller-chosen field was refused: %d %s", status, body)
-	}
-
-	for field, chosen := range map[string]output.CallerNamespaceRequest{
-		"bucket": {Bucket: "somebody-elses-bucket"},
-		"scope":  {Scope: "o0000000000000000000000000000000000000000"},
-		"key":    {Key: "hangar/v1/scopes/x/trees/sha256/dead.tar.zst"},
-		"prefix": {Prefix: "deployments/red"},
-	} {
-		carrying := publication
-		carrying.Namespace = chosen
-
-		status, body := fixture.call(t, "/capture/v1/publish",
-			output.CaptureFacet, "publish", carrying)
-		if status != http.StatusForbidden {
-			t.Errorf("a publication naming a caller-chosen %s was answered %d: %s",
-				field, status, body)
-		}
-		if !strings.Contains(string(body), field) {
-			t.Errorf("the refusal for a caller-chosen %s does not name the field: %s", field, body)
-		}
 	}
 }
 
