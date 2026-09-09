@@ -222,9 +222,17 @@ jobs:
       rootfs_uri: docker:///registry.home/concourse-test-runner:v9
       inputs:
       - name: repo
+      # HANGAR_FAKE_GCS_ENDPOINT is the same value the unit-tests task carries
+      # (above): the brine Hangar fixture reads it instead of starting
+      # fake-gcs-server in this process, so one deployment serves both runners
+      # and both share one failure mode. HANGAR_CI is deliberately NOT here --
+      # that variable turns a missing endpoint into a FAILURE, which is the Go
+      # tier-2 suite's rule because Req 41 gates activation on it; the fixture
+      # has no fail-not-skip rule and should not grow one to match a variable.
       params:
         GITHUB_TOKEN: ((github-token))
         GOPRIVATE: github.com/MarkDucommun/*
+        HANGAR_FAKE_GCS_ENDPOINT: http://fake-gcs.cicd.svc:4443
       run:
         path: sh
         args:
