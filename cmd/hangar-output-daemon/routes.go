@@ -319,13 +319,17 @@ type holdQuery struct {
 }
 
 func (server *Server) inspectHold(_ http.ResponseWriter, request *http.Request,
-	_ executioncontrol.Identity) (any, error) {
+	identity executioncontrol.Identity) (any, error) {
 	var query holdQuery
 	if err := decode(request, &query); err != nil {
 		return nil, err
 	}
 
-	return server.source.InspectHold(query.HandoffID)
+	// The identity is the MIDDLEWARE's -- the one the capability was verified
+	// against -- and not the one this handler re-reads out of the body. They
+	// are the same field today; passing the checked one is what keeps them the
+	// same when the body grows another way to name an execution.
+	return server.source.InspectHold(query.HandoffID, identity)
 }
 
 func (server *Server) issueTicket(_ http.ResponseWriter, request *http.Request,
@@ -374,10 +378,25 @@ type sealConfirmation struct {
 }
 
 func (server *Server) confirmSeal(_ http.ResponseWriter, request *http.Request,
-	_ executioncontrol.Identity) (any, error) {
+	identity executioncontrol.Identity) (any, error) {
 	var confirmation sealConfirmation
 	if err := decode(request, &confirmation); err != nil {
 		return nil, err
+	}
+
+	// ConfirmSeal reads its execution out of the SealStarted the CALLER
+	// supplied, which is the statement this confirmation acts on. The
+	// capability was minted for the identity the middleware checked. Binding
+	// them here is what stops a capability for one execution from confirming
+	// another's seal -- the statement's signature is checked further down, so
+	// the attacker is not a stranger, but "somebody who has seen A's seal
+	// statement" is not "A".
+	if confirmation.Started.Acknowledgement.Execution != identity {
+		return nil, fmt.Errorf("%w: this confirmation is authorized for execution %s at fence "+
+			"%d and the seal statement it carries is execution %s's at fence %d",
+			output.ErrUnauthorized, identity.ExecutionID, identity.Fence,
+			confirmation.Started.Acknowledgement.Execution.ExecutionID,
+			confirmation.Started.Acknowledgement.Execution.Fence)
 	}
 
 	return server.source.ConfirmSeal(request.Context(), output.SealConfirmation{
@@ -389,13 +408,13 @@ func (server *Server) confirmSeal(_ http.ResponseWriter, request *http.Request,
 }
 
 func (server *Server) inspectSeal(_ http.ResponseWriter, request *http.Request,
-	_ executioncontrol.Identity) (any, error) {
+	identity executioncontrol.Identity) (any, error) {
 	var query holdQuery
 	if err := decode(request, &query); err != nil {
 		return nil, err
 	}
 
-	return server.source.InspectSeal(query.HandoffID)
+	return server.source.InspectSeal(query.HandoffID, identity)
 }
 
 func (server *Server) release(_ http.ResponseWriter, request *http.Request,

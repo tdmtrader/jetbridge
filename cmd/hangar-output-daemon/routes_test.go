@@ -396,7 +396,7 @@ func TestTheCaptureRoutesHoldSealAndPublishASealedTree(t *testing.T) {
 		output.CaptureFacet, "begin-seal", sealed); status != http.StatusOK {
 		t.Fatalf("the seal was refused: %d %s", status, body)
 	}
-	started, err := fixture.source.InspectSeal(testHandoff)
+	started, err := fixture.source.InspectSeal(testHandoff, identity(1))
 	if err != nil {
 		t.Fatalf("inspecting the seal: %v", err)
 	}
@@ -467,7 +467,7 @@ func TestACallerSuppliedNamespaceIsRefusedByThePublishRoute(t *testing.T) {
 		}); status != http.StatusOK {
 		t.Fatalf("sealing: %d %s", status, body)
 	}
-	started, err := fixture.source.InspectSeal(testHandoff)
+	started, err := fixture.source.InspectSeal(testHandoff, identity(1))
 	if err != nil {
 		t.Fatalf("inspecting: %v", err)
 	}
@@ -591,7 +591,7 @@ func TestACapabilityForOneExecutionCannotActOnAnothersHandoff(t *testing.T) {
 		}); status != http.StatusOK {
 		t.Fatalf("A's seal was refused: %d %s", status, body)
 	}
-	started, err := fixture.source.InspectSeal(testHandoff)
+	started, err := fixture.source.InspectSeal(testHandoff, identity(1))
 	if err != nil {
 		t.Fatalf("inspecting A's seal: %v", err)
 	}

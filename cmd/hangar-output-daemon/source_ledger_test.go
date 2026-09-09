@@ -180,7 +180,7 @@ func TestARepeatedHoldReturnsTheSameStatementAndADifferentFenceIsAConflict(t *te
 	}
 
 	// And the first hold is still the one in force.
-	current, err := fixture.source.InspectHold(testHandoff)
+	current, err := fixture.source.InspectHold(testHandoff, identity(1))
 	if err != nil {
 		t.Fatalf("inspecting: %v", err)
 	}
@@ -476,7 +476,7 @@ func TestRestartingRecoversEveryStatementAndRecreatesNoAuthority(t *testing.T) {
 
 	fixture.restart(t)
 
-	recovered, err := fixture.source.InspectHold(testHandoff)
+	recovered, err := fixture.source.InspectHold(testHandoff, identity(1))
 	if err != nil {
 		t.Fatalf("inspecting after a restart: %v", err)
 	}
@@ -509,7 +509,7 @@ func TestRestartingRecoversEveryStatementAndRecreatesNoAuthority(t *testing.T) {
 
 	// And a hold for a handoff this node never acknowledged is not invented by
 	// the act of asking about it.
-	if _, err := fixture.source.InspectHold("99999999-9999-4999-8999-999999999999"); !errors.Is(err, output.ErrNotFound) {
+	if _, err := fixture.source.InspectHold("99999999-9999-4999-8999-999999999999", identity(1)); !errors.Is(err, output.ErrNotFound) {
 		t.Errorf("a hold nobody established was answered: %v", err)
 	}
 }

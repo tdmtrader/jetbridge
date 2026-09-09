@@ -182,7 +182,7 @@ func TestNothingTheDaemonEmitsNamesAPathBucketObjectKeyOrCapability(t *testing.T
 	// A ticket issued AFTER the seal: the refusal that names the incarnation.
 	fixture.call(t, "/capture/v1/writer-ticket", output.CaptureFacet, "issue-writer-ticket", ticket)
 
-	started, err := fixture.source.InspectSeal(testHandoff)
+	started, err := fixture.source.InspectSeal(testHandoff, identity(1))
 	if err != nil {
 		t.Fatalf("inspecting the seal: %v", err)
 	}

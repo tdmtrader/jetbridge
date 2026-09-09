@@ -472,7 +472,14 @@ func (ledger *SourceLedger) AcknowledgeHold(_ context.Context, admission output.
 }
 
 // InspectHold returns the statement in force, and invents nothing.
-func (ledger *SourceLedger) InspectHold(handoff output.HandoffID) (output.CaptureAcknowledgement, error) {
+//
+// It takes the identity the CAPABILITY was bound to, not just the handoff. A
+// read is not harmless here: the hold statement carries the incarnation, the
+// pod and the source lease, and a route that verified a token against one
+// execution and then answered about another's handoff would have made the
+// binding decorative on every read.
+func (ledger *SourceLedger) InspectHold(handoff output.HandoffID,
+	execution executioncontrol.Identity) (output.CaptureAcknowledgement, error) {
 	record, found, err := ledger.load(handoff)
 	if err != nil {
 		return output.CaptureAcknowledgement{}, err
@@ -481,8 +488,27 @@ func (ledger *SourceLedger) InspectHold(handoff output.HandoffID) (output.Captur
 		return output.CaptureAcknowledgement{}, fmt.Errorf(
 			"%w: handoff %s holds no source on this node", output.ErrNotFound, handoff)
 	}
+	if err := record.belongsTo(execution, handoff); err != nil {
+		return output.CaptureAcknowledgement{}, err
+	}
 
 	return *record.Hold, nil
+}
+
+// belongsTo is the ownership check the three query-shaped routes share.
+//
+// The fence is deliberately NOT compared: a superseded controller may read
+// what this node said, and `admitted` is where acting requires the current
+// fence. What may never happen is a DIFFERENT execution reading it.
+func (record sourceRecord) belongsTo(execution executioncontrol.Identity,
+	handoff output.HandoffID) error {
+	if record.Execution.ExecutionID != execution.ExecutionID {
+		return fmt.Errorf("%w: handoff %s belongs to execution %s and the request is "+
+			"authorized for %s", output.ErrUnauthorized, handoff,
+			record.Execution.ExecutionID, execution.ExecutionID)
+	}
+
+	return nil
 }
 
 // AdmitWriter issues a ticket, or refuses because sealing won the race.
@@ -861,7 +887,8 @@ var _ output.SourceControl = (*SourceLedger)(nil)
 // SealStarted: an empty drain set is a real and meaningful answer -- nobody was
 // writing when admission was fenced -- and returning one for "no seal has
 // begun" would make the two indistinguishable.
-func (ledger *SourceLedger) InspectSeal(handoff output.HandoffID) (output.SealStarted, error) {
+func (ledger *SourceLedger) InspectSeal(handoff output.HandoffID,
+	execution executioncontrol.Identity) (output.SealStarted, error) {
 	record, found, err := ledger.load(handoff)
 	if err != nil {
 		return output.SealStarted{}, err
@@ -869,6 +896,9 @@ func (ledger *SourceLedger) InspectSeal(handoff output.HandoffID) (output.SealSt
 	if !found || record.SealStarted == nil {
 		return output.SealStarted{}, fmt.Errorf(
 			"%w: handoff %s has not begun sealing", output.ErrNotFound, handoff)
+	}
+	if err := record.belongsTo(execution, handoff); err != nil {
+		return output.SealStarted{}, err
 	}
 
 	return output.SealStarted{
