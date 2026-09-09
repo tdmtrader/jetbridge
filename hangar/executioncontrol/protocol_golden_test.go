@@ -183,6 +183,10 @@ func assertClosedAcknowledgementKinds(t *testing.T, raw []byte) {
 	if len(got) == 0 {
 		t.Fatal("AcknowledgementKinds() is empty; the closed vocabulary check would pass vacuously")
 	}
+	if len(got) != len(want) {
+		t.Fatalf("AcknowledgementKinds() has %d members, the frozen fixture has %d: %v vs %v",
+			len(got), len(want), got, want)
+	}
 	if !bytes.Equal(canonicalJSON(t, got), raw) {
 		t.Errorf("AcknowledgementKinds() does not re-encode to the frozen fixture:\n%s", canonicalJSON(t, got))
 	}
