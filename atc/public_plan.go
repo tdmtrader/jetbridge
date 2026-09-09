@@ -19,6 +19,7 @@ func (plan *Plan) Public() *json.RawMessage {
 		Task           *json.RawMessage `json:"task,omitempty"`
 		Run            *json.RawMessage `json:"run,omitempty"`
 		SetPipeline    *json.RawMessage `json:"set_pipeline,omitempty"`
+		RunPipeline    *json.RawMessage `json:"run_pipeline,omitempty"`
 		LoadVar        *json.RawMessage `json:"load_var,omitempty"`
 		OnAbort        *json.RawMessage `json:"on_abort,omitempty"`
 		OnError        *json.RawMessage `json:"on_error,omitempty"`
@@ -70,6 +71,10 @@ func (plan *Plan) Public() *json.RawMessage {
 
 	if plan.SetPipeline != nil {
 		public.SetPipeline = plan.SetPipeline.Public()
+	}
+
+	if plan.RunPipeline != nil {
+		public.RunPipeline = plan.RunPipeline.Public()
 	}
 
 	if plan.LoadVar != nil {
@@ -319,6 +324,17 @@ func (plan SetPipelinePlan) Public() *json.RawMessage {
 		Name:         plan.Name,
 		Team:         plan.Team,
 		InstanceVars: plan.InstanceVars,
+	})
+}
+
+// Public exposes the name and nothing else. The params are interpolated from
+// the build's credentials, so they may hold secrets and can never be shown to
+// an unauthenticated viewer of the build plan.
+func (plan RunPipelinePlan) Public() *json.RawMessage {
+	return enc(struct {
+		Name string `json:"name"`
+	}{
+		Name: plan.Name,
 	})
 }
 

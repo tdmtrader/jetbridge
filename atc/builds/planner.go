@@ -281,6 +281,15 @@ func (visitor *planVisitor) VisitSetPipeline(step *atc.SetPipelineStep) error {
 	return nil
 }
 
+func (visitor *planVisitor) VisitRunPipeline(step *atc.RunPipelineStep) error {
+	visitor.plan = visitor.planFactory.NewPlan(atc.RunPipelinePlan{
+		Name:   step.Name,
+		Params: step.Params,
+	})
+
+	return nil
+}
+
 func (visitor *planVisitor) VisitLoadVar(step *atc.LoadVarStep) error {
 	visitor.plan = visitor.planFactory.NewPlan(atc.LoadVarPlan{
 		Name:   step.Name,

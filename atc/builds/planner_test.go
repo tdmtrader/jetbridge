@@ -1560,6 +1560,42 @@ var factoryTests = []PlannerTest{
 		}`,
 	},
 	{
+		Title: "run_pipeline step",
+
+		Config: &atc.RunPipelineStep{
+			Name: "some-pipeline",
+			Params: atc.RunParams{
+				"ref":    "some-ref",
+				"nested": map[string]any{"key": "some-value"},
+			},
+		},
+
+		PlanJSON: `{
+			"id": "(unique)",
+			"run_pipeline": {
+				"name": "some-pipeline",
+				"params": {
+					"ref": "some-ref",
+					"nested": {"key": "some-value"}
+				}
+			}
+		}`,
+	},
+	{
+		Title: "run_pipeline step without params",
+
+		Config: &atc.RunPipelineStep{
+			Name: "some-pipeline",
+		},
+
+		PlanJSON: `{
+			"id": "(unique)",
+			"run_pipeline": {
+				"name": "some-pipeline"
+			}
+		}`,
+	},
+	{
 		Title: "load_var step",
 
 		Config: &atc.LoadVarStep{

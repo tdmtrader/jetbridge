@@ -29,6 +29,30 @@ var _ = Describe("Plan", func() {
 		})
 	})
 
+	Describe("RunPipelinePlan Public", func() {
+		It("serializes the name and hides the params, which may hold secrets", func() {
+			plan := atc.Plan{
+				ID: "7",
+				RunPipeline: &atc.RunPipelinePlan{
+					Name: "version-upgrade",
+					Params: atc.RunParams{
+						"token":  "super-secret",
+						"nested": map[string]any{"also": "secret"},
+					},
+				},
+			}
+			json := plan.Public()
+			Expect(json).ToNot(BeNil())
+			Expect([]byte(*json)).To(MatchJSON(`{
+				"id": "7",
+				"run_pipeline": {
+					"name": "version-upgrade"
+				}
+			}`))
+			Expect(string(*json)).ToNot(ContainSubstring("secret"))
+		})
+	})
+
 	Describe("SidecarPlan Public", func() {
 		It("serializes name and image", func() {
 			plan := atc.Plan{

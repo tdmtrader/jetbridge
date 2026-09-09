@@ -10,6 +10,7 @@ type Plan struct {
 	Task        *TaskPlan        `json:"task,omitempty"`
 	Run         *RunPlan         `json:"run,omitempty"`
 	SetPipeline *SetPipelinePlan `json:"set_pipeline,omitempty"`
+	RunPipeline *RunPipelinePlan `json:"run_pipeline,omitempty"`
 	LoadVar     *LoadVarPlan     `json:"load_var,omitempty"`
 
 	Do         *DoPlan         `json:"do,omitempty"`
@@ -412,6 +413,14 @@ type SetPipelinePlan struct {
 	Vars         map[string]any `json:"vars,omitempty"`
 	VarFiles     []string       `json:"var_files,omitempty"`
 	InstanceVars map[string]any `json:"instance_vars,omitempty"`
+}
+
+// RunPipelinePlan names a template pipeline on the calling build's own team.
+// It carries no team of its own, because cross-team calls are refused by the
+// run-admission port.
+type RunPipelinePlan struct {
+	Name   string    `json:"name"`
+	Params RunParams `json:"params,omitempty"`
 }
 
 type LoadVarPlan struct {

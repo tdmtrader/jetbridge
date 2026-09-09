@@ -23,6 +23,9 @@ type StepRecursor struct {
 	// OnSetPipeline will be invoked for any *SetPipelineStep present in the StepConfig.
 	OnSetPipeline func(*SetPipelineStep) error
 
+	// OnRunPipeline will be invoked for any *RunPipelineStep present in the StepConfig.
+	OnRunPipeline func(*RunPipelineStep) error
+
 	// OnLoadVar will be invoked for any *LoadVarStep present in the StepConfig.
 	OnLoadVar func(*LoadVarStep) error
 }
@@ -67,6 +70,15 @@ func (recursor StepRecursor) VisitRun(step *RunStep) error {
 func (recursor StepRecursor) VisitSetPipeline(step *SetPipelineStep) error {
 	if recursor.OnSetPipeline != nil {
 		return recursor.OnSetPipeline(step)
+	}
+
+	return nil
+}
+
+// VisitRunPipeline calls the OnRunPipeline hook if configured.
+func (recursor StepRecursor) VisitRunPipeline(step *RunPipelineStep) error {
+	if recursor.OnRunPipeline != nil {
+		return recursor.OnRunPipeline(step)
 	}
 
 	return nil
