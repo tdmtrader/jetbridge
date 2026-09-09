@@ -10,6 +10,8 @@ package jetbridge_test
 // FILE-level evidence only, and the rebase re-verification did not sustain them
 // (eleven REFUTED, seven GAP). Restoring is always acceptable; deleting on
 // inference is not.
+// The six root-path StreamIn/StreamOut cases now share two contract tests;
+// their exact routing, metadata and byte assertions remain (see CONSOLIDATION.md).
 //
 // The four whose evidence held -- "Source returns the worker name from the db
 // volume", StreamIn's "returns the error", StreamOut's "uses a subdirectory
@@ -94,10 +96,10 @@ var _ = Describe("Volume", func() {
 		)
 	})
 
-	Describe("Handle", func() {
-		It("returns the db volume handle", func() {
-			Expect(volume.Handle()).To(Equal("vol-handle-123"))
-		})
+	It("Handle returns the db volume handle", func() {
+
+		Expect(volume.Handle()).To(Equal("vol-handle-123"))
+
 	})
 
 	Describe("DBVolume", func() {
@@ -125,10 +127,9 @@ var _ = Describe("Volume", func() {
 	})
 
 	Describe("StreamIn", func() {
-		It("execs tar extract in the correct Pod container at the specified path", func() {
-			reader := bytes.NewReader([]byte("tar-data"))
-
-			err := volume.StreamIn(ctx, ".", nil, 0, reader)
+		It("streams exact input bytes to the intended tar destination with stream-in metadata", func() {
+			inputData := []byte("some-tar-stream-data")
+			err := volume.StreamIn(ctx, ".", nil, 0, bytes.NewReader(inputData))
 			Expect(err).ToNot(HaveOccurred())
 
 			Expect(fakeExecutor.execCalls).To(HaveLen(1))
@@ -137,16 +138,8 @@ var _ = Describe("Volume", func() {
 			Expect(call.namespace).To(Equal("test-namespace"))
 			Expect(call.containerName).To(Equal("main"))
 			Expect(call.command).To(Equal([]string{"tar", "xf", "-", "-C", "/tmp/build/inputs"}))
-		})
-
-		It("pipes the reader data to stdin of the exec", func() {
-			inputData := []byte("some-tar-stream-data")
-			reader := bytes.NewReader(inputData)
-
-			err := volume.StreamIn(ctx, ".", nil, 0, reader)
-			Expect(err).ToNot(HaveOccurred())
-
-			call := fakeExecutor.execCalls[0]
+			Expect(call.attrs.Purpose).To(Equal("stream-in"))
+			Expect(call.attrs.VolumeMountPath).To(Equal("/tmp/build/inputs"))
 			Expect(call.stdin).ToNot(BeNil())
 			stdinData, err := io.ReadAll(call.stdin)
 			Expect(err).ToNot(HaveOccurred())
@@ -163,15 +156,6 @@ var _ = Describe("Volume", func() {
 			Expect(call.command).To(Equal([]string{"tar", "xf", "-", "-C", "/tmp/build/inputs/sub/dir"}))
 		})
 
-		It("passes stream-in purpose and volume mount path in ExecAttrs", func() {
-			reader := bytes.NewReader([]byte("tar-data"))
-			err := volume.StreamIn(ctx, ".", nil, 0, reader)
-			Expect(err).ToNot(HaveOccurred())
-
-			call := fakeExecutor.execCalls[0]
-			Expect(call.attrs.Purpose).To(Equal("stream-in"))
-			Expect(call.attrs.VolumeMountPath).To(Equal("/tmp/build/inputs"))
-		})
 	})
 
 	Describe("StreamOut", func() {
@@ -179,35 +163,7 @@ var _ = Describe("Volume", func() {
 			fakeExecutor.execStdout = []byte("tar-output-bytes")
 		})
 
-		It("execs tar create in the correct Pod container at the specified path", func() {
-			readCloser, err := volume.StreamOut(ctx, ".", nil)
-			Expect(err).ToNot(HaveOccurred())
-			defer readCloser.Close()
-
-			// Read all data to let the goroutine complete
-			_, _ = io.ReadAll(readCloser)
-
-			Expect(fakeExecutor.execCalls).To(HaveLen(1))
-			call := fakeExecutor.execCalls[0]
-			Expect(call.podName).To(Equal("test-pod"))
-			Expect(call.namespace).To(Equal("test-namespace"))
-			Expect(call.containerName).To(Equal("main"))
-			Expect(call.command).To(Equal([]string{"tar", "cf", "-", "-C", "/tmp/build/inputs", "."}))
-		})
-
-		It("passes stream-out purpose and volume mount path in ExecAttrs", func() {
-			readCloser, err := volume.StreamOut(ctx, ".", nil)
-			Expect(err).ToNot(HaveOccurred())
-			defer readCloser.Close()
-			_, _ = io.ReadAll(readCloser)
-
-			Expect(fakeExecutor.execCalls).To(HaveLen(1))
-			call := fakeExecutor.execCalls[0]
-			Expect(call.attrs.Purpose).To(Equal("stream-out"))
-			Expect(call.attrs.VolumeMountPath).To(Equal("/tmp/build/inputs"))
-		})
-
-		It("returns the stdout as a ReadCloser via streaming pipe", func() {
+		It("streams exact output bytes from the intended tar destination with stream-out metadata", func() {
 			readCloser, err := volume.StreamOut(ctx, ".", nil)
 			Expect(err).ToNot(HaveOccurred())
 			defer readCloser.Close()
@@ -215,6 +171,14 @@ var _ = Describe("Volume", func() {
 			data, err := io.ReadAll(readCloser)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(data).To(Equal([]byte("tar-output-bytes")))
+			Expect(fakeExecutor.execCalls).To(HaveLen(1))
+			call := fakeExecutor.execCalls[0]
+			Expect(call.podName).To(Equal("test-pod"))
+			Expect(call.namespace).To(Equal("test-namespace"))
+			Expect(call.containerName).To(Equal("main"))
+			Expect(call.command).To(Equal([]string{"tar", "cf", "-", "-C", "/tmp/build/inputs", "."}))
+			Expect(call.attrs.Purpose).To(Equal("stream-out"))
+			Expect(call.attrs.VolumeMountPath).To(Equal("/tmp/build/inputs"))
 		})
 
 		It("handles a file path by tarring from the mount root", func() {
@@ -228,19 +192,17 @@ var _ = Describe("Volume", func() {
 			Expect(call.command).To(Equal([]string{"tar", "cf", "-", "-C", "/tmp/build/inputs", "pipeline.yml"}))
 		})
 
-		Context("when the exec returns an error", func() {
-			BeforeEach(func() {
-				fakeExecutor.execErr = errors.New("exec failed: pod terminated")
-			})
+		It("when the exec returns an error propagates the error through the pipe reader", func() {
 
-			It("propagates the error through the pipe reader", func() {
-				readCloser, err := volume.StreamOut(ctx, ".", nil)
-				Expect(err).ToNot(HaveOccurred())
-				defer readCloser.Close()
+			fakeExecutor.execErr = errors.New("exec failed: pod terminated")
 
-				_, err = io.ReadAll(readCloser)
-				Expect(err).To(MatchError(ContainSubstring("exec failed")))
-			})
+			readCloser, err := volume.StreamOut(ctx, ".", nil)
+			Expect(err).ToNot(HaveOccurred())
+			defer readCloser.Close()
+
+			_, err = io.ReadAll(readCloser)
+			Expect(err).To(MatchError(ContainSubstring("exec failed")))
+
 		})
 	})
 
@@ -271,40 +233,40 @@ var _ = Describe("Volume", func() {
 		})
 	})
 
-	Describe("volume uniqueness", func() {
-		It("two volumes with different handles are distinguishable", func() {
-			creatingVolume2, err := database.VolumeRepository.CreateVolumeWithHandle(
-				"vol-handle-456",
-				team.ID(),
-				dbWorker.Name(),
-				db.VolumeTypeArtifact,
-			)
-			Expect(err).ToNot(HaveOccurred())
-			createdVolume2, err := creatingVolume2.Created()
-			Expect(err).ToNot(HaveOccurred())
-			artifact2, err := createdVolume2.InitializeArtifact("volume-test-artifact-2", 0)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(artifact2.ID()).To(BeNumerically(">", 0))
-			dbVolume2, found, err := database.VolumeRepository.FindVolume(createdVolume2.Handle())
-			Expect(err).ToNot(HaveOccurred())
-			Expect(found).To(BeTrue())
+	It("volume uniqueness two volumes with different handles are distinguishable", func() {
 
-			volume2 := jetbridge.NewVolume(
-				dbVolume2,
-				fakeExecutor,
-				"other-pod",
-				namespace,
-				containerName,
-				"/tmp/build/outputs",
-			)
+		creatingVolume2, err := database.VolumeRepository.CreateVolumeWithHandle(
+			"vol-handle-456",
+			team.ID(),
+			dbWorker.Name(),
+			db.VolumeTypeArtifact,
+		)
+		Expect(err).ToNot(HaveOccurred())
+		createdVolume2, err := creatingVolume2.Created()
+		Expect(err).ToNot(HaveOccurred())
+		artifact2, err := createdVolume2.InitializeArtifact("volume-test-artifact-2", 0)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(artifact2.ID()).To(BeNumerically(">", 0))
+		dbVolume2, found, err := database.VolumeRepository.FindVolume(createdVolume2.Handle())
+		Expect(err).ToNot(HaveOccurred())
+		Expect(found).To(BeTrue())
 
-			Expect(volume.Handle()).ToNot(Equal(volume2.Handle()))
-			Expect(dbVolume2.Handle()).To(Equal("vol-handle-456"))
-			artifactVolume2, found, err := artifact2.Volume(team.ID())
-			Expect(err).ToNot(HaveOccurred())
-			Expect(found).To(BeTrue())
-			Expect(artifactVolume2.Handle()).To(Equal(volume2.Handle()))
-		})
+		volume2 := jetbridge.NewVolume(
+			dbVolume2,
+			fakeExecutor,
+			"other-pod",
+			namespace,
+			containerName,
+			"/tmp/build/outputs",
+		)
+
+		Expect(volume.Handle()).ToNot(Equal(volume2.Handle()))
+		Expect(dbVolume2.Handle()).To(Equal("vol-handle-456"))
+		artifactVolume2, found, err := artifact2.Volume(team.ID())
+		Expect(err).ToNot(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(artifactVolume2.Handle()).To(Equal(volume2.Handle()))
+
 	})
 })
 

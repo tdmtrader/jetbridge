@@ -138,7 +138,6 @@ Feature: A step from end to end — its rows, its pod, its artifacts
   # disagree with the runtime about which pod is which.
   Scenario: A get step in exec mode is named the same way
     Given a jetbridge cluster in namespace "test-namespace"
-    And the worker execs commands in pods
     And a "get" step in pipeline "ci" job "build" build "7" named "source-code" with handle "aabbccdd-1122-3344-5566-778899aabbcc"
     When the step's container is created
     And the step's container runs
@@ -208,7 +207,6 @@ Feature: A step from end to end — its rows, its pod, its artifacts
   # go to a pod that is not there.
   Scenario: A step's input volume starts unbound and ends up reading from its pod
     Given a jetbridge cluster in namespace "test-namespace"
-    And the worker execs commands in pods
     And a "task" step in pipeline "my-pipeline" job "unit-test" build "42" named "" with handle "550e8400-e29b-41d4-a716-446655440000"
     And the step works in "/tmp/build/workdir"
     And the step takes an input at "/tmp/build/workdir/my-input"
@@ -227,7 +225,6 @@ Feature: A step from end to end — its rows, its pod, its artifacts
   @CO-09
   Scenario: An artifact a previous step persisted becomes this step's input
     Given a jetbridge cluster in namespace "ci-namespace"
-    And the worker execs commands in pods
     And an artifact volume "upload" persisted for this team
     And a task step with handle "task-consume-artifact" and no pipeline or job
     And the step works in "/tmp/build/workdir"

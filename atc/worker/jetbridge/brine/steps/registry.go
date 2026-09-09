@@ -10,7 +10,6 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func (d *noopDelegate) BuildStartTime() time.Time { return time.Time{} }
@@ -22,6 +21,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, ContainerSpecDefinitions()...)
 	defs = append(defs, ObservabilityDefinitions()...)
 	defs = append(defs, VolumeStreamingDefinitions()...)
+	defs = append(defs, ArtifactHandoffDefinitions()...)
 	defs = append(defs, TaskCommandDefinitions()...)
 	defs = append(defs, PodNameDefinitions()...)
 	defs = append(defs, ConfigDefinitions()...)
@@ -106,13 +106,10 @@ func failureDefinitions() []brine.StepDefinition {
 		),
 
 		// ClusterReady -> StepRunning.
-		brine.DefineMap[ClusterReady, StepRunning](
+		Transform[ClusterReady, StepRunning](
 			"a task container {string} is running",
-			func(in ClusterReady, p brine.Params, _ *brine.Recorder) (StepRunning, error) {
-				handle, ok := p.GetString(0)
-				if !ok {
-					return StepRunning{}, fmt.Errorf("expected a container handle parameter")
-				}
+			func(in ClusterReady, a Args) (StepRunning, error) {
+				handle := a.String(0)
 
 				container, _, err := in.Worker.FindOrCreateContainer(
 					in.Ctx,
@@ -150,54 +147,37 @@ func failureDefinitions() []brine.StepDefinition {
 
 		// StepRunning -> StepOutcome. Drives the pod into a failure shape and
 		// waits, so the outcome is what a real consumer of Process.Wait sees.
-		brine.DefineMap[StepRunning, StepOutcome](
+		Transform[StepRunning, StepOutcome](
 			"the pod is {string} with waiting reason {string} and last terminated reason {string}",
-			func(in StepRunning, p brine.Params, _ *brine.Recorder) (StepOutcome, error) {
-				phase, ok := p.GetString(0)
-				if !ok {
-					return StepOutcome{}, fmt.Errorf("expected a pod phase parameter")
-				}
-				waiting, ok := p.GetString(1)
-				if !ok {
-					return StepOutcome{}, fmt.Errorf("expected a waiting reason parameter")
-				}
-				lastTerminated, ok := p.GetString(2)
-				if !ok {
-					return StepOutcome{}, fmt.Errorf("expected a last terminated reason parameter")
-				}
+			func(in StepRunning, a Args) (StepOutcome, error) {
+				phase := a.String(0)
+				waiting := a.String(1)
+				lastTerminated := a.String(2)
 
-				pods := in.Clientset.CoreV1().Pods(in.Namespace)
-				pod, err := pods.Get(in.Ctx, in.Handle, metav1.GetOptions{})
-				if err != nil {
-					return StepOutcome{}, fmt.Errorf("get pod %q: %w", in.Handle, err)
-				}
-
-				status := corev1.ContainerStatus{Name: "main"}
-				if waiting != "none" {
-					status.State.Waiting = &corev1.ContainerStateWaiting{
-						Reason:  waiting,
-						Message: waitingMessageFor(waiting),
+				if err := updateTaskPodStatus(in.Ctx, in.Clientset, in.Namespace, in.Handle, func(pod *corev1.Pod) {
+					status := corev1.ContainerStatus{Name: "main"}
+					if waiting != "none" {
+						status.State.Waiting = &corev1.ContainerStateWaiting{
+							Reason:  waiting,
+							Message: waitingMessageFor(waiting),
+						}
 					}
-				}
-				if lastTerminated != "none" {
-					status.RestartCount = 2
-					status.LastTerminationState.Terminated = &corev1.ContainerStateTerminated{
-						Reason:   lastTerminated,
-						ExitCode: 137,
+					if lastTerminated != "none" {
+						status.RestartCount = 2
+						status.LastTerminationState.Terminated = &corev1.ContainerStateTerminated{
+							Reason:   lastTerminated,
+							ExitCode: 137,
+						}
 					}
-				}
 
-				pod.Status.Phase = corev1.PodPhase(phase)
-				pod.Status.ContainerStatuses = []corev1.ContainerStatus{status}
-				if _, err := pods.UpdateStatus(in.Ctx, pod, metav1.UpdateOptions{}); err != nil {
-					return StepOutcome{}, fmt.Errorf("update pod status: %w", err)
+					pod.Status.Phase = corev1.PodPhase(phase)
+					pod.Status.ContainerStatuses = []corev1.ContainerStatus{status}
+				}); err != nil {
+					return StepOutcome{}, err
 				}
 
 				_, waitErr := in.Process.Wait(in.Ctx)
-				message := ""
-				if waitErr != nil {
-					message = waitErr.Error()
-				}
+				message := errorMessage(waitErr)
 				return StepOutcome{Err: waitErr, Message: message, Stderr: in.Stderr.String()}, nil
 			},
 		),
@@ -220,13 +200,11 @@ func failureDefinitions() []brine.StepDefinition {
 		// pass on a message that merely contains the unwanted reason inside a
 		// longer string — which is the case this exists to catch. It also
 		// asserts the step failed at all, which is a second thing.
-		brine.DefineCheck[StepOutcome](
+		Assert[StepOutcome](
 			"the failure does not mention {string}",
-			func(in StepOutcome, p brine.Params, _ *brine.Recorder) error {
-				unwanted, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected an unwanted-reason parameter")
-				}
+			func(in StepOutcome, args Args) error {
+				unwanted := args.String(0)
+
 				if in.Err == nil {
 					return fmt.Errorf("expected the step to have failed, but it succeeded")
 				}

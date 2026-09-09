@@ -2,10 +2,7 @@ package steps
 
 import (
 	"bytes"
-	"context"
-	"errors"
 	"fmt"
-	"io"
 	"strings"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
@@ -144,17 +141,6 @@ type SeveredExecOutcome struct {
 	OutputKey string
 }
 
-// severingExec is a real PodExecutor whose connection dies mid-step, the way a
-// web restart or an API-server rollout kills a long SPDY stream.
-type severingExec struct{}
-
-func (severingExec) ExecInPod(
-	_ context.Context, _, _, _ string, _ []string,
-	_ io.Reader, _, _ io.Writer, _ bool, _ jetbridge.ExecAttrs,
-) error {
-	return errors.New("error dialing backend: EOF")
-}
-
 // SeveredExecDefinitions covers F23 — what must NOT happen when the exec
 // connection to a running step is severed.
 //
@@ -176,7 +162,8 @@ func SeveredExecDefinitions() []brine.StepDefinition {
 					return SeveredExecOutcome{}, fmt.Errorf("expected an output name")
 				}
 				cluster, err := NewCluster(res,
-					WithExecutor(severingExec{}),
+					// Model a broken exec transport, not successful command output.
+					WithExecutor(localExecutor{failure: "error dialing backend: EOF"}),
 				)
 				if err != nil {
 					return SeveredExecOutcome{}, err

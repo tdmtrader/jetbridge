@@ -1,0 +1,45 @@
+#!/bin/sh
+# Run from any directory. Keep each run's raw data and profile for inspection.
+set -eu
+cd "$(dirname "$0")/.."
+
+production_package=github.com/concourse/concourse/atc/worker/jetbridge
+minimum_percent=40
+report_dir=$(mktemp -d "${TMPDIR:-/tmp}/brine-coverage.XXXXXX")
+mkdir "$report_dir/raw"
+printf 'Coverage evidence: %s\n' "$report_dir"
+
+# Instrument main as well: Go installs its coverage exit hook there. Only the
+# production package belongs in the reported denominator, not adapter code.
+trap 'go build -o .build/brine-adapter-jetbridge ./cmd/brine-adapter-jetbridge' 0
+go build -cover -covermode=atomic \
+    -coverpkg="$production_package,$production_package/brine/cmd/brine-adapter-jetbridge" \
+    -o .build/brine-adapter-jetbridge ./cmd/brine-adapter-jetbridge
+
+# The persistent engine inherits its own startup environment. Bypass it so
+# this run's GOCOVERDIR reaches the adapter. This still uses the full CLI gate.
+export GOCOVERDIR="$report_dir/raw"
+if ! brine run --no-engine --mode sync --format brief > "$report_dir/brine.log" 2>&1; then
+    tail -60 "$report_dir/brine.log"
+    exit 1
+fi
+tail -2 "$report_dir/brine.log"
+go tool covdata textfmt -i="$GOCOVERDIR" -pkg="$production_package" \
+    -o="$report_dir/coverage.out"
+go tool covdata percent -i="$GOCOVERDIR" -pkg="$production_package"
+
+# Empty scans and rounded percentages must never satisfy the gate.
+awk -v package="$production_package/" -v minimum="$minimum_percent" '
+    NR == 1 { next }
+    index($1, package) != 1 { unexpected = 1 }
+    { total += $2; if ($3 > 0) covered += $2 }
+    END {
+        if (unexpected || total == 0) {
+            print "FAIL: missing or unexpected production coverage data"
+            exit 2
+        }
+        printf "Brine covers %d/%d production statements (%.6f%%); target >= %g%%\n", \
+            covered, total, 100 * covered / total, minimum
+        if (100 * covered < minimum * total) exit 1
+    }
+' "$report_dir/coverage.out"

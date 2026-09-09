@@ -45,27 +45,15 @@ import (
 // is gone", and a state that cannot express that would push the assertion back
 // onto the double.
 type ProcessOutcome struct {
-	Namespace  string
-	Clientset  *fake.Clientset
-	Ctx        context.Context
-	Handle     string
-	ExitStatus int
-	Err        error
-	Message    string
-	Stderr     string
-}
-
-// MetricsObserved is the terminal state for the two scenarios whose consumer
-// is an operator watching a dashboard rather than a user reading a build log.
-// The counters are process-global, so the step that produces this state drains
-// them immediately before the step runs and reads them immediately after —
-// the whole observation is inside one step, which is why there is no metered
-// cluster state to reach it from.
-type MetricsObserved struct {
-	Err                error
-	Message            string
-	ImagePullFailures  float64
-	PodStartupDuration float64
+	Namespace         string
+	Clientset         *fake.Clientset
+	Ctx               context.Context
+	Handle            string
+	ExitStatus        int
+	Err               error
+	Message           string
+	Stderr            string
+	ImagePullFailures float64
 }
 
 // severingExecutor is a PodExecutor whose behavioral difference from the real
@@ -102,6 +90,25 @@ func ProcessDefinitions() []brine.StepDefinition {
 
 		// --- Workers whose configuration the scenarios need ---
 
+		// Both callers of the shared diagnostics remain covered. Production
+		// uses execProcess; direct compatibility retains the legacy Wait route.
+		TransformUsing[brine.Empty, ClusterReady](
+			"a jetbridge worker using {string} execution",
+			[]string{"jetbridge-db"},
+			func(_ brine.Empty, a Args, res brine.Resources) (ClusterReady, error) {
+				var opts []ClusterOption
+				switch a.String(0) {
+				case "production":
+					opts = append(opts, WithExecutor(localExecutor{}))
+				case "direct compatibility":
+				default:
+					return ClusterReady{}, fmt.Errorf("unknown execution mode %q", a.String(0))
+				}
+				cluster, err := NewCluster(res, opts...)
+				return cluster.Ready(), err
+			},
+		),
+
 		// The default startup timeout is five minutes. A scenario that waits
 		// on it does not fail, it hangs, so the timeout scenarios get an
 		// impatient worker — the same move process_test.go makes. Deliberately
@@ -120,24 +127,10 @@ func ProcessDefinitions() []brine.StepDefinition {
 					return ClusterReady{}, err
 				}
 				// The startup deadline is only enforced on the exec path.
-				ready.Worker.SetExecutor(execStub{})
+				ready.Worker.SetExecutor(localExecutor{})
 				return ready, nil
 			},
 		),
-
-		brine.DefineMapUsing[brine.Empty, ClusterReady](
-			"a jetbridge worker that execs into its pods",
-			[]string{"jetbridge-db"},
-			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder, res brine.Resources) (ClusterReady, error) {
-				ready, err := newConfiguredWorker(res, func(*jetbridge.Config) {})
-				if err != nil {
-					return ClusterReady{}, err
-				}
-				ready.Worker.SetExecutor(execStub{})
-				return ready, nil
-			},
-		),
-
 		// RF-15. The pod dies underneath the exec, and the exec reports the
 		// severed connection rather than the death. Only the runtime can join
 		// the two up for the user.
@@ -146,20 +139,13 @@ func ProcessDefinitions() []brine.StepDefinition {
 			[]string{"jetbridge-db"},
 			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder, res brine.Resources) (ClusterReady, error) {
 				return newSeveringWorker(res, func(ctx context.Context, clientset *fake.Clientset, namespace, podName string) error {
-					pods := clientset.CoreV1().Pods(namespace)
-					pod, err := pods.Get(ctx, podName, metav1.GetOptions{})
-					if err != nil {
-						return fmt.Errorf("get pod %q: %w", podName, err)
-					}
-					pod.Status.Phase = corev1.PodFailed
-					pod.Status.ContainerStatuses = []corev1.ContainerStatus{{
-						Name: "main",
-						State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+					if err := updateTaskPodStatus(ctx, clientset, namespace, podName, func(pod *corev1.Pod) {
+						pod.Status.Phase = corev1.PodFailed
+						pod.Status.ContainerStatuses = []corev1.ContainerStatus{terminatedStatus("main", corev1.ContainerStateTerminated{
 							ExitCode: 137, Reason: "OOMKilled",
-						}},
-					}}
-					if _, err := pods.UpdateStatus(ctx, pod, metav1.UpdateOptions{}); err != nil {
-						return fmt.Errorf("update pod status: %w", err)
+						})}
+					}); err != nil {
+						return err
 					}
 					return errors.New("exec stream: unable to upgrade connection: container not found")
 				})
@@ -181,13 +167,11 @@ func ProcessDefinitions() []brine.StepDefinition {
 
 		// --- Nodes the diagnostics read back (RF-11) ---
 
-		brine.DefineMap[ClusterReady, ClusterReady](
+		Transform[ClusterReady, ClusterReady](
 			"the cluster has a spot node {string} that is short of disk",
-			func(in ClusterReady, p brine.Params, _ *brine.Recorder) (ClusterReady, error) {
-				name, ok := p.GetString(0)
-				if !ok {
-					return ClusterReady{}, fmt.Errorf("expected a node name parameter")
-				}
+			func(in ClusterReady, a Args) (ClusterReady, error) {
+				name := a.String(0)
+
 				node := &corev1.Node{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:   name,
@@ -205,13 +189,11 @@ func ProcessDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineMap[ClusterReady, ClusterReady](
+		Transform[ClusterReady, ClusterReady](
 			"the cluster has a cordoned node {string}",
-			func(in ClusterReady, p brine.Params, _ *brine.Recorder) (ClusterReady, error) {
-				name, ok := p.GetString(0)
-				if !ok {
-					return ClusterReady{}, fmt.Errorf("expected a node name parameter")
-				}
+			func(in ClusterReady, a Args) (ClusterReady, error) {
+				name := a.String(0)
+
 				node := &corev1.Node{
 					ObjectMeta: metav1.ObjectMeta{Name: name},
 					Spec:       corev1.NodeSpec{Unschedulable: true},
@@ -275,25 +257,20 @@ func ProcessDefinitions() []brine.StepDefinition {
 
 		// PE-09. The exit code is the step's result; the phase follows from it
 		// the way the kubelet sets it.
-		brine.DefineMap[StepRunning, ProcessOutcome](
+		Transform[StepRunning, ProcessOutcome](
 			"the pod ends with the main container exiting {int}",
-			func(in StepRunning, p brine.Params, _ *brine.Recorder) (ProcessOutcome, error) {
-				code, ok := p.GetInt(0)
-				if !ok {
-					return ProcessOutcome{}, fmt.Errorf("expected an exit code parameter")
-				}
+			func(in StepRunning, a Args) (ProcessOutcome, error) {
+				code := a.Int(0)
+
 				phase := corev1.PodSucceeded
 				if code != 0 {
 					phase = corev1.PodFailed
 				}
 				return in.settleProcess(func(pod *corev1.Pod) {
 					pod.Status.Phase = phase
-					pod.Status.ContainerStatuses = []corev1.ContainerStatus{{
-						Name: "main",
-						State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
-							ExitCode: int32(code),
-						}},
-					}}
+					pod.Status.ContainerStatuses = []corev1.ContainerStatus{terminatedStatus("main", corev1.ContainerStateTerminated{
+						ExitCode: int32(code),
+					})}
 				})
 			},
 		),
@@ -311,24 +288,16 @@ func ProcessDefinitions() []brine.StepDefinition {
 
 		// SC-10. The pod outlives the main container while sidecars run, so
 		// the runtime has to take it away or the sidecars run forever.
-		brine.DefineMap[StepRunning, ProcessOutcome](
+		Transform[StepRunning, ProcessOutcome](
 			"the main container exits {int} while the sidecar {string} keeps running",
-			func(in StepRunning, p brine.Params, _ *brine.Recorder) (ProcessOutcome, error) {
-				code, _ := p.GetInt(0)
-				sidecar, ok := p.GetString(1)
-				if !ok {
-					return ProcessOutcome{}, fmt.Errorf("expected an exit code and a sidecar name")
-				}
+			func(in StepRunning, a Args) (ProcessOutcome, error) {
 				return in.settleProcess(func(pod *corev1.Pod) {
 					pod.Status.Phase = corev1.PodRunning
 					pod.Status.ContainerStatuses = []corev1.ContainerStatus{
-						{
-							Name: "main",
-							State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
-								ExitCode: int32(code),
-							}},
-						},
-						{Name: sidecar, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+						terminatedStatus("main", corev1.ContainerStateTerminated{
+							ExitCode: int32(a.Int(0)),
+						}),
+						runningStatus(a.String(1)),
 					}
 				})
 			},
@@ -336,29 +305,18 @@ func ProcessDefinitions() []brine.StepDefinition {
 
 		// SC-08. A sidecar that cannot start blocks the step forever unless
 		// the runtime fails on its behalf.
-		brine.DefineMap[StepRunning, ProcessOutcome](
+		Transform[StepRunning, ProcessOutcome](
 			"the sidecar {string} cannot pull the image {string} while the main container is still being created",
-			func(in StepRunning, p brine.Params, _ *brine.Recorder) (ProcessOutcome, error) {
-				sidecar, _ := p.GetString(0)
-				image, ok := p.GetString(1)
-				if !ok {
-					return ProcessOutcome{}, fmt.Errorf("expected a sidecar name and an image")
-				}
+			func(in StepRunning, a Args) (ProcessOutcome, error) {
 				return in.settleProcess(func(pod *corev1.Pod) {
 					pod.Status.Phase = corev1.PodPending
 					pod.Status.ContainerStatuses = []corev1.ContainerStatus{
-						{
-							Name: "main",
-							State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{
-								Reason: "ContainerCreating", Message: "waiting for container",
-							}},
-						},
-						{
-							Name: sidecar,
-							State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{
-								Reason: "ImagePullBackOff", Message: fmt.Sprintf("Back-off pulling image %q", image),
-							}},
-						},
+						waitingStatus("main", corev1.ContainerStateWaiting{
+							Reason: "ContainerCreating", Message: "waiting for container",
+						}),
+						waitingStatus(a.String(0), corev1.ContainerStateWaiting{
+							Reason: "ImagePullBackOff", Message: fmt.Sprintf("Back-off pulling image %q", a.String(1)),
+						}),
 					}
 				})
 			},
@@ -367,30 +325,18 @@ func ProcessDefinitions() []brine.StepDefinition {
 		// SC-09. The mirror image of SC-08: once the step's own command has
 		// finished, a broken sidecar is not the user's problem and must not
 		// turn a green build red.
-		brine.DefineMap[StepRunning, ProcessOutcome](
+		Transform[StepRunning, ProcessOutcome](
 			"the sidecar {string} cannot pull the image {string} after the main container exited {int}",
-			func(in StepRunning, p brine.Params, _ *brine.Recorder) (ProcessOutcome, error) {
-				sidecar, _ := p.GetString(0)
-				image, _ := p.GetString(1)
-				code, ok := p.GetInt(2)
-				if !ok {
-					return ProcessOutcome{}, fmt.Errorf("expected a sidecar name, an image and an exit code")
-				}
+			func(in StepRunning, a Args) (ProcessOutcome, error) {
 				return in.settleProcess(func(pod *corev1.Pod) {
 					pod.Status.Phase = corev1.PodRunning
 					pod.Status.ContainerStatuses = []corev1.ContainerStatus{
-						{
-							Name: "main",
-							State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
-								ExitCode: int32(code),
-							}},
-						},
-						{
-							Name: sidecar,
-							State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{
-								Reason: "ImagePullBackOff", Message: fmt.Sprintf("Back-off pulling image %q", image),
-							}},
-						},
+						terminatedStatus("main", corev1.ContainerStateTerminated{
+							ExitCode: int32(a.Int(2)),
+						}),
+						waitingStatus(a.String(0), corev1.ContainerStateWaiting{
+							Reason: "ImagePullBackOff", Message: fmt.Sprintf("Back-off pulling image %q", a.String(1)),
+						}),
 					}
 				})
 			},
@@ -398,27 +344,19 @@ func ProcessDefinitions() []brine.StepDefinition {
 
 		// RF-10. The image name is the one thing a user needs off this failure,
 		// and the scheduling condition is what tells them the cluster was fine.
-		brine.DefineMap[StepRunning, ProcessOutcome](
+		Transform[StepRunning, ProcessOutcome](
 			"the main container cannot pull the image {string} after being scheduled onto {string}",
-			func(in StepRunning, p brine.Params, _ *brine.Recorder) (ProcessOutcome, error) {
-				image, _ := p.GetString(0)
-				node, ok := p.GetString(1)
-				if !ok {
-					return ProcessOutcome{}, fmt.Errorf("expected an image and a node name")
-				}
+			func(in StepRunning, a Args) (ProcessOutcome, error) {
 				return in.settleProcess(func(pod *corev1.Pod) {
 					pod.Status.Phase = corev1.PodPending
-					pod.Status.ContainerStatuses = []corev1.ContainerStatus{{
-						Name: "main",
-						State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{
-							Reason: "ImagePullBackOff", Message: fmt.Sprintf("Back-off pulling image %q", image),
-						}},
-					}}
+					pod.Status.ContainerStatuses = []corev1.ContainerStatus{waitingStatus("main", corev1.ContainerStateWaiting{
+						Reason: "ImagePullBackOff", Message: fmt.Sprintf("Back-off pulling image %q", a.String(0)),
+					})}
 					pod.Status.Conditions = []corev1.PodCondition{{
 						Type:    corev1.PodScheduled,
 						Status:  corev1.ConditionTrue,
 						Reason:  "Scheduled",
-						Message: fmt.Sprintf("Successfully assigned %s/%s to %s", pod.Namespace, pod.Name, node),
+						Message: fmt.Sprintf("Successfully assigned %s/%s to %s", pod.Namespace, pod.Name, a.String(1)),
 					}}
 				})
 			},
@@ -426,19 +364,14 @@ func ProcessDefinitions() []brine.StepDefinition {
 
 		// RF-10/RF-11. Eviction is the cluster's decision, not the pipeline's,
 		// and the node is the only place the user can go to check.
-		brine.DefineMap[StepRunning, ProcessOutcome](
+		Transform[StepRunning, ProcessOutcome](
 			"the node {string} evicts the pod for running out of {string}",
-			func(in StepRunning, p brine.Params, _ *brine.Recorder) (ProcessOutcome, error) {
-				node, _ := p.GetString(0)
-				resourceName, ok := p.GetString(1)
-				if !ok {
-					return ProcessOutcome{}, fmt.Errorf("expected a node name and a resource name")
-				}
+			func(in StepRunning, a Args) (ProcessOutcome, error) {
 				return in.settleProcess(func(pod *corev1.Pod) {
-					pod.Spec.NodeName = node
+					pod.Spec.NodeName = a.String(0)
 					pod.Status.Phase = corev1.PodFailed
 					pod.Status.Reason = "Evicted"
-					pod.Status.Message = "The node was low on resource: " + resourceName + "."
+					pod.Status.Message = "The node was low on resource: " + a.String(1) + "."
 				})
 			},
 		),
@@ -446,23 +379,18 @@ func ProcessDefinitions() []brine.StepDefinition {
 		// RF-10. A container that has been OOM-killed twice is a memory-limit
 		// problem, and the restart history is how the user tells that from a
 		// one-off.
-		brine.DefineMap[StepRunning, ProcessOutcome](
+		Transform[StepRunning, ProcessOutcome](
 			"the main container on node {string} is killed twice for exceeding {string}",
-			func(in StepRunning, p brine.Params, _ *brine.Recorder) (ProcessOutcome, error) {
-				node, _ := p.GetString(0)
-				limit, ok := p.GetString(1)
-				if !ok {
-					return ProcessOutcome{}, fmt.Errorf("expected a node name and a memory limit")
-				}
+			func(in StepRunning, a Args) (ProcessOutcome, error) {
 				return in.settleProcess(func(pod *corev1.Pod) {
-					pod.Spec.NodeName = node
+					pod.Spec.NodeName = a.String(0)
 					pod.Status.Phase = corev1.PodFailed
 					pod.Status.ContainerStatuses = []corev1.ContainerStatus{{
 						Name:         "main",
 						RestartCount: 2,
 						State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
 							ExitCode: 137, Reason: "OOMKilled",
-							Message: "container exceeded " + limit + " memory limit",
+							Message: "container exceeded " + a.String(1) + " memory limit",
 						}},
 						LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
 							ExitCode: 137, Reason: "OOMKilled",
@@ -489,34 +417,23 @@ func ProcessDefinitions() []brine.StepDefinition {
 
 		// RF-15. The pod is up, the exec goes in, and the severing executor
 		// decides how it comes back out.
-		brine.DefineMap[StepRunning, ProcessOutcome](
+		Transform[StepRunning, ProcessOutcome](
 			"the pod reaches Running on node {string} and the step execs into it",
-			func(in StepRunning, p brine.Params, _ *brine.Recorder) (ProcessOutcome, error) {
-				node, ok := p.GetString(0)
-				if !ok {
-					return ProcessOutcome{}, fmt.Errorf("expected a node name parameter")
-				}
+			func(in StepRunning, a Args) (ProcessOutcome, error) {
 				return in.settleProcess(func(pod *corev1.Pod) {
-					pod.Spec.NodeName = node
+					pod.Spec.NodeName = a.String(0)
 					pod.Status.Phase = corev1.PodRunning
 				})
 			},
 		),
 
 		// RF-12. A single dropped API call is weather, not a build failure.
-		brine.DefineMap[StepRunning, ProcessOutcome](
+		Transform[StepRunning, ProcessOutcome](
 			"the pod succeeds but the next {int} status reads fail",
-			func(in StepRunning, p brine.Params, _ *brine.Recorder) (ProcessOutcome, error) {
-				failures, ok := p.GetInt(0)
-				if !ok {
-					return ProcessOutcome{}, fmt.Errorf("expected a failure count parameter")
-				}
+			func(in StepRunning, a Args) (ProcessOutcome, error) {
 				if err := in.mutatePod(func(pod *corev1.Pod) {
 					pod.Status.Phase = corev1.PodSucceeded
-					pod.Status.ContainerStatuses = []corev1.ContainerStatus{{
-						Name:  "main",
-						State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0}},
-					}}
+					pod.Status.ContainerStatuses = []corev1.ContainerStatus{terminatedStatus("main", corev1.ContainerStateTerminated{ExitCode: 0})}
 				}); err != nil {
 					return ProcessOutcome{}, err
 				}
@@ -527,7 +444,7 @@ func ProcessDefinitions() []brine.StepDefinition {
 				var seen int32
 				in.Clientset.PrependReactor("get", "pods",
 					func(k8stesting.Action) (bool, apiruntime.Object, error) {
-						if atomic.AddInt32(&seen, 1) <= int32(failures) {
+						if atomic.AddInt32(&seen, 1) <= int32(a.Int(0)) {
 							return true, nil, errors.New("transient API error")
 						}
 						return false, nil, nil
@@ -552,70 +469,25 @@ func ProcessDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// --- What the operator's dashboard sees (StepRunning -> MetricsObserved) ---
+		// --- What the operator's dashboard sees (StepRunning -> ProcessOutcome) ---
 
-		brine.DefineMap[StepRunning, MetricsObserved](
+		brine.DefineMap[StepRunning, ProcessOutcome](
 			"the image cannot be pulled, with the failure counters read either side",
-			func(in StepRunning, _ brine.Params, _ *brine.Recorder) (MetricsObserved, error) {
+			func(in StepRunning, _ brine.Params, _ *brine.Recorder) (ProcessOutcome, error) {
 				metric.Metrics.K8sImagePullFailures.Delta()
 
 				if err := in.mutatePod(func(pod *corev1.Pod) {
-					pod.Status.ContainerStatuses = []corev1.ContainerStatus{{
-						Name: "main",
-						State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{
-							Reason: "ImagePullBackOff", Message: "Back-off pulling image",
-						}},
-					}}
+					pod.Status.ContainerStatuses = []corev1.ContainerStatus{waitingStatus("main", corev1.ContainerStateWaiting{
+						Reason: "ImagePullBackOff", Message: "Back-off pulling image",
+					})}
 				}); err != nil {
-					return MetricsObserved{}, err
+					return ProcessOutcome{}, err
 				}
 
-				_, waitErr := in.Process.Wait(in.Ctx)
-				message := ""
-				if waitErr != nil {
-					message = waitErr.Error()
-				}
-				return MetricsObserved{
-					Err:               waitErr,
-					Message:           message,
-					ImagePullFailures: metric.Metrics.K8sImagePullFailures.Delta(),
-				}, nil
-			},
-		),
-
-		// The pod is deliberately slow to come up. Without the delay the whole
-		// startup is sub-millisecond and the gauge is Set(0), which is
-		// indistinguishable from never having been recorded — see the
-		// disposition in pod-lifecycle.feature.
-		brine.DefineMap[StepRunning, MetricsObserved](
-			"the pod takes a moment to reach Running while the step waits",
-			func(in StepRunning, _ brine.Params, _ *brine.Recorder) (MetricsObserved, error) {
-				metric.Metrics.K8sPodStartupDuration.Max()
-
-				pods := in.Clientset.CoreV1().Pods(in.Namespace)
-				pod, err := pods.Get(in.Ctx, in.Handle, metav1.GetOptions{})
-				if err != nil {
-					return MetricsObserved{}, fmt.Errorf("get pod %q: %w", in.Handle, err)
-				}
-
-				// The transition has to arrive while Wait is blocked, so it
-				// cannot be a step of its own.
-				go func() {
-					time.Sleep(25 * time.Millisecond)
-					pod.Status.Phase = corev1.PodRunning
-					_, _ = pods.UpdateStatus(in.Ctx, pod, metav1.UpdateOptions{})
-				}()
-
-				_, waitErr := in.Process.Wait(in.Ctx)
-				message := ""
-				if waitErr != nil {
-					message = waitErr.Error()
-				}
-				return MetricsObserved{
-					Err:                waitErr,
-					Message:            message,
-					PodStartupDuration: metric.Metrics.K8sPodStartupDuration.Max(),
-				}, nil
+				result, waitErr := in.Process.Wait(in.Ctx)
+				out := in.report(result, waitErr)
+				out.ImagePullFailures = metric.Metrics.K8sImagePullFailures.Delta()
+				return out, nil
 			},
 		),
 
@@ -668,17 +540,15 @@ func ProcessDefinitions() []brine.StepDefinition {
 				return nil
 			}),
 
-		// --- Checks over MetricsObserved ---
+		// --- Checks over ProcessOutcome ---
 
 		// Keeps its own body: the counter is a float64, and comparing it as an
 		// int would accept a fractional delta this equality rejects.
-		brine.DefineCheck[MetricsObserved](
+		Assert[ProcessOutcome](
 			"the image pull failure count has gone up by {int}",
-			func(in MetricsObserved, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetInt(0)
-				if !ok {
-					return fmt.Errorf("expected a count parameter")
-				}
+			func(in ProcessOutcome, args Args) error {
+				want := args.Int(0)
+
 				if in.ImagePullFailures != float64(want) {
 					return fmt.Errorf("expected the image pull failure count to go up by %d, it went up by %v",
 						want, in.ImagePullFailures)
@@ -687,33 +557,16 @@ func ProcessDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// Keeps its own body: "at least" is a threshold, not the equality the
-		// numeric combinator compares.
-		brine.DefineCheck[MetricsObserved](
-			"the recorded pod startup duration is at least {int} milliseconds",
-			func(in MetricsObserved, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetInt(0)
-				if !ok {
-					return fmt.Errorf("expected a duration parameter")
-				}
-				if in.Err != nil {
-					return fmt.Errorf("expected a startup duration, the step failed with %q", in.Message)
-				}
-				if in.PodStartupDuration < float64(want) {
-					return fmt.Errorf("expected a recorded startup duration of at least %dms, got %vms",
-						want, in.PodStartupDuration)
-				}
-				return nil
-			},
-		),
-
-		CheckContains[MetricsObserved]("the metered step fails saying {string}",
-			"the failure",
-			func(in MetricsObserved) (string, error) {
+		CheckString[ProcessOutcome]("the failure came from {string} execution",
+			"the failure's execution path",
+			func(in ProcessOutcome) (string, error) {
 				if in.Err == nil {
 					return "", errors.New("expected the step to fail, it succeeded")
 				}
-				return in.Message, nil
+				if strings.Contains(in.Message, "waiting for pod running:") {
+					return "production", nil
+				}
+				return "direct compatibility", nil
 			}),
 	}
 }
@@ -740,25 +593,13 @@ func newSeveringWorker(
 
 // mutatePod applies a status mutation and pushes it back to the cluster.
 func (in StepRunning) mutatePod(mutate func(*corev1.Pod)) error {
-	pods := in.Clientset.CoreV1().Pods(in.Namespace)
-	pod, err := pods.Get(in.Ctx, in.Handle, metav1.GetOptions{})
-	if err != nil {
-		return fmt.Errorf("get pod %q: %w", in.Handle, err)
-	}
-	mutate(pod)
-	if _, err := pods.UpdateStatus(in.Ctx, pod, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("update pod status: %w", err)
-	}
-	return nil
+	return updateTaskPodStatus(in.Ctx, in.Clientset, in.Namespace, in.Handle, mutate)
 }
 
 // report packages what Wait returned together with the cluster it ran against,
 // so a check can ask about the pod as well as the result.
 func (in StepRunning) report(result runtime.ProcessResult, waitErr error) ProcessOutcome {
-	message := ""
-	if waitErr != nil {
-		message = waitErr.Error()
-	}
+	message := errorMessage(waitErr)
 	return ProcessOutcome{
 		Namespace:  in.Namespace,
 		Clientset:  in.Clientset,

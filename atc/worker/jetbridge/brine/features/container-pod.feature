@@ -64,7 +64,7 @@ Feature: What a step's pod actually looks like
     And it uses scratch space at "/tmp/scratch"
     When the container runs
     Then the step sees a volume mounted at "/tmp/scratch"
-    And the volume mounted at "/tmp/scratch" is lost with the pod
+    And the volume mounted at "/tmp/scratch" uses "ephemeral" storage
 
   @CO-07
   Scenario: A cache and a scratch path are different volumes
@@ -317,7 +317,7 @@ Feature: What a step's pod actually looks like
     And it works in "/tmp/build/workdir"
     And it caches "/tmp/build/workdir/.cache"
     When the container runs
-    Then the volume mounted at "/tmp/build/workdir/.cache" is lost with the pod
+    Then the volume mounted at "/tmp/build/workdir/.cache" uses "ephemeral" storage
 
   # CF-04. The operator's explicit choice overrides the artifact store's
   # default, in both directions.
@@ -329,12 +329,12 @@ Feature: What a step's pod actually looks like
     And it belongs to job 7 step "compile"
     And it caches "/tmp/build/workdir/.cache"
     When the container runs
-    Then the volume mounted at "/tmp/build/workdir/.cache" <fate>
+    Then the volume mounted at "/tmp/build/workdir/.cache" uses "<storage>" storage
 
     Examples:
-      | store    | fate                  |
-      | hostpath | survives the pod      |
-      | emptydir | is lost with the pod  |
+      | store    | storage    |
+      | hostpath | node-local |
+      | emptydir | ephemeral  |
 
   # ...and the outline's hostpath row holds only because that step named a job.
   # An operator who writes --kubernetes-cache-store=hostpath has said what
@@ -355,7 +355,7 @@ Feature: What a step's pod actually looks like
     And it works in "/tmp/build/workdir"
     And it caches "/tmp/build/workdir/.cache"
     When the container runs
-    Then the volume mounted at "/tmp/build/workdir/.cache" is lost with the pod
+    Then the volume mounted at "/tmp/build/workdir/.cache" uses "ephemeral" storage
     And every mount in the pod names exactly one of its volumes
 
   # A check container's working directory must be ephemeral EVEN WHEN the
@@ -377,7 +377,7 @@ Feature: What a step's pod actually looks like
     And a check container "check-ephemeral-handle" built from image "docker:///busybox"
     And it works in "/tmp/build/check"
     When the container runs
-    Then the volume mounted at "/tmp/build/check" is lost with the pod
+    Then the volume mounted at "/tmp/build/check" uses "ephemeral" storage
 
   # The contrast that gives the scenario above its teeth: the SAME worker
   # gives a task's working directory node-local storage. Without both, an
@@ -388,7 +388,7 @@ Feature: What a step's pod actually looks like
     And a task container "task-hostpath-handle" built from image "docker:///busybox"
     And it works in "/tmp/build/workdir"
     When the container runs
-    Then the volume mounted at "/tmp/build/workdir" survives the pod
+    Then the volume mounted at "/tmp/build/workdir" uses "node-local" storage
 
   # A reused container starts on top of whatever the previous run left in its
   # node-local workspace, so the pod clears it first. Without that, a retried

@@ -55,16 +55,12 @@ func ContainerLifecycleDefinitions() []brine.StepDefinition {
 		// PE-01. A check container's pause pod finishes when its sleep
 		// expires. The next check must get a fresh pod — exec-ing into a dead
 		// one fails in a way that looks like the resource is broken.
-		brine.DefineMapUsing[brine.Empty, LeftoverPod](
+		TransformUsing[brine.Empty, LeftoverPod](
 			"a check step whose previous pod is {string}",
 			[]string{"jetbridge-db"},
-			func(_ brine.Empty, p brine.Params, _ *brine.Recorder, res brine.Resources) (LeftoverPod, error) {
-				phase, ok := p.GetString(0)
-				if !ok {
-					return LeftoverPod{}, fmt.Errorf("expected a phase parameter")
-				}
+			func(_ brine.Empty, a Args, res brine.Resources) (LeftoverPod, error) {
 				cluster, err := NewCluster(res,
-					WithExecutor(execStub{}),
+					WithExecutor(localExecutor{}),
 				)
 				if err != nil {
 					return LeftoverPod{}, err
@@ -81,7 +77,7 @@ func ContainerLifecycleDefinitions() []brine.StepDefinition {
 						Name: podName, Namespace: namespace,
 						Labels: map[string]string{"concourse.ci/worker": "k8s-worker-1"},
 					},
-					Status: corev1.PodStatus{Phase: corev1.PodPhase(phase)},
+					Status: corev1.PodStatus{Phase: corev1.PodPhase(a.String(0))},
 				}
 				if _, err := clientset.CoreV1().Pods(namespace).Create(ctx, leftover, metav1.CreateOptions{}); err != nil {
 					return LeftoverPod{}, fmt.Errorf("create leftover pod: %w", err)
@@ -152,15 +148,10 @@ func ContainerLifecycleDefinitions() []brine.StepDefinition {
 		// A container's properties are how the runtime remembers a step's
 		// result in-process, which is what Attach reads before it asks
 		// Kubernetes anything.
-		brine.DefineMapUsing[brine.Empty, ContainerProperties](
+		TransformUsing[brine.Empty, ContainerProperties](
 			"a container that has recorded {string} as {string}",
 			[]string{"jetbridge-db"},
-			func(_ brine.Empty, p brine.Params, _ *brine.Recorder, res brine.Resources) (ContainerProperties, error) {
-				key, _ := p.GetString(0)
-				value, ok := p.GetString(1)
-				if !ok {
-					return ContainerProperties{}, fmt.Errorf("expected a key and a value")
-				}
+			func(_ brine.Empty, a Args, res brine.Resources) (ContainerProperties, error) {
 				cluster, err := NewCluster(res)
 				if err != nil {
 					return ContainerProperties{}, err
@@ -177,7 +168,7 @@ func ContainerLifecycleDefinitions() []brine.StepDefinition {
 				if err != nil {
 					return ContainerProperties{}, fmt.Errorf("find or create container: %w", err)
 				}
-				if err := container.SetProperty(key, value); err != nil {
+				if err := container.SetProperty(a.String(0), a.String(1)); err != nil {
 					return ContainerProperties{}, fmt.Errorf("set property: %w", err)
 				}
 				props, err := container.Properties()
@@ -217,19 +208,15 @@ func AttachDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
 		// PE-12 first branch: the in-process property store still remembers.
-		brine.DefineMapUsing[brine.Empty, RecoveredStep](
+		TransformUsing[brine.Empty, RecoveredStep](
 			"a step the runtime still remembers finishing with exit code {int}",
 			[]string{"jetbridge-db"},
-			func(_ brine.Empty, p brine.Params, _ *brine.Recorder, res brine.Resources) (RecoveredStep, error) {
-				code, ok := p.GetInt(0)
-				if !ok {
-					return RecoveredStep{}, fmt.Errorf("expected an exit code parameter")
-				}
+			func(_ brine.Empty, a Args, res brine.Resources) (RecoveredStep, error) {
 				container, ctx, err := attachableContainer(res, "attach-handle", nil)
 				if err != nil {
 					return RecoveredStep{}, err
 				}
-				if err := container.SetProperty("concourse:exit-status", fmt.Sprintf("%d", code)); err != nil {
+				if err := container.SetProperty("concourse:exit-status", fmt.Sprintf("%d", a.Int(0))); err != nil {
 					return RecoveredStep{}, fmt.Errorf("record exit status: %w", err)
 				}
 				return attachAndWait(ctx, container)
@@ -238,21 +225,17 @@ func AttachDefinitions() []brine.StepDefinition {
 
 		// PE-12 second branch: the web restarted, so the property store is
 		// empty and the pod annotation is the only surviving record.
-		brine.DefineMapUsing[brine.Empty, RecoveredStep](
+		TransformUsing[brine.Empty, RecoveredStep](
 			"a web restart, and a pod annotated as having finished with exit code {int}",
 			[]string{"jetbridge-db"},
-			func(_ brine.Empty, p brine.Params, _ *brine.Recorder, res brine.Resources) (RecoveredStep, error) {
-				code, ok := p.GetInt(0)
-				if !ok {
-					return RecoveredStep{}, fmt.Errorf("expected an exit code parameter")
-				}
+			func(_ brine.Empty, a Args, res brine.Resources) (RecoveredStep, error) {
 				handle := "attach-annotated"
 				container, ctx, err := attachableContainer(res, handle, func(clientset *fake.Clientset) error {
 					pod := &corev1.Pod{
 						ObjectMeta: metav1.ObjectMeta{
 							Name: handle, Namespace: "test-namespace",
 							Annotations: map[string]string{
-								"concourse.ci/exit-status": fmt.Sprintf("%d", code),
+								"concourse.ci/exit-status": fmt.Sprintf("%d", a.Int(0)),
 							},
 						},
 						Status: corev1.PodStatus{Phase: corev1.PodRunning},
@@ -314,7 +297,7 @@ func AttachDefinitions() []brine.StepDefinition {
 }
 
 func attachableContainer(res brine.Resources, handle string, seed func(*fake.Clientset) error) (runtime.Container, context.Context, error) {
-	cluster, err := NewCluster(res, WithExecutor(execStub{}))
+	cluster, err := NewCluster(res, WithExecutor(localExecutor{}))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -346,10 +329,7 @@ func attachAndWait(ctx context.Context, container runtime.Container) (RecoveredS
 		return RecoveredStep{Err: err, Message: err.Error()}, nil
 	}
 	result, waitErr := process.Wait(ctx)
-	msg := ""
-	if waitErr != nil {
-		msg = waitErr.Error()
-	}
+	msg := errorMessage(waitErr)
 	return RecoveredStep{ExitStatus: result.ExitStatus, Err: waitErr, Message: msg}, nil
 }
 
@@ -371,17 +351,13 @@ type SidecarLogs struct {
 func SidecarLogDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		brine.DefineMap[ContainerDraft, SidecarLogs](
+		Transform[ContainerDraft, SidecarLogs](
 			"the step runs with a dedicated log stream for sidecar {string}",
-			func(in ContainerDraft, p brine.Params, _ *brine.Recorder) (SidecarLogs, error) {
-				name, ok := p.GetString(0)
-				if !ok {
-					return SidecarLogs{}, fmt.Errorf("expected a sidecar name")
-				}
+			func(in ContainerDraft, a Args) (SidecarLogs, error) {
 				sidecarBuf := new(bytes.Buffer)
 				return runWithSidecarIO(in, runtime.ProcessIO{
 					Stdout:         new(bytes.Buffer),
-					SidecarWriters: map[string]io.Writer{name: sidecarBuf},
+					SidecarWriters: map[string]io.Writer{a.String(0): sidecarBuf},
 				}, sidecarBuf)
 			},
 		),
@@ -437,18 +413,11 @@ func runWithSidecarIO(in ContainerDraft, io0 runtime.ProcessIO, sidecarBuf *byte
 		return SidecarLogs{}, fmt.Errorf("run container: %w", err)
 	}
 
-	pods := in.Clientset.CoreV1().Pods(in.Namespace)
-	pod, err := pods.Get(in.Ctx, in.Handle, metav1.GetOptions{})
-	if err != nil {
-		return SidecarLogs{}, fmt.Errorf("get pod: %w", err)
-	}
-	pod.Status.Phase = corev1.PodSucceeded
-	pod.Status.ContainerStatuses = []corev1.ContainerStatus{{
-		Name:  "main",
-		State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0}},
-	}}
-	if _, err := pods.UpdateStatus(in.Ctx, pod, metav1.UpdateOptions{}); err != nil {
-		return SidecarLogs{}, fmt.Errorf("update pod: %w", err)
+	if err := updateTaskPodStatus(in.Ctx, in.Clientset, in.Namespace, in.Handle, func(pod *corev1.Pod) {
+		pod.Status.Phase = corev1.PodSucceeded
+		pod.Status.ContainerStatuses = []corev1.ContainerStatus{terminatedStatus("main", corev1.ContainerStateTerminated{ExitCode: 0})}
+	}); err != nil {
+		return SidecarLogs{}, err
 	}
 
 	_, waitErr := process.Wait(in.Ctx)

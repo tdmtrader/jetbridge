@@ -26,48 +26,9 @@ Feature: Closing the loop — a whole step, the durable tier, and the artifact i
   # A step from end to end
   # ==========================================================================
 
-  # The last clause of "runs a task step end-to-end: create container → run →
-  # wait → exit". The exit status on the container row is not decoration: it is
-  # what a web that restarted after the command finished reads to decide the
-  # build already succeeded. The pod's worker label is what `kubectl get pods
-  # -l` and the reaper select on.
-  # The pod annotation is the OTHER record, and the one a restarted web falls
-  # back on when the container it rebuilt holds nothing in memory. There is a
-  # scenario elsewhere for reading it — but that one builds the pod itself and
-  # writes "concourse.ci/exit-status" by hand, so it pins the reader against a
-  # string the test supplied. Nothing ran the writer. Measured: making
-  # annotateExitStatus record exitCode+1 left all 328 scenarios green.
-  #
-  # Here the step really runs, production writes the annotation, and a new web
-  # reads it back. Neither half is supplied by the test.
-  Scenario: The exit status a restarted web reads is the one the step itself recorded
-    Given a jetbridge worker driving a whole step from end to end
-    When the step "recorded-exit" runs "exit 3" and finishes
-    And the web dies after the step finished and a new web takes over
-    Then the finished step reported exit 3
-
-  Scenario: A finished step leaves its exit status where a restarted web will find it
-    Given a jetbridge worker driving a whole step from end to end
-    When the step "task-abc123" runs "echo hello world" and finishes
-    Then the finished step reported exit 0
-    And the step's output reached the build log as "hello world"
-    And the finished step left exit status "0" on its container
-    And the step's pod is labelled for the worker that owns it
-
-  # The reattach case. Web 1 finished the command but died before recording
-  # the status, so the pod survives with no completion annotation. Two things
-  # must then be true, and the ginkgo case proved the second by comparing two
-  # recorded command slices for byte equality — which cannot distinguish
-  # "re-execed on the surviving pod" from "re-execed on a brand new one".
-  # Counting the pods can.
-  Scenario: A web that restarted mid-step reuses the pod instead of scheduling a second one
-    Given a jetbridge worker driving a whole step from end to end
-    When the step "task-reattach" runs "echo make release" and finishes
-    And the web dies before the exit status is recorded and a new web takes over
-    And the new web runs the same step again
-    Then attaching was refused saying "no completion status"
-    And the cluster is running exactly 1 pod for the step
-    And the finished step reported exit 0
+  # Ordinary completion, persisted exit status and both restart routes now
+  # share the task-command.feature contracts. This file retains the distinct
+  # interruption classification and diagnostic checks.
 
   # "detects pod eviction in a resource get step". The claim worth keeping is
   # not the diagnostics — pod-lifecycle.feature and failure-priority.feature
@@ -77,11 +38,11 @@ Feature: Closing the loop — a whole step, the durable tier, and the artifact i
   # The node has to keep evicting: one eviction before the command runs is now
   # absorbed by the single pause-pod replacement the runtime is allowed.
   Scenario: An evicted step is a retryable interruption, not a failed build
-    Given a jetbridge worker driving a whole step from end to end
+    Given a jetbridge worker that really runs task commands
     When the node keeps evicting the step "get-evicted" before its command runs
     Then the step was interrupted rather than failed, because it was "evicted"
-    And the diagnostics in the build log explain "Pod Failure Diagnostics"
-    And the diagnostics in the build log explain "Evicted"
+    And the interrupted task's diagnostic log contains "Pod Failure Diagnostics"
+    And the interrupted task's diagnostic log contains "Evicted"
 
   # DISPOSITION — "handles task failure with non-zero exit code" is
   # task-command.feature's "A failing command's exit code reaches the
@@ -109,16 +70,11 @@ Feature: Closing the loop — a whole step, the durable tier, and the artifact i
   # cancellation, so migrating them under their own names would import a
   # mislabelled test.
   #
-  # CORRECTION (this comment previously said something false). It claimed "a
-  # genuinely cancelled step deletes its pod while a failed one keeps it", as
-  # if that were the whole rule. It is direct-mode only. PE-10 splits by mode:
-  # a cancelled DIRECT-mode step deletes its pod, and a cancelled EXEC-mode
-  # step deliberately KEEPS the pause pod so `fly hijack` still works — see
-  # process_test.go:1123, "preserves the pause pod when context is cancelled
-  # (for fly hijack)". The exec-mode half was asserted nowhere, in Go or in
-  # brine, and the reasoning above had waved it away. It is now covered by
-  # "A cancelled step leaves its pod behind so an operator can hijack it"
-  # below.
+  # Real cancellation distinguishes ownership: aborting a supervised task
+  # deletes its pause pod, while resource steps retain theirs. The cancellation
+  # outline below checks both kinds before start and while running. A looked-up
+  # hijack session also leaves its pod alone; that and the exact zero-grace
+  # deletion option remain focused Go contracts.
 
   # DISPOSITION — "mounts input volumes from a get step and output volumes for
   # a task" and "passes inputs from a get step to a put step via volume
@@ -358,14 +314,18 @@ Feature: Closing the loop — a whole step, the durable tier, and the artifact i
     Then every artifact that was recorded is still held
     And every artifact that was collected is gone
 
-  # PE-10, exec-mode half. When a build is cancelled the operator very often
-  # wants to know WHY, and `fly hijack` into the surviving pause pod is how
-  # they find out. Deleting the pod on cancellation would take the evidence
-  # with it — which is why the direct-mode rule (delete) must not be applied
-  # here by someone tidying up.
-  @PE-10
-  Scenario: A cancelled step leaves its pod behind so an operator can hijack it
-    Given an exec-mode step "hijackable" that is waiting for its pod
-    When the build is cancelled before the pod ever starts
-    Then the step reports the cancellation
-    And the pod "hijackable" is still there for the operator
+  # Resource commands end with the exec stream, and keep their pause pod for
+  # hijack. A supervised task can outlive that stream, so cancellation must
+  # delete its pod. The running rows wait for a real child PID before aborting.
+  @PE-10 @supervised-cancellation
+  Scenario Outline: Cancellation stops work and preserves only hijackable resource pods
+    When an exec-mode "<kind>" step "<handle>" is cancelled "<when>"
+    Then the cancelled command stops and reports cancellation
+    And the cancelled step's pod is "<pod>"
+
+    Examples:
+      | kind | handle         | when         | pod      |
+      | get  | hijackable     | before-start | retained |
+      | get  | running-get    | running      | retained |
+      | task | waiting-task   | before-start | removed  |
+      | task | running-task   | running      | removed  |

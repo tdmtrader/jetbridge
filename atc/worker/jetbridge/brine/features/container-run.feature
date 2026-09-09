@@ -75,18 +75,8 @@ Feature: Running a step, and what the caller gets back
   # Exec mode — the pod is a placeholder the step outlives
   # --------------------------------------------------------------------------
 
-  # PE-01. The pod must not be the step, because a pod that is the step dies
-  # with it, taking the step's outputs and any chance of intercepting a failure
-  # with it. The ginkgo test pinned the exact pause string; what a consumer can
-  # observe is that the pod's entrypoint is NOT the command, and that the
-  # command ran anyway.
-  @PE-01
-  Scenario: With an exec transport the pod is a placeholder the step runs inside
-    Given a jetbridge worker that really runs task commands
-    When a task "placeholder-task" runs "echo hello"
-    Then the build log contains "hello"
-    And the pod is a placeholder, not the step's command
-    And the pod is still on the cluster afterwards
+  # Successful pause-pod and retention assertions are shared with the first
+  # startup/log scenario in task-command.feature. Failed tasks stay distinct.
 
   # A pod deleted the moment the command exits cannot have its outputs streamed
   # out and cannot be intercepted. Cleanup is the collector's job, and it waits
@@ -153,26 +143,11 @@ Feature: Running a step, and what the caller gets back
   # "a stub volume with no cluster behind it" scenarios prove an unwired one
   # refuses rather than silently returning nothing.
 
-  # --------------------------------------------------------------------------
-  # Getting the step's output back out
-  # --------------------------------------------------------------------------
-
-  # VT-02/VT-03, and coverage_matrix.md Addendum 2's round trip applied to the
-  # "Output volume extraction after exec" block. That block asserted
-  # `lastCall.command == ["tar","cf","-","-C",path,"."]` and
-  # `lastCall.podName` — neither of which proves a single byte moved, and both
-  # of which would still pass if the archive came back empty. Here the step
-  # really writes a file and the file really comes back.
-  @VT-03
-  Scenario: A step's output can be read back out of the volume afterwards
-    Given a step "outputsurvives" that writes "hello-from-the-step" into its output directory
-    When its output is streamed out of the volume the caller was handed
-    Then the streamed output holds "output.txt" containing "hello-from-the-step"
-
-  # DISPOSITION — "pod remains running after exec for output extraction" is the
-  # same assertion as "A failed step's pod is kept for the operator" above, in
-  # the success direction, and the round trip immediately above only works
-  # because the pod is still there. Not duplicated a third time.
+  # The output round trip is consolidated into volume-streaming.feature's
+  # artifact-handoff outline: a direct gzip read before collection, followed
+  # by the daemon-backed producer-to-consumer transfer after pod deletion.
+  # JB-container-041/-042 retain their named Go tests for exact command,
+  # metadata and pod-retention contracts; see DISPOSITION-jetbridge.md.
 
   # DISPOSITION — "Input streaming is a no-op (handled by init containers)"
   # has no seam-level equivalent and is not migrated. It asserts

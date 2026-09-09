@@ -90,255 +90,246 @@ var _ = Describe("Integration", func() {
 	// this Describe -- "returns an error when the context is cancelled during
 	// exec-mode task" -- is not carried: that one predates the merge-base and
 	// its own disposition row stands.
-	Describe("build cancellation", func() {
+	It("build cancellation deletes the pause pod when the step's own context is cancelled", func() {
 		// A task step runs under the in-pod supervisor, which keeps the
 		// command alive through the teardown of the exec stream. Leaving the
 		// pause pod behind for the reaper therefore leaves the task itself
 		// running -- for an aborted build, until the pod's own 24h sleep ends.
-		It("deletes the pause pod when the step's own context is cancelled", func() {
-			abortCtx, abort := context.WithCancel(ctx)
-			defer abort()
 
-			var deleteOptions []metav1.DeleteOptions
-			fakeClientset.PrependReactor("delete", "pods", func(action k8stesting.Action) (bool, apiruntime.Object, error) {
-				deleteOptions = append(deleteOptions, action.(k8stesting.DeleteActionImpl).DeleteOptions)
-				return false, nil, nil
-			})
+		abortCtx, abort := context.WithCancel(ctx)
+		defer abort()
 
-			// The supervised command outlives the exec stream, so the exec
-			// only comes back when the step is abandoned.
-			execing := make(chan struct{})
-			fakeExecutor.execFunc = func() error {
-				close(execing)
-				<-abortCtx.Done()
-				return abortCtx.Err()
-			}
-
-			container := createContainer("abort-task", db.ContainerTypeTask, runtime.ContainerSpec{
-				TeamID:    1,
-				ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-			})
-
-			process, err := container.Run(abortCtx, runtime.ProcessSpec{
-				Path: "/bin/sh",
-				Args: []string{"-c", "trap '' TERM; sleep 600"},
-			}, runtime.ProcessIO{})
-			Expect(err).ToNot(HaveOccurred())
-
-			By("simulating the Pod reaching Running state")
-			simulatePodRunning("abort-task")
-
-			waited := make(chan error, 1)
-			go func() {
-				defer GinkgoRecover()
-				_, waitErr := process.Wait(abortCtx)
-				waited <- waitErr
-			}()
-
-			By("aborting the build with the command running")
-			Eventually(execing).Should(BeClosed())
-			abort()
-
-			var waitErr error
-			Eventually(waited, 10*time.Second).Should(Receive(&waitErr))
-			Expect(waitErr).To(MatchError(ContainSubstring("context canceled")))
-
-			By("verifying the abandoned pause Pod is gone")
-			pods, err := fakeClientset.CoreV1().Pods("ci-namespace").List(ctx, metav1.ListOptions{})
-			Expect(err).ToNot(HaveOccurred())
-			Expect(pods.Items).To(BeEmpty(), "abandoned pause Pod should be deleted, not left to the reaper")
-
-			By("verifying it is not given a grace period it can sit out")
-			Expect(deleteOptions).To(HaveLen(1))
-			Expect(deleteOptions[0].GracePeriodSeconds).ToNot(BeNil())
-			Expect(*deleteOptions[0].GracePeriodSeconds).To(BeEquivalentTo(0))
+		var deleteOptions []metav1.DeleteOptions
+		fakeClientset.PrependReactor("delete", "pods", func(action k8stesting.Action) (bool, apiruntime.Object, error) {
+			deleteOptions = append(deleteOptions, action.(k8stesting.DeleteActionImpl).DeleteOptions)
+			return false, nil, nil
 		})
+
+		// The supervised command outlives the exec stream, so the exec
+		// only comes back when the step is abandoned.
+		execing := make(chan struct{})
+		fakeExecutor.execFunc = func() error {
+			close(execing)
+			<-abortCtx.Done()
+			return abortCtx.Err()
+		}
+
+		container := createContainer("abort-task", db.ContainerTypeTask, runtime.ContainerSpec{
+			TeamID:    1,
+			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+		})
+
+		process, err := container.Run(abortCtx, runtime.ProcessSpec{
+			Path: "/bin/sh",
+			Args: []string{"-c", "trap '' TERM; sleep 600"},
+		}, runtime.ProcessIO{})
+		Expect(err).ToNot(HaveOccurred())
+
+		By("simulating the Pod reaching Running state")
+		simulatePodRunning("abort-task")
+
+		waited := make(chan error, 1)
+		go func() {
+			defer GinkgoRecover()
+			_, waitErr := process.Wait(abortCtx)
+			waited <- waitErr
+		}()
+
+		By("aborting the build with the command running")
+		Eventually(execing).Should(BeClosed())
+		abort()
+
+		var waitErr error
+		Eventually(waited, 10*time.Second).Should(Receive(&waitErr))
+		Expect(waitErr).To(MatchError(ContainSubstring("context canceled")))
+
+		By("verifying the abandoned pause Pod is gone")
+		pods, err := fakeClientset.CoreV1().Pods("ci-namespace").List(ctx, metav1.ListOptions{})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(pods.Items).To(BeEmpty(), "abandoned pause Pod should be deleted, not left to the reaper")
+
+		By("verifying it is not given a grace period it can sit out")
+		Expect(deleteOptions).To(HaveLen(1))
+		Expect(deleteOptions[0].GracePeriodSeconds).ToNot(BeNil())
+		Expect(*deleteOptions[0].GracePeriodSeconds).To(BeEquivalentTo(0))
+
 	})
 
-	Describe("simple task pipeline", func() {
-		It("runs a task step end-to-end: create container → run → wait → exit", func() {
-			By("creating a container for the task step")
-			container := createContainer("task-abc123", db.ContainerTypeTask, runtime.ContainerSpec{
-				TeamID:   1,
-				TeamName: "main",
-				Dir:      "/tmp/build/workdir",
-				ImageSpec: runtime.ImageSpec{
-					ImageURL: "docker:///ubuntu:22.04",
-				},
-			})
+	It("simple task pipeline runs a task step end-to-end: create container → run → wait → exit", func() {
 
-			By("running the task script")
-			process, err := container.Run(ctx, runtime.ProcessSpec{
-				Path: "/bin/sh",
-				Args: []string{"-c", "echo hello world && exit 0"},
-				Dir:  "/tmp/build/workdir",
-			}, runtime.ProcessIO{})
-			Expect(err).ToNot(HaveOccurred())
-			Expect(process.ID()).To(Equal("task-abc123"))
-
-			By("verifying the Pod was created as a pause pod")
-			pods, err := fakeClientset.CoreV1().Pods("ci-namespace").List(ctx, metav1.ListOptions{})
-			Expect(err).ToNot(HaveOccurred())
-			Expect(pods.Items).To(HaveLen(1))
-			pod := pods.Items[0]
-			Expect(pod.Spec.Containers[0].Image).To(Equal("ubuntu:22.04"))
-			Expect(pod.Spec.Containers[0].Command).To(Equal([]string{"sh", "-c", "trap 'exit 0' TERM; sleep 86400 & wait"}))
-			Expect(pod.Labels["concourse.ci/worker"]).To(Equal("k8s-worker-1"))
-
-			By("simulating Pod reaching Running state and waiting for exec result")
-			simulatePodRunning("task-abc123")
-			result, err := process.Wait(ctx)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(result.ExitStatus).To(Equal(0))
-
-			By("verifying the real command was exec'd under the task supervisor")
-			Expect(fakeExecutor.execCalls).To(HaveLen(1))
-			expectSupervisedExec(fakeExecutor.execCalls[0].command, `'/bin/sh' '-c' 'echo hello world && exit 0'`)
-
-			By("verifying exit status is stored in container properties")
-			props, err := container.Properties()
-			Expect(err).ToNot(HaveOccurred())
-			Expect(props).To(HaveKeyWithValue("concourse:exit-status", "0"))
+		By("creating a container for the task step")
+		container := createContainer("task-abc123", db.ContainerTypeTask, runtime.ContainerSpec{
+			TeamID:   1,
+			TeamName: "main",
+			Dir:      "/tmp/build/workdir",
+			ImageSpec: runtime.ImageSpec{
+				ImageURL: "docker:///ubuntu:22.04",
+			},
 		})
+
+		By("running the task script")
+		process, err := container.Run(ctx, runtime.ProcessSpec{
+			Path: "/bin/sh",
+			Args: []string{"-c", "echo hello world && exit 0"},
+			Dir:  "/tmp/build/workdir",
+		}, runtime.ProcessIO{})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(process.ID()).To(Equal("task-abc123"))
+
+		By("verifying the Pod was created as a pause pod")
+		pod := restoredPod(ctx, fakeClientset, "ci-namespace")
+		Expect(pod.Spec.Containers[0].Image).To(Equal("ubuntu:22.04"))
+		Expect(pod.Spec.Containers[0].Command).To(Equal([]string{"sh", "-c", "trap 'exit 0' TERM; sleep 86400 & wait"}))
+		Expect(pod.Labels["concourse.ci/worker"]).To(Equal("k8s-worker-1"))
+
+		By("simulating Pod reaching Running state and waiting for exec result")
+		simulatePodRunning("task-abc123")
+		result, err := process.Wait(ctx)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(result.ExitStatus).To(Equal(0))
+
+		By("verifying the real command was exec'd under the task supervisor")
+		Expect(fakeExecutor.execCalls).To(HaveLen(1))
+		expectSupervisedExec(fakeExecutor.execCalls[0].command, `'/bin/sh' '-c' 'echo hello world && exit 0'`)
+
+		By("verifying exit status is stored in container properties")
+		props, err := container.Properties()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(props).To(HaveKeyWithValue("concourse:exit-status", "0"))
+
 	})
 
-	Describe("input/output passing between steps", func() {
-		It("passes inputs from a get step to a put step via volume mounts", func() {
-			By("creating a put container with multiple inputs")
-			container := createContainer("put-multi-input", db.ContainerTypePut, runtime.ContainerSpec{
-				TeamID: 1,
-				ImageSpec: runtime.ImageSpec{
-					ResourceType: "s3",
-				},
-				Type: db.ContainerTypePut,
-				Inputs: []runtime.Input{
-					{Artifact: &fakeArtifact{handle: "compiled-binary"}, DestinationPath: "/tmp/build/put/compiled-binary"},
-					{Artifact: &fakeArtifact{handle: "release-notes"}, DestinationPath: "/tmp/build/put/release-notes"},
-				},
-			})
+	It("input/output passing between steps passes inputs from a get step to a put step via volume mounts", func() {
 
-			putStdout := `{"version":{"path":"releases/v1.0.0/app.tar.gz"}}`
-			fakeExecutor.execStdout = []byte(putStdout)
-
-			stdout := new(bytes.Buffer)
-			process, err := container.Run(ctx, runtime.ProcessSpec{
-				ID:   "resource",
-				Path: "/opt/resource/out",
-				Args: []string{"/tmp/build/put"},
-			}, runtime.ProcessIO{
-				Stdin:  bytes.NewBufferString(`{"source":{"bucket":"releases"},"params":{"file":"app.tar.gz"}}`),
-				Stdout: stdout,
-				Stderr: new(bytes.Buffer),
-			})
-			Expect(err).ToNot(HaveOccurred())
-
-			By("verifying input volumes are mounted in the pause Pod")
-			pods, err := fakeClientset.CoreV1().Pods("ci-namespace").List(ctx, metav1.ListOptions{})
-			Expect(err).ToNot(HaveOccurred())
-			Expect(pods.Items).To(HaveLen(1))
-
-			mainContainer := pods.Items[0].Spec.Containers[0]
-			Expect(mainContainer.VolumeMounts).To(HaveLen(2))
-
-			mountPaths := make([]string, len(mainContainer.VolumeMounts))
-			for i, vm := range mainContainer.VolumeMounts {
-				mountPaths[i] = vm.MountPath
-			}
-			Expect(mountPaths).To(ContainElements(
-				"/tmp/build/put/compiled-binary",
-				"/tmp/build/put/release-notes",
-			))
-
-			By("completing the put and verifying output")
-			simulatePodRunning("put-multi-input")
-			result, err := process.Wait(ctx)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(result.ExitStatus).To(Equal(0))
-			Expect(stdout.String()).To(Equal(putStdout))
+		By("creating a put container with multiple inputs")
+		container := createContainer("put-multi-input", db.ContainerTypePut, runtime.ContainerSpec{
+			TeamID: 1,
+			ImageSpec: runtime.ImageSpec{
+				ResourceType: "s3",
+			},
+			Type: db.ContainerTypePut,
+			Inputs: []runtime.Input{
+				{Artifact: &fakeArtifact{handle: "compiled-binary"}, DestinationPath: "/tmp/build/put/compiled-binary"},
+				{Artifact: &fakeArtifact{handle: "release-notes"}, DestinationPath: "/tmp/build/put/release-notes"},
+			},
 		})
+
+		putStdout := `{"version":{"path":"releases/v1.0.0/app.tar.gz"}}`
+		fakeExecutor.execStdout = []byte(putStdout)
+
+		stdout := new(bytes.Buffer)
+		process, err := container.Run(ctx, runtime.ProcessSpec{
+			ID:   "resource",
+			Path: "/opt/resource/out",
+			Args: []string{"/tmp/build/put"},
+		}, runtime.ProcessIO{
+			Stdin:  bytes.NewBufferString(`{"source":{"bucket":"releases"},"params":{"file":"app.tar.gz"}}`),
+			Stdout: stdout,
+			Stderr: new(bytes.Buffer),
+		})
+		Expect(err).ToNot(HaveOccurred())
+
+		By("verifying input volumes are mounted in the pause Pod")
+		listedPod := restoredPod(ctx, fakeClientset, "ci-namespace")
+
+		mainContainer := listedPod.Spec.Containers[0]
+		Expect(mainContainer.VolumeMounts).To(HaveLen(2))
+
+		mountPaths := make([]string, len(mainContainer.VolumeMounts))
+		for i, vm := range mainContainer.VolumeMounts {
+			mountPaths[i] = vm.MountPath
+		}
+		Expect(mountPaths).To(ContainElements(
+			"/tmp/build/put/compiled-binary",
+			"/tmp/build/put/release-notes",
+		))
+
+		By("completing the put and verifying output")
+		simulatePodRunning("put-multi-input")
+		result, err := process.Wait(ctx)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(result.ExitStatus).To(Equal(0))
+		Expect(stdout.String()).To(Equal(putStdout))
+
 	})
 
-	Describe("task with sidecar containers", func() {
-		It("creates a pod with sidecars that share volume mounts and runs the task via exec", func() {
-			By("creating a container with a sidecar")
-			container := createContainer("task-sidecar", db.ContainerTypeTask, runtime.ContainerSpec{
-				TeamID:   1,
-				TeamName: "main",
-				Dir:      "/tmp/build/workdir",
-				ImageSpec: runtime.ImageSpec{
-					ImageURL: "docker:///node:18",
-				},
-				Inputs: []runtime.Input{
-					{Artifact: &fakeArtifact{handle: "my-app"}, DestinationPath: "/tmp/build/workdir/my-app"},
-				},
-				Sidecars: []atc.SidecarConfig{
-					{
-						Name:  "postgres",
-						Image: "postgres:15",
-						Env: []atc.SidecarEnvVar{
-							{Name: "POSTGRES_PASSWORD", Value: "test"},
-							{Name: "POSTGRES_DB", Value: "testdb"},
-						},
-						Ports: []atc.SidecarPort{
-							{ContainerPort: 5432},
-						},
+	It("task with sidecar containers creates a pod with sidecars that share volume mounts and runs the task via exec", func() {
+
+		By("creating a container with a sidecar")
+		container := createContainer("task-sidecar", db.ContainerTypeTask, runtime.ContainerSpec{
+			TeamID:   1,
+			TeamName: "main",
+			Dir:      "/tmp/build/workdir",
+			ImageSpec: runtime.ImageSpec{
+				ImageURL: "docker:///node:18",
+			},
+			Inputs: []runtime.Input{
+				{Artifact: &fakeArtifact{handle: "my-app"}, DestinationPath: "/tmp/build/workdir/my-app"},
+			},
+			Sidecars: []atc.SidecarConfig{
+				{
+					Name:  "postgres",
+					Image: "postgres:15",
+					Env: []atc.SidecarEnvVar{
+						{Name: "POSTGRES_PASSWORD", Value: "test"},
+						{Name: "POSTGRES_DB", Value: "testdb"},
+					},
+					Ports: []atc.SidecarPort{
+						{ContainerPort: 5432},
 					},
 				},
-			})
-
-			By("running the task")
-			stdout := new(bytes.Buffer)
-			process, err := container.Run(ctx, runtime.ProcessSpec{
-				Path: "/bin/sh",
-				Args: []string{"-c", "npm test"},
-				Dir:  "/tmp/build/workdir/my-app",
-			}, runtime.ProcessIO{
-				Stdout: stdout,
-			})
-			Expect(err).ToNot(HaveOccurred())
-
-			By("verifying the pod has both main and sidecar containers")
-			pods, err := fakeClientset.CoreV1().Pods("ci-namespace").List(ctx, metav1.ListOptions{})
-			Expect(err).ToNot(HaveOccurred())
-			Expect(pods.Items).To(HaveLen(1))
-
-			pod := pods.Items[0]
-			containerNames := []string{}
-			for _, c := range pod.Spec.Containers {
-				containerNames = append(containerNames, c.Name)
-			}
-			Expect(containerNames).To(ContainElements("main", "postgres"))
-
-			By("verifying the sidecar has correct env, ports, and shared volume mounts")
-			var sidecar corev1.Container
-			for _, c := range pod.Spec.Containers {
-				if c.Name == "postgres" {
-					sidecar = c
-					break
-				}
-			}
-			Expect(sidecar.Image).To(Equal("postgres:15"))
-			Expect(sidecar.Env).To(ContainElements(
-				corev1.EnvVar{Name: "POSTGRES_PASSWORD", Value: "test"},
-				corev1.EnvVar{Name: "POSTGRES_DB", Value: "testdb"},
-			))
-			Expect(sidecar.Ports).To(ContainElement(
-				corev1.ContainerPort{ContainerPort: 5432, Protocol: corev1.ProtocolTCP},
-			))
-
-			mainMounts := pod.Spec.Containers[0].VolumeMounts
-			Expect(sidecar.VolumeMounts).To(Equal(mainMounts))
-
-			By("simulating Pod running and waiting for exec result")
-			simulatePodRunning("task-sidecar")
-			result, err := process.Wait(ctx)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(result.ExitStatus).To(Equal(0))
-
-			By("verifying the real command was exec'd in the main container")
-			Expect(fakeExecutor.execCalls).To(HaveLen(1))
-			expectSupervisedExec(fakeExecutor.execCalls[0].command, `'/bin/sh' '-c' 'npm test'`)
-			Expect(fakeExecutor.execCalls[0].containerName).To(Equal("main"))
+			},
 		})
+
+		By("running the task")
+		stdout := new(bytes.Buffer)
+		process, err := container.Run(ctx, runtime.ProcessSpec{
+			Path: "/bin/sh",
+			Args: []string{"-c", "npm test"},
+			Dir:  "/tmp/build/workdir/my-app",
+		}, runtime.ProcessIO{
+			Stdout: stdout,
+		})
+		Expect(err).ToNot(HaveOccurred())
+
+		By("verifying the pod has both main and sidecar containers")
+		pod := restoredPod(ctx, fakeClientset, "ci-namespace")
+		containerNames := []string{}
+		for _, c := range pod.Spec.Containers {
+			containerNames = append(containerNames, c.Name)
+		}
+		Expect(containerNames).To(ContainElements("main", "postgres"))
+
+		By("verifying the sidecar has correct env, ports, and shared volume mounts")
+		var sidecar corev1.Container
+		for _, c := range pod.Spec.Containers {
+			if c.Name == "postgres" {
+				sidecar = c
+				break
+			}
+		}
+		Expect(sidecar.Image).To(Equal("postgres:15"))
+		Expect(sidecar.Env).To(ContainElements(
+			corev1.EnvVar{Name: "POSTGRES_PASSWORD", Value: "test"},
+			corev1.EnvVar{Name: "POSTGRES_DB", Value: "testdb"},
+		))
+		Expect(sidecar.Ports).To(ContainElement(
+			corev1.ContainerPort{ContainerPort: 5432, Protocol: corev1.ProtocolTCP},
+		))
+
+		mainMounts := pod.Spec.Containers[0].VolumeMounts
+		Expect(sidecar.VolumeMounts).To(Equal(mainMounts))
+
+		By("simulating Pod running and waiting for exec result")
+		simulatePodRunning("task-sidecar")
+		result, err := process.Wait(ctx)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(result.ExitStatus).To(Equal(0))
+
+		By("verifying the real command was exec'd in the main container")
+		Expect(fakeExecutor.execCalls).To(HaveLen(1))
+		expectSupervisedExec(fakeExecutor.execCalls[0].command, `'/bin/sh' '-c' 'npm test'`)
+		Expect(fakeExecutor.execCalls[0].containerName).To(Equal("main"))
+
 	})
 })

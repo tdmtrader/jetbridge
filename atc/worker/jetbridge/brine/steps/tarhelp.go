@@ -57,9 +57,12 @@ func filesInGzippedTar(r io.Reader) (map[string]string, error) {
 		return nil, fmt.Errorf("open gzip: %w", err)
 	}
 	defer zr.Close()
+	return filesInTar(zr)
+}
 
+func filesInTar(r io.Reader) (map[string]string, error) {
 	files := map[string]string{}
-	tr := tar.NewReader(zr)
+	tr := tar.NewReader(r)
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {

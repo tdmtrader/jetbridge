@@ -1,19 +1,14 @@
 package steps
 
 import (
-	"context"
 	"fmt"
-	"io"
-	"os/exec"
+	"sort"
 	"strings"
-	"syscall"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
-	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // ExecTargetDefinitions closes the last gap the coverage matrix carried: every
@@ -21,68 +16,31 @@ import (
 // `_`, so nothing observed which container a step's command is exec'd into.
 //
 // resource_test.go covered it by inspecting the recorded call. The conversion
-// is the same as PE-08's: containerAwareAdapter knows which containers the pod
+// is the same as PE-08's: localExecutor knows which containers the pod
 // actually has and refuses anything else, exactly as the API server does —
 // `kubectl exec -c nope` fails with "container nope not found in pod". A step
 // exec'd into its sidecar would run its resource script in the wrong image,
 // against the wrong filesystem.
 
-// containerAwareAdapter is a REAL PodExecutor that honours the container name
-// rather than recording it.
-type containerAwareAdapter struct {
-	present map[string]bool
-}
-
-func (a containerAwareAdapter) ExecInPod(
-	ctx context.Context,
-	_, _ string,
-	containerName string,
-	command []string,
-	stdin io.Reader,
-	stdout, stderr io.Writer,
-	_ bool,
-	_ jetbridge.ExecAttrs,
-) error {
-	if !a.present[containerName] {
-		// What the API server says when the pod has no such container.
-		return fmt.Errorf(
-			"container %q not found in pod (has: %s)",
-			containerName, strings.Join(sortedKeys(a.present), ", "))
-	}
-	if len(command) == 0 {
-		return fmt.Errorf("empty command")
-	}
-	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	err := cmd.Run()
-	if cmd.Process != nil {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
-	return execExitError(err)
-}
-
-func sortedKeys(m map[string]bool) []string {
-	var out []string
+// sortedKeys is shared by artifact and pod diagnostics and membership checks.
+func sortedKeys[T any](m map[string]T) []string {
+	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)
 	}
+	sort.Strings(out)
 	return out
 }
 
 func ExecTargetDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		brine.DefineMapUsing[brine.Empty, StepOutcome](
+		TransformUsing[brine.Empty, StepOutcome](
 			"a resource step runs on a pod whose only container is {string}",
 			[]string{"jetbridge-db"},
-			func(_ brine.Empty, p brine.Params, _ *brine.Recorder, res brine.Resources) (StepOutcome, error) {
-				only, ok := p.GetString(0)
-				if !ok {
-					return StepOutcome{}, fmt.Errorf("expected a container name parameter")
-				}
+			func(_ brine.Empty, a Args, res brine.Resources) (StepOutcome, error) {
 				cluster, err := NewCluster(res,
-					WithExecutor(containerAwareAdapter{present: map[string]bool{only: true}}),
+					WithExecutor(localExecutor{present: map[string]bool{a.String(0): true}}),
 				)
 				if err != nil {
 					return StepOutcome{}, err
@@ -118,21 +76,14 @@ func ExecTargetDefinitions() []brine.StepDefinition {
 					return StepOutcome{}, fmt.Errorf("run container: %w", err)
 				}
 
-				pods := clientset.CoreV1().Pods(namespace)
-				pod, err := pods.Get(ctx, handle, metav1.GetOptions{})
-				if err != nil {
-					return StepOutcome{}, fmt.Errorf("get pod: %w", err)
-				}
-				pod.Status.Phase = corev1.PodRunning
-				if _, err := pods.UpdateStatus(ctx, pod, metav1.UpdateOptions{}); err != nil {
-					return StepOutcome{}, fmt.Errorf("update pod: %w", err)
+				if err := updateTaskPodStatus(ctx, clientset, namespace, handle, func(pod *corev1.Pod) {
+					pod.Status.Phase = corev1.PodRunning
+				}); err != nil {
+					return StepOutcome{}, err
 				}
 
 				result, waitErr := process.Wait(ctx)
-				msg := ""
-				if waitErr != nil {
-					msg = waitErr.Error()
-				}
+				msg := errorMessage(waitErr)
 				return StepOutcome{
 					Err: waitErr, Message: msg, ExitStatus: result.ExitStatus,
 				}, nil

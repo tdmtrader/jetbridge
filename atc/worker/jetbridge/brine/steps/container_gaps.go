@@ -77,24 +77,16 @@ func ContainerGapDefinitions() []brine.StepDefinition {
 		// the worker keeps step data on the node. The same container handle
 		// is reused for every check of a resource, so node-local storage
 		// would carry one check's state into the next.
-		brine.DefineMap[ClusterReady, ContainerDraft](
+		Transform[ClusterReady, ContainerDraft](
 			"a check container {string} built from image {string}",
-			func(in ClusterReady, p brine.Params, _ *brine.Recorder) (ContainerDraft, error) {
-				handle, ok := p.GetString(0)
-				if !ok {
-					return ContainerDraft{}, fmt.Errorf("expected a container handle parameter")
-				}
-				image, ok := p.GetString(1)
-				if !ok {
-					return ContainerDraft{}, fmt.Errorf("expected an image parameter")
-				}
+			func(in ClusterReady, a Args) (ContainerDraft, error) {
 				return ContainerDraft{
 					Namespace:     in.Namespace,
 					Worker:        in.Worker,
 					Clientset:     in.Clientset,
 					Ctx:           in.Ctx,
-					Handle:        handle,
-					ImageURL:      image,
+					Handle:        a.String(0),
+					ImageURL:      a.String(1),
 					Dir:           "/workdir",
 					TeamID:        in.TeamID,
 					ContainerType: db.ContainerTypeCheck,
@@ -193,27 +185,25 @@ func ContainerGapDefinitions() []brine.StepDefinition {
 		// it cannot say which name the directory should carry, and the
 		// sentence would be asserting against a name brine invented rather
 		// than one the pipeline chose.
-		brine.DefineMap[ContainerDraft, PodCreated](
+		Transform[ContainerDraft, PodCreated](
 			"the container runs with an input and the output {string} both at {string}",
-			func(in ContainerDraft, p brine.Params, _ *brine.Recorder) (PodCreated, error) {
-				name, _ := p.GetString(0)
-				path, ok := p.GetString(1)
-				if !ok {
-					return PodCreated{}, fmt.Errorf("expected an output name and a path")
-				}
+			func(in ContainerDraft, a Args) (PodCreated, error) {
+				path := a.String(1)
+
 				// The input carries a real artifact, like every input a
 				// pipeline produces.
 				vol, _, err := in.Worker.CreateVolumeForArtifact(in.Ctx, in.TeamID)
 				if err != nil {
 					return PodCreated{}, fmt.Errorf("create artifact for input %q: %w", path, err)
 				}
+
 				kind := draftContainerType(in.ContainerType)
 				return runDraft(in, kind, runtime.ContainerSpec{
 					TeamID:    in.TeamID,
 					Dir:       in.Dir,
 					ImageSpec: runtime.ImageSpec{ImageURL: in.ImageURL},
 					Inputs:    []runtime.Input{{Artifact: vol, DestinationPath: path}},
-					Outputs:   runtime.OutputPaths{name: path},
+					Outputs:   runtime.OutputPaths{a.String(0): path},
 					Type:      kind,
 				}, false)
 			},
@@ -224,14 +214,12 @@ func ContainerGapDefinitions() []brine.StepDefinition {
 		// three ways it fails are three different diagnoses — nothing is
 		// mounted there, the volume is ephemeral, or it is filed under the
 		// wrong name. The last is the one this exists for.
-		brine.DefineCheck[PodCreated](
+		Assert[PodCreated](
 			"the volume mounted at {string} is the node directory recorded for the output {string}",
-			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
-				mountPath, _ := p.GetString(0)
-				outputName, ok := p.GetString(1)
-				if !ok {
-					return fmt.Errorf("expected a mount path and an output name")
-				}
+			func(in PodCreated, args Args) error {
+				mountPath := args.String(0)
+				outputName := args.String(1)
+
 				v, err := volumeAt(in.Pod, mountPath)
 				if err != nil {
 					return err
@@ -370,24 +358,16 @@ func ContainerGapDefinitions() []brine.StepDefinition {
 		// reason the check container has its own: the type has to be on the
 		// draft before the container runs, so the run sentence can put it on
 		// the CONTAINER SPEC as well as on the metadata.
-		brine.DefineMap[ClusterReady, ContainerDraft](
+		Transform[ClusterReady, ContainerDraft](
 			"a get container {string} built from image {string}",
-			func(in ClusterReady, p brine.Params, _ *brine.Recorder) (ContainerDraft, error) {
-				handle, ok := p.GetString(0)
-				if !ok {
-					return ContainerDraft{}, fmt.Errorf("expected a container handle parameter")
-				}
-				image, ok := p.GetString(1)
-				if !ok {
-					return ContainerDraft{}, fmt.Errorf("expected an image parameter")
-				}
+			func(in ClusterReady, a Args) (ContainerDraft, error) {
 				return ContainerDraft{
 					Namespace:     in.Namespace,
 					Worker:        in.Worker,
 					Clientset:     in.Clientset,
 					Ctx:           in.Ctx,
-					Handle:        handle,
-					ImageURL:      image,
+					Handle:        a.String(0),
+					ImageURL:      a.String(1),
 					Dir:           "/workdir",
 					TeamID:        in.TeamID,
 					ContainerType: db.ContainerTypeGet,
@@ -430,20 +410,15 @@ func ContainerGapDefinitions() []brine.StepDefinition {
 		// character away from the volume name the mutation files them under —
 		// so a scenario written on it would be asserting against a name brine
 		// invented, and against a near-miss at that.
-		brine.DefineMap[ContainerDraft, PodCreated](
+		Transform[ContainerDraft, PodCreated](
 			"the container runs producing the output {string} at {string}",
-			func(in ContainerDraft, p brine.Params, _ *brine.Recorder) (PodCreated, error) {
-				name, _ := p.GetString(0)
-				path, ok := p.GetString(1)
-				if !ok {
-					return PodCreated{}, fmt.Errorf("expected an output name and a path")
-				}
+			func(in ContainerDraft, a Args) (PodCreated, error) {
 				kind := draftContainerType(in.ContainerType)
 				return runDraft(in, kind, runtime.ContainerSpec{
 					TeamID:    in.TeamID,
 					Dir:       in.Dir,
 					ImageSpec: runtime.ImageSpec{ImageURL: in.ImageURL},
-					Outputs:   runtime.OutputPaths{name: path},
+					Outputs:   runtime.OutputPaths{a.String(0): a.String(1)},
 					Type:      kind,
 				}, false)
 			},
@@ -472,14 +447,12 @@ func ContainerGapDefinitions() []brine.StepDefinition {
 		// from what the cluster was actually asked for, and it means a pod
 		// with no store at all — a check's — fails here instead of quietly
 		// agreeing.
-		brine.DefineCheck[PodCreated](
+		Assert[PodCreated](
 			"the volume mounted at {string} is the node directory the daemon serves as {string}",
-			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
-				mountPath, _ := p.GetString(0)
-				key, ok := p.GetString(1)
-				if !ok {
-					return fmt.Errorf("expected a mount path and a daemon key")
-				}
+			func(in PodCreated, args Args) error {
+				mountPath := args.String(0)
+				key := args.String(1)
+
 				keyHandle, subdir, split := strings.Cut(key, "/")
 				if !split || keyHandle == "" || subdir == "" {
 					return fmt.Errorf(

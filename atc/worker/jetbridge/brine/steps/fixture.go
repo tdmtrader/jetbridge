@@ -35,6 +35,7 @@ type Cluster struct {
 	Clientset  *fake.Clientset
 	DBWorker   db.Worker
 	DB         JetbridgeDB
+	Config     jetbridge.Config
 	TeamID     int
 	Ctx        context.Context
 }
@@ -156,6 +157,7 @@ func NewCluster(res brine.Resources, opts ...ClusterOption) (Cluster, error) {
 		Clientset:  clientset,
 		DBWorker:   dbWorker,
 		DB:         database,
+		Config:     cfg,
 		TeamID:     teamID,
 		Ctx:        context.Background(),
 	}, nil

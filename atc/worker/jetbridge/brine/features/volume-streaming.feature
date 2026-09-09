@@ -1,24 +1,45 @@
 @VT-02 @VT-03 @VT-04 @VT-05
 Feature: Moving artifacts through volumes
 
-  What a consumer of a volume actually does: put an artifact in, take it back
-  out, hand it to the next step. Where it lands on disk, what command moved it,
-  and which container ran that command are all mechanism.
+  A consumer puts an artifact in, takes it back out, and hands it to the next
+  step. Exact paths, contents and the execution destination determine whether
+  that consumer receives the right artifact.
 
   Source: jetbridge_storage_behavioral_spec_20260330 — VT-02 (StreamIn),
   VT-03 (StreamOut), VT-04 (path resolution), VT-05 (stub volumes).
 
-  These scenarios replace ginkgo tests that asserted `call.podName`,
-  `call.containerName`, `call.attrs.Purpose` and
-  `call.command == ["tar","xf","-","-C","/tmp/build/inputs"]` against a
-  recording double. Each scenario below fails for a real consumer; those did
-  not.
+  Direct-volume scenarios cover the legacy exec-only API. The returned-volume
+  handoff outline exercises production's daemon-backed artifact read path.
+  Focused Go tests remain for constructor arguments, execution attributes and
+  cache wiring that these scenarios do not fully cover; see DISPOSITION-jetbridge.md.
 
   Scenario: An artifact comes back out as it went in
     Given a volume "inputs" mounted at "/tmp/build/inputs"
     And a file "hello.txt" containing "hello world" is put into volume "inputs" at "."
     When volume "inputs" is read from "."
     Then the artifact "hello.txt" containing "hello world" is there
+
+  # This is the production read path: the worker wraps a returned output
+  # volume, the daemon serves it after pod removal, and a returned input
+  # volume streams it into a second task. The task reads its actual mount.
+  # Before collection, the returned volume's compatibility StreamOut API also
+  # returns the exact files via gzip, including output.txt = hello-from-the-step.
+  # That direct exec read is not the production artifact-read route.
+  # The S2 row proves StreamIn decompresses: tar cannot decode S2 itself.
+  # The requested encoding is checked independently of the production codec.
+  @artifact-handoff @VT-08
+  Scenario Outline: Artifact handoff delivers exact files or reports the transfer failure
+    Given a jetbridge worker whose step outputs stay on the node that ran them
+    When a task produces "<file>" containing "<content>" and hands it to a following task using "<encoding>" with fault "<fault>"
+    Then the handoff reports "<outcome>"
+
+    Examples:
+      | file              | content           | encoding | fault            | outcome                                               |
+      | result.json       | built ok          | raw      | none             | exact artifact delivered                              |
+      | nested/result.txt | nested build data | gzip     | none             | exact artifact delivered                              |
+      | deep/tree/out.txt | packed build data | s2       | none             | exact artifact delivered                              |
+      | result.json       | built ok          | raw      | write-refused    | stream into returned input volume: stream in via exec: transfer refused |
+      | result.json       | built ok          | raw      | producer-offline | artifact not found on node node-1 or any peer           |
 
   # The round trip is NOT symmetric, and a consumer has to know it. StreamIn
   # resolves the path into the extraction target, so the artifact lands at
@@ -76,23 +97,9 @@ Feature: Moving artifacts through volumes
   # artifact — which is why this is asserted rather than assumed.
   Scenario: A volume identifies itself by its database handle
     Given a persisted volume on this worker
-    Then the volume identifies itself by its database handle
-    And the volume names the worker it lives on
+    Then the volumes retain their handles, worker and database rows
     # The DB row is what survives a web restart; a volume that lost it would be
     # invisible to garbage collection.
-    And both volume kinds still carry their database row
-
-  # VT-08's other half. Every other streaming scenario uses gzip, which cannot
-  # show that StreamIn decompresses anything: bsdtar auto-detects gzip, and
-  # libarchive auto-detects zstd as well, so removing the decompressor leaves
-  # them all passing. S2 is the encoding tar has no reader for, so it is the
-  # one that proves the runtime did the work rather than the extractor.
-  @VT-08
-  Scenario: An artifact compressed with s2 is decompressed on the way in
-    Given a volume "inputs" mounted at "/tmp/build/inputs"
-    And a file "packed.txt" containing "compressed payload" is put into volume "inputs" compressed with s2
-    When volume "inputs" is read from "."
-    Then the artifact "packed.txt" containing "compressed payload" is there
 
   # The write half of the swallow check. The scenario above it covers a read
   # that cannot reach the cluster; a WRITE that cannot reach it and reports

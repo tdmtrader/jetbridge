@@ -13,9 +13,8 @@ package jetbridge
 //
 // The five tests whose evidence held -- NoInputsMultipleOutputs,
 // AllVolumeTypes_DaemonSet, InputWithoutArtifact, LocatorHitVsMiss and
-// BuildPod_InitContainerOrdering -- stay deleted, so this file's helpers are
-// the original set minus nothing; a few are now unreferenced and kept verbatim
-// rather than pruned, so the restoration stays diffable against the merge-base.
+// BuildPod_InitContainerOrdering -- stay deleted. The retained tests keep their
+// original domain assertions; the substring helpers now use strings.Contains.
 
 import (
 	"context"
@@ -94,12 +93,24 @@ func taskMetadata() db.ContainerMetadata {
 	}
 }
 
-// assertVolumeCount is a test helper for volume count assertions.
-func assertVolumeCount(t *testing.T, volumes []corev1.Volume, expected int) {
+// assertMountLayout keeps exact counts and independently specified paths together.
+func assertMountLayout(t *testing.T, c *Container, expected int, paths ...string) ([]corev1.Volume, []corev1.VolumeMount) {
 	t.Helper()
+	volumes, mounts := c.buildVolumeMounts()
 	if len(volumes) != expected {
 		t.Fatalf("expected %d volumes, got %d", expected, len(volumes))
 	}
+	assertMountCount(t, mounts, expected)
+	for _, path := range paths {
+		findMountByPath(t, mounts, path)
+	}
+	return volumes, mounts
+}
+
+func assertHostPathMount(t *testing.T, volumes []corev1.Volume, mounts []corev1.VolumeMount, path, suffix string) {
+	t.Helper()
+	mount := findMountByPath(t, mounts, path)
+	assertHostPath(t, findVolumeByName(t, volumes, mount.Name), suffix)
 }
 
 // assertMountCount is a test helper for mount count assertions.
@@ -134,14 +145,14 @@ func findVolumeByName(t *testing.T, volumes []corev1.Volume, name string) corev1
 	return corev1.Volume{}
 }
 
-// assertHostPath checks that a volume is hostPath with the expected path prefix.
+// assertHostPath checks that a volume is hostPath and contains the requested fragment.
 func assertHostPath(t *testing.T, vol corev1.Volume, expectedSuffix string) {
 	t.Helper()
 	if vol.HostPath == nil {
 		t.Errorf("volume %q: expected hostPath, got emptyDir or nil", vol.Name)
 		return
 	}
-	if !contains(vol.HostPath.Path, expectedSuffix) {
+	if !strings.Contains(vol.HostPath.Path, expectedSuffix) {
 		t.Errorf("volume %q: hostPath %q does not contain expected suffix %q", vol.Name, vol.HostPath.Path, expectedSuffix)
 	}
 }
@@ -154,17 +165,26 @@ func assertEmptyDir(t *testing.T, vol corev1.Volume) {
 	}
 }
 
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && findSubstring(s, substr))
-}
-
-func findSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
+// assertSidecarMounts keeps the three distinct fixtures on one mount contract.
+// Paths remain explicit expectations, independent of the generated mounts.
+func assertSidecarMounts(t *testing.T, c *Container, spec runtime.ContainerSpec, paths ...string) corev1.Container {
+	t.Helper()
+	if len(paths) == 0 {
+		t.Fatal("sidecar mount check requires expected paths")
 	}
-	return false
+	_, mounts := c.buildVolumeMounts()
+	sidecars := buildSidecarContainers(spec.Sidecars, mounts, spec.Dir)
+	if len(sidecars) != 1 {
+		t.Fatalf("expected 1 sidecar, got %d", len(sidecars))
+	}
+	sidecar := sidecars[0]
+	if len(sidecar.VolumeMounts) != len(mounts) {
+		t.Fatalf("expected sidecar to have %d mounts (same as main), got %d", len(mounts), len(sidecar.VolumeMounts))
+	}
+	for _, path := range paths {
+		findMountByPath(t, sidecar.VolumeMounts, path)
+	}
+	return sidecar
 }
 
 // ---------------------------------------------------------------------------
@@ -184,19 +204,10 @@ func TestBuildVolumeMounts_MultipleInputsNoOutputs(t *testing.T) {
 	}
 
 	c := makeContainer("handle-1", taskMetadata(), spec, cfg, nil, false)
-	volumes, mounts := c.buildVolumeMounts()
-
 	// 1 dir + 3 inputs = 4
-	assertVolumeCount(t, volumes, 4)
-	assertMountCount(t, mounts, 4)
-
 	// Dir mount
-	findMountByPath(t, mounts, "/tmp/build")
-
 	// Input mounts
-	findMountByPath(t, mounts, "/tmp/input-a")
-	findMountByPath(t, mounts, "/tmp/input-b")
-	findMountByPath(t, mounts, "/tmp/input-c")
+	volumes, _ := assertMountLayout(t, c, 4, "/tmp/build", "/tmp/input-a", "/tmp/input-b", "/tmp/input-c")
 
 	// In hostPath mode, inputs use input-N as subdirs (no overlapping outputs).
 	for _, vol := range volumes[1:4] {
@@ -226,29 +237,20 @@ func TestBuildVolumeMounts_MixedOverlap(t *testing.T) {
 	}
 
 	c := makeContainer("handle-3", taskMetadata(), spec, cfg, nil, false)
-	volumes, mounts := c.buildVolumeMounts()
-
 	// 1 dir + 3 inputs + 1 non-overlapping output = 5
-	assertVolumeCount(t, volumes, 5)
-	assertMountCount(t, mounts, 5)
+	volumes, mounts := assertMountLayout(t, c, 5)
 
 	// Input at /tmp/code should use output name "modified-code" as subdir.
-	codeMount := findMountByPath(t, mounts, "/tmp/code")
-	codeVol := findVolumeByName(t, volumes, codeMount.Name)
-	assertHostPath(t, codeVol, "steps/handle-3/modified-code")
+	assertHostPathMount(t, volumes, mounts, "/tmp/code", "steps/handle-3/modified-code")
 
 	// Input at /tmp/shared should use output name "shared-out" as subdir.
-	sharedMount := findMountByPath(t, mounts, "/tmp/shared")
-	sharedVol := findVolumeByName(t, volumes, sharedMount.Name)
-	assertHostPath(t, sharedVol, "steps/handle-3/shared-out")
+	assertHostPathMount(t, volumes, mounts, "/tmp/shared", "steps/handle-3/shared-out")
 
 	// Input at /tmp/data has no overlapping output, uses default subdir.
 	findMountByPath(t, mounts, "/tmp/data")
 
 	// Non-overlapping output "result" has its own volume.
-	resultMount := findMountByPath(t, mounts, "/tmp/result")
-	resultVol := findVolumeByName(t, volumes, resultMount.Name)
-	assertHostPath(t, resultVol, "steps/handle-3/result")
+	assertHostPathMount(t, volumes, mounts, "/tmp/result", "steps/handle-3/result")
 
 	// Verify no separate volumes were created for overlapping outputs.
 	for _, vol := range volumes {
@@ -256,7 +258,7 @@ func TestBuildVolumeMounts_MixedOverlap(t *testing.T) {
 			path := vol.HostPath.Path
 			// "modified-code" and "shared-out" should only appear as input subdirs,
 			// not as separate output-N volumes.
-			if contains(path, "output-") && (contains(path, "modified-code") || contains(path, "shared-out")) {
+			if strings.Contains(path, "output-") && (strings.Contains(path, "modified-code") || strings.Contains(path, "shared-out")) {
 				t.Errorf("unexpected separate output volume for overlapping output: %s", path)
 			}
 		}
@@ -283,20 +285,13 @@ func TestBuildVolumeMounts_AllOverlapping(t *testing.T) {
 	}
 
 	c := makeContainer("handle-4", taskMetadata(), spec, cfg, nil, false)
-	volumes, mounts := c.buildVolumeMounts()
-
 	// 1 dir + 2 inputs + 0 outputs = 3
-	assertVolumeCount(t, volumes, 3)
-	assertMountCount(t, mounts, 3)
+	volumes, mounts := assertMountLayout(t, c, 3)
 
 	// Input subdirs should use output names.
-	codeMount := findMountByPath(t, mounts, "/tmp/code")
-	codeVol := findVolumeByName(t, volumes, codeMount.Name)
-	assertHostPath(t, codeVol, "steps/handle-4/code-out")
+	assertHostPathMount(t, volumes, mounts, "/tmp/code", "steps/handle-4/code-out")
 
-	dataMount := findMountByPath(t, mounts, "/tmp/data")
-	dataVol := findVolumeByName(t, volumes, dataMount.Name)
-	assertHostPath(t, dataVol, "steps/handle-4/data-out")
+	assertHostPathMount(t, volumes, mounts, "/tmp/data", "steps/handle-4/data-out")
 }
 
 // ---------------------------------------------------------------------------
@@ -319,18 +314,9 @@ func TestBuildVolumeMounts_NoOverlap(t *testing.T) {
 	}
 
 	c := makeContainer("handle-5", taskMetadata(), spec, cfg, nil, false)
-	volumes, mounts := c.buildVolumeMounts()
-
 	// 1 dir + 2 inputs + 2 outputs = 5
-	assertVolumeCount(t, volumes, 5)
-	assertMountCount(t, mounts, 5)
-
 	// All paths should be present.
-	findMountByPath(t, mounts, "/tmp/build")
-	findMountByPath(t, mounts, "/tmp/source")
-	findMountByPath(t, mounts, "/tmp/deps")
-	findMountByPath(t, mounts, "/tmp/binary")
-	findMountByPath(t, mounts, "/tmp/docs")
+	assertMountLayout(t, c, 5, "/tmp/build", "/tmp/source", "/tmp/deps", "/tmp/binary", "/tmp/docs")
 }
 
 // ---------------------------------------------------------------------------
@@ -356,16 +342,8 @@ func TestBuildVolumeMounts_PutContainer(t *testing.T) {
 		BuildID:  200,
 	}
 	c := makeContainer("put-handle", meta, spec, cfg, nil, false)
-	volumes, mounts := c.buildVolumeMounts()
-
 	// 1 dir + 3 inputs = 4
-	assertVolumeCount(t, volumes, 4)
-	assertMountCount(t, mounts, 4)
-
-	findMountByPath(t, mounts, "/tmp/build")
-	findMountByPath(t, mounts, "/tmp/resource-a")
-	findMountByPath(t, mounts, "/tmp/resource-b")
-	findMountByPath(t, mounts, "/tmp/resource-c")
+	assertMountLayout(t, c, 4, "/tmp/build", "/tmp/resource-a", "/tmp/resource-b", "/tmp/resource-c")
 }
 
 // ---------------------------------------------------------------------------
@@ -386,13 +364,8 @@ func TestBuildVolumeMounts_GetContainer(t *testing.T) {
 		BuildID:  201,
 	}
 	c := makeContainer("get-handle", meta, spec, cfg, nil, false)
-	volumes, mounts := c.buildVolumeMounts()
-
 	// 1 dir only
-	assertVolumeCount(t, volumes, 1)
-	assertMountCount(t, mounts, 1)
-
-	findMountByPath(t, mounts, "/tmp/resource")
+	assertMountLayout(t, c, 1, "/tmp/resource")
 }
 
 // ---------------------------------------------------------------------------
@@ -411,13 +384,8 @@ func TestBuildVolumeMounts_CheckContainer(t *testing.T) {
 		StepName: "check-step",
 	}
 	c := makeContainer("check-handle", meta, spec, cfg, nil, false)
-	volumes, mounts := c.buildVolumeMounts()
-
 	// 1 dir only (check containers don't have inputs/outputs)
-	assertVolumeCount(t, volumes, 1)
-	assertMountCount(t, mounts, 1)
-
-	findMountByPath(t, mounts, "/tmp/check")
+	volumes, _ := assertMountLayout(t, c, 1, "/tmp/check")
 
 	// Check containers must use emptyDir even with a DaemonSet backend,
 	// because the same container handle is reused across check runs and
@@ -464,33 +432,9 @@ func TestBuildVolumeMounts_SidecarWithCaches(t *testing.T) {
 		BuildID:  300,
 	}
 	c := makeContainer("sidecar-handle", meta, spec, cfg, nil, false)
-	_, mounts := c.buildVolumeMounts()
-
-	sidecars := buildSidecarContainers(spec.Sidecars, mounts, spec.Dir)
-	if len(sidecars) != 1 {
-		t.Fatalf("expected 1 sidecar, got %d", len(sidecars))
-	}
-
-	sidecar := sidecars[0]
+	sidecar := assertSidecarMounts(t, c, spec, "/cache/my-cache")
 	if sidecar.Name != "helper" {
 		t.Errorf("expected sidecar name 'helper', got %q", sidecar.Name)
-	}
-
-	// Sidecar should have same mounts as main container.
-	if len(sidecar.VolumeMounts) != len(mounts) {
-		t.Fatalf("expected sidecar to have %d mounts (same as main), got %d", len(mounts), len(sidecar.VolumeMounts))
-	}
-
-	// Verify cache mount is present in sidecar.
-	found := false
-	for _, m := range sidecar.VolumeMounts {
-		if m.MountPath == "/cache/my-cache" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("sidecar is missing cache mount at /cache/my-cache")
 	}
 }
 
@@ -510,24 +454,7 @@ func TestBuildVolumeMounts_SidecarWithScratch(t *testing.T) {
 	}
 
 	c := makeContainer("scratch-sc-handle", taskMetadata(), spec, cfg, nil, false)
-	_, mounts := c.buildVolumeMounts()
-
-	sidecars := buildSidecarContainers(spec.Sidecars, mounts, spec.Dir)
-	if len(sidecars) != 1 {
-		t.Fatalf("expected 1 sidecar, got %d", len(sidecars))
-	}
-
-	// Verify scratch mount is in the sidecar.
-	found := false
-	for _, m := range sidecars[0].VolumeMounts {
-		if m.MountPath == "/scratch/tmp" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("sidecar is missing scratch mount at /scratch/tmp")
-	}
+	assertSidecarMounts(t, c, spec, "/scratch/tmp")
 }
 
 // ---------------------------------------------------------------------------
@@ -606,36 +533,13 @@ func TestBuildSidecarContainers_GetsAllMountsInDaemonSetMode(t *testing.T) {
 		BuildID:  400,
 	}
 	c := makeContainer("all-mounts-handle", meta, spec, cfg, nil, false)
-	_, mounts := c.buildVolumeMounts()
-
-	sidecars := buildSidecarContainers(spec.Sidecars, mounts, spec.Dir)
-	if len(sidecars) != 1 {
-		t.Fatalf("expected 1 sidecar, got %d", len(sidecars))
-	}
-
-	sidecar := sidecars[0]
-
-	// Sidecar should have identical volume mounts to main container.
-	if len(sidecar.VolumeMounts) != len(mounts) {
-		t.Fatalf("expected sidecar to have %d mounts (same as main), got %d", len(mounts), len(sidecar.VolumeMounts))
-	}
-
-	// Verify all mount paths are present.
-	expectedPaths := map[string]bool{
-		"/tmp/build":  true,
-		"/tmp/input":  true,
-		"/tmp/output": true,
-		"/cache/data": true,
-		"/scratch":    true,
-	}
-	for _, m := range sidecar.VolumeMounts {
-		delete(expectedPaths, m.MountPath)
-	}
-	if len(expectedPaths) > 0 {
-		for path := range expectedPaths {
-			t.Errorf("sidecar missing mount at %s", path)
-		}
-	}
+	assertSidecarMounts(t, c, spec,
+		"/tmp/build",
+		"/tmp/input",
+		"/tmp/output",
+		"/cache/data",
+		"/scratch",
+	)
 }
 
 // ---------------------------------------------------------------------------
@@ -683,10 +587,7 @@ func TestBuildVolumeMounts_EmptyDirMode_AllEmptyDir(t *testing.T) {
 	}
 
 	c := makeContainer("emptydir-handle", taskMetadata(), spec, cfg, nil, false)
-	volumes, mounts := c.buildVolumeMounts()
-
-	assertVolumeCount(t, volumes, 3)
-	assertMountCount(t, mounts, 3)
+	volumes, _ := assertMountLayout(t, c, 3)
 
 	for _, vol := range volumes {
 		assertEmptyDir(t, vol)

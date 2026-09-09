@@ -92,47 +92,11 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 				return in
 			}),
 
-		// Keeps its own body: both parameters are expectations rather than a
-		// key and a value, and each is compared as a quantity, so that "1Gi"
-		// and "1073741824" match — which string equality would not.
-		brine.DefineCheck[PodCreated](
-			"the step may use at most {string} of local disk, reserving {string}",
-			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
-				lim, _ := p.GetString(0)
-				req, ok := p.GetString(1)
-				if !ok {
-					return fmt.Errorf("expected a limit and a request")
-				}
-				main, err := mainContainer(in.Pod)
-				if err != nil {
-					return err
-				}
-				want, err := resource.ParseQuantity(lim)
-				if err != nil {
-					return fmt.Errorf("bad limit %q: %w", lim, err)
-				}
-				got, ok2 := main.Resources.Limits[corev1.ResourceEphemeralStorage]
-				if !ok2 {
-					return fmt.Errorf("expected an ephemeral-storage limit of %s, none is set", lim)
-				}
-				if got.Cmp(want) != 0 {
-					return fmt.Errorf("expected an ephemeral-storage limit of %s, got %s", lim, got.String())
-				}
-				wantReq, err := resource.ParseQuantity(req)
-				if err != nil {
-					return fmt.Errorf("bad request %q: %w", req, err)
-				}
-				gotReq, ok3 := main.Resources.Requests[corev1.ResourceEphemeralStorage]
-				if !ok3 {
-					return fmt.Errorf("expected an ephemeral-storage request of %s, none is set", req)
-				}
-				if gotReq.Cmp(wantReq) != 0 {
-					return fmt.Errorf("expected an ephemeral-storage request of %s, got %s", req, gotReq.String())
-				}
-				return nil
-			},
+		// Both disk fields are required; quantity comparison accepts equivalent units.
+		resourceCheck("the step may use at most {string} of local disk, reserving {string}",
+			resourceExpectation{corev1.ResourceEphemeralStorage, "limit", false},
+			resourceExpectation{corev1.ResourceEphemeralStorage, "request", false},
 		),
-
 		// PE-04
 		Refine[ContainerDraft]("it runs privileged",
 			func(in ContainerDraft, _ Args) ContainerDraft {
@@ -148,17 +112,14 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 				return in
 			}),
 
-		brine.DefineMap[ContainerDraft, ContainerDraft](
+		Transform[ContainerDraft, ContainerDraft](
 			"the sidecar {string} declares its working directory as {string}",
-			func(in ContainerDraft, p brine.Params, _ *brine.Recorder) (ContainerDraft, error) {
-				name, _ := p.GetString(0)
-				dir, ok := p.GetString(1)
-				if !ok {
-					return ContainerDraft{}, fmt.Errorf("expected a name and a directory")
-				}
+			func(in ContainerDraft, a Args) (ContainerDraft, error) {
+				name := a.String(0)
+
 				for i := range in.Sidecars {
 					if in.Sidecars[i].Name == name {
-						in.Sidecars[i].WorkingDir = dir
+						in.Sidecars[i].WorkingDir = a.String(1)
 						return in, nil
 					}
 				}
@@ -222,70 +183,28 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 		// duplicate half of this reachable only from here.
 		CheckThat[PodCreated]("every mount in the pod names exactly one of its volumes",
 			func(in PodCreated) error {
-				declared := map[string]int{}
-				for _, v := range in.Pod.Spec.Volumes {
-					declared[v.Name]++
-				}
-				containers := append([]corev1.Container{}, in.Pod.Spec.InitContainers...)
-				containers = append(containers, in.Pod.Spec.Containers...)
-				for _, c := range containers {
-					for _, m := range c.VolumeMounts {
-						switch declared[m.Name] {
-						case 1:
-						case 0:
-							return fmt.Errorf(
-								"container %q mounts volume %q at %q, and the pod declares no volume by that name",
-								c.Name, m.Name, m.MountPath)
-						default:
-							return fmt.Errorf(
-								"container %q mounts volume %q at %q, and the pod declares %d volumes by that name",
-								c.Name, m.Name, m.MountPath, declared[m.Name])
-						}
-					}
-				}
-				return nil
+				return validatePodMounts(in.Pod)
 			}),
 
-		// These two keep their own bodies: the parameter is a lookup key, not a
-		// value to compare against, and the two ways they fail are different
-		// diagnoses — nothing is mounted there at all, or something is but the
-		// wrong storage backs it. volumeAt keeps them apart; membership over a
-		// pre-filtered list of paths would merge them into one message.
-		brine.DefineCheck[PodCreated](
-			"the volume mounted at {string} survives the pod",
-			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
-				path, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a path parameter")
-				}
+		// Resolve the actual mount first so an absent mount is distinct from
+		// one backed by the wrong storage. Storage kind is a data variation,
+		// not a separate step definition.
+		CheckStringFor[PodCreated]("the volume mounted at {string} uses {string} storage",
+			"the mounted volume's storage",
+			func(in PodCreated, path string) (string, error) {
 				v, err := volumeAt(in.Pod, path)
 				if err != nil {
-					return err
+					return "", err
 				}
-				if v.HostPath == nil {
-					return fmt.Errorf("expected the volume at %q to be node-local storage, it is ephemeral", path)
+				switch {
+				case v.HostPath != nil && v.EmptyDir == nil:
+					return "node-local", nil
+				case v.EmptyDir != nil && v.HostPath == nil:
+					return "ephemeral", nil
+				default:
+					return "", fmt.Errorf("volume at %q has neither a unique hostPath nor emptyDir source", path)
 				}
-				return nil
-			},
-		),
-
-		brine.DefineCheck[PodCreated](
-			"the volume mounted at {string} is lost with the pod",
-			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
-				path, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a path parameter")
-				}
-				v, err := volumeAt(in.Pod, path)
-				if err != nil {
-					return err
-				}
-				if v.EmptyDir == nil {
-					return fmt.Errorf("expected the volume at %q to be ephemeral, it is node-local storage", path)
-				}
-				return nil
-			},
-		),
+			}),
 
 		// PE-07: the QoS class is the observable consequence of the envelope,
 		// so the failure carries the limits and requests it was derived from —
@@ -301,41 +220,15 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 					main.Resources.Limits, main.Resources.Requests)
 			}),
 
-		// These two keep their own bodies: both parameters are expectations
-		// rather than a key and a value, and each is compared as a quantity so
-		// that "1Gi" and "1073741824" match — which string equality would not.
-		brine.DefineCheck[PodCreated](
-			"the step may use at most {string} CPU and {string} memory",
-			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
-				cpu, _ := p.GetString(0)
-				mem, ok := p.GetString(1)
-				if !ok {
-					return fmt.Errorf("expected a cpu and a memory parameter")
-				}
-				main, err := mainContainer(in.Pod)
-				if err != nil {
-					return err
-				}
-				return matchQuantities(main.Resources.Limits, cpu, mem, "limit")
-			},
+		// CPU/memory retain the existing allowance for an unchecked blank field.
+		resourceCheck("the step may use at most {string} CPU and {string} memory",
+			resourceExpectation{corev1.ResourceCPU, "limit", true},
+			resourceExpectation{corev1.ResourceMemory, "limit", true},
 		),
-
-		brine.DefineCheck[PodCreated](
-			"the step is reserved {string} CPU and {string} memory",
-			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
-				cpu, _ := p.GetString(0)
-				mem, ok := p.GetString(1)
-				if !ok {
-					return fmt.Errorf("expected a cpu and a memory parameter")
-				}
-				main, err := mainContainer(in.Pod)
-				if err != nil {
-					return err
-				}
-				return matchQuantities(main.Resources.Requests, cpu, mem, "request")
-			},
+		resourceCheck("the step is reserved {string} CPU and {string} memory",
+			resourceExpectation{corev1.ResourceCPU, "request", true},
+			resourceExpectation{corev1.ResourceMemory, "request", true},
 		),
-
 		// PE-04
 		CheckThat[PodCreated]("the step can escalate its privileges",
 			func(in PodCreated) error {
@@ -396,13 +289,11 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 		// rather than a value to compare, and a sidecar the pod does not run
 		// has to stay an error — under a membership check it would pass by
 		// being absent.
-		brine.DefineCheck[PodCreated](
+		Assert[PodCreated](
 			"the sidecar {string} cannot escalate its privileges",
-			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
-				name, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a name parameter")
-				}
+			func(in PodCreated, args Args) error {
+				name := args.String(0)
+
 				c, err := containerNamed(in.Pod, name)
 				if err != nil {
 					return err
@@ -420,13 +311,11 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 		// Keeps its own body: the parameter names the sidecar, and the
 		// assertion is that one set of mounts covers another — a subset, not
 		// membership of the string the sentence carries.
-		brine.DefineCheck[PodCreated](
+		Assert[PodCreated](
 			"the sidecar {string} sees the same volumes as the step",
-			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
-				name, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a name parameter")
-				}
+			func(in PodCreated, args Args) error {
+				name := args.String(0)
+
 				main, err := mainContainer(in.Pod)
 				if err != nil {
 					return err
@@ -466,13 +355,11 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 		// Keeps its own body: it counts occurrences, and "exactly once" is not
 		// membership — the duplicate this check exists to catch would satisfy
 		// a member check.
-		brine.DefineCheck[PodCreated](
+		Assert[PodCreated](
 			"the pod names the secret {string} exactly once",
-			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
-				secret, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a secret parameter")
-				}
+			func(in PodCreated, args Args) error {
+				secret := args.String(0)
+
 				n := 0
 				for _, s := range in.Pod.Spec.ImagePullSecrets {
 					if s.Name == secret {
@@ -581,32 +468,51 @@ func qosClassOf(pod *corev1.Pod) string {
 	return "Burstable"
 }
 
-func matchQuantities(list corev1.ResourceList, cpu, mem, kind string) error {
-	if cpu != "" {
-		want, err := resource.ParseQuantity(cpu)
+type resourceExpectation struct {
+	name       corev1.ResourceName
+	kind       string
+	allowBlank bool
+}
+
+// Every resource sentence compares two declared fields. Keeping them explicit
+// preserves limit/request selection and the CPU/memory-only blank allowance.
+func resourceCheck(pattern string, first, second resourceExpectation) brine.StepDefinition {
+	return brine.DefineCheck[PodCreated](pattern, func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
+		main, err := mainContainer(in.Pod)
 		if err != nil {
-			return fmt.Errorf("bad cpu %q: %w", cpu, err)
+			return err
 		}
-		got, ok := list[corev1.ResourceCPU]
-		if !ok {
-			return fmt.Errorf("expected a cpu %s of %s, none is set", kind, cpu)
+		for i, want := range []resourceExpectation{first, second} {
+			raw, ok := p.GetString(i)
+			if !ok {
+				return fmt.Errorf("step %q requires resource parameter %d", pattern, i)
+			}
+			if raw == "" && want.allowBlank {
+				continue
+			}
+			list := main.Resources.Limits
+			if want.kind == "request" {
+				list = main.Resources.Requests
+			}
+			if err := matchResourceQuantity(list, want.name, raw, want.kind); err != nil {
+				return err
+			}
 		}
-		if got.Cmp(want) != 0 {
-			return fmt.Errorf("expected a cpu %s of %s, got %s", kind, cpu, got.String())
-		}
+		return nil
+	})
+}
+
+func matchResourceQuantity(list corev1.ResourceList, name corev1.ResourceName, raw, kind string) error {
+	want, err := resource.ParseQuantity(raw)
+	if err != nil {
+		return fmt.Errorf("bad %s %s %q: %w", name, kind, raw, err)
 	}
-	if mem != "" {
-		want, err := resource.ParseQuantity(mem)
-		if err != nil {
-			return fmt.Errorf("bad memory %q: %w", mem, err)
-		}
-		got, ok := list[corev1.ResourceMemory]
-		if !ok {
-			return fmt.Errorf("expected a memory %s of %s, none is set", kind, mem)
-		}
-		if got.Cmp(want) != 0 {
-			return fmt.Errorf("expected a memory %s of %s, got %s", kind, mem, got.String())
-		}
+	got, ok := list[name]
+	if !ok {
+		return fmt.Errorf("expected %s %s of %s, none is set", name, kind, raw)
+	}
+	if got.Cmp(want) != 0 {
+		return fmt.Errorf("expected %s %s of %s, got %s", name, kind, raw, got.String())
 	}
 	return nil
 }
@@ -617,38 +523,28 @@ func matchQuantities(list corev1.ResourceList, cpu, mem, kind string) error {
 func ClusterConfigDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		brine.DefineMapUsing[brine.Empty, ClusterReady](
+		TransformUsing[brine.Empty, ClusterReady](
 			"a jetbridge worker that pulls with the secrets {string} as the service account {string}",
 			[]string{"jetbridge-db"},
-			func(_ brine.Empty, p brine.Params, _ *brine.Recorder, res brine.Resources) (ClusterReady, error) {
-				secrets, _ := p.GetString(0)
-				account, ok := p.GetString(1)
-				if !ok {
-					return ClusterReady{}, fmt.Errorf("expected secrets and a service account")
-				}
+			func(_ brine.Empty, a Args, res brine.Resources) (ClusterReady, error) {
 				return newConfiguredWorker(res, func(cfg *jetbridge.Config) {
-					cfg.ImagePullSecrets = splitList(secrets)
-					cfg.ServiceAccount = account
+					cfg.ImagePullSecrets = splitList(a.String(0))
+					cfg.ServiceAccount = a.String(1)
 				})
 			},
 		),
 
 		// CF-05: a private registry's credentials are added to every pod, and
 		// must not be added twice when the operator already listed them.
-		brine.DefineMapUsing[brine.Empty, ClusterReady](
+		TransformUsing[brine.Empty, ClusterReady](
 			"a jetbridge worker pulling from a private registry with secret {string}, already pulling with {string}",
 			[]string{"jetbridge-db"},
-			func(_ brine.Empty, p brine.Params, _ *brine.Recorder, res brine.Resources) (ClusterReady, error) {
-				registrySecret, _ := p.GetString(0)
-				existing, ok := p.GetString(1)
-				if !ok {
-					return ClusterReady{}, fmt.Errorf("expected a registry secret and existing secrets")
-				}
+			func(_ brine.Empty, a Args, res brine.Resources) (ClusterReady, error) {
 				return newConfiguredWorker(res, func(cfg *jetbridge.Config) {
-					cfg.ImagePullSecrets = splitList(existing)
+					cfg.ImagePullSecrets = splitList(a.String(1))
 					cfg.ImageRegistry = &jetbridge.ImageRegistryConfig{
 						Prefix:     "gcr.io/my-project/concourse",
-						SecretName: registrySecret,
+						SecretName: a.String(0),
 					}
 				})
 			},
@@ -685,31 +581,23 @@ func splitList(s string) []string {
 func CacheStorageDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		brine.DefineMapUsing[brine.Empty, ClusterReady](
+		TransformUsing[brine.Empty, ClusterReady](
 			"a jetbridge worker keeping caches on the node under {string}",
 			[]string{"jetbridge-db"},
-			func(_ brine.Empty, p brine.Params, _ *brine.Recorder, res brine.Resources) (ClusterReady, error) {
-				path, ok := p.GetString(0)
-				if !ok {
-					return ClusterReady{}, fmt.Errorf("expected a host path parameter")
-				}
+			func(_ brine.Empty, a Args, res brine.Resources) (ClusterReady, error) {
 				return newConfiguredWorker(res, func(cfg *jetbridge.Config) {
-					cfg.CacheHostPath = path
+					cfg.CacheHostPath = a.String(0)
 				})
 			},
 		),
 
-		brine.DefineMapUsing[brine.Empty, ClusterReady](
+		TransformUsing[brine.Empty, ClusterReady](
 			"a jetbridge worker with an artifact store, told to keep caches {string}",
 			[]string{"jetbridge-db"},
-			func(_ brine.Empty, p brine.Params, _ *brine.Recorder, res brine.Resources) (ClusterReady, error) {
-				store, ok := p.GetString(0)
-				if !ok {
-					return ClusterReady{}, fmt.Errorf("expected a cache store parameter")
-				}
+			func(_ brine.Empty, a Args, res brine.Resources) (ClusterReady, error) {
 				return newConfiguredWorker(res, func(cfg *jetbridge.Config) {
 					cfg.ArtifactDaemonHostPath = "/var/concourse/artifacts"
-					cfg.CacheStore = store
+					cfg.CacheStore = a.String(0)
 				})
 			},
 		),
@@ -739,14 +627,12 @@ func CacheStorageDefinitions() []brine.StepDefinition {
 		// Keeps its own body: it pins three separate properties, and each
 		// failure explains the rule it broke — survives the pod, filed under a
 		// stable key, created when absent.
-		brine.DefineCheck[PodCreated](
+		Assert[PodCreated](
 			"the cache at {string} is kept on the node under {string}",
-			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
-				mountPath, _ := p.GetString(0)
-				prefix, ok := p.GetString(1)
-				if !ok {
-					return fmt.Errorf("expected a mount path and a host prefix")
-				}
+			func(in PodCreated, args Args) error {
+				mountPath := args.String(0)
+				prefix := args.String(1)
+
 				v, err := volumeAt(in.Pod, mountPath)
 				if err != nil {
 					return err

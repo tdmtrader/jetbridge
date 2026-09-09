@@ -3,85 +3,20 @@ package steps
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"os"
-	"os/exec"
+	"path/filepath"
 	"strings"
-	"syscall"
+	"time"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
-	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 )
-
-// localShellAdapter is a REAL PodExecutor that actually runs the command.
-//
-// It is the second application of the recipe in coverage_matrix.md Addendum 2,
-// aimed at the `expectSupervisedExec` family. Those nine call sites assert
-// three things about a string the runtime never gets to execute:
-//
-//	command[0] == "sh" && command[1] == "-c"
-//	command[2] contains `'/bin/sh' '-c' 'echo hello'`
-//	command[2] contains `trap '' HUP`
-//
-// None of that proves the command runs, that the quoting survives a command
-// with spaces or shell operators, that the exit code comes back, or that the
-// supervisor does the thing it exists to do. Running the command proves all
-// four.
-//
-// The named behavioral difference: the command runs in this process's shell
-// rather than in a pod. It records nothing.
-type localShellAdapter struct{}
-
-func (localShellAdapter) ExecInPod(
-	ctx context.Context,
-	_, _, _ string,
-	command []string,
-	_ io.Reader,
-	stdout, stderr io.Writer,
-	_ bool,
-	_ jetbridge.ExecAttrs,
-) error {
-	if len(command) == 0 {
-		return fmt.Errorf("empty command")
-	}
-	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
-	cmd.Stdout, cmd.Stderr = stdout, stderr
-
-	// Run in its own process group, and tear the whole group down afterwards.
-	//
-	// The in-pod task supervisor backgrounds a `tail -f` on its log and kills
-	// it on the way out. Inside a real pod that cleanup is belt-and-braces:
-	// the pod dies and takes any survivor with it. Here the "pod" is this
-	// host, so a survivor survives for real — and one leaks per supervised
-	// scenario. Measured: 164 orphaned `tail -f` processes after a few full
-	// suite runs, at which point the machine is loaded enough that the
-	// supervisor's own kill/wait sequence starts losing races and a scenario
-	// fails with the supervisor's exit-255 fallback.
-	//
-	// That failure looks like a flaky test and is really an exhausted host, so
-	// it is fixed at the source rather than by clearing /tmp between runs.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	err := cmd.Run()
-	if cmd.Process != nil {
-		// Negative pid signals the group. The leader is already gone; this is
-		// for whatever it backgrounded.
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
-
-	// Surface a non-zero exit the way the SPDY executor does, so the runtime's
-	// exit-code extraction is on the real path (PE-08's last clause).
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return &jetbridge.ExecExitError{ExitCode: exitErr.ExitCode()}
-	}
-	return err
-}
 
 // TaskCommandDefinitions expresses what a task command does, rather than what
 // string was assembled to do it.
@@ -96,31 +31,21 @@ func TaskCommandDefinitions() []brine.StepDefinition {
 				if !ok {
 					return TaskCluster{}, fmt.Errorf("task-workspace resource is %T", res.Get("task-workspace"))
 				}
-				cluster, err := NewCluster(res, WithExecutor(localShellAdapter{}))
+				cluster, err := NewCluster(res, WithExecutor(localExecutor{supervisorRoot: workspace.Dir}))
 				if err != nil {
 					return TaskCluster{}, err
 				}
-				namespace, clientset, worker := cluster.Namespace, cluster.Clientset, cluster.Worker
-
 				return TaskCluster{
-					Namespace: namespace,
-					Worker:    worker,
-					Clientset: clientset,
-					Ctx:       context.Background(),
-					Workspace: workspace,
+					ClusterReady: cluster.Ready(),
+					Workspace:    workspace,
 				}, nil
 			},
 		),
 
-		brine.DefineMap[TaskCluster, TaskOutcome](
+		Transform[TaskCluster, TaskOutcome](
 			"a task {string} runs {string}",
-			func(in TaskCluster, p brine.Params, _ *brine.Recorder) (TaskOutcome, error) {
-				handle, _ := p.GetString(0)
-				script, ok := p.GetString(1)
-				if !ok {
-					return TaskOutcome{}, fmt.Errorf("expected a handle and a command")
-				}
-				return runTask(in, handle, expandWorkspace(script, in.Workspace), true)
+			func(in TaskCluster, a Args) (TaskOutcome, error) {
+				return runTask(in, a.String(0), expandWorkspace(a.String(1), in.Workspace), nil)
 			},
 		),
 
@@ -130,7 +55,7 @@ func TaskCommandDefinitions() []brine.StepDefinition {
 		brine.DefineMap[TaskOutcome, TaskOutcome](
 			"the web restarts and the task is re-executed",
 			func(in TaskOutcome, _ brine.Params, _ *brine.Recorder) (TaskOutcome, error) {
-				return runTask(in.Cluster, in.Handle, in.Script, false)
+				return runTask(in.Cluster, in.Handle, in.Script, nil)
 			},
 		),
 
@@ -138,16 +63,15 @@ func TaskCommandDefinitions() []brine.StepDefinition {
 		// from the process ID AND a hash of the command, so a DIFFERENT
 		// command on the same container gets fresh state and actually runs
 		// (supervisor.go's "e.g. a hijack shell" case).
-		brine.DefineMap[TaskOutcome, TaskOutcome](
+		Transform[TaskOutcome, TaskOutcome](
 			"the web restarts and a different command {string} is executed",
-			func(in TaskOutcome, p brine.Params, _ *brine.Recorder) (TaskOutcome, error) {
-				script, ok := p.GetString(0)
-				if !ok {
-					return TaskOutcome{}, fmt.Errorf("expected a command parameter")
-				}
-				return runTask(in.Cluster, in.Handle, expandWorkspace(script, in.Cluster.Workspace), false)
+			func(in TaskOutcome, a Args) (TaskOutcome, error) {
+				return runTask(in.Cluster, in.Handle, expandWorkspace(a.String(0), in.Cluster.Workspace), nil)
 			},
 		),
+
+		CheckThat[TaskOutcome]("the supervisor state belongs to this task workspace",
+			func(in TaskOutcome) error { return in.Cluster.Workspace.requireSupervisorState() }),
 
 		CheckContains[TaskOutcome]("the build log contains {string}",
 			"the build log",
@@ -173,16 +97,31 @@ func TaskCommandDefinitions() []brine.StepDefinition {
 		CheckInt[TaskOutcome]("the task exits {int}",
 			"the task's exit status",
 			func(in TaskOutcome) (int, error) {
-				return in.ExitStatus, nil
+				return in.ExitStatus, in.Err
 			},
 			func(in TaskOutcome) string { return fmt.Sprintf("err: %v", in.Err) },
 			func(in TaskOutcome) string { return fmt.Sprintf("log: %q", in.Log) }),
+
+		Assert[TaskOutcome](
+			"the recorded pod startup duration is at least {int} milliseconds",
+			func(in TaskOutcome, args Args) error {
+				want := args.Int(0)
+
+				if in.Err != nil {
+					return fmt.Errorf("expected a startup duration, the step failed with %q", in.Message)
+				}
+				if in.PodStartupDuration < float64(want) {
+					return fmt.Errorf("expected a recorded startup duration of at least %dms, got %vms",
+						want, in.PodStartupDuration)
+				}
+				return nil
+			},
+		),
 	}
 }
 
-// runTask drives one exec-mode task to completion and returns what the
-// consumer saw: the build log, the exit status, any error.
-func runTask(in TaskCluster, handle, script string, fresh bool) (TaskOutcome, error) {
+// findTaskContainer returns a fresh runtime object for the same persisted task.
+func findTaskContainer(in TaskCluster, handle string) (runtime.Container, error) {
 	container, _, err := in.Worker.FindOrCreateContainer(
 		in.Ctx,
 		db.NewFixedHandleContainerOwner(handle),
@@ -196,14 +135,29 @@ func runTask(in TaskCluster, handle, script string, fresh bool) (TaskOutcome, er
 		&noopDelegate{},
 	)
 	if err != nil {
-		return TaskOutcome{}, fmt.Errorf("find or create container %q: %w", handle, err)
+		return nil, fmt.Errorf("find or create container %q: %w", handle, err)
 	}
+	return container, nil
+}
 
+// runTask runs the production supervised task and captures the result, including
+// the properties and pod a restarted web will observe. A fault changes only fake
+// kubelet status; it does not replace the production Wait or executor.
+func runTask(in TaskCluster, handle, script string, container runtime.Container, fault ...func(*corev1.Pod)) (TaskOutcome, error) {
+	var err error
+	if container == nil {
+		container, err = findTaskContainer(in, handle)
+		if err != nil {
+			return TaskOutcome{}, err
+		}
+	}
 	log := new(bytes.Buffer)
 	// Stdin must be nil for the step to be supervised (process.go supervised()).
 	process, err := container.Run(in.Ctx,
 		runtime.ProcessSpec{
-			ID:   handle,
+			// Host execution shares /tmp across fake pods. Isolate supervisor
+			// state between scenarios while preserving it across web restarts.
+			ID:   filepath.Base(in.Workspace.Dir) + "-" + handle,
 			Path: "/bin/sh",
 			Args: []string{"-c", script},
 		},
@@ -212,38 +166,96 @@ func runTask(in TaskCluster, handle, script string, fresh bool) (TaskOutcome, er
 	if err != nil {
 		return TaskOutcome{}, fmt.Errorf("run task %q: %w", handle, err)
 	}
-
-	if err := markPodRunning(in, handle); err != nil {
+	metric.Metrics.K8sPodStartupDuration.Max()
+	waitCtx, cancel := context.WithCancel(in.Ctx)
+	defer cancel()
+	var started chan error
+	if len(fault) > 0 {
+		err = updateTaskPodStatus(in.Ctx, in.Clientset, in.Namespace, handle, fault[0])
+	} else {
+		// Let Wait observe startup, so the same task run can verify its
+		// timing as well as command output. Failure to stage is not a hang.
+		started = make(chan error, 1)
+		go func() {
+			time.Sleep(25 * time.Millisecond)
+			err := markPodRunning(waitCtx, in.Clientset, in.Namespace, handle)
+			if err != nil {
+				cancel()
+			}
+			started <- err
+		}()
+	}
+	if err != nil {
 		return TaskOutcome{}, err
 	}
 
-	result, waitErr := process.Wait(in.Ctx)
-	return TaskOutcome{
-		Cluster: in, Handle: handle, Script: script,
+	result, waitErr := process.Wait(waitCtx)
+	if started != nil {
+		if err := <-started; err != nil {
+			return TaskOutcome{}, err
+		}
+	}
+	out := TaskOutcome{
+		Cluster: in, Handle: handle, Script: script, Container: container,
 		Log: log.String(), ExitStatus: result.ExitStatus, Err: waitErr,
-	}, nil
+		PodStartupDuration: metric.Metrics.K8sPodStartupDuration.Max(),
+	}
+	if waitErr != nil {
+		out.Message = waitErr.Error()
+	}
+	out.Props, err = container.Properties()
+	if err != nil {
+		return TaskOutcome{}, fmt.Errorf("read container properties: %w", err)
+	}
+	listed, err := in.Clientset.CoreV1().Pods(in.Namespace).List(in.Ctx, metav1.ListOptions{})
+	if err != nil {
+		return TaskOutcome{}, fmt.Errorf("list pods: %w", err)
+	}
+	for _, pod := range listed.Items {
+		out.Pods = append(out.Pods, pod.Name)
+		if pod.Name == handle {
+			out.PodLabels = pod.Labels
+		}
+	}
+	return out, nil
 }
 
-func markPodRunning(in TaskCluster, handle string) error {
-	pods := in.Clientset.CoreV1().Pods(in.Namespace)
-	pod, err := pods.Get(in.Ctx, handle, metav1.GetOptions{})
+func markPodRunning(ctx context.Context, clientset kubernetes.Interface, namespace, handle string) error {
+	return updateTaskPodStatus(ctx, clientset, namespace, handle, func(pod *corev1.Pod) {
+		pod.Status.Phase = corev1.PodRunning
+		pod.Status.Conditions = []corev1.PodCondition{
+			{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+		}
+	})
+}
+
+func updateTaskPodStatus(ctx context.Context, clientset kubernetes.Interface, namespace, handle string, update func(*corev1.Pod)) error {
+	pods := clientset.CoreV1().Pods(namespace)
+	pod, err := pods.Get(ctx, handle, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("get pod %q: %w", handle, err)
 	}
-	pod.Status.Phase = corev1.PodRunning
-	pod.Status.Conditions = []corev1.PodCondition{
-		{Type: corev1.PodReady, Status: corev1.ConditionTrue},
-	}
-	if _, err := pods.UpdateStatus(in.Ctx, pod, metav1.UpdateOptions{}); err != nil {
+	update(pod)
+	if _, err := pods.UpdateStatus(ctx, pod, metav1.UpdateOptions{}); err != nil {
 		return fmt.Errorf("update pod status: %w", err)
 	}
 	return nil
 }
 
-// expandWorkspace lets a scenario name a scratch path without hard-coding one,
-// so two scenarios running the same command do not share supervisor state.
+// expandWorkspace lets a scenario name a scratch path without hard-coding one.
 func expandWorkspace(script string, w TaskWorkspace) string {
 	return strings.ReplaceAll(script, "$WORKSPACE", w.Dir)
+}
+
+func (w TaskWorkspace) requireSupervisorState() error {
+	entries, err := os.ReadDir(filepath.Join(w.Dir, supervisorStateDirectory))
+	if err != nil {
+		return fmt.Errorf("read supervisor state in task workspace: %w", err)
+	}
+	if len(entries) == 0 {
+		return fmt.Errorf("task workspace contains no supervisor state")
+	}
+	return nil
 }
 
 // TaskWorkspaceResourceDefinition gives each scenario its own scratch dir.
@@ -256,14 +268,17 @@ func TaskWorkspaceResourceDefinition() brine.ResourceDefinition {
 			if err != nil {
 				return nil, fmt.Errorf("create task workspace: %w", err)
 			}
-			return TaskWorkspace{Dir: dir}, nil
+			return TaskWorkspace{Dir: dir, ownedDir: dir}, nil
 		},
 		Disposer: func(value any) error {
 			w, ok := value.(TaskWorkspace)
 			if !ok {
 				return fmt.Errorf("task-workspace disposer got %T", value)
 			}
-			return os.RemoveAll(w.Dir)
+			if w.ownedDir == "" {
+				return fmt.Errorf("task workspace has no owned directory")
+			}
+			return os.RemoveAll(w.ownedDir)
 		},
 	}
 }

@@ -6,8 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -130,26 +128,6 @@ type ArtifactOutcome struct {
 // ---------------------------------------------------------------------------
 // Real adapters (not spies)
 // ---------------------------------------------------------------------------
-
-// reapedPodExecutor is a real PodExecutor for a cluster whose step pods have
-// already been collected. Its named behavioral difference is exactly that: the
-// pods are gone. It records nothing, so the only thing a scenario can assert is
-// what a consumer of the artifact sees — which is the point. Without the
-// DaemonSet wrap, a downstream read execs into the producer pod and dies here;
-// with it, the read never touches this adapter at all.
-type reapedPodExecutor struct{}
-
-func (reapedPodExecutor) ExecInPod(
-	context.Context,
-	string, string, string,
-	[]string,
-	io.Reader,
-	io.Writer, io.Writer,
-	bool,
-	jetbridge.ExecAttrs,
-) error {
-	return fmt.Errorf("exec stream: the producer pod has been reaped")
-}
 
 // stubResourceCache is a db.ResourceCache carrying only the two fields the key
 // formatters read. It mirrors resource_cache_stub_test.go, which lives in a
@@ -327,10 +305,15 @@ func workerSetupDefinitions() []brine.StepDefinition {
 				return in.rebuild()
 			}),
 
-		Refine[WorkerReady]("the worker can exec into pods",
-			func(in WorkerReady, _ Args) WorkerReady {
-				in.Executor = localShellAdapter{}
-				return in.rebuild()
+		TransformUsing[WorkerReady, WorkerReady]("the worker can exec into pods",
+			[]string{"task-workspace"},
+			func(in WorkerReady, _ Args, res brine.Resources) (WorkerReady, error) {
+				workspace, ok := res.Get("task-workspace").(TaskWorkspace)
+				if !ok || workspace.Dir == "" {
+					return WorkerReady{}, fmt.Errorf("task-workspace resource has no intercept root: %T", res.Get("task-workspace"))
+				}
+				in.Executor = localExecutor{supervisorRoot: workspace.Dir}
+				return in.rebuild(), nil
 			}),
 
 		Refine[WorkerReady]("the worker has no volume repository configured",
@@ -834,24 +817,19 @@ func workerInterceptDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineMap[WorkerReady, InterceptOutcome](
+		brine.DefineMapUsing[WorkerReady, InterceptOutcome](
 			"the operator intercepts the container {string} and runs {string}",
-			func(in WorkerReady, p brine.Params, _ *brine.Recorder) (InterceptOutcome, error) {
+			[]string{"task-workspace"},
+			func(in WorkerReady, p brine.Params, _ *brine.Recorder, res brine.Resources) (InterceptOutcome, error) {
 				handle, _ := p.GetString(0)
 				command, ok := p.GetString(1)
 				if !ok {
 					return InterceptOutcome{}, fmt.Errorf("expected a handle and a command")
 				}
 
-				// A real interception lands in a pod whose /tmp belongs to that
-				// pod alone. The local shell adapter runs in THIS host's /tmp,
-				// which outlives the run, so a second invocation of the suite
-				// would find the first one's supervisor state and replay its log
-				// instead of exec-ing afresh. That is the adapter's platform
-				// leaking, not anything the runtime does, so it is cleared at
-				// the source rather than papered over in the assertion.
-				if err := clearSupervisorState(handle); err != nil {
-					return InterceptOutcome{}, err
+				workspace, ok := res.Get("task-workspace").(TaskWorkspace)
+				if !ok || workspace.Dir == "" {
+					return InterceptOutcome{}, fmt.Errorf("task-workspace resource has no intercept root: %T", res.Get("task-workspace"))
 				}
 
 				out := InterceptOutcome{Ready: in}
@@ -874,6 +852,13 @@ func workerInterceptDefinitions() []brine.StepDefinition {
 					out.ExitStatus, out.Err = result.ExitStatus, waitErr
 				} else {
 					out.Err = runErr
+				}
+				// Successful exec (including a non-zero exit) must use this
+				// scenario's state; execution errors keep their original message.
+				if out.Err == nil {
+					if err := workspace.requireSupervisorState(); err != nil {
+						return InterceptOutcome{}, err
+					}
 				}
 				if out.Err != nil {
 					out.Message = out.Err.Error()
@@ -1424,9 +1409,9 @@ func daemonBodyFor(bodies map[string]string, path string) (string, bool) {
 // which is the whole reason ArtifactFromVolume wraps the volume at all.
 func (w WorkerReady) producerExecutor() jetbridge.PodExecutor {
 	if w.ProducerReaped {
-		return reapedPodExecutor{}
+		return localExecutor{failure: "exec stream: the producer pod has been reaped"}
 	}
-	return localShellAdapter{}
+	return localExecutor{}
 }
 
 func (w WorkerReady) wrapArtifact(vol runtime.Volume, handle string) ArtifactOutcome {
@@ -1524,33 +1509,6 @@ func readArtifact(ctx context.Context, source interface {
 		return "", err
 	}
 	return string(body), nil
-}
-
-// clearSupervisorState removes any in-pod task-supervisor state left under the
-// host's /tmp by an earlier invocation of the suite. The supervisor derives its
-// state directory from the process ID and a hash of the command, so the glob is
-// narrowed to the leading alphanumeric run of this scenario's handle — never a
-// blanket sweep, which would take another scenario's state with it.
-func clearSupervisorState(handle string) error {
-	prefix := handle
-	if i := strings.IndexFunc(handle, func(r rune) bool {
-		return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9')
-	}); i > 0 {
-		prefix = handle[:i]
-	}
-	if len(prefix) < 4 {
-		return fmt.Errorf("handle %q has no distinctive prefix to scope supervisor cleanup to", handle)
-	}
-	matches, err := filepath.Glob("/tmp/concourse-task-" + prefix + "*")
-	if err != nil {
-		return fmt.Errorf("look for stale supervisor state: %w", err)
-	}
-	for _, dir := range matches {
-		if err := os.RemoveAll(dir); err != nil {
-			return fmt.Errorf("clear stale supervisor state %q: %w", dir, err)
-		}
-	}
-	return nil
 }
 
 // failureMessage is the half of a "fails saying …" check that a combinator

@@ -5,9 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -46,7 +44,7 @@ import (
 //   - coverage_matrix.md Addendum 2 — a recording double can only tell you
 //     what it recorded, so replace it with a WORKING one and assert the round
 //     trip. resource_test.go's six spy sites and artifact_integration_test.go's
-//     five are answered by localResourceAdapter and localShellAdapter below,
+//     five are answered by localExecutor and localExecutor below,
 //     which really run the command. Nothing here asserts a pod name, a
 //     namespace, a container name or a command slice that was handed to a
 //     collaborator.
@@ -67,18 +65,11 @@ import (
 // A scenario that waits on a Kubernetes deadline HANGS rather than failing,
 // and a hang is worse than an absent test.
 type IntegrationCluster struct {
-	Namespace string
-	Ctx       context.Context
-	DB        JetbridgeDB
-	DBWorker  db.Worker
-	Team      db.Team
-	Clientset *fake.Clientset
-	Config    jetbridge.Config
-	Worker    *jetbridge.Worker
+	Cluster
+	Team db.Team
 
-	// ResourceRoot is the directory the local resource scripts live in, when
-	// the worker runs resource scripts. Empty otherwise.
-	ResourceRoot string
+	// Workspace owns both supervisor state and any installed resource image.
+	Workspace TaskWorkspace
 
 	// Artifacts holds artifact volumes a scenario created and named, so a
 	// later step can feed one to a container as an input.
@@ -193,66 +184,6 @@ type NodeIPOutcome struct {
 // Working doubles
 // ---------------------------------------------------------------------------
 
-// localResourceAdapter is a REAL PodExecutor that runs the resource script the
-// runtime asked for, from a directory laid out like a resource image.
-//
-// This is coverage_matrix.md Addendum 2 applied to resource_test.go's six spy
-// sites, which assert:
-//
-//	call.command == []string{"/opt/resource/in", "/tmp/build/get"}
-//	call.podName == "get-resource-handle"
-//	call.namespace == "test-namespace"
-//	call.containerName == "main"
-//	io.ReadAll(call.stdin) == stdinJSON
-//
-// None of that proves the script ran, that its answer reached the caller, or
-// that a non-zero exit came back. Installing a real script at
-// <root>/opt/resource/in that echoes its argument and its stdin proves the
-// path, the argument and the stdin plumbing TOGETHER, through the only thing a
-// get step consumer ever sees: the bytes on stdout.
-//
-// The named behavioral difference: the script runs in a local directory
-// instead of in a pod. It records nothing.
-type localResourceAdapter struct {
-	root string
-}
-
-func (l localResourceAdapter) ExecInPod(
-	ctx context.Context,
-	_, _, _ string,
-	command []string,
-	stdin io.Reader,
-	stdout, stderr io.Writer,
-	_ bool,
-	_ jetbridge.ExecAttrs,
-) error {
-	if len(command) == 0 {
-		return fmt.Errorf("empty command")
-	}
-	// Resolve the pod-absolute script path into this adapter's root. The
-	// runtime builds the path; we honour it rather than asserting on it, so a
-	// runtime that execs the wrong script finds nothing there.
-	//
-	// Anything the resource image does not provide runs as named, which is
-	// what makes a scenario able to hold a resource step and a task step at
-	// once: the image is an overlay on the local filesystem, not a jail.
-	program := filepath.Join(l.root, filepath.Clean("/"+command[0]))
-	if _, err := os.Stat(program); err != nil {
-		program = command[0]
-	}
-	cmd := exec.CommandContext(ctx, program, command[1:]...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
-
-	err := cmd.Run()
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		// Surface a non-zero exit the way the SPDY executor does, so the
-		// runtime's exit-code extraction is on the real path.
-		return &jetbridge.ExecExitError{ExitCode: exitErr.ExitCode()}
-	}
-	return err
-}
-
 // installResourceScripts writes a tiny but real resource implementation: three
 // scripts that read the request from stdin, echo it back with the directory
 // they were given, and exit with the code the scenario asked for.
@@ -292,43 +223,22 @@ func IntegrationDefinitions() []brine.StepDefinition {
 func integrationClusterDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		brine.DefineMapUsing[brine.Empty, IntegrationCluster](
+		TransformUsing[brine.Empty, IntegrationCluster](
 			"a jetbridge cluster in namespace {string}",
-			[]string{"jetbridge-db"},
-			func(_ brine.Empty, p brine.Params, _ *brine.Recorder, res brine.Resources) (IntegrationCluster, error) {
-				ns, ok := p.GetString(0)
-				if !ok {
-					return IntegrationCluster{}, fmt.Errorf("expected a namespace parameter")
-				}
-				return newIntegrationCluster(res, ns)
+			[]string{"jetbridge-db", "task-workspace"},
+			func(_ brine.Empty, a Args, res brine.Resources) (IntegrationCluster, error) {
+				return newIntegrationCluster(res, a.String(0))
 			},
 		),
 
-		// The worker gets an exec transport. Which one depends on what the
-		// scenario is about: a shell for task commands, a resource image for
-		// the get/put/check protocol.
-		Refine[IntegrationCluster]("the worker execs commands in pods",
-			func(in IntegrationCluster, _ Args) IntegrationCluster {
-				in.Worker.SetExecutor(localShellAdapter{})
-				return in
-			}),
-
-		brine.DefineMap[IntegrationCluster, IntegrationCluster](
+		Transform[IntegrationCluster, IntegrationCluster](
 			"the worker runs resource scripts that exit {int}",
-			func(in IntegrationCluster, p brine.Params, _ *brine.Recorder) (IntegrationCluster, error) {
-				code, ok := p.GetInt(0)
-				if !ok {
-					return IntegrationCluster{}, fmt.Errorf("expected an exit code parameter")
-				}
-				root, err := os.MkdirTemp("", "brine-resource")
-				if err != nil {
-					return IntegrationCluster{}, fmt.Errorf("create resource root: %w", err)
-				}
-				if err := installResourceScripts(root, code); err != nil {
+			func(in IntegrationCluster, a Args) (IntegrationCluster, error) {
+				root := filepath.Join(in.Workspace.Dir, "resource-image")
+				if err := installResourceScripts(root, a.Int(0)); err != nil {
 					return IntegrationCluster{}, err
 				}
-				in.ResourceRoot = root
-				in.Worker.SetExecutor(localResourceAdapter{root: root})
+				in.Worker.SetExecutor(localExecutor{root: root, supervisorRoot: in.Workspace.Dir})
 				return in, nil
 			},
 		),
@@ -344,42 +254,32 @@ func integrationClusterDefinitions() []brine.StepDefinition {
 				return in
 			}),
 
-		brine.DefineMap[IntegrationCluster, IntegrationCluster](
+		Transform[IntegrationCluster, IntegrationCluster](
 			"an artifact volume {string} persisted for this team",
-			func(in IntegrationCluster, p brine.Params, _ *brine.Recorder) (IntegrationCluster, error) {
-				name, ok := p.GetString(0)
-				if !ok {
-					return IntegrationCluster{}, fmt.Errorf("expected a volume name parameter")
-				}
-				return persistArtifactVolume(in, name, in.Team.ID())
+			func(in IntegrationCluster, a Args) (IntegrationCluster, error) {
+				return persistArtifactVolume(in, a.String(0), in.Team.ID())
 			},
 		),
 
-		brine.DefineMap[IntegrationCluster, IntegrationCluster](
+		Transform[IntegrationCluster, IntegrationCluster](
 			"an artifact volume {string} persisted for a second team",
-			func(in IntegrationCluster, p brine.Params, _ *brine.Recorder) (IntegrationCluster, error) {
-				name, ok := p.GetString(0)
-				if !ok {
-					return IntegrationCluster{}, fmt.Errorf("expected a volume name parameter")
-				}
+			func(in IntegrationCluster, a Args) (IntegrationCluster, error) {
 				other, err := in.DB.TeamFactory.CreateTeam(atc.Team{Name: "artifact-team-2"})
 				if err != nil {
 					return IntegrationCluster{}, fmt.Errorf("create second team: %w", err)
 				}
-				return persistArtifactVolume(in, name, other.ID())
+				return persistArtifactVolume(in, a.String(0), other.ID())
 			},
 		),
 
 		// A volume row written straight through the repository, the way a
 		// previous step's output already sits in the database when the next
 		// step looks it up.
-		brine.DefineMap[IntegrationCluster, IntegrationCluster](
+		Transform[IntegrationCluster, IntegrationCluster](
 			"a volume {string} recorded against this worker",
-			func(in IntegrationCluster, p brine.Params, _ *brine.Recorder) (IntegrationCluster, error) {
-				handle, ok := p.GetString(0)
-				if !ok {
-					return IntegrationCluster{}, fmt.Errorf("expected a handle parameter")
-				}
+			func(in IntegrationCluster, a Args) (IntegrationCluster, error) {
+				handle := a.String(0)
+
 				creating, err := in.DB.VolumeRepository.CreateVolumeWithHandle(
 					handle, in.Team.ID(), in.DBWorker.Name(), db.VolumeTypeArtifact)
 				if err != nil {
@@ -397,28 +297,19 @@ func integrationClusterDefinitions() []brine.StepDefinition {
 func integrationStepDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		brine.DefineMap[IntegrationCluster, StepDraft](
+		Transform[IntegrationCluster, StepDraft](
 			"a {string} step in pipeline {string} job {string} build {string} named {string} with handle {string}",
-			func(in IntegrationCluster, p brine.Params, _ *brine.Recorder) (StepDraft, error) {
-				kind, _ := p.GetString(0)
-				pipeline, _ := p.GetString(1)
-				job, _ := p.GetString(2)
-				build, _ := p.GetString(3)
-				stepName, _ := p.GetString(4)
-				handle, ok := p.GetString(5)
-				if !ok {
-					return StepDraft{}, fmt.Errorf("expected six parameters")
-				}
-				containerType := db.ContainerType(kind)
+			func(in IntegrationCluster, a Args) (StepDraft, error) {
+				containerType := db.ContainerType(a.String(0))
 				return StepDraft{
 					Cluster: in,
-					Handle:  handle,
+					Handle:  a.String(5),
 					Metadata: db.ContainerMetadata{
 						Type:         containerType,
-						PipelineName: pipeline,
-						JobName:      job,
-						BuildName:    build,
-						StepName:     stepName,
+						PipelineName: a.String(1),
+						JobName:      a.String(2),
+						BuildName:    a.String(3),
+						StepName:     a.String(4),
 					},
 					Spec: runtime.ContainerSpec{
 						TeamID:    in.Team.ID(),
@@ -433,16 +324,12 @@ func integrationStepDefinitions() []brine.StepDefinition {
 
 		// The sparse case: `fly execute` has no pipeline and no job, so the
 		// pod has nothing to be named after but the handle.
-		brine.DefineMap[IntegrationCluster, StepDraft](
+		Transform[IntegrationCluster, StepDraft](
 			"a task step with handle {string} and no pipeline or job",
-			func(in IntegrationCluster, p brine.Params, _ *brine.Recorder) (StepDraft, error) {
-				handle, ok := p.GetString(0)
-				if !ok {
-					return StepDraft{}, fmt.Errorf("expected a handle parameter")
-				}
+			func(in IntegrationCluster, a Args) (StepDraft, error) {
 				return StepDraft{
 					Cluster:  in,
-					Handle:   handle,
+					Handle:   a.String(0),
 					Metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
 					Spec: runtime.ContainerSpec{
 						TeamID:    in.Team.ID(),
@@ -457,24 +344,18 @@ func integrationStepDefinitions() []brine.StepDefinition {
 
 		// A resource step is described by its type, not by an image URL: the
 		// worker resolves "git" to concourse/git-resource itself.
-		brine.DefineMap[IntegrationCluster, StepDraft](
+		Transform[IntegrationCluster, StepDraft](
 			"a {string} step {string} for resource type {string}",
-			func(in IntegrationCluster, p brine.Params, _ *brine.Recorder) (StepDraft, error) {
-				kind, _ := p.GetString(0)
-				handle, _ := p.GetString(1)
-				resourceType, ok := p.GetString(2)
-				if !ok {
-					return StepDraft{}, fmt.Errorf("expected three parameters")
-				}
-				containerType := db.ContainerType(kind)
+			func(in IntegrationCluster, a Args) (StepDraft, error) {
+				containerType := db.ContainerType(a.String(0))
 				return StepDraft{
 					Cluster:  in,
-					Handle:   handle,
+					Handle:   a.String(1),
 					Metadata: db.ContainerMetadata{Type: containerType},
 					Spec: runtime.ContainerSpec{
 						TeamID:         in.Team.ID(),
 						TeamName:       in.Team.Name(),
-						ImageSpec:      runtime.ImageSpec{ResourceType: resourceType},
+						ImageSpec:      runtime.ImageSpec{ResourceType: a.String(2)},
 						Type:           containerType,
 						CertsBindMount: true,
 					},
@@ -517,14 +398,11 @@ func integrationStepDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineMap[StepDraft, StepDraft](
+		Transform[StepDraft, StepDraft](
 			"the step takes the artifact {string} as an input at {string}",
-			func(in StepDraft, p brine.Params, _ *brine.Recorder) (StepDraft, error) {
-				name, _ := p.GetString(0)
-				path, ok := p.GetString(1)
-				if !ok {
-					return StepDraft{}, fmt.Errorf("expected an artifact name and a path")
-				}
+			func(in StepDraft, a Args) (StepDraft, error) {
+				name := a.String(0)
+
 				named, found := in.Cluster.Artifacts[name]
 				if !found {
 					return StepDraft{}, fmt.Errorf("no artifact volume named %q was created", name)
@@ -540,7 +418,7 @@ func integrationStepDefinitions() []brine.StepDefinition {
 				}
 				in.Spec.Inputs = append(in.Spec.Inputs, runtime.Input{
 					Artifact:        vol,
-					DestinationPath: path,
+					DestinationPath: a.String(1),
 				})
 				return in, nil
 			},
@@ -624,15 +502,13 @@ func integrationStepDefinitions() []brine.StepDefinition {
 		// it is created, that it is of that type, and that it is on that
 		// worker. No combinator compares more than one value, and folding two
 		// of the three into a getter error would demote them to presumptions.
-		brine.DefineCheck[StepCreated](
+		Assert[StepCreated](
 			"the container row for {string} is a created {string} container on worker {string}",
-			func(in StepCreated, p brine.Params, _ *brine.Recorder) error {
-				handle, _ := p.GetString(0)
-				wantType, _ := p.GetString(1)
-				wantWorker, ok := p.GetString(2)
-				if !ok {
-					return fmt.Errorf("expected a handle, a type and a worker name")
-				}
+			func(in StepCreated, args Args) error {
+				handle := args.String(0)
+				wantType := args.String(1)
+				wantWorker := args.String(2)
+
 				return checkContainerRow(in.Cluster, handle, wantType, wantWorker)
 			},
 		),
@@ -655,44 +531,30 @@ func integrationRunDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// Exec mode with a shell that really runs the command, and a wait, so
-		// what the scenario asserts is what a build log would show.
-		// A task step with no stdin runs under the in-pod supervisor, whose
-		// state directory is keyed on the process id plus a hash of the
-		// COMMAND. Left alone that key is stable across runs, so a second
-		// `brine run` would replay the first run's log instead of executing
-		// anything — green, and blind to a regression. Threading the
-		// scenario-scoped workspace through the command makes the key unique
-		// per run without changing what the command prints.
-		brine.DefineMapUsing[StepCreated, StepRan](
+		// The scenario-owned supervisor root prevents cross-run replay without
+		// changing the command. The task must leave its state inside that root.
+		Transform[StepCreated, StepRan](
 			"the step's container runs the command {string}",
-			[]string{"task-workspace"},
-			func(in StepCreated, p brine.Params, _ *brine.Recorder, res brine.Resources) (StepRan, error) {
-				command, ok := p.GetString(0)
-				if !ok {
-					return StepRan{}, fmt.Errorf("expected a command parameter")
-				}
-				workspace, ok := res.Get("task-workspace").(TaskWorkspace)
-				if !ok {
-					return StepRan{}, fmt.Errorf("task-workspace resource is %T", res.Get("task-workspace"))
-				}
+			func(in StepCreated, a Args) (StepRan, error) {
 				log := new(bytes.Buffer)
-				return runStep(in, runtime.ProcessSpec{
+				out, err := runStep(in, runtime.ProcessSpec{
 					Path: "/bin/sh",
-					Args: []string{"-c", command + " # " + workspace.Dir},
+					Args: []string{"-c", a.String(0)},
 				}, runtime.ProcessIO{Stdout: log, Stderr: log}, true, log)
+				if err == nil {
+					err = out.Err
+				}
+				if err == nil && in.Metadata.Type == db.ContainerTypeTask {
+					err = in.Cluster.Workspace.requireSupervisorState()
+				}
+				return out, err
 			},
 		),
 
 		// The resource protocol: a request on stdin, an answer on stdout.
-		brine.DefineMap[StepCreated, StepRan](
+		Transform[StepCreated, StepRan](
 			"the resource is asked for {string} into {string}",
-			func(in StepCreated, p brine.Params, _ *brine.Recorder) (StepRan, error) {
-				request, _ := p.GetString(0)
-				dir, ok := p.GetString(1)
-				if !ok {
-					return StepRan{}, fmt.Errorf("expected a request and a directory")
-				}
+			func(in StepCreated, a Args) (StepRan, error) {
 				script := "/opt/resource/in"
 				if in.Metadata.Type == db.ContainerTypePut {
 					script = "/opt/resource/out"
@@ -701,27 +563,23 @@ func integrationRunDefinitions() []brine.StepDefinition {
 				return runStep(in, runtime.ProcessSpec{
 					ID:   "resource",
 					Path: script,
-					Args: []string{dir},
+					Args: []string{a.String(1)},
 				}, runtime.ProcessIO{
-					Stdin:  bytes.NewBufferString(request),
+					Stdin:  bytes.NewBufferString(a.String(0)),
 					Stdout: out,
 					Stderr: new(bytes.Buffer),
 				}, true, out)
 			},
 		),
 
-		brine.DefineMap[StepCreated, StepRan](
+		Transform[StepCreated, StepRan](
 			"the resource is checked with {string}",
-			func(in StepCreated, p brine.Params, _ *brine.Recorder) (StepRan, error) {
-				request, ok := p.GetString(0)
-				if !ok {
-					return StepRan{}, fmt.Errorf("expected a request parameter")
-				}
+			func(in StepCreated, a Args) (StepRan, error) {
 				out := new(bytes.Buffer)
 				return runStep(in, runtime.ProcessSpec{
 					Path: "/opt/resource/check",
 				}, runtime.ProcessIO{
-					Stdin:  bytes.NewBufferString(request),
+					Stdin:  bytes.NewBufferString(a.String(0)),
 					Stdout: out,
 					Stderr: new(bytes.Buffer),
 				}, true, out)
@@ -731,25 +589,19 @@ func integrationRunDefinitions() []brine.StepDefinition {
 		// A pipeline is more than one step. The cluster travels inside the
 		// outcome, so the next step is described from where the last one
 		// finished rather than from a fresh Given.
-		brine.DefineMap[StepRan, StepDraft](
+		Transform[StepRan, StepDraft](
 			"next, a {string} step {string} for resource type {string}",
-			func(in StepRan, p brine.Params, _ *brine.Recorder) (StepDraft, error) {
-				kind, _ := p.GetString(0)
-				handle, _ := p.GetString(1)
-				resourceType, ok := p.GetString(2)
-				if !ok {
-					return StepDraft{}, fmt.Errorf("expected three parameters")
-				}
-				containerType := db.ContainerType(kind)
+			func(in StepRan, a Args) (StepDraft, error) {
+				containerType := db.ContainerType(a.String(0))
 				cluster := in.Created.Cluster
 				return StepDraft{
 					Cluster:  cluster,
-					Handle:   handle,
+					Handle:   a.String(1),
 					Metadata: db.ContainerMetadata{Type: containerType},
 					Spec: runtime.ContainerSpec{
 						TeamID:         cluster.Team.ID(),
 						TeamName:       cluster.Team.Name(),
-						ImageSpec:      runtime.ImageSpec{ResourceType: resourceType},
+						ImageSpec:      runtime.ImageSpec{ResourceType: a.String(2)},
 						Type:           containerType,
 						CertsBindMount: true,
 					},
@@ -783,13 +635,9 @@ func integrationRunDefinitions() []brine.StepDefinition {
 
 		// The exit status a completed step left behind, plus the pod it left
 		// behind. Both are prerequisites for a successful re-attach.
-		brine.DefineMap[StepCreated, StepCreated](
+		Transform[StepCreated, StepCreated](
 			"the step finished with exit status {string} and left its pod behind",
-			func(in StepCreated, p brine.Params, _ *brine.Recorder) (StepCreated, error) {
-				status, ok := p.GetString(0)
-				if !ok {
-					return StepCreated{}, fmt.Errorf("expected an exit status parameter")
-				}
+			func(in StepCreated, a Args) (StepCreated, error) {
 				podName := jetbridge.GeneratePodName(in.Metadata, in.Handle)
 				pod := &corev1.Pod{
 					ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: in.Cluster.Namespace},
@@ -801,7 +649,7 @@ func integrationRunDefinitions() []brine.StepDefinition {
 					Create(in.Cluster.Ctx, pod, metav1.CreateOptions{}); err != nil {
 					return StepCreated{}, fmt.Errorf("create pod %q: %w", podName, err)
 				}
-				if err := in.Container.SetProperty("concourse:exit-status", status); err != nil {
+				if err := in.Container.SetProperty("concourse:exit-status", a.String(0)); err != nil {
 					return StepCreated{}, fmt.Errorf("record exit status: %w", err)
 				}
 				return in, nil
@@ -847,13 +695,11 @@ func integrationPodCheckDefinitions() []brine.StepDefinition {
 
 		// The parameter is a regular expression, so the comparison is neither
 		// equality nor containment and no combinator expresses it.
-		brine.DefineCheck[StepRan](
+		Assert[StepRan](
 			"the pod in the cluster is named to match {string}",
-			func(in StepRan, p brine.Params, _ *brine.Recorder) error {
-				pattern, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a pattern parameter")
-				}
+			func(in StepRan, args Args) error {
+				pattern := args.String(0)
+
 				if in.Pod == nil {
 					return fmt.Errorf("no pod was created")
 				}
@@ -897,7 +743,7 @@ func integrationPodCheckDefinitions() []brine.StepDefinition {
 				got, found := in.Pod.Labels[key]
 				if !found {
 					return "", fmt.Errorf("expected the pod to carry the label %q, it carries %v",
-						key, labelKeys(in.Pod.Labels))
+						key, sortedKeys(in.Pod.Labels))
 				}
 				return got, nil
 			}),
@@ -908,7 +754,7 @@ func integrationPodCheckDefinitions() []brine.StepDefinition {
 				if in.Pod == nil {
 					return nil, fmt.Errorf("no pod was created")
 				}
-				return labelKeys(in.Pod.Labels), nil
+				return sortedKeys(in.Pod.Labels), nil
 			}),
 
 		// PN-07's hard half: Kubernetes rejects a pod whose label value is
@@ -970,15 +816,13 @@ func integrationPodCheckDefinitions() []brine.StepDefinition {
 		// that it is read from a secret at all, that it is that secret and
 		// that key, and that it carries no literal alongside. A getter can
 		// derive one value, not adjudicate three.
-		brine.DefineCheck[StepRan](
+		Assert[StepRan](
 			"the pod reads {string} from the secret {string} key {string}",
-			func(in StepRan, p brine.Params, _ *brine.Recorder) error {
-				name, _ := p.GetString(0)
-				secret, _ := p.GetString(1)
-				key, ok := p.GetString(2)
-				if !ok {
-					return fmt.Errorf("expected three parameters")
-				}
+			func(in StepRan, args Args) error {
+				name := args.String(0)
+				secret := args.String(1)
+				key := args.String(2)
+
 				env, err := integrationEnvVar(in.Pod, name)
 				if err != nil {
 					return err
@@ -1021,16 +865,14 @@ func integrationPodCheckDefinitions() []brine.StepDefinition {
 		// sentence at all: it is fixed here, and derived from the state in the
 		// check below. CheckString would compare the parameter itself, and
 		// CheckStringFor wants the expectation as a second parameter.
-		brine.DefineCheck[StepRan](
+		Assert[StepRan](
 			"the mount at {string} read from no pod before the step ran",
-			func(in StepRan, p brine.Params, _ *brine.Recorder) error {
-				path, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a mount path parameter")
-				}
+			func(in StepRan, args Args) error {
+				path := args.String(0)
+
 				bound, found := in.BoundBefore[path]
 				if !found {
-					return fmt.Errorf("no mount at %q (have %v)", path, keysOf(in.BoundBefore))
+					return fmt.Errorf("no mount at %q (have %v)", path, sortedKeys(in.BoundBefore))
 				}
 				if bound != "" {
 					return fmt.Errorf("expected the mount at %q to read from no pod before the step ran, it read from %q",
@@ -1040,19 +882,17 @@ func integrationPodCheckDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineCheck[StepRan](
+		Assert[StepRan](
 			"the mount at {string} reads from the pod the step created",
-			func(in StepRan, p brine.Params, _ *brine.Recorder) error {
-				path, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a mount path parameter")
-				}
+			func(in StepRan, args Args) error {
+				path := args.String(0)
+
 				if in.Pod == nil {
 					return fmt.Errorf("no pod was created")
 				}
 				bound, found := in.BoundAfter[path]
 				if !found {
-					return fmt.Errorf("no mount at %q (have %v)", path, keysOf(in.BoundAfter))
+					return fmt.Errorf("no mount at %q (have %v)", path, sortedKeys(in.BoundAfter))
 				}
 				if bound != in.Pod.Name {
 					return fmt.Errorf("expected the mount at %q to read from the pod %q, it reads from %q",
@@ -1082,14 +922,12 @@ func integrationPodCheckDefinitions() []brine.StepDefinition {
 
 		// Same three claims as the StepCreated form above — created, of that
 		// type, on that worker — so the same reason it keeps its own body.
-		brine.DefineCheck[StepRan](
+		Assert[StepRan](
 			"the step's container row is a created {string} container on worker {string}",
-			func(in StepRan, p brine.Params, _ *brine.Recorder) error {
-				wantType, _ := p.GetString(0)
-				wantWorker, ok := p.GetString(1)
-				if !ok {
-					return fmt.Errorf("expected a type and a worker name")
-				}
+			func(in StepRan, args Args) error {
+				wantType := args.String(0)
+				wantWorker := args.String(1)
+
 				return checkContainerRow(in.Created.Cluster, in.Created.Handle, wantType, wantWorker)
 			},
 		),
@@ -1117,13 +955,11 @@ func integrationPodCheckDefinitions() []brine.StepDefinition {
 func integrationVolumeDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		brine.DefineMap[IntegrationCluster, IntegrationVolume](
+		Transform[IntegrationCluster, IntegrationVolume](
 			"the volume {string} is looked up twice",
-			func(in IntegrationCluster, p brine.Params, _ *brine.Recorder) (IntegrationVolume, error) {
-				handle, ok := p.GetString(0)
-				if !ok {
-					return IntegrationVolume{}, fmt.Errorf("expected a handle parameter")
-				}
+			func(in IntegrationCluster, a Args) (IntegrationVolume, error) {
+				handle := a.String(0)
+
 				out := IntegrationVolume{Cluster: in, Handle: handle}
 				for i := 0; i < 2; i++ {
 					vol, found, err := in.Worker.LookupVolume(in.Ctx, handle)
@@ -1151,13 +987,11 @@ func integrationVolumeDefinitions() []brine.StepDefinition {
 
 		// The ATC process is replaced. Nothing is carried over in memory: a
 		// new worker, a new volume repository, the same database.
-		brine.DefineMap[IntegrationCluster, IntegrationVolume](
+		Transform[IntegrationCluster, IntegrationVolume](
 			"a restarted ATC looks the volume {string} up",
-			func(in IntegrationCluster, p brine.Params, _ *brine.Recorder) (IntegrationVolume, error) {
-				handle, ok := p.GetString(0)
-				if !ok {
-					return IntegrationVolume{}, fmt.Errorf("expected a handle parameter")
-				}
+			func(in IntegrationCluster, a Args) (IntegrationVolume, error) {
+				handle := a.String(0)
+
 				restarted := jetbridge.NewWorker(in.DBWorker, in.Clientset, in.Config)
 				restarted.SetVolumeRepo(db.NewVolumeRepository(in.DB.Conn))
 				vol, found, err := restarted.LookupVolume(in.Ctx, handle)
@@ -1171,13 +1005,11 @@ func integrationVolumeDefinitions() []brine.StepDefinition {
 
 		// The reaper's half of the artifact lifecycle: the row goes, and the
 		// handle stops resolving.
-		brine.DefineMap[IntegrationCluster, IntegrationVolume](
+		Transform[IntegrationCluster, IntegrationVolume](
 			"the reaper destroys the artifact volume {string}",
-			func(in IntegrationCluster, p brine.Params, _ *brine.Recorder) (IntegrationVolume, error) {
-				name, ok := p.GetString(0)
-				if !ok {
-					return IntegrationVolume{}, fmt.Errorf("expected an artifact name parameter")
-				}
+			func(in IntegrationCluster, a Args) (IntegrationVolume, error) {
+				name := a.String(0)
+
 				named, found := in.Artifacts[name]
 				if !found {
 					return IntegrationVolume{}, fmt.Errorf("no artifact volume named %q", name)
@@ -1209,15 +1041,11 @@ func integrationVolumeDefinitions() []brine.StepDefinition {
 
 		// RC-03's database half: a get step that hits the cache still has to
 		// record the association, or the next build cannot find it.
-		brine.DefineMap[IntegrationCluster, IntegrationVolume](
+		Transform[IntegrationCluster, IntegrationVolume](
 			"the volume {string} is initialised as the resource cache for type {string} version {string}",
-			func(in IntegrationCluster, p brine.Params, _ *brine.Recorder) (IntegrationVolume, error) {
-				handle, _ := p.GetString(0)
-				resourceType, _ := p.GetString(1)
-				version, ok := p.GetString(2)
-				if !ok {
-					return IntegrationVolume{}, fmt.Errorf("expected a handle, a type and a version")
-				}
+			func(in IntegrationCluster, a Args) (IntegrationVolume, error) {
+				handle := a.String(0)
+				resourceType := a.String(1)
 
 				// The worker has to offer the type before a cache for it can
 				// exist. This is the same row the registrar writes.
@@ -1239,7 +1067,7 @@ func integrationVolumeDefinitions() []brine.StepDefinition {
 				cache, err := cacheFactory.FindOrCreateResourceCache(
 					db.ForBuild(build.ID()),
 					resourceType,
-					atc.Version{"version": version},
+					atc.Version{"version": a.String(2)},
 					atc.Source{"uri": "example.invalid"},
 					nil,
 					nil,
@@ -1317,14 +1145,12 @@ func integrationVolumeDefinitions() []brine.StepDefinition {
 		// Two parameters and two independent comparisons against the same row.
 		// Splitting them across a getter would make one of them a precondition
 		// of the other, which is not what the sentence says.
-		brine.DefineCheck[IntegrationVolume](
+		Assert[IntegrationVolume](
 			"it carries the database row for handle {string} on worker {string}",
-			func(in IntegrationVolume, p brine.Params, _ *brine.Recorder) error {
-				wantHandle, _ := p.GetString(0)
-				wantWorker, ok := p.GetString(1)
-				if !ok {
-					return fmt.Errorf("expected a handle and a worker name")
-				}
+			func(in IntegrationVolume, args Args) error {
+				wantHandle := args.String(0)
+				wantWorker := args.String(1)
+
 				holder, ok2 := in.Volume.(interface{ DBVolume() db.CreatedVolume })
 				if !ok2 || holder.DBVolume() == nil {
 					return fmt.Errorf("the volume carries no database row")
@@ -1405,13 +1231,11 @@ func integrationVolumeDefinitions() []brine.StepDefinition {
 
 		// Team isolation. An artifact reachable from another team's id is a
 		// cross-team data leak, not a convenience.
-		brine.DefineMap[IntegrationCluster, IntegrationVolume](
+		Transform[IntegrationCluster, IntegrationVolume](
 			"the artifact {string} is asked for by its own team and by the other team",
-			func(in IntegrationCluster, p brine.Params, _ *brine.Recorder) (IntegrationVolume, error) {
-				name, ok := p.GetString(0)
-				if !ok {
-					return IntegrationVolume{}, fmt.Errorf("expected an artifact name parameter")
-				}
+			func(in IntegrationCluster, a Args) (IntegrationVolume, error) {
+				name := a.String(0)
+
 				named, found := in.Artifacts[name]
 				if !found {
 					return IntegrationVolume{}, fmt.Errorf("no artifact volume named %q", name)
@@ -1462,15 +1286,12 @@ func integrationVolumeDefinitions() []brine.StepDefinition {
 func integrationNodeIPDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		brine.DefineMap[brine.Empty, NodeCluster](
+		Transform[brine.Empty, NodeCluster](
 			"a cluster whose node {string} has internal address {string} and external address {string}",
-			func(_ brine.Empty, p brine.Params, _ *brine.Recorder) (NodeCluster, error) {
-				name, _ := p.GetString(0)
-				internal, _ := p.GetString(1)
-				external, ok := p.GetString(2)
-				if !ok {
-					return NodeCluster{}, fmt.Errorf("expected a name and two addresses")
-				}
+			func(_ brine.Empty, a Args) (NodeCluster, error) {
+				internal := a.String(1)
+				external := a.String(2)
+
 				var addresses []corev1.NodeAddress
 				if internal != "" {
 					addresses = append(addresses, corev1.NodeAddress{
@@ -1481,7 +1302,7 @@ func integrationNodeIPDefinitions() []brine.StepDefinition {
 						Type: corev1.NodeExternalIP, Address: external})
 				}
 				clientset := fake.NewSimpleClientset(&corev1.Node{
-					ObjectMeta: metav1.ObjectMeta{Name: name},
+					ObjectMeta: metav1.ObjectMeta{Name: a.String(0)},
 					Status:     corev1.NodeStatus{Addresses: addresses},
 				})
 				return NodeCluster{
@@ -1507,16 +1328,12 @@ func integrationNodeIPDefinitions() []brine.StepDefinition {
 		// Resolving twice is the cache case. The consumer-visible claim is
 		// that the second answer is the same as the first — not that the
 		// Nodes API went unasked, which only a recording double could say.
-		brine.DefineMap[NodeCluster, NodeIPOutcome](
+		Transform[NodeCluster, NodeIPOutcome](
 			"a caller resolves {string} twice",
-			func(in NodeCluster, p brine.Params, _ *brine.Recorder) (NodeIPOutcome, error) {
-				name, ok := p.GetString(0)
-				if !ok {
-					return NodeIPOutcome{}, fmt.Errorf("expected a node name parameter")
-				}
+			func(in NodeCluster, a Args) (NodeIPOutcome, error) {
 				out := NodeIPOutcome{}
 				for i := 0; i < 2; i++ {
-					ip, err := in.Resolver.Resolve(in.Ctx, name)
+					ip, err := in.Resolver.Resolve(in.Ctx, a.String(0))
 					if err != nil {
 						out.Err, out.Message = err, err.Error()
 						out.IsIPArg = errors.Is(err, jetbridge.ErrNodeNameIsIP)
@@ -1532,13 +1349,11 @@ func integrationNodeIPDefinitions() []brine.StepDefinition {
 		// one. That is neither membership — which one matching element would
 		// satisfy — nor a count, and the failure has to say which answer of
 		// the several differed.
-		brine.DefineCheck[NodeIPOutcome](
+		Assert[NodeIPOutcome](
 			"every answer is {string}",
-			func(in NodeIPOutcome, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected an address parameter")
-				}
+			func(in NodeIPOutcome, args Args) error {
+				want := args.String(0)
+
 				if in.Err != nil {
 					return fmt.Errorf("resolving failed: %v", in.Err)
 				}
@@ -1612,40 +1427,30 @@ func integrationNodeIPDefinitions() []brine.StepDefinition {
 // ---------------------------------------------------------------------------
 
 func newIntegrationCluster(res brine.Resources, namespace string) (IntegrationCluster, error) {
-	handle := res.Get("jetbridge-db")
-	database, ok := handle.(JetbridgeDB)
+	workspace, ok := res.Get("task-workspace").(TaskWorkspace)
 	if !ok {
-		return IntegrationCluster{}, fmt.Errorf("jetbridge-db resource is %T", handle)
+		return IntegrationCluster{}, fmt.Errorf("task-workspace resource is %T", res.Get("task-workspace"))
 	}
-
-	dbWorker, err := database.PersistNamedWorker("k8s-worker-1")
+	cluster, err := NewCluster(res, WithNamespace(namespace), WithVolumeRepo(),
+		WithExecutor(localExecutor{supervisorRoot: workspace.Dir}),
+		WithConfig(func(cfg *jetbridge.Config) {
+			cfg.PodStartupTimeout = 5 * time.Second
+			cfg.PodSchedulingTimeout = 5 * time.Second
+		}))
 	if err != nil {
 		return IntegrationCluster{}, err
 	}
-	team, err := database.TeamFactory.CreateTeam(atc.Team{Name: "main"})
+	team, err := cluster.DB.TeamFactory.CreateTeam(atc.Team{Name: "main"})
 	if err != nil {
 		return IntegrationCluster{}, fmt.Errorf("create team: %w", err)
 	}
 
-	clientset := fake.NewSimpleClientset()
-	cfg := jetbridge.NewConfig(namespace, "")
-	// Seconds, not the five-minute default: a scenario that waits on a
-	// Kubernetes deadline must fail, not hang.
-	cfg.PodStartupTimeout = 5 * time.Second
-	cfg.PodSchedulingTimeout = 5 * time.Second
-
-	worker := jetbridge.NewWorker(dbWorker, clientset, cfg)
-	worker.SetVolumeRepo(database.VolumeRepository)
+	cluster.TeamID = team.ID()
 
 	return IntegrationCluster{
-		Namespace: namespace,
-		Ctx:       context.Background(),
-		DB:        database,
-		DBWorker:  dbWorker,
+		Cluster:   cluster,
 		Team:      team,
-		Clientset: clientset,
-		Config:    cfg,
-		Worker:    worker,
+		Workspace: workspace,
 		Artifacts: map[string]NamedArtifact{},
 	}, nil
 }
@@ -1730,7 +1535,7 @@ func runStep(in StepCreated, spec runtime.ProcessSpec, pio runtime.ProcessIO, wa
 	// The pause pod has to be Running before the exec, exactly as the kubelet
 	// would have made it. Doing this BEFORE Wait is what keeps the scenario
 	// from sitting on the startup deadline.
-	if err := markIntegrationPodRunning(in.Cluster, pod.Name); err != nil {
+	if err := markPodRunning(in.Cluster.Ctx, in.Cluster.Clientset, in.Cluster.Namespace, pod.Name); err != nil {
 		return StepRan{}, err
 	}
 
@@ -1772,22 +1577,6 @@ func checkContainerRow(cluster IntegrationCluster, handle, wantType, wantWorker 
 	return nil
 }
 
-func markIntegrationPodRunning(cluster IntegrationCluster, podName string) error {
-	pods := cluster.Clientset.CoreV1().Pods(cluster.Namespace)
-	pod, err := pods.Get(cluster.Ctx, podName, metav1.GetOptions{})
-	if err != nil {
-		return fmt.Errorf("get pod %q: %w", podName, err)
-	}
-	pod.Status.Phase = corev1.PodRunning
-	pod.Status.Conditions = []corev1.PodCondition{
-		{Type: corev1.PodReady, Status: corev1.ConditionTrue},
-	}
-	if _, err := pods.UpdateStatus(cluster.Ctx, pod, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("update pod status: %w", err)
-	}
-	return nil
-}
-
 func podNameOf(vol runtime.Volume) string {
 	if named, ok := vol.(interface{ PodName() string }); ok {
 		return named.PodName()
@@ -1801,22 +1590,6 @@ func mountPaths(mounts []runtime.VolumeMount) []string {
 		paths[i] = m.MountPath
 	}
 	return paths
-}
-
-func labelKeys(labels map[string]string) []string {
-	keys := make([]string, 0, len(labels))
-	for k := range labels {
-		keys = append(keys, k)
-	}
-	return keys
-}
-
-func keysOf(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	return keys
 }
 
 func integrationMainContainer(pod *corev1.Pod) (corev1.Container, error) {

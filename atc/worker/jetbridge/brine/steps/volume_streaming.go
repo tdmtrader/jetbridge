@@ -1,18 +1,12 @@
 package steps
 
 import (
-	"bytes"
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
-	"path/filepath"
-	"sort"
 	"strings"
 	"sync/atomic"
 
@@ -23,99 +17,29 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
-	"github.com/klauspost/compress/s2"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
 
-// localExecAdapter is a REAL PodExecutor, not a spy.
-//
-// It implements the same interface the SPDY executor implements, with one
-// behavioral difference we can name: the command runs in a local directory
-// instead of inside a pod. Real tar, real filesystem, deterministic and
-// synchronous — PHILOSOPHY.md's "test adapters are real adapters", the same
-// argument that makes SynchronousTestBus legitimate.
-//
-// This is the answer to the spy sites. The ginkgo tests assert
-// `call.command == ["tar","xf","-","-C","/tmp/build/inputs"]` because a
-// RECORDING double is the only thing a recording double can tell you. A
-// WORKING double lets the scenario assert what a real consumer of the volume
-// port actually experiences: bytes put in come back out.
-//
-// It records nothing. There is nothing to assert on but the artifact.
-type localExecAdapter struct {
-	root    string // stands in for the pod's filesystem
-	failure string // non-empty: this cluster cannot run commands
-}
-
-func (l *localExecAdapter) ExecInPod(
-	ctx context.Context,
-	_, _, _ string,
-	command []string,
-	stdin io.Reader,
-	stdout, stderr io.Writer,
-	_ bool,
-	_ jetbridge.ExecAttrs,
-) error {
-	if l.failure != "" {
-		return errors.New(l.failure)
-	}
-	if len(command) == 0 {
-		return fmt.Errorf("empty command")
-	}
-
-	// Translate the pod-absolute -C target into this adapter's root. The
-	// runtime builds the path; we honour it rather than asserting on it.
-	translated := make([]string, len(command))
-	copy(translated, command)
-	for i, arg := range translated {
-		if i > 0 && translated[i-1] == "-C" {
-			dir := filepath.Join(l.root, filepath.Clean("/"+arg))
-			if err := os.MkdirAll(dir, 0o755); err != nil {
-				return fmt.Errorf("prepare %q: %w", dir, err)
-			}
-			translated[i] = dir
-		}
-	}
-
-	cmd := exec.CommandContext(ctx, translated[0], translated[1:]...)
-	// macOS bsdtar writes AppleDouble "._name" entries for extended
-	// attributes. That is this adapter's platform leaking into the archive,
-	// not anything the runtime does, so switch it off at the source rather
-	// than filtering it out of the assertion.
-	cmd.Env = append(os.Environ(), "COPYFILE_DISABLE=1")
-	// StreamIn and StreamOut hand tar a nil stderr, so a failing tar would
-	// otherwise report nothing but "exit status 2" and leave the reason on the
-	// floor. Keep whatever the caller supplied; capture only when it supplied
-	// nothing, and put the message in the error where a failing scenario shows
-	// it.
-	var captured bytes.Buffer
-	if stderr == nil {
-		stderr = &captured
-	}
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
-	if err := cmd.Run(); err != nil {
-		if said := strings.TrimSpace(captured.String()); said != "" {
-			return fmt.Errorf("exec %v: %w: %s", translated, err, said)
-		}
-		return fmt.Errorf("exec %v: %w", translated, err)
-	}
-	return nil
-}
-
 // VolumeStreamingDefinitions expresses volume behavior as artifact movement.
 // Nothing here names tar, exec, a pod, or ExecAttrs.
 func VolumeStreamingDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		brine.DefineMap[brine.Empty, VolumeSet](
+		brine.DefineMapUsing[brine.Empty, VolumeSet](
 			"a volume {string} mounted at {string}",
-			func(_ brine.Empty, p brine.Params, _ *brine.Recorder) (VolumeSet, error) {
+			[]string{"task-workspace"},
+			func(_ brine.Empty, p brine.Params, _ *brine.Recorder, res brine.Resources) (VolumeSet, error) {
+				workspace, ok := res.Get("task-workspace").(TaskWorkspace)
+				if !ok || workspace.Dir == "" {
+					return VolumeSet{}, fmt.Errorf("task-workspace resource has no volume root: %T", res.Get("task-workspace"))
+				}
 				set := VolumeSet{
-					Volumes: map[string]*jetbridge.Volume{},
-					Ctx:     context.Background(),
+					Volumes:   map[string]*jetbridge.Volume{},
+					Ctx:       context.Background(),
+					Workspace: workspace,
 				}
 				return addVolume(set, p)
 			},
@@ -136,20 +60,14 @@ func VolumeStreamingDefinitions() []brine.StepDefinition {
 				return in
 			}),
 
-		brine.DefineMap[VolumeSet, VolumeSet](
+		Transform[VolumeSet, VolumeSet](
 			"volume {string} sits on a cluster that cannot run commands",
-			func(in VolumeSet, p brine.Params, _ *brine.Recorder) (VolumeSet, error) {
-				name, ok := p.GetString(0)
-				if !ok {
-					return VolumeSet{}, fmt.Errorf("expected a volume name parameter")
-				}
-				root, err := os.MkdirTemp("", "brine-volume")
-				if err != nil {
-					return VolumeSet{}, fmt.Errorf("create volume root: %w", err)
-				}
+			func(in VolumeSet, a Args) (VolumeSet, error) {
+				name := a.String(0)
+
 				volume := jetbridge.NewDeferredVolume(
 					name+"-handle", "k8s-worker-1",
-					&localExecAdapter{root: root, failure: "exec failed: pod terminated"},
+					&localExecutor{failure: "exec failed: pod terminated"},
 					"test-namespace", "main", "/tmp/build/inputs",
 				)
 				volume.SetPodName(name + "-pod")
@@ -158,26 +76,20 @@ func VolumeStreamingDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineMap[VolumeSet, VolumeSet](
+		Transform[VolumeSet, VolumeSet](
 			"a file {string} containing {string} is put into volume {string} at {string}",
-			func(in VolumeSet, p brine.Params, _ *brine.Recorder) (VolumeSet, error) {
-				name, _ := p.GetString(0)
-				content, _ := p.GetString(1)
-				volName, _ := p.GetString(2)
-				destPath, ok := p.GetString(3)
-				if !ok {
-					return VolumeSet{}, fmt.Errorf("expected four parameters")
-				}
+			func(in VolumeSet, a Args) (VolumeSet, error) {
+				volName := a.String(2)
 
 				volume, err := in.volume(volName)
 				if err != nil {
 					return VolumeSet{}, err
 				}
-				archive, err := tarOfOneFile(name, content)
+				archive, err := tarOfOneFile(a.String(0), a.String(1))
 				if err != nil {
 					return VolumeSet{}, err
 				}
-				if err := volume.StreamIn(in.Ctx, destPath, compression.NewGzipCompression(), 0, archive); err != nil {
+				if err := volume.StreamIn(in.Ctx, a.String(3), compression.NewGzipCompression(), 0, archive); err != nil {
 					return VolumeSet{}, fmt.Errorf("stream into %q: %w", volName, err)
 				}
 				return in, nil
@@ -186,14 +98,11 @@ func VolumeStreamingDefinitions() []brine.StepDefinition {
 
 		// The user story the volume-to-volume ginkgo test was really about:
 		// one step's output becomes the next step's input.
-		brine.DefineMap[VolumeSet, VolumeSet](
+		Transform[VolumeSet, VolumeSet](
 			"the contents of volume {string} are moved into volume {string}",
-			func(in VolumeSet, p brine.Params, _ *brine.Recorder) (VolumeSet, error) {
-				srcName, _ := p.GetString(0)
-				dstName, ok := p.GetString(1)
-				if !ok {
-					return VolumeSet{}, fmt.Errorf("expected two volume name parameters")
-				}
+			func(in VolumeSet, a Args) (VolumeSet, error) {
+				srcName := a.String(0)
+				dstName := a.String(1)
 
 				src, err := in.volume(srcName)
 				if err != nil {
@@ -219,99 +128,22 @@ func VolumeStreamingDefinitions() []brine.StepDefinition {
 
 		// Reading is an attempt, so that failure is assertable rather than
 		// fatal to the scenario.
-		brine.DefineMap[VolumeSet, VolumeRead](
+		Transform[VolumeSet, VolumeRead](
 			"volume {string} is read from {string}",
-			func(in VolumeSet, p brine.Params, _ *brine.Recorder) (VolumeRead, error) {
-				volName, _ := p.GetString(0)
-				srcPath, ok := p.GetString(1)
-				if !ok {
-					return VolumeRead{}, fmt.Errorf("expected two parameters")
-				}
-
-				volume, err := in.volume(volName)
+			func(in VolumeSet, a Args) (VolumeRead, error) {
+				volume, err := in.volume(a.String(0))
 				if err != nil {
 					return VolumeRead{}, err
 				}
 
-				stream, streamErr := volume.StreamOut(in.Ctx, srcPath, compression.NewGzipCompression())
-				if streamErr != nil {
-					return VolumeRead{Err: streamErr, Message: streamErr.Error()}, nil
-				}
-				defer stream.Close()
-
-				files, readErr := filesInGzippedTar(stream)
-				if readErr != nil {
-					return VolumeRead{Err: readErr, Message: readErr.Error()}, nil
-				}
-				return VolumeRead{Files: files}, nil
+				return readArtifactFiles(in.Ctx, volume, a.String(1)), nil
 			},
 		),
 
-		// StreamIn must decompress what the Streamer hands it. Every other
-		// streaming scenario uses gzip, and gzip CANNOT witness that step:
-		// bsdtar auto-detects it, and libarchive auto-detects zstd too, so
-		// with the decompressor removed tar still extracts the archive and
-		// every one of those scenarios keeps passing. Verified on this host —
-		// bsdtar 3.5.3 accepted both encodings undecompressed.
-		//
-		// S2 settles it. libarchive has no Snappy reader, so an
-		// undecompressed S2 stream is refused outright, and Concourse offers
-		// s2 as a compression option. The assertion is about the runtime doing
-		// the work, not about the extractor being clever.
-		brine.DefineMap[VolumeSet, VolumeSet](
-			"a file {string} containing {string} is put into volume {string} compressed with s2",
-			func(in VolumeSet, p brine.Params, _ *brine.Recorder) (VolumeSet, error) {
-				name, _ := p.GetString(0)
-				content, _ := p.GetString(1)
-				volName, ok := p.GetString(2)
-				if !ok {
-					return VolumeSet{}, fmt.Errorf("expected a name, content and volume")
-				}
-				volume, err := in.volume(volName)
-				if err != nil {
-					return VolumeSet{}, err
-				}
-
-				// The PLAIN tar, not the gzipped one: a Streamer applies
-				// exactly one encoding, and s2-wrapping an already-gzipped tar
-				// would leave tar itself facing a gzip stream after StreamIn
-				// decompressed the s2 layer. bsdtar hides that by
-				// auto-detecting gzip; GNU tar reading a pipe does not
-				// auto-detect at all and exits 2 with "Archive is compressed.
-				// Use -z option", which is how this scenario failed on Linux
-				// while passing on macOS.
-				raw, err := plainTarOfOneFile(name, content)
-				if err != nil {
-					return VolumeSet{}, err
-				}
-
-				// compression.Compression only reads; the Streamer compresses
-				// with the same library on the way in, so this does too.
-				enc := compression.NewS2Compression()
-				var packed bytes.Buffer
-				w := s2.NewWriter(&packed)
-				if _, err := w.Write(raw); err != nil {
-					return VolumeSet{}, fmt.Errorf("s2 write: %w", err)
-				}
-				if err := w.Close(); err != nil {
-					return VolumeSet{}, fmt.Errorf("close s2 writer: %w", err)
-				}
-
-				if err := volume.StreamIn(in.Ctx, ".", enc, 0, &packed); err != nil {
-					return VolumeSet{}, fmt.Errorf("stream in: %w", err)
-				}
-				return in, nil
-			},
-		),
-
-		brine.DefineMap[VolumeSet, VolumeRead](
+		Transform[VolumeSet, VolumeRead](
 			"a file is put into volume {string}",
-			func(in VolumeSet, p brine.Params, _ *brine.Recorder) (VolumeRead, error) {
-				volName, ok := p.GetString(0)
-				if !ok {
-					return VolumeRead{}, fmt.Errorf("expected a volume name parameter")
-				}
-				volume, err := in.volume(volName)
+			func(in VolumeSet, a Args) (VolumeRead, error) {
+				volume, err := in.volume(a.String(0))
 				if err != nil {
 					return VolumeRead{}, err
 				}
@@ -346,13 +178,11 @@ func VolumeStreamingDefinitions() []brine.StepDefinition {
 
 		// Keeps its own body: the match is case-INSENSITIVE, which CheckContains
 		// is not, and the failure must have happened at all.
-		brine.DefineCheck[VolumeRead](
+		Assert[VolumeRead](
 			"it fails rather than panicking, saying {string}",
-			func(in VolumeRead, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a message parameter")
-				}
+			func(in VolumeRead, args Args) error {
+				want := args.String(0)
+
 				if in.Err == nil {
 					return fmt.Errorf("expected a failure mentioning %q, but it succeeded", want)
 				}
@@ -365,6 +195,23 @@ func VolumeStreamingDefinitions() []brine.StepDefinition {
 	}
 }
 
+// readArtifactFiles observes the same gzip archive contract for exec-backed volumes
+// and daemon-backed artifacts. Setup errors remain fatal at the caller; read
+// errors remain scenario state, so failure steps can inspect them.
+func readArtifactFiles(ctx context.Context, volume runtime.Artifact, path string) VolumeRead {
+	stream, streamErr := volume.StreamOut(ctx, path, compression.NewGzipCompression())
+	if streamErr != nil {
+		return VolumeRead{Err: streamErr, Message: streamErr.Error()}
+	}
+	defer stream.Close()
+
+	files, readErr := filesInGzippedTar(stream)
+	if readErr != nil {
+		return VolumeRead{Err: readErr, Message: readErr.Error()}
+	}
+	return VolumeRead{Files: files}
+}
+
 func addVolume(set VolumeSet, p brine.Params) (VolumeSet, error) {
 	name, _ := p.GetString(0)
 	mountPath, ok := p.GetString(1)
@@ -372,14 +219,14 @@ func addVolume(set VolumeSet, p brine.Params) (VolumeSet, error) {
 		return VolumeSet{}, fmt.Errorf("expected a name and a mount path")
 	}
 
-	root, err := os.MkdirTemp("", "brine-volume")
+	root, err := os.MkdirTemp(set.Workspace.Dir, "volume-")
 	if err != nil {
 		return VolumeSet{}, fmt.Errorf("create volume root: %w", err)
 	}
 
 	volume := jetbridge.NewDeferredVolume(
 		name+"-handle", "k8s-worker-1",
-		&localExecAdapter{root: root},
+		&localExecutor{root: root},
 		"test-namespace", "main", mountPath,
 	)
 	volume.SetPodName(name + "-pod")
@@ -421,11 +268,8 @@ func VolumeIdentityDefinitions() []brine.StepDefinition {
 					return VolumeIdentity{}, fmt.Errorf("mark volume created: %w", err)
 				}
 
-				root, err := os.MkdirTemp("", "brine-identity")
-				if err != nil {
-					return VolumeIdentity{}, fmt.Errorf("temp dir: %w", err)
-				}
-				vol := jetbridge.NewVolume(created, &localExecAdapter{root: root},
+				// This fixture checks identity only; it never streams or runs a command.
+				vol := jetbridge.NewVolume(created, &localExecutor{},
 					"identity-pod", "test-namespace", "main", "/tmp/build/inputs")
 
 				daemonVol := jetbridge.NewDaemonSetVolume(
@@ -439,29 +283,19 @@ func VolumeIdentityDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		CheckThat[VolumeIdentity]("the volume identifies itself by its database handle",
+		// Identity is one contract: the runtime handle, owning worker and
+		// database rows must all survive construction. Keep each field check.
+		CheckThat[VolumeIdentity]("the volumes retain their handles, worker and database rows",
 			func(in VolumeIdentity) error {
 				if in.Volume.Handle() != in.DBHandle {
 					return fmt.Errorf(
 						"expected the volume to identify as %q — the handle the artifact repository keys on — got %q",
 						in.DBHandle, in.Volume.Handle())
 				}
-				return nil
-			}),
-
-		CheckThat[VolumeIdentity]("the volume names the worker it lives on",
-			func(in VolumeIdentity) error {
 				if in.Volume.Source() != in.WorkerName {
 					return fmt.Errorf("expected the volume to name worker %q, got %q",
 						in.WorkerName, in.Volume.Source())
 				}
-				return nil
-			}),
-
-		// The DB row is what survives a web restart; a volume that lost it
-		// would be invisible to garbage collection.
-		CheckThat[VolumeIdentity]("both volume kinds still carry their database row",
-			func(in VolumeIdentity) error {
 				if in.Volume.DBVolume() == nil {
 					return fmt.Errorf("the deferred volume lost its database row")
 				}
@@ -489,7 +323,7 @@ func VolumeIdentityDefinitions() []brine.StepDefinition {
 // comes from.
 //
 // The daemon here is a REAL http.Server speaking the daemon's wire contract,
-// the same argument localExecAdapter makes for exec. Its ONE named
+// the same argument localExecutor makes for exec. Its ONE named
 // behavioural difference is how it treats a connection: it may drop the first
 // few, drop every one, or answer with an internal error. It records nothing an
 // assertion reads. The counter behind "drops the first N" decides what the
@@ -606,9 +440,16 @@ func nodeAndPeers(ip string) *fake.Clientset {
 	)
 }
 
-// withFallback gives the volume the daemon discovery the ATC is configured
-// with, when the scenario said it has any.
-func (r RemoteArtifact) withFallback(vol *jetbridge.DaemonSetVolume, cs *fake.Clientset, port int) *jetbridge.DaemonSetVolume {
+// volumeAtAddress uses the same node resolution and optional peer discovery
+// for live and refused endpoints. Only their transport availability differs.
+func (r RemoteArtifact) volumeAtAddress(ip string, port int) *jetbridge.DaemonSetVolume {
+	cs := nodeAndPeers(ip)
+	cfg := jetbridge.NewConfig(remoteDaemonNamespace, "")
+	cfg.ArtifactDaemonPort = port
+	vol := jetbridge.NewDaemonSetVolume(
+		r.Key, r.Key, "k8s-worker-1", nil, remoteArtifactNode,
+		cfg, jetbridge.NewNodeIPResolver(cs),
+	)
 	if !r.Fallback {
 		return vol
 	}
@@ -638,15 +479,7 @@ func (r RemoteArtifact) daemon() (*jetbridge.DaemonSetVolume, func(), error) {
 		if err != nil {
 			return nil, nil, err
 		}
-		cs := nodeAndPeers("127.0.0.1")
-		cfg := jetbridge.NewConfig(remoteDaemonNamespace, "")
-		cfg.ArtifactDaemonPort = port
-
-		vol := jetbridge.NewDaemonSetVolume(
-			r.Key, r.Key, "k8s-worker-1", nil, remoteArtifactNode,
-			cfg, jetbridge.NewNodeIPResolver(cs),
-		)
-		return r.withFallback(vol, cs, port), func() {}, nil
+		return r.volumeAtAddress("127.0.0.1", port), func() {}, nil
 	}
 
 	body, err := plainTarOfOneFile(r.FileName, r.Content)
@@ -665,16 +498,7 @@ func (r RemoteArtifact) daemon() (*jetbridge.DaemonSetVolume, func(), error) {
 		return nil, nil, fmt.Errorf("the daemon is listening on %T, not TCP", server.Listener.Addr())
 	}
 
-	clientset := nodeAndPeers(addr.IP.String())
-
-	cfg := jetbridge.NewConfig(remoteDaemonNamespace, "")
-	cfg.ArtifactDaemonPort = addr.Port
-
-	vol := jetbridge.NewDaemonSetVolume(
-		r.Key, r.Key, "k8s-worker-1", nil, remoteArtifactNode,
-		cfg, jetbridge.NewNodeIPResolver(clientset),
-	)
-	return r.withFallback(vol, clientset, addr.Port), server.Close, nil
+	return r.volumeAtAddress(addr.IP.String(), addr.Port), server.Close, nil
 }
 
 // handler answers the two routes the artifact daemon answers for a step
@@ -765,17 +589,12 @@ func VolumeGapDefinitions() []brine.StepDefinition {
 func remoteArtifactDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		brine.DefineMap[brine.Empty, RemoteArtifact](
+		Transform[brine.Empty, RemoteArtifact](
 			"an artifact on another node holding the file {string} containing {string}",
-			func(_ brine.Empty, p brine.Params, _ *brine.Recorder) (RemoteArtifact, error) {
-				name, _ := p.GetString(0)
-				content, ok := p.GetString(1)
-				if !ok {
-					return RemoteArtifact{}, fmt.Errorf("expected a file name and its contents")
-				}
+			func(_ brine.Empty, a Args) (RemoteArtifact, error) {
 				return RemoteArtifact{
 					Ctx: context.Background(), Key: remoteArtifactKey,
-					FileName: name, Content: content,
+					FileName: a.String(0), Content: a.String(1),
 				}, nil
 			},
 		),
@@ -854,17 +673,7 @@ func remoteArtifactDefinitions() []brine.StepDefinition {
 				// gzip is what Streamer.StreamFile asks for, and it is what
 				// makes the answer readable as an archive rather than as an
 				// opaque body.
-				stream, streamErr := volume.StreamOut(in.Ctx, ".", compression.NewGzipCompression())
-				if streamErr != nil {
-					return VolumeRead{Err: streamErr, Message: streamErr.Error()}, nil
-				}
-				defer stream.Close()
-
-				files, readErr := filesInGzippedTar(stream)
-				if readErr != nil {
-					return VolumeRead{Err: readErr, Message: readErr.Error()}, nil
-				}
-				return VolumeRead{Files: files}, nil
+				return readArtifactFiles(in.Ctx, volume, "."), nil
 			},
 		),
 
@@ -901,7 +710,7 @@ func remoteArtifactDefinitions() []brine.StepDefinition {
 						"expected the read to fail, but it succeeded and handed back %d files (%v) — "+
 							"a step that cannot reach its input must be told so, not given an empty "+
 							"directory it will then fail on with no explanation",
-						len(in.Files), sortedFileNames(in.Files))
+						len(in.Files), sortedKeys(in.Files))
 				}
 				return nil
 			}),
@@ -983,15 +792,6 @@ func remoteArtifactDefinitions() []brine.StepDefinition {
 	}
 }
 
-func sortedFileNames(files map[string]string) []string {
-	names := make([]string, 0, len(files))
-	for n := range files {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	return names
-}
-
 func inputPlacementDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
@@ -1019,19 +819,15 @@ func inputPlacementDefinitions() []brine.StepDefinition {
 		// the producing step left it. Nothing here stands in for an artifact:
 		// the handle the scheduler is asked about is the one the volume
 		// reports.
-		brine.DefineMap[InputPlacement, InputPlacement](
+		Transform[InputPlacement, InputPlacement](
 			"an input artifact that already lives on node {string}",
-			func(in InputPlacement, p brine.Params, _ *brine.Recorder) (InputPlacement, error) {
-				node, ok := p.GetString(0)
-				if !ok {
-					return InputPlacement{}, fmt.Errorf("expected a node name parameter")
-				}
+			func(in InputPlacement, a Args) (InputPlacement, error) {
 				volume, _, err := in.Cluster.Worker.CreateVolumeForArtifact(
 					in.Cluster.Ctx, in.Cluster.TeamID)
 				if err != nil {
 					return InputPlacement{}, fmt.Errorf("create artifact volume: %w", err)
 				}
-				in.Locator.Record(jetbridge.ArtifactKey(volume.Handle()), node, "")
+				in.Locator.Record(jetbridge.ArtifactKey(volume.Handle()), a.String(0), "")
 				in.Inputs = append(in.Inputs, runtime.Input{
 					Artifact:        volume,
 					DestinationPath: fmt.Sprintf("/tmp/build/workdir/input-%d", len(in.Inputs)),

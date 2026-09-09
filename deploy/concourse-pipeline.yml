@@ -155,8 +155,8 @@ jobs:
           go test -v -count=1 -timeout 5m ./atc/worker/jetbridge/...
           echo "=== All jetbridge tests passed ==="
 
-# The brine suite: 568 scenarios across 35 feature files, driven by the Rust
-# CLI in `--mode sync` against the jetbridge adapter built from
+# The brine suite, driven by the Rust CLI in `--mode sync` against the
+# jetbridge adapter built from
 # atc/worker/jetbridge/brine. The CLI's verdict is the one that counts -- it
 # folds in the manifest's `budgets.undefined: 0` and any unsatisfied wiring,
 # neither of which the adapter's own exit code can see. v9 already ships
@@ -212,11 +212,15 @@ jobs:
           # the sources next to it, so a stale one silently tests old steps.
           go build -o .build/brine-adapter-jetbridge ./cmd/brine-adapter-jetbridge
           go vet ./...
+          # Root Go test jobs do not discover this nested module.
+          go test -count=1 -timeout 5m ./...
 
           # Run through the CLI, never `adapter run` -- the adapter without
           # --features executes zero scenarios and exits 0, which is a green
           # build that tested nothing.
-          brine run --mode sync
+          # Require >=40% production Jetbridge statement coverage from brine
+          # alone; the script runs the full CLI and rejects empty profiles.
+          sh scripts/coverage
 
 - name: tag-rc
   serial_groups: [pipeline]

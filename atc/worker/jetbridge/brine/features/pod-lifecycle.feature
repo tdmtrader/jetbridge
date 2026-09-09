@@ -10,6 +10,14 @@ Feature: What a step gets back from its pod
   diagnostics that go with a bad one, the deadlines, the transient errors the
   runtime absorbs, and the sidecars that must not outlive the step.
 
+  Ordinary supervised execution is covered by task-command.feature and real
+  cancellation by step-closing.feature. Cases explicitly named Legacy
+  compatibility retain Process.Wait's distinct pod-watcher and immediate-delete
+  behavior; they do not describe production task or reaper behavior.
+  Diagnostic outlines cover production exec startup and direct compatibility.
+  The compatibility rows retain the legacy Process.Wait diagnostic calls;
+  they are not a model of production task execution or reaper behavior.
+
   Source: k8s_runtime_behavioral_spec_20260331 (PE-09, PE-10, RF-08, RF-10 to
   RF-13, RF-15, SC-08 to SC-10). Migrated from process_test.go, which carried
   no requirement identifiers.
@@ -17,8 +25,8 @@ Feature: What a step gets back from its pod
   # PE-09. The exit status is the step's whole result, and the pod going away
   # afterwards is what keeps a busy cluster from filling with finished pods.
   @PE-09
-  Scenario: A step whose pod succeeds reports success and leaves nothing behind
-    Given a jetbridge worker on a fake Kubernetes cluster
+  Scenario: Legacy compatibility: A step whose pod succeeds reports success and leaves nothing behind
+    Given a jetbridge worker using "direct compatibility" execution
     And a task container "wait-success" is running
     When the pod ends with the main container exiting 0
     Then the step comes back with exit status 0
@@ -28,8 +36,8 @@ Feature: What a step gets back from its pod
   # reserved for the runtime being unable to say what happened. Conflating the
   # two is what turns "your tests failed" into "errored".
   @PE-09
-  Scenario: A step whose command fails reports the exit code rather than an error
-    Given a jetbridge worker on a fake Kubernetes cluster
+  Scenario: Legacy compatibility: A step whose command fails reports the exit code rather than an error
+    Given a jetbridge worker using "direct compatibility" execution
     And a task container "wait-nonzero" is running
     When the pod ends with the main container exiting 1
     Then the step comes back with exit status 1
@@ -45,8 +53,8 @@ Feature: What a step gets back from its pod
   # relies on exactly the same thing. If this ever goes intermittently red, the
   # race is real and the fix belongs in process.go, not here.
   @PE-10
-  Scenario: A cancelled build takes its pod with it
-    Given a jetbridge worker on a fake Kubernetes cluster
+  Scenario: Legacy compatibility: A cancelled build takes its pod with it
+    Given a jetbridge worker using "direct compatibility" execution
     And a task container "wait-cancelled" is running
     When the build is cancelled while the step is waiting
     Then the step fails saying "context canceled"
@@ -56,13 +64,20 @@ Feature: What a step gets back from its pod
   # and shows that scheduling was fine, so they do not go looking at the
   # cluster.
   @RF-10
-  Scenario: An image that cannot be pulled names the image and the scheduling that worked
-    Given a jetbridge worker on a fake Kubernetes cluster
+  Scenario Outline: An image that cannot be pulled names the image and the scheduling that worked
+    Given a jetbridge worker using "<execution>" execution
     And a task container "diag-imagepull" is running
     When the main container cannot pull the image "nonexistent:latest" after being scheduled onto "node-1"
     Then the step fails saying "ImagePullBackOff"
     And the build log shows "nonexistent:latest"
     And the build log shows "Condition: PodScheduled=True"
+
+    And the failure came from "<execution>" execution
+
+    Examples:
+      | execution            |
+      | production           |
+      | direct compatibility |
 
   # RF-10. The step's own container is fine; something running alongside it is
   # not. Naming which container failed is the difference between a fixable
@@ -71,10 +86,10 @@ Feature: What a step gets back from its pod
   # process_test.go has this case TWICE under one name ("includes sidecar
   # container status in diagnostics", lines 446 and 490), differing only in the
   # sidecar and image names. It is one requirement with two sets of fixture
-  # strings, so it migrates as one outline with two rows.
+  # strings, so one outline covers both fixtures on both execution paths.
   @RF-10 @SC-08
   Scenario Outline: A sidecar that cannot start is named in the diagnostics
-    Given a jetbridge worker on a fake Kubernetes cluster
+    Given a jetbridge worker using "<execution>" execution
     And a task container "diag-sidecar" built from image "docker:///busybox"
     And a sidecar "<sidecar>" runs "<image>" alongside it
     And the described container starts
@@ -83,10 +98,14 @@ Feature: What a step gets back from its pod
     And the build log shows "<sidecar>"
     And the build log shows "<image>"
 
+    And the failure came from "<execution>" execution
+
     Examples:
-      | sidecar       | image               |
-      | my-sidecar    | bad-sidecar:latest  |
-      | redis-sidecar | redis:bad-tag       |
+      | execution            | sidecar       | image              |
+      | production           | my-sidecar    | bad-sidecar:latest |
+      | production           | redis-sidecar | redis:bad-tag      |
+      | direct compatibility | my-sidecar    | bad-sidecar:latest |
+      | direct compatibility | redis-sidecar | redis:bad-tag      |
 
   # RF-10/RF-11. An eviction is the cluster's decision. The build log has to
   # carry the node and the kubelet's own reason, or the user starts debugging
@@ -96,19 +115,26 @@ Feature: What a step gets back from its pod
   # without the node, and is covered here and by failure-priority.feature's
   # RF-05 scenario between them; it is not repeated as a third scenario.
   @RF-10 @RF-11
-  Scenario: An evicted step names the node it was evicted from and why
-    Given a jetbridge worker on a fake Kubernetes cluster
+  Scenario Outline: An evicted step names the node it was evicted from and why
+    Given a jetbridge worker using "<execution>" execution
     And a task container "diag-nodename" is running
     When the node "gke-pool-spot-a1b2c3" evicts the pod for running out of "ephemeral-storage"
     Then the build log shows "Node: gke-pool-spot-a1b2c3"
     And the build log shows "Evicted"
     And the build log shows "low on resource: ephemeral-storage"
 
+    And the failure came from "<execution>" execution
+
+    Examples:
+      | execution            |
+      | production           |
+      | direct compatibility |
+
   # RF-10. Killed once is bad luck; killed twice is a memory limit that is too
   # low, and only the restart history distinguishes them.
   @RF-10
-  Scenario: A repeatedly OOM-killed container shows its message and its restart history
-    Given a jetbridge worker on a fake Kubernetes cluster
+  Scenario Outline: A repeatedly OOM-killed container shows its message and its restart history
+    Given a jetbridge worker using "<execution>" execution
     And a task container "diag-restarts" is running
     When the main container on node "node-1" is killed twice for exceeding "512Mi"
     Then the step fails saying "OOMKilled"
@@ -118,12 +144,19 @@ Feature: What a step gets back from its pod
     And the build log shows "RestartCount: 2"
     And the build log shows "Last termination: OOMKilled"
 
+    And the failure came from "<execution>" execution
+
+    Examples:
+      | execution            |
+      | production           |
+      | direct compatibility |
+
   # RF-11. The node was out of disk and it was a spot instance — two facts that
   # together say "this will happen again, move the workload" and that nothing
   # in the pod's own status can tell you.
   @RF-11
-  Scenario: An eviction from a pressured spot node explains both
-    Given a jetbridge worker on a fake Kubernetes cluster
+  Scenario Outline: An eviction from a pressured spot node explains both
+    Given a jetbridge worker using "<execution>" execution
     And the cluster has a spot node "gke-spot-node-1" that is short of disk
     And a task container "diag-nodepressure" is running
     When the node "gke-spot-node-1" evicts the pod for running out of "ephemeral-storage"
@@ -132,27 +165,48 @@ Feature: What a step gets back from its pod
     And the build log shows "spot/preemptible instance"
     And the build log shows "cloud.google.com/gke-spot=true"
 
+    And the failure came from "<execution>" execution
+
+    Examples:
+      | execution            |
+      | production           |
+      | direct compatibility |
+
   # RF-11. A drain is planned maintenance. Saying so stops the user filing a
   # bug against their pipeline.
   @RF-11
-  Scenario: An eviction from a draining node says the node was cordoned
-    Given a jetbridge worker on a fake Kubernetes cluster
+  Scenario Outline: An eviction from a draining node says the node was cordoned
+    Given a jetbridge worker using "<execution>" execution
     And the cluster has a cordoned node "draining-node-1"
     And a task container "diag-cordoned" is running
     When the node "draining-node-1" evicts the pod for running out of "memory"
     Then the build log shows "cordoned (unschedulable)"
     And the build log shows "node may be draining"
 
+    And the failure came from "<execution>" execution
+
+    Examples:
+      | execution            |
+      | production           |
+      | direct compatibility |
+
   # RF-11. Diagnostics are best-effort. A node that has already been deleted
   # must degrade to a line in the log, not to a second failure on top of the
   # first.
   @RF-11
-  Scenario: A node that no longer exists does not cost a second failure
-    Given a jetbridge worker on a fake Kubernetes cluster
+  Scenario Outline: A node that no longer exists does not cost a second failure
+    Given a jetbridge worker using "<execution>" execution
     And a task container "diag-nonode" is running
     When the node "nonexistent-node" evicts the pod for running out of "memory"
     Then the build log shows "nonexistent-node"
     And the build log shows "unable to fetch details"
+
+    And the failure came from "<execution>" execution
+
+    Examples:
+      | execution            |
+      | production           |
+      | direct compatibility |
 
   # RF-08. A pod that never starts must not hold a build open forever, and the
   # deadline it hit is worth nothing without the pod's state alongside it.
@@ -196,8 +250,8 @@ Feature: What a step gets back from its pod
   # RF-12. API servers drop calls. A build that fails on one of them is a build
   # that fails for no reason the user can act on.
   @RF-12
-  Scenario Outline: A step survives transient failures to read its pod
-    Given a jetbridge worker on a fake Kubernetes cluster
+  Scenario Outline: Legacy compatibility: A step survives transient failures to read its pod
+    Given a jetbridge worker using "direct compatibility" execution
     And a task container "transient-tolerated" is running
     When the pod succeeds but the next <failures> status reads fail
     Then the step comes back with exit status 0
@@ -210,8 +264,8 @@ Feature: What a step gets back from its pod
   # RF-13. Tolerance has a limit; past it the build has to be told, not left
   # hanging on a cluster that is not answering.
   @RF-13
-  Scenario: A cluster that stops answering fails the step rather than hanging
-    Given a jetbridge worker on a fake Kubernetes cluster
+  Scenario: Legacy compatibility: A cluster that stops answering fails the step rather than hanging
+    Given a jetbridge worker using "direct compatibility" execution
     And a task container "transient-exhausted" is running
     When every read of the pod status fails
     Then the step fails saying "consecutive API errors"
@@ -230,70 +284,68 @@ Feature: What a step gets back from its pod
   # The operator's seam, not the user's: an image nobody can pull is a registry
   # or credentials problem, and it shows up as a rate on a dashboard long
   # before anyone reads the build that hit it.
-  Scenario: An unpullable image is counted for the operator
-    Given a jetbridge worker on a fake Kubernetes cluster
+  Scenario Outline: An unpullable image is counted for the operator
+    Given a jetbridge worker using "<execution>" execution
     And a task container "metric-imagepull" is running
     When the image cannot be pulled, with the failure counters read either side
-    Then the metered step fails saying "ImagePullBackOff"
+    Then the step fails saying "ImagePullBackOff"
     And the image pull failure count has gone up by 1
 
-  # How long pods take to start is the number that tells an operator their
-  # cluster is under-provisioned before any build fails.
-  #
-  # DRIFT, recorded rather than copied: process_test.go asserts
-  # `K8sPodStartupDuration.Max()` is `>= 0`. Gauge.Max() returns the current
-  # value — 0 — when nothing has been recorded, so that assertion passes
-  # whether or not the runtime ever writes the gauge. It cannot fail. The
-  # scenario below makes the pod take a measurable moment to come up so the
-  # recorded value can be distinguished from an unrecorded one, which is the
-  # assertion the original was reaching for.
-  Scenario: A pod that takes a moment to start has that moment recorded
-    Given a jetbridge worker that execs into its pods
-    And a task container "metric-startup" is running
-    When the pod takes a moment to reach Running while the step waits
-    Then the recorded pod startup duration is at least 1 milliseconds
+    And the failure came from "<execution>" execution
+
+    Examples:
+      | execution            |
+      | production           |
+      | direct compatibility |
+
+  # Startup duration is checked by task-command.feature's first supervised
+  # task. The shared runner resets the destructive gauge before Wait and makes
+  # startup observable; the threshold remains >= 1ms, not a vacuous >= 0.
 
   # SC-10. The pod outlives the step's own command whenever a sidecar is still
   # running, so somebody has to take it away. If nobody does, a postgres
   # sidecar runs until the reaper notices, on a node the build has finished
   # with.
   @SC-10
-  Scenario: A step whose sidecar is still running still finishes, and its pod goes
-    Given a jetbridge worker on a fake Kubernetes cluster
-    And a task container "sidecar-lifecycle" built from image "docker:///busybox"
-    And a sidecar "postgres" runs "postgres:15" alongside it
+  Scenario Outline: Legacy compatibility: main completion wins over a running sidecar
+    Given a jetbridge worker using "direct compatibility" execution
+    And a task container "<handle>" built from image "docker:///busybox"
+    And a sidecar "<sidecar>" runs "<image>" alongside it
     And the described container starts
-    When the main container exits 0 while the sidecar "postgres" keeps running
-    Then the step comes back with exit status 0
+    When the main container exits <exit> while the sidecar "<sidecar>" keeps running
+    Then the step comes back with exit status <exit>
     And the pod has been removed from the cluster
 
-  @SC-10
-  Scenario: A failing step with a running sidecar still reports its own exit code
-    Given a jetbridge worker on a fake Kubernetes cluster
-    And a task container "sidecar-nonzero" built from image "docker:///busybox"
-    And a sidecar "redis" runs "redis:7" alongside it
-    And the described container starts
-    When the main container exits 42 while the sidecar "redis" keeps running
-    Then the step comes back with exit status 42
+    Examples:
+      | handle            | sidecar  | image       | exit |
+      | sidecar-lifecycle | postgres | postgres:15 | 0    |
+      | sidecar-nonzero   | redis    | redis:7     | 42   |
 
   # SC-08. A sidecar that never starts is a step that never starts. Failing
   # fast is the difference between a clear error and a build that sits at the
   # startup deadline.
   @SC-08
-  Scenario: A sidecar that cannot start fails the step instead of stalling it
-    Given a jetbridge worker on a fake Kubernetes cluster
+  Scenario Outline: A sidecar that cannot start fails the step instead of stalling it
+    Given a jetbridge worker using "<execution>" execution
     And a task container "sidecar-failfast" built from image "docker:///busybox"
     And a sidecar "bad-image" runs "nonexistent:latest" alongside it
     And the described container starts
     When the sidecar "bad-image" cannot pull the image "nonexistent:latest" while the main container is still being created
     Then the step fails saying "ImagePullBackOff"
 
+    And the failure came from "<execution>" execution
+
+    Examples:
+      | execution            |
+      | production           |
+      | direct compatibility |
+
   # SC-09. The other half of SC-08, and the one that matters more: once the
   # step's command has exited, a broken sidecar is not the user's problem and
   # must not turn a green build red.
   @SC-09
-  Scenario: A sidecar that breaks after the step has finished does not fail it
-    Given a jetbridge worker on a fake Kubernetes cluster
+  Scenario: Legacy compatibility: A sidecar that breaks after the step has finished does not fail it
+    Given a jetbridge worker using "direct compatibility" execution
     And a task container "sidecar-late-failure" built from image "docker:///busybox"
     And a sidecar "bad-image" runs "nonexistent:latest" alongside it
     And the described container starts

@@ -13,16 +13,26 @@ Feature: Running a task command
   shell-quoted user command, and contained `trap '' HUP`. None of that runs the
   command. Everything below does.
 
-  @PE-08
-  Scenario: A task's output reaches the build log
+  # Completion also records the status the next web reads and the worker label
+  # used by the reaper. A delayed fake-kubelet startup lets this same supervised
+  # task verify the operator's duration metric, including a reset before Wait.
+  @PE-01 @PE-08
+  Scenario: A task's startup is timed and its output reaches the build log
     Given a jetbridge worker that really runs task commands
-    When a task "echo-task" runs "echo hello"
-    Then the build log contains "hello"
+    When a task "echo-task" runs "echo hello world"
+    Then the build log contains "hello world"
     And the task exits 0
+    And the finished step left exit status "0" on its container
+    And the step's pod is labelled for the worker that owns it
+    And the recorded pod startup duration is at least 1 milliseconds
+    And the supervisor state belongs to this task workspace
+    And the pod is a placeholder, not the step's command
+    And the pod is still on the cluster afterwards
 
   # The reason the command is shell-quoted at all. A naive assembly breaks on
   # spaces and operators, and comparing the assembled string to a literal
-  # cannot tell you whether the shell will accept it.
+  # cannot tell you whether the shell will accept it. Plain spaces are already
+  # covered by the initial echo hello world task; the rows vary other syntax.
   #
   # NOTE for whoever adds a row: a double quote cannot appear inside a
   # {string} argument — the capture ends at the quote and the step stops
@@ -38,30 +48,39 @@ Feature: Running a task command
 
     Examples:
       | slug      | command                          | output      |
-      | spaces    | echo hello world                 | hello world |
       | operator  | echo first && echo second        | second      |
       | quoted    | echo 'a b c'                     | a b c       |
       | path      | echo ./cmd/... -o /tmp/out       | ./cmd/...   |
 
   # PE-08's last clause: "Extract exit code from ExecExitError on command
-  # failure."
+  # failure." The immediate result and the status recovered by a new container
+  # object are checked separately, so a broken writer or reader cannot hide.
   @PE-08
   Scenario: A failing command's exit code reaches the consumer
     Given a jetbridge worker that really runs task commands
     When a task "failing-task" runs "echo about to fail; exit 3"
     Then the build log contains "about to fail"
     And the task exits 3
+    And the web dies after the step finished and a new web takes over
+    Then the task exits 3
 
   # What the supervisor is FOR. The command appends a line each time it
   # actually runs, so the build log shows whether the re-exec resumed the
   # completed run or started a second one. No previous test asserted this;
-  # `trap '' HUP` being present in a string does not.
+  # `trap '' HUP` being present in a string does not. Both annotation-present
+  # re-exec and missing-annotation recovery must resume this one command.
   Scenario: A web restart resumes a finished task instead of re-running it
     Given a jetbridge worker that really runs task commands
     When a task "survivor" runs "echo ran >> $WORKSPACE/runs; cat $WORKSPACE/runs"
     And the web restarts and the task is re-executed
     Then the build log contains "ran" exactly 1 time(s)
     And the task exits 0
+    And the web dies before the exit status is recorded and a new web takes over
+    And the new web runs the same step again
+    Then attaching was refused saying "no completion status"
+    And the cluster is running exactly 1 pod for the step
+    And the task exits 0
+    And the build log contains "ran" exactly 1 time(s)
 
   # The companion, and what makes the scenario above discriminating: state is
   # keyed on the process ID AND a hash of the command, so a DIFFERENT command

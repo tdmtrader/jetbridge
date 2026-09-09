@@ -11,7 +11,6 @@ import (
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // ProcessGapDefinitions closes what mutating process.go exposed. Three of the
@@ -33,7 +32,7 @@ func ProcessGapDefinitions() []brine.StepDefinition {
 				// Impatient, so the deadline lands in seconds rather than the
 				// five-minute default. Same values process_test.go used.
 				cluster, err := NewCluster(res,
-					WithExecutor(execStub{}),
+					WithExecutor(localExecutor{}),
 					WithConfig(func(cfg *jetbridge.Config) {
 						cfg.PodSchedulingTimeout = 3 * time.Second
 						cfg.PodStartupTimeout = 2 * time.Second
@@ -74,27 +73,20 @@ func ProcessGapDefinitions() []brine.StepDefinition {
 					return StepOutcome{}, fmt.Errorf("run container: %w", err)
 				}
 
-				pods := clientset.CoreV1().Pods(namespace)
-				pod, err := pods.Get(ctx, handle, metav1.GetOptions{})
-				if err != nil {
-					return StepOutcome{}, fmt.Errorf("get pod: %w", err)
-				}
-				pod.Status.Phase = corev1.PodPending
-				pod.Status.Conditions = []corev1.PodCondition{{
-					Type:    corev1.PodScheduled,
-					Status:  corev1.ConditionFalse,
-					Reason:  "Unschedulable",
-					Message: "0/3 nodes are available: insufficient cpu.",
-				}}
-				if _, err := pods.UpdateStatus(ctx, pod, metav1.UpdateOptions{}); err != nil {
-					return StepOutcome{}, fmt.Errorf("update pod status: %w", err)
+				if err := updateTaskPodStatus(ctx, clientset, namespace, handle, func(pod *corev1.Pod) {
+					pod.Status.Phase = corev1.PodPending
+					pod.Status.Conditions = []corev1.PodCondition{{
+						Type:    corev1.PodScheduled,
+						Status:  corev1.ConditionFalse,
+						Reason:  "Unschedulable",
+						Message: "0/3 nodes are available: insufficient cpu.",
+					}}
+				}); err != nil {
+					return StepOutcome{}, err
 				}
 
 				_, waitErr := process.Wait(ctx)
-				msg := ""
-				if waitErr != nil {
-					msg = waitErr.Error()
-				}
+				msg := errorMessage(waitErr)
 				return StepOutcome{Err: waitErr, Message: msg, Stderr: stderr.String()}, nil
 			},
 		),
@@ -104,15 +96,11 @@ func ProcessGapDefinitions() []brine.StepDefinition {
 		// or the container never started at all. The fallback decides whether
 		// a build passes, and both directions were uncovered — a Failed pod
 		// defaulting to 0 turns a dead task into a green build.
-		brine.DefineMap[StepRunning, StepOutcome](
+		Transform[StepRunning, StepOutcome](
 			"the pod reaches {string} without ever reporting a container status",
-			func(in StepRunning, p brine.Params, _ *brine.Recorder) (StepOutcome, error) {
-				phase, ok := p.GetString(0)
-				if !ok {
-					return StepOutcome{}, fmt.Errorf("expected a pod phase parameter")
-				}
+			func(in StepRunning, a Args) (StepOutcome, error) {
 				return in.settlePod(func(pod *corev1.Pod) {
-					pod.Status.Phase = corev1.PodPhase(phase)
+					pod.Status.Phase = corev1.PodPhase(a.String(0))
 					pod.Status.ContainerStatuses = nil
 				})
 			},
@@ -143,32 +131,18 @@ func ProcessGapDefinitions() []brine.StepDefinition {
 		// container happens to have terminated first. The sidecar is listed
 		// ahead of main here deliberately: reading "any terminated container"
 		// then picks up the sidecar's 0 and reports a failed step as green.
-		brine.DefineMap[StepRunning, StepOutcome](
+		Transform[StepRunning, StepOutcome](
 			"a sidecar exits {int} before the main container exits {int}",
-			func(in StepRunning, p brine.Params, _ *brine.Recorder) (StepOutcome, error) {
-				sidecarCode, ok := p.GetInt(0)
-				if !ok {
-					return StepOutcome{}, fmt.Errorf("expected a sidecar exit code")
-				}
-				mainCode, ok := p.GetInt(1)
-				if !ok {
-					return StepOutcome{}, fmt.Errorf("expected a main exit code")
-				}
+			func(in StepRunning, a Args) (StepOutcome, error) {
 				return in.settlePod(func(pod *corev1.Pod) {
 					pod.Status.Phase = corev1.PodFailed
 					pod.Status.ContainerStatuses = []corev1.ContainerStatus{
-						{
-							Name: "log-shipper",
-							State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
-								ExitCode: int32(sidecarCode),
-							}},
-						},
-						{
-							Name: "main",
-							State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
-								ExitCode: int32(mainCode),
-							}},
-						},
+						terminatedStatus("log-shipper", corev1.ContainerStateTerminated{
+							ExitCode: int32(a.Int(0)),
+						}),
+						terminatedStatus("main", corev1.ContainerStateTerminated{
+							ExitCode: int32(a.Int(1)),
+						}),
 					}
 				})
 			},

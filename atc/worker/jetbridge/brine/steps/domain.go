@@ -211,8 +211,9 @@ type SpansRecorded struct {
 // carry: no recorded exec calls, no command slice, no pod name. There is
 // nothing to assert on but the artifact.
 type VolumeSet struct {
-	Volumes map[string]*jetbridge.Volume
-	Ctx     context.Context
+	Volumes   map[string]*jetbridge.Volume
+	Ctx       context.Context
+	Workspace TaskWorkspace
 }
 
 func (v VolumeSet) volume(name string) (*jetbridge.Volume, error) {
@@ -243,26 +244,35 @@ func containsFold(haystack, needle string) bool {
 // running the same command never share supervisor state.
 type TaskWorkspace struct {
 	Dir string
+	// Disposal follows the allocation, not a potentially changed public Dir.
+	ownedDir string
 }
 
 // TaskCluster is a worker whose executor really runs commands.
 type TaskCluster struct {
-	Namespace string
-	Worker    *jetbridge.Worker
-	Clientset *fake.Clientset
-	Ctx       context.Context
+	ClusterReady
 	Workspace TaskWorkspace
 }
 
 // TaskOutcome is what the consumer saw: the build log, the exit status, and
 // enough context to re-execute the same task the way a restarted web would.
 type TaskOutcome struct {
-	Cluster    TaskCluster
-	Handle     string
-	Script     string
-	Log        string
-	ExitStatus int
-	Err        error
+	PodStartupDuration float64
+	Cluster            TaskCluster
+	Handle             string
+	Script             string
+	Log                string
+	ExitStatus         int
+	Err                error
+	Message            string
+	Container          runtime.Container
+
+	Props     map[string]string
+	Pods      []string
+	PodLabels map[string]string
+
+	AttachErr     error
+	AttachMessage string
 }
 
 // PodNameRequest and GeneratedPodName are the pod-naming states. The seam is
@@ -360,4 +370,36 @@ type VolumeIdentity struct {
 	DaemonVolume *jetbridge.DaemonSetVolume
 	DBHandle     string
 	WorkerName   string
+}
+
+// Status constructors share only Kubernetes literal wrapping. Callers retain
+// phases, ordering, exit details and any exceptional status fields explicitly.
+func terminatedStatus(name string, state corev1.ContainerStateTerminated) corev1.ContainerStatus {
+	return corev1.ContainerStatus{
+		Name:  name,
+		State: corev1.ContainerState{Terminated: &state},
+	}
+}
+
+func waitingStatus(name string, state corev1.ContainerStateWaiting) corev1.ContainerStatus {
+	return corev1.ContainerStatus{
+		Name:  name,
+		State: corev1.ContainerState{Waiting: &state},
+	}
+}
+
+func runningStatus(name string) corev1.ContainerStatus {
+	return corev1.ContainerStatus{
+		Name:  name,
+		State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+	}
+}
+
+// errorMessage preserves the error snapshot each outcome records, including
+// the empty message for success. Call it where the original guard ran.
+func errorMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }

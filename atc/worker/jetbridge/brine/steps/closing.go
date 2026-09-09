@@ -11,7 +11,7 @@ package steps
 // Every double below is a REAL implementation with a named behavioral
 // difference, per coverage_matrix.md Addendum 2:
 //
-//   - closingShellAdapter is a real PodExecutor that RUNS the command, in this
+//   - localExecutor is a real PodExecutor that RUNS the command, in this
 //     process's shell instead of in a pod. It records nothing. It replaces the
 //     `expectSupervisedExec(fakeExecutor.execCalls[0].command, ...)` family,
 //     which asserted the shape of a string nothing ever executed.
@@ -29,8 +29,7 @@ package steps
 // migrations are landing in this package concurrently.
 
 import (
-	"archive/tar"
-	"bytes"
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -38,7 +37,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +49,7 @@ import (
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
@@ -69,132 +68,32 @@ func ClosingDefinitions() []brine.StepDefinition {
 // Family 1 — a whole step, end to end (integration_test.go)
 // ===========================================================================
 
-// ClosingCluster is a jetbridge worker whose executor really runs commands.
-// It is distinct from TaskCluster because these scenarios keep the container
-// itself — the properties a restarted web reads back live on it, not on the
-// process.
-type ClosingCluster struct {
-	ClosingNamespace string
-	ClosingWorker    *jetbridge.Worker
-	ClosingClientset *fake.Clientset
-	ClosingCtx       context.Context
-}
-
-// ClosingRun is what a consumer and an operator can see after a step has been
-// driven to completion: the log, the exit status, the properties the container
-// carries, the pods on the cluster, and — after a restart — whether attaching
-// was possible.
-type ClosingRun struct {
-	Cluster   ClosingCluster
-	Handle    string
-	Script    string
-	Container runtime.Container
-
-	Log        string
-	ExitStatus int
-	Err        error
-	Message    string
-
-	Props     map[string]string
-	Pods      []string
-	PodLabels map[string]string
-
-	AttachErr     error
-	AttachMessage string
-}
-
-// closingShellAdapter is a real PodExecutor: it runs the command it is given.
-//
-// Its named behavioral difference is that the command runs in this process's
-// shell rather than in a pod. It records nothing, so no scenario below can
-// assert what string was assembled — only what came back out.
-type closingShellAdapter struct{}
-
-func (closingShellAdapter) ExecInPod(
-	ctx context.Context,
-	_, _, _ string,
-	command []string,
-	_ io.Reader,
-	stdout, stderr io.Writer,
-	_ bool,
-	_ jetbridge.ExecAttrs,
-) error {
-	if len(command) == 0 {
-		return fmt.Errorf("empty command")
-	}
-	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
-	cmd.Stdout, cmd.Stderr = stdout, stderr
-	err := cmd.Run()
-
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return &jetbridge.ExecExitError{ExitCode: exitErr.ExitCode()}
-	}
-	return err
-}
-
 func closingStepDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		brine.DefineMapUsing[brine.Empty, ClosingCluster](
-			"a jetbridge worker driving a whole step from end to end",
-			[]string{"jetbridge-db"},
-			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder, res brine.Resources) (ClosingCluster, error) {
-				cluster, err := NewCluster(res,
-					WithNamespace("ci-namespace"),
-					WithExecutor(closingShellAdapter{}),
-				)
-				if err != nil {
-					return ClosingCluster{}, err
-				}
-				namespace, clientset, worker := cluster.Namespace, cluster.Clientset, cluster.Worker
-
-				return ClosingCluster{
-					ClosingNamespace: namespace,
-					ClosingWorker:    worker,
-					ClosingClientset: clientset,
-					ClosingCtx:       context.Background(),
-				}, nil
-			},
-		),
-
-		// The whole workflow the ginkgo case called "create container → run →
-		// wait → exit", with the command really running.
-		brine.DefineMap[ClosingCluster, ClosingRun](
-			"the step {string} runs {string} and finishes",
-			func(in ClosingCluster, p brine.Params, _ *brine.Recorder) (ClosingRun, error) {
-				handle, _ := p.GetString(0)
-				script, ok := p.GetString(1)
-				if !ok {
-					return ClosingRun{}, fmt.Errorf("expected a handle and a command")
-				}
-				return closingRunStep(in, handle, script, nil)
-			},
-		),
-
 		// The reattach case: web 1 finished, but died before the exit status
 		// was recorded, so the pod survives with no completion annotation.
-		brine.DefineMap[ClosingRun, ClosingRun](
+		brine.DefineMap[TaskOutcome, TaskOutcome](
 			"the web dies before the exit status is recorded and a new web takes over",
-			func(in ClosingRun, _ brine.Params, _ *brine.Recorder) (ClosingRun, error) {
-				pods := in.Cluster.ClosingClientset.CoreV1().Pods(in.Cluster.ClosingNamespace)
-				pod, err := pods.Get(in.Cluster.ClosingCtx, in.Handle, metav1.GetOptions{})
+			func(in TaskOutcome, _ brine.Params, _ *brine.Recorder) (TaskOutcome, error) {
+				pods := in.Cluster.Clientset.CoreV1().Pods(in.Cluster.Namespace)
+				pod, err := pods.Get(in.Cluster.Ctx, in.Handle, metav1.GetOptions{})
 				if err != nil {
-					return ClosingRun{}, fmt.Errorf("get pod %q: %w", in.Handle, err)
+					return TaskOutcome{}, fmt.Errorf("get pod %q: %w", in.Handle, err)
 				}
 				pod.Annotations = nil
-				if _, err := pods.Update(in.Cluster.ClosingCtx, pod, metav1.UpdateOptions{}); err != nil {
-					return ClosingRun{}, fmt.Errorf("strip completion annotation: %w", err)
+				if _, err := pods.Update(in.Cluster.Ctx, pod, metav1.UpdateOptions{}); err != nil {
+					return TaskOutcome{}, fmt.Errorf("strip completion annotation: %w", err)
 				}
 
-				container, err := closingContainer(in.Cluster, in.Handle)
+				container, err := findTaskContainer(in.Cluster, in.Handle)
 				if err != nil {
-					return ClosingRun{}, err
+					return TaskOutcome{}, err
 				}
 
 				out := in
 				out.Container = container
-				_, attachErr := container.Attach(in.Cluster.ClosingCtx, in.Handle, runtime.ProcessIO{})
+				_, attachErr := container.Attach(in.Cluster.Ctx, in.Handle, runtime.ProcessIO{})
 				out.AttachErr = attachErr
 				if attachErr != nil {
 					out.AttachMessage = attachErr.Error()
@@ -212,28 +111,28 @@ func closingStepDefinitions() []brine.StepDefinition {
 		// so production's annotateExitStatus could write the wrong number and
 		// nothing noticed. Measured — writing exitCode+1 left all 328 scenarios
 		// green.
-		brine.DefineMap[ClosingRun, ClosingRun](
+		brine.DefineMap[TaskOutcome, TaskOutcome](
 			"the web dies after the step finished and a new web takes over",
-			func(in ClosingRun, _ brine.Params, _ *brine.Recorder) (ClosingRun, error) {
+			func(in TaskOutcome, _ brine.Params, _ *brine.Recorder) (TaskOutcome, error) {
 				// A new container object, which is what a restarted web has:
 				// the exit status it held in memory is gone, so the only
 				// surviving record is the one the step left on the pod.
-				container, err := closingContainer(in.Cluster, in.Handle)
+				container, err := findTaskContainer(in.Cluster, in.Handle)
 				if err != nil {
-					return ClosingRun{}, err
+					return TaskOutcome{}, err
 				}
 
 				out := in
 				out.Container = container
 				out.ExitStatus, out.Err, out.Message = -1, nil, ""
 
-				process, attachErr := container.Attach(in.Cluster.ClosingCtx, in.Handle, runtime.ProcessIO{})
+				process, attachErr := container.Attach(in.Cluster.Ctx, in.Handle, runtime.ProcessIO{})
 				if attachErr != nil {
 					out.AttachErr, out.AttachMessage = attachErr, attachErr.Error()
 					out.Err, out.Message = attachErr, attachErr.Error()
 					return out, nil
 				}
-				result, waitErr := process.Wait(in.Cluster.ClosingCtx)
+				result, waitErr := process.Wait(in.Cluster.Ctx)
 				if waitErr != nil {
 					out.Err, out.Message = waitErr, waitErr.Error()
 					return out, nil
@@ -245,10 +144,10 @@ func closingStepDefinitions() []brine.StepDefinition {
 
 		// ...and then runs the same command again, which must land on the pod
 		// that is already there rather than scheduling a second one.
-		brine.DefineMap[ClosingRun, ClosingRun](
+		brine.DefineMap[TaskOutcome, TaskOutcome](
 			"the new web runs the same step again",
-			func(in ClosingRun, _ brine.Params, _ *brine.Recorder) (ClosingRun, error) {
-				out, err := closingRunStep(in.Cluster, in.Handle, in.Script, in.Container)
+			func(in TaskOutcome, _ brine.Params, _ *brine.Recorder) (TaskOutcome, error) {
+				out, err := runTask(in.Cluster, in.Handle, in.Script, in.Container)
 				if err != nil {
 					return out, err
 				}
@@ -269,27 +168,23 @@ func closingStepDefinitions() []brine.StepDefinition {
 		// allowed, so a node that evicts once no longer reaches the build at
 		// all. The classification is what the scenario is about, and it is
 		// the SECOND eviction that carries it.
-		brine.DefineMap[ClosingCluster, ClosingRun](
+		Transform[TaskCluster, TaskOutcome](
 			"the node keeps evicting the step {string} before its command runs",
-			func(in ClosingCluster, p brine.Params, _ *brine.Recorder) (ClosingRun, error) {
-				handle, ok := p.GetString(0)
-				if !ok {
-					return ClosingRun{}, fmt.Errorf("expected a handle parameter")
-				}
+			func(in TaskCluster, a Args) (TaskOutcome, error) {
 				evict := func(pod *corev1.Pod) {
 					pod.Status.Phase = corev1.PodFailed
 					pod.Status.Reason = "Evicted"
 					pod.Status.Message = "The node was low on resource: memory."
 				}
 				// Every pod this node is given, including the replacement.
-				in.ClosingClientset.PrependReactor("create", "pods",
+				in.Clientset.PrependReactor("create", "pods",
 					func(action k8stesting.Action) (bool, apiruntime.Object, error) {
 						if pod, ok := action.(k8stesting.CreateActionImpl).GetObject().(*corev1.Pod); ok {
 							evict(pod)
 						}
 						return false, nil, nil
 					})
-				return closingRunStep(in, handle, "echo unreachable", nil, evict)
+				return runTask(in, a.String(0), "echo unreachable", nil, evict)
 			},
 		),
 
@@ -326,9 +221,9 @@ func closingStepDefinitions() []brine.StepDefinition {
 		// Checks
 		// ------------------------------------------------------------------
 
-		CheckString[ClosingRun]("the finished step left exit status {string} on its container",
+		CheckString[TaskOutcome]("the finished step left exit status {string} on its container",
 			"the exit status on the container",
-			func(in ClosingRun) (string, error) {
+			func(in TaskOutcome) (string, error) {
 				got, present := in.Props["concourse:exit-status"]
 				if !present {
 					return "", fmt.Errorf("the container carries no concourse:exit-status property (has %v)", in.Props)
@@ -336,8 +231,8 @@ func closingStepDefinitions() []brine.StepDefinition {
 				return got, nil
 			}),
 
-		CheckThat[ClosingRun]("the step's pod is labelled for the worker that owns it",
-			func(in ClosingRun) error {
+		CheckThat[TaskOutcome]("the step's pod is labelled for the worker that owns it",
+			func(in TaskOutcome) error {
 				got, present := in.PodLabels["concourse.ci/worker"]
 				if !present {
 					return fmt.Errorf("the pod carries no concourse.ci/worker label (has %v)", in.PodLabels)
@@ -348,28 +243,22 @@ func closingStepDefinitions() []brine.StepDefinition {
 				return nil
 			}),
 
-		// A wrong exit status is diagnosed from the build log, so the check
-		// carries the log into the failure. A step that errored has no exit
-		// status to compare at all, which is the getter's error.
-		CheckInt[ClosingRun]("the finished step reported exit {int}",
-			"the finished step's exit status",
-			func(in ClosingRun) (int, error) {
-				if in.Err != nil {
-					return 0, fmt.Errorf("the step errored: %v", in.Err)
+		// Diagnostics are inspected on a failed Wait, separately from successful
+		// command output. The ordinary task log check continues to reject errors.
+		CheckContains[TaskOutcome]("the interrupted task's diagnostic log contains {string}",
+			"the task diagnostics",
+			func(in TaskOutcome) (string, error) {
+				if in.Err == nil {
+					return "", fmt.Errorf("expected task diagnostics after an interrupted Wait, but it succeeded")
 				}
-				return in.ExitStatus, nil
-			},
-			func(in ClosingRun) string { return fmt.Sprintf("log: %q", in.Log) }),
-
-		CheckContains[ClosingRun]("the step's output reached the build log as {string}",
-			"the build log",
-			func(in ClosingRun) (string, error) { return in.Log, nil }),
+				return in.Log, nil
+			}),
 
 		// The refusal has to have happened at all before its wording means
 		// anything, so "it succeeded" is reported from the getter.
-		CheckContains[ClosingRun]("attaching was refused saying {string}",
+		CheckContains[TaskOutcome]("attaching was refused saying {string}",
 			"the refusal",
-			func(in ClosingRun) (string, error) {
+			func(in TaskOutcome) (string, error) {
 				if in.AttachErr == nil {
 					return "", fmt.Errorf("expected attaching to be refused, but it succeeded")
 				}
@@ -378,20 +267,18 @@ func closingStepDefinitions() []brine.StepDefinition {
 
 		// On a mismatch the failure names every pod on the cluster, which is how
 		// the duplicate that should not have been scheduled is identified.
-		CheckCount[ClosingRun]("the cluster is running exactly {int} pod for the step",
+		CheckCount[TaskOutcome]("the cluster is running exactly {int} pod for the step",
 			"pods on the cluster",
-			func(in ClosingRun) ([]string, error) { return in.Pods, nil }),
+			func(in TaskOutcome) ([]string, error) { return in.Pods, nil }),
 
 		// Keeps its own body: it asserts a TYPE as well as a reason, and the
 		// message on the wrong type explains the classification rule — a plain
 		// error fails the build where an InterruptionError retries it.
-		brine.DefineCheck[ClosingRun](
+		Assert[TaskOutcome](
 			"the step was interrupted rather than failed, because it was {string}",
-			func(in ClosingRun, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected an interruption reason parameter")
-				}
+			func(in TaskOutcome, args Args) error {
+				want := args.String(0)
+
 				if in.Err == nil {
 					return fmt.Errorf("expected an interruption saying %q, but the step succeeded", want)
 				}
@@ -408,110 +295,7 @@ func closingStepDefinitions() []brine.StepDefinition {
 				return nil
 			},
 		),
-
-		CheckContains[ClosingRun]("the diagnostics in the build log explain {string}",
-			"the build log's diagnostics",
-			func(in ClosingRun) (string, error) { return in.Log, nil }),
 	}
-}
-
-// closingContainer finds or creates the runtime container for a handle.
-func closingContainer(in ClosingCluster, handle string) (runtime.Container, error) {
-	container, _, err := in.ClosingWorker.FindOrCreateContainer(
-		in.ClosingCtx,
-		db.NewFixedHandleContainerOwner(handle),
-		db.ContainerMetadata{Type: db.ContainerTypeTask},
-		runtime.ContainerSpec{
-			TeamID:    1,
-			TeamName:  "main",
-			Dir:       "/tmp/build/workdir",
-			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///ubuntu:22.04"},
-			Type:      db.ContainerTypeTask,
-		},
-		&noopDelegate{},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("find or create container %q: %w", handle, err)
-	}
-	return container, nil
-}
-
-// closingRunStep drives one step to completion and collects everything a
-// consumer or an operator can see afterwards. `shape`, when given, puts the
-// pod into a failure shape instead of running it.
-func closingRunStep(
-	in ClosingCluster,
-	handle, script string,
-	existing runtime.Container,
-	shape ...func(*corev1.Pod),
-) (ClosingRun, error) {
-	container := existing
-	if container == nil {
-		var err error
-		if container, err = closingContainer(in, handle); err != nil {
-			return ClosingRun{}, err
-		}
-	}
-
-	log := new(bytes.Buffer)
-	process, err := container.Run(in.ClosingCtx,
-		runtime.ProcessSpec{
-			ID:   handle,
-			Path: "/bin/sh",
-			Args: []string{"-c", script},
-			Dir:  "/tmp/build/workdir",
-		},
-		runtime.ProcessIO{Stdout: log, Stderr: log},
-	)
-	if err != nil {
-		return ClosingRun{}, fmt.Errorf("run step %q: %w", handle, err)
-	}
-
-	pods := in.ClosingClientset.CoreV1().Pods(in.ClosingNamespace)
-	pod, err := pods.Get(in.ClosingCtx, handle, metav1.GetOptions{})
-	if err != nil {
-		return ClosingRun{}, fmt.Errorf("get pod %q: %w", handle, err)
-	}
-	if len(shape) > 0 {
-		shape[0](pod)
-	} else {
-		pod.Status.Phase = corev1.PodRunning
-		pod.Status.Conditions = []corev1.PodCondition{
-			{Type: corev1.PodReady, Status: corev1.ConditionTrue},
-		}
-	}
-	if _, err := pods.UpdateStatus(in.ClosingCtx, pod, metav1.UpdateOptions{}); err != nil {
-		return ClosingRun{}, fmt.Errorf("update pod status: %w", err)
-	}
-
-	result, waitErr := process.Wait(in.ClosingCtx)
-
-	out := ClosingRun{
-		Cluster: in, Handle: handle, Script: script, Container: container,
-		Log: log.String(), ExitStatus: result.ExitStatus, Err: waitErr,
-	}
-	if waitErr != nil {
-		out.Message = waitErr.Error()
-	}
-
-	props, err := container.Properties()
-	if err != nil {
-		return ClosingRun{}, fmt.Errorf("read container properties: %w", err)
-	}
-	out.Props = props
-
-	listed, err := pods.List(in.ClosingCtx, metav1.ListOptions{})
-	if err != nil {
-		return ClosingRun{}, fmt.Errorf("list pods: %w", err)
-	}
-	for _, item := range listed.Items {
-		out.Pods = append(out.Pods, item.Name)
-		if item.Name == handle {
-			out.PodLabels = item.Labels
-		}
-	}
-
-	return out, nil
 }
 
 // ===========================================================================
@@ -665,7 +449,7 @@ func (d *closingDaemon) handler() http.Handler {
 
 // closingServeTar answers with the one-member archive a daemon serves.
 func closingServeTar(w http.ResponseWriter, r *http.Request, content string) {
-	body, err := closingTar("cached.txt", content)
+	body, err := plainTarOfOneFile("cached.txt", content)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
@@ -675,25 +459,6 @@ func closingServeTar(w http.ResponseWriter, r *http.Request, content string) {
 	if r.Method != http.MethodHead {
 		_, _ = w.Write(body)
 	}
-}
-
-// closingTar builds the uncompressed archive the daemon serves. The package's
-// tarOfOneFile gzips, and the daemon's /artifacts route serves raw tar.
-func closingTar(name, content string) ([]byte, error) {
-	var raw bytes.Buffer
-	tw := tar.NewWriter(&raw)
-	if err := tw.WriteHeader(&tar.Header{
-		Name: name, Mode: 0o644, Size: int64(len(content)), Typeflag: tar.TypeReg,
-	}); err != nil {
-		return nil, fmt.Errorf("write tar header: %w", err)
-	}
-	if _, err := tw.Write([]byte(content)); err != nil {
-		return nil, fmt.Errorf("write tar body: %w", err)
-	}
-	if err := tw.Close(); err != nil {
-		return nil, fmt.Errorf("close tar: %w", err)
-	}
-	return raw.Bytes(), nil
 }
 
 func closingCacheDefinitions() []brine.StepDefinition {
@@ -773,26 +538,17 @@ func closingCacheDefinitions() []brine.StepDefinition {
 
 		// Registration is the producing half: it is what puts an object into
 		// permanent storage under a content key, or does not.
-		brine.DefineMap[ClosingCachePlan, ClosingCachePlan](
+		Transform[ClosingCachePlan, ClosingCachePlan](
 			"the ATC registers the resource cache {string} under content key {string}",
-			func(in ClosingCachePlan, p brine.Params, _ *brine.Recorder) (ClosingCachePlan, error) {
-				key, _ := p.GetString(0)
-				durableKey, ok := p.GetString(1)
-				if !ok {
-					return in, fmt.Errorf("expected a cache key and a content key")
-				}
-				return in, closingRegister(in, key, durableKey)
+			func(in ClosingCachePlan, a Args) (ClosingCachePlan, error) {
+				return in, closingRegister(in, a.String(0), a.String(1))
 			},
 		),
 
-		brine.DefineMap[ClosingCachePlan, ClosingCachePlan](
+		Transform[ClosingCachePlan, ClosingCachePlan](
 			"the ATC registers the resource cache {string} offering no content key",
-			func(in ClosingCachePlan, p brine.Params, _ *brine.Recorder) (ClosingCachePlan, error) {
-				key, ok := p.GetString(0)
-				if !ok {
-					return in, fmt.Errorf("expected a cache key")
-				}
-				return in, closingRegister(in, key, "")
+			func(in ClosingCachePlan, a Args) (ClosingCachePlan, error) {
+				return in, closingRegister(in, a.String(0), "")
 			},
 		),
 
@@ -811,53 +567,33 @@ func closingCacheDefinitions() []brine.StepDefinition {
 		// nothing after a When needs it alive.
 		// ------------------------------------------------------------------
 
-		brine.DefineMap[ClosingCachePlan, ClosingCacheLookup](
+		Transform[ClosingCachePlan, ClosingCacheLookup](
 			"a get step looks up the resource cache {string} offering content key {string}",
-			func(in ClosingCachePlan, p brine.Params, _ *brine.Recorder) (ClosingCacheLookup, error) {
-				key, _ := p.GetString(0)
-				durableKey, ok := p.GetString(1)
-				if !ok {
-					return ClosingCacheLookup{}, fmt.Errorf("expected a cache key and a content key")
-				}
-				return closingLookup(in, key, durableKey, 1, false)
+			func(in ClosingCachePlan, a Args) (ClosingCacheLookup, error) {
+				return closingLookup(in, a.String(0), a.String(1), 1, false)
 			},
 		),
 
-		brine.DefineMap[ClosingCachePlan, ClosingCacheLookup](
+		Transform[ClosingCachePlan, ClosingCacheLookup](
 			"a get step looks up the resource cache {string} offering no content key",
-			func(in ClosingCachePlan, p brine.Params, _ *brine.Recorder) (ClosingCacheLookup, error) {
-				key, ok := p.GetString(0)
-				if !ok {
-					return ClosingCacheLookup{}, fmt.Errorf("expected a cache key")
-				}
-				return closingLookup(in, key, "", 1, false)
+			func(in ClosingCachePlan, a Args) (ClosingCacheLookup, error) {
+				return closingLookup(in, a.String(0), "", 1, false)
 			},
 		),
 
-		brine.DefineMap[ClosingCachePlan, ClosingCacheLookup](
+		Transform[ClosingCachePlan, ClosingCacheLookup](
 			"a get step looks up the resource cache {string} offering content key {string} {int} times over",
-			func(in ClosingCachePlan, p brine.Params, _ *brine.Recorder) (ClosingCacheLookup, error) {
-				key, _ := p.GetString(0)
-				durableKey, _ := p.GetString(1)
-				times, ok := p.GetInt(2)
-				if !ok {
-					return ClosingCacheLookup{}, fmt.Errorf("expected a cache key, a content key and a count")
-				}
-				return closingLookup(in, key, durableKey, times, false)
+			func(in ClosingCachePlan, a Args) (ClosingCacheLookup, error) {
+				return closingLookup(in, a.String(0), a.String(1), a.Int(2), false)
 			},
 		),
 
 		// The alias vanishes between the probe and the read — a sweeper ran,
 		// or the pod rolled. The bound volume has to find the bytes anyway.
-		brine.DefineMap[ClosingCachePlan, ClosingCacheLookup](
+		Transform[ClosingCachePlan, ClosingCacheLookup](
 			"a get step looks up the resource cache {string} offering content key {string}, and the node's alias vanishes before the bytes are read",
-			func(in ClosingCachePlan, p brine.Params, _ *brine.Recorder) (ClosingCacheLookup, error) {
-				key, _ := p.GetString(0)
-				durableKey, ok := p.GetString(1)
-				if !ok {
-					return ClosingCacheLookup{}, fmt.Errorf("expected a cache key and a content key")
-				}
-				return closingLookup(in, key, durableKey, 1, true)
+			func(in ClosingCachePlan, a Args) (ClosingCacheLookup, error) {
+				return closingLookup(in, a.String(0), a.String(1), 1, true)
 			},
 		),
 
@@ -885,13 +621,11 @@ func closingCacheDefinitions() []brine.StepDefinition {
 		// well as what that member says. Two independent assertions in one
 		// sentence fit no combinator — folding the count into a getter error
 		// would turn an assertion into a presumption.
-		brine.DefineCheck[ClosingCacheLookup](
+		Assert[ClosingCacheLookup](
 			"the cached artifact reads {string}",
-			func(in ClosingCacheLookup, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected the expected content")
-				}
+			func(in ClosingCacheLookup, args Args) error {
+				want := args.String(0)
+
 				if in.CacheReadErr != nil {
 					return fmt.Errorf("reading the cached artifact failed: %v", in.CacheReadErr)
 				}
@@ -913,16 +647,13 @@ func closingCacheDefinitions() []brine.StepDefinition {
 		// and answering "is this tier earning its egress?" is impossible.
 		// Keeps its own body: four expectations in one sentence, plus that
 		// partition invariant, is a shape no combinator has.
-		brine.DefineCheck[ClosingCacheLookup](
+		Assert[ClosingCacheLookup](
 			"the warm counters read {int} local, {int} hit, {int} miss, {int} suppressed",
-			func(in ClosingCacheLookup, p brine.Params, _ *brine.Recorder) error {
-				local, _ := p.GetInt(0)
-				hits, _ := p.GetInt(1)
-				misses, _ := p.GetInt(2)
-				suppressed, ok := p.GetInt(3)
-				if !ok {
-					return fmt.Errorf("expected four counter values")
-				}
+			func(in ClosingCacheLookup, args Args) error {
+				local := args.Int(0)
+				hits := args.Int(1)
+				misses := args.Int(2)
+				suppressed := args.Int(3)
 
 				if in.CacheLocalHits != float64(local) ||
 					in.CacheWarmHits != float64(hits) ||
@@ -1180,13 +911,11 @@ func closingLocatorDefinitions() []brine.StepDefinition {
 		// takes a parameter, but it searches a collection, and this index
 		// exposes no listing — only a lookup per key — so there is nothing for
 		// it to search. The failure names the node the index does claim.
-		brine.DefineCheck[ClosingIndex](
+		Assert[ClosingIndex](
 			"the artifact {string} is not held anywhere",
-			func(in ClosingIndex, p brine.Params, _ *brine.Recorder) error {
-				key, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected an artifact key")
-				}
+			func(in ClosingIndex, args Args) error {
+				key := args.String(0)
+
 				if loc, found := in.Index.Locate(key); found {
 					return fmt.Errorf("expected %q to be unknown, the index says node %q", key, loc.NodeName)
 				}
@@ -1208,13 +937,11 @@ func closingLocatorDefinitions() []brine.StepDefinition {
 		//
 		// The failure prints what the lookup answered, because "yes, node
 		// \"\"" is the whole diagnosis.
-		brine.DefineCheck[ClosingIndex](
+		Assert[ClosingIndex](
 			"no node is named for the artifact {string}",
-			func(in ClosingIndex, p brine.Params, _ *brine.Recorder) error {
-				key, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected an artifact key")
-				}
+			func(in ClosingIndex, args Args) error {
+				key := args.String(0)
+
 				if node, found := in.Index.LocateNode(key); found {
 					return fmt.Errorf("expected the node lookup to name nobody for %q, it answered yes with node %q", key, node)
 				}
@@ -1256,115 +983,117 @@ func closingLocatorDefinitions() []brine.StepDefinition {
 	}
 }
 
-// CancelledExecOutcome is what survives after an exec-mode step is cancelled.
+// Cancellation keeps resource pods available for hijack, but must delete a
+// supervised task's pod: its background command survives loss of the stream.
 type CancelledExecOutcome struct {
-	Namespace string
-	Clientset *fake.Clientset
-	Ctx       context.Context
+	Cluster   Cluster
+	Workspace TaskWorkspace
+	Kind      string
 	Handle    string
+	PID       string
 	Err       error
-	Message   string
 }
 
-// CancelledExecDefinitions covers PE-10's exec-mode half: a cancelled step
-// KEEPS its pause pod, because `fly hijack` into that pod is how an operator
-// finds out why a build was cancelled. The direct-mode rule is the opposite,
-// and applying it here would delete the evidence.
 func CancelledExecDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
-
-		brine.DefineMapUsing[brine.Empty, CancelledExecOutcome](
-			"an exec-mode step {string} that is waiting for its pod",
-			[]string{"jetbridge-db"},
-			func(_ brine.Empty, p brine.Params, _ *brine.Recorder, res brine.Resources) (CancelledExecOutcome, error) {
-				handle, ok := p.GetString(0)
+		TransformUsing[brine.Empty, CancelledExecOutcome](
+			"an exec-mode {string} step {string} is cancelled {string}",
+			[]string{"jetbridge-db", "task-workspace"},
+			func(_ brine.Empty, a Args, res brine.Resources) (CancelledExecOutcome, error) {
+				workspace, ok := res.Get("task-workspace").(TaskWorkspace)
 				if !ok {
-					return CancelledExecOutcome{}, fmt.Errorf("expected a handle parameter")
+					return CancelledExecOutcome{}, fmt.Errorf("missing task workspace")
 				}
-				cluster, err := NewCluster(res,
-					WithExecutor(execStub{}),
-				)
+				cluster, err := NewCluster(res)
 				if err != nil {
 					return CancelledExecOutcome{}, err
 				}
-				ctx, namespace := cluster.Ctx, cluster.Namespace
-				clientset, worker := cluster.Clientset, cluster.Worker
-
-				container, _, err := worker.FindOrCreateContainer(
-					ctx,
-					db.NewFixedHandleContainerOwner(handle),
-					db.ContainerMetadata{Type: db.ContainerTypeGet},
-					runtime.ContainerSpec{
-						TeamID:    1,
-						Dir:       "/tmp/build/get",
-						ImageSpec: runtime.ImageSpec{ImageURL: "busybox"},
-						Type:      db.ContainerTypeGet,
-					},
-					&noopDelegate{},
-				)
-				if err != nil {
-					return CancelledExecOutcome{}, fmt.Errorf("find or create container: %w", err)
-				}
-				process, err := container.Run(ctx,
-					runtime.ProcessSpec{Path: "/opt/resource/in", Args: []string{"/tmp/build/get"}},
-					runtime.ProcessIO{
-						Stdin:  strings.NewReader("{}"),
-						Stdout: new(bytes.Buffer),
-						Stderr: new(bytes.Buffer),
-					},
-				)
-				if err != nil {
-					return CancelledExecOutcome{}, fmt.Errorf("run step: %w", err)
-				}
-
-				// The pod never reaches Running; the build is cancelled while
-				// the step is still waiting for it.
-				cancelCtx, cancel := context.WithCancel(ctx)
-				cancel()
-				_, waitErr := process.Wait(cancelCtx)
-				msg := ""
-				if waitErr != nil {
-					msg = waitErr.Error()
-				}
-				return CancelledExecOutcome{
-					Namespace: namespace, Clientset: clientset, Ctx: ctx,
-					Handle: handle, Err: waitErr, Message: msg,
-				}, nil
-			},
-		),
-
-		Refine[CancelledExecOutcome]("the build is cancelled before the pod ever starts",
-			func(in CancelledExecOutcome, _ Args) CancelledExecOutcome {
-				return in
+				cluster.Worker.SetExecutor(localExecutor{client: cluster.Clientset, supervisorRoot: workspace.Dir})
+				return cancelExec(cluster, workspace, a.String(0), a.String(1), a.String(2))
 			}),
-
-		CheckThat[CancelledExecOutcome]("the step reports the cancellation",
+		CheckThat[CancelledExecOutcome]("the cancelled command stops and reports cancellation",
 			func(in CancelledExecOutcome) error {
-				if in.Err == nil {
-					return fmt.Errorf("expected the cancelled step to report an error; it reported success")
+				if !errors.Is(in.Err, context.Canceled) {
+					return fmt.Errorf("expected context cancellation, got %v", in.Err)
+				}
+				if in.PID != "" {
+					if err := processStopped(in.PID); err != nil {
+						return err
+					}
+					if in.Kind == "task" {
+						return in.Workspace.requireSupervisorState()
+					}
 				}
 				return nil
 			}),
-
-		// A pod among the pods, with the rule the check exists for riding along
-		// as detail. Listing is also a better failure than a Get: it says what
-		// the cluster DOES hold instead of only that this one is missing.
-		CheckMember[CancelledExecOutcome]("the pod {string} is still there for the operator",
-			"the pods on the cluster",
-			func(in CancelledExecOutcome) ([]string, error) {
-				pods, err := in.Clientset.CoreV1().Pods(in.Namespace).List(in.Ctx, metav1.ListOptions{})
+		CheckString[CancelledExecOutcome]("the cancelled step's pod is {string}",
+			"the cancelled step's pod",
+			func(in CancelledExecOutcome) (string, error) {
+				_, err := in.Cluster.Clientset.CoreV1().Pods(in.Cluster.Namespace).Get(in.Cluster.Ctx, in.Handle, metav1.GetOptions{})
+				if apierrors.IsNotFound(err) {
+					return "removed", nil
+				}
 				if err != nil {
-					return nil, fmt.Errorf("list pods: %w", err)
+					return "", err
 				}
-				var names []string
-				for _, p := range pods.Items {
-					names = append(names, p.Name)
-				}
-				return names, nil
-			},
-			func(CancelledExecOutcome) string {
-				return "the pause pod must survive cancellation so `fly hijack` can reach it — " +
-					"the direct-mode delete rule must not be applied to exec mode"
+				return "retained", nil
 			}),
 	}
+}
+
+func cancelExec(cluster Cluster, workspace TaskWorkspace, kind, handle, when string) (CancelledExecOutcome, error) {
+	out := CancelledExecOutcome{Cluster: cluster, Workspace: workspace, Kind: kind, Handle: handle}
+	if kind != "task" && kind != "get" || when != "before-start" && when != "running" {
+		return out, fmt.Errorf("unknown cancellation case: %q %q", kind, when)
+	}
+	ctx, cancel := context.WithTimeout(cluster.Ctx, 10*time.Second)
+	defer cancel()
+	container, _, err := cluster.Worker.FindOrCreateContainer(ctx,
+		db.NewFixedHandleContainerOwner(handle), db.ContainerMetadata{Type: db.ContainerType(kind)},
+		runtime.ContainerSpec{TeamID: 1, Type: db.ContainerType(kind),
+			ImageSpec: runtime.ImageSpec{ImageURL: "busybox"}}, &noopDelegate{})
+	if err != nil {
+		return out, err
+	}
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	var stdin io.Reader
+	if kind == "get" {
+		stdin = strings.NewReader("{}")
+	}
+	// Nil task stdin selects the actual supervisor. The workspace argument
+	// makes its command hash unique across runs without changing the script.
+	process, err := container.Run(ctx, runtime.ProcessSpec{
+		Path: "sh", Args: []string{"-c", "sleep 60 & echo $!; wait", workspace.Dir},
+	}, runtime.ProcessIO{Stdin: stdin, Stdout: writer, Stderr: io.Discard})
+	if err != nil {
+		return out, err
+	}
+	if when == "before-start" {
+		cancel()
+		_, out.Err = process.Wait(ctx)
+		return out, nil
+	}
+	if err := markPodRunning(ctx, cluster.Clientset, cluster.Namespace, handle); err != nil {
+		return out, err
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := process.Wait(ctx)
+		_ = writer.CloseWithError(err)
+		done <- err
+	}()
+	pid, err := bufio.NewReader(reader).ReadString('\n')
+	if err != nil {
+		return out, fmt.Errorf("wait for running child: %w", err)
+	}
+	out.PID = strings.TrimSpace(pid)
+	cancel()
+	select {
+	case out.Err = <-done:
+	case <-time.After(3 * time.Second):
+		return out, fmt.Errorf("cancelled command did not finish")
+	}
+	return out, nil
 }
