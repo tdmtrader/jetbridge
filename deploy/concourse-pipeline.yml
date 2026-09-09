@@ -86,12 +86,43 @@ jobs:
       rootfs_uri: docker:///registry.home/concourse-test-runner:v9
       inputs:
       - name: repo
+      # The Hangar output plane's tier-2 conformance suite runs against the
+      # fake-gcs-server already deployed in this namespace (deployment
+      # hangar-fake-gcs, service fake-gcs on 4443). HANGAR_CI is what turns a
+      # missing or unreachable endpoint into a FAILURE there rather than a
+      # skip: Req 41 gates epoch activation on that profile passing, and a
+      # skipped run reported as conformance is worse than no run at all.
+      #
+      # The same variable is what the brine Hangar fixture reads instead of
+      # starting fake-gcs-server in-process, so one deployment serves both
+      # runners and both share one failure mode.
+      #
+      # This repository does not self-apply its pipeline: after this merges,
+      # `fly set-pipeline` has to be re-run before the params take effect.
+      params:
+        HANGAR_FAKE_GCS_ENDPOINT: http://fake-gcs.cicd.svc:4443
+        HANGAR_CI: "1"
       run:
         path: sh
         args:
         - -exc
         - |
           cd repo
+          # The assumption this wiring rests on, checked rather than assumed:
+          # that this task pod resolves the service in its own namespace. If it
+          # does not, the fully-qualified fake-gcs.cicd.svc.cluster.local:4443
+          # is the next thing to try, and a NetworkPolicy exception after that
+          # -- dropping the wiring is not one of the options, because the suite
+          # would then report conformance it never ran.
+          echo "=== Hangar tier-2 substrate reachability ==="
+          echo "HANGAR_FAKE_GCS_ENDPOINT=$HANGAR_FAKE_GCS_ENDPOINT HANGAR_CI=$HANGAR_CI"
+          if wget -q -O- --timeout=5 "$HANGAR_FAKE_GCS_ENDPOINT/storage/v1/b" >/dev/null 2>&1; then
+            echo "reachable: the endpoint answered"
+          else
+            echo "NOT reachable from this pod: the tier-2 conformance suite will fail with its"
+            echo "named reason, which is the intended behaviour and not a flake."
+          fi
+          echo ""
           echo "=== Running unit tests across the full codebase ==="
           echo "Excluding packages that require external infrastructure"
           echo ""
