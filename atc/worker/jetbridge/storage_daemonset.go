@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/concourse/concourse/artifactcap"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -614,6 +615,57 @@ esac
 // A ready label is a scheduling HINT and never authority: the authenticated
 // handshake is. What the label buys is that the pod does not land somewhere the
 // hold could never be acknowledged.
+// CaptureClass reads what the output ledger says about one step directory,
+// through the daemon that owns the node it is on.
+//
+// It is the ATC's half of the same question the cleanup init container asks,
+// and it goes to the same read-only route so there is one classifier and one
+// answer. A node it cannot reach is an error and not "unmanaged": every caller
+// of this is about to do something write-capable or destructive, and an
+// unreadable ledger is not an empty one.
+func (b *DaemonSetBackend) CaptureClass(ctx context.Context, handle, nodeName string) (string, error) {
+	if !b.config.OutputPlaneEnabled {
+		return captureClassUnmanaged, nil
+	}
+	if b.nodeIPResolver == nil || nodeName == "" {
+		return "", fmt.Errorf("no node to ask about %s", handle)
+	}
+	nodeIP, err := b.nodeIPResolver.Resolve(ctx, nodeName)
+	if err != nil {
+		return "", fmt.Errorf("resolving node %s: %w", nodeName, err)
+	}
+
+	port := b.config.ArtifactDaemonPort
+	if port == 0 {
+		port = 7780
+	}
+	url := fmt.Sprintf("%s://%s:%d/capture-held/steps/%s", b.daemonScheme(), nodeIP, port, handle)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	response, err := newDaemonHTTPClient(b.config, 10*time.Second).Do(request)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("the daemon on %s answered %d", nodeName, response.StatusCode)
+	}
+	var answer struct {
+		Class string `json:"class"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<16)).Decode(&answer); err != nil {
+		return "", err
+	}
+	if answer.Class == "" {
+		return "", fmt.Errorf("the daemon on %s named no class for %s", nodeName, handle)
+	}
+
+	return answer.Class, nil
+}
+
 func (b *DaemonSetBackend) BuildAffinity(inputs []runtime.Input, control *runtime.ExecutionControl) *corev1.Affinity {
 	requiredExpressions := []corev1.NodeSelectorRequirement{
 		{

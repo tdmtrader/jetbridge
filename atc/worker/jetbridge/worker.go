@@ -25,6 +25,32 @@ type Worker struct {
 	volumeRepo     db.VolumeRepository
 	storageBackend StorageBackend
 	nodeIPResolver *NodeIPResolver
+
+	// outputControls is set when the output plane is configured. Nil is the
+	// ordinary path: a worker with no output plane hands every container a
+	// nil resolver, and nothing in the exact-execution path is reachable
+	// without an ExecutionControl on the spec anyway.
+	outputControls OutputControlResolver
+}
+
+// SetOutputControls gives the worker its resolver for the output daemon's
+// control API. It is a setter rather than a constructor argument for the same
+// reason SetDaemonClient is: the ATC builds the capability minter from key
+// material that is loaded after the worker exists.
+func (w *Worker) SetOutputControls(resolver OutputControlResolver) {
+	w.outputControls = resolver
+}
+
+// captureClassifier is the storage backend's read of the output ledger, when
+// the backend has one. A deployment with no daemon-set backend gets nil, which
+// is what leaves every ordinary path untouched.
+func (w *Worker) captureClassifier() captureClassifier {
+	classifier, ok := w.storageBackend.(captureClassifier)
+	if !ok {
+		return nil
+	}
+
+	return classifier
 }
 
 // NewWorker creates a new Worker backed by the given Kubernetes clientset.
@@ -126,6 +152,8 @@ func (w *Worker) FindOrCreateContainer(
 	if createdContainer != nil {
 		mounts, volumes := w.buildVolumeMountsForSpec(containerHandle, containerSpec)
 		container := newContainer(containerHandle, metadata, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes, w.storageBackend, true, false)
+		container.outputControls = w.outputControls
+		container.captureClass = w.captureClassifier()
 		return container, mounts, nil
 	}
 
@@ -141,6 +169,8 @@ func (w *Worker) FindOrCreateContainer(
 
 	mounts, volumes := w.buildVolumeMountsForSpec(containerHandle, containerSpec)
 	container := newContainer(containerHandle, metadata, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes, w.storageBackend, false, false)
+	container.outputControls = w.outputControls
+	container.captureClass = w.captureClassifier()
 	return container, mounts, nil
 }
 
@@ -272,6 +302,9 @@ func (w *Worker) LookupContainer(ctx context.Context, handle string) (runtime.Co
 	// There is no ContainerSpec behind a lookup, so this Container must never
 	// create or replace a pod — it exists only to attach to one.
 	container.lookedUp = true
+	// And it is the hijack path, which is the one Req 18 takes away from a
+	// capture-enabled task. It gets the classifier so it can say so.
+	container.captureClass = w.captureClassifier()
 	return container, true, nil
 }
 

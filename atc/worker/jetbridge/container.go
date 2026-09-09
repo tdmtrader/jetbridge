@@ -73,6 +73,16 @@ type Container struct {
 	// in the DB (crash-recovery path). In DaemonSet mode this means the
 	// hostPath directory may contain stale data and needs cleanup.
 	reused bool
+
+	// outputControls reaches the output daemon on whichever node this
+	// container's Pod lands on. Nil on every deployment with no output plane,
+	// and nil is the ordinary path rather than a degraded one.
+	outputControls OutputControlResolver
+
+	// captureClass reads what the output ledger says about this container's
+	// step directory, for the two operations that cannot take a writer ticket:
+	// hijacking a looked-up container and replacing a terminal pause Pod.
+	captureClass captureClassifier
 }
 
 func newContainer(
@@ -153,6 +163,15 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 			}
 			if existingPod.Status.Phase == corev1.PodSucceeded || existingPod.Status.Phase == corev1.PodFailed {
 				return nil, fmt.Errorf("container %q has no pod to intercept: pod %q already exited (%s)", c.handle, c.podName, existingPod.Status.Phase)
+			}
+			// A hijack is a new writer over the step's tree, and the ATC has
+			// no execution identity for a looked-up container -- so it cannot
+			// take a ticket on that writer's behalf. Req 18 says a
+			// capture-enabled task loses post-completion hijack; this is
+			// where that loss is spelled, as a refusal that names itself
+			// rather than a session that races the capture.
+			if err := c.refuseIfCaptureHeld(ctx, "intercepting this container"); err != nil {
+				return nil, err
 			}
 		}
 
