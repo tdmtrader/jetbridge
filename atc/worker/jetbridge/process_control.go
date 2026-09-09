@@ -404,7 +404,7 @@ func (c *Container) refuseIfCaptureHeld(ctx context.Context, why string) error {
 	// An ordinary step has no reservation and the handle is still the right
 	// question: its whole workspace is `steps/<handle>`.
 	asked := c.handle
-	if reserved := captureReservedDirectory(c.containerSpec); reserved != "" {
+	if reserved := c.reservedDirectory(ctx); reserved != "" {
 		asked = reserved
 	}
 
@@ -423,6 +423,36 @@ func (c *Container) refuseIfCaptureHeld(ctx context.Context, why string) error {
 	}
 
 	return nil
+}
+
+// reservedDirectory is the incarnation this container's step mounted, from
+// whichever of the two places knows it.
+//
+// The spec knows it on every path that HAS a spec -- pod replacement, the
+// producer's own start -- and a looked-up container has none: `LookupContainer`
+// builds its Container from a handle and a DB row, with `runtime.ContainerSpec{}`.
+// That is the hijack path, and it is the one path Req 18 is about, so the guard
+// there was asking about the handle and being correctly told `unmanaged`.
+//
+// So the Pod is asked. It is the object that exists for exactly as long as the
+// thing being hijacked, and `buildPod` stamped the daemon's own answer on it.
+// An unreadable Pod yields "", and the caller then asks about the handle: this
+// is not the fail-closed decision, the classifier call after it is, and an
+// ordinary step's handle IS the right question.
+func (c *Container) reservedDirectory(ctx context.Context) string {
+	if reserved := captureReservedDirectory(c.containerSpec); reserved != "" {
+		return reserved
+	}
+	if !c.lookedUp {
+		return ""
+	}
+
+	pod, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, c.podName, metav1.GetOptions{})
+	if err != nil {
+		return ""
+	}
+
+	return pod.Annotations[captureReservationAnnotation]
 }
 
 func (c *Container) captureNodeName(ctx context.Context) string {

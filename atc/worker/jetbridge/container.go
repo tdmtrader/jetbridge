@@ -842,8 +842,22 @@ func (c *Container) buildPodLabels() map[string]string {
 }
 
 // buildPodAnnotations returns annotations for the pod.
+//
+// The reservation is stamped here because a looked-up Container has no
+// ContainerSpec to read it from -- `LookupContainer` builds one with an empty
+// spec -- and the hijack refusal Req 18 requires has to know WHICH directory
+// the capture holds. The handle is a sibling of it, so a guard that fell back
+// to the handle could only ever be told `unmanaged`.
+//
+// The ATC composes nothing: ReservedDirectory came off the wire from
+// `reserve-incarnation` and was validated against the incarnation beside it.
 func (c *Container) buildPodAnnotations() map[string]string {
-	return map[string]string{}
+	annotations := map[string]string{}
+	if reserved := captureReservedDirectory(c.containerSpec); reserved != "" {
+		annotations[captureReservationAnnotation] = reserved
+	}
+
+	return annotations
 }
 
 // resolveImage extracts a Kubernetes-compatible image reference from the

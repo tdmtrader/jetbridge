@@ -659,6 +659,56 @@ var _ = Describe("Destructive operations over a capture-held source", func() {
 				"handle would still refuse an ordinary reused handle for the wrong reason")
 	})
 
+	// The hijack path, which is the ONE path that is hijack, and the one the
+	// completion pass left with a vacuous guard.
+	//
+	// `LookupContainer` builds its Container with `runtime.ContainerSpec{}` --
+	// there is no spec behind a lookup -- so the guard above fell through to
+	// the handle, which is a sibling of the incarnation, and the classifier
+	// correctly answered `unmanaged`. Req 18 takes post-completion hijack away
+	// from a capture-enabled task, and it was being taken away from nobody.
+	//
+	// The Pod is where a looked-up container's facts live, so the reservation
+	// is stamped on it as an annotation at build time and read back here. The
+	// control is first: a looked-up container over an ORDINARY pod still asks
+	// about its handle.
+	It("asks the ledger about the reservation on the Pod when there is no spec", func() {
+		looked := &Container{
+			handle:       "held-handle",
+			podName:      "held-pod",
+			metadata:     db.ContainerMetadata{Type: db.ContainerTypeTask},
+			clientset:    clientset,
+			config:       container.config,
+			properties:   map[string]string{},
+			captureClass: classifier,
+			lookedUp:     true,
+		}
+
+		// The control: an ordinary pod carries no reservation annotation, so
+		// the handle is still the right question.
+		Expect(looked.refuseIfCaptureHeld(ctx, "hijacking the container")).To(Succeed())
+		Expect(classifier.asked).To(Equal([]string{"held-handle"}))
+
+		// The capture-selected pod says what it mounted.
+		reserved := admittedCapture().Capture.ReservedDirectory
+		pod, err := clientset.CoreV1().Pods("test-ns").Get(ctx, "held-pod", metav1.GetOptions{})
+		Expect(err).ToNot(HaveOccurred())
+		pod.Annotations = map[string]string{captureReservationAnnotation: reserved}
+		_, err = clientset.CoreV1().Pods("test-ns").Update(ctx, pod, metav1.UpdateOptions{})
+		Expect(err).ToNot(HaveOccurred())
+
+		classifier.class = captureClassHeld
+		classifier.asked = nil
+		err = looked.refuseIfCaptureHeld(ctx, "hijacking the container")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("loses post-completion hijack"))
+		Expect(classifier.asked).To(ContainElement(reserved),
+			"the hijack door asked about the handle, which a looked-up container is all it has; "+
+				"a classifier answering about a sibling of the held directory can only say "+
+				"unmanaged, so the refusal Req 18 requires never fires")
+		Expect(classifier.asked).ToNot(ContainElement("held-handle"))
+	})
+
 	It("fails closed when the ledger cannot be read", func() {
 		classifier.err = fmt.Errorf("the daemon is unreachable")
 		err := container.refuseIfCaptureHeld(ctx, "recreating the pause pod")

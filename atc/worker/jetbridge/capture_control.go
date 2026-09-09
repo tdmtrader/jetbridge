@@ -36,6 +36,22 @@ import (
 	"github.com/concourse/concourse/hangar/output"
 )
 
+// captureReservationAnnotation is where a capture-selected Pod says which
+// incarnation it mounted.
+//
+// It exists for the one caller that has no ContainerSpec: `LookupContainer`
+// builds its Container with an empty one -- there is nothing behind a lookup
+// but a handle and a DB row -- and the hijack refusal Req 18 requires cannot
+// ask about the incarnation it has never heard of. The handle is a SIBLING of
+// the incarnation, so a guard that fell back to it could only ever be told
+// `unmanaged`.
+//
+// The Pod is the right place for it: it is the object that exists for exactly
+// as long as the thing being hijacked, the ATC already annotates it with the
+// exit status, and the value is the daemon's own answer repeated rather than
+// anything composed here.
+const captureReservationAnnotation = "concourse.dev/hangar-reserved-directory"
+
 // captureControlInitName is the container the hold is established from. It is
 // a constant because the ordering assertion names it.
 const captureControlInitName = "hangar-capture-control"
