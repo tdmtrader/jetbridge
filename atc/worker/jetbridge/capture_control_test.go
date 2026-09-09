@@ -11,10 +11,12 @@ package jetbridge
 // than a sentence.
 
 import (
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -333,5 +335,205 @@ func TestACaptureSelectedPodRequiresBothReadyLabelsAndAnOrdinaryOneRequiresNeith
 				"because a base-only cohort is attested for exact control without having an "+
 				"output bucket, and one label would make those the same claim", label)
 		}
+	}
+}
+
+// The captured output's volume IS the reserved incarnation.
+//
+// This is the pass's whole point stated where it can fail. Before it, the
+// selected output mounted `steps/<handle>/result` -- the ordinary step volume
+// -- while the daemon's hold protected `steps/<execution>.<generation>/result`,
+// a sibling directory. The producer wrote into one and the capture sealed the
+// other, so every path-keyed guard was answering about bytes nobody wrote.
+//
+// The controls are in the same test and asserted first: the step's OTHER
+// volumes are unchanged, so this cannot pass on a builder that has started
+// pointing everything at the incarnation.
+func TestTheCaptureSelectedOutputMountsTheReservedIncarnation(t *testing.T) {
+	control := admittedCapture()
+	control.Capture.Output = "result"
+
+	container := capturingContainer(t, capturePodConfig(true), false, control)
+	container.containerSpec.Outputs = runtime.OutputPaths{
+		"result": "/tmp/build/result",
+		"report": "/tmp/build/report",
+	}
+
+	pod, err := container.buildPod(runtime.ProcessSpec{Path: "/bin/sh"}, []string{"sh"}, nil)
+	if err != nil {
+		t.Fatalf("building the capture pod: %v", err)
+	}
+
+	byMountPath := map[string]string{}
+	for _, mount := range pod.Spec.Containers[0].VolumeMounts {
+		byMountPath[mount.MountPath] = mount.Name
+	}
+	hostPathOf := func(name string) string {
+		for _, volume := range pod.Spec.Volumes {
+			if volume.Name == name {
+				if volume.HostPath == nil {
+					return "(not a hostPath)"
+				}
+
+				return volume.HostPath.Path
+			}
+		}
+
+		return "(no such volume)"
+	}
+
+	// The controls, first. The working directory and the output this step did
+	// NOT select still resolve under the step's own handle.
+	for path, want := range map[string]string{
+		"/tmp/build/task":   "/var/concourse/artifacts/steps/capture-handle/dir",
+		"/tmp/build/report": "/var/concourse/artifacts/steps/capture-handle/report",
+	} {
+		name, mounted := byMountPath[path]
+		if !mounted {
+			t.Fatalf("the pod mounts nothing at %s", path)
+		}
+		if got := hostPathOf(name); got != want {
+			t.Errorf("%s resolves to %s and an unselected step volume is unchanged at %s",
+				path, got, want)
+		}
+	}
+
+	// And the selected output, which is the reservation.
+	name, mounted := byMountPath["/tmp/build/result"]
+	if !mounted {
+		t.Fatal("the pod mounts nothing at the captured output's path")
+	}
+	want := "/var/concourse/artifacts/steps/" + testReservedIncarnation().Directory()
+	if got := hostPathOf(name); got != want {
+		t.Errorf("the captured output resolves to %s; the daemon reserved %s, and a producer "+
+			"writing anywhere else is a hold over bytes nobody wrote", got, want)
+	}
+
+	// The control init's hold names the same location, because a hold over an
+	// incarnation the Pod did not mount protects nothing.
+	var initEnv map[string]string
+	for _, container := range pod.Spec.InitContainers {
+		if container.Name != captureControlInitName {
+			continue
+		}
+		initEnv = map[string]string{}
+		for _, env := range container.Env {
+			initEnv[env.Name] = env.Value
+		}
+	}
+	if initEnv == nil {
+		t.Fatal("the capture pod has no control init")
+	}
+	if initEnv[captureEnvIncarnationGeneration] != "4" ||
+		initEnv[captureEnvIncarnationNode] != "node-1" {
+		t.Errorf("the control init would hold generation %q on node %q; the reservation is "+
+			"generation 4 on node-1", initEnv[captureEnvIncarnationGeneration],
+			initEnv[captureEnvIncarnationNode])
+	}
+}
+
+// No file under atc/ composes a source incarnation's name.
+//
+// The ATC repeats `ReservedIncarnation.Directory`, which came off the wire. It
+// must not derive one, because the handle generation is the daemon's monotonic
+// ledger sequence: a control plane that could spell the directory could spell a
+// STALE one, and a stale generation pointing at a live source is the exact
+// confusion SourceIncarnation exists to prevent -- Req 7 as a scan rather than
+// as a comment.
+//
+// Two things make it non-vacuous. The exemptions are PINNED with a reason and
+// the pin fails if the reason's file stops containing the pattern, so a rename
+// cannot quietly empty the guard; and the counter-check asserts the derivation
+// exists in the contract package, so the scan is looking for a spelling
+// something still uses.
+func TestNoATCCodeComposesAnIncarnationName(t *testing.T) {
+	// The two shapes that DERIVE one: the daemon's format string, and a call
+	// to the contract package's derivation. Reading a field of a reservation --
+	// its generation, its node -- is repeating, not composing, and is not here.
+	composers := map[string]*regexp.Regexp{
+		"the daemon's own format string":    regexp.MustCompile(`%s\s*\.\s*%d`),
+		"the contract package's derivation": regexp.MustCompile(`\.Directory\(\)`),
+	}
+
+	// Pinned, with the reason. Each entry is a file that may derive a
+	// directory, and why -- and each one is checked to still contain what it
+	// was pinned for.
+	pinned := map[string]string{
+		"atc/runtime/executioncontrol.go": "it derives the directory only to REFUSE one that " +
+			"does not match: a ReservedDirectory that does not derive from the incarnation " +
+			"beside it is the ATC having composed a path, and this is where that is caught",
+	}
+
+	// The brine module is the behavioural harness, not the ATC. Its fixture
+	// spells the layout because it asserts on what is on disk afterwards --
+	// which is the one thing a request contract cannot say.
+	const harness = "atc/worker/jetbridge/brine/"
+
+	root := filepath.Join("..", "..", "..", "atc")
+	scanned := 0
+	found := map[string]bool{}
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+		relative := filepath.ToSlash(strings.TrimPrefix(filepath.ToSlash(path), "../../../"))
+		// Tests may name the directory: they are the things asserting what
+		// production repeated, and a test that could not spell the expected
+		// value could not assert on it.
+		if strings.HasSuffix(path, "_test.go") || strings.HasPrefix(relative, harness) {
+			return nil
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		scanned++
+		for why, composer := range composers {
+			if !composer.Match(body) {
+				continue
+			}
+			found[relative] = true
+			if _, allowed := pinned[relative]; allowed {
+				continue
+			}
+			t.Errorf("%s composes a source incarnation's name (%s). The ATC repeats the daemon's "+
+				"answer -- ReservedIncarnation.Directory -- and never derives one; the handle "+
+				"generation is that node's ledger sequence, and a stale one points at somebody "+
+				"else's live source.", relative, why)
+		}
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scanning %s: %v", root, err)
+	}
+	if scanned < 100 {
+		t.Fatalf("the scan read only %d production files under %s; this guard would pass "+
+			"vacuously", scanned, root)
+	}
+
+	// Every pin must still be earning its exemption. A pin on a file that no
+	// longer derives anything is an exemption nobody is watching.
+	for file, reason := range pinned {
+		if !found[file] {
+			t.Errorf("%s is pinned as allowed to derive an incarnation directory (%s) and no "+
+				"longer does. Drop the pin, or the scan has stopped seeing the shape.",
+				file, reason)
+		}
+	}
+
+	// The counter-check: the derivation exists in the contract package, so the
+	// patterns above are not looking for a spelling that was renamed away.
+	contract, err := os.ReadFile(filepath.Join("..", "..", "..", "hangar", "output",
+		"reservation.go"))
+	if err != nil {
+		t.Fatalf("reading the contract package's derivation: %v", err)
+	}
+	if !composers["the daemon's own format string"].Match(contract) {
+		t.Error("hangar/output/reservation.go does not compose an incarnation directory either, " +
+			"so this scan is looking for a spelling that no longer exists")
 	}
 }

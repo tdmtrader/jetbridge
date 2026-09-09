@@ -89,6 +89,31 @@ func (b *DaemonSetBackend) StepVolume(name, handle, subdir string) corev1.Volume
 	}
 }
 
+// ReservedIncarnationVolume mounts the location the output daemon reserved.
+//
+// It joins the node's artifact root, the managed steps directory and the
+// daemon's own answer, and it derives nothing else: `reservedDir` is
+// `ReservedIncarnation.Directory` verbatim, which the ATC validated against the
+// incarnation beside it before it ever reached here.
+//
+// The type is DirectoryOrCreate for the same reason StepVolume's is, and it is
+// very nearly moot: the reservation already created the directory under the
+// daemon's own root, with the daemon's ownership, before this Pod was built.
+// That ordering is the point of reserving at all.
+func (b *DaemonSetBackend) ReservedIncarnationVolume(name, reservedDir string) corev1.Volume {
+	dirType := corev1.HostPathDirectoryOrCreate
+
+	return corev1.Volume{
+		Name: name,
+		VolumeSource: corev1.VolumeSource{
+			HostPath: &corev1.HostPathVolumeSource{
+				Path: filepath.Join(b.config.ArtifactDaemonHostPath, "steps", reservedDir),
+				Type: &dirType,
+			},
+		},
+	}
+}
+
 func (b *DaemonSetBackend) CacheVolume(name string, identity atc.TaskCacheIdentity, stepName, cachePath string) corev1.Volume {
 	basePath := b.config.CacheHostPath
 	if basePath == "" {

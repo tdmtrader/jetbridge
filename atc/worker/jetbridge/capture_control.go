@@ -58,6 +58,14 @@ const (
 	captureEnvGrant      = "HANGAR_SOURCE_CONTROL_GRANT"
 	captureEnvHoldTries  = "HANGAR_HOLD_ATTEMPTS"
 	captureEnvOutputPort = "HANGAR_OUTPUT_DAEMON_PORT"
+
+	// The reserved incarnation, field by field. The control init PRESENTS it
+	// at the hold, and presenting it is what proves this container is running
+	// in the Pod the reservation was made for -- the daemon refuses a hold for
+	// any other. The execution id and the output name are already above; these
+	// are the two that are not.
+	captureEnvIncarnationNode       = "HANGAR_INCARNATION_NODE"
+	captureEnvIncarnationGeneration = "HANGAR_INCARNATION_GENERATION"
 )
 
 // hangarCredentialEnvNames is what "carries no Hangar credential" means, in
@@ -116,6 +124,15 @@ func (c *Container) buildCaptureControlInitContainer() *corev1.Container {
 			{Name: captureEnvOutputPort, Value: strconv.Itoa(port)},
 			{Name: captureEnvHoldTries, Value: strconv.Itoa(defaultHoldAttempts)},
 
+			// The reservation, repeated. The ATC composed none of it: these
+			// values came off the wire from `reserve-incarnation`, and the
+			// same reservation is the hostPath of the selected output's
+			// volume in this very Pod.
+			{Name: captureEnvIncarnationNode,
+				Value: string(capture.ReservedIncarnation.NodeUID)},
+			{Name: captureEnvIncarnationGeneration, Value: strconv.FormatUint(
+				uint64(capture.ReservedIncarnation.HandleGeneration), 10)},
+
 			// The credential, in this container and in no other.
 			{Name: captureEnvGrant, Value: string(capture.SourceControlGrant)},
 		}, downwardAPIPodAndNodeFields()...),
@@ -162,7 +179,8 @@ ENDPOINT="${%[2]s}"
 if [ -z "${ENDPOINT}" ]; then
   ENDPOINT="http://${%[11]s}:${%[15]s}"
 fi
-BODY='{"protocol_version":"'"${%[1]s}"'","execution":{"execution_id":"'"${%[3]s}"'","fence":'"${%[4]s}"'},"activation_epoch":'"${%[5]s}"',"handoff_id":"'"${%[6]s}"'","source_lease_id":"'"${%[7]s}"'","output":"'"${%[8]s}"'","capture_deadline_at":"'"${%[9]s}"'","pod_uid":"'"${%[10]s}"'"}'
+INCARNATION='{"execution_id":"'"${%[3]s}"'","node_uid":"'"${%[17]s}"'","handle_generation":'"${%[18]s}"',"output":"'"${%[8]s}"'"}'
+BODY='{"protocol_version":"'"${%[1]s}"'","execution":{"execution_id":"'"${%[3]s}"'","fence":'"${%[4]s}"'},"activation_epoch":'"${%[5]s}"',"handoff_id":"'"${%[6]s}"'","source_lease_id":"'"${%[7]s}"'","output":"'"${%[8]s}"'","capture_deadline_at":"'"${%[9]s}"'","pod_uid":"'"${%[10]s}"'","incarnation":'"${INCARNATION}"'}'
 echo "[hangar-capture-control] holding the source for output ${%[8]s} on node ${%[12]s} (pod ${%[10]s})" >&2
 ATTEMPT=0
 while [ "${ATTEMPT}" -lt "${%[13]s}" ]; do
@@ -196,6 +214,9 @@ exit 1
 		CapabilityHeaderName, // 14
 		captureEnvOutputPort, // 15
 		captureEnvGrant,      // 16
+
+		captureEnvIncarnationNode,       // 17
+		captureEnvIncarnationGeneration, // 18
 	)
 }
 
@@ -214,6 +235,31 @@ func (c *Container) helperImage() string {
 	}
 
 	return DefaultArtifactHelperImage
+}
+
+// captureReservedDirectory is the daemon-issued directory the selected output's
+// volume must resolve to, or "" when nothing is captured.
+//
+// It is a READ of a field that came off the wire. There is deliberately no
+// function here that builds one: Req 7 says no API accepts a caller-chosen
+// path, and a control plane that could spell a source directory could spell a
+// stale generation pointing at somebody else's live source.
+func captureReservedDirectory(spec runtime.ContainerSpec) string {
+	if !spec.ExecutionControl.HasDurableOutputCapture() {
+		return ""
+	}
+
+	return spec.ExecutionControl.Capture.ReservedDirectory
+}
+
+// captureSelectedOutputName is the name of the one output selected for capture,
+// or "" when nothing is captured.
+func captureSelectedOutputName(spec runtime.ContainerSpec) string {
+	if !spec.ExecutionControl.HasDurableOutputCapture() {
+		return ""
+	}
+
+	return spec.ExecutionControl.Capture.Output
 }
 
 // captureSelectedOutputPath is the container path of the one selected output,

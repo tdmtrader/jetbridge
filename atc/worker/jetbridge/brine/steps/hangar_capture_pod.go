@@ -12,6 +12,7 @@ package steps
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
@@ -199,6 +200,19 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 			"the capture pod declares {int} mounts, and every one resolves to a declared Volume",
 			"the number of mounts that resolve to a declared Volume",
 			captureResolvedMountCount),
+
+		// The reservation, read off the Pod. It is the claim the whole
+		// completion pass is about: the producer's declared output volume is
+		// the location the daemon issued, not this step's own directory.
+		//
+		// The assertion is that the pod builder REPEATED what it was given.
+		// The reservation in this chain is the fixture's stand-in (there is no
+		// daemon in a pod-shape scenario), so what would redden here is a
+		// builder that composed a path of its own -- which is exactly what it
+		// used to do.
+		CheckThat[CapturePodCreated](
+			"the captured output is mounted at the incarnation the daemon reserved",
+			capturedOutputMountsTheReservation),
 
 		CheckInt[CapturePodCreated]("the capture pod carries {int} init containers",
 			"the number of init containers",
@@ -555,6 +569,74 @@ func captureCarriesHandshakeAndDownwardAPI(in CapturePodCreated) error {
 			return fmt.Errorf("%s reads %q and the field that carries it is %q",
 				name, got.ValueFrom.FieldRef.FieldPath, path)
 		}
+	}
+
+	return nil
+}
+
+// capturedOutputMountsTheReservation reads the selected output's volume off the
+// Pod and requires its hostPath to end in the reserved directory.
+//
+// The control is in the same function and checked first: the step's WORKING
+// directory still resolves under the step's own handle, so this cannot pass on
+// a builder that has started pointing every volume at the incarnation.
+func capturedOutputMountsTheReservation(in CapturePodCreated) error {
+	if in.Pod == nil {
+		return fmt.Errorf("no capture pod was built: %v", in.Err)
+	}
+	reserved := in.Draft.Reserved
+	if reserved.Directory == "" {
+		return fmt.Errorf("this chain reserved no incarnation, so there is nothing to repeat")
+	}
+
+	hostPath := func(name string) string {
+		for _, volume := range in.Pod.Spec.Volumes {
+			if volume.Name != name {
+				continue
+			}
+			if volume.HostPath == nil {
+				return ""
+			}
+
+			return volume.HostPath.Path
+		}
+
+		return ""
+	}
+	mounted := map[string]string{}
+	for _, container := range in.Pod.Spec.Containers {
+		for _, mount := range container.VolumeMounts {
+			mounted[mount.MountPath] = hostPath(mount.Name)
+		}
+	}
+
+	// The control: an ordinary step volume is unchanged.
+	dir := in.Draft.Draft.Dir
+	if dir != "" {
+		if path := mounted[dir]; !strings.HasSuffix(path, "/steps/"+in.Draft.Draft.Handle+"/dir") {
+			return fmt.Errorf("the step's working directory resolves to %q, which is not this "+
+				"step's own directory; a builder that pointed everything at the incarnation "+
+				"would pass the assertion below while breaking every ordinary volume", path)
+		}
+	}
+
+	outputPath := ""
+	for _, path := range in.Draft.Draft.Outputs {
+		outputPath = path
+
+		break
+	}
+	if outputPath == "" {
+		return fmt.Errorf("this scenario declares no output")
+	}
+	path, found := mounted[outputPath]
+	if !found {
+		return fmt.Errorf("the task container mounts nothing at the captured output %q", outputPath)
+	}
+	if !strings.HasSuffix(path, "/steps/"+reserved.Directory) {
+		return fmt.Errorf("the captured output is mounted from %q and the daemon reserved "+
+			"%q. A producer writing anywhere else is a hold over bytes nobody wrote",
+			path, reserved.Directory)
 	}
 
 	return nil

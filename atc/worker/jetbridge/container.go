@@ -1028,6 +1028,35 @@ func (c *Container) stepVolume(name, subdir string) corev1.Volume {
 	return emptyDirVolume(name)
 }
 
+// outputVolume is stepVolume for a declared output, with one exception: the ONE
+// output selected for capture mounts the incarnation the output daemon
+// reserved, not this step's own directory.
+//
+// The two used to be the same call and that was the seam Phase 4 found. A
+// capture-selected producer wrote into `steps/<handle>/<output>` while the
+// daemon's hold protected `steps/<execution>.<generation>/<output>` -- sibling
+// directories -- so the capture sealed an empty tree and every path-keyed guard
+// correctly answered "unmanaged" about the bytes that mattered.
+//
+// The ATC chooses nothing here. `ReservedDirectory` came off the wire from
+// `reserve-incarnation`, was validated against the incarnation it carries, and
+// is repeated. Req 7 holds because the daemon named the path.
+func (c *Container) outputVolume(name, outputName string) corev1.Volume {
+	reserved := captureReservedDirectory(c.containerSpec)
+	if reserved == "" || outputName != captureSelectedOutputName(c.containerSpec) {
+		return c.stepVolume(name, outputName)
+	}
+	if c.storageBackend == nil || c.metadata.Type == db.ContainerTypeCheck {
+		// No artifact store, or a check container, whose working directory is
+		// deliberately ephemeral. Neither can carry a capture; the envelope
+		// would not have validated against a spec with no declared output, and
+		// an emptyDir here is the same thing the step's other volumes get.
+		return emptyDirVolume(name)
+	}
+
+	return c.storageBackend.ReservedIncarnationVolume(name, reserved)
+}
+
 func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) {
 	var volumes []corev1.Volume
 	var mounts []corev1.VolumeMount
@@ -1096,7 +1125,7 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 
 		name := fmt.Sprintf("output-%d", idx)
 		idx++
-		volumes = append(volumes, c.stepVolume(name, outputName))
+		volumes = append(volumes, c.outputVolume(name, outputName))
 		mounts = append(mounts, corev1.VolumeMount{
 			Name:      name,
 			MountPath: path,

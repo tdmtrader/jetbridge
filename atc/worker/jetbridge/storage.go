@@ -19,6 +19,18 @@ import (
 // behavior for non-DaemonSet deployments.
 type StorageBackend interface {
 	StepVolume(name, handle, subdir string) corev1.Volume
+
+	// ReservedIncarnationVolume is the volume for a capture-selected output.
+	//
+	// reservedDir is the output daemon's OWN name for the location, relative to
+	// the managed steps root, taken verbatim from the reservation. It is a
+	// separate method from StepVolume because it takes a different key: a step
+	// volume is derived from a handle this runtime chose, and this one is
+	// derived from nothing -- it repeats an answer. A backend that composed it
+	// from a handle would put the producer's bytes back in the sibling
+	// directory no hold protects, which is the defect this method exists to
+	// close.
+	ReservedIncarnationVolume(name, reservedDir string) corev1.Volume
 	CacheVolume(name string, identity atc.TaskCacheIdentity, stepName, cachePath string) corev1.Volume
 	ArtifactStoreVolume(containerType db.ContainerType) *corev1.Volume
 	ArtifactStoreVolumeName() string
