@@ -160,8 +160,12 @@ func startHangarDaemon(rec *brine.Recorder) (HangarDaemon, error) {
 	rec.RegisterDisposer(func() { _ = client.Close() })
 
 	bucket := uniqueBucketName()
-	if err := client.Bucket(bucket).Create(ctx, "brine-hangar-output", nil); err != nil {
-		return HangarDaemon{}, fmt.Errorf("create the Hangar output bucket %q on %s: %w", bucket, endpoint, err)
+	if err := createOutputBucket(ctx, endpoint, bucket,
+		hangarBucketCreateAttempts, hangarBucketCreateTimeout,
+		func(attemptCtx context.Context) error {
+			return client.Bucket(bucket).Create(attemptCtx, "brine-hangar-output", nil)
+		}); err != nil {
+		return HangarDaemon{}, err
 	}
 
 	// One small PKI, minted the same way daemon_mtls.go mints its own. The
@@ -273,6 +277,43 @@ func hangarEmulatorEndpoint(rec *brine.Recorder) (string, error) {
 	}
 	rec.RegisterDisposer(server.Stop)
 	return server.URL(), nil
+}
+
+// The bucket create is bounded, and it is bounded because it was not.
+//
+// The GCS client retries a refused connection with backoff and the fixture
+// handed it a background context, so an endpoint nothing answers -- a service
+// name mistyped in the pipeline, say -- never returned. Measured: with
+// HANGAR_FAKE_GCS_ENDPOINT pointed at a closed port, `brine run
+// features/hangar-fixture.feature` did not finish in 300 seconds. What an
+// operator got was the brine job's 30-minute timeout with no reason in it,
+// which is the least useful shape a failure can take.
+const (
+	hangarBucketCreateAttempts = 3
+	hangarBucketCreateTimeout  = 10 * time.Second
+)
+
+// createOutputBucket attempts the create a bounded number of times, each under
+// its own deadline, and fails with the endpoint in the message.
+//
+// The attempts and the per-attempt bound are parameters rather than the
+// constants above so the closed-port case can be asserted in a second rather
+// than in half a minute; the production call site passes the constants.
+func createOutputBucket(ctx context.Context, endpoint, bucket string, attempts int, perAttempt time.Duration, create func(context.Context) error) error {
+	var err error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		attemptCtx, cancel := context.WithTimeout(ctx, perAttempt)
+		err = create(attemptCtx)
+		cancel()
+		if err == nil {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("create the Hangar output bucket %q on %s: gave up after %d attempts of "+
+		"at most %s each: %w.\n\nIf %s names a Kubernetes service, check that it resolves from "+
+		"this pod. Waiting instead would be this job's timeout with no reason in it.",
+		bucket, endpoint, attempts, perAttempt, err, FakeGCSEndpointEnv)
 }
 
 func uniqueBucketName() string {
