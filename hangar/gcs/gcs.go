@@ -47,6 +47,12 @@ type GCSStore struct {
 	config        GCSConfig
 	createScratch func(string, string) (scratchFile, error)
 	removeScratch func(string) error
+	// withTimeout arms the deadline every store operation runs under. It
+	// defaults to context.WithTimeout, so production behaviour is exactly the
+	// configured read and write timeouts on a real clock; tests replace it to
+	// fire the deadline at a chosen point in the operation rather than racing
+	// a wall clock against the goroutine scheduler.
+	withTimeout func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 }
 
 func NewStorageClient(ctx context.Context, endpoint string) (*storage.Client, error) {
@@ -122,7 +128,7 @@ func newGCSStore(objects objectClient, config GCSConfig) (*GCSStore, error) {
 		return nil, fmt.Errorf("hangar: close zstd configuration probe: %w", err)
 	}
 	config.ScratchDir = filepath.Clean(config.ScratchDir)
-	return &GCSStore{objects: objects, config: config, createScratch: func(directory, pattern string) (scratchFile, error) { return os.CreateTemp(directory, pattern) }, removeScratch: os.Remove}, nil
+	return &GCSStore{objects: objects, config: config, createScratch: func(directory, pattern string) (scratchFile, error) { return os.CreateTemp(directory, pattern) }, removeScratch: os.Remove, withTimeout: context.WithTimeout}, nil
 }
 
 func (store *GCSStore) EnsureTree(ctx context.Context, scope hangar.Scope, digest hangar.Digest, source io.Reader, maxLogicalBytes int64) (attributes hangar.TreeAttributes, created bool, err error) {
@@ -136,7 +142,7 @@ func (store *GCSStore) EnsureTree(ctx context.Context, scope hangar.Scope, diges
 	if err := validateGCSLimit(maxLogicalBytes); err != nil {
 		return hangar.TreeAttributes{}, false, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, store.config.WriteTimeout)
+	ctx, cancel := store.withTimeout(ctx, store.config.WriteTimeout)
 	defer cancel()
 	if err := ctx.Err(); err != nil {
 		return hangar.TreeAttributes{}, false, err
@@ -257,7 +263,7 @@ func (store *GCSStore) InspectTree(ctx context.Context, scope hangar.Scope, dige
 	if err := validateGCSLimit(maxLogicalBytes); err != nil {
 		return hangar.TreeAttributes{}, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, store.config.ReadTimeout)
+	ctx, cancel := store.withTimeout(ctx, store.config.ReadTimeout)
 	defer cancel()
 	reader, attrs, err := store.inspect(ctx, scope, digest, key, maxLogicalBytes)
 	if err != nil {
@@ -280,7 +286,7 @@ func (store *GCSStore) OpenTree(ctx context.Context, ref hangar.TreeRef, maxLogi
 	if err != nil {
 		return nil, hangar.TreeAttributes{}, fmt.Errorf("hangar: open tree identity: %w", err)
 	}
-	ctx, cancel := context.WithTimeout(ctx, store.config.ReadTimeout)
+	ctx, cancel := store.withTimeout(ctx, store.config.ReadTimeout)
 	defer cancel()
 	return store.openVerified(ctx, store.objects.Object(store.config.Bucket, key).Generation(ref.Generation), ref, maxLogicalBytes, false)
 }
@@ -293,7 +299,7 @@ func (store *GCSStore) DeleteTree(ctx context.Context, ref hangar.TreeRef) error
 	if err != nil {
 		return fmt.Errorf("hangar: delete tree identity: %w", err)
 	}
-	ctx, cancel := context.WithTimeout(ctx, store.config.WriteTimeout)
+	ctx, cancel := store.withTimeout(ctx, store.config.WriteTimeout)
 	defer cancel()
 	err = store.objects.Object(store.config.Bucket, key).If(storage.Conditions{GenerationMatch: ref.Generation}).Delete(ctx)
 	if err == nil || isNotFound(err) {
