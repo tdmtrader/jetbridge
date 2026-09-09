@@ -239,6 +239,18 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 			"Phase 8 Green",
 			"both required ready labels, base control and output"),
 
+		// The node pin, declared here in Phase 5 and executed in Phase 8, per
+		// the Phase 4 round-2 ruling 3. It is a stub beside its two affinity
+		// siblings rather than a live step above them, because the scenarios
+		// that exercise a cohort are Phase 8's and splitting the family is
+		// what the ruling declined. The production half exists and is red
+		// under M8 in Go
+		// (TestACaptureSelectedPodIsPinnedToTheReservingNodeAndAnOrdinaryOneIsNot).
+		stubCheck[CapturePodCreated](
+			"the capture pod is admitted only by the node {string}",
+			"Phase 8 Green",
+			"the kubernetes.io/hostname expression BuildAffinity emits for the reserving node"),
+
 		stubCheck[CapturePodCreated](
 			"no capture pod is built",
 			"Phase 8 Green",

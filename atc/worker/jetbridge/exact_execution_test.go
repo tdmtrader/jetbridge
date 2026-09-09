@@ -730,12 +730,35 @@ var _ = Describe("Destructive operations over a capture-held source", func() {
 		Expect(looked.refuseIfCaptureHeld(ctx, "hijacking the container")).To(Succeed())
 		Expect(classifier.asked).To(Equal([]string{"held-handle"}))
 
-		// The capture-selected pod says what it mounted.
+		// The capture-selected pod says what it mounted -- and it says so
+		// because PRODUCTION stamped it. The annotation is not written here:
+		// a spec that writes the key it then reads pins the reader and leaves
+		// the writer to nothing, which is what the Phase 4 round-2 review
+		// found (M5: `buildPod` stamping nothing reddened no committed test).
+		// The Pod below comes out of `Container.buildPod` and is created as
+		// it stands.
 		reserved := admittedCapture().Capture.ReservedDirectory
-		pod, err := clientset.CoreV1().Pods("test-ns").Get(ctx, "held-pod", metav1.GetOptions{})
+		Expect(reserved).ToNot(BeEmpty())
+
+		builder := &Container{
+			handle:         "held-handle",
+			podName:        "held-pod",
+			workerName:     "worker-1",
+			metadata:       db.ContainerMetadata{Type: db.ContainerTypeTask},
+			containerSpec:  capturingSpec(admittedCapture()),
+			config:         container.config,
+			properties:     map[string]string{},
+			storageBackend: NewDaemonSetBackend(container.config, nil, nil),
+		}
+		built, err := builder.buildPod(runtime.ProcessSpec{Path: "/bin/sh"}, []string{"sh"}, nil)
 		Expect(err).ToNot(HaveOccurred())
-		pod.Annotations = map[string]string{captureReservationAnnotation: reserved}
-		_, err = clientset.CoreV1().Pods("test-ns").Update(ctx, pod, metav1.UpdateOptions{})
+		Expect(built.Annotations).To(HaveKeyWithValue(captureReservationAnnotation, reserved),
+			"buildPod stamped no reservation, so a looked-up container has nothing to read "+
+				"and the hijack refusal Req 18 requires never fires")
+
+		Expect(clientset.CoreV1().Pods("test-ns").Delete(ctx, "held-pod",
+			metav1.DeleteOptions{})).To(Succeed())
+		_, err = clientset.CoreV1().Pods("test-ns").Create(ctx, built, metav1.CreateOptions{})
 		Expect(err).ToNot(HaveOccurred())
 
 		classifier.class = captureClassHeld

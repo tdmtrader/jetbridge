@@ -2380,81 +2380,6 @@ func (a *stubArtifact) StreamOut(_ context.Context, _ string, _ compression.Comp
 // records `<handle>/<name>`, because Req 59 says an ordinary output's behaviour
 // is unchanged.
 func TestDaemonSetMode_RecordOutputsPointsTheCapturedOutputAtItsIncarnation(t *testing.T) {
-	var registrations []struct {
-		Key, LocalPath string
-		ReadOnly       bool
-	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/register" {
-			http.NotFound(w, r)
-
-			return
-		}
-		var req struct {
-			Key       string `json:"key"`
-			LocalPath string `json:"local_path"`
-			ReadOnly  bool   `json:"read_only"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&req)
-		registrations = append(registrations, struct {
-			Key, LocalPath string
-			ReadOnly       bool
-		}{req.Key, req.LocalPath, req.ReadOnly})
-		w.WriteHeader(http.StatusCreated)
-	}))
-	defer srv.Close()
-
-	locator := NewArtifactLocator()
-	cfg := daemonSetConfig()
-	cfg.OutputPlaneEnabled = true
-
-	captured := NewStubVolume("captured-vol", "test-worker", "/tmp/build/result")
-	ordinary := NewStubVolume("ordinary-vol", "test-worker", "/tmp/build/report")
-
-	control := admittedCapture()
-	spec := runtime.ContainerSpec{
-		Dir:              "/tmp/build",
-		Type:             db.ContainerTypeTask,
-		Outputs:          runtime.OutputPaths{"result": "/tmp/build/result", "report": "/tmp/build/report"},
-		ExecutionControl: control,
-	}
-
-	backend := NewDaemonSetBackend(cfg, locator, nil)
-	backend.RecordOutputs(context.Background(), "capture-handle", "test-node",
-		[]*Volume{captured, ordinary}, spec)
-
-	// The control: the unselected output is exactly where it always was.
-	ordinaryLoc, found := locator.Locate(ArtifactKey(ordinary.Handle()))
-	if !found {
-		t.Fatal("the unselected output was not recorded at all")
-	}
-	if ordinaryLoc.HostDir != "capture-handle/report" {
-		t.Errorf("the unselected output moved to %q; an ordinary output is unchanged",
-			ordinaryLoc.HostDir)
-	}
-
-	// And the captured one names the directory the producer actually wrote to.
-	capturedLoc, found := locator.Locate(ArtifactKey(captured.Handle()))
-	if !found {
-		t.Fatal("the captured output was not recorded, so no downstream step can find it")
-	}
-	want := control.Capture.ReservedDirectory
-	if capturedLoc.HostDir != want {
-		t.Errorf("the captured output is recorded at %q and its producer wrote into %q; a "+
-			"downstream step would fetch a directory that does not exist",
-			capturedLoc.HostDir, want)
-	}
-}
-
-// And the alias for it goes through the register route as READ-ONLY.
-//
-// The register guard refuses an alias onto a capture-held location, and it is
-// right to: a second write-capable name for bytes a capture is about to seal
-// hands every key-taking destructive path a way to reach them under a name the
-// capture never heard of. A read is not that. So the alias declares itself, and
-// the daemon admits it -- which is what keeps ordinary artifact passing working
-// over a held incarnation without reopening the door Req 16 closes.
-func TestDaemonSetMode_TheCapturedOutputsAliasIsRegisteredReadOnly(t *testing.T) {
 	type registration struct {
 		Key, LocalPath string
 		ReadOnly       bool
@@ -2486,14 +2411,29 @@ func TestDaemonSetMode_TheCapturedOutputsAliasIsRegisteredReadOnly(t *testing.T)
 		t.Fatalf("parsing the test server port: %v", err)
 	}
 
+	locator := NewArtifactLocator()
 	cfg := daemonSetConfig()
 	cfg.OutputPlaneEnabled = true
 	cfg.ArtifactDaemonPort = port
 
+	captured := NewStubVolume("captured-vol", "test-worker", "/tmp/build/result")
+	ordinary := NewStubVolume("ordinary-vol", "test-worker", "/tmp/build/report")
+
+	control := admittedCapture()
+	spec := runtime.ContainerSpec{
+		Dir:              "/tmp/build",
+		Type:             db.ContainerTypeTask,
+		Outputs:          runtime.OutputPaths{"result": "/tmp/build/result", "report": "/tmp/build/report"},
+		ExecutionControl: control,
+	}
+
 	// A real NodeIPResolver over a fake API server whose one Node's internal IP
-	// is the test server's. Nothing about the register path is stubbed: the
-	// backend composes the URL and posts the body it would post in a cluster.
-	backend := NewDaemonSetBackend(cfg, NewArtifactLocator(), nil)
+	// is the test server's, so that RecordOutputs reaches the register route
+	// the way it does in a cluster. Without it `registerAlias` returns at its
+	// first WARNING line and the whole register body -- including the read-only
+	// flag Req 16 depends on -- is never observed. That is the round-2 finding
+	// R2-2: the flag was set at a site no committed test could see.
+	backend := NewDaemonSetBackend(cfg, locator, nil)
 	backend.nodeIPResolver = NewNodeIPResolver(fake.NewSimpleClientset(&corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-node"},
 		Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{
@@ -2501,26 +2441,68 @@ func TestDaemonSetMode_TheCapturedOutputsAliasIsRegisteredReadOnly(t *testing.T)
 		}},
 	}))
 
-	control := admittedCapture()
-	reserved := control.Capture.ReservedDirectory
+	backend.RecordOutputs(context.Background(), "capture-handle", "test-node",
+		[]*Volume{captured, ordinary}, spec)
 
-	backend.registerDaemonAlias("test-node", "ordinary-key",
-		filepath.Join(cfg.ArtifactDaemonHostPath, "steps", "capture-handle", "report"))
-	backend.registerReadOnlyDaemonAlias("test-node", "captured-key",
-		filepath.Join(cfg.ArtifactDaemonHostPath, "steps", reserved))
-
-	if len(registrations) != 2 {
-		t.Fatalf("expected two registrations, got %d: %+v", len(registrations), registrations)
+	// The control: the unselected output is exactly where it always was.
+	ordinaryLoc, found := locator.Locate(ArtifactKey(ordinary.Handle()))
+	if !found {
+		t.Fatal("the unselected output was not recorded at all")
 	}
-	if registrations[0].ReadOnly {
+	if ordinaryLoc.HostDir != "capture-handle/report" {
+		t.Errorf("the unselected output moved to %q; an ordinary output is unchanged",
+			ordinaryLoc.HostDir)
+	}
+
+	// And the captured one names the directory the producer actually wrote to.
+	capturedLoc, found := locator.Locate(ArtifactKey(captured.Handle()))
+	if !found {
+		t.Fatal("the captured output was not recorded, so no downstream step can find it")
+	}
+	want := control.Capture.ReservedDirectory
+	if capturedLoc.HostDir != want {
+		t.Errorf("the captured output is recorded at %q and its producer wrote into %q; a "+
+			"downstream step would fetch a directory that does not exist",
+			capturedLoc.HostDir, want)
+	}
+
+	// The BODY RecordOutputs sent, for both outputs. The register guard refuses
+	// an alias onto a capture-held location, and it is right to: a second
+	// write-capable name for bytes a capture is about to seal hands every
+	// key-taking destructive path a way to reach them under a name the capture
+	// never heard of. A read is not that, so the alias declares which of the
+	// two it is -- and if it declares wrong the daemon answers 409 and the
+	// captured output's ordinary key resolves to nothing.
+	sent := map[string]registration{}
+	for _, entry := range registrations {
+		sent[entry.Key] = entry
+	}
+	if len(sent) != 2 {
+		t.Fatalf("RecordOutputs registered %d distinct aliases, not two: %+v", len(sent), registrations)
+	}
+
+	ordinaryAlias, ok := sent[string(ArtifactKey(ordinary.Handle()))]
+	if !ok {
+		t.Fatalf("the unselected output registered no alias: %+v", registrations)
+	}
+	if ordinaryAlias.ReadOnly {
 		t.Error("an ordinary output's alias declared itself read-only")
 	}
-	if !registrations[1].ReadOnly {
-		t.Error("the captured output's alias did not declare itself read-only, so the register " +
-			"guard will refuse it as a second write-capable name for held bytes")
+	if !strings.HasSuffix(ordinaryAlias.LocalPath, "capture-handle/report") {
+		t.Errorf("the unselected output's alias points at %q", ordinaryAlias.LocalPath)
 	}
-	if !strings.HasSuffix(registrations[1].LocalPath, reserved) {
+
+	capturedAlias, ok := sent[string(ArtifactKey(captured.Handle()))]
+	if !ok {
+		t.Fatalf("the captured output registered no alias: %+v", registrations)
+	}
+	if !capturedAlias.ReadOnly {
+		t.Error("the captured output's alias did not declare itself read-only, so the register " +
+			"guard refuses it as a second write-capable name for held bytes and the captured " +
+			"output's ordinary key resolves to nothing")
+	}
+	if !strings.HasSuffix(capturedAlias.LocalPath, want) {
 		t.Errorf("the captured output's alias points at %q and the incarnation is %q",
-			registrations[1].LocalPath, reserved)
+			capturedAlias.LocalPath, want)
 	}
 }

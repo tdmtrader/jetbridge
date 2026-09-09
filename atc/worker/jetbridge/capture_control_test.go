@@ -40,16 +40,23 @@ func capturePodConfig(outputPlane bool) Config {
 	}
 }
 
-func capturingContainer(t *testing.T, cfg Config, reused bool, control *runtime.ExecutionControl) *Container {
-	t.Helper()
-
-	spec := runtime.ContainerSpec{
+// capturingSpec is the one description of a capture-selected step, so that a
+// spec built here and a spec built in the ginkgo file cannot drift into two
+// different meanings of "capture-selected".
+func capturingSpec(control *runtime.ExecutionControl) runtime.ContainerSpec {
+	return runtime.ContainerSpec{
 		Dir:              "/tmp/build/task",
 		Type:             db.ContainerTypeTask,
 		ImageSpec:        runtime.ImageSpec{ImageURL: "busybox"},
 		Outputs:          runtime.OutputPaths{"result": "/tmp/build/result"},
 		ExecutionControl: control,
 	}
+}
+
+func capturingContainer(t *testing.T, cfg Config, reused bool, control *runtime.ExecutionControl) *Container {
+	t.Helper()
+
+	spec := capturingSpec(control)
 
 	return &Container{
 		handle:         "capture-handle",
