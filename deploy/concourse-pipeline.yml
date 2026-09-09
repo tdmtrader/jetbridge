@@ -63,8 +63,10 @@ jobs:
           echo "=== Compiling live-tagged suites ==="
           go vet -tags live ./atc/worker/jetbridge/...
           # The Hangar generated-Pod contract is hangar_live only: it relabels
-          # a node, so it cannot run against the deployed cluster and has no
-          # CI home until the kind tier hosts it. Compiling it keeps it honest.
+          # a node, so it cannot run against the deployed cluster. It RUNS in
+          # the k8s-e2e pipeline's hangar-generated-pod-contract job, on a
+          # throwaway K3s cluster; compiling it here keeps it honest between
+          # those runs.
           go vet -tags hangar_live ./atc/worker/jetbridge/...
           echo "=== Live-tagged suites compile ==="
 

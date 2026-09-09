@@ -141,7 +141,24 @@ jobs:
 
           echo "=== kind-runner image built and pushed ==="
 
-- name: k8s-integration-tests
+# The Hangar generated-Pod contract lists the cluster's Nodes and relabels one
+# (concourse.dev/artifact-cache, concourse.dev/hangar-v1) so the strict Pod it
+# generates has somewhere to schedule. That is cluster-scope mutation, which is
+# why live_scope_guard_test.go bars it from the `live` tier -- that tier runs
+# against the deployed cluster under a namespaced ServiceAccount -- and why it
+# carries its own `hangar_live` tag. This job is its CI home: a K3s cluster
+# created here, reached through a cluster-admin kubeconfig, and thrown away with
+# the task.
+#
+# It needs no Hangar store and no deployed artifact daemon, so there is no
+# artifactDaemon.hangar.* chart value to set here, no capability-key Secret to
+# mint and nothing to point at GCS. The contract plants its own daemon stand-in
+# -- a hostNetwork BusyBox Pod that writes the strict tree onto the node and
+# answers POST /hangar/v1/materializations on 31780 with an exact empty 204 --
+# and signs its own materialization grants with a key it holds in process. What
+# is under test is the Pod the runtime GENERATES and the tree the init container
+# will accept, not the store behind the daemon.
+- name: hangar-generated-pod-contract
   serial: true
   serial_groups: [k8s-tests]
   plan:
@@ -150,6 +167,146 @@ jobs:
     passed: [build-kind-runner]
   - get: repo
     passed: [build-kind-runner]
+  - task: hangar-generated-pod-contract
+    privileged: true
+    timeout: 40m
+    attempts: 2
+    config:
+      platform: linux
+      inputs:
+      - name: repo
+      rootfs_uri: docker:///registry.home/concourse-kind-runner:v35
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          # Build from the freshly-fetched git resource, NOT the image's baked
+          # /src (which goes stale behind a cached image tag).
+          cd repo
+          K3S_IMAGE="rancher/k3s:v1.31.6-k3s1"
+          CLUSTER="hangar-contract-k3s"
+          KUBECONFIG_PATH=/tmp/hangar-contract-kubeconfig
+
+          echo "=== Pre-compiling the contract before Docker (avoids CPU contention with containerd) ==="
+          go mod download
+          go test -c -tags hangar_live -o /dev/null ./atc/worker/jetbridge/
+
+          echo "=== Starting Docker daemon (DinD) ==="
+          killall -9 dockerd containerd 2>/dev/null || true
+          sleep 1
+          rm -rf /var/run/docker.pid /var/run/docker /var/run/containerd /run/containerd 2>/dev/null || true
+          mkdir -p /var/lib/docker /run/containerd
+          mount -t tmpfs -o size=8G tmpfs /var/lib/docker 2>/dev/null || true
+          # --dns=8.8.8.8 ensures the nested K3s container can resolve external
+          # hostnames for pulling its system images.
+          /usr/local/bin/dockerd --host=unix:///var/run/docker.sock --mtu=1450 \
+                  --dns=8.8.8.8 \
+                  --log-level=warn &
+          DOCKERD_PID=$!
+
+          echo "Waiting for Docker daemon..."
+          for i in $(seq 1 30); do
+            if docker info >/dev/null 2>&1; then
+              echo "Docker daemon ready"
+              break
+            fi
+            sleep 2
+          done
+          docker info >/dev/null
+
+          echo "=== Pulling images ==="
+          docker pull ${K3S_IMAGE}
+          docker pull busybox:latest
+
+          echo "=== Creating the disposable K3s cluster ==="
+          # Same container shape testcontainers' k3s module uses (privileged,
+          # host cgroup namespace, tmpfs /run and /var/run), which is what the
+          # rest of this tier already runs on. The API server is published on
+          # loopback only: the kubeconfig K3s writes already names
+          # https://127.0.0.1:6443, so it needs no rewriting.
+          docker rm -f ${CLUSTER} >/dev/null 2>&1 || true
+          docker run -d --name ${CLUSTER} \
+            --privileged --cgroupns=host \
+            --tmpfs /run --tmpfs /var/run \
+            -e K3S_KUBECONFIG_MODE=644 \
+            -p 127.0.0.1:6443:6443 \
+            ${K3S_IMAGE} \
+            server --disable=traefik --disable=metrics-server --tls-san=127.0.0.1
+
+          echo "Waiting for the node controller to sync..."
+          READY=0
+          for i in $(seq 1 90); do
+            if docker logs ${CLUSTER} 2>&1 | grep -q "Node controller sync successful"; then
+              READY=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "${READY}" -ne 1 ]; then
+            echo "K3s never reported a synced node controller:"
+            docker logs ${CLUSTER} 2>&1 | tail -80
+            docker rm -f ${CLUSTER} >/dev/null 2>&1 || true
+            kill $DOCKERD_PID 2>/dev/null || true
+            exit 1
+          fi
+
+          docker cp ${CLUSTER}:/etc/rancher/k3s/k3s.yaml ${KUBECONFIG_PATH}
+          chmod 600 ${KUBECONFIG_PATH}
+          kubectl --kubeconfig ${KUBECONFIG_PATH} get nodes -o wide
+
+          echo "=== Loading busybox into the cluster's containerd ==="
+          # Both Pods the contract creates run busybox:latest, and the
+          # generated Pod's containers are PullIfNotPresent. Importing the
+          # image the task already pulled keeps the contract off the public
+          # registry once the cluster is up.
+          docker save busybox:latest -o /tmp/busybox.tar
+          docker cp /tmp/busybox.tar ${CLUSTER}:/tmp/busybox.tar
+          docker exec ${CLUSTER} ctr -n=k8s.io images import --all-platforms /tmp/busybox.tar
+
+          # The contract reads exactly two variables: KUBECONFIG (it must be a
+          # single file, not a list) and K8S_TEST_NAMESPACE. It does NOT read
+          # the ARTIFACT_DAEMON_* trio the live job exports -- it plants its own
+          # host root under /tmp and pins the daemon port to 31780 itself, so
+          # exporting those here would describe a daemon that is not involved.
+          export KUBECONFIG=${KUBECONFIG_PATH}
+          export K8S_TEST_NAMESPACE=default
+          echo "KUBECONFIG=$KUBECONFIG K8S_TEST_NAMESPACE=$K8S_TEST_NAMESPACE"
+
+          echo "=== Running the Hangar generated-Pod contract ==="
+          STATUS=0
+          go test -tags hangar_live -v -count=1 -timeout 5m \
+            -run '^TestLiveHangarGeneratedPodMaterializesStrictTree$' \
+            ./atc/worker/jetbridge/... || STATUS=1
+
+          if [ "${STATUS}" -ne 0 ]; then
+            echo "=== CONTRACT FAILED -- dumping diagnostics ==="
+            kubectl --kubeconfig ${KUBECONFIG_PATH} get pods -A -o wide || true
+            kubectl --kubeconfig ${KUBECONFIG_PATH} get nodes --show-labels || true
+            kubectl --kubeconfig ${KUBECONFIG_PATH} get events -A --sort-by=.lastTimestamp | tail -40 || true
+            docker logs ${CLUSTER} 2>&1 | tail -80 || true
+            echo "--- End diagnostics ---"
+          else
+            echo "=== Hangar generated-Pod contract passed on K3s ==="
+          fi
+
+          docker rm -f ${CLUSTER} >/dev/null 2>&1 || true
+          kill $DOCKERD_PID 2>/dev/null || true
+          exit "${STATUS}"
+
+- name: k8s-integration-tests
+  serial: true
+  serial_groups: [k8s-tests]
+  plan:
+  # Gated on the Hangar contract rather than straight off the image build. That
+  # job stands up its own K3s cluster and finishes in about three minutes, so
+  # chaining keeps two DinD workloads off the same worker and puts the cheap
+  # signal ahead of the hour-long one.
+  - get: trigger
+    trigger: true
+    passed: [hangar-generated-pod-contract]
+  - get: repo
+    passed: [hangar-generated-pod-contract]
   - task: k8s-integration
     privileged: true
     timeout: 60m

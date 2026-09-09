@@ -3,8 +3,10 @@
 // generated Pod, which is fine on a disposable cluster with a cluster-admin
 // service account and wrong on the deployed cluster the live tier runs
 // against, where the task's namespaced account cannot list nodes and must not
-// relabel the production node even if it could. It has no CI home yet; the
-// kind-based k8s-e2e tier is where it belongs.
+// relabel the production node even if it could. Its CI home is the
+// hangar-generated-pod-contract job in deploy/k8s-e2e-pipeline.yml, which
+// stands up a throwaway K3s cluster for it and hands it a cluster-admin
+// kubeconfig; build-and-vet only compiles it.
 //go:build hangar_live
 
 package jetbridge
@@ -34,10 +36,17 @@ import (
 )
 
 // TestLiveHangarGeneratedPodMaterializesStrictTree is CI-only by construction:
-// it needs the repository's live build tag, a Linux Kubernetes node, and a
-// kubeconfig or an in-cluster service account (the K3s behavioral tier provides
-// one of these). It deliberately does not silently fall back to a fake client
-// or host shell.
+// it needs the hangar_live build tag, a Linux Kubernetes node, and a kubeconfig
+// or an in-cluster service account (hangar-generated-pod-contract in
+// deploy/k8s-e2e-pipeline.yml provides both, on a K3s cluster it creates and
+// destroys). It deliberately does not silently fall back to a fake client or
+// host shell.
+//
+// It needs no Hangar store: the daemon endpoint the generated Pod's init
+// container calls is stood up below as a BusyBox fixture Pod, and the
+// materialization grants are signed here with a key held in process. What is
+// under test is the Pod the runtime generates and the tree its init container
+// will accept, not the store behind a real daemon.
 func TestLiveHangarGeneratedPodMaterializesStrictTree(t *testing.T) {
 	if runtime.GOOS == "darwin" {
 		t.Skip("real BusyBox/Linux and K3s execution is CI-only on macOS")
@@ -175,9 +184,16 @@ printf 'HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\
 			NodeName: node.Name, HostNetwork: true, RestartPolicy: corev1.RestartPolicyNever,
 			Containers: []corev1.Container{{
 				Name: "daemon-fixture", Image: "busybox:latest",
-				Command:      []string{"sh", "-c", "printf '%s' \"$HANDLER\" >/tmp/handler; chmod 700 /tmp/handler; exec nc -ll -p 31780 -e /tmp/handler"},
-				Env:          []corev1.EnvVar{{Name: "HANDLER", Value: "#!/bin/sh\n" + fixtureScript}},
-				VolumeMounts: []corev1.VolumeMount{{Name: "host", MountPath: "/host"}},
+				Command: []string{"sh", "-c", "printf '%s' \"$HANDLER\" >/tmp/handler; chmod 700 /tmp/handler; exec nc -ll -p 31780 -e /tmp/handler"},
+				// The generated Pod under test is PullIfNotPresent; say the
+				// same for the fixture. Left unset, a `:latest` tag defaults
+				// to Always, so this scaffolding Pod -- which proves nothing
+				// on its own -- would make the contract fail on a registry
+				// timeout inside a nested CI cluster that already has the
+				// image.
+				ImagePullPolicy: corev1.PullIfNotPresent,
+				Env:             []corev1.EnvVar{{Name: "HANDLER", Value: "#!/bin/sh\n" + fixtureScript}},
+				VolumeMounts:    []corev1.VolumeMount{{Name: "host", MountPath: "/host"}},
 			}},
 			Volumes: []corev1.Volume{{Name: "host", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: hostRoot, Type: &hostPathType}}}},
 		},
