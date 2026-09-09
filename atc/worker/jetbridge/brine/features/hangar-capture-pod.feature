@@ -46,8 +46,22 @@ Feature: What a capture-selected task's Pod says
   # configuration entirely, so the PRESENCE half is the line above it, in the
   # same scenario, and it is asserted first.
   #
+  # TWO mutations, because the presence line carries "the only" and is therefore
+  # itself an exclusivity claim. brine stops at the first red step, so a
+  # mutation that puts the grant in a second container reddens the PRESENCE line
+  # and the absence line below it is never evaluated. The plan's single
+  # `Reddened by:` was off by one line for exactly that reason.
+  #
   # Reddened by: buildPod copying the source-control grant env into the main
-  # container — the absence line reddens and the presence line above stays green.
+  # container — the PRESENCE line reddens ("the source-control grant is carried
+  # by [hangar-capture-control main]").
+  #
+  # Reddened by, for the absence line's own vector: buildPod copying the grant
+  # into the main container under the LEGACY name HANGAR_CAPTURE_CAPABILITY —
+  # the presence line stays green, because the grant's own variable is still in
+  # exactly one container, and the absence line reddens. Its point is why that
+  # check scans a SET of names: a rename that moved the credential to a new
+  # variable would sail past a scan that only knew the old one.
   @HOP-24
   Scenario: The capture control init is the only container that carries the source-control grant
     Given a jetbridge worker with an artifact store

@@ -512,6 +512,16 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 	// pod is byte-identical to the one this runtime built before the output
 	// plane existed, which is Req 59 and the control scenario for the whole
 	// capture-pod feature.
+	//
+	// OutputPlaneEnabled deliberately does NOT gate this, and Phase 8 is where
+	// that changes. The flag gates the cleanup probe and the ATC's own control
+	// calls -- the places where a worker with no output daemon would otherwise
+	// dial one -- but the capture init is emitted whenever the spec carries a
+	// capture, because a spec only carries one if the control plane put it
+	// there. Phase 8's scenario `A worker whose output facet is not enabled
+	// builds no capture pod` needs the SELECTION gated rather than the init,
+	// which is a refusal at admission and not an omission here; that is where
+	// this flag becomes load-bearing on this path.
 	if captureInit := c.buildCaptureControlInitContainer(); captureInit != nil {
 		initContainers = append(initContainers, *captureInit)
 	}

@@ -259,6 +259,46 @@ var _ = Describe("An execProcess under exact control", func() {
 			"the command was launched without an acknowledged source hold")
 	})
 
+	// The hold's Pod UID arm, which Phase 4 recorded as having no vector of its
+	// own. It has one, and it does not need Phase 5's takeover.
+	//
+	// A hold's statement carries the Pod UID the execution was ADMITTED for. A
+	// pause pod that goes terminal is REPLACED, and a replacement is a new Pod
+	// UID under the same execution identity and the same fence -- no takeover,
+	// no epoch bump, nothing Phase 5 owns. Container.Run now refuses that
+	// replacement over a held source; this arm is the second door, for a Pod
+	// replaced by some other route before the producer reached its start.
+	//
+	// The control is in the same spec and runs first: with the Pod the hold
+	// names, this exact process starts and the command runs.
+	It("refuses to start a producer whose Pod is not the one the hold names", func() {
+		hold()
+
+		// The control, and it is the arm's premise: before anything is
+		// disturbed, the hold in force names THIS Pod. Without it a refusal
+		// below could be a hold that names nothing.
+		acknowledged, err := harness.Client.InspectHold(ctx, identity, handoffID)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(acknowledged.PodUID).To(Equal(executioncontrol.PodUID(podUID)))
+
+		// The Pod was replaced: same execution, same fence, a new incarnation.
+		// Nothing re-admitted the execution, so the ledger's hold still names
+		// the old UID -- which is exactly the state this arm is for.
+		pod, err := clientset.CoreV1().Pods("test-ns").Get(ctx, "capture-pod",
+			metav1.GetOptions{})
+		Expect(err).ToNot(HaveOccurred())
+		pod.UID = types.UID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
+		_, err = clientset.CoreV1().Pods("test-ns").Update(ctx, pod, metav1.UpdateOptions{})
+		Expect(err).ToNot(HaveOccurred())
+
+		// The producer's first start, in the replaced Pod.
+		_, err = newProcess().Wait(ctx)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("a recreated Pod is a new incarnation"))
+		Expect(executor.count()).To(Equal(0),
+			"the producer ran in a Pod the hold does not name")
+	})
+
 	It("holds a writer ticket for every writer in the pod before the command runs", func() {
 		hold()
 
