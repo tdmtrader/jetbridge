@@ -191,9 +191,15 @@ func TestEverySignedFieldIsCoveredBySignature(t *testing.T) {
 	// survives its row is a field the signature does not cover, which is the
 	// defect this table exists for -- and the plan names exactly one of them
 	// as its Reddened by: mutation, Generation.
+	//
+	// Only fields a valid receipt may vary are here. The three Validate pins to
+	// a cohort constant -- the protocol version, the receipt version and the
+	// marker version -- cannot have a row: CanonicalReceiptBytes validates
+	// first, so their "tamper" is refused before a signature is ever checked and
+	// the row would pass with the field outside the signature entirely. Their
+	// refusal is TestTheVersionPinsAreRefusedBeforeAnySignature below and their
+	// emission is the coverage twin's occurrence count.
 	for field, tamper := range map[string]func(*ReceiptClaims){
-		"protocol version": func(c *ReceiptClaims) { c.ProtocolVersion = "hangar-output-v0" },
-		"receipt version":  func(c *ReceiptClaims) { c.ReceiptVersion = "hangar-output-receipt-v0" },
 		// Both execution ids move together, because Validate requires them
 		// equal: a row that moved one alone would be refused by Validate and
 		// never reach the signature check at all, so it would pass whether the
@@ -300,6 +306,53 @@ func TestEverySignedFieldIsCoveredBySignature(t *testing.T) {
 	flipped.Signature = base64.StdEncoding.EncodeToString(raw)
 	if err := verifier.Verify(flipped, challenge); !errors.Is(err, ErrUnauthorized) {
 		t.Errorf("a receipt with one flipped signature bit verified as %v", err)
+	}
+}
+
+func TestTheVersionPinsAreRefusedBeforeAnySignature(t *testing.T) {
+	// The half of the version claims a tamper row cannot state.
+	//
+	// CanonicalReceiptBytes calls Validate before it emits a byte, so a receipt
+	// naming a version this cohort does not sign is refused with no signature
+	// check at all -- and refused for the version, which is what an operator
+	// reading a failed verification needs to see.
+	for name, testCase := range map[string]struct {
+		tamper func(*ReceiptClaims)
+		want   error
+	}{
+		"a protocol version this cohort does not speak": {
+			tamper: func(c *ReceiptClaims) { c.ProtocolVersion = "hangar-output-v0" },
+			want:   ErrUnsupportedProtocol,
+		},
+		"a receipt version this cohort does not sign": {
+			tamper: func(c *ReceiptClaims) { c.ReceiptVersion = "hangar-output-receipt-v0" },
+			want:   ErrUnsupportedProtocol,
+		},
+		"a marker version this cohort does not accept": {
+			tamper: func(c *ReceiptClaims) { c.MarkerVersion = "hangar-output-v0" },
+			want:   ErrConflict,
+		},
+	} {
+		claims := sampleClaims()
+		testCase.tamper(&claims)
+
+		if err := claims.Validate(); !errors.Is(err, testCase.want) {
+			t.Errorf("%s validated as %v, expected %v", name, err, testCase.want)
+		}
+		if _, err := CanonicalReceiptBytes(claims, "receipt-key-1"); !errors.Is(err, testCase.want) {
+			t.Errorf("%s canonicalized as %v; the canonical form is built only for claims that "+
+				"validate, so a verifier never reaches a signature check on one that does not",
+				name, err)
+		}
+
+		// And through the verifier, so the refusal is what a caller sees rather
+		// than only what the encoder does.
+		_, verifier, receipt, challenge, _ := signed(t)
+		tampered := receipt
+		tampered.Claims = claims
+		if err := verifier.Verify(tampered, challenge); !errors.Is(err, testCase.want) {
+			t.Errorf("%s verified as %v, expected %v", name, err, testCase.want)
+		}
 	}
 }
 
