@@ -77,7 +77,10 @@ func scanForExactExecutionStateMachines(t *testing.T, root string) (sites []clas
 
 			return nil
 		}
-		if filepath.Ext(path) != ".go" {
+		// Production sources only. The rule is about what the tree *is*, and a
+		// test that names a classification to assert something about it -- this
+		// file included -- is not a second state machine.
+		if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
 		scanned++

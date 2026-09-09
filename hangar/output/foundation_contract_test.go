@@ -381,14 +381,17 @@ var Sentinel error
 	}
 
 	got := exportedSurface(t, dir)
+	// Receiver *names* are absent by design: `func (e Exported) Method()` and
+	// `func (x Exported) Method()` are the same signature, and a golden that
+	// churned on a renamed receiver would be regenerated without being read.
 	want := []string{
 		"const Limit",
+		"func (*Hidden) AlsoOnAnExportedType()",
 		"func (Exported) Method() error",
-		"func (h *Hidden) AlsoOnAnExportedType()",
 		"func Exposed(a int) (string, error)",
 		"type Contract interface { Kept(int) error }",
 		"type Exported struct { Kept string }",
-		"type Hidden struct{ X int }",
+		"type Hidden struct { X int }",
 		"var Sentinel error",
 	}
 

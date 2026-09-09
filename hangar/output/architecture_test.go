@@ -51,6 +51,7 @@ type scannedFile struct {
 	Path string
 	Body []byte
 	Go   bool
+	Test bool
 }
 
 type importEdge struct {
@@ -140,7 +141,10 @@ func inventory(t *testing.T, dirs []string) surface {
 			if err != nil {
 				t.Fatalf("reading %s: %v", path, err)
 			}
-			found.Files = append(found.Files, scannedFile{Path: path, Body: body, Go: isGo})
+			found.Files = append(found.Files, scannedFile{
+				Path: path, Body: body, Go: isGo,
+				Test: strings.HasSuffix(name, "_test.go"),
+			})
 
 			if !isGo {
 				continue
@@ -359,6 +363,14 @@ func checkNotRoutedThroughTheDurableCache(found surface) []string {
 		}
 	}
 	for _, file := range found.Files {
+		// Production files only. The import clause above already counts a test
+		// edge; this identifier scan is the belt-and-braces half, and running it
+		// over test sources would make this very file -- which names
+		// durable.Store in the fixture that proves the rule bites -- its own
+		// first violation.
+		if file.Test {
+			continue
+		}
 		if bytes.Contains(file.Body, []byte("durable.Store")) {
 			problems = append(problems, file.Path+" names durable.Store"+
 				": output publication uses its own role-specific interfaces against the dedicated "+
@@ -371,6 +383,17 @@ func checkNotRoutedThroughTheDurableCache(found surface) []string {
 
 // deleteOwner is the one interface allowed to offer a delete.
 const deleteOwner = "Reclaimer"
+
+// deleteVocabularyExemptions are callables whose name contains "delete" but
+// which cannot delete anything: the closed vocabulary of outcomes a conditional
+// delete may report, and its parser.
+//
+// Every entry must match something, so an exemption cannot outlive the thing it
+// exempts and quietly widen the rule.
+var deleteVocabularyExemptions = map[string]string{
+	"DeleteOutcomes":     "the closed vocabulary of conditional-delete results; it performs none",
+	"ParseDeleteOutcome": "the parser for that vocabulary",
+}
 
 func checkDeleteIsIsolatedToTheReclaimer(found surface) []string {
 	var problems []string
@@ -387,8 +410,14 @@ func checkDeleteIsIsolatedToTheReclaimer(found surface) []string {
 		}
 	}
 
+	exempted := map[string]bool{}
 	for _, callable := range found.Callables {
 		if !strings.Contains(strings.ToLower(callable.Name), "delete") {
+			continue
+		}
+		if _, ok := deleteVocabularyExemptions[callable.Name]; ok && callable.Owner == "" {
+			exempted[callable.Name] = true
+
 			continue
 		}
 		deletes++
@@ -438,6 +467,13 @@ func checkDeleteIsIsolatedToTheReclaimer(found surface) []string {
 	if deletes == 0 {
 		problems = append(problems, "no exported callable mentions a delete at all. The "+
 			"isolation rule matched nothing and would pass vacuously.")
+	}
+	for name, reason := range deleteVocabularyExemptions {
+		if !exempted[name] {
+			problems = append(problems, "deleteVocabularyExemptions exempts "+name+" ("+reason+
+				"), but nothing by that name exists any more. Remove the entry so the exemption "+
+				"list keeps describing what is actually true.")
+		}
 	}
 
 	return problems
