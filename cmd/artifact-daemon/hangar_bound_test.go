@@ -239,12 +239,6 @@ func TestDeleteRefusesACaptureHeldSourceAndFailsClosedOnAnUnreadableLedger(t *te
 	if err := os.MkdirAll(filepath.Join(storage, "steps", "third-handle"), 0o755); err != nil {
 		t.Fatalf("creating: %v", err)
 	}
-	// The classifier's cache is invalidated by the control directory's mtime,
-	// which an IN-PLACE edit does not change -- the writer replaces records by
-	// rename, so this corruption is something the writer would never do. The
-	// TTL is the ceiling for exactly that case, and waiting it out is the test
-	// asserting the daemon's behaviour rather than reaching into the cache.
-	time.Sleep(1100 * time.Millisecond)
 	if code := remove("steps/third-handle"); code != http.StatusConflict {
 		t.Errorf("an unreadable ledger admitted a delete with %d", code)
 	}

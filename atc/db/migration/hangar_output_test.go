@@ -822,6 +822,16 @@ var _ = Describe("the Hangar output plane schema", func() {
 		Context("settling a capture", func() {
 			BeforeEach(func() { commitStage2(handoffID, reservationID) })
 
+			// A release is acknowledged FOR an intent
+			// (hangar_reservation_release_names_its_intent), so every raw write
+			// of the acknowledgement here carries the pair's other two halves.
+			// Stated once rather than at each call site, so a reader can see
+			// that the specs below are about settlement and not about the
+			// release's own shape -- that rule has its own vector further down.
+			const releasePair = `release_intent_id = '99999999-9999-4999-8999-999999999999',
+			    release_acknowledgement = '{"kind":"hold_released"}'::jsonb,
+			    release_acknowledged_at = now()`
+
 			It("refuses calling a cancelled capture settled with the source still held", func() {
 				Expect(expectRefusal(database, "a cancelled capture settled with no release", fmt.Sprintf(`
 					UPDATE hangar_capture_reservations
@@ -832,7 +842,7 @@ var _ = Describe("the Hangar output plane schema", func() {
 				expectAccepted(database, "a cancelled capture whose release was acknowledged",
 					fmt.Sprintf(`
 						UPDATE hangar_capture_reservations
-						SET state = 'cancelled', settled_at = now(), release_acknowledged_at = now()
+						SET state = 'cancelled', settled_at = now(), `+releasePair+`
 						WHERE reservation_id = '%s'`, reservationID))
 			})
 
@@ -870,7 +880,7 @@ var _ = Describe("the Hangar output plane schema", func() {
 
 				expectAccepted(database, "a cancelled capture settling on its release",
 					fmt.Sprintf(`UPDATE hangar_capture_reservations
-						SET release_acknowledged_at = now(), settled_at = now()
+						SET settled_at = now(), `+releasePair+`
 						WHERE reservation_id = '%s'`, reservationID))
 			})
 
@@ -878,14 +888,42 @@ var _ = Describe("the Hangar output plane schema", func() {
 				Expect(expectRefusal(database, "an unresolved capture with a settlement time",
 					fmt.Sprintf(`
 						UPDATE hangar_capture_reservations
-						SET settled_at = now(), release_acknowledged_at = now()
+						SET settled_at = now(), `+releasePair+`
 						WHERE reservation_id = '%s'`, reservationID))).
 					To(ContainSubstring("hangar_reservation_settlement_is_terminal"))
 			})
 
+			// The pair's own rule, with its live twin first: an acknowledgement
+			// names the intent it is for, or "which release was this" has no
+			// answer -- which is the whole reason the pair has two halves.
+			It("refuses an acknowledged release that names no intent", func() {
+				expectAccepted(database, "a release naming its intent", fmt.Sprintf(`
+					UPDATE hangar_capture_reservations SET `+releasePair+`
+					WHERE reservation_id = '%s'`, reservationID))
+
+				mustExec(database, fmt.Sprintf(`
+					UPDATE hangar_capture_reservations
+					SET release_intent_id = NULL, release_acknowledgement = NULL,
+					    release_acknowledged_at = NULL
+					WHERE reservation_id = '%s'`, reservationID))
+
+				Expect(expectRefusal(database, "an acknowledgement for no intent", fmt.Sprintf(`
+					UPDATE hangar_capture_reservations SET release_acknowledged_at = now()
+					WHERE reservation_id = '%s'`, reservationID))).
+					To(ContainSubstring("hangar_reservation_release_names_its_intent"))
+
+				Expect(expectRefusal(database, "an acknowledgement with no signed statement",
+					fmt.Sprintf(`
+						UPDATE hangar_capture_reservations
+						SET release_intent_id = '99999999-9999-4999-8999-999999999999',
+						    release_acknowledged_at = now()
+						WHERE reservation_id = '%s'`, reservationID))).
+					To(ContainSubstring("hangar_reservation_release_names_its_intent"))
+			})
+
 			It("refuses withdrawing or restamping an acknowledged release", func() {
 				mustExec(database, fmt.Sprintf(`
-					UPDATE hangar_capture_reservations SET release_acknowledged_at = now()
+					UPDATE hangar_capture_reservations SET `+releasePair+`
 					WHERE reservation_id = '%s'`, reservationID))
 
 				Expect(expectRefusal(database, "a withdrawn source release", fmt.Sprintf(`

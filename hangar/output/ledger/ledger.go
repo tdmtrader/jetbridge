@@ -36,7 +36,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 )
 
 // ControlDirName must match the output daemon's. It is stated here rather than
@@ -90,23 +89,30 @@ type envelope struct {
 type Classifier struct {
 	dir string
 
-	// The answers are cached, because the destructive paths ask on every
-	// operation and a sweep asks thousands of times in a row.
+	// mu serializes the read so two destructive paths cannot both be halfway
+	// through the directory while a record is renamed under them. loadErr is
+	// kept only so Reason can say what went wrong.
+	mu      sync.Mutex
+	loadErr error
+
+	// THERE IS NO CACHE, and the reason is a CI failure rather than a
+	// preference.
 	//
-	// The cache is keyed on the control directory's OWN modification time, not
-	// on a timer. A timer would mean a hold established in the last interval is
-	// invisible, and "the delete arrived a moment after the hold" is exactly
-	// the race this classifier exists for. Creating, replacing or removing a
-	// record changes the directory's mtime, so a new hold invalidates the cache
-	// the instant it lands. The short TTL underneath it only bounds how often
-	// the directory itself is stat-ed.
-	mu       sync.Mutex
-	held     map[string]Class
-	loadedAt time.Time
-	loadedAs time.Time
-	loadErr  error
-	ttl      time.Duration
-	clock    func() time.Time
+	// The first version cached on the control directory's modification time,
+	// which is sound in principle -- the writer replaces records by rename, and
+	// a rename bumps the directory's mtime. It is not sound in practice: on
+	// Linux the mtime granularity is coarse enough that a hold written in the
+	// same tick as the previous read leaves the directory looking unchanged, so
+	// the classifier answered "unmanaged" for a hold that already existed and a
+	// delete went through. That is the exact race this component exists for,
+	// and it passed on a Mac and failed in CI.
+	//
+	// So every call reads the directory. The cost is one ReadDir plus one
+	// ReadFile per LIVE CAPTURE on the node -- the ledger holds a record per
+	// capture, not per artifact -- and a wrong answer here deletes a build's
+	// declared output. If a sweep ever needs a snapshot it should take one
+	// explicitly, for a bounded scope it can name, rather than every caller
+	// silently sharing a stale one.
 }
 
 // New opens a classifier over the managed storage root.
@@ -116,11 +122,7 @@ type Classifier struct {
 // is unchanged. What it must not do is treat an UNREADABLE directory the same
 // way, and Classify is where that distinction lives.
 func New(storageRoot string) *Classifier {
-	return &Classifier{
-		dir:   path.Join(storageRoot, ControlDirName),
-		ttl:   time.Second,
-		clock: func() time.Time { return time.Now().UTC() },
-	}
+	return &Classifier{dir: path.Join(storageRoot, ControlDirName)}
 }
 
 // Classify answers for one path relative to the managed steps directory --
@@ -133,13 +135,15 @@ func (classifier *Classifier) Classify(stepsRelative string) Class {
 	classifier.mu.Lock()
 	defer classifier.mu.Unlock()
 
-	if err := classifier.refresh(); err != nil {
+	held, err := classifier.load()
+	classifier.loadErr = err
+	if err != nil {
 		return Unavailable
 	}
 
 	cleaned := strings.Trim(path.Clean("/"+stepsRelative), "/")
-	for held, class := range classifier.held {
-		if cleaned == held || strings.HasPrefix(cleaned, held+"/") {
+	for incarnation, class := range held {
+		if cleaned == incarnation || strings.HasPrefix(cleaned, incarnation+"/") {
 			return class
 		}
 	}
@@ -165,34 +169,6 @@ func (classifier *Classifier) Reason(stepsRelative string, class Class) error {
 	}
 
 	return nil
-}
-
-func (classifier *Classifier) refresh() error {
-	now := classifier.clock()
-	stamp, stamped := classifier.stamp()
-	fresh := classifier.held != nil &&
-		now.Sub(classifier.loadedAt) < classifier.ttl &&
-		stamped && stamp.Equal(classifier.loadedAs)
-	if fresh {
-		return classifier.loadErr
-	}
-	classifier.loadedAt, classifier.loadedAs = now, stamp
-	classifier.held, classifier.loadErr = classifier.load()
-
-	return classifier.loadErr
-}
-
-// stamp is the control directory's modification time, or nothing when there is
-// no directory to stat. "Nothing" is never treated as fresh, so a node that
-// gains an output plane is picked up on the next call rather than at the next
-// restart.
-func (classifier *Classifier) stamp() (time.Time, bool) {
-	info, err := os.Stat(classifier.dir)
-	if err != nil {
-		return time.Time{}, false
-	}
-
-	return info.ModTime(), true
 }
 
 func (classifier *Classifier) load() (map[string]Class, error) {

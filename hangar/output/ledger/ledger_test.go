@@ -175,6 +175,13 @@ func corruptIn(t *testing.T, dir, how string) {
 			t.Fatalf("writing: %v", err)
 		}
 	case "a directory that cannot be listed":
+		// Mode bits do not apply to uid 0, and CI runs as root: chmod 000 there
+		// leaves the directory perfectly readable and this arm would assert
+		// nothing. The other two arms cover the unavailable path on every
+		// platform, so skipping is honest rather than a hole.
+		if os.Geteuid() == 0 {
+			t.Skip("running as root, which ignores the mode bits this arm depends on")
+		}
 		if err := os.Chmod(dir, 0o000); err != nil {
 			t.Fatalf("chmod: %v", err)
 		}
@@ -221,11 +228,12 @@ func TestThisPackageOffersNoWayToChangeALedger(t *testing.T) {
 
 // A hold established a moment before a delete arrives is seen.
 //
-// The cache is keyed on the control directory's own modification time rather
-// than on a timer, because "the delete arrived just after the hold" is exactly
-// the race this classifier exists for. A timer-only cache would answer
-// "unmanaged" for a whole interval after a hold landed, and the answer would be
-// wrong in the one direction that loses data.
+// This is the race the classifier exists for, and it is the row CI failed on
+// when the answers were cached: the first version keyed its cache on the
+// control directory's mtime, whose granularity on Linux is coarse enough that a
+// hold written in the same tick as the previous read looks like no change at
+// all. It answered "unmanaged" for a hold that already existed. There is no
+// cache now, and this row is what keeps one from coming back.
 func TestAHoldEstablishedAfterTheLastReadIsSeenImmediately(t *testing.T) {
 	root, dir := controlDir(t)
 	classifier := New(root)
