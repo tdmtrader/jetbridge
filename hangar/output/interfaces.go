@@ -217,7 +217,7 @@ type Inventory interface {
 }
 
 // Reclaimer is the only interface in this system that can delete a published
-// object, and architecture_test.go fails the build if a second one appears.
+// object, and architecture_test.go fails the test suite if a second one appears.
 //
 // GCS IAM cannot require a caller to send a generation precondition once delete
 // permission exists. So the requirement lives in the signature: there is one

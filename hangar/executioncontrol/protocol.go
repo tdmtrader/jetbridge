@@ -367,7 +367,7 @@ func (handshake Handshake) Validate() error {
 //
 // Nothing here accepts an output name, a source path, a bucket, a consumer
 // lifecycle or any product-domain value, and hangar/output's architecture guard
-// fails the build if one appears. An implementation that needed a fifth
+// fails the test suite if one appears. An implementation that needed a fifth
 // operation would be describing a different protocol.
 type Client interface {
 	// Classify reports what is durably known. It is safe to call at any time

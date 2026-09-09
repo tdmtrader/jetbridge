@@ -205,7 +205,7 @@ func (kind CaptureAcknowledgementKind) concernsAWriterTicket() bool {
 // It references the base execution identity and activation epoch; it does not
 // restate them as fields of its own, and it never carries a second exact
 // identity. That is the whole reason an optional extension cannot fork the base
-// truth, and architecture_test.go fails the build if it starts to.
+// truth, and architecture_test.go fails the test suite if it starts to.
 type CaptureAcknowledgement struct {
 	ProtocolVersion string                           `json:"protocol_version"`
 	Kind            CaptureAcknowledgementKind       `json:"kind"`

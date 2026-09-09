@@ -137,7 +137,7 @@ func (lease ReadLease) Validate() error {
 // It is a required parameter of the one delete route rather than an option on
 // it. GCS IAM cannot require a caller to send a generation precondition once
 // delete permission exists (Req 55), so the only place that requirement can
-// live is the signature -- and architecture_test.go fails the build if a delete
+// live is the signature -- and architecture_test.go fails the test suite if a delete
 // appears anywhere without one.
 type DeletePrecondition struct {
 	Generation     int64 `json:"generation"`

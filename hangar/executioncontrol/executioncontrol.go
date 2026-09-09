@@ -10,8 +10,8 @@
 //
 // It deliberately does not know why the caller opted in. There is no Run, job,
 // build kind, check, cancellation reason, ticket, workflow, agent or playbook
-// in this package, and hangar/output/architecture_test.go fails the build if one
-// appears. That is what lets one protocol serve an ordinary controlled job, a
+// in this package, and hangar/output/architecture_test.go fails the test suite
+// if one appears. That is what lets one protocol serve an ordinary controlled job, a
 // one-off, and a durable output capture without any of them learning about the
 // others.
 //

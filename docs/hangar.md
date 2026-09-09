@@ -239,7 +239,7 @@ The bucket, its opaque scope and its key prefix are derived from authenticated
 deployment context alone. No task, consumer, path parameter or receipt can
 select or broaden them, and no API in `hangar/output` accepts a bucket, object
 key, absolute path, hostPath or caller-chosen scope — a guard in
-`hangar/output/architecture_test.go` fails the build if one appears.
+`hangar/output/architecture_test.go` fails the test suite if one appears.
 
 ### External responsibility
 
@@ -249,9 +249,9 @@ bucket, the cloud principals, the Workload Identity bindings and the bucket
 IAM; the chart renders explicit identities and refuses activation until the
 attestor proves the externally provisioned policy.
 
-Four distinct identities exist because a Kubernetes service account is Pod-wide,
-so any output permission added to an existing daemon would also be granted to
-that daemon's cache and strict-input identity:
+Four distinct identities are required because a Kubernetes service account is
+Pod-wide, so any output permission added to an existing daemon would also be
+granted to that daemon's cache and strict-input identity:
 
 - the publisher/materializer daemon may create and get objects, never list or
   delete;
