@@ -106,6 +106,9 @@ init buildId hl resources plan =
         Concourse.BuildStepSetPipeline _ _ _ ->
             step |> initBottom buildId hl resources plan SetPipeline
 
+        Concourse.BuildStepRunPipeline _ ->
+            step |> initBottom buildId hl resources plan RunPipeline
+
         Concourse.BuildStepLoadVar _ ->
             step |> initBottom buildId hl resources plan LoadVar
 
@@ -610,6 +613,9 @@ viewTree session model tree depth =
             viewStep model session depth stepId
 
         SetPipeline stepId ->
+            viewStep model session depth stepId
+
+        RunPipeline stepId ->
             viewStep model session depth stepId
 
         LoadVar stepId ->
@@ -1301,6 +1307,9 @@ viewStepHeader step =
                     ]
                 ))
 
+        Concourse.BuildStepRunPipeline name ->
+            simpleHeader "run_pipeline:" Nothing name
+
         Concourse.BuildStepLoadVar name ->
             simpleHeader "load_var:" Nothing name
 
@@ -1369,6 +1378,9 @@ stepName header =
             Just name
 
         Concourse.BuildStepSetPipeline name _ _ ->
+            Just name
+
+        Concourse.BuildStepRunPipeline name ->
             Just name
 
         Concourse.BuildStepLoadVar name ->

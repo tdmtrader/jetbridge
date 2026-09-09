@@ -2771,6 +2771,23 @@ all =
                                 )
                             >> Tuple.first
 
+                    fetchPlanWithRunPipelineStep : () -> Application.Model
+                    fetchPlanWithRunPipelineStep =
+                        givenBuildStarted
+                            >> Tuple.first
+                            >> Application.handleCallback
+                                (Callback.PlanAndResourcesFetched 1 <|
+                                    Ok <|
+                                        ( { id = "plan"
+                                          , step =
+                                                Concourse.BuildStepRunPipeline
+                                                    "step"
+                                          }
+                                        , { inputs = [], outputs = [] }
+                                        )
+                                )
+                            >> Tuple.first
+
                     fetchPlanWithPutStep : () -> Application.Model
                     fetchPlanWithPutStep =
                         givenBuildStarted
@@ -2971,6 +2988,10 @@ all =
                     fetchPlanWithSetPipelineStep
                         >> Common.queryView
                         >> Query.has setPipelineStepLabel
+                , test "run_pipeline step shows run_pipeline label" <|
+                    fetchPlanWithRunPipelineStep
+                        >> Common.queryView
+                        >> Query.has runPipelineStepLabel
                 , test "load_var step shows load_var label" <|
                     fetchPlanWithLoadVarStep
                         >> Common.queryView
@@ -3978,6 +3999,12 @@ checkStepLabel =
 loadVarStepLabel =
     [ style "color" Colors.pending
     , containing [ text "load_var:" ]
+    ]
+
+
+runPipelineStepLabel =
+    [ style "color" Colors.pending
+    , containing [ text "run_pipeline:" ]
     ]
 
 

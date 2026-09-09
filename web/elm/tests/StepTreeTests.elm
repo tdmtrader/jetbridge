@@ -30,6 +30,7 @@ all =
     describe "StepTree"
         [ initTask
         , initSetPipeline
+        , initRunPipeline
         , initLoadVar
         , initCheck
         , initRun
@@ -138,6 +139,30 @@ initSetPipeline =
             \_ ->
                 Expect.equal (Models.SetPipeline "some-id") tree
         , test "the steps" <|
+            \_ ->
+                assertSteps [ someStep "some-id" step Models.StepStatePending ] steps
+        ]
+
+
+initRunPipeline : Test
+initRunPipeline =
+    let
+        step =
+            BuildStepRunPipeline "some-name"
+
+        { tree, steps } =
+            StepTree.init Nothing
+                Routes.HighlightNothing
+                emptyResources
+                { id = "some-id"
+                , step = step
+                }
+    in
+    describe "init with RunPipeline"
+        [ test "the tree" <|
+            \_ ->
+                Expect.equal (Models.RunPipeline "some-id") tree
+        , test "the step" <|
             \_ ->
                 assertSteps [ someStep "some-id" step Models.StepStatePending ] steps
         ]
