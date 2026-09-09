@@ -288,15 +288,18 @@ func buildCapturePod(in CaptureDraft) (CapturePodCreated, error) {
 		Endpoint:        "http://127.0.0.1:7781",
 		Capability:      "brine-base-capability",
 	}
+	reserved := scenarioReservation(in)
 	selection := runtime.DurableOutputCapture{
-		Version:            runtime.DurableOutputCaptureVersion,
-		Identity:           in.Admission.Execution,
-		ActivationEpoch:    in.Admission.ActivationEpoch,
-		HandoffID:          in.Admission.HandoffID,
-		SourceLeaseID:      in.Admission.SourceLeaseID,
-		Output:             string(in.Output),
-		SourceControlGrant: captureGrantForScenario,
-		CaptureDeadline:    in.Admission.CaptureDeadline.Time,
+		Version:             runtime.DurableOutputCaptureVersion,
+		Identity:            in.Admission.Execution,
+		ActivationEpoch:     in.Admission.ActivationEpoch,
+		HandoffID:           in.Admission.HandoffID,
+		SourceLeaseID:       in.Admission.SourceLeaseID,
+		Output:              string(in.Output),
+		SourceControlGrant:  captureGrantForScenario,
+		CaptureDeadline:     in.Admission.CaptureDeadline.Time,
+		ReservedIncarnation: reserved.Incarnation,
+		ReservedDirectory:   reserved.Directory,
 	}
 	if err := control.SelectCapture(selection); err != nil {
 		return CapturePodCreated{Draft: in, Err: err}, nil
@@ -347,7 +350,47 @@ func buildCapturePod(in CaptureDraft) (CapturePodCreated, error) {
 		return CapturePodCreated{Draft: in, Err: err}, nil
 	}
 
+	in.Reserved = reserved
+
 	return CapturePodCreated{Draft: in, Pod: created.Pod}, nil
+}
+
+// scenarioReservation is the daemon's answer, or a stand-in with the same shape
+// when this chain has no daemon.
+//
+// The pod-shape scenarios enter through `a jetbridge worker with an artifact
+// store` and never start an output daemon, so there is nothing to ask. What
+// they assert is not WHICH location was reserved -- that is the daemon's own
+// suite -- but that the pod builder REPEATS whatever reservation it was handed,
+// rather than composing `steps/<handle>/<output>` the way it used to. A
+// stand-in makes that assertion possible; a scenario that named a directory
+// would not, and there is deliberately no phrase that lets one.
+//
+// The generation is fixed rather than random so the mount assertion can name
+// the directory it expects.
+func scenarioReservation(in CaptureDraft) hangaroutput.ReservedIncarnation {
+	if in.Reserved.Directory != "" {
+		return in.Reserved
+	}
+	incarnation := hangaroutput.SourceIncarnation{
+		ExecutionID:      in.Admission.Execution.ExecutionID,
+		NodeUID:          hangarNodeUID,
+		HandleGeneration: 4,
+		Output:           in.Output,
+	}
+
+	return hangaroutput.ReservedIncarnation{
+		ProtocolVersion: hangaroutput.ProtocolVersion,
+		Execution:       in.Admission.Execution,
+		ActivationEpoch: in.Admission.ActivationEpoch,
+		HandoffID:       in.Admission.HandoffID,
+		SourceLeaseID:   in.Admission.SourceLeaseID,
+		NodeUID:         hangarNodeUID,
+		Incarnation:     incarnation,
+		Directory:       incarnation.Directory(),
+		LedgerSequence:  4,
+		ObservedAt:      hangaroutput.NewTimestamp(time.Now().UTC()),
+	}
 }
 
 // captureGrantForScenario is the attenuated source-control grant the control

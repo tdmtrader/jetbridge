@@ -180,6 +180,15 @@ func (server *Server) routes() map[string]route {
 		"POST /execution/v1/cleanup-eligible": {executioncontrol.BaseFacet, "cleanup-eligible", (*Server).cleanupEligible, false},
 
 		// The optional capture extension. Disjoint surface, disjoint facet.
+		//
+		// reserve-incarnation is the ATC's, and it is NOT node-local: the
+		// control plane asks for the location before it builds the Pod, so
+		// there is no Pod on this node to be the caller. It is the one capture
+		// operation whose answer the ATC then repeats into a Pod spec, which is
+		// exactly why it must be authenticated like every other off-node call.
+		"POST /capture/v1/reserve-incarnation": {output.CaptureFacet, "reserve-incarnation",
+			(*Server).reserveIncarnation, false},
+
 		"POST /capture/v1/hold":                {output.CaptureFacet, "hold", (*Server).hold, true},
 		"POST /capture/v1/hold/inspect":        {output.CaptureFacet, "inspect-hold", (*Server).inspectHold, false},
 		"POST /capture/v1/writer-ticket":       {output.CaptureFacet, "issue-writer-ticket", (*Server).issueTicket, false},
@@ -339,16 +348,41 @@ func (server *Server) cleanupEligible(_ http.ResponseWriter, _ *http.Request,
 	return server.base.CleanupEligible(identity)
 }
 
-func (server *Server) hold(_ http.ResponseWriter, request *http.Request,
+func (server *Server) reserveIncarnation(_ http.ResponseWriter, request *http.Request,
 	_ executioncontrol.Identity) (any, error) {
 	var admission output.CaptureAdmission
 	if err := decode(request, &admission); err != nil {
 		return nil, err
 	}
 
-	// The second argument is the interface's, and it is deliberately the zero
-	// value: a caller offering an incarnation is offering a name it chose.
-	return server.source.AcknowledgeHold(request.Context(), admission, output.SourceIncarnation{})
+	return server.source.ReserveIncarnation(request.Context(), admission)
+}
+
+// holdRequest is the capture control init's body: the same admission the
+// reservation carried, plus the incarnation the daemon answered with.
+//
+// The incarnation is on this request and NOT on CaptureAdmission because the
+// two operations are not symmetric. A reservation asks for a location, so it
+// cannot carry one; a hold PRESENTS the one it was given, and presenting it is
+// the proof that this init container is running in the Pod the reservation was
+// made for. It is embedded rather than restated so the two bodies cannot drift.
+//
+// This is still not a caller-chosen path. It is four server-issued identity
+// fields, checked against the record, and the daemon derives every location it
+// touches from its own copy.
+type holdRequest struct {
+	output.CaptureAdmission
+	Incarnation output.SourceIncarnation `json:"incarnation"`
+}
+
+func (server *Server) hold(_ http.ResponseWriter, request *http.Request,
+	_ executioncontrol.Identity) (any, error) {
+	var held holdRequest
+	if err := decode(request, &held); err != nil {
+		return nil, err
+	}
+
+	return server.source.AcknowledgeHold(request.Context(), held.CaptureAdmission, held.Incarnation)
 }
 
 // holdQuery is the inspect routes' body. It names ids and nothing else, which

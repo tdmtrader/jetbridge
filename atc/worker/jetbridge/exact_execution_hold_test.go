@@ -15,8 +15,15 @@ import (
 // from OutputControlClient on purpose: the init container is NOT the ATC, it
 // presents its own one-shot grant on a node-local plaintext path, and a fixture
 // that used the ATC's client would be asserting the ATC twice.
-func postHold(endpoint, grant string, admission hangaroutput.CaptureAdmission) error {
-	body, err := json.Marshal(admission)
+// postHold is the capture control init's request, spelled as it is spelled in
+// the generated script: the admission, plus the incarnation the control plane
+// reserved and put in this container's environment.
+func postHold(endpoint, grant string, admission hangaroutput.CaptureAdmission,
+	incarnation hangaroutput.SourceIncarnation) error {
+	body, err := json.Marshal(struct {
+		hangaroutput.CaptureAdmission
+		Incarnation hangaroutput.SourceIncarnation `json:"incarnation"`
+	}{CaptureAdmission: admission, Incarnation: incarnation})
 	if err != nil {
 		return err
 	}

@@ -76,8 +76,8 @@ func TestTheControlAPIRequiresAClientCertificateExceptForTheNodeLocalHold(t *tes
 	}}}
 
 	nonce := 0
-	call := func(client *http.Client, path string, facet executioncontrol.Facet,
-		operation string, body any) int {
+	answer := func(client *http.Client, path string, facet executioncontrol.Facet,
+		operation string, body any) (int, []byte) {
 		t.Helper()
 
 		nonce++
@@ -104,9 +104,16 @@ func TestTheControlAPIRequiresAClientCertificateExceptForTheNodeLocalHold(t *tes
 			t.Fatalf("%s: %v", path, err)
 		}
 		defer response.Body.Close()
-		_, _ = io.Copy(io.Discard, response.Body)
+		answered, _ := io.ReadAll(response.Body)
 
-		return response.StatusCode
+		return response.StatusCode, answered
+	}
+	call := func(client *http.Client, path string, facet executioncontrol.Facet,
+		operation string, body any) int {
+		t.Helper()
+		code, _ := answer(client, path, facet, operation, body)
+
+		return code
 	}
 
 	// The control plane's own operations, with its certificate. These are the
@@ -120,6 +127,13 @@ func TestTheControlAPIRequiresAClientCertificateExceptForTheNodeLocalHold(t *tes
 		{"/execution/v1/classify", executioncontrol.BaseFacet, "classify", identifiedBy(identity(1))},
 		{"/execution/v1/cleanup-eligible", executioncontrol.BaseFacet, "cleanup-eligible",
 			identifiedBy(identity(1))},
+		// The reservation is a CAPTURE-facet route and it is still the control
+		// plane's: the ATC asks for the location before it builds the Pod, so
+		// there is no Pod on this node to be the caller and no reason to exempt
+		// it. Its presence here is what stops the node-local exemption below
+		// from being read as "capture routes are exempt".
+		{"/capture/v1/reserve-incarnation", output.CaptureFacet, "reserve-incarnation",
+			admission()},
 	} {
 		if code := call(withCert, row.path, row.facet, row.operation, row.body); code != http.StatusOK {
 			t.Fatalf("%s answered %d to the control plane's own certificate", row.path, code)
@@ -131,8 +145,21 @@ func TestTheControlAPIRequiresAClientCertificateExceptForTheNodeLocalHold(t *tes
 	}
 
 	// And the node-local hold, from a caller with no certificate at all: this
-	// is the capture control init, and it must still work.
-	code := call(withoutCert, "/capture/v1/hold", output.CaptureFacet, "hold", admission())
+	// is the capture control init, and it must still work. It presents the
+	// incarnation the control plane reserved over mTLS a moment ago, which is
+	// the whole handoff: the authenticated caller chose nothing and the
+	// unauthenticated one names what it was given.
+	reservedCode, reservedBody := answer(withCert, "/capture/v1/reserve-incarnation",
+		output.CaptureFacet, "reserve-incarnation", admission())
+	if reservedCode != http.StatusOK {
+		t.Fatalf("the reservation was refused: %d %s", reservedCode, reservedBody)
+	}
+	var reserved output.ReservedIncarnation
+	if err := json.Unmarshal(reservedBody, &reserved); err != nil {
+		t.Fatalf("decoding the reservation: %v", err)
+	}
+	code := call(withoutCert, "/capture/v1/hold", output.CaptureFacet, "hold",
+		holdRequest{CaptureAdmission: admission(), Incarnation: reserved.Incarnation})
 	if code != http.StatusOK {
 		t.Errorf("the node-local capture hold answered %d without a client certificate; the "+
 			"control init holds none and cannot be given one, so this refusal would stop every "+

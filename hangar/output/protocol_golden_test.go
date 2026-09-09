@@ -143,6 +143,17 @@ var protocolFixtures = map[string]func(*testing.T, []byte){
 	"source-incarnation.json": func(t *testing.T, raw []byte) { roundTrip[SourceIncarnation](t, raw) },
 	"capture-admission.json":  func(t *testing.T, raw []byte) { roundTrip[CaptureAdmission](t, raw) },
 
+	// The reservation the ATC repeats into the producing Pod's volume. Its
+	// refusal twin is a reservation whose directory does not derive from the
+	// incarnation beside it -- a chosen path wearing a server-issued identity,
+	// which is the shape Req 7 exists to refuse.
+	"reserved-incarnation.json": func(t *testing.T, raw []byte) {
+		roundTrip[ReservedIncarnation](t, raw)
+	},
+	"refusal-chosen-incarnation-directory.json": func(t *testing.T, raw []byte) {
+		refuse[ReservedIncarnation](t, raw)
+	},
+
 	"hold-acknowledgement.json": func(t *testing.T, raw []byte) {
 		roundTrip[CaptureAcknowledgement](t, raw)
 	},

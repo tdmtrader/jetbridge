@@ -108,9 +108,12 @@ var _ = Describe("An execProcess under exact control", func() {
 		})
 		Expect(err).ToNot(HaveOccurred())
 
-		grant, err := harness.Client.MintGrant(hangaroutput.CaptureFacet, "hold", identity)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(postHold(harness.Endpoint, string(grant), hangaroutput.CaptureAdmission{
+		// The reservation, which in production happens before the Pod is even
+		// built: the ATC asks for the location, mounts it as the selected
+		// output's volume, and puts it in the control init's environment. The
+		// hold then PRESENTS it, which is how the daemon knows this init
+		// container is running in the Pod the reservation was made for.
+		admission := hangaroutput.CaptureAdmission{
 			ProtocolVersion: hangaroutput.ProtocolVersion,
 			Execution:       identity,
 			ActivationEpoch: harnessEpoch,
@@ -118,7 +121,14 @@ var _ = Describe("An execProcess under exact control", func() {
 			SourceLeaseID:   leaseID,
 			Output:          "result",
 			CaptureDeadline: hangaroutput.NewTimestamp(time.Now().UTC().Add(time.Hour)),
-		})).To(Succeed())
+		}
+		reserved, err := harness.Client.ReserveIncarnation(ctx, admission)
+		Expect(err).ToNot(HaveOccurred())
+
+		grant, err := harness.Client.MintGrant(hangaroutput.CaptureFacet, "hold", identity)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(postHold(harness.Endpoint, string(grant), admission,
+			reserved.Incarnation)).To(Succeed())
 	}
 
 	BeforeEach(func() {

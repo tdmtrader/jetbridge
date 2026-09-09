@@ -137,6 +137,30 @@ func (fixture *routeFixture) call(t *testing.T, path string, facet executioncont
 	return fixture.callAs(t, identity(1), path, facet, operation, body)
 }
 
+// reserveOverHTTP takes the reservation the way the ATC takes it, and returns
+// the hold body a capture control init would then present.
+//
+// Every hold in this file goes through it, because every hold in PRODUCTION
+// goes through it: the incarnation is issued before the Pod is built, and a
+// hold that could not name one would be a control init in a Pod whose output
+// volume is somewhere else.
+func (fixture *routeFixture) reserveOverHTTP(t *testing.T,
+	as executioncontrol.Identity, admitted output.CaptureAdmission) holdRequest {
+	t.Helper()
+
+	status, body := fixture.callAs(t, as, "/capture/v1/reserve-incarnation",
+		output.CaptureFacet, "reserve-incarnation", admitted)
+	if status != http.StatusOK {
+		t.Fatalf("the reservation was refused: %d %s", status, body)
+	}
+	var reserved output.ReservedIncarnation
+	if err := json.Unmarshal(body, &reserved); err != nil {
+		t.Fatalf("decoding the reservation: %v", err)
+	}
+
+	return holdRequest{CaptureAdmission: admitted, Incarnation: reserved.Incarnation}
+}
+
 // callAs is call for a capability minted for an execution the test names.
 //
 // The default is the fixture's one execution; a cross-execution row needs a
@@ -231,10 +255,13 @@ func TestTheRouteTableReadsBothIdentityShapesAndNoFacetCrosses(t *testing.T) {
 		t.Fatalf("the admit route refused an envelope with a flat identity: %d %s", status, body)
 	}
 
-	// The two capture routes no scenario names.
+	// The capture routes no scenario names -- including the reservation, which
+	// is the ATC's own operation and therefore the one a base control
+	// capability is most plausibly already holding when it reaches for it.
 	for path, operation := range map[string]string{
-		"/capture/v1/writer-ticket": "issue-writer-ticket",
-		"/capture/v1/release":       "release-hold",
+		"/capture/v1/writer-ticket":       "issue-writer-ticket",
+		"/capture/v1/release":             "release-hold",
+		"/capture/v1/reserve-incarnation": "reserve-incarnation",
 	} {
 		status, body := fixture.call(t, path, executioncontrol.BaseFacet, operation,
 			identifiedBy(identity(1)))
@@ -340,9 +367,10 @@ func TestAnUnreadyDaemonAnswersNoControlRequestAtAll(t *testing.T) {
 	admitted(t, &fixture.ledgerFixture)
 
 	for path, operation := range map[string]string{
-		"/execution/v1/classify":         "classify",
-		"/execution/v1/cleanup-eligible": "cleanup-eligible",
-		"/capture/v1/hold":               "hold",
+		"/execution/v1/classify":          "classify",
+		"/execution/v1/cleanup-eligible":  "cleanup-eligible",
+		"/capture/v1/hold":                "hold",
+		"/capture/v1/reserve-incarnation": "reserve-incarnation",
 	} {
 		facet := executioncontrol.BaseFacet
 		if strings.HasPrefix(path, "/capture/") {
@@ -382,7 +410,8 @@ func TestTheCaptureRoutesHoldSealAndPublishASealedTree(t *testing.T) {
 	fixture := newRoutes(t, "")
 	admitted(t, &fixture.ledgerFixture)
 
-	status, body := fixture.call(t, "/capture/v1/hold", output.CaptureFacet, "hold", admission())
+	status, body := fixture.call(t, "/capture/v1/hold", output.CaptureFacet, "hold",
+		fixture.reserveOverHTTP(t, identity(1), admission()))
 	if status != http.StatusOK {
 		t.Fatalf("the hold was refused: %d %s", status, body)
 	}
@@ -526,7 +555,8 @@ func TestACapabilityForOneExecutionCannotActOnAnothersHandoff(t *testing.T) {
 	admitted(t, &fixture.ledgerFixture)
 
 	// A holds and seals.
-	status, body := fixture.call(t, "/capture/v1/hold", output.CaptureFacet, "hold", admission())
+	status, body := fixture.call(t, "/capture/v1/hold", output.CaptureFacet, "hold",
+		fixture.reserveOverHTTP(t, identity(1), admission()))
 	if status != http.StatusOK {
 		t.Fatalf("A's hold was refused: %d %s", status, body)
 	}

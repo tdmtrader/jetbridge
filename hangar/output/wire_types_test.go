@@ -35,6 +35,7 @@ const baseFixtureDir = "../executioncontrol/testdata/protocol-v1"
 var fixturedTypes = map[string]string{
 	outputPackageDir + ":SourceIncarnation":               "source-incarnation.json",
 	outputPackageDir + ":CaptureAdmission":                "capture-admission.json",
+	outputPackageDir + ":ReservedIncarnation":             "reserved-incarnation.json",
 	outputPackageDir + ":CaptureAcknowledgement":          "hold-acknowledgement.json",
 	outputPackageDir + ":SuccessfulFinishDisposition":     "successful-finish-disposition.json",
 	outputPackageDir + ":NoCaptureDisposition":            "no-capture-disposition.json",

@@ -52,6 +52,14 @@ import (
 type sourceState string
 
 const (
+	// sourceReserved is the location set aside before the producing Pod
+	// exists. It authorizes nothing -- no writer, no seal, no publication --
+	// and it is nonetheless a state the read-only classifier answers "held"
+	// for, because the ATC has already mounted the directory into a Pod that
+	// is about to write into it. A reservation that did not withhold cleanup
+	// would be a hostPath the sweeper could reclaim mid-write.
+	sourceReserved sourceState = "reserved"
+
 	sourceHeld     sourceState = "held"
 	sourceSealing  sourceState = "sealing"
 	sourceSealed   sourceState = "sealed"
@@ -288,8 +296,10 @@ func (ledger *SourceLedger) save(record sourceRecord) error {
 // comment. The output name is validated by output.OutputName before it can
 // reach here, and os.Root refuses a climb regardless.
 func incarnationDir(incarnation output.SourceIncarnation) string {
-	return fmt.Sprintf("%s.%d/%s",
-		incarnation.ExecutionID, incarnation.HandleGeneration, incarnation.Output)
+	// One derivation, and it lives in the contract package because the
+	// read-only classifier keys on the identical string. Two spellings of this
+	// is a guard that answers "unmanaged" for a directory a capture holds.
+	return incarnation.Directory()
 }
 
 // ResolveIncarnation turns a server-issued identity into a location, and
@@ -395,13 +405,164 @@ func (ledger *SourceLedger) next() executioncontrol.LedgerSequence {
 	return ledger.sequence
 }
 
-// AcknowledgeHold establishes the pre-start, non-authorizing hold.
+// ReserveIncarnation sets aside the one location this capture will hold,
+// before the producing Pod exists.
 //
-// The second parameter is the SourceControl interface's, and it is deliberately
-// ignored: a caller offering an incarnation is offering a name it chose. What
-// comes back is the one this daemon minted.
+// This is the operation that closes the Phase 4 seam. The incarnation used to
+// be minted inside AcknowledgeHold, which cannot run before the Pod exists --
+// the hold binds to the admitted Pod UID -- so the ATC had no location to mount
+// and the producer wrote into `steps/<handle>/<output>`, a SIBLING of the
+// directory the hold protected. Reserving first is what makes the bytes the
+// hold protects the bytes the producer writes.
+//
+// It still issues rather than accepts. The caller sends the same admission a
+// hold sends -- an exact execution and its fence, a handoff, a source lease, a
+// declared output, an epoch -- and gets back a directory this daemon chose. Req
+// 7 is intact: no API here accepts a path, and the ATC's whole part is to
+// repeat the answer.
+//
+// It authorizes nothing. A reservation is not a hold: no writer ticket may be
+// issued against it, nothing may be sealed, and the producer's main process
+// still may not start until the control init's hold is durably acknowledged.
+// What it does do is withhold destructive cleanup from the moment the directory
+// exists, because from that moment the ATC may have mounted it.
+func (ledger *SourceLedger) ReserveIncarnation(_ context.Context,
+	admission output.CaptureAdmission) (output.ReservedIncarnation, error) {
+	if err := admission.Validate(); err != nil {
+		return output.ReservedIncarnation{}, err
+	}
+	if admission.ActivationEpoch != ledger.epoch {
+		return output.ReservedIncarnation{}, fmt.Errorf(
+			"%w: the reservation names epoch %d and this node is attested for %d",
+			output.ErrConflict, admission.ActivationEpoch, ledger.epoch)
+	}
+
+	ledger.mu.Lock()
+	defer ledger.mu.Unlock()
+
+	record, found, err := ledger.load(admission.HandoffID)
+	if err != nil {
+		return output.ReservedIncarnation{}, err
+	}
+	if found {
+		// Idempotent for the SAME facts, a typed conflict for any different
+		// one, and the same comparison the hold makes -- because a reservation
+		// and a hold are admitted for exactly the same facts, and two
+		// comparisons of one set is how they come to disagree.
+		if err := conflictsWithRecord(record, admission); err != nil {
+			return output.ReservedIncarnation{}, err
+		}
+
+		return ledger.reservationOf(record), nil
+	}
+
+	// A NEW reservation, and only now does base admission matter. A location
+	// set aside for an execution the control plane never admitted would be a
+	// directory nothing ever comes back for.
+	current, _, err := ledger.base.Admission(admission.Execution.ExecutionID)
+	if err != nil {
+		return output.ReservedIncarnation{}, err
+	}
+	if current.Fence != admission.Execution.Fence {
+		return output.ReservedIncarnation{}, fmt.Errorf(
+			"%w: execution %s is admitted at fence %d and the reservation names %d",
+			output.ErrUnauthorized, admission.Execution.ExecutionID,
+			current.Fence, admission.Execution.Fence)
+	}
+
+	incarnation := output.SourceIncarnation{
+		ExecutionID:      admission.Execution.ExecutionID,
+		NodeUID:          ledger.node,
+		HandleGeneration: output.HandleGeneration(ledger.next()),
+		Output:           admission.Output,
+	}
+	if err := ledger.steps.MkdirAll(incarnationDir(incarnation), 0o700); err != nil {
+		return output.ReservedIncarnation{}, fmt.Errorf(
+			"%w: creating the reserved source incarnation: %v", output.ErrInfrastructure, err)
+	}
+
+	record = sourceRecord{
+		State:           sourceReserved,
+		Execution:       admission.Execution,
+		ActivationEpoch: admission.ActivationEpoch,
+		HandoffID:       admission.HandoffID,
+		SourceLeaseID:   admission.SourceLeaseID,
+		Output:          admission.Output,
+		Incarnation:     incarnation,
+		HighWater:       ledger.sequence,
+	}
+	// The gate goes down BEFORE the record, exactly as it does for a hold, and
+	// for the same crash: a gate with no record withholds cleanup and is closed
+	// by the release; a record with no gate is a directory the ATC has mounted
+	// that cleanup is told it may destroy.
+	if err := ledger.base.OpenGate(admission.Execution, SourceHoldGate); err != nil {
+		return output.ReservedIncarnation{}, err
+	}
+	if err := ledger.save(record); err != nil {
+		return output.ReservedIncarnation{}, err
+	}
+
+	return ledger.reservationOf(record), nil
+}
+
+// reservationOf answers from the durable record, never from a field kept in
+// memory: a reservation that a restart could not reproduce is a hostPath the
+// ATC mounted into a Pod that outlives this process.
+func (ledger *SourceLedger) reservationOf(record sourceRecord) output.ReservedIncarnation {
+	return output.ReservedIncarnation{
+		ProtocolVersion: output.ProtocolVersion,
+		Execution:       record.Execution,
+		ActivationEpoch: record.ActivationEpoch,
+		HandoffID:       record.HandoffID,
+		SourceLeaseID:   record.SourceLeaseID,
+		NodeUID:         record.Incarnation.NodeUID,
+		Incarnation:     record.Incarnation,
+		Directory:       incarnationDir(record.Incarnation),
+		LedgerSequence:  record.HighWater,
+		ObservedAt:      output.NewTimestamp(ledger.clock()),
+	}
+}
+
+// conflictsWithRecord is the one fact comparison a reservation and a hold both
+// make. It is a function rather than two copies because the two operations
+// admit the same facts, and the failure mode of two copies is a reservation
+// that accepts what the hold then refuses -- with a Pod already built around
+// the answer.
+func conflictsWithRecord(record sourceRecord, admission output.CaptureAdmission) error {
+	switch {
+	case record.Execution != admission.Execution:
+		return fmt.Errorf(
+			"%w: handoff %s holds a source for execution %s at fence %d and this request names "+
+				"%s at fence %d", output.ErrConflict, admission.HandoffID,
+			record.Execution.ExecutionID, record.Execution.Fence,
+			admission.Execution.ExecutionID, admission.Execution.Fence)
+	case record.SourceLeaseID != admission.SourceLeaseID:
+		return fmt.Errorf("%w: handoff %s holds source lease %s and this request names %s",
+			output.ErrConflict, admission.HandoffID, record.SourceLeaseID, admission.SourceLeaseID)
+	case record.Output != admission.Output:
+		return fmt.Errorf("%w: handoff %s holds the source for output %q and this request names %q",
+			output.ErrConflict, admission.HandoffID, record.Output, admission.Output)
+	case record.State == sourceReleased:
+		return fmt.Errorf("%w: handoff %s released its source; a released reservation is not "+
+			"re-established", output.ErrConflict, admission.HandoffID)
+	}
+
+	return nil
+}
+
+// AcknowledgeHold establishes the pre-start, non-authorizing hold, over the
+// incarnation this daemon already reserved.
+//
+// The second parameter used to be ignored, on the reading that a caller
+// offering an incarnation was offering a name it chose. That reading is no
+// longer available and the change is the point: the incarnation is now issued
+// at ReserveIncarnation, before the Pod exists, so a control init presenting
+// one is not choosing a location -- it is PROVING it received the daemon's
+// answer, which is the same answer the ATC mounted into the Pod it is running
+// in. A hold that named nothing, or named something else, would be a hold over
+// bytes no producer is writing.
 func (ledger *SourceLedger) AcknowledgeHold(_ context.Context, admission output.CaptureAdmission,
-	_ output.SourceIncarnation) (output.CaptureAcknowledgement, error) {
+	offered output.SourceIncarnation) (output.CaptureAcknowledgement, error) {
 	if err := admission.Validate(); err != nil {
 		return output.CaptureAcknowledgement{}, err
 	}
@@ -418,38 +579,38 @@ func (ledger *SourceLedger) AcknowledgeHold(_ context.Context, admission output.
 	if err != nil {
 		return output.CaptureAcknowledgement{}, err
 	}
-	// An existing hold is compared BEFORE the base admission is consulted, and
-	// the order is the answer's meaning. A repeat that names different facts is
-	// a CONFLICT -- this handoff already holds a source for other facts -- and
+	// A hold is bound to a RESERVATION, and there is no path that mints one
+	// here any more. The ATC reserves before it builds the Pod and mounts the
+	// answer as the selected output's volume; a hold with no reservation behind
+	// it is a control init in a Pod whose output volume is somewhere else.
+	if !found {
+		return output.CaptureAcknowledgement{}, fmt.Errorf(
+			"%w: handoff %s has no reserved source incarnation on this node. A hold is bound to "+
+				"a location this daemon issued before the Pod was built, and the producer's "+
+				"output volume is that location", output.ErrNotFound, admission.HandoffID)
+	}
+	// The facts are compared BEFORE the base admission is consulted, and the
+	// order is the answer's meaning. A repeat that names different facts is a
+	// CONFLICT -- this handoff already holds a source for other facts -- and
 	// saying "unauthorized" there would tell a caller its fence was wrong when
 	// what is wrong is that it is reusing a handoff. Nothing is written on this
 	// path, so consulting the record first grants no authority.
-	if found && record.Hold != nil {
-		// Idempotent replay for the SAME facts, and a typed conflict for any
-		// different one. "Repeating the handoff returns the same state" passes
-		// for a daemon that ignores the identity entirely; comparing every fact
-		// is what makes the replay mean something.
-		switch {
-		case record.Execution != admission.Execution:
-			return output.CaptureAcknowledgement{}, fmt.Errorf(
-				"%w: handoff %s holds a source for execution %s at fence %d and this hold names "+
-					"%s at fence %d", output.ErrConflict, admission.HandoffID,
-				record.Execution.ExecutionID, record.Execution.Fence,
-				admission.Execution.ExecutionID, admission.Execution.Fence)
-		case record.SourceLeaseID != admission.SourceLeaseID:
-			return output.CaptureAcknowledgement{}, fmt.Errorf(
-				"%w: handoff %s holds source lease %s and this hold names %s",
-				output.ErrConflict, admission.HandoffID, record.SourceLeaseID, admission.SourceLeaseID)
-		case record.Output != admission.Output:
-			return output.CaptureAcknowledgement{}, fmt.Errorf(
-				"%w: handoff %s holds the source for output %q and this hold names %q",
-				output.ErrConflict, admission.HandoffID, record.Output, admission.Output)
-		case record.State == sourceReleased:
-			return output.CaptureAcknowledgement{}, fmt.Errorf(
-				"%w: handoff %s released its source; a released hold is not re-established",
-				output.ErrConflict, admission.HandoffID)
-		}
+	if err := conflictsWithRecord(record, admission); err != nil {
+		return output.CaptureAcknowledgement{}, err
+	}
+	// And the incarnation itself. An empty one is refused rather than resolved
+	// from the record: a caller that cannot name the location it was given has
+	// not proved it is the Pod the reservation was made for, and "the daemon
+	// filled it in" is how a hold over the wrong generation goes unnoticed.
+	if offered != record.Incarnation {
+		return output.CaptureAcknowledgement{}, fmt.Errorf(
+			"%w: handoff %s reserved incarnation %s and this hold names %s. A hold binds to the "+
+				"location the daemon reserved, which is the one the producer's Pod mounts",
+			output.ErrConflict, admission.HandoffID,
+			incarnationDir(record.Incarnation), incarnationDir(offered))
+	}
 
+	if record.Hold != nil {
 		// The gate, before the statement. A hold is two durable writes -- the
 		// record and the cleanup gate -- and a crash between them leaves a
 		// held record with nothing withholding cleanup. So every replay
@@ -464,9 +625,12 @@ func (ledger *SourceLedger) AcknowledgeHold(_ context.Context, admission output.
 		return *record.Hold, nil
 	}
 
-	// A NEW hold, and only now does base admission matter. A hold over an
-	// execution the control plane never admitted would be a capture with no
-	// exact truth behind it, which is the whole thing the base protocol is for.
+	// A NEW hold over the reserved incarnation, and only now does base
+	// admission matter. A hold over an execution the control plane never
+	// admitted would be a capture with no exact truth behind it, which is the
+	// whole thing the base protocol is for. The Pod UID comes from the base
+	// admission, which is why this cannot run before the Pod exists and why the
+	// incarnation cannot be minted here.
 	current, pod, err := ledger.base.Admission(admission.Execution.ExecutionID)
 	if err != nil {
 		return output.CaptureAcknowledgement{}, err
@@ -478,15 +642,13 @@ func (ledger *SourceLedger) AcknowledgeHold(_ context.Context, admission output.
 			current.Fence, admission.Execution.Fence)
 	}
 
-	// A new handle generation for every hold on this node, taken from the same
-	// monotonic sequence as everything else. A reused generation is precisely
-	// the confusion SourceIncarnation exists to prevent.
-	incarnation := output.SourceIncarnation{
-		ExecutionID:      admission.Execution.ExecutionID,
-		NodeUID:          ledger.node,
-		HandleGeneration: output.HandleGeneration(ledger.next()),
-		Output:           admission.Output,
-	}
+	// The incarnation is the RESERVATION's. Nothing here mints one: a hold that
+	// issued a fresh handle generation would name a directory the Pod running
+	// this init container never mounted.
+	incarnation := record.Incarnation
+	// Idempotent, and the fail-closed direction: the reservation created this
+	// directory, and a hold that found it gone would otherwise acknowledge a
+	// source that is not there.
 	if err := ledger.steps.MkdirAll(incarnationDir(incarnation), 0o700); err != nil {
 		return output.CaptureAcknowledgement{}, fmt.Errorf(
 			"%w: creating the source incarnation: %v", output.ErrInfrastructure, err)
@@ -509,17 +671,9 @@ func (ledger *SourceLedger) AcknowledgeHold(_ context.Context, admission output.
 		return output.CaptureAcknowledgement{}, err
 	}
 
-	record = sourceRecord{
-		State:           sourceHeld,
-		Execution:       admission.Execution,
-		ActivationEpoch: admission.ActivationEpoch,
-		HandoffID:       admission.HandoffID,
-		SourceLeaseID:   admission.SourceLeaseID,
-		Output:          admission.Output,
-		Incarnation:     incarnation,
-		Hold:            &ack,
-		HighWater:       ledger.sequence,
-	}
+	record.State = sourceHeld
+	record.Hold = &ack
+	record.HighWater = ledger.sequence
 	// The gate goes down BEFORE the record, and the order is the crash. A gate
 	// with no hold is the safe orphan: it withholds cleanup, and the release --
 	// or the next hold on this handoff -- closes it. A hold with no gate is the

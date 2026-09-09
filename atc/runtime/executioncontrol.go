@@ -123,6 +123,24 @@ type DurableOutputCapture struct {
 	// CaptureDeadline is the database-clock deadline the capture was admitted
 	// under.
 	CaptureDeadline time.Time
+
+	// ReservedIncarnation is the location the output daemon issued for this
+	// capture BEFORE the producing Pod was built, and ReservedDirectory is the
+	// daemon's own name for it relative to the managed steps root.
+	//
+	// They are here because Phase 4 found the seam they close: the producer's
+	// Pod used to mount `steps/<handle>/<output>` while the hold protected
+	// `steps/<execution>.<generation>/<output>`, two sibling directories, so
+	// every path-keyed guard correctly answered "unmanaged" for the bytes the
+	// producer actually wrote. `Container.buildPod` now mounts the reserved
+	// incarnation as the selected output's volume.
+	//
+	// The ATC REPEATS these. It does not compose them, it cannot compose them
+	// -- the handle generation is the daemon's monotonic sequence -- and
+	// TestNoATCCodeComposesAnIncarnationName fails if any file under atc/
+	// starts to. Req 7 holds because the daemon names the path.
+	ReservedIncarnation hangaroutput.SourceIncarnation
+	ReservedDirectory   string
 }
 
 // SelectCapture attaches the extension, and is the only way to attach it.
@@ -251,6 +269,7 @@ func (control *ExecutionControl) validateCapture(spec ContainerSpec) error {
 	if strings.TrimSpace(capture.Output) == "" {
 		return fmt.Errorf("%w: the capture names no output", ErrInvalidExecutionControl)
 	}
+
 	selectedPath, declared := spec.Outputs[capture.Output]
 	if !declared {
 		names := make([]string, 0, len(spec.Outputs))
@@ -273,6 +292,35 @@ func (control *ExecutionControl) validateCapture(spec ContainerSpec) error {
 				"would be a capture of somebody else's bytes", ErrInvalidExecutionControl,
 				capture.Output, selectedPath, input.DestinationPath)
 		}
+	}
+
+	// The reservation. An unreserved execution cannot be capture-selected: the
+	// producing Pod's output volume IS the reserved incarnation, so a capture
+	// with none is one whose producer would write into a directory no hold
+	// protects and whose seal would seal an empty tree.
+	if err := capture.ReservedIncarnation.Validate(); err != nil {
+		return fmt.Errorf("%w: this capture has no reserved source incarnation. The output daemon "+
+			"issues one before the Pod is built and the selected output's volume is that "+
+			"location; an unreserved execution cannot be capture-selected: %v",
+			ErrInvalidExecutionControl, err)
+	}
+	if capture.ReservedIncarnation.ExecutionID != control.Identity.ExecutionID {
+		return fmt.Errorf("%w: the reserved incarnation belongs to execution %s and this envelope "+
+			"names %s", ErrInvalidExecutionControl,
+			capture.ReservedIncarnation.ExecutionID, control.Identity.ExecutionID)
+	}
+	if string(capture.ReservedIncarnation.Output) != capture.Output {
+		return fmt.Errorf("%w: the reserved incarnation is for output %q and this capture selects "+
+			"%q", ErrInvalidExecutionControl, capture.ReservedIncarnation.Output, capture.Output)
+	}
+	// The directory the pod builder will mount must be the daemon's own answer.
+	// A directory that does not derive from the incarnation beside it is the
+	// control plane having composed a path, which is what Req 7 forbids and
+	// what this whole pair of fields exists to make unnecessary.
+	if capture.ReservedDirectory != capture.ReservedIncarnation.Directory() {
+		return fmt.Errorf("%w: the capture names directory %q and the reserved incarnation it "+
+			"carries does not derive it. The ATC repeats the daemon's answer; it never composes "+
+			"a source path", ErrInvalidExecutionControl, capture.ReservedDirectory)
 	}
 
 	return nil

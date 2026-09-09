@@ -125,6 +125,13 @@ type CaptureDraft struct {
 	// has no cluster and this is the identity the daemon was told; in Phase 4
 	// it is the Pod the cluster handed back, and the same field carries it.
 	PodUID executioncontrol.PodUID
+
+	// Reserved is the location the daemon issued before any Pod exists. It is
+	// the daemon's answer and never a scenario's choice: the pod-shape chain
+	// has no daemon to ask, so it carries a stand-in with the same shape, and
+	// what the scenarios assert is that the pod builder REPEATS whatever it was
+	// given rather than composing a path of its own.
+	Reserved hangaroutput.ReservedIncarnation
 }
 
 // freshUUID mints an identity no feature file chose.
@@ -184,6 +191,10 @@ type HeldSource struct {
 	// Incarnation is the SERVER-issued source identity. There is no phrase that
 	// sets it, which is Req 7 in the type system.
 	Incarnation hangaroutput.SourceIncarnation
+
+	// Reserved is the reservation the incarnation came from, carried so a later
+	// step can present the daemon's own answer rather than rebuild one.
+	Reserved hangaroutput.ReservedIncarnation
 
 	// Fence is the epoch every later control operation is admitted against.
 	Fence hangaroutput.CaptureFence

@@ -61,6 +61,17 @@ func capturingContainer(t *testing.T, cfg Config, reused bool, control *runtime.
 	}
 }
 
+// testReservedIncarnation is what `reserve-incarnation` answered for this
+// execution, as it would come off the wire.
+func testReservedIncarnation() hangaroutput.SourceIncarnation {
+	return hangaroutput.SourceIncarnation{
+		ExecutionID:      "11111111-1111-4111-8111-111111111111",
+		NodeUID:          "node-1",
+		HandleGeneration: 4,
+		Output:           "result",
+	}
+}
+
 func admittedCapture() *runtime.ExecutionControl {
 	control := &runtime.ExecutionControl{
 		Version:         runtime.ExecutionControlVersion,
@@ -79,6 +90,12 @@ func admittedCapture() *runtime.ExecutionControl {
 		Output:             "result",
 		SourceControlGrant: "source-control-grant",
 		CaptureDeadline:    time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC),
+
+		// The daemon's answer, repeated. Nothing here composes it: the
+		// generation is that node's monotonic ledger sequence and no caller can
+		// choose one.
+		ReservedIncarnation: testReservedIncarnation(),
+		ReservedDirectory:   testReservedIncarnation().Directory(),
 	})
 	// The envelope needs an endpoint to validate; the control init falls back
 	// to the Downward API host IP when it is empty, which is the deployed

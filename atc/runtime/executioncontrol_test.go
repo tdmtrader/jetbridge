@@ -49,6 +49,21 @@ func captureExtension() runtime.DurableOutputCapture {
 		Output:             "result",
 		SourceControlGrant: "source-control-grant",
 		CaptureDeadline:    time.Now().Add(time.Hour),
+
+		// The daemon's answer, repeated. Every field here came off the wire;
+		// nothing in atc/ composes one, and
+		// TestNoATCCodeComposesAnIncarnationName is what keeps that true.
+		ReservedIncarnation: reservedIncarnation(),
+		ReservedDirectory:   reservedIncarnation().Directory(),
+	}
+}
+
+func reservedIncarnation() hangaroutput.SourceIncarnation {
+	return hangaroutput.SourceIncarnation{
+		ExecutionID:      testExecutionID,
+		NodeUID:          "node-1",
+		HandleGeneration: 4,
+		Output:           "result",
 	}
 }
 
@@ -193,6 +208,40 @@ func TestTheControlEnvelopeRefusesEveryMalformedShape(t *testing.T) {
 				c.Capture.SourceLeaseID = ""
 			},
 			says: "source lease id",
+		},
+		// The reservation. An unreserved execution cannot be capture-selected:
+		// the incarnation is issued by the daemon before the Pod is built, and
+		// a capture with no reservation behind it is one whose producer would
+		// write into a directory no hold protects -- the seam this pass closes,
+		// stated where a caller can hit it.
+		"a capture with no reserved incarnation": {
+			mutate: func(c *runtime.ExecutionControl, _ *runtime.ContainerSpec) {
+				c.Capture.ReservedIncarnation = hangaroutput.SourceIncarnation{}
+				c.Capture.ReservedDirectory = ""
+			},
+			says: "no reserved source incarnation",
+		},
+		"a capture whose reservation belongs to another execution": {
+			mutate: func(c *runtime.ExecutionControl, _ *runtime.ContainerSpec) {
+				c.Capture.ReservedIncarnation.ExecutionID = "44444444-4444-4444-8444-444444444444"
+			},
+			says: "reserved incarnation",
+		},
+		"a capture whose reservation is for another output": {
+			mutate: func(c *runtime.ExecutionControl, _ *runtime.ContainerSpec) {
+				c.Capture.ReservedIncarnation.Output = "report"
+			},
+			says: "reserved incarnation",
+		},
+		// The ATC repeating a directory it composed itself rather than the one
+		// the daemon answered with. It is the shape Req 7 refuses, and it is
+		// representable here precisely so it can be refused before a Pod is
+		// built around it.
+		"a capture whose directory does not derive from its reservation": {
+			mutate: func(c *runtime.ExecutionControl, _ *runtime.ContainerSpec) {
+				c.Capture.ReservedDirectory = "steps/a-handle-i-chose/result"
+			},
+			says: "does not derive",
 		},
 		"a capture with no deadline": {
 			mutate: func(c *runtime.ExecutionControl, _ *runtime.ContainerSpec) {

@@ -56,6 +56,11 @@ type OutputControl interface {
 	CleanupEligible(ctx context.Context,
 		id executioncontrol.Identity) (executioncontrol.DestructiveCleanupEligibleResult, error)
 
+	// ReserveIncarnation asks the daemon for the location this capture will
+	// hold, BEFORE the producing Pod is built. It is the ATC's only source of
+	// that path: nothing here composes one.
+	ReserveIncarnation(ctx context.Context,
+		admission output.CaptureAdmission) (output.ReservedIncarnation, error)
 	InspectHold(ctx context.Context, id executioncontrol.Identity,
 		handoff output.HandoffID) (output.CaptureAcknowledgement, error)
 	AdmitWriter(ctx context.Context,
@@ -283,6 +288,32 @@ func (client *OutputControlClient) CleanupEligible(ctx context.Context,
 		}, &result)
 
 	return result, err
+}
+
+// ReserveIncarnation takes the reservation, and is the only place in the ATC
+// that learns a source path.
+//
+// It answers a directory, and the ATC's whole part is to repeat it into the
+// producing Pod's output volume. Req 7 is intact because the daemon derived it:
+// the handle generation is that node's monotonic ledger sequence, and no caller
+// can guess or choose one. TestNoATCCodeComposesAnIncarnationName fails if any
+// file under atc/ starts composing one instead of calling this.
+func (client *OutputControlClient) ReserveIncarnation(ctx context.Context,
+	admission output.CaptureAdmission) (output.ReservedIncarnation, error) {
+	var reserved output.ReservedIncarnation
+	if err := client.call(ctx, output.CaptureFacet, "reserve-incarnation",
+		"/capture/v1/reserve-incarnation", admission.Execution, admission, &reserved); err != nil {
+		return output.ReservedIncarnation{}, err
+	}
+	// The answer is validated before it is repeated. A reservation whose
+	// directory does not derive from the incarnation beside it is not a daemon
+	// this ATC should be mounting hostPaths from.
+	if err := reserved.Validate(); err != nil {
+		return output.ReservedIncarnation{}, fmt.Errorf(
+			"the output daemon answered a reservation that does not validate: %w", err)
+	}
+
+	return reserved, nil
 }
 
 func (client *OutputControlClient) InspectHold(ctx context.Context, id executioncontrol.Identity,
