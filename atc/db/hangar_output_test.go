@@ -120,6 +120,65 @@ var _ = Describe("the Hangar output lock suffix", func() {
 		}
 	}
 
+	// The one-use stat challenge the daemon would have been issued, for one
+	// exact ref. Written as SQL because minting it is not the repository's job.
+	issueChallenge := func(handoff output.HandoffID, reservation output.ReservationID, ref hangar.TreeRef) string {
+		GinkgoHelper()
+
+		nonce := "nonce-" + uuid.NewString()
+		_, err := dbConn.Exec(`
+			INSERT INTO hangar_receipt_stat_challenges
+				(nonce, handoff_id, reservation_id, activation_epoch, receipt_public_key_id,
+				 scope, digest, generation, capture_fence, not_after)
+			VALUES ($1, $2, $3, 1, 'receipt-key-1', $4, $5, $6, 1, now() + interval '5 minutes')`,
+			nonce, string(handoff), string(reservation), string(ref.Scope), string(ref.Digest),
+			ref.Generation)
+		Expect(err).NotTo(HaveOccurred())
+
+		return nonce
+	}
+
+	// One receipt admission, in one place, because a second spelling of it is
+	// a second set of facts and the guards under test are exactly about facts
+	// agreeing.
+	admissionFor := func(handoff output.HandoffID, execution executioncontrol.Identity, reservation output.ReservationID, ref hangar.TreeRef, nonce string) output.ReceiptAdmission {
+		name := output.OutputName("result")
+
+		return output.ReceiptAdmission{
+			ProtocolVersion: output.ProtocolVersion,
+			Receipt: output.Receipt{
+				Claims: output.ReceiptClaims{
+					ProtocolVersion:      output.ProtocolVersion,
+					ReceiptVersion:       output.ReceiptDomain,
+					Execution:            execution,
+					ActivationEpoch:      1,
+					HandoffID:            handoff,
+					ProducerCheckpointID: output.OpaqueID("checkpoint-" + string(handoff)),
+					ReservationID:        reservation,
+					Incarnation: output.SourceIncarnation{
+						ExecutionID:      execution.ExecutionID,
+						NodeUID:          "node-uid",
+						HandleGeneration: 1,
+						Output:           name,
+					},
+					Output:        name,
+					CaptureFence:  1,
+					WriterFence:   1,
+					Ref:           ref,
+					Attributes:    output.AttributesFromFoundation(hangar.TreeAttributes{Ref: ref, StoredBytes: 2048, LogicalBytes: 4096, CreatedAt: time.Now()}),
+					MarkerVersion: output.MarkerVersion,
+					SignedAt:      output.NewTimestamp(time.Now()),
+				},
+				KeyID:     "receipt-key-1",
+				Algorithm: output.ReceiptAlgorithm,
+				Signature: "signature",
+			},
+			ChallengeNonce: nonce,
+			Metageneration: 1,
+			AdmittedAt:     output.NewTimestamp(time.Now()),
+		}
+	}
+
 	// publish drives one whole capture, from predeclaration to a registered
 	// receipt, through the repository rather than around it: what is under test
 	// is the seam, and a fixture that wrote the rows itself would be testing
@@ -185,52 +244,13 @@ var _ = Describe("the Hangar output lock suffix", func() {
 		Expect(tx.Commit()).To(Succeed())
 
 		ref := hangar.TreeRef{Scope: "team-a", Digest: digest, Generation: generation}
-		nonce := "nonce-" + uuid.NewString()
-		_, err = dbConn.Exec(`
-			INSERT INTO hangar_receipt_stat_challenges
-				(nonce, handoff_id, reservation_id, activation_epoch, receipt_public_key_id,
-				 scope, digest, generation, capture_fence, not_after)
-			VALUES ($1, $2, $3, 1, 'receipt-key-1', $4, $5, $6, 1, now() + interval '5 minutes')`,
-			nonce, string(handoff), string(reservation), string(ref.Scope), string(ref.Digest),
-			ref.Generation)
-		Expect(err).NotTo(HaveOccurred())
+		nonce := issueChallenge(handoff, reservation, ref)
 
 		tx, err = dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		defer db.Rollback(tx)
-		Expect(repository.RegisterReceipt(ctx, tx, output.ReceiptAdmission{
-			ProtocolVersion: output.ProtocolVersion,
-			Receipt: output.Receipt{
-				Claims: output.ReceiptClaims{
-					ProtocolVersion:      output.ProtocolVersion,
-					ReceiptVersion:       output.ReceiptDomain,
-					Execution:            execution,
-					ActivationEpoch:      1,
-					HandoffID:            handoff,
-					ProducerCheckpointID: output.OpaqueID("checkpoint-" + string(handoff)),
-					ReservationID:        reservation,
-					Incarnation: output.SourceIncarnation{
-						ExecutionID:      execution.ExecutionID,
-						NodeUID:          "node-uid",
-						HandleGeneration: 1,
-						Output:           name,
-					},
-					Output:        name,
-					CaptureFence:  1,
-					WriterFence:   1,
-					Ref:           ref,
-					Attributes:    output.AttributesFromFoundation(hangar.TreeAttributes{Ref: ref, StoredBytes: 2048, LogicalBytes: 4096, CreatedAt: time.Now()}),
-					MarkerVersion: output.MarkerVersion,
-					SignedAt:      output.NewTimestamp(time.Now()),
-				},
-				KeyID:     "receipt-key-1",
-				Algorithm: output.ReceiptAlgorithm,
-				Signature: "signature",
-			},
-			ChallengeNonce: nonce,
-			Metageneration: 1,
-			AdmittedAt:     output.NewTimestamp(time.Now()),
-		})).To(Succeed())
+		Expect(repository.RegisterReceipt(ctx, tx,
+			admissionFor(handoff, execution, reservation, ref, nonce))).To(Succeed())
 		Expect(tx.Commit()).To(Succeed())
 
 		return reservation, ref
@@ -667,6 +687,102 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(derived.Logical.Digest).To(Equal(hangarDigest(8)))
 			Expect(tx.Rollback()).To(Succeed())
+		})
+	})
+
+	Describe("a second receipt for one reservation", func() {
+		// An ambiguous create response converges only through verified
+		// per-capture retry (AC 9), and reuse for different facts conflicts
+		// (Req 6). A second receipt naming another generation is that reuse:
+		// accepting it silently leaves two lifecycle rows for one capture, one
+		// of them `registered` with no receipt naming it, correlated to
+		// nothing and reclaim-eligible once its grace passes.
+		lifecyclesFor := func(digest hangar.Digest) int {
+			GinkgoHelper()
+			var count int
+			Expect(dbConn.QueryRow(
+				`SELECT count(*) FROM hangar_exact_lifecycles WHERE digest = $1`,
+				string(digest)).Scan(&count)).To(Succeed())
+
+			return count
+		}
+		unnamedRegistrations := func() int {
+			GinkgoHelper()
+			var count int
+			Expect(dbConn.QueryRow(`
+				SELECT count(*) FROM hangar_exact_lifecycles l
+				WHERE l.state = 'registered'
+				  AND NOT EXISTS (
+					SELECT 1 FROM hangar_output_receipts r WHERE r.lifecycle_id = l.id)`).
+				Scan(&count)).To(Succeed())
+
+			return count
+		}
+
+		It("refuses another generation and leaves no lifecycle no receipt names", func() {
+			activate()
+			reservation, first := publish(hangarDigest(12), 1725830823000012)
+
+			var handoffID, executionID string
+			Expect(dbConn.QueryRow(`
+				SELECT handoff_id, execution_id FROM hangar_capture_reservations
+				WHERE reservation_id = $1`, string(reservation)).
+				Scan(&handoffID, &executionID)).To(Succeed())
+
+			handoff := output.HandoffID(handoffID)
+			execution := executioncontrol.Identity{
+				ExecutionID: executioncontrol.ExecutionID(executionID),
+				Fence:       1,
+			}
+			second := first
+			second.Generation = first.Generation + 1
+
+			tx, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(tx)
+			registerErr := repository.RegisterReceipt(ctx, tx, admissionFor(handoff, execution,
+				reservation, second, issueChallenge(handoff, reservation, second)))
+			if registerErr == nil {
+				// Committing is what a caller told "no error" would do, and it
+				// is what makes the damage countable below.
+				Expect(tx.Commit()).To(Succeed())
+			} else {
+				Expect(tx.Rollback()).To(Succeed())
+			}
+
+			Expect(registerErr).To(MatchError(output.ErrConflict))
+			Expect(registerErr.Error()).To(ContainSubstring("already registered"))
+			Expect(lifecyclesFor(first.Digest)).To(Equal(1),
+				"a second generation was recorded for one reservation")
+			Expect(unnamedRegistrations()).To(BeZero(),
+				"a registered lifecycle exists that no receipt names")
+		})
+
+		It("is idempotent for the same reservation and the same ref", func() {
+			activate()
+			reservation, ref := publish(hangarDigest(13), 1725830823000013)
+
+			var handoffID, executionID string
+			Expect(dbConn.QueryRow(`
+				SELECT handoff_id, execution_id FROM hangar_capture_reservations
+				WHERE reservation_id = $1`, string(reservation)).
+				Scan(&handoffID, &executionID)).To(Succeed())
+
+			handoff := output.HandoffID(handoffID)
+			execution := executioncontrol.Identity{
+				ExecutionID: executioncontrol.ExecutionID(executionID),
+				Fence:       1,
+			}
+
+			tx, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(tx)
+			Expect(repository.RegisterReceipt(ctx, tx, admissionFor(handoff, execution,
+				reservation, ref, issueChallenge(handoff, reservation, ref)))).To(Succeed())
+			Expect(tx.Commit()).To(Succeed())
+
+			Expect(lifecyclesFor(ref.Digest)).To(Equal(1))
+			Expect(unnamedRegistrations()).To(BeZero())
 		})
 	})
 

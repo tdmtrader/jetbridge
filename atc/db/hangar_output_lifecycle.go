@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -139,6 +140,46 @@ func (repository *HangarOutputRepository) RegisterReceipt(ctx context.Context, t
 		return fmt.Errorf("%w: the receipt registers %s/%s against a reservation resolved to %s/%s",
 			output.ErrConflict, claims.Ref.Scope, claims.Ref.Digest,
 			derived.Logical.Scope, derived.Logical.Digest)
+	}
+
+	// A receipt already registered for this reservation answers the question
+	// before anything is written, and the answer is one of exactly two. The
+	// same exact ref is one admission repeated -- an ambiguous create response
+	// converges through verified per-capture retry, so the retry must return
+	// the state the first attempt made. Another generation is Req 6's reuse
+	// for different facts, and it is a conflict.
+	//
+	// The read is here, under the Receipts lock the suffix already took, and
+	// before the lifecycle upsert, because the third outcome -- writing the
+	// second generation's lifecycle and then dropping its receipt on an ON
+	// CONFLICT DO NOTHING -- leaves one capture with two records, the newer
+	// one `registered` with no receipt naming it and nothing to correlate it
+	// with. Silence is the one answer this must never give.
+	var (
+		registeredScope, registeredDigest string
+		registeredGeneration              int64
+	)
+	switch err := hangarQueryRow(ctx, tx, `
+		SELECT l.scope, l.digest, l.generation
+		FROM hangar_output_receipts r
+		JOIN hangar_exact_lifecycles l ON l.id = r.lifecycle_id
+		WHERE r.reservation_id = $1`,
+		[]any{string(claims.ReservationID)},
+		&registeredScope, &registeredDigest, &registeredGeneration); {
+	case err == nil:
+		if registeredScope != string(claims.Ref.Scope) ||
+			registeredDigest != string(claims.Ref.Digest) ||
+			registeredGeneration != claims.Ref.Generation {
+			return fmt.Errorf("%w: reservation %s already registered %s/%s/%d; a receipt naming "+
+				"%s/%s/%d reuses one capture's identity for different facts",
+				output.ErrConflict, claims.ReservationID,
+				registeredScope, registeredDigest, registeredGeneration,
+				claims.Ref.Scope, claims.Ref.Digest, claims.Ref.Generation)
+		}
+
+		return nil
+	case !errors.Is(err, output.ErrNotFound):
+		return err
 	}
 
 	if _, err := tx.ExecContext(ctx, `
