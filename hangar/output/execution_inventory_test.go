@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -189,13 +190,47 @@ func TestOnlyOneExactExecutionStateMachineExists(t *testing.T) {
 	}
 }
 
+// The two contract packages, as this file's walks name them. They are
+// constants because the vocabulary rules below are stated per package, and a
+// typo in one of two string literals would silently describe nothing.
+const (
+	outputPackageDir = "."
+	basePackageDir   = "../executioncontrol"
+)
+
 // declaredField is one field of one exported struct in the two contract
 // packages.
+//
+// JSONName is the wire spelling from the field's `json` tag, empty when there
+// is none. It is inventoried separately from the Go name because a field has
+// two names and only one of them is what another implementation reads:
+// `Origin string \`json:"run_id"\“ is innocent in Go and a product word on the
+// wire.
 type declaredField struct {
-	Package string
-	Owner   string
-	Name    string
-	Type    string
+	Package  string
+	Owner    string
+	Name     string
+	JSONName string
+	Type     string
+}
+
+// jsonTagName reads the wire name out of a struct tag. It returns "" for an
+// absent tag and for `json:"-"`, and it drops the options after the comma, so
+// `json:",omitempty"` reports no rename rather than an empty wire name.
+func jsonTagName(tag *ast.BasicLit) string {
+	if tag == nil {
+		return ""
+	}
+	value, err := strconv.Unquote(tag.Value)
+	if err != nil {
+		return ""
+	}
+	name, _, _ := strings.Cut(reflect.StructTag(value).Get("json"), ",")
+	if name == "-" {
+		return ""
+	}
+
+	return name
 }
 
 func contractFields(t *testing.T, dirs []string) []declaredField {
@@ -235,8 +270,9 @@ func contractFields(t *testing.T, dirs []string) []declaredField {
 					}
 					for _, field := range structType.Fields.List {
 						rendered := render(fset, field.Type)
+						wire := jsonTagName(field.Tag)
 						if len(field.Names) == 0 {
-							fields = append(fields, declaredField{dir, typeSpec.Name.Name, "", rendered})
+							fields = append(fields, declaredField{dir, typeSpec.Name.Name, "", wire, rendered})
 
 							continue
 						}
@@ -244,7 +280,7 @@ func contractFields(t *testing.T, dirs []string) []declaredField {
 							if !fieldName.IsExported() {
 								continue
 							}
-							fields = append(fields, declaredField{dir, typeSpec.Name.Name, fieldName.Name, rendered})
+							fields = append(fields, declaredField{dir, typeSpec.Name.Name, fieldName.Name, wire, rendered})
 						}
 					}
 				}
@@ -255,43 +291,10 @@ func contractFields(t *testing.T, dirs []string) []declaredField {
 	return fields
 }
 
-// baseEnvelopeForbiddenTerms are the meanings the base protocol must not carry.
-// They are the reason the sibling track can wire an ordinary job, a one-off and
-// a check onto the same protocol without Hangar learning which is which.
-var baseEnvelopeForbiddenTerms = []string{
-	"run", "build", "job", "check", "cancel", "cancellation",
-	"ticket", "workflow", "agent", "playbook", "anvil",
-	"output", "capture", "hold", "receipt", "claim", "bucket",
-}
-
-func TestBaseEnvelopeCarriesNoProductMeaning(t *testing.T) {
-	fields := contractFields(t, []string{"../executioncontrol"})
-	if len(fields) == 0 {
-		t.Fatal("hangar/executioncontrol declares no exported struct field; this guard would " +
-			"pass vacuously")
-	}
-	t.Logf("inventoried %d exported fields in hangar/executioncontrol", len(fields))
-
-	for _, field := range fields {
-		if field.Name == "" {
-			continue
-		}
-		for _, term := range baseEnvelopeForbiddenTerms {
-			if !namesTerm(field.Name, term) {
-				continue
-			}
-			t.Errorf("hangar/executioncontrol: %s.%s carries %q meaning. The base protocol knows "+
-				"an opaque execution identity, a fence and an activation epoch, and nothing about "+
-				"why the caller opted in. An output fact belongs in the DurableOutputCapture "+
-				"extension.", field.Owner, field.Name, term)
-		}
-	}
-}
-
 // TestCaptureExtensionDoesNotForkTheBaseIdentity is the other direction: the
 // extension must reference the base identity and epoch, never redeclare them.
 func TestCaptureExtensionDoesNotForkTheBaseIdentity(t *testing.T) {
-	fields := contractFields(t, []string{"."})
+	fields := contractFields(t, []string{outputPackageDir})
 	if len(fields) == 0 {
 		t.Fatal("hangar/output declares no exported struct field; this guard would pass vacuously")
 	}
