@@ -193,9 +193,16 @@ func TestEverySignedFieldIsCoveredBySignature(t *testing.T) {
 		"handoff id":             func(c *ReceiptClaims) { c.HandoffID = "22222222-2222-4222-8222-222222222222" },
 		"producer checkpoint":    func(c *ReceiptClaims) { c.ProducerCheckpointID = "another-checkpoint" },
 		"reservation id":         func(c *ReceiptClaims) { c.ReservationID = "55555555-5555-4555-8555-555555555555" },
+		"incarnation node uid":   func(c *ReceiptClaims) { c.Incarnation.NodeUID = "node-2" },
 		"incarnation generation": func(c *ReceiptClaims) { c.Incarnation.HandleGeneration = 4 },
-		"capture fence":          func(c *ReceiptClaims) { c.CaptureFence = 6 },
-		"writer fence":           func(c *ReceiptClaims) { c.WriterFence = 10 },
+		// Validate ties Output to Incarnation.Output, so a row that moved only
+		// one of them would be refused before the signature was ever checked.
+		"output": func(c *ReceiptClaims) {
+			c.Output = "another-output"
+			c.Incarnation.Output = "another-output"
+		},
+		"capture fence": func(c *ReceiptClaims) { c.CaptureFence = 6 },
+		"writer fence":  func(c *ReceiptClaims) { c.WriterFence = 10 },
 		"ref scope": func(c *ReceiptClaims) {
 			c.Ref.Scope = "o9999999999999999999999999999999999999999"
 			c.Attributes.Ref = c.Ref

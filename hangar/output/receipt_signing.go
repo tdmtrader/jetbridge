@@ -89,6 +89,11 @@ func CanonicalReceiptBytes(claims ReceiptClaims, keyID string) ([]byte, error) {
 	field(string(claims.ProducerCheckpointID))
 	field(string(claims.ReservationID))
 	field(string(claims.Incarnation.ExecutionID))
+	// The node is part of the source incarnation's identity -- Validate
+	// refuses an incarnation without one -- so it is inside the signature.
+	// Leaving it out meant a receipt whose node had been edited kept a valid
+	// signature and verified, and nothing downstream stores a node to catch it.
+	field(string(claims.Incarnation.NodeUID))
 	field(string(claims.Incarnation.Output))
 	number(int64(claims.Incarnation.HandleGeneration))
 	field(string(claims.Output))
