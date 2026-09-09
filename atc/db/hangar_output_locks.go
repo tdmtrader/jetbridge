@@ -8,8 +8,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jackc/pgx/v5/pgconn"
-
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/output"
 )
@@ -385,55 +383,4 @@ func sortedOpaque[T ~string](ids []T) []T {
 	sort.Slice(unique, func(i, j int) bool { return unique[i] < unique[j] })
 
 	return unique
-}
-
-// hangarConflict maps a PostgreSQL error onto the closed set of typed outcomes
-// hangar/output already has.
-//
-// The sentinels are the leaf's, not new ones, so a caller's errors.Is keeps
-// working across the boundary. The schema's own RAISE messages are matched by
-// what they are about rather than by their exact text, and anything unrecognised
-// stays infrastructure -- which is the honest answer and, importantly, never a
-// cache miss.
-func hangarConflict(err error) error {
-	if err == nil {
-		return nil
-	}
-
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) {
-		return err
-	}
-
-	switch pgErr.Code {
-	case "23505": // unique_violation
-		return fmt.Errorf("%w: %s", output.ErrConflict, pgErr.Message)
-	case "23503": // foreign_key_violation
-		return fmt.Errorf("%w: %s", output.ErrNotFound, pgErr.Message)
-	case "23514": // check_violation
-		return fmt.Errorf("%w: %s", output.ErrIncomplete, pgErr.Message)
-	case "40001", "40P01": // serialization_failure, deadlock_detected
-		return fmt.Errorf("%w: %s", ErrHangarLockRetry, pgErr.Message)
-	case "P0001": // raise_exception: the schema's own guards
-		message := pgErr.Message
-		switch {
-		case strings.Contains(message, "at risk"),
-			strings.Contains(message, "lifetime policy"),
-			strings.Contains(message, "lifetime-policy"):
-			return fmt.Errorf("%w: %s", output.ErrAtRisk, message)
-		case strings.Contains(message, "cannot silently reactivate"),
-			strings.Contains(message, "admitted reclaim beside"),
-			strings.Contains(message, "exclude one another permanently"),
-			strings.Contains(message, "already dispositioned"):
-			return fmt.Errorf("%w: %s", output.ErrConflict, message)
-		case strings.Contains(message, "stale owner"),
-			strings.Contains(message, "backwards"),
-			strings.Contains(message, "without advancing"):
-			return fmt.Errorf("%w: %s", ErrHangarLockRetry, message)
-		default:
-			return fmt.Errorf("%w: %s", output.ErrIncomplete, message)
-		}
-	}
-
-	return fmt.Errorf("%w: %s", output.ErrInfrastructure, pgErr.Message)
 }

@@ -393,29 +393,3 @@ func hangarMarshalWitness(acknowledgement *executioncontrol.Acknowledgement) (an
 
 	return json.Marshal(*acknowledgement)
 }
-
-// hangarQueryRow is QueryRow over the two methods output.Tx has.
-//
-// The leaf's Tx is deliberately ExecContext and QueryContext and nothing that
-// can commit, so there is no QueryRowContext to call; this is that one row,
-// with ErrNotFound when there is none.
-func hangarQueryRow(ctx context.Context, tx output.Tx, query string, args []any, into ...any) error {
-	rows, err := tx.QueryContext(ctx, query, args...)
-	if err != nil {
-		return hangarConflict(err)
-	}
-	defer rows.Close()
-
-	if !rows.Next() {
-		if err := rows.Err(); err != nil {
-			return hangarConflict(err)
-		}
-
-		return fmt.Errorf("%w: no row", output.ErrNotFound)
-	}
-	if err := rows.Scan(into...); err != nil {
-		return err
-	}
-
-	return rows.Err()
-}

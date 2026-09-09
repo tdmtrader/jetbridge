@@ -424,8 +424,10 @@ func (repository *HangarOutputRepository) AcquireReadLease(ctx context.Context, 
 			output.ErrConflict, request.ClaimID)
 	}
 
-	term := output.LeaseTermFor(request.MaterializationTimeout)
-	interval := fmt.Sprintf("%d seconds", int(term.Seconds()))
+	interval, err := hangarLeaseInterval(output.LeaseTermFor(request.MaterializationTimeout))
+	if err != nil {
+		return output.ReadLease{}, err
+	}
 
 	var granted, expires time.Time
 	var fence int64
@@ -464,8 +466,10 @@ func (repository *HangarOutputRepository) RenewReadLease(ctx context.Context, tx
 		return output.ReadLease{}, err
 	}
 
-	term := lease.ExpiresAt.Sub(lease.GrantedAt.Time)
-	interval := fmt.Sprintf("%d seconds", int(term.Seconds()))
+	interval, err := hangarLeaseInterval(lease.ExpiresAt.Sub(lease.GrantedAt.Time))
+	if err != nil {
+		return output.ReadLease{}, err
+	}
 
 	var expires time.Time
 	var fence int64
@@ -514,9 +518,9 @@ func (repository *HangarOutputRepository) AdmitReclaim(ctx context.Context, tx o
 	if err := ref.Validate(); err != nil {
 		return err
 	}
-	if term < output.MinLeaseTerm {
-		return fmt.Errorf("%w: reclaim lease term %s is under the %s floor",
-			output.ErrIncomplete, term, output.MinLeaseTerm)
+	interval, err := hangarLeaseInterval(term)
+	if err != nil {
+		return err
 	}
 
 	locks, err := LockHangarSuffix(ctx, tx, repository.prefix, HangarLockRequest{
@@ -556,7 +560,6 @@ func (repository *HangarOutputRepository) AdmitReclaim(ctx context.Context, tx o
 			output.ErrConflict, ref.Scope, ref.Digest, ref.Generation, claims, leases, pending)
 	}
 
-	interval := fmt.Sprintf("%d seconds", int(term.Seconds()))
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO hangar_reclaim_jobs
 			(lifecycle_id, activation_epoch, owner_id, lease_fence, generation, metageneration, expires_at)

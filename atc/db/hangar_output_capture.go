@@ -98,14 +98,13 @@ func (repository *HangarOutputRepository) AcquireCaptureLease(ctx context.Contex
 	if err := reservation.Validate(); err != nil {
 		return HangarCaptureLease{}, err
 	}
-	if term < output.MinLeaseTerm {
-		return HangarCaptureLease{}, fmt.Errorf("%w: capture lease term %s is under the %s floor",
-			output.ErrIncomplete, term, output.MinLeaseTerm)
+	interval, err := hangarLeaseInterval(term)
+	if err != nil {
+		return HangarCaptureLease{}, err
 	}
 
-	interval := fmt.Sprintf("%d seconds", int(term.Seconds()))
 	var fence int64
-	err := hangarQueryRow(ctx, tx, `
+	err = hangarQueryRow(ctx, tx, `
 		INSERT INTO hangar_capture_attempt_leases
 			(reservation_id, owner_id, capture_fence, expires_at)
 		VALUES ($1, $2, 1, now() + $3::interval)
