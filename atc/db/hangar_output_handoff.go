@@ -316,6 +316,27 @@ func (repository *HangarOutputRepository) acknowledgeRelease(ctx context.Context
 	// The capture branch may only release before the irreversible publish
 	// point. After it the capture settles a registered receipt or a terminal
 	// orphan, and a release offered there is a caller working from stale state.
+	//
+	// Two clauses, and only one of them has a vector today.
+	//
+	// `NOT past_irreversible_publish_point` does: the state is reachable by a
+	// publish in flight passing the point while a canceller is blocked on the
+	// row lock, and the spec drives that race.
+	//
+	// `state = 'cancelled'` does NOT, and it is kept anyway rather than removed
+	// as redundant. It looks redundant because `release_intent_id = $2` above
+	// already implies it -- the only writer of that column is CancelOrSettle,
+	// which sets both in one statement, and cancellation is terminal. But that
+	// implication is a fact about the code as it stands, not about the schema,
+	// and it is one Req 11 is going to break: a capture that terminally
+	// **fails** before the publish point owes a fenced release too, and when
+	// that branch is implemented an intent will exist on a row whose state is
+	// `failed`. Removing this clause now would silently admit those releases
+	// the day that lands.
+	//
+	// Its vector belongs to the phase that adds the failure branch. Making it
+	// structural instead -- a CHECK that an intent implies `cancelled` -- would
+	// be actively wrong for the same reason.
 	guard := ""
 	if branch == output.DispositionCapture {
 		guard = " AND state = 'cancelled' AND NOT past_irreversible_publish_point"
