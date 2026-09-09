@@ -224,10 +224,10 @@ func (repository *HangarOutputRepository) AcknowledgeNoCaptureRelease(ctx contex
 
 // RecordPreReservationCancelIntent wins the third exclusive branch.
 //
-// With no acknowledged hold the branch closes here, with no daemon call at all:
-// there is nothing on any node to release, and a release intent would be a
-// promise to no one. With one, the intent is recorded and the acknowledgement
-// is still owed.
+// With no source incarnation reserved anywhere the branch closes here, with no
+// daemon call at all: there is nothing on any node to release, and a release
+// intent would be a promise to no one. With one, the intent is recorded and the
+// acknowledgement is still owed.
 func (repository *HangarOutputRepository) RecordPreReservationCancelIntent(ctx context.Context, tx output.Tx, disposition output.PreReservationCancelDisposition) error {
 	if err := disposition.Validate(); err != nil {
 		return err
@@ -241,12 +241,12 @@ func (repository *HangarOutputRepository) RecordPreReservationCancelIntent(ctx c
 	if repeated {
 		var held bool
 		if err := hangarQueryRow(ctx, tx, `
-			SELECT hold_acknowledged FROM hangar_pre_reservation_cancel_dispositions
+			SELECT source_reserved FROM hangar_pre_reservation_cancel_dispositions
 			WHERE handoff_id = $1`, []any{string(disposition.HandoffID)}, &held); err != nil {
 			return err
 		}
-		if held != disposition.HoldAcknowledged {
-			return fmt.Errorf("%w: handoff %s already cancelled with hold_acknowledged=%t",
+		if held != disposition.SourceReserved {
+			return fmt.Errorf("%w: handoff %s already cancelled with source_reserved=%t",
 				output.ErrConflict, disposition.HandoffID, held)
 		}
 
@@ -255,23 +255,24 @@ func (repository *HangarOutputRepository) RecordPreReservationCancelIntent(ctx c
 
 	var intent any
 	finalized := "NULL"
-	if disposition.HoldAcknowledged {
+	if disposition.SourceReserved {
 		intent = string(disposition.ReleaseIntentID)
 	} else {
-		// No hold, so nothing is owed and the branch is terminal on the spot.
+		// Nothing reserved anywhere, so nothing is owed and the branch is
+		// terminal on the spot.
 		finalized = "now()"
 	}
 
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
 		INSERT INTO hangar_pre_reservation_cancel_dispositions
-			(handoff_id, execution_id, activation_epoch, source_lease_id, hold_acknowledged,
+			(handoff_id, execution_id, activation_epoch, source_lease_id, source_reserved,
 			 release_intent_id, finalized_at)
 		VALUES ($1, $2, $3, $4, $5, $6, %s)`, finalized),
 		string(disposition.HandoffID),
 		string(disposition.Execution.ExecutionID),
 		int64(disposition.ActivationEpoch),
 		string(disposition.SourceLeaseID),
-		disposition.HoldAcknowledged,
+		disposition.SourceReserved,
 		intent,
 	); err != nil {
 		return hangarConflict(err)

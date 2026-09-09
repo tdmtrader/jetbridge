@@ -80,30 +80,25 @@ func (repository *HangarOutputRepository) CommitCaptureReservation(ctx context.C
 	return reservation, nil
 }
 
-// HangarCaptureLease is one renewable, fenced grant of capture ownership.
-type HangarCaptureLease struct {
-	ReservationID output.ReservationID
-	OwnerID       string
-	Fence         output.CaptureFence
-	ExpiresAt     time.Time
-}
-
 // AcquireCaptureLease takes or takes over capture ownership.
 //
 // Takeover advances the fence, always, and the schema refuses one that does
 // not. The term is measured on the database clock rather than the caller's,
 // because a node whose clock drifts must not be able to expire its own
 // ownership -- and expiry alone is never proof or release authority anyway.
-func (repository *HangarOutputRepository) AcquireCaptureLease(ctx context.Context, tx output.Tx, reservation output.ReservationID, owner string, term time.Duration) (HangarCaptureLease, error) {
+func (repository *HangarOutputRepository) AcquireCaptureLease(ctx context.Context, tx output.Tx, reservation output.ReservationID, owner string, term time.Duration) (output.CaptureLease, error) {
 	if err := reservation.Validate(); err != nil {
-		return HangarCaptureLease{}, err
+		return output.CaptureLease{}, err
 	}
 	interval, err := hangarLeaseInterval(term)
 	if err != nil {
-		return HangarCaptureLease{}, err
+		return output.CaptureLease{}, err
 	}
 
-	var fence int64
+	var (
+		fence   int64
+		expires time.Time
+	)
 	err = hangarQueryRow(ctx, tx, `
 		INSERT INTO hangar_capture_attempt_leases
 			(reservation_id, owner_id, capture_fence, expires_at)
@@ -119,17 +114,18 @@ func (repository *HangarOutputRepository) AcquireCaptureLease(ctx context.Contex
 		    END
 		WHERE hangar_capture_attempt_leases.owner_id = EXCLUDED.owner_id
 		   OR hangar_capture_attempt_leases.expires_at <= now()
-		RETURNING capture_fence`,
-		[]any{string(reservation), owner, interval}, &fence)
+		RETURNING capture_fence, expires_at`,
+		[]any{string(reservation), owner, interval}, &fence, &expires)
 	if err != nil {
-		return HangarCaptureLease{}, fmt.Errorf("%w: capture ownership of reservation %s is held "+
+		return output.CaptureLease{}, fmt.Errorf("%w: capture ownership of reservation %s is held "+
 			"by another owner whose lease has not expired", output.ErrConflict, reservation)
 	}
 
-	return HangarCaptureLease{
+	return output.CaptureLease{
 		ReservationID: reservation,
 		OwnerID:       owner,
-		Fence:         output.CaptureFence(fence),
+		CaptureFence:  output.CaptureFence(fence),
+		ExpiresAt:     output.NewTimestamp(expires),
 	}, nil
 }
 
@@ -241,26 +237,30 @@ func (repository *HangarOutputRepository) CancelOrSettle(ctx context.Context, tx
 	var (
 		lease, execution string
 		epoch, fence     int64
-		held             sql.NullTime
+		reserved         sql.NullTime
 	)
+	// The RESERVATION, not the hold. The incarnation is reserved and its
+	// directory created before the producing Pod exists, so a cancellation
+	// that beat the control init still has bytes on a node to release; a fork
+	// on the hold would close it with no daemon call and leave them there.
 	if err := hangarQueryRow(ctx, tx, `
-		SELECT source_lease_id, execution_id, execution_fence, activation_epoch, hold_acknowledged_at
+		SELECT source_lease_id, execution_id, execution_fence, activation_epoch, reserved_at
 		FROM hangar_handoff_predeclarations WHERE handoff_id = $1`,
-		[]any{string(handoff)}, &lease, &execution, &fence, &epoch, &held); err != nil {
+		[]any{string(handoff)}, &lease, &execution, &fence, &epoch, &reserved); err != nil {
 		return output.HandoffStatus{}, err
 	}
 
 	disposition := output.PreReservationCancelDisposition{
-		ProtocolVersion:  output.ProtocolVersion,
-		Disposition:      output.DispositionPreReservationCancel,
-		ActivationEpoch:  hangarEpoch(epoch),
-		HandoffID:        handoff,
-		SourceLeaseID:    output.SourceLeaseID(lease),
-		HoldAcknowledged: held.Valid,
+		ProtocolVersion: output.ProtocolVersion,
+		Disposition:     output.DispositionPreReservationCancel,
+		ActivationEpoch: hangarEpoch(epoch),
+		HandoffID:       handoff,
+		SourceLeaseID:   output.SourceLeaseID(lease),
+		SourceReserved:  reserved.Valid,
 	}
 	disposition.Execution.ExecutionID = hangarExecutionID(execution)
 	disposition.Execution.Fence = executioncontrol.Fence(fence)
-	if held.Valid {
+	if reserved.Valid {
 		disposition.ReleaseIntentID = output.ReleaseIntentID(uuid.NewString())
 	}
 
