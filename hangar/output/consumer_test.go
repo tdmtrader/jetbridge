@@ -95,6 +95,42 @@ func (unimplementedRoles) DeleteExactGeneration(context.Context, hangar.TreeRef,
 	panic("not implemented")
 }
 
+// The capture-side caller-owned transaction methods. Phase 1 implements them
+// in atc/db; naming them here is what stops that phase inventing the shape
+// outside the leaf, which is what this checkpoint is for.
+
+func (unimplementedRoles) PredeclareHandoff(context.Context, Tx, CaptureAdmission) error {
+	panic("not implemented")
+}
+
+func (unimplementedRoles) CommitCaptureReservation(context.Context, Tx, SuccessfulFinishDisposition) (ReservationID, error) {
+	panic("not implemented")
+}
+
+func (unimplementedRoles) ResolveLogicalReservation(context.Context, Tx, LogicalResolution) error {
+	panic("not implemented")
+}
+
+func (unimplementedRoles) RecordNoCaptureIntent(context.Context, Tx, NoCaptureDisposition) error {
+	panic("not implemented")
+}
+
+func (unimplementedRoles) AcknowledgeNoCaptureRelease(context.Context, Tx, ReleaseAcknowledgement) error {
+	panic("not implemented")
+}
+
+func (unimplementedRoles) RecordPreReservationCancelIntent(context.Context, Tx, PreReservationCancelDisposition) error {
+	panic("not implemented")
+}
+
+func (unimplementedRoles) AcknowledgePreReservationCancelRelease(context.Context, Tx, ReleaseAcknowledgement) error {
+	panic("not implemented")
+}
+
+func (unimplementedRoles) RegisterReceipt(context.Context, Tx, ReceiptAdmission) error {
+	panic("not implemented")
+}
+
 func (unimplementedRoles) AcquireClaim(context.Context, Tx, ClaimAcquisition) error {
 	panic("not implemented")
 }
@@ -123,6 +159,7 @@ func (unimplementedRoles) CancelOrSettle(context.Context, Tx, HandoffID) (Handof
 
 var (
 	_ Reclaimer           = unimplementedRoles{}
+	_ CaptureRepository   = unimplementedRoles{}
 	_ ClaimRepository     = unimplementedRoles{}
 	_ ReadLeaseRepository = unimplementedRoles{}
 	_ CancelSettler       = unimplementedRoles{}
