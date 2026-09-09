@@ -132,6 +132,35 @@ var _ = Describe("a consumer that cannot see atc/db", func() {
 			Expect(countRuns(run.ID)).To(Equal(0))
 		})
 
+		// The port's other form of identity, named from a consumer that cannot
+		// see atc/db. A build principal is exactly the case that has no
+		// counterpart in the request accessor's world -- there is no token,
+		// no claims map and no role -- so if any part of expressing one
+		// required a core type, the consumer this file stands in for could not
+		// build it either. It does not: a team name, three names for the
+		// record, and an id.
+		It("admits as a build acting for itself", func() {
+			tx, err := admitter.Begin(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			defer tx.Rollback()
+
+			run, err := admit(tx, runs.Admission{
+				Template: templateRef,
+				Principal: runs.Principal{Build: &runs.BuildPrincipal{
+					TeamName:     "runs-team",
+					PipelineName: "caller",
+					JobName:      "release",
+					BuildName:    "42",
+					BuildID:      1,
+				}},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(run.CreatedBy).To(Equal("build:runs-team/caller/release#42"))
+
+			Expect(tx.Commit()).To(Succeed())
+			Expect(countRuns(run.ID)).To(Equal(1))
+		})
+
 		It("carries params through to the admitted run", func() {
 			tx, err := admitter.Begin(ctx)
 			Expect(err).NotTo(HaveOccurred())
@@ -144,6 +173,37 @@ var _ = Describe("a consumer that cannot see atc/db", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(run.ID).To(BeNumerically(">", 0))
+		})
+	})
+
+	// The read half of the port, from the same consumer. This is the operation
+	// that keeps a consumer out of pipeline_runs: it recorded a run id in a
+	// table of its own, it comes back holding that id and nothing else, and
+	// what it needs -- the run's number -- is on a core table. Without this it
+	// would write the SELECT itself, and the coupling would be invisible to
+	// any import graph because SQL names no packages.
+	Describe("reading a run back through the port", func() {
+		It("returns the identity admission returned, from an id alone", func() {
+			tx, err := admitter.Begin(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			defer tx.Rollback()
+
+			admitted, err := admit(tx, runs.Admission{Template: templateRef, Principal: memberPrincipal})
+			Expect(err).NotTo(HaveOccurred())
+
+			looked, err := admitter.LookupRun(ctx, tx, admitted.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(looked).To(Equal(admitted))
+			Expect(looked.Number).To(Equal(1))
+		})
+
+		It("refuses an id that names no run", func() {
+			tx, err := admitter.Begin(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			defer tx.Rollback()
+
+			_, err = admitter.LookupRun(ctx, tx, 999999)
+			Expect(err).To(BeIdenticalTo(runs.ErrRunNotFound))
 		})
 	})
 
@@ -203,6 +263,26 @@ var _ = Describe("a consumer that cannot see atc/db", func() {
 			var invalid runs.InvalidParamsError
 			Expect(errors.As(err, &invalid)).To(BeTrue())
 			Expect(invalid.Error()).To(ContainSubstring("not-declared"))
+		})
+
+		// A malformed principal is its own refusal, distinguishable from an
+		// unauthorized one without any core type in sight. A consumer needs
+		// the distinction: unauthorized is a fact about the caller's standing
+		// that it may report and stop on, ambiguous is a bug in the consumer
+		// that assembled the principal.
+		It("distinguishes a principal that is not one identity from one that is not authorized", func() {
+			both := refusalFor(runs.Admission{
+				Template: templateRef,
+				Principal: runs.Principal{
+					Claims: claimsFor("member-user", "member-id"),
+					Build:  &runs.BuildPrincipal{TeamName: "runs-team", BuildName: "42", BuildID: 1},
+				},
+			})
+			Expect(both).To(BeIdenticalTo(runs.ErrPrincipalAmbiguous))
+			Expect(both).NotTo(MatchError(runs.ErrUnauthorized))
+
+			neither := refusalFor(runs.Admission{Template: templateRef, Principal: runs.Principal{}})
+			Expect(neither).To(BeIdenticalTo(runs.ErrPrincipalAmbiguous))
 		})
 
 		It("refuses an unauthorized principal without saying whether the template exists", func() {

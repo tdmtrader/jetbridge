@@ -51,6 +51,17 @@ var (
 	// authorization has already passed.
 	adminPrincipal runs.Principal
 
+	// buildPrincipal is the port's other form of identity: a build on
+	// defaultTeam, acting for itself.
+	//
+	// There is deliberately no builds row behind it. The port records the
+	// build's address and never reads it -- BuildID is carried for the
+	// caller's sake, not the port's -- so a real build would demonstrate
+	// nothing about the port and would tie these specs to the build factory's
+	// fixtures for no gain. The consumer's suite creates real builds because
+	// its own foreign key demands them; this one has no such key.
+	buildPrincipal runs.Principal
+
 	templateRef  runs.TemplateRef // a valid, runnable template
 	paramsRef    runs.TemplateRef // a template declaring one required parameter
 	pausedRef    runs.TemplateRef // a template pipeline that is paused
@@ -66,6 +77,12 @@ var (
 // before-commit callback writing through the callback's Tx without naming a
 // core table or a consumer table.
 const scratchTable = "a10_consumer_scratch"
+
+// buildCreatedBy is the created_by value buildPrincipal must produce, spelled
+// out in full rather than assembled from the same expression the port uses.
+// A spec that rebuilt the string from its parts would agree with any format
+// the port chose, including one that dropped a separator.
+const buildCreatedBy = "build:runs-team/caller/release#42"
 
 var fakeLogFunc = func(logger lager.Logger, id lock.LockID) {}
 
@@ -143,6 +160,14 @@ var _ = BeforeEach(func() {
 	memberPrincipal = runs.Principal{Claims: claimsFor("member-user", "member-id")}
 	viewerPrincipal = runs.Principal{Claims: claimsFor("viewer-user", "viewer-id")}
 	adminPrincipal = runs.Principal{Claims: claimsFor("admin-user", "admin-id")}
+
+	buildPrincipal = runs.Principal{Build: &runs.BuildPrincipal{
+		TeamName:     defaultTeam.Name(),
+		PipelineName: "caller",
+		JobName:      "release",
+		BuildName:    "42",
+		BuildID:      1,
+	}}
 
 	savePipeline(defaultTeam, "runnable", templateConfig(nil))
 	templateRef = runs.TemplateRef{Team: defaultTeam.Name(), Pipeline: atc.PipelineRef{Name: "runnable"}}

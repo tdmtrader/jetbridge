@@ -10,8 +10,14 @@ import "errors"
 // mapping. Sentinels where the refusal is a flag; wrapping structs where the
 // reason has to reach the caller.
 //
-// ErrTemplateNotFound is the one refusal with no counterpart, and its absence
-// downstream is the reason it exists. The run factory maps sql.ErrNoRows from
+// Not all of them are translations. The port makes checks of its own that
+// nothing downstream makes -- the contract key is present, the principal is
+// one identity rather than two or none, a run id names a row -- and those
+// refuse in terms only this package can state.
+//
+// ErrTemplateNotFound is the one translated refusal whose counterpart does not
+// exist, and its absence downstream is the reason it does. The run factory
+// maps sql.ErrNoRows from
 // its FOR UPDATE OF p scan onto "not a template", so "no such pipeline" and
 // "that pipeline is not a template" arrive as one value. This port resolves
 // the template from a reference before admitting, so it sees not-found first
@@ -60,6 +66,29 @@ var (
 	// was recorded anywhere -- the record lives in a consumer table, and a
 	// SELECT from core into one would breach the boundary this package draws.
 	ErrMissingContractKey = errors.New("admission requires a non-empty contract key")
+
+	// ErrPrincipalAmbiguous means the principal set both of its forms, or
+	// neither.
+	//
+	// The two forms are authorized by different rules against different
+	// evidence: claims go to the accessor and are weighed against the team's
+	// auth config, a build is weighed against its own team name and nothing
+	// else. There is no defensible reading of a principal that presents both.
+	// Preferring one would silently discard an identity the caller thought it
+	// was presenting -- and if the discarded one were the narrower, that is a
+	// privilege escalation dressed as a default. An empty principal is refused
+	// for the same reason from the other side: it authorizes nothing, and the
+	// port will not guess which nothing was meant.
+	ErrPrincipalAmbiguous = errors.New("principal must present exactly one of claims and a build")
+
+	// ErrRunNotFound means no run exists with the id LookupRun was given.
+	//
+	// It is not an authorization answer and does not pretend to be one: a
+	// consumer looks a run up by an id it already holds, which it can only
+	// hold because the port handed it back at admission, so there is no name
+	// to guess at and no oracle to protect. Deleted between the admission and
+	// the lookup is the case this actually reports.
+	ErrRunNotFound = errors.New("pipeline run not found")
 )
 
 // TemplateConfigInvalidError reports a stored template config that no longer

@@ -35,4 +35,16 @@
 // package opens the transaction, claims its call row, admits inside it, and
 // writes the admitted run id onto the iteration row through the port's
 // before-commit hook.
+//
+// What it reports back is the run's id, its number, and whether this call
+// admitted it or found it. The number is the interesting one, because it is
+// the smallest fact that shows what the boundary costs and why it is still
+// worth it. It lives on pipeline_runs, a core table; on first admission it
+// arrives on the run the before-commit hook is handed, but a call that
+// re-attaches has only the run id it recorded, and a SELECT from here into
+// pipeline_runs to turn that into a number is exactly the reach the rule above
+// forbids. So core publishes a read -- runs.Admitter.LookupRun -- and this
+// package calls it inside the transaction it already holds. The alternative,
+// copying the number onto the iteration row, would put a value core owns into
+// a table this package owns, where it could only ever go stale.
 package composition

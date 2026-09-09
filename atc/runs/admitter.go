@@ -2,6 +2,7 @@ package runs
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 
 	"github.com/concourse/concourse/atc"
@@ -10,8 +11,11 @@ import (
 
 // Admitter is core's published run-admission surface.
 //
-// Two operations, and the pairing is the design: a consumer opens the
-// transaction, so it can commit its own rows in the same one as the run.
+// The first two operations are a pair, and the pairing is the design: a
+// consumer opens the transaction, so it can commit its own rows in the same
+// one as the run. The third is the read the pair implies -- a consumer that
+// recorded a run id and comes back later holds an id and nothing else, and
+// core will not have it read pipeline_runs for the rest.
 type Admitter interface {
 	// Begin opens a transaction the consumer owns and must finish.
 	Begin(context.Context) (Transaction, error)
@@ -19,6 +23,11 @@ type Admitter interface {
 	// AdmitRun admits one run of one template inside the caller's
 	// transaction. It does not commit and does not roll back.
 	AdmitRun(context.Context, Tx, Admission) (Run, error)
+
+	// LookupRun reads an already-admitted run by id, inside the caller's
+	// transaction. It is a read and nothing else: it creates nothing, decides
+	// no authorization, and refuses an id that names no row.
+	LookupRun(ctx context.Context, tx Tx, runID int) (Run, error)
 }
 
 type admitter struct {
@@ -138,6 +147,64 @@ func (a *admitter) AdmitRun(ctx context.Context, tx Tx, adm Admission) (Run, err
 	}
 
 	return portRun(creation, createdBy), nil
+}
+
+// lookupRunQuery reads one run's identity, and the identity is all of it.
+//
+// The columns are exactly the fields of Run and no others: a consumer that
+// reads a run back learns what a consumer that admitted one learns, and the
+// status, the params and the timestamps stay on core's side of the boundary
+// where the model that interprets them lives. The left join is the same one
+// atc/db's own pipelineRunsQuery uses to reach the payload pipeline, which is
+// how a run with no payload row -- not a state admission produces, but not one
+// a read may crash on either -- comes back as a zero id rather than an error.
+const lookupRunQuery = `
+	SELECT r.id, r.number, r.template_pipeline_id, r.created_by, payload.id
+	FROM pipeline_runs r
+	LEFT JOIN pipelines payload ON payload.pipeline_run_id = r.id
+	WHERE r.id = $1
+`
+
+// LookupRun reads an already-admitted run by id.
+//
+// The read is a statement of this package's own rather than a call into
+// PipelineRunFactory, and the reason is the connection budget. The factory's
+// two by-id readers, GetRun and GetRunByID, run on the pool: called from here
+// they would want a second connection while the caller still holds the first,
+// which is the deadlock AdmitRun's doc comment describes at length. The
+// factory's transaction-scoped readers are unexported, so there is nothing to
+// reuse. Five columns through the caller's Tx is the whole of it.
+//
+// Unlike AdmitRun this does not bridge back to db.Tx and so does not refuse a
+// foreign transaction: it hands the handle to nothing, it just reads through
+// it. A Tx from somewhere else is a transaction the caller owns and a
+// perfectly good place to read from, and refusing it would be a rule with no
+// failure behind it.
+//
+// It decides no authorization, and that is not an omission. A consumer can
+// only reach this with an id the port itself handed back, on a run the port
+// itself authorized when it admitted it; there is no name to guess and no
+// existence oracle to protect, which is why an unknown id is ErrRunNotFound
+// and not ErrUnauthorized.
+func (a *admitter) LookupRun(ctx context.Context, tx Tx, runID int) (Run, error) {
+	var (
+		run       Run
+		payloadID sql.NullInt64
+	)
+
+	err := tx.QueryRowContext(ctx, lookupRunQuery, runID).
+		Scan(&run.ID, &run.Number, &run.TemplatePipelineID, &run.CreatedBy, &payloadID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Run{}, ErrRunNotFound
+		}
+
+		return Run{}, err
+	}
+
+	run.PayloadPipelineID = int(payloadID.Int64)
+
+	return run, nil
 }
 
 // resolveTemplate turns a reference into the pipeline to admit against.

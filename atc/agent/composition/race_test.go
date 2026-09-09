@@ -126,5 +126,15 @@ var _ = Describe("two admissions of the same call, racing on two connections", f
 		// Exactly one of them admitted; the other re-attached. Which one is
 		// the schedule's business, not the contract's.
 		Expect(results[0].Replayed).NotTo(Equal(results[1].Replayed))
+
+		// And both report the run's number, which is the fact a caller shows a
+		// person. The two got it by different routes -- the winner off the run
+		// the port handed its before-commit hook, the loser by reading it back
+		// through the port inside the transaction it was already holding --
+		// and the second of those routes runs here on its own connection,
+		// under the blocking claim, which is the only place in this suite it
+		// does.
+		Expect(results[0].Number).To(Equal(results[1].Number))
+		Expect(results[0].Number).To(Equal(runNumber(results[0].RunID)))
 	})
 })

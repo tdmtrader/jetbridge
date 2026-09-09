@@ -38,6 +38,15 @@
 // a distinction CreateRunInTx cannot make, because by the time it runs the
 // pipeline is already resolved.
 //
+// It owns the one read a consumer is allowed of a run it already admitted.
+// LookupRun exists because the alternative is worse: a consumer holding a run
+// id it recorded and wanting the run's number would write the SELECT itself,
+// and a SELECT out of an agentic package into pipeline_runs is a coupling no
+// import graph can see, because SQL names no packages. Core publishes the read
+// so that the reach guard keeps meaning something. It answers with Run and
+// nothing more, so reading a run back tells a consumer exactly what admitting
+// one tells it.
+//
 // It does not own the transaction. Admission runs inside one the caller
 // opened, so that a caller can commit its own rows in the same transaction as
 // the run -- which is the only way a consumer-side call record and the run it
@@ -101,15 +110,44 @@ type TemplateRef struct {
 	Pipeline atc.PipelineRef
 }
 
-// Principal is the caller's already-verified identity.
+// Principal is the caller's already-verified identity, in one of its two
+// forms. The port does not authenticate; a caller that presents an identity it
+// did not verify has already lost.
 //
-// Claims are in the shape the API's token verification produces -- the same
-// map the request accessor reads. The port derives two things from them: the
-// role verdict on the template's team, and the display identity recorded as
-// the run's creator. It does not authenticate; a caller that presents claims
-// it did not verify has already lost.
+// The two forms are not variants of one thing, and that is why they are two
+// fields rather than an interface with a method: they are authorized by
+// different rules against different evidence, and a caller that sets both has
+// not made a request the port can answer. See ErrPrincipalAmbiguous.
 type Principal struct {
+	// Claims is a verified token's claims, in the shape the API's token
+	// verification produces -- the same map the request accessor reads. The
+	// port derives two things from them: the role verdict on the template's
+	// team, and the display identity recorded as the run's creator. Exactly
+	// one of Claims and Build is set.
 	Claims map[string]any
+
+	// Build is a build acting for itself. A build carries no token and so has
+	// no claims to present; what it has is the team it belongs to, and that is
+	// the whole of its authority. It is authorized for that team and no other,
+	// which is the rule set_pipeline already applies to a build mutating
+	// pipeline configs on its own team.
+	Build *BuildPrincipal
+}
+
+// BuildPrincipal identifies the build a run is admitted on behalf of.
+//
+// Everything on it comes from the build's own step metadata, which the exec
+// step already holds: nothing here is read from the database, by the step or
+// by the port. The names beyond TeamName are carried for the created_by string
+// alone -- they say which build asked, in the form a person reading
+// pipeline_runs.created_by can follow back to it -- and no authorization
+// decision turns on them.
+type BuildPrincipal struct {
+	TeamName     string
+	PipelineName string
+	JobName      string
+	BuildName    string
+	BuildID      int
 }
 
 // Admission is one request to admit one run.
@@ -141,7 +179,10 @@ type Admission struct {
 // atc.RunStatus's neighbours and the whole header model across the boundary,
 // which is precisely the leak this package exists to prevent. A consumer that
 // needs more than identity needs a read operation on the port, and there is
-// not one yet.
+// exactly one: LookupRun, which returns this same struct for a run that
+// already exists. It is deliberately not a second, richer struct -- a consumer
+// that reads a run back learns what a consumer that admitted one learns, and
+// nothing further, so there is only ever one shape of run on this boundary.
 type Run struct {
 	ID                 int
 	Number             int
