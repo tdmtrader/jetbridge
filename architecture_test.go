@@ -53,15 +53,28 @@ var agenticPrefixes = []string{
 // point of the allowlist is that "somewhere" is one named place with a stated
 // justification, rather than wherever it was convenient.
 //
-// It is empty, which is the end state worth defending: core does not name the
-// agentic layer at all. atc/api held the only entry until the MCP tool surface
-// and its route were removed; what remains of mcpserver is transport with no
-// Concourse imports and no registration.
+// There is exactly one, which is the rule stated at the top of this file
+// holding rather than the rule going unexercised. It stood empty for a while:
+// atc/api held the only entry until the MCP tool surface and its route were
+// removed, and what remains of mcpserver is transport with no Concourse
+// imports and no registration. An empty allowlist was never the goal -- an
+// agentic layer nothing constructs is a layer nothing runs.
 //
 // Adding an entry here is the moment to ask whether the dependency should be
 // inverted instead -- the agentic side depending on core costs nothing, and
-// core depending on the agentic side is what made v1/v2/v3 inseparable.
-var wiringPoints = map[string]string{}
+// core depending on the agentic side is what made v1/v2/v3 inseparable. That
+// question was asked for the entry below and answered by inverting everything
+// that could be inverted: atc/exec declares the shape of the admitter it needs
+// and names nothing agentic, atc/engine takes that interface as an option, and
+// atc/agent/composition reaches back into core through atc/runs. What is left
+// is a constructor and a struct-to-struct translation, which is the
+// irreducible part -- something has to build the object graph.
+var wiringPoints = map[string]string{
+	"atc/atccmd": "the composition root: it constructs runs.NewAdmitter and " +
+		"composition.NewService and adapts the result to exec.ChildRunAdmitter " +
+		"for the run_pipeline step, in atc/atccmd/child_run_admitter.go and " +
+		"nowhere else. See docs/superpowers/specs/2026-09-08-run-pipeline-step-design.md.",
+}
 
 type goListPackage struct {
 	ImportPath     string   `json:"ImportPath"`

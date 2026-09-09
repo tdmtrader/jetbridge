@@ -24,6 +24,7 @@ type CoreStepFactory interface {
 	RunStep(atc.Plan, exec.StepMetadata, db.ContainerMetadata, DelegateFactory) exec.Step
 	CheckStep(atc.Plan, exec.StepMetadata, db.ContainerMetadata, DelegateFactory) exec.Step
 	SetPipelineStep(atc.Plan, exec.StepMetadata, DelegateFactory) exec.Step
+	RunPipelineStep(atc.Plan, exec.StepMetadata, DelegateFactory) exec.Step
 	LoadVarStep(atc.Plan, exec.StepMetadata, DelegateFactory) exec.Step
 	ArtifactInputStep(atc.Plan, db.Build) exec.Step
 	ArtifactOutputStep(atc.Plan, db.Build) exec.Step
@@ -144,6 +145,10 @@ func (factory *stepperFactory) buildStep(build db.Build, plan atc.Plan) exec.Ste
 
 	if plan.SetPipeline != nil {
 		return factory.buildSetPipelineStep(build, plan)
+	}
+
+	if plan.RunPipeline != nil {
+		return factory.buildRunPipelineStep(build, plan)
 	}
 
 	if plan.LoadVar != nil {
@@ -408,6 +413,21 @@ func (factory *stepperFactory) buildSetPipelineStep(build db.Build, plan atc.Pla
 	)
 
 	return factory.coreFactory.SetPipelineStep(
+		plan,
+		stepMetadata,
+		factory.buildDelegateFactory(build, plan),
+	)
+}
+
+func (factory *stepperFactory) buildRunPipelineStep(build db.Build, plan atc.Plan) exec.Step {
+
+	stepMetadata := factory.stepMetadata(
+		build,
+		factory.externalURL,
+		false,
+	)
+
+	return factory.coreFactory.RunPipelineStep(
 		plan,
 		stepMetadata,
 		factory.buildDelegateFactory(build, plan),

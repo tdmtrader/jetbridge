@@ -49,3 +49,15 @@ type SetPipelineStepDelegate interface {
 	SetPipelineChanged(lager.Logger, bool)
 	CheckRunSetPipelinePolicy(*atc.Config) error
 }
+
+type RunPipelineStepDelegateFactory interface {
+	RunPipelineStepDelegate(state RunState) RunPipelineStepDelegate
+}
+
+// RunPipelineStepDelegate is a BuildStepDelegate and nothing else. The step
+// reports what it did on stdout and stderr, and emits no event of its own:
+// there is no child status to observe in slice 1, so there is nothing for a
+// wider delegate to carry.
+type RunPipelineStepDelegate interface {
+	BuildStepDelegate
+}
