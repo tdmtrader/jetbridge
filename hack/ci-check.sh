@@ -213,6 +213,10 @@ for job in "${JOBS[@]}"; do
   # exit code. One EOF on the port-forward there turns a build that printed
   # "succeeded" into a non-zero fly. So when fly is unhappy but a build exists,
   # ask the build.
+  #
+  # 300be0b841 fixed that in fly, so this fallback may become unnecessary --
+  # but only once every operator's fly binary carries the fix, and those lag
+  # core. Keep it until then; it costs one `watch` on an already-failed run.
   if [ "$status" -ne 0 ] && [ "$build_id" != "?" ]; then
     for _ in 1 2 3; do
       if fly -t "$FLY_TARGET" watch -b "$build_id" >/dev/null 2>&1; then
