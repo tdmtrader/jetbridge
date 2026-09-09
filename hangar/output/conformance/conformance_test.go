@@ -782,47 +782,52 @@ func assertOnly(t *testing.T, role string, recorder *gcstest.Recorder, allowed .
 // ---------------------------------------------------------------------------
 
 func TestTheTier2GateFailsRatherThanSkipsInCI(t *testing.T) {
-	// The gate is a decision about two environment variables, and the whole
-	// point of it is that it cannot be reached by accident, so it is asserted
-	// as a decision rather than by running the suite twice.
+	// The gate is a decision about two environment variables and one probe, and
+	// the whole point of it is that it cannot be reached by accident, so it is
+	// asserted as a decision rather than by running the suite twice.
+	//
+	// Both halves of it are here. An earlier version of this table modelled
+	// only "no endpoint in CI", so the branch that fails on an endpoint nobody
+	// answers -- the one an operator actually hits, by mistyping a service name
+	// -- could be deleted with the table still green.
+	unreachable := func(string) error { return errors.New("dial tcp: connection refused") }
+	answers := func(string) error { return nil }
+	const configured = "http://fake-gcs.cicd.svc:4443"
+
 	for name, testCase := range map[string]struct {
 		endpoint string
 		ci       bool
-		wantFail bool
+		probe    func(string) error
+		want     tier2Action
 	}{
-		"in CI with no endpoint":      {endpoint: "", ci: true, wantFail: true},
-		"in CI with an endpoint":      {endpoint: "http://fake-gcs.cicd.svc:4443", ci: true, wantFail: false},
-		"outside CI with no endpoint": {endpoint: "", ci: false, wantFail: false},
-		"outside CI with an endpoint": {endpoint: "http://fake-gcs.cicd.svc:4443", ci: false, wantFail: false},
+		"in CI with no endpoint":                  {endpoint: "", ci: true, probe: answers, want: tier2Fail},
+		"in CI with an endpoint that answers":     {endpoint: configured, ci: true, probe: answers, want: tier2Remote},
+		"in CI with an unreachable endpoint":      {endpoint: configured, ci: true, probe: unreachable, want: tier2Fail},
+		"outside CI with no endpoint":             {endpoint: "", ci: false, probe: answers, want: tier2InProcess},
+		"outside CI with an endpoint":             {endpoint: configured, ci: false, probe: answers, want: tier2Remote},
+		"outside CI with an unreachable endpoint": {endpoint: configured, ci: false, probe: unreachable, want: tier2InProcess},
 	} {
-		if failed := tier2MustFail(testCase.endpoint, testCase.ci); failed != testCase.wantFail {
-			t.Errorf("%s: the gate %s, expected it to %s", name,
-				verdict(failed), verdict(testCase.wantFail))
+		action, reason := tier2Decision(testCase.endpoint, testCase.ci, testCase.probe)
+		if action != testCase.want {
+			t.Errorf("%s: the gate decided %s, expected %s", name, action, testCase.want)
+		}
+		if action != tier2Remote && !strings.Contains(reason, endpointVariable) {
+			t.Errorf("%s: the reason does not name the variable an operator has to set: %q",
+				name, reason)
 		}
 	}
 
-	if !strings.Contains(tier2Reason("unset"), endpointVariable) {
-		t.Errorf("the named reason does not name the variable an operator has to set: %q",
-			tier2Reason("unset"))
-	}
-
-	// And the unreachable half, against a port nothing is listening on.
+	// And the real probe against a port nothing is listening on, so that the
+	// table's `unreachable` is a stand-in for something that happens rather
+	// than for something only this file believes.
 	if err := reachable(closedEndpoint(t)); err == nil {
 		t.Error("an endpoint with nothing listening was reported reachable; in CI that would " +
 			"turn a missing service into a silent skip")
 	}
-}
-
-// tier2MustFail is the gate's predicate, extracted so it can be driven as a
-// table. tier2 itself calls t.Fatal, which a table cannot observe.
-func tier2MustFail(endpoint string, inCI bool) bool { return inCI && endpoint == "" }
-
-func verdict(failed bool) string {
-	if failed {
-		return "failed"
+	if action, _ := tier2Decision(closedEndpoint(t), true, reachable); action != tier2Fail {
+		t.Errorf("in CI, an endpoint nothing is listening on decided %s, expected %s",
+			action, tier2Fail)
 	}
-
-	return "passed"
 }
 
 // ---------------------------------------------------------------------------

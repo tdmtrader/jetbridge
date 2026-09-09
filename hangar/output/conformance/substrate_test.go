@@ -33,6 +33,63 @@ func tier2Reason(detail string) string {
 	return fmt.Sprintf("hangar tier-2 conformance required: %s is %s", endpointVariable, detail)
 }
 
+// tier2Action is what the gate decides to do about tier 2.
+//
+// Three members, because the gate really has three answers and a boolean had
+// only ever modelled one of them: run against the configured endpoint, start
+// the same server in this process, or fail the suite with a named reason.
+type tier2Action int
+
+const (
+	tier2Remote tier2Action = iota
+	tier2InProcess
+	tier2Fail
+)
+
+func (action tier2Action) String() string {
+	switch action {
+	case tier2Remote:
+		return "remote"
+	case tier2InProcess:
+		return "in-process"
+	default:
+		return "fail"
+	}
+}
+
+// tier2Decision is the whole gate, extracted so it can be driven as a table.
+// tier2 itself calls t.Fatal, which a table cannot observe.
+func tier2Decision(endpoint string, inCI bool, probe func(string) error) (tier2Action, string) {
+	if endpoint == "" {
+		if inCI {
+			return tier2Fail, tier2Reason("unset") + ". " + ciVariable + " is set, so this run " +
+				"is CI and tier 2 must execute: the API-level profile Req 41 gates activation " +
+				"on -- create-if-absent, exact-generation get and delete, bucket-wide list with " +
+				"pagination, metageneration and the 404/412/403 split -- is exactly what the " +
+				"in-memory fake cannot answer honestly. Wire the params into the unit-tests task."
+		}
+
+		// A developer machine with nothing configured. The plan's rule is that
+		// tier 2 never degrades to tier 1; starting the same server in-process
+		// is not a degrade, it is the same implementation at the same version
+		// as the deployed image.
+		return tier2InProcess, tier2Reason("unset") + "; starting fake-gcs-server in-process instead"
+	}
+
+	if err := probe(endpoint); err != nil {
+		detail := fmt.Sprintf("unreachable: %v", err)
+		if inCI {
+			return tier2Fail, tier2Reason(detail) + ". " + ciVariable + " is set, so a skipped " +
+				"tier 2 may not be reported as conformance. Check that the task pod resolves " +
+				"the service in its own namespace."
+		}
+
+		return tier2InProcess, tier2Reason(detail) + "; falling back to an in-process server"
+	}
+
+	return tier2Remote, ""
+}
+
 // substrate is one tier under test.
 type substrate struct {
 	name   string
@@ -151,40 +208,21 @@ func tier2(t *testing.T) substrate {
 	endpoint := strings.TrimSpace(os.Getenv(endpointVariable))
 	inCI := strings.TrimSpace(os.Getenv(ciVariable)) != ""
 
-	switch {
-	case endpoint == "" && inCI:
-		t.Fatal(tier2Reason("unset") + ". " + ciVariable + " is set, so this run is CI and " +
-			"tier 2 must execute: the API-level profile Req 41 gates activation on -- " +
-			"create-if-absent, exact-generation get and delete, bucket-wide list with " +
-			"pagination, metageneration and the 404/412/403 split -- is exactly what the " +
-			"in-memory fake cannot answer honestly. Wire the params into the unit-tests task.")
+	switch action, reason := tier2Decision(endpoint, inCI, reachable); action {
+	case tier2Fail:
+		t.Fatal(reason)
 
-	case endpoint != "":
-		if err := reachable(endpoint); err != nil {
-			if inCI {
-				t.Fatal(tier2Reason(fmt.Sprintf("unreachable: %v", err)) + ". " + ciVariable +
-					" is set, so a skipped tier 2 may not be reported as conformance. Check " +
-					"that the task pod resolves the service in its own namespace.")
-			}
-			t.Logf("%s; falling back to an in-process server", tier2Reason(fmt.Sprintf("unreachable: %v", err)))
+		// Unreachable: t.Fatal stops the test, and Go still needs a return.
+		return substrate{}
 
-			return inProcessTier2(t)
-		}
-
-		return remoteTier2(t, endpoint)
-
-	default:
-		// A developer machine with nothing configured. The plan's rule is that
-		// tier 2 never degrades to tier 1; starting the same server in-process
-		// is not a degrade, it is the same implementation at the same version
-		// as the deployed image.
-		t.Logf("%s; starting fake-gcs-server in-process instead", tier2Reason("unset"))
+	case tier2InProcess:
+		t.Log(reason)
 
 		return inProcessTier2(t)
-	}
 
-	// Unreachable: t.Fatal above stops the test, and Go still needs a return.
-	return substrate{}
+	default:
+		return remoteTier2(t, endpoint)
+	}
 }
 
 func inProcessTier2(t *testing.T) substrate {
