@@ -73,6 +73,29 @@ func ContainerGapDefinitions() []brine.StepDefinition {
 			},
 		),
 
+		// The same worker with the output plane ON.
+		//
+		// It exists for the ordinary-pod CONTROL in hangar-capture-pod.feature.
+		// That scenario is the file's answer to "an unchanged-pod assertion is
+		// only meaningful beside the changed one", and with the plane off it
+		// could not see a plane-on change to an ordinary pod at all: the
+		// mutation that emits the capture init whenever the plane is on and
+		// nothing is captured left it 6/6 green while its Go twin reddened.
+		//
+		// Nothing else about the worker changes, which is the point -- the
+		// claim is that turning the plane on changes nothing for a step that
+		// captures nothing.
+		brine.DefineMapUsing[brine.Empty, ClusterReady](
+			"a jetbridge worker with an artifact store and the output plane on",
+			[]string{"jetbridge-db"},
+			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder, res brine.Resources) (ClusterReady, error) {
+				return newConfiguredWorker(res, func(cfg *jetbridge.Config) {
+					cfg.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+					cfg.OutputPlaneEnabled = true
+				})
+			},
+		),
+
 		// A check container's working directory must be ephemeral even when
 		// the worker keeps step data on the node. The same container handle
 		// is reused for every check of a resource, so node-local storage

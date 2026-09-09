@@ -29,11 +29,19 @@ Feature: What a capture-selected task's Pod says
 
   # The control the whole file needs.
   #
+  # The worker has the output plane ON, and that is the whole point of the
+  # scenario: the claim is that turning the plane on changes nothing for a step
+  # that captures nothing, and a control built on a plane-OFF worker cannot say
+  # it. With the plane off, the mutation that emits the capture init whenever
+  # the plane is on and nothing is captured left this 6/6 green while its Go
+  # twin (TestTheOutputPlaneChangesNoOrdinaryPodWhenNothingIsCaptured) reddened.
+  #
   # Reddened by: Container.buildPod adding the capture control init when
-  # DurableOutputCapture is nil.
+  # DurableOutputCapture is nil, and equally by adding it whenever the output
+  # plane is enabled.
   @HOP-1 @HOP-59
   Scenario: A task whose output is not selected for capture builds the pod it builds today
-    Given a jetbridge worker with an artifact store
+    Given a jetbridge worker with an artifact store and the output plane on
     And a task container "build" built from image "busybox"
     And it produces an output at "/tmp/build/result"
     When the container runs
