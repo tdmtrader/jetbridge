@@ -216,6 +216,12 @@ type ContainerSpec struct {
 	// for which volumes should be created and mounted.
 	Outputs OutputPaths
 
+	// ExecutionControl is the optional envelope that opts this execution into
+	// exact control, and through it into the optional durable-output-capture
+	// extension. Nil is the ordinary path and stays byte-identical: a runtime
+	// that sees nil builds exactly the pod it built before this field existed.
+	ExecutionControl *ExecutionControl
+
 	// Limits specifies resource limits to be set on the container.
 	Limits ContainerLimits
 
