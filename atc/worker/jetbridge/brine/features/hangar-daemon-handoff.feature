@@ -46,6 +46,27 @@ Feature: What the output daemon answers
     When destructive cleanup is requested
     Then destructive cleanup is permitted
 
+  # The scenario above is this one's control: it is the already-eligible case,
+  # and without it "the source is still there" would pass on a daemon that
+  # destroys nothing because it does nothing.
+  #
+  # Assertion ORDER is part of the assertion. brine stops at the first red step,
+  # so the acknowledgement is asserted BEFORE the survival check rather than
+  # after it (MIGRATION-EVIDENCE.md:218-230) — a survival check written last is
+  # never evaluated on a run where the stop went wrong.
+  #
+  # Reddened by: RequestSourcePreservingStop removing the incarnation directory
+  # as part of the stop — the source line reddens while the acknowledgement line
+  # above it stays green.
+  @HOP-14 @HOP-16
+  Scenario: A source-preserving stop leaves the pod's artifact path in place
+    Given a real artifact daemon publishing to a Hangar output bucket
+    And a capture-selected task "build" built from image "busybox" declares the output "result"
+    And the daemon holds the source
+    When the step is stopped without destroying its source
+    Then the witness is what the step reports
+    And the source is still there after the stop
+
   # Reddened by: DestructiveCleanupEligible returning true whenever the
   # execution record exists, instead of requiring the finish acknowledgement —
   # this reddens on its one line while the scenario above stays green, which is
