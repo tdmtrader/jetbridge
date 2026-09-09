@@ -96,6 +96,7 @@ func CanonicalReceiptBytes(claims ReceiptClaims, keyID string) ([]byte, error) {
 	number(int64(claims.WriterFence))
 	field(string(claims.Ref.Scope))
 	field(string(claims.Ref.Digest))
+	number(claims.Ref.Generation)
 	number(claims.Attributes.StoredBytes)
 	number(claims.Attributes.LogicalBytes)
 	field(claims.Attributes.CreatedAt.UTC().Format(time.RFC3339Nano))
