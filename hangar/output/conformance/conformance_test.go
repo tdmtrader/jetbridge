@@ -414,6 +414,45 @@ func TestTheExactGenerationDeleteIsConditionalAndTyped(t *testing.T) {
 			if _, err := role.StatExactObject(ctx, object.Attributes.Ref); err != nil {
 				t.Fatalf("the object is gone after a delete of another generation: %v", err)
 			}
+
+			// And the metageneration half, which Req 47 names beside the
+			// generation ("replacement generation/metageneration ... conflict
+			// becomes debt") and which the generation pin alone cannot answer
+			// for: the ref is the right one, the generation matches, and only
+			// the metageneration has moved -- which is what a metadata change
+			// between the read and the delete looks like. Without the
+			// `If(conditions)` on the delete this row deletes the object and the
+			// wrong-generation row above does not notice, because the store
+			// reports a missing generation as absence.
+			//
+			// Tier 1 only, and not because the fake is more convenient: tier 2's
+			// fake-gcs-server v1.52.3 ignores delete preconditions outright
+			// (measured in probeCapabilities, named in knownSubstrateGaps), so
+			// there the row would assert the emulator's shortcut. Real GCS
+			// answers it in Phase 9.
+			staleMetageneration := output.DeletePrecondition{
+				Generation:     object.Attributes.Ref.Generation,
+				Metageneration: object.Metageneration + 1,
+			}
+			outcome, err = sweeper.DeleteExactGeneration(ctx, object.Attributes.Ref, staleMetageneration)
+			if outcome != output.DeleteGenerationConflict {
+				t.Errorf("deleting the right generation at a metageneration it is not at reported "+
+					"%q (%v), expected %q. The metageneration moved between the read and the "+
+					"delete, so this delete is about an object nobody looked at",
+					outcome, err, output.DeleteGenerationConflict)
+			}
+			if !errors.Is(err, output.ErrGenerationConflict) {
+				t.Errorf("the metageneration conflict is typed %v; Req 47 makes it debt and never "+
+					"an unconditional retry", err)
+			}
+			if _, err := role.StatExactObject(ctx, object.Attributes.Ref); err != nil {
+				t.Fatalf("the object is gone after a delete whose metageneration precondition did "+
+					"not match: %v", err)
+			}
+		} else {
+			t.Logf("%s does not enforce delete preconditions, so neither the wrong-generation "+
+				"nor the wrong-metageneration row runs here; both are tier 1's and real GCS's "+
+				"(Phase 9). knownSubstrateGaps names the gap.", tier.name)
 		}
 
 		// And the right one.
