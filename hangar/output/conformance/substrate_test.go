@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"cloud.google.com/go/storage"
 	"github.com/fsouza/fake-gcs-server/fakestorage"
 
 	"github.com/concourse/concourse/hangar"
@@ -202,10 +203,11 @@ func inProcessTier2(t *testing.T) substrate {
 	bucket := uniqueBucket("tier-2-inproc")
 	server.CreateBucketWithOpts(fakestorage.CreateBucketOpts{Name: bucket})
 
+	client, _ := adapterAndClient(t, server.URL())
 	tier := substrate{
 		name:   "tier-2 (fake-gcs-server, in-process)",
 		bucket: bucket,
-		client: adapterFor(t, server.URL()),
+		client: client,
 	}
 	tier.can = probeCapabilities(t, tier)
 
@@ -216,10 +218,18 @@ func remoteTier2(t *testing.T, endpoint string) substrate {
 	t.Helper()
 
 	bucket := uniqueBucket("tier-2")
-	// fake-gcs-server creates a bucket on first write in its default
-	// configuration; when it does not, the create below is what says so, with
-	// the endpoint named.
-	client := adapterFor(t, endpoint)
+
+	// The bucket is created explicitly. fake-gcs-server does NOT create one on
+	// first write -- an upload to an unknown bucket is a 404, measured -- and
+	// the deployed service is shared, so each run takes its own bucket rather
+	// than colliding with whatever the last one left behind.
+	client, storageClient := adapterAndClient(t, endpoint)
+	if err := storageClient.Bucket(bucket).Create(context.Background(), conformanceProject, nil); err != nil {
+		t.Fatalf("creating the conformance bucket %s at %s: %v.\n\n"+
+			"The endpoint answered the reachability probe, so this is the emulator refusing a "+
+			"bucket insert rather than an unreachable service.", bucket, endpoint, err)
+	}
+	t.Cleanup(func() { deleteBucket(t, client, storageClient, bucket) })
 
 	tier := substrate{
 		name:   "tier-2 (fake-gcs-server at " + endpoint + ")",
@@ -238,6 +248,23 @@ func remoteTier2(t *testing.T, endpoint string) substrate {
 func adapterFor(t *testing.T, endpoint string) objectstore.Client {
 	t.Helper()
 
+	client, _ := adapterAndClient(t, endpoint)
+
+	return client
+}
+
+// conformanceProject is the project id a bucket insert needs. The emulator does
+// not check it and real GCS is never reached from here.
+const conformanceProject = "hangar-conformance"
+
+// adapterAndClient also hands back the storage client, which the remote tier
+// needs for the one operation the object seam deliberately does not offer:
+// creating a bucket. No role has bucket-policy permission, so bucket creation
+// cannot be behind the seam -- it is test setup against an emulator, and saying
+// so here is better than widening objectstore.Client to make a test convenient.
+func adapterAndClient(t *testing.T, endpoint string) (objectstore.Client, *storage.Client) {
+	t.Helper()
+
 	storageClient, err := hangargcs.NewStorageClient(context.Background(), endpoint)
 	if err != nil {
 		t.Fatalf("building a storage client for %s: %v", endpoint, err)
@@ -249,7 +276,33 @@ func adapterFor(t *testing.T, endpoint string) objectstore.Client {
 		t.Fatalf("adapting the storage client: %v", err)
 	}
 
-	return client
+	return client, storageClient
+}
+
+// deleteBucket clears a run's bucket off the shared emulator.
+//
+// It is best-effort and never fails the test: the suite's assertions are about
+// what the plane does, and a leftover bucket on a fake is an untidiness rather
+// than a wrong answer. Each run takes a fresh name, so a failure here cannot
+// affect the next one.
+func deleteBucket(t *testing.T, client objectstore.Client, storageClient *storage.Client, bucket string) {
+	t.Helper()
+
+	ctx := context.Background()
+	for cursor := ""; ; {
+		page, err := client.List(ctx, bucket, objectstore.ListRequest{PageSize: 200, Cursor: cursor})
+		if err != nil {
+			return
+		}
+		for _, object := range page.Objects {
+			_ = client.Object(bucket, object.Key).Delete(ctx)
+		}
+		if page.Cursor == "" {
+			break
+		}
+		cursor = page.Cursor
+	}
+	_ = storageClient.Bucket(bucket).Delete(ctx)
 }
 
 func reachable(endpoint string) error {
