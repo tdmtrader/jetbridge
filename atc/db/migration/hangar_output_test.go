@@ -1709,6 +1709,28 @@ var _ = Describe("the Hangar output plane schema", func() {
 			}
 		})
 
+		It("refuses while a worker still holds an operation lease", func() {
+			// The one row the blocker list did not check. Every other table it
+			// omits is reachable transitively through a RESTRICT foreign key to
+			// one it does check, so DROP TABLE would have failed loudly; an
+			// operation lease references only the epoch, and an `initial`
+			// epoch is allowed to drop -- so this combination dropped the
+			// plane out from under a running worker.
+			mustExec(database, `
+				INSERT INTO hangar_output_activation_epochs (epoch_id) VALUES (1)`)
+			mustExec(database, fmt.Sprintf(`
+				INSERT INTO hangar_operation_leases
+					(kind, activation_epoch, owner_id, lease_fence, expires_at)
+				VALUES ('inventory', 1, '%s', 1, now() + interval '15 minutes')`, workerID))
+			Expect(database.Close()).To(Succeed())
+
+			err := migrateDown()
+			Expect(err).To(MatchError(ContainSubstring("refusing to remove the output plane")))
+			Expect(err.Error()).To(ContainSubstring("1 held operation lease(s)"))
+
+			database = postgresRunner.OpenDBAtVersion(hangarOutputVersion)
+		})
+
 		It("refuses while an epoch has left initial, even with no other rows", func() {
 			seedEpoch()
 			Expect(database.Close()).To(Succeed())

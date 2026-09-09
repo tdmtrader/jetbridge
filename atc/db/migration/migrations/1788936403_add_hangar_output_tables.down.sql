@@ -43,6 +43,11 @@ BEGIN
     IF n > 0 THEN blockers := blockers || format('%s reclaim job(s)', n); END IF;
     SELECT count(*) INTO n FROM hangar_policy_snapshots;
     IF n > 0 THEN blockers := blockers || format('%s policy snapshot(s)', n); END IF;
+    -- An operation lease references only the epoch, and an `initial` epoch is
+    -- allowed to drop, so this is the one table nothing else keeps here. Every
+    -- other table not listed hangs off one that is, by a RESTRICT foreign key.
+    SELECT count(*) INTO n FROM hangar_operation_leases;
+    IF n > 0 THEN blockers := blockers || format('%s held operation lease(s)', n); END IF;
 
     IF array_length(blockers, 1) IS NOT NULL THEN
         RAISE EXCEPTION 'hangar: refusing to remove the output plane while it holds state: %. Drain output first: the claim, read-lease, lifecycle, inventory, reclaim and policy surfaces stay compatible while any managed publication, claim or lease exists, and removing them is not something a finite wait makes safe.',
