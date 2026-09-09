@@ -95,6 +95,30 @@ func (fixture *ledgerFixture) reopen(t *testing.T) {
 	fixture.store, fixture.ledger = store, ledger
 }
 
+// sameStatement compares two acknowledgements by the bytes their signature
+// covers plus the signature itself.
+//
+// Not `==`: Acknowledgement carries *ExitOutcome, so the operator compares
+// pointers and two identical statements read as different. Comparing the signed
+// bytes is also the stronger claim -- it is exactly what a verifier compares,
+// so "the same statement" means the same thing here as it does to a control
+// plane.
+func sameStatement(left, right executioncontrol.Acknowledgement) bool {
+	unsigned := func(ack executioncontrol.Acknowledgement) string {
+		ack.Signature = ""
+
+		return string(executioncontrol.CanonicalAcknowledgementBytes(ack))
+	}
+
+	return left.Signature == right.Signature && unsigned(left) == unsigned(right)
+}
+
+func describeStatement(ack executioncontrol.Acknowledgement) string {
+	raw, _ := json.Marshal(ack)
+
+	return string(raw)
+}
+
 func identity(fence executioncontrol.Fence) executioncontrol.Identity {
 	return executioncontrol.Identity{ExecutionID: testExecution, Fence: fence}
 }
@@ -191,13 +215,13 @@ func TestTheLedgerWalksOneExecutionFromAdmissionToAnAuthoritativeFinish(t *testi
 	if result.Classification != executioncontrol.ClassificationAuthoritativeFinish {
 		t.Errorf("a finished execution classified %s", result.Classification)
 	}
-	if result.Acknowledgement == nil || *result.Acknowledgement != finish {
+	if result.Acknowledgement == nil || !sameStatement(*result.Acknowledgement, finish) {
 		t.Error("the authoritative classification does not carry the acknowledgement that makes it authoritative")
 	}
 	if observed, err = fixture.ledger.Observe(identity(1)); err != nil {
 		t.Fatalf("observing: %v", err)
 	}
-	if observed.Acknowledgement == nil || *observed.Acknowledgement != finish {
+	if observed.Acknowledgement == nil || !sameStatement(*observed.Acknowledgement, finish) {
 		t.Error("ObserveFinishOrStop returned something other than the durable acknowledgement")
 	}
 }
@@ -400,8 +424,9 @@ func TestARepeatedOutcomeReturnsTheSameStatementAndAConflictingOneIsRefused(t *t
 	if err != nil {
 		t.Fatalf("replaying: %v", err)
 	}
-	if replay != first {
-		t.Errorf("the replay returned a different statement:\n first: %+v\nreplay: %+v", first, replay)
+	if !sameStatement(replay, first) {
+		t.Errorf("the replay returned a different statement:\n first: %s\nreplay: %s",
+			describeStatement(first), describeStatement(replay))
 	}
 
 	for name, conflicting := range map[string]struct {
@@ -422,7 +447,7 @@ func TestARepeatedOutcomeReturnsTheSameStatementAndAConflictingOneIsRefused(t *t
 	if err != nil {
 		t.Fatalf("classifying: %v", err)
 	}
-	if result.Acknowledgement == nil || *result.Acknowledgement != first {
+	if result.Acknowledgement == nil || !sameStatement(*result.Acknowledgement, first) {
 		t.Error("a refused conflicting outcome changed what the ledger says")
 	}
 }
@@ -452,9 +477,9 @@ func TestARestartReturnsTheSameSignedStatementWithoutRelaunchingAnything(t *test
 	if observed.Acknowledgement == nil {
 		t.Fatal("a restarted daemon has no acknowledgement for a finished execution")
 	}
-	if *observed.Acknowledgement != finish {
-		t.Errorf("a restarted daemon returned a different statement:\nbefore: %+v\n after: %+v",
-			finish, *observed.Acknowledgement)
+	if !sameStatement(*observed.Acknowledgement, finish) {
+		t.Errorf("a restarted daemon returned a different statement:\nbefore: %s\n after: %s",
+			describeStatement(finish), describeStatement(*observed.Acknowledgement))
 	}
 	if err := executioncontrol.VerifyAcknowledgement(*observed.Acknowledgement, fixture.public); err != nil {
 		t.Errorf("the recovered statement does not verify: %v", err)
