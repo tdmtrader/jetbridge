@@ -364,6 +364,23 @@ var _ = Describe("the Hangar output plane schema", func() {
 				return found
 			}
 
+			// The order inside that one transaction is not a preference. The
+			// per-facet `enabled` index is a *partial unique index*, which
+			// PostgreSQL checks per statement and cannot defer -- a partial
+			// unique constraint is not expressible, so DEFERRABLE is not on
+			// offer. Moving the incoming row to `enabled` first is therefore
+			// two enabled rows for one statement's worth of time, and the
+			// index refuses it by name.
+			reversed, err := database.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reversed.Exec(`UPDATE hangar_output_activation_epochs
+				SET output_state = 'enabled', revision = revision + 1 WHERE epoch_id = 2`)
+			Expect(err).To(MatchError(
+				ContainSubstring("hangar_output_one_enabled_output_epoch")),
+				"the swap was accepted incoming-first, so nothing forces the outgoing row to "+
+					"reach draining before the incoming row is enabled")
+			Expect(reversed.Rollback()).To(Succeed())
+
 			rotate("output_state")
 			Expect(states("output_state")).To(Equal(map[int]string{1: "draining", 2: "enabled"}))
 
