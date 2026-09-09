@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/concourse/concourse/hangar/executioncontrol"
@@ -88,6 +89,8 @@ func CanonicalReceiptBytes(claims ReceiptClaims, keyID string) ([]byte, error) {
 	field(string(claims.HandoffID))
 	field(string(claims.ProducerCheckpointID))
 	field(string(claims.ReservationID))
+	field(claims.ChallengeNonce)
+	field(claims.ChallengeIssuedAt.UTC().Format(time.RFC3339Nano))
 	field(string(claims.Incarnation.ExecutionID))
 	// The node is part of the source incarnation's identity -- Validate
 	// refuses an incarnation without one -- so it is inside the signature.
@@ -284,6 +287,18 @@ func (ring *ReceiptKeyRing) KeyIDs() []string {
 type ReceiptSignatureVerifier struct {
 	ring  *ReceiptKeyRing
 	clock Clock
+
+	// consumed is the in-process half of the challenge's one-use rule.
+	//
+	// The durable authority is the schema: hangar_challenge_one_use raises on a
+	// second UPDATE of a consumed row, and that is the guard a restart survives.
+	// This one exists because a verifier that accepted the same nonce twice in
+	// one process would report "verified" twice for one challenge, and whoever
+	// read the second answer would learn nothing about whether the transaction
+	// behind it committed. Entries are dropped once past their not-after, so the
+	// map is bounded by the five-minute window rather than by uptime.
+	mu       sync.Mutex
+	consumed map[string]time.Time
 }
 
 // NewReceiptSignatureVerifier builds a verifier over a pinned key ring.
@@ -296,7 +311,7 @@ func NewReceiptSignatureVerifier(ring *ReceiptKeyRing, clock Clock) (*ReceiptSig
 			"key has a validity window", ErrIncomplete)
 	}
 
-	return &ReceiptSignatureVerifier{ring: ring, clock: clock}, nil
+	return &ReceiptSignatureVerifier{ring: ring, clock: clock, consumed: map[string]time.Time{}}, nil
 }
 
 // Verify checks one receipt against one challenge.
@@ -347,7 +362,34 @@ func (verifier *ReceiptSignatureVerifier) Verify(receipt Receipt, challenge Stat
 			"activation-pinned public key for %q", ErrUnauthorized, receipt.KeyID)
 	}
 
-	return verifier.bind(receipt, challenge, now)
+	if err := verifier.bind(receipt, challenge, now); err != nil {
+		return err
+	}
+
+	// Consumed last, and only on success: a nonce burned by a receipt that did
+	// not verify would let one forgery deny the capture its real answer.
+	return verifier.consume(challenge, now)
+}
+
+// consume records one nonce as used and refuses the second use.
+func (verifier *ReceiptSignatureVerifier) consume(challenge StatChallenge, now time.Time) error {
+	verifier.mu.Lock()
+	defer verifier.mu.Unlock()
+
+	for nonce, notAfter := range verifier.consumed {
+		if now.After(notAfter) {
+			delete(verifier.consumed, nonce)
+		}
+	}
+
+	if at, used := verifier.consumed[challenge.Nonce]; used {
+		return fmt.Errorf("%w: stat challenge %s was already answered at %s. It is one-use, "+
+			"which is what stops one fresh observation from settling two captures",
+			ErrConflict, challenge.Nonce, at.UTC())
+	}
+	verifier.consumed[challenge.Nonce] = challenge.NotAfter.UTC()
+
+	return nil
 }
 
 // bind is the replay half: every fact the challenge names must be the fact the
@@ -364,6 +406,27 @@ func (verifier *ReceiptSignatureVerifier) bind(receipt Receipt, challenge StatCh
 		return fmt.Errorf("%w: the stat challenge expired at %s and it is now %s. A receipt "+
 			"proves its facts were true when it was signed; the challenge is what makes them "+
 			"true now", ErrTimeout, challenge.NotAfter.UTC(), now)
+	}
+	if claims.ChallengeNonce != challenge.Nonce {
+		return fmt.Errorf("%w: the receipt answers stat challenge %s and this verifier issued %s. "+
+			"A receipt bound to its facts alone answers every later challenge naming the same "+
+			"facts, which is the replay a nonce exists to stop", ErrConflict,
+			claims.ChallengeNonce, challenge.Nonce)
+	}
+	if !claims.ChallengeIssuedAt.Equal(challenge.IssuedAt.Time) {
+		return fmt.Errorf("%w: the receipt says its challenge was issued at %s and this one was "+
+			"issued at %s", ErrConflict,
+			claims.ChallengeIssuedAt.UTC(), challenge.IssuedAt.UTC())
+	}
+	if claims.SignedAt.Before(challenge.IssuedAt.Time) {
+		// The receipt's instant is the daemon's clock and the challenge's is the
+		// database's, so this is a cross-clock comparison and it fails closed: a
+		// node running behind the database has its receipt refused and re-attests
+		// against a new challenge, which is the direction that cannot be used to
+		// present a stale observation as a fresh one.
+		return fmt.Errorf("%w: the receipt was signed at %s and its challenge was issued at %s. "+
+			"A stat that predates the challenge is the old observation the challenge was issued "+
+			"to replace", ErrConflict, claims.SignedAt.UTC(), challenge.IssuedAt.UTC())
 	}
 	if claims.HandoffID != challenge.HandoffID {
 		return fmt.Errorf("%w: the receipt is for handoff %s and the challenge names %s",

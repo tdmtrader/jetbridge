@@ -178,23 +178,10 @@ func TestThePublishPathCreatesAnObjectAndSignsAVerifiableReceipt(t *testing.T) {
 			output.NewTimestamp(time.Now().UTC())),
 	}
 
-	request := PublishRequest{
-		Reservation: reservation,
-		Claims: output.ReceiptClaims{
-			ProducerCheckpointID: "opaque-checkpoint",
-			Incarnation: output.SourceIncarnation{
-				ExecutionID:      "33333333-3333-4333-8333-333333333333",
-				NodeUID:          "node-1",
-				HandleGeneration: 3,
-				Output:           "result",
-			},
-			Output:      "result",
-			WriterFence: 9,
-		},
-	}
+	request := PublishRequest{Reservation: reservation}
 
 	body := []byte("a sealed canonical tree")
-	receipt, object, err := daemon.Publish(context.Background(), request,
+	object, err := daemon.Publish(context.Background(), request,
 		bytes.NewReader(body), int64(len(body)))
 	if err != nil {
 		t.Fatalf("publishing: %v", err)
@@ -206,11 +193,54 @@ func TestThePublishPathCreatesAnObjectAndSignsAVerifiableReceipt(t *testing.T) {
 	if object.Attributes.Ref.Generation <= 0 {
 		t.Error("the published object has no generation")
 	}
+
+	// The challenge exists only now: it names the generation the publish
+	// assigned, which is why the receipt cannot be signed one call earlier.
+	issuedAt := time.Now().UTC()
+	challenge := output.StatChallenge{
+		Nonce:           "nonce-0123456789abcdef",
+		HandoffID:       reservation.HandoffID,
+		ReservationID:   reservation.ReservationID,
+		ActivationEpoch: namespace.ActivationEpoch(),
+		Ref:             object.Attributes.Ref,
+		CaptureFence:    reservation.CaptureFence,
+		IssuedAt:        output.NewTimestamp(issuedAt),
+		NotAfter:        output.NewTimestamp(issuedAt.Add(5 * time.Minute)),
+	}
+
+	receipt, attested, err := daemon.StatExact(context.Background(), challenge, output.ReceiptClaims{
+		Execution:            reservation.Execution,
+		ProducerCheckpointID: "opaque-checkpoint",
+		Incarnation: output.SourceIncarnation{
+			ExecutionID:      "33333333-3333-4333-8333-333333333333",
+			NodeUID:          "node-1",
+			HandleGeneration: 3,
+			Output:           "result",
+		},
+		Output:      "result",
+		WriterFence: 9,
+	})
+	if err != nil {
+		t.Fatalf("attesting: %v", err)
+	}
+
+	if attested.Attributes.Ref != object.Attributes.Ref {
+		t.Errorf("the attesting stat observed %v and the publish reported %v",
+			attested.Attributes.Ref, object.Attributes.Ref)
+	}
 	if receipt.Claims.Ref != object.Attributes.Ref {
 		t.Errorf("the receipt names %v and the object is %v", receipt.Claims.Ref, object.Attributes.Ref)
 	}
 	if receipt.Claims.ActivationEpoch != namespace.ActivationEpoch() {
 		t.Errorf("the receipt claims epoch %d", receipt.Claims.ActivationEpoch)
+	}
+	if receipt.Claims.ChallengeNonce != challenge.Nonce {
+		t.Errorf("the receipt answers challenge %q and the daemon was handed %q",
+			receipt.Claims.ChallengeNonce, challenge.Nonce)
+	}
+	if !receipt.Claims.ChallengeIssuedAt.Equal(challenge.IssuedAt.Time) {
+		t.Errorf("the receipt says its challenge was issued at %s and it was issued at %s",
+			receipt.Claims.ChallengeIssuedAt.UTC(), challenge.IssuedAt.UTC())
 	}
 
 	// Verified with the production verifier under the activation-pinned public
@@ -228,15 +258,6 @@ func TestThePublishPathCreatesAnObjectAndSignsAVerifiableReceipt(t *testing.T) {
 	verifier, err := output.NewReceiptSignatureVerifier(ring, output.ClockFunc(nowUTC))
 	if err != nil {
 		t.Fatalf("building the verifier: %v", err)
-	}
-	challenge := output.StatChallenge{
-		Nonce:           "nonce-0123456789abcdef",
-		HandoffID:       receipt.Claims.HandoffID,
-		ReservationID:   receipt.Claims.ReservationID,
-		ActivationEpoch: receipt.Claims.ActivationEpoch,
-		Ref:             receipt.Claims.Ref,
-		CaptureFence:    receipt.Claims.CaptureFence,
-		NotAfter:        output.NewTimestamp(time.Now().UTC().Add(5 * time.Minute)),
 	}
 	if err := verifier.Verify(receipt, challenge); err != nil {
 		t.Errorf("the daemon's own receipt does not verify under the pinned key: %v", err)
@@ -269,7 +290,7 @@ func TestACallerChosenNamespaceIsRefusedByThePublishPath(t *testing.T) {
 		"key":    {Key: "hangar/v1/scopes/x/trees/sha256/dead.tar.zst"},
 		"prefix": {Prefix: "deployments/red"},
 	} {
-		_, _, err := daemon.Publish(context.Background(),
+		_, err := daemon.Publish(context.Background(),
 			PublishRequest{Namespace: chosen},
 			bytes.NewReader([]byte("body")), 4)
 		if !errors.Is(err, output.ErrUnauthorized) {

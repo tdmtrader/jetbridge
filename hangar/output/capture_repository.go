@@ -76,6 +76,10 @@ func (resolution LogicalResolution) Validate() error {
 // every fact it bound, and a copy travelling beside the receipt would be a
 // second, unauthoritative statement of facts the receipt already carries.
 //
+// It must be the nonce the receipt itself names. The row it consumes and the
+// signature it presents have to be about the same challenge, or the one-use
+// rule is spending one capture's nonce on another capture's evidence.
+//
 // Metageneration is what the exact-generation stat observed. The generation
 // itself is in the receipt's signed claims; the metageneration is not signed,
 // because it changes when metadata does and a signature over it would expire
@@ -98,6 +102,12 @@ func (admission ReceiptAdmission) Validate() error {
 	if admission.ChallengeNonce == "" {
 		return fmt.Errorf("%w: receipt admission carries no challenge nonce; a signature over "+
 			"old facts proves only that the facts were once true", ErrIncomplete)
+	}
+	if admission.ChallengeNonce != admission.Receipt.Claims.ChallengeNonce {
+		return fmt.Errorf("%w: the admission consumes challenge %s and the receipt answers %s. "+
+			"Consuming a nonce the receipt never named would let a fresh observation of one "+
+			"challenge settle a different one", ErrConflict,
+			admission.ChallengeNonce, admission.Receipt.Claims.ChallengeNonce)
 	}
 	if admission.Metageneration <= 0 {
 		return fmt.Errorf("%w: receipt admission observed no metageneration", ErrIncomplete)

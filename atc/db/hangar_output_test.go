@@ -122,26 +122,28 @@ var _ = Describe("the Hangar output lock suffix", func() {
 
 	// The one-use stat challenge the daemon would have been issued, for one
 	// exact ref. Written as SQL because minting it is not the repository's job.
-	issueChallenge := func(handoff output.HandoffID, reservation output.ReservationID, ref hangar.TreeRef) string {
+	issueChallenge := func(handoff output.HandoffID, reservation output.ReservationID, ref hangar.TreeRef) (string, time.Time) {
 		GinkgoHelper()
 
 		nonce := "nonce-" + uuid.NewString()
-		_, err := dbConn.Exec(`
+		var issuedAt time.Time
+		err := dbConn.QueryRow(`
 			INSERT INTO hangar_receipt_stat_challenges
 				(nonce, handoff_id, reservation_id, activation_epoch, receipt_public_key_id,
 				 scope, digest, generation, capture_fence, not_after)
-			VALUES ($1, $2, $3, 1, 'receipt-key-1', $4, $5, $6, 1, now() + interval '5 minutes')`,
+			VALUES ($1, $2, $3, 1, 'receipt-key-1', $4, $5, $6, 1, now() + interval '5 minutes')
+			RETURNING issued_at`,
 			nonce, string(handoff), string(reservation), string(ref.Scope), string(ref.Digest),
-			ref.Generation)
+			ref.Generation).Scan(&issuedAt)
 		Expect(err).NotTo(HaveOccurred())
 
-		return nonce
+		return nonce, issuedAt
 	}
 
 	// One receipt admission, in one place, because a second spelling of it is
 	// a second set of facts and the guards under test are exactly about facts
 	// agreeing.
-	admissionFor := func(handoff output.HandoffID, execution executioncontrol.Identity, reservation output.ReservationID, ref hangar.TreeRef, nonce string) output.ReceiptAdmission {
+	admissionFor := func(handoff output.HandoffID, execution executioncontrol.Identity, reservation output.ReservationID, ref hangar.TreeRef, nonce string, issuedAt time.Time) output.ReceiptAdmission {
 		name := output.OutputName("result")
 
 		return output.ReceiptAdmission{
@@ -155,6 +157,8 @@ var _ = Describe("the Hangar output lock suffix", func() {
 					HandoffID:            handoff,
 					ProducerCheckpointID: output.OpaqueID("checkpoint-" + string(handoff)),
 					ReservationID:        reservation,
+					ChallengeNonce:       nonce,
+					ChallengeIssuedAt:    output.NewTimestamp(issuedAt),
 					Incarnation: output.SourceIncarnation{
 						ExecutionID:      execution.ExecutionID,
 						NodeUID:          "node-uid",
@@ -244,13 +248,13 @@ var _ = Describe("the Hangar output lock suffix", func() {
 		Expect(tx.Commit()).To(Succeed())
 
 		ref := hangar.TreeRef{Scope: "team-a", Digest: digest, Generation: generation}
-		nonce := issueChallenge(handoff, reservation, ref)
+		nonce, issuedAt := issueChallenge(handoff, reservation, ref)
 
 		tx, err = dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		defer db.Rollback(tx)
 		Expect(repository.RegisterReceipt(ctx, tx,
-			admissionFor(handoff, execution, reservation, ref, nonce))).To(Succeed())
+			admissionFor(handoff, execution, reservation, ref, nonce, issuedAt))).To(Succeed())
 		Expect(tx.Commit()).To(Succeed())
 
 		return reservation, ref
@@ -750,8 +754,9 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			tx, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(tx)
+			elsewhereNonce, elsewhereIssuedAt := issueChallenge(handoff, reservation, elsewhere)
 			err = repository.RegisterReceipt(ctx, tx, admissionFor(handoff, execution, reservation,
-				elsewhere, issueChallenge(handoff, reservation, elsewhere)))
+				elsewhere, elsewhereNonce, elsewhereIssuedAt))
 			Expect(err).To(MatchError(output.ErrConflict))
 			Expect(err.Error()).To(ContainSubstring("against a reservation resolved to"))
 			Expect(tx.Rollback()).To(Succeed())
@@ -1127,8 +1132,9 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			tx, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(tx)
+			secondNonce, secondIssuedAt := issueChallenge(handoff, reservation, second)
 			registerErr := repository.RegisterReceipt(ctx, tx, admissionFor(handoff, execution,
-				reservation, second, issueChallenge(handoff, reservation, second)))
+				reservation, second, secondNonce, secondIssuedAt))
 			if registerErr == nil {
 				// Committing is what a caller told "no error" would do, and it
 				// is what makes the damage countable below.
@@ -1164,8 +1170,9 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			tx, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(tx)
+			lateNonce, lateIssuedAt := issueChallenge(handoff, reservation, ref)
 			Expect(repository.RegisterReceipt(ctx, tx, admissionFor(handoff, execution,
-				reservation, ref, issueChallenge(handoff, reservation, ref)))).To(Succeed())
+				reservation, ref, lateNonce, lateIssuedAt))).To(Succeed())
 			Expect(tx.Commit()).To(Succeed())
 
 			Expect(lifecyclesFor(ref.Digest)).To(Equal(1))

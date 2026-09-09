@@ -12,6 +12,8 @@
       "handoff_id": "6b1e9d40-2a77-4c11-8f3e-5d0a9c8b7e62",
       "producer_checkpoint_id": "opaque-producer-checkpoint-1",
       "reservation_id": "e3a70b5c-1d84-4f29-b6c0-9a72d5e814f3",
+      "challenge_nonce": "a1d4c9b2e7f30485",
+      "challenge_issued_at": "2026-09-08T21:50:23.900000000Z",
       "incarnation": {
         "execution_id": "0f8a5b1c-3d2e-4a6f-9b70-1c2d3e4f5a6b",
         "node_uid": "node-9f2b1d4c",

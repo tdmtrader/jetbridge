@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	hangargcs "github.com/concourse/concourse/hangar/gcs"
 	"github.com/concourse/concourse/hangar/objectstore"
@@ -98,51 +97,104 @@ func (daemon *Daemon) ReceiptPublicKey() ed25519.PublicKey { return daemon.signe
 type PublishRequest struct {
 	Namespace   output.CallerNamespaceRequest `json:"namespace"`
 	Reservation output.ResolvedReservation    `json:"-"`
-	Claims      output.ReceiptClaims          `json:"-"`
 }
 
-// Publish creates the object and signs the receipt for one capture.
+// Publish creates the object and reports the exact generation. It signs
+// nothing.
 //
 // The order matters and is not negotiable. The object is created first, because
 // a receipt is a statement about bytes that exist; then the exact generation is
 // read back off the store rather than taken from the writer, because Req 26
 // says the signed attributes come from a stat and not from what the writer
-// believed; and only then is anything signed.
+// believed.
+//
+// The receipt is not produced here, and the reason is the ordering the schema
+// fixes: hangar_receipt_stat_challenges.generation is NOT NULL CHECK
+// (generation > 0), so a challenge cannot exist until this call has returned
+// the generation it names. A receipt signed at publish time is therefore a
+// receipt bound to facts and to no challenge -- it answers every later
+// challenge naming the same facts and cannot show its stat post-dates any of
+// them. Signing lives in StatExact below, where a challenge is in hand.
 //
 // What this method deliberately does not do is register anything. Registration
 // is the caller's transaction -- it consumes the one-use stat challenge while
 // revalidating the reservation, the fences, the epoch and the exact generation
 // -- and a daemon that could register would be a daemon holding a database
 // credential on every node.
-func (daemon *Daemon) Publish(ctx context.Context, request PublishRequest, canonical io.Reader, size int64) (output.Receipt, output.PublishedObject, error) {
+func (daemon *Daemon) Publish(ctx context.Context, request PublishRequest, canonical io.Reader, size int64) (output.PublishedObject, error) {
 	if err := request.Namespace.Validate(); err != nil {
-		return output.Receipt{}, output.PublishedObject{}, err
+		return output.PublishedObject{}, err
 	}
 	if err := request.Reservation.Validate(); err != nil {
-		return output.Receipt{}, output.PublishedObject{}, err
+		return output.PublishedObject{}, err
 	}
 
 	object, err := daemon.publisher.EnsureObject(ctx, request.Reservation, canonical, size)
 	if err != nil {
-		return output.Receipt{}, output.PublishedObject{}, err
+		return output.PublishedObject{}, err
 	}
 
-	// The exact stat, outside any lock and after the create, is what the
-	// receipt's attributes are signed over.
 	fresh, err := daemon.publisher.StatExactObject(ctx, object.Attributes.Ref)
 	if err != nil {
-		return output.Receipt{}, output.PublishedObject{}, err
+		return output.PublishedObject{}, err
 	}
 	fresh.Deduplicated = object.Deduplicated
 
-	claims := request.Claims
+	return fresh, nil
+}
+
+// StatExact answers one stat challenge: a fresh exact-generation marked stat,
+// performed outside every database lock, signed against the challenge that
+// demanded it.
+//
+// The claims the caller passes are the control plane's own facts -- the
+// producer checkpoint, the source incarnation, the writer fence and the
+// selected output -- which this process cannot check and does not pretend to.
+// What it fills in itself is everything it *can* observe or is authoritative
+// for: the protocol and receipt versions, its own activation epoch, the
+// challenge's identities and fences, the exact ref and strict attributes the
+// stat returned, the marker version the store reported, and the nonce and
+// issued-at of the challenge in hand. Req 26 is what revalidates the rest,
+// against durable state, in the transaction that consumes the nonce.
+func (daemon *Daemon) StatExact(ctx context.Context, challenge output.StatChallenge, claims output.ReceiptClaims) (output.Receipt, output.PublishedObject, error) {
+	if err := challenge.Validate(); err != nil {
+		return output.Receipt{}, output.PublishedObject{}, err
+	}
+	if challenge.ActivationEpoch != daemon.namespace.ActivationEpoch() {
+		return output.Receipt{}, output.PublishedObject{}, fmt.Errorf(
+			"%w: the challenge names epoch %d and this daemon holds epoch %d's key",
+			output.ErrConflict, challenge.ActivationEpoch, daemon.namespace.ActivationEpoch())
+	}
+
+	fresh, err := daemon.publisher.StatExactObject(ctx, challenge.Ref)
+	if err != nil {
+		return output.Receipt{}, output.PublishedObject{}, err
+	}
+	if fresh.Attributes.Ref != challenge.Ref {
+		return output.Receipt{}, output.PublishedObject{}, fmt.Errorf(
+			"%w: the challenge names %s/%s/%d and the stat observed %s/%s/%d",
+			output.ErrConflict,
+			challenge.Ref.Scope, challenge.Ref.Digest, challenge.Ref.Generation,
+			fresh.Attributes.Ref.Scope, fresh.Attributes.Ref.Digest, fresh.Attributes.Ref.Generation)
+	}
+	if fresh.Marker.ReservationID != challenge.ReservationID {
+		// A *marked* stat, which is what the plan asks for: the object at that
+		// exact generation has to be this capture's, not merely present.
+		return output.Receipt{}, output.PublishedObject{}, fmt.Errorf(
+			"%w: the object at %s/%s/%d is marked for reservation %s and the challenge names %s",
+			output.ErrConflict,
+			challenge.Ref.Scope, challenge.Ref.Digest, challenge.Ref.Generation,
+			fresh.Marker.ReservationID, challenge.ReservationID)
+	}
+
 	claims.ProtocolVersion = output.ProtocolVersion
 	claims.ReceiptVersion = output.ReceiptDomain
 	claims.ActivationEpoch = daemon.namespace.ActivationEpoch()
-	claims.ReservationID = request.Reservation.ReservationID
-	claims.HandoffID = request.Reservation.HandoffID
-	claims.Execution = request.Reservation.Execution
-	claims.CaptureFence = request.Reservation.CaptureFence
+	claims.HandoffID = challenge.HandoffID
+	claims.ReservationID = challenge.ReservationID
+	claims.CaptureFence = challenge.CaptureFence
+	claims.ChallengeNonce = challenge.Nonce
+	claims.ChallengeIssuedAt = challenge.IssuedAt
 	claims.Ref = fresh.Attributes.Ref
 	claims.Attributes = output.AttributesFromFoundation(fresh.Attributes)
 	claims.MarkerVersion = fresh.Marker.Version
@@ -153,12 +205,6 @@ func (daemon *Daemon) Publish(ctx context.Context, request PublishRequest, canon
 	}
 
 	return receipt, fresh, nil
-}
-
-// StatExact is the fresh exact-generation observation the control plane's
-// challenge demands.
-func (daemon *Daemon) StatExact(ctx context.Context, ref hangar.TreeRef) (output.PublishedObject, error) {
-	return daemon.publisher.StatExactObject(ctx, ref)
 }
 
 // parsePKCS8Ed25519 refuses anything that is not an Ed25519 private key.

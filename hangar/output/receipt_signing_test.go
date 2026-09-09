@@ -58,6 +58,8 @@ func sampleClaims() ReceiptClaims {
 		HandoffID:            "11111111-1111-4111-8111-111111111111",
 		ProducerCheckpointID: "opaque-checkpoint",
 		ReservationID:        "44444444-4444-4444-8444-444444444444",
+		ChallengeNonce:       "nonce-0123456789abcdef",
+		ChallengeIssuedAt:    NewTimestamp(receiptInstant),
 		Incarnation: SourceIncarnation{
 			ExecutionID:      "33333333-3333-4333-8333-333333333333",
 			NodeUID:          "node-1",
@@ -74,14 +76,19 @@ func sampleClaims() ReceiptClaims {
 	}
 }
 
+// sampleChallenge is the challenge the claims say they answer. The nonce and
+// the issued-at come from the claims rather than being restated here, because a
+// verifier's whole job is to compare the two and a fixture that spelled them
+// twice would be comparing this file with itself.
 func sampleChallenge(claims ReceiptClaims, notAfter time.Time) StatChallenge {
 	return StatChallenge{
-		Nonce:           "nonce-0123456789abcdef",
+		Nonce:           claims.ChallengeNonce,
 		HandoffID:       claims.HandoffID,
 		ReservationID:   claims.ReservationID,
 		ActivationEpoch: claims.ActivationEpoch,
 		Ref:             claims.Ref,
 		CaptureFence:    claims.CaptureFence,
+		IssuedAt:        claims.ChallengeIssuedAt,
 		NotAfter:        NewTimestamp(notAfter),
 	}
 }
@@ -376,6 +383,65 @@ func TestAChallengeIsOneUseBoundAndTimeBounded(t *testing.T) {
 	}
 }
 
+func TestAReceiptAnswersTheChallengeItWasSignedAgainstAndNoOther(t *testing.T) {
+	// The facts a receipt binds were all true once. What makes them true *now*
+	// is the challenge: a one-use nonce the verifier issued, with an instant the
+	// stat has to post-date. A receipt bound to the facts alone answers every
+	// later challenge for the same facts, which is the replay Req 25 forbids and
+	// which the DB's one-use row cannot catch, because it consumes a nonce the
+	// receipt never named.
+	signer, verifier, receipt, challenge, clock := signed(t)
+
+	if err := verifier.Verify(receipt, challenge); err != nil {
+		t.Fatalf("the control did not verify: %v", err)
+	}
+
+	// Another nonce for the same facts. Every bound field agrees; only the
+	// challenge is a different one.
+	another := challenge
+	another.Nonce = "nonce-fedcba9876543210"
+	if err := verifier.Verify(receipt, another); !errors.Is(err, ErrConflict) {
+		t.Errorf("a receipt signed against one challenge answered another with the same facts: "+
+			"%v, expected ErrConflict", err)
+	}
+
+	// And the same nonce twice. One use is the whole point of a nonce.
+	if err := verifier.Verify(receipt, challenge); !errors.Is(err, ErrConflict) {
+		t.Errorf("a challenge nonce was accepted twice: %v, expected ErrConflict", err)
+	}
+
+	// A stat that predates the challenge. The receipt is signed at the daemon's
+	// clock and the challenge is issued at the database's, so a receipt signed
+	// before the challenge existed cannot be the fresh observation the challenge
+	// demanded, whatever its facts say. Every other bound fact agrees, and the
+	// nonce agrees too, so this row reaches the freshness check and nothing else.
+	backdated := sampleClaims()
+	backdated.ChallengeNonce = "nonce-0f0f0f0f0f0f0f0f"
+	backdated.ChallengeIssuedAt = NewTimestamp(receiptInstant.Add(time.Minute))
+	staleReceipt, err := signer.Sign(backdated)
+	if err != nil {
+		t.Fatalf("signing the backdated capture: %v", err)
+	}
+	if !staleReceipt.Claims.SignedAt.Before(staleReceipt.Claims.ChallengeIssuedAt.Time) {
+		t.Fatalf("the fixture does not predate its challenge: signed %s, issued %s",
+			staleReceipt.Claims.SignedAt.UTC(), staleReceipt.Claims.ChallengeIssuedAt.UTC())
+	}
+	stale := sampleChallenge(staleReceipt.Claims, receiptInstant.Add(5*time.Minute))
+	if err := verifier.Verify(staleReceipt, stale); !errors.Is(err, ErrConflict) {
+		t.Errorf("a receipt signed before its challenge was issued verified as %v; its stat "+
+			"cannot be the fresh proof the challenge demanded", err)
+	}
+
+	// A window wider than five minutes is not a challenge this cohort issues.
+	wide := sampleChallenge(receipt.Claims, challenge.IssuedAt.Add(time.Hour))
+	if err := verifier.Verify(receipt, wide); !errors.Is(err, ErrLimitExceeded) {
+		t.Errorf("a challenge with an hour-long window verified as %v; the bound is five "+
+			"minutes, the same bound the schema's CHECK carries", err)
+	}
+
+	_ = clock
+}
+
 func TestDeduplicatedBytesGetTheirOwnReceipt(t *testing.T) {
 	signer, verifier, first, firstChallenge, _ := signed(t)
 
@@ -386,6 +452,7 @@ func TestDeduplicatedBytesGetTheirOwnReceipt(t *testing.T) {
 	second.ReservationID = "55555555-5555-4555-8555-555555555555"
 	second.HandoffID = "22222222-2222-4222-8222-222222222222"
 	second.CaptureFence = 6
+	second.ChallengeNonce = "nonce-aaaabbbbccccdddd"
 
 	secondReceipt, err := signer.Sign(second)
 	if err != nil {
@@ -452,6 +519,7 @@ func TestRotationIsANewEpochAndAKeyIsNeverReplacedInPlace(t *testing.T) {
 
 	newClaims := sampleClaims()
 	newClaims.ActivationEpoch = 8
+	newClaims.ChallengeNonce = "nonce-eeeeffff00001111"
 	newReceipt, err := incoming.Sign(newClaims)
 	if err != nil {
 		t.Fatalf("signing under the incoming epoch: %v", err)
@@ -468,7 +536,9 @@ func TestRotationIsANewEpochAndAKeyIsNeverReplacedInPlace(t *testing.T) {
 	// Once the outgoing key's window closes, its receipts stop verifying --
 	// which is why the schema, not elapsed time alone, authorizes removing it.
 	clock.advance(2 * time.Hour)
-	if err := verifier.Verify(oldReceipt, sampleChallenge(oldReceipt.Claims, clock.at.Add(5*time.Minute))); !errors.Is(err, ErrUnauthorized) {
+	expired := sampleChallenge(oldReceipt.Claims, clock.at.Add(5*time.Minute))
+	expired.IssuedAt = NewTimestamp(clock.at)
+	if err := verifier.Verify(oldReceipt, expired); !errors.Is(err, ErrUnauthorized) {
 		t.Errorf("a receipt from a key past its validity window verified as %v", err)
 	}
 
