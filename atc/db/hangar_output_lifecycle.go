@@ -86,16 +86,38 @@ func (repository *HangarOutputRepository) ResolveLogicalReservation(ctx context.
 // the logical reservation exists: every possibly-created object must have a
 // pre-existing reservation that recovery and inventory can correlate, and the
 // schema refuses this write when there is none.
-func (repository *HangarOutputRepository) RecordFirstObjectCreate(ctx context.Context, tx output.Tx, reservation output.ReservationID) error {
+//
+// It takes the fence it is offered under. Req 10: a stale owner may not seal,
+// publish, sign/register a receipt, finalize or release -- and this is the
+// publish half. Every other write on this path is fenced, by the schema for a
+// logical resolution and by the lease itself for ownership; without the fence
+// here, any caller holding a reservation id could move a capture past the one
+// point nothing can walk back, including an owner that was superseded minutes
+// ago and does not know it.
+func (repository *HangarOutputRepository) RecordFirstObjectCreate(ctx context.Context, tx output.Tx, reservation output.ReservationID, fence output.CaptureFence) error {
 	if err := reservation.Validate(); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE hangar_capture_reservations
-		SET first_create_attempted_at = coalesce(first_create_attempted_at, now()),
+	if fence <= 0 {
+		return fmt.Errorf("%w: the irreversible publish point is recorded under the capture fence "+
+			"it was reached at; %d names no ownership", output.ErrIncomplete, fence)
+	}
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE hangar_capture_reservations r
+		SET first_create_attempted_at = coalesce(r.first_create_attempted_at, now()),
 		    past_irreversible_publish_point = true
-		WHERE reservation_id = $1`, string(reservation)); err != nil {
+		WHERE r.reservation_id = $1
+		  AND EXISTS (
+			SELECT 1 FROM hangar_capture_attempt_leases l
+			WHERE l.reservation_id = r.reservation_id AND l.capture_fence = $2)`,
+		string(reservation), int64(fence))
+	if err != nil {
 		return hangarConflict(err)
+	}
+	if recorded, err := result.RowsAffected(); err == nil && recorded == 0 {
+		return fmt.Errorf("%w: reservation %s is not owned at capture fence %d; a stale owner may "+
+			"not publish", executioncontrol.ErrStaleFence, reservation, fence)
 	}
 
 	return nil

@@ -240,7 +240,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			LogicalBytes:    4096,
 			ResolvedAt:      output.NewTimestamp(time.Now()),
 		})).To(Succeed())
-		Expect(repository.RecordFirstObjectCreate(ctx, tx, reservation)).To(Succeed())
+		Expect(repository.RecordFirstObjectCreate(ctx, tx, reservation, 1)).To(Succeed())
 		Expect(tx.Commit()).To(Succeed())
 
 		ref := hangar.TreeRef{Scope: "team-a", Digest: digest, Generation: generation}
@@ -755,6 +755,104 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			Expect(err).To(MatchError(output.ErrConflict))
 			Expect(err.Error()).To(ContainSubstring("against a reservation resolved to"))
 			Expect(tx.Rollback()).To(Succeed())
+		})
+	})
+
+	Describe("the irreversible publish point", func() {
+		// Req 10: a stale owner may not seal, publish, sign/register a
+		// receipt, finalize or release. This is the publish half, and it is
+		// the one write nothing can walk back -- past it, cancellation cannot
+		// unmake the object, and the capture is left to receipt or orphan
+		// settlement.
+		It("refuses a superseded owner", func() {
+			activate()
+
+			handoff := output.HandoffID(uuid.NewString())
+			lease := output.SourceLeaseID(uuid.NewString())
+			execution := identity()
+			name := output.OutputName("result")
+			deadline := output.NewTimestamp(time.Now().Add(24 * time.Hour))
+
+			tx, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(tx)
+			Expect(repository.PredeclareHandoff(ctx, tx, output.CaptureAdmission{
+				ProtocolVersion: output.ProtocolVersion,
+				Execution:       execution,
+				ActivationEpoch: 1,
+				HandoffID:       handoff,
+				SourceLeaseID:   lease,
+				Output:          name,
+				CaptureDeadline: deadline,
+			})).To(Succeed())
+			Expect(repository.AcknowledgeSourceHold(ctx, tx, holdFor(handoff, lease, execution, name))).
+				To(Succeed())
+			reservation, err := repository.CommitCaptureReservation(ctx, tx,
+				output.SuccessfulFinishDisposition{
+					ProtocolVersion:       output.ProtocolVersion,
+					Disposition:           output.DispositionCapture,
+					Execution:             execution,
+					ActivationEpoch:       1,
+					HandoffID:             handoff,
+					SourceLeaseID:         lease,
+					ProducerCheckpointID:  output.OpaqueID("checkpoint-" + string(handoff)),
+					Output:                name,
+					CaptureFence:          1,
+					CaptureDeadline:       deadline,
+					FinishAcknowledgement: finishFor(execution),
+				})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = repository.AcquireCaptureLease(ctx, tx, reservation, uuid.NewString(),
+				output.MinLeaseTerm)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(repository.ResolveLogicalReservation(ctx, tx, output.LogicalResolution{
+				ProtocolVersion: output.ProtocolVersion,
+				Execution:       execution,
+				ActivationEpoch: 1,
+				HandoffID:       handoff,
+				ReservationID:   reservation,
+				CaptureFence:    1,
+				Scope:           "team-a",
+				Digest:          hangarDigest(18),
+				LogicalBytes:    4096,
+				ResolvedAt:      output.NewTimestamp(time.Now()),
+			})).To(Succeed())
+			Expect(tx.Commit()).To(Succeed())
+
+			// Somebody else takes capture ownership over.
+			_, err = dbConn.Exec(`
+				UPDATE hangar_capture_attempt_leases
+				SET owner_id = $2, capture_fence = capture_fence + 1, renewed_at = now(),
+				    expires_at = now() + interval '15 minutes'
+				WHERE reservation_id = $1`, string(reservation), uuid.NewString())
+			Expect(err).NotTo(HaveOccurred())
+
+			superseded, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(superseded)
+			err = repository.RecordFirstObjectCreate(ctx, superseded, reservation, 1)
+			Expect(err).To(MatchError(executioncontrol.ErrStaleFence))
+			Expect(err.Error()).To(ContainSubstring("a stale owner may not publish"))
+			Expect(superseded.Rollback()).To(Succeed())
+
+			var past bool
+			Expect(dbConn.QueryRow(`
+				SELECT past_irreversible_publish_point FROM hangar_capture_reservations
+				WHERE reservation_id = $1`, string(reservation)).Scan(&past)).To(Succeed())
+			Expect(past).To(BeFalse(),
+				"a superseded owner moved the capture past the point nothing walks back")
+
+			// And the owner that actually holds the fence records it.
+			current, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(current)
+			Expect(repository.RecordFirstObjectCreate(ctx, current, reservation, 2)).To(Succeed())
+			Expect(current.Commit()).To(Succeed())
+
+			Expect(dbConn.QueryRow(`
+				SELECT past_irreversible_publish_point FROM hangar_capture_reservations
+				WHERE reservation_id = $1`, string(reservation)).Scan(&past)).To(Succeed())
+			Expect(past).To(BeTrue())
 		})
 	})
 
