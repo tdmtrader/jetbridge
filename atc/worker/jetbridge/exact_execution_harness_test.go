@@ -157,12 +157,13 @@ func startOutputDaemon() (*outputDaemonHarness, error) {
 		"--scratch-dir", filepath.Join(dir, "scratch"),
 		"--listen", fmt.Sprintf("127.0.0.1:%d", port),
 	)
+	transport := &http.Client{Timeout: 10 * time.Second}
 	daemon.Stdout, daemon.Stderr = os.Stderr, os.Stderr
 	if err := daemon.Start(); err != nil {
 		return nil, err
 	}
 
-	if err := waitForReady(endpoint); err != nil {
+	if err := waitForReady(transport, endpoint); err != nil {
 		_ = daemon.Process.Kill()
 
 		return nil, err
@@ -177,9 +178,8 @@ func startOutputDaemon() (*outputDaemonHarness, error) {
 		Endpoint: endpoint,
 		StepsDir: filepath.Join(dir, "steps"),
 		Minter:   minter,
-		Client: NewOutputControlClient(endpoint, &http.Client{Timeout: 10 * time.Second},
-			minter, harnessEpoch),
-		cmd: daemon,
+		Client:   NewOutputControlClient(endpoint, transport, minter, harnessEpoch),
+		cmd:      daemon,
 	}, nil
 }
 
@@ -197,11 +197,11 @@ func (harness *outputDaemonHarness) ForNode(_ context.Context, _ string) (Output
 	return harness.Client, nil
 }
 
-func waitForReady(endpoint string) error {
+func waitForReady(client *http.Client, endpoint string) error {
 	deadline := time.Now().Add(20 * time.Second)
 	var last error
 	for time.Now().Before(deadline) {
-		response, err := http.Get(endpoint + "/readyz")
+		response, err := client.Get(endpoint + "/readyz")
 		if err == nil {
 			response.Body.Close()
 			if response.StatusCode == http.StatusOK {
