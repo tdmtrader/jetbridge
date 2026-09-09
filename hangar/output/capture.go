@@ -173,6 +173,27 @@ func (kind CaptureAcknowledgementKind) Validate() error {
 	return err
 }
 
+// stateProved is the human-readable state each statement attests. It exists so
+// that ValidateAs can say what was expected rather than only what was offered.
+func (kind CaptureAcknowledgementKind) stateProved() string {
+	switch kind {
+	case CaptureHoldAcknowledged:
+		return "the pre-start, non-authorizing source hold"
+	case CaptureHoldReleased:
+		return "one exact fenced release of that hold"
+	case CaptureWriterTicketIssued:
+		return "one admitted writer over the incarnation"
+	case CaptureWriterTicketClosed:
+		return "one admitted writer retired"
+	case CaptureSealStarted:
+		return "future writer admission fenced"
+	case CaptureSealConfirmed:
+		return "admission fenced and every captured writer drained"
+	}
+
+	return string(kind)
+}
+
 // concernsAWriterTicket reports whether this kind must name one.
 func (kind CaptureAcknowledgementKind) concernsAWriterTicket() bool {
 	return kind == CaptureWriterTicketIssued || kind == CaptureWriterTicketClosed
@@ -265,6 +286,31 @@ func (ack CaptureAcknowledgement) Validate() error {
 	if ack.Kind == CaptureHoldAcknowledged && ack.WriterFence != 0 {
 		return fmt.Errorf("%w: the pre-start hold carries writer fence %d; the hold authorizes "+
 			"no writing at all", ErrIncomplete, ack.WriterFence)
+	}
+
+	return nil
+}
+
+// ValidateAs is Validate plus the rule a boolean beside an acknowledgement
+// cannot express: this statement must be of the kind that attests the state it
+// is being offered for.
+//
+// Sealing is why it exists. `seal_started` says admission is fenced and
+// `seal_confirmed` says every captured writer drained; those are two states,
+// owned by two actors, and a value that carried an acknowledgement of any kind
+// next to a `Confirmed: true` field would let a pre-start hold back a confirmed
+// seal. Binding the kind to the state is the structural form of Req 15's "both
+// halves hold".
+func (ack CaptureAcknowledgement) ValidateAs(kind CaptureAcknowledgementKind) error {
+	if err := kind.Validate(); err != nil {
+		return err
+	}
+	if err := ack.Validate(); err != nil {
+		return err
+	}
+	if ack.Kind != kind {
+		return fmt.Errorf("%w: a %s statement was offered as proof of %s; only a %s statement "+
+			"attests that", ErrIncomplete, ack.Kind, kind.stateProved(), kind)
 	}
 
 	return nil

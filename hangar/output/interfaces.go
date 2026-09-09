@@ -315,40 +315,141 @@ type SealRequest struct {
 	DeadlineAt      Timestamp
 }
 
-// SealResult is what sealing proved.
+// SealStarted is the daemon half: admission is fenced, and this is the exact
+// set of writers the other half must account for.
 //
 // DrainSet is captured at the moment admission is fenced, and it is the set
 // sealing waits for. A later query returning zero current tickets is not the
 // same thing and is not accepted as proof: the point of capturing the set is
 // that a writer admitted and closed during the wait is still accounted for.
 //
-// Confirmed false with a reason is ErrSealUnconfirmed: no receipt is published,
-// and the producer is not re-executed.
-type SealResult struct {
+// It is returned rather than waited on because the ATC cannot know *which* pod
+// writers to terminate until it has this list, and the seal cannot be confirmed
+// until it has terminated them. A single blocking call would make each half
+// wait for the other.
+type SealStarted struct {
 	Acknowledgement CaptureAcknowledgement
 	DrainSet        []WriterTicketID
-	Confirmed       bool
-	UnconfirmedWhy  string
 }
 
-func (result SealResult) Validate() error {
-	if err := result.Acknowledgement.Validate(); err != nil {
+func (started SealStarted) Validate() error {
+	if err := started.Acknowledgement.ValidateAs(CaptureSealStarted); err != nil {
 		return err
 	}
-	if result.Confirmed {
-		if result.UnconfirmedWhy != "" {
-			return fmt.Errorf("%w: seal confirmed and unconfirmed at once (%q)",
-				ErrIncomplete, result.UnconfirmedWhy)
-		}
 
-		return nil
-	}
-	if result.UnconfirmedWhy == "" {
-		return fmt.Errorf("%w: seal unconfirmed with no reason; a refusal nobody can read is a "+
-			"capture nobody can diagnose", ErrSealUnconfirmed)
+	seen := map[WriterTicketID]bool{}
+	for _, ticket := range started.DrainSet {
+		if err := ticket.Validate(); err != nil {
+			return err
+		}
+		if seen[ticket] {
+			return fmt.Errorf("%w: writer ticket %s appears twice in the captured drain set",
+				ErrIncomplete, ticket)
+		}
+		seen[ticket] = true
 	}
 
 	return nil
+}
+
+// DrainedWriter is one ticket from the captured drain set, and the proof that
+// it is closed.
+//
+// PodUID is empty for a writer that was never a pod process -- the daemon's own
+// cleanup, delete, replacement, remap and reuse paths hold tickets too. When it
+// is set, Req 14's Kubernetes half applies: the final status of every regular,
+// init, sidecar and ephemeral container must have been observed `terminated`
+// for that exact UID. NotFound, Gone and a force deletion are not that
+// observation, which is why the field records what was seen rather than what
+// was attempted.
+type DrainedWriter struct {
+	WriterTicketID       WriterTicketID
+	Closed               CaptureAcknowledgement
+	PodUID               executioncontrol.PodUID
+	ContainersTerminated bool
+}
+
+func (drained DrainedWriter) Validate() error {
+	if err := drained.WriterTicketID.Validate(); err != nil {
+		return err
+	}
+	if err := drained.Closed.ValidateAs(CaptureWriterTicketClosed); err != nil {
+		return err
+	}
+	if drained.Closed.WriterTicketID != drained.WriterTicketID {
+		return fmt.Errorf("%w: the close statement names writer ticket %s, and this evidence is "+
+			"offered for %s", ErrInvalidIdentity, drained.Closed.WriterTicketID, drained.WriterTicketID)
+	}
+	if drained.PodUID != "" && !drained.ContainersTerminated {
+		return fmt.Errorf("%w: writer ticket %s was held by pod %s and no terminated status was "+
+			"observed for its containers", ErrSealUnconfirmed, drained.WriterTicketID, drained.PodUID)
+	}
+
+	return nil
+}
+
+// SealConfirmation is the ATC half: the drain and container-termination
+// evidence for the set BeginSeal captured.
+//
+// It carries the whole SealStarted rather than a ticket count, because the
+// captured set is the only admissible proof. Validate requires the evidence to
+// cover exactly that set, so "no tickets are outstanding right now" has nowhere
+// to be expressed.
+type SealConfirmation struct {
+	Started      SealStarted
+	Drained      []DrainedWriter
+	CaptureFence CaptureFence
+	ObservedAt   Timestamp
+}
+
+func (confirmation SealConfirmation) Validate() error {
+	if err := confirmation.Started.Validate(); err != nil {
+		return err
+	}
+	if confirmation.CaptureFence == 0 {
+		return fmt.Errorf("%w: capture fence is zero; a stale owner may not confirm a seal",
+			ErrIncomplete)
+	}
+
+	fenced := confirmation.Started.Acknowledgement
+	accounted := map[WriterTicketID]bool{}
+	for _, drained := range confirmation.Drained {
+		if err := drained.Validate(); err != nil {
+			return err
+		}
+		if accounted[drained.WriterTicketID] {
+			return fmt.Errorf("%w: writer ticket %s is accounted for twice",
+				ErrIncomplete, drained.WriterTicketID)
+		}
+		if drained.Closed.Execution != fenced.Execution {
+			return fmt.Errorf("%w: the close statement for writer ticket %s belongs to a "+
+				"different exact execution than the seal", ErrInvalidIdentity, drained.WriterTicketID)
+		}
+		if drained.Closed.ActivationEpoch != fenced.ActivationEpoch {
+			return fmt.Errorf("%w: the close statement for writer ticket %s was made under epoch "+
+				"%d and the seal under %d", ErrInvalidIdentity, drained.WriterTicketID,
+				drained.Closed.ActivationEpoch, fenced.ActivationEpoch)
+		}
+		accounted[drained.WriterTicketID] = true
+	}
+
+	captured := map[WriterTicketID]bool{}
+	for _, ticket := range confirmation.Started.DrainSet {
+		captured[ticket] = true
+		if !accounted[ticket] {
+			return fmt.Errorf("%w: writer ticket %s was in the captured drain set and no close "+
+				"statement accounts for it", ErrSealUnconfirmed, ticket)
+		}
+	}
+	for _, drained := range confirmation.Drained {
+		if !captured[drained.WriterTicketID] {
+			return fmt.Errorf("%w: writer ticket %s was never in the captured drain set; a seal "+
+				"is confirmed against the set captured when admission was fenced, not against "+
+				"whatever is outstanding now", ErrIncomplete, drained.WriterTicketID)
+		}
+	}
+
+	return confirmation.ObservedAt.Validate()
 }
 
 // ReleaseIntent is the caller-recorded half of an exact fenced source release.
@@ -381,8 +482,18 @@ type SourceControl interface {
 	// RetireWriter closes a ticket.
 	RetireWriter(ctx context.Context, admission WriterAdmission) (CaptureAcknowledgement, error)
 
-	// Seal fences future admission and waits for the captured drain set.
-	Seal(ctx context.Context, request SealRequest) (SealResult, error)
+	// BeginSeal fences future admission and returns the drain set captured at
+	// that instant. It does not wait: the caller cannot terminate the writers
+	// it has not been told about, so waiting here would be each half waiting
+	// for the other.
+	BeginSeal(ctx context.Context, request SealRequest) (SealStarted, error)
+
+	// ConfirmSeal takes the drain and container-termination evidence for that
+	// exact captured set and returns the seal_confirmed acknowledgement, or
+	// ErrSealUnconfirmed with the reason. Nothing is canonicalized before it
+	// returns, no receipt is published if it does not, and the producer is
+	// never re-executed.
+	ConfirmSeal(ctx context.Context, confirmation SealConfirmation) (CaptureAcknowledgement, error)
 
 	// AcknowledgeRelease is the daemon half of a no-capture or
 	// pre-reservation-cancel handoff. It is idempotent for the same intent.

@@ -123,6 +123,22 @@ func refuseMarker(t *testing.T, raw []byte) {
 	t.Logf("refused as required: %v", err)
 }
 
+// roundTripAcknowledgementOfKind is roundTrip plus ValidateAs: the fixture must
+// be the statement it claims to be. A source-ledger statement whose kind is not
+// bound to the state it proves is finding 1's defect on the wire.
+func roundTripAcknowledgementOfKind(kind CaptureAcknowledgementKind) func(*testing.T, []byte) {
+	return func(t *testing.T, raw []byte) {
+		t.Helper()
+
+		roundTrip[CaptureAcknowledgement](t, raw)
+
+		ack := decodeExact[CaptureAcknowledgement](t, raw)
+		if err := ack.ValidateAs(kind); err != nil {
+			t.Errorf("the frozen fixture is not a %s statement: %v", kind, err)
+		}
+	}
+}
+
 var protocolFixtures = map[string]func(*testing.T, []byte){
 	"source-incarnation.json": func(t *testing.T, raw []byte) { roundTrip[SourceIncarnation](t, raw) },
 	"capture-admission.json":  func(t *testing.T, raw []byte) { roundTrip[CaptureAdmission](t, raw) },
@@ -133,6 +149,12 @@ var protocolFixtures = map[string]func(*testing.T, []byte){
 	"writer-ticket-acknowledgement.json": func(t *testing.T, raw []byte) {
 		roundTrip[CaptureAcknowledgement](t, raw)
 	},
+
+	// Sealing's two halves are two statements, so each gets its own frozen
+	// fixture and each is asserted to be of its own kind. A single fixture
+	// would freeze the merged shape this contract exists not to have.
+	"seal-started-acknowledgement.json":   roundTripAcknowledgementOfKind(CaptureSealStarted),
+	"seal-confirmed-acknowledgement.json": roundTripAcknowledgementOfKind(CaptureSealConfirmed),
 
 	"successful-finish-disposition.json": func(t *testing.T, raw []byte) {
 		roundTrip[SuccessfulFinishDisposition](t, raw)
