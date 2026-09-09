@@ -290,8 +290,22 @@ type ReceiptSignatureVerifier struct {
 
 	// consumed is the in-process half of the challenge's one-use rule.
 	//
-	// The durable authority is the schema: hangar_challenge_one_use raises on a
-	// second UPDATE of a consumed row, and that is the guard a restart survives.
+	// The durable authority is the schema, and it is worth naming the guards
+	// that actually fire, because the obvious candidate does not.
+	// hangar_challenge_one_use raises on a second UPDATE of a *consumed* row,
+	// but RegisterReceipt's consume is `UPDATE … WHERE nonce = $1 AND
+	// consumed_at IS NULL AND not_after > now()` — a consumed, expired or
+	// absent nonce is simply outside the update set, so that trigger never sees
+	// it. What refuses those durably is
+	// hangar_output_receipts.challenge_nonce's `NOT NULL UNIQUE REFERENCES
+	// hangar_receipt_stat_challenges(nonce)` (a reused nonce is a unique
+	// violation, since the insert's ON CONFLICT names only reservation_id, and
+	// a missing one is a foreign-key violation) together with the deferred
+	// hangar_receipt_admission trigger's `consumed_at IS NULL` arm (JB004),
+	// which refuses a registration whose challenge was never consumed — an
+	// expired nonce among them. Every case fails closed; those two are the
+	// guards a restart survives.
+	//
 	// This one exists because a verifier that accepted the same nonce twice in
 	// one process would report "verified" twice for one challenge, and whoever
 	// read the second answer would learn nothing about whether the transaction
