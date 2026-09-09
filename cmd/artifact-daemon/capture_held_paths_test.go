@@ -580,3 +580,67 @@ func TestTheCaptureClassRouteAnswersHeldAndUnheldAndDestroysNothing(t *testing.T
 			"asked (err %v)", len(entries), err)
 	}
 }
+
+// A READ-ONLY alias onto a held incarnation is admitted, and it is the only
+// kind that is.
+//
+// Reviewer's F4, and the ruling: capture is ADDITIVE. A capture-selected task's
+// Pod mounts the reserved incarnation as its declared output's volume, so
+// `steps/<handle>/<output>` is a sibling directory nothing wrote into -- and
+// with the write-capable alias refused (correctly) and no read-only one
+// admitted, a downstream step consuming that output fetched an empty directory
+// and nothing said so.
+//
+// The three arms are the whole rule. A write-capable alias onto the held source
+// is still refused; a read-only one is created; and a read-only REMAP of a key
+// that currently names the held source is still refused, because pointing that
+// key elsewhere destroys the only way anything finds those bytes and no amount
+// of read-only-ness makes that safe.
+func TestAReadOnlyAliasOntoACaptureHeldSourceIsAdmittedAndAWriteCapableOneIsNot(t *testing.T) {
+	server, storage := capturedServer(t)
+	handler := server.Handler()
+
+	register := func(key, localPath string, readOnly bool) int {
+		body, err := json.Marshal(registerRequest{
+			Key: key, LocalPath: localPath, ReadOnly: readOnly,
+		})
+		if err != nil {
+			t.Fatalf("encoding: %v", err)
+		}
+		request := httptest.NewRequest(http.MethodPost, "/register", bytes.NewReader(body))
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+
+		return recorder.Code
+	}
+
+	held := filepath.Join(storage, "steps", heldIncarnation())
+	unheld := filepath.Join(storage, "steps", "unheld-handle", "out")
+
+	// The control, and it is the arm that keeps this from weakening the guard:
+	// a write-capable alias onto the same path is still a conflict.
+	if code := register("a-write-capable-name", held, false); code != http.StatusConflict {
+		t.Fatalf("a write-capable alias onto a capture-held source answered %d", code)
+	}
+
+	// The read-only one is created, and it resolves to the incarnation.
+	if code := register("the-outputs-ordinary-key", held, true); code != http.StatusCreated {
+		t.Fatalf("a read-only alias onto a capture-held source answered %d; a captured output "+
+			"is still an ordinary output and a downstream step must be able to fetch it", code)
+	}
+	rel, found := server.registry.Lookup("the-outputs-ordinary-key")
+	if !found || !strings.HasSuffix(string(rel), heldIncarnation()) {
+		t.Errorf("the read-only alias resolves to %q and the incarnation is %q",
+			rel, heldIncarnation())
+	}
+
+	// And a read-only REMAP off the held source is still refused. The mode says
+	// what the NEW end may be; it says nothing about unmapping the old one.
+	if code := register("the-outputs-ordinary-key", unheld, true); code != http.StatusConflict {
+		t.Errorf("a read-only remap off a capture-held source answered %d", code)
+	}
+	if rel, found := server.registry.Lookup("the-outputs-ordinary-key"); !found ||
+		!strings.HasSuffix(string(rel), heldIncarnation()) {
+		t.Errorf("a refused read-only remap moved the alias to %q", rel)
+	}
+}

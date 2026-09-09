@@ -111,7 +111,25 @@ func (r *Registry) AmbientPath(rel RelKey) string {
 
 // RegisterAlias records an alias entry (volume handle → location) and
 // persists it to disk so it survives daemon restarts.
+// RegisterAlias registers a WRITE-CAPABLE name for an artifact.
 func (r *Registry) RegisterAlias(key, localPath string) (RelKey, error) {
+	return r.registerAlias(key, localPath, false)
+}
+
+// RegisterReadOnlyAlias registers a name for READING bytes another authority
+// owns.
+//
+// The one caller is a capture-selected task's declared output: its Pod mounts
+// the reserved incarnation, so the ordinary `steps/<handle>/<output>` is a
+// sibling nothing wrote into, and a downstream step must still be able to fetch
+// the output by its ordinary key. Capture is additive -- a captured output is
+// still an output -- and this is the narrow door that keeps it so without
+// reopening the one Req 16 closes.
+func (r *Registry) RegisterReadOnlyAlias(key, localPath string) (RelKey, error) {
+	return r.registerAlias(key, localPath, true)
+}
+
+func (r *Registry) registerAlias(key, localPath string, readOnly bool) (RelKey, error) {
 	rk, err := containedRelKey(r.storagePath, localPath)
 	if err != nil {
 		r.logger.Info("register-alias-refused", lager.Data{
@@ -134,8 +152,17 @@ func (r *Registry) RegisterAlias(key, localPath string) (RelKey, error) {
 	// Asked here rather than in the handler because this is the one function
 	// that holds both ends; a handler-side check would have to look the old
 	// end up, and the lookup and the write would not be the same operation.
-	if err := r.refuseIfCaptureHeld(rk); err != nil {
-		return "", err
+	// The NEW end, and the mode decides it. A write-capable alias onto a held
+	// incarnation is the second name Req 3 names beside cleanup; a READ-ONLY
+	// one is how a capture-selected task's output stays an ordinary output that
+	// downstream steps can fetch, which is what "capture is additive" means.
+	// Every destructive and write-capable route on this daemon asks the ledger
+	// about the location it resolved to, so the read-only alias opens no door
+	// that a direct key onto the incarnation does not already close.
+	if !readOnly {
+		if err := r.refuseIfCaptureHeld(rk); err != nil {
+			return "", err
+		}
 	}
 	if existing, found := r.Lookup(key); found && existing != rk {
 		if err := r.refuseIfCaptureHeld(existing); err != nil {

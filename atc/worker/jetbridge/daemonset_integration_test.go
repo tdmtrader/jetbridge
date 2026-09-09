@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -2365,4 +2366,161 @@ func (a *stubArtifact) Handle() string { return a.handle }
 func (a *stubArtifact) Source() string { return "test-worker" }
 func (a *stubArtifact) StreamOut(_ context.Context, _ string, _ compression.Compression) (io.ReadCloser, error) {
 	return nil, nil
+}
+
+// The captured output stays an ordinary output.
+//
+// Reviewer's F4, and the ruling on it: capture is ADDITIVE. `Container.buildPod`
+// now mounts the reserved incarnation as the selected output's volume, and
+// RecordOutputs went on recording `steps/<handle>/<output>` for it -- a sibling
+// directory the producer never writes into -- so a downstream step consuming
+// that output would fetch an empty directory and nothing would say so.
+//
+// The control is asserted first and it is the unselected output: it still
+// records `<handle>/<name>`, because Req 59 says an ordinary output's behaviour
+// is unchanged.
+func TestDaemonSetMode_RecordOutputsPointsTheCapturedOutputAtItsIncarnation(t *testing.T) {
+	var registrations []struct {
+		Key, LocalPath string
+		ReadOnly       bool
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/register" {
+			http.NotFound(w, r)
+
+			return
+		}
+		var req struct {
+			Key       string `json:"key"`
+			LocalPath string `json:"local_path"`
+			ReadOnly  bool   `json:"read_only"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		registrations = append(registrations, struct {
+			Key, LocalPath string
+			ReadOnly       bool
+		}{req.Key, req.LocalPath, req.ReadOnly})
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	locator := NewArtifactLocator()
+	cfg := daemonSetConfig()
+	cfg.OutputPlaneEnabled = true
+
+	captured := NewStubVolume("captured-vol", "test-worker", "/tmp/build/result")
+	ordinary := NewStubVolume("ordinary-vol", "test-worker", "/tmp/build/report")
+
+	control := admittedCapture()
+	spec := runtime.ContainerSpec{
+		Dir:              "/tmp/build",
+		Type:             db.ContainerTypeTask,
+		Outputs:          runtime.OutputPaths{"result": "/tmp/build/result", "report": "/tmp/build/report"},
+		ExecutionControl: control,
+	}
+
+	backend := NewDaemonSetBackend(cfg, locator, nil)
+	backend.RecordOutputs(context.Background(), "capture-handle", "test-node",
+		[]*Volume{captured, ordinary}, spec)
+
+	// The control: the unselected output is exactly where it always was.
+	ordinaryLoc, found := locator.Locate(ArtifactKey(ordinary.Handle()))
+	if !found {
+		t.Fatal("the unselected output was not recorded at all")
+	}
+	if ordinaryLoc.HostDir != "capture-handle/report" {
+		t.Errorf("the unselected output moved to %q; an ordinary output is unchanged",
+			ordinaryLoc.HostDir)
+	}
+
+	// And the captured one names the directory the producer actually wrote to.
+	capturedLoc, found := locator.Locate(ArtifactKey(captured.Handle()))
+	if !found {
+		t.Fatal("the captured output was not recorded, so no downstream step can find it")
+	}
+	want := control.Capture.ReservedDirectory
+	if capturedLoc.HostDir != want {
+		t.Errorf("the captured output is recorded at %q and its producer wrote into %q; a "+
+			"downstream step would fetch a directory that does not exist",
+			capturedLoc.HostDir, want)
+	}
+}
+
+// And the alias for it goes through the register route as READ-ONLY.
+//
+// The register guard refuses an alias onto a capture-held location, and it is
+// right to: a second write-capable name for bytes a capture is about to seal
+// hands every key-taking destructive path a way to reach them under a name the
+// capture never heard of. A read is not that. So the alias declares itself, and
+// the daemon admits it -- which is what keeps ordinary artifact passing working
+// over a held incarnation without reopening the door Req 16 closes.
+func TestDaemonSetMode_TheCapturedOutputsAliasIsRegisteredReadOnly(t *testing.T) {
+	type registration struct {
+		Key, LocalPath string
+		ReadOnly       bool
+	}
+	var registrations []registration
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/register" {
+			http.NotFound(w, r)
+
+			return
+		}
+		var req struct {
+			Key       string `json:"key"`
+			LocalPath string `json:"local_path"`
+			ReadOnly  bool   `json:"read_only"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		registrations = append(registrations, registration{req.Key, req.LocalPath, req.ReadOnly})
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	endpoint, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parsing the test server URL: %v", err)
+	}
+	port, err := strconv.Atoi(endpoint.Port())
+	if err != nil {
+		t.Fatalf("parsing the test server port: %v", err)
+	}
+
+	cfg := daemonSetConfig()
+	cfg.OutputPlaneEnabled = true
+	cfg.ArtifactDaemonPort = port
+
+	// A real NodeIPResolver over a fake API server whose one Node's internal IP
+	// is the test server's. Nothing about the register path is stubbed: the
+	// backend composes the URL and posts the body it would post in a cluster.
+	backend := NewDaemonSetBackend(cfg, NewArtifactLocator(), nil)
+	backend.nodeIPResolver = NewNodeIPResolver(fake.NewSimpleClientset(&corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-node"},
+		Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{
+			{Type: corev1.NodeInternalIP, Address: endpoint.Hostname()},
+		}},
+	}))
+
+	control := admittedCapture()
+	reserved := control.Capture.ReservedDirectory
+
+	backend.registerDaemonAlias("test-node", "ordinary-key",
+		filepath.Join(cfg.ArtifactDaemonHostPath, "steps", "capture-handle", "report"))
+	backend.registerReadOnlyDaemonAlias("test-node", "captured-key",
+		filepath.Join(cfg.ArtifactDaemonHostPath, "steps", reserved))
+
+	if len(registrations) != 2 {
+		t.Fatalf("expected two registrations, got %d: %+v", len(registrations), registrations)
+	}
+	if registrations[0].ReadOnly {
+		t.Error("an ordinary output's alias declared itself read-only")
+	}
+	if !registrations[1].ReadOnly {
+		t.Error("the captured output's alias did not declare itself read-only, so the register " +
+			"guard will refuse it as a second write-capable name for held bytes")
+	}
+	if !strings.HasSuffix(registrations[1].LocalPath, reserved) {
+		t.Errorf("the captured output's alias points at %q and the incarnation is %q",
+			registrations[1].LocalPath, reserved)
+	}
 }

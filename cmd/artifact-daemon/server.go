@@ -1042,6 +1042,24 @@ type registerRequest struct {
 	// single segment; DurableKey names a bucket object and carries a
 	// retention-class prefix that a lifecycle rule acts on.
 	DurableKey string `json:"durable_key,omitempty"`
+
+	// ReadOnly says this alias is a name for READING bytes another authority
+	// owns, and it is the one kind the capture guard admits onto a held
+	// incarnation.
+	//
+	// The guard refuses an alias onto a capture-held location because a second
+	// write-capable name for bytes a capture is about to seal reaches them
+	// under a name the capture never heard of. What Req 16 forbids is that
+	// mount, not a read -- and a capture-selected task's output is still an
+	// ordinary output that downstream steps must be able to fetch. So the
+	// caller declares which of the two it is asking for, and refusing an
+	// undeclared one is what keeps "read-only" from being a default nobody
+	// chose.
+	//
+	// Remapping a key that CURRENTLY names a held source is refused either
+	// way: that destroys the only way anything finds those bytes, which no
+	// amount of read-only-ness makes safe.
+	ReadOnly bool `json:"read_only,omitempty"`
 }
 
 // mirrorRequest is the JSON body for POST /mirror.
@@ -1152,7 +1170,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// so this is the one Register call whose input is not derived from the
 	// daemon's own tree — and 400 is the honest status: the caller named a path
 	// outside the store.
-	loc, err := s.registry.RegisterAlias(req.Key, req.LocalPath)
+	register := s.registry.RegisterAlias
+	if req.ReadOnly {
+		register = s.registry.RegisterReadOnlyAlias
+	}
+	loc, err := register(req.Key, req.LocalPath)
 	if err != nil {
 		s.logger.Info("register-refused", lager.Data{"key": req.Key, "path": req.LocalPath, "reason": err.Error()})
 		// Two different refusals with two different statuses. An uncontained

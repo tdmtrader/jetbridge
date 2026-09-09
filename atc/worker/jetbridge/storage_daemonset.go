@@ -829,11 +829,30 @@ func (b *DaemonSetBackend) RecordOutputs(ctx context.Context, handle, nodeName s
 			subdir = "unknown"
 		}
 		daemonKey := handle + "/" + subdir
+
+		// The ONE selected output lives somewhere else, and capture is
+		// ADDITIVE: it is still an ordinary output and downstream steps still
+		// resolve it in the ordinary way. `Container.buildPod` mounts the
+		// reserved incarnation as its volume, so `steps/<handle>/<output>` is
+		// a sibling directory nothing wrote into -- recording that one would
+		// hand a consumer an empty tree with nothing to say it was empty.
+		//
+		// The ATC composes nothing here either: ReservedDirectory came off the
+		// wire from `reserve-incarnation` and is repeated.
+		readOnly := false
+		if reserved := captureReservedDirectory(spec); reserved != "" &&
+			subdir == captureSelectedOutputName(spec) {
+			daemonKey = reserved
+			// And the alias onto it is read-only, because the incarnation is
+			// held: a write-capable second name is what the register guard
+			// exists to refuse.
+			readOnly = true
+		}
 		b.artifactLocator.Record(key, nodeName, daemonKey)
 
 		if nodeName != "" {
-			diskPath := filepath.Join(b.config.ArtifactDaemonHostPath, "steps", handle, subdir)
-			b.registerDaemonAlias(nodeName, key, diskPath)
+			diskPath := filepath.Join(b.config.ArtifactDaemonHostPath, "steps", daemonKey)
+			b.registerAlias(nodeName, key, diskPath, readOnly)
 			// Trigger an outbound mirror on the producer's daemon so the
 			// step output survives loss of this node. Best-effort: if the
 			// trigger fails, the build still succeeds — node loss just
@@ -870,7 +889,25 @@ func (b *DaemonSetBackend) triggerMirror(nodeName, daemonKey string) {
 	_ = b.daemonClient.TriggerMirror(ctx, nodeIP, daemonKey)
 }
 
+// registerReadOnlyDaemonAlias registers a name for bytes another authority
+// owns.
+//
+// The register guard refuses an alias onto a capture-held location, and it is
+// right to: a second WRITE-CAPABLE name for bytes a capture is about to seal
+// hands every key-taking destructive path on that daemon a way to reach them
+// under a name the capture never heard of. A read is not that, and Req 16
+// forbids the mount, not the read -- so the captured output stays an ordinary
+// output that downstream steps resolve in the ordinary way, and the alias says
+// which of the two it is.
+func (b *DaemonSetBackend) registerReadOnlyDaemonAlias(nodeName, volumeKey, diskPath string) {
+	b.registerAlias(nodeName, volumeKey, diskPath, true)
+}
+
 func (b *DaemonSetBackend) registerDaemonAlias(nodeName, volumeKey, diskPath string) {
+	b.registerAlias(nodeName, volumeKey, diskPath, false)
+}
+
+func (b *DaemonSetBackend) registerAlias(nodeName, volumeKey, diskPath string, readOnly bool) {
 	if b.nodeIPResolver == nil {
 		fmt.Fprintf(os.Stderr, "WARNING: registerDaemonAlias: no node IP resolver configured\n")
 		return
@@ -891,7 +928,7 @@ func (b *DaemonSetBackend) registerDaemonAlias(nodeName, volumeKey, diskPath str
 	}
 
 	url := fmt.Sprintf("%s://%s:%d/register", b.daemonScheme(), nodeIP, port)
-	body := fmt.Sprintf(`{"key":%q,"local_path":%q}`, volumeKey, diskPath)
+	body := fmt.Sprintf(`{"key":%q,"local_path":%q,"read_only":%t}`, volumeKey, diskPath, readOnly)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
 	if err != nil {
