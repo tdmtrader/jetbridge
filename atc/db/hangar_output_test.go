@@ -1014,6 +1014,196 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			Expect(settled).To(BeTrue(), "the acknowledged release did not settle the capture")
 		})
 
+		// Phase 3 completion pass. The capture branch's release guard is
+		// `state = 'cancelled' AND NOT past_irreversible_publish_point`, and
+		// the second half had no vector: through the repository the two facts
+		// look mutually exclusive, because RecordFirstObjectCreate refuses a
+		// cancelled row and CancelOrSettle returns early past the publish
+		// point. So the state the guard defends against looked unreachable,
+		// and a guard against an unreachable state is one somebody deletes.
+		//
+		// It is reachable, by the interleaving the guard is FOR. A publish that
+		// is already in flight passes the point while the row is still live;
+		// the canceller classifies the handoff a moment earlier, sees a capture
+		// it may cancel, and then blocks on the publisher's row lock. When it
+		// wakes the row is past the point and its own UPDATE -- which re-checks
+		// only `settled_at IS NULL` -- goes through. State: cancelled, and past
+		// the point nothing walks back.
+		//
+		// The release offered there is a node working from stale state. The
+		// object may exist; the capture settles a registered receipt or a
+		// terminal orphan, and admitting the release would settle it while an
+		// object nobody has correlated is sitting in the bucket.
+		It("refuses a release offered after the irreversible publish point, and admits one before it", func() {
+			activate()
+
+			setUp := func() (output.HandoffID, output.ReservationID, output.ReleaseAcknowledgement) {
+				handoff := output.HandoffID(uuid.NewString())
+				lease := output.SourceLeaseID(uuid.NewString())
+				execution := identity()
+				name := output.OutputName("result")
+				deadline := output.NewTimestamp(time.Now().Add(24 * time.Hour))
+
+				tx, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(tx)
+				Expect(repository.PredeclareHandoff(ctx, tx, output.CaptureAdmission{
+					ProtocolVersion: output.ProtocolVersion,
+					Execution:       execution,
+					ActivationEpoch: 1,
+					HandoffID:       handoff,
+					SourceLeaseID:   lease,
+					Output:          name,
+					CaptureDeadline: deadline,
+				})).To(Succeed())
+				Expect(repository.AcknowledgeSourceHold(ctx, tx,
+					holdFor(handoff, lease, execution, name))).To(Succeed())
+				reservation, err := repository.CommitCaptureReservation(ctx, tx,
+					output.SuccessfulFinishDisposition{
+						ProtocolVersion:       output.ProtocolVersion,
+						Disposition:           output.DispositionCapture,
+						Execution:             execution,
+						ActivationEpoch:       1,
+						HandoffID:             handoff,
+						SourceLeaseID:         lease,
+						ProducerCheckpointID:  output.OpaqueID("checkpoint-" + string(handoff)),
+						Output:                name,
+						CaptureFence:          1,
+						CaptureDeadline:       deadline,
+						FinishAcknowledgement: finishFor(execution),
+					})
+				Expect(err).NotTo(HaveOccurred())
+				_, err = repository.AcquireCaptureLease(ctx, tx, reservation, uuid.NewString(),
+					output.MinLeaseTerm)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(tx.Commit()).To(Succeed())
+
+				return handoff, reservation, output.ReleaseAcknowledgement{
+					ProtocolVersion: output.ProtocolVersion,
+					Disposition:     output.DispositionCapture,
+					Execution:       execution,
+					ActivationEpoch: 1,
+					HandoffID:       handoff,
+					SourceLeaseID:   lease,
+					Incarnation: output.SourceIncarnation{
+						ExecutionID:      execution.ExecutionID,
+						NodeUID:          "node-uid",
+						HandleGeneration: 1,
+						Output:           name,
+					},
+					LedgerSequence: 11,
+					ObservedAt:     output.NewTimestamp(time.Now().UTC()),
+					Signature:      "c2lnbmF0dXJlLXJlbGVhc2U",
+				}
+			}
+
+			intentFor := func(handoff output.HandoffID) output.ReleaseIntentID {
+				var intent string
+				Expect(dbConn.QueryRow(`
+					SELECT release_intent_id::text FROM hangar_capture_reservations
+					WHERE handoff_id = $1`, string(handoff)).Scan(&intent)).To(Succeed())
+				Expect(intent).NotTo(BeEmpty())
+
+				return output.ReleaseIntentID(intent)
+			}
+
+			// THE CONTROL, first. Cancelled and short of the publish point: the
+			// release is admitted. Without this the refusal below would also
+			// pass on a branch that refuses every capture release.
+			handoff, _, release := setUp()
+			cancelling, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(cancelling)
+			_, err = repository.CancelOrSettle(ctx, cancelling, handoff)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cancelling.Commit()).To(Succeed())
+
+			release.ReleaseIntentID = intentFor(handoff)
+			admitting, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(admitting)
+			Expect(repository.AcknowledgeCaptureRelease(ctx, admitting, release)).To(Succeed())
+			Expect(admitting.Commit()).To(Succeed())
+
+			// AND THE VECTOR. A second capture, raced past the point.
+			racedHandoff, racedReservation, racedRelease := setUp()
+
+			// The publisher passes the point and HOLDS ITS TRANSACTION OPEN.
+			publishing, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(publishing)
+			Expect(repository.ResolveLogicalReservation(ctx, publishing, output.LogicalResolution{
+				ProtocolVersion: output.ProtocolVersion,
+				Execution:       racedRelease.Execution,
+				ActivationEpoch: 1,
+				HandoffID:       racedHandoff,
+				ReservationID:   racedReservation,
+				CaptureFence:    1,
+				Scope:           "team-a",
+				Digest:          hangarDigest(37),
+				LogicalBytes:    4096,
+				ResolvedAt:      output.NewTimestamp(time.Now()),
+			})).To(Succeed())
+			Expect(repository.RecordFirstObjectCreate(ctx, publishing, racedReservation, 1)).
+				To(Succeed())
+
+			// The canceller starts while the row still reads live, and blocks
+			// on the publisher's lock at its UPDATE.
+			cancelled := make(chan error, 1)
+			go func() {
+				racing, err := dbConn.Begin()
+				if err != nil {
+					cancelled <- err
+
+					return
+				}
+				if _, err := repository.CancelOrSettle(ctx, racing, racedHandoff); err != nil {
+					_ = racing.Rollback()
+					cancelled <- err
+
+					return
+				}
+				cancelled <- racing.Commit()
+			}()
+
+			// Give the canceller time to reach the lock. If it has not, the
+			// interleaving is simply a different order and the assertions below
+			// are about the state, not about the timing.
+			time.Sleep(250 * time.Millisecond)
+			Expect(publishing.Commit()).To(Succeed())
+			Eventually(cancelled, 10*time.Second).Should(Receive(BeNil()))
+
+			var past bool
+			var state string
+			Expect(dbConn.QueryRow(`
+				SELECT past_irreversible_publish_point, state FROM hangar_capture_reservations
+				WHERE reservation_id = $1`, string(racedReservation)).Scan(&past, &state)).To(Succeed())
+			Expect(state).To(Equal("cancelled"))
+			Expect(past).To(BeTrue(),
+				"the race did not reach the state this vector is about; the guard is untested")
+
+			racedRelease.ReleaseIntentID = intentFor(racedHandoff)
+			refusing, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(refusing)
+			err = repository.AcknowledgeCaptureRelease(ctx, refusing, racedRelease)
+			Expect(err).To(MatchError(output.ErrConflict),
+				"a release past the irreversible publish point was not refused as a conflict")
+			Expect(err.Error()).To(ContainSubstring("irreversible publish point"))
+			Expect(refusing.Rollback()).To(Succeed())
+
+			// And it really was refused: nothing was written.
+			var acknowledged, settled bool
+			Expect(dbConn.QueryRow(`
+				SELECT release_acknowledged_at IS NOT NULL, settled_at IS NOT NULL
+				FROM hangar_capture_reservations WHERE reservation_id = $1`,
+				string(racedReservation)).Scan(&acknowledged, &settled)).To(Succeed())
+			Expect(acknowledged).To(BeFalse(),
+				"the release past the publish point was recorded anyway")
+			Expect(settled).To(BeFalse(),
+				"a capture with an uncorrelated object in the bucket was settled")
+		})
+
 		// Review finding R2-3. Cancellation is terminal by Req 11's own word,
 		// but it does not take the capture lease away -- so the owner that was
 		// running when the control plane gave up is still the owner at the
