@@ -1639,6 +1639,21 @@ var _ = Describe("the Hangar output plane schema", func() {
 				"hangar_capture_reservations"), vector...)...)).To(Succeed())
 		})
 
+		It("without hangar_read_lease_matches_claim, a lease reads past its claim", func() {
+			lifecycle := seedFullChain()
+			seedClaim(claimID, lifecycle)
+			other := seedLifecycle(otherDigest, sampleGeneration+1)
+			vector := []string{fmt.Sprintf(`
+				INSERT INTO hangar_read_leases
+					(read_lease_id, claim_id, lifecycle_id, activation_epoch, lease_fence, expires_at)
+				VALUES ('%s', '%s', %d, 1, 1, now() + interval '20 minutes')`,
+				readLeaseID, claimID, other)}
+
+			Expect(attempt(database, vector...)).To(HaveOccurred())
+			Expect(attempt(database, append(dropTriggerOnEach("hangar_read_lease_matches_claim",
+				"hangar_read_leases"), vector...)...)).To(Succeed())
+		})
+
 		It("without hangar_reclaim_evidence, an ambiguous deletion is called confirmed", func() {
 			lifecycle := seedFullChain()
 			mustExec(database, fmt.Sprintf(`INSERT INTO hangar_reclaim_jobs
