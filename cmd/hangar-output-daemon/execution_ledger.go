@@ -643,3 +643,32 @@ func (ledger *ExecutionLedger) Sequence() executioncontrol.LedgerSequence {
 
 	return ledger.sequence
 }
+
+// Admission is the exact identity an execution is currently admitted at, and
+// the Pod it was admitted for.
+//
+// The capture extension needs both before the execution has started -- a source
+// is held before the producer's main process runs -- so they come from the
+// admission record rather than from a start acknowledgement that may not exist
+// yet. The FENCE is the important half: an extension that read the fence out of
+// its own record instead would honour a takeover on one side and not the other,
+// which is two truths about one execution.
+//
+// It is the extension's only read of base state that is not a classification,
+// and it is read-only. Nothing here lets the extension change what the base
+// ledger says.
+func (ledger *ExecutionLedger) Admission(id executioncontrol.ExecutionID) (executioncontrol.Identity, executioncontrol.PodUID, error) {
+	ledger.mu.Lock()
+	defer ledger.mu.Unlock()
+
+	record, found, err := ledger.load(id)
+	if err != nil {
+		return executioncontrol.Identity{}, "", err
+	}
+	if !found {
+		return executioncontrol.Identity{}, "", fmt.Errorf(
+			"%w: execution %s was never admitted on this node", output.ErrUnauthorized, id)
+	}
+
+	return record.Identity, record.PodUID, nil
+}
