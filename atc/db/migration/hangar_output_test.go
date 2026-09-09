@@ -1219,6 +1219,61 @@ var _ = Describe("the Hangar output plane schema", func() {
 			})
 		})
 
+		// The class travels with the refusal, all the way to the client.
+		//
+		// atc/db maps a refusal onto a typed outcome by its SQLSTATE, and a
+		// class that only existed in the migration source would be a map keyed
+		// on something the wire never carries. One vector per class, so a
+		// class that stopped arriving is named.
+		Context("the refusal classes", func() {
+			var lifecycle int64
+
+			BeforeEach(func() { lifecycle = seedFullChain() })
+
+			It("raises a conflict as JB001", func() {
+				seedClaim(claimID, lifecycle)
+				mustExec(database, fmt.Sprintf(
+					`UPDATE hangar_claims SET released_at = now() WHERE claim_id = '%s'`, claimID))
+
+				Expect(expectRefusal(database, "a reactivated claim", fmt.Sprintf(
+					`UPDATE hangar_claims SET released_at = NULL WHERE claim_id = '%s'`, claimID))).
+					To(ContainSubstring("SQLSTATE JB001"))
+			})
+
+			It("raises an at-risk admission as JB002", func() {
+				mustExec(database, `
+					INSERT INTO hangar_policy_snapshots
+						(activation_epoch, bucket_fingerprint, metageneration, policy_hash,
+						 lifecycle_delete_rules, state)
+					VALUES (1, 'gs://output-bucket', 4, 'policy-hash-2', 1, 'at_risk')`)
+
+				Expect(expectRefusal(database, "a claim acquired while at risk", fmt.Sprintf(`
+					INSERT INTO hangar_claims (claim_id, lifecycle_id, activation_epoch, consumer_binding_id)
+					VALUES ('%s', %d, 1, 'opaque-binding')`, claimID, lifecycle))).
+					To(ContainSubstring("SQLSTATE JB002"))
+			})
+
+			It("raises a superseded fence as JB003", func() {
+				// Forward first, so the vector is the trigger's own refusal
+				// and not the CHECK that keeps the fence positive.
+				mustExec(database, fmt.Sprintf(`
+					UPDATE hangar_capture_attempt_leases SET capture_fence = 3
+					WHERE reservation_id = '%s'`, reservationID))
+
+				Expect(expectRefusal(database, "a capture fence moved backwards", fmt.Sprintf(`
+					UPDATE hangar_capture_attempt_leases SET capture_fence = 2
+					WHERE reservation_id = '%s'`, reservationID))).
+					To(ContainSubstring("SQLSTATE JB003"))
+			})
+
+			It("raises an immutable rewrite as JB004", func() {
+				Expect(expectRefusal(database, "a rewritten predeclaration", fmt.Sprintf(`
+					UPDATE hangar_handoff_predeclarations SET output_name = 'other'
+					WHERE handoff_id = '%s'`, handoffID))).
+					To(ContainSubstring("SQLSTATE JB004"))
+			})
+		})
+
 		Context("inventory and worker leases", func() {
 			It("refuses debt for a bucket and epoch this deployment holds no cursor for", func() {
 				Expect(expectRefusal(database, "debt from another deployment's sweep", `

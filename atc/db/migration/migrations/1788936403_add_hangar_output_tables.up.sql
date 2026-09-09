@@ -111,18 +111,22 @@ CREATE FUNCTION hangar_output_epoch_transition() RETURNS trigger
 BEGIN
     IF hangar_output_facet_ordinal(NEW.base_state) < hangar_output_facet_ordinal(OLD.base_state) THEN
         RAISE EXCEPTION 'hangar: activation epoch % moved base_state backwards, % -> %; a new epoch row is the only way back',
-            OLD.epoch_id, OLD.base_state, NEW.base_state;
+            OLD.epoch_id, OLD.base_state, NEW.base_state
+            USING ERRCODE = 'JB001';
     END IF;
     IF hangar_output_facet_ordinal(NEW.output_state) < hangar_output_facet_ordinal(OLD.output_state) THEN
         RAISE EXCEPTION 'hangar: activation epoch % moved output_state backwards, % -> %; a new epoch row is the only way back',
-            OLD.epoch_id, OLD.output_state, NEW.output_state;
+            OLD.epoch_id, OLD.output_state, NEW.output_state
+            USING ERRCODE = 'JB001';
     END IF;
     IF NEW.epoch_id <> OLD.epoch_id OR NEW.created_at <> OLD.created_at THEN
-        RAISE EXCEPTION 'hangar: activation epoch identity is immutable';
+        RAISE EXCEPTION 'hangar: activation epoch identity is immutable'
+            USING ERRCODE = 'JB004';
     END IF;
     IF NEW.revision <= OLD.revision THEN
         RAISE EXCEPTION 'hangar: activation epoch % was written without advancing its revision (% -> %)',
-            OLD.epoch_id, OLD.revision, NEW.revision;
+            OLD.epoch_id, OLD.revision, NEW.revision
+            USING ERRCODE = 'JB001';
     END IF;
 
     RETURN NEW;
@@ -172,14 +176,17 @@ BEGIN
         OR NEW.capture_deadline_at <> OLD.capture_deadline_at
         OR NEW.created_at <> OLD.created_at THEN
         RAISE EXCEPTION 'hangar: the predeclaration for handoff % is immutable; a new build uses new identities',
-            OLD.handoff_id;
+            OLD.handoff_id
+            USING ERRCODE = 'JB004';
     END IF;
     IF OLD.hold_acknowledged_at IS NOT NULL AND NEW.hold_acknowledged_at IS DISTINCT FROM OLD.hold_acknowledged_at THEN
         RAISE EXCEPTION 'hangar: the source hold for handoff % is already acknowledged; it is acknowledged once',
-            OLD.handoff_id;
+            OLD.handoff_id
+            USING ERRCODE = 'JB001';
     END IF;
     IF NEW.hold_acknowledged_at IS NULL AND OLD.hold_acknowledged_at IS NOT NULL THEN
-        RAISE EXCEPTION 'hangar: the source hold for handoff % cannot be un-acknowledged', OLD.handoff_id;
+        RAISE EXCEPTION 'hangar: the source hold for handoff % cannot be un-acknowledged', OLD.handoff_id
+            USING ERRCODE = 'JB004';
     END IF;
 
     RETURN NEW;
@@ -209,7 +216,8 @@ CREATE FUNCTION hangar_disposition_immutable() RETURNS trigger
     LANGUAGE plpgsql AS $$
 BEGIN
     RAISE EXCEPTION 'hangar: handoff % is already dispositioned as %; the three branches exclude one another permanently',
-        OLD.handoff_id, OLD.disposition;
+        OLD.handoff_id, OLD.disposition
+            USING ERRCODE = 'JB001';
 END $$;
 
 CREATE TRIGGER hangar_disposition_immutability_guard
@@ -276,11 +284,13 @@ CREATE FUNCTION hangar_capture_lease_fence() RETURNS trigger
 BEGIN
     IF NEW.capture_fence < OLD.capture_fence THEN
         RAISE EXCEPTION 'hangar: capture fence for reservation % moved backwards, % -> %',
-            OLD.reservation_id, OLD.capture_fence, NEW.capture_fence;
+            OLD.reservation_id, OLD.capture_fence, NEW.capture_fence
+            USING ERRCODE = 'JB003';
     END IF;
     IF NEW.owner_id <> OLD.owner_id AND NEW.capture_fence <= OLD.capture_fence THEN
         RAISE EXCEPTION 'hangar: capture ownership of reservation % changed without advancing the fence (still %); takeover advances the epoch',
-            OLD.reservation_id, OLD.capture_fence;
+            OLD.reservation_id, OLD.capture_fence
+            USING ERRCODE = 'JB003';
     END IF;
 
     RETURN NEW;
@@ -379,7 +389,8 @@ CREATE FUNCTION hangar_logical_reservation_immutable() RETURNS trigger
 BEGIN
     IF NEW.scope <> OLD.scope OR NEW.digest <> OLD.digest OR NEW.resolved_at <> OLD.resolved_at THEN
         RAISE EXCEPTION 'hangar: the logical identity of reservation % is immutable; a claim protects an immutable generation and cannot float to replacement content',
-            OLD.reservation_id;
+            OLD.reservation_id
+            USING ERRCODE = 'JB001';
     END IF;
 
     RETURN NEW;
@@ -416,19 +427,23 @@ CREATE FUNCTION hangar_lifecycle_transition() RETURNS trigger
     LANGUAGE plpgsql AS $$
 BEGIN
     IF NEW.scope <> OLD.scope OR NEW.digest <> OLD.digest OR NEW.generation <> OLD.generation THEN
-        RAISE EXCEPTION 'hangar: the exact ref of lifecycle % is immutable', OLD.id;
+        RAISE EXCEPTION 'hangar: the exact ref of lifecycle % is immutable', OLD.id
+            USING ERRCODE = 'JB001';
     END IF;
     IF OLD.state IN ('reclaimed_confirmed', 'reclaimed_inferred') AND NEW.state <> OLD.state THEN
         RAISE EXCEPTION 'hangar: lifecycle % is % and terminal; a reclaimed generation never resurrects',
-            OLD.id, OLD.state;
+            OLD.id, OLD.state
+            USING ERRCODE = 'JB001';
     END IF;
     IF NEW.state IN ('reclaimed_confirmed', 'reclaimed_inferred') AND OLD.state <> 'reclaiming' THEN
         RAISE EXCEPTION 'hangar: lifecycle % finalized as % from %; admission marks a generation reclaiming durably before any external delete',
-            OLD.id, NEW.state, OLD.state;
+            OLD.id, NEW.state, OLD.state
+            USING ERRCODE = 'JB001';
     END IF;
     IF NEW.state = 'reclaiming' AND OLD.state NOT IN ('registered', 'adopted') THEN
         RAISE EXCEPTION 'hangar: lifecycle % admitted to reclaim from %; only a registered or adopted generation may be',
-            OLD.id, OLD.state;
+            OLD.id, OLD.state
+            USING ERRCODE = 'JB001';
     END IF;
 
     RETURN NEW;
@@ -469,7 +484,8 @@ CREATE FUNCTION hangar_challenge_one_use() RETURNS trigger
 BEGIN
     IF OLD.consumed_at IS NOT NULL THEN
         RAISE EXCEPTION 'hangar: stat challenge % was already consumed at %; it is one-use, which is what stops a receipt being replayed',
-            OLD.nonce, OLD.consumed_at;
+            OLD.nonce, OLD.consumed_at
+            USING ERRCODE = 'JB001';
     END IF;
     IF NEW.nonce <> OLD.nonce
         OR NEW.reservation_id <> OLD.reservation_id
@@ -477,7 +493,8 @@ BEGIN
         OR NEW.generation <> OLD.generation
         OR NEW.capture_fence <> OLD.capture_fence
         OR NEW.not_after <> OLD.not_after THEN
-        RAISE EXCEPTION 'hangar: the facts stat challenge % binds are immutable', OLD.nonce;
+        RAISE EXCEPTION 'hangar: the facts stat challenge % binds are immutable', OLD.nonce
+            USING ERRCODE = 'JB001';
     END IF;
 
     RETURN NEW;
@@ -535,15 +552,18 @@ CREATE FUNCTION hangar_claim_tombstone() RETURNS trigger
 BEGIN
     IF TG_OP = 'DELETE' THEN
         RAISE EXCEPTION 'hangar: claim % cannot be deleted; a released identity stays tombstoned for the lifetime of the exact-ref lifecycle record',
-            OLD.claim_id;
+            OLD.claim_id
+            USING ERRCODE = 'JB001';
     END IF;
     IF NEW.lifecycle_id <> OLD.lifecycle_id THEN
         RAISE EXCEPTION 'hangar: claim % was moved to another exact ref; a claim protects one immutable generation',
-            OLD.claim_id;
+            OLD.claim_id
+            USING ERRCODE = 'JB001';
     END IF;
     IF OLD.released_at IS NOT NULL AND NEW.released_at IS NULL THEN
         RAISE EXCEPTION 'hangar: claim % was released at % and cannot silently reactivate',
-            OLD.claim_id, OLD.released_at;
+            OLD.claim_id, OLD.released_at
+            USING ERRCODE = 'JB001';
     END IF;
 
     RETURN NEW;
@@ -577,18 +597,22 @@ CREATE FUNCTION hangar_read_lease_guard() RETURNS trigger
 BEGIN
     IF TG_OP = 'DELETE' THEN
         RAISE EXCEPTION 'hangar: read lease % cannot be deleted; its tombstone is what prevents stale resurrection',
-            OLD.read_lease_id;
+            OLD.read_lease_id
+            USING ERRCODE = 'JB001';
     END IF;
     IF NEW.lifecycle_id <> OLD.lifecycle_id OR NEW.claim_id <> OLD.claim_id THEN
-        RAISE EXCEPTION 'hangar: read lease % was moved to another ref or claim', OLD.read_lease_id;
+        RAISE EXCEPTION 'hangar: read lease % was moved to another ref or claim', OLD.read_lease_id
+            USING ERRCODE = 'JB001';
     END IF;
     IF NEW.lease_fence < OLD.lease_fence THEN
         RAISE EXCEPTION 'hangar: read lease % moved its fence backwards, % -> %',
-            OLD.read_lease_id, OLD.lease_fence, NEW.lease_fence;
+            OLD.read_lease_id, OLD.lease_fence, NEW.lease_fence
+            USING ERRCODE = 'JB003';
     END IF;
     IF OLD.released_at IS NOT NULL AND NEW.released_at IS NULL THEN
         RAISE EXCEPTION 'hangar: read lease % was released at % and cannot reactivate',
-            OLD.read_lease_id, OLD.released_at;
+            OLD.read_lease_id, OLD.released_at
+            USING ERRCODE = 'JB001';
     END IF;
 
     RETURN NEW;
@@ -630,11 +654,13 @@ CREATE FUNCTION hangar_cursor_fence() RETURNS trigger
 BEGIN
     IF NEW.cursor_fence < OLD.cursor_fence THEN
         RAISE EXCEPTION 'hangar: inventory cursor for % at epoch % moved its fence backwards, % -> %; only the current fencing epoch may reserve a page or advance the cursor',
-            OLD.bucket_fingerprint, OLD.activation_epoch, OLD.cursor_fence, NEW.cursor_fence;
+            OLD.bucket_fingerprint, OLD.activation_epoch, OLD.cursor_fence, NEW.cursor_fence
+            USING ERRCODE = 'JB003';
     END IF;
     IF NEW.cycle < OLD.cycle THEN
         RAISE EXCEPTION 'hangar: inventory cursor for % went back a cycle, % -> %',
-            OLD.bucket_fingerprint, OLD.cycle, NEW.cycle;
+            OLD.bucket_fingerprint, OLD.cycle, NEW.cycle
+            USING ERRCODE = 'JB003';
     END IF;
 
     RETURN NEW;
@@ -758,11 +784,13 @@ CREATE FUNCTION hangar_operation_lease_fence() RETURNS trigger
 BEGIN
     IF NEW.lease_fence < OLD.lease_fence THEN
         RAISE EXCEPTION 'hangar: % lease at epoch % moved its fence backwards, % -> %',
-            OLD.kind, OLD.activation_epoch, OLD.lease_fence, NEW.lease_fence;
+            OLD.kind, OLD.activation_epoch, OLD.lease_fence, NEW.lease_fence
+            USING ERRCODE = 'JB003';
     END IF;
     IF NEW.owner_id <> OLD.owner_id AND NEW.lease_fence <= OLD.lease_fence THEN
         RAISE EXCEPTION 'hangar: % lease at epoch % changed owner without advancing the fence (still %); expired owners cannot delete or finalize and takeover advances the epoch',
-            OLD.kind, OLD.activation_epoch, OLD.lease_fence;
+            OLD.kind, OLD.activation_epoch, OLD.lease_fence
+            USING ERRCODE = 'JB003';
     END IF;
 
     RETURN NEW;
@@ -797,7 +825,8 @@ BEGIN
     SELECT disposition INTO decided FROM hangar_handoff_dispositions WHERE handoff_id = target;
     IF decided IS NULL THEN
         RAISE EXCEPTION 'hangar: handoff % has a branch record but no disposition arbiter row; the arbiter is what makes exactly-one true',
-            target;
+            target
+            USING ERRCODE = 'JB004';
     END IF;
 
     SELECT count(*) INTO captures FROM hangar_capture_reservations WHERE handoff_id = target;
@@ -806,11 +835,13 @@ BEGIN
 
     IF captures + no_captures + cancels = 0 THEN
         RAISE EXCEPTION 'hangar: handoff % is dispositioned % and carries no branch record; the arbiter says which branch won and the branch record is what that branch did',
-            target, decided;
+            target, decided
+            USING ERRCODE = 'JB004';
     END IF;
     IF captures + no_captures + cancels > 1 THEN
         RAISE EXCEPTION 'hangar: handoff % has % capture, % no_capture and % pre_reservation_cancel records; the three branches exclude one another permanently',
-            target, captures, no_captures, cancels;
+            target, captures, no_captures, cancels
+            USING ERRCODE = 'JB001';
     END IF;
 
     IF (CASE decided
@@ -819,7 +850,8 @@ BEGIN
             ELSE cancels
         END) <> 1 THEN
         RAISE EXCEPTION 'hangar: handoff % is dispositioned % but carries the wrong branch record (% capture, % no_capture, % pre_reservation_cancel)',
-            target, decided, captures, no_captures, cancels;
+            target, decided, captures, no_captures, cancels
+            USING ERRCODE = 'JB001';
     END IF;
 
     RETURN NULL;
@@ -853,18 +885,21 @@ DECLARE
 BEGIN
     SELECT * INTO pre FROM hangar_handoff_predeclarations WHERE handoff_id = NEW.handoff_id;
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'hangar: capture reservation % has no predeclaration', NEW.reservation_id;
+        RAISE EXCEPTION 'hangar: capture reservation % has no predeclaration', NEW.reservation_id
+            USING ERRCODE = 'JB004';
     END IF;
     IF pre.execution_id <> NEW.execution_id
         OR pre.source_lease_id <> NEW.source_lease_id
         OR pre.activation_epoch <> NEW.activation_epoch
         OR pre.capture_deadline_at <> NEW.capture_deadline_at THEN
         RAISE EXCEPTION 'hangar: capture reservation % does not match the predeclared execution, source lease, activation epoch and deadline for handoff %',
-            NEW.reservation_id, NEW.handoff_id;
+            NEW.reservation_id, NEW.handoff_id
+            USING ERRCODE = 'JB001';
     END IF;
     IF pre.hold_acknowledged_at IS NULL THEN
         RAISE EXCEPTION 'hangar: capture reservation % entered Stage 2 with no acknowledged source hold for handoff %; start and recovery fail closed until the hold matches current execution admission',
-            NEW.reservation_id, NEW.handoff_id;
+            NEW.reservation_id, NEW.handoff_id
+            USING ERRCODE = 'JB004';
     END IF;
 
     RETURN NULL;
@@ -885,23 +920,27 @@ DECLARE
 BEGIN
     SELECT * INTO reservation FROM hangar_capture_reservations WHERE reservation_id = NEW.reservation_id;
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'hangar: logical reservation % has no Stage 2 reservation', NEW.reservation_id;
+        RAISE EXCEPTION 'hangar: logical reservation % has no Stage 2 reservation', NEW.reservation_id
+            USING ERRCODE = 'JB004';
     END IF;
     IF reservation.first_create_attempted_at IS NOT NULL
         AND reservation.first_create_attempted_at < NEW.resolved_at THEN
         RAISE EXCEPTION 'hangar: reservation % attempted its first object create at %, before the logical reservation resolved at %; every possibly-created object must have a pre-existing reservation',
-            NEW.reservation_id, reservation.first_create_attempted_at, NEW.resolved_at;
+            NEW.reservation_id, reservation.first_create_attempted_at, NEW.resolved_at
+            USING ERRCODE = 'JB004';
     END IF;
 
     SELECT capture_fence INTO current_fence
         FROM hangar_capture_attempt_leases WHERE reservation_id = NEW.reservation_id;
     IF current_fence IS NULL THEN
         RAISE EXCEPTION 'hangar: reservation % resolved a logical reservation while owned by nobody',
-            NEW.reservation_id;
+            NEW.reservation_id
+            USING ERRCODE = 'JB004';
     END IF;
     IF NEW.capture_fence <> current_fence THEN
         RAISE EXCEPTION 'hangar: reservation % resolved at fence % while the current capture owner holds fence %; a stale owner may not seal, publish, sign, register or finalize',
-            NEW.reservation_id, NEW.capture_fence, current_fence;
+            NEW.reservation_id, NEW.capture_fence, current_fence
+            USING ERRCODE = 'JB003';
     END IF;
 
     RETURN NULL;
@@ -923,7 +962,8 @@ BEGIN
     END IF;
     IF NOT EXISTS (SELECT 1 FROM hangar_logical_reservations WHERE reservation_id = NEW.reservation_id) THEN
         RAISE EXCEPTION 'hangar: reservation % recorded an object create with no resolved logical reservation; recovery and inventory would have nothing to correlate the object with',
-            NEW.reservation_id;
+            NEW.reservation_id
+            USING ERRCODE = 'JB004';
     END IF;
 
     RETURN NULL;
@@ -949,14 +989,16 @@ BEGIN
     IF epoch.receipt_public_key_id IS DISTINCT FROM NEW.receipt_key_id THEN
         RAISE EXCEPTION 'hangar: receipt % names key % but activation epoch % attests key %',
             NEW.receipt_id, NEW.receipt_key_id, NEW.activation_epoch,
-            coalesce(epoch.receipt_public_key_id, '<none>');
+            coalesce(epoch.receipt_public_key_id, '<none>')
+            USING ERRCODE = 'JB001';
     END IF;
 
     SELECT * INTO logical FROM hangar_logical_reservations WHERE reservation_id = NEW.reservation_id;
     SELECT * INTO lifecycle FROM hangar_exact_lifecycles WHERE id = NEW.lifecycle_id;
     IF logical.scope <> lifecycle.scope OR logical.digest <> lifecycle.digest THEN
         RAISE EXCEPTION 'hangar: receipt % registers %/% against a logical reservation for %/%; a ref may not be registered ahead of the logical reservation that correlates it',
-            NEW.receipt_id, lifecycle.scope, lifecycle.digest, logical.scope, logical.digest;
+            NEW.receipt_id, lifecycle.scope, lifecycle.digest, logical.scope, logical.digest
+            USING ERRCODE = 'JB001';
     END IF;
 
     SELECT * INTO challenge FROM hangar_receipt_stat_challenges WHERE nonce = NEW.challenge_nonce;
@@ -965,11 +1007,13 @@ BEGIN
         OR challenge.digest <> lifecycle.digest
         OR challenge.generation <> lifecycle.generation THEN
         RAISE EXCEPTION 'hangar: receipt % consumed a challenge issued for another capture or ref; a receipt cannot be replayed for another capture, source, output or fence',
-            NEW.receipt_id;
+            NEW.receipt_id
+            USING ERRCODE = 'JB001';
     END IF;
     IF challenge.consumed_at IS NULL THEN
         RAISE EXCEPTION 'hangar: receipt % registered without consuming its one-use stat challenge',
-            NEW.receipt_id;
+            NEW.receipt_id
+            USING ERRCODE = 'JB004';
     END IF;
 
     RETURN NULL;
@@ -1007,7 +1051,8 @@ BEGIN
 
     IF reclaims > 0 AND (claims > 0 OR leases > 0 OR pending > 0) THEN
         RAISE EXCEPTION 'hangar: exact ref %/%/% has an admitted reclaim beside % active claim(s), % active read lease(s) and % unresolved reservation(s); reclaim admission is refused while any of them exists',
-            lifecycle.scope, lifecycle.digest, lifecycle.generation, claims, leases, pending;
+            lifecycle.scope, lifecycle.digest, lifecycle.generation, claims, leases, pending
+            USING ERRCODE = 'JB001';
     END IF;
 
     RETURN NULL;
@@ -1035,7 +1080,8 @@ BEGIN
     SELECT * INTO claim FROM hangar_claims WHERE claim_id = NEW.claim_id;
     IF claim.lifecycle_id <> NEW.lifecycle_id THEN
         RAISE EXCEPTION 'hangar: read lease % reads lifecycle % under a claim on lifecycle %',
-            NEW.read_lease_id, NEW.lifecycle_id, claim.lifecycle_id;
+            NEW.read_lease_id, NEW.lifecycle_id, claim.lifecycle_id
+            USING ERRCODE = 'JB001';
     END IF;
 
     RETURN NULL;
@@ -1070,15 +1116,18 @@ BEGIN
 
     IF NOT FOUND THEN
         RAISE EXCEPTION 'hangar: epoch % has no lifetime-policy attestation; "we have not checked" and "the check failed" are the same amount of evidence',
-            NEW.activation_epoch;
+            NEW.activation_epoch
+            USING ERRCODE = 'JB002';
     END IF;
     IF latest.state <> 'safe' THEN
         RAISE EXCEPTION 'hangar: epoch % is % on its lifetime policy; new captures, claim acquires, grants, adoption and reclaim admission stop from detection onward',
-            NEW.activation_epoch, latest.state;
+            NEW.activation_epoch, latest.state
+            USING ERRCODE = 'JB002';
     END IF;
     IF now() - latest.observed_at > interval '15 minutes' THEN
         RAISE EXCEPTION 'hangar: the lifetime-policy attestation for epoch % is % old, past the 15-minute detection bound; a stale check is not a safe one',
-            NEW.activation_epoch, now() - latest.observed_at;
+            NEW.activation_epoch, now() - latest.observed_at
+            USING ERRCODE = 'JB002';
     END IF;
 
     RETURN NULL;
@@ -1133,16 +1182,19 @@ BEGIN
 
     IF NEW.outcome = 'reclaimed_confirmed' AND confirmed = 0 THEN
         RAISE EXCEPTION 'hangar: reclaim job % finalized as reclaimed_confirmed with no acknowledged conditional delete; an ambiguous deletion is inferred at best',
-            NEW.id;
+            NEW.id
+            USING ERRCODE = 'JB004';
     END IF;
     IF NEW.outcome = 'reclaimed_inferred' THEN
         IF admitted = 0 THEN
             RAISE EXCEPTION 'hangar: reclaim job % finalized as reclaimed_inferred with no durable admitted-delete record; absence without a prior admitted delete is an out-of-band lifetime violation, not normal reclamation',
-                NEW.id;
+                NEW.id
+            USING ERRCODE = 'JB004';
         END IF;
         IF NEW.absence_observed_at IS NULL THEN
             RAISE EXCEPTION 'hangar: reclaim job % finalized as reclaimed_inferred without observing exact absence',
-                NEW.id;
+                NEW.id
+            USING ERRCODE = 'JB004';
         END IF;
     END IF;
 
