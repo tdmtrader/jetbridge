@@ -655,3 +655,76 @@ func TestAReleaseReplayedAfterACrashStillClosesTheGate(t *testing.T) {
 			eligible.WithheldReason, eligible.OpenExtensionGates)
 	}
 }
+
+// A ticket's replay is the ticket's own statement, and the ticket is bound to
+// the process that was issued it.
+//
+// The record stored ticket IDs and nothing else, so three things followed. A
+// re-presented ticket replayed the HOLD statement -- kind hold_acknowledged,
+// no writer ticket id, an older sequence -- rather than the issue statement the
+// first call returned. The same id from another Pod UID, or at another writer
+// fence, was admitted as if it were the same writer: Req 13's "a ticket cannot
+// be transferred to a new process, Pod UID, handle generation, or fence epoch",
+// with three of the four unchecked. And a retire replay minted a FRESH
+// signature each time, so two answers to one close disagreed about their
+// sequence.
+func TestAWriterTicketReplaysItsOwnStatementAndIsBoundToItsProcess(t *testing.T) {
+	fixture := newSourceLedger(t)
+	hold := held(t, fixture)
+
+	issued, err := fixture.source.AdmitWriter(context.Background(), writerAdmission(hold, testTicket))
+	if err != nil {
+		t.Fatalf("issuing: %v", err)
+	}
+
+	replayed, err := fixture.source.AdmitWriter(context.Background(), writerAdmission(hold, testTicket))
+	if err != nil {
+		t.Fatalf("replaying the ticket: %v", err)
+	}
+	if !sameCaptureStatement(replayed, issued) {
+		t.Errorf("the ticket replay returned a different statement:\n first: kind=%s ticket=%q seq=%d\n"+
+			"replay: kind=%s ticket=%q seq=%d", issued.Kind, issued.WriterTicketID,
+			issued.LedgerSequence, replayed.Kind, replayed.WriterTicketID, replayed.LedgerSequence)
+	}
+
+	// The same ticket, from another pod or at another writer fence, is a
+	// different writer wearing the same name.
+	for name, mutate := range map[string]func(*output.WriterAdmission){
+		"another pod":          func(a *output.WriterAdmission) { a.PodUID = "pod-2" },
+		"another writer fence": func(a *output.WriterAdmission) { a.WriterFence = 9 },
+	} {
+		moved := writerAdmission(hold, testTicket)
+		mutate(&moved)
+		if _, err := fixture.source.AdmitWriter(context.Background(), moved); !errors.Is(err, output.ErrConflict) {
+			t.Errorf("a ticket presented from %s was not a typed conflict: %v", name, err)
+		}
+	}
+
+	closed, err := fixture.source.RetireWriter(context.Background(), writerAdmission(hold, testTicket))
+	if err != nil {
+		t.Fatalf("retiring: %v", err)
+	}
+	if err := closed.ValidateAs(output.CaptureWriterTicketClosed); err != nil {
+		t.Fatalf("the close statement is not a close: %v", err)
+	}
+	again, err := fixture.source.RetireWriter(context.Background(), writerAdmission(hold, testTicket))
+	if err != nil {
+		t.Fatalf("retiring again: %v", err)
+	}
+	if !sameCaptureStatement(again, closed) {
+		t.Errorf("a retire replay minted a fresh statement: seq %d then %d",
+			closed.LedgerSequence, again.LedgerSequence)
+	}
+
+	// And every one of those statements survives a restart, because it is what
+	// the record holds rather than what a signer would produce again.
+	fixture.restart(t)
+	afterRestart, err := fixture.source.RetireWriter(context.Background(), writerAdmission(hold, testTicket))
+	if err != nil {
+		t.Fatalf("retiring after a restart: %v", err)
+	}
+	if !sameCaptureStatement(afterRestart, closed) {
+		t.Errorf("the close statement did not survive a restart: seq %d, was %d",
+			afterRestart.LedgerSequence, closed.LedgerSequence)
+	}
+}
