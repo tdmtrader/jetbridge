@@ -34,22 +34,28 @@ const (
 )
 
 type ledgerFixture struct {
-	ledger *ExecutionLedger
-	store  *controlStore
-	dir    string
-	public ed25519.PublicKey
-	signer *executioncontrol.AcknowledgementSigner
-	now    time.Time
+	ledger  *ExecutionLedger
+	store   *controlStore
+	dir     string
+	public  ed25519.PublicKey
+	private ed25519.PrivateKey
+	signer  *executioncontrol.AcknowledgementSigner
+	now     time.Time
 }
 
 func (fixture *ledgerFixture) clock() time.Time { return fixture.now }
+
+// fixedNow is the one instant these tests run at. A ledger's timestamps are
+// what a signature covers, so a clock that moved would make two statements over
+// the same facts differ for a reason no assertion is about.
+func fixedNow() time.Time { return time.Date(2026, 9, 9, 10, 0, 0, 0, time.UTC) }
 
 func newLedger(t *testing.T) *ledgerFixture {
 	t.Helper()
 
 	fixture := &ledgerFixture{
 		dir: t.TempDir(),
-		now: time.Date(2026, 9, 9, 10, 0, 0, 0, time.UTC),
+		now: fixedNow(),
 	}
 	fixture.reopen(t)
 
@@ -72,7 +78,7 @@ func (fixture *ledgerFixture) reopen(t *testing.T) {
 		if err != nil {
 			t.Fatalf("building the signer: %v", err)
 		}
-		fixture.public = public
+		fixture.public, fixture.private = public, private
 		fixture.signer = signer
 	}
 

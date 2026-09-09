@@ -453,6 +453,11 @@ func (confirmation SealConfirmation) Validate() error {
 }
 
 // ReleaseIntent is the caller-recorded half of an exact fenced source release.
+//
+// All three dispositions can record one. The capture branch's is the narrow
+// case settled by the branch review's F7: a capture that terminally cancels or
+// fails before the irreversible publish point has released nothing, and the
+// source stays held until the daemon acknowledges this intent.
 type ReleaseIntent struct {
 	Disposition     Disposition
 	Execution       executioncontrol.Identity
@@ -461,6 +466,36 @@ type ReleaseIntent struct {
 	SourceLeaseID   SourceLeaseID
 	ReleaseIntentID ReleaseIntentID
 	Incarnation     SourceIncarnation
+}
+
+func (intent ReleaseIntent) Validate() error {
+	if err := intent.Disposition.Validate(); err != nil {
+		return err
+	}
+	if err := intent.Execution.Validate(); err != nil {
+		return err
+	}
+	if intent.ActivationEpoch == 0 {
+		return fmt.Errorf("%w: a release intent names no activation epoch", ErrIncomplete)
+	}
+	if err := intent.HandoffID.Validate(); err != nil {
+		return err
+	}
+	if err := intent.SourceLeaseID.Validate(); err != nil {
+		return err
+	}
+	if err := intent.ReleaseIntentID.Validate(); err != nil {
+		return err
+	}
+	if err := intent.Incarnation.Validate(); err != nil {
+		return err
+	}
+	if intent.Incarnation.ExecutionID != intent.Execution.ExecutionID {
+		return fmt.Errorf("%w: the incarnation to release belongs to a different execution",
+			ErrInvalidIdentity)
+	}
+
+	return nil
 }
 
 // SourceControl is the authenticated node-local API for the source ledger.

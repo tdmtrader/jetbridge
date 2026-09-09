@@ -336,8 +336,20 @@ func (disposition PreReservationCancelDisposition) Validate() error {
 	return nil
 }
 
-// ReleaseAcknowledgement is the second, daemon-side half of a no-capture or
-// pre-reservation-cancel handoff.
+// ReleaseAcknowledgement is the second, daemon-side half of an exact fenced
+// source release.
+//
+// All three branches can owe one. no_capture and pre_reservation_cancel owe it
+// by construction. The capture branch owes it in exactly one situation, and the
+// Phase 2 branch review's F7 is where that was settled: a capture that
+// TERMINALLY CANCELS or fails before the irreversible publish point has decided
+// something and released nothing, and the source is still held on a node until
+// this statement says otherwise. `Settled` means the same thing on all three
+// branches -- nothing is still owed -- so a cancelled capture with no
+// acknowledged release is decided and unsettled, which is the state drain has
+// to wait on. What the capture branch may NOT do is release after that point:
+// past the publish point it settles a registered receipt or a terminal orphan,
+// and there is nothing left to release.
 //
 // The two halves are deliberately two steps and idempotent. Nothing in this
 // package describes them as a cross-system atomic commit, because they are not
@@ -363,10 +375,6 @@ func (ack ReleaseAcknowledgement) Validate() error {
 	}
 	if err := ack.Disposition.Validate(); err != nil {
 		return err
-	}
-	if ack.Disposition == DispositionCapture {
-		return fmt.Errorf("%w: a release acknowledgement cannot belong to the %s branch; that "+
-			"branch settles a receipt or an orphan, never a release", ErrIncomplete, DispositionCapture)
 	}
 	if err := ack.Execution.Validate(); err != nil {
 		return err
