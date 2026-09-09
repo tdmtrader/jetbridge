@@ -256,6 +256,7 @@ func main() {
 
 	sweeper := NewSweeper(logger, *storagePath, *ttl, 5*time.Minute, server.Registry())
 	sweeper.SetGuard(server.Guard())
+	sweeper.SetCaptureLedger(server.CaptureLedger())
 
 	// Set up peer resolver for cross-node artifact resolution.
 	var mirror *Mirror

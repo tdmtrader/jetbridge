@@ -8,6 +8,8 @@ import (
 	"sync"
 
 	"code.cloudfoundry.org/lager/v3"
+
+	"github.com/concourse/concourse/hangar/output/ledger"
 )
 
 // Registry is a thread-safe in-memory map from artifact key to the local
@@ -34,6 +36,12 @@ type Registry struct {
 	aliases     map[string]RelKey // key → location under storagePath (aliases only, persisted)
 	aliasStore  *AliasStore       // optional persistence; nil disables persistence
 	logger      lager.Logger
+
+	// captureLedger is the output plane's read-only source ledger. A mapping is
+	// not a file, but a remap or a reuse is destructive in the way Req 3 means:
+	// one hands another consumer a name for bytes a capture is about to seal,
+	// the other takes away the only name those bytes had.
+	captureLedger *ledger.Classifier
 }
 
 // NewRegistry creates an empty Registry rooted at storagePath.
@@ -112,6 +120,29 @@ func (r *Registry) RegisterAlias(key, localPath string) (RelKey, error) {
 		return "", refused("registry: %s", err)
 	}
 
+	// The output plane's hold, on BOTH ends of the mapping.
+	//
+	// REUSE is the new end: a second name for bytes a capture is about to seal
+	// hands every key-taking destructive path on this daemon a way to reach
+	// them under a name the capture never heard of.
+	//
+	// REMAP is the old end: pointing a key that currently names a held source
+	// somewhere else destroys no bytes at all -- it destroys the only way
+	// anything finds them, which is worse, because nothing reports it. Req 3
+	// names remap and reuse beside cleanup for exactly this reason.
+	//
+	// Asked here rather than in the handler because this is the one function
+	// that holds both ends; a handler-side check would have to look the old
+	// end up, and the lookup and the write would not be the same operation.
+	if err := r.refuseIfCaptureHeld(rk); err != nil {
+		return "", err
+	}
+	if existing, found := r.Lookup(key); found && existing != rk {
+		if err := r.refuseIfCaptureHeld(existing); err != nil {
+			return "", err
+		}
+	}
+
 	r.mu.Lock()
 	r.entries[key] = rk
 	r.aliases[key] = rk
@@ -120,6 +151,35 @@ func (r *Registry) RegisterAlias(key, localPath string) (RelKey, error) {
 	r.logger.Debug("registered-alias", lager.Data{"key": key, "rel": string(rk)})
 	r.persistAliases()
 	return rk, nil
+}
+
+// SetCaptureLedger wires the output plane's read-only classifier. Nil is a node
+// with no output plane, and every mapping is unchanged.
+func (r *Registry) SetCaptureLedger(classifier *ledger.Classifier) {
+	r.captureLedger = classifier
+}
+
+// refuseIfCaptureHeld asks the output plane's ledger about one stored location.
+//
+// The classifier speaks in incarnations relative to steps/, so the prefix is
+// stripped here. A location outside steps/ is not a source incarnation and
+// cannot be held.
+func (r *Registry) refuseIfCaptureHeld(rel RelKey) error {
+	if r.captureLedger == nil {
+		return nil
+	}
+
+	relative, inSteps := strings.CutPrefix(string(rel), "steps/")
+	if !inSteps {
+		return nil
+	}
+
+	class := r.captureLedger.Classify(relative)
+	if class.Destructive() {
+		return nil
+	}
+
+	return r.captureLedger.Reason(relative, class)
 }
 
 // LoadAliases reads persisted aliases from the AliasStore and merges them

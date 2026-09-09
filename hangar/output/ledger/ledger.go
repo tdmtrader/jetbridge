@@ -126,11 +126,28 @@ func New(storageRoot string) *Classifier {
 }
 
 // Classify answers for one path relative to the managed steps directory --
-// "<execution>.<generation>/<output>", or anything beneath it.
+// "<execution>.<generation>/<output>", or anything beneath it, or anything it
+// is beneath.
 //
-// A path beneath a held incarnation is held. Deleting one file out of a source
-// a capture is about to seal is not less destructive than deleting the
-// directory; it is the same damage, harder to notice.
+// It answers in BOTH directions, and the second one is the one a first reading
+// misses.
+//
+// Downward is obvious: a path beneath a held incarnation is held, because
+// deleting one file out of a source a capture is about to seal is not less
+// destructive than deleting the directory -- it is the same damage, harder to
+// notice.
+//
+// Upward is the direction the callers actually use. A hold names
+// "<execution>.<generation>/<output>"; the Reaper deletes
+// "steps/<handle>" and the sweeper removes an expired "steps/<handle>"
+// directory, both of which are the PARENT of that. A classifier that answered
+// only downward told them the directory containing a held source was
+// unmanaged, and the source went with it -- on a timer, with nobody watching.
+//
+// The comparison is by path SEGMENT in both directions. A string prefix would
+// make "exec-1.3" hold "exec-1.30", which is a different handle generation and
+// a different artifact; the registry has had exactly that bug (see
+// Registry.RemoveByPath) and it presented as a permanent cache miss.
 func (classifier *Classifier) Classify(stepsRelative string) Class {
 	classifier.mu.Lock()
 	defer classifier.mu.Unlock()
@@ -142,8 +159,25 @@ func (classifier *Classifier) Classify(stepsRelative string) Class {
 	}
 
 	cleaned := strings.Trim(path.Clean("/"+stepsRelative), "/")
+	if cleaned == "" {
+		// The steps root itself. If anything at all is held, destroying the
+		// root destroys it.
+		for _, class := range held {
+			return class
+		}
+
+		return Unmanaged
+	}
+
 	for incarnation, class := range held {
-		if cleaned == incarnation || strings.HasPrefix(cleaned, incarnation+"/") {
+		switch {
+		case cleaned == incarnation:
+			return class
+		case strings.HasPrefix(cleaned, incarnation+"/"):
+			// Beneath a held incarnation.
+			return class
+		case strings.HasPrefix(incarnation, cleaned+"/"):
+			// An ancestor of one. Destroying it takes the incarnation with it.
 			return class
 		}
 	}
@@ -156,11 +190,12 @@ func (classifier *Classifier) Classify(stepsRelative string) Class {
 func (classifier *Classifier) Reason(stepsRelative string, class Class) error {
 	switch class {
 	case Held:
-		return fmt.Errorf("%w: %s is a source a durable output capture holds; it must survive "+
-			"until the capture releases it", ErrRefused, stepsRelative)
-	case Sealed:
-		return fmt.Errorf("%w: %s is sealed and its exact bytes are being read now", ErrRefused,
+		return fmt.Errorf("%w: %s is, contains, or is contained by a source a durable output "+
+			"capture holds; it must survive until the capture releases it", ErrRefused,
 			stepsRelative)
+	case Sealed:
+		return fmt.Errorf("%w: %s is, contains, or is contained by a sealed source whose exact "+
+			"bytes are being read now", ErrRefused, stepsRelative)
 	case Unavailable:
 		return fmt.Errorf("%w: the output source ledger under %s could not be read, so whether "+
 			"%s is held is unknown. Destroying it on that basis is how a build's declared output "+

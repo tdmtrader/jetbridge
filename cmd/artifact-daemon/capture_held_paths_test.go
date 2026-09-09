@@ -337,11 +337,24 @@ func TestAnAliasIsNeitherReusedForNorRemappedOffACaptureHeldSource(t *testing.T)
 		t.Errorf("a second alias onto a capture-held source answered %d", code)
 	}
 
-	// Remap. The alias is placed while nothing holds the source is not
-	// available here -- the hold predates the server -- so the mapping is
-	// installed directly, which is what a remap starts from.
+	// Remap. A remap starts from a mapping that was legitimate when it was
+	// made, so the alias is placed while the hold is momentarily off the disk
+	// -- which is the real sequence: the ATC registers the volume, and the
+	// capture holds it afterwards.
+	record := filepath.Join(storage, ledger.ControlDirName,
+		"source-88888888-8888-4888-8888-888888888888.json")
+	held0, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("reading the hold: %v", err)
+	}
+	if err := os.Remove(record); err != nil {
+		t.Fatalf("lifting the hold: %v", err)
+	}
 	if _, err := server.registry.RegisterAlias("the-captures-name", held); err != nil {
 		t.Fatalf("seeding the mapping: %v", err)
+	}
+	if err := os.WriteFile(record, held0, 0o600); err != nil {
+		t.Fatalf("restoring the hold: %v", err)
 	}
 	if code := register("the-captures-name", unheld); code != http.StatusConflict {
 		t.Errorf("remapping a capture-held source's alias elsewhere answered %d", code)
