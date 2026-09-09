@@ -522,6 +522,88 @@ var hangarGCSImporters = map[string]string{
 		"makes the consequence -- ./cmd/concourse -- checkable rather than argued",
 }
 
+// outputRolePackages are the four cloud-facing roles of the Hangar output plane.
+//
+// Each is a separate binary with a separate Kubernetes service account, and the
+// isolation only means something while no other process links one. The
+// existing artifact daemon is the case that matters: its identity holds the
+// cache and strict-input roles, and a service account is Pod-wide, so an
+// import here would give that identity an output role no code in that process
+// could give back.
+var outputRolePackages = []string{
+	"hangar/output/publisher",
+	"hangar/output/inventory",
+	"hangar/output/reclaimer",
+	"hangar/output/policy",
+}
+
+// outputRoleImporters are the packages allowed to link one, with the reason.
+var outputRoleImporters = map[string]string{
+	"cmd/hangar-output-daemon": "the output daemon is the publisher principal",
+	"hangar/output/conformance": "the shared conformance suite drives all four roles against " +
+		"both substrate tiers; it is a test-only package that links into no binary",
+}
+
+// TestTheOutputRolesAreLinkedOnlyByTheirOwnPrincipals is the import half of the
+// principal boundary.
+func TestTheOutputRolesAreLinkedOnlyByTheirOwnPrincipals(t *testing.T) {
+	graph := loadImportGraph(t)
+
+	for _, role := range outputRolePackages {
+		if _, ok := graph.all[role]; !ok {
+			t.Fatalf("%s does not exist; this rule would pass vacuously", role)
+		}
+	}
+	for importer := range outputRoleImporters {
+		if _, ok := graph.all[importer]; !ok {
+			t.Errorf("allowed importer %q does not exist; the exemption is stale", importer)
+		}
+	}
+
+	forbidden := map[string]bool{}
+	for _, role := range outputRolePackages {
+		forbidden[role] = true
+	}
+
+	linked := 0
+	for pkg, imports := range graph.all {
+		for _, imported := range imports {
+			if !forbidden[imported] {
+				continue
+			}
+			linked++
+			if reason, ok := outputRoleImporters[pkg]; ok {
+				t.Logf("allowed: %s links %s — %s", pkg, imported, reason)
+
+				continue
+			}
+			t.Errorf("%s links %s.\n\nThe four output roles are four Kubernetes service "+
+				"accounts. A Pod's identity is Pod-wide, so a process that links a role has "+
+				"that role's cloud permission for everything else it does -- which is exactly "+
+				"why cmd/artifact-daemon, the ATC and the web node link none of them. Depend "+
+				"on the hangar/output interface, or add %s above with the reason it must be a "+
+				"principal.", pkg, imported, pkg)
+		}
+	}
+	if linked == 0 {
+		t.Error("nothing links any output role at all, including the output daemon. Either the " +
+			"roles moved or the graph is not being read, and in both cases this rule is " +
+			"guarding nothing.")
+	}
+
+	// The case this rule exists for, stated by name so a green says it was
+	// checked rather than merely not violated.
+	for _, role := range outputRolePackages {
+		for _, imported := range graph.all["cmd/artifact-daemon"] {
+			if imported == role {
+				t.Errorf("cmd/artifact-daemon links %s. Its service account holds the cache and "+
+					"strict-input roles; adding an output role to that Pod is the one thing the "+
+					"second binary exists to prevent.", role)
+			}
+		}
+	}
+}
+
 // cloudStorageModule is the dependency the rule above exists to keep out of the
 // ATC binary.
 const cloudStorageModule = "cloud.google.com/go/storage"
