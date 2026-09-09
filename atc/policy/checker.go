@@ -11,6 +11,14 @@ import (
 const ActionUseImage = "UseImage"
 const ActionRunSetPipeline = "SetPipeline"
 
+// ActionRunPipeline screens a build creating a run of a template pipeline
+// (the run_pipeline step). Creating one over HTTP is screened by the API's
+// policy wrappa; a build reaches no route, so without this action a policy
+// agent that blocks run creation would be inert for exactly the callers that
+// never touch the API -- which is the same gap ActionRunSetPipeline closes for
+// set_pipeline.
+const ActionRunPipeline = "RunPipeline"
+
 type PolicyCheckNotPass struct {
 	Messages []string
 }

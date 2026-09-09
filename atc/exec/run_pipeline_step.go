@@ -86,6 +86,18 @@ func (step *RunPipelineStep) run(ctx context.Context, state RunState, delegate R
 
 	delegate.Starting(logger)
 
+	// The API route that creates a run is screened by the policy wrappa; this
+	// step reaches no route, so a policy agent would never see a
+	// build-initiated run unless it is asked here. It is asked with the
+	// interpolated values, because those are the run that would actually
+	// exist. A policy refusal errors the step rather than failing it, exactly
+	// as it does for set_pipeline: the build did not fail on its own terms, it
+	// was stopped.
+	err = delegate.CheckRunPipelinePolicy(step.metadata.TeamName, interpolatedPlan.Name, interpolatedPlan.Params)
+	if err != nil {
+		return false, err
+	}
+
 	digest, err := runPipelineInputDigest(step.metadata.TeamName, interpolatedPlan)
 	if err != nil {
 		return false, err
@@ -118,21 +130,33 @@ func (step *RunPipelineStep) run(ctx context.Context, state RunState, delegate R
 		InputDigest: digest,
 	})
 	if err != nil {
-		// Every refusal the port and the composition layer can return is a
-		// fact about this pipeline's config or about the template's state: the
-		// team is not the caller's, the template does not exist or is not a
-		// template, it is paused or archived, the params do not satisfy its
-		// declared schema, or a re-attach presented inputs that have moved
-		// since the call was recorded. None of those is a platform fault, and
-		// none of them is fixed by retrying, so they are the step failing --
-		// reported on stderr where the author reads it -- rather than the step
-		// erroring. Distinguishing the handful that genuinely are faults would
-		// mean this step re-deciding what the port already decided, and being
-		// wrong about it silently.
-		fmt.Fprintf(stderr, "%s\n", err)
-		delegate.Finished(logger, false)
+		// A refusal is a fact about this pipeline's config or about the
+		// template's state: the team is not the caller's, the template does
+		// not exist or is not a template, it is paused or archived, the params
+		// do not satisfy its declared schema, or a re-attach presented inputs
+		// that have moved since the call was recorded. Retrying changes none
+		// of it and the pipeline's author is the one who can, so the message
+		// goes to stderr where they read it and the step fails.
+		//
+		// runs.IsRefusal owns that set, rather than a list here: the step
+		// cannot name composition's refusal at all, and a second copy of the
+		// vocabulary would go stale on the first one the port adds.
+		if runs.IsRefusal(err) {
+			fmt.Fprintf(stderr, "%s\n", err)
+			delegate.Finished(logger, false)
 
-		return false, nil
+			return false, nil
+		}
+
+		// Everything else is a fault, and the step errors rather than fails.
+		// That is what puts it in front of exec.LogError and exec.RetryError,
+		// and what lets an aborted build read as aborted: the engine's finish
+		// path tests errors.Is(err, context.Canceled), which a swallowed error
+		// defeats. It is deliberately not written to stderr -- the engine
+		// reports an errored step itself, and a build log is anonymously
+		// readable on a public pipeline, which is no place for a driver's
+		// message.
+		return false, err
 	}
 
 	verb := "admitted"

@@ -21,6 +21,55 @@ import (
 	"github.com/concourse/concourse/vars"
 )
 
+// digestConflictRefusal stands in for composition.DigestConflictError.
+//
+// atc/exec may not import the package that raises it -- that is the boundary
+// architecture_test.go defends, and a test import breaches it exactly as a
+// production one would -- so the spec exercises the path the real error takes
+// instead: an error from beyond core that marks itself a refusal through
+// runs.Refusal. A plain errors.New here would assert nothing, because the step
+// no longer treats an unrecognized error as a refusal.
+type digestConflictRefusal struct{}
+
+func (digestConflictRefusal) Error() string {
+	return "sealed input digest changed for an already-admitted call: recorded abc, presented def"
+}
+
+func (digestConflictRefusal) AdmissionRefusal() {}
+
+// runPipelineRecordingChecker is a policy.Checker wired the way a deployment
+// with a policy agent is -- it screens the run_pipeline action -- and it
+// allows, so that what the step showed it can be read back.
+type runPipelineRecordingChecker struct {
+	policy.NoopChecker
+	asked  []string
+	inputs []policy.PolicyCheckInput
+}
+
+func (checker *runPipelineRecordingChecker) ShouldCheckAction(action string) bool {
+	checker.asked = append(checker.asked, action)
+	return action == policy.ActionRunPipeline
+}
+
+func (checker *runPipelineRecordingChecker) Check(input policy.PolicyCheckInput) (policy.PolicyCheckResult, error) {
+	checker.inputs = append(checker.inputs, input)
+	return policy.PassedPolicyCheck(), nil
+}
+
+// runPipelineDenyingChecker screens the same action and blocks it.
+type runPipelineDenyingChecker struct {
+	policy.NoopChecker
+	messages []string
+}
+
+func (checker runPipelineDenyingChecker) ShouldCheckAction(action string) bool {
+	return action == policy.ActionRunPipeline
+}
+
+func (checker runPipelineDenyingChecker) Check(policy.PolicyCheckInput) (policy.PolicyCheckResult, error) {
+	return deniedPolicyCheck{messages: checker.messages}, nil
+}
+
 var _ = Describe("RunPipelineStep", func() {
 	var (
 		ctx        context.Context
@@ -34,6 +83,7 @@ var _ = Describe("RunPipelineStep", func() {
 		realBuild       db.Build
 
 		fakeAdmitter    *execfakes.FakeChildRunAdmitter
+		policyChecker   policy.Checker
 		delegateFactory exec.RunPipelineStepDelegateFactory
 
 		state exec.RunState
@@ -69,8 +119,10 @@ var _ = Describe("RunPipelineStep", func() {
 		fakeAdmitter = new(execfakes.FakeChildRunAdmitter)
 		fakeAdmitter.AdmitChildRunReturns(exec.ChildRun{RunID: 42, Number: 7}, nil)
 
+		policyChecker = policy.NoopChecker{}
+
 		delegateFactory = runPipelineStepDelegateFactory(func(state exec.RunState) exec.RunPipelineStepDelegate {
-			return engine.NewRunPipelineStepDelegate(realBuild, atc.PlanID(planID), state, clock.NewClock(), policy.NoopChecker{})
+			return engine.NewRunPipelineStepDelegate(realBuild, atc.PlanID(planID), state, clock.NewClock(), policyChecker)
 		})
 
 		stepMetadata = exec.StepMetadata{
@@ -146,21 +198,20 @@ var _ = Describe("RunPipelineStep", func() {
 		})
 	})
 
-	// Every refusal is a fact about the config or about the template's state,
-	// so every one of them fails the step with its message on stderr rather
-	// than erroring it. The digest conflict is stated as a plain error here
-	// because atc/exec may not import the package that raises it -- that is
-	// the boundary architecture_test.go defends, and a test import breaches it
-	// exactly as a production one would.
+	// A refusal is a fact about the config or about the template's state, so
+	// every one of them fails the step with its message on stderr rather than
+	// erroring it. runs.IsRefusal is what decides, and its own spec pins the
+	// set; these assert that the step acts on the answer.
 	for name, refusal := range map[string]error{
-		"another team's template":     runs.ErrUnauthorized,
-		"no such template":            runs.ErrTemplateNotFound,
-		"not a template":              runs.ErrNotATemplate,
-		"a paused template":           runs.ErrTemplatePaused,
-		"an archived template":        runs.ErrTemplateArchived,
-		"params the template refuses": runs.InvalidParamsError{Err: errors.New("unknown parameter: nope")},
-		"a re-attach whose inputs moved": errors.New(
-			"recorded input digest abc does not match presented digest def"),
+		"another team's template":                    runs.ErrUnauthorized,
+		"no such template":                           runs.ErrTemplateNotFound,
+		"not a template":                             runs.ErrNotATemplate,
+		"an instanced pipeline":                      runs.ErrTemplateInstanced,
+		"a paused template":                          runs.ErrTemplatePaused,
+		"an archived template":                       runs.ErrTemplateArchived,
+		"params the template refuses":                runs.InvalidParamsError{Err: errors.New("unknown parameter: nope")},
+		"a template config that no longer validates": runs.TemplateConfigInvalidError{Err: errors.New("jobs: identifier is empty")},
+		"a re-attach whose inputs moved":             digestConflictRefusal{},
 	} {
 		Context("when the port refuses: "+name, func() {
 			BeforeEach(func() {
@@ -180,6 +231,61 @@ var _ = Describe("RunPipelineStep", func() {
 			})
 		})
 	}
+
+	// Everything else is a fault, and a fault errors the step. Erroring is
+	// what the engine's abort and error reporting read, and what LogError and
+	// RetryError wrap; failing the step instead reports a broken platform as a
+	// pipeline the author wrote wrong, and does it in a build log that is
+	// anonymously readable on a public pipeline.
+	for name, fault := range map[string]error{
+		"an ambiguous principal":       runs.ErrPrincipalAmbiguous,
+		"a missing contract key":       runs.ErrMissingContractKey,
+		"a run id that names no row":   runs.ErrRunNotFound,
+		"a transaction from elsewhere": runs.ForeignTransactionError{},
+		"an operator role it will not honour": runs.CustomRolesInvalidError{
+			Err: errors.New("viewer may create runs")},
+		"a database that is not answering": errors.New("pool exhausted"),
+	} {
+		Context("when the admission faults: "+name, func() {
+			BeforeEach(func() {
+				fakeAdmitter.AdmitChildRunReturns(exec.ChildRun{}, fault)
+			})
+
+			It("errors the step, and writes nothing to the build log", func() {
+				Expect(stepErr).To(MatchError(fault))
+				Expect(stepOk).To(BeFalse())
+				Expect(execBuildLog(fixture, realBuild, event.OriginSourceStderr)).To(BeEmpty())
+				Expect(execBuildLog(fixture, realBuild, event.OriginSourceStdout)).To(BeEmpty())
+			})
+
+			// An errored step is finished by the engine, not here. Reporting
+			// Finished(false) as well would render the build as one that ran
+			// and failed.
+			It("does not finish the step as failed", func() {
+				Expect(execBuildFinishEvents(fixture, realBuild)).To(BeEmpty())
+			})
+		})
+	}
+
+	// The abort case, called out on its own because it is the one the old
+	// behaviour got visibly wrong: atc/engine's finish path tests
+	// errors.Is(err, context.Canceled) to record the build as aborted, and an
+	// error the step swallowed can never reach it.
+	Context("when the build is aborted during the admission", func() {
+		BeforeEach(func() {
+			fakeAdmitter.AdmitChildRunReturns(exec.ChildRun{}, context.Canceled)
+		})
+
+		It("returns the cancellation, intact enough for the engine to read", func() {
+			Expect(stepOk).To(BeFalse())
+			Expect(errors.Is(stepErr, context.Canceled)).To(BeTrue())
+		})
+
+		It("does not finish the step as failed", func() {
+			Expect(execBuildFinishEvents(fixture, realBuild)).To(BeEmpty())
+			Expect(execBuildLog(fixture, realBuild, event.OriginSourceStderr)).To(BeEmpty())
+		})
+	})
 
 	Describe("the request the admitter receives", func() {
 		It("carries the call's identity", func() {
@@ -289,6 +395,66 @@ var _ = Describe("RunPipelineStep", func() {
 			Expect(stepErr).To(HaveOccurred())
 			Expect(stepOk).To(BeFalse())
 			Expect(fakeAdmitter.AdmitChildRunCallCount()).To(BeZero())
+		})
+	})
+
+	// Creating a run over the API is screened by the policy wrappa. A build
+	// creating one reaches no route, so without this the agent that a
+	// deployment installed to govern run creation would never see a
+	// build-initiated run at all.
+	Describe("the policy check", func() {
+		var checker *runPipelineRecordingChecker
+
+		BeforeEach(func() {
+			checker = &runPipelineRecordingChecker{}
+			policyChecker = checker
+		})
+
+		It("screens the run_pipeline action", func() {
+			Expect(checker.asked).To(Equal([]string{policy.ActionRunPipeline}))
+		})
+
+		// The agent is shown the call as it would actually be made: the
+		// interpolated params, not the ((var))s the author wrote. A policy on
+		// param values is worthless against the uninterpolated form.
+		It("shows the agent the interpolated call", func() {
+			Expect(checker.inputs).To(HaveLen(1))
+
+			input := checker.inputs[0]
+			Expect(input.Action).To(Equal(policy.ActionRunPipeline))
+			Expect(input.Team).To(Equal("some-team"))
+			Expect(input.Pipeline).To(Equal("parent-pipeline"))
+			Expect(input.Data).To(Equal(exec.RunPipelinePolicyData{
+				Team:     "some-team",
+				Pipeline: "version-upgrade",
+				Params:   atc.RunParams{"ref": "deadbeef"},
+			}))
+		})
+
+		It("admits once the agent allows", func() {
+			Expect(stepErr).NotTo(HaveOccurred())
+			Expect(stepOk).To(BeTrue())
+			Expect(fakeAdmitter.AdmitChildRunCallCount()).To(Equal(1))
+		})
+
+		Context("when the agent blocks the run", func() {
+			BeforeEach(func() {
+				policyChecker = runPipelineDenyingChecker{messages: []string{"policy-check-error"}}
+			})
+
+			// A blocked run errors the step rather than failing it, exactly as
+			// set_pipeline's does: the build did not fail on its own terms, it
+			// was stopped by the operator's policy.
+			It("errors the step", func() {
+				Expect(stepOk).To(BeFalse())
+				Expect(stepErr).To(MatchError(policy.PolicyCheckNotPass{
+					Messages: []string{"policy-check-error"},
+				}))
+			})
+
+			It("admits nothing", func() {
+				Expect(fakeAdmitter.AdmitChildRunCallCount()).To(BeZero())
+			})
 		})
 	})
 

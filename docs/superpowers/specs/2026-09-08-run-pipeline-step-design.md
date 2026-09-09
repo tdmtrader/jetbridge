@@ -66,7 +66,8 @@ jobs:
 | Public plan | `RunPipelinePlan.Public()` exposes `name` only; params are never public |
 | creds evaluator | `creds.NewRunPipelinePlan(vars.Variables, atc.RunPipelinePlan).Evaluate() (atc.RunPipelinePlan, error)` |
 | exec step | `atc/exec/run_pipeline_step.go`: `NewRunPipelineStep(planID, plan, metadata, delegateFactory, admitter ChildRunAdmitter) Step` |
-| exec delegate | `RunPipelineStepDelegateFactory` / `RunPipelineStepDelegate` (embeds `BuildStepDelegate`, nothing more in slice 1) |
+| exec delegate | `RunPipelineStepDelegateFactory` / `RunPipelineStepDelegate` (embeds `BuildStepDelegate`, plus `CheckRunPipelinePolicy(team, pipeline string, params atc.RunParams) error`) |
+| policy | `policy.ActionRunPipeline = "RunPipeline"`; check data is `exec.RunPipelinePolicyData{Team, Pipeline, Params}` |
 | exec port | `exec.ChildRunAdmitter` (below) |
 | engine | `CoreStepFactory.RunPipelineStep(atc.Plan, StepMetadata, DelegateFactory) exec.Step`; `stepperFactory.buildRunPipelineStep`; `DelegateFactory.RunPipelineStepDelegate` |
 | runs port | `runs.Principal` gains the build form (below) |
@@ -171,6 +172,42 @@ type BuildPrincipal struct {
 The exec step builds the principal from `StepMetadata` and never reads the
 database itself.
 
+## Policy
+
+`atc.CreatePipelineRun` over HTTP is screened by the policy-check wrappa. This
+step reaches no route, so it asks the checker itself, through
+`RunPipelineStepDelegate.CheckRunPipelinePolicy` — the same shape
+`set_pipeline` uses for `policy.ActionRunSetPipeline`. The check happens after
+interpolation and before the admitter, so the agent sees the call that would
+actually be made. `Team` and `Pipeline` on the check input are the *calling*
+build's, as set_pipeline's are; the target team, the template name and the
+interpolated params are the data. A policy refusal is a step error, not a step
+failure.
+
+## Errors
+
+An error from the admitter is a **refusal** or a **fault**, and nothing else.
+
+A refusal is a fact about the config or the template's state:
+`ErrTemplateNotFound`, `ErrNotATemplate`, `ErrTemplateInstanced`,
+`ErrTemplateArchived`, `ErrTemplatePaused`, `ErrUnauthorized`,
+`InvalidParamsError`, `TemplateConfigInvalidError`, and composition's
+`DigestConflictError`. Retrying changes none of them. The step writes the
+message to stderr, calls `Finished(false)` and returns `(false, nil)`.
+
+Everything else is a fault — a context error, a driver error,
+`ForeignTransactionError`, `CustomRolesInvalidError`, `ErrPrincipalAmbiguous`,
+`ErrMissingContractKey`, `ErrRunNotFound`, `ErrCallRecordIncomplete`. The step
+returns `(false, err)` and writes nothing: the engine reports an errored step
+itself, `errors.Is(err, context.Canceled)` is what makes an aborted build read
+as aborted, and a build log is anonymously readable on a public pipeline.
+
+The set is closed in `atc/runs`, not in the step: `runs.Refusal` is an exported
+marker interface and `runs.IsRefusal(err)` answers for the sentinels, the two
+wrapping types and anything carrying the marker. `composition.DigestConflictError`
+carries it, which is how a refusal `atc/exec` cannot name still classifies
+correctly. Unrecognized means fault.
+
 ## Validation
 
 `StepValidator.VisitRunPipeline`:
@@ -205,9 +242,15 @@ database itself.
 - `atc/agent/composition`: `Result.Number` on first admission and on replay.
 - `atc/exec`: with a counterfeiter `ChildRunAdmitter` — success line on
   stdout, replayed line differs, refusals surface on stderr and fail the step
-  (`Finished(false)`), interpolation happens before the digest, digest is
+  (`Finished(false)`), faults and `context.Canceled` error the step and write
+  nothing, the policy check sees the interpolated call and a denial errors the
+  step without admitting, interpolation happens before the digest, digest is
   stable across param key order.
-- `atc/engine`: builder dispatches `plan.RunPipeline` to the core factory.
+- `atc/runs`: `IsRefusal` for each refusal, wrapped and unwrapped, and for each
+  fault.
+- `atc/agent/composition`: `DigestConflictError` satisfies `runs.IsRefusal`.
+- `atc/engine`: builder dispatches `plan.RunPipeline` to the core factory;
+  `CheckRunPipelinePolicy` reports the calling build and the target call.
 - root: `architecture_test.go` passes with `atc/atccmd` as a wiring point;
   `composition_boundary_test.go` passes.
 - web: `make test-elm` passes; the decoder test covers `run_pipeline`.

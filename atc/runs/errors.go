@@ -140,3 +140,84 @@ type ForeignTransactionError struct{}
 func (ForeignTransactionError) Error() string {
 	return "transaction was not opened by this port; use Admitter.Begin"
 }
+
+// Refusal marks an error as a refusal rather than a fault.
+//
+// A refusal is the port answering the caller: a fact about what was asked for
+// or about the template's state -- the wrong team, no such template, a paused
+// one, params that do not satisfy the declared schema. Retrying changes none
+// of it; whoever wrote the call has to change the call. A fault is everything
+// else -- a dropped connection, a transaction from the wrong place, a state
+// that should be unreachable -- and retrying one of those is exactly the right
+// thing to do.
+//
+// The interface exists so a consumer beyond this package can add its own
+// refusals to that set without core naming the consumer. atc/agent/composition
+// raises one of its own (a re-attach whose sealed inputs moved) and marks it,
+// so IsRefusal answers for it with the dependency pointing the direction
+// architecture_test.go requires.
+type Refusal interface {
+	// AdmissionRefusal has no behaviour. It is here to be written
+	// deliberately: an error is a refusal because someone declared it one, not
+	// because its message happened to read like one.
+	AdmissionRefusal()
+}
+
+// refusalSentinels are the flag-shaped refusals, listed once so that IsRefusal
+// and its spec cannot drift apart. Everything absent from it -- and from the
+// two wrapping types IsRefusal names below -- is a fault.
+var refusalSentinels = []error{
+	ErrTemplateNotFound,
+	ErrNotATemplate,
+	ErrTemplateInstanced,
+	ErrTemplateArchived,
+	ErrTemplatePaused,
+	ErrUnauthorized,
+}
+
+// IsRefusal reports whether err is a refusal.
+//
+// The distinction has to be made somewhere, and the caller who needs it cannot
+// make it. A build step failing an admission has to tell "your pipeline config
+// is wrong" from "the platform is broken": the first belongs on the build's
+// stderr and fails the step, the second belongs in the step's returned error,
+// where the engine's abort and retry handling can see it and where a raw
+// driver message does not land in a build log that is world-readable on a
+// public pipeline. Deciding that by hand at each consumer means re-deriving
+// this package's vocabulary, incompletely, in a package that cannot even name
+// every refusal -- composition's is not core's to name.
+//
+// So the set is closed here. It is closed conservatively: an error this
+// function does not recognize is a fault. An unrecognized fault reported as a
+// refusal is a build that failed for a reason nobody can act on and a retry
+// that never happened; an unrecognized refusal reported as a fault is a noisy
+// error, which is the cheaper mistake.
+//
+// Wrapping is respected throughout, because a consumer that adds context with
+// %w has not stopped being refused.
+func IsRefusal(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	for _, sentinel := range refusalSentinels {
+		if errors.Is(err, sentinel) {
+			return true
+		}
+	}
+
+	// The two refusals that carry a reason rather than being one.
+	var invalidParams InvalidParamsError
+	if errors.As(err, &invalidParams) {
+		return true
+	}
+
+	var invalidTemplate TemplateConfigInvalidError
+	if errors.As(err, &invalidTemplate) {
+		return true
+	}
+
+	var refusal Refusal
+
+	return errors.As(err, &refusal)
+}

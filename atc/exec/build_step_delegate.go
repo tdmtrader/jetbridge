@@ -54,10 +54,40 @@ type RunPipelineStepDelegateFactory interface {
 	RunPipelineStepDelegate(state RunState) RunPipelineStepDelegate
 }
 
-// RunPipelineStepDelegate is a BuildStepDelegate and nothing else. The step
-// reports what it did on stdout and stderr, and emits no event of its own:
-// there is no child status to observe in slice 1, so there is nothing for a
-// wider delegate to carry.
+// RunPipelineStepDelegate is a BuildStepDelegate plus the one thing the step
+// cannot do for itself. The step reports what it did on stdout and stderr and
+// emits no event of its own -- there is no child status to observe in slice 1,
+// so there is nothing for a wider delegate to carry -- but it does have to be
+// screened by the policy checker, which lives on the build's side of this
+// interface.
 type RunPipelineStepDelegate interface {
 	BuildStepDelegate
+
+	// CheckRunPipelinePolicy screens one admission before it happens.
+	//
+	// Creating a run over HTTP goes through the API's policy wrappa. A build
+	// creating one reaches no route, so a policy agent that blocks run
+	// creation would be inert for build-initiated runs unless the step asks --
+	// the gap set_pipeline closes the same way with
+	// SetPipelineStepDelegate.CheckRunSetPipelinePolicy.
+	//
+	// team is the team the run would be created on and pipeline is the
+	// template it names; the calling build's own team and pipeline are the
+	// delegate's to supply. params are the interpolated ones, because those
+	// are what would actually run.
+	CheckRunPipelinePolicy(team string, pipeline string, params atc.RunParams) error
+}
+
+// RunPipelinePolicyData is what the policy agent is shown about an admission,
+// as the check input's data.
+//
+// It is declared here, next to the method that produces it, so the shape a
+// policy is written against is stated once rather than assembled inline at the
+// delegate. set_pipeline hands over the whole *atc.Config it is about to save;
+// the equivalent for a run is what identifies it -- the template it names, the
+// team it lands on, and the params it carries.
+type RunPipelinePolicyData struct {
+	Team     string        `json:"team"`
+	Pipeline string        `json:"pipeline"`
+	Params   atc.RunParams `json:"params"`
 }
