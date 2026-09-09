@@ -42,13 +42,17 @@ const markerCreatedAtLayout = "2006-01-02T15:04:05.000000000Z07:00"
 // registration adds it, and inventory reads it from the object itself. Putting
 // it here would have meant a marker that is a self-report of the very fact it
 // is supposed to help verify.
+//
+// It carries no json tags. Object custom metadata is a string-to-string map on
+// the wire, and Metadata/ParseObjectMarker are that encoding; the struct's JSON
+// form is never sent anywhere, so it does not claim to be frozen.
 type ObjectMarker struct {
-	Version         string                           `json:"version"`
-	Scope           hangar.Scope                     `json:"scope"`
-	Digest          hangar.Digest                    `json:"digest"`
-	ReservationID   ReservationID                    `json:"reservation_id"`
-	ActivationEpoch executioncontrol.ActivationEpoch `json:"activation_epoch"`
-	CreatedAt       Timestamp                        `json:"created_at"`
+	Version         string
+	Scope           hangar.Scope
+	Digest          hangar.Digest
+	ReservationID   ReservationID
+	ActivationEpoch executioncontrol.ActivationEpoch
+	CreatedAt       Timestamp
 }
 
 // Metadata renders the marker as object custom metadata.

@@ -673,6 +673,13 @@ type CancelSettler interface {
 
 // DurableOutputCapture is the optional extension of one base execution.
 //
+// It carries no json tags, and neither does ControlledExecution: they are a
+// Go-side composition seam, not a wire type. Phases 3 and 4 extend them with
+// writer tickets and seal state, so freezing their JSON now would freeze a
+// shape that is about to grow -- and a tag would claim it was already frozen.
+// The rule they exist for is asserted behaviourally instead, in
+// TestTheCaptureExtensionCannotForkTheBaseExecution.
+//
 // It is a distinct value hanging off a ControlledExecution rather than extra
 // fields on the base envelope, because the protocol must keep an execution with
 // *no* capture representable -- that is the shape the sibling
@@ -680,7 +687,7 @@ type CancelSettler interface {
 // envelope with capture fields set to zero would be a different thing that
 // merely looks the same.
 type DurableOutputCapture struct {
-	Admission CaptureAdmission `json:"admission"`
+	Admission CaptureAdmission
 }
 
 func (capture DurableOutputCapture) Validate() error {
@@ -689,8 +696,8 @@ func (capture DurableOutputCapture) Validate() error {
 
 // ControlledExecution is a base execution and its optional capture extension.
 type ControlledExecution struct {
-	Envelope executioncontrol.Envelope `json:"envelope"`
-	Capture  *DurableOutputCapture     `json:"capture,omitempty"`
+	Envelope executioncontrol.Envelope
+	Capture  *DurableOutputCapture
 }
 
 // HasDurableOutputCapture reports whether this execution opted in.

@@ -177,6 +177,7 @@ var protocolFixtures = map[string]func(*testing.T, []byte){
 	"claim-acquire.json":       func(t *testing.T, raw []byte) { roundTrip[ClaimAcquisition](t, raw) },
 	"claim-release.json":       func(t *testing.T, raw []byte) { roundTrip[ClaimRelease](t, raw) },
 	"read-lease.json":          func(t *testing.T, raw []byte) { roundTrip[ReadLease](t, raw) },
+	"delete-precondition.json": func(t *testing.T, raw []byte) { roundTrip[DeletePrecondition](t, raw) },
 	"inventory-cursor.json":    func(t *testing.T, raw []byte) { roundTrip[InventoryCursor](t, raw) },
 	"inventory-debt.json":      func(t *testing.T, raw []byte) { roundTrip[InventoryDebt](t, raw) },
 	"policy-snapshot.json":     func(t *testing.T, raw []byte) { roundTrip[PolicySnapshot](t, raw) },
