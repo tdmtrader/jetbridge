@@ -72,12 +72,20 @@ type sourceRecord struct {
 	// back these bytes.
 	Hold *output.CaptureAcknowledgement `json:"hold,omitempty"`
 
-	// Open and Closed are the writer tickets. Open is what a seal would
-	// capture; Closed is what has been retired. Both are needed: a ticket that
-	// was issued and closed before the seal is not in the drain set, and one
-	// issued and closed after it must still be accounted for.
-	Open   []output.WriterTicketID `json:"open_tickets,omitempty"`
-	Closed []output.WriterTicketID `json:"closed_tickets,omitempty"`
+	// Tickets is every writer ticket this source has issued, with the facts it
+	// was issued for and the statements it was answered with.
+	//
+	// It is a list of RECORDS and not two lists of ids. Ids alone cannot say
+	// which process holds a ticket -- so the same id from another Pod UID or at
+	// another writer fence was the same writer -- and they cannot replay: a
+	// re-presented ticket answered with the hold statement, and a re-presented
+	// close minted a fresh signature. A statement this node made is a fact, and
+	// a fact is stored rather than reproduced.
+	//
+	// Both open and closed tickets are kept. A ticket issued and closed before
+	// the seal is not in the drain set; one issued and closed after it must
+	// still be accounted for.
+	Tickets []writerTicket `json:"writer_tickets,omitempty"`
 
 	// DrainSet is captured at the instant admission is fenced and never
 	// recomputed. Confirming against a live query instead is the defect this
@@ -93,6 +101,64 @@ type sourceRecord struct {
 	Release         *output.ReleaseAcknowledgement `json:"release,omitempty"`
 
 	HighWater executioncontrol.LedgerSequence `json:"high_water"`
+}
+
+// writerTicket is one ticket: who was issued it, and what this node said.
+//
+// PodUID and WriterFence are the ticket's IDENTITY, not decoration on it. Req
+// 13 says a ticket cannot be transferred to a new process, Pod UID, handle
+// generation or fence epoch; the incarnation carries the generation and the
+// admission's execution carries the epoch, and these two are the rest.
+type writerTicket struct {
+	TicketID    output.WriterTicketID          `json:"writer_ticket_id"`
+	PodUID      executioncontrol.PodUID        `json:"pod_uid"`
+	WriterFence output.WriterFence             `json:"writer_fence"`
+	Issued      output.CaptureAcknowledgement  `json:"issued"`
+	Closed      *output.CaptureAcknowledgement `json:"closed,omitempty"`
+}
+
+// ticket finds one by id. The slice is small -- it is the writers of one
+// source -- and keeping it a slice keeps the record's JSON an ordered thing a
+// person can read.
+func (record sourceRecord) ticket(id output.WriterTicketID) (writerTicket, bool) {
+	for _, ticket := range record.Tickets {
+		if ticket.TicketID == id {
+			return ticket, true
+		}
+	}
+
+	return writerTicket{}, false
+}
+
+// openTickets is what a seal captures: the tickets that have not been retired.
+func (record sourceRecord) openTickets() []output.WriterTicketID {
+	open := make([]output.WriterTicketID, 0, len(record.Tickets))
+	for _, ticket := range record.Tickets {
+		if ticket.Closed == nil {
+			open = append(open, ticket.TicketID)
+		}
+	}
+	sort.Slice(open, func(i, j int) bool { return open[i] < open[j] })
+
+	return open
+}
+
+// sameWriter is the transfer refusal. The id matching is not enough: a ticket
+// re-presented from another pod, or at another writer fence, is a different
+// process wearing the same name.
+func (ticket writerTicket) sameWriter(admission output.WriterAdmission) error {
+	if ticket.PodUID != admission.PodUID {
+		return fmt.Errorf("%w: writer ticket %s was issued to pod %s and this request names %s; "+
+			"a ticket cannot be transferred to a new process", output.ErrConflict,
+			ticket.TicketID, ticket.PodUID, admission.PodUID)
+	}
+	if ticket.WriterFence != admission.WriterFence {
+		return fmt.Errorf("%w: writer ticket %s was issued at writer fence %d and this request "+
+			"names %d; a ticket cannot be transferred to a new fence epoch", output.ErrConflict,
+			ticket.TicketID, ticket.WriterFence, admission.WriterFence)
+	}
+
+	return nil
 }
 
 // SourceHoldGate is the opaque name the base execution ledger knows this
@@ -520,30 +586,45 @@ func (ledger *SourceLedger) AdmitWriter(_ context.Context, admission output.Writ
 	ledger.mu.Lock()
 	defer ledger.mu.Unlock()
 
-	record, ack, err := ledger.ticketStatement(admission, output.CaptureWriterTicketIssued)
+	record, err := ledger.admittedWriter(admission)
 	if err != nil {
 		return output.CaptureAcknowledgement{}, err
 	}
+
+	// The replay is decided BEFORE the state, and the order is the answer's
+	// meaning: a writer that was issued a ticket and lost the answer must be
+	// able to ask again after the seal began, and be told what it was told.
+	// Deciding the state first would answer "sealed" to a writer that is in
+	// the captured drain set.
+	if existing, found := record.ticket(admission.WriterTicketID); found {
+		if err := existing.sameWriter(admission); err != nil {
+			return output.CaptureAcknowledgement{}, err
+		}
+		if existing.Closed != nil {
+			return output.CaptureAcknowledgement{}, fmt.Errorf(
+				"%w: writer ticket %s was already retired; a ticket cannot be transferred to a "+
+					"new process", output.ErrConflict, admission.WriterTicketID)
+		}
+
+		return existing.Issued, nil
+	}
+
 	if record.State != sourceHeld {
 		return output.CaptureAcknowledgement{}, fmt.Errorf(
 			"%w: the source for handoff %s is %s; no process and no new pod may receive a "+
 				"write-capable mount for it", output.ErrSealed, admission.HandoffID, record.State)
 	}
-	for _, open := range record.Open {
-		if open == admission.WriterTicketID {
-			return *record.Hold, nil
-		}
-	}
-	for _, closed := range record.Closed {
-		if closed == admission.WriterTicketID {
-			return output.CaptureAcknowledgement{}, fmt.Errorf(
-				"%w: writer ticket %s was already retired; a ticket cannot be transferred to a "+
-					"new process", output.ErrConflict, admission.WriterTicketID)
-		}
-	}
 
-	record.Open = append(record.Open, admission.WriterTicketID)
-	sort.Slice(record.Open, func(i, j int) bool { return record.Open[i] < record.Open[j] })
+	ack, err := ledger.signTicketStatement(record, admission, output.CaptureWriterTicketIssued)
+	if err != nil {
+		return output.CaptureAcknowledgement{}, err
+	}
+	record.Tickets = append(record.Tickets, writerTicket{
+		TicketID:    admission.WriterTicketID,
+		PodUID:      admission.PodUID,
+		WriterFence: admission.WriterFence,
+		Issued:      ack,
+	})
 	record.HighWater = ledger.sequence
 	if err := ledger.save(record); err != nil {
 		return output.CaptureAcknowledgement{}, err
@@ -558,35 +639,38 @@ func (ledger *SourceLedger) RetireWriter(_ context.Context, admission output.Wri
 	ledger.mu.Lock()
 	defer ledger.mu.Unlock()
 
-	record, ack, err := ledger.ticketStatement(admission, output.CaptureWriterTicketClosed)
+	record, err := ledger.admittedWriter(admission)
 	if err != nil {
 		return output.CaptureAcknowledgement{}, err
 	}
 
-	remaining := make([]output.WriterTicketID, 0, len(record.Open))
-	held := false
-	for _, open := range record.Open {
-		if open == admission.WriterTicketID {
-			held = true
-
-			continue
-		}
-		remaining = append(remaining, open)
-	}
-	if !held {
-		for _, closed := range record.Closed {
-			if closed == admission.WriterTicketID {
-				return ack, nil
-			}
-		}
-
+	existing, found := record.ticket(admission.WriterTicketID)
+	if !found {
 		return output.CaptureAcknowledgement{}, fmt.Errorf(
 			"%w: writer ticket %s was never admitted over handoff %s",
 			output.ErrNotFound, admission.WriterTicketID, admission.HandoffID)
 	}
-	record.Open = remaining
-	record.Closed = append(record.Closed, admission.WriterTicketID)
-	sort.Slice(record.Closed, func(i, j int) bool { return record.Closed[i] < record.Closed[j] })
+	if err := existing.sameWriter(admission); err != nil {
+		return output.CaptureAcknowledgement{}, err
+	}
+	if existing.Closed != nil {
+		// The stored statement, not a fresh one. A close is answered once and
+		// the answer is a signed fact; minting another would give one event two
+		// sequences, and a caller holding both could not say which was the
+		// close.
+		return *existing.Closed, nil
+	}
+
+	ack, err := ledger.signTicketStatement(record, admission, output.CaptureWriterTicketClosed)
+	if err != nil {
+		return output.CaptureAcknowledgement{}, err
+	}
+	for index := range record.Tickets {
+		if record.Tickets[index].TicketID == admission.WriterTicketID {
+			closed := ack
+			record.Tickets[index].Closed = &closed
+		}
+	}
 	record.HighWater = ledger.sequence
 	if err := ledger.save(record); err != nil {
 		return output.CaptureAcknowledgement{}, err
@@ -595,20 +679,23 @@ func (ledger *SourceLedger) RetireWriter(_ context.Context, admission output.Wri
 	return ack, nil
 }
 
-// ticketStatement is the shared validation and minting for the two ticket
-// operations. Callers hold the lock.
-func (ledger *SourceLedger) ticketStatement(admission output.WriterAdmission,
-	kind output.CaptureAcknowledgementKind) (sourceRecord, output.CaptureAcknowledgement, error) {
+// admittedWriter is the validation the two ticket operations share, and it
+// mints nothing. Callers hold the lock.
+//
+// Splitting the minting out is what makes a replay a replay: the old shape
+// signed a statement before it knew whether the ticket already had one, so
+// every repeat burned a ledger sequence on an acknowledgement it discarded.
+func (ledger *SourceLedger) admittedWriter(admission output.WriterAdmission) (sourceRecord, error) {
 	if err := admission.Validate(); err != nil {
-		return sourceRecord{}, output.CaptureAcknowledgement{}, err
+		return sourceRecord{}, err
 	}
 
 	record, err := ledger.admitted(admission.HandoffID, admission.Execution, admission.ActivationEpoch)
 	if err != nil {
-		return sourceRecord{}, output.CaptureAcknowledgement{}, err
+		return sourceRecord{}, err
 	}
 	if admission.Incarnation != record.Incarnation {
-		return sourceRecord{}, output.CaptureAcknowledgement{}, fmt.Errorf(
+		return sourceRecord{}, fmt.Errorf(
 			"%w: the admission names an incarnation this node did not issue for handoff %s",
 			output.ErrUnauthorized, admission.HandoffID)
 	}
@@ -617,10 +704,18 @@ func (ledger *SourceLedger) ticketStatement(admission output.WriterAdmission,
 	// to bytes that are not the ones this capture will seal -- and the ticket
 	// would then be in the drain set, accounted for, and completely misleading.
 	if _, err := ledger.ResolveIncarnation(record.Incarnation); err != nil {
-		return sourceRecord{}, output.CaptureAcknowledgement{}, err
+		return sourceRecord{}, err
 	}
 
-	ack, err := ledger.signer.SignCapture(output.CaptureAcknowledgement{
+	return record, nil
+}
+
+// signTicketStatement mints one ticket statement. Callers hold the lock and
+// have already decided that there is no stored statement to return instead.
+func (ledger *SourceLedger) signTicketStatement(record sourceRecord,
+	admission output.WriterAdmission,
+	kind output.CaptureAcknowledgementKind) (output.CaptureAcknowledgement, error) {
+	return ledger.signer.SignCapture(output.CaptureAcknowledgement{
 		ProtocolVersion: output.ProtocolVersion,
 		Kind:            kind,
 		Execution:       record.Execution,
@@ -635,8 +730,6 @@ func (ledger *SourceLedger) ticketStatement(admission output.WriterAdmission,
 		WriterFence:     admission.WriterFence,
 		ObservedAt:      output.NewTimestamp(ledger.clock()),
 	})
-
-	return record, ack, err
 }
 
 // BeginSeal fences future admission and captures the drain set.
@@ -699,7 +792,7 @@ func (ledger *SourceLedger) BeginSeal(_ context.Context, request output.SealRequ
 
 	record.State = sourceSealing
 	record.SealStarted = &ack
-	record.DrainSet = append([]output.WriterTicketID(nil), record.Open...)
+	record.DrainSet = record.openTickets()
 	record.HighWater = ledger.sequence
 	if err := ledger.save(record); err != nil {
 		return output.SealStarted{}, err
@@ -747,7 +840,7 @@ func (ledger *SourceLedger) ConfirmSeal(_ context.Context, confirmation output.S
 	if record.SealConfirmed != nil {
 		return *record.SealConfirmed, nil
 	}
-	for _, ticket := range record.Open {
+	for _, ticket := range record.openTickets() {
 		return output.CaptureAcknowledgement{}, fmt.Errorf(
 			"%w: writer ticket %s is still open over handoff %s", output.ErrSealUnconfirmed,
 			ticket, started.HandoffID)
@@ -850,7 +943,7 @@ func (ledger *SourceLedger) AcknowledgeRelease(_ context.Context, intent output.
 	record.State = sourceReleased
 	record.ReleaseIntentID = intent.ReleaseIntentID
 	record.Release = &ack
-	record.Open, record.Closed = nil, nil
+	record.Tickets = nil
 	record.HighWater = ledger.sequence
 	if err := ledger.save(record); err != nil {
 		return output.ReleaseAcknowledgement{}, err
