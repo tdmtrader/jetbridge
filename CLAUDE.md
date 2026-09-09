@@ -35,6 +35,21 @@ ginkgo --focus="test name" ./atc/db/      # single test by name
 
 The `atc/db` suite is the largest (~1007 specs, ~90s). It uses a template database for fast setup. If you see `database "testdb_template" already exists`, another test process is still running — wait for it or kill it.
 
+### Before offering a branch for merge
+
+```bash
+hack/ci-check.sh <ref>          # default jobs: build-and-vet (~4 min) then unit-tests (~15 min)
+```
+
+This runs the pipeline's own `build-and-vet` and `unit-tests` tasks — lifted verbatim out of
+`deploy/concourse-pipeline.yml` — on the CI cluster via `fly execute`, against a `git archive` of
+the ref (never the working tree). It exists because the local tiers are macOS and two classes of
+failure only appear in CI: process-environment assumptions (signal dispositions, PATH, uid — a
+SIGHUP trap passes here and fails under a CI shell that inherited SIGHUP ignored), and anything
+needing the cluster (`live`-tagged suites are skipped on darwin). It opens the `loupe-local`
+port-forward itself. Jobs whose task config interpolates `((var))` need the value exported
+(`github-token` → `GITHUB_TOKEN`); it does not reproduce `attempts: 2` or the pipeline `timeout:`.
+
 ### Key Notes
 
 - Unit tests run in parallel (`-p` flag, 9 procs by default). Do not use `--race` — it causes parallel compilation failures (`fork/exec db.test: no such file or directory`).
