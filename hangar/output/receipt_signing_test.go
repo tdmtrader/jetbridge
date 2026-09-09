@@ -192,9 +192,16 @@ func TestEverySignedFieldIsCoveredBySignature(t *testing.T) {
 	// defect this table exists for -- and the plan names exactly one of them
 	// as its Reddened by: mutation, Generation.
 	for field, tamper := range map[string]func(*ReceiptClaims){
-		"protocol version":       func(c *ReceiptClaims) { c.ProtocolVersion = "hangar-output-v0" },
-		"receipt version":        func(c *ReceiptClaims) { c.ReceiptVersion = "hangar-output-receipt-v0" },
-		"execution id":           func(c *ReceiptClaims) { c.Execution.ExecutionID = "99999999-9999-4999-8999-999999999999" },
+		"protocol version": func(c *ReceiptClaims) { c.ProtocolVersion = "hangar-output-v0" },
+		"receipt version":  func(c *ReceiptClaims) { c.ReceiptVersion = "hangar-output-receipt-v0" },
+		// Both execution ids move together, because Validate requires them
+		// equal: a row that moved one alone would be refused by Validate and
+		// never reach the signature check at all, so it would pass whether the
+		// signature covered the field or not.
+		"execution id": func(c *ReceiptClaims) {
+			c.Execution.ExecutionID = "99999999-9999-4999-8999-999999999999"
+			c.Incarnation.ExecutionID = "99999999-9999-4999-8999-999999999999"
+		},
 		"execution fence":        func(c *ReceiptClaims) { c.Execution.Fence = 3 },
 		"activation epoch":       func(c *ReceiptClaims) { c.ActivationEpoch = 8 },
 		"handoff id":             func(c *ReceiptClaims) { c.HandoffID = "22222222-2222-4222-8222-222222222222" },
@@ -260,19 +267,35 @@ func TestEverySignedFieldIsCoveredBySignature(t *testing.T) {
 
 	// The key id is signed too, so a receipt cannot be re-pointed at another
 	// pinned key.
-	_, verifier, receipt, challenge, _ := signed(t)
+	//
+	// Verify alone cannot say that. It fails on the ring lookup for an id this
+	// deployment never pinned, whatever the signature covers -- so the
+	// assertion is over the canonical bytes directly: the signature this key
+	// made must not check out under any other key id.
+	_, verifier, receipt, challenge, _, public := signedWithKey(t)
 	repointed := receipt
 	repointed.KeyID = "receipt-key-2"
 	if err := verifier.Verify(repointed, challenge); err == nil {
 		t.Error("a receipt whose key id was edited still verified")
 	}
 
-	// And the signature itself.
-	flipped := receipt
-	raw, err := base64.StdEncoding.DecodeString(receipt.Signature)
+	repointedBytes, err := CanonicalReceiptBytes(receipt.Claims, "receipt-key-2")
+	if err != nil {
+		t.Fatalf("canonicalizing under another key id: %v", err)
+	}
+	original, err := base64.StdEncoding.DecodeString(receipt.Signature)
 	if err != nil {
 		t.Fatalf("decoding the signature: %v", err)
 	}
+	if ed25519.Verify(public, repointedBytes, original) {
+		t.Error("the signature checks out under another key id, so the key id is outside it. A " +
+			"receipt whose key id could be edited without breaking the signature would let a " +
+			"verifier be pointed at a key of the attacker's choosing")
+	}
+
+	// And the signature itself.
+	flipped := receipt
+	raw := append([]byte(nil), original...)
 	raw[0] ^= 0x01
 	flipped.Signature = base64.StdEncoding.EncodeToString(raw)
 	if err := verifier.Verify(flipped, challenge); !errors.Is(err, ErrUnauthorized) {
