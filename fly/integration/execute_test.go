@@ -1226,4 +1226,50 @@ run:
 			Expect(uploadedBits).To(HaveLen(1))
 		})
 	})
+
+	// The task config in this file declares no outputs, and none of these
+	// specs pass -o -- so there is nothing for fly to fetch and no reason for
+	// a failure to list build artifacts to change the verdict on the build.
+	Context("when no outputs were requested and listing build artifacts fails", func() {
+		JustBeforeEach(func() {
+			atcServer.RouteToHandler("GET", "/api/v1/builds/128/artifacts",
+				ghttp.RespondWith(500, "artifact listing exploded"),
+			)
+		})
+
+		It("exits 0 for a build that succeeded", func() {
+			flyCmd := exec.Command(flyPath, "-t", targetName, "e", "-c", taskConfigPath)
+			flyCmd.Dir = buildDir
+
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).ToNot(HaveOccurred())
+
+			Eventually(streaming).Should(BeClosed())
+
+			events <- event.Status{Status: atc.StatusSucceeded}
+			close(events)
+
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.Err).ToNot(gbytes.Say("artifact"))
+		})
+	})
+
+	Context("when no outputs were requested and listing build artifacts is healthy", func() {
+		It("exits 2 for a build that errored", func() {
+			flyCmd := exec.Command(flyPath, "-t", targetName, "e", "-c", taskConfigPath)
+			flyCmd.Dir = buildDir
+
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).ToNot(HaveOccurred())
+
+			Eventually(streaming).Should(BeClosed())
+
+			events <- event.Status{Status: atc.StatusErrored}
+			close(events)
+
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(2))
+		})
+	})
 })
