@@ -106,16 +106,28 @@ type Attrs struct {
 // narrowed by IAM: the caller applies the server-derived prefix itself, and
 // the honest way to say that is that the request carries one. Nothing outside
 // the inventory role ever builds one of these.
+//
+// After is a KEY, not a page token, and the distinction is the whole reason
+// this field is spelled the way it is. A page token is opaque, provider-owned
+// and short-lived; the inventory cursor it would have to be stored in is a
+// database column that outlives a sweep, a process restart and a leader
+// takeover. Resuming from the last key seen is stable across all three, and it
+// is what the cursor's own column name already promised.
 type ListRequest struct {
 	Prefix   string
 	PageSize int
-	Cursor   string
+	After    string
 }
 
-// Page is one listing page and the token that continues it.
+// Page is one listing page.
+//
+// LastKey is the key of the last object in it, and Done says the listing had
+// nothing more. Together they are the next request's After, without either the
+// caller or the adapter holding a token.
 type Page struct {
 	Objects []Attrs
-	Cursor  string
+	LastKey string
+	Done    bool
 }
 
 // Client is the whole surface. A role is given a narrower interface than this;

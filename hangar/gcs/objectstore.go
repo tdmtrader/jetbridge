@@ -55,6 +55,13 @@ func (client outputObjectClient) List(ctx context.Context, bucket string, reques
 	}
 
 	query := &storage.Query{Prefix: request.Prefix}
+	if request.After != "" {
+		// StartOffset is inclusive, so the resumed-from key comes back and is
+		// dropped below. A page token would have been one call shorter and is
+		// exactly what this seam refuses to carry: it expires, and the cursor
+		// it would live in does not.
+		query.StartOffset = request.After
+	}
 	// Only the fields the inventory classifies on. A projection that fetched
 	// everything would make one page's metadata budget unpredictable.
 	if err := query.SetAttrSelection([]string{"Name", "Generation", "Metageneration", "Size", "Created", "Metadata"}); err != nil {
@@ -62,17 +69,25 @@ func (client outputObjectClient) List(ctx context.Context, bucket string, reques
 	}
 
 	iterated := client.client.Bucket(bucket).Objects(ctx, query)
-	pager := iterator.NewPager(iterated, request.PageSize, request.Cursor)
 
-	var objects []*storage.ObjectAttrs
-	next, err := pager.NextPage(&objects)
-	if err != nil {
-		return objectstore.Page{}, translate(err)
-	}
+	page := objectstore.Page{Objects: make([]objectstore.Attrs, 0, request.PageSize)}
+	for len(page.Objects) < request.PageSize {
+		attrs, err := iterated.Next()
+		if errors.Is(err, iterator.Done) {
+			page.Done = true
 
-	page := objectstore.Page{Cursor: next, Objects: make([]objectstore.Attrs, 0, len(objects))}
-	for _, attrs := range objects {
+			break
+		}
+		if err != nil {
+			return objectstore.Page{}, translate(err)
+		}
+		if attrs.Name == request.After {
+			continue
+		}
 		page.Objects = append(page.Objects, outputAttrs(attrs))
+	}
+	if len(page.Objects) > 0 {
+		page.LastKey = page.Objects[len(page.Objects)-1].Key
 	}
 
 	return page, nil

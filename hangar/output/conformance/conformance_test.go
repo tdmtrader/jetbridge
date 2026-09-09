@@ -326,16 +326,10 @@ func TestBucketWideListPagesUnderTheServerDerivedPrefix(t *testing.T) {
 		budget := output.DefaultPageBudget()
 		budget.MaxObjects = 2
 
-		if !tier.can.Paginates {
-			// The substrate returns every match in one page whatever page size
-			// it is given, so this run reads the prefix rule and not the
-			// paging rule. Named, not skipped: TestTheSubstrateGapsAreNamed
-			// below fails if this gap is ever unaccounted for.
-			budget.MaxObjects = output.DefaultPageBudget().MaxObjects
-		}
-
 		var keys []string
+		passes := 0
 		for pass := 0; pass < 5; pass++ {
+			passes++
 			page, err := sweep.ListPage(ctx, cursor, budget)
 			if err != nil {
 				t.Fatalf("listing: %v", err)
@@ -356,6 +350,10 @@ func TestBucketWideListPagesUnderTheServerDerivedPrefix(t *testing.T) {
 		if len(keys) != 3 {
 			t.Fatalf("the sweep read %d objects, expected the 3 under the deployment prefix: %v",
 				len(keys), keys)
+		}
+		if passes < 2 {
+			t.Errorf("the sweep read 3 objects at a page size of 2 in %d pass(es); it did not "+
+				"page, so this case is asserting the prefix rule and not the paging rule", passes)
 		}
 		for _, key := range keys {
 			if !strings.HasPrefix(key, namespace.ListPrefix()) {
@@ -894,13 +892,11 @@ var knownSubstrateGaps = map[string]string{
 		"covered on tier 1, whose fake does enforce it, and is real-GCS evidence in Phase 9. " +
 		"Nothing in the plane may treat a tier-2 green as proof that a conditional delete is " +
 		"conditional.",
-	"Paginates": "fsouza/fake-gcs-server v1.52.3 returns every matching object in one page and " +
-		"no next-page token, whatever page size it is asked for. Bucket-wide listing under the " +
-		"server-derived prefix is still proven here; paging across pages is covered on tier 1 " +
-		"and is real-GCS evidence in Phase 9.",
 }
 
 func TestTheSubstrateGapsAreNamed(t *testing.T) {
+	observed := map[string]bool{}
+
 	for _, build := range []func(*testing.T) substrate{tier1, tier2} {
 		tier := build(t)
 		t.Run(tier.name, func(t *testing.T) {
@@ -911,6 +907,8 @@ func TestTheSubstrateGapsAreNamed(t *testing.T) {
 				if supported {
 					continue
 				}
+				observed[name] = true
+
 				reason, known := knownSubstrateGaps[name]
 				if !known {
 					t.Errorf("%s does not support %s, and that gap is not in "+
@@ -923,6 +921,20 @@ func TestTheSubstrateGapsAreNamed(t *testing.T) {
 				t.Logf("%s does not support %s. %s", tier.name, name, reason)
 			}
 		})
+	}
+
+	// The other direction, and the one that bit: a listed gap that no substrate
+	// actually has. `Paginates` was in this list until the seam stopped
+	// carrying page tokens and started resuming from the last key, at which
+	// point fake-gcs-server paged perfectly well -- the gap had been in this
+	// code, not in the emulator. A stale entry here is a row the suite quietly
+	// stops proving while the list says somebody else proves it.
+	for name, reason := range knownSubstrateGaps {
+		if !observed[name] {
+			t.Errorf("knownSubstrateGaps names %s, but every substrate supports it now.\n\n"+
+				"The entry says: %s\n\nRemove it. A recorded gap that has closed is a row this "+
+				"suite could be asserting and is not.", name, reason)
+		}
 	}
 
 	// Tier 1 must support both, or the gaps above would be uncovered

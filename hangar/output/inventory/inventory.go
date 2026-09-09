@@ -101,7 +101,7 @@ func (inventory *Inventory) ListPage(ctx context.Context, cursor output.Inventor
 	page, err := inventory.store.List(ctx, inventory.namespace.Bucket(), objectstore.ListRequest{
 		Prefix:   inventory.namespace.ListPrefix(),
 		PageSize: budget.MaxObjects,
-		Cursor:   cursor.AfterKey,
+		After:    cursor.AfterKey,
 	})
 	if err != nil {
 		return output.InventoryPage{}, translate(err)
@@ -124,15 +124,25 @@ func (inventory *Inventory) ListPage(ctx context.Context, cursor output.Inventor
 		}
 
 		result.Objects = append(result.Objects, inventory.classify(attrs))
-		result.Next.AfterKey = page.Cursor
+
+		// The cursor advances to the last object this page actually
+		// CLASSIFIED, not to the end of what the store returned. A page cut
+		// short by a budget is replayed from where classification stopped, so
+		// nothing is skipped -- which is the whole reason the advance is inside
+		// the loop.
+		result.Next.AfterKey = attrs.Key
 		result.Next.AfterGeneration = attrs.Generation
 	}
 
-	// A cursor that advanced past nothing is a cursor that would skip a page.
+	// A page that classified nothing leaves the cursor exactly where it was.
 	if len(result.Objects) == 0 {
 		result.Next = cursor
 	}
-	if page.Cursor == "" && result.Complete {
+
+	// A cycle ends only when the listing said it had nothing more AND every
+	// object it returned was classified. Either half alone would restart a
+	// sweep over a bucket it had not finished reading.
+	if page.Done && result.Complete && len(result.Objects) == len(page.Objects) {
 		result.Next.Cycle = cursor.Cycle + 1
 		result.Next.AfterKey = ""
 		result.Next.AfterGeneration = 0

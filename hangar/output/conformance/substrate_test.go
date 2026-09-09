@@ -107,7 +107,7 @@ func probeCapabilities(t *testing.T, tier substrate) capabilities {
 	if err != nil {
 		t.Fatalf("probing pagination: %v", err)
 	}
-	measured.Paginates = page.Cursor != ""
+	measured.Paginates = len(page.Objects) == 2 && !page.Done
 
 	// Leave nothing behind: every case below counts objects under its own
 	// namespace prefix, and these are not under one.
@@ -289,18 +289,18 @@ func deleteBucket(t *testing.T, client objectstore.Client, storageClient *storag
 	t.Helper()
 
 	ctx := context.Background()
-	for cursor := ""; ; {
-		page, err := client.List(ctx, bucket, objectstore.ListRequest{PageSize: 200, Cursor: cursor})
+	for after := ""; ; {
+		page, err := client.List(ctx, bucket, objectstore.ListRequest{PageSize: 200, After: after})
 		if err != nil {
 			return
 		}
 		for _, object := range page.Objects {
 			_ = client.Object(bucket, object.Key).Delete(ctx)
 		}
-		if page.Cursor == "" {
+		if page.Done || page.LastKey == "" {
 			break
 		}
-		cursor = page.Cursor
+		after = page.LastKey
 	}
 	_ = storageClient.Bucket(bucket).Delete(ctx)
 }

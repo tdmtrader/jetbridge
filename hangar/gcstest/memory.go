@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"io"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -187,25 +186,20 @@ func (memory *Memory) List(ctx context.Context, bucket string, request objectsto
 	sort.Strings(keys)
 
 	start := 0
-	if request.Cursor != "" {
-		index, err := strconv.Atoi(request.Cursor)
-		if err != nil {
-			return objectstore.Page{}, fmt.Errorf("%w: unreadable list cursor %q",
-				objectstore.ErrInfrastructure, request.Cursor)
-		}
-		start = index
+	for start < len(keys) && keys[start] <= request.After && request.After != "" {
+		start++
 	}
 	end := start + request.PageSize
 	if end > len(keys) {
 		end = len(keys)
 	}
 
-	page := objectstore.Page{}
+	page := objectstore.Page{Done: end >= len(keys)}
 	for _, key := range keys[start:end] {
 		page.Objects = append(page.Objects, attrsOf(memory.objects[bucket][key]))
 	}
-	if end < len(keys) {
-		page.Cursor = strconv.Itoa(end)
+	if len(page.Objects) > 0 {
+		page.LastKey = page.Objects[len(page.Objects)-1].Key
 	}
 
 	return page, nil
