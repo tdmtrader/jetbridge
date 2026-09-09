@@ -301,9 +301,24 @@ func (repository *HangarOutputRepository) acknowledgeRelease(ctx context.Context
 		return err
 	}
 
+	// Each branch's terminal fact has a different name, so the one that
+	// finalizes it is named per branch rather than assumed. The capture branch
+	// SETTLES: with the release acknowledged there is nothing still owed, which
+	// is what settled already means on the other two.
 	finalize := ""
-	if branch == output.DispositionPreReservationCancel {
+	switch branch {
+	case output.DispositionPreReservationCancel:
 		finalize = ", finalized_at = coalesce(finalized_at, now())"
+	case output.DispositionCapture:
+		finalize = ", settled_at = coalesce(settled_at, now())"
+	}
+
+	// The capture branch may only release before the irreversible publish
+	// point. After it the capture settles a registered receipt or a terminal
+	// orphan, and a release offered there is a caller working from stale state.
+	guard := ""
+	if branch == output.DispositionCapture {
+		guard = " AND state = 'cancelled' AND NOT past_irreversible_publish_point"
 	}
 
 	result, err := tx.ExecContext(ctx, fmt.Sprintf(`
@@ -311,7 +326,7 @@ func (repository *HangarOutputRepository) acknowledgeRelease(ctx context.Context
 		SET release_acknowledged_at = now(), release_acknowledgement = $3%s
 		WHERE handoff_id = $1
 		  AND release_intent_id = $2
-		  AND release_acknowledged_at IS NULL`, table, finalize),
+		  AND release_acknowledged_at IS NULL%s`, table, finalize, guard),
 		string(acknowledgement.HandoffID),
 		string(acknowledgement.ReleaseIntentID),
 		body,
@@ -392,4 +407,27 @@ func hangarMarshalWitness(acknowledgement *executioncontrol.Acknowledgement) (an
 	}
 
 	return json.Marshal(*acknowledgement)
+}
+
+// AcknowledgeCaptureRelease completes the capture branch's own fenced release.
+//
+// The capture branch owes one in exactly one situation, and the branch review's
+// F7 is where that was settled: a capture that terminally cancels or fails
+// before the irreversible publish point has decided something and released
+// nothing, so the source is still held on some node until this statement says
+// otherwise. `Settled` means the same thing on all three branches -- nothing is
+// still owed -- and a cancelled capture with no acknowledged release is decided
+// and unsettled, which is the state drain has to wait on.
+//
+// It is not owed past the publish point. There the capture settles a registered
+// receipt or a terminal orphan, and there is nothing left to release; the state
+// guard above is what refuses one offered anyway.
+func (repository *HangarOutputRepository) AcknowledgeCaptureRelease(ctx context.Context, tx output.Tx, acknowledgement output.ReleaseAcknowledgement) error {
+	if acknowledgement.Disposition != output.DispositionCapture {
+		return fmt.Errorf("%w: a %s release acknowledgement was offered to the %s branch",
+			output.ErrIncomplete, acknowledgement.Disposition, output.DispositionCapture)
+	}
+
+	return repository.acknowledgeRelease(ctx, tx, acknowledgement,
+		output.DispositionCapture, "hangar_capture_reservations")
 }

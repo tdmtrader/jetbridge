@@ -929,23 +929,89 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			Expect(state).To(Equal("cancelled"), "the cancellation was not recorded")
 			Expect(unsettled).To(BeTrue(), "a settlement time was stamped with nothing to earn it")
 
-			// The daemon's fenced release, arriving. Phase 3 builds the pair
-			// that produces it -- an intent, a signed acknowledgement and the
-			// fence they are offered under -- so this writes the column the
-			// way that pair eventually will.
-			_, err = dbConn.Exec(`
-				UPDATE hangar_capture_reservations
-				SET release_acknowledged_at = now(), settled_at = now()
-				WHERE handoff_id = $1`, string(handoff))
+			// The cancellation recorded an INTENT, and it is the database that
+			// minted it: the generic CancelOrSettle seam takes a handoff and
+			// nothing else, because T7 calls it and must not learn what a
+			// release intent is.
+			var intent string
+			Expect(dbConn.QueryRow(`
+				SELECT release_intent_id::text FROM hangar_capture_reservations
+				WHERE handoff_id = $1`, string(handoff)).Scan(&intent)).To(Succeed())
+			Expect(intent).NotTo(BeEmpty(),
+				"a cancelled capture recorded no release intent, so nothing on any node has "+
+					"anything to acknowledge")
+
+			// The daemon's fenced release, arriving through the repository
+			// rather than through raw SQL -- which is what makes this a test of
+			// the pair rather than of the column.
+			release := output.ReleaseAcknowledgement{
+				ProtocolVersion: output.ProtocolVersion,
+				Disposition:     output.DispositionCapture,
+				Execution:       execution,
+				ActivationEpoch: 1,
+				HandoffID:       handoff,
+				SourceLeaseID:   lease,
+				ReleaseIntentID: output.ReleaseIntentID(intent),
+				Incarnation: output.SourceIncarnation{
+					ExecutionID:      execution.ExecutionID,
+					NodeUID:          "node-uid",
+					HandleGeneration: 1,
+					Output:           name,
+				},
+				LedgerSequence: 9,
+				ObservedAt:     output.NewTimestamp(time.Now().UTC()),
+				Signature:      "c2lnbmF0dXJlLXJlbGVhc2U",
+			}
+
+			// A release naming an intent this branch never recorded is refused,
+			// and it is asserted BEFORE the one that succeeds: "the release was
+			// admitted" proves nothing on a repository that admits every
+			// release.
+			foreign := release
+			foreign.ReleaseIntentID = output.ReleaseIntentID(uuid.NewString())
+			refusing, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(refusing)
+			Expect(repository.AcknowledgeCaptureRelease(ctx, refusing, foreign)).NotTo(Succeed())
+			Expect(refusing.Rollback()).To(Succeed())
+
+			// And one offered to the wrong branch.
+			wrongBranch := release
+			wrongBranch.Disposition = output.DispositionNoCapture
+			misdirecting, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(misdirecting)
+			Expect(repository.AcknowledgeCaptureRelease(ctx, misdirecting, wrongBranch)).NotTo(Succeed())
+			Expect(misdirecting.Rollback()).To(Succeed())
+
+			releasing, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(releasing)
+			Expect(repository.AcknowledgeCaptureRelease(ctx, releasing, release)).To(Succeed())
+			Expect(releasing.Commit()).To(Succeed())
+
+			// Idempotent for the same intent: recovery repeats it until
+			// committed-versus-not is known.
+			repeating, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(repeating)
+			Expect(repository.AcknowledgeCaptureRelease(ctx, repeating, release)).To(Succeed())
+			Expect(repeating.Commit()).To(Succeed())
 
 			reading, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(reading)
 			status, err = repository.ClassifyHandoff(ctx, reading, handoff)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(status.Settled).To(BeTrue())
+			Expect(status.Settled).To(BeTrue(),
+				"the release is acknowledged and the capture still reports something owed")
 			Expect(reading.Rollback()).To(Succeed())
+
+			var settled bool
+			Expect(dbConn.QueryRow(`
+				SELECT settled_at IS NOT NULL FROM hangar_capture_reservations
+				WHERE handoff_id = $1`, string(handoff)).Scan(&settled)).To(Succeed())
+			Expect(settled).To(BeTrue(), "the acknowledged release did not settle the capture")
 		})
 
 		// Review finding R2-3. Cancellation is terminal by Req 11's own word,
