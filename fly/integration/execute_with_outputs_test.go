@@ -261,6 +261,34 @@ run:
 			})
 		})
 
+		// A listing failure here is a real failure: the user asked for files
+		// and did not get them, so fly must not report success.
+		Context("when listing the build's artifacts fails", func() {
+			JustBeforeEach(func() {
+				atcServer.RouteToHandler("GET", "/api/v1/builds/128/artifacts",
+					ghttp.RespondWith(500, "artifact listing exploded"),
+				)
+			})
+
+			It("exits non-zero and names the output it could not fetch", func() {
+				flyCmd := exec.Command(flyPath, "-t", targetName, "e", "-c", taskConfigPath, "--output", "some-dir="+outputDir)
+				flyCmd.Dir = buildDir
+
+				sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+				Expect(err).NotTo(HaveOccurred())
+
+				// sync with after create
+				<-streaming
+
+				events <- event.Status{Status: atc.StatusSucceeded}
+				close(events)
+
+				<-sess.Exited
+				Expect(sess.ExitCode()).NotTo(Equal(0))
+				Expect(sess.Err).To(gbytes.Say("some-dir"))
+			})
+		})
+
 		Context("when the task does not specify those outputs", func() {
 			It("exits 1", func() {
 				flyCmd := exec.Command(flyPath, "-t", targetName, "e", "-c", taskConfigPath, "-o", "wrong-output=wrong-path")

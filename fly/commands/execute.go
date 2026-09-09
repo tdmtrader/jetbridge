@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -155,9 +156,30 @@ func (command *ExecuteCommand) Execute(args []string) error {
 	exitCode := eventstream.Render(os.Stdout, eventSource, renderOptions)
 	eventSource.Close()
 
+	// Listing the build's artifacts exists solely to resolve the -o outputs to
+	// artifact IDs. With no -o there is nothing to resolve, and asking anyway
+	// only creates a way for a transient API error to mask a finished build's
+	// exit code -- which it did: an EOF on a port-forwarded connection turned a
+	// build that had already printed "succeeded" into a non-zero fly.
+	if len(outputs) == 0 {
+		os.Exit(exitCode)
+		return nil
+	}
+
 	artifactList, err := client.ListBuildArtifacts(strconv.Itoa(build.ID))
 	if err != nil {
-		return err
+		// Outputs *were* requested, so this is a real failure -- the user asked
+		// for files they are not getting. Still never report success, and never
+		// downgrade a build that failed on its own merits.
+		names := make([]string, len(outputs))
+		for i, output := range outputs {
+			names[i] = output.Name
+		}
+
+		fmt.Fprintf(ui.Stderr, "could not list build artifacts to fetch output(s) %s: %s\n", strings.Join(names, ", "), err)
+
+		os.Exit(nonZero(exitCode))
+		return nil
 	}
 
 	artifacts := map[string]atc.WorkerArtifact{}
@@ -191,6 +213,15 @@ func (command *ExecuteCommand) Execute(args []string) error {
 	os.Exit(exitCode)
 
 	return nil
+}
+
+// nonZero keeps a failing build's own exit code -- 1 for failed, 2 for errored
+// -- and only invents one when the build itself succeeded.
+func nonZero(exitCode int) int {
+	if exitCode != 0 {
+		return exitCode
+	}
+	return 1
 }
 
 func (command *ExecuteCommand) CreateTaskConfig(args []string) (atc.TaskConfig, error) {
