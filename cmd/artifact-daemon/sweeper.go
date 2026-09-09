@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
+
+	"github.com/concourse/concourse/hangar/output/ledger"
 )
 
 // Sweeper periodically removes expired artifacts from the hostPath storage.
@@ -32,6 +34,22 @@ type Sweeper struct {
 	// (tests without a server); main wires the server's guard. Set before
 	// Run starts.
 	guard *ReadGuard
+
+	// captureLedger is the output plane's read-only source ledger.
+	//
+	// The sweeper is the destructive path a held source is most likely to
+	// meet. Nothing refreshes a held source's mtime -- the producer wrote it
+	// and exited, and the capture is waiting for a seal -- so a source waiting
+	// to be sealed ages exactly like an abandoned one, and this loop is the
+	// thing that decides. Nil-safe: a nil ledger is a node with no output
+	// plane, and the sweep is unchanged.
+	captureLedger *ledger.Classifier
+}
+
+// SetCaptureLedger wires the output plane's read-only classifier. Must be
+// called before Run starts.
+func (s *Sweeper) SetCaptureLedger(classifier *ledger.Classifier) {
+	s.captureLedger = classifier
 }
 
 // SetGuard wires the read/sweep coordination guard. Must be called before

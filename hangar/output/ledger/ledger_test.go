@@ -250,3 +250,53 @@ func TestAHoldEstablishedAfterTheLastReadIsSeenImmediately(t *testing.T) {
 			"on the control directory's modification time for exactly this case", class)
 	}
 }
+
+// Destroying the PARENT of a held incarnation destroys the held incarnation.
+//
+// This is the direction the first version of this package did not answer, and
+// the caller that asks it is the one that matters most: the Reaper deletes
+// `steps/<handle>` -- the step directory -- while a hold names
+// `<execution>.<generation>/<output>` BENEATH it. A classifier that only
+// answered "is this path at or under a held incarnation" told the Reaper that
+// the directory containing a held source was unmanaged, and the source went
+// with it.
+//
+// The sweeper asks the same question about the same path, on a timer, with
+// nobody watching.
+func TestDestroyingAnAncestorOfAHeldIncarnationIsRefused(t *testing.T) {
+	root, dir := controlDir(t)
+	writeRecord(t, dir, "handoff-a", "held", "exec-1", 3, "result")
+
+	classifier := New(root)
+
+	// The incarnation itself, and everything beneath it: the rows that already
+	// held. They are the control -- if these stop working the ancestor rule was
+	// bought with the descendant one.
+	for _, held := range []string{"exec-1.3/result", "exec-1.3/result/inner/file"} {
+		if class := classifier.Classify(held); class != Held {
+			t.Errorf("%s classified %s, expected held", held, class)
+		}
+	}
+
+	// The step directory the Reaper and the sweeper name.
+	if class := classifier.Classify("exec-1.3"); class != Held {
+		t.Errorf("the step directory containing a held source classified %s; deleting it "+
+			"destroys the held source just as surely as deleting the source", class)
+	}
+
+	// And the refusal has to say something, because a caller that cannot
+	// explain why it did not delete is a stuck sweep nobody can diagnose.
+	if err := classifier.Reason("exec-1.3", Held); err == nil {
+		t.Error("an ancestor refusal carried no reason")
+	}
+
+	// A SIBLING that merely shares a prefix is not held. This is the row that
+	// keeps the ancestor rule from becoming "anything that looks similar":
+	// exec-1.3 and exec-1.30 are different handle generations.
+	for _, free := range []string{"exec-1.30", "exec-1.3x", "exec-2.3", "exec-1"} {
+		if class := classifier.Classify(free); class != Unmanaged {
+			t.Errorf("%s classified %s, expected unmanaged: an unrelated step that shares "+
+				"characters with a held one is not held", free, class)
+		}
+	}
+}
