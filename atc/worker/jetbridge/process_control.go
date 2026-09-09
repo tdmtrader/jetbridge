@@ -387,18 +387,35 @@ func (c *Container) refuseIfCaptureHeld(ctx context.Context, why string) error {
 		return nil
 	}
 
-	class, err := c.captureClass.CaptureClass(ctx, c.handle, c.captureNodeName(ctx))
+	// WHICH path is asked matters more than that one is.
+	//
+	// The step handle is the wrong question for a capture-selected step. Its
+	// declared output is mounted from the reserved incarnation --
+	// `steps/<execution>.<generation>/<output>` -- which is a SIBLING of
+	// `steps/<handle>`, so a classifier asked about the handle correctly
+	// answers `unmanaged` and this refusal never fires. Asking about the
+	// reservation is what makes the guard load-bearing rather than a call that
+	// always says yes.
+	//
+	// An ordinary step has no reservation and the handle is still the right
+	// question: its whole workspace is `steps/<handle>`.
+	asked := c.handle
+	if reserved := captureReservedDirectory(c.containerSpec); reserved != "" {
+		asked = reserved
+	}
+
+	class, err := c.captureClass.CaptureClass(ctx, asked, c.captureNodeName(ctx))
 	if err != nil {
 		// Fail closed: an unreadable ledger is not an empty one, and the
 		// operation being refused is destructive or write-capable in every
 		// caller.
 		return fmt.Errorf("%s is refused: the output ledger could not be read for %s: %w",
-			why, c.handle, err)
+			why, asked, err)
 	}
 	if class == captureClassHeld {
 		return fmt.Errorf("%s is refused: a durable output capture holds the source for %s. "+
 			"A capture-enabled task loses post-completion hijack and a held incarnation may not "+
-			"receive a new write-capable mount or a new Pod UID", why, c.handle)
+			"receive a new write-capable mount or a new Pod UID", why, asked)
 	}
 
 	return nil

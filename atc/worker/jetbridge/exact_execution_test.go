@@ -519,6 +519,39 @@ var _ = Describe("Destructive operations over a capture-held source", func() {
 			"a refused replacement still spent the one replacement this step gets")
 	})
 
+	// WHICH path the guard asks about, which is the completion pass's whole
+	// point on this side.
+	//
+	// The step handle is the wrong question for a capture-selected step: the
+	// producer's declared output is now the reserved incarnation, a SIBLING of
+	// `steps/<handle>`, so a classifier asked about the handle correctly
+	// answers `unmanaged` and the refusal never fires. It has to ask about the
+	// directory the hold protects.
+	//
+	// The control is asserted first and it is the ordinary step: with no
+	// capture on the spec there is no reservation, and the handle is still the
+	// right question.
+	It("asks the ledger about the reserved incarnation, and about the handle otherwise", func() {
+		Expect(container.refuseIfCaptureHeld(ctx, "recreating the pause pod")).To(Succeed())
+		Expect(classifier.asked).To(Equal([]string{"held-handle"}),
+			"an ordinary step's guard stopped asking about its own step directory")
+
+		container.containerSpec.ExecutionControl = admittedCapture()
+		reserved := container.containerSpec.ExecutionControl.Capture.ReservedDirectory
+		Expect(reserved).ToNot(BeEmpty())
+
+		classifier.class = captureClassHeld
+		classifier.asked = nil
+		err := container.refuseIfCaptureHeld(ctx, "recreating the pause pod")
+		Expect(err).To(HaveOccurred())
+		Expect(classifier.asked).To(ContainElement(reserved),
+			"the guard asked about the step handle, which is a sibling of the directory the "+
+				"hold protects; a classifier answering about it can only ever say unmanaged")
+		Expect(classifier.asked).ToNot(ContainElement("held-handle"),
+			"the guard asked BOTH, so a fix that added the incarnation without dropping the "+
+				"handle would still refuse an ordinary reused handle for the wrong reason")
+	})
+
 	It("fails closed when the ledger cannot be read", func() {
 		classifier.err = fmt.Errorf("the daemon is unreachable")
 		err := container.refuseIfCaptureHeld(ctx, "recreating the pause pod")
