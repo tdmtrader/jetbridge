@@ -170,6 +170,10 @@ var _ = Describe("the Hangar output plane schema", func() {
 		GinkgoHelper()
 		tx, err := database.Begin()
 		Expect(err).NotTo(HaveOccurred())
+		// Without this, a fixture that fails mid-transaction leaves the suite's
+		// one connection idle in transaction, and the next spec's DROP DATABASE
+		// reports a session it cannot terminate rather than the real failure.
+		defer func() { _ = tx.Rollback() }()
 		for _, statement := range stage2(handoff, reservation) {
 			_, err := tx.Exec(statement)
 			Expect(err).NotTo(HaveOccurred())
@@ -213,11 +217,10 @@ var _ = Describe("the Hangar output plane schema", func() {
 	// The whole valid chain, from epoch to claim. Every negative vector below
 	// is one deviation from it, so that "the schema refused this" always means
 	// "the schema refused this one thing".
+	// The whole valid chain past the epoch, policy and predeclaration its
+	// callers already seeded.
 	seedFullChain := func() int64 {
 		GinkgoHelper()
-		seedEpoch()
-		seedSafePolicy()
-		seedPredeclaration(handoffID, sourceLeaseID, executionID, true)
 		commitStage2(handoffID, reservationID)
 		seedCaptureLease(reservationID, 1)
 		seedLogicalReservation(reservationID, sampleDigest, 1)
@@ -284,7 +287,7 @@ var _ = Describe("the Hangar output plane schema", func() {
 					 activation_epoch, capture_deadline_at)
 				VALUES ('%s', '%s', '%s', 1, 'result', 1, now() + interval '24 hours')`,
 				handoffID, sourceLeaseID, executionID))
-			Expect(err).To(MatchError(ContainSubstring("hangar_output_activation_epochs")))
+			Expect(err).To(MatchError(ContainSubstring("hangar_handoff_predeclarations_activation_epoch_fkey")))
 		})
 	})
 
@@ -313,18 +316,64 @@ var _ = Describe("the Hangar output plane schema", func() {
 		// The overlap is the point: it is what gives rotation no emission gap.
 		// An index phrased "at most one non-terminal row" would forbid this and
 		// force a gap on every rotation.
+		//
+		// The swap is one transaction, not two steps. Taken literally, "CAS the
+		// next epoch to enabled and only then move the outgoing row to
+		// draining" would need two `enabled` rows for an instant, which this
+		// index forbids; committing both moves together is what delivers the
+		// property the rule is actually about -- no instant with two, and no
+		// instant with none.
 		It("accepts a draining row and an enabled row for the same facet", func() {
-			Expect(attempt(database,
-				`INSERT INTO hangar_output_activation_epochs
-					(epoch_id, base_state, output_state, base_attestation)
-				 VALUES (2, 'attested', 'initial', '{}')`,
-				// The swap is one transaction, so there is never an instant
-				// with two enabled rows and never an instant with none.
-				`UPDATE hangar_output_activation_epochs
-				 SET base_state = 'draining', revision = revision + 1 WHERE epoch_id = 1`,
-				`UPDATE hangar_output_activation_epochs
-				 SET base_state = 'enabled', revision = revision + 1 WHERE epoch_id = 2`,
-			)).To(Succeed())
+			mustExec(database, `
+				INSERT INTO hangar_output_activation_epochs
+					(epoch_id, base_state, output_state, base_attestation, output_attestation,
+					 receipt_public_key_id, receipt_key_valid_from, receipt_key_valid_until,
+					 materialization_key_id, bucket_fingerprint, derived_namespace)
+				VALUES (2, 'attested', 'attested', '{}', '{}', 'receipt-key-2',
+					now(), now() + interval '30 days',
+					'materialize-key-2', 'gs://output-bucket', 'deployment/ns')`)
+
+			rotate := func(facet string) {
+				GinkgoHelper()
+				tx, err := database.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer func() { _ = tx.Rollback() }()
+				_, err = tx.Exec(fmt.Sprintf(`UPDATE hangar_output_activation_epochs
+					SET %s = 'draining', revision = revision + 1 WHERE epoch_id = 1`, facet))
+				Expect(err).NotTo(HaveOccurred())
+				_, err = tx.Exec(fmt.Sprintf(`UPDATE hangar_output_activation_epochs
+					SET %s = 'enabled', revision = revision + 1 WHERE epoch_id = 2`, facet))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(tx.Commit()).To(Succeed())
+			}
+			states := func(facet string) map[int]string {
+				GinkgoHelper()
+				rows, err := database.Query(fmt.Sprintf(
+					`SELECT epoch_id, %s FROM hangar_output_activation_epochs`, facet))
+				Expect(err).NotTo(HaveOccurred())
+				defer rows.Close()
+				found := map[int]string{}
+				for rows.Next() {
+					var id int
+					var state string
+					Expect(rows.Scan(&id, &state)).To(Succeed())
+					found[id] = state
+				}
+				Expect(rows.Err()).NotTo(HaveOccurred())
+
+				return found
+			}
+
+			rotate("output_state")
+			Expect(states("output_state")).To(Equal(map[int]string{1: "draining", 2: "enabled"}))
+
+			// Output leaves service before base does, which is the order
+			// `drain --facet=all` uses and the only one the "output can never
+			// be ready without base control" check permits.
+			mustExec(database, `UPDATE hangar_output_activation_epochs
+				SET output_state = 'disabled', revision = revision + 1 WHERE epoch_id = 1`)
+			rotate("base_state")
+			Expect(states("base_state")).To(Equal(map[int]string{1: "draining", 2: "enabled"}))
 		})
 
 		It("has no retired state anywhere in the schema", func() {
@@ -459,7 +508,7 @@ var _ = Describe("the Hangar output plane schema", func() {
 			rows, err := database.Query(`
 				SELECT table_name, column_name, data_type, column_default
 				FROM information_schema.columns
-				WHERE table_name LIKE 'hangar_%' AND column_name IN
+				WHERE table_name LIKE 'hangar_%' AND is_nullable = 'NO' AND column_name IN
 					('created_at', 'acquired_at', 'granted_at', 'renewed_at', 'observed_at',
 					 'issued_at', 'registered_at', 'updated_at', 'decided_at', 'resolved_at',
 					 'intent_recorded_at', 'admitted_at', 'admitted_delete_at')`)
@@ -543,7 +592,7 @@ var _ = Describe("the Hangar output plane schema", func() {
 				Expect(expectRefusal(database, "an arbiter with no branch child",
 					fmt.Sprintf(`INSERT INTO hangar_handoff_dispositions (handoff_id, disposition)
 						VALUES ('%s', 'capture')`, handoffID))).
-					To(ContainSubstring("carries the wrong branch record"))
+					To(ContainSubstring("carries no branch record"))
 			})
 
 			It("refuses a branch record with no arbiter", func() {
@@ -858,14 +907,24 @@ var _ = Describe("the Hangar output plane schema", func() {
 			})
 
 			It("refuses a receipt that did not consume its challenge", func() {
-				mustExec(database, fmt.Sprintf(
-					`UPDATE hangar_receipt_stat_challenges SET consumed_at = NULL WHERE nonce = '%s'`,
-					challengeNonce))
-				// Un-consuming is only possible here because the row was
-				// consumed in the same fixture; the trigger below is what stops
-				// a second use.
+				// A fresh, unconsumed challenge for the same capture and ref.
+				// Un-consuming the seeded one is a different rule's business,
+				// and the one-use trigger refuses it.
+				mustExec(database, fmt.Sprintf(`
+					INSERT INTO hangar_receipt_stat_challenges
+						(nonce, handoff_id, reservation_id, activation_epoch, receipt_public_key_id,
+						 scope, digest, generation, capture_fence, not_after)
+					VALUES ('nonce-fedcba9876543210', '%s', '%s', 1, 'receipt-key-1', 'team-a',
+						'%s', %d, 1, now() + interval '5 minutes')`,
+					handoffID, reservationID, sampleDigest, sampleGeneration))
+
 				Expect(expectRefusal(database, "a receipt registered without consuming its challenge",
-					registerWith("hangar-output-v1", "receipt-key-1", lifecycle))).
+					fmt.Sprintf(`INSERT INTO hangar_output_receipts
+						(reservation_id, lifecycle_id, handoff_id, activation_epoch, receipt_key_id,
+						 challenge_nonce, marker_version, algorithm, claims, signature)
+						VALUES ('%s', %d, '%s', 1, 'receipt-key-1', 'nonce-fedcba9876543210',
+							'hangar-output-v1', 'ed25519', '{}', 'signature')`,
+						reservationID, lifecycle, handoffID))).
 					To(ContainSubstring("without consuming its one-use stat challenge"))
 			})
 
@@ -881,7 +940,7 @@ var _ = Describe("the Hangar output plane schema", func() {
 					INSERT INTO hangar_receipt_stat_challenges
 						(nonce, handoff_id, reservation_id, activation_epoch, receipt_public_key_id,
 						 scope, digest, generation, capture_fence, not_after)
-					VALUES ('nonce-fedcba9876543210', '%s', '%s', 1, 'receipt-key-1', 'team-a',
+					VALUES ('nonce-0f1e2d3c4b5a6978', '%s', '%s', 1, 'receipt-key-1', 'team-a',
 						'%s', %d, 1, now() + interval '1 hour')`,
 					handoffID, reservationID, sampleDigest, sampleGeneration))).
 					To(ContainSubstring("hangar_challenge_window"))
@@ -1085,8 +1144,6 @@ var _ = Describe("the Hangar output plane schema", func() {
 		})
 
 		Context("inventory and worker leases", func() {
-			BeforeEach(seedEpoch)
-
 			It("refuses debt for a bucket and epoch this deployment holds no cursor for", func() {
 				Expect(expectRefusal(database, "debt from another deployment's sweep", `
 					INSERT INTO hangar_inventory_debt
@@ -1336,6 +1393,9 @@ var _ = Describe("the Hangar output plane schema", func() {
 		}
 
 		It("refuses before any DDL while the plane holds state", func() {
+			seedEpoch()
+			seedSafePolicy()
+			seedPredeclaration(handoffID, sourceLeaseID, executionID, true)
 			seedFullChain()
 			Expect(database.Close()).To(Succeed())
 
