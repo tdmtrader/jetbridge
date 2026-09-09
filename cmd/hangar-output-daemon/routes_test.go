@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fsouza/fake-gcs-server/fakestorage"
+
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 )
@@ -31,6 +33,20 @@ type routeFixture struct {
 	minter *executioncontrol.CapabilityMinter
 	epoch  executioncontrol.ActivationEpoch
 	nonce  int
+
+	// The store this daemon was pointed at, and the configuration it was built
+	// from. The redaction scan needs both: it has to know the bucket name and
+	// the object keys before it can assert nothing the daemon says contains
+	// them.
+	store  *fakestorage.Server
+	bucket string
+	config Config
+
+	// minted records every capability this fixture handed the daemon, so the
+	// scan can assert none of them came back.
+	minted []executioncontrol.ControlCapability
+	// emitted records every response the daemon produced, for the same reason.
+	emitted []string
 }
 
 func newRoutes(t *testing.T, unready string) *routeFixture {
@@ -65,6 +81,9 @@ func newRoutes(t *testing.T, unready string) *routeFixture {
 		daemon:        daemon,
 		minter:        minter,
 		epoch:         daemon.Namespace().ActivationEpoch(),
+		store:         emulatorServer,
+		bucket:        bucket,
+		config:        config,
 	}
 	fixture.server = httptest.NewServer(
 		NewServer(daemon, source.ledger, source.source, verifier, unready).Handler())
@@ -96,6 +115,7 @@ func (fixture *routeFixture) call(t *testing.T, path string, facet executioncont
 	if err != nil {
 		t.Fatalf("minting: %v", err)
 	}
+	fixture.minted = append(fixture.minted, token)
 
 	return fixture.callWith(t, path, token, body)
 }
@@ -123,6 +143,7 @@ func (fixture *routeFixture) callWith(t *testing.T, path string,
 	if err != nil {
 		t.Fatalf("reading: %v", err)
 	}
+	fixture.emitted = append(fixture.emitted, path+" -> "+string(answer))
 
 	return response.StatusCode, answer
 }
