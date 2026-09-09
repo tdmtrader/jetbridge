@@ -462,10 +462,22 @@ var _ = Describe("An execProcess under exact control", func() {
 	// The stop/cleanup matrix. Every row is the SAME sequence -- classify,
 	// stop only what is executing, observe, ask about cleanup -- against a
 	// different state, and what changes is only the answer.
+	//
+	// `wantStops` is the reviewer's F6: "classifies before it interrupts" was
+	// the name of this table and not an assertion in it, so issuing the stop
+	// whatever the classification left all three rows green. It matters
+	// because the daemon ACCEPTS a stop for a never-started execution -- only a
+	// terminal one refuses -- and marks StopRequested on its record, so the
+	// ATC's ordering is the only thing that keeps a producer from being told to
+	// stop before it starts. What is counted is the CALL, at the one collaborator
+	// that would receive it.
 	DescribeTable("a source-preserving stop classifies before it interrupts, and destroys nothing",
-		func(prepare func(), wantEligible bool, wantHeld bool) {
+		func(prepare func(), wantEligible bool, wantHeld bool, wantStops int) {
 			hold()
 			prepare()
+
+			counted := &countingOutputControl{OutputControl: harness.Client}
+			container.outputControls = staticOutputControls{control: counted}
 
 			process := newProcess()
 			Expect(process.admitWhenScheduled(ctx)()).To(Succeed())
@@ -473,6 +485,9 @@ var _ = Describe("An execProcess under exact control", func() {
 			eligible, err := process.stopPreservingSource(ctx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(eligible).To(Equal(wantEligible))
+			Expect(counted.stops).To(Equal(wantStops),
+				"an execution that is not executing was interrupted anyway; the daemon accepts "+
+					"that stop and records it, so the ordering here is the only guard")
 
 			// Nothing was destroyed. The Pod is still there, and so is the
 			// hold -- "source-preserving" is the name of the operation, and a
@@ -495,14 +510,14 @@ var _ = Describe("An execProcess under exact control", func() {
 			Expect(again).To(Equal(eligible))
 		},
 		Entry("never started: there is nothing to interrupt and nothing to destroy",
-			func() {}, false, true),
+			func() {}, false, true, 0),
 		Entry("executing: the interrupt is issued and the source survives it",
 			func() {
 				_, err := harness.Client.RecordStart(context.Background(), executioncontrol.Identity{
 					ExecutionID: executionID, Fence: 1,
 				}, executioncontrol.PodUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd"), "proc-1")
 				Expect(err).ToNot(HaveOccurred())
-			}, false, true),
+			}, false, true, 1),
 		Entry("naturally finished with its hold still open: cleanup stays withheld",
 			func() {
 				id := executioncontrol.Identity{ExecutionID: executionID, Fence: 1}
@@ -512,7 +527,7 @@ var _ = Describe("An execProcess under exact control", func() {
 				_, err = harness.Client.RecordOutcome(context.Background(), id,
 					executioncontrol.AcknowledgementFinish, executioncontrol.ExitOutcome{})
 				Expect(err).ToNot(HaveOccurred())
-			}, false, true),
+			}, false, true, 0),
 	)
 
 	It("keeps an abandoned producer's Pod while its source is still held", func() {
@@ -556,6 +571,32 @@ var _ = Describe("An execProcess under exact control", func() {
 			"an ordinary step reached the exact-execution ledger")
 	})
 })
+
+// countingOutputControl is the real client with one call counted.
+//
+// It counts rather than answers: every operation still reaches the real daemon
+// and the daemon's own refusals still apply, so a row that stops asserts an
+// interruption that really happened. A double here would let the ordering be
+// asserted against nothing.
+type countingOutputControl struct {
+	OutputControl
+	stops int
+}
+
+func (counted *countingOutputControl) RequestStop(ctx context.Context,
+	id executioncontrol.Identity) (executioncontrol.RequestSourcePreservingStopResult, error) {
+	counted.stops++
+
+	return counted.OutputControl.RequestStop(ctx, id)
+}
+
+// staticOutputControls is one node, one control, which is what a spec with one
+// Pod has.
+type staticOutputControls struct{ control OutputControl }
+
+func (controls staticOutputControls) ForNode(context.Context, string) (OutputControl, error) {
+	return controls.control, nil
+}
 
 // heldClassifier is a read of the output ledger with a fixed answer.
 //
