@@ -1,0 +1,6 @@
+{
+  "protocol_version": "hangar-execution-control-v1",
+  "ledger_version": "hangar-execution-ledger-v1",
+  "control_key_id": "control-key-2026-09",
+  "activation_epoch": 3
+}

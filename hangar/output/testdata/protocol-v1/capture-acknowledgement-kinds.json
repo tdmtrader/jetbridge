@@ -1,0 +1,8 @@
+[
+  "hold_acknowledged",
+  "hold_released",
+  "writer_ticket_issued",
+  "writer_ticket_closed",
+  "seal_started",
+  "seal_confirmed"
+]

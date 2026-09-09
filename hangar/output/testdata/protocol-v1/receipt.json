@@ -1,0 +1,43 @@
+{
+  "claims": {
+    "protocol_version": "hangar-output-v1",
+    "receipt_version": "hangar-output-receipt-v1",
+    "execution": {
+      "execution_id": "0f8a5b1c-3d2e-4a6f-9b70-1c2d3e4f5a6b",
+      "fence": 7
+    },
+    "activation_epoch": 3,
+    "handoff_id": "6b1e9d40-2a77-4c11-8f3e-5d0a9c8b7e62",
+    "producer_checkpoint_id": "opaque-producer-checkpoint-1",
+    "reservation_id": "e3a70b5c-1d84-4f29-b6c0-9a72d5e814f3",
+    "incarnation": {
+      "execution_id": "0f8a5b1c-3d2e-4a6f-9b70-1c2d3e4f5a6b",
+      "node_uid": "node-9f2b1d4c",
+      "handle_generation": 4,
+      "output": "built-image"
+    },
+    "output": "built-image",
+    "capture_fence": 1,
+    "writer_fence": 2,
+    "ref": {
+      "scope": "0192b3c4d5e6f708",
+      "digest": "sha256:9f2c0c4a6a1a7f7f6b1d0f2f3e4d5c6b7a8998a7b6c5d4e3f201122334455667",
+      "generation": 1725830823000001
+    },
+    "attributes": {
+      "ref": {
+        "scope": "0192b3c4d5e6f708",
+        "digest": "sha256:9f2c0c4a6a1a7f7f6b1d0f2f3e4d5c6b7a8998a7b6c5d4e3f201122334455667",
+        "generation": 1725830823000001
+      },
+      "stored_bytes": 4096,
+      "logical_bytes": 3072,
+      "created_at": "2026-09-08T21:50:23.000000000Z"
+    },
+    "marker_version": "hangar-output-v1",
+    "signed_at": "2026-09-08T21:50:24.000000000Z"
+  },
+  "key_id": "receipt-key-2026-09",
+  "algorithm": "ed25519",
+  "signature": "c2lnbmF0dXJlLXJlY2VpcHQ"
+}

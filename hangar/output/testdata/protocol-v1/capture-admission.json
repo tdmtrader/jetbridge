@@ -1,0 +1,12 @@
+{
+  "protocol_version": "hangar-output-v1",
+  "execution": {
+    "execution_id": "0f8a5b1c-3d2e-4a6f-9b70-1c2d3e4f5a6b",
+    "fence": 7
+  },
+  "activation_epoch": 3,
+  "handoff_id": "6b1e9d40-2a77-4c11-8f3e-5d0a9c8b7e62",
+  "source_lease_id": "a4d2c8f1-9e03-4b55-86ad-71f0c3e29b48",
+  "output": "built-image",
+  "capture_deadline_at": "2026-09-09T21:47:03.000000000Z"
+}

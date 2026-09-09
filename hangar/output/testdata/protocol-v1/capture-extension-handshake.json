@@ -1,0 +1,14 @@
+{
+  "base": {
+    "protocol_version": "hangar-execution-control-v1",
+    "ledger_version": "hangar-execution-ledger-v1",
+    "control_key_id": "control-key-2026-09",
+    "activation_epoch": 3
+  },
+  "capture_extension_version": "hangar-output-v1",
+  "source_ledger_version": "hangar-output-source-ledger-v1",
+  "receipt_public_key_id": "receipt-key-2026-09",
+  "materialization_key_id": "materialize-key-2026-09",
+  "bucket_fingerprint": "sha256:1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809",
+  "derived_namespace": "deployment-a/0192b3c4d5e6f708"
+}

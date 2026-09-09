@@ -1,0 +1,10 @@
+{
+  "protocol_version": "hangar-output-v1",
+  "activation_epoch": 3,
+  "object_key": "deployment-a/0192b3c4d5e6f708/sha256:2b7e1516",
+  "generation": 1725830900000002,
+  "reason": "poison_metadata",
+  "attempts": 3,
+  "observed_at": "2026-09-08T22:00:05.000000000Z",
+  "detail": "hangar-output-version metadata is not decodable"
+}
