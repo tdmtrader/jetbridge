@@ -24,6 +24,7 @@ import (
 
 	"github.com/concourse/concourse/artifactcap"
 	"github.com/concourse/concourse/cmd/artifact-daemon/durable"
+	"github.com/concourse/concourse/hangar/output/ledger"
 )
 
 // Server is the artifact-daemon HTTP server that stores and serves
@@ -39,6 +40,20 @@ type Server struct {
 	guard         *ReadGuard
 	durable       *DurableTier
 	hangar        *HangarService
+
+	// captureLedger is the READ-ONLY view of the output daemon's source ledger.
+	//
+	// The two daemons are two authorities over one node's disk: that one owns
+	// which sources a capture holds, and this one owns everything else. This
+	// field is how the second respects the first without being able to change
+	// it -- the package it comes from has no mutator at all, and its own guard
+	// keeps that true.
+	//
+	// It fails CLOSED. A ledger this daemon cannot read is not a ledger that
+	// says nothing is held; it is a daemon that does not know, and destroying
+	// on that basis is how a build's declared output disappears with no record
+	// it existed.
+	captureLedger *ledger.Classifier
 
 	// restoreFlight collapses concurrent durable restores of one key.
 	restoreFlight singleflight.Group
@@ -216,6 +231,14 @@ func NewServer(logger lager.Logger, storagePath, nodeName string) (*Server, erro
 		hangarSem:   make(chan struct{}, maxConcurrentHangarMaterializations),
 		destLocks:   make(map[string]*destLock),
 		root:        root,
+
+		// The classifier is always attached, and it is attached here rather
+		// than behind a flag on purpose: a node that gained an output daemon
+		// after this one started would otherwise keep destroying held sources
+		// until somebody restarted it. New() does not touch the filesystem;
+		// the absence of a control directory is a real answer meaning "no
+		// output plane on this node", and it is answered on every call.
+		captureLedger: ledger.New(storagePath),
 	}, nil
 }
 
@@ -781,6 +804,17 @@ func (s *Server) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	loc := RelKey(key) // validated by artifactKey
 
+	// The output plane's hold, before anything is removed. An ordinary path is
+	// unchanged; a capture-held or sealed one is refused, and so is a path this
+	// daemon could not classify.
+	if class, err := s.refuseIfCaptureHeld(loc); err != nil {
+		s.refuse(w, r, http.StatusConflict, reasonCaptureHeld, err)
+		s.logger.Info("refused-delete-of-capture-source", lager.Data{
+			"rel": string(loc), "class": string(class),
+		})
+		return
+	}
+
 	// Deletion is destructive like a sweep: wait out in-flight reads so a
 	// concurrent copy never sees a half-removed tree.
 	release := s.guard.BeginSweep(s.stepHandle(loc))
@@ -793,6 +827,33 @@ func (s *Server) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// refuseIfCaptureHeld is the one place this daemon asks the output plane's
+// ledger, so every destructive path asks the same question the same way.
+//
+// The key is namespaced -- artifacts live under "steps/" -- and the ledger
+// speaks in incarnations relative to that directory, so the prefix is stripped
+// here rather than at each call site. A key outside steps/ is not a source
+// incarnation and cannot be held.
+func (s *Server) refuseIfCaptureHeld(loc RelKey) (ledger.Class, error) {
+	if s.captureLedger == nil {
+		// No output plane configured on this node. Every path is unmanaged and
+		// the ordinary behaviour is unchanged.
+		return ledger.Unmanaged, nil
+	}
+
+	relative, inSteps := strings.CutPrefix(string(loc), "steps/")
+	if !inSteps {
+		return ledger.Unmanaged, nil
+	}
+
+	class := s.captureLedger.Classify(relative)
+	if class.Destructive() {
+		return class, nil
+	}
+
+	return class, s.captureLedger.Reason(relative, class)
 }
 
 func (s *Server) handleHeadArtifact(w http.ResponseWriter, r *http.Request) {

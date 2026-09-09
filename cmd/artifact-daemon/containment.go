@@ -1006,6 +1006,12 @@ const (
 	reasonConflict         = "conflict"
 	reasonTreeVerification = "tree_verification"
 	reasonOverloaded       = "overloaded"
+
+	// The output plane's hold. This daemon has no output-bucket credential and
+	// no business changing a capture's state, but its destructive paths can be
+	// pointed at a source some capture is about to seal -- so it asks the
+	// read-only ledger classifier first and refuses under this label.
+	reasonCaptureHeld = "capture_held"
 )
 
 // refusalRoute is the bounded route label for a refusal.
