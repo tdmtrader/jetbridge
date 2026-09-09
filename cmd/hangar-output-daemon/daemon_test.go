@@ -12,6 +12,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -342,21 +343,34 @@ func TestTheDaemonNeverProbesTheBucketAtStartup(t *testing.T) {
 	}
 }
 
-func TestTheDaemonLinksNoCacheOrStrictInputClient(t *testing.T) {
-	// The import-side statement of the same rule, checked against the binary's
-	// own dependency graph in the repository's architecture_test.go. Here we
-	// assert the type-level half: the publisher role this daemon holds cannot
-	// list and cannot delete, because its interface has neither method.
-	var role publisher.Handle
-	if role != nil {
-		t.Fatal("unreachable")
+func TestTheDaemonHoldsOnlyThePublisherRole(t *testing.T) {
+	// The type-level half of the principal boundary, from this binary's side.
+	// The import-side half is the repository's own
+	// TestTheOutputRolesAreLinkedOnlyByTheirOwnPrincipals, and the role
+	// interfaces' own method sets are asserted in hangar/output/conformance;
+	// what is checked here is that THIS daemon's field is that narrow role and
+	// not a full client that happens to be used narrowly.
+	handle := reflect.TypeOf((*publisher.Handle)(nil)).Elem()
+	for index := 0; index < handle.NumMethod(); index++ {
+		switch name := handle.Method(index).Name; name {
+		case "Delete", "List":
+			t.Errorf("the publisher handle this daemon holds offers %s. Its Pod's service "+
+				"account is the output publisher; a method here is a permission there", name)
+		}
 	}
 
-	// If Handle ever gains Delete or the store gains List, these assertions
-	// stop compiling, which is the point: the rule is enforced by the type and
-	// this test is where the intent is written down.
-	var store publisher.Store = publisher.Restrict(nil)
-	_ = store
+	daemonType := reflect.TypeOf(Daemon{})
+	field, ok := daemonType.FieldByName("publisher")
+	if !ok {
+		t.Fatal("the Daemon has no publisher field; this rule is guarding nothing")
+	}
+	if field.Type != reflect.TypeOf((*publisher.Publisher)(nil)) {
+		t.Errorf("the Daemon's publisher field is %v, not *publisher.Publisher. A wider type "+
+			"here is a wider capability, whatever this process happens to call today", field.Type)
+	}
+	if _, ok := daemonType.FieldByName("store"); ok {
+		t.Error("the Daemon holds an object store directly, bypassing the role restriction")
+	}
 }
 
 func listKeys(t *testing.T, server *fakestorage.Server, bucket string) []string {

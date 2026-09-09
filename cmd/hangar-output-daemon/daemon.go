@@ -177,7 +177,9 @@ func parsePKCS8Ed25519(der []byte) (ed25519.PrivateKey, error) {
 	return private, nil
 }
 
-// The object store the daemon links is the shared seam, not a cloud client
-// type. This assertion is here so the direction is checked by the compiler
-// rather than by a reviewer reading imports.
+// The daemon holds the shared seam, never a cloud client type: hangargcs's
+// adapter returns an objectstore.Client and publisher.Restrict narrows it. The
+// direction is checked by the compiler on the Build path above -- this file
+// names cloud.google.com/go/storage nowhere, which is what keeps hangar/gcs the
+// only package in the repository that does.
 var _ objectstore.Client = (objectstore.Client)(nil)

@@ -357,9 +357,6 @@ func TestBucketWideListPagesUnderTheServerDerivedPrefix(t *testing.T) {
 			t.Fatalf("the sweep read %d objects, expected the 3 under the deployment prefix: %v",
 				len(keys), keys)
 		}
-		if tier.can.Paginates && len(keys) != 3 {
-			t.Errorf("paging over %d objects at a page size of 2 read %d", 3, len(keys))
-		}
 		for _, key := range keys {
 			if !strings.HasPrefix(key, namespace.ListPrefix()) {
 				t.Errorf("the sweep returned %q, which is not under %q", key, namespace.ListPrefix())
