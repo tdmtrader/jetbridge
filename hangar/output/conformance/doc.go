@@ -14,12 +14,18 @@
 //
 //   - **Tier 2**, fsouza/fake-gcs-server reached through the real
 //     hangar/gcs adapter, is the API tier: create-if-absent, exact
-//     GenerationMatch on get and delete, a body-capable get used as an
-//     exact-generation stat, bucket-wide list with a server-derived prefix,
-//     pagination, metageneration, immutable-at-creation metadata, a same-key
-//     new generation, and the 404/412/403 split. The in-memory fake cannot
-//     answer any of those honestly, because it would be answering about
-//     itself.
+//     GenerationMatch on get, a body-capable get used as an exact-generation
+//     stat, bucket-wide list with a server-derived prefix, pagination,
+//     metageneration, immutable-at-creation metadata, a same-key new
+//     generation, and the 404/412/403 split. The in-memory fake cannot answer
+//     any of those honestly, because it would be answering about itself.
+//
+//     Delete preconditions are NOT in that list, and the omission is measured
+//     rather than assumed: fake-gcs-server v1.52.3 deletes whatever is at the
+//     key whether or not the delete carries a generation pin or a
+//     GenerationMatch. probeCapabilities measures it, knownSubstrateGaps names
+//     it, the conditional-delete case is gated on the measured capability, and
+//     tier 1 and real GCS (Phase 9) are where that row is answered.
 //
 // Tier 2 never silently degrades to tier 1. When HANGAR_CI is set it *fails*
 // with a named reason if no endpoint is configured or the endpoint does not
