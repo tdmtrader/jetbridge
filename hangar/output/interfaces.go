@@ -273,16 +273,20 @@ type PolicyReader interface {
 // cleanup, delete, replacement, remap and reuse paths. A ticket cannot be
 // transferred to a new process, Pod UID, handle generation or fence.
 type WriterAdmission struct {
-	Execution       executioncontrol.Identity
-	ActivationEpoch executioncontrol.ActivationEpoch
-	HandoffID       HandoffID
-	Incarnation     SourceIncarnation
-	WriterTicketID  WriterTicketID
-	WriterFence     WriterFence
-	PodUID          executioncontrol.PodUID
+	ProtocolVersion string                           `json:"protocol_version"`
+	Execution       executioncontrol.Identity        `json:"execution"`
+	ActivationEpoch executioncontrol.ActivationEpoch `json:"activation_epoch"`
+	HandoffID       HandoffID                        `json:"handoff_id"`
+	Incarnation     SourceIncarnation                `json:"incarnation"`
+	WriterTicketID  WriterTicketID                   `json:"writer_ticket_id"`
+	WriterFence     WriterFence                      `json:"writer_fence"`
+	PodUID          executioncontrol.PodUID          `json:"pod_uid"`
 }
 
 func (admission WriterAdmission) Validate() error {
+	if err := validateProtocol(admission.ProtocolVersion); err != nil {
+		return err
+	}
 	if err := admission.Execution.Validate(); err != nil {
 		return err
 	}
@@ -307,12 +311,36 @@ func (admission WriterAdmission) Validate() error {
 
 // SealRequest asks for the incarnation to stop accepting writers.
 type SealRequest struct {
-	Execution       executioncontrol.Identity
-	ActivationEpoch executioncontrol.ActivationEpoch
-	HandoffID       HandoffID
-	Incarnation     SourceIncarnation
-	CaptureFence    CaptureFence
-	DeadlineAt      Timestamp
+	ProtocolVersion string                           `json:"protocol_version"`
+	Execution       executioncontrol.Identity        `json:"execution"`
+	ActivationEpoch executioncontrol.ActivationEpoch `json:"activation_epoch"`
+	HandoffID       HandoffID                        `json:"handoff_id"`
+	Incarnation     SourceIncarnation                `json:"incarnation"`
+	CaptureFence    CaptureFence                     `json:"capture_fence"`
+	DeadlineAt      Timestamp                        `json:"deadline_at"`
+}
+
+func (request SealRequest) Validate() error {
+	if err := validateProtocol(request.ProtocolVersion); err != nil {
+		return err
+	}
+	if err := request.Execution.Validate(); err != nil {
+		return err
+	}
+	if request.ActivationEpoch == 0 {
+		return fmt.Errorf("%w: a seal names no activation epoch", ErrIncomplete)
+	}
+	if err := request.HandoffID.Validate(); err != nil {
+		return err
+	}
+	if err := request.Incarnation.Validate(); err != nil {
+		return err
+	}
+	if request.CaptureFence == 0 {
+		return fmt.Errorf("%w: a seal names no capture fence", ErrIncomplete)
+	}
+
+	return request.DeadlineAt.Validate()
 }
 
 // SealStarted is the daemon half: admission is fenced, and this is the exact
@@ -328,8 +356,8 @@ type SealRequest struct {
 // until it has terminated them. A single blocking call would make each half
 // wait for the other.
 type SealStarted struct {
-	Acknowledgement CaptureAcknowledgement
-	DrainSet        []WriterTicketID
+	Acknowledgement CaptureAcknowledgement `json:"acknowledgement"`
+	DrainSet        []WriterTicketID       `json:"drain_set"`
 }
 
 func (started SealStarted) Validate() error {
@@ -459,16 +487,20 @@ func (confirmation SealConfirmation) Validate() error {
 // fails before the irreversible publish point has released nothing, and the
 // source stays held until the daemon acknowledges this intent.
 type ReleaseIntent struct {
-	Disposition     Disposition
-	Execution       executioncontrol.Identity
-	ActivationEpoch executioncontrol.ActivationEpoch
-	HandoffID       HandoffID
-	SourceLeaseID   SourceLeaseID
-	ReleaseIntentID ReleaseIntentID
-	Incarnation     SourceIncarnation
+	ProtocolVersion string                           `json:"protocol_version"`
+	Disposition     Disposition                      `json:"disposition"`
+	Execution       executioncontrol.Identity        `json:"execution"`
+	ActivationEpoch executioncontrol.ActivationEpoch `json:"activation_epoch"`
+	HandoffID       HandoffID                        `json:"handoff_id"`
+	SourceLeaseID   SourceLeaseID                    `json:"source_lease_id"`
+	ReleaseIntentID ReleaseIntentID                  `json:"release_intent_id"`
+	Incarnation     SourceIncarnation                `json:"incarnation"`
 }
 
 func (intent ReleaseIntent) Validate() error {
+	if err := validateProtocol(intent.ProtocolVersion); err != nil {
+		return err
+	}
 	if err := intent.Disposition.Validate(); err != nil {
 		return err
 	}

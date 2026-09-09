@@ -169,6 +169,20 @@ var protocolFixtures = map[string]func(*testing.T, []byte){
 		roundTrip[ReleaseAcknowledgement](t, raw)
 	},
 
+	// The node-local control API's request bodies. They are wire in exactly the
+	// sense this file means it: another implementation of the output daemon
+	// reads them, so their shape is a promise and not an internal detail.
+	"writer-admission.json": func(t *testing.T, raw []byte) { roundTrip[WriterAdmission](t, raw) },
+	"seal-request.json":     func(t *testing.T, raw []byte) { roundTrip[SealRequest](t, raw) },
+	"seal-started.json":     func(t *testing.T, raw []byte) { roundTrip[SealStarted](t, raw) },
+	"release-intent.json":   func(t *testing.T, raw []byte) { roundTrip[ReleaseIntent](t, raw) },
+	"publication-request.json": func(t *testing.T, raw []byte) {
+		roundTrip[PublicationRequest](t, raw)
+	},
+	"publication-result.json": func(t *testing.T, raw []byte) {
+		roundTrip[PublicationResult](t, raw)
+	},
+
 	"receipt.json":           func(t *testing.T, raw []byte) { roundTrip[Receipt](t, raw) },
 	"receipt-admission.json": func(t *testing.T, raw []byte) { roundTrip[ReceiptAdmission](t, raw) },
 	"logical-resolution.json": func(t *testing.T, raw []byte) {

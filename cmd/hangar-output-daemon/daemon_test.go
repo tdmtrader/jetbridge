@@ -73,6 +73,7 @@ func validConfig(t *testing.T, endpoint, bucket string) Config {
 	t.Helper()
 
 	keyFile, _ := writeReceiptKey(t)
+	controlKeyFile, _ := writeReceiptKey(t)
 
 	return Config{
 		OutputStore:       output.StoreGCS,
@@ -84,6 +85,11 @@ func validConfig(t *testing.T, endpoint, bucket string) Config {
 		StrictInputBucket: "deployment-strict-input",
 		ReceiptKeyID:      "receipt-key-1",
 		ReceiptKeyFile:    keyFile,
+		ControlKeyID:      "control-key-1",
+		ControlKeyFile:    controlKeyFile,
+		NodeUID:           "node-1",
+		ScratchDir:        t.TempDir(),
+		CapabilityTTL:     time.Minute,
 		ActivationEpoch:   7,
 		OperationTimeout:  10 * time.Second,
 	}
@@ -108,7 +114,12 @@ func TestTheDaemonRefusesToBePointedAtAnotherPlanesBucket(t *testing.T) {
 		"no epoch":                                   func(c *Config) { c.ActivationEpoch = 0 },
 		"no receipt key id":                          func(c *Config) { c.ReceiptKeyID = "" },
 		"no receipt key file":                        func(c *Config) { c.ReceiptKeyFile = "" },
-		"a non-positive timeout":                     func(c *Config) { c.OperationTimeout = 0 },
+		"no control key id":                          func(c *Config) { c.ControlKeyID = "" },
+		"no control key file":                        func(c *Config) { c.ControlKeyFile = "" },
+		// One key for both would mean rotating either rotates both, and an
+		// activation epoch pins them separately.
+		"one key for receipts and control": func(c *Config) { c.ControlKeyFile = c.ReceiptKeyFile },
+		"a non-positive timeout":           func(c *Config) { c.OperationTimeout = 0 },
 	} {
 		config := validConfig(t, server.URL(), bucket)
 		mutate(&config)
@@ -320,6 +331,8 @@ func TestTheDaemonBindsEveryFlagItNeeds(t *testing.T) {
 		"output-store", "output-endpoint", "output-bucket", "output-prefix", "output-tenant",
 		"cache-bucket", "strict-input-bucket", "shared-bucket-prefix-only-isolation",
 		"receipt-key-id", "receipt-key-file", "activation-epoch", "output-timeout",
+		"control-key-id", "control-key-file", "node-uid", "listen", "control-dir",
+		"steps-dir", "scratch-dir", "capability-key", "capability-ttl",
 	} {
 		if flags.Lookup(name) == nil {
 			t.Errorf("the daemon has no --%s flag", name)
@@ -539,4 +552,20 @@ func TestTheAttestingStatRefusesAChallengeItCannotAnswer(t *testing.T) {
 			}
 		}
 	}
+}
+
+// writePrivateKey puts an existing key on disk in the form the daemon reads.
+func writePrivateKey(t *testing.T, private ed25519.PrivateKey) string {
+	t.Helper()
+
+	der, err := x509.MarshalPKCS8PrivateKey(private)
+	if err != nil {
+		t.Fatalf("encoding: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "control.pem")
+	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
+		t.Fatalf("writing: %v", err)
+	}
+
+	return path
 }

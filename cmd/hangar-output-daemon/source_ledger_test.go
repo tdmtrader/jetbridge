@@ -212,6 +212,7 @@ func TestWriterAdmissionAndSealingSerializeOnOneBoundary(t *testing.T) {
 	}
 
 	started, err := fixture.source.BeginSeal(context.Background(), output.SealRequest{
+		ProtocolVersion: output.ProtocolVersion,
 		Execution:       identity(1),
 		ActivationEpoch: testEpoch,
 		HandoffID:       testHandoff,
@@ -278,6 +279,7 @@ func TestWriterAdmissionAndSealingSerializeOnOneBoundary(t *testing.T) {
 
 func writerAdmission(hold output.CaptureAcknowledgement, ticket output.WriterTicketID) output.WriterAdmission {
 	return output.WriterAdmission{
+		ProtocolVersion: output.ProtocolVersion,
 		Execution:       identity(1),
 		ActivationEpoch: testEpoch,
 		HandoffID:       testHandoff,
@@ -378,6 +380,7 @@ func TestAReleasedHoldIsGoneFromTheNodeAndAHeldOneIsNot(t *testing.T) {
 	}
 
 	intent := output.ReleaseIntent{
+		ProtocolVersion: output.ProtocolVersion,
 		Disposition:     output.DispositionNoCapture,
 		Execution:       identity(1),
 		ActivationEpoch: testEpoch,
@@ -417,6 +420,7 @@ func TestAReleasedHoldIsGoneFromTheNodeAndAHeldOneIsNot(t *testing.T) {
 	second := newSourceLedger(t)
 	secondHold := held(t, second)
 	captureRelease, err := second.source.AcknowledgeRelease(context.Background(), output.ReleaseIntent{
+		ProtocolVersion: output.ProtocolVersion,
 		Disposition:     output.DispositionCapture,
 		Execution:       identity(1),
 		ActivationEpoch: testEpoch,
@@ -488,6 +492,7 @@ func TestRestartingRecoversEveryStatementAndRecreatesNoAuthority(t *testing.T) {
 	// wait for it. A daemon that forgot would confirm a seal over bytes a
 	// writer is still holding open.
 	started, err := fixture.source.BeginSeal(context.Background(), output.SealRequest{
+		ProtocolVersion: output.ProtocolVersion,
 		Execution:       identity(1),
 		ActivationEpoch: testEpoch,
 		HandoffID:       testHandoff,

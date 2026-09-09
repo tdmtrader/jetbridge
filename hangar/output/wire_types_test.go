@@ -54,6 +54,12 @@ var fixturedTypes = map[string]string{
 	outputPackageDir + ":PolicySnapshot":                  "policy-snapshot.json",
 	outputPackageDir + ":ExtensionHandshake":              "capture-extension-handshake.json",
 	outputPackageDir + ":CallerNamespaceRequest":          "caller-namespace-request.json",
+	outputPackageDir + ":WriterAdmission":                 "writer-admission.json",
+	outputPackageDir + ":SealRequest":                     "seal-request.json",
+	outputPackageDir + ":SealStarted":                     "seal-started.json",
+	outputPackageDir + ":ReleaseIntent":                   "release-intent.json",
+	outputPackageDir + ":PublicationRequest":              "publication-request.json",
+	outputPackageDir + ":PublicationResult":               "publication-result.json",
 
 	basePackageDir + ":Identity":                           "identity.json",
 	basePackageDir + ":Envelope":                           "envelope.json",

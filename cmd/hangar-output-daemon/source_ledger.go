@@ -805,3 +805,53 @@ func (ledger *SourceLedger) AcknowledgeRelease(_ context.Context, intent output.
 }
 
 var _ output.SourceControl = (*SourceLedger)(nil)
+
+// InspectSeal reports the captured drain set, and invents nothing.
+//
+// A handoff that has not begun sealing is ErrNotFound rather than an empty
+// SealStarted: an empty drain set is a real and meaningful answer -- nobody was
+// writing when admission was fenced -- and returning one for "no seal has
+// begun" would make the two indistinguishable.
+func (ledger *SourceLedger) InspectSeal(handoff output.HandoffID) (output.SealStarted, error) {
+	record, found, err := ledger.load(handoff)
+	if err != nil {
+		return output.SealStarted{}, err
+	}
+	if !found || record.SealStarted == nil {
+		return output.SealStarted{}, fmt.Errorf(
+			"%w: handoff %s has not begun sealing", output.ErrNotFound, handoff)
+	}
+
+	return output.SealStarted{
+		Acknowledgement: *record.SealStarted,
+		DrainSet:        append([]output.WriterTicketID(nil), record.DrainSet...),
+	}, nil
+}
+
+// SealedIncarnation is the location of a sealed source, for the publisher.
+//
+// It is the ONLY way bytes reach the publish path, and it refuses anything that
+// is not sealed: canonicalizing an open source would be reading bytes a writer
+// may still be changing, and Req 15 is exactly the rule that no canonical read
+// begins before both halves of the seal hold.
+func (ledger *SourceLedger) SealedIncarnation(handoff output.HandoffID,
+	execution executioncontrol.Identity, epoch executioncontrol.ActivationEpoch) (string, sourceRecord, error) {
+	ledger.mu.Lock()
+	defer ledger.mu.Unlock()
+
+	record, err := ledger.admitted(handoff, execution, epoch)
+	if err != nil {
+		return "", sourceRecord{}, err
+	}
+	if record.State != sourceSealed {
+		return "", sourceRecord{}, fmt.Errorf(
+			"%w: the source for handoff %s is %s; no canonical read begins before the seal is "+
+				"confirmed", output.ErrSealUnconfirmed, handoff, record.State)
+	}
+	root, err := ledger.ResolveIncarnation(record.Incarnation)
+	if err != nil {
+		return "", sourceRecord{}, err
+	}
+
+	return root, record, nil
+}

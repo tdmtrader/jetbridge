@@ -46,6 +46,24 @@ type Config struct {
 	ReceiptKeyID   string
 	ReceiptKeyFile string
 
+	// The node's control key: a SECOND Ed25519 key, for the statements the
+	// execution and source ledgers make. It is separate from the receipt key
+	// because the two say different things -- a receipt says an object exists
+	// in a bucket, a control statement says a process on this node did
+	// something -- and an activation epoch pins them separately, so rotating
+	// one does not rotate the other.
+	ControlKeyID   string
+	ControlKeyFile string
+
+	// The node-local surfaces.
+	NodeUID           string
+	ListenAddress     string
+	ControlDir        string
+	StepsDir          string
+	ScratchDir        string
+	CapabilityKeyFile string
+	CapabilityTTL     time.Duration
+
 	ActivationEpoch  uint64
 	OperationTimeout time.Duration
 }
@@ -77,6 +95,24 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 		"Identifier of the Ed25519 receipt signing key. A receipt names it so a verifier knows which activation-pinned public key can check it.")
 	flags.StringVar(&config.ReceiptKeyFile, "receipt-key-file", "",
 		"Path to the PKCS#8 PEM Ed25519 private key used to sign receipts. It is mounted only in this Pod: the control plane, the web node, the existing artifact daemon, the controllers, the control init container, the task and the sidecar hold the public key and the key id only.")
+	flags.StringVar(&config.ControlKeyID, "control-key-id", "",
+		"Identifier of the Ed25519 key this node signs execution and source ledger statements with. A control plane pins its public half per activation epoch.")
+	flags.StringVar(&config.ControlKeyFile, "control-key-file", "",
+		"Path to the PKCS#8 PEM Ed25519 private key used to sign ledger statements. It is a different key from the receipt key: rotating one must not rotate the other.")
+	flags.StringVar(&config.NodeUID, "node-uid", "",
+		"This node's Kubernetes UID, from the Downward API. It is the UID and not the name: a name can be reused for new hardware, and a ledger sequence is only meaningful alongside the node that issued it.")
+	flags.StringVar(&config.ListenAddress, "listen", "127.0.0.1:0",
+		"Address the control API listens on. It is node-local: nothing outside this node's pods speaks this API.")
+	flags.StringVar(&config.ControlDir, "control-dir", "",
+		"Parent of the private control directory holding the execution and source ledgers. It is inside the shared managed hostPath and excluded from Registry, alias persistence, steps traversal and the Sweeper.")
+	flags.StringVar(&config.StepsDir, "steps-dir", "",
+		"The managed steps directory holding source incarnations. The daemon opens it as an os.Root handle; no request ever names a path beneath it.")
+	flags.StringVar(&config.ScratchDir, "scratch-dir", "",
+		"Absolute scratch directory for canonicalization, outside the storage root.")
+	flags.StringVar(&config.CapabilityKeyFile, "capability-key", "",
+		"Path to the raw 32-byte key control capabilities are minted and verified with. It is shared with the control plane and with nothing else.")
+	flags.DurationVar(&config.CapabilityTTL, "capability-ttl", 15*time.Minute,
+		"Maximum accepted lifetime of a control capability. A capability is presented once, within one operation; an hour-long one is a credential.")
 	flags.Uint64Var(&config.ActivationEpoch, "activation-epoch", 0,
 		"The active activation epoch this daemon publishes under. Rotation creates a new epoch rather than replacing a key in place.")
 	flags.DurationVar(&config.OperationTimeout, "output-timeout", time.Minute,
@@ -100,6 +136,19 @@ func (config Config) Validate() error {
 	if config.OperationTimeout <= 0 {
 		return fmt.Errorf("%w: --output-timeout must be positive", output.ErrIncomplete)
 	}
+	if strings.TrimSpace(config.ControlKeyID) == "" {
+		return fmt.Errorf("%w: --control-key-id is required; a ledger statement names the key "+
+			"that can check it", output.ErrIncomplete)
+	}
+	if strings.TrimSpace(config.ControlKeyFile) == "" {
+		return fmt.Errorf("%w: --control-key-file is required; an unsigned acknowledgement is "+
+			"not proof", output.ErrIncomplete)
+	}
+	if config.ControlKeyFile == config.ReceiptKeyFile {
+		return fmt.Errorf("%w: --control-key-file and --receipt-key-file name the same key. They "+
+			"say different things and an activation epoch pins them separately, so one key would "+
+			"mean rotating either rotates both", output.ErrIncomplete)
+	}
 
 	_, err := config.Namespace()
 
@@ -120,6 +169,11 @@ func (config Config) Namespace() (output.OutputNamespace, error) {
 	})
 }
 
+// LoadControlKey reads the node's control signing key off disk.
+func (config Config) LoadControlKey() (ed25519.PrivateKey, error) {
+	return loadEd25519(config.ControlKeyFile, "control")
+}
+
 // LoadReceiptKey reads the private key off disk.
 //
 // It refuses anything that is not an Ed25519 private key, including an RSA key
@@ -127,20 +181,19 @@ func (config Config) Namespace() (output.OutputNamespace, error) {
 // that silently accepted another algorithm would produce receipts no verifier
 // in this cohort can check.
 func (config Config) LoadReceiptKey() (ed25519.PrivateKey, error) {
-	raw, err := os.ReadFile(config.ReceiptKeyFile)
+	return loadEd25519(config.ReceiptKeyFile, "receipt")
+}
+
+func loadEd25519(file, what string) (ed25519.PrivateKey, error) {
+	raw, err := os.ReadFile(file)
 	if err != nil {
-		return nil, fmt.Errorf("%w: reading the receipt signing key: %v", output.ErrIncomplete, err)
+		return nil, fmt.Errorf("%w: reading the %s signing key: %v", output.ErrIncomplete, what, err)
 	}
 
 	block, _ := pem.Decode(raw)
 	if block == nil {
-		return nil, fmt.Errorf("%w: %s is not PEM", output.ErrCorrupt, config.ReceiptKeyFile)
+		return nil, fmt.Errorf("%w: %s is not PEM", output.ErrCorrupt, file)
 	}
 
-	private, err := parsePKCS8Ed25519(block.Bytes)
-	if err != nil {
-		return nil, err
-	}
-
-	return private, nil
+	return parsePKCS8Ed25519(block.Bytes)
 }

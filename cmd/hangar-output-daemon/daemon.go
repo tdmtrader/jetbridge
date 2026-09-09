@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	hangargcs "github.com/concourse/concourse/hangar/gcs"
 	"github.com/concourse/concourse/hangar/objectstore"
@@ -31,6 +32,20 @@ type Daemon struct {
 	namespace output.OutputNamespace
 	publisher *publisher.Publisher
 	signer    *output.ReceiptSigner
+
+	// canonicalizer turns a sealed source directory into the one canonical form
+	// this repository has. It is the foundation's, not a second implementation:
+	// two answers to "what are these bytes" is two digests for one tree.
+	canonicalizer hangar.Canonicalizer
+
+	// controlKeyID names the Ed25519 key this node signs execution and source
+	// ledger statements with. It is a DIFFERENT key from the receipt key: a
+	// receipt says an object exists in a bucket, a control statement says a
+	// process on this node did something, and an epoch pins both separately so
+	// that rotating one does not rotate the other.
+	controlKeyID  string
+	controlSigner *executioncontrol.AcknowledgementSigner
+	captureSigner *output.CaptureStatementSigner
 }
 
 // Build constructs the daemon from a validated configuration.
@@ -77,8 +92,43 @@ func Build(ctx context.Context, config Config) (*Daemon, error) {
 		return nil, err
 	}
 
-	return &Daemon{namespace: namespace, publisher: role, signer: signer}, nil
+	controlPrivate, err := config.LoadControlKey()
+	if err != nil {
+		return nil, err
+	}
+	controlSigner, err := executioncontrol.NewAcknowledgementSigner(controlPrivate)
+	if err != nil {
+		return nil, err
+	}
+	captureSigner, err := output.NewCaptureStatementSigner(controlPrivate)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Daemon{
+		namespace: namespace, publisher: role, signer: signer,
+		canonicalizer: hangar.Canonicalizer{TempDir: config.ScratchDir},
+		controlKeyID:  config.ControlKeyID,
+		controlSigner: controlSigner,
+		captureSigner: captureSigner,
+	}, nil
 }
+
+// ControlKeyID is what the handshake reports, so a control plane knows which
+// pinned public key checks this node's statements.
+func (daemon *Daemon) ControlKeyID() string { return daemon.controlKeyID }
+
+// ControlSigner and CaptureSigner are the node's two statement signers over one
+// key. They are handed to the ledgers at construction and to nothing else.
+func (daemon *Daemon) ControlSigner() *executioncontrol.AcknowledgementSigner {
+	return daemon.controlSigner
+}
+
+func (daemon *Daemon) CaptureSigner() *output.CaptureStatementSigner { return daemon.captureSigner }
+
+// ControlPublicKey is the half an activation epoch pins for this node's
+// execution and source statements.
+func (daemon *Daemon) ControlPublicKey() ed25519.PublicKey { return daemon.controlSigner.PublicKey() }
 
 // Namespace is what this daemon publishes into.
 func (daemon *Daemon) Namespace() output.OutputNamespace { return daemon.namespace }
