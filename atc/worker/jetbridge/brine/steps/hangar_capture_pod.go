@@ -161,11 +161,6 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 			"Phase 8 Green",
 			"the extension handshake a ready label alone is never a substitute for"),
 
-		stubMap[CaptureDraft, CaptureDraft](
-			"its pause pod reaches a terminal state",
-			capturePodPhase,
-			"the ledger classifier recreatePausePodIfTerminal must consult"),
-
 		brine.DefineMap[CaptureDraft, CapturePodCreated](
 			"the capture pod is built",
 			func(in CaptureDraft, _ brine.Params, _ *brine.Recorder) (CapturePodCreated, error) {

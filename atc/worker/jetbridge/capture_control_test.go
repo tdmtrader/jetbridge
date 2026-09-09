@@ -537,3 +537,46 @@ func TestNoATCCodeComposesAnIncarnationName(t *testing.T) {
 			"so this scan is looking for a spelling that no longer exists")
 	}
 }
+
+// Every Container the worker builds carries the ledger classifier.
+//
+// This is the finding this pass turned up on the ATC side, and it is worse than
+// the wrong question: `captureClass` was never assigned by production at all.
+// `refuseIfCaptureHeld` returns nil on a nil classifier -- which is right for a
+// deployment with no output plane -- so the pause-pod and hijack refusals were
+// dark everywhere, and every test that exercised them supplied the collaborator
+// themselves.
+//
+// The control is asserted first and it is the deployment with no output plane:
+// it must still get NO classifier, because the classifier's own refusal is fail
+// closed and a worker with no daemon to ask would refuse every reused handle.
+func TestEveryContainerTheWorkerBuildsCarriesTheLedgerClassifier(t *testing.T) {
+	off := NewDaemonSetBackend(capturePodConfig(false), NewArtifactLocator(), nil)
+	ordinary := newContainer("h", db.ContainerMetadata{Type: db.ContainerTypeTask},
+		runtime.ContainerSpec{}, nil, nil, capturePodConfig(false), "worker", nil, nil,
+		off, false, false)
+	if ordinary.captureClass != nil {
+		t.Error("a deployment with no output plane was given a ledger classifier; every reused " +
+			"handle would then be refused by a guard that fails closed on a daemon that is " +
+			"not there")
+	}
+
+	on := NewDaemonSetBackend(capturePodConfig(true), NewArtifactLocator(), nil)
+	container := newContainer("h", db.ContainerMetadata{Type: db.ContainerTypeTask},
+		runtime.ContainerSpec{}, nil, nil, capturePodConfig(true), "worker", nil, nil,
+		on, false, false)
+	if container.captureClass == nil {
+		t.Fatal("the worker built a Container with no ledger classifier, so refuseIfCaptureHeld " +
+			"returns nil on every path: pause pod recreation and hijack over a capture-held " +
+			"source are not refused anywhere in production")
+	}
+
+	// A worker with no storage backend at all -- the emptyDir deployment --
+	// has nothing to ask and must not pretend otherwise.
+	none := newContainer("h", db.ContainerMetadata{Type: db.ContainerTypeTask},
+		runtime.ContainerSpec{}, nil, nil, capturePodConfig(true), "worker", nil, nil,
+		nil, false, false)
+	if none.captureClass != nil {
+		t.Error("a worker with no storage backend was given a ledger classifier")
+	}
+}

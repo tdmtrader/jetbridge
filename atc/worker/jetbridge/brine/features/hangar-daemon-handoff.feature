@@ -169,3 +169,36 @@ Feature: What the output daemon answers
     Then the Hangar daemon answers 200, holding the source
     When a writer ticket is issued after the seal
     Then the daemon's refusal says "sealed"
+
+  # The CONTROL, and it is the regression the refusal must not become: without
+  # it, "a capture-held pause pod is refused" passes on a runtime that has
+  # stopped replacing pause pods at all. It is a separate scenario written
+  # above its twin for the same reason `Destructive cleanup is permitted once
+  # the witness and the release both exist` is -- brine's registry gives one
+  # sentence exactly one input type, and these two chains start from different
+  # states.
+  @HOP-12 @HOP-16
+  Scenario: An ordinary step's terminal pause pod is still replaced
+    Given a real artifact daemon publishing to a Hangar output bucket
+    And a capture-selected task "build" built from image "busybox" declares the output "result"
+    When an ordinary step's pause pod reaches a terminal state
+    Then the pause pod is recreated
+
+  # A pause pod that dies before the step's command runs is REPLACED, and a
+  # replacement is a new Pod UID getting a write-capable mount over the step's
+  # tree. For a capture-selected step that tree is the reserved incarnation, and
+  # Req 16 says a held incarnation may not receive one. This is the one
+  # destructive path with no execution identity to take a writer ticket with,
+  # which is why it goes through the ledger classifier instead.
+  #
+  # Reddened by: Container.Run replacing the terminal pause Pod without first
+  # consulting the ledger classifier -- this scenario reddens on `the pause pod
+  # is not recreated` and the control scenario above stays green.
+  @HOP-12 @HOP-16
+  Scenario: Pause pod recreation for a capture-held source is refused, and an ordinary one still recreates
+    Given a real artifact daemon publishing to a Hangar output bucket
+    And a capture-selected task "build" built from image "busybox" declares the output "result"
+    And the daemon holds the source
+    When its pause pod reaches a terminal state
+    Then the pause pod is not recreated
+    And the runtime's refusal says "durable output capture holds the source"

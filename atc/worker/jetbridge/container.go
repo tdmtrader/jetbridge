@@ -99,8 +99,25 @@ func newContainer(
 	reused bool,
 	lookedUp bool,
 ) *Container {
+	// The ledger classifier, wired HERE and nowhere else.
+	//
+	// It was never assigned in production before this pass, which made
+	// refuseIfCaptureHeld a no-op on every path: pause pod recreation and
+	// hijack over a capture-held source were refused only in tests that
+	// supplied the collaborator themselves. It is nil when there is no output
+	// plane and when there is no storage backend, and both nils are correct:
+	// the guard fails CLOSED on an unreadable ledger, so a worker with no
+	// daemon to ask must not be given something to ask.
+	var classifier captureClassifier
+	if config.OutputPlaneEnabled && storageBackend != nil {
+		if daemonSet, ok := storageBackend.(*DaemonSetBackend); ok {
+			classifier = daemonSet
+		}
+	}
+
 	return &Container{
 		handle:         handle,
+		captureClass:   classifier,
 		podName:        GeneratePodName(metadata, handle),
 		metadata:       metadata,
 		containerSpec:  containerSpec,
@@ -176,6 +193,22 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 		}
 
 		if getErr == nil && (existingPod.Status.Phase == corev1.PodSucceeded || existingPod.Status.Phase == corev1.PodFailed) {
+			// A replacement is a NEW POD UID getting a write-capable mount over
+			// this step's tree, and for a capture-selected step that tree is
+			// the reserved incarnation. Req 16 forbids one over a held source,
+			// and this path has no execution identity to take a writer ticket
+			// with, so it asks the ledger instead.
+			//
+			// This is the OTHER pause-pod replacement site. execProcess's
+			// recreatePausePod covers a pod that died after Run returned; this
+			// one covers a pod that was already terminal when Run was called,
+			// which is the same damage reached by a different route. The
+			// ordinary path is unchanged: with nothing held the classifier
+			// answers unmanaged and the pod is replaced exactly as before.
+			if err := c.refuseIfCaptureHeld(ctx, "replacing this step's terminal pause pod"); err != nil {
+				return nil, err
+			}
+
 			// Pod exists but is terminal — delete it so we can create a fresh one.
 			logger.Info("deleting-terminal-pod", lager.Data{
 				"pod":   c.podName,

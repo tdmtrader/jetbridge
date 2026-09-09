@@ -522,11 +522,6 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 				return nil
 			}),
 
-		stubCheck[HeldSource](
-			"the pause pod is recreated",
-			"Phase 4 Green",
-			"recreatePausePodIfTerminal on the ordinary, non-capture path"),
-
 		// Checks over the witness.
 		CheckThat[FinishWitnessed]("the witness is what the step reports",
 			func(in FinishWitnessed) error {

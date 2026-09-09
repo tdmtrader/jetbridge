@@ -122,6 +122,12 @@ type HangarDaemon struct {
 	Published hangar.TreeAttributes
 	Err       error
 
+	// CertDir holds the one small PKI both daemons were started with. The ATC
+	// dials the artifact daemon with the client half of it, so a step that
+	// drives production ATC code needs the paths rather than the assembled
+	// client.
+	CertDir string
+
 	// Pending is the canonical archive a step produced and has not published
 	// yet. It is bytes on their way to the daemon, not a record of anything the
 	// daemon did.
@@ -292,6 +298,7 @@ func startHangarDaemon(rec *brine.Recorder) (HangarDaemon, error) {
 		Bucket:   bucket,
 		Client:   client,
 		HTTP:     httpClient,
+		CertDir:  certDir,
 	}
 
 	return startOutputDaemon(rec, state, certDir)
@@ -338,20 +345,28 @@ func startOutputDaemon(rec *brine.Recorder, state HangarDaemon, certDir string) 
 	}
 	state.Minter = minter
 
-	output, err := startNamedDaemonProbed("hangar-output-daemon", "http", func(url string) error {
-		resp, err := http.Get(url + "/readyz")
-		if err != nil {
-			return err
-		}
-		defer resp.Body.Close()
-		_, _ = io.Copy(io.Discard, resp.Body)
-		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("the output daemon is not ready: %d", resp.StatusCode)
-		}
+	// ONE node, ONE storage root. The output daemon is started in the artifact
+	// daemon's root, which is what a real node looks like: the control
+	// directory the output daemon writes is under the hostPath the artifact
+	// daemon serves, and the artifact daemon's read-only classifier is what
+	// reads it before anything destructive happens. Two roots made the
+	// classifier answer "unmanaged" about every held source, because it was
+	// reading a directory the other daemon never wrote to.
+	output, err := startNamedDaemonInRoot("hangar-output-daemon", state.Daemon.Root, "http",
+		func(url string) error {
+			resp, err := http.Get(url + "/readyz")
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+			_, _ = io.Copy(io.Discard, resp.Body)
+			if resp.StatusCode != http.StatusOK {
+				return fmt.Errorf("the output daemon is not ready: %d", resp.StatusCode)
+			}
 
-		return nil
-	}, hangarOutputDaemonFlags(state.Endpoint, state.OutputBucket,
-		receiptKey, controlKey, capabilityFile)...)
+			return nil
+		}, hangarOutputDaemonFlags(state.Endpoint, state.OutputBucket,
+			receiptKey, controlKey, capabilityFile)...)
 	if err != nil {
 		return HangarDaemon{}, err
 	}

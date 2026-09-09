@@ -57,6 +57,10 @@ type realDaemon struct {
 	Root string // the storage path this daemon serves
 	URL  string // http://127.0.0.1:<port>
 	cmd  *exec.Cmd
+
+	// sharedRoot marks a daemon started in somebody else's storage root, so
+	// stopping it does not remove the other daemon's storage.
+	sharedRoot bool
 }
 
 type builtBinary struct {
@@ -157,13 +161,31 @@ func startRealDaemonProbed(scheme string, ready func(url string) error, extraArg
 // -- passes its own and gets them through addressableArgs below rather than
 // having this function learn two vocabularies.
 func startNamedDaemonProbed(command, scheme string, ready func(url string) error, extraArgs ...string) (*realDaemon, error) {
+	return startNamedDaemonInRoot(command, "", scheme, ready, extraArgs...)
+}
+
+// startNamedDaemonInRoot is the same launcher with the node's storage root
+// chosen by the caller.
+//
+// The output daemon is started in the ARTIFACT daemon's root, because on a real
+// node there is one hostPath and both daemons are on it: the output daemon's
+// control directory lives under it, and the artifact daemon's read-only ledger
+// classifier is what reads that directory before it destroys anything. Two
+// roots made every "a capture holds this" question unanswerable -- the
+// classifier looked in a directory the other daemon never wrote to -- and a
+// guard asked over two roots can only ever answer "unmanaged".
+func startNamedDaemonInRoot(command, root, scheme string, ready func(url string) error,
+	extraArgs ...string) (*realDaemon, error) {
 	bin, err := daemonBinary(command)
 	if err != nil {
 		return nil, err
 	}
-	root, err := os.MkdirTemp("", "brine-daemon-root-*")
-	if err != nil {
-		return nil, err
+	shared := root != ""
+	if !shared {
+		root, err = os.MkdirTemp("", "brine-daemon-root-*")
+		if err != nil {
+			return nil, err
+		}
 	}
 	if err := os.MkdirAll(filepath.Join(root, "steps"), 0o755); err != nil {
 		return nil, err
@@ -181,7 +203,8 @@ func startNamedDaemonProbed(command, scheme string, ready func(url string) error
 		return nil, fmt.Errorf("start artifact-daemon: %w", err)
 	}
 
-	d := &realDaemon{Root: root, URL: fmt.Sprintf("%s://127.0.0.1:%d", scheme, port), cmd: cmd}
+	d := &realDaemon{Root: root, URL: fmt.Sprintf("%s://127.0.0.1:%d", scheme, port), cmd: cmd,
+		sharedRoot: shared}
 
 	// Readiness: a route that answers even with nothing stored. A daemon that
 	// died on startup must be reported as that, not as a scenario failure
@@ -232,7 +255,9 @@ func (d *realDaemon) stop() error {
 		// too would race for the same exit status.
 		_ = d.cmd.Process.Kill()
 	}
-	if d.Root != "" {
+	// A shared root belongs to whoever created it. Removing it here would take
+	// the other daemon's storage with it.
+	if d.Root != "" && !d.sharedRoot {
 		return os.RemoveAll(d.Root)
 	}
 	return nil
