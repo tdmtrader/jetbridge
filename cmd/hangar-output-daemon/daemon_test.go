@@ -517,15 +517,6 @@ func TestTheAttestingStatRefusesAChallengeItCannotAnswer(t *testing.T) {
 			says:    []string{"8", "7"},
 		},
 		{
-			// The marked half of "a fresh exact-generation marked stat": the
-			// object at that exact generation has to be THIS capture's, not
-			// merely present at the key.
-			name:    "a challenge naming another capture's reservation",
-			mutate:  func(c *output.StatChallenge) { c.ReservationID = somebodyElse },
-			sentine: output.ErrConflict,
-			says:    []string{"marked for reservation", string(mine), string(somebodyElse)},
-		},
-		{
 			// The reachable variant of the ref check. A generation that is not
 			// there fails in the stat itself, before any comparison, which is
 			// why this row asserts ErrNotFound and not ErrConflict.
@@ -551,6 +542,60 @@ func TestTheAttestingStatRefusesAChallengeItCannotAnswer(t *testing.T) {
 				t.Errorf("the refusal of %s does not name %q: %v", row.name, fragment, err)
 			}
 		}
+	}
+
+	// The marked half of "a fresh exact-generation marked stat", which needs an
+	// object seeded at the challenged KEY rather than a mutated challenge: a
+	// different digest is a different key, so it 404s before the marker is ever
+	// read.
+	//
+	// The rule is about the LOGICAL TREE and not about the reservation, and the
+	// brine dedup scenario is what settled that: two captures of identical
+	// bytes deduplicate to one object carrying the first one's marker, so a
+	// reservation-equality rule would make AC 8's "one object and two receipts"
+	// unreachable. The reservation binding lives in the signed claims and is
+	// revalidated durably in the transaction that consumes the nonce -- so the
+	// control below is a challenge from ANOTHER reservation, which must be
+	// answered, and the refusal is a marker for another tree.
+	key, err := namespace.ObjectKey(digest)
+	if err != nil {
+		t.Fatalf("deriving the key: %v", err)
+	}
+
+	elsewhere := valid()
+	elsewhere.ReservationID = somebodyElse
+	elsewhere.Nonce = "nonce-fedcba9876543210"
+	if _, _, err := daemon.StatExact(context.Background(), elsewhere, claims); err != nil {
+		t.Errorf("a challenge from the reservation that deduplicated against this object was "+
+			"refused: %v. Two captures of identical bytes share one object and get two "+
+			"receipts; the marker names whichever wrote first.", err)
+	}
+
+	// The refusal comes from the publisher's own classifier, which the stat goes
+	// through: there is one statement of "marked" in this codebase and it is
+	// there, so this row asserts the rule holds end to end rather than that a
+	// second copy of it exists in the daemon.
+	foreign := namespace.MarkerFor(mine, hangarDigest("cd"), output.NewTimestamp(time.Now().UTC()))
+	server.CreateObject(fakestorage.Object{
+		ObjectAttrs: fakestorage.ObjectAttrs{
+			BucketName: bucket, Name: key, Metadata: foreign.Metadata(),
+		},
+		Content: []byte("an object marked for another tree"),
+	})
+	seeded, err := server.GetObject(bucket, key)
+	if err != nil {
+		t.Fatalf("reading back the seeded object: %v", err)
+	}
+
+	mismatched := valid()
+	mismatched.Nonce = "nonce-0f1e2d3c4b5a6978"
+	mismatched.Ref.Generation = seeded.Generation
+	_, _, err = daemon.StatExact(context.Background(), mismatched, claims)
+	if !errors.Is(err, output.ErrConflict) {
+		t.Errorf("an object marked for another logical tree was attested: %v", err)
+	}
+	if err != nil && !strings.Contains(err.Error(), "collision") {
+		t.Errorf("the refusal does not say what was wrong: %v", err)
 	}
 }
 

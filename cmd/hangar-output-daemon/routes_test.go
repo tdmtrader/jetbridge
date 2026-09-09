@@ -76,6 +76,12 @@ func newRoutes(t *testing.T, unready string) *routeFixture {
 // call presents a capability minted for exactly the facet and operation given,
 // which is what makes a cross-facet row a real cross-facet row: the token is
 // valid, it is simply not for this route.
+// identifiedBy is the body a base route takes: the frozen types embed Identity,
+// so the execution is flat rather than nested.
+func identifiedBy(id executioncontrol.Identity) map[string]any {
+	return map[string]any{"execution_id": id.ExecutionID, "fence": id.Fence}
+}
+
 func (fixture *routeFixture) call(t *testing.T, path string, facet executioncontrol.Facet,
 	operation string, body any) (int, []byte) {
 	t.Helper()
@@ -131,9 +137,25 @@ func TestABaseControlCapabilityCannotHoldSealOrPublish(t *testing.T) {
 
 	// The control.
 	status, body := fixture.call(t, "/execution/v1/classify",
-		executioncontrol.BaseFacet, "classify", identified{Execution: identity(1)})
+		executioncontrol.BaseFacet, "classify", identifiedBy(identity(1)))
 	if status != http.StatusOK {
 		t.Fatalf("the base capability was refused at its own operation: %d %s", status, body)
+	}
+
+	// The base surface's own admit/start/outcome routes, over HTTP: the whole
+	// point of the middleware reading two body shapes is that the frozen types
+	// embed Identity, and nothing else exercises that.
+	flattened := newRoutes(t, "")
+	if status, body := flattened.call(t, "/execution/v1/admit",
+		executioncontrol.BaseFacet, "admit", executioncontrol.Envelope{
+			ProtocolVersion: executioncontrol.ProtocolVersion,
+			Identity:        identity(1),
+			ActivationEpoch: flattened.epoch,
+			NodeUID:         testNode,
+			PodUID:          testPod,
+			Capability:      "opaque-capability",
+		}); status != http.StatusOK {
+		t.Fatalf("the admit route refused an envelope with a flat identity: %d %s", status, body)
 	}
 
 	// And now the same facet, at the extension's routes.
@@ -145,7 +167,7 @@ func TestABaseControlCapabilityCannotHoldSealOrPublish(t *testing.T) {
 		"/capture/v1/release":       "release-hold",
 	} {
 		status, body := fixture.call(t, path, executioncontrol.BaseFacet, operation,
-			identified{Execution: identity(1)})
+			identifiedBy(identity(1)))
 		if status != http.StatusForbidden {
 			t.Errorf("a base control capability was admitted at %s: %d %s", path, status, body)
 		}
@@ -156,7 +178,7 @@ func TestABaseControlCapabilityCannotHoldSealOrPublish(t *testing.T) {
 
 	// The mirror: a capture capability at a base route.
 	status, body = fixture.call(t, "/execution/v1/classify",
-		output.CaptureFacet, "classify", identified{Execution: identity(1)})
+		output.CaptureFacet, "classify", identifiedBy(identity(1)))
 	if status != http.StatusForbidden {
 		t.Errorf("a capture capability was admitted at a base route: %d %s", status, body)
 	}
@@ -178,18 +200,18 @@ func TestAReplayedCapabilityIsRefusedAndAFreshOneIsNot(t *testing.T) {
 	}
 
 	if status, body := fixture.callWith(t, "/execution/v1/classify", token,
-		identified{Execution: identity(1)}); status != http.StatusOK {
+		identifiedBy(identity(1))); status != http.StatusOK {
 		t.Fatalf("the first presentation was refused: %d %s", status, body)
 	}
 	if status, body := fixture.callWith(t, "/execution/v1/classify", token,
-		identified{Execution: identity(1)}); status != http.StatusForbidden {
+		identifiedBy(identity(1))); status != http.StatusForbidden {
 		t.Errorf("a replayed capability was admitted: %d %s", status, body)
 	}
 
 	// A fresh one still works, so the refusal is about this nonce and not about
 	// the daemon having given up.
 	if status, body := fixture.call(t, "/execution/v1/classify",
-		executioncontrol.BaseFacet, "classify", identified{Execution: identity(1)}); status != http.StatusOK {
+		executioncontrol.BaseFacet, "classify", identifiedBy(identity(1))); status != http.StatusOK {
 		t.Errorf("a fresh capability was refused after a replay: %d %s", status, body)
 	}
 }
@@ -216,7 +238,7 @@ func TestTheBaseSurfaceNeverMentionsTheExtension(t *testing.T) {
 		"/execution/v1/cleanup-eligible": "cleanup-eligible",
 	} {
 		status, body := fixture.call(t, path, executioncontrol.BaseFacet, operation,
-			identified{Execution: identity(1)})
+			identifiedBy(identity(1)))
 		if status != http.StatusOK {
 			t.Fatalf("%s answered %d: %s", path, status, body)
 		}
@@ -241,7 +263,7 @@ func TestAnUnreadyDaemonAnswersNoControlRequestAtAll(t *testing.T) {
 	admitted(t, &ready.ledgerFixture)
 	if status, body := ready.call(t, "/execution/v1/cleanup-eligible",
 		executioncontrol.BaseFacet, "cleanup-eligible",
-		identified{Execution: identity(1)}); status != http.StatusOK {
+		identifiedBy(identity(1))); status != http.StatusOK {
 		t.Fatalf("the ready daemon refused: %d %s", status, body)
 	}
 
@@ -257,7 +279,7 @@ func TestAnUnreadyDaemonAnswersNoControlRequestAtAll(t *testing.T) {
 		if strings.HasPrefix(path, "/capture/") {
 			facet = output.CaptureFacet
 		}
-		status, body := fixture.call(t, path, facet, operation, identified{Execution: identity(1)})
+		status, body := fixture.call(t, path, facet, operation, identifiedBy(identity(1)))
 		if status != http.StatusServiceUnavailable {
 			t.Errorf("an unready daemon answered %s with %d: %s", path, status, body)
 		}

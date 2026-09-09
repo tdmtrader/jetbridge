@@ -92,6 +92,14 @@ func Build(ctx context.Context, config Config) (*Daemon, error) {
 		return nil, err
 	}
 
+	// The canonicalizer needs a trusted temporary parent that exists and is
+	// owned by this process. The DaemonSet mounts the hostPath; the
+	// subdirectory beneath it is the daemon's own, so it is created here rather
+	// than assumed.
+	if err := config.PrepareScratch(); err != nil {
+		return nil, err
+	}
+
 	controlPrivate, err := config.LoadControlKey()
 	if err != nil {
 		return nil, err
@@ -227,15 +235,21 @@ func (daemon *Daemon) StatExact(ctx context.Context, challenge output.StatChalle
 			challenge.Ref.Scope, challenge.Ref.Digest, challenge.Ref.Generation,
 			fresh.Attributes.Ref.Scope, fresh.Attributes.Ref.Digest, fresh.Attributes.Ref.Generation)
 	}
-	if fresh.Marker.ReservationID != challenge.ReservationID {
-		// A *marked* stat, which is what the plan asks for: the object at that
-		// exact generation has to be this capture's, not merely present.
-		return output.Receipt{}, output.PublishedObject{}, fmt.Errorf(
-			"%w: the object at %s/%s/%d is marked for reservation %s and the challenge names %s",
-			output.ErrConflict,
-			challenge.Ref.Scope, challenge.Ref.Digest, challenge.Ref.Generation,
-			fresh.Marker.ReservationID, challenge.ReservationID)
-	}
+	// The MARKED half of "a fresh exact-generation marked stat" is already
+	// enforced, and enforced in one place: StatExactObject classifies what it
+	// finds, and that classifier refuses an unmarked object, an object marked
+	// for another scope, and an object marked with another digest, each with
+	// its own message. Restating any of those here would be a second statement
+	// of the rule that could drift from the first.
+	//
+	// What is deliberately NOT required anywhere is that the marker name THIS
+	// challenge's reservation. It cannot be: two captures of identical
+	// canonical bytes deduplicate to one object, and that object carries the
+	// marker of whichever wrote it first -- so a reservation-equality rule
+	// would make AC 8's "one object and two receipts" unreachable. The brine
+	// dedup scenario is what found that. The reservation binding is in the
+	// signed claims, taken from the challenge, and is revalidated against
+	// durable state in the transaction that consumes the nonce (Req 26).
 
 	claims.ProtocolVersion = output.ProtocolVersion
 	claims.ReceiptVersion = output.ReceiptDomain

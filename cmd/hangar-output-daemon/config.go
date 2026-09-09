@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -167,6 +168,28 @@ func (config Config) Namespace() (output.OutputNamespace, error) {
 		SharedBucketPrefixOnlyIsolation: config.SharedBucketPrefixOnlyIsolation,
 		ActivationEpoch:                 activationEpoch(config.ActivationEpoch),
 	})
+}
+
+// PrepareScratch creates the canonicalization scratch directory.
+//
+// It must be ABSOLUTE. The canonicalizer resolves it once and then works
+// descriptor-relative beneath it, and a relative path would be resolved against
+// whatever directory this process happened to start in -- which on a DaemonSet
+// is not a thing anybody chose.
+func (config Config) PrepareScratch() error {
+	if strings.TrimSpace(config.ScratchDir) == "" {
+		return fmt.Errorf("%w: --scratch-dir is required; canonicalization needs a trusted "+
+			"temporary parent", output.ErrIncomplete)
+	}
+	if !filepath.IsAbs(config.ScratchDir) {
+		return fmt.Errorf("%w: --scratch-dir %q is relative", output.ErrIncomplete, config.ScratchDir)
+	}
+	if err := os.MkdirAll(config.ScratchDir, 0o700); err != nil {
+		return fmt.Errorf("%w: creating the canonicalization scratch directory: %v",
+			output.ErrInfrastructure, err)
+	}
+
+	return nil
 }
 
 // LoadControlKey reads the node's control signing key off disk.

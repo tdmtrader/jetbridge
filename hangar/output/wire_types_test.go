@@ -57,6 +57,7 @@ var fixturedTypes = map[string]string{
 	outputPackageDir + ":WriterAdmission":                 "writer-admission.json",
 	outputPackageDir + ":SealRequest":                     "seal-request.json",
 	outputPackageDir + ":SealStarted":                     "seal-started.json",
+	outputPackageDir + ":DrainedWriter":                   "drained-writer.json",
 	outputPackageDir + ":ReleaseIntent":                   "release-intent.json",
 	outputPackageDir + ":PublicationRequest":              "publication-request.json",
 	outputPackageDir + ":PublicationResult":               "publication-result.json",

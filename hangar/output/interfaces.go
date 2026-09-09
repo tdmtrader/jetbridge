@@ -391,10 +391,10 @@ func (started SealStarted) Validate() error {
 // observation, which is why the field records what was seen rather than what
 // was attempted.
 type DrainedWriter struct {
-	WriterTicketID       WriterTicketID
-	Closed               CaptureAcknowledgement
-	PodUID               executioncontrol.PodUID
-	ContainersTerminated bool
+	WriterTicketID       WriterTicketID          `json:"writer_ticket_id"`
+	Closed               CaptureAcknowledgement  `json:"closed"`
+	PodUID               executioncontrol.PodUID `json:"pod_uid"`
+	ContainersTerminated bool                    `json:"containers_terminated"`
 }
 
 func (drained DrainedWriter) Validate() error {

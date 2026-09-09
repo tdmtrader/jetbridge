@@ -72,10 +72,31 @@ type route struct {
 	handle    func(*Server, http.ResponseWriter, *http.Request, executioncontrol.Identity) (any, error)
 }
 
-// identified is the shape every control request shares: it names an exact
-// execution, and the capability is checked against that identity.
+// identified is how the middleware finds the execution a capability must be
+// bound to, and it has to read TWO shapes.
+//
+// The base protocol's frozen types EMBED Identity, so an Envelope or a
+// ClassifyRequest carries execution_id and fence at the top level. The
+// extension's types carry it under `execution`, because they also carry a
+// handoff and an incarnation and a flattened identity beside those would be
+// ambiguous. Both are frozen, so the middleware accommodates both rather than
+// either being changed to suit it.
+//
+// Reading the identity out of the BODY rather than a header is deliberate: the
+// capability is bound to that identity, and a header the body could contradict
+// would put the authorization key outside the thing being authorized.
 type identified struct {
-	Execution executioncontrol.Identity `json:"execution"`
+	Execution   *executioncontrol.Identity   `json:"execution"`
+	ExecutionID executioncontrol.ExecutionID `json:"execution_id"`
+	Fence       executioncontrol.Fence       `json:"fence"`
+}
+
+func (named identified) identity() executioncontrol.Identity {
+	if named.Execution != nil {
+		return *named.Execution
+	}
+
+	return executioncontrol.Identity{ExecutionID: named.ExecutionID, Fence: named.Fence}
 }
 
 func (server *Server) Handler() http.Handler {
@@ -119,6 +140,14 @@ func (server *Server) routes() map[string]route {
 	return map[string]route{
 		// The base protocol's four closed operations. Nothing here mentions an
 		// output, a hold, a bucket or a receipt.
+		// Admission and the supervisor's two writes. They are base routes and
+		// they carry no output, source or capture field: this is the shape a
+		// non-capture execution uses unchanged, which is decision F13's
+		// contract obligation stated as a route rather than promised.
+		"POST /execution/v1/admit":   {executioncontrol.BaseFacet, "admit", (*Server).admit},
+		"POST /execution/v1/start":   {executioncontrol.BaseFacet, "start", (*Server).start},
+		"POST /execution/v1/outcome": {executioncontrol.BaseFacet, "outcome", (*Server).outcome},
+
 		"POST /execution/v1/classify":         {executioncontrol.BaseFacet, "classify", (*Server).classify},
 		"POST /execution/v1/observe":          {executioncontrol.BaseFacet, "observe", (*Server).observe},
 		"POST /execution/v1/stop":             {executioncontrol.BaseFacet, "stop", (*Server).stop},
@@ -130,6 +159,7 @@ func (server *Server) routes() map[string]route {
 		"POST /capture/v1/writer-ticket":       {output.CaptureFacet, "issue-writer-ticket", (*Server).issueTicket},
 		"POST /capture/v1/writer-ticket/close": {output.CaptureFacet, "close-writer-ticket", (*Server).closeTicket},
 		"POST /capture/v1/seal":                {output.CaptureFacet, "begin-seal", (*Server).beginSeal},
+		"POST /capture/v1/seal/confirm":        {output.CaptureFacet, "confirm-seal", (*Server).confirmSeal},
 		"POST /capture/v1/seal/inspect":        {output.CaptureFacet, "inspect-seal", (*Server).inspectSeal},
 		"POST /capture/v1/release":             {output.CaptureFacet, "release-hold", (*Server).release},
 		"POST /capture/v1/publish":             {output.CaptureFacet, "publish", (*Server).publish},
@@ -162,7 +192,8 @@ func (server *Server) protect(declared route) http.Handler {
 
 			return
 		}
-		if err := named.Execution.Validate(); err != nil {
+		identity := named.identity()
+		if err := identity.Validate(); err != nil {
 			writeError(w, err)
 
 			return
@@ -176,7 +207,7 @@ func (server *Server) protect(declared route) http.Handler {
 			executioncontrol.CapabilityClaims{
 				Facet:           declared.facet,
 				Operation:       declared.operation,
-				Identity:        named.Execution,
+				Identity:        identity,
 				ActivationEpoch: server.daemon.Namespace().ActivationEpoch(),
 			}); err != nil {
 			writeError(w, fmt.Errorf("%w: %s facet, %s operation: %v",
@@ -188,7 +219,7 @@ func (server *Server) protect(declared route) http.Handler {
 		request = request.WithContext(request.Context())
 		request.Body = readerOf(body)
 
-		answer, err := declared.handle(server, w, request, named.Execution)
+		answer, err := declared.handle(server, w, request, identity)
 		if err != nil {
 			writeError(w, err)
 
@@ -196,6 +227,56 @@ func (server *Server) protect(declared route) http.Handler {
 		}
 		writeJSON(w, http.StatusOK, answer)
 	})
+}
+
+func (server *Server) admit(_ http.ResponseWriter, request *http.Request,
+	_ executioncontrol.Identity) (any, error) {
+	var envelope executioncontrol.Envelope
+	if err := decode(request, &envelope); err != nil {
+		return nil, err
+	}
+	if err := server.base.Admit(envelope); err != nil {
+		return nil, err
+	}
+
+	return server.base.Classify(envelope.Identity)
+}
+
+// startRequest and outcomeRequest are the supervisor's two writes.
+//
+// They are the only routes on the base surface that change anything about a
+// process, and both are written durably before their caller may act: the start
+// before the child is launched, the outcome before the result is exposed.
+type startRequest struct {
+	Execution       executioncontrol.Identity        `json:"execution"`
+	PodUID          executioncontrol.PodUID          `json:"pod_uid"`
+	ProcessIdentity executioncontrol.ProcessIdentity `json:"process_identity"`
+}
+
+type outcomeRequest struct {
+	Execution executioncontrol.Identity            `json:"execution"`
+	Kind      executioncontrol.AcknowledgementKind `json:"kind"`
+	Outcome   executioncontrol.ExitOutcome         `json:"outcome"`
+}
+
+func (server *Server) start(_ http.ResponseWriter, request *http.Request,
+	_ executioncontrol.Identity) (any, error) {
+	var started startRequest
+	if err := decode(request, &started); err != nil {
+		return nil, err
+	}
+
+	return server.base.RecordStart(started.Execution, started.PodUID, started.ProcessIdentity)
+}
+
+func (server *Server) outcome(_ http.ResponseWriter, request *http.Request,
+	_ executioncontrol.Identity) (any, error) {
+	var recorded outcomeRequest
+	if err := decode(request, &recorded); err != nil {
+		return nil, err
+	}
+
+	return server.base.RecordOutcome(recorded.Execution, recorded.Kind, recorded.Outcome)
 }
 
 func (server *Server) classify(_ http.ResponseWriter, _ *http.Request,
@@ -275,6 +356,36 @@ func (server *Server) beginSeal(_ http.ResponseWriter, request *http.Request,
 	}
 
 	return server.source.BeginSeal(request.Context(), sealRequest)
+}
+
+// sealConfirmation is the ATC's half on the wire: the drain and
+// container-termination evidence for the set BeginSeal captured.
+//
+// The execution is named separately because the capability is bound to it, and
+// the middleware must be able to read it out of the body before any of this is
+// decoded.
+type sealConfirmation struct {
+	Execution executioncontrol.Identity `json:"execution"`
+	Started   output.SealStarted        `json:"started"`
+	Drained   []output.DrainedWriter    `json:"drained"`
+
+	CaptureFence output.CaptureFence `json:"capture_fence"`
+	ObservedAt   output.Timestamp    `json:"observed_at"`
+}
+
+func (server *Server) confirmSeal(_ http.ResponseWriter, request *http.Request,
+	_ executioncontrol.Identity) (any, error) {
+	var confirmation sealConfirmation
+	if err := decode(request, &confirmation); err != nil {
+		return nil, err
+	}
+
+	return server.source.ConfirmSeal(request.Context(), output.SealConfirmation{
+		Started:      confirmation.Started,
+		Drained:      confirmation.Drained,
+		CaptureFence: confirmation.CaptureFence,
+		ObservedAt:   confirmation.ObservedAt,
+	})
 }
 
 func (server *Server) inspectSeal(_ http.ResponseWriter, request *http.Request,

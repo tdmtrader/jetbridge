@@ -175,6 +175,7 @@ var protocolFixtures = map[string]func(*testing.T, []byte){
 	"writer-admission.json": func(t *testing.T, raw []byte) { roundTrip[WriterAdmission](t, raw) },
 	"seal-request.json":     func(t *testing.T, raw []byte) { roundTrip[SealRequest](t, raw) },
 	"seal-started.json":     func(t *testing.T, raw []byte) { roundTrip[SealStarted](t, raw) },
+	"drained-writer.json":   func(t *testing.T, raw []byte) { roundTrip[DrainedWriter](t, raw) },
 	"release-intent.json":   func(t *testing.T, raw []byte) { roundTrip[ReleaseIntent](t, raw) },
 	"publication-request.json": func(t *testing.T, raw []byte) {
 		roundTrip[PublicationRequest](t, raw)

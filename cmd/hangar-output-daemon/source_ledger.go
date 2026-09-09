@@ -571,6 +571,13 @@ func (ledger *SourceLedger) ticketStatement(admission output.WriterAdmission,
 			"%w: the admission names an incarnation this node did not issue for handoff %s",
 			output.ErrUnauthorized, admission.HandoffID)
 	}
+	// The incarnation has to still BE the incarnation. Admitting a writer over
+	// a path that has become a symlink, or is gone, would hand write capability
+	// to bytes that are not the ones this capture will seal -- and the ticket
+	// would then be in the drain set, accounted for, and completely misleading.
+	if _, err := ledger.ResolveIncarnation(record.Incarnation); err != nil {
+		return sourceRecord{}, output.CaptureAcknowledgement{}, err
+	}
 
 	ack, err := ledger.signer.SignCapture(output.CaptureAcknowledgement{
 		ProtocolVersion: output.ProtocolVersion,
@@ -612,6 +619,12 @@ func (ledger *SourceLedger) BeginSeal(_ context.Context, request output.SealRequ
 	if request.CaptureFence == 0 {
 		return output.SealStarted{}, fmt.Errorf("%w: a seal names no capture fence",
 			output.ErrIncomplete)
+	}
+	// Same rule as writer admission, and for the sharper reason: a seal is the
+	// promise that what follows reads exactly these bytes, and a source that
+	// cannot be resolved is not a source anybody can promise anything about.
+	if _, err := ledger.ResolveIncarnation(record.Incarnation); err != nil {
+		return output.SealStarted{}, err
 	}
 	if record.State == sourceReleased {
 		return output.SealStarted{}, fmt.Errorf("%w: handoff %s released its source",
