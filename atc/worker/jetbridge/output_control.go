@@ -311,3 +311,42 @@ func (client *OutputControlClient) RetireWriter(ctx context.Context,
 
 	return ack, err
 }
+
+// nodeOutputControls resolves the output daemon for the node an execution
+// landed on, and dials it the way the ATC dials the artifact daemon: same
+// client certificate, same CA, same scheme predicate. The two daemons are
+// separate Pods with separate service accounts and separate buckets -- Req 20
+// forbids sharing one -- but the ATC's identity to both is one identity, and a
+// second certificate would be a second thing to rotate for no gain.
+type nodeOutputControls struct {
+	config   Config
+	resolver *NodeIPResolver
+	minter   *executioncontrol.CapabilityMinter
+	epoch    executioncontrol.ActivationEpoch
+}
+
+// NewOutputControls builds the resolver a Worker is given.
+func NewOutputControls(config Config, resolver *NodeIPResolver,
+	minter *executioncontrol.CapabilityMinter,
+	epoch executioncontrol.ActivationEpoch) OutputControlResolver {
+	return &nodeOutputControls{config: config, resolver: resolver, minter: minter, epoch: epoch}
+}
+
+func (controls *nodeOutputControls) ForNode(ctx context.Context, nodeName string) (OutputControl, error) {
+	if controls.resolver == nil || nodeName == "" {
+		return nil, fmt.Errorf("no node to reach the output daemon on")
+	}
+	nodeIP, err := controls.resolver.Resolve(ctx, nodeName)
+	if err != nil {
+		return nil, fmt.Errorf("resolving node %s: %w", nodeName, err)
+	}
+	port := controls.config.OutputDaemonPort
+	if port == 0 {
+		port = DefaultOutputDaemonPort
+	}
+
+	return NewOutputControlClient(
+		fmt.Sprintf("%s://%s:%d", daemonURLScheme(controls.config), nodeIP, port),
+		newDaemonHTTPClient(controls.config, 30*time.Second),
+		controls.minter, controls.epoch), nil
+}

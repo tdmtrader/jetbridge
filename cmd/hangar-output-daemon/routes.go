@@ -50,7 +50,18 @@ type Server struct {
 	// route fails closed: a daemon that could not read its own ledger is not a
 	// daemon that may answer questions about what it says.
 	unreadyBecause string
+
+	// mutualTLS is set when the daemon serves HTTPS with a client CA. It makes
+	// every route but the node-local one require a verified client
+	// certificate. It is a server fact rather than a per-request one because
+	// "this request arrived over TLS" is not the same claim as "this daemon
+	// requires TLS", and only the second one can be enforced.
+	mutualTLS bool
 }
+
+// RequireClientCertificates turns on the client-certificate check for every
+// route that is not node-local.
+func (server *Server) RequireClientCertificates() { server.mutualTLS = true }
 
 func NewServer(daemon *Daemon, base *ExecutionLedger, source *SourceLedger,
 	capability *executioncontrol.CapabilityVerifier, unreadyBecause string) *Server {
@@ -70,6 +81,21 @@ type route struct {
 	facet     executioncontrol.Facet
 	operation string
 	handle    func(*Server, http.ResponseWriter, *http.Request, executioncontrol.Identity) (any, error)
+
+	// nodeLocal marks the one route whose caller is a container in a Pod on
+	// this node rather than the control plane.
+	//
+	// Every other route on this API is now called by the ATC, which is on
+	// another node, so when TLS is configured they require a verified client
+	// certificate -- a bearer capability over plaintext off-node is
+	// interceptable inside its TTL. The capture control init holds no client
+	// certificate and cannot be given one (Req 24 gives the task's Pod no
+	// output-plane credential beyond its one-shot grant), so its route stays
+	// reachable without one, exactly as cmd/artifact-daemon exempts /resolve
+	// for the same caller and the same reason. It is node-local traffic on the
+	// node's own loopback or CNI path, and the grant is still a signed,
+	// facet-scoped, single-use capability.
+	nodeLocal bool
 }
 
 // identified is how the middleware finds the execution a capability must be
@@ -144,26 +170,26 @@ func (server *Server) routes() map[string]route {
 		// they carry no output, source or capture field: this is the shape a
 		// non-capture execution uses unchanged, which is decision F13's
 		// contract obligation stated as a route rather than promised.
-		"POST /execution/v1/admit":   {executioncontrol.BaseFacet, "admit", (*Server).admit},
-		"POST /execution/v1/start":   {executioncontrol.BaseFacet, "start", (*Server).start},
-		"POST /execution/v1/outcome": {executioncontrol.BaseFacet, "outcome", (*Server).outcome},
+		"POST /execution/v1/admit":   {executioncontrol.BaseFacet, "admit", (*Server).admit, false},
+		"POST /execution/v1/start":   {executioncontrol.BaseFacet, "start", (*Server).start, false},
+		"POST /execution/v1/outcome": {executioncontrol.BaseFacet, "outcome", (*Server).outcome, false},
 
-		"POST /execution/v1/classify":         {executioncontrol.BaseFacet, "classify", (*Server).classify},
-		"POST /execution/v1/observe":          {executioncontrol.BaseFacet, "observe", (*Server).observe},
-		"POST /execution/v1/stop":             {executioncontrol.BaseFacet, "stop", (*Server).stop},
-		"POST /execution/v1/cleanup-eligible": {executioncontrol.BaseFacet, "cleanup-eligible", (*Server).cleanupEligible},
+		"POST /execution/v1/classify":         {executioncontrol.BaseFacet, "classify", (*Server).classify, false},
+		"POST /execution/v1/observe":          {executioncontrol.BaseFacet, "observe", (*Server).observe, false},
+		"POST /execution/v1/stop":             {executioncontrol.BaseFacet, "stop", (*Server).stop, false},
+		"POST /execution/v1/cleanup-eligible": {executioncontrol.BaseFacet, "cleanup-eligible", (*Server).cleanupEligible, false},
 
 		// The optional capture extension. Disjoint surface, disjoint facet.
-		"POST /capture/v1/hold":                {output.CaptureFacet, "hold", (*Server).hold},
-		"POST /capture/v1/hold/inspect":        {output.CaptureFacet, "inspect-hold", (*Server).inspectHold},
-		"POST /capture/v1/writer-ticket":       {output.CaptureFacet, "issue-writer-ticket", (*Server).issueTicket},
-		"POST /capture/v1/writer-ticket/close": {output.CaptureFacet, "close-writer-ticket", (*Server).closeTicket},
-		"POST /capture/v1/seal":                {output.CaptureFacet, "begin-seal", (*Server).beginSeal},
-		"POST /capture/v1/seal/confirm":        {output.CaptureFacet, "confirm-seal", (*Server).confirmSeal},
-		"POST /capture/v1/seal/inspect":        {output.CaptureFacet, "inspect-seal", (*Server).inspectSeal},
-		"POST /capture/v1/release":             {output.CaptureFacet, "release-hold", (*Server).release},
-		"POST /capture/v1/publish":             {output.CaptureFacet, "publish", (*Server).publish},
-		"POST /capture/v1/stat":                {output.CaptureFacet, "stat", (*Server).statExact},
+		"POST /capture/v1/hold":                {output.CaptureFacet, "hold", (*Server).hold, true},
+		"POST /capture/v1/hold/inspect":        {output.CaptureFacet, "inspect-hold", (*Server).inspectHold, false},
+		"POST /capture/v1/writer-ticket":       {output.CaptureFacet, "issue-writer-ticket", (*Server).issueTicket, false},
+		"POST /capture/v1/writer-ticket/close": {output.CaptureFacet, "close-writer-ticket", (*Server).closeTicket, false},
+		"POST /capture/v1/seal":                {output.CaptureFacet, "begin-seal", (*Server).beginSeal, false},
+		"POST /capture/v1/seal/confirm":        {output.CaptureFacet, "confirm-seal", (*Server).confirmSeal, false},
+		"POST /capture/v1/seal/inspect":        {output.CaptureFacet, "inspect-seal", (*Server).inspectSeal, false},
+		"POST /capture/v1/release":             {output.CaptureFacet, "release-hold", (*Server).release, false},
+		"POST /capture/v1/publish":             {output.CaptureFacet, "publish", (*Server).publish, false},
+		"POST /capture/v1/stat":                {output.CaptureFacet, "stat", (*Server).statExact, false},
 	}
 }
 
@@ -174,6 +200,20 @@ func (server *Server) protect(declared route) http.Handler {
 			// Fail closed. Output-daemon unavailability never grants authority,
 			// and "unavailable" includes "cannot read its own ledger".
 			http.Error(w, server.unreadyBecause, http.StatusServiceUnavailable)
+
+			return
+		}
+
+		// The transport check comes before the capability check, and that
+		// order is the point: a capability presented over an unauthenticated
+		// transport has already been on the wire in the clear, and verifying
+		// it would be deciding whether to honour a token that may have been
+		// copied on the way in.
+		if server.mutualTLS && !declared.nodeLocal &&
+			(request.TLS == nil || len(request.TLS.PeerCertificates) == 0) {
+			http.Error(w, "a verified client certificate is required for the control plane's "+
+				"operations on this daemon; only the node-local capture hold is exempt",
+				http.StatusUnauthorized)
 
 			return
 		}

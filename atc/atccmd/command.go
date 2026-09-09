@@ -201,6 +201,8 @@ type RunCommand struct {
 		ArtifactDaemonTLSCert              string        `long:"kubernetes-artifact-daemon-tls-cert"    description:"Path to client certificate for mTLS with the artifact daemon."`
 		ArtifactDaemonTLSKey               string        `long:"kubernetes-artifact-daemon-tls-key"     description:"Path to client private key for mTLS with the artifact daemon."`
 		ArtifactDaemonTLSCACert            string        `long:"kubernetes-artifact-daemon-tls-ca-cert" description:"Path to CA certificate for verifying the artifact daemon's server certificate."`
+		OutputPlaneEnabled                 bool          `long:"kubernetes-hangar-output-enabled"           description:"Enable the durable output-capture extension: the capture control init, the ledger-checked stale-workspace cleanup, and the ATC's exact-execution control calls. Off, every one of those is absent and an ordinary pod is byte-identical to the one built without it."`
+		OutputDaemonPort                   int           `long:"kubernetes-hangar-output-daemon-port" default:"7781" description:"Control port of the node-local Hangar output daemon. It is a different daemon on a different port from the artifact daemon, because the two may not share a bucket and a Kubernetes service account is Pod-wide."`
 		HangarEnabled                      bool          `long:"kubernetes-hangar-enabled"                  description:"Enable exact immutable Hangar tree inputs for Kubernetes task Pods."`
 		HangarCapabilityKey                string        `long:"kubernetes-hangar-capability-key"           description:"Path to the raw 32-byte Hangar materialization capability key."`
 		HangarCapabilityTTL                time.Duration `long:"kubernetes-hangar-capability-ttl"           default:"15m" description:"Lifetime of exact Hangar materialization grants (maximum 15m)."`
@@ -1326,6 +1328,8 @@ func (cmd *RunCommand) backendComponents(
 		)
 		k8sCfg.HangarEnabled = cmd.Kubernetes.HangarEnabled
 		k8sCfg.HangarGrantSigner = cmd.k8sHangarGrantSigner
+		k8sCfg.OutputPlaneEnabled = cmd.Kubernetes.OutputPlaneEnabled
+		k8sCfg.OutputDaemonPort = cmd.Kubernetes.OutputDaemonPort
 		if cmd.Kubernetes.CacheStore != "" && !jetbridge.ValidCacheStores[cmd.Kubernetes.CacheStore] {
 			return nil, fmt.Errorf("invalid --kubernetes-cache-store value %q (valid: hostpath, emptydir)", cmd.Kubernetes.CacheStore)
 		}
@@ -1462,6 +1466,8 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 		)
 		k8sCfg.HangarEnabled = cmd.Kubernetes.HangarEnabled
 		k8sCfg.HangarGrantSigner = cmd.k8sHangarGrantSigner
+		k8sCfg.OutputPlaneEnabled = cmd.Kubernetes.OutputPlaneEnabled
+		k8sCfg.OutputDaemonPort = cmd.Kubernetes.OutputDaemonPort
 		if cmd.Kubernetes.ImageRegistryPrefix != "" || cmd.Kubernetes.ImageRegistrySecret != "" {
 			k8sCfg.ImageRegistry = &jetbridge.ImageRegistryConfig{
 				Prefix:     cmd.Kubernetes.ImageRegistryPrefix,

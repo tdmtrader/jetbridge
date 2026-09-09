@@ -11,6 +11,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"flag"
 	"fmt"
@@ -96,23 +98,31 @@ func run(ctx context.Context, config Config, out *os.File) error {
 
 	server := NewServer(daemon, base, source, capability, unready)
 
-	// TODO(phase-4): TLS flags before the first off-node caller lands (Phase 4
-	// first ATC->daemon box).
-	//
-	// This listener is node-local and plaintext, which is the shape Phase 3's
-	// boxes ask for: every caller of this API in this phase is a pod on this
-	// node, and the capability is a signed, facet-scoped, single-use bearer
-	// token. Phase 4 wires the first caller that is NOT on this node -- the web
-	// pod's execProcess revalidating a hold and taking a writer ticket -- and a
-	// bearer token over plaintext off-node is interceptable inside its TTL. So
-	// the phase that adds that caller adds --tls-cert/--tls-key/--tls-ca-cert
-	// here, spelled the way cmd/artifact-daemon/main.go spells them, and the
-	// "mTLS ATC operations" test; Phase 8's attest handshake renders the
-	// Secret, the NetworkPolicy and the values.
+	// The first off-node caller landed in Phase 4: execProcess revalidates the
+	// hold, takes writer tickets, records the start and the outcome, and asks
+	// about cleanup -- all from the web pod, which is on another node. So the
+	// control API is mTLS when it is configured for it, and every route but
+	// the node-local capture hold requires a verified client certificate. The
+	// hold's caller is the capture control init inside a Pod on this node; it
+	// holds no client certificate and Req 24 will not give it one, which is
+	// the same exemption cmd/artifact-daemon makes for /resolve.
+	var tlsConfig *tls.Config
+	if config.TLSEnabled() {
+		built, err := buildControlTLSConfig(config)
+		if err != nil {
+			return err
+		}
+		tlsConfig = built
+		server.RequireClientCertificates()
+	}
+
 	listener, err := net.Listen("tcp", config.ListenAddress)
 	if err != nil {
 		return fmt.Errorf("%w: listening on %s: %v", output.ErrInfrastructure,
 			config.ListenAddress, err)
+	}
+	if tlsConfig != nil {
+		listener = tls.NewListener(listener, tlsConfig)
 	}
 
 	namespace := daemon.Namespace()
@@ -127,6 +137,12 @@ func run(ctx context.Context, config Config, out *os.File) error {
 		config.ReceiptKeyID, daemon.ReceiptPublicKey()[:8])
 	fmt.Fprintf(out, "  control key:      %s (public key %x)\n",
 		config.ControlKeyID, daemon.ControlPublicKey()[:8])
+	if tlsConfig != nil {
+		fmt.Fprintf(out, "  control API:      https, client certificate required "+
+			"(node-local capture hold exempt)\n")
+	} else {
+		fmt.Fprintf(out, "  control API:      http, node-local only\n")
+	}
 	if unready != "" {
 		fmt.Fprintf(out, "\nNOT READY: %s\n", unready)
 	}
@@ -137,4 +153,37 @@ func run(ctx context.Context, config Config, out *os.File) error {
 	}
 
 	return nil
+}
+
+// buildControlTLSConfig is the server half of the ATC's own client-certificate
+// plumbing, spelled the way cmd/artifact-daemon spells it.
+//
+// ClientAuth is VerifyClientCertIfGiven rather than RequireAndVerify because
+// the node-local capture hold, /healthz, /readyz and /handshake are reachable
+// without one; the per-route check in routes.go is what refuses a control-plane
+// operation that arrives without a verified certificate. Requiring it at the
+// handshake would take the hold away from the init container that has to make
+// it.
+func buildControlTLSConfig(config Config) (*tls.Config, error) {
+	certificate, err := tls.LoadX509KeyPair(config.TLSCert, config.TLSKey)
+	if err != nil {
+		return nil, fmt.Errorf("%w: loading the control API server certificate: %v",
+			output.ErrIncomplete, err)
+	}
+	caPEM, err := os.ReadFile(config.TLSCACert)
+	if err != nil {
+		return nil, fmt.Errorf("%w: reading the control API client CA: %v",
+			output.ErrIncomplete, err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("%w: no certificates in %s", output.ErrCorrupt, config.TLSCACert)
+	}
+
+	return &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{certificate},
+		ClientCAs:    pool,
+		ClientAuth:   tls.VerifyClientCertIfGiven,
+	}, nil
 }
