@@ -241,3 +241,88 @@ func translate(err error) error {
 		return fmt.Errorf("%w: %v", output.ErrInfrastructure, err)
 	}
 }
+
+// Classification is what a sweep concluded about one object it found.
+//
+// The vocabulary is closed and the members are deliberately not "found" and
+// "not found". An object in the output bucket is one of exactly four things,
+// and the difference between them is what may be done to it: an unmanaged
+// object is never touched, a registered one is protected by its lifecycle row,
+// an orphan may eventually be adopted, and a candidate inside its publication
+// grace is a capture that may still legitimately be retrying.
+//
+// None of them is a cache miss. Req 27 says so about every typed outcome in
+// this plane, and inventory is where the temptation is strongest: an object
+// with no lifecycle row looks exactly like a miss if the only question asked is
+// "is it registered".
+type Classification string
+
+const (
+	// ClassificationUnmanaged is an object with no Hangar marker. It is never
+	// relabelled, adopted or deleted.
+	ClassificationUnmanaged Classification = "unmanaged"
+
+	// ClassificationRegistered is a marked object with a committed lifecycle
+	// row naming its exact generation.
+	ClassificationRegistered Classification = "registered"
+
+	// ClassificationWithinGrace is a marked object with no lifecycle row,
+	// found before its publication grace elapsed. Its capture may still be
+	// retrying, and adopting it would race the capture that made it.
+	ClassificationWithinGrace Classification = "within_publication_grace"
+
+	// ClassificationOrphan is a marked object with no lifecycle row whose
+	// publication grace has elapsed. It is adoptable; it is not a miss, and it
+	// is never a binding.
+	ClassificationOrphan Classification = "orphan"
+)
+
+// Classifications is the closed set.
+func Classifications() []Classification {
+	return []Classification{
+		ClassificationUnmanaged,
+		ClassificationRegistered,
+		ClassificationWithinGrace,
+		ClassificationOrphan,
+	}
+}
+
+// Classify decides what one found object is.
+//
+// `registered` is supplied by the caller rather than read here, because the
+// lifecycle row is the control plane's and inventory holds no database handle.
+// `grace` and `now` are parameters for the same reason every deadline in this
+// plane is: the sweep must not measure an object's age against a node's wall
+// clock, and a grace window that could be shortened below the maximum capture
+// deadline would let an object become adoptable while its own capture was still
+// legitimately retrying -- which is why ValidateGrace refuses one.
+func Classify(object output.InventoryObject, registered bool, grace time.Duration, now time.Time) Classification {
+	if !object.Managed {
+		return ClassificationUnmanaged
+	}
+	if registered {
+		return ClassificationRegistered
+	}
+	if now.Sub(object.CreatedAt.UTC()) < grace {
+		return ClassificationWithinGrace
+	}
+
+	return ClassificationOrphan
+}
+
+// ValidateGrace refuses a publication grace that could race a capture.
+func ValidateGrace(grace, maxCaptureDeadline time.Duration) error {
+	floor := maxCaptureDeadline + output.PublicationGraceMargin
+	if grace < floor {
+		return fmt.Errorf("%w: a publication grace of %s is below the maximum capture deadline "+
+			"plus %s (%s). Below that floor an object becomes adoptable while the capture that "+
+			"created it may still be legitimately retrying, and adoption would race publication",
+			output.ErrIncomplete, grace, output.PublicationGraceMargin, floor)
+	}
+	if grace > output.MaxPublicationGrace {
+		return fmt.Errorf("%w: a publication grace of %s exceeds the %s bound",
+			output.ErrLimitExceeded, grace, output.MaxPublicationGrace)
+	}
+
+	return nil
+}
