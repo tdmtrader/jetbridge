@@ -393,19 +393,47 @@ func (publisher *Publisher) OpenExactObject(ctx context.Context, ref hangar.Tree
 // Absence is ErrNotFound and stays ErrNotFound: Req 27 says none of these
 // becomes a cache miss, and the way that rule is broken is by a helper that
 // turns "not there" into a nil error and an empty value.
+//
+// It takes the key and DELIBERATELY DOES NOT PUT IT IN THE MESSAGE. Reqs 3, 7
+// and 12 say the bucket, the prefix, the opaque scope and the object key are
+// server-derived and never crossed the boundary in either direction: this
+// plane refuses a request that names one, and it must not answer with one
+// either. It did -- the exact stat of an object that was not there answered
+// with the whole key, prefix and derived scope included -- which told a caller
+// that had just been refused for naming a key exactly what the key was.
+//
+// The parameter stays because dropping it would make the next person add it
+// back at the call site by hand. `_ = key` is the whole point: it is the fact
+// that this function knows the key and says nothing about it.
+//
+// What is lost is real, and it is the cost Req 7 chose. A node operator
+// reading a "not found" no longer sees which object. What they do have is the
+// typed outcome and the reservation the caller named, and the daemon's own
+// startup banner names the bucket and prefix once, at boot, to its own stdout.
+//
+// The vendor error text goes for the same reason: a GCS error names the bucket
+// and the object in prose, so forwarding %v forwards the key by another route.
+// The classification above is what a caller can act on; the text was never it.
 func translate(err error, key string) error {
+	_ = key
+
 	switch {
 	case err == nil:
 		return nil
 	case errors.Is(err, objectstore.ErrNotFound):
-		return fmt.Errorf("%w: %s", output.ErrNotFound, key)
+		return fmt.Errorf("%w: no object at the server-derived key for this reservation",
+			output.ErrNotFound)
 	case errors.Is(err, objectstore.ErrUnauthorized):
-		return fmt.Errorf("%w: %s: %v", output.ErrUnauthorized, key, err)
+		return fmt.Errorf("%w: this plane's credential was refused for the server-derived key",
+			output.ErrUnauthorized)
 	case errors.Is(err, objectstore.ErrPreconditionFailed):
-		return fmt.Errorf("%w: %s: %v", output.ErrGenerationConflict, key, err)
+		return fmt.Errorf("%w: the object at the server-derived key is not at the generation "+
+			"this operation required", output.ErrGenerationConflict)
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
-		return fmt.Errorf("%w: %s: %v", output.ErrTimeout, key, err)
+		return fmt.Errorf("%w: the store did not answer within this operation's deadline",
+			output.ErrTimeout)
 	default:
-		return fmt.Errorf("%w: %s: %v", output.ErrInfrastructure, key, err)
+		return fmt.Errorf("%w: the object store could not be reached for this operation",
+			output.ErrInfrastructure)
 	}
 }
