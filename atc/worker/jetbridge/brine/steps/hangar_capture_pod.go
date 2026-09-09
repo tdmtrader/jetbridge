@@ -26,6 +26,12 @@ import (
 
 const capturePodPhase = "Phase 4 Green"
 
+// scenarioReservingNode is the Kubernetes node whose daemon issued the
+// scenario's reservation. A reservation is a directory on ONE node's disk, so
+// the capture pod carries a required affinity on this node by name; the node
+// UID beside it (hangarNodeUID) is what the daemon compares a hold against.
+const scenarioReservingNode = "hangar-node-a"
+
 // HangarCapturePodDefinitions is the capture-pod family.
 func HangarCapturePodDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
@@ -123,13 +129,17 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 				// doing it here rather than inside `the daemon holds the
 				// source` keeps the two facts separable: a scenario can admit
 				// and then never hold.
+				// The envelope names no Pod, and could not: the reservation the
+				// producer will mount is issued against this admission, so the
+				// admission precedes the Pod. The draft mints a Pod UID here
+				// only because the next step -- the hold -- is the one made
+				// from inside the Pod, and that is where the daemon binds it.
 				answer := in.base("admit", "/execution/v1/admit", draft.Admission.Execution,
 					executioncontrol.Envelope{
 						ProtocolVersion: executioncontrol.ProtocolVersion,
 						Identity:        draft.Admission.Execution,
 						ActivationEpoch: draft.Admission.ActivationEpoch,
 						NodeUID:         hangarNodeUID,
-						PodUID:          executioncontrol.PodUID(freshUUID()),
 						Capability:      "opaque-admission-capability",
 					})
 				if _, err := decodeControl[executioncontrol.ClassifyResult](answer); err != nil {
@@ -309,6 +319,7 @@ func buildCapturePod(in CaptureDraft) (CapturePodCreated, error) {
 		CaptureDeadline:     in.Admission.CaptureDeadline.Time,
 		ReservedIncarnation: reserved.Incarnation,
 		ReservedDirectory:   reserved.Directory,
+		ReservingNode:       scenarioReservingNode,
 	}
 	if err := control.SelectCapture(selection); err != nil {
 		return CapturePodCreated{Draft: in, Err: err}, nil

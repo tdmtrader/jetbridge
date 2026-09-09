@@ -145,12 +145,21 @@ func (identity Identity) Validate() error {
 //
 // It is the base envelope in the literal sense: everything an execution needs
 // to be controllable, and not one field about what the execution is for.
+//
+// It names NO Pod, and the omission is the protocol's, not an oversight. An
+// admission is what a location may be reserved against, and a reservation has
+// to precede the Pod: `buildPod` mounts the reserved incarnation, so the
+// reservation cannot wait for a UID the API server has not assigned yet. What
+// admission binds is therefore the execution identity, its fence and the node
+// -- the three facts that exist before the Pod does. The Pod UID is bound once,
+// later and elsewhere: the capture control init presents its own Downward API
+// value at the hold, and a start acknowledgement carries the UID the ATC
+// recorded the start for.
 type Envelope struct {
 	ProtocolVersion string `json:"protocol_version"`
 	Identity
 	ActivationEpoch ActivationEpoch   `json:"activation_epoch"`
 	NodeUID         NodeUID           `json:"node_uid"`
-	PodUID          PodUID            `json:"pod_uid"`
 	Capability      ControlCapability `json:"capability"`
 }
 

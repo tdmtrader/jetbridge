@@ -479,7 +479,6 @@ func (s HangarDaemon) captureAgain(first HeldSource) (CaptureOutcome, error) {
 			Identity:        draft.Admission.Execution,
 			ActivationEpoch: draft.Admission.ActivationEpoch,
 			NodeUID:         hangarNodeUID,
-			PodUID:          draft.PodUID,
 			Capability:      "opaque-admission-capability",
 		})
 	if _, err := decodeControl[executioncontrol.ClassifyResult](admitted); err != nil {
@@ -498,7 +497,7 @@ func (s HangarDaemon) captureAgain(first HeldSource) (CaptureOutcome, error) {
 	draft.Reserved = reserved
 
 	answer := s.capture("hold", "/capture/v1/hold", draft.Admission.Execution,
-		holdBody(draft.Admission, reserved.Incarnation))
+		holdBody(draft.Admission, reserved.Incarnation, draft.PodUID))
 	ack, err := decodeControl[hangaroutput.CaptureAcknowledgement](answer)
 	if err != nil {
 		return CaptureOutcome{}, fmt.Errorf("holding the second source: %w", err)

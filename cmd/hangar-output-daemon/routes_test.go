@@ -158,7 +158,10 @@ func (fixture *routeFixture) reserveOverHTTP(t *testing.T,
 		t.Fatalf("decoding the reservation: %v", err)
 	}
 
-	return holdRequest{CaptureAdmission: admitted, Incarnation: reserved.Incarnation}
+	// The Pod UID is the init container's, presented at the hold and nowhere
+	// earlier: the reservation above was made before any Pod existed.
+	return holdRequest{CaptureAdmission: admitted, Incarnation: reserved.Incarnation,
+		PodUID: testPod}
 }
 
 // callAs is call for a capability minted for an execution the test names.
@@ -249,7 +252,6 @@ func TestTheRouteTableReadsBothIdentityShapesAndNoFacetCrosses(t *testing.T) {
 			Identity:        identity(1),
 			ActivationEpoch: flattened.epoch,
 			NodeUID:         testNode,
-			PodUID:          testPod,
 			Capability:      "opaque-capability",
 		}); status != http.StatusOK {
 		t.Fatalf("the admit route refused an envelope with a flat identity: %d %s", status, body)
@@ -602,7 +604,6 @@ func TestACapabilityForOneExecutionCannotActOnAnothersHandoff(t *testing.T) {
 		Identity:        b,
 		ActivationEpoch: testEpoch,
 		NodeUID:         testNode,
-		PodUID:          testPod,
 		Capability:      "opaque-capability",
 	}); err != nil {
 		t.Fatalf("admitting B: %v", err)

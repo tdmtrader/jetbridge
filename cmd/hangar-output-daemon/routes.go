@@ -373,6 +373,17 @@ func (server *Server) reserveIncarnation(_ http.ResponseWriter, request *http.Re
 type holdRequest struct {
 	output.CaptureAdmission
 	Incarnation output.SourceIncarnation `json:"incarnation"`
+
+	// PodUID is the Downward API's `metadata.uid`, read by the init container
+	// inside the Pod it is running in. It is on the HOLD and not on
+	// CaptureAdmission for the same asymmetry the incarnation is: a
+	// reservation is made before the Pod exists and cannot name one, and a
+	// hold is made from inside the Pod and is the first message that can.
+	//
+	// It is the one honest source of this value. The ATC learns the UID from
+	// the API server, which is a second-hand reading of the same fact; the
+	// container reads it from the kubelet that is running it.
+	PodUID executioncontrol.PodUID `json:"pod_uid"`
 }
 
 func (server *Server) hold(_ http.ResponseWriter, request *http.Request,
@@ -382,7 +393,8 @@ func (server *Server) hold(_ http.ResponseWriter, request *http.Request,
 		return nil, err
 	}
 
-	return server.source.AcknowledgeHold(request.Context(), held.CaptureAdmission, held.Incarnation)
+	return server.source.AcknowledgeHold(request.Context(), held.CaptureAdmission, held.Incarnation,
+		held.PodUID)
 }
 
 // holdQuery is the inspect routes' body. It names ids and nothing else, which

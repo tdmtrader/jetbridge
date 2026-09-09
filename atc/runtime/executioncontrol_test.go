@@ -55,6 +55,10 @@ func captureExtension() runtime.DurableOutputCapture {
 		// TestNoATCCodeComposesAnIncarnationName is what keeps that true.
 		ReservedIncarnation: reservedIncarnation(),
 		ReservedDirectory:   reservedIncarnation().Directory(),
+
+		// The node whose daemon issued it. A reservation is a directory on one
+		// node's disk, so the producing Pod is pinned to that node by name.
+		ReservingNode: "kube-node-a",
 	}
 }
 
@@ -242,6 +246,17 @@ func TestTheControlEnvelopeRefusesEveryMalformedShape(t *testing.T) {
 				c.Capture.ReservedDirectory = "steps/a-handle-i-chose/result"
 			},
 			says: "does not derive",
+		},
+		// A capture that cannot say which node reserved its directory. The Pod
+		// is pinned to the reserving node because the reservation is a
+		// directory on that node's disk; without the name there is nothing to
+		// pin to and the scheduler is free to place the producer on a node that
+		// reserved nothing.
+		"a capture naming no reserving node": {
+			mutate: func(c *runtime.ExecutionControl, _ *runtime.ContainerSpec) {
+				c.Capture.ReservingNode = ""
+			},
+			says: "names no reserving node",
 		},
 		"a capture with no deadline": {
 			mutate: func(c *runtime.ExecutionControl, _ *runtime.ContainerSpec) {

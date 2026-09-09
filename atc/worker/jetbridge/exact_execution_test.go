@@ -88,22 +88,42 @@ var _ = Describe("An execProcess under exact control", func() {
 			runtime.ProcessIO{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}, nil)
 	}
 
-	// hold is what the capture control init does inside the Pod. The spec plays
-	// it explicitly rather than pretending a container ran: the ATC's half is
-	// what is under test, and the hold is its precondition.
+	// captureAdmission is the same admission the reservation and the hold both
+	// carry. It names no Pod: no Pod exists when it is first sent.
+	captureAdmission := func() hangaroutput.CaptureAdmission {
+		return hangaroutput.CaptureAdmission{
+			ProtocolVersion: hangaroutput.ProtocolVersion,
+			Execution:       identity,
+			ActivationEpoch: harnessEpoch,
+			HandoffID:       handoffID,
+			SourceLeaseID:   leaseID,
+			Output:          "result",
+			CaptureDeadline: hangaroutput.NewTimestamp(time.Now().UTC().Add(time.Hour)),
+		}
+	}
+
+	// hold drives the sequence in the ONLY order a real producer has, which is
+	// the order the ledger must therefore accept:
+	//
+	//	admit (identity, fence, node -- no Pod exists yet)
+	//	  -> reserve the incarnation
+	//	    -> the API server assigns a Pod UID
+	//	      -> the control init holds, presenting THAT UID
+	//
+	// It used to admit with a Pod UID the spec invented before any Pod, which
+	// is a thing no ATC can do: `buildPod` needs the reservation, so the
+	// reservation cannot wait for the Pod. Every spec in this file goes
+	// through here, so the whole file is now driven from a real producer's
+	// point of view.
+	//
+	// The Pod UID is bound ONCE, at hold time, from the value the init
+	// container reads off the Downward API.
 	hold := func() {
-		// The control plane admits the exact execution before anything may
-		// hold. In production the ATC does this the instant the scheduler
-		// binds the Pod and the init container RETRIES until it lands; here
-		// the Pod is already Running, so the admission is made first and the
-		// ATC's own Admit inside Wait is the idempotent repeat it is meant to
-		// be.
 		_, err := harness.Client.Admit(ctx, executioncontrol.Envelope{
 			ProtocolVersion: executioncontrol.ProtocolVersion,
 			Identity:        identity,
 			ActivationEpoch: harnessEpoch,
 			NodeUID:         executioncontrol.NodeUID(harnessNodeUID),
-			PodUID:          executioncontrol.PodUID(podUID),
 			Capability:      "base-capability",
 		})
 		Expect(err).ToNot(HaveOccurred())
@@ -113,22 +133,14 @@ var _ = Describe("An execProcess under exact control", func() {
 		// output's volume, and puts it in the control init's environment. The
 		// hold then PRESENTS it, which is how the daemon knows this init
 		// container is running in the Pod the reservation was made for.
-		admission := hangaroutput.CaptureAdmission{
-			ProtocolVersion: hangaroutput.ProtocolVersion,
-			Execution:       identity,
-			ActivationEpoch: harnessEpoch,
-			HandoffID:       handoffID,
-			SourceLeaseID:   leaseID,
-			Output:          "result",
-			CaptureDeadline: hangaroutput.NewTimestamp(time.Now().UTC().Add(time.Hour)),
-		}
+		admission := captureAdmission()
 		reserved, err := harness.Client.ReserveIncarnation(ctx, admission)
 		Expect(err).ToNot(HaveOccurred())
 
 		grant, err := harness.Client.MintGrant(hangaroutput.CaptureFacet, "hold", identity)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(postHold(harness.Endpoint, string(grant), admission,
-			reserved.Incarnation)).To(Succeed())
+			reserved.Incarnation, executioncontrol.PodUID(podUID))).To(Succeed())
 	}
 
 	BeforeEach(func() {
@@ -297,6 +309,61 @@ var _ = Describe("An execProcess under exact control", func() {
 		Expect(err.Error()).To(ContainSubstring("a recreated Pod is a new incarnation"))
 		Expect(executor.count()).To(Equal(0),
 			"the producer ran in a Pod the hold does not name")
+	})
+
+	// The whole sequence, in the only order a real producer has, asserted as an
+	// order rather than as an outcome.
+	//
+	// This is the Phase 4 round-1 review's probe P2. Every fixture in the phase
+	// used to admit the execution WITH a Pod UID, which is a thing no ATC can
+	// do: `buildPod` mounts the reserved incarnation, so the reservation
+	// precedes the Pod, so the admission that authorizes the reservation
+	// precedes it too. Driven honestly, the old ledger bound the hold to an
+	// empty Pod UID and then refused the producer's own start.
+	It("admits, reserves and holds in the only order a producer has, and then admits its own producer", func() {
+		// 1. Admission. No Pod exists: nothing has been created yet, and the
+		//    envelope has no field to name one with.
+		_, err := harness.Client.Admit(ctx, executioncontrol.Envelope{
+			ProtocolVersion: executioncontrol.ProtocolVersion,
+			Identity:        identity,
+			ActivationEpoch: harnessEpoch,
+			NodeUID:         executioncontrol.NodeUID(harnessNodeUID),
+			Capability:      "base-capability",
+		})
+		Expect(err).ToNot(HaveOccurred())
+
+		// 2. The reservation, which is what the Pod will mount. It is issued
+		//    against the admission above and names no Pod either.
+		admission := captureAdmission()
+		reserved, err := harness.Client.ReserveIncarnation(ctx, admission)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(reserved.Directory).To(Equal(reserved.Incarnation.Directory()))
+
+		// 3. The Pod. In this spec it is already in the fake API server, which
+		//    is the point at which a UID first exists at all.
+		pod, err := clientset.CoreV1().Pods("test-ns").Get(ctx, "capture-pod", metav1.GetOptions{})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(pod.UID).ToNot(BeEmpty())
+
+		// 4. The control init's hold, presenting the Downward API's value.
+		grant, err := harness.Client.MintGrant(hangaroutput.CaptureFacet, "hold", identity)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(postHold(harness.Endpoint, string(grant), admission,
+			reserved.Incarnation, executioncontrol.PodUID(pod.UID))).To(Succeed())
+
+		// The hold binds THAT Pod, not the empty one an admission could offer.
+		acknowledged, err := harness.Client.InspectHold(ctx, identity, handoffID)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(acknowledged.PodUID).To(Equal(executioncontrol.PodUID(pod.UID)))
+		Expect(acknowledged.Incarnation).To(Equal(reserved.Incarnation))
+
+		// 5. And the producer the ATC admitted is the producer it now runs.
+		//    This is the line that was red: `beginExactCommand` revalidates the
+		//    hold against its own Pod UID and used to refuse itself.
+		result, err := newProcess().Wait(ctx)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(result.ExitStatus).To(Equal(0))
+		Expect(executor.count()).To(Equal(1))
 	})
 
 	It("holds a writer ticket for every writer in the pod before the command runs", func() {

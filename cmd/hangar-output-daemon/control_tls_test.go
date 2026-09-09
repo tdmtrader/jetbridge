@@ -159,7 +159,8 @@ func TestTheControlAPIRequiresAClientCertificateExceptForTheNodeLocalHold(t *tes
 		t.Fatalf("decoding the reservation: %v", err)
 	}
 	code := call(withoutCert, "/capture/v1/hold", output.CaptureFacet, "hold",
-		holdRequest{CaptureAdmission: admission(), Incarnation: reserved.Incarnation})
+		holdRequest{CaptureAdmission: admission(), Incarnation: reserved.Incarnation,
+			PodUID: testPod})
 	if code != http.StatusOK {
 		t.Errorf("the node-local capture hold answered %d without a client certificate; the "+
 			"control init holds none and cannot be given one, so this refusal would stop every "+

@@ -202,7 +202,6 @@ func TestTheCaptureExtensionCannotForkTheBaseExecution(t *testing.T) {
 		Identity:        identity,
 		ActivationEpoch: 3,
 		NodeUID:         "node-9f2b1d4c",
-		PodUID:          "3f1b2c4d-5e6f-4708-9a1b-2c3d4e5f6071",
 		Capability:      "control-capability-opaque-token",
 	}
 	admission := CaptureAdmission{

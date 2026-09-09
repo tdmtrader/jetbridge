@@ -176,6 +176,7 @@ func capturedControl(in HeldSource) (*runtime.ExecutionControl, error) {
 		CaptureDeadline:     in.Admission.CaptureDeadline.Time,
 		ReservedIncarnation: in.Reserved.Incarnation,
 		ReservedDirectory:   in.Reserved.Directory,
+		ReservingNode:       scenarioReservingNode,
 	}); err != nil {
 		return nil, err
 	}

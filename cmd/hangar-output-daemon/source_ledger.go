@@ -383,7 +383,7 @@ func (ledger *SourceLedger) admitted(handoff output.HandoffID,
 	// The fence is the BASE ledger's, read fresh. The extension does not keep a
 	// second copy of the execution's fence, because two copies is how a
 	// takeover ends up honoured on one side and not the other.
-	current, _, err := ledger.base.Admission(record.Execution.ExecutionID)
+	current, err := ledger.base.Admission(record.Execution.ExecutionID)
 	if err != nil {
 		return sourceRecord{}, err
 	}
@@ -459,7 +459,7 @@ func (ledger *SourceLedger) ReserveIncarnation(_ context.Context,
 	// A NEW reservation, and only now does base admission matter. A location
 	// set aside for an execution the control plane never admitted would be a
 	// directory nothing ever comes back for.
-	current, _, err := ledger.base.Admission(admission.Execution.ExecutionID)
+	current, err := ledger.base.Admission(admission.Execution.ExecutionID)
 	if err != nil {
 		return output.ReservedIncarnation{}, err
 	}
@@ -551,7 +551,7 @@ func conflictsWithRecord(record sourceRecord, admission output.CaptureAdmission)
 }
 
 // AcknowledgeHold establishes the pre-start, non-authorizing hold, over the
-// incarnation this daemon already reserved.
+// incarnation this daemon already reserved, and binds the Pod UID.
 //
 // The second parameter used to be ignored, on the reading that a caller
 // offering an incarnation was offering a name it chose. That reading is no
@@ -561,8 +561,19 @@ func conflictsWithRecord(record sourceRecord, admission output.CaptureAdmission)
 // answer, which is the same answer the ATC mounted into the Pod it is running
 // in. A hold that named nothing, or named something else, would be a hold over
 // bytes no producer is writing.
+//
+// The third is where the Pod UID enters this protocol, and it enters here
+// because here is the first moment it exists. Admission and reservation both
+// precede the Pod -- the ATC mounts the reservation into the Pod it has not
+// created yet -- so neither can bind one; the capture control init reads
+// `metadata.uid` off the Downward API inside the Pod and presents it. It is
+// bound ONCE: the first hold writes it into the durable statement and a later
+// hold on the same handoff must present the same one. A different UID at the
+// same fence is a typed conflict rather than a rebinding, because a replaced
+// Pod is a new incarnation that may not inherit a hold over bytes the previous
+// one was writing.
 func (ledger *SourceLedger) AcknowledgeHold(_ context.Context, admission output.CaptureAdmission,
-	offered output.SourceIncarnation) (output.CaptureAcknowledgement, error) {
+	offered output.SourceIncarnation, pod executioncontrol.PodUID) (output.CaptureAcknowledgement, error) {
 	if err := admission.Validate(); err != nil {
 		return output.CaptureAcknowledgement{}, err
 	}
@@ -570,6 +581,28 @@ func (ledger *SourceLedger) AcknowledgeHold(_ context.Context, admission output.
 		return output.CaptureAcknowledgement{}, fmt.Errorf(
 			"%w: the admission names epoch %d and this node is attested for %d",
 			output.ErrConflict, admission.ActivationEpoch, ledger.epoch)
+	}
+	// A hold with no Pod is refused rather than recorded empty. An empty UID
+	// compares equal to the next empty one, so a hold that skipped this would
+	// bind nothing and then admit every later Pod as "the same" -- which is the
+	// precise shape of the defect this parameter exists to close.
+	if pod == "" {
+		return output.CaptureAcknowledgement{}, fmt.Errorf(
+			"%w: the hold names no pod. The capture control init reads metadata.uid from the "+
+				"Downward API and presents it; a hold that carries none is not running in a Pod "+
+				"this daemon can bind a writer to", output.ErrIncomplete)
+	}
+	// The reserving node has the last word on where a hold may be taken. The
+	// reservation is a directory on ONE node's disk, so a Pod that the
+	// scheduler placed elsewhere reaches its own node's daemon, which reserved
+	// nothing -- and `DirectoryOrCreate` would have made it an empty unheld
+	// directory. This is the typed refusal for it, ahead of the record lookup
+	// so the answer names the real problem rather than "no such handoff".
+	if offered.NodeUID != "" && offered.NodeUID != ledger.node {
+		return output.CaptureAcknowledgement{}, fmt.Errorf(
+			"%w: the hold names an incarnation reserved on node %s and this daemon is node %s. "+
+				"A reservation is a directory on the reserving node's disk; a producer scheduled "+
+				"elsewhere holds nothing", output.ErrUnauthorized, offered.NodeUID, ledger.node)
 	}
 
 	ledger.mu.Lock()
@@ -611,6 +644,18 @@ func (ledger *SourceLedger) AcknowledgeHold(_ context.Context, admission output.
 	}
 
 	if record.Hold != nil {
+		// Bound once. The stored statement names the Pod this hold is for, and
+		// a second hold naming a different one is a REPLACEMENT Pod reaching
+		// for a hold it did not take -- the same fence, the same handoff, a new
+		// incarnation. Phase 4 already treats that as takeover-by-replacement
+		// and refuses it; saying so here is what keeps the ATC's own arm
+		// (`hold.PodUID != p.exact.podUID`) from being the only door.
+		if record.Hold.PodUID != pod {
+			return output.CaptureAcknowledgement{}, fmt.Errorf(
+				"%w: handoff %s holds its source for pod %s and this hold names %s. A recreated "+
+					"Pod is a new incarnation and does not inherit the hold",
+				output.ErrConflict, admission.HandoffID, record.Hold.PodUID, pod)
+		}
 		// The gate, before the statement. A hold is two durable writes -- the
 		// record and the cleanup gate -- and a crash between them leaves a
 		// held record with nothing withholding cleanup. So every replay
@@ -628,10 +673,10 @@ func (ledger *SourceLedger) AcknowledgeHold(_ context.Context, admission output.
 	// A NEW hold over the reserved incarnation, and only now does base
 	// admission matter. A hold over an execution the control plane never
 	// admitted would be a capture with no exact truth behind it, which is the
-	// whole thing the base protocol is for. The Pod UID comes from the base
-	// admission, which is why this cannot run before the Pod exists and why the
-	// incarnation cannot be minted here.
-	current, pod, err := ledger.base.Admission(admission.Execution.ExecutionID)
+	// whole thing the base protocol is for. The base admission is asked for the
+	// FENCE and nothing else: it has no Pod to give, because it was made before
+	// the Pod existed.
+	current, err := ledger.base.Admission(admission.Execution.ExecutionID)
 	if err != nil {
 		return output.CaptureAcknowledgement{}, err
 	}
@@ -859,6 +904,15 @@ func (ledger *SourceLedger) admittedWriter(admission output.WriterAdmission) (so
 	// would then be in the drain set, accounted for, and completely misleading.
 	if _, err := ledger.ResolveIncarnation(record.Incarnation); err != nil {
 		return sourceRecord{}, err
+	}
+	// And the Pod the HOLD bound. Every later operation on a hold presents the
+	// Pod UID the hold was taken for; a writer ticket is the write-capable one,
+	// so this is where a Pod that never held anything is turned away rather
+	// than issued a ticket that a seal would then have to drain.
+	if record.Hold != nil && admission.PodUID != record.Hold.PodUID {
+		return sourceRecord{}, fmt.Errorf(
+			"%w: handoff %s holds its source for pod %s and this writer admission names %s",
+			output.ErrConflict, admission.HandoffID, record.Hold.PodUID, admission.PodUID)
 	}
 
 	return record, nil

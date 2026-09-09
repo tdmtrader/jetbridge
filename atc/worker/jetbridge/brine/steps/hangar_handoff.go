@@ -104,7 +104,7 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 				in.Reserved = reserved
 
 				answer := in.Daemon.capture("hold", "/capture/v1/hold",
-					in.Admission.Execution, holdBody(in.Admission, reserved.Incarnation))
+					in.Admission.Execution, holdBody(in.Admission, reserved.Incarnation, in.PodUID))
 				ack, err := decodeControl[hangaroutput.CaptureAcknowledgement](answer)
 				if err != nil {
 					return HeldSource{}, fmt.Errorf("establishing the hold: %w", err)
@@ -138,7 +138,7 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 			"the same hold is repeated with the same identity",
 			func(in HeldSource, _ brine.Params, _ *brine.Recorder) (HeldSource, error) {
 				answer := in.Draft.Daemon.capture("hold", "/capture/v1/hold",
-					in.Execution, holdBody(in.Admission, in.Incarnation))
+					in.Execution, holdBody(in.Admission, in.Incarnation, in.PodUID))
 				repeated, err := decodeControl[hangaroutput.CaptureAcknowledgement](answer)
 				if err == nil {
 					in.Repeated = repeated
@@ -158,7 +158,7 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 				different.Execution.Fence++
 
 				return in.answered(in.Draft.Daemon.capture("hold", "/capture/v1/hold",
-					different.Execution, holdBody(different, in.Incarnation))), nil
+					different.Execution, holdBody(different, in.Incarnation, in.PodUID))), nil
 			},
 		),
 
@@ -185,7 +185,6 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 						Identity:        taken,
 						ActivationEpoch: in.Admission.ActivationEpoch,
 						NodeUID:         hangarNodeUID,
-						PodUID:          in.PodUID,
 						Capability:      "opaque-takeover-capability",
 					})
 				if _, err := decodeControl[executioncontrol.ClassifyResult](answer); err != nil {
@@ -264,7 +263,7 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 				case "hold":
 					return in.answered(in.Draft.Daemon.control(executioncontrol.BaseFacet,
 						"hold", "/capture/v1/hold", in.Execution,
-						holdBody(in.Admission, in.Incarnation))), nil
+						holdBody(in.Admission, in.Incarnation, in.PodUID))), nil
 				case "seal":
 					return in.answered(in.Draft.Daemon.control(executioncontrol.BaseFacet,
 						"begin-seal", "/capture/v1/seal", in.Execution, in.sealRequest())), nil
@@ -602,13 +601,20 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 }
 
 // holdBody is the capture control init's request: the admission the
-// reservation was made for, plus the incarnation the daemon answered with.
+// reservation was made for, the incarnation the daemon answered with, and the
+// Pod UID the container read off the Downward API.
 //
 // The incarnation is not a path and not a choice. It is four server-issued
 // identity fields, and presenting them is how an init container proves it is
 // running in the Pod the reservation was made for.
+//
+// The Pod UID is here and not on the admission because the admission and the
+// reservation both happen before the Pod exists. This is the first message in
+// the protocol sent from INSIDE the Pod, so it is the first one that can name
+// it, and the daemon binds it once.
 func holdBody(admission hangaroutput.CaptureAdmission,
-	incarnation hangaroutput.SourceIncarnation) map[string]any {
+	incarnation hangaroutput.SourceIncarnation,
+	pod executioncontrol.PodUID) map[string]any {
 	return map[string]any{
 		"protocol_version":    admission.ProtocolVersion,
 		"execution":           admission.Execution,
@@ -618,6 +624,7 @@ func holdBody(admission hangaroutput.CaptureAdmission,
 		"output":              admission.Output,
 		"capture_deadline_at": admission.CaptureDeadline,
 		"incarnation":         incarnation,
+		"pod_uid":             pod,
 	}
 }
 

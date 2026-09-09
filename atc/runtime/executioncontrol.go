@@ -141,6 +141,24 @@ type DurableOutputCapture struct {
 	// starts to. Req 7 holds because the daemon names the path.
 	ReservedIncarnation hangaroutput.SourceIncarnation
 	ReservedDirectory   string
+
+	// ReservingNode is the Kubernetes node whose daemon issued that
+	// reservation, and it is here so the producing Pod can be pinned to it.
+	//
+	// A reservation is a directory on ONE node's disk. The ready labels pick a
+	// COHORT -- nodes where a hold could be acknowledged at all -- and a cohort
+	// is not a node: a multi-node cohort lets the scheduler place the producer
+	// somewhere that reserved nothing, where the hostPath mount silently
+	// creates an empty unheld directory and the control init's hold is refused.
+	// That is a fail-closed outage rather than an exposure, and it is still an
+	// outage, so `BuildAffinity` requires this node by name.
+	//
+	// It is the node NAME rather than the UID because a scheduling constraint
+	// is expressed against `kubernetes.io/hostname`, which is the name. The
+	// UID travels beside it inside ReservedIncarnation, and the daemon checks
+	// that one: a hold naming an incarnation reserved on another node is
+	// refused by the node that receives it.
+	ReservingNode string
 }
 
 // SelectCapture attaches the extension, and is the only way to attach it.
@@ -312,6 +330,12 @@ func (control *ExecutionControl) validateCapture(spec ContainerSpec) error {
 	if string(capture.ReservedIncarnation.Output) != capture.Output {
 		return fmt.Errorf("%w: the reserved incarnation is for output %q and this capture selects "+
 			"%q", ErrInvalidExecutionControl, capture.ReservedIncarnation.Output, capture.Output)
+	}
+	if capture.ReservingNode == "" {
+		return fmt.Errorf("%w: this capture names no reserving node. The reservation is a "+
+			"directory on one node's disk and the producing Pod is pinned to that node; a "+
+			"capture that cannot say which node it reserved on cannot be scheduled safely",
+			ErrInvalidExecutionControl)
 	}
 	// The directory the pod builder will mount must be the daemon's own answer.
 	// A directory that does not derive from the incarnation beside it is the

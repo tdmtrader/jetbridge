@@ -548,7 +548,13 @@ func (intent ReleaseIntent) Validate() error {
 type SourceControl interface {
 	// AcknowledgeHold durably records the pre-start, non-authorizing hold. The
 	// producer's main process may not start before it returns.
-	AcknowledgeHold(ctx context.Context, admission CaptureAdmission, incarnation SourceIncarnation) (CaptureAcknowledgement, error)
+	//
+	// The pod is the Downward API's `metadata.uid`, presented by the capture
+	// control init from inside the Pod. It is bound once and every later
+	// operation on this hold presents the same one -- admission and reservation
+	// both precede the Pod and therefore bind identity, fence and node only.
+	AcknowledgeHold(ctx context.Context, admission CaptureAdmission, incarnation SourceIncarnation,
+		pod executioncontrol.PodUID) (CaptureAcknowledgement, error)
 
 	// AdmitWriter issues a ticket, or refuses because sealing won the race.
 	// Issuance and the open-to-sealing transition serialize on one durable

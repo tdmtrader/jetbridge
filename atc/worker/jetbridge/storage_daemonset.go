@@ -717,6 +717,21 @@ func (b *DaemonSetBackend) BuildAffinity(inputs []runtime.Input, control *runtim
 				Values:   []string{"ready"},
 			})
 		}
+		// And the reserving node itself, by name.
+		//
+		// The two labels above pick a COHORT: nodes whose daemons are up and
+		// attested, which is where a hold could be acknowledged at all. The
+		// reservation is narrower than that -- it is a directory on one node's
+		// disk, made before this Pod existed -- so a cohort-wide placement lets
+		// the scheduler land the producer on a node that reserved nothing,
+		// where the hostPath's DirectoryOrCreate makes an empty unheld
+		// directory and the control init's hold is refused. Requiring the node
+		// is what turns that outage into a pending Pod.
+		requiredExpressions = append(requiredExpressions, corev1.NodeSelectorRequirement{
+			Key:      corev1.LabelHostname,
+			Operator: corev1.NodeSelectorOpIn,
+			Values:   []string{control.Capture.ReservingNode},
+		})
 	}
 	affinity := &corev1.Affinity{
 		NodeAffinity: &corev1.NodeAffinity{

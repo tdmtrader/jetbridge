@@ -63,6 +63,10 @@ func capturingContainer(t *testing.T, cfg Config, reused bool, control *runtime.
 	}
 }
 
+// testReservingNode is the Kubernetes node whose daemon issued the reservation
+// below. It is the node NAME; testReservedIncarnation carries that node's UID.
+const testReservingNode = "kube-node-a"
+
 // testReservedIncarnation is what `reserve-incarnation` answered for this
 // execution, as it would come off the wire.
 func testReservedIncarnation() hangaroutput.SourceIncarnation {
@@ -98,6 +102,10 @@ func admittedCapture() *runtime.ExecutionControl {
 		// choose one.
 		ReservedIncarnation: testReservedIncarnation(),
 		ReservedDirectory:   testReservedIncarnation().Directory(),
+
+		// The node whose daemon answered. A reservation is a directory on that
+		// node's disk, so the producing Pod is pinned to it.
+		ReservingNode: testReservingNode,
 	})
 	// The envelope needs an endpoint to validate; the control init falls back
 	// to the Downward API host IP when it is empty, which is the deployed
@@ -578,5 +586,59 @@ func TestEveryContainerTheWorkerBuildsCarriesTheLedgerClassifier(t *testing.T) {
 		nil, false, false)
 	if none.captureClass != nil {
 		t.Error("a worker with no storage backend was given a ledger classifier")
+	}
+}
+
+// The capture pod is pinned to the node whose daemon reserved its incarnation.
+//
+// The two ready labels above pick a COHORT -- nodes where a hold could be
+// acknowledged at all -- and the Phase 4 round-1 review's point is that a
+// cohort is not a node. The reservation is a directory on one node's disk, made
+// before this Pod existed; a producer the scheduler placed anywhere else in the
+// cohort would mount an empty unheld directory (`DirectoryOrCreate` makes one)
+// and its control init's hold would be refused by a daemon that reserved
+// nothing. Requiring the node turns that outage into a Pod that stays Pending.
+//
+// The ordinary pod is the control and it is asserted first: it is pinned to
+// nothing, because an ordinary step may run anywhere its inputs allow.
+func TestACaptureSelectedPodIsPinnedToTheReservingNodeAndAnOrdinaryOneIsNot(t *testing.T) {
+	hostnameValues := func(pod *corev1.Pod) []string {
+		affinity := pod.Spec.Affinity
+		if affinity == nil || affinity.NodeAffinity == nil ||
+			affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
+			return nil
+		}
+		var values []string
+		for _, term := range affinity.NodeAffinity.
+			RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms {
+			for _, expr := range term.MatchExpressions {
+				if expr.Key == corev1.LabelHostname {
+					values = append(values, expr.Values...)
+				}
+			}
+		}
+
+		return values
+	}
+
+	ordinary, err := capturingContainer(t, capturePodConfig(true), false, nil).
+		buildPod(runtime.ProcessSpec{Path: "/bin/sh"}, []string{"sh"}, nil)
+	if err != nil {
+		t.Fatalf("building the ordinary pod: %v", err)
+	}
+	if pinned := hostnameValues(ordinary); len(pinned) != 0 {
+		t.Errorf("an ordinary pod was pinned to %v; a step with no reservation may run anywhere",
+			pinned)
+	}
+
+	capture, err := capturingContainer(t, capturePodConfig(true), false, admittedCapture()).
+		buildPod(runtime.ProcessSpec{Path: "/bin/sh"}, []string{"sh"}, nil)
+	if err != nil {
+		t.Fatalf("building the capture pod: %v", err)
+	}
+	pinned := hostnameValues(capture)
+	if len(pinned) != 1 || pinned[0] != testReservingNode {
+		t.Errorf("the capture pod is pinned to %v and its reservation was issued by %s",
+			pinned, testReservingNode)
 	}
 }

@@ -234,7 +234,8 @@ func TestConfirmingASealRequiresTheCapturedDrainSet(t *testing.T) {
 // compile against a single blocking Seal.
 type twoHalvedSourceControl struct{}
 
-func (twoHalvedSourceControl) AcknowledgeHold(context.Context, CaptureAdmission, SourceIncarnation) (CaptureAcknowledgement, error) {
+func (twoHalvedSourceControl) AcknowledgeHold(context.Context, CaptureAdmission, SourceIncarnation,
+	executioncontrol.PodUID) (CaptureAcknowledgement, error) {
 	panic("not implemented")
 }
 

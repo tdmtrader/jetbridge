@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/concourse/concourse/hangar/executioncontrol"
 	hangaroutput "github.com/concourse/concourse/hangar/output"
 )
 
@@ -16,14 +17,16 @@ import (
 // presents its own one-shot grant on a node-local plaintext path, and a fixture
 // that used the ATC's client would be asserting the ATC twice.
 // postHold is the capture control init's request, spelled as it is spelled in
-// the generated script: the admission, plus the incarnation the control plane
-// reserved and put in this container's environment.
+// the generated script: the admission, the incarnation the control plane
+// reserved and put in this container's environment, and the Pod UID the
+// container reads off the Downward API.
 func postHold(endpoint, grant string, admission hangaroutput.CaptureAdmission,
-	incarnation hangaroutput.SourceIncarnation) error {
+	incarnation hangaroutput.SourceIncarnation, pod executioncontrol.PodUID) error {
 	body, err := json.Marshal(struct {
 		hangaroutput.CaptureAdmission
 		Incarnation hangaroutput.SourceIncarnation `json:"incarnation"`
-	}{CaptureAdmission: admission, Incarnation: incarnation})
+		PodUID      executioncontrol.PodUID        `json:"pod_uid"`
+	}{CaptureAdmission: admission, Incarnation: incarnation, PodUID: pod})
 	if err != nil {
 		return err
 	}

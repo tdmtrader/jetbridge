@@ -130,12 +130,16 @@ func (p *execProcess) admitExactExecution(ctx context.Context) error {
 		return fmt.Errorf("reading the UID of node %s: %w", pod.Spec.NodeName, err)
 	}
 
+	// The envelope names no Pod, and the ATC could not honestly put one here
+	// even though it happens to have read one: an admission is what a location
+	// is reserved against, and the reservation precedes the Pod by
+	// construction. The Pod UID this process holds below is for the START
+	// record and for comparing against the hold the init container took.
 	envelope := executioncontrol.Envelope{
 		ProtocolVersion: executioncontrol.ProtocolVersion,
 		Identity:        p.control.Identity,
 		ActivationEpoch: p.control.ActivationEpoch,
 		NodeUID:         executioncontrol.NodeUID(node.UID),
-		PodUID:          executioncontrol.PodUID(pod.UID),
 		Capability:      p.control.Capability,
 	}
 	if _, err := client.Admit(ctx, envelope); err != nil {
