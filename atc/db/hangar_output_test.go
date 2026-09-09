@@ -266,6 +266,23 @@ var _ = Describe("the Hangar output lock suffix", func() {
 		})
 	}
 
+	// A second generation of one correlation, recorded the way inventory
+	// records a marked orphan it found in the deployment's own bucket.
+	adopt := func(ref hangar.TreeRef) error {
+		GinkgoHelper()
+
+		tx, err := dbConn.Begin()
+		if err != nil {
+			return err
+		}
+		defer db.Rollback(tx)
+		if err := repository.AdoptManagedOrphan(ctx, tx, ref, 1, 1); err != nil {
+			return err
+		}
+
+		return tx.Commit()
+	}
+
 	countActiveClaims := func(ref hangar.TreeRef) int {
 		GinkgoHelper()
 		var count int
@@ -789,35 +806,61 @@ var _ = Describe("the Hangar output lock suffix", func() {
 	// AC 11's two clauses that inverting which actor arrives first does not
 	// cover.
 	Describe("AC 11", func() {
-		It("takes one lock order for two transactions handed the same batch reversed", func() {
+		// The property is the *input* order, and it is proved by making the
+		// helper block: a holder takes the key that sorts second, the helper is
+		// handed the batch reversed, and a third connection asks with NOWAIT
+		// whether the key that sorts first is held. A helper that locked in the
+		// order it was given would have blocked on the second key immediately
+		// and never reached the first, so the NOWAIT probe would succeed.
+		//
+		// The earlier version of this ran two concurrent transactions and
+		// asserted neither deadlocked. It could not fail: two goroutines do not
+		// interleave at statement granularity often enough to make an unsorted
+		// helper deadlock, so the spec passed with sorting removed.
+		blockedProbe := func(query string, args ...any) func() error {
+			return func() error {
+				probe, err := dbConn.Begin()
+				if err != nil {
+					return err
+				}
+				defer db.Rollback(probe)
+				_, err = probe.Exec(query, args...)
+
+				return err
+			}
+		}
+
+		It("locks logical rows in sorted order when the batch arrives reversed", func() {
 			activate()
-			_, first := publish(hangarDigest(9), 1725830823000009)
-			_, second := publish(hangarDigest(10), 1725830823000010)
+			dbConn.SetMaxOpenConns(4)
 
-			forward := db.HangarLockRequest{
-				Logical: []db.HangarLogicalKey{
-					{Scope: first.Scope, Digest: first.Digest},
-					{Scope: second.Scope, Digest: second.Digest},
-				},
-				Exact: []hangar.TreeRef{first, second},
-			}
-			reversed := db.HangarLockRequest{
-				Logical: []db.HangarLogicalKey{
-					{Scope: second.Scope, Digest: second.Digest},
-					// The duplicate is deliberate: a batch that names one
-					// correlation twice must lock it once.
-					{Scope: second.Scope, Digest: second.Digest},
-					{Scope: first.Scope, Digest: first.Digest},
-				},
-				Exact: []hangar.TreeRef{second, first, second},
+			_, a := publish(hangarDigest(9), 1725830823000009)
+			_, b := publish(hangarDigest(10), 1725830823000010)
+			low, high := a, b
+			if string(b.Digest) < string(a.Digest) {
+				low, high = b, a
 			}
 
-			// Inverting which actor arrives first is a different property.
-			// This one is about the *input* order: both transactions are open
-			// at once, and both must complete, which they can only do if the
-			// helper sorted before locking.
-			done := make(chan error, 2)
-			run := func(request db.HangarLockRequest) {
+			const lockLogical = `
+				SELECT 1 FROM hangar_logical_reservations
+				WHERE scope = $1 AND digest = $2
+				FOR NO KEY UPDATE`
+			probeFirst := blockedProbe(lockLogical+" NOWAIT", string(low.Scope), string(low.Digest))
+
+			// Nobody holds the key that sorts first, yet. Without this the probe
+			// below could be failing for a reason that has nothing to do with
+			// the helper.
+			Expect(probeFirst()).To(Succeed())
+
+			holder, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(holder)
+			_, err = holder.Exec(lockLogical, string(high.Scope), string(high.Digest))
+			Expect(err).NotTo(HaveOccurred())
+
+			done := make(chan error, 1)
+			locked := make(chan db.HangarLocks, 1)
+			go func() {
 				defer GinkgoRecover()
 				tx, err := dbConn.Begin()
 				if err != nil {
@@ -826,24 +869,109 @@ var _ = Describe("the Hangar output lock suffix", func() {
 					return
 				}
 				defer db.Rollback(tx)
-				if _, err := db.LockHangarSuffix(ctx, tx, consumer, request); err != nil {
+				locks, err := db.LockHangarSuffix(ctx, tx, consumer, db.HangarLockRequest{
+					Logical: []db.HangarLogicalKey{
+						{Scope: high.Scope, Digest: high.Digest},
+						// The duplicate is deliberate: a batch that names one
+						// correlation twice must lock it once.
+						{Scope: high.Scope, Digest: high.Digest},
+						{Scope: low.Scope, Digest: low.Digest},
+					},
+				})
+				if err != nil {
 					done <- err
 
 					return
 				}
-				time.Sleep(100 * time.Millisecond)
-				done <- tx.Commit()
-			}
+				locked <- locks
+				done <- nil
+			}()
 
-			go run(forward)
-			go run(reversed)
+			Eventually(probeFirst, 10*time.Second, 50*time.Millisecond).Should(
+				MatchError(ContainSubstring("55P03")),
+				"the key that sorts first was never locked while the helper blocked on the key "+
+					"that sorts second, so the helper took the batch in the order it was handed")
 
-			for range 2 {
-				var err error
-				Eventually(done, 10*time.Second).Should(Receive(&err))
-				Expect(err).NotTo(HaveOccurred(),
-					"the helper deadlocked, which means it did not sort before locking")
-			}
+			Expect(holder.Rollback()).To(Succeed())
+
+			var completed error
+			Eventually(done, 10*time.Second).Should(Receive(&completed))
+			Expect(completed).NotTo(HaveOccurred())
+
+			var locks db.HangarLocks
+			Expect(locked).To(Receive(&locks))
+			Expect(locks.Logical).To(HaveLen(2), "the duplicated correlation was locked twice")
+		})
+
+		It("locks exact rows in sorted order when the batch arrives reversed", func() {
+			activate()
+			dbConn.SetMaxOpenConns(4)
+
+			// One correlation, two generations, so the class-2 order is decided
+			// by generation and compared numerically: "9" sorts after "10" as
+			// bytes, and a lock order that depends on how a number was spelled is
+			// not an order.
+			digest := hangarDigest(14)
+			_, a := publish(digest, 9)
+			second := hangar.TreeRef{Scope: a.Scope, Digest: digest, Generation: 10}
+			Expect(adopt(second)).To(Succeed())
+
+			low, high := a, second
+
+			const lockExact = `
+				SELECT id FROM hangar_exact_lifecycles
+				WHERE scope = $1 AND digest = $2 AND generation = $3
+				FOR NO KEY UPDATE`
+			probeFirst := blockedProbe(lockExact+" NOWAIT",
+				string(low.Scope), string(low.Digest), low.Generation)
+
+			Expect(probeFirst()).To(Succeed())
+
+			holder, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(holder)
+			_, err = holder.Exec(lockExact,
+				string(high.Scope), string(high.Digest), high.Generation)
+			Expect(err).NotTo(HaveOccurred())
+
+			done := make(chan error, 1)
+			locked := make(chan db.HangarLocks, 1)
+			go func() {
+				defer GinkgoRecover()
+				tx, err := dbConn.Begin()
+				if err != nil {
+					done <- err
+
+					return
+				}
+				defer db.Rollback(tx)
+				locks, err := db.LockHangarSuffix(ctx, tx, consumer, db.HangarLockRequest{
+					Exact: []hangar.TreeRef{high, low, high},
+				})
+				if err != nil {
+					done <- err
+
+					return
+				}
+				locked <- locks
+				done <- nil
+			}()
+
+			Eventually(probeFirst, 10*time.Second, 50*time.Millisecond).Should(
+				MatchError(ContainSubstring("55P03")),
+				"generation 9 was never locked while the helper blocked on generation 10, so the "+
+					"helper took the batch in the order it was handed")
+
+			Expect(holder.Rollback()).To(Succeed())
+
+			var completed error
+			Eventually(done, 10*time.Second).Should(Receive(&completed))
+			Expect(completed).NotTo(HaveOccurred())
+
+			var locks db.HangarLocks
+			Expect(locked).To(Receive(&locks))
+			Expect(locks.Exact).To(HaveLen(2), "the duplicated exact ref was locked twice")
+			Expect(locks.Lifecycles).To(HaveLen(2))
 		})
 
 		It("acquires no lock on a consumer's own tables and inverts none it holds", func() {
