@@ -187,6 +187,19 @@ var protocolFixtures = map[string]func(*testing.T, []byte){
 		roundTrip[ExtensionHandshake](t, raw)
 	},
 
+	// The empty object is the whole shape: every field of a
+	// CallerNamespaceRequest is a namespace a caller tried to choose, so the
+	// only request this plane serves is the one that names none of them. The
+	// type carries json tags precisely so that a hostile body decodes into
+	// something that can be refused with a message, rather than into fields
+	// that are silently dropped.
+	"caller-namespace-request.json": func(t *testing.T, raw []byte) {
+		roundTrip[CallerNamespaceRequest](t, raw)
+	},
+	"refusal-caller-chosen-namespace.json": func(t *testing.T, raw []byte) {
+		refuse[CallerNamespaceRequest](t, raw)
+	},
+
 	"dispositions.json":                  assertClosedDispositions,
 	"capture-acknowledgement-kinds.json": assertClosedCaptureAcknowledgementKinds,
 	"no-capture-reasons.json":            assertClosedNoCaptureReasons,

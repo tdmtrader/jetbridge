@@ -1,4 +1,4 @@
-package output_test
+package output
 
 import (
 	"errors"
@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/hangar"
-	"github.com/concourse/concourse/hangar/output"
 )
 
 // fixedInstant is the one clock reading these tables use. Nothing here is about
@@ -20,9 +19,9 @@ var fixedInstant = time.Date(2026, 9, 9, 4, 5, 6, 123456789, time.UTC)
 // inputs may reach the bucket, the prefix and the scope, so the test that
 // proves it has to enumerate the inputs that must not.
 
-func validNamespaceConfig() output.NamespaceConfig {
-	return output.NamespaceConfig{
-		Store:             output.StoreGCS,
+func validNamespaceConfig() NamespaceConfig {
+	return NamespaceConfig{
+		Store:             StoreGCS,
 		Bucket:            "deployment-output",
 		DeploymentPrefix:  "deployments/blue",
 		TenantID:          "tenant-a",
@@ -36,7 +35,7 @@ func TestDeriveNamespaceRefusesEveryConfigurationRequirement20Forbids(t *testing
 	// The positive control, first: the valid configuration derives. Without
 	// it, every refusal below would also pass on a function that refused
 	// everything.
-	namespace, err := output.DeriveNamespace(validNamespaceConfig())
+	namespace, err := DeriveNamespace(validNamespaceConfig())
 	if err != nil {
 		t.Fatalf("the valid configuration did not derive: %v", err)
 	}
@@ -45,75 +44,75 @@ func TestDeriveNamespaceRefusesEveryConfigurationRequirement20Forbids(t *testing
 	}
 
 	for name, testCase := range map[string]struct {
-		mutate   func(*output.NamespaceConfig)
+		mutate   func(*NamespaceConfig)
 		sentinel error
 		says     string
 	}{
 		"the cache bucket": {
-			mutate:   func(c *output.NamespaceConfig) { c.Bucket = c.CacheBucket },
-			sentinel: output.ErrConflict,
+			mutate:   func(c *NamespaceConfig) { c.Bucket = c.CacheBucket },
+			sentinel: ErrConflict,
 			says:     "durable cache bucket",
 		},
 		"the strict-input bucket": {
-			mutate:   func(c *output.NamespaceConfig) { c.Bucket = c.StrictInputBucket },
-			sentinel: output.ErrConflict,
+			mutate:   func(c *NamespaceConfig) { c.Bucket = c.StrictInputBucket },
+			sentinel: ErrConflict,
 			says:     "strict-input bucket",
 		},
 		"a shared bucket with prefix-only isolation": {
-			mutate:   func(c *output.NamespaceConfig) { c.SharedBucketPrefixOnlyIsolation = true },
-			sentinel: output.ErrUnauthorized,
+			mutate:   func(c *NamespaceConfig) { c.SharedBucketPrefixOnlyIsolation = true },
+			sentinel: ErrUnauthorized,
 			says:     "not an activation-compatible substitute",
 		},
 		"a store that is not native GCS": {
-			mutate:   func(c *output.NamespaceConfig) { c.Store = "filesystem" },
-			sentinel: output.ErrUnsupportedProtocol,
+			mutate:   func(c *NamespaceConfig) { c.Store = "filesystem" },
+			sentinel: ErrUnsupportedProtocol,
 			says:     "strict native-GCS profile",
 		},
 		"an S3-compatible store": {
-			mutate:   func(c *output.NamespaceConfig) { c.Store = "s3" },
-			sentinel: output.ErrUnsupportedProtocol,
+			mutate:   func(c *NamespaceConfig) { c.Store = "s3" },
+			sentinel: ErrUnsupportedProtocol,
 			says:     "strict native-GCS profile",
 		},
 		"an absolute prefix": {
-			mutate:   func(c *output.NamespaceConfig) { c.DeploymentPrefix = "/deployments/blue" },
-			sentinel: output.ErrIncomplete,
+			mutate:   func(c *NamespaceConfig) { c.DeploymentPrefix = "/deployments/blue" },
+			sentinel: ErrIncomplete,
 			says:     "prefix",
 		},
 		"a prefix that climbs": {
-			mutate:   func(c *output.NamespaceConfig) { c.DeploymentPrefix = "deployments/../../etc" },
-			sentinel: output.ErrIncomplete,
+			mutate:   func(c *NamespaceConfig) { c.DeploymentPrefix = "deployments/../../etc" },
+			sentinel: ErrIncomplete,
 			says:     "prefix",
 		},
 		"a prefix with a backslash": {
-			mutate:   func(c *output.NamespaceConfig) { c.DeploymentPrefix = `deployments\blue` },
-			sentinel: output.ErrIncomplete,
+			mutate:   func(c *NamespaceConfig) { c.DeploymentPrefix = `deployments\blue` },
+			sentinel: ErrIncomplete,
 			says:     "prefix",
 		},
 		"a prefix with an uppercase segment": {
-			mutate:   func(c *output.NamespaceConfig) { c.DeploymentPrefix = "Deployments/blue" },
-			sentinel: output.ErrIncomplete,
+			mutate:   func(c *NamespaceConfig) { c.DeploymentPrefix = "Deployments/blue" },
+			sentinel: ErrIncomplete,
 			says:     "prefix",
 		},
 		"no bucket at all": {
-			mutate:   func(c *output.NamespaceConfig) { c.Bucket = "  " },
-			sentinel: output.ErrIncomplete,
+			mutate:   func(c *NamespaceConfig) { c.Bucket = "  " },
+			sentinel: ErrIncomplete,
 			says:     "no output bucket",
 		},
 		"no authenticated tenant": {
-			mutate:   func(c *output.NamespaceConfig) { c.TenantID = "" },
-			sentinel: output.ErrIncomplete,
+			mutate:   func(c *NamespaceConfig) { c.TenantID = "" },
+			sentinel: ErrIncomplete,
 			says:     "opaque scope has nothing to be derived from",
 		},
 		"no active epoch": {
-			mutate:   func(c *output.NamespaceConfig) { c.ActivationEpoch = 0 },
-			sentinel: output.ErrIncomplete,
+			mutate:   func(c *NamespaceConfig) { c.ActivationEpoch = 0 },
+			sentinel: ErrIncomplete,
 			says:     "activation epoch",
 		},
 	} {
 		config := validNamespaceConfig()
 		testCase.mutate(&config)
 
-		derived, err := output.DeriveNamespace(config)
+		derived, err := DeriveNamespace(config)
 		if err == nil {
 			t.Errorf("%s derived the namespace %q/%q instead of being refused",
 				name, derived.Bucket(), derived.Scope())
@@ -133,11 +132,11 @@ func TestDeriveNamespaceRefusesEveryConfigurationRequirement20Forbids(t *testing
 }
 
 func TestTheDerivedNamespaceIsStableOpaqueAndPerTenantPerEpoch(t *testing.T) {
-	first, err := output.DeriveNamespace(validNamespaceConfig())
+	first, err := DeriveNamespace(validNamespaceConfig())
 	if err != nil {
 		t.Fatalf("deriving: %v", err)
 	}
-	again, err := output.DeriveNamespace(validNamespaceConfig())
+	again, err := DeriveNamespace(validNamespaceConfig())
 	if err != nil {
 		t.Fatalf("deriving again: %v", err)
 	}
@@ -151,7 +150,7 @@ func TestTheDerivedNamespaceIsStableOpaqueAndPerTenantPerEpoch(t *testing.T) {
 
 	otherTenant := validNamespaceConfig()
 	otherTenant.TenantID = "tenant-b"
-	other, err := output.DeriveNamespace(otherTenant)
+	other, err := DeriveNamespace(otherTenant)
 	if err != nil {
 		t.Fatalf("deriving for another tenant: %v", err)
 	}
@@ -162,7 +161,7 @@ func TestTheDerivedNamespaceIsStableOpaqueAndPerTenantPerEpoch(t *testing.T) {
 
 	nextEpoch := validNamespaceConfig()
 	nextEpoch.ActivationEpoch = 8
-	rotated, err := output.DeriveNamespace(nextEpoch)
+	rotated, err := DeriveNamespace(nextEpoch)
 	if err != nil {
 		t.Fatalf("deriving for the next epoch: %v", err)
 	}
@@ -179,7 +178,7 @@ func TestTheDerivedNamespaceIsStableOpaqueAndPerTenantPerEpoch(t *testing.T) {
 }
 
 func TestTheObjectKeyComesOnlyFromTheDerivedNamespace(t *testing.T) {
-	namespace, err := output.DeriveNamespace(validNamespaceConfig())
+	namespace, err := DeriveNamespace(validNamespaceConfig())
 	if err != nil {
 		t.Fatalf("deriving: %v", err)
 	}
@@ -217,7 +216,7 @@ func TestTheObjectKeyComesOnlyFromTheDerivedNamespace(t *testing.T) {
 	if _, err := namespace.ObjectKey("sha256:not-a-digest"); err == nil {
 		t.Error("a malformed digest produced a key")
 	}
-	var underived output.OutputNamespace
+	var underived OutputNamespace
 	if _, err := underived.ObjectKey(digest); err == nil {
 		t.Error("an underived namespace produced a key, which would publish into the empty bucket")
 	}
@@ -225,23 +224,23 @@ func TestTheObjectKeyComesOnlyFromTheDerivedNamespace(t *testing.T) {
 
 func TestACallerChosenNamespaceFieldIsRefusedRatherThanIgnored(t *testing.T) {
 	// The control, first: a request that names nothing is served.
-	if err := (output.CallerNamespaceRequest{}).Refuse(); err != nil {
+	if err := (CallerNamespaceRequest{}).Validate(); err != nil {
 		t.Fatalf("a request naming no namespace field was refused: %v", err)
 	}
 
-	for field, request := range map[string]output.CallerNamespaceRequest{
+	for field, request := range map[string]CallerNamespaceRequest{
 		"bucket": {Bucket: "somebody-elses-bucket"},
 		"scope":  {Scope: "o0000000000000000000000000000000000000000"},
 		"key":    {Key: "hangar/v1/scopes/other/trees/sha256/dead.tar.zst"},
 		"prefix": {Prefix: "deployments/red"},
 	} {
-		err := request.Refuse()
+		err := request.Validate()
 		if err == nil {
 			t.Errorf("a request naming a %s was served", field)
 
 			continue
 		}
-		if !errors.Is(err, output.ErrUnauthorized) {
+		if !errors.Is(err, ErrUnauthorized) {
 			t.Errorf("a request naming a %s was refused as %v, expected ErrUnauthorized", field, err)
 		}
 		if !strings.Contains(err.Error(), field) {
@@ -251,20 +250,20 @@ func TestACallerChosenNamespaceFieldIsRefusedRatherThanIgnored(t *testing.T) {
 }
 
 func TestTheMarkerAndTheKeyAgreeByConstruction(t *testing.T) {
-	namespace, err := output.DeriveNamespace(validNamespaceConfig())
+	namespace, err := DeriveNamespace(validNamespaceConfig())
 	if err != nil {
 		t.Fatalf("deriving: %v", err)
 	}
 
 	digest := hangar.Digest("sha256:" + strings.Repeat("cd", 32))
-	reservation := output.ReservationID("44444444-4444-4444-8444-444444444444")
-	marker := namespace.MarkerFor(reservation, digest, output.NewTimestamp(fixedInstant))
+	reservation := ReservationID("44444444-4444-4444-8444-444444444444")
+	marker := namespace.MarkerFor(reservation, digest, NewTimestamp(fixedInstant))
 
 	if err := marker.Validate(); err != nil {
 		t.Fatalf("the derived marker does not validate: %v", err)
 	}
-	if marker.Version != output.MarkerVersion {
-		t.Errorf("the marker version is %q, this cohort writes %q", marker.Version, output.MarkerVersion)
+	if marker.Version != MarkerVersion {
+		t.Errorf("the marker version is %q, this cohort writes %q", marker.Version, MarkerVersion)
 	}
 	if marker.Scope != namespace.Scope() {
 		t.Errorf("the marker says scope %q, the namespace derives %q. An object whose marker "+
@@ -279,7 +278,7 @@ func TestTheMarkerAndTheKeyAgreeByConstruction(t *testing.T) {
 	// Round-tripping through the wire form is what the publisher actually
 	// writes, and a marker that parses back to a different value would be a
 	// marker nothing could verify.
-	parsed, err := output.ParseObjectMarker(marker.Metadata())
+	parsed, err := ParseObjectMarker(marker.Metadata())
 	if err != nil {
 		t.Fatalf("the marker this cohort writes does not parse: %v", err)
 	}
@@ -293,16 +292,16 @@ func TestTheMarkerAndTheKeyAgreeByConstruction(t *testing.T) {
 	// A wrong version is a typed collision, not a parse failure: it is a
 	// deliberate statement by some other cohort and must never be overwritten.
 	wrongVersion := marker.Metadata()
-	wrongVersion[output.MarkerKeyVersion] = "hangar-output-v2"
-	if _, err := output.ParseObjectMarker(wrongVersion); !errors.Is(err, output.ErrConflict) {
+	wrongVersion[MarkerKeyVersion] = "hangar-output-v2"
+	if _, err := ParseObjectMarker(wrongVersion); !errors.Is(err, ErrConflict) {
 		t.Errorf("a wrong marker version parsed as %v, expected ErrConflict", err)
 	}
 
 	// And no marker at all is unmanaged, which is ErrNotFound and never a
 	// cache miss the publisher fills in.
 	unmarked := marker.Metadata()
-	delete(unmarked, output.MarkerKeyVersion)
-	if _, err := output.ParseObjectMarker(unmarked); !errors.Is(err, output.ErrNotFound) {
+	delete(unmarked, MarkerKeyVersion)
+	if _, err := ParseObjectMarker(unmarked); !errors.Is(err, ErrNotFound) {
 		t.Errorf("an unmarked object parsed as %v, expected ErrNotFound", err)
 	}
 }

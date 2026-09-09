@@ -2,8 +2,10 @@ package output
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"strings"
 
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
@@ -96,6 +98,44 @@ type OutputNamespace struct {
 
 // DeriveNamespace is the only constructor.
 func DeriveNamespace(config NamespaceConfig) (OutputNamespace, error) {
+	if config.Store != StoreGCS {
+		return OutputNamespace{}, fmt.Errorf("%w: output capture requires the strict native-GCS "+
+			"profile; %q cannot offer create-if-absent at an exact generation, so it cannot make "+
+			"the collision guarantee", ErrUnsupportedProtocol, config.Store)
+	}
+	if strings.TrimSpace(config.Bucket) == "" {
+		return OutputNamespace{}, fmt.Errorf("%w: no output bucket is configured", ErrIncomplete)
+	}
+	if config.SharedBucketPrefixOnlyIsolation {
+		return OutputNamespace{}, fmt.Errorf("%w: this deployment separates trust domains by key "+
+			"prefix inside one bucket. Prefix-only IAM is not an activation-compatible substitute "+
+			"for a dedicated output bucket: object-level permission is not expressible in a "+
+			"bucket policy, so every principal that can read one prefix can read them all",
+			ErrUnauthorized)
+	}
+	if config.CacheBucket != "" && config.Bucket == config.CacheBucket {
+		return OutputNamespace{}, fmt.Errorf("%w: the output bucket is the durable cache bucket "+
+			"%q. The cache is fail-open and re-derivable by re-running a step; a durable result "+
+			"is neither, and one bucket cannot have both lifetimes", ErrConflict, config.Bucket)
+	}
+	if config.StrictInputBucket != "" && config.Bucket == config.StrictInputBucket {
+		return OutputNamespace{}, fmt.Errorf("%w: the output bucket is the caller-published "+
+			"strict-input bucket %q. Strict inputs are published by callers; output objects are "+
+			"published only by the output daemon, and sharing the bucket gives one principal "+
+			"both roles", ErrConflict, config.Bucket)
+	}
+	if err := hangar.ValidateDeploymentPrefix(config.DeploymentPrefix); err != nil {
+		return OutputNamespace{}, fmt.Errorf("%w: output key prefix: %v", ErrIncomplete, err)
+	}
+	if strings.TrimSpace(config.TenantID) == "" {
+		return OutputNamespace{}, fmt.Errorf("%w: no authenticated tenant identity; the opaque "+
+			"scope has nothing to be derived from, and a constant scope is a shared namespace",
+			ErrIncomplete)
+	}
+	if config.ActivationEpoch == 0 {
+		return OutputNamespace{}, fmt.Errorf("%w: no active activation epoch", ErrIncomplete)
+	}
+
 	return OutputNamespace{
 		bucket: config.Bucket,
 		prefix: config.DeploymentPrefix,
@@ -115,7 +155,9 @@ func deriveScope(tenant string, epoch executioncontrol.ActivationEpoch) hangar.S
 	digest.Write([]byte{0})
 	digest.Write([]byte(tenant))
 	digest.Write([]byte{0})
-	_ = epoch
+	var encoded [8]byte
+	binary.BigEndian.PutUint64(encoded[:], uint64(epoch))
+	digest.Write(encoded[:])
 
 	// A leading letter, because hangar.Scope requires a lowercase alphanumeric
 	// first character and a hex string can start with a digit -- which would
@@ -190,8 +232,32 @@ type CallerNamespaceRequest struct {
 	Prefix string `json:"prefix,omitempty"`
 }
 
-// Refuse reports the caller-chosen field, if there is one.
-func (request CallerNamespaceRequest) Refuse() error {
+// Validate reports the caller-chosen field, if there is one.
+//
+// It is spelled Validate because that is this package's one name for "this
+// value is allowed to exist as it stands", and because the wire contract
+// requires every frozen type to bound itself. The only valid value is the
+// empty one: a request that names nothing is served from the derived
+// namespace.
+func (request CallerNamespaceRequest) Validate() error {
+	for _, chosen := range []struct {
+		field, value string
+	}{
+		{"bucket", request.Bucket},
+		{"scope", request.Scope},
+		{"key", request.Key},
+		{"prefix", request.Prefix},
+	} {
+		if chosen.value == "" {
+			continue
+		}
+
+		return fmt.Errorf("%w: the request names a %s (%q). The output bucket, prefix and opaque "+
+			"scope are server-derived from authenticated deployment configuration and the active "+
+			"epoch; a request that could name one could publish into another tenant's namespace "+
+			"or read one", ErrUnauthorized, chosen.field, chosen.value)
+	}
+
 	return nil
 }
 
