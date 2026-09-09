@@ -1141,6 +1141,82 @@ var _ = Describe("the Hangar output plane schema", func() {
 					VALUES (1, 'gs://output-bucket', 4, 'policy-hash-2', 1, 'safe')`)).
 					To(ContainSubstring("hangar_policy_safe_has_no_delete_rules"))
 			})
+
+			// Req 52 names five admissions that stop from detection onward:
+			// new captures, claim acquires, managed-output grants, orphan
+			// adoption and reclaim admission. Each vector below is one of
+			// them, and each runs twice against the same statement -- once
+			// while the freshest attestation is safe, once after an at-risk
+			// one lands. The safe run is the valid twin: a gate that refused
+			// the shape rather than the state would fail it.
+			goAtRisk := func() {
+				GinkgoHelper()
+				mustExec(database, `
+					INSERT INTO hangar_policy_snapshots
+						(activation_epoch, bucket_fingerprint, metageneration, policy_hash,
+						 lifecycle_delete_rules, state)
+					VALUES (1, 'gs://output-bucket', 4, 'policy-hash-2', 1, 'at_risk')`)
+			}
+
+			It("refuses a managed-output grant while at risk", func() {
+				seedClaim(claimID, lifecycle)
+				grant := fmt.Sprintf(`
+					INSERT INTO hangar_read_leases
+						(read_lease_id, claim_id, lifecycle_id, activation_epoch, lease_fence, expires_at)
+					VALUES ('%s', '%s', %d, 1, 1, now() + interval '20 minutes')`,
+					readLeaseID, claimID, lifecycle)
+
+				expectAccepted(database, "a read lease granted on a safe policy", grant)
+
+				goAtRisk()
+
+				Expect(expectRefusal(database, "a read lease granted while at risk", grant)).
+					To(ContainSubstring("new captures, claim acquires, grants, adoption and reclaim admission stop"))
+			})
+
+			It("refuses orphan adoption while at risk, and still lets a registration finish", func() {
+				adopt := fmt.Sprintf(`
+					INSERT INTO hangar_exact_lifecycles
+						(scope, digest, generation, metageneration, activation_epoch,
+						 marker_version, origin, state)
+					VALUES ('team-a', '%s', %d, 1, 1, 'hangar-output-v1', 'adopted', 'adopted')`,
+					otherDigest, sampleGeneration+1)
+
+				expectAccepted(database, "an adoption on a safe policy", adopt)
+
+				goAtRisk()
+
+				Expect(expectRefusal(database, "an orphan adopted while at risk", adopt)).
+					To(ContainSubstring("new captures, claim acquires, grants, adoption and reclaim admission stop"))
+
+				// Registration is the other origin on this table and it is
+				// deliberately not gated. A capture that has already passed
+				// its first object create cannot be un-made by a policy
+				// observation; refusing its receipt would leave the
+				// generation in the bucket as an unregistered orphan with
+				// nothing correlating it -- the exact state adoption exists to
+				// clean up. Req 52 blocks admission and lets already-admitted
+				// work finish, and this is that work finishing.
+				expectAccepted(database, "a registration completing while at risk", fmt.Sprintf(`
+					INSERT INTO hangar_exact_lifecycles
+						(scope, digest, generation, metageneration, activation_epoch,
+						 marker_version, origin, state)
+					VALUES ('team-a', '%s', %d, 1, 1, 'hangar-output-v1', 'registered', 'registered')`,
+					otherDigest, sampleGeneration+2))
+			})
+
+			It("refuses a new capture while at risk", func() {
+				seedPredeclaration(secondHandoffID, secondLeaseID, secondExecutionID, true)
+				capture := stage2(secondHandoffID, secondReservation)
+
+				expectAccepted(database, "a Stage 2 reservation on a safe policy", capture...)
+
+				goAtRisk()
+
+				Expect(expectRefusal(database, "a Stage 2 reservation committed while at risk",
+					capture...)).
+					To(ContainSubstring("new captures, claim acquires, grants, adoption and reclaim admission stop"))
+			})
 		})
 
 		Context("inventory and worker leases", func() {
@@ -1342,6 +1418,61 @@ var _ = Describe("the Hangar output plane schema", func() {
 			Expect(attempt(database, vector...)).To(HaveOccurred())
 			Expect(attempt(database, append(dropTriggerOnEach("hangar_policy_admits_new_protection",
 				"hangar_claims", "hangar_reclaim_jobs"), vector...)...)).To(Succeed())
+		})
+
+		// The other three admissions Req 52 names. Each drops only the copy on
+		// its own table, so a passing row says which attachment carried the
+		// refusal rather than that some copy somewhere did.
+		It("without hangar_policy_admits_new_protection on hangar_read_leases, an at-risk plane grants", func() {
+			lifecycle := seedFullChain()
+			seedClaim(claimID, lifecycle)
+			mustExec(database, `
+				INSERT INTO hangar_policy_snapshots
+					(activation_epoch, bucket_fingerprint, metageneration, policy_hash,
+					 lifecycle_delete_rules, state)
+				VALUES (1, 'gs://output-bucket', 4, 'policy-hash-2', 1, 'at_risk')`)
+			vector := []string{fmt.Sprintf(`
+				INSERT INTO hangar_read_leases
+					(read_lease_id, claim_id, lifecycle_id, activation_epoch, lease_fence, expires_at)
+				VALUES ('%s', '%s', %d, 1, 1, now() + interval '20 minutes')`,
+				readLeaseID, claimID, lifecycle)}
+
+			Expect(attempt(database, vector...)).To(HaveOccurred())
+			Expect(attempt(database, append(dropTriggerOnEach("hangar_policy_admits_new_protection",
+				"hangar_read_leases"), vector...)...)).To(Succeed())
+		})
+
+		It("without hangar_policy_admits_new_protection on hangar_exact_lifecycles, an at-risk plane adopts", func() {
+			seedFullChain()
+			mustExec(database, `
+				INSERT INTO hangar_policy_snapshots
+					(activation_epoch, bucket_fingerprint, metageneration, policy_hash,
+					 lifecycle_delete_rules, state)
+				VALUES (1, 'gs://output-bucket', 4, 'policy-hash-2', 1, 'at_risk')`)
+			vector := []string{fmt.Sprintf(`
+				INSERT INTO hangar_exact_lifecycles
+					(scope, digest, generation, metageneration, activation_epoch,
+					 marker_version, origin, state)
+				VALUES ('team-a', '%s', %d, 1, 1, 'hangar-output-v1', 'adopted', 'adopted')`,
+				otherDigest, sampleGeneration+1)}
+
+			Expect(attempt(database, vector...)).To(HaveOccurred())
+			Expect(attempt(database, append(dropTriggerOnEach("hangar_policy_admits_new_protection",
+				"hangar_exact_lifecycles"), vector...)...)).To(Succeed())
+		})
+
+		It("without hangar_policy_admits_new_protection on hangar_capture_reservations, an at-risk plane captures", func() {
+			seedPredeclaration(secondHandoffID, secondLeaseID, secondExecutionID, true)
+			mustExec(database, `
+				INSERT INTO hangar_policy_snapshots
+					(activation_epoch, bucket_fingerprint, metageneration, policy_hash,
+					 lifecycle_delete_rules, state)
+				VALUES (1, 'gs://output-bucket', 4, 'policy-hash-2', 1, 'at_risk')`)
+			vector := stage2(secondHandoffID, secondReservation)
+
+			Expect(attempt(database, vector...)).To(HaveOccurred())
+			Expect(attempt(database, append(dropTriggerOnEach("hangar_policy_admits_new_protection",
+				"hangar_capture_reservations"), vector...)...)).To(Succeed())
 		})
 
 		It("without hangar_reclaim_evidence, an ambiguous deletion is called confirmed", func() {

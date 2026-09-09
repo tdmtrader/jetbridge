@@ -1051,6 +1051,14 @@ CREATE CONSTRAINT TRIGGER hangar_read_lease_matches_claim
 -- alone: from detection onward new captures, claim acquires, grants, adoption
 -- and reclaim admission stop, while existing claims and leases stay recorded
 -- and already-admitted delete work may finish.
+--
+-- Req 52 names five admissions, so this is attached five times: to
+-- hangar_capture_reservations (a new capture), hangar_claims (a claim
+-- acquire), hangar_read_leases (a managed-output grant),
+-- hangar_exact_lifecycles for adopted rows only (orphan adoption) and
+-- hangar_reclaim_jobs (reclaim admission). A renewal reaches the ON CONFLICT
+-- UPDATE path and fires none of them, which is the "existing claims and read
+-- leases remain recorded" half of the same requirement.
 CREATE FUNCTION hangar_check_policy_admission() RETURNS trigger
     LANGUAGE plpgsql AS $$
 DECLARE
@@ -1084,6 +1092,25 @@ CREATE CONSTRAINT TRIGGER hangar_policy_admits_new_protection
     AFTER INSERT ON hangar_reclaim_jobs
     DEFERRABLE INITIALLY DEFERRED
     FOR EACH ROW EXECUTE FUNCTION hangar_check_policy_admission();
+CREATE CONSTRAINT TRIGGER hangar_policy_admits_new_protection
+    AFTER INSERT ON hangar_capture_reservations
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION hangar_check_policy_admission();
+CREATE CONSTRAINT TRIGGER hangar_policy_admits_new_protection
+    AFTER INSERT ON hangar_read_leases
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION hangar_check_policy_admission();
+-- Adoption only. A registration is a capture that has already passed its first
+-- object create: the bytes exist in the bucket, and refusing the row that names
+-- them would leave a marked generation with nothing correlating it -- an orphan
+-- of exactly the kind adoption exists to clean up, manufactured by the guard
+-- meant to protect the plane. Req 52 stops admission and lets already-admitted
+-- work finish; this is that work finishing.
+CREATE CONSTRAINT TRIGGER hangar_policy_admits_new_protection
+    AFTER INSERT ON hangar_exact_lifecycles
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW WHEN (NEW.origin = 'adopted')
+    EXECUTE FUNCTION hangar_check_policy_admission();
 
 -- What a finalized reclaim job may claim to have proved. `reclaimed_confirmed`
 -- needs an acknowledged conditional delete; `reclaimed_inferred` needs a
