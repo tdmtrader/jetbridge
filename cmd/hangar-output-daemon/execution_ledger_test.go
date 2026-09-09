@@ -155,6 +155,15 @@ func TestTheLedgerWalksOneExecutionFromAdmissionToAnAuthoritativeFinish(t *testi
 
 	admitted(t, fixture)
 
+	// An outcome for a command with no durable start record is an inference,
+	// not an observation: nothing on this node ever saw the process, so
+	// "it exited zero" is a claim the caller made about itself.
+	if _, err := fixture.ledger.RecordOutcome(identity(1),
+		executioncontrol.AcknowledgementFinish,
+		executioncontrol.ExitOutcome{ExitCode: 0}); !errors.Is(err, output.ErrUnauthorized) {
+		t.Errorf("an outcome was recorded for a command that never started: %v", err)
+	}
+
 	// Admitted and not started is never_started, and it is the only
 	// classification a first start is admissible from.
 	result, err := fixture.ledger.Classify(identity(1))
@@ -406,8 +415,26 @@ func TestTheLedgerRefusesAForeignIdentityOrAStaleFence(t *testing.T) {
 func TestARepeatedOutcomeReturnsTheSameStatementAndAConflictingOneIsRefused(t *testing.T) {
 	fixture := newLedger(t)
 	admitted(t, fixture)
-	if _, err := fixture.ledger.RecordStart(identity(1), testPod, "proc-1"); err != nil {
+	started, err := fixture.ledger.RecordStart(identity(1), testPod, "proc-1")
+	if err != nil {
 		t.Fatalf("starting: %v", err)
+	}
+
+	// The start replays too, and for the same reason: the supervisor writes it
+	// before launching the child, so the call that never returned is exactly the
+	// one a caller has to be able to repeat.
+	startedAgain, err := fixture.ledger.RecordStart(identity(1), testPod, "proc-1")
+	if err != nil {
+		t.Fatalf("replaying the start: %v", err)
+	}
+	if !sameStatement(startedAgain, started) {
+		t.Errorf("the replayed start returned a different statement:\n first: %s\nreplay: %s",
+			describeStatement(started), describeStatement(startedAgain))
+	}
+	// And a start of the same execution as a DIFFERENT process is a conflict,
+	// not a second start: that is a command about to run twice.
+	if _, err := fixture.ledger.RecordStart(identity(1), testPod, "proc-2"); !errors.Is(err, output.ErrConflict) {
+		t.Errorf("a second, different start was admitted: %v", err)
 	}
 
 	first, err := fixture.ledger.RecordOutcome(identity(1),
