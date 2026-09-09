@@ -125,6 +125,13 @@ type mtlsMaterial struct {
 	clientKey  []byte
 	server     tls.Certificate
 	clientPool *x509.CertPool
+
+	// serverCert and serverKey are the same material as `server`, kept in the
+	// form a PROCESS needs. The mTLS family hands the certificate to an
+	// in-process tls.Config; the Hangar fixture starts the real daemon, which
+	// reads --tls-cert and --tls-key off disk.
+	serverCert []byte
+	serverKey  []byte
 }
 
 func mintMTLSMaterial(dnsName string, ips []net.IP) (mtlsMaterial, error) {
@@ -178,6 +185,8 @@ func mintMTLSMaterial(dnsName string, ips []net.IP) (mtlsMaterial, error) {
 		clientKey:  clientKeyPEM,
 		server:     serverCert,
 		clientPool: pool,
+		serverCert: serverPEM,
+		serverKey:  serverKeyPEM,
 	}, nil
 }
 

@@ -114,8 +114,26 @@ func freePort() (int, error) {
 	return l.Addr().(*net.TCPAddr).Port, nil
 }
 
-// startRealDaemon brings up one daemon and waits until it answers.
+// startRealDaemon brings up one plaintext daemon and waits until it answers.
 func startRealDaemon(extraArgs ...string) (*realDaemon, error) {
+	return startRealDaemonProbed("http", func(url string) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url+"/artifacts/steps/__ready__", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return err
+		}
+		return resp.Body.Close()
+	}, extraArgs...)
+}
+
+// startRealDaemonProbed is startRealDaemon with the caller choosing the URL
+// scheme and the readiness probe. A daemon serving TLS cannot be polled over
+// plaintext, and a daemon whose Hangar surface is mTLS-protected needs a client
+// certificate to answer anything but /healthz — so the probe belongs to the
+// fixture that knows those things, not to this launcher.
+func startRealDaemonProbed(scheme string, ready func(url string) error, extraArgs ...string) (*realDaemon, error) {
 	bin, err := artifactDaemonBinary()
 	if err != nil {
 		return nil, err
@@ -143,7 +161,7 @@ func startRealDaemon(extraArgs ...string) (*realDaemon, error) {
 		return nil, fmt.Errorf("start artifact-daemon: %w", err)
 	}
 
-	d := &realDaemon{Root: root, URL: fmt.Sprintf("http://127.0.0.1:%d", port), cmd: cmd}
+	d := &realDaemon{Root: root, URL: fmt.Sprintf("%s://127.0.0.1:%d", scheme, port), cmd: cmd}
 
 	// Readiness: a route that answers even with nothing stored. A daemon that
 	// died on startup must be reported as that, not as a scenario failure
@@ -164,12 +182,7 @@ func startRealDaemon(extraArgs ...string) (*realDaemon, error) {
 			return nil, fmt.Errorf("artifact-daemon exited during startup: %w", err)
 		default:
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, d.URL+"/artifacts/steps/__ready__", nil)
-		resp, err := http.DefaultClient.Do(req)
-		cancel()
-		if err == nil {
-			resp.Body.Close()
+		if err := ready(d.URL); err == nil {
 			return d, nil
 		}
 		time.Sleep(100 * time.Millisecond)
