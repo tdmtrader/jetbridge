@@ -364,10 +364,16 @@ func ProcessDefinitions() []brine.StepDefinition {
 
 		// RF-10/RF-11. Eviction is the cluster's decision, not the pipeline's,
 		// and the node is the only place the user can go to check.
+		//
+		// On the production path the node has to keep deciding it: a pause
+		// pod that dies before the command runs is replaced exactly once, so
+		// a single eviction never reaches the build. The replacement meets the
+		// same node, and the SECOND eviction is the one the diagnostics
+		// describe. Direct compatibility never creates a replacement.
 		Transform[StepRunning, ProcessOutcome](
 			"the node {string} evicts the pod for running out of {string}",
 			func(in StepRunning, a Args) (ProcessOutcome, error) {
-				return in.settleProcess(func(pod *corev1.Pod) {
+				return in.settleProcessOnEveryPod(func(pod *corev1.Pod) {
 					pod.Spec.NodeName = a.String(0)
 					pod.Status.Phase = corev1.PodFailed
 					pod.Status.Reason = "Evicted"
@@ -378,11 +384,12 @@ func ProcessDefinitions() []brine.StepDefinition {
 
 		// RF-10. A container that has been OOM-killed twice is a memory-limit
 		// problem, and the restart history is how the user tells that from a
-		// one-off.
+		// one-off. A Failed pause pod is replaced once before the step gives
+		// up, so the limit has to be too low for the replacement as well.
 		Transform[StepRunning, ProcessOutcome](
 			"the main container on node {string} is killed twice for exceeding {string}",
 			func(in StepRunning, a Args) (ProcessOutcome, error) {
-				return in.settleProcess(func(pod *corev1.Pod) {
+				return in.settleProcessOnEveryPod(func(pod *corev1.Pod) {
 					pod.Spec.NodeName = a.String(0)
 					pod.Status.Phase = corev1.PodFailed
 					pod.Status.ContainerStatuses = []corev1.ContainerStatus{{
@@ -620,4 +627,23 @@ func (in StepRunning) settleProcess(mutate func(*corev1.Pod)) (ProcessOutcome, e
 	}
 	result, waitErr := in.Process.Wait(in.Ctx)
 	return in.report(result, waitErr), nil
+}
+
+// settleProcessOnEveryPod is settleProcess for a fate the cluster keeps
+// handing out. The runtime replaces a pause pod that dies before the step's
+// command runs — once, whatever the phase (recreatePausePod) — and on a fake
+// cluster the replacement would otherwise sit unstarted until the startup
+// timeout. So the mutation is applied to the pod that exists now AND to every
+// pod created afterwards; the replacement dies the same way, the one
+// replacement is spent, and the classification the scenario asserts stands.
+// The legacy Wait route never creates a pod, so there the reactor is inert.
+func (in StepRunning) settleProcessOnEveryPod(mutate func(*corev1.Pod)) (ProcessOutcome, error) {
+	in.Clientset.PrependReactor("create", "pods",
+		func(action k8stesting.Action) (bool, apiruntime.Object, error) {
+			if pod, ok := action.(k8stesting.CreateActionImpl).GetObject().(*corev1.Pod); ok {
+				mutate(pod)
+			}
+			return false, nil, nil
+		})
+	return in.settleProcess(mutate)
 }
