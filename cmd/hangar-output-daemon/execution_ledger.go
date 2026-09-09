@@ -569,6 +569,47 @@ func (ledger *ExecutionLedger) OpenGate(identity executioncontrol.Identity, gate
 	return ledger.save(record)
 }
 
+// EnsureGateOpen re-opens a gate this node already committed to, without a
+// fence.
+//
+// It exists for one thing: the second half of a two-write durable step that a
+// crash interrupted. The extension writes its own record and then opens the
+// gate, and a replay of that step has to be able to finish it -- including a
+// replay reaching this node from a caller whose fence has since been
+// superseded, which is a READ and must stay one.
+//
+// Opening a gate is the fail-closed direction. It can only withhold cleanup,
+// never authorize it, so a repair that takes no fence grants nobody anything.
+// CLOSING one still takes admission at the current fence, because that is the
+// direction that lets bytes be destroyed.
+func (ledger *ExecutionLedger) EnsureGateOpen(id executioncontrol.ExecutionID, gate string) error {
+	if strings.TrimSpace(gate) == "" {
+		return fmt.Errorf("%w: an extension gate needs a name", output.ErrIncomplete)
+	}
+
+	ledger.mu.Lock()
+	defer ledger.mu.Unlock()
+
+	record, found, err := ledger.load(id)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("%w: execution %s was never admitted on this node", output.ErrUnauthorized, id)
+	}
+	for _, open := range record.OpenGates {
+		if open == gate {
+			return nil
+		}
+	}
+	record.OpenGates = append(record.OpenGates, gate)
+	sort.Strings(record.OpenGates)
+	ledger.sequence++
+	record.HighWater = ledger.sequence
+
+	return ledger.save(record)
+}
+
 func (ledger *ExecutionLedger) CloseGate(identity executioncontrol.Identity, gate string) error {
 	ledger.mu.Lock()
 	defer ledger.mu.Unlock()

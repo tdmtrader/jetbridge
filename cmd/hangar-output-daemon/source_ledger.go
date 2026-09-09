@@ -384,6 +384,17 @@ func (ledger *SourceLedger) AcknowledgeHold(_ context.Context, admission output.
 				output.ErrConflict, admission.HandoffID)
 		}
 
+		// The gate, before the statement. A hold is two durable writes -- the
+		// record and the cleanup gate -- and a crash between them leaves a
+		// held record with nothing withholding cleanup. So every replay
+		// re-runs the second half; it is idempotent, and it is the fail-closed
+		// direction, so a replay arriving at a superseded fence may run it
+		// too. Without this the repair would only ever happen on a path that
+		// no longer needs it.
+		if err := ledger.base.EnsureGateOpen(record.Execution.ExecutionID, SourceHoldGate); err != nil {
+			return output.CaptureAcknowledgement{}, err
+		}
+
 		return *record.Hold, nil
 	}
 
@@ -443,13 +454,17 @@ func (ledger *SourceLedger) AcknowledgeHold(_ context.Context, admission output.
 		Hold:            &ack,
 		HighWater:       ledger.sequence,
 	}
-	if err := ledger.save(record); err != nil {
+	// The gate goes down BEFORE the record, and the order is the crash. A gate
+	// with no hold is the safe orphan: it withholds cleanup, and the release --
+	// or the next hold on this handoff -- closes it. A hold with no gate is the
+	// other one, and it is a held source that cleanup is told it may destroy.
+	//
+	// The gate is an opaque name, and it is the only thing the base ledger ever
+	// learns about a capture.
+	if err := ledger.base.OpenGate(admission.Execution, SourceHoldGate); err != nil {
 		return output.CaptureAcknowledgement{}, err
 	}
-
-	// The hold is a cleanup gate on the base execution, by opaque name. This is
-	// the only thing the base ledger ever learns about a capture.
-	if err := ledger.base.OpenGate(admission.Execution, SourceHoldGate); err != nil {
+	if err := ledger.save(record); err != nil {
 		return output.CaptureAcknowledgement{}, err
 	}
 
@@ -769,6 +784,14 @@ func (ledger *SourceLedger) AcknowledgeRelease(_ context.Context, intent output.
 	}
 	if record.Release != nil {
 		if record.ReleaseIntentID == intent.ReleaseIntentID {
+			// The same repair, at the other end. A release is the record, then
+			// the bytes, then the gate; a crash after the record leaves a gate
+			// open over a source that is gone, and an execution that is never
+			// cleanup-eligible again. Both halves below are idempotent.
+			if err := ledger.finishRelease(intent.Execution, record); err != nil {
+				return output.ReleaseAcknowledgement{}, err
+			}
+
 			return *record.Release, nil
 		}
 
@@ -806,15 +829,28 @@ func (ledger *SourceLedger) AcknowledgeRelease(_ context.Context, intent output.
 	if err := ledger.save(record); err != nil {
 		return output.ReleaseAcknowledgement{}, err
 	}
-	if err := ledger.steps.RemoveAll(incarnationDir(record.Incarnation)); err != nil {
-		return output.ReleaseAcknowledgement{}, fmt.Errorf(
-			"%w: removing the released source incarnation: %v", output.ErrInfrastructure, err)
-	}
-	if err := ledger.base.CloseGate(record.Execution, SourceHoldGate); err != nil {
+	if err := ledger.finishRelease(intent.Execution, record); err != nil {
 		return output.ReleaseAcknowledgement{}, err
 	}
 
 	return ack, nil
+}
+
+// finishRelease is everything a release does after its record is durable, and
+// it is idempotent so that a replay can re-run it.
+//
+// The identity is the REQUEST's, not the record's. `admitted` has just proved
+// the request names the fence this node currently holds; the record's copy was
+// written when the hold was taken and a takeover since then would make closing
+// the gate refuse as stale -- after the bytes were already gone.
+func (ledger *SourceLedger) finishRelease(execution executioncontrol.Identity,
+	record sourceRecord) error {
+	if err := ledger.steps.RemoveAll(incarnationDir(record.Incarnation)); err != nil {
+		return fmt.Errorf("%w: removing the released source incarnation: %v",
+			output.ErrInfrastructure, err)
+	}
+
+	return ledger.base.CloseGate(execution, SourceHoldGate)
 }
 
 var _ output.SourceControl = (*SourceLedger)(nil)
