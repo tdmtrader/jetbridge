@@ -351,6 +351,32 @@ func (repository *HangarOutputRepository) acknowledgeRelease(ctx context.Context
 			acknowledgement.ReleaseIntentID, acknowledgement.HandoffID)
 	}
 	if !acknowledged.Valid {
+		// The intent is this branch's and it is unacknowledged, so the UPDATE
+		// was stopped by the capture branch's own guard rather than by the
+		// intent. Say WHICH, because the two answers mean opposite things to
+		// the caller: "not yet" is retried and "never" is not.
+		//
+		// The state is reachable -- a publish already in flight passes the
+		// point while the row is still live, and the canceller that classified
+		// a moment earlier blocks on its row lock and then cancels a row that
+		// is now past the point. A node offering a release there is working
+		// from stale state: the object may exist, and the capture settles a
+		// registered receipt or a terminal orphan under its own fence.
+		if branch == output.DispositionCapture {
+			var state string
+			var past bool
+			if err := hangarQueryRow(ctx, tx, `
+				SELECT state, past_irreversible_publish_point FROM hangar_capture_reservations
+				WHERE handoff_id = $1`,
+				[]any{string(acknowledgement.HandoffID)}, &state, &past,
+			); err == nil && past {
+				return fmt.Errorf("%w: handoff %s is past the irreversible publish point and a "+
+					"release is admitted only before it. The capture settles a registered "+
+					"receipt or a terminal orphan under its own fence; retrying this release "+
+					"will never admit it", output.ErrConflict, acknowledgement.HandoffID)
+			}
+		}
+
 		return fmt.Errorf("%w: release intent %s is recorded but unacknowledged",
 			output.ErrUnresolved, acknowledgement.ReleaseIntentID)
 	}
