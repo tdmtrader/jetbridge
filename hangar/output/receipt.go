@@ -94,6 +94,14 @@ func (claims ReceiptClaims) Validate() error {
 	if err := claims.Ref.Validate(); err != nil {
 		return err
 	}
+	// The attributes are validated on their own terms first. Req 25 says the
+	// signed claims bind "strict tree attributes" and Req 26 says every signed
+	// claim is matched against durable state -- so claims that validate while
+	// carrying a zero creation instant or a negative size are a hole, and
+	// comparing only the ref was how the hole stayed open.
+	if err := claims.Attributes.Validate(); err != nil {
+		return err
+	}
 	if claims.Attributes.Ref != claims.Ref {
 		return fmt.Errorf("%w: the signed attributes describe a different exact ref",
 			ErrInvalidIdentity)
