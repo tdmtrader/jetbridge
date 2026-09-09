@@ -665,7 +665,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 		// in between, that is a typed retry -- nothing is wrong, another actor
 		// legitimately advanced the row while this one was choosing what to
 		// lock.
-		It("returns a typed retry when a derived fact changes under the locks", func() {
+		It("returns a typed retry when another owner takes over between the read and the lock", func() {
 			activate()
 			reservation, _ := publish(hangarDigest(7), 1725830823000007)
 
@@ -678,31 +678,82 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			Expect(derived.Resolved).To(BeTrue())
 			Expect(derived.Logical.Digest).To(Equal(hangarDigest(7)))
 
+			// The takeover, committed by somebody else, between the unlocked read
+			// and the locks. Mutating the derived struct on the client would prove
+			// only that the comparison compares; what has to be true is that the
+			// revalidation reads the row again and sees what the other owner did.
+			takeover, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(takeover)
+			_, err = takeover.Exec(`
+				UPDATE hangar_capture_attempt_leases
+				SET owner_id = $2, capture_fence = capture_fence + 1, renewed_at = now(),
+				    expires_at = now() + interval '15 minutes'
+				WHERE reservation_id = $1`, string(reservation), uuid.NewString())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(takeover.Commit()).To(Succeed())
+
+			locks, err := db.LockHangarSuffix(ctx, tx, consumer, db.HangarLockRequest{
+				Logical:  []db.HangarLogicalKey{derived.Logical},
+				Captures: []output.ReservationID{reservation},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			err = locks.RevalidateDerivation(ctx, tx, derived)
+			Expect(err).To(MatchError(db.ErrHangarLockRetry))
+			Expect(err.Error()).To(ContainSubstring("superseded"))
+			Expect(tx.Rollback()).To(Succeed())
+		})
+
+		It("revalidates cleanly when nothing moved", func() {
+			activate()
+			reservation, _ := publish(hangarDigest(16), 1725830823000016)
+
+			tx, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(tx)
+
+			derived, err := db.DeriveHangarRefUnlocked(ctx, tx, reservation)
+			Expect(err).NotTo(HaveOccurred())
 			locks, err := db.LockHangarSuffix(ctx, tx, consumer, db.HangarLockRequest{
 				Logical:  []db.HangarLogicalKey{derived.Logical},
 				Captures: []output.ReservationID{reservation},
 			})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(locks.RevalidateDerivation(ctx, tx, derived)).To(Succeed())
-
-			// The fact the derivation rested on, moved.
-			stale := derived
-			stale.CaptureFence = derived.CaptureFence + 1
-			err = locks.RevalidateDerivation(ctx, tx, stale)
-			Expect(err).To(MatchError(db.ErrHangarLockRetry))
-			Expect(err.Error()).To(ContainSubstring("superseded"))
+			Expect(tx.Rollback()).To(Succeed())
 		})
 
 		It("refuses to register a receipt whose reservation resolved elsewhere", func() {
 			activate()
-			reservation, _ := publish(hangarDigest(8), 1725830823000008)
+			reservation, ref := publish(hangarDigest(8), 1725830823000008)
+
+			var handoffID, executionID string
+			Expect(dbConn.QueryRow(`
+				SELECT handoff_id, execution_id FROM hangar_capture_reservations
+				WHERE reservation_id = $1`, string(reservation)).
+				Scan(&handoffID, &executionID)).To(Succeed())
+
+			handoff := output.HandoffID(handoffID)
+			execution := executioncontrol.Identity{
+				ExecutionID: executioncontrol.ExecutionID(executionID),
+				Fence:       1,
+			}
+
+			// A receipt for content this reservation never resolved to. The
+			// logical identity of published bytes is what recovery and inventory
+			// correlate on, so registering a ref against a reservation resolved
+			// elsewhere is a conflict and not a second record.
+			elsewhere := ref
+			elsewhere.Digest = hangarDigest(17)
 
 			tx, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(tx)
-			derived, err := db.DeriveHangarRefUnlocked(ctx, tx, reservation)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(derived.Logical.Digest).To(Equal(hangarDigest(8)))
+			err = repository.RegisterReceipt(ctx, tx, admissionFor(handoff, execution, reservation,
+				elsewhere, issueChallenge(handoff, reservation, elsewhere)))
+			Expect(err).To(MatchError(output.ErrConflict))
+			Expect(err.Error()).To(ContainSubstring("against a reservation resolved to"))
 			Expect(tx.Rollback()).To(Succeed())
 		})
 	})
