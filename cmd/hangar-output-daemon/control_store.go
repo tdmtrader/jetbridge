@@ -32,6 +32,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/concourse/concourse/hangar/output"
 )
@@ -331,4 +332,40 @@ func validRecordName(name string) error {
 	}
 
 	return nil
+}
+
+// capabilityReplayRecordName is where the verifier's spent nonces live.
+//
+// It is in the same control directory as the ledgers and it deliberately
+// carries neither record prefix: the two ledgers enumerate their own records by
+// prefix at startup, and this is not one of theirs. It is a single record
+// rather than one per nonce because the whole set is small -- bounded by the
+// capability TTL, which is at most fifteen minutes of one node's control
+// traffic -- and because replacing it is one atomic rename.
+const capabilityReplayRecordName = "capability-replay.json"
+
+// capabilityReplayStore is the control store seen through the interface
+// executioncontrol.CapabilityVerifier asks for.
+//
+// The verifier package has no storage of its own and must not grow one. This
+// daemon already owns a durable, checksummed, atomically-replaced directory,
+// and a second persistence mechanism beside it would be a second thing to get
+// wrong.
+type capabilityReplayStore struct{ store *controlStore }
+
+func (spent capabilityReplayStore) LoadSpentCapabilities() (map[string]time.Time, error) {
+	var record map[string]time.Time
+	found, err := spent.store.get(capabilityReplayRecordName, &record)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return map[string]time.Time{}, nil
+	}
+
+	return record, nil
+}
+
+func (spent capabilityReplayStore) SaveSpentCapabilities(nonces map[string]time.Time) error {
+	return spent.store.put(capabilityReplayRecordName, nonces)
 }

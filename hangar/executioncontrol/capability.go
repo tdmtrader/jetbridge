@@ -168,6 +168,20 @@ func (minter *CapabilityMinter) Mint(claims CapabilityClaims, nonce string) (Con
 	}, "|")), nil
 }
 
+// SpentCapabilities is where a verifier keeps the nonces it has already
+// admitted, so a restart does not forget them.
+//
+// It is an interface because this package has no storage of its own and must
+// not grow one: the daemon that verifies capabilities already owns a durable,
+// checksummed, atomically-replaced control directory, and a second persistence
+// mechanism beside it would be a second thing to get wrong. The map is the
+// whole set -- it is bounded by the TTL, which is at most fifteen minutes of
+// one node's control traffic -- so a save replaces it rather than appending.
+type SpentCapabilities interface {
+	LoadSpentCapabilities() (map[string]time.Time, error)
+	SaveSpentCapabilities(map[string]time.Time) error
+}
+
 // CapabilityVerifier is the daemon's half. It refuses replay, which is why it
 // holds state.
 type CapabilityVerifier struct {
@@ -180,8 +194,46 @@ type CapabilityVerifier struct {
 	// one succeeded, because a verifier that let the second through could not
 	// tell a retry from a captured token. Entries are dropped once past their
 	// expiry, so the map is bounded by the TTL and not by uptime.
-	mu    sync.Mutex
-	spent map[string]time.Time
+	//
+	// durable is where the same set is kept across a restart. Without it the
+	// refusal was a property of one process's uptime: a crash, a rollout or an
+	// OOM kill inside a token's TTL made a captured capability good for one
+	// more operation.
+	mu      sync.Mutex
+	spent   map[string]time.Time
+	durable SpentCapabilities
+}
+
+// RememberSpentIn gives the verifier somewhere durable to keep spent nonces,
+// and reads back what is already there.
+//
+// Called once at startup, before the listener. A load that fails is not
+// survivable by ignoring it: this verifier would then admit every capability
+// spent before the restart, which is the defect the store exists to close.
+func (verifier *CapabilityVerifier) RememberSpentIn(store SpentCapabilities) error {
+	if store == nil {
+		return fmt.Errorf("%w: a spent-capability store is required", ErrIncomplete)
+	}
+
+	spent, err := store.LoadSpentCapabilities()
+	if err != nil {
+		return err
+	}
+
+	verifier.mu.Lock()
+	defer verifier.mu.Unlock()
+
+	verifier.durable = store
+	now := verifier.clock().UTC()
+	for nonce, expiresAt := range spent {
+		// Pruned on the way in. A nonce past its expiry cannot authorize
+		// anything, so keeping it would only make the record grow.
+		if now.Before(expiresAt) {
+			verifier.spent[nonce] = expiresAt
+		}
+	}
+
+	return nil
 }
 
 func NewCapabilityVerifier(secret []byte, maxTTL time.Duration, clock func() time.Time) (*CapabilityVerifier, error) {
@@ -258,6 +310,18 @@ func (verifier *CapabilityVerifier) Verify(capability ControlCapability, expecte
 			"authorizes one operation", ErrUnauthorized, nonce)
 	}
 	verifier.spent[nonce] = expiresAt
+	if verifier.durable != nil {
+		// Recorded as spent BEFORE the operation runs, and a failure to record
+		// it refuses the operation. A verifier that admitted a capability it
+		// could not remember would be one restart away from admitting it
+		// twice, and this is the direction that must fail closed.
+		if err := verifier.durable.SaveSpentCapabilities(verifier.spent); err != nil {
+			delete(verifier.spent, nonce)
+
+			return fmt.Errorf("%w: this capability could not be recorded as spent, and one that "+
+				"is not recorded is one a restart would admit again: %v", ErrUnauthorized, err)
+		}
+	}
 
 	return nil
 }

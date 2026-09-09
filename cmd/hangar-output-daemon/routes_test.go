@@ -111,6 +111,11 @@ func (fixture *routeFixture) serve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("building the verifier: %v", err)
 	}
+	// The same wiring main.go does: the spent nonces belong in the control
+	// directory, not in one process's memory.
+	if err := verifier.RememberSpentIn(capabilityReplayStore{store: fixture.sourceFixture.store}); err != nil {
+		t.Fatalf("opening the spent-capability record: %v", err)
+	}
 	fixture.server = httptest.NewServer(NewServer(fixture.daemon, fixture.ledger,
 		fixture.source, verifier, fixture.unready).Handler())
 	t.Cleanup(fixture.server.Close)
@@ -707,6 +712,22 @@ func TestASpentCapabilityIsStillSpentAfterARestart(t *testing.T) {
 		t.Fatalf("the first presentation was refused: %d %s", status, body)
 	}
 
+	// A nonce that has already expired, planted in the record. It cannot
+	// authorize anything, and a record that kept them would grow with every
+	// capability this node ever saw.
+	spent := capabilityReplayStore{store: fixture.sourceFixture.store}
+	nonces, err := spent.LoadSpentCapabilities()
+	if err != nil {
+		t.Fatalf("reading the spent record: %v", err)
+	}
+	if _, recorded := nonces["nonce-spent-across-a-restart"]; !recorded {
+		t.Fatalf("the presented capability was not recorded as spent: %v", nonces)
+	}
+	nonces["nonce-from-an-hour-ago"] = fixedNow().Add(-time.Hour)
+	if err := spent.SaveSpentCapabilities(nonces); err != nil {
+		t.Fatalf("planting an expired nonce: %v", err)
+	}
+
 	// The restart: a new process over the same control directory.
 	fixture.serve(t)
 
@@ -717,5 +738,16 @@ func TestASpentCapabilityIsStillSpentAfterARestart(t *testing.T) {
 	if status, body := fixture.call(t, "/execution/v1/classify",
 		executioncontrol.BaseFacet, "classify", identifiedBy(identity(1))); status != http.StatusOK {
 		t.Errorf("a fresh capability was refused after the restart: %d %s", status, body)
+	}
+
+	kept, err := spent.LoadSpentCapabilities()
+	if err != nil {
+		t.Fatalf("re-reading the spent record: %v", err)
+	}
+	if _, stale := kept["nonce-from-an-hour-ago"]; stale {
+		t.Error("an expired nonce survived the restart; the record grows without bound")
+	}
+	if _, recorded := kept["nonce-spent-across-a-restart"]; !recorded {
+		t.Error("the spent nonce was pruned along with the expired one")
 	}
 }

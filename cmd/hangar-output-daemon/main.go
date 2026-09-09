@@ -87,9 +87,28 @@ func run(ctx context.Context, config Config, out *os.File) error {
 	if err != nil {
 		return err
 	}
+	// The spent nonces live in the same control directory the ledgers do. A
+	// verifier that kept them in memory would be one restart away from
+	// admitting a captured capability a second time inside its TTL.
+	if err := capability.RememberSpentIn(capabilityReplayStore{store: store}); err != nil {
+		return err
+	}
 
 	server := NewServer(daemon, base, source, capability, unready)
 
+	// TODO(phase-4): TLS flags before the first off-node caller lands (Phase 4
+	// first ATC->daemon box).
+	//
+	// This listener is node-local and plaintext, which is the shape Phase 3's
+	// boxes ask for: every caller of this API in this phase is a pod on this
+	// node, and the capability is a signed, facet-scoped, single-use bearer
+	// token. Phase 4 wires the first caller that is NOT on this node -- the web
+	// pod's execProcess revalidating a hold and taking a writer ticket -- and a
+	// bearer token over plaintext off-node is interceptable inside its TTL. So
+	// the phase that adds that caller adds --tls-cert/--tls-key/--tls-ca-cert
+	// here, spelled the way cmd/artifact-daemon/main.go spells them, and the
+	// "mTLS ATC operations" test; Phase 8's attest handshake renders the
+	// Secret, the NetworkPolicy and the values.
 	listener, err := net.Listen("tcp", config.ListenAddress)
 	if err != nil {
 		return fmt.Errorf("%w: listening on %s: %v", output.ErrInfrastructure,
