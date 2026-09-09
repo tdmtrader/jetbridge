@@ -108,6 +108,54 @@ func TestCreateIfAbsentPublishesOnceAndReportsAnExactGeneration(t *testing.T) {
 		if _, err := role.StatExactObject(ctx, absent); !errors.Is(err, output.ErrNotFound) {
 			t.Errorf("a stat of a generation that is not there returned %v, expected ErrNotFound", err)
 		}
+
+		// A reservation resolved to another namespace's scope is refused before
+		// anything is written, not after.
+		//
+		// The order is the whole assertion. Without the refusal the publisher
+		// derives its OWN key from its own namespace, creates the object there
+		// carrying a foreign-scope marker, and only the read-back classify
+		// notices -- by which time the bytes have landed at a key create-if-absent
+		// will refuse forever. So this checks the error AND that the key is empty.
+		elsewhere, err := output.DeriveNamespace(output.NamespaceConfig{
+			Store:            output.StoreGCS,
+			Bucket:           tier.bucket,
+			DeploymentPrefix: "deployments/blue",
+			TenantID:         "tenant-elsewhere",
+			ActivationEpoch:  testEpoch,
+		})
+		if err != nil {
+			t.Fatalf("deriving another tenant's namespace: %v", err)
+		}
+		if elsewhere.Scope() == namespace.Scope() {
+			t.Fatal("the two tenants derived the same scope; this case would assert nothing")
+		}
+
+		foreignDigest := digestOf("ef")
+		foreign := reservationFor(t, elsewhere, otherReservation, foreignDigest)
+		if _, err := role.EnsureObject(ctx, foreign,
+			bytes.NewReader(canonicalBytes("another namespace's tree")), 24); !errors.Is(err, output.ErrUnauthorized) {
+			t.Errorf("a reservation resolved to scope %q was published into %q and answered with "+
+				"%v, expected ErrUnauthorized", foreign.Scope, namespace.Scope(), err)
+		}
+
+		stranded, err := namespace.ObjectKey(foreignDigest)
+		if err != nil {
+			t.Fatalf("deriving the key: %v", err)
+		}
+		if _, present := read(t, tier, stranded); present {
+			t.Errorf("the refused publish left bytes at %s. A capture publishes into the "+
+				"namespace its epoch derived and no other, and an object created under this "+
+				"namespace's key with another scope's marker is unmanaged the moment it lands",
+				stranded)
+		}
+		foreignKey, err := elsewhere.ObjectKey(foreignDigest)
+		if err != nil {
+			t.Fatalf("deriving the foreign key: %v", err)
+		}
+		if _, present := read(t, tier, foreignKey); present {
+			t.Errorf("the refused publish wrote into the other namespace at %s", foreignKey)
+		}
 	})
 }
 
