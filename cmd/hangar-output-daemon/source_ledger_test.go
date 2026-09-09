@@ -463,6 +463,24 @@ func TestAStaleFenceIsRefusedWhileTheCurrentOneIsServed(t *testing.T) {
 	if _, err := fixture.source.AdmitWriter(context.Background(), current); err != nil {
 		t.Errorf("the current fence was refused after the takeover: %v", err)
 	}
+
+	// A REPEATED hold at the superseded fence is a read, and reads are served.
+	// It returns the stored statement -- the one the first hold returned, at
+	// fence 1 -- and grants nothing; a takeover keeps every durable statement,
+	// and the previous owner asking what this node said is not the previous
+	// owner acting.
+	//
+	// This is also why the hold replay repairs its cleanup gate through
+	// EnsureGateOpen, which takes no fence. A fenced OpenGate here would turn
+	// this read into a stale-fence refusal, and the crash it repairs does not
+	// care which controller replays the hold.
+	replayed, err := fixture.source.AcknowledgeHold(context.Background(), admission(),
+		output.SourceIncarnation{})
+	if err != nil {
+		t.Errorf("a repeated hold at the superseded fence was refused: %v", err)
+	} else if !sameCaptureStatement(replayed, hold) {
+		t.Error("a repeated hold at the superseded fence returned a different statement")
+	}
 }
 
 // A registry recreated on this node does not recreate authority.
