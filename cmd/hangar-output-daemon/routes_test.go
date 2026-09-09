@@ -28,11 +28,12 @@ import (
 type routeFixture struct {
 	*sourceFixture
 
-	server *httptest.Server
-	daemon *Daemon
-	minter *executioncontrol.CapabilityMinter
-	epoch  executioncontrol.ActivationEpoch
-	nonce  int
+	server  *httptest.Server
+	unready string
+	daemon  *Daemon
+	minter  *executioncontrol.CapabilityMinter
+	epoch   executioncontrol.ActivationEpoch
+	nonce   int
 
 	// The store this daemon was pointed at, and the configuration it was built
 	// from. The redaction scan needs both: it has to know the bucket name and
@@ -66,14 +67,9 @@ func newRoutes(t *testing.T, unready string) *routeFixture {
 		t.Fatalf("building the daemon: %v", err)
 	}
 
-	secret := bytes.Repeat([]byte{7}, executioncontrol.CapabilityKeyBytes)
-	minter, err := executioncontrol.NewCapabilityMinter(secret, time.Minute, source.clock)
+	minter, err := executioncontrol.NewCapabilityMinter(capabilitySecret(), time.Minute, source.clock)
 	if err != nil {
 		t.Fatalf("building the minter: %v", err)
-	}
-	verifier, err := executioncontrol.NewCapabilityVerifier(secret, time.Minute, source.clock)
-	if err != nil {
-		t.Fatalf("building the verifier: %v", err)
 	}
 
 	fixture := &routeFixture{
@@ -84,12 +80,40 @@ func newRoutes(t *testing.T, unready string) *routeFixture {
 		store:         emulatorServer,
 		bucket:        bucket,
 		config:        config,
+		unready:       unready,
 	}
-	fixture.server = httptest.NewServer(
-		NewServer(daemon, source.ledger, source.source, verifier, unready).Handler())
-	t.Cleanup(fixture.server.Close)
+	fixture.serve(t)
 
 	return fixture
+}
+
+// capabilitySecret is the one key the minter and every verifier in these tests
+// share.
+func capabilitySecret() []byte {
+	return bytes.Repeat([]byte{7}, executioncontrol.CapabilityKeyBytes)
+}
+
+// serve builds a verifier the way the daemon builds one and puts a server in
+// front of it.
+//
+// It is called again by the restart row, which is the whole reason it is a
+// method: what a restart must not lose is the set of capabilities already
+// spent, and the only way to see that is to build a second verifier over the
+// same control directory.
+func (fixture *routeFixture) serve(t *testing.T) {
+	t.Helper()
+
+	if fixture.server != nil {
+		fixture.server.Close()
+	}
+	verifier, err := executioncontrol.NewCapabilityVerifier(
+		capabilitySecret(), time.Minute, fixture.clock)
+	if err != nil {
+		t.Fatalf("building the verifier: %v", err)
+	}
+	fixture.server = httptest.NewServer(NewServer(fixture.daemon, fixture.ledger,
+		fixture.source, verifier, fixture.unready).Handler())
+	t.Cleanup(fixture.server.Close)
 }
 
 // call presents a capability minted for exactly the facet and operation given,
@@ -651,5 +675,47 @@ func TestACapabilityForOneExecutionCannotActOnAnothersHandoff(t *testing.T) {
 		Started: started, CaptureFence: captureFence, ObservedAt: output.NewTimestamp(fixedNow()),
 	}); err != nil {
 		t.Errorf("A could not confirm its own seal afterwards: %v", err)
+	}
+}
+
+// A capability is spent once, and a restart does not forget that.
+//
+// The replay refusal lived in the verifier's memory. A daemon restart -- a
+// crash, a rollout, an OOM kill -- emptied it, so a token captured off the
+// wire was admitted a second time inside its TTL, which is up to fifteen
+// minutes. The bound was the ledgers' own idempotency rather than the
+// capability, and the auth test said "replayed capability ... fail closed"
+// without the row that a restart is.
+//
+// The pair: a fresh capability still works after the restart, so the refusal
+// is about this nonce and not about the daemon having given up.
+func TestASpentCapabilityIsStillSpentAfterARestart(t *testing.T) {
+	fixture := newRoutes(t, "")
+	admitted(t, &fixture.ledgerFixture)
+
+	token, err := fixture.minter.Mint(executioncontrol.CapabilityClaims{
+		Facet:           executioncontrol.BaseFacet,
+		Operation:       "classify",
+		Identity:        identity(1),
+		ActivationEpoch: fixture.epoch,
+	}, "nonce-spent-across-a-restart")
+	if err != nil {
+		t.Fatalf("minting: %v", err)
+	}
+	if status, body := fixture.callWith(t, "/execution/v1/classify", token,
+		identifiedBy(identity(1))); status != http.StatusOK {
+		t.Fatalf("the first presentation was refused: %d %s", status, body)
+	}
+
+	// The restart: a new process over the same control directory.
+	fixture.serve(t)
+
+	if status, body := fixture.callWith(t, "/execution/v1/classify", token,
+		identifiedBy(identity(1))); status != http.StatusForbidden {
+		t.Errorf("a capability spent before the restart was admitted after it: %d %s", status, body)
+	}
+	if status, body := fixture.call(t, "/execution/v1/classify",
+		executioncontrol.BaseFacet, "classify", identifiedBy(identity(1))); status != http.StatusOK {
+		t.Errorf("a fresh capability was refused after the restart: %d %s", status, body)
 	}
 }
