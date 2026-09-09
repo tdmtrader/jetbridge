@@ -40,10 +40,17 @@ func (repository *HangarOutputRepository) ResolveLogicalReservation(ctx context.
 		return err
 	}
 
+	// The state predicate is the whole reason this is an INSERT ... SELECT.
+	// Cancellation is terminal (Req 11), and the cancellation does not take the
+	// capture lease away -- so an owner still holding the current fence, which
+	// is the only thing the schema checks here, could resolve a logical
+	// identity for a capture the control plane had already given up on.
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO hangar_logical_reservations
 			(reservation_id, scope, digest, logical_bytes, capture_fence)
-		VALUES ($1, $2, $3, $4, $5)
+		SELECT $1, $2, $3, $4, $5
+		FROM hangar_capture_reservations r
+		WHERE r.reservation_id = $1 AND r.state IN ('unresolved', 'resolved')
 		ON CONFLICT (reservation_id) DO NOTHING`,
 		string(resolution.ReservationID),
 		string(resolution.Scope),
@@ -54,7 +61,17 @@ func (repository *HangarOutputRepository) ResolveLogicalReservation(ctx context.
 	if err != nil {
 		return hangarConflict(err)
 	}
-	if inserted, err := result.RowsAffected(); err == nil && inserted == 1 {
+	inserted, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if inserted == 0 {
+		if err := hangarRefuseTerminalCapture(ctx, tx, resolution.ReservationID,
+			"resolve a logical identity"); err != nil {
+			return err
+		}
+	}
+	if inserted == 1 {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE hangar_capture_reservations SET state = 'resolved'
 			WHERE reservation_id = $1 AND state = 'unresolved'`,
@@ -108,6 +125,7 @@ func (repository *HangarOutputRepository) RecordFirstObjectCreate(ctx context.Co
 		SET first_create_attempted_at = coalesce(r.first_create_attempted_at, now()),
 		    past_irreversible_publish_point = true
 		WHERE r.reservation_id = $1
+		  AND r.state IN ('unresolved', 'resolved')
 		  AND EXISTS (
 			SELECT 1 FROM hangar_capture_attempt_leases l
 			WHERE l.reservation_id = r.reservation_id AND l.capture_fence = $2)`,
@@ -115,9 +133,54 @@ func (repository *HangarOutputRepository) RecordFirstObjectCreate(ctx context.Co
 	if err != nil {
 		return hangarConflict(err)
 	}
-	if recorded, err := result.RowsAffected(); err == nil && recorded == 0 {
+	recorded, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if recorded == 0 {
+		// Two reasons produce zero rows, and they are different answers. A
+		// terminal capture is named first because "a stale owner may not
+		// publish" would be a lie about a live owner whose capture was
+		// cancelled underneath it, and the caller's next move differs: a stale
+		// owner stops, a cancelled owner releases the source.
+		if err := hangarRefuseTerminalCapture(ctx, tx, reservation,
+			"pass the irreversible publish point"); err != nil {
+			return err
+		}
+
 		return fmt.Errorf("%w: reservation %s is not owned at capture fence %d; a stale owner may "+
 			"not publish", executioncontrol.ErrStaleFence, reservation, fence)
+	}
+
+	return nil
+}
+
+// hangarRefuseTerminalCapture reports a conflict when the reservation has
+// already reached a state it cannot leave.
+//
+// It reads the state rather than inferring it, and it returns nil when the
+// capture is still live, so the caller keeps whatever refusal it had for the
+// other reasons the same statement can affect no rows.
+func hangarRefuseTerminalCapture(ctx context.Context, tx output.Tx, reservation output.ReservationID, attempted string) error {
+	var state string
+	switch err := hangarQueryRow(ctx, tx,
+		`SELECT state FROM hangar_capture_reservations WHERE reservation_id = $1`,
+		[]any{string(reservation)}, &state); {
+	case errors.Is(err, output.ErrNotFound):
+		return nil
+	case err != nil:
+		return err
+	}
+
+	switch state {
+	case "cancelled":
+		return fmt.Errorf("%w: capture %s was terminally cancelled; an owner holding the current "+
+			"fence may not %s afterwards, because cancellation before the irreversible publish "+
+			"point is what makes the owed source release owed for a capture that published "+
+			"nothing", output.ErrConflict, reservation, attempted)
+	case "registered", "failed":
+		return fmt.Errorf("%w: capture %s is %s, which is terminal; it may not %s",
+			output.ErrConflict, reservation, state, attempted)
 	}
 
 	return nil

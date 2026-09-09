@@ -943,6 +943,119 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			Expect(reading.Rollback()).To(Succeed())
 		})
 
+		// Review finding R2-3. Cancellation is terminal by Req 11's own word,
+		// but it does not take the capture lease away -- so the owner that was
+		// running when the control plane gave up is still the owner at the
+		// current fence, and every write on the publish path was fenced and
+		// nothing else. The control comes first: the same call, by the same
+		// owner, at the same fence, succeeds while the capture is live.
+		It("refuses the live owner's publish writes after a terminal cancellation", func() {
+			activate()
+
+			handoff := output.HandoffID(uuid.NewString())
+			lease := output.SourceLeaseID(uuid.NewString())
+			execution := identity()
+			name := output.OutputName("result")
+			deadline := output.NewTimestamp(time.Now().Add(24 * time.Hour))
+
+			tx, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(tx)
+			Expect(repository.PredeclareHandoff(ctx, tx, output.CaptureAdmission{
+				ProtocolVersion: output.ProtocolVersion,
+				Execution:       execution,
+				ActivationEpoch: 1,
+				HandoffID:       handoff,
+				SourceLeaseID:   lease,
+				Output:          name,
+				CaptureDeadline: deadline,
+			})).To(Succeed())
+			Expect(repository.AcknowledgeSourceHold(ctx, tx, holdFor(handoff, lease, execution, name))).
+				To(Succeed())
+			reservation, err := repository.CommitCaptureReservation(ctx, tx,
+				output.SuccessfulFinishDisposition{
+					ProtocolVersion:       output.ProtocolVersion,
+					Disposition:           output.DispositionCapture,
+					Execution:             execution,
+					ActivationEpoch:       1,
+					HandoffID:             handoff,
+					SourceLeaseID:         lease,
+					ProducerCheckpointID:  output.OpaqueID("checkpoint-" + string(handoff)),
+					Output:                name,
+					CaptureFence:          1,
+					CaptureDeadline:       deadline,
+					FinishAcknowledgement: finishFor(execution),
+				})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = repository.AcquireCaptureLease(ctx, tx, reservation, uuid.NewString(),
+				output.MinLeaseTerm)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(tx.Commit()).To(Succeed())
+
+			resolution := output.LogicalResolution{
+				ProtocolVersion: output.ProtocolVersion,
+				Execution:       execution,
+				ActivationEpoch: 1,
+				HandoffID:       handoff,
+				ReservationID:   reservation,
+				CaptureFence:    1,
+				Scope:           "team-a",
+				Digest:          hangarDigest(31),
+				LogicalBytes:    4096,
+				ResolvedAt:      output.NewTimestamp(time.Now()),
+			}
+
+			// The control, thrown away: while the capture is live this owner
+			// resolves and passes the publish point. Without it, the refusals
+			// below would also pass on a repository that had stopped writing.
+			live, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(live)
+			Expect(repository.ResolveLogicalReservation(ctx, live, resolution)).To(Succeed())
+			Expect(repository.RecordFirstObjectCreate(ctx, live, reservation, 1)).To(Succeed())
+			Expect(live.Rollback()).To(Succeed())
+
+			cancelling, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(cancelling)
+			status, err := repository.CancelOrSettle(ctx, cancelling, handoff)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(status.PastIrreversiblePublishPoint).To(BeFalse())
+			Expect(cancelling.Commit()).To(Succeed())
+
+			after, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(after)
+			err = repository.ResolveLogicalReservation(ctx, after, resolution)
+			Expect(err).To(MatchError(output.ErrConflict))
+			Expect(err.Error()).To(ContainSubstring("terminally cancelled"))
+			Expect(after.Rollback()).To(Succeed())
+
+			publishing, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(publishing)
+			err = repository.RecordFirstObjectCreate(ctx, publishing, reservation, 1)
+			Expect(err).To(MatchError(output.ErrConflict))
+			Expect(err.Error()).To(ContainSubstring("terminally cancelled"))
+			Expect(publishing.Rollback()).To(Succeed())
+
+			var past bool
+			var state string
+			Expect(dbConn.QueryRow(`
+				SELECT past_irreversible_publish_point, state FROM hangar_capture_reservations
+				WHERE reservation_id = $1`, string(reservation)).Scan(&past, &state)).To(Succeed())
+			Expect(state).To(Equal("cancelled"))
+			Expect(past).To(BeFalse(),
+				"a cancelled capture was moved past the point nothing walks back")
+
+			var resolved bool
+			Expect(dbConn.QueryRow(`
+				SELECT EXISTS(SELECT 1 FROM hangar_logical_reservations WHERE reservation_id = $1)`,
+				string(reservation)).Scan(&resolved)).To(Succeed())
+			Expect(resolved).To(BeFalse(),
+				"a cancelled capture resolved a logical identity nothing will ever publish")
+		})
+
 		It("reports a registered capture settled without any release", func() {
 			// The other way a capture settles: the receipt is registered, the
 			// object exists, and there is nothing to release.
