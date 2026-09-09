@@ -479,8 +479,23 @@ func checkDeleteIsIsolatedToTheReclaimer(found surface) []string {
 	return problems
 }
 
+// storageRoleInterfaces are the interfaces that reach the object store or the
+// node's source ledger. They are the surface Req 7 and Req 24 are about, and
+// the bare-string rule below applies to them by name-independent type.
+//
+// Each must exist, or the rule is guarding an interface somebody renamed.
+var storageRoleInterfaces = []string{
+	"Publisher", "Inventory", "Reclaimer", "SourceControl", "ReceiptVerifier",
+}
+
 // locationParamNames are parameter names that would let a caller choose where
 // the output plane writes or reads.
+//
+// They are the *diagnostic*, not the rule: a name list is defeated by a rename,
+// and `b`, `where` and `location` are ordinary names for a location. What the
+// rule turns on is the type — see checkNoAPIAcceptsAStorageLocation. Keeping
+// the names is still worth it, because they produce the message that says which
+// authority was being handed over.
 var locationParamNames = []string{
 	"bucket", "prefix", "key", "objectkey", "path", "hostpath", "root", "dir", "directory", "url", "endpoint",
 }
@@ -495,8 +510,42 @@ func checkNoAPIAcceptsAStorageLocation(found surface) []string {
 		return []string{"the inventory found no exported callable; this rule would pass vacuously"}
 	}
 
+	roles := map[string]bool{}
+	for _, name := range storageRoleInterfaces {
+		roles[name] = true
+	}
+	declared := map[string]bool{}
+	for _, found := range found.Types {
+		if found.Kind == "interface" {
+			declared[found.Name] = true
+		}
+	}
+	for _, name := range storageRoleInterfaces {
+		if !declared[name] {
+			problems = append(problems, "no interface named "+name+" was found. The "+
+				"storage-location rule is stated over the roles that reach the object store and "+
+				"the source ledger; a renamed or removed one leaves it guarding nothing.")
+		}
+	}
+
 	for _, callable := range found.Callables {
 		for _, param := range callable.Params {
+			// A bare string on a role interface is forbidden outright. Every
+			// identity these roles take is a distinct type -- a TreeRef, a
+			// typed UUID, a resolved reservation -- so the only thing a plain
+			// string can be is a name somebody chose, and Req 7 says a handle
+			// string alone is never an identity. The delete rule already says
+			// this for Reclaimer; there was no reason it stopped there.
+			if roles[callable.Owner] && param.Type == "string" {
+				name := param.Name
+				if name == "" {
+					name = "(unnamed)"
+				}
+				problems = append(problems, callable.File+": "+describe(callable)+
+					" takes a bare string parameter "+name+". The control plane derives every "+
+					"bucket, scope, key and path from authenticated deployment context; a role "+
+					"that accepts a string accepts one a caller chose.")
+			}
 			lower := strings.ToLower(param.Name)
 			for _, forbidden := range locationParamNames {
 				if lower != forbidden {
@@ -705,6 +754,44 @@ func TestArchitectureGuardsAreNotVacuous(t *testing.T) {
 			}
 		})
 	}
+
+	// The storage-location rule must catch a location by *type*, not by the
+	// name somebody gave the parameter. A rule that matches names is a rule a
+	// rename defeats, and `b`, `where` and `location` are all perfectly
+	// ordinary parameter names.
+	t.Run("a bare string on a role interface is caught whatever it is called", func(t *testing.T) {
+		roles := surface{
+			Types: []declaredType{
+				{File: "output.go", Name: "Publisher", Kind: "interface"},
+				{File: "output.go", Name: "Inventory", Kind: "interface"},
+				{File: "output.go", Name: "Reclaimer", Kind: "interface"},
+				{File: "output.go", Name: "SourceControl", Kind: "interface"},
+				{File: "output.go", Name: "ReceiptVerifier", Kind: "interface"},
+			},
+			Callables: []declaredCallable{
+				{File: "output.go", Owner: "SourceControl", Name: "BeginSeal",
+					Params: []declaredParam{{Name: "b", Type: "string"}}},
+			},
+		}
+		problems := checkNoAPIAcceptsAStorageLocation(roles)
+		joined := strings.Join(problems, "\n")
+		if !strings.Contains(joined, "SourceControl.BeginSeal takes a bare string parameter b") {
+			t.Errorf("the rule did not object to a bare string parameter named b. It reported:\n%s", joined)
+		}
+	})
+
+	// And it must know the roles exist. A renamed interface would otherwise
+	// leave the rule guarding nothing.
+	t.Run("a missing role interface is reported", func(t *testing.T) {
+		problems := checkNoAPIAcceptsAStorageLocation(surface{
+			Types:     []declaredType{{File: "output.go", Name: "Publisher", Kind: "interface"}},
+			Callables: []declaredCallable{{File: "output.go", Owner: "Publisher", Name: "StatExactObject"}},
+		})
+		joined := strings.Join(problems, "\n")
+		if !strings.Contains(joined, "no interface named SourceControl") {
+			t.Errorf("the rule did not notice a missing role interface. It reported:\n%s", joined)
+		}
+	})
 
 	// The vocabulary rule must not fire on the words that legitimately contain
 	// a forbidden term, or the allowlist above is doing nothing and the rule
