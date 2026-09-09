@@ -642,3 +642,50 @@ func TestACaptureSelectedPodIsPinnedToTheReservingNodeAndAnOrdinaryOneIsNot(t *t
 			pinned, testReservingNode)
 	}
 }
+
+// assignsCaptureClass matches an assignment TO the field and nothing else: not
+// `c.captureClass == nil`, not `c.captureClass.CaptureClass(...)`, not the
+// `captureClassHeld` constant beside it.
+var assignsCaptureClass = regexp.MustCompile(`captureClass(\s*=[^=]|:\s)`)
+
+// One assignment site for the ledger classifier, and it is newContainer.
+//
+// Reviewer's F8. `newContainer` assigns it under the output-plane predicate;
+// worker.go assigned it again, unconditionally, at both FindOrCreateContainer
+// returns and in LookupContainer -- all of which had already been through
+// newContainer. Harmless while the two agreed, and the class of defect this
+// very field produced (a nil-tolerant field nobody assigns in production, which
+// made refuseIfCaptureHeld a no-op on every path) is exactly the one two
+// assignment sites invite: the test above pins newContainer alone, so a second
+// site could disagree with it and be pinned by nothing.
+//
+// The scan is over the package's own source rather than over behaviour, because
+// what is being asserted is that there is nowhere ELSE to look.
+func TestTheLedgerClassifierIsAssignedInExactlyOnePlace(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("reading the package: %v", err)
+	}
+
+	sites := map[string]int{}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		source, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("reading %s: %v", name, err)
+		}
+		sites[name] += len(assignsCaptureClass.FindAllIndex(source, -1))
+		if sites[name] == 0 {
+			delete(sites, name)
+		}
+	}
+
+	if len(sites) != 1 || sites["container.go"] != 1 {
+		t.Errorf("the ledger classifier is assigned in %v; it is assigned once, in "+
+			"newContainer, because a second site is a second answer to \"does this container "+
+			"ask the ledger\" and only the first one is pinned", sites)
+	}
+}

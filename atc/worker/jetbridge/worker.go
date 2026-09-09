@@ -41,18 +41,6 @@ func (w *Worker) SetOutputControls(resolver OutputControlResolver) {
 	w.outputControls = resolver
 }
 
-// captureClassifier is the storage backend's read of the output ledger, when
-// the backend has one. A deployment with no daemon-set backend gets nil, which
-// is what leaves every ordinary path untouched.
-func (w *Worker) captureClassifier() captureClassifier {
-	classifier, ok := w.storageBackend.(captureClassifier)
-	if !ok {
-		return nil
-	}
-
-	return classifier
-}
-
 // NewWorker creates a new Worker backed by the given Kubernetes clientset.
 func NewWorker(dbWorker db.Worker, clientset kubernetes.Interface, config Config) *Worker {
 	nodeIPResolver := NewNodeIPResolver(clientset)
@@ -153,7 +141,6 @@ func (w *Worker) FindOrCreateContainer(
 		mounts, volumes := w.buildVolumeMountsForSpec(containerHandle, containerSpec)
 		container := newContainer(containerHandle, metadata, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes, w.storageBackend, true, false)
 		container.outputControls = w.outputControls
-		container.captureClass = w.captureClassifier()
 		return container, mounts, nil
 	}
 
@@ -170,7 +157,6 @@ func (w *Worker) FindOrCreateContainer(
 	mounts, volumes := w.buildVolumeMountsForSpec(containerHandle, containerSpec)
 	container := newContainer(containerHandle, metadata, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes, w.storageBackend, false, false)
 	container.outputControls = w.outputControls
-	container.captureClass = w.captureClassifier()
 	return container, mounts, nil
 }
 
@@ -302,9 +288,13 @@ func (w *Worker) LookupContainer(ctx context.Context, handle string) (runtime.Co
 	// There is no ContainerSpec behind a lookup, so this Container must never
 	// create or replace a pod — it exists only to attach to one.
 	container.lookedUp = true
-	// And it is the hijack path, which is the one Req 18 takes away from a
-	// capture-enabled task. It gets the classifier so it can say so.
-	container.captureClass = w.captureClassifier()
+	// It is the hijack path -- the one Req 18 takes away from a capture-enabled
+	// task -- and it gets its ledger classifier from newContainer above, like
+	// every other container this worker builds. It used to be assigned a second
+	// time here, and at both FindOrCreateContainer returns, all of which had
+	// already been through newContainer. Harmless while the two agreed; the
+	// class of defect the phase found on this very field is a nil-tolerant one
+	// nobody assigns, and two assignment sites is how the two come to disagree.
 	return container, true, nil
 }
 
