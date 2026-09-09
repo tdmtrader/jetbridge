@@ -527,3 +527,56 @@ func TestTheOutputLedgersControlDirectoryIsNotReachableThroughTheOrdinaryAPI(t *
 		t.Errorf("an unheld step directory answered %d; the guard became an outage", code)
 	}
 }
+
+// The classification route the cleanup init container asks.
+//
+// It exists because the `rm -rf` init container is the one destructive path on
+// a node that consulted nothing, and it cannot consult the way every other
+// caller does: an init container holds no client certificate, so /artifacts/ is
+// closed to it. So it asks this, and the script refuses to remove anything the
+// answer does not call unmanaged.
+//
+// The pair is the whole test: a held handle answers `held` and an unheld one
+// answers `unmanaged`. A route that said `held` about everything would be an
+// outage dressed as a guard, and one that said `unmanaged` about everything
+// would be the exposure it was written to close.
+func TestTheCaptureClassRouteAnswersHeldAndUnheldAndDestroysNothing(t *testing.T) {
+	server, storage := capturedServer(t)
+	handler := server.Handler()
+
+	ask := func(target string) (int, string) {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+
+		return recorder.Code, recorder.Body.String()
+	}
+
+	code, body := ask("/capture-held/steps/" + heldStepDir())
+	if code != http.StatusOK {
+		t.Fatalf("asking about a held step answered %d: %s", code, body)
+	}
+	if !strings.Contains(body, `"class":"held"`) {
+		t.Errorf("a capture-held step directory classified as %s", body)
+	}
+
+	code, body = ask("/capture-held/steps/unheld-handle")
+	if code != http.StatusOK {
+		t.Fatalf("asking about an unheld step answered %d: %s", code, body)
+	}
+	if !strings.Contains(body, `"class":"unmanaged"`) {
+		t.Errorf("an unheld step directory classified as %s; the cleanup init would refuse to "+
+			"clear a workspace nothing holds, which is an outage rather than a guard", body)
+	}
+
+	// It reads. It does not remove, and it does not reach outside steps/.
+	stillThere(t, storage, heldIncarnation())
+	if code, body := ask("/capture-held/steps/../" + ledger.ControlDirName); code == http.StatusOK &&
+		!strings.Contains(body, `"class"`) {
+		t.Errorf("a traversal out of steps/ was served: %d %s", code, body)
+	}
+	entries, err := os.ReadDir(filepath.Join(storage, ledger.ControlDirName))
+	if err != nil || len(entries) != 1 {
+		t.Errorf("the control directory holds %d entries after the classification route was "+
+			"asked (err %v)", len(entries), err)
+	}
+}

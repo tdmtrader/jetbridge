@@ -16,6 +16,9 @@ import (
 
 	"github.com/brine-dev/brine-go/pkg/brine"
 
+	corev1 "k8s.io/api/core/v1"
+
+	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	hangaroutput "github.com/concourse/concourse/hangar/output"
 )
@@ -30,11 +33,37 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 		// that has not run. There is deliberately no sentence that selects
 		// capture after the container runs, so "a late request captures an
 		// already-running task" is a state no scenario can build (Req 1).
-		stubMap[ContainerDraft, CaptureDraft](
+		brine.DefineMap[ContainerDraft, CaptureDraft](
 			"its output {string} is captured when the step succeeds",
-			capturePodPhase,
-			"the DurableOutputCapture extension on the container spec and the "+
-				"admission that predeclares its handoff and source-lease identities"),
+			func(in ContainerDraft, p brine.Params, _ *brine.Recorder) (CaptureDraft, error) {
+				const pattern = "its output {string} is captured when the step succeeds"
+				outputName, err := paramAt(pattern, p, 0)
+				if err != nil {
+					return CaptureDraft{}, err
+				}
+
+				// The identities are MINTED HERE, not named by the feature
+				// file, for the same reason the daemon-side sentence mints
+				// them: a scenario that could choose a handoff could make two
+				// scenarios collide on one node's ledger.
+				return CaptureDraft{
+					Draft:  in,
+					Output: hangaroutput.OutputName(outputName),
+					Admission: hangaroutput.CaptureAdmission{
+						ProtocolVersion: hangaroutput.ProtocolVersion,
+						Execution: executioncontrol.Identity{
+							ExecutionID: executioncontrol.ExecutionID(freshUUID()),
+							Fence:       1,
+						},
+						ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch),
+						HandoffID:       hangaroutput.HandoffID(freshUUID()),
+						SourceLeaseID:   hangaroutput.SourceLeaseID(freshUUID()),
+						Output:          hangaroutput.OutputName(outputName),
+						CaptureDeadline: hangaroutput.NewTimestamp(time.Now().UTC().Add(time.Hour)),
+					},
+				}, nil
+			},
+		),
 
 		// The second way in, for chains that need the daemon as well as the pod.
 		// It is a different sentence rather than a second definition of the one
@@ -111,10 +140,15 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		stubMap[CaptureDraft, CaptureDraft](
-			"a second output {string} is also selected for capture",
-			capturePodPhase,
-			"the admission-time refusal of more than one declared capture output"),
+		// It records an ATTEMPT. Production never reaches a state where two
+		// outputs are selected; it reaches a state where a second was asked
+		// for, and the refusal is what `the capture pod is built` returns.
+		Refine[CaptureDraft]("a second output {string} is also selected for capture",
+			func(in CaptureDraft, a Args) CaptureDraft {
+				in.SecondOutput = hangaroutput.OutputName(a.String(0))
+
+				return in
+			}),
 
 		stubMap[CaptureDraft, CaptureDraft](
 			"the worker's cohort is ready for {string}",
@@ -131,49 +165,50 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 			capturePodPhase,
 			"the ledger classifier recreatePausePodIfTerminal must consult"),
 
-		stubMap[CaptureDraft, CapturePodCreated](
+		brine.DefineMap[CaptureDraft, CapturePodCreated](
 			"the capture pod is built",
-			capturePodPhase,
-			"Container.buildPod's capture-selected branch"),
+			func(in CaptureDraft, _ brine.Params, _ *brine.Recorder) (CapturePodCreated, error) {
+				return buildCapturePod(in)
+			},
+		),
 
 		// Checks, terminal over the Pod that came back.
 
-		stubCheck[CapturePodCreated](
-			"the capture control init runs before every writer",
-			capturePodPhase,
-			"the capture control init container at index 0 of the init slice"),
+		CheckThat[CapturePodCreated]("the capture control init runs before every writer",
+			captureControlIsFirstInitContainer),
 
-		stubCheck[CapturePodCreated](
+		CheckThat[CapturePodCreated](
 			"the capture control init is the only container carrying the source-control grant",
-			capturePodPhase,
-			"the one-shot source-control capability, mounted into exactly one container"),
+			captureGrantIsInExactlyTheControlInit),
 
 		// The absence half. Its positive control is the line above it, in the
 		// same scenario: "no credential" passes on a worker that ignores its
 		// configuration entirely.
-		stubCheck[CapturePodCreated](
-			"the task's containers carry no Hangar credential",
-			capturePodPhase,
-			"the credential placement buildPod must not copy into task or sidecar containers"),
+		CheckThat[CapturePodCreated]("the task's containers carry no Hangar credential",
+			taskContainersCarryNoHangarCredential),
 
-		stubCheck[CapturePodCreated](
+		CheckThat[CapturePodCreated](
 			"the capture pod carries the base control handshake and the Downward API pod and node fields",
-			capturePodPhase,
-			"the ExecutionControl envelope and the exact Downward API field refs"),
+			captureCarriesHandshakeAndDownwardAPI),
 
 		// A COUNT, not membership. The migration's own GAP rows warn that
 		// brine's mount steps are membership by default, and "every mount
 		// resolves to a declared Volume" is only a real claim when the number
 		// of mounts is pinned too.
-		stubCheck[CapturePodCreated](
+		CheckInt[CapturePodCreated](
 			"the capture pod declares {int} mounts, and every one resolves to a declared Volume",
-			capturePodPhase,
-			"the capture pod's volume and mount construction"),
+			"the number of mounts that resolve to a declared Volume",
+			captureResolvedMountCount),
 
-		stubCheck[CapturePodCreated](
-			"the capture pod carries {int} init containers",
-			capturePodPhase,
-			"the init-container list a capture-selected pod is built with"),
+		CheckInt[CapturePodCreated]("the capture pod carries {int} init containers",
+			"the number of init containers",
+			func(in CapturePodCreated) (int, error) {
+				if in.Pod == nil {
+					return 0, fmt.Errorf("no capture pod was built: %v", in.Err)
+				}
+
+				return len(in.Pod.Spec.InitContainers), nil
+			}),
 
 		stubCheck[CapturePodCreated](
 			"the capture pod is admitted only by a node carrying {string}",
@@ -190,14 +225,326 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 			"Phase 8 Green",
 			"the refusal a worker whose output facet is not enabled must return"),
 
-		stubCheck[CapturePodCreated](
-			"the pod build is refused saying {string}",
-			capturePodPhase,
-			"the typed refusals the capture-selected build path returns"),
+		CheckContains[CapturePodCreated]("the pod build is refused saying {string}",
+			"the refusal",
+			func(in CapturePodCreated) (string, error) {
+				if in.Err == nil {
+					return "", fmt.Errorf("the capture pod was built; nothing was refused")
+				}
+
+				return in.Err.Error(), nil
+			}),
 
 		stubCheck[CapturePodCreated](
 			"the pod's fetch init container reads from the bucket {string}",
-			capturePodPhase,
+			"Phase 9",
 			"the strict-input bucket the output plane must never redirect"),
+
+		// The ORDINARY pod's half of the control scenario, over PodCreated
+		// rather than CapturePodCreated: the pod a task that selected nothing
+		// builds carries no output-plane container at all. Without this line
+		// the control scenario cannot redden on a buildPod that emits the
+		// capture control init when there is no capture.
+		CheckThat[PodCreated]("the pod carries no output-plane container",
+			func(in PodCreated) error {
+				if in.Pod == nil {
+					return fmt.Errorf("no pod was created")
+				}
+				for _, container := range in.Pod.Spec.InitContainers {
+					if container.Name == captureControlInitName {
+						return fmt.Errorf("the pod for %q carries the capture control init, and "+
+							"this step selected no output for capture; an ordinary pipeline's pod "+
+							"is byte-identical to the one built before the output plane existed",
+							in.Handle)
+					}
+				}
+				for _, carrier := range containersCarrying(in.Pod, captureGrantEnvName) {
+					return fmt.Errorf("container %q of an ordinary pod carries the source-control "+
+						"grant", carrier)
+				}
+
+				return nil
+			}),
 	}
+}
+
+// buildCapturePod runs the described container through the worker the way the
+// ATC does, with the control envelope on the spec, and reads back what the
+// cluster was actually asked for.
+//
+// It is `runDraft` with one field added, deliberately: if the capture path
+// composed its own ContainerSpec the control scenario would be comparing two
+// pods this fixture built two different ways, which proves nothing about
+// production. The ONLY difference between the pod this function asks for and
+// the pod `the container runs` asks for is ContainerSpec.ExecutionControl.
+func buildCapturePod(in CaptureDraft) (CapturePodCreated, error) {
+	draft := in.Draft
+
+	control := &runtime.ExecutionControl{
+		Version:         runtime.ExecutionControlVersion,
+		Phase:           runtime.ControlPhaseAdmitted,
+		Identity:        in.Admission.Execution,
+		ActivationEpoch: in.Admission.ActivationEpoch,
+		Endpoint:        "http://127.0.0.1:7781",
+		Capability:      "brine-base-capability",
+	}
+	selection := runtime.DurableOutputCapture{
+		Version:            runtime.DurableOutputCaptureVersion,
+		Identity:           in.Admission.Execution,
+		ActivationEpoch:    in.Admission.ActivationEpoch,
+		HandoffID:          in.Admission.HandoffID,
+		SourceLeaseID:      in.Admission.SourceLeaseID,
+		Output:             string(in.Output),
+		SourceControlGrant: captureGrantForScenario,
+		CaptureDeadline:    in.Admission.CaptureDeadline.Time,
+	}
+	if err := control.SelectCapture(selection); err != nil {
+		return CapturePodCreated{Draft: in, Err: err}, nil
+	}
+	if in.SecondOutput != "" {
+		second := selection
+		second.Output = string(in.SecondOutput)
+		if err := control.SelectCapture(second); err != nil {
+			return CapturePodCreated{Draft: in, Err: err}, nil
+		}
+	}
+
+	inputs, err := draftInputs(draft)
+	if err != nil {
+		return CapturePodCreated{}, err
+	}
+	outputs := runtime.OutputPaths{}
+	for i, path := range draft.Outputs {
+		outputs[fmt.Sprintf("output-%d", i)] = path
+	}
+	// The captured output is named, so it has to BE one of the declared
+	// outputs rather than a name beside them: `its output "result" is captured`
+	// selects the first declared output and calls it that.
+	if len(draft.Outputs) > 0 {
+		delete(outputs, "output-0")
+		outputs[string(in.Output)] = draft.Outputs[0]
+	}
+
+	spec := runtime.ContainerSpec{
+		TeamID:           1,
+		Dir:              draft.Dir,
+		ImageSpec:        runtime.ImageSpec{ImageURL: draft.ImageURL, Privileged: draft.Privileged},
+		Env:              draft.ContainerEnv,
+		Inputs:           inputs,
+		Caches:           draft.Caches,
+		ScratchPaths:     draft.Scratch,
+		Sidecars:         draft.Sidecars,
+		ExecutionControl: control,
+	}
+	if len(outputs) > 0 {
+		spec.Outputs = outputs
+	}
+
+	created, err := runDraft(draft, draftContainerType(draft.ContainerType), spec, draft.RanBefore)
+	if err != nil {
+		// A refusal is a VALUE here: "the pod build is refused saying …" is an
+		// outcome scenarios assert on, and a fixture that died on it could not.
+		return CapturePodCreated{Draft: in, Err: err}, nil
+	}
+
+	return CapturePodCreated{Draft: in, Pod: created.Pod}, nil
+}
+
+// captureGrantForScenario is the attenuated source-control grant the control
+// init carries. It is a fixture value with no authority; what the scenarios
+// assert is WHERE it appears, not what it opens.
+const captureGrantForScenario = "brine-source-control-grant"
+
+// The names the pod-shape assertions read. They are the production spellings,
+// restated here so a rename that moved the grant to a different variable is a
+// compile-time or an assertion failure rather than a scan that finds nothing.
+const (
+	captureControlInitName = "hangar-capture-control"
+	captureGrantEnvName    = "HANGAR_SOURCE_CONTROL_GRANT"
+)
+
+func captureControlIsFirstInitContainer(in CapturePodCreated) error {
+	if in.Pod == nil {
+		return fmt.Errorf("no capture pod was built: %v", in.Err)
+	}
+	inits := in.Pod.Spec.InitContainers
+	if len(inits) == 0 {
+		return fmt.Errorf("the capture pod carries no init containers at all")
+	}
+	if inits[0].Name != captureControlInitName {
+		names := make([]string, 0, len(inits))
+		for _, c := range inits {
+			names = append(names, c.Name)
+		}
+
+		return fmt.Errorf("the first init container is %q, not the capture control init; "+
+			"the init containers are %v and every one of them after index 0 writes into the "+
+			"tree the hold protects", inits[0].Name, names)
+	}
+
+	// "Before every writer" is only a claim when there IS a writer after it.
+	// A pod whose sole init container is the control init would pass an index
+	// check while asserting nothing about ordering.
+	writers := len(inits) - 1 + len(in.Pod.Spec.Containers)
+	if writers == 0 {
+		return fmt.Errorf("nothing follows the capture control init, so its position says nothing")
+	}
+	for _, c := range inits[1:] {
+		if c.Name == captureControlInitName {
+			return fmt.Errorf("the capture control init appears twice")
+		}
+	}
+
+	return nil
+}
+
+func captureGrantIsInExactlyTheControlInit(in CapturePodCreated) error {
+	if in.Pod == nil {
+		return fmt.Errorf("no capture pod was built: %v", in.Err)
+	}
+	carrying := containersCarrying(in.Pod, captureGrantEnvName)
+	if len(carrying) != 1 || carrying[0] != captureControlInitName {
+		return fmt.Errorf("the source-control grant is carried by %v; it belongs to the capture "+
+			"control init and to nothing else in this pod", carrying)
+	}
+
+	return nil
+}
+
+func taskContainersCarryNoHangarCredential(in CapturePodCreated) error {
+	if in.Pod == nil {
+		return fmt.Errorf("no capture pod was built: %v", in.Err)
+	}
+	// Everything that is not the control init: the task, its sidecars, and
+	// every other init container.
+	for _, name := range []string{captureGrantEnvName, "HANGAR_CAPTURE_CAPABILITY"} {
+		for _, carrier := range containersCarrying(in.Pod, name) {
+			if carrier == captureControlInitName {
+				continue
+			}
+
+			return fmt.Errorf("container %q carries %s; Req 24 gives the task and its sidecars "+
+				"no output-plane credential at all", carrier, name)
+		}
+	}
+
+	return nil
+}
+
+// containersCarrying names every container in the pod with an env var of that
+// name, init containers included.
+func containersCarrying(pod *corev1.Pod, envName string) []string {
+	var carrying []string
+	for _, group := range [][]corev1.Container{pod.Spec.InitContainers, pod.Spec.Containers} {
+		for _, container := range group {
+			for _, env := range container.Env {
+				if env.Name == envName {
+					carrying = append(carrying, container.Name)
+
+					break
+				}
+			}
+		}
+	}
+
+	return carrying
+}
+
+func captureCarriesHandshakeAndDownwardAPI(in CapturePodCreated) error {
+	if in.Pod == nil {
+		return fmt.Errorf("no capture pod was built: %v", in.Err)
+	}
+	var control *corev1.Container
+	for i := range in.Pod.Spec.InitContainers {
+		if in.Pod.Spec.InitContainers[i].Name == captureControlInitName {
+			control = &in.Pod.Spec.InitContainers[i]
+
+			break
+		}
+	}
+	if control == nil {
+		return fmt.Errorf("the capture pod has no %s container", captureControlInitName)
+	}
+
+	values := map[string]corev1.EnvVar{}
+	for _, env := range control.Env {
+		values[env.Name] = env
+	}
+
+	// The base handshake: the protocol this cohort speaks, the exact identity
+	// and its fence, the epoch it was admitted under, and where to ask.
+	for name, want := range map[string]string{
+		"HANGAR_PROTOCOL_VERSION": hangaroutput.ProtocolVersion,
+		"HANGAR_EXECUTION_ID":     string(in.Draft.Admission.Execution.ExecutionID),
+		"HANGAR_EXECUTION_FENCE":  fmt.Sprintf("%d", in.Draft.Admission.Execution.Fence),
+		"HANGAR_ACTIVATION_EPOCH": fmt.Sprintf("%d", in.Draft.Admission.ActivationEpoch),
+		"HANGAR_HANDOFF_ID":       string(in.Draft.Admission.HandoffID),
+		"HANGAR_SOURCE_LEASE_ID":  string(in.Draft.Admission.SourceLeaseID),
+	} {
+		got, present := values[name]
+		if !present {
+			return fmt.Errorf("the control init carries no %s", name)
+		}
+		if got.Value != want {
+			return fmt.Errorf("%s is %q and the execution it extends says %q", name, got.Value, want)
+		}
+	}
+
+	// The Downward API fields, by EXACT field path. `metadata.uid` is the Pod
+	// incarnation a writer ticket binds to; `spec.nodeName` and
+	// `status.hostIP` are how the container reaches the daemon that owns this
+	// node's ledger. A literal value here would be the control plane filling
+	// in a guess: neither exists when the Pod is composed.
+	for name, path := range map[string]string{
+		"HANGAR_POD_UID":   "metadata.uid",
+		"HANGAR_NODE_NAME": "spec.nodeName",
+		"HANGAR_HOST_IP":   "status.hostIP",
+	} {
+		got, present := values[name]
+		if !present {
+			return fmt.Errorf("the control init carries no %s", name)
+		}
+		if got.ValueFrom == nil || got.ValueFrom.FieldRef == nil {
+			return fmt.Errorf("%s is a literal %q rather than a Downward API field reference; "+
+				"neither the Pod UID nor the node exists when this Pod is composed", name, got.Value)
+		}
+		if got.ValueFrom.FieldRef.FieldPath != path {
+			return fmt.Errorf("%s reads %q and the field that carries it is %q",
+				name, got.ValueFrom.FieldRef.FieldPath, path)
+		}
+	}
+
+	return nil
+}
+
+// captureResolvedMountCount counts the mounts that resolve, and returns the
+// count so the sentence can pin it.
+//
+// It is a COUNT and not a membership test. brine's mount steps are membership
+// by default, and "every mount resolves to a declared Volume" passes trivially
+// on a pod with no mounts -- so the number is the assertion and the resolution
+// is the precondition for counting one at all.
+func captureResolvedMountCount(in CapturePodCreated) (int, error) {
+	if in.Pod == nil {
+		return 0, fmt.Errorf("no capture pod was built: %v", in.Err)
+	}
+	declared := map[string]struct{}{}
+	for _, volume := range in.Pod.Spec.Volumes {
+		declared[volume.Name] = struct{}{}
+	}
+
+	resolved := 0
+	for _, group := range [][]corev1.Container{in.Pod.Spec.InitContainers, in.Pod.Spec.Containers} {
+		for _, container := range group {
+			for _, mount := range container.VolumeMounts {
+				if _, ok := declared[mount.Name]; !ok {
+					return 0, fmt.Errorf("container %q mounts %q, which no Pod volume declares",
+						container.Name, mount.Name)
+				}
+				resolved++
+			}
+		}
+	}
+
+	return resolved, nil
 }

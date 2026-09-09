@@ -23,8 +23,8 @@ type StorageBackend interface {
 	ArtifactStoreVolume(containerType db.ContainerType) *corev1.Volume
 	ArtifactStoreVolumeName() string
 	BuildFetchInitContainers(handle string, inputs []runtime.Input, podVolumes []corev1.Volume, mainMounts []corev1.VolumeMount) ([]corev1.Container, error)
-	BuildCleanupInitContainer(handle string, containerType db.ContainerType, reused bool) *corev1.Container
-	BuildAffinity(inputs []runtime.Input) *corev1.Affinity
+	BuildCleanupInitContainer(handle string, containerType db.ContainerType, reused bool) (*corev1.Container, error)
+	BuildAffinity(inputs []runtime.Input, control *runtime.ExecutionControl) *corev1.Affinity
 	RecordOutputs(ctx context.Context, handle, nodeName string, volumes []*Volume, spec runtime.ContainerSpec)
 	WrapVolumeForArtifact(key, handle, workerName string, dbVolume db.CreatedVolume) runtime.Volume
 	WrapVolumeForLookup(ctx context.Context, key, handle, workerName string, dbVolume db.CreatedVolume) runtime.Volume

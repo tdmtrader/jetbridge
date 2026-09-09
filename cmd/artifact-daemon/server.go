@@ -391,6 +391,12 @@ func (s *Server) Handler(opts ...HandlerOption) http.Handler {
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("POST /resolve", s.handleResolve)
 	mux.HandleFunc("POST /resolve-batch", s.handleResolveBatch)
+	// Read-only, and mTLS-exempt for the same reason /resolve is: the caller
+	// is an init container in a pod on this node, it holds no client
+	// certificate, and the question it needs answered is about its OWN step
+	// directory. It reads nothing but the class, writes nothing, and names no
+	// path the caller did not already name.
+	mux.HandleFunc("GET /capture-held/steps/{handle...}", s.handleCaptureClass)
 	if s.metrics != nil {
 		mux.Handle("GET /metrics", s.metrics.handler())
 	}
@@ -902,6 +908,50 @@ func (s *Server) refuseIfCaptureHeld(loc RelKey) (ledger.Class, error) {
 	}
 
 	return class, s.captureLedger.Reason(relative, class)
+}
+
+// handleCaptureClass answers what the output ledger says about a step
+// directory, for the one caller that cannot ask any other way.
+//
+// The `rm -rf` cleanup init container is the most destructive thing in a Pod
+// and it is the only destructive path on a node that reached no guard: every
+// other one -- DELETE /artifacts, the sweeper, a stream-in replacement, a
+// registry remap or reuse -- goes through refuseIfCaptureHeld. That container
+// holds no client certificate, so /artifacts/ is closed to it; this is the
+// question it asks instead, and the script refuses to remove anything the
+// answer does not say is unmanaged.
+//
+// It is deliberately not a delete: giving an unauthenticated route the ability
+// to remove bytes is the shape this whole guard exists to prevent. It says what
+// the ledger says and the caller decides.
+func (s *Server) handleCaptureClass(w http.ResponseWriter, r *http.Request) {
+	handle := r.PathValue("handle")
+	if handle == "" {
+		s.refuse(w, r, http.StatusBadRequest, reasonInvalidKey,
+			errors.New("no step directory named"))
+
+		return
+	}
+	key := "steps/" + handle
+	if err := validateRequestKey(key); err != nil {
+		s.refuse(w, r, http.StatusBadRequest, reasonInvalidKey, err)
+
+		return
+	}
+
+	class, reason := s.refuseIfCaptureHeld(RelKey(key))
+	body := struct {
+		Class  string `json:"class"`
+		Handle string `json:"handle"`
+		Reason string `json:"reason,omitempty"`
+	}{Class: string(class), Handle: handle}
+	if reason != nil {
+		body.Reason = reason.Error()
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 // refuseIfCaptureHeldPath is the same question for a caller holding an ABSOLUTE

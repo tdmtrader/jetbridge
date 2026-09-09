@@ -406,6 +406,13 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 	if err := c.validateInputs(); err != nil {
 		return nil, err
 	}
+	// The envelope is validated against the SPEC, before any container is
+	// composed: an undeclared output, an output overlapping a strict input or
+	// a capture riding the base capability must be a refusal rather than a pod
+	// that comes back and then cannot be held.
+	if err := c.containerSpec.ExecutionControl.Validate(c.containerSpec); err != nil {
+		return nil, err
+	}
 
 	image := resolveImage(c.containerSpec.ImageSpec, c.config.ResourceTypeImages)
 	if image == "" {
@@ -439,9 +446,31 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 
 	var initContainers []corev1.Container
 
+	// The capture control init goes FIRST, before every writer.
+	//
+	// Requirement 3 puts the durable source hold ahead of the producer main
+	// process, and every other container this pod builds writes into the tree
+	// that hold protects: `cleanup-stale` removes it, `artifact-fetch` stages
+	// inputs into it, the main container and its sidecars produce into it. So
+	// "before the main process" is not enough; it is index 0 of the init
+	// slice, and the ordering scenario asserts the index rather than mere
+	// membership.
+	//
+	// An execution that selected no capture reaches none of this: the ordinary
+	// pod is byte-identical to the one this runtime built before the output
+	// plane existed, which is Req 59 and the control scenario for the whole
+	// capture-pod feature.
+	if captureInit := c.buildCaptureControlInitContainer(); captureInit != nil {
+		initContainers = append(initContainers, *captureInit)
+	}
+
 	// If this container handle was reused (crash recovery), prepend a cleanup
 	// init container to remove stale hostPath data before anything else runs.
-	if cleanup := c.buildCleanupInitContainer(); cleanup != nil {
+	cleanup, err := c.buildCleanupInitContainer()
+	if err != nil {
+		return nil, err
+	}
+	if cleanup != nil {
 		initContainers = append(initContainers, *cleanup)
 	}
 
@@ -592,9 +621,9 @@ func (c *Container) buildArtifactInitContainers(podVolumes []corev1.Volume, main
 // buildCleanupInitContainer creates an init container that removes stale data
 // from the hostPath steps directory for this container handle. Delegates to
 // the storage backend. Returns nil when no backend is configured.
-func (c *Container) buildCleanupInitContainer() *corev1.Container {
+func (c *Container) buildCleanupInitContainer() (*corev1.Container, error) {
 	if c.storageBackend == nil {
-		return nil
+		return nil, nil
 	}
 	return c.storageBackend.BuildCleanupInitContainer(c.handle, c.containerSpec.Type, c.reused)
 }
@@ -716,7 +745,7 @@ func (c *Container) buildAffinity() *corev1.Affinity {
 	if c.storageBackend == nil {
 		return nil
 	}
-	return c.storageBackend.BuildAffinity(c.containerSpec.Inputs)
+	return c.storageBackend.BuildAffinity(c.containerSpec.Inputs, c.containerSpec.ExecutionControl)
 }
 
 // buildPodLabels constructs the label map for the pod, including the

@@ -250,8 +250,29 @@ func (r *Reaper) cleanupDaemonSetArtifacts(ctx context.Context, logger lager.Log
 		resp, err := r.httpClient.Do(req)
 		if err != nil {
 			logger.Error("failed-to-delete-artifact", err, lager.Data{"handle": handle, "node": sourceNode})
-		} else {
-			resp.Body.Close()
+
+			// The bytes are still there and the locator is the only thing that
+			// knows where. Forgetting the key now would leave a source no
+			// sweep of ours can find again, so the next sweep retries.
+			continue
+		}
+		status := resp.StatusCode
+		resp.Body.Close()
+
+		// A REFUSED delete is not a done delete. The daemon answers 409 when a
+		// durable output capture still holds the source, which is the whole
+		// point of that refusal -- and the Reaper used to drop the key anyway,
+		// so the one caller that could come back and try again forgot the
+		// handle instead. The source is not leaked (once the capture releases,
+		// the classifier answers unmanaged and the sweeper's TTL reclaims it),
+		// but nothing retries, and "the Reaper will clean it up" stops being
+		// true for exactly the sources that most need cleaning up.
+		if status == http.StatusConflict || status >= 500 {
+			logger.Info("delete-refused-keeping-locator-entry", lager.Data{
+				"handle": handle, "node": sourceNode, "status": status,
+			})
+
+			continue
 		}
 
 		r.artifactLocator.Remove(key)

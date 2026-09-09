@@ -17,6 +17,8 @@ import (
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/hangar"
+	"github.com/concourse/concourse/hangar/executioncontrol"
+	"github.com/concourse/concourse/hangar/output"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -511,17 +513,44 @@ func (b *DaemonSetBackend) helperImage() string {
 	return DefaultArtifactHelperImage
 }
 
-func (b *DaemonSetBackend) BuildCleanupInitContainer(handle string, containerType db.ContainerType, reused bool) *corev1.Container {
+// BuildCleanupInitContainer removes a reused handle's stale hostPath data --
+// and, when the output plane is on, asks the ledger first.
+//
+// This container is the most destructive thing in a Pod: `rm -rf` over the step
+// directory, running before anything else, reached by no guard the daemon
+// added. Every OTHER destructive path on a node -- DELETE /artifacts, the
+// sweeper, a stream-in replacement, a registry remap or reuse -- consults the
+// output ledger's classifier and refuses a capture-held source with a 409. This
+// one asked nobody, and a reused handle whose previous execution's capture is
+// still unsettled would have its held source destroyed by the next build's
+// first init container.
+//
+// It cannot consult the ledger the way the ATC does: an init container holds no
+// client certificate (see wgetTLSOpts), so /artifacts/ is closed to it. So it
+// asks the read-only classification route, which is mTLS-exempt for exactly the
+// reason /resolve is -- it is a question a pod on this node must be able to ask
+// about its own step directory, and the answer is a boolean about a handle the
+// caller already named.
+//
+// It FAILS CLOSED, and that is why the probe is only emitted when the output
+// plane is configured. An unreachable daemon is not "nothing is held"; but on a
+// deployment with no output plane there is nothing to ask and today's script is
+// emitted byte for byte, so Req 59's unchanged ordinary behaviour is not
+// traded for this.
+func (b *DaemonSetBackend) BuildCleanupInitContainer(handle string, containerType db.ContainerType, reused bool) (*corev1.Container, error) {
 	if !reused {
-		return nil
+		return nil, nil
 	}
 	if containerType == db.ContainerTypeCheck {
-		return nil
+		return nil, nil
 	}
 
 	helperImage := b.helperImage()
 	cleanupPath := filepath.Join(ArtifactMountPath, "steps", handle)
 	script := fmt.Sprintf(`echo "[cleanup-stale] removing stale hostPath data: %s" >&2; rm -rf %s; mkdir -p %s`, cleanupPath, cleanupPath, cleanupPath)
+	if b.config.OutputPlaneEnabled {
+		script = b.ledgerCheckedCleanupScript(handle, cleanupPath)
+	}
 
 	allowEscalation := false
 	return &corev1.Container{
@@ -535,10 +564,57 @@ func (b *DaemonSetBackend) BuildCleanupInitContainer(handle string, containerTyp
 		SecurityContext: &corev1.SecurityContext{
 			AllowPrivilegeEscalation: &allowEscalation,
 		},
-	}
+	}, nil
 }
 
-func (b *DaemonSetBackend) BuildAffinity(inputs []runtime.Input) *corev1.Affinity {
+// ledgerCheckedCleanupScript is the same removal, behind the classifier.
+//
+// The three arms mirror the classifier's own (hangar/output/ledger): "held" is
+// a refusal, "unmanaged" -- which is what an absent control directory means,
+// and it is a real answer rather than an error -- proceeds, and anything else,
+// including no answer at all, is a refusal. A guard whose failure mode is
+// "delete it anyway" would be the exposure it was written to close.
+func (b *DaemonSetBackend) ledgerCheckedCleanupScript(handle, cleanupPath string) string {
+	port := b.config.ArtifactDaemonPort
+	if port == 0 {
+		port = 7780
+	}
+
+	return fmt.Sprintf(`
+set -u
+CLASS="$(wget -q -O - %[4]s "%[3]s://${HOST_IP}:%[2]d/capture-held/steps/%[1]s" 2>/dev/null || true)"
+case "${CLASS}" in
+  *'"class":"unmanaged"'*)
+    echo "[cleanup-stale] the output ledger holds nothing here; removing stale hostPath data: %[5]s" >&2
+    rm -rf %[5]s
+    mkdir -p %[5]s
+    ;;
+  *'"class":"held"'*)
+    echo "[cleanup-stale] REFUSED: a durable output capture still holds %[1]s. This step's stale workspace is somebody else's unsettled source, and removing it would destroy bytes no receipt has been written for yet." >&2
+    exit 1
+    ;;
+  *)
+    echo "[cleanup-stale] REFUSED: the output ledger did not answer for %[1]s (got: ${CLASS}). An unreadable ledger is not an empty one." >&2
+    exit 1
+    ;;
+esac
+`, handle, port, b.daemonScheme(), b.wgetTLSOpts(), cleanupPath)
+}
+
+// BuildAffinity places the pod on a node that can serve every facet it needs.
+//
+// A capture-selected execution needs TWO ready labels and not one. The base
+// control facet attests that this node's daemon, runtime and control key are a
+// homogeneous attested cohort for the exact-execution protocol; the output
+// facet attests the capture extension on top of it. They are separate labels
+// because a base-only cohort is a real deployment -- it is the one the sibling
+// `exact_execution_control` track schedules onto -- and a single label would
+// make "attested for exact control" and "has an output bucket" the same claim.
+//
+// A ready label is a scheduling HINT and never authority: the authenticated
+// handshake is. What the label buys is that the pod does not land somewhere the
+// hold could never be acknowledged.
+func (b *DaemonSetBackend) BuildAffinity(inputs []runtime.Input, control *runtime.ExecutionControl) *corev1.Affinity {
 	requiredExpressions := []corev1.NodeSelectorRequirement{
 		{
 			Key:      "concourse.dev/artifact-cache",
@@ -554,6 +630,15 @@ func (b *DaemonSetBackend) BuildAffinity(inputs []runtime.Input) *corev1.Affinit
 				Values:   []string{"ready"},
 			})
 			break
+		}
+	}
+	if control.HasDurableOutputCapture() {
+		for _, label := range []string{executioncontrol.ReadyLabel, output.ReadyLabel} {
+			requiredExpressions = append(requiredExpressions, corev1.NodeSelectorRequirement{
+				Key:      label,
+				Operator: corev1.NodeSelectorOpIn,
+				Values:   []string{"ready"},
+			})
 		}
 	}
 	affinity := &corev1.Affinity{

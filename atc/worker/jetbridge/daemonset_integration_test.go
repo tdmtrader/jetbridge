@@ -1094,7 +1094,7 @@ func TestDaemonSetMode_CleanupInitContainerOnReuse(t *testing.T) {
 		storageBackend: NewDaemonSetBackend(cfg, nil, nil),
 	}
 
-	cleanup := c.buildCleanupInitContainer()
+	cleanup, _ := c.buildCleanupInitContainer()
 	if cleanup == nil {
 		t.Fatal("expected cleanup init container for reused container, got nil")
 	}
@@ -1150,7 +1150,7 @@ func TestDaemonSetMode_NoCleanupOnFreshContainer(t *testing.T) {
 		storageBackend: NewDaemonSetBackend(cfg, nil, nil),
 	}
 
-	cleanup := c.buildCleanupInitContainer()
+	cleanup, _ := c.buildCleanupInitContainer()
 	if cleanup != nil {
 		t.Errorf("expected no cleanup init container for fresh container, got: %+v", cleanup)
 	}
@@ -1173,7 +1173,7 @@ func TestDaemonSetMode_NoCleanupInPVCMode(t *testing.T) {
 		reused:     true,
 	}
 
-	cleanup := c.buildCleanupInitContainer()
+	cleanup, _ := c.buildCleanupInitContainer()
 	if cleanup != nil {
 		t.Errorf("expected no cleanup in PVC mode, got: %+v", cleanup)
 	}
@@ -1197,7 +1197,7 @@ func TestDaemonSetMode_NoCleanupForCheckContainers(t *testing.T) {
 		storageBackend: NewDaemonSetBackend(cfg, nil, nil),
 	}
 
-	cleanup := c.buildCleanupInitContainer()
+	cleanup, _ := c.buildCleanupInitContainer()
 	if cleanup != nil {
 		t.Errorf("expected no cleanup for check containers, got: %+v", cleanup)
 	}
