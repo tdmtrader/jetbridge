@@ -86,6 +86,7 @@ DROP FUNCTION hangar_claim_tombstone();
 DROP FUNCTION hangar_challenge_one_use();
 DROP FUNCTION hangar_lifecycle_transition();
 DROP FUNCTION hangar_logical_reservation_immutable();
+DROP FUNCTION hangar_capture_release_is_one_way();
 DROP FUNCTION hangar_capture_lease_fence();
 DROP FUNCTION hangar_disposition_immutable();
 DROP FUNCTION hangar_predeclaration_immutable();

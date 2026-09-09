@@ -802,6 +802,56 @@ var _ = Describe("the Hangar output plane schema", func() {
 			})
 		})
 
+		Context("settling a capture", func() {
+			BeforeEach(func() { commitStage2(handoffID, reservationID) })
+
+			It("refuses calling a cancelled capture settled with the source still held", func() {
+				Expect(expectRefusal(database, "a cancelled capture settled with no release", fmt.Sprintf(`
+					UPDATE hangar_capture_reservations
+					SET state = 'cancelled', settled_at = now()
+					WHERE reservation_id = '%s'`, reservationID))).
+					To(ContainSubstring("hangar_reservation_settlement_is_earned"))
+
+				expectAccepted(database, "a cancelled capture whose release was acknowledged",
+					fmt.Sprintf(`
+						UPDATE hangar_capture_reservations
+						SET state = 'cancelled', settled_at = now(), release_acknowledged_at = now()
+						WHERE reservation_id = '%s'`, reservationID))
+			})
+
+			It("accepts a cancelled capture that is decided and not yet settled", func() {
+				expectAccepted(database, "a cancellation waiting on its release", fmt.Sprintf(`
+					UPDATE hangar_capture_reservations SET state = 'cancelled'
+					WHERE reservation_id = '%s'`, reservationID))
+			})
+
+			It("refuses a settlement time on a capture that is not terminal", func() {
+				Expect(expectRefusal(database, "an unresolved capture with a settlement time",
+					fmt.Sprintf(`
+						UPDATE hangar_capture_reservations
+						SET settled_at = now(), release_acknowledged_at = now()
+						WHERE reservation_id = '%s'`, reservationID))).
+					To(ContainSubstring("hangar_reservation_settlement_is_terminal"))
+			})
+
+			It("refuses withdrawing or restamping an acknowledged release", func() {
+				mustExec(database, fmt.Sprintf(`
+					UPDATE hangar_capture_reservations SET release_acknowledged_at = now()
+					WHERE reservation_id = '%s'`, reservationID))
+
+				Expect(expectRefusal(database, "a withdrawn source release", fmt.Sprintf(`
+					UPDATE hangar_capture_reservations SET release_acknowledged_at = NULL
+					WHERE reservation_id = '%s'`, reservationID))).
+					To(ContainSubstring("acknowledged once"))
+
+				Expect(expectRefusal(database, "a restamped source release", fmt.Sprintf(`
+					UPDATE hangar_capture_reservations
+					SET release_acknowledged_at = now() + interval '1 hour'
+					WHERE reservation_id = '%s'`, reservationID))).
+					To(ContainSubstring("acknowledged once"))
+			})
+		})
+
 		Context("logical resolution and the first object create", func() {
 			BeforeEach(func() {
 				commitStage2(handoffID, reservationID)

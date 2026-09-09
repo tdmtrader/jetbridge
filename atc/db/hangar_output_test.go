@@ -707,6 +707,114 @@ var _ = Describe("the Hangar output lock suffix", func() {
 		})
 	})
 
+	Describe("cancelling a capture before the publish point", func() {
+		// Req 5 and Req 11: the source remains held until both halves are
+		// authoritative, and a cancellation before sealing or object creation
+		// terminally cancels *and fenced-releases the source*. A capture that
+		// called itself settled the moment the row said `cancelled` was
+		// reporting the second half done because the first half was decided --
+		// while a node somewhere still holds the source open. The other two
+		// branches already mean "the daemon acknowledged the release" by
+		// `Settled`, and one word meaning two things across three branches is
+		// what makes a drain predicate unwritable.
+		It("is not settled until the source release is acknowledged", func() {
+			activate()
+
+			handoff := output.HandoffID(uuid.NewString())
+			lease := output.SourceLeaseID(uuid.NewString())
+			execution := identity()
+			name := output.OutputName("result")
+			deadline := output.NewTimestamp(time.Now().Add(24 * time.Hour))
+
+			tx, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(tx)
+			Expect(repository.PredeclareHandoff(ctx, tx, output.CaptureAdmission{
+				ProtocolVersion: output.ProtocolVersion,
+				Execution:       execution,
+				ActivationEpoch: 1,
+				HandoffID:       handoff,
+				SourceLeaseID:   lease,
+				Output:          name,
+				CaptureDeadline: deadline,
+			})).To(Succeed())
+			Expect(repository.AcknowledgeSourceHold(ctx, tx, holdFor(handoff, lease, execution, name))).
+				To(Succeed())
+			_, err = repository.CommitCaptureReservation(ctx, tx,
+				output.SuccessfulFinishDisposition{
+					ProtocolVersion:       output.ProtocolVersion,
+					Disposition:           output.DispositionCapture,
+					Execution:             execution,
+					ActivationEpoch:       1,
+					HandoffID:             handoff,
+					SourceLeaseID:         lease,
+					ProducerCheckpointID:  output.OpaqueID("checkpoint-" + string(handoff)),
+					Output:                name,
+					CaptureFence:          1,
+					CaptureDeadline:       deadline,
+					FinishAcknowledgement: finishFor(execution),
+				})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(tx.Commit()).To(Succeed())
+
+			cancelling, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(cancelling)
+			status, err := repository.CancelOrSettle(ctx, cancelling, handoff)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(status.PastIrreversiblePublishPoint).To(BeFalse())
+			Expect(status.Settled).To(BeFalse(),
+				"the capture called itself settled while the source is still held")
+			Expect(cancelling.Commit()).To(Succeed())
+
+			var state string
+			var unsettled bool
+			Expect(dbConn.QueryRow(`
+				SELECT state, settled_at IS NULL FROM hangar_capture_reservations
+				WHERE handoff_id = $1`, string(handoff)).Scan(&state, &unsettled)).To(Succeed())
+			Expect(state).To(Equal("cancelled"), "the cancellation was not recorded")
+			Expect(unsettled).To(BeTrue(), "a settlement time was stamped with nothing to earn it")
+
+			// The daemon's fenced release, arriving. Phase 3 builds the pair
+			// that produces it -- an intent, a signed acknowledgement and the
+			// fence they are offered under -- so this writes the column the
+			// way that pair eventually will.
+			_, err = dbConn.Exec(`
+				UPDATE hangar_capture_reservations
+				SET release_acknowledged_at = now(), settled_at = now()
+				WHERE handoff_id = $1`, string(handoff))
+			Expect(err).NotTo(HaveOccurred())
+
+			reading, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(reading)
+			status, err = repository.ClassifyHandoff(ctx, reading, handoff)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(status.Settled).To(BeTrue())
+			Expect(reading.Rollback()).To(Succeed())
+		})
+
+		It("reports a registered capture settled without any release", func() {
+			// The other way a capture settles: the receipt is registered, the
+			// object exists, and there is nothing to release.
+			activate()
+			reservation, _ := publish(hangarDigest(15), 1725830823000015)
+
+			var handoffID string
+			Expect(dbConn.QueryRow(
+				`SELECT handoff_id FROM hangar_capture_reservations WHERE reservation_id = $1`,
+				string(reservation)).Scan(&handoffID)).To(Succeed())
+
+			tx, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(tx)
+			status, err := repository.ClassifyHandoff(ctx, tx, output.HandoffID(handoffID))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(status.Settled).To(BeTrue())
+			Expect(tx.Rollback()).To(Succeed())
+		})
+	})
+
 	Describe("a second receipt for one reservation", func() {
 		// An ambiguous create response converges only through verified
 		// per-capture retry (AC 9), and reuse for different facts conflicts

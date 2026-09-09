@@ -250,10 +250,31 @@ CREATE TABLE hangar_capture_reservations (
     past_irreversible_publish_point boolean NOT NULL DEFAULT false,
     terminal_failure                text,
     settled_at                      timestamp with time zone,
+    -- The source stops being held when the daemon says so, and only then. A
+    -- capture that terminally cancels or fails before the irreversible publish
+    -- point owes a fenced release of the source (Reqs 5, 11), and until that
+    -- release is acknowledged the capture is decided but not settled -- which
+    -- is what `settled` already means on the other two branches, and what the
+    -- drain predicate needs it to mean here.
+    --
+    -- One nullable column with a one-way trigger, the same shape as
+    -- `hold_acknowledged_at`. The intent identity and the signed
+    -- acknowledgement body that the daemon-side release pair carries land with
+    -- that pair; this column is the fact the rest of the plane reads.
+    release_acknowledged_at         timestamp with time zone,
     created_at                      timestamp with time zone NOT NULL DEFAULT now(),
 
-    CONSTRAINT hangar_reservation_terminal_pairs CHECK (
-        (state IN ('registered', 'failed', 'cancelled')) = (settled_at IS NOT NULL)
+    -- A settlement time means a terminal state, and a terminal state that is
+    -- not a registration has to have earned it. Note which direction each of
+    -- these runs: a `cancelled` row with no settlement is legal and expected --
+    -- it is a capture waiting for its release to be acknowledged.
+    CONSTRAINT hangar_reservation_settlement_is_terminal CHECK (
+        settled_at IS NULL OR state IN ('registered', 'failed', 'cancelled')
+    ),
+    CONSTRAINT hangar_reservation_settlement_is_earned CHECK (
+        settled_at IS NULL
+        OR state = 'registered'
+        OR release_acknowledged_at IS NOT NULL
     ),
     CONSTRAINT hangar_reservation_failure_is_typed CHECK (
         (state = 'failed') = (terminal_failure IS NOT NULL)
@@ -262,6 +283,26 @@ CREATE TABLE hangar_capture_reservations (
         NOT past_irreversible_publish_point OR first_create_attempted_at IS NOT NULL
     )
 );
+
+-- The source is released once. The same one-way rule the predeclaration's hold
+-- acknowledgement has, for the same reason: a release that could be withdrawn
+-- would make "the source is no longer held" a claim with no expiry date on it.
+CREATE FUNCTION hangar_capture_release_is_one_way() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+BEGIN
+    IF OLD.release_acknowledged_at IS NOT NULL
+        AND NEW.release_acknowledged_at IS DISTINCT FROM OLD.release_acknowledged_at THEN
+        RAISE EXCEPTION 'hangar: the source release for reservation % is already acknowledged; it is acknowledged once',
+            OLD.reservation_id
+            USING ERRCODE = 'JB001';
+    END IF;
+
+    RETURN NEW;
+END $$;
+
+CREATE TRIGGER hangar_capture_release_one_way_guard
+    BEFORE UPDATE ON hangar_capture_reservations
+    FOR EACH ROW EXECUTE FUNCTION hangar_capture_release_is_one_way();
 
 -- Renewable capture ownership on the database clock: a 15-minute floor, and a
 -- monotonic fence advanced by takeover (Req 10). A stale owner may not seal,
