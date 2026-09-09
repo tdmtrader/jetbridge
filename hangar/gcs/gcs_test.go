@@ -835,18 +835,18 @@ func TestGCSCancellationAndInterruptedWritesLeaveNoVisibleObjectOrScratch(t *tes
 	digest := digestFor(content)
 	t.Run("blocked source", func(t *testing.T) {
 		t.Parallel()
-		store, objects, scratch := newTestGCSStoreWithTimeouts(t, time.Second, 20*time.Millisecond)
+		store, objects, scratch := newTestGCSStore(t)
+		armed := manualTimeouts(store)
 		source := newBlockingGCSReadCloser()
 		result := make(chan error, 1)
 		go func() {
 			_, _, err := store.EnsureTree(context.Background(), testScope, digest, source, 64)
 			result <- err
 		}()
-		select {
-		case <-source.started:
-		case <-time.After(time.Second):
-			t.Fatal("source read did not start")
-		}
+		operation := <-armed
+		require.Equal(t, store.config.WriteTimeout, operation.requested)
+		<-source.started
+		operation.expire()
 		require.ErrorIs(t, <-result, context.DeadlineExceeded)
 		require.Equal(t, 1, source.closeCalls())
 		require.Empty(t, objects.objects)
@@ -866,9 +866,19 @@ func TestGCSCancellationAndInterruptedWritesLeaveNoVisibleObjectOrScratch(t *tes
 	})
 	t.Run("write timeout remains a context error", func(t *testing.T) {
 		t.Parallel()
-		store, objects, scratch := newTestGCSStoreWithTimeouts(t, time.Second, 20*time.Millisecond)
+		store, objects, scratch := newTestGCSStore(t)
+		armed := manualTimeouts(store)
 		objects.blockWrite = true
-		_, _, err := store.EnsureTree(context.Background(), testScope, digest, bytes.NewReader(content), 64)
+		result := make(chan error, 1)
+		go func() {
+			_, _, err := store.EnsureTree(context.Background(), testScope, digest, bytes.NewReader(content), 64)
+			result <- err
+		}()
+		operation := <-armed
+		require.Equal(t, store.config.WriteTimeout, operation.requested)
+		<-objects.writeBlocked
+		operation.expire()
+		err := <-result
 		require.ErrorIs(t, err, context.DeadlineExceeded)
 		require.NotErrorIs(t, err, hangar.ErrInfrastructure)
 		require.Empty(t, objects.objects)
@@ -876,13 +886,27 @@ func TestGCSCancellationAndInterruptedWritesLeaveNoVisibleObjectOrScratch(t *tes
 	})
 	t.Run("read body timeout remains a context error", func(t *testing.T) {
 		t.Parallel()
-		store, objects, scratch := newTestGCSStoreWithTimeouts(t, 20*time.Millisecond, time.Second)
+		store, objects, scratch := newTestGCSStore(t)
 		ref := putLogical(t, objects, store.config.Prefix, testScope, digest, content)
+		armed := manualTimeouts(store)
 		objects.blockReadBody = true
-		reader, _, err := store.OpenTree(context.Background(), ref, 64)
-		require.ErrorIs(t, err, context.DeadlineExceeded)
-		require.NotErrorIs(t, err, hangar.ErrCorrupt)
-		require.Nil(t, reader)
+		type openResult struct {
+			reader io.ReadCloser
+			err    error
+		}
+		result := make(chan openResult, 1)
+		go func() {
+			reader, _, err := store.OpenTree(context.Background(), ref, 64)
+			result <- openResult{reader: reader, err: err}
+		}()
+		operation := <-armed
+		require.Equal(t, store.config.ReadTimeout, operation.requested)
+		<-objects.readBodyBlocked
+		operation.expire()
+		opened := <-result
+		require.ErrorIs(t, opened.err, context.DeadlineExceeded)
+		require.NotErrorIs(t, opened.err, hangar.ErrCorrupt)
+		require.Nil(t, opened.reader)
 		requireScratchEmpty(t, scratch)
 	})
 	t.Run("scratch ENOSPC", func(t *testing.T) {
@@ -932,13 +956,9 @@ func withGCSConfig(config GCSConfig, mutate func(*GCSConfig)) GCSConfig {
 }
 func newTestGCSStore(t *testing.T) (*GCSStore, *memoryObjectClient, string) {
 	t.Helper()
-	return newTestGCSStoreWithTimeouts(t, time.Second, time.Second)
-}
-func newTestGCSStoreWithTimeouts(t *testing.T, readTimeout, writeTimeout time.Duration) (*GCSStore, *memoryObjectClient, string) {
-	t.Helper()
 	scratch := t.TempDir()
 	objects := newMemoryObjectClient()
-	store, err := newGCSStore(objects, GCSConfig{Bucket: "bucket", Prefix: "deployment/blue", ScratchDir: scratch, ZstdLevel: zstd.SpeedFastest, ReadTimeout: readTimeout, WriteTimeout: writeTimeout})
+	store, err := newGCSStore(objects, GCSConfig{Bucket: "bucket", Prefix: "deployment/blue", ScratchDir: scratch, ZstdLevel: zstd.SpeedFastest, ReadTimeout: time.Second, WriteTimeout: 2 * time.Second})
 	require.NoError(t, err)
 	return store, objects, scratch
 }

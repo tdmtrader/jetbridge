@@ -25,6 +25,11 @@ type memoryObjectClient struct {
 	readBytes                                                                              int64
 	blockRead, blockReadBody, blockWrite, retainVersions                                   bool
 	afterAttrs, afterRead                                                                  func(string)
+	// writeBlocked and readBodyBlocked close as soon as a blocked upload or
+	// blocked body read is actually reached, so a cancellation test can fire
+	// the operation deadline at that point instead of guessing at it.
+	writeBlocked, readBodyBlocked         chan struct{}
+	writeBlockedOnce, readBodyBlockedOnce sync.Once
 }
 
 type memoryObject struct {
@@ -35,7 +40,15 @@ type memoryObject struct {
 }
 
 func newMemoryObjectClient() *memoryObjectClient {
-	return &memoryObjectClient{objects: map[string]memoryObject{}, versions: map[string]map[int64]memoryObject{}, nextGeneration: 1}
+	return &memoryObjectClient{objects: map[string]memoryObject{}, versions: map[string]map[int64]memoryObject{}, nextGeneration: 1, writeBlocked: make(chan struct{}), readBodyBlocked: make(chan struct{})}
+}
+
+func (client *memoryObjectClient) signalWriteBlocked() {
+	client.writeBlockedOnce.Do(func() { close(client.writeBlocked) })
+}
+
+func (client *memoryObjectClient) signalReadBodyBlocked() {
+	client.readBodyBlockedOnce.Do(func() { close(client.readBodyBlocked) })
 }
 
 func (client *memoryObjectClient) Object(bucket, key string) objectHandle {
@@ -133,7 +146,7 @@ func (handle *memoryObjectHandle) NewReader(ctx context.Context) (io.ReadCloser,
 	if !found {
 		return nil, &googleapi.Error{Code: 404, Message: "missing generation"}
 	}
-	return &memoryObjectReader{ctx: ctx, reader: bytes.NewReader(object.data), block: blockBody, readErr: readErr, readErrAfter: readErrAfter, closeErr: closeErr, recordRead: handle.client.recordRead}, nil
+	return &memoryObjectReader{ctx: ctx, reader: bytes.NewReader(object.data), block: blockBody, readErr: readErr, readErrAfter: readErrAfter, closeErr: closeErr, recordRead: handle.client.recordRead, signalBlocked: handle.client.signalReadBodyBlocked}, nil
 }
 
 func (client *memoryObjectClient) recordRead(count int) {
@@ -197,6 +210,7 @@ func (writer *memoryObjectWriter) Write(content []byte) (int, error) {
 	blocked, err := writer.handle.client.blockWrite, writer.handle.client.writeErr
 	writer.handle.client.mu.Unlock()
 	if blocked {
+		writer.handle.client.signalWriteBlocked()
 		<-writer.ctx.Done()
 		return 0, writer.ctx.Err()
 	}
@@ -237,17 +251,21 @@ func (writer *memoryObjectWriter) Abort(error) error {
 func (writer *memoryObjectWriter) Attrs() objectAttrs { return writer.attrs }
 
 type memoryObjectReader struct {
-	ctx          context.Context
-	reader       io.Reader
-	block        bool
-	readErr      error
-	readErrAfter int
-	closeErr     error
-	recordRead   func(int)
+	ctx           context.Context
+	reader        io.Reader
+	block         bool
+	readErr       error
+	readErrAfter  int
+	closeErr      error
+	recordRead    func(int)
+	signalBlocked func()
 }
 
 func (reader *memoryObjectReader) Read(buffer []byte) (int, error) {
 	if reader.block {
+		if reader.signalBlocked != nil {
+			reader.signalBlocked()
+		}
 		<-reader.ctx.Done()
 		return 0, reader.ctx.Err()
 	}
@@ -394,4 +412,69 @@ func (writer *writeErrorObservingObjectWriter) Write(buffer []byte) (int, error)
 	count, err := writer.objectWriter.Write(buffer)
 	writer.client.record(err)
 	return count, err
+}
+
+// manualTimeout is the operation deadline a test arms by hand. The store's
+// production deadline is a real timer that can expire before the goroutine
+// running the operation reaches the step under test; substituting this one
+// through GCSStore.withTimeout lets the test expire the deadline at a point it
+// has already observed the store reach, so the assertion never races the clock.
+type manualTimeout struct {
+	parent    context.Context
+	requested time.Duration
+	deadline  time.Time
+	done      chan struct{}
+	finishes  sync.Once
+	mu        sync.Mutex
+	err       error
+}
+
+func newManualTimeout(parent context.Context, timeout time.Duration) *manualTimeout {
+	operation := &manualTimeout{parent: parent, requested: timeout, deadline: time.Now().Add(timeout), done: make(chan struct{})}
+	if parent.Done() != nil {
+		go func() {
+			select {
+			case <-parent.Done():
+				operation.finish(parent.Err())
+			case <-operation.done:
+			}
+		}()
+	}
+	return operation
+}
+
+func (operation *manualTimeout) finish(err error) {
+	operation.finishes.Do(func() {
+		operation.mu.Lock()
+		operation.err = err
+		operation.mu.Unlock()
+		close(operation.done)
+	})
+}
+
+// expire fires the deadline exactly as a real timer would have.
+func (operation *manualTimeout) expire() { operation.finish(context.DeadlineExceeded) }
+
+// cancel is the CancelFunc the store defers, matching context.WithTimeout.
+func (operation *manualTimeout) cancel() { operation.finish(context.Canceled) }
+
+func (operation *manualTimeout) Deadline() (time.Time, bool) { return operation.deadline, true }
+func (operation *manualTimeout) Done() <-chan struct{}       { return operation.done }
+func (operation *manualTimeout) Value(key any) any           { return operation.parent.Value(key) }
+func (operation *manualTimeout) Err() error {
+	operation.mu.Lock()
+	defer operation.mu.Unlock()
+	return operation.err
+}
+
+// manualTimeouts replaces a store's deadline source and hands every armed
+// operation deadline back to the test in order.
+func manualTimeouts(store *GCSStore) <-chan *manualTimeout {
+	armed := make(chan *manualTimeout, 4)
+	store.withTimeout = func(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+		operation := newManualTimeout(parent, timeout)
+		armed <- operation
+		return operation, operation.cancel
+	}
+	return armed
 }
