@@ -155,7 +155,7 @@ jobs:
           go test -v -count=1 -timeout 5m ./atc/worker/jetbridge/...
           echo "=== All jetbridge tests passed ==="
 
-# The brine suite: 568 scenarios across 35 feature files, driven by the Rust
+# The brine suite: 568 scenarios across 36 feature files, driven by the Rust
 # CLI in `--mode sync` against the jetbridge adapter built from
 # atc/worker/jetbridge/brine. The CLI's verdict is the one that counts -- it
 # folds in the manifest's `budgets.undefined: 0` and any unsatisfied wiring,
