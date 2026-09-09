@@ -305,6 +305,15 @@ func (admission WriterAdmission) Validate() error {
 	if admission.WriterFence == 0 {
 		return fmt.Errorf("%w: writer fence is zero", ErrIncomplete)
 	}
+	// A ticket that names no pod is bound to nothing. `sameWriter` compares two
+	// empty strings and calls them the same process, so an admission with no
+	// Pod UID would replay for any later writer that also omitted it -- the
+	// ticket's whole binding, vacuous, for a caller that just left the field
+	// out. Req 13: a ticket cannot be transferred to a new process or Pod UID,
+	// which requires it to name one.
+	if admission.PodUID == "" {
+		return fmt.Errorf("%w: writer admission names no pod", ErrIncomplete)
+	}
 
 	return nil
 }

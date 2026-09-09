@@ -616,6 +616,77 @@ func TestAHoldReplayedAfterACrashStillGatesCleanup(t *testing.T) {
 	}
 }
 
+// The repair the test above does not reach, on its own vector.
+//
+// With the write order gate-then-record, a crash at the second put leaves a
+// GATE and no record, so the replay takes the new-hold path and `OpenGate` is
+// idempotent -- the replay branch's `EnsureGateOpen` is never entered by that
+// test at all. Delete the call and every committed test stays green, which is
+// the definition of an unpinned repair.
+//
+// So this test reaches the state the repair exists for directly: a `held`
+// record whose gate is gone. The ledger's own API cannot produce it any more,
+// which is the point -- a gate can still be lost to a ledger written by the
+// PREVIOUS order, to an operator's edit, or to any half-write nobody has
+// thought of yet. `CloseGate` here is not a scenario, it is the damage.
+//
+// The pair is the before and the after: cleanup is eligible with the gate gone,
+// and the replay -- which returns the SAME statement, so it is a read, not a
+// new hold -- puts it back.
+func TestAHoldReplayRepairsAGateLostBehindTheLedgersBack(t *testing.T) {
+	fixture := newSourceLedger(t)
+	first := held(t, fixture)
+
+	if _, err := fixture.ledger.RecordStart(identity(1), testPod, "proc-1"); err != nil {
+		t.Fatalf("starting: %v", err)
+	}
+	if _, err := fixture.ledger.RecordOutcome(identity(1),
+		executioncontrol.AcknowledgementFinish, executioncontrol.ExitOutcome{ExitCode: 0}); err != nil {
+		t.Fatalf("finishing: %v", err)
+	}
+
+	// The damage: the gate, gone, while the record still says `held`.
+	if err := fixture.ledger.CloseGate(identity(1), SourceHoldGate); err != nil {
+		t.Fatalf("closing the gate behind the ledger's back: %v", err)
+	}
+
+	// The control. Without this line a repair that never ran would look the
+	// same as a gate that was never lost.
+	before, err := fixture.ledger.CleanupEligible(identity(1))
+	if err != nil {
+		t.Fatalf("asking about cleanup: %v", err)
+	}
+	if !before.Eligible || len(before.OpenExtensionGates) != 0 {
+		t.Fatalf("the damage did not take: eligible=%v gates=%v",
+			before.Eligible, before.OpenExtensionGates)
+	}
+	if !fixture.source.Holds(first.Incarnation) {
+		t.Fatal("the source went away with the gate; this test is about a held source")
+	}
+
+	replayed, err := fixture.source.AcknowledgeHold(context.Background(), admission(),
+		output.SourceIncarnation{})
+	if err != nil {
+		t.Fatalf("replaying the hold: %v", err)
+	}
+	if !sameCaptureStatement(replayed, first) {
+		t.Errorf("the replay minted a fresh hold instead of returning the stored one: seq %d, was %d",
+			replayed.LedgerSequence, first.LedgerSequence)
+	}
+
+	after, err := fixture.ledger.CleanupEligible(identity(1))
+	if err != nil {
+		t.Fatalf("asking about cleanup after the replay: %v", err)
+	}
+	if after.Eligible {
+		t.Errorf("the replay did not repair the gate: cleanup is eligible over a held source")
+	}
+	if len(after.OpenExtensionGates) != 1 || after.OpenExtensionGates[0] != SourceHoldGate {
+		t.Errorf("the replay left gates %v; the hold's gate is not back",
+			after.OpenExtensionGates)
+	}
+}
+
 // The mirror, and it fails the other way: closed and stuck.
 //
 // A release writes the released record, removes the bytes and closes the gate.
@@ -716,6 +787,17 @@ func TestAWriterTicketReplaysItsOwnStatementAndIsBoundToItsProcess(t *testing.T)
 		if _, err := fixture.source.AdmitWriter(context.Background(), moved); !errors.Is(err, output.ErrConflict) {
 			t.Errorf("a ticket presented from %s was not a typed conflict: %v", name, err)
 		}
+	}
+
+	// And a ticket that names NO pod is refused before it is issued, rather
+	// than admitted and then replayed for the next caller that also left the
+	// field out. `sameWriter` compares two empty strings and calls them one
+	// process, so an unbound ticket is a ticket bound to nothing at all -- the
+	// binding the two rows above assert, made vacuous by omission.
+	unbound := writerAdmission(hold, testTicketB)
+	unbound.PodUID = ""
+	if _, err := fixture.source.AdmitWriter(context.Background(), unbound); !errors.Is(err, output.ErrIncomplete) {
+		t.Errorf("a writer admission naming no pod was not refused as incomplete: %v", err)
 	}
 
 	closed, err := fixture.source.RetireWriter(context.Background(), writerAdmission(hold, testTicket))

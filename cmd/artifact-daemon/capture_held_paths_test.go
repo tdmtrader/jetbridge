@@ -436,6 +436,44 @@ func TestTheOutputLedgersControlDirectoryIsNotReachableThroughTheOrdinaryAPI(t *
 		t.Error("an alias onto the output ledger's own record was registered")
 	}
 
+	// A PLANTED SYMLINK, which is the vector the key door cannot see.
+	//
+	// `validateRequestKey` reads the name a request chose, and
+	// "steps/unheld-handle/out/link/source-….json" is a lexically clean key. It
+	// is `containedRelKey`, through `locateArtifact`, that resolves the path and
+	// sees where it lands. The link is WITHIN the root and relative, which is
+	// exactly what a producer writing on the hostPath can plant -- tar
+	// extraction refuses such a target at `validateSymlinkTarget`, so the only
+	// way one exists is that something wrote it directly.
+	//
+	// With the refusal removed from `containedRelKey` alone, the PUT below
+	// rewrites the hold record through the link and every route above stays
+	// green: the two doors answer different questions and neither subsumes the
+	// other.
+	link := filepath.Join(storage, "steps", "unheld-handle", "out", "link")
+	if err := os.Symlink(filepath.Join("..", "..", "..", ledger.ControlDirName), link); err != nil {
+		t.Fatalf("planting the within-root symlink: %v", err)
+	}
+	throughLink := "/artifacts/steps/unheld-handle/out/link/" +
+		"source-88888888-8888-4888-8888-888888888888.json"
+	for _, method := range []string{
+		http.MethodGet, http.MethodHead, http.MethodPut, http.MethodDelete,
+	} {
+		if code := do(method, throughLink, []byte("garbage")); code < 400 || code > 499 {
+			t.Errorf("%s of the hold record through a within-root symlink answered %d", method, code)
+		}
+	}
+	// A record that does not exist yet, so a refusal cannot be "no such file".
+	if code := do(http.MethodPut, "/artifacts/steps/unheld-handle/out/link/source-planted.json",
+		[]byte("garbage")); code < 400 || code > 499 {
+		t.Errorf("a NEW control record written through the symlink answered %d", code)
+	}
+	// And the link itself is not deletable through the API either: the key
+	// names it, and the resolved path is the control directory.
+	if code := do(http.MethodDelete, "/artifacts/steps/unheld-handle/out/link", nil); code < 400 || code > 499 {
+		t.Errorf("deleting the planted link through the ordinary API answered %d", code)
+	}
+
 	// An ordered list rather than a map: a row that got through would destroy
 	// what a later row names, and a random order would make the failure a
 	// different one each run.
