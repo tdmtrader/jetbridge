@@ -28,6 +28,14 @@ func ProtectEventStream() (*os.File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dup stdout: %w", err)
 	}
+	// Dup hands back a descriptor WITHOUT close-on-exec, so every child the
+	// adapter starts -- etcd and kube-apiserver under envtest, the postmaster,
+	// a real artifact daemon, every command the local executor runs -- would
+	// inherit the CLI's event pipe. A child that outlives the adapter then
+	// keeps that pipe open, and `brine run` waits for EOF that never comes:
+	// a killed or crashed run looked hung until the orphans were found and
+	// killed by hand. The stream is the adapter's alone.
+	unix.CloseOnExec(saved)
 	if err := unix.Dup2(unix.Stderr, unix.Stdout); err != nil {
 		return nil, fmt.Errorf("redirect stdout to stderr: %w", err)
 	}
