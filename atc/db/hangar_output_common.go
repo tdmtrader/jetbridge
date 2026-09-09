@@ -14,16 +14,20 @@ import (
 )
 
 // The work every Hangar output repository method does the same way, in one
-// place: reading a row over the two methods output.Tx has, reading the database
-// clock, turning a lease term into something SQL will accept, mapping a
-// PostgreSQL failure onto the leaf's typed outcomes, and waking a worker after
-// a commit.
+// place: reading a row over the two methods output.Tx has, turning a lease term
+// into something SQL will accept, mapping a PostgreSQL failure onto the leaf's
+// typed outcomes, and waking a worker after a commit.
 //
-// Each was written three or four times before it lived here, and each of the
-// four is somewhere a second spelling would be a second behaviour: a clock read
-// that fell back to the process clock, a lease term rounded differently, a
-// conflict that mapped to the wrong sentinel, or a notification sent before the
-// commit it announces.
+// Each was written three or four times before it lived here, and each is
+// somewhere a second spelling would be a second behaviour: a lease term rounded
+// differently, a conflict that mapped to the wrong sentinel, or a notification
+// sent before the commit it announces.
+//
+// Every deadline in this plane is still measured on the database clock -- Reqs
+// 10, 11, 36, 39 and 48 all say so, and a node whose clock drifts must not be
+// able to expire its own hold -- but it is read where it is used, as `now()`
+// inside the statement that depends on it, which is the reading that cannot
+// have drifted by the time the row is written.
 
 // hangarQueryRow is QueryRow over the two methods output.Tx has.
 //
@@ -50,23 +54,6 @@ func hangarQueryRow(ctx context.Context, tx output.Tx, query string, args []any,
 	}
 
 	return rows.Err()
-}
-
-// hangarDatabaseNow reads the clock every deadline in this plane is measured
-// against.
-//
-// Requirements 10, 11, 36, 39 and 48 all say "database clock", and they mean
-// it: a node whose clock drifts must not be able to expire its own hold, and
-// expiry alone is never proof or release authority. There is deliberately no
-// fallback to time.Now() -- a fallback would be exactly the drift the rule
-// exists to exclude, quietly.
-func hangarDatabaseNow(ctx context.Context, tx output.Tx) (time.Time, error) {
-	var now time.Time
-	if err := hangarQueryRow(ctx, tx, `SELECT now()`, nil, &now); err != nil {
-		return time.Time{}, err
-	}
-
-	return now, nil
 }
 
 // hangarLeaseInterval renders a lease term for `now() + $n::interval`.
