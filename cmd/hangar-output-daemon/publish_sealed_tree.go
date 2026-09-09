@@ -100,6 +100,65 @@ func (server *Server) PublishSealedTree(ctx context.Context,
 	return result, result.Validate()
 }
 
+// CanonicalizeSealedTree answers the logical identity of the sealed tree
+// without creating anything.
+//
+// This is the first half of an ordering requirement 21 states and the publish
+// route alone cannot express: the capture owner must durably resolve its
+// reservation to the server-derived scope and logical digest AFTER
+// canonicalization and BEFORE the first object create, so that every
+// possibly-created object has a pre-existing reservation recovery and
+// inventory can correlate. A control plane driving only `publish` learns the
+// digest at the same moment the object exists.
+//
+// The seal is a precondition here for the same reason it is one for publish:
+// `SealedIncarnation` refuses anything that is not `sealed`, so a canonical
+// read cannot begin over bytes a writer may still be changing (Req 15).
+//
+// The tree is canonicalized twice across the pair, and deliberately. The
+// canonical form is deterministic -- that is the property the whole plane is
+// built on -- so the publish re-deriving it is a re-derivation and not a
+// second opinion, and the control plane compares the two answers rather than
+// carrying a digest between calls. Handing the publish a caller-supplied
+// digest would be exactly the caller-chosen key Req 7 forbids.
+func (server *Server) CanonicalizeSealedTree(ctx context.Context,
+	request output.PublicationRequest) (output.CanonicalizationResult, error) {
+	if err := request.Validate(); err != nil {
+		return output.CanonicalizationResult{}, err
+	}
+	if request.ActivationEpoch != server.daemon.Namespace().ActivationEpoch() {
+		return output.CanonicalizationResult{}, fmt.Errorf(
+			"%w: the canonicalization names epoch %d and this daemon publishes under %d",
+			output.ErrConflict, request.ActivationEpoch,
+			server.daemon.Namespace().ActivationEpoch())
+	}
+
+	root, _, err := server.source.SealedIncarnation(
+		request.HandoffID, request.Execution, request.ActivationEpoch)
+	if err != nil {
+		return output.CanonicalizationResult{}, err
+	}
+
+	captured, err := server.daemon.CanonicalizeDirectory(ctx, root)
+	if err != nil {
+		return output.CanonicalizationResult{}, err
+	}
+	defer captured.Close()
+
+	result := output.CanonicalizationResult{
+		ProtocolVersion: output.ProtocolVersion,
+		HandoffID:       request.HandoffID,
+		ReservationID:   request.ReservationID,
+		CaptureFence:    request.CaptureFence,
+		Scope:           server.daemon.Namespace().Scope(),
+		Digest:          captured.Digest,
+		LogicalBytes:    captured.ByteSize,
+		ObservedAt:      output.NewTimestamp(nowUTC()),
+	}
+
+	return result, result.Validate()
+}
+
 // CanonicalizeDirectory turns a sealed incarnation into canonical bytes.
 //
 // It tars the directory and hands the tar to the foundation's Canonicalizer,

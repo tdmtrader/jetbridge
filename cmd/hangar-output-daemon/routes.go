@@ -197,6 +197,7 @@ func (server *Server) routes() map[string]route {
 		"POST /capture/v1/seal/confirm":        {output.CaptureFacet, "confirm-seal", (*Server).confirmSeal, false},
 		"POST /capture/v1/seal/inspect":        {output.CaptureFacet, "inspect-seal", (*Server).inspectSeal, false},
 		"POST /capture/v1/release":             {output.CaptureFacet, "release-hold", (*Server).release, false},
+		"POST /capture/v1/canonicalize":        {output.CaptureFacet, "canonicalize", (*Server).canonicalize, false},
 		"POST /capture/v1/publish":             {output.CaptureFacet, "publish", (*Server).publish, false},
 		"POST /capture/v1/stat":                {output.CaptureFacet, "stat", (*Server).statExact, false},
 	}
@@ -521,6 +522,23 @@ func (server *Server) publish(_ http.ResponseWriter, request *http.Request,
 	}
 
 	return server.PublishSealedTree(request.Context(), publication)
+}
+
+// canonicalize answers what the sealed tree IS, and creates nothing.
+//
+// It takes the publish route's own request type because a canonicalization and
+// a publication are admitted for exactly the same facts -- the same argument
+// `reserve-incarnation` makes for taking a hold's admission. A second request
+// type carrying the same seven fields is how the two come to disagree, with a
+// logical resolution already committed against the first answer.
+func (server *Server) canonicalize(_ http.ResponseWriter, request *http.Request,
+	_ executioncontrol.Identity) (any, error) {
+	var publication output.PublicationRequest
+	if err := decode(request, &publication); err != nil {
+		return nil, err
+	}
+
+	return server.CanonicalizeSealedTree(request.Context(), publication)
 }
 
 func (server *Server) statExact(_ http.ResponseWriter, request *http.Request,
