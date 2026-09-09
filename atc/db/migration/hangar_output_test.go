@@ -1401,6 +1401,65 @@ var _ = Describe("the Hangar output plane schema", func() {
 	// worth having if removing it changes the answer. Each case here drops the
 	// guard inside a transaction that is rolled back, re-runs the vector that
 	// the guard refused, and requires it to be accepted.
+	// The two statements every Hangar transaction runs, and what the planner
+	// can do with them.
+	//
+	// `SET LOCAL enable_seqscan = off` is what makes this decidable on an empty
+	// database: it is a cost penalty, not a prohibition, so a table with a
+	// usable index switches to it and a table without one still sequentially
+	// scans and says so. Without the penalty every plan here is a Seq Scan on
+	// three rows and the assertion would mean nothing either way.
+	Describe("the hot statements have an index", func() {
+		BeforeEach(seedEpoch)
+
+		planFor := func(statement string, arguments ...any) string {
+			GinkgoHelper()
+
+			tx, err := database.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer func() { _ = tx.Rollback() }()
+
+			_, err = tx.Exec(`SET LOCAL enable_seqscan = off`)
+			Expect(err).NotTo(HaveOccurred())
+
+			rows, err := tx.Query("EXPLAIN "+statement, arguments...)
+			Expect(err).NotTo(HaveOccurred())
+			defer rows.Close()
+
+			var plan string
+			for rows.Next() {
+				var line string
+				Expect(rows.Scan(&line)).To(Succeed())
+				plan += line + "\n"
+			}
+			Expect(rows.Err()).NotTo(HaveOccurred())
+
+			return plan
+		}
+
+		It("looks up a logical reservation by correlation without a sequential scan", func() {
+			// The lock helper's class-1 statement, verbatim. The only
+			// (scope, digest) index was partial on state =
+			// 'unresolved_generation', and this statement carries no such
+			// predicate, so the planner could not use it: every Hangar
+			// transaction that touches a correlation scanned the table.
+			Expect(planFor(`
+				SELECT 1 FROM hangar_logical_reservations
+				WHERE scope = $1 AND digest = $2
+				ORDER BY reservation_id
+				FOR NO KEY UPDATE`, "team-a", sampleDigest)).
+				To(ContainSubstring("hangar_logical_reservations_correlation_idx"),
+					"the correlation was answered by a scan or by the primary key, not by an "+
+						"index on (scope, digest)")
+		})
+
+		It("reads a receipt by handoff without a sequential scan", func() {
+			Expect(planFor(
+				`SELECT claims FROM hangar_output_receipts WHERE handoff_id = $1`, handoffID)).
+				To(ContainSubstring("hangar_output_receipts_handoff_idx"))
+		})
+	})
+
 	Describe("the guards are load-bearing", func() {
 		BeforeEach(func() {
 			seedEpoch()

@@ -1274,10 +1274,24 @@ CREATE INDEX hangar_logical_reservations_unresolved_idx
     ON hangar_logical_reservations (scope, digest)
     WHERE state = 'unresolved_generation';
 
+-- The lock suffix's class-1 statement. It asks for a correlation and carries no
+-- state predicate -- it cannot, because it locks every reservation for that
+-- correlation whatever state each is in -- so the partial index above cannot
+-- answer it, and without this one every Hangar transaction that touches a
+-- correlation scans the table.
+CREATE INDEX hangar_logical_reservations_correlation_idx
+    ON hangar_logical_reservations (scope, digest);
+
 -- Exact generation lookup, and the reclaim candidate scan.
 CREATE INDEX hangar_exact_lifecycles_reclaimable_idx
     ON hangar_exact_lifecycles (registered_at)
     WHERE state IN ('registered', 'adopted');
+
+-- The receipt for a handoff, which is what classifying a handoff reads. The
+-- table's own unique keys are on the reservation and the challenge nonce, and
+-- neither of those is what a caller holding a handoff id has.
+CREATE INDEX hangar_output_receipts_handoff_idx
+    ON hangar_output_receipts (handoff_id);
 
 -- Active claims and active read leases, which are what reclaim admission asks
 -- about and what the lock helper orders.
