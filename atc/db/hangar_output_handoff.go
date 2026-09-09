@@ -423,11 +423,10 @@ func hangarMarshalWitness(acknowledgement *executioncontrol.Acknowledgement) (an
 // receipt or a terminal orphan, and there is nothing left to release; the state
 // guard above is what refuses one offered anyway.
 func (repository *HangarOutputRepository) AcknowledgeCaptureRelease(ctx context.Context, tx output.Tx, acknowledgement output.ReleaseAcknowledgement) error {
-	if acknowledgement.Disposition != output.DispositionCapture {
-		return fmt.Errorf("%w: a %s release acknowledgement was offered to the %s branch",
-			output.ErrIncomplete, acknowledgement.Disposition, output.DispositionCapture)
-	}
-
+	// The branch check is acknowledgeRelease's, and it is not repeated here:
+	// there is one statement of "this acknowledgement belongs to this branch",
+	// and a second copy could only drift from it. Mutation is what found this
+	// one redundant -- removing it reddened nothing.
 	return repository.acknowledgeRelease(ctx, tx, acknowledgement,
 		output.DispositionCapture, "hangar_capture_reservations")
 }

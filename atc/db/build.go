@@ -409,6 +409,7 @@ func (b *build) RerunNumber() int                 { return b.rerunNumber }
 func (b *build) CreatedBy() *string               { return b.createdBy }
 func (b *build) RunJobName() string               { return b.runJobName }
 func (b *build) RunJobKey() string                { return b.runJobKey }
+
 // TaskCacheIdentity reports the scope a task cache created by this build is
 // keyed on, and whether it has one at all.
 //
