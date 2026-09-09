@@ -46,6 +46,13 @@ func scanHangarLockSites(t *testing.T, roots ...string) hangarSourceInventory {
 	inventory := hangarSourceInventory{}
 	fileSet := token.NewFileSet()
 
+	type parsedFile struct {
+		Relative  string
+		Directory string
+		File      *ast.File
+	}
+	var files []parsedFile
+
 	for _, root := range roots {
 		err := filepath.Walk(filepath.Join(repoRoot, root), func(path string, info os.FileInfo, err error) error {
 			if err != nil {
@@ -66,33 +73,14 @@ func scanHangarLockSites(t *testing.T, roots ...string) hangarSourceInventory {
 			if err != nil {
 				return err
 			}
-			inventory.Files++
-
 			relative, err := filepath.Rel(repoRoot, path)
 			if err != nil {
 				return err
 			}
-
-			ast.Inspect(parsed, func(node ast.Node) bool {
-				literal, ok := node.(*ast.BasicLit)
-				if !ok || literal.Kind != token.STRING {
-					return true
-				}
-				value, err := strconv.Unquote(literal.Value)
-				if err != nil {
-					return true
-				}
-				inventory.Literals++
-
-				if !hangarLocksARow(value) {
-					return true
-				}
-				inventory.Sites = append(inventory.Sites, hangarLockSite{
-					File:    filepath.ToSlash(relative),
-					Snippet: firstLine(value),
-				})
-
-				return true
+			files = append(files, parsedFile{
+				Relative:  filepath.ToSlash(relative),
+				Directory: filepath.Dir(path),
+				File:      parsed,
 			})
 
 			return nil
@@ -102,17 +90,149 @@ func scanHangarLockSites(t *testing.T, roots ...string) hangarSourceInventory {
 		}
 	}
 
+	// String constants, per package directory, so that a lock clause assembled
+	// out of a name declared elsewhere in the package can still be read.
+	constants := map[string]map[string]string{}
+	for _, file := range files {
+		if constants[file.Directory] == nil {
+			constants[file.Directory] = map[string]string{}
+		}
+		for name, value := range hangarStringDeclarations(file.File) {
+			constants[file.Directory][name] = value
+		}
+	}
+
+	seen := map[hangarLockSite]bool{}
+	record := func(file parsedFile, rendered string) {
+		site := hangarLockSite{File: file.Relative, Snippet: firstLine(rendered)}
+		if seen[site] {
+			return
+		}
+		seen[site] = true
+		inventory.Sites = append(inventory.Sites, site)
+	}
+
+	for _, file := range files {
+		inventory.Files++
+		known := constants[file.Directory]
+
+		ast.Inspect(file.File, func(node ast.Node) bool {
+			switch expression := node.(type) {
+			case *ast.BasicLit:
+				if expression.Kind != token.STRING {
+					return true
+				}
+				value, err := strconv.Unquote(expression.Value)
+				if err != nil {
+					return true
+				}
+				inventory.Literals++
+				if hangarLocksARow(value) {
+					record(file, value)
+				}
+			case *ast.CallExpr:
+				// A format string and its arguments are one statement, whatever
+				// the source does with the pieces.
+				selector, ok := expression.Fun.(*ast.SelectorExpr)
+				if !ok || selector.Sel.Name != "Sprintf" {
+					return true
+				}
+				if rendered := hangarRenderString(expression, known); hangarLocksARow(rendered) {
+					record(file, rendered)
+				}
+			case *ast.BinaryExpr:
+				if expression.Op != token.ADD {
+					return true
+				}
+				if rendered := hangarRenderString(expression, known); hangarLocksARow(rendered) {
+					record(file, rendered)
+				}
+			}
+
+			return true
+		})
+	}
+
 	return inventory
 }
 
-// hangarLocksARow is the rule itself, over one string literal, so that the same
-// predicate drives the real scan and the fixtures below.
+// hangarStringDeclarations reads the file's string constants and vars.
+func hangarStringDeclarations(file *ast.File) map[string]string {
+	declared := map[string]string{}
+
+	ast.Inspect(file, func(node ast.Node) bool {
+		spec, ok := node.(*ast.ValueSpec)
+		if !ok {
+			return true
+		}
+		for index, name := range spec.Names {
+			if index >= len(spec.Values) {
+				continue
+			}
+			literal, ok := spec.Values[index].(*ast.BasicLit)
+			if !ok || literal.Kind != token.STRING {
+				continue
+			}
+			value, err := strconv.Unquote(literal.Value)
+			if err != nil {
+				continue
+			}
+			declared[name.Name] = value
+		}
+
+		return true
+	})
+
+	return declared
+}
+
+// hangarRenderString flattens an expression into everything it can say.
+//
+// It is deliberately not an evaluator: it collects every string literal and
+// every name it can resolve anywhere inside the expression and joins them. That
+// over-approximates what the statement will be, which is the right direction --
+// the rule is asking whether a lock clause and a Hangar table meet in one
+// statement, and a rendering that saw only half of it would answer no for the
+// exact shape this exists to catch.
+func hangarRenderString(expression ast.Node, known map[string]string) string {
+	var parts []string
+
+	ast.Inspect(expression, func(node ast.Node) bool {
+		switch inner := node.(type) {
+		case *ast.BasicLit:
+			if inner.Kind != token.STRING {
+				return true
+			}
+			if value, err := strconv.Unquote(inner.Value); err == nil {
+				parts = append(parts, value)
+			}
+		case *ast.Ident:
+			if value, ok := known[inner.Name]; ok {
+				parts = append(parts, value)
+			}
+		}
+
+		return true
+	})
+
+	return strings.Join(parts, " ")
+}
+
+// hangarLocksARow is the rule itself, over one rendered statement, so that the
+// same predicate drives the real scan and the fixtures below.
 func hangarLocksARow(statement string) bool {
 	upper := strings.ToUpper(statement)
-	if !strings.Contains(upper, "FOR UPDATE") &&
-		!strings.Contains(upper, "FOR NO KEY UPDATE") &&
-		!strings.Contains(upper, "FOR SHARE") &&
-		!strings.Contains(upper, "FOR KEY SHARE") {
+	locking := false
+	for _, clause := range []string{
+		"FOR UPDATE", "FOR NO KEY UPDATE", "FOR SHARE", "FOR KEY SHARE", "LOCK TABLE",
+	} {
+		if strings.Contains(upper, clause) {
+			locking = true
+
+			break
+		}
+	}
+	if !locking {
 		return false
 	}
 
@@ -192,6 +312,88 @@ func TestTheHangarLockRuleIsNotVacuous(t *testing.T) {
 				t.Errorf("the rule objected to %q, which locks no Hangar row", statement)
 			}
 		}
+	})
+
+	// The shape that evaded the per-literal rule: the lock clause and the
+	// table are both there, in one statement, written as two pieces.
+	t.Run("it catches a lock assembled out of pieces", func(t *testing.T) {
+		source := `package db
+
+import "fmt"
+
+const probeTable = "hangar_claims"
+
+func probe(tx Tx) {
+	_, _ = tx.Exec(fmt.Sprintf("SELECT 1 FROM %s WHERE claim_id = $1 FOR UPDATE", probeTable))
+	_, _ = tx.Exec("SELECT 1 FROM hangar_read_leases WHERE read_lease_id = $1 " + "FOR UPDATE")
+}
+`
+		fileSet := token.NewFileSet()
+		parsed, err := parser.ParseFile(fileSet, "probe.go", source, 0)
+		if err != nil {
+			t.Fatalf("parsing the fixture: %v", err)
+		}
+		known := hangarStringDeclarations(parsed)
+
+		found := 0
+		ast.Inspect(parsed, func(node ast.Node) bool {
+			switch expression := node.(type) {
+			case *ast.CallExpr:
+				selector, ok := expression.Fun.(*ast.SelectorExpr)
+				if !ok || selector.Sel.Name != "Sprintf" {
+					return true
+				}
+			case *ast.BinaryExpr:
+				if expression.Op != token.ADD {
+					return true
+				}
+			default:
+				return true
+			}
+			if hangarLocksARow(hangarRenderString(node, known)) {
+				found++
+			}
+
+			return true
+		})
+
+		if found != 2 {
+			t.Errorf("the rule recognised %d of the 2 split lock sites in the fixture. A "+
+				"`FROM %%s ... FOR UPDATE` with the table in a constant, and a clause "+
+				"concatenated onto its own statement, are both a second lock order -- and a "+
+				"second lock order is a deadlock nobody wrote down.", found)
+		}
+	})
+
+	t.Run("it leaves a lock clause that names no Hangar table alone", func(t *testing.T) {
+		// `Suffix("FOR SHARE")` on a builder over `pipelines` is how the rest
+		// of atc/db locks its own rows. Reading the pieces together must not
+		// turn those into Hangar lock sites.
+		source := `package db
+
+func other(builder Builder) {
+	_ = builder.From("pipelines").Suffix("FOR UPDATE")
+	_ = "SELECT 1 FROM builds WHERE id = $1 " + "FOR UPDATE"
+}
+`
+		fileSet := token.NewFileSet()
+		parsed, err := parser.ParseFile(fileSet, "other.go", source, 0)
+		if err != nil {
+			t.Fatalf("parsing the fixture: %v", err)
+		}
+		known := hangarStringDeclarations(parsed)
+
+		ast.Inspect(parsed, func(node ast.Node) bool {
+			expression, ok := node.(*ast.BinaryExpr)
+			if !ok || expression.Op != token.ADD {
+				return true
+			}
+			if hangarLocksARow(hangarRenderString(node, known)) {
+				t.Error("the rule objected to a lock on a table that is not Hangar's")
+			}
+
+			return true
+		})
 	})
 
 	// And the whole scan, driven over a source tree that violates it.
