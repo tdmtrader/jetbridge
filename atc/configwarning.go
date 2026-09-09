@@ -23,7 +23,7 @@ func ValidateIdentifier(identifier string, context ...string) (*ConfigWarning, e
 
 	// Skip validation for specific contexts
 	contextLen := len(context)
-	if contextLen >= 2 && (strings.Contains(context[contextLen-1], "set_pipeline") || strings.Contains(context[contextLen-1], "task")) && context[contextLen-2] == ".across" {
+	if contextLen >= 2 && (strings.Contains(context[contextLen-1], "set_pipeline") || strings.Contains(context[contextLen-1], "run_pipeline") || strings.Contains(context[contextLen-1], "task")) && context[contextLen-2] == ".across" {
 		return nil, nil
 	}
 
