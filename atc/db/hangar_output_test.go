@@ -989,9 +989,15 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				_, err := dbConn.Exec(`DROP TABLE IF EXISTS opaque_consumer_bindings`)
 				Expect(err).NotTo(HaveOccurred())
 			})
+			// Two rows: the one the consumer locks, and one it does not. The
+			// second is what makes this spec able to fail -- pg_locks holds
+			// one row per (relation, mode, pid) and row locks live in tuple
+			// headers, so Hangar taking the same mode on the same row the
+			// consumer already holds is invisible from outside. Reaching any
+			// row the consumer left alone is not.
 			_, err = dbConn.Exec(`
 				INSERT INTO opaque_consumer_bindings (binding_id, visibility)
-				VALUES ('binding-1', 'hidden')`)
+				VALUES ('binding-1', 'hidden'), ('binding-2', 'hidden')`)
 			Expect(err).NotTo(HaveOccurred())
 
 			tx, err := dbConn.Begin()
@@ -1024,6 +1030,18 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			}
 			Expect(consumerLocks).To(Equal(1),
 				"Hangar acquired a lock on a consumer table; it never acquires a consumer-domain row")
+
+			// And the consumer row nobody locked is still free while this
+			// transaction holds every lock the claim needed.
+			probe, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(probe)
+			_, err = probe.Exec(
+				`SELECT 1 FROM opaque_consumer_bindings WHERE binding_id = $1 FOR UPDATE NOWAIT`,
+				"binding-2")
+			Expect(err).NotTo(HaveOccurred(),
+				"Hangar reached a consumer row the consumer never locked")
+			Expect(probe.Rollback()).To(Succeed())
 
 			Expect(tx.Rollback()).To(Succeed())
 		})
