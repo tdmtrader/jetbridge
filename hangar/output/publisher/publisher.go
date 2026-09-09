@@ -215,19 +215,13 @@ func (publisher *Publisher) reconcileExisting(ctx context.Context, key string, r
 		return output.PublishedObject{}, translate(err, key)
 	}
 
-	// M-dedup-unverified, the mutation: deduplicate on the strength of an
-	// object being at the derived key, without reading its marker.
-	return output.PublishedObject{
-		Attributes: hangar.TreeAttributes{
-			Ref:          publisher.namespace.Ref(reservation.Digest, attrs.Generation),
-			StoredBytes:  attrs.Size,
-			LogicalBytes: attrs.Size,
-			CreatedAt:    attrs.Created.UTC(),
-		},
-		Metageneration: attrs.Metageneration,
-		Marker:         reservation.Marker,
-		Deduplicated:   true,
-	}, nil
+	object, err := publisher.classify(attrs, reservation)
+	if err != nil {
+		return output.PublishedObject{}, err
+	}
+	object.Deduplicated = true
+
+	return object, nil
 }
 
 // reconcileAmbiguous is the lost-response path.
