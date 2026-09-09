@@ -303,9 +303,11 @@ func rejectStructuralName(key string) error {
 // one path segment. Folded, because APFS and NTFS fold and an exact-string
 // check has already let a structural name through here once.
 //
-// The name is the reader package's constant. There is only one spelling of it
-// in the tree, and a second one is how the writer and the exclusion drift
-// apart.
+// The name is the READER package's constant, which is the one this daemon
+// already classifies with. The writer states its own (control_store.go, with
+// the reason: a reader that imported the writer would be one import away from
+// being able to write), and those two are the whole set — a third spelling
+// here is how an exclusion drifts off the directory it excludes.
 func refuseControlDirectory(relative string) error {
 	cleaned := filepath.ToSlash(filepath.Clean(filepath.FromSlash(relative)))
 	first, _, _ := strings.Cut(cleaned, "/")
