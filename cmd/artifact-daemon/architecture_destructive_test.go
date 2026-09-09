@@ -43,6 +43,19 @@ type admission struct {
 	// admission lives in a caller rather than at the call itself. Empty means
 	// the site's own function.
 	guardedIn string
+	// ledgerGuard is the SECOND question a destructive site that takes a
+	// caller-chosen name has to have asked. The first is "is this path a
+	// source a capture holds"; this one is "is this path the ledger that
+	// answers that". They are separate fields because they were separate
+	// defects: the classifier was wired into every path here while the records
+	// it reads were served, replaced and removed by the same routes, and a
+	// single field would have let one stand in for the other.
+	ledgerGuard string
+	// ledgerGuardedIn is the function whose body must contain ledgerGuard. It
+	// is usually not the site's own function: the refusal lives at the door a
+	// key or a path comes through, which is what makes it true of routes
+	// nobody has written yet.
+	ledgerGuardedIn string
 	// why is the reason, and it is required for every entry. An exempt site
 	// with no reason is an unreviewed site.
 	why string
@@ -61,7 +74,9 @@ var destructiveInventory = map[string]struct {
 	// ---- the artifact daemon's destructive paths ----
 
 	"artifact-daemon/server.go | Server.handleDeleteArtifact | s.root.RemoveAll(osName())": {1, admission{
-		guard: "refuseIfCaptureHeld",
+		guard:           "refuseIfCaptureHeld",
+		ledgerGuard:     "refuseControlDirectory",
+		ledgerGuardedIn: "validateRequestKey",
 		why: "DELETE /artifacts/ is what the Reaper's cleanupDaemonSetArtifacts calls, by step " +
 			"handle. TODO(phase-4): this is also the seam the ticketed control-init operation " +
 			"will call when DaemonSetBackend.BuildCleanupInitContainer's `rm -rf` init container " +
@@ -70,21 +85,29 @@ var destructiveInventory = map[string]struct {
 			"init container destroys this path's bytes without passing through here at all.",
 	}},
 	"artifact-daemon/server.go | Server.handleStreamIn | stepsRoot.RemoveAll(key)": {1, admission{
-		guard: "refuseIfCaptureHeld",
-		why:   "stream-in replaces: it clears the key and renames a fresh tree over it.",
+		guard:           "refuseIfCaptureHeld",
+		ledgerGuard:     "refuseControlDirectory",
+		ledgerGuardedIn: "validateRequestKey",
+		why: "stream-in replaces: it clears the key and renames a fresh tree over it. Its key " +
+			"is relative to steps/ and could not name the real control directory; the refusal " +
+			"at the door costs a name nothing may create anyway.",
 	}},
 	"artifact-daemon/server.go | Server.handleStreamIn | stepsRoot.RemoveAll(tmpName)": {1, admission{
 		why: "removes the temp directory this call just created, on every error path.",
 	}},
 	"artifact-daemon/server.go | Server.handlePutArtifact | s.root.Rename(tmpKey)": {1, admission{
-		guard: "refuseIfCaptureHeld",
-		why:   "the ordinary PUT replaces the bytes at its key.",
+		guard:           "refuseIfCaptureHeld",
+		ledgerGuard:     "refuseControlDirectory",
+		ledgerGuardedIn: "validateRequestKey",
+		why:             "the ordinary PUT replaces the bytes at its key.",
 	}},
 	"artifact-daemon/server.go | Server.handlePutArtifact | s.root.Remove(tmpKey)": {4, admission{
 		why: "removes the temp file this call just created, on each error path.",
 	}},
 	"artifact-daemon/server.go | Server.copyArtifact | parent.RemoveAll(base)": {1, admission{
 		guard: "refuseIfCaptureHeldPath", guardedIn: "Server.resolveOne",
+		ledgerGuard:     "refuseControlDirectory",
+		ledgerGuardedIn: "validateResolveDest",
 		why: "copyArtifact clears the resolve DESTINATION. The destination is caller-supplied " +
 			"and is checked once in resolveOne, which covers all three resolve branches.",
 	}},
@@ -93,6 +116,8 @@ var destructiveInventory = map[string]struct {
 	}},
 	"artifact-daemon/peers.go | PeerResolver.FetchInto | parent.RemoveAll(base)": {1, admission{
 		guard: "refuseIfCaptureHeldPath", guardedIn: "Server.resolveOne",
+		ledgerGuard:     "refuseControlDirectory",
+		ledgerGuardedIn: "validateResolveDest",
 		why: "the peer branch's writer clears the same caller-supplied destination copyArtifact " +
 			"does, and reaches it only through resolveOne.",
 	}},
@@ -104,6 +129,8 @@ var destructiveInventory = map[string]struct {
 	}},
 	"artifact-daemon/containment.go | promoteDir | parent.Rename(tmp)": {1, admission{
 		guard: "refuseIfCaptureHeld", guardedIn: "Server.handleStreamIn",
+		ledgerGuard:     "refuseControlDirectory",
+		ledgerGuardedIn: "validateRequestKey",
 		why: "the shared temp-to-final promote. Its three callers -- handleStreamIn, " +
 			"copyArtifact and FetchInto -- each clear the target first and are each guarded " +
 			"above; the promote itself renames a name this process minted.",
@@ -323,25 +350,31 @@ func TestArchitecture_EveryDestructiveCallIsAdmittedByANamedGuardOrPinnedAsExemp
 		if pinned.why == "" {
 			t.Errorf("%s is pinned with no reason", key)
 		}
-		if pinned.guard == "" {
-			continue
-		}
-		where := pinned.guardedIn
-		if where == "" {
-			_, function, _ := strings.Cut(key, " | ")
-			function, _, _ = strings.Cut(function, " | ")
-			where = strings.TrimSpace(function)
-		}
-		body, ok := bodies[where]
-		if !ok {
-			t.Errorf("%s names %s as the function that guards it, and there is no such "+
-				"function", key, where)
-			continue
-		}
-		if !strings.Contains(body, pinned.guard) {
-			t.Errorf("%s is pinned as admitted by %q in %s, and %s no longer mentions it. "+
-				"Either the guard was removed and this call now destroys a held source, or "+
-				"the guard moved and this entry is wrong.", key, pinned.guard, where, where)
+		for _, named := range []struct{ identifier, in, lost string }{
+			{pinned.guard, pinned.guardedIn, "this call now destroys a held source"},
+			{pinned.ledgerGuard, pinned.ledgerGuardedIn,
+				"this call now reaches the ledger that says what is held"},
+		} {
+			if named.identifier == "" {
+				continue
+			}
+			where := named.in
+			if where == "" {
+				_, function, _ := strings.Cut(key, " | ")
+				function, _, _ = strings.Cut(function, " | ")
+				where = strings.TrimSpace(function)
+			}
+			body, ok := bodies[where]
+			if !ok {
+				t.Errorf("%s names %s as the function that guards it, and there is no such "+
+					"function", key, where)
+				continue
+			}
+			if !strings.Contains(body, named.identifier) {
+				t.Errorf("%s is pinned as admitted by %q in %s, and %s no longer mentions it. "+
+					"Either the guard was removed and %s, or the guard moved and this entry "+
+					"is wrong.", key, named.identifier, where, where, named.lost)
+			}
 		}
 	}
 }

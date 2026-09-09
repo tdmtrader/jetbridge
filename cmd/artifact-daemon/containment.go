@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/concourse/concourse/hangar/output/ledger"
 )
 
 // ErrRefused marks an error the ARCHIVE is answerable for rather than the
@@ -141,7 +143,12 @@ func validateRequestKey(key string) error {
 		return fmt.Errorf("request key %q escapes the storage root (resolves to %q)", key, cleaned)
 	}
 
-	return nil
+	// The output plane's ledger is not an artifact. Refused here rather than
+	// per route because every route that takes a key reaches this function, and
+	// the one route that forgot is how this was reachable at all. A stream-in
+	// key is relative to steps/ and could not name the real directory, so
+	// refusing it there costs a name nothing may create anyway.
+	return refuseControlDirectory(cleaned)
 }
 
 // validateContainedPath decides whether a path supplied in a request body may
@@ -190,6 +197,13 @@ func containedRelKey(root, candidate string) (RelKey, error) {
 
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("path %q resolves outside the storage root (relative: %q)", candidate, rel)
+	}
+	// A register's local_path and a resolve's dest are absolute paths the
+	// caller chose, and "contained in the store" includes the control
+	// directory. This is the same refusal validateRequestKey makes, at the
+	// other door.
+	if err := refuseControlDirectory(filepath.ToSlash(rel)); err != nil {
+		return "", err
 	}
 
 	return RelKey(filepath.ToSlash(rel)), nil
@@ -271,6 +285,38 @@ func rejectStructuralName(key string) error {
 	if _, ok := structuralNames[strings.ToLower(filepath.Clean(key))]; ok {
 		return fmt.Errorf("key %q names a structural path, not an artifact", key)
 	}
+	return nil
+}
+
+// refuseControlDirectory keeps every route away from the output plane's ledger.
+//
+// The classifier next door answers "is this path held" for a SOURCE. It says
+// nothing about the records that answer it, and refuseIfCaptureHeld says less
+// than nothing: it strips "steps/" and answers Unmanaged for everything else,
+// so the control directory was not a location the guard protected but a
+// location this daemon served. DELETE of a hold record answered 204, and the
+// delete of the source that hold protected then answered 204 too.
+//
+// It is a FIRST-SEGMENT rule, not an equality one. The directory, the records
+// inside it and the quarantine beneath them are one thing: a daemon that
+// refused the directory and served the records would have moved the vector by
+// one path segment. Folded, because APFS and NTFS fold and an exact-string
+// check has already let a structural name through here once.
+//
+// The name is the reader package's constant. There is only one spelling of it
+// in the tree, and a second one is how the writer and the exclusion drift
+// apart.
+func refuseControlDirectory(relative string) error {
+	cleaned := filepath.ToSlash(filepath.Clean(filepath.FromSlash(relative)))
+	first, _, _ := strings.Cut(cleaned, "/")
+	if strings.EqualFold(first, ledger.ControlDirName) {
+		return refused(
+			"%q is inside %s, the output plane's control ledger: this daemon reads that ledger "+
+				"to decide what it may destroy and has no route that serves, replaces or removes it",
+			relative, ledger.ControlDirName,
+		)
+	}
+
 	return nil
 }
 
@@ -357,6 +403,13 @@ func validateResolveDest(root, dest string) error {
 		if len(segment) > 255 {
 			return fmt.Errorf("destination %q has a segment longer than 255 bytes", dest)
 		}
+	}
+
+	// The control ledger, at the destination door. validateResolveDest computes
+	// its own lexical relative form rather than going through containedRelKey,
+	// so the refusal there does not cover this one.
+	if err := refuseControlDirectory(string(rel)); err != nil {
+		return err
 	}
 
 	// One segment is never a real destination, which covers every structural
