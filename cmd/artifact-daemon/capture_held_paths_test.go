@@ -364,3 +364,128 @@ func TestAnAliasIsNeitherReusedForNorRemappedOffACaptureHeldSource(t *testing.T)
 		t.Errorf("the capture's alias now points at %q", rel)
 	}
 }
+
+// The ordinary daemon's API must never reach the output plane's LEDGER.
+//
+// Every case above is about the source a capture holds. This one is about the
+// thing that says a source is held. `refuseIfCaptureHeld` strips `steps/` and
+// answers `Unmanaged` for everything outside it, so the control directory was
+// not a location the guard protected -- it was a location the daemon SERVED:
+// `DELETE /artifacts/.hangar-output-control/source-….json` answered 204 and the
+// hold was gone, after which the very next delete of the source it protected
+// answered 204 too. The whole classifier is downstream of a file this API could
+// remove, and `control_store.go`'s "a ledger the Sweeper could delete is a
+// ledger that fails open" is exactly as true of `DELETE /artifacts/`.
+//
+// The pair: every route refuses the control directory, and the hold it holds
+// still refuses the destructive call it exists to refuse -- afterwards, from
+// the same server, so a guard that broke the classifier fails here too.
+func TestTheOutputLedgersControlDirectoryIsNotReachableThroughTheOrdinaryAPI(t *testing.T) {
+	server, storage := capturedServer(t)
+	handler := server.Handler()
+
+	recordKey := ledger.ControlDirName + "/source-88888888-8888-4888-8888-888888888888.json"
+	recordPath := filepath.Join(storage, filepath.FromSlash(recordKey))
+	before, err := os.ReadFile(recordPath)
+	if err != nil {
+		t.Fatalf("reading the hold: %v", err)
+	}
+
+	// The control, first: while the record is there the held source is refused.
+	// If this line ever fails, nothing below means anything.
+	do := func(method, target string, body []byte) int {
+		var reader *bytes.Reader
+		if body == nil {
+			reader = bytes.NewReader(nil)
+		} else {
+			reader = bytes.NewReader(body)
+		}
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(method, target, reader))
+
+		return recorder.Code
+	}
+
+	if code := do(http.MethodDelete, "/artifacts/steps/"+heldStepDir(), nil); code != http.StatusConflict {
+		t.Fatalf("the held source answered %d before the ledger was touched", code)
+	}
+
+	// A resolve DESTINATION and a register LOCAL PATH are the two absolute
+	// paths a caller chooses. Both land inside the store and both clear what is
+	// there, so both are asserted BEFORE the key routes below -- a resolve of a
+	// key nothing registered, or a register of a path a previous row deleted,
+	// would be refused for a reason that has nothing to do with the ledger.
+	if _, err := server.registry.Register("some-artifact",
+		filepath.Join(storage, "steps", "unheld-handle", "out")); err != nil {
+		t.Fatalf("registering the source: %v", err)
+	}
+	dest, err := json.Marshal(resolveRequest{
+		Key: "some-artifact", Dest: filepath.Join(storage, ledger.ControlDirName, "quarantine"),
+	})
+	if err != nil {
+		t.Fatalf("encoding: %v", err)
+	}
+	if code := do(http.MethodPost, "/resolve", dest); code == http.StatusOK {
+		t.Error("a resolve destination inside the control directory was accepted")
+	}
+	registration, err := json.Marshal(registerRequest{Key: "the-ledger", LocalPath: recordPath})
+	if err != nil {
+		t.Fatalf("encoding: %v", err)
+	}
+	if code := do(http.MethodPost, "/register", registration); code == http.StatusCreated {
+		t.Error("an alias onto the output ledger's own record was registered")
+	}
+
+	// An ordered list rather than a map: a row that got through would destroy
+	// what a later row names, and a random order would make the failure a
+	// different one each run.
+	for _, row := range []struct{ name, target string }{
+		{"the record", "/artifacts/" + recordKey},
+		{"a path under it", "/artifacts/" + ledger.ControlDirName + "/quarantine"},
+		{"the directory", "/artifacts/" + ledger.ControlDirName},
+		// Folded, because APFS and NTFS fold and an exact-string check has let
+		// a structural name through here before (rejectStructuralName's own
+		// comment).
+		{"the directory, folded", "/artifacts/" + strings.ToUpper(ledger.ControlDirName)},
+	} {
+		for _, method := range []string{
+			http.MethodGet, http.MethodHead, http.MethodPut, http.MethodDelete,
+		} {
+			code := do(method, row.target, []byte("not a control record"))
+			if code < 400 || code > 499 {
+				t.Errorf("%s %s (%s) answered %d; the ordinary API does not serve the output "+
+					"plane's ledger", method, row.target, row.name, code)
+			}
+		}
+	}
+
+	// The ledger is byte-for-byte what it was, and nothing new is beside it.
+	after, err := os.ReadFile(recordPath)
+	if err != nil {
+		t.Fatalf("the hold record is gone: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("the hold record was rewritten through the ordinary API: %q", after)
+	}
+	entries, err := os.ReadDir(filepath.Join(storage, ledger.ControlDirName))
+	if err != nil {
+		t.Fatalf("reading the control directory: %v", err)
+	}
+	if len(entries) != 1 {
+		names := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		t.Errorf("the control directory holds %v; the ordinary API wrote into it", names)
+	}
+
+	// And the classifier still answers, from the same server: the held source
+	// is refused and an unheld one is not.
+	if code := do(http.MethodDelete, "/artifacts/steps/"+heldStepDir(), nil); code != http.StatusConflict {
+		t.Errorf("after the control directory was refused, the held source answered %d", code)
+	}
+	stillThere(t, storage, heldIncarnation())
+	if code := do(http.MethodDelete, "/artifacts/steps/unheld-handle", nil); code != http.StatusNoContent {
+		t.Errorf("an unheld step directory answered %d; the guard became an outage", code)
+	}
+}
