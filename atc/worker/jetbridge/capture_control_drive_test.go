@@ -237,3 +237,43 @@ func TestTheGeneratedControlInitScriptEstablishesAHoldAtARealDaemon(t *testing.T
 		t.Errorf("the script did not report an acknowledged hold:\n%s", out)
 	}
 }
+
+// The same script against a daemon whose listener is TLS.
+//
+// J6 wrapped the ONE control listener in tls.NewListener, so the node-local
+// exemption is a client-CERTIFICATE exemption and not a plaintext port. The
+// script defaulted its endpoint to `http://` and dialled with no TLS options at
+// all, which is `400 Client sent an HTTP request to an HTTPS server` -- and
+// then, once the scheme was right, an unverifiable certificate, because the
+// init dials the node by IP and no SAN covers that.
+//
+// The cleanup init has spoken this correctly since the artifact daemon got
+// mTLS; this reuses its two helpers rather than inventing a third spelling.
+func TestTheGeneratedControlInitScriptEstablishesAHoldOverTLS(t *testing.T) {
+	harness, err := startTLSOutputDaemon()
+	if err != nil {
+		t.Fatalf("starting the TLS output daemon: %v", err)
+	}
+	t.Cleanup(harness.Stop)
+
+	cfg := capturePodConfig(true)
+	cfg.ArtifactDaemonTLSEnabled = true
+
+	// The control, first: the script it generates dials https.
+	control := capturingContainer(t, cfg, false, admittedCapture()).buildCaptureControlInitContainer()
+	if control == nil {
+		t.Fatal("a capture-selected container built no control init")
+	}
+	if !strings.Contains(control.Command[2], "https://") {
+		t.Errorf("the control init composes a plaintext endpoint at a TLS daemon:\n%s",
+			control.Command[2])
+	}
+
+	out, err := driveCaptureHold(t, harness, cfg)
+	if err != nil {
+		t.Fatalf("the generated control init did not establish a hold over TLS: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "hold acknowledged") {
+		t.Errorf("the script did not report an acknowledged hold over TLS:\n%s", out)
+	}
+}

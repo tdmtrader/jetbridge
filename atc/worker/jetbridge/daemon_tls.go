@@ -21,6 +21,29 @@ func daemonURLScheme(cfg Config) string {
 	return "http"
 }
 
+// wgetTLSOptions returns the extra BusyBox wget options an init container needs
+// to reach a daemon over TLS, or "" when there is none.
+//
+// --no-check-certificate is there because an init container dials its node by
+// IP (HOST_IP from the Downward API), which is not a certificate SAN, so server
+// authentication cannot succeed however correct the deployment is. What the
+// transport buys is confidentiality for the one-shot capability the hold
+// presents in a header; the AUTHORIZATION is that signed, facet-scoped,
+// single-use token, verified by the daemon, and it is unchanged by this.
+//
+// It is a free function beside daemonURLScheme rather than a method, because
+// the two callers are not the same type: the cleanup init is built by
+// DaemonSetBackend and the capture control init by Container. Two spellings of
+// this is an init container that composes https and then cannot complete a
+// handshake.
+func wgetTLSOptions(cfg Config) string {
+	if cfg.ArtifactDaemonTLSEnabled {
+		return "--no-check-certificate"
+	}
+
+	return ""
+}
+
 // DaemonTLSConfigured is the single predicate for "the ATC speaks mTLS to the
 // artifact daemon": all three of the client certificate, its key, and the
 // daemon CA must be named. Every site that decides whether TLS is on -- the

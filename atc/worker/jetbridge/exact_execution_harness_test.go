@@ -18,11 +18,16 @@ package jetbridge
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -99,7 +104,18 @@ func repositoryRoot() string {
 
 // startOutputDaemon brings up one daemon with its own ledger and returns a
 // client already bound to it.
-func startOutputDaemon() (*outputDaemonHarness, error) {
+func startOutputDaemon() (*outputDaemonHarness, error) { return startOutputDaemonWith(false) }
+
+// startTLSOutputDaemon is the same daemon with J6's three control-TLS flags set.
+//
+// It exists because the node-local capture-hold exemption is a CLIENT
+// CERTIFICATE exemption and not a plaintext port: the one listener is wrapped
+// in tls.NewListener, so an init container that dials `http://` is answered
+// "Client sent an HTTP request to an HTTPS server" and holds nothing. Driving
+// the generated script needs a daemon in that shape.
+func startTLSOutputDaemon() (*outputDaemonHarness, error) { return startOutputDaemonWith(true) }
+
+func startOutputDaemonWith(secure bool) (*outputDaemonHarness, error) {
 	binary, err := buildOutputDaemon()
 	if err != nil {
 		return nil, err
@@ -135,7 +151,11 @@ func startOutputDaemon() (*outputDaemonHarness, error) {
 	if err != nil {
 		return nil, err
 	}
-	endpoint := fmt.Sprintf("http://127.0.0.1:%d", port)
+	scheme := "http"
+	if secure {
+		scheme = "https"
+	}
+	endpoint := fmt.Sprintf("%s://127.0.0.1:%d", scheme, port)
 
 	daemon := exec.Command(binary,
 		// The endpoint is deliberately one nothing answers on. No control
@@ -158,6 +178,17 @@ func startOutputDaemon() (*outputDaemonHarness, error) {
 		"--listen", fmt.Sprintf("127.0.0.1:%d", port),
 	)
 	transport := &http.Client{Timeout: 10 * time.Second}
+	if secure {
+		pki, err := writeHarnessControlPKI(dir)
+		if err != nil {
+			return nil, err
+		}
+		daemon.Args = append(daemon.Args,
+			"--tls-cert", pki.serverCert,
+			"--tls-key", pki.serverKey,
+			"--tls-ca-cert", pki.caCert)
+		transport = pki.client
+	}
 	daemon.Stdout, daemon.Stderr = os.Stderr, os.Stderr
 	if err := daemon.Start(); err != nil {
 		return nil, err
@@ -180,6 +211,116 @@ func startOutputDaemon() (*outputDaemonHarness, error) {
 		Minter:   minter,
 		Client:   NewOutputControlClient(endpoint, transport, minter, harnessEpoch),
 		cmd:      daemon,
+	}, nil
+}
+
+// harnessControlPKI is one throwaway CA, a server certificate for 127.0.0.1 and
+// a client certificate for the ATC's own calls.
+//
+// The init container's calls present NO client certificate -- that is the
+// exemption the hold route exists inside -- so the shape this mints is exactly
+// production's: an authenticated control plane and an unauthenticated,
+// node-local init.
+type harnessControlPKI struct {
+	caCert     string
+	serverCert string
+	serverKey  string
+	client     *http.Client
+}
+
+func writeHarnessControlPKI(dir string) (*harnessControlPKI, error) {
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	caTemplate := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "harness-control-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		IsCA:                  true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
+	if err != nil {
+		return nil, err
+	}
+	caCert, err := x509.ParseCertificate(caDER)
+	if err != nil {
+		return nil, err
+	}
+
+	issue := func(name string, serial int64, server bool) (certPath, keyPath string, pair tls.Certificate, err error) {
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			return "", "", tls.Certificate{}, err
+		}
+		template := &x509.Certificate{
+			SerialNumber: big.NewInt(serial),
+			Subject:      pkix.Name{CommonName: name},
+			NotBefore:    time.Now().Add(-time.Hour),
+			NotAfter:     time.Now().Add(24 * time.Hour),
+			KeyUsage:     x509.KeyUsageDigitalSignature,
+		}
+		if server {
+			template.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
+			template.IPAddresses = []net.IP{net.ParseIP("127.0.0.1")}
+		} else {
+			template.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
+		}
+		der, err := x509.CreateCertificate(rand.Reader, template, caCert, &key.PublicKey, caKey)
+		if err != nil {
+			return "", "", tls.Certificate{}, err
+		}
+		keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+		if err != nil {
+			return "", "", tls.Certificate{}, err
+		}
+		certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+		keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
+		certPath = filepath.Join(dir, name+".crt")
+		keyPath = filepath.Join(dir, name+".key")
+		if err := os.WriteFile(certPath, certPEM, 0o600); err != nil {
+			return "", "", tls.Certificate{}, err
+		}
+		if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+			return "", "", tls.Certificate{}, err
+		}
+		pair, err = tls.X509KeyPair(certPEM, keyPEM)
+
+		return certPath, keyPath, pair, err
+	}
+
+	serverCert, serverKey, _, err := issue("harness-control-server", 2, true)
+	if err != nil {
+		return nil, err
+	}
+	_, _, clientPair, err := issue("harness-control-client", 3, false)
+	if err != nil {
+		return nil, err
+	}
+
+	caPath := filepath.Join(dir, "control-ca.crt")
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})
+	if err := os.WriteFile(caPath, caPEM, 0o600); err != nil {
+		return nil, err
+	}
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(caPEM)
+
+	return &harnessControlPKI{
+		caCert:     caPath,
+		serverCert: serverCert,
+		serverKey:  serverKey,
+		client: &http.Client{
+			Timeout: 10 * time.Second,
+			Transport: &http.Transport{TLSClientConfig: &tls.Config{
+				MinVersion:   tls.VersionTLS12,
+				RootCAs:      pool,
+				Certificates: []tls.Certificate{clientPair},
+			}},
+		},
 	}, nil
 }
 

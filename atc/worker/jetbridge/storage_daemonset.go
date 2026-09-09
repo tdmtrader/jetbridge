@@ -428,16 +428,11 @@ func (b *DaemonSetBackend) daemonScheme() string {
 	return daemonURLScheme(b.config)
 }
 
-// wgetTLSOpts returns extra BusyBox wget options for daemon HTTPS calls. When
-// TLS is enabled it adds --no-check-certificate: the init container dials the
-// daemon by node IP (HOST_IP), which is not a cert SAN, so server authentication
-// cannot succeed. Strict Hangar calls verify the sealed materialization receipt
-// as their outcome boundary; authenticated local transport is future hardening.
+// wgetTLSOpts returns extra BusyBox wget options for daemon HTTPS calls. The
+// reasoning lives with the function it delegates to, which the capture control
+// init reads from too.
 func (b *DaemonSetBackend) wgetTLSOpts() string {
-	if b.config.ArtifactDaemonTLSEnabled {
-		return "--no-check-certificate"
-	}
-	return ""
+	return wgetTLSOptions(b.config)
 }
 
 func (b *DaemonSetBackend) daemonResolveCommand(key, hostDest string) []string {

@@ -108,9 +108,10 @@ func (c *Container) buildCaptureControlInitContainer() *corev1.Container {
 	allowEscalation := false
 
 	return &corev1.Container{
-		Name:    captureControlInitName,
-		Image:   c.helperImage(),
-		Command: []string{"sh", "-c", captureHoldScript()},
+		Name:  captureControlInitName,
+		Image: c.helperImage(),
+		Command: []string{"sh", "-c", captureHoldScript(daemonURLScheme(c.config),
+			wgetTLSOptions(c.config))},
 		Env: append([]corev1.EnvVar{
 			{Name: captureEnvProtocol, Value: output.ProtocolVersion},
 			{Name: captureEnvEndpoint, Value: control.Endpoint},
@@ -172,20 +173,29 @@ func downwardAPIPodAndNodeFields() []corev1.EnvVar {
 // vocabulary. What it must not do is invent an answer -- an unreachable daemon,
 // a refusal and a malformed body are all "no hold", and no hold means the
 // producer does not start.
-func captureHoldScript() string {
+//
+// The scheme and the wget options are the deployment's, not this file's. J6
+// wrapped the output daemon's ONE listener in tls.NewListener, so the
+// node-local hold exemption is a client-CERTIFICATE exemption and not a
+// plaintext port: a script that hard-coded `http://` is answered "Client sent
+// an HTTP request to an HTTPS server" and the producer never starts. Both come
+// from the same two helpers the cleanup init has used since the artifact daemon
+// got mTLS, so there is one spelling of "is TLS on" per pod.
+func captureHoldScript(scheme, wgetOpts string) string {
 	return fmt.Sprintf(`
 set -u
 ENDPOINT="${%[2]s}"
 if [ -z "${ENDPOINT}" ]; then
-  ENDPOINT="http://${%[11]s}:${%[15]s}"
+  ENDPOINT="%[19]s://${%[11]s}:${%[15]s}"
 fi
+WGET_OPTS="%[20]s"
 INCARNATION='{"execution_id":"'"${%[3]s}"'","node_uid":"'"${%[17]s}"'","handle_generation":'"${%[18]s}"',"output":"'"${%[8]s}"'"}'
 BODY='{"protocol_version":"'"${%[1]s}"'","execution":{"execution_id":"'"${%[3]s}"'","fence":'"${%[4]s}"'},"activation_epoch":'"${%[5]s}"',"handoff_id":"'"${%[6]s}"'","source_lease_id":"'"${%[7]s}"'","output":"'"${%[8]s}"'","capture_deadline_at":"'"${%[9]s}"'","pod_uid":"'"${%[10]s}"'","incarnation":'"${INCARNATION}"'}'
 echo "[hangar-capture-control] holding the source for output ${%[8]s} on node ${%[12]s} (pod ${%[10]s})" >&2
 ATTEMPT=0
 while [ "${ATTEMPT}" -lt "${%[13]s}" ]; do
   ATTEMPT=$((ATTEMPT+1))
-  RESP="$(wget -q -O - --header="Content-Type: application/json" --header="%[14]s: ${%[16]s}" --post-data="${BODY}" "${ENDPOINT}/capture/v1/hold" 2>/dev/null || true)"
+  RESP="$(wget ${WGET_OPTS} -q -O - --header="Content-Type: application/json" --header="%[14]s: ${%[16]s}" --post-data="${BODY}" "${ENDPOINT}/capture/v1/hold" 2>/dev/null || true)"
   case "${RESP}" in
     *'"kind":"hold_acknowledged"'*)
       echo "[hangar-capture-control] hold acknowledged" >&2
@@ -217,6 +227,9 @@ exit 1
 
 		captureEnvIncarnationNode,       // 17
 		captureEnvIncarnationGeneration, // 18
+
+		scheme,   // 19
+		wgetOpts, // 20
 	)
 }
 
