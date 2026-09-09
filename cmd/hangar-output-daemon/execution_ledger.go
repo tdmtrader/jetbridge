@@ -434,9 +434,16 @@ func (ledger *ExecutionLedger) Classify(identity executioncontrol.Identity) (exe
 		Acknowledgement: ack,
 	}
 	if ack != nil {
-		// The evidence rule: an acknowledgement is attached only when it is for
-		// this exact identity. A statement about a superseded fence is not
-		// proof about the current one.
+		// The evidence rule: a result carries the identity its acknowledgement
+		// is ABOUT, not the one that asked.
+		//
+		// After a takeover the two differ, and the statement wins. A caller at
+		// fence 2 asking about an execution that finished at fence 1 is told
+		// "authoritative_finish, fence 1" -- the outcome of a process is a fact
+		// about that process, and a new controller does not get to un-know it.
+		// Relabelling the result is also what validateEvidence requires: a
+		// statement filed under a fence it does not name is evidence about
+		// something else.
 		result.Identity = ack.Identity
 	}
 

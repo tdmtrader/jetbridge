@@ -50,6 +50,12 @@ Feature: What the output daemon answers
   # execution record exists, instead of requiring the finish acknowledgement —
   # this reddens on its one line while the scenario above stays green, which is
   # what tells it apart from a daemon that is simply down.
+  #
+  # That mutation is BOTH arms of CleanupEligible, and it has to be. Removing
+  # only the classification arm leaves this scenario green: the hold's own
+  # cleanup gate withholds on its own, so nothing here can tell the two apart.
+  # The arm is pinned in Go, by
+  # TestDestructiveCleanupWaitsForTheOutcomeAndForEveryOpenGate.
   @HOP-9 @HOP-14
   Scenario: Destructive cleanup is refused until the finish witness exists
     Given a real artifact daemon publishing to a Hangar output bucket
