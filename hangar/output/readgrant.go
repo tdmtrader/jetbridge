@@ -265,29 +265,29 @@ type ReadGrantVerifier struct {
 	clock Clock
 }
 
-func NewReadGrantSigner(key []byte) (*ReadGrantSigner, error) {
-	if len(key) != ReadGrantKeyBytes {
+func NewReadGrantSigner(material []byte) (*ReadGrantSigner, error) {
+	if len(material) != ReadGrantKeyBytes {
 		return nil, fmt.Errorf("%w: an output read grant key is exactly %d raw bytes, this one "+
 			"is %d; it is never the receipt key and never the strict-input materialization key",
-			ErrIncomplete, ReadGrantKeyBytes, len(key))
+			ErrIncomplete, ReadGrantKeyBytes, len(material))
 	}
 	signer := &ReadGrantSigner{}
-	copy(signer.key[:], key)
+	copy(signer.key[:], material)
 
 	return signer, nil
 }
 
-func NewReadGrantVerifier(key []byte, clock Clock) (*ReadGrantVerifier, error) {
-	if len(key) != ReadGrantKeyBytes {
+func NewReadGrantVerifier(material []byte, clock Clock) (*ReadGrantVerifier, error) {
+	if len(material) != ReadGrantKeyBytes {
 		return nil, fmt.Errorf("%w: an output read grant key is exactly %d raw bytes, this one "+
-			"is %d", ErrIncomplete, ReadGrantKeyBytes, len(key))
+			"is %d", ErrIncomplete, ReadGrantKeyBytes, len(material))
 	}
 	if clock == nil {
 		return nil, fmt.Errorf("%w: a read grant verifier needs a clock; a grant has an expiry",
 			ErrIncomplete)
 	}
 	verifier := &ReadGrantVerifier{clock: clock}
-	copy(verifier.key[:], key)
+	copy(verifier.key[:], material)
 
 	return verifier, nil
 }
@@ -409,4 +409,34 @@ func sameRef(left, right hangar.TreeRef) bool {
 
 func constantTimeEqual(left, right string) bool {
 	return hmac.Equal([]byte(left), []byte(right))
+}
+
+// DecodeReadGrantClaims reads a grant's claims WITHOUT checking anything.
+//
+// It exists for exactly one caller: a verifier that needs to know which ref and
+// destination a token names before it can check the token against them. That is
+// not a weakening -- the destination in a managed read is the grant's, never the
+// caller's (requirement 7: no API accepts a caller-chosen path), so there is no
+// second opinion to compare it with, and the MAC over the canonical form is what
+// decides. Nothing else may use it: the name says unverified, and the result is
+// data until Verify has run.
+func DecodeReadGrantClaims(token string, claims *ReadGrantClaims) error {
+	if claims == nil {
+		return fmt.Errorf("%w: nowhere to decode a read grant into", ErrIncomplete)
+	}
+	if len(token) == 0 || len(token) > MaxReadGrantBytes {
+		return fmt.Errorf("%w: the read grant is %d bytes", ErrUnauthorized, len(token))
+	}
+	raw, err := base64.RawURLEncoding.Strict().DecodeString(token)
+	if err != nil || len(raw) <= sha256.Size {
+		return fmt.Errorf("%w: the read grant is not a payload and a MAC", ErrUnauthorized)
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(raw[:len(raw)-sha256.Size]))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(claims); err != nil {
+		return fmt.Errorf("%w: the read grant's claims do not decode", ErrUnauthorized)
+	}
+
+	return nil
 }

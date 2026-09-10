@@ -1,4 +1,4 @@
-package output_test
+package output
 
 // What an output read grant binds, and what it refuses.
 //
@@ -26,48 +26,47 @@ import (
 
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
-	"github.com/concourse/concourse/hangar/output"
 )
 
 var readGrantKey = []byte("0123456789abcdef0123456789abcdef")
 
-func readGrantLease() output.ReadLease {
+func readGrantLease() ReadLease {
 	granted := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
 
-	return output.ReadLease{
-		ProtocolVersion: output.ProtocolVersion,
-		ReadLeaseID:     output.ReadLeaseID("6a5b4c3d-2e1f-4a0b-9c8d-7e6f5a4b3c2d"),
-		ClaimID:         output.ClaimID("1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"),
+	return ReadLease{
+		ProtocolVersion: ProtocolVersion,
+		ReadLeaseID:     ReadLeaseID("6a5b4c3d-2e1f-4a0b-9c8d-7e6f5a4b3c2d"),
+		ClaimID:         ClaimID("1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"),
 		Ref: hangar.TreeRef{
 			Scope:      "deployment-ns",
 			Digest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			Generation: 7,
 		},
 		ActivationEpoch: executioncontrol.ActivationEpoch(3),
-		LeaseFence:      output.LeaseFence(1),
-		GrantedAt:       output.NewTimestamp(granted),
-		ExpiresAt:       output.NewTimestamp(granted.Add(20 * time.Minute)),
+		LeaseFence:      LeaseFence(1),
+		GrantedAt:       NewTimestamp(granted),
+		ExpiresAt:       NewTimestamp(granted.Add(20 * time.Minute)),
 	}
 }
 
-func readGrantDestination() output.ReadDestination {
-	return output.ReadDestination{Handle: "task-handle", Volume: "input-0"}
+func readGrantDestination() ReadDestination {
+	return ReadDestination{Handle: "task-handle", Volume: "input-0"}
 }
 
 // insideTheWindow is a clock inside the lease's own window, which is the
 // grant's window too.
-func insideTheWindow() output.ClockFunc {
+func insideTheWindow() ClockFunc {
 	return func() time.Time { return readGrantLease().GrantedAt.Add(time.Minute) }
 }
 
 func mustSignReadGrant(t *testing.T) string {
 	t.Helper()
 
-	signer, err := output.NewReadGrantSigner(readGrantKey)
+	signer, err := NewReadGrantSigner(readGrantKey)
 	if err != nil {
 		t.Fatalf("new read grant signer: %v", err)
 	}
-	nonce, err := output.NewReadGrantNonce(strings.NewReader("0123456789abcdef"))
+	nonce, err := NewReadGrantNonce(strings.NewReader("0123456789abcdef"))
 	if err != nil {
 		t.Fatalf("new read grant nonce: %v", err)
 	}
@@ -80,7 +79,7 @@ func mustSignReadGrant(t *testing.T) string {
 }
 
 func TestAnOutputReadGrantVerifiesForItsOwnLeaseRefAndDestination(t *testing.T) {
-	verifier, err := output.NewReadGrantVerifier(readGrantKey, insideTheWindow())
+	verifier, err := NewReadGrantVerifier(readGrantKey, insideTheWindow())
 	if err != nil {
 		t.Fatalf("new read grant verifier: %v", err)
 	}
@@ -120,35 +119,35 @@ func TestAnOutputReadGrantVerifiesForItsOwnLeaseRefAndDestination(t *testing.T) 
 func TestAnEditedOutputReadGrantDoesNotVerify(t *testing.T) {
 	for _, test := range []struct {
 		name string
-		edit func(*output.ReadGrantClaims)
+		edit func(*ReadGrantClaims)
 	}{
-		{"read lease id", func(c *output.ReadGrantClaims) {
-			c.ReadLeaseID = output.ReadLeaseID("99999999-2e1f-4a0b-9c8d-7e6f5a4b3c2d")
+		{"read lease id", func(c *ReadGrantClaims) {
+			c.ReadLeaseID = ReadLeaseID("99999999-2e1f-4a0b-9c8d-7e6f5a4b3c2d")
 		}},
-		{"lease fence", func(c *output.ReadGrantClaims) { c.LeaseFence = c.LeaseFence + 1 }},
-		{"claim id", func(c *output.ReadGrantClaims) {
-			c.ClaimID = output.ClaimID("99999999-5e6f-4a7b-8c9d-0e1f2a3b4c5d")
+		{"lease fence", func(c *ReadGrantClaims) { c.LeaseFence = c.LeaseFence + 1 }},
+		{"claim id", func(c *ReadGrantClaims) {
+			c.ClaimID = ClaimID("99999999-5e6f-4a7b-8c9d-0e1f2a3b4c5d")
 		}},
-		{"ref scope", func(c *output.ReadGrantClaims) { c.Ref.Scope = "another-ns" }},
-		{"ref digest", func(c *output.ReadGrantClaims) {
+		{"ref scope", func(c *ReadGrantClaims) { c.Ref.Scope = "another-ns" }},
+		{"ref digest", func(c *ReadGrantClaims) {
 			c.Ref.Digest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 		}},
-		{"ref generation", func(c *output.ReadGrantClaims) { c.Ref.Generation++ }},
-		{"destination handle", func(c *output.ReadGrantClaims) { c.Destination.Handle = "other-handle" }},
-		{"destination volume", func(c *output.ReadGrantClaims) { c.Destination.Volume = "input-9" }},
-		{"activation epoch", func(c *output.ReadGrantClaims) { c.ActivationEpoch++ }},
-		{"issued at", func(c *output.ReadGrantClaims) {
-			c.IssuedAt = output.NewTimestamp(c.IssuedAt.Add(-time.Hour))
+		{"ref generation", func(c *ReadGrantClaims) { c.Ref.Generation++ }},
+		{"destination handle", func(c *ReadGrantClaims) { c.Destination.Handle = "other-handle" }},
+		{"destination volume", func(c *ReadGrantClaims) { c.Destination.Volume = "input-9" }},
+		{"activation epoch", func(c *ReadGrantClaims) { c.ActivationEpoch++ }},
+		{"issued at", func(c *ReadGrantClaims) {
+			c.IssuedAt = NewTimestamp(c.IssuedAt.Add(-time.Hour))
 		}},
-		{"expires at", func(c *output.ReadGrantClaims) {
-			c.ExpiresAt = output.NewTimestamp(c.ExpiresAt.Add(24 * time.Hour))
+		{"expires at", func(c *ReadGrantClaims) {
+			c.ExpiresAt = NewTimestamp(c.ExpiresAt.Add(24 * time.Hour))
 		}},
-		{"nonce", func(c *output.ReadGrantClaims) { c.Nonce = "AAAAAAAAAAAAAAAAAAAAAA" }},
-		{"domain", func(c *output.ReadGrantClaims) { c.Domain = hangarStrictInputDomain }},
-		{"version", func(c *output.ReadGrantClaims) { c.Version = "2" }},
+		{"nonce", func(c *ReadGrantClaims) { c.Nonce = "AAAAAAAAAAAAAAAAAAAAAA" }},
+		{"domain", func(c *ReadGrantClaims) { c.Domain = hangarStrictInputDomain }},
+		{"version", func(c *ReadGrantClaims) { c.Version = "2" }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			verifier, err := output.NewReadGrantVerifier(readGrantKey, insideTheWindow())
+			verifier, err := NewReadGrantVerifier(readGrantKey, insideTheWindow())
 			if err != nil {
 				t.Fatalf("new read grant verifier: %v", err)
 			}
@@ -158,11 +157,11 @@ func TestAnEditedOutputReadGrantDoesNotVerify(t *testing.T) {
 			// The rows that move the ref or the destination are asked for
 			// under the EDITED value, so a row cannot pass merely because the
 			// caller asked for something the grant never named.
-			var edited output.ReadGrantClaims
+			var edited ReadGrantClaims
 			decodeReadGrantPayload(t, token, &edited)
 
 			if _, err := verifier.Verify(token, edited.Ref,
-				edited.Destination); !errors.Is(err, output.ErrUnauthorized) {
+				edited.Destination); !errors.Is(err, ErrUnauthorized) {
 				t.Fatalf("a grant whose %s was edited verified: %v", test.name, err)
 			}
 		})
@@ -182,13 +181,13 @@ func TestAnOutputReadGrantIsRefusedOutsideTheLeaseWindow(t *testing.T) {
 		{"after the lease expires", lease.ExpiresAt.Add(time.Hour)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			verifier, err := output.NewReadGrantVerifier(readGrantKey,
-				output.ClockFunc(func() time.Time { return test.at }))
+			verifier, err := NewReadGrantVerifier(readGrantKey,
+				ClockFunc(func() time.Time { return test.at }))
 			if err != nil {
 				t.Fatalf("new read grant verifier: %v", err)
 			}
 			if _, err := verifier.Verify(mustSignReadGrant(t), lease.Ref,
-				readGrantDestination()); !errors.Is(err, output.ErrUnauthorized) {
+				readGrantDestination()); !errors.Is(err, ErrUnauthorized) {
 				t.Fatalf("a grant verified %s: %v", test.name, err)
 			}
 		})
@@ -204,19 +203,19 @@ func TestAnOutputReadGrantIsRefusedForAnotherRefOrDestination(t *testing.T) {
 	for _, test := range []struct {
 		name        string
 		ref         hangar.TreeRef
-		destination output.ReadDestination
+		destination ReadDestination
 	}{
 		{"another generation", other, readGrantDestination()},
-		{"another handle", lease.Ref, output.ReadDestination{Handle: "other", Volume: "input-0"}},
-		{"another volume", lease.Ref, output.ReadDestination{Handle: "task-handle", Volume: "input-1"}},
+		{"another handle", lease.Ref, ReadDestination{Handle: "other", Volume: "input-0"}},
+		{"another volume", lease.Ref, ReadDestination{Handle: "task-handle", Volume: "input-1"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			verifier, err := output.NewReadGrantVerifier(readGrantKey, insideTheWindow())
+			verifier, err := NewReadGrantVerifier(readGrantKey, insideTheWindow())
 			if err != nil {
 				t.Fatalf("new read grant verifier: %v", err)
 			}
 			if _, err := verifier.Verify(mustSignReadGrant(t), test.ref,
-				test.destination); !errors.Is(err, output.ErrUnauthorized) {
+				test.destination); !errors.Is(err, ErrUnauthorized) {
 				t.Fatalf("a grant verified for %s: %v", test.name, err)
 			}
 		})
@@ -242,11 +241,11 @@ func TestAStrictInputGrantDoesNotVerifyAsAnOutputReadGrant(t *testing.T) {
 		t.Fatalf("sign strict-input grant: %v", err)
 	}
 
-	verifier, err := output.NewReadGrantVerifier(readGrantKey, insideTheWindow())
+	verifier, err := NewReadGrantVerifier(readGrantKey, insideTheWindow())
 	if err != nil {
 		t.Fatalf("new read grant verifier: %v", err)
 	}
-	if _, err := verifier.Verify(token, lease.Ref, readGrantDestination()); !errors.Is(err, output.ErrUnauthorized) {
+	if _, err := verifier.Verify(token, lease.Ref, readGrantDestination()); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("a strict-input materialization grant verified as an output read grant: %v", err)
 	}
 
@@ -270,12 +269,12 @@ func TestTheReceiptKeyCannotSignAnOutputReadGrant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate an Ed25519 key: %v", err)
 	}
-	if _, err := output.NewReadGrantSigner(private); !errors.Is(err, output.ErrIncomplete) {
+	if _, err := NewReadGrantSigner(private); !errors.Is(err, ErrIncomplete) {
 		t.Fatalf("an Ed25519 receipt private key was accepted as a read grant key: %v", err)
 	}
 	// Exact, not a floor: a key with a stray byte on the end is a different key.
-	if _, err := output.NewReadGrantSigner(append(append([]byte{}, readGrantKey...),
-		'\n')); !errors.Is(err, output.ErrIncomplete) {
+	if _, err := NewReadGrantSigner(append(append([]byte{}, readGrantKey...),
+		'\n')); !errors.Is(err, ErrIncomplete) {
 		t.Fatalf("a 33-byte read grant key was accepted: %v", err)
 	}
 }
@@ -290,11 +289,11 @@ func TestReMintingOneLeasesGrantIsByteIdentical(t *testing.T) {
 
 	// And a different nonce is a different grant, so the nonce is genuinely
 	// inside the signature rather than decorative.
-	signer, err := output.NewReadGrantSigner(readGrantKey)
+	signer, err := NewReadGrantSigner(readGrantKey)
 	if err != nil {
 		t.Fatalf("new read grant signer: %v", err)
 	}
-	other, err := output.NewReadGrantNonce(strings.NewReader("fedcba9876543210"))
+	other, err := NewReadGrantNonce(strings.NewReader("fedcba9876543210"))
 	if err != nil {
 		t.Fatalf("new read grant nonce: %v", err)
 	}
@@ -309,7 +308,7 @@ func TestReMintingOneLeasesGrantIsByteIdentical(t *testing.T) {
 
 // A destination is a handle and a volume, never a path.
 func TestAReadDestinationIsNeverAPath(t *testing.T) {
-	for _, destination := range []output.ReadDestination{
+	for _, destination := range []ReadDestination{
 		{Handle: "../escape", Volume: "input-0"},
 		{Handle: "task-handle", Volume: "/absolute"},
 		{Handle: "task-handle", Volume: "nested/volume"},
@@ -330,10 +329,10 @@ func TestAReadDestinationIsNeverAPath(t *testing.T) {
 // tamper row can put it where the output domain belongs.
 const hangarStrictInputDomain = "hangar-materialize-v1"
 
-func editReadGrant(t *testing.T, token string, edit func(*output.ReadGrantClaims)) string {
+func editReadGrant(t *testing.T, token string, edit func(*ReadGrantClaims)) string {
 	t.Helper()
 
-	var claims output.ReadGrantClaims
+	var claims ReadGrantClaims
 	mac := decodeReadGrantPayload(t, token, &claims)
 	edit(&claims)
 
@@ -346,7 +345,7 @@ func editReadGrant(t *testing.T, token string, edit func(*output.ReadGrantClaims
 }
 
 // decodeReadGrantPayload splits a grant into its rendered claims and its MAC.
-func decodeReadGrantPayload(t *testing.T, token string, claims *output.ReadGrantClaims) []byte {
+func decodeReadGrantPayload(t *testing.T, token string, claims *ReadGrantClaims) []byte {
 	t.Helper()
 
 	raw, err := base64.RawURLEncoding.Strict().DecodeString(token)

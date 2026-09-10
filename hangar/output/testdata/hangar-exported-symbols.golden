@@ -6,6 +6,7 @@ func (*CapturedTree) OpenRoot() (*os.Root, error)
 func (*GrantSigner) Sign(ref TreeRef, handle, volume string) (string, error)
 func (*GrantVerifier) Verify(token string, ref TreeRef, handle, volume string) error
 func (*Materializer) Materialize(ctx context.Context, ref TreeRef, handle, volume string) (err error)
+func (*Materializer) MaterializeManaged(ctx context.Context, ref TreeRef, handle, volume string, profile OutputReadProfile) (err error)
 func (Canonicalizer) Capture(ctx context.Context, rawTar io.Reader) (tree *CapturedTree, err error)
 func (Digest) Validate() error
 func (Scope) Validate() error
@@ -14,6 +15,7 @@ func CanonicalArchiveByteLimit(maxContentBytes, maxEntries int64) (int64, error)
 func NewGrantSigner(key []byte, ttl time.Duration, clock func() time.Time) (*GrantSigner, error)
 func NewGrantVerifier(key []byte, maxTTL time.Duration, clock func() time.Time) (*GrantVerifier, error)
 func NewTreeRef(scope Scope, digest Digest, generation int64) (TreeRef, error)
+func RenewWhile(ctx context.Context, profile OutputReadProfile, every time.Duration, work func(context.Context) error) error
 func TreeKey(prefix string, scope Scope, digest Digest) (string, error)
 func ValidateArchiveLimits(ctx context.Context, source io.Reader, limits TreeLimits) error
 func ValidateDeploymentPrefix(prefix string) error
@@ -24,6 +26,7 @@ type Digest string
 type GrantSigner struct { }
 type GrantVerifier struct { }
 type Materializer struct { Store Store Canonicalizer Canonicalizer StoragePath string MaxTreeBytes int64 }
+type OutputReadProfile interface { Admit(ctx context.Context, ref TreeRef, handle, volume string) (time.Duration, error) Renew(ctx context.Context) error Release(ctx context.Context, staged error) error }
 type Scope string
 type Store interface { EnsureTree(context.Context, Scope, Digest, io.Reader, int64) (TreeAttributes, bool, error) InspectTree(context.Context, Scope, Digest, int64) (TreeAttributes, error) OpenTree(context.Context, TreeRef, int64) (io.ReadCloser, TreeAttributes, error) DeleteTree(context.Context, TreeRef) error }
 type TreeAttributes struct { Ref TreeRef StoredBytes int64 LogicalBytes int64 CreatedAt time.Time }
