@@ -19,6 +19,7 @@ package hangaroutput
 // Reqs 1-11, 21, 25-27; ACs 1, 2, 6, 8, 9.
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -124,6 +125,55 @@ func resolvedLogically(record output.HandoffRecord) output.HandoffRecord {
 	record.Digest = hangar.Digest("sha256:" + strings.Repeat("ab", 32))
 
 	return record
+}
+
+// TransitionSettleOrphan has no durable outcome to settle INTO, and it says so
+// out loud rather than reporting success.
+//
+// `settleOrphan` called CancelOrSettle, which returns early past the publish
+// point -- so the transition settled nothing, answered nil, and a recovery pass
+// walked away believing it had done something. There is no terminal orphan
+// state in the schema either: `settlement_is_earned` needs a release, and the
+// release guard refuses one past the publish point. Phase 7's "terminal orphan
+// outcome" needs a durable state, and until it exists a silent success is the
+// worst of the three possible answers.
+//
+// It is unreachable from the coordinator today -- cancellation past the point
+// is routed to register_receipt, and the collision arm cannot fire because the
+// digest is in the key -- which is precisely why it has to fail loudly: an
+// unreachable no-op is invisible, and an unreachable refusal is a message the
+// day something reaches it.
+func TestSettlingAnOrphanRefusesRatherThanReportingSuccess(t *testing.T) {
+	record := resolvedLogically(captured(predeclared()))
+	record.PastIrreversiblePublishPoint = true
+	record.State = output.CaptureStateCancelled
+
+	// The control: this record really does select settle_orphan, so the
+	// refusal below is the transition's and not a mis-selection.
+	decision, err := Decide(record)
+	if err != nil {
+		t.Fatalf("deciding: %v", err)
+	}
+	if decision.Transition != TransitionSettleOrphan {
+		t.Fatalf("the record selects %q, so this spec is not about settle_orphan",
+			decision.Transition)
+	}
+
+	// A zero coordinator: the refusal comes before anything is touched, which
+	// is the other half of "loudly" -- a transition that refused after writing
+	// would have settled half of something.
+	coordinator := &Coordinator{}
+	taken, err := coordinator.perform(context.Background(), record)
+	if taken.Transition != TransitionSettleOrphan {
+		t.Errorf("the coordinator performed %q", taken.Transition)
+	}
+	if !errors.Is(err, output.ErrIncomplete) {
+		t.Fatalf("settling an orphan answered %v; a transition with no durable outcome must "+
+			"not report success", err)
+	}
+	if !strings.Contains(err.Error(), "orphan") {
+		t.Errorf("the refusal does not name what is missing: %v", err)
+	}
 }
 
 // registeredCapture is a capture whose verified receipt is registered and whose

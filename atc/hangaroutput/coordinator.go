@@ -844,17 +844,31 @@ func checkReceiptClaims(receipt output.Receipt, record output.HandoffRecord, fen
 	return nil
 }
 
-// settleOrphan is the only thing left past the irreversible publish point.
+// settleOrphan is the only thing left past the irreversible publish point, and
+// it has nothing to settle INTO yet.
 //
-// Cancellation cannot unmake an object, so this settles rather than releases.
-// It goes through the generic seam, which returns what it found and creates no
-// binding -- there is no parameter through which one could be asked for.
-func (coordinator *Coordinator) settleOrphan(ctx context.Context, record output.HandoffRecord) error {
-	return coordinator.write(ctx, func(tx Transaction) error {
-		_, err := coordinator.Repository.CancelOrSettle(ctx, tx, record.HandoffID)
-
-		return err
-	})
+// It used to call the generic cancel/settle seam, which returns early past the
+// publish point -- so the transition settled nothing and answered nil, and a
+// recovery pass walked away believing it had done something. There is no
+// terminal orphan state in the schema either: `settlement_is_earned` needs a
+// release and the release guard refuses one past the publish point, so there is
+// no row this could write even if it wanted to.
+//
+// It refuses, before touching anything. The state is unreachable from this
+// coordinator today -- cancellation past the point is routed to
+// register_receipt, and the collision arm cannot fire because the digest is in
+// the key -- and that is the argument FOR the refusal rather than against it:
+// an unreachable no-op is invisible forever, and an unreachable refusal is a
+// message the day something reaches it.
+//
+// TODO(phase 7, reclamation): the terminal orphan outcome is a durable state --
+// a created object that no receipt correlates, held as inventory debt rather
+// than settled away -- and this becomes the transition that records it.
+func (coordinator *Coordinator) settleOrphan(_ context.Context, record output.HandoffRecord) error {
+	return fmt.Errorf("%w: handoff %s is %s past the irreversible publish point, and a terminal "+
+		"orphan has no durable outcome to settle into yet. An object may exist for it and no "+
+		"receipt correlates one; that is inventory debt, and recording it is reclamation's",
+		output.ErrIncomplete, record.HandoffID, record.State)
 }
 
 // failTerminally commits a typed failure and announces it.
