@@ -139,7 +139,7 @@ func TestTheHoldIsAcknowledgedForAnIncarnationTheServerIssued(t *testing.T) {
 	}
 
 	// And the source is really on the node, under the daemon's own root.
-	if !fixture.source.Holds(ack.Incarnation) {
+	if !fixture.source.HasIncarnation(ack.Incarnation) {
 		t.Error("the daemon acknowledged a hold and holds nothing")
 	}
 
@@ -199,7 +199,7 @@ func TestARepeatedHoldReturnsTheSameStatementAndADifferentFenceIsAConflict(t *te
 	if !sameCaptureStatement(current, first) {
 		t.Error("a refused conflicting hold changed the acknowledgement in force")
 	}
-	if !fixture.source.Holds(first.Incarnation) {
+	if !fixture.source.HasIncarnation(first.Incarnation) {
 		t.Error("a refused conflicting hold released the source")
 	}
 }
@@ -374,8 +374,72 @@ func TestNoSourceControlOperationAcceptsAPathAndASwappedSymlinkIsRefused(t *test
 	} else if !strings.Contains(err.Error(), "symbolic link") {
 		t.Errorf("the refusal does not name the link: %v", err)
 	}
-	if fixture.source.Holds(hold.Incarnation) {
+	if fixture.source.HasIncarnation(hold.Incarnation) {
 		t.Error("the daemon reports it holds a source that is a link to somebody else's")
+	}
+}
+
+// A release releases the HOLD, and never the bytes.
+//
+// The incarnation is the step's own output directory -- after the Phase 4
+// ruling it is reserved and created before the producing Pod exists, and the
+// artifact daemon has already registered a read-only alias at the ordinary
+// `<handle>/<output>` path pointing into it. Req 2 says a failed producer
+// "follows existing task semantics", and existing semantics keep a failed
+// task's outputs on the node for the build's lifetime: on_failure, hijack, and
+// artifact passing to a later step all read them.
+//
+// So a release closes the hold and the gate and leaves the bytes to the
+// artifact daemon's ordinary lifecycle. Deleting them was a side effect that
+// made every no_capture, cancellation and terminal failure destroy a step's
+// output the moment it settled, while the alias kept pointing at where they
+// had been. Deletion of a settled incarnation is reclamation, by policy, and
+// it belongs to the phase that owns policy.
+func TestAReleaseClosesTheHoldAndLeavesTheStepsOutputOnTheNode(t *testing.T) {
+	fixture := newSourceLedger(t)
+	hold := held(t, fixture)
+
+	root, err := fixture.source.ResolveIncarnation(hold.Incarnation)
+	if err != nil {
+		t.Fatalf("resolving the incarnation: %v", err)
+	}
+	produced := filepath.Join(root, "artifact.txt")
+	if err := os.WriteFile(produced, []byte("the bytes a producer wrote\n"), 0o600); err != nil {
+		t.Fatalf("writing the produced source: %v", err)
+	}
+
+	// The no_capture branch: the producer FAILED and its output is the one a
+	// build's on_failure hook, a hijack and a later step all still want.
+	if _, err := fixture.source.AcknowledgeRelease(context.Background(), output.ReleaseIntent{
+		ProtocolVersion: output.ProtocolVersion,
+		Disposition:     output.DispositionNoCapture,
+		Execution:       identity(1),
+		ActivationEpoch: testEpoch,
+		HandoffID:       testHandoff,
+		SourceLeaseID:   testLease,
+		ReleaseIntentID: testIntent,
+		Incarnation:     hold.Incarnation,
+	}); err != nil {
+		t.Fatalf("releasing: %v", err)
+	}
+
+	// The hold is gone.
+	released, err := fixture.source.Released(testHandoff)
+	if err != nil {
+		t.Fatalf("asking whether the hold is released: %v", err)
+	}
+	if !released {
+		t.Error("the hold is not released after an acknowledged release")
+	}
+
+	// The bytes are not.
+	if _, err := os.Stat(produced); err != nil {
+		t.Errorf("the produced output is gone from the node after a release: %v; a failed "+
+			"producer's output follows existing task semantics, and the read-only alias the "+
+			"artifact daemon registered at the ordinary path is still pointing at it", err)
+	}
+	if !fixture.source.HasIncarnation(hold.Incarnation) {
+		t.Error("the incarnation directory was removed by a release")
 	}
 }
 
@@ -387,8 +451,11 @@ func TestAReleasedHoldIsGoneFromTheNodeAndAHeldOneIsNot(t *testing.T) {
 	fixture := newSourceLedger(t)
 	hold := held(t, fixture)
 
-	if !fixture.source.Holds(hold.Incarnation) {
+	if !fixture.source.HasIncarnation(hold.Incarnation) {
 		t.Fatal("the source is not held")
+	}
+	if held, err := fixture.source.Released(testHandoff); err != nil || held {
+		t.Fatalf("a fresh hold reports itself released (%v, %v)", held, err)
 	}
 
 	intent := output.ReleaseIntent{
@@ -408,8 +475,8 @@ func TestAReleasedHoldIsGoneFromTheNodeAndAHeldOneIsNot(t *testing.T) {
 	if err := output.VerifyReleaseAcknowledgement(released, fixture.public); err != nil {
 		t.Errorf("the release does not verify: %v", err)
 	}
-	if fixture.source.Holds(hold.Incarnation) {
-		t.Error("the source is still held after an acknowledged release")
+	if released, err := fixture.source.Released(testHandoff); err != nil || !released {
+		t.Errorf("the source is still held after an acknowledged release (%v, %v)", released, err)
 	}
 
 	// Idempotent for the same intent, and a conflict for another one.
@@ -514,7 +581,7 @@ func TestRestartingRecoversEveryStatementAndRecreatesNoAuthority(t *testing.T) {
 		t.Errorf("a restarted daemon returned a different hold:\nbefore: %+v\n after: %+v",
 			hold, recovered)
 	}
-	if !fixture.source.Holds(hold.Incarnation) {
+	if !fixture.source.HasIncarnation(hold.Incarnation) {
 		t.Error("a restarted daemon does not hold the source it acknowledged holding")
 	}
 
@@ -615,7 +682,7 @@ func TestAHoldReplayedAfterACrashStillGatesCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("replaying the hold after the crash: %v", err)
 	}
-	if !fixture.source.Holds(replayed.Incarnation) {
+	if !fixture.source.HasIncarnation(replayed.Incarnation) {
 		t.Fatal("the replayed hold names an incarnation this node does not hold")
 	}
 
@@ -682,7 +749,7 @@ func TestAHoldReplayRepairsAGateLostBehindTheLedgersBack(t *testing.T) {
 		t.Fatalf("the damage did not take: eligible=%v gates=%v",
 			before.Eligible, before.OpenExtensionGates)
 	}
-	if !fixture.source.Holds(first.Incarnation) {
+	if !fixture.source.HasIncarnation(first.Incarnation) {
 		t.Fatal("the source went away with the gate; this test is about a held source")
 	}
 
@@ -711,10 +778,10 @@ func TestAHoldReplayRepairsAGateLostBehindTheLedgersBack(t *testing.T) {
 
 // The mirror, and it fails the other way: closed and stuck.
 //
-// A release writes the released record, removes the bytes and closes the gate.
-// A crash before the close leaves the gate open over a source that is gone, and
-// the replay returns the stored statement without closing it -- so the
-// execution is never cleanup-eligible again, for a hold nothing holds.
+// A release writes the released record and then closes the gate. A crash
+// between them leaves the gate open over a hold that is already released, and a
+// replay that returned the stored statement without closing it would leave the
+// execution never cleanup-eligible again, for a hold nothing holds.
 func TestAReleaseReplayedAfterACrashStillClosesTheGate(t *testing.T) {
 	fixture := newSourceLedger(t)
 	hold := held(t, fixture)
@@ -753,8 +820,8 @@ func TestAReleaseReplayedAfterACrashStillClosesTheGate(t *testing.T) {
 	if replayed.ReleaseIntentID != testIntent {
 		t.Errorf("the replayed release names intent %s", replayed.ReleaseIntentID)
 	}
-	if fixture.source.Holds(hold.Incarnation) {
-		t.Error("the released source is still on the node after the replay")
+	if released, err := fixture.source.Released(testHandoff); err != nil || !released {
+		t.Errorf("the replay left the hold unreleased (%v, %v)", released, err)
 	}
 
 	eligible, err := fixture.ledger.CleanupEligible(identity(1))

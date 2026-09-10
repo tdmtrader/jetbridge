@@ -361,10 +361,35 @@ func (ledger *SourceLedger) ResolveIncarnation(incarnation output.SourceIncarnat
 // Holds reports whether the incarnation's bytes are still on this node. It is
 // an outcome, not a call count: "the daemon was not asked to delete it" is not
 // something this file can say and not something a caller should want.
-func (ledger *SourceLedger) Holds(incarnation output.SourceIncarnation) bool {
+// HasIncarnation reports whether this incarnation's directory is still on this
+// node.
+//
+// It is a question about BYTES and not about the hold, and the two are separate
+// questions now: a release closes the hold and leaves the bytes to the artifact
+// daemon's ordinary lifecycle, so after a release this stays true and Released
+// below turns true. They were one question while a release deleted, which is
+// exactly the conflation that let every settlement destroy a step's output.
+func (ledger *SourceLedger) HasIncarnation(incarnation output.SourceIncarnation) bool {
 	_, err := ledger.ResolveIncarnation(incarnation)
 
 	return err == nil
+}
+
+// Released reports whether this handoff's hold has been released.
+//
+// The hold is a RECORD, and this reads it. Nothing about the directory: the
+// bytes outlive the hold by design.
+func (ledger *SourceLedger) Released(handoff output.HandoffID) (bool, error) {
+	record, found, err := ledger.load(handoff)
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		return false, fmt.Errorf("%w: handoff %s holds no source on this node",
+			output.ErrNotFound, handoff)
+	}
+
+	return record.State == sourceReleased, nil
 }
 
 // admitted is the precondition every acting operation shares: this handoff is
@@ -1192,17 +1217,31 @@ func (ledger *SourceLedger) AcknowledgeRelease(_ context.Context, intent output.
 // finishRelease is everything a release does after its record is durable, and
 // it is idempotent so that a replay can re-run it.
 //
+// IT DOES NOT REMOVE THE BYTES, and that is the whole of the rule: a release
+// releases the HOLD. The incarnation is the step's own output directory --
+// after the Phase 4 ruling it is reserved and created before the producing Pod
+// exists, and the artifact daemon has registered a read-only alias at the
+// ordinary `<handle>/<output>` path that points into it. Removing it here made
+// every no_capture, cancellation and terminal failure delete a step's output at
+// the moment it settled, leaving that alias pointing at a directory that was
+// gone; Req 2 says a failed producer follows existing task semantics, and
+// existing semantics keep a failed task's outputs for the build's lifetime.
+//
+// What is left is what a release actually is: the record says released, and the
+// gate this hold held open is closed, so the execution becomes cleanup-eligible
+// and the incarnation becomes sweepable exactly as an unselected output is.
+//
+// TODO(phase 7, reclamation): a settled incarnation is deleted by the reclaim
+// policy that owns retention -- age, residency and the rule that every
+// uncertainty KEEPS -- and never as a side effect of a release. Until that
+// lands the artifact daemon's ordinary lifecycle is what reclaims it.
+//
 // The identity is the REQUEST's, not the record's. `admitted` has just proved
 // the request names the fence this node currently holds; the record's copy was
 // written when the hold was taken and a takeover since then would make closing
-// the gate refuse as stale -- after the bytes were already gone.
+// the gate refuse as stale.
 func (ledger *SourceLedger) finishRelease(execution executioncontrol.Identity,
 	record sourceRecord) error {
-	if err := ledger.steps.RemoveAll(incarnationDir(record.Incarnation)); err != nil {
-		return fmt.Errorf("%w: removing the released source incarnation: %v",
-			output.ErrInfrastructure, err)
-	}
-
 	return ledger.base.CloseGate(execution, SourceHoldGate)
 }
 

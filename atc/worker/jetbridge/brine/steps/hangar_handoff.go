@@ -548,11 +548,32 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 				return nil
 			}),
 
+		// A release releases the HOLD, and never the bytes.
+		//
+		// So this asks the two questions separately, and both of them are
+		// outcomes: the gate the hold held open is closed -- the daemon says
+		// the execution is destructively cleanup-eligible, which it refuses
+		// while any hold stands -- and the incarnation directory is still
+		// there, because it is the step's own output, aliased read-only at the
+		// ordinary path, and Req 2 keeps a failed producer's output for the
+		// build's lifetime. Deletion is reclamation by policy, not a side
+		// effect of a release.
 		CheckThat[HeldSource]("the source has been released",
 			func(in HeldSource) error {
-				if _, err := os.Lstat(in.incarnationRoot()); err == nil {
-					return fmt.Errorf("the source incarnation is still on the node after a "+
-						"release: %s", in.incarnationRoot())
+				answer, err := decodeControl[executioncontrol.DestructiveCleanupEligibleResult](
+					in.Draft.Daemon.base("cleanup-eligible", "/execution/v1/cleanup-eligible",
+						in.Execution, identifiedBy(in.Execution)))
+				if err != nil {
+					return fmt.Errorf("asking whether cleanup is eligible: %w", err)
+				}
+				if !answer.Eligible {
+					return fmt.Errorf("the hold's gate is still open after a release: %s "+
+						"(open gates %v)", answer.WithheldReason, answer.OpenExtensionGates)
+				}
+				if _, err := os.Lstat(in.incarnationRoot()); err != nil {
+					return fmt.Errorf("the release deleted the step's output at %s: %v; a "+
+						"release closes the hold and leaves the bytes to the artifact daemon's "+
+						"ordinary lifecycle", in.incarnationRoot(), err)
 				}
 
 				return nil

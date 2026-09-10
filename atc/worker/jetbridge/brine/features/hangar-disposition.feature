@@ -68,6 +68,7 @@ Feature: Which outcome a finished producer selects, and what the build is told
     When the capture settles
     Then the outcome was pending between the two halves
     And the disposition is "no_capture"
+    And the produced output is still on the node
 
   @HOP-11
   Scenario: Cancellation before Stage 2 selects pre_reservation_cancel, never no_capture
@@ -82,12 +83,19 @@ Feature: Which outcome a finished producer selects, and what the build is told
   # cancellation whose hold was never acknowledged still has bytes on a node,
   # because the incarnation is reserved before the producing Pod exists.
   #
-  # Asserted as STORE STATE and never as a call count: the incarnation
-  # directory is gone from the daemon's steps root, which is the outcome a
-  # release has, and "the daemon was called" is not assertable here at all.
+  # Asserted as STORE STATE and never as a call count: the handoff settled with
+  # a release the daemon acknowledged, which is the outcome a release has, and
+  # "the daemon was called" is not assertable here at all.
+  #
+  # What it does NOT assert is that the bytes are gone. A release releases the
+  # HOLD; the incarnation is the step's own output and the artifact daemon has
+  # aliased it read-only at the ordinary path, so deleting it here would be a
+  # settlement destroying a step's output while that alias still pointed at it.
+  # Deletion is reclamation by policy — Phase 7's — and the no_capture scenario
+  # above asserts the surviving bytes directly.
   #
   # Reddened by: the pre_reservation_cancel branch forking on the acknowledged
-  # hold instead of the reserved source — this reddens on the directory line
+  # hold instead of the reserved source — this reddens on the release line
   # while the disposition line above it stays green.
   @HOP-11
   Scenario: A cancelled handoff with no acknowledged hold releases its reservation and closes
@@ -96,7 +104,7 @@ Feature: Which outcome a finished producer selects, and what the build is told
     When the handoff is cancelled with no acknowledged hold
     And the capture settles
     Then the disposition is "pre_reservation_cancel"
-    And the reserved incarnation is gone from the node
+    And the reserved incarnation is released
 
   # The CONTROL is the first scenario in this file: the same operations, served
   # from a committed Stage 2 reservation. Without it, "a predeclaration is

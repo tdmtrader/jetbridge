@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
@@ -248,17 +249,50 @@ func HangarDispositionDefinitions() []brine.StepDefinition {
 				return nil
 			}),
 
-		CheckThat[CaptureOutcome]("the reserved incarnation is gone from the node",
+		// The release, as store state and never as a call count: the handoff is
+		// settled, which on every branch means the daemon acknowledged the
+		// exact fenced release of the source, and the durable acknowledgement
+		// says so.
+		//
+		// It does NOT say the bytes are gone. A release releases the hold: the
+		// incarnation is the step's own output, the artifact daemon has aliased
+		// it read-only at the ordinary path, and deleting it here would be a
+		// settlement destroying a step's output while the alias still pointed
+		// at it. The two questions are asked separately below.
+		CheckThat[CaptureOutcome]("the reserved incarnation is released",
 			func(in CaptureOutcome) error {
 				if !in.Final.Settled {
-					return fmt.Errorf("the handoff is not settled, so the release has not run")
+					return fmt.Errorf("the handoff is not settled, so the release has not run "+
+						"(transitions %v)", in.Transitions)
 				}
+				if !in.Final.ReleaseAcknowledged {
+					return fmt.Errorf("the handoff settled with no acknowledged release of the " +
+						"reservation the ATC took before the Pod; only the node holding it can " +
+						"say it is no longer held")
+				}
+
+				return nil
+			}),
+
+		// The other half, and the reason it is its own line: Req 2 says a
+		// producer that did not succeed follows existing task semantics, and
+		// existing semantics keep a failed task's outputs on the node for the
+		// build's lifetime -- on_failure, hijack and artifact passing to a
+		// later step all read them.
+		CheckThat[CaptureOutcome]("the produced output is still on the node",
+			func(in CaptureOutcome) error {
 				root := in.Source.incarnationRoot()
-				if _, err := os.Stat(root); err == nil {
-					return fmt.Errorf("the incarnation directory is still on the node; the " +
-						"reservation the ATC took before the Pod was never released")
-				} else if !os.IsNotExist(err) {
-					return fmt.Errorf("reading the node: %w", err)
+				info, err := os.Stat(root)
+				if err != nil {
+					return fmt.Errorf("the settlement deleted the step's output at %s: %v", root, err)
+				}
+				if !info.IsDir() {
+					return fmt.Errorf("%s is a %s, not the output directory", root, info.Mode().Type())
+				}
+				produced := filepath.Join(root, "artifact.txt")
+				if _, err := os.Stat(produced); err != nil {
+					return fmt.Errorf("the bytes the producer wrote are gone from %s: %v",
+						produced, err)
 				}
 
 				return nil

@@ -437,8 +437,12 @@ func TestAnUnprovableDrainIsSealUnconfirmedAndPublishesNothing(t *testing.T) {
 	if !record.ReleaseAcknowledged {
 		t.Error("the source was never released after a terminal failure")
 	}
-	if c.sourceStillThere() {
-		t.Error("the released incarnation is still on the node")
+	// And the release released the HOLD. The bytes are the step's own output,
+	// aliased read-only at the ordinary path, and a terminal capture failure is
+	// not a reason to delete a step's output from under a build.
+	if !c.sourceStillThere() {
+		t.Error("the release deleted the step's output; a release closes the hold and leaves " +
+			"the bytes to the artifact daemon's ordinary lifecycle")
 	}
 }
 
@@ -705,6 +709,14 @@ func TestALostReleaseAcknowledgementIsRepeatedUnderTheSameIntent(t *testing.T) {
 	}
 	if permitted, reason := hangaroutput.TerminalExposurePermitted(final); !permitted {
 		t.Errorf("a settled no_capture does not permit a terminal outcome: %s", reason)
+	}
+	// Req 2: a failed producer follows existing task semantics, and existing
+	// semantics keep a failed task's outputs on the node for the build's
+	// lifetime -- on_failure, hijack and artifact passing to a later step all
+	// read them. The release released the hold; it did not delete the step's
+	// output out from under the build that is about to look at it.
+	if !c.sourceStillThere() {
+		t.Error("no_capture deleted the failed producer's output from the node")
 	}
 }
 
