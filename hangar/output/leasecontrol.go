@@ -201,6 +201,23 @@ type LeaseAnswer struct {
 	Refusal         LeaseRefusal    `json:"refusal,omitempty"`
 	Lease           ReadLease       `json:"lease,omitempty"`
 	Destination     ReadDestination `json:"destination,omitempty"`
+
+	// Grant is the RE-MINTED token for the window this answer describes, and a
+	// renewal is the only operation that carries one.
+	//
+	// A grant is dated with its lease's granted-at and expires-at -- nothing in
+	// it comes from the instant it was minted, which is what makes requirement
+	// 37's byte-identical re-mint possible. The consequence is that a renewal
+	// moves the row and cannot move a token already handed out, so unless the
+	// renewal answers with a current one the reader carries a token describing
+	// a window that has passed. That token still BINDS the same read, and the
+	// control plane decides the window on the row; but the daemon checks the
+	// grant's own window before it opens anything, and a reader whose token
+	// never caught up would fail that check while its lease was perfectly live.
+	//
+	// It is empty on a validate, on a release and on every refusal: a caller
+	// told no reads no facts it was not admitted to, and that includes a token.
+	Grant string `json:"grant,omitempty"`
 }
 
 // LeaseRefusal is the closed set of reasons a lease question is answered no.
@@ -236,13 +253,26 @@ func (answer LeaseAnswer) Validate() error {
 		if err := answer.Lease.Validate(); err != nil {
 			return err
 		}
+		if answer.Operation == LeaseRenew && answer.Grant == "" {
+			return fmt.Errorf("%w: an admitted renewal carries no re-minted grant; the reader's "+
+				"token would still name the window this renewal moved", ErrIncomplete)
+		}
+		if answer.Operation != LeaseRenew && answer.Grant != "" {
+			return fmt.Errorf("%w: a %s answer carries a grant; only a renewal re-mints one",
+				ErrIncomplete, answer.Operation)
+		}
+		if len(answer.Grant) > MaxReadGrantBytes {
+			return fmt.Errorf("%w: the re-minted grant is %d bytes, the bound is %d",
+				ErrLimitExceeded, len(answer.Grant), MaxReadGrantBytes)
+		}
 
 		return answer.Destination.Validate()
 	}
 	if err := answer.Refusal.Validate(); err != nil {
 		return err
 	}
-	if answer.Lease.ReadLeaseID != "" || answer.Destination != (ReadDestination{}) {
+	if answer.Lease.ReadLeaseID != "" || answer.Destination != (ReadDestination{}) ||
+		answer.Grant != "" {
 		return fmt.Errorf("%w: a refused answer describes a lease; a caller told no would read "+
 			"facts it was not admitted to", ErrIncomplete)
 	}

@@ -344,7 +344,46 @@ func (signer *ReadGrantSigner) Sign(lease ReadLease, destination ReadDestination
 // which field failed would tell a caller holding a forged token exactly which
 // byte to change next; the operator's diagnosis comes from the lease-control
 // answer, which is authenticated.
+//
+// It is the BINDING plus the token's own window, and it is what the DAEMON
+// calls: nothing is opened under a token whose window has passed, and that
+// check runs on the node before any question is asked. The control plane calls
+// VerifyBinding instead, for the reason written there.
 func (verifier *ReadGrantVerifier) Verify(token string, ref hangar.TreeRef, destination ReadDestination) (ReadGrantClaims, error) {
+	claims, err := verifier.VerifyBinding(token, ref, destination)
+	if err != nil {
+		return ReadGrantClaims{}, err
+	}
+
+	now := verifier.clock.Now().UTC()
+	if now.Before(claims.IssuedAt.UTC()) || !now.Before(claims.ExpiresAt.UTC()) {
+		return ReadGrantClaims{}, fmt.Errorf("%w: the read grant does not authorize this read",
+			ErrUnauthorized)
+	}
+
+	return claims, nil
+}
+
+// VerifyBinding checks everything the MAC covers EXCEPT the token's window.
+//
+// The split is not a weakening, it is a statement about which clock owns which
+// question. What a grant binds -- the lease, the claim, the ref, the
+// destination, the epoch, the nonce -- is settled by the MAC and is true
+// forever. Whether that lease is still a live protection is settled by the ROW,
+// on the database clock, and only the row knows about a renewal: a renewal
+// moves the row's expiry and cannot move a token already in a reader's hands.
+//
+// So the control plane authenticates the binding here and then asks the
+// repository, which refuses a released, expired, or no-longer-readable lease on
+// the clock that owns those facts. A control plane that had refused on the
+// token's window instead would have answered `unauthorized` to a legitimately
+// renewed reader trying to RELEASE, and the protection would have been held
+// until recovery closed it.
+//
+// The daemon still calls Verify. A stale token opening an object is exactly
+// what the window is for; what it is not for is deciding, on the control
+// plane's side, a question the database has a better answer to.
+func (verifier *ReadGrantVerifier) VerifyBinding(token string, ref hangar.TreeRef, destination ReadDestination) (ReadGrantClaims, error) {
 	unauthorized := func() (ReadGrantClaims, error) {
 		return ReadGrantClaims{}, fmt.Errorf("%w: the read grant does not authorize this read",
 			ErrUnauthorized)
@@ -388,10 +427,6 @@ func (verifier *ReadGrantVerifier) Verify(token string, ref hangar.TreeRef, dest
 		return unauthorized()
 	}
 
-	now := verifier.clock.Now().UTC()
-	if now.Before(claims.IssuedAt.UTC()) || !now.Before(claims.ExpiresAt.UTC()) {
-		return unauthorized()
-	}
 	if !sameRef(claims.Ref, ref) ||
 		!constantTimeEqual(claims.Destination.Handle, destination.Handle) ||
 		!constantTimeEqual(claims.Destination.Volume, destination.Volume) {

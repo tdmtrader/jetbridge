@@ -66,6 +66,16 @@ type LeaseControl struct {
 	Keys       NodeKeys
 	Clock      output.Clock
 	Logger     lager.Logger
+
+	// Minter re-mints the grant a RENEWAL produces.
+	//
+	// A grant is dated with its lease's own instants, so a renewal moves the
+	// row and cannot move the token the reader already holds. Without a token
+	// for the new window the daemon's own pre-open window check -- which is
+	// where a stale grant is supposed to be caught -- would start failing on a
+	// lease that is perfectly live. It is the same signer the admission uses,
+	// over the row this transaction just wrote.
+	Minter GrantMinter
 }
 
 // Routes are the three paths, versioned and product-neutral.
@@ -171,13 +181,27 @@ func (control *LeaseControl) answer(request *http.Request, operation output.Leas
 		return refuse(classify(err), err)
 	}
 
-	return output.LeaseAnswer{
+	answer := output.LeaseAnswer{
 		ProtocolVersion: output.ProtocolVersion,
 		Operation:       operation,
 		Admitted:        true,
 		Lease:           record.Lease,
 		Destination:     record.Destination,
-	}, http.StatusOK
+	}
+
+	// The re-mint, AFTER the transaction that renewed the row has committed and
+	// out of the function that opened it -- the same ordering the admission
+	// keeps, and for the same reason: a token minted beside an uncommitted row
+	// is a token for a lease that may never have existed.
+	if operation == output.LeaseRenew {
+		token, err := control.Minter.Sign(record.Lease, record.Destination, record.GrantNonce)
+		if err != nil {
+			return refuse(output.LeaseRefusedInfra, err)
+		}
+		answer.Grant = token
+	}
+
+	return answer, http.StatusOK
 }
 
 // grantClaims verifies the grant against the ref and destination the grant
@@ -192,7 +216,15 @@ func (control *LeaseControl) grantClaims(question output.LeaseQuestion) (output.
 		return output.ReadGrantClaims{}, err
 	}
 
-	return control.Grants.Verify(question.Grant, unverified.Ref, unverified.Destination)
+	// VerifyBinding, not Verify: what the token BINDS is the MAC's to settle and
+	// whether the lease is still live is the ROW's, on the database clock. A
+	// renewal moves the row's expiry and cannot move a token already handed
+	// out, so a control plane that refused on the token's window would answer
+	// `unauthorized` to a renewed reader asking to RELEASE -- and the
+	// protection nobody needs would be held until recovery closed it. The
+	// daemon's own Verify, before it opens anything, is where a stale window
+	// stops a read.
+	return control.Grants.VerifyBinding(question.Grant, unverified.Ref, unverified.Destination)
 }
 
 func (control *LeaseControl) decide(ctx context.Context, operation output.LeaseOperation, claims output.ReadGrantClaims, remaining time.Duration) (output.ReadLeaseRecord, error) {
@@ -262,6 +294,9 @@ func (control *LeaseControl) wired() error {
 		return fmt.Errorf("%w: lease control needs a lease store", output.ErrIncomplete)
 	case control.Grants == nil:
 		return fmt.Errorf("%w: lease control needs a grant verifier", output.ErrIncomplete)
+	case control.Minter == nil:
+		return fmt.Errorf("%w: lease control needs the minter a renewal re-mints its grant with",
+			output.ErrIncomplete)
 	case control.Keys == nil:
 		return fmt.Errorf("%w: lease control needs the node keys it checks questions against",
 			output.ErrIncomplete)

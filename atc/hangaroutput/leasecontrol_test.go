@@ -53,10 +53,16 @@ func newLeaseFixture(t *testing.T, h *harness, grant hangaroutput.ReadGrant) *le
 		t.Fatalf("grant verifier: %v", err)
 	}
 
+	minter, err := output.NewReadGrantSigner(readGrantKey)
+	if err != nil {
+		t.Fatalf("grant signer: %v", err)
+	}
+
 	control := &hangaroutput.LeaseControl{
 		Transactor: h.Coordinator.Transactor,
 		Leases:     h.Repository,
 		Grants:     verifier,
+		Minter:     minter,
 		Keys: hangaroutput.NodeKeysFunc(
 			func(node executioncontrol.NodeUID, keyID string) (ed25519.PublicKey, error) {
 				if node != harnessNode || keyID != "node-control-1" {
@@ -320,5 +326,100 @@ func TestAnUnreachableControlPlaneIsNotARevocation(t *testing.T) {
 	if !errors.Is(err, output.ErrInfrastructure) {
 		t.Fatalf("an unreachable control plane answered %v; a daemon that read that as a "+
 			"revocation would fail a task for an outage", err)
+	}
+}
+
+// A RENEWED READER OUTLIVES ITS ORIGINAL GRANT WINDOW.
+//
+// The grant is dated with the lease's granted-at and expires-at, and requirement
+// 37's byte-identical re-mint is why: nothing in the token may come from the
+// instant it was minted. But a RENEWAL moves the row's expiry and cannot move a
+// token that has already been handed out, so if the control plane decided the
+// window from the token, everything a renewed reader did after its original
+// expiry -- validating, renewing again, and above all RELEASING -- would be
+// answered `unauthorized`. The lease would then close only by expiry plus
+// recovery, and the renewal mechanism Green box 3 describes would have no
+// reachable effect at all.
+//
+// Two halves, and this spec asserts both against a row that is live on the
+// DATABASE clock while the verifier's clock sits past the original window:
+//
+//   - the control plane checks what the token BINDS and takes the window from
+//     the row it names, because the row is the only thing that knows about a
+//     renewal;
+//   - a renewal answers with a grant RE-MINTED over the renewed row, so the
+//     reader's token catches up and the daemon's own window check -- which
+//     stays, and is what stops a stale token from ever opening anything --
+//     keeps passing.
+func TestARenewedReaderKeepsWorkingPastItsOriginalGrantWindow(t *testing.T) {
+	h := newHarness(t)
+	grant := admittedGrant(t, h)
+	fixture := newLeaseFixture(t, h, grant)
+
+	renewed, err := fixture.Client.RenewLease(context.Background(), fixture.Grant, time.Minute)
+	if err != nil || !renewed.Admitted {
+		t.Fatalf("renewing a live lease: %v %+v", err, renewed)
+	}
+	if renewed.Grant == "" {
+		t.Fatal("a renewal answered with no grant; the reader's token still names the window " +
+			"the renewal just moved, and nothing else will ever hand it a current one")
+	}
+	if renewed.Grant == fixture.Grant {
+		t.Error("the renewal handed back the same token it was given, so the renewed window is " +
+			"in no token the reader holds")
+	}
+
+	// The verifier's clock, one second past the ORIGINAL window. The row is
+	// untouched and live on the database clock, which is the clock that decides.
+	past, err := output.NewReadGrantVerifier(readGrantKey,
+		output.ClockFunc(func() time.Time { return grant.Lease.ExpiresAt.Add(time.Second).UTC() }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.Control.Grants = past
+
+	// The ORIGINAL token, past its own expiry, over a row that is still live.
+	answer, err := fixture.Client.ValidateLease(context.Background(), fixture.Grant, time.Minute)
+	if err != nil {
+		t.Fatalf("validating with the original grant: %v", err)
+	}
+	if !answer.Admitted {
+		t.Errorf("a live lease was refused as %q because the TOKEN's window had passed; the "+
+			"window is the row's", answer.Refusal)
+	}
+
+	// And the re-minted token, which is what the reader actually carries on.
+	for _, step := range []struct {
+		name string
+		ask  func(string) (output.LeaseAnswer, error)
+	}{
+		{"validate", func(token string) (output.LeaseAnswer, error) {
+			return fixture.Client.ValidateLease(context.Background(), token, time.Minute)
+		}},
+		{"renew", func(token string) (output.LeaseAnswer, error) {
+			return fixture.Client.RenewLease(context.Background(), token, time.Minute)
+		}},
+		{"release", func(token string) (output.LeaseAnswer, error) {
+			return fixture.Client.ReleaseLease(context.Background(), token)
+		}},
+	} {
+		answer, err := step.ask(renewed.Grant)
+		if err != nil {
+			t.Fatalf("%s with the re-minted grant: %v", step.name, err)
+		}
+		if !answer.Admitted {
+			t.Fatalf("%s with the re-minted grant was refused as %q", step.name, answer.Refusal)
+		}
+	}
+
+	var released bool
+	if err := h.Conn.QueryRow(
+		`SELECT released_at IS NOT NULL FROM hangar_read_leases WHERE read_lease_id = $1`,
+		string(grant.Lease.ReadLeaseID)).Scan(&released); err != nil {
+		t.Fatalf("reading the row back: %v", err)
+	}
+	if !released {
+		t.Error("a renewed reader could not release its own lease, so the protection it no " +
+			"longer needs is held until recovery closes it")
 	}
 }

@@ -2,9 +2,9 @@ package hangaroutput_test
 
 // The commit boundary, asserted structurally.
 //
-// The behavioural spec beside this one counts signer calls and proves a
+// The behavioural specs beside this one count signer calls and prove a
 // rolled-back admission reaches none. That is the right assertion and it is not
-// sufficient: it covers the paths the spec drives, and the rule requirement 35
+// sufficient: it covers the paths the specs drive, and the rule requirement 35
 // states is about every path there is -- "only after that transaction commits
 // may the control plane mint and deliver a usable lease-bound grant".
 //
@@ -12,6 +12,14 @@ package hangaroutput_test
 // inside it is minting under a transaction that may still roll back, and that
 // is exactly the shape a later edit reintroduces by moving one call two lines.
 // The guard cannot be satisfied by a comment.
+//
+// IT FOLLOWS ONE STEP OF INDIRECTION. A guard matching only a literal `Sign`
+// selector in the same function body as `Begin` is narrower than its own name:
+// a mint reached through a helper on the same receiver -- `admission.mint(...)`
+// inside `commitLease` -- would walk straight past it. So the functions each
+// file declares are resolved against each other and "signs" is transitive.
+// Across files it is not, which is why every file that mints is in the list
+// below rather than only the one that started out that way.
 //
 // It asserts it FOUND something first. A guard that scanned nothing and
 // reported nothing is the silent-skip failure this tree warns about elsewhere,
@@ -26,72 +34,119 @@ import (
 	"testing"
 )
 
+// mintingFiles is every file in this package that reaches a grant signer.
+// read.go admits a read; leasecontrol.go re-mints the grant a renewal produces.
+var mintingFiles = []string{"read.go", "leasecontrol.go"}
+
 func TestNoFunctionBothOpensATransactionAndSigns(t *testing.T) {
-	fileSet := token.NewFileSet()
-	parsed, err := parser.ParseFile(fileSet, "read.go", nil, 0)
-	if err != nil {
-		t.Fatalf("parsing read.go: %v", err)
-	}
+	totalScanned, totalTransacting, totalSigning := 0, 0, 0
 
-	// What the two halves look like as calls.
-	opensTransaction := func(name string) bool { return name == "Begin" }
-	signs := func(name string) bool { return name == "Sign" }
-
-	scanned, transacting, signing := 0, 0, 0
-	for _, declaration := range parsed.Decls {
-		function, ok := declaration.(*ast.FuncDecl)
-		if !ok || function.Body == nil {
-			continue
+	for _, path := range mintingFiles {
+		fileSet := token.NewFileSet()
+		parsed, err := parser.ParseFile(fileSet, path, nil, 0)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", path, err)
 		}
-		scanned++
 
-		var begins, mints []string
-		ast.Inspect(function.Body, func(node ast.Node) bool {
-			call, ok := node.(*ast.CallExpr)
-			if !ok {
+		// What the two halves look like as calls.
+		opensTransaction := func(name string) bool { return name == "Begin" }
+		signs := func(name string) bool { return name == "Sign" }
+
+		type body struct {
+			name    string
+			begins  []string
+			mints   []string
+			calls   []string
+			signing bool
+		}
+
+		var functions []*body
+		byName := map[string]*body{}
+		for _, declaration := range parsed.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Body == nil {
+				continue
+			}
+			found := &body{name: function.Name.Name}
+			ast.Inspect(function.Body, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				switch fun := call.Fun.(type) {
+				case *ast.SelectorExpr:
+					switch {
+					case opensTransaction(fun.Sel.Name):
+						found.begins = append(found.begins, render(fileSet, call))
+					case signs(fun.Sel.Name):
+						found.mints = append(found.mints, render(fileSet, call))
+					default:
+						// A method on this file's own receiver, resolved below.
+						found.calls = append(found.calls, fun.Sel.Name)
+					}
+				case *ast.Ident:
+					found.calls = append(found.calls, fun.Name)
+				}
+
 				return true
-			}
-			selector, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			switch {
-			case opensTransaction(selector.Sel.Name):
-				begins = append(begins, render(fileSet, call))
-			case signs(selector.Sel.Name):
-				mints = append(mints, render(fileSet, call))
-			}
-
-			return true
-		})
-
-		if len(begins) > 0 {
-			transacting++
+			})
+			found.signing = len(found.mints) > 0
+			functions = append(functions, found)
+			byName[found.name] = found
 		}
-		if len(mints) > 0 {
-			signing++
+
+		// Transitive closure over the calls this file declares: a function that
+		// reaches a mint through a helper is a function that mints.
+		for changed := true; changed; {
+			changed = false
+			for _, function := range functions {
+				if function.signing {
+					continue
+				}
+				for _, called := range function.calls {
+					if target, ok := byName[called]; ok && target.signing {
+						function.signing = true
+						function.mints = append(function.mints, "via "+called)
+						changed = true
+
+						break
+					}
+				}
+			}
 		}
-		if len(begins) > 0 && len(mints) > 0 {
-			t.Errorf("atc/hangaroutput/read.go: %s both opens a transaction (%s) and signs (%s).\n\n"+
-				"A grant minted inside a transaction is a grant minted under a commit that may "+
-				"still roll back, and requirement 35 admits a usable grant only after the commit "+
-				"is authoritative. The mint belongs in a function that holds no transaction and "+
-				"takes a value only a committed row can produce.",
-				function.Name.Name, strings.Join(begins, ", "), strings.Join(mints, ", "))
+
+		for _, function := range functions {
+			totalScanned++
+			if len(function.begins) > 0 {
+				totalTransacting++
+			}
+			if function.signing {
+				totalSigning++
+			}
+			if len(function.begins) > 0 && function.signing {
+				t.Errorf("atc/hangaroutput/%s: %s both opens a transaction (%s) and signs (%s).\n\n"+
+					"A grant minted inside a transaction is a grant minted under a commit that may "+
+					"still roll back, and requirement 35 admits a usable grant only after the commit "+
+					"is authoritative. The mint belongs in a function that holds no transaction and "+
+					"takes a value only a committed row can produce.",
+					path, function.name, strings.Join(function.begins, ", "),
+					strings.Join(function.mints, ", "))
+			}
 		}
 	}
 
-	if scanned == 0 {
-		t.Fatal("this guard parsed read.go and found no functions, so it is passing vacuously")
+	if totalScanned == 0 {
+		t.Fatalf("this guard parsed %v and found no functions, so it is passing vacuously",
+			mintingFiles)
 	}
-	if transacting == 0 {
+	if totalTransacting == 0 {
 		t.Error("this guard found no function that opens a transaction; either the admission " +
 			"stopped using one or it moved, and either way the rule is no longer being checked " +
 			"where it is written")
 	}
-	if signing == 0 {
-		t.Error("this guard found no function that signs; the mint moved out of read.go and the " +
-			"rule is no longer being checked where it is written")
+	if totalSigning == 0 {
+		t.Errorf("this guard found no function that signs; the mint moved out of %v and the "+
+			"rule is no longer being checked where it is written", mintingFiles)
 	}
 }
 
