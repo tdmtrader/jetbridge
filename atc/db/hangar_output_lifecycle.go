@@ -981,3 +981,53 @@ func (repository *HangarOutputRepository) ValidateReadLease(ctx context.Context,
 	}
 	return record, nil
 }
+
+// ReadClaims reports every claim recorded for one exact ref, active and
+// tombstoned, in acquisition order.
+//
+// It takes no lock. It is a read for a caller that wants to know what is there,
+// not a step in a transaction that is about to decide something -- and a read
+// that took the exact-lifecycle lock would make asking the question serialize
+// against every claimant and reclaimer of that generation.
+func (repository *HangarOutputRepository) ReadClaims(ctx context.Context, tx output.Tx, ref hangar.TreeRef) ([]output.ClaimRecord, error) {
+	if err := ref.Validate(); err != nil {
+		return nil, err
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT c.claim_id, c.consumer_binding_id, c.acquired_at, c.released_at
+		FROM hangar_claims c
+		JOIN hangar_exact_lifecycles l ON l.id = c.lifecycle_id
+		WHERE l.scope = $1 AND l.digest = $2 AND l.generation = $3
+		ORDER BY c.acquired_at, c.claim_id`,
+		string(ref.Scope), string(ref.Digest), ref.Generation)
+	if err != nil {
+		return nil, hangarConflict(err)
+	}
+	defer Close(rows)
+
+	var claims []output.ClaimRecord
+	for rows.Next() {
+		var (
+			id, binding string
+			acquired    time.Time
+			released    sql.NullTime
+		)
+		if err := rows.Scan(&id, &binding, &acquired, &released); err != nil {
+			return nil, err
+		}
+		record := output.ClaimRecord{
+			ClaimID:           output.ClaimID(id),
+			Ref:               ref,
+			ConsumerBindingID: output.OpaqueID(binding),
+			AcquiredAt:        output.NewTimestamp(acquired),
+		}
+		if released.Valid {
+			at := output.NewTimestamp(released.Time)
+			record.ReleasedAt = &at
+		}
+		claims = append(claims, record)
+	}
+
+	return claims, rows.Err()
+}

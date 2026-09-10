@@ -268,21 +268,6 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 			"Phase 7 Green",
 			"the exact replacement that supersedes a generation and unresolves the old ref"),
 
-		stubMap[BoundOutput, BoundOutput](
-			"the ref moves from hidden to published",
-			"Phase 6 Green",
-			"the hidden-to-published lifecycle transition"),
-
-		stubMap[BoundOutput, BoundOutput](
-			"the consumer names an unregistered exact ref",
-			"Phase 6 Green",
-			"the registration check a claim is refused against"),
-
-		stubMap[BoundOutput, BoundOutput](
-			"the consumer holds no active claim",
-			"Phase 6 Green",
-			"the active-claim precondition a managed read is granted against"),
-
 		// Checks over the outcome.
 		// The receipt is asserted WHOLE, and against the SERVER-DERIVED scope --
 		// which is why the sentence cannot name one. The scope is an opaque

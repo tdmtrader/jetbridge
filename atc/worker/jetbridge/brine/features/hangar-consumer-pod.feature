@@ -1,7 +1,5 @@
 Feature: What a consuming step's Pod says about a published output
 
-  NOT RUN YET — see ../README.md. These scenarios are checked, not executed.
-
   This is where the learning's split row 2 lands: the consumer's Hangar init
   container's args and mounts are spec, so the two Go tests at
   atc/worker/jetbridge/storage_daemonset_test.go:492 and :559 move here.

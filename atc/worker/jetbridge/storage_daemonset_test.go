@@ -556,59 +556,22 @@ func TestDaemonSetBackend_HangarInitRequiresExactResponseAndReceipt(t *testing.T
 	}
 }
 
-func TestDaemonSetBackend_HangarInitUsesOneFixedReadOnlyVerificationMountPerTree(t *testing.T) {
-	key := []byte("0123456789abcdef0123456789abcdef")
-	signer, err := hangar.NewGrantSigner(key, hangar.MaxGrantTTL, func() time.Time {
-		return time.Unix(1_800_000_000, 0).UTC()
-	})
-	if err != nil {
-		t.Fatalf("new grant signer: %v", err)
-	}
-	cfg := testDaemonConfig()
-	cfg.HangarEnabled = true
-	cfg.HangarGrantSigner = signer
-	b := NewDaemonSetBackend(cfg, nil, nil)
-	refs := []hangar.TreeRef{
-		{Scope: "builds", Digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Generation: 7},
-		{Scope: "builds", Digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Generation: 8},
-	}
-	inputs := []runtime.Input{
-		{HangarTree: &refs[0], DestinationPath: "/work/user-a"},
-		{HangarTree: &refs[1], DestinationPath: "/work/user-b"},
-	}
-	mounts := []corev1.VolumeMount{
-		{Name: "input-0", MountPath: "/work/user-a", ReadOnly: true},
-		{Name: "input-1", MountPath: "/work/user-b", ReadOnly: true},
-	}
-	volumes := []corev1.Volume{
-		b.StepVolume("input-0", "task-handle", "input-0"),
-		b.StepVolume("input-1", "task-handle", "input-1"),
-	}
-	inits, err := b.BuildFetchInitContainers("task-handle", inputs, volumes, mounts)
-	if err != nil || len(inits) != 1 {
-		t.Fatalf("build two-tree strict init: containers=%d err=%v", len(inits), err)
-	}
-	if len(inits[0].VolumeMounts) != 2 {
-		t.Fatalf("strict verification mounts = %+v", inits[0].VolumeMounts)
-	}
-	for index, mount := range inits[0].VolumeMounts {
-		wantPath := "/hangar-inputs/input-" + strconv.Itoa(index)
-		if mount.Name != "input-"+strconv.Itoa(index) || mount.MountPath != wantPath || !mount.ReadOnly {
-			t.Errorf("verification mount %d = %+v, want fixed read-only %s", index, mount, wantPath)
-		}
-	}
-	command := strings.Join(inits[0].Command, " ")
-	if strings.Contains(command, "/work/user-a") || strings.Contains(command, "/work/user-b") {
-		t.Fatal("user-controlled destination entered strict verification command")
-	}
-	for _, ref := range refs {
-		receipt, _ := json.Marshal(ref)
-		if !strings.Contains(command, base64.StdEncoding.EncodeToString(receipt)) {
-			t.Errorf("strict command is missing exact expected receipt for %+v", ref)
-		}
-	}
-	assertContainerMountsResolve(t, inits, volumes)
-}
+// TestDaemonSetBackend_HangarInitUsesOneFixedReadOnlyVerificationMountPerTree
+// moved to brine.
+//
+// Its three assertions -- one fixed read-only verification mount per tree, the
+// exact expected receipt in the command, and no user-controlled destination in
+// it -- are what a consumer's Pod SAYS, which is the learning's own brine-shaped
+// row. They live in features/hangar-consumer-pod.feature now, over a pod built
+// from a tree a real capture really published rather than from a ref this file
+// wrote down. See atc/worker/jetbridge/brine/steps/hangar_consumer_pod.go.
+//
+// Its sibling at TestDaemonSetBackend_HangarInitRequiresExactResponseAndReceipt
+// did NOT move, and the plan's own reason for keeping
+// TestDaemonSetBackend_HangarInitSignalsCleanUpAndFail is why: it runs the
+// generated shell with a fake wget on PATH, and script text is not spec. Its
+// twenty-one rows are about retry bounds, symlinked receipts, file modes and
+// false 204s -- behaviour brine cannot express and nothing else covers.
 
 func TestDaemonSetBackend_HangarInitSignalsCleanUpAndFail(t *testing.T) {
 	ref := hangar.TreeRef{

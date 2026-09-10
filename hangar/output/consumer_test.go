@@ -137,6 +137,9 @@ func (unimplementedRoles) AcquireClaim(context.Context, Tx, ClaimAcquisition) er
 func (unimplementedRoles) ReleaseClaim(context.Context, Tx, ClaimRelease) error {
 	panic("not implemented")
 }
+func (unimplementedRoles) ReadClaims(context.Context, Tx, hangar.TreeRef) ([]ClaimRecord, error) {
+	panic("not implemented")
+}
 
 func (unimplementedRoles) AcquireReadLease(context.Context, Tx, ReadLeaseRequest) (ReadLease, error) {
 	panic("not implemented")

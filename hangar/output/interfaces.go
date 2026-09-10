@@ -690,6 +690,16 @@ type ClaimRepository interface {
 	// ReleaseClaim is idempotent, and tombstones the identity for the lifetime
 	// of the exact-ref lifecycle record.
 	ReleaseClaim(ctx context.Context, tx Tx, release ClaimRelease) error
+
+	// ReadClaims reports every claim recorded for one exact ref -- active and
+	// tombstoned -- in acquisition order.
+	//
+	// It is on the contract rather than left to callers' SQL because it is the
+	// only honest way to ask "how many claims protect this". A caller that
+	// selected the rows itself would be asserting about a table rather than
+	// about the repository, and a repository that wrote the right row through
+	// the wrong API would pass.
+	ReadClaims(ctx context.Context, tx Tx, ref hangar.TreeRef) ([]ClaimRecord, error)
 }
 
 // ReadLeaseRequest asks for the right to read one exact generation.

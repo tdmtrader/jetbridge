@@ -71,6 +71,54 @@ func (release ClaimRelease) Validate() error {
 	return release.RequestedAt.Validate()
 }
 
+// ClaimRecord is one claim as the plane records it -- active or tombstoned.
+//
+// The tombstone is a field rather than an absence, and that is the whole point:
+// a released identity stays for the lifetime of the exact-ref lifecycle record,
+// so "no claim is left behind" and "the tombstone is permanent" are different
+// questions about the same row and a reader that could not see a released claim
+// could not tell them apart.
+type ClaimRecord struct {
+	ClaimID           ClaimID        `json:"claim_id"`
+	Ref               hangar.TreeRef `json:"ref"`
+	ConsumerBindingID OpaqueID       `json:"consumer_binding_id"`
+	AcquiredAt        Timestamp      `json:"acquired_at"`
+
+	// ReleasedAt is nil while the claim is active. It is a pointer rather than
+	// a zero time because "not released" is the absence of an instant, and a
+	// zero time is an instant.
+	ReleasedAt *Timestamp `json:"released_at,omitempty"`
+}
+
+// Active reports whether this claim still protects its generation.
+func (record ClaimRecord) Active() bool { return record.ReleasedAt == nil }
+
+func (record ClaimRecord) Validate() error {
+	if err := record.ClaimID.Validate(); err != nil {
+		return err
+	}
+	if err := record.Ref.Validate(); err != nil {
+		return err
+	}
+	if err := record.ConsumerBindingID.Validate(); err != nil {
+		return err
+	}
+	if err := record.AcquiredAt.Validate(); err != nil {
+		return err
+	}
+	if record.ReleasedAt != nil {
+		if err := record.ReleasedAt.Validate(); err != nil {
+			return err
+		}
+		if record.ReleasedAt.Before(record.AcquiredAt.Time) {
+			return fmt.Errorf("%w: claim %s was released before it was acquired", ErrIncomplete,
+				record.ClaimID)
+		}
+	}
+
+	return nil
+}
+
 // ReadLease is the fenced, renewable right to read one exact generation while a
 // materialization is in flight.
 //
