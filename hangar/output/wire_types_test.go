@@ -49,6 +49,7 @@ var fixturedTypes = map[string]string{
 	outputPackageDir + ":ClaimAcquisition":                "claim-acquire.json",
 	outputPackageDir + ":ClaimRelease":                    "claim-release.json",
 	outputPackageDir + ":ReadLease":                       "read-lease.json",
+	outputPackageDir + ":ClaimRecord":                     "claim-record.json",
 	outputPackageDir + ":ReadGrantClaims":                 "read-grant-claims.json",
 	outputPackageDir + ":ReadDestination":                 "read-grant-claims.json",
 	outputPackageDir + ":LeaseQuestion":                   "lease-question.json",
