@@ -367,6 +367,17 @@ func (request SealRequest) Validate() error {
 type SealStarted struct {
 	Acknowledgement CaptureAcknowledgement `json:"acknowledgement"`
 	DrainSet        []WriterTicketID       `json:"drain_set"`
+
+	// Confirmed reports whether the drain has already been confirmed for this
+	// exact seal.
+	//
+	// It is here rather than derived from the drain set because an empty drain
+	// set is a real and different answer -- nobody was writing when admission
+	// was fenced -- and a coordinator that read "no outstanding tickets" as
+	// "confirmed" would skip the container boundary entirely. It is the node's
+	// state, reported: `sealing` and `sealed` are two states and only the
+	// second one may be read from.
+	Confirmed bool `json:"confirmed"`
 }
 
 func (started SealStarted) Validate() error {

@@ -461,6 +461,44 @@ CREATE TABLE hangar_no_capture_dispositions (
     )
 );
 
+-- What a capture told a watcher, in emission order.
+--
+-- Requirement 18 says a capture-enabled task exposes the loss of
+-- post-completion hijack and the checkpoint, sealing and capture outcomes in
+-- existing diagnostics, and nothing else in this plane emits anything a
+-- watcher can see -- the daemon has logs and metrics, and those are for an
+-- operator. This is the durable half of that: the coordinator appends, and
+-- whatever renders a task's diagnostics reads.
+--
+-- IT IS DURABLE AND NOT A LOG LINE because the process that announces a
+-- selection is not the process that announces the outcome: a capture crosses
+-- an ATC restart, and an announcement stream held in memory would lose exactly
+-- the announcement that explains why hijack stopped working.
+--
+-- THE PAYLOAD IS CLOSED. A disposition and a reason word, both constrained,
+-- and nowhere to put a grant, a key, a path or a consumer reference. A jsonb
+-- detail column here would be the column one eventually appears in.
+CREATE TABLE hangar_capture_announcements (
+    id           bigserial PRIMARY KEY,
+    handoff_id   uuid NOT NULL
+        REFERENCES hangar_handoff_predeclarations (handoff_id) ON DELETE RESTRICT,
+    kind         text NOT NULL
+        CHECK (kind IN ('capture-selected', 'capture-seal-started', 'capture-disposition')),
+    disposition  text
+        CHECK (disposition IS NULL
+               OR disposition IN ('capture', 'no_capture', 'pre_reservation_cancel')),
+    reason       text NOT NULL CHECK (octet_length(reason) BETWEEN 1 AND 64),
+    announced_at timestamp with time zone NOT NULL DEFAULT now(),
+
+    -- One announcement of each kind per handoff. A capture that announced its
+    -- selection twice across a restart would be telling a watcher that hijack
+    -- went away twice, and the retry that produced it is not news.
+    CONSTRAINT hangar_announcement_once UNIQUE (handoff_id, kind)
+);
+
+CREATE INDEX hangar_capture_announcements_handoff_idx
+    ON hangar_capture_announcements (handoff_id, id);
+
 -- The pre_reservation_cancel branch: cancellation winning before Stage 2.
 --
 -- `source_reserved` is the fork. With no incarnation reserved anywhere there is

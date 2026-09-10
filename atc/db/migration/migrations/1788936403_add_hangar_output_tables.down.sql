@@ -67,6 +67,7 @@ DROP TABLE hangar_output_receipts;
 DROP TABLE hangar_receipt_stat_challenges;
 DROP TABLE hangar_exact_lifecycles;
 DROP TABLE hangar_logical_reservations;
+DROP TABLE hangar_capture_announcements;
 DROP TABLE hangar_pre_reservation_cancel_dispositions;
 DROP TABLE hangar_no_capture_dispositions;
 DROP TABLE hangar_capture_attempt_leases;

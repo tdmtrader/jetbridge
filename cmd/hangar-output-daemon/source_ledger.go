@@ -1205,6 +1205,7 @@ func (ledger *SourceLedger) InspectSeal(handoff output.HandoffID,
 	return output.SealStarted{
 		Acknowledgement: *record.SealStarted,
 		DrainSet:        append([]output.WriterTicketID(nil), record.DrainSet...),
+		Confirmed:       record.State == sourceSealed,
 	}, nil
 }
 

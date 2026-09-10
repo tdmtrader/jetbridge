@@ -1,0 +1,843 @@
+package hangaroutput
+
+// The impure half: performing the one transition Decide selected.
+//
+// Two rules run through every method here and they are the reason the file is
+// shaped as it is.
+//
+// NO DATABASE LOCK IS HELD ACROSS A NETWORK CALL. Every transition that talks
+// to a node or a store does its reads in one short transaction, closes it,
+// makes the call, and commits the result in a second short transaction. That
+// is not a performance choice: a transaction held open across a daemon call is
+// a lock held for as long as an unreachable node takes to time out, and the
+// lock order this plane depends on stops meaning anything.
+//
+// NOTHING HERE IS DESCRIBED AS ATOMIC. Every cross-system step is two steps and
+// idempotent, and recovery repeats the same identity until committed-versus-not
+// is known. An ambiguous answer is never resolved by guessing; it is resolved by
+// asking again with the same identity, which is why every request this file
+// composes is derived from durable state rather than from a value it kept.
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/concourse/concourse/hangar/output"
+)
+
+// Default terms. All three are database-clock terms; none of them is read from
+// a process's own clock.
+const (
+	// DefaultLeaseTerm is requirement 10's 15-minute capture ownership lease.
+	DefaultLeaseTerm = 15 * time.Minute
+
+	// DefaultSealDeadline is requirement 17's 5 minutes, configurable from 30
+	// seconds through 30 minutes.
+	DefaultSealDeadline = 5 * time.Minute
+
+	// DefaultChallengeTerm bounds a stat challenge. A receipt signed over old
+	// facts proves only that the facts were once true.
+	DefaultChallengeTerm = 5 * time.Minute
+)
+
+// Coordinator advances one handoff by one bounded transition.
+//
+// It holds no state about any handoff between calls. That is the whole point:
+// a coordinator with a memory would be a coordinator whose memory disagrees
+// with PostgreSQL after a restart, and the restart is the case this exists for.
+type Coordinator struct {
+	Transactor Transactor
+	Repository Repository
+	Dialer     SourceDialer
+	Drain      DrainConfirmer
+	Verifier   ReceiptChecker
+	Announcer  Announcer
+
+	// OwnerID identifies this process for the ownership lease. Two processes
+	// sharing one would be two owners the fence cannot tell apart.
+	OwnerID string
+
+	// ReceiptKeyID names the key a receipt for this epoch must be signed under.
+	ReceiptKeyID string
+
+	LeaseTerm     time.Duration
+	SealDeadline  time.Duration
+	ChallengeTerm time.Duration
+
+	// Now is the database's clock only for values that are compared to nothing
+	// -- a signature timestamp, a deadline offered to a daemon. Every deadline
+	// that DECIDES anything is evaluated in SQL as `now()`.
+	Now func() time.Time
+}
+
+func (coordinator *Coordinator) leaseTerm() time.Duration {
+	if coordinator.LeaseTerm == 0 {
+		return DefaultLeaseTerm
+	}
+
+	return coordinator.LeaseTerm
+}
+
+func (coordinator *Coordinator) sealDeadline() time.Duration {
+	if coordinator.SealDeadline == 0 {
+		return DefaultSealDeadline
+	}
+
+	return coordinator.SealDeadline
+}
+
+func (coordinator *Coordinator) challengeTerm() time.Duration {
+	if coordinator.ChallengeTerm == 0 {
+		return DefaultChallengeTerm
+	}
+
+	return coordinator.ChallengeTerm
+}
+
+func (coordinator *Coordinator) now() time.Time {
+	if coordinator.Now == nil {
+		return time.Now().UTC()
+	}
+
+	return coordinator.Now().UTC()
+}
+
+// Advance performs at most one bounded transition and reports which.
+//
+// One, and not a loop, because a loop would hold a worker on one handoff while
+// a node it cannot reach times out repeatedly. The caller runs Advance again --
+// on a notification, or on the periodic fallback -- and the next call reads the
+// state the last one committed.
+func (coordinator *Coordinator) Advance(ctx context.Context, handoff output.HandoffID) (Decision, error) {
+	record, err := coordinator.observe(ctx, handoff)
+	if err != nil {
+		return Decision{}, err
+	}
+
+	return coordinator.perform(ctx, record)
+}
+
+// Cancel is the product-neutral cancel/settle seam's caller-facing half.
+//
+// It is a separate entry point and not a flag on a row, because a cancellation
+// REQUEST is not durable state: what is durable is which branch the arbiter
+// then won. Before Stage 2 that is pre_reservation_cancel and only ever that;
+// after it, the capture is immutable and this drives receipt-or-orphan
+// settlement. Neither can create a consumer binding, and there is no parameter
+// here through which one could be asked for.
+//
+// Classification precedes the destructive half by construction: the record is
+// read, the transition is derived from it, and only then does anything happen.
+func (coordinator *Coordinator) Cancel(ctx context.Context, handoff output.HandoffID) (Decision, error) {
+	record, err := coordinator.observe(ctx, handoff)
+	if err != nil {
+		return Decision{}, err
+	}
+	record.CancellationRequested = true
+
+	return coordinator.perform(ctx, record)
+}
+
+func (coordinator *Coordinator) perform(ctx context.Context, record output.HandoffRecord) (Decision, error) {
+	decision, err := Decide(record)
+	if err != nil {
+		return Decision{}, err
+	}
+
+	switch decision.Transition {
+	case TransitionNone, TransitionAwaitOutcome:
+		return decision, nil
+
+	case TransitionCommitCaptureReservation:
+		return decision, coordinator.commitStageTwo(ctx, record)
+	case TransitionRecordNoCaptureIntent:
+		return decision, coordinator.recordNoCapture(ctx, record)
+	case TransitionAcknowledgeNoCaptureRelease:
+		return decision, coordinator.releaseFor(ctx, record, output.DispositionNoCapture)
+	case TransitionRecordCancellationIntent:
+		return decision, coordinator.recordCancellation(ctx, record)
+	case TransitionAcknowledgeCancellationRelease:
+		return decision, coordinator.releaseFor(ctx, record, output.DispositionPreReservationCancel)
+
+	case TransitionCancelCapture:
+		return decision, coordinator.cancelCapture(ctx, record)
+	case TransitionBeginSeal:
+		return decision, coordinator.beginSeal(ctx, record)
+	case TransitionConfirmSeal:
+		return decision, coordinator.confirmSeal(ctx, record)
+	case TransitionResolveLogicalReservation:
+		return decision, coordinator.resolveLogical(ctx, record)
+	case TransitionPublish:
+		return decision, coordinator.publish(ctx, record)
+	case TransitionRegisterReceipt:
+		return decision, coordinator.registerReceipt(ctx, record)
+	case TransitionReleaseSource:
+		return decision, coordinator.releaseFor(ctx, record, output.DispositionCapture)
+	case TransitionSettleOrphan:
+		return decision, coordinator.settleOrphan(ctx, record)
+	}
+
+	return decision, fmt.Errorf("%w: transition %q has no implementation",
+		output.ErrUnknownMember, decision.Transition)
+}
+
+// observe reads the durable record and, for a live capture, asks the node what
+// its seal has done.
+//
+// The node question is asked OUTSIDE the transaction that read the row, and the
+// order is deliberate: the row is the authority for what branch this is, and
+// the node is the authority for the seal. Reading them in one transaction would
+// be a database lock held across a network call.
+func (coordinator *Coordinator) observe(ctx context.Context, handoff output.HandoffID) (output.HandoffRecord, error) {
+	record, err := coordinator.read(ctx, func(tx Transaction) (output.HandoffRecord, error) {
+		return coordinator.Repository.LoadHandoffRecord(ctx, tx, handoff)
+	})
+	if err != nil {
+		return output.HandoffRecord{}, err
+	}
+
+	if !record.Source.Reserved() {
+		return record, nil
+	}
+
+	control, err := coordinator.Dialer.ForLocator(record.Source.Locator)
+	if err != nil {
+		return output.HandoffRecord{}, err
+	}
+
+	// Before the arbiter is won, the question is the finish witness, and it is
+	// the node's. There is deliberately no second place it could come from:
+	// requirement 4 says pod state, a disappeared process, a terminal row and
+	// an in-memory result are not witnesses, and the way to honour that is to
+	// have nowhere else to read one.
+	if record.Disposition == nil {
+		observed, err := control.Observe(ctx, record.Execution, 0)
+		if err != nil {
+			return output.HandoffRecord{}, err
+		}
+		if observed.Acknowledgement != nil && observed.Acknowledgement.Kind != "" {
+			witness := *observed.Acknowledgement
+			record.FinishWitness = &witness
+		}
+
+		return record, nil
+	}
+
+	if *record.Disposition != output.DispositionCapture ||
+		record.State != output.CaptureStateUnresolved {
+		return record, nil
+	}
+
+	started, err := control.InspectSeal(ctx, record.HandoffID, record.Execution)
+	if errors.Is(err, output.ErrNotFound) {
+		// No seal has begun. That is an answer, not a failure: an empty drain
+		// set is a real and different answer -- nobody was writing when
+		// admission was fenced -- and treating the two the same would let a
+		// coordinator confirm a seal that never started.
+		return record, nil
+	}
+	if err != nil {
+		return output.HandoffRecord{}, err
+	}
+
+	record.SealBegun = true
+	record.SealDrainSet = started.DrainSet
+	record.SealConfirmed = started.Confirmed
+
+	return record, nil
+}
+
+// read runs a read-only transaction and always rolls it back.
+func (coordinator *Coordinator) read(ctx context.Context, body func(Transaction) (output.HandoffRecord, error)) (output.HandoffRecord, error) {
+	tx, err := coordinator.Transactor.Begin()
+	if err != nil {
+		return output.HandoffRecord{}, err
+	}
+	defer tx.Rollback()
+
+	return body(tx)
+}
+
+// write runs a short transaction and commits it.
+//
+// An error from Commit is AMBIGUOUS and is returned as such: the transaction
+// may have committed. Nothing above it may treat a commit error as "it did not
+// happen"; the next Advance reads what is durably there and decides again,
+// which is the only honest way to resolve it.
+func (coordinator *Coordinator) write(ctx context.Context, body func(Transaction) error) error {
+	tx, err := coordinator.Transactor.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if err := body(tx); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+// own takes or renews the capture ownership lease and returns the fence every
+// later operation in this transition is admitted under.
+//
+// It is called at the start of every capture transition rather than once,
+// because a takeover between two transitions is exactly what the fence exists
+// to catch: the repository refuses a stale fence, so a coordinator that kept a
+// fence from an earlier call would be refused rather than allowed -- which is
+// the right direction, and this makes it observable at the top of the step
+// instead of three calls later.
+func (coordinator *Coordinator) own(ctx context.Context, record output.HandoffRecord) (output.CaptureLease, error) {
+	var lease output.CaptureLease
+	err := coordinator.write(ctx, func(tx Transaction) error {
+		var err error
+		lease, err = coordinator.Repository.AcquireCaptureLease(ctx, tx,
+			record.ReservationID, coordinator.OwnerID, coordinator.leaseTerm())
+
+		return err
+	})
+
+	return lease, err
+}
+
+func (coordinator *Coordinator) control(record output.HandoffRecord) (SourceControl, error) {
+	if !record.Source.Reserved() {
+		return nil, fmt.Errorf("%w: handoff %s has no source on any node to reach",
+			output.ErrNotFound, record.HandoffID)
+	}
+
+	return coordinator.Dialer.ForLocator(record.Source.Locator)
+}
+
+// commitStageTwo is the successful-finish-only door.
+//
+// The producer checkpoint id is derived from the handoff rather than minted, so
+// that a repeat after an ambiguous commit offers the SAME checkpoint and is
+// idempotent. A fresh uuid here would make every retry look like a different
+// Stage 2 wearing an old idempotency key, which the repository correctly
+// refuses -- and the capture would be stuck forever on a lost commit response.
+func (coordinator *Coordinator) commitStageTwo(ctx context.Context, record output.HandoffRecord) error {
+	if record.FinishWitness == nil {
+		return fmt.Errorf("%w: Stage 2 for handoff %s has no finish witness",
+			output.ErrIncomplete, record.HandoffID)
+	}
+
+	if err := coordinator.say(ctx, record, coordinator.announce(
+		AnnouncementSelected, "", "post_completion_hijack_unavailable")); err != nil {
+		return err
+	}
+
+	return coordinator.write(ctx, func(tx Transaction) error {
+		_, err := coordinator.Repository.CommitCaptureReservation(ctx, tx,
+			output.SuccessfulFinishDisposition{
+				ProtocolVersion:       output.ProtocolVersion,
+				Disposition:           output.DispositionCapture,
+				Execution:             record.Execution,
+				ActivationEpoch:       record.ActivationEpoch,
+				HandoffID:             record.HandoffID,
+				SourceLeaseID:         record.SourceLeaseID,
+				ProducerCheckpointID:  checkpointFor(record.HandoffID),
+				Output:                record.Output,
+				CaptureFence:          1,
+				CaptureDeadline:       record.CaptureDeadline,
+				FinishAcknowledgement: *record.FinishWitness,
+			})
+
+		return err
+	})
+}
+
+// checkpointFor derives the opaque producer checkpoint id from the handoff.
+//
+// Derived and not minted, so that a repeat after a lost commit response offers
+// the same value. Hangar attaches no meaning to it either way -- the opaque id
+// has no semantic interpretation here -- so the only property that matters is
+// that repeating an identity repeats it.
+func checkpointFor(handoff output.HandoffID) output.OpaqueID {
+	return output.OpaqueID("checkpoint-" + string(handoff))
+}
+
+// recordNoCapture is the first of the branch's two halves.
+func (coordinator *Coordinator) recordNoCapture(ctx context.Context, record output.HandoffRecord) error {
+	disposition := output.NoCaptureDisposition{
+		ProtocolVersion: output.ProtocolVersion,
+		Disposition:     output.DispositionNoCapture,
+		Execution:       record.Execution,
+		ActivationEpoch: record.ActivationEpoch,
+		HandoffID:       record.HandoffID,
+		SourceLeaseID:   record.SourceLeaseID,
+		ReleaseIntentID: releaseIntentFor(record.HandoffID, output.DispositionNoCapture),
+	}
+
+	switch {
+	case record.FinishWitness != nil:
+		disposition.Reason = output.NoCaptureAuthoritativeNonSuccess
+		disposition.FinishAcknowledgement = record.FinishWitness
+	case record.FinishUnresolvable != "":
+		// A reconciliation carries no witness, because it exists precisely
+		// because none could be obtained.
+		disposition.Reason = record.FinishUnresolvable
+	default:
+		return fmt.Errorf("%w: handoff %s reached no_capture with neither a witness nor a typed "+
+			"reconciliation", output.ErrIncomplete, record.HandoffID)
+	}
+
+	if err := coordinator.write(ctx, func(tx Transaction) error {
+		return coordinator.Repository.RecordNoCaptureIntent(ctx, tx, disposition)
+	}); err != nil {
+		return err
+	}
+
+	return coordinator.say(ctx, record, coordinator.announce(AnnouncementDisposition,
+		output.DispositionNoCapture, string(disposition.Reason)))
+}
+
+// recordCancellation wins the third branch through the generic seam.
+//
+// It goes through CancelOrSettle rather than composing a disposition, because
+// the seam is what a product-neutral caller uses and a second path into the
+// same branch is a second set of rules for it. What CancelOrSettle does with a
+// reserved source -- record a fenced release intent rather than close -- is the
+// branch's own, and this does not re-decide it.
+func (coordinator *Coordinator) recordCancellation(ctx context.Context, record output.HandoffRecord) error {
+	if err := coordinator.write(ctx, func(tx Transaction) error {
+		_, err := coordinator.Repository.CancelOrSettle(ctx, tx, record.HandoffID)
+
+		return err
+	}); err != nil {
+		return err
+	}
+
+	return coordinator.say(ctx, record, coordinator.announce(AnnouncementDisposition,
+		output.DispositionPreReservationCancel, "cancelled"))
+}
+
+// cancelCapture is cancellation after Stage 2 and before the publish point.
+func (coordinator *Coordinator) cancelCapture(ctx context.Context, record output.HandoffRecord) error {
+	if err := coordinator.write(ctx, func(tx Transaction) error {
+		_, err := coordinator.Repository.CancelOrSettle(ctx, tx, record.HandoffID)
+
+		return err
+	}); err != nil {
+		return err
+	}
+
+	return coordinator.say(ctx, record, coordinator.announce(AnnouncementDisposition,
+		output.DispositionCapture, "cancelled"))
+}
+
+// releaseIntentFor derives a branch's release intent id from its handoff.
+//
+// Derived for the same reason the checkpoint is: a repeat after a lost answer
+// must offer the SAME intent, because an intent is what a release
+// acknowledgement is for, and a second intent for a source already released is
+// a caller working from stale state -- which the daemon correctly refuses.
+//
+// It is a version-5 UUID over the branch and the handoff, so that the three
+// branches cannot collide on one intent and the same branch always derives the
+// same one. A random id here would make every retry after a lost answer a
+// SECOND release of one source, which is the conflict the daemon exists to
+// refuse -- and the handoff would never complete.
+func releaseIntentFor(handoff output.HandoffID, branch output.Disposition) output.ReleaseIntentID {
+	return output.ReleaseIntentID(
+		uuid.NewSHA1(releaseIntentNamespace, []byte(string(branch)+":"+string(handoff))).String())
+}
+
+// releaseIntentNamespace is this plane's own UUID namespace. It is a constant
+// so that two processes deriving the same intent derive the same value.
+var releaseIntentNamespace = uuid.MustParse("6f1f0b6e-3a3a-4d2a-9a1c-2d0f5f7f0a11")
+
+// releaseFor is the second half of every branch that owes a fenced release.
+//
+// One method for all three, because it is one protocol: the intent is durable,
+// the daemon acknowledges that exact intent, and the caller records the
+// acknowledgement. The branch decides only which recording method takes it.
+func (coordinator *Coordinator) releaseFor(ctx context.Context, record output.HandoffRecord, branch output.Disposition) error {
+	control, err := coordinator.control(record)
+	if err != nil {
+		return err
+	}
+
+	intent := record.ReleaseIntentID
+	if intent == "" {
+		intent = releaseIntentFor(record.HandoffID, branch)
+	}
+
+	// Outside every database lock. A node that cannot answer holds up this one
+	// handoff and nothing else.
+	acknowledgement, err := control.AcknowledgeRelease(ctx, output.ReleaseIntent{
+		ProtocolVersion: output.ProtocolVersion,
+		Disposition:     branch,
+		Execution:       record.Execution,
+		ActivationEpoch: record.ActivationEpoch,
+		HandoffID:       record.HandoffID,
+		SourceLeaseID:   record.SourceLeaseID,
+		ReleaseIntentID: intent,
+		Incarnation:     record.Source.Incarnation,
+	})
+	if err != nil {
+		return err
+	}
+
+	return coordinator.write(ctx, func(tx Transaction) error {
+		switch branch {
+		case output.DispositionNoCapture:
+			return coordinator.Repository.AcknowledgeNoCaptureRelease(ctx, tx, acknowledgement)
+		case output.DispositionPreReservationCancel:
+			return coordinator.Repository.AcknowledgePreReservationCancelRelease(ctx, tx, acknowledgement)
+		case output.DispositionCapture:
+			return coordinator.Repository.AcknowledgeCaptureRelease(ctx, tx, acknowledgement)
+		}
+
+		return fmt.Errorf("%w: branch %q owes no release", output.ErrUnknownMember, branch)
+	})
+}
+
+// beginSeal fences writer admission and captures the drain set.
+func (coordinator *Coordinator) beginSeal(ctx context.Context, record output.HandoffRecord) error {
+	if err := requireCaptureAuthority(record, "begin_seal"); err != nil {
+		return err
+	}
+	lease, err := coordinator.own(ctx, record)
+	if err != nil {
+		return err
+	}
+	control, err := coordinator.control(record)
+	if err != nil {
+		return err
+	}
+
+	if err := coordinator.say(ctx, record, coordinator.announce(
+		AnnouncementSealStarted, output.DispositionCapture, "sealing")); err != nil {
+		return err
+	}
+
+	_, err = control.BeginSeal(ctx, output.SealRequest{
+		ProtocolVersion: output.ProtocolVersion,
+		Execution:       record.Execution,
+		ActivationEpoch: record.ActivationEpoch,
+		HandoffID:       record.HandoffID,
+		Incarnation:     record.Source.Incarnation,
+		CaptureFence:    lease.CaptureFence,
+		DeadlineAt:      output.NewTimestamp(coordinator.now().Add(coordinator.sealDeadline())),
+	})
+
+	return err
+}
+
+// confirmSeal drains the captured set and proves the container boundary.
+//
+// A drain that cannot be proved is `seal_unconfirmed` and is recorded as a
+// terminal capture failure: requirement 17 says an unconfirmed ticket drain or
+// container boundary publishes no receipt and follows the no-re-execution rule.
+// It is committed rather than retried forever because a capture that cannot
+// prove its boundary will not become provable by asking again, and the source
+// it still holds is owed a release.
+func (coordinator *Coordinator) confirmSeal(ctx context.Context, record output.HandoffRecord) error {
+	if err := requireCaptureAuthority(record, "confirm_seal"); err != nil {
+		return err
+	}
+	lease, err := coordinator.own(ctx, record)
+	if err != nil {
+		return err
+	}
+	control, err := coordinator.control(record)
+	if err != nil {
+		return err
+	}
+
+	started, err := control.InspectSeal(ctx, record.HandoffID, record.Execution)
+	if err != nil {
+		return err
+	}
+
+	drained, err := coordinator.Drain.ConfirmDrain(ctx, record.Source.Locator, started)
+	if err != nil {
+		return coordinator.failTerminally(ctx, record, lease.CaptureFence, "seal_unconfirmed")
+	}
+
+	if _, err := control.ConfirmSeal(ctx, output.SealConfirmation{
+		Started:      started,
+		Drained:      drained,
+		CaptureFence: lease.CaptureFence,
+		ObservedAt:   output.NewTimestamp(coordinator.now()),
+	}); err != nil {
+		return coordinator.failTerminally(ctx, record, lease.CaptureFence, "seal_unconfirmed")
+	}
+
+	return nil
+}
+
+// resolveLogical canonicalizes and commits the logical identity BEFORE any
+// object create. Requirement 21.
+func (coordinator *Coordinator) resolveLogical(ctx context.Context, record output.HandoffRecord) error {
+	if err := requireCaptureAuthority(record, "resolve_logical_reservation"); err != nil {
+		return err
+	}
+	lease, err := coordinator.own(ctx, record)
+	if err != nil {
+		return err
+	}
+	control, err := coordinator.control(record)
+	if err != nil {
+		return err
+	}
+
+	canonical, err := control.Canonicalize(ctx,
+		coordinator.publicationRequest(record, lease.CaptureFence))
+	if err != nil {
+		return err
+	}
+
+	return coordinator.write(ctx, func(tx Transaction) error {
+		return coordinator.Repository.ResolveLogicalReservation(ctx, tx, output.LogicalResolution{
+			ProtocolVersion: output.ProtocolVersion,
+			Execution:       record.Execution,
+			ActivationEpoch: record.ActivationEpoch,
+			HandoffID:       record.HandoffID,
+			ReservationID:   record.ReservationID,
+			CaptureFence:    lease.CaptureFence,
+			Scope:           canonical.Scope,
+			Digest:          canonical.Digest,
+			LogicalBytes:    canonical.LogicalBytes,
+			ResolvedAt:      output.NewTimestamp(coordinator.now()),
+		})
+	})
+}
+
+func (coordinator *Coordinator) publicationRequest(record output.HandoffRecord, fence output.CaptureFence) output.PublicationRequest {
+	return output.PublicationRequest{
+		ProtocolVersion: output.ProtocolVersion,
+		Execution:       record.Execution,
+		ActivationEpoch: record.ActivationEpoch,
+		HandoffID:       record.HandoffID,
+		ReservationID:   record.ReservationID,
+		CaptureFence:    fence,
+	}
+}
+
+// publish creates the object and records that a create was attempted.
+//
+// The record is written AFTER the create returns, and there is no ordering that
+// removes the crash between them. What removes the danger is that the create is
+// idempotent by identity -- create-if-absent at a server-derived key -- so a
+// lost response converges on the next Advance, and the resolution that
+// correlates it committed one transition earlier.
+func (coordinator *Coordinator) publish(ctx context.Context, record output.HandoffRecord) error {
+	if err := requireCaptureAuthority(record, "publish"); err != nil {
+		return err
+	}
+	if !record.LogicalResolved {
+		return fmt.Errorf("%w: handoff %s attempted a publish with no committed logical "+
+			"resolution", output.ErrUnauthorized, record.HandoffID)
+	}
+	lease, err := coordinator.own(ctx, record)
+	if err != nil {
+		return err
+	}
+	control, err := coordinator.control(record)
+	if err != nil {
+		return err
+	}
+
+	// The point of no return is recorded FIRST, and this is the one place that
+	// ordering is deliberate in the other direction: past it, cancellation may
+	// no longer release a source, and a create whose response is lost must not
+	// leave a canceller believing there is nothing to settle. A row that says
+	// "a create was attempted" over an object that was never created is
+	// recoverable; an object with no such row is the orphan nothing correlates.
+	if err := coordinator.write(ctx, func(tx Transaction) error {
+		return coordinator.Repository.RecordFirstObjectCreate(ctx, tx,
+			record.ReservationID, lease.CaptureFence)
+	}); err != nil {
+		return err
+	}
+
+	_, err = control.Publish(ctx, coordinator.publicationRequest(record, lease.CaptureFence))
+
+	return err
+}
+
+// registerReceipt converges the object, obtains a fresh per-capture receipt
+// against a one-use challenge, verifies it and registers it.
+//
+// The publish is repeated here rather than remembered, and that is what makes
+// an ambiguous upload converge: the create is idempotent at a server-derived
+// key, so repeating it returns the object that exists -- possibly reporting
+// deduplication -- and the generation it reports is the one the challenge names.
+func (coordinator *Coordinator) registerReceipt(ctx context.Context, record output.HandoffRecord) error {
+	if err := requireCaptureAuthority(record, "register_receipt"); err != nil {
+		return err
+	}
+	lease, err := coordinator.own(ctx, record)
+	if err != nil {
+		return err
+	}
+	control, err := coordinator.control(record)
+	if err != nil {
+		return err
+	}
+
+	result, err := control.Publish(ctx, coordinator.publicationRequest(record, lease.CaptureFence))
+	if err != nil {
+		return err
+	}
+	if result.Ref.Digest != record.Digest {
+		// The object at the derived key is not the tree this reservation
+		// resolved. That is a typed collision and never an overwrite.
+		return coordinator.failTerminally(ctx, record, lease.CaptureFence, "collision")
+	}
+
+	var challenge output.StatChallenge
+	if err := coordinator.write(ctx, func(tx Transaction) error {
+		var err error
+		challenge, err = coordinator.Repository.IssueStatChallenge(ctx, tx,
+			record.HandoffID, record.ReservationID, result.Ref, lease.CaptureFence,
+			coordinator.ReceiptKeyID, coordinator.challengeTerm())
+
+		return err
+	}); err != nil {
+		return err
+	}
+
+	receipt, err := control.Attest(ctx, challenge, output.ReceiptClaims{
+		Execution:            record.Execution,
+		ProducerCheckpointID: record.ProducerCheckpointID,
+		Incarnation:          record.Source.Incarnation,
+		Output:               record.Output,
+		WriterFence:          output.WriterFence(lease.CaptureFence),
+	})
+	if err != nil {
+		return err
+	}
+
+	// Verified with the production verifier against the activation epoch and
+	// the challenge, before anything is registered. A syntactically valid
+	// receipt is not evidence; a signature over the challenge this transaction
+	// is about to consume is.
+	if err := coordinator.Verifier.Verify(receipt, challenge); err != nil {
+		return err
+	}
+	// And every signed claim matched against the durable state, which is the
+	// half only the control plane can do: the daemon signed what it observed,
+	// and whether what it observed is THIS capture's checkpoint, incarnation,
+	// output and fence is a question about rows.
+	if err := checkReceiptClaims(receipt, record, lease.CaptureFence); err != nil {
+		return err
+	}
+
+	if err := coordinator.write(ctx, func(tx Transaction) error {
+		return coordinator.Repository.RegisterReceipt(ctx, tx, output.ReceiptAdmission{
+			ProtocolVersion: output.ProtocolVersion,
+			Receipt:         receipt,
+			ChallengeNonce:  challenge.Nonce,
+			Metageneration:  result.Metageneration,
+			AdmittedAt:      output.NewTimestamp(coordinator.now()),
+		})
+	}); err != nil {
+		return err
+	}
+
+	return coordinator.say(ctx, record, coordinator.announce(AnnouncementDisposition,
+		output.DispositionCapture, "captured"))
+}
+
+// checkReceiptClaims matches a receipt's signed claims to the durable record.
+//
+// Requirement 26: syntactic validity and a caller-provided reference are not
+// enough. A signature proves the daemon said it; this proves the daemon said it
+// about THIS capture. Every field here is one a replayed receipt from another
+// capture, source, output or fence would differ in, which is the whole reason
+// the list is long rather than a spot check.
+func checkReceiptClaims(receipt output.Receipt, record output.HandoffRecord, fence output.CaptureFence) error {
+	claims := receipt.Claims
+
+	switch {
+	case claims.Execution != record.Execution:
+		return fmt.Errorf("%w: the receipt is for execution %s and this capture is %s",
+			output.ErrInvalidIdentity, claims.Execution.ExecutionID, record.Execution.ExecutionID)
+	case claims.ProducerCheckpointID != record.ProducerCheckpointID:
+		return fmt.Errorf("%w: the receipt names another producer checkpoint",
+			output.ErrInvalidIdentity)
+	case claims.Incarnation != record.Source.Incarnation:
+		return fmt.Errorf("%w: the receipt names another source incarnation",
+			output.ErrInvalidIdentity)
+	case claims.Output != record.Output:
+		return fmt.Errorf("%w: the receipt names output %q and this capture selected %q",
+			output.ErrInvalidIdentity, claims.Output, record.Output)
+	case claims.Ref.Scope != record.Scope || claims.Ref.Digest != record.Digest:
+		return fmt.Errorf("%w: the receipt is for %s and the reservation resolved %s",
+			output.ErrInvalidIdentity, claims.Ref.Digest, record.Digest)
+	case claims.ActivationEpoch != record.ActivationEpoch:
+		return fmt.Errorf("%w: the receipt is signed under epoch %d and this capture is admitted "+
+			"under %d", output.ErrInvalidIdentity, claims.ActivationEpoch, record.ActivationEpoch)
+	case claims.WriterFence != output.WriterFence(fence):
+		return fmt.Errorf("%w: the receipt is bound to fence %d and this owner holds %d",
+			output.ErrInvalidIdentity, claims.WriterFence, fence)
+	}
+
+	return nil
+}
+
+// settleOrphan is the only thing left past the irreversible publish point.
+//
+// Cancellation cannot unmake an object, so this settles rather than releases.
+// It goes through the generic seam, which returns what it found and creates no
+// binding -- there is no parameter through which one could be asked for.
+func (coordinator *Coordinator) settleOrphan(ctx context.Context, record output.HandoffRecord) error {
+	return coordinator.write(ctx, func(tx Transaction) error {
+		_, err := coordinator.Repository.CancelOrSettle(ctx, tx, record.HandoffID)
+
+		return err
+	})
+}
+
+// failTerminally commits a typed failure and announces it.
+//
+// It never creates a receipt or a claim, and the release the failure then owes
+// is a later transition rather than part of this one -- the source is on a node
+// and only that node can say it is gone.
+func (coordinator *Coordinator) failTerminally(ctx context.Context, record output.HandoffRecord, fence output.CaptureFence, failure string) error {
+	if err := coordinator.write(ctx, func(tx Transaction) error {
+		return coordinator.Repository.RecordTerminalCaptureFailure(ctx, tx,
+			record.ReservationID, fence, failure)
+	}); err != nil {
+		return err
+	}
+
+	return coordinator.say(ctx, record,
+		coordinator.announce(AnnouncementDisposition, output.DispositionCapture, failure))
+}
+
+// say emits one announcement, and a deployment with no announcer is silent
+// rather than broken.
+func (coordinator *Coordinator) say(ctx context.Context, record output.HandoffRecord, announcement Announcement) error {
+	if coordinator.Announcer == nil {
+		return nil
+	}
+	if err := announcement.Validate(); err != nil {
+		return err
+	}
+
+	return coordinator.Announcer.Announce(ctx, record.HandoffID, announcement)
+}
+
+// TerminalOutcome reports the settled disposition and its reason for a handoff,
+// for a caller that has been told exposure is permitted.
+//
+// It answers WHAT happened and never what to do about it: capture success
+// permits ordinary success, a terminal capture failure fails the step and a
+// completed no_capture preserves the authoritative ordinary non-success, and
+// all three are the consumer's to apply. A product-neutral plane that returned
+// a step result would be choosing one.
+func TerminalOutcome(record output.HandoffRecord) (output.Disposition, string) {
+	if record.Disposition == nil {
+		return "", ""
+	}
+
+	return *record.Disposition, terminalReason(record)
+}

@@ -42,9 +42,23 @@ var baseOnlyVocabulary = []string{
 
 // forbiddenVocabulary states the rule per package, so that a package this file
 // does not describe cannot inherit an empty one by default.
+// coordinatorPackageDir is the control plane's capture coordinator. It is a
+// THIRD package under this rule, and it has to be: it is where a Run, a build
+// or a job would first be tempted in, because it is the half that talks to a
+// deployment. It may say `capture`, `output`, `hold` and `receipt` -- those are
+// its subject -- and it may not say what a capture is FOR.
+const coordinatorPackageDir = "../../atc/hangaroutput"
+
+// coordinatorVocabulary is the product list plus the execution words the
+// coordinator must not learn either. It is generic over an opaque handoff; a
+// field named for a build or a job would be the boundary quietly moving.
+var coordinatorVocabulary = append(append([]string{}, productVocabulary...),
+	"build", "job", "check")
+
 var forbiddenVocabulary = map[string][]string{
-	outputPackageDir: productVocabulary,
-	basePackageDir:   append(append([]string{}, productVocabulary...), baseOnlyVocabulary...),
+	outputPackageDir:      productVocabulary,
+	basePackageDir:        append(append([]string{}, productVocabulary...), baseOnlyVocabulary...),
+	coordinatorPackageDir: coordinatorVocabulary,
 }
 
 // vocabularyExemptions are the exported fields whose name or wire spelling
@@ -145,7 +159,7 @@ func checkNoProductVocabulary(fields []declaredField) []string {
 }
 
 func TestNeitherContractPackageCarriesProductMeaning(t *testing.T) {
-	fields := contractFields(t, []string{outputPackageDir, basePackageDir})
+	fields := contractFields(t, []string{outputPackageDir, basePackageDir, coordinatorPackageDir})
 
 	for _, problem := range checkNoProductVocabulary(fields) {
 		t.Errorf("product vocabulary: %s", problem)
@@ -158,7 +172,7 @@ func TestNeitherContractPackageCarriesProductMeaning(t *testing.T) {
 		}
 	}
 	t.Logf("inventoried %d exported fields (%d with a wire name) across %v",
-		len(fields), tagged, []string{outputPackageDir, basePackageDir})
+		len(fields), tagged, []string{outputPackageDir, basePackageDir, coordinatorPackageDir})
 }
 
 // TestTheProductVocabularyGuardIsNotVacuous drives the rule with the two shapes
@@ -242,6 +256,10 @@ func TestTheProductVocabularyGuardIsNotVacuous(t *testing.T) {
 			// and words that merely contain a forbidden one are not it.
 			declaredField{basePackageDir, "Acknowledgement", "ProcessIdentity", "process_identity", "ProcessIdentity"},
 			declaredField{outputPackageDir, "InventoryDebt", "Attempts", "attempts", "int"},
+			// The coordinator's own words are capture words too: it is the
+			// control plane's half of the same extension, and it says nothing
+			// about what a capture is for.
+			declaredField{coordinatorPackageDir, "Coordinator", "ReceiptKeyID", "", "string"},
 		)
 		if problems := checkNoProductVocabulary(benign); len(problems) != 0 {
 			t.Errorf("the rule objected to Hangar's own vocabulary: %v", problems)

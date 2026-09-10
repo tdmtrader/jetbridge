@@ -17,6 +17,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
@@ -335,4 +337,227 @@ func (repository *HangarOutputRepository) LoadHandoffRecord(ctx context.Context,
 	record.Settled = status.Settled
 
 	return record, record.Validate()
+}
+
+// IssueStatChallenge mints the one-use, database-clock-bounded challenge a
+// receipt is signed against.
+//
+// It is here rather than at the coordinator because the challenge is a ROW: its
+// one-use property is the row being consumed exactly once, and a nonce a
+// process kept in memory would be one-use only for as long as that process
+// lived. A receipt signed over old facts proves only that the facts were once
+// true, which is why the freshness is durable rather than remembered.
+//
+// The generation is part of it, so it cannot be issued before the object exists.
+func (repository *HangarOutputRepository) IssueStatChallenge(ctx context.Context, tx output.Tx, handoff output.HandoffID, reservation output.ReservationID, ref hangar.TreeRef, fence output.CaptureFence, keyID string, term time.Duration) (output.StatChallenge, error) {
+	if err := handoff.Validate(); err != nil {
+		return output.StatChallenge{}, err
+	}
+	if err := reservation.Validate(); err != nil {
+		return output.StatChallenge{}, err
+	}
+	if err := ref.Validate(); err != nil {
+		return output.StatChallenge{}, err
+	}
+	if fence == 0 {
+		return output.StatChallenge{}, fmt.Errorf(
+			"%w: a stat challenge under no capture fence", output.ErrUnauthorized)
+	}
+	interval := hangarInterval(term)
+
+	nonce := "nonce-" + uuid.NewString()
+	var issuedAt, notAfter time.Time
+	var epoch int64
+	if err := hangarQueryRow(ctx, tx, `
+		INSERT INTO hangar_receipt_stat_challenges
+			(nonce, handoff_id, reservation_id, activation_epoch, receipt_public_key_id,
+			 scope, digest, generation, capture_fence, not_after)
+		SELECT $1, $2, $3, r.activation_epoch, $7, $4, $5, $6, $8, now() + $9::interval
+		FROM hangar_capture_reservations r
+		WHERE r.reservation_id = $3 AND r.capture_fence = $8
+		RETURNING issued_at, not_after, activation_epoch`,
+		[]any{
+			nonce, string(handoff), string(reservation),
+			string(ref.Scope), string(ref.Digest), ref.Generation,
+			keyID, int64(fence), interval,
+		}, &issuedAt, &notAfter, &epoch); err != nil {
+		return output.StatChallenge{}, fmt.Errorf("%w: reservation %s is not owned at capture "+
+			"fence %d; a stale owner may not obtain a receipt", output.ErrUnauthorized,
+			reservation, fence)
+	}
+
+	challenge := output.StatChallenge{
+		Nonce:           nonce,
+		HandoffID:       handoff,
+		ReservationID:   reservation,
+		ActivationEpoch: hangarEpoch(epoch),
+		Ref:             ref,
+		CaptureFence:    fence,
+		IssuedAt:        output.NewTimestamp(issuedAt),
+		NotAfter:        output.NewTimestamp(notAfter),
+	}
+
+	return challenge, challenge.Validate()
+}
+
+// RecordAnnouncement appends one Req 18 announcement.
+//
+// Durable rather than a log line, because the process that announces a
+// selection is not the process that announces the outcome: a capture crosses
+// an ATC restart, and an announcement stream held in memory would lose exactly
+// the announcement that explains why hijack stopped working.
+//
+// A repeat of the same kind is idempotent. A capture that re-announced its
+// selection after a restart would be telling a watcher that hijack went away
+// twice, and the retry that produced it is not news.
+func (repository *HangarOutputRepository) RecordAnnouncement(ctx context.Context, tx output.Tx, handoff output.HandoffID, kind, disposition, reason string) error {
+	if err := handoff.Validate(); err != nil {
+		return err
+	}
+
+	var branch any
+	if disposition != "" {
+		branch = disposition
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO hangar_capture_announcements (handoff_id, kind, disposition, reason)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (handoff_id, kind) DO NOTHING`,
+		string(handoff), kind, branch, reason,
+	); err != nil {
+		return hangarConflict(err)
+	}
+
+	return nil
+}
+
+// HangarAnnouncement is one thing a capture told a watcher.
+type HangarAnnouncement struct {
+	Kind        string
+	Disposition string
+	Reason      string
+}
+
+// ReadAnnouncements returns what a capture told a watcher, in emission order.
+//
+// Order is part of what it says: a selection announced after an outcome would
+// be explaining a refusal instead of preventing one, and a reader that sorted
+// by anything but the append order could not tell.
+func (repository *HangarOutputRepository) ReadAnnouncements(ctx context.Context, tx output.Tx, handoff output.HandoffID) ([]HangarAnnouncement, error) {
+	if err := handoff.Validate(); err != nil {
+		return nil, err
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT kind, coalesce(disposition, ''), reason
+		FROM hangar_capture_announcements
+		WHERE handoff_id = $1
+		ORDER BY id`, string(handoff))
+	if err != nil {
+		return nil, hangarConflict(err)
+	}
+	defer rows.Close()
+
+	var announcements []HangarAnnouncement
+	for rows.Next() {
+		var announcement HangarAnnouncement
+		if err := rows.Scan(&announcement.Kind, &announcement.Disposition,
+			&announcement.Reason); err != nil {
+			return nil, err
+		}
+		announcements = append(announcements, announcement)
+	}
+
+	return announcements, rows.Err()
+}
+
+// IncompleteHandoffs lists the handoffs that still owe something.
+//
+// It is a query about DEBT rather than about age or state, and the difference
+// matters: what a coordinator has to look at is exactly the set that has not
+// settled, and a list built from a timestamp would either miss a handoff whose
+// producer is still running or keep visiting captures that are done.
+//
+// The predicate is the same "nothing is still owed" ClassifyHandoff uses, in
+// its negative form. Two spellings of settled would be two answers.
+func (repository *HangarOutputRepository) IncompleteHandoffs(ctx context.Context, tx output.Tx, limit int) ([]output.HandoffID, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("%w: a batch of %d handoffs", output.ErrIncomplete, limit)
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT p.handoff_id
+		FROM hangar_handoff_predeclarations p
+		LEFT JOIN hangar_handoff_dispositions d ON d.handoff_id = p.handoff_id
+		LEFT JOIN hangar_capture_reservations r ON r.handoff_id = p.handoff_id
+		LEFT JOIN hangar_no_capture_dispositions n ON n.handoff_id = p.handoff_id
+		LEFT JOIN hangar_pre_reservation_cancel_dispositions c ON c.handoff_id = p.handoff_id
+		WHERE NOT coalesce(
+			CASE d.disposition
+			    WHEN 'capture' THEN r.state = 'registered' OR r.release_acknowledged_at IS NOT NULL
+			    WHEN 'no_capture' THEN n.release_acknowledged_at IS NOT NULL
+			    WHEN 'pre_reservation_cancel' THEN c.finalized_at IS NOT NULL
+			    ELSE false
+			END, false)
+		ORDER BY p.created_at
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, hangarConflict(err)
+	}
+	defer rows.Close()
+
+	var handoffs []output.HandoffID
+	for rows.Next() {
+		var handoff string
+		if err := rows.Scan(&handoff); err != nil {
+			return nil, err
+		}
+		handoffs = append(handoffs, output.HandoffID(handoff))
+	}
+
+	return handoffs, rows.Err()
+}
+
+// HangarOutputAnnouncer is the durable half of requirement 18.
+//
+// It is a thin adapter rather than a method on the repository because the
+// coordinator's port takes no transaction: an announcement is its own fact and
+// composes with nothing, so it owns the short transaction it commits in.
+type HangarOutputAnnouncer struct {
+	Conn       DbConn
+	Repository *HangarOutputRepository
+}
+
+// Announce appends one announcement in its own transaction.
+func (announcer *HangarOutputAnnouncer) Announce(ctx context.Context, handoff output.HandoffID, kind, disposition, reason string) error {
+	tx, err := announcer.Conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer Rollback(tx)
+
+	if err := announcer.Repository.RecordAnnouncement(ctx, tx, handoff, kind, disposition, reason); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+// HangarConsumerPrefixForComponent is the recovery component's own token.
+//
+// The component is not composing with anyone's binding write -- it advances a
+// capture and nothing else -- so the prefix it "holds" is empty by
+// construction. It still names itself, because the whole point of the token is
+// that a caller which reached the lock suffix has written down which caller it
+// was, and an anonymous one would be a boolean with extra steps.
+func HangarConsumerPrefixForComponent() HangarConsumerPrefix {
+	prefix, err := HangarConsumerPrefixHeld("hangar-output-capture-component")
+	if err != nil {
+		// The name is a constant, so this cannot fail; a panic here would be a
+		// programming error at startup rather than a runtime condition.
+		panic("hangar: the capture component's own consumer prefix is invalid: " + err.Error())
+	}
+
+	return prefix
 }

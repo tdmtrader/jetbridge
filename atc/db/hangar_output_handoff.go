@@ -340,7 +340,14 @@ func (repository *HangarOutputRepository) acknowledgeRelease(ctx context.Context
 	// be actively wrong for the same reason.
 	guard := ""
 	if branch == output.DispositionCapture {
-		guard = " AND state = 'cancelled' AND NOT past_irreversible_publish_point"
+		// `failed` joins `cancelled` here, and the comment above predicted it:
+		// a capture that terminally FAILS before the publish point -- an
+		// unconfirmed seal, a collision at the derived key, a lost source --
+		// owes a fenced release exactly as a cancelled one does, and its row
+		// says `failed`. The clause was kept rather than removed as redundant
+		// precisely so that this phase would have to widen it deliberately
+		// instead of discovering that failed captures could never release.
+		guard = " AND state IN ('cancelled', 'failed') AND NOT past_irreversible_publish_point"
 	}
 
 	result, err := tx.ExecContext(ctx, fmt.Sprintf(`

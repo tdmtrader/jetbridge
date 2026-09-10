@@ -67,7 +67,15 @@ func hangarLeaseInterval(term time.Duration) (string, error) {
 			output.ErrIncomplete, term, output.MinLeaseTerm)
 	}
 
-	return fmt.Sprintf("%d seconds", int(term.Round(time.Second).Seconds())), nil
+	return hangarInterval(term), nil
+}
+
+// hangarInterval renders a term with NO floor, for the bounded windows that are
+// not ownership leases: a stat challenge's freshness window is capped at five
+// minutes by the schema and would fail the lease floor, and a challenge is not
+// a lease -- nothing is owned for its duration.
+func hangarInterval(term time.Duration) string {
+	return fmt.Sprintf("%d seconds", int(term.Round(time.Second).Seconds()))
 }
 
 // The four classes of refusal the output plane's schema raises, as SQLSTATEs.
