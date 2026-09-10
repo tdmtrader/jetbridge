@@ -428,10 +428,21 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 		// Cancellation is a REQUEST and not a row. What the state carries is
 		// the question; which branch the arbiter then wins is the plane's
 		// answer, and no phrase here decides it.
-		brine.DefineMap[HeldSource, FinishWitnessed](
+		//
+		// It takes a WITNESSED step rather than a held source, and that is the
+		// whole point of the phrase: Req 11 says cancellation before Stage 2
+		// selects only pre_reservation_cancel, never no_capture, and the only
+		// way a scenario can be false against that "never" is for the producer
+		// to have a non-success outcome the arbiter could confuse it with. A
+		// cancellation with no witness beside it is answered
+		// `pre_reservation_cancel` by an arbiter that asks the outcome FIRST
+		// too, so it pins "cancellation is honoured" and not the branch order.
+		brine.DefineMap[FinishWitnessed, FinishWitnessed](
 			"the step is cancelled before Stage 2",
-			func(in HeldSource, _ brine.Params, _ *brine.Recorder) (FinishWitnessed, error) {
-				return FinishWitnessed{Source: in, Cancelled: true}, nil
+			func(in FinishWitnessed, _ brine.Params, _ *brine.Recorder) (FinishWitnessed, error) {
+				in.Cancelled = true
+
+				return in, nil
 			},
 		),
 

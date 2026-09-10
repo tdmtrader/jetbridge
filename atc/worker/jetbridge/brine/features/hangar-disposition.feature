@@ -70,12 +70,25 @@ Feature: Which outcome a finished producer selects, and what the build is told
     And the disposition is "no_capture"
     And the produced output is still on the node
 
+  # The producer FAILS and is then cancelled, and the "never" in the title is
+  # what that is for: Req 11 says cancellation before Stage 2 selects only
+  # pre_reservation_cancel, and the branch it must never reach is no_capture,
+  # which is what an authoritative non-success selects. Without a non-success
+  # witness beside the cancellation there is nothing for the branch to be
+  # confused WITH, and an arbiter that asked the producer's outcome first would
+  # answer pre_reservation_cancel here too — pinning "cancellation is honoured"
+  # rather than the ordering the title names.
+  #
+  # Reddened by: the arbiter asking about the producer's outcome BEFORE the
+  # cancellation. The no_capture scenarios above stay green, which is what
+  # tells a branch confusion apart from a broken arbiter.
   @HOP-11
   Scenario: Cancellation before Stage 2 selects pre_reservation_cancel, never no_capture
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
     And the daemon holds the source
-    When the step is cancelled before Stage 2
+    When the step fails
+    And the step is cancelled before Stage 2
     And the capture settles
     Then the disposition is "pre_reservation_cancel"
 
