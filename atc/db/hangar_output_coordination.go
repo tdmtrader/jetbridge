@@ -583,31 +583,6 @@ func (repository *HangarOutputRepository) IncompleteHandoffs(ctx context.Context
 	return handoffs, rows.Err()
 }
 
-// HangarOutputAnnouncer is the durable half of requirement 18.
-//
-// It is a thin adapter rather than a method on the repository because the
-// coordinator's port takes no transaction: an announcement is its own fact and
-// composes with nothing, so it owns the short transaction it commits in.
-type HangarOutputAnnouncer struct {
-	Conn       DbConn
-	Repository *HangarOutputRepository
-}
-
-// Announce appends one announcement in its own transaction.
-func (announcer *HangarOutputAnnouncer) Announce(ctx context.Context, handoff output.HandoffID, kind, disposition, reason string) error {
-	tx, err := announcer.Conn.Begin()
-	if err != nil {
-		return err
-	}
-	defer Rollback(tx)
-
-	if err := announcer.Repository.RecordAnnouncement(ctx, tx, handoff, kind, disposition, reason); err != nil {
-		return err
-	}
-
-	return tx.Commit()
-}
-
 // HangarConsumerPrefixForComponent is the recovery component's own token.
 //
 // The component is not composing with anyone's binding write -- it advances a

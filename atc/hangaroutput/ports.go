@@ -158,8 +158,19 @@ type ReceiptChecker interface {
 // event, a log line on the step -- is the deployment's, and the redaction rule
 // is not: an announcement carries a disposition and a reason, and never a
 // grant, key, path or consumer reference.
+//
+// It takes the CALLER's transaction, and that is the whole of what makes an
+// announcement survivable. An announcement emitted after the commit it
+// announces is outside everything recovery re-takes: the fact is durable, the
+// answer is lost, the transition is never taken again and the announcement is
+// gone. That cost the terminal disposition -- the last one, the one nothing
+// repeats and the one a build's diagnostics exist to show. Riding the
+// transaction of the fact it announces makes the two one commit, and the store
+// is idempotent by (handoff, kind) so a repeated transition tells a watcher
+// nothing twice.
 type Announcer interface {
-	Announce(ctx context.Context, handoff output.HandoffID, announcement Announcement) error
+	Announce(ctx context.Context, tx output.Tx, handoff output.HandoffID,
+		announcement Announcement) error
 }
 
 // unavailableDialer is what a deployment with no output plane has.

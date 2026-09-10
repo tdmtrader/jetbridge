@@ -151,17 +151,16 @@ func (coordinator *Coordinator) perform(ctx context.Context, record output.Hando
 		return decision, nil
 
 	case TransitionNone:
-		// The terminal announcement, replayed from the disposition.
+		// Nothing, and deliberately nothing.
 		//
-		// Every announcement is emitted after the commit it announces, which
-		// means it is outside anything recovery re-takes: a lost commit answer
-		// leaves the fact durable and the announcement never made. The one that
-		// loses is the terminal disposition -- it is the last one, nothing
-		// repeats it, and it is precisely what a build's diagnostics exist to
-		// show. So it is said again here, from durable state, every time a
-		// handoff is found owing nothing. The store is idempotent by (handoff,
-		// kind), so a repeat tells a watcher nothing twice.
-		return decision, coordinator.sayDisposition(ctx, record)
+		// A replay of the terminal announcement lived here, and it was
+		// unreachable from the component that exists to recover a capture:
+		// `Recoverer.Run` advances every INCOMPLETE handoff, and a handoff that
+		// would decide `none` has settled and is not listed. Every terminal
+		// announcement is now written inside the transaction that commits its
+		// disposition, which is where it is owed and the one place a lost
+		// answer cannot separate it from the fact.
+		return decision, nil
 
 	case TransitionCommitCaptureReservation:
 		return decision, coordinator.commitStageTwo(ctx, record)
@@ -337,13 +336,17 @@ func (coordinator *Coordinator) commitStageTwo(ctx context.Context, record outpu
 			output.ErrIncomplete, record.HandoffID)
 	}
 
-	if err := coordinator.say(ctx, record, coordinator.announce(
-		AnnouncementSelected, "", "post_completion_hijack_unavailable")); err != nil {
-		return err
-	}
-
+	// The SELECTION announcement rides Stage 2's own commit.
+	//
+	// Selection IS this commit: post-completion hijack becomes unavailable the
+	// moment the capture is durably chosen, and not a moment earlier. Said
+	// before it, an announcement outlives a Stage 2 that never committed and
+	// tells a watcher hijack is gone when it is not; said after it, a lost
+	// answer leaves a committed capture nobody was told about. One transaction
+	// is the only spelling with neither failure, and it is the same rule the
+	// terminal announcement follows.
 	return coordinator.write(ctx, func(tx Transaction) error {
-		_, err := coordinator.Repository.CommitCaptureReservation(ctx, tx,
+		if _, err := coordinator.Repository.CommitCaptureReservation(ctx, tx,
 			output.SuccessfulFinishDisposition{
 				ProtocolVersion:       output.ProtocolVersion,
 				Disposition:           output.DispositionCapture,
@@ -356,9 +359,12 @@ func (coordinator *Coordinator) commitStageTwo(ctx context.Context, record outpu
 				CaptureFence:          1,
 				CaptureDeadline:       record.CaptureDeadline,
 				FinishAcknowledgement: *record.FinishWitness,
-			})
+			}); err != nil {
+			return err
+		}
 
-		return err
+		return coordinator.say(ctx, tx, record, coordinator.announce(
+			AnnouncementSelected, "", "post_completion_hijack_unavailable"))
 	})
 }
 
@@ -387,14 +393,14 @@ func (coordinator *Coordinator) recordNoCapture(ctx context.Context, record outp
 			"reconciliation", output.ErrIncomplete, record.HandoffID)
 	}
 
-	if err := coordinator.write(ctx, func(tx Transaction) error {
-		return coordinator.Repository.RecordNoCaptureIntent(ctx, tx, disposition)
-	}); err != nil {
-		return err
-	}
+	return coordinator.write(ctx, func(tx Transaction) error {
+		if err := coordinator.Repository.RecordNoCaptureIntent(ctx, tx, disposition); err != nil {
+			return err
+		}
 
-	return coordinator.say(ctx, record, coordinator.announce(AnnouncementDisposition,
-		output.DispositionNoCapture, string(disposition.Reason)))
+		return coordinator.say(ctx, tx, record, coordinator.announce(AnnouncementDisposition,
+			output.DispositionNoCapture, string(disposition.Reason)))
+	})
 }
 
 // recordCancellation wins the third branch through the generic seam.
@@ -405,30 +411,26 @@ func (coordinator *Coordinator) recordNoCapture(ctx context.Context, record outp
 // reserved source -- record a fenced release intent rather than close -- is the
 // branch's own, and this does not re-decide it.
 func (coordinator *Coordinator) recordCancellation(ctx context.Context, record output.HandoffRecord) error {
-	if err := coordinator.write(ctx, func(tx Transaction) error {
-		_, err := coordinator.Repository.CancelOrSettle(ctx, tx, record.HandoffID)
+	return coordinator.write(ctx, func(tx Transaction) error {
+		if _, err := coordinator.Repository.CancelOrSettle(ctx, tx, record.HandoffID); err != nil {
+			return err
+		}
 
-		return err
-	}); err != nil {
-		return err
-	}
-
-	return coordinator.say(ctx, record, coordinator.announce(AnnouncementDisposition,
-		output.DispositionPreReservationCancel, "cancelled"))
+		return coordinator.say(ctx, tx, record, coordinator.announce(AnnouncementDisposition,
+			output.DispositionPreReservationCancel, "cancelled"))
+	})
 }
 
 // cancelCapture is cancellation after Stage 2 and before the publish point.
 func (coordinator *Coordinator) cancelCapture(ctx context.Context, record output.HandoffRecord) error {
-	if err := coordinator.write(ctx, func(tx Transaction) error {
-		_, err := coordinator.Repository.CancelOrSettle(ctx, tx, record.HandoffID)
+	return coordinator.write(ctx, func(tx Transaction) error {
+		if _, err := coordinator.Repository.CancelOrSettle(ctx, tx, record.HandoffID); err != nil {
+			return err
+		}
 
-		return err
-	}); err != nil {
-		return err
-	}
-
-	return coordinator.say(ctx, record, coordinator.announce(AnnouncementDisposition,
-		output.DispositionCapture, "cancelled"))
+		return coordinator.say(ctx, tx, record, coordinator.announce(AnnouncementDisposition,
+			output.DispositionCapture, "cancelled"))
+	})
 }
 
 // releaseFor is the second half of every branch that owes a fenced release.
@@ -518,14 +520,16 @@ func (coordinator *Coordinator) beginSeal(ctx context.Context, record output.Han
 		var err error
 		deadline, err = coordinator.Repository.RecordSealDeadline(ctx, tx,
 			record.ReservationID, lease.CaptureFence, coordinator.sealDeadline())
+		if err != nil {
+			return err
+		}
 
-		return err
+		// The boundary announcement rides the deadline's commit: the moment
+		// this capture is durably sealing is the moment a watcher is owed the
+		// news that its writers, sidecars and hijack session are going away.
+		return coordinator.say(ctx, tx, record, coordinator.announce(
+			AnnouncementSealStarted, output.DispositionCapture, "sealing"))
 	}); err != nil {
-		return err
-	}
-
-	if err := coordinator.say(ctx, record, coordinator.announce(
-		AnnouncementSealStarted, output.DispositionCapture, "sealing")); err != nil {
 		return err
 	}
 
@@ -828,20 +832,25 @@ func (coordinator *Coordinator) registerReceipt(ctx context.Context, record outp
 		return err
 	}
 
-	if err := coordinator.write(ctx, func(tx Transaction) error {
-		return coordinator.Repository.RegisterReceipt(ctx, tx, output.ReceiptAdmission{
+	// The receipt and the sentence that tells a watcher the capture succeeded
+	// are one commit. This is the transaction whose answer P4 loses, and an
+	// announcement made after it is an announcement nothing ever makes again:
+	// the capture is registered, the transition is never re-taken, and the
+	// recovery component does not revisit a handoff that has settled.
+	return coordinator.write(ctx, func(tx Transaction) error {
+		if err := coordinator.Repository.RegisterReceipt(ctx, tx, output.ReceiptAdmission{
 			ProtocolVersion: output.ProtocolVersion,
 			Receipt:         receipt,
 			ChallengeNonce:  challenge.Nonce,
 			Metageneration:  result.Metageneration,
 			AdmittedAt:      output.NewTimestamp(coordinator.now()),
-		})
-	}); err != nil {
-		return err
-	}
+		}); err != nil {
+			return err
+		}
 
-	return coordinator.say(ctx, record, coordinator.announce(AnnouncementDisposition,
-		output.DispositionCapture, "captured"))
+		return coordinator.say(ctx, tx, record, coordinator.announce(AnnouncementDisposition,
+			output.DispositionCapture, "captured"))
+	})
 }
 
 // checkReceiptClaims matches a receipt's signed claims to the durable record.
@@ -914,36 +923,26 @@ func (coordinator *Coordinator) settleOrphan(_ context.Context, record output.Ha
 // is a later transition rather than part of this one -- the source is on a node
 // and only that node can say it is gone.
 func (coordinator *Coordinator) failTerminally(ctx context.Context, record output.HandoffRecord, fence output.CaptureFence, failure string) error {
-	if err := coordinator.write(ctx, func(tx Transaction) error {
-		return coordinator.Repository.RecordTerminalCaptureFailure(ctx, tx,
-			record.ReservationID, fence, failure)
-	}); err != nil {
-		return err
-	}
+	return coordinator.write(ctx, func(tx Transaction) error {
+		if err := coordinator.Repository.RecordTerminalCaptureFailure(ctx, tx,
+			record.ReservationID, fence, failure); err != nil {
+			return err
+		}
 
-	return coordinator.say(ctx, record,
-		coordinator.announce(AnnouncementDisposition, output.DispositionCapture, failure))
+		return coordinator.say(ctx, tx, record,
+			coordinator.announce(AnnouncementDisposition, output.DispositionCapture, failure))
+	})
 }
 
-// sayDisposition announces a settled handoff's terminal outcome, derived from
-// the durable record rather than from anything a caller passed in.
+// say emits one announcement INSIDE the caller's transaction, and a deployment
+// with no announcer is silent rather than broken.
 //
-// It is derived, and that is what makes replaying it safe: the disposition and
-// the reason come out of the same rows a recovery pass has just read, so a
-// process that was not the one that decided them announces the same words.
-func (coordinator *Coordinator) sayDisposition(ctx context.Context, record output.HandoffRecord) error {
-	disposition, reason := TerminalOutcome(record)
-	if disposition == "" || reason == "" {
-		return nil
-	}
-
-	return coordinator.say(ctx, record,
-		coordinator.announce(AnnouncementDisposition, disposition, reason))
-}
-
-// say emits one announcement, and a deployment with no announcer is silent
-// rather than broken.
-func (coordinator *Coordinator) say(ctx context.Context, record output.HandoffRecord, announcement Announcement) error {
+// Every caller here is the transaction that commits the fact being announced.
+// That is the rule: a disposition and the sentence that tells a watcher about
+// it commit together or neither commits, so no lost answer can leave the plane
+// holding a terminal outcome nobody was told about.
+func (coordinator *Coordinator) say(ctx context.Context, tx output.Tx,
+	record output.HandoffRecord, announcement Announcement) error {
 	if coordinator.Announcer == nil {
 		return nil
 	}
@@ -951,7 +950,7 @@ func (coordinator *Coordinator) say(ctx context.Context, record output.HandoffRe
 		return err
 	}
 
-	return coordinator.Announcer.Announce(ctx, record.HandoffID, announcement)
+	return coordinator.Announcer.Announce(ctx, tx, record.HandoffID, announcement)
 }
 
 // TerminalOutcome reports the settled disposition and its reason for a handoff,

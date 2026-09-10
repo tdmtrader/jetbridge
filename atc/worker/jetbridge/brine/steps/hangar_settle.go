@@ -104,7 +104,6 @@ func newSettlementPlane(source HeldSource, res brine.Resources) (settlementPlane
 
 	client := jetbridgeOutputClient(source)
 	transactor := brineTransactor{conn: jdb.Conn}
-	announcer := &db.HangarOutputAnnouncer{Conn: jdb.Conn, Repository: repository}
 
 	verifier, err := hangaroutputleaf.NewReceiptSignatureVerifier(
 		hangarReceiptRing(source.Draft.Daemon), hangaroutputleaf.ClockFunc(func() time.Time {
@@ -120,7 +119,7 @@ func newSettlementPlane(source HeldSource, res brine.Resources) (settlementPlane
 		Dialer:       oneDaemonDialer{control: client},
 		Drain:        brineDrain{},
 		Verifier:     verifier,
-		Announcer:    hangaroutput.AnnouncerFunc(announcer.Announce),
+		Announcer:    hangaroutput.AnnouncerFunc(repository.RecordAnnouncement),
 		OwnerID:      uuid.NewString(),
 		ReceiptKeyID: hangarReceiptKeyID,
 	}

@@ -108,9 +108,80 @@ type harness struct {
 	Bucket     string
 
 	Coordinator *hangaroutput.Coordinator
-	Announcer   *recordingAnnouncer
+	Recoverer   *hangaroutput.Recoverer
 	Drain       *stubDrain
 	Dialer      *injectingDialer
+}
+
+// announcementKinds reads what a watcher was told, from the DURABLE store.
+//
+// Not from a recorder in this process: an announcement whose whole reason for
+// existing is that the process which decided a disposition may be gone cannot
+// be asserted against that process's memory. The store is also the only place
+// that can tell "announced" from "announced and then rolled back", which is
+// exactly the distinction a terminal announcement written inside its
+// disposition's transaction is making.
+func (h *harness) announcementKinds(t *testing.T, handoff output.HandoffID) []hangaroutput.AnnouncementKind {
+	t.Helper()
+
+	tx, err := h.Conn.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback()
+
+	stored, err := h.Repository.ReadAnnouncements(context.Background(), tx, handoff)
+	if err != nil {
+		t.Fatalf("reading the announcements: %v", err)
+	}
+
+	var kinds []hangaroutput.AnnouncementKind
+	for _, announcement := range stored {
+		kinds = append(kinds, hangaroutput.AnnouncementKind(announcement.Kind))
+	}
+
+	return kinds
+}
+
+// recoverUntilSettled drives PRODUCTION's recovery component, not the harness's
+// own loop.
+//
+// The difference is the whole assertion in one spec below: `Recoverer.Run`
+// advances every INCOMPLETE handoff by at most one transition, and a handoff
+// that has settled is not incomplete and is never visited again. A spec that
+// looped `Advance` to quiescence would take a transition production never takes.
+func (h *harness) recoverUntilSettled(t *testing.T, handoff output.HandoffID) int {
+	t.Helper()
+
+	for pass := 1; pass <= 12; pass++ {
+		if err := h.Recoverer.Run(context.Background()); err != nil {
+			t.Fatalf("recovery pass %d: %v", pass, err)
+		}
+		if len(h.incompleteHandoffs(t)) == 0 {
+			return pass
+		}
+	}
+	t.Fatalf("twelve recovery passes left %v incomplete", h.incompleteHandoffs(t))
+
+	return 0
+}
+
+func (h *harness) incompleteHandoffs(t *testing.T) []output.HandoffID {
+	t.Helper()
+
+	tx, err := h.Conn.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback()
+
+	handoffs, err := h.Repository.IncompleteHandoffs(context.Background(), tx,
+		hangaroutput.DefaultBatchSize)
+	if err != nil {
+		t.Fatalf("listing the incomplete handoffs: %v", err)
+	}
+
+	return handoffs
 }
 
 func newHarness(t *testing.T) *harness {
@@ -134,7 +205,6 @@ func newHarness(t *testing.T) *harness {
 
 	activate(t, conn, daemon)
 
-	announcer := &recordingAnnouncer{}
 	drain := &stubDrain{}
 	dialer := &injectingDialer{control: daemon.Client}
 
@@ -145,28 +215,39 @@ func newHarness(t *testing.T) *harness {
 		t.Fatalf("building the verifier: %v", err)
 	}
 
-	return &harness{
-		t:          t,
-		Conn:       conn,
+	transactor := &connTransactor{conn: conn}
+	coordinator := &hangaroutput.Coordinator{
+		Transactor: transactor,
 		Repository: repository,
-		Daemon:     daemon,
-		Store:      store,
-		Bucket:     bucket,
-		Announcer:  announcer,
-		Drain:      drain,
 		Dialer:     dialer,
-		Coordinator: &hangaroutput.Coordinator{
-			Transactor: &connTransactor{conn: conn},
-			Repository: repository,
-			Dialer:     dialer,
-			Drain:      drain,
-			Verifier:   verifier,
-			Announcer:  announcer,
-			// The schema types an owner as a uuid: two processes sharing a
-			// name would be two owners the fence cannot tell apart.
-			OwnerID:      uuid.NewString(),
-			ReceiptKeyID: harnessKeyID,
-			Now:          func() time.Time { return time.Now().UTC() },
+		Drain:      drain,
+		Verifier:   verifier,
+		// PRODUCTION's announcer, over the durable store. Requirement 18's
+		// announcements outlive the process that made them, and a recorder in
+		// this one cannot say whether the store has them -- nor whether the
+		// transaction they were written in committed.
+		Announcer: hangaroutput.AnnouncerFunc(repository.RecordAnnouncement),
+		// The schema types an owner as a uuid: two processes sharing a name
+		// would be two owners the fence cannot tell apart.
+		OwnerID:      uuid.NewString(),
+		ReceiptKeyID: harnessKeyID,
+		Now:          func() time.Time { return time.Now().UTC() },
+	}
+
+	return &harness{
+		t:           t,
+		Conn:        conn,
+		Repository:  repository,
+		Daemon:      daemon,
+		Store:       store,
+		Bucket:      bucket,
+		Drain:       drain,
+		Dialer:      dialer,
+		Coordinator: coordinator,
+		Recoverer: &hangaroutput.Recoverer{
+			Coordinator: coordinator,
+			Incomplete:  repository,
+			Transactor:  transactor,
 		},
 	}
 }

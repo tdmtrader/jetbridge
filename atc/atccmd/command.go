@@ -1615,7 +1615,6 @@ func (cmd *RunCommand) hangarOutputCaptureComponent(dbConn db.DbConn) RunnableCo
 	prefix := db.HangarConsumerPrefixForComponent()
 	repository := db.NewHangarOutputRepository(prefix)
 	transactor := hangarOutputTransactor{conn: dbConn}
-	announcer := &db.HangarOutputAnnouncer{Conn: dbConn, Repository: repository}
 
 	return RunnableComponent{
 		Component: atc.Component{Name: atc.ComponentHangarOutputCapture},
@@ -1627,7 +1626,7 @@ func (cmd *RunCommand) hangarOutputCaptureComponent(dbConn db.DbConn) RunnableCo
 				Repository: repository,
 				Dialer:     hangaroutput.NoSourcePlane(),
 				Drain:      hangaroutput.NoDrainProof(),
-				Announcer:  hangaroutput.AnnouncerFunc(announcer.Announce),
+				Announcer:  hangaroutput.AnnouncerFunc(repository.RecordAnnouncement),
 				OwnerID:    uuid.NewString(),
 			},
 		},

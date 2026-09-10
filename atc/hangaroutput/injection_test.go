@@ -248,39 +248,6 @@ func (drain *stubDrain) Calls() int {
 	return drain.calls
 }
 
-// recordingAnnouncer keeps what a watcher was told, in order.
-//
-// Order is part of the assertion: selection has to reach a watcher while hijack
-// still looks available, and an announcement stream that named the outcome
-// first would be explaining a refusal instead of preventing one.
-type recordingAnnouncer struct {
-	Announcements []hangaroutput.Announcement
-
-	mu sync.Mutex
-}
-
-func (announcer *recordingAnnouncer) Announce(_ context.Context, _ output.HandoffID,
-	announcement hangaroutput.Announcement) error {
-	announcer.mu.Lock()
-	defer announcer.mu.Unlock()
-
-	announcer.Announcements = append(announcer.Announcements, announcement)
-
-	return nil
-}
-
-func (announcer *recordingAnnouncer) Kinds() []hangaroutput.AnnouncementKind {
-	announcer.mu.Lock()
-	defer announcer.mu.Unlock()
-
-	var kinds []hangaroutput.AnnouncementKind
-	for _, announcement := range announcer.Announcements {
-		kinds = append(kinds, announcement.Kind)
-	}
-
-	return kinds
-}
-
 // ambiguousTransactor commits for real and then reports failure.
 //
 // This is the only honest shape for an ambiguous PostgreSQL commit: the rows

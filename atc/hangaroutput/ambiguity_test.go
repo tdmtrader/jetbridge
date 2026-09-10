@@ -316,7 +316,7 @@ func TestAnUninterruptedCaptureCompletesAndReleasesItsSource(t *testing.T) {
 	// is hangar-disposition.feature's assertion, over a real build's own event
 	// stream; what is asserted here is only that the coordinator emitted at
 	// all, so that a silent emitter is not discovered three phases later.
-	if len(h.Announcer.Kinds()) == 0 {
+	if len(h.announcementKinds(t, c.Handoff)) == 0 {
 		t.Error("a completed capture told a watcher nothing at all")
 	}
 }
@@ -809,15 +809,23 @@ func TestALostReleaseAcknowledgementIsRepeatedUnderTheSameIntent(t *testing.T) {
 // A LOST REGISTRATION ANSWER, and what the build is then told.
 //
 // The receipt registers, the commit's answer is lost, and the next pass reads
-// durable state and answers `none`. The capture is right; the DIAGNOSTICS are
-// what break, because every announcement was emitted after its commit, outside
+// durable state and settles. The capture is right; the DIAGNOSTICS are what
+// break, because every announcement was emitted AFTER its commit, outside
 // anything recovery re-takes. So the one announcement a build's diagnostics
 // exist to show -- the terminal disposition, the thing that explains why hijack
 // went away and how the capture ended -- was the announcement most likely to be
 // lost, since it is the last one and the one nothing repeats.
 //
-// Req 18. The store is idempotent by (handoff, kind), so replaying it from the
-// disposition costs nothing and a repeat tells a watcher nothing twice.
+// It is driven by PRODUCTION's recovery component, and that is the assertion
+// rather than a detail. `Recoverer.Run` advances every INCOMPLETE handoff by at
+// most one transition, drawn from `IncompleteHandoffs`; a handoff that has
+// settled is not incomplete and is never visited again. So a replay hung off
+// the `none` transition -- the state a settled handoff is in -- is a replay
+// nothing in production ever reaches. A spec that looped `Advance` to
+// quiescence took a transition the deployment does not take, and passed.
+//
+// Req 18. The store is idempotent by (handoff, kind), so a disposition written
+// inside its own transaction costs a repeat nothing.
 func TestALostRegistrationAnswerStillAnnouncesTheDisposition(t *testing.T) {
 	h := newHarness(t)
 	ambiguous := &ambiguousTransactor{inner: h.Coordinator.Transactor}
@@ -839,7 +847,7 @@ func TestALostRegistrationAnswerStillAnnouncesTheDisposition(t *testing.T) {
 		t.Fatalf("the lost registration answer was not reported: %v", err)
 	}
 
-	c.advance(t)
+	h.recoverUntilSettled(t, c.Handoff)
 
 	record := c.record(t)
 	if record.State != output.CaptureStateRegistered {
@@ -848,8 +856,11 @@ func TestALostRegistrationAnswerStillAnnouncesTheDisposition(t *testing.T) {
 	if record.Receipt == nil {
 		t.Fatal("no receipt was registered")
 	}
+	if !record.Settled {
+		t.Fatal("the recovery component left the handoff unsettled")
+	}
 
-	kinds := h.Announcer.Kinds()
+	kinds := h.announcementKinds(t, c.Handoff)
 	for _, owed := range hangaroutput.AnnouncementKinds() {
 		found := false
 		for _, said := range kinds {

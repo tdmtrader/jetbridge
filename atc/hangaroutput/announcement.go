@@ -94,8 +94,8 @@ func (announcement Announcement) Validate() error {
 	return nil
 }
 
-// announceSelection is the first of the three, and the one with a deadline of
-// its own: it is owed while hijack still looks available.
+// announce composes one of the three. Every caller hands it to `say` inside the
+// transaction that commits the fact being announced.
 func (coordinator *Coordinator) announce(kind AnnouncementKind, disposition output.Disposition, reason string) Announcement {
 	return Announcement{Kind: kind, Disposition: disposition, Reason: reason}
 }
@@ -145,11 +145,11 @@ func terminalReason(record output.HandoffRecord) string {
 // thing that stores or renders it does not have to import this package. A
 // deployment's diagnostics are the deployment's; what stays here is the closed
 // vocabulary and the rule that there is nothing else in the payload.
-type AnnouncerFunc func(ctx context.Context, handoff output.HandoffID,
+type AnnouncerFunc func(ctx context.Context, tx output.Tx, handoff output.HandoffID,
 	kind, disposition, reason string) error
 
-func (announce AnnouncerFunc) Announce(ctx context.Context, handoff output.HandoffID,
-	announcement Announcement) error {
-	return announce(ctx, handoff, string(announcement.Kind),
+func (announce AnnouncerFunc) Announce(ctx context.Context, tx output.Tx,
+	handoff output.HandoffID, announcement Announcement) error {
+	return announce(ctx, tx, handoff, string(announcement.Kind),
 		string(announcement.Disposition), announcement.Reason)
 }
