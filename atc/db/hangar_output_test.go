@@ -878,24 +878,47 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				Expect(err.Error()).To(ContainSubstring("was released"))
 			})
 
-			It("advances the fence on renewal, so the older grant stops working", func() {
+			// A repeat is a RETRY, not a renewal.
+			//
+			// The lease id and the nonce are the caller's, generated before the
+			// attempt, so a caller whose commit answer was lost asks again with
+			// the same ones. Advancing anything there would hand the retry a
+			// different lease than the one that may already be committed, and
+			// the byte-identical re-mint requirement 37 asks for would be
+			// impossible to honour. Reuse of the identity for DIFFERENT facts is
+			// the other half, and it is a conflict.
+			It("is idempotent for the same identity and facts, and a conflict for others", func() {
+				again, err := admit(request)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(again.LeaseFence).To(Equal(lease.LeaseFence))
+				Expect(again.GrantedAt.Time).To(BeTemporally("==", lease.GrantedAt.Time))
+				Expect(again.ExpiresAt.Time).To(BeTemporally("==", lease.ExpiresAt.Time))
+
+				var leases int
+				Expect(dbConn.QueryRow(
+					`SELECT count(*) FROM hangar_read_leases WHERE read_lease_id = $1`,
+					string(id)).Scan(&leases)).To(Succeed())
+				Expect(leases).To(Equal(1))
+
+				// The same identity, a different nonce: another read wearing
+				// this one's lease id.
+				other := readLeaseRequest(id, claimID, ref)
+				Expect(other.GrantNonce).NotTo(Equal(request.GrantNonce))
+				_, err = admit(other)
+				Expect(err).To(MatchError(output.ErrConflict))
+				Expect(err.Error()).To(ContainSubstring("already protects another read"))
+			})
+
+			It("refuses to reactivate a released lease under its own identity", func() {
 				tx, err := dbConn.Begin()
 				Expect(err).NotTo(HaveOccurred())
 				defer db.Rollback(tx)
-				renewed, err := repository.RenewReadLease(ctx, tx, lease)
-				Expect(err).NotTo(HaveOccurred())
+				Expect(repository.ReleaseReadLease(ctx, tx, lease)).To(Succeed())
 				Expect(tx.Commit()).To(Succeed())
-				Expect(renewed.LeaseFence).To(Equal(lease.LeaseFence))
 
-				// A renewal keeps the fence; a TAKEOVER advances it. Re-acquiring
-				// the same lease id is the takeover, and it is what makes an
-				// older grant stale.
-				taken, err := admit(readLeaseRequest(id, claimID, ref))
-				Expect(err).NotTo(HaveOccurred())
-				Expect(taken.LeaseFence).To(BeNumerically(">", lease.LeaseFence))
-
-				_, err = validate(validation())
-				Expect(err).To(MatchError(executioncontrol.ErrStaleFence))
+				_, err = admit(request)
+				Expect(err).To(MatchError(output.ErrConflict))
+				Expect(err.Error()).To(ContainSubstring("stays tombstoned"))
 			})
 		})
 	})

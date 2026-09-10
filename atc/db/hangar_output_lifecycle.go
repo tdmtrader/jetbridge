@@ -611,27 +611,59 @@ func (repository *HangarOutputRepository) AcquireReadLease(ctx context.Context, 
 		return output.ReadLease{}, err
 	}
 
-	var granted, expires time.Time
-	var fence int64
-	if err := hangarQueryRow(ctx, tx, `
+	// Idempotent on the identity, and a conflict for different facts.
+	//
+	// A repeat is a RETRY, not a renewal: the lease id and the nonce are the
+	// caller's, generated before the attempt, so a caller whose commit answer
+	// was lost asks again with the same ones. Advancing the fence or the expiry
+	// there would hand the retry a different lease than the one that may
+	// already be committed, and requirement 37's byte-identical re-mint would
+	// be impossible to honour. Extending a live lease is RenewReadLease's, and
+	// it is a different question asked by a different actor.
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO hangar_read_leases
 			(read_lease_id, claim_id, lifecycle_id, activation_epoch, lease_fence, expires_at,
 			 grant_nonce, destination_handle, destination_volume,
 			 stat_metageneration, stat_marker_version, stat_observed_at)
 		VALUES ($1, $2, $3, $4, 1, now() + $5::interval, $6, $7, $8, $9, $10, $11)
-		ON CONFLICT (read_lease_id) DO UPDATE
-		SET renewed_at = now(),
-		    expires_at = now() + $5::interval,
-		    lease_fence = hangar_read_leases.lease_fence + 1
-		RETURNING granted_at, expires_at, lease_fence`,
-		[]any{
-			string(request.ReadLeaseID), string(request.ClaimID), lifecycle,
-			int64(request.ActivationEpoch), interval,
-			request.GrantNonce, request.Destination.Handle, request.Destination.Volume,
-			request.StatProof.Metageneration, request.StatProof.Marker.Version,
-			request.StatObservedAt.Time,
-		}, &granted, &expires, &fence); err != nil {
+		ON CONFLICT (read_lease_id) DO NOTHING`,
+		string(request.ReadLeaseID), string(request.ClaimID), lifecycle,
+		int64(request.ActivationEpoch), interval,
+		request.GrantNonce, request.Destination.Handle, request.Destination.Volume,
+		request.StatProof.Metageneration, request.StatProof.Marker.Version,
+		request.StatObservedAt.Time,
+	); err != nil {
+		return output.ReadLease{}, hangarConflict(err)
+	}
+
+	var (
+		existingClaim, existingNonce, existingHandle, existingVolume string
+		existingLifecycle, existingEpoch, fence                      int64
+		granted, expires                                             time.Time
+		leaseReleased                                                sql.NullTime
+	)
+	if err := hangarQueryRow(ctx, tx, `
+		SELECT claim_id, lifecycle_id, activation_epoch, lease_fence, granted_at, expires_at,
+		       released_at, grant_nonce, destination_handle, destination_volume
+		FROM hangar_read_leases WHERE read_lease_id = $1`,
+		[]any{string(request.ReadLeaseID)},
+		&existingClaim, &existingLifecycle, &existingEpoch, &fence, &granted, &expires,
+		&leaseReleased, &existingNonce, &existingHandle, &existingVolume); err != nil {
 		return output.ReadLease{}, err
+	}
+	if leaseReleased.Valid {
+		return output.ReadLease{}, fmt.Errorf("%w: read lease %s was released at %s and stays "+
+			"tombstoned; a released reader does not reactivate", output.ErrConflict,
+			request.ReadLeaseID, leaseReleased.Time)
+	}
+	if existingClaim != string(request.ClaimID) || existingLifecycle != lifecycle ||
+		existingEpoch != int64(request.ActivationEpoch) ||
+		existingNonce != request.GrantNonce ||
+		existingHandle != request.Destination.Handle ||
+		existingVolume != request.Destination.Volume {
+		return output.ReadLease{}, fmt.Errorf("%w: read lease %s already protects another read; "+
+			"reuse of a lease identity for different facts is a conflict", output.ErrConflict,
+			request.ReadLeaseID)
 	}
 
 	return output.ReadLease{
