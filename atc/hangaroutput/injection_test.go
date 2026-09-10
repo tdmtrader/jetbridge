@@ -235,6 +235,19 @@ func (drain *stubDrain) ConfirmDrain(_ context.Context, _ string,
 	return nil, nil
 }
 
+// Calls reports how many times the deployment's writer termination was driven.
+//
+// It is the one place a COUNT is the assertion rather than an outcome: "the
+// drain was never asked" has no trace on the node or in a row, and the whole
+// point of deciding admissibility on the database clock first is that a seal
+// past its deadline does not terminate anybody's containers to find out.
+func (drain *stubDrain) Calls() int {
+	drain.mu.Lock()
+	defer drain.mu.Unlock()
+
+	return drain.calls
+}
+
 // recordingAnnouncer keeps what a watcher was told, in order.
 //
 // Order is part of the assertion: selection has to reach a watcher while hijack

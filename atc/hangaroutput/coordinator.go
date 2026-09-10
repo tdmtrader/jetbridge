@@ -575,6 +575,38 @@ func (coordinator *Coordinator) confirmSeal(ctx context.Context, record output.H
 		return err
 	}
 
+	// ADMISSIBILITY, before anything is asked of the deployment or the node.
+	//
+	// Requirement 17's deadline is a database-clock deadline, and a deadline
+	// that only decides whether an already-refused boundary is PERMANENT
+	// leaves the question it exists to answer -- may a proof that arrives late
+	// be admitted? -- to whichever wall clock is asked. That was the daemon's,
+	// which is the clock Req 17 explicitly does not name and the one that
+	// drifts: a node an hour behind admitted a seal the database had already
+	// closed, and a node an hour ahead refused every seal proved in its last
+	// hour. The daemon's own comparison stays, as the defence in depth its
+	// comment says it is.
+	//
+	// The node is asked FIRST, and only then the clock: a confirmation this
+	// node has already recorded is a fact, and refusing to read back a
+	// statement it made -- because the answer was lost, or because this pass is
+	// a takeover -- would turn a lost answer into a destroyed output. Only a
+	// seal with nothing recorded is closed by the deadline.
+	//
+	// And the drain is not driven for a capture that is already inadmissible.
+	// Proving the boundary TERMINATES the producing Pod, its sidecars and any
+	// live hijack session; doing that to reach a refusal that is already
+	// decided is destroying a step's containers to learn nothing.
+	if !started.Confirmed {
+		passed, err := coordinator.sealDeadlinePassed(ctx, record)
+		if err != nil {
+			return err
+		}
+		if passed {
+			return coordinator.failTerminally(ctx, record, lease.CaptureFence, "seal_unconfirmed")
+		}
+	}
+
 	drained, err := coordinator.Drain.ConfirmDrain(ctx, record.Source.Locator, started)
 	if err != nil {
 		return coordinator.sealUnprovable(ctx, record, lease.CaptureFence, err)
@@ -606,6 +638,11 @@ func (coordinator *Coordinator) confirmSeal(ctx context.Context, record output.H
 //
 // The deadline is read in SQL, from the row, at this moment -- not from
 // anything this process composed or remembers.
+//
+// confirmSeal now asks the same question BEFORE it drives the drain, so this
+// arm is what is left over: the deadline that elapses while the boundary is
+// being proved. Both readings are the database's, which is the point -- two
+// spellings of "past the deadline" would be two answers.
 func (coordinator *Coordinator) sealUnprovable(ctx context.Context, record output.HandoffRecord,
 	fence output.CaptureFence, cause error) error {
 	if !errors.Is(cause, output.ErrSealUnconfirmed) {

@@ -502,6 +502,72 @@ func TestASealPastItsDeadlineIsSealUnconfirmed(t *testing.T) {
 	}
 }
 
+// The database clock decides ADMISSIBILITY, not only terminality.
+//
+// Requirement 17 names a database-clock deadline, and a deadline that only
+// decides whether an already-refused boundary is permanent leaves the question
+// it exists to answer -- may a proof that arrives LATE be admitted? -- to
+// whichever wall clock happened to be asked. The daemon's own comparison says
+// so in its comment: it is defence in depth, and "the deciding clock is the
+// database's".
+//
+// Only the ROW's deadline moves here, by SQL, and the node's copy stays
+// healthy: the daemon would confirm this seal, so the only thing that can
+// refuse it is the database clock. At the round-2 head it did not, and a seal
+// an hour past its deadline registered a receipt whenever the two clocks
+// disagreed -- which is not a hypothetical, it is what a node running an hour
+// behind IS.
+//
+// The drain is not asked. That is the point rather than an optimisation:
+// proving the boundary terminates the producing Pod, its sidecars and any live
+// hijack session, and a capture that is already inadmissible must not do that
+// to find out.
+func TestASealProvedPastTheDatabaseDeadlineIsNotAdmitted(t *testing.T) {
+	h := newHarness(t)
+	c := h.admit(t).hold(t).finish(t, true)
+
+	// Stage 2 and the seal, both under a healthy deadline: the row and the
+	// node hold the same one.
+	advanceExactly(t, c, 2)
+
+	if _, err := h.Conn.Exec(`
+		UPDATE hangar_capture_reservations SET seal_deadline_at = now() - interval '1 hour'
+		WHERE reservation_id = $1`, string(c.record(t).ReservationID)); err != nil {
+		t.Fatalf("moving the row's seal deadline into the past: %v", err)
+	}
+
+	taken := c.advance(t)
+
+	record := c.record(t)
+	if record.State != output.CaptureStateFailed {
+		t.Fatalf("a seal an hour past the DATABASE deadline is %s after %v, with the node's "+
+			"copy of the deadline still healthy", record.State, taken)
+	}
+	if record.TerminalFailure != "seal_unconfirmed" {
+		t.Errorf("the terminal failure is %q", record.TerminalFailure)
+	}
+	if record.Receipt != nil {
+		t.Error("a proof admitted past the database deadline produced a receipt")
+	}
+	if keys := h.bucketKeys(t); keys != nil {
+		t.Errorf("a proof admitted past the database deadline created %v", keys)
+	}
+	if record.LogicalResolved {
+		t.Error("a seal past the database deadline resolved a logical identity")
+	}
+	if h.Drain.Calls() != 0 {
+		t.Errorf("the writer drain was driven %d time(s) for a capture the database clock had "+
+			"already made inadmissible; proving a boundary terminates the producing Pod",
+			h.Drain.Calls())
+	}
+	if !record.ReleaseAcknowledged {
+		t.Error("the source was never released after the terminal failure")
+	}
+	if !c.sourceStillThere() {
+		t.Error("the release deleted the step's output")
+	}
+}
+
 // The deadline's control, and it is the half that says the clock is a clock
 // rather than a switch: the SAME typed evidence, before the deadline, is
 // retried and committed as nothing.
