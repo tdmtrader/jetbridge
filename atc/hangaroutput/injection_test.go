@@ -281,6 +281,13 @@ type ambiguousTransactor struct {
 	// committed. Consumed, so the retry can succeed.
 	LoseNext bool
 
+	// Skip lets that many successful commits through first. One transition can
+	// commit more than once -- taking the lease, issuing a challenge, admitting
+	// a receipt -- and which of them loses its answer is a different crash
+	// half, so a transactor that could only lose the first could only ever
+	// exercise one of them.
+	Skip int
+
 	mu sync.Mutex
 }
 
@@ -306,6 +313,11 @@ func (tx *ambiguousTransaction) Commit() error {
 
 	tx.owner.mu.Lock()
 	defer tx.owner.mu.Unlock()
+	if tx.owner.Skip > 0 {
+		tx.owner.Skip--
+
+		return nil
+	}
 	if tx.owner.LoseNext {
 		tx.owner.LoseNext = false
 

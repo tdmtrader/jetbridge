@@ -740,6 +740,64 @@ func TestALostReleaseAcknowledgementIsRepeatedUnderTheSameIntent(t *testing.T) {
 	}
 }
 
+// A LOST REGISTRATION ANSWER, and what the build is then told.
+//
+// The receipt registers, the commit's answer is lost, and the next pass reads
+// durable state and answers `none`. The capture is right; the DIAGNOSTICS are
+// what break, because every announcement was emitted after its commit, outside
+// anything recovery re-takes. So the one announcement a build's diagnostics
+// exist to show -- the terminal disposition, the thing that explains why hijack
+// went away and how the capture ended -- was the announcement most likely to be
+// lost, since it is the last one and the one nothing repeats.
+//
+// Req 18. The store is idempotent by (handoff, kind), so replaying it from the
+// disposition costs nothing and a repeat tells a watcher nothing twice.
+func TestALostRegistrationAnswerStillAnnouncesTheDisposition(t *testing.T) {
+	h := newHarness(t)
+	ambiguous := &ambiguousTransactor{inner: h.Coordinator.Transactor}
+	h.Coordinator.Transactor = ambiguous
+
+	c := h.admit(t).hold(t).finish(t, true)
+
+	// Stage 2, seal, confirm, resolve, publish.
+	for i := 0; i < 5; i++ {
+		if _, err := c.advanceOnce(t); err != nil {
+			t.Fatalf("advancing: %v", err)
+		}
+	}
+
+	// register_receipt commits three times: the lease, the stat challenge, and
+	// the receipt admission. It is the third one whose answer is lost.
+	ambiguous.Skip, ambiguous.LoseNext = 2, true
+	if _, err := c.advanceOnce(t); !errors.Is(err, lostAnswer) {
+		t.Fatalf("the lost registration answer was not reported: %v", err)
+	}
+
+	c.advance(t)
+
+	record := c.record(t)
+	if record.State != output.CaptureStateRegistered {
+		t.Fatalf("the capture is %s after a lost registration answer", record.State)
+	}
+	if record.Receipt == nil {
+		t.Fatal("no receipt was registered")
+	}
+
+	kinds := h.Announcer.Kinds()
+	for _, owed := range hangaroutput.AnnouncementKinds() {
+		found := false
+		for _, said := range kinds {
+			if said == owed {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("the capture announced %v and never %q; the announcement a build's "+
+				"diagnostics exist to show is the one a lost answer drops", kinds, owed)
+		}
+	}
+}
+
 // NODE LOSS: the node is gone and stays gone.
 //
 // It is the injection whose correct answer is to do nothing, and that is what

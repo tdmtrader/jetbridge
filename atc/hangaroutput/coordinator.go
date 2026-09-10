@@ -147,8 +147,21 @@ func (coordinator *Coordinator) perform(ctx context.Context, record output.Hando
 	}
 
 	switch decision.Transition {
-	case TransitionNone, TransitionAwaitOutcome:
+	case TransitionAwaitOutcome:
 		return decision, nil
+
+	case TransitionNone:
+		// The terminal announcement, replayed from the disposition.
+		//
+		// Every announcement is emitted after the commit it announces, which
+		// means it is outside anything recovery re-takes: a lost commit answer
+		// leaves the fact durable and the announcement never made. The one that
+		// loses is the terminal disposition -- it is the last one, nothing
+		// repeats it, and it is precisely what a build's diagnostics exist to
+		// show. So it is said again here, from durable state, every time a
+		// handoff is found owing nothing. The store is idempotent by (handoff,
+		// kind), so a repeat tells a watcher nothing twice.
+		return decision, coordinator.sayDisposition(ctx, record)
 
 	case TransitionCommitCaptureReservation:
 		return decision, coordinator.commitStageTwo(ctx, record)
@@ -842,6 +855,22 @@ func (coordinator *Coordinator) failTerminally(ctx context.Context, record outpu
 
 	return coordinator.say(ctx, record,
 		coordinator.announce(AnnouncementDisposition, output.DispositionCapture, failure))
+}
+
+// sayDisposition announces a settled handoff's terminal outcome, derived from
+// the durable record rather than from anything a caller passed in.
+//
+// It is derived, and that is what makes replaying it safe: the disposition and
+// the reason come out of the same rows a recovery pass has just read, so a
+// process that was not the one that decided them announces the same words.
+func (coordinator *Coordinator) sayDisposition(ctx context.Context, record output.HandoffRecord) error {
+	disposition, reason := TerminalOutcome(record)
+	if disposition == "" || reason == "" {
+		return nil
+	}
+
+	return coordinator.say(ctx, record,
+		coordinator.announce(AnnouncementDisposition, disposition, reason))
 }
 
 // say emits one announcement, and a deployment with no announcer is silent
