@@ -74,6 +74,11 @@ func (handle restrictedHandle) Attrs(ctx context.Context) (objectstore.Attrs, er
 	return handle.handle.Attrs(ctx)
 }
 
+// sizeUnknown says a caller holds no canonical size to compare an object's body
+// against. Only the stat path passes it: every publish path canonicalized the
+// tree itself and therefore knows exactly how many bytes it wrote.
+const sizeUnknown int64 = -1
+
 // Publisher creates and reads objects in one derived namespace.
 type Publisher struct {
 	namespace output.OutputNamespace
@@ -144,7 +149,7 @@ func (publisher *Publisher) EnsureObject(ctx context.Context, reservation output
 	created, createErr := publisher.create(ctx, key, reservation, canonical)
 	switch {
 	case createErr == nil:
-		object, err := publisher.verifyExact(ctx, key, reservation, created.Generation)
+		object, err := publisher.verifyExact(ctx, key, reservation, created.Generation, size)
 		if err != nil {
 			return output.PublishedObject{}, err
 		}
@@ -154,7 +159,7 @@ func (publisher *Publisher) EnsureObject(ctx context.Context, reservation output
 	case errors.Is(createErr, objectstore.ErrPreconditionFailed):
 		// Something is already at the key. This is the dedup candidate and the
 		// collision candidate, and telling them apart is the point.
-		return publisher.reconcileExisting(ctx, key, reservation)
+		return publisher.reconcileExisting(ctx, key, reservation, size)
 
 	case errors.Is(createErr, context.DeadlineExceeded), errors.Is(createErr, context.Canceled):
 		return output.PublishedObject{}, fmt.Errorf("%w: creating %s: %v",
@@ -169,7 +174,7 @@ func (publisher *Publisher) EnsureObject(ctx context.Context, reservation output
 		// not be there, and the only honest way to find out is to look. A
 		// retry that assumed failure would either publish twice or report a
 		// collision against itself.
-		return publisher.reconcileAmbiguous(ctx, key, reservation, createErr)
+		return publisher.reconcileAmbiguous(ctx, key, reservation, size, createErr)
 	}
 }
 
@@ -201,7 +206,7 @@ func (publisher *Publisher) create(ctx context.Context, key string, reservation 
 
 // reconcileExisting is the 412 path: full marked exact verification, or a typed
 // collision.
-func (publisher *Publisher) reconcileExisting(ctx context.Context, key string, reservation output.ResolvedReservation) (output.PublishedObject, error) {
+func (publisher *Publisher) reconcileExisting(ctx context.Context, key string, reservation output.ResolvedReservation, size int64) (output.PublishedObject, error) {
 	attrs, err := publisher.store.Object(publisher.namespace.Bucket(), key).Attrs(ctx)
 	if err != nil {
 		if errors.Is(err, objectstore.ErrNotFound) {
@@ -215,7 +220,7 @@ func (publisher *Publisher) reconcileExisting(ctx context.Context, key string, r
 		return output.PublishedObject{}, translate(err, key)
 	}
 
-	object, err := publisher.classify(attrs, reservation)
+	object, err := publisher.classify(attrs, reservation, size)
 	if err != nil {
 		return output.PublishedObject{}, err
 	}
@@ -225,7 +230,7 @@ func (publisher *Publisher) reconcileExisting(ctx context.Context, key string, r
 }
 
 // reconcileAmbiguous is the lost-response path.
-func (publisher *Publisher) reconcileAmbiguous(ctx context.Context, key string, reservation output.ResolvedReservation, cause error) (output.PublishedObject, error) {
+func (publisher *Publisher) reconcileAmbiguous(ctx context.Context, key string, reservation output.ResolvedReservation, size int64, cause error) (output.PublishedObject, error) {
 	attrs, err := publisher.store.Object(publisher.namespace.Bucket(), key).Attrs(ctx)
 	if err != nil {
 		if errors.Is(err, objectstore.ErrNotFound) {
@@ -238,7 +243,7 @@ func (publisher *Publisher) reconcileAmbiguous(ctx context.Context, key string, 
 		return output.PublishedObject{}, translate(err, key)
 	}
 
-	object, err := publisher.classify(attrs, reservation)
+	object, err := publisher.classify(attrs, reservation, size)
 	if err != nil {
 		return output.PublishedObject{}, err
 	}
@@ -258,7 +263,7 @@ func (publisher *Publisher) reconcileAmbiguous(ctx context.Context, key string, 
 // but a marker read back off the object is the only thing that proves the
 // metadata landed with it, and Req 26 says a receipt is signed over an exact
 // stat rather than over what the writer believed.
-func (publisher *Publisher) verifyExact(ctx context.Context, key string, reservation output.ResolvedReservation, generation int64) (output.PublishedObject, error) {
+func (publisher *Publisher) verifyExact(ctx context.Context, key string, reservation output.ResolvedReservation, generation, size int64) (output.PublishedObject, error) {
 	if generation <= 0 {
 		return output.PublishedObject{}, fmt.Errorf("%w: the store reported no generation for "+
 			"%s; an object with no generation cannot be registered as an exact ref",
@@ -272,12 +277,25 @@ func (publisher *Publisher) verifyExact(ctx context.Context, key string, reserva
 		return output.PublishedObject{}, translate(err, key)
 	}
 
-	return publisher.classify(attrs, reservation)
+	return publisher.classify(attrs, reservation, size)
 }
 
 // classify is the full marked exact verification, in one place so that the
 // create path, the dedup path and the ambiguous path cannot drift apart.
-func (publisher *Publisher) classify(attrs objectstore.Attrs, reservation output.ResolvedReservation) (output.PublishedObject, error) {
+//
+// `size` is the canonical size of the tree THIS capture holds, and it is
+// checked against what the store reports because a marker is a claim ABOUT
+// bytes and not the bytes. Without it, an object whose body was replaced under
+// the same marker metadata deduplicates and is registered, and the receipt then
+// attests a generation whose contents are not the tree that was canonicalized.
+// Req 23 calls corrupt metadata or body a typed collision "even if a weaker
+// content check appears to match", and "the marker says the right digest" is
+// precisely the weaker check.
+//
+// A size is not a digest, and this does not pretend otherwise: what it refuses
+// is a body that is not the same tree, and the store has no content hash this
+// role can read to do better. It is the check that was available and absent.
+func (publisher *Publisher) classify(attrs objectstore.Attrs, reservation output.ResolvedReservation, size int64) (output.PublishedObject, error) {
 	marker, err := output.ParseObjectMarker(attrs.Metadata)
 	switch {
 	case errors.Is(err, output.ErrNotFound):
@@ -305,6 +323,13 @@ func (publisher *Publisher) classify(attrs objectstore.Attrs, reservation output
 	if attrs.Size <= 0 {
 		return output.PublishedObject{}, fmt.Errorf("%w: the object at generation %d reports %d "+
 			"stored bytes", output.ErrCorrupt, attrs.Generation, attrs.Size)
+	}
+	if size != sizeUnknown && attrs.Size != size {
+		return output.PublishedObject{}, fmt.Errorf("%w: the object at generation %d holds %d "+
+			"stored bytes and this capture canonicalized %d for %s. The marker claims this tree "+
+			"and the body is not it, which is a collision and is never overwritten or "+
+			"deduplicated against", output.ErrConflict, attrs.Generation, attrs.Size, size,
+			reservation.Digest)
 	}
 	if attrs.Metageneration <= 0 {
 		return output.PublishedObject{}, fmt.Errorf("%w: the object at generation %d reports "+
@@ -353,7 +378,13 @@ func (publisher *Publisher) StatExactObject(ctx context.Context, ref hangar.Tree
 		return output.PublishedObject{}, translate(err, key)
 	}
 
-	return publisher.classify(attrs, output.ResolvedReservation{Digest: ref.Digest})
+	// sizeUnknown, and deliberately: a stat of an already-registered ref is
+	// asked about a generation this call did not canonicalize, so there is no
+	// capture-side size to compare against. The size check belongs to the three
+	// paths that DO hold one -- create, dedup and the ambiguous retry -- and
+	// inventing an expectation here would be asserting a fact this role does
+	// not have.
+	return publisher.classify(attrs, output.ResolvedReservation{Digest: ref.Digest}, sizeUnknown)
 }
 
 // OpenExactObject reads the bytes, under an active read lease.
