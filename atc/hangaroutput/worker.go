@@ -38,11 +38,27 @@ type IncompleteReader interface {
 	IncompleteHandoffs(ctx context.Context, tx output.Tx, limit int) ([]output.HandoffID, error)
 }
 
+// DebtReporter receives what the plane still owes, after every pass.
+//
+// The shape is the whole point: a COUNT per bounded label, and no identity
+// anywhere. A metric keyed by handoff would be a metrics store with one series
+// per capture forever, which is the cardinality failure this plane is otherwise
+// careful to avoid -- and it would put an opaque id, which a consumer may treat
+// as sensitive, into a system nobody thinks of as a log.
+//
+// `state` is the transition a handoff is waiting on, which is a member of a
+// closed set. It answers the two questions an operator has: how much is
+// outstanding, and is any of it stuck somewhere it should not be.
+type DebtReporter interface {
+	ReportDebt(ctx context.Context, byTransition map[Transition]int)
+}
+
 // Recoverer is the component.
 type Recoverer struct {
 	Coordinator *Coordinator
 	Incomplete  IncompleteReader
 	Transactor  Transactor
+	Debt        DebtReporter
 	BatchSize   int
 }
 
@@ -73,8 +89,10 @@ func (recoverer *Recoverer) Run(ctx context.Context) error {
 		return err
 	}
 
+	debt := map[Transition]int{}
 	for _, handoff := range handoffs {
 		decision, err := recoverer.Coordinator.Advance(ctx, handoff)
+		debt[decision.Transition]++
 		if err == nil {
 			continue
 		}
@@ -88,6 +106,10 @@ func (recoverer *Recoverer) Run(ctx context.Context) error {
 			"transition": string(decision.Transition),
 			"class":      classOf(err),
 		})
+	}
+
+	if recoverer.Debt != nil {
+		recoverer.Debt.ReportDebt(ctx, debt)
 	}
 
 	return nil

@@ -434,6 +434,7 @@ func (repository *HangarOutputRepository) RecordAnnouncement(ctx context.Context
 
 // HangarAnnouncement is one thing a capture told a watcher.
 type HangarAnnouncement struct {
+	Handoff     string
 	Kind        string
 	Disposition string
 	Reason      string
@@ -450,7 +451,7 @@ func (repository *HangarOutputRepository) ReadAnnouncements(ctx context.Context,
 	}
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT kind, coalesce(disposition, ''), reason
+		SELECT handoff_id, kind, coalesce(disposition, ''), reason
 		FROM hangar_capture_announcements
 		WHERE handoff_id = $1
 		ORDER BY id`, string(handoff))
@@ -462,8 +463,8 @@ func (repository *HangarOutputRepository) ReadAnnouncements(ctx context.Context,
 	var announcements []HangarAnnouncement
 	for rows.Next() {
 		var announcement HangarAnnouncement
-		if err := rows.Scan(&announcement.Kind, &announcement.Disposition,
-			&announcement.Reason); err != nil {
+		if err := rows.Scan(&announcement.Handoff, &announcement.Kind,
+			&announcement.Disposition, &announcement.Reason); err != nil {
 			return nil, err
 		}
 		announcements = append(announcements, announcement)
@@ -560,4 +561,34 @@ func HangarConsumerPrefixForComponent() HangarConsumerPrefix {
 	}
 
 	return prefix
+}
+
+// ReadEveryAnnouncement returns what the plane told watchers about EVERY
+// handoff, in emission order.
+//
+// It exists for the absence half of requirement 18: "an ordinary step announces
+// none of them" is a statement about what is NOT in the store, and a reader
+// scoped to one handoff cannot make it. The whole store is small by
+// construction -- three rows per capture, and only captures produce any.
+func (repository *HangarOutputRepository) ReadEveryAnnouncement(ctx context.Context, tx output.Tx) ([]HangarAnnouncement, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT handoff_id, kind, coalesce(disposition, ''), reason
+		FROM hangar_capture_announcements
+		ORDER BY id`)
+	if err != nil {
+		return nil, hangarConflict(err)
+	}
+	defer rows.Close()
+
+	var announcements []HangarAnnouncement
+	for rows.Next() {
+		var announcement HangarAnnouncement
+		if err := rows.Scan(&announcement.Handoff, &announcement.Kind,
+			&announcement.Disposition, &announcement.Reason); err != nil {
+			return nil, err
+		}
+		announcements = append(announcements, announcement)
+	}
+
+	return announcements, rows.Err()
 }

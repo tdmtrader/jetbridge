@@ -321,6 +321,17 @@ func decideLiveCapture(record output.HandoffRecord) (Decision, error) {
 // seal/publish/receipt method". A predeclaration carries no reservation id, so
 // the check is one question, and every publication entry point asks it.
 func requireCaptureAuthority(record output.HandoffRecord, operation string) error {
+	return PublicationAuthority(record, operation)
+}
+
+// PublicationAuthority is the exported form, for a caller that wants to ask
+// the question without performing the operation.
+//
+// It exists because "a predeclaration is refused" is a fact a test can only
+// observe by asking: a coordinator never REACHES a seal from a predeclaration,
+// so an observer that only saw "it did not seal" could not tell the guard from
+// a coordinator that had simply not got round to it.
+func PublicationAuthority(record output.HandoffRecord, operation string) error {
 	if record.Disposition == nil || *record.Disposition != output.DispositionCapture {
 		return fmt.Errorf("%w: %s was attempted for handoff %s from a predeclaration. A "+
 			"predeclaration records identities before a pod may start; it is not capture "+

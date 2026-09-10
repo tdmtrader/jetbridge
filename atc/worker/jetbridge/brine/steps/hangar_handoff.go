@@ -425,15 +425,52 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		stubMap[HeldSource, FinishWitnessed](
+		// Cancellation is a REQUEST and not a row. What the state carries is
+		// the question; which branch the arbiter then wins is the plane's
+		// answer, and no phrase here decides it.
+		brine.DefineMap[HeldSource, FinishWitnessed](
 			"the step is cancelled before Stage 2",
-			"Phase 5 Green",
-			"the pre_reservation_cancel arm of the disposition arbiter"),
+			func(in HeldSource, _ brine.Params, _ *brine.Recorder) (FinishWitnessed, error) {
+				return FinishWitnessed{Source: in, Cancelled: true}, nil
+			},
+		),
 
-		stubMap[CaptureDraft, FinishWitnessed](
+		// The absence: a handoff cancelled with no hold ever acknowledged.
+		//
+		// It still RESERVED, because a reservation exists before the producing
+		// Pod does -- so there is a directory on a node to release, and the
+		// scenario above is its control. The reservation is taken here rather
+		// than in a Given because this is the one chain where the control init
+		// never runs.
+		brine.DefineMap[CaptureDraft, FinishWitnessed](
 			"the handoff is cancelled with no acknowledged hold",
-			"Phase 5 Green",
-			"the cancellation path that closes a handoff which never established a hold"),
+			func(in CaptureDraft, _ brine.Params, _ *brine.Recorder) (FinishWitnessed, error) {
+				reserving := in.Daemon.capture("reserve-incarnation",
+					"/capture/v1/reserve-incarnation", in.Admission.Execution, in.Admission)
+				reserved, err := decodeControl[hangaroutput.ReservedIncarnation](reserving)
+				if err != nil {
+					return FinishWitnessed{}, fmt.Errorf("reserving the incarnation: %w", err)
+				}
+
+				source := HeldSource{
+					Draft: HeldDraft{
+						Handle: string(in.Admission.HandoffID),
+						Output: in.Output,
+						Daemon: in.Daemon,
+					},
+					DaemonURL:   in.Daemon.Output.URL,
+					StorageRoot: in.Daemon.Output.Root,
+					Incarnation: reserved.Incarnation,
+					Reserved:    reserved,
+					Fence:       hangaroutput.CaptureFence(in.Admission.Execution.Fence),
+					Execution:   in.Admission.Execution,
+					Admission:   in.Admission,
+					PodUID:      in.PodUID,
+				}
+
+				return FinishWitnessed{Source: source, Cancelled: true}, nil
+			},
+		),
 
 		// Checks over a held source. The daemon's own status line is spelled
 		// "the Hangar daemon answers" rather than reusing the durable tier's

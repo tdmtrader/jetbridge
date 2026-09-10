@@ -1,6 +1,7 @@
 package hangaroutput
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 
@@ -78,5 +79,38 @@ func TestATerminalAnnouncementWithoutAReasonIsRefused(t *testing.T) {
 	unknown.Kind = "capture-something-else"
 	if err := unknown.Validate(); err == nil {
 		t.Error("an announcement of an unknown kind was admitted")
+	}
+}
+
+// Nothing this component reports carries an identity.
+//
+// The debt report is a COUNT per bounded label and the log line is a class
+// word, and both are deliberate: a metric keyed by handoff is one series per
+// capture forever, and an opaque handoff id -- which a consumer may treat as
+// sensitive -- in a metrics store is a leak into a system nobody thinks of as a
+// log. The one place an id appears at all is the failure log line, where an
+// operator needs it to find the capture.
+func TestEveryReportedClassIsABoundedWord(t *testing.T) {
+	seen := map[string]bool{}
+	for _, err := range []error{
+		output.ErrUnauthorized, output.ErrConflict, output.ErrNotFound, output.ErrSealed,
+		output.ErrSealUnconfirmed, output.ErrUnresolved, output.ErrIncomplete,
+		output.ErrInvalidIdentity, output.ErrCorrupt, output.ErrInfrastructure,
+	} {
+		class := classOf(err)
+		if class == "other" {
+			t.Errorf("%v reduced to `other`; every sentinel this plane raises has a name", err)
+		}
+		if seen[class] {
+			t.Errorf("two sentinels reduce to %q, so the label cannot tell them apart", class)
+		}
+		seen[class] = true
+	}
+
+	// And an error the plane does not name is `other` rather than its own text,
+	// which is what keeps the label bounded when a dependency invents one.
+	if class := classOf(errors.New("a store returned gs://bucket/key: no such object")); class != "other" {
+		t.Errorf("an unnamed error reduced to %q; a label built from an error's text is "+
+			"unbounded, and this one carries an object key", class)
 	}
 }

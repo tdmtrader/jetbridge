@@ -97,11 +97,6 @@ func sealAndPublish(in FinishWitnessed) (CaptureOutcome, error) {
 func HangarPublicationDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		stubMap[FinishWitnessed, CaptureOutcome](
-			"the capture settles",
-			"Phase 5 Green",
-			"the capture recovery component that seals, canonicalizes, publishes and resolves the reservation"),
-
 		// The two seeding refinements the collision scenarios need.
 		//
 		// NEITHER NAMES A KEY. The key is server-derived from a namespace this
@@ -156,15 +151,52 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		stubMap[CaptureDraft, CaptureOutcome](
-			"seal and publish are attempted from the predeclaration",
-			"Phase 5 Green",
-			"the refusal a predeclaration must return when asked to seal or publish"),
-
-		stubMap[CaptureOutcome, CaptureDraft](
+		// A NEW BUILD of the same step: new execution, new handoff, new source
+		// lease. It is the identity rule requirement 6 states, and it is
+		// asserted over the DRAFT rather than the outcome because the
+		// identities are predeclared at admission -- the only moment both the
+		// old and the new one are knowable.
+		brine.DefineMap[CaptureOutcome, CaptureDraft](
 			"a new build of the same step is admitted",
-			"Phase 5 Green",
-			"a second admission, which must mint a new handoff identity and a new source lease"),
+			func(in CaptureOutcome, _ brine.Params, _ *brine.Recorder) (CaptureDraft, error) {
+				previous := in.Source.Admission
+
+				execution := executioncontrol.Identity{
+					ExecutionID: executioncontrol.ExecutionID(freshUUID()),
+					Fence:       1,
+				}
+				admitted := in.Source.Draft.Daemon.base("admit", "/execution/v1/admit", execution,
+					executioncontrol.Envelope{
+						ProtocolVersion: executioncontrol.ProtocolVersion,
+						Identity:        execution,
+						ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch),
+						NodeUID:         hangarNodeUID,
+						Capability:      "opaque-capability",
+					})
+				if _, err := decodeControl[executioncontrol.ClassifyResult](admitted); err != nil {
+					return CaptureDraft{}, fmt.Errorf("admitting the new build: %w", err)
+				}
+
+				return CaptureDraft{
+					Daemon: in.Source.Draft.Daemon,
+					Output: in.Source.Draft.Output,
+					Admission: hangaroutput.CaptureAdmission{
+						ProtocolVersion: hangaroutput.ProtocolVersion,
+						Execution:       execution,
+						ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch),
+						HandoffID:       hangaroutput.HandoffID(freshUUID()),
+						SourceLeaseID:   hangaroutput.SourceLeaseID(freshUUID()),
+						Output:          in.Source.Draft.Output,
+						CaptureDeadline: previous.CaptureDeadline,
+					},
+					PreviousAdmission: previous,
+					// The cluster hands back a new Pod for a new build, and a
+					// hold binds to it: a replacement Pod is a new incarnation
+					// and does not inherit the old one's hold.
+					PodUID: executioncontrol.PodUID(freshUUID()),
+				}, nil
+			},
+		),
 
 		// A READ OF THE BUCKET, through the same client the daemon uses. Not a
 		// memory of what was published: that is what makes "holds exactly one
@@ -294,6 +326,13 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 		CheckContains[CaptureOutcome]("the capture is refused as {string}",
 			"the capture's refusal",
 			func(in CaptureOutcome) (string, error) {
+				// A refusal from the control plane's own guard, when the
+				// capture never reached the daemon. It is asked first because
+				// a predeclaration cannot produce a daemon answer at all --
+				// there is nothing to send.
+				if in.Refusal != nil {
+					return in.Refusal.Error(), nil
+				}
 				if in.Answer.Err != nil {
 					return "", fmt.Errorf("no answer at all: %w", in.Answer.Err)
 				}
@@ -468,7 +507,7 @@ func (s HangarDaemon) captureAgain(first HeldSource) (CaptureOutcome, error) {
 			HandoffID:       hangaroutput.HandoffID(freshUUID()),
 			SourceLeaseID:   hangaroutput.SourceLeaseID(freshUUID()),
 			Output:          first.Admission.Output,
-			CaptureDeadline: hangaroutput.NewTimestamp(time.Now().UTC().Add(time.Hour)),
+			CaptureDeadline: hangaroutput.NewTimestamp(time.Now().UTC().Add(24 * time.Hour)),
 		},
 		PodUID: executioncontrol.PodUID(freshUUID()),
 	}

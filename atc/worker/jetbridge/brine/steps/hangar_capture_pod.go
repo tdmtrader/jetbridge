@@ -66,7 +66,7 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 						HandoffID:       hangaroutput.HandoffID(freshUUID()),
 						SourceLeaseID:   hangaroutput.SourceLeaseID(freshUUID()),
 						Output:          hangaroutput.OutputName(outputName),
-						CaptureDeadline: hangaroutput.NewTimestamp(time.Now().UTC().Add(time.Hour)),
+						CaptureDeadline: hangaroutput.NewTimestamp(time.Now().UTC().Add(24 * time.Hour)),
 					},
 				}, nil
 			},
@@ -119,7 +119,7 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 						HandoffID:       hangaroutput.HandoffID(freshUUID()),
 						SourceLeaseID:   hangaroutput.SourceLeaseID(freshUUID()),
 						Output:          hangaroutput.OutputName(outputName),
-						CaptureDeadline: hangaroutput.NewTimestamp(time.Now().UTC().Add(time.Hour)),
+						CaptureDeadline: hangaroutput.NewTimestamp(time.Now().UTC().Add(24 * time.Hour)),
 					},
 				}
 				draft.Draft.StepName, draft.Draft.ImageURL = name, image

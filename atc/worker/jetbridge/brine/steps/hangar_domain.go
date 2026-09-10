@@ -35,6 +35,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
+	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	hangaroutput "github.com/concourse/concourse/hangar/output"
@@ -262,6 +263,11 @@ type FinishWitnessed struct {
 	// assertable.
 	Asked controlAnswer
 
+	// Cancelled records that a caller asked to cancel, which is a REQUEST and
+	// not a row: which branch the arbiter then wins is the plane's answer, and
+	// this state carries the question rather than the answer.
+	Cancelled bool
+
 	Err error
 }
 
@@ -295,7 +301,35 @@ type CaptureOutcome struct {
 
 	// Announcements are the build's own Req 18 events, read back through the
 	// production reader, in emission order — order is part of the assertion.
-	Announcements []string
+	Announcements []db.HangarAnnouncement
+
+	// Transitions is every bounded step the coordinator took, in order, and
+	// Snapshots is the durable record after each one.
+	//
+	// They are here because two of this family's assertions are about ORDERING
+	// rather than about a final state: "the checkpoint is committed with an
+	// UNRESOLVED reservation" and "the outcome was pending between the two
+	// halves" are both true at a moment the settled state no longer shows.
+	Transitions []string
+	Snapshots   []hangaroutput.HandoffRecord
+
+	// Final is the durable record when nothing is owed any more.
+	Final hangaroutput.HandoffRecord
+
+	// AllAnnouncements is what the plane told watchers about EVERY handoff,
+	// which is the only form the Req 18 absence can take: "an ordinary step
+	// announces none of them" is a statement about what is not in the store.
+	AllAnnouncements []db.HangarAnnouncement
+
+	// Refusal is what a publication API answered a caller offering something
+	// that is not capture authority. It is a VALUE so the refusal is
+	// assertable rather than fatal.
+	Refusal error
+
+	// Plane is the control plane this capture settled on, kept so a later step
+	// can ask it another question -- what the announcement store holds for a
+	// DIFFERENT handoff, say.
+	Plane *settlementPlane
 
 	// Settled is false while the outcome is still pending, which is a state the
 	// two-halves scenarios assert on directly.
