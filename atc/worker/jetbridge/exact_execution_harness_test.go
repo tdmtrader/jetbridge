@@ -63,15 +63,14 @@ var (
 // and instant warm, which is why it is not per spec.
 func buildOutputDaemon() (string, error) {
 	outputDaemonBuild.Do(func() {
-		dir, err := os.MkdirTemp("", "jetbridge-output-daemon-*")
-		if err != nil {
-			outputDaemonBuildErr = err
-
-			return
-		}
-		binary := filepath.Join(dir, "hangar-output-daemon")
+		binary := filepath.Join(tempRoot, "hangar-output-daemon")
 		build := exec.Command("go", "build", "-o", binary, "./cmd/hangar-output-daemon")
 		build.Dir = repositoryRoot()
+		// The go tool's own work directory goes inside this package's root, so
+		// that a build killed by a signal leaves its `go-build*` where this
+		// process's cleanup will find it rather than in the user's temp
+		// directory forever.
+		build.Env = append(os.Environ(), "TMPDIR="+tempRoot)
 		if out, err := build.CombinedOutput(); err != nil {
 			outputDaemonBuildErr = fmt.Errorf("building the output daemon: %w\n%s", err, out)
 
@@ -121,7 +120,10 @@ func startOutputDaemonWith(secure bool) (*outputDaemonHarness, error) {
 		return nil, err
 	}
 
-	dir, err := os.MkdirTemp("", "jetbridge-output-control-*")
+	// Under the package's own root, so that a daemon this harness starts takes
+	// its ledger, its steps and its keys with it when the process ends. Nothing
+	// removed these, and a suite that starts one per spec left one per spec.
+	dir, err := os.MkdirTemp(tempRoot, "control-*")
 	if err != nil {
 		return nil, err
 	}

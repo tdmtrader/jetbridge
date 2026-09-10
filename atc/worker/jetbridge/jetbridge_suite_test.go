@@ -118,6 +118,14 @@ func persistNamedWorker(database jetbridgeDB, name string) (db.Worker, error) {
 
 func TestJetbridge(t *testing.T) {
 	RegisterFailHandler(Fail)
+
+	// What was already in the user's temp directory before this process ran.
+	// Anything attributable to it that is still there afterwards is a leak, and
+	// it fails the package rather than accumulating a copy of a 150 MB daemon
+	// binary per run until the volume is full.
+	before := jetbridge.TempSuspects()
+	defer jetbridge.AssertNoTempSurvives(t, before)
+
 	RunSpecs(t, "Jetbridge Suite")
 }
 

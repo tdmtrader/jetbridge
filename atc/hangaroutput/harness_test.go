@@ -86,12 +86,26 @@ func TestMain(m *testing.M) {
 	postgresrunner.InitializeRunnerForGinkgo(&runner, &postmasterRun)
 	postmaster = &runner
 
+	// What was already in the user's temp directory before this package ran.
+	// Anything attributable to this process that is still there afterwards is a
+	// leak, and it fails the package rather than accumulating silently.
+	before := tempSuspects()
+
 	code := m.Run()
 
 	postmasterRun.Signal(os.Interrupt)
 	select {
 	case <-postmasterRun.Wait():
 	case <-time.After(10 * time.Second):
+	}
+
+	if leaks := tempLeaks(before); len(leaks) != 0 {
+		for _, leak := range leaks {
+			fmt.Fprintln(os.Stderr, "temp leak:", leak)
+		}
+		if code == 0 {
+			code = 1
+		}
 	}
 
 	os.Exit(code)
@@ -343,15 +357,14 @@ var (
 
 func buildDaemon() (string, error) {
 	daemonBuild.Do(func() {
-		dir, err := os.MkdirTemp("", "hangaroutput-daemon-*")
-		if err != nil {
-			daemonBuildErr = err
-
-			return
-		}
-		binary := filepath.Join(dir, "hangar-output-daemon")
+		binary := filepath.Join(tempRoot, "hangar-output-daemon")
 		build := exec.Command("go", "build", "-o", binary, "./cmd/hangar-output-daemon")
 		build.Dir = repositoryRoot()
+		// The go tool's own work directory goes inside this package's root, so
+		// that a build killed by a signal leaves its `go-build*` where this
+		// process's cleanup will find it rather than in the user's temp
+		// directory forever.
+		build.Env = append(os.Environ(), "TMPDIR="+tempRoot)
 		if out, err := build.CombinedOutput(); err != nil {
 			daemonBuildErr = fmt.Errorf("building the output daemon: %w\n%s", err, out)
 
@@ -402,11 +415,9 @@ func startDaemon(t *testing.T, endpoint, bucket string) *daemonProcess {
 		t.Fatalf("%v", err)
 	}
 
-	dir, err := os.MkdirTemp("", "hangaroutput-control-*")
-	if err != nil {
-		t.Fatalf("temp dir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	// t.TempDir, so the spec's own directory goes when the spec goes and a
+	// failing run leaves nothing to sweep up by hand.
+	dir := t.TempDir()
 	for _, sub := range []string{"control", "steps", "scratch"} {
 		if err := os.MkdirAll(filepath.Join(dir, sub), 0o700); err != nil {
 			t.Fatalf("mkdir: %v", err)
