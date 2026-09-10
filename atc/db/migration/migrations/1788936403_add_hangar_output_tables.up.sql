@@ -798,6 +798,17 @@ CREATE TABLE hangar_read_leases (
     stat_marker_version text NOT NULL CHECK (stat_marker_version <> ''),
     stat_observed_at    timestamp with time zone NOT NULL,
 
+    -- The term this lease was ADMITTED for, stored because a renewal grants one
+    -- of them and there is nowhere else the length could honestly come from.
+    --
+    -- Not `expires_at - granted_at`: expires_at is what the last renewal moved
+    -- and granted_at never moves, so that difference grows by the age of the
+    -- lease and every renewal would be longer than the one before it. And not
+    -- the daemon's own number either -- the length of a protection is not
+    -- something the party being protected gets to choose.
+    lease_term_seconds integer NOT NULL
+        CHECK (lease_term_seconds >= 900 AND lease_term_seconds <= 86400),
+
     CONSTRAINT hangar_read_lease_term CHECK (expires_at - granted_at >= interval '15 minutes')
 );
 
@@ -818,6 +829,11 @@ BEGIN
         OR NEW.destination_volume <> OLD.destination_volume THEN
         RAISE EXCEPTION 'hangar: read lease % changed what its grant binds; a re-mint is byte-identical or it is a different lease',
             OLD.read_lease_id
+            USING ERRCODE = 'JB001';
+    END IF;
+    IF NEW.lease_term_seconds <> OLD.lease_term_seconds THEN
+        RAISE EXCEPTION 'hangar: read lease % changed its admitted term, % -> %; a renewal grants one term and does not choose a new one',
+            OLD.read_lease_id, OLD.lease_term_seconds, NEW.lease_term_seconds
             USING ERRCODE = 'JB001';
     END IF;
     IF NEW.lease_fence < OLD.lease_fence THEN

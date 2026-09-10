@@ -606,7 +606,10 @@ func (repository *HangarOutputRepository) AcquireReadLease(ctx context.Context, 
 			output.ErrConflict, request.ClaimID)
 	}
 
-	interval, err := hangarLeaseInterval(output.LeaseTermFor(request.MaterializationTimeout))
+	// The admitted term, derived once and STORED, because a renewal grants one
+	// of them and the row is the only place that length can come from later.
+	term := output.LeaseTermFor(request.MaterializationTimeout)
+	interval, err := hangarLeaseInterval(term)
 	if err != nil {
 		return output.ReadLease{}, err
 	}
@@ -623,12 +626,12 @@ func (repository *HangarOutputRepository) AcquireReadLease(ctx context.Context, 
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO hangar_read_leases
 			(read_lease_id, claim_id, lifecycle_id, activation_epoch, lease_fence, expires_at,
-			 grant_nonce, destination_handle, destination_volume,
+			 lease_term_seconds, grant_nonce, destination_handle, destination_volume,
 			 stat_metageneration, stat_marker_version, stat_observed_at)
-		VALUES ($1, $2, $3, $4, 1, now() + $5::interval, $6, $7, $8, $9, $10, $11)
+		VALUES ($1, $2, $3, $4, 1, now() + $5::interval, $6, $7, $8, $9, $10, $11, $12)
 		ON CONFLICT (read_lease_id) DO NOTHING`,
 		string(request.ReadLeaseID), string(request.ClaimID), lifecycle,
-		int64(request.ActivationEpoch), interval,
+		int64(request.ActivationEpoch), interval, int(term.Round(time.Second).Seconds()),
 		request.GrantNonce, request.Destination.Handle, request.Destination.Volume,
 		request.StatProof.Metageneration, request.StatProof.Marker.Version,
 		request.StatObservedAt.Time,
@@ -680,27 +683,45 @@ func (repository *HangarOutputRepository) AcquireReadLease(ctx context.Context, 
 
 // RenewReadLease extends the reader's authority while work continues. Work may
 // only begin, or continue, with enough of the lease left to finish inside it.
+//
+// ONE TERM FROM NOW, and the term is the row's. Deriving it from
+// `ExpiresAt - GrantedAt` of the lease being renewed compounds: expires_at is
+// what the previous renewal moved and granted_at never moves, so the k-th
+// renewal would be k-1 intervals longer than the first and an abandoned reader
+// would pin its generation for far longer than the term it was admitted under.
+// Requirement 36 names one term, and lease_term_seconds is where it lives.
+//
+// The row's own state is checked HERE rather than left to the caller. The one
+// production caller does run ValidateReadLease first, which refuses an expired
+// lease -- but this method is on the repository contract for any caller, and a
+// renewal that resurrected an expired lease would re-pin a generation recovery
+// had already released. The lifecycle join is the same rule AcquireReadLease
+// admits under: a generation recorded missing or conflicted is not one a reader
+// may keep protecting.
 func (repository *HangarOutputRepository) RenewReadLease(ctx context.Context, tx output.Tx, lease output.ReadLease) (output.ReadLease, error) {
 	if err := lease.Validate(); err != nil {
-		return output.ReadLease{}, err
-	}
-
-	interval, err := hangarLeaseInterval(lease.ExpiresAt.Sub(lease.GrantedAt.Time))
-	if err != nil {
 		return output.ReadLease{}, err
 	}
 
 	var expires time.Time
 	var fence int64
 	if err := hangarQueryRow(ctx, tx, `
-		UPDATE hangar_read_leases
-		SET renewed_at = now(), expires_at = now() + $2::interval
-		WHERE read_lease_id = $1 AND released_at IS NULL AND lease_fence = $3
-		RETURNING expires_at, lease_fence`,
-		[]any{string(lease.ReadLeaseID), interval, int64(lease.LeaseFence)},
+		UPDATE hangar_read_leases r
+		SET renewed_at = now(),
+		    expires_at = now() + make_interval(secs => r.lease_term_seconds)
+		WHERE r.read_lease_id = $1
+		  AND r.released_at IS NULL
+		  AND r.expires_at > now()
+		  AND r.lease_fence = $2
+		  AND EXISTS (
+			SELECT 1 FROM hangar_exact_lifecycles l
+			WHERE l.id = r.lifecycle_id AND l.state IN ('registered', 'adopted'))
+		RETURNING r.expires_at, r.lease_fence`,
+		[]any{string(lease.ReadLeaseID), int64(lease.LeaseFence)},
 		&expires, &fence); err != nil {
-		return output.ReadLease{}, fmt.Errorf("%w: read lease %s is released, expired or held at "+
-			"another fence", output.ErrConflict, lease.ReadLeaseID)
+		return output.ReadLease{}, fmt.Errorf("%w: read lease %s is released, expired, held at "+
+			"another fence, or protects a generation that is no longer readable",
+			output.ErrConflict, lease.ReadLeaseID)
 	}
 
 	renewed := lease

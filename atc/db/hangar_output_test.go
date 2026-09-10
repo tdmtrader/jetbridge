@@ -946,6 +946,94 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				Expect(released).To(Equal(1))
 			})
 
+			// A RENEWAL GRANTS ONE TERM, and the same one every time.
+			//
+			// The interval must not be read off the row being renewed:
+			// `expires_at` is what the previous renewal moved and `granted_at`
+			// never moves, so a term derived from their difference grows by the
+			// age of the lease on every pass. At the daemon's one-minute
+			// cadence the k-th renewal would add k-1 minutes, and an abandoned
+			// reader would pin its generation for term + N(N-1)/2 minutes --
+			// which is exactly the pin CloseAbandonedReadLeases exists to
+			// bound, made unboundable by the mechanism meant to keep a live
+			// reader alive. Requirement 36 names ONE term.
+			//
+			// The row is aged so that renewing has something to do; ageing
+			// moves both instants together, so what changes is how much is
+			// left, never the term itself.
+			It("grants exactly one term from now, however often it is renewed", func() {
+				term := output.LeaseTermFor(request.MaterializationTimeout)
+
+				_, err := dbConn.Exec(`
+					UPDATE hangar_read_leases
+					SET granted_at = granted_at - interval '10 minutes',
+					    renewed_at = renewed_at - interval '10 minutes',
+					    expires_at = expires_at - interval '10 minutes'
+					WHERE read_lease_id = $1`, string(id))
+				Expect(err).NotTo(HaveOccurred())
+
+				current := lease
+				for pass := 1; pass <= 3; pass++ {
+					tx, err := dbConn.Begin()
+					Expect(err).NotTo(HaveOccurred())
+					record, err := repository.LoadReadLease(ctx, tx, id)
+					Expect(err).NotTo(HaveOccurred())
+
+					current, err = repository.RenewReadLease(ctx, tx, record.Lease)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(tx.Commit()).To(Succeed())
+
+					remaining := time.Until(current.ExpiresAt.Time)
+					Expect(remaining).To(BeNumerically("<=", term),
+						fmt.Sprintf("renewal %d left more than one term on the lease", pass))
+					Expect(remaining).To(BeNumerically(">", term-time.Minute),
+						fmt.Sprintf("renewal %d granted less than a term", pass))
+				}
+			})
+
+			// The repository's own contract, not the handler's composition.
+			//
+			// LeaseControl runs ValidateReadLease first and would refuse both
+			// of these before RenewReadLease saw them -- but RenewReadLease is
+			// on the ReadLeaseRepository contract for any caller, and a method
+			// whose error text says "released, expired or ..." should be the
+			// method that decides it. A renewal that resurrected an expired
+			// lease would re-pin a generation recovery had already released.
+			It("refuses to renew a lease that has already expired", func() {
+				_, err := dbConn.Exec(`
+					UPDATE hangar_read_leases
+					SET granted_at = granted_at - interval '1 hour',
+					    renewed_at = renewed_at - interval '1 hour',
+					    expires_at = expires_at - interval '1 hour'
+					WHERE read_lease_id = $1`, string(id))
+				Expect(err).NotTo(HaveOccurred())
+
+				tx, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(tx)
+				_, err = repository.RenewReadLease(ctx, tx, lease)
+				Expect(err).To(MatchError(output.ErrConflict))
+				Expect(err.Error()).To(ContainSubstring("expired"))
+			})
+
+			DescribeTable("refuses to renew a lease whose generation is no longer readable",
+				func(state string) {
+					_, err := dbConn.Exec(`
+						UPDATE hangar_exact_lifecycles SET state = $4
+						WHERE scope = $1 AND digest = $2 AND generation = $3`,
+						string(ref.Scope), string(ref.Digest), ref.Generation, state)
+					Expect(err).NotTo(HaveOccurred())
+
+					tx, err := dbConn.Begin()
+					Expect(err).NotTo(HaveOccurred())
+					defer db.Rollback(tx)
+					_, err = repository.RenewReadLease(ctx, tx, lease)
+					Expect(err).To(MatchError(output.ErrConflict))
+				},
+				Entry("recorded missing out of band", "missing_out_of_band"),
+				Entry("recorded conflicted", "conflicted"),
+			)
+
 			It("refuses a released lease even though its grant is still signed", func() {
 				tx, err := dbConn.Begin()
 				Expect(err).NotTo(HaveOccurred())
