@@ -437,6 +437,23 @@ func (coordinator *Coordinator) cancelCapture(ctx context.Context, record output
 // the daemon acknowledges that exact intent, and the caller records the
 // acknowledgement. The branch decides only which recording method takes it.
 func (coordinator *Coordinator) releaseFor(ctx context.Context, record output.HandoffRecord, branch output.Disposition) error {
+	// The capture branch takes the lease first, exactly as every other capture
+	// transition does. It was the one that did not, so a superseded coordinator
+	// could still drive the daemon's AcknowledgeRelease for a capture it no
+	// longer owned. Bounded -- the release is idempotent by intent and the row
+	// is already terminal -- and Req 10 nonetheless names release in the list a
+	// stale owner may not do, so the refusal belongs at the top of the step
+	// where every other one is.
+	//
+	// The other two branches have no capture fence to take: they never reached
+	// Stage 2, so there is no reservation to own, and their fence is the
+	// EXECUTION fence the daemon checks.
+	if branch == output.DispositionCapture {
+		if _, err := coordinator.own(ctx, record); err != nil {
+			return err
+		}
+	}
+
 	control, err := coordinator.control(record)
 	if err != nil {
 		return err

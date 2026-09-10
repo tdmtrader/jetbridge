@@ -379,6 +379,93 @@ func TestNoSourceControlOperationAcceptsAPathAndASwappedSymlinkIsRefused(t *test
 	}
 }
 
+// The CAPTURE fence, at the daemon.
+//
+// SealRequest.CaptureFence, SealConfirmation.CaptureFence and
+// PublicationRequest.CaptureFence were validated non-zero and otherwise unread:
+// `admitted` compares only the EXECUTION fence, which a capture-lease takeover
+// does not move. So every stale-owner refusal on the capture branch lived in
+// PostgreSQL, and Req 10 says the daemon persists the matching source lease and
+// epoch and that a stale owner may not seal, publish, sign, finalize or
+// release.
+//
+// The permitted case is asserted FIRST and at each operation, because a fence
+// check that refused everything would look exactly like a fence check that
+// worked.
+func TestTheDaemonRefusesACaptureFenceBelowTheOneItSealedUnder(t *testing.T) {
+	fixture := newSourceLedger(t)
+	hold := held(t, fixture)
+
+	started, err := fixture.source.BeginSeal(context.Background(), output.SealRequest{
+		ProtocolVersion: output.ProtocolVersion,
+		Execution:       identity(1),
+		ActivationEpoch: testEpoch,
+		HandoffID:       testHandoff,
+		Incarnation:     hold.Incarnation,
+		CaptureFence:    captureFence,
+		DeadlineAt:      output.NewTimestamp(fixedNow().Add(time.Hour)),
+	})
+	if err != nil {
+		t.Fatalf("beginning the seal: %v", err)
+	}
+
+	// The control: the fence the seal was begun under is served.
+	if _, err := fixture.source.ConfirmSeal(context.Background(), output.SealConfirmation{
+		Started:      started,
+		CaptureFence: captureFence,
+		ObservedAt:   output.NewTimestamp(fixedNow()),
+	}); err != nil {
+		t.Fatalf("the owner's own fence was refused at confirm-seal: %v", err)
+	}
+
+	// And a lower one is not, at every capture-facet operation that takes one.
+	if _, err := fixture.source.ConfirmSeal(context.Background(), output.SealConfirmation{
+		Started:      started,
+		CaptureFence: captureFence - 1,
+		ObservedAt:   output.NewTimestamp(fixedNow()),
+	}); !errors.Is(err, executioncontrol.ErrStaleFence) {
+		t.Errorf("a superseded owner confirmed a seal: %v", err)
+	}
+	if _, _, err := fixture.source.SealedIncarnation(testHandoff, identity(1), testEpoch,
+		captureFence-1); !errors.Is(err, executioncontrol.ErrStaleFence) {
+		t.Errorf("a superseded owner read the sealed tree: %v", err)
+	}
+	if err := fixture.source.AdmitCaptureFence(testHandoff, identity(1), testEpoch,
+		captureFence-1); !errors.Is(err, executioncontrol.ErrStaleFence) {
+		t.Errorf("a superseded owner was admitted to attest: %v", err)
+	}
+
+	// The control again, on the two that are not ConfirmSeal: the current fence
+	// reaches the bytes.
+	if _, _, err := fixture.source.SealedIncarnation(testHandoff, identity(1), testEpoch,
+		captureFence); err != nil {
+		t.Errorf("the owner's own fence was refused at the sealed read: %v", err)
+	}
+	if err := fixture.source.AdmitCaptureFence(testHandoff, identity(1), testEpoch,
+		captureFence); err != nil {
+		t.Errorf("the owner's own fence was refused at attest: %v", err)
+	}
+
+	// A takeover moves it forward, and the daemon follows rather than pinning
+	// the first fence it ever saw: the lease is the authority, and BeginSeal is
+	// idempotent across a takeover by design.
+	if _, err := fixture.source.BeginSeal(context.Background(), output.SealRequest{
+		ProtocolVersion: output.ProtocolVersion,
+		Execution:       identity(1),
+		ActivationEpoch: testEpoch,
+		HandoffID:       testHandoff,
+		Incarnation:     hold.Incarnation,
+		CaptureFence:    captureFence + 1,
+		DeadlineAt:      output.NewTimestamp(fixedNow().Add(time.Hour)),
+	}); err != nil {
+		t.Fatalf("a takeover's seal was refused: %v", err)
+	}
+	if err := fixture.source.AdmitCaptureFence(testHandoff, identity(1), testEpoch,
+		captureFence); !errors.Is(err, executioncontrol.ErrStaleFence) {
+		t.Errorf("the superseded owner was still served after the takeover: %v", err)
+	}
+}
+
 // A release releases the HOLD, and never the bytes.
 //
 // The incarnation is the step's own output directory -- after the Phase 4

@@ -111,6 +111,23 @@ type sourceRecord struct {
 	// moment the evidence was supposed to cover.
 	SealDeadlineAt output.Timestamp `json:"seal_deadline_at,omitzero"`
 
+	// CaptureFence is the capture-ownership fence this source was last sealed
+	// under, and it is the daemon's half of Req 10: "a stale owner may not
+	// seal, publish, sign/register a receipt, finalize, or release".
+	//
+	// It is a DIFFERENT fence from the execution's, which is what made the gap:
+	// `admitted` compares the base ledger's execution fence, and a capture-lease
+	// takeover does not move that -- the incarnation is the same, the writer set
+	// is the same, and the seal is idempotent across it by design. So every
+	// stale-capture-owner refusal lived in PostgreSQL, and a superseded owner
+	// that still held a valid capability could drive this node's seal
+	// confirmation, canonical read, publication and attestation.
+	//
+	// It moves FORWARD only, and it follows the lease rather than pinning the
+	// first value it saw: the control plane's lease is the authority for who
+	// owns a capture, and a takeover's BeginSeal is how this node learns.
+	CaptureFence output.CaptureFence `json:"capture_fence,omitempty"`
+
 	// Release is the fenced release pair's second half, stored so a repeat of
 	// the same intent returns the same statement and a different intent is a
 	// conflict.
@@ -431,6 +448,50 @@ func (ledger *SourceLedger) admitted(handoff output.HandoffID,
 	}
 
 	return record, nil
+}
+
+// admitCapture is `admitted` plus the CAPTURE fence, and it is the precondition
+// every capture-facet operation past the seal shares.
+//
+// The two fences answer different questions and neither substitutes for the
+// other. The execution fence says a replacement Pod has not superseded this
+// writer; the capture fence says a second coordinator has not taken ownership
+// of this capture. A takeover moves only the second, so `admitted` alone would
+// serve a superseded owner every operation this node has.
+func (ledger *SourceLedger) admitCapture(handoff output.HandoffID,
+	execution executioncontrol.Identity, epoch executioncontrol.ActivationEpoch,
+	fence output.CaptureFence) (sourceRecord, error) {
+	record, err := ledger.admitted(handoff, execution, epoch)
+	if err != nil {
+		return sourceRecord{}, err
+	}
+	if fence == 0 {
+		return sourceRecord{}, fmt.Errorf("%w: a capture operation over handoff %s names no "+
+			"capture fence", output.ErrIncomplete, handoff)
+	}
+	if fence < record.CaptureFence {
+		return sourceRecord{}, fmt.Errorf("%w: capture fence %d over handoff %s was superseded "+
+			"by %d; a stale owner may not seal, publish, sign, finalize or release",
+			executioncontrol.ErrStaleFence, fence, handoff, record.CaptureFence)
+	}
+
+	return record, nil
+}
+
+// AdmitCaptureFence is the fence check on its own, for the attestation route.
+//
+// Signing a receipt reads no source bytes -- it is a stat against the object
+// store -- so it has no other reason to reach this ledger, and Req 10 lists
+// signing among the things a stale owner may not do.
+func (ledger *SourceLedger) AdmitCaptureFence(handoff output.HandoffID,
+	execution executioncontrol.Identity, epoch executioncontrol.ActivationEpoch,
+	fence output.CaptureFence) error {
+	ledger.mu.Lock()
+	defer ledger.mu.Unlock()
+
+	_, err := ledger.admitCapture(handoff, execution, epoch, fence)
+
+	return err
 }
 
 func (ledger *SourceLedger) next() executioncontrol.LedgerSequence {
@@ -1006,9 +1067,28 @@ func (ledger *SourceLedger) BeginSeal(_ context.Context, request output.SealRequ
 		return output.SealStarted{}, fmt.Errorf("%w: handoff %s released its source",
 			output.ErrConflict, request.HandoffID)
 	}
+	if request.CaptureFence < record.CaptureFence {
+		return output.SealStarted{}, fmt.Errorf(
+			"%w: capture fence %d over handoff %s was superseded by %d; a stale owner may not seal",
+			executioncontrol.ErrStaleFence, request.CaptureFence, request.HandoffID,
+			record.CaptureFence)
+	}
 	if record.SealStarted != nil {
 		// Idempotent: the captured set is captured once. Re-capturing it on a
 		// repeat is exactly the live-query defect this field exists to avoid.
+		//
+		// The FENCE still moves, and that is not a contradiction: a takeover
+		// inherits the seal this node already made -- the incarnation and its
+		// writer set have not changed -- and how this node learns that
+		// ownership moved is the new owner's own BeginSeal. Pinning the first
+		// fence seen would refuse every operation the takeover then owes.
+		if request.CaptureFence > record.CaptureFence {
+			record.CaptureFence = request.CaptureFence
+			if err := ledger.save(record); err != nil {
+				return output.SealStarted{}, err
+			}
+		}
+
 		return output.SealStarted{
 			Acknowledgement: *record.SealStarted,
 			DrainSet:        append([]output.WriterTicketID(nil), record.DrainSet...),
@@ -1035,6 +1115,7 @@ func (ledger *SourceLedger) BeginSeal(_ context.Context, request output.SealRequ
 	record.State = sourceSealing
 	record.SealStarted = &ack
 	record.SealDeadlineAt = request.DeadlineAt
+	record.CaptureFence = request.CaptureFence
 	record.DrainSet = record.openTickets()
 	record.HighWater = ledger.sequence
 	if err := ledger.save(record); err != nil {
@@ -1060,7 +1141,8 @@ func (ledger *SourceLedger) ConfirmSeal(_ context.Context, confirmation output.S
 	defer ledger.mu.Unlock()
 
 	started := confirmation.Started.Acknowledgement
-	record, err := ledger.admitted(started.HandoffID, started.Execution, started.ActivationEpoch)
+	record, err := ledger.admitCapture(started.HandoffID, started.Execution,
+		started.ActivationEpoch, confirmation.CaptureFence)
 	if err != nil {
 		return output.CaptureAcknowledgement{}, err
 	}
@@ -1281,11 +1363,12 @@ func (ledger *SourceLedger) InspectSeal(handoff output.HandoffID,
 // may still be changing, and Req 15 is exactly the rule that no canonical read
 // begins before both halves of the seal hold.
 func (ledger *SourceLedger) SealedIncarnation(handoff output.HandoffID,
-	execution executioncontrol.Identity, epoch executioncontrol.ActivationEpoch) (string, sourceRecord, error) {
+	execution executioncontrol.Identity, epoch executioncontrol.ActivationEpoch,
+	fence output.CaptureFence) (string, sourceRecord, error) {
 	ledger.mu.Lock()
 	defer ledger.mu.Unlock()
 
-	record, err := ledger.admitted(handoff, execution, epoch)
+	record, err := ledger.admitCapture(handoff, execution, epoch, fence)
 	if err != nil {
 		return "", sourceRecord{}, err
 	}

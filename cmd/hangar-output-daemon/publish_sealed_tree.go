@@ -45,7 +45,7 @@ func (server *Server) PublishSealedTree(ctx context.Context,
 	}
 
 	root, record, err := server.source.SealedIncarnation(
-		request.HandoffID, request.Execution, request.ActivationEpoch)
+		request.HandoffID, request.Execution, request.ActivationEpoch, request.CaptureFence)
 	if err != nil {
 		return output.PublicationResult{}, err
 	}
@@ -134,7 +134,7 @@ func (server *Server) CanonicalizeSealedTree(ctx context.Context,
 	}
 
 	root, _, err := server.source.SealedIncarnation(
-		request.HandoffID, request.Execution, request.ActivationEpoch)
+		request.HandoffID, request.Execution, request.ActivationEpoch, request.CaptureFence)
 	if err != nil {
 		return output.CanonicalizationResult{}, err
 	}
