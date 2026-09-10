@@ -226,6 +226,23 @@ func (c *capture) sourceStillThere() bool {
 	return err == nil
 }
 
+// expireTheLease moves the capture ownership lease wholesale into the past.
+//
+// Expiry alone releases nothing and proves nothing -- what it permits is a
+// takeover, and the takeover advances the fence. The row is moved rather than
+// shortened because the schema refuses a term under fifteen minutes: what is
+// being simulated is time passing, not an illegally short lease.
+func (c *capture) expireTheLease(t *testing.T) {
+	t.Helper()
+
+	if _, err := c.harness.Conn.Exec(`
+		UPDATE hangar_capture_attempt_leases
+		SET renewed_at = now() - interval '2 hours', expires_at = now() - interval '1 hour'
+		WHERE reservation_id = $1`, string(c.record(t).ReservationID)); err != nil {
+		t.Fatalf("expiring the lease: %v", err)
+	}
+}
+
 func (h *harness) bucketKeys(t *testing.T) []string {
 	t.Helper()
 
@@ -572,18 +589,7 @@ func TestAStaleOwnerCannotAdvanceACapture(t *testing.T) {
 	}
 	record := c.record(t)
 
-	// The owner's lease runs out. Expiry alone releases nothing and proves
-	// nothing -- what it permits is a takeover, and the takeover advances the
-	// fence, which is the thing the old owner is then refused on.
-	// The schema refuses a term under fifteen minutes, so the row is moved
-	// wholesale into the past rather than shortened: what is being simulated is
-	// time passing, not an illegally short lease.
-	if _, err := h.Conn.Exec(`
-		UPDATE hangar_capture_attempt_leases
-		SET renewed_at = now() - interval '2 hours', expires_at = now() - interval '1 hour'
-		WHERE reservation_id = $1`, string(record.ReservationID)); err != nil {
-		t.Fatalf("expiring the lease: %v", err)
-	}
+	c.expireTheLease(t)
 
 	tx, err := h.Conn.Begin()
 	if err != nil {
@@ -611,6 +617,64 @@ func TestAStaleOwnerCannotAdvanceACapture(t *testing.T) {
 	}
 	if after := c.record(t); after.Receipt != nil {
 		t.Error("a stale owner registered a receipt")
+	}
+}
+
+// The POSITIVE half of a lease takeover: the new owner finishes what it
+// inherited.
+//
+// A takeover is what an ATC restart mid-capture becomes, because OwnerID is
+// minted per process: after DefaultLeaseTerm the next process is a different
+// owner and its first `own` advances the fence. The spec above proves the OLD
+// owner is refused; this one proves the NEW one is not, which is the half
+// recovery depends on and the half that was broken -- two writes checked the
+// reservation ROW's fence, frozen at 1 by Stage 2, while everything else
+// checked the lease, so every capture that survived a restart past Stage 2
+// ended as an unregistered object nobody could either register or fail.
+func TestATakeoverCarriesTheCaptureThroughToRegistration(t *testing.T) {
+	h := newHarness(t)
+	c := h.admit(t).hold(t).finish(t, true)
+
+	// Stage 2 and the seal, under the first owner. A takeover of a lease
+	// nobody holds is not a takeover.
+	for i := 0; i < 2; i++ {
+		if _, err := c.advanceOnce(t); err != nil {
+			t.Fatalf("advancing: %v", err)
+		}
+	}
+	c.expireTheLease(t)
+
+	// The second process. A new owner id is exactly what an ATC restart
+	// produces, and it is the whole difference between the two owners.
+	h.Coordinator.OwnerID = uuid.NewString()
+
+	taken := c.advance(t)
+
+	record := c.record(t)
+	if record.State != output.CaptureStateRegistered {
+		t.Fatalf("a capture inherited by a new owner is %s after %v", record.State, taken)
+	}
+	if record.CaptureFence != 2 {
+		t.Errorf("the capture is admitted under fence %d and the takeover advanced the lease "+
+			"to 2; one fence source or none", record.CaptureFence)
+	}
+	if record.Receipt == nil {
+		t.Fatal("the new owner published an object and could never obtain a receipt for it")
+	}
+	if record.Receipt.Claims.WriterFence != output.WriterFence(2) {
+		t.Errorf("the receipt is bound to writer fence %d and the takeover holds 2",
+			record.Receipt.Claims.WriterFence)
+	}
+	if keys := h.bucketKeys(t); len(keys) != 1 {
+		t.Errorf("the takeover created %d object(s): %v", len(keys), keys)
+	}
+	if h.Dialer.Calls("begin-seal") != 1 {
+		t.Errorf("the seal was begun %d times across the takeover; the captured drain set is "+
+			"captured once", h.Dialer.Calls("begin-seal"))
+	}
+	if permitted, reason := hangaroutput.TerminalExposurePermitted(record); !permitted {
+		t.Errorf("a capture completed by its new owner does not permit a terminal outcome: %s",
+			reason)
 	}
 }
 

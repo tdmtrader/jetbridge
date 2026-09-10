@@ -144,16 +144,16 @@ func (repository *HangarOutputRepository) RecordTerminalCaptureFailure(ctx conte
 	}
 
 	result, err := tx.ExecContext(ctx, `
-		UPDATE hangar_capture_reservations
+		UPDATE hangar_capture_reservations r
 		SET state = 'failed',
 		    terminal_failure = $3,
 		    release_intent_id = CASE
-		        WHEN past_irreversible_publish_point THEN release_intent_id
-		        ELSE coalesce(release_intent_id, gen_random_uuid())
+		        WHEN r.past_irreversible_publish_point THEN r.release_intent_id
+		        ELSE coalesce(r.release_intent_id, gen_random_uuid())
 		    END
-		WHERE reservation_id = $1
-		  AND capture_fence = $2
-		  AND state IN ('unresolved', 'resolved')`,
+		WHERE r.reservation_id = $1
+		  AND `+hangarCurrentCaptureFence+` = $2
+		  AND r.state IN ('unresolved', 'resolved')`,
 		string(reservation), int64(fence), failure)
 	if err != nil {
 		return hangarConflict(err)
@@ -165,8 +165,8 @@ func (repository *HangarOutputRepository) RecordTerminalCaptureFailure(ctx conte
 	var state, existing string
 	var stored sql.NullString
 	if err := hangarQueryRow(ctx, tx, `
-		SELECT state, coalesce(terminal_failure, '') FROM hangar_capture_reservations
-		WHERE reservation_id = $1 AND capture_fence = $2`,
+		SELECT r.state, coalesce(r.terminal_failure, '') FROM hangar_capture_reservations r
+		WHERE r.reservation_id = $1 AND `+hangarCurrentCaptureFence+` = $2`,
 		[]any{string(reservation), int64(fence)}, &state, &existing); err != nil {
 		return fmt.Errorf("%w: reservation %s is not owned at capture fence %d; a stale owner "+
 			"may not finalize", output.ErrUnauthorized, reservation, fence)
@@ -220,7 +220,9 @@ func (repository *HangarOutputRepository) LoadHandoffRecord(ctx context.Context,
 		       p.reserved_locator, p.reserved_incarnation, p.reserved_directory, p.reserved_at,
 		       p.hold_acknowledged_at,
 		       d.disposition,
-		       r.reservation_id, r.producer_checkpoint_id, r.capture_fence, r.state,
+		       r.reservation_id, r.producer_checkpoint_id,
+		       CASE WHEN r.reservation_id IS NULL THEN NULL
+		            ELSE `+hangarCurrentCaptureFence+` END, r.state,
 		       r.terminal_failure, r.past_irreversible_publish_point,
 		       r.release_intent_id, r.release_acknowledged_at,
 		       l.scope, l.digest, l.logical_bytes,
@@ -374,7 +376,7 @@ func (repository *HangarOutputRepository) IssueStatChallenge(ctx context.Context
 			 scope, digest, generation, capture_fence, not_after)
 		SELECT $1, $2, $3, r.activation_epoch, $7, $4, $5, $6, $8, now() + $9::interval
 		FROM hangar_capture_reservations r
-		WHERE r.reservation_id = $3 AND r.capture_fence = $8
+		WHERE r.reservation_id = $3 AND `+hangarCurrentCaptureFence+` = $8
 		RETURNING issued_at, not_after, activation_epoch`,
 		[]any{
 			nonce, string(handoff), string(reservation),
