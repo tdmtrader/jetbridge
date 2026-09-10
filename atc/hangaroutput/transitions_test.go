@@ -536,3 +536,61 @@ func TestAHoldOverNoReservedSourceIsRefused(t *testing.T) {
 		t.Errorf("a hold over no reserved incarnation was answered with %v", err)
 	}
 }
+
+// A receipt is checked against the capture it is supposed to be FOR.
+//
+// The signature says the daemon said it; this says the daemon said it about
+// this capture. Every field below is one a receipt replayed from another
+// capture, source, output, epoch or fence would differ in — which is why the
+// list is long rather than a spot check, and why each arm is tampered with
+// individually here: in a live run the receipt is freshly obtained and every
+// field agrees, so nothing on the happy path can tell a missing arm from a
+// present one.
+func TestAReceiptIsMatchedToTheCaptureItIsFor(t *testing.T) {
+	record := resolvedLogically(captured(predeclared()))
+	record.PastIrreversiblePublishPoint = true
+
+	whole := output.Receipt{
+		Claims: output.ReceiptClaims{
+			Execution:            record.Execution,
+			ProducerCheckpointID: record.ProducerCheckpointID,
+			Incarnation:          record.Source.Incarnation,
+			Output:               record.Output,
+			Ref: hangar.TreeRef{
+				Scope: record.Scope, Digest: record.Digest, Generation: 12,
+			},
+			ActivationEpoch: record.ActivationEpoch,
+			WriterFence:     output.WriterFence(record.CaptureFence),
+		},
+	}
+
+	// The control: the receipt this capture would really get.
+	if err := checkReceiptClaims(whole, record, record.CaptureFence); err != nil {
+		t.Fatalf("a receipt for this exact capture was refused: %v", err)
+	}
+
+	for name, tamper := range map[string]func(*output.Receipt){
+		"another execution": func(r *output.Receipt) {
+			r.Claims.Execution.ExecutionID = "99999999-9999-4999-8999-999999999999"
+		},
+		"another producer checkpoint": func(r *output.Receipt) {
+			r.Claims.ProducerCheckpointID = "somebody-else's-checkpoint"
+		},
+		"another source incarnation": func(r *output.Receipt) {
+			r.Claims.Incarnation.HandleGeneration = 99
+		},
+		"another output": func(r *output.Receipt) { r.Claims.Output = "report" },
+		"another digest": func(r *output.Receipt) {
+			r.Claims.Ref.Digest = hangar.Digest("sha256:" + strings.Repeat("cd", 32))
+		},
+		"another scope":            func(r *output.Receipt) { r.Claims.Ref.Scope = "someone-elses-scope" },
+		"another activation epoch": func(r *output.Receipt) { r.Claims.ActivationEpoch = 99 },
+		"another writer fence":     func(r *output.Receipt) { r.Claims.WriterFence = 99 },
+	} {
+		tampered := whole
+		tamper(&tampered)
+		if err := checkReceiptClaims(tampered, record, record.CaptureFence); err == nil {
+			t.Errorf("a receipt bound to %s was admitted for this capture", name)
+		}
+	}
+}
