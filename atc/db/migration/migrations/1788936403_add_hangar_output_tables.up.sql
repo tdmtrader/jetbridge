@@ -1279,8 +1279,14 @@ BEGIN
         WHERE lifecycle_id = target AND finalized_at IS NULL;
     SELECT count(*) INTO claims FROM hangar_claims
         WHERE lifecycle_id = target AND released_at IS NULL;
+    -- An EXPIRED lease is not an active one. AC 13 says a reader's protection
+    -- ends when the read lease closes OR safely expires, and counting an
+    -- abandoned lease forever would make one crashed materializer pin a
+    -- generation for the life of the deployment. Recovery still closes it --
+    -- only after this same database clock says it has expired -- and the
+    -- tombstone is what stops it resurrecting.
     SELECT count(*) INTO leases FROM hangar_read_leases
-        WHERE lifecycle_id = target AND released_at IS NULL;
+        WHERE lifecycle_id = target AND released_at IS NULL AND expires_at > now();
     SELECT count(*) INTO pending FROM hangar_logical_reservations
         WHERE scope = lifecycle.scope AND digest = lifecycle.digest
           AND state = 'unresolved_generation';

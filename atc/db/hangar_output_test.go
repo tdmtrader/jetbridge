@@ -866,6 +866,80 @@ var _ = Describe("the Hangar output lock suffix", func() {
 					}),
 			)
 
+			// An abandoned reader does not pin a generation forever.
+			//
+			// A materializer that dies mid-staging leaves an unreleased lease.
+			// Requirement 46 asks for "no active read lease" and AC 13 says a
+			// reader's protection ends when the lease closes OR SAFELY EXPIRES,
+			// and counting an expired one forever would let one crash pin a
+			// generation for the life of the deployment.
+			//
+			// The lease is aged by moving both of its instants back together, so
+			// its fifteen-minute term is preserved and what changes is only
+			// whether it has run out. Nothing here shortens a lease.
+			It("stops pinning a generation once an abandoned lease has expired", func() {
+				tx, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(tx)
+				Expect(repository.ReleaseClaim(ctx, tx, output.ClaimRelease{
+					ProtocolVersion: output.ProtocolVersion,
+					ClaimID:         claimID,
+					Ref:             ref,
+					RequestedAt:     output.NewTimestamp(time.Now()),
+				})).To(Succeed())
+				Expect(tx.Commit()).To(Succeed())
+
+				// The control: while the lease is live, reclaim is refused.
+				blocked, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(blocked)
+				err = repository.AdmitReclaim(ctx, blocked, ref, uuid.NewString(), 1,
+					output.MinLeaseTerm)
+				Expect(err).To(MatchError(output.ErrConflict))
+				Expect(err.Error()).To(ContainSubstring("1 read lease(s)"))
+				Expect(blocked.Rollback()).To(Succeed())
+
+				_, err = dbConn.Exec(`
+					UPDATE hangar_read_leases
+					SET granted_at = granted_at - interval '1 hour',
+					    renewed_at = renewed_at - interval '1 hour',
+					    expires_at = expires_at - interval '1 hour'
+					WHERE read_lease_id = $1`, string(id))
+				Expect(err).NotTo(HaveOccurred())
+
+				admitted, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(admitted)
+				Expect(repository.AdmitReclaim(ctx, admitted, ref, uuid.NewString(), 1,
+					output.MinLeaseTerm)).To(Succeed())
+				Expect(admitted.Commit()).To(Succeed())
+
+				// And recovery writes the release the daemon never got to write,
+				// so the tombstone that prevents resurrection exists either way.
+				closing, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(closing)
+				closed, err := repository.CloseAbandonedReadLeases(ctx, closing, 100)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(closed).To(Equal(1))
+				Expect(closing.Commit()).To(Succeed())
+
+				again, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(again)
+				closed, err = repository.CloseAbandonedReadLeases(ctx, again, 100)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(closed).To(BeZero(), "recovery closed a lease it had already closed")
+				Expect(again.Rollback()).To(Succeed())
+
+				var released int
+				Expect(dbConn.QueryRow(`
+					SELECT count(*) FROM hangar_read_leases
+					WHERE read_lease_id = $1 AND released_at IS NOT NULL`,
+					string(id)).Scan(&released)).To(Succeed())
+				Expect(released).To(Equal(1))
+			})
+
 			It("refuses a released lease even though its grant is still signed", func() {
 				tx, err := dbConn.Begin()
 				Expect(err).NotTo(HaveOccurred())

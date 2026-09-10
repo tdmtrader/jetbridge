@@ -762,7 +762,7 @@ func (repository *HangarOutputRepository) AdmitReclaim(ctx context.Context, tx o
 		       (SELECT count(*) FROM hangar_claims
 		         WHERE lifecycle_id = l.id AND released_at IS NULL),
 		       (SELECT count(*) FROM hangar_read_leases
-		         WHERE lifecycle_id = l.id AND released_at IS NULL),
+		         WHERE lifecycle_id = l.id AND released_at IS NULL AND expires_at > now()),
 		       (SELECT count(*) FROM hangar_logical_reservations
 		         WHERE scope = l.scope AND digest = l.digest AND state = 'unresolved_generation')
 		FROM hangar_exact_lifecycles l WHERE l.id = $1`,
@@ -1030,4 +1030,42 @@ func (repository *HangarOutputRepository) ReadClaims(ctx context.Context, tx out
 	}
 
 	return claims, rows.Err()
+}
+
+// CloseAbandonedReadLeases releases read leases whose term has run out on the
+// database clock.
+//
+// It is recovery, and it is the reason an abandoned reader does not pin a
+// generation forever: a materializer that died mid-staging leaves an unreleased
+// lease, and requirement 46's "no active read lease" plus AC 13's "closes or
+// safely EXPIRES" both mean the same thing about it. Nothing here guesses -- the
+// only leases it touches are ones the database itself says have expired, and it
+// closes them by writing the release the daemon never got to write, so the
+// tombstone that prevents resurrection exists either way.
+//
+// It is bounded, like every other worker pass in this plane, and it reports how
+// many it closed so a caller can tell "nothing was owed" from "the batch was
+// full".
+func (repository *HangarOutputRepository) CloseAbandonedReadLeases(ctx context.Context, tx output.Tx, limit int) (int, error) {
+	if limit <= 0 {
+		return 0, fmt.Errorf("%w: a recovery pass is bounded; %d is not a batch",
+			output.ErrIncomplete, limit)
+	}
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE hangar_read_leases SET released_at = now()
+		WHERE read_lease_id IN (
+			SELECT read_lease_id FROM hangar_read_leases
+			WHERE released_at IS NULL AND expires_at <= now()
+			ORDER BY expires_at
+			LIMIT $1)`, limit)
+	if err != nil {
+		return 0, hangarConflict(err)
+	}
+	closed, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+
+	return int(closed), nil
 }
