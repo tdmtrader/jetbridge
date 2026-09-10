@@ -870,3 +870,130 @@ func probe(tx Tx) {
 		}
 	})
 }
+
+// Every write to hangar_read_leases takes the read-lease suffix.
+//
+// The rule above says only the helper may LOCK a Hangar row. This is the other
+// half, and the one that was silently unmet: a statement that WRITES a Hangar
+// row without having entered the suffix is not a second lock order, it is no
+// lock order -- the row is taken at the write's own moment, in whatever order
+// the writes happen to arrive.
+//
+// Renew, release and abandoned-lease recovery all issued bare UPDATEs. I traced
+// renew-versus-reclaim in both arrival orders and there is no correctness hole
+// today: hangar_reclaim_exclusion is a DEFERRED trigger that fires on the
+// read-lease UPDATE and on the reclaim-job INSERT, each commit's trigger sees
+// the other's committed row, and the second to commit rolls back. But "the
+// schema happens to catch it" is not the rule requirement 33 states, and a rule
+// that holds by accident is one the next statement breaks. The suffix is an API.
+//
+// The check is per FUNCTION rather than per file, because the suffix has to be
+// entered by the transaction that writes, not somewhere in the same package.
+func TestEveryReadLeaseWriteTakesTheReadLeaseSuffix(t *testing.T) {
+	_, thisFile, _, _ := runtime.Caller(0)
+	directory := filepath.Dir(thisFile)
+
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatalf("reading atc/db: %v", err)
+	}
+
+	writes := func(statement string) bool {
+		lowered := strings.ToLower(strings.Join(strings.Fields(statement), " "))
+		for _, verb := range []string{"update hangar_read_leases", "insert into hangar_read_leases",
+			"delete from hangar_read_leases"} {
+			if strings.Contains(lowered, verb) {
+				return true
+			}
+		}
+
+		return false
+	}
+
+	scanned, writers := 0, 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasPrefix(name, "hangar_output_") ||
+			!strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		// The helper is where the row lock lives; it locks rather than writes.
+		if filepath.ToSlash(filepath.Join("atc/db", name)) == hangarLockHelper {
+			continue
+		}
+
+		fileSet := token.NewFileSet()
+		parsed, err := parser.ParseFile(fileSet, filepath.Join(directory, name), nil, 0)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", name, err)
+		}
+		scanned++
+
+		for _, declaration := range parsed.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Body == nil {
+				continue
+			}
+
+			wrote, locked := false, false
+			ast.Inspect(function.Body, func(node ast.Node) bool {
+				switch expression := node.(type) {
+				case *ast.BasicLit:
+					if expression.Kind == token.STRING {
+						if value, err := strconv.Unquote(expression.Value); err == nil &&
+							writes(value) {
+							wrote = true
+						}
+					}
+				case *ast.CallExpr:
+					identifier, ok := expression.Fun.(*ast.Ident)
+					if !ok || identifier.Name != "LockHangarSuffix" {
+						return true
+					}
+					for _, argument := range expression.Args {
+						composite, ok := argument.(*ast.CompositeLit)
+						if !ok {
+							continue
+						}
+						for _, element := range composite.Elts {
+							pair, ok := element.(*ast.KeyValueExpr)
+							if !ok {
+								continue
+							}
+							if key, ok := pair.Key.(*ast.Ident); ok &&
+								key.Name == "ReadLeases" {
+								locked = true
+							}
+						}
+					}
+				}
+
+				return true
+			})
+
+			if !wrote {
+				continue
+			}
+			writers++
+			if !locked {
+				t.Errorf("atc/db/%s: %s writes hangar_read_leases without entering the suffix "+
+					"for the lease it writes.\n\nRequirement 33 and \"lock order is an API, not a "+
+					"convention\" put grant and read-lease work inside one complete suffix. A bare "+
+					"UPDATE takes the row at the write's own moment, in whatever order the writes "+
+					"arrive; that the deferred hangar_reclaim_exclusion trigger happens to catch "+
+					"the race today is the schema's doing, not this transaction's. Call "+
+					"LockHangarSuffix with ReadLeases: the identities this function writes.",
+					name, function.Name.Name)
+			}
+		}
+	}
+
+	if scanned == 0 {
+		t.Fatal("this guard read no atc/db/hangar_output_*.go file, so it is passing vacuously")
+	}
+	if writers < 4 {
+		t.Errorf("this guard found %d function(s) writing hangar_read_leases; the plane has at "+
+			"least four (acquire, renew, release, close-abandoned), so either they moved or the "+
+			"predicate stopped recognising them", writers)
+	}
+}

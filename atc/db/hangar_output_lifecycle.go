@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/concourse/concourse/hangar"
@@ -703,6 +704,20 @@ func (repository *HangarOutputRepository) RenewReadLease(ctx context.Context, tx
 		return output.ReadLease{}, err
 	}
 
+	// The suffix, for the one row this writes. Requirement 33 and "lock order
+	// is an API, not a convention" put grant and read-lease work inside one
+	// complete suffix, and a bare UPDATE takes the row at the write's own
+	// moment instead. The deferred hangar_reclaim_exclusion trigger does catch
+	// a renewal racing a reclaim admission -- each commit's trigger sees the
+	// other's committed row and the second one rolls back -- but that is the
+	// schema's doing and not this transaction's, and a rule that holds by
+	// accident is one the next statement breaks.
+	if _, err := LockHangarSuffix(ctx, tx, repository.prefix, HangarLockRequest{
+		ReadLeases: []output.ReadLeaseID{lease.ReadLeaseID},
+	}); err != nil {
+		return output.ReadLease{}, err
+	}
+
 	var expires time.Time
 	var fence int64
 	if err := hangarQueryRow(ctx, tx, `
@@ -735,6 +750,11 @@ func (repository *HangarOutputRepository) RenewReadLease(ctx context.Context, tx
 // resurrection.
 func (repository *HangarOutputRepository) ReleaseReadLease(ctx context.Context, tx output.Tx, lease output.ReadLease) error {
 	if err := lease.ReadLeaseID.Validate(); err != nil {
+		return err
+	}
+	if _, err := LockHangarSuffix(ctx, tx, repository.prefix, HangarLockRequest{
+		ReadLeases: []output.ReadLeaseID{lease.ReadLeaseID},
+	}); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -1079,13 +1099,63 @@ func (repository *HangarOutputRepository) CloseAbandonedReadLeases(ctx context.C
 			output.ErrIncomplete, limit)
 	}
 
-	result, err := tx.ExecContext(ctx, `
+	// The candidates first, unlocked, because a lock set has to be derived from
+	// identities and there is no identity until something has been selected.
+	rows, err := tx.QueryContext(ctx, `
+		SELECT read_lease_id FROM hangar_read_leases
+		WHERE released_at IS NULL AND expires_at <= now()
+		ORDER BY expires_at
+		LIMIT $1`, limit)
+	if err != nil {
+		return 0, hangarConflict(err)
+	}
+	var candidates []output.ReadLeaseID
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+
+			return 0, err
+		}
+		candidates = append(candidates, output.ReadLeaseID(id))
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+
+		return 0, hangarConflict(err)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	if len(candidates) == 0 {
+		return 0, nil
+	}
+
+	// Then the suffix, over exactly those identities, in the one order this
+	// system has -- the helper sorts them, so two passes given overlapping
+	// batches take them the same way round.
+	if _, err := LockHangarSuffix(ctx, tx, repository.prefix, HangarLockRequest{
+		ReadLeases: candidates,
+	}); err != nil {
+		return 0, err
+	}
+
+	// And the write, with the predicate REPEATED under the lock. The candidate
+	// read ran before the rows were held, so a lease that was renewed in
+	// between must not be closed by a decision taken from the stale answer --
+	// which is also the only reason the count this returns is the UPDATE's
+	// rather than the SELECT's.
+	placeholders := make([]string, 0, len(candidates))
+	closing := make([]any, 0, len(candidates))
+	for index, id := range candidates {
+		placeholders = append(placeholders, fmt.Sprintf("$%d", index+1))
+		closing = append(closing, string(id))
+	}
+	result, err := tx.ExecContext(ctx, fmt.Sprintf(`
 		UPDATE hangar_read_leases SET released_at = now()
-		WHERE read_lease_id IN (
-			SELECT read_lease_id FROM hangar_read_leases
-			WHERE released_at IS NULL AND expires_at <= now()
-			ORDER BY expires_at
-			LIMIT $1)`, limit)
+		WHERE read_lease_id IN (%s)
+		  AND released_at IS NULL AND expires_at <= now()`,
+		strings.Join(placeholders, ", ")), closing...)
 	if err != nil {
 		return 0, hangarConflict(err)
 	}
