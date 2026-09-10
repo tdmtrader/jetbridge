@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
@@ -208,6 +209,10 @@ func NewReadGrantNonce(random io.Reader) (string, error) {
 // CanonicalReceiptBytes, and for the same reason. A signature over an encoder's
 // output would be a signature over that encoder's field ordering.
 func CanonicalReadGrantBytes(claims ReadGrantClaims) ([]byte, error) {
+	if err := claims.Validate(); err != nil {
+		return nil, err
+	}
+
 	var canonical []byte
 	field := func(value string) {
 		canonical = append(canonical, fmt.Sprintf("%d:", len(value))...)
@@ -217,9 +222,19 @@ func CanonicalReadGrantBytes(claims ReadGrantClaims) ([]byte, error) {
 	number := func(value int64) { field(fmt.Sprintf("%d", value)) }
 
 	field(MaterializeDomain)
+	field(ReadGrantVersion)
+	field(string(claims.ReadLeaseID))
+	number(int64(claims.LeaseFence))
+	field(string(claims.ClaimID))
 	field(string(claims.Ref.Scope))
 	field(string(claims.Ref.Digest))
 	number(claims.Ref.Generation)
+	field(claims.Destination.Handle)
+	field(claims.Destination.Volume)
+	number(int64(claims.ActivationEpoch))
+	field(claims.IssuedAt.UTC().Format(time.RFC3339Nano))
+	field(claims.ExpiresAt.UTC().Format(time.RFC3339Nano))
+	field(claims.Nonce)
 
 	if len(canonical) > MaxCanonicalReadGrantBytes {
 		return nil, fmt.Errorf("%w: the canonical read grant is %d bytes, the bound is %d",
@@ -364,6 +379,16 @@ func (verifier *ReadGrantVerifier) Verify(token string, ref hangar.TreeRef, dest
 	mac := hmac.New(sha256.New, verifier.key[:])
 	_, _ = mac.Write(canonical)
 	if !hmac.Equal(provided, mac.Sum(nil)) {
+		return unauthorized()
+	}
+
+	now := verifier.clock.Now().UTC()
+	if now.Before(claims.IssuedAt.UTC()) || !now.Before(claims.ExpiresAt.UTC()) {
+		return unauthorized()
+	}
+	if !sameRef(claims.Ref, ref) ||
+		!constantTimeEqual(claims.Destination.Handle, destination.Handle) ||
+		!constantTimeEqual(claims.Destination.Volume, destination.Volume) {
 		return unauthorized()
 	}
 
