@@ -124,7 +124,11 @@ func TestJetbridge(t *testing.T) {
 	// it fails the package rather than accumulating a copy of a 150 MB daemon
 	// binary per run until the volume is full.
 	before := jetbridge.TempSuspects()
-	defer jetbridge.AssertNoTempSurvives(t, before)
+	defer func() {
+		for _, leak := range jetbridge.TempLeaks(before) {
+			t.Error(leak)
+		}
+	}()
 
 	RunSpecs(t, "Jetbridge Suite")
 }

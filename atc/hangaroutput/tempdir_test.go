@@ -17,11 +17,19 @@ package hangaroutput_test
 // on a signal, and on a signal is exactly when it used to be left in the user's
 // temp directory forever.
 //
-// The guard reports only entries carrying THIS process's pid, plus any
-// `go-build*` that escaped the redirect. Attribution is the point: a plain
-// before/after count under os.TempDir() reports a neighbouring package's live
-// work as this package's leak, and a guard that cries wolf is a guard somebody
-// deletes.
+// ATTRIBUTION IS THE WHOLE RULE, and it is a rule about deleting as much as
+// about reporting. The guard reports and removes entries carrying THIS
+// process's pid, and nothing else -- not a `go-build*` directory, not a
+// neighbour's scratch, not anything that merely appeared while this package
+// ran. A plain before/after count under os.TempDir() reports a neighbouring
+// package's live work as this package's leak; a guard that also DELETES what it
+// cannot attribute takes a concurrent `go build`'s work directory out from
+// under it mid-compile, which is the `fork/exec ...: no such file or directory`
+// shape this tree already warns about elsewhere, and then reddens this package
+// for a leak that was never its own. CI's unit tier runs the packages in
+// parallel and two siblings build binaries into TMPDIR from inside their tests,
+// so the neighbour is not hypothetical. A guard that cries wolf is a guard
+// somebody deletes; a guard that eats the sheep is worse.
 
 import (
 	"fmt"
@@ -30,13 +38,17 @@ import (
 	"strings"
 )
 
+// tempRootPrefix names this package's roots, and the pid follows it. Both the
+// guard and the stale-root sweep read the pid back out of the name.
+const tempRootPrefix = "hangaroutput-daemon-"
+
 // tempRoot is the one directory this package creates outside its own tree.
 //
 // The pid is in the name so the guard can tell its own leavings from another
 // test process's live work, and so a human reading `ls` can tell a leak from
 // something still running.
 var tempRoot = func() string {
-	root, err := os.MkdirTemp("", fmt.Sprintf("hangaroutput-daemon-%d-*", os.Getpid()))
+	root, err := os.MkdirTemp("", fmt.Sprintf("%s%d-*", tempRootPrefix, os.Getpid()))
 	if err != nil {
 		panic("hangaroutput harness: creating the package temp root: " + err.Error())
 	}
@@ -52,22 +64,30 @@ var tempRoot = func() string {
 // about the RULE, and leaving the bytes behind to prove they were there would
 // be the leak all over again.
 func tempLeaks(before map[string]bool) []string {
+	return tempLeaksIn(os.TempDir(), tempRoot, before, os.Getpid())
+}
+
+// tempLeaksIn is tempLeaks with the directory and the pid named, so the guard
+// can be run over a fabricated temp directory and asserted on -- including the
+// half that is about what it must NOT touch, which is unassertable against the
+// real one without leaving a foreign directory behind to prove it.
+func tempLeaksIn(dir, root string, before map[string]bool, pid int) []string {
 	var leaks []string
 
-	if err := os.RemoveAll(tempRoot); err != nil {
+	if err := os.RemoveAll(root); err != nil {
 		leaks = append(leaks, fmt.Sprintf("the package temp root %s could not be removed: %v",
-			filepath.Base(tempRoot), err))
+			filepath.Base(root), err))
 	}
 	// The root is created at package init, so the "before" snapshot taken in
 	// TestMain already has it. Forgetting that would make the guard vacuous:
 	// the one directory it exists to chase would be exempt from it.
-	delete(before, filepath.Base(tempRoot))
+	delete(before, filepath.Base(root))
 
-	for name := range tempSuspects() {
+	for name := range tempSuspectsIn(dir, pid) {
 		if before[name] {
 			continue
 		}
-		path := filepath.Join(os.TempDir(), name)
+		path := filepath.Join(dir, name)
 		size := treeBytes(path)
 		_ = os.RemoveAll(path)
 		leaks = append(leaks, fmt.Sprintf("%s (%d bytes) survived this package's run; every "+
@@ -78,21 +98,23 @@ func tempLeaks(before map[string]bool) []string {
 	return leaks
 }
 
-// tempSuspects is the set of entries under os.TempDir() this process could be
-// responsible for: its own pid-stamped roots, and any go-build work directory,
-// which no test in this tree should be producing there any more.
+// tempSuspects is the set of entries under os.TempDir() this process is
+// responsible for: the ones carrying its own pid, and only those.
 func tempSuspects() map[string]bool {
-	entries, err := os.ReadDir(os.TempDir())
+	return tempSuspectsIn(os.TempDir(), os.Getpid())
+}
+
+func tempSuspectsIn(dir string, pid int) map[string]bool {
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
 	}
 
-	mine := fmt.Sprintf("-%d-", os.Getpid())
+	mine := fmt.Sprintf("-%d-", pid)
 	suspects := map[string]bool{}
 	for _, entry := range entries {
-		name := entry.Name()
-		if strings.HasPrefix(name, "go-build") || strings.Contains(name, mine) {
-			suspects[name] = true
+		if strings.Contains(entry.Name(), mine) {
+			suspects[entry.Name()] = true
 		}
 	}
 
