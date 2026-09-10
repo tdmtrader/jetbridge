@@ -1031,6 +1031,82 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				Entry("recorded conflicted", "conflicted"),
 			)
 
+			// RECOVERY CLOSES THE ABANDONED ONE AND NOTHING ELSE.
+			//
+			// The spec above has a single lease and it is already expired, so
+			// `closed == 1` cannot tell "closed what the database says has run
+			// out" from "closed everything unreleased" -- and the second is a
+			// recovery pass that ends every in-flight read on the node. So this
+			// one runs the pass against two leases at once and asserts the
+			// survivor by asking the production validator, not by reading a
+			// column: a lease that still validates is a lease a daemon may
+			// still stage under.
+			It("closes the abandoned lease and leaves a live one alone", func() {
+				live := output.ReadLeaseID(uuid.NewString())
+				liveRequest := readLeaseRequest(live, claimID, ref)
+				liveLease, err := admit(liveRequest)
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = dbConn.Exec(`
+					UPDATE hangar_read_leases
+					SET granted_at = granted_at - interval '1 hour',
+					    renewed_at = renewed_at - interval '1 hour',
+					    expires_at = expires_at - interval '1 hour'
+					WHERE read_lease_id = $1`, string(id))
+				Expect(err).NotTo(HaveOccurred())
+
+				closing, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(closing)
+				closed, err := repository.CloseAbandonedReadLeases(ctx, closing, 100)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(closed).To(Equal(1),
+					"recovery closed more than the one lease the database says has expired")
+				Expect(closing.Commit()).To(Succeed())
+
+				var released []string
+				rows, err := dbConn.Query(`
+					SELECT read_lease_id FROM hangar_read_leases WHERE released_at IS NOT NULL`)
+				Expect(err).NotTo(HaveOccurred())
+				defer rows.Close()
+				for rows.Next() {
+					var closedID string
+					Expect(rows.Scan(&closedID)).To(Succeed())
+					released = append(released, closedID)
+				}
+				Expect(rows.Err()).NotTo(HaveOccurred())
+				Expect(released).To(ConsistOf(string(id)))
+
+				// The live one still authorizes work, through the method a
+				// daemon's question really goes through.
+				validating, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(validating)
+				_, err = repository.ValidateReadLease(ctx, validating, output.ReadLeaseValidation{
+					ReadLeaseID:       live,
+					ClaimID:           claimID,
+					Ref:               ref,
+					Destination:       liveRequest.Destination,
+					ActivationEpoch:   1,
+					GrantNonce:        liveRequest.GrantNonce,
+					RequiredRemaining: time.Minute,
+				})
+				Expect(err).NotTo(HaveOccurred(),
+					"recovery closed a live reader's protection out from under it")
+				Expect(liveLease.ReadLeaseID).To(Equal(live))
+
+				// And the generation is still pinned: a reclaimer arriving now
+				// meets the survivor.
+				reclaiming, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(reclaiming)
+				err = repository.AdmitReclaim(ctx, reclaiming, ref, uuid.NewString(), 1,
+					output.MinLeaseTerm)
+				Expect(err).To(MatchError(output.ErrConflict))
+				Expect(err.Error()).To(ContainSubstring("1 read lease(s)"))
+				Expect(reclaiming.Rollback()).To(Succeed())
+			})
+
 			It("refuses a released lease even though its grant is still signed", func() {
 				tx, err := dbConn.Begin()
 				Expect(err).NotTo(HaveOccurred())
