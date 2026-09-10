@@ -199,6 +199,17 @@ type stubDrain struct {
 	// second, it is ordinary, and it is consumed here so the retry succeeds.
 	TransientErrors int
 
+	// WhileDraining runs INSIDE the drain, between the call and its answer, and
+	// it is the arm that makes the seal deadline's real window assertable.
+	//
+	// The drain is the SLOW half of a seal: it terminates the producing Pod and
+	// waits for a complete final container status, which is the half a
+	// five-minute deadline actually elapses in. A stub that could only be slow
+	// or refuse before the deadline could only ever demonstrate a deadline that
+	// had already passed when the boundary was first considered -- which is the
+	// easy half, and not the half production reaches.
+	WhileDraining func()
+
 	calls int
 	mu    sync.Mutex
 }
@@ -213,7 +224,14 @@ func (drain *stubDrain) ConfirmDrain(_ context.Context, _ string,
 	}
 	once := drain.UnprovableOnce
 	drain.UnprovableOnce = false
+	while := drain.WhileDraining
 	drain.mu.Unlock()
+
+	// Outside the lock and before the answer: what happens here happens while
+	// the boundary is being proved, which is what it is for.
+	if while != nil {
+		while()
+	}
 
 	if transient {
 		return nil, fmt.Errorf("%w: the apiserver did not answer in time",

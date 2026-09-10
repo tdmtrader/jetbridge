@@ -597,6 +597,10 @@ func (coordinator *Coordinator) confirmSeal(ctx context.Context, record output.H
 	// a takeover -- would turn a lost answer into a destroyed output. Only a
 	// seal with nothing recorded is closed by the deadline.
 	//
+	// This reading decides whether to START. It is not the only one: the drain
+	// is slow by nature, and the clock is read again below, after it returns
+	// and before the node is asked to record anything.
+	//
 	// And the drain is not driven for a capture that is already inadmissible.
 	// Proving the boundary TERMINATES the producing Pod, its sidecars and any
 	// live hijack session; doing that to reach a refusal that is already
@@ -614,6 +618,41 @@ func (coordinator *Coordinator) confirmSeal(ctx context.Context, record output.H
 	drained, err := coordinator.Drain.ConfirmDrain(ctx, record.Source.Locator, started)
 	if err != nil {
 		return coordinator.sealUnprovable(ctx, record, lease.CaptureFence, err)
+	}
+
+	// And the clock AGAIN, now that the drain has returned.
+	//
+	// The reading above decides whether to start; this one decides whether to
+	// admit, and they are different questions because the drain is the slow
+	// half. It terminates the producing Pod and waits for a complete final
+	// container status, so a deadline elapsing WHILE the boundary is proved is
+	// the ordinary way a five-minute deadline elapses -- not an edge. Reading
+	// the clock only before the wait leaves that whole window to whichever wall
+	// clock the node happens to be running, which is precisely the clock
+	// requirement 17 does not name.
+	//
+	// The refusal is recorded here rather than left to the node's answer,
+	// because a confirmation the node records is a FACT: every later pass reads
+	// `started.Confirmed` back and skips the clock entirely, so a confirmation
+	// obtained past the deadline is past the deadline's reach forever. The node
+	// is not asked at all.
+	//
+	// The drain has already been driven, and that is the unavoidable cost of a
+	// deadline that elapsed while it ran -- the alternative is not asking, and
+	// the boundary cannot be proved without asking. What is saved is the
+	// publication, which is what requirement 17 is about.
+	//
+	// The residual window is the round trip between this reading and the node's
+	// record, and that -- only that -- is what the daemon's own comparison is
+	// defence in depth for.
+	if !started.Confirmed {
+		passed, err := coordinator.sealDeadlinePassed(ctx, record)
+		if err != nil {
+			return err
+		}
+		if passed {
+			return coordinator.failTerminally(ctx, record, lease.CaptureFence, "seal_unconfirmed")
+		}
 	}
 
 	if _, err := control.ConfirmSeal(ctx, output.SealConfirmation{
@@ -643,10 +682,13 @@ func (coordinator *Coordinator) confirmSeal(ctx context.Context, record output.H
 // The deadline is read in SQL, from the row, at this moment -- not from
 // anything this process composed or remembers.
 //
-// confirmSeal now asks the same question BEFORE it drives the drain, so this
-// arm is what is left over: the deadline that elapses while the boundary is
-// being proved. Both readings are the database's, which is the point -- two
-// spellings of "past the deadline" would be two answers.
+// confirmSeal asks the same question twice around the drain -- before it is
+// driven and again before the node is asked to record anything -- so what is
+// left over here is the third case: evidence that REFUSES. A drain that cannot
+// prove the boundary, or a node declining to confirm one, is a typed statement
+// and not a clock reading, and whether that refusal is permanent is still the
+// deadline's to say. All three readings are the database's, which is the
+// point: two spellings of "past the deadline" would be two answers.
 func (coordinator *Coordinator) sealUnprovable(ctx context.Context, record output.HandoffRecord,
 	fence output.CaptureFence, cause error) error {
 	if !errors.Is(cause, output.ErrSealUnconfirmed) {

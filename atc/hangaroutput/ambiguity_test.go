@@ -568,6 +568,192 @@ func TestASealProvedPastTheDatabaseDeadlineIsNotAdmitted(t *testing.T) {
 	}
 }
 
+// The window a five-minute deadline actually elapses in: DURING the drain.
+//
+// The spec above reads the database clock before the drain is driven, which is
+// the cheap half -- it covers a capture that was already inadmissible when the
+// boundary was first considered. The drain is the slow half. It terminates the
+// producing Pod and waits for a complete final container status, so "the
+// deadline elapsed while the boundary was being proved" is the ORDINARY way a
+// seal deadline elapses, and a control plane that reads the clock only before
+// the wait has not read it at the moment it decides.
+//
+// Here the row's deadline moves into the past WHILE the drain runs and the
+// node's copy stays healthy, so the daemon would confirm this seal: the
+// database clock is the only thing that can refuse it, which is what
+// requirement 17 says decides. The `confirm-seal` count is the assertion that
+// makes this spec more than a second copy of the one above -- the node is never
+// ASKED, so no confirmation is recorded anywhere, and the later passes that
+// read a recorded confirmation back as a fact have nothing to read.
+func TestAProofCompletedPastTheDatabaseDeadlineIsNotAdmitted(t *testing.T) {
+	h := newHarness(t)
+	c := h.admit(t).hold(t).finish(t, true)
+
+	// Stage 2 and the seal, both under a healthy deadline: the row and the
+	// node hold the same one.
+	advanceExactly(t, c, 2)
+
+	reservation := string(c.record(t).ReservationID)
+	var moved error
+	h.Drain.WhileDraining = func() {
+		_, moved = h.Conn.Exec(`
+			UPDATE hangar_capture_reservations SET seal_deadline_at = now() - interval '1 hour'
+			WHERE reservation_id = $1`, reservation)
+	}
+
+	taken := c.advance(t)
+	if moved != nil {
+		t.Fatalf("moving the row's seal deadline into the past during the drain: %v", moved)
+	}
+
+	if h.Drain.Calls() != 1 {
+		t.Fatalf("the drain was driven %d time(s); this spec is about a deadline that elapses "+
+			"while the boundary is being proved, so it has to be proved", h.Drain.Calls())
+	}
+
+	record := c.record(t)
+	if record.State != output.CaptureStateFailed {
+		t.Fatalf("a boundary proved past the DATABASE deadline is %s after %v, with the node's "+
+			"copy of the deadline still healthy", record.State, taken)
+	}
+	if record.TerminalFailure != "seal_unconfirmed" {
+		t.Errorf("the terminal failure is %q", record.TerminalFailure)
+	}
+	if asked := h.Dialer.Calls("confirm-seal"); asked != 0 {
+		t.Errorf("the node was asked to confirm %d time(s) a seal the database clock had already "+
+			"closed; a confirmation recorded at the node is read back as a fact by every later "+
+			"pass, so asking for one past the deadline puts the wrong answer beyond the "+
+			"deadline's reach", asked)
+	}
+	if record.Receipt != nil {
+		t.Error("a proof completed past the database deadline produced a receipt")
+	}
+	if keys := h.bucketKeys(t); keys != nil {
+		t.Errorf("a proof completed past the database deadline created %v", keys)
+	}
+	if record.LogicalResolved {
+		t.Error("a proof completed past the database deadline resolved a logical identity")
+	}
+	if !record.ReleaseAcknowledged {
+		t.Error("the source was never released after the terminal failure")
+	}
+	if !c.sourceStillThere() {
+		t.Error("the release deleted the step's output")
+	}
+}
+
+// The same window with both clocks AGREEING, and a deadline that is a real
+// forward-going term rather than one composed already in the past.
+//
+// Every other deadline spec in this file arranges the past by subtraction --
+// `SealDeadline = -time.Hour` -- which is a fine way to say "already expired"
+// and a poor way to say "expired while we waited". Here the deadline is ahead
+// when the seal begins, the drain takes longer than it, and both the row and
+// the node's copy have passed by the time the drain returns.
+//
+// It is the spec that says WHICH clock carries the refusal now. Both would
+// refuse, so the outcome alone cannot tell them apart; the `confirm-seal` count
+// can, and it says the database's decides and the node is never asked. Round 3
+// found the reverse -- the daemon's wall clock was the only thing refusing this
+// window, and it is the clock requirement 17 pointedly does not name.
+func TestAProofOverrunningItsDeadlineOnBothClocksIsNotAdmitted(t *testing.T) {
+	h := newHarness(t)
+	h.Coordinator.SealDeadline = 3 * time.Second
+
+	c := h.admit(t).hold(t).finish(t, true)
+	advanceExactly(t, c, 2)
+
+	h.Drain.WhileDraining = func() { time.Sleep(4 * time.Second) }
+
+	taken := c.advance(t)
+
+	if h.Drain.Calls() != 1 {
+		t.Fatalf("the drain was driven %d time(s); the deadline was ahead when the seal began, "+
+			"so the boundary has to be proved before it can be proved late", h.Drain.Calls())
+	}
+
+	record := c.record(t)
+	if record.State != output.CaptureStateFailed {
+		t.Fatalf("a boundary that took longer than its own deadline to prove is %s after %v",
+			record.State, taken)
+	}
+	if record.TerminalFailure != "seal_unconfirmed" {
+		t.Errorf("the terminal failure is %q", record.TerminalFailure)
+	}
+	if asked := h.Dialer.Calls("confirm-seal"); asked != 0 {
+		t.Errorf("the node was asked to confirm %d time(s); when both clocks agree the proof is "+
+			"late the DATABASE's is the one that decides, and it decides before the node is "+
+			"asked -- otherwise the daemon's wall clock is carrying requirement 17", asked)
+	}
+	if record.Receipt != nil {
+		t.Error("a boundary proved past its own deadline produced a receipt")
+	}
+	if keys := h.bucketKeys(t); keys != nil {
+		t.Errorf("a boundary proved past its own deadline created %v", keys)
+	}
+	if !c.sourceStillThere() {
+		t.Error("the release deleted the step's output")
+	}
+}
+
+// And the node's own comparison, which is what is left for it to do.
+//
+// The daemon refuses to confirm a seal past the deadline it was GIVEN, and its
+// comment calls that defence in depth -- the residual window between the
+// control plane's last reading of the database clock and the node's record of
+// the confirmation. Defence in depth with nothing pinning it is a line of code
+// nobody notices removing, and once the database clock refuses before the node
+// is asked, no other spec in this file can reach the node's arm at all.
+//
+// So the two clocks are made to DISAGREE in the direction only the node can
+// answer: the node holds a deadline a minute in the past and the database's row
+// says an hour ahead. The node refuses; the control plane weighs that refusal
+// against its own clock, finds the deadline still ahead, and commits NOTHING --
+// which is the second half, and the reason this refusal is typed as an
+// unconfirmed seal rather than as a conflict. A drifting node may not expire a
+// deadline it is subject to, only decline to answer for it.
+func TestTheNodeRefusesToConfirmPastTheDeadlineItWasGiven(t *testing.T) {
+	h := newHarness(t)
+	h.Coordinator.SealDeadline = -time.Minute
+
+	c := h.admit(t).hold(t).finish(t, true)
+	advanceExactly(t, c, 2)
+
+	// The DATABASE extends -- a longer term, an operator's edit, a row restored
+	// from a backup. The node keeps the deadline it was handed at begin_seal.
+	if _, err := h.Conn.Exec(`
+		UPDATE hangar_capture_reservations SET seal_deadline_at = now() + interval '1 hour'
+		WHERE reservation_id = $1`, string(c.record(t).ReservationID)); err != nil {
+		t.Fatalf("moving the row's seal deadline into the future: %v", err)
+	}
+
+	decision, err := c.advanceOnce(t)
+	if !errors.Is(err, output.ErrSealUnconfirmed) {
+		t.Fatalf("the node confirmed a seal past the deadline it was given (%s): %v",
+			decision.Transition, err)
+	}
+	if asked := h.Dialer.Calls("confirm-seal"); asked != 1 {
+		t.Errorf("the node was asked to confirm %d time(s); the database's deadline is ahead, "+
+			"so this refusal can only be the node's own", asked)
+	}
+
+	record := c.record(t)
+	if record.State == output.CaptureStateFailed {
+		t.Fatalf("a node's clock committed the capture as terminal %q while the database's "+
+			"deadline was an hour ahead; a drifting node may not expire a deadline it is "+
+			"subject to", record.TerminalFailure)
+	}
+	if record.Receipt != nil {
+		t.Error("a seal the node refused to confirm produced a receipt")
+	}
+	if keys := h.bucketKeys(t); keys != nil {
+		t.Errorf("a seal the node refused to confirm created %v", keys)
+	}
+	if !c.sourceStillThere() {
+		t.Error("a refusal the database has not agreed with released the step's output")
+	}
+}
+
 // The deadline's control, and it is the half that says the clock is a clock
 // rather than a switch: the SAME typed evidence, before the deadline, is
 // retried and committed as nothing.
