@@ -466,6 +466,67 @@ func TestTheDaemonRefusesACaptureFenceBelowTheOneItSealedUnder(t *testing.T) {
 	}
 }
 
+// The takeover this node actually gets: one PAST the seal, which never calls
+// BeginSeal at all.
+//
+// The spec above advances the stored fence through a second BeginSeal, and that
+// is the one path a takeover past the seal does not take -- the captured drain
+// set is captured once, the new owner inherits it, and every crash-half spec in
+// the control plane asserts `begin-seal == 1` across a takeover for exactly that
+// reason. So the node learned a new owner only on the takeover that did not need
+// teaching, and on the one this check was written for it went on serving the
+// superseded fence: `admitCapture` refused anything BELOW its stored fence and
+// never moved it.
+//
+// It moves now, on the new owner's first capture-facet call, and the refusal
+// this node offers is defence in depth over Postgres's -- every durable refusal
+// is the lease's, and a third owner over a live lease never reaches here.
+func TestATakeoverPastTheSealAdvancesTheStoredCaptureFence(t *testing.T) {
+	fixture := newSourceLedger(t)
+	hold := held(t, fixture)
+
+	started, err := fixture.source.BeginSeal(context.Background(), output.SealRequest{
+		ProtocolVersion: output.ProtocolVersion,
+		Execution:       identity(1),
+		ActivationEpoch: testEpoch,
+		HandoffID:       testHandoff,
+		Incarnation:     hold.Incarnation,
+		CaptureFence:    captureFence,
+		DeadlineAt:      output.NewTimestamp(fixedNow().Add(time.Hour)),
+	})
+	if err != nil {
+		t.Fatalf("beginning the seal: %v", err)
+	}
+
+	// The new owner's FIRST call, and its only one at the boundary: the seal
+	// this node already made, confirmed under the fence the lease now holds.
+	if _, err := fixture.source.ConfirmSeal(context.Background(), output.SealConfirmation{
+		Started:      started,
+		CaptureFence: captureFence + 1,
+		ObservedAt:   output.NewTimestamp(fixedNow()),
+	}); err != nil {
+		t.Fatalf("the takeover's confirmation was refused: %v", err)
+	}
+
+	// The first owner is gone, everywhere the capture facet is reached.
+	if _, _, err := fixture.source.SealedIncarnation(testHandoff, identity(1), testEpoch,
+		captureFence); !errors.Is(err, executioncontrol.ErrStaleFence) {
+		t.Errorf("the superseded owner canonicalized the sealed tree after a takeover past the "+
+			"seal: %v", err)
+	}
+	if err := fixture.source.AdmitCaptureFence(testHandoff, identity(1), testEpoch,
+		captureFence); !errors.Is(err, executioncontrol.ErrStaleFence) {
+		t.Errorf("the superseded owner was admitted to sign after a takeover past the seal: %v",
+			err)
+	}
+
+	// And the takeover's own fence reaches the bytes it inherited.
+	if _, _, err := fixture.source.SealedIncarnation(testHandoff, identity(1), testEpoch,
+		captureFence+1); err != nil {
+		t.Errorf("the new owner was refused the tree it took over: %v", err)
+	}
+}
+
 // A release releases the HOLD, and never the bytes.
 //
 // The incarnation is the step's own output directory -- after the Phase 4

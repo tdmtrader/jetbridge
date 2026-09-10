@@ -458,6 +458,20 @@ func (ledger *SourceLedger) admitted(handoff output.HandoffID,
 // writer; the capture fence says a second coordinator has not taken ownership
 // of this capture. A takeover moves only the second, so `admitted` alone would
 // serve a superseded owner every operation this node has.
+//
+// A HIGHER fence moves the stored one forward, and that is what makes the check
+// engage on the takeover it was written for. BeginSeal advances it too, but a
+// takeover past the seal never calls BeginSeal -- the captured drain set is
+// captured once and the new owner inherits it, which is why every crash-half
+// spec asserts `begin-seal == 1` across a takeover. So the node learned a new
+// owner only on the takeover that did not need teaching, and served the
+// superseded fence on the one that did. The new owner's first capture-facet
+// call is the lesson, whichever call that is.
+//
+// Monotonic, and never downward: the fence a lease has issued is a fact, and a
+// node that could be talked backwards would be a node a stale owner could
+// re-admit itself at. The durable refusal is Postgres's regardless -- a stale
+// owner is refused at the lease before it reaches this node at all.
 func (ledger *SourceLedger) admitCapture(handoff output.HandoffID,
 	execution executioncontrol.Identity, epoch executioncontrol.ActivationEpoch,
 	fence output.CaptureFence) (sourceRecord, error) {
@@ -473,6 +487,12 @@ func (ledger *SourceLedger) admitCapture(handoff output.HandoffID,
 		return sourceRecord{}, fmt.Errorf("%w: capture fence %d over handoff %s was superseded "+
 			"by %d; a stale owner may not seal, publish, sign, finalize or release",
 			executioncontrol.ErrStaleFence, fence, handoff, record.CaptureFence)
+	}
+	if fence > record.CaptureFence {
+		record.CaptureFence = fence
+		if err := ledger.save(record); err != nil {
+			return sourceRecord{}, err
+		}
 	}
 
 	return record, nil
