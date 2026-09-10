@@ -23,21 +23,34 @@ package jetbridge
 // package's `go build` work directory out from under it mid-compile, which is
 // the `fork/exec ...: no such file or directory` shape this tree already warns
 // about, and then redden this package for a leak that was never its own.
+//
+// The exception, and it is still attribution: a root whose owning process is
+// GONE. A run that panics, or is killed, or dies in TestMain before the run
+// starts takes nothing with it, and no later run swept those because the guard
+// trusted only its own pid. Liveness answers it -- a pid that is not running
+// cannot be using its directory, and one that is running must not have it taken
+// away.
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
-// tempRootPrefix names this package's roots, and the pid follows it.
+// tempRootPrefix names this package's roots, and the pid follows it. Both the
+// guard and the stale-root sweep read the pid back out of the name.
 const tempRootPrefix = "jetbridge-output-daemon-"
 
 // tempRoot is the one directory this package creates outside its own
 // tree. The pid is in the name so the guard can tell its own leavings from a
 // sibling Ginkgo process's live work.
 var tempRoot = func() string {
+	// Before this process's own root, the ones nobody owns any more.
+	sweepStaleRoots(os.TempDir(), os.Getpid())
+
 	root, err := os.MkdirTemp("", fmt.Sprintf("%s%d-*", tempRootPrefix, os.Getpid()))
 	if err != nil {
 		panic("jetbridge harness: creating the package temp root: " + err.Error())
@@ -112,6 +125,77 @@ func tempSuspectsIn(dir string, pid int) map[string]bool {
 	}
 
 	return suspects
+}
+
+// sweepStaleRoots removes this package's roots whose owning process is gone,
+// and reports what it removed.
+//
+// Only this package's own prefix, and only a pid that is not running: a live
+// sibling under `--procs` owns its directory, and a directory belonging to
+// another package belongs to that package's guard. A pid this process cannot
+// answer for -- an error that is not "no such process" -- counts as ALIVE, so
+// the sweep errs towards leaving bytes on the disk rather than towards deleting
+// somebody's live work.
+func sweepStaleRoots(dir string, self int) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	var swept []string
+	for _, entry := range entries {
+		name := entry.Name()
+		pid, ok := rootPID(name)
+		if !ok || pid == self || processAlive(pid) {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(dir, name)); err == nil {
+			swept = append(swept, name)
+		}
+	}
+
+	return swept
+}
+
+// rootPID reads the pid back out of a root's name, and answers no for a name
+// this package did not compose.
+func rootPID(name string) (int, bool) {
+	if !strings.HasPrefix(name, tempRootPrefix) {
+		return 0, false
+	}
+
+	rest := strings.TrimPrefix(name, tempRootPrefix)
+	digits, _, found := strings.Cut(rest, "-")
+	if !found || digits == "" {
+		return 0, false
+	}
+
+	var pid int
+	if _, err := fmt.Sscanf(digits, "%d", &pid); err != nil || pid <= 0 {
+		return 0, false
+	}
+
+	return pid, true
+}
+
+// processAlive answers whether a pid is running, and answers YES when it cannot
+// tell.
+//
+// Signal 0 delivers nothing and reports only whether it could have. "No such
+// process" is the one answer that permits a removal, in its two spellings --
+// the errno, and the ErrProcessDone the standard library substitutes for a
+// child this process has already reaped. A permission error, somebody else's
+// process, is not one of them, and neither is anything unrecognised: the sweep
+// errs towards leaving bytes on the disk rather than towards deleting live work.
+func processAlive(pid int) bool {
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+
+	err = process.Signal(syscall.Signal(0))
+
+	return !errors.Is(err, syscall.ESRCH) && !errors.Is(err, os.ErrProcessDone)
 }
 
 func treeBytes(root string) int64 {

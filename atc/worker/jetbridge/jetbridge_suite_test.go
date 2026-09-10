@@ -119,17 +119,11 @@ func persistNamedWorker(database jetbridgeDB, name string) (db.Worker, error) {
 func TestJetbridge(t *testing.T) {
 	RegisterFailHandler(Fail)
 
-	// What was already in the user's temp directory before this process ran.
-	// Anything attributable to it that is still there afterwards is a leak, and
-	// it fails the package rather than accumulating a copy of a 150 MB daemon
-	// binary per run until the volume is full.
-	before := jetbridge.TempSuspects()
-	defer func() {
-		for _, leak := range jetbridge.TempLeaks(before) {
-			t.Error(leak)
-		}
-	}()
-
+	// The temp guard is NOT here. The package temp root is created at init, for
+	// every test binary of this package, so what owns it is TestMain -- a guard
+	// hanging off this function would not run under `go test -run <one Go
+	// test>`, which is how one of the 260 plain tests beside this suite is run,
+	// and the root would leak on every such invocation.
 	RunSpecs(t, "Jetbridge Suite")
 }
 

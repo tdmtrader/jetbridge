@@ -15,6 +15,7 @@ package jetbridge
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -88,6 +89,63 @@ func TestTheTempGuardLeavesADirectoryItCannotAttributeAlone(t *testing.T) {
 	}
 }
 
+// A root left behind by a process that is GONE.
+//
+// A suite that panics, or is killed, or fails in TestMain before the run
+// starts, takes no directory with it -- and no later run swept one, because the
+// guard trusts only its own pid. Liveness is the attribution that closes it:
+// a root whose owner is not running belongs to nobody and is removed at init,
+// and a root whose owner IS running is a sibling `--procs` process's live work
+// and is not touched by anybody.
+//
+// The dead pid here is a real one: a process that ran and exited, not a number
+// picked for being large.
+func TestAStaleRootWhoseProcessIsGoneIsSwept(t *testing.T) {
+	dir := t.TempDir()
+
+	dead := exitedProcessPID(t)
+	if processAlive(dead) {
+		t.Fatalf("pid %d is still alive after being waited for; the sweep cannot be asserted "+
+			"against it", dead)
+	}
+	if !processAlive(os.Getpid()) {
+		t.Fatal("processAlive says this very process is not running")
+	}
+
+	stale := makeTempDir(t, dir, fmt.Sprintf("%s%d-stale", tempRootPrefix, dead))
+	writeTempFile(t, stale, "hangar-output-daemon", 64)
+	live := makeTempDir(t, dir, fmt.Sprintf("%s%d-live", tempRootPrefix, os.Getpid()))
+	foreign := makeTempDir(t, dir, "go-build-r3foreign-live2")
+	other := makeTempDir(t, dir, fmt.Sprintf("some-other-suite-%d-live", dead))
+
+	swept := sweepStaleRoots(dir, os.Getpid())
+
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("the root of a process that has exited survived the sweep: %v", err)
+	}
+	if len(swept) != 1 || !strings.Contains(swept[0], filepath.Base(stale)) {
+		t.Errorf("the sweep removed %v; it owes exactly %s", swept, filepath.Base(stale))
+	}
+	for _, survivor := range []string{live, foreign, other} {
+		if _, err := os.Stat(survivor); err != nil {
+			t.Errorf("the sweep removed %s, which belongs to a live process or to another "+
+				"package entirely: %v", filepath.Base(survivor), err)
+		}
+	}
+}
+
+// exitedProcessPID runs a process, waits for it, and returns its pid.
+func exitedProcessPID(t *testing.T) int {
+	t.Helper()
+
+	command := exec.Command("/bin/sh", "-c", "exit 0")
+	if err := command.Run(); err != nil {
+		t.Fatalf("running a process to exit: %v", err)
+	}
+
+	return command.ProcessState.Pid()
+}
+
 func makeTempDir(t *testing.T, parent, name string) string {
 	t.Helper()
 
@@ -104,5 +162,45 @@ func writeTempFile(t *testing.T, dir, name string, size int) {
 
 	if err := os.WriteFile(filepath.Join(dir, name), make([]byte, size), 0o600); err != nil {
 		t.Fatalf("writing %s: %v", name, err)
+	}
+}
+
+// The process takes its root with it under ANY `-run` filter.
+//
+// This is the one thing the fabricated-directory specs above cannot say, and it
+// is the finding itself: the root is created at package INIT, so what owns it
+// is the process, and a guard hanging off the Ginkgo entry point does not run
+// when `-run` selects one of the 260 plain Go tests beside it. So this runs a
+// real test binary of this very package with a filter that matches NOTHING --
+// no test executes, the root is still created -- and asserts the temp directory
+// it was pointed at is empty afterwards.
+//
+// `TMPDIR` is redirected into the spec's own scratch, which keeps the child's
+// build work and its root out of the user's temp directory, and incidentally
+// puts a live `go-build*` under the same roof the child's guard is sweeping.
+func TestTheProcessTakesItsTempRootWithItUnderAnyRunFilter(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("no go toolchain on PATH to run a second test binary with")
+	}
+
+	scratch := t.TempDir()
+
+	child := exec.Command("go", "test", "-count=1", "-run", "^$",
+		"github.com/concourse/concourse/atc/worker/jetbridge")
+	child.Env = append(os.Environ(), "TMPDIR="+scratch)
+	if out, err := child.CombinedOutput(); err != nil {
+		t.Fatalf("running a filtered test binary of this package: %v\n%s", err, out)
+	}
+
+	entries, err := os.ReadDir(scratch)
+	if err != nil {
+		t.Fatalf("reading the child's temp directory: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), tempRootPrefix) {
+			t.Errorf("a test binary of this package that ran NO tests left %s behind; the temp "+
+				"root is created at package init, so removing it belongs to TestMain and not to "+
+				"the suite's entry point", entry.Name())
+		}
 	}
 }

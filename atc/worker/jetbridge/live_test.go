@@ -45,6 +45,11 @@ func runLive(m *testing.M) int {
 		panic("postgresrunner: " + message)
 	})
 
+	// The `live` build's half of the temp guard: the untagged build has a
+	// TestMain of its own for this and a binary may hold only one, so the rule
+	// -- this process takes its temp root with it -- is spelled in both.
+	before := jetbridge.TempSuspects()
+
 	livePostgresRunner = postgresrunner.Runner{Port: postgresrunner.PickPort()}
 	process := ifrit.Invoke(livePostgresRunner)
 	livePostgresRunner.InitializeTestDBTemplate()
@@ -53,6 +58,16 @@ func runLive(m *testing.M) int {
 
 	process.Signal(os.Interrupt)
 	<-process.Wait()
+
+	if leaks := jetbridge.TempLeaks(before); len(leaks) != 0 {
+		for _, leak := range leaks {
+			fmt.Fprintln(os.Stderr, "temp leak:", leak)
+		}
+		if code == 0 {
+			code = 1
+		}
+	}
+
 	return code
 }
 

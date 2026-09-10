@@ -19,6 +19,7 @@ package hangaroutput_test
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -89,6 +90,63 @@ func TestTheTempGuardLeavesADirectoryItCannotAttributeAlone(t *testing.T) {
 	if !strings.Contains(leaks[0], "(4096 bytes)") {
 		t.Errorf("the leak was reported without its size: %s", leaks[0])
 	}
+}
+
+// A root left behind by a process that is GONE.
+//
+// A suite that panics, or is killed, or fails in TestMain before the run
+// starts, takes no directory with it -- and no later run swept one, because the
+// guard trusts only its own pid. Liveness is the attribution that closes it:
+// a root whose owner is not running belongs to nobody and is removed at init,
+// and a root whose owner IS running is a sibling `--procs` process's live work
+// and is not touched by anybody.
+//
+// The dead pid here is a real one: a process that ran and exited, not a number
+// picked for being large.
+func TestAStaleRootWhoseProcessIsGoneIsSwept(t *testing.T) {
+	dir := t.TempDir()
+
+	dead := exitedProcessPID(t)
+	if processAlive(dead) {
+		t.Fatalf("pid %d is still alive after being waited for; the sweep cannot be asserted "+
+			"against it", dead)
+	}
+	if !processAlive(os.Getpid()) {
+		t.Fatal("processAlive says this very process is not running")
+	}
+
+	stale := makeDir(t, dir, fmt.Sprintf("%s%d-stale", tempRootPrefix, dead))
+	writeFile(t, stale, "hangar-output-daemon", 64)
+	live := makeDir(t, dir, fmt.Sprintf("%s%d-live", tempRootPrefix, os.Getpid()))
+	foreign := makeDir(t, dir, "go-build-r3foreign-live2")
+	other := makeDir(t, dir, fmt.Sprintf("some-other-suite-%d-live", dead))
+
+	swept := sweepStaleRoots(dir, os.Getpid())
+
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("the root of a process that has exited survived the sweep: %v", err)
+	}
+	if len(swept) != 1 || !strings.Contains(swept[0], filepath.Base(stale)) {
+		t.Errorf("the sweep removed %v; it owes exactly %s", swept, filepath.Base(stale))
+	}
+	for _, survivor := range []string{live, foreign, other} {
+		if _, err := os.Stat(survivor); err != nil {
+			t.Errorf("the sweep removed %s, which belongs to a live process or to another "+
+				"package entirely: %v", filepath.Base(survivor), err)
+		}
+	}
+}
+
+// exitedProcessPID runs a process, waits for it, and returns its pid.
+func exitedProcessPID(t *testing.T) int {
+	t.Helper()
+
+	command := exec.Command("/bin/sh", "-c", "exit 0")
+	if err := command.Run(); err != nil {
+		t.Fatalf("running a process to exit: %v", err)
+	}
+
+	return command.ProcessState.Pid()
 }
 
 func makeDir(t *testing.T, parent, name string) string {
