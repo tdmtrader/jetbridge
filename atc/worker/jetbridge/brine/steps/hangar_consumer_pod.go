@@ -237,9 +237,22 @@ func noUserDestinationInTheVerificationCommand(in PodCreated) error {
 	return nil
 }
 
-// materializesExactlyTheReceiptsTree asserts the request the init issues names
-// the ref the capture published and no other.
-func materializesExactlyTheReceiptsTree(in PodCreated) error {
+// asksForExactlyTheReceiptsTree asserts the request the init issues names the
+// ref the capture published, and names no other.
+//
+// IT IS A CHECK ABOUT THE REQUEST, and the phrase says so. The earlier name --
+// "materializes exactly the receipt's tree" -- promised something this tier
+// cannot see: the pod is never run here, no bytes move, and the only way to
+// stage in this fixture would be a stand-in for the daemon's own read path,
+// which the doctrine forbids and which would be asserting the stand-in. The
+// staging proof is elsewhere and is real in both places:
+// TestAManagedMaterializationStagesTheSameBytesAsAStrictOne walks both
+// destinations byte for byte, and AC 19's K3s tier runs the pod.
+//
+// "Exactly" is now load-bearing in both directions. The first version returned
+// on the FIRST batch naming the ref, so a command that also asked for a second
+// tree passed a check whose whole word is "exactly".
+func asksForExactlyTheReceiptsTree(in PodCreated) error {
 	container, err := hangarInit(in)
 	if err != nil {
 		return err
@@ -264,14 +277,30 @@ func materializesExactlyTheReceiptsTree(in PodCreated) error {
 	if err != nil {
 		return err
 	}
+	naming, batches := 0, 0
 	for _, body := range decoded {
+		if !strings.Contains(body, `"ref"`) {
+			continue
+		}
+		batches++
 		if strings.Contains(body, fragment) {
-			return nil
+			naming++
 		}
 	}
+	if batches == 0 {
+		return fmt.Errorf("the verification command carries no materialization request at all")
+	}
+	if naming == 0 {
+		return fmt.Errorf("no materialization request in the verification command names %s/%s/%d",
+			ref.Scope, ref.Digest, ref.Generation)
+	}
+	if naming != batches {
+		return fmt.Errorf("the verification command carries %d materialization request(s) and "+
+			"only %d name %s/%s/%d; the consumer asks for exactly its own tree",
+			batches, naming, ref.Scope, ref.Digest, ref.Generation)
+	}
 
-	return fmt.Errorf("no materialization request in the verification command names %s/%s/%d",
-		ref.Scope, ref.Digest, ref.Generation)
+	return nil
 }
 
 // decodedInitPayloads returns every base64 blob in the command, decoded.

@@ -296,6 +296,23 @@ func managedRead(in BoundOutput) (hangaroutputleaf.ReadLease, error) {
 	return grant.Lease, nil
 }
 
+// refusalWords is the closed vocabulary, in one place, so that a phrase taking
+// a refusal by name can refuse a word this plane does not have. A check that
+// accepted any string would be a check whose failing case is unreachable.
+func refusalWords() []string {
+	return []string{"not found", "lifecycle conflict", "unauthorized", "at risk", "expired"}
+}
+
+func knownRefusalWord(word string) bool {
+	for _, member := range refusalWords() {
+		if member == word {
+			return true
+		}
+	}
+
+	return false
+}
+
 // refusalWord maps a typed sentinel onto the word a scenario says.
 //
 // It is a closed mapping and not a substring search: "refused as X" has to name
@@ -715,20 +732,29 @@ func HangarBindingDefinitions() []brine.StepDefinition {
 				return nil
 			}),
 
+		// Through refusalWord, like the binding phrase beside it, so the map is
+		// CLOSED. The first version knew one word and let every other one pass
+		// on any error at all: a scenario could have said `refused as "sausage"`
+		// and been green on a nil-pointer panic recovered into an error.
 		check[BoundOutput]("the managed read is refused as {string}",
 			func(in BoundOutput, p brine.Params) error {
 				want, ok := p.GetString(0)
 				if !ok {
 					return fmt.Errorf("expected a refusal parameter")
 				}
+				if !knownRefusalWord(want) {
+					return fmt.Errorf("%q is not a refusal this plane has; the vocabulary is %v",
+						want, refusalWords())
+				}
 				if in.Err == nil {
 					return fmt.Errorf("the read was granted: %+v", in.Lease.ReadLeaseID)
 				}
-				if want == "no active claim" &&
-					!errors.Is(in.Err, hangaroutputleaf.ErrNotFound) &&
-					!errors.Is(in.Err, hangaroutputleaf.ErrConflict) {
-					return fmt.Errorf("the read was refused as %v, and a read with no active "+
-						"claim is a typed not-found or conflict", in.Err)
+				got, refused := refusalWord(in.Err)
+				if !refused {
+					return fmt.Errorf("the read was not refused with a typed outcome: %v", in.Err)
+				}
+				if got != want {
+					return fmt.Errorf("the read was refused as %q, not %q: %v", got, want, in.Err)
 				}
 
 				return nil
@@ -746,8 +772,8 @@ func HangarBindingDefinitions() []brine.StepDefinition {
 		CheckThat[PodCreated]("no user-controlled destination enters the verification command",
 			noUserDestinationInTheVerificationCommand),
 
-		CheckThat[PodCreated]("the consumer's pod materializes exactly the receipt's tree",
-			materializesExactlyTheReceiptsTree),
+		CheckThat[PodCreated]("the consumer's pod asks for exactly the receipt's tree",
+			asksForExactlyTheReceiptsTree),
 	}
 }
 
