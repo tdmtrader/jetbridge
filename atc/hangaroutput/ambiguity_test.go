@@ -437,6 +437,99 @@ func TestAnUnprovableDrainIsSealUnconfirmedAndPublishesNothing(t *testing.T) {
 	}
 }
 
+// A LOST SEAL CONFIRMATION. The daemon confirmed the seal and the answer never
+// arrived.
+//
+// This is the one boundary in the coordinator where a lost answer used to be
+// GUESSED rather than repeated: any error at all from the drain confirmer or
+// the confirm-seal call was committed as terminal `seal_unconfirmed`, and the
+// release that failure then owes destroyed a healthy, fully produced output --
+// while the daemon's own record said `confirmed`. One dropped HTTP response
+// failed the step.
+//
+// Req 5: an ambiguous acknowledgement is repeated under the same identity, and
+// the source is preserved. Only a TYPED ErrSealUnconfirmed is a statement about
+// the boundary; anything else is a statement about the network.
+func TestALostSealConfirmationConvergesOnTheNode(t *testing.T) {
+	h := newHarness(t)
+	c := h.admit(t).hold(t).finish(t, true)
+
+	// Stage 2 and the seal.
+	for i := 0; i < 2; i++ {
+		if _, err := c.advanceOnce(t); err != nil {
+			t.Fatalf("advancing: %v", err)
+		}
+	}
+
+	h.Dialer.LoseAfter = "confirm-seal"
+	if _, err := c.advanceOnce(t); !errors.Is(err, lostAnswer) {
+		t.Fatalf("the lost seal confirmation was not reported as ambiguous: %v", err)
+	}
+
+	// Nothing was decided on it, and nothing was destroyed by it.
+	interim := c.record(t)
+	if interim.State == output.CaptureStateFailed {
+		t.Fatalf("a lost confirm-seal answer was committed as terminal %q while the daemon's own "+
+			"record says the seal is confirmed", interim.TerminalFailure)
+	}
+	if !c.sourceStillThere() {
+		t.Error("the source was released on a lost answer")
+	}
+
+	c.advance(t)
+
+	final := c.record(t)
+	if final.State != output.CaptureStateRegistered {
+		t.Fatalf("the capture is %s/%q; a healthy sealed source lost one answer",
+			final.State, final.TerminalFailure)
+	}
+	if final.Receipt == nil {
+		t.Error("no receipt was registered")
+	}
+	if keys := h.bucketKeys(t); len(keys) != 1 {
+		t.Errorf("the bucket holds %d object(s): %v", len(keys), keys)
+	}
+	if h.Dialer.Calls("confirm-seal") < 1 {
+		t.Error("the seal was never confirmed at the node at all")
+	}
+}
+
+// A TRANSIENT drain error -- a kube-apiserver that did not answer in time.
+//
+// It is not evidence about the container boundary and it must not be committed
+// as one. The next pass asks again, and the capture completes.
+func TestATransientDrainErrorIsRetriedRatherThanCommitted(t *testing.T) {
+	h := newHarness(t)
+	h.Drain.TransientErrors = 1
+
+	c := h.admit(t).hold(t).finish(t, true)
+
+	// Stage 2 and the seal, then the confirmation that cannot reach the
+	// apiserver.
+	for i := 0; i < 2; i++ {
+		if _, err := c.advanceOnce(t); err != nil {
+			t.Fatalf("advancing: %v", err)
+		}
+	}
+	if _, err := c.advanceOnce(t); !errors.Is(err, output.ErrInfrastructure) {
+		t.Fatalf("a transient drain error was not reported as one: %v", err)
+	}
+
+	interim := c.record(t)
+	if interim.State == output.CaptureStateFailed {
+		t.Fatalf("one unreachable apiserver was committed as terminal %q", interim.TerminalFailure)
+	}
+	if !c.sourceStillThere() {
+		t.Error("the source was released on a transient error")
+	}
+
+	c.advance(t)
+	if final := c.record(t); final.State != output.CaptureStateRegistered {
+		t.Errorf("the capture is %s/%q after the apiserver came back",
+			final.State, final.TerminalFailure)
+	}
+}
+
 // A lost UPLOAD response. The object exists; the caller does not know it.
 //
 // AC 9: an ambiguous create converges only through verified per-capture retry.

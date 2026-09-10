@@ -498,12 +498,19 @@ func (coordinator *Coordinator) beginSeal(ctx context.Context, record output.Han
 
 // confirmSeal drains the captured set and proves the container boundary.
 //
-// A drain that cannot be proved is `seal_unconfirmed` and is recorded as a
+// A drain that cannot be PROVED is `seal_unconfirmed` and is recorded as a
 // terminal capture failure: requirement 17 says an unconfirmed ticket drain or
 // container boundary publishes no receipt and follows the no-re-execution rule.
-// It is committed rather than retried forever because a capture that cannot
-// prove its boundary will not become provable by asking again, and the source
-// it still holds is owed a release.
+//
+// What counts as "cannot be proved" is the whole of this method's care, and it
+// is a TYPE and not "an error happened". A lost HTTP response, an apiserver
+// that did not answer this second and a node that is briefly unreachable are
+// statements about the network; ErrSealUnconfirmed is the only statement about
+// the boundary. Committing the first three as the fourth destroys a healthy,
+// fully produced output on one dropped packet -- and the daemon's own record
+// still says the seal is confirmed, so the guess is not even the likelier
+// answer. Everything but the typed refusal is returned, and the next pass asks
+// again with the same identity (Req 5).
 func (coordinator *Coordinator) confirmSeal(ctx context.Context, record output.HandoffRecord) error {
 	if err := requireCaptureAuthority(record, "confirm_seal"); err != nil {
 		return err
@@ -524,7 +531,7 @@ func (coordinator *Coordinator) confirmSeal(ctx context.Context, record output.H
 
 	drained, err := coordinator.Drain.ConfirmDrain(ctx, record.Source.Locator, started)
 	if err != nil {
-		return coordinator.failTerminally(ctx, record, lease.CaptureFence, "seal_unconfirmed")
+		return coordinator.sealUnprovable(ctx, record, lease.CaptureFence, err)
 	}
 
 	if _, err := control.ConfirmSeal(ctx, output.SealConfirmation{
@@ -533,10 +540,26 @@ func (coordinator *Coordinator) confirmSeal(ctx context.Context, record output.H
 		CaptureFence: lease.CaptureFence,
 		ObservedAt:   output.NewTimestamp(coordinator.now()),
 	}); err != nil {
-		return coordinator.failTerminally(ctx, record, lease.CaptureFence, "seal_unconfirmed")
+		return coordinator.sealUnprovable(ctx, record, lease.CaptureFence, err)
 	}
 
 	return nil
+}
+
+// sealUnprovable decides whether a failure at the seal boundary is a statement
+// about the boundary or about the network.
+//
+// Only a typed ErrSealUnconfirmed is the first. Everything else is returned
+// unchanged, so the caller retries and the coordinator settles nothing and
+// fabricates nothing -- which is what it already does at every other operation
+// and what this one was the single exception to.
+func (coordinator *Coordinator) sealUnprovable(ctx context.Context, record output.HandoffRecord,
+	fence output.CaptureFence, cause error) error {
+	if !errors.Is(cause, output.ErrSealUnconfirmed) {
+		return cause
+	}
+
+	return coordinator.failTerminally(ctx, record, fence, "seal_unconfirmed")
 }
 
 // resolveLogical canonicalizes and commits the logical identity BEFORE any

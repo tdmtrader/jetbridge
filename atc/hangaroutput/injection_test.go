@@ -185,6 +185,14 @@ type stubDrain struct {
 	// no complete final container status before the deadline.
 	Unprovable bool
 
+	// TransientErrors is the arm this stub was missing, and its absence is why
+	// a destructive guess at the seal boundary was invisible: a confirmer that
+	// only ever refuses when told to, and refuses with the one typed sentinel
+	// that MEANS terminal, cannot distinguish "could not prove it" from "could
+	// not reach the apiserver this second". A kube-apiserver timeout is the
+	// second, it is ordinary, and it is consumed here so the retry succeeds.
+	TransientErrors int
+
 	calls int
 	mu    sync.Mutex
 }
@@ -193,8 +201,16 @@ func (drain *stubDrain) ConfirmDrain(_ context.Context, _ string,
 	started output.SealStarted) ([]output.DrainedWriter, error) {
 	drain.mu.Lock()
 	drain.calls++
+	transient := drain.TransientErrors > 0
+	if transient {
+		drain.TransientErrors--
+	}
 	drain.mu.Unlock()
 
+	if transient {
+		return nil, fmt.Errorf("%w: the apiserver did not answer in time",
+			output.ErrInfrastructure)
+	}
 	if drain.Unprovable {
 		return nil, fmt.Errorf("%w: no complete final container status before the deadline",
 			output.ErrSealUnconfirmed)
