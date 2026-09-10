@@ -559,7 +559,7 @@ func (repository *HangarOutputRepository) IncompleteHandoffs(ctx context.Context
 		LEFT JOIN hangar_pre_reservation_cancel_dispositions c ON c.handoff_id = p.handoff_id
 		WHERE NOT coalesce(
 			CASE d.disposition
-			    WHEN 'capture' THEN r.state = 'registered' OR r.release_acknowledged_at IS NOT NULL
+			    WHEN 'capture' THEN r.release_acknowledged_at IS NOT NULL
 			    WHEN 'no_capture' THEN n.release_acknowledged_at IS NOT NULL
 			    WHEN 'pre_reservation_cancel' THEN c.finalized_at IS NOT NULL
 			    ELSE false

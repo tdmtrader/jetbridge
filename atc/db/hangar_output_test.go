@@ -1354,24 +1354,82 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				"a cancelled capture resolved a logical identity nothing will ever publish")
 		})
 
-		It("reports a registered capture settled without any release", func() {
-			// The other way a capture settles: the receipt is registered, the
-			// object exists, and there is nothing to release.
+		// A registered receipt is a decision about the OBJECT. The source is on
+		// some node until that node says otherwise, and a held source is exempt
+		// from payload cleanup, sweep and reuse -- so calling a registered
+		// capture settled is how a successful capture came to pin its
+		// incarnation on a node forever. It settles the way the other two
+		// branches settle: when the fenced release is acknowledged.
+		It("reports a registered capture settled only once its source is released", func() {
 			activate()
 			reservation, _ := publish(hangarDigest(15), 1725830823000015)
 
-			var handoffID string
-			Expect(dbConn.QueryRow(
-				`SELECT handoff_id FROM hangar_capture_reservations WHERE reservation_id = $1`,
-				string(reservation)).Scan(&handoffID)).To(Succeed())
+			var handoffID, intent, executionID, leaseID string
+			Expect(dbConn.QueryRow(`
+				SELECT handoff_id, release_intent_id, execution_id, source_lease_id
+				FROM hangar_capture_reservations WHERE reservation_id = $1`, string(reservation)).
+				Scan(&handoffID, &intent, &executionID, &leaseID)).To(Succeed())
+			handoff := output.HandoffID(handoffID)
+			Expect(intent).ToNot(BeEmpty(),
+				"a registered capture recorded no release intent, so nothing addresses the "+
+					"node still holding the source it sealed")
 
-			tx, err := dbConn.Begin()
+			settled := func() bool {
+				GinkgoHelper()
+
+				tx, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(tx)
+				status, err := repository.ClassifyHandoff(ctx, tx, handoff)
+				Expect(err).NotTo(HaveOccurred())
+
+				return status.Settled
+			}
+
+			Expect(settled()).To(BeFalse(),
+				"a registered capture reported itself settled while its source was still held")
+
+			incomplete, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
-			defer db.Rollback(tx)
-			status, err := repository.ClassifyHandoff(ctx, tx, output.HandoffID(handoffID))
+			defer db.Rollback(incomplete)
+			owed, err := repository.IncompleteHandoffs(ctx, incomplete, 100)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(status.Settled).To(BeTrue())
-			Expect(tx.Rollback()).To(Succeed())
+			Expect(owed).To(ContainElement(handoff),
+				"a registered capture that still owes a release is not in the debt query, so "+
+					"nothing will ever come back for it")
+			Expect(incomplete.Rollback()).To(Succeed())
+
+			// And the release settles it. Past the irreversible publish point,
+			// which is where a registered capture always is: `registered` is
+			// the one state that reached it legitimately.
+			release, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(release)
+			execution := executioncontrol.Identity{
+				ExecutionID: executioncontrol.ExecutionID(executionID),
+				Fence:       1,
+			}
+			Expect(repository.AcknowledgeCaptureRelease(ctx, release, output.ReleaseAcknowledgement{
+				ProtocolVersion: output.ProtocolVersion,
+				Disposition:     output.DispositionCapture,
+				Execution:       execution,
+				ActivationEpoch: 1,
+				HandoffID:       handoff,
+				SourceLeaseID:   output.SourceLeaseID(leaseID),
+				ReleaseIntentID: output.ReleaseIntentID(intent),
+				Incarnation: output.SourceIncarnation{
+					ExecutionID:      execution.ExecutionID,
+					NodeUID:          "node-uid",
+					HandleGeneration: 1,
+					Output:           "result",
+				},
+				LedgerSequence: 11,
+				ObservedAt:     output.NewTimestamp(time.Now().UTC()),
+				Signature:      "c2lnbmF0dXJlLXJlbGVhc2U",
+			})).To(Succeed())
+			Expect(release.Commit()).To(Succeed())
+
+			Expect(settled()).To(BeTrue())
 		})
 	})
 
@@ -2039,7 +2097,12 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			Expect(record.Digest).To(Equal(ref.Digest))
 			Expect(record.Ref).To(Equal(ref))
 			Expect(record.Receipt).ToNot(BeNil())
-			Expect(record.Settled).To(BeTrue())
+			// Not settled: the receipt is registered and the fenced release of
+			// the source it sealed is still owed. `settled` means the same
+			// thing on all three branches.
+			Expect(record.Settled).To(BeFalse())
+			Expect(record.ReleaseIntentID).ToNot(BeEmpty(),
+				"a registered capture recorded no release intent for the source it sealed")
 		})
 	})
 

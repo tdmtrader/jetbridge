@@ -303,9 +303,21 @@ func (repository *HangarOutputRepository) RegisterReceipt(ctx context.Context, t
 		string(claims.ReservationID)); err != nil {
 		return hangarConflict(err)
 	}
+	// Registered, and NOT settled. A capture still owes the fenced release of
+	// the source it sealed: Req 11 orders the exact receipt before that
+	// release, and a held source is exempt from payload cleanup, sweep and
+	// reuse, so stamping settled here would call a capture finished while its
+	// incarnation was pinned on a node forever. `settled_at` is the release's
+	// to stamp, exactly as it is on the other two branches.
+	//
+	// The intent id is minted here, by the database, for the same reason
+	// CancelOrSettle mints one: the release is a pair, the acknowledgement
+	// names one exact intent, and a release with nothing to name has no answer
+	// to "which release was this".
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE hangar_capture_reservations
-		SET state = 'registered', settled_at = coalesce(settled_at, now())
+		SET state = 'registered',
+		    release_intent_id = coalesce(release_intent_id, gen_random_uuid())
 		WHERE reservation_id = $1`, string(claims.ReservationID)); err != nil {
 		return hangarConflict(err)
 	}

@@ -147,16 +147,19 @@ func (repository *HangarOutputRepository) ClassifyHandoff(ctx context.Context, t
 		irreversible sql.NullBool
 	)
 	// `Settled` means one thing on all three branches: nothing is still owed.
-	// For a capture that is a registered receipt -- the object exists and there
-	// is nothing to release -- or an acknowledged fenced release of the source.
-	// A row that merely says `cancelled` is a decision, not a settlement: the
-	// source is still held on some node until the daemon says otherwise, which
-	// is exactly what the other two branches read.
+	// On every one of them that is the acknowledged fenced release of the
+	// source, and on the capture branch it is that whether the capture ended in
+	// a registered receipt or in a terminal cancellation or failure.
+	//
+	// `registered` used to settle on its own, and that was the reading that let
+	// a successful capture hold its incarnation forever: a row that says
+	// `registered` is a decision about the OBJECT, and the source is still on
+	// some node until that node says otherwise. A row that merely says
+	// `cancelled` was never allowed to settle for exactly the same reason.
 	if err := hangarQueryRow(ctx, tx, `
 		SELECT d.disposition,
 		       CASE d.disposition
-		           WHEN 'capture' THEN r.state = 'registered'
-		                                OR r.release_acknowledged_at IS NOT NULL
+		           WHEN 'capture' THEN r.release_acknowledged_at IS NOT NULL
 		           WHEN 'no_capture' THEN n.release_acknowledged_at IS NOT NULL
 		           ELSE c.finalized_at IS NOT NULL
 		       END,

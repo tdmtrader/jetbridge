@@ -77,9 +77,17 @@ const (
 	// were once true, so the challenge is part of the transition.
 	TransitionRegisterReceipt Transition = "register_receipt"
 
-	// TransitionReleaseSource is the capture branch's own fenced release: a
-	// capture that terminally cancelled or failed BEFORE the irreversible
-	// publish point has decided something and released nothing.
+	// TransitionReleaseSource is the capture branch's own fenced release. Every
+	// terminal capture owes one: a capture that cancelled or failed BEFORE the
+	// irreversible publish point has decided something and released nothing,
+	// and a capture that REGISTERED a receipt is finished with the source it
+	// sealed. A held source is exempt from payload cleanup, sweep and reuse, so
+	// a success that skipped this would pin its incarnation on the node
+	// forever.
+	//
+	// It releases the HOLD. The bytes stay -- they are the step's own output,
+	// already aliased read-only at the ordinary path -- and reclamation by
+	// policy is what removes them.
 	TransitionReleaseSource Transition = "release_source"
 
 	// TransitionSettleOrphan is the only thing left past the irreversible
@@ -229,8 +237,25 @@ func decideCapture(record output.HandoffRecord) (Decision, error) {
 
 	switch record.State {
 	case output.CaptureStateRegistered:
-		return decide(TransitionNone,
-			"handoff %s registered a verified receipt for %s", record.HandoffID, record.Ref.Digest), nil
+		// A registered receipt is not the end of the capture. Requirement 11
+		// orders "an exact receipt ... before a fenced source release", and
+		// that ordering presupposes the release: a held source is exempt from
+		// payload cleanup, sweep and reuse (Reqs 3 and 9), so a success that
+		// never released would pin its incarnation on the node forever and
+		// leave the execution permanently cleanup-ineligible.
+		//
+		// It is safe to owe it here, and it was not before: a release used to
+		// DELETE, and the captured bytes are still serving the ordinary
+		// read-only alias. A release releases the hold.
+		if record.ReleaseAcknowledged || !record.Source.Reserved() {
+			return decide(TransitionNone,
+				"handoff %s registered a verified receipt for %s and its exact fenced source "+
+					"release is acknowledged", record.HandoffID, record.Ref.Digest), nil
+		}
+
+		return decide(TransitionReleaseSource,
+			"handoff %s registered a verified receipt for %s and its source is still held",
+			record.HandoffID, record.Ref.Digest), nil
 
 	case output.CaptureStateCancelled, output.CaptureStateFailed:
 		// Past the publish point an object may exist, and cancellation cannot

@@ -126,6 +126,18 @@ func resolvedLogically(record output.HandoffRecord) output.HandoffRecord {
 	return record
 }
 
+// registeredCapture is a capture whose verified receipt is registered and whose
+// source has not been released yet.
+func registeredCapture() output.HandoffRecord {
+	record := resolvedLogically(captured(predeclared()))
+	record.PastIrreversiblePublishPoint = true
+	record.State = output.CaptureStateRegistered
+	record.Ref = hangar.TreeRef{Scope: record.Scope, Digest: record.Digest, Generation: 9}
+	record.ReleaseIntentID = testIntent
+
+	return record
+}
+
 // TestEveryCrashHalfSelectsExactlyOneLegalTransition is the recovery review, as
 // a table.
 func TestEveryCrashHalfSelectsExactlyOneLegalTransition(t *testing.T) {
@@ -240,12 +252,24 @@ func TestEveryCrashHalfSelectsExactlyOneLegalTransition(t *testing.T) {
 			notWant: []Transition{TransitionPublish, TransitionReleaseSource, TransitionNone},
 		},
 		{
-			crash: "after the receipt was registered",
+			// A registered receipt is not the end. Req 11 orders the exact
+			// receipt BEFORE a fenced source release, and a held source is
+			// exempt from payload cleanup, sweep and reuse -- so a success that
+			// stopped here would pin its incarnation on the node forever.
+			crash: "after the receipt was registered, before the source was released",
 			record: func() output.HandoffRecord {
-				record := resolvedLogically(captured(predeclared()))
-				record.PastIrreversiblePublishPoint = true
-				record.State = output.CaptureStateRegistered
-				record.Ref = hangar.TreeRef{Scope: record.Scope, Digest: record.Digest, Generation: 9}
+				record := registeredCapture()
+
+				return record
+			}(),
+			want:    TransitionReleaseSource,
+			notWant: []Transition{TransitionRegisterReceipt, TransitionPublish, TransitionNone},
+		},
+		{
+			crash: "after a registered capture released its source",
+			record: func() output.HandoffRecord {
+				record := registeredCapture()
+				record.ReleaseAcknowledged = true
 
 				return record
 			}(),
@@ -478,12 +502,8 @@ func TestNoPredeclarationOrAcknowledgementIsAcceptedByASealOrPublicationAPI(t *t
 // cases are asserted first: without them "exposure is refused" would pass on a
 // predicate that refuses everything, and the step would never finish at all.
 func TestTerminalExposureWaitsForEveryBoundary(t *testing.T) {
-	registered := resolvedLogically(captured(predeclared()))
-	registered.PastIrreversiblePublishPoint = true
-	registered.State = output.CaptureStateRegistered
-	registered.Ref = hangar.TreeRef{
-		Scope: registered.Scope, Digest: registered.Digest, Generation: 9,
-	}
+	registered := registeredCapture()
+	registered.ReleaseAcknowledged = true
 
 	settledNoCapture := dispositioned(held(predeclared()), output.DispositionNoCapture)
 	settledNoCapture.ReleaseAcknowledged = true
@@ -492,9 +512,9 @@ func TestTerminalExposureWaitsForEveryBoundary(t *testing.T) {
 	closedCancel.ReleaseAcknowledged = true
 
 	for name, record := range map[string]output.HandoffRecord{
-		"a registered receipt":  registered,
-		"a settled no_capture":  settledNoCapture,
-		"a closed cancellation": closedCancel,
+		"a registered receipt over a released source": registered,
+		"a settled no_capture":                        settledNoCapture,
+		"a closed cancellation":                       closedCancel,
 	} {
 		if permitted, reason := TerminalExposurePermitted(record); !permitted {
 			t.Errorf("%s does not permit a terminal outcome: %s", name, reason)
@@ -512,6 +532,7 @@ func TestTerminalExposureWaitsForEveryBoundary(t *testing.T) {
 		"a committed reservation before the seal": captured(predeclared()),
 		"a sealed capture before resolution":      sealed(captured(predeclared())),
 		"a resolved capture before the create":    resolvedLogically(captured(predeclared())),
+		"a registered receipt before its release": registeredCapture(),
 		"a no_capture before its release":         dispositioned(held(predeclared()), output.DispositionNoCapture),
 		"a cancellation before its release":       dispositioned(reserved(predeclared()), output.DispositionPreReservationCancel),
 		"an unsettled orphan":                     orphan,

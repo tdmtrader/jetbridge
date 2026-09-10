@@ -284,6 +284,26 @@ func TestAnUninterruptedCaptureCompletesAndReleasesItsSource(t *testing.T) {
 	if keys := h.bucketKeys(t); len(keys) != 1 {
 		t.Errorf("the bucket holds %d object(s): %v", len(keys), keys)
 	}
+	// The source release, which is the last thing a capture owes. Req 11 orders
+	// "an exact receipt ... before a fenced source release", and that ordering
+	// presupposes the release: a held source is exempt from payload cleanup,
+	// sweep and reuse (Reqs 3 and 9), so a successful capture that never
+	// released would pin its incarnation on the node forever.
+	//
+	// The release is the HOLD's. The bytes stay -- they are the step's output,
+	// aliased read-only at the ordinary path -- and only reclamation by policy
+	// removes them.
+	if !record.ReleaseAcknowledged {
+		t.Error("a registered capture never released its source, so the incarnation is held on " +
+			"the node forever and the execution is never cleanup-eligible")
+	}
+	if !c.sourceStillThere() {
+		t.Error("the release deleted the captured output from the node")
+	}
+	if record.Settled != true {
+		t.Error("a capture with a registered receipt and an acknowledged release is not settled")
+	}
+
 	if permitted, reason := hangaroutput.TerminalExposurePermitted(record); !permitted {
 		t.Errorf("a completed capture does not permit a terminal outcome: %s", reason)
 	}

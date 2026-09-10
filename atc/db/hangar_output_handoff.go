@@ -347,7 +347,18 @@ func (repository *HangarOutputRepository) acknowledgeRelease(ctx context.Context
 		// says `failed`. The clause was kept rather than removed as redundant
 		// precisely so that this phase would have to widen it deliberately
 		// instead of discovering that failed captures could never release.
-		guard = " AND state IN ('cancelled', 'failed') AND NOT past_irreversible_publish_point"
+		//
+		// `registered` joins them too, and it is the one state that may release
+		// PAST the publish point -- because it is the state that got there
+		// legitimately. Req 11 orders the exact receipt before the fenced
+		// release, and a capture that never released would pin its incarnation
+		// on the node forever; a held source is exempt from payload cleanup,
+		// sweep and reuse. What the publish-point clause still refuses is a
+		// cancelled or failed capture offering a release after an object may
+		// exist, which is a node working from stale state.
+		guard = ` AND (
+			state = 'registered'
+			OR (state IN ('cancelled', 'failed') AND NOT past_irreversible_publish_point))`
 	}
 
 	result, err := tx.ExecContext(ctx, fmt.Sprintf(`
