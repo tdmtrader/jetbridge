@@ -884,7 +884,7 @@ func TestAStaleOwnerCannotAdvanceACapture(t *testing.T) {
 }
 
 // The POSITIVE half of a lease takeover: the new owner finishes what it
-// inherited.
+// inherited, from EVERY half a capture can be interrupted at.
 //
 // A takeover is what an ATC restart mid-capture becomes, because OwnerID is
 // minted per process: after DefaultLeaseTerm the next process is a different
@@ -894,50 +894,131 @@ func TestAStaleOwnerCannotAdvanceACapture(t *testing.T) {
 // reservation ROW's fence, frozen at 1 by Stage 2, while everything else
 // checked the lease, so every capture that survived a restart past Stage 2
 // ended as an unregistered object nobody could either register or fail.
+//
+// FOUR halves and not one, because "the lease is the one fence source" is a
+// claim about every reader and a takeover after the SEAL is the single half
+// where it cannot fail: the new owner makes the logical resolution itself, so
+// the resolution's fence and the lease's agree and a reader of the wrong one
+// looks correct. The three halves past the resolution are where a second fence
+// source shows -- and the slow one, the upload, is the half an ATC restart is
+// most likely to land in. Each of them ends `registered` under the new owner or
+// it ends as an object in the bucket that nobody can register and nobody can
+// fail.
 func TestATakeoverCarriesTheCaptureThroughToRegistration(t *testing.T) {
-	h := newHarness(t)
-	c := h.admit(t).hold(t).finish(t, true)
+	// The point the FIRST owner is interrupted at. Each returns having driven
+	// the capture there and no further.
+	halves := []struct {
+		name    string
+		arrange func(t *testing.T, h *harness, c *capture)
+	}{
+		{
+			// Stage 2 and the seal, under the first owner. A takeover of a
+			// lease nobody holds is not a takeover.
+			name: "after the seal",
+			arrange: func(t *testing.T, _ *harness, c *capture) {
+				advanceExactly(t, c, 2)
+			},
+		},
+		{
+			// The logical resolution is committed at fence 1 and is immutable.
+			// Everything after it is the new owner's, at fence 2.
+			name: "after the logical resolution",
+			arrange: func(t *testing.T, _ *harness, c *capture) {
+				advanceExactly(t, c, 4)
+			},
+		},
+		{
+			// The object IS in the bucket and the first owner never learned
+			// it. This is F1's own outcome: a marked object, no receipt, and a
+			// handoff `IncompleteHandoffs` lists on every pass.
+			name: "after a lost publish answer",
+			arrange: func(t *testing.T, h *harness, c *capture) {
+				advanceExactly(t, c, 4)
+				h.Dialer.LoseAfter = "publish"
+				if _, err := c.advanceOnce(t); !errors.Is(err, lostAnswer) {
+					t.Fatalf("the lost publish answer was not reported: %v", err)
+				}
+			},
+		},
+		{
+			// register_receipt commits three times: the lease, the stat
+			// challenge, and the receipt admission. Losing the SECOND leaves a
+			// consumed-nothing challenge behind and the capture unregistered.
+			name: "after a lost stat-challenge commit",
+			arrange: func(t *testing.T, h *harness, c *capture) {
+				advanceExactly(t, c, 5)
+				ambiguous := &ambiguousTransactor{inner: h.Coordinator.Transactor}
+				h.Coordinator.Transactor = ambiguous
+				ambiguous.Skip, ambiguous.LoseNext = 1, true
+				if _, err := c.advanceOnce(t); !errors.Is(err, lostAnswer) {
+					t.Fatalf("the lost challenge commit was not reported: %v", err)
+				}
+				h.Coordinator.Transactor = ambiguous.inner
+			},
+		},
+	}
 
-	// Stage 2 and the seal, under the first owner. A takeover of a lease
-	// nobody holds is not a takeover.
-	for i := 0; i < 2; i++ {
-		if _, err := c.advanceOnce(t); err != nil {
-			t.Fatalf("advancing: %v", err)
+	for _, half := range halves {
+		t.Run(half.name, func(t *testing.T) {
+			h := newHarness(t)
+			c := h.admit(t).hold(t).finish(t, true)
+
+			half.arrange(t, h, c)
+
+			c.expireTheLease(t)
+
+			// The second process. A new owner id is exactly what an ATC
+			// restart produces, and it is the whole difference between the two
+			// owners.
+			h.Coordinator.OwnerID = uuid.NewString()
+
+			taken := c.advance(t)
+
+			record := c.record(t)
+			if record.State != output.CaptureStateRegistered {
+				t.Fatalf("a capture inherited by a new owner is %s after %v", record.State, taken)
+			}
+			if record.CaptureFence != 2 {
+				t.Errorf("the capture is admitted under fence %d and the takeover advanced the "+
+					"lease to 2; one fence source or none", record.CaptureFence)
+			}
+			if record.Receipt == nil {
+				t.Fatal("the new owner published an object and could never obtain a receipt for it")
+			}
+			if record.Receipt.Claims.WriterFence != output.WriterFence(2) {
+				t.Errorf("the receipt is bound to writer fence %d and the takeover holds 2",
+					record.Receipt.Claims.WriterFence)
+			}
+			if keys := h.bucketKeys(t); len(keys) != 1 {
+				t.Errorf("the takeover created %d object(s): %v", len(keys), keys)
+			}
+			if h.Dialer.Calls("begin-seal") != 1 {
+				t.Errorf("the seal was begun %d times across the takeover; the captured drain "+
+					"set is captured once", h.Dialer.Calls("begin-seal"))
+			}
+			if !record.ReleaseAcknowledged {
+				t.Error("the new owner registered the receipt and never released the source it " +
+					"inherited")
+			}
+			if permitted, reason := hangaroutput.TerminalExposurePermitted(record); !permitted {
+				t.Errorf("a capture completed by its new owner does not permit a terminal "+
+					"outcome: %s", reason)
+			}
+		})
+	}
+}
+
+// advanceExactly drives the coordinator forward a fixed number of transitions
+// and refuses to let a failure look like an arrangement.
+func advanceExactly(t *testing.T, c *capture, transitions int) {
+	t.Helper()
+
+	for i := 0; i < transitions; i++ {
+		decision, err := c.advanceOnce(t)
+		if err != nil {
+			t.Fatalf("arranging (%s), transition %d of %d: %v", decision.Transition, i+1,
+				transitions, err)
 		}
-	}
-	c.expireTheLease(t)
-
-	// The second process. A new owner id is exactly what an ATC restart
-	// produces, and it is the whole difference between the two owners.
-	h.Coordinator.OwnerID = uuid.NewString()
-
-	taken := c.advance(t)
-
-	record := c.record(t)
-	if record.State != output.CaptureStateRegistered {
-		t.Fatalf("a capture inherited by a new owner is %s after %v", record.State, taken)
-	}
-	if record.CaptureFence != 2 {
-		t.Errorf("the capture is admitted under fence %d and the takeover advanced the lease "+
-			"to 2; one fence source or none", record.CaptureFence)
-	}
-	if record.Receipt == nil {
-		t.Fatal("the new owner published an object and could never obtain a receipt for it")
-	}
-	if record.Receipt.Claims.WriterFence != output.WriterFence(2) {
-		t.Errorf("the receipt is bound to writer fence %d and the takeover holds 2",
-			record.Receipt.Claims.WriterFence)
-	}
-	if keys := h.bucketKeys(t); len(keys) != 1 {
-		t.Errorf("the takeover created %d object(s): %v", len(keys), keys)
-	}
-	if h.Dialer.Calls("begin-seal") != 1 {
-		t.Errorf("the seal was begun %d times across the takeover; the captured drain set is "+
-			"captured once", h.Dialer.Calls("begin-seal"))
-	}
-	if permitted, reason := hangaroutput.TerminalExposurePermitted(record); !permitted {
-		t.Errorf("a capture completed by its new owner does not permit a terminal outcome: %s",
-			reason)
 	}
 }
 

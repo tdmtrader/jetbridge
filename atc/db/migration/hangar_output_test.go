@@ -1011,6 +1011,36 @@ var _ = Describe("the Hangar output plane schema", func() {
 					WHERE reservation_id = '%s'`, otherDigest, reservationID))).
 					To(ContainSubstring("cannot float to replacement content"))
 			})
+
+			// The takeover half. The resolution's own fence is the fence it was
+			// MADE at and is never rewritten, so a trigger that compared it to
+			// the current lease on every write refused the one write a new
+			// owner has to make: `RegisterReceipt` marks the row `registered`,
+			// and after an ATC restart anywhere past the resolution -- the
+			// upload included -- that mark raised at commit forever, leaving an
+			// object nobody could register and nobody could fail.
+			It("admits the registration mark by a later owner over an inherited resolution", func() {
+				seedLogicalReservation(reservationID, sampleDigest, 4)
+
+				mustExec(database, fmt.Sprintf(`
+					UPDATE hangar_capture_attempt_leases SET capture_fence = 5
+					WHERE reservation_id = '%s'`, reservationID))
+
+				expectAccepted(database, "a registration mark under the takeover's fence",
+					fmt.Sprintf(`UPDATE hangar_logical_reservations SET state = 'registered'
+						WHERE reservation_id = '%s'`, reservationID))
+			})
+
+			// And the fence is still enforced where it is the act: a statement
+			// that moves the resolution's own fence backwards is refused.
+			It("refuses a resolution whose fence is moved to a superseded one", func() {
+				seedLogicalReservation(reservationID, sampleDigest, 4)
+
+				Expect(expectRefusal(database, "a resolution refenced to a superseded fence",
+					fmt.Sprintf(`UPDATE hangar_logical_reservations SET capture_fence = 3
+						WHERE reservation_id = '%s'`, reservationID))).
+					To(ContainSubstring("a stale owner may not seal, publish, sign, register or finalize"))
+			})
 		})
 
 		Context("receipts", func() {

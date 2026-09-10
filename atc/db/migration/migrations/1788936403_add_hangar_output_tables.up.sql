@@ -1101,12 +1101,32 @@ CREATE CONSTRAINT TRIGGER hangar_stage_two_matches_predeclaration
 
 -- Logical resolution runs after canonicalization and only under the current
 -- capture ownership fence. A stale owner resolves nothing.
+--
+-- The FENCED ACT is the resolution itself -- the insert, and any statement that
+-- moves the fence the resolution was made under. It is not every later write to
+-- the row: `capture_fence` here is the fence the resolution was recorded at and
+-- is never rewritten, so comparing it to the CURRENT lease on an UPDATE that
+-- touches only `state` refuses exactly the writes a takeover exists to permit.
+-- `RegisterReceipt` updates `state` to 'registered'; under a new owner that
+-- update raised JB003 at commit, so an ATC restart anywhere between the
+-- resolution and the receipt -- which includes the upload, the slow half --
+-- left a marked object in the bucket that no owner could ever register and no
+-- owner could ever fail. The lease is the one fence source (see
+-- hangarCurrentCaptureFence); this is the reader that had not joined it.
+--
+-- Every statement that IS fenced still checks its own fence: RegisterReceipt,
+-- the irreversible publish point, the seal deadline and the terminal failure
+-- all derive the current fence from the lease and refuse a stale one.
 CREATE FUNCTION hangar_check_logical_resolution() RETURNS trigger
     LANGUAGE plpgsql AS $$
 DECLARE
     current_fence bigint;
     reservation   hangar_capture_reservations%ROWTYPE;
 BEGIN
+    IF TG_OP = 'UPDATE' AND NEW.capture_fence = OLD.capture_fence THEN
+        RETURN NULL;
+    END IF;
+
     SELECT * INTO reservation FROM hangar_capture_reservations WHERE reservation_id = NEW.reservation_id;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'hangar: logical reservation % has no Stage 2 reservation', NEW.reservation_id
