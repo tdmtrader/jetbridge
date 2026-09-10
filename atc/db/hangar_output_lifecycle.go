@@ -594,10 +594,19 @@ func (repository *HangarOutputRepository) AcquireReadLease(ctx context.Context, 
 		return output.ReadLease{}, err
 	}
 
+	// The absence of a claim and the failure to ask are different answers, and
+	// wrapping both as ErrNotFound told a caller "there is no claim" when what
+	// happened was that the database could not be reached. A consumer reads
+	// that as "my binding is gone" and gives up; the honest answer sends it
+	// back to try again.
 	var released sql.NullTime
 	if err := hangarQueryRow(ctx, tx, `
 		SELECT released_at FROM hangar_claims WHERE claim_id = $1 AND lifecycle_id = $2`,
 		[]any{string(request.ClaimID), lifecycle}, &released); err != nil {
+		if !errors.Is(err, output.ErrNotFound) {
+			return output.ReadLease{}, err
+		}
+
 		return output.ReadLease{}, fmt.Errorf("%w: no claim %s protects %s/%s/%d; a managed-output "+
 			"grant needs at least one active claim", output.ErrNotFound, request.ClaimID,
 			request.Ref.Scope, request.Ref.Digest, request.Ref.Generation)

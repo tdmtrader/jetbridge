@@ -745,6 +745,46 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			Entry("recorded conflicted", "conflicted"),
 		)
 
+		// "There is no claim" and "I could not ask" are different answers.
+		//
+		// The claim lookup wrapped every failure as ErrNotFound, so a database
+		// the transaction could not reach came back as "no claim protects this
+		// ref" -- and a consumer reads that as "my binding is gone" and stops.
+		// The failure is induced by renaming the table INSIDE the transaction
+		// that then asks, which is a real undefined-table failure from the real
+		// driver, and it is rolled back with the transaction.
+		It("tells a claim that is absent from a claim lookup that failed", func() {
+			tx, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(tx)
+
+			// The COLUMN and not the table: the lock suffix takes
+			// `SELECT 1 FROM hangar_claims ... FOR UPDATE` first, so renaming
+			// the table would fail the lock and this spec would be asserting
+			// the helper's error instead of the lookup's.
+			_, err = tx.Exec(`ALTER TABLE hangar_claims DROP COLUMN released_at CASCADE`)
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = repository.AcquireReadLease(ctx, tx,
+				readLeaseRequest(output.ReadLeaseID(uuid.NewString()), claimID, ref))
+			Expect(err).To(HaveOccurred())
+			Expect(err).To(MatchError(output.ErrInfrastructure))
+			Expect(err).NotTo(MatchError(output.ErrNotFound),
+				"a lookup that could not run was reported as an absent claim")
+			Expect(tx.Rollback()).To(Succeed())
+
+			// The control, on the same fixture: with the table where it
+			// belongs, an absent claim really is a typed not-found.
+			absent, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(absent)
+			request := readLeaseRequest(output.ReadLeaseID(uuid.NewString()),
+				output.ClaimID(uuid.NewString()), ref)
+			_, err = repository.AcquireReadLease(ctx, absent, request)
+			Expect(err).To(MatchError(output.ErrNotFound))
+			Expect(absent.Rollback()).To(Succeed())
+		})
+
 		It("refuses a read while the epoch's lifetime policy is at risk", func() {
 			tx, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())

@@ -114,6 +114,21 @@ func (client *LeaseControlClient) ask(ctx context.Context, operation LeaseOperat
 		_ = response.Body.Close()
 	}()
 
+	// The STATUS first, and only then the body.
+	//
+	// The control plane answers a refusal with a JSON body and a 403/404/409,
+	// and an outage with whatever is between the two: a proxy's HTML 502, an
+	// ingress's 503, a 401 from something that is not the control plane at all.
+	// Decoding those produced ErrCorrupt -- "the answer does not decode" --
+	// which reads as "the control plane is broken" rather than "the control
+	// plane was not reached", and the daemon has to tell those apart. A status
+	// this protocol never uses is infrastructure.
+	if !leaseStatusIsAnswer(response.StatusCode) {
+		return LeaseAnswer{}, fmt.Errorf("%w: the control plane answered HTTP %d to a %s; that "+
+			"is not a status this protocol speaks, so it is an outage between here and it, not "+
+			"a refusal", ErrInfrastructure, response.StatusCode, operation)
+	}
+
 	var answer LeaseAnswer
 	if err := json.NewDecoder(io.LimitReader(response.Body, MaxLeaseAnswerBytes)).
 		Decode(&answer); err != nil {
@@ -134,6 +149,19 @@ func (client *LeaseControlClient) ask(ctx context.Context, operation LeaseOperat
 	}
 
 	return answer, nil
+}
+
+// leaseStatusIsAnswer is the closed set of statuses the control plane's own
+// handler produces: one for an admission and one per refusal class. Anything
+// else came from something that is not the handler.
+func leaseStatusIsAnswer(status int) bool {
+	switch status {
+	case http.StatusOK, http.StatusForbidden, http.StatusNotFound, http.StatusConflict,
+		http.StatusServiceUnavailable:
+		return true
+	}
+
+	return false
 }
 
 func (client *LeaseControlClient) wired() error {

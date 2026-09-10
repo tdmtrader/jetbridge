@@ -1160,6 +1160,22 @@ var _ = Describe("the Hangar output plane schema", func() {
 				Expect(expectRefusal(database, "a deleted claim tombstone", fmt.Sprintf(`
 					DELETE FROM hangar_claims WHERE claim_id = '%s'`, claimID))).
 					To(ContainSubstring("stays tombstoned"))
+
+				// A tombstone's INSTANT is as immutable as the tombstone.
+				// Refusing only the move to NULL left "released at one time,
+				// then released at another" open -- a reactivation with a cover
+				// story, and the timestamp is what a later audit reads.
+				Expect(expectRefusal(database, "a re-dated claim tombstone", fmt.Sprintf(`
+					UPDATE hangar_claims SET released_at = now() + interval '1 hour'
+					WHERE claim_id = '%s'`, claimID))).
+					To(ContainSubstring("re-dated"))
+
+				// And the release production really writes -- coalesce, so the
+				// instant does not move -- is still accepted, which is what
+				// makes ReleaseClaim idempotent rather than refused.
+				expectAccepted(database, "an idempotent re-release", fmt.Sprintf(`
+					UPDATE hangar_claims SET released_at = coalesce(released_at, now())
+					WHERE claim_id = '%s'`, claimID))
 			})
 
 			It("refuses moving a claim to another exact ref", func() {

@@ -749,9 +749,15 @@ BEGIN
             OLD.claim_id
             USING ERRCODE = 'JB001';
     END IF;
-    IF OLD.released_at IS NOT NULL AND NEW.released_at IS NULL THEN
-        RAISE EXCEPTION 'hangar: claim % was released at % and cannot silently reactivate',
-            OLD.claim_id, OLD.released_at
+    -- A tombstone's INSTANT is as immutable as the tombstone. The arm used to
+    -- refuse only released_at going back to NULL, so a claim could be released
+    -- at one time and then "released" at another -- which is a reactivation
+    -- with a cover story, and the timestamp is what a later audit reads.
+    -- ReleaseClaim writes coalesce(released_at, now()) and never moves it, so
+    -- nothing in production notices the difference; that is the point.
+    IF OLD.released_at IS NOT NULL AND NEW.released_at IS DISTINCT FROM OLD.released_at THEN
+        RAISE EXCEPTION 'hangar: claim % was released at % and cannot silently reactivate or be re-dated to %',
+            OLD.claim_id, OLD.released_at, NEW.released_at
             USING ERRCODE = 'JB001';
     END IF;
 

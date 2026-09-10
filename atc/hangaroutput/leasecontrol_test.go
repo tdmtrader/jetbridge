@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -421,5 +422,60 @@ func TestARenewedReaderKeepsWorkingPastItsOriginalGrantWindow(t *testing.T) {
 	if !released {
 		t.Error("a renewed reader could not release its own lease, so the protection it no " +
 			"longer needs is held until recovery closes it")
+	}
+}
+
+// An OUTAGE between the daemon and the control plane is not a corrupt answer.
+//
+// The client decoded whatever came back without looking at the status, so a
+// proxy's HTML 502, an ingress's 503 or a 401 from something that is not the
+// control plane at all came out as ErrCorrupt -- "the answer does not decode",
+// which reads as "the control plane is broken". The daemon has to tell "the
+// lease is gone" from "the control plane was not reached" (the spec above says
+// so for a closed server), and a status this protocol never uses belongs on the
+// second side of that line.
+//
+// The control is first and it is the real handler: the statuses the control
+// plane itself produces still decode as answers.
+func TestAStatusTheControlPlaneNeverSendsIsAnOutageAndNotACorruptAnswer(t *testing.T) {
+	h := newHarness(t)
+	fixture := newLeaseFixture(t, h, admittedGrant(t, h))
+
+	if answer, err := fixture.Client.ValidateLease(context.Background(), fixture.Grant,
+		time.Minute); err != nil || !answer.Admitted {
+		t.Fatalf("the real handler did not answer before this spec replaced it: %v %+v",
+			err, answer)
+	}
+
+	for _, gateway := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"a proxy's HTML 502", http.StatusBadGateway, "<html><body>502 Bad Gateway</body></html>"},
+		{"an ingress 504", http.StatusGatewayTimeout, "upstream timed out"},
+		{"a 401 from something that is not the control plane", http.StatusUnauthorized, "{}"},
+	} {
+		t.Run(gateway.name, func(t *testing.T) {
+			proxy := httptest.NewServer(http.HandlerFunc(
+				func(writer http.ResponseWriter, _ *http.Request) {
+					writer.WriteHeader(gateway.status)
+					_, _ = writer.Write([]byte(gateway.body))
+				}))
+			defer proxy.Close()
+
+			client := *fixture.Client
+			client.BaseURL = proxy.URL
+			client.HTTP = proxy.Client()
+
+			_, err := client.ValidateLease(context.Background(), fixture.Grant, time.Minute)
+			if !errors.Is(err, output.ErrInfrastructure) {
+				t.Fatalf("%s was answered %v; a daemon that read that as a revocation would "+
+					"fail a task for an outage", gateway.name, err)
+			}
+			if errors.Is(err, output.ErrCorrupt) {
+				t.Error("an unreached control plane was reported as a corrupt answer")
+			}
+		})
 	}
 }
