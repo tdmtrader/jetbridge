@@ -705,6 +705,25 @@ type ReadLeaseRequest struct {
 	ActivationEpoch        executioncontrol.ActivationEpoch
 	RequestedAt            Timestamp
 	MaterializationTimeout time.Duration
+
+	// Destination and GrantNonce are what the grant for this lease will bind.
+	// They are on the REQUEST, and stored with the lease, because the grant is
+	// minted after the transaction commits and may have to be minted again: a
+	// nonce chosen at mint time would make two mints of one lease differ.
+	Destination ReadDestination
+	GrantNonce  string
+
+	// StatProof is the exact-generation metadata stat, performed OUTSIDE the
+	// locks and revalidated inside them. Requirement 35 admits a managed-output
+	// grant only after a stat proves the registered marked generation is
+	// present; a lease created without one would be protection for content
+	// nobody looked at.
+	StatProof PublishedObject
+
+	// StatObservedAt is when that stat was taken. It is separate from
+	// RequestedAt because a caller may hold a request open while retrying, and
+	// what has to be fresh is the OBSERVATION.
+	StatObservedAt Timestamp
 }
 
 func (request ReadLeaseRequest) Validate() error {
@@ -724,9 +743,46 @@ func (request ReadLeaseRequest) Validate() error {
 		return fmt.Errorf("%w: materialization timeout is not positive; the lease term is derived "+
 			"from it", ErrIncomplete)
 	}
+	if err := request.Destination.Validate(); err != nil {
+		return err
+	}
+	if err := validateReadGrantNonce(request.GrantNonce); err != nil {
+		return err
+	}
+	// The marker is checked BEFORE the generic stat validation, because both
+	// would refuse a wrong version and only one of them says what happened: an
+	// unmarked or wrong-version object is unmanaged, which is a typed conflict
+	// about ownership, not an incomplete request.
+	if request.StatProof.Marker.Version != MarkerVersion {
+		return fmt.Errorf("%w: the stat carries marker version %q, not %q; an unmarked or "+
+			"wrong-version object is unmanaged and never a managed read", ErrConflict,
+			request.StatProof.Marker.Version, MarkerVersion)
+	}
+	if err := request.StatProof.Validate(); err != nil {
+		return fmt.Errorf("%w: a read lease is admitted on an exact-generation stat: %v",
+			ErrIncomplete, err)
+	}
+	if request.StatProof.Attributes.Ref != request.Ref {
+		return fmt.Errorf("%w: the stat proves %s/%s/%d and the lease is for %s/%s/%d",
+			ErrConflict,
+			request.StatProof.Attributes.Ref.Scope, request.StatProof.Attributes.Ref.Digest,
+			request.StatProof.Attributes.Ref.Generation,
+			request.Ref.Scope, request.Ref.Digest, request.Ref.Generation)
+	}
+	if err := request.StatObservedAt.Validate(); err != nil {
+		return err
+	}
 
 	return request.RequestedAt.Validate()
 }
+
+// MaxStatProofAge is how stale the admitting stat may be.
+//
+// It is the challenge window, and deliberately the same five minutes: both
+// answer the same question -- how long may an observation of the object store
+// stand in for the object store -- and two different answers to it would be two
+// different opinions about the same risk.
+const MaxStatProofAge = MaxChallengeWindow
 
 // ReadLeaseRepository manages the reader's half of protection.
 //
@@ -740,6 +796,17 @@ type ReadLeaseRepository interface {
 	AcquireReadLease(ctx context.Context, tx Tx, request ReadLeaseRequest) (ReadLease, error)
 	RenewReadLease(ctx context.Context, tx Tx, lease ReadLease) (ReadLease, error)
 	ReleaseReadLease(ctx context.Context, tx Tx, lease ReadLease) error
+
+	// LoadReadLease reads a committed lease back by identity, for the minter
+	// that runs after the commit and for the recovery that runs after an
+	// ambiguous one.
+	LoadReadLease(ctx context.Context, tx Tx, id ReadLeaseID) (ReadLeaseRecord, error)
+
+	// ValidateReadLease answers the daemon's independent question. It is a
+	// separate method from LoadReadLease because it answers a different one: not
+	// "what does this row say" but "may this exact fenced lease authorize work
+	// that will take this long", measured on the database clock.
+	ValidateReadLease(ctx context.Context, tx Tx, validation ReadLeaseValidation) (ReadLeaseRecord, error)
 }
 
 // HandoffStatus is what a generic caller may learn about a capture.

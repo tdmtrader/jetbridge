@@ -3,6 +3,7 @@ package output
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
@@ -129,6 +130,101 @@ func (lease ReadLease) Validate() error {
 	}
 
 	return nil
+}
+
+// ReadLeaseRecord is a committed lease plus everything its grant binds.
+//
+// It exists because minting is deliberately not atomic with the transaction
+// that created the lease: after the commit, the minter loads the exact facts
+// back rather than signing the ones it thought it wrote. An ambiguous commit is
+// then answered by identity -- load by lease id and fence, mint only if what
+// came back matches -- instead of by hoping.
+type ReadLeaseRecord struct {
+	Lease       ReadLease
+	Destination ReadDestination
+	GrantNonce  string
+}
+
+func (record ReadLeaseRecord) Validate() error {
+	if err := record.Lease.Validate(); err != nil {
+		return err
+	}
+	if err := record.Destination.Validate(); err != nil {
+		return err
+	}
+
+	return validateReadGrantNonce(record.GrantNonce)
+}
+
+// ReadLeaseValidation is the question the materializing daemon asks the control
+// plane before it opens a single object.
+//
+// It repeats every field the grant carried, and the control plane compares each
+// one against the committed row rather than against the token. That is the
+// whole point of asking: a valid HMAC bound to a lease that is missing,
+// released, expired, superseded or reclaim-conflicted authorizes nothing, and
+// only the database knows which of those is true.
+//
+// RequiredRemaining is the work the caller is about to start. Requirement 36
+// lets work begin only with the operation's timeout plus two minutes left, and
+// putting that here rather than in the daemon means the DATABASE clock decides
+// it -- a node whose clock drifts cannot talk itself into starting.
+type ReadLeaseValidation struct {
+	ReadLeaseID       ReadLeaseID
+	LeaseFence        LeaseFence
+	ClaimID           ClaimID
+	Ref               hangar.TreeRef
+	Destination       ReadDestination
+	ActivationEpoch   executioncontrol.ActivationEpoch
+	GrantNonce        string
+	RequiredRemaining time.Duration
+}
+
+func (validation ReadLeaseValidation) Validate() error {
+	if err := validation.ReadLeaseID.Validate(); err != nil {
+		return err
+	}
+	if validation.LeaseFence == 0 {
+		return fmt.Errorf("%w: a lease validation names no fence", ErrIncomplete)
+	}
+	if err := validation.ClaimID.Validate(); err != nil {
+		return err
+	}
+	if err := validation.Ref.Validate(); err != nil {
+		return err
+	}
+	if err := validation.Destination.Validate(); err != nil {
+		return err
+	}
+	if validation.ActivationEpoch == 0 {
+		return fmt.Errorf("%w: a lease validation names no activation epoch", ErrIncomplete)
+	}
+	if err := validateReadGrantNonce(validation.GrantNonce); err != nil {
+		return err
+	}
+	if validation.RequiredRemaining < 0 {
+		return fmt.Errorf("%w: required remaining term is negative", ErrIncomplete)
+	}
+
+	return nil
+}
+
+// ReadGrantFor is the validation a grant's own claims imply.
+//
+// It exists so the daemon cannot compose a different question from the one the
+// token answered: every field comes from the verified claims, and the only
+// thing the caller adds is how much work it is about to start.
+func ReadGrantFor(claims ReadGrantClaims, remaining time.Duration) ReadLeaseValidation {
+	return ReadLeaseValidation{
+		ReadLeaseID:       claims.ReadLeaseID,
+		LeaseFence:        claims.LeaseFence,
+		ClaimID:           claims.ClaimID,
+		Ref:               claims.Ref,
+		Destination:       claims.Destination,
+		ActivationEpoch:   claims.ActivationEpoch,
+		GrantNonce:        claims.Nonce,
+		RequiredRemaining: remaining,
+	}
 }
 
 // DeletePrecondition is the exact generation and metageneration a conditional

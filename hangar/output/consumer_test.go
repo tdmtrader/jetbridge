@@ -148,6 +148,12 @@ func (unimplementedRoles) RenewReadLease(context.Context, Tx, ReadLease) (ReadLe
 func (unimplementedRoles) ReleaseReadLease(context.Context, Tx, ReadLease) error {
 	panic("not implemented")
 }
+func (unimplementedRoles) LoadReadLease(context.Context, Tx, ReadLeaseID) (ReadLeaseRecord, error) {
+	panic("not implemented")
+}
+func (unimplementedRoles) ValidateReadLease(context.Context, Tx, ReadLeaseValidation) (ReadLeaseRecord, error) {
+	panic("not implemented")
+}
 
 func (unimplementedRoles) ClassifyHandoff(context.Context, Tx, HandoffID) (HandoffStatus, error) {
 	panic("not implemented")

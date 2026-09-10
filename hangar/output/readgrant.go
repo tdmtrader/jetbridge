@@ -178,10 +178,16 @@ func (claims ReadGrantClaims) Validate() error {
 	if !claims.ExpiresAt.After(claims.IssuedAt.Time) {
 		return fmt.Errorf("%w: read grant expires at or before it was issued", ErrIncomplete)
 	}
-	nonce, err := base64.RawURLEncoding.Strict().DecodeString(claims.Nonce)
-	if err != nil || len(nonce) != ReadGrantNonceBytes ||
-		base64.RawURLEncoding.EncodeToString(nonce) != claims.Nonce {
-		return fmt.Errorf("%w: read grant nonce is not %d raw bytes in strict raw-url base64",
+	return validateReadGrantNonce(claims.Nonce)
+}
+
+// validateReadGrantNonce is the nonce rule, stated once and used by both the
+// claims and the lease request.
+func validateReadGrantNonce(nonce string) error {
+	raw, err := base64.RawURLEncoding.Strict().DecodeString(nonce)
+	if err != nil || len(raw) != ReadGrantNonceBytes ||
+		base64.RawURLEncoding.EncodeToString(raw) != nonce {
+		return fmt.Errorf("%w: a read grant nonce is %d raw bytes in strict raw-url base64",
 			ErrIncomplete, ReadGrantNonceBytes)
 	}
 

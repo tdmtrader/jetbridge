@@ -778,6 +778,26 @@ CREATE TABLE hangar_read_leases (
     expires_at       timestamp with time zone NOT NULL,
     released_at      timestamp with time zone,
 
+    -- What the grant for this lease binds, stored because the grant is minted
+    -- AFTER this transaction commits and may have to be minted again. A nonce
+    -- chosen at mint time would make two mints of one lease differ, and the
+    -- ambiguous-commit retry would have to create a second lease to be
+    -- answerable. The destination is here for the same reason and for one more:
+    -- the daemon asks the control plane to confirm the destination it was told,
+    -- and a control plane with nothing to compare it against would be
+    -- confirming the caller's own claim back to it.
+    grant_nonce        text NOT NULL CHECK (length(grant_nonce) BETWEEN 16 AND 128),
+    destination_handle text NOT NULL CHECK (destination_handle <> ''),
+    destination_volume text NOT NULL CHECK (destination_volume <> ''),
+
+    -- The exact-generation stat this lease was admitted on. Requirement 35
+    -- says a grant may be issued only after a stat proves the registered marked
+    -- generation is PRESENT; the metageneration is what makes that proof exact,
+    -- and observed_at is what stops a stat from an hour ago standing in for one.
+    stat_metageneration bigint NOT NULL CHECK (stat_metageneration > 0),
+    stat_marker_version text NOT NULL CHECK (stat_marker_version <> ''),
+    stat_observed_at    timestamp with time zone NOT NULL,
+
     CONSTRAINT hangar_read_lease_term CHECK (expires_at - granted_at >= interval '15 minutes')
 );
 
@@ -791,6 +811,13 @@ BEGIN
     END IF;
     IF NEW.lifecycle_id <> OLD.lifecycle_id OR NEW.claim_id <> OLD.claim_id THEN
         RAISE EXCEPTION 'hangar: read lease % was moved to another ref or claim', OLD.read_lease_id
+            USING ERRCODE = 'JB001';
+    END IF;
+    IF NEW.grant_nonce <> OLD.grant_nonce
+        OR NEW.destination_handle <> OLD.destination_handle
+        OR NEW.destination_volume <> OLD.destination_volume THEN
+        RAISE EXCEPTION 'hangar: read lease % changed what its grant binds; a re-mint is byte-identical or it is a different lease',
+            OLD.read_lease_id
             USING ERRCODE = 'JB001';
     END IF;
     IF NEW.lease_fence < OLD.lease_fence THEN
