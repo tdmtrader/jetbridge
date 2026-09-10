@@ -608,7 +608,9 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				return output.ReadLease{}, err
 			}
 
-			return lease, tx.Commit()
+			// Committed through the production adapter, because the refusals
+			// this plane makes at COMMIT are only typed on the other side of it.
+			return lease, db.HangarOutputTx{Tx: tx}.Commit()
 		}
 
 		It("admits a read against a claimed, registered, marked, freshly stat-ed generation", func() {
@@ -759,8 +761,12 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			})).To(Succeed())
 			Expect(tx.Commit()).To(Succeed())
 
+			// The refusal is DEFERRED: it fires at the commit, not at the
+			// insert, so what makes it a refusal rather than a lost answer is
+			// the transaction adapter's mapping of the schema's class. A
+			// substring on the message could not tell the two apart.
 			_, err = admit(readLeaseRequest(output.ReadLeaseID(uuid.NewString()), claimID, ref))
-			Expect(err).To(HaveOccurred())
+			Expect(err).To(MatchError(output.ErrAtRisk))
 			Expect(err.Error()).To(ContainSubstring("lifetime policy"))
 		})
 

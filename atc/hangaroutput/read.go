@@ -183,8 +183,23 @@ func (admission *ReadAdmission) commitLease(ctx context.Context, request ReadReq
 		// A refusal the database made is an answer; a lost answer is not. Only
 		// the second one may be resolved by asking again, because asking again
 		// after a refusal would turn a denial into a retry loop.
-		if errors.Is(err, output.ErrConflict) || errors.Is(err, output.ErrNotFound) ||
-			errors.Is(err, output.ErrAtRisk) || errors.Is(err, output.ErrTimeout) {
+		//
+		// The refusals this commit can carry are not only the ones raised while
+		// the statements ran. hangar_policy_admits_new_protection and
+		// hangar_reclaim_exclusion are DEFERRED, so an at-risk lifetime policy
+		// and a racing reclaim both refuse HERE, at the commit, and they are
+		// the two the ambiguity rule would misfile most expensively: a caller
+		// told "your answer was lost, retry with the same identity" against a
+		// policy only an attestor can change retries until something else
+		// stops it.
+		//
+		// What makes the difference visible is the transactor: every adapter
+		// that hands this package a transaction maps the schema's SQLSTATE at
+		// commit, so a class that arrived is a class this reads. Anything with
+		// no class -- a dropped connection, a cancelled context -- falls
+		// through, and falling through is the honest answer: nothing is known
+		// about whether the rows landed.
+		if refused(err) {
 			return false, err
 		}
 
@@ -192,6 +207,20 @@ func (admission *ReadAdmission) commitLease(ctx context.Context, request ReadReq
 	}
 
 	return true, nil
+}
+
+// refused reports whether an error is the database's ANSWER rather than the
+// absence of one.
+//
+// The list is the closed set of classes this plane's schema raises (JB001
+// conflict, JB002 at risk, JB003 stale fence, JB004 incomplete) plus the
+// timeout a stale stat proof produces. output.ErrInfrastructure is deliberately
+// absent: it is what an unrecognised SQLSTATE maps to, and an outcome nobody
+// named is not one this may treat as a denial.
+func refused(err error) bool {
+	return errors.Is(err, output.ErrConflict) || errors.Is(err, output.ErrNotFound) ||
+		errors.Is(err, output.ErrAtRisk) || errors.Is(err, output.ErrTimeout) ||
+		errors.Is(err, output.ErrIncomplete) || errors.Is(err, executioncontrol.ErrStaleFence)
 }
 
 // resolveAmbiguity asks whether the lost commit landed.

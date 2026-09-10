@@ -362,9 +362,98 @@ func TestAGrantIsNeverMintedForAnotherReadsLease(t *testing.T) {
 	}
 }
 
-// failingCommitTransactor makes a commit REFUSE, which is not the same thing as
-// losing its answer: a refusal is an answer, and answering it by asking again
-// would turn a denial into a retry loop.
+// A refusal the SCHEMA makes at COMMIT is a refusal, not a lost answer.
+//
+// The at-risk lifetime policy is checked by a DEFERRED trigger on the lease
+// insert, so it fires at commit and nowhere earlier: there is no Go check ahead
+// of it and there could not be one, because the snapshot it reads may be
+// written by another transaction between the check and the commit. What arrives
+// is a driver error carrying SQLSTATE JB002, and whether the caller is told
+// "refused" or "your answer was lost, retry with the same identity" is decided
+// entirely by whether the transaction adapter maps it.
+//
+// Told the second, a consumer retries forever: the same identity produces the
+// same refusal, and the attestor is the only thing that can change the answer.
+// AC 12 lists at-risk as a REFUSAL, and this is where that is true or not.
+func TestAManagedReadUnderAnAtRiskPolicyIsRefusedRatherThanLeftUnresolved(t *testing.T) {
+	h := newHarness(t)
+	ref := registeredRef(t, h)
+	claimID := claimOn(t, h, ref)
+	recordAtRiskPolicy(t, h)
+
+	admission, minter := readAdmission(t, h)
+
+	_, err := admission.Admit(context.Background(), readRequest(t, claimID, ref))
+	if !errors.Is(err, output.ErrAtRisk) {
+		t.Fatalf("a read refused at commit by the at-risk policy was answered %v", err)
+	}
+	if errors.Is(err, output.ErrUnresolved) {
+		t.Error("a refusal the database made was reported as a lost commit answer; the caller " +
+			"would retry with the same identity until the attestor changed its mind")
+	}
+	if minter.calls != 0 {
+		t.Errorf("the signer ran %d times for a refused admission", minter.calls)
+	}
+}
+
+// And the other half: a commit that genuinely loses its answer is STILL
+// unresolved.
+//
+// The pair is the whole finding. Mapping the schema's classes must not turn
+// every commit failure into a refusal -- a dropped connection carries no class,
+// nothing is known about whether the rows landed, and the only honest answer is
+// the one that sends the caller back with the same identity.
+func TestACommitFailureWithNoSchemaClassStaysUnresolved(t *testing.T) {
+	h := newHarness(t)
+	ref := registeredRef(t, h)
+	claimID := claimOn(t, h, ref)
+
+	admission, minter := readAdmission(t, h)
+	failing := &failingCommitTransactor{inner: admission.Transactor}
+	admission.Transactor = failing
+	failing.FailNext = true
+
+	_, err := admission.Admit(context.Background(), readRequest(t, claimID, ref))
+	if !errors.Is(err, output.ErrUnresolved) {
+		t.Fatalf("a commit whose answer was lost was reported as %v", err)
+	}
+	if minter.calls != 0 {
+		t.Errorf("the signer ran %d times for an admission that never committed", minter.calls)
+	}
+}
+
+// recordAtRiskPolicy writes the lifetime-policy attestation the schema refuses
+// a new protection under. It is the production repository method; the state is
+// a fact an attestor records, not a flag this spec flips.
+func recordAtRiskPolicy(t *testing.T, h *harness) {
+	t.Helper()
+
+	tx, err := h.Conn.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer db.Rollback(tx)
+
+	if err := h.Repository.RecordPolicySnapshot(context.Background(), tx, output.PolicySnapshot{
+		ProtocolVersion:      output.ProtocolVersion,
+		ActivationEpoch:      harnessEpoch,
+		BucketFingerprint:    "gs://harness-output",
+		Metageneration:       4,
+		PolicyHash:           "policy-hash-at-risk",
+		LifecycleDeleteRules: 1,
+		State:                output.PolicyAtRisk,
+		ObservedAt:           output.NewTimestamp(time.Now()),
+	}); err != nil {
+		t.Fatalf("recording the at-risk snapshot: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+}
+
+// failingCommitTransactor makes a commit fail with an error carrying NO schema
+// class, which is not the same thing as a refusal: nothing is known about
+// whether the rows landed, and the caller is sent back with the same identity.
 type failingCommitTransactor struct {
 	inner    hangaroutput.Transactor
 	FailNext bool

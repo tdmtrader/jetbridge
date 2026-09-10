@@ -1643,7 +1643,16 @@ func (cmd *RunCommand) hangarOutputCaptureComponent(dbConn db.DbConn) RunnableCo
 type hangarOutputTransactor struct{ conn db.DbConn }
 
 func (transactor hangarOutputTransactor) Begin() (hangaroutput.Transaction, error) {
-	return transactor.conn.Begin()
+	tx, err := transactor.conn.Begin()
+	if err != nil {
+		return nil, err
+	}
+
+	// The COMMIT answers in the output leaf's vocabulary. Two of this plane's
+	// constraint triggers are DEFERRED, so their refusals arrive here and
+	// nowhere earlier, and a coordinator handed an unclassified commit failure
+	// would read a denial as an ambiguous commit and retry it forever.
+	return db.HangarOutputTx{Tx: tx}, nil
 }
 
 func newPipelineRunReclaimerComponent(lifecycle db.PipelineRunReclaimLifecycle, now func() time.Time, batchSize int) RunnableComponent {
