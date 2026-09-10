@@ -93,9 +93,6 @@ func TestAnOutputReadGrantVerifiesForItsOwnLeaseRefAndDestination(t *testing.T) 
 	if claims.ReadLeaseID != lease.ReadLeaseID {
 		t.Errorf("read lease id = %q, want %q", claims.ReadLeaseID, lease.ReadLeaseID)
 	}
-	if claims.LeaseFence != lease.LeaseFence {
-		t.Errorf("lease fence = %d, want %d", claims.LeaseFence, lease.LeaseFence)
-	}
 	if claims.ClaimID != lease.ClaimID {
 		t.Errorf("claim id = %q, want %q", claims.ClaimID, lease.ClaimID)
 	}
@@ -124,7 +121,6 @@ func TestAnEditedOutputReadGrantDoesNotVerify(t *testing.T) {
 		{"read lease id", func(c *ReadGrantClaims) {
 			c.ReadLeaseID = ReadLeaseID("99999999-2e1f-4a0b-9c8d-7e6f5a4b3c2d")
 		}},
-		{"lease fence", func(c *ReadGrantClaims) { c.LeaseFence = c.LeaseFence + 1 }},
 		{"claim id", func(c *ReadGrantClaims) {
 			c.ClaimID = ClaimID("99999999-5e6f-4a7b-8c9d-0e1f2a3b4c5d")
 		}},

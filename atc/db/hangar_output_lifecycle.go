@@ -712,15 +712,14 @@ func (repository *HangarOutputRepository) RenewReadLease(ctx context.Context, tx
 		WHERE r.read_lease_id = $1
 		  AND r.released_at IS NULL
 		  AND r.expires_at > now()
-		  AND r.lease_fence = $2
 		  AND EXISTS (
 			SELECT 1 FROM hangar_exact_lifecycles l
 			WHERE l.id = r.lifecycle_id AND l.state IN ('registered', 'adopted'))
 		RETURNING r.expires_at, r.lease_fence`,
-		[]any{string(lease.ReadLeaseID), int64(lease.LeaseFence)},
+		[]any{string(lease.ReadLeaseID)},
 		&expires, &fence); err != nil {
-		return output.ReadLease{}, fmt.Errorf("%w: read lease %s is released, expired, held at "+
-			"another fence, or protects a generation that is no longer readable",
+		return output.ReadLease{}, fmt.Errorf("%w: read lease %s is released, expired, or "+
+			"protects a generation that is no longer readable",
 			output.ErrConflict, lease.ReadLeaseID)
 	}
 
@@ -950,14 +949,21 @@ func (repository *HangarOutputRepository) ValidateReadLease(ctx context.Context,
 		return output.ReadLeaseRecord{}, err
 	}
 
-	// The fence first, because a superseded lease is the case a stale daemon is
-	// most likely to present: a renewal advances it, and a grant minted at the
-	// old one names a right that has moved on.
-	if record.Lease.LeaseFence != validation.LeaseFence {
-		return output.ReadLeaseRecord{}, fmt.Errorf("%w: read lease %s is at fence %d and the "+
-			"grant names fence %d", executioncontrol.ErrStaleFence, validation.ReadLeaseID,
-			record.Lease.LeaseFence, validation.LeaseFence)
-	}
+	// THERE IS NO FENCE CHECK, and its absence is a fact about the plane rather
+	// than an omission.
+	//
+	// hangar_read_leases.lease_fence has no writer: AcquireReadLease inserts 1
+	// and nothing anywhere moves it. A retry of an ambiguous commit deliberately
+	// does not advance it -- requirement 37 wants a byte-identical re-mint, and
+	// a moving fence would make that impossible -- and Phase 7's takeover works
+	// on the CAPTURE fence, a different column on a different table. So a
+	// comparison here could only ever be a value checked against itself, which
+	// is the kind of check that passes for a reason nobody can state.
+	//
+	// The column stays, with a note at the migration, because a column with no
+	// reader is cheaper than renumbering a migration; the grant no longer binds
+	// one. What supersession this lease HAS is the released tombstone, which
+	// LoadReadLease above has already refused.
 	if record.Lease.ClaimID != validation.ClaimID ||
 		record.Lease.Ref != validation.Ref ||
 		record.Lease.ActivationEpoch != validation.ActivationEpoch ||

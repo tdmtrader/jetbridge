@@ -772,6 +772,18 @@ CREATE TABLE hangar_read_leases (
         REFERENCES hangar_exact_lifecycles (id) ON DELETE RESTRICT,
     activation_epoch bigint NOT NULL
         REFERENCES hangar_output_activation_epochs (epoch_id) ON DELETE RESTRICT,
+    -- lease_fence HAS NO WRITER, and that is recorded here rather than left to
+    -- be rediscovered. It is inserted as 1 and nothing moves it: the retry of an
+    -- ambiguous commit deliberately does not advance it (requirement 37 wants a
+    -- byte-identical re-mint, which a moving fence would make impossible), and
+    -- the takeover Phase 7 performs works on hangar_capture_attempt_leases's
+    -- capture_fence, which is a different column on a different table. The read
+    -- grant does not bind it and ValidateReadLease does not compare it -- a
+    -- comparison against a value with exactly one possible spelling is a check
+    -- that passes for a reason nobody can state. The column stays because a
+    -- column with no reader is cheaper than a renumbered migration, and because
+    -- the monotonicity arm below is the thing that would have to be right if a
+    -- writer ever arrived.
     lease_fence      bigint NOT NULL CHECK (lease_fence > 0),
     granted_at       timestamp with time zone NOT NULL DEFAULT now(),
     renewed_at       timestamp with time zone NOT NULL DEFAULT now(),

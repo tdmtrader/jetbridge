@@ -219,7 +219,6 @@ func (record ReadLeaseRecord) Validate() error {
 // it -- a node whose clock drifts cannot talk itself into starting.
 type ReadLeaseValidation struct {
 	ReadLeaseID       ReadLeaseID
-	LeaseFence        LeaseFence
 	ClaimID           ClaimID
 	Ref               hangar.TreeRef
 	Destination       ReadDestination
@@ -231,9 +230,6 @@ type ReadLeaseValidation struct {
 func (validation ReadLeaseValidation) Validate() error {
 	if err := validation.ReadLeaseID.Validate(); err != nil {
 		return err
-	}
-	if validation.LeaseFence == 0 {
-		return fmt.Errorf("%w: a lease validation names no fence", ErrIncomplete)
 	}
 	if err := validation.ClaimID.Validate(); err != nil {
 		return err
@@ -265,7 +261,6 @@ func (validation ReadLeaseValidation) Validate() error {
 func ReadGrantFor(claims ReadGrantClaims, remaining time.Duration) ReadLeaseValidation {
 	return ReadLeaseValidation{
 		ReadLeaseID:       claims.ReadLeaseID,
-		LeaseFence:        claims.LeaseFence,
 		ClaimID:           claims.ClaimID,
 		Ref:               claims.Ref,
 		Destination:       claims.Destination,

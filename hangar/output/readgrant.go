@@ -31,9 +31,15 @@ import (
 //     prefix of these. A signer that could be persuaded to produce one while
 //     believing it produced the other is a signer with one authority.
 //   - A DIFFERENT SHAPE. A strict input grant binds a ref and a destination. A
-//     read grant also binds the READ LEASE -- its id and its fence -- because a
-//     managed read is only ever authorized by a committed lease, and a token
-//     that did not name one could outlive the protection it was issued under.
+//     read grant also binds the READ LEASE, because a managed read is only ever
+//     authorized by a committed lease, and a token that did not name one could
+//     outlive the protection it was issued under. It binds the lease's IDENTITY
+//     and not a fence: the read lease's fence has no writer anywhere in this
+//     plane -- it is inserted as 1 and never moved, and Phase 7's takeover works
+//     on the CAPTURE fence, which is a different column on a different table --
+//     so a fence in the token would have been a field with exactly one possible
+//     value, checked against itself. The column stays (see the migration's note
+//     at hangar_read_leases.lease_fence); the claim does not.
 //
 // THE GRANT IS NOT AUTHORITY BY ITSELF. A valid HMAC over a lease that is
 // missing, released, expired, superseded or reclaim-conflicted authorizes
@@ -132,7 +138,6 @@ type ReadGrantClaims struct {
 	Domain          string                           `json:"domain"`
 	Version         string                           `json:"version"`
 	ReadLeaseID     ReadLeaseID                      `json:"read_lease_id"`
-	LeaseFence      LeaseFence                       `json:"lease_fence"`
 	ClaimID         ClaimID                          `json:"claim_id"`
 	Ref             hangar.TreeRef                   `json:"ref"`
 	Destination     ReadDestination                  `json:"destination"`
@@ -153,9 +158,6 @@ func (claims ReadGrantClaims) Validate() error {
 	}
 	if err := claims.ReadLeaseID.Validate(); err != nil {
 		return err
-	}
-	if claims.LeaseFence == 0 {
-		return fmt.Errorf("%w: read grant names no lease fence", ErrIncomplete)
 	}
 	if err := claims.ClaimID.Validate(); err != nil {
 		return err
@@ -230,7 +232,6 @@ func CanonicalReadGrantBytes(claims ReadGrantClaims) ([]byte, error) {
 	field(MaterializeDomain)
 	field(ReadGrantVersion)
 	field(string(claims.ReadLeaseID))
-	number(int64(claims.LeaseFence))
 	field(string(claims.ClaimID))
 	field(string(claims.Ref.Scope))
 	field(string(claims.Ref.Digest))
@@ -306,7 +307,6 @@ func (signer *ReadGrantSigner) Sign(lease ReadLease, destination ReadDestination
 		Domain:          MaterializeDomain,
 		Version:         ReadGrantVersion,
 		ReadLeaseID:     lease.ReadLeaseID,
-		LeaseFence:      lease.LeaseFence,
 		ClaimID:         lease.ClaimID,
 		Ref:             lease.Ref,
 		Destination:     destination,

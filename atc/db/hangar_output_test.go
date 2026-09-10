@@ -789,7 +789,6 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			validation := func() output.ReadLeaseValidation {
 				return output.ReadLeaseValidation{
 					ReadLeaseID:       id,
-					LeaseFence:        lease.LeaseFence,
 					ClaimID:           claimID,
 					Ref:               ref,
 					Destination:       request.Destination,
@@ -846,8 +845,6 @@ var _ = Describe("the Hangar output lock suffix", func() {
 					func(question *output.ReadLeaseValidation) {
 						question.ReadLeaseID = output.ReadLeaseID(uuid.NewString())
 					}),
-				Entry("a superseded fence", executioncontrol.ErrStaleFence,
-					func(question *output.ReadLeaseValidation) { question.LeaseFence++ }),
 				Entry("another claim", output.ErrUnauthorized,
 					func(question *output.ReadLeaseValidation) {
 						question.ClaimID = output.ClaimID(uuid.NewString())
