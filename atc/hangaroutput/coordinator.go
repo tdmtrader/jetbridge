@@ -24,8 +24,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/concourse/concourse/hangar/output"
 )
 
@@ -351,16 +349,6 @@ func (coordinator *Coordinator) commitStageTwo(ctx context.Context, record outpu
 	})
 }
 
-// checkpointFor derives the opaque producer checkpoint id from the handoff.
-//
-// Derived and not minted, so that a repeat after a lost commit response offers
-// the same value. Hangar attaches no meaning to it either way -- the opaque id
-// has no semantic interpretation here -- so the only property that matters is
-// that repeating an identity repeats it.
-func checkpointFor(handoff output.HandoffID) output.OpaqueID {
-	return output.OpaqueID("checkpoint-" + string(handoff))
-}
-
 // recordNoCapture is the first of the branch's two halves.
 func (coordinator *Coordinator) recordNoCapture(ctx context.Context, record output.HandoffRecord) error {
 	disposition := output.NoCaptureDisposition{
@@ -429,27 +417,6 @@ func (coordinator *Coordinator) cancelCapture(ctx context.Context, record output
 	return coordinator.say(ctx, record, coordinator.announce(AnnouncementDisposition,
 		output.DispositionCapture, "cancelled"))
 }
-
-// releaseIntentFor derives a branch's release intent id from its handoff.
-//
-// Derived for the same reason the checkpoint is: a repeat after a lost answer
-// must offer the SAME intent, because an intent is what a release
-// acknowledgement is for, and a second intent for a source already released is
-// a caller working from stale state -- which the daemon correctly refuses.
-//
-// It is a version-5 UUID over the branch and the handoff, so that the three
-// branches cannot collide on one intent and the same branch always derives the
-// same one. A random id here would make every retry after a lost answer a
-// SECOND release of one source, which is the conflict the daemon exists to
-// refuse -- and the handoff would never complete.
-func releaseIntentFor(handoff output.HandoffID, branch output.Disposition) output.ReleaseIntentID {
-	return output.ReleaseIntentID(
-		uuid.NewSHA1(releaseIntentNamespace, []byte(string(branch)+":"+string(handoff))).String())
-}
-
-// releaseIntentNamespace is this plane's own UUID namespace. It is a constant
-// so that two processes deriving the same intent derive the same value.
-var releaseIntentNamespace = uuid.MustParse("6f1f0b6e-3a3a-4d2a-9a1c-2d0f5f7f0a11")
 
 // releaseFor is the second half of every branch that owes a fenced release.
 //
