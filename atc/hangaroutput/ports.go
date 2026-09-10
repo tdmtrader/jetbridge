@@ -54,6 +54,13 @@ type Repository interface {
 	RegisterReceipt(ctx context.Context, tx output.Tx, admission output.ReceiptAdmission) error
 	RecordTerminalCaptureFailure(ctx context.Context, tx output.Tx, reservation output.ReservationID, fence output.CaptureFence, failure string) error
 
+	// The Req 17 seal deadline, stamped once and evaluated in SQL. Both halves
+	// are the repository's rather than the coordinator's because the deciding
+	// clock is the database's: a capture crosses an ATC restart, so a deadline
+	// a process holds is a deadline that dies with it.
+	RecordSealDeadline(ctx context.Context, tx output.Tx, reservation output.ReservationID, fence output.CaptureFence, term time.Duration) (output.Timestamp, error)
+	SealDeadlinePassed(ctx context.Context, tx output.Tx, reservation output.ReservationID) (bool, error)
+
 	RecordNoCaptureIntent(ctx context.Context, tx output.Tx, disposition output.NoCaptureDisposition) error
 	AcknowledgeNoCaptureRelease(ctx context.Context, tx output.Tx, acknowledgement output.ReleaseAcknowledgement) error
 	RecordPreReservationCancelIntent(ctx context.Context, tx output.Tx, disposition output.PreReservationCancelDisposition) error

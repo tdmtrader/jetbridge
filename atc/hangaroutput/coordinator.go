@@ -478,6 +478,22 @@ func (coordinator *Coordinator) beginSeal(ctx context.Context, record output.Han
 		return err
 	}
 
+	// The deadline is committed BEFORE the seal begins, and it is the
+	// database's own `now()` rather than this process's. A deadline composed
+	// after the fact would bound nothing after a crash between the two, and a
+	// deadline this process merely held would expire when the process did --
+	// which is exactly the window a capture crossing an ATC restart lives in.
+	var deadline output.Timestamp
+	if err := coordinator.write(ctx, func(tx Transaction) error {
+		var err error
+		deadline, err = coordinator.Repository.RecordSealDeadline(ctx, tx,
+			record.ReservationID, lease.CaptureFence, coordinator.sealDeadline())
+
+		return err
+	}); err != nil {
+		return err
+	}
+
 	if err := coordinator.say(ctx, record, coordinator.announce(
 		AnnouncementSealStarted, output.DispositionCapture, "sealing")); err != nil {
 		return err
@@ -490,7 +506,7 @@ func (coordinator *Coordinator) beginSeal(ctx context.Context, record output.Han
 		HandoffID:       record.HandoffID,
 		Incarnation:     record.Source.Incarnation,
 		CaptureFence:    lease.CaptureFence,
-		DeadlineAt:      output.NewTimestamp(coordinator.now().Add(coordinator.sealDeadline())),
+		DeadlineAt:      deadline,
 	})
 
 	return err
@@ -546,20 +562,45 @@ func (coordinator *Coordinator) confirmSeal(ctx context.Context, record output.H
 	return nil
 }
 
-// sealUnprovable decides whether a failure at the seal boundary is a statement
-// about the boundary or about the network.
+// sealUnprovable decides whether a failure at the seal boundary is terminal.
 //
-// Only a typed ErrSealUnconfirmed is the first. Everything else is returned
-// unchanged, so the caller retries and the coordinator settles nothing and
-// fabricates nothing -- which is what it already does at every other operation
-// and what this one was the single exception to.
+// Two questions, and both must answer yes. Only a typed ErrSealUnconfirmed is a
+// statement about the boundary at all -- everything else is a statement about
+// the network, and is returned unchanged so the caller retries and this
+// coordinator settles nothing and fabricates nothing, which is what it already
+// does at every other operation and what this one was the single exception to.
+// And only the DEADLINE makes an unproved boundary permanent: requirement 17
+// types `seal_unconfirmed` as a drain or container boundary that could not be
+// proved *before a database-clock deadline*, so a boundary that cannot be
+// proved right now is asked about again on the next pass.
+//
+// The deadline is read in SQL, from the row, at this moment -- not from
+// anything this process composed or remembers.
 func (coordinator *Coordinator) sealUnprovable(ctx context.Context, record output.HandoffRecord,
 	fence output.CaptureFence, cause error) error {
 	if !errors.Is(cause, output.ErrSealUnconfirmed) {
 		return cause
 	}
 
+	passed, err := coordinator.sealDeadlinePassed(ctx, record)
+	if err != nil {
+		return err
+	}
+	if !passed {
+		return cause
+	}
+
 	return coordinator.failTerminally(ctx, record, fence, "seal_unconfirmed")
+}
+
+func (coordinator *Coordinator) sealDeadlinePassed(ctx context.Context, record output.HandoffRecord) (bool, error) {
+	tx, err := coordinator.Transactor.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+
+	return coordinator.Repository.SealDeadlinePassed(ctx, tx, record.ReservationID)
 }
 
 // resolveLogical canonicalizes and commits the logical identity BEFORE any

@@ -290,6 +290,18 @@ CREATE TABLE hangar_capture_reservations (
     finish_successful               boolean NOT NULL CHECK (finish_successful),
     capture_fence                   bigint NOT NULL CHECK (capture_fence > 0),
     capture_deadline_at             timestamp with time zone NOT NULL,
+    -- The Req 17 seal deadline, on the DATABASE clock, stamped once when the
+    -- seal begins. It is a column and not a value the coordinator holds
+    -- because the process that begins a seal is not necessarily the process
+    -- that has to decide whether it was proved in time: a capture crosses an
+    -- ATC restart, and a deadline in a dead process's memory is a deadline
+    -- that never expires. Without it `seal_unconfirmed` had no producer at
+    -- all, and a seal an hour past its deadline registered a receipt.
+    --
+    -- Nullable, because it is meaningless before a seal begins, and one-way:
+    -- every writer coalesces, so a repeat after a lost answer inherits the
+    -- deadline the first attempt set rather than granting itself a fresh one.
+    seal_deadline_at                timestamp with time zone,
     state                           text NOT NULL DEFAULT 'unresolved'
         CHECK (state IN ('unresolved', 'resolved', 'registered', 'failed', 'cancelled')),
     first_create_attempted_at       timestamp with time zone,

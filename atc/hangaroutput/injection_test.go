@@ -185,6 +185,12 @@ type stubDrain struct {
 	// no complete final container status before the deadline.
 	Unprovable bool
 
+	// UnprovableOnce is the same typed refusal for ONE pass. It is what makes
+	// the deadline assertable in both directions: the same evidence that is
+	// terminal after the deadline has to be retried before it, and a stub that
+	// could only refuse forever could only ever demonstrate the first.
+	UnprovableOnce bool
+
 	// TransientErrors is the arm this stub was missing, and its absence is why
 	// a destructive guess at the seal boundary was invisible: a confirmer that
 	// only ever refuses when told to, and refuses with the one typed sentinel
@@ -205,11 +211,17 @@ func (drain *stubDrain) ConfirmDrain(_ context.Context, _ string,
 	if transient {
 		drain.TransientErrors--
 	}
+	once := drain.UnprovableOnce
+	drain.UnprovableOnce = false
 	drain.mu.Unlock()
 
 	if transient {
 		return nil, fmt.Errorf("%w: the apiserver did not answer in time",
 			output.ErrInfrastructure)
+	}
+	if once {
+		return nil, fmt.Errorf("%w: no complete final container status yet",
+			output.ErrSealUnconfirmed)
 	}
 	if drain.Unprovable {
 		return nil, fmt.Errorf("%w: no complete final container status before the deadline",

@@ -1939,6 +1939,78 @@ var _ = Describe("the Hangar output lock suffix", func() {
 					"recorded no intent for it")
 		})
 
+		// Requirement 17's seal deadline, on the database clock. It is stamped
+		// once and read in SQL, because the process that begins a seal is not
+		// necessarily the process that has to say whether the boundary was
+		// proved in time -- a capture crosses an ATC restart, and a deadline
+		// held in a dead process's memory never expires.
+		It("stamps the seal deadline once and answers whether it has passed", func() {
+			tx, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(tx)
+			Expect(repository.RecordSourceReservation(ctx, tx,
+				reserveFor(handoff, lease, execution, name), "node-a")).To(Succeed())
+			Expect(repository.AcknowledgeSourceHold(ctx, tx,
+				holdFor(handoff, lease, execution, name))).To(Succeed())
+			reservation, err := repository.CommitCaptureReservation(ctx, tx,
+				output.SuccessfulFinishDisposition{
+					ProtocolVersion:       output.ProtocolVersion,
+					Disposition:           output.DispositionCapture,
+					Execution:             execution,
+					ActivationEpoch:       1,
+					HandoffID:             handoff,
+					SourceLeaseID:         lease,
+					ProducerCheckpointID:  "checkpoint",
+					Output:                name,
+					CaptureFence:          1,
+					CaptureDeadline:       deadline,
+					FinishAcknowledgement: finishFor(execution),
+				})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(tx.Commit()).To(Succeed())
+
+			// The control: before any seal begins there is no deadline, and
+			// "has it passed" is false rather than vacuously true. Without
+			// this, a predicate that answered true for everything would look
+			// like an enforced deadline.
+			unstamped, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(unstamped)
+			Expect(repository.SealDeadlinePassed(ctx, unstamped, reservation)).To(BeFalse())
+
+			// A stale owner does not get to set one.
+			_, err = repository.RecordSealDeadline(ctx, unstamped, reservation, 99, time.Minute)
+			Expect(err).To(MatchError(output.ErrUnauthorized))
+			db.Rollback(unstamped)
+
+			owner, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(owner)
+			first, err := repository.RecordSealDeadline(ctx, owner, reservation, 1, time.Hour)
+			Expect(err).NotTo(HaveOccurred())
+			// A begin_seal repeated after a lost answer is the SAME seal, so
+			// it inherits the deadline rather than granting itself a fresh
+			// one -- which would be an unbounded seal wearing a bound.
+			repeated, err := repository.RecordSealDeadline(ctx, owner, reservation, 1, time.Hour)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(repeated.Time).To(Equal(first.Time))
+			Expect(repository.SealDeadlinePassed(ctx, owner, reservation)).To(BeFalse())
+			Expect(owner.Commit()).To(Succeed())
+
+			// And a deadline in the past has passed, measured by `now()` in
+			// SQL rather than by anything this process computed.
+			elapsed, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(elapsed)
+			_, err = elapsed.Exec(`
+				UPDATE hangar_capture_reservations
+				SET seal_deadline_at = now() - interval '1 minute'
+				WHERE reservation_id = $1`, string(reservation))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(repository.SealDeadlinePassed(ctx, elapsed, reservation)).To(BeTrue())
+			Expect(elapsed.Commit()).To(Succeed())
+		})
+
 		// One read, one moment. The facts live in six tables and a coordinator
 		// that read them one at a time would be deciding on a mixture of two
 		// moments, which is the class of bug the whole plane exists to refuse.

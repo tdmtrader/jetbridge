@@ -399,16 +399,21 @@ func TestADaemonRestartBetweenSealingAndPublishingChangesNothing(t *testing.T) {
 	}
 }
 
-// A Kubernetes timeout at the drain boundary: no complete final container
-// status before the deadline.
+// A Kubernetes timeout at the drain boundary, carried past the seal deadline:
+// no complete final container status before the deadline.
 //
-// Requirement 17: that is typed `seal_unconfirmed`, it publishes no receipt,
-// and it does not re-execute anything. What it DOES owe is a fenced release --
-// the source is still on a node -- and the handoff is not settled until that
-// release is acknowledged.
+// The DEADLINE is what makes it terminal, and it is the reason this spec moves
+// the coordinator's seal deadline into the past rather than relying on the
+// drain refusing forever. Requirement 17 types `seal_unconfirmed` as the
+// outcome of a boundary that could not be proved *before a database-clock
+// deadline*; a boundary that cannot be proved right now is retried, which is
+// the spec below this one. What it DOES owe is a fenced release -- the source
+// is still on a node -- and the handoff is not settled until that release is
+// acknowledged.
 func TestAnUnprovableDrainIsSealUnconfirmedAndPublishesNothing(t *testing.T) {
 	h := newHarness(t)
 	h.Drain.Unprovable = true
+	h.Coordinator.SealDeadline = -time.Minute
 
 	c := h.admit(t).hold(t).finish(t, true)
 	c.advance(t)
@@ -434,6 +439,81 @@ func TestAnUnprovableDrainIsSealUnconfirmedAndPublishesNothing(t *testing.T) {
 	}
 	if c.sourceStillThere() {
 		t.Error("the released incarnation is still on the node")
+	}
+}
+
+// The SEAL DEADLINE, enforced: a seal whose boundary is not proved before its
+// database-clock deadline is `seal_unconfirmed` and publishes nothing.
+//
+// The deadline is composed at begin_seal and it used to be read by nothing --
+// the daemon stored neither it nor a seal-begun time, and the coordinator held
+// no durable moment to compare `now()` against -- so a seal an hour past its
+// deadline completed and registered a receipt. The only producer of
+// `seal_unconfirmed` was the mistaken one a lost answer made.
+//
+// The drain here PROVES: the refusal is the deadline's alone, which is what
+// makes this a spec about the clock rather than a second copy of the one above.
+func TestASealPastItsDeadlineIsSealUnconfirmed(t *testing.T) {
+	h := newHarness(t)
+	h.Coordinator.SealDeadline = -time.Hour
+
+	c := h.admit(t).hold(t).finish(t, true)
+	c.advance(t)
+
+	record := c.record(t)
+	if record.State != output.CaptureStateFailed {
+		t.Fatalf("a seal an hour past its deadline is %s", record.State)
+	}
+	if record.TerminalFailure != "seal_unconfirmed" {
+		t.Errorf("the terminal failure is %q", record.TerminalFailure)
+	}
+	if record.Receipt != nil {
+		t.Error("a seal past its deadline produced a receipt")
+	}
+	if h.bucketKeys(t) != nil {
+		t.Error("a seal past its deadline created an object")
+	}
+	if record.LogicalResolved {
+		t.Error("a seal past its deadline resolved a logical identity")
+	}
+}
+
+// The deadline's control, and it is the half that says the clock is a clock
+// rather than a switch: the SAME typed evidence, before the deadline, is
+// retried and committed as nothing.
+//
+// Without it, "a seal past its deadline fails" passes on a coordinator that
+// fails every seal it cannot prove on the first pass -- which is exactly what
+// requirement 17 does not say.
+func TestAnUnprovableDrainBeforeItsDeadlineIsRetriedNotCommitted(t *testing.T) {
+	h := newHarness(t)
+	h.Drain.UnprovableOnce = true
+
+	c := h.admit(t).hold(t).finish(t, true)
+
+	// Stage 2 and the seal, then the confirmation that cannot be proved yet.
+	for i := 0; i < 2; i++ {
+		if _, err := c.advanceOnce(t); err != nil {
+			t.Fatalf("advancing: %v", err)
+		}
+	}
+	if _, err := c.advanceOnce(t); !errors.Is(err, output.ErrSealUnconfirmed) {
+		t.Fatalf("an unproved boundary before the deadline was not reported: %v", err)
+	}
+
+	interim := c.record(t)
+	if interim.State == output.CaptureStateFailed {
+		t.Fatalf("a boundary unproved on the first pass was committed as terminal %q with the "+
+			"deadline still ahead", interim.TerminalFailure)
+	}
+	if !c.sourceStillThere() {
+		t.Error("the source was released before the seal deadline")
+	}
+
+	c.advance(t)
+	if final := c.record(t); final.State != output.CaptureStateRegistered {
+		t.Errorf("the capture is %s/%q after the boundary was proved",
+			final.State, final.TerminalFailure)
 	}
 }
 

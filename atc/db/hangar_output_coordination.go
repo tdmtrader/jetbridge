@@ -180,6 +180,67 @@ func (repository *HangarOutputRepository) RecordTerminalCaptureFailure(ctx conte
 		output.ErrConflict, reservation, state, failure)
 }
 
+// RecordSealDeadline stamps, once, the database-clock moment past which this
+// capture's seal is unprovable, and returns it.
+//
+// It is durable, and on the database's clock, for the reason every deadline in
+// this plane is: the process that begins a seal is not necessarily the process
+// that has to decide whether the boundary was proved in time. A capture crosses
+// an ATC restart, so a deadline held in the memory of the process that composed
+// it is a deadline that never expires -- which is what left `seal_unconfirmed`
+// with no producer except a mistaken guess at a lost answer.
+//
+// `coalesce`, not an overwrite: a begin_seal repeated after a lost answer is
+// the same seal, and a fresh deadline on every retry is an unbounded seal
+// wearing a bound.
+func (repository *HangarOutputRepository) RecordSealDeadline(ctx context.Context, tx output.Tx, reservation output.ReservationID, fence output.CaptureFence, term time.Duration) (output.Timestamp, error) {
+	if err := reservation.Validate(); err != nil {
+		return output.Timestamp{}, err
+	}
+	if fence == 0 {
+		return output.Timestamp{}, fmt.Errorf("%w: a seal deadline under no capture fence",
+			output.ErrUnauthorized)
+	}
+
+	var deadline time.Time
+	if err := hangarQueryRow(ctx, tx, `
+		UPDATE hangar_capture_reservations r
+		SET seal_deadline_at = coalesce(r.seal_deadline_at, now() + $3::interval)
+		WHERE r.reservation_id = $1
+		  AND `+hangarCurrentCaptureFence+` = $2
+		  AND r.state IN ('unresolved', 'resolved')
+		RETURNING r.seal_deadline_at`,
+		[]any{string(reservation), int64(fence), hangarInterval(term)}, &deadline); err != nil {
+		return output.Timestamp{}, fmt.Errorf("%w: reservation %s is not owned at capture fence "+
+			"%d, or is terminal; a stale owner may not seal", output.ErrUnauthorized,
+			reservation, fence)
+	}
+
+	return output.NewTimestamp(deadline), nil
+}
+
+// SealDeadlinePassed answers, on the database clock, whether this capture's
+// seal deadline has elapsed.
+//
+// The comparison is `now()` in SQL and not a value any process computed, which
+// is the same rule the ownership lease follows: a node whose clock drifts must
+// not be able to expire -- or extend -- a deadline it is subject to.
+func (repository *HangarOutputRepository) SealDeadlinePassed(ctx context.Context, tx output.Tx, reservation output.ReservationID) (bool, error) {
+	if err := reservation.Validate(); err != nil {
+		return false, err
+	}
+
+	var passed bool
+	if err := hangarQueryRow(ctx, tx, `
+		SELECT coalesce(seal_deadline_at IS NOT NULL AND now() >= seal_deadline_at, false)
+		FROM hangar_capture_reservations WHERE reservation_id = $1`,
+		[]any{string(reservation)}, &passed); err != nil {
+		return false, err
+	}
+
+	return passed, nil
+}
+
 // LoadHandoffRecord assembles every durable fact about one handoff.
 //
 // One statement, and that is deliberate. The facts live in five tables and a

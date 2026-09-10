@@ -102,6 +102,15 @@ type sourceRecord struct {
 	DrainSet      []output.WriterTicketID        `json:"drain_set,omitempty"`
 	SealConfirmed *output.CaptureAcknowledgement `json:"seal_confirmed,omitempty"`
 
+	// SealDeadlineAt is the deadline the control plane composed on the DATABASE
+	// clock and handed over with the seal. It is stored here, with the captured
+	// drain set and for the same reason: a deadline that is recomputed on every
+	// call is not a deadline. What it buys is defence in depth -- the deciding
+	// clock is still the database's -- so that a control plane which lost track
+	// of its own deadline cannot have a boundary confirmed hours after the
+	// moment the evidence was supposed to cover.
+	SealDeadlineAt output.Timestamp `json:"seal_deadline_at,omitzero"`
+
 	// Release is the fenced release pair's second half, stored so a repeat of
 	// the same intent returns the same statement and a different intent is a
 	// conflict.
@@ -1000,6 +1009,7 @@ func (ledger *SourceLedger) BeginSeal(_ context.Context, request output.SealRequ
 
 	record.State = sourceSealing
 	record.SealStarted = &ack
+	record.SealDeadlineAt = request.DeadlineAt
 	record.DrainSet = record.openTickets()
 	record.HighWater = ledger.sequence
 	if err := ledger.save(record); err != nil {
@@ -1047,6 +1057,22 @@ func (ledger *SourceLedger) ConfirmSeal(_ context.Context, confirmation output.S
 	}
 	if record.SealConfirmed != nil {
 		return *record.SealConfirmed, nil
+	}
+	// The deadline the seal was begun under. Checked AFTER the idempotent
+	// return, because a confirmation that already happened is a fact and not a
+	// request, and refusing to hand back a statement this node made would turn
+	// a lost answer into a permanent one.
+	//
+	// The deciding clock is the database's -- this refusal is defence in depth,
+	// and it is why it is typed as an unconfirmed seal rather than as a
+	// conflict: the answer it gives the control plane is exactly the one the
+	// control plane then weighs against its own deadline.
+	if !record.SealDeadlineAt.IsZero() && ledger.clock().After(record.SealDeadlineAt.Time) {
+		return output.CaptureAcknowledgement{}, fmt.Errorf(
+			"%w: the seal over handoff %s was begun with a deadline of %s and this node's clock "+
+				"reads %s; evidence for a boundary is evidence for the moment it covered",
+			output.ErrSealUnconfirmed, started.HandoffID,
+			record.SealDeadlineAt.UTC().Format(time.RFC3339), ledger.clock().UTC().Format(time.RFC3339))
 	}
 	for _, ticket := range record.openTickets() {
 		return output.CaptureAcknowledgement{}, fmt.Errorf(
