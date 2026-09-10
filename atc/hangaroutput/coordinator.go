@@ -791,6 +791,18 @@ func (coordinator *Coordinator) registerReceipt(ctx context.Context, record outp
 	if result.Ref.Digest != record.Digest {
 		// The object at the derived key is not the tree this reservation
 		// resolved. That is a typed collision and never an overwrite.
+		//
+		// TODO(phase 7, terminal outcomes): this arm cannot fire -- the digest
+		// is IN the derived key, so a publish that answered would answer with
+		// this reservation's digest or not at all. The real collision signal is
+		// the publisher's typed ErrConflict, which arrives from the call above
+		// and is retried on every pass: three passes, three identical refusals,
+		// nothing registered, the source held. That is the honest answer for an
+		// out-of-band writer -- the bytes may be put back -- but it is unbounded
+		// until the capture deadline, and nothing enforces `capture_deadline_at`
+		// yet. Phase 7 owns both: the enforcement, and the decision that a
+		// collision at a server-derived key becomes terminal at it. Round-2
+		// review finding R2-F6.
 		return coordinator.failTerminally(ctx, record, lease.CaptureFence, "collision")
 	}
 

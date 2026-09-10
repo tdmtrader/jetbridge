@@ -324,6 +324,14 @@ func (publisher *Publisher) classify(attrs objectstore.Attrs, reservation output
 		return output.PublishedObject{}, fmt.Errorf("%w: the object at generation %d reports %d "+
 			"stored bytes", output.ErrCorrupt, attrs.Generation, attrs.Size)
 	}
+	// SIZE, and only size. It catches a replaced body of a different length and
+	// nothing else: a same-size replacement still deduplicates.
+	//
+	// TODO(phase 7, inventory): compare the store's CRC32C against the marker
+	// as well. `objectstore.Attrs` carries no checksum, so this role cannot
+	// read one today -- but GCS reports one and so does the emulator, and the
+	// inventory role is where widening `Attrs` earns its place. Round-2 review
+	// finding R2-F5.
 	if size != sizeUnknown && attrs.Size != size {
 		return output.PublishedObject{}, fmt.Errorf("%w: the object at generation %d holds %d "+
 			"stored bytes and this capture canonicalized %d for %s. The marker claims this tree "+
