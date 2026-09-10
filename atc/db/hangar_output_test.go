@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 
@@ -2261,6 +2262,169 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			Expect(tombstones).To(BeZero())
 		})
 
+		// ROLLBACK AT EVERY STATEMENT, not at the one an author happened to
+		// think of.
+		//
+		// The spec above injects its fault after both halves are already in the
+		// transaction, which is the easy half: a composition that only ever
+		// failed there could still leave a claim behind when it broke in the
+		// middle of the acquire. So this counts the statements the WHOLE
+		// composition runs -- the consumer's own writes and every statement
+		// inside AcquireClaim -- and then runs it once per statement, aborting
+		// AT that statement. Neither half may be visible afterwards, at any
+		// index.
+		//
+		// The count is discovered rather than written down: a number in the
+		// spec would go stale the first time the repository grew a statement,
+		// and the spec would keep passing over the shorter prefix it knew.
+		It("leaves neither half visible when it is rolled back at any statement", func() {
+			claimID := output.ClaimID(uuid.NewString())
+
+			compose := func(counter *countingTx, id output.ClaimID, binding string) error {
+				if _, err := counter.ExecContext(ctx, `
+					INSERT INTO opaque_consumer_bindings (binding_id, visibility, claim_id)
+					VALUES ($1, 'hidden', $2)`, binding, string(id)); err != nil {
+					return err
+				}
+				if err := repository.AcquireClaim(ctx, counter, output.ClaimAcquisition{
+					ProtocolVersion:   output.ProtocolVersion,
+					ClaimID:           id,
+					Ref:               ref,
+					ConsumerBindingID: output.OpaqueID(binding),
+					RequestedAt:       output.NewTimestamp(time.Now()),
+				}); err != nil {
+					return err
+				}
+				_, err := counter.ExecContext(ctx, `
+					UPDATE opaque_consumer_bindings SET visibility = 'published' WHERE binding_id = $1`,
+					binding)
+
+				return err
+			}
+
+			// One clean run, to learn how many statements there are.
+			var total int
+			func() {
+				tx, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(tx)
+
+				counter := &countingTx{inner: tx}
+				Expect(compose(counter, claimID, "binding-count")).To(Succeed())
+				total = counter.count
+			}()
+			Expect(total).To(BeNumerically(">=", 4),
+				"the composition runs too few statements for this spec to be saying anything")
+
+			for at := 1; at <= total; at++ {
+				id := output.ClaimID(uuid.NewString())
+				binding := fmt.Sprintf("binding-at-%d", at)
+
+				// The transaction is closed by a defer inside its own scope.
+				// A failed assertion aborts the spec, and an aborted spec that
+				// left this transaction open would hold a lock on the
+				// consumer's own table until the cleanup DROP blocked on it --
+				// a spec that reported a hang rather than a failure.
+				func() {
+					tx, err := dbConn.Begin()
+					Expect(err).NotTo(HaveOccurred())
+					defer db.Rollback(tx)
+
+					counter := &countingTx{inner: tx, failAt: at}
+					err = compose(counter, id, binding)
+					Expect(err).To(HaveOccurred(),
+						"statement %d was injected with a fault and the composition still succeeded", at)
+					Expect(err.Error()).To(ContainSubstring("injected"),
+						"statement %d failed for a reason this spec did not cause: %v", at, err)
+				}()
+
+				var bindings int
+				Expect(dbConn.QueryRow(
+					`SELECT count(*) FROM opaque_consumer_bindings WHERE binding_id = $1`, binding).
+					Scan(&bindings)).To(Succeed())
+				Expect(bindings).To(BeZero(),
+					"the consumer's binding survived a rollback at statement %d", at)
+
+				var claims int
+				Expect(dbConn.QueryRow(`SELECT count(*) FROM hangar_claims WHERE claim_id = $1`,
+					string(id)).Scan(&claims)).To(Succeed())
+				Expect(claims).To(BeZero(),
+					"a Hangar claim -- active or tombstoned -- survived a rollback at statement %d", at)
+			}
+
+			Expect(countActiveClaims(ref)).To(BeZero())
+		})
+
+		// The arrival inversion, with a consumer's own binding in it.
+		//
+		// The claimant-versus-reclaimer specs above prove which side wins. This
+		// proves the thing AC 10 actually asks for and they cannot say: that
+		// the loser leaves no DANGLING BINDING. A consumer whose Hangar half
+		// failed and whose own half committed would have published a reference
+		// to content nothing protects, which is exactly the outcome the shared
+		// transaction exists to make impossible.
+		It("leaves no dangling binding whichever of the claimant and the reclaimer arrives first", func() {
+			// Reclaimer first: the consumer loses, and takes its own binding
+			// down with it.
+			reclaimer, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(reclaimer)
+			Expect(repository.AdmitReclaim(ctx, reclaimer, ref, uuid.NewString(), 1,
+				output.MinLeaseTerm)).To(Succeed())
+			Expect(reclaimer.Commit()).To(Succeed())
+
+			loser, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(loser)
+			lateID := output.ClaimID(uuid.NewString())
+			_, err = loser.Exec(`
+				INSERT INTO opaque_consumer_bindings (binding_id, visibility, claim_id)
+				VALUES ('binding-late', 'hidden', $1)`, string(lateID))
+			Expect(err).NotTo(HaveOccurred())
+			err = acquire(loser, lateID, ref, "binding-late")
+			Expect(err).To(MatchError(output.ErrConflict))
+			Expect(err.Error()).To(ContainSubstring("reclaiming"))
+			Expect(loser.Rollback()).To(Succeed())
+
+			var dangling int
+			Expect(dbConn.QueryRow(
+				`SELECT count(*) FROM opaque_consumer_bindings WHERE binding_id = 'binding-late'`).
+				Scan(&dangling)).To(Succeed())
+			Expect(dangling).To(BeZero(),
+				"the consumer's binding survived a claim the reclaimer had already won")
+			Expect(lifecycleState(ref)).To(Equal("reclaiming"))
+
+			// Claimant first, on a second generation: the consumer wins, its
+			// binding is there, and the reclaimer rechecks under the lock and
+			// skips.
+			_, second := publish(hangarDigest(21), 1725830823000021)
+
+			winner, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(winner)
+			earlyID := output.ClaimID(uuid.NewString())
+			_, err = winner.Exec(`
+				INSERT INTO opaque_consumer_bindings (binding_id, visibility, claim_id)
+				VALUES ('binding-early', 'hidden', $1)`, string(earlyID))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(acquire(winner, earlyID, second, "binding-early")).To(Succeed())
+			Expect(winner.Commit()).To(Succeed())
+
+			late, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(late)
+			err = repository.AdmitReclaim(ctx, late, second, uuid.NewString(), 1, output.MinLeaseTerm)
+			Expect(err).To(MatchError(output.ErrConflict))
+			Expect(err.Error()).To(ContainSubstring("1 claim(s)"))
+			Expect(late.Rollback()).To(Succeed())
+
+			visibility, claim := binding("binding-early")
+			Expect(visibility).To(Equal("hidden"))
+			Expect(claim).To(Equal(string(earlyID)))
+			Expect(countActiveClaims(second)).To(Equal(1))
+			Expect(lifecycleState(second)).To(Equal("registered"))
+		})
+
 		It("refuses the consumer's own prefix being skipped", func() {
 			_, err := db.HangarConsumerPrefixHeld("   ")
 			Expect(err).To(MatchError(output.ErrIncomplete))
@@ -2308,3 +2472,42 @@ func hangarLockedRelations(tx db.Tx) []string {
 
 	return relations
 }
+
+// countingTx counts the statements a composition runs, and can fail at any one
+// of them.
+//
+// It is the only honest way to say "rollback at EVERY statement": the
+// composition's statements are not all the spec's -- most of them are inside
+// AcquireClaim -- so a spec that injected its fault between the calls it can
+// see would be asserting about three boundaries out of a dozen. Counting first
+// and injecting by index makes the assertion cover whatever the repository
+// currently does, and grow with it.
+//
+// The error is a plain one on purpose: what the spec checks is that the
+// composition fails and leaves nothing, not that a particular sentinel came
+// back out.
+type countingTx struct {
+	inner  db.Tx
+	count  int
+	failAt int
+}
+
+func (tx *countingTx) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	tx.count++
+	if tx.failAt == tx.count {
+		return nil, fmt.Errorf("injected fault at statement %d", tx.count)
+	}
+
+	return tx.inner.ExecContext(ctx, query, args...)
+}
+
+func (tx *countingTx) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	tx.count++
+	if tx.failAt == tx.count {
+		return nil, fmt.Errorf("injected fault at statement %d", tx.count)
+	}
+
+	return tx.inner.QueryContext(ctx, query, args...)
+}
+
+var _ output.Tx = (*countingTx)(nil)
