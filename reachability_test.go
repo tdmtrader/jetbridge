@@ -97,6 +97,7 @@ var deferredEntryPoints = []deferredEntryPoint{
 	{"DeriveCohortFindings", cohortIdentities},
 	{"ObserveExactAbsence", separateAbsenceStat},
 	{"ValidateSealDeadline", sealDeadlineHasNoFlag},
+	{"ValidateCaptureDeadline", captureDeadlineHasNoProducer},
 
 	// Wired later in this revision. It is here so the first commit is green and
 	// the rule is on from it; the commit that wires it deletes this line, and
@@ -116,6 +117,9 @@ const (
 		"stat belongs to the ambiguous-response recovery path in Phase 8"
 	sealDeadlineHasNoFlag = "Req 17's bound has no operator-facing flag to refuse; the " +
 		"coordinator's seal deadline is set by the ATC's own composition"
+	captureDeadlineHasNoProducer = "the producer for capture_deadline_at is the Phase 8 " +
+		"Refactor line named in the collision-at-deadline carry-forward; nothing composes a " +
+		"capture deadline from a duration yet, so there is no configuration site to bound"
 	violationGateArrivesLater = "the reclaim-admission violation gate is wired later in this " +
 		"revision, under R1-F15"
 )

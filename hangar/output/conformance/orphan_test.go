@@ -77,19 +77,19 @@ func TestPublicationGraceCannotBeShortenedIntoACaptureWindow(t *testing.T) {
 	// AdoptManagedOrphan, on the database clock.
 
 	// The control: the default is admissible.
-	if err := output.ValidatePublicationGrace(output.DefaultPublicationGrace, output.MaxCaptureDeadline); err != nil {
+	if err := output.ValidatePublicationGrace(output.DefaultPublicationGrace); err != nil {
 		t.Fatalf("the default publication grace was refused: %v", err)
 	}
-	if err := output.ValidatePublicationGrace(floor, output.MaxCaptureDeadline); err != nil {
+	if err := output.ValidatePublicationGrace(floor); err != nil {
 		t.Errorf("the floor itself was refused: %v. Req 39 admits a grace that exceeds the "+
 			"maximum capture deadline by AT LEAST an hour", err)
 	}
 
-	if err := output.ValidatePublicationGrace(floor-time.Minute, output.MaxCaptureDeadline); err == nil {
+	if err := output.ValidatePublicationGrace(floor - time.Minute); err == nil {
 		t.Errorf("a publication grace one minute below the floor of %s was accepted. Below it an "+
 			"object becomes adoptable while its own capture may still be retrying", floor)
 	}
-	if err := output.ValidatePublicationGrace(output.MaxPublicationGrace+time.Hour, output.MaxCaptureDeadline); err == nil {
+	if err := output.ValidatePublicationGrace(output.MaxPublicationGrace + time.Hour); err == nil {
 		t.Error("a publication grace past the maximum bound was accepted")
 	}
 }

@@ -49,7 +49,7 @@ func run(ctx context.Context, config controllerConfig) error {
 	if err != nil {
 		return err
 	}
-	if err := output.ValidatePublicationGrace(config.Grace, output.MaxCaptureDeadline); err != nil {
+	if err := output.ValidatePublicationGrace(config.Grace); err != nil {
 		return err
 	}
 

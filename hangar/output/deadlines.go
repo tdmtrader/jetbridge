@@ -84,6 +84,18 @@ const (
 	WorkerFallbackInterval = time.Minute
 )
 
+// Deferred: the producer for capture_deadline_at is the Phase 8 Refactor line
+// named in the collision-at-deadline carry-forward; nothing composes a capture
+// deadline from a duration yet, so there is no configuration site to bound
+//
+// ValidateCaptureDeadline bounds a configured capture-deadline term.
+//
+// Its only caller was ValidatePublicationGrace, through a parameter every
+// caller passed the constant to -- so removing that parameter left this with
+// none, which is the reachability guard reporting a real thing: the bound
+// exists and nothing in a running process applies it. The deadline is an
+// absolute instant everywhere it is carried today; the duration it is composed
+// from is the coordinator's, and that producer is named and owed.
 func ValidateCaptureDeadline(deadline time.Duration) error {
 	if deadline < MinCaptureDeadline || deadline > MaxCaptureDeadline {
 		return fmt.Errorf("%w: capture deadline %s is outside %s..%s",
@@ -104,21 +116,30 @@ func ValidateSealDeadline(deadline time.Duration) error {
 	return nil
 }
 
-// ValidatePublicationGrace is the cross-constraint from Req 39. It takes the
-// configured maximum capture deadline rather than the constant, because a
-// deployment that lowered its capture deadline may lower its grace with it.
-func ValidatePublicationGrace(grace, maxCaptureDeadline time.Duration) error {
-	if err := ValidateCaptureDeadline(maxCaptureDeadline); err != nil {
-		return err
-	}
+// ValidatePublicationGrace is the cross-constraint from Req 39.
+//
+// The floor is derived from MaxCaptureDeadline, the plane-wide CEILING on any
+// capture deadline, and not from a deployment-level maximum -- because there is
+// no such thing to pass. A capture deadline is per-capture and is bounded above
+// by this constant, so a grace above the constant plus an hour is conservative
+// for every capture any deployment can predeclare.
+//
+// This used to take the maximum as a parameter, with a doc sentence saying it
+// did so "because a deployment that lowered its capture deadline may lower its
+// grace with it". Every caller passed the constant, so the floor was always
+// 7d+1h and the sentence described a behaviour nothing had. If a
+// deployment-level maximum is ever configured, the parameter comes back WITH a
+// caller that has one; a parameter nobody varies is a claim nobody keeps.
+func ValidatePublicationGrace(grace time.Duration) error {
 	if grace > MaxPublicationGrace {
 		return fmt.Errorf("%w: publication grace %s exceeds the maximum %s",
 			ErrIncomplete, grace, MaxPublicationGrace)
 	}
-	if grace < maxCaptureDeadline+PublicationGraceMargin {
+	if grace < MaxCaptureDeadline+PublicationGraceMargin {
 		return fmt.Errorf("%w: publication grace %s does not exceed the maximum capture deadline "+
 			"%s by at least %s; an object could become adoptable while its own capture was still "+
-			"legitimately retrying", ErrIncomplete, grace, maxCaptureDeadline, PublicationGraceMargin)
+			"legitimately retrying", ErrIncomplete, grace, MaxCaptureDeadline,
+			PublicationGraceMargin)
 	}
 
 	return nil

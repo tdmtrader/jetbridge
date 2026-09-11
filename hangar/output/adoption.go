@@ -175,7 +175,7 @@ func (request AdoptionRequest) Validate() error {
 		return fmt.Errorf("%w: adoption observed no creation time, and publication grace is "+
 			"measured from it", ErrIncomplete)
 	}
-	if err := ValidatePublicationGrace(request.Grace, MaxCaptureDeadline); err != nil {
+	if err := ValidatePublicationGrace(request.Grace); err != nil {
 		return err
 	}
 	if request.SafetyMargin < PublicationGraceMargin {
