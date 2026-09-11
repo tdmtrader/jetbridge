@@ -32,6 +32,10 @@ var permittedLogKeys = map[string]string{
 	"handoff":    "the one identity an operator needs to find a capture, and opaque by construction",
 	"transition": "a member of a closed set",
 	"class":      "a bounded word derived from the leaf's sentinels, never an error's own text",
+	"closed": "a COUNT of read leases a recovery pass closed. It is an integer and it names " +
+		"nobody: a log line naming the lease would put an opaque id a consumer may treat as " +
+		"sensitive into a system nobody thinks of as a log, and a metric keyed by one would be " +
+		"a series per reader forever",
 }
 
 func TestThisPackageSaysNothingItShouldNot(t *testing.T) {

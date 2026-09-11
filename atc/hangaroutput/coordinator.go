@@ -834,17 +834,27 @@ func (coordinator *Coordinator) registerReceipt(ctx context.Context, record outp
 		// The object at the derived key is not the tree this reservation
 		// resolved. That is a typed collision and never an overwrite.
 		//
-		// TODO(phase 7, terminal outcomes): this arm cannot fire -- the digest
-		// is IN the derived key, so a publish that answered would answer with
-		// this reservation's digest or not at all. The real collision signal is
-		// the publisher's typed ErrConflict, which arrives from the call above
-		// and is retried on every pass: three passes, three identical refusals,
-		// nothing registered, the source held. That is the honest answer for an
-		// out-of-band writer -- the bytes may be put back -- but it is unbounded
-		// until the capture deadline, and nothing enforces `capture_deadline_at`
-		// yet. Phase 7 owns both: the enforcement, and the decision that a
-		// collision at a server-derived key becomes terminal at it. Round-2
-		// review finding R2-F6.
+		// This arm cannot fire -- the digest is IN the derived key, so a publish
+		// that answered would answer with this reservation's digest or not at
+		// all. The real collision signal is the publisher's typed ErrConflict,
+		// which arrives from the call above and is retried on every pass. That
+		// is the honest answer for an out-of-band writer: the bytes may be put
+		// back.
+		//
+		// Phase 7 landed HALF of round-2 review finding R2-F6. What it fixed is
+		// the consequence: a capture that gives up past the publish point can
+		// now reach a terminal state and let its source go (see settleOrphan
+		// below), so a collision is no longer a capture pinned on a node
+		// forever. What it did NOT do is enforce `capture_deadline_at` in this
+		// coordinator -- nothing reads that column here, so "retried until the
+		// capture deadline" is still "retried until somebody gives up". That
+		// producer is capture-path work: the deadline is a Stage 2 fact and the
+		// decision to terminalize on it belongs beside the seal deadline, not
+		// beside the sweep.
+		//
+		// TODO(capture path): read `capture_deadline_at` here and fail
+		// terminally at it, so a collision at a server-derived key is bounded by
+		// the deadline rather than by attention.
 		return coordinator.failTerminally(ctx, record, lease.CaptureFence, "collision")
 	}
 
