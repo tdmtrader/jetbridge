@@ -235,6 +235,22 @@ type Config struct {
 	// account is Pod-wide, so the isolation is a second Pod.
 	OutputDaemonPort int
 
+	// OutputActivationEpoch is the epoch this control plane speaks for.
+	//
+	// It is what makes Req 57 enforceable at the worker: a node label is a
+	// scheduling HINT, and a cohort can carry a ready label while its daemons
+	// speak for a different epoch -- a rolling upgrade, a half-finished
+	// rotation, a node that came back from a long drain. Every capture records
+	// the epoch it was admitted under, so a spec whose epoch is not this one
+	// was admitted by a control plane this worker is not part of, and a stale
+	// label or handshake authorizes nothing.
+	//
+	// Zero means unconfigured, and an unconfigured epoch checks nothing: the
+	// conformance tier and this package's own specs run with no activation row
+	// at all, and refusing there would be the chart's rule enforced in the
+	// wrong process.
+	OutputActivationEpoch int64
+
 	// HangarEnabled permits exact immutable Hangar tree inputs.
 	HangarEnabled bool
 

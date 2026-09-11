@@ -1346,6 +1346,7 @@ func (cmd *RunCommand) backendComponents(
 		k8sCfg.HangarEnabled = cmd.Kubernetes.HangarEnabled
 		k8sCfg.HangarGrantSigner = cmd.k8sHangarGrantSigner
 		k8sCfg.OutputPlaneEnabled = cmd.Kubernetes.OutputPlaneEnabled
+		k8sCfg.OutputActivationEpoch = cmd.Kubernetes.OutputActivationEpoch
 		k8sCfg.OutputDaemonPort = cmd.Kubernetes.OutputDaemonPort
 		if cmd.Kubernetes.CacheStore != "" && !jetbridge.ValidCacheStores[cmd.Kubernetes.CacheStore] {
 			return nil, fmt.Errorf("invalid --kubernetes-cache-store value %q (valid: hostpath, emptydir)", cmd.Kubernetes.CacheStore)
@@ -1487,6 +1488,7 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 		k8sCfg.HangarEnabled = cmd.Kubernetes.HangarEnabled
 		k8sCfg.HangarGrantSigner = cmd.k8sHangarGrantSigner
 		k8sCfg.OutputPlaneEnabled = cmd.Kubernetes.OutputPlaneEnabled
+		k8sCfg.OutputActivationEpoch = cmd.Kubernetes.OutputActivationEpoch
 		k8sCfg.OutputDaemonPort = cmd.Kubernetes.OutputDaemonPort
 		if cmd.Kubernetes.ImageRegistryPrefix != "" || cmd.Kubernetes.ImageRegistrySecret != "" {
 			k8sCfg.ImageRegistry = &jetbridge.ImageRegistryConfig{

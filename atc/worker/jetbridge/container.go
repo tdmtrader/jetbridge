@@ -465,6 +465,43 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 	if err := c.containerSpec.ExecutionControl.Validate(c.containerSpec); err != nil {
 		return nil, err
 	}
+	// And the FACET, which the envelope cannot carry: a spec may be admitted
+	// with a capture by a control plane that believes the plane is on, and land
+	// on a worker whose output facet is not enabled.
+	//
+	// This is a refusal at ADMISSION rather than an omission in the Pod. The
+	// difference is the whole of Req 58: a worker that quietly built the
+	// ordinary pod would produce a step that ran, succeeded and captured
+	// nothing, and the handoff the control plane predeclared would sit
+	// unresolved until its deadline. There is no cache-tier fallback to
+	// degrade into, so the honest answer is that no capture pod is built.
+	if c.containerSpec.ExecutionControl.HasDurableOutputCapture() {
+		if !c.config.OutputPlaneEnabled {
+			return nil, fmt.Errorf("%w: this step selected durable output capture and this "+
+				"worker's output facet is not enabled, so no capture pod is built. Durable "+
+				"output capture never degrades into an ordinary step: a pod that ran and "+
+				"captured nothing would leave the predeclared handoff unresolved until its "+
+				"deadline", runtime.ErrInvalidExecutionControl)
+		}
+		// And the EPOCH, which is the part a ready label cannot attest.
+		//
+		// A label says a node's daemon was up and attested at some point; it
+		// does not say which cohort it belongs to. A node can carry the label
+		// while its daemons speak for a different activation epoch -- a
+		// rolling upgrade, a half-finished rotation, a node back from a long
+		// drain -- and a capture admitted against that cohort would be signed
+		// by a key this control plane does not pin. Req 57: a stale label or
+		// handshake authorizes nothing.
+		if epoch := c.config.OutputActivationEpoch; epoch != 0 &&
+			int64(c.containerSpec.ExecutionControl.ActivationEpoch) != epoch {
+			return nil, fmt.Errorf("%w: this step was admitted under activation epoch %d and "+
+				"this worker speaks for epoch %d, so no capture pod is built. A ready label "+
+				"is a scheduling hint and never authority; the authenticated handshake and "+
+				"the activation epoch row are",
+				runtime.ErrInvalidExecutionControl,
+				c.containerSpec.ExecutionControl.ActivationEpoch, epoch)
+		}
+	}
 
 	image := resolveImage(c.containerSpec.ImageSpec, c.config.ResourceTypeImages)
 	if image == "" {

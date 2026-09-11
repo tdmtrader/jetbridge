@@ -20,6 +20,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/concourse/concourse/atc/runtime"
+	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	hangaroutput "github.com/concourse/concourse/hangar/output"
 )
@@ -161,15 +162,45 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 				return in
 			}),
 
-		stubMap[CaptureDraft, CaptureDraft](
+		// The scheduling refinements. They REBUILD the worker, because what
+		// they describe is a fact about the deployment rather than about this
+		// step: which facets this cohort serves is configuration the worker was
+		// started with, and a phrase that only recorded an intention on the
+		// draft would be a sentence with nothing behind it.
+		brine.DefineMapUsing[CaptureDraft, CaptureDraft](
 			"the worker's cohort is ready for {string}",
-			"Phase 8 Green",
-			"the per-facet readiness labels and the authenticated extension handshake"),
+			[]string{"jetbridge-db"},
+			func(in CaptureDraft, p brine.Params, _ *brine.Recorder, res brine.Resources) (CaptureDraft, error) {
+				facet, ok := p.GetString(0)
+				if !ok {
+					return CaptureDraft{}, fmt.Errorf("expected a facet parameter")
+				}
 
-		stubMap[CaptureDraft, CaptureDraft](
+				return withCohort(in, res, facet, int64(hangarEpoch))
+			},
+		),
+
+		// A ready label is a HINT and never authority.
+		//
+		// A node can carry the output label while its daemons speak for another
+		// activation epoch -- a rolling upgrade, a half-finished rotation, a
+		// node back from a long drain -- and a capture admitted against that
+		// cohort would be signed by a key this control plane does not pin. So
+		// the un-handshaked cohort is spelled as exactly that: the label is
+		// there, and the epoch does not match.
+		brine.DefineMapUsing[CaptureDraft, CaptureDraft](
 			"the daemon cohort has not handshaked",
-			"Phase 8 Green",
-			"the extension handshake a ready label alone is never a substitute for"),
+			[]string{"jetbridge-db"},
+			func(in CaptureDraft, _ brine.Params, _ *brine.Recorder, res brine.Resources) (CaptureDraft, error) {
+				out, err := withCohort(in, res, hangaroutput.ReadyLabel, int64(hangarEpoch)+1)
+				if err != nil {
+					return CaptureDraft{}, err
+				}
+				out.CohortHandshaked = false
+
+				return out, nil
+			},
+		),
 
 		brine.DefineMap[CaptureDraft, CapturePodCreated](
 			"the capture pod is built",
@@ -229,15 +260,18 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 				return len(in.Pod.Spec.InitContainers), nil
 			}),
 
-		stubCheck[CapturePodCreated](
+		CheckMember[CapturePodCreated](
 			"the capture pod is admitted only by a node carrying {string}",
-			"Phase 8 Green",
-			"the affinity terms BuildAffinity emits for the output cohort"),
+			"the node-selector keys the capture pod requires",
+			capturePodRequiredLabelKeys),
 
-		stubCheck[CapturePodCreated](
-			"the capture pod requires {int} ready labels",
-			"Phase 8 Green",
-			"both required ready labels, base control and output"),
+		// A COUNT of the READY labels, not membership. "the pod requires this
+		// label" passes on a pod that requires it and eleven others; the claim
+		// is that a capture pod needs exactly the two, and neither alone
+		// admits it.
+		CheckInt[CapturePodCreated]("the capture pod requires {int} ready labels",
+			"the number of required ready labels",
+			capturePodReadyLabelCount),
 
 		// The node pin, declared here in Phase 5 and executed in Phase 8, per
 		// the Phase 4 round-2 ruling 3. It is a stub beside its two affinity
@@ -246,15 +280,43 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 		// what the ruling declined. The production half exists and is red
 		// under M8 in Go
 		// (TestACaptureSelectedPodIsPinnedToTheReservingNodeAndAnOrdinaryOneIsNot).
-		stubCheck[CapturePodCreated](
+		// The node pin. A reservation is a directory on ONE node's disk, made
+		// before this Pod existed, so a cohort-wide placement lets the
+		// scheduler land the producer on a node that reserved nothing -- where
+		// the hostPath's DirectoryOrCreate makes an empty unheld directory and
+		// the control init's hold is refused. Requiring the node turns that
+		// outage into a pending Pod.
+		CheckString[CapturePodCreated](
 			"the capture pod is admitted only by the node {string}",
-			"Phase 8 Green",
-			"the kubernetes.io/hostname expression BuildAffinity emits for the reserving node"),
+			"the node the capture pod is pinned to",
+			capturePodRequiredNode),
 
-		stubCheck[CapturePodCreated](
-			"no capture pod is built",
-			"Phase 8 Green",
-			"the refusal a worker whose output facet is not enabled must return"),
+		// The ABSENCE, whose control is the line above it in every scenario
+		// that uses it: "no capture pod" passes on a worker that builds no pods
+		// at all, so the refusal's own text is asserted first.
+		CheckThat[CapturePodCreated]("no capture pod is built",
+			func(in CapturePodCreated) error {
+				if in.Pod == nil {
+					return nil
+				}
+
+				return fmt.Errorf("a capture pod was built: %s", in.Pod.Name)
+			}),
+
+		// The control that makes the absence mean something, in the same
+		// scenario (convention 5): the very same worker still builds an
+		// ordinary pod for a step that captures nothing.
+		CheckThat[CapturePodCreated](
+			"the same worker still builds an ordinary pod for a step that captures nothing",
+			sameWorkerStillBuildsAnOrdinaryPod),
+
+		// The handshake scenario's own control. "a ready label without a
+		// matching handshake admits nothing" passes on a worker that admits
+		// nothing at all, so the same worker is asked for a capture whose epoch
+		// DOES match its cohort, and must build one.
+		CheckThat[CapturePodCreated](
+			"the same worker admits a capture whose epoch matches its cohort",
+			sameWorkerAdmitsAMatchingEpoch),
 
 		CheckContains[CapturePodCreated]("the pod build is refused saying {string}",
 			"the refusal",
@@ -690,4 +752,206 @@ func captureResolvedMountCount(in CapturePodCreated) (int, error) {
 	}
 
 	return resolved, nil
+}
+
+// ---------------------------------------------------------------------------
+// The scheduling block
+// ---------------------------------------------------------------------------
+
+// withCohort rebuilds the worker for a named facet and one activation epoch.
+//
+// A REBUILD rather than a mutation, because which facets a cohort serves is
+// configuration the worker was started with. The draft is a description at this
+// point -- no container has been created -- so replacing the cluster under it is
+// safe, and it is what makes the phrase a construction rather than a note.
+func withCohort(in CaptureDraft, res brine.Resources, facet string, epoch int64) (CaptureDraft, error) {
+	outputFacet := false
+	switch facet {
+	case executioncontrol.ReadyLabel:
+		// The BASE facet alone. A base-only cohort is a real deployment -- it
+		// is the one the sibling exact_execution_control track schedules onto.
+	case hangaroutput.ReadyLabel, "hangar-output-v1":
+		outputFacet = true
+	default:
+		return CaptureDraft{}, fmt.Errorf("no such facet %q; there are two, "+
+			"%s and %s", facet, executioncontrol.ReadyLabel, hangaroutput.ReadyLabel)
+	}
+
+	cluster, err := newConfiguredWorker(res, func(cfg *jetbridge.Config) {
+		cfg.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+		cfg.OutputPlaneEnabled = outputFacet
+		cfg.OutputActivationEpoch = epoch
+	})
+	if err != nil {
+		return CaptureDraft{}, err
+	}
+
+	in.Draft.Namespace = cluster.Namespace
+	in.Draft.Worker = cluster.Worker
+	in.Draft.Clientset = cluster.Clientset
+	in.Draft.Ctx = cluster.Ctx
+	in.ReadyFacets = append(in.ReadyFacets, facet)
+	in.CohortHandshaked = true
+
+	return in, nil
+}
+
+// requiredNodeSelector is the single required term BuildAffinity emits.
+//
+// Single by construction: the whole affinity is one NodeSelectorTerm whose
+// expressions are ANDed, because "this node has the cache AND both facets AND is
+// the reserving node" is one conjunction. A second term would be an OR, and an
+// OR would admit a node that had only some of them.
+func requiredNodeSelector(in CapturePodCreated) ([]corev1.NodeSelectorRequirement, error) {
+	if in.Pod == nil {
+		return nil, fmt.Errorf("no capture pod was built: %v", in.Err)
+	}
+	affinity := in.Pod.Spec.Affinity
+	if affinity == nil || affinity.NodeAffinity == nil ||
+		affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
+		return nil, fmt.Errorf("the capture pod carries no required node affinity at all")
+	}
+	terms := affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+	if len(terms) != 1 {
+		return nil, fmt.Errorf("the capture pod carries %d node selector terms; separate terms "+
+			"are ORed, so more than one would admit a node that satisfies only some of them",
+			len(terms))
+	}
+
+	return terms[0].MatchExpressions, nil
+}
+
+// capturePodRequiredLabelKeys is every key the pod requires, so a membership
+// check names one and the count beside it pins the rest.
+func capturePodRequiredLabelKeys(in CapturePodCreated) ([]string, error) {
+	expressions, err := requiredNodeSelector(in)
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(expressions))
+	for _, expression := range expressions {
+		keys = append(keys, expression.Key)
+	}
+
+	return keys, nil
+}
+
+// capturePodReadyLabelCount counts the READY-label requirements and nothing
+// else: the artifact cache label and the hostname pin are required too, and
+// counting them would make "2" an accident of how many other terms exist.
+func capturePodReadyLabelCount(in CapturePodCreated) (int, error) {
+	expressions, err := requiredNodeSelector(in)
+	if err != nil {
+		return 0, err
+	}
+
+	ready := 0
+	for _, expression := range expressions {
+		switch expression.Key {
+		case executioncontrol.ReadyLabel, hangaroutput.ReadyLabel:
+			if expression.Operator != corev1.NodeSelectorOpIn ||
+				len(expression.Values) != 1 || expression.Values[0] != "ready" {
+				return 0, fmt.Errorf("%s is required with %s %v rather than In [ready]",
+					expression.Key, expression.Operator, expression.Values)
+			}
+			ready++
+		}
+	}
+
+	return ready, nil
+}
+
+// capturePodRequiredNode is the ONE node the pod may land on.
+func capturePodRequiredNode(in CapturePodCreated) (string, error) {
+	expressions, err := requiredNodeSelector(in)
+	if err != nil {
+		return "", err
+	}
+	for _, expression := range expressions {
+		if expression.Key != corev1.LabelHostname {
+			continue
+		}
+		if len(expression.Values) != 1 {
+			return "", fmt.Errorf("the capture pod is pinned to %d nodes; a reservation is a "+
+				"directory on ONE node's disk", len(expression.Values))
+		}
+
+		return expression.Values[0], nil
+	}
+
+	return "", fmt.Errorf("the capture pod is not pinned to any node. The two ready labels pick " +
+		"a COHORT; the reservation is narrower than that, so a cohort-wide placement lets the " +
+		"scheduler land the producer on a node that reserved nothing")
+}
+
+// sameWorkerStillBuildsAnOrdinaryPod is the absence's control.
+//
+// "no capture pod is built" passes on a worker that builds no pods at all, and
+// convention 5 says the positive half belongs in the same scenario. So this
+// builds an ORDINARY pod -- same worker, same image, same declared output, no
+// capture selected -- and requires it to come back.
+func sameWorkerStillBuildsAnOrdinaryPod(in CapturePodCreated) error {
+	draft := in.Draft.Draft
+	if draft.Worker == nil {
+		return fmt.Errorf("the chain carries no worker to ask")
+	}
+
+	ordinary := draft
+	ordinary.Handle = draft.Handle + "-ordinary"
+
+	outputs := runtime.OutputPaths{}
+	for index, path := range draft.Outputs {
+		outputs[fmt.Sprintf("output-%d", index)] = path
+	}
+	inputs, err := draftInputs(ordinary)
+	if err != nil {
+		return err
+	}
+
+	spec := runtime.ContainerSpec{
+		TeamID:    1,
+		Dir:       ordinary.Dir,
+		ImageSpec: runtime.ImageSpec{ImageURL: ordinary.ImageURL},
+		Env:       ordinary.ContainerEnv,
+		Inputs:    inputs,
+		Caches:    ordinary.Caches,
+	}
+	if len(outputs) > 0 {
+		spec.Outputs = outputs
+	}
+
+	created, err := runDraft(ordinary, draftContainerType(ordinary.ContainerType), spec, false)
+	if err != nil {
+		return fmt.Errorf("the same worker refused an ORDINARY step as well, so the refusal "+
+			"above says nothing about capture: %w", err)
+	}
+	if created.Pod == nil {
+		return fmt.Errorf("the same worker built no ordinary pod either")
+	}
+
+	return nil
+}
+
+// sameWorkerAdmitsAMatchingEpoch is the handshake scenario's positive half.
+//
+// "a ready label without a matching handshake admits nothing" passes on a worker
+// that admits nothing at all -- a broken image, a missing volume, a refusal for
+// some other reason entirely. So the same worker is handed the same capture with
+// the epoch its cohort actually speaks for, and must build a pod.
+func sameWorkerAdmitsAMatchingEpoch(in CapturePodCreated) error {
+	matching := in.Draft
+	matching.Draft.Handle = matching.Draft.Handle + "-matching"
+	matching.Admission.ActivationEpoch = executioncontrol.ActivationEpoch(hangarEpoch)
+	matching.Reserved = hangaroutput.ReservedIncarnation{}
+
+	built, err := buildCapturePod(matching)
+	if err != nil {
+		return fmt.Errorf("building the matching-epoch control: %w", err)
+	}
+	if built.Pod == nil {
+		return fmt.Errorf("the same worker refused a capture whose epoch matches its cohort "+
+			"as well, so the refusal above says nothing about the handshake: %v", built.Err)
+	}
+
+	return nil
 }
