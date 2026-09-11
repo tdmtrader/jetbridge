@@ -11,6 +11,7 @@ package db_test
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"time"
 
@@ -339,6 +340,52 @@ func hangarReleaseSource(ctx context.Context, repository *db.HangarOutputReposit
 		Signature:      "signature",
 	})).To(Succeed())
 	Expect(tx.Commit()).To(Succeed())
+}
+
+// readLeaseRequest is a well-formed managed-read admission: an exact stat
+// taken a moment ago, a destination that is a handle and a volume, and a
+// nonce minted once for this lease. Every refusal spec below starts from
+// this and changes exactly one thing, so a red row names the check rather
+// than "a lease was refused".
+func hangarReadLeaseRequest(id output.ReadLeaseID, claimID output.ClaimID, ref hangar.TreeRef) output.ReadLeaseRequest {
+	GinkgoHelper()
+	nonce, err := output.NewReadGrantNonce(rand.Reader)
+	Expect(err).NotTo(HaveOccurred())
+
+	// The marker on a real stat carries the reservation that published the
+	// object. The fixture reads it back rather than inventing one, so a
+	// well-formed stat proof here is the shape production actually observes.
+	var reservation string
+	Expect(dbConn.QueryRow(`
+		SELECT reservation_id FROM hangar_logical_reservations WHERE scope = $1 AND digest = $2`,
+		string(ref.Scope), string(ref.Digest)).Scan(&reservation)).To(Succeed())
+
+	return output.ReadLeaseRequest{
+		ReadLeaseID:            id,
+		ClaimID:                claimID,
+		Ref:                    ref,
+		ActivationEpoch:        1,
+		RequestedAt:            output.NewTimestamp(time.Now()),
+		MaterializationTimeout: 10 * time.Minute,
+		Destination:            output.ReadDestination{Handle: "task-handle", Volume: "input-0"},
+		GrantNonce:             nonce,
+		StatProof: output.PublishedObject{
+			Attributes: hangar.TreeAttributes{
+				Ref: ref, StoredBytes: 1024, LogicalBytes: 4096,
+				CreatedAt: time.Now().Add(-time.Minute),
+			},
+			Metageneration: 1,
+			Marker: output.ObjectMarker{
+				Version:         output.MarkerVersion,
+				Scope:           ref.Scope,
+				Digest:          ref.Digest,
+				ReservationID:   output.ReservationID(reservation),
+				ActivationEpoch: 1,
+				CreatedAt:       output.NewTimestamp(time.Now().Add(-time.Minute)),
+			},
+		},
+		StatObservedAt: output.NewTimestamp(time.Now()),
+	}
 }
 
 // hangarAgeCapture moves one capture's deadline into the past.

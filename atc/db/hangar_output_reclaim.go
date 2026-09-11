@@ -1,0 +1,444 @@
+package db
+
+// The reclaim job's durable half: admission's fenced lease, the admitted-delete
+// record that has to exist BEFORE any external call, the outcome that record
+// later carries, and the finalization that says which of four things happened.
+//
+// Two rules run through all of it.
+//
+// The first is that the record precedes the effect. An admitted delete is
+// written and committed before the reclaimer is allowed to ask the object store
+// to delete anything, because the alternative -- ask first, record after -- has
+// a window in which the object is gone and nothing durable says this system
+// asked for it. Absence with no prior admitted delete is an out-of-band
+// lifetime violation, and a plane that could not tell the two apart would
+// quietly rewrite one as the other.
+//
+// The second is that the fence, not the expiry, is what authorizes a write. An
+// owner whose lease expired may have been taken over, and a takeover advances
+// the fence; every statement here names the fence it believes it holds, so a
+// paused owner that wakes up writes nothing.
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/concourse/concourse/hangar"
+	"github.com/concourse/concourse/hangar/output"
+)
+
+// HangarReclaimJob is one admitted reclamation.
+//
+// It carries the exact ref and metageneration the delete will be conditioned
+// on, read back from the row rather than from the caller: a job whose
+// precondition came from the process that is about to delete would be a
+// precondition that process chose.
+type HangarReclaimJob struct {
+	ID              int64
+	LifecycleID     int64
+	Ref             hangar.TreeRef
+	Metageneration  int64
+	ActivationEpoch int64
+	OwnerID         string
+	LeaseFence      output.LeaseFence
+	RenewedAt       output.Timestamp
+	ExpiresAt       output.Timestamp
+	AdmittedDeletes int
+}
+
+// Remaining is how much of the lease is left at a database-clock instant.
+func (job HangarReclaimJob) Remaining(now output.Timestamp) time.Duration {
+	return job.ExpiresAt.UTC().Sub(now.UTC())
+}
+
+// LoadReclaimJob reads the open job for one exact ref.
+func (repository *HangarOutputRepository) LoadReclaimJob(ctx context.Context, tx output.Tx, ref hangar.TreeRef) (HangarReclaimJob, error) {
+	if err := ref.Validate(); err != nil {
+		return HangarReclaimJob{}, err
+	}
+
+	job := HangarReclaimJob{Ref: ref}
+	var renewedAt, expiresAt time.Time
+	err := hangarQueryRow(ctx, tx, `
+		SELECT j.id, j.lifecycle_id, j.metageneration, j.activation_epoch, j.owner_id,
+		       j.lease_fence, j.renewed_at, j.expires_at,
+		       (SELECT count(*) FROM hangar_reclaim_attempts a WHERE a.job_id = j.id)
+		  FROM hangar_reclaim_jobs j
+		  JOIN hangar_exact_lifecycles l ON l.id = j.lifecycle_id
+		 WHERE l.scope = $1 AND l.digest = $2 AND l.generation = $3
+		   AND j.finalized_at IS NULL`,
+		[]any{string(ref.Scope), string(ref.Digest), ref.Generation},
+		&job.ID, &job.LifecycleID, &job.Metageneration, &job.ActivationEpoch, &job.OwnerID,
+		&job.LeaseFence, &renewedAt, &expiresAt, &job.AdmittedDeletes)
+	if errors.Is(err, output.ErrNotFound) {
+		return HangarReclaimJob{}, fmt.Errorf("%w: no open reclaim job for %s/%s/%d",
+			output.ErrNotFound, ref.Scope, ref.Digest, ref.Generation)
+	}
+	if err != nil {
+		return HangarReclaimJob{}, err
+	}
+	job.RenewedAt = output.NewTimestamp(renewedAt.UTC())
+	job.ExpiresAt = output.NewTimestamp(expiresAt.UTC())
+
+	return job, nil
+}
+
+// RenewReclaimLease extends a reclaim lease its owner still holds.
+//
+// The fence is named as well as the owner, and the expiry is checked on the
+// database clock, so an owner that was taken over -- or one that let its lease
+// lapse and is asking for it back -- is refused rather than resurrected. A
+// delete admitted under a lapsed lease is a delete under authority somebody
+// else now holds.
+func (repository *HangarOutputRepository) RenewReclaimLease(ctx context.Context, tx output.Tx, job HangarReclaimJob, term time.Duration) (HangarReclaimJob, error) {
+	interval, err := hangarLeaseInterval(term)
+	if err != nil {
+		return HangarReclaimJob{}, err
+	}
+
+	renewed := job
+	var renewedAt, expiresAt time.Time
+	err = hangarQueryRow(ctx, tx, `
+		UPDATE hangar_reclaim_jobs
+		   SET renewed_at = now(), expires_at = now() + $4::interval
+		 WHERE id = $1 AND owner_id = $2 AND lease_fence = $3
+		   AND finalized_at IS NULL AND expires_at > now()
+		RETURNING renewed_at, expires_at`,
+		[]any{job.ID, job.OwnerID, int64(job.LeaseFence), interval}, &renewedAt, &expiresAt)
+	if errors.Is(err, output.ErrNotFound) {
+		return HangarReclaimJob{}, fmt.Errorf("%w: reclaim job %d is no longer owner %s at fence "+
+			"%d, or it has expired or finalized; an expired owner cannot delete or finalize",
+			output.ErrConflict, job.ID, job.OwnerID, job.LeaseFence)
+	}
+	if err != nil {
+		return HangarReclaimJob{}, err
+	}
+	renewed.RenewedAt = output.NewTimestamp(renewedAt.UTC())
+	renewed.ExpiresAt = output.NewTimestamp(expiresAt.UTC())
+
+	return renewed, nil
+}
+
+// TakeOverReclaimJob advances the fence of an expired job to a new owner.
+//
+// Expiry alone releases nothing and proves nothing; what it permits is this.
+// The advance is what makes the previous owner's later writes -- including a
+// delete outcome it is still holding -- refuse.
+func (repository *HangarOutputRepository) TakeOverReclaimJob(ctx context.Context, tx output.Tx, job HangarReclaimJob, owner string, term time.Duration) (HangarReclaimJob, error) {
+	interval, err := hangarLeaseInterval(term)
+	if err != nil {
+		return HangarReclaimJob{}, err
+	}
+	if owner == "" {
+		return HangarReclaimJob{}, fmt.Errorf("%w: a reclaim takeover names its owner",
+			output.ErrIncomplete)
+	}
+
+	taken := job
+	taken.OwnerID = owner
+	var renewedAt, expiresAt time.Time
+	err = hangarQueryRow(ctx, tx, `
+		UPDATE hangar_reclaim_jobs
+		   SET owner_id = $2, lease_fence = lease_fence + 1,
+		       renewed_at = now(), expires_at = now() + $3::interval
+		 WHERE id = $1 AND finalized_at IS NULL AND expires_at <= now()
+		RETURNING lease_fence, renewed_at, expires_at`,
+		[]any{job.ID, owner, interval}, &taken.LeaseFence, &renewedAt, &expiresAt)
+	if errors.Is(err, output.ErrNotFound) {
+		return HangarReclaimJob{}, fmt.Errorf("%w: reclaim job %d has not expired on the database "+
+			"clock, or it is already finalized; a live owner is not taken over",
+			output.ErrConflict, job.ID)
+	}
+	if err != nil {
+		return HangarReclaimJob{}, err
+	}
+	taken.RenewedAt = output.NewTimestamp(renewedAt.UTC())
+	taken.ExpiresAt = output.NewTimestamp(expiresAt.UTC())
+
+	return taken, nil
+}
+
+// AdmitDelete writes the durable record that this system is about to ask the
+// object store to delete an exact generation.
+//
+// It is a separate call from the delete, and the caller must COMMIT it before
+// making the external one. That ordering is the whole reason the record exists:
+// after it, an object found absent with a lost response is `reclaimed_inferred`,
+// and an object found absent with no such record is an out-of-band lifetime
+// violation. Ask-then-record would make the second indistinguishable from the
+// first for the width of the window.
+//
+// It also enforces Req 48's start condition: work begins only with the delete
+// timeout plus two minutes of lease remaining, measured on the database clock,
+// because a delete that starts with less has no way to finish inside its own
+// authority.
+func (repository *HangarOutputRepository) AdmitDelete(ctx context.Context, tx output.Tx, job HangarReclaimJob, deleteTimeout time.Duration) (int64, error) {
+	if deleteTimeout <= 0 {
+		return 0, fmt.Errorf("%w: an admitted delete names no timeout, and the lease it must "+
+			"finish inside is derived from one", output.ErrIncomplete)
+	}
+
+	var remaining time.Duration
+	var seconds float64
+	if err := hangarQueryRow(ctx, tx, `
+		SELECT extract(epoch FROM (expires_at - now()))
+		  FROM hangar_reclaim_jobs
+		 WHERE id = $1 AND owner_id = $2 AND lease_fence = $3 AND finalized_at IS NULL`,
+		[]any{job.ID, job.OwnerID, int64(job.LeaseFence)}, &seconds); err != nil {
+		if errors.Is(err, output.ErrNotFound) {
+			return 0, fmt.Errorf("%w: reclaim job %d is no longer owner %s at fence %d, or it is "+
+				"finalized", output.ErrConflict, job.ID, job.OwnerID, job.LeaseFence)
+		}
+
+		return 0, err
+	}
+	remaining = time.Duration(seconds * float64(time.Second))
+	if !output.MayStartWork(remaining, deleteTimeout) {
+		return 0, fmt.Errorf("%w: reclaim job %d has %s of lease left and a delete of %s needs "+
+			"%s; work begins only with the delete timeout plus %s remaining",
+			output.ErrTimeout, job.ID, remaining.Round(time.Second), deleteTimeout,
+			(deleteTimeout + output.LeaseStartMargin), output.LeaseStartMargin)
+	}
+
+	var attempt int64
+	if err := hangarQueryRow(ctx, tx, `
+		INSERT INTO hangar_reclaim_attempts (job_id, lease_fence)
+		VALUES ($1, $2)
+		RETURNING id`, []any{job.ID, int64(job.LeaseFence)}, &attempt); err != nil {
+		return 0, err
+	}
+
+	return attempt, nil
+}
+
+// RecordDeleteOutcome attaches what the object store answered to one admitted
+// delete.
+//
+// Every member of the vocabulary is recorded, including the failures, because
+// the caller's next move differs per outcome and an error alone cannot say
+// which: `already_absent` finalizes, `generation_conflict` becomes debt and
+// never broadens into an unconditional delete, and a timeout is an answer
+// nobody got rather than an object nobody deleted.
+//
+// It is fenced. An owner that was taken over while its delete was in flight
+// records nothing, which is what stops two owners writing two answers about one
+// attempt.
+func (repository *HangarOutputRepository) RecordDeleteOutcome(ctx context.Context, tx output.Tx, job HangarReclaimJob, attempt int64, outcome output.DeleteOutcome) error {
+	if err := outcome.Validate(); err != nil {
+		return err
+	}
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE hangar_reclaim_attempts a
+		   SET outcome = $3, observed_at = now()
+		 WHERE a.id = $1 AND a.lease_fence = $2 AND a.outcome IS NULL
+		   AND EXISTS (
+		       SELECT 1 FROM hangar_reclaim_jobs j
+		        WHERE j.id = a.job_id AND j.owner_id = $4 AND j.lease_fence = $2
+		          AND j.finalized_at IS NULL)`,
+		attempt, int64(job.LeaseFence), string(outcome), job.OwnerID)
+	if err != nil {
+		return hangarConflict(err)
+	}
+	recorded, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if recorded == 0 {
+		return fmt.Errorf("%w: attempt %d already carries an outcome, or reclaim job %d is no "+
+			"longer owner %s at fence %d; an expired owner cannot delete or finalize",
+			output.ErrConflict, attempt, job.ID, job.OwnerID, job.LeaseFence)
+	}
+
+	return nil
+}
+
+// FinalizeReclaim closes a job and says which of four things happened.
+//
+// It writes the lifecycle state as well, in the same transaction, so a
+// generation can never be `reclaimed_confirmed` in one table and `reclaiming`
+// in the other. The schema's own evidence trigger is what refuses a claim this
+// job's attempts do not support -- confirmed with no acknowledged delete,
+// inferred with no admitted delete or no observed absence -- and that check is
+// deliberately not repeated here: two copies of an evidence rule are two
+// chances for one of them to be the one that was not updated.
+func (repository *HangarOutputRepository) FinalizeReclaim(ctx context.Context, tx output.Tx, job HangarReclaimJob, outcome output.ReclaimOutcome, absenceObserved bool) error {
+	if err := outcome.Validate(); err != nil {
+		return err
+	}
+
+	if _, err := LockHangarSuffix(ctx, tx, repository.prefix, HangarLockRequest{
+		Logical: []HangarLogicalKey{{Scope: job.Ref.Scope, Digest: job.Ref.Digest}},
+		Exact:   []hangar.TreeRef{job.Ref},
+	}); err != nil {
+		return err
+	}
+
+	absence := "absence_observed_at"
+	if absenceObserved {
+		absence = "coalesce(absence_observed_at, now())"
+	}
+	result, err := tx.ExecContext(ctx, fmt.Sprintf(`
+		UPDATE hangar_reclaim_jobs
+		   SET outcome = $3, finalized_at = now(), absence_observed_at = %s
+		 WHERE id = $1 AND lease_fence = $2 AND finalized_at IS NULL
+		   AND expires_at > now()`, absence),
+		job.ID, int64(job.LeaseFence), string(outcome))
+	if err != nil {
+		return hangarConflict(err)
+	}
+	finalized, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if finalized == 0 {
+		return fmt.Errorf("%w: reclaim job %d is already finalized, or its lease has expired or "+
+			"been taken over at fence %d; an expired owner cannot finalize",
+			output.ErrConflict, job.ID, job.LeaseFence)
+	}
+
+	// And the lifecycle row, in the same transaction. `conflicted` and
+	// `abandoned` are different: the first is a generation this plane found
+	// something else at, and the second is a job given up on, whose generation
+	// goes back to being protected rather than being deleted on a guess.
+	state := string(outcome)
+	if outcome == output.ReclaimAbandoned {
+		state = ""
+	}
+	if state != "" {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE hangar_exact_lifecycles SET state = $2, updated_at = now() WHERE id = $1`,
+			job.LifecycleID, state); err != nil {
+			return hangarConflict(err)
+		}
+
+		return nil
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE hangar_exact_lifecycles SET state = origin, updated_at = now()
+		WHERE id = $1 AND state = 'reclaiming'`, job.LifecycleID); err != nil {
+		return hangarConflict(err)
+	}
+
+	return nil
+}
+
+// RecordOutOfBandAbsence is what an exact generation's disappearance means when
+// no admitted delete explains it.
+//
+// It is a LIFETIME VIOLATION and never a reclamation, and the two are kept apart
+// here because rewriting one as the other is exactly how a bucket losing objects
+// to somebody else's lifecycle rule would look like this system working
+// correctly. The state it writes is terminal in its own right: `reclaiming` is
+// not a prerequisite, because nothing admitted this.
+func (repository *HangarOutputRepository) RecordOutOfBandAbsence(ctx context.Context, tx output.Tx, ref hangar.TreeRef) error {
+	if err := ref.Validate(); err != nil {
+		return err
+	}
+
+	if _, err := LockHangarSuffix(ctx, tx, repository.prefix, HangarLockRequest{
+		Logical: []HangarLogicalKey{{Scope: ref.Scope, Digest: ref.Digest}},
+		Exact:   []hangar.TreeRef{ref},
+	}); err != nil {
+		return err
+	}
+
+	var admitted int
+	if err := hangarQueryRow(ctx, tx, `
+		SELECT count(*)
+		  FROM hangar_reclaim_attempts a
+		  JOIN hangar_reclaim_jobs j ON j.id = a.job_id
+		  JOIN hangar_exact_lifecycles l ON l.id = j.lifecycle_id
+		 WHERE l.scope = $1 AND l.digest = $2 AND l.generation = $3`,
+		[]any{string(ref.Scope), string(ref.Digest), ref.Generation}, &admitted); err != nil {
+		return err
+	}
+	if admitted > 0 {
+		return fmt.Errorf("%w: %s/%s/%d has %d admitted delete(s) on record; its absence is this "+
+			"plane's reclamation to finalize, not an out-of-band violation to report",
+			output.ErrConflict, ref.Scope, ref.Digest, ref.Generation, admitted)
+	}
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE hangar_exact_lifecycles
+		   SET state = 'missing_out_of_band', updated_at = now()
+		 WHERE scope = $1 AND digest = $2 AND generation = $3
+		   AND state NOT IN ('reclaimed_confirmed', 'reclaimed_inferred', 'missing_out_of_band')`,
+		string(ref.Scope), string(ref.Digest), ref.Generation)
+	if err != nil {
+		return hangarConflict(err)
+	}
+	recorded, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if recorded == 0 {
+		return fmt.Errorf("%w: %s/%s/%d has no lifecycle row this plane may move, or it is "+
+			"already terminal", output.ErrConflict, ref.Scope, ref.Digest, ref.Generation)
+	}
+
+	return nil
+}
+
+// DueReclaimJobs is the reclaimer's bounded work query: open jobs whose leases
+// this owner may act under, oldest first.
+func (repository *HangarOutputRepository) DueReclaimJobs(ctx context.Context, tx output.Tx, limit int) ([]HangarReclaimJob, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("%w: a reclaim pass is bounded; %d is not a batch",
+			output.ErrIncomplete, limit)
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT j.id, j.lifecycle_id, l.scope, l.digest, l.generation, j.metageneration,
+		       j.activation_epoch, j.owner_id, j.lease_fence, j.renewed_at, j.expires_at,
+		       (SELECT count(*) FROM hangar_reclaim_attempts a WHERE a.job_id = j.id)
+		  FROM hangar_reclaim_jobs j
+		  JOIN hangar_exact_lifecycles l ON l.id = j.lifecycle_id
+		 WHERE j.finalized_at IS NULL
+		 ORDER BY j.admitted_at, j.id
+		 LIMIT $1`, limit)
+	if err != nil {
+		return nil, hangarConflict(err)
+	}
+	defer Close(rows)
+
+	var jobs []HangarReclaimJob
+	for rows.Next() {
+		var job HangarReclaimJob
+		var scope, digest string
+		var renewedAt, expiresAt time.Time
+		if err := rows.Scan(&job.ID, &job.LifecycleID, &scope, &digest, &job.Ref.Generation,
+			&job.Metageneration, &job.ActivationEpoch, &job.OwnerID, &job.LeaseFence,
+			&renewedAt, &expiresAt, &job.AdmittedDeletes); err != nil {
+			return nil, err
+		}
+		job.Ref.Scope = hangar.Scope(scope)
+		job.Ref.Digest = hangar.Digest(digest)
+		job.RenewedAt = output.NewTimestamp(renewedAt.UTC())
+		job.ExpiresAt = output.NewTimestamp(expiresAt.UTC())
+		jobs = append(jobs, job)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, hangarConflict(err)
+	}
+
+	return jobs, nil
+}
+
+// HangarDatabaseNow is the database clock, read as a value.
+//
+// Every deadline in this plane is measured against it rather than a node's own
+// clock, and a controller that wants to ask "how much of my lease is left"
+// needs a reading it can compare with. The alternative -- time.Now() in a
+// controller -- is the one thing the lease design exists to prevent.
+func (repository *HangarOutputRepository) HangarDatabaseNow(ctx context.Context, tx output.Tx) (output.Timestamp, error) {
+	var now time.Time
+	if err := hangarQueryRow(ctx, tx, `SELECT now()`, nil, &now); err != nil {
+		return output.Timestamp{}, err
+	}
+
+	return output.NewTimestamp(now.UTC()), nil
+}

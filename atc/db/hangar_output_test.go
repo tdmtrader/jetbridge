@@ -61,51 +61,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 		return hangarPublish(ctx, repository, digest, generation)
 	}
 
-	// readLeaseRequest is a well-formed managed-read admission: an exact stat
-	// taken a moment ago, a destination that is a handle and a volume, and a
-	// nonce minted once for this lease. Every refusal spec below starts from
-	// this and changes exactly one thing, so a red row names the check rather
-	// than "a lease was refused".
-	readLeaseRequest := func(id output.ReadLeaseID, claimID output.ClaimID, ref hangar.TreeRef) output.ReadLeaseRequest {
-		GinkgoHelper()
-		nonce, err := output.NewReadGrantNonce(rand.Reader)
-		Expect(err).NotTo(HaveOccurred())
-
-		// The marker on a real stat carries the reservation that published the
-		// object. The fixture reads it back rather than inventing one, so a
-		// well-formed stat proof here is the shape production actually observes.
-		var reservation string
-		Expect(dbConn.QueryRow(`
-			SELECT reservation_id FROM hangar_logical_reservations WHERE scope = $1 AND digest = $2`,
-			string(ref.Scope), string(ref.Digest)).Scan(&reservation)).To(Succeed())
-
-		return output.ReadLeaseRequest{
-			ReadLeaseID:            id,
-			ClaimID:                claimID,
-			Ref:                    ref,
-			ActivationEpoch:        1,
-			RequestedAt:            output.NewTimestamp(time.Now()),
-			MaterializationTimeout: 10 * time.Minute,
-			Destination:            output.ReadDestination{Handle: "task-handle", Volume: "input-0"},
-			GrantNonce:             nonce,
-			StatProof: output.PublishedObject{
-				Attributes: hangar.TreeAttributes{
-					Ref: ref, StoredBytes: 1024, LogicalBytes: 4096,
-					CreatedAt: time.Now().Add(-time.Minute),
-				},
-				Metageneration: 1,
-				Marker: output.ObjectMarker{
-					Version:         output.MarkerVersion,
-					Scope:           ref.Scope,
-					Digest:          ref.Digest,
-					ReservationID:   output.ReservationID(reservation),
-					ActivationEpoch: 1,
-					CreatedAt:       output.NewTimestamp(time.Now().Add(-time.Minute)),
-				},
-			},
-			StatObservedAt: output.NewTimestamp(time.Now()),
-		}
-	}
+	readLeaseRequest := hangarReadLeaseRequest
 
 	acquire := func(tx db.Tx, id output.ClaimID, ref hangar.TreeRef, binding string) error {
 		return repository.AcquireClaim(ctx, tx, output.ClaimAcquisition{

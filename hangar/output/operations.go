@@ -153,3 +153,74 @@ func (lease OperationLease) Validate() error {
 func (lease OperationLease) Remaining(now Timestamp) time.Duration {
 	return lease.ExpiresAt.UTC().Sub(now.UTC())
 }
+
+// ReclaimOutcome is how a reclaim job ended.
+//
+// Four members, and the difference between the first two is the whole point of
+// Req 49. `reclaimed_confirmed` needs an acknowledged conditional delete;
+// `reclaimed_inferred` is a durable admitted-delete record whose response was
+// lost, plus observed exact absence. They are not the same evidence and this
+// plane never lets one stand in for the other, because confirming a deletion it
+// did not see acknowledged is how a lifetime violation becomes a normal
+// reclamation in the record.
+type ReclaimOutcome string
+
+const (
+	// ReclaimConfirmed is an acknowledged conditional delete.
+	ReclaimConfirmed ReclaimOutcome = "reclaimed_confirmed"
+
+	// ReclaimInferred is a durable admitted delete, a lost response, and exact
+	// absence observed afterwards. Absence WITHOUT a prior admitted delete is
+	// an out-of-band lifetime violation and never this.
+	ReclaimInferred ReclaimOutcome = "reclaimed_inferred"
+
+	// ReclaimConflicted is a replacement generation, metageneration or marker
+	// found where the exact one was expected. It becomes debt and never
+	// broadens into an unconditional delete.
+	ReclaimConflicted ReclaimOutcome = "conflicted"
+
+	// ReclaimAbandoned is a job given up on -- an unauthorized principal, a
+	// policy that went at-risk before any delete was admitted. The generation
+	// goes back to being protected rather than being deleted on a guess.
+	ReclaimAbandoned ReclaimOutcome = "abandoned"
+)
+
+func ReclaimOutcomes() []ReclaimOutcome {
+	return []ReclaimOutcome{
+		ReclaimConfirmed,
+		ReclaimInferred,
+		ReclaimConflicted,
+		ReclaimAbandoned,
+	}
+}
+
+func ParseReclaimOutcome(value string) (ReclaimOutcome, error) {
+	for _, member := range ReclaimOutcomes() {
+		if string(member) == value {
+			return member, nil
+		}
+	}
+
+	return "", fmt.Errorf("%w: reclaim outcome %q; the vocabulary is %v",
+		ErrUnknownMember, value, ReclaimOutcomes())
+}
+
+func (outcome *ReclaimOutcome) UnmarshalJSON(raw []byte) error {
+	var text string
+	if err := json.Unmarshal(raw, &text); err != nil {
+		return err
+	}
+	parsed, err := ParseReclaimOutcome(text)
+	if err != nil {
+		return err
+	}
+	*outcome = parsed
+
+	return nil
+}
+
+func (outcome ReclaimOutcome) Validate() error {
+	_, err := ParseReclaimOutcome(string(outcome))
+
+	return err
+}
