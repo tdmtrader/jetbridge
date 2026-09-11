@@ -902,19 +902,74 @@ var _ = Describe("the Hangar output plane schema", func() {
 						WHERE reservation_id = '%s'`, reservationID))
 			})
 
+			// A live capture cannot be settled by EITHER route, and the two
+			// routes are refused by different constraints. Both are asserted,
+			// because the claim under test is about the row and not about
+			// which rule happens to fire first: a spec that named one would go
+			// green the day the other took over.
 			It("refuses a settlement time on a capture that is not terminal", func() {
+				// Bare: a settlement no release earned.
 				Expect(expectRefusal(database, "an unresolved capture with a settlement time",
+					fmt.Sprintf(`
+						UPDATE hangar_capture_reservations SET settled_at = now()
+						WHERE reservation_id = '%s'`, reservationID))).
+					To(ContainSubstring("hangar_reservation_settlement_is_earned"))
+
+				// And with the release pair that would earn it, which is now
+				// refused one step earlier: a release intent implies a
+				// terminal capture, so a live one cannot manufacture the
+				// acknowledgement that would let it settle.
+				Expect(expectRefusal(database, "an unresolved capture settling on a release",
 					fmt.Sprintf(`
 						UPDATE hangar_capture_reservations
 						SET settled_at = now(), `+releasePair+`
 						WHERE reservation_id = '%s'`, reservationID))).
-					To(ContainSubstring("hangar_reservation_settlement_is_terminal"))
+					To(ContainSubstring("hangar_release_intent_implies_terminal"))
+
+				// The live twin: the same write on a terminal row is accepted,
+				// so both refusals above are the state and not the write.
+				mustExec(database, fmt.Sprintf(`
+					UPDATE hangar_capture_reservations SET state = 'cancelled'
+					WHERE reservation_id = '%s'`, reservationID))
+				expectAccepted(database, "a cancelled capture settling on its release",
+					fmt.Sprintf(`
+						UPDATE hangar_capture_reservations
+						SET settled_at = now(), `+releasePair+`
+						WHERE reservation_id = '%s'`, reservationID))
+			})
+
+			// A release intent implies a TERMINAL capture. The live twin first:
+			// the same write on a cancelled row is accepted, so the refusal
+			// below is the state and not the write.
+			It("refuses a release intent on a capture that is still live", func() {
+				Expect(expectRefusal(database, "a live capture carrying a release intent",
+					fmt.Sprintf(`
+						UPDATE hangar_capture_reservations
+						SET release_intent_id = '99999999-9999-4999-8999-999999999999'
+						WHERE reservation_id = '%s'`, reservationID))).
+					To(ContainSubstring("hangar_release_intent_implies_terminal"))
+
+				mustExec(database, fmt.Sprintf(`
+					UPDATE hangar_capture_reservations SET state = 'cancelled'
+					WHERE reservation_id = '%s'`, reservationID))
+
+				expectAccepted(database, "a cancelled capture carrying a release intent",
+					fmt.Sprintf(`
+						UPDATE hangar_capture_reservations
+						SET release_intent_id = '99999999-9999-4999-8999-999999999999'
+						WHERE reservation_id = '%s'`, reservationID))
 			})
 
 			// The pair's own rule, with its live twin first: an acknowledgement
 			// names the intent it is for, or "which release was this" has no
 			// answer -- which is the whole reason the pair has two halves.
 			It("refuses an acknowledged release that names no intent", func() {
+				// Terminal first: a release intent implies a terminal capture,
+				// so the pair below is written on a row entitled to carry one.
+				mustExec(database, fmt.Sprintf(`
+					UPDATE hangar_capture_reservations SET state = 'cancelled'
+					WHERE reservation_id = '%s'`, reservationID))
+
 				expectAccepted(database, "a release naming its intent", fmt.Sprintf(`
 					UPDATE hangar_capture_reservations SET `+releasePair+`
 					WHERE reservation_id = '%s'`, reservationID))
@@ -940,6 +995,9 @@ var _ = Describe("the Hangar output plane schema", func() {
 			})
 
 			It("refuses withdrawing or restamping an acknowledged release", func() {
+				mustExec(database, fmt.Sprintf(`
+					UPDATE hangar_capture_reservations SET state = 'cancelled'
+					WHERE reservation_id = '%s'`, reservationID))
 				mustExec(database, fmt.Sprintf(`
 					UPDATE hangar_capture_reservations SET `+releasePair+`
 					WHERE reservation_id = '%s'`, reservationID))

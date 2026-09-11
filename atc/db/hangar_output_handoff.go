@@ -335,21 +335,26 @@ func (repository *HangarOutputRepository) acknowledgeRelease(ctx context.Context
 	// it. That is Req 40's "terminal settlement eventually permits marked-orphan
 	// adoption", and the mechanism is inventory rather than a second ledger.
 	//
-	// What the state list still refuses is a release for a capture that is not
+	// What still has to be refused is a release for a capture that is not
 	// terminal at all: a live capture's source is held because it is being
 	// written, and an unsealed tree released mid-write is the seam Phase 4
-	// closed.
-	guard := ""
-	if branch == output.DispositionCapture {
-		guard = ` AND state IN ('registered', 'cancelled', 'failed')`
-	}
-
+	// closed. That rule is now a CHECK on the row --
+	// hangar_release_intent_implies_terminal -- and deliberately NOT a second
+	// state list here.
+	//
+	// The state list was here and could refuse nothing. All three writers of
+	// release_intent_id set a terminal state in the same statement, so removing
+	// the clause entirely left every suite green; a guard nothing can redden
+	// reads like a control and is a comment. As a constraint it is a rule about
+	// the ROW rather than about one path to it, so a fourth writer that minted
+	// an intent for a live capture is refused whether or not it comes through
+	// this statement, and a spec can put a row in front of it.
 	result, err := tx.ExecContext(ctx, fmt.Sprintf(`
 		UPDATE %s
 		SET release_acknowledged_at = now(), release_acknowledgement = $3%s
 		WHERE handoff_id = $1
 		  AND release_intent_id = $2
-		  AND release_acknowledged_at IS NULL%s`, table, finalize, guard),
+		  AND release_acknowledged_at IS NULL`, table, finalize),
 		string(acknowledgement.HandoffID),
 		string(acknowledgement.ReleaseIntentID),
 		body,
@@ -375,31 +380,16 @@ func (repository *HangarOutputRepository) acknowledgeRelease(ctx context.Context
 	}
 	if !acknowledged.Valid {
 		// The intent is this branch's and it is unacknowledged, so the UPDATE
-		// was stopped by the capture branch's own guard rather than by the
-		// intent. Say WHICH, because the two answers mean opposite things to
-		// the caller: "not yet" is retried and "never" is not.
+		// matched nothing for a reason that is not the intent.
 		//
-		// The state is reachable -- a publish already in flight passes the
-		// point while the row is still live, and the canceller that classified
-		// a moment earlier blocks on its row lock and then cancels a row that
-		// is now past the point. A node offering a release there is working
-		// from stale state: the object may exist, and the capture settles a
-		// registered receipt or a terminal orphan under its own fence.
-		if branch == output.DispositionCapture {
-			var state string
-			var past bool
-			if err := hangarQueryRow(ctx, tx, `
-				SELECT state, past_irreversible_publish_point FROM hangar_capture_reservations
-				WHERE handoff_id = $1`,
-				[]any{string(acknowledgement.HandoffID)}, &state, &past,
-			); err == nil && past {
-				return fmt.Errorf("%w: handoff %s is past the irreversible publish point and a "+
-					"release is admitted only before it. The capture settles a registered "+
-					"receipt or a terminal orphan under its own fence; retrying this release "+
-					"will never admit it", output.ErrConflict, acknowledgement.HandoffID)
-			}
-		}
-
+		// There used to be a branch here saying the handoff was past the
+		// irreversible publish point and that "retrying this release will never
+		// admit it". That is no longer true and the distinction it drew is no
+		// longer this statement's to draw: past-the-point is not a reason to
+		// refuse a release -- a release releases the HOLD, never the bytes, and
+		// a terminal capture on either side of the point owes one. Leaving the
+		// branch would have told a caller "never" about the one case that is
+		// now retryable, which is the opposite of what a caller does with it.
 		return fmt.Errorf("%w: release intent %s is recorded but unacknowledged",
 			output.ErrUnresolved, acknowledgement.ReleaseIntentID)
 	}

@@ -797,3 +797,60 @@ var _ = Describe("reclaiming an exact generation", func() {
 		})
 	})
 })
+
+// A release intent implies a terminal capture, enforced by the row.
+//
+// The rule used to be an extra WHERE clause in the acknowledgement statement
+// and it could refuse nothing: all three writers of release_intent_id set a
+// terminal state in the same statement, so deleting the clause entirely left
+// every suite green. It is a CHECK now, which is a rule about the row rather
+// than about one path to it -- and which a spec can actually put a row in front
+// of.
+//
+// The writes here are deliberately RAW. Every production path satisfies the
+// invariant already; what has to be proved is that a path which did not would
+// be stopped, and the only way to arrange that is to be the path.
+var _ = Describe("a release intent on a capture reservation", func() {
+	var (
+		ctx        context.Context
+		repository *db.HangarOutputRepository
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		consumer, err := db.HangarConsumerPrefixHeld("release-intent-spec")
+		Expect(err).NotTo(HaveOccurred())
+		repository = db.NewHangarOutputRepository(consumer)
+		hangarActivateEpoch(ctx, repository)
+	})
+
+	It("is refused while the capture is still live, and admitted once it is terminal", func() {
+		capture := hangarPublishAt(ctx, repository, hangarDigest(70), 1725830823000070,
+			output.NewTimestamp(time.Now().Add(output.DefaultCaptureDeadline)))
+
+		// The control: the row exists and is terminal, so an intent on it is
+		// legal. Without this the refusal below could be the row being missing.
+		_, err := dbConn.Exec(`
+			UPDATE hangar_capture_reservations SET release_intent_id = gen_random_uuid()
+			 WHERE handoff_id = $1`, string(capture.HandoffID))
+		Expect(err).NotTo(HaveOccurred())
+
+		var state string
+		Expect(dbConn.QueryRow(`
+			SELECT state FROM hangar_capture_reservations WHERE handoff_id = $1`,
+			string(capture.HandoffID)).Scan(&state)).To(Succeed())
+		Expect(state).To(Equal("registered"))
+
+		// And now a live one. A capture still being written owes no release:
+		// its source is held BECAUSE it is being written, and an unsealed tree
+		// released mid-write is the seam Phase 4 closed.
+		live := hangarReserve(ctx, repository, hangarDigest(71),
+			output.NewTimestamp(time.Now().Add(output.DefaultCaptureDeadline)))
+		_, err = dbConn.Exec(`
+			UPDATE hangar_capture_reservations SET release_intent_id = gen_random_uuid()
+			 WHERE handoff_id = $1`, string(live.HandoffID))
+		Expect(err).To(HaveOccurred(),
+			"a release intent was recorded for a capture that is not terminal at all")
+		Expect(err.Error()).To(ContainSubstring("hangar_release_intent_implies_terminal"))
+	})
+})

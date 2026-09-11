@@ -354,6 +354,20 @@ CREATE TABLE hangar_capture_reservations (
     ),
     CONSTRAINT hangar_reservation_publish_point CHECK (
         NOT past_irreversible_publish_point OR first_create_attempted_at IS NOT NULL
+    ),
+    -- A release intent implies a TERMINAL state, and this is where that is
+    -- said.
+    --
+    -- It was said in Go, in the acknowledgement statement, as an extra WHERE
+    -- clause -- and it could refuse nothing, because all three writers of
+    -- release_intent_id set a terminal state in the same statement. A guard
+    -- nothing can redden is worse than no guard: it reads like a control and
+    -- is a comment. Here it is a rule about the ROW rather than about one
+    -- path to it, so a fourth writer added later -- one that minted an intent
+    -- for a live capture, which is the release of a source still being
+    -- written -- is refused whether or not it goes through that statement.
+    CONSTRAINT hangar_release_intent_implies_terminal CHECK (
+        release_intent_id IS NULL OR state IN ('registered', 'cancelled', 'failed')
     )
 );
 
