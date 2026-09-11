@@ -62,6 +62,10 @@ var typedModes = []struct {
 		name: "output facet with every optional surface on",
 		sets: append(append([]string{}, outputSets...),
 			"networkPolicy.enabled=true",
+			// The output plane has its OWN NetworkPolicy switch, and without it
+			// this mode decoded the web and db policies while the four output
+			// ones were never rendered in any mode at all.
+			"hangarOutput.networkPolicy.enabled=true",
 			"alertingRules.enabled=true",
 			"metrics.enabled=true",
 			"serviceMonitor.enabled=true",
@@ -242,6 +246,185 @@ func TestEveryRenderedObjectDecodesAsTheKubernetesObjectItClaimsToBe(t *testing.
 		t.Errorf("no mode in typedModes renders %s, so nothing typed-decodes %s; "+
 			"add a mode that does, or drop the kind from kindsCovered if no template emits it",
 			strings.Join(missing, ", "), plural(len(missing)))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The structural arm: a decoder is not a validator
+// ---------------------------------------------------------------------------
+//
+// Phase 8 review R2-F2, and it is the round-1 blocker one layer on. The blanket
+// decode above catches a field that changed SHAPE -- a list that became a list
+// of maps, a duplicate key, an unknown field. It cannot catch a field that was
+// REMOVED, because absence decodes: delete `image:` from the output controllers'
+// container and every `UnmarshalStrict` in this file succeeds, `Image` is "",
+// and the whole directory stays green on a chart the API server refuses with
+// `spec.template.spec.containers[0].image: Required value`. Measured at
+// cc1d77ad5e: `go test ./deploy/chart/tests/` was **ok 27.5s** with that line
+// deleted from _hangar-output-controller.tpl.
+//
+// So this arm states the fields the API server itself requires, over every Pod
+// template every mode renders. It is deliberately small: only rules whose
+// violation the API server rejects outright, never house style, because a
+// structural guard that also encodes preference is one refactor away from being
+// disabled wholesale.
+//
+// Non-vacuity is a floor on the number of Pod templates walked, not a nonzero
+// check: the bug this replaces was a guard that stopped looking.
+func TestEveryRenderedPodTemplateCarriesTheFieldsTheAPIServerRequires(t *testing.T) {
+	// Every mode, because the controllers only exist in some of them and the
+	// DaemonSet only in others.
+	walked := 0
+
+	for _, mode := range typedModes {
+		t.Run(mode.name, func(t *testing.T) {
+			out := render(t, mode.sets...)
+
+			for _, chunk := range splitDocuments(out) {
+				var head renderedObject
+				if err := yaml.Unmarshal([]byte(chunk), &head); err != nil || head.Kind == "" {
+					continue
+				}
+
+				var (
+					template corev1.PodTemplateSpec
+					selector map[string]string
+					isJob    bool
+				)
+
+				switch head.Kind {
+				case "Deployment":
+					var object appsv1.Deployment
+					if err := yaml.UnmarshalStrict([]byte(chunk), &object); err != nil {
+						continue // the blanket decode above reports this
+					}
+					template = object.Spec.Template
+					if object.Spec.Selector == nil {
+						t.Errorf("%s Deployment %s has no spec.selector; the API server "+
+							"requires it and rejects the object outright",
+							sourceOf(chunk), head.Metadata.Name)
+
+						continue
+					}
+					selector = object.Spec.Selector.MatchLabels
+				case "DaemonSet":
+					var object appsv1.DaemonSet
+					if err := yaml.UnmarshalStrict([]byte(chunk), &object); err != nil {
+						continue
+					}
+					template = object.Spec.Template
+					if object.Spec.Selector == nil {
+						t.Errorf("%s DaemonSet %s has no spec.selector",
+							sourceOf(chunk), head.Metadata.Name)
+
+						continue
+					}
+					selector = object.Spec.Selector.MatchLabels
+				case "Job":
+					var object batchv1.Job
+					if err := yaml.UnmarshalStrict([]byte(chunk), &object); err != nil {
+						continue
+					}
+					template = object.Spec.Template
+					isJob = true
+				default:
+					continue
+				}
+
+				walked++
+				where := fmt.Sprintf("%s %s %s", sourceOf(chunk), head.Kind, head.Metadata.Name)
+
+				// A Pod with no regular container is rejected.
+				if len(template.Spec.Containers) == 0 {
+					t.Errorf("%s renders a Pod template with no containers; "+
+						"spec.template.spec.containers is Required value", where)
+				}
+
+				// name and image are Required value on EVERY container, init
+				// and regular alike. This is the arm the removed `image:` needs.
+				for kindOfContainer, containers := range map[string][]corev1.Container{
+					"containers":     template.Spec.Containers,
+					"initContainers": template.Spec.InitContainers,
+				} {
+					names := map[string]bool{}
+					for i, container := range containers {
+						if strings.TrimSpace(container.Name) == "" {
+							t.Errorf("%s: %s[%d] has no name; it is Required value",
+								where, kindOfContainer, i)
+						}
+						if strings.TrimSpace(container.Image) == "" {
+							t.Errorf("%s: %s[%d] (%q) has no image. The API server rejects "+
+								"this with `image: Required value`, and a strict DECODE "+
+								"cannot see it, because an absent string decodes to \"\".",
+								where, kindOfContainer, i, container.Name)
+						}
+						if names[container.Name] {
+							t.Errorf("%s: %s has two containers named %q; container names "+
+								"must be unique within a Pod",
+								where, kindOfContainer, container.Name)
+						}
+						names[container.Name] = true
+					}
+				}
+
+				// Every volumeMount must name a volume the Pod declares. AC 19
+				// states this for the generated capture Pod; it is true of every
+				// Pod, and the API server refuses the mismatch.
+				volumes := map[string]bool{}
+				for _, volume := range template.Spec.Volumes {
+					volumes[volume.Name] = true
+				}
+				for _, container := range append(
+					append([]corev1.Container{}, template.Spec.Containers...),
+					template.Spec.InitContainers...,
+				) {
+					for _, mount := range container.VolumeMounts {
+						if !volumes[mount.Name] {
+							t.Errorf("%s: container %q mounts volume %q, which the Pod "+
+								"template does not declare",
+								where, container.Name, mount.Name)
+						}
+					}
+				}
+
+				// A Job's Pod template must set restartPolicy, and only to
+				// Never or OnFailure; the default Always is rejected.
+				if isJob {
+					switch template.Spec.RestartPolicy {
+					case corev1.RestartPolicyNever, corev1.RestartPolicyOnFailure:
+					default:
+						t.Errorf("%s: a Job's pod template restartPolicy is %q; the API "+
+							"server accepts only Never or OnFailure",
+							where, template.Spec.RestartPolicy)
+					}
+				}
+
+				// The selector must be present and must select the template the
+				// controller owns, or the controller adopts nothing and the
+				// API server rejects the object at admission.
+				if selector != nil {
+					if len(selector) == 0 {
+						t.Errorf("%s has an empty spec.selector.matchLabels; an empty "+
+							"selector selects every Pod in the namespace", where)
+					}
+					for key, value := range selector {
+						if template.Labels[key] != value {
+							t.Errorf("%s: spec.selector wants %s=%s but the pod template "+
+								"has %s=%q; `selector does not match template labels`",
+								where, key, value, key, template.Labels[key])
+						}
+					}
+				}
+			}
+		})
+	}
+
+	// Seven modes; the smallest renders the web Deployment and the worker's,
+	// and the largest adds the DaemonSet, three controllers and a Job. Well
+	// under the real number, and far above zero.
+	if walked < 20 {
+		t.Fatalf("this guard walked only %d pod templates across %d modes; it has stopped "+
+			"looking at the render", walked, len(typedModes))
 	}
 }
 

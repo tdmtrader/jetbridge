@@ -96,7 +96,17 @@ metadata:
   name: {{ $component }}
   namespace: {{ $.Release.Namespace }}
   labels:
-    {{- include "concourse.labels" $ | nindent 4 }}
+    {{- /*
+      commonLabels, not labels: `concourse.labels` appends
+      `app.kubernetes.io/component: web`, and these three NetworkPolicies are
+      the inventory, reclaimer and policy-attestor controllers. The label is
+      inert at the API server -- nothing selects a NetworkPolicy -- but an
+      operator filtering `component=web` to see what governs the web pod would
+      be shown three policies that govern the output controllers, which is the
+      one thing this chart's labels are read for.
+    */}}
+    {{- include "concourse.commonLabels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ trimPrefix (printf "%s-" (include "concourse.fullname" $)) $component }}
 spec:
   podSelector:
     matchLabels:

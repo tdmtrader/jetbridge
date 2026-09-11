@@ -418,6 +418,159 @@ func TestASharedKubernetesServiceAccountIsRefused(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Seven service accounts, not four
+// ---------------------------------------------------------------------------
+//
+// Phase 8 review R2-F1. The validation above used to cover the four output
+// ROLES, and the chart renders seven service accounts: those four, the
+// activation Job's, the artifact daemon's, and the top-level (web) one. Each of
+// the three it did not cover was reachable by a values override, and each of
+// the three was ACCEPTED at cc1d77ad5e -- measured, not inferred:
+//
+//	helm template ... --set hangarOutput.activation.serviceAccount.name=<reclaimer>
+//	  -> rendered TWO ServiceAccount objects named jb-...-hangar-output-reclaimer
+//	helm template ... --set <activation annotation>=<the reclaimer's principal>
+//	  -> rendered the delete-holding cloud identity on two Kubernetes accounts
+//	helm template ... --set serviceAccount.name=<reclaimer>
+//	  -> rendered the WEB Deployment with
+//	     serviceAccountName: jb-...-hangar-output-reclaimer
+//
+// The third is the one that matters most and reads the most innocuous: Req 54
+// says web/control-plane, task, cache and strict-input identities have no role
+// on the output bucket, and that override gives web the delete grant. The first
+// is the quieter outage -- two objects, one name, and whichever the apply leaves
+// standing decides whether the reclaimer still carries its Workload Identity
+// annotation. A reclaimer without it deletes nothing, so the plane keeps every
+// published object forever while its status says it reclaims.
+//
+// No shipped configuration was ever in any of these states.
+//
+// These are three separate tests rather than a table because each one names a
+// different consequence, and a table would report "a refusal happened".
+
+// The positive control for all three: the ordinary render, with the activation
+// Job present, still succeeds. Asserted FIRST, because a refusal assertion
+// passes on a chart that refuses everything.
+func TestTheOrdinaryRenderWithAnActivationJobIsAccepted(t *testing.T) {
+	out := renderOutput(t,
+		"hangarOutput.activation.job.mode=attest",
+		"hangarOutput.activation.job.facet=output",
+	)
+
+	for _, suffix := range []string{
+		"-" + outputDaemonComponent, "-" + outputInventoryComponent,
+		"-" + outputReclaimerComponent, "-" + outputAttestorComponent,
+		"-hangar-output-activation", "-artifact-daemon", "-web",
+	} {
+		if !hasObject(t, out, "ServiceAccount", suffix) {
+			t.Errorf("the ordinary render has no ServiceAccount ending %q; this chart renders "+
+				"seven and the validation below covers whatever it renders", suffix)
+		}
+	}
+}
+
+// The activation Job's account is a distinct identity (decision F4). Naming it
+// after the reclaimer's renders two objects with one name.
+func TestTheActivationAccountMayNotBeNamedAfterTheReclaimers(t *testing.T) {
+	message := renderOutputError(t,
+		"hangarOutput.activation.job.mode=attest",
+		"hangarOutput.activation.job.facet=output",
+		"hangarOutput.activation.serviceAccount.name=jb-concourse-jetbridge-hangar-output-reclaimer",
+	)
+	if !strings.Contains(message, "service account") {
+		t.Errorf("the activation Job was allowed to render a second ServiceAccount object with "+
+			"the reclaimer's name. Which object the apply leaves standing decides whether the "+
+			"reclaimer keeps its Workload Identity annotation, and a reclaimer without one "+
+			"keeps every published object forever:\n%s", message)
+	}
+}
+
+// The same union-of-grants defect the four-role check refuses, one account over.
+func TestTheActivationAccountMayNotCarryTheReclaimersPrincipal(t *testing.T) {
+	message := renderOutputError(t,
+		"hangarOutput.activation.job.mode=attest",
+		"hangarOutput.activation.job.facet=output",
+		"hangarOutput.reclaimer.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=reclaimer@p.iam.gserviceaccount.com",
+		"hangarOutput.activation.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=reclaimer@p.iam.gserviceaccount.com",
+	)
+	if !strings.Contains(message, "principal") {
+		t.Errorf("the activation identity was allowed to carry the reclaimer's cloud principal. "+
+			"The activation command signs nothing and touches no object; giving it delete is "+
+			"the union-of-grants failure Req 54 calls an activation failure:\n%s", message)
+	}
+}
+
+// Req 54, the sharpest form: web has no role on the output bucket, and this is
+// the one override that gives it every one of them.
+func TestTheWebIdentityMayNotBeNamedAfterAnOutputRole(t *testing.T) {
+	message := renderOutputError(t,
+		"serviceAccount.name=jb-concourse-jetbridge-hangar-output-reclaimer",
+	)
+	if !strings.Contains(message, "service account") {
+		t.Errorf("the top-level service account was allowed to take the reclaimer's name, so the "+
+			"WEB Deployment runs as the delete-holding identity. Req 54: web/control-plane, "+
+			"task, cache and strict-input identities have no role on the output bucket:\n%s",
+			message)
+	}
+}
+
+// And the name check is not create-gated: an externally provisioned account
+// named after an output role is the same Pod running as the same identity, and
+// the chart declining to render the object does not make that untrue.
+func TestAPreProvisionedWebAccountNamedAfterAnOutputRoleIsAlsoRefused(t *testing.T) {
+	message := renderOutputError(t,
+		"serviceAccount.create=false",
+		"serviceAccount.name=jb-concourse-jetbridge-hangar-output-daemon",
+	)
+	if !strings.Contains(message, "service account") {
+		t.Errorf("serviceAccount.create=false let the web pod run as the publisher's identity:\n%s",
+			message)
+	}
+}
+
+// Phase 8 review R2-F3. `concourse.labels` appends component: web, so the three
+// controller NetworkPolicies described themselves as governing the web pod. The
+// label selects nothing -- no controller selects a NetworkPolicy -- so this is a
+// label an operator reads, and the render is the thing an operator reads.
+func TestEveryOutputNetworkPolicyNamesItsOwnComponent(t *testing.T) {
+	out := renderOutput(t, "hangarOutput.networkPolicy.enabled=true")
+
+	found := 0
+	for _, subject := range documentsIn(t, out) {
+		if subject.kind != "NetworkPolicy" || !strings.Contains(subject.name, "hangar-output") {
+			continue
+		}
+		found++
+
+		var parsed struct {
+			Metadata struct {
+				Name   string            `json:"name"`
+				Labels map[string]string `json:"labels"`
+			} `json:"metadata"`
+		}
+		if err := yaml.Unmarshal([]byte(subject.body), &parsed); err != nil {
+			t.Fatalf("parsing %s: %v", subject.name, err)
+		}
+
+		component := parsed.Metadata.Labels["app.kubernetes.io/component"]
+		if component == "web" {
+			t.Errorf("NetworkPolicy %s is labelled component=web. It governs an output "+
+				"workload; an operator filtering component=web to see what constrains the "+
+				"web pod is shown a policy that constrains something else.", subject.name)
+		}
+		if !strings.HasSuffix(subject.name, component) {
+			t.Errorf("NetworkPolicy %s is labelled component=%q, which is not the workload "+
+				"it selects", subject.name, component)
+		}
+	}
+
+	if found != 4 {
+		t.Fatalf("the output plane renders %d NetworkPolicies, not four; this guard is looking "+
+			"at the wrong render", found)
+	}
+}
+
 // The existing identities gain nothing. This is the whole reason there is a
 // second daemon binary at all.
 func TestNoExistingIdentityGainsAnOutputRole(t *testing.T) {

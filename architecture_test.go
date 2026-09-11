@@ -1558,8 +1558,9 @@ func TestOnlyTheActivationCommandWritesTheEpochRow(t *testing.T) {
 // TRIPWIRES for the first accident shape: reaching for a different cloud's
 // object storage from a package that had no object-storage business. An entry
 // with no importer cannot go stale the way an exemption can -- and
-// TestEveryCloudStorageSDKEntryIsRecognised proves each one is matched by
-// isCloudStorageSDK rather than being a string nothing reads.
+// TestEveryCloudStorageSDKEntryIsRecognised proves each one is MATCHED by
+// isCloudStorageSDK, exactly and by sub-path. It does not, and cannot, prove
+// that an entry nothing imports is load-bearing; see that test's own comment.
 var cloudStorageSDKs = []string{
 	"cloud.google.com/go/storage",
 	"google.golang.org/api/storage/v1",
@@ -1707,8 +1708,13 @@ func isCloudStorageSDK(imported string) bool {
 	return false
 }
 
-// TestEveryCloudStorageSDKEntryIsRecognised is R1-F9's fix: proof that each
-// entry in the list is load-bearing.
+// TestEveryCloudStorageSDKEntryIsRecognised is R1-F9's fix: proof that the
+// MATCHER recognises each entry in the list, exactly and by sub-path.
+//
+// It is not proof that each entry is load-bearing, and the sentence that once
+// said so is corrected here (Phase 8 review R2-F4): an entry guarding an import
+// nothing makes is a tripwire by design, and no assertion over source can tell
+// a live tripwire from a dead string. What follows says which claim is which.
 //
 // The importer allowlist has a staleness arm -- an exemption nobody uses fails.
 // The SDK list had none, and could not have the same one: two of its entries are

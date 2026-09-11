@@ -322,31 +322,79 @@ does not set is read once and believed.
 {{- end -}}
 {{- end }}
 
+{{/*
+validatePrincipals covers EVERY service account this chart renders, not only the
+four output roles.
+
+It used to cover four of seven, and the three it did not were the three an
+operator can actually reach by accident:
+
+  - hangarOutput.activation.serviceAccount.name pointed at the reclaimer's
+    account rendered TWO ServiceAccount objects with one name. Which one the
+    apply leaves standing decides whether the reclaimer keeps its Workload
+    Identity annotation -- and a reclaimer whose annotation was stripped has no
+    delete authority, so the plane keeps every published object forever while
+    its status says it reclaims;
+  - the reclaimer's cloud principal on the activation account's annotation is
+    the same union-of-grants defect the four-role check already refuses, one
+    account over;
+  - serviceAccount.name -- the TOP-LEVEL one -- set to the reclaimer's account
+    makes the *web* Deployment run as the delete-holding identity. Req 54 is
+    explicit that web/control-plane, task, cache and strict-input identities
+    have no role on the output bucket, and this is the one values override that
+    gives web all of them.
+
+The web account is checked by NAME even when serviceAccount.create is false: a
+pre-provisioned account named after the reclaimer's is the same Pod running as
+the same identity, and the chart not rendering the object does not make that
+untrue. Its PRINCIPAL is only checked when the chart renders the annotation,
+because that is the only case where the chart is the thing asserting it.
+*/}}
 {{- define "concourse.hangarOutput.validatePrincipals" -}}
-{{- $accounts := dict -}}
-{{- range $role, $name := dict
-  "daemon" (include "concourse.hangarOutput.daemonServiceAccount" .)
-  "inventory" (include "concourse.hangarOutput.inventoryServiceAccount" .)
-  "reclaimer" (include "concourse.hangarOutput.reclaimerServiceAccount" .)
-  "policyAttestor" (include "concourse.hangarOutput.attestorServiceAccount" .) -}}
-{{- if hasKey $accounts $name -}}
-{{- fail (printf "hangarOutput.%s and hangarOutput.%s render the same Kubernetes service account %q. A service account is Pod-wide: two workloads sharing one are ONE cloud identity holding both sets of permissions, and no care inside either process takes that back. The publisher must not be able to list or delete; the reclaimer must not be able to create; the attestor must hold no object permission at all." (get $accounts $name) $role $name) -}}
+{{- $subjects := list
+  (dict "path" "hangarOutput.daemon"
+        "name" (include "concourse.hangarOutput.daemonServiceAccount" .)
+        "annotations" .Values.hangarOutput.daemon.serviceAccount.annotations)
+  (dict "path" "hangarOutput.inventory"
+        "name" (include "concourse.hangarOutput.inventoryServiceAccount" .)
+        "annotations" .Values.hangarOutput.inventory.serviceAccount.annotations)
+  (dict "path" "hangarOutput.reclaimer"
+        "name" (include "concourse.hangarOutput.reclaimerServiceAccount" .)
+        "annotations" .Values.hangarOutput.reclaimer.serviceAccount.annotations)
+  (dict "path" "hangarOutput.policyAttestor"
+        "name" (include "concourse.hangarOutput.attestorServiceAccount" .)
+        "annotations" .Values.hangarOutput.policyAttestor.serviceAccount.annotations)
+  (dict "path" "hangarOutput.activation"
+        "name" (include "concourse.hangarOutput.activationServiceAccount" .)
+        "annotations" .Values.hangarOutput.activation.serviceAccount.annotations)
+  (dict "path" "serviceAccount"
+        "name" (include "concourse.serviceAccountName" .)
+        "annotations" (ternary (.Values.serviceAccount.annotations | default dict) dict (.Values.serviceAccount.create | default false | not | not)))
+-}}
+{{- if .Values.artifactDaemon.enabled -}}
+{{- $subjects = append $subjects (dict
+      "path" "artifactDaemon"
+      "name" (printf "%s-artifact-daemon" (include "concourse.fullname" .))
+      "annotations" dict) -}}
 {{- end -}}
-{{- $_ := set $accounts $name $role -}}
+
+{{- $accounts := dict -}}
+{{- range $subject := $subjects -}}
+{{- $name := $subject.name -}}
+{{- if hasKey $accounts $name -}}
+{{- fail (printf "%s and %s render the same Kubernetes service account %q. A service account is Pod-wide: two workloads sharing one are ONE cloud identity holding both sets of permissions, and no care inside either process takes that back. The publisher must not be able to list or delete; the reclaimer must not be able to create; the attestor must hold no object permission at all; and web, task, cache and strict-input identities hold no output role whatsoever." (get $accounts $name) $subject.path $name) -}}
+{{- end -}}
+{{- $_ := set $accounts $name $subject.path -}}
 {{- end -}}
 
 {{- $principals := dict -}}
-{{- range $role, $annotations := dict
-  "daemon" .Values.hangarOutput.daemon.serviceAccount.annotations
-  "inventory" .Values.hangarOutput.inventory.serviceAccount.annotations
-  "reclaimer" .Values.hangarOutput.reclaimer.serviceAccount.annotations
-  "policyAttestor" .Values.hangarOutput.policyAttestor.serviceAccount.annotations -}}
-{{- $principal := get ($annotations | default dict) "iam.gke.io/gcp-service-account" -}}
+{{- range $subject := $subjects -}}
+{{- $principal := get ($subject.annotations | default dict) "iam.gke.io/gcp-service-account" -}}
 {{- if $principal -}}
 {{- if hasKey $principals $principal -}}
-{{- fail (printf "hangarOutput.%s and hangarOutput.%s are annotated with the same cloud principal %q. Shared Workload Identity principals are an activation failure: the whole separation is four cloud identities with four disjoint grants, and one principal bound to two Kubernetes service accounts has the union of both." (get $principals $principal) $role $principal) -}}
+{{- fail (printf "%s and %s are annotated with the same cloud principal %q. Shared Workload Identity principals are an activation failure: the whole separation is distinct cloud identities with disjoint grants, and one principal bound to two Kubernetes service accounts has the union of both." (get $principals $principal) $subject.path $principal) -}}
 {{- end -}}
-{{- $_ := set $principals $principal $role -}}
+{{- $_ := set $principals $principal $subject.path -}}
 {{- end -}}
 {{- end -}}
 {{- end }}
