@@ -41,6 +41,18 @@ type injectingDialer struct {
 	// response.
 	Unreachable bool
 
+	// CollideOnPublish makes every publish answer the publisher's own typed
+	// conflict: an object exists at the server-derived key and it is not this
+	// capture's bytes.
+	//
+	// It is injected rather than arranged in the bucket because arranging it
+	// would need an out-of-band writer putting a DIFFERENT tree at a key that
+	// contains this tree's digest -- which is a thing the derivation makes
+	// impossible for anyone playing by the rules, and the whole reason the
+	// conflict is the honest answer for somebody who is not. What the
+	// coordinator does with the answer is what is under test.
+	CollideOnPublish bool
+
 	calls map[string]int
 	mu    sync.Mutex
 }
@@ -138,6 +150,10 @@ func (wrapper *injectingControl) Canonicalize(ctx context.Context,
 func (wrapper *injectingControl) Publish(ctx context.Context,
 	request output.PublicationRequest) (output.PublicationResult, error) {
 	wrapper.dialer.count("publish")
+	if wrapper.dialer.CollideOnPublish {
+		return output.PublicationResult{}, fmt.Errorf("%w: an object exists at the "+
+			"server-derived key and it is not this capture's bytes", output.ErrConflict)
+	}
 	result, err := wrapper.control.Publish(ctx, request)
 	if err == nil && wrapper.dialer.intercept("publish") {
 		// The object IS created. This is the lost upload response: the store

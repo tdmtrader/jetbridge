@@ -47,6 +47,13 @@ type Transactor interface {
 type Repository interface {
 	LoadHandoffRecord(ctx context.Context, tx output.Tx, handoff output.HandoffID) (output.HandoffRecord, error)
 
+	// HangarDatabaseNow is the plane's clock, and the coordinator holds it for
+	// exactly one decision: whether a capture whose object collided at a
+	// server-derived key has passed its capture deadline. A coordinator whose
+	// own clock had drifted forward would terminalize a capture that is still
+	// entitled to register, and a terminal capture cannot be un-terminalized.
+	HangarDatabaseNow(ctx context.Context, tx output.Tx) (output.Timestamp, error)
+
 	CommitCaptureReservation(ctx context.Context, tx output.Tx, disposition output.SuccessfulFinishDisposition) (output.ReservationID, error)
 	ResolveLogicalReservation(ctx context.Context, tx output.Tx, resolution output.LogicalResolution) error
 	RecordFirstObjectCreate(ctx context.Context, tx output.Tx, reservation output.ReservationID, fence output.CaptureFence) error

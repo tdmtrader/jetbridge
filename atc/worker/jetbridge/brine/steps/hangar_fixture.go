@@ -164,7 +164,8 @@ type HangarDaemon struct {
 //
 // It names a DIFFERENT bucket from the artifact daemon's, which is the point:
 // the two buckets are the trust boundary between the planes.
-func hangarOutputDaemonFlags(endpoint, bucket, receiptKey, controlKey, capabilityKey string) []string {
+func hangarOutputDaemonFlags(endpoint, bucket, receiptKey, controlKey, capabilityKey,
+	materializeKey string) []string {
 	return []string{
 		"--output-endpoint", endpoint,
 		"--output-bucket", bucket,
@@ -175,6 +176,8 @@ func hangarOutputDaemonFlags(endpoint, bucket, receiptKey, controlKey, capabilit
 		"--control-key-id", hangarControlKeyID,
 		"--control-key-file", controlKey,
 		"--capability-key", capabilityKey,
+		"--materialization-key-id", hangarMaterializationKeyID,
+		"--materialization-key-file", materializeKey,
 		"--node-uid", hangarNodeUID,
 		"--activation-epoch", fmt.Sprint(hangarEpoch),
 	}
@@ -185,9 +188,13 @@ func hangarOutputDaemonFlags(endpoint, bucket, receiptKey, controlKey, capabilit
 // set would be a feature file choosing which key signs its receipts.
 const (
 	hangarReceiptKeyID = "brine-receipt-key-1"
-	hangarControlKeyID = "brine-control-key-1"
-	hangarNodeUID      = "brine-node-1"
-	hangarEpoch        = uint64(7)
+	// The read-grant key's id. A THIRD key: a grant must not be signable by
+	// anything that can mint a publication receipt, and the daemon refuses a
+	// configuration where two of the three are one file.
+	hangarMaterializationKeyID = "brine-materialize-key-1"
+	hangarControlKeyID         = "brine-control-key-1"
+	hangarNodeUID              = "brine-node-1"
+	hangarEpoch                = uint64(7)
 )
 
 // startHangarDaemon brings up the emulator (or adopts CI's), creates the output
@@ -344,6 +351,14 @@ func startOutputDaemon(rec *brine.Recorder, state HangarDaemon, certDir string) 
 	if err := os.WriteFile(capabilityFile, capabilitySecret, 0o600); err != nil {
 		return HangarDaemon{}, err
 	}
+	// The output read-grant key, which is the SAME material the consumer-side
+	// fixture mints grants with (brineReadGrantKey): one key on both sides is
+	// what makes a grant this fixture signs one the daemon can verify.
+	materializeFile := filepath.Join(certDir, "materialize.key")
+	if err := os.WriteFile(materializeFile, brineReadGrantKey, 0o600); err != nil {
+		return HangarDaemon{}, err
+	}
+
 	minter, err := executioncontrol.NewCapabilityMinter(capabilitySecret, time.Minute,
 		func() time.Time { return time.Now().UTC() })
 	if err != nil {
@@ -372,7 +387,7 @@ func startOutputDaemon(rec *brine.Recorder, state HangarDaemon, certDir string) 
 
 			return nil
 		}, hangarOutputDaemonFlags(state.Endpoint, state.OutputBucket,
-			receiptKey, controlKey, capabilityFile)...)
+			receiptKey, controlKey, capabilityFile, materializeFile)...)
 	if err != nil {
 		return HangarDaemon{}, err
 	}

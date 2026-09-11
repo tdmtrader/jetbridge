@@ -135,6 +135,42 @@ var segmentPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,254}$`)
 //
 // The fs backend joins the key onto a root directory, so "../" would write
 // outside it.
+// ValidatePrefix bounds the deployment prefix the same way ValidateKey bounds a
+// key, and it exists because ValidateKey alone did not bound the OBJECT NAME.
+//
+// The prefix is concatenated ahead of the key in every backend's objectName, so
+// `ValidateKey`'s "at most one prefix segment" rule constrained only the last
+// one or two path segments and said nothing about what came before them. A
+// prefix of "any/deep/path/segments" -- or of "../.." in the filesystem backend,
+// which joins the key onto a root -- produced an object name this package's own
+// bound had never seen. That is what made the key-only delete route round 3
+// found reach ANY key rather than a shallow one.
+//
+// Same segment pattern, so there is one shape; up to four segments, because a
+// deployment prefix is legitimately "cluster/tenant" or a little deeper, and an
+// unbounded depth is the thing being fixed. An empty prefix is valid and means
+// no namespacing at all.
+func ValidatePrefix(prefix string) error {
+	trimmed := strings.Trim(prefix, "/")
+	if trimmed == "" {
+		return nil
+	}
+
+	segments := strings.Split(trimmed, "/")
+	if len(segments) > 4 {
+		return fmt.Errorf("durable: invalid prefix %q: at most four segments. The prefix is "+
+			"concatenated ahead of the key, so an unbounded one is an object name nothing in "+
+			"this package bounds", prefix)
+	}
+	for _, segment := range segments {
+		if !segmentPattern.MatchString(segment) {
+			return fmt.Errorf("durable: invalid prefix %q: segment %q", prefix, segment)
+		}
+	}
+
+	return nil
+}
+
 func ValidateKey(key string) error {
 	segments := strings.Split(key, "/")
 	if len(segments) > 2 {

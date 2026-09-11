@@ -84,10 +84,6 @@ const (
 	WorkerFallbackInterval = time.Minute
 )
 
-// Deferred: the producer for capture_deadline_at is the Phase 8 Refactor line
-// named in the collision-at-deadline carry-forward; nothing composes a capture
-// deadline from a duration yet, so there is no configuration site to bound
-//
 // ValidateCaptureDeadline bounds a configured capture-deadline term.
 //
 // Its only caller was ValidatePublicationGrace, through a parameter every
@@ -192,9 +188,6 @@ func MayStartWork(remaining, operationTimeout time.Duration) bool {
 	return remaining >= operationTimeout+LeaseStartMargin
 }
 
-// Deferred: the operator status and diagnosis surface is Phase 8's; no running
-// process reads it yet
-//
 // ValidatePolicyEvidenceAge fails closed on stale attestation.
 func ValidatePolicyEvidenceAge(age time.Duration) error {
 	if age < 0 {

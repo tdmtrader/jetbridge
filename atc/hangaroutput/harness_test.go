@@ -434,6 +434,16 @@ func startDaemon(t *testing.T, endpoint, bucket string) *daemonProcess {
 	if err := os.WriteFile(capabilityKey, secret, 0o600); err != nil {
 		t.Fatalf("capability key: %v", err)
 	}
+	// The output read-grant key, and it is the SAME material the control-plane
+	// side of this harness mints grants with: one key on both sides is what
+	// makes a grant the harness signs one the daemon can verify. It is a THIRD
+	// key -- a grant must not be signable by anything that can mint a
+	// publication receipt -- and the daemon refuses a configuration where two
+	// of the three are one file.
+	materializeKey := filepath.Join(dir, "materialize.key")
+	if err := os.WriteFile(materializeKey, readGrantKey, 0o600); err != nil {
+		t.Fatalf("read-grant key: %v", err)
+	}
 
 	port := freePort(t)
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
@@ -448,6 +458,8 @@ func startDaemon(t *testing.T, endpoint, bucket string) *daemonProcess {
 		"--control-key-id", "harness-control-1",
 		"--control-key-file", controlKey,
 		"--capability-key", capabilityKey,
+		"--materialization-key-id", "harness-materialize-1",
+		"--materialization-key-file", materializeKey,
 		"--node-uid", harnessNode,
 		"--activation-epoch", fmt.Sprint(uint64(harnessEpoch)),
 		"--control-dir", filepath.Join(dir, "control"),

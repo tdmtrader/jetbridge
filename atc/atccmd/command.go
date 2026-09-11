@@ -59,6 +59,7 @@ import (
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"github.com/concourse/concourse/atc/wrappa"
 	"github.com/concourse/concourse/hangar"
+	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 	"github.com/concourse/concourse/skymarshal/dexserver"
 	"github.com/concourse/concourse/skymarshal/legacyserver"
@@ -216,6 +217,8 @@ type RunCommand struct {
 		OutputReceiptKeys                  string        `long:"kubernetes-hangar-output-receipt-keys"      description:"Path to the versioned receipt PUBLIC key ring. Verification material only: the control plane checks every receipt before registration and can sign none of them."`
 		OutputMaterializationKey           string        `long:"kubernetes-hangar-output-materialization-key" description:"Path to the exact 32-byte key output READ GRANTS are minted with, under the hangar-output-materialize-v1 domain. It is never the receipt key -- a grant must not be signable by anything that can mint a publication receipt -- and never the foundation's strict-input materialization key."`
 		OutputActivationEpoch              int64         `long:"kubernetes-hangar-output-activation-epoch"  description:"The activation epoch this control plane speaks for. Every capture records it; a stale label or handshake authorizes nothing."`
+		OutputBucket                       string        `long:"kubernetes-hangar-output-bucket"            description:"The dedicated output bucket. The control plane derives the bucket, scope and key prefix from authenticated deployment context alone; it is here so the status surface can key a cursor by the same bucket the sweep does, and never so a caller can choose one."`
+		OutputTenant                       string        `long:"kubernetes-hangar-output-tenant"            description:"Authenticated deployment/tenant identity the opaque output scope is derived from. It is never rendered into an object key."`
 		OutputCaptureDeadline              time.Duration `long:"kubernetes-hangar-output-capture-deadline"  default:"24h" description:"Maximum capture deadline offered to a daemon. Configurable from 1h to 168h."`
 		OutputSealDeadline                 time.Duration `long:"kubernetes-hangar-output-seal-deadline"     default:"5m" description:"How long a seal may take before it is unconfirmed. Configurable from 30s to 30m."`
 		OutputLeaseTerm                    time.Duration `long:"kubernetes-hangar-output-lease-term"        default:"15m" description:"Term of the capture, read and reclaim leases. At least 15 minutes."`
@@ -1394,6 +1397,9 @@ func (cmd *RunCommand) backendComponents(
 
 	components = append(components, cmd.hangarOutputCaptureComponent(dbConn))
 	components = append(components, cmd.hangarOutputReadLeaseCleanupComponent(dbConn))
+	if status := cmd.hangarOutputStatusComponent(dbConn); status != nil {
+		components = append(components, *status)
+	}
 
 	if syslogDrainConfigured {
 		components = append(components, RunnableComponent{
@@ -2719,4 +2725,48 @@ func (cmd *RunCommand) validateHangarOutputPlane() error {
 	}
 
 	return nil
+}
+
+// hangarOutputStatusComponent publishes the output plane's operational state.
+//
+// Nil when the output facet is not configured, and that is the honest answer
+// rather than a component emitting zeroes: a deployment with no activation
+// epoch has no plane to describe, and a status surface reporting "0 live
+// generations, not at risk" about a plane that does not exist is worse than
+// silence -- it is an alert rule that will never fire looking exactly like
+// coverage.
+//
+// The interval is the plane's own one-minute fallback. Requirement 52 bounds
+// detection of a policy change at the 15-minute refresh, and a status pass a
+// minute behind that is fifteen times finer than the thing it reports on.
+func (cmd *RunCommand) hangarOutputStatusComponent(dbConn db.DbConn) *RunnableComponent {
+	if cmd.Kubernetes.OutputActivationEpoch <= 0 {
+		return nil
+	}
+
+	namespace, err := output.DeriveNamespace(output.NamespaceConfig{
+		Store:           output.StoreGCS,
+		Bucket:          cmd.Kubernetes.OutputBucket,
+		TenantID:        cmd.Kubernetes.OutputTenant,
+		ActivationEpoch: executioncontrol.ActivationEpoch(cmd.Kubernetes.OutputActivationEpoch),
+	})
+	if err != nil {
+		// A misconfigured namespace is a startup problem this process reports
+		// elsewhere; a status component that guessed a bucket fingerprint would
+		// publish a cursor belonging to somebody else's sweep.
+		return nil
+	}
+
+	return &RunnableComponent{
+		Component: atc.Component{Name: atc.ComponentHangarOutputStatus},
+		Runnable: &hangaroutput.StatusPublisher{
+			Reader: &hangaroutput.StatusReader{
+				Transactor: hangarOutputTransactor{conn: dbConn},
+				Repository: db.NewHangarOutputRepository(db.HangarConsumerPrefixForComponent()),
+				Epoch:      cmd.Kubernetes.OutputActivationEpoch,
+				Bucket:     namespace.BucketFingerprint(),
+			},
+		},
+		Interval: time.Minute,
+	}
 }

@@ -843,6 +843,30 @@ func (coordinator *Coordinator) registerReceipt(ctx context.Context, record outp
 
 	result, err := control.Publish(ctx, coordinator.publicationRequest(record, lease.CaptureFence))
 	if err != nil {
+		// A typed COLLISION is bounded by the capture deadline, and this is the
+		// producer that bounds it.
+		//
+		// The publisher's ErrConflict is the honest answer for an out-of-band
+		// writer at a server-derived key: the bytes may be put back, so the
+		// retry is right and every pass repeats it. What was missing is an end:
+		// nothing read `capture_deadline_at`, so "retried until the capture
+		// deadline" was in fact "retried until somebody gives up", and the
+		// source stayed held on one node for as long as nobody looked.
+		//
+		// The deadline is read from the RECORD and compared to the DATABASE
+		// clock -- never to this process's. A coordinator whose clock had
+		// drifted forward would terminalize a capture that is still entitled to
+		// register, which is the one outcome worse than retrying too long.
+		if errors.Is(err, output.ErrConflict) {
+			expired, deadlineErr := coordinator.pastCaptureDeadline(ctx, record)
+			if deadlineErr != nil {
+				return deadlineErr
+			}
+			if expired {
+				return coordinator.failTerminally(ctx, record, lease.CaptureFence, "collision")
+			}
+		}
+
 		return err
 	}
 	if result.Ref.Digest != record.Digest {
@@ -856,20 +880,14 @@ func (coordinator *Coordinator) registerReceipt(ctx context.Context, record outp
 		// is the honest answer for an out-of-band writer: the bytes may be put
 		// back.
 		//
-		// Phase 7 landed HALF of round-2 review finding R2-F6. What it fixed is
-		// the consequence: a capture that gives up past the publish point can
-		// now reach a terminal state and let its source go (see settleOrphan
-		// below), so a collision is no longer a capture pinned on a node
-		// forever. What it did NOT do is enforce `capture_deadline_at` in this
-		// coordinator -- nothing reads that column here, so "retried until the
-		// capture deadline" is still "retried until somebody gives up". That
-		// producer is capture-path work: the deadline is a Stage 2 fact and the
-		// decision to terminalize on it belongs beside the seal deadline, not
-		// beside the sweep.
-		//
-		// TODO(capture path): read `capture_deadline_at` here and fail
-		// terminally at it, so a collision at a server-derived key is bounded by
-		// the deadline rather than by attention.
+		// Round-2 review finding R2-F6 is now closed in both halves. Phase 7
+		// landed the consequence -- a capture that gives up past the publish
+		// point reaches a terminal state and lets its source go -- and the
+		// deadline arm above landed the decision: a collision at a
+		// server-derived key is bounded by `capture_deadline_at` rather than by
+		// attention. This arm stays as the unreachable second reading, because
+		// a digest mismatch here would mean the derived key stopped deriving
+		// from the digest.
 		return coordinator.failTerminally(ctx, record, lease.CaptureFence, "collision")
 	}
 
@@ -1043,4 +1061,37 @@ func TerminalOutcome(record output.HandoffRecord) (output.Disposition, string) {
 	}
 
 	return *record.Disposition, terminalReason(record)
+}
+
+// pastCaptureDeadline asks the DATABASE whether this capture's deadline has
+// passed.
+//
+// The database's clock and not this process's, for the same reason every other
+// deadline in this plane is evaluated there: a coordinator whose clock had
+// drifted forward would terminalize a capture that is still entitled to
+// register its object, and a terminal capture cannot be un-terminalized. The
+// read is its own transaction and takes no lock -- it is a comparison of two
+// instants, and holding a row while asking what time it is would be a lock
+// order for no exclusion.
+func (coordinator *Coordinator) pastCaptureDeadline(ctx context.Context,
+	record output.HandoffRecord) (bool, error) {
+	if record.CaptureDeadline.Time.IsZero() {
+		// No deadline on the record is not "expired". A predeclaration always
+		// carries one -- the column is NOT NULL -- so a zero here is a record
+		// this coordinator did not read properly, and treating that as expiry
+		// would terminalize a capture because of a bug in the reader.
+		return false, nil
+	}
+
+	var now output.Timestamp
+	if err := coordinator.write(ctx, func(tx Transaction) error {
+		var err error
+		now, err = coordinator.Repository.HangarDatabaseNow(ctx, tx)
+
+		return err
+	}); err != nil {
+		return false, err
+	}
+
+	return now.UTC().After(record.CaptureDeadline.UTC()), nil
 }

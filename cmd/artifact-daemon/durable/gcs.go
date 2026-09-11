@@ -59,6 +59,14 @@ func NewGCS(ctx context.Context, cfg GCSConfig) (*GCS, error) {
 	if cfg.Bucket == "" {
 		return nil, errors.New("durable: gcs bucket is required")
 	}
+	// The PREFIX is bounded here and not only the key. objectName concatenates
+	// them, so an unvalidated prefix made ValidateKey's two-segment rule bound
+	// the last one or two segments of an object name rather than the object
+	// name -- which is what let a caller-supplied config address any key in any
+	// bucket it could name.
+	if err := ValidatePrefix(cfg.Prefix); err != nil {
+		return nil, err
+	}
 
 	var opts []option.ClientOption
 	if cfg.Endpoint != "" {

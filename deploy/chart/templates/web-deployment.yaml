@@ -204,6 +204,12 @@ spec:
             - --kubernetes-hangar-output-receipt-keys=/etc/concourse/hangar-output/receipt-keys/receipt-keys.json
             - --kubernetes-hangar-output-materialization-key=/etc/concourse/hangar-output/materialize/materialize.key
             - --kubernetes-hangar-output-activation-epoch={{ int .Values.hangarOutput.activationEpoch }}
+            # The bucket and tenant reach web so the operator STATUS surface can
+            # key a cursor by the same bucket the sweep does. They are server
+            # configuration and never a request field: no task, consumer, path
+            # parameter or receipt can select or broaden them.
+            - --kubernetes-hangar-output-bucket={{ .Values.hangarOutput.bucket }}
+            - --kubernetes-hangar-output-tenant={{ .Values.hangarOutput.tenant }}
             {{- if .Values.hangarOutput.webEnabled }}
             - --kubernetes-hangar-output-capture-enabled
             {{- end }}

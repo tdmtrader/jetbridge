@@ -40,9 +40,16 @@ func TestAlertRulesReferenceMetricsTheBinaryEmits(t *testing.T) {
 			"parse -- an oracle that finds nothing passes everything.", len(declared))
 	}
 
+	// The output plane's rules are rendered too, and that matters more than it
+	// looks: they are behind `{{- if .Values.hangarOutput.enabled }}`, so a
+	// default render would check none of them and this guard would report
+	// coverage it does not have -- which is the exact shape of the defect it
+	// was written for, one level up.
 	rendered := renderChart(t,
-		"alertingRules.enabled=true",
-		"kubernetes.artifactHelperImage=alpine@sha256:aaaa",
+		append([]string{
+			"alertingRules.enabled=true",
+			"kubernetes.artifactHelperImage=alpine@sha256:aaaa",
+		}, outputSets...)...,
 	)
 
 	exprs := alertExpressions(rendered)

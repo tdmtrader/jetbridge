@@ -777,19 +777,27 @@ func withCohort(in CaptureDraft, res brine.Resources, facet string, epoch int64)
 			"%s and %s", facet, executioncontrol.ReadyLabel, hangaroutput.ReadyLabel)
 	}
 
-	cluster, err := newConfiguredWorker(res, func(cfg *jetbridge.Config) {
-		cfg.ArtifactDaemonHostPath = "/var/concourse/artifacts"
-		cfg.OutputPlaneEnabled = outputFacet
-		cfg.OutputActivationEpoch = epoch
-	})
+	// A DISTINCT worker name, because the cluster preamble derives its team's
+	// name from it and the team name is unique. The Given already made one; a
+	// rebuild that reused the name would fail on the constraint rather than on
+	// anything this phrase is about.
+	cluster, err := NewCluster(res,
+		WithWorkerName("k8s-worker-cohort-"+strings.TrimPrefix(facet, "concourse.dev/")),
+		WithVolumeRepo(), WithTeam(),
+		WithConfig(func(cfg *jetbridge.Config) {
+			cfg.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+			cfg.OutputPlaneEnabled = outputFacet
+			cfg.OutputActivationEpoch = epoch
+		}))
 	if err != nil {
 		return CaptureDraft{}, err
 	}
+	ready := cluster.Ready()
 
-	in.Draft.Namespace = cluster.Namespace
-	in.Draft.Worker = cluster.Worker
-	in.Draft.Clientset = cluster.Clientset
-	in.Draft.Ctx = cluster.Ctx
+	in.Draft.Namespace = ready.Namespace
+	in.Draft.Worker = ready.Worker
+	in.Draft.Clientset = ready.Clientset
+	in.Draft.Ctx = ready.Ctx
 	in.ReadyFacets = append(in.ReadyFacets, facet)
 	in.CohortHandshaked = true
 

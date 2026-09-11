@@ -109,15 +109,14 @@ var deferredEntryPoints = []deferredEntryPoint{
 	// The operator surface. Every one of these answers an operator's question
 	// and nothing decides anything from it; the API and the status page that
 	// ask them are Phase 8's.
-	{name: "AdmitsNewWork", why: statusSurface},
-	{name: "AtCycleStart", why: statusSurface},
-	{name: "Remaining", why: statusSurface},
-	{name: "ValidatePolicyEvidenceAge", why: statusSurface},
-	{name: "HangarDatabaseNow", why: statusSurface},
-	{name: "LoadReclaimJob", why: statusSurface},
-	{name: "ReadOperationLease", why: statusSurface},
-	{name: "ReadInventoryDebt", why: statusSurface},
-	{name: "ReconcilePolicyViolation", why: statusSurface},
+	// atc/db.HangarReclaimJob.Remaining, which is the reclaim JOB's own
+	// remaining lease term. hangar/output.OperationLease.Remaining -- the same
+	// name, a different package -- is spent by the status surface; this one is
+	// not, because the status surface reports the reclaim backlog as a COUNT
+	// and a per-job term would be a series per object.
+	{name: "Remaining", pkg: "atc/db", why: reclaimJobDetailHasNoReader},
+	{name: "LoadReclaimJob", pkg: "atc/db", why: reclaimJobDetailHasNoReader},
+	{name: "ReconcilePolicyViolation", why: operatorReconciliationHasNoAPI},
 
 	// The consumer half: verifying a grant, a receipt or a lease answer that
 	// this plane issued. This phase issues them and reads none of them back.
@@ -126,13 +125,17 @@ var deferredEntryPoints = []deferredEntryPoint{
 	{name: "ReceiptEnvelopeIsUnaltered", why: consumerHalf},
 	{name: "NewReadGrantVerifier", why: consumerHalf},
 	{name: "VerifyReleaseAcknowledgement", why: consumerHalf},
-	{name: "ValidateLease", why: consumerHalf},
-	{name: "RenewLease", why: consumerHalf},
-	{name: "ReleaseLease", why: consumerHalf},
 
 	{name: "DeriveCohortFindings", why: cohortIdentities},
+
+	// The managed read's daemon half. It is composed in specs against the real
+	// control plane and the real materializer, and nothing in production builds
+	// one yet: a managed read reaches a consumer pod through a lease acquired
+	// by the ATC before the Pod is built, and that acquisition is the piece
+	// this phase did not land.
+	{name: "NewLeaseReadProfile", pkg: "hangar/output", why: managedReadHasNoConsumer},
+	{name: "Renew", pkg: "hangar/output", why: managedReadHasNoConsumer},
 	{name: "ObserveExactAbsence", why: separateAbsenceStat},
-	{name: "ValidateCaptureDeadline", why: captureDeadlineHasNoProducer},
 	{name: "Holds", why: runnerBeliefIsNotAuthority},
 
 	// The reclaim-admission violation gate is enforced by the schema, on the
@@ -140,14 +143,25 @@ var deferredEntryPoints = []deferredEntryPoint{
 	// beside the SQL one would be two descriptions to keep in step, and the
 	// one that is not the enforcement is the one that drifts. It stays where
 	// the rest of the operator surface is.
-	{name: "OpenPolicyViolations", why: statusSurface},
 }
 
 const (
 	statusSurface = "the operator status and diagnosis surface is Phase 8's; no running " +
 		"process reads it yet"
-	consumerHalf = "the consumer-side verification half is Phase 8's; nothing in this phase " +
-		"reads a grant, a receipt or a lease answer back"
+	reclaimJobDetailHasNoReader = "the operator status surface reports the reclaim backlog as " +
+		"a count, because a series per in-flight object is cardinality nobody can alert on. " +
+		"Loading one job and reading its remaining term is a diagnosis of a SPECIFIC object, " +
+		"and this track ships no API that names one"
+	operatorReconciliationHasNoAPI = "reconciling a policy violation is a deliberate operator " +
+		"act with its own record, and this track ships no API for it. The status surface is " +
+		"deliberately read-only: a surface with a write in its port is one an operator can be " +
+		"persuaded to \"just clear\", and a cleared violation is the record of what was wrong " +
+		"while the plane refused work"
+	consumerHalf = "the consumer-side verification half needs a consumer: these five verify a " +
+		"receipt or a key id some process read BACK, and the process that does that is the " +
+		"ATC's receipt registration. Three names this reason once covered -- ValidateLease, " +
+		"RenewLease, ReleaseLease -- are now spent by hangar/output.LeaseReadProfile and are " +
+		"off the list"
 	cohortIdentities = "mixed-cohort detection needs a per-role observed identity the IAM read " +
 		"does not return; Phase 8, with the activation verification"
 	separateAbsenceStat = "the delete pass's own answer already reports absence; a separate " +
@@ -156,9 +170,11 @@ const (
 		"status surface; no running process decides anything from it, and a runner that " +
 		"decided from its own belief rather than from the lease would be the stale owner " +
 		"every fence in this plane exists to stop"
-	captureDeadlineHasNoProducer = "the producer for capture_deadline_at is the Phase 8 " +
-		"Refactor line named in the collision-at-deadline carry-forward; nothing composes a " +
-		"capture deadline from a duration yet, so there is no configuration site to bound"
+	managedReadHasNoConsumer = "a managed read reaches a consumer pod through a read lease " +
+		"the ATC acquires before the Pod is built, and that acquisition -- the claim, the " +
+		"lease transaction and the init-container route -- is the half of the Phase 8 " +
+		"managed-read box this phase did not land. The profile itself is composed against " +
+		"the real control plane and the real materializer in atc/hangaroutput"
 )
 
 func TestEveryExportedHangarEntryPointIsReachableOrDeclaredDeferred(t *testing.T) {
@@ -390,7 +406,7 @@ func productionReferences(t *testing.T, root string, declared map[string][]strin
 			// see is credited: conservative, and still exact enough to have
 			// found policy.New unwired.
 			for _, pkg := range packages {
-				if visible[pkg] || interfaceSatisfied[ident.Name] != "" {
+				if visible[pkg] || interfaceSatisfied[ident.Name].credits(pkg) {
 					credit(ident.Name, pkg)
 				}
 			}
@@ -536,45 +552,84 @@ func repositoryRoot() string {
 // the implementation. It does not say the port is called: that is the limit of
 // a rule with no type information, and it is the reason this list is short,
 // named port by port, and reviewed when it grows.
-var interfaceSatisfied = map[string]string{
+//
+// Each entry carries its DECLARING PACKAGE, exactly as deferredEntryPoint does
+// and for the identical reason. Without it the credit clause read
+//
+//	if visible[pkg] || interfaceSatisfied[ident.Name] != "" {
+//
+// -- the right-hand disjunct has no package in it, so a name on this list was
+// credited to EVERY package that declares it, and the repository-wide bare-name
+// rule this file was rewritten to remove was still alive for exactly these
+// names. It was demonstrated: OpenExactObject and AcquireReadLease injected
+// unwired into atc/hangaroutput/controller -- which satisfies neither port --
+// were both waved through while a control in the same file was reported.
+type satisfiedEntry struct {
+	// pkg is the package whose declaration satisfies the port. Empty means
+	// every package, and there is exactly one such entry, whose reason is that
+	// the caller is the reflection inside encoding/json.
+	pkg string
+
+	// port names the interface, so a reviewer can check the claim.
+	port string
+}
+
+// credits reports whether this entry vouches for a declaration in pkg.
+func (entry satisfiedEntry) credits(pkg string) bool {
+	return entry.port != "" && (entry.pkg == "" || entry.pkg == pkg)
+}
+
+var interfaceSatisfied = map[string]satisfiedEntry{
 	// atc/hangaroutput.Repository -- the ATC-side port the passes hold. Its
 	// implementation is db.HangarOutputRepository and no pass imports atc/db.
-	"AcknowledgeCaptureRelease":    "atc/hangaroutput.Repository",
-	"AcquireCaptureLease":          "atc/hangaroutput.Repository",
-	"IssueStatChallenge":           "atc/hangaroutput.Repository",
-	"RecordFirstObjectCreate":      "atc/hangaroutput.Repository",
-	"RecordSealDeadline":           "atc/hangaroutput.Repository",
-	"RecordTerminalCaptureFailure": "atc/hangaroutput.Repository",
-	"SealDeadlinePassed":           "atc/hangaroutput.Repository",
+	"AcknowledgeCaptureRelease":    {pkg: "atc/db", port: "atc/hangaroutput.Repository"},
+	"AcquireCaptureLease":          {pkg: "atc/db", port: "atc/hangaroutput.Repository"},
+	"IssueStatChallenge":           {pkg: "atc/db", port: "atc/hangaroutput.Repository"},
+	"RecordFirstObjectCreate":      {pkg: "atc/db", port: "atc/hangaroutput.Repository"},
+	"RecordSealDeadline":           {pkg: "atc/db", port: "atc/hangaroutput.Repository"},
+	"RecordTerminalCaptureFailure": {pkg: "atc/db", port: "atc/hangaroutput.Repository"},
+	"SealDeadlinePassed":           {pkg: "atc/db", port: "atc/hangaroutput.Repository"},
 
 	// The same implementation, reached through the leaf's own repository ports
 	// as well, so the capture half can be composed without the ATC.
-	"AcknowledgeNoCaptureRelease":            "atc/hangaroutput.Repository and hangar/output.CaptureRepository",
-	"AcknowledgePreReservationCancelRelease": "atc/hangaroutput.Repository and hangar/output.CaptureRepository",
-	"CommitCaptureReservation":               "atc/hangaroutput.Repository and hangar/output.CaptureRepository",
-	"RecordNoCaptureIntent":                  "atc/hangaroutput.Repository and hangar/output.CaptureRepository",
-	"RegisterReceipt":                        "atc/hangaroutput.Repository and hangar/output.CaptureRepository",
-	"ResolveLogicalReservation":              "atc/hangaroutput.Repository and hangar/output.CaptureRepository",
-	"CancelOrSettle":                         "atc/hangaroutput.Repository and hangar/output.CancelSettler",
+	"AcknowledgeNoCaptureRelease":            {pkg: "atc/db", port: "atc/hangaroutput.Repository and hangar/output.CaptureRepository"},
+	"AcknowledgePreReservationCancelRelease": {pkg: "atc/db", port: "atc/hangaroutput.Repository and hangar/output.CaptureRepository"},
+	"CommitCaptureReservation":               {pkg: "atc/db", port: "atc/hangaroutput.Repository and hangar/output.CaptureRepository"},
+	"RecordNoCaptureIntent":                  {pkg: "atc/db", port: "atc/hangaroutput.Repository and hangar/output.CaptureRepository"},
+	"RegisterReceipt":                        {pkg: "atc/db", port: "atc/hangaroutput.Repository and hangar/output.CaptureRepository"},
+	"ResolveLogicalReservation":              {pkg: "atc/db", port: "atc/hangaroutput.Repository and hangar/output.CaptureRepository"},
+	"CancelOrSettle":                         {pkg: "atc/db", port: "atc/hangaroutput.Repository and hangar/output.CancelSettler"},
 
 	// The read-lease ports, split so a holder of one cannot use the other.
-	"AcquireReadLease":  "atc/hangaroutput.ReadLeaseStore and hangar/output.ReadLeaseRepository",
-	"ReleaseReadLease":  "atc/hangaroutput.LeaseControlStore and hangar/output.ReadLeaseRepository",
-	"RenewReadLease":    "atc/hangaroutput.LeaseControlStore and hangar/output.ReadLeaseRepository",
-	"ValidateReadLease": "atc/hangaroutput.LeaseControlStore and hangar/output.ReadLeaseRepository",
+	"AcquireReadLease":  {pkg: "atc/db", port: "atc/hangaroutput.ReadLeaseStore and hangar/output.ReadLeaseRepository"},
+	"ReleaseReadLease":  {pkg: "atc/db", port: "atc/hangaroutput.LeaseControlStore and hangar/output.ReadLeaseRepository"},
+	"RenewReadLease":    {pkg: "atc/db", port: "atc/hangaroutput.LeaseControlStore and hangar/output.ReadLeaseRepository"},
+	"ValidateReadLease": {pkg: "atc/db", port: "atc/hangaroutput.LeaseControlStore and hangar/output.ReadLeaseRepository"},
 
-	"CloseAbandonedReadLeases": "atc/hangaroutput.AbandonedReadLeases",
-	"IncompleteHandoffs":       "atc/hangaroutput.IncompleteReader",
+	"CloseAbandonedReadLeases": {pkg: "atc/db", port: "atc/hangaroutput.AbandonedReadLeases"},
+	"IncompleteHandoffs":       {pkg: "atc/db", port: "atc/hangaroutput.IncompleteReader"},
 
 	// The controller's lease port, which is how the three command roots reach
 	// the same implementation without linking atc/db's package name.
-	"ClaimOperationLease": "atc/hangaroutput/controller.Leases",
-	"RenewOperationLease": "atc/hangaroutput/controller.Leases",
+	"ClaimOperationLease": {pkg: "atc/db", port: "atc/hangaroutput/controller.Leases"},
+	"RenewOperationLease": {pkg: "atc/db", port: "atc/hangaroutput/controller.Leases"},
 
-	"OpenExactObject": "hangar/output.Publisher",
+	"OpenExactObject": {pkg: "hangar/output/publisher", port: "hangar/output.Publisher"},
+
+	// The operator status surface's read port. Its implementation is
+	// db.HangarOutputRepository, and atc/hangaroutput/status.go holds the port
+	// rather than the package -- which is the same shape every other entry here
+	// has, and the reason the reads below are reached without an atc/db import.
+	"CountOutputPlaneState":       {pkg: "atc/db", port: "atc/hangaroutput.StatusStore"},
+	"LatestPolicySnapshot":        {pkg: "atc/db", port: "atc/hangaroutput.StatusStore"},
+	"ReadInventoryCursorProgress": {pkg: "atc/db", port: "atc/hangaroutput.StatusStore"},
+	"HangarDatabaseNow":           {pkg: "atc/db", port: "atc/hangaroutput.StatusStore"},
+	"ReadOperationLease":          {pkg: "atc/db", port: "atc/hangaroutput.StatusStore"},
+	"ReadInventoryDebt":           {pkg: "atc/db", port: "atc/hangaroutput.StatusStore"},
+	"OpenPolicyViolations":        {pkg: "atc/db", port: "atc/hangaroutput.StatusStore"},
 
 	// A standard-library interface, and the one case where the port is not in
 	// this repository at all: encoding/json reaches these by reflection, so no
 	// file names them anywhere.
-	"UnmarshalJSON": "encoding/json.Unmarshaler",
+	"UnmarshalJSON": {pkg: "", port: "encoding/json.Unmarshaler"},
 }

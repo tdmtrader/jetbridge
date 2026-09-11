@@ -742,3 +742,131 @@ func (event WorkersState) Emit(logger lager.Logger, m *Monitor) {
 		)
 	}
 }
+
+// HangarOutputSnapshot is one read of the Hangar output plane's operational
+// state, flattened for emission.
+//
+// Flat and closed-vocabulary: every map below carries EVERY member of its set
+// on every emission, including the zeroes. A gauge that appears only when it is
+// nonzero is one an alert cannot tell from a scrape that did not happen --
+// `... > 0` fires the same way on a missing series as on a healthy one, which
+// is to say not at all. That is the same defect the alert/metric drift guard
+// was written for, one layer down.
+type HangarOutputSnapshot struct {
+	// AtRisk is the fail-closed state, and Reasons is the comma-joined set of
+	// classes that put it there. The reasons are an ATTRIBUTE and not a series:
+	// they are for the operator reading the alert, and a label per class would
+	// make the at-risk gauge's cardinality the size of the violation
+	// vocabulary.
+	AtRisk  bool
+	Reasons string
+
+	EvidenceAgeSeconds float64
+	EvidenceStale      bool
+
+	InventoryCycle        int64
+	InventoryAtCycleStart bool
+
+	Violations map[string]int
+	Debt       map[string]int
+
+	// DebtTruncated says the debt read hit its own limit, which is itself the
+	// signal: a backlog larger than the bound is one nothing is draining.
+	DebtTruncated bool
+
+	// LeaseRemainingSeconds is each operation kind's remaining lease term. A
+	// kind nobody holds is -1 rather than 0 or absent: zero reads as "expired
+	// right now" and absence reads as "not scraped".
+	LeaseRemainingSeconds map[string]float64
+
+	LiveGenerations        int
+	NonterminalCaptures    int
+	OpenClaims             int
+	OpenReadLeases         int
+	UnfinalizedReclaimJobs int
+}
+
+// HangarOutputStatus is the event one status pass emits.
+type HangarOutputStatus struct {
+	Status HangarOutputSnapshot
+}
+
+func (event HangarOutputStatus) Emit(logger lager.Logger) {
+	session := logger.Session("hangar-output-status")
+
+	Metrics.emit(session, Event{
+		Name:  "hangar output at risk",
+		Value: boolValue(event.Status.AtRisk),
+		Attributes: map[string]string{
+			"reasons": event.Status.Reasons,
+		},
+	})
+	Metrics.emit(session, Event{
+		Name:  "hangar output policy evidence age",
+		Value: event.Status.EvidenceAgeSeconds,
+		Attributes: map[string]string{
+			"stale": boolAttribute(event.Status.EvidenceStale),
+		},
+	})
+	for violation, count := range event.Status.Violations {
+		Metrics.emit(session, Event{
+			Name:       "hangar output policy violations",
+			Value:      float64(count),
+			Attributes: map[string]string{"violation": violation},
+		})
+	}
+	Metrics.emit(session, Event{
+		Name:  "hangar output inventory cycle",
+		Value: float64(event.Status.InventoryCycle),
+		Attributes: map[string]string{
+			"atCycleStart": boolAttribute(event.Status.InventoryAtCycleStart),
+		},
+	})
+	for reason, count := range event.Status.Debt {
+		Metrics.emit(session, Event{
+			Name:       "hangar output inventory debt",
+			Value:      float64(count),
+			Attributes: map[string]string{"reason": reason},
+		})
+	}
+	Metrics.emit(session, Event{
+		Name:  "hangar output inventory debt truncated",
+		Value: boolValue(event.Status.DebtTruncated),
+	})
+	for kind, remaining := range event.Status.LeaseRemainingSeconds {
+		Metrics.emit(session, Event{
+			Name:       "hangar output operation lease remaining",
+			Value:      remaining,
+			Attributes: map[string]string{"kind": kind},
+		})
+	}
+	for name, value := range map[string]int{
+		"live_generations":         event.Status.LiveGenerations,
+		"nonterminal_captures":     event.Status.NonterminalCaptures,
+		"open_claims":              event.Status.OpenClaims,
+		"open_read_leases":         event.Status.OpenReadLeases,
+		"unfinalized_reclaim_jobs": event.Status.UnfinalizedReclaimJobs,
+	} {
+		Metrics.emit(session, Event{
+			Name:       "hangar output plane inventory",
+			Value:      float64(value),
+			Attributes: map[string]string{"kind": name},
+		})
+	}
+}
+
+func boolValue(value bool) float64 {
+	if value {
+		return 1
+	}
+
+	return 0
+}
+
+func boolAttribute(value bool) string {
+	if value {
+		return "true"
+	}
+
+	return "false"
+}

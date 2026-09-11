@@ -109,22 +109,36 @@ const (
 //	every MaxPolicyEvidenceAge; the schedule IS the requirement, and a wake on
 //	some other event would not make the evidence fresher.
 //
-//	Acceleration: capture_recovery -- none, and this one is owed a phase. It
-//	does have a database-write trigger (an incomplete handoff becomes
-//	recoverable when an outcome or a deadline is written), and it is not
-//	accelerated. The workers are Phase 5's and so is this: it is recorded as a
-//	carry-forward rather than implemented here, because a producer added beside
-//	a transition this phase does not own is a producer nobody tested.
+// The three below DO have a database-write trigger and are still not
+// accelerated. Their reason used to name Phase 5, which was already closed when
+// it was written -- a deferral addressed to a phase whose boxes do not contain
+// it is not a deferral. The live owner is the operator status surface
+// (atc/hangaroutput.StatusReader and the alert rules beside it), and the reason
+// is that a wake-up latency and a stalled sweep are the same operator concern:
+// what matters about an unaccelerated kind is not that it waits up to a minute,
+// it is whether anybody would notice if it waited forever. The status surface
+// publishes each kind's lease term as a series, so a kind nobody is working is
+// an alert rather than an inference, and adding a producer beside a transition
+// is then a measured improvement rather than a hedge against an invisible
+// failure.
 //
-//	Acceleration: no_capture_release -- none, owed to the same phase and for the
-//	same reason: recording a no-capture intent is a write, and the release that
-//	follows it waits for the tick.
+//	Acceleration: capture_recovery -- none. An incomplete handoff becomes
+//	recoverable when an outcome or a deadline is written, so a producer is
+//	possible. The periodic fallback bounds it at a minute, and
+//	concourse_hangar_output_operation_lease_remaining_seconds{kind="capture_recovery"}
+//	is what says whether the worker is running at all.
 //
-//	Acceleration: reclaim_finalization -- none, owed to the same phase.
-//	FinalizeReclaim follows an acknowledged delete, which is a write, and the
-//	finalization pass waits for the tick. It is the least urgent of the three:
-//	the object is already gone by then, so the latency costs bookkeeping rather
-//	than an observable state.
+//	Acceleration: no_capture_release -- none, for the same reason: recording a
+//	no-capture intent is a write, and the release that follows it waits for the
+//	tick. Nothing is at stake in the bucket while it waits; the source hold is
+//	the thing held, and it is held on one node.
+//
+//	Acceleration: reclaim_finalization -- none, and it is the least urgent of
+//	the three. FinalizeReclaim follows an acknowledged delete, so the object is
+//	already gone by the time this runs: the latency costs bookkeeping rather
+//	than an observable state, and the backlog it would show up in is
+//	concourse_hangar_output_plane_inventory{kind="unfinalized_reclaim_jobs"},
+//	which has an alert of its own.
 func NotifyChannel(kind OperationKind) string {
 	return "hangar_output_" + string(kind)
 }
@@ -214,9 +228,6 @@ func (lease OperationLease) Validate() error {
 	return nil
 }
 
-// Deferred: the operator status and diagnosis surface is Phase 8's; no running
-// process reads it yet
-//
 // Remaining is how much of the lease is left at the given database-clock
 // instant. It is never computed from a node's own clock: `now` is a reading
 // this plane took from PostgreSQL.
@@ -293,4 +304,30 @@ func (outcome ReclaimOutcome) Validate() error {
 	_, err := ParseReclaimOutcome(string(outcome))
 
 	return err
+}
+
+// PlaneCounts is the output plane's inventory, as an operator reads it.
+//
+// Counts and not lists. An operator watching a plane wants to know whether the
+// numbers are moving, and a status surface that returned every live generation
+// would be the thing that fell over on the deployment where the number mattered.
+type PlaneCounts struct {
+	// LiveGenerations are registered, adopted or reclaiming objects: the set
+	// this plane is responsible for, and the set a downgrade cannot abandon.
+	LiveGenerations int
+
+	// NonterminalCaptures may still create an object or still owe a
+	// registration. They are what a capture deadline eventually settles.
+	NonterminalCaptures int
+
+	// OpenClaims and OpenReadLeases are the protections consumers hold. Each
+	// one keeps reclaim admission refusing for the generation it names, so an
+	// open lease nobody is using is an object nothing will ever delete.
+	OpenClaims     int
+	OpenReadLeases int
+
+	// UnfinalizedReclaimJobs were admitted and have no outcome. Every one of
+	// them is an object whose disposition is unknown: the delete may have
+	// happened, and the answer may have been lost.
+	UnfinalizedReclaimJobs int
 }

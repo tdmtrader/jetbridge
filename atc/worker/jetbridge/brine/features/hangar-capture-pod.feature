@@ -17,7 +17,7 @@ Feature: What a capture-selected task's Pod says
 
   @HOP-1 @HOP-3 @HOP-12
   Scenario: Selecting capture for a declared output puts the hold init container before every writer
-    Given a jetbridge worker with an artifact store
+    Given a jetbridge worker with an artifact store and the output plane on
     And a task container "build" built from image "busybox"
     And it takes an input at "/tmp/build/src"
     And it produces an output at "/tmp/build/result"
@@ -71,7 +71,7 @@ Feature: What a capture-selected task's Pod says
   # variable would sail past a scan that only knew the old one.
   @HOP-24
   Scenario: The capture control init is the only container that carries the source-control grant
-    Given a jetbridge worker with an artifact store
+    Given a jetbridge worker with an artifact store and the output plane on
     And a task container "build" built from image "busybox"
     And it produces an output at "/tmp/build/result"
     And its output "result" is captured when the step succeeds
@@ -81,7 +81,7 @@ Feature: What a capture-selected task's Pod says
 
   @HOP-1
   Scenario: Exactly one declared output is selected, and a second selection is refused
-    Given a jetbridge worker with an artifact store
+    Given a jetbridge worker with an artifact store and the output plane on
     And a task container "build" built from image "busybox"
     And it produces an output at "/tmp/build/result"
     And it produces an output at "/tmp/build/report"
@@ -92,7 +92,7 @@ Feature: What a capture-selected task's Pod says
 
   @HOP-3 @HOP-58
   Scenario: A capture pod carries the base control handshake and the exact Downward API pod and node fields
-    Given a jetbridge worker with an artifact store
+    Given a jetbridge worker with an artifact store and the output plane on
     And a task container "build" built from image "busybox"
     And it produces an output at "/tmp/build/result"
     And its output "result" is captured when the step succeeds
@@ -104,7 +104,7 @@ Feature: What a capture-selected task's Pod says
   # declared Volume" is only a real claim when the number is pinned too.
   @HOP-12 @HOP-20
   Scenario: A capture pod's mounts all resolve to a declared Volume
-    Given a jetbridge worker with an artifact store
+    Given a jetbridge worker with an artifact store and the output plane on
     And a task container "build" built from image "busybox"
     And it takes an input at "/tmp/build/src"
     And it produces an output at "/tmp/build/result"
