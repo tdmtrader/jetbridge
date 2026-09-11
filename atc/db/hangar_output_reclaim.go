@@ -180,13 +180,19 @@ func (repository *HangarOutputRepository) AdmitDelete(ctx context.Context, tx ou
 			"finish inside is derived from one", output.ErrIncomplete)
 	}
 
-	var remaining time.Duration
-	var seconds float64
+	// Both instants come from the DATABASE, and the subtraction is done here.
+	//
+	// Not `extract(epoch FROM (expires_at - now()))`, which would be one
+	// statement instead of two values -- but `FROM` inside `extract` is the one
+	// place this plane's own table-naming guard cannot tell a keyword from a
+	// table, and a rule that has to be taught an exception is a rule with an
+	// exception. Reading two timestamps and subtracting them is the same
+	// arithmetic on the same clock.
+	var expiresAt, databaseNow time.Time
 	if err := hangarQueryRow(ctx, tx, `
-		SELECT extract(epoch FROM (expires_at - now()))
-		  FROM hangar_reclaim_jobs
+		SELECT expires_at, now() FROM hangar_reclaim_jobs
 		 WHERE id = $1 AND owner_id = $2 AND lease_fence = $3 AND finalized_at IS NULL`,
-		[]any{job.ID, job.OwnerID, int64(job.LeaseFence)}, &seconds); err != nil {
+		[]any{job.ID, job.OwnerID, int64(job.LeaseFence)}, &expiresAt, &databaseNow); err != nil {
 		if errors.Is(err, output.ErrNotFound) {
 			return 0, fmt.Errorf("%w: reclaim job %d is no longer owner %s at fence %d, or it is "+
 				"finalized", output.ErrConflict, job.ID, job.OwnerID, job.LeaseFence)
@@ -194,7 +200,7 @@ func (repository *HangarOutputRepository) AdmitDelete(ctx context.Context, tx ou
 
 		return 0, err
 	}
-	remaining = time.Duration(seconds * float64(time.Second))
+	remaining := expiresAt.Sub(databaseNow)
 	if !output.MayStartWork(remaining, deleteTimeout) {
 		return 0, fmt.Errorf("%w: reclaim job %d has %s of lease left and a delete of %s needs "+
 			"%s; work begins only with the delete timeout plus %s remaining",
