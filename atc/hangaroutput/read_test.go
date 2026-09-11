@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/hangaroutput"
@@ -422,6 +423,55 @@ func TestACommitFailureWithNoSchemaClassStaysUnresolved(t *testing.T) {
 	}
 }
 
+// AND A COMMIT CARRYING A CLASS NOBODY NAMED IS STILL A LOST ANSWER.
+//
+// The spec above presents a commit failure with no SQLSTATE at all, which falls
+// through the adapter's mapping unchanged. This is the other half, and it is the
+// one refused()'s deliberate exclusion of ErrInfrastructure is written for: the
+// adapter maps every SQLSTATE it does not recognise onto ErrInfrastructure, so a
+// class really does arrive here -- 53300, "too many clients", is a database that
+// could not even be asked -- and reading "a class arrived" as "the database
+// answered no" would tell a caller to stop when nothing is known about whether
+// its rows landed. The read lease is exactly the row a caller must ask about
+// again with the SAME identity, which is why the request carries one.
+//
+// The commit error goes through db.HangarCommitError rather than being hand-
+// built: what is under test is the plane's reading of a mapped commit, so the
+// mapping has to be the production one.
+func TestACommitFailingWithAnUnrecognisedSQLSTATEStaysUnresolved(t *testing.T) {
+	h := newHarness(t)
+	ref := registeredRef(t, h)
+	claimID := claimOn(t, h, ref)
+
+	// The control: the mapping really does produce a class here, so a green
+	// below is not "the exclusion was never exercised".
+	unrecognised := db.HangarCommitError(&pgconn.PgError{
+		Code: "53300", Message: "sorry, too many clients already"})
+	if !errors.Is(unrecognised, output.ErrInfrastructure) {
+		t.Fatalf("53300 mapped to %v; this spec is about the class an unrecognised SQLSTATE "+
+			"produces and there is no longer one", unrecognised)
+	}
+
+	admission, minter := readAdmission(t, h)
+	failing := &failingCommitTransactor{inner: admission.Transactor, FailWith: unrecognised}
+	admission.Transactor = failing
+	failing.FailNext = true
+
+	_, err := admission.Admit(context.Background(), readRequest(t, claimID, ref))
+	if !errors.Is(err, output.ErrUnresolved) {
+		t.Fatalf("a commit that failed with a SQLSTATE this plane does not name was reported "+
+			"as %v; an outcome nobody named is not a denial, and a caller told one stops "+
+			"instead of retrying with the same lease identity", err)
+	}
+	if errors.Is(err, output.ErrInfrastructure) {
+		t.Error("the unrecognised class was passed on as the answer, so the ambiguity rule " +
+			"never ran")
+	}
+	if minter.calls != 0 {
+		t.Errorf("the signer ran %d times for an admission that never committed", minter.calls)
+	}
+}
+
 // recordAtRiskPolicy writes the lifetime-policy attestation the schema refuses
 // a new protection under. It is the production repository method; the state is
 // a fact an attestor records, not a flag this spec flips.
@@ -457,6 +507,15 @@ func recordAtRiskPolicy(t *testing.T, h *harness) {
 type failingCommitTransactor struct {
 	inner    hangaroutput.Transactor
 	FailNext bool
+
+	// FailWith is what that commit answers, and it is a parameter because the
+	// two shapes of unanswered commit are different facts. An error carrying no
+	// SQLSTATE at all is a dropped connection. An error carrying a SQLSTATE
+	// THIS PLANE DOES NOT NAME has been through the adapter's mapping and come
+	// out as ErrInfrastructure -- which is the case refused()'s exclusion is
+	// written for, and the one a "class arrived, so it is a denial" reading
+	// would get wrong. Nil means commitRefused.
+	FailWith error
 }
 
 var commitRefused = errors.New("the commit was refused")
@@ -468,17 +527,24 @@ func (transactor *failingCommitTransactor) Begin() (hangaroutput.Transaction, er
 	}
 	if transactor.FailNext {
 		transactor.FailNext = false
+		failure := transactor.FailWith
+		if failure == nil {
+			failure = commitRefused
+		}
 
-		return &refusingTransaction{Transaction: tx}, nil
+		return &refusingTransaction{Transaction: tx, failure: failure}, nil
 	}
 
 	return tx, nil
 }
 
-type refusingTransaction struct{ hangaroutput.Transaction }
+type refusingTransaction struct {
+	hangaroutput.Transaction
+	failure error
+}
 
 func (tx *refusingTransaction) Commit() error {
 	_ = tx.Transaction.Rollback()
 
-	return commitRefused
+	return tx.failure
 }
