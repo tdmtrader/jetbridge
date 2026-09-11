@@ -84,6 +84,7 @@ DROP TABLE hangar_output_activation_epochs;
 
 DROP FUNCTION hangar_policy_violation_resolution();
 DROP FUNCTION hangar_check_reclaim_evidence();
+DROP FUNCTION hangar_check_reclaim_admission();
 DROP FUNCTION hangar_check_policy_admission();
 DROP FUNCTION hangar_check_read_lease_claim();
 DROP FUNCTION hangar_check_reclaim_exclusion();

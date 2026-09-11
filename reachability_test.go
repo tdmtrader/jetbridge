@@ -99,11 +99,12 @@ var deferredEntryPoints = []deferredEntryPoint{
 	{"ValidateSealDeadline", sealDeadlineHasNoFlag},
 	{"ValidateCaptureDeadline", captureDeadlineHasNoProducer},
 
-	// Wired later in this revision. It is here so the first commit is green and
-	// the rule is on from it; the commit that wires it deletes this line, and
-	// the "listed as deferred but referenced" arm below is what stops a line
-	// outliving its reason.
-	{"OpenPolicyViolations", violationGateArrivesLater},
+	// The reclaim-admission violation gate is enforced by the schema, on the
+	// INSERT itself, so this read is not part of it: a Go copy of the rule
+	// beside the SQL one would be two descriptions to keep in step, and the
+	// one that is not the enforcement is the one that drifts. It stays where
+	// the rest of the operator surface is.
+	{"OpenPolicyViolations", statusSurface},
 }
 
 const (
@@ -120,8 +121,6 @@ const (
 	captureDeadlineHasNoProducer = "the producer for capture_deadline_at is the Phase 8 " +
 		"Refactor line named in the collision-at-deadline carry-forward; nothing composes a " +
 		"capture deadline from a duration yet, so there is no configuration site to bound"
-	violationGateArrivesLater = "the reclaim-admission violation gate is wired later in this " +
-		"revision, under R1-F15"
 )
 
 func TestEveryExportedHangarEntryPointIsReachableOrDeclaredDeferred(t *testing.T) {

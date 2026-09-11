@@ -17,6 +17,7 @@ package db_test
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -315,6 +316,86 @@ var _ = Describe("the output-plane controller passes", func() {
 			Expect(notification.Channel).To(Equal(channel),
 				"the notification went to a channel no controller listens on, which is a "+
 					"producer notifying nobody and fails silently")
+		})
+
+		It("waits for reconciliation before admitting another delete beside an unexplained one", func() {
+			// R1-F15's ruling, in the half where the blip reading is wrong. A
+			// fresh safe attestation reopens captures, claims and grants,
+			// because a twenty-minute network problem must not need a human
+			// before the plane resumes. It does NOT reopen deletion while a
+			// violation says something else may be removing this bucket's
+			// objects: resuming there is how a plane finishes a job something
+			// else started.
+			gone := published(hangarDigest(89))
+			candidate := published(hangarDigest(90))
+			// A third, untouched generation for the admission probe. The probe
+			// takes a CLAIM, and a claim is one of reclaim admission's
+			// exclusions -- probing on the candidate would block the very
+			// admission this spec is about, for the wrong reason.
+			probe := published(hangarDigest(91))
+			ageRegistration(candidate, output.DefaultPublicationGrace+time.Hour)
+
+			key, err := hangar.TreeKey(namespace.Prefix(), gone.Scope, gone.Digest)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(store.ObjectToDelete(namespace.Bucket(), key).Delete(ctx)).To(Succeed())
+
+			reconciled, err := newSweep().Reconcile(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(reconciled).To(Equal(1))
+			Expect(openViolations()).To(ContainElement(string(output.ViolationOutOfBandAbsence)))
+
+			// A fresh safe attestation. The rest of the plane is open again --
+			// that is the ruling -- and the violation is still open, because
+			// re-attesting never erases one.
+			attest := func() {
+				GinkgoHelper()
+				tx, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(tx)
+				Expect(repository.RecordPolicySnapshot(ctx, db.HangarOutputTx{Tx: tx},
+					output.PolicySnapshot{
+						ProtocolVersion:   output.ProtocolVersion,
+						ActivationEpoch:   1,
+						BucketFingerprint: "gs://output-bucket",
+						Metageneration:    4,
+						PolicyHash:        "policy-hash-2",
+						State:             output.PolicySafe,
+						ObservedAt:        output.NewTimestamp(time.Now()),
+					})).To(Succeed())
+				Expect(tx.Commit()).To(Succeed())
+			}
+			attest()
+			Expect(policyStateOf(1)).To(Equal("safe"))
+			Expect(admissionRefusal(probe)).To(BeEmpty(),
+				"a fresh safe attestation did not reopen ordinary admission; a twenty-minute "+
+					"network blip must not need a human before the plane resumes")
+			Expect(openViolations()).To(ContainElement(string(output.ViolationOutOfBandAbsence)),
+				"re-attesting erased the violation, which is a reconciliation that never "+
+					"happened")
+
+			// And reclaim admission, which is the half that waits.
+			admitted, err := newAdmission().Run(ctx, leaseFor(output.OperationReclaimAdmission))
+			Expect(err).NotTo(HaveOccurred(),
+				"a refused admission is a fact about the epoch, not a failed pass")
+			Expect(admitted).To(BeZero(),
+				"the plane resumed deleting objects beside an unexplained deleter after nothing "+
+					"more than a fresh reading")
+			Expect(lifecycleStateOf(candidate)).To(Equal("registered"))
+
+			// Reconciled, and deletion resumes. Without this the refusal above
+			// could be a plane that had simply stopped reclaiming.
+			tx, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(repository.ReconcilePolicyViolation(ctx, db.HangarOutputTx{Tx: tx}, 1,
+				output.ViolationOutOfBandAbsence,
+				string(gone.Scope)+"/"+string(gone.Digest)+"/"+
+					strconv.FormatInt(gone.Generation, 10))).To(Succeed())
+			Expect(tx.Commit()).To(Succeed())
+
+			admitted, err = newAdmission().Run(ctx, leaseFor(output.OperationReclaimAdmission))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(admitted).To(Equal(1))
+			Expect(lifecycleStateOf(candidate)).To(Equal("reclaiming"))
 		})
 
 		It("leaves a generation inside its publication grace alone", func() {

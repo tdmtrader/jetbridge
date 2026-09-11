@@ -450,8 +450,8 @@ func (repository *HangarOutputRepository) RecordRuntimeAtRisk(ctx context.Contex
 	return nil
 }
 
-// Deferred: the reclaim-admission violation gate is wired later in this
-// revision, under R1-F15
+// Deferred: the operator status and diagnosis surface is Phase 8's; no running
+// process reads it yet
 //
 // OpenPolicyViolations reads what is still unreconciled for one epoch.
 //

@@ -1574,6 +1574,48 @@ CREATE CONSTRAINT TRIGGER hangar_policy_admits_new_protection
     FOR EACH ROW WHEN (NEW.origin = 'adopted')
     EXECUTE FUNCTION hangar_check_policy_admission();
 
+-- Reclaim admission, and ONLY reclaim admission, is gated on violation
+-- reconciliation as well as on a fresh safe attestation.
+--
+-- Req 52's recovery clause says a fresh safe attestation AND violation
+-- reconciliation. The admission gate above tests only the freshest snapshot,
+-- and that is the right call for most of the plane: a twenty-minute network
+-- blip leaves an unreadable-evidence violation open, and requiring a human
+-- before captures, claims and grants resume would turn a blip into an outage.
+--
+-- Deletion is the half where that reading is wrong. Two violation classes say
+-- something else may be removing this bucket's objects -- a lifecycle rule that
+-- can delete, and an exact generation that vanished with no admitted delete
+-- behind it -- and resuming deletion beside an unexplained deleter is how a
+-- plane finishes the job something else started. Those two, open, stop new
+-- admissions until somebody has said what happened.
+--
+-- Already-admitted work is untouched: this fires on INSERT, and Req 52 lets
+-- conditional delete work that was already admitted finish.
+CREATE FUNCTION hangar_check_reclaim_admission() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+DECLARE
+    unreconciled integer;
+BEGIN
+    SELECT count(*) INTO unreconciled FROM hangar_policy_violations
+        WHERE activation_epoch = NEW.activation_epoch
+          AND resolved_at IS NULL
+          AND violation IN ('lifecycle_delete_rule', 'out_of_band_absence');
+
+    IF unreconciled > 0 THEN
+        RAISE EXCEPTION 'hangar: epoch % has % unreconciled lifetime violation(s) saying something other than this plane may be removing its objects; a fresh safe attestation reopens the rest of the plane, and reclaim admission waits for reconciliation, because resuming deletion beside an unexplained deleter is how this plane finishes a job something else started',
+            NEW.activation_epoch, unreconciled
+            USING ERRCODE = 'JB002';
+    END IF;
+
+    RETURN NULL;
+END $$;
+
+CREATE CONSTRAINT TRIGGER hangar_reclaim_admission_needs_reconciliation
+    AFTER INSERT ON hangar_reclaim_jobs
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION hangar_check_reclaim_admission();
+
 -- What a finalized reclaim job may claim to have proved. `reclaimed_confirmed`
 -- needs an acknowledged conditional delete; `reclaimed_inferred` needs a
 -- durable admitted-delete record whose response was lost, plus observed exact
