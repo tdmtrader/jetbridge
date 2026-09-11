@@ -85,6 +85,19 @@ func OpenListenerPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 			output.ErrInfrastructure, err)
 	}
 
+	// The pool is lazy, so NewWithConfig succeeds against a database that is
+	// not there. This is where that is found out, and it is not fastidiousness:
+	// the listener this pool is for acquires its connection in a constructor
+	// that PANICS on failure, so a controller that handed it an unreachable
+	// pool would crash on a database blip -- over an acceleration whose whole
+	// error policy is "log it and run on the ticker".
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+
+		return nil, fmt.Errorf("%w: reaching the controller listener connection: %v",
+			output.ErrInfrastructure, err)
+	}
+
 	return pool, nil
 }
 

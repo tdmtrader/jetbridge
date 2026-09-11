@@ -19,6 +19,10 @@ import (
 	"testing"
 	"time"
 
+	"code.cloudfoundry.org/lager/v3/lagerctx"
+	"code.cloudfoundry.org/lager/v3/lagertest"
+
+	"github.com/concourse/concourse/atc/hangaroutput/controller"
 	"github.com/concourse/concourse/hangar/output"
 	"github.com/concourse/concourse/hangar/output/reclaimer"
 )
@@ -165,5 +169,33 @@ func TestTheReclaimerRefusesAGraceThatCouldRaceACaptureBeforeItOpensAnything(t *
 	}
 	if !errors.Is(err, output.ErrIncomplete) {
 		t.Errorf("the refusal is %v; a grace below the floor is an incomplete configuration", err)
+	}
+}
+
+// The acceleration never takes the process down with it.
+//
+// Notification accelerates work and is never how work is found -- every worker
+// in this plane has a nonzero periodic wake beside it -- so a listener that
+// cannot be opened costs latency and nothing else. That is worth a test because
+// the listener's own constructor PANICS when it cannot acquire a connection,
+// and a pool is lazy: without a reachability check the reclaimer would crash on
+// a database blip rather than run on its ticker.
+func TestTheReclaimerRunsWithoutItsAccelerationRatherThanCrashing(t *testing.T) {
+	ctx := lagerctx.NewContext(context.Background(), lagertest.NewTestLogger("reclaimer"))
+
+	var accelerated controller.Acceleration
+	var closeBus func()
+	if r := func() (recovered any) {
+		defer func() { recovered = recover() }()
+		accelerated, closeBus = listenForAdmissions(ctx, "postgres://127.0.0.1:1/none", nil)
+
+		return nil
+	}(); r != nil {
+		t.Fatalf("an unreachable listener panicked instead of being run past: %v", r)
+	}
+	defer closeBus()
+
+	if accelerated != nil {
+		t.Error("an unreachable listener came back as a working acceleration")
 	}
 }
