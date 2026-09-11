@@ -952,6 +952,23 @@ func (repository *HangarOutputRepository) AdmitReclaim(ctx context.Context, tx o
 		return hangarConflict(err)
 	}
 
+	// The acceleration, and it is INSIDE the transaction on purpose.
+	//
+	// PostgreSQL delivers a NOTIFY issued in a transaction only when that
+	// transaction commits, so "after the transaction that created the work has
+	// committed" is what this already means -- a listener woken by an admission
+	// that rolled back would read a job that does not exist. Doing it out of
+	// band after the commit would be the same claim with a window in it.
+	//
+	// It is an acceleration and never the way work is found: the delete
+	// controller has a nonzero periodic wake, so a lost notification costs a
+	// minute rather than a job.
+	if _, err := tx.ExecContext(ctx,
+		`SELECT pg_notify($1, '')`, output.NotifyChannel(output.OperationReclaimDelete),
+	); err != nil {
+		return hangarConflict(err)
+	}
+
 	return nil
 }
 

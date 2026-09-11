@@ -169,7 +169,7 @@ func run(ctx context.Context, config attestorConfig) error {
 	logger.RegisterSink(lager.NewWriterSink(os.Stdout, lager.INFO))
 	ctx = lagerctx.NewContext(ctx, logger)
 
-	ticker := time.NewTicker(controller.Interval(config.Interval))
+	ticker := time.NewTicker(controller.Interval(output.OperationPolicyAttestation, config.Interval))
 	defer ticker.Stop()
 
 	for {

@@ -98,11 +98,10 @@ var deferredEntryPoints = []deferredEntryPoint{
 	{"ObserveExactAbsence", separateAbsenceStat},
 	{"ValidateSealDeadline", sealDeadlineHasNoFlag},
 
-	// Two that are wired later in this revision. They are here so the first
-	// commit is green and the rule is on from it; the commit that wires each
-	// deletes its line, and the "listed as deferred but referenced" arm below
-	// is what stops a line outliving its reason.
-	{"HangarOutputNotify", notifyArrivesLater},
+	// Wired later in this revision. It is here so the first commit is green and
+	// the rule is on from it; the commit that wires it deletes this line, and
+	// the "listed as deferred but referenced" arm below is what stops a line
+	// outliving its reason.
 	{"OpenPolicyViolations", violationGateArrivesLater},
 }
 
@@ -117,7 +116,6 @@ const (
 		"stat belongs to the ambiguous-response recovery path in Phase 8"
 	sealDeadlineHasNoFlag = "Req 17's bound has no operator-facing flag to refuse; the " +
 		"coordinator's seal deadline is set by the ATC's own composition"
-	notifyArrivesLater        = "NOTIFY acceleration is wired later in this revision, under R1-F9"
 	violationGateArrivesLater = "the reclaim-admission violation gate is wired later in this " +
 		"revision, under R1-F15"
 )

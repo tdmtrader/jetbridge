@@ -62,6 +62,21 @@ const (
 )
 
 // OperationKinds is the closed set, in the order the schema names them.
+// NotifyChannel is the PostgreSQL notification channel one kind is woken on.
+//
+// One channel per kind, matching one lease and one cursor per kind, so a
+// notification about reclaim work cannot wake the inventory sweep -- which
+// would be a wake with nothing to do, every time, for the kind with the most
+// expensive pass.
+//
+// It is derived rather than written down because a channel name that drifted
+// from its kind would be a producer notifying nobody, and the failure mode of
+// that is silence: the work is still found by the periodic pass, later, and
+// nothing says the acceleration stopped working.
+func NotifyChannel(kind OperationKind) string {
+	return "hangar_output_" + string(kind)
+}
+
 func OperationKinds() []OperationKind {
 	return []OperationKind{
 		OperationCaptureRecovery,

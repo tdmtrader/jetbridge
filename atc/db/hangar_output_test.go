@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"time"
 
-	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -2744,43 +2743,6 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			Expect(record.Settled).To(BeFalse())
 			Expect(record.ReleaseIntentID).ToNot(BeEmpty(),
 				"a registered capture recorded no release intent for the source it sealed")
-		})
-	})
-
-	Describe("waking a worker", func() {
-		// NOTIFY accelerates work; it is never how work is found. A failed one
-		// is therefore a warning and nothing else: the transaction it announces
-		// has already committed, there is nothing left to undo, and the work is
-		// still picked up by the worker's periodic database-clock pass. So the
-		// call returns nothing a caller could be tempted to roll back on.
-		It("reports a failed notification without offering the caller an error", func() {
-			logger := lagertest.NewTestLogger("hangar-output")
-
-			Expect(func() {
-				db.HangarOutputNotify(logger, dbConn, "1 this is not a channel name")
-			}).NotTo(Panic())
-
-			Expect(logger.Logs()).NotTo(BeEmpty())
-			Expect(logger.LogMessages()).To(ContainElement(
-				ContainSubstring("failed-to-notify-hangar-output-worker")))
-
-			// And the connection is still usable, because nothing was rolled
-			// back and nothing was left open.
-			var one int
-			Expect(dbConn.QueryRow(`SELECT 1`).Scan(&one)).To(Succeed())
-			Expect(one).To(Equal(1))
-		})
-
-		It("wakes each worker channel it is given", func() {
-			logger := lagertest.NewTestLogger("hangar-output")
-
-			db.HangarOutputNotify(logger, dbConn,
-				db.HangarOutputCaptureRecoveryChannel,
-				db.HangarOutputReleaseChannel,
-				db.HangarOutputInventoryChannel,
-				db.HangarOutputReclaimChannel)
-
-			Expect(logger.Logs()).To(BeEmpty(), "a valid channel was reported as failing")
 		})
 	})
 

@@ -210,16 +210,48 @@ var _ = Describe("the bounded output-plane workers", func() {
 	})
 
 	It("has a nonzero wake no slower than a minute, whatever it is configured with", func() {
-		// component.Runner with a zero interval wakes only on NOTIFY, so a zero
-		// here is a worker that a missed notification silences until the next
-		// restart. There is one spelling of the bound and it is nonzero by
-		// construction.
-		Expect(controller.Interval(0)).To(Equal(output.WorkerFallbackInterval))
-		Expect(controller.Interval(-time.Second)).To(Equal(output.WorkerFallbackInterval))
-		Expect(controller.Interval(time.Hour)).To(Equal(output.WorkerFallbackInterval),
-			"a configured interval slower than the bound was accepted")
-		Expect(controller.Interval(10 * time.Second)).To(Equal(10 * time.Second))
+		// A worker with a zero interval wakes only on NOTIFY, so a zero here is
+		// a worker that a missed notification silences until the next restart.
+		// There is one spelling of the bound and it is nonzero by construction.
+		for _, kind := range []output.OperationKind{
+			output.OperationInventory, output.OperationReclaimDelete,
+			output.OperationCaptureRecovery,
+		} {
+			Expect(controller.Interval(kind, 0)).To(Equal(output.WorkerFallbackInterval))
+			Expect(controller.Interval(kind, -time.Second)).
+				To(Equal(output.WorkerFallbackInterval))
+			Expect(controller.Interval(kind, time.Hour)).
+				To(Equal(output.WorkerFallbackInterval),
+					"a configured interval slower than the bound was accepted")
+			Expect(controller.Interval(kind, 10*time.Second)).To(Equal(10 * time.Second))
+		}
 		Expect(output.WorkerFallbackInterval).To(Equal(time.Minute))
+	})
+
+	// The attestor's ceiling is its own, and this is the half that was wrong.
+	//
+	// Req 51 bounds the policy attestation at fifteen minutes and every pass of
+	// it is a whole-bucket lifecycle and IAM read. One ceiling for every kind
+	// meant the attestor's validated, configured, five-minute interval was
+	// clamped to sixty seconds: compliant with "at least every 15 minutes", and
+	// fifteen times more IAM traffic than anyone asked for or reviewed.
+	It("lets the policy attestor keep the interval it was configured with", func() {
+		attestation := output.OperationPolicyAttestation
+
+		Expect(controller.Interval(attestation, output.MaxPolicyEvidenceAge/3)).
+			To(Equal(output.MaxPolicyEvidenceAge/3),
+				"the attestor's default interval was clamped to another kind's ceiling")
+		Expect(controller.Interval(attestation, 10*time.Minute)).To(Equal(10 * time.Minute))
+
+		// Its own bound still holds, and it is still nonzero by construction.
+		Expect(controller.Interval(attestation, time.Hour)).
+			To(Equal(output.MaxPolicyEvidenceAge))
+		Expect(controller.Interval(attestation, 0)).To(Equal(output.MaxPolicyEvidenceAge))
+
+		// And no other kind inherits it: the workers whose backlog is work
+		// waiting keep the one-minute fallback Req 50 gives them.
+		Expect(controller.Interval(output.OperationInventory, 10*time.Minute)).
+			To(Equal(output.WorkerFallbackInterval))
 	})
 
 	// The carry-forward: read-lease recovery had no worker at all, so a crashed

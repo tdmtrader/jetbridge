@@ -152,9 +152,20 @@ func (pass *Pass) loadCursor(ctx context.Context, lease output.OperationLease) (
 
 // adopt offers one classified object for adoption.
 //
-// It reports whether a lifecycle row was written. Every refusal the repository
-// can give is a fact about one object rather than an error in the pass, which
-// is why only an unexpected class comes back as one.
+// It reports whether a lifecycle row was written. Every TYPED refusal the
+// repository can give is a fact about one object rather than an error in the
+// pass: an unresolved reservation, a capture still inside its deadline, a
+// source still held, an object still inside its publication grace. A validation
+// failure, a lock failure or a query error is not one of those, and this used
+// to report all three as "not adopted, nothing wrong" -- because it tested
+// Adopted() before it tested err, and AdoptManagedOrphan returns ("", err) for
+// exactly those. The page's debt arm was unreachable as a result, and its
+// comment described behaviour that never happened.
+//
+// The two are told apart by the OUTCOME and not by the error alone. A typed
+// refusal comes back as a named member plus an ErrConflict explaining it; a
+// failure comes back with no member at all, because the repository got far
+// enough to say nothing about the object.
 func (pass *Pass) adopt(ctx context.Context, object output.InventoryObject) (bool, error) {
 	if !object.Managed {
 		// Unmanaged. Recorded by the listing, never relabelled, adopted or
@@ -184,11 +195,15 @@ func (pass *Pass) adopt(ctx context.Context, object output.InventoryObject) (boo
 		Grace:           pass.Grace,
 		SafetyMargin:    output.PublicationGraceMargin,
 	})
+	if err != nil {
+		if outcome != "" && errors.Is(err, output.ErrConflict) {
+			return false, nil
+		}
+
+		return false, err
+	}
 	if !outcome.Adopted() {
 		return false, nil
-	}
-	if err != nil {
-		return false, err
 	}
 	if err := tx.Commit(); err != nil {
 		return false, err

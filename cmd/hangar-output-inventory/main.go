@@ -98,7 +98,7 @@ func run(ctx context.Context, config controllerConfig) error {
 		Reporter: controller.ReporterFunc(logPass),
 	}
 
-	return loop(ctx, runner, controller.Interval(config.Interval))
+	return loop(ctx, runner, controller.Interval(output.OperationInventory, config.Interval))
 }
 
 // loop is the periodic wake. It is nonzero by construction: component.Runner

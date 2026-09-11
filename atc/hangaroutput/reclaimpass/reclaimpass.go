@@ -15,6 +15,7 @@ package reclaimpass
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/concourse/concourse/atc/db"
@@ -153,6 +154,24 @@ type DeletePass struct {
 
 var _ controller.Pass = (*DeletePass)(nil)
 
+// Run advances a bounded batch, and REPORTS what it could not advance.
+//
+// It used to `continue` on every per-job error under a comment saying
+// "recorded and skipped", and nothing recorded anything: an unreachable store,
+// an unauthorized principal and a healthy empty queue all reported `class=ok`
+// with a processed count of zero. That is precisely the state the Reporter's own
+// documentation says the count exists to make distinguishable -- "a controller
+// that did nothing and a controller that is stuck look identical without it" --
+// and the count alone cannot say it, because both are zero.
+//
+// One representative error is enough and a list would be worse: the class is a
+// bounded metric label, a stuck plane is stuck for one reason at a time in
+// practice, and every per-job outcome is already durable in its own row. What
+// the pass owes telemetry is "this was not ok", said in the leaf's vocabulary.
+//
+// A lease conflict is NOT one of those. A job whose owner is alive is somebody
+// else's this minute, which is a correctly configured pair of replicas racing,
+// and reporting it would make that look broken every time it happened.
 func (pass *DeletePass) Run(ctx context.Context, lease output.OperationLease) (int, error) {
 	jobs, err := pass.due(ctx)
 	if err != nil {
@@ -160,14 +179,28 @@ func (pass *DeletePass) Run(ctx context.Context, lease output.OperationLease) (i
 	}
 
 	advanced := 0
+	var firstErr error
 	for _, job := range jobs {
-		if err := pass.advance(ctx, job); err != nil {
-			continue
+		err := pass.advance(ctx, job)
+		switch {
+		case err == nil:
+			advanced++
+
+		case errors.Is(err, output.ErrConflict):
+			// Another owner holds this job and has not expired. Not this
+			// pass's work and not a failure.
+
+		default:
+			// One unreachable store must not stop every other generation in
+			// the deployment from being collected, so the loop goes on -- but
+			// the pass does not then attest healthy.
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
-		advanced++
 	}
 
-	return advanced, nil
+	return advanced, firstErr
 }
 
 func (pass *DeletePass) due(ctx context.Context) ([]db.HangarReclaimJob, error) {
@@ -270,6 +303,8 @@ func (pass *DeletePass) admitDelete(ctx context.Context, job db.HangarReclaimJob
 // generation conflict is debt and never a broader retry. Anything else leaves
 // the job open for the next pass under a renewed lease.
 func (pass *DeletePass) record(ctx context.Context, job db.HangarReclaimJob, attempt int64, outcome output.DeleteOutcome, deleteErr error) error {
+	unauthorized := false
+
 	tx, err := pass.Transactor.Begin()
 	if err != nil {
 		return err
@@ -303,13 +338,18 @@ func (pass *DeletePass) record(ctx context.Context, job db.HangarReclaimJob, att
 		}
 
 	case outcome == output.DeleteUnauthorized:
-		// The principal lost its grant. The generation goes back to being
-		// protected rather than being deleted on a guess -- and the EPOCH goes
-		// at risk, because this is Req 52's platform-principal mismatch in its
-		// runtime form. Finalizing the one job and returning nil, which is what
-		// this did, leaves a plane admitting new captures and new claims under
-		// an identity the store has just refused, with nothing recorded and
-		// nobody told.
+		// The principal lost its grant. The job is finalized and the epoch goes
+		// at risk -- and the pass says so, because a reclaimer whose store
+		// refuses it is not a healthy reclaimer that happened to finish a job.
+		// The error is returned AFTER the commit below, so the record stands
+		// whatever telemetry does with it.
+		// The generation goes back to being protected rather than being
+		// deleted on a guess, the EPOCH goes at risk because this is Req 52's
+		// platform-principal mismatch in its runtime form, and the pass reports
+		// it. Finalizing the one job and returning nil, which is what this did,
+		// leaves a plane admitting new work under an identity the store has
+		// just refused, reporting class=ok while it does.
+		unauthorized = true
 		if err := pass.Repository.FinalizeReclaim(ctx, tx, job,
 			output.ReclaimAbandoned, false); err != nil {
 			return err
@@ -333,5 +373,20 @@ func (pass *DeletePass) record(ctx context.Context, job db.HangarReclaimJob, att
 		}
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if unauthorized {
+		return fmt.Errorf("%w: the object store refused reclaim job %d a conditional delete; "+
+			"the generation is protected again and the epoch is at risk", output.ErrUnauthorized,
+			job.ID)
+	}
+	if deleteErr != nil {
+		// A timeout or an infrastructure failure, recorded and left open for
+		// the next pass. The job survived; the PASS did not do what it set out
+		// to do, and a plane whose store is unreachable must not read healthy.
+		return deleteErr
+	}
+
+	return nil
 }

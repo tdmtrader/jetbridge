@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -279,6 +280,43 @@ var _ = Describe("the output-plane controller passes", func() {
 					"in the bucket")
 		})
 
+		It("wakes the delete controller on the channel its admission notifies", func() {
+			// Req 50's other half. The fallback is what makes work always
+			// FOUND; this is what makes it found promptly, and it was absent:
+			// there was no NOTIFY anywhere in the output plane, so a reclaim
+			// job admitted a moment after a pass waited a whole interval for
+			// the pass that would act on it.
+			//
+			// The listener is a real LISTEN on a real connection, and the
+			// notification is issued inside the admitting transaction --
+			// PostgreSQL delivers it only when that transaction commits, which
+			// is what "after the work exists" has to mean.
+			listener, err := pgx.Connect(ctx, postgresRunner.DataSourceName())
+			Expect(err).NotTo(HaveOccurred())
+			defer func() { _ = listener.Close(ctx) }()
+
+			channel := output.NotifyChannel(output.OperationReclaimDelete)
+			_, err = listener.Exec(ctx, "LISTEN "+channel)
+			Expect(err).NotTo(HaveOccurred())
+
+			ref := published(hangarDigest(88))
+			ageRegistration(ref, output.DefaultPublicationGrace+time.Hour)
+
+			admitted, err := newAdmission().Run(ctx, leaseFor(output.OperationReclaimAdmission))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(admitted).To(Equal(1))
+
+			waiting, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			notification, err := listener.WaitForNotification(waiting)
+			Expect(err).NotTo(HaveOccurred(),
+				"admitting a reclaim job notified nobody, so the controller that acts on it "+
+					"waits a whole periodic interval for work that already exists")
+			Expect(notification.Channel).To(Equal(channel),
+				"the notification went to a channel no controller listens on, which is a "+
+					"producer notifying nobody and fails silently")
+		})
+
 		It("leaves a generation inside its publication grace alone", func() {
 			ref := published(hangarDigest(81))
 
@@ -290,6 +328,64 @@ var _ = Describe("the output-plane controller passes", func() {
 	})
 
 	Describe("the inventory sweep", func() {
+		It("reports an adoption that FAILED rather than counting it as a refusal", func() {
+			// The two are opposite facts and the pass told them apart by
+			// asking Adopted() before asking err. AdoptManagedOrphan returns
+			// ("", err) for a validation failure, a lock failure or a query
+			// error, so every one of them arrived as "not adopted, nothing
+			// wrong" -- and the page's debt arm, which exists for exactly this,
+			// was unreachable.
+			//
+			// The failure is arranged by taking the connection away, which is
+			// the shape of the real thing: the repository cannot say anything
+			// about the object because it never got to look.
+			key, err := hangar.TreeKey(namespace.Prefix(), "team-a", hangarDigest(87))
+			Expect(err).NotTo(HaveOccurred())
+			store.Seed(namespace.Bucket(), key, []byte("an orphan"), output.ObjectMarker{
+				Version:         output.MarkerVersion,
+				Scope:           "team-a",
+				Digest:          hangarDigest(87),
+				ReservationID:   output.ReservationID(uuid.NewString()),
+				ActivationEpoch: 1,
+				CreatedAt:       output.NewTimestamp(time.Now().UTC()),
+			}.Metadata())
+
+			// The control: the sweep adopts nothing here and says nothing is
+			// wrong, because a marked object inside its publication grace is a
+			// typed refusal about one object.
+			lease := leaseFor(output.OperationInventory)
+			sweep := newSweep()
+			_, err = sweep.Run(ctx, lease)
+			Expect(err).NotTo(HaveOccurred())
+
+			// And now a failure, in the adoption transaction and nowhere else.
+			// The pass reads the cursor first and commits the page last; only
+			// the transaction in between is poisoned, so a pass that reports an
+			// error here is reporting THIS one.
+			broken := newSweep()
+			broken.Transactor = &hangarPoisonedTransactor{conn: dbConn, poisonAt: 2}
+			_, err = broken.Run(ctx, lease)
+			Expect(err).NotTo(HaveOccurred(),
+				"one object's failure stopped the page; the keys behind it are stranded")
+
+			// The debt row is the whole assertion. It is the arm the pass has
+			// for exactly this -- "recorded against the object and not fatal to
+			// the page" -- and it was UNREACHABLE: AdoptManagedOrphan returns an
+			// empty outcome for a validation, lock or query failure, so asking
+			// Adopted() before asking err reported every one of them as a
+			// refusal, and the arm's own comment described behaviour that never
+			// happened.
+			var reason, detail string
+			Expect(dbConn.QueryRow(`
+				SELECT reason, detail FROM hangar_inventory_debt
+				 WHERE bucket_fingerprint = $1 AND object_key = $2`,
+				namespace.Bucket(), key).Scan(&reason, &detail)).To(Succeed(),
+				"an adoption that failed was recorded nowhere at all")
+			Expect(reason).To(Equal(string(output.DebtStatFailure)))
+			Expect(detail).NotTo(BeEmpty(),
+				"the debt row does not say what went wrong")
+		})
+
 		It("recovers a corrupt cursor on a later pass rather than stalling on it forever", func() {
 			// The cursor's own CHECK is what makes this shape unwritable, so
 			// the fixture suspends exactly that constraint for the length of
@@ -405,6 +501,44 @@ var _ = Describe("the output-plane controller passes", func() {
 				"the plane went on admitting new protection beside an unexplained deleter")
 		})
 
+		It("stops reporting a healthy class once a job cannot be advanced", func() {
+			ref := published(hangarDigest(85))
+			ageRegistration(ref, output.DefaultPublicationGrace+time.Hour)
+
+			admitted, err := newAdmission().Run(ctx, leaseFor(output.OperationReclaimAdmission))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(admitted).To(Equal(1))
+
+			// The control: with a store that answers, the pass is ok and the
+			// count is one. Both halves matter -- the assertion below is that a
+			// STUCK pass looks different, not that this pass ever looks bad.
+			deletes := newDeletes()
+			advanced, err := deletes.Run(ctx, leaseFor(output.OperationReclaimDelete))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(advanced).To(Equal(1))
+
+			// And now a plane whose store will not answer. A pass that reported
+			// class=ok here is the exact state the Reporter's own doc says the
+			// processed count exists to make distinguishable -- and the count
+			// cannot say it, because a controller that did nothing and a
+			// controller that is stuck both report zero.
+			second := published(hangarDigest(86))
+			ageRegistration(second, output.DefaultPublicationGrace+time.Hour)
+			admitted, err = newAdmission().Run(ctx, leaseFor(output.OperationReclaimAdmission))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(admitted).To(Equal(1))
+
+			store.Inject(gcstest.Faults{DeleteTimeout: true})
+			advanced, err = deletes.Run(ctx, leaseFor(output.OperationReclaimDelete))
+			Expect(advanced).To(BeZero())
+			Expect(err).To(HaveOccurred(),
+				"a reclaim pass whose every job failed reported no error at all, so the "+
+					"controller above it reports class=ok for an unreachable store")
+			Expect(err).To(MatchError(output.ErrTimeout))
+			Expect(lifecycleStateOf(second)).To(Equal("reclaiming"),
+				"a job the store did not answer for was closed rather than left open")
+		})
+
 		It("puts the epoch at risk when the store refuses the reclaimer a delete it is configured to make", func() {
 			ref := published(hangarDigest(83))
 			ageRegistration(ref, output.DefaultPublicationGrace+time.Hour)
@@ -419,9 +553,10 @@ var _ = Describe("the output-plane controller passes", func() {
 			// bindings claim, and this is the store saying otherwise.
 			store.Inject(gcstest.Faults{Unauthorized: true})
 
-			advanced, err := newDeletes().Run(ctx, leaseFor(output.OperationReclaimDelete))
-			Expect(err).NotTo(HaveOccurred())
-			Expect(advanced).To(Equal(1))
+			_, err = newDeletes().Run(ctx, leaseFor(output.OperationReclaimDelete))
+			Expect(err).To(MatchError(output.ErrUnauthorized),
+				"a reclaimer whose store refused it the one call its role exists to make "+
+					"reported a healthy pass")
 
 			Expect(lifecycleStateOf(ref)).To(Equal("registered"),
 				"a generation the plane could not delete was left reclaiming or worse; an "+
@@ -436,3 +571,34 @@ var _ = Describe("the output-plane controller passes", func() {
 		})
 	})
 })
+
+// hangarPoisonedTransactor hands out real transactions, except for the one at
+// poisonAt, which it rolls back before handing over.
+//
+// It is a transactor and not a fake repository on purpose: what has to be
+// arranged is the case where the repository cannot say anything about the
+// object at all -- a lock failure, a query error -- and everything below this
+// is the production repository against real PostgreSQL, failing for a real
+// reason.
+//
+// Exactly ONE transaction is poisoned, and that precision is the point. If the
+// pass's own commit failed too, the pass would report an error either way and
+// the spec would be green whether or not adoption errors are surfaced.
+type hangarPoisonedTransactor struct {
+	conn     db.DbConn
+	poisonAt int
+	handed   int
+}
+
+func (transactor *hangarPoisonedTransactor) Begin() (controller.Transaction, error) {
+	transactor.handed++
+	tx, err := transactor.conn.Begin()
+	if err != nil {
+		return nil, err
+	}
+	if transactor.handed == transactor.poisonAt {
+		_ = tx.Rollback()
+	}
+
+	return db.HangarOutputTx{Tx: tx}, nil
+}

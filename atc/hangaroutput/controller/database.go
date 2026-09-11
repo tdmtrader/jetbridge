@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	// The pgx stdlib driver, registered as "pgx", which is the name every other
 	// PostgreSQL caller in this repository opens with.
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -50,6 +51,52 @@ func OpenDatabase(dsn string, maxConns int) (*sql.DB, error) {
 	conn.SetConnMaxLifetime(time.Hour)
 
 	return conn, nil
+}
+
+// OpenListenerPool opens the connection a controller LISTENs on.
+//
+// It is separate from the pool above and it has to be. A LISTEN holds its
+// session for as long as it is listening, so a listener sharing the working
+// pool would take one of the two connections that pool exists to bound and hold
+// it forever -- and the pool is deliberately tiny because a controller does one
+// bounded unit per wake.
+//
+// Notification is an ACCELERATION. Every worker in this plane has a nonzero
+// periodic wake beside it (Req 50), so a listener that cannot be opened, or one
+// whose connection dies, costs latency rather than work: the caller logs it and
+// runs on the ticker.
+func OpenListenerPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
+	if dsn == "" {
+		return nil, fmt.Errorf("%w: a controller needs a database connection string",
+			output.ErrIncomplete)
+	}
+
+	config, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("%w: parsing the controller listener DSN: %v",
+			output.ErrInfrastructure, err)
+	}
+	config.MaxConns = 1
+	config.MinConns = 1
+
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		return nil, fmt.Errorf("%w: opening the controller listener connection: %v",
+			output.ErrInfrastructure, err)
+	}
+
+	return pool, nil
+}
+
+// Acceleration is the notification half of Req 50, declared where it is
+// CONSUMED.
+//
+// One method, returning a channel that is closed of nothing and receives when
+// there may be work. The contract is the one the notification bus already
+// states: a wake means "something changed", never "process this item", so
+// coalescing is safe and a pass does its own full bounded scan either way.
+type Acceleration interface {
+	C() <-chan struct{}
 }
 
 // SQLTransactor adapts a *sql.DB to the Transactor port.

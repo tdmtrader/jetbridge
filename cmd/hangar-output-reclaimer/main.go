@@ -20,6 +20,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"flag"
 	"fmt"
 	"os"
@@ -133,16 +134,77 @@ func run(ctx context.Context, config controllerConfig) error {
 		Reporter: controller.ReporterFunc(logPass),
 	}
 
-	return loop(ctx, []*controller.Runner{admission, deletes}, controller.Interval(config.Interval))
-}
-
-func loop(ctx context.Context, runners []*controller.Runner, interval time.Duration) error {
 	logger := lager.NewLogger("hangar-output-reclaimer")
 	logger.RegisterSink(lager.NewWriterSink(os.Stdout, lager.INFO))
 	ctx = lagerctx.NewContext(ctx, logger)
 
+	// The acceleration. A reclaim job is admitted by the pass above and worked
+	// by the pass below, and between them is a wait: without a notification the
+	// delete begins up to one periodic interval after the decision to delete.
+	// The fallback is what makes the work always FOUND; this is what makes it
+	// found promptly, and a failure here is logged and run past.
+	accelerated, closeBus := listenForAdmissions(ctx, config.DSN, conn)
+	defer closeBus()
+
+	return loop(ctx, []*controller.Runner{admission, deletes},
+		controller.Interval(output.OperationReclaimDelete, config.Interval), accelerated)
+}
+
+// listenForAdmissions subscribes to the channel AdmitReclaim notifies.
+//
+// It returns a nil Acceleration when it cannot subscribe, and that is the whole
+// error policy: notification accelerates work and is never the way work is
+// found, so a controller that could not listen runs on its periodic wake and
+// says so once rather than failing to start.
+func listenForAdmissions(ctx context.Context, dsn string, conn *sql.DB) (controller.Acceleration, func()) {
+	logger := lagerctx.FromContext(ctx)
+
+	pool, err := controller.OpenListenerPool(ctx, dsn)
+	if err != nil {
+		logger.Info("hangar-output-acceleration-unavailable", lager.Data{
+			"error":  err.Error(),
+			"effect": "none on correctness: work is found by the periodic database-clock pass",
+		})
+
+		return nil, func() {}
+	}
+
+	bus := db.NewNotificationsBus(db.NewPgxListener(pool), conn)
+	channel := output.NotifyChannel(output.OperationReclaimDelete)
+	signal, err := bus.ListenSignal(channel)
+	if err != nil {
+		logger.Info("hangar-output-acceleration-unavailable", lager.Data{
+			"error":  err.Error(),
+			"effect": "none on correctness: work is found by the periodic database-clock pass",
+		})
+		_ = bus.Close()
+		pool.Close()
+
+		return nil, func() {}
+	}
+
+	return signal, func() {
+		_ = bus.UnlistenSignal(channel, signal)
+		_ = bus.Close()
+		pool.Close()
+	}
+}
+
+// loop is the periodic wake, plus whatever accelerates it.
+//
+// The ticker is unconditional and the acceleration is optional, which is the
+// direction Req 50 states: a worker woken only by NOTIFY is silenced by one
+// missed notification until it restarts. A wake from either source runs the
+// same bounded pass over the same full query, so a coalesced notification and a
+// lost one cost the same thing -- nothing.
+func loop(ctx context.Context, runners []*controller.Runner, interval time.Duration, accelerated controller.Acceleration) error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+
+	var woken <-chan struct{}
+	if accelerated != nil {
+		woken = accelerated.C()
+	}
 
 	for {
 		for _, runner := range runners {
@@ -154,6 +216,7 @@ func loop(ctx context.Context, runners []*controller.Runner, interval time.Durat
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
+		case <-woken:
 		}
 	}
 }
