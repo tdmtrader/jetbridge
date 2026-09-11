@@ -142,6 +142,33 @@ Feature: What a sealed source becomes, and what the bucket then holds
     When the same canonical bytes are captured again
     Then the two captures share one object and carry two distinct receipts
 
+  # WHAT THIS SCENARIO PINS, AND WHAT IT DOES NOT. The distinction was found by
+  # an independent review of Phase 9 and is recorded here rather than filed.
+  #
+  # It pins: that a registered exact ref names the generation the store
+  # assigned (the first Then, which is also the positive control -- without it
+  # "the old ref does not resolve" passes against a chain that published
+  # nothing), and that a superseded generation stops resolving when asked for
+  # BY generation at a key that is still occupied.
+  #
+  # It does NOT pin the second half of Req 38, "a caller may recapture and
+  # claim a newly published generation". The replacement is published through
+  # the DAEMON -- `captureAgain` admits, reserves, holds, seals and publishes,
+  # and stops there -- so nothing settles it and no lifecycle row exists for
+  # the new generation to read back. Asserting the registration a second time
+  # here reddens, correctly, because there is nothing to find. Closing it means
+  # driving a second control-plane settle for the replacement's own identities,
+  # which is a step this family does not have; recorded in
+  # phase-9-demonstrations.md as owed.
+  #
+  # So the one product assertion in the replacement half is the
+  # different-generation check inside the When step, which surfaces as a step
+  # ERROR rather than as a failing Then. That is weaker than a Then and the
+  # file says so.
+  #
+  # Reddened by: RegisterReceipt registering the logical ref without its
+  # generation -- the FIRST Then reddens and brine stops there, which is also
+  # the M55 row in ../../DISPOSITION-hangar.md.
   @HOP-34 @HOP-45
   Scenario: An exact replacement generation supersedes the old one, and the old ref no longer resolves
     Given a real artifact daemon publishing to a Hangar output bucket

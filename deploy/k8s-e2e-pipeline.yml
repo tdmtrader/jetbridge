@@ -296,8 +296,19 @@ jobs:
           # contract broke. Recorded as a deliberate deviation in
           # phase-9-demonstrations.md rather than followed to the letter.
           STATUS=0
+          # A renamed test silently matches nothing and `go test` exits 0 with
+          # "no tests to run", so the job would go green having run neither
+          # contract. Count them first.
+          FOUND=$(grep -c -E 'func (TestLiveHangarGeneratedPodMaterializesStrictTree|TestLiveCaptureSelectedProducerHoldsAndWrites)\(' \
+            atc/worker/jetbridge/live_hangar_flow_test.go atc/worker/jetbridge/live_capture_flow_test.go \
+            | awk -F: '{s+=$2} END {print s}')
+          if [ "${FOUND}" -ne 2 ]; then
+            echo "the -run regex names two contracts and ${FOUND} were found; a rename went one way" >&2
+            exit 1
+          fi
+
           go test -tags hangar_live -v -count=1 -timeout 12m \
-            -run '^TestLiveHangarGeneratedPodMaterializesStrictTree$|^TestLiveCaptureSelectedProducerHoldsWritesAndIsSealed$' \
+            -run '^TestLiveHangarGeneratedPodMaterializesStrictTree$|^TestLiveCaptureSelectedProducerHoldsAndWrites$' \
             ./atc/worker/jetbridge/... || STATUS=1
 
           if [ "${STATUS}" -ne 0 ]; then

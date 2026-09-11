@@ -478,15 +478,20 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 					generation    int64
 					state         string
 				)
+				// By GENERATION, not by (scope, digest). A replacement
+				// registers a SECOND lifecycle for the same logical pair, and
+				// an unqualified QueryRow with no ORDER BY would silently take
+				// whichever row the planner handed back -- which is how this
+				// check would pass while looking at the superseded row.
 				err := in.Outcome.Plane.DB.Conn.QueryRow(`
 					SELECT scope, digest, generation, state
 					  FROM hangar_exact_lifecycles
-					 WHERE scope = $1 AND digest = $2`,
-					string(in.Ref.Scope), string(in.Ref.Digest)).
+					 WHERE scope = $1 AND digest = $2 AND generation = $3`,
+					string(in.Ref.Scope), string(in.Ref.Digest), in.Ref.Generation).
 					Scan(&scope, &digest, &generation, &state)
 				if err != nil {
-					return fmt.Errorf("no exact lifecycle for %s/%s: %v",
-						in.Ref.Scope, in.Ref.Digest, err)
+					return fmt.Errorf("no exact lifecycle for %s/%s at generation %d: %v",
+						in.Ref.Scope, in.Ref.Digest, in.Ref.Generation, err)
 				}
 
 				registered := hangar.TreeRef{

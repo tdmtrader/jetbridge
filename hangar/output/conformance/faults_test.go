@@ -98,15 +98,14 @@ func TestADeleteRefusedByIAMIsUnauthorizedAndNotAnInfrastructureFailure(t *testi
 			"retried it would retry forever, and the operator would never learn the grant is gone")
 	}
 
-	// And the object is STILL THERE. That is the half that matters: a refused
-	// delete must leave the generation intact, so the lifecycle row is still
-	// about an object that exists.
-	tier.memory.Inject(gcstest.Faults{})
-	namespace := namespaceFor(t, tier.bucket)
-	role, _ := publisherFor(t, tier, namespace)
-	if _, err := role.StatExactObject(context.Background(), ref); err != nil {
-		t.Errorf("the object is gone after a delete the store refused: %v", err)
-	}
+	// WHAT IS NOT ASSERTED HERE, and why. "And the object is still there" reads
+	// like the half that matters and it cannot fail on this substrate:
+	// `memoryHandle.Delete` returns the injected 403 BEFORE it looks the object
+	// up (`hangar/gcstest/memory.go:334-336`), so no mutation in the reclaimer
+	// -- whose whole body is `ObjectToDelete(...).Delete(ctx)` -- could make the
+	// object vanish. Asserting it would be asserting the fake's early return.
+	// A substrate that evaluated authorization after locating the object could
+	// say it; none here does, and real GCS is where it belongs.
 }
 
 // And `timeout`, for the same reason inverted: a delete that timed out MAY have
@@ -127,14 +126,10 @@ func TestADeleteThatTimedOutIsTimedOutAndNeverConfirmed(t *testing.T) {
 	if !errors.Is(err, output.ErrTimeout) {
 		t.Errorf("the error is not typed as a timeout: %v", err)
 	}
-	for _, forbidden := range []output.DeleteOutcome{
-		output.DeleteConfirmed, output.DeleteAlreadyAbsent,
-	} {
-		if outcome == forbidden {
-			t.Errorf("a timed-out delete reported %q; \"we did not hear back\" is not proof",
-				forbidden)
-		}
-	}
+	// No second loop over the outcomes a timeout must NOT be: the equality
+	// above already excludes every one of them, and a check that can only fire
+	// when the check above it has fired is a sentence about an assertion rather
+	// than an assertion.
 }
 
 // Every one of Req 47's six outcomes is now reachable from a test, and this row
@@ -152,6 +147,18 @@ func TestEveryTypedDeleteOutcomeIsExercisedSomewhere(t *testing.T) {
 		output.DeleteUnauthorized:       "TestADeleteRefusedByIAMIsUnauthorizedAndNotAnInfrastructureFailure",
 		output.DeleteTimedOut:           "TestADeleteThatTimedOutIsTimedOutAndNeverConfirmed",
 		output.DeleteInfrastructure:     "TestALostDeleteResponseIsNeverReportedAsConfirmed",
+	}
+
+	// The names above are strings, and a string is not a reference: deleting or
+	// renaming one of these tests would leave the map claiming it. This makes
+	// them load-bearing -- a deletion breaks the build rather than leaving a
+	// guard that quietly vouches for nothing.
+	_ = []func(*testing.T){
+		TestADeleteWithNoFaultInjectedIsConfirmed,
+		TestTheExactGenerationDeleteIsConditionalAndTyped,
+		TestADeleteRefusedByIAMIsUnauthorizedAndNotAnInfrastructureFailure,
+		TestADeleteThatTimedOutIsTimedOutAndNeverConfirmed,
+		TestALostDeleteResponseIsNeverReportedAsConfirmed,
 	}
 
 	for _, outcome := range output.DeleteOutcomes() {
@@ -205,12 +212,26 @@ func TestARetryAfterAnAmbiguousCreateConvergesOnOneGeneration(t *testing.T) {
 			"twice and left one of them unregistered",
 			second.Attributes.Ref.Generation, first.Attributes.Ref.Generation)
 	}
-	if !second.Deduplicated {
-		t.Error("the retry reported a fresh create rather than a deduplication; the object the " +
-			"lost response committed is what it must have found")
-	}
 	if second.Marker.ReservationID != testReservation {
 		t.Errorf("the retry's marker names reservation %q, not the one that published the "+
 			"bytes (%q)", second.Marker.ReservationID, testReservation)
 	}
+
+	// `Deduplicated` IS DELIBERATELY NOT ASSERTED, and that is a finding rather
+	// than a gap.
+	//
+	// The two reconciliation paths disagree about what the flag means for a
+	// capture's OWN bytes. `reconcileAmbiguous` compares the marker's
+	// reservation against this one (`publisher.go:255`), so the lost-response
+	// path reports `false` -- and `TestAnAmbiguousUploadIsReconciledByAnExactStat`
+	// asserts exactly that, calling the opposite "deduplication against this
+	// capture's own object". `reconcileExisting` sets it `true`
+	// unconditionally (`publisher.go:227`) even though it has the same marker
+	// and could make the same comparison. So this retry -- which takes the
+	// second path -- reports `true` for bytes the first path would call its own.
+	//
+	// Asserting either value here would pin the inconsistency as a contract.
+	// What this case is about is CONVERGENCE, which both paths agree on: one
+	// generation, and a marker naming the reservation that published it.
+	// Recorded in phase-9-demonstrations.md for the reviewer to rule on.
 }

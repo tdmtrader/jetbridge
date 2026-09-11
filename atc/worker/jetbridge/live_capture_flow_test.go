@@ -23,11 +23,23 @@ package jetbridge
 // go. What that test still cannot say is the three things below, and those are
 // what this test asserts:
 //
-//  1. A kubelet ORDERED the control init before every writer. The Go and brine
-//     tiers assert the order in the Pod spec; only a kubelet asserts the effect,
-//     and the effect is asserted here by having the daemon fixture write a
-//     marker at the moment it acknowledges the hold and having the producer
-//     refuse to run without it.
+//  1. A kubelet ran the control init TO COMPLETION before the producer started.
+//     The daemon fixture writes a marker at the moment it acknowledges the hold
+//     and the producer refuses to run without it, so this is the hold's effect
+//     rather than its position in a list.
+//
+//     NARROWED, deliberately, and the narrowing is the honest version. The
+//     header used to say "before every writer". This Pod HAS no other writer:
+//     `cleanup-stale` is emitted only for a reused handle
+//     (`storage_daemonset.go:562`) and `artifact-fetch` only for declared
+//     inputs, so its init list has exactly one element and `InitContainers[0]`
+//     is trivially the control init. Ordering against SIBLING inits is asserted
+//     where a multi-init Pod exists: `features/hangar-capture-pod.feature`'s
+//     `Selecting capture for a declared output puts the hold init container
+//     before every writer`, and `capture_control_test.go`. Making it real here
+//     would mean a second fixture listening on the artifact daemon's port to
+//     answer the cleanup init's `GET /capture-held/steps/<handle>`, which is
+//     scaffolding this contract does not need for what it does say.
 //  2. The Downward API really supplied `metadata.uid`, and the value the API
 //     server assigned is the value that reached the daemon. No fixture can
 //     honestly invent a UID the API server has not yet issued; this test reads
@@ -90,7 +102,7 @@ const (
 	liveCapturePort      = 31781
 )
 
-func TestLiveCaptureSelectedProducerHoldsWritesAndIsSealed(t *testing.T) {
+func TestLiveCaptureSelectedProducerHoldsAndWrites(t *testing.T) {
 	if runtime.GOOS == "darwin" {
 		t.Skip("real BusyBox/Linux and K3s execution is CI-only on macOS")
 	}
@@ -112,9 +124,10 @@ func TestLiveCaptureSelectedProducerHoldsWritesAndIsSealed(t *testing.T) {
 	// The node this execution's reservation belongs to. A reservation is a
 	// directory on ONE node's disk, so the Pod has to land on that node and
 	// nowhere else -- which is contract 3, and which one node cannot disprove.
-	// On a single-node K3s cluster the affinity is asserted on the spec and the
-	// placement is asserted on the result; a second node makes the placement
-	// falsifiable, and the job that runs this may provide one.
+	// The job that runs this stands up ONE K3s container, so the placement
+	// assertion below cannot currently fail: the affinity is asserted on the
+	// spec and the placement on the result, and only a second node would make
+	// the second of those falsifiable. Stated rather than hedged.
 	nodes, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil || len(nodes.Items) == 0 {
 		t.Fatalf("list K3s nodes: count=%d err=%v", len(nodes.Items), err)
@@ -130,14 +143,26 @@ func TestLiveCaptureSelectedProducerHoldsWritesAndIsSealed(t *testing.T) {
 			"a node without one can hold no reservation this runtime can schedule to",
 			node.Name, corev1.LabelHostname)
 	}
+	// THREE labels, not two. `BuildAffinity` seeds the required expressions with
+	// `concourse.dev/artifact-cache` unconditionally
+	// (`storage_daemonset.go:689-693`) before it appends the two output-plane
+	// ones, so a node carrying only the output pair schedules nothing and the
+	// Pod sits Pending until the context expires -- a failure whose message
+	// would name a deadline rather than a label.
 	labelLiveNode(t, ctx, client, node.Name,
-		"concourse.dev/hangar-execution-control-v1", "concourse.dev/hangar-output-v1")
+		"concourse.dev/artifact-cache",
+		"concourse.dev/hangar-execution-control-v1",
+		"concourse.dev/hangar-output-v1")
 
 	unique := fmt.Sprintf("hangar-capture-%d", time.Now().UnixNano())
 	hostRoot := "/tmp/" + unique
 
 	cfg.Namespace = namespace
 	cfg.ArtifactDaemonHostPath = hostRoot
+	// The artifact daemon's port. Nothing listens on it and nothing in this Pod
+	// dials it -- cleanup-stale, its only consumer, is not emitted for a fresh
+	// handle -- but the config field is what the pod builder reads, so it is
+	// set to something that is not the output daemon's.
 	cfg.ArtifactDaemonPort = 31782
 	cfg.ArtifactHelperImage = "busybox:latest"
 	cfg.OutputPlaneEnabled = true
@@ -249,14 +274,21 @@ cat /hold/.hold-request
 	if len(pod.Spec.InitContainers) == 0 {
 		t.Fatal("the capture-selected Pod has no init containers at all")
 	}
+	names := make([]string, 0, len(pod.Spec.InitContainers))
+	for _, init := range pod.Spec.InitContainers {
+		names = append(names, init.Name)
+	}
 	if pod.Spec.InitContainers[0].Name != captureControlInitName {
-		names := make([]string, 0, len(pod.Spec.InitContainers))
-		for _, init := range pod.Spec.InitContainers {
-			names = append(names, init.Name)
-		}
-		t.Fatalf("the capture control init is not first: %v. cleanup-stale removes the tree "+
-			"the hold protects and artifact-fetch stages inputs into it, so a kubelet running "+
-			"either before the hold writes into an unheld directory", names)
+		t.Fatalf("the capture control init is not first: %v", names)
+	}
+	// And it is the ONLY one, which this test says out loud rather than letting
+	// the line above read as an ordering proof. A step with no inputs on a
+	// fresh handle emits no cleanup-stale and no artifact-fetch; if that ever
+	// changes, the ordering claim here becomes real and the header's narrowing
+	// is what needs revisiting.
+	if len(names) != 1 {
+		t.Fatalf("this Pod has %d init containers (%v); the ordering assertion above is about "+
+			"a list of one, and with siblings present it would need to say more", len(names), names)
 	}
 	assertLiveCaptureAffinity(t, pod, reservingNode)
 
@@ -292,13 +324,21 @@ cat /hold/.hold-request
 	// answers, and writes the marker in the same breath, so "the marker exists"
 	// and "the request arrived" are one fact rather than two.
 	//
-	// It creates the reserved incarnation directory too, which is what the
-	// daemon does at reservation time: DirectoryOrCreate would otherwise make
-	// an empty one on first mount and the test would be asserting the kubelet's
-	// mkdir rather than the daemon's.
+	// It also widens the reserved incarnation directory, which lives under
+	// `steps/` because that is where `ReservedIncarnationVolume` roots it
+	// (`storage_daemonset.go:110`).
+	//
+	// The claim this comment used to make -- that creating it here is what the
+	// daemon does at reservation time, so the test is not asserting the
+	// kubelet's mkdir -- was false twice over: the path was missing its
+	// `steps/` segment, and the handler runs when `nc` accepts a connection,
+	// which is inside the control init, long after the kubelet did its
+	// DirectoryOrCreate during volume setup. The honest statement is the
+	// narrow one: the producer runs as root in this Pod, so the chmod is
+	// belt-and-braces and the directory it writes into is the kubelet's.
 	fixtureScript := fmt.Sprintf(`set -eu
-mkdir -p '/host/hold' '/host/%s'
-chmod 777 '/host/%s'
+mkdir -p '/host/hold' '/host/steps/%s'
+chmod 777 '/host/steps/%s'
 REQ=/host/hold/.hold-request
 : >"$REQ"
 LEN=0
@@ -478,7 +518,11 @@ func assertLiveCaptureAffinity(t *testing.T, pod *corev1.Pod, reservingNode stri
 			"it schedule away from the node holding its reservation")
 	}
 
+	// Every label the scheduler will actually demand, including the
+	// artifact-cache one BuildAffinity seeds for every pod. An assertion that
+	// covered only the output pair would pass while the Pod was unschedulable.
 	want := map[string]bool{
+		"concourse.dev/artifact-cache":              false,
 		"concourse.dev/hangar-execution-control-v1": false,
 		"concourse.dev/hangar-output-v1":            false,
 	}

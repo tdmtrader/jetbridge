@@ -1092,8 +1092,10 @@ func strictInputMaterializationIsUnchanged(in CapturePodCreated) error {
 			naming++
 		}
 	}
-	if batches == 0 {
-		return fmt.Errorf("the strict-input init carries no materialization request at all")
+	if batches != 1 {
+		return fmt.Errorf("the strict-input init carries %d materialization requests; this "+
+			"step declares exactly one strict input, so a plane that ADDED a request beside "+
+			"the right one would otherwise pass", batches)
 	}
 	if naming == 0 {
 		return fmt.Errorf("no materialization request in the strict-input init names %s/%s/%d; "+

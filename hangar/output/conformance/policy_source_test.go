@@ -36,6 +36,7 @@ package conformance
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -140,20 +141,40 @@ func TestAnUnreadablePrincipalPolicyIsAtRiskAndNotAnAllClear(t *testing.T) {
 		}
 		defer func() { _ = closer() }()
 
+		// THE CONTROL, on this source and this substrate, asserted first.
+		//
+		// `ReadPrincipalBindings` wraps EVERY error in ErrAtRisk
+		// (`gcs/lifetime.go:111-115`), so a connection refused, a DNS failure
+		// or a torn-down emulator satisfies the refusal below just as well as
+		// "this server has no IAM". `eachTier2` starts a fresh in-process
+		// server per test, so the control in the case above vouches for a
+		// different server than this one. Without this line the test asserts a
+		// `%w` rather than the premise its comment rests on.
+		if _, err := source.ReadLifetimePolicy(ctx); err != nil {
+			t.Fatalf("the substrate this case is about is not answering at all: %v", err)
+		}
+
 		bindings, err := source.ReadPrincipalBindings(ctx, map[output.PrincipalRole]string{
 			output.PrincipalPublisher: "publisher@p.iam.gserviceaccount.com",
 			output.PrincipalReclaimer: "reclaimer@p.iam.gserviceaccount.com",
 		})
 		if err == nil {
-			// If a future emulator grows IAM this becomes a real conformance
-			// row rather than a skip, so it says what it would then require.
+			// A future emulator that grows IAM lands here. It must not be a
+			// silent pass: an empty policy on the output bucket means no
+			// principal may touch it, which is not a state this plane may
+			// report as healthy, and a NON-empty one means this case's premise
+			// is gone and the case has to be rewritten as a real conformance
+			// row rather than left reporting success on an assertion it no
+			// longer makes.
 			if len(bindings.Permissions) == 0 && len(bindings.UnrecognisedRoles) == 0 {
-				t.Error("the substrate answered an IAM read with an EMPTY policy and no error. " +
+				t.Fatal("the substrate answered an IAM read with an EMPTY policy and no error. " +
 					"An empty policy on the output bucket means no principal may touch it, " +
 					"which is not a state this plane may report as healthy.")
 			}
-
-			return
+			t.Fatalf("the substrate answered an IAM read with %d permission set(s). This case "+
+				"exists because fake-gcs-server implements no bucket IAM; that is no longer "+
+				"true, so it must become a real conformance row over the roles Req 54 names "+
+				"rather than a fail-closed check.", len(bindings.Permissions))
 		}
 
 		if !errors.Is(err, output.ErrAtRisk) {
@@ -161,6 +182,13 @@ func TestAnUnreadablePrincipalPolicyIsAtRiskAndNotAnAllClear(t *testing.T) {
 				"unsafe policy check a durable at-risk state, and any other typing lets it "+
 				"be retried as a blip forever while the plane keeps publishing", err)
 		}
+
+		// And it failed for the reason the comment claims: a 404 from the
+		// server, which is "this server does not implement bucket IAM". A
+		// refused connection would satisfy the ErrAtRisk check above just as
+		// well, and the two must not be confused in a file whose whole subject
+		// is which failure is which.
+		assertServerSaid404(t, "the IAM read", err)
 		if len(bindings.Permissions) != 0 {
 			t.Errorf("a failed IAM read returned %d permission set(s); a partial answer from a "+
 				"read that failed is worse than none", len(bindings.Permissions))
@@ -182,10 +210,50 @@ func TestAPolicySourceOnAMissingBucketIsAtRisk(t *testing.T) {
 		}
 		defer func() { _ = closer() }()
 
-		if _, err := source.ReadLifetimePolicy(ctx); !errors.Is(err, output.ErrAtRisk) {
+		_, err = source.ReadLifetimePolicy(ctx)
+		if !errors.Is(err, output.ErrAtRisk) {
 			t.Errorf("reading the lifetime policy of a bucket that does not exist returned %v; "+
 				"an operator who pointed the plane at the wrong bucket learns it here or not "+
 				"at all", err)
 		}
+		// Same distinction as above: `lifetime.go:82-85` wraps every failure in
+		// ErrAtRisk, so without this the case cannot tell "the bucket is not
+		// there" from "the emulator is not there".
+		assertServerSaid404(t, "reading a missing bucket", err)
 	})
+}
+
+// assertServerSaid404 checks that a policy-source failure came from the SERVER
+// and said 404, rather than being a connection failure wearing the same type.
+//
+// IT READS THE MESSAGE, and that is a finding rather than a shortcut.
+// `BucketPolicySource` formats the underlying error with `%v` and wraps only
+// `output.ErrAtRisk` with `%w` (`hangar/gcs/lifetime.go:83-84` and `:112-113`),
+// so `errors.As(err, &googleapi.Error{})` cannot reach the status code -- the
+// chain is cut at the format verb. Measured: the message reads
+// "...: googleapi: got HTTP response code 404 with body: Not Found", and
+// `errors.As` returns false on it.
+//
+// The typed form would be better and is a one-character production change --
+// `%v` to `%w` on the inner error, which Go has allowed alongside a second `%w`
+// since 1.20. It is not made here because it widens what every caller of those
+// two methods can unwrap, which is a decision about the API rather than about
+// this test. Recorded in phase-9-demonstrations.md.
+func assertServerSaid404(t *testing.T, what string, err error) {
+	t.Helper()
+
+	if err == nil {
+		t.Fatalf("%s did not fail at all", what)
+	}
+	if !strings.Contains(err.Error(), "googleapi:") {
+		t.Errorf("%s failed with an error that did not come from the server at all: %v",
+			what, err)
+
+		return
+	}
+	if !strings.Contains(err.Error(), "404") {
+		t.Errorf("%s failed with something other than a 404: %v. This case is about a "+
+			"substrate that does not implement the API being asked for; any other status is "+
+			"a different fact.", what, err)
+	}
 }

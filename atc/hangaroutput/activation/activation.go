@@ -296,10 +296,13 @@ func (epochs Epochs) Drain(ctx context.Context, epoch executioncontrol.Activatio
 
 // Disable is the terminal step, and it is separate from Drain on purpose.
 //
-// Nothing here checks whether the facet is empty: the drain PREDICATE does, in
-// the command, against the live tables, and it refuses long before this runs. A
-// method that both decided emptiness and wrote the terminal state would be one
-// where "the check passed" and "the check was skipped" produce the same row.
+// Nothing here checks whether the facet is empty: `DrainStep` does, against the
+// live tables, and refuses long before this runs. A method that both decided
+// emptiness and wrote the terminal state would be one where "the check passed"
+// and "the check was skipped" produce the same row.
+//
+// That separation used to mean the decision lived in `cmd/hangar-output-activate`
+// and was exercised by nothing, which is why `DrainStep` exists.
 func (epochs Epochs) Disable(ctx context.Context, epoch executioncontrol.ActivationEpoch,
 	facet Facet) error {
 	column, err := facet.Column()

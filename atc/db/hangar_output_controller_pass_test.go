@@ -440,24 +440,22 @@ var _ = Describe("the output-plane controller passes", func() {
 			Expect(err).NotTo(HaveOccurred())
 			store.Seed(namespace.Bucket(), unmarkedKey, []byte("not ours"), nil)
 
+			// ONE pass, not a retry loop. Nothing here is asynchronous: Run is
+			// synchronous and the page holds two objects, so a poll would hide
+			// whether one pass suffices and would turn a failure into ten
+			// seconds of cursor-advancing before saying so.
 			lease := leaseFor(output.OperationInventory)
-			Eventually(func() string {
-				_, err := newSweep().Run(ctx, lease)
-				Expect(err).NotTo(HaveOccurred())
+			_, err = newSweep().Run(ctx, lease)
+			Expect(err).NotTo(HaveOccurred())
 
-				var state string
-				queryErr := dbConn.QueryRow(`
-					SELECT state FROM hangar_exact_lifecycles
-					 WHERE scope = $1 AND digest = $2 AND generation = $3`,
-					"team-a", string(orphan), orphanAttrs.Generation).Scan(&state)
-				if queryErr != nil {
-					return ""
-				}
-
-				return state
-			}, 10*time.Second, 10*time.Millisecond).Should(Equal("adopted"),
+			var state string
+			Expect(dbConn.QueryRow(`
+				SELECT state FROM hangar_exact_lifecycles
+				 WHERE scope = $1 AND digest = $2 AND generation = $3`,
+				"team-a", string(orphan), orphanAttrs.Generation).Scan(&state)).To(Succeed(),
 				"a marked, unregistered, grace-elapsed object in the deployment's own "+
 					"namespace was never adopted by a real sweep")
+			Expect(state).To(Equal("adopted"))
 
 			// origin distinguishes an adopted generation from a registered one
 			// for the rest of its life, because the evidence behind them is not

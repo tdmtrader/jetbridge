@@ -53,6 +53,7 @@ package db_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"time"
 
@@ -81,10 +82,13 @@ var _ = Describe("the Hangar output plane, end to end", func() {
 	BeforeEach(func() {
 		ctx = context.Background()
 
-		// Two open transactions at once in the first spec (the reader holding
-		// while the reclaimer is refused), so the suite's deliberate
-		// one-connection default has to lift and be put back.
-		dbConn.SetMaxOpenConns(3)
+		// The suite runs on one pooled connection so that code needing a second
+		// deadlocks visibly. These specs need two, and the reason is
+		// `hangarReadLeaseRequest` (hangar_output_fixture_test.go:350): it does
+		// a bare `dbConn.QueryRow` for the marker's reservation WHILE the
+		// caller's transaction is open, which is exactly the second connection
+		// the default is there to surface. It goes back to one afterwards.
+		dbConn.SetMaxOpenConns(2)
 		DeferCleanup(func() { dbConn.SetMaxOpenConns(1) })
 
 		consumer, err := db.HangarConsumerPrefixHeld("acceptance-consumer")
@@ -140,14 +144,22 @@ var _ = Describe("the Hangar output plane, end to end", func() {
 		// The receipt's registration is what makes the exact generation
 		// readable. Before the source is released the capture is not settled,
 		// and that is a state the plane sits in on purpose.
-		var settled bool
+		var (
+			reservationState string
+			releasedAt       sql.NullTime
+		)
+		// Two columns, scanned separately. Collapsing them into one boolean and
+		// asserting it false would also pass if `state` had drifted to anything
+		// other than `registered` -- i.e. a regression in the receipt path
+		// would satisfy the assertion that is supposed to be about the release.
 		Expect(dbConn.QueryRow(`
-			SELECT state = 'registered' AND release_acknowledged_at IS NOT NULL
+			SELECT state, release_acknowledged_at
 			  FROM hangar_capture_reservations WHERE reservation_id = $1`,
-			string(capture.ReservationID)).Scan(&settled)).To(Succeed())
-		Expect(settled).To(BeFalse(),
-			"the capture reported itself settled before its source was released; "+
-				"Req 40 wants the source released and not only the decision taken")
+			string(capture.ReservationID)).Scan(&reservationState, &releasedAt)).To(Succeed())
+		Expect(reservationState).To(Equal("registered"))
+		Expect(releasedAt.Valid).To(BeFalse(),
+			"the capture reported its source released before it was; Req 40 wants the source "+
+				"released and not only the decision taken")
 
 		hangarReleaseSource(ctx, repository, capture)
 
@@ -286,17 +298,18 @@ var _ = Describe("the Hangar output plane, end to end", func() {
 		// record (Req 32), and a caller cannot re-acquire on a reclaimed ref
 		// (Req 38). Both are read from the state the legs above committed, not
 		// from a row this spec wrote.
-		var tombstoned int
-		Expect(dbConn.QueryRow(`
-			SELECT count(*) FROM hangar_claims claim
-			JOIN hangar_exact_lifecycles lifecycle ON lifecycle.id = claim.lifecycle_id
-			WHERE lifecycle.scope = $1 AND lifecycle.digest = $2 AND lifecycle.generation = $3
-			  AND claim.released_at IS NOT NULL`,
-			string(capture.Ref.Scope), string(capture.Ref.Digest),
-			capture.Ref.Generation).Scan(&tombstoned)).To(Succeed())
-		Expect(tombstoned).To(Equal(1),
+		var claims []output.ClaimRecord
+		in(func(tx db.HangarOutputTx) {
+			var err error
+			claims, err = repository.ReadClaims(ctx, tx, capture.Ref)
+			Expect(err).NotTo(HaveOccurred())
+		})
+		Expect(claims).To(HaveLen(1),
 			"the released claim identity must remain tombstoned; a purged tombstone is a "+
 				"claim id that can silently reactivate")
+		Expect(claims[0].ClaimID).To(Equal(claimID))
+		Expect(claims[0].Active()).To(BeFalse(),
+			"the claim is still active after the consumer released it")
 
 		tx := begin()
 		defer db.Rollback(tx)
@@ -432,11 +445,23 @@ var _ = Describe("the Hangar output plane, end to end", func() {
 		Expect(outcome.Disabled).To(BeTrue(),
 			"the refusal above must be a refusal and not an inability")
 
-		// And the base facet follows only afterwards, never before: output can
-		// never be in service under a disabled base.
 		state, err = epochs.Read(ctx, acceptanceEpoch)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(state.Output).To(Equal("disabled"))
-		Expect(state.Base).NotTo(Equal("disabled"))
+
+		// And the base facet follows only AFTERWARDS. This asserts the ordering
+		// by taking it: base could not be drained while output was in service
+		// (`TestTheBaseFacetCannotBeDrainedWhileOutputIsInService` pins the
+		// refusal), and now that output is terminal it can. A line that merely
+		// read `state.Base != "disabled"` here would have been unfalsifiable --
+		// nothing in this spec had touched the base facet at all.
+		Expect(state.Base).To(Equal("enabled"))
+		baseOutcome, err := epochs.DrainStep(ctx, acceptanceEpoch, activation.FacetBase, true)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(baseOutcome.Disabled).To(BeTrue())
+
+		state, err = epochs.Read(ctx, acceptanceEpoch)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(state.Base).To(Equal("disabled"))
 	})
 })
