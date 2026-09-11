@@ -213,9 +213,12 @@ func (runner *Runner) report(ctx context.Context, processed int, class string) {
 	runner.Reporter.ReportPass(ctx, runner.Kind, processed, class)
 }
 
-// Holds reports whether this runner currently believes it owns its lease. It
-// exists for the liveness specs and for a status surface; nothing decides
-// anything from it.
+// Deferred: Holds is read by the liveness specs and by the Phase 8 status
+// surface; no running process decides anything from it, and a runner that
+// decided from its own belief rather than from the lease would be the stale
+// owner every fence in this plane exists to stop
+//
+// Holds reports whether this runner currently believes it owns its lease.
 func (runner *Runner) Holds() bool { return runner.held }
 
 func (runner *Runner) String() string {

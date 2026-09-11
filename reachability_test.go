@@ -52,6 +52,14 @@ import (
 // reachabilityTrees are the trees whose exported surface is under this rule.
 var reachabilityTrees = []string{
 	"hangar/output",
+
+	// The controllers' composition. These packages exist BECAUSE four
+	// capabilities had no production caller, so they are the last place that
+	// should be allowed to grow a fifth.
+	"atc/hangaroutput/inventorypass",
+	"atc/hangaroutput/reclaimpass",
+	"atc/hangaroutput/attestpass",
+	"atc/hangaroutput/controller",
 }
 
 // hangarSurfaceFiles are the atc/db files that make up the Hangar surface. The
@@ -98,6 +106,7 @@ var deferredEntryPoints = []deferredEntryPoint{
 	{"ObserveExactAbsence", separateAbsenceStat},
 	{"ValidateSealDeadline", sealDeadlineHasNoFlag},
 	{"ValidateCaptureDeadline", captureDeadlineHasNoProducer},
+	{"Holds", runnerBeliefIsNotAuthority},
 
 	// The reclaim-admission violation gate is enforced by the schema, on the
 	// INSERT itself, so this read is not part of it: a Go copy of the rule
@@ -118,6 +127,10 @@ const (
 		"stat belongs to the ambiguous-response recovery path in Phase 8"
 	sealDeadlineHasNoFlag = "Req 17's bound has no operator-facing flag to refuse; the " +
 		"coordinator's seal deadline is set by the ATC's own composition"
+	runnerBeliefIsNotAuthority = "Holds is read by the liveness specs and by the Phase 8 " +
+		"status surface; no running process decides anything from it, and a runner that " +
+		"decided from its own belief rather than from the lease would be the stale owner " +
+		"every fence in this plane exists to stop"
 	captureDeadlineHasNoProducer = "the producer for capture_deadline_at is the Phase 8 " +
 		"Refactor line named in the collision-at-deadline carry-forward; nothing composes a " +
 		"capture deadline from a duration yet, so there is no configuration site to bound"
