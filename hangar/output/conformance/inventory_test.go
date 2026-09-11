@@ -593,21 +593,32 @@ func TestMetadataLargerThanAWholePassBecomesDebtRatherThanReplayingForever(t *te
 		publishTrees(t, tier, namespace, "1a", "9f")
 		keys := publishedKeys(t, tier, namespace)
 
-		// A marker-shaped metadata map whose total size is larger than the
-		// whole budget below.
-		bulky := map[string]string{
-			output.MarkerKeyVersion: output.MarkerVersion,
-			"hangar-bulk":           strings.Repeat("x", 4096),
-		}
-		poisonAt(t, tier, keys[0], bulky)
-
-		clock := &stoppedClock{at: fixedInstant}
-		sweep := sweepOver(t, namespace, inventory.Restrict(tier.client), clock)
 		budget := output.PageBudget{
 			MaxObjects:       output.MaxInventoryPageObjects,
 			MaxMetadataBytes: 1024,
 			MaxDuration:      output.MaxInventoryPassDuration,
 		}
+
+		// A marker-shaped metadata map whose total size is larger than the
+		// whole budget, and only just.
+		//
+		// The size is derived from the budget rather than picked, and that is a
+		// CI finding rather than tidiness: an earlier 4 KiB value passed against
+		// the in-process server on macOS and failed against the deployed one on
+		// Linux with `xattr.Set … no space left on device`. fake-gcs-server
+		// stores custom metadata as extended attributes, and ext4 keeps all of
+		// an inode's xattrs in one block -- so "large" here has a ceiling that
+		// has nothing to do with this plane's budget. What the case is about is
+		// being over the BUDGET; a couple of hundred bytes over is the whole
+		// assertion, and it is portable.
+		bulky := map[string]string{
+			output.MarkerKeyVersion: output.MarkerVersion,
+			"hangar-bulk":           strings.Repeat("x", int(budget.MaxMetadataBytes)+200),
+		}
+		poisonAt(t, tier, keys[0], bulky)
+
+		clock := &stoppedClock{at: fixedInstant}
+		sweep := sweepOver(t, namespace, inventory.Restrict(tier.client), clock)
 
 		page, err := sweep.ListPage(ctx, startedCursor(t), budget)
 		if err != nil {
