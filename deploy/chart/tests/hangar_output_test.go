@@ -1,6 +1,9 @@
 package tests
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -952,4 +955,201 @@ func readChartFile(t *testing.T, name string) string {
 	}
 
 	return string(body)
+}
+
+// ---------------------------------------------------------------------------
+// The documented IAM matrix, checked against the roles it describes
+// ---------------------------------------------------------------------------
+
+// roleOperations maps each output role's own Store/Handle interface method to
+// the GCS permission a principal needs to make that call.
+//
+// This is the translation an operator makes from the chart's documentation to a
+// Terraform file, and it is the one place it can go wrong quietly: a role that
+// gains a method gains a permission, and a permission matrix written in prose
+// stays right until the first time it does not. The chart's documentation is
+// what an operator GRANTS; the interface is what the process can actually do.
+// If those two drift, the grant is either too small (a broken plane) or too
+// large (a principal that can do something nobody wrote down).
+var roleOperations = map[string]map[string]string{
+	"publisher": {
+		"NewWriter": "storage.objects.create",
+		"NewReader": "storage.objects.get",
+		"Attrs":     "storage.objects.get",
+		// Pure refinements: they narrow a handle and issue no request.
+		"If":         "",
+		"Generation": "",
+		"Object":     "",
+	},
+	"inventory": {
+		"List":       "storage.objects.list",
+		"Attrs":      "storage.objects.get",
+		"Generation": "",
+		"Object":     "",
+	},
+	"reclaimer": {
+		"Delete":     "storage.objects.delete",
+		"Attrs":      "storage.objects.get",
+		"If":         "",
+		"Generation": "",
+		"Object":     "",
+	},
+}
+
+// documentedRolePermissions is what deploy/chart/values.yaml tells an operator
+// to grant, per workload.
+var documentedRolePermissions = map[string][]string{
+	"publisher": {"storage.objects.create", "storage.objects.get"},
+	"inventory": {"storage.objects.list", "storage.objects.get"},
+	"reclaimer": {"storage.objects.get", "storage.objects.delete"},
+}
+
+func TestTheDocumentedIAMMatrixMatchesWhatEachRoleCanActuallyDo(t *testing.T) {
+	values := readChartFile(t, "values.yaml")
+	root := repoRoot(t)
+
+	for role, permissions := range documentedRolePermissions {
+		// Every documented permission appears in values.yaml, verbatim. A
+		// matrix an operator cannot copy is a matrix they will approximate.
+		for _, permission := range permissions {
+			if !strings.Contains(values, permission) {
+				t.Errorf("deploy/chart/values.yaml does not name %s, which the %s role needs",
+					permission, role)
+			}
+		}
+
+		// And the reverse: every method the role's own interfaces declare maps
+		// to a permission the documentation grants. A method with no mapping is
+		// a capability nobody wrote down.
+		methods := declaredRoleMethods(t, filepath.Join(root, "hangar", "output", role, role+".go"))
+		if len(methods) < 3 {
+			t.Fatalf("parsed only %d interface methods out of the %s role; the declaration "+
+				"moved and this rule would pass vacuously", len(methods), role)
+		}
+
+		granted := map[string]bool{}
+		for _, permission := range permissions {
+			granted[permission] = true
+		}
+		for method := range methods {
+			permission, known := roleOperations[role][method]
+			if !known {
+				t.Errorf("the %s role declares %s and roleOperations has no entry for it.\n\n"+
+					"Every method on a role's Store or Handle is a request some principal has "+
+					"to be permitted to make. A method with no entry is a capability the "+
+					"documented IAM matrix does not account for -- and the matrix is what an "+
+					"operator copies into Terraform.", role, method)
+
+				continue
+			}
+			if permission == "" {
+				continue
+			}
+			if !granted[permission] {
+				t.Errorf("the %s role declares %s, which needs %s, and the documented matrix "+
+					"grants only %v. The role silently broadened.",
+					role, method, permission, permissions)
+			}
+		}
+	}
+}
+
+// declaredRoleMethods reads the method names off every interface a role package
+// declares.
+func declaredRoleMethods(t *testing.T, path string) map[string]bool {
+	t.Helper()
+
+	file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+	if err != nil {
+		t.Fatalf("parsing %s: %v", path, err)
+	}
+
+	methods := map[string]bool{}
+	ast.Inspect(file, func(node ast.Node) bool {
+		iface, ok := node.(*ast.InterfaceType)
+		if !ok {
+			return true
+		}
+		for _, field := range iface.Methods.List {
+			for _, name := range field.Names {
+				methods[name.Name] = true
+			}
+		}
+
+		return true
+	})
+
+	return methods
+}
+
+// The attestor holds NO object permission at all, which is why its compromise
+// costs the assessment rather than the data. Its own interface is the statement.
+func TestThePolicyAttestorHoldsNoObjectPermission(t *testing.T) {
+	// The attestor's capability is a CONCRETE type rather than a role
+	// interface: hangar/gcs.BucketPolicySource is what the process holds, and
+	// what it can do is the set of methods on it. An interface would state what
+	// the role may do; this states what the process actually has, which is the
+	// generalisation TestEachOutputPrincipalHoldsOnlyItsOwnOperations made when
+	// the conformance guard was re-pointed at production.
+	methods := declaredMethodsOnType(t,
+		filepath.Join(repoRoot(t), "hangar", "gcs", "lifetime.go"), "BucketPolicySource")
+	if len(methods) < 2 {
+		t.Fatalf("parsed %d methods off BucketPolicySource; the declaration moved and this "+
+			"rule would pass vacuously", len(methods))
+	}
+
+	for method := range methods {
+		for _, objectMethod := range []string{
+			"Object", "NewReader", "NewWriter", "Delete", "List", "Attrs",
+			"ObjectToDelete",
+		} {
+			if method == objectMethod {
+				t.Errorf("the policy attestor's role declares %s. It reads bucket lifecycle "+
+					"and IAM and holds no object permission at all: that is the whole reason "+
+					"it is a fourth identity, and it is what makes its compromise cost the "+
+					"assessment rather than the data.", method)
+			}
+		}
+	}
+
+	values := readChartFile(t, "values.yaml")
+	for _, permission := range []string{"storage.buckets.get", "storage.buckets.getIamPolicy"} {
+		if !strings.Contains(values, permission) {
+			t.Errorf("deploy/chart/values.yaml does not name %s for the policy attestor",
+				permission)
+		}
+	}
+}
+
+// declaredMethodsOnType reads the exported methods declared on one concrete
+// type in one file.
+func declaredMethodsOnType(t *testing.T, path, receiver string) map[string]bool {
+	t.Helper()
+
+	file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+	if err != nil {
+		t.Fatalf("parsing %s: %v", path, err)
+	}
+
+	methods := map[string]bool{}
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || function.Recv == nil || len(function.Recv.List) == 0 {
+			continue
+		}
+		name := function.Recv.List[0].Type
+		if star, isStar := name.(*ast.StarExpr); isStar {
+			name = star.X
+		}
+		ident, isIdent := name.(*ast.Ident)
+		if !isIdent || ident.Name != receiver {
+			continue
+		}
+		if !function.Name.IsExported() {
+			continue
+		}
+		methods[function.Name.Name] = true
+	}
+
+	return methods
 }
