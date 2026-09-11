@@ -104,75 +104,40 @@ func run(ctx context.Context, config Config, out *os.File) error {
 	return nil
 }
 
-// drain stops new admission first, and only then asks whether anything is left.
+// drain formats what activation.DrainStep decided, one facet at a time.
 //
-// That ORDER is requirement 58: emission stops before the predicate runs, so the
-// set the predicate is counting cannot grow while it counts. A drain that
-// checked first and stopped emission afterwards would refuse on state that
-// arrived in between and admit state that arrived after the check.
-//
-// `--facet=all` takes OUTPUT down first and base second. Base is what settles a
-// capture, so a plane that lost exact execution control while an output capture
-// was still nonterminal would have removed the only thing that could finish it.
+// The DECISION -- stop emission first, then count, then refuse or disable -- is
+// activation.DrainStep's, and it lives there rather than here because
+// `Epochs.Disable` deliberately does not decide emptiness, so this sequence was
+// the only thing standing between a live plane and `disabled` and nothing
+// exercised it. What is left here is printing, which is this binary's job.
 func drain(ctx context.Context, epochs activation.Epochs,
 	epoch executioncontrol.ActivationEpoch, config Config, out *os.File) error {
-	facets := []activation.Facet{config.Facet}
-	if config.All {
-		facets = []activation.Facet{activation.FacetOutput, activation.FacetBase}
-	}
-
-	for _, facet := range facets {
-		state, err := epochs.Read(ctx, epoch)
-		if err != nil {
-			return err
-		}
-		current := state.Base
-		if facet == activation.FacetOutput {
-			current = state.Output
-		}
-
-		if current == "enabled" {
-			if err := epochs.Drain(ctx, epoch, facet); err != nil {
-				return err
-			}
+	for _, facet := range activation.DrainFacets(config.All, config.Facet) {
+		outcome, err := epochs.DrainStep(ctx, epoch, facet, config.Finalize)
+		if outcome.Drained {
 			fmt.Fprintf(out, "epoch %d's %s facet is draining: no new admission, and every "+
 				"release, settlement and already-admitted delete continues\n", epoch, facet)
-			current = "draining"
 		}
-		if current != "draining" {
-			fmt.Fprintf(out, "epoch %d's %s facet is %q; nothing to drain\n",
-				epoch, facet, current)
-
-			continue
-		}
-
-		residue, err := epochs.DrainResidue(ctx, epoch, facet)
 		if err != nil {
 			return err
 		}
-		if len(residue) != 0 {
-			if !config.Finalize {
-				fmt.Fprintf(out, "epoch %d's %s facet still holds state and stays draining:\n",
-					epoch, facet)
-				for _, one := range residue {
-					fmt.Fprintf(out, "  - %s\n", one)
-				}
-
-				continue
+		switch {
+		case outcome.Skipped:
+			fmt.Fprintf(out, "epoch %d's %s facet is %q; nothing to drain\n",
+				epoch, facet, outcome.State)
+		case len(outcome.Residue) != 0:
+			fmt.Fprintf(out, "epoch %d's %s facet still holds state and stays draining:\n",
+				epoch, facet)
+			for _, one := range outcome.Residue {
+				fmt.Fprintf(out, "  - %s\n", one)
 			}
-
-			return activation.RefuseDrain(epoch, facet, residue)
-		}
-		if !config.Finalize {
+		case outcome.Disabled:
+			fmt.Fprintf(out, "epoch %d's %s facet is disabled\n", epoch, facet)
+		default:
 			fmt.Fprintf(out, "epoch %d's %s facet holds nothing; re-run with --finalize to "+
 				"disable it\n", epoch, facet)
-
-			continue
 		}
-		if err := epochs.Disable(ctx, epoch, facet); err != nil {
-			return err
-		}
-		fmt.Fprintf(out, "epoch %d's %s facet is disabled\n", epoch, facet)
 	}
 
 	return nil
