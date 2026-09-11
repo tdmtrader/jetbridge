@@ -609,6 +609,16 @@ CREATE TABLE hangar_exact_lifecycles (
     registered_at    timestamp with time zone NOT NULL DEFAULT now(),
     updated_at       timestamp with time zone NOT NULL DEFAULT now(),
 
+    -- When the lifetime audit last STATTED this generation and found it there.
+    --
+    -- It is a separate column from updated_at because it answers a different
+    -- question: updated_at says when this plane last changed its mind about the
+    -- row, and this says when the plane last confirmed the object it names still
+    -- exists. Without it the absence reconciliation would re-stat the same
+    -- oldest rows every pass and never reach the rest of the bucket, which is
+    -- the same starvation the inventory cursor exists to prevent one tier down.
+    lifetime_audited_at timestamp with time zone,
+
     UNIQUE (scope, digest, generation)
 );
 

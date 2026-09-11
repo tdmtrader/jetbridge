@@ -27,6 +27,7 @@ import (
 
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/hangaroutput/controller"
+	"github.com/concourse/concourse/atc/hangaroutput/inventorypass"
 	hangargcs "github.com/concourse/concourse/hangar/gcs"
 	"github.com/concourse/concourse/hangar/output"
 	"github.com/concourse/concourse/hangar/output/inventory"
@@ -87,12 +88,12 @@ func run(ctx context.Context, config controllerConfig) error {
 		Term:            output.MinLeaseTerm,
 		Transactor:      transactor,
 		Leases:          repository,
-		Pass: &sweepPass{
-			namespace:  namespace,
-			inventory:  sweep,
-			repository: repository,
-			transactor: transactor,
-			grace:      config.Grace,
+		Pass: &inventorypass.Pass{
+			Namespace:  namespace,
+			Inventory:  sweep,
+			Repository: repository,
+			Transactor: transactor,
+			Grace:      config.Grace,
 		},
 		Reporter: controller.ReporterFunc(logPass),
 	}

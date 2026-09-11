@@ -48,11 +48,17 @@ type HangarReclaimJob struct {
 	AdmittedDeletes int
 }
 
+// Deferred: the operator status and diagnosis surface is Phase 8's; no running
+// process reads it yet
+//
 // Remaining is how much of the lease is left at a database-clock instant.
 func (job HangarReclaimJob) Remaining(now output.Timestamp) time.Duration {
 	return job.ExpiresAt.UTC().Sub(now.UTC())
 }
 
+// Deferred: the operator status and diagnosis surface is Phase 8's; no running
+// process reads it yet
+//
 // LoadReclaimJob reads the open job for one exact ref.
 func (repository *HangarOutputRepository) LoadReclaimJob(ctx context.Context, tx output.Tx, ref hangar.TreeRef) (HangarReclaimJob, error) {
 	if err := ref.Validate(); err != nil {
@@ -434,6 +440,9 @@ func (repository *HangarOutputRepository) DueReclaimJobs(ctx context.Context, tx
 	return jobs, nil
 }
 
+// Deferred: the operator status and diagnosis surface is Phase 8's; no running
+// process reads it yet
+//
 // HangarDatabaseNow is the database clock, read as a value.
 //
 // Every deadline in this plane is measured against it rather than a node's own
@@ -447,4 +456,152 @@ func (repository *HangarOutputRepository) HangarDatabaseNow(ctx context.Context,
 	}
 
 	return output.NewTimestamp(now.UTC()), nil
+}
+
+// HangarReclaimCandidate is one generation whose reclamation may be admitted.
+//
+// It is what the admission pass selects and nothing it decides: every exclusion
+// named here is rechecked by AdmitReclaim under the exact-lifecycle lock, and
+// the schema rechecks the policy half again at commit. Selecting on them here as
+// well is not a second copy of the rule -- it is the bound that stops a pass
+// from opening a transaction per protected generation in the deployment.
+type HangarReclaimCandidate struct {
+	Ref            hangar.TreeRef
+	Metageneration int64
+	RegisteredAt   output.Timestamp
+}
+
+// ReclaimCandidates is the admission pass's bounded work query.
+//
+// The grace comparison is made on the DATABASE clock against the row's own
+// registered_at, for the same reason every deadline in this plane is: a
+// controller that measured grace on its own clock could admit a delete for an
+// object whose grace had not elapsed by simply being wrong about the time.
+//
+// registered_at is the instant this plane learned the generation exists, and it
+// is deliberately used rather than the object's creation time, which this table
+// does not carry. For a `registered` row the create precedes the receipt, and
+// for an `adopted` row adoption itself already required grace to have elapsed
+// since the object was created. Both directions are therefore conservative: the
+// wait is never shorter than grace measured from creation.
+func (repository *HangarOutputRepository) ReclaimCandidates(ctx context.Context, tx output.Tx, epoch int64, grace time.Duration, limit int) ([]HangarReclaimCandidate, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("%w: a reclaim admission pass is bounded; %d is not a batch",
+			output.ErrIncomplete, limit)
+	}
+	if grace <= 0 {
+		return nil, fmt.Errorf("%w: a reclaim admission pass names no publication grace, and "+
+			"elapsed grace is one of Req 46's preconditions", output.ErrIncomplete)
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT l.scope, l.digest, l.generation, l.metageneration, l.registered_at
+		  FROM hangar_exact_lifecycles l
+		 WHERE l.activation_epoch = $1
+		   AND l.state IN ('registered', 'adopted')
+		   AND l.registered_at <= now() - $2::interval
+		   AND NOT EXISTS (
+		       SELECT 1 FROM hangar_claims c
+		        WHERE c.lifecycle_id = l.id AND c.released_at IS NULL)
+		   AND NOT EXISTS (
+		       SELECT 1 FROM hangar_read_leases r
+		        WHERE r.lifecycle_id = l.id AND r.released_at IS NULL AND r.expires_at > now())
+		   AND NOT EXISTS (
+		       SELECT 1 FROM hangar_logical_reservations g
+		        WHERE g.scope = l.scope AND g.digest = l.digest
+		          AND g.state = 'unresolved_generation')
+		   AND NOT EXISTS (
+		       SELECT 1 FROM hangar_reclaim_jobs j
+		        WHERE j.lifecycle_id = l.id AND j.finalized_at IS NULL)
+		 ORDER BY l.registered_at, l.id
+		 LIMIT $3`, epoch, hangarInterval(grace), limit)
+	if err != nil {
+		return nil, hangarConflict(err)
+	}
+	defer Close(rows)
+
+	var candidates []HangarReclaimCandidate
+	for rows.Next() {
+		var candidate HangarReclaimCandidate
+		var scope, digest string
+		var registeredAt time.Time
+		if err := rows.Scan(&scope, &digest, &candidate.Ref.Generation,
+			&candidate.Metageneration, &registeredAt); err != nil {
+			return nil, err
+		}
+		candidate.Ref.Scope = hangar.Scope(scope)
+		candidate.Ref.Digest = hangar.Digest(digest)
+		candidate.RegisteredAt = output.NewTimestamp(registeredAt.UTC())
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, hangarConflict(err)
+	}
+
+	return candidates, nil
+}
+
+// LifetimeAuditCandidates is the absence reconciliation's bounded work query:
+// the generations this plane believes exist, least recently confirmed first.
+//
+// It is the other half of Req 52's "unexpected exact absence". The inventory
+// sweep classifies objects it SEES; nothing in a listing can report an object
+// that is not there, so a registered generation that somebody else's lifecycle
+// rule removed is invisible to it forever. This asks the opposite question --
+// of the objects this plane says exist, which ones does the store not have --
+// and it is the only question whose answer can be an out-of-band violation.
+func (repository *HangarOutputRepository) LifetimeAuditCandidates(ctx context.Context, tx output.Tx, epoch int64, limit int) ([]hangar.TreeRef, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("%w: a lifetime audit is bounded; %d is not a batch",
+			output.ErrIncomplete, limit)
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT l.scope, l.digest, l.generation
+		  FROM hangar_exact_lifecycles l
+		 WHERE l.activation_epoch = $1
+		   AND l.state IN ('registered', 'adopted')
+		 ORDER BY coalesce(l.lifetime_audited_at, l.registered_at), l.id
+		 LIMIT $2`, epoch, limit)
+	if err != nil {
+		return nil, hangarConflict(err)
+	}
+	defer Close(rows)
+
+	var refs []hangar.TreeRef
+	for rows.Next() {
+		var ref hangar.TreeRef
+		var scope, digest string
+		if err := rows.Scan(&scope, &digest, &ref.Generation); err != nil {
+			return nil, err
+		}
+		ref.Scope = hangar.Scope(scope)
+		ref.Digest = hangar.Digest(digest)
+		refs = append(refs, ref)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, hangarConflict(err)
+	}
+
+	return refs, nil
+}
+
+// RecordLifetimePresence stamps a generation the audit statted and found.
+//
+// Presence is recorded and not only absence, because the audit has to make
+// progress: a pass that stamped nothing would re-stat the same oldest rows every
+// wake and never reach the rest of the bucket. It writes no state, because
+// finding an object where this plane said it was is not news.
+func (repository *HangarOutputRepository) RecordLifetimePresence(ctx context.Context, tx output.Tx, ref hangar.TreeRef) error {
+	if err := ref.Validate(); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE hangar_exact_lifecycles SET lifetime_audited_at = now()
+		 WHERE scope = $1 AND digest = $2 AND generation = $3`,
+		string(ref.Scope), string(ref.Digest), ref.Generation); err != nil {
+		return hangarConflict(err)
+	}
+
+	return nil
 }

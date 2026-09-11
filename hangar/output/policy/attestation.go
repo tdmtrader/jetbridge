@@ -269,6 +269,9 @@ func DeriveBindingFindings(expectation Expectation, bindings output.PrincipalBin
 	return findings
 }
 
+// Deferred: mixed-cohort detection needs a per-role observed identity the IAM
+// read does not return; Phase 8, with the activation verification
+//
 // DeriveCohortFindings reports principals bound from another activation epoch.
 //
 // Rotation creates a new epoch rather than replacing a key in place, so two

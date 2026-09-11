@@ -31,6 +31,7 @@ import (
 
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/hangaroutput/controller"
+	"github.com/concourse/concourse/atc/hangaroutput/reclaimpass"
 	hangargcs "github.com/concourse/concourse/hangar/gcs"
 	"github.com/concourse/concourse/hangar/output"
 	"github.com/concourse/concourse/hangar/output/reclaimer"
@@ -50,6 +51,9 @@ func main() {
 func run(ctx context.Context, config controllerConfig) error {
 	namespace, err := config.namespace()
 	if err != nil {
+		return err
+	}
+	if err := output.ValidatePublicationGrace(config.Grace, output.MaxCaptureDeadline); err != nil {
 		return err
 	}
 
@@ -80,28 +84,54 @@ func run(ctx context.Context, config controllerConfig) error {
 
 	repository := db.NewHangarOutputRepository(db.HangarConsumerPrefixForComponent())
 	transactor := controller.SQLTransactor{DB: conn, CommitError: db.HangarCommitError}
+	owner := uuid.NewString()
+	term := output.LeaseTermFor(config.DeleteTimeout)
 
-	runner := &controller.Runner{
-		Kind:            output.OperationReclaimDelete,
+	// Two runners, two kinds, two leases. Admission decides; the delete pass
+	// acts. A single lease over both would let one unreachable store hold the
+	// decision queue behind it, and the schema names them separately for that
+	// reason.
+	admission := &controller.Runner{
+		Kind:            output.OperationReclaimAdmission,
 		ActivationEpoch: config.ActivationEpoch,
-		OwnerID:         uuid.NewString(),
-		Term:            output.LeaseTermFor(config.DeleteTimeout),
+		OwnerID:         owner,
+		Term:            output.MinLeaseTerm,
 		Transactor:      transactor,
 		Leases:          repository,
-		Pass: &reclaimPass{
-			reclaimer:     sweeper,
-			repository:    repository,
-			transactor:    transactor,
-			deleteTimeout: config.DeleteTimeout,
-			batch:         config.Batch,
+		Pass: &reclaimpass.AdmissionPass{
+			Repository: repository,
+			Transactor: transactor,
+			Grace:      config.Grace,
+			Term:       term,
+			Batch:      config.Batch,
+			OwnerID:    owner,
 		},
 		Reporter: controller.ReporterFunc(logPass),
 	}
 
-	return loop(ctx, runner, controller.Interval(config.Interval))
+	deletes := &controller.Runner{
+		Kind:            output.OperationReclaimDelete,
+		ActivationEpoch: config.ActivationEpoch,
+		OwnerID:         owner,
+		Term:            term,
+		Transactor:      transactor,
+		Leases:          repository,
+		Pass: &reclaimpass.DeletePass{
+			Reclaimer:     sweeper,
+			Repository:    repository,
+			Transactor:    transactor,
+			DeleteTimeout: config.DeleteTimeout,
+			Batch:         config.Batch,
+			OwnerID:       owner,
+			Term:          term,
+		},
+		Reporter: controller.ReporterFunc(logPass),
+	}
+
+	return loop(ctx, []*controller.Runner{admission, deletes}, controller.Interval(config.Interval))
 }
 
-func loop(ctx context.Context, runner *controller.Runner, interval time.Duration) error {
+func loop(ctx context.Context, runners []*controller.Runner, interval time.Duration) error {
 	logger := lager.NewLogger("hangar-output-reclaimer")
 	logger.RegisterSink(lager.NewWriterSink(os.Stdout, lager.INFO))
 	ctx = lagerctx.NewContext(ctx, logger)
@@ -110,8 +140,10 @@ func loop(ctx context.Context, runner *controller.Runner, interval time.Duration
 	defer ticker.Stop()
 
 	for {
-		if err := runner.Run(ctx); err != nil {
-			return err
+		for _, runner := range runners {
+			if err := runner.Run(ctx); err != nil {
+				return err
+			}
 		}
 		select {
 		case <-ctx.Done():

@@ -55,6 +55,9 @@ func (cursor InventoryCursor) Validate() error {
 	return cursor.UpdatedAt.Validate()
 }
 
+// Deferred: the operator status and diagnosis surface is Phase 8's; no running
+// process reads it yet
+//
 // AtCycleStart reports whether the cursor is positioned at the beginning of the
 // output prefix. Recovery from a corrupt after-key restarts here, having first
 // recorded the corruption as debt.

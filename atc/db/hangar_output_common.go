@@ -228,6 +228,8 @@ const (
 	HangarOutputReclaimChannel         = "hangar_output_reclaim"
 )
 
+// Deferred: NOTIFY acceleration is wired later in this revision, under R1-F9
+//
 // HangarOutputNotify wakes a worker after the transaction that created its work
 // has committed.
 //

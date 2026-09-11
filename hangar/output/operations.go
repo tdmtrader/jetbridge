@@ -147,6 +147,9 @@ func (lease OperationLease) Validate() error {
 	return nil
 }
 
+// Deferred: the operator status and diagnosis surface is Phase 8's; no running
+// process reads it yet
+//
 // Remaining is how much of the lease is left at the given database-clock
 // instant. It is never computed from a node's own clock: `now` is a reading
 // this plane took from PostgreSQL.

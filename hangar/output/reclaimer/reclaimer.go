@@ -158,6 +158,9 @@ func (reclaimer *Reclaimer) DeleteExactGeneration(ctx context.Context, ref hanga
 	}
 }
 
+// Deferred: the delete pass's own answer already reports absence; a separate
+// stat belongs to the ambiguous-response recovery path in Phase 8
+//
 // ObserveExactAbsence is the stat half of inferred reclamation.
 //
 // It is a separate method because "the object is gone" and "we deleted it" are

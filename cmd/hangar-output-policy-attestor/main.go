@@ -28,6 +28,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/hangaroutput/attestpass"
 	"github.com/concourse/concourse/atc/hangaroutput/controller"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	hangargcs "github.com/concourse/concourse/hangar/gcs"
@@ -150,11 +151,12 @@ func run(ctx context.Context, config attestorConfig) error {
 		Term:            output.MinLeaseTerm,
 		Transactor:      transactor,
 		Leases:          repository,
-		Pass: &attestPass{
-			expectation: expectation,
-			source:      source,
-			repository:  repository,
-			transactor:  transactor,
+		Pass: &attestpass.Pass{
+			Expectation: expectation,
+			Source:      source,
+			Repository:  repository,
+			Transactor:  transactor,
+			Clock:       output.ClockFunc(func() time.Time { return time.Now().UTC() }),
 		},
 		Reporter: controller.ReporterFunc(func(ctx context.Context, kind output.OperationKind, processed int, class string) {
 			lagerctx.FromContext(ctx).Info("hangar-output-pass", lager.Data{
@@ -180,75 +182,4 @@ func run(ctx context.Context, config attestorConfig) error {
 		case <-ticker.C:
 		}
 	}
-}
-
-// attestPass is one whole-bucket reading and everything derived from it.
-//
-// A read that FAILS is recorded, not skipped. "We have not checked" and "the
-// check failed" are the same amount of evidence, and a monitor that went quiet
-// on an outage would leave the last safe snapshot standing until it aged out --
-// turning a detection into a delay.
-type attestPass struct {
-	expectation policy.Expectation
-	source      *hangargcs.BucketPolicySource
-	repository  *db.HangarOutputRepository
-	transactor  controller.Transactor
-}
-
-func (pass *attestPass) Run(ctx context.Context, lease output.OperationLease) (int, error) {
-	observation, readErr := pass.source.ReadLifetimePolicy(ctx)
-	snapshot, findings, err := policy.DeriveSnapshot(pass.expectation, observation)
-	if err != nil {
-		return 0, err
-	}
-	if readErr != nil {
-		snapshot = output.PolicySnapshot{
-			ProtocolVersion:   output.ProtocolVersion,
-			ActivationEpoch:   pass.expectation.ActivationEpoch,
-			BucketFingerprint: pass.expectation.BucketFingerprint,
-			Metageneration:    1,
-			PolicyHash:        "sha256:unread",
-			State:             output.PolicyUnknown,
-			ObservedAt:        output.NewTimestamp(time.Now().UTC()),
-		}
-		findings = []output.PolicyFinding{{
-			Violation: output.ViolationEvidenceUnreadable,
-			Subject:   pass.expectation.BucketFingerprint,
-			Detail:    readErr.Error(),
-		}}
-	}
-
-	if bindings, err := pass.source.ReadPrincipalBindings(ctx,
-		pass.expectation.Principals); err == nil {
-		findings = append(findings,
-			policy.DeriveBindingFindings(pass.expectation, bindings)...)
-	} else {
-		findings = append(findings, output.PolicyFinding{
-			Violation: output.ViolationEvidenceUnreadable,
-			Subject:   pass.expectation.BucketFingerprint,
-			Detail:    err.Error(),
-		})
-	}
-
-	// A finding anywhere is at_risk, even when the lifecycle half read clean:
-	// an excessive IAM grant is a way for this bucket to lose objects, and the
-	// state is the plane's answer to "may new work be admitted".
-	if policy.AtRisk(findings) {
-		snapshot.State = output.PolicyAtRisk
-	}
-
-	tx, err := pass.transactor.Begin()
-	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	if err := pass.repository.RecordPolicyAttestation(ctx, tx, snapshot, findings); err != nil {
-		return 0, err
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-
-	return len(findings), nil
 }

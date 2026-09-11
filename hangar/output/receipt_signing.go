@@ -266,6 +266,9 @@ func NewReceiptKeyRing(keys ...EpochKey) (*ReceiptKeyRing, error) {
 	return ring, nil
 }
 
+// Deferred: the consumer-side verification half is Phase 8's; nothing in this
+// phase reads a grant, a receipt or a lease answer back
+//
 // KeyIDs is what the ring holds, sorted, so that a drain predicate can say
 // which epochs are still verifiable.
 func (ring *ReceiptKeyRing) KeyIDs() []string {
@@ -470,6 +473,9 @@ func (verifier *ReceiptSignatureVerifier) bind(receipt Receipt, challenge StatCh
 	return nil
 }
 
+// Deferred: the consumer-side verification half is Phase 8's; nothing in this
+// phase reads a grant, a receipt or a lease answer back
+//
 // ReceiptEnvelopeIsUnaltered is the tamper check over the wire form.
 //
 // It exists because the receipt travels as JSON and a verifier that decoded,
@@ -489,6 +495,9 @@ func ReceiptEnvelopeIsUnaltered(body []byte) (Receipt, error) {
 	return receipt, nil
 }
 
+// Deferred: the consumer-side verification half is Phase 8's; nothing in this
+// phase reads a grant, a receipt or a lease answer back
+//
 // ConstantTimeKeyIDEqual compares two key ids without leaking which byte
 // differed. It is small, but a key id is compared before a signature is
 // checked, and a comparison that returns early is a comparison an attacker can

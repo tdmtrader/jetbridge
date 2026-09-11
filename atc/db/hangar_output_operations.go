@@ -125,6 +125,9 @@ func (repository *HangarOutputRepository) RenewOperationLease(ctx context.Contex
 	return renewed, nil
 }
 
+// Deferred: the operator status and diagnosis surface is Phase 8's; no running
+// process reads it yet
+//
 // ReadOperationLease reads one kind's lease back, whether or not it is held.
 //
 // Diagnosis stays possible in every state this plane can be in, which is why
@@ -285,6 +288,9 @@ func (repository *HangarOutputRepository) RecordInventoryDebt(ctx context.Contex
 	return nil
 }
 
+// Deferred: the operator status and diagnosis surface is Phase 8's; no running
+// process reads it yet
+//
 // ReadInventoryDebt reads a bounded page of what the sweep still owes.
 func (repository *HangarOutputRepository) ReadInventoryDebt(ctx context.Context, tx output.Tx, bucket string, epoch int64, limit int) ([]output.InventoryDebt, error) {
 	if limit <= 0 {
@@ -381,6 +387,9 @@ func (repository *HangarOutputRepository) RecordPolicyAttestation(ctx context.Co
 	return nil
 }
 
+// Deferred: the reclaim-admission violation gate is wired later in this
+// revision, under R1-F15
+//
 // OpenPolicyViolations reads what is still unreconciled for one epoch.
 //
 // A fresh safe attestation does not close these, and that is the whole reason
@@ -417,6 +426,9 @@ func (repository *HangarOutputRepository) OpenPolicyViolations(ctx context.Conte
 	return findings, nil
 }
 
+// Deferred: the operator status and diagnosis surface is Phase 8's; no running
+// process reads it yet
+//
 // ReconcilePolicyViolation closes one finding.
 //
 // It is one-way and the schema says so: a reopened finding is a reconciliation

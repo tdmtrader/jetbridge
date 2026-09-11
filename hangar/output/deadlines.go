@@ -93,6 +93,8 @@ func ValidateCaptureDeadline(deadline time.Duration) error {
 	return nil
 }
 
+// Deferred: Req 17's bound has no operator-facing flag to refuse; the
+// coordinator's seal deadline is set by the ATC's own composition
 func ValidateSealDeadline(deadline time.Duration) error {
 	if deadline < MinSealDeadline || deadline > MaxSealDeadline {
 		return fmt.Errorf("%w: seal deadline %s is outside %s..%s",
@@ -163,6 +165,9 @@ func MayStartWork(remaining, operationTimeout time.Duration) bool {
 	return remaining >= operationTimeout+LeaseStartMargin
 }
 
+// Deferred: the operator status and diagnosis surface is Phase 8's; no running
+// process reads it yet
+//
 // ValidatePolicyEvidenceAge fails closed on stale attestation.
 func ValidatePolicyEvidenceAge(age time.Duration) error {
 	if age < 0 {

@@ -278,6 +278,8 @@ func NewReadGrantSigner(material []byte) (*ReadGrantSigner, error) {
 	return signer, nil
 }
 
+// Deferred: the consumer-side verification half is Phase 8's; nothing in this
+// phase reads a grant, a receipt or a lease answer back
 func NewReadGrantVerifier(material []byte, clock Clock) (*ReadGrantVerifier, error) {
 	if len(material) != ReadGrantKeyBytes {
 		return nil, fmt.Errorf("%w: an output read grant key is exactly %d raw bytes, this one "+

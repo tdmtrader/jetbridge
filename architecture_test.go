@@ -569,6 +569,27 @@ var outputRoleImporters = map[string]string{
 		"publisher's exact-generation stat over the same bucket the daemon published into, " +
 		"because requirement 35 is about the object rather than about a fixture's opinion of " +
 		"it. The package's production code declares ExactStat as a port and links nothing",
+
+	// The three pass packages. Each is one principal's bounded unit of work,
+	// lifted out of `package main` so the composition can be driven -- which
+	// is what the Phase 7 review found nothing was doing. Each links EXACTLY
+	// ONE role and is linked by exactly one binary, so the principal boundary
+	// is unchanged: the guard below over cmd/ roots is what keeps that true,
+	// and it reads the real build graph rather than these words.
+	"atc/hangaroutput/inventorypass": "the inventory controller's bounded unit, lifted out of " +
+		"its main so it can be driven; it links the inventory role and no other, and only " +
+		"cmd/hangar-output-inventory links it",
+	"atc/hangaroutput/reclaimpass": "the reclaimer's two bounded units, lifted out of its " +
+		"main so they can be driven; they link the reclaimer role and no other, and only " +
+		"cmd/hangar-output-reclaimer links them",
+	"atc/hangaroutput/attestpass": "the attestor's bounded unit, lifted out of its main so it " +
+		"can be driven; it links the policy role and no other, and only " +
+		"cmd/hangar-output-policy-attestor links it",
+
+	"atc/db": "TEST-ONLY: the controller-pass specs drive the real inventory and reclaimer " +
+		"roles against real PostgreSQL and the tier-1 store, because the composition -- which " +
+		"record precedes which effect -- is what the phase shipped unwired. The package's " +
+		"production code links no role",
 }
 
 // testOnlyRoleImporters are the exemptions above whose reason says TEST-ONLY.
@@ -581,6 +602,7 @@ var outputRoleImporters = map[string]string{
 var testOnlyRoleImporters = map[string]bool{
 	"hangar/output/conformance": true,
 	"atc/hangaroutput":          true,
+	"atc/db":                    true,
 }
 
 // TestTheOutputRolesAreLinkedOnlyByTheirOwnPrincipals is the import half of the

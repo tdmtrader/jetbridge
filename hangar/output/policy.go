@@ -80,6 +80,9 @@ func (state PolicyState) Validate() error {
 	return err
 }
 
+// Deferred: the operator status and diagnosis surface is Phase 8's; no running
+// process reads it yet
+//
 // AdmitsNewWork reports whether this state permits new captures, claim
 // acquires, grants, adoption and reclaim admission. Only PolicySafe does;
 // PolicyUnknown is treated exactly as PolicyAtRisk, because "we have not
