@@ -1147,6 +1147,180 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				Expect(reclaiming.Rollback()).To(Succeed())
 			})
 
+			// RECOVERY VERSUS A RENEWAL, IN BOTH ARRIVAL ORDERS.
+			//
+			// The two run against each other for real here, on two
+			// connections, because the interleaving is not reachable from one:
+			// each transaction needs to be open while the other decides.
+			//
+			// What makes the first order possible at all is that `now()` is
+			// `transaction_timestamp()`. A renewal whose transaction OPENED
+			// while the lease was live still sees it live at its own now(),
+			// while a recovery transaction that starts later reads the same
+			// committed row as expired -- so a recovery pass really can pick up
+			// a lease that a renewal is about to extend. The candidate SELECT
+			// runs unlocked, by necessity: there is no identity to lock until
+			// something has been selected. It is the predicate REPEATED under
+			// the lock that saves the live reader, and nothing asserted that
+			// repetition: deleting it leaves this suite green.
+			//
+			// The recovery pass is blocked on the renewal's row lock at the
+			// moment the renewal commits, which is asserted rather than assumed
+			// -- a spec that let the renewal commit first would be watching two
+			// transactions that never met.
+			It("leaves alone a lease that was renewed while recovery waited for its row", func() {
+				renewing := postgresRunner.OpenConn()
+				DeferCleanup(func() { Expect(renewing.Close()).To(Succeed()) })
+
+				renewal, err := renewing.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(renewal)
+
+				// The renewal's own now(), fixed by its first statement.
+				var opened time.Time
+				Expect(renewal.QueryRow(`SELECT transaction_timestamp()`).Scan(&opened)).
+					To(Succeed())
+
+				// Live at that instant, expired at any later transaction's.
+				// All three instants move together, so the row keeps the
+				// fifteen-minute term it was admitted under -- the schema
+				// refuses a shorter one, and shortening a lease to make a race
+				// reachable would be a different spec.
+				deadline := opened.Add(200 * time.Millisecond)
+				_, err = dbConn.Exec(`
+					UPDATE hangar_read_leases
+					SET granted_at = $2::timestamptz - interval '15 minutes',
+					    renewed_at = $2::timestamptz - interval '15 minutes',
+					    expires_at = $2
+					WHERE read_lease_id = $1`, string(id), deadline)
+				Expect(err).NotTo(HaveOccurred())
+
+				Eventually(func() bool {
+					var past bool
+					Expect(dbConn.QueryRow(`SELECT now() > $1`, deadline).Scan(&past)).
+						To(Succeed())
+
+					return past
+				}, 10*time.Second, 20*time.Millisecond).Should(BeTrue(),
+					"the database clock never passed the expiry this spec set")
+
+				// The renewal: admitted on its own clock, holding the row,
+				// uncommitted.
+				renewed, err := repository.RenewReadLease(ctx, renewal, lease)
+				Expect(err).NotTo(HaveOccurred(),
+					"the renewal was refused, so this is no longer the race it is named for")
+				Expect(renewed.ExpiresAt.After(deadline)).To(BeTrue())
+
+				closed := make(chan int, 1)
+				done := make(chan error, 1)
+				go func() {
+					defer GinkgoRecover()
+					tx, err := dbConn.Begin()
+					if err != nil {
+						done <- err
+
+						return
+					}
+					defer db.Rollback(tx)
+					count, err := repository.CloseAbandonedReadLeases(ctx, tx, 100)
+					if err != nil {
+						done <- err
+
+						return
+					}
+					if err := tx.Commit(); err != nil {
+						done <- err
+
+						return
+					}
+					closed <- count
+					done <- nil
+				}()
+
+				// It has read its candidates -- the committed row is expired --
+				// and it is now waiting on the lock the renewal holds.
+				Consistently(done, 500*time.Millisecond, 50*time.Millisecond).ShouldNot(Receive(),
+					"recovery finished without ever meeting the renewal's row lock")
+
+				Expect(renewal.Commit()).To(Succeed())
+
+				var failure error
+				Eventually(done, 10*time.Second).Should(Receive(&failure))
+				Expect(failure).NotTo(HaveOccurred())
+				Expect(closed).To(Receive(Equal(0)),
+					"recovery closed a lease that was renewed while it waited; the decision came "+
+						"from the candidate read taken before the row was held")
+
+				// And the survivor is a lease a daemon may still stage under.
+				validating, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(validating)
+				_, err = repository.ValidateReadLease(ctx, validating, validation())
+				Expect(err).NotTo(HaveOccurred(),
+					"the renewed lease no longer authorizes the read it protects")
+			})
+
+			// The other arrival order: recovery holds the row first, and the
+			// renewal waits for it. A renewal that came back admitted here
+			// would resurrect a lease recovery has already closed -- the
+			// generation would be re-pinned by a reader the plane has decided
+			// is gone, and the tombstone recovery wrote would be the only
+			// record that it ever happened.
+			//
+			// The refusal CLASS is pinned by the expired-lease specs beside
+			// this one; what this adds is the interleaving. The renewal is
+			// still blocked on recovery's row at the moment recovery commits,
+			// which is asserted, so its answer is taken from the row as
+			// recovery left it and not from the reading it had before it
+			// waited.
+			It("refuses a renewal that waited for the recovery pass that closed its lease", func() {
+				_, err := dbConn.Exec(`
+					UPDATE hangar_read_leases
+					SET granted_at = granted_at - interval '1 hour',
+					    renewed_at = renewed_at - interval '1 hour',
+					    expires_at = expires_at - interval '1 hour'
+					WHERE read_lease_id = $1`, string(id))
+				Expect(err).NotTo(HaveOccurred())
+
+				recovery, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(recovery)
+				count, err := repository.CloseAbandonedReadLeases(ctx, recovery, 100)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(count).To(Equal(1))
+
+				renewing := postgresRunner.OpenConn()
+				DeferCleanup(func() { Expect(renewing.Close()).To(Succeed()) })
+				renewal, err := renewing.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(renewal)
+
+				done := make(chan error, 1)
+				go func() {
+					defer GinkgoRecover()
+					_, err := repository.RenewReadLease(ctx, renewal, lease)
+					done <- err
+				}()
+
+				Consistently(done, 500*time.Millisecond, 50*time.Millisecond).ShouldNot(Receive(),
+					"the renewal answered without waiting for the row recovery was holding, so "+
+						"it decided from a read taken outside the suffix")
+
+				Expect(recovery.Commit()).To(Succeed())
+
+				var failure error
+				Eventually(done, 10*time.Second).Should(Receive(&failure))
+				Expect(failure).To(MatchError(output.ErrConflict),
+					"the renewal resurrected a lease recovery had closed")
+				Expect(renewal.Rollback()).To(Succeed())
+
+				var released bool
+				Expect(dbConn.QueryRow(`
+					SELECT released_at IS NOT NULL FROM hangar_read_leases
+					WHERE read_lease_id = $1`, string(id)).Scan(&released)).To(Succeed())
+				Expect(released).To(BeTrue())
+			})
+
 			It("refuses a released lease even though its grant is still signed", func() {
 				tx, err := dbConn.Begin()
 				Expect(err).NotTo(HaveOccurred())
