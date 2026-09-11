@@ -684,6 +684,15 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				}),
 			Entry("no nonce for the grant", output.ErrIncomplete, "read grant nonce",
 				func(request *output.ReadLeaseRequest) { request.GrantNonce = "" }),
+			// The term's CEILING, refused where the policy is read rather than
+			// by the column's CHECK. Both refusals are typed ErrIncomplete, so
+			// what tells them apart is which sentence comes back: the schema's
+			// is the constraint's text, and a caller cannot act on it.
+			Entry("a timeout whose term would outrun the bound", output.ErrIncomplete,
+				"the bound is",
+				func(request *output.ReadLeaseRequest) {
+					request.MaterializationTimeout = 24 * time.Hour
+				}),
 		)
 
 		It("refuses a read whose claim was released", func() {

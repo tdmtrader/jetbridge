@@ -749,9 +749,8 @@ func (request ReadLeaseRequest) Validate() error {
 	if request.ActivationEpoch == 0 {
 		return fmt.Errorf("%w: activation epoch is zero", ErrIncomplete)
 	}
-	if request.MaterializationTimeout <= 0 {
-		return fmt.Errorf("%w: materialization timeout is not positive; the lease term is derived "+
-			"from it", ErrIncomplete)
+	if err := ValidateMaterializationTimeout(request.MaterializationTimeout); err != nil {
+		return err
 	}
 	if err := request.Destination.Validate(); err != nil {
 		return err

@@ -22,6 +22,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -469,6 +470,52 @@ func TestACommitFailingWithAnUnrecognisedSQLSTATEStaysUnresolved(t *testing.T) {
 	}
 	if minter.calls != 0 {
 		t.Errorf("the signer ran %d times for an admission that never committed", minter.calls)
+	}
+}
+
+// A TERM THE SCHEMA WOULD REFUSE IS REFUSED BY THE REQUEST SURFACE.
+//
+// lease_term_seconds is bounded at both ends by the column's CHECK. The floor is
+// unreachable -- LeaseTermFor floors at MinLeaseTerm -- and the ceiling was
+// reachable from a caller's own timeout: anything past 23h55m derives a term
+// over 86400 seconds and the INSERT failed as SQLSTATE 23514. Nothing was lost
+// in class (the adapter maps it to ErrIncomplete either way); what came back was
+// the constraint's text, which names a column a consumer has never heard of and
+// says nothing about what to ask for instead.
+//
+// So the bound is read where the policy is: the request. The schema's CHECK is
+// the second line of defence, which is what a constraint is for.
+func TestATermPastTheBoundIsRefusedByTheRequestAndNotByTheColumn(t *testing.T) {
+	h := newHarness(t)
+	ref := registeredRef(t, h)
+	claimID := claimOn(t, h, ref)
+
+	admission, minter := readAdmission(t, h)
+	request := readRequest(t, claimID, ref)
+	request.MaterializationTimeout = 24 * time.Hour
+
+	_, err := admission.Admit(context.Background(), request)
+	if !errors.Is(err, output.ErrIncomplete) {
+		t.Fatalf("a timeout deriving a term past the bound answered %v", err)
+	}
+	if !strings.Contains(err.Error(), "the bound is") {
+		t.Errorf("the refusal does not name the bound: %v", err)
+	}
+	if strings.Contains(err.Error(), "lease_term_seconds") {
+		t.Errorf("the COLUMN refused this, not the request: %v. A caller reading a check "+
+			"constraint's text cannot tell what to ask for instead", err)
+	}
+	if minter.calls != 0 {
+		t.Errorf("the signer ran %d times for a request that was never admitted", minter.calls)
+	}
+
+	var leases int
+	if err := h.Conn.QueryRow(`SELECT count(*) FROM hangar_read_leases WHERE read_lease_id = $1`,
+		string(request.ReadLeaseID)).Scan(&leases); err != nil {
+		t.Fatalf("counting: %v", err)
+	}
+	if leases != 0 {
+		t.Error("a refused read still created a lease")
 	}
 }
 

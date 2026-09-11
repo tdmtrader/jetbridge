@@ -90,9 +90,10 @@ func (request ReadRequest) Validate() error {
 	if request.ActivationEpoch == 0 {
 		return fmt.Errorf("%w: a managed read names no activation epoch", output.ErrIncomplete)
 	}
-	if request.MaterializationTimeout <= 0 {
-		return fmt.Errorf("%w: a managed read names no materialization timeout; the lease term "+
-			"is derived from it", output.ErrIncomplete)
+	// The term's bounds, read here rather than left to the column's CHECK: a
+	// request refused by the schema comes back carrying a constraint's text.
+	if err := output.ValidateMaterializationTimeout(request.MaterializationTimeout); err != nil {
+		return err
 	}
 
 	return nil
