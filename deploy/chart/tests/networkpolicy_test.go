@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	networkingv1 "k8s.io/api/networking/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 )
 
@@ -163,13 +165,85 @@ func TestNetworkPolicyNamesAreUniqueInEverySupportedMode(t *testing.T) {
 	}
 }
 
-// The daemon policy has to select the task pods that actually exist.
+// No policy in the render selects task pods by a label only some of them carry.
 //
-// This is the other half of the collision: the copy that was deleted selected
-// `concourse.ci/pipeline Exists`, and a one-off build's pod carries no
-// pipeline. Asserting the surviving selector keeps the deletion from being
-// reversed by a later "restore the missing rule" change that restores the
-// wrong one.
+// `concourse.ci/worker` is set unconditionally on every pod the K8s runtime
+// builds (atc/worker/jetbridge/container.go:856). `concourse.ci/pipeline` is
+// added only when the value is non-empty, so a one-off build -- `fly execute`,
+// with no pipeline -- carries the first and not the second. A policy selecting
+// the second therefore silently does not apply to those pods, and what that
+// means depends on which direction the policy runs in:
+//
+//   - the artifact-daemon INGRESS policy, selecting pipeline, refused a one-off
+//     build its artifact fetch. That copy was deleted.
+//   - the -task-egress policy, selecting pipeline, did the opposite and worse:
+//     a pod selected by no NetworkPolicy is UNRESTRICTED, so a one-off build
+//     escaped egress confinement entirely while the operator believed egress
+//     was restricted. That is the same defect, in the policy whose whole job is
+//     to confine task pods.
+//
+// So the rule is over the WHOLE render in every mode, not over one policy.
+// Asserting the absence only from the daemon's policy is what let the second
+// one survive the first fix.
+func TestNoRenderedPolicySelectsTaskPodsByPipelineLabel(t *testing.T) {
+	scanned, selectors := 0, 0
+
+	for _, mode := range networkPolicyModes() {
+		out := render(t, mode.sets...)
+
+		for _, document := range splitDocuments(out) {
+			var head renderedObject
+			if err := yaml.Unmarshal([]byte(document), &head); err != nil {
+				continue
+			}
+			if head.Kind != "NetworkPolicy" {
+				continue
+			}
+			scanned++
+
+			// Decoded, not substring-matched. The template explains this defect
+			// in a YAML comment that helm renders into the output, so a
+			// substring rule would fail on the explanation. The selector is
+			// what the rule is about, so the selector is what it reads.
+			var policy networkingv1.NetworkPolicy
+			if err := yaml.UnmarshalStrict([]byte(document), &policy); err != nil {
+				t.Errorf("in mode %q, NetworkPolicy %s does not decode: %v",
+					mode.name, head.Metadata.Name, err)
+
+				continue
+			}
+
+			for _, key := range selectorKeys(policy) {
+				switch key {
+				case "concourse.ci/worker":
+					selectors++
+				case "concourse.ci/pipeline":
+					t.Errorf("in mode %q, NetworkPolicy %s selects by the pipeline label.\n\n"+
+						"The runtime sets it only when the build HAS a pipeline, so a one-off "+
+						"build's pod does not match. For an ingress policy that silently "+
+						"refuses the pod; for an egress policy it silently EXEMPTS it, because "+
+						"a pod selected by no NetworkPolicy is unrestricted. Select the worker "+
+						"label, which every pod the runtime builds carries.",
+						mode.name, head.Metadata.Name)
+				}
+			}
+		}
+	}
+
+	if scanned < 4 {
+		t.Fatalf("only %d NetworkPolicies were seen across %d modes; the render or the split "+
+			"failed and this rule would pass vacuously", scanned, len(networkPolicyModes()))
+	}
+	if selectors < 2 {
+		t.Fatalf("only %d rendered policies select by concourse.ci/worker. The task-pod "+
+			"policies are the subject of this rule; a render where none of them selects a "+
+			"worker pod is one where the label moved and this rule is guarding a string",
+			selectors)
+	}
+}
+
+// And the positive half for the daemon's own policy, which is the one a
+// "restore the missing rule" change would be most likely to rewrite.
 func TestTheArtifactDaemonPolicySelectsEveryWorkerPodAndNotOnlyPipelineOnes(t *testing.T) {
 	out := render(t,
 		"networkPolicy.enabled=true",
@@ -195,10 +269,6 @@ func TestTheArtifactDaemonPolicySelectsEveryWorkerPodAndNotOnlyPipelineOnes(t *t
 			"That is the label the K8s runtime puts on every task and check pod it builds. " +
 			"concourse.ci/pipeline is not: a one-off build has no pipeline, so a policy " +
 			"selecting it silently refuses those pods their artifact fetch.")
-	}
-	if strings.Contains(daemonPolicy, "concourse.ci/pipeline") {
-		t.Errorf("the artifact-daemon NetworkPolicy selects pods by concourse.ci/pipeline, "+
-			"which one-off builds and checks do not carry:\n\n%s", daemonPolicy)
 	}
 }
 
@@ -239,4 +309,39 @@ func TestTheDaemonPolicyHasExactlyOneSwitch(t *testing.T) {
 		t.Error("artifactDaemon.networkPolicy.enabled=true rendered no artifact-daemon " +
 			"NetworkPolicy; the daemon's only switch does not work")
 	}
+}
+
+// selectorKeys is every label key any selector in one NetworkPolicy matches on
+// -- the pod selector itself and the pod selectors of every ingress and egress
+// peer.
+func selectorKeys(policy networkingv1.NetworkPolicy) []string {
+	var keys []string
+
+	collect := func(selector *metav1.LabelSelector) {
+		if selector == nil {
+			return
+		}
+		for key := range selector.MatchLabels {
+			keys = append(keys, key)
+		}
+		for _, expression := range selector.MatchExpressions {
+			keys = append(keys, expression.Key)
+		}
+	}
+
+	collect(&policy.Spec.PodSelector)
+	for _, rule := range policy.Spec.Ingress {
+		for _, peer := range rule.From {
+			collect(peer.PodSelector)
+			collect(peer.NamespaceSelector)
+		}
+	}
+	for _, rule := range policy.Spec.Egress {
+		for _, peer := range rule.To {
+			collect(peer.PodSelector)
+			collect(peer.NamespaceSelector)
+		}
+	}
+
+	return keys
 }

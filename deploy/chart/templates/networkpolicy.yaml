@@ -84,9 +84,17 @@ metadata:
   labels:
     {{- include "concourse.labels" . | nindent 4 }}
 spec:
+  # concourse.ci/worker, not concourse.ci/pipeline. The runtime sets the worker
+  # label on every pod it builds and the pipeline label only when the build HAS
+  # a pipeline, so a one-off build (`fly execute`) carried the first and not the
+  # second. A pod selected by NO NetworkPolicy is unrestricted, so this policy
+  # -- whose entire job is to confine task egress -- exempted exactly the builds
+  # with no pipeline, while the operator read the render and believed egress was
+  # restricted. Same defect as the daemon-policy collision one template over,
+  # and the more security-relevant half of it.
   podSelector:
     matchExpressions:
-      - key: concourse.ci/pipeline
+      - key: concourse.ci/worker
         operator: Exists
   policyTypes:
     - Egress
