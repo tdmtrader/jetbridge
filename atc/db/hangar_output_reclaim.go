@@ -18,6 +18,16 @@ package db
 // owner whose lease expired may have been taken over, and a takeover advances
 // the fence; every statement here names the fence it believes it holds, so a
 // paused owner that wakes up writes nothing.
+//
+// One recorded imprecision, ruled on rather than fixed (round 1, R1-F14). Every
+// lease instant here is now(), which in PostgreSQL is TRANSACTION START -- so a
+// transaction open for N seconds overstates its remaining lease by N. The exact
+// form is clock_timestamp(), which hangarStatProofFresh already uses for the
+// reason it matters there. It is not used here because consistency across the
+// plane is worth more than the milliseconds: these transactions are short, the
+// same reading is what every earlier phase's lease arithmetic uses, and
+// tightening one site alone would make two kinds of lease mean two things.
+// Revisit if a lease is ever tightened below a minute.
 
 import (
 	"context"
