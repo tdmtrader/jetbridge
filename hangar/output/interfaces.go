@@ -281,6 +281,20 @@ func PrincipalRoles() []PrincipalRole {
 type PrincipalBindings struct {
 	BucketFingerprint string
 	Permissions       map[PrincipalRole][]string
+
+	// UnrecognisedRoles is every IAM role name the translation could not
+	// expand into permissions, per principal that holds it.
+	//
+	// It is a separate field and not an entry in Permissions, and the
+	// difference is the whole of R1-F5. An unknown role folded in as a
+	// pseudo-permission matches nothing the matrix forbids, so a publisher
+	// bound roles/storage.objectCreator PLUS a custom role carrying
+	// storage.objects.delete satisfied its required set, tripped no excess
+	// finding, and attested SAFE. The matrix cannot know what a custom role
+	// contains -- only the project that defined it does -- so the honest
+	// answer is not "harmless", it is "unknown, therefore unsafe", and that is
+	// a finding rather than an omission.
+	UnrecognisedRoles map[PrincipalRole][]string
 }
 
 // PolicyReader reads bucket lifetime policy and IAM. It has no object method

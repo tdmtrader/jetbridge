@@ -2,12 +2,19 @@ package gcs
 
 // The authoritative whole-bucket lifetime-policy and IAM read.
 //
-// This file is a TRANSLATION and nothing else: it turns what the provider's SDK
-// returns into the neutral shapes hangar/output declares, and every judgement --
-// is this safe, is this binding excessive, is this a shared bucket -- is made in
-// hangar/output/policy against those shapes. The split is deliberate. A
-// derivation that lived here could only be tested against a live API, and a
-// translation that lived there would need the SDK in the leaf.
+// Most of this file is a TRANSLATION: it turns what the provider's SDK returns
+// into the neutral shapes hangar/output declares, and the judgements about a
+// reading -- is this safe, is this binding excessive, is this a shared bucket --
+// are made in hangar/output/policy against those shapes. The split is
+// deliberate: a derivation that lived here could only be tested against a live
+// API, and a translation that lived there would need the SDK in the leaf.
+//
+// permissionsOf is the exception, and pretending otherwise was a finding. It
+// expands an IAM role name into permissions, which means it decides what a
+// grant MEANS, and the decision it used to make about a role it did not
+// recognise -- report the role name as if it were a permission -- was the one
+// that let a publisher holding a custom delete role attest safe. It is
+// therefore tested here, in this package, including the shape of that mistake.
 //
 // What it reads is the WHOLE policy. Req 51 wants a whole-bucket lifecycle read
 // proving the snapshot, and a reader that fetched only the rules it expected
@@ -104,6 +111,7 @@ func (source *BucketPolicySource) ReadPrincipalBindings(ctx context.Context, ide
 	bindings := output.PrincipalBindings{
 		BucketFingerprint: fingerprintOf(source.name),
 		Permissions:       map[output.PrincipalRole][]string{},
+		UnrecognisedRoles: map[output.PrincipalRole][]string{},
 	}
 	for _, role := range policy.Roles() {
 		for _, member := range policy.Members(role) {
@@ -115,8 +123,21 @@ func (source *BucketPolicySource) ReadPrincipalBindings(ctx context.Context, ide
 				// role for it would hide exactly the case Req 54 refuses.
 				principal = output.PrincipalRole(identity)
 			}
+			permissions, recognised := permissionsOf(string(role))
+			if !recognised {
+				// Reported as UNEXPANDED rather than folded into the
+				// permission list. A role name in the permission list matches
+				// nothing the matrix forbids, so folding it in is the same as
+				// saying the role grants nothing -- and the one thing this
+				// code knows about a custom role is that it does not know
+				// what it grants.
+				bindings.UnrecognisedRoles[principal] =
+					append(bindings.UnrecognisedRoles[principal], string(role))
+
+				continue
+			}
 			bindings.Permissions[principal] = append(bindings.Permissions[principal],
-				permissionsOf(string(role))...)
+				permissions...)
 		}
 	}
 
@@ -124,36 +145,61 @@ func (source *BucketPolicySource) ReadPrincipalBindings(ctx context.Context, ide
 }
 
 // permissionsOf expands an IAM role name into the object and bucket permissions
-// this plane compares against.
+// this plane compares against, and says whether it recognised the role at all.
 //
-// It covers the predefined roles a deployment would plausibly use plus the
-// custom-role case, which is passed through under its own name. A role this
-// function does not recognise is NOT silently treated as harmless: it comes
-// back as itself, so the matrix sees a permission it did not expect rather than
-// an empty grant it would call insufficient.
-func permissionsOf(role string) []string {
+// This table is a SNAPSHOT OF SOMETHING GOOGLE OWNS. The membership of a
+// predefined role is Google's to change, and this file cannot notice when it
+// does; the table was read from Cloud Storage's predefined-role reference and
+// last checked on 2026-09-10. That date is here rather than in a commit message
+// because the next person to wonder whether it is still true needs to know when
+// it was last true.
+//
+// The boolean is the fix for R1-F5 and it is the reason this function is not a
+// translation. It makes a JUDGEMENT: an unrecognised role is not its own name
+// and not an empty grant -- both of those are "harmless" in a matrix that tests
+// held[permission] against a forbidden list, and "harmless" is precisely what a
+// custom role carrying storage.objects.delete is not. What this plane knows
+// about a custom role is that it does not know what it grants, so it says so
+// and the leaf makes it a finding.
+func permissionsOf(role string) ([]string, bool) {
 	switch role {
 	case "roles/storage.objectCreator":
-		return []string{"storage.objects.create"}
+		return []string{"storage.objects.create"}, true
 	case "roles/storage.objectViewer":
-		return []string{"storage.objects.get", "storage.objects.list"}
+		return []string{"storage.objects.get", "storage.objects.list"}, true
 	case "roles/storage.objectUser", "roles/storage.objectAdmin":
 		return []string{
 			"storage.objects.create", "storage.objects.get",
 			"storage.objects.list", "storage.objects.delete",
-		}
-	case "roles/storage.legacyBucketReader", "roles/storage.bucketViewer":
-		return []string{"storage.buckets.get"}
+		}, true
+	case "roles/storage.legacyBucketReader":
+		// storage.objects.list as well as the bucket read, which is the half
+		// this table had missing: a principal granted the legacy reader gains
+		// bucket-wide object listing, and the matrix forbids exactly that to
+		// the publisher and the reclaimer.
+		return []string{"storage.buckets.get", "storage.objects.list"}, true
+	case "roles/storage.bucketViewer":
+		// Bucket metadata and bucket LISTING -- of buckets, not of objects.
+		// It is a different role from the legacy reader above and was
+		// previously folded in with it.
+		return []string{"storage.buckets.get", "storage.buckets.list"}, true
+	case "roles/storage.legacyBucketWriter":
+		return []string{
+			"storage.buckets.get", "storage.objects.create",
+			"storage.objects.delete", "storage.objects.list",
+		}, true
+	case "roles/storage.legacyObjectReader":
+		return []string{"storage.objects.get"}, true
 	case "roles/storage.admin":
 		return []string{
 			"storage.objects.create", "storage.objects.get",
 			"storage.objects.list", "storage.objects.delete",
 			"storage.buckets.get", "storage.buckets.getIamPolicy",
 			"storage.buckets.update", "storage.buckets.setIamPolicy",
-		}
+		}, true
 	}
 
-	return []string{role}
+	return nil, false
 }
 
 // normalizeMember strips the IAM member type prefix, so

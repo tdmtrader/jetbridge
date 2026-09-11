@@ -304,6 +304,16 @@ const (
 	// detects one after activation.
 	ViolationSharedBucket PolicyViolation = "shared_bucket"
 
+	// ViolationUnrecognisedRole is a principal holding an IAM role this plane
+	// cannot expand into permissions -- a custom role, or a predefined one
+	// added since the matrix was written.
+	//
+	// It is a violation and not an omission because the matrix has no way to
+	// know what such a role contains: only the project that defined it does.
+	// Treating it as harmless is what let a publisher hold a custom role
+	// carrying storage.objects.delete and attest safe.
+	ViolationUnrecognisedRole PolicyViolation = "unrecognised_role"
+
 	// ViolationOutOfBandAbsence is an exact generation this plane registered,
 	// found absent, with no admitted delete on record to explain it. It is
 	// Req 52's "unexpected exact absence": somebody else removed a managed
@@ -334,6 +344,7 @@ func PolicyViolations() []PolicyViolation {
 		ViolationWrongPrincipal,
 		ViolationSharedBucket,
 		ViolationMixedCohort,
+		ViolationUnrecognisedRole,
 		ViolationOutOfBandAbsence,
 		ViolationRuntimePrincipalDenied,
 	}

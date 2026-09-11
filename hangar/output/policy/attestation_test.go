@@ -555,3 +555,76 @@ func TestNoRoleCanBroadenWithoutThisFailing(t *testing.T) {
 			"matrix; it would pass for a table that lost most of its rows", checked)
 	}
 }
+
+// A publisher that holds a custom role, which is the case the matrix used to
+// wave through.
+//
+// It is the most dangerous shape this derivation has, because every visible
+// signal is green: the required set is satisfied by the predefined role, the
+// forbidden set is not tripped because a role this plane cannot expand
+// contributes no permission to test, and the epoch attests safe while a
+// principal holds storage.objects.delete on the output bucket. The matrix has
+// no way to know what a custom role contains -- only the project that defined
+// it does -- so "unknown" has to mean unsafe here rather than harmless.
+func TestAnUnexpandableRoleIsAFindingAndNotAnOmission(t *testing.T) {
+	// The control first: a conforming set with nothing unexpandable is clean,
+	// so the finding below is the role and not the shape of the fixture.
+	if findings := policy.DeriveBindingFindings(expectation(), conformingBindings()); len(findings) != 0 {
+		t.Fatalf("the conforming binding set produced findings: %v", findings)
+	}
+
+	bindings := conformingBindings()
+	bindings.UnrecognisedRoles = map[output.PrincipalRole][]string{
+		output.PrincipalPublisher: {"projects/example/roles/customOutputWriter"},
+	}
+
+	findings := policy.DeriveBindingFindings(expectation(), bindings)
+	counted := violationsOf(findings)
+	if counted[output.ViolationUnrecognisedRole] != 1 {
+		t.Fatalf("a publisher holding a custom role produced %v.\n\nEvery other signal is "+
+			"green: roles/storage.objectCreator satisfies the required set and an unexpanded "+
+			"role trips no excess finding, so without this the epoch attests SAFE while a "+
+			"principal may hold storage.objects.delete on the output bucket.", counted)
+	}
+	if !policy.AtRisk(findings) {
+		t.Error("an unrecognised role did not move the epoch out of safe")
+	}
+
+	// The subject is the configured identity, so an operator reading the
+	// violation knows which service account to look at rather than which of
+	// this plane's four words was involved.
+	for _, finding := range findings {
+		if finding.Violation != output.ViolationUnrecognisedRole {
+			continue
+		}
+		if finding.Subject != expectation().Principals[output.PrincipalPublisher] {
+			t.Errorf("the finding names %q; an operator needs the cloud identity",
+				finding.Subject)
+		}
+		if !strings.Contains(finding.Detail, "customOutputWriter") {
+			t.Errorf("the finding does not name the role: %q", finding.Detail)
+		}
+	}
+}
+
+// And a stranger whose only binding is an unexpandable role is still a stranger.
+//
+// The shared-bucket arm reads bindings.Permissions, so an identity whose sole
+// role could not be expanded had an empty permission list and disappeared from
+// that arm entirely -- which is the same hole one layer out.
+func TestAStrangerHoldingOnlyACustomRoleIsStillASharedBucket(t *testing.T) {
+	bindings := conformingBindings()
+	bindings.UnrecognisedRoles = map[output.PrincipalRole][]string{
+		"someone-else@project.iam.gserviceaccount.com": {"projects/example/roles/mystery"},
+	}
+
+	counted := violationsOf(policy.DeriveBindingFindings(expectation(), bindings))
+	if counted[output.ViolationSharedBucket] != 1 {
+		t.Errorf("an identity outside the four roles, holding a role this plane cannot expand, "+
+			"produced %v; the dedicated bucket contains only output-plane objects and "+
+			"prefix-only isolation is not a substitute", counted)
+	}
+	if counted[output.ViolationUnrecognisedRole] != 1 {
+		t.Errorf("the unexpandable role itself was not reported: %v", counted)
+	}
+}

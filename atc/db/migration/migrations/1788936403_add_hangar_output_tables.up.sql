@@ -1065,7 +1065,7 @@ CREATE TABLE hangar_policy_violations (
     violation        text NOT NULL
         CHECK (violation IN ('lifecycle_delete_rule', 'evidence_stale', 'evidence_unreadable',
                              'excess_role', 'insufficient_role', 'wrong_principal',
-                             'shared_bucket', 'mixed_cohort',
+                             'shared_bucket', 'mixed_cohort', 'unrecognised_role',
                              'out_of_band_absence', 'runtime_principal_denied')),
 
     -- And the two that have no snapshot are exactly the two runtime members.

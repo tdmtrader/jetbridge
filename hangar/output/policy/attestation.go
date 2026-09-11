@@ -216,6 +216,37 @@ func DeriveBindingFindings(expectation Expectation, bindings output.PrincipalBin
 		})
 	}
 
+	// An IAM role nobody could expand, held by anyone on this bucket. It is
+	// reported BEFORE the required/forbidden comparison below, because it is
+	// the reason that comparison cannot be trusted for this principal: the
+	// matrix tests held[permission] against a forbidden list, and a role whose
+	// contents are unknown contributes no permission to test. A publisher bound
+	// roles/storage.objectCreator plus a custom role containing
+	// storage.objects.delete satisfied its required set and tripped no excess
+	// finding, and that is what this catches.
+	var unexpanded []output.PrincipalRole
+	for role := range bindings.UnrecognisedRoles {
+		unexpanded = append(unexpanded, role)
+	}
+	sort.Slice(unexpanded, func(i, j int) bool { return unexpanded[i] < unexpanded[j] })
+	for _, role := range unexpanded {
+		subject := expectation.Principals[role]
+		if subject == "" {
+			subject = string(role)
+		}
+		for _, name := range bindings.UnrecognisedRoles[role] {
+			findings = append(findings, output.PolicyFinding{
+				Violation: output.ViolationUnrecognisedRole,
+				Subject:   subject,
+				Detail: truncate(fmt.Sprintf("the %s principal holds %q, which this plane "+
+					"cannot expand into permissions. Only the project that defined it knows "+
+					"what it grants, so it is unknown and therefore unsafe: a custom role "+
+					"carrying storage.objects.delete is indistinguishable from a harmless one "+
+					"here", role, name)),
+			})
+		}
+	}
+
 	for _, role := range output.PrincipalRoles() {
 		held := permissionSet(bindings.Permissions[role])
 
@@ -251,6 +282,11 @@ func DeriveBindingFindings(expectation Expectation, bindings output.PrincipalBin
 	var strangers []output.PrincipalRole
 	for role := range bindings.Permissions {
 		if !known[role] {
+			strangers = append(strangers, role)
+		}
+	}
+	for role := range bindings.UnrecognisedRoles {
+		if !known[role] && !containsRole(strangers, role) {
 			strangers = append(strangers, role)
 		}
 	}
@@ -306,6 +342,16 @@ func DeriveCohortFindings(expectation Expectation, observed map[output.Principal
 // a violation this plane would carry on publishing through is one it should not
 // be recording.
 func AtRisk(findings []output.PolicyFinding) bool { return len(findings) > 0 }
+
+func containsRole(roles []output.PrincipalRole, needle output.PrincipalRole) bool {
+	for _, role := range roles {
+		if role == needle {
+			return true
+		}
+	}
+
+	return false
+}
 
 func permissionSet(permissions []string) map[string]bool {
 	set := make(map[string]bool, len(permissions))
