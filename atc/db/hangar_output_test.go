@@ -47,246 +47,18 @@ var _ = Describe("the Hangar output lock suffix", func() {
 		Expect(err).NotTo(HaveOccurred())
 		repository = db.NewHangarOutputRepository(consumer)
 	})
-
-	// One activation epoch and one fresh, safe policy attestation: without
-	// both, nothing in the plane admits anything, which is the held state the
-	// migration leaves behind.
-	activate := func() {
-		GinkgoHelper()
-		_, err := dbConn.Exec(`
-			INSERT INTO hangar_output_activation_epochs
-				(epoch_id, base_state, output_state, base_attestation, output_attestation,
-				 receipt_public_key_id, receipt_key_valid_from, receipt_key_valid_until,
-				 materialization_key_id, bucket_fingerprint, derived_namespace)
-			VALUES (1, 'enabled', 'enabled', '{}', '{}', 'receipt-key-1',
-				now() - interval '1 day', now() + interval '30 days',
-				'materialize-key-1', 'gs://output-bucket', 'deployment/ns')`)
-		Expect(err).NotTo(HaveOccurred())
-
-		tx, err := dbConn.Begin()
-		Expect(err).NotTo(HaveOccurred())
-		defer db.Rollback(tx)
-		Expect(repository.RecordPolicySnapshot(ctx, tx, output.PolicySnapshot{
-			ProtocolVersion:      output.ProtocolVersion,
-			ActivationEpoch:      1,
-			BucketFingerprint:    "gs://output-bucket",
-			Metageneration:       3,
-			PolicyHash:           "policy-hash-1",
-			LifecycleDeleteRules: 0,
-			State:                output.PolicySafe,
-			ObservedAt:           output.NewTimestamp(time.Now()),
-		})).To(Succeed())
-		Expect(tx.Commit()).To(Succeed())
-	}
-
-	identity := func() executioncontrol.Identity {
-		return executioncontrol.Identity{
-			ExecutionID: executioncontrol.ExecutionID(uuid.NewString()),
-			Fence:       1,
-		}
-	}
-
-	holdFor := func(handoff output.HandoffID, lease output.SourceLeaseID, execution executioncontrol.Identity, name output.OutputName) output.CaptureAcknowledgement {
-		return output.CaptureAcknowledgement{
-			ProtocolVersion: output.ProtocolVersion,
-			Kind:            output.CaptureHoldAcknowledged,
-			Execution:       execution,
-			ActivationEpoch: 1,
-			LedgerSequence:  1,
-			NodeUID:         "node-uid",
-			HandoffID:       handoff,
-			SourceLeaseID:   lease,
-			Incarnation: output.SourceIncarnation{
-				ExecutionID:      execution.ExecutionID,
-				NodeUID:          "node-uid",
-				HandleGeneration: 1,
-				Output:           name,
-			},
-			ObservedAt: output.NewTimestamp(time.Now()),
-			Signature:  "signature",
-		}
-	}
-
-	// A hold binds to an incarnation the daemon issued FIRST, and the schema
-	// now says so: the reservation exists before the producing Pod does, and a
-	// hold over no reservation is the Phase 4 seam -- a producer writing into a
-	// directory nothing protects. Every hold below reserves first, because
-	// every hold in production does.
-	reserveFor := func(handoff output.HandoffID, lease output.SourceLeaseID, execution executioncontrol.Identity, name output.OutputName) output.ReservedIncarnation {
-		return output.ReservedIncarnation{
-			ProtocolVersion: output.ProtocolVersion,
-			Execution:       execution,
-			ActivationEpoch: 1,
-			HandoffID:       handoff,
-			SourceLeaseID:   lease,
-			NodeUID:         "node-uid",
-			Incarnation: output.SourceIncarnation{
-				ExecutionID:      execution.ExecutionID,
-				NodeUID:          "node-uid",
-				HandleGeneration: 1,
-				Output:           name,
-			},
-			Directory:      string(execution.ExecutionID) + ".1/" + string(name),
-			LedgerSequence: 1,
-			ObservedAt:     output.NewTimestamp(time.Now()),
-		}
-	}
-
-	finishFor := func(execution executioncontrol.Identity) executioncontrol.Acknowledgement {
-		return executioncontrol.Acknowledgement{
-			ProtocolVersion: executioncontrol.ProtocolVersion,
-			Kind:            executioncontrol.AcknowledgementFinish,
-			Identity:        execution,
-			ActivationEpoch: 1,
-			LedgerSequence:  2,
-			NodeUID:         "node-uid",
-			ProcessIdentity: "process-1",
-			ObservedAt:      output.NewTimestamp(time.Now()),
-			Outcome:         &executioncontrol.ExitOutcome{ExitCode: 0},
-			Signature:       "signature",
-		}
-	}
-
-	// The one-use stat challenge the daemon would have been issued, for one
-	// exact ref. Written as SQL because minting it is not the repository's job.
-	issueChallenge := func(handoff output.HandoffID, reservation output.ReservationID, ref hangar.TreeRef) (string, time.Time) {
-		GinkgoHelper()
-
-		nonce := "nonce-" + uuid.NewString()
-		var issuedAt time.Time
-		err := dbConn.QueryRow(`
-			INSERT INTO hangar_receipt_stat_challenges
-				(nonce, handoff_id, reservation_id, activation_epoch, receipt_public_key_id,
-				 scope, digest, generation, capture_fence, not_after)
-			VALUES ($1, $2, $3, 1, 'receipt-key-1', $4, $5, $6, 1, now() + interval '5 minutes')
-			RETURNING issued_at`,
-			nonce, string(handoff), string(reservation), string(ref.Scope), string(ref.Digest),
-			ref.Generation).Scan(&issuedAt)
-		Expect(err).NotTo(HaveOccurred())
-
-		return nonce, issuedAt
-	}
-
-	// One receipt admission, in one place, because a second spelling of it is
-	// a second set of facts and the guards under test are exactly about facts
-	// agreeing.
-	admissionFor := func(handoff output.HandoffID, execution executioncontrol.Identity, reservation output.ReservationID, ref hangar.TreeRef, nonce string, issuedAt time.Time) output.ReceiptAdmission {
-		name := output.OutputName("result")
-
-		return output.ReceiptAdmission{
-			ProtocolVersion: output.ProtocolVersion,
-			Receipt: output.Receipt{
-				Claims: output.ReceiptClaims{
-					ProtocolVersion:      output.ProtocolVersion,
-					ReceiptVersion:       output.ReceiptDomain,
-					Execution:            execution,
-					ActivationEpoch:      1,
-					HandoffID:            handoff,
-					ProducerCheckpointID: output.OpaqueID("checkpoint-" + string(handoff)),
-					ReservationID:        reservation,
-					ChallengeNonce:       nonce,
-					ChallengeIssuedAt:    output.NewTimestamp(issuedAt),
-					Incarnation: output.SourceIncarnation{
-						ExecutionID:      execution.ExecutionID,
-						NodeUID:          "node-uid",
-						HandleGeneration: 1,
-						Output:           name,
-					},
-					Output:        name,
-					CaptureFence:  1,
-					WriterFence:   1,
-					Ref:           ref,
-					Attributes:    output.AttributesFromFoundation(hangar.TreeAttributes{Ref: ref, StoredBytes: 2048, LogicalBytes: 4096, CreatedAt: time.Now()}),
-					MarkerVersion: output.MarkerVersion,
-					SignedAt:      output.NewTimestamp(time.Now()),
-				},
-				KeyID:     "receipt-key-1",
-				Algorithm: output.ReceiptAlgorithm,
-				Signature: "signature",
-			},
-			ChallengeNonce: nonce,
-			Metageneration: 1,
-			AdmittedAt:     output.NewTimestamp(time.Now()),
-		}
-	}
-
-	// publish drives one whole capture, from predeclaration to a registered
-	// receipt, through the repository rather than around it: what is under test
-	// is the seam, and a fixture that wrote the rows itself would be testing
-	// the schema twice and the repository not at all.
+	// The fixture is package-level (hangar_output_fixture_test.go) because a
+	// second file's specs need the same capture; these bindings keep every call
+	// site below reading the way it did when it was a closure.
+	activate := func() { hangarActivateEpoch(ctx, repository) }
+	identity := hangarIdentity
+	holdFor := hangarHoldFor
+	reserveFor := hangarReserveFor
+	finishFor := hangarFinishFor
+	issueChallenge := hangarIssueChallenge
+	admissionFor := hangarAdmissionFor
 	publish := func(digest hangar.Digest, generation int64) (output.ReservationID, hangar.TreeRef) {
-		GinkgoHelper()
-
-		handoff := output.HandoffID(uuid.NewString())
-		lease := output.SourceLeaseID(uuid.NewString())
-		execution := identity()
-		name := output.OutputName("result")
-		deadline := output.NewTimestamp(time.Now().Add(24 * time.Hour))
-
-		tx, err := dbConn.Begin()
-		Expect(err).NotTo(HaveOccurred())
-		defer db.Rollback(tx)
-
-		Expect(repository.PredeclareHandoff(ctx, tx, output.CaptureAdmission{
-			ProtocolVersion: output.ProtocolVersion,
-			Execution:       execution,
-			ActivationEpoch: 1,
-			HandoffID:       handoff,
-			SourceLeaseID:   lease,
-			Output:          name,
-			CaptureDeadline: deadline,
-		})).To(Succeed())
-		Expect(repository.RecordSourceReservation(ctx, tx,
-			reserveFor(handoff, lease, execution, name), "node-a")).To(Succeed())
-		Expect(repository.AcknowledgeSourceHold(ctx, tx, holdFor(handoff, lease, execution, name))).
-			To(Succeed())
-
-		reservation, err := repository.CommitCaptureReservation(ctx, tx,
-			output.SuccessfulFinishDisposition{
-				ProtocolVersion:       output.ProtocolVersion,
-				Disposition:           output.DispositionCapture,
-				Execution:             execution,
-				ActivationEpoch:       1,
-				HandoffID:             handoff,
-				SourceLeaseID:         lease,
-				ProducerCheckpointID:  output.OpaqueID("checkpoint-" + string(handoff)),
-				Output:                name,
-				CaptureFence:          1,
-				CaptureDeadline:       deadline,
-				FinishAcknowledgement: finishFor(execution),
-			})
-		Expect(err).NotTo(HaveOccurred())
-
-		_, err = repository.AcquireCaptureLease(ctx, tx, reservation, uuid.NewString(),
-			output.MinLeaseTerm)
-		Expect(err).NotTo(HaveOccurred())
-
-		Expect(repository.ResolveLogicalReservation(ctx, tx, output.LogicalResolution{
-			ProtocolVersion: output.ProtocolVersion,
-			Execution:       execution,
-			ActivationEpoch: 1,
-			HandoffID:       handoff,
-			ReservationID:   reservation,
-			CaptureFence:    1,
-			Scope:           "team-a",
-			Digest:          digest,
-			LogicalBytes:    4096,
-			ResolvedAt:      output.NewTimestamp(time.Now()),
-		})).To(Succeed())
-		Expect(repository.RecordFirstObjectCreate(ctx, tx, reservation, 1)).To(Succeed())
-		Expect(tx.Commit()).To(Succeed())
-
-		ref := hangar.TreeRef{Scope: "team-a", Digest: digest, Generation: generation}
-		nonce, issuedAt := issueChallenge(handoff, reservation, ref)
-
-		tx, err = dbConn.Begin()
-		Expect(err).NotTo(HaveOccurred())
-		defer db.Rollback(tx)
-		Expect(repository.RegisterReceipt(ctx, tx,
-			admissionFor(handoff, execution, reservation, ref, nonce, issuedAt))).To(Succeed())
-		Expect(tx.Commit()).To(Succeed())
-
-		return reservation, ref
+		return hangarPublish(ctx, repository, digest, generation)
 	}
 
 	// readLeaseRequest is a well-formed managed-read admission: an exact stat
@@ -355,8 +127,13 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			return err
 		}
 		defer db.Rollback(tx)
-		if err := repository.AdoptManagedOrphan(ctx, tx, ref, 1, 1); err != nil {
+		outcome, err := repository.AdoptManagedOrphan(ctx, tx,
+			hangarAdoptionFor(ref, time.Now().Add(-30*24*time.Hour)))
+		if err != nil {
 			return err
+		}
+		if !outcome.Adopted() {
+			return fmt.Errorf("the orphan was not adopted: %s", outcome)
 		}
 
 		return tx.Commit()
@@ -1484,8 +1261,10 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			inventory, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(inventory)
-			err = repository.AdoptManagedOrphan(ctx, inventory, orphan, 1, 1)
+			outcome, err := repository.AdoptManagedOrphan(ctx, inventory,
+				hangarAdoptionFor(orphan, time.Now().Add(-30*24*time.Hour)))
 			Expect(err).To(MatchError(output.ErrConflict))
+			Expect(outcome).To(Equal(output.AdoptionProtectedByReservation))
 			Expect(err.Error()).To(ContainSubstring("unresolved reservation"))
 			Expect(inventory.Rollback()).To(Succeed())
 
@@ -1917,7 +1696,16 @@ var _ = Describe("the Hangar output lock suffix", func() {
 		// object may exist; the capture settles a registered receipt or a
 		// terminal orphan, and admitting the release would settle it while an
 		// object nobody has correlated is sitting in the bucket.
-		It("refuses a release offered after the irreversible publish point, and admits one before it", func() {
+		// Phase 7 reversed this spec's second half, deliberately, and the
+		// reason is in `acknowledgeRelease`'s own comment: the rule had the
+		// consequence backwards. A release releases the HOLD, never the bytes,
+		// and a capture that could not release pinned its incarnation on a node
+		// for the life of the deployment -- while the schema, which earns
+		// settlement with an acknowledged release, kept the capture unsettled
+		// and its correlation shielded from orphan adoption forever. The object
+		// is not lost by letting the hold go: it carries the capture's marker,
+		// the sweep finds it, and adoption takes it after grace.
+		It("admits a release for a terminal capture on either side of the publish point", func() {
 			activate()
 
 			setUp := func() (output.HandoffID, output.ReservationID, output.ReleaseAcknowledgement) {
@@ -2068,25 +1856,44 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				"the race did not reach the state this vector is about; the guard is untested")
 
 			racedRelease.ReleaseIntentID = intentFor(racedHandoff)
-			refusing, err := dbConn.Begin()
+			releasing, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
-			defer db.Rollback(refusing)
-			err = repository.AcknowledgeCaptureRelease(ctx, refusing, racedRelease)
-			Expect(err).To(MatchError(output.ErrConflict),
-				"a release past the irreversible publish point was not refused as a conflict")
-			Expect(err.Error()).To(ContainSubstring("irreversible publish point"))
-			Expect(refusing.Rollback()).To(Succeed())
+			defer db.Rollback(releasing)
+			Expect(repository.AcknowledgeCaptureRelease(ctx, releasing, racedRelease)).To(Succeed())
+			Expect(releasing.Commit()).To(Succeed())
 
-			// And it really was refused: nothing was written.
 			var acknowledged, settled bool
 			Expect(dbConn.QueryRow(`
 				SELECT release_acknowledged_at IS NOT NULL, settled_at IS NOT NULL
 				FROM hangar_capture_reservations WHERE reservation_id = $1`,
 				string(racedReservation)).Scan(&acknowledged, &settled)).To(Succeed())
-			Expect(acknowledged).To(BeFalse(),
-				"the release past the publish point was recorded anyway")
-			Expect(settled).To(BeFalse(),
-				"a capture with an uncorrelated object in the bucket was settled")
+			Expect(acknowledged).To(BeTrue())
+			Expect(settled).To(BeTrue(),
+				"a terminal capture that released its hold is still unsettled, so its correlation "+
+					"is shielded from adoption forever and its incarnation is pinned on a node")
+
+			// And the object it may have created is STILL not a consumer
+			// result. Settling the capture records no receipt and no lifecycle
+			// row; what exists in the bucket is a marked orphan for the sweep.
+			var receipts, lifecycles int
+			Expect(dbConn.QueryRow(`
+				SELECT count(*) FROM hangar_output_receipts WHERE reservation_id = $1`,
+				string(racedReservation)).Scan(&receipts)).To(Succeed())
+			Expect(receipts).To(Equal(0))
+			Expect(dbConn.QueryRow(`
+				SELECT count(*) FROM hangar_exact_lifecycles WHERE scope = 'team-a' AND digest = $1`,
+				string(hangarDigest(37))).Scan(&lifecycles)).To(Succeed())
+			Expect(lifecycles).To(Equal(0),
+				"settling a cancelled capture manufactured a lifecycle row for an object no "+
+					"receipt correlates")
+
+			// The logical reservation is terminal, which is what eventually
+			// lets the sweep adopt that object rather than shielding it.
+			var logical string
+			Expect(dbConn.QueryRow(`
+				SELECT state FROM hangar_logical_reservations WHERE reservation_id = $1`,
+				string(racedReservation)).Scan(&logical)).To(Succeed())
+			Expect(logical).To(Equal("terminal"))
 		})
 
 		// Review finding R2-3. Cancellation is terminal by Req 11's own word,
@@ -2490,7 +2297,16 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			// bytes, and a lock order that depends on how a number was spelled is
 			// not an order.
 			digest := hangarDigest(14)
-			_, a := publish(digest, 9)
+			// The first generation's capture is published under a deadline
+			// already past and its source released, because adoption of a
+			// SECOND generation at the same correlation waits for exactly that
+			// (Req 40): terminal disposition, source release, and the capture
+			// deadline plus the safety margin elapsed.
+			capture := hangarPublishAt(ctx, repository, digest, 9,
+				output.NewTimestamp(time.Now().Add(output.DefaultCaptureDeadline)))
+			hangarReleaseSource(ctx, repository, capture)
+			hangarAgeCapture(capture, 48*time.Hour)
+			a := capture.Ref
 			second := hangar.TreeRef{Scope: a.Scope, Digest: digest, Generation: 10}
 			Expect(adopt(second)).To(Succeed())
 

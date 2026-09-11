@@ -944,31 +944,28 @@ func checkReceiptClaims(receipt output.Receipt, record output.HandoffRecord, fen
 	return nil
 }
 
-// settleOrphan is the only thing left past the irreversible publish point, and
-// it has nothing to settle INTO yet.
+// settleOrphan settles a capture that reached a terminal state past the
+// irreversible publish point.
 //
-// It used to call the generic cancel/settle seam, which returns early past the
-// publish point -- so the transition settled nothing and answered nil, and a
-// recovery pass walked away believing it had done something. There is no
-// terminal orphan state in the schema either: `settlement_is_earned` needs a
-// release and the release guard refuses one past the publish point, so there is
-// no row this could write even if it wanted to.
+// An object may exist for it that no receipt correlates -- that is what a
+// terminal orphan IS -- and this transition does not try to say anything about
+// that object. It cannot: the control plane holds no output-bucket role, and a
+// coordinator that wrote an orphan record from a capture's own row would be
+// this plane guessing at a bucket only the inventory principal may list.
 //
-// It refuses, before touching anything. The state is unreachable from this
-// coordinator today -- cancellation past the point is routed to
-// register_receipt, and the collision arm cannot fire because the digest is in
-// the key -- and that is the argument FOR the refusal rather than against it:
-// an unreachable no-op is invisible forever, and an unreachable refusal is a
-// message the day something reaches it.
+// What it does is what is actually owed: the fenced release of the source the
+// capture sealed. That release is what earns settlement in the schema, and a
+// capture that could not settle kept its incarnation pinned on a node and its
+// correlation shielded from adoption forever. Once it is settled and terminal,
+// the sweep's own path takes over -- find the marked object, wait out its
+// publication grace, adopt it (Req 40).
 //
-// TODO(phase 7, reclamation): the terminal orphan outcome is a durable state --
-// a created object that no receipt correlates, held as inventory debt rather
-// than settled away -- and this becomes the transition that records it.
-func (coordinator *Coordinator) settleOrphan(_ context.Context, record output.HandoffRecord) error {
-	return fmt.Errorf("%w: handoff %s is %s past the irreversible publish point, and a terminal "+
-		"orphan has no durable outcome to settle into yet. An object may exist for it and no "+
-		"receipt correlates one; that is inventory debt, and recording it is reclamation's",
-		output.ErrIncomplete, record.HandoffID, record.State)
+// Phase 7 replaced a refusal here. The refusal was honest about the state being
+// unreachable at the time, and the state is reachable now: a publish that
+// passes the point while a canceller is blocked on the row lock produces
+// exactly it, and so does a terminal failure after the first object create.
+func (coordinator *Coordinator) settleOrphan(ctx context.Context, record output.HandoffRecord) error {
+	return coordinator.releaseFor(ctx, record, output.DispositionCapture)
 }
 
 // failTerminally commits a typed failure and announces it.

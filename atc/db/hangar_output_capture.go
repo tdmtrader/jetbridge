@@ -233,6 +233,17 @@ func (repository *HangarOutputRepository) CancelOrSettle(ctx context.Context, tx
 			WHERE handoff_id = $1 AND settled_at IS NULL`, string(handoff)); err != nil {
 			return output.HandoffStatus{}, hangarConflict(err)
 		}
+		// And the logical half with it. A cancelled capture that kept an
+		// unresolved reservation would keep its shield over a correlation it
+		// has given up on, which is a (scope, digest) nothing can ever adopt or
+		// reclaim.
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE hangar_logical_reservations SET state = 'terminal'
+			WHERE reservation_id IN (
+				SELECT reservation_id FROM hangar_capture_reservations WHERE handoff_id = $1
+			) AND state = 'unresolved_generation'`, string(handoff)); err != nil {
+			return output.HandoffStatus{}, hangarConflict(err)
+		}
 
 		return repository.ClassifyHandoff(ctx, tx, handoff)
 	}

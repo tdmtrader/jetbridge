@@ -90,10 +90,17 @@ const (
 	// policy is what removes them.
 	TransitionReleaseSource Transition = "release_source"
 
-	// TransitionSettleOrphan is the only thing left past the irreversible
-	// publish point. Cancellation cannot unmake an object, so the capture
-	// settles a registered receipt or a terminal orphan -- and never a domain
-	// binding.
+	// TransitionSettleOrphan is the terminal-orphan branch: a capture that
+	// reached a terminal state PAST the irreversible publish point, so an
+	// object may exist that no receipt correlates.
+	//
+	// It settles by releasing the hold, exactly as a registered capture does,
+	// and it records no receipt, no lifecycle row and never a domain binding.
+	// The object is not abandoned by that: it carries the capture's marker, the
+	// sweep finds it, and once this reservation is terminal and publication
+	// grace has elapsed, adoption takes it (Req 40). The alternative -- a
+	// second ledger of orphans written by the coordinator -- would be this
+	// plane guessing at a bucket it cannot read.
 	TransitionSettleOrphan Transition = "settle_orphan"
 )
 
@@ -258,13 +265,22 @@ func decideCapture(record output.HandoffRecord) (Decision, error) {
 			record.HandoffID, record.Ref.Digest), nil
 
 	case output.CaptureStateCancelled, output.CaptureStateFailed:
-		// Past the publish point an object may exist, and cancellation cannot
-		// unmake it. There is nothing to release and nothing to re-decide:
-		// what is left is a registered receipt or a terminal orphan.
-		if record.PastIrreversiblePublishPoint {
+		// Past the publish point an object may exist, and a terminal state
+		// cannot unmake it. What is left is the TERMINAL ORPHAN, and Phase 7 is
+		// where it stopped being a word and became a transition that does
+		// something: the capture still owes its source back, and the object it
+		// created is left for the sweep to find, classify and -- after its
+		// publication grace, with this reservation terminal -- adopt.
+		//
+		// The order matters. A settled row owes nothing; an unsettled one owes
+		// the release that earns settlement. Deciding settle_orphan
+		// unconditionally, as this did, made it a transition the coordinator
+		// selected forever.
+		if record.PastIrreversiblePublishPoint && !record.ReleaseAcknowledged &&
+			record.Source.Reserved() {
 			return decide(TransitionSettleOrphan,
-				"handoff %s is %s past the irreversible publish point; a created object is "+
-					"settled as a receipt or a terminal orphan, never released",
+				"handoff %s is %s past the irreversible publish point; an object may exist that "+
+					"no receipt correlates, and the source it sealed is still held",
 				record.HandoffID, record.State), nil
 		}
 		if record.ReleaseAcknowledged || !record.Source.Reserved() {
