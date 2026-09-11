@@ -6,6 +6,8 @@ import (
 	"go/token"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -515,6 +517,13 @@ var hangarGCSImporters = map[string]string{
 	"cmd/hangar-output-daemon": "the output daemon is the only process that talks to the output " +
 		"bucket, under its own service account; a Kubernetes service account is Pod-wide, so this " +
 		"is a second binary precisely so the first one's identity gains no output role",
+	"cmd/hangar-output-inventory": "the inventory controller is the list/get principal, and the " +
+		"only workload in this system whose cloud identity holds bucket-wide list",
+	"cmd/hangar-output-reclaimer": "the reclaimer is the get/delete principal, and the only " +
+		"process that deletes a published object at all",
+	"cmd/hangar-output-policy-attestor": "the attestor is the bucket-metadata principal: it " +
+		"reads lifecycle and IAM and holds no object permission, which is why its compromise " +
+		"costs the assessment rather than the data",
 	"hangar/output/conformance": "the tier-2 conformance suite drives the real adapter against " +
 		"fake-gcs-server, because a conformance claim proved through a hand-written fake is a " +
 		"claim about the fake. It is a test-only import: the package has no non-test file that " +
@@ -550,7 +559,10 @@ var outputRolePackages = []string{
 
 // outputRoleImporters are the packages allowed to link one, with the reason.
 var outputRoleImporters = map[string]string{
-	"cmd/hangar-output-daemon": "the output daemon is the publisher principal",
+	"cmd/hangar-output-daemon":          "the output daemon is the publisher principal",
+	"cmd/hangar-output-inventory":       "the inventory controller is the inventory principal",
+	"cmd/hangar-output-reclaimer":       "the reclaimer is the reclaimer principal",
+	"cmd/hangar-output-policy-attestor": "the attestor is the policy principal",
 	"hangar/output/conformance": "the shared conformance suite drives all four roles against " +
 		"both substrate tiers; it is a test-only package that links into no binary",
 	"atc/hangaroutput": "TEST-ONLY: the managed-read specs admit a read against the REAL " +
@@ -596,6 +608,13 @@ func TestTheOutputRolesAreLinkedOnlyByTheirOwnPrincipals(t *testing.T) {
 	for pkg, imports := range graph.all {
 		for _, imported := range imports {
 			if !forbidden[imported] {
+				continue
+			}
+			if pkg == imported {
+				// A role's own external test package (`package policy_test`)
+				// importing the role. It is the same directory and the same
+				// principal; counting it would make every role package an
+				// extra importer of itself the moment it grew a test.
 				continue
 			}
 			linked++
@@ -998,4 +1017,142 @@ func TestDurableTierSeparationGuardIsNotVacuous(t *testing.T) {
 			t.Errorf("expected no problems, got %v", problems)
 		}
 	})
+}
+
+// The delete capability, measured at the ROOT rather than at the import.
+//
+// Every guard above is a rule about which package may NAME another. This one
+// asks the toolchain what each binary actually links, which is the question the
+// requirement is about: GCS IAM cannot require a caller to send a generation
+// precondition once delete permission exists (Req 55), so the boundary has to be
+// that exactly one process can make the call at all. An allowlist entry that
+// turned out to matter is caught here by the fact it was supposed to prevent
+// rather than by a reviewer noticing.
+//
+// It is deliberately not parameterised over "the roots we remembered": it
+// discovers every main package in cmd/ and checks all of them, so a binary added
+// next year inherits the rule without anyone adding it to a list.
+const outputDeleteRole = "github.com/concourse/concourse/hangar/output/reclaimer"
+
+// outputDeleteRoot is the one binary allowed to link it.
+const outputDeleteRoot = "./cmd/hangar-output-reclaimer"
+
+func TestOnlyTheReclaimerBinaryCanInvokeAnOutputDelete(t *testing.T) {
+	roots := commandRoots(t)
+	if len(roots) < 4 {
+		t.Fatalf("found %d command roots, which is far too few to be this repository's cmd/ "+
+			"directory; the discovery failed and this rule would pass vacuously", len(roots))
+	}
+
+	// The control FIRST: the reclaimer really does link the role. Without it
+	// every assertion below would also pass for a tree in which the delete
+	// client had been deleted entirely.
+	if !linksPackage(t, outputDeleteRoot, outputDeleteRole) {
+		t.Fatalf("%s does not link %s, so this rule is guarding nothing",
+			outputDeleteRoot, outputDeleteRole)
+	}
+
+	for _, root := range roots {
+		if root == outputDeleteRoot {
+			continue
+		}
+		if linksPackage(t, root, outputDeleteRole) {
+			t.Errorf("%s links %s.\n\nOnly the isolated reclaimer workload may import or invoke "+
+				"the output delete client. GCS IAM cannot require a caller to send a generation "+
+				"precondition once delete permission exists, so the boundary is that exactly one "+
+				"process can make the call -- and a Kubernetes service account is Pod-wide, so a "+
+				"second binary that linked this would be a second identity holding "+
+				"storage.objects.delete for everything else it does.", root, outputDeleteRole)
+		}
+	}
+}
+
+// commandRoots lists every main package under cmd/.
+func commandRoots(t *testing.T) []string {
+	t.Helper()
+
+	out, err := exec.Command("go", "list", "-f", "{{if eq .Name \"main\"}}{{.Dir}}{{end}}",
+		"./cmd/...").Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			t.Fatalf("go list ./cmd/... failed: %v\n%s", err, ee.Stderr)
+		}
+		t.Fatalf("go list ./cmd/... failed: %v", err)
+	}
+
+	_, thisFile, _, _ := runtime.Caller(0)
+	repoRoot := filepath.Dir(thisFile)
+
+	var roots []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		relative, err := filepath.Rel(repoRoot, strings.TrimSpace(line))
+		if err != nil {
+			t.Fatalf("relativising %q: %v", line, err)
+		}
+		roots = append(roots, "./"+filepath.ToSlash(relative))
+	}
+
+	return roots
+}
+
+// linksPackage asks the toolchain whether a root's transitive dependencies
+// include a package. It reads the real build graph rather than source imports,
+// so a package reached through three intermediaries is still found.
+func linksPackage(t *testing.T, root, pkg string) bool {
+	t.Helper()
+
+	out, err := exec.Command("go", "list", "-deps", root).Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			t.Fatalf("go list -deps %s failed: %v\n%s", root, err, ee.Stderr)
+		}
+		t.Fatalf("go list -deps %s failed: %v", root, err)
+	}
+
+	for _, dep := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.TrimSpace(dep) == pkg {
+			return true
+		}
+	}
+
+	return false
+}
+
+// TestEachOutputControllerLinksOnlyItsOwnRole is the same measurement for the
+// other three principals.
+//
+// The isolation only means anything while each binary links ONE role. A
+// controller that linked two would be one Kubernetes service account holding
+// two sets of cloud permissions, and no care inside the process takes that back.
+func TestEachOutputControllerLinksOnlyItsOwnRole(t *testing.T) {
+	const prefix = "github.com/concourse/concourse/hangar/output/"
+
+	expected := map[string]string{
+		"./cmd/hangar-output-daemon":          prefix + "publisher",
+		"./cmd/hangar-output-inventory":       prefix + "inventory",
+		"./cmd/hangar-output-reclaimer":       prefix + "reclaimer",
+		"./cmd/hangar-output-policy-attestor": prefix + "policy",
+	}
+	all := []string{
+		prefix + "publisher", prefix + "inventory", prefix + "reclaimer", prefix + "policy",
+	}
+
+	for root, own := range expected {
+		if !linksPackage(t, root, own) {
+			t.Errorf("%s does not link its own role %s", root, own)
+		}
+		for _, role := range all {
+			if role == own {
+				continue
+			}
+			if linksPackage(t, root, role) {
+				t.Errorf("%s links %s as well as its own %s. One binary, one service account, "+
+					"one role: a process holding two is one cloud identity with two sets of "+
+					"permissions.", root, role, own)
+			}
+		}
+	}
 }

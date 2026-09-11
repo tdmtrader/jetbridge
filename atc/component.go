@@ -35,6 +35,22 @@ const (
 	// The DB lease makes one ATC own one capture at a time; the fence makes a
 	// takeover safe.
 	ComponentHangarOutputCapture = "hangar_output_capture"
+
+	// ComponentHangarOutputReadLeaseCleanup closes read leases whose readers
+	// are gone.
+	//
+	// A read lease is the READER's protection and it outlives the claim, so
+	// that releasing the last claim during a transfer cannot delete the bytes
+	// out from under a materializing task. The cost of that is a lease nobody
+	// closes if the materializer dies mid-transfer: the generation stays
+	// protected against reclaim for the life of the deployment, because an
+	// active lease refuses reclaim admission.
+	//
+	// Expiry alone is what bounds it, and expiry is measured on the DATABASE
+	// clock rather than the reader's -- but something still has to notice. This
+	// is that something, and until Phase 7 it did not exist: the repository
+	// method was written, specified and unreachable.
+	ComponentHangarOutputReadLeaseCleanup = "hangar_output_read_lease_cleanup"
 )
 
 type Component struct {

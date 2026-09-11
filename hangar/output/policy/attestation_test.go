@@ -461,3 +461,97 @@ func (source *scriptedSource) ReadLifetimePolicy(context.Context) (output.Policy
 func (source *scriptedSource) ReadPrincipalBindings(context.Context) (output.PrincipalBindings, error) {
 	return source.bindings, source.bindingsErr
 }
+
+// A role cannot silently broaden.
+//
+// Every guard above asks what the attestation concludes about a BUCKET. This
+// one asks what the matrix itself says, and it is the half that catches a change
+// nobody meant: the four roles are four cloud identities whose whole value is
+// that each holds strictly less than the union, and an edit that added one
+// permission to one role's required set would make that role's principal
+// correctly configured while holding more than it did yesterday -- with every
+// bucket-facing assertion still green.
+//
+// It is derived from the matrix rather than from a list, so a fifth role
+// inherits it.
+func TestNoRoleCanBroadenWithoutThisFailing(t *testing.T) {
+	// The exact matrix, frozen. A changed row has to be changed HERE too, which
+	// is the whole mechanism: the permission a role holds is a security
+	// boundary, and moving one should cost a deliberate edit in a file that
+	// says so.
+	frozen := map[output.PrincipalRole][]string{
+		output.PrincipalPublisher:      {"storage.objects.create", "storage.objects.get"},
+		output.PrincipalInventory:      {"storage.objects.list", "storage.objects.get"},
+		output.PrincipalReclaimer:      {"storage.objects.get", "storage.objects.delete"},
+		output.PrincipalPolicyAttestor: {"storage.buckets.get", "storage.buckets.getIamPolicy"},
+	}
+
+	for role, expected := range frozen {
+		// The required set is measured through the derivation rather than read
+		// from an exported list, so this cannot pass against a matrix that is
+		// declared correctly and applied wrongly. A principal holding exactly
+		// the frozen set produces no finding; a principal missing any one of
+		// them produces an insufficient-role finding.
+		bindings := conformingBindings()
+		bindings.Permissions[role] = expected
+		if findings := policy.DeriveBindingFindings(expectation(), bindings); len(findings) != 0 {
+			t.Errorf("the frozen %s set %v was judged non-conforming: %v", role, expected, findings)
+		}
+
+		for index := range expected {
+			short := append([]string{}, expected[:index]...)
+			short = append(short, expected[index+1:]...)
+			bindings := conformingBindings()
+			bindings.Permissions[role] = short
+			counted := violationsOf(policy.DeriveBindingFindings(expectation(), bindings))
+			if counted[output.ViolationInsufficientRole] == 0 {
+				t.Errorf("the %s role without %s produced no insufficient-role finding, so the "+
+					"frozen matrix has drifted from what is actually required",
+					role, expected[index])
+			}
+		}
+	}
+
+	// And nothing outside a role's own set is tolerated. Every permission this
+	// package knows about, offered to every role that does not need it, has to
+	// be an excess-role finding -- which is the broadening this guard is named
+	// for.
+	every := []string{
+		policy.PermissionObjectCreate, policy.PermissionObjectGet, policy.PermissionObjectList,
+		policy.PermissionObjectDelete, policy.PermissionBucketGet,
+		policy.PermissionBucketGetIAMPolicy, policy.PermissionBucketUpdate,
+		policy.PermissionBucketSetIAMPolicy,
+	}
+	checked := 0
+	for role, own := range frozen {
+		held := map[string]bool{}
+		for _, permission := range own {
+			held[permission] = true
+		}
+		for _, permission := range every {
+			if held[permission] {
+				continue
+			}
+			// The two bucket reads are the attestor's and are harmless to the
+			// object roles, so they are not in anybody's forbidden set. Every
+			// OBJECT permission, and both mutations, are.
+			if permission == policy.PermissionBucketGet ||
+				permission == policy.PermissionBucketGetIAMPolicy {
+				continue
+			}
+			bindings := conformingBindings()
+			bindings.Permissions[role] = append(append([]string{}, own...), permission)
+			counted := violationsOf(policy.DeriveBindingFindings(expectation(), bindings))
+			if counted[output.ViolationExcessRole] == 0 {
+				t.Errorf("the %s role holding %s produced no excess-role finding; a role that "+
+					"can quietly gain a permission is not an isolation boundary",
+					role, permission)
+			}
+			checked++
+		}
+	}
+	if checked < 16 {
+		t.Errorf("this guard checked %d role/permission pairs, which is too few to be the whole "+
+			"matrix; it would pass for a table that lost most of its rows", checked)
+	}
+}
