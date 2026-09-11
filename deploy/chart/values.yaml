@@ -380,7 +380,14 @@ secrets:
 
 # -- Network policy configuration
 networkPolicy:
-  # -- Enable NetworkPolicy resources
+  # -- Enable NetworkPolicy resources for the web pod and the bundled database.
+  #
+  # This switch does NOT emit a policy for the artifact daemon. It used to, and
+  # the policy it emitted carried the same name as the daemon's own template's,
+  # so with both switches on one namespace held one object and apply order
+  # decided which rules were in the cluster. The daemon's policy now has exactly
+  # one switch -- artifactDaemon.networkPolicy.enabled -- and one selector that
+  # covers one-off builds and checks as well as pipeline jobs.
   enabled: false
 
   # -- Allow ingress from these pod selectors to the web pod.
