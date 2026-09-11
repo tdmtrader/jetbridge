@@ -70,9 +70,19 @@ controllerTail is everything after the command line: the database credential
 under the activation role's Secret, the resources, and the security context.
 No controller mounts the node's hostPath -- the source ledger and the step
 incarnations have exactly one writer and it is the daemon.
+
+It OPENS WITH ITS OWN NEWLINE, deliberately. Every caller includes it with the
+left-chomping `{{- include`, which eats the newline that ended the caller's last
+command argument; without a newline of its own the tail's first key is glued
+onto that argument, `command` becomes a list of maps, and `env` ceases to exist.
+That rendered for three Deployments and no test saw it, because a substring
+assertion is still true of the glued line and `kubectl --dry-run=client`
+round-trips it through an unstructured decode that prints `env: null` back.
+TestEveryRenderedObjectDecodesAsTheKubernetesObjectItClaimsToBe is the guard;
+this comment is why the `}}` below is not `-}}`.
 */}}
 {{- define "concourse.hangarOutput.controllerTail" -}}
-{{- $root := .root -}}
+{{- $root := .root }}
           env:
             - name: HANGAR_OUTPUT_DSN
               valueFrom:
