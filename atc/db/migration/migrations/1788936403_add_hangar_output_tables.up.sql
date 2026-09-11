@@ -1008,6 +1008,70 @@ CREATE TABLE hangar_policy_snapshots (
     )
 );
 
+-- What an attestation CONCLUDED, beside what it observed.
+--
+-- The snapshot above records the reading; this records the findings derived
+-- from it. They are separate tables because they have different lifetimes: a
+-- snapshot is superseded by the next reading, and Req 52 says recovery needs a
+-- fresh safe attestation AND violation reconciliation -- re-attesting alone
+-- never erases an unresolved violation. A findings column on the snapshot would
+-- make the second half impossible to state, because the row carrying the
+-- violation would be the row the next refresh replaced.
+--
+-- `resolved_at` is the reconciliation, and it is nullable and one-way: an
+-- operator (or an operation that provably repaired the cause) closes a
+-- violation, and nothing reopens a closed one under the same id.
+CREATE TABLE hangar_policy_violations (
+    id               bigserial PRIMARY KEY,
+    activation_epoch bigint NOT NULL
+        REFERENCES hangar_output_activation_epochs (epoch_id) ON DELETE RESTRICT,
+    snapshot_id      bigint NOT NULL
+        REFERENCES hangar_policy_snapshots (id) ON DELETE RESTRICT,
+    violation        text NOT NULL
+        CHECK (violation IN ('lifecycle_delete_rule', 'evidence_stale', 'evidence_unreadable',
+                             'excess_role', 'insufficient_role', 'wrong_principal',
+                             'shared_bucket', 'mixed_cohort')),
+    subject          text NOT NULL CHECK (subject <> ''),
+    detail           text NOT NULL DEFAULT '' CHECK (octet_length(detail) <= 1024),
+    observed_at      timestamp with time zone NOT NULL DEFAULT now(),
+    resolved_at      timestamp with time zone
+);
+
+-- One OPEN finding per (epoch, violation, subject). A monitor running every
+-- fifteen minutes against an unfixed bucket would otherwise write a row per
+-- pass forever, and the count an operator reads would be the age of the problem
+-- rather than its size.
+--
+-- A partial index and not a four-column UNIQUE including `resolved_at`: NULLs
+-- are distinct in a unique index, so that spelling constrains nothing at all
+-- for exactly the rows it was meant to constrain -- every open finding has a
+-- NULL there. Resolved rows are deliberately left unconstrained: the same
+-- violation can be found, fixed, and found again, and each of those is a
+-- separate fact with its own dates.
+CREATE UNIQUE INDEX hangar_policy_violations_one_open_idx
+    ON hangar_policy_violations (activation_epoch, violation, subject)
+    WHERE resolved_at IS NULL;
+
+CREATE FUNCTION hangar_policy_violation_resolution() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+BEGIN
+    IF OLD.resolved_at IS NOT NULL AND NEW.resolved_at IS DISTINCT FROM OLD.resolved_at THEN
+        RAISE EXCEPTION 'hangar: policy violation % was resolved at % and cannot be reopened or re-dated to %; recovery needs a fresh safe attestation AND violation reconciliation, and a reopened finding is a reconciliation that never happened',
+            OLD.id, OLD.resolved_at, NEW.resolved_at
+            USING ERRCODE = 'JB002';
+    END IF;
+    IF NEW.violation <> OLD.violation OR NEW.subject <> OLD.subject THEN
+        RAISE EXCEPTION 'hangar: policy violation % is immutable in what it is about', OLD.id
+            USING ERRCODE = 'JB002';
+    END IF;
+
+    RETURN NEW;
+END $$;
+
+CREATE TRIGGER hangar_policy_violation_resolution_guard
+    BEFORE UPDATE ON hangar_policy_violations
+    FOR EACH ROW EXECUTE FUNCTION hangar_policy_violation_resolution();
+
 -- One durable lease per operation kind per epoch. One operation cannot advance
 -- another's cursor, which is why the kind is half the primary key rather than a
 -- column on a shared lease.

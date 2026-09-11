@@ -329,3 +329,119 @@ func (repository *HangarOutputRepository) ReadInventoryDebt(ctx context.Context,
 
 	return owed, nil
 }
+
+// RecordPolicyAttestation stores one reading and everything it concluded, in
+// one transaction.
+//
+// The two halves go together because a snapshot that said `at_risk` with no
+// finding beside it is an operator being told something is wrong and nothing
+// else. The snapshot is superseded by the next reading; the findings are not,
+// because Req 52's recovery needs a fresh safe attestation AND violation
+// reconciliation, and a finding stored on the snapshot would vanish with it.
+//
+// A repeated finding bumps nothing and adds nothing: the open row is keyed on
+// (epoch, violation, subject), so a monitor running every fifteen minutes
+// against an unfixed bucket leaves one row rather than ninety-six a day.
+func (repository *HangarOutputRepository) RecordPolicyAttestation(ctx context.Context, tx output.Tx, snapshot output.PolicySnapshot, findings []output.PolicyFinding) error {
+	if err := snapshot.Validate(); err != nil {
+		return err
+	}
+
+	var id int64
+	if err := hangarQueryRow(ctx, tx, `
+		INSERT INTO hangar_policy_snapshots
+			(activation_epoch, bucket_fingerprint, metageneration, policy_hash,
+			 lifecycle_delete_rules, state, observed_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id`,
+		[]any{
+			int64(snapshot.ActivationEpoch), snapshot.BucketFingerprint, snapshot.Metageneration,
+			snapshot.PolicyHash, snapshot.LifecycleDeleteRules, string(snapshot.State),
+			snapshot.ObservedAt.Time,
+		}, &id); err != nil {
+		return hangarConflict(err)
+	}
+
+	for _, finding := range findings {
+		if err := finding.Validate(); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO hangar_policy_violations
+				(activation_epoch, snapshot_id, violation, subject, detail)
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (activation_epoch, violation, subject) WHERE resolved_at IS NULL
+			DO NOTHING`,
+			int64(snapshot.ActivationEpoch), id, string(finding.Violation),
+			finding.Subject, finding.Detail); err != nil {
+			return hangarConflict(err)
+		}
+	}
+
+	return nil
+}
+
+// OpenPolicyViolations reads what is still unreconciled for one epoch.
+//
+// A fresh safe attestation does not close these, and that is the whole reason
+// this read exists: an operator who fixed the bucket and re-attested has a
+// plane that admits work again and a list of what was wrong while it did not.
+func (repository *HangarOutputRepository) OpenPolicyViolations(ctx context.Context, tx output.Tx, epoch int64) ([]output.PolicyFinding, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT violation, subject, detail FROM hangar_policy_violations
+		 WHERE activation_epoch = $1 AND resolved_at IS NULL
+		 ORDER BY observed_at, id`, epoch)
+	if err != nil {
+		return nil, hangarConflict(err)
+	}
+	defer Close(rows)
+
+	var findings []output.PolicyFinding
+	for rows.Next() {
+		var violation string
+		var finding output.PolicyFinding
+		if err := rows.Scan(&violation, &finding.Subject, &finding.Detail); err != nil {
+			return nil, err
+		}
+		parsed, err := output.ParsePolicyViolation(violation)
+		if err != nil {
+			return nil, err
+		}
+		finding.Violation = parsed
+		findings = append(findings, finding)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, hangarConflict(err)
+	}
+
+	return findings, nil
+}
+
+// ReconcilePolicyViolation closes one finding.
+//
+// It is one-way and the schema says so: a reopened finding is a reconciliation
+// that never happened, and an audit reading these rows has to be able to tell
+// "this was fixed" from "this was fixed, unfixed, and marked fixed again".
+func (repository *HangarOutputRepository) ReconcilePolicyViolation(ctx context.Context, tx output.Tx, epoch int64, violation output.PolicyViolation, subject string) error {
+	if err := violation.Validate(); err != nil {
+		return err
+	}
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE hangar_policy_violations SET resolved_at = now()
+		 WHERE activation_epoch = $1 AND violation = $2 AND subject = $3 AND resolved_at IS NULL`,
+		epoch, string(violation), subject)
+	if err != nil {
+		return hangarConflict(err)
+	}
+	closed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if closed == 0 {
+		return fmt.Errorf("%w: no open %s violation for %q at epoch %d",
+			output.ErrNotFound, violation, subject, epoch)
+	}
+
+	return nil
+}
