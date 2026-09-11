@@ -867,9 +867,11 @@ hangarOutput:
       # -- Absolute canonicalization scratch directory, disjoint from the
       # storage root.
       path: /var/concourse/hangar-output-scratch
-      # -- REQUIRED when the output facet is on. The scratch volume is an
-      # emptyDir, and an emptyDir with no sizeLimit is bounded only by the
-      # node's disk: filling it evicts every Pod on the node, not only this one.
+      # -- REQUIRED whenever hangarOutput.executionControl.enabled is true --
+      # that is, in base-control-only mode as well as with the output facet on.
+      # The DaemonSet, this emptyDir and --scratch-dir all render under the BASE
+      # switch, and an emptyDir with no sizeLimit is bounded only by the node's
+      # disk: filling it evicts every Pod on the node, not only this one.
       # Use Kubernetes quantity syntax, e.g. "32Gi".
       sizeLimit: ""
       # -- Largest regular-file content admitted in one captured tree.

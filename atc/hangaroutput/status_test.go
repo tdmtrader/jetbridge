@@ -242,3 +242,99 @@ func TestAStatusReaderWithoutItsIdentityIsRefused(t *testing.T) {
 		}
 	}
 }
+
+// EVERY class, not one of them.
+//
+// The chart's alert coverage rests on a single aggregate rule --
+// HangarOutputPlaneAtRisk, over concourse_hangar_output_at_risk -- standing in
+// for eleven violation classes. That is legitimate coverage only if every class
+// really does raise the aggregate, and "AtRisk is len(reasons) != 0" is a
+// statement about code that a schema CHECK, a repository filter or a
+// classification could quietly falsify for one class.
+//
+// So it is measured, per class, against the real schema:
+// deploy/chart/tests.TestEveryAtRiskTransitionIsCoveredByARenderedAlert asserts
+// the rule exists; this asserts the rule means something for each member. A
+// class that stopped raising the aggregate would otherwise be a class with no
+// alert at all, on a plane that refuses new work from the moment it is
+// detected.
+func TestEveryPolicyViolationClassPutsThePlaneAtRisk(t *testing.T) {
+	classes := output.PolicyViolations()
+	if len(classes) < 10 {
+		t.Fatalf("the policy-violation vocabulary is %d classes; it collapsed and this rule "+
+			"would pass over almost nothing", len(classes))
+	}
+
+	for _, class := range classes {
+		t.Run(string(class), func(t *testing.T) {
+			h := newHarness(t)
+			reader := newStatusReader(t, h)
+
+			finding := output.PolicyFinding{
+				Violation: class,
+				Subject:   "gs://harness-output/some/object",
+				Detail:    "recorded by TestEveryPolicyViolationClassPutsThePlaneAtRisk",
+			}
+
+			tx, err := h.Conn.Begin()
+			if err != nil {
+				t.Fatalf("begin: %v", err)
+			}
+			// Each class enters by the route it really has. Two are runtime
+			// OBSERVATIONS -- an object that is not there, a store that says
+			// 403 -- and the repository refuses to record any other class that
+			// way, because a finding derived from a policy reading has to name
+			// the reading it came from. The rest arrive on an attestation.
+			switch class {
+			case output.ViolationOutOfBandAbsence, output.ViolationRuntimePrincipalDenied:
+				err = h.Repository.RecordRuntimeAtRisk(context.Background(),
+					db.HangarOutputTx{Tx: tx}, int64(harnessEpoch), finding)
+			default:
+				err = h.Repository.RecordPolicyAttestation(context.Background(),
+					db.HangarOutputTx{Tx: tx}, output.PolicySnapshot{
+						ProtocolVersion:      output.ProtocolVersion,
+						ActivationEpoch:      harnessEpoch,
+						BucketFingerprint:    "gs://harness-output",
+						Metageneration:       4,
+						PolicyHash:           "policy-hash-" + string(class),
+						LifecycleDeleteRules: 0,
+						State:                output.PolicySafe,
+						ObservedAt:           output.NewTimestamp(time.Now()),
+					}, []output.PolicyFinding{finding})
+			}
+			if err != nil {
+				t.Fatalf("recording %s: %v", class, err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatalf("commit: %v", err)
+			}
+
+			status, err := reader.Read(context.Background())
+			if err != nil {
+				t.Fatalf("reading status: %v", err)
+			}
+
+			if !status.AtRisk {
+				t.Errorf("an open %s did not put the plane at risk.\n\nThe chart has ONE "+
+					"alert covering every violation class, over "+
+					"concourse_hangar_output_at_risk. A class that does not raise it is a "+
+					"class with no alert at all, on a plane that has already stopped "+
+					"admitting new work.", class)
+			}
+			if status.Violations[class] != 1 {
+				t.Errorf("%s was not counted by class: %v", class, status.Violations)
+			}
+			named := false
+			for _, why := range status.Why {
+				if why == string(class) {
+					named = true
+				}
+			}
+			if !named {
+				t.Errorf("the at-risk reasons do not name %s: %v.\n\nThe alert's description "+
+					"renders $labels.reasons, so a class missing from Why is an operator "+
+					"woken with no class to act on.", class, status.Why)
+			}
+		})
+	}
+}

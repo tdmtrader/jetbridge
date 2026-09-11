@@ -155,13 +155,22 @@ daemon that would refuse itself at startup.
 {{- if le (int $output.activationEpoch) 0 -}}
 {{- fail "hangarOutput.activationEpoch is required and must be positive: a stale or absent epoch authorizes nothing, and zero is the absence." -}}
 {{- end -}}
+{{/*
+validateScratch belongs to the BASE switch, not the output one. The DaemonSet,
+its hangar-output-scratch emptyDir and its --scratch-dir flag all render under
+$base, so with the check under $capture a base-control-only deployment rendered
+`sizeLimit:` -- an explicit null, i.e. unbounded -- beneath a comment asserting
+the limit was required and validated. Nothing writes that volume in base-only
+mode today, so the exposure was the CLAIM; a render that documents a bound it
+does not set is read once and believed.
+*/}}
+{{- include "concourse.hangarOutput.validateScratch" . -}}
 {{- end -}}
 
 {{- if $capture -}}
 {{- include "concourse.hangarOutput.validateBucket" . -}}
 {{- include "concourse.hangarOutput.validateKeys" . -}}
 {{- include "concourse.hangarOutput.validateDurations" . -}}
-{{- include "concourse.hangarOutput.validateScratch" . -}}
 {{- include "concourse.hangarOutput.validateControllers" . -}}
 {{- include "concourse.hangarOutput.validatePrincipals" . -}}
 {{- if not $output.database.existingSecret -}}

@@ -49,6 +49,9 @@ var baseControlSets = []string{
 	"hangarOutput.capabilityKeySecret=op-capability-key",
 	"hangarOutput.daemon.tls.existingSecret=op-output-daemon-tls",
 	"hangarOutput.activationEpoch=7",
+	// Required under the BASE switch, not the output one: the DaemonSet, its
+	// scratch emptyDir and its --scratch-dir flag all render here.
+	"hangarOutput.daemon.scratch.sizeLimit=32Gi",
 }
 
 // outputSets add the OUTPUT capture facet on top of the base one.
@@ -65,7 +68,6 @@ var outputSets = append(append([]string{}, baseControlSets...),
 	"hangarOutput.receipt.publicKeys[0].epoch=7",
 	"hangarOutput.receipt.publicKeys[0].key=cHVibGljLWtleS1ieXRlcw==",
 	"hangarOutput.materializationKeySecret=op-output-materialize",
-	"hangarOutput.daemon.scratch.sizeLimit=32Gi",
 	"hangarOutput.database.existingSecret=op-activation-db",
 )
 
@@ -675,6 +677,44 @@ func TestTheOutputScratchVolumeIsBounded(t *testing.T) {
 	if !strings.Contains(out, "--publish-concurrency=") {
 		t.Error("the concurrency bound is a chart value with no flag behind it; the render " +
 			"would be a promise the process does not keep")
+	}
+}
+
+// And in BASE-CONTROL-ONLY mode, where the volume also renders.
+//
+// The DaemonSet, its hangar-output-scratch emptyDir and its --scratch-dir flag
+// are all under the BASE switch, and the validation was under the OUTPUT one.
+// So a base-control-only deployment rendered
+//
+//   - name: hangar-output-scratch
+//     emptyDir:
+//     # REQUIRED, and validated against the content limit ...
+//     sizeLimit:
+//
+// -- an explicit null, which is to say unbounded, under a comment asserting a
+// bound that is not there. Nothing in that mode writes the volume today
+// (PrepareScratch and the canonicalizer are inside the output-facet branch of
+// cmd/hangar-output-daemon), so the live exposure was nil; what was wrong was
+// the claim, and a render that documents a limit it does not set is the kind of
+// thing an operator reads once.
+func TestTheOutputScratchVolumeIsBoundedInBaseControlOnlyModeToo(t *testing.T) {
+	message := renderHangarError(t, append(append([]string{}, baseControlSets...),
+		"hangarOutput.daemon.scratch.sizeLimit=",
+	)...)
+	if !strings.Contains(message, "sizeLimit") {
+		t.Errorf("an unbounded scratch emptyDir was accepted in base-control-only mode:\n%s",
+			message)
+	}
+
+	out := renderBaseControl(t)
+	daemon := objectNamed(t, out, "DaemonSet", "-"+outputDaemonComponent)
+	if !strings.Contains(daemon.body, "sizeLimit: 32Gi") {
+		t.Errorf("the scratch volume renders no sizeLimit in base-control-only mode:\n%s",
+			daemon.body)
+	}
+	if strings.Contains(daemon.body, "sizeLimit:\n") {
+		t.Errorf("the scratch volume renders an explicit null sizeLimit, which is "+
+			"unbounded:\n%s", daemon.body)
 	}
 }
 
