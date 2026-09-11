@@ -188,19 +188,24 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 		// cohort would be signed by a key this control plane does not pin. So
 		// the un-handshaked cohort is spelled as exactly that: the label is
 		// there, and the epoch does not match.
-		brine.DefineMapUsing[CaptureDraft, CaptureDraft](
-			"the daemon cohort has not handshaked",
-			[]string{"jetbridge-db"},
-			func(in CaptureDraft, _ brine.Params, _ *brine.Recorder, res brine.Resources) (CaptureDraft, error) {
-				out, err := withCohort(in, res, hangaroutput.ReadyLabel, int64(hangarEpoch)+1)
-				if err != nil {
-					return CaptureDraft{}, err
-				}
-				out.CohortHandshaked = false
+		Refine[CaptureDraft]("the daemon cohort has not handshaked",
+			func(in CaptureDraft, _ Args) CaptureDraft {
+				// The ADMISSION moves, not the worker. The node carries the
+				// ready label -- the phrase above put it there -- and what is
+				// missing is the handshake behind it: this capture was admitted
+				// by a control plane speaking for a DIFFERENT activation epoch,
+				// which is the state a rolling upgrade, a half-finished
+				// rotation or a node back from a long drain produces.
+				//
+				// Moving the worker instead would rebuild it, and the rebuild
+				// would need a second team; that is a fixture collision wearing
+				// the costume of a production refusal, which is the worst shape
+				// a green can have. It cost one, and this is the fix.
+				in.Admission.ActivationEpoch = executioncontrol.ActivationEpoch(hangarEpoch) + 1
+				in.CohortHandshaked = false
 
-				return out, nil
-			},
-		),
+				return in
+			}),
 
 		brine.DefineMap[CaptureDraft, CapturePodCreated](
 			"the capture pod is built",
@@ -777,12 +782,18 @@ func withCohort(in CaptureDraft, res brine.Resources, facet string, epoch int64)
 			"%s and %s", facet, executioncontrol.ReadyLabel, hangaroutput.ReadyLabel)
 	}
 
-	// A DISTINCT worker name, because the cluster preamble derives its team's
-	// name from it and the team name is unique. The Given already made one; a
-	// rebuild that reused the name would fail on the constraint rather than on
-	// anything this phrase is about.
+	// A DISTINCT worker name per rebuild, because the cluster preamble derives
+	// its team's name from it and the team name is unique.
+	//
+	// The EPOCH is in the name and not only the facet: the handshake scenario
+	// rebuilds twice for the SAME facet -- once ready, once speaking for another
+	// epoch -- and a name keyed on the facet alone made the second rebuild fail
+	// on the team constraint rather than on anything the phrase is about. That
+	// is a fixture collision wearing the costume of a production refusal, which
+	// is the worst shape a green can have.
 	cluster, err := NewCluster(res,
-		WithWorkerName("k8s-worker-cohort-"+strings.TrimPrefix(facet, "concourse.dev/")),
+		WithWorkerName(fmt.Sprintf("k8s-worker-cohort-%s-%d",
+			strings.TrimPrefix(facet, "concourse.dev/"), epoch)),
 		WithVolumeRepo(), WithTeam(),
 		WithConfig(func(cfg *jetbridge.Config) {
 			cfg.ArtifactDaemonHostPath = "/var/concourse/artifacts"
@@ -949,7 +960,10 @@ func sameWorkerStillBuildsAnOrdinaryPod(in CapturePodCreated) error {
 func sameWorkerAdmitsAMatchingEpoch(in CapturePodCreated) error {
 	matching := in.Draft
 	matching.Draft.Handle = matching.Draft.Handle + "-matching"
+	// The epoch the worker's cohort actually speaks for, which is the fixture's
+	// one epoch. The refusal above was an admission from another one.
 	matching.Admission.ActivationEpoch = executioncontrol.ActivationEpoch(hangarEpoch)
+	matching.CohortHandshaked = true
 	matching.Reserved = hangaroutput.ReservedIncarnation{}
 
 	built, err := buildCapturePod(matching)
