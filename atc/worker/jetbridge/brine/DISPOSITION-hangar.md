@@ -85,6 +85,30 @@ Every such row below says so explicitly rather than leaving the column blank.
 This is a finding about the FILES, not about the behaviour: 26 of the 32 were
 reddened here anyway, transitively, by a mutation aimed at a sibling.
 
+### 4. Added after an independent review of Phase 9
+
+Two adversarial reviewers were run over this phase's diff. Two findings land on
+this table:
+
+- **`An exact replacement generation supersedes the old one, and the old ref no
+  longer resolves` has no `Then` a production mutation can redden.** The
+  replacement is published through the DAEMON -- `captureAgain` admits,
+  reserves, holds, seals and publishes, and stops -- so nothing settles it and
+  no lifecycle row exists for the new generation. Asserting the registration a
+  second time after the replacement was tried and **reddens**, correctly,
+  because there is nothing to find. Its one product assertion is the
+  different-generation check inside the `When`, which surfaces as a step ERROR
+  rather than a failing `Then`. The M55 row below is the scenario's real
+  evidence, and it reddens on the FIRST `Then` -- the control -- rather than on
+  the replacement half. The feature file now says all of this; closing it needs
+  a second control-plane settle this family does not have.
+
+- **`A capture-selected step's strict input is untouched by the output plane`
+  was unbounded.** `strictInputMaterializationIsUnchanged` asserted "at least
+  one request names the ref"; a plane that ADDED a bogus request beside the
+  right one passed. It now requires exactly one, which is what the scenario
+  declares.
+
 ---
 
 ## The rows
