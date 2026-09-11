@@ -1,9 +1,12 @@
 package db_test
 
 import (
+	"bytes"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -995,5 +998,182 @@ func TestEveryReadLeaseWriteTakesTheReadLeaseSuffix(t *testing.T) {
 		t.Errorf("this guard found %d function(s) writing hangar_read_leases; the plane has at "+
 			"least four (acquire, renew, release, close-abandoned), so either they moved or the "+
 			"predicate stopped recognising them", writers)
+	}
+}
+
+// Every production Hangar output transaction is the TYPED one.
+//
+// Two of this plane's constraint triggers are DEFERRED, so their refusals
+// arrive at COMMIT and nowhere earlier. db.HangarOutputTx is what maps that
+// commit's SQLSTATE onto the output leaf's vocabulary, and a coordinator handed
+// an unmapped commit failure reads a refusal ("stop, or change something
+// first") as a lost answer ("ask again with the same identity") -- against an
+// at-risk lifetime policy only an attestor can change, that is a retry loop
+// with no exit.
+//
+// The mapping moved into one adapter so that the three places which hand the
+// coordinator a transaction stopped carrying three copies of it. What they
+// still carry is three copies of the DECISION TO APPLY IT, and nothing saw
+// that: the specs commit through the harness's own transactor and brine through
+// its own, both of which wrap independently, so the ATC could ship
+// `return tx, nil` with every tier green. That is the mutation this guard is
+// written against, and it is the one production wiring site R1-F1 was about.
+//
+// It is derived from the source rather than from a list of files, so a SECOND
+// wiring site -- Phase 8 serves LeaseControl from the ATC -- inherits the rule
+// without anyone remembering it, and the floor below fails if it is added
+// without the wrapper.
+func TestEveryProductionHangarOutputTransactionIsTyped(t *testing.T) {
+	_, thisFile, _, _ := runtime.Caller(0)
+	root := filepath.Dir(filepath.Dir(filepath.Dir(thisFile)))
+
+	// Whether a result type is the coordinator's Transaction port. Inside
+	// package hangaroutput it is spelled bare; everywhere else it is qualified.
+	isTransactionPort := func(expression ast.Expr) bool {
+		switch typed := expression.(type) {
+		case *ast.SelectorExpr:
+			identifier, ok := typed.X.(*ast.Ident)
+
+			return ok && identifier.Name == "hangaroutput" && typed.Sel.Name == "Transaction"
+		case *ast.Ident:
+			return typed.Name == "Transaction"
+		}
+
+		return false
+	}
+
+	// Whether an expression constructs db.HangarOutputTx. A composite literal
+	// is what the three adapters write; the pointer and conversion forms are
+	// admitted so that the rule is about the TYPE rather than about a spelling.
+	var typedTransaction func(expression ast.Expr) bool
+	typedTransaction = func(expression ast.Expr) bool {
+		switch typed := expression.(type) {
+		case *ast.CompositeLit:
+			return typedTransaction(typed.Type)
+		case *ast.UnaryExpr:
+			return typed.Op == token.AND && typedTransaction(typed.X)
+		case *ast.SelectorExpr:
+			return typed.Sel.Name == "HangarOutputTx"
+		case *ast.Ident:
+			return typed.Name == "HangarOutputTx"
+		}
+
+		return false
+	}
+
+	isNil := func(expression ast.Expr) bool {
+		identifier, ok := expression.(*ast.Ident)
+
+		return ok && identifier.Name == "nil"
+	}
+
+	var sites []string
+	scanned := 0
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			switch name := entry.Name(); {
+			case name == "vendor", name == "node_modules", name == "testdata",
+				strings.HasPrefix(name, "."):
+				return fs.SkipDir
+			}
+
+			return nil
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			return nil
+		}
+
+		// The cheap filter first: a function returning the port has to name the
+		// type, and reading 1,800 files is cheaper than parsing them. Package
+		// hangaroutput's own files are read whole, because there the type is
+		// spelled without its package.
+		source, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if !bytes.Contains(source, []byte("hangaroutput.Transaction")) &&
+			filepath.Base(filepath.Dir(path)) != "hangaroutput" {
+			return nil
+		}
+		scanned++
+
+		fileSet := token.NewFileSet()
+		parsed, err := parser.ParseFile(fileSet, path, source, 0)
+		if err != nil {
+			return fmt.Errorf("parsing %s: %w", path, err)
+		}
+
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		relative = filepath.ToSlash(relative)
+
+		for _, declaration := range parsed.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Body == nil || function.Type.Results == nil ||
+				len(function.Type.Results.List) == 0 ||
+				!isTransactionPort(function.Type.Results.List[0].Type) {
+				continue
+			}
+			sites = append(sites, relative+":"+function.Name.Name)
+
+			ast.Inspect(function.Body, func(node ast.Node) bool {
+				// A nested function literal answers for itself; the results
+				// above are this function's.
+				if _, ok := node.(*ast.FuncLit); ok {
+					return false
+				}
+				statement, ok := node.(*ast.ReturnStmt)
+				if !ok || len(statement.Results) == 0 {
+					return true
+				}
+				returned := statement.Results[0]
+				if isNil(returned) || typedTransaction(returned) {
+					return true
+				}
+				t.Errorf("%s: %s hands the output coordinator a transaction that is not "+
+					"db.HangarOutputTx at %s.\n\nTwo of this plane's constraint triggers are "+
+					"DEFERRED: their refusals arrive at COMMIT, and a raw transaction's Commit "+
+					"answers an unclassified driver error. The coordinator reads that as a LOST "+
+					"answer and retries the same identity against a refusal only an attestor can "+
+					"lift. Wrap it: db.HangarOutputTx{Tx: tx}.", relative, function.Name.Name,
+					fileSet.Position(statement.Pos()))
+
+				return true
+			})
+		}
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking %s: %v", root, err)
+	}
+
+	if scanned == 0 {
+		t.Fatal("this guard read no file naming hangaroutput.Transaction, so it is passing " +
+			"vacuously -- the port was renamed, or the walk no longer reaches the tree")
+	}
+	// The floor. Today: the ATC's own wiring and the brine harness's. Phase 8
+	// adds a second ATC site (serving LeaseControl), which raises it.
+	if len(sites) < 2 {
+		t.Errorf("this guard found %d production implementation(s) of the transaction port %v; "+
+			"there are at least two (the ATC's wiring and brine's), so either they moved or the "+
+			"result-type predicate stopped recognising them", len(sites), sites)
+	}
+	atc := false
+	for _, site := range sites {
+		if strings.HasPrefix(site, "atc/atccmd/") {
+			atc = true
+		}
+	}
+	if !atc {
+		t.Errorf("no production implementation of the transaction port lives in atc/atccmd; "+
+			"the ATC's own wiring is the site a green test suite cannot see, because every "+
+			"tier commits through its own adapter. Found: %v", sites)
 	}
 }
