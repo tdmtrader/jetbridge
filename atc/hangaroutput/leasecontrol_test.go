@@ -425,6 +425,128 @@ func TestARenewedReaderKeepsWorkingPastItsOriginalGrantWindow(t *testing.T) {
 	}
 }
 
+// AND THE RE-MINTED TOKEN IS THE ONE THE DAEMON WILL ACCEPT.
+//
+// The spec above renews the instant the lease is admitted, so the window it
+// moves by is the microseconds of wall clock between the two calls, and every
+// question it then asks goes through the CONTROL PLANE -- which takes the window
+// from the row and does not look at the token's. What holds its line is
+// `renewed.Grant != fixture.Grant`, and that catches only a byte-identical
+// re-mint: a token carrying the PRE-RENEWAL expiry with any other field
+// differing would pass it. The distinguishing check is the daemon's own Verify,
+// which is where a stale window actually stops a read, and nothing ran it on a
+// re-minted token.
+//
+// So this one moves the window by a REAL ten minutes and asks the daemon's
+// question. The row is aged by moving all three instants back together, which
+// preserves its fifteen-minute term and changes only how much is left; the
+// reader's token is then minted by the production signer over the committed row
+// read back through LoadReadLease, which is the method the minter exists for --
+// a token minted before the ageing would name a window the row never had.
+//
+// The three answers, at one clock five seconds past the reader's own window:
+//
+//   - the daemon REFUSES the stale pre-renewal token -- a token whose window has
+//     passed opens nothing, which is what the window is for;
+//   - the daemon ADMITS the re-minted one, and it names the renewed row's
+//     expiry, so the reader carries authority it can actually use;
+//   - the control plane still admits the stale token's BINDING, because what a
+//     grant binds is the MAC's to settle and whether the lease is live is the
+//     row's. A renewed reader must still be able to release.
+func TestARenewalRemintsTheWindowTheDaemonChecks(t *testing.T) {
+	h := newHarness(t)
+	admitted := admittedGrant(t, h)
+
+	if _, err := h.Conn.Exec(`
+		UPDATE hangar_read_leases
+		SET granted_at = granted_at - interval '10 minutes',
+		    renewed_at = renewed_at - interval '10 minutes',
+		    expires_at = expires_at - interval '10 minutes'
+		WHERE read_lease_id = $1`, string(admitted.Lease.ReadLeaseID)); err != nil {
+		t.Fatalf("ageing the lease: %v", err)
+	}
+
+	loading, err := h.Conn.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer db.Rollback(loading)
+	record, err := h.Repository.LoadReadLease(context.Background(), loading,
+		admitted.Lease.ReadLeaseID)
+	if err != nil {
+		t.Fatalf("reading the aged lease back: %v", err)
+	}
+	if err := loading.Rollback(); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+
+	minter, err := output.NewReadGrantSigner(readGrantKey)
+	if err != nil {
+		t.Fatalf("grant signer: %v", err)
+	}
+	stale, err := minter.Sign(record.Lease, record.Destination, record.GrantNonce)
+	if err != nil {
+		t.Fatalf("minting the reader's token over the aged row: %v", err)
+	}
+
+	fixture := newLeaseFixture(t, h, hangaroutput.ReadGrant{
+		Token: stale, Lease: record.Lease, Record: record})
+
+	renewed, err := fixture.Client.RenewLease(context.Background(), stale, time.Minute)
+	if err != nil || !renewed.Admitted {
+		t.Fatalf("renewing a lease with five minutes left: %v %+v", err, renewed)
+	}
+	if renewed.Grant == "" || renewed.Grant == stale {
+		t.Fatal("the renewal handed back no new token, so the reader still carries the window " +
+			"this renewal just moved")
+	}
+
+	// The daemon's verifier, past the reader's own window and well inside the
+	// renewed one. Its clock is the NODE's; the row is live on the database's.
+	daemon, err := output.NewReadGrantVerifier(readGrantKey, output.ClockFunc(func() time.Time {
+		return record.Lease.ExpiresAt.Add(5 * time.Second).UTC()
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := daemon.Verify(stale, record.Lease.Ref, record.Destination); !errors.Is(err,
+		output.ErrUnauthorized) {
+		t.Errorf("the daemon answered %v to a token whose window has passed; a stale grant "+
+			"opening an object is what the window is for", err)
+	}
+
+	claims, err := daemon.Verify(renewed.Grant, record.Lease.Ref, record.Destination)
+	if err != nil {
+		t.Fatalf("the daemon refused the RE-MINTED token as %v; the reader's lease is live, it "+
+			"has just been renewed, and the one token it carries opens nothing", err)
+	}
+	if !claims.ExpiresAt.UTC().Equal(renewed.Lease.ExpiresAt.UTC()) {
+		t.Errorf("the re-minted token names %s and the renewed row expires at %s; a token dated "+
+			"from anything but the committed row is a token for a lease that may never have "+
+			"existed", claims.ExpiresAt.UTC(), renewed.Lease.ExpiresAt.UTC())
+	}
+
+	// And the interval is real, which is what makes the clock above a question
+	// about a renewal rather than about a microsecond.
+	if moved := renewed.Lease.ExpiresAt.Sub(record.Lease.ExpiresAt.Time); moved < 9*time.Minute {
+		t.Errorf("the renewal moved the window by %s; this spec ages the lease by ten minutes "+
+			"so that the two windows are distinguishable at all", moved)
+	}
+
+	// The control plane, asked with the stale token: admitted. A renewed reader
+	// that could not validate, renew again or RELEASE with the token it was
+	// handed would hold its protection until recovery closed it.
+	answer, err := fixture.Client.ValidateLease(context.Background(), stale, time.Minute)
+	if err != nil {
+		t.Fatalf("validating with the stale token: %v", err)
+	}
+	if !answer.Admitted {
+		t.Errorf("the control plane refused a live lease as %q because the TOKEN's window had "+
+			"passed; the window is the row's", answer.Refusal)
+	}
+}
+
 // An OUTAGE between the daemon and the control plane is not a corrupt answer.
 //
 // The client decoded whatever came back without looking at the status, so a
