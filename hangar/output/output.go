@@ -145,7 +145,35 @@ var (
 
 	// ErrUnsupportedProtocol is a message from outside this cohort.
 	ErrUnsupportedProtocol = errors.New("hangar/output: unsupported protocol version")
+
+	// ErrCaptureDisabled is a durable-output-capture operation asked of a
+	// component that does not have the facet.
+	//
+	// Req 58 makes this a TYPED result with no cache-tier fallback, and the
+	// distinction is the whole of the requirement: "this daemon has no output
+	// bucket" and "this capture failed" must not be the same answer, because a
+	// caller that cannot tell them apart writes the retry, and the retry it
+	// writes is the cache tier. Nothing in this plane degrades into a cache
+	// miss.
+	ErrCaptureDisabled = errors.New("hangar/output: durable output capture is not enabled here")
 )
+
+// BucketFingerprintScheme is the one prefix a bucket fingerprint carries.
+//
+// A fingerprint rather than the bare name, because it is compared between
+// components that were configured separately -- the attestor's expectation, the
+// daemon's handshake, the inventory cursor's key -- and two spellings of one
+// bucket is how a cursor ends up scoped to a bucket nobody is publishing into.
+//
+// It is a CONSTANT and not a function taking a bucket name, deliberately. A
+// function here would be an exported API in this package that accepts a
+// caller-chosen storage location, which is the shape checkNoAPIAcceptsAStorageLocation
+// exists to reject; the guard found it when it was written that way, and the
+// right answer was to stop writing it that way rather than to rename the
+// parameter past the rule. The server-derived side reads
+// OutputNamespace.BucketFingerprint, which takes nothing; the attestor, whose
+// bucket is its own authenticated flag, composes the same two parts.
+const BucketFingerprintScheme = "gs://"
 
 func validateProtocol(version string) error {
 	if version != ProtocolVersion {

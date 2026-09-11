@@ -47,6 +47,14 @@ type Config struct {
 	ReceiptKeyID   string
 	ReceiptKeyFile string
 
+	// The output read-grant key: a THIRD key, an exact 32-byte HMAC secret
+	// under the hangar-output-materialize-v1 domain. It is neither the receipt
+	// key (a read grant must not be signable by anything that can mint a
+	// publication receipt) nor the foundation's strict-input materialization
+	// key (which attests inputs and belongs to the other daemon).
+	MaterializationKeyID   string
+	MaterializationKeyFile string
+
 	// The node's control key: a SECOND Ed25519 key, for the statements the
 	// execution and source ledgers make. It is separate from the receipt key
 	// because the two say different things -- a receipt says an object exists
@@ -56,7 +64,19 @@ type Config struct {
 	ControlKeyID   string
 	ControlKeyFile string
 
+	// PublishConcurrency bounds how many trees may be spooled to scratch at
+	// once.
+	//
+	// It is here rather than left to whatever arrives because the scratch
+	// volume is an emptyDir with a sizeLimit, and the bound an operator can
+	// actually reason about is concurrency times the content limit. Without it
+	// the volume's ceiling is "however many captures happened to land on this
+	// node at once", and an emptyDir that exceeds its sizeLimit evicts the Pod;
+	// one with no sizeLimit fills the node's disk and evicts every Pod on it.
+	PublishConcurrency int
+
 	// The node-local surfaces.
+	NodeName          string
 	NodeUID           string
 	ListenAddress     string
 	ControlDir        string
@@ -107,10 +127,18 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 		"Identifier of the Ed25519 receipt signing key. A receipt names it so a verifier knows which activation-pinned public key can check it.")
 	flags.StringVar(&config.ReceiptKeyFile, "receipt-key-file", "",
 		"Path to the PKCS#8 PEM Ed25519 private key used to sign receipts. It is mounted only in this Pod: the control plane, the web node, the existing artifact daemon, the controllers, the control init container, the task and the sidecar hold the public key and the key id only.")
+	flags.StringVar(&config.MaterializationKeyID, "materialization-key-id", "",
+		"Identifier of the key output read grants are minted and verified with. A grant names it so a verifier knows which activation-pinned key can check it.")
+	flags.StringVar(&config.MaterializationKeyFile, "materialization-key-file", "",
+		"Path to the raw 32-byte key output read grants are signed with, under the hangar-output-materialize-v1 domain. It is never the receipt key and never the foundation's strict-input materialization key.")
 	flags.StringVar(&config.ControlKeyID, "control-key-id", "",
 		"Identifier of the Ed25519 key this node signs execution and source ledger statements with. A control plane pins its public half per activation epoch.")
 	flags.StringVar(&config.ControlKeyFile, "control-key-file", "",
 		"Path to the PKCS#8 PEM Ed25519 private key used to sign ledger statements. It is a different key from the receipt key: rotating one must not rotate the other.")
+	flags.IntVar(&config.PublishConcurrency, "publish-concurrency", 1,
+		"How many trees may be canonicalized and spooled to scratch at once. The scratch volume's size limit must cover this many maximum-sized trees; the chart renders both from one pair of values and refuses a product that does not fit.")
+	flags.StringVar(&config.NodeName, "node-name", "",
+		"This node's Kubernetes name, from the Downward API. It is what the daemon patches its two ready labels onto. Empty means no labeling at all, which is how this binary runs in the conformance tier and in its own tests.")
 	flags.StringVar(&config.NodeUID, "node-uid", "",
 		"This node's Kubernetes UID, from the Downward API. It is the UID and not the name: a name can be reused for new hardware, and a ledger sequence is only meaningful alongside the node that issued it.")
 	flags.StringVar(&config.ListenAddress, "listen", "127.0.0.1:0",
@@ -137,20 +165,25 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 		"Per-operation timeout against the output bucket.")
 }
 
+// OutputFacetEnabled reports whether this daemon carries the durable-capture
+// extension as well as the base exact-execution-control protocol.
+//
+// The bucket is the discriminator and not a separate boolean, because a boolean
+// and a bucket can disagree: "output enabled, no bucket" has no honest reading,
+// and a daemon that took both would have to pick one. A base-only cohort is a
+// real deployment -- the sibling `exact_execution_control` track schedules onto
+// exactly it, and Req 58's output-only downgrade has to be able to REACH it
+// from a running plane without taking exact process control away.
+func (config Config) OutputFacetEnabled() bool {
+	return strings.TrimSpace(config.OutputBucket) != ""
+}
+
 // Validate refuses a configuration before anything is built.
 //
 // The bucket rules are delegated to output.DeriveNamespace rather than
 // reimplemented here, so there is exactly one statement of Req 20 and this
 // binary cannot drift from it.
 func (config Config) Validate() error {
-	if strings.TrimSpace(config.ReceiptKeyID) == "" {
-		return fmt.Errorf("%w: --receipt-key-id is required; a receipt names the key that can "+
-			"check it", output.ErrIncomplete)
-	}
-	if strings.TrimSpace(config.ReceiptKeyFile) == "" {
-		return fmt.Errorf("%w: --receipt-key-file is required; this is the only process that "+
-			"holds the private half", output.ErrIncomplete)
-	}
 	if config.OperationTimeout <= 0 {
 		return fmt.Errorf("%w: --output-timeout must be positive", output.ErrIncomplete)
 	}
@@ -162,19 +195,99 @@ func (config Config) Validate() error {
 		return fmt.Errorf("%w: --control-key-file is required; an unsigned acknowledgement is "+
 			"not proof", output.ErrIncomplete)
 	}
-	if config.ControlKeyFile == config.ReceiptKeyFile {
-		return fmt.Errorf("%w: --control-key-file and --receipt-key-file name the same key. They "+
-			"say different things and an activation epoch pins them separately, so one key would "+
-			"mean rotating either rotates both", output.ErrIncomplete)
+	if config.PublishConcurrency < 1 {
+		return fmt.Errorf("%w: --publish-concurrency must be at least 1; zero would admit no "+
+			"capture at all", output.ErrIncomplete)
+	}
+	if config.ActivationEpoch == 0 {
+		return fmt.Errorf("%w: --activation-epoch is required; a stale or absent epoch "+
+			"authorizes nothing, and zero is the absence", output.ErrIncomplete)
 	}
 
+	if err := config.validateOutputFacet(); err != nil {
+		return err
+	}
 	if err := config.validateTLS(); err != nil {
 		return err
+	}
+	if !config.OutputFacetEnabled() {
+		return nil
 	}
 
 	_, err := config.Namespace()
 
 	return err
+}
+
+// validateOutputFacet is the whole of the optional half, stated in one place.
+//
+// Two directions, and the second is the one that is easy to leave out: the
+// facet's own values are required when it is ON, and REFUSED when it is off. A
+// daemon configured with a receipt private key and no bucket is a process
+// holding a signing key it can never need, which is a key an exploit of that
+// process gets for free (Req 24); and a prefix or a tenant with no bucket is an
+// operator who believes the plane is on.
+func (config Config) validateOutputFacet() error {
+	if !config.OutputFacetEnabled() {
+		for _, set := range []struct{ flag, value string }{
+			{"--output-prefix", config.OutputPrefix},
+			{"--output-tenant", config.OutputTenant},
+			{"--output-endpoint", config.OutputEndpoint},
+			{"--receipt-key-id", config.ReceiptKeyID},
+			{"--receipt-key-file", config.ReceiptKeyFile},
+			{"--materialization-key-id", config.MaterializationKeyID},
+			{"--materialization-key-file", config.MaterializationKeyFile},
+		} {
+			if strings.TrimSpace(set.value) != "" {
+				return fmt.Errorf("%w: %s is set and --output-bucket is not. This daemon "+
+					"carries the base exact-execution-control facet only; a half-configured "+
+					"output facet is not a base-only daemon, it is a deployment that believes "+
+					"it is publishing", output.ErrIncomplete, set.flag)
+			}
+		}
+
+		return nil
+	}
+
+	for _, required := range []struct{ flag, value, why string }{
+		{"--receipt-key-id", config.ReceiptKeyID,
+			"a receipt names the key that can check it"},
+		{"--receipt-key-file", config.ReceiptKeyFile,
+			"this is the only process that holds the private half"},
+		{"--materialization-key-id", config.MaterializationKeyID,
+			"a read grant names the key that can check it"},
+		{"--materialization-key-file", config.MaterializationKeyFile,
+			"the output read grant uses its own key and its own domain, never the receipt key"},
+	} {
+		if strings.TrimSpace(required.value) == "" {
+			return fmt.Errorf("%w: %s is required when --output-bucket is set; %s",
+				output.ErrIncomplete, required.flag, required.why)
+		}
+	}
+
+	// Three key roles, three files. They say different things, an activation
+	// epoch pins them separately, and one file for two of them means rotating
+	// either rotates both.
+	for _, pair := range []struct{ left, right, leftFlag, rightFlag string }{
+		{config.ControlKeyFile, config.ReceiptKeyFile, "--control-key-file", "--receipt-key-file"},
+		{config.ControlKeyFile, config.MaterializationKeyFile, "--control-key-file", "--materialization-key-file"},
+		{config.ReceiptKeyFile, config.MaterializationKeyFile, "--receipt-key-file", "--materialization-key-file"},
+		{config.ReceiptKeyFile, config.CapabilityKeyFile, "--receipt-key-file", "--capability-key"},
+		{config.MaterializationKeyFile, config.CapabilityKeyFile, "--materialization-key-file", "--capability-key"},
+	} {
+		if pair.left != "" && pair.left == pair.right {
+			return fmt.Errorf("%w: %s and %s name the same key. They say different things and "+
+				"an activation epoch pins them separately, so one key would mean rotating "+
+				"either rotates both", output.ErrIncomplete, pair.leftFlag, pair.rightFlag)
+		}
+	}
+	if config.ReceiptKeyID == config.MaterializationKeyID {
+		return fmt.Errorf("%w: the receipt and materialization key ids are the same; a read "+
+			"grant must not be signable by anything that can mint a publication receipt",
+			output.ErrIncomplete)
+	}
+
+	return nil
 }
 
 // TLSEnabled is the single predicate for "this daemon serves the control API

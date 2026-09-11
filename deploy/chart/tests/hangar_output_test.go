@@ -1,0 +1,955 @@
+package tests
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"sigs.k8s.io/yaml"
+)
+
+// The output plane's rendered surface.
+//
+// Every workload here exists because a Kubernetes service account is Pod-wide.
+// The publisher may create and get objects; inventory may list and get
+// bucket-wide; the reclaimer may get and delete; the attestor reads bucket
+// lifecycle and IAM and holds no object permission at all. Those are four
+// disjoint cloud identities, so they are four Pods with four KSAs, and the
+// chart's job is to render that separation and to refuse the configurations
+// that quietly collapse it.
+//
+// The chart does NOT create buckets, lifecycle rules or GCP IAM. It renders
+// explicit identities and names what an operator must provision; activation is
+// what proves the provisioning is real. A render test can say a KSA exists and
+// that no other workload mounts a private key. It cannot say an IAM binding is
+// what the annotation claims, and nothing here pretends otherwise.
+
+const (
+	outputDaemonComponent    = "hangar-output-daemon"
+	outputInventoryComponent = "hangar-output-inventory"
+	outputReclaimerComponent = "hangar-output-reclaimer"
+	outputAttestorComponent  = "hangar-output-policy-attestor"
+)
+
+// baseControlSets turn on the BASE exact-execution-control facet and nothing
+// else. It is a real deployment on its own: the sibling `exact_execution_control`
+// track schedules onto exactly this cohort.
+var baseControlSets = []string{
+	"artifactDaemon.enabled=true",
+	"hangarOutput.executionControl.enabled=true",
+	"hangarOutput.executionControl.keySecret=op-control-key",
+	"hangarOutput.capabilityKeySecret=op-capability-key",
+	"hangarOutput.daemon.tls.existingSecret=op-output-daemon-tls",
+	"hangarOutput.activationEpoch=7",
+}
+
+// outputSets add the OUTPUT capture facet on top of the base one.
+var outputSets = append(append([]string{}, baseControlSets...),
+	"hangarOutput.enabled=true",
+	"hangarOutput.bucket=jb-output",
+	"hangarOutput.prefix=cluster-a",
+	"hangarOutput.tenant=tenant-a",
+	"hangarOutput.cacheBucket=jb-cache",
+	"hangarOutput.strictInputBucket=jb-strict-input",
+	"hangarOutput.receipt.keyID=receipt-7",
+	"hangarOutput.receipt.privateKeySecret=op-receipt-private",
+	"hangarOutput.receipt.publicKeys[0].id=receipt-7",
+	"hangarOutput.receipt.publicKeys[0].epoch=7",
+	"hangarOutput.receipt.publicKeys[0].key=cHVibGljLWtleS1ieXRlcw==",
+	"hangarOutput.materializationKeySecret=op-output-materialize",
+	"hangarOutput.daemon.scratch.sizeLimit=32Gi",
+	"hangarOutput.database.existingSecret=op-activation-db",
+)
+
+func renderBaseControl(t *testing.T, extra ...string) string {
+	t.Helper()
+
+	return render(t, append(append([]string{}, baseControlSets...), extra...)...)
+}
+
+func renderOutput(t *testing.T, extra ...string) string {
+	t.Helper()
+
+	return render(t, append(append([]string{}, outputSets...), extra...)...)
+}
+
+// renderOutputError requires the render to FAIL and returns helm's message.
+func renderOutputError(t *testing.T, extra ...string) string {
+	t.Helper()
+
+	return renderHangarError(t, append(append([]string{}, outputSets...), extra...)...)
+}
+
+// document is one rendered manifest with the template it came from.
+type document struct {
+	source string
+	body   string
+	kind   string
+	name   string
+}
+
+func documentsIn(t *testing.T, out string) []document {
+	t.Helper()
+
+	var documents []document
+	for _, chunk := range splitDocuments(out) {
+		var object renderedObject
+		if err := yaml.Unmarshal([]byte(chunk), &object); err != nil {
+			continue
+		}
+		if object.Kind == "" {
+			continue
+		}
+		documents = append(documents, document{
+			source: sourceOf(chunk),
+			body:   chunk,
+			kind:   object.Kind,
+			name:   object.Metadata.Name,
+		})
+	}
+	if len(documents) < 5 {
+		t.Fatalf("only %d documents parsed out of the render; the split failed and every "+
+			"rule in this file would pass vacuously", len(documents))
+	}
+
+	return documents
+}
+
+// objectNamed finds exactly one rendered object by kind and name suffix.
+func objectNamed(t *testing.T, out, kind, suffix string) document {
+	t.Helper()
+
+	var found []document
+	for _, candidate := range documentsIn(t, out) {
+		if candidate.kind == kind && strings.HasSuffix(candidate.name, suffix) {
+			found = append(found, candidate)
+		}
+	}
+	switch len(found) {
+	case 0:
+		t.Fatalf("no %s whose name ends in %q was rendered", kind, suffix)
+	case 1:
+		return found[0]
+	default:
+		t.Fatalf("%d %ss whose name ends in %q were rendered", len(found), kind, suffix)
+	}
+
+	return document{}
+}
+
+func hasObject(t *testing.T, out, kind, suffix string) bool {
+	t.Helper()
+
+	for _, candidate := range documentsIn(t, out) {
+		if candidate.kind == kind && strings.HasSuffix(candidate.name, suffix) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// ---------------------------------------------------------------------------
+// Disabled defaults
+// ---------------------------------------------------------------------------
+
+// Req 59: with durable output capture disabled, the existing chart is what it
+// was. Not "mostly" -- a rendered flag the old binary does not accept is a
+// CrashLoopBackOff on the first sync, and a rendered workload is a bill.
+func TestTheOutputPlaneRendersNothingByDefault(t *testing.T) {
+	out := render(t)
+
+	for _, component := range []string{
+		outputDaemonComponent, outputInventoryComponent,
+		outputReclaimerComponent, outputAttestorComponent,
+	} {
+		if strings.Contains(out, component) {
+			t.Errorf("the default render mentions %q; the output plane is opt-in", component)
+		}
+	}
+	for _, unexpected := range []string{
+		"--output-bucket", "--receipt-key-file", "--control-key-file",
+		"concourse.dev/hangar-output-v1", "concourse.dev/hangar-execution-control-v1",
+		"hangar-output-scratch",
+	} {
+		if strings.Contains(out, unexpected) {
+			t.Errorf("the default render contains %q", unexpected)
+		}
+	}
+}
+
+// The two facets are distinct switches, and the base one is a deployment on its
+// own. A single switch would make "attested for exact control" and "has an
+// output bucket" the same claim, which is the thing the two node labels exist
+// to keep apart.
+func TestBaseControlRendersWithoutTheOutputFacet(t *testing.T) {
+	out := renderBaseControl(t)
+
+	if !hasObject(t, out, "DaemonSet", "-"+outputDaemonComponent) {
+		t.Fatal("the base execution-control facet rendered no output daemon; it is the " +
+			"process that owns the execution ledger")
+	}
+	daemon := objectNamed(t, out, "DaemonSet", "-"+outputDaemonComponent)
+
+	if strings.Contains(daemon.body, "--output-bucket") {
+		t.Error("a base-control-only daemon is configured with an output bucket")
+	}
+	if strings.Contains(daemon.body, "--receipt-key-file") {
+		t.Error("a base-control-only daemon mounts the receipt private key; it signs no receipts")
+	}
+	if !strings.Contains(daemon.body, "--control-key-file") {
+		t.Error("a base-control-only daemon has no control key; an unsigned acknowledgement " +
+			"is not proof")
+	}
+	for _, controller := range []string{
+		outputInventoryComponent, outputReclaimerComponent, outputAttestorComponent,
+	} {
+		if hasObject(t, out, "Deployment", "-"+controller) {
+			t.Errorf("base control alone rendered %s; the controllers belong to the output "+
+				"facet and have nothing to sweep", controller)
+		}
+	}
+}
+
+// Output can never be ready without base control. The chart refuses the
+// configuration rather than rendering a daemon that would refuse itself at
+// startup: a render is what an operator reviews.
+func TestOutputEnablementRequiresBaseControl(t *testing.T) {
+	message := renderHangarError(t,
+		"artifactDaemon.enabled=true",
+		"hangarOutput.enabled=true",
+		"hangarOutput.bucket=jb-output",
+	)
+	if !strings.Contains(message, "hangarOutput.executionControl.enabled") {
+		t.Errorf("the refusal does not name the base facet:\n%s", message)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The dedicated bucket and the server-derived namespace
+// ---------------------------------------------------------------------------
+
+// Req 20. The bucket is explicit, and it is never one of the other two.
+func TestTheOutputBucketIsExplicitAndIsNeitherOtherBucket(t *testing.T) {
+	if message := renderHangarError(t, append(append([]string{}, outputSets...),
+		"hangarOutput.bucket=")...); !strings.Contains(message, "hangarOutput.bucket") {
+		t.Errorf("an empty output bucket was accepted:\n%s", message)
+	}
+
+	for _, collision := range []string{
+		"hangarOutput.bucket=jb-cache",
+		"hangarOutput.bucket=jb-strict-input",
+	} {
+		message := renderOutputError(t, collision)
+		if !strings.Contains(strings.ToLower(message), "dedicated") {
+			t.Errorf("%s did not name the dedicated-bucket rule:\n%s", collision, message)
+		}
+	}
+
+	// And the durable cache bucket the artifact daemon is pointed at, which an
+	// operator sets in a different block entirely.
+	message := renderHangarError(t, append(append([]string{}, outputSets...),
+		"artifactDaemon.durable.store=gcs",
+		"artifactDaemon.durable.bucket=jb-output",
+	)...)
+	if !strings.Contains(strings.ToLower(message), "dedicated") {
+		t.Errorf("the output bucket was accepted as the artifact daemon's durable bucket:\n%s",
+			message)
+	}
+}
+
+// Prefix-only isolation inside one shared bucket is not an activation-compatible
+// substitute, and Req 20 says so. The chart has no value that expresses it.
+func TestPrefixOnlyIsolationInAMixedBucketIsRefused(t *testing.T) {
+	message := renderOutputError(t, "hangarOutput.sharedBucketPrefixOnlyIsolation=true")
+	if !strings.Contains(message, "prefix") {
+		t.Errorf("prefix-only isolation was accepted:\n%s", message)
+	}
+}
+
+// The prefix and the tenant are server configuration handed to every output
+// workload, and they are the same values everywhere: a controller sweeping a
+// namespace the daemon does not publish into would find every object orphaned.
+func TestEveryOutputWorkloadIsGivenTheSameDerivedNamespace(t *testing.T) {
+	out := renderOutput(t)
+
+	workloads := []document{
+		objectNamed(t, out, "DaemonSet", "-"+outputDaemonComponent),
+		objectNamed(t, out, "Deployment", "-"+outputInventoryComponent),
+		objectNamed(t, out, "Deployment", "-"+outputReclaimerComponent),
+		objectNamed(t, out, "Deployment", "-"+outputAttestorComponent),
+	}
+	for _, workload := range workloads {
+		for _, flag := range []string{
+			"--output-bucket=jb-output",
+			"--activation-epoch=7",
+		} {
+			if !strings.Contains(workload.body, flag) {
+				t.Errorf("%s does not carry %s", workload.name, flag)
+			}
+		}
+	}
+	// The attestor reads the bucket's policy and has no namespace inside it,
+	// so prefix and tenant are asserted over the three that do.
+	for _, workload := range workloads[:3] {
+		for _, flag := range []string{"--output-prefix=cluster-a", "--output-tenant=tenant-a"} {
+			if !strings.Contains(workload.body, flag) {
+				t.Errorf("%s does not carry %s", workload.name, flag)
+			}
+		}
+	}
+}
+
+// Decision F3. The output plane's endpoint override is its own value and its
+// own flag; the artifact daemon's --durable-endpoint serves the durable CACHE
+// bucket, which Req 20 forbids the output plane sharing.
+func TestTheOutputEndpointAndTheDurableCacheEndpointAreIndependent(t *testing.T) {
+	outputOnly := renderOutput(t, "hangarOutput.endpoint=http://fake-gcs.cicd.svc:4443")
+	if !strings.Contains(outputOnly, "--output-endpoint=http://fake-gcs.cicd.svc:4443") {
+		t.Error("hangarOutput.endpoint did not reach --output-endpoint")
+	}
+	if strings.Contains(outputOnly, "--durable-endpoint=http://fake-gcs.cicd.svc:4443") {
+		t.Error("hangarOutput.endpoint populated the durable CACHE tier's endpoint too; the " +
+			"two are different buckets under different identities")
+	}
+
+	cacheOnly := renderOutput(t,
+		"artifactDaemon.durable.store=gcs",
+		"artifactDaemon.durable.bucket=jb-cache-2",
+		"artifactDaemon.durable.endpoint=http://minio.local:9000",
+	)
+	if !strings.Contains(cacheOnly, "--durable-endpoint=http://minio.local:9000") {
+		t.Error("artifactDaemon.durable.endpoint did not reach --durable-endpoint")
+	}
+	if strings.Contains(cacheOnly, "--output-endpoint=http://minio.local:9000") {
+		t.Error("artifactDaemon.durable.endpoint populated the OUTPUT plane's endpoint")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Four principals, four service accounts
+// ---------------------------------------------------------------------------
+
+func TestTheFourOutputPrincipalsHaveFourDistinctServiceAccounts(t *testing.T) {
+	out := renderOutput(t,
+		"hangarOutput.daemon.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=publisher@p.iam.gserviceaccount.com",
+		"hangarOutput.inventory.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=inventory@p.iam.gserviceaccount.com",
+		"hangarOutput.reclaimer.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=reclaimer@p.iam.gserviceaccount.com",
+		"hangarOutput.policyAttestor.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=attestor@p.iam.gserviceaccount.com",
+	)
+
+	names := map[string]bool{}
+	for _, component := range []string{
+		outputDaemonComponent, outputInventoryComponent,
+		outputReclaimerComponent, outputAttestorComponent,
+	} {
+		account := objectNamed(t, out, "ServiceAccount", "-"+component)
+		if names[account.name] {
+			t.Errorf("%s reuses the ServiceAccount name %s. A service account is Pod-wide: "+
+				"two workloads sharing one are one cloud identity holding both sets of "+
+				"permissions.", component, account.name)
+		}
+		names[account.name] = true
+	}
+	if len(names) != 4 {
+		t.Fatalf("expected four distinct output service accounts, got %d: %v", len(names), names)
+	}
+
+	// The Workload Identity annotations are four distinct cloud principals too.
+	// The chart cannot verify the binding -- activation does -- but it can
+	// refuse to render one principal into two roles.
+	principals := map[string]string{}
+	for _, component := range []string{
+		outputDaemonComponent, outputInventoryComponent,
+		outputReclaimerComponent, outputAttestorComponent,
+	} {
+		account := objectNamed(t, out, "ServiceAccount", "-"+component)
+		var parsed struct {
+			Metadata struct {
+				Annotations map[string]string `json:"annotations"`
+			} `json:"metadata"`
+		}
+		if err := yaml.Unmarshal([]byte(account.body), &parsed); err != nil {
+			t.Fatalf("parsing %s: %v", account.name, err)
+		}
+		principal := parsed.Metadata.Annotations["iam.gke.io/gcp-service-account"]
+		if principal == "" {
+			t.Errorf("%s has no Workload Identity annotation", component)
+
+			continue
+		}
+		if other, seen := principals[principal]; seen {
+			t.Errorf("%s and %s are annotated with the same cloud principal %s",
+				component, other, principal)
+		}
+		principals[principal] = component
+	}
+}
+
+// Shared identities are an activation failure, and the chart is where an
+// operator would try to express one.
+func TestASharedCloudPrincipalIsRefused(t *testing.T) {
+	message := renderOutputError(t,
+		"hangarOutput.daemon.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=one@p.iam.gserviceaccount.com",
+		"hangarOutput.reclaimer.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=one@p.iam.gserviceaccount.com",
+	)
+	if !strings.Contains(message, "principal") {
+		t.Errorf("two roles sharing one cloud principal were accepted:\n%s", message)
+	}
+}
+
+func TestASharedKubernetesServiceAccountIsRefused(t *testing.T) {
+	message := renderOutputError(t,
+		"hangarOutput.inventory.serviceAccount.name=shared",
+		"hangarOutput.reclaimer.serviceAccount.name=shared",
+	)
+	if !strings.Contains(message, "service account") {
+		t.Errorf("two roles sharing one Kubernetes service account were accepted:\n%s", message)
+	}
+}
+
+// The existing identities gain nothing. This is the whole reason there is a
+// second daemon binary at all.
+func TestNoExistingIdentityGainsAnOutputRole(t *testing.T) {
+	out := renderOutput(t)
+
+	// The read-grant key legitimately reaches the control plane -- web MINTS
+	// grants -- so the rule is per secret and not "anything with the word
+	// output in it". What must not leave the daemon is the RECEIPT PRIVATE key
+	// and the bucket itself.
+	allowed := map[string][]string{
+		"op-receipt-private":    {outputDaemonComponent},
+		"op-output-materialize": {outputDaemonComponent, "-web"},
+	}
+	for secret, carriers := range allowed {
+		found := 0
+		for _, subject := range documentsIn(t, out) {
+			if !strings.Contains(subject.body, secret) {
+				continue
+			}
+			found++
+			permitted := false
+			for _, carrier := range carriers {
+				if strings.Contains(subject.name, carrier) {
+					permitted = true
+				}
+			}
+			if !permitted {
+				t.Errorf("%s %s references %q, and only %v may. Web, task, cache and "+
+					"strict-input identities have no role on the output bucket.",
+					subject.kind, subject.name, secret, carriers)
+			}
+		}
+		if found == 0 {
+			t.Errorf("nothing references %q; this rule would pass vacuously", secret)
+		}
+	}
+
+	for _, subject := range documentsIn(t, out) {
+		if strings.Contains(subject.name, "hangar-output") {
+			continue
+		}
+		if strings.Contains(subject.body, "--output-bucket") {
+			t.Errorf("%s %s is configured with the output bucket", subject.kind, subject.name)
+		}
+	}
+
+	// And the artifact daemon's own KSA is untouched: it still exists, and it
+	// is not one of the four.
+	daemonAccount := objectNamed(t, out, "ServiceAccount", "-artifact-daemon")
+	if strings.Contains(daemonAccount.name, "hangar-output") {
+		t.Errorf("the artifact daemon's service account is an output one: %s", daemonAccount.name)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Key material
+// ---------------------------------------------------------------------------
+
+// Req 24. The receipt private key is mounted in exactly one Pod.
+func TestTheReceiptPrivateKeyIsMountedOnlyInTheOutputDaemon(t *testing.T) {
+	out := renderOutput(t)
+
+	carriers := []string{}
+	for _, subject := range documentsIn(t, out) {
+		if !strings.Contains(subject.body, "op-receipt-private") {
+			continue
+		}
+		carriers = append(carriers, subject.kind+"/"+subject.name)
+	}
+	if len(carriers) == 0 {
+		t.Fatal("nothing references the receipt private key Secret; this rule would pass " +
+			"vacuously")
+	}
+	for _, carrier := range carriers {
+		if !strings.Contains(carrier, outputDaemonComponent) {
+			t.Errorf("%s references the receipt private key. The control plane, the web node, "+
+				"the existing artifact daemon, the controllers, the control init container, "+
+				"the task and the sidecar hold the public key and the key id only.", carrier)
+		}
+	}
+}
+
+// The control plane gets the versioned public ring and nothing that can sign.
+func TestTheControlPlaneGetsOnlyTheVersionedPublicRing(t *testing.T) {
+	out := renderOutput(t)
+
+	ring := objectNamed(t, out, "ConfigMap", "-hangar-output-receipt-keys")
+	if !strings.Contains(ring.body, "receipt-7") {
+		t.Error("the receipt public key ring does not carry the active key id")
+	}
+	if strings.Contains(ring.body, "PRIVATE KEY") {
+		t.Error("the receipt public key ring contains private key material")
+	}
+
+	web := objectNamed(t, out, "Deployment", "-web")
+	if !strings.Contains(web.body, "hangar-output-receipt-keys") {
+		t.Error("the web pod does not mount the receipt public key ring; it verifies every " +
+			"receipt before registration")
+	}
+	if strings.Contains(web.body, "op-receipt-private") {
+		t.Error("the web pod mounts the receipt private key")
+	}
+}
+
+// Rotation creates a new epoch. A key id whose ring entry names a different
+// epoch is an in-place replacement, which the receipt-key rule forbids: an old
+// private key is retained while its epoch still has an unsettled capture.
+func TestAReceiptKeyIsNeverReplacedInPlace(t *testing.T) {
+	message := renderHangarError(t, append(append([]string{}, outputSets...),
+		"hangarOutput.receipt.publicKeys[0].epoch=6",
+	)...)
+	if !strings.Contains(message, "epoch") {
+		t.Errorf("a key id bound to a different epoch than the active one was accepted:\n%s",
+			message)
+	}
+
+	// The same id appearing twice with two different keys is the same defect
+	// spelled the other way.
+	message = renderOutputError(t,
+		"hangarOutput.receipt.publicKeys[1].id=receipt-7",
+		"hangarOutput.receipt.publicKeys[1].epoch=8",
+		"hangarOutput.receipt.publicKeys[1].key=YW5vdGhlci1wdWJsaWMta2V5",
+	)
+	if !strings.Contains(message, "receipt-7") {
+		t.Errorf("one key id with two different public keys was accepted:\n%s", message)
+	}
+}
+
+// An unknown or retired active key is refused: a receipt names the key that can
+// check it, and a verifier with no entry for it cannot.
+func TestTheActiveReceiptKeyMustBeInTheRingAndNotRetired(t *testing.T) {
+	message := renderOutputError(t, "hangarOutput.receipt.keyID=receipt-9")
+	if !strings.Contains(message, "receipt-9") {
+		t.Errorf("an active key id absent from the ring was accepted:\n%s", message)
+	}
+
+	message = renderOutputError(t, "hangarOutput.receipt.publicKeys[0].retired=true")
+	if !strings.Contains(message, "retired") {
+		t.Errorf("a retired key was accepted as the active one:\n%s", message)
+	}
+}
+
+// Public verification material is retained while any durable state references
+// its epoch. The chart cannot read the database, so the operator declares the
+// referenced epochs and the chart refuses to drop one.
+func TestAPublicKeyIsNotRemovedWhileAnEpochStillReferencesIt(t *testing.T) {
+	message := renderOutputError(t, "hangarOutput.receipt.referencedEpochs[0]=5")
+	if !strings.Contains(message, "5") {
+		t.Errorf("a referenced epoch with no verification key was accepted:\n%s", message)
+	}
+
+	// With the entry present it renders, and the retired key stays in the ring.
+	out := renderOutput(t,
+		"hangarOutput.receipt.referencedEpochs[0]=5",
+		"hangarOutput.receipt.publicKeys[1].id=receipt-5",
+		"hangarOutput.receipt.publicKeys[1].epoch=5",
+		"hangarOutput.receipt.publicKeys[1].retired=true",
+		"hangarOutput.receipt.publicKeys[1].key=b2xkLXB1YmxpYy1rZXk=",
+	)
+	ring := objectNamed(t, out, "ConfigMap", "-hangar-output-receipt-keys")
+	if !strings.Contains(ring.body, "receipt-5") {
+		t.Error("the retired key was dropped from the ring while its epoch is still referenced")
+	}
+}
+
+// The three key roles say different things and are pinned separately. One
+// Secret serving two of them means rotating either rotates both.
+func TestTheKeyRolesAreDistinctSecrets(t *testing.T) {
+	for _, collapse := range [][]string{
+		{"hangarOutput.executionControl.keySecret=op-receipt-private"},
+		{"hangarOutput.materializationKeySecret=op-control-key"},
+		{"hangarOutput.capabilityKeySecret=op-output-materialize"},
+	} {
+		message := renderOutputError(t, collapse...)
+		if !strings.Contains(message, "same") {
+			t.Errorf("%v collapsed two key roles into one Secret and was accepted:\n%s",
+				collapse, message)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Deadlines, grace and leases
+// ---------------------------------------------------------------------------
+
+// Req 39. Grace must exceed the configured maximum capture deadline by at least
+// an hour, and must not exceed 30 days. The frozen defaults are 24h and 8 days.
+func TestTheDeadlineGraceAndLeaseRelationshipsAreEnforced(t *testing.T) {
+	for _, invalid := range []struct {
+		sets   []string
+		expect string
+	}{
+		{[]string{"hangarOutput.publicationGrace=24h"}, "publicationGrace"},
+		{[]string{"hangarOutput.publicationGrace=744h"}, "publicationGrace"},
+		{[]string{"hangarOutput.captureDeadline=30m"}, "captureDeadline"},
+		{[]string{"hangarOutput.captureDeadline=200h"}, "captureDeadline"},
+		{[]string{"hangarOutput.sealDeadline=10s"}, "sealDeadline"},
+		{[]string{"hangarOutput.sealDeadline=45m"}, "sealDeadline"},
+		{[]string{"hangarOutput.leaseTerm=5m"}, "leaseTerm"},
+		{[]string{"hangarOutput.leaseRenewInterval=5m"}, "leaseRenewInterval"},
+	} {
+		message := renderOutputError(t, invalid.sets...)
+		if !strings.Contains(message, invalid.expect) {
+			t.Errorf("%v was accepted, or refused without naming %s:\n%s",
+				invalid.sets, invalid.expect, message)
+		}
+	}
+
+	// grace == maxCaptureDeadline + 1h is admissible; "greater than" was the
+	// plan's own outlier wording and Req 39 says "by at least 1 hour".
+	renderOutput(t, "hangarOutput.captureDeadline=24h", "hangarOutput.publicationGrace=25h")
+}
+
+// ---------------------------------------------------------------------------
+// Scratch, concurrency and the node-eviction bound
+// ---------------------------------------------------------------------------
+
+// Branch-review follow-up F9. The output daemon canonicalizes and spools whole
+// trees to an emptyDir; an emptyDir with no sizeLimit is bounded by the node's
+// disk, and filling it evicts every pod on the node, not only this one.
+func TestTheOutputScratchVolumeIsBounded(t *testing.T) {
+	message := renderHangarError(t, append(append([]string{}, baseControlSets...),
+		"hangarOutput.enabled=true",
+		"hangarOutput.bucket=jb-output",
+		"hangarOutput.tenant=tenant-a",
+		"hangarOutput.activationEpoch=7",
+		"hangarOutput.receipt.keyID=receipt-7",
+		"hangarOutput.receipt.privateKeySecret=op-receipt-private",
+		"hangarOutput.receipt.publicKeys[0].id=receipt-7",
+		"hangarOutput.receipt.publicKeys[0].epoch=7",
+		"hangarOutput.receipt.publicKeys[0].key=cHVibGljLWtleS1ieXRlcw==",
+		"hangarOutput.materializationKeySecret=op-output-materialize",
+		"hangarOutput.database.existingSecret=op-activation-db",
+		"hangarOutput.daemon.scratch.sizeLimit=",
+	)...)
+	if !strings.Contains(message, "sizeLimit") {
+		t.Errorf("an unbounded output scratch emptyDir was accepted:\n%s", message)
+	}
+
+	out := renderOutput(t)
+	daemon := objectNamed(t, out, "DaemonSet", "-"+outputDaemonComponent)
+	if !strings.Contains(daemon.body, "sizeLimit: 32Gi") {
+		t.Errorf("the output scratch volume has no sizeLimit:\n%s", daemon.body)
+	}
+
+	// The bound only holds if concurrency times the content limit stays under
+	// it. Two concurrent 10 GiB trees do not fit in 16 GiB.
+	message = renderOutputError(t,
+		"hangarOutput.daemon.scratch.sizeLimit=16Gi",
+		"hangarOutput.daemon.scratch.concurrency=2",
+		"hangarOutput.daemon.scratch.maxContentBytes=10737418240",
+	)
+	if !strings.Contains(message, "concurrency") {
+		t.Errorf("a concurrency whose product exceeds the sizeLimit was accepted:\n%s", message)
+	}
+
+	if !strings.Contains(out, "--publish-concurrency=") {
+		t.Error("the concurrency bound is a chart value with no flag behind it; the render " +
+			"would be a promise the process does not keep")
+	}
+}
+
+// The same exposure was already carried by the existing artifact daemon's
+// hangar-scratch emptyDir, and leaving one daemon guarded and one not is not a
+// decision anybody made.
+func TestTheArtifactDaemonScratchVolumeIsBoundedToo(t *testing.T) {
+	out := render(t, append(append([]string{}, daemonHangarSets...),
+		"artifactDaemon.hangar.scratchSizeLimit=24Gi")...)
+
+	daemon := objectNamed(t, out, "DaemonSet", "-artifact-daemon")
+	if !strings.Contains(daemon.body, "sizeLimit: 24Gi") {
+		t.Errorf("the artifact daemon's hangar-scratch volume has no sizeLimit:\n%s", daemon.body)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Controllers
+// ---------------------------------------------------------------------------
+
+// Req 57. Output enablement without every controller is refused: an activation
+// epoch attests recovery, inventory and reclaim workers, and a plane with no
+// reclaimer keeps every published object forever while claiming it does not.
+func TestOutputEnablementRequiresEveryController(t *testing.T) {
+	for _, missing := range []string{
+		"hangarOutput.inventory.enabled=false",
+		"hangarOutput.reclaimer.enabled=false",
+		"hangarOutput.policyAttestor.enabled=false",
+	} {
+		message := renderOutputError(t, missing)
+		if !strings.Contains(message, "controller") {
+			t.Errorf("%s was accepted:\n%s", missing, message)
+		}
+	}
+}
+
+func TestEachControllerRendersItsOwnDeploymentImageAndTimeouts(t *testing.T) {
+	out := renderOutput(t,
+		"hangarOutput.inventory.interval=90s",
+		"hangarOutput.reclaimer.deleteTimeout=3m",
+		"hangarOutput.policyAttestor.interval=4m",
+	)
+
+	for _, expected := range []struct {
+		component string
+		command   string
+		flag      string
+	}{
+		{outputInventoryComponent, "/usr/local/concourse/bin/hangar-output-inventory", "--interval=90s"},
+		{outputReclaimerComponent, "/usr/local/concourse/bin/hangar-output-reclaimer", "--delete-timeout=3m"},
+		{outputAttestorComponent, "/usr/local/concourse/bin/hangar-output-policy-attestor", "--interval=4m"},
+	} {
+		deployment := objectNamed(t, out, "Deployment", "-"+expected.component)
+		if !strings.Contains(deployment.body, expected.command) {
+			t.Errorf("%s does not run %s", expected.component, expected.command)
+		}
+		if !strings.Contains(deployment.body, expected.flag) {
+			t.Errorf("%s does not carry %s", expected.component, expected.flag)
+		}
+	}
+}
+
+// Req 42: exactly one renewable lease owner per bucket and epoch. Two inventory
+// replicas are two cursor owners racing for one lease, which the plan forbids
+// by construction rather than by luck.
+func TestTheSingletonControllersRenderExactlyOneReplica(t *testing.T) {
+	out := renderOutput(t)
+
+	for _, component := range []string{
+		outputInventoryComponent, outputReclaimerComponent, outputAttestorComponent,
+	} {
+		deployment := objectNamed(t, out, "Deployment", "-"+component)
+		var parsed struct {
+			Spec struct {
+				Replicas *int32 `json:"replicas"`
+				Strategy struct {
+					Type string `json:"type"`
+				} `json:"strategy"`
+			} `json:"spec"`
+		}
+		if err := yaml.Unmarshal([]byte(deployment.body), &parsed); err != nil {
+			t.Fatalf("parsing %s: %v", component, err)
+		}
+		if parsed.Spec.Replicas == nil || *parsed.Spec.Replicas != 1 {
+			t.Errorf("%s renders %v replicas; there is one cursor and one lease owner per "+
+				"bucket and epoch", component, parsed.Spec.Replicas)
+		}
+		if parsed.Spec.Strategy.Type != "Recreate" {
+			t.Errorf("%s uses the %q strategy; a rolling update runs two owners at once",
+				component, parsed.Spec.Strategy.Type)
+		}
+	}
+
+	message := renderOutputError(t, "hangarOutput.inventory.replicas=2")
+	if !strings.Contains(message, "replica") {
+		t.Errorf("a second inventory replica was accepted:\n%s", message)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Probes, policies and disruption
+// ---------------------------------------------------------------------------
+
+func TestEveryOutputWorkloadHasProbesAndANetworkPolicy(t *testing.T) {
+	out := renderOutput(t, "hangarOutput.networkPolicy.enabled=true")
+
+	daemon := objectNamed(t, out, "DaemonSet", "-"+outputDaemonComponent)
+	for _, probe := range []string{"livenessProbe", "readinessProbe"} {
+		if !strings.Contains(daemon.body, probe) {
+			t.Errorf("the output daemon has no %s", probe)
+		}
+	}
+
+	for _, component := range []string{
+		outputDaemonComponent, outputInventoryComponent,
+		outputReclaimerComponent, outputAttestorComponent,
+	} {
+		if !hasObject(t, out, "NetworkPolicy", "-"+component) {
+			t.Errorf("%s has no NetworkPolicy", component)
+		}
+	}
+
+	if !hasObject(t, out, "PodDisruptionBudget", "-"+outputDaemonComponent) {
+		t.Error("the output daemon has no PodDisruptionBudget")
+	}
+}
+
+// The daemon owns node-local state; the controllers own none, and a controller
+// that mounted the managed hostPath would be a second writer to a directory one
+// daemon is the authority for.
+func TestOnlyTheOutputDaemonMountsTheNodeLocalPaths(t *testing.T) {
+	out := renderOutput(t)
+
+	daemon := objectNamed(t, out, "DaemonSet", "-"+outputDaemonComponent)
+	if !strings.Contains(daemon.body, "hostPath") {
+		t.Fatal("the output daemon mounts no hostPath; it owns the source ledger and the " +
+			"step incarnations")
+	}
+	for _, component := range []string{
+		outputInventoryComponent, outputReclaimerComponent, outputAttestorComponent,
+	} {
+		deployment := objectNamed(t, out, "Deployment", "-"+component)
+		if strings.Contains(deployment.body, "hostPath") {
+			t.Errorf("%s mounts a hostPath; the node-local ledger has one writer", component)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Both node labels
+// ---------------------------------------------------------------------------
+
+// Req 56/58. The two ready labels are scheduling HINTS, and they are two
+// because a base-only cohort is a real deployment.
+//
+// What the CHART decides is not the label STRINGS -- those are protocol
+// constants in hangar/executioncontrol and hangar/output, and rendering them
+// here would be a second spelling of a value the daemon already holds. What it
+// decides is whether the daemon can advertise at all, and which facets it has
+// to advertise. So that is what this asserts, and
+// cmd/hangar-output-daemon/labels_test.go owns the order the two go on and come
+// off in.
+func TestTheDaemonCanAdvertiseAndAdvertisesOnlyTheFacetsItHas(t *testing.T) {
+	for name, out := range map[string]string{
+		"base control only": renderBaseControl(t),
+		"base plus output":  renderOutput(t),
+	} {
+		daemon := objectNamed(t, out, "DaemonSet", "-"+outputDaemonComponent)
+
+		if !strings.Contains(daemon.body, "--node-name=$(NODE_NAME)") {
+			t.Errorf("%s: the daemon is given no node to label, so it advertises nothing and "+
+				"the scheduler never places a controlled pod on it", name)
+		}
+		if !strings.Contains(daemon.body, "fieldPath: spec.nodeName") {
+			t.Errorf("%s: NODE_NAME does not come from the Downward API", name)
+		}
+
+		// Parsed, not grepped: the rules are what grant permission, and this
+		// file is full of prose that names the resources it is saying the role
+		// must NOT have.
+		role := objectNamed(t, out, "ClusterRole", "-"+outputDaemonComponent)
+		var parsed struct {
+			Rules []struct {
+				Resources []string `json:"resources"`
+				Verbs     []string `json:"verbs"`
+			} `json:"rules"`
+		}
+		if err := yaml.Unmarshal([]byte(role.body), &parsed); err != nil {
+			t.Fatalf("%s: parsing the daemon ClusterRole: %v", name, err)
+		}
+		if len(parsed.Rules) != 1 {
+			t.Errorf("%s: the daemon's ClusterRole has %d rules; its only API business is its "+
+				"own node's labels", name, len(parsed.Rules))
+
+			continue
+		}
+		if got := strings.Join(parsed.Rules[0].Resources, ","); got != "nodes" {
+			t.Errorf("%s: the daemon's ClusterRole covers %q and not just nodes", name, got)
+		}
+		verbs := strings.Join(parsed.Rules[0].Verbs, ",")
+		if verbs != "get,patch" {
+			t.Errorf("%s: the daemon's ClusterRole grants %q; get and patch are what a label "+
+				"needs, and a node-local daemon with list or watch over every node is a "+
+				"cluster-wide reach it has no use for", name, verbs)
+		}
+
+		if strings.Contains(daemon.body, "concourse.dev/hangar-v1") {
+			t.Errorf("%s: the output daemon claims the strict-input capability, which attests "+
+				"inputs and belongs to the existing artifact daemon", name)
+		}
+	}
+
+	// The output facet is what the output label attests, and a base-only daemon
+	// has none of it: no bucket, no receipt key, no publisher. It therefore
+	// cannot advertise the output label however the code is written, which is a
+	// stronger statement than a render asserting the string is absent.
+	base := objectNamed(t, renderBaseControl(t), "DaemonSet", "-"+outputDaemonComponent)
+	for _, absent := range []string{"--output-bucket", "--receipt-key-file", "--materialization-key-file"} {
+		if strings.Contains(base.body, absent) {
+			t.Errorf("a base-control-only daemon carries %s", absent)
+		}
+	}
+	full := objectNamed(t, renderOutput(t), "DaemonSet", "-"+outputDaemonComponent)
+	for _, present := range []string{"--output-bucket", "--receipt-key-file", "--materialization-key-file"} {
+		if !strings.Contains(full.body, present) {
+			t.Errorf("the output daemon does not carry %s", present)
+		}
+	}
+
+	// The operator has to be able to find both label keys without reading Go.
+	values := readChartFile(t, "values.yaml")
+	for _, label := range []string{
+		"concourse.dev/hangar-execution-control-v1", "concourse.dev/hangar-output-v1",
+	} {
+		if !strings.Contains(values, label) {
+			t.Errorf("deploy/chart/values.yaml does not name %s", label)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Honest documentation
+// ---------------------------------------------------------------------------
+
+// Req 41 and 54. The chart's own documentation must state the two GCS facts
+// that make the permission matrix weaker than it reads: object get authorizes
+// the body as well as the metadata, and list authority covers the bucket rather
+// than a prefix. A permission matrix that omits them is a matrix an operator
+// will believe.
+func TestTheChartDocumentsTheHonestGCSPermissions(t *testing.T) {
+	body := readChartFile(t, "values.yaml")
+
+	for _, phrase := range []string{
+		"storage.objects.get",
+		"storage.objects.list",
+	} {
+		if !strings.Contains(body, phrase) {
+			t.Errorf("deploy/chart/values.yaml does not name %s in the output plane's "+
+				"permission documentation", phrase)
+		}
+	}
+	if !strings.Contains(strings.ToLower(body), "body") {
+		t.Error("the documentation does not say that object get is body-capable")
+	}
+	if !strings.Contains(strings.ToLower(body), "bucket-wide") {
+		t.Error("the documentation does not say that list authority is bucket-wide")
+	}
+	if !strings.Contains(strings.ToLower(body), "does not create") &&
+		!strings.Contains(strings.ToLower(body), "never creates") {
+		t.Error("the documentation does not say the chart creates no bucket, lifecycle rule " +
+			"or IAM binding")
+	}
+}
+
+// readChartFile reads a file from deploy/chart.
+func readChartFile(t *testing.T, name string) string {
+	t.Helper()
+
+	body, err := os.ReadFile(filepath.Join(repoRoot(t), "deploy", "chart", name))
+	if err != nil {
+		t.Fatalf("reading deploy/chart/%s: %v", name, err)
+	}
+
+	return string(body)
+}

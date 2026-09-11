@@ -1,0 +1,35 @@
+{{/*
+The policy attestor: bucket lifecycle and IAM, and no object permission at all.
+
+Its compromise costs the ASSESSMENT rather than the data, which is the whole
+reason it is a fourth identity. It reads the bucket's policy and has no
+namespace inside it, so it takes the bucket and the epoch and not the derived
+prefix or tenant.
+
+It cannot prevent a policy change. It detects one within the refresh bound, and
+Req 52 says exactly that: a functioning monitor notices inside 15 minutes; it
+does not stop a deletion inside the window.
+*/}}
+{{- if .Values.hangarOutput.enabled }}
+{{- $values := .Values.hangarOutput.policyAttestor }}
+{{- include "concourse.hangarOutput.controllerHead" (dict
+      "root" .
+      "component" "hangar-output-policy-attestor"
+      "name" (include "concourse.hangarOutput.attestorName" .)
+      "account" (include "concourse.hangarOutput.attestorServiceAccount" .)
+      "values" $values) }}
+          command:
+            - /usr/local/concourse/bin/hangar-output-policy-attestor
+            - --output-bucket={{ .Values.hangarOutput.bucket }}
+            - --activation-epoch={{ int .Values.hangarOutput.activationEpoch }}
+            {{- if .Values.hangarOutput.endpoint }}
+            - --output-endpoint={{ .Values.hangarOutput.endpoint }}
+            {{- end }}
+            - --publisher-identity={{ include "concourse.hangarOutput.daemonServiceAccount" . }}
+            - --inventory-identity={{ include "concourse.hangarOutput.inventoryServiceAccount" . }}
+            - --reclaimer-identity={{ include "concourse.hangarOutput.reclaimerServiceAccount" . }}
+            - --attestor-identity={{ include "concourse.hangarOutput.attestorServiceAccount" . }}
+            - --interval={{ $values.interval }}
+            - --database=$(HANGAR_OUTPUT_DSN)
+{{- include "concourse.hangarOutput.controllerTail" (dict "root" . "values" $values) }}
+{{- end }}

@@ -1,0 +1,151 @@
+{{/*
+The activation Job, and the identity it runs under.
+
+ONE Job at a time, named by hangarOutput.activation.job.mode, and none by
+default. There is deliberately no Helm hook here: a hook would re-run the
+transition on every upgrade, and "enable" running again on a plane an operator
+took down is exactly the surprise the CAS row exists to make impossible rather
+than merely unlikely.
+
+No single Helm boolean enables a capability. Rendering this Job with
+mode=enable does nothing unless the facet is already `attested`, `attest`
+refuses a mixed cohort, and output can never be enabled while base is not --
+all of which live in the CAS predicate and the schema, not in this template.
+
+The Job mounts the database Secret and, for `attest`, the daemon control API's
+client certificate. It mounts NO receipt private key: the activation identity
+signs nothing, and a key in a Pod that cannot need it is a key an exploit of
+that Pod gets for free.
+*/}}
+{{- if .Values.hangarOutput.executionControl.enabled }}
+{{- $mode := .Values.hangarOutput.activation.job.mode }}
+{{- if $mode }}
+{{- if not (has $mode (list "begin" "attest" "enable" "drain")) }}
+{{- fail (printf "hangarOutput.activation.job.mode is %q; there are four: begin, attest, enable, drain" $mode) }}
+{{- end }}
+{{- $facet := .Values.hangarOutput.activation.job.facet }}
+{{- if and (ne $mode "begin") (not $facet) }}
+{{- fail (printf "hangarOutput.activation.job.facet is required for mode %q: base, output, or (for drain) all" $mode) }}
+{{- end }}
+{{- if and $facet (not (has $facet (list "base" "output" "all"))) }}
+{{- fail (printf "hangarOutput.activation.job.facet is %q; it is base, output, or (for drain) all" $facet) }}
+{{- end }}
+{{- if and (eq $facet "all") (ne $mode "drain") }}
+{{- fail "hangarOutput.activation.job.facet=all is only meaningful for mode=drain: attesting or enabling \"both facets\" in one step would hide the ordering the whole protocol is." }}
+{{- end }}
+{{- $name := printf "%s-%s" (include "concourse.hangarOutput.activationName" .) $mode }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "concourse.hangarOutput.activationServiceAccount" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hangar-output-activation
+  {{- with .Values.hangarOutput.activation.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "concourse.hangarOutput.activationName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hangar-output-activation
+rules:
+  # Attestation enumerates the daemon cohort from the API rather than from node
+  # labels: a label is a hint the daemon itself wrote, and attesting from it
+  # would be asking the cohort whether it is homogeneous. Read-only, in one
+  # namespace.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "concourse.hangarOutput.activationName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hangar-output-activation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "concourse.hangarOutput.activationName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "concourse.hangarOutput.activationServiceAccount" . }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hangar-output-activation
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "concourse.name" . }}
+        app.kubernetes.io/component: hangar-output-activation
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "concourse.hangarOutput.activationServiceAccount" . }}
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: hangar-output-activate
+          image: {{ include "concourse.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /usr/local/concourse/bin/hangar-output-activate
+            - --mode={{ $mode }}
+            {{- if $facet }}
+            - --facet={{ $facet }}
+            {{- end }}
+            - --epoch={{ int .Values.hangarOutput.activationEpoch }}
+            - --namespace={{ .Release.Namespace }}
+            - --daemon-port={{ .Values.hangarOutput.daemon.port }}
+            {{- if eq $mode "attest" }}
+            - --tls-cert=/etc/concourse/hangar-output/tls/tls.crt
+            - --tls-key=/etc/concourse/hangar-output/tls/tls.key
+            - --tls-ca-cert=/etc/concourse/hangar-output/tls/ca.crt
+            {{- end }}
+            {{- if .Values.hangarOutput.activation.job.finalize }}
+            - --finalize
+            {{- end }}
+            - --database=$(HANGAR_OUTPUT_DSN)
+          env:
+            - name: HANGAR_OUTPUT_DSN
+              valueFrom:
+                secretKeyRef:
+                  # The ACTIVATION role's credential, not the web pod's. The web
+                  # pod's is what the migrate-db init container uses; sharing it
+                  # would make "only the activation command writes this table"
+                  # a statement about code that any web process could contradict.
+                  name: {{ required "hangarOutput.database.existingSecret is required to run an activation Job" .Values.hangarOutput.database.existingSecret }}
+                  key: dsn
+          {{- if eq $mode "attest" }}
+          volumeMounts:
+            - name: daemon-tls
+              mountPath: /etc/concourse/hangar-output/tls
+              readOnly: true
+          {{- end }}
+          {{- include "concourse.hangarOutput.controllerSecurityContext" . | nindent 10 }}
+      {{- if eq $mode "attest" }}
+      volumes:
+        - name: daemon-tls
+          secret:
+            secretName: {{ .Values.hangarOutput.daemon.tls.existingSecret }}
+      {{- end }}
+{{- end }}
+{{- end }}

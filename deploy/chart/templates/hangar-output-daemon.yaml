@@ -1,0 +1,251 @@
+{{/*
+The output plane's node-local daemon: publisher, receipt signer, and the
+authority for exact execution control on this node.
+
+It is a SECOND DaemonSet beside artifact-daemon and not a second container in
+it. A Kubernetes service account is Pod-wide, so giving the existing daemon an
+output-bucket role would give its cache and strict-input identity the same role,
+and nothing inside either process takes that back.
+
+The validation runs unconditionally, outside every gate, because the refusal an
+operator most needs is the one for a configuration that renders nothing.
+*/}}
+{{- include "concourse.hangarOutput.validate" . }}
+{{- if .Values.hangarOutput.executionControl.enabled }}
+{{- $output := .Values.hangarOutput }}
+{{- $capture := $output.enabled | default false }}
+{{- $name := include "concourse.hangarOutput.daemonName" . }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "concourse.hangarOutput.daemonServiceAccount" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hangar-output-daemon
+  {{- with $output.daemon.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hangar-output-daemon
+rules:
+  # Its own node, to advertise and withdraw the two ready labels. Nothing else:
+  # this daemon watches no pods, reads no secrets through the API and lists no
+  # endpoints.
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hangar-output-daemon
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "concourse.hangarOutput.daemonServiceAccount" . }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hangar-output-daemon
+spec:
+  # A node's source incarnations live on that node's disk and nowhere else, so
+  # evicting a daemon is taking the only authority for its holds away. One at a
+  # time, and never zero available on a single-node cluster.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "concourse.name" . }}
+      app.kubernetes.io/component: hangar-output-daemon
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hangar-output-daemon
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "concourse.name" . }}
+      app.kubernetes.io/component: hangar-output-daemon
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "concourse.name" . }}
+        app.kubernetes.io/component: hangar-output-daemon
+    spec:
+      serviceAccountName: {{ include "concourse.hangarOutput.daemonServiceAccount" . }}
+      # Long enough for the labels to come off and the in-flight publish to
+      # finish. A capture that loses its daemon mid-publish is recoverable, but
+      # a node that keeps advertising a facet it has stopped serving is where
+      # the scheduler sends the next one.
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: hangar-output-daemon
+          image: {{ include "concourse.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /usr/local/concourse/bin/hangar-output-daemon
+            - --listen=0.0.0.0:{{ $output.daemon.port }}
+            - --node-name=$(NODE_NAME)
+            - --node-uid=$(NODE_UID)
+            - --control-dir={{ $output.daemon.controlPath }}
+            - --steps-dir={{ $output.daemon.stepsPath }}
+            - --scratch-dir={{ $output.daemon.scratch.path }}
+            - --control-key-id={{ $output.executionControl.keySecret }}
+            - --control-key-file=/etc/concourse/hangar-output/control/control.key
+            - --capability-key=/etc/concourse/hangar-output/capability/capability.key
+            - --activation-epoch={{ int $output.activationEpoch }}
+            - --output-timeout={{ $output.operationTimeout }}
+            - --publish-concurrency={{ int $output.daemon.scratch.concurrency }}
+            - --tls-cert=/etc/concourse/hangar-output/tls/tls.crt
+            - --tls-key=/etc/concourse/hangar-output/tls/tls.key
+            - --tls-ca-cert=/etc/concourse/hangar-output/tls/ca.crt
+            {{- if $capture }}
+            {{- include "concourse.hangarOutput.namespaceFlags" . | nindent 12 }}
+            {{- if $output.cacheBucket }}
+            - --cache-bucket={{ $output.cacheBucket }}
+            {{- end }}
+            {{- if $output.strictInputBucket }}
+            - --strict-input-bucket={{ $output.strictInputBucket }}
+            {{- end }}
+            - --receipt-key-id={{ $output.receipt.keyID }}
+            - --receipt-key-file=/etc/concourse/hangar-output/receipt/receipt.key
+            - --materialization-key-id={{ $output.materializationKeyID }}
+            - --materialization-key-file=/etc/concourse/hangar-output/materialize/materialize.key
+            {{- end }}
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: NODE_UID
+              valueFrom:
+                fieldRef:
+                  # The UID and not the name. A name can be reused for new
+                  # hardware, and a ledger sequence is only meaningful beside
+                  # the node that issued it.
+                  fieldPath: metadata.uid
+          ports:
+            - name: control
+              containerPort: {{ $output.daemon.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: control
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            # Readiness is not liveness. A daemon whose ledger is quarantined is
+            # alive and must STAY alive so an operator can read the quarantine;
+            # it is simply not one that may answer questions about what it says.
+            httpGet:
+              path: /readyz
+              port: control
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          {{- with $output.daemon.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            # Root, for the same reason artifact-daemon is: it manages a shared
+            # hostPath that task containers write to as arbitrary UIDs, and K8s
+            # does not apply fsGroup to hostPath.
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - DAC_OVERRIDE
+          volumeMounts:
+            - name: artifact-storage
+              mountPath: {{ .Values.artifactDaemon.hostPath | default "/var/concourse/artifacts" }}
+            - name: hangar-output-scratch
+              mountPath: {{ $output.daemon.scratch.path }}
+            - name: control-key
+              mountPath: /etc/concourse/hangar-output/control
+              readOnly: true
+            - name: capability-key
+              mountPath: /etc/concourse/hangar-output/capability
+              readOnly: true
+            - name: daemon-tls
+              mountPath: /etc/concourse/hangar-output/tls
+              readOnly: true
+            {{- if $capture }}
+            - name: receipt-key
+              mountPath: /etc/concourse/hangar-output/receipt
+              readOnly: true
+            - name: materialize-key
+              mountPath: /etc/concourse/hangar-output/materialize
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: artifact-storage
+          hostPath:
+            path: {{ .Values.artifactDaemon.hostPath | default "/var/concourse/artifacts" }}
+            type: DirectoryOrCreate
+        - name: hangar-output-scratch
+          emptyDir:
+            # REQUIRED, and validated against the content limit and the publish
+            # concurrency. An emptyDir with no sizeLimit is bounded by the
+            # node's disk: filling it evicts every Pod on the node.
+            sizeLimit: {{ $output.daemon.scratch.sizeLimit }}
+        - name: control-key
+          secret:
+            secretName: {{ $output.executionControl.keySecret }}
+        - name: capability-key
+          secret:
+            secretName: {{ $output.capabilityKeySecret }}
+        - name: daemon-tls
+          secret:
+            secretName: {{ $output.daemon.tls.existingSecret }}
+        {{- if $capture }}
+        - name: receipt-key
+          secret:
+            # The private half of the receipt key, mounted HERE and nowhere
+            # else. Web, the controllers, the activation Jobs, the control init
+            # container, the task and the sidecar hold the public key and the
+            # key id.
+            secretName: {{ $output.receipt.privateKeySecret }}
+        - name: materialize-key
+          secret:
+            secretName: {{ $output.materializationKeySecret }}
+        {{- end }}
+      {{- with $output.daemon.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $output.daemon.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"sort"
@@ -1446,6 +1447,131 @@ func TestEachOutputControllerLinksOnlyItsOwnRole(t *testing.T) {
 					"one role: a process holding two is one cloud identity with two sets of "+
 					"permissions.", root, role, own)
 			}
+		}
+	}
+}
+
+// activationTableWriters are the packages allowed to write the activation epoch
+// row, and there is one.
+//
+// The epoch row is the plane's single authority: a node label is a hint, a
+// daemon handshake is evidence, a Helm value is an intention, and none of them
+// authorizes a capture, a receipt registration, a claim acquisition or a
+// finalization. This row does. So the set of things that can move it is the set
+// of things that can turn the plane on, and it is one internal command run as a
+// one-shot Job under its own least-privilege PostgreSQL role.
+//
+// The rule is stated over SOURCE rather than over the build graph because what
+// it is about is a STATEMENT: any package that can open a database handle can
+// write any table, and no import rule can see that. What it can see is an
+// UPDATE, an INSERT or a DELETE naming the table.
+var activationTableWriters = map[string]string{
+	"atc/hangaroutput/activation": "the activation command's own package. Its four guarded " +
+		"transitions ARE the protocol, and the Jobs that run them hold a PostgreSQL role " +
+		"distinct from the web pod's -- which is what makes this rule enforceable at the " +
+		"credential as well as at the code",
+	"atc/worker/jetbridge/brine/steps": "TEST HARNESS: the brine adapter's step definitions, " +
+		"which arrange an activated plane so a scenario can start from one. They are ordinary " +
+		"Go files rather than _test.go files because a brine adapter is a BINARY, so the " +
+		"suffix rule cannot see them -- which is why the check below reads the nested go.mod " +
+		"rather than believing this sentence",
+}
+
+// nestedTestModules are the exemptions above whose reason says TEST HARNESS,
+// with the nested go.mod that makes the claim checkable.
+//
+// A comment saying "this is only a harness" is a comment a later edit can
+// quietly make untrue. A separate module is not: the root module's build graph
+// cannot reach it at all, so nothing this repository ships can link it.
+var nestedTestModules = map[string]string{
+	"atc/worker/jetbridge/brine/steps": "atc/worker/jetbridge/brine/go.mod",
+}
+
+const activationTable = "hangar_output_activation_epochs"
+
+// TestOnlyTheActivationCommandWritesTheEpochRow reads every non-test Go file in
+// the repository for a write against the activation table.
+func TestOnlyTheActivationCommandWritesTheEpochRow(t *testing.T) {
+	root := repositoryRoot()
+
+	// A write is an UPDATE, an INSERT or a DELETE naming the table. A SELECT is
+	// not: half this plane reads the epoch row, and reading an authority is
+	// what an authority is for.
+	writes := regexp.MustCompile(`(?is)\b(UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+` + activationTable + `\b`)
+
+	scanned, readers, exercised := 0, 0, map[string]bool{}
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			if entry.Name() == "vendor" || entry.Name() == ".git" || entry.Name() == "node_modules" {
+				return filepath.SkipDir
+			}
+
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		body, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		scanned++
+		if !strings.Contains(string(body), activationTable) {
+			return nil
+		}
+		readers++
+
+		relative, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
+		}
+		pkg := filepath.ToSlash(filepath.Dir(relative))
+		if !writes.MatchString(string(body)) {
+			return nil
+		}
+		if reason, ok := activationTableWriters[pkg]; ok {
+			exercised[pkg] = true
+			t.Logf("allowed: %s writes %s — %s", filepath.ToSlash(relative), activationTable, reason)
+
+			return nil
+		}
+		t.Errorf("%s writes %s.\n\nThat row is the output plane's single authority: every "+
+			"capture records the epoch it was admitted under, and a stale label or handshake "+
+			"cannot authorize emission, receipt registration, claim acquisition or "+
+			"finalization. It moves only through the four guarded transitions in %s, which "+
+			"run as one-shot Jobs under a PostgreSQL role distinct from the web pod's. A "+
+			"second writer is a second way to turn the plane on.",
+			filepath.ToSlash(relative), activationTable, "atc/hangaroutput/activation")
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scanning the repository: %v", err)
+	}
+
+	if scanned < 500 {
+		t.Fatalf("scanned only %d non-test Go files; the walk failed and this rule would pass "+
+			"vacuously", scanned)
+	}
+	if readers < 2 {
+		t.Fatalf("only %d non-test files name %s at all. Half this plane reads the epoch row, "+
+			"so a repository where nothing does is one where the table was renamed and this "+
+			"rule is guarding a string", readers, activationTable)
+	}
+	for pkg := range activationTableWriters {
+		if !exercised[pkg] {
+			t.Errorf("%s is exempted to write %s and no file in it does; the exemption is stale",
+				pkg, activationTable)
+		}
+	}
+	for pkg, module := range nestedTestModules {
+		if _, statErr := os.Stat(filepath.Join(root, filepath.FromSlash(module))); statErr != nil {
+			t.Errorf("%s is exempted as a TEST HARNESS in a nested module, and %s does not "+
+				"exist: %v. Without the separate module the root build graph can reach it, and "+
+				"the exemption is a sentence rather than a fact.", pkg, module, statErr)
 		}
 	}
 }

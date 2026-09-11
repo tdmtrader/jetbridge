@@ -189,6 +189,26 @@ spec:
             - --kubernetes-hangar-capability-ttl={{ .Values.artifactDaemon.hangar.capabilityTTL }}
             {{- end }}
             {{- end }}
+            {{- if .Values.hangarOutput.executionControl.enabled }}
+            # The output plane's control-plane half. The web node mints control
+            # capabilities and verifies receipts; it holds NO receipt private
+            # key, no GCS credential and no role on the output bucket.
+            - --kubernetes-hangar-output-enabled
+            - --kubernetes-hangar-output-daemon-port={{ .Values.hangarOutput.daemon.port }}
+            - --kubernetes-hangar-output-capability-key=/etc/concourse/hangar-output/capability/capability.key
+            - --kubernetes-hangar-output-seal-deadline={{ .Values.hangarOutput.sealDeadline }}
+            - --kubernetes-hangar-output-capture-deadline={{ .Values.hangarOutput.captureDeadline }}
+            - --kubernetes-hangar-output-lease-term={{ .Values.hangarOutput.leaseTerm }}
+            - --kubernetes-hangar-output-lease-renew-interval={{ .Values.hangarOutput.leaseRenewInterval }}
+            {{- if .Values.hangarOutput.enabled }}
+            - --kubernetes-hangar-output-receipt-keys=/etc/concourse/hangar-output/receipt-keys/receipt-keys.json
+            - --kubernetes-hangar-output-materialization-key=/etc/concourse/hangar-output/materialize/materialize.key
+            - --kubernetes-hangar-output-activation-epoch={{ int .Values.hangarOutput.activationEpoch }}
+            {{- if .Values.hangarOutput.webEnabled }}
+            - --kubernetes-hangar-output-capture-enabled
+            {{- end }}
+            {{- end }}
+            {{- end }}
             # Kubernetes credential manager (resolve ((vars)) from k8s Secrets)
             {{- if .Values.kubernetes.credentialManager.enabled }}
             - --kubernetes-in-cluster
@@ -301,6 +321,19 @@ spec:
               mountPath: /etc/concourse/resolve-capability
               readOnly: true
             {{- end }}
+            {{- if .Values.hangarOutput.executionControl.enabled }}
+            - name: hangar-output-capability
+              mountPath: /etc/concourse/hangar-output/capability
+              readOnly: true
+            {{- if .Values.hangarOutput.enabled }}
+            - name: hangar-output-receipt-keys
+              mountPath: /etc/concourse/hangar-output/receipt-keys
+              readOnly: true
+            - name: hangar-output-materialize
+              mountPath: /etc/concourse/hangar-output/materialize
+              readOnly: true
+            {{- end }}
+            {{- end }}
             - name: tmp
               mountPath: /tmp
             {{- with .Values.web.extraVolumeMounts }}
@@ -362,6 +395,25 @@ spec:
         - name: resolve-capability
           secret:
             secretName: {{ .Values.artifactDaemon.resolveCapability.existingSecret }}
+        {{- end }}
+        {{- if .Values.hangarOutput.executionControl.enabled }}
+        - name: hangar-output-capability
+          secret:
+            secretName: {{ .Values.hangarOutput.capabilityKeySecret }}
+        {{- if .Values.hangarOutput.enabled }}
+        - name: hangar-output-receipt-keys
+          configMap:
+            # PUBLIC verification material only. The private half is mounted in
+            # the output daemon Pod and nowhere else; a public key cannot sign,
+            # which is what makes this a ConfigMap rather than a Secret.
+            name: {{ include "concourse.hangarOutput.receiptKeysName" . }}
+        - name: hangar-output-materialize
+          secret:
+            # The read-grant key. The control plane MINTS grants, so it holds
+            # this one -- and it is a different key and a different domain from
+            # the receipt key, so holding it does not let web sign a receipt.
+            secretName: {{ .Values.hangarOutput.materializationKeySecret }}
+        {{- end }}
         {{- end }}
         {{- with .Values.web.extraVolumes }}
         {{- toYaml . | nindent 8 }}

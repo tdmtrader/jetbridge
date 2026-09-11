@@ -1,0 +1,27 @@
+{{/*
+The reclaimer: the ONLY principal in this system that may delete an object.
+
+GCS IAM cannot require a caller to send a generation precondition once delete
+permission exists, so the boundary is that exactly one process can make the call
+at all -- one binary, one service account, one cloud identity. Its API requires
+an exact registered ref and lifecycle admission under a fence; architecture
+guards reject an unconditional or key-only delete route anywhere else.
+*/}}
+{{- if .Values.hangarOutput.enabled }}
+{{- $values := .Values.hangarOutput.reclaimer }}
+{{- include "concourse.hangarOutput.controllerHead" (dict
+      "root" .
+      "component" "hangar-output-reclaimer"
+      "name" (include "concourse.hangarOutput.reclaimerName" .)
+      "account" (include "concourse.hangarOutput.reclaimerServiceAccount" .)
+      "values" $values) }}
+          command:
+            - /usr/local/concourse/bin/hangar-output-reclaimer
+            {{- include "concourse.hangarOutput.namespaceFlags" . | nindent 12 }}
+            - --publication-grace={{ .Values.hangarOutput.publicationGrace }}
+            - --interval={{ $values.interval }}
+            - --delete-timeout={{ $values.deleteTimeout }}
+            - --batch={{ int $values.batch }}
+            - --database=$(HANGAR_OUTPUT_DSN)
+{{- include "concourse.hangarOutput.controllerTail" (dict "root" . "values" $values) }}
+{{- end }}

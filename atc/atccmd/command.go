@@ -59,6 +59,7 @@ import (
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"github.com/concourse/concourse/atc/wrappa"
 	"github.com/concourse/concourse/hangar"
+	"github.com/concourse/concourse/hangar/output"
 	"github.com/concourse/concourse/skymarshal/dexserver"
 	"github.com/concourse/concourse/skymarshal/legacyserver"
 	"github.com/concourse/concourse/skymarshal/skycmd"
@@ -138,6 +139,10 @@ type RunCommand struct {
 	// shared by every separately composed JetBridge Config.
 	k8sHangarGrantSigner *hangar.GrantSigner
 
+	// hangarOutputReceiptKeys is the versioned receipt VERIFICATION ring, loaded
+	// once at startup rather than at the first receipt.
+	hangarOutputReceiptKeys hangaroutput.ReceiptKeyRing
+
 	BindIP   flag.IP `long:"bind-ip"   default:"0.0.0.0" description:"IP address on which to listen for web traffic."`
 	BindPort uint16  `long:"bind-port" default:"8080"    description:"Port on which to listen for HTTP traffic."`
 
@@ -206,6 +211,15 @@ type RunCommand struct {
 		ArtifactDaemonTLSCACert            string        `long:"kubernetes-artifact-daemon-tls-ca-cert" description:"Path to CA certificate for verifying the artifact daemon's server certificate."`
 		OutputPlaneEnabled                 bool          `long:"kubernetes-hangar-output-enabled"           description:"Enable the durable output-capture extension: the capture control init, the ledger-checked stale-workspace cleanup, and the ATC's exact-execution control calls. Off, every one of those is absent and an ordinary pod is byte-identical to the one built without it."`
 		OutputDaemonPort                   int           `long:"kubernetes-hangar-output-daemon-port" default:"7781" description:"Control port of the node-local Hangar output daemon. It is a different daemon on a different port from the artifact daemon, because the two may not share a bucket and a Kubernetes service account is Pod-wide."`
+		OutputCaptureEnabled               bool          `long:"kubernetes-hangar-output-capture-enabled"   description:"Enable web-side durable output SELECTION. It is a second switch on top of --kubernetes-hangar-output-enabled: the base one wires the exact-execution control calls, this one is what lets an admitted task carry a capture at all. A worker whose output facet is not enabled builds no capture pod, and the refusal is at admission rather than an omission in the Pod."`
+		OutputCapabilityKey                string        `long:"kubernetes-hangar-output-capability-key"    description:"Path to the raw 32-byte key the control plane mints Hangar output CONTROL capabilities with. The output daemon verifies with the same key; nothing else holds it."`
+		OutputReceiptKeys                  string        `long:"kubernetes-hangar-output-receipt-keys"      description:"Path to the versioned receipt PUBLIC key ring. Verification material only: the control plane checks every receipt before registration and can sign none of them."`
+		OutputMaterializationKey           string        `long:"kubernetes-hangar-output-materialization-key" description:"Path to the exact 32-byte key output READ GRANTS are minted with, under the hangar-output-materialize-v1 domain. It is never the receipt key -- a grant must not be signable by anything that can mint a publication receipt -- and never the foundation's strict-input materialization key."`
+		OutputActivationEpoch              int64         `long:"kubernetes-hangar-output-activation-epoch"  description:"The activation epoch this control plane speaks for. Every capture records it; a stale label or handshake authorizes nothing."`
+		OutputCaptureDeadline              time.Duration `long:"kubernetes-hangar-output-capture-deadline"  default:"24h" description:"Maximum capture deadline offered to a daemon. Configurable from 1h to 168h."`
+		OutputSealDeadline                 time.Duration `long:"kubernetes-hangar-output-seal-deadline"     default:"5m" description:"How long a seal may take before it is unconfirmed. Configurable from 30s to 30m."`
+		OutputLeaseTerm                    time.Duration `long:"kubernetes-hangar-output-lease-term"        default:"15m" description:"Term of the capture, read and reclaim leases. At least 15 minutes."`
+		OutputLeaseRenewInterval           time.Duration `long:"kubernetes-hangar-output-lease-renew-interval" default:"1m" description:"How often a held lease is renewed. At most one minute: a longer interval is a lease that expires under its own owner."`
 		HangarEnabled                      bool          `long:"kubernetes-hangar-enabled"                  description:"Enable exact immutable Hangar tree inputs for Kubernetes task Pods."`
 		HangarCapabilityKey                string        `long:"kubernetes-hangar-capability-key"           description:"Path to the raw 32-byte Hangar materialization capability key."`
 		HangarCapabilityTTL                time.Duration `long:"kubernetes-hangar-capability-ttl"           default:"15m" description:"Lifetime of exact Hangar materialization grants (maximum 15m)."`
@@ -1629,6 +1643,15 @@ func (cmd *RunCommand) hangarOutputCaptureComponent(dbConn db.DbConn) RunnableCo
 				Drain:      hangaroutput.NoDrainProof(),
 				Announcer:  hangaroutput.AnnouncerFunc(repository.RecordAnnouncement),
 				OwnerID:    uuid.NewString(),
+
+				// The configured terms, rather than the package defaults.
+				// Leaving these zero meant the deployment's own bounds -- the
+				// ones the chart validates against the publication grace --
+				// were not the ones the coordinator used, so a deployment could
+				// render a 1h capture deadline and still offer 24h.
+				ReceiptKeyID: cmd.hangarOutputReceiptKeys.ActiveKeyID,
+				LeaseTerm:    cmd.Kubernetes.OutputLeaseTerm,
+				SealDeadline: cmd.Kubernetes.OutputSealDeadline,
 			},
 		},
 		Interval: time.Minute,
@@ -2072,6 +2095,9 @@ func (cmd *RunCommand) validateK8sRuntime() error {
 		cmd.Kubernetes.ArtifactDaemonTLSKey,
 		cmd.Kubernetes.ArtifactDaemonTLSCACert,
 	); err != nil {
+		return err
+	}
+	if err := cmd.validateHangarOutputPlane(); err != nil {
 		return err
 	}
 	if !cmd.Kubernetes.HangarEnabled {
@@ -2592,4 +2618,103 @@ func (cmd *RunCommand) loadArtifactResolveCapabilityKey() ([]byte, error) {
 	}
 	cmd.artifactResolveCapabilityKey = append([]byte(nil), key...)
 	return append([]byte(nil), key...), nil
+}
+
+// validateHangarOutputPlane refuses a half-configured control plane.
+//
+// Two facets, checked in the order they depend on each other. The BASE facet
+// wires this node's exact-execution control calls and needs the capability key
+// the daemon verifies with; the CAPTURE facet needs the receipt ring it
+// verifies receipts against, the read-grant key it mints grants with, and an
+// activation epoch, and it can never be on while the base facet is off.
+//
+// Every refusal here is one the chart also refuses at render time. Both, and
+// deliberately: the chart is what an operator reviews, and this is what catches
+// a deployment that did not come from the chart.
+func (cmd *RunCommand) validateHangarOutputPlane() error {
+	if cmd.Kubernetes.OutputCaptureEnabled && !cmd.Kubernetes.OutputPlaneEnabled {
+		return errors.New("--kubernetes-hangar-output-capture-enabled requires " +
+			"--kubernetes-hangar-output-enabled: durable output capture is an extension of " +
+			"exact execution control, and output admission can never be true while base " +
+			"admission is false")
+	}
+	if !cmd.Kubernetes.OutputPlaneEnabled {
+		return nil
+	}
+	if cmd.Kubernetes.OutputCapabilityKey == "" {
+		return errors.New("--kubernetes-hangar-output-capability-key is required when " +
+			"--kubernetes-hangar-output-enabled is set: every control operation on the output " +
+			"daemon presents a capability minted with it, and a control plane that cannot mint " +
+			"one can make no call at all")
+	}
+	if err := output.ValidateSealDeadline(cmd.Kubernetes.OutputSealDeadline); err != nil {
+		return fmt.Errorf("--kubernetes-hangar-output-seal-deadline: %w", err)
+	}
+	if err := output.ValidateCaptureDeadline(cmd.Kubernetes.OutputCaptureDeadline); err != nil {
+		return fmt.Errorf("--kubernetes-hangar-output-capture-deadline: %w", err)
+	}
+	if cmd.Kubernetes.OutputLeaseTerm < output.MinLeaseTerm {
+		return fmt.Errorf("--kubernetes-hangar-output-lease-term must be at least %s; a "+
+			"shorter term makes expiry -- rather than a fence -- the thing a worker races",
+			output.MinLeaseTerm)
+	}
+	if cmd.Kubernetes.OutputLeaseRenewInterval <= 0 ||
+		cmd.Kubernetes.OutputLeaseRenewInterval > time.Minute {
+		return errors.New("--kubernetes-hangar-output-lease-renew-interval must be positive " +
+			"and no more than 1m: a lease is renewed at least once a minute, and a longer " +
+			"interval is a lease that expires under its own owner")
+	}
+	if cmd.Kubernetes.OutputLeaseRenewInterval >= cmd.Kubernetes.OutputLeaseTerm {
+		return errors.New("--kubernetes-hangar-output-lease-renew-interval is not shorter " +
+			"than --kubernetes-hangar-output-lease-term")
+	}
+	if !cmd.Kubernetes.OutputCaptureEnabled {
+		return nil
+	}
+	if cmd.Kubernetes.OutputActivationEpoch <= 0 {
+		return errors.New("--kubernetes-hangar-output-activation-epoch is required when " +
+			"--kubernetes-hangar-output-capture-enabled is set: every capture records the " +
+			"epoch it was admitted under, and zero is the absence of one")
+	}
+	if cmd.Kubernetes.OutputReceiptKeys == "" {
+		return errors.New("--kubernetes-hangar-output-receipt-keys is required when " +
+			"--kubernetes-hangar-output-capture-enabled is set: a caller-provided TreeRef is " +
+			"not enough, and a control plane with no verification ring cannot check the " +
+			"receipt it is about to register")
+	}
+	// Read it HERE rather than at the first receipt. A ring that cannot be
+	// loaded is a control plane that will verify nothing, and "verified
+	// nothing" and "verified successfully" are the same observable outcome on
+	// any path that discovers the problem late.
+	ring, err := hangaroutput.LoadReceiptKeyRing(cmd.Kubernetes.OutputReceiptKeys)
+	if err != nil {
+		return fmt.Errorf("--kubernetes-hangar-output-receipt-keys: %w", err)
+	}
+	if cmd.Kubernetes.OutputActivationEpoch > 0 &&
+		int64(ring.ActivationEpoch) != cmd.Kubernetes.OutputActivationEpoch {
+		return fmt.Errorf("--kubernetes-hangar-output-receipt-keys is for activation epoch %d "+
+			"and --kubernetes-hangar-output-activation-epoch is %d. A stale ring cannot "+
+			"authorize emission, receipt registration or finalization",
+			ring.ActivationEpoch, cmd.Kubernetes.OutputActivationEpoch)
+	}
+	cmd.hangarOutputReceiptKeys = ring
+	if cmd.Kubernetes.OutputMaterializationKey == "" {
+		return errors.New("--kubernetes-hangar-output-materialization-key is required when " +
+			"--kubernetes-hangar-output-capture-enabled is set: a managed read is delivered " +
+			"as a lease-bound grant, and there is nothing to sign one with")
+	}
+	if cmd.Kubernetes.OutputMaterializationKey == cmd.Kubernetes.OutputCapabilityKey {
+		return errors.New("--kubernetes-hangar-output-materialization-key and " +
+			"--kubernetes-hangar-output-capability-key name the same file. A read grant " +
+			"authorizes one staged read of one object; a control capability authorizes one " +
+			"operation on a daemon. One key for both means either can be spent as the other")
+	}
+	if cmd.Kubernetes.OutputMaterializationKey == cmd.Kubernetes.HangarCapabilityKey {
+		return errors.New("--kubernetes-hangar-output-materialization-key and " +
+			"--kubernetes-hangar-capability-key name the same file. The output read grant " +
+			"uses its own key and its own domain; reusing the foundation's strict-input key " +
+			"would make a strict-input grant spendable against a managed output")
+	}
+
+	return nil
 }

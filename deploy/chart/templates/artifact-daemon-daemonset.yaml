@@ -261,7 +261,12 @@ spec:
         {{- end }}
         {{- if $hangarEnabled }}
         - name: hangar-scratch
+          {{- if .Values.artifactDaemon.hangar.scratchSizeLimit }}
+          emptyDir:
+            sizeLimit: {{ .Values.artifactDaemon.hangar.scratchSizeLimit }}
+          {{- else }}
           emptyDir: {}
+          {{- end }}
         {{- end }}
         {{- with .Values.artifactDaemon.resolveCapability.existingSecret }}
         - name: resolve-capability
