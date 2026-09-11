@@ -249,9 +249,25 @@ func noUserDestinationInTheVerificationCommand(in PodCreated) error {
 // TestAManagedMaterializationStagesTheSameBytesAsAStrictOne walks both
 // destinations byte for byte, and AC 19's K3s tier runs the pod.
 //
-// "Exactly" is now load-bearing in both directions. The first version returned
-// on the FIRST batch naming the ref, so a command that also asked for a second
-// tree passed a check whose whole word is "exactly".
+// WHAT "EXACTLY" CAN MEAN IN THIS TIER, AND WHAT IT CANNOT. Two arms, and both
+// of them fire: the command carries a materialization request at all, and one
+// of those requests names this ref rather than a digest that happens to appear
+// nearby.
+//
+// A third arm refused a command whose request batches did not ALL name the ref,
+// and nothing could ever make it fire -- not because no scenario happens to
+// build that shape, but because the ENCODING has no such shape. A consumer
+// taking N trees produces ONE materialization request carrying N items
+// (storage_daemonset.go:311), and the expected receipts beside it are marshalled
+// TreeRefs, which carry no "ref" key at all. So the batch count this walked is 1
+// whenever it is not 0, and `naming != batches` could only restate the arm above
+// it. An arm nothing can redden is not a check, it is a sentence about one --
+// the standard the read-lease fence was decided on in round 1 -- so it is gone.
+//
+// Saying "exactly" in the other direction means reading the request's ITEM LIST
+// and comparing it against the set of receipts, over a consumer that takes more
+// than one published output. Neither exists in this tier; both arrive with
+// Phase 8's composition.
 func asksForExactlyTheReceiptsTree(in PodCreated) error {
 	container, err := hangarInit(in)
 	if err != nil {
@@ -293,11 +309,6 @@ func asksForExactlyTheReceiptsTree(in PodCreated) error {
 	if naming == 0 {
 		return fmt.Errorf("no materialization request in the verification command names %s/%s/%d",
 			ref.Scope, ref.Digest, ref.Generation)
-	}
-	if naming != batches {
-		return fmt.Errorf("the verification command carries %d materialization request(s) and "+
-			"only %d name %s/%s/%d; the consumer asks for exactly its own tree",
-			batches, naming, ref.Scope, ref.Digest, ref.Generation)
 	}
 
 	return nil
