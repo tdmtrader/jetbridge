@@ -88,6 +88,63 @@ var _ = Describe("the output-plane controller passes", func() {
 		Expect(err).NotTo(HaveOccurred())
 	}
 
+	// openViolations is what is still unreconciled, read straight out of the
+	// table rather than through the repository: the assertion is about the row
+	// that survives the next attestation.
+	openViolations := func() []string {
+		GinkgoHelper()
+		rows, err := dbConn.Query(`
+			SELECT violation FROM hangar_policy_violations
+			 WHERE activation_epoch = 1 AND resolved_at IS NULL ORDER BY id`)
+		Expect(err).NotTo(HaveOccurred())
+		defer db.Close(rows)
+
+		var violations []string
+		for rows.Next() {
+			var violation string
+			Expect(rows.Scan(&violation)).To(Succeed())
+			violations = append(violations, violation)
+		}
+		Expect(rows.Err()).NotTo(HaveOccurred())
+
+		return violations
+	}
+
+	policyStateOf := func(epoch int64) string {
+		GinkgoHelper()
+		var state string
+		Expect(dbConn.QueryRow(`
+			SELECT state FROM hangar_policy_snapshots WHERE activation_epoch = $1
+			 ORDER BY observed_at DESC, id DESC LIMIT 1`, epoch).Scan(&state)).To(Succeed())
+
+		return state
+	}
+
+	// admissionRefusal asks the GATE rather than the snapshot table: a state
+	// column nothing reads is not a plane that stopped. The claim is taken on a
+	// healthy registered generation, so nothing but the policy gate can refuse
+	// it, and the refusal arrives at COMMIT because the trigger is deferred.
+	admissionRefusal := func(ref hangar.TreeRef) string {
+		GinkgoHelper()
+		tx, err := dbConn.Begin()
+		Expect(err).NotTo(HaveOccurred())
+		defer db.Rollback(tx)
+		Expect(repository.AcquireClaim(ctx, db.HangarOutputTx{Tx: tx}, output.ClaimAcquisition{
+			ProtocolVersion:   output.ProtocolVersion,
+			ClaimID:           output.ClaimID(uuid.NewString()),
+			Ref:               ref,
+			ConsumerBindingID: "binding-at-risk",
+			RequestedAt:       output.NewTimestamp(time.Now()),
+		})).To(Succeed())
+
+		commitErr := tx.Commit()
+		if commitErr == nil {
+			return ""
+		}
+
+		return commitErr.Error()
+	}
+
 	lifecycleStateOf := func(ref hangar.TreeRef) string {
 		GinkgoHelper()
 		var state string
@@ -311,6 +368,11 @@ var _ = Describe("the output-plane controller passes", func() {
 
 		It("reports an exact generation the store no longer has as an out-of-band lifetime violation", func() {
 			ref := published(hangarDigest(82))
+			// A second, healthy generation, published BEFORE anything goes
+			// wrong. It is what the admission probe below takes a claim on:
+			// the one that vanished is terminal and would be refused for its
+			// own reasons.
+			healthy := published(hangarDigest(84))
 			key, err := hangar.TreeKey(namespace.Prefix(), ref.Scope, ref.Digest)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -332,6 +394,45 @@ var _ = Describe("the output-plane controller passes", func() {
 					"did not record a lifetime violation; absence rewritten as reclamation is "+
 					"exactly how a bucket losing objects to somebody else looks like this "+
 					"system working")
+
+			// And the epoch, which is the half Req 52 is actually about.
+			// Moving one lifecycle row says one object is gone; entering
+			// at-risk is what stops the plane publishing into a bucket
+			// something else is deleting from.
+			Expect(openViolations()).To(ConsistOf(string(output.ViolationOutOfBandAbsence)))
+			Expect(policyStateOf(1)).To(Equal("at_risk"))
+			Expect(admissionRefusal(healthy)).To(ContainSubstring("at_risk"),
+				"the plane went on admitting new protection beside an unexplained deleter")
+		})
+
+		It("puts the epoch at risk when the store refuses the reclaimer a delete it is configured to make", func() {
+			ref := published(hangarDigest(83))
+			ageRegistration(ref, output.DefaultPublicationGrace+time.Hour)
+
+			admitted, err := newAdmission().Run(ctx, leaseFor(output.OperationReclaimAdmission))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(admitted).To(Equal(1))
+
+			// The store says 403 for the one call this principal exists to
+			// make. That is Req 52's platform-principal mismatch arriving at
+			// runtime rather than in an IAM reading: the matrix says what the
+			// bindings claim, and this is the store saying otherwise.
+			store.Inject(gcstest.Faults{Unauthorized: true})
+
+			advanced, err := newDeletes().Run(ctx, leaseFor(output.OperationReclaimDelete))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(advanced).To(Equal(1))
+
+			Expect(lifecycleStateOf(ref)).To(Equal("registered"),
+				"a generation the plane could not delete was left reclaiming or worse; an "+
+					"unauthorized delete goes back to being protected rather than being "+
+					"deleted on a guess")
+			Expect(openViolations()).
+				To(ConsistOf(string(output.ViolationRuntimePrincipalDenied)))
+			Expect(policyStateOf(1)).To(Equal("at_risk"))
+			Expect(admissionRefusal(ref)).To(ContainSubstring("at_risk"),
+				"the plane finalized one job and carried on admitting new work under an "+
+					"identity the store had just refused")
 		})
 	})
 })

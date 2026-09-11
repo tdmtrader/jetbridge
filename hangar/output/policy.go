@@ -304,6 +304,19 @@ const (
 	// detects one after activation.
 	ViolationSharedBucket PolicyViolation = "shared_bucket"
 
+	// ViolationOutOfBandAbsence is an exact generation this plane registered,
+	// found absent, with no admitted delete on record to explain it. It is
+	// Req 52's "unexpected exact absence": somebody else removed a managed
+	// object, and the one thing this plane must never do is rewrite that as
+	// its own reclamation.
+	ViolationOutOfBandAbsence PolicyViolation = "out_of_band_absence"
+
+	// ViolationRuntimePrincipalDenied is Req 52's "platform-principal
+	// mismatch" in its runtime form: a controller was refused by the store
+	// while doing work its role is supposed to authorize. The IAM matrix says
+	// what the bindings CLAIM; this is the store saying otherwise.
+	ViolationRuntimePrincipalDenied PolicyViolation = "runtime_principal_denied"
+
 	// ViolationMixedCohort is more than one activation epoch's principals bound
 	// at once. Rotation creates a new epoch rather than replacing a key in
 	// place, and two cohorts on one bucket is two planes disagreeing about
@@ -321,6 +334,8 @@ func PolicyViolations() []PolicyViolation {
 		ViolationWrongPrincipal,
 		ViolationSharedBucket,
 		ViolationMixedCohort,
+		ViolationOutOfBandAbsence,
+		ViolationRuntimePrincipalDenied,
 	}
 }
 

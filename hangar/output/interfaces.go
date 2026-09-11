@@ -247,6 +247,22 @@ const (
 	PrincipalPolicyAttestor PrincipalRole = "policy_attestor"
 )
 
+// Validate refuses a role outside the closed set.
+//
+// It matters here for the same reason it matters everywhere else in this
+// vocabulary: a runtime denial recorded against an invented role name is a
+// violation row an operator cannot map to a service account.
+func (role PrincipalRole) Validate() error {
+	for _, member := range PrincipalRoles() {
+		if role == member {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("%w: %q is not one of this plane's four principals %v",
+		ErrUnknownMember, role, PrincipalRoles())
+}
+
 func PrincipalRoles() []PrincipalRole {
 	return []PrincipalRole{
 		PrincipalPublisher,

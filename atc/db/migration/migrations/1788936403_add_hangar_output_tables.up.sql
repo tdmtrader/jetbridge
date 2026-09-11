@@ -1013,8 +1013,28 @@ CREATE TABLE hangar_policy_snapshots (
     state                  text NOT NULL CHECK (state IN ('unknown', 'safe', 'at_risk')),
     observed_at            timestamp with time zone NOT NULL DEFAULT now(),
 
+    -- Where the row came from. Two of Req 52's three at-risk triggers are not
+    -- policy readings at all: an exact generation found absent with no admitted
+    -- delete, and a principal that lost its grant while a delete was in flight.
+    -- Both have to enter the SAME durable at-risk state -- Req 52 blocks new
+    -- captures, claims, grants, adoption and reclaim admission from detection
+    -- onward, whichever trigger fired -- and this table is what the admission
+    -- gate reads. So they are written here, and the column is what keeps them
+    -- honest: an operator reading this table can tell an attestation of the
+    -- bucket's policy from a runtime observation that no policy read was made
+    -- at all.
+    source                 text NOT NULL DEFAULT 'attestation'
+        CHECK (source IN ('attestation', 'runtime_observation')),
+
     CONSTRAINT hangar_policy_safe_has_no_delete_rules CHECK (
         state <> 'safe' OR lifecycle_delete_rules = 0
+    ),
+
+    -- A runtime observation is never SAFE. It exists only because something
+    -- went wrong; a safe one would be this plane attesting a policy it did not
+    -- read.
+    CONSTRAINT hangar_runtime_observation_is_never_safe CHECK (
+        source <> 'runtime_observation' OR state <> 'safe'
     )
 );
 
@@ -1035,12 +1055,26 @@ CREATE TABLE hangar_policy_violations (
     id               bigserial PRIMARY KEY,
     activation_epoch bigint NOT NULL
         REFERENCES hangar_output_activation_epochs (epoch_id) ON DELETE RESTRICT,
-    snapshot_id      bigint NOT NULL
+    -- NULLABLE, because two of the three triggers have no snapshot to attach
+    -- to. An out-of-band absence and a runtime principal denial are observed by
+    -- a controller doing its work, not by a policy read, and a violation forced
+    -- to name a snapshot would have to invent one -- which is the same as
+    -- claiming a policy reading that never happened.
+    snapshot_id      bigint
         REFERENCES hangar_policy_snapshots (id) ON DELETE RESTRICT,
     violation        text NOT NULL
         CHECK (violation IN ('lifecycle_delete_rule', 'evidence_stale', 'evidence_unreadable',
                              'excess_role', 'insufficient_role', 'wrong_principal',
-                             'shared_bucket', 'mixed_cohort')),
+                             'shared_bucket', 'mixed_cohort',
+                             'out_of_band_absence', 'runtime_principal_denied')),
+
+    -- And the two that have no snapshot are exactly the two runtime members.
+    -- An attestation-derived finding without its reading would be a finding
+    -- nothing can be traced back to.
+    CONSTRAINT hangar_violation_snapshot_matches_trigger CHECK (
+        (violation IN ('out_of_band_absence', 'runtime_principal_denied'))
+        OR snapshot_id IS NOT NULL
+    ),
     subject          text NOT NULL CHECK (subject <> ''),
     detail           text NOT NULL DEFAULT '' CHECK (octet_length(detail) <= 1024),
     observed_at      timestamp with time zone NOT NULL DEFAULT now(),

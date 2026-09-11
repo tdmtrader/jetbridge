@@ -304,10 +304,21 @@ func (pass *DeletePass) record(ctx context.Context, job db.HangarReclaimJob, att
 
 	case outcome == output.DeleteUnauthorized:
 		// The principal lost its grant. The generation goes back to being
-		// protected rather than being deleted on a guess, and an operator has
-		// an IAM problem to look at.
+		// protected rather than being deleted on a guess -- and the EPOCH goes
+		// at risk, because this is Req 52's platform-principal mismatch in its
+		// runtime form. Finalizing the one job and returning nil, which is what
+		// this did, leaves a plane admitting new captures and new claims under
+		// an identity the store has just refused, with nothing recorded and
+		// nobody told.
 		if err := pass.Repository.FinalizeReclaim(ctx, tx, job,
 			output.ReclaimAbandoned, false); err != nil {
+			return err
+		}
+		if err := pass.Repository.RecordRuntimePrincipalDenial(ctx, tx,
+			job.ActivationEpoch, output.PrincipalReclaimer,
+			"the object store refused this principal a conditional delete its role is "+
+				"configured to hold; either the grant was removed or this is not the "+
+				"principal the deployment attested"); err != nil {
 			return err
 		}
 

@@ -392,7 +392,46 @@ func (repository *HangarOutputRepository) RecordOutOfBandAbsence(ctx context.Con
 			"already terminal", output.ErrConflict, ref.Scope, ref.Digest, ref.Generation)
 	}
 
-	return nil
+	// And the epoch, because Req 52 says an unexpected exact absence enters
+	// durable at-risk state and blocks new admissions from detection onward.
+	// Moving one lifecycle row and stopping -- which is what this did -- says
+	// one object is gone while the plane carries on publishing into a bucket
+	// something else is deleting from.
+	var epoch int64
+	if err := hangarQueryRow(ctx, tx, `
+		SELECT activation_epoch FROM hangar_exact_lifecycles
+		 WHERE scope = $1 AND digest = $2 AND generation = $3`,
+		[]any{string(ref.Scope), string(ref.Digest), ref.Generation}, &epoch); err != nil {
+		return err
+	}
+
+	return repository.RecordRuntimeAtRisk(ctx, tx, epoch, output.PolicyFinding{
+		Violation: output.ViolationOutOfBandAbsence,
+		Subject:   fmt.Sprintf("%s/%s/%d", ref.Scope, ref.Digest, ref.Generation),
+		Detail: "the exact generation is absent from the output bucket and no admitted delete " +
+			"on record explains it; this is a lifetime violation and never a reclamation",
+	})
+}
+
+// RecordRuntimePrincipalDenial is Req 52's platform-principal mismatch in its
+// runtime form.
+//
+// The IAM matrix says what the bucket's bindings CLAIM. This is the store
+// saying otherwise: a controller was refused while doing work its own role is
+// supposed to authorize, which is either a grant that was removed or a
+// principal that is not the one the deployment configured. Either way the plane
+// is not the plane that was attested, and carrying on admitting work under an
+// identity that has just been refused is exactly the state Req 52 stops.
+func (repository *HangarOutputRepository) RecordRuntimePrincipalDenial(ctx context.Context, tx output.Tx, epoch int64, role output.PrincipalRole, detail string) error {
+	if err := role.Validate(); err != nil {
+		return err
+	}
+
+	return repository.RecordRuntimeAtRisk(ctx, tx, epoch, output.PolicyFinding{
+		Violation: output.ViolationRuntimePrincipalDenied,
+		Subject:   string(role),
+		Detail:    detail,
+	})
 }
 
 // DueReclaimJobs is the reclaimer's bounded work query: open jobs whose leases

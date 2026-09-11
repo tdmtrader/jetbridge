@@ -387,6 +387,69 @@ func (repository *HangarOutputRepository) RecordPolicyAttestation(ctx context.Co
 	return nil
 }
 
+// RecordRuntimeAtRisk is how the two non-attestation triggers of Req 52 enter
+// the same durable at-risk state the policy trigger does.
+//
+// Req 52 names three ways in: a stale, failed, unreadable or unsafe policy
+// check, an unexpected exact absence, and a platform-principal mismatch. Only
+// the first is a reading of the bucket's policy. The other two are observed by
+// a controller doing its work -- an object that is not there, a store that says
+// 403 -- and until this existed they moved one lifecycle row and stopped: no
+// violation, no state change, no operator alert, and a plane that carried on
+// admitting new work beside an unexplained deleter.
+//
+// It writes both halves in one transaction because they answer different
+// questions and both are needed. The VIOLATION is the durable record of what
+// was found and it outlives the next attestation, which is why recovery needs
+// reconciliation as well as a fresh reading. The SNAPSHOT is what the admission
+// gate reads, and it is marked `runtime_observation` so that nobody mistakes it
+// for a policy read: this plane did not read the bucket's policy here, it
+// watched the bucket behave.
+func (repository *HangarOutputRepository) RecordRuntimeAtRisk(ctx context.Context, tx output.Tx, epoch int64, finding output.PolicyFinding) error {
+	if err := finding.Validate(); err != nil {
+		return err
+	}
+	switch finding.Violation {
+	case output.ViolationOutOfBandAbsence, output.ViolationRuntimePrincipalDenied:
+	default:
+		return fmt.Errorf("%w: %q is an attestation's finding and this is a runtime "+
+			"observation; a finding derived from a policy reading names the reading it came "+
+			"from", output.ErrConflict, finding.Violation)
+	}
+
+	var fingerprint string
+	if err := hangarQueryRow(ctx, tx, `
+		SELECT bucket_fingerprint FROM hangar_output_activation_epochs WHERE epoch_id = $1`,
+		[]any{epoch}, &fingerprint); err != nil {
+		return err
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO hangar_policy_violations (activation_epoch, violation, subject, detail)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (activation_epoch, violation, subject) WHERE resolved_at IS NULL
+		DO NOTHING`,
+		epoch, string(finding.Violation), finding.Subject, finding.Detail); err != nil {
+		return hangarConflict(err)
+	}
+
+	// Metageneration 1 and a hash that says what it is. Both columns exist to
+	// describe a policy READING and there was none; inventing a plausible hash
+	// would make a runtime observation indistinguishable from an attestation
+	// in the one table an operator goes to for that distinction.
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO hangar_policy_snapshots
+			(activation_epoch, bucket_fingerprint, metageneration, policy_hash,
+			 lifecycle_delete_rules, state, observed_at, source)
+		VALUES ($1, $2, 1, 'sha256:runtime-observation', 0, 'at_risk', now(),
+			'runtime_observation')`,
+		epoch, fingerprint); err != nil {
+		return hangarConflict(err)
+	}
+
+	return nil
+}
+
 // Deferred: the reclaim-admission violation gate is wired later in this
 // revision, under R1-F15
 //
