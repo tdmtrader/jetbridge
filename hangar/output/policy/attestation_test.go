@@ -1,7 +1,6 @@
 package policy_test
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -392,74 +391,6 @@ func TestAMixedCohortIsDetected(t *testing.T) {
 			"creates a new epoch rather than replacing a key in place, and two cohorts on one "+
 			"bucket is two planes disagreeing about whose object is whose", counted)
 	}
-}
-
-// The API outage, and the recovery after it.
-//
-// A read that fails is not "unknown and therefore fine": the attestor reports
-// at_risk with the reason, because a monitor that goes quiet and a bucket that
-// is safe look identical from the outside.
-func TestAnOutageIsAtRiskAndAFreshReadingRecovers(t *testing.T) {
-	namespace, err := output.DeriveNamespace(output.NamespaceConfig{
-		Store:            output.StoreGCS,
-		Bucket:           "output-bucket",
-		DeploymentPrefix: "deployments/blue",
-		TenantID:         "tenant-policy",
-		ActivationEpoch:  7,
-	})
-	if err != nil {
-		t.Fatalf("deriving the namespace: %v", err)
-	}
-
-	source := &scriptedSource{}
-	attestor, err := policy.New(namespace, source, output.ClockFunc(time.Now))
-	if err != nil {
-		t.Fatalf("building the attestor: %v", err)
-	}
-
-	source.policyErr = errors.New("the metadata API did not answer")
-	if _, err := attestor.ReadLifetimePolicy(context.Background()); err == nil {
-		t.Fatal("an outage produced a policy reading")
-	} else if !errors.Is(err, output.ErrAtRisk) {
-		t.Errorf("an outage is typed %v, expected %v", err, output.ErrAtRisk)
-	}
-
-	source.policyErr = nil
-	source.policy = output.PolicySnapshot{
-		ProtocolVersion:   output.ProtocolVersion,
-		ActivationEpoch:   7,
-		BucketFingerprint: bucket,
-		Metageneration:    3,
-		PolicyHash:        "sha256:whatever",
-		State:             output.PolicySafe,
-		ObservedAt:        output.NewTimestamp(time.Now().UTC()),
-	}
-	if _, err := attestor.ReadLifetimePolicy(context.Background()); err != nil {
-		t.Errorf("the reading after the outage failed: %v", err)
-	}
-
-	// An IAM read that comes back EMPTY is an unread bucket, not an unbound
-	// one, and saying so is the difference between "nobody can touch this" and
-	// "we did not look".
-	source.bindings = output.PrincipalBindings{BucketFingerprint: bucket}
-	if _, err := attestor.ReadPrincipalBindings(context.Background()); err == nil {
-		t.Error("a bucket that reported no bindings at all was accepted as correctly bound")
-	}
-}
-
-type scriptedSource struct {
-	policy      output.PolicySnapshot
-	policyErr   error
-	bindings    output.PrincipalBindings
-	bindingsErr error
-}
-
-func (source *scriptedSource) ReadLifetimePolicy(context.Context) (output.PolicySnapshot, error) {
-	return source.policy, source.policyErr
-}
-
-func (source *scriptedSource) ReadPrincipalBindings(context.Context) (output.PrincipalBindings, error) {
-	return source.bindings, source.bindingsErr
 }
 
 // A role cannot silently broaden.

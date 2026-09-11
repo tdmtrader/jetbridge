@@ -297,14 +297,6 @@ type PrincipalBindings struct {
 	UnrecognisedRoles map[PrincipalRole][]string
 }
 
-// PolicyReader reads bucket lifetime policy and IAM. It has no object method
-// at all: the attestor's cloud principal cannot read, create or delete a single
-// object, which is why it can be trusted to say what the policy is.
-type PolicyReader interface {
-	ReadLifetimePolicy(ctx context.Context) (PolicySnapshot, error)
-	ReadPrincipalBindings(ctx context.Context) (PrincipalBindings, error)
-}
-
 // WriterAdmission is one writer's ticket over a source incarnation.
 //
 // Every operation that can obtain or exercise write capability holds one:

@@ -221,10 +221,6 @@ func (runner *Runner) report(ctx context.Context, processed int, class string) {
 // Holds reports whether this runner currently believes it owns its lease.
 func (runner *Runner) Holds() bool { return runner.held }
 
-func (runner *Runner) String() string {
-	return fmt.Sprintf("hangar output %s controller", runner.Kind)
-}
-
 // classOf reduces an error to a bounded word.
 //
 // Bounded because it is a metric label and a log field, and an unbounded one is
