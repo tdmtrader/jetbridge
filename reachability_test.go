@@ -132,7 +132,6 @@ var deferredEntryPoints = []deferredEntryPoint{
 
 	{name: "DeriveCohortFindings", why: cohortIdentities},
 	{name: "ObserveExactAbsence", why: separateAbsenceStat},
-	{name: "ValidateSealDeadline", why: sealDeadlineHasNoFlag},
 	{name: "ValidateCaptureDeadline", why: captureDeadlineHasNoProducer},
 	{name: "Holds", why: runnerBeliefIsNotAuthority},
 
@@ -153,8 +152,6 @@ const (
 		"does not return; Phase 8, with the activation verification"
 	separateAbsenceStat = "the delete pass's own answer already reports absence; a separate " +
 		"stat belongs to the ambiguous-response recovery path in Phase 8"
-	sealDeadlineHasNoFlag = "Req 17's bound has no operator-facing flag to refuse; the " +
-		"coordinator's seal deadline is set by the ATC's own composition"
 	runnerBeliefIsNotAuthority = "Holds is read by the liveness specs and by the Phase 8 " +
 		"status surface; no running process decides anything from it, and a runner that " +
 		"decided from its own belief rather than from the lease would be the stale owner " +

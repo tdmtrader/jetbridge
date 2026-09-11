@@ -33,10 +33,6 @@ const (
 	// DefaultLeaseTerm is requirement 10's 15-minute capture ownership lease.
 	DefaultLeaseTerm = 15 * time.Minute
 
-	// DefaultSealDeadline is requirement 17's 5 minutes, configurable from 30
-	// seconds through 30 minutes.
-	DefaultSealDeadline = 5 * time.Minute
-
 	// DefaultChallengeTerm bounds a stat challenge. A receipt signed over old
 	// facts proves only that the facts were once true.
 	DefaultChallengeTerm = 5 * time.Minute
@@ -80,12 +76,23 @@ func (coordinator *Coordinator) leaseTerm() time.Duration {
 	return coordinator.LeaseTerm
 }
 
-func (coordinator *Coordinator) sealDeadline() time.Duration {
+// sealDeadline is the only place a seal deadline can come from, so it is the
+// place Req 17's range is enforced.
+//
+// SealDeadline is an exported field on an exported struct: any composition can
+// set it, and this substituted the default on zero and accepted anything else
+// whatever -- a negative duration, a day. The frozen decision is 5 minutes,
+// configurable from 30 seconds through 30 minutes, and output.ValidateSealDeadline
+// is the statement of it. It had no caller at all until this one.
+func (coordinator *Coordinator) sealDeadline() (time.Duration, error) {
 	if coordinator.SealDeadline == 0 {
-		return DefaultSealDeadline
+		return output.DefaultSealDeadline, nil
+	}
+	if err := output.ValidateSealDeadline(coordinator.SealDeadline); err != nil {
+		return 0, err
 	}
 
-	return coordinator.SealDeadline
+	return coordinator.SealDeadline, nil
 }
 
 func (coordinator *Coordinator) challengeTerm() time.Duration {
@@ -515,11 +522,19 @@ func (coordinator *Coordinator) beginSeal(ctx context.Context, record output.Han
 	// after the fact would bound nothing after a crash between the two, and a
 	// deadline this process merely held would expire when the process did --
 	// which is exactly the window a capture crossing an ATC restart lives in.
+	// Before the write, and that ordering is the requirement: a deadline
+	// committed and then rejected bounds the capture by a number nobody
+	// approved, and the row is what the daemon and the reaper read.
+	sealDeadline, err := coordinator.sealDeadline()
+	if err != nil {
+		return err
+	}
+
 	var deadline output.Timestamp
 	if err := coordinator.write(ctx, func(tx Transaction) error {
 		var err error
 		deadline, err = coordinator.Repository.RecordSealDeadline(ctx, tx,
-			record.ReservationID, lease.CaptureFence, coordinator.sealDeadline())
+			record.ReservationID, lease.CaptureFence, sealDeadline)
 		if err != nil {
 			return err
 		}
