@@ -409,6 +409,97 @@ var _ = Describe("the output-plane controller passes", func() {
 	})
 
 	Describe("the inventory sweep", func() {
+		// AC 14 and AC 15's positive case, which nothing spanned: the GCS half
+		// proved a marked unregistered object comes back `Managed` and the
+		// PostgreSQL half proved `AdoptManagedOrphan` adopts, and no spec ran a
+		// real sweep over a real store and ended with an adopted lifecycle row.
+		// The two halves can each be right while the pass between them adopts
+		// nothing, which is precisely the class Phase 7 found four times.
+		//
+		// The negative twin is in the same spec and asserted AFTER the positive
+		// one, because "nothing was adopted" passes against a sweep that adopts
+		// nothing at all.
+		It("adopts a marked orphan whose grace has elapsed, and never the unmarked object beside it", func() {
+			orphan := hangarDigest(88)
+			orphanKey, err := hangar.TreeKey(namespace.Prefix(), "team-a", orphan)
+			Expect(err).NotTo(HaveOccurred())
+			orphanAttrs := store.Seed(namespace.Bucket(), orphanKey, []byte("an orphan"),
+				output.ObjectMarker{
+					Version:         output.MarkerVersion,
+					Scope:           "team-a",
+					Digest:          orphan,
+					ReservationID:   output.ReservationID(uuid.NewString()),
+					ActivationEpoch: 1,
+					CreatedAt:       output.NewTimestamp(time.Now().Add(-hangarGraceElapsed).UTC()),
+				}.Metadata())
+
+			// Beside it, an object with no Hangar marker at all: pre-capability
+			// bytes, or somebody else's. Req 45 is explicit that it is
+			// unmanaged and is never automatically relabelled or deleted.
+			unmarkedKey, err := hangar.TreeKey(namespace.Prefix(), "team-a", hangarDigest(89))
+			Expect(err).NotTo(HaveOccurred())
+			store.Seed(namespace.Bucket(), unmarkedKey, []byte("not ours"), nil)
+
+			lease := leaseFor(output.OperationInventory)
+			Eventually(func() string {
+				_, err := newSweep().Run(ctx, lease)
+				Expect(err).NotTo(HaveOccurred())
+
+				var state string
+				queryErr := dbConn.QueryRow(`
+					SELECT state FROM hangar_exact_lifecycles
+					 WHERE scope = $1 AND digest = $2 AND generation = $3`,
+					"team-a", string(orphan), orphanAttrs.Generation).Scan(&state)
+				if queryErr != nil {
+					return ""
+				}
+
+				return state
+			}, 10*time.Second, 10*time.Millisecond).Should(Equal("adopted"),
+				"a marked, unregistered, grace-elapsed object in the deployment's own "+
+					"namespace was never adopted by a real sweep")
+
+			// origin distinguishes an adopted generation from a registered one
+			// for the rest of its life, because the evidence behind them is not
+			// the same: one has a signed receipt and one has a marker.
+			var origin string
+			Expect(dbConn.QueryRow(`
+				SELECT origin FROM hangar_exact_lifecycles
+				 WHERE scope = $1 AND digest = $2 AND generation = $3`,
+				"team-a", string(orphan), orphanAttrs.Generation).Scan(&origin)).To(Succeed())
+			Expect(origin).To(Equal("adopted"))
+
+			// And the unmarked object: no lifecycle row, and still in the
+			// store. Not adopted, not relabelled, not deleted.
+			var rows int
+			Expect(dbConn.QueryRow(`
+				SELECT count(*) FROM hangar_exact_lifecycles WHERE digest = $1`,
+				string(hangarDigest(89))).Scan(&rows)).To(Succeed())
+			Expect(rows).To(BeZero(),
+				"the sweep adopted an object carrying no Hangar marker; Req 45 says an "+
+					"unmarked object is unmanaged and is never automatically relabelled")
+
+			_, err = store.Object(namespace.Bucket(), unmarkedKey).Attrs(ctx)
+			Expect(err).NotTo(HaveOccurred(),
+				"the unmarked object was deleted by a sweep with no authority over it")
+
+			// And it is UNMANAGED, not debt. The distinction is the one the
+			// mutation record below turns on: removing the `Managed` gate in
+			// inventorypass.adopt does not produce an adoption -- the ref built
+			// from an empty marker fails validation downstream -- so without
+			// this line the negative arm above is pinned by nothing. What
+			// removing the gate DOES produce is an attempted adoption that
+			// fails, and a failed adoption is recorded as debt.
+			var debt int
+			Expect(dbConn.QueryRow(`
+				SELECT count(*) FROM hangar_inventory_debt
+				 WHERE bucket_fingerprint = $1 AND object_key = $2`,
+				namespace.Bucket(), unmarkedKey).Scan(&debt)).To(Succeed())
+			Expect(debt).To(BeZero(),
+				"an object with no Hangar marker was recorded as inventory debt; it is "+
+					"UNMANAGED -- there is nothing wrong with it and nothing to revisit")
+		})
+
 		It("reports an adoption that FAILED rather than counting it as a refusal", func() {
 			// The two are opposite facts and the pass told them apart by
 			// asking Adopted() before asking err. AdoptManagedOrphan returns
