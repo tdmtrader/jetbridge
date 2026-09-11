@@ -156,11 +156,33 @@ func TestLiveCaptureSelectedProducerHoldsWritesAndIsSealed(t *testing.T) {
 	}
 	reservedDirectory := incarnation.Directory()
 
+	// The control endpoint is the NODE's, and it is read off the API server
+	// rather than composed.
+	//
+	// `buildPod` validates the envelope (`container.go:465` ->
+	// `runtime.ExecutionControl.Validate`), and an empty endpoint is refused:
+	// "an envelope nobody can ask about is not control". The init script does
+	// have a Downward-API fallback for an empty one, but reaching it here would
+	// mean shipping an envelope production refuses, so the deployed shape is
+	// what is exercised: the ATC knows which node reserved the incarnation, so
+	// it knows where that node's daemon answers.
+	nodeAddress := ""
+	for _, address := range node.Status.Addresses {
+		if address.Type == corev1.NodeInternalIP {
+			nodeAddress = address.Address
+		}
+	}
+	if nodeAddress == "" {
+		t.Fatalf("node %s reports no InternalIP; the control init dials its node's daemon by "+
+			"address and there is none to dial", node.Name)
+	}
+
 	control := &atcruntime.ExecutionControl{
 		Version:         atcruntime.ExecutionControlVersion,
 		Phase:           atcruntime.ControlPhaseAdmitted,
 		Identity:        executioncontrol.Identity{ExecutionID: liveCaptureExecution, Fence: 3},
 		ActivationEpoch: 9,
+		Endpoint:        fmt.Sprintf("http://%s:%d", nodeAddress, liveCapturePort),
 		Capability:      "live-base-capability",
 	}
 	if err := control.SelectCapture(atcruntime.DurableOutputCapture{
