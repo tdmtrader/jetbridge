@@ -73,6 +73,58 @@ const (
 // from its kind would be a producer notifying nobody, and the failure mode of
 // that is silence: the work is still found by the periodic pass, later, and
 // nothing says the acceleration stopped working.
+//
+// WHICH KINDS ACCELERATE, AND WHY THE OTHER EIGHT DO NOT.
+//
+// Every kind has an unconditional periodic wake and none of them depends on a
+// notification to find work; Req 50 asks for the fallback "in addition to
+// notifications", and the fallback is what is load-bearing. So the question a
+// kind answers here is only whether a wake sooner than the tick is worth a
+// producer, and one-of-nine with no stated reason reads as unfinished rather
+// than as chosen. TestOnlyTheRecordedOperationKindsAreAccelerated is what keeps
+// these sentences true.
+//
+//	Acceleration: reclaim_delete -- ACCELERATED. AdmitReclaim mints a job inside
+//	a transaction, and until that job is taken the object is decided-on and
+//	still present. This is the one kind where the latency between "the plane
+//	decided to delete" and "the object is gone" is a window an operator can
+//	observe in the bucket.
+//
+//	Acceleration: inventory -- none. There is no database write to notify from:
+//	the sweep is driven by what is in the BUCKET, and nothing in PostgreSQL
+//	knows an object appeared. A producer would have to be the bucket.
+//
+//	Acceleration: adoption -- none. Same reason, plus a clock: an object becomes
+//	adoptable when publication grace elapses, which is the passage of time and
+//	not an event. Nothing writes "grace has now elapsed".
+//
+//	Acceleration: reclaim_admission -- none. It reads candidates whose grace has
+//	elapsed, so its trigger is also the clock. Waking it at the instant a
+//	generation settles would find a candidate that is days from admissible.
+//
+//	Acceleration: read_lease_cleanup -- none. A lease becomes abandoned by
+//	expiring, on the database clock, and expiry is not a write.
+//
+//	Acceleration: policy_attestation -- none. It re-reads the bucket at least
+//	every MaxPolicyEvidenceAge; the schedule IS the requirement, and a wake on
+//	some other event would not make the evidence fresher.
+//
+//	Acceleration: capture_recovery -- none, and this one is owed a phase. It
+//	does have a database-write trigger (an incomplete handoff becomes
+//	recoverable when an outcome or a deadline is written), and it is not
+//	accelerated. The workers are Phase 5's and so is this: it is recorded as a
+//	carry-forward rather than implemented here, because a producer added beside
+//	a transition this phase does not own is a producer nobody tested.
+//
+//	Acceleration: no_capture_release -- none, owed to the same phase and for the
+//	same reason: recording a no-capture intent is a write, and the release that
+//	follows it waits for the tick.
+//
+//	Acceleration: reclaim_finalization -- none, owed to the same phase.
+//	FinalizeReclaim follows an acknowledged delete, which is a write, and the
+//	finalization pass waits for the tick. It is the least urgent of the three:
+//	the object is already gone by then, so the latency costs bookkeeping rather
+//	than an observable state.
 func NotifyChannel(kind OperationKind) string {
 	return "hangar_output_" + string(kind)
 }
