@@ -1,0 +1,72 @@
+package hangaroutput
+
+import "github.com/concourse/concourse/hangar/output"
+
+// Which operation kinds a deployed plane actually works, and which it does not.
+//
+// `output.OperationKinds()` is the schema's vocabulary: nine kinds, each with
+// its own durable lease, cursor, debt and fencing epoch. That is a fact about
+// the SCHEMA. Which of them a running deployment has a worker for is a fact
+// about the WIRING, and the two are not the same set -- four kinds are assigned
+// to a controller.Runner in a workload this chart renders, and five are not.
+//
+// The distinction has to exist here because liveness is only assertable about
+// the first group. The status publisher emits -1 for a kind with no lease
+// holder and HangarOutputOperationLeaseUnheld alerts on it after ten minutes,
+// saying "its controller is not running, or it cannot reach the database". For
+// a kind nothing runs that sentence is false, and the alert fires ten minutes
+// after a clean install of a perfectly healthy plane and never clears. An alert
+// that is on at install is the one an operator silences, and silencing it
+// removes the observability the surface was added for -- so the fix is to stop
+// asserting liveness about work nobody does, not to make the message vaguer.
+//
+// TestTheOwnedOperationKindsAreExactlyTheOnesAWorkloadClaims reads the four out
+// of the command roots, so wiring a Runner for a fifth kind and forgetting this
+// list reddens, and removing one reddens too.
+
+// OwnedOperationKinds are the kinds a production controller.Runner claims a
+// lease for, and therefore the only kinds whose lease term means anything.
+func OwnedOperationKinds() []output.OperationKind {
+	return []output.OperationKind{
+		output.OperationInventory,
+		output.OperationReclaimAdmission,
+		output.OperationReclaimDelete,
+		output.OperationPolicyAttestation,
+	}
+}
+
+// UnownedOperationKinds are the five with no wired owner, each with why.
+//
+// They are not dead: every one of them is a real transition the schema, the
+// repository and the passes implement, and the work they name is performed --
+// by the web node's capture recovery path, by the release that follows a
+// no-capture intent, by adoption inside the inventory sweep, by finalization
+// after an acknowledged delete, and by read-lease expiry on the database clock.
+// What none of them has is a workload that takes a LEASE of that kind, so there
+// is no owner to be alive or dead.
+//
+// Whether each should get one is R3-F4's open question and is recorded as such
+// rather than answered here. What is settled is that until one does, the plane
+// must not claim its lease is unheld: that is a statement about a worker that
+// does not exist.
+func UnownedOperationKinds() map[output.OperationKind]string {
+	return map[output.OperationKind]string{
+		output.OperationCaptureRecovery: "advanced by the web node's recovery pass, which needs " +
+			"PostgreSQL, Kubernetes and the output daemon and holds no output-bucket role. It " +
+			"is not a leased controller",
+		output.OperationNoCaptureRelease: "settled on the same web-node pass. Nothing is at " +
+			"stake in the bucket while it waits: the source hold is the thing held, and it is " +
+			"held on one node",
+		output.OperationAdoption: "performed inside the inventory sweep, under the inventory " +
+			"lease. It is a separate KIND so that a sweep which could not classify an object is " +
+			"still not prevented from adopting the ones it could -- not a separate worker",
+		output.OperationReclaimFinalization: "follows an acknowledged delete, so the object is " +
+			"already gone; the latency costs bookkeeping rather than an observable state, and " +
+			"the backlog it shows up in is " +
+			"concourse_hangar_output_plane_inventory{kind=\"unfinalized_reclaim_jobs\"}, which " +
+			"has an alert of its own",
+		output.OperationReadLeaseCleanup: "a lease becomes abandoned by EXPIRING, on the " +
+			"database clock. Expiry is not a write and closing an expired lease is not work " +
+			"somebody has to be holding a lease to do",
+	}
+}

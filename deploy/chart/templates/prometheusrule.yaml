@@ -110,6 +110,13 @@ spec:
           # -1 is "no owner at all", which the publisher emits deliberately
           # rather than 0 or an absent series: zero reads as "expired right now"
           # and absence reads as "not scraped".
+          #
+          # The series exists only for the operation kinds a workload in this
+          # chart actually takes a lease for. Five of the schema's nine kinds
+          # have no leased worker -- see atc/hangaroutput/leaseowners.go -- and
+          # emitting -1 for those made this rule fire five permanent warnings
+          # ten minutes after a clean install, each blaming a controller that
+          # does not exist.
           expr: concourse_hangar_output_operation_lease_remaining_seconds == -1
           for: 10m
           labels:

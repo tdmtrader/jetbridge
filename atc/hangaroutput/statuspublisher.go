@@ -88,13 +88,20 @@ func statusEvent(status Status) metric.HangarOutputSnapshot {
 	for _, reason := range output.DebtReasons() {
 		snapshot.Debt[string(reason)] = status.Debt[reason]
 	}
-	for _, kind := range output.OperationKinds() {
+	// OwnedOperationKinds and NOT OperationKinds. The vocabulary is nine; the
+	// kinds a deployed workload takes a lease for are four. Emitting -1 for the
+	// other five made HangarOutputOperationLeaseUnheld fire five permanent
+	// warnings ten minutes after a clean install of a healthy plane, each
+	// saying "its controller is not running" about a controller that does not
+	// exist -- which is the shape of alert an operator silences, taking the
+	// four real ones with it. See leaseowners.go for the five and why.
+	for _, kind := range OwnedOperationKinds() {
 		remaining, held := status.Leases[kind]
 		if !held {
-			// A kind nobody holds is reported as a negative term rather than as
-			// zero or as an absent series: zero would read as "expired right
-			// now" and absence would read as "not scraped". -1 is neither, and
-			// the alert rule that cares says so.
+			// A kind whose owner holds nothing is reported as a negative term
+			// rather than as zero or as an absent series: zero would read as
+			// "expired right now" and absence would read as "not scraped". -1
+			// is neither, and the alert rule that cares says so.
 			snapshot.LeaseRemainingSeconds[string(kind)] = -1
 
 			continue
