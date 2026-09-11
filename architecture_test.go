@@ -2,6 +2,7 @@ package concourse
 
 import (
 	"encoding/json"
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
@@ -519,6 +520,11 @@ var hangarGCSImporters = map[string]string{
 		"is a second binary precisely so the first one's identity gains no output role",
 	"cmd/hangar-output-inventory": "the inventory controller is the list/get principal, and the " +
 		"only workload in this system whose cloud identity holds bucket-wide list",
+	"hangar/gcsdelete": "the object-delete capability's own package. It names the cloud client " +
+		"because it IS the adapter, and it shares hangar/gcs's 404/412/403 split rather than " +
+		"re-deriving it -- a second reading of those three codes is where a delete eventually " +
+		"gets told that 412 means \"already gone\". Which binaries link it is the subject of " +
+		"TestOnlyTheReclaimerBinaryCanInvokeAnOutputDelete, and the answer is one",
 	"cmd/hangar-output-reclaimer": "the reclaimer is the get/delete principal, and the only " +
 		"process that deletes a published object at all",
 	"cmd/hangar-output-policy-attestor": "the attestor is the bucket-metadata principal: it " +
@@ -1056,7 +1062,20 @@ func TestDurableTierSeparationGuardIsNotVacuous(t *testing.T) {
 // next year inherits the rule without anyone adding it to a list.
 const outputDeleteRole = "github.com/concourse/concourse/hangar/output/reclaimer"
 
-// outputDeleteRoot is the one binary allowed to link it.
+// outputDeleteCapability is the package that can construct an object delete
+// over a real cloud client, and the only one.
+//
+// It is a separate subject from the role because the role was the WRONG thing
+// to measure, demonstrated: `objectstore.Handle` carried Delete, so the adapter
+// handed to the daemon, the inventory controller and the reclaimer alike
+// carried the capability, and a live `objects.delete` added to
+// cmd/hangar-output-daemon -- no reclaimer import anywhere -- built and passed
+// every guard in this file. Linking a role is a fact about imports. Being able
+// to delete is a fact about which package's constructor is in the binary, and
+// that is what this asks.
+const outputDeleteCapability = "github.com/concourse/concourse/hangar/gcsdelete"
+
+// outputDeleteRoot is the one binary allowed to link either.
 const outputDeleteRoot = "./cmd/hangar-output-reclaimer"
 
 func TestOnlyTheReclaimerBinaryCanInvokeAnOutputDelete(t *testing.T) {
@@ -1066,26 +1085,85 @@ func TestOnlyTheReclaimerBinaryCanInvokeAnOutputDelete(t *testing.T) {
 			"directory; the discovery failed and this rule would pass vacuously", len(roots))
 	}
 
-	// The control FIRST: the reclaimer really does link the role. Without it
+	// The controls FIRST: the reclaimer really does link both. Without them
 	// every assertion below would also pass for a tree in which the delete
 	// client had been deleted entirely.
-	if !linksPackage(t, outputDeleteRoot, outputDeleteRole) {
-		t.Fatalf("%s does not link %s, so this rule is guarding nothing",
-			outputDeleteRoot, outputDeleteRole)
+	for _, subject := range []string{outputDeleteRole, outputDeleteCapability} {
+		if !linksPackage(t, outputDeleteRoot, subject) {
+			t.Fatalf("%s does not link %s, so this rule is guarding nothing",
+				outputDeleteRoot, subject)
+		}
 	}
 
 	for _, root := range roots {
 		if root == outputDeleteRoot {
 			continue
 		}
+		if linksPackage(t, root, outputDeleteCapability) {
+			t.Errorf("%s links %s.\n\nThat package is the object-delete CAPABILITY: it is the "+
+				"only place in this repository that can construct a deleter over a real cloud "+
+				"client, and a binary that links it can issue objects.delete whether or not it "+
+				"names a role. GCS IAM cannot require a caller to send a generation precondition "+
+				"once delete permission exists, so the boundary is that exactly one process can "+
+				"make the call at all.", root, outputDeleteCapability)
+		}
 		if linksPackage(t, root, outputDeleteRole) {
 			t.Errorf("%s links %s.\n\nOnly the isolated reclaimer workload may import or invoke "+
-				"the output delete client. GCS IAM cannot require a caller to send a generation "+
-				"precondition once delete permission exists, so the boundary is that exactly one "+
-				"process can make the call -- and a Kubernetes service account is Pod-wide, so a "+
+				"the output delete client. A Kubernetes service account is Pod-wide, so a "+
 				"second binary that linked this would be a second identity holding "+
-				"storage.objects.delete for everything else it does.", root, outputDeleteRole)
+				"storage.objects.delete for everything else it does. This is the second line: "+
+				"the capability guard above is the first.", root, outputDeleteRole)
 		}
+	}
+
+	// And the property the two guards exist for, stated so a green says it was
+	// checked: the shared object seam every root holds has no delete on it at
+	// all. A Delete method here would put the capability back into the type
+	// three of four binaries take, which is the shape that was demonstrated.
+	assertSharedHandleHasNoDelete(t)
+}
+
+// assertSharedHandleHasNoDelete reads the interface declaration rather than the
+// build graph, because this half is about a TYPE: it is the one that makes the
+// reviewer's demonstration -- `objects.Object(bucket, key).Delete(ctx)` in a
+// non-reclaimer root -- fail to compile rather than merely fail a guard.
+func assertSharedHandleHasNoDelete(t *testing.T) {
+	t.Helper()
+
+	path := filepath.Join(repositoryRoot(), "hangar", "objectstore", "objectstore.go")
+	file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+	if err != nil {
+		t.Fatalf("parsing %s: %v", path, err)
+	}
+
+	found := false
+	ast.Inspect(file, func(node ast.Node) bool {
+		spec, ok := node.(*ast.TypeSpec)
+		if !ok || spec.Name.Name != "Handle" {
+			return true
+		}
+		iface, ok := spec.Type.(*ast.InterfaceType)
+		if !ok {
+			return true
+		}
+		found = true
+		for _, method := range iface.Methods.List {
+			for _, name := range method.Names {
+				if name.Name == "Delete" {
+					t.Errorf("objectstore.Handle declares Delete.\n\nEvery root that takes an "+
+						"object adapter then holds the delete capability, whatever role it "+
+						"links -- which is exactly the state a live objects.delete was "+
+						"demonstrated from cmd/hangar-output-daemon in. Deletion belongs on "+
+						"objectstore.DeleteHandle, whose only implementation over a real cloud "+
+						"client is %s.", outputDeleteCapability)
+				}
+			}
+		}
+
+		return false
+	})
+	if !found {
+		t.Fatal("objectstore.Handle was not found; this rule would pass vacuously")
 	}
 }
 

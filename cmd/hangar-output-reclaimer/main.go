@@ -33,6 +33,7 @@ import (
 	"github.com/concourse/concourse/atc/hangaroutput/controller"
 	"github.com/concourse/concourse/atc/hangaroutput/reclaimpass"
 	hangargcs "github.com/concourse/concourse/hangar/gcs"
+	"github.com/concourse/concourse/hangar/gcsdelete"
 	"github.com/concourse/concourse/hangar/output"
 	"github.com/concourse/concourse/hangar/output/reclaimer"
 )
@@ -63,7 +64,11 @@ func run(ctx context.Context, config controllerConfig) error {
 	}
 	defer func() { _ = client.Close() }()
 
-	objects, err := hangargcs.NewObjectClient(client)
+	// The capability, from the one package in this repository that can
+	// construct it over a real cloud client. An architecture guard fails the
+	// suite if any other main under cmd/ links that package, and the shared
+	// objectstore.Handle the other three roots hold has no Delete at all.
+	objects, err := gcsdelete.NewDeleteClient(client)
 	if err != nil {
 		return err
 	}

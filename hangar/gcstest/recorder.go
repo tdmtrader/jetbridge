@@ -110,10 +110,56 @@ func (handle recordingHandle) Attrs(ctx context.Context) (objectstore.Attrs, err
 	return handle.handle.Attrs(ctx)
 }
 
-func (handle recordingHandle) Delete(ctx context.Context) error {
+// The delete seam, recorded separately because it IS separate: Delete is no
+// longer a method on objectstore.Handle, so a recorder that wrapped the full
+// client would have nothing to record. A Recorder therefore wraps a delete
+// client as well, and a test that wants both passes both.
+type recordingDeleteClient struct {
+	recorder *Recorder
+	client   objectstore.DeleteClient
+}
+
+// RecordDeletes wraps a delete client so its calls land in the same log.
+func (recorder *Recorder) RecordDeletes(client objectstore.DeleteClient) objectstore.DeleteClient {
+	return recordingDeleteClient{recorder: recorder, client: client}
+}
+
+func (client recordingDeleteClient) ObjectToDelete(bucket, key string) objectstore.DeleteHandle {
+	return recordingDeleteHandle{
+		recorder: client.recorder,
+		handle:   client.client.ObjectToDelete(bucket, key),
+	}
+}
+
+type recordingDeleteHandle struct {
+	recorder *Recorder
+	handle   objectstore.DeleteHandle
+}
+
+func (handle recordingDeleteHandle) If(conditions objectstore.Conditions) objectstore.DeleteHandle {
+	return recordingDeleteHandle{recorder: handle.recorder, handle: handle.handle.If(conditions)}
+}
+
+func (handle recordingDeleteHandle) Generation(generation int64) objectstore.DeleteHandle {
+	return recordingDeleteHandle{
+		recorder: handle.recorder,
+		handle:   handle.handle.Generation(generation),
+	}
+}
+
+func (handle recordingDeleteHandle) Attrs(ctx context.Context) (objectstore.Attrs, error) {
+	handle.recorder.note(objectstore.OpStat)
+
+	return handle.handle.Attrs(ctx)
+}
+
+func (handle recordingDeleteHandle) Delete(ctx context.Context) error {
 	handle.recorder.note(objectstore.OpDelete)
 
 	return handle.handle.Delete(ctx)
 }
 
-var _ objectstore.Client = (*Recorder)(nil)
+var (
+	_ objectstore.Client       = (*Recorder)(nil)
+	_ objectstore.DeleteClient = recordingDeleteClient{}
+)

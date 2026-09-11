@@ -133,10 +133,6 @@ func (handle outputObjectHandle) Attrs(ctx context.Context) (objectstore.Attrs, 
 	return outputAttrs(attrs), nil
 }
 
-func (handle outputObjectHandle) Delete(ctx context.Context) error {
-	return translate(handle.handle.Delete(ctx))
-}
-
 type outputObjectWriter struct{ writer *storage.Writer }
 
 func (writer *outputObjectWriter) Write(content []byte) (int, error) {
@@ -158,6 +154,18 @@ func (writer *outputObjectWriter) SetMetadata(metadata map[string]string) {
 func (writer *outputObjectWriter) Attrs() objectstore.Attrs {
 	return outputAttrs(writer.writer.Attrs())
 }
+
+// OutputAttrs and TranslateObjectError are exported for hangar/gcsdelete, which
+// is the delete capability's own package and therefore cannot be this one.
+//
+// They are the projection and the status-code split, and both are shared on
+// purpose: a second reading of 404/412/403 is where a delete would eventually
+// be told that 412 means "already gone".
+func OutputAttrs(attrs *storage.ObjectAttrs) objectstore.Attrs { return outputAttrs(attrs) }
+
+// TranslateObjectError is the 404/412/403 split, shared with the delete
+// capability's package.
+func TranslateObjectError(err error) error { return translate(err) }
 
 func outputAttrs(attrs *storage.ObjectAttrs) objectstore.Attrs {
 	if attrs == nil {

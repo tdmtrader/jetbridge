@@ -494,7 +494,8 @@ func TestTheExactGenerationDeleteIsConditionalAndTyped(t *testing.T) {
 		}
 
 		recorder := gcstest.Record(tier.client)
-		sweeper, err := reclaimer.New(namespace, reclaimer.Restrict(recorder))
+		sweeper, err := reclaimer.New(namespace,
+			reclaimer.Restrict(recorder.RecordDeletes(tier.deleter)))
 		if err != nil {
 			t.Fatalf("building the reclaimer: %v", err)
 		}
@@ -701,7 +702,7 @@ func TestALostDeleteResponseIsNeverReportedAsConfirmed(t *testing.T) {
 		t.Fatalf("publishing: %v", err)
 	}
 
-	sweeper, err := reclaimer.New(namespace, reclaimer.Restrict(tier.client))
+	sweeper, err := reclaimer.New(namespace, reclaimer.Restrict(tier.deleter))
 	if err != nil {
 		t.Fatalf("building the reclaimer: %v", err)
 	}
@@ -890,7 +891,8 @@ func TestEachRoleIssuesOnlyItsOwnRPCs(t *testing.T) {
 		assertOnly(t, "inventory", inventoryRecorder, objectstore.OpList, objectstore.OpStat)
 
 		reclaimRecorder := gcstest.Record(tier.client)
-		sweeper, err := reclaimer.New(namespace, reclaimer.Restrict(reclaimRecorder))
+		sweeper, err := reclaimer.New(namespace,
+			reclaimer.Restrict(reclaimRecorder.RecordDeletes(tier.deleter)))
 		if err != nil {
 			t.Fatalf("building the reclaimer: %v", err)
 		}

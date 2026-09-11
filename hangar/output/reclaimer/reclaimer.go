@@ -41,16 +41,20 @@ type Handle interface {
 	Delete(ctx context.Context) error
 }
 
-// Restrict narrows a full client to the reclaimer's role.
-func Restrict(client objectstore.Client) Store { return restricted{client: client} }
+// Restrict narrows a delete client to the reclaimer's role.
+//
+// It takes objectstore.DeleteClient and NOT the full client, which is the point
+// of the split: the full client no longer carries a delete at all, so a root
+// that holds one cannot reach this call however it is narrowed afterwards.
+func Restrict(client objectstore.DeleteClient) Store { return restricted{client: client} }
 
-type restricted struct{ client objectstore.Client }
+type restricted struct{ client objectstore.DeleteClient }
 
 func (store restricted) Object(bucket, key string) Handle {
-	return restrictedHandle{handle: store.client.Object(bucket, key)}
+	return restrictedHandle{handle: store.client.ObjectToDelete(bucket, key)}
 }
 
-type restrictedHandle struct{ handle objectstore.Handle }
+type restrictedHandle struct{ handle objectstore.DeleteHandle }
 
 func (handle restrictedHandle) If(conditions objectstore.Conditions) Handle {
 	return restrictedHandle{handle: handle.handle.If(conditions)}

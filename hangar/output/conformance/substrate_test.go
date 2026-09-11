@@ -15,6 +15,7 @@ import (
 
 	"github.com/concourse/concourse/hangar"
 	hangargcs "github.com/concourse/concourse/hangar/gcs"
+	"github.com/concourse/concourse/hangar/gcsdelete"
 	"github.com/concourse/concourse/hangar/gcstest"
 	"github.com/concourse/concourse/hangar/objectstore"
 	"github.com/concourse/concourse/hangar/output"
@@ -96,6 +97,13 @@ type substrate struct {
 	bucket string
 	client objectstore.Client
 
+	// deleter is the capability, and it arrives separately because it IS
+	// separate: Delete is not a method on objectstore.Handle, and the only
+	// constructor of one over a real cloud client lives in hangar/gcsdelete,
+	// which exactly one binary links. A suite that drives the reclaimer has to
+	// be handed one, which is the whole point.
+	deleter objectstore.DeleteClient
+
 	// memory is non-nil only for tier 1, and is what the fault-injection
 	// cases arm. A case that needs it says so by name, so a tier-2 run skips
 	// exactly those and nothing else.
@@ -146,7 +154,7 @@ func probeCapabilities(t *testing.T, tier substrate) capabilities {
 	// Delete preconditions: delete a generation that is not there and see
 	// whether the object survives.
 	victim := write("capability-probe/delete")
-	_ = tier.client.Object(tier.bucket, "capability-probe/delete").
+	_ = tier.deleter.ObjectToDelete(tier.bucket, "capability-probe/delete").
 		Generation(victim.Generation + 1).
 		If(objectstore.Conditions{GenerationMatch: victim.Generation + 1}).
 		Delete(ctx)
@@ -172,7 +180,7 @@ func probeCapabilities(t *testing.T, tier substrate) capabilities {
 		"capability-probe/delete",
 		"capability-probe/page/a", "capability-probe/page/b", "capability-probe/page/c",
 	} {
-		_ = tier.client.Object(tier.bucket, key).Delete(ctx)
+		_ = tier.deleter.ObjectToDelete(tier.bucket, key).Delete(ctx)
 	}
 
 	return measured
@@ -184,10 +192,11 @@ func tier1(t *testing.T) substrate {
 
 	memory := gcstest.NewMemory()
 	tier := substrate{
-		name:   "tier-1 (in-memory adapter fake)",
-		bucket: "tier-1-output",
-		client: memory,
-		memory: memory,
+		name:    "tier-1 (in-memory adapter fake)",
+		bucket:  "tier-1-output",
+		client:  memory,
+		deleter: memory,
+		memory:  memory,
 	}
 	tier.can = probeCapabilities(t, tier)
 
@@ -241,11 +250,12 @@ func inProcessTier2(t *testing.T) substrate {
 	bucket := uniqueBucket("tier-2-inproc")
 	server.CreateBucketWithOpts(fakestorage.CreateBucketOpts{Name: bucket})
 
-	client, _ := adapterAndClient(t, server.URL())
+	client, deleter, _ := adapterAndClient(t, server.URL())
 	tier := substrate{
-		name:   "tier-2 (fake-gcs-server, in-process)",
-		bucket: bucket,
-		client: client,
+		name:    "tier-2 (fake-gcs-server, in-process)",
+		bucket:  bucket,
+		client:  client,
+		deleter: deleter,
 	}
 	tier.can = probeCapabilities(t, tier)
 
@@ -261,18 +271,19 @@ func remoteTier2(t *testing.T, endpoint string) substrate {
 	// first write -- an upload to an unknown bucket is a 404, measured -- and
 	// the deployed service is shared, so each run takes its own bucket rather
 	// than colliding with whatever the last one left behind.
-	client, storageClient := adapterAndClient(t, endpoint)
+	client, deleter, storageClient := adapterAndClient(t, endpoint)
 	if err := storageClient.Bucket(bucket).Create(context.Background(), conformanceProject, nil); err != nil {
 		t.Fatalf("creating the conformance bucket %s at %s: %v.\n\n"+
 			"The endpoint answered the reachability probe, so this is the emulator refusing a "+
 			"bucket insert rather than an unreachable service.", bucket, endpoint, err)
 	}
-	t.Cleanup(func() { deleteBucket(t, client, storageClient, bucket) })
+	t.Cleanup(func() { deleteBucket(t, client, deleter, storageClient, bucket) })
 
 	tier := substrate{
-		name:   "tier-2 (fake-gcs-server at " + endpoint + ")",
-		bucket: bucket,
-		client: client,
+		name:    "tier-2 (fake-gcs-server at " + endpoint + ")",
+		bucket:  bucket,
+		client:  client,
+		deleter: deleter,
 	}
 	tier.can = probeCapabilities(t, tier)
 
@@ -283,12 +294,12 @@ func remoteTier2(t *testing.T, endpoint string) substrate {
 // the emulator endpoint, then hangar/gcs's exported object adapter over it.
 // Nothing in this file constructs a *storage.Client any other way, so a break
 // in that seam is a failure here rather than a surprise in the daemon.
-func adapterFor(t *testing.T, endpoint string) objectstore.Client {
+func adapterFor(t *testing.T, endpoint string) (objectstore.Client, objectstore.DeleteClient) {
 	t.Helper()
 
-	client, _ := adapterAndClient(t, endpoint)
+	client, deleter, _ := adapterAndClient(t, endpoint)
 
-	return client
+	return client, deleter
 }
 
 // conformanceProject is the project id a bucket insert needs. The emulator does
@@ -300,7 +311,7 @@ const conformanceProject = "hangar-conformance"
 // creating a bucket. No role has bucket-policy permission, so bucket creation
 // cannot be behind the seam -- it is test setup against an emulator, and saying
 // so here is better than widening objectstore.Client to make a test convenient.
-func adapterAndClient(t *testing.T, endpoint string) (objectstore.Client, *storage.Client) {
+func adapterAndClient(t *testing.T, endpoint string) (objectstore.Client, objectstore.DeleteClient, *storage.Client) {
 	t.Helper()
 
 	storageClient, err := hangargcs.NewStorageClient(context.Background(), endpoint)
@@ -313,8 +324,12 @@ func adapterAndClient(t *testing.T, endpoint string) (objectstore.Client, *stora
 	if err != nil {
 		t.Fatalf("adapting the storage client: %v", err)
 	}
+	deleter, err := gcsdelete.NewDeleteClient(storageClient)
+	if err != nil {
+		t.Fatalf("adapting the delete capability: %v", err)
+	}
 
-	return client, storageClient
+	return client, deleter, storageClient
 }
 
 // deleteBucket clears a run's bucket off the shared emulator.
@@ -323,7 +338,7 @@ func adapterAndClient(t *testing.T, endpoint string) (objectstore.Client, *stora
 // what the plane does, and a leftover bucket on a fake is an untidiness rather
 // than a wrong answer. Each run takes a fresh name, so a failure here cannot
 // affect the next one.
-func deleteBucket(t *testing.T, client objectstore.Client, storageClient *storage.Client, bucket string) {
+func deleteBucket(t *testing.T, client objectstore.Client, deleter objectstore.DeleteClient, storageClient *storage.Client, bucket string) {
 	t.Helper()
 
 	ctx := context.Background()
@@ -333,7 +348,7 @@ func deleteBucket(t *testing.T, client objectstore.Client, storageClient *storag
 			return
 		}
 		for _, object := range page.Objects {
-			_ = client.Object(bucket, object.Key).Delete(ctx)
+			_ = deleter.ObjectToDelete(bucket, object.Key).Delete(ctx)
 		}
 		if page.Done || page.LastKey == "" {
 			break

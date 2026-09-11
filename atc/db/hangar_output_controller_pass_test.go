@@ -384,7 +384,7 @@ var _ = Describe("the output-plane controller passes", func() {
 
 			// Somebody else's lifecycle rule, which is the case Req 52 names.
 			// Nothing in this plane admitted a delete for it.
-			Expect(store.Object(namespace.Bucket(), key).Delete(ctx)).To(Succeed())
+			Expect(store.ObjectToDelete(namespace.Bucket(), key).Delete(ctx)).To(Succeed())
 
 			reconciled, err := sweep.Reconcile(ctx)
 			Expect(err).NotTo(HaveOccurred())

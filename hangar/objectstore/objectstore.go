@@ -152,11 +152,45 @@ type Client interface {
 
 // Handle is one object, possibly at one generation, possibly under
 // preconditions.
+//
+// There is no Delete here, and its absence is the point. GCS IAM cannot require
+// a caller to send a generation precondition once delete permission exists
+// (Req 55), so the boundary has to be that exactly one process can make the
+// call at all -- and while Delete was a method on this interface, every root
+// that took an adapter held the capability whether or not it linked the
+// reclaimer role. A guard over role linkage measured the import; this measures
+// the capability. Deletion is DeleteClient below, constructed by one package
+// that one binary links.
 type Handle interface {
 	If(Conditions) Handle
 	Generation(int64) Handle
 	NewWriter(ctx context.Context) Writer
 	NewReader(ctx context.Context) (io.ReadCloser, error)
+	Attrs(ctx context.Context) (Attrs, error)
+}
+
+// DeleteClient is the separate seam the capability lives on.
+//
+// The interface is declared here, beside the one it was carved out of, because
+// both are the shared vocabulary and an interface is not a capability. What is
+// a capability is an implementation of this over a real cloud client, and there
+// is exactly one -- hangar/gcsdelete -- which exists as its own package so that
+// "who can delete" is a question the toolchain answers about a binary's
+// dependency graph rather than a question a reviewer answers by reading.
+type DeleteClient interface {
+	ObjectToDelete(bucket, key string) DeleteHandle
+}
+
+// DeleteHandle is one object, pinned to a generation, under a precondition.
+//
+// Attrs is here beside Delete because the reclaimer's two questions -- "is it
+// gone" and "remove exactly this" -- are about the same object and neither may
+// broaden into a read of its bytes. There is no reader and no writer: a
+// reclaimer that could read could exfiltrate, and one that could write could
+// resurrect.
+type DeleteHandle interface {
+	If(Conditions) DeleteHandle
+	Generation(int64) DeleteHandle
 	Attrs(ctx context.Context) (Attrs, error)
 	Delete(ctx context.Context) error
 }
