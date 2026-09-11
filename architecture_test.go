@@ -1136,19 +1136,50 @@ func TestDurableTierSeparationGuardIsNotVacuous(t *testing.T) {
 	})
 }
 
-// The delete capability, measured at the ROOT rather than at the import.
+// What this rule claims, and what it does not.
 //
-// Every guard above is a rule about which package may NAME another. This one
-// asks the toolchain what each binary actually links, which is the question the
-// requirement is about: GCS IAM cannot require a caller to send a generation
-// precondition once delete permission exists (Req 55), so the boundary has to be
-// that exactly one process can make the call at all. An allowlist entry that
-// turned out to matter is caught here by the fact it was supposed to prevent
-// rather than by a reviewer noticing.
+// It claims exactly one thing: NO COMMAND ROOT REACHES AN OBJECT DELETE THROUGH
+// THE GO COMPOSITION. It is measured at the ROOT rather than at the import --
+// every guard above is a rule about which package may NAME another; this one
+// asks the toolchain what each binary actually links, so an allowlist entry that
+// turned out to matter is caught by the fact it was supposed to prevent rather
+// than by a reviewer noticing. It is not parameterised over "the roots we
+// remembered": it discovers every main package in cmd/ and checks all of them,
+// so a binary added next year inherits the rule without anyone adding it to a
+// list.
 //
-// It is deliberately not parameterised over "the roots we remembered": it
-// discovers every main package in cmd/ and checks all of them, so a binary added
-// next year inherits the rule without anyone adding it to a list.
+// SOURCE GUARDS CANNOT BOUND A CREDENTIAL HOLDER; IAM IS THE CONTROL. A Go
+// program holding application default credentials can do anything those
+// credentials permit, and no rule written over imports can say otherwise. Round
+// 4 of review demonstrated three routes that are green here and will stay green:
+//
+//	L  golang.org/x/oauth2/google.DefaultClient and a net/http DELETE to
+//	   https://storage.googleapis.com/storage/v1/b/<bucket>/o/<key> -- fifteen
+//	   lines, no go.mod change, no storage SDK named anywhere
+//	M  os/exec of `gcloud storage rm gs://<bucket>/<key>`
+//	N  github.com/aws/aws-sdk-go-v2/service/s3 DeleteObject -- a cloud storage
+//	   SDK that was not on the list, already required at v1.107.1
+//
+// Chasing those with source rules is unbounded work ending in a guard nobody can
+// satisfy. They are not defects in the composition; they are the fact that
+// credentials are the boundary. Reqs 54 and 55 say so, and the control is IAM:
+// the daemon, inventory and attestor principals hold no storage.objects.delete,
+// and every one of L, M and N gets a 403. That half is made load-bearing by
+// deploy/chart/tests/hangar_output_test.go's
+// TestOnlyTheReclaimerPrincipalIsGrantedObjectDelete, which asserts the rendered
+// Workload Identity annotations and the generated IAM documentation grant delete
+// to the reclaimer principal and to no other, and by activation, which attests
+// the real policy.
+//
+// What these rules buy is that the capability is not RE-ACQUIRED BY ACCIDENT
+// through the composition: a refactor that hands the wrong adapter to the wrong
+// binary, a helper that opens its own client, a role that grows a method. That
+// is a real and recurring failure -- it happened three times in three rounds --
+// and it is what is checked here. The three tripwires below
+// (TestNoPackageOutsideTheCapabilityPackagesNamesACloudStorageSDK's widened SDK
+// list, TestNoCommandRootShellsOutToACloudCLI and
+// TestNoPackageAddressesACloudStorageEndpointOverRawHTTP) cover the
+// plausible-accident shape of L, M and N without pretending to close them.
 const outputDeleteRole = "github.com/concourse/concourse/hangar/output/reclaimer"
 
 // outputDeleteCapability is the package that can construct an object delete
@@ -1167,7 +1198,7 @@ const outputDeleteCapability = "github.com/concourse/concourse/hangar/gcsdelete"
 // outputDeleteRoot is the one binary allowed to link either.
 const outputDeleteRoot = "./cmd/hangar-output-reclaimer"
 
-func TestOnlyTheReclaimerBinaryCanInvokeAnOutputDelete(t *testing.T) {
+func TestNoCommandRootReachesAnObjectDeleteThroughTheGoComposition(t *testing.T) {
 	roots := commandRoots(t)
 	if len(roots) < 4 {
 		t.Fatalf("found %d command roots, which is far too few to be this repository's cmd/ "+
@@ -1189,19 +1220,22 @@ func TestOnlyTheReclaimerBinaryCanInvokeAnOutputDelete(t *testing.T) {
 			continue
 		}
 		if linksPackage(t, root, outputDeleteCapability) {
-			t.Errorf("%s links %s.\n\nThat package is the object-delete CAPABILITY: it is the "+
-				"only place in this repository that can construct a deleter over a real cloud "+
-				"client, and a binary that links it can issue objects.delete whether or not it "+
-				"names a role. GCS IAM cannot require a caller to send a generation precondition "+
-				"once delete permission exists, so the boundary is that exactly one process can "+
-				"make the call at all.", root, outputDeleteCapability)
+			t.Errorf("%s reaches an object delete through the Go composition: it links %s.\n\n"+
+				"That package is the object-delete CAPABILITY: it is the only place in this "+
+				"repository that can construct a deleter over a real cloud client, and a binary "+
+				"that links it can issue objects.delete whether or not it names a role. This "+
+				"rule does not claim the binary CANNOT delete -- a process holding credentials "+
+				"can, and IAM is what stops it. It claims the composition does not hand it the "+
+				"capability, which is the accident this has been three times.",
+				root, outputDeleteCapability)
 		}
 		if linksPackage(t, root, outputDeleteRole) {
-			t.Errorf("%s links %s.\n\nOnly the isolated reclaimer workload may import or invoke "+
-				"the output delete client. A Kubernetes service account is Pod-wide, so a "+
-				"second binary that linked this would be a second identity holding "+
-				"storage.objects.delete for everything else it does. This is the second line: "+
-				"the capability guard above is the first.", root, outputDeleteRole)
+			t.Errorf("%s reaches an object delete through the Go composition: it links %s.\n\n"+
+				"Only the isolated reclaimer workload may import or invoke the output delete "+
+				"client. A Kubernetes service account is Pod-wide, so a second binary that "+
+				"linked this would be a second Pod whose identity IAM would then have to be "+
+				"trusted to keep delete away from. This is the second line: the capability "+
+				"guard above is the first.", root, outputDeleteRole)
 		}
 	}
 
@@ -1507,15 +1541,33 @@ func TestOnlyTheActivationCommandWritesTheEpochRow(t *testing.T) {
 
 // cloudStorageSDKs are every import path that IS a Cloud Storage SDK.
 //
-// Two, and the second is the whole reason this is a list. Round 3 demonstrated
+// The second entry is the reason this is a list at all. Round 3 demonstrated
 // `rawstorage "google.golang.org/api/storage/v1"` in cmd/hangar-output-daemon
 // with `svc.Objects.Delete(bucket, key).Do()` -- an arbitrary, unconditional,
 // key-only delete, with no go.mod change (google.golang.org/api is already
 // required) and with `cloud.google.com/go/storage` appearing nowhere in the
 // file. A rule comparing against one constant saw nothing.
+//
+// The third is round 4's route N: the AWS S3 SDK is already required at
+// v1.107.1 for the durable cache tier's S3 backend, so `s3.DeleteObject` was a
+// delete with no go.mod change and no Google SDK named. Cheap to close, because
+// the one package that legitimately names it -- cmd/artifact-daemon/durable --
+// is already an allowed importer.
+//
+// The rest name SDKs nothing in this repository imports today. They are
+// TRIPWIRES for the first accident shape: reaching for a different cloud's
+// object storage from a package that had no object-storage business. An entry
+// with no importer cannot go stale the way an exemption can -- and
+// TestEveryCloudStorageSDKEntryIsRecognised proves each one is matched by
+// isCloudStorageSDK rather than being a string nothing reads.
 var cloudStorageSDKs = []string{
 	"cloud.google.com/go/storage",
 	"google.golang.org/api/storage/v1",
+	"github.com/aws/aws-sdk-go-v2/service/s3",
+	"github.com/aws/aws-sdk-go/service/s3",
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob",
+	"github.com/minio/minio-go",
+	"gocloud.dev/blob",
 }
 
 // cloudStorageSDKImporters are the packages allowed to name a Cloud Storage
@@ -1541,9 +1593,9 @@ var cloudStorageSDKImporters = map[string]string{
 		"BY KEY, which is why it is a separate package with a separate importer rule below",
 	"hangar/gcsdelete": "the object-delete capability's own package. It names the SDK because " +
 		"it IS the adapter, and exactly one binary links it",
-	"cmd/artifact-daemon/durable": "the durable CACHE tier's own GCS backend, which predates " +
-		"the output plane and is a different store over a different bucket. It builds its own " +
-		"client because it IS a backend; which binaries may LINK it is the subject of " +
+	"cmd/artifact-daemon/durable": "the durable CACHE tier's own GCS and S3 backends, which " +
+		"predate the output plane and are a different store over a different bucket. It builds " +
+		"its own client because it IS a backend; which binaries may LINK it is the subject of " +
 		"TestTheDurableCacheTierIsLinkedOnlyByTheArtifactDaemon below, and the answer is one",
 	"hangar/output/conformance": "TEST-ONLY: the tier-2 conformance suite drives the real " +
 		"adapter against fake-gcs-server, because a conformance claim proved through a " +
@@ -1653,6 +1705,369 @@ func isCloudStorageSDK(imported string) bool {
 	}
 
 	return false
+}
+
+// TestEveryCloudStorageSDKEntryIsRecognised is R1-F9's fix: proof that each
+// entry in the list is load-bearing.
+//
+// The importer allowlist has a staleness arm -- an exemption nobody uses fails.
+// The SDK list had none, and could not have the same one: two of its entries are
+// MEANT to guard an import nothing makes, and `google.golang.org/api/storage/v1`
+// is named in exactly one file in the repository, this one, as the list entry.
+// Replacing it with a nonsense path left the whole guard green, so the entry
+// that closes round 3's route I could be deleted in a refactor with nothing to
+// say so.
+//
+// What is actually assertable is that each entry is a path the matcher matches,
+// exactly and by sub-path, and that a near miss does not match. That reddens on
+// a typo, on a deletion (the case count drops below the list length), and on a
+// matcher that stops working.
+func TestEveryCloudStorageSDKEntryIsRecognised(t *testing.T) {
+	if len(cloudStorageSDKs) < 3 {
+		t.Fatalf("cloudStorageSDKs has %d entries; the list collapsed and the rules over it "+
+			"guard almost nothing", len(cloudStorageSDKs))
+	}
+
+	for _, sdk := range cloudStorageSDKs {
+		if !isCloudStorageSDK(sdk) {
+			t.Errorf("isCloudStorageSDK(%q) is false for an entry of its own list", sdk)
+		}
+		if !isCloudStorageSDK(sdk + "/internal/apiv2") {
+			t.Errorf("isCloudStorageSDK does not match a sub-path of %q. Every one of these "+
+				"SDKs has sub-packages, and a rule that matches only the root path is one "+
+				"`import \"%s/types\"` away from silent.", sdk, sdk)
+		}
+		if isCloudStorageSDK(sdk + "-notreally") {
+			t.Errorf("isCloudStorageSDK matches %q by prefix alone; the separator is what keeps "+
+				"a neighbouring module out", sdk+"-notreally")
+		}
+	}
+
+	// The two entries whose whole job is to close a demonstrated route, named
+	// so that deleting one fails here and not in review a year later.
+	for _, required := range []string{
+		"cloud.google.com/go/storage",
+		"google.golang.org/api/storage/v1",
+		"github.com/aws/aws-sdk-go-v2/service/s3",
+	} {
+		if !isCloudStorageSDK(required) {
+			t.Errorf("%s is no longer in cloudStorageSDKs. It is there because a delete through "+
+				"it was DEMONSTRATED past the guards of its round; removing it reopens that "+
+				"route.", required)
+		}
+	}
+
+	for _, harmless := range []string{
+		"net/http", "cloud.google.com/go/iam", "google.golang.org/api/option",
+		"github.com/aws/aws-sdk-go-v2/config",
+	} {
+		if isCloudStorageSDK(harmless) {
+			t.Errorf("isCloudStorageSDK(%q) is true; the list has grown a path that is not an "+
+				"object-storage SDK, and every allowlist over it is now about the wrong thing",
+				harmless)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The two accident tripwires that are not about imports of an SDK
+// ---------------------------------------------------------------------------
+//
+// Neither closes its route. Route M (`gcloud storage rm`) and route L (a raw
+// HTTPS DELETE with application default credentials) are open to any binary that
+// holds credentials, and no source rule changes that -- IAM does. What these
+// catch is the shape the accident takes: somebody reaching for a cloud CLI or
+// for a storage endpoint by hand, in a tree where neither has ever appeared.
+//
+// Both are stated over a PREDICATE with its own table test, because the corpus
+// is clean: there is nothing for the scan to find today, so "it found nothing"
+// is not by itself evidence it is looking. The scan floors say the walk ran; the
+// predicate tables say the matcher works.
+
+// cloudCLIProgram matches an invocation of a cloud vendor's command-line tool.
+//
+// Deliberately narrow. `aws`, `az` and `mc` alone are ordinary English and
+// ordinary variable names, so this matches the distinctive tokens and the
+// two-word forms, which is what an actual shell-out reads like.
+var cloudCLIProgram = regexp.MustCompile(
+	`\b(gcloud|gsutil|s3cmd|rclone|awscli|aws\s+s3|az\s+storage|azcopy)\b`)
+
+// cloudStorageEndpointHost matches a cloud object-storage API host.
+var cloudStorageEndpointHost = regexp.MustCompile(
+	`\b(storage\.googleapis\.com|storage\.cloud\.google\.com|` +
+		`[a-z0-9.-]*s3[a-z0-9.-]*\.amazonaws\.com|` +
+		`[a-z0-9.-]*\.blob\.core\.windows\.net|` +
+		`[a-z0-9.-]*\.r2\.cloudflarestorage\.com)\b`)
+
+// cloudCLIShellOutAllowed and cloudStorageEndpointAllowed are the packages
+// permitted to trip each tripwire, with the reason. Both are empty: nothing in
+// this repository does either, and that is the point -- the first entry added
+// is a decision somebody has to write a sentence for.
+var cloudCLIShellOutAllowed = map[string]string{}
+
+var cloudStorageEndpointAllowed = map[string]string{}
+
+// TestNoCommandRootShellsOutToACloudCLI is route M's tell.
+//
+// `os/exec` in a composition root is the same shape as `unsafe` in one: a root
+// wires things together, and a binary that can start a subprocess can run
+// `gcloud storage rm gs://bucket/key` with the same credentials the SDK would
+// have used, naming no SDK at all. Scoped to cmd/ and to the output plane's own
+// trees, because exec has legitimate uses elsewhere in this repository (the
+// worker runs things for a living) and a rule that had to exempt half the tree
+// would be a list, not a boundary.
+func TestNoCommandRootShellsOutToACloudCLI(t *testing.T) {
+	trees := []string{"cmd", "hangar", "atc/hangaroutput"}
+	root := repositoryRoot()
+	fileSet := token.NewFileSet()
+	scanned := 0
+
+	for _, tree := range trees {
+		err := filepath.WalkDir(filepath.Join(root, filepath.FromSlash(tree)),
+			func(path string, entry os.DirEntry, walkErr error) error {
+				if walkErr != nil {
+					return walkErr
+				}
+				if entry.IsDir() || !strings.HasSuffix(path, ".go") ||
+					strings.HasSuffix(path, "_test.go") {
+					return nil
+				}
+				relative, relErr := filepath.Rel(root, path)
+				if relErr != nil {
+					return relErr
+				}
+				relative = filepath.ToSlash(relative)
+				pkg := filepath.ToSlash(filepath.Dir(relative))
+				scanned++
+
+				file, parseErr := parser.ParseFile(fileSet, path, nil, 0)
+				if parseErr != nil {
+					return fmt.Errorf("parsing %s: %w", relative, parseErr)
+				}
+
+				importsExec := false
+				for _, spec := range file.Imports {
+					imported, unquoteErr := strconv.Unquote(spec.Path.Value)
+					if unquoteErr != nil {
+						return unquoteErr
+					}
+					if imported == "os/exec" {
+						importsExec = true
+					}
+				}
+
+				named := ""
+				ast.Inspect(file, func(node ast.Node) bool {
+					literal, ok := node.(*ast.BasicLit)
+					if !ok || literal.Kind != token.STRING {
+						return true
+					}
+					value, unquoteErr := strconv.Unquote(literal.Value)
+					if unquoteErr != nil {
+						return true
+					}
+					if match := cloudCLIProgram.FindString(value); match != "" {
+						named = match
+					}
+
+					return true
+				})
+
+				if !importsExec && named == "" {
+					return nil
+				}
+				if reason, ok := cloudCLIShellOutAllowed[pkg]; ok {
+					t.Logf("allowed: %s (exec=%v, names=%q) — %s",
+						relative, importsExec, named, reason)
+
+					return nil
+				}
+				switch {
+				case importsExec && named != "":
+					t.Errorf("%s imports os/exec and names the cloud CLI %q.\n\nThat is a "+
+						"delete with the Pod's own credentials, naming no SDK and making no "+
+						"import any rule in this file reads. It is not closed here -- IAM "+
+						"closes it -- but nothing in this tree has ever needed it, so the "+
+						"first time something does it should be a decision with a sentence "+
+						"in cloudCLIShellOutAllowed.", relative, named)
+				case importsExec:
+					t.Errorf("%s imports os/exec.\n\nA composition root and the output plane "+
+						"wire things together; they do not start subprocesses. This is route "+
+						"M's tell, the way `unsafe` is route K's: a subprocess runs with the "+
+						"same credentials and is invisible to every import rule here.",
+						relative)
+				default:
+					t.Errorf("%s names the cloud CLI %q.\n\nNothing in this tree drives a "+
+						"vendor CLI. A program name in a string is how a shell-out arrives "+
+						"one commit before the os/exec import does.", relative, named)
+				}
+
+				return nil
+			})
+		if err != nil {
+			t.Fatalf("scanning %s/: %v", tree, err)
+		}
+	}
+
+	if scanned < 100 {
+		t.Fatalf("scanned only %d non-test files across %v; the walk failed and this rule "+
+			"would pass vacuously", scanned, trees)
+	}
+}
+
+// TestNoPackageAddressesACloudStorageEndpointOverRawHTTP is route L's tell.
+//
+// Route L is the sharpest one found: `golang.org/x/oauth2/google.DefaultClient`
+// plus `net/http` DELETE to
+// https://storage.googleapis.com/storage/v1/b/<bucket>/o/<key>. Fifteen lines,
+// no go.mod change, no SDK named, and route I one layer down -- the same JSON
+// API, reached with net/http instead of the generated client. An import rule
+// cannot see a URL.
+//
+// This is repository-wide because the URL can be built anywhere the binary
+// links, and it is over string literals because that is what a host in a URL
+// is. Comments are not scanned: several files legitimately explain this route,
+// including the paragraph above.
+func TestNoPackageAddressesACloudStorageEndpointOverRawHTTP(t *testing.T) {
+	root := repositoryRoot()
+	fileSet := token.NewFileSet()
+	scanned := 0
+
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			switch entry.Name() {
+			case "vendor", ".git", "node_modules", "elm-stuff":
+				return filepath.SkipDir
+			}
+
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		relative, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
+		}
+		relative = filepath.ToSlash(relative)
+		pkg := filepath.ToSlash(filepath.Dir(relative))
+		scanned++
+
+		// Cheap pre-filter: parse only files whose bytes mention a host at all.
+		body, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if !cloudStorageEndpointHost.Match(body) {
+			return nil
+		}
+
+		file, parseErr := parser.ParseFile(fileSet, path, body, 0)
+		if parseErr != nil {
+			return fmt.Errorf("parsing %s: %w", relative, parseErr)
+		}
+
+		ast.Inspect(file, func(node ast.Node) bool {
+			literal, ok := node.(*ast.BasicLit)
+			if !ok || literal.Kind != token.STRING {
+				return true
+			}
+			value, unquoteErr := strconv.Unquote(literal.Value)
+			if unquoteErr != nil {
+				return true
+			}
+			match := cloudStorageEndpointHost.FindString(value)
+			if match == "" {
+				return true
+			}
+			if reason, ok := cloudStorageEndpointAllowed[pkg]; ok {
+				t.Logf("allowed: %s names %s — %s", relative, match, reason)
+
+				return true
+			}
+			t.Errorf("%s names the cloud object-storage endpoint %s in a string literal.\n\n"+
+				"An SDK takes its endpoint from a (ctx, endpoint) constructor in "+
+				"hangar/internal/gcsclient or from the tier's own config; a host written into "+
+				"a literal is a URL somebody is about to build by hand. `DELETE "+
+				"https://storage.googleapis.com/storage/v1/b/<bucket>/o/<key>` with "+
+				"application default credentials is a working object delete that names no SDK "+
+				"and makes no import any rule in this file reads. IAM is what refuses it; this "+
+				"is what notices it was written.", relative, match)
+
+			return true
+		})
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scanning the repository: %v", err)
+	}
+
+	if scanned < 1000 {
+		t.Fatalf("scanned only %d non-test Go files; the walk failed and this rule would pass "+
+			"vacuously", scanned)
+	}
+}
+
+// TestTheAccidentTripwiresRecogniseWhatTheyAreLookingFor is the positive control
+// for both rules above.
+//
+// Neither has anything to find in this repository, so a green says only that the
+// walk completed. These cases say the matchers work -- including the near misses
+// that must NOT match, because a tripwire that fires on ordinary code is a
+// tripwire somebody disables.
+func TestTheAccidentTripwiresRecogniseWhatTheyAreLookingFor(t *testing.T) {
+	for _, tripping := range []string{
+		"gcloud storage rm gs://bucket/key",
+		"gsutil -m rm gs://bucket/**",
+		"aws s3 rm s3://bucket/key",
+		"az storage blob delete",
+		"rclone delete remote:bucket/key",
+		"s3cmd del s3://bucket/key",
+		"azcopy remove",
+	} {
+		if !cloudCLIProgram.MatchString(tripping) {
+			t.Errorf("cloudCLIProgram does not match %q, which is a cloud CLI delete", tripping)
+		}
+	}
+	for _, harmless := range []string{
+		"gcloudy", "the aws region", "az", "mc", "team storage", "s3 bucket name",
+		"downloading azcopying",
+	} {
+		if cloudCLIProgram.MatchString(harmless) {
+			t.Errorf("cloudCLIProgram matches %q, which is ordinary text; a tripwire that "+
+				"fires on ordinary code is one somebody turns off", harmless)
+		}
+	}
+
+	for _, tripping := range []string{
+		"https://storage.googleapis.com/storage/v1/b/jb-output/o/key",
+		"storage.cloud.google.com",
+		"https://jb-output.s3.amazonaws.com/key",
+		"https://s3.us-east-2.amazonaws.com/jb-output",
+		"https://account.blob.core.windows.net/c/k",
+		"https://abc.r2.cloudflarestorage.com/jb",
+	} {
+		if !cloudStorageEndpointHost.MatchString(tripping) {
+			t.Errorf("cloudStorageEndpointHost does not match %q, which is an object-storage "+
+				"API host", tripping)
+		}
+	}
+	for _, harmless := range []string{
+		"https://www.googleapis.com/auth/devstorage.read_only",
+		"http://localhost:4443",
+		"https://iam.googleapis.com",
+		"https://sts.amazonaws.com",
+		"storage",
+	} {
+		if cloudStorageEndpointHost.MatchString(harmless) {
+			t.Errorf("cloudStorageEndpointHost matches %q, which is not an object-storage API "+
+				"host", harmless)
+		}
+	}
 }
 
 // TestNoCommandRootReachesForUnsafe closes route K by its tell.

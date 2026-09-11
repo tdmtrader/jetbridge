@@ -6,9 +6,13 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
 )
 
@@ -1152,4 +1156,229 @@ func declaredMethodsOnType(t *testing.T, path, receiver string) map[string]bool 
 	}
 
 	return methods
+}
+
+// ---------------------------------------------------------------------------
+// The IAM half, made load-bearing
+// ---------------------------------------------------------------------------
+//
+// Source guards cannot bound a credential holder: a Go program holding
+// application default credentials can delete an object with a raw HTTPS request,
+// a vendor CLI, or any SDK nobody thought to name, and no rule over imports
+// changes that. IAM is the control -- so the claim "only the reclaimer may
+// reach delete" is only as true as the grant, and the grant has to be asserted
+// somewhere rather than described.
+//
+// This is that assertion, over the two artefacts an operator actually acts on:
+// the permission matrix generated into deploy/chart/values.yaml, which is what
+// they copy into Terraform, and the rendered Workload Identity annotations,
+// which are what bind a Pod to the cloud principal that holds it. Neither proves
+// a binding exists -- the chart creates no IAM and says so, and activation is
+// what attests the real policy (Req 54). What they prove is that the
+// documentation grants storage.objects.delete to exactly one principal and that
+// exactly one workload runs as it.
+
+// documentedPermissionMatrix reads the matrix out of values.yaml rather than
+// restating it, because a matrix restated in a test is a second copy that drifts
+// with the first.
+//
+// The block is
+//
+//	#   <workload>
+//	#     storage.x, storage.y
+//
+// under "THE HONEST PERMISSION MATRIX", and it ends at the first bulleted
+// caveat.
+func documentedPermissionMatrix(t *testing.T) map[string][]string {
+	t.Helper()
+
+	const marker = "THE HONEST PERMISSION MATRIX"
+
+	lines := strings.Split(readChartFile(t, "values.yaml"), "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.Contains(line, marker) {
+			start = i
+
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("deploy/chart/values.yaml no longer contains %q; the matrix moved and this "+
+			"rule would pass over nothing", marker)
+	}
+
+	matrix := map[string][]string{}
+	workload := ""
+	for _, line := range lines[start+1:] {
+		if !strings.HasPrefix(line, "#") {
+			break
+		}
+		body := strings.TrimPrefix(line, "#")
+		trimmed := strings.TrimSpace(body)
+		if trimmed == "" {
+			continue
+		}
+		indent := len(body) - len(strings.TrimLeft(body, " "))
+		switch {
+		case indent == 3 && strings.HasPrefix(trimmed, "*"):
+			// The caveats below the matrix. Everything after is prose.
+			return matrix
+		case indent == 3:
+			workload = trimmed
+		case indent == 5 && strings.HasPrefix(trimmed, "storage."):
+			if workload == "" {
+				t.Fatalf("permission line %q has no workload above it", trimmed)
+			}
+			for _, permission := range strings.Split(trimmed, ",") {
+				permission = strings.TrimSpace(permission)
+				if permission == "" {
+					continue
+				}
+				if !strings.HasPrefix(permission, "storage.") {
+					t.Errorf("%q under %q is not a GCS permission", permission, workload)
+
+					continue
+				}
+				matrix[workload] = append(matrix[workload], permission)
+			}
+		}
+	}
+
+	return matrix
+}
+
+func TestOnlyTheReclaimerPrincipalIsGrantedObjectDelete(t *testing.T) {
+	matrix := documentedPermissionMatrix(t)
+	if len(matrix) != 4 {
+		t.Fatalf("parsed %d workloads out of the documented permission matrix, not four: %v. "+
+			"The block's shape changed and every assertion below would pass over the wrong "+
+			"text.", len(matrix), matrix)
+	}
+
+	var granted []string
+	total := 0
+	for workload, permissions := range matrix {
+		total += len(permissions)
+		for _, permission := range permissions {
+			if permission == "storage.objects.delete" {
+				granted = append(granted, workload)
+			}
+		}
+	}
+	if total < 8 {
+		t.Fatalf("the documented matrix grants %d permissions across four workloads; it "+
+			"collapsed", total)
+	}
+	sort.Strings(granted)
+
+	if len(granted) != 1 {
+		t.Fatalf("deploy/chart/values.yaml grants storage.objects.delete to %d workloads (%v).\n\n"+
+			"IAM is the control here -- source guards cannot bound a process that holds "+
+			"credentials -- so exactly one principal may hold delete on the output bucket, and "+
+			"the whole isolation is that the reclaimer is a separate Pod because of it.",
+			len(granted), granted)
+	}
+	if !strings.Contains(granted[0], "reclaimer") {
+		t.Fatalf("the documented matrix grants storage.objects.delete to %q, not to the "+
+			"reclaimer", granted[0])
+	}
+
+	// And the rendered side: the annotation that binds a Pod to that principal
+	// is on one ServiceAccount, and one workload runs as it. Rendered with the
+	// activation Job on, because it is the fifth identity in this namespace and
+	// the easiest one to point at the wrong account by copy-paste.
+	out := renderOutput(t,
+		"hangarOutput.daemon.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=publisher@p.iam.gserviceaccount.com",
+		"hangarOutput.inventory.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=inventory@p.iam.gserviceaccount.com",
+		"hangarOutput.reclaimer.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=reclaimer@p.iam.gserviceaccount.com",
+		"hangarOutput.policyAttestor.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=attestor@p.iam.gserviceaccount.com",
+		"hangarOutput.activation.job.mode=enable",
+		"hangarOutput.activation.job.facet=output",
+	)
+
+	const deletePrincipal = "reclaimer@p.iam.gserviceaccount.com"
+
+	reclaimerAccount := objectNamed(t, out, "ServiceAccount", "-"+outputReclaimerComponent).name
+
+	accountsWithDelete := map[string]string{}
+	annotated := 0
+	for _, document := range documentsIn(t, out) {
+		if document.kind != "ServiceAccount" {
+			continue
+		}
+		var account corev1.ServiceAccount
+		if err := yaml.UnmarshalStrict([]byte(document.body), &account); err != nil {
+			t.Fatalf("%s: %v", document.source, err)
+		}
+		principal := account.Annotations["iam.gke.io/gcp-service-account"]
+		if principal == "" {
+			continue
+		}
+		annotated++
+		if principal == deletePrincipal {
+			accountsWithDelete[account.Name] = document.source
+		}
+	}
+	if annotated < 4 {
+		t.Fatalf("only %d rendered ServiceAccounts carry a Workload Identity annotation; the "+
+			"render changed shape and this rule is looking at nothing", annotated)
+	}
+	if len(accountsWithDelete) != 1 {
+		t.Fatalf("%d ServiceAccounts are annotated with the delete-holding principal %s: %v.\n\n"+
+			"A Kubernetes service account is Pod-wide. Two accounts bound to one cloud identity "+
+			"is two Pods holding storage.objects.delete, whatever their code does.",
+			len(accountsWithDelete), deletePrincipal, accountsWithDelete)
+	}
+	if _, ok := accountsWithDelete[reclaimerAccount]; !ok {
+		t.Fatalf("the delete-holding principal %s is bound to %v, not to the reclaimer's "+
+			"ServiceAccount %s", deletePrincipal, accountsWithDelete, reclaimerAccount)
+	}
+
+	// Finally: which workloads run as that account. Every Pod template in the
+	// render, not just the output ones -- web, the artifact daemon, postgres and
+	// the activation Job are all in this namespace.
+	var runAs []string
+	templates := 0
+	for _, document := range documentsIn(t, out) {
+		var spec corev1.PodSpec
+		switch document.kind {
+		case "Deployment":
+			var object appsv1.Deployment
+			if err := yaml.UnmarshalStrict([]byte(document.body), &object); err != nil {
+				t.Fatalf("%s: %v", document.source, err)
+			}
+			spec = object.Spec.Template.Spec
+		case "DaemonSet":
+			var object appsv1.DaemonSet
+			if err := yaml.UnmarshalStrict([]byte(document.body), &object); err != nil {
+				t.Fatalf("%s: %v", document.source, err)
+			}
+			spec = object.Spec.Template.Spec
+		case "Job":
+			var object batchv1.Job
+			if err := yaml.UnmarshalStrict([]byte(document.body), &object); err != nil {
+				t.Fatalf("%s: %v", document.source, err)
+			}
+			spec = object.Spec.Template.Spec
+		default:
+			continue
+		}
+		templates++
+		if spec.ServiceAccountName == reclaimerAccount {
+			runAs = append(runAs, document.source)
+		}
+	}
+	if templates < 7 {
+		t.Fatalf("only %d Pod templates were decoded out of the render; the walk failed and "+
+			"this rule would pass vacuously", templates)
+	}
+	if len(runAs) != 1 {
+		t.Fatalf("%d Pod templates run as %s, the only account bound to a principal holding "+
+			"storage.objects.delete: %v", len(runAs), reclaimerAccount, runAs)
+	}
+	if !strings.Contains(runAs[0], "reclaimer") {
+		t.Fatalf("the account holding storage.objects.delete is used by %s, which is not the "+
+			"reclaimer", runAs[0])
+	}
 }
