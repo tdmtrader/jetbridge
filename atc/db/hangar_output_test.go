@@ -57,8 +57,17 @@ var _ = Describe("the Hangar output lock suffix", func() {
 	finishFor := hangarFinishFor
 	issueChallenge := hangarIssueChallenge
 	admissionFor := hangarAdmissionFor
+	// publish, with its publication grace already elapsed on the database
+	// clock. Every spec in this file that admits a reclamation needs that --
+	// elapsed grace is one of Req 46's seven preconditions -- and a spec that
+	// did not arrange it would be asserting the grace refusal under the name of
+	// whatever else it was about.
 	publish := func(digest hangar.Digest, generation int64) (output.ReservationID, hangar.TreeRef) {
-		return hangarPublish(ctx, repository, digest, generation)
+		GinkgoHelper()
+		reservation, ref := hangarPublish(ctx, repository, digest, generation)
+		hangarAgePublication(ref, hangarGraceElapsed)
+
+		return reservation, ref
 	}
 
 	readLeaseRequest := hangarReadLeaseRequest
@@ -140,7 +149,8 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(reclaimer)
 
-			err = repository.AdmitReclaim(ctx, reclaimer, ref, uuid.NewString(), 1, output.MinLeaseTerm)
+			err = repository.AdmitReclaim(ctx, reclaimer, ref, uuid.NewString(), 1, output.MinLeaseTerm,
+				output.DefaultPublicationGrace)
 			Expect(err).To(MatchError(output.ErrConflict))
 			Expect(err.Error()).To(ContainSubstring("1 claim(s)"))
 			Expect(reclaimer.Rollback()).To(Succeed())
@@ -157,7 +167,8 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			defer db.Rollback(reclaimer)
 
 			Expect(repository.AdmitReclaim(ctx, reclaimer, ref, uuid.NewString(), 1,
-				output.MinLeaseTerm)).To(Succeed())
+				output.MinLeaseTerm,
+				output.DefaultPublicationGrace)).To(Succeed())
 			Expect(reclaimer.Commit()).To(Succeed())
 
 			claimant, err := dbConn.Begin()
@@ -197,7 +208,8 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				}
 				defer db.Rollback(reclaimer)
 				err = repository.AdmitReclaim(ctx, reclaimer, ref, uuid.NewString(), 1,
-					output.MinLeaseTerm)
+					output.MinLeaseTerm,
+					output.DefaultPublicationGrace)
 				if err == nil {
 					err = reclaimer.Commit()
 				}
@@ -254,7 +266,8 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			reclaimer, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(reclaimer)
-			err = repository.AdmitReclaim(ctx, reclaimer, ref, uuid.NewString(), 1, output.MinLeaseTerm)
+			err = repository.AdmitReclaim(ctx, reclaimer, ref, uuid.NewString(), 1, output.MinLeaseTerm,
+				output.DefaultPublicationGrace)
 			Expect(err).To(MatchError(output.ErrConflict))
 			Expect(err.Error()).To(ContainSubstring("1 read lease(s)"))
 			Expect(reclaimer.Rollback()).To(Succeed())
@@ -271,7 +284,8 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(reclaimer)
 			Expect(repository.AdmitReclaim(ctx, reclaimer, ref, uuid.NewString(), 1,
-				output.MinLeaseTerm)).To(Succeed())
+				output.MinLeaseTerm,
+				output.DefaultPublicationGrace)).To(Succeed())
 			Expect(reclaimer.Commit()).To(Succeed())
 		})
 
@@ -293,7 +307,8 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(reclaimer)
 			Expect(repository.AdmitReclaim(ctx, reclaimer, ref, uuid.NewString(), 1,
-				output.MinLeaseTerm)).To(Succeed())
+				output.MinLeaseTerm,
+				output.DefaultPublicationGrace)).To(Succeed())
 			Expect(reclaimer.Commit()).To(Succeed())
 
 			reader, err := dbConn.Begin()
@@ -679,7 +694,8 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				Expect(err).NotTo(HaveOccurred())
 				defer db.Rollback(blocked)
 				err = repository.AdmitReclaim(ctx, blocked, ref, uuid.NewString(), 1,
-					output.MinLeaseTerm)
+					output.MinLeaseTerm,
+					output.DefaultPublicationGrace)
 				Expect(err).To(MatchError(output.ErrConflict))
 				Expect(err.Error()).To(ContainSubstring("1 read lease(s)"))
 				Expect(blocked.Rollback()).To(Succeed())
@@ -696,7 +712,8 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				Expect(err).NotTo(HaveOccurred())
 				defer db.Rollback(admitted)
 				Expect(repository.AdmitReclaim(ctx, admitted, ref, uuid.NewString(), 1,
-					output.MinLeaseTerm)).To(Succeed())
+					output.MinLeaseTerm,
+					output.DefaultPublicationGrace)).To(Succeed())
 				Expect(admitted.Commit()).To(Succeed())
 
 				// And recovery writes the release the daemon never got to write,
@@ -883,7 +900,8 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				Expect(err).NotTo(HaveOccurred())
 				defer db.Rollback(reclaiming)
 				err = repository.AdmitReclaim(ctx, reclaiming, ref, uuid.NewString(), 1,
-					output.MinLeaseTerm)
+					output.MinLeaseTerm,
+					output.DefaultPublicationGrace)
 				Expect(err).To(MatchError(output.ErrConflict))
 				Expect(err.Error()).To(ContainSubstring("1 read lease(s)"))
 				Expect(reclaiming.Rollback()).To(Succeed())
@@ -1269,7 +1287,8 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(reclaimer)
 			Expect(repository.AdmitReclaim(ctx, reclaimer, second, uuid.NewString(), 1,
-				output.MinLeaseTerm)).To(Succeed())
+				output.MinLeaseTerm,
+				output.DefaultPublicationGrace)).To(Succeed())
 			Expect(reclaimer.Commit()).To(Succeed())
 
 			Expect(lifecycleState(first)).To(Equal("registered"))
@@ -2991,7 +3010,8 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(reclaimer)
 			Expect(repository.AdmitReclaim(ctx, reclaimer, ref, uuid.NewString(), 1,
-				output.MinLeaseTerm)).To(Succeed())
+				output.MinLeaseTerm,
+				output.DefaultPublicationGrace)).To(Succeed())
 			Expect(reclaimer.Commit()).To(Succeed())
 
 			loser, err := dbConn.Begin()
@@ -3034,7 +3054,8 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			late, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(late)
-			err = repository.AdmitReclaim(ctx, late, second, uuid.NewString(), 1, output.MinLeaseTerm)
+			err = repository.AdmitReclaim(ctx, late, second, uuid.NewString(), 1, output.MinLeaseTerm,
+				output.DefaultPublicationGrace)
 			Expect(err).To(MatchError(output.ErrConflict))
 			Expect(err.Error()).To(ContainSubstring("1 claim(s)"))
 			Expect(late.Rollback()).To(Succeed())

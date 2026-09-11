@@ -178,11 +178,13 @@ var _ = Describe("the bounded output-plane workers", func() {
 			output.NewTimestamp(time.Now().Add(output.DefaultCaptureDeadline)))
 		hangarReleaseSource(ctx, repository, capture)
 		hangarAgeCapture(capture, 48*time.Hour)
+		hangarAgePublication(capture.Ref, hangarGraceElapsed)
 
 		tx, err := dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(repository.AdmitReclaim(ctx, db.HangarOutputTx{Tx: tx}, capture.Ref,
-			uuid.NewString(), 1, output.MinLeaseTerm)).To(Succeed())
+			uuid.NewString(), 1, output.MinLeaseTerm,
+			output.DefaultPublicationGrace)).To(Succeed())
 		Expect(tx.Commit()).To(Succeed())
 
 		found := 0
@@ -367,9 +369,11 @@ var _ = Describe("the bounded output-plane workers", func() {
 				RequestedAt:     output.NewTimestamp(time.Now()),
 			})).To(Succeed())
 		})
+		hangarAgePublication(capture.Ref, hangarGraceElapsed)
 		in(func(tx db.HangarOutputTx) {
 			Expect(repository.AdmitReclaim(ctx, tx, capture.Ref, uuid.NewString(), 1,
-				output.MinLeaseTerm)).To(Succeed())
+				output.MinLeaseTerm,
+				output.DefaultPublicationGrace)).To(Succeed())
 		})
 	})
 

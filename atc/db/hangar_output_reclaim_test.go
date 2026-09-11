@@ -48,7 +48,10 @@ var _ = Describe("reclaiming an exact generation", func() {
 	// reclaimable publishes a capture, settles it completely, and returns an
 	// exact ref nothing protects: no claim, no read lease, no unresolved
 	// reservation, a terminal and settled capture past its deadline.
-	reclaimable := func(digest hangar.Digest, generation int64) hangar.TreeRef {
+	// published is a settled capture whose generation is still inside its
+	// publication grace. Elapsed grace is a precondition in its own right and
+	// one spec below is about exactly that, so the two are separate helpers.
+	published := func(digest hangar.Digest, generation int64) hangar.TreeRef {
 		GinkgoHelper()
 		capture := hangarPublishAt(ctx, repository, digest, generation,
 			output.NewTimestamp(time.Now().Add(output.DefaultCaptureDeadline)))
@@ -58,12 +61,20 @@ var _ = Describe("reclaiming an exact generation", func() {
 		return capture.Ref
 	}
 
+	reclaimable := func(digest hangar.Digest, generation int64) hangar.TreeRef {
+		GinkgoHelper()
+		ref := published(digest, generation)
+		hangarAgePublication(ref, hangarGraceElapsed)
+
+		return ref
+	}
+
 	admit := func(ref hangar.TreeRef) db.HangarReclaimJob {
 		GinkgoHelper()
 		var job db.HangarReclaimJob
 		in(func(tx db.HangarOutputTx) {
 			Expect(repository.AdmitReclaim(ctx, tx, ref, owner, 1,
-				output.LeaseTermFor(deleteTimeout))).To(Succeed())
+				output.LeaseTermFor(deleteTimeout), output.DefaultPublicationGrace)).To(Succeed())
 		})
 		in(func(tx db.HangarOutputTx) {
 			var err error
@@ -111,6 +122,34 @@ var _ = Describe("reclaiming an exact generation", func() {
 	})
 
 	Describe("admission", func() {
+		It("refuses a generation whose publication grace has not elapsed", func() {
+			// Req 46 lists seven preconditions and elapsed grace is one of
+			// them. Without it a generation is admissible the instant its
+			// receipt lands: the capture that made the object has settled, so
+			// nothing else here objects, and the plane would delete a freshly
+			// published tree because no claim had been taken yet.
+			ref := published(hangarDigest(60), 1725830823000060)
+
+			tx := begin()
+			err := repository.AdmitReclaim(ctx, tx, ref, owner, 1,
+				output.LeaseTermFor(deleteTimeout), output.DefaultPublicationGrace)
+			db.Rollback(tx)
+			Expect(err).To(MatchError(output.ErrConflict))
+			Expect(err.Error()).To(ContainSubstring("publication grace"))
+			Expect(lifecycleStateOf(ref)).To(Equal("registered"),
+				"a generation inside its publication grace was marked reclaiming")
+
+			// And the control: the same generation, once its grace has
+			// elapsed on the database clock, is admitted.
+			hangarAgePublication(ref, hangarGraceElapsed)
+			in(func(tx db.HangarOutputTx) {
+				Expect(repository.AdmitReclaim(ctx, tx, ref, owner, 1,
+					output.LeaseTermFor(deleteTimeout), output.DefaultPublicationGrace)).
+					To(Succeed())
+			})
+			Expect(lifecycleStateOf(ref)).To(Equal("reclaiming"))
+		})
+
 		It("marks the generation reclaiming before any external delete", func() {
 			ref := reclaimable(hangarDigest(50), 1725830823000050)
 			Expect(lifecycleStateOf(ref)).To(Equal("registered"))
@@ -139,9 +178,13 @@ var _ = Describe("reclaiming an exact generation", func() {
 			})
 
 			tx := begin()
-			err := repository.AdmitReclaim(ctx, tx, ref, owner, 1, output.MinLeaseTerm)
+			err := repository.AdmitReclaim(ctx, tx, ref, owner, 1, output.MinLeaseTerm,
+				output.DefaultPublicationGrace)
 			db.Rollback(tx)
 			Expect(err).To(MatchError(output.ErrConflict))
+			Expect(err.Error()).To(ContainSubstring("claim"),
+				"the refusal is about something other than the active claim; a precondition "+
+					"added later must not quietly become the reason this spec is green")
 			Expect(lifecycleStateOf(ref)).To(Equal("registered"))
 
 			in(func(tx db.HangarOutputTx) {
@@ -183,7 +226,7 @@ var _ = Describe("reclaiming an exact generation", func() {
 					return
 				}
 				if err := repository.AdmitReclaim(ctx, db.HangarOutputTx{Tx: tx}, ref, owner, 1,
-					output.MinLeaseTerm); err != nil {
+					output.MinLeaseTerm, output.DefaultPublicationGrace); err != nil {
 					_ = tx.Rollback()
 					admitted <- err
 
@@ -213,7 +256,8 @@ var _ = Describe("reclaiming an exact generation", func() {
 
 			tx := begin()
 			defer db.Rollback(tx)
-			err := repository.AdmitReclaim(ctx, tx, ref, owner, 1, output.MinLeaseTerm)
+			err := repository.AdmitReclaim(ctx, tx, ref, owner, 1, output.MinLeaseTerm,
+				output.DefaultPublicationGrace)
 			Expect(err).To(MatchError(output.ErrConflict))
 			Expect(err.Error()).To(ContainSubstring("unresolved reservation"))
 		})
@@ -250,7 +294,7 @@ var _ = Describe("reclaiming an exact generation", func() {
 			// what turns the refusal into this leaf's vocabulary.
 			tx := begin()
 			Expect(repository.AdmitReclaim(ctx, tx, other, owner, 1,
-				output.MinLeaseTerm)).To(Succeed())
+				output.MinLeaseTerm, output.DefaultPublicationGrace)).To(Succeed())
 			err := tx.Commit()
 			db.Rollback(tx)
 			Expect(err).To(HaveOccurred())
@@ -582,7 +626,8 @@ var _ = Describe("reclaiming an exact generation", func() {
 
 			tx := begin()
 			defer db.Rollback(tx)
-			err := repository.AdmitReclaim(ctx, tx, ref, owner, 1, output.MinLeaseTerm)
+			err := repository.AdmitReclaim(ctx, tx, ref, owner, 1, output.MinLeaseTerm,
+				output.DefaultPublicationGrace)
 			Expect(err).To(MatchError(output.ErrConflict))
 
 			// And a claim on it is refused: the tombstone is what stops a
@@ -610,7 +655,8 @@ var _ = Describe("reclaiming an exact generation", func() {
 			// state is terminal and a reclaim job over it is refused.
 			tx := begin()
 			defer db.Rollback(tx)
-			Expect(repository.AdmitReclaim(ctx, tx, ref, owner, 1, output.MinLeaseTerm)).
+			Expect(repository.AdmitReclaim(ctx, tx, ref, owner, 1, output.MinLeaseTerm,
+				output.DefaultPublicationGrace)).
 				To(MatchError(output.ErrConflict))
 		})
 
@@ -727,7 +773,8 @@ var _ = Describe("reclaiming an exact generation", func() {
 
 			// The last claim is gone and the reader is still transferring.
 			tx := begin()
-			err := repository.AdmitReclaim(ctx, tx, ref, owner, 1, output.MinLeaseTerm)
+			err := repository.AdmitReclaim(ctx, tx, ref, owner, 1, output.MinLeaseTerm,
+				output.DefaultPublicationGrace)
 			db.Rollback(tx)
 			Expect(err).To(MatchError(output.ErrConflict))
 			Expect(err.Error()).To(ContainSubstring("read lease"))

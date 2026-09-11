@@ -37,9 +37,12 @@ type AdmissionPass struct {
 	Repository *db.HangarOutputRepository
 	Transactor controller.Transactor
 
-	// Grace is the configured publication grace. AdmitReclaim re-derives
-	// elapsed grace from the row and the database clock; this is the
-	// configuration half of that comparison and never the answer to it.
+	// Grace is the configured publication grace, and it is passed to
+	// AdmitReclaim as well as used to select candidates. The selection is a
+	// bound on how much work one pass opens; the admission is the precondition.
+	// Deriving the answer twice from one configured value is not two rules --
+	// both comparisons are made by the database against the row's own
+	// registered_at, and the second one holds the exact-lifecycle lock.
 	Grace time.Duration
 
 	// Term is the lease term a newly admitted job starts with.
@@ -119,7 +122,7 @@ func (pass *AdmissionPass) admit(ctx context.Context, candidate db.HangarReclaim
 	defer func() { _ = tx.Rollback() }()
 
 	if err := pass.Repository.AdmitReclaim(ctx, tx, candidate.Ref, pass.OwnerID,
-		candidate.Metageneration, pass.Term); err != nil {
+		candidate.Metageneration, pass.Term, pass.Grace); err != nil {
 		return err
 	}
 

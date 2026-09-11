@@ -176,9 +176,11 @@ var _ = Describe("the lifetime-policy admission gate", func() {
 
 		It("refuses reclaim admission", func() {
 			hangarAgeCapture(capture, 48*time.Hour)
+			hangarAgePublication(ref, hangarGraceElapsed)
 			err := commitOf(func(tx db.HangarOutputTx) {
 				Expect(repository.AdmitReclaim(ctx, tx, ref, uuid.NewString(), 1,
-					output.MinLeaseTerm)).To(Succeed())
+					output.MinLeaseTerm,
+					output.DefaultPublicationGrace)).To(Succeed())
 			})
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("at_risk"))

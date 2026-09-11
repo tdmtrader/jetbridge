@@ -462,3 +462,26 @@ func hangarAdoptionFor(ref hangar.TreeRef, createdAt time.Time) output.AdoptionR
 		SafetyMargin: output.PublicationGraceMargin,
 	}
 }
+
+// hangarAgePublication moves a lifecycle row into the past on the database
+// clock.
+//
+// Elapsed publication grace is one of reclaim admission's seven preconditions
+// and the default is eight days, so every spec that admits a reclamation has to
+// arrange it. Moving the row is the honest form: what is being arranged is time
+// passing, and the comparison the repository makes is still the database's own
+// against the row's own registered_at.
+func hangarAgePublication(ref hangar.TreeRef, by time.Duration) {
+	GinkgoHelper()
+
+	_, err := dbConn.Exec(`
+		UPDATE hangar_exact_lifecycles SET registered_at = registered_at - $4::interval
+		 WHERE scope = $1 AND digest = $2 AND generation = $3`,
+		string(ref.Scope), string(ref.Digest), ref.Generation, by.Round(time.Second).String())
+	Expect(err).NotTo(HaveOccurred())
+}
+
+// hangarGraceElapsed is the aging every admission spec applies: the default
+// publication grace plus an hour, so the row is outside grace by a margin no
+// clock skew can close.
+const hangarGraceElapsed = output.DefaultPublicationGrace + time.Hour

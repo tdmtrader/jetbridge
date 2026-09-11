@@ -862,12 +862,30 @@ func (repository *HangarOutputRepository) ReleaseReadLease(ctx context.Context, 
 // external delete.
 //
 // Every exclusion is rechecked here under the exact-lifecycle lock, and the
-// schema rechecks them again at commit: no active claim, no active read lease,
-// no unresolved reservation for the same content, and a currently provable safe
-// policy. A reclaimer that arrives second recognises the claimant and skips.
-func (repository *HangarOutputRepository) AdmitReclaim(ctx context.Context, tx output.Tx, ref hangar.TreeRef, owner string, metageneration int64, term time.Duration) error {
+// schema rechecks them again at commit: elapsed publication grace, no active
+// claim, no active read lease, no unresolved reservation for the same content,
+// and a currently provable safe policy. A reclaimer that arrives second
+// recognises the claimant and skips.
+//
+// Grace is a PARAMETER and the instant it is measured against is not. The
+// caller brings the deployment's configured publication grace, which is
+// configuration; the row brings registered_at, and the comparison is made on
+// the database clock in the statement below. A precondition whose instant came
+// from the process about to delete would be a precondition that process chose,
+// which is the same rule the reclaim job's own generation precondition follows.
+//
+// registered_at rather than the object's creation time, which this table does
+// not carry: for a `registered` row the object create precedes the receipt, and
+// for an `adopted` row adoption itself already required grace to elapse since
+// creation. Both are conservative -- the wait is never shorter than grace
+// measured from the object.
+func (repository *HangarOutputRepository) AdmitReclaim(ctx context.Context, tx output.Tx, ref hangar.TreeRef, owner string, metageneration int64, term, grace time.Duration) error {
 	if err := ref.Validate(); err != nil {
 		return err
+	}
+	if grace <= 0 {
+		return fmt.Errorf("%w: reclaim admission names no publication grace, and elapsed grace "+
+			"is one of the seven preconditions", output.ErrIncomplete)
 	}
 	interval, err := hangarLeaseInterval(term)
 	if err != nil {
@@ -889,8 +907,10 @@ func (repository *HangarOutputRepository) AdmitReclaim(ctx context.Context, tx o
 	var claims, leases, pending int
 	var epoch int64
 	var state string
+	var withinGrace bool
 	if err := hangarQueryRow(ctx, tx, `
 		SELECT l.state, l.activation_epoch,
+		       l.registered_at > now() - $2::interval,
 		       (SELECT count(*) FROM hangar_claims
 		         WHERE lifecycle_id = l.id AND released_at IS NULL),
 		       (SELECT count(*) FROM hangar_read_leases
@@ -898,12 +918,20 @@ func (repository *HangarOutputRepository) AdmitReclaim(ctx context.Context, tx o
 		       (SELECT count(*) FROM hangar_logical_reservations
 		         WHERE scope = l.scope AND digest = l.digest AND state = 'unresolved_generation')
 		FROM hangar_exact_lifecycles l WHERE l.id = $1`,
-		[]any{lifecycle}, &state, &epoch, &claims, &leases, &pending); err != nil {
+		[]any{lifecycle, hangarInterval(grace)},
+		&state, &epoch, &withinGrace, &claims, &leases, &pending); err != nil {
 		return err
 	}
 	if state != "registered" && state != "adopted" {
 		return fmt.Errorf("%w: %s/%s/%d is already %s", output.ErrConflict,
 			ref.Scope, ref.Digest, ref.Generation, state)
+	}
+	if withinGrace {
+		return fmt.Errorf("%w: %s/%s/%d is still inside its %s publication grace on the "+
+			"database clock; reclamation requires elapsed grace, and a generation admissible "+
+			"the instant its receipt landed would be one this plane deleted while the capture "+
+			"that made it could still legitimately be retrying",
+			output.ErrConflict, ref.Scope, ref.Digest, ref.Generation, grace)
 	}
 	if claims > 0 || leases > 0 || pending > 0 {
 		return fmt.Errorf("%w: %s/%s/%d is protected by %d claim(s), %d read lease(s) and %d "+
