@@ -21,7 +21,7 @@ metadata:
   name: {{ include "concourse.hangarOutput.daemonServiceAccount" . }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "concourse.labels" . | nindent 4 }}
+    {{- include "concourse.commonLabels" . | nindent 4 }}
     app.kubernetes.io/component: hangar-output-daemon
   {{- with $output.daemon.serviceAccount.annotations }}
   annotations:
@@ -33,7 +33,7 @@ kind: ClusterRole
 metadata:
   name: {{ $name }}
   labels:
-    {{- include "concourse.labels" . | nindent 4 }}
+    {{- include "concourse.commonLabels" . | nindent 4 }}
     app.kubernetes.io/component: hangar-output-daemon
 rules:
   # Its own node, to advertise and withdraw the two ready labels. Nothing else:
@@ -48,7 +48,7 @@ kind: ClusterRoleBinding
 metadata:
   name: {{ $name }}
   labels:
-    {{- include "concourse.labels" . | nindent 4 }}
+    {{- include "concourse.commonLabels" . | nindent 4 }}
     app.kubernetes.io/component: hangar-output-daemon
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -65,7 +65,7 @@ metadata:
   name: {{ $name }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "concourse.labels" . | nindent 4 }}
+    {{- include "concourse.commonLabels" . | nindent 4 }}
     app.kubernetes.io/component: hangar-output-daemon
 spec:
   # A node's source incarnations live on that node's disk and nowhere else, so
@@ -83,7 +83,7 @@ metadata:
   name: {{ $name }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "concourse.labels" . | nindent 4 }}
+    {{- include "concourse.commonLabels" . | nindent 4 }}
     app.kubernetes.io/component: hangar-output-daemon
 spec:
   selector:

@@ -40,7 +40,7 @@ metadata:
   name: {{ include "concourse.hangarOutput.activationServiceAccount" . }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "concourse.labels" . | nindent 4 }}
+    {{- include "concourse.commonLabels" . | nindent 4 }}
     app.kubernetes.io/component: hangar-output-activation
   {{- with .Values.hangarOutput.activation.serviceAccount.annotations }}
   annotations:
@@ -53,7 +53,7 @@ metadata:
   name: {{ include "concourse.hangarOutput.activationName" . }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "concourse.labels" . | nindent 4 }}
+    {{- include "concourse.commonLabels" . | nindent 4 }}
     app.kubernetes.io/component: hangar-output-activation
 rules:
   # Attestation enumerates the daemon cohort from the API rather than from node
@@ -70,7 +70,7 @@ metadata:
   name: {{ include "concourse.hangarOutput.activationName" . }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "concourse.labels" . | nindent 4 }}
+    {{- include "concourse.commonLabels" . | nindent 4 }}
     app.kubernetes.io/component: hangar-output-activation
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -87,7 +87,7 @@ metadata:
   name: {{ $name }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "concourse.labels" . | nindent 4 }}
+    {{- include "concourse.commonLabels" . | nindent 4 }}
     app.kubernetes.io/component: hangar-output-activation
 spec:
   backoffLimit: 2

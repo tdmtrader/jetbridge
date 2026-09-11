@@ -6,7 +6,7 @@ metadata:
   name: {{ include "concourse.fullname" . }}-db
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "concourse.labels" . | nindent 4 }}
+    {{- include "concourse.commonLabels" . | nindent 4 }}
     app.kubernetes.io/component: database
 spec:
   replicas: 1
@@ -70,7 +70,7 @@ metadata:
   name: {{ include "concourse.fullname" . }}-db
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "concourse.labels" . | nindent 4 }}
+    {{- include "concourse.commonLabels" . | nindent 4 }}
     app.kubernetes.io/component: database
 spec:
   selector:
@@ -87,7 +87,7 @@ metadata:
   name: {{ include "concourse.fullname" . }}-db
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "concourse.labels" . | nindent 4 }}
+    {{- include "concourse.commonLabels" . | nindent 4 }}
     app.kubernetes.io/component: database
 spec:
   accessModes:

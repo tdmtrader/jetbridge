@@ -18,7 +18,7 @@ metadata:
   name: {{ include "concourse.hangarOutput.receiptKeysName" . }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "concourse.labels" . | nindent 4 }}
+    {{- include "concourse.commonLabels" . | nindent 4 }}
     app.kubernetes.io/component: hangar-output
 data:
   receipt-keys.json: |

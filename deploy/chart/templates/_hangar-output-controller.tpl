@@ -20,7 +20,7 @@ metadata:
   name: {{ .account }}
   namespace: {{ $root.Release.Namespace }}
   labels:
-    {{- include "concourse.labels" $root | nindent 4 }}
+    {{- include "concourse.commonLabels" $root | nindent 4 }}
     app.kubernetes.io/component: {{ .component }}
   {{- with .values.serviceAccount.annotations }}
   annotations:
@@ -33,7 +33,7 @@ metadata:
   name: {{ .name }}
   namespace: {{ $root.Release.Namespace }}
   labels:
-    {{- include "concourse.labels" $root | nindent 4 }}
+    {{- include "concourse.commonLabels" $root | nindent 4 }}
     app.kubernetes.io/component: {{ .component }}
 spec:
   replicas: {{ int .values.replicas }}
