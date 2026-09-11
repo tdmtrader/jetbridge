@@ -117,6 +117,19 @@ type ListRequest struct {
 	Prefix   string
 	PageSize int
 	After    string
+
+	// AfterGeneration is the second half of the lexicographic (key, generation)
+	// after-key Req 43 makes the durable cursor out of.
+	//
+	// A listing resumed from a key alone cannot tell "I already did this
+	// object" from "this key was recreated while I was away": the second is a
+	// NEW object at an old name, and dropping it would mean an object the
+	// deployment created is never swept in the cycle it appeared in. So After
+	// is resumed from inclusively and an object at exactly that key is dropped
+	// only when its generation is no newer than this. Zero keeps the older
+	// meaning -- drop the resumed-from key outright -- so a caller that has no
+	// generation to name is not silently given a different listing.
+	AfterGeneration int64
 }
 
 // Page is one listing page.

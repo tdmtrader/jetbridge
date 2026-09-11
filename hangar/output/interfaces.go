@@ -198,8 +198,17 @@ type InventoryObject struct {
 // Complete is false when the pass stopped on a budget or a failure. The cursor
 // advances only when every object in the page has a committed disposition, so
 // an incomplete page is replayed rather than skipped.
+//
+// Debt is the other half of "every object has a committed disposition". An
+// object that cannot be classified -- poisoned metadata, a marker some other
+// cohort wrote, metadata larger than a whole pass budget -- is a disposition
+// too, and Req 44 requires it to be committed BEFORE the cursor moves past it.
+// Carrying it beside the objects is what lets one transaction write both, which
+// is the only arrangement in which a poisoned object can neither be lost nor
+// replayed forever.
 type InventoryPage struct {
 	Objects  []InventoryObject
+	Debt     []InventoryDebt
 	Next     InventoryCursor
 	Complete bool
 }

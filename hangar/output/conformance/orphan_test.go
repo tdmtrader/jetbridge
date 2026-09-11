@@ -33,7 +33,7 @@ func TestAMarkedUnregisteredObjectIsAnOrphanAndNotAMiss(t *testing.T) {
 			t.Fatalf("publishing: %v", err)
 		}
 
-		sweep, err := inventory.New(namespace, inventory.Restrict(tier.client))
+		sweep, err := inventory.New(namespace, inventory.Restrict(tier.client), output.ClockFunc(time.Now))
 		if err != nil {
 			t.Fatalf("building the inventory: %v", err)
 		}

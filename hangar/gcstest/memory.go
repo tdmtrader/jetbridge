@@ -185,8 +185,16 @@ func (memory *Memory) List(ctx context.Context, bucket string, request objectsto
 	}
 	sort.Strings(keys)
 
+	// The (key, generation) after-key. A resumed listing drops the key it
+	// resumed from ONLY when the object there is no newer than the generation
+	// the cursor named: an object recreated at that key since is a new object
+	// at an old name, and skipping it would lose it for a whole cycle.
 	start := 0
-	for start < len(keys) && keys[start] <= request.After && request.After != "" {
+	for start < len(keys) && request.After != "" && keys[start] <= request.After {
+		if keys[start] == request.After && request.AfterGeneration != 0 &&
+			memory.objects[bucket][keys[start]].generation > request.AfterGeneration {
+			break
+		}
 		start++
 	}
 	end := start + request.PageSize

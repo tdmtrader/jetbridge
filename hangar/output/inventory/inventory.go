@@ -60,10 +60,15 @@ func (handle restrictedHandle) Attrs(ctx context.Context) (objectstore.Attrs, er
 type Inventory struct {
 	namespace output.OutputNamespace
 	store     Store
+	clock     output.Clock
 }
 
 // New builds an inventory for one namespace.
-func New(namespace output.OutputNamespace, store Store) (*Inventory, error) {
+//
+// The clock is a parameter for the reason every clock in this plane is one: the
+// per-pass duration budget is the one bound a test cannot otherwise move, and a
+// bound nothing can reach is a bound nothing checks.
+func New(namespace output.OutputNamespace, store Store, clock output.Clock) (*Inventory, error) {
 	if namespace.IsZero() {
 		return nil, fmt.Errorf("%w: the inventory needs a derived output namespace",
 			output.ErrIncomplete)
@@ -71,8 +76,11 @@ func New(namespace output.OutputNamespace, store Store) (*Inventory, error) {
 	if store == nil {
 		return nil, fmt.Errorf("%w: the inventory needs an object store", output.ErrIncomplete)
 	}
+	if clock == nil {
+		return nil, fmt.Errorf("%w: the inventory needs a clock", output.ErrIncomplete)
+	}
 
-	return &Inventory{namespace: namespace, store: store}, nil
+	return &Inventory{namespace: namespace, store: store, clock: clock}, nil
 }
 
 var _ output.Inventory = (*Inventory)(nil)
@@ -82,7 +90,10 @@ var _ output.Inventory = (*Inventory)(nil)
 // Every field of the budget is a stop condition, and the page is Complete only
 // when the sweep stopped because the listing did. A page that stopped on a
 // budget is replayed rather than skipped, which is why the cursor it returns is
-// the position after the objects it actually classified.
+// the position after the objects it actually DISPOSITIONED -- classified as an
+// object, or recorded as debt. Those two are the same thing to a cursor, which
+// is the whole of Req 44: an object that cannot be classified must still be got
+// past, or it starves every key behind it.
 func (inventory *Inventory) ListPage(ctx context.Context, cursor output.InventoryCursor, budget output.PageBudget) (output.InventoryPage, error) {
 	if err := cursor.Validate(); err != nil {
 		return output.InventoryPage{}, err
@@ -96,12 +107,17 @@ func (inventory *Inventory) ListPage(ctx context.Context, cursor output.Inventor
 			cursor.ActivationEpoch, inventory.namespace.ActivationEpoch())
 	}
 
-	deadline := time.Now().Add(budget.MaxDuration)
+	deadline := inventory.clock.Now().Add(budget.MaxDuration)
 
 	page, err := inventory.store.List(ctx, inventory.namespace.Bucket(), objectstore.ListRequest{
 		Prefix:   inventory.namespace.ListPrefix(),
 		PageSize: budget.MaxObjects,
 		After:    cursor.AfterKey,
+		// The generation half of the after-key. Without it a listing resumed
+		// from a key cannot tell an object it finished from a NEW object
+		// recreated at the same name, and the new one would be invisible for a
+		// whole cycle.
+		AfterGeneration: cursor.AfterGeneration,
 	})
 	if err != nil {
 		return output.InventoryPage{}, translate(err)
@@ -109,57 +125,144 @@ func (inventory *Inventory) ListPage(ctx context.Context, cursor output.Inventor
 
 	result := output.InventoryPage{Next: cursor, Complete: true}
 	var metadataBytes int64
+	dispositioned := 0
 
 	for _, attrs := range page.Objects {
-		if time.Now().After(deadline) {
-			result.Complete = false
-
-			break
-		}
-		metadataBytes += metadataSize(attrs)
-		if metadataBytes > budget.MaxMetadataBytes {
+		if inventory.clock.Now().After(deadline) {
 			result.Complete = false
 
 			break
 		}
 
-		result.Objects = append(result.Objects, inventory.classify(attrs))
+		size := metadataSize(attrs)
+		if size > budget.MaxMetadataBytes {
+			// An object whose metadata alone is larger than a WHOLE pass can
+			// never fit in any pass. Stopping before it and leaving the cursor
+			// behind it replays it forever, and every key after it with it, so
+			// this is a disposition rather than a stop condition: debt now, and
+			// the cursor goes past.
+			result.Debt = append(result.Debt, inventory.debtFor(attrs, output.DebtPoisonMetadata,
+				fmt.Sprintf("object metadata is %d bytes, past the %d-byte budget for a whole "+
+					"pass; it is recorded and passed rather than replayed forever",
+					size, budget.MaxMetadataBytes)))
+			result.Next.AfterKey = attrs.Key
+			result.Next.AfterGeneration = attrs.Generation
+			dispositioned++
+			result.Complete = false
+
+			break
+		}
+		if metadataBytes+size > budget.MaxMetadataBytes {
+			// It would fit in a pass; it does not fit in the REST of this one.
+			result.Complete = false
+
+			break
+		}
+		metadataBytes += size
+
+		object, debt, classified := inventory.classify(attrs)
+		if classified {
+			result.Objects = append(result.Objects, object)
+		} else {
+			result.Debt = append(result.Debt, debt)
+		}
+		dispositioned++
 
 		// The cursor advances to the last object this page actually
-		// CLASSIFIED, not to the end of what the store returned. A page cut
-		// short by a budget is replayed from where classification stopped, so
-		// nothing is skipped -- which is the whole reason the advance is inside
-		// the loop.
+		// DISPOSITIONED, not to the end of what the store returned. A page cut
+		// short by a budget is replayed from where that stopped, so nothing is
+		// skipped -- which is the whole reason the advance is inside the loop.
 		result.Next.AfterKey = attrs.Key
 		result.Next.AfterGeneration = attrs.Generation
 	}
 
-	// A page that classified nothing leaves the cursor exactly where it was.
-	if len(result.Objects) == 0 {
+	// A page that dispositioned nothing leaves the cursor exactly where it was.
+	if dispositioned == 0 {
 		result.Next = cursor
 	}
 
 	// A cycle ends only when the listing said it had nothing more AND every
-	// object it returned was classified. Either half alone would restart a
+	// object it returned was dispositioned. Either half alone would restart a
 	// sweep over a bucket it had not finished reading.
-	if page.Done && result.Complete && len(result.Objects) == len(page.Objects) {
+	if page.Done && result.Complete && dispositioned == len(page.Objects) {
 		result.Next.Cycle = cursor.Cycle + 1
 		result.Next.AfterKey = ""
 		result.Next.AfterGeneration = 0
 	}
-	result.Next.UpdatedAt = output.NewTimestamp(time.Now().UTC())
+	result.Next.UpdatedAt = output.NewTimestamp(inventory.clock.Now().UTC())
 
 	return result, nil
 }
 
+// RecoverCursor is Req 44's corrupt-cursor branch.
+//
+// A cursor that does not validate is a fact about the cursor and never
+// authoritative absence: the corruption is recorded as debt and the sweep
+// restarts at the validated output prefix, so poison, stale ownership and
+// cursor corruption cannot strand later objects.
+//
+// It refuses a cursor that DOES validate, and the refusal is not pedantry: a
+// recovery that accepted a healthy cursor would restart every sweep at the
+// prefix, which is the same head of the bucket read forever and no object
+// beyond one page ever reached.
+func (inventory *Inventory) RecoverCursor(cursor output.InventoryCursor) (output.InventoryCursor, output.InventoryDebt, error) {
+	corruption := cursor.Validate()
+	if corruption == nil {
+		return output.InventoryCursor{}, output.InventoryDebt{}, fmt.Errorf(
+			"%w: the cursor at %q#%d validates; there is nothing to recover, and restarting a "+
+				"healthy sweep at the prefix would mean no object past the first page is ever "+
+				"reached", output.ErrConflict, cursor.AfterKey, cursor.AfterGeneration)
+	}
+
+	restarted := cursor
+	restarted.ProtocolVersion = output.ProtocolVersion
+	restarted.AfterKey = ""
+	restarted.AfterGeneration = 0
+	restarted.UpdatedAt = output.NewTimestamp(inventory.clock.Now().UTC())
+	if err := restarted.Validate(); err != nil {
+		return output.InventoryCursor{}, output.InventoryDebt{}, fmt.Errorf(
+			"%w: the cursor is corrupt in a way a restart at the output prefix does not repair: "+
+				"%v", output.ErrCorrupt, err)
+	}
+
+	// The debt names the position the cursor CLAIMED, because that is the only
+	// object identity a corrupt cursor has, and the output prefix when it
+	// claimed none. Inventing a key would be recording a fact about an object
+	// nothing observed.
+	key := cursor.AfterKey
+	if key == "" {
+		key = inventory.namespace.ListPrefix()
+	}
+
+	return restarted, output.InventoryDebt{
+		ProtocolVersion: output.ProtocolVersion,
+		ActivationEpoch: cursor.ActivationEpoch,
+		ObjectKey:       key,
+		Generation:      cursor.AfterGeneration,
+		Reason:          output.DebtCorruptCursor,
+		Attempts:        1,
+		ObservedAt:      output.NewTimestamp(inventory.clock.Now().UTC()),
+		Detail:          truncateDetail(corruption.Error()),
+	}, nil
+}
+
 // classify says whether an object is this plane's, and never guesses.
 //
-// An object with no marker is unmanaged, which is a fact about the object and
-// not an error: the sweep records it and moves on, and nothing ever relabels,
-// adopts or deletes it. A marker that is present and wrong is different -- it
-// is debt, because some other cohort said something here and this one cannot
-// safely act.
-func (inventory *Inventory) classify(attrs objectstore.Attrs) output.InventoryObject {
+// Three answers, not two, and the difference between them is what may be done
+// to the object. An object with no marker is UNMANAGED: a fact about the
+// object, not an error, recorded for diagnosis and never relabelled, adopted or
+// deleted -- and deliberately not debt, because debt is work this deployment
+// owes and somebody else's object is not work. A marker of another cohort's
+// version is a deliberate statement by that cohort, so it is debt and this one
+// does not act on it. A marker that will not decode at all is poison, and it is
+// debt for the same reason: an object whose own evidence is unreadable is one
+// nothing may conclude anything about.
+//
+// The boolean says which list the caller puts the result in, and an object can
+// never be in both: a sweep that returned a poisoned object beside its debt row
+// would let a caller adopt exactly the thing it had just recorded it could not
+// read.
+func (inventory *Inventory) classify(attrs objectstore.Attrs) (output.InventoryObject, output.InventoryDebt, bool) {
 	object := output.InventoryObject{
 		ObjectKey:      attrs.Key,
 		Generation:     attrs.Generation,
@@ -169,23 +272,51 @@ func (inventory *Inventory) classify(attrs objectstore.Attrs) output.InventoryOb
 	}
 
 	marker, err := output.ParseObjectMarker(attrs.Metadata)
-	if err != nil {
-		return object
-	}
-	if marker.Scope != inventory.namespace.Scope() {
-		// Another epoch's scope in the same bucket under the same deployment
-		// prefix. It is this deployment's object and it is managed; it is just
-		// not this epoch's, which is what the marker's own epoch says.
+	switch {
+	case err == nil:
+		// A marker carrying another epoch's scope is still this deployment's
+		// object and still managed; it is just not this epoch's, which is what
+		// the marker's own epoch says.
 		object.Marker = marker
 		object.Managed = true
 
-		return object
+		return object, output.InventoryDebt{}, true
+
+	case errors.Is(err, output.ErrNotFound):
+		return object, output.InventoryDebt{}, true
+
+	case errors.Is(err, output.ErrConflict):
+		return output.InventoryObject{},
+			inventory.debtFor(attrs, output.DebtMarkerMismatch, err.Error()), false
+
+	default:
+		return output.InventoryObject{},
+			inventory.debtFor(attrs, output.DebtPoisonMetadata, err.Error()), false
+	}
+}
+
+// debtFor is the one place a debt row is built, so every one of them carries
+// the same epoch, the same bounded detail, and a server-observed key.
+func (inventory *Inventory) debtFor(attrs objectstore.Attrs, reason output.DebtReason, detail string) output.InventoryDebt {
+	return output.InventoryDebt{
+		ProtocolVersion: output.ProtocolVersion,
+		ActivationEpoch: inventory.namespace.ActivationEpoch(),
+		ObjectKey:       attrs.Key,
+		Generation:      attrs.Generation,
+		Reason:          reason,
+		Attempts:        1,
+		ObservedAt:      output.NewTimestamp(inventory.clock.Now().UTC()),
+		Detail:          truncateDetail(detail),
+	}
+}
+
+// truncateDetail bounds the free text a poisoned object can put into a row.
+func truncateDetail(detail string) string {
+	if len(detail) <= output.MaxDebtDetailBytes {
+		return detail
 	}
 
-	object.Marker = marker
-	object.Managed = true
-
-	return object
+	return detail[:output.MaxDebtDetailBytes]
 }
 
 // StatExactObject reads metadata for one exact generation.

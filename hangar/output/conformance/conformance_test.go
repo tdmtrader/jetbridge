@@ -428,7 +428,7 @@ func TestBucketWideListPagesUnderTheServerDerivedPrefix(t *testing.T) {
 		seed(t, tier, "someone-elses-prefix/hangar/v1/scopes/x/trees/sha256/dead.tar.zst",
 			canonicalBytes("outside"), nil)
 
-		sweep, err := inventory.New(namespace, inventory.Restrict(gcstest.Record(tier.client)))
+		sweep, err := inventory.New(namespace, inventory.Restrict(gcstest.Record(tier.client)), output.ClockFunc(time.Now))
 		if err != nil {
 			t.Fatalf("building the inventory: %v", err)
 		}
@@ -872,7 +872,7 @@ func TestEachRoleIssuesOnlyItsOwnRPCs(t *testing.T) {
 			objectstore.OpCreate, objectstore.OpStat, objectstore.OpRead)
 
 		inventoryRecorder := gcstest.Record(tier.client)
-		sweep, err := inventory.New(namespace, inventory.Restrict(inventoryRecorder))
+		sweep, err := inventory.New(namespace, inventory.Restrict(inventoryRecorder), output.ClockFunc(time.Now))
 		if err != nil {
 			t.Fatalf("building the inventory: %v", err)
 		}

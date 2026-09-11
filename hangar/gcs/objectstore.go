@@ -81,7 +81,11 @@ func (client outputObjectClient) List(ctx context.Context, bucket string, reques
 		if err != nil {
 			return objectstore.Page{}, translate(err)
 		}
-		if attrs.Name == request.After {
+		if attrs.Name == request.After &&
+			(request.AfterGeneration == 0 || attrs.Generation <= request.AfterGeneration) {
+			// The resumed-from key, already dispositioned. It is NOT dropped
+			// when its generation is past the one the cursor named: that is an
+			// object recreated at the same name since, and it is new.
 			continue
 		}
 		page.Objects = append(page.Objects, outputAttrs(attrs))
