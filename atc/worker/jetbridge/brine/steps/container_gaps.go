@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
+	"github.com/concourse/concourse/hangar"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -89,6 +91,12 @@ func ContainerGapDefinitions() []brine.StepDefinition {
 			"a jetbridge worker with an artifact store and the output plane on",
 			[]string{"jetbridge-db"},
 			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder, res brine.Resources) (ClusterReady, error) {
+				signer, err := hangar.NewGrantSigner(brineReadGrantKey, hangar.MaxGrantTTL,
+					time.Now)
+				if err != nil {
+					return ClusterReady{}, err
+				}
+
 				return newConfiguredWorker(res, func(cfg *jetbridge.Config) {
 					cfg.ArtifactDaemonHostPath = "/var/concourse/artifacts"
 					cfg.OutputPlaneEnabled = true
@@ -97,6 +105,13 @@ func ContainerGapDefinitions() []brine.StepDefinition {
 					// nothing, so every capture scenario in this family would
 					// be exercising a plane with that arm switched off.
 					cfg.OutputActivationEpoch = int64(hangarEpoch)
+					// Strict inputs, the foundation tier. Inert for every
+					// scenario that declares no tree input -- the strict-input
+					// branch of BuildFetchInitContainers only runs for an input
+					// that has one -- and required by the AC 20 twin, which is
+					// about a step that takes both.
+					cfg.HangarEnabled = true
+					cfg.HangarGrantSigner = signer
 				})
 			},
 		),
