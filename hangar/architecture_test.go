@@ -53,7 +53,7 @@ func TestArchitectureHasNoAgentImports(t *testing.T) {
 // hangar is imported by atc/runtime, atc/atccmd and atc/worker/jetbridge, so
 // every package hangar imports is linked into the web binary too. While the
 // GCS store lived in this package that cost ./cmd/concourse 168 extra packages
-// and 20 MB; the store now lives in hangar/gcs, which only cmd/artifact-daemon
+// and 20 MB; the store now lives in hangar/gcsstore, which only cmd/artifact-daemon
 // imports. This asserts the shape that keeps it that way: hangar itself is a
 // leaf — no cloud client, and no first-party import but its own path, which is
 // what "go list -deps ./hangar/ | grep concourse prints only hangar" means.

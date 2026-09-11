@@ -77,14 +77,15 @@ func Build(ctx context.Context, config Config) (*Daemon, error) {
 		return nil, err
 	}
 
-	storageClient, err := hangargcs.NewStorageClient(ctx, config.OutputEndpoint)
+	// The object seam, and no client above it. This root cannot name a
+	// *storage.Client at all: hangar/gcs opens its own behind this constructor
+	// and hands back an interface with no delete on it, which is what makes
+	// `client.Bucket(b).Object(k).Delete(ctx)` here a compile error rather than
+	// a line that built and passed every guard.
+	objects, _, err := hangargcs.NewObjectClient(ctx, config.OutputEndpoint)
 	if err != nil {
-		return nil, fmt.Errorf("%w: building the output storage client: %v",
+		return nil, fmt.Errorf("%w: building the output object client: %v",
 			output.ErrInfrastructure, err)
-	}
-	objects, err := hangargcs.NewObjectClient(storageClient)
-	if err != nil {
-		return nil, err
 	}
 
 	role, err := publisher.New(namespace, publisher.Restrict(objects), config.OperationTimeout)

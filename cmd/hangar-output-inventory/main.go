@@ -53,19 +53,16 @@ func run(ctx context.Context, config controllerConfig) error {
 		return err
 	}
 
-	client, err := hangargcs.NewStorageClient(ctx, config.Endpoint)
+	// The narrowing starts here and there is nothing above it: this root never
+	// holds a *storage.Client, so an object handle -- and the delete on it --
+	// is not reachable from anything in scope. Everything below holds an
+	// interface with List and a stat and nothing else.
+	objects, closeObjects, err := hangargcs.NewObjectClient(ctx, config.Endpoint)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = client.Close() }()
+	defer func() { _ = closeObjects() }()
 
-	objects, err := hangargcs.NewObjectClient(client)
-	if err != nil {
-		return err
-	}
-
-	// The narrowing, at the one place it happens. Everything below this line
-	// holds an interface with List and a stat and nothing else.
 	sweep, err := inventory.New(namespace, inventory.Restrict(objects),
 		output.ClockFunc(func() time.Time { return time.Now().UTC() }))
 	if err != nil {

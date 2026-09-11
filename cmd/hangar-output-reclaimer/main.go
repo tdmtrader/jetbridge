@@ -33,7 +33,6 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/hangaroutput/controller"
 	"github.com/concourse/concourse/atc/hangaroutput/reclaimpass"
-	hangargcs "github.com/concourse/concourse/hangar/gcs"
 	"github.com/concourse/concourse/hangar/gcsdelete"
 	"github.com/concourse/concourse/hangar/output"
 	"github.com/concourse/concourse/hangar/output/reclaimer"
@@ -59,20 +58,17 @@ func run(ctx context.Context, config controllerConfig) error {
 		return err
 	}
 
-	client, err := hangargcs.NewStorageClient(ctx, config.Endpoint)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = client.Close() }()
-
 	// The capability, from the one package in this repository that can
-	// construct it over a real cloud client. An architecture guard fails the
-	// suite if any other main under cmd/ links that package, and the shared
-	// objectstore.Handle the other three roots hold has no Delete at all.
-	objects, err := gcsdelete.NewDeleteClient(client)
+	// construct it over a real cloud client. Three guards hold this: no other
+	// main under cmd/ links that package, the shared objectstore.Handle the
+	// other three roots hold has no Delete at all, and no file under cmd/ --
+	// this one included -- names cloud.google.com/go/storage, so not even this
+	// root can reach the SDK around the capability package.
+	objects, closeObjects, err := gcsdelete.NewDeleteClient(ctx, config.Endpoint)
 	if err != nil {
 		return err
 	}
+	defer func() { _ = closeObjects() }()
 
 	// The narrowing. Below this line there is a stat and a conditional delete,
 	// and no writer and no list: a reclaimer that could read could exfiltrate,

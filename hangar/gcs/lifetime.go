@@ -28,6 +28,7 @@ import (
 
 	"cloud.google.com/go/storage"
 
+	"github.com/concourse/concourse/hangar/internal/gcsclient"
 	"github.com/concourse/concourse/hangar/output"
 )
 
@@ -43,20 +44,30 @@ type BucketPolicySource struct {
 	now    func() time.Time
 }
 
-// NewBucketPolicySource narrows a storage client to one bucket's metadata.
-func NewBucketPolicySource(client *storage.Client, bucket string, now func() time.Time) (*BucketPolicySource, error) {
-	if client == nil {
-		return nil, fmt.Errorf("%w: the policy source needs a storage client",
-			output.ErrIncomplete)
-	}
+// NewBucketPolicySource opens a client for one bucket's metadata and keeps
+// nothing but the bucket handle.
+//
+// The narrowing is now the toolchain's rather than a comment's. The attestor
+// used to build a whole *storage.Client and hold it in a local, one line above
+// a comment reading "A bucket handle, and no object handle anywhere below" --
+// and an object handle was one method call away on that local, which is how the
+// same finding reached its third round. The client this opens is reachable only
+// through the returned closer.
+func NewBucketPolicySource(ctx context.Context, endpoint, bucket string, now func() time.Time) (*BucketPolicySource, func() error, error) {
 	if bucket == "" {
-		return nil, fmt.Errorf("%w: the policy source names no bucket", output.ErrIncomplete)
+		return nil, nil, fmt.Errorf("%w: the policy source names no bucket", output.ErrIncomplete)
 	}
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
+	client, err := gcsclient.New(ctx, endpoint)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: opening the policy source's client: %v",
+			output.ErrInfrastructure, err)
+	}
 
-	return &BucketPolicySource{bucket: client.Bucket(bucket), name: bucket, now: now}, nil
+	return &BucketPolicySource{bucket: client.Bucket(bucket), name: bucket, now: now},
+		client.Close, nil
 }
 
 // ReadLifetimePolicy fetches the bucket's attributes and reports every

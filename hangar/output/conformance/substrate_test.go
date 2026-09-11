@@ -12,6 +12,7 @@ import (
 
 	"cloud.google.com/go/storage"
 	"github.com/fsouza/fake-gcs-server/fakestorage"
+	"google.golang.org/api/option"
 
 	"github.com/concourse/concourse/hangar"
 	hangargcs "github.com/concourse/concourse/hangar/gcs"
@@ -314,22 +315,43 @@ const conformanceProject = "hangar-conformance"
 func adapterAndClient(t *testing.T, endpoint string) (objectstore.Client, objectstore.DeleteClient, *storage.Client) {
 	t.Helper()
 
-	storageClient, err := hangargcs.NewStorageClient(context.Background(), endpoint)
+	client, closeClient, err := hangargcs.NewObjectClient(context.Background(), endpoint)
 	if err != nil {
-		t.Fatalf("building a storage client for %s: %v", endpoint, err)
+		t.Fatalf("adapting the object seam to %s: %v", endpoint, err)
 	}
-	t.Cleanup(func() { _ = storageClient.Close() })
+	t.Cleanup(func() { _ = closeClient() })
 
-	client, err := hangargcs.NewObjectClient(storageClient)
-	if err != nil {
-		t.Fatalf("adapting the storage client: %v", err)
-	}
-	deleter, err := gcsdelete.NewDeleteClient(storageClient)
+	deleter, closeDeleter, err := gcsdelete.NewDeleteClient(context.Background(), endpoint)
 	if err != nil {
 		t.Fatalf("adapting the delete capability: %v", err)
 	}
+	t.Cleanup(func() { _ = closeDeleter() })
 
-	return client, deleter, storageClient
+	return client, deleter, emulatorClient(t, endpoint)
+}
+
+// emulatorClient is the bucket-creating client, and it is built here with the
+// SDK rather than through hangar/gcs on purpose.
+//
+// hangar/gcs hands out no *storage.Client at all any more -- that is the whole
+// of R2-F1 -- so a harness that needs one for bucket setup builds its own. The
+// endpoint convention is still shared, through NormalizeStorageEndpoint, which
+// is a string in and a string out and confers nothing.
+func emulatorClient(t *testing.T, endpoint string) *storage.Client {
+	t.Helper()
+
+	normalized, err := hangargcs.NormalizeStorageEndpoint(endpoint)
+	if err != nil {
+		t.Fatalf("normalising %s: %v", endpoint, err)
+	}
+	client, err := storage.NewClient(context.Background(), option.WithEndpoint(normalized),
+		option.WithoutAuthentication(), storage.WithJSONReads())
+	if err != nil {
+		t.Fatalf("building a bucket-creating client for %s: %v", endpoint, err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	return client
 }
 
 // deleteBucket clears a run's bucket off the shared emulator.

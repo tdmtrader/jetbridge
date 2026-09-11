@@ -122,18 +122,18 @@ func run(ctx context.Context, config attestorConfig) error {
 			config.Interval, output.MaxPolicyEvidenceAge)
 	}
 
-	client, err := hangargcs.NewStorageClient(ctx, config.Endpoint)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = client.Close() }()
-
-	// The narrowing. A bucket handle, and no object handle anywhere below.
-	source, err := hangargcs.NewBucketPolicySource(client, config.Bucket,
+	// The narrowing, and now it is one. This used to read "A bucket handle, and
+	// no object handle anywhere below" one line beneath a local variable that
+	// was a whole *storage.Client -- on which an object handle, and a delete on
+	// it, was a single method call. The client is opened inside the policy
+	// source, which keeps the bucket handle and nothing else; there is no
+	// storage type in this function to reach an object from.
+	source, closeSource, err := hangargcs.NewBucketPolicySource(ctx, config.Endpoint, config.Bucket,
 		func() time.Time { return time.Now().UTC() })
 	if err != nil {
 		return err
 	}
+	defer func() { _ = closeSource() }()
 
 	conn, err := controller.OpenDatabase(config.DSN, 2)
 	if err != nil {

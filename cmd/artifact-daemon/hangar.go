@@ -13,7 +13,7 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 
 	"github.com/concourse/concourse/hangar"
-	hangargcs "github.com/concourse/concourse/hangar/gcs"
+	hangargcs "github.com/concourse/concourse/hangar/gcsstore"
 )
 
 const (
@@ -170,21 +170,19 @@ func buildHangarService(ctx context.Context, logger lager.Logger, storagePath st
 	if err != nil {
 		return nil, nil, err
 	}
-	client, err := hangargcs.NewStorageClient(ctx, opts.Endpoint)
-	if err != nil {
-		return nil, nil, fmt.Errorf("create Hangar GCS client: %w", err)
-	}
-	closeClient := func() error { return client.Close() }
-	store, err := hangargcs.NewGCSStore(client, hangargcs.GCSConfig{
+	// The store opens and owns its client. This root used to hold the
+	// *storage.Client the constructor was handed, which is a delete on any key
+	// in any bucket one method call away in a function that has no business
+	// deleting anything.
+	store, closeClient, err := hangargcs.NewGCSStore(ctx, opts.Endpoint, hangargcs.GCSConfig{
 		Bucket: opts.Bucket, Prefix: opts.Prefix, ScratchDir: opts.ScratchDir,
 		ReadTimeout: opts.Timeout, WriteTimeout: opts.Timeout,
 	})
 	if err != nil {
-		_ = closeClient()
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("create Hangar GCS store: %w", err)
 	}
 	validationCtx, cancelValidation := context.WithTimeout(ctx, opts.Timeout)
-	_, validationErr := client.Bucket(opts.Bucket).Attrs(validationCtx)
+	validationErr := store.ValidateBucket(validationCtx)
 	cancelValidation()
 	if validationErr != nil {
 		_ = closeClient()

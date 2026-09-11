@@ -1,4 +1,4 @@
-package gcs
+package gcsstore
 
 import (
 	"bytes"
@@ -57,7 +57,10 @@ func TestGCSStoreValidatesConfigurationAndDefaultsCompression(t *testing.T) {
 	store, err := newGCSStore(newMemoryObjectClient(), valid)
 	require.NoError(t, err)
 	require.Equal(t, zstd.SpeedDefault, store.config.ZstdLevel)
-	_, err = NewGCSStore(nil, valid)
+	// The exported constructor opens its own client, so the way it can be
+	// under-configured is an endpoint it cannot parse rather than a nil client
+	// a caller no longer has to supply.
+	_, _, err = NewGCSStore(context.Background(), "not-a-url", valid)
 	require.Error(t, err)
 }
 
@@ -209,35 +212,6 @@ func TestGCSEnsureTreeVerifiesPreconditionReportedDuringUploadWrite(t *testing.T
 	requireScratchEmpty(t, scratch)
 }
 
-func TestNormalizeStorageEndpointAcceptsSharedDurableRoot(t *testing.T) {
-	for _, tc := range []struct{ input, want string }{
-		{"http://127.0.0.1:4443", "http://127.0.0.1:4443/storage/v1/"},
-		{"http://127.0.0.1:4443/", "http://127.0.0.1:4443/storage/v1/"},
-		{"http://127.0.0.1:4443/storage/v1", "http://127.0.0.1:4443/storage/v1/"},
-		{"http://127.0.0.1:4443/storage/v1/", "http://127.0.0.1:4443/storage/v1/"},
-	} {
-		got, err := normalizeStorageEndpoint(tc.input)
-		require.NoError(t, err)
-		require.Equal(t, tc.want, got)
-	}
-}
-
-func TestNewStorageClientRootEndpointUsesJSONAPIBase(t *testing.T) {
-	var path string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path = r.URL.Path
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"name":"bucket"}`))
-	}))
-	t.Cleanup(server.Close)
-	client, err := NewStorageClient(context.Background(), server.URL)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, client.Close()) })
-	_, err = client.Bucket("bucket").Attrs(context.Background())
-	require.NoError(t, err)
-	require.Equal(t, "/storage/v1/b/bucket", path)
-}
-
 func TestGCSOfficialClientPinsGenerationAndConditionsDeleteQuery(t *testing.T) {
 	t.Parallel()
 	const generation int64 = 73
@@ -273,11 +247,9 @@ func TestGCSOfficialClientPinsGenerationAndConditionsDeleteQuery(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	client, err := NewStorageClient(context.Background(), server.URL+"/storage/v1/")
+	store, closeStore, err := NewGCSStore(context.Background(), server.URL+"/storage/v1/", GCSConfig{Bucket: "bucket", Prefix: "deployment/blue", ScratchDir: t.TempDir(), ReadTimeout: time.Second, WriteTimeout: time.Second})
 	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, client.Close()) })
-	store, err := NewGCSStore(client, GCSConfig{Bucket: "bucket", Prefix: "deployment/blue", ScratchDir: t.TempDir(), ReadTimeout: time.Second, WriteTimeout: time.Second})
-	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, closeStore()) })
 	reader, _, err := store.OpenTree(context.Background(), ref, int64(len(content)))
 	require.NoError(t, err)
 	require.Equal(t, content, readAll(t, reader))
@@ -358,12 +330,10 @@ func TestGCSOfficialClientConditionalUploadWriteConflictVerifiesExistingGenerati
 		}
 	}))
 	t.Cleanup(server.Close)
-	client, err := NewStorageClient(context.Background(), server.URL+"/storage/v1/")
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, client.Close()) })
 	scratch := t.TempDir()
-	store, err := NewGCSStore(client, GCSConfig{Bucket: bucket, Prefix: "deployment/blue", ScratchDir: scratch, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second})
+	store, closeStore, err := NewGCSStore(context.Background(), server.URL+"/storage/v1/", GCSConfig{Bucket: bucket, Prefix: "deployment/blue", ScratchDir: scratch, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second})
 	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, closeStore()) })
 	writeObserver := &writeErrorObservingObjectClient{objectClient: store.objects}
 	store.objects = writeObserver
 

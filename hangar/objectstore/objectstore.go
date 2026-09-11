@@ -3,13 +3,13 @@
 //
 // It exists for two reasons the foundation's own adapter could not serve.
 //
-// First, packaging. hangar/gcs declares the same shape unexported
-// (gcs.go:668-679), so hangar/output/{publisher,inventory,reclaimer,policy}
-// could not reach it, and each would have grown its own fake and its own
+// First, packaging. hangar/gcsstore declares the same shape unexported, so
+// hangar/output/{publisher,inventory,reclaimer,policy} could not reach it, and each would have grown its own fake and its own
 // conformance suite -- four descriptions of one API, drifting.
 //
-// Second, direction. This package names no cloud SDK type. hangar/gcs stays the
-// only importer of cloud.google.com/go/storage in the repository, the role
+// Second, direction. This package names no cloud SDK type. hangar/gcs,
+// hangar/gcsstore and hangar/gcsdelete stay the only importers of
+// cloud.google.com/go/storage in this half of the repository, the role
 // packages depend on an interface instead of a client, and ./cmd/concourse does
 // not regain a hundred megabytes of transitive dependency because somebody
 // wired a role package into the ATC.

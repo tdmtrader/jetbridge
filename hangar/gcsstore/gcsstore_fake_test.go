@@ -1,4 +1,4 @@
-package gcs
+package gcsstore
 
 import (
 	"bytes"

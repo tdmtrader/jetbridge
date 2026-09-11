@@ -1,3 +1,18 @@
+// Package gcs is the Hangar OUTPUT plane's Cloud Storage seam: the object
+// adapter its four roles share, and the bucket-metadata source the attestor
+// reads.
+//
+// It opens every client it hands out and hands out none. A constructor here
+// takes an endpoint, never a *storage.Client, because the third round of one
+// finding showed what an exported client constructor costs: three non-reclaimer
+// command roots held the raw client in a local variable, and
+// `client.Bucket(b).Object("any/key").Delete(ctx)` compiled in all three with no
+// new import and every architecture guard green. The client is now opened by
+// hangar/internal/gcsclient, which nothing outside hangar/ can import at all.
+//
+// The artifact daemon's strict-input store used to live in this package and is
+// now hangar/gcsstore, so an output root that links this seam cannot name
+// GCSStore.DeleteTree either.
 package gcs
 
 import (
@@ -10,8 +25,19 @@ import (
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/iterator"
 
+	"github.com/concourse/concourse/hangar/internal/gcsclient"
 	"github.com/concourse/concourse/hangar/objectstore"
 )
+
+// NormalizeStorageEndpoint puts an emulator endpoint on the JSON API base.
+//
+// It is re-exported from the internal client package for harnesses that must
+// point a client of their own at the same emulator the production seam uses.
+// It is a string in and a string out: it hands out no capability, which is the
+// whole reason it may be exported while the client constructor may not.
+func NormalizeStorageEndpoint(endpoint string) (string, error) {
+	return gcsclient.NormalizeEndpoint(endpoint)
+}
 
 // The exported object adapter, for the output plane's four cloud roles.
 //
@@ -27,13 +53,19 @@ import (
 // authenticated configuration (hangar/output.OutputNamespace), and this file's
 // only judgement is turning a transport status into a typed sentinel.
 
-// NewObjectClient adapts a storage client to the shared seam.
-func NewObjectClient(client *storage.Client) (objectstore.Client, error) {
-	if client == nil {
-		return nil, fmt.Errorf("hangar: GCS client is required")
+// NewObjectClient opens a client for the shared object seam and owns it.
+//
+// The returned closer is the caller's to defer. It takes an endpoint rather
+// than a client so that no caller ever holds a type from which delete is
+// reachable: objectstore.Client has no delete on it, and a root that held the
+// *storage.Client behind it would have one anyway.
+func NewObjectClient(ctx context.Context, endpoint string) (objectstore.Client, func() error, error) {
+	client, err := gcsclient.New(ctx, endpoint)
+	if err != nil {
+		return nil, nil, fmt.Errorf("hangar: opening the GCS object client: %w", err)
 	}
 
-	return outputObjectClient{client: client}, nil
+	return outputObjectClient{client: client}, client.Close, nil
 }
 
 type outputObjectClient struct{ client *storage.Client }

@@ -22,20 +22,25 @@ import (
 	"cloud.google.com/go/storage"
 
 	"github.com/concourse/concourse/hangar/gcs"
+	"github.com/concourse/concourse/hangar/internal/gcsclient"
 	"github.com/concourse/concourse/hangar/objectstore"
 )
 
-// NewDeleteClient adapts a storage client to the delete seam.
+// NewDeleteClient opens the delete capability's own client and owns it.
 //
 // It is the only constructor of objectstore.DeleteClient over a real cloud
-// client in this repository.
-func NewDeleteClient(client *storage.Client) (objectstore.DeleteClient, error) {
-	if client == nil {
-		return nil, fmt.Errorf("%w: the delete client needs a GCS client",
-			objectstore.ErrInfrastructure)
+// client in this repository, and it takes an endpoint rather than a client
+// because handing the client to the caller hands the caller the capability:
+// `client.Bucket(b).Object(k).Delete(ctx)` needs neither this package nor any
+// import at all. The returned closer is the caller's to defer.
+func NewDeleteClient(ctx context.Context, endpoint string) (objectstore.DeleteClient, func() error, error) {
+	client, err := gcsclient.New(ctx, endpoint)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: opening the delete client: %v",
+			objectstore.ErrInfrastructure, err)
 	}
 
-	return deleteClient{client: client}, nil
+	return deleteClient{client: client}, client.Close, nil
 }
 
 type deleteClient struct{ client *storage.Client }

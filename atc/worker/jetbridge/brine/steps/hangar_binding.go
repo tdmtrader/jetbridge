@@ -231,7 +231,7 @@ func consumerFor(tree PublishedTree) (neutralConsumer, error) {
 // authenticated inputs the fixture started it with. A stand-in would have been
 // asserting the fixture's opinion of the object; requirement 35 is about the
 // object.
-func outputStat(daemon HangarDaemon) (hangaroutput.ExactStat, error) {
+func outputStat(daemon HangarDaemon) (hangaroutput.ExactStat, func() error, error) {
 	namespace, err := hangaroutputleaf.DeriveNamespace(hangaroutputleaf.NamespaceConfig{
 		Store:            hangaroutputleaf.StoreGCS,
 		Bucket:           daemon.OutputBucket,
@@ -240,15 +240,21 @@ func outputStat(daemon HangarDaemon) (hangaroutput.ExactStat, error) {
 		ActivationEpoch:  executioncontrol.ActivationEpoch(hangarEpoch),
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	objects, err := hangargcs.NewObjectClient(daemon.Client)
+	objects, closeObjects, err := hangargcs.NewObjectClient(daemon.Ctx, daemon.Endpoint)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	return publisher.New(namespace, publisher.Restrict(objects), 30*time.Second)
+	stat, err := publisher.New(namespace, publisher.Restrict(objects), 30*time.Second)
+	if err != nil {
+		_ = closeObjects()
+		return nil, nil, err
+	}
+
+	return stat, closeObjects, nil
 }
 
 // managedRead admits one read through the production admission and reports what
@@ -259,10 +265,11 @@ func managedRead(in BoundOutput) (hangaroutputleaf.ReadLease, error) {
 		return hangaroutputleaf.ReadLease{}, fmt.Errorf("this chain never settled a capture")
 	}
 
-	stat, err := outputStat(in.Tree.Outcome.Source.Draft.Daemon)
+	stat, closeStat, err := outputStat(in.Tree.Outcome.Source.Draft.Daemon)
 	if err != nil {
 		return hangaroutputleaf.ReadLease{}, err
 	}
+	defer func() { _ = closeStat() }()
 	signer, err := hangaroutputleaf.NewReadGrantSigner(brineReadGrantKey)
 	if err != nil {
 		return hangaroutputleaf.ReadLease{}, err
