@@ -161,24 +161,32 @@ func TestOutputCannotBeEnabledWithoutBaseAndCannotSkipAttestation(t *testing.T) 
 	}
 }
 
-// Decision F1's rotation, end to end, and the judgment it forced.
+// Decision F1's rotation, end to end, as the plan's authoritative sequence
+// specifies it.
 //
-// F1 asks for a rotation with "no window in which the facet has no `enabled`
-// row", and describes it as: enable the incoming row, THEN move the outgoing one
-// to draining. That exact sequence is impossible against the schema as landed --
-// `hangar_output_one_enabled_base_epoch` is a partial unique index admitting one
-// `enabled` row per facet GLOBALLY, so the incoming row cannot be enabled while
-// the outgoing one still is. The first assertion below is that refusal, because
-// a rotation written the way F1 describes it must fail loudly rather than
-// silently leave two cohorts claiming one bucket.
+// The source is plan.md's "Rotation overlaps; it does not gap": `begin` creates
+// the next epoch row in `initial`, `attest` moves it to `attested`, and then, in
+// the SAME TRANSACTION, the outgoing row is moved `enabled -> draining` first
+// and the incoming row `attested -> enabled` second -- because the per-facet
+// `enabled` partial unique index is checked per statement and cannot be
+// deferred, so the order inside the transaction matters. That is what
+// Epochs.Rotate implements, line for line.
 //
-// What satisfies the requirement is one TRANSACTION: drain the outgoing row and
-// enable the incoming one together. The index is checked at statement end, so
-// the intermediate state is legal, and no other session ever OBSERVES a moment
-// with no enabled row -- which is what "no window" can mean here. Afterwards a
-// `draining` row and an `enabled` row coexist, which is the coexistence F1
-// names: the outgoing epoch keeps settling what is already in flight while the
-// incoming one admits new work.
+// The first assertion below is that the OTHER order is refused: enabling the
+// incoming row while the outgoing one is still `enabled` violates
+// `hangar_output_one_enabled_base_epoch`, which admits one `enabled` row per
+// facet globally. It is asserted because a rotation written that way must fail
+// loudly rather than silently leave two cohorts claiming one bucket -- not
+// because the plan and the schema disagree. They do not; three summaries of the
+// plan did, and were corrected on 2026-09-11 (Phase 8 review R1-F5): decision
+// F1's paragraph, this migration's index comment, and the Phase 8 activation
+// box. The checkpointed schema was never in question.
+//
+// Inside one transaction the intermediate state is legal, no other session ever
+// OBSERVES a moment with no enabled row -- which is what "no window" means here
+// -- and afterwards a `draining` row and an `enabled` row coexist, which is the
+// coexistence F1 names: the outgoing epoch keeps settling what is already in
+// flight while the incoming one admits new work.
 func TestRotationOverlapsAndNoObserverSeesTheFacetWithoutAnEnabledRow(t *testing.T) {
 	epochs, conn := activationFixture(t)
 	ctx := context.Background()
