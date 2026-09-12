@@ -646,6 +646,14 @@ func (repository *HangarOutputRepository) RecordLifetimePresence(ctx context.Con
 	if err := ref.Validate(); err != nil {
 		return err
 	}
+	// The exact class, named rather than taken by the UPDATE below: see
+	// RecordFirstObjectCreate for why an unnamed single-class lock is still a
+	// lock this order has to be able to see.
+	if _, err := LockHangarSuffix(ctx, tx, repository.prefix, HangarLockRequest{
+		Exact: []hangar.TreeRef{ref},
+	}); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE hangar_exact_lifecycles SET lifetime_audited_at = now()
 		 WHERE scope = $1 AND digest = $2 AND generation = $3`,

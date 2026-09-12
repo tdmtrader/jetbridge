@@ -1177,3 +1177,514 @@ func TestEveryProductionHangarOutputTransactionIsTyped(t *testing.T) {
 			"tier commits through its own adapter. Found: %v", sites)
 	}
 }
+
+// THE SAME RULE, FOR THE LOCKS NOBODY WROTE DOWN.
+//
+// hangarLocksARow above recognises a statement that ASKS for a row lock. That
+// is not the same set as the statements that TAKE one: PostgreSQL acquires FOR
+// NO KEY UPDATE on every row an UPDATE touches and FOR UPDATE on every row a
+// DELETE removes, so a bare `UPDATE hangar_logical_reservations` is a class-1
+// acquisition with no lock clause anywhere in it. That is why two writers took
+// the capture class before the logical class for ten phases with the guard
+// above passing: the guard measured the route into the lock rather than the
+// lock.
+//
+// So this rule reads the ORDER instead of the route. For every production
+// function it replays, in source order, every class this transaction acquires
+// -- explicitly through a HangarLockRequest, implicitly through a write against
+// a table in a class -- following calls into the package's own helpers, because
+// hangarTerminalizeLogical is a different function from the one that locks. A
+// write against class C while a class above C is already held, and class C is
+// not, is the inversion. That is exactly the shape of the blocker this rule was
+// written for, and it reddens against it.
+
+// hangarTableClass is the suffix class each locked Hangar table belongs to.
+//
+// It is checked against LockHangarSuffix's own statements below rather than
+// trusted, so a fifth class, or a table moving between classes, cannot leave
+// this list quietly stale.
+var hangarTableClass = map[string]int{
+	"hangar_logical_reservations": 1,
+	"hangar_exact_lifecycles":     2,
+	"hangar_capture_reservations": 3,
+	"hangar_output_receipts":      4,
+	"hangar_claims":               4,
+	"hangar_read_leases":          4,
+}
+
+// hangarRequestFieldClass maps a HangarLockRequest field to the class it names.
+var hangarRequestFieldClass = map[string]int{
+	"Logical":    1,
+	"Exact":      2,
+	"Captures":   3,
+	"Receipts":   4,
+	"Claims":     4,
+	"ReadLeases": 4,
+}
+
+// hangarAcquisition is one lock class a function takes, in source order.
+type hangarAcquisition struct {
+	Class    int
+	Implicit bool
+	Snippet  string
+	File     string
+	Line     int
+	// Callee, when set, is a call into another function in the same package
+	// whose acquisitions happen here.
+	Callee string
+}
+
+// hangarWriteTable reads the Hangar table a statement WRITES, or "".
+//
+// An INSERT is not a row lock -- it creates a row nothing else can be holding
+// -- unless it can fall through to an UPDATE, which ON CONFLICT ... DO UPDATE
+// can. A SELECT is not a write. Everything else that names a table after UPDATE
+// or DELETE FROM takes that table's row lock.
+func hangarWriteTable(statement string) string {
+	fields := strings.Fields(statement)
+	for index, field := range fields {
+		word := strings.ToUpper(field)
+		var candidate string
+		switch {
+		case word == "UPDATE" && index+1 < len(fields):
+			candidate = fields[index+1]
+		case word == "DELETE" && index+2 < len(fields) &&
+			strings.ToUpper(fields[index+1]) == "FROM":
+			candidate = fields[index+2]
+		default:
+			continue
+		}
+		candidate = strings.Trim(strings.ToLower(candidate), "(),;`\"'")
+		if _, classed := hangarTableClass[candidate]; classed {
+			return candidate
+		}
+	}
+
+	return ""
+}
+
+// hangarAcquisitionsByFunction replays every function in the scanned tree.
+func hangarAcquisitionsByFunction(t *testing.T, roots ...string) map[string][]hangarAcquisition {
+	t.Helper()
+
+	_, thisFile, _, _ := runtime.Caller(0)
+	repoRoot := filepath.Join(filepath.Dir(thisFile), "..", "..")
+
+	fileSet := token.NewFileSet()
+
+	type parsedFile struct {
+		Relative  string
+		Directory string
+		File      *ast.File
+	}
+	var files []parsedFile
+
+	for _, root := range roots {
+		err := filepath.Walk(filepath.Join(repoRoot, root), func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() {
+				if name := info.Name(); name == "vendor" || name == "testdata" || name == "node_modules" {
+					return filepath.SkipDir
+				}
+
+				return nil
+			}
+			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			parsed, err := parser.ParseFile(fileSet, path, nil, parser.ParseComments)
+			if err != nil {
+				return err
+			}
+			relative, err := filepath.Rel(repoRoot, path)
+			if err != nil {
+				return err
+			}
+			files = append(files, parsedFile{
+				Relative:  filepath.ToSlash(relative),
+				Directory: filepath.Dir(path),
+				File:      parsed,
+			})
+
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walking %s: %v", root, err)
+		}
+	}
+
+	constants := map[string]map[string]string{}
+	for _, file := range files {
+		if constants[file.Directory] == nil {
+			constants[file.Directory] = map[string]string{}
+		}
+		for name, value := range hangarStringDeclarations(file.File) {
+			constants[file.Directory][name] = value
+		}
+	}
+
+	acquisitions := map[string][]hangarAcquisition{}
+	hangarDeclaredIn = map[string]string{}
+	hangarExported = map[string]bool{}
+	for _, file := range files {
+		known := constants[file.Directory]
+		for _, declaration := range file.File.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Body == nil {
+				continue
+			}
+			key := file.Directory + "." + function.Name.Name
+			hangarDeclaredIn[key] = file.Relative
+			hangarExported[key] = function.Name.IsExported()
+			var taken []hangarAcquisition
+
+			record := func(acquisition hangarAcquisition, position token.Pos) {
+				acquisition.File = file.Relative
+				acquisition.Line = fileSet.Position(position).Line
+				taken = append(taken, acquisition)
+			}
+
+			ast.Inspect(function.Body, func(node ast.Node) bool {
+				switch expression := node.(type) {
+				case *ast.CompositeLit:
+					name := ""
+					switch typed := expression.Type.(type) {
+					case *ast.Ident:
+						name = typed.Name
+					case *ast.SelectorExpr:
+						name = typed.Sel.Name
+					}
+					if name != "HangarLockRequest" {
+						return true
+					}
+					for _, element := range expression.Elts {
+						pair, ok := element.(*ast.KeyValueExpr)
+						if !ok {
+							continue
+						}
+						field, ok := pair.Key.(*ast.Ident)
+						if !ok {
+							continue
+						}
+						if class, named := hangarRequestFieldClass[field.Name]; named {
+							record(hangarAcquisition{
+								Class:   class,
+								Snippet: "HangarLockRequest{" + field.Name + "}",
+							}, expression.Pos())
+						}
+					}
+
+					return true
+
+				case *ast.BasicLit:
+					if expression.Kind != token.STRING {
+						return true
+					}
+					value, err := strconv.Unquote(expression.Value)
+					if err != nil {
+						return true
+					}
+					if table := hangarWriteTable(value); table != "" {
+						record(hangarAcquisition{
+							Class:    hangarTableClass[table],
+							Implicit: true,
+							Snippet:  firstLine(value),
+						}, expression.Pos())
+					}
+
+					return true
+
+				case *ast.BinaryExpr:
+					if expression.Op != token.ADD {
+						return true
+					}
+					rendered := hangarRenderStatement(expression, known)
+					if table := hangarWriteTable(rendered); table != "" {
+						record(hangarAcquisition{
+							Class:    hangarTableClass[table],
+							Implicit: true,
+							Snippet:  firstLine(rendered),
+						}, expression.Pos())
+					}
+
+					return false
+
+				case *ast.CallExpr:
+					callee := ""
+					switch fun := expression.Fun.(type) {
+					case *ast.Ident:
+						callee = fun.Name
+					case *ast.SelectorExpr:
+						callee = fun.Sel.Name
+					}
+					if callee == "" || callee == "LockHangarSuffix" {
+						return true
+					}
+					if callee == "Sprintf" {
+						rendered := hangarRenderStatement(expression, known)
+						if table := hangarWriteTable(rendered); table != "" {
+							record(hangarAcquisition{
+								Class:    hangarTableClass[table],
+								Implicit: true,
+								Snippet:  firstLine(rendered),
+							}, expression.Pos())
+						}
+
+						return true
+					}
+					record(hangarAcquisition{Callee: file.Directory + "." + callee},
+						expression.Pos())
+
+					return true
+				}
+
+				return true
+			})
+
+			if len(taken) > 0 {
+				acquisitions[key] = taken
+			}
+		}
+	}
+
+	return acquisitions
+}
+
+// hangarDeclaredIn and hangarExported are filled by the replay, so that the
+// rules below can tell a helper inside the one lock file from a caller of it,
+// and an entry point from an internal step.
+var (
+	hangarDeclaredIn = map[string]string{}
+	hangarExported   = map[string]bool{}
+)
+
+// hangarExpand inlines intra-package calls so that a helper's writes are
+// attributed to the transaction that entered it -- hangarTerminalizeLogical is
+// a different function from the one that locks, and the transaction is the same
+// one.
+//
+// A function declared inside the lock helper file is inlined as its SORTED set
+// of classes instead of its statement sequence. That file is where the order is
+// defined, so checking its own statements against the order would be circular;
+// what a caller is entitled to assume is that entering it takes the classes it
+// names, in order. Black-boxing it also keeps the rule sharp: a class the
+// helper stops naming disappears from every caller's held set at once.
+func hangarExpand(key string, byFunction map[string][]hangarAcquisition, seen map[string]bool, depth int) []hangarAcquisition {
+	if depth > 6 || seen[key] {
+		return nil
+	}
+	seen[key] = true
+	defer delete(seen, key)
+
+	var flattened []hangarAcquisition
+	for _, acquisition := range byFunction[key] {
+		if acquisition.Callee == "" {
+			flattened = append(flattened, acquisition)
+
+			continue
+		}
+		inner := hangarExpand(acquisition.Callee, byFunction, seen, depth+1)
+		if hangarDeclaredIn[acquisition.Callee] == hangarLockHelper {
+			inner = hangarSortedClasses(inner)
+		}
+		flattened = append(flattened, inner...)
+	}
+
+	return flattened
+}
+
+// hangarSortedClasses reduces a helper's acquisitions to the classes it takes,
+// in class order.
+func hangarSortedClasses(acquisitions []hangarAcquisition) []hangarAcquisition {
+	seen := map[int]hangarAcquisition{}
+	for _, acquisition := range acquisitions {
+		if _, known := seen[acquisition.Class]; !known {
+			acquisition.Implicit = false
+			seen[acquisition.Class] = acquisition
+		}
+	}
+
+	var ordered []hangarAcquisition
+	for class := 1; class <= 4; class++ {
+		if acquisition, taken := seen[class]; taken {
+			ordered = append(ordered, acquisition)
+		}
+	}
+
+	return ordered
+}
+
+func TestEveryHangarRowLockIsTakenInClassOrder(t *testing.T) {
+	byFunction := hangarAcquisitionsByFunction(t, "atc", "cmd", "hangar")
+
+	if len(byFunction) < 20 {
+		t.Fatalf("the replay found lock acquisitions in only %d functions, which is too few to "+
+			"have covered atc/db; the rule would be passing vacuously", len(byFunction))
+	}
+
+	var implicit int
+	for key := range byFunction {
+		// The lock file itself is not checked against the order it defines.
+		// That would be circular, and it is also where the one acquisition this
+		// system cannot make in class order lives: a logical row that did not
+		// exist when the lock set was chosen cannot have been locked then, and
+		// hangarLockTerminalCapture takes it afterwards with the reason written
+		// at the site. Callers see that helper as its sorted class set, which
+		// is what hangarExpand does, so nothing here is hidden from them.
+		if hangarDeclaredIn[key] == hangarLockHelper {
+			continue
+		}
+		flattened := hangarExpand(key, byFunction, map[string]bool{}, 0)
+		held := map[int]bool{}
+		highest := 0
+		for _, acquisition := range flattened {
+			if acquisition.Implicit {
+				implicit++
+			}
+			if !acquisition.Implicit && !held[acquisition.Class] && acquisition.Class < highest {
+				t.Errorf("%s:%d enters the Hangar suffix out of order: %s names class %d after "+
+					"this transaction has already taken class %d. One transaction takes ONE "+
+					"complete suffix; a second entry that reaches back to an earlier class is "+
+					"the second order the rule exists to forbid.",
+					acquisition.File, acquisition.Line, acquisition.Snippet, acquisition.Class,
+					highest)
+			}
+			if acquisition.Implicit && !held[acquisition.Class] && acquisition.Class < highest {
+				t.Errorf("%s:%d takes the Hangar suffix out of order: %q writes a class %d row "+
+					"while this transaction already holds class %d and not class %d.\n\n"+
+					"A bare UPDATE or DELETE takes the row's lock just as FOR NO KEY UPDATE "+
+					"does, so this is a lock acquisition whether or not it says so. Two orders "+
+					"is a deadlock nobody wrote down -- and this exact shape "+
+					"(capture row, then logical row, against a publisher holding the logical "+
+					"row) was reproduced live as SQLSTATE 40P01. Name class %d in the "+
+					"HangarLockRequest this transaction already passes to LockHangarSuffix.",
+					acquisition.File, acquisition.Line, acquisition.Snippet, acquisition.Class,
+					highest, acquisition.Class, acquisition.Class)
+			}
+			held[acquisition.Class] = true
+			if acquisition.Class > highest {
+				highest = acquisition.Class
+			}
+		}
+	}
+
+	// EVERY ROW A WRITER LOCKS IS NAMED, not only every inversion.
+	//
+	// A write against a classed table that no HangarLockRequest named is a row
+	// lock taken with nothing on the way in to say so. On its own it cannot
+	// invert -- one class has nothing to invert with -- but it is invisible to
+	// the order, and invisibility is the whole reason the blocker survived. The
+	// rule is asked of ENTRY POINTS: an unexported step like
+	// hangarTerminalizeLogical is covered by the exported method that entered
+	// it, which the expansion above already attributes.
+	for key := range byFunction {
+		if !hangarExported[key] || !strings.HasPrefix(hangarDeclaredIn[key], "atc/db/") {
+			continue
+		}
+		flattened := hangarExpand(key, byFunction, map[string]bool{}, 0)
+		named := map[int]bool{}
+		for _, acquisition := range flattened {
+			if !acquisition.Implicit {
+				named[acquisition.Class] = true
+			}
+		}
+		for _, acquisition := range flattened {
+			if acquisition.Implicit && !named[acquisition.Class] {
+				t.Errorf("%s:%d writes a class %d Hangar row that no lock request names: %q.\n\n"+
+					"A bare UPDATE or DELETE takes that row's lock. Name the class in a "+
+					"HangarLockRequest so the order can see it.",
+					acquisition.File, acquisition.Line, acquisition.Class, acquisition.Snippet)
+			}
+		}
+	}
+
+	if implicit < 10 {
+		t.Errorf("the replay saw %d implicit row locks across the whole tree, and atc/db has "+
+			"more UPDATEs against classed Hangar tables than that; the statement reader has "+
+			"stopped reading them", implicit)
+	}
+}
+
+// TestTheHangarClassMapMatchesTheHelper keeps the table-to-class map honest
+// against the only statements that define the classes.
+func TestTheHangarClassMapMatchesTheHelper(t *testing.T) {
+	_, thisFile, _, _ := runtime.Caller(0)
+	repoRoot := filepath.Join(filepath.Dir(thisFile), "..", "..")
+
+	source, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(hangarLockHelper)))
+	if err != nil {
+		t.Fatalf("reading %s: %v", hangarLockHelper, err)
+	}
+
+	fileSet := token.NewFileSet()
+	parsed, err := parser.ParseFile(fileSet, hangarLockHelper, source, 0)
+	if err != nil {
+		t.Fatalf("parsing %s: %v", hangarLockHelper, err)
+	}
+
+	locked := map[string]bool{}
+	ast.Inspect(parsed, func(node ast.Node) bool {
+		literal, ok := node.(*ast.BasicLit)
+		if !ok || literal.Kind != token.STRING {
+			return true
+		}
+		value, err := strconv.Unquote(literal.Value)
+		if err != nil || !hangarLocksARow(value) {
+			return true
+		}
+		for _, field := range strings.Fields(value) {
+			name := strings.Trim(strings.ToLower(field), "(),;")
+			if strings.HasPrefix(name, "hangar_") {
+				locked[name] = true
+
+				break
+			}
+		}
+
+		return true
+	})
+
+	if len(locked) == 0 {
+		t.Fatal(hangarLockHelper + " locks no Hangar table, so this comparison is vacuous")
+	}
+	for table := range locked {
+		if _, classed := hangarTableClass[table]; !classed {
+			t.Errorf("%s locks %s and hangarTableClass does not give it a class, so every bare "+
+				"UPDATE against it is invisible to the order rule", hangarLockHelper, table)
+		}
+	}
+	for table := range hangarTableClass {
+		if !locked[table] {
+			t.Errorf("hangarTableClass gives %s a class and %s never locks it; the map is "+
+				"describing an order that is not the one the helper takes", table, hangarLockHelper)
+		}
+	}
+}
+
+// TestTheHangarWriteRuleIsNotVacuous drives the statement reader with the
+// shapes it has to catch and the shapes it must not, the same way
+// TestTheHangarLockRuleIsNotVacuous drives the lock-clause rule.
+func TestTheHangarWriteRuleIsNotVacuous(t *testing.T) {
+	for statement, expected := range map[string]string{
+		"UPDATE hangar_logical_reservations SET state = 'terminal' WHERE reservation_id = $1": "hangar_logical_reservations",
+		"\n\t\tUPDATE hangar_capture_reservations r\n\t\tSET state = 'failed'\n":              "hangar_capture_reservations",
+		"update hangar_read_leases set released_at = now()":                                   "hangar_read_leases",
+		"DELETE FROM hangar_claims WHERE claim_id = $1":                                       "hangar_claims",
+		"delete from hangar_exact_lifecycles where id = $1":                                   "hangar_exact_lifecycles",
+		// A read is not a lock, an insert creates a row nobody can hold, and a
+		// table outside the four classes is outside this order.
+		"SELECT state FROM hangar_logical_reservations WHERE reservation_id = $1": "",
+		"INSERT INTO hangar_claims (claim_id) VALUES ($1)":                        "",
+		"UPDATE hangar_reclaim_jobs SET finalized_at = now() WHERE id = $1":       "",
+		"UPDATE builds SET status = 'succeeded' WHERE id = $1":                    "",
+		// The shape that matters most: the table is named several words in,
+		// and a read of an unrelated Hangar table comes first.
+		"UPDATE hangar_exact_lifecycles SET state = 'reclaiming' FROM hangar_reclaim_jobs j WHERE j.id = $1": "hangar_exact_lifecycles",
+	} {
+		if found := hangarWriteTable(statement); found != expected {
+			t.Errorf("the write rule read %q as writing %q, not %q", statement, found, expected)
+		}
+	}
+}

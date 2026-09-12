@@ -224,6 +224,15 @@ func (repository *HangarOutputRepository) RecordSealDeadline(ctx context.Context
 			output.ErrUnauthorized)
 	}
 
+	// The capture class, named rather than taken by the UPDATE below: see
+	// RecordFirstObjectCreate for why an unnamed single-class lock is still a
+	// lock this order has to be able to see.
+	if _, err := LockHangarSuffix(ctx, tx, repository.prefix, HangarLockRequest{
+		Captures: []output.ReservationID{reservation},
+	}); err != nil {
+		return output.Timestamp{}, err
+	}
+
 	var deadline time.Time
 	if err := hangarQueryRow(ctx, tx, `
 		UPDATE hangar_capture_reservations r

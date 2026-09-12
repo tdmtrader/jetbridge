@@ -122,6 +122,17 @@ func (repository *HangarOutputRepository) RecordFirstObjectCreate(ctx context.Co
 			"it was reached at; %d names no ownership", output.ErrIncomplete, fence)
 	}
 
+	// The capture class, named rather than taken by the UPDATE below. One class
+	// taken implicitly cannot invert against anything -- there is nothing to
+	// invert with -- but a lock the suffix never hears about is a lock the
+	// order rule cannot see, and that invisibility is what let two writers take
+	// classes 3 and 1 the wrong way round for ten phases.
+	if _, err := LockHangarSuffix(ctx, tx, repository.prefix, HangarLockRequest{
+		Captures: []output.ReservationID{reservation},
+	}); err != nil {
+		return err
+	}
+
 	result, err := tx.ExecContext(ctx, `
 		UPDATE hangar_capture_reservations r
 		SET first_create_attempted_at = coalesce(r.first_create_attempted_at, now()),
