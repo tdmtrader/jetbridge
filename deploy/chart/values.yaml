@@ -1006,7 +1006,9 @@ hangarOutput:
     replicas: 1
     # -- Refresh interval for the whole-bucket lifecycle-policy read. Evidence
     # older than 15 minutes is stale and the plane goes at-risk, so this is a
-    # third of that by default.
+    # third of that by default and the chart refuses anything above 15m: a
+    # longer interval does not make detection slower, it makes the plane
+    # at-risk between every pass.
     interval: "5m"
     serviceAccount:
       name: ""

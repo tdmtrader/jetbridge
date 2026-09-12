@@ -184,6 +184,9 @@ daemon that would refuse itself at startup.
 {{- end -}}
 
 {{- if $base -}}
+{{- if not .Values.artifactDaemon.enabled -}}
+{{- fail "hangarOutput.executionControl.enabled requires artifactDaemon.enabled. Every pod this runtime builds -- capture-selected or ordinary -- carries a REQUIRED node affinity on concourse.dev/artifact-cache=ready before the two output labels are appended, and the artifact daemon is the only thing that sets that label. With it disabled no node ever carries it, so every pod sits Pending until its deadline expires and the failure names a timeout rather than a label: the plane would render complete and schedule nothing." -}}
+{{- end -}}
 {{- if not $output.executionControl.keySecret -}}
 {{- fail "hangarOutput.executionControl.keySecret is required: the node signs every execution and source ledger statement with it, and an unsigned acknowledgement is not proof." -}}
 {{- end -}}
@@ -222,6 +225,7 @@ does not set is read once and believed.
 
 {{- if $capture -}}
 {{- include "concourse.hangarOutput.validateBucket" . -}}
+{{- include "concourse.hangarOutput.validateIntervals" . -}}
 {{- include "concourse.hangarOutput.validateKeys" . -}}
 {{- include "concourse.hangarOutput.validateDurations" . -}}
 {{- include "concourse.hangarOutput.validateControllers" . -}}
@@ -433,6 +437,26 @@ the same identity, and the chart not rendering the object does not make that
 untrue. Its PRINCIPAL is only checked when the chart renders the annotation,
 because that is the only case where the chart is the thing asserting it.
 */}}
+{{/*
+validateIntervals checks the three controllers' cadences, which nothing checked.
+
+Every other duration in this plane is parsed and bounded at render time. The
+attestor's was not, and it is the one whose bound has a consequence written into
+the SCHEMA: a policy snapshot older than fifteen minutes is stale, a stale
+snapshot puts the plane at-risk, and at-risk blocks five kinds of admission. An
+interval above that bound guarantees the state it is supposed to prevent.
+*/}}
+{{- define "concourse.hangarOutput.validateIntervals" -}}
+{{- $output := .Values.hangarOutput -}}
+{{- $_ := include "concourse.durationSeconds" (dict "name" "hangarOutput.inventory.interval" "value" $output.inventory.interval) -}}
+{{- $_ = include "concourse.durationSeconds" (dict "name" "hangarOutput.reclaimer.interval" "value" $output.reclaimer.interval) -}}
+{{- $_ = include "concourse.durationSeconds" (dict "name" "hangarOutput.reclaimer.deleteTimeout" "value" $output.reclaimer.deleteTimeout) -}}
+{{- $attest := atoi (include "concourse.durationSeconds" (dict "name" "hangarOutput.policyAttestor.interval" "value" $output.policyAttestor.interval)) -}}
+{{- if gt $attest 900 -}}
+{{- fail (printf "hangarOutput.policyAttestor.interval is %s; the maximum is 15m. Policy evidence older than fifteen minutes is stale, the schema enforces that bound on every admission, and a stale snapshot puts the plane at-risk -- so a longer refresh interval does not make detection slower, it makes the plane at-risk between every pass." $output.policyAttestor.interval) -}}
+{{- end -}}
+{{- end }}
+
 {{- define "concourse.hangarOutput.validatePrincipals" -}}
 {{- $subjects := list
   (dict "path" "hangarOutput.daemon"

@@ -1775,3 +1775,51 @@ func sortedForbidden(forbidden map[string]string) []string {
 
 	return names
 }
+
+// ---------------------------------------------------------------------------
+// Two refusals the plane was missing
+// ---------------------------------------------------------------------------
+
+// The output plane cannot schedule a single pod without the artifact daemon.
+//
+// `BuildAffinity` seeds EVERY pod's required node affinity with
+// `concourse.dev/artifact-cache=ready` before it appends the two output labels,
+// and the only thing in the tree that sets that label is the artifact daemon.
+// With the daemon disabled no node ever carries it, so every capture pod -- and
+// every ordinary pod -- sits Pending until its deadline expires, and the failure
+// names a timeout rather than a label. The render succeeded.
+func TestTheOutputPlaneRefusesToRenderWithoutTheArtifactDaemon(t *testing.T) {
+	message := renderHangarError(t, append(append([]string{}, baseControlSets...),
+		"artifactDaemon.enabled=false")...)
+	if !strings.Contains(message, "artifactDaemon.enabled") {
+		t.Errorf("the output plane rendered with the artifact daemon disabled, or was "+
+			"refused by something else:\n%s", message)
+	}
+	if !strings.Contains(message, "concourse.dev/artifact-cache") {
+		t.Errorf("the refusal does not name the label that is the reason:\n%s", message)
+	}
+}
+
+// Every other duration in this plane is checked at render time. The attestor's
+// interval was not, and it is the one whose bound has a consequence written
+// into the schema: policy evidence older than fifteen minutes is stale, and a
+// stale snapshot puts the plane at-risk, which blocks five kinds of admission.
+func TestTheControllerIntervalsAreValidated(t *testing.T) {
+	for _, bad := range []struct {
+		set, names string
+	}{
+		{"hangarOutput.policyAttestor.interval=20m", "policyAttestor.interval"},
+		{"hangarOutput.policyAttestor.interval=0s", "policyAttestor.interval"},
+		{"hangarOutput.policyAttestor.interval=every-so-often", "policyAttestor.interval"},
+		{"hangarOutput.inventory.interval=nope", "inventory.interval"},
+		{"hangarOutput.reclaimer.interval=nope", "reclaimer.interval"},
+	} {
+		message := renderOutputError(t, bad.set)
+		if !strings.Contains(message, bad.names) {
+			t.Errorf("%s rendered, or was refused by something else:\n%s", bad.set, message)
+		}
+	}
+
+	// And the default is accepted, so the rule is not simply "refuse".
+	renderOutput(t, "hangarOutput.policyAttestor.interval=15m")
+}
