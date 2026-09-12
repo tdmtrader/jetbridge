@@ -518,6 +518,17 @@ func (repository *HangarOutputRepository) upsertLifecycle(ctx context.Context, t
 // reclaim admission one winner: claimant first and the reclaimer rechecks and
 // skips, reclaimer first and this transaction rolls back with no usable
 // binding.
+//
+// THE COMMIT IS THE CONSUMER'S, AND SO IS THE REFUSAL. This runs inside the
+// consumer's transaction (Reqs 30 and 31), so the deferred
+// hangar_policy_admits_new_protection fires at the CONSUMER's COMMIT and
+// arrives there as a bare driver error carrying SQLSTATE JB002 -- nothing this
+// method returns, and nothing a caller can branch on. A consumer composing this
+// into its own transaction MUST pass its commit error through
+// db.HangarCommitError (or commit through db.HangarOutputTx, which is that
+// function with a Commit around it). A consumer that does not will read a
+// policy denial as an ambiguous commit and retry a refusal that never clears.
+// ReleaseClaim says the same, for the same reason.
 func (repository *HangarOutputRepository) AcquireClaim(ctx context.Context, tx output.Tx, acquisition output.ClaimAcquisition) error {
 	if err := acquisition.Validate(); err != nil {
 		return err
@@ -586,6 +597,10 @@ func (repository *HangarOutputRepository) AcquireClaim(ctx context.Context, tx o
 // Releasing an active or already-released claim is idempotent. The identity is
 // never reused: the row is the tombstone, and the schema refuses both its
 // deletion and its reactivation.
+//
+// Like AcquireClaim, this runs inside the CONSUMER's transaction, so a deferred
+// refusal reaches the consumer at its own COMMIT as an unclassified driver
+// error. Pass it through db.HangarCommitError.
 func (repository *HangarOutputRepository) ReleaseClaim(ctx context.Context, tx output.Tx, release output.ClaimRelease) error {
 	if err := release.Validate(); err != nil {
 		return err
