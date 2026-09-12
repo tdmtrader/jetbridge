@@ -430,7 +430,7 @@ func TestTheDaemonRefusesACaptureFenceBelowTheOneItSealedUnder(t *testing.T) {
 		captureFence-1); !errors.Is(err, executioncontrol.ErrStaleFence) {
 		t.Errorf("a superseded owner read the sealed tree: %v", err)
 	}
-	if err := fixture.source.AdmitCaptureFence(testHandoff, identity(1), testEpoch,
+	if _, err := fixture.source.AdmitCaptureFence(testHandoff, identity(1), testEpoch,
 		captureFence-1); !errors.Is(err, executioncontrol.ErrStaleFence) {
 		t.Errorf("a superseded owner was admitted to attest: %v", err)
 	}
@@ -441,7 +441,7 @@ func TestTheDaemonRefusesACaptureFenceBelowTheOneItSealedUnder(t *testing.T) {
 		captureFence); err != nil {
 		t.Errorf("the owner's own fence was refused at the sealed read: %v", err)
 	}
-	if err := fixture.source.AdmitCaptureFence(testHandoff, identity(1), testEpoch,
+	if _, err := fixture.source.AdmitCaptureFence(testHandoff, identity(1), testEpoch,
 		captureFence); err != nil {
 		t.Errorf("the owner's own fence was refused at attest: %v", err)
 	}
@@ -460,7 +460,7 @@ func TestTheDaemonRefusesACaptureFenceBelowTheOneItSealedUnder(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("a takeover's seal was refused: %v", err)
 	}
-	if err := fixture.source.AdmitCaptureFence(testHandoff, identity(1), testEpoch,
+	if _, err := fixture.source.AdmitCaptureFence(testHandoff, identity(1), testEpoch,
 		captureFence); !errors.Is(err, executioncontrol.ErrStaleFence) {
 		t.Errorf("the superseded owner was still served after the takeover: %v", err)
 	}
@@ -514,7 +514,7 @@ func TestATakeoverPastTheSealAdvancesTheStoredCaptureFence(t *testing.T) {
 		t.Errorf("the superseded owner canonicalized the sealed tree after a takeover past the "+
 			"seal: %v", err)
 	}
-	if err := fixture.source.AdmitCaptureFence(testHandoff, identity(1), testEpoch,
+	if _, err := fixture.source.AdmitCaptureFence(testHandoff, identity(1), testEpoch,
 		captureFence); !errors.Is(err, executioncontrol.ErrStaleFence) {
 		t.Errorf("the superseded owner was admitted to sign after a takeover past the seal: %v",
 			err)

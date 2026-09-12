@@ -318,6 +318,16 @@ type CaptureFence uint64
 // serialize on it.
 type WriterFence uint64
 
+// FirstWriterFence is the writer-admission epoch of a source incarnation no
+// writer has ever been fenced out of.
+//
+// It is the floor rather than a default: a source with no ticket still HAS a
+// writer-admission epoch -- nobody has been superseded -- and a receipt has to
+// be able to claim it, because ReceiptClaims.Validate refuses a zero fence. The
+// ATC spells the same value for its first admission; this is the one the node's
+// own ledger answers with when it is asked what it admitted.
+const FirstWriterFence = WriterFence(1)
+
 // LeaseFence is the monotonic fencing epoch of a read or reclaim lease.
 type LeaseFence uint64
 

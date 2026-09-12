@@ -76,6 +76,11 @@ func Build(ctx context.Context, config Config) (*Daemon, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
+	// Validate's key separation is over PATHS. This is the same rule over the
+	// bytes, which is what authority actually follows.
+	if err := config.RefuseCollidingKeyMaterial(); err != nil {
+		return nil, err
+	}
 	var err error
 
 	// The output facet, or nothing. Everything between here and the control key
@@ -301,7 +306,8 @@ func (daemon *Daemon) Publish(ctx context.Context, request PublishRequest, canon
 // stat returned, the marker version the store reported, and the nonce and
 // issued-at of the challenge in hand. Req 26 is what revalidates the rest,
 // against durable state, in the transaction that consumes the nonce.
-func (daemon *Daemon) StatExact(ctx context.Context, challenge output.StatChallenge, claims output.ReceiptClaims) (output.Receipt, output.PublishedObject, error) {
+func (daemon *Daemon) StatExact(ctx context.Context, challenge output.StatChallenge,
+	claims output.ReceiptClaims, admittedWriterFence output.WriterFence) (output.Receipt, output.PublishedObject, error) {
 	if err := challenge.Validate(); err != nil {
 		return output.Receipt{}, output.PublishedObject{}, err
 	}
@@ -344,6 +350,12 @@ func (daemon *Daemon) StatExact(ctx context.Context, challenge output.StatChalle
 	claims.HandoffID = challenge.HandoffID
 	claims.ReservationID = challenge.ReservationID
 	claims.CaptureFence = challenge.CaptureFence
+	// The writer fence comes from the node's own source ledger, not from the
+	// caller. It was the one claim a caller could dictate, and the control
+	// plane dictated a cast of the capture fence -- then checked it against
+	// that same capture fence, which is a comparison that cannot fail. See
+	// SourceLedger.AdmitCaptureFence.
+	claims.WriterFence = admittedWriterFence
 	claims.ChallengeNonce = challenge.Nonce
 	claims.ChallengeIssuedAt = challenge.IssuedAt
 	claims.Ref = fresh.Attributes.Ref

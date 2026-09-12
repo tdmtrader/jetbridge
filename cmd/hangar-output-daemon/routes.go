@@ -642,12 +642,14 @@ func (server *Server) statExact(_ http.ResponseWriter, request *http.Request,
 	// reach the source ledger -- it stats an object, it reads no bytes. So the
 	// fence is checked explicitly rather than implied by a call that happens to
 	// touch the source.
-	if err := server.source.AdmitCaptureFence(attestation.Challenge.HandoffID,
+	writerFence, err := server.source.AdmitCaptureFence(attestation.Challenge.HandoffID,
 		attestation.Execution, attestation.Challenge.ActivationEpoch,
-		attestation.Challenge.CaptureFence); err != nil {
+		attestation.Challenge.CaptureFence)
+	if err != nil {
 		return nil, err
 	}
-	receipt, _, err := server.daemon.StatExact(request.Context(), attestation.Challenge, attestation.Claims)
+	receipt, _, err := server.daemon.StatExact(request.Context(), attestation.Challenge,
+		attestation.Claims, writerFence)
 
 	return receipt, err
 }

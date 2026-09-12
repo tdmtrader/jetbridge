@@ -688,6 +688,41 @@ func TestAReceiptBodyIsTheClaimsItDecodesTo(t *testing.T) {
 	if _, err := ReceiptEnvelopeIsUnaltered([]byte(`not json`)); !errors.Is(err, ErrCorrupt) {
 		t.Error("a body that is not JSON decoded as a receipt")
 	}
+
+	// The three the doc comment is about, and the three it did not do.
+	//
+	// "Decoding strictly and re-encoding is what turns 'the claims verify' into
+	// 'this body is those claims'" -- and the body was json.Unmarshal plus
+	// Validate, which is neither half. The first case is a body carrying a
+	// field the decoder ignores; the third is one receipt read two different
+	// ways by two conforming JSON parsers, where a first-wins reader sees
+	// "receipt-key-1" and Go's last-wins decoder resolves the key id to the
+	// attacker's.
+	claims := mustJSON(t, receipt.Claims)
+	for _, altered := range []struct{ name, body string }{
+		{"an unknown top-level field",
+			`{"smuggled":"anything at all","claims":` + claims +
+				`,"key_id":"receipt-key-1","algorithm":"ed25519","signature":"` +
+				receipt.Signature + `"}`},
+		{"a duplicated key id, attacker first",
+			`{"claims":` + claims + `,"key_id":"attacker-key","key_id":"receipt-key-1",` +
+				`"algorithm":"ed25519","signature":"` + receipt.Signature + `"}`},
+		{"a duplicated key id, attacker last",
+			`{"claims":` + claims + `,"key_id":"receipt-key-1","key_id":"attacker-key",` +
+				`"algorithm":"ed25519","signature":"` + receipt.Signature + `"}`},
+		{"a trailing token after the object",
+			`{"claims":` + claims + `,"key_id":"receipt-key-1","algorithm":"ed25519",` +
+				`"signature":"` + receipt.Signature + `"} {"key_id":"attacker-key"}`},
+	} {
+		if decoded, err := ReceiptEnvelopeIsUnaltered([]byte(altered.body)); err == nil {
+			t.Errorf("%s was accepted, and the key id resolved to %q.\n\nThis function's whole "+
+				"reason for existing is that a verifier which decoded, re-canonicalized and "+
+				"checked would accept a body whose ENCODING said something the claims did not.",
+				altered.name, decoded.KeyID)
+		} else if !errors.Is(err, ErrCorrupt) {
+			t.Errorf("%s was refused as %v, expected a corrupt-body refusal", altered.name, err)
+		}
+	}
 }
 
 func mustJSON(t *testing.T, value any) string {

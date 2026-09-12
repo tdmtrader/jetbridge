@@ -1,11 +1,14 @@
 package output
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"sync"
 	"time"
@@ -489,13 +492,37 @@ func (verifier *ReceiptSignatureVerifier) bind(receipt Receipt, challenge StatCh
 // something the claims did not -- a duplicate key, say, or a field the decoder
 // ignored. Decoding strictly and re-encoding is what turns "the claims verify"
 // into "this body is those claims".
+// It is the same three steps ReadGrantVerifier.VerifyBinding performs, and for
+// the same reason: this used to be json.Unmarshal plus Validate, which is
+// neither half of what the paragraph above describes. Measured before the fix,
+// it accepted a body carrying an unknown top-level field outright, and accepted
+// a duplicated `key_id` -- one receipt read two different ways by two
+// conforming JSON parsers, where a first-wins reader sees one key id and Go's
+// last-wins decoder resolves to the other.
 func ReceiptEnvelopeIsUnaltered(body []byte) (Receipt, error) {
 	var receipt Receipt
-	if err := json.Unmarshal(body, &receipt); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&receipt); err != nil {
 		return Receipt{}, fmt.Errorf("%w: the receipt body does not decode: %v", ErrCorrupt, err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return Receipt{}, fmt.Errorf("%w: the receipt body carries a trailing token; a body that "+
+			"is two JSON values is a body two readers disagree about", ErrCorrupt)
 	}
 	if err := receipt.Validate(); err != nil {
 		return Receipt{}, err
+	}
+
+	// The re-encode. A strict decoder refuses an unknown field and refuses a
+	// trailing token, and it still accepts a DUPLICATE key -- last wins, and
+	// the other reader takes the first. Comparing the body against what these
+	// claims encode to is what turns "the claims verify" into "this body is
+	// those claims".
+	rendered, err := json.Marshal(receipt)
+	if err != nil || !bytes.Equal(rendered, body) {
+		return Receipt{}, fmt.Errorf("%w: the receipt body is not the encoding of the claims it "+
+			"decodes to", ErrCorrupt)
 	}
 
 	return receipt, nil
