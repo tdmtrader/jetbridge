@@ -1823,3 +1823,77 @@ func TestTheControllerIntervalsAreValidated(t *testing.T) {
 	// And the default is accepted, so the rule is not simply "refuse".
 	renderOutput(t, "hangarOutput.policyAttestor.interval=15m")
 }
+
+// ---------------------------------------------------------------------------
+// The low set
+// ---------------------------------------------------------------------------
+
+// The database credential does not reach argv.
+//
+// `--database=$(HANGAR_OUTPUT_DSN)` is expanded by the KUBELET, so the
+// connection string -- user, password and all -- ends up in
+// /proc/<pid>/cmdline, which is world-readable inside the container, while
+// /proc/<pid>/environ is readable only by the process's own uid. The commands
+// read the variable themselves instead.
+func TestTheDatabaseCredentialNeverReachesArgv(t *testing.T) {
+	out := renderOutput(t,
+		"hangarOutput.activation.job.mode=attest",
+		"hangarOutput.activation.job.facet=base")
+
+	carriers := 0
+	for _, subject := range documentsIn(t, out) {
+		if !strings.Contains(subject.body, "HANGAR_OUTPUT_DSN") {
+			continue
+		}
+		carriers++
+		if strings.Contains(subject.body, "--database=$(HANGAR_OUTPUT_DSN)") {
+			t.Errorf("%s %s expands the DSN into its argv. The kubelet substitutes $(VAR) "+
+				"in args, so the credential lands in /proc/<pid>/cmdline, which is readable "+
+				"by anything in the container; the environment is not.",
+				subject.kind, subject.name)
+		}
+	}
+	if carriers < 4 {
+		t.Fatalf("only %d workloads take a DSN from the environment; this rule is looking at "+
+			"the wrong render", carriers)
+	}
+}
+
+// readOnlyRootFilesystem with nowhere to write is a runtime error waiting for
+// the first operation that wants a temp file -- on a Pod that passed every
+// render check. The GCS client library spools resumable uploads.
+func TestTheControllersHaveSomewhereToWrite(t *testing.T) {
+	out := renderOutput(t)
+
+	for _, component := range []string{
+		outputInventoryComponent, outputReclaimerComponent, outputAttestorComponent,
+	} {
+		controller := objectNamed(t, out, "Deployment", "-"+component)
+
+		var object appsv1.Deployment
+		if err := yaml.UnmarshalStrict([]byte(controller.body), &object); err != nil {
+			t.Fatalf("%s: %v", controller.source, err)
+		}
+		spec := object.Spec.Template.Spec
+		if len(spec.Containers) == 0 || spec.Containers[0].SecurityContext == nil {
+			t.Fatalf("%s has no container security context; this rule is looking at nothing",
+				component)
+		}
+		readOnly := spec.Containers[0].SecurityContext.ReadOnlyRootFilesystem
+		if readOnly == nil || !*readOnly {
+			continue // Nothing to guarantee.
+		}
+
+		writable := false
+		for _, mount := range spec.Containers[0].VolumeMounts {
+			if mount.MountPath == "/tmp" {
+				writable = true
+			}
+		}
+		if !writable {
+			t.Errorf("%s runs with readOnlyRootFilesystem and mounts nothing at /tmp. The "+
+				"GCS client spools resumable uploads to a temp file, and the failure would "+
+				"be a runtime error on a Pod that passed every render check.", component)
+		}
+	}
+}

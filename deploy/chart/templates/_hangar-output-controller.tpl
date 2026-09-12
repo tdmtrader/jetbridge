@@ -84,14 +84,30 @@ this comment is why the `}}` below is not `-}}`.
 {{- define "concourse.hangarOutput.controllerTail" -}}
 {{- $root := .root }}
           env:
+            # Read by the command itself, never passed as --database. The
+            # kubelet expands $(VAR) in args, so a flag would put the
+            # connection string -- user and password included -- into
+            # /proc/<pid>/cmdline, which is world-readable inside the
+            # container; /proc/<pid>/environ is not.
             - name: HANGAR_OUTPUT_DSN
               valueFrom:
                 secretKeyRef:
                   name: {{ $root.Values.hangarOutput.database.existingSecret }}
                   key: dsn
+          volumeMounts:
+            # readOnlyRootFilesystem with nowhere to write is a runtime error
+            # waiting for the first operation that wants a temp file -- the GCS
+            # client spools resumable uploads -- on a Pod that passed every
+            # render check.
+            - name: tmp
+              mountPath: /tmp
           {{- with .values.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           {{- include "concourse.hangarOutput.controllerSecurityContext" $root | nindent 10 }}
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
 {{- end }}

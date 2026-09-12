@@ -149,7 +149,6 @@ spec:
             {{- if .Values.hangarOutput.activation.job.finalize }}
             - --finalize
             {{- end }}
-            - --database=$(HANGAR_OUTPUT_DSN)
           env:
             - name: HANGAR_OUTPUT_DSN
               valueFrom:

@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -115,8 +116,9 @@ func (config Config) TLSEnabled() bool {
 
 // Validate refuses a Job that cannot do what it was asked.
 func (config Config) Validate() error {
-	if strings.TrimSpace(config.DSN) == "" {
-		return fmt.Errorf("%w: --database is required", output.ErrIncomplete)
+	if strings.TrimSpace(resolveDSN(config.DSN)) == "" {
+		return fmt.Errorf("%w: --database is required, or %s in the environment",
+			output.ErrIncomplete, dsnEnvironmentVariable)
 	}
 	if config.Epoch <= 0 {
 		return fmt.Errorf("%w: --epoch is required and must be positive; zero is the absence "+
@@ -167,4 +169,24 @@ func (config Config) Validate() error {
 	}
 
 	return nil
+}
+
+// dsnEnvironmentVariable is where this command reads its PostgreSQL connection
+// string when --database is not given, and is how the chart supplies it.
+//
+// Not `--database=$(HANGAR_OUTPUT_DSN)`: the kubelet expands $(VAR) in args, so
+// the credential lands in /proc/<pid>/cmdline, which is world-readable inside
+// the container. /proc/<pid>/environ is readable only by the process's own uid.
+// The flag stays, because a developer running this by hand has no environment
+// set up for it and a flag is the honest way to say so.
+const dsnEnvironmentVariable = "HANGAR_OUTPUT_DSN"
+
+// resolveDSN fills the connection string from the environment when the flag
+// left it empty.
+func resolveDSN(dsn string) string {
+	if dsn != "" {
+		return dsn
+	}
+
+	return os.Getenv(dsnEnvironmentVariable)
 }

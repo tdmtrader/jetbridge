@@ -45,6 +45,5 @@ say. An include is idempotent; a misleading first error is not.
             - --reclaimer-identity={{ include "concourse.hangarOutput.cloudIdentity" (dict "path" "hangarOutput.reclaimer" "annotations" .Values.hangarOutput.reclaimer.serviceAccount.annotations) }}
             - --attestor-identity={{ include "concourse.hangarOutput.cloudIdentity" (dict "path" "hangarOutput.policyAttestor" "annotations" .Values.hangarOutput.policyAttestor.serviceAccount.annotations) }}
             - --interval={{ $values.interval }}
-            - --database=$(HANGAR_OUTPUT_DSN)
 {{- include "concourse.hangarOutput.controllerTail" (dict "root" . "values" $values) }}
 {{- end }}

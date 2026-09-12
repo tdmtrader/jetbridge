@@ -576,6 +576,17 @@ database credential, security context, probes-by-liveness-of-process. Each is a
 single bounded worker with no HTTP surface, so there is no readiness probe to
 write -- the Deployment's one replica IS the readiness the lease enforces.
 */}}
+{{/*
+No liveness probe, and that is a gap rather than a decision.
+
+The absent READINESS probe is argued above and is right: these three serve
+nothing, and the one replica is the readiness the lease enforces. Liveness is a
+different question -- a wedged worker holding a lease is exactly what a liveness
+probe exists for, and this plane's status surface already knows how to say "the
+sweep has stalled". What it needs is a heartbeat the controller loop writes, and
+that loop lives in atc/hangaroutput/controller rather than here. Recorded so
+that the absence is not read as a considered one.
+*/}}
 {{- define "concourse.hangarOutput.controllerSecurityContext" -}}
 securityContext:
   runAsNonRoot: true
