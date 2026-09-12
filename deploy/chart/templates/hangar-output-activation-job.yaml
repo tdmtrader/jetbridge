@@ -36,7 +36,26 @@ gets for free.
 {{- if and (eq $facet "all") (ne $mode "drain") }}
 {{- fail "hangarOutput.activation.job.facet=all is only meaningful for mode=drain: attesting or enabling \"both facets\" in one step would hide the ordering the whole protocol is." }}
 {{- end }}
-{{- $name := printf "%s-%s" (include "concourse.hangarOutput.activationName" .) $mode }}
+{{/*
+The name carries the mode, the EPOCH and the finalize flag, and it is composed
+through the same name helper the workloads use so the 63-character bound holds
+at every release name.
+
+A Job's `spec.template` is immutable. With four possible names for the life of
+the release, running mode=attest for epoch 8 after mode=attest ran for epoch 7
+made `helm upgrade` fail with `Job.batch … field is immutable` -- the epoch is
+an argument inside the pod template -- and the way past it was deleting the Job
+by hand, an undocumented step in the middle of the sequence decision F1 spent a
+page getting right. Re-rendering the SAME mode and epoch is still a no-op,
+which is correct: a Complete Job is not re-run, and re-running a transition is
+exactly what the CAS row exists to make impossible rather than merely unlikely.
+*/}}
+{{- $epoch := int .Values.hangarOutput.activationEpoch }}
+{{- $suffix := printf "hangar-output-activation-%s-%d" $mode $epoch }}
+{{- if and (eq $mode "drain") .Values.hangarOutput.activation.job.finalize }}
+{{- $suffix = printf "%s-finalize" $suffix }}
+{{- end }}
+{{- $name := include "concourse.hangarOutput.qualifiedName" (dict "root" . "suffix" $suffix) }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -94,6 +113,10 @@ metadata:
     app.kubernetes.io/component: hangar-output-activation
 spec:
   backoffLimit: 2
+  {{- with .Values.hangarOutput.activation.job.ttlSecondsAfterFinished }}
+  # Completed Jobs otherwise accumulate one per mode per epoch, forever.
+  ttlSecondsAfterFinished: {{ int . }}
+  {{- end }}
   template:
     metadata:
       labels:

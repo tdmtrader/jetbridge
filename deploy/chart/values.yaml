@@ -1037,6 +1037,13 @@ hangarOutput:
       # what is still live; with it the facet may reach the terminal disabled
       # state, and only if the live tables say it holds nothing.
       finalize: false
+      # -- How long a completed activation Job is kept before Kubernetes
+      # deletes it. The Job's name carries the mode AND the epoch, so a
+      # rotation renders a NEW Job rather than colliding with the previous
+      # epoch's immutable pod template -- which means they accumulate, one per
+      # mode per epoch, without this. A day is long enough to read the logs.
+      # Empty or 0 keeps them forever.
+      ttlSecondsAfterFinished: 86400
 
   networkPolicy:
     # -- Enable NetworkPolicies for the four output workloads.

@@ -9,28 +9,57 @@ and is diagnosed from logs at three in the morning.
 
 {{/* ------------------------------------------------------------------ names */}}
 
+{{/*
+qualifiedName composes `<fullname>-<suffix>` inside the 63-character bound by
+truncating the FULLNAME, never the composed string.
+
+Truncating the composed string is what the four workload names used to do, and
+the four suffixes share a 14-character `-hangar-output` prefix: once the
+fullname reached 49 characters there were fewer than 14 distinguishing
+characters left and all four collapsed to ONE name. validatePrincipals then
+refused the render -- correctly, and with a message about service accounts --
+for a problem the operator can only fix by renaming the release. The fullname is
+`<release>-concourse-jetbridge`, so the chart was unusable at any release name
+of 28 characters or more, and Helm permits 53.
+
+Reserving the suffix instead keeps the four distinct at every length, because
+the part that distinguishes them is the part that survives. Names stay
+byte-identical for any fullname short enough not to need truncating, which is
+every release name in use.
+
+Expects a dict: root, suffix.
+*/}}
+{{- define "concourse.hangarOutput.qualifiedName" -}}
+{{- $suffix := .suffix -}}
+{{- $budget := int (sub 62 (len $suffix)) -}}
+{{- if lt $budget 1 -}}
+{{- fail (printf "the Hangar output plane cannot compose a name for %q: the suffix alone is %d characters and a Kubernetes object name is 63" $suffix (len $suffix)) -}}
+{{- end -}}
+{{- printf "%s-%s" (include "concourse.fullname" .root | trunc $budget | trimSuffix "-") $suffix -}}
+{{- end }}
+
 {{- define "concourse.hangarOutput.daemonName" -}}
-{{- printf "%s-hangar-output-daemon" (include "concourse.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- include "concourse.hangarOutput.qualifiedName" (dict "root" . "suffix" "hangar-output-daemon") }}
 {{- end }}
 
 {{- define "concourse.hangarOutput.inventoryName" -}}
-{{- printf "%s-hangar-output-inventory" (include "concourse.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- include "concourse.hangarOutput.qualifiedName" (dict "root" . "suffix" "hangar-output-inventory") }}
 {{- end }}
 
 {{- define "concourse.hangarOutput.reclaimerName" -}}
-{{- printf "%s-hangar-output-reclaimer" (include "concourse.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- include "concourse.hangarOutput.qualifiedName" (dict "root" . "suffix" "hangar-output-reclaimer") }}
 {{- end }}
 
 {{- define "concourse.hangarOutput.attestorName" -}}
-{{- printf "%s-hangar-output-policy-attestor" (include "concourse.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- include "concourse.hangarOutput.qualifiedName" (dict "root" . "suffix" "hangar-output-policy-attestor") }}
 {{- end }}
 
 {{- define "concourse.hangarOutput.receiptKeysName" -}}
-{{- printf "%s-hangar-output-receipt-keys" (include "concourse.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- include "concourse.hangarOutput.qualifiedName" (dict "root" . "suffix" "hangar-output-receipt-keys") }}
 {{- end }}
 
 {{- define "concourse.hangarOutput.activationName" -}}
-{{- printf "%s-hangar-output-activation" (include "concourse.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- include "concourse.hangarOutput.qualifiedName" (dict "root" . "suffix" "hangar-output-activation") }}
 {{- end }}
 
 {{/*
