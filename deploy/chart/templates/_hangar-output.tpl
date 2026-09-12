@@ -363,7 +363,20 @@ operator can actually reach by accident:
     makes the *web* Deployment run as the delete-holding identity. Req 54 is
     explicit that web/control-plane, task, cache and strict-input identities
     have no role on the output bucket, and this is the one values override that
-    gives web all of them.
+    gives web all of them;
+  - kubernetes.serviceAccount is the TASK pods' account, and it is the worst of
+    the four. Task pods run arbitrary user-supplied code; the reclaimer holds
+    the only storage.objects.delete on the output bucket. Req 54 names this
+    case by hand -- "shared KSAs, shared Workload Identity principals,
+    prefix-only isolation in a mixed bucket, OR TASK CREDENTIALS are activation
+    failures". An empty value needs nothing: it means "the web SA", which the
+    serviceAccount subject already covers.
+
+That this list has now been extended four times is the argument for the guard
+that reads it. deploy/chart/tests/hangar_output_principals_test.go enumerates
+every `.Values.…serviceAccount[.name]` any template consults, points each at
+another workload's account and requires the refusal, so a fifth override cannot
+be added without either landing here or turning that rule red.
 
 The web account is checked by NAME even when serviceAccount.create is false: a
 pre-provisioned account named after the reclaimer's is the same Pod running as
@@ -392,6 +405,12 @@ because that is the only case where the chart is the thing asserting it.
         "name" (include "concourse.serviceAccountName" .)
         "annotations" (ternary (.Values.serviceAccount.annotations | default dict) dict (.Values.serviceAccount.create | default false | not | not)))
 -}}
+{{- if .Values.kubernetes.serviceAccount -}}
+{{- $subjects = append $subjects (dict
+      "path" "kubernetes.serviceAccount"
+      "name" .Values.kubernetes.serviceAccount
+      "annotations" dict) -}}
+{{- end -}}
 {{- if .Values.artifactDaemon.enabled -}}
 {{- $subjects = append $subjects (dict
       "path" "artifactDaemon"
