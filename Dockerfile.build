@@ -76,9 +76,10 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
       -o /artifact-daemon \
       ./cmd/artifact-daemon
 
-# Build the Hangar output plane's four isolated binaries.
+# Build the Hangar output plane's five binaries.
 #
-# Four and not one. A Kubernetes service account is Pod-wide, so a process that
+# Four isolated roles plus the internal activation command -- five binaries.
+# Four and not one for the ROLES: a Kubernetes service account is Pod-wide, so a process that
 # holds a cloud role has that role for everything else it does: the publisher may
 # create and get, inventory may list and get bucket-wide, the reclaimer may get
 # and delete, and the attestor holds no object permission at all. Those are four
