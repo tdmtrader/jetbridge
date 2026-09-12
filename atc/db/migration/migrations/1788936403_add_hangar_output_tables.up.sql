@@ -1547,6 +1547,19 @@ BEGIN
             NEW.activation_epoch, latest.state
             USING ERRCODE = 'JB002';
     END IF;
+    -- now() is transaction_timestamp(), so a transaction open for N seconds
+    -- measures this bound N seconds early and can admit an attestation older
+    -- than fifteen minutes by its own duration. Recorded and left as now() on
+    -- purpose: this trigger is DEFERRED, so it fires in the constraint phase of
+    -- a transaction whose other now() readings -- the claim's requested_at, the
+    -- lease instants it was admitted under -- are all transaction start, and a
+    -- freshness bound read from a later clock than the row it is admitting
+    -- would be the mixture of two moments this schema exists to refuse. The
+    -- error is bounded by transaction duration, the bound is fifteen minutes,
+    -- and the admission transactions here are milliseconds long. The one place
+    -- the distinction is load-bearing is the seal deadline, which is
+    -- configurable down to thirty seconds and reads clock_timestamp(); see
+    -- SealDeadlinePassed.
     IF now() - latest.observed_at > interval '15 minutes' THEN
         RAISE EXCEPTION 'hangar: the lifetime-policy attestation for epoch % is % old, past the 15-minute detection bound; a stale check is not a safe one',
             NEW.activation_epoch, now() - latest.observed_at

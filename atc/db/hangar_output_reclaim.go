@@ -28,6 +28,11 @@ package db
 // same reading is what every earlier phase's lease arithmetic uses, and
 // tightening one site alone would make two kinds of lease mean two things.
 // Revisit if a lease is ever tightened below a minute.
+//
+// The SEAL DEADLINE is the exception, and it is not a lease. Req 17 makes it
+// configurable down to thirty seconds, which is inside the error the ruling
+// above accepts, so SealDeadlinePassed reads clock_timestamp() and says why at
+// its own site. The ruling here is about leases and stays about leases.
 
 import (
 	"context"

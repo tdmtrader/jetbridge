@@ -480,3 +480,101 @@ func mustAttestAndEnableOutput(t *testing.T, epochs activation.Epochs,
 		t.Fatalf("enable output %d: %v", epoch, err)
 	}
 }
+
+// AFTER ONE OUTPUT ROTATION, ENABLE MUST STILL BE REACHABLE.
+//
+// Enable required `base_state = 'enabled'` for the output facet, and Rotate
+// deliberately admitted `base_state IN ('attested','enabled')` -- the schema's
+// own predicate -- because the incoming row's base facet cannot be enabled
+// while the outgoing row's still is. The two disagreed, and the disagreement is
+// a one-way door: after the first output rotation the serving row's base sits
+// at `attested` permanently, so the only way to move output again was another
+// rotation. Take the output facet out of service entirely and there is nothing
+// left to rotate FROM, and nothing whose base is `enabled` to rotate TO. The
+// plane's output half cannot be turned back on at all.
+//
+// The sequence below is that door, walked. It is the operator's own vocabulary
+// throughout: no row is written by hand.
+func TestOutputCanBeEnabledAgainAfterARotationAndAFullDrain(t *testing.T) {
+	epochs, conn := activationFixture(t)
+	ctx := context.Background()
+
+	const (
+		first  = executioncontrol.ActivationEpoch(61)
+		second = executioncontrol.ActivationEpoch(62)
+		third  = executioncontrol.ActivationEpoch(63)
+	)
+
+	mustBegin(t, epochs, first)
+	mustAttestAndEnableBase(t, epochs, first)
+	mustAttestAndEnableOutput(t, epochs, first)
+
+	// One output rotation, which is the ordinary receipt-key rotation.
+	mustBegin(t, epochs, second)
+	mustAttestBase(t, epochs, second)
+	mustAttestOutputOnly(t, epochs, second)
+	if err := epochs.Rotate(ctx, first, second, activation.FacetOutput); err != nil {
+		t.Fatalf("rotating output: %v", err)
+	}
+	if err := epochs.Disable(ctx, first, activation.FacetOutput); err != nil {
+		t.Fatalf("disabling the outgoing output facet: %v", err)
+	}
+
+	state, err := epochs.Read(ctx, second)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if state.Base != "attested" {
+		t.Fatalf("the serving row's base facet is %q; this test is about the state a rotation "+
+			"leaves behind, and that state is base=attested", state.Base)
+	}
+
+	// The output facet goes out of service entirely -- a deployment turning the
+	// output plane off, which every drain path is written for.
+	if err := epochs.Drain(ctx, second, activation.FacetOutput); err != nil {
+		t.Fatalf("draining the serving output facet: %v", err)
+	}
+	if err := epochs.Disable(ctx, second, activation.FacetOutput); err != nil {
+		t.Fatalf("disabling the serving output facet: %v", err)
+	}
+
+	var enabled int
+	if err := conn.QueryRow(`SELECT count(*) FROM hangar_output_activation_epochs
+		 WHERE output_state = 'enabled'`).Scan(&enabled); err != nil {
+		t.Fatalf("counting enabled output rows: %v", err)
+	}
+	if enabled != 0 {
+		t.Fatalf("%d output facets are still enabled, so this is not the state the test is "+
+			"named for", enabled)
+	}
+
+	// And now output is turned back on. Rotate cannot do it -- there is no
+	// enabled output facet to rotate off -- so Enable has to, and the row it
+	// has to do it on is one whose base facet is `attested`, because the only
+	// `enabled` base facet belongs to a row whose output facet is terminally
+	// disabled.
+	mustBegin(t, epochs, third)
+	mustAttestBase(t, epochs, third)
+	mustAttestOutputOnly(t, epochs, third)
+
+	if err := epochs.Rotate(ctx, second, third, activation.FacetOutput); err == nil {
+		t.Fatal("a rotation succeeded off a disabled output facet, so the dead end this test " +
+			"is about is not reachable and the test proves nothing")
+	}
+	if err := epochs.Enable(ctx, third, activation.FacetOutput); err != nil {
+		t.Fatalf("the output facet cannot be brought back into service at all: %v.\n\n"+
+			"Enable and Rotate disagree about base readiness. Rotate takes the schema's own "+
+			"predicate -- base_state IN ('attested','enabled') -- and Enable takes a stricter "+
+			"one, so after the first output rotation Enable is unreachable forever: the "+
+			"serving row's base stays at `attested` and the only `enabled` base belongs to a "+
+			"row whose output facet is terminally disabled", err)
+	}
+
+	state, err = epochs.Read(ctx, third)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if state.Base != "attested" || state.Output != "enabled" {
+		t.Errorf("the re-enabled row is base=%s output=%s", state.Base, state.Output)
+	}
+}

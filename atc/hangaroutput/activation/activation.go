@@ -260,11 +260,27 @@ func (epochs Epochs) Enable(ctx context.Context, epoch executioncontrol.Activati
 		 WHERE epoch_id = $1
 		   AND %s = 'attested'`, column, column)
 	if facet == FacetOutput {
-		// Output effective admission is the conjunction of base readiness, the
-		// output facets and the CURRENT policy, so the base check is here as
-		// well as in the schema's CHECK: the constraint admits `attested`,
-		// which is a base facet that has not been put into service.
-		statement += ` AND base_state = 'enabled'`
+		// The SCHEMA's own readiness predicate, which is the same one Rotate
+		// takes. Output effective admission is the conjunction of base
+		// readiness, the output facets and the CURRENT policy, so the base
+		// check is here as well as in the CHECK -- but it is the same check.
+		//
+		// It used to be the stricter `base_state = 'enabled'`, and that was a
+		// one-way door. A rotation leaves the incoming row at
+		// base=attested/output=enabled, because the incoming row's base facet
+		// cannot be enabled while the outgoing row's still is; so after the
+		// first output rotation the serving row's base sits at `attested`
+		// permanently. Take the output facet out of service from there and
+		// there is nothing left to rotate FROM and nothing whose base is
+		// `enabled` to rotate TO -- the only such row's output facet is
+		// terminally disabled -- and the plane's output half could not be
+		// turned back on at all.
+		//
+		// base=attested with output=enabled is not a state this loosens the
+		// plane into: it is the state every output rotation already produces
+		// and runs in, and the schema's hangar_output_epoch_needs_base admits
+		// it by name.
+		statement += ` AND base_state IN ('attested', 'enabled')`
 	}
 
 	return epochs.apply(ctx, epoch, facet, column, "enabled", statement, []any{int64(epoch)})

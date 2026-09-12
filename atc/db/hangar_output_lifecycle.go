@@ -30,6 +30,25 @@ func hangarExecutionID(value string) executioncontrol.ExecutionID {
 // other than the one the lease currently holds, so a stale owner resolves
 // nothing. Scope and Digest arrive on the value the control plane filled in;
 // there is no parameter here a task could reach.
+//
+// RECORDED, NOT FIXED: a resolution can land for a correlation whose generation
+// has ALREADY been admitted to reclamation. hangar_check_reclaim_exclusion
+// counts unresolved logical reservations and is attached to
+// hangar_reclaim_jobs, hangar_claims and hangar_read_leases, not to this table;
+// and AdmitReclaim's class-1 lock locks the rows that exist and cannot block an
+// INSERT of one that does not. So Req 46's "no unresolved reservation" is an
+// ADMISSION-TIME precondition, and a later resolution loses rather than being
+// refused.
+//
+// It stays a precondition because the harm is bounded and self-healing and the
+// alternative is not. A second capture of identical bytes dedupes onto the
+// reclaiming generation, RegisterReceipt registers a receipt against it --
+// upsertLifecycle deliberately does not rewrite `state`, so nothing is
+// resurrected -- and the consumer's AcquireClaim then refuses with
+// `reclaiming`. One capture fails; no consumer is handed a binding to bytes
+// that are going away. Making this a refusal instead would mean a trigger on
+// this table that failed a live capture for the sake of a reclamation that has
+// not deleted anything yet.
 func (repository *HangarOutputRepository) ResolveLogicalReservation(ctx context.Context, tx output.Tx, resolution output.LogicalResolution) error {
 	if err := resolution.Validate(); err != nil {
 		return err
