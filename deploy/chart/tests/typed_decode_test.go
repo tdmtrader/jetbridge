@@ -271,10 +271,19 @@ func TestEveryRenderedObjectDecodesAsTheKubernetesObjectItClaimsToBe(t *testing.
 //
 // Non-vacuity is a floor on the number of Pod templates walked, not a nonzero
 // check: the bug this replaces was a guard that stopped looking.
+//
+// And the kinds it does NOT walk are declared rather than fallen through. The
+// switch below used to end in `default: continue`, which is the same shape as
+// the defect this whole file exists for: a CronJob or a StatefulSet added to
+// this chart tomorrow carries a pod template the API server validates, and it
+// would have been skipped in silence. kindsWithoutPodTemplates is checked
+// against kindsCovered at the end, so a new kind lands in one list or the
+// other by decision.
 func TestEveryRenderedPodTemplateCarriesTheFieldsTheAPIServerRequires(t *testing.T) {
 	// Every mode, because the controllers only exist in some of them and the
 	// DaemonSet only in others.
 	walked := 0
+	walkedKinds := map[string]bool{}
 
 	for _, mode := range typedModes {
 		t.Run(mode.name, func(t *testing.T) {
@@ -328,10 +337,19 @@ func TestEveryRenderedPodTemplateCarriesTheFieldsTheAPIServerRequires(t *testing
 					template = object.Spec.Template
 					isJob = true
 				default:
+					if !kindsWithoutPodTemplates[head.Kind] {
+						t.Errorf("%s renders kind %q, which this guard neither walks nor "+
+							"declares free of pod templates. If it carries one, add a case "+
+							"for it; if it does not, say so in kindsWithoutPodTemplates -- "+
+							"a kind that falls through in silence is exactly the shape of "+
+							"defect this file exists for.", sourceOf(chunk), head.Kind)
+					}
+
 					continue
 				}
 
 				walked++
+				walkedKinds[head.Kind] = true
 				where := fmt.Sprintf("%s %s %s", sourceOf(chunk), head.Kind, head.Metadata.Name)
 
 				// A Pod with no regular container is rejected.
@@ -426,6 +444,36 @@ func TestEveryRenderedPodTemplateCarriesTheFieldsTheAPIServerRequires(t *testing
 		t.Fatalf("this guard walked only %d pod templates across %d modes; it has stopped "+
 			"looking at the render", walked, len(typedModes))
 	}
+
+	// Every kind the chart can emit is accounted for: walked, or declared to
+	// carry no pod template. A kind in neither list is a hole.
+	for _, kind := range kindsCovered {
+		if walkedKinds[kind] || kindsWithoutPodTemplates[kind] {
+			continue
+		}
+		t.Errorf("kind %q is in kindsCovered and this guard neither walked it nor declared "+
+			"it free of pod templates", kind)
+	}
+}
+
+// kindsWithoutPodTemplates carry no `spec.template.spec` for the API server to
+// validate. Declared rather than defaulted: the point is that adding a kind is
+// a decision somebody writes down.
+var kindsWithoutPodTemplates = map[string]bool{
+	"ClusterRole":           true,
+	"ClusterRoleBinding":    true,
+	"ConfigMap":             true,
+	"Ingress":               true,
+	"NetworkPolicy":         true,
+	"PersistentVolumeClaim": true,
+	"PodDisruptionBudget":   true,
+	"PrometheusRule":        true,
+	"Role":                  true,
+	"RoleBinding":           true,
+	"Secret":                true,
+	"Service":               true,
+	"ServiceAccount":        true,
+	"ServiceMonitor":        true,
 }
 
 // The specific shape that got past everything: a workload's `command` is a list
