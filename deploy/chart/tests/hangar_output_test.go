@@ -71,6 +71,14 @@ var outputSets = append(append([]string{}, baseControlSets...),
 	"hangarOutput.receipt.publicKeys[0].key=cHVibGljLWtleS1ieXRlcw==",
 	"hangarOutput.materializationKeySecret=op-output-materialize",
 	"hangarOutput.database.existingSecret=op-activation-db",
+	// The four Workload Identity annotations. The output facet requires them:
+	// the policy attestor compares the bucket's IAM policy against these four
+	// members, so a plane that does not declare them can attest nothing. See
+	// hangar_output_principals_test.go.
+	`hangarOutput.daemon.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=publisher@p.iam.gserviceaccount.com`,
+	`hangarOutput.inventory.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=inventory@p.iam.gserviceaccount.com`,
+	`hangarOutput.reclaimer.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=reclaimer@p.iam.gserviceaccount.com`,
+	`hangarOutput.policyAttestor.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=attestor@p.iam.gserviceaccount.com`,
 )
 
 func renderBaseControl(t *testing.T, extra ...string) string {

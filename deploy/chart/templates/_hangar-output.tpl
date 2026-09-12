@@ -197,6 +197,7 @@ does not set is read once and believed.
 {{- include "concourse.hangarOutput.validateDurations" . -}}
 {{- include "concourse.hangarOutput.validateControllers" . -}}
 {{- include "concourse.hangarOutput.validatePrincipals" . -}}
+{{- include "concourse.hangarOutput.validateCloudIdentities" . -}}
 {{- if not $output.database.existingSecret -}}
 {{- fail "hangarOutput.database.existingSecret is required: the activation and drain Jobs use a PostgreSQL role of their own, distinct from the web pod's, which is what makes \"only the activation command writes hangar_output_activation_epochs\" enforceable rather than aspirational." -}}
 {{- end -}}
@@ -455,6 +456,46 @@ because that is the only case where the chart is the thing asserting it.
 {{- end -}}
 {{- $_ := set $principals $principal $subject.path -}}
 {{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+cloudIdentity is the IAM member bound to one output role's Kubernetes service
+account, read off the Workload Identity annotation the chart renders on that
+account.
+
+It is not the service account's NAME. The policy attestor compares the bucket's
+IAM policy against these four values and the matcher normalises an IAM member
+("serviceAccount:a@b" and "a@b" are one identity), so a Kubernetes name here
+matches no binding on any real bucket: every role attests insufficient_role,
+every real principal on the bucket becomes a stranger, and the epoch goes
+permanently at risk. It fails CLOSED, which is why nothing noticed -- and it
+means Req 54's "activation verifies the KSA-to-cloud identity bindings" could
+never succeed as deployed.
+
+An empty annotation fails the render rather than rendering an empty identity,
+because an empty member matches no binding either and is indistinguishable from
+a principal that really has no role: the operator would be shown a plane whose
+publisher holds nothing, for a deployment whose Workload Identity is correct
+and merely undeclared.
+*/}}
+{{- define "concourse.hangarOutput.cloudIdentity" -}}
+{{- $principal := get (.annotations | default dict) "iam.gke.io/gcp-service-account" -}}
+{{- if not $principal -}}
+{{- fail (printf "%s.serviceAccount.annotations has no iam.gke.io/gcp-service-account. The policy attestor compares the output bucket's IAM policy against the four principals this plane claims to have, and a Kubernetes service account name -- or an empty one -- matches no member on any real bucket: all four roles attest insufficient_role, every real principal becomes a stranger and the epoch goes permanently at risk. The chart cannot verify the binding; activation does. It does need to be told what it is." .path) -}}
+{{- end -}}
+{{- $principal -}}
+{{- end }}
+
+{{/*
+validateCloudIdentities requires all four before anything renders, so the
+refusal names the value rather than arriving from whichever template happened
+to be first.
+*/}}
+{{- define "concourse.hangarOutput.validateCloudIdentities" -}}
+{{- $output := .Values.hangarOutput -}}
+{{- range $path, $values := dict "hangarOutput.daemon" $output.daemon "hangarOutput.inventory" $output.inventory "hangarOutput.reclaimer" $output.reclaimer "hangarOutput.policyAttestor" $output.policyAttestor -}}
+{{- $_ := include "concourse.hangarOutput.cloudIdentity" (dict "path" $path "annotations" $values.serviceAccount.annotations) -}}
 {{- end -}}
 {{- end }}
 

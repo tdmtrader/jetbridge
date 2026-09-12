@@ -930,9 +930,19 @@ hangarOutput:
       # -- Override the rendered name. Leave empty for
       # <fullname>-hangar-output-daemon.
       name: ""
-      # -- Workload Identity annotation, e.g.
-      # iam.gke.io/gcp-service-account: publisher@project.iam.gserviceaccount.com
-      # The chart cannot verify the binding; activation does.
+      # -- Workload Identity annotation. REQUIRED for all four output roles
+      # when the output facet is on:
+      #
+      #   annotations:
+      #     iam.gke.io/gcp-service-account: publisher@project.iam.gserviceaccount.com
+      #
+      # The policy attestor compares the output bucket's IAM policy against
+      # these four CLOUD members -- they are what --publisher-identity and its
+      # three siblings carry. The chart cannot verify the binding; activation
+      # does, and it can only do so if it is told what the binding is. An
+      # undeclared one is refused rather than rendered, because an empty member
+      # matches no binding and is indistinguishable from a principal that
+      # genuinely holds nothing.
       annotations: {}
     resources: {}
     nodeSelector: {}
