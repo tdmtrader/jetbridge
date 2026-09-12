@@ -403,8 +403,18 @@ func fingerprintOf(bucket string) string {
 // describeCondition renders a lifecycle condition for an operator to read. It
 // is diagnostic text and nothing decides anything from it, which is why a
 // condition this code cannot render is still a rule that counts.
+//
+// Every field GCS models is rendered, and it used to be four of twelve: a rule
+// scoped by prefix, suffix, storage class, custom time or noncurrent time all
+// rendered as "unconditional", so two different Delete rules could be described
+// identically in the recorded finding an operator is supposed to act on. The
+// safe/at_risk decision is made from the ACTION alone and was never affected;
+// what was affected is whether the text says which rule.
 func describeCondition(condition storage.LifecycleCondition) string {
 	var parts []string
+	if condition.AllObjects {
+		parts = append(parts, "allObjects")
+	}
 	if condition.AgeInDays > 0 {
 		parts = append(parts, fmt.Sprintf("age>%d", condition.AgeInDays))
 	}
@@ -413,6 +423,30 @@ func describeCondition(condition storage.LifecycleCondition) string {
 	}
 	if !condition.CreatedBefore.IsZero() {
 		parts = append(parts, "createdBefore="+condition.CreatedBefore.Format(time.RFC3339))
+	}
+	if !condition.CustomTimeBefore.IsZero() {
+		parts = append(parts, "customTimeBefore="+condition.CustomTimeBefore.Format(time.RFC3339))
+	}
+	if !condition.NoncurrentTimeBefore.IsZero() {
+		parts = append(parts,
+			"noncurrentTimeBefore="+condition.NoncurrentTimeBefore.Format(time.RFC3339))
+	}
+	if condition.DaysSinceCustomTime > 0 {
+		parts = append(parts, fmt.Sprintf("daysSinceCustomTime>%d", condition.DaysSinceCustomTime))
+	}
+	if condition.DaysSinceNoncurrentTime > 0 {
+		parts = append(parts,
+			fmt.Sprintf("daysSinceNoncurrentTime>%d", condition.DaysSinceNoncurrentTime))
+	}
+	if len(condition.MatchesPrefix) > 0 {
+		parts = append(parts, "matchesPrefix="+strings.Join(condition.MatchesPrefix, "|"))
+	}
+	if len(condition.MatchesSuffix) > 0 {
+		parts = append(parts, "matchesSuffix="+strings.Join(condition.MatchesSuffix, "|"))
+	}
+	if len(condition.MatchesStorageClasses) > 0 {
+		parts = append(parts,
+			"matchesStorageClasses="+strings.Join(condition.MatchesStorageClasses, "|"))
 	}
 	if condition.Liveness != storage.LiveAndArchived {
 		parts = append(parts, fmt.Sprintf("liveness=%d", condition.Liveness))

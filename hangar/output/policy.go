@@ -234,10 +234,16 @@ type BucketLifetimePolicy struct {
 // has a new metageneration and the same policy, and a reader comparing only the
 // number would report a change that did not happen -- or, worse, would be
 // tempted to treat a matching number as proof the rules were re-read.
+//
+// The metageneration is therefore NOT in the preimage, and it used to be. With
+// it in, the hash changed exactly when the metageneration changed and added
+// nothing over the number it was supposed to improve on -- the one job the
+// comment above gives it was the one job it could not do. It is recorded beside
+// the hash instead, on PolicySnapshot.Metageneration, which is where a reader
+// that wants to compare the numbers finds it.
 func (policy BucketLifetimePolicy) PolicyHash() string {
 	hash := sha256.New()
-	fmt.Fprintf(hash, "hangar-output-lifetime-policy-v1\n%s\n%d\n",
-		policy.BucketFingerprint, policy.Metageneration)
+	fmt.Fprintf(hash, "hangar-output-lifetime-policy-v1\n%s\n", policy.BucketFingerprint)
 	for _, rule := range policy.Rules {
 		fmt.Fprintf(hash, "%s\x00%s\n", rule.Action, rule.Condition)
 	}

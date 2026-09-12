@@ -120,9 +120,13 @@ func (reclaimer *Reclaimer) DeleteExactGeneration(ctx context.Context, ref hanga
 		return output.DeleteInfrastructure, err
 	}
 
+	// The generation and only the generation. The registered metageneration is
+	// evidence about the object, not a condition on removing it: a benign
+	// metadata change moves it without moving the generation, and a delete
+	// conditioned on the recorded value 412s forever against an object nobody
+	// has touched the bytes of. See DeletePrecondition.
 	conditions := objectstore.Conditions{
-		GenerationMatch:     precondition.Generation,
-		MetagenerationMatch: precondition.Metageneration,
+		GenerationMatch: precondition.Generation,
 	}
 	if err := conditions.Validate(); err != nil {
 		return output.DeleteInfrastructure, err

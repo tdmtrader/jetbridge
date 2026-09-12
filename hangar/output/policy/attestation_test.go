@@ -142,12 +142,19 @@ func TestThePolicyHashDistinguishesAnUnchangedPolicyFromAnUnreadOne(t *testing.T
 		t.Error("adding a lifecycle rule did not change the policy hash")
 	}
 
-	// Metageneration is part of it too, and a hash that ignored it would let a
-	// reader treat "the bucket metadata moved" as "the rules are the same".
+	// And the metageneration is NOT part of it, which is the whole point and
+	// was the defect: with the number in the preimage the hash changed exactly
+	// when the number changed, so it added nothing over comparing the number --
+	// while its own comment says it exists because the number cannot tell an
+	// unchanged policy from a touched one. A bucket whose metadata was edited
+	// and reverted has a new metageneration and the same rules, and that is
+	// precisely the case a reader needs the hash for.
 	touched := safePolicy()
 	touched.Metageneration = 4
-	if touched.PolicyHash() == first.PolicyHash() {
-		t.Error("a changed metageneration did not change the policy hash")
+	if touched.PolicyHash() != first.PolicyHash() {
+		t.Error("a bucket whose METADATA moved while its rules did not hashes differently, so " +
+			"the hash is a spelling of the metageneration and a reader gains nothing by " +
+			"comparing it")
 	}
 }
 

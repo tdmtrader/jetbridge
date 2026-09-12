@@ -102,6 +102,27 @@ func (client outputObjectClient) List(ctx context.Context, bucket string, reques
 
 	iterated := client.client.Bucket(bucket).Objects(ctx, query)
 
+	// Req 44's budget bounds what this pass PROCESSES, not what the SDK
+	// decodes, and the difference is recorded here rather than closed.
+	//
+	// The loop below stops at request.PageSize, but the SDK still fetches its
+	// own default of 1000 items per list RPC and decodes every one of them
+	// first, so a pass bounded to 100 objects and 8 MiB of decoded metadata can
+	// have the client decode ten times that in one call. The one-line fix is
+	// `iterated.PageInfo().MaxSize = request.PageSize`, and it is WITHHELD on
+	// measured evidence rather than overlooked: fsouza/fake-gcs-server v1.52.3
+	// honours maxResults by truncating the answer and returns NO
+	// nextPageToken, so with the bound set the SDK's iterator reaches atEnd
+	// after one RPC and every sweep on tier 2 silently stops at the first page
+	// -- the exact class of defect the suite exists to catch, traded for a
+	// memory bound. Real GCS returns the token (the adapter pages correctly
+	// against a server that does, measured against an httptest double of one),
+	// so this is a real-GCS observation before it is a change: set maxResults
+	// against the real API, confirm the continuation token, then set MaxSize
+	// here. It is in the Phase 9 evidence list in this package's doc.go.
+	//
+	// What IS bounded already is the per-object decode: SetAttrSelection above
+	// asks for six fields rather than the whole object resource.
 	page := objectstore.Page{Objects: make([]objectstore.Attrs, 0, request.PageSize)}
 	for len(page.Objects) < request.PageSize {
 		attrs, err := iterated.Next()

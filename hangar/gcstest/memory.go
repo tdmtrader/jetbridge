@@ -158,6 +158,30 @@ func (memory *Memory) putLocked(bucket, key string, body []byte, metadata map[st
 	return attrsOf(object)
 }
 
+// TouchMetadata moves an object's METAGENERATION without moving its generation.
+//
+// It exists because that state was unreachable in both tiers -- this fake set
+// metageneration to 1 at creation and never incremented it, and fake-gcs-server
+// reports 1 forever even after a full rewrite -- and it is the state a real
+// bucket reaches on any metadata change: a SetStorageClass lifecycle
+// transition, Autoclass, an ACL or metadata edit, a hold. None of those is a
+// Delete rule, so the bucket still attests safe, and a delete conditioned on a
+// stale metageneration 412s against every object in it.
+//
+// It is not a production seam. Nothing in this plane updates object metadata;
+// what this models is somebody ELSE'S benign, spec-permitted change.
+func (memory *Memory) TouchMetadata(bucket, key string) {
+	memory.mu.Lock()
+	defer memory.mu.Unlock()
+
+	object, found := memory.objects[bucket][key]
+	if !found {
+		return
+	}
+	object.metageneration++
+	memory.objects[bucket][key] = object
+}
+
 // Keys is what the bucket holds, sorted. "The bucket holds exactly one object"
 // is an outcome read out of the store, never a count of calls.
 func (memory *Memory) Keys(bucket string) []string {
