@@ -64,8 +64,11 @@ func TestAValidateOrRenewMayNotNameZeroWork(t *testing.T) {
 		} else if !errors.Is(err, ErrIncomplete) {
 			t.Errorf("a %s naming zero work was refused as %v", operation, err)
 		}
-		if err := question(operation, LeaseStartMargin-time.Second).Validate(); err == nil {
-			t.Errorf("a %s naming less than the start margin was accepted", operation)
+		// A non-zero term is the CALLER's to compute -- only the caller knows
+		// what it is about to start -- so this validation refuses the one value
+		// that can never be right rather than second-guessing the rest.
+		if err := question(operation, time.Minute).Validate(); err != nil {
+			t.Errorf("a %s naming a minute of work was refused: %v", operation, err)
 		}
 		if err := question(operation, time.Hour).Validate(); err != nil {
 			t.Errorf("a %s naming an hour of work was refused: %v", operation, err)
