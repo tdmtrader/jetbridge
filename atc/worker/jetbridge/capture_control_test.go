@@ -696,3 +696,47 @@ func TestTheLedgerClassifierIsAssignedInExactlyOnePlace(t *testing.T) {
 			"ask the ledger\" and only the first one is pinned", sites)
 	}
 }
+
+// The output plane's scheme does not move with the artifact daemon's switch.
+//
+// It used to. Both output-plane call sites asked `daemonURLScheme`, a predicate
+// over `ArtifactDaemonTLSEnabled`, which the chart derives from
+// `artifactDaemon.tls.enabled` -- a different daemon, a different bucket, a
+// different identity, and false by default. The output daemon's control API has
+// no plaintext branch at all, so under the chart's own documented values the
+// generated hold dialed `http://` at an HTTPS listener, was answered "Client
+// sent an HTTP request to an HTTPS server", and the producer never started.
+//
+// Both directions are asserted, because a rule that only checks the default
+// would pass on a scheme that follows the wrong flag upward.
+func TestTheControlInitDialsHTTPSWhateverTheArtifactDaemonsTLSSwitchSays(t *testing.T) {
+	for _, artifactTLS := range []bool{false, true} {
+		cfg := capturePodConfig(true)
+		cfg.ArtifactDaemonTLSEnabled = artifactTLS
+
+		script := capturingContainer(t, cfg, false, admittedCapture()).
+			buildCaptureControlInitContainer().Command[2]
+
+		fallback := "https://${" + captureEnvHostIP + "}:${" + captureEnvOutputPort + "}"
+		if !strings.Contains(script, fallback) {
+			t.Errorf("with ArtifactDaemonTLSEnabled=%v the control init composes no %q; the "+
+				"output daemon is TLS-only and a plaintext dial is refused at the transport, "+
+				"before any capability is read",
+				artifactTLS, fallback)
+		}
+		if strings.Contains(script, "http://${"+captureEnvHostIP+"}") {
+			t.Errorf("with ArtifactDaemonTLSEnabled=%v the control init composes a plaintext "+
+				"dial at the output daemon", artifactTLS)
+		}
+		if !strings.Contains(script, `WGET_OPTS="--no-check-certificate"`) {
+			t.Errorf("with ArtifactDaemonTLSEnabled=%v the control init passes no "+
+				"--no-check-certificate; it dials its own node by IP, which can be no "+
+				"certificate SAN, so the handshake fails however correct the deployment is",
+				artifactTLS)
+		}
+	}
+
+	if got := outputDaemonURLScheme(); got != "https" {
+		t.Errorf("outputDaemonURLScheme is %q", got)
+	}
+}

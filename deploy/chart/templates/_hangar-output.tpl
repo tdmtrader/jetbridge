@@ -9,28 +9,57 @@ and is diagnosed from logs at three in the morning.
 
 {{/* ------------------------------------------------------------------ names */}}
 
+{{/*
+qualifiedName composes `<fullname>-<suffix>` inside the 63-character bound by
+truncating the FULLNAME, never the composed string.
+
+Truncating the composed string is what the four workload names used to do, and
+the four suffixes share a 14-character `-hangar-output` prefix: once the
+fullname reached 49 characters there were fewer than 14 distinguishing
+characters left and all four collapsed to ONE name. validatePrincipals then
+refused the render -- correctly, and with a message about service accounts --
+for a problem the operator can only fix by renaming the release. The fullname is
+`<release>-concourse-jetbridge`, so the chart was unusable at any release name
+of 28 characters or more, and Helm permits 53.
+
+Reserving the suffix instead keeps the four distinct at every length, because
+the part that distinguishes them is the part that survives. Names stay
+byte-identical for any fullname short enough not to need truncating, which is
+every release name in use.
+
+Expects a dict: root, suffix.
+*/}}
+{{- define "concourse.hangarOutput.qualifiedName" -}}
+{{- $suffix := .suffix -}}
+{{- $budget := int (sub 62 (len $suffix)) -}}
+{{- if lt $budget 1 -}}
+{{- fail (printf "the Hangar output plane cannot compose a name for %q: the suffix alone is %d characters and a Kubernetes object name is 63" $suffix (len $suffix)) -}}
+{{- end -}}
+{{- printf "%s-%s" (include "concourse.fullname" .root | trunc $budget | trimSuffix "-") $suffix -}}
+{{- end }}
+
 {{- define "concourse.hangarOutput.daemonName" -}}
-{{- printf "%s-hangar-output-daemon" (include "concourse.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- include "concourse.hangarOutput.qualifiedName" (dict "root" . "suffix" "hangar-output-daemon") }}
 {{- end }}
 
 {{- define "concourse.hangarOutput.inventoryName" -}}
-{{- printf "%s-hangar-output-inventory" (include "concourse.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- include "concourse.hangarOutput.qualifiedName" (dict "root" . "suffix" "hangar-output-inventory") }}
 {{- end }}
 
 {{- define "concourse.hangarOutput.reclaimerName" -}}
-{{- printf "%s-hangar-output-reclaimer" (include "concourse.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- include "concourse.hangarOutput.qualifiedName" (dict "root" . "suffix" "hangar-output-reclaimer") }}
 {{- end }}
 
 {{- define "concourse.hangarOutput.attestorName" -}}
-{{- printf "%s-hangar-output-policy-attestor" (include "concourse.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- include "concourse.hangarOutput.qualifiedName" (dict "root" . "suffix" "hangar-output-policy-attestor") }}
 {{- end }}
 
 {{- define "concourse.hangarOutput.receiptKeysName" -}}
-{{- printf "%s-hangar-output-receipt-keys" (include "concourse.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- include "concourse.hangarOutput.qualifiedName" (dict "root" . "suffix" "hangar-output-receipt-keys") }}
 {{- end }}
 
 {{- define "concourse.hangarOutput.activationName" -}}
-{{- printf "%s-hangar-output-activation" (include "concourse.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- include "concourse.hangarOutput.qualifiedName" (dict "root" . "suffix" "hangar-output-activation") }}
 {{- end }}
 
 {{/*
@@ -56,6 +85,21 @@ that an operator made equal.
 
 {{- define "concourse.hangarOutput.activationServiceAccount" -}}
 {{- default (include "concourse.hangarOutput.activationName" .) .Values.hangarOutput.activation.serviceAccount.name }}
+{{- end }}
+
+{{/*
+daemonTLSServerName is the name the ATC verifies the output daemon's SERVER
+certificate against.
+
+The daemon is dialed at `<node InternalIP>:<port>` and renders no Service, so
+there is no name in the dial at all -- and a node IP cannot be a SAN in a
+certificate issued before that node existed. Verification is therefore against
+a name the operator puts in the certificate, and this is the one place the
+chart spells it: the same string reaches the ATC's flag and values.yaml's
+instruction to the operator.
+*/}}
+{{- define "concourse.hangarOutput.daemonTLSServerName" -}}
+{{- default (printf "%s.%s.svc" (include "concourse.hangarOutput.daemonName" .) .Release.Namespace) .Values.hangarOutput.daemon.tls.serverName }}
 {{- end }}
 
 {{/* -------------------------------------------------------------- durations */}}
@@ -140,14 +184,26 @@ daemon that would refuse itself at startup.
 {{- end -}}
 
 {{- if $base -}}
+{{- if not .Values.artifactDaemon.enabled -}}
+{{- fail "hangarOutput.executionControl.enabled requires artifactDaemon.enabled. Every pod this runtime builds -- capture-selected or ordinary -- carries a REQUIRED node affinity on concourse.dev/artifact-cache=ready before the two output labels are appended, and the artifact daemon is the only thing that sets that label. With it disabled no node ever carries it, so every pod sits Pending until its deadline expires and the failure names a timeout rather than a label: the plane would render complete and schedule nothing." -}}
+{{- end -}}
 {{- if not $output.executionControl.keySecret -}}
 {{- fail "hangarOutput.executionControl.keySecret is required: the node signs every execution and source ledger statement with it, and an unsigned acknowledgement is not proof." -}}
+{{- end -}}
+{{- if not $output.executionControl.keyID -}}
+{{- fail "hangarOutput.executionControl.keyID is required: it is the id every node reports over the attestation handshake, and base attestation is a homogeneity check over exactly those ids. It names KEY MATERIAL and not the Secret -- it used to render the Secret NAME, so two nodes holding different private keys under one Secret name reported one id and a cohort half-way through a rollout attested as homogeneous." -}}
 {{- end -}}
 {{- if not $output.capabilityKeySecret -}}
 {{- fail "hangarOutput.capabilityKeySecret is required: control capabilities are minted by the control plane and verified by the daemon with the same raw 32-byte key." -}}
 {{- end -}}
 {{- if not $output.daemon.tls.existingSecret -}}
 {{- fail "hangarOutput.daemon.tls.existingSecret is required: the ATC calls this daemon's control API from another node, and a bearer capability over plaintext off-node is interceptable inside its TTL." -}}
+{{- end -}}
+{{- if not $output.daemon.tls.clientSecret -}}
+{{- fail "hangarOutput.daemon.tls.clientSecret is required: this daemon's control API is TLS-only and refuses every operation whose request carries no VERIFIED peer certificate, so an ATC with no client certificate of its own can hold no source, issue no writer ticket, seal nothing, publish nothing and grant no read. It is the OUTPUT plane's credential and not artifactDaemon.tls.enabled's: that switch belongs to a different daemon on a different bucket under a different identity, and a certificate from its CA handshakes here and is then refused by every route." -}}
+{{- end -}}
+{{- if eq $output.daemon.tls.clientSecret $output.daemon.tls.existingSecret -}}
+{{- fail (printf "hangarOutput.daemon.tls.clientSecret and hangarOutput.daemon.tls.existingSecret are both %q. existingSecret holds tls.key -- the key this daemon SERVES with -- and it is mounted in the daemon Pod and nowhere else: whatever else held it could impersonate the output daemon to the ATC. A client needs a CLIENT certificate, issued by the same CA and kept in its own Secret." $output.daemon.tls.existingSecret) -}}
 {{- end -}}
 {{- if kindIs "string" $output.activationEpoch -}}
 {{- fail "hangarOutput.activationEpoch must be an integer, not a string" -}}
@@ -169,10 +225,12 @@ does not set is read once and believed.
 
 {{- if $capture -}}
 {{- include "concourse.hangarOutput.validateBucket" . -}}
+{{- include "concourse.hangarOutput.validateIntervals" . -}}
 {{- include "concourse.hangarOutput.validateKeys" . -}}
 {{- include "concourse.hangarOutput.validateDurations" . -}}
 {{- include "concourse.hangarOutput.validateControllers" . -}}
 {{- include "concourse.hangarOutput.validatePrincipals" . -}}
+{{- include "concourse.hangarOutput.validateCloudIdentities" . -}}
 {{- if not $output.database.existingSecret -}}
 {{- fail "hangarOutput.database.existingSecret is required: the activation and drain Jobs use a PostgreSQL role of their own, distinct from the web pod's, which is what makes \"only the activation command writes hangar_output_activation_epochs\" enforceable rather than aspirational." -}}
 {{- end -}}
@@ -211,6 +269,22 @@ does not set is read once and believed.
 {{- end -}}
 {{- if not $output.materializationKeySecret -}}
 {{- fail "hangarOutput.materializationKeySecret is required: output read grants use their own key and their own domain, never the receipt key." -}}
+{{- end -}}
+
+{{/*
+Three key roles, three ids. A receipt says an object exists in a bucket, a
+control statement says a process on a node did something, and a read grant
+authorizes one staged read; "which key checks this" has to have one answer per
+id, and a shared id makes it two.
+*/}}
+{{- $ids := dict -}}
+{{- range $role, $id := dict "executionControl.keyID" $output.executionControl.keyID "receipt.keyID" $output.receipt.keyID "materializationKeyID" $output.materializationKeyID -}}
+{{- if $id -}}
+{{- if hasKey $ids $id -}}
+{{- fail (printf "hangarOutput.%s and hangarOutput.%s are both the key id %q. A key id names one piece of key material for one role, and an activation epoch pins the three separately: one id for two roles makes \"which key checks this\" unanswerable." (get $ids $id) $role $id) -}}
+{{- end -}}
+{{- $_ := set $ids $id $role -}}
+{{- end -}}
 {{- end -}}
 
 {{/* Three key roles, three Secrets. One Secret for two of them means rotating either rotates both. */}}
@@ -342,7 +416,20 @@ operator can actually reach by accident:
     makes the *web* Deployment run as the delete-holding identity. Req 54 is
     explicit that web/control-plane, task, cache and strict-input identities
     have no role on the output bucket, and this is the one values override that
-    gives web all of them.
+    gives web all of them;
+  - kubernetes.serviceAccount is the TASK pods' account, and it is the worst of
+    the four. Task pods run arbitrary user-supplied code; the reclaimer holds
+    the only storage.objects.delete on the output bucket. Req 54 names this
+    case by hand -- "shared KSAs, shared Workload Identity principals,
+    prefix-only isolation in a mixed bucket, OR TASK CREDENTIALS are activation
+    failures". An empty value needs nothing: it means "the web SA", which the
+    serviceAccount subject already covers.
+
+That this list has now been extended four times is the argument for the guard
+that reads it. deploy/chart/tests/hangar_output_principals_test.go enumerates
+every `.Values.…serviceAccount[.name]` any template consults, points each at
+another workload's account and requires the refusal, so a fifth override cannot
+be added without either landing here or turning that rule red.
 
 The web account is checked by NAME even when serviceAccount.create is false: a
 pre-provisioned account named after the reclaimer's is the same Pod running as
@@ -350,6 +437,26 @@ the same identity, and the chart not rendering the object does not make that
 untrue. Its PRINCIPAL is only checked when the chart renders the annotation,
 because that is the only case where the chart is the thing asserting it.
 */}}
+{{/*
+validateIntervals checks the three controllers' cadences, which nothing checked.
+
+Every other duration in this plane is parsed and bounded at render time. The
+attestor's was not, and it is the one whose bound has a consequence written into
+the SCHEMA: a policy snapshot older than fifteen minutes is stale, a stale
+snapshot puts the plane at-risk, and at-risk blocks five kinds of admission. An
+interval above that bound guarantees the state it is supposed to prevent.
+*/}}
+{{- define "concourse.hangarOutput.validateIntervals" -}}
+{{- $output := .Values.hangarOutput -}}
+{{- $_ := include "concourse.durationSeconds" (dict "name" "hangarOutput.inventory.interval" "value" $output.inventory.interval) -}}
+{{- $_ = include "concourse.durationSeconds" (dict "name" "hangarOutput.reclaimer.interval" "value" $output.reclaimer.interval) -}}
+{{- $_ = include "concourse.durationSeconds" (dict "name" "hangarOutput.reclaimer.deleteTimeout" "value" $output.reclaimer.deleteTimeout) -}}
+{{- $attest := atoi (include "concourse.durationSeconds" (dict "name" "hangarOutput.policyAttestor.interval" "value" $output.policyAttestor.interval)) -}}
+{{- if gt $attest 900 -}}
+{{- fail (printf "hangarOutput.policyAttestor.interval is %s; the maximum is 15m. Policy evidence older than fifteen minutes is stale, the schema enforces that bound on every admission, and a stale snapshot puts the plane at-risk -- so a longer refresh interval does not make detection slower, it makes the plane at-risk between every pass." $output.policyAttestor.interval) -}}
+{{- end -}}
+{{- end }}
+
 {{- define "concourse.hangarOutput.validatePrincipals" -}}
 {{- $subjects := list
   (dict "path" "hangarOutput.daemon"
@@ -371,6 +478,12 @@ because that is the only case where the chart is the thing asserting it.
         "name" (include "concourse.serviceAccountName" .)
         "annotations" (ternary (.Values.serviceAccount.annotations | default dict) dict (.Values.serviceAccount.create | default false | not | not)))
 -}}
+{{- if .Values.kubernetes.serviceAccount -}}
+{{- $subjects = append $subjects (dict
+      "path" "kubernetes.serviceAccount"
+      "name" .Values.kubernetes.serviceAccount
+      "annotations" dict) -}}
+{{- end -}}
 {{- if .Values.artifactDaemon.enabled -}}
 {{- $subjects = append $subjects (dict
       "path" "artifactDaemon"
@@ -399,6 +512,46 @@ because that is the only case where the chart is the thing asserting it.
 {{- end -}}
 {{- end }}
 
+{{/*
+cloudIdentity is the IAM member bound to one output role's Kubernetes service
+account, read off the Workload Identity annotation the chart renders on that
+account.
+
+It is not the service account's NAME. The policy attestor compares the bucket's
+IAM policy against these four values and the matcher normalises an IAM member
+("serviceAccount:a@b" and "a@b" are one identity), so a Kubernetes name here
+matches no binding on any real bucket: every role attests insufficient_role,
+every real principal on the bucket becomes a stranger, and the epoch goes
+permanently at risk. It fails CLOSED, which is why nothing noticed -- and it
+means Req 54's "activation verifies the KSA-to-cloud identity bindings" could
+never succeed as deployed.
+
+An empty annotation fails the render rather than rendering an empty identity,
+because an empty member matches no binding either and is indistinguishable from
+a principal that really has no role: the operator would be shown a plane whose
+publisher holds nothing, for a deployment whose Workload Identity is correct
+and merely undeclared.
+*/}}
+{{- define "concourse.hangarOutput.cloudIdentity" -}}
+{{- $principal := get (.annotations | default dict) "iam.gke.io/gcp-service-account" -}}
+{{- if not $principal -}}
+{{- fail (printf "%s.serviceAccount.annotations has no iam.gke.io/gcp-service-account. The policy attestor compares the output bucket's IAM policy against the four principals this plane claims to have, and a Kubernetes service account name -- or an empty one -- matches no member on any real bucket: all four roles attest insufficient_role, every real principal becomes a stranger and the epoch goes permanently at risk. The chart cannot verify the binding; activation does. It does need to be told what it is." .path) -}}
+{{- end -}}
+{{- $principal -}}
+{{- end }}
+
+{{/*
+validateCloudIdentities requires all four before anything renders, so the
+refusal names the value rather than arriving from whichever template happened
+to be first.
+*/}}
+{{- define "concourse.hangarOutput.validateCloudIdentities" -}}
+{{- $output := .Values.hangarOutput -}}
+{{- range $path, $values := dict "hangarOutput.daemon" $output.daemon "hangarOutput.inventory" $output.inventory "hangarOutput.reclaimer" $output.reclaimer "hangarOutput.policyAttestor" $output.policyAttestor -}}
+{{- $_ := include "concourse.hangarOutput.cloudIdentity" (dict "path" $path "annotations" $values.serviceAccount.annotations) -}}
+{{- end -}}
+{{- end }}
+
 {{/* ------------------------------------------------- shared container pieces */}}
 
 {{/*
@@ -422,6 +575,17 @@ controllerPodSpec is the body every one of the three controllers shares:
 database credential, security context, probes-by-liveness-of-process. Each is a
 single bounded worker with no HTTP surface, so there is no readiness probe to
 write -- the Deployment's one replica IS the readiness the lease enforces.
+*/}}
+{{/*
+No liveness probe, and that is a gap rather than a decision.
+
+The absent READINESS probe is argued above and is right: these three serve
+nothing, and the one replica is the readiness the lease enforces. Liveness is a
+different question -- a wedged worker holding a lease is exactly what a liveness
+probe exists for, and this plane's status surface already knows how to say "the
+sweep has stalled". What it needs is a heartbeat the controller loop writes, and
+that loop lives in atc/hangaroutput/controller rather than here. Recorded so
+that the absence is not read as a considered one.
 */}}
 {{- define "concourse.hangarOutput.controllerSecurityContext" -}}
 securityContext:

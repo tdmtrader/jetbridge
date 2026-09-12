@@ -214,6 +214,10 @@ type RunCommand struct {
 		OutputDaemonPort                   int           `long:"kubernetes-hangar-output-daemon-port" default:"7781" description:"Control port of the node-local Hangar output daemon. It is a different daemon on a different port from the artifact daemon, because the two may not share a bucket and a Kubernetes service account is Pod-wide."`
 		OutputCaptureEnabled               bool          `long:"kubernetes-hangar-output-capture-enabled"   description:"Enable web-side durable output SELECTION. It is a second switch on top of --kubernetes-hangar-output-enabled: the base one wires the exact-execution control calls, this one is what lets an admitted task carry a capture at all. A worker whose output facet is not enabled builds no capture pod, and the refusal is at admission rather than an omission in the Pod."`
 		OutputCapabilityKey                string        `long:"kubernetes-hangar-output-capability-key"    description:"Path to the raw 32-byte key the control plane mints Hangar output CONTROL capabilities with. The output daemon verifies with the same key; nothing else holds it."`
+		OutputDaemonTLSCert                string        `long:"kubernetes-hangar-output-tls-cert"          description:"Path to the ATC's CLIENT certificate for the Hangar output daemon's control API. It is the output plane's own credential, issued in the same trust domain as the daemon's server Secret: the artifact daemon's is a different daemon, a different bucket and a different identity, and a certificate from its CA handshakes and is then refused by every control route."`
+		OutputDaemonTLSKey                 string        `long:"kubernetes-hangar-output-tls-key"           description:"Path to the private key for --kubernetes-hangar-output-tls-cert."`
+		OutputDaemonTLSCACert              string        `long:"kubernetes-hangar-output-tls-ca-cert"       description:"Path to the CA certificate the Hangar output daemon's SERVER certificate is verified against."`
+		OutputDaemonTLSServerName          string        `long:"kubernetes-hangar-output-tls-server-name"   description:"DNS name the output daemon's server certificate carries. The daemon is dialed at <node IP> and has no Service, and a node IP cannot be a SAN in a certificate issued before that node existed, so verification is against this name."`
 		OutputReceiptKeys                  string        `long:"kubernetes-hangar-output-receipt-keys"      description:"Path to the versioned receipt PUBLIC key ring. Verification material only: the control plane checks every receipt before registration and can sign none of them."`
 		OutputMaterializationKey           string        `long:"kubernetes-hangar-output-materialization-key" description:"Path to the exact 32-byte key output READ GRANTS are minted with, under the hangar-output-materialize-v1 domain. It is never the receipt key -- a grant must not be signable by anything that can mint a publication receipt -- and never the foundation's strict-input materialization key."`
 		OutputActivationEpoch              int64         `long:"kubernetes-hangar-output-activation-epoch"  description:"The activation epoch this control plane speaks for. Every capture records it; a stale label or handshake authorizes nothing."`
@@ -1351,6 +1355,10 @@ func (cmd *RunCommand) backendComponents(
 		k8sCfg.OutputPlaneEnabled = cmd.Kubernetes.OutputPlaneEnabled
 		k8sCfg.OutputActivationEpoch = cmd.Kubernetes.OutputActivationEpoch
 		k8sCfg.OutputDaemonPort = cmd.Kubernetes.OutputDaemonPort
+		k8sCfg.OutputDaemonTLSCert = cmd.Kubernetes.OutputDaemonTLSCert
+		k8sCfg.OutputDaemonTLSKey = cmd.Kubernetes.OutputDaemonTLSKey
+		k8sCfg.OutputDaemonTLSCACert = cmd.Kubernetes.OutputDaemonTLSCACert
+		k8sCfg.OutputDaemonTLSServerName = cmd.Kubernetes.OutputDaemonTLSServerName
 		if cmd.Kubernetes.CacheStore != "" && !jetbridge.ValidCacheStores[cmd.Kubernetes.CacheStore] {
 			return nil, fmt.Errorf("invalid --kubernetes-cache-store value %q (valid: hostpath, emptydir)", cmd.Kubernetes.CacheStore)
 		}
@@ -1496,6 +1504,10 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 		k8sCfg.OutputPlaneEnabled = cmd.Kubernetes.OutputPlaneEnabled
 		k8sCfg.OutputActivationEpoch = cmd.Kubernetes.OutputActivationEpoch
 		k8sCfg.OutputDaemonPort = cmd.Kubernetes.OutputDaemonPort
+		k8sCfg.OutputDaemonTLSCert = cmd.Kubernetes.OutputDaemonTLSCert
+		k8sCfg.OutputDaemonTLSKey = cmd.Kubernetes.OutputDaemonTLSKey
+		k8sCfg.OutputDaemonTLSCACert = cmd.Kubernetes.OutputDaemonTLSCACert
+		k8sCfg.OutputDaemonTLSServerName = cmd.Kubernetes.OutputDaemonTLSServerName
 		if cmd.Kubernetes.ImageRegistryPrefix != "" || cmd.Kubernetes.ImageRegistrySecret != "" {
 			k8sCfg.ImageRegistry = &jetbridge.ImageRegistryConfig{
 				Prefix:     cmd.Kubernetes.ImageRegistryPrefix,
@@ -2654,6 +2666,18 @@ func (cmd *RunCommand) validateHangarOutputPlane() error {
 			"--kubernetes-hangar-output-enabled is set: every control operation on the output " +
 			"daemon presents a capability minted with it, and a control plane that cannot mint " +
 			"one can make no call at all")
+	}
+	// The output plane's transport is TLS, and only TLS: the daemon's control
+	// API has no plaintext branch and its routes refuse an operation whose
+	// request carries no VERIFIED peer certificate. A partially-configured or
+	// absent client credential is therefore not a weaker deployment, it is one
+	// that fails at the first capture instead of at startup.
+	if err := jetbridge.ValidateOutputDaemonTLSFlags(
+		cmd.Kubernetes.OutputDaemonTLSCert,
+		cmd.Kubernetes.OutputDaemonTLSKey,
+		cmd.Kubernetes.OutputDaemonTLSCACert,
+	); err != nil {
+		return err
 	}
 	if err := output.ValidateSealDeadline(cmd.Kubernetes.OutputSealDeadline); err != nil {
 		return fmt.Errorf("--kubernetes-hangar-output-seal-deadline: %w", err)

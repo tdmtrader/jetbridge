@@ -78,7 +78,7 @@ func run(ctx context.Context, config controllerConfig) error {
 		return err
 	}
 
-	conn, err := controller.OpenDatabase(config.DSN, 2)
+	conn, err := controller.OpenDatabase(resolveDSN(config.DSN), 2)
 	if err != nil {
 		return err
 	}
@@ -139,7 +139,7 @@ func run(ctx context.Context, config controllerConfig) error {
 	// delete begins up to one periodic interval after the decision to delete.
 	// The fallback is what makes the work always FOUND; this is what makes it
 	// found promptly, and a failure here is logged and run past.
-	accelerated, closeBus := listenForAdmissions(ctx, config.DSN, conn)
+	accelerated, closeBus := listenForAdmissions(ctx, resolveDSN(config.DSN), conn)
 	defer closeBus()
 
 	return loop(ctx, []*controller.Runner{admission, deletes},

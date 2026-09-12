@@ -86,7 +86,7 @@ exec curl -s --fail $INSECURE "$@" --data-binary "@$BODY" "$URL"
 
 // driveCaptureHold runs the generated script for a capture whose incarnation
 // the daemon has really reserved, and returns what the script printed.
-func driveCaptureHold(t *testing.T, harness *outputDaemonHarness, cfg Config) (string, error) {
+func driveCaptureHold(t *testing.T, harness *outputDaemonHarness, cfg Config, endpoint string) (string, error) {
 	t.Helper()
 
 	identity := executioncontrol.Identity{
@@ -123,15 +123,21 @@ func driveCaptureHold(t *testing.T, harness *outputDaemonHarness, cfg Config) (s
 	}
 
 	// The control envelope the pod builder reads, carrying the daemon's own
-	// answers. Endpoint is left EMPTY on purpose: that is the deployed shape,
-	// where the script composes its own endpoint from the Downward API host IP
-	// and the port -- which is the line F2 is about.
+	// answers.
+	//
+	// An EMPTY endpoint makes the script compose its own from the Downward API
+	// host IP and the port, which is the line F2 is about -- and that fallback
+	// composes `https://`, because the deployed daemon is TLS-only. A caller
+	// that passes an endpoint is the other deployed shape: production refuses
+	// an empty one (`container.go` validates the envelope), so a control plane
+	// always supplies it and the fallback is the belt to that brace.
 	control := &runtime.ExecutionControl{
 		Version:         runtime.ExecutionControlVersion,
 		Phase:           runtime.ControlPhaseAdmitted,
 		Identity:        identity,
 		ActivationEpoch: harnessEpoch,
 		Capability:      "base-capability",
+		Endpoint:        endpoint,
 	}
 	if err := control.SelectCapture(runtime.DurableOutputCapture{
 		Version:             runtime.DurableOutputCaptureVersion,
@@ -221,7 +227,15 @@ func hostAndPortOf(endpoint string) (string, int, error) {
 	return host, number, nil
 }
 
-// The generated script establishes a hold at a plaintext daemon.
+// The generated script establishes a hold at a real daemon, given the endpoint
+// a control plane supplies.
+//
+// This is the endpoint-supplied half, and it is the one production always
+// takes: `buildPod` validates the envelope and refuses an empty endpoint ("an
+// envelope nobody can ask about is not control"). The daemon here is the
+// plaintext harness, so what is exercised is the SCRIPT -- its body, its
+// header, its parsing of the answer -- with the transport taken out of the
+// question. The fallback's own scheme is the TLS test below.
 func TestTheGeneratedControlInitScriptEstablishesAHoldAtARealDaemon(t *testing.T) {
 	harness, err := startOutputDaemon()
 	if err != nil {
@@ -229,7 +243,7 @@ func TestTheGeneratedControlInitScriptEstablishesAHoldAtARealDaemon(t *testing.T
 	}
 	t.Cleanup(harness.Stop)
 
-	out, err := driveCaptureHold(t, harness, capturePodConfig(true))
+	out, err := driveCaptureHold(t, harness, capturePodConfig(true), harness.Endpoint)
 	if err != nil {
 		t.Fatalf("the generated control init did not establish a hold: %v\n%s", err, out)
 	}
@@ -247,8 +261,11 @@ func TestTheGeneratedControlInitScriptEstablishesAHoldAtARealDaemon(t *testing.T
 // then, once the scheme was right, an unverifiable certificate, because the
 // init dials the node by IP and no SAN covers that.
 //
-// The cleanup init has spoken this correctly since the artifact daemon got
-// mTLS; this reuses its two helpers rather than inventing a third spelling.
+// The scheme is now the OUTPUT plane's own constant rather than a predicate
+// over `artifactDaemon.tls.enabled`: that switch belongs to a different daemon
+// on a different bucket under a different identity, defaults to false, and
+// under the chart's own documented values it made this script dial http:// at
+// a listener with no plaintext branch.
 func TestTheGeneratedControlInitScriptEstablishesAHoldOverTLS(t *testing.T) {
 	harness, err := startTLSOutputDaemon()
 	if err != nil {
@@ -256,8 +273,12 @@ func TestTheGeneratedControlInitScriptEstablishesAHoldOverTLS(t *testing.T) {
 	}
 	t.Cleanup(harness.Stop)
 
+	// ArtifactDaemonTLSEnabled is deliberately left FALSE. It used to be what
+	// decided this script's scheme, which is exactly the defect: it is a switch
+	// on a different daemon, serving a different bucket under a different
+	// identity, and false is its default. The output daemon is TLS-only
+	// whatever it says.
 	cfg := capturePodConfig(true)
-	cfg.ArtifactDaemonTLSEnabled = true
 
 	// The control, first: the script it generates dials https.
 	control := capturingContainer(t, cfg, false, admittedCapture()).buildCaptureControlInitContainer()
@@ -269,7 +290,9 @@ func TestTheGeneratedControlInitScriptEstablishesAHoldOverTLS(t *testing.T) {
 			control.Command[2])
 	}
 
-	out, err := driveCaptureHold(t, harness, cfg)
+	// No endpoint: the script composes its own, and the scheme it composes is
+	// the thing under test.
+	out, err := driveCaptureHold(t, harness, cfg, "")
 	if err != nil {
 		t.Fatalf("the generated control init did not establish a hold over TLS: %v\n%s", err, out)
 	}

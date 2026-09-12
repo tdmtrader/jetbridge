@@ -46,8 +46,10 @@ var baseControlSets = []string{
 	"artifactDaemon.enabled=true",
 	"hangarOutput.executionControl.enabled=true",
 	"hangarOutput.executionControl.keySecret=op-control-key",
+	"hangarOutput.executionControl.keyID=control-key-7",
 	"hangarOutput.capabilityKeySecret=op-capability-key",
 	"hangarOutput.daemon.tls.existingSecret=op-output-daemon-tls",
+	"hangarOutput.daemon.tls.clientSecret=op-output-daemon-client-tls",
 	"hangarOutput.activationEpoch=7",
 	// Required under the BASE switch, not the output one: the DaemonSet, its
 	// scratch emptyDir and its --scratch-dir flag all render here.
@@ -69,6 +71,14 @@ var outputSets = append(append([]string{}, baseControlSets...),
 	"hangarOutput.receipt.publicKeys[0].key=cHVibGljLWtleS1ieXRlcw==",
 	"hangarOutput.materializationKeySecret=op-output-materialize",
 	"hangarOutput.database.existingSecret=op-activation-db",
+	// The four Workload Identity annotations. The output facet requires them:
+	// the policy attestor compares the bucket's IAM policy against these four
+	// members, so a plane that does not declare them can attest nothing. See
+	// hangar_output_principals_test.go.
+	`hangarOutput.daemon.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=publisher@p.iam.gserviceaccount.com`,
+	`hangarOutput.inventory.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=inventory@p.iam.gserviceaccount.com`,
+	`hangarOutput.reclaimer.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=reclaimer@p.iam.gserviceaccount.com`,
+	`hangarOutput.policyAttestor.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=attestor@p.iam.gserviceaccount.com`,
 )
 
 func renderBaseControl(t *testing.T, extra ...string) string {
@@ -1573,5 +1583,317 @@ func TestOnlyTheReclaimerPrincipalIsGrantedObjectDelete(t *testing.T) {
 	if !strings.Contains(runAs[0], "reclaimer") {
 		t.Fatalf("the account holding storage.objects.delete is used by %s, which is not the "+
 			"reclaimer", runAs[0])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The control key's identity
+// ---------------------------------------------------------------------------
+
+// A key id names KEY MATERIAL, and the chart used to give the control key the
+// name of its Secret.
+//
+// `--control-key-id={{ .executionControl.keySecret }}` means two nodes holding
+// different private keys under one Secret name report one id. Base attestation
+// collects `control_key_id` into the evidence bundle and the digest, so a
+// cohort half-way through a control-key rollout attests as homogeneous on the
+// base facet's ONLY key material -- and the in-place replacement that the
+// receipt key's ring rules refuse was unguarded for the control key precisely
+// because the id could not move.
+//
+// `receipt.keyID` has been a value of its own since Phase 8, with the ring rule
+// that a key id is never reused for different material and rotation creates a
+// new epoch. The control key now gets the same shape.
+func TestTheControlKeyIdNamesKeyMaterialAndNotItsSecret(t *testing.T) {
+	daemon := objectNamed(t, renderBaseControl(t), "DaemonSet", "-"+outputDaemonComponent)
+
+	id := ""
+	for _, line := range strings.Split(daemon.body, "\n") {
+		if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "- --control-key-id=") {
+			id = strings.TrimPrefix(trimmed, "- --control-key-id=")
+		}
+	}
+	if id == "" {
+		t.Fatal("the output daemon renders no --control-key-id; this rule would pass vacuously")
+	}
+	if id == "op-control-key" {
+		t.Error("--control-key-id carries hangarOutput.executionControl.keySecret, the SECRET " +
+			"NAME. Two nodes holding different key material under one Secret name then report " +
+			"one id, and base attestation compares ids: a cohort half-way through a " +
+			"control-key rollout attests as homogeneous.")
+	}
+
+	// The id moves independently of the Secret. Same Secret name, different
+	// key: a different id, which is the whole property.
+	rotated := objectNamed(t,
+		renderBaseControl(t, "hangarOutput.executionControl.keyID=control-key-8"),
+		"DaemonSet", "-"+outputDaemonComponent)
+	if !strings.Contains(rotated.body, "- --control-key-id=control-key-8") {
+		t.Error("hangarOutput.executionControl.keyID does not reach --control-key-id, so the " +
+			"id cannot be moved without renaming the Secret")
+	}
+	if !strings.Contains(rotated.body, "secretName: op-control-key") {
+		t.Error("the rotated render no longer mounts the same Secret; the two are supposed to " +
+			"be independent")
+	}
+}
+
+// An id shared across key ROLES is the same ambiguity one level up: a control
+// statement and a receipt say different things, and "which key checks this" has
+// to have one answer per id.
+func TestAKeyIdIsNotSharedBetweenTheControlReceiptAndReadGrantKeys(t *testing.T) {
+	for _, collision := range []string{
+		"hangarOutput.executionControl.keyID=receipt-7",
+		"hangarOutput.materializationKeyID=receipt-7",
+	} {
+		message := renderOutputError(t, collision)
+		if !strings.Contains(message, "key id") {
+			t.Errorf("%s was refused, but not by the key-id rule:\n%s", collision, message)
+		}
+	}
+}
+
+// The base facet cannot render without one. A daemon started with no id
+// refuses at startup (cmd/hangar-output-daemon/config.go), and the refusal an
+// operator most needs is the one at render time.
+func TestTheControlKeyIdIsRequiredWithTheBaseFacet(t *testing.T) {
+	message := renderHangarError(t, append(append([]string{}, baseControlSets...),
+		"hangarOutput.executionControl.keyID=")...)
+	if !strings.Contains(message, "executionControl.keyID") {
+		t.Errorf("an empty control key id rendered, or was refused by something else:\n%s",
+			message)
+	}
+}
+
+// forbiddenPermissionMatrix reads the second half of values.yaml's matrix: the
+// permissions no runtime principal holds, each with its reason.
+func forbiddenPermissionMatrix(t *testing.T) map[string]string {
+	t.Helper()
+
+	const marker = "PERMISSIONS NO RUNTIME PRINCIPAL HOLDS"
+
+	lines := strings.Split(readChartFile(t, "values.yaml"), "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.Contains(line, marker) {
+			start = i
+
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("deploy/chart/values.yaml no longer contains %q; the block moved and this "+
+			"rule would pass over nothing", marker)
+	}
+
+	forbidden := map[string]string{}
+	permission := ""
+	for _, line := range lines[start+1:] {
+		if !strings.HasPrefix(line, "#") {
+			break
+		}
+		body := strings.TrimPrefix(line, "#")
+		trimmed := strings.TrimSpace(body)
+		if trimmed == "" {
+			continue
+		}
+		indent := len(body) - len(strings.TrimLeft(body, " "))
+		switch {
+		case indent == 3 && strings.HasPrefix(trimmed, "storage."):
+			for _, name := range strings.Split(trimmed, ",") {
+				if name = strings.TrimSpace(name); name != "" {
+					forbidden[name] = ""
+					permission = name
+				}
+			}
+		case indent == 3:
+			// Prose resumed; the block is over.
+			return forbidden
+		case indent == 5 && permission != "":
+			forbidden[permission] += " " + trimmed
+		}
+	}
+
+	return forbidden
+}
+
+// Req 22: the publisher cannot update the marker.
+//
+// That sentence is what the ownership-evidence story rests on -- a marker that
+// can be rewritten is not evidence of who created an object -- and it was
+// enforced by nothing but the Go `Handle` type having no update method.
+// `storage.objects.update` was absent from this matrix, so nothing said the
+// absence was deliberate, and it is absent from `permissionsOf`'s role
+// expansion too, so even `roles/storage.objectAdmin` -- which really does grant
+// it -- is invisible to the attestation on that axis. This is the matrix half;
+// the expansion half is in hangar/gcs and hangar/output/policy.
+func TestTheMatrixForbidsRewritingTheOwnershipMarker(t *testing.T) {
+	const update = "storage.objects.update"
+
+	granted := documentedPermissionMatrix(t)
+	if len(granted) != 4 {
+		t.Fatalf("parsed %d workloads out of the granted matrix, not four", len(granted))
+	}
+	for workload, permissions := range granted {
+		for _, permission := range permissions {
+			if permission == update {
+				t.Errorf("the documented matrix grants %s to %s. It rewrites object "+
+					"metadata, which is the ownership marker: Req 22's \"the publisher "+
+					"cannot update the marker\" is the sentence the whole immutable-marker "+
+					"argument rests on.", update, workload)
+			}
+		}
+	}
+
+	forbidden := forbiddenPermissionMatrix(t)
+	if len(forbidden) < 3 {
+		t.Fatalf("parsed %d forbidden permissions out of values.yaml (%v); the block's shape "+
+			"changed and this rule would pass vacuously", len(forbidden), forbidden)
+	}
+	reason, named := forbidden[update]
+	if !named {
+		t.Errorf("values.yaml does not name %s among the permissions no runtime principal "+
+			"holds (it names %v).\n\n"+
+			"An absent grant is a promise, and this one is load-bearing: "+
+			"roles/storage.objectAdmin and roles/storage.objectUser both GRANT it, so an "+
+			"operator binding either one satisfies every other line of this matrix and "+
+			"breaks Req 22.", update, sortedForbidden(forbidden))
+
+		return
+	}
+	if !strings.Contains(reason, "marker") {
+		t.Errorf("%s is named but its reason does not mention the marker: %q", update, reason)
+	}
+}
+
+func sortedForbidden(forbidden map[string]string) []string {
+	var names []string
+	for name := range forbidden {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	return names
+}
+
+// ---------------------------------------------------------------------------
+// Two refusals the plane was missing
+// ---------------------------------------------------------------------------
+
+// The output plane cannot schedule a single pod without the artifact daemon.
+//
+// `BuildAffinity` seeds EVERY pod's required node affinity with
+// `concourse.dev/artifact-cache=ready` before it appends the two output labels,
+// and the only thing in the tree that sets that label is the artifact daemon.
+// With the daemon disabled no node ever carries it, so every capture pod -- and
+// every ordinary pod -- sits Pending until its deadline expires, and the failure
+// names a timeout rather than a label. The render succeeded.
+func TestTheOutputPlaneRefusesToRenderWithoutTheArtifactDaemon(t *testing.T) {
+	message := renderHangarError(t, append(append([]string{}, baseControlSets...),
+		"artifactDaemon.enabled=false")...)
+	if !strings.Contains(message, "artifactDaemon.enabled") {
+		t.Errorf("the output plane rendered with the artifact daemon disabled, or was "+
+			"refused by something else:\n%s", message)
+	}
+	if !strings.Contains(message, "concourse.dev/artifact-cache") {
+		t.Errorf("the refusal does not name the label that is the reason:\n%s", message)
+	}
+}
+
+// Every other duration in this plane is checked at render time. The attestor's
+// interval was not, and it is the one whose bound has a consequence written
+// into the schema: policy evidence older than fifteen minutes is stale, and a
+// stale snapshot puts the plane at-risk, which blocks five kinds of admission.
+func TestTheControllerIntervalsAreValidated(t *testing.T) {
+	for _, bad := range []struct {
+		set, names string
+	}{
+		{"hangarOutput.policyAttestor.interval=20m", "policyAttestor.interval"},
+		{"hangarOutput.policyAttestor.interval=0s", "policyAttestor.interval"},
+		{"hangarOutput.policyAttestor.interval=every-so-often", "policyAttestor.interval"},
+		{"hangarOutput.inventory.interval=nope", "inventory.interval"},
+		{"hangarOutput.reclaimer.interval=nope", "reclaimer.interval"},
+	} {
+		message := renderOutputError(t, bad.set)
+		if !strings.Contains(message, bad.names) {
+			t.Errorf("%s rendered, or was refused by something else:\n%s", bad.set, message)
+		}
+	}
+
+	// And the default is accepted, so the rule is not simply "refuse".
+	renderOutput(t, "hangarOutput.policyAttestor.interval=15m")
+}
+
+// ---------------------------------------------------------------------------
+// The low set
+// ---------------------------------------------------------------------------
+
+// The database credential does not reach argv.
+//
+// `--database=$(HANGAR_OUTPUT_DSN)` is expanded by the KUBELET, so the
+// connection string -- user, password and all -- ends up in
+// /proc/<pid>/cmdline, which is world-readable inside the container, while
+// /proc/<pid>/environ is readable only by the process's own uid. The commands
+// read the variable themselves instead.
+func TestTheDatabaseCredentialNeverReachesArgv(t *testing.T) {
+	out := renderOutput(t,
+		"hangarOutput.activation.job.mode=attest",
+		"hangarOutput.activation.job.facet=base")
+
+	carriers := 0
+	for _, subject := range documentsIn(t, out) {
+		if !strings.Contains(subject.body, "HANGAR_OUTPUT_DSN") {
+			continue
+		}
+		carriers++
+		if strings.Contains(subject.body, "--database=$(HANGAR_OUTPUT_DSN)") {
+			t.Errorf("%s %s expands the DSN into its argv. The kubelet substitutes $(VAR) "+
+				"in args, so the credential lands in /proc/<pid>/cmdline, which is readable "+
+				"by anything in the container; the environment is not.",
+				subject.kind, subject.name)
+		}
+	}
+	if carriers < 4 {
+		t.Fatalf("only %d workloads take a DSN from the environment; this rule is looking at "+
+			"the wrong render", carriers)
+	}
+}
+
+// readOnlyRootFilesystem with nowhere to write is a runtime error waiting for
+// the first operation that wants a temp file -- on a Pod that passed every
+// render check. The GCS client library spools resumable uploads.
+func TestTheControllersHaveSomewhereToWrite(t *testing.T) {
+	out := renderOutput(t)
+
+	for _, component := range []string{
+		outputInventoryComponent, outputReclaimerComponent, outputAttestorComponent,
+	} {
+		controller := objectNamed(t, out, "Deployment", "-"+component)
+
+		var object appsv1.Deployment
+		if err := yaml.UnmarshalStrict([]byte(controller.body), &object); err != nil {
+			t.Fatalf("%s: %v", controller.source, err)
+		}
+		spec := object.Spec.Template.Spec
+		if len(spec.Containers) == 0 || spec.Containers[0].SecurityContext == nil {
+			t.Fatalf("%s has no container security context; this rule is looking at nothing",
+				component)
+		}
+		readOnly := spec.Containers[0].SecurityContext.ReadOnlyRootFilesystem
+		if readOnly == nil || !*readOnly {
+			continue // Nothing to guarantee.
+		}
+
+		writable := false
+		for _, mount := range spec.Containers[0].VolumeMounts {
+			if mount.MountPath == "/tmp" {
+				writable = true
+			}
+		}
+		if !writable {
+			t.Errorf("%s runs with readOnlyRootFilesystem and mounts nothing at /tmp. The "+
+				"GCS client spools resumable uploads to a temp file, and the failure would "+
+				"be a runtime error on a Pod that passed every render check.", component)
+		}
 	}
 }

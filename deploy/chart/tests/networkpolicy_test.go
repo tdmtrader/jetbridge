@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"sort"
 	"strings"
 	"testing"
 
@@ -275,39 +276,59 @@ func TestTheArtifactDaemonPolicySelectsEveryWorkerPodAndNotOnlyPipelineOnes(t *t
 // The consequence of deleting the duplicate, stated as a check rather than as a
 // comment in a template.
 //
-// `networkPolicy.enabled` used to emit a daemon policy as a side effect. It no
-// longer does: the daemon's policy has one switch and one template. That is a
-// visible change for an install that set only the cluster switch, so it is
-// asserted in both directions -- the cluster switch alone emits no daemon
-// policy, and the daemon switch alone does.
-func TestTheDaemonPolicyHasExactlyOneSwitch(t *testing.T) {
-	clusterOnly := objectsOfKind(t, render(t, "networkPolicy.enabled=true"), "NetworkPolicy")
-	daemonPolicies := 0
-	for name := range clusterOnly {
-		if strings.HasSuffix(name, "-artifact-daemon") {
-			daemonPolicies++
-		}
-	}
-	if len(clusterOnly) == 0 {
-		t.Fatal("networkPolicy.enabled=true rendered no NetworkPolicy at all; this rule " +
-			"would pass vacuously")
-	}
-	if daemonPolicies != 0 {
-		t.Errorf("networkPolicy.enabled=true rendered %d artifact-daemon NetworkPolicies. "+
-			"The daemon's policy is artifactDaemon.networkPolicy.enabled's; emitting one "+
-			"from the cluster switch too is how the name collision happened.", daemonPolicies)
-	}
+// `networkPolicy.enabled` used to emit a daemon policy of its OWN, under the
+// same name as the dedicated template's: one object in the namespace, and apply
+// order decided which rules it carried. There is now exactly one template that
+// emits it, and it emits it under EITHER switch -- because gating it on the new
+// switch alone silently removed the policy from every install that had set only
+// the cluster one. Both halves are asserted: one object, from one template, in
+// every mode that produces it.
+func TestTheDaemonPolicyComesFromExactlyOneTemplate(t *testing.T) {
+	for _, mode := range []struct {
+		name string
+		sets []string
+	}{
+		{name: "cluster switch only", sets: []string{"networkPolicy.enabled=true"}},
+		{name: "daemon switch only", sets: []string{"artifactDaemon.networkPolicy.enabled=true"}},
+		{
+			name: "both",
+			sets: []string{"networkPolicy.enabled=true", "artifactDaemon.networkPolicy.enabled=true"},
+		},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			out := render(t, mode.sets...)
 
-	daemonOnly := objectsOfKind(t, render(t, "artifactDaemon.networkPolicy.enabled=true"), "NetworkPolicy")
-	found := false
-	for name := range daemonOnly {
-		if strings.HasSuffix(name, "-artifact-daemon") {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("artifactDaemon.networkPolicy.enabled=true rendered no artifact-daemon " +
-			"NetworkPolicy; the daemon's only switch does not work")
+			var sources []string
+			for _, chunk := range splitDocuments(out) {
+				var head renderedObject
+				if err := yaml.Unmarshal([]byte(chunk), &head); err != nil {
+					continue
+				}
+				if head.Kind != "NetworkPolicy" ||
+					!strings.HasSuffix(head.Metadata.Name, "-artifact-daemon") {
+					continue
+				}
+				sources = append(sources, sourceOf(chunk))
+			}
+
+			switch len(sources) {
+			case 1:
+				if !strings.HasSuffix(sources[0], "artifact-daemon-networkpolicy.yaml") {
+					t.Errorf("the artifact daemon's NetworkPolicy came from %s; it has one "+
+						"template, and a second one emitting the same name is one object "+
+						"whose rules are decided by apply order", sources[0])
+				}
+			case 0:
+				t.Errorf("no artifact-daemon NetworkPolicy was rendered. Either switch has "+
+					"to render it: an install that set only %v HAS this policy today, and a "+
+					"pod selected by none is unrestricted rather than default-deny", mode.sets)
+			default:
+				t.Errorf("%d artifact-daemon NetworkPolicies were rendered, from %v. Two "+
+					"objects with one name are ONE object in the namespace, and which rules "+
+					"it ends up with is decided by the order the apply happens to send them",
+					len(sources), sources)
+			}
+		})
 	}
 }
 
@@ -344,4 +365,62 @@ func selectorKeys(policy networkingv1.NetworkPolicy) []string {
 	}
 
 	return keys
+}
+
+// An upgrade does not take a running cluster's policies away.
+//
+// The de-duplication above was correct and its DEFAULT was not. At base,
+// networkpolicy.yaml rendered `<fullname>-artifact-daemon` whenever
+// `networkPolicy.enabled && artifactDaemon.enabled`, independent of the new
+// `artifactDaemon.networkPolicy.enabled`, which defaults to FALSE. Deleting the
+// duplicate therefore deleted the policy for the realistic existing
+// configuration -- one that sets `networkPolicy.enabled` and has never heard of
+// the new switch. A pod selected by no NetworkPolicy is unrestricted, so daemon
+// port 7780 went from "web and pipeline pods" to "every pod in the namespace",
+// silently; and this estate renders the chart live from the branch through
+// ArgoCD, so with auto-prune the object is deleted and without it it lingers
+// out of sync.
+//
+// This is the only finding in the whole review that can hurt a cluster that is
+// already running, so the rule is the upgrade case itself: the values an
+// existing install has are the values the policy has to survive.
+func TestAnExistingInstallKeepsItsArtifactDaemonPolicyOnUpgrade(t *testing.T) {
+	// Exactly what an existing install sets: the cluster switch, nothing else.
+	// artifactDaemon.enabled is true by default and required for the K8s
+	// runtime, so this is the whole of it.
+	out := render(t, "networkPolicy.enabled=true")
+
+	names := map[string]bool{}
+	for _, chunk := range splitDocuments(out) {
+		var head renderedObject
+		if err := yaml.Unmarshal([]byte(chunk), &head); err != nil || head.Kind != "NetworkPolicy" {
+			continue
+		}
+		names[head.Metadata.Name] = true
+	}
+
+	// Non-vacuity: the web policy is the one this switch has always rendered.
+	if !names["jb-concourse-jetbridge-web"] {
+		t.Fatalf("networkPolicy.enabled rendered no web policy; this render is not the one "+
+			"this rule is about (found %v)", sortedNames(names))
+	}
+	if !names["jb-concourse-jetbridge-artifact-daemon"] {
+		t.Errorf("networkPolicy.enabled=true renders no artifact-daemon NetworkPolicy "+
+			"(found %v).\n\n"+
+			"An install that has this switch set today HAS that policy. Removing it on "+
+			"upgrade leaves the daemon selected by no policy at all, which is not a default "+
+			"deny -- it is unrestricted: port 7780 goes from web and pipeline pods to every "+
+			"pod in the namespace, with no error and no event.",
+			sortedNames(names))
+	}
+}
+
+func sortedNames(names map[string]bool) []string {
+	var out []string
+	for name := range names {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+
+	return out
 }

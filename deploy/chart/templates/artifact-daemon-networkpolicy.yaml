@@ -1,4 +1,15 @@
-{{- if and .Values.artifactDaemon.enabled (.Values.artifactDaemon.networkPolicy.enabled | default false) }}
+{{/*
+EITHER switch renders it, and that is not redundancy.
+
+`networkPolicy.enabled` used to render a SECOND copy of this object out of
+networkpolicy.yaml -- same name, different task selector -- and de-duplicating
+that was right. Gating the survivor on the new switch alone was not: an install
+that sets networkPolicy.enabled and has never heard of
+artifactDaemon.networkPolicy.enabled (default false) LOST the policy on
+upgrade, and a pod selected by no NetworkPolicy is not default-deny, it is
+unrestricted.
+*/}}
+{{- if and .Values.artifactDaemon.enabled (or .Values.networkPolicy.enabled (.Values.artifactDaemon.networkPolicy.enabled | default false)) }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
