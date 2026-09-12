@@ -329,6 +329,16 @@ func (t *CapturedTree) Close() error {
 // Cancellation between Read calls is cooperative for an arbitrary io.Reader.
 // When rawTar is an io.ReadCloser, cancellation closes it to unblock Read; an
 // ordinary successful capture does not close caller-owned input.
+
+// CanonicalizerTempPrefix is the prefix of every private capture directory this
+// canonicalizer spools into its configured temporary parent.
+//
+// It is exported because a process that owns the temporary parent has to be
+// able to recognise what a KILLED capture left behind: the directory is removed
+// by CapturedTree.Close, and a SIGKILL before that leaves an assembled
+// canonical.tar in the volume with nothing to sweep it.
+const CanonicalizerTempPrefix = "hangar-tree-"
+
 func (c Canonicalizer) Capture(ctx context.Context, rawTar io.Reader) (tree *CapturedTree, err error) {
 	if rawTar == nil {
 		return nil, fmt.Errorf("hangar: tar reader is required")
@@ -345,7 +355,7 @@ func (c Canonicalizer) Capture(ctx context.Context, rawTar io.Reader) (tree *Cap
 		return nil, err
 	}
 
-	privateRoot, err := os.MkdirTemp(tempDir, "hangar-tree-")
+	privateRoot, err := os.MkdirTemp(tempDir, CanonicalizerTempPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("hangar: create private capture directory: %w", err)
 	}

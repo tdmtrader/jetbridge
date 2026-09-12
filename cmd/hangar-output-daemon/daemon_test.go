@@ -235,7 +235,7 @@ func TestThePublishPathCreatesAnObjectAndSignsAVerifiableReceipt(t *testing.T) {
 		},
 		Output:      "result",
 		WriterFence: 9,
-	})
+	}, output.FirstWriterFence)
 	if err != nil {
 		t.Fatalf("attesting: %v", err)
 	}
@@ -249,6 +249,45 @@ func TestThePublishPathCreatesAnObjectAndSignsAVerifiableReceipt(t *testing.T) {
 	}
 	if receipt.Claims.ActivationEpoch != namespace.ActivationEpoch() {
 		t.Errorf("the receipt claims epoch %d", receipt.Claims.ActivationEpoch)
+	}
+
+	// Req 25. The writer fence is the fence this NODE admitted -- the claims
+	// above ask for 9 -- and it is a DIFFERENT number from the capture fence,
+	// which this challenge carries as 5.
+	//
+	// It was the only claim in the whole receipt taken verbatim from the
+	// caller, and the control plane filled it with a cast of the capture fence
+	// and then revalidated it against that same capture fence: a comparison
+	// that cannot fail for any receipt this plane produces, while Req 25 names
+	// the two as separate bound claims and AC 9 asks for tamper and replay
+	// across both. Nothing observed it because the writer fence is the constant
+	// 1 today, so a takeover moving the capture fence 1 to 2 read as the writer
+	// fence being bound.
+	if receipt.Claims.WriterFence != output.FirstWriterFence {
+		t.Errorf("the receipt claims writer fence %d; the ledger admitted %d and the caller "+
+			"asked for 9. A claim the caller dictates is a claim the caller's own revalidation "+
+			"cannot check.", receipt.Claims.WriterFence, output.FirstWriterFence)
+	}
+	if uint64(receipt.Claims.CaptureFence) == uint64(receipt.Claims.WriterFence) {
+		t.Errorf("the receipt's capture fence and writer fence are one number (%d). They are "+
+			"separate fences with separate writers: a capture-lease takeover moves one and "+
+			"leaves the other exactly where it was.", receipt.Claims.CaptureFence)
+	}
+
+	// And it follows the ledger when writer admission has moved.
+	moved, _, err := daemon.StatExact(context.Background(), challenge, output.ReceiptClaims{
+		Execution:            reservation.Execution,
+		ProducerCheckpointID: "opaque-checkpoint",
+		Incarnation:          receipt.Claims.Incarnation,
+		Output:               "result",
+		WriterFence:          9,
+	}, output.WriterFence(2))
+	if err != nil {
+		t.Fatalf("attesting at writer fence 2: %v", err)
+	}
+	if moved.Claims.WriterFence != output.WriterFence(2) {
+		t.Errorf("the receipt claims writer fence %d after an admission at 2",
+			moved.Claims.WriterFence)
 	}
 	if receipt.Claims.ChallengeNonce != challenge.Nonce {
 		t.Errorf("the receipt answers challenge %q and the daemon was handed %q",
@@ -502,7 +541,7 @@ func TestTheAttestingStatRefusesAChallengeItCannotAnswer(t *testing.T) {
 		Output:      "result",
 		WriterFence: 9,
 	}
-	if _, _, err := daemon.StatExact(context.Background(), valid(), claims); err != nil {
+	if _, _, err := daemon.StatExact(context.Background(), valid(), claims, output.FirstWriterFence); err != nil {
 		t.Fatalf("the control challenge was refused: %v", err)
 	}
 
@@ -535,7 +574,7 @@ func TestTheAttestingStatRefusesAChallengeItCannotAnswer(t *testing.T) {
 		challenge := valid()
 		row.mutate(&challenge)
 
-		receipt, _, err := daemon.StatExact(context.Background(), challenge, claims)
+		receipt, _, err := daemon.StatExact(context.Background(), challenge, claims, output.FirstWriterFence)
 		if !errors.Is(err, row.sentine) {
 			t.Errorf("%s was answered with %v, expected %v", row.name, err, row.sentine)
 		}
@@ -570,7 +609,7 @@ func TestTheAttestingStatRefusesAChallengeItCannotAnswer(t *testing.T) {
 	elsewhere := valid()
 	elsewhere.ReservationID = somebodyElse
 	elsewhere.Nonce = "nonce-fedcba9876543210"
-	if _, _, err := daemon.StatExact(context.Background(), elsewhere, claims); err != nil {
+	if _, _, err := daemon.StatExact(context.Background(), elsewhere, claims, output.FirstWriterFence); err != nil {
 		t.Errorf("a challenge from the reservation that deduplicated against this object was "+
 			"refused: %v. Two captures of identical bytes share one object and get two "+
 			"receipts; the marker names whichever wrote first.", err)
@@ -595,7 +634,7 @@ func TestTheAttestingStatRefusesAChallengeItCannotAnswer(t *testing.T) {
 	mismatched := valid()
 	mismatched.Nonce = "nonce-0f1e2d3c4b5a6978"
 	mismatched.Ref.Generation = seeded.Generation
-	_, _, err = daemon.StatExact(context.Background(), mismatched, claims)
+	_, _, err = daemon.StatExact(context.Background(), mismatched, claims, output.FirstWriterFence)
 	if !errors.Is(err, output.ErrConflict) {
 		t.Errorf("an object marked for another logical tree was attested: %v", err)
 	}

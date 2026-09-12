@@ -197,6 +197,18 @@ var destructiveInventory = map[string]struct {
 		why: "moves a torn or unsupported record aside so an operator can read it. It touches " +
 			"no source, and the daemon stays unready until it is resolved.",
 	}},
+	"hangar-output-daemon/config.go | Config.PrepareScratch | os.RemoveAll(filepath.Join())": {1, admission{
+		why: "sweeps what a KILLED canonicalization left in the scratch volume, at startup, " +
+			"before the listener exists. It touches no source: the scratch directory is the " +
+			"canonicalizer's own temporary parent, it holds assembled canonical.tar copies and " +
+			"nothing a capture can hold, and only hangar-tree-* entries are removed. A " +
+			"restarted daemon owns no in-flight canonicalization, every capture is retried " +
+			"under its capture fence, and SealedIncarnation re-derives the tree from the held " +
+			"source rather than from scratch. Leaving the residue is the finding: output " +
+			"plaintext outliving its capture on the node, and a scratch volume that does not " +
+			"start empty under a crash-loop, which is what the chart's sizeLimit arithmetic " +
+			"assumes.",
+	}},
 }
 
 type destructiveSite struct {
@@ -308,7 +320,7 @@ func TestArchitecture_EveryDestructiveCallIsAdmittedByANamedGuardOrPinnedAsExemp
 	// scan silently matched nothing passes, and a scan that stops finding
 	// calls -- a renamed directory, a parse that quietly failed -- looks
 	// exactly like a daemon that stopped destroying things.
-	const pinnedTotal = 31
+	const pinnedTotal = 32
 	if total != pinnedTotal {
 		t.Errorf("found %d destructive calls across both daemons and %d are pinned. "+
 			"Every Remove/RemoveAll/Rename must be listed in destructiveInventory with the "+

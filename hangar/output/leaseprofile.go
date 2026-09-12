@@ -40,6 +40,18 @@ type LeaseReadProfile struct {
 	// on a lease that is perfectly live.
 	grant string
 
+	// materializationTimeout is how long the transfer this profile authorizes
+	// is allowed to take, and it is what makes Req 36's margin real.
+	//
+	// Admit and Renew ask the control plane whether the lease has the
+	// operation's timeout PLUS LeaseStartMargin left, and both used to ask for
+	// zero -- which asks the database whether the lease has expired, a
+	// different and much weaker rule. A read admitted with thirty seconds left
+	// would start and be cut off mid-transfer, which is exactly what the margin
+	// exists to prevent. The repository looked correct because the spec that
+	// appeared to pin it supplied the margin itself.
+	materializationTimeout time.Duration
+
 	// mutex guards grant. Renew runs on a ticker in RenewWhile's goroutine
 	// while Release may run on the caller's, and a token read half-written is
 	// a token no verifier accepts.
@@ -58,8 +70,15 @@ type LeaseReadProfile struct {
 // managed-read box this phase did not land. The profile itself is composed
 // against the real control plane and the real materializer in atc/hangaroutput
 //
-// NewLeaseReadProfile binds one profile to one delivered grant.
-func NewLeaseReadProfile(control *LeaseControlClient, grant string) (*LeaseReadProfile, error) {
+// NewLeaseReadProfile binds one profile to one delivered grant and to the
+// timeout of the transfer it is about.
+//
+// The timeout is a parameter and not an option: it is the whole of Req 36's
+// "work starts only with the timeout plus two minutes remaining", and a profile
+// that could be built without one is a profile that asks the control plane
+// whether the lease has expired.
+func NewLeaseReadProfile(control *LeaseControlClient, grant string,
+	materializationTimeout time.Duration) (*LeaseReadProfile, error) {
 	if control == nil {
 		return nil, fmt.Errorf("%w: a managed read needs a lease-control client; an output "+
 			"read is authorized by a committed lease and never by a grant alone",
@@ -69,8 +88,19 @@ func NewLeaseReadProfile(control *LeaseControlClient, grant string) (*LeaseReadP
 		return nil, fmt.Errorf("%w: a managed read needs its lease-bound grant",
 			ErrIncomplete)
 	}
+	if err := ValidateMaterializationTimeout(materializationTimeout); err != nil {
+		return nil, err
+	}
 
-	return &LeaseReadProfile{Control: control, grant: grant}, nil
+	return &LeaseReadProfile{
+		Control: control, grant: grant, materializationTimeout: materializationTimeout,
+	}, nil
+}
+
+// requiredRemaining is Req 36's term, in one spelling: the operation's timeout
+// plus the start margin. MayStartWork applies the same sum on the reclaim path.
+func (profile *LeaseReadProfile) requiredRemaining() time.Duration {
+	return profile.materializationTimeout + LeaseStartMargin
 }
 
 // Admit validates the lease before anything is opened, and returns how long the
@@ -89,7 +119,7 @@ func NewLeaseReadProfile(control *LeaseControlClient, grant string) (*LeaseReadP
 // would let a grant for one object authorize a read of another.
 func (profile *LeaseReadProfile) Admit(ctx context.Context, ref hangar.TreeRef,
 	handle, volume string) (time.Duration, error) {
-	answer, err := profile.Control.ValidateLease(ctx, profile.current(), 0)
+	answer, err := profile.Control.ValidateLease(ctx, profile.current(), profile.requiredRemaining())
 	if err != nil {
 		return 0, err
 	}
@@ -118,7 +148,7 @@ func (profile *LeaseReadProfile) Admit(ctx context.Context, ref hangar.TreeRef,
 //
 // Renew extends the lease and takes the re-minted token with it.
 func (profile *LeaseReadProfile) Renew(ctx context.Context) error {
-	answer, err := profile.Control.RenewLease(ctx, profile.current(), 0)
+	answer, err := profile.Control.RenewLease(ctx, profile.current(), profile.requiredRemaining())
 	if err != nil {
 		return err
 	}

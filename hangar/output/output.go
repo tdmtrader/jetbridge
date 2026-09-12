@@ -81,6 +81,40 @@ const (
 // caller's errors.Is keeps working across the boundary between strict input and
 // durable output. A parallel set would have meant every caller checking twice
 // and eventually checking once.
+//
+// # Req 38's eight managed-generation states, and the narrowing this set is
+//
+// Req 38 asks for a distinct typed outcome per managed-generation state:
+// `reclaiming`, `reclaimed`, authoritatively missing, out-of-band missing,
+// conflicted, unregistered, unclaimed and policy-at-risk. A consumer asking for
+// a generation gets one of FOUR values, and this is the mapping, written down
+// rather than left for somebody to infer from a message:
+//
+//	reclaiming, reclaimed, authoritatively missing   -> ErrNotFound
+//	out-of-band missing                              -> ErrNotFound
+//	conflicted                                       -> ErrGenerationConflict
+//	unregistered, unclaimed                          -> ErrNotFound
+//	policy at risk                                   -> ErrAtRisk
+//
+// What a consumer can therefore tell apart is "retry under a NEW generation"
+// (ErrGenerationConflict, and ErrAtRisk once the operator clears the finding)
+// from "this exact generation is not available" -- and what it cannot tell
+// apart is which of the five ErrNotFound states it is in, so "recapture and
+// claim a newly published generation, which will work" reads the same as "this
+// object is being reclaimed right now, so a recapture races it". Today the only
+// way to separate them is substring-matching a message, which is not an
+// interface.
+//
+// The narrowing is RECORDED rather than closed, and the reason is where the
+// eight states live: they are rows of the lifecycle table, and the refusal is
+// composed in the control plane's transaction (atc/db, atc/hangaroutput), not
+// here. Closing it means carrying the lifecycle state ON the refusal -- a typed
+// error value that wraps one of these sentinels and names the row's own state
+// word, so errors.Is keeps working for every existing caller and errors.As
+// answers the eighth question. That is a control-plane change with a schema
+// vocabulary already in place for it; this leaf declares the sentinels it
+// wraps. Until it lands, a consumer must treat every ErrNotFound as "not
+// available now, reason unknown" and must not infer retryability from it.
 var (
 	ErrNotFound       = hangar.ErrNotFound
 	ErrConflict       = hangar.ErrConflict
@@ -317,6 +351,16 @@ type CaptureFence uint64
 // source incarnation. Ticket issuance and the open-to-sealing transition
 // serialize on it.
 type WriterFence uint64
+
+// FirstWriterFence is the writer-admission epoch of a source incarnation no
+// writer has ever been fenced out of.
+//
+// It is the floor rather than a default: a source with no ticket still HAS a
+// writer-admission epoch -- nobody has been superseded -- and a receipt has to
+// be able to claim it, because ReceiptClaims.Validate refuses a zero fence. The
+// ATC spells the same value for its first admission; this is the one the node's
+// own ledger answers with when it is asked what it admitted.
+const FirstWriterFence = WriterFence(1)
 
 // LeaseFence is the monotonic fencing epoch of a read or reclaim lease.
 type LeaseFence uint64

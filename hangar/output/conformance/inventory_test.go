@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/gcstest"
 	"github.com/concourse/concourse/hangar/objectstore"
 	"github.com/concourse/concourse/hangar/output"
@@ -926,6 +927,122 @@ func TestContinuousArrivalsCannotStarveTheSweep(t *testing.T) {
 				t.Fatalf("pass %d: %v", pass, err)
 			}
 			cursor = page.Next
+		}
+	})
+}
+
+// Req 49, Req 52. A bucket that does not exist is not a bucket full of objects
+// that are gone.
+//
+// The two arms below are MEASURED rather than argued, and they answer
+// differently, which is the whole reason this case exists:
+//
+//   - a bucket-wide LIST in a missing bucket answers storage.ErrBucketNotExist,
+//     which now reaches objectstore.ErrBucketNotFound and stops the sweep;
+//   - an OBJECT stat or delete in a missing bucket answers an ordinary object
+//     404, because the JSON API says the same thing for both and the SDK cannot
+//     tell either.
+//
+// So a controller pointed at the wrong bucket is detectable on the inventory's
+// path and is NOT detectable on the reclaimer's. That is why inferred
+// reclamation is decided from the job's own admitted-attempt history on the
+// control plane rather than from the store's answer, and it is why
+// objectstore.ErrBucketNotFound may never wrap ErrNotFound: the moment it does,
+// a misconfigured bucket name finalizes an intact registered set as this
+// plane's own successful deletions.
+func TestAMissingBucketIsNotAnEmptyBucketOnThePathThatCanTell(t *testing.T) {
+	for _, tier := range []substrate{tier1(t), tier2(t)} {
+		t.Run(tier.name, func(t *testing.T) {
+			ctx := context.Background()
+			missing := "a-bucket-this-deployment-never-created"
+
+			_, err := tier.client.List(ctx, missing,
+				objectstore.ListRequest{Prefix: "deployments/blue/", PageSize: 10})
+			if err == nil {
+				t.Fatal("listing a bucket that does not exist answered a page. An empty page " +
+					"from a wrong bucket name is a sweep that reports the plane is clean")
+			}
+			if !errors.Is(err, objectstore.ErrBucketNotFound) {
+				t.Errorf("listing a missing bucket answered %v, which is not the bucket-absence "+
+					"sentinel", err)
+			}
+			if errors.Is(err, objectstore.ErrNotFound) {
+				t.Error("a missing BUCKET still reads as object absence on the list path")
+			}
+		})
+	}
+}
+
+// Req 45. A marker is evidence about the object it is ON.
+//
+// classify used to mark any object carrying a parseable marker as managed,
+// without comparing the object's own key against the key that marker's
+// (scope, digest) derives. Every later step then builds the TreeRef out of the
+// marker, so AdoptionRequest.Validate's Marker.Matches(request.Ref) compares a
+// value with itself and can never fire -- which is what its own doc comment
+// says it exists to prevent.
+//
+// The consequence is not a failed adoption. It is a lifecycle row naming a ref
+// whose derived key is somewhere else: the real object is never reclaimed, and
+// the eventual conditional delete at the derived key 404s into a FALSE
+// reclaimed_inferred. Reachability is bounded by Req 53's residual trust
+// boundary -- only the publisher principal can create a marked object -- so
+// this is defence in depth, and it is the half the guard was asserted to have.
+func TestAValidMarkerAtAForeignKeyIsDebtRatherThanAnAdoptableObject(t *testing.T) {
+	eachSubstrate(t, func(t *testing.T, tier substrate) {
+		ctx := context.Background()
+		namespace := namespaceFor(t, tier.bucket)
+		published := publishTrees(t, tier, namespace, "2a", "2b")
+		keys := publishedKeys(t, tier, namespace)
+
+		// The FIRST object's own marker, valid in every field, written onto the
+		// SECOND object's key.
+		foreign := published[0].Marker.Metadata()
+		own, err := hangar.TreeKey(namespace.Prefix(), published[0].Attributes.Ref.Scope,
+			published[0].Attributes.Ref.Digest)
+		if err != nil {
+			t.Fatalf("deriving the first object's own key: %v", err)
+		}
+		var victim string
+		for _, key := range keys {
+			if key != own {
+				victim = key
+			}
+		}
+		if victim == "" {
+			t.Fatalf("the fixture published %d distinguishable keys", len(keys))
+		}
+		poisonAt(t, tier, victim, foreign)
+
+		clock := &stoppedClock{at: fixedInstant}
+		sweep := sweepOver(t, namespace, inventory.Restrict(tier.client), clock)
+		page, err := sweep.ListPage(ctx, startedCursor(t), output.DefaultPageBudget())
+		if err != nil {
+			t.Fatalf("sweeping: %v", err)
+		}
+
+		for _, object := range page.Objects {
+			if object.ObjectKey == victim && object.Managed {
+				t.Errorf("an object at %s carrying a marker for %s/%s came back MANAGED and "+
+					"adoptable. The lifecycle row it produces names a ref whose derived key is "+
+					"another object's, so the real bytes are never reclaimed and the delete at "+
+					"the derived key 404s into a false reclaimed_inferred.",
+					victim, published[0].Marker.Scope, published[0].Marker.Digest)
+			}
+		}
+		var recorded output.InventoryDebt
+		for _, debt := range page.Debt {
+			if debt.ObjectKey == victim {
+				recorded = debt
+			}
+		}
+		if recorded.ObjectKey == "" {
+			t.Fatalf("a marker at a foreign key produced no debt row; %d were recorded",
+				len(page.Debt))
+		}
+		if recorded.Reason != output.DebtMarkerMismatch {
+			t.Errorf("a marker at a foreign key was recorded as %q, expected %q",
+				recorded.Reason, output.DebtMarkerMismatch)
 		}
 	})
 }

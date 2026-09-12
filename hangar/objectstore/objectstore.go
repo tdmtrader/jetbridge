@@ -51,6 +51,26 @@ var (
 	// something is already at the key, which is a collision candidate and
 	// never a licence to overwrite.
 	ErrPreconditionFailed = errors.New("hangar/objectstore: precondition failed")
+
+	// ErrBucketNotFound is the BUCKET being absent, and it deliberately does
+	// not wrap ErrNotFound.
+	//
+	// It used to. A deleted bucket, or a controller started against a bucket
+	// name nobody publishes into, made every operation answer "not found" --
+	// and the reclaim path reads object absence as evidence that the object was
+	// removed. Folded together, a wrong bucket finalized the entire registered
+	// set as this plane's own successful deletions, with no violation and no
+	// at-risk, while every object was still there. Deletion truth is the one
+	// thing this plane must never get wrong, so the two answers are two errors.
+	//
+	// It is NOT a claim that every bucket-absence is detectable. Measured
+	// against both tiers: a bucket-wide LIST in a missing bucket answers
+	// storage.ErrBucketNotExist and reaches this sentinel; an OBJECT stat or
+	// delete in a missing bucket answers an ordinary object 404, because the
+	// JSON API says the same thing for both and the SDK cannot tell either.
+	// What decides the reclaim case is therefore the job's own admitted-attempt
+	// history on the control plane, not this error.
+	ErrBucketNotFound = errors.New("hangar/objectstore: bucket not found")
 )
 
 // Conditions is the precondition set an operation runs under.
