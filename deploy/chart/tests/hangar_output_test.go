@@ -48,6 +48,7 @@ var baseControlSets = []string{
 	"hangarOutput.executionControl.keySecret=op-control-key",
 	"hangarOutput.capabilityKeySecret=op-capability-key",
 	"hangarOutput.daemon.tls.existingSecret=op-output-daemon-tls",
+	"hangarOutput.daemon.tls.clientSecret=op-output-daemon-client-tls",
 	"hangarOutput.activationEpoch=7",
 	// Required under the BASE switch, not the output one: the DaemonSet, its
 	// scratch emptyDir and its --scratch-dir flag all render here.

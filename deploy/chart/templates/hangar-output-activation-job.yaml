@@ -12,10 +12,13 @@ mode=enable does nothing unless the facet is already `attested`, `attest`
 refuses a mixed cohort, and output can never be enabled while base is not --
 all of which live in the CAS predicate and the schema, not in this template.
 
-The Job mounts the database Secret and, for `attest`, the daemon control API's
-client certificate. It mounts NO receipt private key: the activation identity
-signs nothing, and a key in a Pod that cannot need it is a key an exploit of
-that Pod gets for free.
+The Job mounts the database Secret and, for `attest`, the output plane's CLIENT
+certificate -- hangarOutput.daemon.tls.clientSecret, and never the daemon's own
+server Secret, which holds the key the daemon SERVES with: an exploit of this
+Job would otherwise obtain the material to impersonate the output daemon to the
+ATC. It mounts NO receipt private key either: the activation identity signs
+nothing, and a key in a Pod that cannot need it is a key an exploit of that Pod
+gets for free.
 */}}
 {{- if .Values.hangarOutput.executionControl.enabled }}
 {{- $mode := .Values.hangarOutput.activation.job.mode }}
@@ -145,7 +148,7 @@ spec:
       volumes:
         - name: daemon-tls
           secret:
-            secretName: {{ .Values.hangarOutput.daemon.tls.existingSecret }}
+            secretName: {{ .Values.hangarOutput.daemon.tls.clientSecret }}
       {{- end }}
 {{- end }}
 {{- end }}

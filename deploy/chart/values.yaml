@@ -853,11 +853,46 @@ hangarOutput:
   daemon:
     # -- Control API port.
     port: 7781
-    # -- Existing Secret with tls.crt/tls.key/ca.crt for the control API. The
-    # ATC calls this daemon from another node, and a bearer capability over
-    # plaintext off-node is interceptable inside its TTL.
+    # -- The control API's TLS, which is the OUTPUT plane's own trust domain.
+    #
+    # This daemon is TLS-only. Its listener is wrapped unconditionally and its
+    # control routes refuse any operation whose request carries no VERIFIED
+    # peer certificate, so there is no plaintext mode to fall back to and no
+    # switch to turn it off. `artifactDaemon.tls.enabled` is a DIFFERENT
+    # daemon's switch, on a different bucket under a different identity, and it
+    # has nothing to say about this plane.
+    #
+    # WHAT AN OPERATOR MUST PROVISION, and the chart cannot check any of it:
+    #
+    #   * one certificate authority for the output plane. `existingSecret`'s
+    #     ca.crt must verify `clientSecret`'s certificate and vice versa. Two
+    #     independently-issued Secrets complete a handshake and are then
+    #     refused by every control route, which looks like an authorization bug
+    #     and is a trust-domain one;
+    #   * the SERVER certificate in `existingSecret` must carry `serverName`
+    #     below as a DNS SAN. The ATC dials this daemon at <node IP> -- there is
+    #     no Service -- and a node IP cannot be a SAN in a certificate issued
+    #     before the node existed, so the ATC verifies against that name
+    #     instead;
+    #   * the CLIENT certificate in `clientSecret` is what the ATC and the
+    #     `attest` activation Job present. It is a separate Secret because
+    #     `existingSecret` holds tls.key, the key this daemon SERVES with:
+    #     whatever holds it can impersonate the daemon to the ATC.
     tls:
+      # -- Existing Secret with tls.crt/tls.key/ca.crt: the certificate this
+      # daemon SERVES with. Mounted in the output daemon Pod and nowhere else.
+      # Required whenever executionControl.enabled is true.
       existingSecret: ""
+      # -- Existing Secret with tls.crt/tls.key/ca.crt: the CLIENT certificate
+      # the ATC and the attest Job present to this daemon. Issued by the same
+      # CA as existingSecret, and never the same Secret. Required whenever
+      # executionControl.enabled is true.
+      clientSecret: ""
+      # -- DNS name the server certificate above carries, and the name the ATC
+      # verifies it against. Empty derives
+      # <fullname>-hangar-output-daemon.<namespace>.svc; it need not resolve,
+      # it only has to be in the certificate.
+      serverName: ""
     # -- Private control directory, inside the managed artifact hostPath. It
     # holds the execution and source ledgers and is excluded from every sweep.
     controlPath: /var/concourse/artifacts/hangar-output-control
