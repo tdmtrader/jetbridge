@@ -117,7 +117,10 @@ spec:
             - --control-dir={{ $output.daemon.controlPath }}
             - --steps-dir={{ $output.daemon.stepsPath }}
             - --scratch-dir={{ $output.daemon.scratch.path }}
-            - --control-key-id={{ $output.executionControl.keySecret }}
+            # The key's id, not its Secret's name. Two nodes holding
+            # different material under one Secret name reported one id, and
+            # base attestation compares ids.
+            - --control-key-id={{ $output.executionControl.keyID }}
             - --control-key-file=/etc/concourse/hangar-output/control/control.key
             - --capability-key=/etc/concourse/hangar-output/capability/capability.key
             - --activation-epoch={{ int $output.activationEpoch }}

@@ -158,6 +158,9 @@ daemon that would refuse itself at startup.
 {{- if not $output.executionControl.keySecret -}}
 {{- fail "hangarOutput.executionControl.keySecret is required: the node signs every execution and source ledger statement with it, and an unsigned acknowledgement is not proof." -}}
 {{- end -}}
+{{- if not $output.executionControl.keyID -}}
+{{- fail "hangarOutput.executionControl.keyID is required: it is the id every node reports over the attestation handshake, and base attestation is a homogeneity check over exactly those ids. It names KEY MATERIAL and not the Secret -- it used to render the Secret NAME, so two nodes holding different private keys under one Secret name reported one id and a cohort half-way through a rollout attested as homogeneous." -}}
+{{- end -}}
 {{- if not $output.capabilityKeySecret -}}
 {{- fail "hangarOutput.capabilityKeySecret is required: control capabilities are minted by the control plane and verified by the daemon with the same raw 32-byte key." -}}
 {{- end -}}
@@ -232,6 +235,22 @@ does not set is read once and believed.
 {{- end -}}
 {{- if not $output.materializationKeySecret -}}
 {{- fail "hangarOutput.materializationKeySecret is required: output read grants use their own key and their own domain, never the receipt key." -}}
+{{- end -}}
+
+{{/*
+Three key roles, three ids. A receipt says an object exists in a bucket, a
+control statement says a process on a node did something, and a read grant
+authorizes one staged read; "which key checks this" has to have one answer per
+id, and a shared id makes it two.
+*/}}
+{{- $ids := dict -}}
+{{- range $role, $id := dict "executionControl.keyID" $output.executionControl.keyID "receipt.keyID" $output.receipt.keyID "materializationKeyID" $output.materializationKeyID -}}
+{{- if $id -}}
+{{- if hasKey $ids $id -}}
+{{- fail (printf "hangarOutput.%s and hangarOutput.%s are both the key id %q. A key id names one piece of key material for one role, and an activation epoch pins the three separately: one id for two roles makes \"which key checks this\" unanswerable." (get $ids $id) $role $id) -}}
+{{- end -}}
+{{- $_ := set $ids $id $role -}}
+{{- end -}}
 {{- end -}}
 
 {{/* Three key roles, three Secrets. One Secret for two of them means rotating either rotates both. */}}

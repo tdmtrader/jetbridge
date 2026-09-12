@@ -767,6 +767,15 @@ hangarOutput:
     # It is NOT the receipt key and NOT the read-grant key; an activation epoch
     # pins the three separately so rotating one does not rotate the others.
     keySecret: ""
+    # -- Key id of the control key above, and the id every node in the cohort
+    # reports over the attestation handshake. Required whenever enabled.
+    #
+    # It names KEY MATERIAL and not the Secret. This used to render the Secret
+    # NAME, so two nodes holding different private keys under one Secret name
+    # reported one id and a cohort half-way through a control-key rollout
+    # attested as homogeneous on the base facet's only key material. Move this
+    # value when you move the key, exactly as receipt.keyID is moved.
+    keyID: ""
 
   # -- Existing Secret holding capability.key: the raw 32 bytes control
   # capabilities are minted and verified with, shared between the control plane

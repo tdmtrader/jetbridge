@@ -46,6 +46,7 @@ var baseControlSets = []string{
 	"artifactDaemon.enabled=true",
 	"hangarOutput.executionControl.enabled=true",
 	"hangarOutput.executionControl.keySecret=op-control-key",
+	"hangarOutput.executionControl.keyID=control-key-7",
 	"hangarOutput.capabilityKeySecret=op-capability-key",
 	"hangarOutput.daemon.tls.existingSecret=op-output-daemon-tls",
 	"hangarOutput.daemon.tls.clientSecret=op-output-daemon-client-tls",
@@ -1574,5 +1575,84 @@ func TestOnlyTheReclaimerPrincipalIsGrantedObjectDelete(t *testing.T) {
 	if !strings.Contains(runAs[0], "reclaimer") {
 		t.Fatalf("the account holding storage.objects.delete is used by %s, which is not the "+
 			"reclaimer", runAs[0])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The control key's identity
+// ---------------------------------------------------------------------------
+
+// A key id names KEY MATERIAL, and the chart used to give the control key the
+// name of its Secret.
+//
+// `--control-key-id={{ .executionControl.keySecret }}` means two nodes holding
+// different private keys under one Secret name report one id. Base attestation
+// collects `control_key_id` into the evidence bundle and the digest, so a
+// cohort half-way through a control-key rollout attests as homogeneous on the
+// base facet's ONLY key material -- and the in-place replacement that the
+// receipt key's ring rules refuse was unguarded for the control key precisely
+// because the id could not move.
+//
+// `receipt.keyID` has been a value of its own since Phase 8, with the ring rule
+// that a key id is never reused for different material and rotation creates a
+// new epoch. The control key now gets the same shape.
+func TestTheControlKeyIdNamesKeyMaterialAndNotItsSecret(t *testing.T) {
+	daemon := objectNamed(t, renderBaseControl(t), "DaemonSet", "-"+outputDaemonComponent)
+
+	id := ""
+	for _, line := range strings.Split(daemon.body, "\n") {
+		if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "- --control-key-id=") {
+			id = strings.TrimPrefix(trimmed, "- --control-key-id=")
+		}
+	}
+	if id == "" {
+		t.Fatal("the output daemon renders no --control-key-id; this rule would pass vacuously")
+	}
+	if id == "op-control-key" {
+		t.Error("--control-key-id carries hangarOutput.executionControl.keySecret, the SECRET " +
+			"NAME. Two nodes holding different key material under one Secret name then report " +
+			"one id, and base attestation compares ids: a cohort half-way through a " +
+			"control-key rollout attests as homogeneous.")
+	}
+
+	// The id moves independently of the Secret. Same Secret name, different
+	// key: a different id, which is the whole property.
+	rotated := objectNamed(t,
+		renderBaseControl(t, "hangarOutput.executionControl.keyID=control-key-8"),
+		"DaemonSet", "-"+outputDaemonComponent)
+	if !strings.Contains(rotated.body, "- --control-key-id=control-key-8") {
+		t.Error("hangarOutput.executionControl.keyID does not reach --control-key-id, so the " +
+			"id cannot be moved without renaming the Secret")
+	}
+	if !strings.Contains(rotated.body, "secretName: op-control-key") {
+		t.Error("the rotated render no longer mounts the same Secret; the two are supposed to " +
+			"be independent")
+	}
+}
+
+// An id shared across key ROLES is the same ambiguity one level up: a control
+// statement and a receipt say different things, and "which key checks this" has
+// to have one answer per id.
+func TestAKeyIdIsNotSharedBetweenTheControlReceiptAndReadGrantKeys(t *testing.T) {
+	for _, collision := range []string{
+		"hangarOutput.executionControl.keyID=receipt-7",
+		"hangarOutput.materializationKeyID=receipt-7",
+	} {
+		message := renderOutputError(t, collision)
+		if !strings.Contains(message, "key id") {
+			t.Errorf("%s was refused, but not by the key-id rule:\n%s", collision, message)
+		}
+	}
+}
+
+// The base facet cannot render without one. A daemon started with no id
+// refuses at startup (cmd/hangar-output-daemon/config.go), and the refusal an
+// operator most needs is the one at render time.
+func TestTheControlKeyIdIsRequiredWithTheBaseFacet(t *testing.T) {
+	message := renderHangarError(t, append(append([]string{}, baseControlSets...),
+		"hangarOutput.executionControl.keyID=")...)
+	if !strings.Contains(message, "executionControl.keyID") {
+		t.Errorf("an empty control key id rendered, or was refused by something else:\n%s",
+			message)
 	}
 }
