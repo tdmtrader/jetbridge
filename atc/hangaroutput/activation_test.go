@@ -578,3 +578,324 @@ func TestOutputCanBeEnabledAgainAfterARotationAndAFullDrain(t *testing.T) {
 		t.Errorf("the re-enabled row is base=%s output=%s", state.Base, state.Output)
 	}
 }
+
+// ENABLE HAD NO PRECONDITIONS AT ALL, AND A WRITTEN INSTRUCTION INSTEAD.
+//
+// `--mode=enable --facet=output` never read a policy snapshot, never checked
+// which migration the database is at, never asked whether a policy attestor is
+// deployed and holding its lease, and never looked at the identity facts the
+// epoch row carries. An operator could attest and enable with no conformance
+// run and no attestor anywhere in the cluster, and the first they would hear of
+// it is a deferred JB002 on some build's commit.
+//
+// EnablePreconditions is that instruction made real, and this drives it against
+// the live tables one missing thing at a time.
+func TestEnablingOutputIsRefusedWhileItsPreconditionsAreUnmet(t *testing.T) {
+	ctx := context.Background()
+	const epoch = executioncontrol.ActivationEpoch(71)
+
+	// ready builds an epoch that is attested on both facets, with a fresh safe
+	// policy attestation of the attested bucket and an attestor holding its
+	// lease -- everything EnablePreconditions asks for. Each case then removes
+	// exactly one thing, so a red row names the precondition rather than
+	// "enable was refused".
+	ready := func(t *testing.T) (activation.Epochs, *sql.DB) {
+		t.Helper()
+
+		epochs, conn := activationFixture(t)
+		mustBegin(t, epochs, epoch)
+		mustAttestAndEnableBase(t, epochs, epoch)
+		mustAttestOutputOnly(t, epochs, epoch)
+
+		if _, err := conn.Exec(`
+			INSERT INTO hangar_policy_snapshots
+				(activation_epoch, bucket_fingerprint, metageneration, policy_hash,
+				 lifecycle_delete_rules, state, observed_at)
+			VALUES ($1, $2, 3, 'policy-hash-1', 0, 'safe', now())`,
+			int64(epoch), outputEvidence().BucketFingerprint); err != nil {
+			t.Fatalf("recording the policy attestation: %v", err)
+		}
+		if _, err := conn.Exec(`
+			INSERT INTO hangar_operation_leases
+				(kind, activation_epoch, owner_id, lease_fence, expires_at)
+			VALUES ('policy_attestation', $1, gen_random_uuid(), 1,
+				now() + interval '30 minutes')`, int64(epoch)); err != nil {
+			t.Fatalf("taking the policy attestation lease: %v", err)
+		}
+
+		return epochs, conn
+	}
+
+	// THE CONTROL. Without it every case below would also pass against a step
+	// that refused everything.
+	t.Run("a ready epoch is enabled", func(t *testing.T) {
+		epochs, _ := ready(t)
+
+		outcome, err := epochs.EnableStep(ctx, epoch, activation.FacetOutput, true)
+		if err != nil {
+			t.Fatalf("a fully prepared epoch was refused: %v", err)
+		}
+		if !outcome.Enabled {
+			t.Fatal("the step reported success and enabled nothing")
+		}
+		if len(outcome.Preconditions) < 8 {
+			t.Errorf("the step checked only %d preconditions; the list is what makes the "+
+				"refusal actionable", len(outcome.Preconditions))
+		}
+		for _, precondition := range outcome.Preconditions {
+			if !precondition.Met {
+				t.Errorf("a precondition was unmet and the facet was enabled anyway: %s",
+					precondition)
+			}
+			if precondition.Why == "" || precondition.Detail == "" {
+				t.Errorf("precondition %q says nothing an operator can act on: %+v",
+					precondition.Name, precondition)
+			}
+		}
+
+		state, err := epochs.Read(ctx, epoch)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if state.Output != "enabled" {
+			t.Errorf("the output facet is %q", state.Output)
+		}
+	})
+
+	// Each case removes one thing and names every precondition that should then
+	// be unmet. Usually that is one; deleting the attestation altogether is
+	// three, because "safe", "fresh" and "of this bucket" are three questions
+	// about a row that is no longer there, and a case that asserted only the
+	// first would be hiding the other two.
+	for name, probe := range map[string]struct {
+		remove func(t *testing.T, conn *sql.DB)
+		unmet  []string
+	}{
+		"there is no lifetime-policy attestation": {
+			remove: func(t *testing.T, conn *sql.DB) {
+				mustExec(t, conn, `DELETE FROM hangar_policy_snapshots`)
+			},
+			unmet: []string{
+				"lifetime policy attested safe",
+				"lifetime policy attestation is fresh",
+				"the attestation is of the attested bucket",
+			},
+		},
+		"the lifetime policy is at risk": {
+			remove: func(t *testing.T, conn *sql.DB) {
+				mustExec(t, conn, `UPDATE hangar_policy_snapshots
+					SET state = 'at_risk', lifecycle_delete_rules = 1`)
+			},
+			unmet: []string{"lifetime policy attested safe"},
+		},
+		"the attestation is older than the detection bound": {
+			remove: func(t *testing.T, conn *sql.DB) {
+				mustExec(t, conn, `UPDATE hangar_policy_snapshots
+					SET observed_at = now() - interval '41 minutes'`)
+			},
+			unmet: []string{"lifetime policy attestation is fresh"},
+		},
+		"the attestation reads another bucket": {
+			remove: func(t *testing.T, conn *sql.DB) {
+				mustExec(t, conn, `UPDATE hangar_policy_snapshots
+					SET bucket_fingerprint = 'gs://somebody-elses-bucket'`)
+			},
+			unmet: []string{"the attestation is of the attested bucket"},
+		},
+		"no policy attestor is deployed": {
+			remove: func(t *testing.T, conn *sql.DB) {
+				mustExec(t, conn, `DELETE FROM hangar_operation_leases
+					WHERE kind = 'policy_attestation'`)
+			},
+			unmet: []string{"a policy attestor is running"},
+		},
+		"the policy attestor's lease has expired": {
+			remove: func(t *testing.T, conn *sql.DB) {
+				mustExec(t, conn, `UPDATE hangar_operation_leases
+					SET acquired_at = now() - interval '2 hours',
+					    renewed_at = now() - interval '2 hours',
+					    expires_at = now() - interval '1 hour'
+					WHERE kind = 'policy_attestation'`)
+			},
+			unmet: []string{"a policy attestor is running"},
+		},
+		"the receipt key's validity window has passed": {
+			remove: func(t *testing.T, conn *sql.DB) {
+				mustExec(t, conn, `UPDATE hangar_output_activation_epochs
+					SET receipt_key_valid_from = now() - interval '90 days',
+					    receipt_key_valid_until = now() - interval '1 day',
+					    revision = revision + 1`)
+			},
+			unmet: []string{"receipt key is currently valid"},
+		},
+		"the database has been rolled back past the plane's migration": {
+			remove: func(t *testing.T, conn *sql.DB) {
+				mustExec(t, conn, `INSERT INTO migrations_history
+					(version, tstamp, direction, status, dirty)
+					VALUES ($1, current_timestamp, 'down', 'passed', false)`,
+					activation.HangarOutputMigration)
+			},
+			unmet: []string{"schema migration"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			epochs, conn := ready(t)
+			probe.remove(t, conn)
+
+			outcome, err := epochs.EnableStep(ctx, epoch, activation.FacetOutput, true)
+			if !errors.Is(err, activation.ErrEnableRefused) {
+				t.Fatalf("the facet was enabled, or refused for the wrong reason: %v", err)
+			}
+			if outcome.Enabled {
+				t.Fatal("the step refused and enabled the facet anyway")
+			}
+			for _, named := range probe.unmet {
+				if !strings.Contains(err.Error(), named) {
+					t.Errorf("the refusal does not name %q, so an operator cannot tell which "+
+						"of eight things to go and do: %v", named, err)
+				}
+			}
+
+			var unmet []string
+			for _, precondition := range outcome.Preconditions {
+				if !precondition.Met {
+					unmet = append(unmet, precondition.Name)
+				}
+			}
+			if strings.Join(unmet, "|") != strings.Join(probe.unmet, "|") {
+				t.Errorf("removing one thing made %v unmet and the case expects %v; either the "+
+					"case is no longer about what it says, or a precondition is answering for "+
+					"another one's absence", unmet, probe.unmet)
+			}
+
+			// And nothing was written: the facet is still attested, so the
+			// operator can fix the one thing and run the same command again.
+			state, err := epochs.Read(ctx, epoch)
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			if state.Output != "attested" {
+				t.Errorf("the output facet is %q after a refusal", state.Output)
+			}
+
+			// The pre-flight form reports the same list and refuses nothing,
+			// which is what an operator runs before the window rather than
+			// during it.
+			preflight, err := epochs.EnableStep(ctx, epoch, activation.FacetOutput, false)
+			if err != nil {
+				t.Errorf("the pre-flight form returned an error: %v", err)
+			}
+			if preflight.Enabled {
+				t.Error("the pre-flight form enabled the facet")
+			}
+		})
+	}
+}
+
+func mustExec(t *testing.T, conn *sql.DB, statement string, arguments ...any) {
+	t.Helper()
+
+	if _, err := conn.Exec(statement, arguments...); err != nil {
+		t.Fatalf("preparing the case (%s): %v", statement, err)
+	}
+}
+
+// The three enable preconditions the table above cannot reach by removing one
+// thing from a ready epoch, because reaching them means never getting there.
+func TestEnablingIsRefusedForAnEpochThatWasNeverFullyAttested(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("the output facet was never attested", func(t *testing.T) {
+		epochs, _ := activationFixture(t)
+		const epoch = executioncontrol.ActivationEpoch(81)
+		mustBegin(t, epochs, epoch)
+		mustAttestAndEnableBase(t, epochs, epoch)
+
+		outcome, err := epochs.EnableStep(ctx, epoch, activation.FacetOutput, true)
+		if !errors.Is(err, activation.ErrEnableRefused) {
+			t.Fatalf("an unattested output facet was enabled: %v", err)
+		}
+		if outcome.Enabled {
+			t.Fatal("the step refused and enabled the facet anyway")
+		}
+		for _, named := range []string{
+			"facet attested", "cloud identity attested", "receipt key is currently valid",
+		} {
+			if !strings.Contains(err.Error(), named) {
+				t.Errorf("the refusal does not name %q: %v", named, err)
+			}
+		}
+	})
+
+	// The identity CHECK on the epoch row fires only at `enabled`, so an
+	// ATTESTED row with no attested bucket or keys is a state the schema
+	// permits and this is the one thing that refuses it before service.
+	t.Run("the attested output facet names no cloud identity", func(t *testing.T) {
+		epochs, conn := activationFixture(t)
+		const epoch = executioncontrol.ActivationEpoch(82)
+		mustBegin(t, epochs, epoch)
+		mustAttestAndEnableBase(t, epochs, epoch)
+		mustAttestOutputOnly(t, epochs, epoch)
+		mustExec(t, conn, `UPDATE hangar_output_activation_epochs
+			SET receipt_public_key_id = NULL, materialization_key_id = NULL,
+			    bucket_fingerprint = NULL, derived_namespace = NULL,
+			    revision = revision + 1`)
+
+		_, err := epochs.EnableStep(ctx, epoch, activation.FacetOutput, true)
+		if !errors.Is(err, activation.ErrEnableRefused) {
+			t.Fatalf("an output facet attesting no bucket or keys was enabled: %v", err)
+		}
+		if !strings.Contains(err.Error(), "cloud identity attested") {
+			t.Errorf("the refusal does not name the missing identity: %v", err)
+		}
+	})
+
+	t.Run("the attested base facet names no cohort versions", func(t *testing.T) {
+		epochs, conn := activationFixture(t)
+		const epoch = executioncontrol.ActivationEpoch(83)
+		mustBegin(t, epochs, epoch)
+		mustAttestBase(t, epochs, epoch)
+
+		if _, err := epochs.EnableStep(ctx, epoch, activation.FacetBase, false); err != nil {
+			t.Fatalf("the pre-flight on a well-attested base facet errored: %v", err)
+		}
+		mustExec(t, conn, `UPDATE hangar_output_activation_epochs
+			SET protocol_version = NULL, ledger_version = NULL, revision = revision + 1`)
+
+		_, err := epochs.EnableStep(ctx, epoch, activation.FacetBase, true)
+		if !errors.Is(err, activation.ErrEnableRefused) {
+			t.Fatalf("a base facet attesting no protocol or ledger version was enabled: %v", err)
+		}
+		if !strings.Contains(err.Error(), "cohort versions attested") {
+			t.Errorf("the refusal does not name the missing versions: %v", err)
+		}
+	})
+}
+
+// The "base facet ready" line in the pre-flight list can only ever report met,
+// and this is the constraint that makes that true rather than lucky.
+//
+// hangar_output_epoch_needs_base pins base_state in ('attested','enabled') for
+// as long as output_state is anything but `initial` or `disabled`, so an output
+// facet that is attested at all sits on a row whose base is ready. A precondition
+// that cannot be reddened is a comment unless the thing that makes it so is
+// itself pinned; this pins it.
+func TestTheSchemaIsWhatMakesTheBaseReadinessLineTrue(t *testing.T) {
+	epochs, conn := activationFixture(t)
+	const epoch = executioncontrol.ActivationEpoch(84)
+
+	mustBegin(t, epochs, epoch)
+	mustAttestAndEnableBase(t, epochs, epoch)
+	mustAttestOutputOnly(t, epochs, epoch)
+
+	_, err := conn.Exec(`UPDATE hangar_output_activation_epochs
+		SET base_state = 'draining', revision = revision + 1 WHERE epoch_id = $1`, int64(epoch))
+	if err == nil {
+		t.Fatal("the base facet was moved out of readiness while the output facet is attested. " +
+			"The `base facet ready` precondition reports rather than gates, and this constraint " +
+			"is the whole reason that is safe")
+	}
+	if !strings.Contains(err.Error(), "hangar_output_epoch_needs_base") {
+		t.Errorf("the refusal comes from somewhere other than the readiness constraint: %v", err)
+	}
+}
