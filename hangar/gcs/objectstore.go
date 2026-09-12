@@ -227,7 +227,15 @@ func translate(err error) error {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
-	if errors.Is(err, storage.ErrObjectNotExist) || errors.Is(err, storage.ErrBucketNotExist) {
+	// The bucket and the object are two absences, and folding them together was
+	// a finding: object absence is what the reclaim path reads as evidence a
+	// generation is gone, so a deleted bucket or a misconfigured bucket name
+	// answered "already absent" for every object in a registered set that was
+	// entirely intact.
+	if errors.Is(err, storage.ErrBucketNotExist) {
+		return fmt.Errorf("%w: %v", objectstore.ErrBucketNotFound, err)
+	}
+	if errors.Is(err, storage.ErrObjectNotExist) {
 		return fmt.Errorf("%w: %v", objectstore.ErrNotFound, err)
 	}
 

@@ -33,6 +33,18 @@ import (
 type Memory struct {
 	mu      sync.Mutex
 	objects map[string]map[string]storedObject
+
+	// buckets is which bucket names EXIST, which is a different question from
+	// which ones hold an object.
+	//
+	// It is here because the alternative answered a list against a bucket that
+	// was never created with an empty page -- and an empty page from a wrong
+	// bucket name is a sweep reporting that the plane is clean. Real GCS
+	// answers that list with a bucket 404; this one now does too. Object stat
+	// and delete are deliberately NOT modelled on the bucket, because real GCS
+	// answers those with an ordinary object 404 and a fake that could tell them
+	// apart would be a fake nobody can rely on.
+	buckets map[string]bool
 	// nextGeneration is monotonic across the whole store, the way a real
 	// bucket's generations are: a test that assumed 1, 2, 3 per key would be
 	// asserting the fake.
@@ -90,9 +102,22 @@ type storedObject struct {
 func NewMemory() *Memory {
 	return &Memory{
 		objects:        map[string]map[string]storedObject{},
+		buckets:        map[string]bool{},
 		nextGeneration: 1725830823000001,
 		clock:          time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
+}
+
+// CreateBucket makes a bucket name exist without putting anything in it.
+//
+// A harness calls it for the same reason a deployment creates a bucket before
+// it publishes: "the bucket is empty" and "the bucket is not there" are two
+// different answers, and a substrate that cannot give the second cannot pin
+// what a controller pointed at the wrong bucket sees.
+func (memory *Memory) CreateBucket(bucket string) {
+	memory.mu.Lock()
+	defer memory.mu.Unlock()
+	memory.buckets[bucket] = true
 }
 
 // Inject arms the faults for subsequent operations.
@@ -117,6 +142,7 @@ func (memory *Memory) putLocked(bucket, key string, body []byte, metadata map[st
 	if memory.objects[bucket] == nil {
 		memory.objects[bucket] = map[string]storedObject{}
 	}
+	memory.buckets[bucket] = true
 	generation := memory.nextGeneration
 	memory.nextGeneration++
 	object := storedObject{
@@ -209,6 +235,9 @@ func (memory *Memory) List(ctx context.Context, bucket string, request objectsto
 	if request.PageSize <= 0 {
 		return objectstore.Page{}, fmt.Errorf("%w: a list page size must be positive",
 			objectstore.ErrInfrastructure)
+	}
+	if !memory.buckets[bucket] {
+		return objectstore.Page{}, fmt.Errorf("%w: %s", objectstore.ErrBucketNotFound, bucket)
 	}
 
 	keys := make([]string, 0, len(memory.objects[bucket]))

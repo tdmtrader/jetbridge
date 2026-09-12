@@ -929,3 +929,45 @@ func TestContinuousArrivalsCannotStarveTheSweep(t *testing.T) {
 		}
 	})
 }
+
+// Req 49, Req 52. A bucket that does not exist is not a bucket full of objects
+// that are gone.
+//
+// The two arms below are MEASURED rather than argued, and they answer
+// differently, which is the whole reason this case exists:
+//
+//   - a bucket-wide LIST in a missing bucket answers storage.ErrBucketNotExist,
+//     which now reaches objectstore.ErrBucketNotFound and stops the sweep;
+//   - an OBJECT stat or delete in a missing bucket answers an ordinary object
+//     404, because the JSON API says the same thing for both and the SDK cannot
+//     tell either.
+//
+// So a controller pointed at the wrong bucket is detectable on the inventory's
+// path and is NOT detectable on the reclaimer's. That is why inferred
+// reclamation is decided from the job's own admitted-attempt history on the
+// control plane rather than from the store's answer, and it is why
+// objectstore.ErrBucketNotFound may never wrap ErrNotFound: the moment it does,
+// a misconfigured bucket name finalizes an intact registered set as this
+// plane's own successful deletions.
+func TestAMissingBucketIsNotAnEmptyBucketOnThePathThatCanTell(t *testing.T) {
+	for _, tier := range []substrate{tier1(t), tier2(t)} {
+		t.Run(tier.name, func(t *testing.T) {
+			ctx := context.Background()
+			missing := "a-bucket-this-deployment-never-created"
+
+			_, err := tier.client.List(ctx, missing,
+				objectstore.ListRequest{Prefix: "deployments/blue/", PageSize: 10})
+			if err == nil {
+				t.Fatal("listing a bucket that does not exist answered a page. An empty page " +
+					"from a wrong bucket name is a sweep that reports the plane is clean")
+			}
+			if !errors.Is(err, objectstore.ErrBucketNotFound) {
+				t.Errorf("listing a missing bucket answered %v, which is not the bucket-absence "+
+					"sentinel", err)
+			}
+			if errors.Is(err, objectstore.ErrNotFound) {
+				t.Error("a missing BUCKET still reads as object absence on the list path")
+			}
+		})
+	}
+}
