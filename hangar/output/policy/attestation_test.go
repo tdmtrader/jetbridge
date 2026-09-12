@@ -249,12 +249,18 @@ func TestTheExactPermissionMatrixIsWhatIsChecked(t *testing.T) {
 		}
 	}
 
-	// Every role is forbidden the two administration permissions. A runtime
-	// identity that could rewrite the lifecycle policy could delete everything
-	// this plane protects by editing one rule.
+	// Every role is forbidden the two administration permissions and
+	// storage.objects.update. A runtime identity that could rewrite the
+	// lifecycle policy could delete everything this plane protects by editing
+	// one rule -- and storage.objects.update is the permission that rewrites an
+	// object's METADATA, which is where the marker lives. Req 22's "the
+	// publisher cannot update the marker" was enforced by nothing but the Go
+	// Handle type having no update method: a property of this binary, not of
+	// the principal, and not the thing an operator copies into Terraform.
 	for _, role := range output.PrincipalRoles() {
 		for _, permission := range []string{
 			policy.PermissionBucketUpdate, policy.PermissionBucketSetIAMPolicy,
+			policy.PermissionObjectUpdate,
 		} {
 			bindings := conformingBindings()
 			bindings.Permissions[role] = append(bindings.Permissions[role], permission)

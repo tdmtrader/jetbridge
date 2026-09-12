@@ -16,18 +16,31 @@ import (
 // booleans computed here would be this package's opinion of a binding; a list
 // of permission names is the binding.
 //
-// Two limits are stated rather than modelled, and Req 41 is explicit about
-// both. `storage.objects.get` authorizes metadata AND body reads: there is no
-// metadata-only object permission, so inventory and the reclaimer can read the
-// bytes even though their code does not. And `storage.objects.list` cannot be
-// scoped to a prefix: list authority covers the bucket. The dedicated bucket,
-// the distinct principals and application-level key validation are the boundary
+// Three limits are stated rather than modelled, and Req 41 is explicit about
+// the first two. `storage.objects.get` authorizes metadata AND body reads:
+// there is no metadata-only object permission, so inventory and the reclaimer
+// can read the bytes even though their code does not. `storage.objects.list`
+// cannot be scoped to a prefix: list authority covers the bucket. And
+// `storage.objects.create` is DESTROY-CAPABLE: GCS has no separate
+// content-update permission, so create is the overwrite permission, and on a
+// bucket without versioning an overwrite destroys the previous generation as
+// thoroughly as a delete would. "The publisher may create and get but not
+// delete" therefore does not mean "the publisher cannot destroy data". What
+// makes it true is the code always sending a create-if-absent precondition,
+// which is an application-level property; the dedicated bucket is the boundary
 // -- not an IAM condition this code could assert and does not have.
 const (
 	PermissionObjectCreate = "storage.objects.create"
 	PermissionObjectGet    = "storage.objects.get"
 	PermissionObjectList   = "storage.objects.list"
 	PermissionObjectDelete = "storage.objects.delete"
+
+	// PermissionObjectUpdate is the permission that REWRITES an object's
+	// metadata. GCS has no separate content-update permission -- an overwrite
+	// is a create -- so this is exactly and only the marker-rewrite authority
+	// Req 22's second sentence forbids the publisher, and it was in neither
+	// this matrix nor the role expansion.
+	PermissionObjectUpdate = "storage.objects.update"
 
 	PermissionBucketGet          = "storage.buckets.get"
 	PermissionBucketGetIAMPolicy = "storage.buckets.getIamPolicy"
@@ -59,7 +72,16 @@ func requiredPermissions(role output.PrincipalRole) []string {
 // could rewrite the lifecycle policy could delete everything this plane
 // protects by editing one rule.
 func forbiddenPermissions(role output.PrincipalRole) []string {
-	administration := []string{PermissionBucketUpdate, PermissionBucketSetIAMPolicy}
+	// Every role is forbidden the two administration permissions AND
+	// storage.objects.update. No role in this plane ever rewrites an object's
+	// metadata: the marker is written once, at creation, by the publisher, and
+	// "the publisher cannot update the marker" (Req 22) is the sentence the
+	// whole ownership-evidence story rests on. It was enforced by nothing but
+	// the Go Handle type having no update method, which is a property of this
+	// binary rather than of the principal.
+	administration := []string{
+		PermissionBucketUpdate, PermissionBucketSetIAMPolicy, PermissionObjectUpdate,
+	}
 
 	switch role {
 	case output.PrincipalPublisher:

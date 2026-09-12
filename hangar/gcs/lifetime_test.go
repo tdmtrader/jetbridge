@@ -12,7 +12,8 @@ package gcs
 //
 // The table is a snapshot of something Google owns. These assertions cannot
 // notice Google changing a predefined role; what they can do is make a change
-// HERE deliberate, and record what was believed on 2026-09-10.
+// HERE deliberate, and record what was believed on 2026-09-10, with
+// storage.objects.update added on 2026-09-12 from the same reference.
 
 import (
 	"sort"
@@ -26,13 +27,19 @@ func TestThePredefinedRoleExpansionIsPinnedMemberForMember(t *testing.T) {
 	}{
 		{"roles/storage.objectCreator", []string{"storage.objects.create"}},
 		{"roles/storage.objectViewer", []string{"storage.objects.get", "storage.objects.list"}},
+		// storage.objects.update is the one that was missing, and its absence
+		// was the whole of Req 22's "the publisher cannot update the marker":
+		// the marker IS object metadata, and a matrix that never names the
+		// permission that rewrites metadata cannot forbid it to anyone.
 		{"roles/storage.objectUser", []string{
 			"storage.objects.create", "storage.objects.delete",
 			"storage.objects.get", "storage.objects.list",
+			"storage.objects.update",
 		}},
 		{"roles/storage.objectAdmin", []string{
 			"storage.objects.create", "storage.objects.delete",
 			"storage.objects.get", "storage.objects.list",
+			"storage.objects.update",
 		}},
 		// The one that was wrong. GCS's own definition carries object LIST as
 		// well as the bucket read, and the matrix forbids bucket-wide list to
@@ -48,6 +55,7 @@ func TestThePredefinedRoleExpansionIsPinnedMemberForMember(t *testing.T) {
 		{"roles/storage.legacyBucketWriter", []string{
 			"storage.buckets.get", "storage.objects.create",
 			"storage.objects.delete", "storage.objects.list",
+			"storage.objects.update",
 		}},
 		{"roles/storage.legacyObjectReader", []string{"storage.objects.get"}},
 		{"roles/storage.admin", []string{
@@ -55,6 +63,7 @@ func TestThePredefinedRoleExpansionIsPinnedMemberForMember(t *testing.T) {
 			"storage.buckets.setIamPolicy", "storage.buckets.update",
 			"storage.objects.create", "storage.objects.delete",
 			"storage.objects.get", "storage.objects.list",
+			"storage.objects.update",
 		}},
 	} {
 		got, recognised := permissionsOf(expansion.role)
@@ -109,7 +118,7 @@ func TestTheMemberPrefixIsStrippedSoOneIdentityIsOneIdentity(t *testing.T) {
 		{"publisher@project.iam.gserviceaccount.com",
 			"publisher@project.iam.gserviceaccount.com"},
 	} {
-		if got := normalizeMember(member.raw); got != member.want {
+		if got, _ := normalizeMember(member.raw); got != member.want {
 			t.Errorf("normalizeMember(%q) = %q, expected %q.\n\nThe configured identity and the "+
 				"one the IAM policy names are the same service account written two ways; a "+
 				"mismatch here reports every principal as a stranger on its own bucket.",
