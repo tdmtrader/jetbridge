@@ -124,6 +124,11 @@ func (repository *HangarOutputRepository) RecordSourceReservation(ctx context.Co
 //
 // The fence is checked, so a stale owner cannot fail a capture the current
 // owner is still publishing.
+//
+// It can return ErrHangarLockRetry, for the same reason CancelOrSettle can:
+// this closes two Hangar rows in two lock classes, so it enters the suffix, and
+// a suffix can always be told the facts it was derived from have moved. The
+// caller rolls back and comes round again.
 func (repository *HangarOutputRepository) RecordTerminalCaptureFailure(ctx context.Context, tx output.Tx, reservation output.ReservationID, fence output.CaptureFence, failure string) error {
 	if err := reservation.Validate(); err != nil {
 		return err
@@ -137,9 +142,12 @@ func (repository *HangarOutputRepository) RecordTerminalCaptureFailure(ctx conte
 			output.ErrUnauthorized)
 	}
 
-	if _, err := LockHangarSuffix(ctx, tx, repository.prefix, HangarLockRequest{
-		Captures: []output.ReservationID{reservation},
-	}); err != nil {
+	// Class 1 BEFORE class 3, because hangarTerminalizeLogical below writes the
+	// logical reservation and a bare UPDATE takes that row's lock. Taking only
+	// the capture class here left this writer holding class 3 and reaching back
+	// for class 1, which deadlocks against any publisher taking the stated
+	// order.
+	if err := hangarLockTerminalCapture(ctx, tx, repository.prefix, reservation); err != nil {
 		return err
 	}
 

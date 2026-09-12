@@ -796,15 +796,25 @@ func (repository *HangarOutputRepository) RenewReadLease(ctx context.Context, tx
 		return output.ReadLease{}, err
 	}
 
-	// The suffix, for the one row this writes. Requirement 33 and "lock order
-	// is an API, not a convention" put grant and read-lease work inside one
-	// complete suffix, and a bare UPDATE takes the row at the write's own
-	// moment instead. The deferred hangar_reclaim_exclusion trigger does catch
-	// a renewal racing a reclaim admission -- each commit's trigger sees the
-	// other's committed row and the second one rolls back -- but that is the
-	// schema's doing and not this transaction's, and a rule that holds by
-	// accident is one the next statement breaks.
+	// The suffix, and it names the generation as well as the lease.
+	//
+	// Class 4 alone does not intersect AdmitReclaim's class 1 and 2, so the two
+	// took DISJOINT lock sets and nothing serialized them at all. What was left
+	// was the deferred hangar_reclaim_exclusion trigger, and a deferred
+	// constraint trigger is a SNAPSHOT READ, not a mutex: it fires inside its
+	// own transaction, before that transaction's commit is visible, so two
+	// transactions whose constraint phases overlap each see the other as
+	// uncommitted and BOTH commit. That was reproduced: a live renewed read
+	// lease and an admitted reclaim job committed together for the same
+	// generation, which is what AC 13 and Req 36 forbid.
+	//
+	// The trigger stays, and it is a good backstop -- it closes every SEQUENTIAL
+	// pair, which is what a backstop is for. It is the exact-lifecycle row,
+	// class 2, that both this and AdmitReclaim now hold, that makes the
+	// concurrent pair impossible rather than unlikely.
 	if _, err := LockHangarSuffix(ctx, tx, repository.prefix, HangarLockRequest{
+		Logical:    []HangarLogicalKey{{Scope: lease.Ref.Scope, Digest: lease.Ref.Digest}},
+		Exact:      []hangar.TreeRef{lease.Ref},
 		ReadLeases: []output.ReadLeaseID{lease.ReadLeaseID},
 	}); err != nil {
 		return output.ReadLease{}, err
@@ -844,7 +854,17 @@ func (repository *HangarOutputRepository) ReleaseReadLease(ctx context.Context, 
 	if err := lease.ReadLeaseID.Validate(); err != nil {
 		return err
 	}
+	// The same set the renewal takes, for symmetry rather than for necessity:
+	// a release only ever REMOVES protection, so a reclaim admission that ran
+	// beside it could not be made wrong by it. Two writers of the same row that
+	// take different sets is how the renewal's disjoint set went unnoticed, so
+	// they take the same one.
+	if err := lease.Ref.Validate(); err != nil {
+		return err
+	}
 	if _, err := LockHangarSuffix(ctx, tx, repository.prefix, HangarLockRequest{
+		Logical:    []HangarLogicalKey{{Scope: lease.Ref.Scope, Digest: lease.Ref.Digest}},
+		Exact:      []hangar.TreeRef{lease.Ref},
 		ReadLeases: []output.ReadLeaseID{lease.ReadLeaseID},
 	}); err != nil {
 		return err
@@ -1271,6 +1291,16 @@ func (repository *HangarOutputRepository) CloseAbandonedReadLeases(ctx context.C
 	// Then the suffix, over exactly those identities, in the one order this
 	// system has -- the helper sorts them, so two passes given overlapping
 	// batches take them the same way round.
+	//
+	// Class 4 ALONE, deliberately, and unlike RenewReadLease beside it. A
+	// renewal extends protection, so a reclaim admission that ran beside it
+	// could be admitted over a generation a reader still holds; that is why the
+	// renewal now takes classes 1 and 2 as well, and meets AdmitReclaim on the
+	// exact-lifecycle row. Recovery only ever REMOVES protection. A reclaim
+	// admission racing it either sees the lease still live and refuses, or sees
+	// it closed and proceeds, and both are correct: the pass closes leases the
+	// database itself says have run out. Locking the generation here would be a
+	// batch pass taking class 2 over every correlation it swept, for nothing.
 	if _, err := LockHangarSuffix(ctx, tx, repository.prefix, HangarLockRequest{
 		ReadLeases: candidates,
 	}); err != nil {

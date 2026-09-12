@@ -279,6 +279,81 @@ func DeriveHangarRefUnlocked(ctx context.Context, tx output.Tx, reservation outp
 	return derived, rows.Err()
 }
 
+// hangarLockTerminalCapture takes the suffix for a writer that closes BOTH
+// halves of one capture: the capture row and the logical reservation it owns.
+//
+// It exists because a bare `UPDATE hangar_logical_reservations` is a lock
+// acquisition in the lock-order sense -- PostgreSQL takes FOR NO KEY UPDATE on
+// every row an UPDATE touches -- and the two writers that close a capture
+// (RecordTerminalCaptureFailure, CancelOrSettle) touch the capture row, which
+// is class 3, and then the logical row, which is class 1. Naming only the class
+// a writer locks EXPLICITLY leaves the other one acquired implicitly and out of
+// order, and against a publisher that holds class 1 and is reaching for class 3
+// -- which is where RegisterReceipt and ResolveLogicalReservation sit between
+// their first suffix statement and their third -- that is an ABBA. It was not a
+// theoretical one: it was reproduced as SQLSTATE 40P01 on two connections.
+//
+// The correlation is not known until it is read, and a reservation may have no
+// logical row at all, so the facts are derived unlocked and the suffix is then
+// entered with both classes named.
+//
+// THE ONE WINDOW THIS CANNOT CLOSE, stated rather than hidden: a resolution
+// that commits between the unlocked read and the class-3 acquisition leaves a
+// logical row that did not exist when the lock set was chosen, and a row that
+// does not exist cannot be locked. Holding class 3 is what ends the window --
+// ResolveLogicalReservation is the only writer that inserts a logical
+// reservation and it takes class 3 for the same reservation -- so the
+// derivation is re-read under the lock and, if a correlation appeared, its
+// class-1 row is taken THEN, explicitly, out of order.
+//
+// That residual acquisition is the only one in this plane that is not in class
+// order, and its cost is bounded: for it to be a cycle a third transaction must
+// have taken class 1 on that correlation in the same microsecond window and be
+// queued behind this transaction for class 3. PostgreSQL detects that and
+// hangarConflict maps 40P01 to ErrHangarLockRetry, so the outcome is a typed
+// retry rather than a hang. Refusing outright instead would turn every ordinary
+// publish-racing-cancel into a retry, which is a worse contract for a seam
+// whose callers are deliberately ignorant of Hangar's internals.
+func hangarLockTerminalCapture(ctx context.Context, tx output.Tx, prefix HangarConsumerPrefix, reservation output.ReservationID) error {
+	derived, err := DeriveHangarRefUnlocked(ctx, tx, reservation)
+	if err != nil {
+		return err
+	}
+
+	request := HangarLockRequest{Captures: []output.ReservationID{reservation}}
+	if derived.Resolved {
+		request.Logical = []HangarLogicalKey{derived.Logical}
+	}
+	if _, err := LockHangarSuffix(ctx, tx, prefix, request); err != nil {
+		return err
+	}
+
+	fresh, err := DeriveHangarRefUnlocked(ctx, tx, reservation)
+	if err != nil {
+		return err
+	}
+	if fresh.Resolved == derived.Resolved && fresh.Logical == derived.Logical {
+		return nil
+	}
+	if derived.Resolved {
+		// A correlation is immutable once resolved -- the schema's own
+		// hangar_logical_reservation_immutability_guard says so -- so this is
+		// not a state the plane has, and treating it as one would be inventing
+		// a recovery for something that cannot happen. It is a retry because
+		// the transaction's own reading of the world is wrong.
+		return fmt.Errorf("%w: reservation %s resolved to %s/%s under the lock and to %s/%s "+
+			"before it", ErrHangarLockRetry, reservation,
+			fresh.Logical.Scope, fresh.Logical.Digest,
+			derived.Logical.Scope, derived.Logical.Digest)
+	}
+
+	_, err = LockHangarSuffix(ctx, tx, prefix, HangarLockRequest{
+		Logical: []HangarLogicalKey{fresh.Logical},
+	})
+
+	return err
+}
+
 // RevalidateDerivation re-reads the derived facts now that the locks are held.
 //
 // A mismatch is ErrHangarLockRetry, not a conflict: the caller rolls back,

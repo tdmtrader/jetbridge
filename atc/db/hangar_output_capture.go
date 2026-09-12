@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -188,6 +189,30 @@ func (repository *HangarOutputRepository) ClassifyHandoff(ctx context.Context, t
 	return status, nil
 }
 
+// lockCancellableCapture takes the suffix for whichever rows a cancellation of
+// this handoff could write.
+//
+// A handoff that never reached a capture reservation has no Hangar row in
+// classes 1 to 3 to write: the pre-reservation branch inserts a disposition of
+// its own and touches neither the capture nor the logical table. So an absent
+// reservation is not an error here, and locking rows that do not exist would be
+// a lock order that depended on how far a capture had got.
+func (repository *HangarOutputRepository) lockCancellableCapture(ctx context.Context, tx output.Tx, handoff output.HandoffID) error {
+	var reservation string
+	err := hangarQueryRow(ctx, tx, `
+		SELECT reservation_id FROM hangar_capture_reservations WHERE handoff_id = $1`,
+		[]any{string(handoff)}, &reservation)
+	if errors.Is(err, output.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	return hangarLockTerminalCapture(ctx, tx, repository.prefix,
+		output.ReservationID(reservation))
+}
+
 // CancelOrSettle is the product-neutral cancel and settle seam.
 //
 // Before the irreversible publish point it terminally cancels and records a
@@ -195,6 +220,13 @@ func (repository *HangarOutputRepository) ClassifyHandoff(ctx context.Context, t
 // the capture settles a registered receipt or a terminal orphan, and this
 // returns what it found. Neither path can create a consumer binding, and there
 // is no parameter through which a caller could ask for one.
+//
+// It can return ErrHangarLockRetry, and a caller must handle it: roll the
+// transaction back and call again. This branch writes two Hangar rows in two
+// lock classes, so it enters the suffix, and a suffix can always be told that
+// the facts it was derived from have moved. It is a retry and not a failure --
+// nothing is wrong, another actor legitimately moved a row -- and the second
+// pass derives from the newer truth.
 func (repository *HangarOutputRepository) CancelOrSettle(ctx context.Context, tx output.Tx, handoff output.HandoffID) (output.HandoffStatus, error) {
 	status, err := repository.ClassifyHandoff(ctx, tx, handoff)
 	if err != nil {
@@ -207,6 +239,26 @@ func (repository *HangarOutputRepository) CancelOrSettle(ctx context.Context, tx
 		return status, nil
 	}
 	if status.Disposition != nil && *status.Disposition == output.DispositionCapture {
+		// The suffix, and both classes of it, BEFORE either write.
+		//
+		// This branch used to take no suffix at all: a bare UPDATE of the
+		// capture row (class 3) followed by a bare UPDATE of the logical
+		// reservation (class 1), with nothing on the way in to say either row
+		// was being locked. A bare UPDATE takes FOR NO KEY UPDATE on the rows
+		// it touches, so those were two lock acquisitions in REVERSE order, and
+		// against a publisher holding class 1 and reaching for class 3 they
+		// deadlocked -- SQLSTATE 40P01, reproduced on two connections.
+		//
+		// It is taken here rather than above the classification on purpose. The
+		// classification is a read and decides only which branch to take; a
+		// cancellation that races a publisher past the irreversible point still
+		// lands, as it always did, and the release guard downstream is what
+		// makes that safe. Moving the read under the lock would quietly close
+		// that race and leave that guard untested.
+		if err := repository.lockCancellableCapture(ctx, tx, handoff); err != nil {
+			return output.HandoffStatus{}, err
+		}
+
 		// The cancellation is terminal and it is recorded here. The settlement
 		// is not: the source is still held until a fenced release of it is
 		// acknowledged, and stamping settled_at now would be this transaction
