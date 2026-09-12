@@ -740,11 +740,32 @@ artifactDaemon:
 #     the only workload granted list at all, and why the output bucket contains
 #     nothing but output-plane objects.
 #
-# No runtime principal holds lifecycle or IAM MUTATION on the bucket. Policy
-# administration stays an operator trust root, and requirement 53's residual
-# boundary is exactly that: Hangar cannot attest every organization-level
-# credential, and a cloud administrator can delete objects it manages. What it
-# can do is notice, within the 15-minute attestation bound, and say so.
+# PERMISSIONS NO RUNTIME PRINCIPAL HOLDS. An absent grant is a promise, and a
+# promise nobody wrote down is one the next role addition breaks by accident.
+# These are the ones whose absence the design leans on:
+#
+#   storage.objects.update
+#     The permission that REWRITES an object's metadata, and therefore its
+#     ownership marker. Requirement 22's "the publisher cannot update the
+#     marker" is what the whole immutable-marker argument rests on: a marker
+#     that can be rewritten is not evidence of who created an object. It is
+#     forbidden to all four principals -- including the publisher, which is the
+#     one that would want it -- and note that roles/storage.objectAdmin and
+#     roles/storage.objectUser GRANT it, so "the reclaimer just has objectAdmin"
+#     is not a compatible binding.
+#   storage.objects.delete
+#     Held by the reclaimer alone. It is the only destructive permission in the
+#     plane and the entire reason the reclaimer is a separate Pod under a
+#     separate identity.
+#   storage.buckets.update, storage.buckets.setIamPolicy
+#     Lifecycle rules and IAM policy. The attestor READS the policy and can
+#     change nothing; a monitor that can rewrite what it monitors is not one.
+#
+# Policy administration stays an operator trust root, and requirement 53's
+# residual boundary is exactly that: Hangar cannot attest every
+# organization-level credential, and a cloud administrator can delete objects it
+# manages. What it can do is notice, within the 15-minute attestation bound, and
+# say so.
 hangarOutput:
   # -- The BASE facet: exact execution control.
   #

@@ -1664,3 +1664,114 @@ func TestTheControlKeyIdIsRequiredWithTheBaseFacet(t *testing.T) {
 			message)
 	}
 }
+
+// forbiddenPermissionMatrix reads the second half of values.yaml's matrix: the
+// permissions no runtime principal holds, each with its reason.
+func forbiddenPermissionMatrix(t *testing.T) map[string]string {
+	t.Helper()
+
+	const marker = "PERMISSIONS NO RUNTIME PRINCIPAL HOLDS"
+
+	lines := strings.Split(readChartFile(t, "values.yaml"), "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.Contains(line, marker) {
+			start = i
+
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("deploy/chart/values.yaml no longer contains %q; the block moved and this "+
+			"rule would pass over nothing", marker)
+	}
+
+	forbidden := map[string]string{}
+	permission := ""
+	for _, line := range lines[start+1:] {
+		if !strings.HasPrefix(line, "#") {
+			break
+		}
+		body := strings.TrimPrefix(line, "#")
+		trimmed := strings.TrimSpace(body)
+		if trimmed == "" {
+			continue
+		}
+		indent := len(body) - len(strings.TrimLeft(body, " "))
+		switch {
+		case indent == 3 && strings.HasPrefix(trimmed, "storage."):
+			for _, name := range strings.Split(trimmed, ",") {
+				if name = strings.TrimSpace(name); name != "" {
+					forbidden[name] = ""
+					permission = name
+				}
+			}
+		case indent == 3:
+			// Prose resumed; the block is over.
+			return forbidden
+		case indent == 5 && permission != "":
+			forbidden[permission] += " " + trimmed
+		}
+	}
+
+	return forbidden
+}
+
+// Req 22: the publisher cannot update the marker.
+//
+// That sentence is what the ownership-evidence story rests on -- a marker that
+// can be rewritten is not evidence of who created an object -- and it was
+// enforced by nothing but the Go `Handle` type having no update method.
+// `storage.objects.update` was absent from this matrix, so nothing said the
+// absence was deliberate, and it is absent from `permissionsOf`'s role
+// expansion too, so even `roles/storage.objectAdmin` -- which really does grant
+// it -- is invisible to the attestation on that axis. This is the matrix half;
+// the expansion half is in hangar/gcs and hangar/output/policy.
+func TestTheMatrixForbidsRewritingTheOwnershipMarker(t *testing.T) {
+	const update = "storage.objects.update"
+
+	granted := documentedPermissionMatrix(t)
+	if len(granted) != 4 {
+		t.Fatalf("parsed %d workloads out of the granted matrix, not four", len(granted))
+	}
+	for workload, permissions := range granted {
+		for _, permission := range permissions {
+			if permission == update {
+				t.Errorf("the documented matrix grants %s to %s. It rewrites object "+
+					"metadata, which is the ownership marker: Req 22's \"the publisher "+
+					"cannot update the marker\" is the sentence the whole immutable-marker "+
+					"argument rests on.", update, workload)
+			}
+		}
+	}
+
+	forbidden := forbiddenPermissionMatrix(t)
+	if len(forbidden) < 3 {
+		t.Fatalf("parsed %d forbidden permissions out of values.yaml (%v); the block's shape "+
+			"changed and this rule would pass vacuously", len(forbidden), forbidden)
+	}
+	reason, named := forbidden[update]
+	if !named {
+		t.Errorf("values.yaml does not name %s among the permissions no runtime principal "+
+			"holds (it names %v).\n\n"+
+			"An absent grant is a promise, and this one is load-bearing: "+
+			"roles/storage.objectAdmin and roles/storage.objectUser both GRANT it, so an "+
+			"operator binding either one satisfies every other line of this matrix and "+
+			"breaks Req 22.", update, sortedForbidden(forbidden))
+
+		return
+	}
+	if !strings.Contains(reason, "marker") {
+		t.Errorf("%s is named but its reason does not mention the marker: %q", update, reason)
+	}
+}
+
+func sortedForbidden(forbidden map[string]string) []string {
+	var names []string
+	for name := range forbidden {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	return names
+}
