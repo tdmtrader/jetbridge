@@ -4,26 +4,30 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 )
 
 // The work every Hangar output repository method does the same way, in one
-// place: reading a row over the two methods output.Tx has, reading the database
-// clock, turning a lease term into something SQL will accept, mapping a
-// PostgreSQL failure onto the leaf's typed outcomes, and waking a worker after
-// a commit.
+// place: reading a row over the two methods output.Tx has, turning a lease term
+// into something SQL will accept, mapping a PostgreSQL failure onto the leaf's
+// typed outcomes, and waking a worker after a commit.
 //
-// Each was written three or four times before it lived here, and each of the
-// four is somewhere a second spelling would be a second behaviour: a clock read
-// that fell back to the process clock, a lease term rounded differently, a
-// conflict that mapped to the wrong sentinel, or a notification sent before the
-// commit it announces.
+// Each was written three or four times before it lived here, and each is
+// somewhere a second spelling would be a second behaviour: a lease term rounded
+// differently, a conflict that mapped to the wrong sentinel, or a notification
+// sent before the commit it announces.
+//
+// Every deadline in this plane is still measured on the database clock -- Reqs
+// 10, 11, 36, 39 and 48 all say so, and a node whose clock drifts must not be
+// able to expire its own hold -- but it is read where it is used, as `now()`
+// inside the statement that depends on it, which is the reading that cannot
+// have drifted by the time the row is written.
 
 // hangarQueryRow is QueryRow over the two methods output.Tx has.
 //
@@ -52,23 +56,6 @@ func hangarQueryRow(ctx context.Context, tx output.Tx, query string, args []any,
 	return rows.Err()
 }
 
-// hangarDatabaseNow reads the clock every deadline in this plane is measured
-// against.
-//
-// Requirements 10, 11, 36, 39 and 48 all say "database clock", and they mean
-// it: a node whose clock drifts must not be able to expire its own hold, and
-// expiry alone is never proof or release authority. There is deliberately no
-// fallback to time.Now() -- a fallback would be exactly the drift the rule
-// exists to exclude, quietly.
-func hangarDatabaseNow(ctx context.Context, tx output.Tx) (time.Time, error) {
-	var now time.Time
-	if err := hangarQueryRow(ctx, tx, `SELECT now()`, nil, &now); err != nil {
-		return time.Time{}, err
-	}
-
-	return now, nil
-}
-
 // hangarLeaseInterval renders a lease term for `now() + $n::interval`.
 //
 // Whole seconds, once, here: a term rendered two ways in two call sites is two
@@ -83,14 +70,33 @@ func hangarLeaseInterval(term time.Duration) (string, error) {
 	return fmt.Sprintf("%d seconds", int(term.Round(time.Second).Seconds())), nil
 }
 
+// The four classes of refusal the output plane's schema raises, as SQLSTATEs.
+//
+// A class on the RAISE, not a substring of its message, because the messages
+// are shared: "backwards" is in six trigger functions, "exclude one another
+// permanently" in two, and "at risk" -- which the old map looked for -- was in
+// none of them, because the state is spelled `at_risk`. A substring can only
+// ever be a guess about which refusal happened, and the guess this system was
+// making told a stale owner and a re-enabled disabled epoch to retry.
+//
+// The letters are not the obvious `HG`: PostgreSQL reserves SQLSTATE classes
+// beginning 0-4 and A-H for standard codes, so a code in that range is one
+// release away from meaning something the server chose.
+const (
+	hangarRefusalConflict   = "JB001"
+	hangarRefusalAtRisk     = "JB002"
+	hangarRefusalStaleFence = "JB003"
+	hangarRefusalIncomplete = "JB004"
+)
+
 // hangarConflict maps a PostgreSQL error onto the closed set of typed outcomes
 // hangar/output already has.
 //
 // The sentinels are the leaf's, not new ones, so a caller's errors.Is keeps
 // working across the boundary between strict input and durable output. The
-// schema's own RAISE messages are matched by what they are about rather than by
-// their exact text, and anything unrecognised stays infrastructure -- which is
-// the honest answer and, importantly, never a cache miss.
+// schema's own refusals arrive classified by the RAISE that made them, and
+// anything unrecognised stays infrastructure -- which is the honest answer and,
+// importantly, never a cache miss.
 func hangarConflict(err error) error {
 	if err == nil {
 		return nil
@@ -109,32 +115,31 @@ func hangarConflict(err error) error {
 	case "23514": // check_violation
 		return fmt.Errorf("%w: %s", output.ErrIncomplete, pgErr.Message)
 	case "40001", "40P01": // serialization_failure, deadlock_detected
+		// The only two that mean "run this again". PostgreSQL aborted a
+		// transaction it could have run; the same statements against the same
+		// rows may well commit next time.
 		return fmt.Errorf("%w: %s", ErrHangarLockRetry, pgErr.Message)
-	case "P0001": // raise_exception: the schema's own guards
-		return hangarGuardRefusal(pgErr.Message)
+	case hangarRefusalConflict:
+		return fmt.Errorf("%w: %s", output.ErrConflict, pgErr.Message)
+	case hangarRefusalAtRisk:
+		return fmt.Errorf("%w: %s", output.ErrAtRisk, pgErr.Message)
+	case hangarRefusalStaleFence:
+		// Req 10: a stale owner may not seal, publish, sign/register, finalize
+		// or release, and plan.md says a lost CAS is a typed stale refusal and
+		// never a retry loop. Re-running produces the same refusal; the owner
+		// has to take the lease over first, which advances the fence, which is
+		// a different transaction with different facts.
+		return fmt.Errorf("%w: %s", executioncontrol.ErrStaleFence, pgErr.Message)
+	case hangarRefusalIncomplete:
+		return fmt.Errorf("%w: %s", output.ErrIncomplete, pgErr.Message)
+	case "P0001":
+		// raise_exception with no class: a refusal somebody added without
+		// saying which kind. It is still a refusal, so it is not a retry and
+		// not a conflict it never claimed to be.
+		return fmt.Errorf("%w: %s", output.ErrIncomplete, pgErr.Message)
 	}
 
 	return fmt.Errorf("%w: %s", output.ErrInfrastructure, pgErr.Message)
-}
-
-func hangarGuardRefusal(message string) error {
-	switch {
-	case strings.Contains(message, "at risk"),
-		strings.Contains(message, "lifetime policy"),
-		strings.Contains(message, "lifetime-policy"):
-		return fmt.Errorf("%w: %s", output.ErrAtRisk, message)
-	case strings.Contains(message, "cannot silently reactivate"),
-		strings.Contains(message, "admitted reclaim beside"),
-		strings.Contains(message, "exclude one another permanently"),
-		strings.Contains(message, "already dispositioned"):
-		return fmt.Errorf("%w: %s", output.ErrConflict, message)
-	case strings.Contains(message, "stale owner"),
-		strings.Contains(message, "backwards"),
-		strings.Contains(message, "without advancing"):
-		return fmt.Errorf("%w: %s", ErrHangarLockRetry, message)
-	}
-
-	return fmt.Errorf("%w: %s", output.ErrIncomplete, message)
 }
 
 // The channels the output plane's workers wake on.

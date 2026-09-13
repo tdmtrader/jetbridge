@@ -150,10 +150,17 @@ func (repository *HangarOutputRepository) ClassifyHandoff(ctx context.Context, t
 		settled      sql.NullBool
 		irreversible sql.NullBool
 	)
+	// `Settled` means one thing on all three branches: nothing is still owed.
+	// For a capture that is a registered receipt -- the object exists and there
+	// is nothing to release -- or an acknowledged fenced release of the source.
+	// A row that merely says `cancelled` is a decision, not a settlement: the
+	// source is still held on some node until the daemon says otherwise, which
+	// is exactly what the other two branches read.
 	if err := hangarQueryRow(ctx, tx, `
 		SELECT d.disposition,
 		       CASE d.disposition
-		           WHEN 'capture' THEN r.settled_at IS NOT NULL
+		           WHEN 'capture' THEN r.state = 'registered'
+		                                OR r.release_acknowledged_at IS NOT NULL
 		           WHEN 'no_capture' THEN n.release_acknowledged_at IS NOT NULL
 		           ELSE c.finalized_at IS NOT NULL
 		       END,
@@ -201,9 +208,26 @@ func (repository *HangarOutputRepository) CancelOrSettle(ctx context.Context, tx
 		return status, nil
 	}
 	if status.Disposition != nil && *status.Disposition == output.DispositionCapture {
+		// The cancellation is terminal and it is recorded here. The settlement
+		// is not: the source is still held until a fenced release of it is
+		// acknowledged, and stamping settled_at now would be this transaction
+		// asserting something only the node holding the source can say. The
+		// schema refuses it too.
+		//
+		// TODO(phase 3, capture release pair): the daemon-side half -- minting
+		// the release intent, offering it under the capture fence and admitting
+		// the signed acknowledgement that sets release_acknowledged_at -- is
+		// the fenced release ledger Phase 3 builds, alongside the same pair the
+		// no_capture and pre_reservation_cancel branches already carry. Until
+		// then a cancelled capture stays decided and unsettled, which is the
+		// honest state and the one drain has to wait on.
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE hangar_capture_reservations
-			SET state = 'cancelled', settled_at = now()
+			SET state = 'cancelled',
+			    settled_at = CASE
+			        WHEN release_acknowledged_at IS NOT NULL THEN coalesce(settled_at, now())
+			        ELSE settled_at
+			    END
 			WHERE handoff_id = $1 AND settled_at IS NULL`, string(handoff)); err != nil {
 			return output.HandoffStatus{}, hangarConflict(err)
 		}

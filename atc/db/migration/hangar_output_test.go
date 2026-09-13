@@ -364,6 +364,23 @@ var _ = Describe("the Hangar output plane schema", func() {
 				return found
 			}
 
+			// The order inside that one transaction is not a preference. The
+			// per-facet `enabled` index is a *partial unique index*, which
+			// PostgreSQL checks per statement and cannot defer -- a partial
+			// unique constraint is not expressible, so DEFERRABLE is not on
+			// offer. Moving the incoming row to `enabled` first is therefore
+			// two enabled rows for one statement's worth of time, and the
+			// index refuses it by name.
+			reversed, err := database.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reversed.Exec(`UPDATE hangar_output_activation_epochs
+				SET output_state = 'enabled', revision = revision + 1 WHERE epoch_id = 2`)
+			Expect(err).To(MatchError(
+				ContainSubstring("hangar_output_one_enabled_output_epoch")),
+				"the swap was accepted incoming-first, so nothing forces the outgoing row to "+
+					"reach draining before the incoming row is enabled")
+			Expect(reversed.Rollback()).To(Succeed())
+
 			rotate("output_state")
 			Expect(states("output_state")).To(Equal(map[int]string{1: "draining", 2: "enabled"}))
 
@@ -802,6 +819,56 @@ var _ = Describe("the Hangar output plane schema", func() {
 			})
 		})
 
+		Context("settling a capture", func() {
+			BeforeEach(func() { commitStage2(handoffID, reservationID) })
+
+			It("refuses calling a cancelled capture settled with the source still held", func() {
+				Expect(expectRefusal(database, "a cancelled capture settled with no release", fmt.Sprintf(`
+					UPDATE hangar_capture_reservations
+					SET state = 'cancelled', settled_at = now()
+					WHERE reservation_id = '%s'`, reservationID))).
+					To(ContainSubstring("hangar_reservation_settlement_is_earned"))
+
+				expectAccepted(database, "a cancelled capture whose release was acknowledged",
+					fmt.Sprintf(`
+						UPDATE hangar_capture_reservations
+						SET state = 'cancelled', settled_at = now(), release_acknowledged_at = now()
+						WHERE reservation_id = '%s'`, reservationID))
+			})
+
+			It("accepts a cancelled capture that is decided and not yet settled", func() {
+				expectAccepted(database, "a cancellation waiting on its release", fmt.Sprintf(`
+					UPDATE hangar_capture_reservations SET state = 'cancelled'
+					WHERE reservation_id = '%s'`, reservationID))
+			})
+
+			It("refuses a settlement time on a capture that is not terminal", func() {
+				Expect(expectRefusal(database, "an unresolved capture with a settlement time",
+					fmt.Sprintf(`
+						UPDATE hangar_capture_reservations
+						SET settled_at = now(), release_acknowledged_at = now()
+						WHERE reservation_id = '%s'`, reservationID))).
+					To(ContainSubstring("hangar_reservation_settlement_is_terminal"))
+			})
+
+			It("refuses withdrawing or restamping an acknowledged release", func() {
+				mustExec(database, fmt.Sprintf(`
+					UPDATE hangar_capture_reservations SET release_acknowledged_at = now()
+					WHERE reservation_id = '%s'`, reservationID))
+
+				Expect(expectRefusal(database, "a withdrawn source release", fmt.Sprintf(`
+					UPDATE hangar_capture_reservations SET release_acknowledged_at = NULL
+					WHERE reservation_id = '%s'`, reservationID))).
+					To(ContainSubstring("acknowledged once"))
+
+				Expect(expectRefusal(database, "a restamped source release", fmt.Sprintf(`
+					UPDATE hangar_capture_reservations
+					SET release_acknowledged_at = now() + interval '1 hour'
+					WHERE reservation_id = '%s'`, reservationID))).
+					To(ContainSubstring("acknowledged once"))
+			})
+		})
+
 		Context("logical resolution and the first object create", func() {
 			BeforeEach(func() {
 				commitStage2(handoffID, reservationID)
@@ -1141,6 +1208,137 @@ var _ = Describe("the Hangar output plane schema", func() {
 					VALUES (1, 'gs://output-bucket', 4, 'policy-hash-2', 1, 'safe')`)).
 					To(ContainSubstring("hangar_policy_safe_has_no_delete_rules"))
 			})
+
+			// Req 52 names five admissions that stop from detection onward:
+			// new captures, claim acquires, managed-output grants, orphan
+			// adoption and reclaim admission. Each vector below is one of
+			// them, and each runs twice against the same statement -- once
+			// while the freshest attestation is safe, once after an at-risk
+			// one lands. The safe run is the valid twin: a gate that refused
+			// the shape rather than the state would fail it.
+			goAtRisk := func() {
+				GinkgoHelper()
+				mustExec(database, `
+					INSERT INTO hangar_policy_snapshots
+						(activation_epoch, bucket_fingerprint, metageneration, policy_hash,
+						 lifecycle_delete_rules, state)
+					VALUES (1, 'gs://output-bucket', 4, 'policy-hash-2', 1, 'at_risk')`)
+			}
+
+			It("refuses a managed-output grant while at risk", func() {
+				seedClaim(claimID, lifecycle)
+				grant := fmt.Sprintf(`
+					INSERT INTO hangar_read_leases
+						(read_lease_id, claim_id, lifecycle_id, activation_epoch, lease_fence, expires_at)
+					VALUES ('%s', '%s', %d, 1, 1, now() + interval '20 minutes')`,
+					readLeaseID, claimID, lifecycle)
+
+				expectAccepted(database, "a read lease granted on a safe policy", grant)
+
+				goAtRisk()
+
+				Expect(expectRefusal(database, "a read lease granted while at risk", grant)).
+					To(ContainSubstring("new captures, claim acquires, grants, adoption and reclaim admission stop"))
+			})
+
+			It("refuses orphan adoption while at risk, and still lets a registration finish", func() {
+				adopt := fmt.Sprintf(`
+					INSERT INTO hangar_exact_lifecycles
+						(scope, digest, generation, metageneration, activation_epoch,
+						 marker_version, origin, state)
+					VALUES ('team-a', '%s', %d, 1, 1, 'hangar-output-v1', 'adopted', 'adopted')`,
+					otherDigest, sampleGeneration+1)
+
+				expectAccepted(database, "an adoption on a safe policy", adopt)
+
+				goAtRisk()
+
+				Expect(expectRefusal(database, "an orphan adopted while at risk", adopt)).
+					To(ContainSubstring("new captures, claim acquires, grants, adoption and reclaim admission stop"))
+
+				// Registration is the other origin on this table and it is
+				// deliberately not gated. A capture that has already passed
+				// its first object create cannot be un-made by a policy
+				// observation; refusing its receipt would leave the
+				// generation in the bucket as an unregistered orphan with
+				// nothing correlating it -- the exact state adoption exists to
+				// clean up. Req 52 blocks admission and lets already-admitted
+				// work finish, and this is that work finishing.
+				expectAccepted(database, "a registration completing while at risk", fmt.Sprintf(`
+					INSERT INTO hangar_exact_lifecycles
+						(scope, digest, generation, metageneration, activation_epoch,
+						 marker_version, origin, state)
+					VALUES ('team-a', '%s', %d, 1, 1, 'hangar-output-v1', 'registered', 'registered')`,
+					otherDigest, sampleGeneration+2))
+			})
+
+			It("refuses a new capture while at risk", func() {
+				seedPredeclaration(secondHandoffID, secondLeaseID, secondExecutionID, true)
+				capture := stage2(secondHandoffID, secondReservation)
+
+				expectAccepted(database, "a Stage 2 reservation on a safe policy", capture...)
+
+				goAtRisk()
+
+				Expect(expectRefusal(database, "a Stage 2 reservation committed while at risk",
+					capture...)).
+					To(ContainSubstring("new captures, claim acquires, grants, adoption and reclaim admission stop"))
+			})
+		})
+
+		// The class travels with the refusal, all the way to the client.
+		//
+		// atc/db maps a refusal onto a typed outcome by its SQLSTATE, and a
+		// class that only existed in the migration source would be a map keyed
+		// on something the wire never carries. One vector per class, so a
+		// class that stopped arriving is named.
+		Context("the refusal classes", func() {
+			var lifecycle int64
+
+			BeforeEach(func() { lifecycle = seedFullChain() })
+
+			It("raises a conflict as JB001", func() {
+				seedClaim(claimID, lifecycle)
+				mustExec(database, fmt.Sprintf(
+					`UPDATE hangar_claims SET released_at = now() WHERE claim_id = '%s'`, claimID))
+
+				Expect(expectRefusal(database, "a reactivated claim", fmt.Sprintf(
+					`UPDATE hangar_claims SET released_at = NULL WHERE claim_id = '%s'`, claimID))).
+					To(ContainSubstring("SQLSTATE JB001"))
+			})
+
+			It("raises an at-risk admission as JB002", func() {
+				mustExec(database, `
+					INSERT INTO hangar_policy_snapshots
+						(activation_epoch, bucket_fingerprint, metageneration, policy_hash,
+						 lifecycle_delete_rules, state)
+					VALUES (1, 'gs://output-bucket', 4, 'policy-hash-2', 1, 'at_risk')`)
+
+				Expect(expectRefusal(database, "a claim acquired while at risk", fmt.Sprintf(`
+					INSERT INTO hangar_claims (claim_id, lifecycle_id, activation_epoch, consumer_binding_id)
+					VALUES ('%s', %d, 1, 'opaque-binding')`, claimID, lifecycle))).
+					To(ContainSubstring("SQLSTATE JB002"))
+			})
+
+			It("raises a superseded fence as JB003", func() {
+				// Forward first, so the vector is the trigger's own refusal
+				// and not the CHECK that keeps the fence positive.
+				mustExec(database, fmt.Sprintf(`
+					UPDATE hangar_capture_attempt_leases SET capture_fence = 3
+					WHERE reservation_id = '%s'`, reservationID))
+
+				Expect(expectRefusal(database, "a capture fence moved backwards", fmt.Sprintf(`
+					UPDATE hangar_capture_attempt_leases SET capture_fence = 2
+					WHERE reservation_id = '%s'`, reservationID))).
+					To(ContainSubstring("SQLSTATE JB003"))
+			})
+
+			It("raises an immutable rewrite as JB004", func() {
+				Expect(expectRefusal(database, "a rewritten predeclaration", fmt.Sprintf(`
+					UPDATE hangar_handoff_predeclarations SET output_name = 'other'
+					WHERE handoff_id = '%s'`, handoffID))).
+					To(ContainSubstring("SQLSTATE JB004"))
+			})
 		})
 
 		Context("inventory and worker leases", func() {
@@ -1220,6 +1418,65 @@ var _ = Describe("the Hangar output plane schema", func() {
 	// worth having if removing it changes the answer. Each case here drops the
 	// guard inside a transaction that is rolled back, re-runs the vector that
 	// the guard refused, and requires it to be accepted.
+	// The two statements every Hangar transaction runs, and what the planner
+	// can do with them.
+	//
+	// `SET LOCAL enable_seqscan = off` is what makes this decidable on an empty
+	// database: it is a cost penalty, not a prohibition, so a table with a
+	// usable index switches to it and a table without one still sequentially
+	// scans and says so. Without the penalty every plan here is a Seq Scan on
+	// three rows and the assertion would mean nothing either way.
+	Describe("the hot statements have an index", func() {
+		BeforeEach(seedEpoch)
+
+		planFor := func(statement string, arguments ...any) string {
+			GinkgoHelper()
+
+			tx, err := database.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer func() { _ = tx.Rollback() }()
+
+			_, err = tx.Exec(`SET LOCAL enable_seqscan = off`)
+			Expect(err).NotTo(HaveOccurred())
+
+			rows, err := tx.Query("EXPLAIN "+statement, arguments...)
+			Expect(err).NotTo(HaveOccurred())
+			defer rows.Close()
+
+			var plan string
+			for rows.Next() {
+				var line string
+				Expect(rows.Scan(&line)).To(Succeed())
+				plan += line + "\n"
+			}
+			Expect(rows.Err()).NotTo(HaveOccurred())
+
+			return plan
+		}
+
+		It("looks up a logical reservation by correlation without a sequential scan", func() {
+			// The lock helper's class-1 statement, verbatim. The only
+			// (scope, digest) index was partial on state =
+			// 'unresolved_generation', and this statement carries no such
+			// predicate, so the planner could not use it: every Hangar
+			// transaction that touches a correlation scanned the table.
+			Expect(planFor(`
+				SELECT 1 FROM hangar_logical_reservations
+				WHERE scope = $1 AND digest = $2
+				ORDER BY reservation_id
+				FOR NO KEY UPDATE`, "team-a", sampleDigest)).
+				To(ContainSubstring("hangar_logical_reservations_correlation_idx"),
+					"the correlation was answered by a scan or by the primary key, not by an "+
+						"index on (scope, digest)")
+		})
+
+		It("reads a receipt by handoff without a sequential scan", func() {
+			Expect(planFor(
+				`SELECT claims FROM hangar_output_receipts WHERE handoff_id = $1`, handoffID)).
+				To(ContainSubstring("hangar_output_receipts_handoff_idx"))
+		})
+	})
+
 	Describe("the guards are load-bearing", func() {
 		BeforeEach(func() {
 			seedEpoch()
@@ -1344,6 +1601,76 @@ var _ = Describe("the Hangar output plane schema", func() {
 				"hangar_claims", "hangar_reclaim_jobs"), vector...)...)).To(Succeed())
 		})
 
+		// The other three admissions Req 52 names. Each drops only the copy on
+		// its own table, so a passing row says which attachment carried the
+		// refusal rather than that some copy somewhere did.
+		It("without hangar_policy_admits_new_protection on hangar_read_leases, an at-risk plane grants", func() {
+			lifecycle := seedFullChain()
+			seedClaim(claimID, lifecycle)
+			mustExec(database, `
+				INSERT INTO hangar_policy_snapshots
+					(activation_epoch, bucket_fingerprint, metageneration, policy_hash,
+					 lifecycle_delete_rules, state)
+				VALUES (1, 'gs://output-bucket', 4, 'policy-hash-2', 1, 'at_risk')`)
+			vector := []string{fmt.Sprintf(`
+				INSERT INTO hangar_read_leases
+					(read_lease_id, claim_id, lifecycle_id, activation_epoch, lease_fence, expires_at)
+				VALUES ('%s', '%s', %d, 1, 1, now() + interval '20 minutes')`,
+				readLeaseID, claimID, lifecycle)}
+
+			Expect(attempt(database, vector...)).To(HaveOccurred())
+			Expect(attempt(database, append(dropTriggerOnEach("hangar_policy_admits_new_protection",
+				"hangar_read_leases"), vector...)...)).To(Succeed())
+		})
+
+		It("without hangar_policy_admits_new_protection on hangar_exact_lifecycles, an at-risk plane adopts", func() {
+			seedFullChain()
+			mustExec(database, `
+				INSERT INTO hangar_policy_snapshots
+					(activation_epoch, bucket_fingerprint, metageneration, policy_hash,
+					 lifecycle_delete_rules, state)
+				VALUES (1, 'gs://output-bucket', 4, 'policy-hash-2', 1, 'at_risk')`)
+			vector := []string{fmt.Sprintf(`
+				INSERT INTO hangar_exact_lifecycles
+					(scope, digest, generation, metageneration, activation_epoch,
+					 marker_version, origin, state)
+				VALUES ('team-a', '%s', %d, 1, 1, 'hangar-output-v1', 'adopted', 'adopted')`,
+				otherDigest, sampleGeneration+1)}
+
+			Expect(attempt(database, vector...)).To(HaveOccurred())
+			Expect(attempt(database, append(dropTriggerOnEach("hangar_policy_admits_new_protection",
+				"hangar_exact_lifecycles"), vector...)...)).To(Succeed())
+		})
+
+		It("without hangar_policy_admits_new_protection on hangar_capture_reservations, an at-risk plane captures", func() {
+			seedPredeclaration(secondHandoffID, secondLeaseID, secondExecutionID, true)
+			mustExec(database, `
+				INSERT INTO hangar_policy_snapshots
+					(activation_epoch, bucket_fingerprint, metageneration, policy_hash,
+					 lifecycle_delete_rules, state)
+				VALUES (1, 'gs://output-bucket', 4, 'policy-hash-2', 1, 'at_risk')`)
+			vector := stage2(secondHandoffID, secondReservation)
+
+			Expect(attempt(database, vector...)).To(HaveOccurred())
+			Expect(attempt(database, append(dropTriggerOnEach("hangar_policy_admits_new_protection",
+				"hangar_capture_reservations"), vector...)...)).To(Succeed())
+		})
+
+		It("without hangar_read_lease_matches_claim, a lease reads past its claim", func() {
+			lifecycle := seedFullChain()
+			seedClaim(claimID, lifecycle)
+			other := seedLifecycle(otherDigest, sampleGeneration+1)
+			vector := []string{fmt.Sprintf(`
+				INSERT INTO hangar_read_leases
+					(read_lease_id, claim_id, lifecycle_id, activation_epoch, lease_fence, expires_at)
+				VALUES ('%s', '%s', %d, 1, 1, now() + interval '20 minutes')`,
+				readLeaseID, claimID, other)}
+
+			Expect(attempt(database, vector...)).To(HaveOccurred())
+			Expect(attempt(database, append(dropTriggerOnEach("hangar_read_lease_matches_claim",
+				"hangar_read_leases"), vector...)...)).To(Succeed())
+		})
+
 		It("without hangar_reclaim_evidence, an ambiguous deletion is called confirmed", func() {
 			lifecycle := seedFullChain()
 			mustExec(database, fmt.Sprintf(`INSERT INTO hangar_reclaim_jobs
@@ -1412,6 +1739,28 @@ var _ = Describe("the Hangar output plane schema", func() {
 				).Scan(&exists)).To(Succeed())
 				Expect(exists).To(BeTrue(), "the refused down migration dropped %s", table)
 			}
+		})
+
+		It("refuses while a worker still holds an operation lease", func() {
+			// The one row the blocker list did not check. Every other table it
+			// omits is reachable transitively through a RESTRICT foreign key to
+			// one it does check, so DROP TABLE would have failed loudly; an
+			// operation lease references only the epoch, and an `initial`
+			// epoch is allowed to drop -- so this combination dropped the
+			// plane out from under a running worker.
+			mustExec(database, `
+				INSERT INTO hangar_output_activation_epochs (epoch_id) VALUES (1)`)
+			mustExec(database, fmt.Sprintf(`
+				INSERT INTO hangar_operation_leases
+					(kind, activation_epoch, owner_id, lease_fence, expires_at)
+				VALUES ('inventory', 1, '%s', 1, now() + interval '15 minutes')`, workerID))
+			Expect(database.Close()).To(Succeed())
+
+			err := migrateDown()
+			Expect(err).To(MatchError(ContainSubstring("refusing to remove the output plane")))
+			Expect(err.Error()).To(ContainSubstring("1 held operation lease(s)"))
+
+			database = postgresRunner.OpenDBAtVersion(hangarOutputVersion)
 		})
 
 		It("refuses while an epoch has left initial, even with no other rows", func() {

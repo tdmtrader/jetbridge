@@ -120,6 +120,65 @@ var _ = Describe("the Hangar output lock suffix", func() {
 		}
 	}
 
+	// The one-use stat challenge the daemon would have been issued, for one
+	// exact ref. Written as SQL because minting it is not the repository's job.
+	issueChallenge := func(handoff output.HandoffID, reservation output.ReservationID, ref hangar.TreeRef) string {
+		GinkgoHelper()
+
+		nonce := "nonce-" + uuid.NewString()
+		_, err := dbConn.Exec(`
+			INSERT INTO hangar_receipt_stat_challenges
+				(nonce, handoff_id, reservation_id, activation_epoch, receipt_public_key_id,
+				 scope, digest, generation, capture_fence, not_after)
+			VALUES ($1, $2, $3, 1, 'receipt-key-1', $4, $5, $6, 1, now() + interval '5 minutes')`,
+			nonce, string(handoff), string(reservation), string(ref.Scope), string(ref.Digest),
+			ref.Generation)
+		Expect(err).NotTo(HaveOccurred())
+
+		return nonce
+	}
+
+	// One receipt admission, in one place, because a second spelling of it is
+	// a second set of facts and the guards under test are exactly about facts
+	// agreeing.
+	admissionFor := func(handoff output.HandoffID, execution executioncontrol.Identity, reservation output.ReservationID, ref hangar.TreeRef, nonce string) output.ReceiptAdmission {
+		name := output.OutputName("result")
+
+		return output.ReceiptAdmission{
+			ProtocolVersion: output.ProtocolVersion,
+			Receipt: output.Receipt{
+				Claims: output.ReceiptClaims{
+					ProtocolVersion:      output.ProtocolVersion,
+					ReceiptVersion:       output.ReceiptDomain,
+					Execution:            execution,
+					ActivationEpoch:      1,
+					HandoffID:            handoff,
+					ProducerCheckpointID: output.OpaqueID("checkpoint-" + string(handoff)),
+					ReservationID:        reservation,
+					Incarnation: output.SourceIncarnation{
+						ExecutionID:      execution.ExecutionID,
+						NodeUID:          "node-uid",
+						HandleGeneration: 1,
+						Output:           name,
+					},
+					Output:        name,
+					CaptureFence:  1,
+					WriterFence:   1,
+					Ref:           ref,
+					Attributes:    output.AttributesFromFoundation(hangar.TreeAttributes{Ref: ref, StoredBytes: 2048, LogicalBytes: 4096, CreatedAt: time.Now()}),
+					MarkerVersion: output.MarkerVersion,
+					SignedAt:      output.NewTimestamp(time.Now()),
+				},
+				KeyID:     "receipt-key-1",
+				Algorithm: output.ReceiptAlgorithm,
+				Signature: "signature",
+			},
+			ChallengeNonce: nonce,
+			Metageneration: 1,
+			AdmittedAt:     output.NewTimestamp(time.Now()),
+		}
+	}
+
 	// publish drives one whole capture, from predeclaration to a registered
 	// receipt, through the repository rather than around it: what is under test
 	// is the seam, and a fixture that wrote the rows itself would be testing
@@ -181,56 +240,17 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			LogicalBytes:    4096,
 			ResolvedAt:      output.NewTimestamp(time.Now()),
 		})).To(Succeed())
-		Expect(repository.RecordFirstObjectCreate(ctx, tx, reservation)).To(Succeed())
+		Expect(repository.RecordFirstObjectCreate(ctx, tx, reservation, 1)).To(Succeed())
 		Expect(tx.Commit()).To(Succeed())
 
 		ref := hangar.TreeRef{Scope: "team-a", Digest: digest, Generation: generation}
-		nonce := "nonce-" + uuid.NewString()
-		_, err = dbConn.Exec(`
-			INSERT INTO hangar_receipt_stat_challenges
-				(nonce, handoff_id, reservation_id, activation_epoch, receipt_public_key_id,
-				 scope, digest, generation, capture_fence, not_after)
-			VALUES ($1, $2, $3, 1, 'receipt-key-1', $4, $5, $6, 1, now() + interval '5 minutes')`,
-			nonce, string(handoff), string(reservation), string(ref.Scope), string(ref.Digest),
-			ref.Generation)
-		Expect(err).NotTo(HaveOccurred())
+		nonce := issueChallenge(handoff, reservation, ref)
 
 		tx, err = dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		defer db.Rollback(tx)
-		Expect(repository.RegisterReceipt(ctx, tx, output.ReceiptAdmission{
-			ProtocolVersion: output.ProtocolVersion,
-			Receipt: output.Receipt{
-				Claims: output.ReceiptClaims{
-					ProtocolVersion:      output.ProtocolVersion,
-					ReceiptVersion:       output.ReceiptDomain,
-					Execution:            execution,
-					ActivationEpoch:      1,
-					HandoffID:            handoff,
-					ProducerCheckpointID: output.OpaqueID("checkpoint-" + string(handoff)),
-					ReservationID:        reservation,
-					Incarnation: output.SourceIncarnation{
-						ExecutionID:      execution.ExecutionID,
-						NodeUID:          "node-uid",
-						HandleGeneration: 1,
-						Output:           name,
-					},
-					Output:        name,
-					CaptureFence:  1,
-					WriterFence:   1,
-					Ref:           ref,
-					Attributes:    output.AttributesFromFoundation(hangar.TreeAttributes{Ref: ref, StoredBytes: 2048, LogicalBytes: 4096, CreatedAt: time.Now()}),
-					MarkerVersion: output.MarkerVersion,
-					SignedAt:      output.NewTimestamp(time.Now()),
-				},
-				KeyID:     "receipt-key-1",
-				Algorithm: output.ReceiptAlgorithm,
-				Signature: "signature",
-			},
-			ChallengeNonce: nonce,
-			Metageneration: 1,
-			AdmittedAt:     output.NewTimestamp(time.Now()),
-		})).To(Succeed())
+		Expect(repository.RegisterReceipt(ctx, tx,
+			admissionFor(handoff, execution, reservation, ref, nonce))).To(Succeed())
 		Expect(tx.Commit()).To(Succeed())
 
 		return reservation, ref
@@ -244,6 +264,23 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			ConsumerBindingID: output.OpaqueID(binding),
 			RequestedAt:       output.NewTimestamp(time.Now()),
 		})
+	}
+
+	// A second generation of one correlation, recorded the way inventory
+	// records a marked orphan it found in the deployment's own bucket.
+	adopt := func(ref hangar.TreeRef) error {
+		GinkgoHelper()
+
+		tx, err := dbConn.Begin()
+		if err != nil {
+			return err
+		}
+		defer db.Rollback(tx)
+		if err := repository.AdoptManagedOrphan(ctx, tx, ref, 1, 1); err != nil {
+			return err
+		}
+
+		return tx.Commit()
 	}
 
 	countActiveClaims := func(ref hangar.TreeRef) int {
@@ -628,7 +665,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 		// in between, that is a typed retry -- nothing is wrong, another actor
 		// legitimately advanced the row while this one was choosing what to
 		// lock.
-		It("returns a typed retry when a derived fact changes under the locks", func() {
+		It("returns a typed retry when another owner takes over between the read and the lock", func() {
 			activate()
 			reservation, _ := publish(hangarDigest(7), 1725830823000007)
 
@@ -641,67 +678,446 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			Expect(derived.Resolved).To(BeTrue())
 			Expect(derived.Logical.Digest).To(Equal(hangarDigest(7)))
 
+			// The takeover, committed by somebody else, between the unlocked read
+			// and the locks. Mutating the derived struct on the client would prove
+			// only that the comparison compares; what has to be true is that the
+			// revalidation reads the row again and sees what the other owner did.
+			takeover, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(takeover)
+			_, err = takeover.Exec(`
+				UPDATE hangar_capture_attempt_leases
+				SET owner_id = $2, capture_fence = capture_fence + 1, renewed_at = now(),
+				    expires_at = now() + interval '15 minutes'
+				WHERE reservation_id = $1`, string(reservation), uuid.NewString())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(takeover.Commit()).To(Succeed())
+
+			locks, err := db.LockHangarSuffix(ctx, tx, consumer, db.HangarLockRequest{
+				Logical:  []db.HangarLogicalKey{derived.Logical},
+				Captures: []output.ReservationID{reservation},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			err = locks.RevalidateDerivation(ctx, tx, derived)
+			Expect(err).To(MatchError(db.ErrHangarLockRetry))
+			Expect(err.Error()).To(ContainSubstring("superseded"))
+			Expect(tx.Rollback()).To(Succeed())
+		})
+
+		It("revalidates cleanly when nothing moved", func() {
+			activate()
+			reservation, _ := publish(hangarDigest(16), 1725830823000016)
+
+			tx, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(tx)
+
+			derived, err := db.DeriveHangarRefUnlocked(ctx, tx, reservation)
+			Expect(err).NotTo(HaveOccurred())
 			locks, err := db.LockHangarSuffix(ctx, tx, consumer, db.HangarLockRequest{
 				Logical:  []db.HangarLogicalKey{derived.Logical},
 				Captures: []output.ReservationID{reservation},
 			})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(locks.RevalidateDerivation(ctx, tx, derived)).To(Succeed())
-
-			// The fact the derivation rested on, moved.
-			stale := derived
-			stale.CaptureFence = derived.CaptureFence + 1
-			err = locks.RevalidateDerivation(ctx, tx, stale)
-			Expect(err).To(MatchError(db.ErrHangarLockRetry))
-			Expect(err.Error()).To(ContainSubstring("superseded"))
+			Expect(tx.Rollback()).To(Succeed())
 		})
 
 		It("refuses to register a receipt whose reservation resolved elsewhere", func() {
 			activate()
-			reservation, _ := publish(hangarDigest(8), 1725830823000008)
+			reservation, ref := publish(hangarDigest(8), 1725830823000008)
+
+			var handoffID, executionID string
+			Expect(dbConn.QueryRow(`
+				SELECT handoff_id, execution_id FROM hangar_capture_reservations
+				WHERE reservation_id = $1`, string(reservation)).
+				Scan(&handoffID, &executionID)).To(Succeed())
+
+			handoff := output.HandoffID(handoffID)
+			execution := executioncontrol.Identity{
+				ExecutionID: executioncontrol.ExecutionID(executionID),
+				Fence:       1,
+			}
+
+			// A receipt for content this reservation never resolved to. The
+			// logical identity of published bytes is what recovery and inventory
+			// correlate on, so registering a ref against a reservation resolved
+			// elsewhere is a conflict and not a second record.
+			elsewhere := ref
+			elsewhere.Digest = hangarDigest(17)
 
 			tx, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(tx)
-			derived, err := db.DeriveHangarRefUnlocked(ctx, tx, reservation)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(derived.Logical.Digest).To(Equal(hangarDigest(8)))
+			err = repository.RegisterReceipt(ctx, tx, admissionFor(handoff, execution, reservation,
+				elsewhere, issueChallenge(handoff, reservation, elsewhere)))
+			Expect(err).To(MatchError(output.ErrConflict))
+			Expect(err.Error()).To(ContainSubstring("against a reservation resolved to"))
 			Expect(tx.Rollback()).To(Succeed())
+		})
+	})
+
+	Describe("the irreversible publish point", func() {
+		// Req 10: a stale owner may not seal, publish, sign/register a
+		// receipt, finalize or release. This is the publish half, and it is
+		// the one write nothing can walk back -- past it, cancellation cannot
+		// unmake the object, and the capture is left to receipt or orphan
+		// settlement.
+		It("refuses a superseded owner", func() {
+			activate()
+
+			handoff := output.HandoffID(uuid.NewString())
+			lease := output.SourceLeaseID(uuid.NewString())
+			execution := identity()
+			name := output.OutputName("result")
+			deadline := output.NewTimestamp(time.Now().Add(24 * time.Hour))
+
+			tx, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(tx)
+			Expect(repository.PredeclareHandoff(ctx, tx, output.CaptureAdmission{
+				ProtocolVersion: output.ProtocolVersion,
+				Execution:       execution,
+				ActivationEpoch: 1,
+				HandoffID:       handoff,
+				SourceLeaseID:   lease,
+				Output:          name,
+				CaptureDeadline: deadline,
+			})).To(Succeed())
+			Expect(repository.AcknowledgeSourceHold(ctx, tx, holdFor(handoff, lease, execution, name))).
+				To(Succeed())
+			reservation, err := repository.CommitCaptureReservation(ctx, tx,
+				output.SuccessfulFinishDisposition{
+					ProtocolVersion:       output.ProtocolVersion,
+					Disposition:           output.DispositionCapture,
+					Execution:             execution,
+					ActivationEpoch:       1,
+					HandoffID:             handoff,
+					SourceLeaseID:         lease,
+					ProducerCheckpointID:  output.OpaqueID("checkpoint-" + string(handoff)),
+					Output:                name,
+					CaptureFence:          1,
+					CaptureDeadline:       deadline,
+					FinishAcknowledgement: finishFor(execution),
+				})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = repository.AcquireCaptureLease(ctx, tx, reservation, uuid.NewString(),
+				output.MinLeaseTerm)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(repository.ResolveLogicalReservation(ctx, tx, output.LogicalResolution{
+				ProtocolVersion: output.ProtocolVersion,
+				Execution:       execution,
+				ActivationEpoch: 1,
+				HandoffID:       handoff,
+				ReservationID:   reservation,
+				CaptureFence:    1,
+				Scope:           "team-a",
+				Digest:          hangarDigest(18),
+				LogicalBytes:    4096,
+				ResolvedAt:      output.NewTimestamp(time.Now()),
+			})).To(Succeed())
+			Expect(tx.Commit()).To(Succeed())
+
+			// Somebody else takes capture ownership over.
+			_, err = dbConn.Exec(`
+				UPDATE hangar_capture_attempt_leases
+				SET owner_id = $2, capture_fence = capture_fence + 1, renewed_at = now(),
+				    expires_at = now() + interval '15 minutes'
+				WHERE reservation_id = $1`, string(reservation), uuid.NewString())
+			Expect(err).NotTo(HaveOccurred())
+
+			superseded, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(superseded)
+			err = repository.RecordFirstObjectCreate(ctx, superseded, reservation, 1)
+			Expect(err).To(MatchError(executioncontrol.ErrStaleFence))
+			Expect(err.Error()).To(ContainSubstring("a stale owner may not publish"))
+			Expect(superseded.Rollback()).To(Succeed())
+
+			var past bool
+			Expect(dbConn.QueryRow(`
+				SELECT past_irreversible_publish_point FROM hangar_capture_reservations
+				WHERE reservation_id = $1`, string(reservation)).Scan(&past)).To(Succeed())
+			Expect(past).To(BeFalse(),
+				"a superseded owner moved the capture past the point nothing walks back")
+
+			// And the owner that actually holds the fence records it.
+			current, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(current)
+			Expect(repository.RecordFirstObjectCreate(ctx, current, reservation, 2)).To(Succeed())
+			Expect(current.Commit()).To(Succeed())
+
+			Expect(dbConn.QueryRow(`
+				SELECT past_irreversible_publish_point FROM hangar_capture_reservations
+				WHERE reservation_id = $1`, string(reservation)).Scan(&past)).To(Succeed())
+			Expect(past).To(BeTrue())
+		})
+	})
+
+	Describe("cancelling a capture before the publish point", func() {
+		// Req 5 and Req 11: the source remains held until both halves are
+		// authoritative, and a cancellation before sealing or object creation
+		// terminally cancels *and fenced-releases the source*. A capture that
+		// called itself settled the moment the row said `cancelled` was
+		// reporting the second half done because the first half was decided --
+		// while a node somewhere still holds the source open. The other two
+		// branches already mean "the daemon acknowledged the release" by
+		// `Settled`, and one word meaning two things across three branches is
+		// what makes a drain predicate unwritable.
+		It("is not settled until the source release is acknowledged", func() {
+			activate()
+
+			handoff := output.HandoffID(uuid.NewString())
+			lease := output.SourceLeaseID(uuid.NewString())
+			execution := identity()
+			name := output.OutputName("result")
+			deadline := output.NewTimestamp(time.Now().Add(24 * time.Hour))
+
+			tx, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(tx)
+			Expect(repository.PredeclareHandoff(ctx, tx, output.CaptureAdmission{
+				ProtocolVersion: output.ProtocolVersion,
+				Execution:       execution,
+				ActivationEpoch: 1,
+				HandoffID:       handoff,
+				SourceLeaseID:   lease,
+				Output:          name,
+				CaptureDeadline: deadline,
+			})).To(Succeed())
+			Expect(repository.AcknowledgeSourceHold(ctx, tx, holdFor(handoff, lease, execution, name))).
+				To(Succeed())
+			_, err = repository.CommitCaptureReservation(ctx, tx,
+				output.SuccessfulFinishDisposition{
+					ProtocolVersion:       output.ProtocolVersion,
+					Disposition:           output.DispositionCapture,
+					Execution:             execution,
+					ActivationEpoch:       1,
+					HandoffID:             handoff,
+					SourceLeaseID:         lease,
+					ProducerCheckpointID:  output.OpaqueID("checkpoint-" + string(handoff)),
+					Output:                name,
+					CaptureFence:          1,
+					CaptureDeadline:       deadline,
+					FinishAcknowledgement: finishFor(execution),
+				})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(tx.Commit()).To(Succeed())
+
+			cancelling, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(cancelling)
+			status, err := repository.CancelOrSettle(ctx, cancelling, handoff)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(status.PastIrreversiblePublishPoint).To(BeFalse())
+			Expect(status.Settled).To(BeFalse(),
+				"the capture called itself settled while the source is still held")
+			Expect(cancelling.Commit()).To(Succeed())
+
+			var state string
+			var unsettled bool
+			Expect(dbConn.QueryRow(`
+				SELECT state, settled_at IS NULL FROM hangar_capture_reservations
+				WHERE handoff_id = $1`, string(handoff)).Scan(&state, &unsettled)).To(Succeed())
+			Expect(state).To(Equal("cancelled"), "the cancellation was not recorded")
+			Expect(unsettled).To(BeTrue(), "a settlement time was stamped with nothing to earn it")
+
+			// The daemon's fenced release, arriving. Phase 3 builds the pair
+			// that produces it -- an intent, a signed acknowledgement and the
+			// fence they are offered under -- so this writes the column the
+			// way that pair eventually will.
+			_, err = dbConn.Exec(`
+				UPDATE hangar_capture_reservations
+				SET release_acknowledged_at = now(), settled_at = now()
+				WHERE handoff_id = $1`, string(handoff))
+			Expect(err).NotTo(HaveOccurred())
+
+			reading, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(reading)
+			status, err = repository.ClassifyHandoff(ctx, reading, handoff)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(status.Settled).To(BeTrue())
+			Expect(reading.Rollback()).To(Succeed())
+		})
+
+		It("reports a registered capture settled without any release", func() {
+			// The other way a capture settles: the receipt is registered, the
+			// object exists, and there is nothing to release.
+			activate()
+			reservation, _ := publish(hangarDigest(15), 1725830823000015)
+
+			var handoffID string
+			Expect(dbConn.QueryRow(
+				`SELECT handoff_id FROM hangar_capture_reservations WHERE reservation_id = $1`,
+				string(reservation)).Scan(&handoffID)).To(Succeed())
+
+			tx, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(tx)
+			status, err := repository.ClassifyHandoff(ctx, tx, output.HandoffID(handoffID))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(status.Settled).To(BeTrue())
+			Expect(tx.Rollback()).To(Succeed())
+		})
+	})
+
+	Describe("a second receipt for one reservation", func() {
+		// An ambiguous create response converges only through verified
+		// per-capture retry (AC 9), and reuse for different facts conflicts
+		// (Req 6). A second receipt naming another generation is that reuse:
+		// accepting it silently leaves two lifecycle rows for one capture, one
+		// of them `registered` with no receipt naming it, correlated to
+		// nothing and reclaim-eligible once its grace passes.
+		lifecyclesFor := func(digest hangar.Digest) int {
+			GinkgoHelper()
+			var count int
+			Expect(dbConn.QueryRow(
+				`SELECT count(*) FROM hangar_exact_lifecycles WHERE digest = $1`,
+				string(digest)).Scan(&count)).To(Succeed())
+
+			return count
+		}
+		unnamedRegistrations := func() int {
+			GinkgoHelper()
+			var count int
+			Expect(dbConn.QueryRow(`
+				SELECT count(*) FROM hangar_exact_lifecycles l
+				WHERE l.state = 'registered'
+				  AND NOT EXISTS (
+					SELECT 1 FROM hangar_output_receipts r WHERE r.lifecycle_id = l.id)`).
+				Scan(&count)).To(Succeed())
+
+			return count
+		}
+
+		It("refuses another generation and leaves no lifecycle no receipt names", func() {
+			activate()
+			reservation, first := publish(hangarDigest(12), 1725830823000012)
+
+			var handoffID, executionID string
+			Expect(dbConn.QueryRow(`
+				SELECT handoff_id, execution_id FROM hangar_capture_reservations
+				WHERE reservation_id = $1`, string(reservation)).
+				Scan(&handoffID, &executionID)).To(Succeed())
+
+			handoff := output.HandoffID(handoffID)
+			execution := executioncontrol.Identity{
+				ExecutionID: executioncontrol.ExecutionID(executionID),
+				Fence:       1,
+			}
+			second := first
+			second.Generation = first.Generation + 1
+
+			tx, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(tx)
+			registerErr := repository.RegisterReceipt(ctx, tx, admissionFor(handoff, execution,
+				reservation, second, issueChallenge(handoff, reservation, second)))
+			if registerErr == nil {
+				// Committing is what a caller told "no error" would do, and it
+				// is what makes the damage countable below.
+				Expect(tx.Commit()).To(Succeed())
+			} else {
+				Expect(tx.Rollback()).To(Succeed())
+			}
+
+			Expect(registerErr).To(MatchError(output.ErrConflict))
+			Expect(registerErr.Error()).To(ContainSubstring("already registered"))
+			Expect(lifecyclesFor(first.Digest)).To(Equal(1),
+				"a second generation was recorded for one reservation")
+			Expect(unnamedRegistrations()).To(BeZero(),
+				"a registered lifecycle exists that no receipt names")
+		})
+
+		It("is idempotent for the same reservation and the same ref", func() {
+			activate()
+			reservation, ref := publish(hangarDigest(13), 1725830823000013)
+
+			var handoffID, executionID string
+			Expect(dbConn.QueryRow(`
+				SELECT handoff_id, execution_id FROM hangar_capture_reservations
+				WHERE reservation_id = $1`, string(reservation)).
+				Scan(&handoffID, &executionID)).To(Succeed())
+
+			handoff := output.HandoffID(handoffID)
+			execution := executioncontrol.Identity{
+				ExecutionID: executioncontrol.ExecutionID(executionID),
+				Fence:       1,
+			}
+
+			tx, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(tx)
+			Expect(repository.RegisterReceipt(ctx, tx, admissionFor(handoff, execution,
+				reservation, ref, issueChallenge(handoff, reservation, ref)))).To(Succeed())
+			Expect(tx.Commit()).To(Succeed())
+
+			Expect(lifecyclesFor(ref.Digest)).To(Equal(1))
+			Expect(unnamedRegistrations()).To(BeZero())
 		})
 	})
 
 	// AC 11's two clauses that inverting which actor arrives first does not
 	// cover.
 	Describe("AC 11", func() {
-		It("takes one lock order for two transactions handed the same batch reversed", func() {
+		// The property is the *input* order, and it is proved by making the
+		// helper block: a holder takes the key that sorts second, the helper is
+		// handed the batch reversed, and a third connection asks with NOWAIT
+		// whether the key that sorts first is held. A helper that locked in the
+		// order it was given would have blocked on the second key immediately
+		// and never reached the first, so the NOWAIT probe would succeed.
+		//
+		// The earlier version of this ran two concurrent transactions and
+		// asserted neither deadlocked. It could not fail: two goroutines do not
+		// interleave at statement granularity often enough to make an unsorted
+		// helper deadlock, so the spec passed with sorting removed.
+		blockedProbe := func(query string, args ...any) func() error {
+			return func() error {
+				probe, err := dbConn.Begin()
+				if err != nil {
+					return err
+				}
+				defer db.Rollback(probe)
+				_, err = probe.Exec(query, args...)
+
+				return err
+			}
+		}
+
+		It("locks logical rows in sorted order when the batch arrives reversed", func() {
 			activate()
-			_, first := publish(hangarDigest(9), 1725830823000009)
-			_, second := publish(hangarDigest(10), 1725830823000010)
+			dbConn.SetMaxOpenConns(4)
 
-			forward := db.HangarLockRequest{
-				Logical: []db.HangarLogicalKey{
-					{Scope: first.Scope, Digest: first.Digest},
-					{Scope: second.Scope, Digest: second.Digest},
-				},
-				Exact: []hangar.TreeRef{first, second},
-			}
-			reversed := db.HangarLockRequest{
-				Logical: []db.HangarLogicalKey{
-					{Scope: second.Scope, Digest: second.Digest},
-					// The duplicate is deliberate: a batch that names one
-					// correlation twice must lock it once.
-					{Scope: second.Scope, Digest: second.Digest},
-					{Scope: first.Scope, Digest: first.Digest},
-				},
-				Exact: []hangar.TreeRef{second, first, second},
+			_, a := publish(hangarDigest(9), 1725830823000009)
+			_, b := publish(hangarDigest(10), 1725830823000010)
+			low, high := a, b
+			if string(b.Digest) < string(a.Digest) {
+				low, high = b, a
 			}
 
-			// Inverting which actor arrives first is a different property.
-			// This one is about the *input* order: both transactions are open
-			// at once, and both must complete, which they can only do if the
-			// helper sorted before locking.
-			done := make(chan error, 2)
-			run := func(request db.HangarLockRequest) {
+			const lockLogical = `
+				SELECT 1 FROM hangar_logical_reservations
+				WHERE scope = $1 AND digest = $2
+				FOR NO KEY UPDATE`
+			probeFirst := blockedProbe(lockLogical+" NOWAIT", string(low.Scope), string(low.Digest))
+
+			// Nobody holds the key that sorts first, yet. Without this the probe
+			// below could be failing for a reason that has nothing to do with
+			// the helper.
+			Expect(probeFirst()).To(Succeed())
+
+			holder, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(holder)
+			_, err = holder.Exec(lockLogical, string(high.Scope), string(high.Digest))
+			Expect(err).NotTo(HaveOccurred())
+
+			done := make(chan error, 1)
+			locked := make(chan db.HangarLocks, 1)
+			go func() {
 				defer GinkgoRecover()
 				tx, err := dbConn.Begin()
 				if err != nil {
@@ -710,24 +1126,109 @@ var _ = Describe("the Hangar output lock suffix", func() {
 					return
 				}
 				defer db.Rollback(tx)
-				if _, err := db.LockHangarSuffix(ctx, tx, consumer, request); err != nil {
+				locks, err := db.LockHangarSuffix(ctx, tx, consumer, db.HangarLockRequest{
+					Logical: []db.HangarLogicalKey{
+						{Scope: high.Scope, Digest: high.Digest},
+						// The duplicate is deliberate: a batch that names one
+						// correlation twice must lock it once.
+						{Scope: high.Scope, Digest: high.Digest},
+						{Scope: low.Scope, Digest: low.Digest},
+					},
+				})
+				if err != nil {
 					done <- err
 
 					return
 				}
-				time.Sleep(100 * time.Millisecond)
-				done <- tx.Commit()
-			}
+				locked <- locks
+				done <- nil
+			}()
 
-			go run(forward)
-			go run(reversed)
+			Eventually(probeFirst, 10*time.Second, 50*time.Millisecond).Should(
+				MatchError(ContainSubstring("55P03")),
+				"the key that sorts first was never locked while the helper blocked on the key "+
+					"that sorts second, so the helper took the batch in the order it was handed")
 
-			for range 2 {
-				var err error
-				Eventually(done, 10*time.Second).Should(Receive(&err))
-				Expect(err).NotTo(HaveOccurred(),
-					"the helper deadlocked, which means it did not sort before locking")
-			}
+			Expect(holder.Rollback()).To(Succeed())
+
+			var completed error
+			Eventually(done, 10*time.Second).Should(Receive(&completed))
+			Expect(completed).NotTo(HaveOccurred())
+
+			var locks db.HangarLocks
+			Expect(locked).To(Receive(&locks))
+			Expect(locks.Logical).To(HaveLen(2), "the duplicated correlation was locked twice")
+		})
+
+		It("locks exact rows in sorted order when the batch arrives reversed", func() {
+			activate()
+			dbConn.SetMaxOpenConns(4)
+
+			// One correlation, two generations, so the class-2 order is decided
+			// by generation and compared numerically: "9" sorts after "10" as
+			// bytes, and a lock order that depends on how a number was spelled is
+			// not an order.
+			digest := hangarDigest(14)
+			_, a := publish(digest, 9)
+			second := hangar.TreeRef{Scope: a.Scope, Digest: digest, Generation: 10}
+			Expect(adopt(second)).To(Succeed())
+
+			low, high := a, second
+
+			const lockExact = `
+				SELECT id FROM hangar_exact_lifecycles
+				WHERE scope = $1 AND digest = $2 AND generation = $3
+				FOR NO KEY UPDATE`
+			probeFirst := blockedProbe(lockExact+" NOWAIT",
+				string(low.Scope), string(low.Digest), low.Generation)
+
+			Expect(probeFirst()).To(Succeed())
+
+			holder, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(holder)
+			_, err = holder.Exec(lockExact,
+				string(high.Scope), string(high.Digest), high.Generation)
+			Expect(err).NotTo(HaveOccurred())
+
+			done := make(chan error, 1)
+			locked := make(chan db.HangarLocks, 1)
+			go func() {
+				defer GinkgoRecover()
+				tx, err := dbConn.Begin()
+				if err != nil {
+					done <- err
+
+					return
+				}
+				defer db.Rollback(tx)
+				locks, err := db.LockHangarSuffix(ctx, tx, consumer, db.HangarLockRequest{
+					Exact: []hangar.TreeRef{high, low, high},
+				})
+				if err != nil {
+					done <- err
+
+					return
+				}
+				locked <- locks
+				done <- nil
+			}()
+
+			Eventually(probeFirst, 10*time.Second, 50*time.Millisecond).Should(
+				MatchError(ContainSubstring("55P03")),
+				"generation 9 was never locked while the helper blocked on generation 10, so the "+
+					"helper took the batch in the order it was handed")
+
+			Expect(holder.Rollback()).To(Succeed())
+
+			var completed error
+			Eventually(done, 10*time.Second).Should(Receive(&completed))
+			Expect(completed).NotTo(HaveOccurred())
+
+			var locks db.HangarLocks
+			Expect(locked).To(Receive(&locks))
+			Expect(locks.Exact).To(HaveLen(2), "the duplicated exact ref was locked twice")
+			Expect(locks.Lifecycles).To(HaveLen(2))
 		})
 
 		It("acquires no lock on a consumer's own tables and inverts none it holds", func() {
@@ -745,9 +1246,15 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				_, err := dbConn.Exec(`DROP TABLE IF EXISTS opaque_consumer_bindings`)
 				Expect(err).NotTo(HaveOccurred())
 			})
+			// Two rows: the one the consumer locks, and one it does not. The
+			// second is what makes this spec able to fail -- pg_locks holds
+			// one row per (relation, mode, pid) and row locks live in tuple
+			// headers, so Hangar taking the same mode on the same row the
+			// consumer already holds is invisible from outside. Reaching any
+			// row the consumer left alone is not.
 			_, err = dbConn.Exec(`
 				INSERT INTO opaque_consumer_bindings (binding_id, visibility)
-				VALUES ('binding-1', 'hidden')`)
+				VALUES ('binding-1', 'hidden'), ('binding-2', 'hidden')`)
 			Expect(err).NotTo(HaveOccurred())
 
 			tx, err := dbConn.Begin()
@@ -780,6 +1287,18 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			}
 			Expect(consumerLocks).To(Equal(1),
 				"Hangar acquired a lock on a consumer table; it never acquires a consumer-domain row")
+
+			// And the consumer row nobody locked is still free while this
+			// transaction holds every lock the claim needed.
+			probe, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(probe)
+			_, err = probe.Exec(
+				`SELECT 1 FROM opaque_consumer_bindings WHERE binding_id = $1 FOR UPDATE NOWAIT`,
+				"binding-2")
+			Expect(err).NotTo(HaveOccurred(),
+				"Hangar reached a consumer row the consumer never locked")
+			Expect(probe.Rollback()).To(Succeed())
 
 			Expect(tx.Rollback()).To(Succeed())
 		})

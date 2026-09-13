@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -85,16 +86,38 @@ func (repository *HangarOutputRepository) ResolveLogicalReservation(ctx context.
 // the logical reservation exists: every possibly-created object must have a
 // pre-existing reservation that recovery and inventory can correlate, and the
 // schema refuses this write when there is none.
-func (repository *HangarOutputRepository) RecordFirstObjectCreate(ctx context.Context, tx output.Tx, reservation output.ReservationID) error {
+//
+// It takes the fence it is offered under. Req 10: a stale owner may not seal,
+// publish, sign/register a receipt, finalize or release -- and this is the
+// publish half. Every other write on this path is fenced, by the schema for a
+// logical resolution and by the lease itself for ownership; without the fence
+// here, any caller holding a reservation id could move a capture past the one
+// point nothing can walk back, including an owner that was superseded minutes
+// ago and does not know it.
+func (repository *HangarOutputRepository) RecordFirstObjectCreate(ctx context.Context, tx output.Tx, reservation output.ReservationID, fence output.CaptureFence) error {
 	if err := reservation.Validate(); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE hangar_capture_reservations
-		SET first_create_attempted_at = coalesce(first_create_attempted_at, now()),
+	if fence <= 0 {
+		return fmt.Errorf("%w: the irreversible publish point is recorded under the capture fence "+
+			"it was reached at; %d names no ownership", output.ErrIncomplete, fence)
+	}
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE hangar_capture_reservations r
+		SET first_create_attempted_at = coalesce(r.first_create_attempted_at, now()),
 		    past_irreversible_publish_point = true
-		WHERE reservation_id = $1`, string(reservation)); err != nil {
+		WHERE r.reservation_id = $1
+		  AND EXISTS (
+			SELECT 1 FROM hangar_capture_attempt_leases l
+			WHERE l.reservation_id = r.reservation_id AND l.capture_fence = $2)`,
+		string(reservation), int64(fence))
+	if err != nil {
 		return hangarConflict(err)
+	}
+	if recorded, err := result.RowsAffected(); err == nil && recorded == 0 {
+		return fmt.Errorf("%w: reservation %s is not owned at capture fence %d; a stale owner may "+
+			"not publish", executioncontrol.ErrStaleFence, reservation, fence)
 	}
 
 	return nil
@@ -139,6 +162,46 @@ func (repository *HangarOutputRepository) RegisterReceipt(ctx context.Context, t
 		return fmt.Errorf("%w: the receipt registers %s/%s against a reservation resolved to %s/%s",
 			output.ErrConflict, claims.Ref.Scope, claims.Ref.Digest,
 			derived.Logical.Scope, derived.Logical.Digest)
+	}
+
+	// A receipt already registered for this reservation answers the question
+	// before anything is written, and the answer is one of exactly two. The
+	// same exact ref is one admission repeated -- an ambiguous create response
+	// converges through verified per-capture retry, so the retry must return
+	// the state the first attempt made. Another generation is Req 6's reuse
+	// for different facts, and it is a conflict.
+	//
+	// The read is here, under the Receipts lock the suffix already took, and
+	// before the lifecycle upsert, because the third outcome -- writing the
+	// second generation's lifecycle and then dropping its receipt on an ON
+	// CONFLICT DO NOTHING -- leaves one capture with two records, the newer
+	// one `registered` with no receipt naming it and nothing to correlate it
+	// with. Silence is the one answer this must never give.
+	var (
+		registeredScope, registeredDigest string
+		registeredGeneration              int64
+	)
+	switch err := hangarQueryRow(ctx, tx, `
+		SELECT l.scope, l.digest, l.generation
+		FROM hangar_output_receipts r
+		JOIN hangar_exact_lifecycles l ON l.id = r.lifecycle_id
+		WHERE r.reservation_id = $1`,
+		[]any{string(claims.ReservationID)},
+		&registeredScope, &registeredDigest, &registeredGeneration); {
+	case err == nil:
+		if registeredScope != string(claims.Ref.Scope) ||
+			registeredDigest != string(claims.Ref.Digest) ||
+			registeredGeneration != claims.Ref.Generation {
+			return fmt.Errorf("%w: reservation %s already registered %s/%s/%d; a receipt naming "+
+				"%s/%s/%d reuses one capture's identity for different facts",
+				output.ErrConflict, claims.ReservationID,
+				registeredScope, registeredDigest, registeredGeneration,
+				claims.Ref.Scope, claims.Ref.Digest, claims.Ref.Generation)
+		}
+
+		return nil
+	case !errors.Is(err, output.ErrNotFound):
+		return err
 	}
 
 	if _, err := tx.ExecContext(ctx, `
