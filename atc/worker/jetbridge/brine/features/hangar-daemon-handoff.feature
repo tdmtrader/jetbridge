@@ -202,3 +202,38 @@ Feature: What the output daemon answers
     When its pause pod reaches a terminal state
     Then the pause pod is not recreated
     And the runtime's refusal says "durable output capture holds the source"
+
+  # A takeover is the only concurrency this runner can say, and it says it
+  # sequentially: the epoch is bumped, and the old owner's fence is then stale.
+  @HOP-10
+  Scenario: A lease takeover bumps the epoch, and the previous owner's fence stops being served
+    Given a real artifact daemon publishing to a Hangar output bucket
+    And a capture-selected task "build" built from image "busybox" declares the output "result"
+    And the daemon holds the source
+    When the owner's lease is taken over
+    Then the Hangar daemon answers 200, holding the source
+    When a stale fence is presented
+    Then the daemon's refusal says "fence"
+  # "The hold is gone" needs its presence half, and the release is the only
+  # thing that makes it gone: the scenario asserts the source is held, releases
+  # it, and asserts it is not.
+  #
+  # The FAILING producer between them is not decoration. A no_capture release
+  # follows an authoritative non-success witness (Req 5), and the daemon
+  # refuses a release for a producer nobody has heard from -- "is
+  # never_started; only a durable finish or stop may authorize destroying
+  # anything". Without this line the scenario asked for a state production
+  # cannot reach.
+  #
+  # Reddened by: the release route leaving the hold's gate open -- the first
+  # check, the presence half, stays green and only "the source has been
+  # released" reddens.
+  @HOP-9 @HOP-11
+  Scenario: A released hold is gone from the node, and a held one is not
+    Given a real artifact daemon publishing to a Hangar output bucket
+    And a capture-selected task "build" built from image "busybox" declares the output "result"
+    And the daemon holds the source
+    Then the source is still held on the node
+    When the step fails
+    And the hold is released
+    Then the source has been released

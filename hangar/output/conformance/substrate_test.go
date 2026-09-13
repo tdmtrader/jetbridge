@@ -113,6 +113,13 @@ type substrate struct {
 	// can is what this substrate was *measured* to support, not what it
 	// claims. See probeCapabilities.
 	can capabilities
+
+	// endpoint is the HTTP address of a tier-2 substrate, and empty for tier
+	// 1, which has no API server at all. A case that needs to open a SECOND
+	// production seam against the same store -- the policy attestor's bucket
+	// handle, which is not an objectstore.Client -- needs the address rather
+	// than the adapter.
+	endpoint string
 }
 
 // capabilities are the parts of the strict profile a substrate can actually
@@ -253,10 +260,11 @@ func inProcessTier2(t *testing.T) substrate {
 
 	client, deleter, _ := adapterAndClient(t, server.URL())
 	tier := substrate{
-		name:    "tier-2 (fake-gcs-server, in-process)",
-		bucket:  bucket,
-		client:  client,
-		deleter: deleter,
+		name:     "tier-2 (fake-gcs-server, in-process)",
+		bucket:   bucket,
+		client:   client,
+		deleter:  deleter,
+		endpoint: server.URL(),
 	}
 	tier.can = probeCapabilities(t, tier)
 
@@ -281,10 +289,11 @@ func remoteTier2(t *testing.T, endpoint string) substrate {
 	t.Cleanup(func() { deleteBucket(t, client, deleter, storageClient, bucket) })
 
 	tier := substrate{
-		name:    "tier-2 (fake-gcs-server at " + endpoint + ")",
-		bucket:  bucket,
-		client:  client,
-		deleter: deleter,
+		name:     "tier-2 (fake-gcs-server at " + endpoint + ")",
+		bucket:   bucket,
+		client:   client,
+		deleter:  deleter,
+		endpoint: endpoint,
 	}
 	tier.can = probeCapabilities(t, tier)
 

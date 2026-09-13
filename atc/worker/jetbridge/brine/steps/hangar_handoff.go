@@ -350,19 +350,36 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		brine.DefineMap[HeldSource, HeldSource](
+		// A no_capture release, and it takes a WITNESSED step rather than a held
+		// source.
+		//
+		// That is Req 5 in the type system rather than in a comment: the
+		// no_capture handoff follows an authoritative non-success witness, and
+		// there is no production path on which a hold is released for a
+		// producer nobody has heard from. Written over HeldSource the phrase
+		// constructed a state production cannot reach -- convention 3 -- and the
+		// daemon said so at runtime, refusing with "is never_started; only a
+		// durable finish or stop may authorize destroying anything". It was a
+		// pending scenario, so nothing ran it and nothing noticed.
+		//
+		// It returns the HeldSource so the two node-side checks either side of
+		// it -- the source is still held, the source has been released -- read
+		// the same incarnation on the same node.
+		brine.DefineMap[FinishWitnessed, HeldSource](
 			"the hold is released",
-			func(in HeldSource, _ brine.Params, _ *brine.Recorder) (HeldSource, error) {
-				return in.answered(in.Draft.Daemon.capture("release-hold", "/capture/v1/release",
-					in.Execution, hangaroutput.ReleaseIntent{
+			func(in FinishWitnessed, _ brine.Params, _ *brine.Recorder) (HeldSource, error) {
+				source := in.Source
+
+				return source.answered(source.Draft.Daemon.capture("release-hold",
+					"/capture/v1/release", source.Execution, hangaroutput.ReleaseIntent{
 						ProtocolVersion: hangaroutput.ProtocolVersion,
 						Disposition:     hangaroutput.DispositionNoCapture,
-						Execution:       in.Execution,
-						ActivationEpoch: in.Admission.ActivationEpoch,
-						HandoffID:       in.Admission.HandoffID,
-						SourceLeaseID:   in.Admission.SourceLeaseID,
+						Execution:       source.Execution,
+						ActivationEpoch: source.Admission.ActivationEpoch,
+						HandoffID:       source.Admission.HandoffID,
+						SourceLeaseID:   source.Admission.SourceLeaseID,
 						ReleaseIntentID: hangaroutput.ReleaseIntentID(freshUUID()),
-						Incarnation:     in.Incarnation,
+						Incarnation:     source.Incarnation,
 					})), nil
 			},
 		),

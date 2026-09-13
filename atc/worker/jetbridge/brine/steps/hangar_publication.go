@@ -19,6 +19,7 @@ package steps
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -27,10 +28,12 @@ import (
 	"strings"
 	"time"
 
+	"cloud.google.com/go/storage"
 	"google.golang.org/api/iterator"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
 
+	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	hangaroutput "github.com/concourse/concourse/hangar/output"
 )
@@ -263,10 +266,61 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		stubMap[PublishedTree, PublishedTree](
+		// A REPLACEMENT generation, reached the only way production reaches
+		// one: the old generation is removed from the bucket and the same
+		// canonical bytes are captured again, so the store assigns a new
+		// generation at the same key.
+		//
+		// It is not an overwrite and there is no API for one -- create-if-absent
+		// refuses a key that is occupied, which is what the collision scenarios
+		// above pin. Req 38's "a caller may recapture and claim a newly
+		// published generation" is this sequence, and the old exact ref is a
+		// ref to a generation that is gone.
+		brine.DefineMap[PublishedTree, PublishedTree](
 			"an exact replacement generation is published",
-			"Phase 7 Green",
-			"the exact replacement that supersedes a generation and unresolves the old ref"),
+			func(in PublishedTree, _ brine.Params, _ *brine.Recorder) (PublishedTree, error) {
+				if in.Ref.Generation == 0 {
+					return in, fmt.Errorf("this chain published no generation to replace: %s",
+						in.Outcome.Answer.describe())
+				}
+				if len(in.BucketKeys) != 1 {
+					return in, fmt.Errorf("the bucket holds %d objects, so there is no one key "+
+						"to replace at: %v", len(in.BucketKeys), in.BucketKeys)
+				}
+				in.Superseded = in.Ref
+
+				daemon := in.Outcome.Source.Draft.Daemon
+				key := in.BucketKeys[0]
+				if err := daemon.Client.Bucket(daemon.OutputBucket).Object(key).
+					Delete(daemon.Ctx); err != nil {
+					return in, fmt.Errorf("removing the superseded object at %q: %w", key, err)
+				}
+
+				replacement, err := daemon.captureAgain(in.Outcome.Source)
+				if err != nil {
+					return in, fmt.Errorf("publishing the replacement generation: %w", err)
+				}
+				if replacement.Published.Ref.Generation == 0 {
+					return in, fmt.Errorf("the replacement capture published nothing: %s",
+						replacement.Answer.describe())
+				}
+				if replacement.Published.Ref.Generation == in.Superseded.Generation {
+					return in, fmt.Errorf("the replacement was assigned the SAME generation %d "+
+						"as the object it replaced; a store that reuses a generation cannot "+
+						"make an exact ref mean one set of bytes",
+						replacement.Published.Ref.Generation)
+				}
+
+				in.Second = replacement
+				in.Ref = replacement.Published.Ref
+				in.Attributes = replacement.Published.Attributes.Foundation()
+				if replacement.Receipt.Signature != "" {
+					in.Receipts = append(in.Receipts, replacement.Receipt)
+				}
+
+				return in, nil
+			},
+		),
 
 		// Checks over the outcome.
 		// The receipt is asserted WHOLE, and against the SERVER-DERIVED scope --
@@ -397,15 +451,110 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 				return nil
 			}),
 
-		stubCheck[PublishedTree](
-			"the registered exact ref names the published generation",
-			"Phase 6 Green",
-			"RegisterReceipt, which must register the ref WITH its generation"),
+		// The DATABASE half of the whole chain, and the last line of it: the
+		// lifecycle row a settled capture left behind is about the exact
+		// generation the store assigned, not about the logical (scope, digest)
+		// the reservation resolved to.
+		//
+		// It is written against the row rather than against a repository read
+		// because what is under test is what the row CONTAINS. A registration
+		// that dropped the generation would leave a lifecycle every read still
+		// finds -- by scope and digest -- and it would be a lifecycle about
+		// whichever bytes are at that key, which is exactly the float Req 28
+		// forbids.
+		CheckThat[PublishedTree]("the registered exact ref names the published generation",
+			func(in PublishedTree) error {
+				if in.Outcome.Plane == nil {
+					return fmt.Errorf("this capture never settled on a control plane, so " +
+						"nothing registered a receipt")
+				}
+				if in.Ref.Generation == 0 {
+					return fmt.Errorf("the capture published no generation: %s",
+						in.Outcome.Answer.describe())
+				}
 
-		stubCheck[PublishedTree](
-			"the old ref no longer resolves",
-			"Phase 7 Green",
-			"the supersession that unresolves a replaced generation"),
+				var (
+					scope, digest string
+					generation    int64
+					state         string
+				)
+				// By GENERATION, not by (scope, digest). A replacement
+				// registers a SECOND lifecycle for the same logical pair, and
+				// an unqualified QueryRow with no ORDER BY would silently take
+				// whichever row the planner handed back -- which is how this
+				// check would pass while looking at the superseded row.
+				err := in.Outcome.Plane.DB.Conn.QueryRow(`
+					SELECT scope, digest, generation, state
+					  FROM hangar_exact_lifecycles
+					 WHERE scope = $1 AND digest = $2 AND generation = $3`,
+					string(in.Ref.Scope), string(in.Ref.Digest), in.Ref.Generation).
+					Scan(&scope, &digest, &generation, &state)
+				if err != nil {
+					return fmt.Errorf("no exact lifecycle for %s/%s at generation %d: %v",
+						in.Ref.Scope, in.Ref.Digest, in.Ref.Generation, err)
+				}
+
+				registered := hangar.TreeRef{
+					Scope:      hangar.Scope(scope),
+					Digest:     hangar.Digest(digest),
+					Generation: generation,
+				}
+				if registered != in.Ref {
+					return fmt.Errorf("the registered ref is %v and the store published %v; a "+
+						"lifecycle that is not about the exact generation is a lifecycle that "+
+						"floats to whatever is at the key", registered, in.Ref)
+				}
+				if state != "registered" {
+					return fmt.Errorf("the exact lifecycle is %q, not registered", state)
+				}
+
+				return nil
+			}),
+
+		// The absence half of the replacement pair. Its positive control is
+		// `the registered exact ref names the published generation`, asserted
+		// on the line above the replacement in the same scenario, because
+		// "the old ref does not resolve" passes against a chain that published
+		// nothing at all.
+		CheckThat[PublishedTree]("the old ref no longer resolves",
+			func(in PublishedTree) error {
+				if in.Superseded.Generation == 0 {
+					return fmt.Errorf("nothing was superseded in this chain, so there is no " +
+						"old ref to fail on")
+				}
+				if in.Superseded == in.Ref {
+					return fmt.Errorf("the replacement carries the same exact ref %v as the "+
+						"generation it replaced", in.Ref)
+				}
+
+				daemon := in.Outcome.Source.Draft.Daemon
+				keys, err := daemon.outputObjectKeys()
+				if err != nil {
+					return err
+				}
+				if len(keys) != 1 {
+					return fmt.Errorf("the bucket holds %d objects after a replacement: %v",
+						len(keys), keys)
+				}
+
+				// The exact old generation, asked for by generation. The KEY is
+				// occupied -- by the replacement -- so a check that only asked
+				// whether the key existed would pass against a store that never
+				// replaced anything.
+				attrs, err := daemon.Client.Bucket(daemon.OutputBucket).
+					Object(keys[0]).Generation(in.Superseded.Generation).Attrs(daemon.Ctx)
+				if err == nil {
+					return fmt.Errorf("generation %d is still in the bucket at %q (created %v); "+
+						"a superseded exact ref must stop resolving",
+						in.Superseded.Generation, keys[0], attrs.Created)
+				}
+				if !errors.Is(err, storage.ErrObjectNotExist) {
+					return fmt.Errorf("asking for the superseded generation %d at %q: %w",
+						in.Superseded.Generation, keys[0], err)
+				}
+
+				return nil
+			}),
 	}
 }
 

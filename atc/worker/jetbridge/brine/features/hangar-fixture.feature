@@ -23,8 +23,9 @@ Feature: The fixture the Hangar output family stands on
   unexported by design.
 
   This file holds ONE scenario, and its job is the fixture rather than the
-  product. Everything the Hangar output plane will publish is described in
-  ../features/pending/, which is not yet run — see that directory's README.
+  product. Everything the Hangar output plane publishes is described in the six
+  hangar-*.feature files beside it; ../features/pending/ held the last of them
+  until Phase 9 and is now empty.
 
   # The whole fixture in one chain, said in the only Hangar vocabulary the
   # daemon has today: a raw tar goes in, the daemon canonicalizes it, derives

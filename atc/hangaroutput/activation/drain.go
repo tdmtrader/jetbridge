@@ -186,3 +186,108 @@ var outputResidueQueries = []residueQuery{
 			"the set nothing else will revisit",
 	},
 }
+
+// DrainOutcome is what one facet's drain step did and what it found.
+//
+// It exists because the sequence below used to live in `cmd/hangar-output-
+// activate`'s `drain`, interleaved with its printing, and therefore had no test
+// at all: `Epochs.Disable` deliberately does not decide emptiness (see its own
+// comment), so the ONLY thing standing between a live plane and `disabled` was
+// twenty-five lines in package main that nothing exercised. Requirement 58's
+// whole claim -- "unsafe removal is blocked rather than promised after a finite
+// drain" -- rested on them. Moving the decision here and leaving the formatting
+// in the command makes the claim assertable without changing what it does.
+type DrainOutcome struct {
+	Facet Facet
+
+	// From is the facet's state on entry, and State its state on exit.
+	From  string
+	State string
+
+	// Drained is true when this step made the enabled -> draining transition.
+	// Skipped is true when the facet was neither enabled nor draining, so
+	// there was nothing to drain.
+	Drained bool
+	Skipped bool
+
+	// Residue is every class of live state found AFTER emission stopped.
+	Residue []Residue
+
+	// Disabled is true only when the facet reached the terminal state: the
+	// caller asked to finalize AND the residue was empty.
+	Disabled bool
+}
+
+// DrainStep stops new admission first, and only then asks whether anything is
+// left.
+//
+// That ORDER is requirement 58: emission stops before the predicate runs, so the
+// set the predicate is counting cannot grow while it counts. A drain that
+// checked first and stopped emission afterwards would refuse on state that
+// arrived in between and admit state that arrived after the check.
+//
+// With `finalize` false it reports and stops, which is the common operator
+// action and is safe to repeat. With `finalize` true and any residue it returns
+// ErrDrainRefused and disables nothing.
+func (epochs Epochs) DrainStep(ctx context.Context, epoch executioncontrol.ActivationEpoch,
+	facet Facet, finalize bool) (DrainOutcome, error) {
+	outcome := DrainOutcome{Facet: facet}
+
+	state, err := epochs.Read(ctx, epoch)
+	if err != nil {
+		return outcome, err
+	}
+	outcome.From = state.Base
+	if facet == FacetOutput {
+		outcome.From = state.Output
+	}
+	outcome.State = outcome.From
+
+	if outcome.State == "enabled" {
+		if err := epochs.Drain(ctx, epoch, facet); err != nil {
+			return outcome, err
+		}
+		outcome.Drained = true
+		outcome.State = "draining"
+	}
+	if outcome.State != "draining" {
+		outcome.Skipped = true
+
+		return outcome, nil
+	}
+
+	outcome.Residue, err = epochs.DrainResidue(ctx, epoch, facet)
+	if err != nil {
+		return outcome, err
+	}
+	if len(outcome.Residue) != 0 {
+		if !finalize {
+			return outcome, nil
+		}
+
+		return outcome, RefuseDrain(epoch, facet, outcome.Residue)
+	}
+	if !finalize {
+		return outcome, nil
+	}
+
+	if err := epochs.Disable(ctx, epoch, facet); err != nil {
+		return outcome, err
+	}
+	outcome.Disabled = true
+	outcome.State = "disabled"
+
+	return outcome, nil
+}
+
+// DrainFacets is the order `--facet=all` takes them in: OUTPUT first, base
+// second. Base is what settles a capture, so a plane that lost exact execution
+// control while an output capture was still nonterminal would have removed the
+// only thing that could finish it.
+func DrainFacets(all bool, facet Facet) []Facet {
+	if all {
+		return []Facet{FacetOutput, FacetBase}
+	}
+
+	return []Facet{facet}
+}

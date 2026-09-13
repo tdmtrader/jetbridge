@@ -11,6 +11,7 @@ package steps
 // them passes.
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
+	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	hangaroutput "github.com/concourse/concourse/hangar/output"
 )
@@ -214,6 +216,22 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 			},
 		),
 
+		// A strict-input tree beside the captured output. The ref is the
+		// fixture's, because a strict input is an exact ref a caller was given
+		// and no phrase here may choose where bytes live.
+		brine.DefineMap[CaptureDraft, CaptureDraft](
+			"it also takes a strict-input tree at {string}",
+			func(in CaptureDraft, p brine.Params, _ *brine.Recorder) (CaptureDraft, error) {
+				destination, err := paramAt("it also takes a strict-input tree at {string}", p, 0)
+				if err != nil {
+					return in, err
+				}
+				in.StrictInput = destination
+
+				return in, nil
+			},
+		),
+
 		// Checks, terminal over the Pod that came back.
 
 		CheckThat[CapturePodCreated]("the capture control init runs before every writer",
@@ -333,10 +351,29 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 				return in.Err.Error(), nil
 			}),
 
-		stubCheck[CapturePodCreated](
-			"the pod's fetch init container reads from the bucket {string}",
-			"Phase 9",
-			"the strict-input bucket the output plane must never redirect"),
+		// The AC 20 regression twin, and the one assertion about it a Pod can
+		// carry.
+		//
+		// The scenario this replaces asked that "the pod's fetch init container
+		// reads from the bucket {string}", and the plan's own citation pointed
+		// at container-pod.feature:367-373 and :442-446 for its control. Both
+		// were wrong, and only running it found out: container-pod.feature
+		// contains no strict-input scenario at all (grep: zero hits for
+		// `strict`, `Hangar` or `hangar`), and NO BUCKET APPEARS IN A POD. The
+		// strict-input init carries a TreeRef and a signed grant; the daemon
+		// resolves the bucket from its own configuration, which is exactly the
+		// containment Req 20 requires. A phrase naming a bucket would have been
+		// a phrase constructing a state production cannot reach -- convention 3
+		// -- and it sat in features/pending/ where nothing ran it.
+		//
+		// What the Pod CAN say, and what the output plane must not break, is
+		// that a capture-selected step which also takes an exact immutable
+		// input still gets the ordinary strict-input materialization beside its
+		// capture control init, naming exactly that input's ref, and that the
+		// source-control grant stays in the capture init alone.
+		CheckThat[CapturePodCreated](
+			"the pod's strict-input materialization is unchanged by the output plane",
+			strictInputMaterializationIsUnchanged),
 
 		// The ORDINARY pod's half of the control scenario, over PodCreated
 		// rather than CapturePodCreated: the pod a task that selected nothing
@@ -425,6 +462,11 @@ func buildCapturePod(in CaptureDraft) (CapturePodCreated, error) {
 	if len(draft.Outputs) > 0 {
 		delete(outputs, "output-0")
 		outputs[string(in.Output)] = draft.Outputs[0]
+	}
+
+	if in.StrictInput != "" {
+		ref := scenarioStrictInputRef
+		inputs = append(inputs, runtime.Input{HangarTree: &ref, DestinationPath: in.StrictInput})
 	}
 
 	spec := runtime.ContainerSpec{
@@ -973,6 +1015,106 @@ func sameWorkerAdmitsAMatchingEpoch(in CapturePodCreated) error {
 	if built.Pod == nil {
 		return fmt.Errorf("the same worker refused a capture whose epoch matches its cohort "+
 			"as well, so the refusal above says nothing about the handshake: %v", built.Err)
+	}
+
+	return nil
+}
+
+// scenarioStrictInputRef is the exact immutable tree a capture-selected step
+// also consumes.
+//
+// It is a constant rather than a parameter for the reason every identity in
+// this family is server-side: a feature file that could spell a ref would be a
+// feature file choosing where bytes live. What the scenario asserts is that the
+// pod REPEATS the ref it was handed.
+var scenarioStrictInputRef = hangar.TreeRef{
+	Scope:      "strict-input-scope",
+	Digest:     hangar.Digest("sha256:" + strings.Repeat("ab", 32)),
+	Generation: 1725830823000777,
+}
+
+// strictInputMaterializationIsUnchanged is the AC 20 twin's body.
+//
+// Three arms, and the ORDER is the assertion because brine stops at the first
+// red step: the strict-input init is PRESENT (the control -- an absence check
+// written first would pass against a worker that builds no init containers at
+// all), it names exactly the ref the step was given, and it carries none of the
+// capture plane's authority.
+func strictInputMaterializationIsUnchanged(in CapturePodCreated) error {
+	if in.Err != nil {
+		return in.Err
+	}
+	if in.Pod == nil {
+		return fmt.Errorf("no capture pod was built")
+	}
+	if in.Draft.StrictInput == "" {
+		return fmt.Errorf("this step takes no strict-input tree, so there is no strict-input " +
+			"materialization for the output plane to have left alone")
+	}
+
+	var materialize *corev1.Container
+	for i, container := range in.Pod.Spec.InitContainers {
+		if container.Name == hangarInitName {
+			materialize = &in.Pod.Spec.InitContainers[i]
+		}
+	}
+	if materialize == nil {
+		names := make([]string, 0, len(in.Pod.Spec.InitContainers))
+		for _, container := range in.Pod.Spec.InitContainers {
+			names = append(names, container.Name)
+		}
+
+		return fmt.Errorf("the capture pod has no %q init container; its init containers are "+
+			"%v. A capture-selected step that also takes an exact immutable input still gets "+
+			"the ordinary strict-input materialization: the output plane extends the pod, it "+
+			"does not take the strict-input path over", hangarInitName, names)
+	}
+
+	command := strings.Join(materialize.Command, " ")
+	payload, err := json.Marshal(struct {
+		Ref hangar.TreeRef `json:"ref"`
+	}{Ref: scenarioStrictInputRef})
+	if err != nil {
+		return err
+	}
+	fragment := strings.TrimSuffix(strings.TrimPrefix(string(payload), "{"), "}")
+	decoded, err := decodedInitPayloads(command)
+	if err != nil {
+		return err
+	}
+	naming, batches := 0, 0
+	for _, body := range decoded {
+		if !strings.Contains(body, `"ref"`) {
+			continue
+		}
+		batches++
+		if strings.Contains(body, fragment) {
+			naming++
+		}
+	}
+	if batches != 1 {
+		return fmt.Errorf("the strict-input init carries %d materialization requests; this "+
+			"step declares exactly one strict input, so a plane that ADDED a request beside "+
+			"the right one would otherwise pass", batches)
+	}
+	if naming == 0 {
+		return fmt.Errorf("no materialization request in the strict-input init names %s/%s/%d; "+
+			"the output plane redirected an input it has no business touching",
+			scenarioStrictInputRef.Scope, scenarioStrictInputRef.Digest,
+			scenarioStrictInputRef.Generation)
+	}
+
+	// And it holds none of the capture plane's authority. The source-control
+	// grant belongs to the capture control init alone, which the scenario above
+	// this one pins from the other direction.
+	for _, variable := range materialize.Env {
+		if strings.Contains(variable.Value, captureGrantForScenario) {
+			return fmt.Errorf("the strict-input init carries the source-control grant in %s",
+				variable.Name)
+		}
+	}
+	if strings.Contains(command, captureGrantForScenario) {
+		return fmt.Errorf("the strict-input init's command carries the source-control grant")
 	}
 
 	return nil

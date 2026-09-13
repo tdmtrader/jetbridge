@@ -133,6 +133,13 @@ type CaptureDraft struct {
 	// what the scenarios assert is that the pod builder REPEATS whatever it was
 	// given rather than composing a path of its own.
 	Reserved hangaroutput.ReservedIncarnation
+
+	// StrictInput is the destination of a strict-input Hangar tree this step
+	// also takes, empty when it takes none. It is the AC 20 regression twin's
+	// whole subject: a capture-selected step that ALSO consumes an exact
+	// immutable input must still get the ordinary strict-input materialization,
+	// unchanged, beside its capture control init.
+	StrictInput string
 }
 
 // freshUUID mints an identity no feature file chose.

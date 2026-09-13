@@ -11,9 +11,10 @@ Feature: What a capture-selected task's Pod says
   rather than in a file of its own, and why Phase 9 cites it as the AC 20
   regression twin instead of writing a second copy.
 
-  One scenario in this family is still in ../pending/: the strict-input fetch,
-  which belongs to Phase 9. The scheduling block below arrived in Phase 8, which
-  is where a worker can be told which facets its cohort serves.
+  The scheduling block below arrived in Phase 8, which is where a worker can be
+  told which facets its cohort serves; the strict-input twin at the end arrived
+  in Phase 9, and the note above it records what running it found out about the
+  shape it was drafted in.
 
   @HOP-1 @HOP-3 @HOP-12
   Scenario: Selecting capture for a declared output puts the hold init container before every writer
@@ -191,3 +192,32 @@ Feature: What a capture-selected task's Pod says
     Then the pod build is refused saying "speaks for epoch"
     And no capture pod is built
     And the same worker admits a capture whose epoch matches its cohort
+
+  # The AC 20 twin that is not a pod shape: turning the output plane on must
+  # change nothing about a strict INPUT.
+  #
+  # This scenario was drafted as "the pod's fetch init container reads from the
+  # bucket {string}", citing ../container-pod.feature:367-373 and :442-446 for
+  # its control. Running it in Phase 9 found both halves wrong. There is no
+  # strict-input scenario in container-pod.feature at all, and NO BUCKET APPEARS
+  # IN A POD: the strict-input init carries a TreeRef and a signed grant and the
+  # daemon resolves the bucket from its own configuration, which is the
+  # containment Req 20 asks for. The phrase named a state production cannot
+  # reach, and features/pending/ is where that could sit unnoticed.
+  #
+  # Its control is the presence arm inside the check itself, evaluated first: an
+  # "unchanged" assertion passes against a worker that builds no init container
+  # at all.
+  #
+  # Reddened by: BuildFetchInitContainers skipping its HangarTree branch when
+  # the output plane is enabled -- the strict-input init disappears and the
+  # capture scenarios above stay green.
+  @HOP-19 @HOP-59
+  Scenario: A capture-selected step's strict input is untouched by the output plane
+    Given a jetbridge worker with an artifact store and the output plane on
+    And a task container "build" built from image "busybox"
+    And it produces an output at "/tmp/build/result"
+    And its output "result" is captured when the step succeeds
+    And it also takes a strict-input tree at "/tmp/build/from-cache"
+    When the capture pod is built
+    Then the pod's strict-input materialization is unchanged by the output plane

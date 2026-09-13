@@ -278,3 +278,133 @@ func TestTheBaseFacetRefusesWhileACaptureSelectedExecutionIsUnsettled(t *testing
 			"facet; the residue was %v", residue)
 	}
 }
+
+// The sequence itself, which had no test at all until Phase 9.
+//
+// `Epochs.Disable` deliberately does not decide emptiness -- its own comment
+// says so, and that separation is right -- so the only thing standing between a
+// live plane and `disabled` was the ordering in `cmd/hangar-output-activate`'s
+// `drain`, in package main, interleaved with its printing. Requirement 58's
+// strongest sentence rested on twenty-five untested lines. Phase 9 moved the
+// DECISION into activation.DrainStep and left the printing in the command; these
+// are the rows that decision now has.
+//
+// Order matters here in the way the learning warns about: the ACCEPTING case is
+// asserted first, because a refusal assertion passes against a DrainStep that
+// refuses unconditionally.
+
+func TestADrainStepOnAnEmptyFacetFinalizesIt(t *testing.T) {
+	const epoch = executioncontrol.ActivationEpoch(75)
+	epochs, _ := drainFixture(t, epoch)
+	ctx := context.Background()
+
+	outcome, err := epochs.DrainStep(ctx, epoch, activation.FacetOutput, true)
+	if err != nil {
+		t.Fatalf("draining an empty output facet: %v", err)
+	}
+	if !outcome.Drained {
+		t.Error("the step did not report making the enabled -> draining transition")
+	}
+	if !outcome.Disabled || outcome.State != "disabled" {
+		t.Errorf("an empty facet was not finalized: disabled=%v state=%q",
+			outcome.Disabled, outcome.State)
+	}
+}
+
+func TestADrainStepRefusesToFinalizeAFacetThatStillHoldsState(t *testing.T) {
+	const epoch = executioncontrol.ActivationEpoch(76)
+	epochs, conn := drainFixture(t, epoch)
+	ctx := context.Background()
+
+	seedLiveGeneration(t, conn, epoch)
+
+	outcome, err := epochs.DrainStep(ctx, epoch, activation.FacetOutput, true)
+	if !errors.Is(err, activation.ErrDrainRefused) {
+		t.Fatalf("finalizing a facet with a live generation was not refused: %v", err)
+	}
+	if !errors.Is(err, output.ErrConflict) {
+		t.Errorf("the refusal is not a typed conflict: %v", err)
+	}
+	if outcome.Disabled {
+		t.Error("the refused step reported the facet disabled")
+	}
+
+	// And the refusal is a refusal, not a rollback: emission stopped, because
+	// stopping it is unconditionally the right thing and is what keeps the set
+	// the predicate counted from growing.
+	state, err := epochs.Read(ctx, epoch)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if state.Output != "draining" {
+		t.Errorf("a refused finalize left the facet %q; emission must still have stopped",
+			state.Output)
+	}
+}
+
+// Without --finalize the same live state is a report, not an error. This is the
+// common operator action and it has to be safe to repeat.
+func TestADrainStepWithoutFinalizeReportsResidueRatherThanFailing(t *testing.T) {
+	const epoch = executioncontrol.ActivationEpoch(77)
+	epochs, conn := drainFixture(t, epoch)
+	ctx := context.Background()
+
+	seedLiveGeneration(t, conn, epoch)
+
+	first, err := epochs.DrainStep(ctx, epoch, activation.FacetOutput, false)
+	if err != nil {
+		t.Fatalf("reporting residue without --finalize: %v", err)
+	}
+	if len(first.Residue) == 0 {
+		t.Fatal("the step reported no residue for a plane with a live generation")
+	}
+	if first.Disabled {
+		t.Error("a step without --finalize disabled the facet")
+	}
+
+	second, err := epochs.DrainStep(ctx, epoch, activation.FacetOutput, false)
+	if err != nil {
+		t.Fatalf("the second drain step failed: %v", err)
+	}
+	if second.Drained {
+		t.Error("the second step reported making the enabled -> draining transition again")
+	}
+	if len(second.Residue) != len(first.Residue) {
+		t.Errorf("repeating the step changed the residue: %v then %v",
+			first.Residue, second.Residue)
+	}
+}
+
+// A facet that is neither enabled nor draining is skipped rather than moved.
+func TestADrainStepOnADisabledFacetIsASkip(t *testing.T) {
+	const epoch = executioncontrol.ActivationEpoch(78)
+	epochs, _ := drainFixture(t, epoch)
+	ctx := context.Background()
+
+	if _, err := epochs.DrainStep(ctx, epoch, activation.FacetOutput, true); err != nil {
+		t.Fatalf("first drain: %v", err)
+	}
+
+	outcome, err := epochs.DrainStep(ctx, epoch, activation.FacetOutput, true)
+	if err != nil {
+		t.Fatalf("draining an already-disabled facet: %v", err)
+	}
+	if !outcome.Skipped || outcome.State != "disabled" {
+		t.Errorf("an already-disabled facet was not skipped: %+v", outcome)
+	}
+}
+
+// --facet=all takes output down first and base second, and the order is a
+// function rather than a comment in the command.
+func TestDrainFacetsTakesOutputDownBeforeBase(t *testing.T) {
+	all := activation.DrainFacets(true, activation.FacetBase)
+	if len(all) != 2 || all[0] != activation.FacetOutput || all[1] != activation.FacetBase {
+		t.Errorf("--facet=all drains %v; base is what settles a capture, so output goes first",
+			all)
+	}
+
+	one := activation.DrainFacets(false, activation.FacetBase)
+	if len(one) != 1 || one[0] != activation.FacetBase {
+		t.Errorf("a single-facet drain took %v", one)
+	}
+}
