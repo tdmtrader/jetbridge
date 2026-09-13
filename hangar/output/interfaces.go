@@ -198,8 +198,17 @@ type InventoryObject struct {
 // Complete is false when the pass stopped on a budget or a failure. The cursor
 // advances only when every object in the page has a committed disposition, so
 // an incomplete page is replayed rather than skipped.
+//
+// Debt is the other half of "every object has a committed disposition". An
+// object that cannot be classified -- poisoned metadata, a marker some other
+// cohort wrote, metadata larger than a whole pass budget -- is a disposition
+// too, and Req 44 requires it to be committed BEFORE the cursor moves past it.
+// Carrying it beside the objects is what lets one transaction write both, which
+// is the only arrangement in which a poisoned object can neither be lost nor
+// replayed forever.
 type InventoryPage struct {
 	Objects  []InventoryObject
+	Debt     []InventoryDebt
 	Next     InventoryCursor
 	Complete bool
 }
@@ -238,6 +247,22 @@ const (
 	PrincipalPolicyAttestor PrincipalRole = "policy_attestor"
 )
 
+// Validate refuses a role outside the closed set.
+//
+// It matters here for the same reason it matters everywhere else in this
+// vocabulary: a runtime denial recorded against an invented role name is a
+// violation row an operator cannot map to a service account.
+func (role PrincipalRole) Validate() error {
+	for _, member := range PrincipalRoles() {
+		if role == member {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("%w: %q is not one of this plane's four principals %v",
+		ErrUnknownMember, role, PrincipalRoles())
+}
+
 func PrincipalRoles() []PrincipalRole {
 	return []PrincipalRole{
 		PrincipalPublisher,
@@ -256,14 +281,20 @@ func PrincipalRoles() []PrincipalRole {
 type PrincipalBindings struct {
 	BucketFingerprint string
 	Permissions       map[PrincipalRole][]string
-}
 
-// PolicyReader reads bucket lifetime policy and IAM. It has no object method
-// at all: the attestor's cloud principal cannot read, create or delete a single
-// object, which is why it can be trusted to say what the policy is.
-type PolicyReader interface {
-	ReadLifetimePolicy(ctx context.Context) (PolicySnapshot, error)
-	ReadPrincipalBindings(ctx context.Context) (PrincipalBindings, error)
+	// UnrecognisedRoles is every IAM role name the translation could not
+	// expand into permissions, per principal that holds it.
+	//
+	// It is a separate field and not an entry in Permissions, and the
+	// difference is the whole of R1-F5. An unknown role folded in as a
+	// pseudo-permission matches nothing the matrix forbids, so a publisher
+	// bound roles/storage.objectCreator PLUS a custom role carrying
+	// storage.objects.delete satisfied its required set, tripped no excess
+	// finding, and attested SAFE. The matrix cannot know what a custom role
+	// contains -- only the project that defined it does -- so the honest
+	// answer is not "harmless", it is "unknown, therefore unsafe", and that is
+	// a finding rather than an omission.
+	UnrecognisedRoles map[PrincipalRole][]string
 }
 
 // WriterAdmission is one writer's ticket over a source incarnation.

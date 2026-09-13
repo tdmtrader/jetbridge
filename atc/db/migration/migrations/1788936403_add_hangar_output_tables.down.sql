@@ -43,6 +43,11 @@ BEGIN
     IF n > 0 THEN blockers := blockers || format('%s reclaim job(s)', n); END IF;
     SELECT count(*) INTO n FROM hangar_policy_snapshots;
     IF n > 0 THEN blockers := blockers || format('%s policy snapshot(s)', n); END IF;
+    -- A violation outlives the snapshot it was derived from, on purpose:
+    -- recovery needs a fresh safe attestation AND reconciliation, so an open
+    -- finding is exactly the state a removal must not walk past.
+    SELECT count(*) INTO n FROM hangar_policy_violations;
+    IF n > 0 THEN blockers := blockers || format('%s policy violation record(s)', n); END IF;
     -- An operation lease references only the epoch, and an `initial` epoch is
     -- allowed to drop, so this is the one table nothing else keeps here. Every
     -- other table not listed hangs off one that is, by a RESTRICT foreign key.
@@ -56,6 +61,7 @@ BEGIN
 END $$;
 
 DROP TABLE hangar_operation_leases;
+DROP TABLE hangar_policy_violations;
 DROP TABLE hangar_policy_snapshots;
 DROP TABLE hangar_reclaim_attempts;
 DROP TABLE hangar_reclaim_jobs;
@@ -76,7 +82,9 @@ DROP TABLE hangar_handoff_dispositions;
 DROP TABLE hangar_handoff_predeclarations;
 DROP TABLE hangar_output_activation_epochs;
 
+DROP FUNCTION hangar_policy_violation_resolution();
 DROP FUNCTION hangar_check_reclaim_evidence();
+DROP FUNCTION hangar_check_reclaim_admission();
 DROP FUNCTION hangar_check_policy_admission();
 DROP FUNCTION hangar_check_read_lease_claim();
 DROP FUNCTION hangar_check_reclaim_exclusion();

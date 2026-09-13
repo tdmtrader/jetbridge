@@ -33,10 +33,6 @@ const (
 	// DefaultLeaseTerm is requirement 10's 15-minute capture ownership lease.
 	DefaultLeaseTerm = 15 * time.Minute
 
-	// DefaultSealDeadline is requirement 17's 5 minutes, configurable from 30
-	// seconds through 30 minutes.
-	DefaultSealDeadline = 5 * time.Minute
-
 	// DefaultChallengeTerm bounds a stat challenge. A receipt signed over old
 	// facts proves only that the facts were once true.
 	DefaultChallengeTerm = 5 * time.Minute
@@ -80,12 +76,23 @@ func (coordinator *Coordinator) leaseTerm() time.Duration {
 	return coordinator.LeaseTerm
 }
 
-func (coordinator *Coordinator) sealDeadline() time.Duration {
+// sealDeadline is the only place a seal deadline can come from, so it is the
+// place Req 17's range is enforced.
+//
+// SealDeadline is an exported field on an exported struct: any composition can
+// set it, and this substituted the default on zero and accepted anything else
+// whatever -- a negative duration, a day. The frozen decision is 5 minutes,
+// configurable from 30 seconds through 30 minutes, and output.ValidateSealDeadline
+// is the statement of it. It had no caller at all until this one.
+func (coordinator *Coordinator) sealDeadline() (time.Duration, error) {
 	if coordinator.SealDeadline == 0 {
-		return DefaultSealDeadline
+		return output.DefaultSealDeadline, nil
+	}
+	if err := output.ValidateSealDeadline(coordinator.SealDeadline); err != nil {
+		return 0, err
 	}
 
-	return coordinator.SealDeadline
+	return coordinator.SealDeadline, nil
 }
 
 func (coordinator *Coordinator) challengeTerm() time.Duration {
@@ -515,11 +522,19 @@ func (coordinator *Coordinator) beginSeal(ctx context.Context, record output.Han
 	// after the fact would bound nothing after a crash between the two, and a
 	// deadline this process merely held would expire when the process did --
 	// which is exactly the window a capture crossing an ATC restart lives in.
+	// Before the write, and that ordering is the requirement: a deadline
+	// committed and then rejected bounds the capture by a number nobody
+	// approved, and the row is what the daemon and the reaper read.
+	sealDeadline, err := coordinator.sealDeadline()
+	if err != nil {
+		return err
+	}
+
 	var deadline output.Timestamp
 	if err := coordinator.write(ctx, func(tx Transaction) error {
 		var err error
 		deadline, err = coordinator.Repository.RecordSealDeadline(ctx, tx,
-			record.ReservationID, lease.CaptureFence, coordinator.sealDeadline())
+			record.ReservationID, lease.CaptureFence, sealDeadline)
 		if err != nil {
 			return err
 		}
@@ -834,17 +849,27 @@ func (coordinator *Coordinator) registerReceipt(ctx context.Context, record outp
 		// The object at the derived key is not the tree this reservation
 		// resolved. That is a typed collision and never an overwrite.
 		//
-		// TODO(phase 7, terminal outcomes): this arm cannot fire -- the digest
-		// is IN the derived key, so a publish that answered would answer with
-		// this reservation's digest or not at all. The real collision signal is
-		// the publisher's typed ErrConflict, which arrives from the call above
-		// and is retried on every pass: three passes, three identical refusals,
-		// nothing registered, the source held. That is the honest answer for an
-		// out-of-band writer -- the bytes may be put back -- but it is unbounded
-		// until the capture deadline, and nothing enforces `capture_deadline_at`
-		// yet. Phase 7 owns both: the enforcement, and the decision that a
-		// collision at a server-derived key becomes terminal at it. Round-2
-		// review finding R2-F6.
+		// This arm cannot fire -- the digest is IN the derived key, so a publish
+		// that answered would answer with this reservation's digest or not at
+		// all. The real collision signal is the publisher's typed ErrConflict,
+		// which arrives from the call above and is retried on every pass. That
+		// is the honest answer for an out-of-band writer: the bytes may be put
+		// back.
+		//
+		// Phase 7 landed HALF of round-2 review finding R2-F6. What it fixed is
+		// the consequence: a capture that gives up past the publish point can
+		// now reach a terminal state and let its source go (see settleOrphan
+		// below), so a collision is no longer a capture pinned on a node
+		// forever. What it did NOT do is enforce `capture_deadline_at` in this
+		// coordinator -- nothing reads that column here, so "retried until the
+		// capture deadline" is still "retried until somebody gives up". That
+		// producer is capture-path work: the deadline is a Stage 2 fact and the
+		// decision to terminalize on it belongs beside the seal deadline, not
+		// beside the sweep.
+		//
+		// TODO(capture path): read `capture_deadline_at` here and fail
+		// terminally at it, so a collision at a server-derived key is bounded by
+		// the deadline rather than by attention.
 		return coordinator.failTerminally(ctx, record, lease.CaptureFence, "collision")
 	}
 
@@ -944,31 +969,28 @@ func checkReceiptClaims(receipt output.Receipt, record output.HandoffRecord, fen
 	return nil
 }
 
-// settleOrphan is the only thing left past the irreversible publish point, and
-// it has nothing to settle INTO yet.
+// settleOrphan settles a capture that reached a terminal state past the
+// irreversible publish point.
 //
-// It used to call the generic cancel/settle seam, which returns early past the
-// publish point -- so the transition settled nothing and answered nil, and a
-// recovery pass walked away believing it had done something. There is no
-// terminal orphan state in the schema either: `settlement_is_earned` needs a
-// release and the release guard refuses one past the publish point, so there is
-// no row this could write even if it wanted to.
+// An object may exist for it that no receipt correlates -- that is what a
+// terminal orphan IS -- and this transition does not try to say anything about
+// that object. It cannot: the control plane holds no output-bucket role, and a
+// coordinator that wrote an orphan record from a capture's own row would be
+// this plane guessing at a bucket only the inventory principal may list.
 //
-// It refuses, before touching anything. The state is unreachable from this
-// coordinator today -- cancellation past the point is routed to
-// register_receipt, and the collision arm cannot fire because the digest is in
-// the key -- and that is the argument FOR the refusal rather than against it:
-// an unreachable no-op is invisible forever, and an unreachable refusal is a
-// message the day something reaches it.
+// What it does is what is actually owed: the fenced release of the source the
+// capture sealed. That release is what earns settlement in the schema, and a
+// capture that could not settle kept its incarnation pinned on a node and its
+// correlation shielded from adoption forever. Once it is settled and terminal,
+// the sweep's own path takes over -- find the marked object, wait out its
+// publication grace, adopt it (Req 40).
 //
-// TODO(phase 7, reclamation): the terminal orphan outcome is a durable state --
-// a created object that no receipt correlates, held as inventory debt rather
-// than settled away -- and this becomes the transition that records it.
-func (coordinator *Coordinator) settleOrphan(_ context.Context, record output.HandoffRecord) error {
-	return fmt.Errorf("%w: handoff %s is %s past the irreversible publish point, and a terminal "+
-		"orphan has no durable outcome to settle into yet. An object may exist for it and no "+
-		"receipt correlates one; that is inventory debt, and recording it is reclamation's",
-		output.ErrIncomplete, record.HandoffID, record.State)
+// Phase 7 replaced a refusal here. The refusal was honest about the state being
+// unreachable at the time, and the state is reachable now: a publish that
+// passes the point while a canceller is blocked on the row lock produces
+// exactly it, and so does a terminal failure after the first object create.
+func (coordinator *Coordinator) settleOrphan(ctx context.Context, record output.HandoffRecord) error {
+	return coordinator.releaseFor(ctx, record, output.DispositionCapture)
 }
 
 // failTerminally commits a typed failure and announces it.

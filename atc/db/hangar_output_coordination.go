@@ -143,14 +143,28 @@ func (repository *HangarOutputRepository) RecordTerminalCaptureFailure(ctx conte
 		return err
 	}
 
+	// The release intent is minted whatever side of the publish point the
+	// capture failed on, and that is a Phase 7 change with a reason.
+	//
+	// A failed capture ALWAYS owes its source back. What a release releases is
+	// the HOLD, never the bytes (the Phase 5 ruling): the incarnation stays on
+	// the node as ordinary step content, and the hold is what exempts it from
+	// payload cleanup, sweep and reuse. Withholding the intent past the publish
+	// point left a terminally failed capture that could never settle -- the
+	// schema earns settlement with a release acknowledgement -- and therefore
+	// an incarnation pinned on a node for the life of the deployment, beside a
+	// correlation adoption would never be allowed to collect.
+	//
+	// The object it may have created needs no record here. It carries this
+	// capture's marker, the sweep will find it, and once this reservation is
+	// terminal and its grace has elapsed adoption takes it: that is Req 40's
+	// "terminal settlement eventually permits marked-orphan adoption", and the
+	// mechanism is inventory rather than a second ledger of orphans.
 	result, err := tx.ExecContext(ctx, `
 		UPDATE hangar_capture_reservations r
 		SET state = 'failed',
 		    terminal_failure = $3,
-		    release_intent_id = CASE
-		        WHEN r.past_irreversible_publish_point THEN r.release_intent_id
-		        ELSE coalesce(r.release_intent_id, gen_random_uuid())
-		    END
+		    release_intent_id = coalesce(r.release_intent_id, gen_random_uuid())
 		WHERE r.reservation_id = $1
 		  AND `+hangarCurrentCaptureFence+` = $2
 		  AND r.state IN ('unresolved', 'resolved')`,
@@ -159,7 +173,7 @@ func (repository *HangarOutputRepository) RecordTerminalCaptureFailure(ctx conte
 		return hangarConflict(err)
 	}
 	if updated, err := result.RowsAffected(); err == nil && updated == 1 {
-		return nil
+		return hangarTerminalizeLogical(ctx, tx, reservation)
 	}
 
 	var state, existing string
@@ -173,7 +187,7 @@ func (repository *HangarOutputRepository) RecordTerminalCaptureFailure(ctx conte
 	}
 	_ = stored
 	if state == string(output.CaptureStateFailed) && existing == failure {
-		return nil
+		return hangarTerminalizeLogical(ctx, tx, reservation)
 	}
 
 	return fmt.Errorf("%w: reservation %s is %s and cannot also fail as %q",
@@ -629,4 +643,28 @@ func (repository *HangarOutputRepository) ReadEveryAnnouncement(ctx context.Cont
 	}
 
 	return announcements, rows.Err()
+}
+
+// hangarTerminalizeLogical closes the logical half of a terminal capture.
+//
+// It exists because a terminally failed or cancelled capture used to leave its
+// logical reservation at `unresolved_generation` forever, and an unresolved
+// reservation is a SHIELD: it protects its (scope, digest) correlation from
+// orphan adoption (Req 40) and refuses reclaim admission (the schema's reclaim
+// exclusion). A capture that has given up and kept its shield is a correlation
+// nothing can ever collect -- the leak Req 40's own "or records terminal
+// failure" arm exists to close.
+//
+// `registered` is never overwritten: a capture that registered a generation and
+// then failed on a LATER step still resolved its logical identity, and calling
+// that terminal would lose the resolution.
+func hangarTerminalizeLogical(ctx context.Context, tx output.Tx, reservation output.ReservationID) error {
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE hangar_logical_reservations SET state = 'terminal'
+		WHERE reservation_id = $1 AND state = 'unresolved_generation'`,
+		string(reservation)); err != nil {
+		return hangarConflict(err)
+	}
+
+	return nil
 }

@@ -10,15 +10,20 @@ package steps
 // that made "the bucket" an ordinary directory is not available here, and the
 // choice is between a GCS stand-in over HTTP and no real daemon at all.
 //
-// The stand-in is github.com/fsouza/fake-gcs-server, reached through the seam
-// the production code already has: hangar/gcs.NewStorageClient passes a
-// non-empty endpoint to option.WithEndpoint together with
-// option.WithoutAuthentication() and storage.WithJSONReads(), which is exactly
-// an unauthenticated emulator profile. Nothing in the daemon is modified or
-// stubbed to make this work; the daemon's own --durable-endpoint flag is the
-// whole seam, and the daemon validates the bucket at boot
-// (client.Bucket(...).Attrs), so a fixture pointing at nothing is reported as
-// a daemon that exited during startup rather than as a scenario failure later.
+// The stand-in is github.com/fsouza/fake-gcs-server, reached on the same
+// endpoint convention the production code uses: a non-empty endpoint goes to
+// option.WithEndpoint together with option.WithoutAuthentication() and
+// storage.WithJSONReads(), which is exactly an unauthenticated emulator
+// profile. The URL shaping is shared through hangar/gcs.NormalizeStorageEndpoint
+// -- a string in and a string out -- rather than through a client constructor:
+// hangar/gcs hands out no *storage.Client to anything any more, because a
+// caller holding one holds an arbitrary object delete. This fixture needs a raw
+// client for the one operation no role has permission for (creating a bucket),
+// so it builds its own with the SDK and says so. Nothing in the daemon is
+// modified or stubbed to make this work; the daemon's own --durable-endpoint
+// flag is the whole seam, and the daemon validates the bucket at boot, so a
+// fixture pointing at nothing is reported as a daemon that exited during
+// startup rather than as a scenario failure later.
 //
 // THE FIXTURE RECORDS NOTHING (convention 10). fakestorage stores objects with
 // their metadata and generations and answers requests; there is no request log
@@ -78,6 +83,7 @@ import (
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/fsouza/fake-gcs-server/fakestorage"
 	"google.golang.org/api/iterator"
+	"google.golang.org/api/option"
 
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
@@ -195,9 +201,9 @@ func startHangarDaemon(rec *brine.Recorder) (HangarDaemon, error) {
 		return HangarDaemon{}, err
 	}
 
-	client, err := hangargcs.NewStorageClient(ctx, endpoint)
+	client, err := emulatorStorageClient(ctx, endpoint)
 	if err != nil {
-		return HangarDaemon{}, fmt.Errorf("create the emulator's storage client: %w", err)
+		return HangarDaemon{}, err
 	}
 	rec.RegisterDisposer(func() { _ = client.Close() })
 
@@ -436,6 +442,28 @@ const (
 // The attempts and the per-attempt bound are parameters rather than the
 // constants above so the closed-port case can be asserted in a second rather
 // than in half a minute; the production call site passes the constants.
+// emulatorStorageClient is the fixture's own raw client, for the one operation
+// the production seam deliberately cannot do: creating a bucket.
+//
+// It is built with the SDK rather than obtained from hangar/gcs because that
+// package hands out no *storage.Client to anybody -- a caller holding one holds
+// an arbitrary, unconditional object delete, which is how one finding reached
+// three rounds. The endpoint convention is still shared, through a function
+// that takes a string and returns a string.
+func emulatorStorageClient(ctx context.Context, endpoint string) (*storage.Client, error) {
+	normalized, err := hangargcs.NormalizeStorageEndpoint(endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("normalise the emulator endpoint %q: %w", endpoint, err)
+	}
+	client, err := storage.NewClient(ctx, option.WithEndpoint(normalized),
+		option.WithoutAuthentication(), storage.WithJSONReads())
+	if err != nil {
+		return nil, fmt.Errorf("create the emulator's storage client: %w", err)
+	}
+
+	return client, nil
+}
+
 func createOutputBucket(ctx context.Context, endpoint, bucket string, attempts int, perAttempt time.Duration, create func(context.Context) error) error {
 	var err error
 	for attempt := 1; attempt <= attempts; attempt++ {

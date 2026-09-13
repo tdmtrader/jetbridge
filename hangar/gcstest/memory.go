@@ -162,6 +162,40 @@ func (memory *Memory) Object(bucket, key string) objectstore.Handle {
 	return &memoryHandle{memory: memory, bucket: bucket, key: key}
 }
 
+// ObjectToDelete is the delete seam, which is a separate interface from the
+// one above for the same reason it is in production: Delete is not a method on
+// objectstore.Handle any more, so a role that can delete has to have been handed
+// something that can. The tier-1 substrate implements both over the same
+// objects, which is what lets one spec publish through the publisher and reclaim
+// through the reclaimer.
+func (memory *Memory) ObjectToDelete(bucket, key string) objectstore.DeleteHandle {
+	return &memoryDeleteHandle{handle: &memoryHandle{memory: memory, bucket: bucket, key: key}}
+}
+
+type memoryDeleteHandle struct{ handle *memoryHandle }
+
+func (handle *memoryDeleteHandle) If(conditions objectstore.Conditions) objectstore.DeleteHandle {
+	copied := *handle.handle
+	copied.conditions = conditions
+
+	return &memoryDeleteHandle{handle: &copied}
+}
+
+func (handle *memoryDeleteHandle) Generation(generation int64) objectstore.DeleteHandle {
+	copied := *handle.handle
+	copied.generation = generation
+
+	return &memoryDeleteHandle{handle: &copied}
+}
+
+func (handle *memoryDeleteHandle) Attrs(ctx context.Context) (objectstore.Attrs, error) {
+	return handle.handle.Attrs(ctx)
+}
+
+func (handle *memoryDeleteHandle) Delete(ctx context.Context) error {
+	return handle.handle.Delete(ctx)
+}
+
 func (memory *Memory) List(ctx context.Context, bucket string, request objectstore.ListRequest) (objectstore.Page, error) {
 	if err := ctx.Err(); err != nil {
 		return objectstore.Page{}, err
@@ -185,8 +219,16 @@ func (memory *Memory) List(ctx context.Context, bucket string, request objectsto
 	}
 	sort.Strings(keys)
 
+	// The (key, generation) after-key. A resumed listing drops the key it
+	// resumed from ONLY when the object there is no newer than the generation
+	// the cursor named: an object recreated at that key since is a new object
+	// at an old name, and skipping it would lose it for a whole cycle.
 	start := 0
-	for start < len(keys) && keys[start] <= request.After && request.After != "" {
+	for start < len(keys) && request.After != "" && keys[start] <= request.After {
+		if keys[start] == request.After && request.AfterGeneration != 0 &&
+			memory.objects[bucket][keys[start]].generation > request.AfterGeneration {
+			break
+		}
 		start++
 	}
 	end := start + request.PageSize
@@ -427,4 +469,7 @@ func cloneMetadata(metadata map[string]string) map[string]string {
 	return copied
 }
 
-var _ objectstore.Client = (*Memory)(nil)
+var (
+	_ objectstore.Client       = (*Memory)(nil)
+	_ objectstore.DeleteClient = (*Memory)(nil)
+)

@@ -176,6 +176,8 @@ func VerifyCaptureAcknowledgement(ack CaptureAcknowledgement, public ed25519.Pub
 	}, public, fmt.Sprintf("the %s statement for %s", ack.Kind, ack.Execution.ExecutionID))
 }
 
+// Deferred: the consumer-side verification half is Phase 8's; nothing in this
+// phase reads a grant, a receipt or a lease answer back
 func VerifyReleaseAcknowledgement(ack ReleaseAcknowledgement, public ed25519.PublicKey) error {
 	if err := ack.Validate(); err != nil {
 		return err

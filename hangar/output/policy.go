@@ -1,8 +1,11 @@
 package output
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/concourse/concourse/hangar/executioncontrol"
 )
@@ -77,6 +80,9 @@ func (state PolicyState) Validate() error {
 	return err
 }
 
+// Deferred: the operator status and diagnosis surface is Phase 8's; no running
+// process reads it yet
+//
 // AdmitsNewWork reports whether this state permits new captures, claim
 // acquires, grants, adoption and reclaim admission. Only PolicySafe does;
 // PolicyUnknown is treated exactly as PolicyAtRisk, because "we have not
@@ -177,6 +183,230 @@ func (handshake ExtensionHandshake) Validate() error {
 	}
 	if handshake.DerivedNamespace == "" {
 		return fmt.Errorf("%w: handshake reports no derived namespace", ErrIncomplete)
+	}
+
+	return nil
+}
+
+// LifecycleRule is one bucket lifetime rule as the provider reports it.
+//
+// Action is kept as the provider's own string rather than a parsed enum: the
+// rule this plane cares about is "is there a Delete action here", and a
+// vocabulary of our own would answer that question about our vocabulary rather
+// than about the bucket. Anything this code does not recognise is therefore
+// still visible, and still counted.
+type LifecycleRule struct {
+	Action    string
+	Condition string
+}
+
+// RemovesObjects reports whether this rule can remove an object.
+//
+// It matches case-insensitively and it matches on a PREFIX, because the safe
+// direction is to over-report: a rule this plane does not recognise that
+// happens to remove objects is the failure mode the whole attestation exists to
+// catch, and a rule it over-reports costs an operator one look.
+//
+// The name is not `IsDelete`, and that is the delete-isolation guard doing its
+// job rather than being worked around: a predicate about a RULE is not an
+// operation, but a method whose name says "delete" outside the reclaimer is the
+// thing the guard cannot tell apart from one, and the honest fix is a name that
+// says what this is.
+func (rule LifecycleRule) RemovesObjects() bool {
+	action := strings.ToLower(strings.TrimSpace(rule.Action))
+
+	return strings.HasPrefix(action, "delete")
+}
+
+// BucketLifetimePolicy is one authoritative whole-bucket policy read.
+//
+// It is the WHOLE policy and not a summary: Req 51 wants a whole-bucket
+// lifecycle read proving the snapshot, and a reader that fetched only the rules
+// it expected could not prove the absence of the one it did not.
+type BucketLifetimePolicy struct {
+	BucketFingerprint string
+	Metageneration    int64
+	Rules             []LifecycleRule
+	ObservedAt        Timestamp
+}
+
+// PolicyHash is a stable digest of the observed policy.
+//
+// It exists so a later reader can tell an UNCHANGED policy from an UNREAD one.
+// Metageneration alone cannot: a bucket whose metadata was touched and reverted
+// has a new metageneration and the same policy, and a reader comparing only the
+// number would report a change that did not happen -- or, worse, would be
+// tempted to treat a matching number as proof the rules were re-read.
+func (policy BucketLifetimePolicy) PolicyHash() string {
+	hash := sha256.New()
+	fmt.Fprintf(hash, "hangar-output-lifetime-policy-v1\n%s\n%d\n",
+		policy.BucketFingerprint, policy.Metageneration)
+	for _, rule := range policy.Rules {
+		fmt.Fprintf(hash, "%s\x00%s\n", rule.Action, rule.Condition)
+	}
+
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil))
+}
+
+// RemovalRules counts the rules that can remove an object.
+func (policy BucketLifetimePolicy) RemovalRules() int {
+	count := 0
+	for _, rule := range policy.Rules {
+		if rule.RemovesObjects() {
+			count++
+		}
+	}
+
+	return count
+}
+
+// PolicyViolation is the closed set of things an attestation can conclude is
+// wrong, each of which moves the epoch to at_risk.
+//
+// They are separate members because the operator action differs: a lifecycle
+// Delete rule is a bucket misconfiguration, an excess role is an IAM
+// misconfiguration, and a stale reading is a monitor that stopped. A single
+// `unsafe` would tell an operator that something is wrong and nothing else.
+type PolicyViolation string
+
+const (
+	// ViolationLifecycleDeleteRule is the one Req 51 is named for: the
+	// dedicated output bucket has no lifecycle Delete rule, and a bucket that
+	// has one can remove a claimed generation without asking anybody.
+	ViolationLifecycleDeleteRule PolicyViolation = "lifecycle_delete_rule"
+
+	// ViolationEvidenceStale is an attestation older than the detection bound.
+	// "We have not checked" and "the check failed" are the same amount of
+	// evidence, and this is both of them.
+	ViolationEvidenceStale PolicyViolation = "evidence_stale"
+
+	// ViolationEvidenceUnreadable is a read that did not answer.
+	ViolationEvidenceUnreadable PolicyViolation = "evidence_unreadable"
+
+	// ViolationExcessRole is a principal holding a permission its role
+	// forbids -- the publisher with delete, the reclaimer with list.
+	ViolationExcessRole PolicyViolation = "excess_role"
+
+	// ViolationInsufficientRole is a principal missing a permission its role
+	// needs. It is a violation rather than a warning because a role that
+	// cannot do its work is a plane that will silently stop reclaiming.
+	ViolationInsufficientRole PolicyViolation = "insufficient_role"
+
+	// ViolationWrongPrincipal is a role bound to an identity other than the
+	// configured one, including the case where two roles share one identity.
+	// A Kubernetes service account is Pod-wide: shared identities are shared
+	// permissions.
+	ViolationWrongPrincipal PolicyViolation = "wrong_principal"
+
+	// ViolationSharedBucket is an identity outside this plane's four roles
+	// holding object permissions on the output bucket. Prefix-only isolation
+	// in a mixed bucket is an activation failure (Req 54), and this is what
+	// detects one after activation.
+	ViolationSharedBucket PolicyViolation = "shared_bucket"
+
+	// ViolationUnrecognisedRole is a principal holding an IAM role this plane
+	// cannot expand into permissions -- a custom role, or a predefined one
+	// added since the matrix was written.
+	//
+	// It is a violation and not an omission because the matrix has no way to
+	// know what such a role contains: only the project that defined it does.
+	// Treating it as harmless is what let a publisher hold a custom role
+	// carrying storage.objects.delete and attest safe.
+	ViolationUnrecognisedRole PolicyViolation = "unrecognised_role"
+
+	// ViolationOutOfBandAbsence is an exact generation this plane registered,
+	// found absent, with no admitted delete on record to explain it. It is
+	// Req 52's "unexpected exact absence": somebody else removed a managed
+	// object, and the one thing this plane must never do is rewrite that as
+	// its own reclamation.
+	ViolationOutOfBandAbsence PolicyViolation = "out_of_band_absence"
+
+	// ViolationRuntimePrincipalDenied is Req 52's "platform-principal
+	// mismatch" in its runtime form: a controller was refused by the store
+	// while doing work its role is supposed to authorize. The IAM matrix says
+	// what the bindings CLAIM; this is the store saying otherwise.
+	ViolationRuntimePrincipalDenied PolicyViolation = "runtime_principal_denied"
+
+	// ViolationMixedCohort is more than one activation epoch's principals bound
+	// at once. Rotation creates a new epoch rather than replacing a key in
+	// place, and two cohorts on one bucket is two planes disagreeing about
+	// whose object is whose.
+	ViolationMixedCohort PolicyViolation = "mixed_cohort"
+)
+
+func PolicyViolations() []PolicyViolation {
+	return []PolicyViolation{
+		ViolationLifecycleDeleteRule,
+		ViolationEvidenceStale,
+		ViolationEvidenceUnreadable,
+		ViolationExcessRole,
+		ViolationInsufficientRole,
+		ViolationWrongPrincipal,
+		ViolationSharedBucket,
+		ViolationMixedCohort,
+		ViolationUnrecognisedRole,
+		ViolationOutOfBandAbsence,
+		ViolationRuntimePrincipalDenied,
+	}
+}
+
+func ParsePolicyViolation(value string) (PolicyViolation, error) {
+	for _, member := range PolicyViolations() {
+		if string(member) == value {
+			return member, nil
+		}
+	}
+
+	return "", fmt.Errorf("%w: policy violation %q; the vocabulary is %v",
+		ErrUnknownMember, value, PolicyViolations())
+}
+
+func (violation *PolicyViolation) UnmarshalJSON(raw []byte) error {
+	var text string
+	if err := json.Unmarshal(raw, &text); err != nil {
+		return err
+	}
+	parsed, err := ParsePolicyViolation(text)
+	if err != nil {
+		return err
+	}
+	*violation = parsed
+
+	return nil
+}
+
+func (violation PolicyViolation) Validate() error {
+	_, err := ParsePolicyViolation(string(violation))
+
+	return err
+}
+
+// PolicyFinding is one violation with the detail an operator needs to act.
+//
+// Subject is the principal or rule it is about, and it is bounded free text
+// read off an authoritative response rather than composed here: an operator
+// asked to fix an IAM binding needs the binding's own name.
+type PolicyFinding struct {
+	Violation PolicyViolation
+	Subject   string
+	Detail    string
+}
+
+// MaxFindingDetailBytes bounds one finding's free text, so a bucket with a
+// thousand bindings cannot turn an attestation into an unbounded write.
+const MaxFindingDetailBytes = 1024
+
+func (finding PolicyFinding) Validate() error {
+	if err := finding.Violation.Validate(); err != nil {
+		return err
+	}
+	if finding.Subject == "" {
+		return fmt.Errorf("%w: a policy finding names no subject; an operator asked to fix a "+
+			"binding needs the binding", ErrIncomplete)
+	}
+	if len(finding.Detail) > MaxFindingDetailBytes {
+		return fmt.Errorf("%w: finding detail is %d bytes, the bound is %d",
+			ErrLimitExceeded, len(finding.Detail), MaxFindingDetailBytes)
 	}
 
 	return nil

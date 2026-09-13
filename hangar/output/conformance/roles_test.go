@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	hangargcs "github.com/concourse/concourse/hangar/gcs"
 	"github.com/concourse/concourse/hangar/output/inventory"
-	"github.com/concourse/concourse/hangar/output/policy"
 	"github.com/concourse/concourse/hangar/output/publisher"
 	"github.com/concourse/concourse/hangar/output/reclaimer"
 )
@@ -33,9 +33,17 @@ import (
 func methodNames(t *testing.T, prototype any) []string {
 	t.Helper()
 
-	typ := reflect.TypeOf(prototype).Elem()
-	if typ.Kind() != reflect.Interface {
-		t.Fatalf("%v is not an interface", typ)
+	// An interface prototype arrives as (*Iface)(nil) and a concrete one as
+	// (*Type)(nil); Elem() gives the interface in the first case and the
+	// pointer type in the second, and NumMethod is the method set either way.
+	// Both shapes are wanted: an interface states what a role MAY do, and a
+	// concrete type states what the process actually holds.
+	typ := reflect.TypeOf(prototype)
+	if typ == nil || typ.Kind() != reflect.Ptr {
+		t.Fatalf("%v is not a typed nil pointer", typ)
+	}
+	if typ.Elem().Kind() == reflect.Interface {
+		typ = typ.Elem()
 	}
 
 	names := make([]string, 0, typ.NumMethod())
@@ -95,7 +103,13 @@ func TestEachRolesStoreInterfaceHasOnlyItsRolesMethods(t *testing.T) {
 			because:   "a reclaimer deletes what it was told to delete; it does not go looking",
 		},
 		"the policy attestor's source": {
-			prototype: (*policy.Source)(nil),
+			// The PRODUCTION type, not a role-package interface. The interface
+			// this used to name had no implementation and no consumer: the
+			// wired composition reads bucket metadata through
+			// hangar/gcs.BucketPolicySource directly, so an interface nothing
+			// satisfied was a guard over a shape that could be correct while
+			// the shape in the process was not.
+			prototype: (*hangargcs.BucketPolicySource)(nil),
 			want:      []string{"ReadLifetimePolicy", "ReadPrincipalBindings"},
 			forbidden: []string{"Object", "List", "Delete", "NewWriter", "NewReader", "Attrs"},
 			because: "the attestor is the workload whose word the plane trusts about whether the " +

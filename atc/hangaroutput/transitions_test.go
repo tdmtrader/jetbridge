@@ -19,7 +19,6 @@ package hangaroutput
 // Reqs 1-11, 21, 25-27; ACs 1, 2, 6, 8, 9.
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -127,52 +126,39 @@ func resolvedLogically(record output.HandoffRecord) output.HandoffRecord {
 	return record
 }
 
-// TransitionSettleOrphan has no durable outcome to settle INTO, and it says so
-// out loud rather than reporting success.
+// The terminal-orphan DECISION, at the level this file works at: which
+// transition a record in that state selects, and when it stops selecting it.
 //
-// `settleOrphan` called CancelOrSettle, which returns early past the publish
-// point -- so the transition settled nothing, answered nil, and a recovery pass
-// walked away believing it had done something. There is no terminal orphan
-// state in the schema either: `settlement_is_earned` needs a release, and the
-// release guard refuses one past the publish point. Phase 7's "terminal orphan
-// outcome" needs a durable state, and until it exists a silent success is the
-// worst of the three possible answers.
-//
-// It is unreachable from the coordinator today -- cancellation past the point
-// is routed to register_receipt, and the collision arm cannot fire because the
-// digest is in the key -- which is precisely why it has to fail loudly: an
-// unreachable no-op is invisible, and an unreachable refusal is a message the
-// day something reaches it.
-func TestSettlingAnOrphanRefusesRatherThanReportingSuccess(t *testing.T) {
+// The behaviour -- that settling it releases the source, settles the row, and
+// invents no receipt or lifecycle row -- is proved end to end against the real
+// daemon and real PostgreSQL in orphan_test.go, because that is an assertion
+// about a node and a database rather than about a decision.
+func TestATerminalOrphanSelectsSettleOrphanUntilItsSourceIsReleased(t *testing.T) {
 	record := resolvedLogically(captured(predeclared()))
 	record.PastIrreversiblePublishPoint = true
 	record.State = output.CaptureStateCancelled
 
-	// The control: this record really does select settle_orphan, so the
-	// refusal below is the transition's and not a mis-selection.
 	decision, err := Decide(record)
 	if err != nil {
 		t.Fatalf("deciding: %v", err)
 	}
 	if decision.Transition != TransitionSettleOrphan {
-		t.Fatalf("the record selects %q, so this spec is not about settle_orphan",
+		t.Errorf("a terminal capture past the publish point with a held source selects %q",
 			decision.Transition)
 	}
 
-	// A zero coordinator: the refusal comes before anything is touched, which
-	// is the other half of "loudly" -- a transition that refused after writing
-	// would have settled half of something.
-	coordinator := &Coordinator{}
-	taken, err := coordinator.perform(context.Background(), record)
-	if taken.Transition != TransitionSettleOrphan {
-		t.Errorf("the coordinator performed %q", taken.Transition)
+	// And it stops. Deciding settle_orphan unconditionally -- which this arm
+	// used to do -- made it a transition the coordinator selected forever, with
+	// the recoverer driving a release that was already acknowledged on every
+	// pass for the life of the deployment.
+	released := record
+	released.ReleaseAcknowledged = true
+	decision, err = Decide(released)
+	if err != nil {
+		t.Fatalf("deciding a released orphan: %v", err)
 	}
-	if !errors.Is(err, output.ErrIncomplete) {
-		t.Fatalf("settling an orphan answered %v; a transition with no durable outcome must "+
-			"not report success", err)
-	}
-	if !strings.Contains(err.Error(), "orphan") {
-		t.Errorf("the refusal does not name what is missing: %v", err)
+	if decision.Transition != TransitionNone {
+		t.Errorf("a settled terminal orphan still selects %q", decision.Transition)
 	}
 }
 

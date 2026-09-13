@@ -327,11 +327,18 @@ func (publisher *Publisher) classify(attrs objectstore.Attrs, reservation output
 	// SIZE, and only size. It catches a replaced body of a different length and
 	// nothing else: a same-size replacement still deduplicates.
 	//
-	// TODO(phase 7, inventory): compare the store's CRC32C against the marker
-	// as well. `objectstore.Attrs` carries no checksum, so this role cannot
-	// read one today -- but GCS reports one and so does the emulator, and the
-	// inventory role is where widening `Attrs` earns its place. Round-2 review
-	// finding R2-F5.
+	// TODO(phase 9, real GCS): compare the store's CRC32C against the marker as
+	// well. `objectstore.Attrs` carries no checksum, so this role cannot read
+	// one today -- but GCS reports one and so does the emulator.
+	//
+	// Round-2 review finding R2-F5 pointed this at "when the inventory role
+	// lands". The inventory role landed in Phase 7 and this did not move, for a
+	// reason worth writing down: widening `Attrs` with a checksum changes the
+	// PUBLISHER's dedup comparison, which is reachable only from a capture, and
+	// the evidence that the value is what GCS actually returns is a real-store
+	// observation. Adding the field on the strength of an emulator would be
+	// adding a comparison whose input this tree has never seen from the real
+	// thing.
 	if size != sizeUnknown && attrs.Size != size {
 		return output.PublishedObject{}, fmt.Errorf("%w: the object at generation %d holds %d "+
 			"stored bytes and this capture canonicalized %d for %s. The marker claims this tree "+

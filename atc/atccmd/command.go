@@ -1378,6 +1378,7 @@ func (cmd *RunCommand) backendComponents(
 	}
 
 	components = append(components, cmd.hangarOutputCaptureComponent(dbConn))
+	components = append(components, cmd.hangarOutputReadLeaseCleanupComponent(dbConn))
 
 	if syslogDrainConfigured {
 		components = append(components, RunnableComponent{
@@ -1653,6 +1654,34 @@ func (transactor hangarOutputTransactor) Begin() (hangaroutput.Transaction, erro
 	// nowhere earlier, and a coordinator handed an unclassified commit failure
 	// would read a denial as an ambiguous commit and retry it forever.
 	return db.HangarOutputTx{Tx: tx}, nil
+}
+
+// hangarOutputReadLeaseCleanupComponent closes abandoned managed-read leases.
+//
+// It is the carry-forward from the Phase 6 review: `CloseAbandonedReadLeases`
+// existed, was specified, and had no worker, so a materializer that died
+// mid-transfer left a lease that nothing closed and a generation that reclaim
+// admission would refuse forever.
+//
+// It lives in the web node rather than in a controller binary for the same
+// reason capture recovery does: it needs PostgreSQL and no output-bucket role at
+// all. It takes no cloud permission, opens no store client and reads no object;
+// what it does is ask the database which leases its own clock says have expired.
+//
+// The batch is bounded and the interval is the plane's one-minute fallback. A
+// pass that closed every expired lease in one go would hold the component runner
+// behind a deployment's whole backlog on the first wake after an outage.
+func (cmd *RunCommand) hangarOutputReadLeaseCleanupComponent(dbConn db.DbConn) RunnableComponent {
+	repository := db.NewHangarOutputRepository(db.HangarConsumerPrefixForComponent())
+
+	return RunnableComponent{
+		Component: atc.Component{Name: atc.ComponentHangarOutputReadLeaseCleanup},
+		Runnable: &hangaroutput.ReadLeaseCleaner{
+			Transactor: hangarOutputTransactor{conn: dbConn},
+			Leases:     repository,
+		},
+		Interval: time.Minute,
+	}
 }
 
 func newPipelineRunReclaimerComponent(lifecycle db.PipelineRunReclaimLifecycle, now func() time.Time, batchSize int) RunnableComponent {

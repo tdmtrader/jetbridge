@@ -423,8 +423,8 @@ func TestADaemonRestartBetweenSealingAndPublishingChangesNothing(t *testing.T) {
 // no complete final container status before the deadline.
 //
 // The DEADLINE is what makes it terminal, and it is the reason this spec moves
-// the coordinator's seal deadline into the past rather than relying on the
-// drain refusing forever. Requirement 17 types `seal_unconfirmed` as the
+// the row's seal deadline into the past rather than relying on the drain
+// refusing forever. Requirement 17 types `seal_unconfirmed` as the
 // outcome of a boundary that could not be proved *before a database-clock
 // deadline*; a boundary that cannot be proved right now is retried, which is
 // the spec below this one. What it DOES owe is a fenced release -- the source
@@ -433,9 +433,10 @@ func TestADaemonRestartBetweenSealingAndPublishingChangesNothing(t *testing.T) {
 func TestAnUnprovableDrainIsSealUnconfirmedAndPublishesNothing(t *testing.T) {
 	h := newHarness(t)
 	h.Drain.Unprovable = true
-	h.Coordinator.SealDeadline = -time.Minute
 
 	c := h.admit(t).hold(t).finish(t, true)
+	advanceExactly(t, c, 1)
+	stampAnExpiredSealDeadline(t, h, c, time.Minute)
 	c.advance(t)
 
 	record := c.record(t)
@@ -479,9 +480,10 @@ func TestAnUnprovableDrainIsSealUnconfirmedAndPublishesNothing(t *testing.T) {
 // makes this a spec about the clock rather than a second copy of the one above.
 func TestASealPastItsDeadlineIsSealUnconfirmed(t *testing.T) {
 	h := newHarness(t)
-	h.Coordinator.SealDeadline = -time.Hour
 
 	c := h.admit(t).hold(t).finish(t, true)
+	advanceExactly(t, c, 1)
+	stampAnExpiredSealDeadline(t, h, c, time.Hour)
 	c.advance(t)
 
 	record := c.record(t)
@@ -642,26 +644,36 @@ func TestAProofCompletedPastTheDatabaseDeadlineIsNotAdmitted(t *testing.T) {
 	}
 }
 
-// The same window with both clocks AGREEING, and a deadline that is a real
-// forward-going term rather than one composed already in the past.
+// A deadline that expires WHILE WE WAIT, rather than one that was already past
+// when the seal began.
 //
-// Every other deadline spec in this file arranges the past by subtraction --
-// `SealDeadline = -time.Hour` -- which is a fine way to say "already expired"
-// and a poor way to say "expired while we waited". Here the deadline is ahead
-// when the seal begins, the drain takes longer than it, and both the row and
-// the node's copy have passed by the time the drain returns.
+// The other deadline specs in this file arrange the past by subtraction, which
+// is a fine way to say "already expired" and a poor way to say "expired while
+// we waited". Here the row's deadline is ahead when the drain starts, the drain
+// takes longer than it, and the row has passed by the time the drain returns.
 //
-// It is the spec that says WHICH clock carries the refusal now. Both would
-// refuse, so the outcome alone cannot tell them apart; the `confirm-seal` count
-// can, and it says the database's decides and the node is never asked. Round 3
-// found the reverse -- the daemon's wall clock was the only thing refusing this
-// window, and it is the clock requirement 17 pointedly does not name.
+// It is the spec that says WHICH clock carries the refusal. The node keeps the
+// deadline it was handed at begin_seal -- minutes ahead, and untouched here --
+// so the database's row is the ONLY clock that has expired, and a green says
+// its arm fired and fired before the node was asked. Round 3 found the reverse:
+// the daemon's wall clock was the only thing refusing this window, and it is
+// the clock requirement 17 pointedly does not name. The node's own arm is
+// pinned separately, in the spec below.
 func TestAProofOverrunningItsDeadlineOnBothClocksIsNotAdmitted(t *testing.T) {
 	h := newHarness(t)
-	h.Coordinator.SealDeadline = 3 * time.Second
 
 	c := h.admit(t).hold(t).finish(t, true)
 	advanceExactly(t, c, 2)
+
+	// Three seconds ahead, set after begin_seal: a real forward-going term the
+	// drain then overruns. It cannot come from Coordinator.SealDeadline, whose
+	// floor is thirty seconds and is a frozen decision rather than a knob a
+	// spec may turn.
+	if _, err := h.Conn.Exec(`
+		UPDATE hangar_capture_reservations SET seal_deadline_at = now() + interval '3 seconds'
+		WHERE reservation_id = $1`, string(c.record(t).ReservationID)); err != nil {
+		t.Fatalf("giving the row a short forward-going deadline: %v", err)
+	}
 
 	h.Drain.WhileDraining = func() { time.Sleep(4 * time.Second) }
 
@@ -681,9 +693,10 @@ func TestAProofOverrunningItsDeadlineOnBothClocksIsNotAdmitted(t *testing.T) {
 		t.Errorf("the terminal failure is %q", record.TerminalFailure)
 	}
 	if asked := h.Dialer.Calls("confirm-seal"); asked != 0 {
-		t.Errorf("the node was asked to confirm %d time(s); when both clocks agree the proof is "+
-			"late the DATABASE's is the one that decides, and it decides before the node is "+
-			"asked -- otherwise the daemon's wall clock is carrying requirement 17", asked)
+		t.Errorf("the node was asked to confirm %d time(s); the node's own copy of the deadline "+
+			"is still minutes ahead, so the DATABASE's is the only clock that has expired and "+
+			"it has to decide before the node is asked -- otherwise the daemon's wall clock is "+
+			"carrying requirement 17", asked)
 	}
 	if record.Receipt != nil {
 		t.Error("a boundary proved past its own deadline produced a receipt")
@@ -714,10 +727,10 @@ func TestAProofOverrunningItsDeadlineOnBothClocksIsNotAdmitted(t *testing.T) {
 // deadline it is subject to, only decline to answer for it.
 func TestTheNodeRefusesToConfirmPastTheDeadlineItWasGiven(t *testing.T) {
 	h := newHarness(t)
-	h.Coordinator.SealDeadline = -time.Minute
-
 	c := h.admit(t).hold(t).finish(t, true)
-	advanceExactly(t, c, 2)
+	advanceExactly(t, c, 1)
+	stampAnExpiredSealDeadline(t, h, c, time.Minute)
+	advanceExactly(t, c, 1)
 
 	// The DATABASE extends -- a longer term, an operator's edit, a row restored
 	// from a backup. The node keeps the deadline it was handed at begin_seal.
@@ -1273,6 +1286,31 @@ func TestATakeoverCarriesTheCaptureThroughToRegistration(t *testing.T) {
 
 // advanceExactly drives the coordinator forward a fixed number of transitions
 // and refuses to let a failure look like an arrangement.
+// stampAnExpiredSealDeadline puts a past deadline on the reservation BEFORE
+// begin_seal composes one.
+//
+// It is a raw write, on purpose, and it replaced the arrangement these specs
+// used to make: Coordinator.SealDeadline set to a negative duration. That field
+// is Req 17's only configuration site and it is bounded now -- 30 seconds
+// through 30 minutes -- so "already expired" can no longer be composed through
+// it, and it should not be: a deployment able to configure a deadline in the
+// past is the defect the bound exists to stop. What these specs are about is
+// what happens once the deadline HAS passed, which is a fact about the row.
+//
+// It reproduces the old arrangement exactly rather than approximating it,
+// because RecordSealDeadline coalesces: a deadline already on the row is the
+// one begin_seal keeps and the one it hands the node. So both clocks see the
+// same expired instant, which is what they saw before.
+func stampAnExpiredSealDeadline(t *testing.T, h *harness, c *capture, by time.Duration) {
+	t.Helper()
+
+	if _, err := h.Conn.Exec(`
+		UPDATE hangar_capture_reservations SET seal_deadline_at = now() - $2::interval
+		WHERE reservation_id = $1`, string(c.record(t).ReservationID), by.String()); err != nil {
+		t.Fatalf("stamping an expired seal deadline: %v", err)
+	}
+}
+
 func advanceExactly(t *testing.T, c *capture, transitions int) {
 	t.Helper()
 

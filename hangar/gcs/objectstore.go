@@ -1,3 +1,18 @@
+// Package gcs is the Hangar OUTPUT plane's Cloud Storage seam: the object
+// adapter its four roles share, and the bucket-metadata source the attestor
+// reads.
+//
+// It opens every client it hands out and hands out none. A constructor here
+// takes an endpoint, never a *storage.Client, because the third round of one
+// finding showed what an exported client constructor costs: three non-reclaimer
+// command roots held the raw client in a local variable, and
+// `client.Bucket(b).Object("any/key").Delete(ctx)` compiled in all three with no
+// new import and every architecture guard green. The client is now opened by
+// hangar/internal/gcsclient, which nothing outside hangar/ can import at all.
+//
+// The artifact daemon's strict-input store used to live in this package and is
+// now hangar/gcsstore, so an output root that links this seam cannot name
+// GCSStore.DeleteTree either.
 package gcs
 
 import (
@@ -10,8 +25,19 @@ import (
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/iterator"
 
+	"github.com/concourse/concourse/hangar/internal/gcsclient"
 	"github.com/concourse/concourse/hangar/objectstore"
 )
+
+// NormalizeStorageEndpoint puts an emulator endpoint on the JSON API base.
+//
+// It is re-exported from the internal client package for harnesses that must
+// point a client of their own at the same emulator the production seam uses.
+// It is a string in and a string out: it hands out no capability, which is the
+// whole reason it may be exported while the client constructor may not.
+func NormalizeStorageEndpoint(endpoint string) (string, error) {
+	return gcsclient.NormalizeEndpoint(endpoint)
+}
 
 // The exported object adapter, for the output plane's four cloud roles.
 //
@@ -27,13 +53,19 @@ import (
 // authenticated configuration (hangar/output.OutputNamespace), and this file's
 // only judgement is turning a transport status into a typed sentinel.
 
-// NewObjectClient adapts a storage client to the shared seam.
-func NewObjectClient(client *storage.Client) (objectstore.Client, error) {
-	if client == nil {
-		return nil, fmt.Errorf("hangar: GCS client is required")
+// NewObjectClient opens a client for the shared object seam and owns it.
+//
+// The returned closer is the caller's to defer. It takes an endpoint rather
+// than a client so that no caller ever holds a type from which delete is
+// reachable: objectstore.Client has no delete on it, and a root that held the
+// *storage.Client behind it would have one anyway.
+func NewObjectClient(ctx context.Context, endpoint string) (objectstore.Client, func() error, error) {
+	client, err := gcsclient.New(ctx, endpoint)
+	if err != nil {
+		return nil, nil, fmt.Errorf("hangar: opening the GCS object client: %w", err)
 	}
 
-	return outputObjectClient{client: client}, nil
+	return outputObjectClient{client: client}, client.Close, nil
 }
 
 type outputObjectClient struct{ client *storage.Client }
@@ -81,7 +113,11 @@ func (client outputObjectClient) List(ctx context.Context, bucket string, reques
 		if err != nil {
 			return objectstore.Page{}, translate(err)
 		}
-		if attrs.Name == request.After {
+		if attrs.Name == request.After &&
+			(request.AfterGeneration == 0 || attrs.Generation <= request.AfterGeneration) {
+			// The resumed-from key, already dispositioned. It is NOT dropped
+			// when its generation is past the one the cursor named: that is an
+			// object recreated at the same name since, and it is new.
 			continue
 		}
 		page.Objects = append(page.Objects, outputAttrs(attrs))
@@ -129,10 +165,6 @@ func (handle outputObjectHandle) Attrs(ctx context.Context) (objectstore.Attrs, 
 	return outputAttrs(attrs), nil
 }
 
-func (handle outputObjectHandle) Delete(ctx context.Context) error {
-	return translate(handle.handle.Delete(ctx))
-}
-
 type outputObjectWriter struct{ writer *storage.Writer }
 
 func (writer *outputObjectWriter) Write(content []byte) (int, error) {
@@ -154,6 +186,18 @@ func (writer *outputObjectWriter) SetMetadata(metadata map[string]string) {
 func (writer *outputObjectWriter) Attrs() objectstore.Attrs {
 	return outputAttrs(writer.writer.Attrs())
 }
+
+// OutputAttrs and TranslateObjectError are exported for hangar/gcsdelete, which
+// is the delete capability's own package and therefore cannot be this one.
+//
+// They are the projection and the status-code split, and both are shared on
+// purpose: a second reading of 404/412/403 is where a delete would eventually
+// be told that 412 means "already gone".
+func OutputAttrs(attrs *storage.ObjectAttrs) objectstore.Attrs { return outputAttrs(attrs) }
+
+// TranslateObjectError is the 404/412/403 split, shared with the delete
+// capability's package.
+func TranslateObjectError(err error) error { return translate(err) }
 
 func outputAttrs(attrs *storage.ObjectAttrs) objectstore.Attrs {
 	if attrs == nil {

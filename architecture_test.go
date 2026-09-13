@@ -2,10 +2,15 @@ package concourse
 
 import (
 	"encoding/json"
+	"fmt"
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -488,11 +493,12 @@ func TestUnpinnedAgenticPackagesGuardFailsOnAnEmptyScan(t *testing.T) {
 	})
 }
 
-// hangarGCSPackage is the Google Cloud Storage implementation of hangar.Store.
-// It is a daemon-side implementation detail, and this is the second half of the
-// rule stated in hangar/architecture_test.go: that one keeps the cloud client
-// out of package hangar, this one keeps it out of everything that is not the
-// daemon.
+// hangarGCSPackage is the Hangar OUTPUT plane's Cloud Storage seam: the object
+// adapter its four roles share, and the bucket-metadata source the attestor
+// reads. It is a daemon-side implementation detail, and this is the second half
+// of the rule stated in hangar/architecture_test.go: that one keeps the cloud
+// client out of package hangar, this one keeps it out of everything that is not
+// a daemon.
 //
 // The cost of losing it is measurable rather than theoretical. hangar is
 // imported by atc/runtime, atc/atccmd and atc/worker/jetbridge; while the GCS
@@ -502,6 +508,25 @@ func TestUnpinnedAgenticPackagesGuardFailsOnAnEmptyScan(t *testing.T) {
 // it back.
 const hangarGCSPackage = "hangar/gcs"
 
+// hangarStorePackage is the artifact daemon's strict-input Hangar store, which
+// was in hangar/gcs until the third round of one finding.
+//
+// It is a separate package because of GCSStore.DeleteTree. While the store sat
+// beside the output object seam, the output daemon, the inventory controller
+// and the attestor -- all of which link that seam -- could name GCSStore, point
+// a GCSConfig at the output bucket and delete a key from a root that is not the
+// reclaimer. That is the "key-only delete route" Req 55 asks the guards to
+// reject, and no import guard about hangar/gcs could see it, because naming
+// GCSStore WAS naming hangar/gcs.
+const hangarStorePackage = "hangar/gcsstore"
+
+// hangarStoreImporters: exactly one binary, and its own specs.
+var hangarStoreImporters = map[string]string{
+	"cmd/artifact-daemon": "the artifact daemon is the only process that talks to the cache " +
+		"and strict-input buckets, and the only one that has any business holding a store " +
+		"whose DeleteTree takes a key",
+}
+
 // hangarGCSImporters are the packages allowed to name it, each with the reason.
 //
 // The list grew with the output plane, and the entries are deliberately three
@@ -510,11 +535,19 @@ const hangarGCSPackage = "hangar/gcs"
 // they depend on hangar/objectstore, which names no cloud SDK type, and that
 // is what keeps the cloud client out of anything that links a role.
 var hangarGCSImporters = map[string]string{
-	"cmd/artifact-daemon": "the daemon is the only process that talks to the cache and " +
-		"strict-input buckets",
 	"cmd/hangar-output-daemon": "the output daemon is the only process that talks to the output " +
 		"bucket, under its own service account; a Kubernetes service account is Pod-wide, so this " +
 		"is a second binary precisely so the first one's identity gains no output role",
+	"cmd/hangar-output-inventory": "the inventory controller is the list/get principal, and the " +
+		"only workload in this system whose cloud identity holds bucket-wide list",
+	"hangar/gcsdelete": "the object-delete capability's own package. It names the cloud client " +
+		"because it IS the adapter, and it shares hangar/gcs's 404/412/403 split rather than " +
+		"re-deriving it -- a second reading of those three codes is where a delete eventually " +
+		"gets told that 412 means \"already gone\". Which binaries link it is the subject of " +
+		"TestOnlyTheReclaimerBinaryCanInvokeAnOutputDelete, and the answer is one",
+	"cmd/hangar-output-policy-attestor": "the attestor is the bucket-metadata principal: it " +
+		"reads lifecycle and IAM and holds no object permission, which is why its compromise " +
+		"costs the assessment rather than the data",
 	"hangar/output/conformance": "the tier-2 conformance suite drives the real adapter against " +
 		"fake-gcs-server, because a conformance claim proved through a hand-written fake is a " +
 		"claim about the fake. It is a test-only import: the package has no non-test file that " +
@@ -550,13 +583,37 @@ var outputRolePackages = []string{
 
 // outputRoleImporters are the packages allowed to link one, with the reason.
 var outputRoleImporters = map[string]string{
-	"cmd/hangar-output-daemon": "the output daemon is the publisher principal",
+	"cmd/hangar-output-daemon":          "the output daemon is the publisher principal",
+	"cmd/hangar-output-inventory":       "the inventory controller is the inventory principal",
+	"cmd/hangar-output-reclaimer":       "the reclaimer is the reclaimer principal",
+	"cmd/hangar-output-policy-attestor": "the attestor is the policy principal",
 	"hangar/output/conformance": "the shared conformance suite drives all four roles against " +
 		"both substrate tiers; it is a test-only package that links into no binary",
 	"atc/hangaroutput": "TEST-ONLY: the managed-read specs admit a read against the REAL " +
 		"publisher's exact-generation stat over the same bucket the daemon published into, " +
 		"because requirement 35 is about the object rather than about a fixture's opinion of " +
 		"it. The package's production code declares ExactStat as a port and links nothing",
+
+	// The three pass packages. Each is one principal's bounded unit of work,
+	// lifted out of `package main` so the composition can be driven -- which
+	// is what the Phase 7 review found nothing was doing. Each links EXACTLY
+	// ONE role and is linked by exactly one binary, so the principal boundary
+	// is unchanged: the guard below over cmd/ roots is what keeps that true,
+	// and it reads the real build graph rather than these words.
+	"atc/hangaroutput/inventorypass": "the inventory controller's bounded unit, lifted out of " +
+		"its main so it can be driven; it links the inventory role and no other, and only " +
+		"cmd/hangar-output-inventory links it",
+	"atc/hangaroutput/reclaimpass": "the reclaimer's two bounded units, lifted out of its " +
+		"main so they can be driven; they link the reclaimer role and no other, and only " +
+		"cmd/hangar-output-reclaimer links them",
+	"atc/hangaroutput/attestpass": "the attestor's bounded unit, lifted out of its main so it " +
+		"can be driven; it links the policy role and no other, and only " +
+		"cmd/hangar-output-policy-attestor links it",
+
+	"atc/db": "TEST-ONLY: the controller-pass specs drive the real inventory and reclaimer " +
+		"roles against real PostgreSQL and the tier-1 store, because the composition -- which " +
+		"record precedes which effect -- is what the phase shipped unwired. The package's " +
+		"production code links no role",
 }
 
 // testOnlyRoleImporters are the exemptions above whose reason says TEST-ONLY.
@@ -569,6 +626,7 @@ var outputRoleImporters = map[string]string{
 var testOnlyRoleImporters = map[string]bool{
 	"hangar/output/conformance": true,
 	"atc/hangaroutput":          true,
+	"atc/db":                    true,
 }
 
 // TestTheOutputRolesAreLinkedOnlyByTheirOwnPrincipals is the import half of the
@@ -596,6 +654,13 @@ func TestTheOutputRolesAreLinkedOnlyByTheirOwnPrincipals(t *testing.T) {
 	for pkg, imports := range graph.all {
 		for _, imported := range imports {
 			if !forbidden[imported] {
+				continue
+			}
+			if pkg == imported {
+				// A role's own external test package (`package policy_test`)
+				// importing the role. It is the same directory and the same
+				// principal; counting it would make every role package an
+				// extra importer of itself the moment it grew a test.
 				continue
 			}
 			linked++
@@ -690,8 +755,18 @@ func TestHangarGCSStoreIsImportedOnlyByTheDaemon(t *testing.T) {
 		t.Fatalf("%s does not exist; this rule would pass vacuously", hangarGCSPackage)
 	}
 	for importer := range hangarGCSImporters {
-		if _, ok := graph.all[importer]; !ok {
+		imports, ok := graph.all[importer]
+		if !ok {
 			t.Errorf("allowed importer %q does not exist; the exemption is stale", importer)
+			continue
+		}
+		// An exemption that is no longer used is a rule that got weaker for
+		// free. cmd/artifact-daemon sat on this list after its store moved to
+		// hangar/gcsstore and nothing said so, which is how an allowlist stops
+		// describing the tree it guards.
+		if !slices.Contains(imports, hangarGCSPackage) {
+			t.Errorf("%s is exempted to import %s and does not import it. Delete the entry: an "+
+				"exemption nobody uses is a hole nobody is watching.", importer, hangarGCSPackage)
 		}
 	}
 	for importer := range testOnlyGCSImporters {
@@ -725,6 +800,66 @@ func TestHangarGCSStoreIsImportedOnlyByTheDaemon(t *testing.T) {
 			t.Errorf("%s imports %s. The GCS client is a daemon-side detail: depend on the "+
 				"hangar.Store interface instead, or add %s above with the reason it must link a "+
 				"cloud client.", pkg, hangarGCSPackage, pkg)
+		}
+	}
+}
+
+// TestTheHangarStoreIsLinkedOnlyByTheArtifactDaemon is the delete-shaped half
+// of the rule above.
+//
+// hangar/gcsstore.GCSStore.DeleteTree takes a TreeRef and a config, and the
+// config names the bucket. A root that can construct one can delete a key in
+// any bucket it can name -- including the output bucket -- which is the
+// "key-only delete route" Req 55 asks the guards to reject. It is measured at
+// the ROOT, like the capability guard below, because the question is which
+// binaries can make the call rather than which packages may say the name.
+func TestTheHangarStoreIsLinkedOnlyByTheArtifactDaemon(t *testing.T) {
+	graph := loadImportGraph(t)
+
+	if _, ok := graph.all[hangarStorePackage]; !ok {
+		t.Fatalf("%s does not exist; this rule would pass vacuously", hangarStorePackage)
+	}
+	for importer := range hangarStoreImporters {
+		imports, ok := graph.all[importer]
+		if !ok {
+			t.Errorf("allowed importer %q does not exist; the exemption is stale", importer)
+			continue
+		}
+		if !slices.Contains(imports, hangarStorePackage) {
+			t.Errorf("%s is exempted to import %s and does not import it; the exemption is stale",
+				importer, hangarStorePackage)
+		}
+	}
+
+	for pkg, imports := range graph.all {
+		if pkg == hangarStorePackage {
+			continue
+		}
+		for _, imported := range imports {
+			if imported != hangarStorePackage {
+				continue
+			}
+			if reason, ok := hangarStoreImporters[pkg]; ok {
+				t.Logf("allowed: %s imports %s — %s", pkg, hangarStorePackage, reason)
+				continue
+			}
+			t.Errorf("%s imports %s.\n\nThat package's store deletes by key: DeleteTree takes a "+
+				"TreeRef and the bucket comes from the config, so any package that can construct "+
+				"one can remove an object from any bucket it can name. It is the artifact "+
+				"daemon's, and the output plane's roles reach objects through "+
+				"hangar/gcs and hangar/objectstore instead.", pkg, hangarStorePackage)
+		}
+	}
+
+	// And the reason the split exists, stated so a green says it was checked:
+	// the roots that link the OUTPUT seam must not link the store.
+	for _, root := range []string{
+		"./cmd/hangar-output-daemon", "./cmd/hangar-output-inventory",
+		"./cmd/hangar-output-policy-attestor", "./cmd/hangar-output-reclaimer",
+	} {
+		if linksPackage(t, root, modulePrefix+hangarStorePackage) {
+			t.Errorf("%s links %s, whose DeleteTree is a delete by key from a root that is not "+
+				"the reclaimer", root, hangarStorePackage)
 		}
 	}
 }
@@ -998,4 +1133,319 @@ func TestDurableTierSeparationGuardIsNotVacuous(t *testing.T) {
 			t.Errorf("expected no problems, got %v", problems)
 		}
 	})
+}
+
+// The delete capability, measured at the ROOT rather than at the import.
+//
+// Every guard above is a rule about which package may NAME another. This one
+// asks the toolchain what each binary actually links, which is the question the
+// requirement is about: GCS IAM cannot require a caller to send a generation
+// precondition once delete permission exists (Req 55), so the boundary has to be
+// that exactly one process can make the call at all. An allowlist entry that
+// turned out to matter is caught here by the fact it was supposed to prevent
+// rather than by a reviewer noticing.
+//
+// It is deliberately not parameterised over "the roots we remembered": it
+// discovers every main package in cmd/ and checks all of them, so a binary added
+// next year inherits the rule without anyone adding it to a list.
+const outputDeleteRole = "github.com/concourse/concourse/hangar/output/reclaimer"
+
+// outputDeleteCapability is the package that can construct an object delete
+// over a real cloud client, and the only one.
+//
+// It is a separate subject from the role because the role was the WRONG thing
+// to measure, demonstrated: `objectstore.Handle` carried Delete, so the adapter
+// handed to the daemon, the inventory controller and the reclaimer alike
+// carried the capability, and a live `objects.delete` added to
+// cmd/hangar-output-daemon -- no reclaimer import anywhere -- built and passed
+// every guard in this file. Linking a role is a fact about imports. Being able
+// to delete is a fact about which package's constructor is in the binary, and
+// that is what this asks.
+const outputDeleteCapability = "github.com/concourse/concourse/hangar/gcsdelete"
+
+// outputDeleteRoot is the one binary allowed to link either.
+const outputDeleteRoot = "./cmd/hangar-output-reclaimer"
+
+func TestOnlyTheReclaimerBinaryCanInvokeAnOutputDelete(t *testing.T) {
+	roots := commandRoots(t)
+	if len(roots) < 4 {
+		t.Fatalf("found %d command roots, which is far too few to be this repository's cmd/ "+
+			"directory; the discovery failed and this rule would pass vacuously", len(roots))
+	}
+
+	// The controls FIRST: the reclaimer really does link both. Without them
+	// every assertion below would also pass for a tree in which the delete
+	// client had been deleted entirely.
+	for _, subject := range []string{outputDeleteRole, outputDeleteCapability} {
+		if !linksPackage(t, outputDeleteRoot, subject) {
+			t.Fatalf("%s does not link %s, so this rule is guarding nothing",
+				outputDeleteRoot, subject)
+		}
+	}
+
+	for _, root := range roots {
+		if root == outputDeleteRoot {
+			continue
+		}
+		if linksPackage(t, root, outputDeleteCapability) {
+			t.Errorf("%s links %s.\n\nThat package is the object-delete CAPABILITY: it is the "+
+				"only place in this repository that can construct a deleter over a real cloud "+
+				"client, and a binary that links it can issue objects.delete whether or not it "+
+				"names a role. GCS IAM cannot require a caller to send a generation precondition "+
+				"once delete permission exists, so the boundary is that exactly one process can "+
+				"make the call at all.", root, outputDeleteCapability)
+		}
+		if linksPackage(t, root, outputDeleteRole) {
+			t.Errorf("%s links %s.\n\nOnly the isolated reclaimer workload may import or invoke "+
+				"the output delete client. A Kubernetes service account is Pod-wide, so a "+
+				"second binary that linked this would be a second identity holding "+
+				"storage.objects.delete for everything else it does. This is the second line: "+
+				"the capability guard above is the first.", root, outputDeleteRole)
+		}
+	}
+
+	// And the property the two guards exist for, stated so a green says it was
+	// checked: the shared object seam every root holds has no delete on it at
+	// all. A Delete method here would put the capability back into the type
+	// three of four binaries take, which is the shape that was demonstrated.
+	assertSharedHandleHasNoDelete(t)
+
+	// The third line, and the one the first two were blind to.
+	assertNoCommandRootNamesTheStorageSDK(t)
+}
+
+// storageSDKExemptions are the packages under cmd/ allowed to name the Cloud
+// Storage SDK, with the reason. There is one.
+var storageSDKExemptions = map[string]string{
+	"cmd/artifact-daemon/durable": "the durable CACHE tier's own GCS backend, which predates the " +
+		"output plane and is a different store over a different bucket: it is fail-open, " +
+		"name-keyed and re-derivable, and durableTierSeparation above is what keeps it and " +
+		"Hangar from becoming each other. It builds its own client with the SDK because it IS a " +
+		"backend; it is not a command root, and no main package is exempt",
+}
+
+// assertNoCommandRootNamesTheStorageSDK is the arm that closes the route the
+// first two guards certified against and did not measure.
+//
+// Both of those ask the build graph which PACKAGES a binary links. Neither can
+// see the cheapest delete there is, because it needs no package: while
+// hangar/gcs.NewStorageClient was exported, three non-reclaimer roots held the
+// raw *storage.Client in a local variable, and
+//
+//	storageClient.Bucket(bucket).Object("any/key").Delete(ctx)
+//
+// compiled in cmd/hangar-output-daemon, cmd/hangar-output-inventory and
+// cmd/hangar-output-policy-attestor alike -- no new import, nothing added to any
+// dependency graph, every guard in this file green. That was demonstrated in all
+// three. A method call on an already-typed value is invisible to an import rule.
+//
+// What makes that line a compile error now is that no root can obtain the value:
+// the client is opened by hangar/internal/gcsclient, which Go's internal rule
+// puts out of reach of everything outside hangar/, and each capability package
+// hands back an interface carrying only the operations its role may issue. This
+// arm is the belt to that brace -- it stops a root reaching around the
+// capability packages to storage.NewClient directly -- and it applies to the
+// RECLAIMER too: the one binary allowed to delete should be doing it through
+// hangar/gcsdelete, not through the SDK.
+func assertNoCommandRootNamesTheStorageSDK(t *testing.T) {
+	t.Helper()
+
+	root := filepath.Join(repositoryRoot(), "cmd")
+	fileSet := token.NewFileSet()
+	scanned, exercised := 0, map[string]bool{}
+
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+		relative, err := filepath.Rel(repositoryRoot(), path)
+		if err != nil {
+			return err
+		}
+		relative = filepath.ToSlash(relative)
+		pkg := filepath.ToSlash(filepath.Dir(relative))
+
+		file, err := parser.ParseFile(fileSet, path, nil, parser.ImportsOnly)
+		if err != nil {
+			return fmt.Errorf("parsing %s: %w", relative, err)
+		}
+		scanned++
+
+		for _, spec := range file.Imports {
+			imported, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				return fmt.Errorf("%s: unquoting %s: %w", relative, spec.Path.Value, err)
+			}
+			if imported != cloudStorageModule && !strings.HasPrefix(imported, cloudStorageModule+"/") {
+				continue
+			}
+			if reason, ok := storageSDKExemptions[pkg]; ok {
+				exercised[pkg] = true
+				t.Logf("allowed: %s names %s — %s", relative, cloudStorageModule, reason)
+				continue
+			}
+			t.Errorf("%s names %s.\n\nA file under cmd/ that can reach the SDK can open its own "+
+				"client, and a *storage.Client is an arbitrary, unconditional, key-only "+
+				"objects.delete one method call away -- with no further import, invisible to "+
+				"every import-graph rule in this file. That exact line was demonstrated in three "+
+				"roots. Take the capability from hangar/gcs, hangar/gcsstore or "+
+				"hangar/gcsdelete, each of which opens and owns its own client behind a "+
+				"(ctx, endpoint) constructor and returns only the operations the role may "+
+				"issue. The reclaimer is not an exception: it reaches delete through "+
+				"%s.", relative, cloudStorageModule, outputDeleteCapability)
+		}
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scanning cmd/: %v", err)
+	}
+	if scanned < 20 {
+		t.Fatalf("scanned only %d files under cmd/, which is far too few to be this "+
+			"repository's command roots; the walk failed and this rule would pass vacuously",
+			scanned)
+	}
+	for pkg := range storageSDKExemptions {
+		if !exercised[pkg] {
+			t.Errorf("%s is exempted to name %s and no file in it does; the exemption is stale",
+				pkg, cloudStorageModule)
+		}
+	}
+}
+
+// assertSharedHandleHasNoDelete reads the interface declaration rather than the
+// build graph, because this half is about a TYPE: it is the one that makes the
+// reviewer's demonstration -- `objects.Object(bucket, key).Delete(ctx)` in a
+// non-reclaimer root -- fail to compile rather than merely fail a guard.
+func assertSharedHandleHasNoDelete(t *testing.T) {
+	t.Helper()
+
+	path := filepath.Join(repositoryRoot(), "hangar", "objectstore", "objectstore.go")
+	file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+	if err != nil {
+		t.Fatalf("parsing %s: %v", path, err)
+	}
+
+	found := false
+	ast.Inspect(file, func(node ast.Node) bool {
+		spec, ok := node.(*ast.TypeSpec)
+		if !ok || spec.Name.Name != "Handle" {
+			return true
+		}
+		iface, ok := spec.Type.(*ast.InterfaceType)
+		if !ok {
+			return true
+		}
+		found = true
+		for _, method := range iface.Methods.List {
+			for _, name := range method.Names {
+				if name.Name == "Delete" {
+					t.Errorf("objectstore.Handle declares Delete.\n\nEvery root that takes an "+
+						"object adapter then holds the delete capability, whatever role it "+
+						"links -- which is exactly the state a live objects.delete was "+
+						"demonstrated from cmd/hangar-output-daemon in. Deletion belongs on "+
+						"objectstore.DeleteHandle, whose only implementation over a real cloud "+
+						"client is %s.", outputDeleteCapability)
+				}
+			}
+		}
+
+		return false
+	})
+	if !found {
+		t.Fatal("objectstore.Handle was not found; this rule would pass vacuously")
+	}
+}
+
+// commandRoots lists every main package under cmd/.
+func commandRoots(t *testing.T) []string {
+	t.Helper()
+
+	out, err := exec.Command("go", "list", "-f", "{{if eq .Name \"main\"}}{{.Dir}}{{end}}",
+		"./cmd/...").Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			t.Fatalf("go list ./cmd/... failed: %v\n%s", err, ee.Stderr)
+		}
+		t.Fatalf("go list ./cmd/... failed: %v", err)
+	}
+
+	_, thisFile, _, _ := runtime.Caller(0)
+	repoRoot := filepath.Dir(thisFile)
+
+	var roots []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		relative, err := filepath.Rel(repoRoot, strings.TrimSpace(line))
+		if err != nil {
+			t.Fatalf("relativising %q: %v", line, err)
+		}
+		roots = append(roots, "./"+filepath.ToSlash(relative))
+	}
+
+	return roots
+}
+
+// linksPackage asks the toolchain whether a root's transitive dependencies
+// include a package. It reads the real build graph rather than source imports,
+// so a package reached through three intermediaries is still found.
+func linksPackage(t *testing.T, root, pkg string) bool {
+	t.Helper()
+
+	out, err := exec.Command("go", "list", "-deps", root).Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			t.Fatalf("go list -deps %s failed: %v\n%s", root, err, ee.Stderr)
+		}
+		t.Fatalf("go list -deps %s failed: %v", root, err)
+	}
+
+	for _, dep := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.TrimSpace(dep) == pkg {
+			return true
+		}
+	}
+
+	return false
+}
+
+// TestEachOutputControllerLinksOnlyItsOwnRole is the same measurement for the
+// other three principals.
+//
+// The isolation only means anything while each binary links ONE role. A
+// controller that linked two would be one Kubernetes service account holding
+// two sets of cloud permissions, and no care inside the process takes that back.
+func TestEachOutputControllerLinksOnlyItsOwnRole(t *testing.T) {
+	const prefix = "github.com/concourse/concourse/hangar/output/"
+
+	expected := map[string]string{
+		"./cmd/hangar-output-daemon":          prefix + "publisher",
+		"./cmd/hangar-output-inventory":       prefix + "inventory",
+		"./cmd/hangar-output-reclaimer":       prefix + "reclaimer",
+		"./cmd/hangar-output-policy-attestor": prefix + "policy",
+	}
+	all := []string{
+		prefix + "publisher", prefix + "inventory", prefix + "reclaimer", prefix + "policy",
+	}
+
+	for root, own := range expected {
+		if !linksPackage(t, root, own) {
+			t.Errorf("%s does not link its own role %s", root, own)
+		}
+		for _, role := range all {
+			if role == own {
+				continue
+			}
+			if linksPackage(t, root, role) {
+				t.Errorf("%s links %s as well as its own %s. One binary, one service account, "+
+					"one role: a process holding two is one cloud identity with two sets of "+
+					"permissions.", root, role, own)
+			}
+		}
+	}
 }

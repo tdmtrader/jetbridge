@@ -1,0 +1,132 @@
+package gcs
+
+// The IAM role expansion, which is the one thing in lifetime.go that makes a
+// judgement rather than a translation.
+//
+// It had no test of any kind, and the judgement it made about a role it did not
+// recognise -- report the role name as if it were a permission -- was what let
+// a publisher holding a custom role with storage.objects.delete attest safe:
+// the matrix tests held[permission] against a forbidden list, and a
+// pseudo-permission matches nothing. So the table is pinned member for member,
+// and so is the unknown-role answer.
+//
+// The table is a snapshot of something Google owns. These assertions cannot
+// notice Google changing a predefined role; what they can do is make a change
+// HERE deliberate, and record what was believed on 2026-09-10.
+
+import (
+	"sort"
+	"testing"
+)
+
+func TestThePredefinedRoleExpansionIsPinnedMemberForMember(t *testing.T) {
+	for _, expansion := range []struct {
+		role string
+		want []string
+	}{
+		{"roles/storage.objectCreator", []string{"storage.objects.create"}},
+		{"roles/storage.objectViewer", []string{"storage.objects.get", "storage.objects.list"}},
+		{"roles/storage.objectUser", []string{
+			"storage.objects.create", "storage.objects.delete",
+			"storage.objects.get", "storage.objects.list",
+		}},
+		{"roles/storage.objectAdmin", []string{
+			"storage.objects.create", "storage.objects.delete",
+			"storage.objects.get", "storage.objects.list",
+		}},
+		// The one that was wrong. GCS's own definition carries object LIST as
+		// well as the bucket read, and the matrix forbids bucket-wide list to
+		// the publisher and the reclaimer -- so a deployment that granted the
+		// legacy reader to either of them gained exactly the permission the
+		// matrix exists to refuse, and the matrix said safe.
+		{"roles/storage.legacyBucketReader", []string{
+			"storage.buckets.get", "storage.objects.list",
+		}},
+		{"roles/storage.bucketViewer", []string{
+			"storage.buckets.get", "storage.buckets.list",
+		}},
+		{"roles/storage.legacyBucketWriter", []string{
+			"storage.buckets.get", "storage.objects.create",
+			"storage.objects.delete", "storage.objects.list",
+		}},
+		{"roles/storage.legacyObjectReader", []string{"storage.objects.get"}},
+		{"roles/storage.admin", []string{
+			"storage.buckets.get", "storage.buckets.getIamPolicy",
+			"storage.buckets.setIamPolicy", "storage.buckets.update",
+			"storage.objects.create", "storage.objects.delete",
+			"storage.objects.get", "storage.objects.list",
+		}},
+	} {
+		got, recognised := permissionsOf(expansion.role)
+		if !recognised {
+			t.Errorf("%s came back unrecognised; it is in the table", expansion.role)
+
+			continue
+		}
+		sort.Strings(got)
+		if len(got) != len(expansion.want) {
+			t.Errorf("%s expands to %v, expected %v", expansion.role, got, expansion.want)
+
+			continue
+		}
+		for i := range got {
+			if got[i] != expansion.want[i] {
+				t.Errorf("%s expands to %v, expected %v", expansion.role, got, expansion.want)
+
+				break
+			}
+		}
+	}
+}
+
+func TestARoleThisPlaneCannotExpandIsUnknownAndNotHarmless(t *testing.T) {
+	for _, role := range []string{
+		"projects/example/roles/customOutputWriter",
+		"roles/storage.somethingAddedAfterThisTableWasWritten",
+		"organizations/1/roles/blanket",
+		"",
+	} {
+		permissions, recognised := permissionsOf(role)
+		if recognised {
+			t.Errorf("%q was recognised; the table does not contain it", role)
+		}
+		if len(permissions) != 0 {
+			t.Errorf("%q expanded to %v.\n\nThis is the shape of the defect: a role name "+
+				"returned as if it were a permission matches nothing in the forbidden list, so "+
+				"a publisher bound roles/storage.objectCreator PLUS a custom role containing "+
+				"storage.objects.delete satisfies its required set, trips no excess finding, "+
+				"and attests safe. An unexpandable role must come back as unknown so the leaf "+
+				"can call it a violation.", role, permissions)
+		}
+	}
+}
+
+func TestTheMemberPrefixIsStrippedSoOneIdentityIsOneIdentity(t *testing.T) {
+	for _, member := range []struct{ raw, want string }{
+		{"serviceAccount:publisher@project.iam.gserviceaccount.com",
+			"publisher@project.iam.gserviceaccount.com"},
+		{"user:someone@example.com", "someone@example.com"},
+		{"publisher@project.iam.gserviceaccount.com",
+			"publisher@project.iam.gserviceaccount.com"},
+	} {
+		if got := normalizeMember(member.raw); got != member.want {
+			t.Errorf("normalizeMember(%q) = %q, expected %q.\n\nThe configured identity and the "+
+				"one the IAM policy names are the same service account written two ways; a "+
+				"mismatch here reports every principal as a stranger on its own bucket.",
+				member.raw, got, member.want)
+		}
+	}
+}
+
+func TestTheBucketFingerprintIsTheSameSpellingTheNamespaceUses(t *testing.T) {
+	for _, bucket := range []struct{ raw, want string }{
+		{"output-bucket", "gs://output-bucket"},
+		{"gs://output-bucket", "gs://output-bucket"},
+	} {
+		if got := fingerprintOf(bucket.raw); got != bucket.want {
+			t.Errorf("fingerprintOf(%q) = %q, expected %q; an attestation and a namespace that "+
+				"named the same bucket differently would make every reading a wrong-bucket "+
+				"finding", bucket.raw, got, bucket.want)
+		}
+	}
+}

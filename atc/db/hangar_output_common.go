@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"code.cloudfoundry.org/lager/v3"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/concourse/concourse/hangar/executioncontrol"
@@ -215,40 +214,16 @@ func (tx HangarOutputTx) Commit() error {
 	return HangarCommitError(tx.Tx.Commit())
 }
 
-// The channels the output plane's workers wake on.
+// There are deliberately no channel-name constants and no notify helper here.
 //
-// NOTIFY accelerates work; it is never the only way work is found. Every worker
-// here also has a periodic database-clock fallback no slower than once a
-// minute, because component.Runner with a zero interval wakes only on NOTIFY
-// and a missed one would strand eligible work until restart.
-const (
-	HangarOutputCaptureRecoveryChannel = "hangar_output_capture_recovery"
-	HangarOutputReleaseChannel         = "hangar_output_release"
-	HangarOutputInventoryChannel       = "hangar_output_inventory"
-	HangarOutputReclaimChannel         = "hangar_output_reclaim"
-)
-
-// HangarOutputNotify wakes a worker after the transaction that created its work
-// has committed.
+// There were four constants and a helper, none of them wired, and their names
+// were already a second spelling of the operation kinds they were about:
+// `hangar_output_reclaim` beside output.OperationReclaimDelete. Two spellings of
+// one thing is one of them drifting, and a producer notifying a channel nobody
+// listens on fails silently -- the work is still found by the periodic pass,
+// later, and nothing says the acceleration stopped working.
 //
-// After, not inside. A listener woken by a transaction that then rolled back
-// reads state that does not exist and either drops the event or acts on the
-// stale one it can still see; the ordering is the whole content of the claim.
-//
-// And a NOTIFY that fails is a warning, never a rollback. The transaction is
-// already committed -- there is nothing left to undo -- and the work is still
-// found on the next periodic pass. Returning an error here would tempt a caller
-// into unmaking a commit that succeeded, which is a fiction, so this returns
-// nothing at all.
-func HangarOutputNotify(logger lager.Logger, conn DbConn, channels ...string) {
-	for _, channel := range channels {
-		if err := conn.Bus().Notify(channel); err != nil {
-			logger.Info("failed-to-notify-hangar-output-worker", lager.Data{
-				"channel": channel,
-				"error":   err.Error(),
-				"effect": "none on correctness: the transaction is committed and the work is " +
-					"found by the worker's periodic database-clock pass",
-			})
-		}
-	}
-}
+// The one spelling is output.NotifyChannel(kind), derived from the kind so it
+// cannot drift, and the notification is issued by the statement that creates
+// the work, inside its transaction: PostgreSQL delivers a NOTIFY only when the
+// transaction that issued it commits, which is exactly "after the work exists".

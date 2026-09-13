@@ -6,8 +6,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	hangargcs "github.com/concourse/concourse/hangar/gcs"
 )
 
 // The fixture's bucket create, against an endpoint nothing answers.
@@ -26,7 +24,7 @@ import (
 func TestTheHangarFixtureFailsOnAnUnreachableEndpointInsteadOfWaiting(t *testing.T) {
 	endpoint := closedEndpoint(t)
 
-	client, err := hangargcs.NewStorageClient(context.Background(), endpoint)
+	client, err := emulatorStorageClient(context.Background(), endpoint)
 	if err != nil {
 		t.Fatalf("building a storage client for %s: %v", endpoint, err)
 	}

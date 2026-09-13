@@ -354,6 +354,20 @@ CREATE TABLE hangar_capture_reservations (
     ),
     CONSTRAINT hangar_reservation_publish_point CHECK (
         NOT past_irreversible_publish_point OR first_create_attempted_at IS NOT NULL
+    ),
+    -- A release intent implies a TERMINAL state, and this is where that is
+    -- said.
+    --
+    -- It was said in Go, in the acknowledgement statement, as an extra WHERE
+    -- clause -- and it could refuse nothing, because all three writers of
+    -- release_intent_id set a terminal state in the same statement. A guard
+    -- nothing can redden is worse than no guard: it reads like a control and
+    -- is a comment. Here it is a rule about the ROW rather than about one
+    -- path to it, so a fourth writer added later -- one that minted an intent
+    -- for a live capture, which is the release of a source still being
+    -- written -- is refused whether or not it goes through that statement.
+    CONSTRAINT hangar_release_intent_implies_terminal CHECK (
+        release_intent_id IS NULL OR state IN ('registered', 'cancelled', 'failed')
     )
 );
 
@@ -608,6 +622,16 @@ CREATE TABLE hangar_exact_lifecycles (
                          'conflicted', 'missing_out_of_band')),
     registered_at    timestamp with time zone NOT NULL DEFAULT now(),
     updated_at       timestamp with time zone NOT NULL DEFAULT now(),
+
+    -- When the lifetime audit last STATTED this generation and found it there.
+    --
+    -- It is a separate column from updated_at because it answers a different
+    -- question: updated_at says when this plane last changed its mind about the
+    -- row, and this says when the plane last confirmed the object it names still
+    -- exists. Without it the absence reconciliation would re-stat the same
+    -- oldest rows every pass and never reach the rest of the bucket, which is
+    -- the same starvation the inventory cursor exists to prevent one tier down.
+    lifetime_audited_at timestamp with time zone,
 
     UNIQUE (scope, digest, generation)
 );
@@ -1003,10 +1027,108 @@ CREATE TABLE hangar_policy_snapshots (
     state                  text NOT NULL CHECK (state IN ('unknown', 'safe', 'at_risk')),
     observed_at            timestamp with time zone NOT NULL DEFAULT now(),
 
+    -- Where the row came from. Two of Req 52's three at-risk triggers are not
+    -- policy readings at all: an exact generation found absent with no admitted
+    -- delete, and a principal that lost its grant while a delete was in flight.
+    -- Both have to enter the SAME durable at-risk state -- Req 52 blocks new
+    -- captures, claims, grants, adoption and reclaim admission from detection
+    -- onward, whichever trigger fired -- and this table is what the admission
+    -- gate reads. So they are written here, and the column is what keeps them
+    -- honest: an operator reading this table can tell an attestation of the
+    -- bucket's policy from a runtime observation that no policy read was made
+    -- at all.
+    source                 text NOT NULL DEFAULT 'attestation'
+        CHECK (source IN ('attestation', 'runtime_observation')),
+
     CONSTRAINT hangar_policy_safe_has_no_delete_rules CHECK (
         state <> 'safe' OR lifecycle_delete_rules = 0
+    ),
+
+    -- A runtime observation is never SAFE. It exists only because something
+    -- went wrong; a safe one would be this plane attesting a policy it did not
+    -- read.
+    CONSTRAINT hangar_runtime_observation_is_never_safe CHECK (
+        source <> 'runtime_observation' OR state <> 'safe'
     )
 );
+
+-- What an attestation CONCLUDED, beside what it observed.
+--
+-- The snapshot above records the reading; this records the findings derived
+-- from it. They are separate tables because they have different lifetimes: a
+-- snapshot is superseded by the next reading, and Req 52 says recovery needs a
+-- fresh safe attestation AND violation reconciliation -- re-attesting alone
+-- never erases an unresolved violation. A findings column on the snapshot would
+-- make the second half impossible to state, because the row carrying the
+-- violation would be the row the next refresh replaced.
+--
+-- `resolved_at` is the reconciliation, and it is nullable and one-way: an
+-- operator (or an operation that provably repaired the cause) closes a
+-- violation, and nothing reopens a closed one under the same id.
+CREATE TABLE hangar_policy_violations (
+    id               bigserial PRIMARY KEY,
+    activation_epoch bigint NOT NULL
+        REFERENCES hangar_output_activation_epochs (epoch_id) ON DELETE RESTRICT,
+    -- NULLABLE, because two of the three triggers have no snapshot to attach
+    -- to. An out-of-band absence and a runtime principal denial are observed by
+    -- a controller doing its work, not by a policy read, and a violation forced
+    -- to name a snapshot would have to invent one -- which is the same as
+    -- claiming a policy reading that never happened.
+    snapshot_id      bigint
+        REFERENCES hangar_policy_snapshots (id) ON DELETE RESTRICT,
+    violation        text NOT NULL
+        CHECK (violation IN ('lifecycle_delete_rule', 'evidence_stale', 'evidence_unreadable',
+                             'excess_role', 'insufficient_role', 'wrong_principal',
+                             'shared_bucket', 'mixed_cohort', 'unrecognised_role',
+                             'out_of_band_absence', 'runtime_principal_denied')),
+
+    -- And the two that have no snapshot are exactly the two runtime members.
+    -- An attestation-derived finding without its reading would be a finding
+    -- nothing can be traced back to.
+    CONSTRAINT hangar_violation_snapshot_matches_trigger CHECK (
+        (violation IN ('out_of_band_absence', 'runtime_principal_denied'))
+        OR snapshot_id IS NOT NULL
+    ),
+    subject          text NOT NULL CHECK (subject <> ''),
+    detail           text NOT NULL DEFAULT '' CHECK (octet_length(detail) <= 1024),
+    observed_at      timestamp with time zone NOT NULL DEFAULT now(),
+    resolved_at      timestamp with time zone
+);
+
+-- One OPEN finding per (epoch, violation, subject). A monitor running every
+-- fifteen minutes against an unfixed bucket would otherwise write a row per
+-- pass forever, and the count an operator reads would be the age of the problem
+-- rather than its size.
+--
+-- A partial index and not a four-column UNIQUE including `resolved_at`: NULLs
+-- are distinct in a unique index, so that spelling constrains nothing at all
+-- for exactly the rows it was meant to constrain -- every open finding has a
+-- NULL there. Resolved rows are deliberately left unconstrained: the same
+-- violation can be found, fixed, and found again, and each of those is a
+-- separate fact with its own dates.
+CREATE UNIQUE INDEX hangar_policy_violations_one_open_idx
+    ON hangar_policy_violations (activation_epoch, violation, subject)
+    WHERE resolved_at IS NULL;
+
+CREATE FUNCTION hangar_policy_violation_resolution() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+BEGIN
+    IF OLD.resolved_at IS NOT NULL AND NEW.resolved_at IS DISTINCT FROM OLD.resolved_at THEN
+        RAISE EXCEPTION 'hangar: policy violation % was resolved at % and cannot be reopened or re-dated to %; recovery needs a fresh safe attestation AND violation reconciliation, and a reopened finding is a reconciliation that never happened',
+            OLD.id, OLD.resolved_at, NEW.resolved_at
+            USING ERRCODE = 'JB002';
+    END IF;
+    IF NEW.violation <> OLD.violation OR NEW.subject <> OLD.subject THEN
+        RAISE EXCEPTION 'hangar: policy violation % is immutable in what it is about', OLD.id
+            USING ERRCODE = 'JB002';
+    END IF;
+
+    RETURN NEW;
+END $$;
+
+CREATE TRIGGER hangar_policy_violation_resolution_guard
+    BEFORE UPDATE ON hangar_policy_violations
+    FOR EACH ROW EXECUTE FUNCTION hangar_policy_violation_resolution();
 
 -- One durable lease per operation kind per epoch. One operation cannot advance
 -- another's cursor, which is why the kind is half the primary key rather than a
@@ -1451,6 +1573,48 @@ CREATE CONSTRAINT TRIGGER hangar_policy_admits_new_protection
     DEFERRABLE INITIALLY DEFERRED
     FOR EACH ROW WHEN (NEW.origin = 'adopted')
     EXECUTE FUNCTION hangar_check_policy_admission();
+
+-- Reclaim admission, and ONLY reclaim admission, is gated on violation
+-- reconciliation as well as on a fresh safe attestation.
+--
+-- Req 52's recovery clause says a fresh safe attestation AND violation
+-- reconciliation. The admission gate above tests only the freshest snapshot,
+-- and that is the right call for most of the plane: a twenty-minute network
+-- blip leaves an unreadable-evidence violation open, and requiring a human
+-- before captures, claims and grants resume would turn a blip into an outage.
+--
+-- Deletion is the half where that reading is wrong. Two violation classes say
+-- something else may be removing this bucket's objects -- a lifecycle rule that
+-- can delete, and an exact generation that vanished with no admitted delete
+-- behind it -- and resuming deletion beside an unexplained deleter is how a
+-- plane finishes the job something else started. Those two, open, stop new
+-- admissions until somebody has said what happened.
+--
+-- Already-admitted work is untouched: this fires on INSERT, and Req 52 lets
+-- conditional delete work that was already admitted finish.
+CREATE FUNCTION hangar_check_reclaim_admission() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+DECLARE
+    unreconciled integer;
+BEGIN
+    SELECT count(*) INTO unreconciled FROM hangar_policy_violations
+        WHERE activation_epoch = NEW.activation_epoch
+          AND resolved_at IS NULL
+          AND violation IN ('lifecycle_delete_rule', 'out_of_band_absence');
+
+    IF unreconciled > 0 THEN
+        RAISE EXCEPTION 'hangar: epoch % has % unreconciled lifetime violation(s) saying something other than this plane may be removing its objects; a fresh safe attestation reopens the rest of the plane, and reclaim admission waits for reconciliation, because resuming deletion beside an unexplained deleter is how this plane finishes a job something else started',
+            NEW.activation_epoch, unreconciled
+            USING ERRCODE = 'JB002';
+    END IF;
+
+    RETURN NULL;
+END $$;
+
+CREATE CONSTRAINT TRIGGER hangar_reclaim_admission_needs_reconciliation
+    AFTER INSERT ON hangar_reclaim_jobs
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION hangar_check_reclaim_admission();
 
 -- What a finalized reclaim job may claim to have proved. `reclaimed_confirmed`
 -- needs an acknowledged conditional delete; `reclaimed_inferred` needs a

@@ -314,59 +314,47 @@ func (repository *HangarOutputRepository) acknowledgeRelease(ctx context.Context
 		finalize = ", settled_at = coalesce(settled_at, now())"
 	}
 
-	// The capture branch may only release before the irreversible publish
-	// point. After it the capture settles a registered receipt or a terminal
-	// orphan, and a release offered there is a caller working from stale state.
+	// The capture branch releases in every TERMINAL state, on either side of
+	// the irreversible publish point, and that is Phase 7 removing a special
+	// case rather than adding one.
 	//
-	// Two clauses, and only one of them has a vector today.
+	// The rule the guard used to carry was that a cancelled or failed capture
+	// could not release once an object might exist -- a node working from stale
+	// state. It had the consequence backwards. What a release releases is the
+	// HOLD, never the bytes (the Phase 5 ruling): the incarnation stays on the
+	// node as ordinary step content and reclamation by policy is what removes
+	// it. A held source, by contrast, is exempt from payload cleanup, sweep and
+	// reuse -- so a capture that could not release pinned an incarnation on a
+	// node for the life of the deployment. And the schema EARNS settlement with
+	// an acknowledged release, so the same capture could never settle, and its
+	// correlation stayed shielded from orphan adoption forever.
 	//
-	// `NOT past_irreversible_publish_point` does: the state is reachable by a
-	// publish in flight passing the point while a canceller is blocked on the
-	// row lock, and the spec drives that race.
+	// The object such a capture created is not lost by letting the hold go. It
+	// carries that capture's marker; the sweep finds it; and once the
+	// reservation is terminal and publication grace has elapsed, adoption takes
+	// it. That is Req 40's "terminal settlement eventually permits marked-orphan
+	// adoption", and the mechanism is inventory rather than a second ledger.
 	//
-	// `state = 'cancelled'` does NOT, and it is kept anyway rather than removed
-	// as redundant. It looks redundant because `release_intent_id = $2` above
-	// already implies it -- the only writer of that column is CancelOrSettle,
-	// which sets both in one statement, and cancellation is terminal. But that
-	// implication is a fact about the code as it stands, not about the schema,
-	// and it is one Req 11 is going to break: a capture that terminally
-	// **fails** before the publish point owes a fenced release too, and when
-	// that branch is implemented an intent will exist on a row whose state is
-	// `failed`. Removing this clause now would silently admit those releases
-	// the day that lands.
+	// What still has to be refused is a release for a capture that is not
+	// terminal at all: a live capture's source is held because it is being
+	// written, and an unsealed tree released mid-write is the seam Phase 4
+	// closed. That rule is now a CHECK on the row --
+	// hangar_release_intent_implies_terminal -- and deliberately NOT a second
+	// state list here.
 	//
-	// Its vector belongs to the phase that adds the failure branch. Making it
-	// structural instead -- a CHECK that an intent implies `cancelled` -- would
-	// be actively wrong for the same reason.
-	guard := ""
-	if branch == output.DispositionCapture {
-		// `failed` joins `cancelled` here, and the comment above predicted it:
-		// a capture that terminally FAILS before the publish point -- an
-		// unconfirmed seal, a collision at the derived key, a lost source --
-		// owes a fenced release exactly as a cancelled one does, and its row
-		// says `failed`. The clause was kept rather than removed as redundant
-		// precisely so that this phase would have to widen it deliberately
-		// instead of discovering that failed captures could never release.
-		//
-		// `registered` joins them too, and it is the one state that may release
-		// PAST the publish point -- because it is the state that got there
-		// legitimately. Req 11 orders the exact receipt before the fenced
-		// release, and a capture that never released would pin its incarnation
-		// on the node forever; a held source is exempt from payload cleanup,
-		// sweep and reuse. What the publish-point clause still refuses is a
-		// cancelled or failed capture offering a release after an object may
-		// exist, which is a node working from stale state.
-		guard = ` AND (
-			state = 'registered'
-			OR (state IN ('cancelled', 'failed') AND NOT past_irreversible_publish_point))`
-	}
-
+	// The state list was here and could refuse nothing. All three writers of
+	// release_intent_id set a terminal state in the same statement, so removing
+	// the clause entirely left every suite green; a guard nothing can redden
+	// reads like a control and is a comment. As a constraint it is a rule about
+	// the ROW rather than about one path to it, so a fourth writer that minted
+	// an intent for a live capture is refused whether or not it comes through
+	// this statement, and a spec can put a row in front of it.
 	result, err := tx.ExecContext(ctx, fmt.Sprintf(`
 		UPDATE %s
 		SET release_acknowledged_at = now(), release_acknowledgement = $3%s
 		WHERE handoff_id = $1
 		  AND release_intent_id = $2
-		  AND release_acknowledged_at IS NULL%s`, table, finalize, guard),
+		  AND release_acknowledged_at IS NULL`, table, finalize),
 		string(acknowledgement.HandoffID),
 		string(acknowledgement.ReleaseIntentID),
 		body,
@@ -392,31 +380,16 @@ func (repository *HangarOutputRepository) acknowledgeRelease(ctx context.Context
 	}
 	if !acknowledged.Valid {
 		// The intent is this branch's and it is unacknowledged, so the UPDATE
-		// was stopped by the capture branch's own guard rather than by the
-		// intent. Say WHICH, because the two answers mean opposite things to
-		// the caller: "not yet" is retried and "never" is not.
+		// matched nothing for a reason that is not the intent.
 		//
-		// The state is reachable -- a publish already in flight passes the
-		// point while the row is still live, and the canceller that classified
-		// a moment earlier blocks on its row lock and then cancels a row that
-		// is now past the point. A node offering a release there is working
-		// from stale state: the object may exist, and the capture settles a
-		// registered receipt or a terminal orphan under its own fence.
-		if branch == output.DispositionCapture {
-			var state string
-			var past bool
-			if err := hangarQueryRow(ctx, tx, `
-				SELECT state, past_irreversible_publish_point FROM hangar_capture_reservations
-				WHERE handoff_id = $1`,
-				[]any{string(acknowledgement.HandoffID)}, &state, &past,
-			); err == nil && past {
-				return fmt.Errorf("%w: handoff %s is past the irreversible publish point and a "+
-					"release is admitted only before it. The capture settles a registered "+
-					"receipt or a terminal orphan under its own fence; retrying this release "+
-					"will never admit it", output.ErrConflict, acknowledgement.HandoffID)
-			}
-		}
-
+		// There used to be a branch here saying the handoff was past the
+		// irreversible publish point and that "retrying this release will never
+		// admit it". That is no longer true and the distinction it drew is no
+		// longer this statement's to draw: past-the-point is not a reason to
+		// refuse a release -- a release releases the HOLD, never the bytes, and
+		// a terminal capture on either side of the point owes one. Leaving the
+		// branch would have told a caller "never" about the one case that is
+		// now retryable, which is the opposite of what a caller does with it.
 		return fmt.Errorf("%w: release intent %s is recorded but unacknowledged",
 			output.ErrUnresolved, acknowledgement.ReleaseIntentID)
 	}

@@ -1,4 +1,19 @@
-package gcs
+// Package gcsstore is the artifact daemon's strict-input Hangar store over
+// Cloud Storage, and only the artifact daemon's.
+//
+// It was package gcs until the third round of one finding. hangar/gcs is the
+// OUTPUT plane's object seam, linked by the output daemon, the inventory
+// controller, the attestor and the reclaimer; while this store lived beside it,
+// every one of those roots could name GCSStore, point a config at the output
+// bucket and call DeleteTree -- a key-shaped delete, from a root that is not
+// the reclaimer, with no new import and every guard green. Req 55 asks the
+// guards to reject exactly that shape.
+//
+// Splitting the package is what makes the rule a fact about the build graph
+// rather than a sentence: the output roots link hangar/gcs and cannot name
+// anything in here, and TestTheHangarStoreIsLinkedOnlyByTheArtifactDaemon says
+// so by asking the toolchain.
+package gcsstore
 
 import (
 	"context"
@@ -7,7 +22,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -18,11 +32,11 @@ import (
 	"cloud.google.com/go/storage"
 	"github.com/klauspost/compress/zstd"
 	"google.golang.org/api/googleapi"
-	"google.golang.org/api/option"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	"github.com/concourse/concourse/hangar"
+	"github.com/concourse/concourse/hangar/internal/gcsclient"
 )
 
 const (
@@ -53,42 +67,48 @@ type GCSStore struct {
 	// fire the deadline at a chosen point in the operation rather than racing
 	// a wall clock against the goroutine scheduler.
 	withTimeout func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+	// bucketAttrs is the boot-time bucket check, nil for a store built over a
+	// memory client in a test.
+	bucketAttrs func(context.Context) error
 }
 
-func NewStorageClient(ctx context.Context, endpoint string) (*storage.Client, error) {
-	if endpoint == "" {
-		return storage.NewClient(ctx)
-	}
-	normalized, err := normalizeStorageEndpoint(endpoint)
+// NewGCSStore opens the store's own client and owns it.
+//
+// It takes an endpoint rather than a client for the reason the package comment
+// gives: a caller that held the *storage.Client could delete any key in any
+// bucket in one line, whatever this type exposes. The returned closer is the
+// caller's to defer; it closes the client this constructor opened and nothing
+// else.
+func NewGCSStore(ctx context.Context, endpoint string, config GCSConfig) (*GCSStore, func() error, error) {
+	client, err := gcsclient.New(ctx, endpoint)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	// A non-empty endpoint is the repository's existing emulator or explicitly
-	// unauthenticated proxy convention, shared with durable.NewGCS.
-	return storage.NewClient(ctx, option.WithEndpoint(normalized), option.WithoutAuthentication(), storage.WithJSONReads())
+	store, err := newGCSStore(storageObjectClient{client: client}, config)
+	if err != nil {
+		_ = client.Close()
+		return nil, nil, err
+	}
+	store.bucketAttrs = func(ctx context.Context) error {
+		_, err := client.Bucket(config.Bucket).Attrs(ctx)
+		return err
+	}
+
+	return store, client.Close, nil
 }
 
-func normalizeStorageEndpoint(endpoint string) (string, error) {
-	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", fmt.Errorf("hangar: invalid GCS endpoint")
+// ValidateBucket asks the provider for the configured bucket's attributes.
+//
+// The artifact daemon does this at boot so a misconfigured bucket is a process
+// that refuses to start rather than a build that fails later. It lives here
+// because the bucket handle does: the daemon no longer holds a client to ask
+// with, which is the point.
+func (store *GCSStore) ValidateBucket(ctx context.Context) error {
+	if store.bucketAttrs == nil {
+		return fmt.Errorf("hangar: this store was not built over a real bucket")
 	}
-	switch strings.TrimSuffix(parsed.Path, "/") {
-	case "":
-		parsed.Path = "/storage/v1/"
-	case "/storage/v1":
-		parsed.Path = "/storage/v1/"
-	default:
-		return "", fmt.Errorf("hangar: GCS endpoint path must be empty or /storage/v1/")
-	}
-	return parsed.String(), nil
-}
 
-func NewGCSStore(client *storage.Client, config GCSConfig) (*GCSStore, error) {
-	if client == nil {
-		return nil, fmt.Errorf("hangar: GCS client is required")
-	}
-	return newGCSStore(storageObjectClient{client: client}, config)
+	return store.bucketAttrs(ctx)
 }
 
 func newGCSStore(objects objectClient, config GCSConfig) (*GCSStore, error) {
