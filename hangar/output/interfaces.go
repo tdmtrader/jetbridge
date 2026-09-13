@@ -305,6 +305,15 @@ func (admission WriterAdmission) Validate() error {
 	if admission.WriterFence == 0 {
 		return fmt.Errorf("%w: writer fence is zero", ErrIncomplete)
 	}
+	// A ticket that names no pod is bound to nothing. `sameWriter` compares two
+	// empty strings and calls them the same process, so an admission with no
+	// Pod UID would replay for any later writer that also omitted it -- the
+	// ticket's whole binding, vacuous, for a caller that just left the field
+	// out. Req 13: a ticket cannot be transferred to a new process or Pod UID,
+	// which requires it to name one.
+	if admission.PodUID == "" {
+		return fmt.Errorf("%w: writer admission names no pod", ErrIncomplete)
+	}
 
 	return nil
 }
@@ -539,7 +548,13 @@ func (intent ReleaseIntent) Validate() error {
 type SourceControl interface {
 	// AcknowledgeHold durably records the pre-start, non-authorizing hold. The
 	// producer's main process may not start before it returns.
-	AcknowledgeHold(ctx context.Context, admission CaptureAdmission, incarnation SourceIncarnation) (CaptureAcknowledgement, error)
+	//
+	// The pod is the Downward API's `metadata.uid`, presented by the capture
+	// control init from inside the Pod. It is bound once and every later
+	// operation on this hold presents the same one -- admission and reservation
+	// both precede the Pod and therefore bind identity, fence and node only.
+	AcknowledgeHold(ctx context.Context, admission CaptureAdmission, incarnation SourceIncarnation,
+		pod executioncontrol.PodUID) (CaptureAcknowledgement, error)
 
 	// AdmitWriter issues a ticket, or refuses because sealing won the race.
 	// Issuance and the open-to-sealing transition serialize on one durable

@@ -19,12 +19,24 @@ import (
 // behavior for non-DaemonSet deployments.
 type StorageBackend interface {
 	StepVolume(name, handle, subdir string) corev1.Volume
+
+	// ReservedIncarnationVolume is the volume for a capture-selected output.
+	//
+	// reservedDir is the output daemon's OWN name for the location, relative to
+	// the managed steps root, taken verbatim from the reservation. It is a
+	// separate method from StepVolume because it takes a different key: a step
+	// volume is derived from a handle this runtime chose, and this one is
+	// derived from nothing -- it repeats an answer. A backend that composed it
+	// from a handle would put the producer's bytes back in the sibling
+	// directory no hold protects, which is the defect this method exists to
+	// close.
+	ReservedIncarnationVolume(name, reservedDir string) corev1.Volume
 	CacheVolume(name string, identity atc.TaskCacheIdentity, stepName, cachePath string) corev1.Volume
 	ArtifactStoreVolume(containerType db.ContainerType) *corev1.Volume
 	ArtifactStoreVolumeName() string
 	BuildFetchInitContainers(handle string, inputs []runtime.Input, podVolumes []corev1.Volume, mainMounts []corev1.VolumeMount) ([]corev1.Container, error)
-	BuildCleanupInitContainer(handle string, containerType db.ContainerType, reused bool) *corev1.Container
-	BuildAffinity(inputs []runtime.Input) *corev1.Affinity
+	BuildCleanupInitContainer(handle string, containerType db.ContainerType, reused bool) (*corev1.Container, error)
+	BuildAffinity(inputs []runtime.Input, control *runtime.ExecutionControl) *corev1.Affinity
 	RecordOutputs(ctx context.Context, handle, nodeName string, volumes []*Volume, spec runtime.ContainerSpec)
 	WrapVolumeForArtifact(key, handle, workerName string, dbVolume db.CreatedVolume) runtime.Volume
 	WrapVolumeForLookup(ctx context.Context, key, handle, workerName string, dbVolume db.CreatedVolume) runtime.Volume

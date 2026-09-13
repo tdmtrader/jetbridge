@@ -391,6 +391,12 @@ func (s *Server) Handler(opts ...HandlerOption) http.Handler {
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("POST /resolve", s.handleResolve)
 	mux.HandleFunc("POST /resolve-batch", s.handleResolveBatch)
+	// Read-only, and mTLS-exempt for the same reason /resolve is: the caller
+	// is an init container in a pod on this node, it holds no client
+	// certificate, and the question it needs answered is about its OWN step
+	// directory. It reads nothing but the class, writes nothing, and names no
+	// path the caller did not already name.
+	mux.HandleFunc("GET /capture-held/steps/{handle...}", s.handleCaptureClass)
 	if s.metrics != nil {
 		mux.Handle("GET /metrics", s.metrics.handler())
 	}
@@ -904,6 +910,50 @@ func (s *Server) refuseIfCaptureHeld(loc RelKey) (ledger.Class, error) {
 	return class, s.captureLedger.Reason(relative, class)
 }
 
+// handleCaptureClass answers what the output ledger says about a step
+// directory, for the one caller that cannot ask any other way.
+//
+// The `rm -rf` cleanup init container is the most destructive thing in a Pod
+// and it is the only destructive path on a node that reached no guard: every
+// other one -- DELETE /artifacts, the sweeper, a stream-in replacement, a
+// registry remap or reuse -- goes through refuseIfCaptureHeld. That container
+// holds no client certificate, so /artifacts/ is closed to it; this is the
+// question it asks instead, and the script refuses to remove anything the
+// answer does not say is unmanaged.
+//
+// It is deliberately not a delete: giving an unauthenticated route the ability
+// to remove bytes is the shape this whole guard exists to prevent. It says what
+// the ledger says and the caller decides.
+func (s *Server) handleCaptureClass(w http.ResponseWriter, r *http.Request) {
+	handle := r.PathValue("handle")
+	if handle == "" {
+		s.refuse(w, r, http.StatusBadRequest, reasonInvalidKey,
+			errors.New("no step directory named"))
+
+		return
+	}
+	key := "steps/" + handle
+	if err := validateRequestKey(key); err != nil {
+		s.refuse(w, r, http.StatusBadRequest, reasonInvalidKey, err)
+
+		return
+	}
+
+	class, reason := s.refuseIfCaptureHeld(RelKey(key))
+	body := struct {
+		Class  string `json:"class"`
+		Handle string `json:"handle"`
+		Reason string `json:"reason,omitempty"`
+	}{Class: string(class), Handle: handle}
+	if reason != nil {
+		body.Reason = reason.Error()
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
 // refuseIfCaptureHeldPath is the same question for a caller holding an ABSOLUTE
 // path rather than a key: a resolve destination and a register's local_path are
 // both client-supplied absolute paths inside the store.
@@ -992,6 +1042,24 @@ type registerRequest struct {
 	// single segment; DurableKey names a bucket object and carries a
 	// retention-class prefix that a lifecycle rule acts on.
 	DurableKey string `json:"durable_key,omitempty"`
+
+	// ReadOnly says this alias is a name for READING bytes another authority
+	// owns, and it is the one kind the capture guard admits onto a held
+	// incarnation.
+	//
+	// The guard refuses an alias onto a capture-held location because a second
+	// write-capable name for bytes a capture is about to seal reaches them
+	// under a name the capture never heard of. What Req 16 forbids is that
+	// mount, not a read -- and a capture-selected task's output is still an
+	// ordinary output that downstream steps must be able to fetch. So the
+	// caller declares which of the two it is asking for, and refusing an
+	// undeclared one is what keeps "read-only" from being a default nobody
+	// chose.
+	//
+	// Remapping a key that CURRENTLY names a held source is refused either
+	// way: that destroys the only way anything finds those bytes, which no
+	// amount of read-only-ness makes safe.
+	ReadOnly bool `json:"read_only,omitempty"`
 }
 
 // mirrorRequest is the JSON body for POST /mirror.
@@ -1102,7 +1170,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// so this is the one Register call whose input is not derived from the
 	// daemon's own tree — and 400 is the honest status: the caller named a path
 	// outside the store.
-	loc, err := s.registry.RegisterAlias(req.Key, req.LocalPath)
+	register := s.registry.RegisterAlias
+	if req.ReadOnly {
+		register = s.registry.RegisterReadOnlyAlias
+	}
+	loc, err := register(req.Key, req.LocalPath)
 	if err != nil {
 		s.logger.Info("register-refused", lager.Data{"key": req.Key, "path": req.LocalPath, "reason": err.Error()})
 		// Two different refusals with two different statuses. An uncontained

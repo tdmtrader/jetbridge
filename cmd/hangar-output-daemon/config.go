@@ -65,6 +65,17 @@ type Config struct {
 	CapabilityKeyFile string
 	CapabilityTTL     time.Duration
 
+	// The control listener's TLS material. Phase 3 listened on 127.0.0.1 with
+	// no TLS, which was right while every caller was a pod on this node. The
+	// ATC is not: it revalidates holds, takes writer tickets, records starts
+	// and outcomes, seals and publishes, all from the web pod on another node,
+	// and a bearer capability over plaintext off-node is interceptable inside
+	// its TTL. Spelled the way cmd/artifact-daemon spells them, because the
+	// ATC's client-certificate plumbing is the same plumbing.
+	TLSCert   string
+	TLSKey    string
+	TLSCACert string
+
 	ActivationEpoch  uint64
 	OperationTimeout time.Duration
 }
@@ -114,6 +125,12 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 		"Path to the raw 32-byte key control capabilities are minted and verified with. It is shared with the control plane and with nothing else.")
 	flags.DurationVar(&config.CapabilityTTL, "capability-ttl", 15*time.Minute,
 		"Maximum accepted lifetime of a control capability. A capability is presented once, within one operation; an hour-long one is a credential.")
+	flags.StringVar(&config.TLSCert, "tls-cert", "",
+		"Path to the TLS server certificate for the control API. Setting all three TLS flags makes the listener HTTPS and requires a verified client certificate on every route but the node-local capture hold.")
+	flags.StringVar(&config.TLSKey, "tls-key", "",
+		"Path to the TLS server private key.")
+	flags.StringVar(&config.TLSCACert, "tls-ca-cert", "",
+		"Path to the CA certificate this daemon verifies control-plane client certificates against.")
 	flags.Uint64Var(&config.ActivationEpoch, "activation-epoch", 0,
 		"The active activation epoch this daemon publishes under. Rotation creates a new epoch rather than replacing a key in place.")
 	flags.DurationVar(&config.OperationTimeout, "output-timeout", time.Minute,
@@ -151,9 +168,42 @@ func (config Config) Validate() error {
 			"mean rotating either rotates both", output.ErrIncomplete)
 	}
 
+	if err := config.validateTLS(); err != nil {
+		return err
+	}
+
 	_, err := config.Namespace()
 
 	return err
+}
+
+// TLSEnabled is the single predicate for "this daemon serves the control API
+// over mTLS". All three files or none: a partial configuration has no honest
+// reading, and silently falling back to plaintext would put the control plane's
+// capabilities on the wire in the clear for an operator who asked for TLS.
+func (config Config) TLSEnabled() bool {
+	return config.TLSCert != "" && config.TLSKey != "" && config.TLSCACert != ""
+}
+
+func (config Config) validateTLS() error {
+	var missing []string
+	for _, flag := range []struct{ name, value string }{
+		{"--tls-cert", config.TLSCert},
+		{"--tls-key", config.TLSKey},
+		{"--tls-ca-cert", config.TLSCACert},
+	} {
+		if strings.TrimSpace(flag.value) == "" {
+			missing = append(missing, flag.name)
+		}
+	}
+	if len(missing) == 0 || len(missing) == 3 {
+		return nil
+	}
+
+	return fmt.Errorf("%w: the control API's TLS is partially configured; %s must also be set. "+
+		"mTLS needs the server certificate, its key and the client CA together, and with only "+
+		"part of them this daemon would listen in plaintext for a control plane that believes "+
+		"it is dialling https", output.ErrIncomplete, strings.Join(missing, " and "))
 }
 
 // Namespace is the derived output namespace this daemon publishes into.

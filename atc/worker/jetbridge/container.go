@@ -73,6 +73,16 @@ type Container struct {
 	// in the DB (crash-recovery path). In DaemonSet mode this means the
 	// hostPath directory may contain stale data and needs cleanup.
 	reused bool
+
+	// outputControls reaches the output daemon on whichever node this
+	// container's Pod lands on. Nil on every deployment with no output plane,
+	// and nil is the ordinary path rather than a degraded one.
+	outputControls OutputControlResolver
+
+	// captureClass reads what the output ledger says about this container's
+	// step directory, for the two operations that cannot take a writer ticket:
+	// hijacking a looked-up container and replacing a terminal pause Pod.
+	captureClass captureClassifier
 }
 
 func newContainer(
@@ -89,8 +99,25 @@ func newContainer(
 	reused bool,
 	lookedUp bool,
 ) *Container {
+	// The ledger classifier, wired HERE and nowhere else.
+	//
+	// It was never assigned in production before this pass, which made
+	// refuseIfCaptureHeld a no-op on every path: pause pod recreation and
+	// hijack over a capture-held source were refused only in tests that
+	// supplied the collaborator themselves. It is nil when there is no output
+	// plane and when there is no storage backend, and both nils are correct:
+	// the guard fails CLOSED on an unreadable ledger, so a worker with no
+	// daemon to ask must not be given something to ask.
+	var classifier captureClassifier
+	if config.OutputPlaneEnabled && storageBackend != nil {
+		if daemonSet, ok := storageBackend.(*DaemonSetBackend); ok {
+			classifier = daemonSet
+		}
+	}
+
 	return &Container{
 		handle:         handle,
+		captureClass:   classifier,
 		podName:        GeneratePodName(metadata, handle),
 		metadata:       metadata,
 		containerSpec:  containerSpec,
@@ -154,9 +181,34 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 			if existingPod.Status.Phase == corev1.PodSucceeded || existingPod.Status.Phase == corev1.PodFailed {
 				return nil, fmt.Errorf("container %q has no pod to intercept: pod %q already exited (%s)", c.handle, c.podName, existingPod.Status.Phase)
 			}
+			// A hijack is a new writer over the step's tree, and the ATC has
+			// no execution identity for a looked-up container -- so it cannot
+			// take a ticket on that writer's behalf. Req 18 says a
+			// capture-enabled task loses post-completion hijack; this is
+			// where that loss is spelled, as a refusal that names itself
+			// rather than a session that races the capture.
+			if err := c.refuseIfCaptureHeld(ctx, "intercepting this container"); err != nil {
+				return nil, err
+			}
 		}
 
 		if getErr == nil && (existingPod.Status.Phase == corev1.PodSucceeded || existingPod.Status.Phase == corev1.PodFailed) {
+			// A replacement is a NEW POD UID getting a write-capable mount over
+			// this step's tree, and for a capture-selected step that tree is
+			// the reserved incarnation. Req 16 forbids one over a held source,
+			// and this path has no execution identity to take a writer ticket
+			// with, so it asks the ledger instead.
+			//
+			// This is the OTHER pause-pod replacement site. execProcess's
+			// recreatePausePod covers a pod that died after Run returned; this
+			// one covers a pod that was already terminal when Run was called,
+			// which is the same damage reached by a different route. The
+			// ordinary path is unchanged: with nothing held the classifier
+			// answers unmanaged and the pod is replaced exactly as before.
+			if err := c.refuseIfCaptureHeld(ctx, "replacing this step's terminal pause pod"); err != nil {
+				return nil, err
+			}
+
 			// Pod exists but is terminal — delete it so we can create a fresh one.
 			logger.Info("deleting-terminal-pod", lager.Data{
 				"pod":   c.podName,
@@ -406,6 +458,13 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 	if err := c.validateInputs(); err != nil {
 		return nil, err
 	}
+	// The envelope is validated against the SPEC, before any container is
+	// composed: an undeclared output, an output overlapping a strict input or
+	// a capture riding the base capability must be a refusal rather than a pod
+	// that comes back and then cannot be held.
+	if err := c.containerSpec.ExecutionControl.Validate(c.containerSpec); err != nil {
+		return nil, err
+	}
 
 	image := resolveImage(c.containerSpec.ImageSpec, c.config.ResourceTypeImages)
 	if image == "" {
@@ -439,9 +498,41 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 
 	var initContainers []corev1.Container
 
+	// The capture control init goes FIRST, before every writer.
+	//
+	// Requirement 3 puts the durable source hold ahead of the producer main
+	// process, and every other container this pod builds writes into the tree
+	// that hold protects: `cleanup-stale` removes it, `artifact-fetch` stages
+	// inputs into it, the main container and its sidecars produce into it. So
+	// "before the main process" is not enough; it is index 0 of the init
+	// slice, and the ordering scenario asserts the index rather than mere
+	// membership.
+	//
+	// An execution that selected no capture reaches none of this: the ordinary
+	// pod is byte-identical to the one this runtime built before the output
+	// plane existed, which is Req 59 and the control scenario for the whole
+	// capture-pod feature.
+	//
+	// OutputPlaneEnabled deliberately does NOT gate this, and Phase 8 is where
+	// that changes. The flag gates the cleanup probe and the ATC's own control
+	// calls -- the places where a worker with no output daemon would otherwise
+	// dial one -- but the capture init is emitted whenever the spec carries a
+	// capture, because a spec only carries one if the control plane put it
+	// there. Phase 8's scenario `A worker whose output facet is not enabled
+	// builds no capture pod` needs the SELECTION gated rather than the init,
+	// which is a refusal at admission and not an omission here; that is where
+	// this flag becomes load-bearing on this path.
+	if captureInit := c.buildCaptureControlInitContainer(); captureInit != nil {
+		initContainers = append(initContainers, *captureInit)
+	}
+
 	// If this container handle was reused (crash recovery), prepend a cleanup
 	// init container to remove stale hostPath data before anything else runs.
-	if cleanup := c.buildCleanupInitContainer(); cleanup != nil {
+	cleanup, err := c.buildCleanupInitContainer()
+	if err != nil {
+		return nil, err
+	}
+	if cleanup != nil {
 		initContainers = append(initContainers, *cleanup)
 	}
 
@@ -592,9 +683,9 @@ func (c *Container) buildArtifactInitContainers(podVolumes []corev1.Volume, main
 // buildCleanupInitContainer creates an init container that removes stale data
 // from the hostPath steps directory for this container handle. Delegates to
 // the storage backend. Returns nil when no backend is configured.
-func (c *Container) buildCleanupInitContainer() *corev1.Container {
+func (c *Container) buildCleanupInitContainer() (*corev1.Container, error) {
 	if c.storageBackend == nil {
-		return nil
+		return nil, nil
 	}
 	return c.storageBackend.BuildCleanupInitContainer(c.handle, c.containerSpec.Type, c.reused)
 }
@@ -716,7 +807,7 @@ func (c *Container) buildAffinity() *corev1.Affinity {
 	if c.storageBackend == nil {
 		return nil
 	}
-	return c.storageBackend.BuildAffinity(c.containerSpec.Inputs)
+	return c.storageBackend.BuildAffinity(c.containerSpec.Inputs, c.containerSpec.ExecutionControl)
 }
 
 // buildPodLabels constructs the label map for the pod, including the
@@ -751,8 +842,22 @@ func (c *Container) buildPodLabels() map[string]string {
 }
 
 // buildPodAnnotations returns annotations for the pod.
+//
+// The reservation is stamped here because a looked-up Container has no
+// ContainerSpec to read it from -- `LookupContainer` builds one with an empty
+// spec -- and the hijack refusal Req 18 requires has to know WHICH directory
+// the capture holds. The handle is a sibling of it, so a guard that fell back
+// to the handle could only ever be told `unmanaged`.
+//
+// The ATC composes nothing: ReservedDirectory came off the wire from
+// `reserve-incarnation` and was validated against the incarnation beside it.
 func (c *Container) buildPodAnnotations() map[string]string {
-	return map[string]string{}
+	annotations := map[string]string{}
+	if reserved := captureReservedDirectory(c.containerSpec); reserved != "" {
+		annotations[captureReservationAnnotation] = reserved
+	}
+
+	return annotations
 }
 
 // resolveImage extracts a Kubernetes-compatible image reference from the
@@ -980,6 +1085,35 @@ func (c *Container) stepVolume(name, subdir string) corev1.Volume {
 	return emptyDirVolume(name)
 }
 
+// outputVolume is stepVolume for a declared output, with one exception: the ONE
+// output selected for capture mounts the incarnation the output daemon
+// reserved, not this step's own directory.
+//
+// The two used to be the same call and that was the seam Phase 4 found. A
+// capture-selected producer wrote into `steps/<handle>/<output>` while the
+// daemon's hold protected `steps/<execution>.<generation>/<output>` -- sibling
+// directories -- so the capture sealed an empty tree and every path-keyed guard
+// correctly answered "unmanaged" about the bytes that mattered.
+//
+// The ATC chooses nothing here. `ReservedDirectory` came off the wire from
+// `reserve-incarnation`, was validated against the incarnation it carries, and
+// is repeated. Req 7 holds because the daemon named the path.
+func (c *Container) outputVolume(name, outputName string) corev1.Volume {
+	reserved := captureReservedDirectory(c.containerSpec)
+	if reserved == "" || outputName != captureSelectedOutputName(c.containerSpec) {
+		return c.stepVolume(name, outputName)
+	}
+	if c.storageBackend == nil || c.metadata.Type == db.ContainerTypeCheck {
+		// No artifact store, or a check container, whose working directory is
+		// deliberately ephemeral. Neither can carry a capture; the envelope
+		// would not have validated against a spec with no declared output, and
+		// an emptyDir here is the same thing the step's other volumes get.
+		return emptyDirVolume(name)
+	}
+
+	return c.storageBackend.ReservedIncarnationVolume(name, reserved)
+}
+
 func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) {
 	var volumes []corev1.Volume
 	var mounts []corev1.VolumeMount
@@ -1048,7 +1182,7 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 
 		name := fmt.Sprintf("output-%d", idx)
 		idx++
-		volumes = append(volumes, c.stepVolume(name, outputName))
+		volumes = append(volumes, c.outputVolume(name, outputName))
 		mounts = append(mounts, corev1.VolumeMount{
 			Name:      name,
 			MountPath: path,

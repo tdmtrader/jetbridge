@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/concourse/concourse/artifactcap"
+	"io"
 	"net/http"
 	"os"
 	"path"
@@ -18,6 +19,8 @@ import (
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/hangar"
+	"github.com/concourse/concourse/hangar/executioncontrol"
+	"github.com/concourse/concourse/hangar/output"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -81,6 +84,31 @@ func (b *DaemonSetBackend) StepVolume(name, handle, subdir string) corev1.Volume
 		VolumeSource: corev1.VolumeSource{
 			HostPath: &corev1.HostPathVolumeSource{
 				Path: filepath.Join(b.config.ArtifactDaemonHostPath, "steps", handle, subdir),
+				Type: &dirType,
+			},
+		},
+	}
+}
+
+// ReservedIncarnationVolume mounts the location the output daemon reserved.
+//
+// It joins the node's artifact root, the managed steps directory and the
+// daemon's own answer, and it derives nothing else: `reservedDir` is
+// `ReservedIncarnation.Directory` verbatim, which the ATC validated against the
+// incarnation beside it before it ever reached here.
+//
+// The type is DirectoryOrCreate for the same reason StepVolume's is, and it is
+// very nearly moot: the reservation already created the directory under the
+// daemon's own root, with the daemon's ownership, before this Pod was built.
+// That ordering is the point of reserving at all.
+func (b *DaemonSetBackend) ReservedIncarnationVolume(name, reservedDir string) corev1.Volume {
+	dirType := corev1.HostPathDirectoryOrCreate
+
+	return corev1.Volume{
+		Name: name,
+		VolumeSource: corev1.VolumeSource{
+			HostPath: &corev1.HostPathVolumeSource{
+				Path: filepath.Join(b.config.ArtifactDaemonHostPath, "steps", reservedDir),
 				Type: &dirType,
 			},
 		},
@@ -401,16 +429,11 @@ func (b *DaemonSetBackend) daemonScheme() string {
 	return daemonURLScheme(b.config)
 }
 
-// wgetTLSOpts returns extra BusyBox wget options for daemon HTTPS calls. When
-// TLS is enabled it adds --no-check-certificate: the init container dials the
-// daemon by node IP (HOST_IP), which is not a cert SAN, so server authentication
-// cannot succeed. Strict Hangar calls verify the sealed materialization receipt
-// as their outcome boundary; authenticated local transport is future hardening.
+// wgetTLSOpts returns extra BusyBox wget options for daemon HTTPS calls. The
+// reasoning lives with the function it delegates to, which the capture control
+// init reads from too.
 func (b *DaemonSetBackend) wgetTLSOpts() string {
-	if b.config.ArtifactDaemonTLSEnabled {
-		return "--no-check-certificate"
-	}
-	return ""
+	return wgetTLSOptions(b.config)
 }
 
 func (b *DaemonSetBackend) daemonResolveCommand(key, hostDest string) []string {
@@ -512,17 +535,44 @@ func (b *DaemonSetBackend) helperImage() string {
 	return DefaultArtifactHelperImage
 }
 
-func (b *DaemonSetBackend) BuildCleanupInitContainer(handle string, containerType db.ContainerType, reused bool) *corev1.Container {
+// BuildCleanupInitContainer removes a reused handle's stale hostPath data --
+// and, when the output plane is on, asks the ledger first.
+//
+// This container is the most destructive thing in a Pod: `rm -rf` over the step
+// directory, running before anything else, reached by no guard the daemon
+// added. Every OTHER destructive path on a node -- DELETE /artifacts, the
+// sweeper, a stream-in replacement, a registry remap or reuse -- consults the
+// output ledger's classifier and refuses a capture-held source with a 409. This
+// one asked nobody, and a reused handle whose previous execution's capture is
+// still unsettled would have its held source destroyed by the next build's
+// first init container.
+//
+// It cannot consult the ledger the way the ATC does: an init container holds no
+// client certificate (see wgetTLSOpts), so /artifacts/ is closed to it. So it
+// asks the read-only classification route, which is mTLS-exempt for exactly the
+// reason /resolve is -- it is a question a pod on this node must be able to ask
+// about its own step directory, and the answer is a boolean about a handle the
+// caller already named.
+//
+// It FAILS CLOSED, and that is why the probe is only emitted when the output
+// plane is configured. An unreachable daemon is not "nothing is held"; but on a
+// deployment with no output plane there is nothing to ask and today's script is
+// emitted byte for byte, so Req 59's unchanged ordinary behaviour is not
+// traded for this.
+func (b *DaemonSetBackend) BuildCleanupInitContainer(handle string, containerType db.ContainerType, reused bool) (*corev1.Container, error) {
 	if !reused {
-		return nil
+		return nil, nil
 	}
 	if containerType == db.ContainerTypeCheck {
-		return nil
+		return nil, nil
 	}
 
 	helperImage := b.helperImage()
 	cleanupPath := filepath.Join(ArtifactMountPath, "steps", handle)
 	script := fmt.Sprintf(`echo "[cleanup-stale] removing stale hostPath data: %s" >&2; rm -rf %s; mkdir -p %s`, cleanupPath, cleanupPath, cleanupPath)
+	if b.config.OutputPlaneEnabled {
+		script = b.ledgerCheckedCleanupScript(handle, cleanupPath)
+	}
 
 	allowEscalation := false
 	return &corev1.Container{
@@ -536,10 +586,108 @@ func (b *DaemonSetBackend) BuildCleanupInitContainer(handle string, containerTyp
 		SecurityContext: &corev1.SecurityContext{
 			AllowPrivilegeEscalation: &allowEscalation,
 		},
-	}
+	}, nil
 }
 
-func (b *DaemonSetBackend) BuildAffinity(inputs []runtime.Input) *corev1.Affinity {
+// ledgerCheckedCleanupScript is the same removal, behind the classifier.
+//
+// The three arms mirror the classifier's own (hangar/output/ledger): "held" is
+// a refusal, "unmanaged" -- which is what an absent control directory means,
+// and it is a real answer rather than an error -- proceeds, and anything else,
+// including no answer at all, is a refusal. A guard whose failure mode is
+// "delete it anyway" would be the exposure it was written to close.
+func (b *DaemonSetBackend) ledgerCheckedCleanupScript(handle, cleanupPath string) string {
+	port := b.config.ArtifactDaemonPort
+	if port == 0 {
+		port = 7780
+	}
+
+	return fmt.Sprintf(`
+set -u
+CLASS="$(wget -q -O - %[4]s "%[3]s://${HOST_IP}:%[2]d/capture-held/steps/%[1]s" 2>/dev/null || true)"
+case "${CLASS}" in
+  *'"class":"unmanaged"'*)
+    echo "[cleanup-stale] the output ledger holds nothing here; removing stale hostPath data: %[5]s" >&2
+    rm -rf %[5]s
+    mkdir -p %[5]s
+    ;;
+  *'"class":"held"'*)
+    echo "[cleanup-stale] REFUSED: a durable output capture still holds %[1]s. This step's stale workspace is somebody else's unsettled source, and removing it would destroy bytes no receipt has been written for yet." >&2
+    exit 1
+    ;;
+  *)
+    echo "[cleanup-stale] REFUSED: the output ledger did not answer for %[1]s (got: ${CLASS}). An unreadable ledger is not an empty one." >&2
+    exit 1
+    ;;
+esac
+`, handle, port, b.daemonScheme(), b.wgetTLSOpts(), cleanupPath)
+}
+
+// BuildAffinity places the pod on a node that can serve every facet it needs.
+//
+// A capture-selected execution needs TWO ready labels and not one. The base
+// control facet attests that this node's daemon, runtime and control key are a
+// homogeneous attested cohort for the exact-execution protocol; the output
+// facet attests the capture extension on top of it. They are separate labels
+// because a base-only cohort is a real deployment -- it is the one the sibling
+// `exact_execution_control` track schedules onto -- and a single label would
+// make "attested for exact control" and "has an output bucket" the same claim.
+//
+// A ready label is a scheduling HINT and never authority: the authenticated
+// handshake is. What the label buys is that the pod does not land somewhere the
+// hold could never be acknowledged.
+// CaptureClass reads what the output ledger says about one step directory,
+// through the daemon that owns the node it is on.
+//
+// It is the ATC's half of the same question the cleanup init container asks,
+// and it goes to the same read-only route so there is one classifier and one
+// answer. A node it cannot reach is an error and not "unmanaged": every caller
+// of this is about to do something write-capable or destructive, and an
+// unreadable ledger is not an empty one.
+func (b *DaemonSetBackend) CaptureClass(ctx context.Context, handle, nodeName string) (string, error) {
+	if !b.config.OutputPlaneEnabled {
+		return captureClassUnmanaged, nil
+	}
+	if b.nodeIPResolver == nil || nodeName == "" {
+		return "", fmt.Errorf("no node to ask about %s", handle)
+	}
+	nodeIP, err := b.nodeIPResolver.Resolve(ctx, nodeName)
+	if err != nil {
+		return "", fmt.Errorf("resolving node %s: %w", nodeName, err)
+	}
+
+	port := b.config.ArtifactDaemonPort
+	if port == 0 {
+		port = 7780
+	}
+	url := fmt.Sprintf("%s://%s:%d/capture-held/steps/%s", b.daemonScheme(), nodeIP, port, handle)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	response, err := newDaemonHTTPClient(b.config, 10*time.Second).Do(request)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("the daemon on %s answered %d", nodeName, response.StatusCode)
+	}
+	var answer struct {
+		Class string `json:"class"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<16)).Decode(&answer); err != nil {
+		return "", err
+	}
+	if answer.Class == "" {
+		return "", fmt.Errorf("the daemon on %s named no class for %s", nodeName, handle)
+	}
+
+	return answer.Class, nil
+}
+
+func (b *DaemonSetBackend) BuildAffinity(inputs []runtime.Input, control *runtime.ExecutionControl) *corev1.Affinity {
 	requiredExpressions := []corev1.NodeSelectorRequirement{
 		{
 			Key:      "concourse.dev/artifact-cache",
@@ -556,6 +704,30 @@ func (b *DaemonSetBackend) BuildAffinity(inputs []runtime.Input) *corev1.Affinit
 			})
 			break
 		}
+	}
+	if control.HasDurableOutputCapture() {
+		for _, label := range []string{executioncontrol.ReadyLabel, output.ReadyLabel} {
+			requiredExpressions = append(requiredExpressions, corev1.NodeSelectorRequirement{
+				Key:      label,
+				Operator: corev1.NodeSelectorOpIn,
+				Values:   []string{"ready"},
+			})
+		}
+		// And the reserving node itself, by name.
+		//
+		// The two labels above pick a COHORT: nodes whose daemons are up and
+		// attested, which is where a hold could be acknowledged at all. The
+		// reservation is narrower than that -- it is a directory on one node's
+		// disk, made before this Pod existed -- so a cohort-wide placement lets
+		// the scheduler land the producer on a node that reserved nothing,
+		// where the hostPath's DirectoryOrCreate makes an empty unheld
+		// directory and the control init's hold is refused. Requiring the node
+		// is what turns that outage into a pending Pod.
+		requiredExpressions = append(requiredExpressions, corev1.NodeSelectorRequirement{
+			Key:      corev1.LabelHostname,
+			Operator: corev1.NodeSelectorOpIn,
+			Values:   []string{control.Capture.ReservingNode},
+		})
 	}
 	affinity := &corev1.Affinity{
 		NodeAffinity: &corev1.NodeAffinity{
@@ -669,11 +841,30 @@ func (b *DaemonSetBackend) RecordOutputs(ctx context.Context, handle, nodeName s
 		// the one node holding the data, and the mirror was refused the same
 		// way and swallowed. Slash-separated key, so path and not filepath.
 		daemonKey := path.Join(handle, subdir)
+
+		// The ONE selected output lives somewhere else, and capture is
+		// ADDITIVE: it is still an ordinary output and downstream steps still
+		// resolve it in the ordinary way. `Container.buildPod` mounts the
+		// reserved incarnation as its volume, so `steps/<handle>/<output>` is
+		// a sibling directory nothing wrote into -- recording that one would
+		// hand a consumer an empty tree with nothing to say it was empty.
+		//
+		// The ATC composes nothing here either: ReservedDirectory came off the
+		// wire from `reserve-incarnation` and is repeated.
+		readOnly := false
+		if reserved := captureReservedDirectory(spec); reserved != "" &&
+			subdir == captureSelectedOutputName(spec) {
+			daemonKey = reserved
+			// And the alias onto it is read-only, because the incarnation is
+			// held: a write-capable second name is what the register guard
+			// exists to refuse.
+			readOnly = true
+		}
 		b.artifactLocator.Record(key, nodeName, daemonKey)
 
 		if nodeName != "" {
-			diskPath := filepath.Join(b.config.ArtifactDaemonHostPath, "steps", handle, subdir)
-			b.registerDaemonAlias(nodeName, key, diskPath)
+			diskPath := filepath.Join(b.config.ArtifactDaemonHostPath, "steps", daemonKey)
+			b.registerAlias(nodeName, key, diskPath, readOnly)
 			// Trigger an outbound mirror on the producer's daemon so the
 			// step output survives loss of this node. Best-effort: if the
 			// trigger fails, the build still succeeds — node loss just
@@ -710,7 +901,25 @@ func (b *DaemonSetBackend) triggerMirror(nodeName, daemonKey string) {
 	_ = b.daemonClient.TriggerMirror(ctx, nodeIP, daemonKey)
 }
 
+// registerReadOnlyDaemonAlias registers a name for bytes another authority
+// owns.
+//
+// The register guard refuses an alias onto a capture-held location, and it is
+// right to: a second WRITE-CAPABLE name for bytes a capture is about to seal
+// hands every key-taking destructive path on that daemon a way to reach them
+// under a name the capture never heard of. A read is not that, and Req 16
+// forbids the mount, not the read -- so the captured output stays an ordinary
+// output that downstream steps resolve in the ordinary way, and the alias says
+// which of the two it is.
+func (b *DaemonSetBackend) registerReadOnlyDaemonAlias(nodeName, volumeKey, diskPath string) {
+	b.registerAlias(nodeName, volumeKey, diskPath, true)
+}
+
 func (b *DaemonSetBackend) registerDaemonAlias(nodeName, volumeKey, diskPath string) {
+	b.registerAlias(nodeName, volumeKey, diskPath, false)
+}
+
+func (b *DaemonSetBackend) registerAlias(nodeName, volumeKey, diskPath string, readOnly bool) {
 	if b.nodeIPResolver == nil {
 		fmt.Fprintf(os.Stderr, "WARNING: registerDaemonAlias: no node IP resolver configured\n")
 		return
@@ -731,7 +940,7 @@ func (b *DaemonSetBackend) registerDaemonAlias(nodeName, volumeKey, diskPath str
 	}
 
 	url := fmt.Sprintf("%s://%s:%d/register", b.daemonScheme(), nodeIP, port)
-	body := fmt.Sprintf(`{"key":%q,"local_path":%q}`, volumeKey, diskPath)
+	body := fmt.Sprintf(`{"key":%q,"local_path":%q,"read_only":%t}`, volumeKey, diskPath, readOnly)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
 	if err != nil {

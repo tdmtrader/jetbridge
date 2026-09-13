@@ -11,6 +11,7 @@ import (
 
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
+	"github.com/concourse/concourse/hangar/output/ledger"
 )
 
 // The source ledger is the node-local authority for one source incarnation:
@@ -83,13 +84,24 @@ func admission() output.CaptureAdmission {
 }
 
 // held is the state every later assertion starts from: an admitted execution
-// whose source the daemon holds.
+// whose incarnation the daemon has RESERVED and whose source it then holds.
+//
+// The reservation is part of the state now, and not an extra step this helper
+// happens to take. The incarnation is issued before the Pod exists so the ATC
+// can mount it as the producer's output volume; a hold is bound to it, and a
+// fixture that skipped the reservation would be exercising a path production
+// no longer has.
 func held(t *testing.T, fixture *sourceFixture) output.CaptureAcknowledgement {
 	t.Helper()
 
 	admitted(t, &fixture.ledgerFixture)
 
-	ack, err := fixture.source.AcknowledgeHold(context.Background(), admission(), output.SourceIncarnation{})
+	reserved, err := fixture.source.ReserveIncarnation(context.Background(), admission())
+	if err != nil {
+		t.Fatalf("reserving the incarnation: %v", err)
+	}
+
+	ack, err := fixture.source.AcknowledgeHold(context.Background(), admission(), reserved.Incarnation, testPod)
 	if err != nil {
 		t.Fatalf("holding the source: %v", err)
 	}
@@ -158,7 +170,7 @@ func TestARepeatedHoldReturnsTheSameStatementAndADifferentFenceIsAConflict(t *te
 	fixture := newSourceLedger(t)
 	first := held(t, fixture)
 
-	again, err := fixture.source.AcknowledgeHold(context.Background(), admission(), output.SourceIncarnation{})
+	again, err := fixture.source.AcknowledgeHold(context.Background(), admission(), first.Incarnation, testPod)
 	if err != nil {
 		t.Fatalf("repeating the hold: %v", err)
 	}
@@ -174,7 +186,7 @@ func TestARepeatedHoldReturnsTheSameStatementAndADifferentFenceIsAConflict(t *te
 		different := admission()
 		mutate(&different)
 
-		if _, err := fixture.source.AcknowledgeHold(context.Background(), different, output.SourceIncarnation{}); !errors.Is(err, output.ErrConflict) {
+		if _, err := fixture.source.AcknowledgeHold(context.Background(), different, first.Incarnation, testPod); !errors.Is(err, output.ErrConflict) {
 			t.Errorf("a hold repeated with %s was not a typed conflict: %v", name, err)
 		}
 	}
@@ -475,7 +487,7 @@ func TestAStaleFenceIsRefusedWhileTheCurrentOneIsServed(t *testing.T) {
 	// this read into a stale-fence refusal, and the crash it repairs does not
 	// care which controller replays the hold.
 	replayed, err := fixture.source.AcknowledgeHold(context.Background(), admission(),
-		output.SourceIncarnation{})
+		hold.Incarnation, testPod)
 	if err != nil {
 		t.Errorf("a repeated hold at the superseded fence was refused: %v", err)
 	} else if !sameCaptureStatement(replayed, hold) {
@@ -563,23 +575,33 @@ func crashOnPut(fixture *sourceFixture, nth int) {
 }
 
 // A hold is a record AND a cleanup gate, and a crash between them must not
-// leave a held source that cleanup may destroy.
+// leave a source that cleanup may destroy.
 //
-// The record is written first and the gate second, so a crash in between leaves
-// a `held` record with no gate -- and the replay path returns the stored hold
-// without re-opening it. `CleanupEligible` then says yes over a source this
-// node is still holding, which is the one answer that cannot be taken back:
-// Req 3's "the hold prevents cleanup", failing open.
+// The reservation opened the gate and wrote a `reserved` record before this
+// Pod existed; the hold's own record write is the one that crashes here, so
+// what survives the crash is a directory the ATC has already mounted into a
+// running Pod with no `held` record naming it. If the gate did not survive
+// with it, `CleanupEligible` would say yes over a source the producer is
+// writing into, which is the one answer that cannot be taken back: Req 3's
+// "the hold prevents cleanup", failing open.
 //
-// The pair is the assertion after the replay: the gate is back, and the source
-// is still on the node.
+// The pair is the assertion after the replay: the gate is there, and the
+// source is still on the node.
 func TestAHoldReplayedAfterACrashStillGatesCleanup(t *testing.T) {
 	fixture := newSourceLedger(t)
 	admitted(t, &fixture.ledgerFixture)
 
-	crashOnPut(fixture, 2)
+	// The reservation comes first, as it does in production: the ATC asks for
+	// the location before it builds the Pod, and the crash under test is the
+	// one INSIDE the hold.
+	reserved, err := fixture.source.ReserveIncarnation(context.Background(), admission())
+	if err != nil {
+		t.Fatalf("reserving: %v", err)
+	}
+
+	crashOnPut(fixture, 1)
 	if _, err := fixture.source.AcknowledgeHold(context.Background(), admission(),
-		output.SourceIncarnation{}); !errors.Is(err, errInjectedCrash) {
+		reserved.Incarnation, testPod); !errors.Is(err, errInjectedCrash) {
 		t.Fatalf("the injected crash between the hold record and its gate was not reported: %v", err)
 	}
 	fixture.store.fault = nil
@@ -589,7 +611,7 @@ func TestAHoldReplayedAfterACrashStillGatesCleanup(t *testing.T) {
 	fixture.restart(t)
 
 	replayed, err := fixture.source.AcknowledgeHold(context.Background(), admission(),
-		output.SourceIncarnation{})
+		reserved.Incarnation, testPod)
 	if err != nil {
 		t.Fatalf("replaying the hold after the crash: %v", err)
 	}
@@ -613,6 +635,77 @@ func TestAHoldReplayedAfterACrashStillGatesCleanup(t *testing.T) {
 	}
 	if len(eligible.OpenExtensionGates) != 1 || eligible.OpenExtensionGates[0] != SourceHoldGate {
 		t.Errorf("the hold's gate did not survive the crash: %v", eligible.OpenExtensionGates)
+	}
+}
+
+// The repair the test above does not reach, on its own vector.
+//
+// With the write order gate-then-record, a crash at the second put leaves a
+// GATE and no record, so the replay takes the new-hold path and `OpenGate` is
+// idempotent -- the replay branch's `EnsureGateOpen` is never entered by that
+// test at all. Delete the call and every committed test stays green, which is
+// the definition of an unpinned repair.
+//
+// So this test reaches the state the repair exists for directly: a `held`
+// record whose gate is gone. The ledger's own API cannot produce it any more,
+// which is the point -- a gate can still be lost to a ledger written by the
+// PREVIOUS order, to an operator's edit, or to any half-write nobody has
+// thought of yet. `CloseGate` here is not a scenario, it is the damage.
+//
+// The pair is the before and the after: cleanup is eligible with the gate gone,
+// and the replay -- which returns the SAME statement, so it is a read, not a
+// new hold -- puts it back.
+func TestAHoldReplayRepairsAGateLostBehindTheLedgersBack(t *testing.T) {
+	fixture := newSourceLedger(t)
+	first := held(t, fixture)
+
+	if _, err := fixture.ledger.RecordStart(identity(1), testPod, "proc-1"); err != nil {
+		t.Fatalf("starting: %v", err)
+	}
+	if _, err := fixture.ledger.RecordOutcome(identity(1),
+		executioncontrol.AcknowledgementFinish, executioncontrol.ExitOutcome{ExitCode: 0}); err != nil {
+		t.Fatalf("finishing: %v", err)
+	}
+
+	// The damage: the gate, gone, while the record still says `held`.
+	if err := fixture.ledger.CloseGate(identity(1), SourceHoldGate); err != nil {
+		t.Fatalf("closing the gate behind the ledger's back: %v", err)
+	}
+
+	// The control. Without this line a repair that never ran would look the
+	// same as a gate that was never lost.
+	before, err := fixture.ledger.CleanupEligible(identity(1))
+	if err != nil {
+		t.Fatalf("asking about cleanup: %v", err)
+	}
+	if !before.Eligible || len(before.OpenExtensionGates) != 0 {
+		t.Fatalf("the damage did not take: eligible=%v gates=%v",
+			before.Eligible, before.OpenExtensionGates)
+	}
+	if !fixture.source.Holds(first.Incarnation) {
+		t.Fatal("the source went away with the gate; this test is about a held source")
+	}
+
+	replayed, err := fixture.source.AcknowledgeHold(context.Background(), admission(),
+		first.Incarnation, testPod)
+	if err != nil {
+		t.Fatalf("replaying the hold: %v", err)
+	}
+	if !sameCaptureStatement(replayed, first) {
+		t.Errorf("the replay minted a fresh hold instead of returning the stored one: seq %d, was %d",
+			replayed.LedgerSequence, first.LedgerSequence)
+	}
+
+	after, err := fixture.ledger.CleanupEligible(identity(1))
+	if err != nil {
+		t.Fatalf("asking about cleanup after the replay: %v", err)
+	}
+	if after.Eligible {
+		t.Errorf("the replay did not repair the gate: cleanup is eligible over a held source")
+	}
+	if len(after.OpenExtensionGates) != 1 || after.OpenExtensionGates[0] != SourceHoldGate {
+		t.Errorf("the replay left gates %v; the hold's gate is not back",
+			after.OpenExtensionGates)
 	}
 }
 
@@ -718,6 +811,17 @@ func TestAWriterTicketReplaysItsOwnStatementAndIsBoundToItsProcess(t *testing.T)
 		}
 	}
 
+	// And a ticket that names NO pod is refused before it is issued, rather
+	// than admitted and then replayed for the next caller that also left the
+	// field out. `sameWriter` compares two empty strings and calls them one
+	// process, so an unbound ticket is a ticket bound to nothing at all -- the
+	// binding the two rows above assert, made vacuous by omission.
+	unbound := writerAdmission(hold, testTicketB)
+	unbound.PodUID = ""
+	if _, err := fixture.source.AdmitWriter(context.Background(), unbound); !errors.Is(err, output.ErrIncomplete) {
+		t.Errorf("a writer admission naming no pod was not refused as incomplete: %v", err)
+	}
+
 	closed, err := fixture.source.RetireWriter(context.Background(), writerAdmission(hold, testTicket))
 	if err != nil {
 		t.Fatalf("retiring: %v", err)
@@ -744,5 +848,314 @@ func TestAWriterTicketReplaysItsOwnStatementAndIsBoundToItsProcess(t *testing.T)
 	if !sameCaptureStatement(afterRestart, closed) {
 		t.Errorf("the close statement did not survive a restart: seq %d, was %d",
 			afterRestart.LedgerSequence, closed.LedgerSequence)
+	}
+}
+
+// The incarnation is reserved BEFORE the Pod exists, and the hold binds to it.
+//
+// This is the Phase 4 completion pass's whole point. Before it, the daemon
+// minted the incarnation inside AcknowledgeHold -- which cannot happen before
+// the Pod exists, because the hold is bound to the admitted Pod UID -- so the
+// ATC had nothing to mount and the producer wrote into a sibling directory no
+// hold protected. Reserving first is what lets the ATC repeat a location the
+// daemon chose, and Req 7 still holds because the ATC composes nothing.
+func TestTheIncarnationIsReservedBeforeThePodExistsAndTheHoldBindsToIt(t *testing.T) {
+	fixture := newSourceLedger(t)
+	admitted(t, &fixture.ledgerFixture)
+
+	reserved, err := fixture.source.ReserveIncarnation(context.Background(), admission())
+	if err != nil {
+		t.Fatalf("reserving the incarnation: %v", err)
+	}
+	if err := reserved.Validate(); err != nil {
+		t.Fatalf("the reservation does not validate: %v", err)
+	}
+	if reserved.Incarnation.HandleGeneration == 0 {
+		t.Error("the daemon reserved no handle generation")
+	}
+	if reserved.Incarnation.NodeUID != testNode {
+		t.Errorf("the reservation names node %s", reserved.Incarnation.NodeUID)
+	}
+	if reserved.Directory != reserved.Incarnation.Directory() {
+		t.Errorf("the reservation's directory %q is not the incarnation's %q",
+			reserved.Directory, reserved.Incarnation.Directory())
+	}
+
+	// The directory is REALLY there, under the daemon's own root, before any
+	// Pod exists. A reservation the ATC could mount and the kubelet could not
+	// find would be a hostPath the node creates with the wrong ownership.
+	onDisk := filepath.Join(fixture.dir, "steps", reserved.Directory)
+	info, statErr := os.Lstat(onDisk)
+	if statErr != nil {
+		t.Fatalf("the reserved incarnation is not on the node: %v", statErr)
+	}
+	if !info.IsDir() {
+		t.Errorf("the reserved incarnation is a %s, not a directory", info.Mode().Type())
+	}
+
+	// It is owned by the LEDGER from this moment, which is what makes every
+	// path-keyed guard load-bearing while the producer is still writing. The
+	// read-only classifier is the one every destructive path on this node asks.
+	classifier := ledger.New(fixture.dir)
+	if class := classifier.Classify(reserved.Directory); class.Destructive() {
+		t.Errorf("a reserved incarnation classified as %s; destructive cleanup would be "+
+			"permitted over the directory the producer is about to write into", class)
+	}
+	// And the ancestor question, which is the one the sweeper asks: the
+	// reservation is a top-level entry under steps/, and a sweep that removed
+	// it would take the source with it.
+	parent := reserved.Directory[:strings.Index(reserved.Directory, "/")]
+	if class := classifier.Classify(parent); class.Destructive() {
+		t.Errorf("the reservation's parent directory %q classified as %s", parent, class)
+	}
+
+	// Idempotent for the same identity and fence: the same location, not a
+	// second one. A reservation that minted a fresh generation per call would
+	// leave the first directory orphaned and the hold pointing at the wrong
+	// bytes after any retry.
+	again, err := fixture.source.ReserveIncarnation(context.Background(), admission())
+	if err != nil {
+		t.Fatalf("repeating the reservation: %v", err)
+	}
+	if again.Incarnation != reserved.Incarnation {
+		t.Errorf("a repeated reservation issued %v and the first issued %v",
+			again.Incarnation, reserved.Incarnation)
+	}
+
+	// A DIFFERENT fence is a typed conflict, and the first reservation stands.
+	differentFence := admission()
+	differentFence.Execution.Fence++
+	if _, err := fixture.source.ReserveIncarnation(context.Background(), differentFence); err == nil {
+		t.Error("a reservation at a different fence was admitted")
+	} else if !errors.Is(err, output.ErrConflict) && !errors.Is(err, executioncontrol.ErrStaleFence) {
+		t.Errorf("a reservation at a different fence was refused untyped: %v", err)
+	}
+	standing, err := fixture.source.ReserveIncarnation(context.Background(), admission())
+	if err != nil {
+		t.Fatalf("re-reading the standing reservation: %v", err)
+	}
+	if standing.Incarnation != reserved.Incarnation {
+		t.Error("the refused reservation replaced the standing one")
+	}
+
+	// The hold BINDS to it. A hold offering a different incarnation is refused
+	// however well formed it is, because the ATC has already mounted the
+	// reserved one into the producing Pod and a hold over anything else would
+	// protect bytes nobody is writing.
+	foreign := reserved.Incarnation
+	foreign.HandleGeneration += 100
+	if _, err := fixture.source.AcknowledgeHold(context.Background(), admission(), foreign, testPod); err == nil {
+		t.Error("a hold naming an incarnation the daemon did not reserve was acknowledged")
+	} else if !errors.Is(err, output.ErrConflict) {
+		t.Errorf("a hold over an unreserved incarnation was refused untyped: %v", err)
+	}
+
+	ack, err := fixture.source.AcknowledgeHold(context.Background(), admission(), reserved.Incarnation, testPod)
+	if err != nil {
+		t.Fatalf("holding the reserved source: %v", err)
+	}
+	if ack.Incarnation != reserved.Incarnation {
+		t.Errorf("the hold acknowledged %v and the reservation issued %v",
+			ack.Incarnation, reserved.Incarnation)
+	}
+}
+
+// An unreserved execution cannot be held at all.
+//
+// The control is the line below it: the same admission, after a reservation,
+// is acknowledged. Without that line this would pass on a daemon that refused
+// every hold.
+func TestAHoldOverAnUnreservedExecutionIsRefusedAndAReservedOneIsNot(t *testing.T) {
+	fixture := newSourceLedger(t)
+	admitted(t, &fixture.ledgerFixture)
+
+	_, err := fixture.source.AcknowledgeHold(context.Background(), admission(),
+		output.SourceIncarnation{}, testPod)
+	if err == nil {
+		t.Fatal("a hold with no reservation behind it was acknowledged; the incarnation would " +
+			"have been minted after the Pod was built, which is the seam this pass closes")
+	}
+	if !errors.Is(err, output.ErrNotFound) {
+		t.Errorf("an unreserved hold was refused untyped: %v", err)
+	}
+
+	reserved, err := fixture.source.ReserveIncarnation(context.Background(), admission())
+	if err != nil {
+		t.Fatalf("reserving: %v", err)
+	}
+	if _, err := fixture.source.AcknowledgeHold(context.Background(), admission(),
+		reserved.Incarnation, testPod); err != nil {
+		t.Fatalf("the same hold was refused after a reservation: %v", err)
+	}
+}
+
+// The reservation is DURABLE: it survives the daemon, and the replay proves it.
+//
+// A reservation kept only in memory would be a hostPath the ATC mounted into a
+// Pod that outlives the daemon process, with nothing on this node saying the
+// directory is spoken for -- so the next sweep would reclaim it while the
+// producer was still writing.
+func TestAReservationSurvivesARestartAndTheReplayReturnsTheSameLocation(t *testing.T) {
+	fixture := newSourceLedger(t)
+	admitted(t, &fixture.ledgerFixture)
+
+	reserved, err := fixture.source.ReserveIncarnation(context.Background(), admission())
+	if err != nil {
+		t.Fatalf("reserving: %v", err)
+	}
+
+	fixture.restart(t)
+
+	replayed, err := fixture.source.ReserveIncarnation(context.Background(), admission())
+	if err != nil {
+		t.Fatalf("replaying the reservation after a restart: %v", err)
+	}
+	if replayed.Incarnation != reserved.Incarnation {
+		t.Errorf("the restarted daemon reserved %v and the reservation before the restart was %v",
+			replayed.Incarnation, reserved.Incarnation)
+	}
+	if replayed.Directory != reserved.Directory {
+		t.Errorf("the restarted daemon named directory %q and the reservation named %q",
+			replayed.Directory, reserved.Directory)
+	}
+
+	// And a fresh reservation for a DIFFERENT handoff still gets its own
+	// location, so the replay is a replay rather than a ledger that has stopped
+	// issuing.
+	other := admission()
+	other.HandoffID = output.HandoffID("33333333-3333-4333-8333-333333333333")
+	other.SourceLeaseID = output.SourceLeaseID("44444444-4444-4444-8444-444444444444")
+	fresh, err := fixture.source.ReserveIncarnation(context.Background(), other)
+	if err != nil {
+		t.Fatalf("reserving for a second handoff: %v", err)
+	}
+	if fresh.Incarnation.HandleGeneration == reserved.Incarnation.HandleGeneration {
+		t.Error("a second handoff was given the first's handle generation")
+	}
+}
+
+// The Pod UID is bound ONCE, at the hold, from inside the Pod.
+//
+// This is the finding the Phase 4 round-1 review turned up by driving the
+// sequence a real producer has: admission and reservation both precede the Pod,
+// so neither can name one, and the hold is the first message that can. Before
+// this the hold read the Pod UID off the base admission -- which for a caller
+// that reserves before building a Pod is the empty string, so the producer's
+// own start was then refused for not being the Pod the hold named.
+//
+// Three arms and a control, and the control is first: with a Pod UID presented,
+// the hold names it and the same UID replays to the same statement.
+func TestTheHoldBindsThePodUIDOnceAndRefusesADifferentOneAtTheSameFence(t *testing.T) {
+	fixture := newSourceLedger(t)
+	admitted(t, &fixture.ledgerFixture)
+
+	reserved, err := fixture.source.ReserveIncarnation(context.Background(), admission())
+	if err != nil {
+		t.Fatalf("reserving: %v", err)
+	}
+
+	// The control. The reservation named no Pod and the hold binds one.
+	first, err := fixture.source.AcknowledgeHold(context.Background(), admission(),
+		reserved.Incarnation, testPod)
+	if err != nil {
+		t.Fatalf("holding: %v", err)
+	}
+	if first.PodUID != testPod {
+		t.Fatalf("the hold bound pod %q and the init container presented %q",
+			first.PodUID, testPod)
+	}
+
+	// The same Pod replays to the same statement.
+	again, err := fixture.source.AcknowledgeHold(context.Background(), admission(),
+		reserved.Incarnation, testPod)
+	if err != nil {
+		t.Fatalf("repeating the hold from the same pod: %v", err)
+	}
+	if !sameCaptureStatement(again, first) {
+		t.Error("a repeat from the same pod returned a different statement")
+	}
+
+	// A DIFFERENT Pod at the same fence is a typed conflict. No takeover, no
+	// epoch bump, nothing Phase 5 owns: a replaced Pod is simply a new
+	// incarnation, and it does not inherit a hold over bytes the previous one
+	// was writing.
+	if _, err := fixture.source.AcknowledgeHold(context.Background(), admission(),
+		reserved.Incarnation, "pod-2"); !errors.Is(err, output.ErrConflict) {
+		t.Errorf("a second hold from another pod at the same fence was not a typed conflict: %v", err)
+	}
+
+	// And the first hold is still the one in force.
+	current, err := fixture.source.InspectHold(testHandoff, identity(1))
+	if err != nil {
+		t.Fatalf("inspecting: %v", err)
+	}
+	if current.PodUID != testPod {
+		t.Errorf("a refused second hold rebound the pod to %q", current.PodUID)
+	}
+
+	// A writer admission from a pod the hold does not name is refused too --
+	// with a ticket id nothing has issued, so this is the NEW-ticket arm rather
+	// than the ticket-transfer one above it.
+	foreignWriter := writerAdmission(first, testTicketB)
+	foreignWriter.PodUID = "pod-2"
+	if _, err := fixture.source.AdmitWriter(context.Background(), foreignWriter); !errors.Is(err, output.ErrConflict) {
+		t.Errorf("a writer ticket for a pod the hold does not name was issued: %v", err)
+	}
+}
+
+// A hold with no Pod at all is refused rather than recorded empty.
+//
+// An empty UID compares equal to the next empty one, so a hold that bound
+// nothing would then admit every later Pod as "the same" -- which is precisely
+// the vacuity the bind-once rule exists to prevent.
+func TestAHoldThatNamesNoPodIsRefused(t *testing.T) {
+	fixture := newSourceLedger(t)
+	admitted(t, &fixture.ledgerFixture)
+
+	reserved, err := fixture.source.ReserveIncarnation(context.Background(), admission())
+	if err != nil {
+		t.Fatalf("reserving: %v", err)
+	}
+
+	if _, err := fixture.source.AcknowledgeHold(context.Background(), admission(),
+		reserved.Incarnation, ""); !errors.Is(err, output.ErrIncomplete) {
+		t.Errorf("a hold naming no pod was not refused as incomplete: %v", err)
+	}
+
+	// The control: the same hold, with the Downward API's value, is acknowledged.
+	if _, err := fixture.source.AcknowledgeHold(context.Background(), admission(),
+		reserved.Incarnation, testPod); err != nil {
+		t.Fatalf("the same hold with a pod was refused: %v", err)
+	}
+}
+
+// A hold taken on a node other than the reserving one is refused, by name.
+//
+// The reservation is a directory on ONE node's disk. A scheduler that placed
+// the producer elsewhere would have its control init dial its own node's
+// daemon, which reserved nothing -- and the hostPath's DirectoryOrCreate would
+// have made an empty unheld directory under it. This is the typed refusal; the
+// Pod's required affinity on the reserving node is the other half.
+func TestAHoldFromANodeOtherThanTheReservingOneIsRefused(t *testing.T) {
+	fixture := newSourceLedger(t)
+	admitted(t, &fixture.ledgerFixture)
+
+	reserved, err := fixture.source.ReserveIncarnation(context.Background(), admission())
+	if err != nil {
+		t.Fatalf("reserving: %v", err)
+	}
+
+	elsewhere := reserved.Incarnation
+	elsewhere.NodeUID = "node-somewhere-else"
+	if _, err := fixture.source.AcknowledgeHold(context.Background(), admission(),
+		elsewhere, testPod); !errors.Is(err, output.ErrUnauthorized) {
+		t.Errorf("a hold naming an incarnation reserved on another node was not refused: %v", err)
+	}
+
+	// The control, and it is what keeps the arm from being "every hold is
+	// refused": the same hold on the reserving node is acknowledged.
+	if _, err := fixture.source.AcknowledgeHold(context.Background(), admission(),
+		reserved.Incarnation, testPod); err != nil {
+		t.Fatalf("the hold on the reserving node was refused: %v", err)
 	}
 }

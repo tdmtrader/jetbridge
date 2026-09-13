@@ -53,7 +53,6 @@ type executionRecord struct {
 	Identity        executioncontrol.Identity        `json:"identity"`
 	ActivationEpoch executioncontrol.ActivationEpoch `json:"activation_epoch"`
 	NodeUID         executioncontrol.NodeUID         `json:"node_uid"`
-	PodUID          executioncontrol.PodUID          `json:"pod_uid"`
 	AdmittedAt      executioncontrol.Timestamp       `json:"admitted_at"`
 
 	// Start and Outcome are the signed statements themselves, stored exactly as
@@ -247,7 +246,6 @@ func (ledger *ExecutionLedger) Admit(envelope executioncontrol.Envelope) error {
 		// outcome of a process is a fact about that process; a new controller
 		// does not get to un-know it.
 		record.Identity.Fence = envelope.Fence
-		record.PodUID = envelope.PodUID
 		ledger.sequence++
 		record.HighWater = ledger.sequence
 
@@ -260,7 +258,6 @@ func (ledger *ExecutionLedger) Admit(envelope executioncontrol.Envelope) error {
 		Identity:        envelope.Identity,
 		ActivationEpoch: envelope.ActivationEpoch,
 		NodeUID:         envelope.NodeUID,
-		PodUID:          envelope.PodUID,
 		AdmittedAt:      executioncontrol.NewTimestamp(ledger.clock()),
 		HighWater:       ledger.sequence,
 	})
@@ -705,18 +702,23 @@ func (ledger *ExecutionLedger) Sequence() executioncontrol.LedgerSequence {
 // It is the extension's only read of base state that is not a classification,
 // and it is read-only. Nothing here lets the extension change what the base
 // ledger says.
-func (ledger *ExecutionLedger) Admission(id executioncontrol.ExecutionID) (executioncontrol.Identity, executioncontrol.PodUID, error) {
+// It answers with the admitted IDENTITY and nothing else. It used to answer
+// with a Pod UID too, and that was the seam: an admission cannot know a Pod,
+// so the UID it handed back was whatever the first admission happened to
+// carry -- empty, for every caller that admits before the Pod exists, which is
+// every caller that reserves a location to mount.
+func (ledger *ExecutionLedger) Admission(id executioncontrol.ExecutionID) (executioncontrol.Identity, error) {
 	ledger.mu.Lock()
 	defer ledger.mu.Unlock()
 
 	record, found, err := ledger.load(id)
 	if err != nil {
-		return executioncontrol.Identity{}, "", err
+		return executioncontrol.Identity{}, err
 	}
 	if !found {
-		return executioncontrol.Identity{}, "", fmt.Errorf(
+		return executioncontrol.Identity{}, fmt.Errorf(
 			"%w: execution %s was never admitted on this node", output.ErrUnauthorized, id)
 	}
 
-	return record.Identity, record.PodUID, nil
+	return record.Identity, nil
 }

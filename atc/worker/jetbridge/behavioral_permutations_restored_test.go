@@ -394,14 +394,14 @@ func TestBuildVolumeMounts_CheckContainer(t *testing.T) {
 
 	// Check containers use emptyDir (not hostPath) so there is no stale
 	// data across runs. No cleanup init container is needed, even when reused.
-	cleanup := c.buildCleanupInitContainer()
+	cleanup, _ := c.buildCleanupInitContainer()
 	if cleanup != nil {
 		t.Error("expected nil cleanup init container for check container")
 	}
 
 	// Reused check containers still don't need cleanup — emptyDir is fresh per pod.
 	c2 := makeContainer("check-handle-2", meta, spec, cfg, nil, true)
-	cleanup2 := c2.buildCleanupInitContainer()
+	cleanup2, _ := c2.buildCleanupInitContainer()
 	if cleanup2 != nil {
 		t.Error("expected nil cleanup init container for reused check container")
 	}

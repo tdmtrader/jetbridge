@@ -479,14 +479,25 @@ func (s HangarDaemon) captureAgain(first HeldSource) (CaptureOutcome, error) {
 			Identity:        draft.Admission.Execution,
 			ActivationEpoch: draft.Admission.ActivationEpoch,
 			NodeUID:         hangarNodeUID,
-			PodUID:          draft.PodUID,
 			Capability:      "opaque-admission-capability",
 		})
 	if _, err := decodeControl[executioncontrol.ClassifyResult](admitted); err != nil {
 		return CaptureOutcome{}, fmt.Errorf("admitting the second capture: %w", err)
 	}
 
-	answer := s.capture("hold", "/capture/v1/hold", draft.Admission.Execution, draft.Admission)
+	// The second capture reserves its own incarnation, as the first did: a
+	// reservation is per handoff, and two captures of the same bytes are two
+	// locations on this node.
+	reserving := s.capture("reserve-incarnation", "/capture/v1/reserve-incarnation",
+		draft.Admission.Execution, draft.Admission)
+	reserved, err := decodeControl[hangaroutput.ReservedIncarnation](reserving)
+	if err != nil {
+		return CaptureOutcome{}, fmt.Errorf("reserving the second incarnation: %w", err)
+	}
+	draft.Reserved = reserved
+
+	answer := s.capture("hold", "/capture/v1/hold", draft.Admission.Execution,
+		holdBody(draft.Admission, reserved.Incarnation, draft.PodUID))
 	ack, err := decodeControl[hangaroutput.CaptureAcknowledgement](answer)
 	if err != nil {
 		return CaptureOutcome{}, fmt.Errorf("holding the second source: %w", err)

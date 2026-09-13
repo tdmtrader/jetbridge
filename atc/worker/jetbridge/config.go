@@ -222,6 +222,19 @@ type Config struct {
 	// communication. Derived from the presence of TLS cert/key/CA paths.
 	ArtifactDaemonTLSEnabled bool
 
+	// OutputPlaneEnabled turns on the durable output-capture extension: the
+	// capture control init, the ledger-checked cleanup probe, the output
+	// cohort's ready labels and the ATC's control calls. Off, every one of
+	// those is absent and an ordinary pod is byte-identical to the one this
+	// runtime built before the output plane existed (Req 59).
+	OutputPlaneEnabled bool
+
+	// OutputDaemonPort is the control port of the node-local output daemon.
+	// It is a different daemon from the artifact daemon on a different port,
+	// because Req 20 forbids the two sharing a bucket and a Kubernetes service
+	// account is Pod-wide, so the isolation is a second Pod.
+	OutputDaemonPort int
+
 	// HangarEnabled permits exact immutable Hangar tree inputs.
 	HangarEnabled bool
 

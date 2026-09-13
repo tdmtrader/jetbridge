@@ -80,6 +80,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, HangarFixtureDefinitions()...)
 	defs = append(defs, HangarCapturePodDefinitions()...)
 	defs = append(defs, HangarHandoffDefinitions()...)
+	defs = append(defs, HangarPausePodDefinitions()...)
 	defs = append(defs, HangarPublicationDefinitions()...)
 	defs = append(defs, HangarDispositionDefinitions()...)
 	defs = append(defs, HangarBindingDefinitions()...)

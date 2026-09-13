@@ -135,7 +135,6 @@ func envelope(fence executioncontrol.Fence) executioncontrol.Envelope {
 		Identity:        identity(fence),
 		ActivationEpoch: testEpoch,
 		NodeUID:         testNode,
-		PodUID:          testPod,
 		Capability:      "opaque-capability",
 	}
 }
@@ -532,7 +531,6 @@ func TestARestartReturnsTheSameSignedStatementWithoutRelaunchingAnything(t *test
 		Identity:        executioncontrol.Identity{ExecutionID: "44444444-4444-4444-8444-444444444444", Fence: 1},
 		ActivationEpoch: testEpoch,
 		NodeUID:         testNode,
-		PodUID:          testPod,
 		Capability:      "opaque-capability",
 	}); err != nil {
 		t.Fatalf("admitting a second execution: %v", err)
@@ -768,7 +766,6 @@ func TestDestructiveCleanupWaitsForTheOutcomeAndForEveryOpenGate(t *testing.T) {
 		Identity:        second,
 		ActivationEpoch: testEpoch,
 		NodeUID:         testNode,
-		PodUID:          testPod,
 		Capability:      "opaque-capability",
 	}); err != nil {
 		t.Fatalf("admitting: %v", err)

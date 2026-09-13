@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -105,6 +106,136 @@ var _ = Describe("Task exec supervisor script execution", func() {
 		logBytes, err := os.ReadFile(filepath.Join(stateDirOf(cmd[2]), "log"))
 		Expect(err).ToNot(HaveOccurred())
 		Expect(strings.Count(string(logBytes), "one-shot-output")).To(Equal(1))
+	})
+
+	// --- The exact-execution supervisor. ---
+	//
+	// Every row here is a crash half around a start, which is why they stay
+	// Go: brine has no way to say "the web died between these two lines", and
+	// what makes them meaningful is a process that really was killed.
+
+	runExact := func(shellCommand string) (string, int) {
+		cmd := exactSupervisorCommand(stateID, runtime.ProcessSpec{
+			Path: "sh",
+			Args: []string{"-c", shellCommand},
+		})
+		out, err := exec.Command(cmd[0], cmd[1], cmd[2]).CombinedOutput()
+		exitCode := 0
+		if err != nil {
+			exitErr, ok := err.(*exec.ExitError)
+			Expect(ok).To(BeTrue(), "unexpected non-exit error: %v, output: %s", err, out)
+			exitCode = exitErr.ExitCode()
+		}
+		return string(out), exitCode
+	}
+
+	exactStateDir := func(shellCommand string) string {
+		return stateDirOf(exactSupervisorCommand(stateID, runtime.ProcessSpec{
+			Path: "sh",
+			Args: []string{"-c", shellCommand},
+		})[2])
+	}
+
+	It("records the exact start before the command can finish, and still reports its exit code", func() {
+		const command = "sleep 2; echo done; exit 4"
+		cmd := exactSupervisorCommand(stateID, runtime.ProcessSpec{
+			Path: "sh", Args: []string{"-c", command},
+		})
+		web := exec.Command(cmd[0], cmd[1], cmd[2])
+		Expect(web.Start()).To(Succeed())
+
+		// The start record is durable BEFORE the outcome is, which is the
+		// ordering Req 4 puts around the finish witness: while the command is
+		// still running there is a start and no exit.
+		Eventually(func() bool {
+			_, err := os.Stat(filepath.Join(exactStateDir(command), "start"))
+			return err == nil
+		}, 3*time.Second, 50*time.Millisecond).Should(BeTrue())
+		_, err := os.Stat(filepath.Join(exactStateDir(command), "exit"))
+		Expect(os.IsNotExist(err)).To(BeTrue(), "an outcome was recorded while the command was still running")
+
+		Expect(web.Wait()).ToNot(Succeed())
+		Expect(web.ProcessState.ExitCode()).To(Equal(4))
+	})
+
+	It("never runs the command again once its start is recorded and its outcome is unprovable", func() {
+		// The state today's supervisor relaunches into, and the one Req 6
+		// forbids: the command really started, the web died, and the runner
+		// died with it. There is no exit file and nothing is alive, and an
+		// ordinary task's supervisor would start the command over.
+		const command = "echo run-marker; sleep 30"
+		cmd := exactSupervisorCommand(stateID, runtime.ProcessSpec{
+			Path: "sh", Args: []string{"-c", command},
+		})
+		web1 := exec.Command(cmd[0], cmd[1], cmd[2])
+		Expect(web1.Start()).To(Succeed())
+
+		state := exactStateDir(command)
+		Eventually(func() bool {
+			_, err := os.Stat(filepath.Join(state, "start"))
+			return err == nil
+		}, 3*time.Second, 50*time.Millisecond).Should(BeTrue())
+
+		pidBytes, err := os.ReadFile(filepath.Join(state, "pid"))
+		Expect(err).ToNot(HaveOccurred())
+		var runnerPid int
+		_, err = fmt.Sscanf(strings.TrimSpace(string(pidBytes)), "%d", &runnerPid)
+		Expect(err).ToNot(HaveOccurred())
+
+		Expect(web1.Process.Kill()).To(Succeed())
+		_ = web1.Wait()
+		Expect(syscall.Kill(runnerPid, syscall.SIGKILL)).To(Succeed())
+		Eventually(func() error {
+			return syscall.Kill(runnerPid, 0)
+		}, 3*time.Second, 50*time.Millisecond).Should(HaveOccurred())
+
+		out, code := runExact(command)
+		Expect(code).To(Equal(ExactUnresolvedExitCode),
+			"the re-exec did not report an unresolved outcome; output: %s", out)
+
+		// And the proof it did not run again is in the command's own log,
+		// which the replay printed: one marker, not two.
+		logBytes, err := os.ReadFile(filepath.Join(state, "log"))
+		Expect(err).ToNot(HaveOccurred())
+		Expect(strings.Count(string(logBytes), "run-marker")).To(Equal(1),
+			"the producer was executed a second time after its exact start was recorded")
+	})
+
+	It("still takes over a still-running command without restarting it", func() {
+		const command = "echo exact-marker; sleep 3; echo finished; exit 5"
+		cmd := exactSupervisorCommand(stateID, runtime.ProcessSpec{
+			Path: "sh", Args: []string{"-c", command},
+		})
+		web1 := exec.Command(cmd[0], cmd[1], cmd[2])
+		Expect(web1.Start()).To(Succeed())
+
+		time.Sleep(1500 * time.Millisecond)
+		Expect(web1.Process.Kill()).To(Succeed())
+		_ = web1.Wait()
+
+		out, code := runExact(command)
+		Expect(code).To(Equal(5))
+		Expect(out).To(ContainSubstring("finished"))
+		Expect(strings.Count(out, "exact-marker")).To(Equal(1),
+			"a live command was restarted rather than attached to")
+	})
+
+	It("replays a recorded outcome rather than reporting it unresolved", func() {
+		out1, code1 := runExact("echo exact-once; exit 3")
+		Expect(code1).To(Equal(3))
+		Expect(out1).To(ContainSubstring("exact-once"))
+
+		out2, code2 := runExact("echo exact-once; exit 3")
+		Expect(code2).To(Equal(3), "a completed command was reported unresolved: %s", out2)
+	})
+
+	It("leaves the ordinary supervisor script alone", func() {
+		ordinary := supervisorCommand(stateID, runtime.ProcessSpec{Path: "sh", Args: []string{"-c", "true"}})[2]
+		Expect(ordinary).ToNot(ContainSubstring("/start"),
+			"the ordinary script grew the exact start record; an ordinary task's re-exec must "+
+				"still restart a command whose runner died, which is the whole reason the "+
+				"supervisor exists")
+		Expect(ordinary).ToNot(ContainSubstring(strconv.Itoa(ExactUnresolvedExitCode)))
 	})
 
 	It("shields the command from SIGHUP so pty teardown cannot kill it", func() {

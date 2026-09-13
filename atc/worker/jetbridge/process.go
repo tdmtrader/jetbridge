@@ -16,6 +16,7 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
+	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/tracing"
 	"go.opentelemetry.io/otel/attribute"
 	oteltrace "go.opentelemetry.io/otel/trace"
@@ -771,6 +772,19 @@ type execProcess struct {
 	// Past that point the step has started and must never be exec'd a
 	// second time, whatever happens to the pod.
 	execTransportLive atomic.Bool
+
+	// control is the optional exact-execution envelope this step was admitted
+	// under, and exact is the live control state once the daemon has admitted
+	// it. Both are nil on the ordinary path, which is every step that opted
+	// into nothing: this file's behaviour is unchanged for them.
+	control        *runtime.ExecutionControl
+	outputControls OutputControlResolver
+	exact          *exactExecution
+
+	// exactCleanupEligible is the ledger's last word on whether this
+	// execution's remains may be destroyed. It starts false, which is the
+	// fail-closed direction: a Pod that is not proven disposable is kept.
+	exactCleanupEligible bool
 }
 
 func newExecProcess(
@@ -783,7 +797,7 @@ func newExecProcess(
 	io runtime.ProcessIO,
 	storageBackend StorageBackend,
 ) *execProcess {
-	return &execProcess{
+	process := &execProcess{
 		id:             id,
 		podName:        podName,
 		clientset:      clientset,
@@ -794,6 +808,12 @@ func newExecProcess(
 		processIO:      io,
 		storageBackend: storageBackend,
 	}
+	if container != nil {
+		process.control = container.containerSpec.ExecutionControl
+		process.outputControls = container.outputControls
+	}
+
+	return process
 }
 
 func (p *execProcess) ID() string {
@@ -849,6 +869,33 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		}
 	}()
 
+	// Deleting an abandoned Pod is destructive quiescence, and for a
+	// controlled execution nothing may be destroyed until the ledger says so.
+	// The stop is source-preserving and the delete waits on
+	// DestructiveCleanupEligible, which for a capture-selected execution stays
+	// false while its hold is open -- so an aborted producer's source survives
+	// its Pod being reaped rather than going with it.
+	defer func() {
+		if ctx.Err() == nil || p.control == nil || p.exact == nil {
+			return
+		}
+		quiesceCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		eligible, err := p.stopPreservingSource(lagerctx.NewContext(quiesceCtx, logger))
+		if err != nil {
+			logger.Error("failed-to-stop-preserving-source", err)
+		}
+		p.exactCleanupEligible = eligible
+	}()
+
+	// Admit the exact identity as soon as the scheduler binds the Pod, which
+	// is BEFORE it is running: the capture control init is already retrying
+	// its hold inside that Pod, and the daemon refuses a hold for an execution
+	// it was never told about. Waiting for Running here would be waiting for
+	// the container that is waiting for this.
+	joinAdmission := p.admitWhenScheduled(ctx)
+
 	// Wait for the Pod to be running before exec-ing.
 	waitCtx, waitSpan := tracing.StartSpan(ctx, "k8s.exec-process.wait-for-running", tracing.Attrs{
 		"pod-name": p.podName,
@@ -897,8 +944,37 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	// Task steps run under an in-pod supervisor so that a web restart can
 	// re-exec the same command and take over the still-running process
 	// instead of starting a second copy (see supervisor.go).
+	//
+	// A controlled execution runs under the EXACT supervisor instead, which
+	// records its start before the child and refuses to re-run a command whose
+	// start it finds with no outcome. The two scripts are two contracts and the
+	// call site says which one it chose.
 	if p.supervised() {
-		command = supervisorCommand(p.id, p.processSpec)
+		if p.control != nil {
+			command = exactSupervisorCommand(p.id, p.processSpec)
+		} else {
+			command = supervisorCommand(p.id, p.processSpec)
+		}
+	}
+
+	// Everything that must be durable before the command runs: the admission,
+	// the revalidated hold, every writer's ticket, and the start record. A
+	// refusal here happens before the process and before its mounts.
+	if p.control != nil {
+		if err := joinAdmission(); err != nil {
+			spanErr = err
+			return runtime.ProcessResult{}, fmt.Errorf("exact execution admission: %w", err)
+		}
+		if err := p.beginExactCommand(ctx); err != nil {
+			if errors.Is(err, errExactAlreadyDurable) {
+				// Recovery: the outcome is on the ledger, so it is reported
+				// and the command is not run. The exec below is never
+				// reached, which is the whole of "never re-invokes".
+				return p.reportExactOutcomeWithoutRerunning(ctx)
+			}
+			spanErr = err
+			return runtime.ProcessResult{}, err
+		}
 	}
 
 	// Exec with retry: if the SPDY dial fails because the pause pod was
@@ -982,6 +1058,26 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		var exitErr *ExecExitError
 		if errors.As(err, &exitErr) {
 			exitCode := exitErr.ExitCode
+
+			// The exact supervisor's own refusal: it found a recorded start,
+			// no outcome and nothing alive. The command may have run, so the
+			// ATC asks the ledger rather than deciding, and never re-invokes.
+			if p.control != nil && exitCode == ExactUnresolvedExitCode {
+				return p.reportExactOutcomeWithoutRerunning(ctx)
+			}
+
+			// The outcome is durable before the result is exposed. An exit
+			// code the engine has seen and the ledger has not is a terminal
+			// answer nothing can corroborate.
+			if p.control != nil {
+				if recordErr := p.finishExactCommand(ctx,
+					executioncontrol.ExitOutcome{ExitCode: exitCode},
+					executioncontrol.AcknowledgementFinish); recordErr != nil {
+					spanErr = recordErr
+					return runtime.ProcessResult{}, recordErr
+				}
+			}
+
 			// Upload outputs even on non-zero exit (some steps produce
 			// useful artifacts on failure).
 			if uploadErr := p.uploadOutputsToArtifactStore(ctx); uploadErr != nil {
@@ -997,9 +1093,27 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 			return runtime.ProcessResult{ExitStatus: exitCode}, nil
 		}
 		logger.Error("failed-to-exec-in-pod", err)
+
+		// The transport lost its answer for a controlled execution whose
+		// command had already started talking. It is not run again; the ledger
+		// is asked what is durably known, and "we do not know" stays unresolved
+		// rather than becoming a failure.
+		if p.control != nil && p.execTransportLive.Load() {
+			return p.reportExactOutcomeWithoutRerunning(ctx)
+		}
+
 		fetchPodFailureContext(ctx, p.clientset, p.config.Namespace, p.podName, p.processIO.Stderr)
 		spanErr = err
 		return runtime.ProcessResult{}, wrapIfTransient(fmt.Errorf("exec in pod: %w", err))
+	}
+
+	if p.control != nil {
+		if recordErr := p.finishExactCommand(ctx,
+			executioncontrol.ExitOutcome{ExitCode: 0},
+			executioncontrol.AcknowledgementFinish); recordErr != nil {
+			spanErr = recordErr
+			return runtime.ProcessResult{}, recordErr
+		}
 	}
 
 	// Hand step outputs to the artifact daemon so later steps -- possibly on
@@ -1023,6 +1137,18 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 // privileged nested dockerd, say — would otherwise sit out the pod's
 // termination grace period before anything actually stopped.
 func (p *execProcess) deleteAbandonedPod(logger lager.Logger) {
+	// A controlled execution's Pod is deleted only once the ledger has said
+	// its remains may be destroyed. Missing or unprovable truth withholds
+	// cleanup, so the Pod stays and an operator can see why.
+	if p.control != nil && !p.exactCleanupEligible {
+		logger.Info("not-deleting-abandoned-pod", lager.Data{
+			"pod": p.podName,
+			"why": "the exact execution is not cleanup-eligible; its source may still be held",
+		})
+
+		return
+	}
+
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cleanupCancel()
 
@@ -1109,6 +1235,13 @@ func (p *execProcess) recreatePausePod(ctx context.Context, pod *corev1.Pod) err
 	}
 	if p.pausePodRecreated {
 		return fmt.Errorf("pause pod %s has already been replaced once", p.podName)
+	}
+	// A new Pod is a new Pod UID, and a capture-held incarnation may not give
+	// one a write-capable mount (Req 16). The ordinary recreation is unchanged
+	// -- it is the regression this refusal must not become -- so the question
+	// is asked of the ledger rather than answered from a flag.
+	if err := p.container.refuseIfCaptureHeld(ctx, "recreating the pause pod"); err != nil {
+		return err
 	}
 
 	if pod == nil {

@@ -828,7 +828,7 @@ func assertContainerMountsResolve(t *testing.T, containers []corev1.Container, v
 
 func TestDaemonSetBackend_BuildCleanupInitContainer_Reused(t *testing.T) {
 	b := testBackend(nil)
-	ic := b.BuildCleanupInitContainer("handle-1", db.ContainerTypeTask, true)
+	ic, _ := b.BuildCleanupInitContainer("handle-1", db.ContainerTypeTask, true)
 
 	if ic == nil {
 		t.Fatal("expected cleanup init container for reused task")
@@ -844,7 +844,7 @@ func TestDaemonSetBackend_BuildCleanupInitContainer_Reused(t *testing.T) {
 
 func TestDaemonSetBackend_BuildCleanupInitContainer_Fresh(t *testing.T) {
 	b := testBackend(nil)
-	ic := b.BuildCleanupInitContainer("handle-1", db.ContainerTypeTask, false)
+	ic, _ := b.BuildCleanupInitContainer("handle-1", db.ContainerTypeTask, false)
 	if ic != nil {
 		t.Errorf("expected nil for fresh container, got %+v", ic)
 	}
@@ -852,7 +852,7 @@ func TestDaemonSetBackend_BuildCleanupInitContainer_Fresh(t *testing.T) {
 
 func TestDaemonSetBackend_BuildCleanupInitContainer_Check(t *testing.T) {
 	b := testBackend(nil)
-	ic := b.BuildCleanupInitContainer("handle-1", db.ContainerTypeCheck, true)
+	ic, _ := b.BuildCleanupInitContainer("handle-1", db.ContainerTypeCheck, true)
 	if ic != nil {
 		t.Errorf("expected nil for check container, got %+v", ic)
 	}
@@ -864,7 +864,7 @@ func TestDaemonSetBackend_BuildCleanupInitContainer_Check(t *testing.T) {
 
 func TestDaemonSetBackend_BuildAffinity_HardLabel(t *testing.T) {
 	b := testBackend(nil)
-	affinity := b.BuildAffinity(nil)
+	affinity := b.BuildAffinity(nil, nil)
 
 	if affinity == nil {
 		t.Fatal("expected non-nil affinity")
@@ -895,7 +895,7 @@ func TestDaemonSetBackend_BuildAffinity_SoftPreference(t *testing.T) {
 		{Artifact: &testArtifact{handle: "vol-a"}, DestinationPath: "/tmp/input"},
 	}
 
-	affinity := b.BuildAffinity(inputs)
+	affinity := b.BuildAffinity(inputs, nil)
 	preferred := affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution
 	if len(preferred) == 0 {
 		t.Fatal("expected soft affinity")
@@ -921,7 +921,7 @@ func TestDaemonSetBackend_BuildAffinity_NoInputs_NoSoftAffinity(t *testing.T) {
 	locator := NewArtifactLocator()
 	b := testBackend(locator)
 
-	affinity := b.BuildAffinity(nil)
+	affinity := b.BuildAffinity(nil, nil)
 	preferred := affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution
 	if len(preferred) != 0 {
 		t.Errorf("expected no soft affinity with no inputs, got %d terms", len(preferred))

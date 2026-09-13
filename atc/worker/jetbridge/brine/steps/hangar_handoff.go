@@ -45,6 +45,7 @@ func heldFrom(draft CaptureDraft, ack hangaroutput.CaptureAcknowledgement, answe
 		Execution:       draft.Admission.Execution,
 		ReservationID:   freshUUID(),
 		Admission:       draft.Admission,
+		Reserved:        draft.Reserved,
 		PodUID:          draft.PodUID,
 		Status:          answer.Status,
 		Body:            answer.Body,
@@ -90,8 +91,20 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 		brine.DefineMap[CaptureDraft, HeldSource](
 			"the daemon holds the source",
 			func(in CaptureDraft, _ brine.Params, _ *brine.Recorder) (HeldSource, error) {
+				// The reservation comes first, because in production it comes
+				// before the Pod exists at all: the ATC asks the daemon for the
+				// location, mounts it as the producer's output volume, and puts
+				// it in the control init's environment. The hold PRESENTS it.
+				reserving := in.Daemon.capture("reserve-incarnation",
+					"/capture/v1/reserve-incarnation", in.Admission.Execution, in.Admission)
+				reserved, err := decodeControl[hangaroutput.ReservedIncarnation](reserving)
+				if err != nil {
+					return HeldSource{}, fmt.Errorf("reserving the incarnation: %w", err)
+				}
+				in.Reserved = reserved
+
 				answer := in.Daemon.capture("hold", "/capture/v1/hold",
-					in.Admission.Execution, in.Admission)
+					in.Admission.Execution, holdBody(in.Admission, reserved.Incarnation, in.PodUID))
 				ack, err := decodeControl[hangaroutput.CaptureAcknowledgement](answer)
 				if err != nil {
 					return HeldSource{}, fmt.Errorf("establishing the hold: %w", err)
@@ -102,7 +115,22 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 						"activation-pinned public key: %w", err)
 				}
 
-				return heldFrom(in, ack, answer), nil
+				held := heldFrom(in, ack, answer)
+
+				// The bytes a producer wrote, written HERE rather than at the
+				// witness, and the move is the point. The source-preserving
+				// stop scenario asserts that the incarnation survives the stop;
+				// writing into it while witnessing made a stop that removed the
+				// directory fail on the `When` instead, so the named `Then` was
+				// never reached. The content is deterministic and shared, which
+				// is what lets two captures of "the same canonical bytes"
+				// really be the same bytes.
+				if err := os.WriteFile(filepath.Join(held.incarnationRoot(), "artifact.txt"),
+					[]byte("the bytes a producer wrote\n"), 0o600); err != nil {
+					return HeldSource{}, fmt.Errorf("writing the produced source: %w", err)
+				}
+
+				return held, nil
 			},
 		),
 
@@ -110,7 +138,7 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 			"the same hold is repeated with the same identity",
 			func(in HeldSource, _ brine.Params, _ *brine.Recorder) (HeldSource, error) {
 				answer := in.Draft.Daemon.capture("hold", "/capture/v1/hold",
-					in.Execution, in.Admission)
+					in.Execution, holdBody(in.Admission, in.Incarnation, in.PodUID))
 				repeated, err := decodeControl[hangaroutput.CaptureAcknowledgement](answer)
 				if err == nil {
 					in.Repeated = repeated
@@ -130,7 +158,7 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 				different.Execution.Fence++
 
 				return in.answered(in.Draft.Daemon.capture("hold", "/capture/v1/hold",
-					different.Execution, different)), nil
+					different.Execution, holdBody(different, in.Incarnation, in.PodUID))), nil
 			},
 		),
 
@@ -157,7 +185,6 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 						Identity:        taken,
 						ActivationEpoch: in.Admission.ActivationEpoch,
 						NodeUID:         hangarNodeUID,
-						PodUID:          in.PodUID,
 						Capability:      "opaque-takeover-capability",
 					})
 				if _, err := decodeControl[executioncontrol.ClassifyResult](answer); err != nil {
@@ -235,7 +262,8 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 						in.publicationRequest())), nil
 				case "hold":
 					return in.answered(in.Draft.Daemon.control(executioncontrol.BaseFacet,
-						"hold", "/capture/v1/hold", in.Execution, in.Admission)), nil
+						"hold", "/capture/v1/hold", in.Execution,
+						holdBody(in.Admission, in.Incarnation, in.PodUID))), nil
 				case "seal":
 					return in.answered(in.Draft.Daemon.control(executioncontrol.BaseFacet,
 						"begin-seal", "/capture/v1/seal", in.Execution, in.sealRequest())), nil
@@ -493,11 +521,6 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 				return nil
 			}),
 
-		stubCheck[HeldSource](
-			"the pause pod is recreated",
-			"Phase 4 Green",
-			"recreatePausePodIfTerminal on the ordinary, non-capture path"),
-
 		// Checks over the witness.
 		CheckThat[FinishWitnessed]("the witness is what the step reports",
 			func(in FinishWitnessed) error {
@@ -577,6 +600,34 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 	}
 }
 
+// holdBody is the capture control init's request: the admission the
+// reservation was made for, the incarnation the daemon answered with, and the
+// Pod UID the container read off the Downward API.
+//
+// The incarnation is not a path and not a choice. It is four server-issued
+// identity fields, and presenting them is how an init container proves it is
+// running in the Pod the reservation was made for.
+//
+// The Pod UID is here and not on the admission because the admission and the
+// reservation both happen before the Pod exists. This is the first message in
+// the protocol sent from INSIDE the Pod, so it is the first one that can name
+// it, and the daemon binds it once.
+func holdBody(admission hangaroutput.CaptureAdmission,
+	incarnation hangaroutput.SourceIncarnation,
+	pod executioncontrol.PodUID) map[string]any {
+	return map[string]any{
+		"protocol_version":    admission.ProtocolVersion,
+		"execution":           admission.Execution,
+		"activation_epoch":    admission.ActivationEpoch,
+		"handoff_id":          admission.HandoffID,
+		"source_lease_id":     admission.SourceLeaseID,
+		"output":              admission.Output,
+		"capture_deadline_at": admission.CaptureDeadline,
+		"incarnation":         incarnation,
+		"pod_uid":             pod,
+	}
+}
+
 // identifiedExecution is the body a base route takes.
 //
 // The execution is FLAT rather than nested, because every frozen base type
@@ -617,17 +668,10 @@ func (source HeldSource) witness(kind executioncontrol.AcknowledgementKind,
 	outcome executioncontrol.ExitOutcome) (FinishWitnessed, error) {
 	witnessed := FinishWitnessed{Source: source, Outcome: outcome}
 
-	// The producer's bytes. The fixture writes them because in Phase 3 nothing
-	// runs a container -- what the daemon is being asked about is a source
-	// incarnation with content in it, and an empty one would make every dedup
-	// assertion below a comparison of two empty trees.
-	//
-	// The content is DETERMINISTIC and shared, which is what lets two captures
-	// of "the same canonical bytes" really be the same bytes.
-	if err := os.WriteFile(filepath.Join(source.incarnationRoot(), "artifact.txt"),
-		[]byte("the bytes a producer wrote\n"), 0o600); err != nil {
-		return witnessed, fmt.Errorf("writing the produced source: %w", err)
-	}
+	// The producer's bytes are already there: they are written when the hold is
+	// established, not here. Writing them at the witness made a stop that
+	// removed the incarnation fail on the `When` line, so the `Then` the box
+	// names -- "the source is still there after the stop" -- was never reached.
 
 	started := source.Draft.Daemon.base("start", "/execution/v1/start", source.Execution,
 		map[string]any{

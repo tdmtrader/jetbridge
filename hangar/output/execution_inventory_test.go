@@ -47,6 +47,21 @@ var baseClassificationVocabulary = []string{
 var classificationOwners = map[string]string{
 	"hangar/executioncontrol": "the one base exact-execution protocol; every other package " +
 		"references its Classification rather than spelling one",
+
+	// The ATC's ADAPTER, and the only one. It declares a Classify because it
+	// is the client half of the protocol above -- it forwards the question to
+	// the daemon that owns the ledger and returns that daemon's
+	// executioncontrol.ClassifyResult unchanged. It computes no
+	// classification, stores none, and has no vocabulary of its own: grep the
+	// file for a Classification literal and there is not one.
+	//
+	// It is pinned here rather than exempted silently because the sibling
+	// `exact_execution_control` track EXTENDS this adapter for non-capture
+	// executions, and the pin is what tells that track which file to extend
+	// rather than which second one to write.
+	"atc/worker/jetbridge": "the ATC's single client adapter for the base protocol; it " +
+		"forwards Classify to the node's daemon and returns that answer, and the sibling " +
+		"exact_execution_control track extends this one rather than adding a second",
 }
 
 // skippedTreeDirs are directories the repository-wide walk does not enter.

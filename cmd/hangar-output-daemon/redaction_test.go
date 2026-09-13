@@ -114,8 +114,14 @@ func TestNothingTheDaemonEmitsNamesAPathBucketObjectKeyOrCapability(t *testing.T
 	fixture := newRoutes(t, "")
 	admitted(t, &fixture.ledgerFixture)
 
-	// ---- hold ----
-	status, body := fixture.call(t, "/capture/v1/hold", output.CaptureFacet, "hold", admission())
+	// ---- reserve, then hold ----
+	//
+	// The reservation is on the scan too: it is the one route whose ANSWER is a
+	// directory, so a daemon that leaked its own storage root would leak it
+	// here first.
+	held := fixture.reserveOverHTTP(t, identity(1), admission())
+
+	status, body := fixture.call(t, "/capture/v1/hold", output.CaptureFacet, "hold", held)
 	if status != http.StatusOK {
 		t.Fatalf("the hold was refused: %d %s", status, body)
 	}
@@ -126,9 +132,15 @@ func TestNothingTheDaemonEmitsNamesAPathBucketObjectKeyOrCapability(t *testing.T
 
 	// A hold repeated with a different fence: a typed conflict, and the first
 	// refusal on the list.
-	conflicting := admission()
+	conflicting := held
 	conflicting.SourceLeaseID = "99999999-9999-4999-8999-999999999999"
 	fixture.call(t, "/capture/v1/hold", output.CaptureFacet, "hold", conflicting)
+
+	// And a hold naming an incarnation the daemon never reserved: the refusal
+	// names two directories, and neither may carry the daemon's storage root.
+	foreign := held
+	foreign.Incarnation.HandleGeneration += 100
+	fixture.call(t, "/capture/v1/hold", output.CaptureFacet, "hold", foreign)
 
 	// A hold naming a PATH. The refusal for this one is the most tempting place
 	// in the whole surface to echo what the caller sent.
@@ -291,8 +303,8 @@ func TestNothingTheDaemonEmitsNamesAPathBucketObjectKeyOrCapability(t *testing.T
 	fixture.call(t, "/capture/v1/release", output.CaptureFacet, "release-hold", second)
 
 	// ---- the authorization refusals, where a token could be echoed ----
-	fixture.call(t, "/capture/v1/hold", executioncontrol.BaseFacet, "hold", admission())
-	fixture.callWith(t, "/capture/v1/hold", "a-forged-capability", admission())
+	fixture.call(t, "/capture/v1/hold", executioncontrol.BaseFacet, "hold", held)
+	fixture.callWith(t, "/capture/v1/hold", "a-forged-capability", held)
 	if len(fixture.minted) > 0 {
 		fixture.callWith(t, "/capture/v1/seal", fixture.minted[0], admission())
 	}
