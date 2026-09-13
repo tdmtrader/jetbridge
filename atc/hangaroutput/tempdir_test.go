@@ -197,7 +197,10 @@ func rootPID(name string) (int, bool) {
 func processAlive(pid int) bool {
 	process, err := os.FindProcess(pid)
 	if err != nil {
-		return false
+		// Unreachable on Unix, and it still answers the contract's way: an
+		// error here is "cannot tell", and cannot-tell is ALIVE. Answering no
+		// would make the one unrecognised case the one that permits a removal.
+		return true
 	}
 
 	err = process.Signal(syscall.Signal(0))

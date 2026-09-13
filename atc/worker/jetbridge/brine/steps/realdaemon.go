@@ -84,7 +84,10 @@ func daemonBinary(command string) (string, error) {
 	entry, _ := builtBinaries.LoadOrStore(command, &builtBinary{})
 	built := entry.(*builtBinary)
 	built.once.Do(func() {
-		dir, err := os.MkdirTemp("", "brine-"+command+"-*")
+		// Under the adapter's own root, with the pid in its name, because a
+		// 150 MB binary in the user's temp directory under a random suffix is
+		// a leak nobody can attribute and nobody sweeps. See temproot.go.
+		dir, err := daemonTempDir(command)
 		if err != nil {
 			built.err = err
 			return
@@ -92,6 +95,10 @@ func daemonBinary(command string) (string, error) {
 		bin := filepath.Join(dir, command)
 		cmd := exec.Command("go", "build", "-o", bin, "./cmd/"+command)
 		cmd.Dir = repoRoot()
+		// The go tool's own work directory goes inside ours too: it removes it
+		// on success and LEAVES it on a signal, and on a signal is exactly when
+		// it used to be left in the user's temp directory forever.
+		cmd.Env = append(os.Environ(), "TMPDIR="+dir)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			built.err = fmt.Errorf("build %s: %w\n%s", command, err, out)
 			return
@@ -182,7 +189,7 @@ func startNamedDaemonInRoot(command, root, scheme string, ready func(url string)
 	}
 	shared := root != ""
 	if !shared {
-		root, err = os.MkdirTemp("", "brine-daemon-root-*")
+		root, err = daemonTempDir("root")
 		if err != nil {
 			return nil, err
 		}

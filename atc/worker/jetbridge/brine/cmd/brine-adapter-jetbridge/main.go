@@ -16,10 +16,33 @@ import (
 	"github.com/concourse/concourse/atc/worker/jetbridge/brine/steps"
 )
 
+// exitAfterSweep is the only way this adapter leaves.
+//
+// A daemon fixture makes directories outside the tree -- a built binary, a node
+// storage root -- and `os.Exit` runs no defers, so every exit path has to sweep
+// explicitly or the bytes stay. 571 of them, 42 GB, were found in one user's
+// temp directory before this existed.
+//
+// A LEAK FAILS THE RUN. Reporting it and exiting 0 is how a fixture leak
+// survives for five days: nobody reads a warning on a green run, and the cost
+// lands on whoever's disk fills up next. The report names the directory and its
+// size, and the bytes are already gone by then -- leaving them behind to prove
+// they were there would be the leak all over again.
+func exitAfterSweep(code int) {
+	leaks := steps.SweepAdapterDaemonRoots()
+	for _, leak := range leaks {
+		fmt.Fprintln(os.Stderr, "brine-adapter-jetbridge: temp leak:", leak)
+	}
+	if len(leaks) != 0 && code == 0 {
+		code = 1
+	}
+	os.Exit(code)
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "brine-adapter-jetbridge: subcommand required (catalog, check, run)")
-		os.Exit(2)
+		exitAfterSweep(2)
 	}
 
 	// Track 0: postgresrunner uses gomega in non-test code; outside a suite
@@ -31,7 +54,7 @@ func main() {
 	events, err := steps.ProtectEventStream()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "brine-adapter-jetbridge: %v\n", err)
-		os.Exit(2)
+		exitAfterSweep(2)
 	}
 
 	registry := buildAppRegistry()
@@ -44,7 +67,7 @@ func main() {
 		seed, err := brine.BuildSeed(registry, resourcesJSON)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "brine-adapter-jetbridge: resources seed error: %v\n", err)
-			os.Exit(2)
+			exitAfterSweep(2)
 		}
 		if seed != nil {
 			pipeline = brine.NewPipelineWithSeed(registry, emitter, seed)
@@ -63,7 +86,7 @@ func main() {
 	resourceRegistry, err := buildAppResources()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "brine-adapter-jetbridge: resource registry error: %v\n", err)
-		os.Exit(2)
+		exitAfterSweep(2)
 	}
 	pipeline = pipeline.WithResources(brine.NewResourceState(resourceRegistry))
 
@@ -79,7 +102,7 @@ func main() {
 		runRun(pipeline, args)
 	default:
 		fmt.Fprintf(os.Stderr, "brine-adapter-jetbridge: unknown subcommand %q (expected catalog, check, or run)\n", sub)
-		os.Exit(2)
+		exitAfterSweep(2)
 	}
 }
 
@@ -89,9 +112,9 @@ func runCatalog(pipeline *brine.Pipeline, args []string) {
 	parseAcceptIgnoreFlags(args)
 	if err := pipeline.Catalog(); err != nil {
 		fmt.Fprintf(os.Stderr, "brine-adapter-jetbridge: catalog error: %v\n", err)
-		os.Exit(2)
+		exitAfterSweep(2)
 	}
-	os.Exit(0)
+	exitAfterSweep(0)
 }
 
 // runCheck handles the "check" subcommand.
@@ -102,21 +125,21 @@ func runCheck(pipeline *brine.Pipeline, emitter *brine.JsonlEmitter, args []stri
 	features, err := loadFeatures(featurePaths)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "brine-adapter-jetbridge: check error loading features: %v\n", err)
-		os.Exit(2)
+		exitAfterSweep(2)
 	}
 
 	checkStart := time.Now()
 	results, exitCode, err := pipeline.Check(features)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "brine-adapter-jetbridge: check error: %v\n", err)
-		os.Exit(2)
+		exitAfterSweep(2)
 	}
 	durationMs := time.Since(checkStart).Milliseconds()
 	if err := brine.EmitCheckResults(emitter, featurePaths, results, durationMs); err != nil {
 		fmt.Fprintf(os.Stderr, "brine-adapter-jetbridge: check emit error: %v\n", err)
-		os.Exit(2)
+		exitAfterSweep(2)
 	}
-	os.Exit(exitCode)
+	exitAfterSweep(exitCode)
 }
 
 // runRun handles the "run" subcommand.
@@ -133,16 +156,16 @@ func runRun(pipeline *brine.Pipeline, args []string) {
 	features, err := loadFeatures(featurePaths)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "brine-adapter-jetbridge: run error loading features: %v\n", err)
-		os.Exit(2)
+		exitAfterSweep(2)
 	}
 
 	filter := brine.TagFilter{Include: tagArgs, Exclude: excludeTagArgs}
 	_, exitCode, err := pipeline.Run(features, filter, lineFilter)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "brine-adapter-jetbridge: run error: %v\n", err)
-		os.Exit(2)
+		exitAfterSweep(2)
 	}
-	os.Exit(exitCode)
+	exitAfterSweep(exitCode)
 }
 
 // parseRunFlags parses --features, --tags, --exclude-tags from args.

@@ -1,0 +1,19 @@
+{
+  "domain": "hangar-output-materialize-v1",
+  "version": "1",
+  "read_lease_id": "c1b2a390-4d5e-4f60-8172-93a4b5c6d7e8",
+  "claim_id": "5f3d2a19-8c47-4e60-b1a2-0d9e8f7c6b5a",
+  "ref": {
+    "scope": "0192b3c4d5e6f708",
+    "digest": "sha256:9f2c0c4a6a1a7f7f6b1d0f2f3e4d5c6b7a8998a7b6c5d4e3f201122334455667",
+    "generation": 1725830823000001
+  },
+  "destination": {
+    "handle": "task-handle",
+    "volume": "input-0"
+  },
+  "activation_epoch": 3,
+  "issued_at": "2026-09-08T21:52:00.000000000Z",
+  "expires_at": "2026-09-08T22:07:00.000000000Z",
+  "nonce": "AAECAwQFBgcICQoLDA0ODw"
+}

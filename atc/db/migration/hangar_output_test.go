@@ -1160,6 +1160,22 @@ var _ = Describe("the Hangar output plane schema", func() {
 				Expect(expectRefusal(database, "a deleted claim tombstone", fmt.Sprintf(`
 					DELETE FROM hangar_claims WHERE claim_id = '%s'`, claimID))).
 					To(ContainSubstring("stays tombstoned"))
+
+				// A tombstone's INSTANT is as immutable as the tombstone.
+				// Refusing only the move to NULL left "released at one time,
+				// then released at another" open -- a reactivation with a cover
+				// story, and the timestamp is what a later audit reads.
+				Expect(expectRefusal(database, "a re-dated claim tombstone", fmt.Sprintf(`
+					UPDATE hangar_claims SET released_at = now() + interval '1 hour'
+					WHERE claim_id = '%s'`, claimID))).
+					To(ContainSubstring("re-dated"))
+
+				// And the release production really writes -- coalesce, so the
+				// instant does not move -- is still accepted, which is what
+				// makes ReleaseClaim idempotent rather than refused.
+				expectAccepted(database, "an idempotent re-release", fmt.Sprintf(`
+					UPDATE hangar_claims SET released_at = coalesce(released_at, now())
+					WHERE claim_id = '%s'`, claimID))
 			})
 
 			It("refuses moving a claim to another exact ref", func() {
@@ -1176,10 +1192,114 @@ var _ = Describe("the Hangar output plane schema", func() {
 
 				Expect(expectRefusal(database, "a five-minute read lease", fmt.Sprintf(`
 					INSERT INTO hangar_read_leases
-						(read_lease_id, claim_id, lifecycle_id, activation_epoch, lease_fence, expires_at)
-					VALUES ('%s', '%s', %d, 1, 1, now() + interval '5 minutes')`,
+						(read_lease_id, claim_id, lifecycle_id, activation_epoch, lease_fence, expires_at,
+					 grant_nonce, destination_handle, destination_volume,
+					 stat_metageneration, stat_marker_version, stat_observed_at, lease_term_seconds)
+					VALUES ('%s', '%s', %d, 1, 1, now() + interval '5 minutes', 'AAAAAAAAAAAAAAAAAAAAAA', 'task-handle', 'input-0', 1, 'hangar-output-v1', now(), 900)`,
 					readLeaseID, claimID, lifecycle))).
 					To(ContainSubstring("hangar_read_lease_term"))
+			})
+
+			// What a grant binds is immutable for the life of the lease.
+			//
+			// The grant is minted AFTER the transaction that created the lease
+			// commits, and requirement 37 wants an ambiguous mint retried with
+			// byte-identical bytes. If the nonce or the destination could move,
+			// a re-mint would be a different token for the same lease, and the
+			// daemon's comparison against the committed row would be comparing
+			// against something that had changed underneath it.
+			It("refuses changing what a read lease's grant binds", func() {
+				seedClaim(claimID, lifecycle)
+				mustExec(database, fmt.Sprintf(`
+					INSERT INTO hangar_read_leases
+						(read_lease_id, claim_id, lifecycle_id, activation_epoch, lease_fence, expires_at,
+						 grant_nonce, destination_handle, destination_volume,
+						 stat_metageneration, stat_marker_version, stat_observed_at, lease_term_seconds)
+					VALUES ('%s', '%s', %d, 1, 1, now() + interval '20 minutes', 'AAAAAAAAAAAAAAAAAAAAAA', 'task-handle', 'input-0', 1, 'hangar-output-v1', now(), 900)`,
+					readLeaseID, claimID, lifecycle))
+
+				for _, change := range []string{
+					`grant_nonce = 'BBBBBBBBBBBBBBBBBBBBBB'`,
+					`destination_handle = 'another-handle'`,
+					`destination_volume = 'input-9'`,
+				} {
+					Expect(expectRefusal(database, "a grant's binding moved", fmt.Sprintf(
+						`UPDATE hangar_read_leases SET %s WHERE read_lease_id = '%s'`,
+						change, readLeaseID))).
+						To(ContainSubstring("changed what its grant binds"))
+				}
+
+				// The renewal a reader really does makes none of those changes,
+				// so the guard above is a rule about identity rather than a
+				// freeze on the row.
+				expectAccepted(database, "a renewal", fmt.Sprintf(`
+					UPDATE hangar_read_leases SET renewed_at = now(),
+						expires_at = now() + interval '20 minutes'
+					WHERE read_lease_id = '%s'`, readLeaseID))
+			})
+
+			// The admitted TERM is immutable too, and for a reason the fence
+			// rule does not cover.
+			//
+			// A renewal grants one term from now, and the term is the row's --
+			// so a renewal that could also move lease_term_seconds would be a
+			// renewal that chose its own length. Requirement 36 puts the length
+			// of a protection with the party that admitted it, never with the
+			// party being protected, and this is the arm that makes that true
+			// of the row rather than of the one method that writes it.
+			It("refuses changing a read lease's admitted term", func() {
+				seedClaim(claimID, lifecycle)
+				mustExec(database, fmt.Sprintf(`
+					INSERT INTO hangar_read_leases
+						(read_lease_id, claim_id, lifecycle_id, activation_epoch, lease_fence, expires_at,
+						 grant_nonce, destination_handle, destination_volume,
+						 stat_metageneration, stat_marker_version, stat_observed_at, lease_term_seconds)
+					VALUES ('%s', '%s', %d, 1, 1, now() + interval '20 minutes', 'AAAAAAAAAAAAAAAAAAAAAA', 'task-handle', 'input-0', 1, 'hangar-output-v1', now(), 900)`,
+					readLeaseID, claimID, lifecycle))
+
+				Expect(expectRefusal(database, "a renewal that widened its own term", fmt.Sprintf(`
+					UPDATE hangar_read_leases SET renewed_at = now(),
+						lease_term_seconds = 7200, expires_at = now() + interval '2 hours'
+					WHERE read_lease_id = '%s'`, readLeaseID))).
+					To(ContainSubstring("changed its admitted term"))
+
+				// The renewal a reader really does keeps the term and moves the
+				// window by one of them.
+				expectAccepted(database, "a renewal at the admitted term", fmt.Sprintf(`
+					UPDATE hangar_read_leases SET renewed_at = now(),
+						expires_at = now() + make_interval(secs => lease_term_seconds)
+					WHERE read_lease_id = '%s'`, readLeaseID))
+			})
+
+			It("refuses a read lease that names no grant, destination or stat", func() {
+				seedClaim(claimID, lifecycle)
+
+				for _, vector := range []struct{ name, columns, values string }{
+					{"no nonce", "grant_nonce", "''"},
+					{"no destination handle", "destination_handle", "''"},
+					{"no destination volume", "destination_volume", "''"},
+					{"no stat metageneration", "stat_metageneration", "0"},
+					{"no stat marker", "stat_marker_version", "''"},
+				} {
+					columns := map[string]string{
+						"grant_nonce": "'AAAAAAAAAAAAAAAAAAAAAA'", "destination_handle": "'task-handle'",
+						"destination_volume": "'input-0'", "stat_metageneration": "1",
+						"stat_marker_version": "'hangar-output-v1'",
+					}
+					columns[vector.columns] = vector.values
+
+					Expect(expectRefusal(database, vector.name, fmt.Sprintf(`
+						INSERT INTO hangar_read_leases
+							(read_lease_id, claim_id, lifecycle_id, activation_epoch, lease_fence,
+							 expires_at, grant_nonce, destination_handle, destination_volume,
+							 stat_metageneration, stat_marker_version, stat_observed_at, lease_term_seconds)
+						VALUES ('%s', '%s', %d, 1, 1, now() + interval '20 minutes', %s, %s, %s, %s, %s, now(), 900)`,
+						readLeaseID, claimID, lifecycle,
+						columns["grant_nonce"], columns["destination_handle"],
+						columns["destination_volume"], columns["stat_metageneration"],
+						columns["stat_marker_version"]))).
+						To(ContainSubstring("violates check constraint"))
+				}
 			})
 
 			It("refuses a read lease under a claim on another ref", func() {
@@ -1188,8 +1308,10 @@ var _ = Describe("the Hangar output plane schema", func() {
 
 				Expect(expectRefusal(database, "a read lease that reads past its claim", fmt.Sprintf(`
 					INSERT INTO hangar_read_leases
-						(read_lease_id, claim_id, lifecycle_id, activation_epoch, lease_fence, expires_at)
-					VALUES ('%s', '%s', %d, 1, 1, now() + interval '20 minutes')`,
+						(read_lease_id, claim_id, lifecycle_id, activation_epoch, lease_fence, expires_at,
+					 grant_nonce, destination_handle, destination_volume,
+					 stat_metageneration, stat_marker_version, stat_observed_at, lease_term_seconds)
+					VALUES ('%s', '%s', %d, 1, 1, now() + interval '20 minutes', 'AAAAAAAAAAAAAAAAAAAAAA', 'task-handle', 'input-0', 1, 'hangar-output-v1', now(), 900)`,
 					readLeaseID, claimID, other))).
 					To(ContainSubstring("under a claim on lifecycle"))
 			})
@@ -1218,8 +1340,10 @@ var _ = Describe("the Hangar output plane schema", func() {
 				seedClaim(claimID, lifecycle)
 				mustExec(database, fmt.Sprintf(`
 					INSERT INTO hangar_read_leases
-						(read_lease_id, claim_id, lifecycle_id, activation_epoch, lease_fence, expires_at)
-					VALUES ('%s', '%s', %d, 1, 1, now() + interval '20 minutes')`,
+						(read_lease_id, claim_id, lifecycle_id, activation_epoch, lease_fence, expires_at,
+					 grant_nonce, destination_handle, destination_volume,
+					 stat_metageneration, stat_marker_version, stat_observed_at, lease_term_seconds)
+					VALUES ('%s', '%s', %d, 1, 1, now() + interval '20 minutes', 'AAAAAAAAAAAAAAAAAAAAAA', 'task-handle', 'input-0', 1, 'hangar-output-v1', now(), 900)`,
 					readLeaseID, claimID, lifecycle))
 				mustExec(database, fmt.Sprintf(
 					`UPDATE hangar_claims SET released_at = now() WHERE claim_id = '%s'`, claimID))
@@ -1347,8 +1471,10 @@ var _ = Describe("the Hangar output plane schema", func() {
 				seedClaim(claimID, lifecycle)
 				grant := fmt.Sprintf(`
 					INSERT INTO hangar_read_leases
-						(read_lease_id, claim_id, lifecycle_id, activation_epoch, lease_fence, expires_at)
-					VALUES ('%s', '%s', %d, 1, 1, now() + interval '20 minutes')`,
+						(read_lease_id, claim_id, lifecycle_id, activation_epoch, lease_fence, expires_at,
+					 grant_nonce, destination_handle, destination_volume,
+					 stat_metageneration, stat_marker_version, stat_observed_at, lease_term_seconds)
+					VALUES ('%s', '%s', %d, 1, 1, now() + interval '20 minutes', 'AAAAAAAAAAAAAAAAAAAAAA', 'task-handle', 'input-0', 1, 'hangar-output-v1', now(), 900)`,
 					readLeaseID, claimID, lifecycle)
 
 				expectAccepted(database, "a read lease granted on a safe policy", grant)
@@ -1796,8 +1922,10 @@ var _ = Describe("the Hangar output plane schema", func() {
 				VALUES (1, 'gs://output-bucket', 4, 'policy-hash-2', 1, 'at_risk')`)
 			vector := []string{fmt.Sprintf(`
 				INSERT INTO hangar_read_leases
-					(read_lease_id, claim_id, lifecycle_id, activation_epoch, lease_fence, expires_at)
-				VALUES ('%s', '%s', %d, 1, 1, now() + interval '20 minutes')`,
+					(read_lease_id, claim_id, lifecycle_id, activation_epoch, lease_fence, expires_at,
+					 grant_nonce, destination_handle, destination_volume,
+					 stat_metageneration, stat_marker_version, stat_observed_at, lease_term_seconds)
+				VALUES ('%s', '%s', %d, 1, 1, now() + interval '20 minutes', 'AAAAAAAAAAAAAAAAAAAAAA', 'task-handle', 'input-0', 1, 'hangar-output-v1', now(), 900)`,
 				readLeaseID, claimID, lifecycle)}
 
 			Expect(attempt(database, vector...)).To(HaveOccurred())
@@ -1878,8 +2006,10 @@ var _ = Describe("the Hangar output plane schema", func() {
 			other := seedLifecycle(otherDigest, sampleGeneration+1)
 			vector := []string{fmt.Sprintf(`
 				INSERT INTO hangar_read_leases
-					(read_lease_id, claim_id, lifecycle_id, activation_epoch, lease_fence, expires_at)
-				VALUES ('%s', '%s', %d, 1, 1, now() + interval '20 minutes')`,
+					(read_lease_id, claim_id, lifecycle_id, activation_epoch, lease_fence, expires_at,
+					 grant_nonce, destination_handle, destination_volume,
+					 stat_metageneration, stat_marker_version, stat_observed_at, lease_term_seconds)
+				VALUES ('%s', '%s', %d, 1, 1, now() + interval '20 minutes', 'AAAAAAAAAAAAAAAAAAAAAA', 'task-handle', 'input-0', 1, 'hangar-output-v1', now(), 900)`,
 				readLeaseID, claimID, other)}
 
 			Expect(attempt(database, vector...)).To(HaveOccurred())

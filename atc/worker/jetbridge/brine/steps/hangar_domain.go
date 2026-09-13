@@ -395,6 +395,12 @@ type PublishedTree struct {
 type ConsumerDraft struct {
 	Tree PublishedTree
 
+	// Cluster is the worker the consuming step runs on. It is here rather than
+	// carried down from the capture chain because a capture chain has no
+	// cluster in it: the daemon fixture is a process and a bucket, and a
+	// consumer needs a worker to build a pod on.
+	Cluster ClusterReady
+
 	StepName    string
 	Output      hangaroutput.OutputName
 	Destination string
@@ -409,16 +415,37 @@ type ConsumerDraft struct {
 type BoundOutput struct {
 	Tree PublishedTree
 
+	// Consumer is the product-neutral test consumer this binding belongs to,
+	// carried so later steps read the binding back through the same API that
+	// wrote it rather than through a select of their own.
+	Consumer neutralConsumer
+
+	// Binding is the consumer's own opaque binding id.
+	Binding string
+
 	Acquisition hangaroutput.ClaimAcquisition
 	Release     hangaroutput.ClaimRelease
 
 	// Claims is the ledger view: every claim the repository reports for this
-	// ref, so "exactly one" and "none left behind" are counts of what is there
-	// rather than of what was asked for.
-	Claims []hangaroutput.ClaimAcquisition
+	// ref, active and tombstoned, so "exactly one", "none left behind" and "the
+	// tombstone is permanent" are counts of what is THERE rather than of what
+	// was asked for.
+	Claims []hangaroutput.ClaimRecord
 
-	// Visible is what a production read says about the binding. It is false
-	// before verification and true after, and the scenario asserts both halves.
+	// RolledBackClaimID and RolledBackBinding are the attempt that did not
+	// commit. They are separate fields from the committed pair because the
+	// scenario asserts about both at once: exactly one claim, and not this one.
+	RolledBackClaimID hangaroutput.ClaimID
+	RolledBackBinding string
+
+	// HeldClaimID is what the consumer's binding names AFTER a hidden-to-
+	// published transition, read back rather than remembered -- which is what
+	// makes "the candidate claim ID is unchanged" a claim about the row.
+	HeldClaimID hangaroutput.ClaimID
+
+	// Visible is what the consumer's own read says about the binding. It is
+	// false before verification and true after, and the scenario asserts both
+	// halves.
 	Visible bool
 
 	// Lease is the read lease a granted managed read produced.

@@ -3,6 +3,7 @@ package output
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
@@ -70,6 +71,54 @@ func (release ClaimRelease) Validate() error {
 	return release.RequestedAt.Validate()
 }
 
+// ClaimRecord is one claim as the plane records it -- active or tombstoned.
+//
+// The tombstone is a field rather than an absence, and that is the whole point:
+// a released identity stays for the lifetime of the exact-ref lifecycle record,
+// so "no claim is left behind" and "the tombstone is permanent" are different
+// questions about the same row and a reader that could not see a released claim
+// could not tell them apart.
+type ClaimRecord struct {
+	ClaimID           ClaimID        `json:"claim_id"`
+	Ref               hangar.TreeRef `json:"ref"`
+	ConsumerBindingID OpaqueID       `json:"consumer_binding_id"`
+	AcquiredAt        Timestamp      `json:"acquired_at"`
+
+	// ReleasedAt is nil while the claim is active. It is a pointer rather than
+	// a zero time because "not released" is the absence of an instant, and a
+	// zero time is an instant.
+	ReleasedAt *Timestamp `json:"released_at,omitempty"`
+}
+
+// Active reports whether this claim still protects its generation.
+func (record ClaimRecord) Active() bool { return record.ReleasedAt == nil }
+
+func (record ClaimRecord) Validate() error {
+	if err := record.ClaimID.Validate(); err != nil {
+		return err
+	}
+	if err := record.Ref.Validate(); err != nil {
+		return err
+	}
+	if err := record.ConsumerBindingID.Validate(); err != nil {
+		return err
+	}
+	if err := record.AcquiredAt.Validate(); err != nil {
+		return err
+	}
+	if record.ReleasedAt != nil {
+		if err := record.ReleasedAt.Validate(); err != nil {
+			return err
+		}
+		if record.ReleasedAt.Before(record.AcquiredAt.Time) {
+			return fmt.Errorf("%w: claim %s was released before it was acquired", ErrIncomplete,
+				record.ClaimID)
+		}
+	}
+
+	return nil
+}
+
 // ReadLease is the fenced, renewable right to read one exact generation while a
 // materialization is in flight.
 //
@@ -129,6 +178,96 @@ func (lease ReadLease) Validate() error {
 	}
 
 	return nil
+}
+
+// ReadLeaseRecord is a committed lease plus everything its grant binds.
+//
+// It exists because minting is deliberately not atomic with the transaction
+// that created the lease: after the commit, the minter loads the exact facts
+// back rather than signing the ones it thought it wrote. An ambiguous commit is
+// then answered by identity -- load by lease id and fence, mint only if what
+// came back matches -- instead of by hoping.
+type ReadLeaseRecord struct {
+	Lease       ReadLease
+	Destination ReadDestination
+	GrantNonce  string
+}
+
+func (record ReadLeaseRecord) Validate() error {
+	if err := record.Lease.Validate(); err != nil {
+		return err
+	}
+	if err := record.Destination.Validate(); err != nil {
+		return err
+	}
+
+	return validateReadGrantNonce(record.GrantNonce)
+}
+
+// ReadLeaseValidation is the question the materializing daemon asks the control
+// plane before it opens a single object.
+//
+// It repeats every field the grant carried, and the control plane compares each
+// one against the committed row rather than against the token. That is the
+// whole point of asking: a valid HMAC bound to a lease that is missing,
+// released, expired, superseded or reclaim-conflicted authorizes nothing, and
+// only the database knows which of those is true.
+//
+// RequiredRemaining is the work the caller is about to start. Requirement 36
+// lets work begin only with the operation's timeout plus two minutes left, and
+// putting that here rather than in the daemon means the DATABASE clock decides
+// it -- a node whose clock drifts cannot talk itself into starting.
+type ReadLeaseValidation struct {
+	ReadLeaseID       ReadLeaseID
+	ClaimID           ClaimID
+	Ref               hangar.TreeRef
+	Destination       ReadDestination
+	ActivationEpoch   executioncontrol.ActivationEpoch
+	GrantNonce        string
+	RequiredRemaining time.Duration
+}
+
+func (validation ReadLeaseValidation) Validate() error {
+	if err := validation.ReadLeaseID.Validate(); err != nil {
+		return err
+	}
+	if err := validation.ClaimID.Validate(); err != nil {
+		return err
+	}
+	if err := validation.Ref.Validate(); err != nil {
+		return err
+	}
+	if err := validation.Destination.Validate(); err != nil {
+		return err
+	}
+	if validation.ActivationEpoch == 0 {
+		return fmt.Errorf("%w: a lease validation names no activation epoch", ErrIncomplete)
+	}
+	if err := validateReadGrantNonce(validation.GrantNonce); err != nil {
+		return err
+	}
+	if validation.RequiredRemaining < 0 {
+		return fmt.Errorf("%w: required remaining term is negative", ErrIncomplete)
+	}
+
+	return nil
+}
+
+// ReadGrantFor is the validation a grant's own claims imply.
+//
+// It exists so the daemon cannot compose a different question from the one the
+// token answered: every field comes from the verified claims, and the only
+// thing the caller adds is how much work it is about to start.
+func ReadGrantFor(claims ReadGrantClaims, remaining time.Duration) ReadLeaseValidation {
+	return ReadLeaseValidation{
+		ReadLeaseID:       claims.ReadLeaseID,
+		ClaimID:           claims.ClaimID,
+		Ref:               claims.Ref,
+		Destination:       claims.Destination,
+		ActivationEpoch:   claims.ActivationEpoch,
+		GrantNonce:        claims.Nonce,
+		RequiredRemaining: remaining,
+	}
 }
 
 // DeletePrecondition is the exact generation and metageneration a conditional

@@ -1,0 +1,10 @@
+{
+  "protocol_version": "hangar-output-v1",
+  "operation": "validate",
+  "key_id": "node-control-1",
+  "node_uid": "node-a",
+  "grant": "eyJkb21haW4iOiJoYW5nYXItb3V0cHV0LW1hdGVyaWFsaXplLXYxIn0",
+  "required_remaining_seconds": 720,
+  "issued_at": "2026-09-08T21:52:00.000000000Z",
+  "signature": "c2lnbmF0dXJl"
+}

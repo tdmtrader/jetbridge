@@ -170,6 +170,51 @@ func hangarConflict(err error) error {
 	return fmt.Errorf("%w: %s", output.ErrInfrastructure, pgErr.Message)
 }
 
+// HangarCommitError maps a COMMIT's failure onto the same typed outcomes every
+// mid-transaction failure is mapped to.
+//
+// A DEFERRED constraint trigger raises its refusal at commit and nowhere
+// earlier -- hangar_policy_admits_new_protection and hangar_reclaim_exclusion
+// are both deferred, because both read rows another transaction may write
+// between a Go check and the commit, so a check ahead of them could only ever
+// be a guess. The error that comes back is the driver's, carrying the same
+// SQLSTATE an immediate RAISE would have carried, and a caller that did not map
+// it sees an unclassified failure.
+//
+// That is not a cosmetic difference. Every caller in this plane distinguishes a
+// REFUSAL (an answer: stop, or change something first) from a LOST ANSWER (ask
+// again with the same identity). An unmapped JB002 at commit reads as the
+// second, and the caller retries the same identity against a policy only an
+// attestor can change -- a loop with no exit. Mapping it here, once, in the
+// adapter every transactor hands out, is what makes "at risk is a refusal" true
+// of the whole path rather than of the statements that happen to fail early.
+//
+// What it deliberately does NOT do is invent a class. An error with no
+// SQLSTATE -- a dropped connection, a context cancelled while the server was
+// deciding -- comes back unchanged, and its caller still treats it as the
+// ambiguous commit it is.
+func HangarCommitError(err error) error {
+	return hangarConflict(err)
+}
+
+// HangarOutputTx is a transaction whose Commit answers in the output leaf's
+// typed vocabulary.
+//
+// It is a wrapper rather than a change to dbTx because the mapping is the
+// output plane's reading of a SQLSTATE and dbTx is every other caller's
+// transaction too: a JB00x class means nothing outside this plane, and 23505
+// already means something different to the callers that check it themselves.
+//
+// It is exported so that the three adapters which hand a transaction to the
+// output coordinator -- the ATC's own wiring, the brine harness's and this
+// package's specs -- share one spelling. Three copies of a mapping is three
+// chances for one of them to be the one that was not updated.
+type HangarOutputTx struct{ Tx }
+
+func (tx HangarOutputTx) Commit() error {
+	return HangarCommitError(tx.Tx.Commit())
+}
+
 // The channels the output plane's workers wake on.
 //
 // NOTIFY accelerates work; it is never the only way work is found. Every worker

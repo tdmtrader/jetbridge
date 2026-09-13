@@ -50,7 +50,15 @@ type settlementPlane struct {
 type brineTransactor struct{ conn db.DbConn }
 
 func (transactor brineTransactor) Begin() (hangaroutput.Transaction, error) {
-	return transactor.conn.Begin()
+	tx, err := transactor.conn.Begin()
+	if err != nil {
+		return nil, err
+	}
+
+	// The same adapter production uses, for the same reason: the deferred
+	// triggers refuse at COMMIT, and a scenario running an unmapped one would
+	// be watching a different system from the deployed one.
+	return db.HangarOutputTx{Tx: tx}, nil
 }
 
 // oneDaemonDialer is the whole cluster a brine scenario has: one node, one

@@ -520,6 +520,17 @@ var hangarGCSImporters = map[string]string{
 		"claim about the fake. It is a test-only import: the package has no non-test file that " +
 		"names hangar/gcs, and TestTheConcourseBinaryLinksNoCloudStorageClient below is what " +
 		"makes the consequence -- ./cmd/concourse -- checkable rather than argued",
+	"atc/hangaroutput": "TEST-ONLY: the managed-read specs stat the published object through " +
+		"the real client against the emulator the daemon published into. The package's " +
+		"production code declares ExactStat as a port and names no cloud SDK; " +
+		"testOnlyGCSImporters below checks that rather than believing it",
+}
+
+// testOnlyGCSImporters are the exemptions above whose reason says TEST-ONLY, and
+// the check that follows is what makes the words true.
+var testOnlyGCSImporters = map[string]bool{
+	"hangar/output/conformance": true,
+	"atc/hangaroutput":          true,
 }
 
 // outputRolePackages are the four cloud-facing roles of the Hangar output plane.
@@ -542,6 +553,22 @@ var outputRoleImporters = map[string]string{
 	"cmd/hangar-output-daemon": "the output daemon is the publisher principal",
 	"hangar/output/conformance": "the shared conformance suite drives all four roles against " +
 		"both substrate tiers; it is a test-only package that links into no binary",
+	"atc/hangaroutput": "TEST-ONLY: the managed-read specs admit a read against the REAL " +
+		"publisher's exact-generation stat over the same bucket the daemon published into, " +
+		"because requirement 35 is about the object rather than about a fixture's opinion of " +
+		"it. The package's production code declares ExactStat as a port and links nothing",
+}
+
+// testOnlyRoleImporters are the exemptions above whose reason says TEST-ONLY.
+//
+// The reason is CHECKED rather than believed: an exemption stated in a comment
+// is one a later edit can quietly turn into a production import, and the whole
+// point of the principal boundary is that a Pod's identity is Pod-wide. The
+// check reads the non-test import graph, so a production file that named one of
+// these would fail here even though the exemption is still listed.
+var testOnlyRoleImporters = map[string]bool{
+	"hangar/output/conformance": true,
+	"atc/hangaroutput":          true,
 }
 
 // TestTheOutputRolesAreLinkedOnlyByTheirOwnPrincipals is the import half of the
@@ -589,6 +616,21 @@ func TestTheOutputRolesAreLinkedOnlyByTheirOwnPrincipals(t *testing.T) {
 		t.Error("nothing links any output role at all, including the output daemon. Either the " +
 			"roles moved or the graph is not being read, and in both cases this rule is " +
 			"guarding nothing.")
+	}
+
+	// Every TEST-ONLY exemption is verified to be one.
+	for importer := range testOnlyRoleImporters {
+		if _, ok := outputRoleImporters[importer]; !ok {
+			t.Errorf("%s is listed as a test-only exemption and is not an exemption at all; the "+
+				"two lists have drifted", importer)
+		}
+		for _, imported := range graph.prod[importer] {
+			if forbidden[imported] {
+				t.Errorf("%s is exempted as a TEST-ONLY importer of an output role and its "+
+					"PRODUCTION code imports %s. A Pod's identity is Pod-wide: an exemption for "+
+					"a spec is not an exemption for a process.", importer, imported)
+			}
+		}
 	}
 
 	// The case this rule exists for, stated by name so a green says it was
@@ -650,6 +692,19 @@ func TestHangarGCSStoreIsImportedOnlyByTheDaemon(t *testing.T) {
 	for importer := range hangarGCSImporters {
 		if _, ok := graph.all[importer]; !ok {
 			t.Errorf("allowed importer %q does not exist; the exemption is stale", importer)
+		}
+	}
+	for importer := range testOnlyGCSImporters {
+		if _, ok := hangarGCSImporters[importer]; !ok {
+			t.Errorf("%s is listed as a test-only exemption and is not an exemption at all; the "+
+				"two lists have drifted", importer)
+		}
+		for _, imported := range graph.prod[importer] {
+			if imported == hangarGCSPackage {
+				t.Errorf("%s is exempted as a TEST-ONLY importer of %s and its PRODUCTION code "+
+					"imports it. The cloud client is a daemon-side detail, and an exemption for "+
+					"a spec is not an exemption for a process.", importer, hangarGCSPackage)
+			}
 		}
 	}
 

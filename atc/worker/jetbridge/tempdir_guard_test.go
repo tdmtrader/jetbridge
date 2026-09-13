@@ -112,9 +112,22 @@ func TestAStaleRootWhoseProcessIsGoneIsSwept(t *testing.T) {
 		t.Fatal("processAlive says this very process is not running")
 	}
 
+	// The sibling. It is a LIVE pid that is not this process's, which is the
+	// only shape that reaches the sweep's liveness arm at all: `pid == self` is
+	// tested first and returns before processAlive is ever asked, so a "live"
+	// root named with our own pid pins nothing about liveness. A `--procs`
+	// sibling is never self, and its root is exactly what must survive.
+	sibling := liveSiblingPID(t)
+	if sibling == os.Getpid() {
+		t.Fatalf("the sibling pid %d is this process; the liveness arm cannot be asserted "+
+			"against it", sibling)
+	}
+
 	stale := makeTempDir(t, dir, fmt.Sprintf("%s%d-stale", tempRootPrefix, dead))
 	writeTempFile(t, stale, "hangar-output-daemon", 64)
 	live := makeTempDir(t, dir, fmt.Sprintf("%s%d-live", tempRootPrefix, os.Getpid()))
+	liveSibling := makeTempDir(t, dir, fmt.Sprintf("%s%d-live", tempRootPrefix, sibling))
+	writeTempFile(t, liveSibling, "hangar-output-daemon", 64)
 	foreign := makeTempDir(t, dir, "go-build-r3foreign-live2")
 	other := makeTempDir(t, dir, fmt.Sprintf("some-other-suite-%d-live", dead))
 
@@ -126,12 +139,39 @@ func TestAStaleRootWhoseProcessIsGoneIsSwept(t *testing.T) {
 	if len(swept) != 1 || !strings.Contains(swept[0], filepath.Base(stale)) {
 		t.Errorf("the sweep removed %v; it owes exactly %s", swept, filepath.Base(stale))
 	}
-	for _, survivor := range []string{live, foreign, other} {
+	for _, survivor := range []string{live, liveSibling, foreign, other} {
 		if _, err := os.Stat(survivor); err != nil {
 			t.Errorf("the sweep removed %s, which belongs to a live process or to another "+
 				"package entirely: %v", filepath.Base(survivor), err)
 		}
 	}
+	if _, err := os.Stat(filepath.Join(liveSibling, "hangar-output-daemon")); err != nil {
+		t.Errorf("the sweep emptied a live sibling's root: %v", err)
+	}
+}
+
+// liveSiblingPID starts a process this spec owns, and keeps it running for the
+// length of the spec.
+//
+// It stands for a `--procs` sibling: a pid that is running, is not this one,
+// and whose temp root nobody may take away.
+func liveSiblingPID(t *testing.T) int {
+	t.Helper()
+
+	command := exec.Command("/bin/sh", "-c", "sleep 30")
+	if err := command.Start(); err != nil {
+		t.Fatalf("starting a live sibling process: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = command.Process.Kill()
+		_, _ = command.Process.Wait()
+	})
+	if !processAlive(command.Process.Pid) {
+		t.Fatalf("the sibling process %d is not running immediately after being started",
+			command.Process.Pid)
+	}
+
+	return command.Process.Pid
 }
 
 // exitedProcessPID runs a process, waits for it, and returns its pid.
@@ -185,11 +225,33 @@ func TestTheProcessTakesItsTempRootWithItUnderAnyRunFilter(t *testing.T) {
 
 	scratch := t.TempDir()
 
+	// And the sweep's CALL, pinned through the same child.
+	//
+	// The in-process specs above drive sweepStaleRoots directly, so removing
+	// the call at tempRoot's init leaves every one of them green. A second
+	// binary whose TMPDIR is this scratch runs that init for real: seed a root
+	// owned by a process that has exited, and it must be gone when the child
+	// is. Nothing else in the tree runs a package's own init against a
+	// directory a spec can look inside afterwards.
+	dead := exitedProcessPID(t)
+	if processAlive(dead) {
+		t.Fatalf("pid %d is still alive after being waited for; the child's sweep cannot be "+
+			"asserted against it", dead)
+	}
+	stale := makeTempDir(t, scratch, fmt.Sprintf("%s%d-stale", tempRootPrefix, dead))
+	writeTempFile(t, stale, "hangar-output-daemon", 64)
+
 	child := exec.Command("go", "test", "-count=1", "-run", "^$",
 		"github.com/concourse/concourse/atc/worker/jetbridge")
 	child.Env = append(os.Environ(), "TMPDIR="+scratch)
 	if out, err := child.CombinedOutput(); err != nil {
 		t.Fatalf("running a filtered test binary of this package: %v\n%s", err, out)
+	}
+
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("a test binary of this package left %s behind; a root whose owner has exited is "+
+			"swept at package init, and the init call is what this asserts: %v",
+			filepath.Base(stale), err)
 	}
 
 	entries, err := os.ReadDir(scratch)

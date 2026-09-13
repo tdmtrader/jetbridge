@@ -323,12 +323,11 @@ func (transactor *connTransactor) Begin() (hangaroutput.Transaction, error) {
 		return nil, err
 	}
 
-	return &txAdapter{Tx: tx}, nil
+	// db.HangarOutputTx is the PRODUCTION adapter -- the ATC's own wiring hands
+	// out the same one. A harness that unwrapped the commit's typed answer
+	// would be specifying a system nobody deploys.
+	return db.HangarOutputTx{Tx: tx}, nil
 }
-
-type txAdapter struct{ db.Tx }
-
-func (adapter *txAdapter) Rollback() error { return adapter.Tx.Rollback() }
 
 // emulator is the strict-native-GCS stand-in, started per spec.
 func emulator(t *testing.T) (*fakestorage.Server, string) {

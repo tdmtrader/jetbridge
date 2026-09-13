@@ -1,7 +1,5 @@
 Feature: What a consuming step's Pod says about a published output
 
-  NOT RUN YET — see ../README.md. These scenarios are checked, not executed.
-
   This is where the learning's split row 2 lands: the consumer's Hangar init
   container's args and mounts are spec, so the two Go tests at
   atc/worker/jetbridge/storage_daemonset_test.go:492 and :559 move here.
@@ -56,7 +54,7 @@ Feature: What a consuming step's Pod says about a published output
     And no user-controlled destination enters the verification command
 
   @HOP-35 @HOP-37
-  Scenario: A consumer pod materializes exactly the receipt's tree
+  Scenario: A consumer pod asks for exactly the receipt's tree
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
     And the daemon holds the source
@@ -65,7 +63,7 @@ Feature: What a consuming step's Pod says about a published output
     And the published tree is read back from the output bucket
     And a later step "consume" takes the published output "result" at "/tmp/build/from-earlier"
     When the consumer's pod is built
-    Then the consumer's pod materializes exactly the receipt's tree
+    Then the consumer's pod asks for exactly the receipt's tree
     And the step sees a volume mounted at "/tmp/build/from-earlier"
 
   # Control first: the granted read is the line above the refusal, because a
@@ -81,4 +79,4 @@ Feature: What a consuming step's Pod says about a published output
     And the consumer binds the output inside its own transaction
     Then the managed read is granted
     When the consumer holds no active claim
-    Then the managed read is refused as "no active claim"
+    Then the managed read is refused as "lifecycle conflict"

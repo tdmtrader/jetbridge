@@ -749,9 +749,15 @@ BEGIN
             OLD.claim_id
             USING ERRCODE = 'JB001';
     END IF;
-    IF OLD.released_at IS NOT NULL AND NEW.released_at IS NULL THEN
-        RAISE EXCEPTION 'hangar: claim % was released at % and cannot silently reactivate',
-            OLD.claim_id, OLD.released_at
+    -- A tombstone's INSTANT is as immutable as the tombstone. The arm used to
+    -- refuse only released_at going back to NULL, so a claim could be released
+    -- at one time and then "released" at another -- which is a reactivation
+    -- with a cover story, and the timestamp is what a later audit reads.
+    -- ReleaseClaim writes coalesce(released_at, now()) and never moves it, so
+    -- nothing in production notices the difference; that is the point.
+    IF OLD.released_at IS NOT NULL AND NEW.released_at IS DISTINCT FROM OLD.released_at THEN
+        RAISE EXCEPTION 'hangar: claim % was released at % and cannot silently reactivate or be re-dated to %',
+            OLD.claim_id, OLD.released_at, NEW.released_at
             USING ERRCODE = 'JB001';
     END IF;
 
@@ -772,11 +778,54 @@ CREATE TABLE hangar_read_leases (
         REFERENCES hangar_exact_lifecycles (id) ON DELETE RESTRICT,
     activation_epoch bigint NOT NULL
         REFERENCES hangar_output_activation_epochs (epoch_id) ON DELETE RESTRICT,
+    -- lease_fence HAS NO WRITER, and that is recorded here rather than left to
+    -- be rediscovered. It is inserted as 1 and nothing moves it: the retry of an
+    -- ambiguous commit deliberately does not advance it (requirement 37 wants a
+    -- byte-identical re-mint, which a moving fence would make impossible), and
+    -- the takeover Phase 7 performs works on hangar_capture_attempt_leases's
+    -- capture_fence, which is a different column on a different table. The read
+    -- grant does not bind it and ValidateReadLease does not compare it -- a
+    -- comparison against a value with exactly one possible spelling is a check
+    -- that passes for a reason nobody can state. The column stays because a
+    -- column with no reader is cheaper than a renumbered migration, and because
+    -- the monotonicity arm below is the thing that would have to be right if a
+    -- writer ever arrived.
     lease_fence      bigint NOT NULL CHECK (lease_fence > 0),
     granted_at       timestamp with time zone NOT NULL DEFAULT now(),
     renewed_at       timestamp with time zone NOT NULL DEFAULT now(),
     expires_at       timestamp with time zone NOT NULL,
     released_at      timestamp with time zone,
+
+    -- What the grant for this lease binds, stored because the grant is minted
+    -- AFTER this transaction commits and may have to be minted again. A nonce
+    -- chosen at mint time would make two mints of one lease differ, and the
+    -- ambiguous-commit retry would have to create a second lease to be
+    -- answerable. The destination is here for the same reason and for one more:
+    -- the daemon asks the control plane to confirm the destination it was told,
+    -- and a control plane with nothing to compare it against would be
+    -- confirming the caller's own claim back to it.
+    grant_nonce        text NOT NULL CHECK (length(grant_nonce) BETWEEN 16 AND 128),
+    destination_handle text NOT NULL CHECK (destination_handle <> ''),
+    destination_volume text NOT NULL CHECK (destination_volume <> ''),
+
+    -- The exact-generation stat this lease was admitted on. Requirement 35
+    -- says a grant may be issued only after a stat proves the registered marked
+    -- generation is PRESENT; the metageneration is what makes that proof exact,
+    -- and observed_at is what stops a stat from an hour ago standing in for one.
+    stat_metageneration bigint NOT NULL CHECK (stat_metageneration > 0),
+    stat_marker_version text NOT NULL CHECK (stat_marker_version <> ''),
+    stat_observed_at    timestamp with time zone NOT NULL,
+
+    -- The term this lease was ADMITTED for, stored because a renewal grants one
+    -- of them and there is nowhere else the length could honestly come from.
+    --
+    -- Not `expires_at - granted_at`: expires_at is what the last renewal moved
+    -- and granted_at never moves, so that difference grows by the age of the
+    -- lease and every renewal would be longer than the one before it. And not
+    -- the daemon's own number either -- the length of a protection is not
+    -- something the party being protected gets to choose.
+    lease_term_seconds integer NOT NULL
+        CHECK (lease_term_seconds >= 900 AND lease_term_seconds <= 86400),
 
     CONSTRAINT hangar_read_lease_term CHECK (expires_at - granted_at >= interval '15 minutes')
 );
@@ -791,6 +840,18 @@ BEGIN
     END IF;
     IF NEW.lifecycle_id <> OLD.lifecycle_id OR NEW.claim_id <> OLD.claim_id THEN
         RAISE EXCEPTION 'hangar: read lease % was moved to another ref or claim', OLD.read_lease_id
+            USING ERRCODE = 'JB001';
+    END IF;
+    IF NEW.grant_nonce <> OLD.grant_nonce
+        OR NEW.destination_handle <> OLD.destination_handle
+        OR NEW.destination_volume <> OLD.destination_volume THEN
+        RAISE EXCEPTION 'hangar: read lease % changed what its grant binds; a re-mint is byte-identical or it is a different lease',
+            OLD.read_lease_id
+            USING ERRCODE = 'JB001';
+    END IF;
+    IF NEW.lease_term_seconds <> OLD.lease_term_seconds THEN
+        RAISE EXCEPTION 'hangar: read lease % changed its admitted term, % -> %; a renewal grants one term and does not choose a new one',
+            OLD.read_lease_id, OLD.lease_term_seconds, NEW.lease_term_seconds
             USING ERRCODE = 'JB001';
     END IF;
     IF NEW.lease_fence < OLD.lease_fence THEN
@@ -1252,8 +1313,14 @@ BEGIN
         WHERE lifecycle_id = target AND finalized_at IS NULL;
     SELECT count(*) INTO claims FROM hangar_claims
         WHERE lifecycle_id = target AND released_at IS NULL;
+    -- An EXPIRED lease is not an active one. AC 13 says a reader's protection
+    -- ends when the read lease closes OR safely expires, and counting an
+    -- abandoned lease forever would make one crashed materializer pin a
+    -- generation for the life of the deployment. Recovery still closes it --
+    -- only after this same database clock says it has expired -- and the
+    -- tombstone is what stops it resurrecting.
     SELECT count(*) INTO leases FROM hangar_read_leases
-        WHERE lifecycle_id = target AND released_at IS NULL;
+        WHERE lifecycle_id = target AND released_at IS NULL AND expires_at > now();
     SELECT count(*) INTO pending FROM hangar_logical_reservations
         WHERE scope = lifecycle.scope AND digest = lifecycle.digest
           AND state = 'unresolved_generation';

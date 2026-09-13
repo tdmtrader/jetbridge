@@ -2,6 +2,8 @@ package db_test
 
 import (
 	"context"
+	"crypto/rand"
+	"database/sql"
 	"fmt"
 	"time"
 
@@ -287,6 +289,52 @@ var _ = Describe("the Hangar output lock suffix", func() {
 		return reservation, ref
 	}
 
+	// readLeaseRequest is a well-formed managed-read admission: an exact stat
+	// taken a moment ago, a destination that is a handle and a volume, and a
+	// nonce minted once for this lease. Every refusal spec below starts from
+	// this and changes exactly one thing, so a red row names the check rather
+	// than "a lease was refused".
+	readLeaseRequest := func(id output.ReadLeaseID, claimID output.ClaimID, ref hangar.TreeRef) output.ReadLeaseRequest {
+		GinkgoHelper()
+		nonce, err := output.NewReadGrantNonce(rand.Reader)
+		Expect(err).NotTo(HaveOccurred())
+
+		// The marker on a real stat carries the reservation that published the
+		// object. The fixture reads it back rather than inventing one, so a
+		// well-formed stat proof here is the shape production actually observes.
+		var reservation string
+		Expect(dbConn.QueryRow(`
+			SELECT reservation_id FROM hangar_logical_reservations WHERE scope = $1 AND digest = $2`,
+			string(ref.Scope), string(ref.Digest)).Scan(&reservation)).To(Succeed())
+
+		return output.ReadLeaseRequest{
+			ReadLeaseID:            id,
+			ClaimID:                claimID,
+			Ref:                    ref,
+			ActivationEpoch:        1,
+			RequestedAt:            output.NewTimestamp(time.Now()),
+			MaterializationTimeout: 10 * time.Minute,
+			Destination:            output.ReadDestination{Handle: "task-handle", Volume: "input-0"},
+			GrantNonce:             nonce,
+			StatProof: output.PublishedObject{
+				Attributes: hangar.TreeAttributes{
+					Ref: ref, StoredBytes: 1024, LogicalBytes: 4096,
+					CreatedAt: time.Now().Add(-time.Minute),
+				},
+				Metageneration: 1,
+				Marker: output.ObjectMarker{
+					Version:         output.MarkerVersion,
+					Scope:           ref.Scope,
+					Digest:          ref.Digest,
+					ReservationID:   output.ReservationID(reservation),
+					ActivationEpoch: 1,
+					CreatedAt:       output.NewTimestamp(time.Now().Add(-time.Minute)),
+				},
+			},
+			StatObservedAt: output.NewTimestamp(time.Now()),
+		}
+	}
+
 	acquire := func(tx db.Tx, id output.ClaimID, ref hangar.TreeRef, binding string) error {
 		return repository.AcquireClaim(ctx, tx, output.ClaimAcquisition{
 			ProtocolVersion:   output.ProtocolVersion,
@@ -457,14 +505,8 @@ var _ = Describe("the Hangar output lock suffix", func() {
 
 			claimID := output.ClaimID(uuid.NewString())
 			Expect(acquire(tx, claimID, ref, "binding-1")).To(Succeed())
-			lease, err := repository.AcquireReadLease(ctx, tx, output.ReadLeaseRequest{
-				ReadLeaseID:            output.ReadLeaseID(uuid.NewString()),
-				ClaimID:                claimID,
-				Ref:                    ref,
-				ActivationEpoch:        1,
-				RequestedAt:            output.NewTimestamp(time.Now()),
-				MaterializationTimeout: 10 * time.Minute,
-			})
+			lease, err := repository.AcquireReadLease(ctx, tx,
+				readLeaseRequest(output.ReadLeaseID(uuid.NewString()), claimID, ref))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(repository.ReleaseClaim(ctx, tx, output.ClaimRelease{
 				ProtocolVersion: output.ProtocolVersion,
@@ -524,16 +566,824 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			reader, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(reader)
-			_, err = repository.AcquireReadLease(ctx, reader, output.ReadLeaseRequest{
-				ReadLeaseID:            output.ReadLeaseID(uuid.NewString()),
-				ClaimID:                claimID,
-				Ref:                    ref,
-				ActivationEpoch:        1,
-				RequestedAt:            output.NewTimestamp(time.Now()),
-				MaterializationTimeout: 10 * time.Minute,
-			})
+			_, err = repository.AcquireReadLease(ctx, reader,
+				readLeaseRequest(output.ReadLeaseID(uuid.NewString()), claimID, ref))
 			Expect(err).To(HaveOccurred())
 			Expect(reader.Rollback()).To(Succeed())
+		})
+	})
+
+	// A MANAGED READ is admitted by a transaction and validated by another.
+	//
+	// Requirement 35 names four things that must hold together before a grant
+	// exists: an exact stat proving the registered marked generation is
+	// PRESENT, a readable lifecycle state, at least one active claim, and a
+	// current activation epoch. Requirement 36 adds the lease term. The control
+	// row is first, so a repository that refused every read would fail the
+	// table rather than pass it.
+	Describe("a managed read", func() {
+		var ref hangar.TreeRef
+		var claimID output.ClaimID
+
+		BeforeEach(func() {
+			activate()
+			_, ref = publish(hangarDigest(30), 1725830823000030)
+
+			claimID = output.ClaimID(uuid.NewString())
+			tx, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(tx)
+			Expect(acquire(tx, claimID, ref, "binding-read")).To(Succeed())
+			Expect(tx.Commit()).To(Succeed())
+		})
+
+		admit := func(request output.ReadLeaseRequest) (output.ReadLease, error) {
+			GinkgoHelper()
+			tx, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(tx)
+
+			lease, err := repository.AcquireReadLease(ctx, tx, request)
+			if err != nil {
+				return output.ReadLease{}, err
+			}
+
+			// Committed through the production adapter, because the refusals
+			// this plane makes at COMMIT are only typed on the other side of it.
+			return lease, db.HangarOutputTx{Tx: tx}.Commit()
+		}
+
+		It("admits a read against a claimed, registered, marked, freshly stat-ed generation", func() {
+			id := output.ReadLeaseID(uuid.NewString())
+			request := readLeaseRequest(id, claimID, ref)
+
+			lease, err := admit(request)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lease.ReadLeaseID).To(Equal(id))
+			Expect(lease.Ref).To(Equal(ref))
+			Expect(lease.LeaseFence).To(Equal(output.LeaseFence(1)))
+
+			// The term is the requirement's own arithmetic, read off the row
+			// the database wrote rather than off the value Go passed in.
+			term := lease.ExpiresAt.Sub(lease.GrantedAt.Time)
+			Expect(term).To(BeNumerically(">=", output.MinLeaseTerm))
+			Expect(term).To(BeNumerically(">=",
+				request.MaterializationTimeout+output.LeaseTermMargin))
+			Expect(output.MayStartWork(term, request.MaterializationTimeout)).To(BeTrue())
+
+			// And what the grant will bind is stored, so a re-mint is the same
+			// bytes rather than a second lease.
+			tx, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(tx)
+			record, err := repository.LoadReadLease(ctx, tx, id)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(record.GrantNonce).To(Equal(request.GrantNonce))
+			Expect(record.Destination).To(Equal(request.Destination))
+			Expect(record.Lease.LeaseFence).To(Equal(lease.LeaseFence))
+		})
+
+		DescribeTable("refuses a read that is not admitted",
+			func(sentinel error, substring string, spoil func(*output.ReadLeaseRequest)) {
+				request := readLeaseRequest(output.ReadLeaseID(uuid.NewString()), claimID, ref)
+				spoil(&request)
+
+				_, err := admit(request)
+				Expect(err).To(MatchError(sentinel))
+				Expect(err.Error()).To(ContainSubstring(substring))
+
+				var leases int
+				Expect(dbConn.QueryRow(`SELECT count(*) FROM hangar_read_leases WHERE read_lease_id = $1`,
+					string(request.ReadLeaseID)).Scan(&leases)).To(Succeed())
+				Expect(leases).To(BeZero(), "a refused read still created a lease")
+			},
+			Entry("a claim nobody acquired", output.ErrNotFound, "active claim",
+				func(request *output.ReadLeaseRequest) {
+					request.ClaimID = output.ClaimID(uuid.NewString())
+				}),
+			Entry("a stat for another generation", output.ErrConflict, "the stat proves",
+				func(request *output.ReadLeaseRequest) {
+					request.StatProof.Attributes.Ref.Generation++
+				}),
+			Entry("a stat whose metageneration moved", output.ErrConflict, "metageneration",
+				func(request *output.ReadLeaseRequest) { request.StatProof.Metageneration = 4 }),
+			Entry("a stat carrying no accepted marker", output.ErrConflict, "marker version",
+				func(request *output.ReadLeaseRequest) {
+					request.StatProof.Marker.Version = "hangar-output-v0"
+				}),
+			Entry("a stat from ten minutes ago", output.ErrTimeout, "older than",
+				func(request *output.ReadLeaseRequest) {
+					request.StatObservedAt = output.NewTimestamp(time.Now().Add(-10 * time.Minute))
+				}),
+			Entry("an epoch that is not the one the ref was registered under",
+				output.ErrConflict, "was registered under epoch",
+				func(request *output.ReadLeaseRequest) { request.ActivationEpoch = 2 }),
+			Entry("a destination that is a path", output.ErrInvalidIdentity, "canonical path segment",
+				func(request *output.ReadLeaseRequest) {
+					request.Destination.Volume = "../elsewhere"
+				}),
+			Entry("no nonce for the grant", output.ErrIncomplete, "read grant nonce",
+				func(request *output.ReadLeaseRequest) { request.GrantNonce = "" }),
+			// The term's CEILING, refused where the policy is read rather than
+			// by the column's CHECK. Both refusals are typed ErrIncomplete, so
+			// what tells them apart is which sentence comes back: the schema's
+			// is the constraint's text, and a caller cannot act on it.
+			Entry("a timeout whose term would outrun the bound", output.ErrIncomplete,
+				"the bound is",
+				func(request *output.ReadLeaseRequest) {
+					request.MaterializationTimeout = 24 * time.Hour
+				}),
+		)
+
+		It("refuses a read whose claim was released", func() {
+			tx, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(tx)
+			Expect(repository.ReleaseClaim(ctx, tx, output.ClaimRelease{
+				ProtocolVersion: output.ProtocolVersion,
+				ClaimID:         claimID,
+				Ref:             ref,
+				RequestedAt:     output.NewTimestamp(time.Now()),
+			})).To(Succeed())
+			Expect(tx.Commit()).To(Succeed())
+
+			_, err = admit(readLeaseRequest(output.ReadLeaseID(uuid.NewString()), claimID, ref))
+			Expect(err).To(MatchError(output.ErrConflict))
+			Expect(err.Error()).To(ContainSubstring("already released"))
+		})
+
+		It("refuses a read for a ref no receipt registered", func() {
+			unregistered := ref
+			unregistered.Generation++
+
+			request := readLeaseRequest(output.ReadLeaseID(uuid.NewString()), claimID, ref)
+			request.Ref = unregistered
+			request.StatProof.Attributes.Ref = unregistered
+
+			_, err := admit(request)
+			Expect(err).To(MatchError(output.ErrNotFound))
+		})
+
+		// The two states a claimed generation can still reach.
+		//
+		// Requirement 52 keeps existing claims RECORDED when a lifetime
+		// violation is detected -- the consumer's binding does not evaporate --
+		// so a claimed ref really can be sitting in `missing_out_of_band` or
+		// `conflicted` when a read is asked for, and a read admitted against
+		// one would be a grant for content the plane has said is not there.
+		//
+		// Phase 7 owns the code that writes those states; the fixture sets them
+		// directly, which is what a spec for a state whose writer has not
+		// landed yet can honestly do. What it does NOT do is assert through
+		// SQL: the refusal below comes out of the repository.
+		DescribeTable("refuses a read for a generation that is no longer readable",
+			func(state string) {
+				_, err := dbConn.Exec(`
+					UPDATE hangar_exact_lifecycles SET state = $4
+					WHERE scope = $1 AND digest = $2 AND generation = $3`,
+					string(ref.Scope), string(ref.Digest), ref.Generation, state)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(countActiveClaims(ref)).To(Equal(1),
+					"the claim went away, so this is no longer the case it is named for")
+
+				_, err = admit(readLeaseRequest(output.ReadLeaseID(uuid.NewString()), claimID, ref))
+				Expect(err).To(MatchError(output.ErrConflict))
+				Expect(err.Error()).To(ContainSubstring(state))
+			},
+			Entry("recorded missing out of band", "missing_out_of_band"),
+			Entry("recorded conflicted", "conflicted"),
+		)
+
+		// "There is no claim" and "I could not ask" are different answers.
+		//
+		// The claim lookup wrapped every failure as ErrNotFound, so a database
+		// the transaction could not reach came back as "no claim protects this
+		// ref" -- and a consumer reads that as "my binding is gone" and stops.
+		// The failure is induced by renaming the table INSIDE the transaction
+		// that then asks, which is a real undefined-table failure from the real
+		// driver, and it is rolled back with the transaction.
+		It("tells a claim that is absent from a claim lookup that failed", func() {
+			tx, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(tx)
+
+			// The COLUMN and not the table: the lock suffix takes
+			// `SELECT 1 FROM hangar_claims ... FOR UPDATE` first, so renaming
+			// the table would fail the lock and this spec would be asserting
+			// the helper's error instead of the lookup's.
+			_, err = tx.Exec(`ALTER TABLE hangar_claims DROP COLUMN released_at CASCADE`)
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = repository.AcquireReadLease(ctx, tx,
+				readLeaseRequest(output.ReadLeaseID(uuid.NewString()), claimID, ref))
+			Expect(err).To(HaveOccurred())
+			Expect(err).To(MatchError(output.ErrInfrastructure))
+			Expect(err).NotTo(MatchError(output.ErrNotFound),
+				"a lookup that could not run was reported as an absent claim")
+			Expect(tx.Rollback()).To(Succeed())
+
+			// The control, on the same fixture: with the table where it
+			// belongs, an absent claim really is a typed not-found.
+			absent, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(absent)
+			request := readLeaseRequest(output.ReadLeaseID(uuid.NewString()),
+				output.ClaimID(uuid.NewString()), ref)
+			_, err = repository.AcquireReadLease(ctx, absent, request)
+			Expect(err).To(MatchError(output.ErrNotFound))
+			Expect(absent.Rollback()).To(Succeed())
+		})
+
+		It("refuses a read while the epoch's lifetime policy is at risk", func() {
+			tx, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(tx)
+			Expect(repository.RecordPolicySnapshot(ctx, tx, output.PolicySnapshot{
+				ProtocolVersion:      output.ProtocolVersion,
+				ActivationEpoch:      1,
+				BucketFingerprint:    "gs://output-bucket",
+				Metageneration:       4,
+				PolicyHash:           "policy-hash-2",
+				LifecycleDeleteRules: 1,
+				State:                output.PolicyAtRisk,
+				ObservedAt:           output.NewTimestamp(time.Now()),
+			})).To(Succeed())
+			Expect(tx.Commit()).To(Succeed())
+
+			// The refusal is DEFERRED: it fires at the commit, not at the
+			// insert, so what makes it a refusal rather than a lost answer is
+			// the transaction adapter's mapping of the schema's class. A
+			// substring on the message could not tell the two apart.
+			_, err = admit(readLeaseRequest(output.ReadLeaseID(uuid.NewString()), claimID, ref))
+			Expect(err).To(MatchError(output.ErrAtRisk))
+			Expect(err.Error()).To(ContainSubstring("lifetime policy"))
+		})
+
+		// The daemon's independent question, asked of the committed row rather
+		// than of the token.
+		Describe("validating the lease a grant names", func() {
+			var id output.ReadLeaseID
+			var request output.ReadLeaseRequest
+			var lease output.ReadLease
+
+			BeforeEach(func() {
+				id = output.ReadLeaseID(uuid.NewString())
+				request = readLeaseRequest(id, claimID, ref)
+
+				var err error
+				lease, err = admit(request)
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			validation := func() output.ReadLeaseValidation {
+				return output.ReadLeaseValidation{
+					ReadLeaseID:       id,
+					ClaimID:           claimID,
+					Ref:               ref,
+					Destination:       request.Destination,
+					ActivationEpoch:   1,
+					GrantNonce:        request.GrantNonce,
+					RequiredRemaining: request.MaterializationTimeout + output.LeaseStartMargin,
+				}
+			}
+
+			validate := func(question output.ReadLeaseValidation) (output.ReadLeaseRecord, error) {
+				GinkgoHelper()
+				tx, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(tx)
+
+				return repository.ValidateReadLease(ctx, tx, question)
+			}
+
+			It("admits the exact committed lease for work that fits inside it", func() {
+				record, err := validate(validation())
+				Expect(err).NotTo(HaveOccurred())
+				Expect(record.Lease.ReadLeaseID).To(Equal(id))
+				Expect(record.GrantNonce).To(Equal(request.GrantNonce))
+			})
+
+			It("still admits it after the consumer released its last claim", func() {
+				tx, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(tx)
+				Expect(repository.ReleaseClaim(ctx, tx, output.ClaimRelease{
+					ProtocolVersion: output.ProtocolVersion,
+					ClaimID:         claimID,
+					Ref:             ref,
+					RequestedAt:     output.NewTimestamp(time.Now()),
+				})).To(Succeed())
+				Expect(tx.Commit()).To(Succeed())
+				Expect(countActiveClaims(ref)).To(BeZero())
+
+				_, err = validate(validation())
+				Expect(err).NotTo(HaveOccurred(),
+					"a transfer that released its last claim mid-read was refused; the lease is "+
+						"what protects a read once it has one")
+			})
+
+			DescribeTable("refuses a grant that does not describe the committed lease",
+				func(sentinel error, spoil func(*output.ReadLeaseValidation)) {
+					question := validation()
+					spoil(&question)
+
+					_, err := validate(question)
+					Expect(err).To(MatchError(sentinel))
+				},
+				Entry("a lease nobody committed", output.ErrNotFound,
+					func(question *output.ReadLeaseValidation) {
+						question.ReadLeaseID = output.ReadLeaseID(uuid.NewString())
+					}),
+				Entry("another claim", output.ErrUnauthorized,
+					func(question *output.ReadLeaseValidation) {
+						question.ClaimID = output.ClaimID(uuid.NewString())
+					}),
+				Entry("another generation", output.ErrUnauthorized,
+					func(question *output.ReadLeaseValidation) { question.Ref.Generation++ }),
+				Entry("another destination", output.ErrUnauthorized,
+					func(question *output.ReadLeaseValidation) {
+						question.Destination.Volume = "input-9"
+					}),
+				Entry("another epoch", output.ErrUnauthorized,
+					func(question *output.ReadLeaseValidation) { question.ActivationEpoch = 2 }),
+				Entry("another nonce", output.ErrUnauthorized,
+					func(question *output.ReadLeaseValidation) {
+						nonce, err := output.NewReadGrantNonce(rand.Reader)
+						Expect(err).NotTo(HaveOccurred())
+						question.GrantNonce = nonce
+					}),
+				Entry("work that would outlive the lease", output.ErrTimeout,
+					func(question *output.ReadLeaseValidation) {
+						question.RequiredRemaining = 24 * time.Hour
+					}),
+			)
+
+			// An abandoned reader does not pin a generation forever.
+			//
+			// A materializer that dies mid-staging leaves an unreleased lease.
+			// Requirement 46 asks for "no active read lease" and AC 13 says a
+			// reader's protection ends when the lease closes OR SAFELY EXPIRES,
+			// and counting an expired one forever would let one crash pin a
+			// generation for the life of the deployment.
+			//
+			// The lease is aged by moving both of its instants back together, so
+			// its fifteen-minute term is preserved and what changes is only
+			// whether it has run out. Nothing here shortens a lease.
+			It("stops pinning a generation once an abandoned lease has expired", func() {
+				tx, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(tx)
+				Expect(repository.ReleaseClaim(ctx, tx, output.ClaimRelease{
+					ProtocolVersion: output.ProtocolVersion,
+					ClaimID:         claimID,
+					Ref:             ref,
+					RequestedAt:     output.NewTimestamp(time.Now()),
+				})).To(Succeed())
+				Expect(tx.Commit()).To(Succeed())
+
+				// The control: while the lease is live, reclaim is refused.
+				blocked, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(blocked)
+				err = repository.AdmitReclaim(ctx, blocked, ref, uuid.NewString(), 1,
+					output.MinLeaseTerm)
+				Expect(err).To(MatchError(output.ErrConflict))
+				Expect(err.Error()).To(ContainSubstring("1 read lease(s)"))
+				Expect(blocked.Rollback()).To(Succeed())
+
+				_, err = dbConn.Exec(`
+					UPDATE hangar_read_leases
+					SET granted_at = granted_at - interval '1 hour',
+					    renewed_at = renewed_at - interval '1 hour',
+					    expires_at = expires_at - interval '1 hour'
+					WHERE read_lease_id = $1`, string(id))
+				Expect(err).NotTo(HaveOccurred())
+
+				admitted, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(admitted)
+				Expect(repository.AdmitReclaim(ctx, admitted, ref, uuid.NewString(), 1,
+					output.MinLeaseTerm)).To(Succeed())
+				Expect(admitted.Commit()).To(Succeed())
+
+				// And recovery writes the release the daemon never got to write,
+				// so the tombstone that prevents resurrection exists either way.
+				closing, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(closing)
+				closed, err := repository.CloseAbandonedReadLeases(ctx, closing, 100)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(closed).To(Equal(1))
+				Expect(closing.Commit()).To(Succeed())
+
+				again, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(again)
+				closed, err = repository.CloseAbandonedReadLeases(ctx, again, 100)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(closed).To(BeZero(), "recovery closed a lease it had already closed")
+				Expect(again.Rollback()).To(Succeed())
+
+				var released int
+				Expect(dbConn.QueryRow(`
+					SELECT count(*) FROM hangar_read_leases
+					WHERE read_lease_id = $1 AND released_at IS NOT NULL`,
+					string(id)).Scan(&released)).To(Succeed())
+				Expect(released).To(Equal(1))
+			})
+
+			// A RENEWAL GRANTS ONE TERM, and the same one every time.
+			//
+			// The interval must not be read off the row being renewed:
+			// `expires_at` is what the previous renewal moved and `granted_at`
+			// never moves, so a term derived from their difference grows by the
+			// age of the lease on every pass. At the daemon's one-minute
+			// cadence the k-th renewal would add k-1 minutes, and an abandoned
+			// reader would pin its generation for term + N(N-1)/2 minutes --
+			// which is exactly the pin CloseAbandonedReadLeases exists to
+			// bound, made unboundable by the mechanism meant to keep a live
+			// reader alive. Requirement 36 names ONE term.
+			//
+			// The row is aged so that renewing has something to do; ageing
+			// moves both instants together, so what changes is how much is
+			// left, never the term itself.
+			It("grants exactly one term from now, however often it is renewed", func() {
+				term := output.LeaseTermFor(request.MaterializationTimeout)
+
+				_, err := dbConn.Exec(`
+					UPDATE hangar_read_leases
+					SET granted_at = granted_at - interval '10 minutes',
+					    renewed_at = renewed_at - interval '10 minutes',
+					    expires_at = expires_at - interval '10 minutes'
+					WHERE read_lease_id = $1`, string(id))
+				Expect(err).NotTo(HaveOccurred())
+
+				current := lease
+				for pass := 1; pass <= 3; pass++ {
+					tx, err := dbConn.Begin()
+					Expect(err).NotTo(HaveOccurred())
+					record, err := repository.LoadReadLease(ctx, tx, id)
+					Expect(err).NotTo(HaveOccurred())
+
+					current, err = repository.RenewReadLease(ctx, tx, record.Lease)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(tx.Commit()).To(Succeed())
+
+					remaining := time.Until(current.ExpiresAt.Time)
+					Expect(remaining).To(BeNumerically("<=", term),
+						fmt.Sprintf("renewal %d left more than one term on the lease", pass))
+					Expect(remaining).To(BeNumerically(">", term-time.Minute),
+						fmt.Sprintf("renewal %d granted less than a term", pass))
+				}
+			})
+
+			// The repository's own contract, not the handler's composition.
+			//
+			// LeaseControl runs ValidateReadLease first and would refuse both
+			// of these before RenewReadLease saw them -- but RenewReadLease is
+			// on the ReadLeaseRepository contract for any caller, and a method
+			// whose error text says "released, expired or ..." should be the
+			// method that decides it. A renewal that resurrected an expired
+			// lease would re-pin a generation recovery had already released.
+			It("refuses to renew a lease that has already expired", func() {
+				_, err := dbConn.Exec(`
+					UPDATE hangar_read_leases
+					SET granted_at = granted_at - interval '1 hour',
+					    renewed_at = renewed_at - interval '1 hour',
+					    expires_at = expires_at - interval '1 hour'
+					WHERE read_lease_id = $1`, string(id))
+				Expect(err).NotTo(HaveOccurred())
+
+				tx, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(tx)
+				_, err = repository.RenewReadLease(ctx, tx, lease)
+				Expect(err).To(MatchError(output.ErrConflict))
+				Expect(err.Error()).To(ContainSubstring("expired"))
+			})
+
+			DescribeTable("refuses to renew a lease whose generation is no longer readable",
+				func(state string) {
+					_, err := dbConn.Exec(`
+						UPDATE hangar_exact_lifecycles SET state = $4
+						WHERE scope = $1 AND digest = $2 AND generation = $3`,
+						string(ref.Scope), string(ref.Digest), ref.Generation, state)
+					Expect(err).NotTo(HaveOccurred())
+
+					tx, err := dbConn.Begin()
+					Expect(err).NotTo(HaveOccurred())
+					defer db.Rollback(tx)
+					_, err = repository.RenewReadLease(ctx, tx, lease)
+					Expect(err).To(MatchError(output.ErrConflict))
+				},
+				Entry("recorded missing out of band", "missing_out_of_band"),
+				Entry("recorded conflicted", "conflicted"),
+			)
+
+			// RECOVERY CLOSES THE ABANDONED ONE AND NOTHING ELSE.
+			//
+			// The spec above has a single lease and it is already expired, so
+			// `closed == 1` cannot tell "closed what the database says has run
+			// out" from "closed everything unreleased" -- and the second is a
+			// recovery pass that ends every in-flight read on the node. So this
+			// one runs the pass against two leases at once and asserts the
+			// survivor by asking the production validator, not by reading a
+			// column: a lease that still validates is a lease a daemon may
+			// still stage under.
+			It("closes the abandoned lease and leaves a live one alone", func() {
+				live := output.ReadLeaseID(uuid.NewString())
+				liveRequest := readLeaseRequest(live, claimID, ref)
+				liveLease, err := admit(liveRequest)
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = dbConn.Exec(`
+					UPDATE hangar_read_leases
+					SET granted_at = granted_at - interval '1 hour',
+					    renewed_at = renewed_at - interval '1 hour',
+					    expires_at = expires_at - interval '1 hour'
+					WHERE read_lease_id = $1`, string(id))
+				Expect(err).NotTo(HaveOccurred())
+
+				closing, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(closing)
+				closed, err := repository.CloseAbandonedReadLeases(ctx, closing, 100)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(closed).To(Equal(1),
+					"recovery closed more than the one lease the database says has expired")
+				Expect(closing.Commit()).To(Succeed())
+
+				var released []string
+				rows, err := dbConn.Query(`
+					SELECT read_lease_id FROM hangar_read_leases WHERE released_at IS NOT NULL`)
+				Expect(err).NotTo(HaveOccurred())
+				defer rows.Close()
+				for rows.Next() {
+					var closedID string
+					Expect(rows.Scan(&closedID)).To(Succeed())
+					released = append(released, closedID)
+				}
+				Expect(rows.Err()).NotTo(HaveOccurred())
+				Expect(released).To(ConsistOf(string(id)))
+
+				// The live one still authorizes work, through the method a
+				// daemon's question really goes through.
+				validating, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(validating)
+				_, err = repository.ValidateReadLease(ctx, validating, output.ReadLeaseValidation{
+					ReadLeaseID:       live,
+					ClaimID:           claimID,
+					Ref:               ref,
+					Destination:       liveRequest.Destination,
+					ActivationEpoch:   1,
+					GrantNonce:        liveRequest.GrantNonce,
+					RequiredRemaining: time.Minute,
+				})
+				Expect(err).NotTo(HaveOccurred(),
+					"recovery closed a live reader's protection out from under it")
+				Expect(liveLease.ReadLeaseID).To(Equal(live))
+
+				// And the generation is still pinned: a reclaimer arriving now
+				// meets the survivor.
+				reclaiming, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(reclaiming)
+				err = repository.AdmitReclaim(ctx, reclaiming, ref, uuid.NewString(), 1,
+					output.MinLeaseTerm)
+				Expect(err).To(MatchError(output.ErrConflict))
+				Expect(err.Error()).To(ContainSubstring("1 read lease(s)"))
+				Expect(reclaiming.Rollback()).To(Succeed())
+			})
+
+			// RECOVERY VERSUS A RENEWAL, IN BOTH ARRIVAL ORDERS.
+			//
+			// The two run against each other for real here, on two
+			// connections, because the interleaving is not reachable from one:
+			// each transaction needs to be open while the other decides.
+			//
+			// What makes the first order possible at all is that `now()` is
+			// `transaction_timestamp()`. A renewal whose transaction OPENED
+			// while the lease was live still sees it live at its own now(),
+			// while a recovery transaction that starts later reads the same
+			// committed row as expired -- so a recovery pass really can pick up
+			// a lease that a renewal is about to extend. The candidate SELECT
+			// runs unlocked, by necessity: there is no identity to lock until
+			// something has been selected. It is the predicate REPEATED under
+			// the lock that saves the live reader, and nothing asserted that
+			// repetition: deleting it leaves this suite green.
+			//
+			// The recovery pass is blocked on the renewal's row lock at the
+			// moment the renewal commits, which is asserted rather than assumed
+			// -- a spec that let the renewal commit first would be watching two
+			// transactions that never met.
+			It("leaves alone a lease that was renewed while recovery waited for its row", func() {
+				renewing := postgresRunner.OpenConn()
+				DeferCleanup(func() { Expect(renewing.Close()).To(Succeed()) })
+
+				renewal, err := renewing.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(renewal)
+
+				// The renewal's own now(), fixed by its first statement.
+				var opened time.Time
+				Expect(renewal.QueryRow(`SELECT transaction_timestamp()`).Scan(&opened)).
+					To(Succeed())
+
+				// Live at that instant, expired at any later transaction's.
+				// All three instants move together, so the row keeps the
+				// fifteen-minute term it was admitted under -- the schema
+				// refuses a shorter one, and shortening a lease to make a race
+				// reachable would be a different spec.
+				deadline := opened.Add(200 * time.Millisecond)
+				_, err = dbConn.Exec(`
+					UPDATE hangar_read_leases
+					SET granted_at = $2::timestamptz - interval '15 minutes',
+					    renewed_at = $2::timestamptz - interval '15 minutes',
+					    expires_at = $2
+					WHERE read_lease_id = $1`, string(id), deadline)
+				Expect(err).NotTo(HaveOccurred())
+
+				Eventually(func() bool {
+					var past bool
+					Expect(dbConn.QueryRow(`SELECT now() > $1`, deadline).Scan(&past)).
+						To(Succeed())
+
+					return past
+				}, 10*time.Second, 20*time.Millisecond).Should(BeTrue(),
+					"the database clock never passed the expiry this spec set")
+
+				// The renewal: admitted on its own clock, holding the row,
+				// uncommitted.
+				renewed, err := repository.RenewReadLease(ctx, renewal, lease)
+				Expect(err).NotTo(HaveOccurred(),
+					"the renewal was refused, so this is no longer the race it is named for")
+				Expect(renewed.ExpiresAt.After(deadline)).To(BeTrue())
+
+				closed := make(chan int, 1)
+				done := make(chan error, 1)
+				go func() {
+					defer GinkgoRecover()
+					tx, err := dbConn.Begin()
+					if err != nil {
+						done <- err
+
+						return
+					}
+					defer db.Rollback(tx)
+					count, err := repository.CloseAbandonedReadLeases(ctx, tx, 100)
+					if err != nil {
+						done <- err
+
+						return
+					}
+					if err := tx.Commit(); err != nil {
+						done <- err
+
+						return
+					}
+					closed <- count
+					done <- nil
+				}()
+
+				// It has read its candidates -- the committed row is expired --
+				// and it is now waiting on the lock the renewal holds.
+				Consistently(done, 500*time.Millisecond, 50*time.Millisecond).ShouldNot(Receive(),
+					"recovery finished without ever meeting the renewal's row lock")
+
+				Expect(renewal.Commit()).To(Succeed())
+
+				var failure error
+				Eventually(done, 10*time.Second).Should(Receive(&failure))
+				Expect(failure).NotTo(HaveOccurred())
+				Expect(closed).To(Receive(Equal(0)),
+					"recovery closed a lease that was renewed while it waited; the decision came "+
+						"from the candidate read taken before the row was held")
+
+				// And the survivor is a lease a daemon may still stage under.
+				validating, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(validating)
+				_, err = repository.ValidateReadLease(ctx, validating, validation())
+				Expect(err).NotTo(HaveOccurred(),
+					"the renewed lease no longer authorizes the read it protects")
+			})
+
+			// The other arrival order: recovery holds the row first, and the
+			// renewal waits for it. A renewal that came back admitted here
+			// would resurrect a lease recovery has already closed -- the
+			// generation would be re-pinned by a reader the plane has decided
+			// is gone, and the tombstone recovery wrote would be the only
+			// record that it ever happened.
+			//
+			// The refusal CLASS is pinned by the expired-lease specs beside
+			// this one; what this adds is the interleaving. The renewal is
+			// still blocked on recovery's row at the moment recovery commits,
+			// which is asserted, so its answer is taken from the row as
+			// recovery left it and not from the reading it had before it
+			// waited.
+			It("refuses a renewal that waited for the recovery pass that closed its lease", func() {
+				_, err := dbConn.Exec(`
+					UPDATE hangar_read_leases
+					SET granted_at = granted_at - interval '1 hour',
+					    renewed_at = renewed_at - interval '1 hour',
+					    expires_at = expires_at - interval '1 hour'
+					WHERE read_lease_id = $1`, string(id))
+				Expect(err).NotTo(HaveOccurred())
+
+				recovery, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(recovery)
+				count, err := repository.CloseAbandonedReadLeases(ctx, recovery, 100)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(count).To(Equal(1))
+
+				renewing := postgresRunner.OpenConn()
+				DeferCleanup(func() { Expect(renewing.Close()).To(Succeed()) })
+				renewal, err := renewing.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(renewal)
+
+				done := make(chan error, 1)
+				go func() {
+					defer GinkgoRecover()
+					_, err := repository.RenewReadLease(ctx, renewal, lease)
+					done <- err
+				}()
+
+				Consistently(done, 500*time.Millisecond, 50*time.Millisecond).ShouldNot(Receive(),
+					"the renewal answered without waiting for the row recovery was holding, so "+
+						"it decided from a read taken outside the suffix")
+
+				Expect(recovery.Commit()).To(Succeed())
+
+				var failure error
+				Eventually(done, 10*time.Second).Should(Receive(&failure))
+				Expect(failure).To(MatchError(output.ErrConflict),
+					"the renewal resurrected a lease recovery had closed")
+				Expect(renewal.Rollback()).To(Succeed())
+
+				var released bool
+				Expect(dbConn.QueryRow(`
+					SELECT released_at IS NOT NULL FROM hangar_read_leases
+					WHERE read_lease_id = $1`, string(id)).Scan(&released)).To(Succeed())
+				Expect(released).To(BeTrue())
+			})
+
+			It("refuses a released lease even though its grant is still signed", func() {
+				tx, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(tx)
+				Expect(repository.ReleaseReadLease(ctx, tx, lease)).To(Succeed())
+				Expect(tx.Commit()).To(Succeed())
+
+				_, err = validate(validation())
+				Expect(err).To(MatchError(output.ErrConflict))
+				Expect(err.Error()).To(ContainSubstring("was released"))
+			})
+
+			// A repeat is a RETRY, not a renewal.
+			//
+			// The lease id and the nonce are the caller's, generated before the
+			// attempt, so a caller whose commit answer was lost asks again with
+			// the same ones. Advancing anything there would hand the retry a
+			// different lease than the one that may already be committed, and
+			// the byte-identical re-mint requirement 37 asks for would be
+			// impossible to honour. Reuse of the identity for DIFFERENT facts is
+			// the other half, and it is a conflict.
+			It("is idempotent for the same identity and facts, and a conflict for others", func() {
+				again, err := admit(request)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(again.LeaseFence).To(Equal(lease.LeaseFence))
+				Expect(again.GrantedAt.Time).To(BeTemporally("==", lease.GrantedAt.Time))
+				Expect(again.ExpiresAt.Time).To(BeTemporally("==", lease.ExpiresAt.Time))
+
+				var leases int
+				Expect(dbConn.QueryRow(
+					`SELECT count(*) FROM hangar_read_leases WHERE read_lease_id = $1`,
+					string(id)).Scan(&leases)).To(Succeed())
+				Expect(leases).To(Equal(1))
+
+				// The same identity, a different nonce: another read wearing
+				// this one's lease id.
+				other := readLeaseRequest(id, claimID, ref)
+				Expect(other.GrantNonce).NotTo(Equal(request.GrantNonce))
+				_, err = admit(other)
+				Expect(err).To(MatchError(output.ErrConflict))
+				Expect(err.Error()).To(ContainSubstring("already protects another read"))
+			})
+
+			It("refuses to reactivate a released lease under its own identity", func() {
+				tx, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(tx)
+				Expect(repository.ReleaseReadLease(ctx, tx, lease)).To(Succeed())
+				Expect(tx.Commit()).To(Succeed())
+
+				_, err = admit(request)
+				Expect(err).To(MatchError(output.ErrConflict))
+				Expect(err.Error()).To(ContainSubstring("stays tombstoned"))
+			})
 		})
 	})
 
@@ -2261,6 +3111,169 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			Expect(tombstones).To(BeZero())
 		})
 
+		// ROLLBACK AT EVERY STATEMENT, not at the one an author happened to
+		// think of.
+		//
+		// The spec above injects its fault after both halves are already in the
+		// transaction, which is the easy half: a composition that only ever
+		// failed there could still leave a claim behind when it broke in the
+		// middle of the acquire. So this counts the statements the WHOLE
+		// composition runs -- the consumer's own writes and every statement
+		// inside AcquireClaim -- and then runs it once per statement, aborting
+		// AT that statement. Neither half may be visible afterwards, at any
+		// index.
+		//
+		// The count is discovered rather than written down: a number in the
+		// spec would go stale the first time the repository grew a statement,
+		// and the spec would keep passing over the shorter prefix it knew.
+		It("leaves neither half visible when it is rolled back at any statement", func() {
+			claimID := output.ClaimID(uuid.NewString())
+
+			compose := func(counter *countingTx, id output.ClaimID, binding string) error {
+				if _, err := counter.ExecContext(ctx, `
+					INSERT INTO opaque_consumer_bindings (binding_id, visibility, claim_id)
+					VALUES ($1, 'hidden', $2)`, binding, string(id)); err != nil {
+					return err
+				}
+				if err := repository.AcquireClaim(ctx, counter, output.ClaimAcquisition{
+					ProtocolVersion:   output.ProtocolVersion,
+					ClaimID:           id,
+					Ref:               ref,
+					ConsumerBindingID: output.OpaqueID(binding),
+					RequestedAt:       output.NewTimestamp(time.Now()),
+				}); err != nil {
+					return err
+				}
+				_, err := counter.ExecContext(ctx, `
+					UPDATE opaque_consumer_bindings SET visibility = 'published' WHERE binding_id = $1`,
+					binding)
+
+				return err
+			}
+
+			// One clean run, to learn how many statements there are.
+			var total int
+			func() {
+				tx, err := dbConn.Begin()
+				Expect(err).NotTo(HaveOccurred())
+				defer db.Rollback(tx)
+
+				counter := &countingTx{inner: tx}
+				Expect(compose(counter, claimID, "binding-count")).To(Succeed())
+				total = counter.count
+			}()
+			Expect(total).To(BeNumerically(">=", 4),
+				"the composition runs too few statements for this spec to be saying anything")
+
+			for at := 1; at <= total; at++ {
+				id := output.ClaimID(uuid.NewString())
+				binding := fmt.Sprintf("binding-at-%d", at)
+
+				// The transaction is closed by a defer inside its own scope.
+				// A failed assertion aborts the spec, and an aborted spec that
+				// left this transaction open would hold a lock on the
+				// consumer's own table until the cleanup DROP blocked on it --
+				// a spec that reported a hang rather than a failure.
+				func() {
+					tx, err := dbConn.Begin()
+					Expect(err).NotTo(HaveOccurred())
+					defer db.Rollback(tx)
+
+					counter := &countingTx{inner: tx, failAt: at}
+					err = compose(counter, id, binding)
+					Expect(err).To(HaveOccurred(),
+						"statement %d was injected with a fault and the composition still succeeded", at)
+					Expect(err.Error()).To(ContainSubstring("injected"),
+						"statement %d failed for a reason this spec did not cause: %v", at, err)
+				}()
+
+				var bindings int
+				Expect(dbConn.QueryRow(
+					`SELECT count(*) FROM opaque_consumer_bindings WHERE binding_id = $1`, binding).
+					Scan(&bindings)).To(Succeed())
+				Expect(bindings).To(BeZero(),
+					"the consumer's binding survived a rollback at statement %d", at)
+
+				var claims int
+				Expect(dbConn.QueryRow(`SELECT count(*) FROM hangar_claims WHERE claim_id = $1`,
+					string(id)).Scan(&claims)).To(Succeed())
+				Expect(claims).To(BeZero(),
+					"a Hangar claim -- active or tombstoned -- survived a rollback at statement %d", at)
+			}
+
+			Expect(countActiveClaims(ref)).To(BeZero())
+		})
+
+		// The arrival inversion, with a consumer's own binding in it.
+		//
+		// The claimant-versus-reclaimer specs above prove which side wins. This
+		// proves the thing AC 10 actually asks for and they cannot say: that
+		// the loser leaves no DANGLING BINDING. A consumer whose Hangar half
+		// failed and whose own half committed would have published a reference
+		// to content nothing protects, which is exactly the outcome the shared
+		// transaction exists to make impossible.
+		It("leaves no dangling binding whichever of the claimant and the reclaimer arrives first", func() {
+			// Reclaimer first: the consumer loses, and takes its own binding
+			// down with it.
+			reclaimer, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(reclaimer)
+			Expect(repository.AdmitReclaim(ctx, reclaimer, ref, uuid.NewString(), 1,
+				output.MinLeaseTerm)).To(Succeed())
+			Expect(reclaimer.Commit()).To(Succeed())
+
+			loser, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(loser)
+			lateID := output.ClaimID(uuid.NewString())
+			_, err = loser.Exec(`
+				INSERT INTO opaque_consumer_bindings (binding_id, visibility, claim_id)
+				VALUES ('binding-late', 'hidden', $1)`, string(lateID))
+			Expect(err).NotTo(HaveOccurred())
+			err = acquire(loser, lateID, ref, "binding-late")
+			Expect(err).To(MatchError(output.ErrConflict))
+			Expect(err.Error()).To(ContainSubstring("reclaiming"))
+			Expect(loser.Rollback()).To(Succeed())
+
+			var dangling int
+			Expect(dbConn.QueryRow(
+				`SELECT count(*) FROM opaque_consumer_bindings WHERE binding_id = 'binding-late'`).
+				Scan(&dangling)).To(Succeed())
+			Expect(dangling).To(BeZero(),
+				"the consumer's binding survived a claim the reclaimer had already won")
+			Expect(lifecycleState(ref)).To(Equal("reclaiming"))
+
+			// Claimant first, on a second generation: the consumer wins, its
+			// binding is there, and the reclaimer rechecks under the lock and
+			// skips.
+			_, second := publish(hangarDigest(21), 1725830823000021)
+
+			winner, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(winner)
+			earlyID := output.ClaimID(uuid.NewString())
+			_, err = winner.Exec(`
+				INSERT INTO opaque_consumer_bindings (binding_id, visibility, claim_id)
+				VALUES ('binding-early', 'hidden', $1)`, string(earlyID))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(acquire(winner, earlyID, second, "binding-early")).To(Succeed())
+			Expect(winner.Commit()).To(Succeed())
+
+			late, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(late)
+			err = repository.AdmitReclaim(ctx, late, second, uuid.NewString(), 1, output.MinLeaseTerm)
+			Expect(err).To(MatchError(output.ErrConflict))
+			Expect(err.Error()).To(ContainSubstring("1 claim(s)"))
+			Expect(late.Rollback()).To(Succeed())
+
+			visibility, claim := binding("binding-early")
+			Expect(visibility).To(Equal("hidden"))
+			Expect(claim).To(Equal(string(earlyID)))
+			Expect(countActiveClaims(second)).To(Equal(1))
+			Expect(lifecycleState(second)).To(Equal("registered"))
+		})
+
 		It("refuses the consumer's own prefix being skipped", func() {
 			_, err := db.HangarConsumerPrefixHeld("   ")
 			Expect(err).To(MatchError(output.ErrIncomplete))
@@ -2308,3 +3321,42 @@ func hangarLockedRelations(tx db.Tx) []string {
 
 	return relations
 }
+
+// countingTx counts the statements a composition runs, and can fail at any one
+// of them.
+//
+// It is the only honest way to say "rollback at EVERY statement": the
+// composition's statements are not all the spec's -- most of them are inside
+// AcquireClaim -- so a spec that injected its fault between the calls it can
+// see would be asserting about three boundaries out of a dozen. Counting first
+// and injecting by index makes the assertion cover whatever the repository
+// currently does, and grow with it.
+//
+// The error is a plain one on purpose: what the spec checks is that the
+// composition fails and leaves nothing, not that a particular sentinel came
+// back out.
+type countingTx struct {
+	inner  db.Tx
+	count  int
+	failAt int
+}
+
+func (tx *countingTx) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	tx.count++
+	if tx.failAt == tx.count {
+		return nil, fmt.Errorf("injected fault at statement %d", tx.count)
+	}
+
+	return tx.inner.ExecContext(ctx, query, args...)
+}
+
+func (tx *countingTx) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	tx.count++
+	if tx.failAt == tx.count {
+		return nil, fmt.Errorf("injected fault at statement %d", tx.count)
+	}
+
+	return tx.inner.QueryContext(ctx, query, args...)
+}
+
+var _ output.Tx = (*countingTx)(nil)

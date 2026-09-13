@@ -1,7 +1,5 @@
 Feature: What the ATC binds in PostgreSQL when a consumer takes a published output
 
-  NOT RUN YET — see ../README.md. These scenarios are checked, not executed.
-
   Every check here is a PRODUCTION read rather than a raw SQL select, so a
   repository that writes the right row through the wrong API cannot pass. The
   database is the real scenario-scoped PostgreSQL the estate already runs
@@ -21,7 +19,7 @@ Feature: What the ATC binds in PostgreSQL when a consumer takes a published outp
     And the published tree is read back from the output bucket
     When the consumer binds the output inside its own transaction
     Then exactly 1 claim is recorded
-    And the claim protects generation 1
+    And the claim protects the published generation
 
   # The committed half is asserted FIRST, so the absence cannot pass on a
   # repository that never writes a claim; the count is `exactly one`.

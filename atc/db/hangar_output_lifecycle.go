@@ -2,10 +2,12 @@ package db
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/concourse/concourse/hangar"
@@ -549,10 +551,62 @@ func (repository *HangarOutputRepository) AcquireReadLease(ctx context.Context, 
 		return output.ReadLease{}, err
 	}
 
+	// The exact lifecycle, under the lock, before anything is written. Req 35
+	// admits a managed-output grant only for a REGISTERED MARKED generation
+	// whose lifecycle state is readable: a caller-supplied ref, a stale receipt
+	// or the ordinary strict-input path cannot reach this, and neither can a
+	// generation that reclamation has already admitted.
+	//
+	// The marker version is not read here: hangar_exact_lifecycles constrains
+	// it to the accepted version at the column, so a row with another one
+	// cannot exist and a check would be code no state can reach. What CAN
+	// differ is the marker on the object the stat just saw, and
+	// ReadLeaseRequest.Validate refuses that before this transaction opens.
+	var state string
+	var metageneration, epoch int64
+	if err := hangarQueryRow(ctx, tx, `
+		SELECT state, metageneration, activation_epoch
+		FROM hangar_exact_lifecycles WHERE id = $1`,
+		[]any{lifecycle}, &state, &metageneration, &epoch); err != nil {
+		return output.ReadLease{}, err
+	}
+	if state != "registered" && state != "adopted" {
+		return output.ReadLease{}, fmt.Errorf("%w: %s/%s/%d is %s; a managed read is granted only "+
+			"against a readable registered or adopted generation", output.ErrConflict,
+			request.Ref.Scope, request.Ref.Digest, request.Ref.Generation, state)
+	}
+	if int64(request.ActivationEpoch) != epoch {
+		return output.ReadLease{}, fmt.Errorf("%w: the read names epoch %d and %s/%s/%d was "+
+			"registered under epoch %d", output.ErrConflict, request.ActivationEpoch,
+			request.Ref.Scope, request.Ref.Digest, request.Ref.Generation, epoch)
+	}
+
+	// And the stat, revalidated against the durable row it claims to describe.
+	// The stat itself ran outside these locks -- it is a network call and no
+	// lock is held across one -- so what makes it evidence is this comparison
+	// and its freshness, both decided on the DATABASE clock.
+	if request.StatProof.Metageneration != metageneration {
+		return output.ReadLease{}, fmt.Errorf("%w: the stat observed metageneration %d and the "+
+			"registered generation is at %d; the object at that key is not the one this lifecycle "+
+			"records", output.ErrConflict, request.StatProof.Metageneration, metageneration)
+	}
+	if err := hangarStatProofFresh(ctx, tx, request.StatObservedAt); err != nil {
+		return output.ReadLease{}, err
+	}
+
+	// The absence of a claim and the failure to ask are different answers, and
+	// wrapping both as ErrNotFound told a caller "there is no claim" when what
+	// happened was that the database could not be reached. A consumer reads
+	// that as "my binding is gone" and gives up; the honest answer sends it
+	// back to try again.
 	var released sql.NullTime
 	if err := hangarQueryRow(ctx, tx, `
 		SELECT released_at FROM hangar_claims WHERE claim_id = $1 AND lifecycle_id = $2`,
 		[]any{string(request.ClaimID), lifecycle}, &released); err != nil {
+		if !errors.Is(err, output.ErrNotFound) {
+			return output.ReadLease{}, err
+		}
+
 		return output.ReadLease{}, fmt.Errorf("%w: no claim %s protects %s/%s/%d; a managed-output "+
 			"grant needs at least one active claim", output.ErrNotFound, request.ClaimID,
 			request.Ref.Scope, request.Ref.Digest, request.Ref.Generation)
@@ -562,27 +616,67 @@ func (repository *HangarOutputRepository) AcquireReadLease(ctx context.Context, 
 			output.ErrConflict, request.ClaimID)
 	}
 
-	interval, err := hangarLeaseInterval(output.LeaseTermFor(request.MaterializationTimeout))
+	// The admitted term, derived once and STORED, because a renewal grants one
+	// of them and the row is the only place that length can come from later.
+	term := output.LeaseTermFor(request.MaterializationTimeout)
+	interval, err := hangarLeaseInterval(term)
 	if err != nil {
 		return output.ReadLease{}, err
 	}
 
-	var granted, expires time.Time
-	var fence int64
-	if err := hangarQueryRow(ctx, tx, `
+	// Idempotent on the identity, and a conflict for different facts.
+	//
+	// A repeat is a RETRY, not a renewal: the lease id and the nonce are the
+	// caller's, generated before the attempt, so a caller whose commit answer
+	// was lost asks again with the same ones. Advancing the fence or the expiry
+	// there would hand the retry a different lease than the one that may
+	// already be committed, and requirement 37's byte-identical re-mint would
+	// be impossible to honour. Extending a live lease is RenewReadLease's, and
+	// it is a different question asked by a different actor.
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO hangar_read_leases
-			(read_lease_id, claim_id, lifecycle_id, activation_epoch, lease_fence, expires_at)
-		VALUES ($1, $2, $3, $4, 1, now() + $5::interval)
-		ON CONFLICT (read_lease_id) DO UPDATE
-		SET renewed_at = now(),
-		    expires_at = now() + $5::interval,
-		    lease_fence = hangar_read_leases.lease_fence + 1
-		RETURNING granted_at, expires_at, lease_fence`,
-		[]any{
-			string(request.ReadLeaseID), string(request.ClaimID), lifecycle,
-			int64(request.ActivationEpoch), interval,
-		}, &granted, &expires, &fence); err != nil {
+			(read_lease_id, claim_id, lifecycle_id, activation_epoch, lease_fence, expires_at,
+			 lease_term_seconds, grant_nonce, destination_handle, destination_volume,
+			 stat_metageneration, stat_marker_version, stat_observed_at)
+		VALUES ($1, $2, $3, $4, 1, now() + $5::interval, $6, $7, $8, $9, $10, $11, $12)
+		ON CONFLICT (read_lease_id) DO NOTHING`,
+		string(request.ReadLeaseID), string(request.ClaimID), lifecycle,
+		int64(request.ActivationEpoch), interval, int(term.Round(time.Second).Seconds()),
+		request.GrantNonce, request.Destination.Handle, request.Destination.Volume,
+		request.StatProof.Metageneration, request.StatProof.Marker.Version,
+		request.StatObservedAt.Time,
+	); err != nil {
+		return output.ReadLease{}, hangarConflict(err)
+	}
+
+	var (
+		existingClaim, existingNonce, existingHandle, existingVolume string
+		existingLifecycle, existingEpoch, fence                      int64
+		granted, expires                                             time.Time
+		leaseReleased                                                sql.NullTime
+	)
+	if err := hangarQueryRow(ctx, tx, `
+		SELECT claim_id, lifecycle_id, activation_epoch, lease_fence, granted_at, expires_at,
+		       released_at, grant_nonce, destination_handle, destination_volume
+		FROM hangar_read_leases WHERE read_lease_id = $1`,
+		[]any{string(request.ReadLeaseID)},
+		&existingClaim, &existingLifecycle, &existingEpoch, &fence, &granted, &expires,
+		&leaseReleased, &existingNonce, &existingHandle, &existingVolume); err != nil {
 		return output.ReadLease{}, err
+	}
+	if leaseReleased.Valid {
+		return output.ReadLease{}, fmt.Errorf("%w: read lease %s was released at %s and stays "+
+			"tombstoned; a released reader does not reactivate", output.ErrConflict,
+			request.ReadLeaseID, leaseReleased.Time)
+	}
+	if existingClaim != string(request.ClaimID) || existingLifecycle != lifecycle ||
+		existingEpoch != int64(request.ActivationEpoch) ||
+		existingNonce != request.GrantNonce ||
+		existingHandle != request.Destination.Handle ||
+		existingVolume != request.Destination.Volume {
+		return output.ReadLease{}, fmt.Errorf("%w: read lease %s already protects another read; "+
+			"reuse of a lease identity for different facts is a conflict", output.ErrConflict,
+			request.ReadLeaseID)
 	}
 
 	return output.ReadLease{
@@ -599,27 +693,58 @@ func (repository *HangarOutputRepository) AcquireReadLease(ctx context.Context, 
 
 // RenewReadLease extends the reader's authority while work continues. Work may
 // only begin, or continue, with enough of the lease left to finish inside it.
+//
+// ONE TERM FROM NOW, and the term is the row's. Deriving it from
+// `ExpiresAt - GrantedAt` of the lease being renewed compounds: expires_at is
+// what the previous renewal moved and granted_at never moves, so the k-th
+// renewal would be k-1 intervals longer than the first and an abandoned reader
+// would pin its generation for far longer than the term it was admitted under.
+// Requirement 36 names one term, and lease_term_seconds is where it lives.
+//
+// The row's own state is checked HERE rather than left to the caller. The one
+// production caller does run ValidateReadLease first, which refuses an expired
+// lease -- but this method is on the repository contract for any caller, and a
+// renewal that resurrected an expired lease would re-pin a generation recovery
+// had already released. The lifecycle join is the same rule AcquireReadLease
+// admits under: a generation recorded missing or conflicted is not one a reader
+// may keep protecting.
 func (repository *HangarOutputRepository) RenewReadLease(ctx context.Context, tx output.Tx, lease output.ReadLease) (output.ReadLease, error) {
 	if err := lease.Validate(); err != nil {
 		return output.ReadLease{}, err
 	}
 
-	interval, err := hangarLeaseInterval(lease.ExpiresAt.Sub(lease.GrantedAt.Time))
-	if err != nil {
+	// The suffix, for the one row this writes. Requirement 33 and "lock order
+	// is an API, not a convention" put grant and read-lease work inside one
+	// complete suffix, and a bare UPDATE takes the row at the write's own
+	// moment instead. The deferred hangar_reclaim_exclusion trigger does catch
+	// a renewal racing a reclaim admission -- each commit's trigger sees the
+	// other's committed row and the second one rolls back -- but that is the
+	// schema's doing and not this transaction's, and a rule that holds by
+	// accident is one the next statement breaks.
+	if _, err := LockHangarSuffix(ctx, tx, repository.prefix, HangarLockRequest{
+		ReadLeases: []output.ReadLeaseID{lease.ReadLeaseID},
+	}); err != nil {
 		return output.ReadLease{}, err
 	}
 
 	var expires time.Time
 	var fence int64
 	if err := hangarQueryRow(ctx, tx, `
-		UPDATE hangar_read_leases
-		SET renewed_at = now(), expires_at = now() + $2::interval
-		WHERE read_lease_id = $1 AND released_at IS NULL AND lease_fence = $3
-		RETURNING expires_at, lease_fence`,
-		[]any{string(lease.ReadLeaseID), interval, int64(lease.LeaseFence)},
+		UPDATE hangar_read_leases r
+		SET renewed_at = now(),
+		    expires_at = now() + make_interval(secs => r.lease_term_seconds)
+		WHERE r.read_lease_id = $1
+		  AND r.released_at IS NULL
+		  AND r.expires_at > now()
+		  AND EXISTS (
+			SELECT 1 FROM hangar_exact_lifecycles l
+			WHERE l.id = r.lifecycle_id AND l.state IN ('registered', 'adopted'))
+		RETURNING r.expires_at, r.lease_fence`,
+		[]any{string(lease.ReadLeaseID)},
 		&expires, &fence); err != nil {
-		return output.ReadLease{}, fmt.Errorf("%w: read lease %s is released, expired or held at "+
-			"another fence", output.ErrConflict, lease.ReadLeaseID)
+		return output.ReadLease{}, fmt.Errorf("%w: read lease %s is released, expired, or "+
+			"protects a generation that is no longer readable",
+			output.ErrConflict, lease.ReadLeaseID)
 	}
 
 	renewed := lease
@@ -634,6 +759,11 @@ func (repository *HangarOutputRepository) RenewReadLease(ctx context.Context, tx
 // resurrection.
 func (repository *HangarOutputRepository) ReleaseReadLease(ctx context.Context, tx output.Tx, lease output.ReadLease) error {
 	if err := lease.ReadLeaseID.Validate(); err != nil {
+		return err
+	}
+	if _, err := LockHangarSuffix(ctx, tx, repository.prefix, HangarLockRequest{
+		ReadLeases: []output.ReadLeaseID{lease.ReadLeaseID},
+	}); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -681,7 +811,7 @@ func (repository *HangarOutputRepository) AdmitReclaim(ctx context.Context, tx o
 		       (SELECT count(*) FROM hangar_claims
 		         WHERE lifecycle_id = l.id AND released_at IS NULL),
 		       (SELECT count(*) FROM hangar_read_leases
-		         WHERE lifecycle_id = l.id AND released_at IS NULL),
+		         WHERE lifecycle_id = l.id AND released_at IS NULL AND expires_at > now()),
 		       (SELECT count(*) FROM hangar_logical_reservations
 		         WHERE scope = l.scope AND digest = l.digest AND state = 'unresolved_generation')
 		FROM hangar_exact_lifecycles l WHERE l.id = $1`,
@@ -735,4 +865,313 @@ func (repository *HangarOutputRepository) RecordPolicySnapshot(ctx context.Conte
 	}
 
 	return nil
+}
+
+// hangarStatProofFresh asks the DATABASE whether an observation is still fresh.
+//
+// A node's own clock is never the authority here, for the same reason it is
+// never the authority for a lease: a drifting node could otherwise present an
+// hour-old stat as fresh, and freshness is the whole of what a stat proof is.
+// The comparison is a predicate rather than an age in seconds so that the
+// answer and the bound meet in one place instead of in Go arithmetic over a
+// number the database already knew how to compare.
+//
+// Two details that are not incidental. It reads clock_timestamp() and not
+// now(): now() is the TRANSACTION's start, and a stat taken legitimately after
+// the transaction opened would be "in the future" by it. And the window is
+// symmetric -- the observation must be within the same bound on either side --
+// because the ATC and the database are different hosts and a few milliseconds
+// of NTP skew must not be a refusal, while an observation dated minutes ahead
+// is the same broken clock a stale one is.
+func hangarStatProofFresh(ctx context.Context, tx output.Tx, observed output.Timestamp) error {
+	var future, stale bool
+	if err := hangarQueryRow(ctx, tx, `
+		SELECT $1::timestamptz > clock_timestamp() + $2::interval,
+		       $1::timestamptz < clock_timestamp() - $2::interval`,
+		[]any{observed.Time, hangarInterval(output.MaxStatProofAge)}, &future, &stale); err != nil {
+		return err
+	}
+	if future {
+		return fmt.Errorf("%w: the admitting stat is dated more than %s ahead of the database "+
+			"clock", output.ErrIncomplete, output.MaxStatProofAge)
+	}
+	if stale {
+		return fmt.Errorf("%w: the admitting stat is older than %s on the database clock; an "+
+			"observation cannot stand in for the object store indefinitely", output.ErrTimeout,
+			output.MaxStatProofAge)
+	}
+
+	return nil
+}
+
+// LoadReadLease reads a committed lease back by identity.
+//
+// It is what the minter calls AFTER the transaction commits, and what recovery
+// calls after an ambiguous one. Loading rather than remembering is the point:
+// an ambiguous commit is answered by asking the database what it has, and a
+// mint over the caller's idea of the lease would be a grant for a row that may
+// never have existed.
+func (repository *HangarOutputRepository) LoadReadLease(ctx context.Context, tx output.Tx, id output.ReadLeaseID) (output.ReadLeaseRecord, error) {
+	if err := id.Validate(); err != nil {
+		return output.ReadLeaseRecord{}, err
+	}
+
+	var (
+		claim, scope, digest, nonce, handle, volume string
+		generation, fence, epoch                    int64
+		granted, expires                            time.Time
+		released                                    sql.NullTime
+	)
+	if err := hangarQueryRow(ctx, tx, `
+		SELECT r.claim_id, l.scope, l.digest, l.generation, r.lease_fence, r.activation_epoch,
+		       r.granted_at, r.expires_at, r.released_at,
+		       r.grant_nonce, r.destination_handle, r.destination_volume
+		FROM hangar_read_leases r
+		JOIN hangar_exact_lifecycles l ON l.id = r.lifecycle_id
+		WHERE r.read_lease_id = $1`,
+		[]any{string(id)},
+		&claim, &scope, &digest, &generation, &fence, &epoch,
+		&granted, &expires, &released, &nonce, &handle, &volume); err != nil {
+		return output.ReadLeaseRecord{}, err
+	}
+	if released.Valid {
+		return output.ReadLeaseRecord{}, fmt.Errorf("%w: read lease %s was released at %s",
+			output.ErrConflict, id, released.Time)
+	}
+
+	return output.ReadLeaseRecord{
+		Lease: output.ReadLease{
+			ProtocolVersion: output.ProtocolVersion,
+			ReadLeaseID:     id,
+			ClaimID:         output.ClaimID(claim),
+			Ref: hangar.TreeRef{
+				Scope: hangar.Scope(scope), Digest: hangar.Digest(digest), Generation: generation,
+			},
+			ActivationEpoch: hangarEpoch(epoch),
+			LeaseFence:      output.LeaseFence(fence),
+			GrantedAt:       output.NewTimestamp(granted),
+			ExpiresAt:       output.NewTimestamp(expires),
+		},
+		Destination: output.ReadDestination{Handle: handle, Volume: volume},
+		GrantNonce:  nonce,
+	}, nil
+}
+
+// ValidateReadLease answers the materializing daemon's independent question.
+//
+// Every field the grant carried is compared against the committed row, and the
+// row's own state -- released, expired, superseded by a later fence, or beside
+// a lifecycle that reclamation has admitted -- is what decides. A valid HMAC
+// bound to any of those authorizes nothing, and this is the method that says so.
+//
+// The remaining term is measured in SQL. Requirement 36 lets work begin only
+// with the operation's timeout plus two minutes left, and a daemon that
+// measured that against its own clock would be deciding, on a node, a question
+// the database owns.
+func (repository *HangarOutputRepository) ValidateReadLease(ctx context.Context, tx output.Tx, validation output.ReadLeaseValidation) (output.ReadLeaseRecord, error) {
+	if err := validation.Validate(); err != nil {
+		return output.ReadLeaseRecord{}, err
+	}
+
+	record, err := repository.LoadReadLease(ctx, tx, validation.ReadLeaseID)
+	if err != nil {
+		return output.ReadLeaseRecord{}, err
+	}
+
+	// THERE IS NO FENCE CHECK, and its absence is a fact about the plane rather
+	// than an omission.
+	//
+	// hangar_read_leases.lease_fence has no writer: AcquireReadLease inserts 1
+	// and nothing anywhere moves it. A retry of an ambiguous commit deliberately
+	// does not advance it -- requirement 37 wants a byte-identical re-mint, and
+	// a moving fence would make that impossible -- and Phase 7's takeover works
+	// on the CAPTURE fence, a different column on a different table. So a
+	// comparison here could only ever be a value checked against itself, which
+	// is the kind of check that passes for a reason nobody can state.
+	//
+	// The column stays, with a note at the migration, because a column with no
+	// reader is cheaper than renumbering a migration; the grant no longer binds
+	// one. What supersession this lease HAS is the released tombstone, which
+	// LoadReadLease above has already refused.
+	if record.Lease.ClaimID != validation.ClaimID ||
+		record.Lease.Ref != validation.Ref ||
+		record.Lease.ActivationEpoch != validation.ActivationEpoch ||
+		record.Destination != validation.Destination ||
+		subtle.ConstantTimeCompare([]byte(record.GrantNonce), []byte(validation.GrantNonce)) != 1 {
+		return output.ReadLeaseRecord{}, fmt.Errorf("%w: the grant presented for read lease %s "+
+			"does not describe the lease this transaction committed", output.ErrUnauthorized,
+			validation.ReadLeaseID)
+	}
+
+	// The claim is deliberately NOT rechecked here.
+	//
+	// Requirement 36 and AC 13 are explicit: reclaim admission is refused while
+	// any read lease is active EVEN IF the domain releases its last claim, and
+	// releasing the last claim during a transfer must not delete the bytes out
+	// from under a reader. A claim is what admits a grant; the lease is what
+	// protects the read once it has one. A daemon that refused to stage because
+	// the consumer had already unbound would be enforcing the opposite rule.
+	// There is no reclaim check here, and its absence is the schema's doing
+	// rather than an omission. hangar_reclaim_exclusion refuses an admitted
+	// reclaim beside an active read lease and refuses an active read lease
+	// beside an admitted reclaim, so the two states cannot coexist: a lease a
+	// reclaimer got past was released first, and LoadReadLease above has
+	// already answered that. A count here would be code no state can reach.
+	var expired, tooShort bool
+	if err := hangarQueryRow(ctx, tx, `
+		SELECT r.expires_at <= now(), r.expires_at < now() + $2::interval
+		FROM hangar_read_leases r WHERE r.read_lease_id = $1`,
+		[]any{string(validation.ReadLeaseID), hangarInterval(validation.RequiredRemaining)},
+		&expired, &tooShort); err != nil {
+		return output.ReadLeaseRecord{}, err
+	}
+	if expired {
+		return output.ReadLeaseRecord{}, fmt.Errorf("%w: read lease %s has expired on the "+
+			"database clock", output.ErrTimeout, validation.ReadLeaseID)
+	}
+	if tooShort {
+		return output.ReadLeaseRecord{}, fmt.Errorf("%w: read lease %s has less than %s left and "+
+			"that is what the work needs; work begins only with the operation's timeout plus %s "+
+			"remaining", output.ErrTimeout, validation.ReadLeaseID, validation.RequiredRemaining,
+			output.LeaseStartMargin)
+	}
+	return record, nil
+}
+
+// ReadClaims reports every claim recorded for one exact ref, active and
+// tombstoned, in acquisition order.
+//
+// It takes no lock. It is a read for a caller that wants to know what is there,
+// not a step in a transaction that is about to decide something -- and a read
+// that took the exact-lifecycle lock would make asking the question serialize
+// against every claimant and reclaimer of that generation.
+func (repository *HangarOutputRepository) ReadClaims(ctx context.Context, tx output.Tx, ref hangar.TreeRef) ([]output.ClaimRecord, error) {
+	if err := ref.Validate(); err != nil {
+		return nil, err
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT c.claim_id, c.consumer_binding_id, c.acquired_at, c.released_at
+		FROM hangar_claims c
+		JOIN hangar_exact_lifecycles l ON l.id = c.lifecycle_id
+		WHERE l.scope = $1 AND l.digest = $2 AND l.generation = $3
+		ORDER BY c.acquired_at, c.claim_id`,
+		string(ref.Scope), string(ref.Digest), ref.Generation)
+	if err != nil {
+		return nil, hangarConflict(err)
+	}
+	defer Close(rows)
+
+	var claims []output.ClaimRecord
+	for rows.Next() {
+		var (
+			id, binding string
+			acquired    time.Time
+			released    sql.NullTime
+		)
+		if err := rows.Scan(&id, &binding, &acquired, &released); err != nil {
+			return nil, err
+		}
+		record := output.ClaimRecord{
+			ClaimID:           output.ClaimID(id),
+			Ref:               ref,
+			ConsumerBindingID: output.OpaqueID(binding),
+			AcquiredAt:        output.NewTimestamp(acquired),
+		}
+		if released.Valid {
+			at := output.NewTimestamp(released.Time)
+			record.ReleasedAt = &at
+		}
+		claims = append(claims, record)
+	}
+
+	return claims, rows.Err()
+}
+
+// CloseAbandonedReadLeases releases read leases whose term has run out on the
+// database clock.
+//
+// It is recovery, and it is the reason an abandoned reader does not pin a
+// generation forever: a materializer that died mid-staging leaves an unreleased
+// lease, and requirement 46's "no active read lease" plus AC 13's "closes or
+// safely EXPIRES" both mean the same thing about it. Nothing here guesses -- the
+// only leases it touches are ones the database itself says have expired, and it
+// closes them by writing the release the daemon never got to write, so the
+// tombstone that prevents resurrection exists either way.
+//
+// It is bounded, like every other worker pass in this plane, and it reports how
+// many it closed so a caller can tell "nothing was owed" from "the batch was
+// full".
+func (repository *HangarOutputRepository) CloseAbandonedReadLeases(ctx context.Context, tx output.Tx, limit int) (int, error) {
+	if limit <= 0 {
+		return 0, fmt.Errorf("%w: a recovery pass is bounded; %d is not a batch",
+			output.ErrIncomplete, limit)
+	}
+
+	// The candidates first, unlocked, because a lock set has to be derived from
+	// identities and there is no identity until something has been selected.
+	rows, err := tx.QueryContext(ctx, `
+		SELECT read_lease_id FROM hangar_read_leases
+		WHERE released_at IS NULL AND expires_at <= now()
+		ORDER BY expires_at
+		LIMIT $1`, limit)
+	if err != nil {
+		return 0, hangarConflict(err)
+	}
+	var candidates []output.ReadLeaseID
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+
+			return 0, err
+		}
+		candidates = append(candidates, output.ReadLeaseID(id))
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+
+		return 0, hangarConflict(err)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	if len(candidates) == 0 {
+		return 0, nil
+	}
+
+	// Then the suffix, over exactly those identities, in the one order this
+	// system has -- the helper sorts them, so two passes given overlapping
+	// batches take them the same way round.
+	if _, err := LockHangarSuffix(ctx, tx, repository.prefix, HangarLockRequest{
+		ReadLeases: candidates,
+	}); err != nil {
+		return 0, err
+	}
+
+	// And the write, with the predicate REPEATED under the lock. The candidate
+	// read ran before the rows were held, so a lease that was renewed in
+	// between must not be closed by a decision taken from the stale answer --
+	// which is also the only reason the count this returns is the UPDATE's
+	// rather than the SELECT's.
+	placeholders := make([]string, 0, len(candidates))
+	closing := make([]any, 0, len(candidates))
+	for index, id := range candidates {
+		placeholders = append(placeholders, fmt.Sprintf("$%d", index+1))
+		closing = append(closing, string(id))
+	}
+	result, err := tx.ExecContext(ctx, fmt.Sprintf(`
+		UPDATE hangar_read_leases SET released_at = now()
+		WHERE read_lease_id IN (%s)
+		  AND released_at IS NULL AND expires_at <= now()`,
+		strings.Join(placeholders, ", ")), closing...)
+	if err != nil {
+		return 0, hangarConflict(err)
+	}
+	closed, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+
+	return int(closed), nil
 }
