@@ -34,6 +34,13 @@ type DefaultFactory struct {
 	// K8sDaemonClient is the DaemonClient used for probing daemon pods for
 	// cached resources. Shared across all workers.
 	K8sDaemonClient *jetbridge.DaemonClient
+
+	// K8sOutputControls resolves the output daemon's control API for the node
+	// an execution landed on. Nil unless the output plane is configured, and
+	// nil is the ordinary path: a worker with no resolver hands every
+	// container a nil one, and nothing in the exact-execution path is
+	// reachable without an ExecutionControl on the spec.
+	K8sOutputControls jetbridge.OutputControlResolver
 }
 
 func (f DefaultFactory) NewWorker(logger lager.Logger, dbWorker db.Worker) runtime.Worker {
@@ -51,6 +58,9 @@ func (f DefaultFactory) newK8sWorker(dbWorker db.Worker) *jetbridge.Worker {
 	}
 	if f.K8sDaemonClient != nil {
 		w.SetDaemonClient(f.K8sDaemonClient)
+	}
+	if f.K8sOutputControls != nil {
+		w.SetOutputControls(f.K8sOutputControls)
 	}
 	return w
 }

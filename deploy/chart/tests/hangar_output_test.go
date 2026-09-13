@@ -233,6 +233,37 @@ func TestBaseControlRendersWithoutTheOutputFacet(t *testing.T) {
 	}
 }
 
+// THE WEB NODE'S EPOCH RENDERED ONLY UNDER THE CAPTURE FACET.
+//
+// Every control capability the ATC mints -- base or capture -- carries the
+// activation epoch in its claims, and a capability claiming zero is refused
+// before it is signed. This chart's own validation has always required
+// hangarOutput.activationEpoch under the BASE switch, and then passed it to the
+// web node only when the capture facet was on: a base-only deployment rendered
+// a control plane whose every call to the daemon would fail at mint time. The
+// value was demanded and not handed over.
+func TestTheWebNodeIsGivenTheActivationEpochUnderTheBaseFacet(t *testing.T) {
+	web := objectNamed(t, renderBaseControl(t), "Deployment", "-web")
+
+	if !strings.Contains(web.body, "--kubernetes-hangar-output-activation-epoch=") {
+		t.Error("a base-control-only web node is given no activation epoch, so every control " +
+			"capability it mints names epoch zero and is refused before it is signed")
+	}
+	// And the capture facet's own flags are still the capture facet's: this
+	// moved one line, and a test that only asked for the epoch would pass
+	// against a base render that had quietly gained all of them.
+	for _, captureOnly := range []string{
+		"--kubernetes-hangar-output-receipt-keys=",
+		"--kubernetes-hangar-output-materialization-key=",
+		"--kubernetes-hangar-output-bucket=",
+	} {
+		if strings.Contains(web.body, captureOnly) {
+			t.Errorf("a base-control-only web node is given %s, which belongs to capture",
+				captureOnly)
+		}
+	}
+}
+
 // Output can never be ready without base control. The chart refuses the
 // configuration rather than rendering a daemon that would refuse itself at
 // startup: a render is what an operator reviews.

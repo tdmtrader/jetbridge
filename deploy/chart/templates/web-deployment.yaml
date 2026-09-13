@@ -213,10 +213,18 @@ spec:
             - --kubernetes-hangar-output-capture-deadline={{ .Values.hangarOutput.captureDeadline }}
             - --kubernetes-hangar-output-lease-term={{ .Values.hangarOutput.leaseTerm }}
             - --kubernetes-hangar-output-lease-renew-interval={{ .Values.hangarOutput.leaseRenewInterval }}
+            # THE EPOCH BELONGS TO THE BASE FACET, and it used to render only
+            # under the capture one. Every capability this node mints -- base
+            # or capture -- carries the activation epoch in its claims, and a
+            # capability claiming epoch zero is refused before it is signed. So
+            # a base-only deployment rendered a control plane whose every call
+            # would fail at mint time, while this chart's own validation
+            # already required hangarOutput.activationEpoch under the base
+            # switch: the value was demanded and then not passed on.
+            - --kubernetes-hangar-output-activation-epoch={{ int .Values.hangarOutput.activationEpoch }}
             {{- if .Values.hangarOutput.enabled }}
             - --kubernetes-hangar-output-receipt-keys=/etc/concourse/hangar-output/receipt-keys/receipt-keys.json
             - --kubernetes-hangar-output-materialization-key=/etc/concourse/hangar-output/materialize/materialize.key
-            - --kubernetes-hangar-output-activation-epoch={{ int .Values.hangarOutput.activationEpoch }}
             # The bucket and tenant reach web so the operator STATUS surface can
             # key a cursor by the same bucket the sweep does. They are server
             # configuration and never a request field: no task, consumer, path
