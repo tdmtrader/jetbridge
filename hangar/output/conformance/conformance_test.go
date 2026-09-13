@@ -294,6 +294,74 @@ func TestAnUnmarkedObjectIsATypedCollisionAndAMarkedOneStillDeduplicates(t *test
 	})
 }
 
+// A marker is a claim ABOUT bytes, and dedup checked the claim and never the
+// bytes.
+//
+// `classify` compared the marker's scope, the marker's digest, and that the
+// object had some size and some metageneration -- so an object whose BODY had
+// been replaced under the same marker metadata was deduplicated against and
+// registered, and the receipt then attested a generation whose contents are not
+// the tree the capture canonicalized. Req 23 lists corrupt metadata or body as
+// a typed collision "even if a weaker content check appears to match", and
+// "the marker says the right digest" is exactly that weaker check.
+//
+// Reaching it needs a writer on the output bucket, which the trust model puts
+// in the at-risk class. It is a cheap check regardless: the canonical size is
+// already in hand at every call site, and comparing it costs one field.
+//
+// The positive control is first: the same bytes at the right size deduplicate.
+func TestAnObjectWhoseBodyDoesNotMatchTheCaptureIsATypedCollision(t *testing.T) {
+	eachSubstrate(t, func(t *testing.T, tier substrate) {
+		ctx := context.Background()
+		namespace := namespaceFor(t, tier.bucket)
+		role, _ := publisherFor(t, tier, namespace)
+
+		digest := digestOf("44")
+		key, err := namespace.ObjectKey(digest)
+		if err != nil {
+			t.Fatalf("deriving the key: %v", err)
+		}
+		body := canonicalBytes("the tree this capture canonicalized")
+		marker := namespace.MarkerFor(otherReservation, digest, output.NewTimestamp(fixedInstant))
+		seed(t, tier, key, body, marker.Metadata())
+
+		object, err := role.EnsureObject(ctx,
+			reservationFor(t, namespace, testReservation, digest),
+			bytes.NewReader(body), int64(len(body)))
+		if err != nil {
+			t.Fatalf("publishing against identical bytes: %v", err)
+		}
+		if !object.Deduplicated {
+			t.Fatal("identical bytes under a correct marker did not deduplicate")
+		}
+
+		// And the same key, the same marker metadata, a different body. This
+		// is the lost-response path: the capture repeats its create, the store
+		// answers "already there", and what is there is not what it wrote.
+		replacedDigest := digestOf("55")
+		replacedKey, err := namespace.ObjectKey(replacedDigest)
+		if err != nil {
+			t.Fatalf("deriving the replaced key: %v", err)
+		}
+		replacedMarker := namespace.MarkerFor(otherReservation, replacedDigest,
+			output.NewTimestamp(fixedInstant))
+		seed(t, tier, replacedKey, canonicalBytes("somebody else's much longer body"),
+			replacedMarker.Metadata())
+
+		captured := canonicalBytes("short")
+		_, err = role.EnsureObject(ctx,
+			reservationFor(t, namespace, testReservation, replacedDigest),
+			bytes.NewReader(captured), int64(len(captured)))
+		if !errors.Is(err, output.ErrConflict) {
+			t.Fatalf("an object whose body is not this capture's tree was answered with %v, "+
+				"expected ErrConflict", err)
+		}
+		if !strings.Contains(err.Error(), "stored bytes") {
+			t.Errorf("the refusal does not name the size disagreement: %v", err)
+		}
+	})
+}
+
 func TestTheMarkerIsImmutableAtCreationAndThePublisherCannotChangeIt(t *testing.T) {
 	// This is a statement about the *type*, and it is checked by compilation
 	// rather than by a call: publisher.Handle offers a writer, a reader and a

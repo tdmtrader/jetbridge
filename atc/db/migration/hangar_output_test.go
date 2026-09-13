@@ -19,7 +19,7 @@ const (
 	hangarOutputPriorVersion = 1773105511
 )
 
-// The nineteen tables of the output plane, in the order the down migration
+// The twenty tables of the output plane, in the order the down migration
 // removes them. Named here so that a table added later without a test is a
 // visible omission rather than an invisible one.
 var hangarOutputTables = []string{
@@ -30,6 +30,7 @@ var hangarOutputTables = []string{
 	"hangar_capture_attempt_leases",
 	"hangar_no_capture_dispositions",
 	"hangar_pre_reservation_cancel_dispositions",
+	"hangar_capture_announcements",
 	"hangar_logical_reservations",
 	"hangar_exact_lifecycles",
 	"hangar_receipt_stat_challenges",
@@ -137,18 +138,31 @@ var _ = Describe("the Hangar output plane schema", func() {
 				 lifecycle_delete_rules, state)
 			VALUES (1, 'gs://output-bucket', 3, 'policy-hash-1', 0, 'safe')`)
 	}
+	// A predeclaration, and -- when it holds -- the reservation that hold binds
+	// to. The order is production's and the schema enforces it: an incarnation
+	// is reserved before the producing Pod exists, and a hold over an
+	// unreserved source is a producer writing into a directory nothing
+	// protects.
 	seedPredeclaration := func(handoff, lease, execution string, holdAcknowledged bool) {
 		GinkgoHelper()
-		hold := "NULL"
+		hold, reserved := "NULL", "NULL"
+		locator, incarnation, directory := "NULL", "NULL", "NULL"
 		if holdAcknowledged {
-			hold = "now()"
+			hold, reserved = "now()", "now()"
+			locator = "'node-a'"
+			incarnation = fmt.Sprintf(
+				`'{"execution_id":"%s","node_uid":"node-uid","handle_generation":1,"output":"result"}'`,
+				execution)
+			directory = fmt.Sprintf("'%s.1/result'", execution)
 		}
 		mustExec(database, fmt.Sprintf(`
 			INSERT INTO hangar_handoff_predeclarations
 				(handoff_id, source_lease_id, execution_id, execution_fence, output_name,
-				 activation_epoch, capture_deadline_at, hold_acknowledged_at)
-			VALUES ('%s', '%s', '%s', 1, 'result', 1, now() + interval '24 hours', %s)`,
-			handoff, lease, execution, hold))
+				 activation_epoch, capture_deadline_at, hold_acknowledged_at,
+				 reserved_locator, reserved_incarnation, reserved_directory, reserved_at)
+			VALUES ('%s', '%s', '%s', 1, 'result', 1, now() + interval '24 hours', %s,
+				%s, %s, %s, %s)`,
+			handoff, lease, execution, hold, locator, incarnation, directory, reserved))
 	}
 	// The Stage 2 commit as one transaction: the arbiter row and its single
 	// branch child, exactly as CommitCaptureReservation will write them.
@@ -484,6 +498,10 @@ var _ = Describe("the Hangar output plane schema", func() {
 				"handoff_id",
 				"hold_acknowledged_at",
 				"output_name",
+				"reserved_at",
+				"reserved_directory",
+				"reserved_incarnation",
+				"reserved_locator",
 				"source_lease_id",
 			))
 		})
@@ -578,7 +596,7 @@ var _ = Describe("the Hangar output plane schema", func() {
 					fmt.Sprintf(`
 						INSERT INTO hangar_pre_reservation_cancel_dispositions
 							(handoff_id, execution_id, activation_epoch, source_lease_id,
-							 hold_acknowledged, release_intent_id)
+							 source_reserved, release_intent_id)
 						VALUES ('%s', '%s', 1, '%s', true, '%s')`,
 						handoffID, executionID, sourceLeaseID, releaseIntentID))).
 					To(ContainSubstring("exclude one another permanently"))
@@ -590,7 +608,7 @@ var _ = Describe("the Hangar output plane schema", func() {
 						VALUES ('%s', 'no_capture')`, handoffID),
 					fmt.Sprintf(`INSERT INTO hangar_pre_reservation_cancel_dispositions
 						(handoff_id, execution_id, activation_epoch, source_lease_id,
-						 hold_acknowledged, release_intent_id)
+						 source_reserved, release_intent_id)
 						VALUES ('%s', '%s', 1, '%s', true, '%s')`,
 						handoffID, executionID, sourceLeaseID, releaseIntentID))).
 					To(ContainSubstring("carries the wrong branch record"))
@@ -641,53 +659,53 @@ var _ = Describe("the Hangar output plane schema", func() {
 					VALUES ('%s', 'pre_reservation_cancel')`, handoffID)
 			}
 
-			It("refuses an unheld cancellation carrying release fields", func() {
-				Expect(expectRefusal(database, "an unheld cancellation with a release intent",
+			It("refuses an unreserved cancellation carrying release fields", func() {
+				Expect(expectRefusal(database, "an unreserved cancellation with a release intent",
 					decide(),
 					fmt.Sprintf(`INSERT INTO hangar_pre_reservation_cancel_dispositions
 						(handoff_id, execution_id, activation_epoch, source_lease_id,
-						 hold_acknowledged, release_intent_id)
+						 source_reserved, release_intent_id)
 						VALUES ('%s', '%s', 1, '%s', false, '%s')`,
 						handoffID, executionID, sourceLeaseID, releaseIntentID))).
-					To(ContainSubstring("hangar_cancel_unheld_carries_no_release"))
+					To(ContainSubstring("hangar_cancel_unreserved_carries_no_release"))
 
-				expectAccepted(database, "an unheld cancellation closing with no daemon call",
+				expectAccepted(database, "an unreserved cancellation closing with no daemon call",
 					decide(),
 					fmt.Sprintf(`INSERT INTO hangar_pre_reservation_cancel_dispositions
 						(handoff_id, execution_id, activation_epoch, source_lease_id,
-						 hold_acknowledged, finalized_at)
+						 source_reserved, finalized_at)
 						VALUES ('%s', '%s', 1, '%s', false, now())`,
 						handoffID, executionID, sourceLeaseID))
 			})
 
-			It("refuses a held cancellation finalized without an exact release acknowledgement", func() {
-				Expect(expectRefusal(database, "a held cancellation finalized with no acknowledgement",
+			It("refuses a reserved cancellation finalized without an exact release acknowledgement", func() {
+				Expect(expectRefusal(database, "a reserved cancellation finalized with no acknowledgement",
 					decide(),
 					fmt.Sprintf(`INSERT INTO hangar_pre_reservation_cancel_dispositions
 						(handoff_id, execution_id, activation_epoch, source_lease_id,
-						 hold_acknowledged, release_intent_id, finalized_at)
+						 source_reserved, release_intent_id, finalized_at)
 						VALUES ('%s', '%s', 1, '%s', true, '%s', now())`,
 						handoffID, executionID, sourceLeaseID, releaseIntentID))).
-					To(ContainSubstring("hangar_cancel_held_finalizes_on_acknowledgement"))
+					To(ContainSubstring("hangar_cancel_reserved_finalizes_on_acknowledgement"))
 
-				expectAccepted(database, "a held cancellation finalized on its acknowledgement",
+				expectAccepted(database, "a reserved cancellation finalized on its acknowledgement",
 					decide(),
 					fmt.Sprintf(`INSERT INTO hangar_pre_reservation_cancel_dispositions
 						(handoff_id, execution_id, activation_epoch, source_lease_id,
-						 hold_acknowledged, release_intent_id, release_acknowledged_at,
+						 source_reserved, release_intent_id, release_acknowledged_at,
 						 release_acknowledgement, finalized_at)
 						VALUES ('%s', '%s', 1, '%s', true, '%s', now(), '{}', now())`,
 						handoffID, executionID, sourceLeaseID, releaseIntentID))
 			})
 
-			It("refuses a held cancellation with no release intent", func() {
-				Expect(expectRefusal(database, "a held cancellation with no release intent",
+			It("refuses a reserved cancellation with no release intent", func() {
+				Expect(expectRefusal(database, "a reserved cancellation with no release intent",
 					decide(),
 					fmt.Sprintf(`INSERT INTO hangar_pre_reservation_cancel_dispositions
-						(handoff_id, execution_id, activation_epoch, source_lease_id, hold_acknowledged)
+						(handoff_id, execution_id, activation_epoch, source_lease_id, source_reserved)
 						VALUES ('%s', '%s', 1, '%s', true)`,
 						handoffID, executionID, sourceLeaseID))).
-					To(ContainSubstring("hangar_cancel_held_records_intent"))
+					To(ContainSubstring("hangar_cancel_reserved_records_intent"))
 			})
 		})
 
@@ -992,6 +1010,36 @@ var _ = Describe("the Hangar output plane schema", func() {
 					UPDATE hangar_logical_reservations SET digest = '%s'
 					WHERE reservation_id = '%s'`, otherDigest, reservationID))).
 					To(ContainSubstring("cannot float to replacement content"))
+			})
+
+			// The takeover half. The resolution's own fence is the fence it was
+			// MADE at and is never rewritten, so a trigger that compared it to
+			// the current lease on every write refused the one write a new
+			// owner has to make: `RegisterReceipt` marks the row `registered`,
+			// and after an ATC restart anywhere past the resolution -- the
+			// upload included -- that mark raised at commit forever, leaving an
+			// object nobody could register and nobody could fail.
+			It("admits the registration mark by a later owner over an inherited resolution", func() {
+				seedLogicalReservation(reservationID, sampleDigest, 4)
+
+				mustExec(database, fmt.Sprintf(`
+					UPDATE hangar_capture_attempt_leases SET capture_fence = 5
+					WHERE reservation_id = '%s'`, reservationID))
+
+				expectAccepted(database, "a registration mark under the takeover's fence",
+					fmt.Sprintf(`UPDATE hangar_logical_reservations SET state = 'registered'
+						WHERE reservation_id = '%s'`, reservationID))
+			})
+
+			// And the fence is still enforced where it is the act: a statement
+			// that moves the resolution's own fence backwards is refused.
+			It("refuses a resolution whose fence is moved to a superseded one", func() {
+				seedLogicalReservation(reservationID, sampleDigest, 4)
+
+				Expect(expectRefusal(database, "a resolution refenced to a superseded fence",
+					fmt.Sprintf(`UPDATE hangar_logical_reservations SET capture_fence = 3
+						WHERE reservation_id = '%s'`, reservationID))).
+					To(ContainSubstring("a stale owner may not seal, publish, sign, register or finalize"))
 			})
 		})
 

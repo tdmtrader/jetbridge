@@ -425,15 +425,63 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		stubMap[HeldSource, FinishWitnessed](
+		// Cancellation is a REQUEST and not a row. What the state carries is
+		// the question; which branch the arbiter then wins is the plane's
+		// answer, and no phrase here decides it.
+		//
+		// It takes a WITNESSED step rather than a held source, and that is the
+		// whole point of the phrase: Req 11 says cancellation before Stage 2
+		// selects only pre_reservation_cancel, never no_capture, and the only
+		// way a scenario can be false against that "never" is for the producer
+		// to have a non-success outcome the arbiter could confuse it with. A
+		// cancellation with no witness beside it is answered
+		// `pre_reservation_cancel` by an arbiter that asks the outcome FIRST
+		// too, so it pins "cancellation is honoured" and not the branch order.
+		brine.DefineMap[FinishWitnessed, FinishWitnessed](
 			"the step is cancelled before Stage 2",
-			"Phase 5 Green",
-			"the pre_reservation_cancel arm of the disposition arbiter"),
+			func(in FinishWitnessed, _ brine.Params, _ *brine.Recorder) (FinishWitnessed, error) {
+				in.Cancelled = true
 
-		stubMap[CaptureDraft, FinishWitnessed](
+				return in, nil
+			},
+		),
+
+		// The absence: a handoff cancelled with no hold ever acknowledged.
+		//
+		// It still RESERVED, because a reservation exists before the producing
+		// Pod does -- so there is a directory on a node to release, and the
+		// scenario above is its control. The reservation is taken here rather
+		// than in a Given because this is the one chain where the control init
+		// never runs.
+		brine.DefineMap[CaptureDraft, FinishWitnessed](
 			"the handoff is cancelled with no acknowledged hold",
-			"Phase 5 Green",
-			"the cancellation path that closes a handoff which never established a hold"),
+			func(in CaptureDraft, _ brine.Params, _ *brine.Recorder) (FinishWitnessed, error) {
+				reserving := in.Daemon.capture("reserve-incarnation",
+					"/capture/v1/reserve-incarnation", in.Admission.Execution, in.Admission)
+				reserved, err := decodeControl[hangaroutput.ReservedIncarnation](reserving)
+				if err != nil {
+					return FinishWitnessed{}, fmt.Errorf("reserving the incarnation: %w", err)
+				}
+
+				source := HeldSource{
+					Draft: HeldDraft{
+						Handle: string(in.Admission.HandoffID),
+						Output: in.Output,
+						Daemon: in.Daemon,
+					},
+					DaemonURL:   in.Daemon.Output.URL,
+					StorageRoot: in.Daemon.Output.Root,
+					Incarnation: reserved.Incarnation,
+					Reserved:    reserved,
+					Fence:       hangaroutput.CaptureFence(in.Admission.Execution.Fence),
+					Execution:   in.Admission.Execution,
+					Admission:   in.Admission,
+					PodUID:      in.PodUID,
+				}
+
+				return FinishWitnessed{Source: source, Cancelled: true}, nil
+			},
+		),
 
 		// Checks over a held source. The daemon's own status line is spelled
 		// "the Hangar daemon answers" rather than reusing the durable tier's
@@ -511,11 +559,32 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 				return nil
 			}),
 
+		// A release releases the HOLD, and never the bytes.
+		//
+		// So this asks the two questions separately, and both of them are
+		// outcomes: the gate the hold held open is closed -- the daemon says
+		// the execution is destructively cleanup-eligible, which it refuses
+		// while any hold stands -- and the incarnation directory is still
+		// there, because it is the step's own output, aliased read-only at the
+		// ordinary path, and Req 2 keeps a failed producer's output for the
+		// build's lifetime. Deletion is reclamation by policy, not a side
+		// effect of a release.
 		CheckThat[HeldSource]("the source has been released",
 			func(in HeldSource) error {
-				if _, err := os.Lstat(in.incarnationRoot()); err == nil {
-					return fmt.Errorf("the source incarnation is still on the node after a "+
-						"release: %s", in.incarnationRoot())
+				answer, err := decodeControl[executioncontrol.DestructiveCleanupEligibleResult](
+					in.Draft.Daemon.base("cleanup-eligible", "/execution/v1/cleanup-eligible",
+						in.Execution, identifiedBy(in.Execution)))
+				if err != nil {
+					return fmt.Errorf("asking whether cleanup is eligible: %w", err)
+				}
+				if !answer.Eligible {
+					return fmt.Errorf("the hold's gate is still open after a release: %s "+
+						"(open gates %v)", answer.WithheldReason, answer.OpenExtensionGates)
+				}
+				if _, err := os.Lstat(in.incarnationRoot()); err != nil {
+					return fmt.Errorf("the release deleted the step's output at %s: %v; a "+
+						"release closes the hold and leaves the bytes to the artifact daemon's "+
+						"ordinary lifecycle", in.incarnationRoot(), err)
 				}
 
 				return nil

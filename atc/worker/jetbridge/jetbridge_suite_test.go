@@ -118,6 +118,12 @@ func persistNamedWorker(database jetbridgeDB, name string) (db.Worker, error) {
 
 func TestJetbridge(t *testing.T) {
 	RegisterFailHandler(Fail)
+
+	// The temp guard is NOT here. The package temp root is created at init, for
+	// every test binary of this package, so what owns it is TestMain -- a guard
+	// hanging off this function would not run under `go test -run <one Go
+	// test>`, which is how one of the 260 plain tests beside this suite is run,
+	// and the root would leak on every such invocation.
 	RunSpecs(t, "Jetbridge Suite")
 }
 

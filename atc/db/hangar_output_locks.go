@@ -247,10 +247,9 @@ func DeriveHangarRefUnlocked(ctx context.Context, tx output.Tx, reservation outp
 		handoff       string
 	)
 	rows, err := tx.QueryContext(ctx, `
-		SELECT r.handoff_id, r.activation_epoch, coalesce(l.capture_fence, r.capture_fence),
+		SELECT r.handoff_id, r.activation_epoch, `+hangarCurrentCaptureFence+`,
 		       g.scope, g.digest
 		FROM hangar_capture_reservations r
-		LEFT JOIN hangar_capture_attempt_leases l ON l.reservation_id = r.reservation_id
 		LEFT JOIN hangar_logical_reservations g ON g.reservation_id = r.reservation_id
 		WHERE r.reservation_id = $1`, string(reservation))
 	if err != nil {

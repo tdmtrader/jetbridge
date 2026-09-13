@@ -62,6 +62,7 @@ var fixturedTypes = map[string]string{
 	outputPackageDir + ":ReleaseIntent":                   "release-intent.json",
 	outputPackageDir + ":PublicationRequest":              "publication-request.json",
 	outputPackageDir + ":PublicationResult":               "publication-result.json",
+	outputPackageDir + ":CanonicalizationResult":          "canonicalization-result.json",
 
 	basePackageDir + ":Identity":                           "identity.json",
 	basePackageDir + ":Envelope":                           "envelope.json",

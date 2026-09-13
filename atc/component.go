@@ -25,6 +25,16 @@ const (
 	ComponentK8sWorkerReaper            = "k8s_worker_reaper"
 	ComponentPipelinePauser             = "pipeline_pauser"
 	ComponentSigningKeyLifecycler       = "signing_key_lifecycler"
+
+	// ComponentHangarOutputCapture advances durable output captures.
+	//
+	// It is a component rather than a goroutine beside the step because the
+	// process that started a capture is exactly the process that may be gone:
+	// a capture crosses two systems, and what has to survive an ATC restart is
+	// the ability to ask what is durably true and take the next bounded step.
+	// The DB lease makes one ATC own one capture at a time; the fence makes a
+	// takeover safe.
+	ComponentHangarOutputCapture = "hangar_output_capture"
 )
 
 type Component struct {

@@ -23,6 +23,8 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse"
+	"github.com/google/uuid"
+
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api"
 	"github.com/concourse/concourse/atc/api/accessor"
@@ -43,6 +45,7 @@ import (
 	"github.com/concourse/concourse/atc/db/migration"
 	"github.com/concourse/concourse/atc/engine"
 	"github.com/concourse/concourse/atc/gc"
+	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/lidar"
 	"github.com/concourse/concourse/atc/metric"
@@ -1374,6 +1377,8 @@ func (cmd *RunCommand) backendComponents(
 		})
 	}
 
+	components = append(components, cmd.hangarOutputCaptureComponent(dbConn))
+
 	if syslogDrainConfigured {
 		components = append(components, RunnableComponent{
 			Component: atc.Component{
@@ -1581,6 +1586,64 @@ func (cmd *RunCommand) gcComponents(
 	components = append(components, newPipelineRunReclaimerComponent(dbPipelineRunReclaimLifecycle, time.Now, cmd.PipelineRunReclaimBatch))
 
 	return components, nil
+}
+
+// hangarOutputCaptureComponent advances every incomplete durable output
+// capture by one bounded transition.
+//
+// It is a component and not a goroutine beside the step because the process
+// that started a capture is exactly the process that may be gone: a capture
+// crosses two systems and an ATC restart, and what has to survive is the
+// ability to read what is durably true and take the next step. The DB lease the
+// component runner already provides makes one ATC own one pass; the capture's
+// own fence makes a takeover safe.
+//
+// A ONE-MINUTE fallback, rather than the ten-second default, because every pass
+// costs a query and most passes will find nothing: a capture's own progress is
+// driven by the notification the runner already listens for, and this interval
+// is the safety net under a lost one.
+//
+// The source dialer and the drain confirmer are the deployment's, and this
+// deployment has neither yet: nothing in production constructs a
+// runtime.ExecutionControl, so no capture is ever predeclared and the batch is
+// always empty. They are wired as REFUSALS rather than left nil so that a
+// handoff which somehow existed would be a bounded, typed refusal in a log
+// rather than a nil dereference in a component that runs every minute. The
+// sibling exact_execution_control track supplies both alongside the first
+// production caller.
+func (cmd *RunCommand) hangarOutputCaptureComponent(dbConn db.DbConn) RunnableComponent {
+	prefix := db.HangarConsumerPrefixForComponent()
+	repository := db.NewHangarOutputRepository(prefix)
+	transactor := hangarOutputTransactor{conn: dbConn}
+
+	return RunnableComponent{
+		Component: atc.Component{Name: atc.ComponentHangarOutputCapture},
+		Runnable: &hangaroutput.Recoverer{
+			Transactor: transactor,
+			Incomplete: repository,
+			Coordinator: &hangaroutput.Coordinator{
+				Transactor: transactor,
+				Repository: repository,
+				Dialer:     hangaroutput.NoSourcePlane(),
+				Drain:      hangaroutput.NoDrainProof(),
+				Announcer:  hangaroutput.AnnouncerFunc(repository.RecordAnnouncement),
+				OwnerID:    uuid.NewString(),
+			},
+		},
+		Interval: time.Minute,
+	}
+}
+
+// hangarOutputTransactor adapts the connection to the coordinator's port.
+//
+// It lives here rather than in atc/db because the port belongs to the
+// coordinator and atc/db has no business importing it: an interface is a
+// statement of what a consumer uses, and the package that satisfies one should
+// not have to know it exists.
+type hangarOutputTransactor struct{ conn db.DbConn }
+
+func (transactor hangarOutputTransactor) Begin() (hangaroutput.Transaction, error) {
+	return transactor.conn.Begin()
 }
 
 func newPipelineRunReclaimerComponent(lifecycle db.PipelineRunReclaimLifecycle, now func() time.Time, batchSize int) RunnableComponent {

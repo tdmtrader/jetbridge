@@ -14,6 +14,7 @@ import (
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
+	"net/http/httptest"
 )
 
 // Nothing this daemon emits may name where anything is.
@@ -419,5 +420,66 @@ func TestTheOutputDaemonWritesNoLogLineOutsideItsStartupBanner(t *testing.T) {
 	if !strings.Contains(string(banner), "func run(ctx context.Context, config Config, out *os.File) error") {
 		t.Error("run() no longer takes its output destination as a parameter. The startup " +
 			"banner's confinement to startup was that signature; check where it prints now.")
+	}
+}
+
+// Which sentinels reach 503, and that 503 is the DAEMON's fault and not the
+// caller's.
+//
+// This is the output half of branch-review finding F4. The artifact daemon
+// already draws the line: `artifact_daemon_refusals_total` answers "how often
+// did the daemon turn a client away for something the CLIENT did", and a bucket
+// that will not answer, a cancelled context and an unclassified store error are
+// none of those -- so they go through `hangarUnavailable`, which logs and does
+// not count, and `refusal_visibility_test.go`'s `known` map enumerates it
+// deliberately.
+//
+// This daemon has no refusal counter yet, so there is nothing to split. What
+// there is, and what this pins, is the CLASSIFICATION the counter will be built
+// on: these sentinels are server-side faults, and a counter that included them
+// would make one metric mean two things exactly as the artifact daemon's did.
+// The day this daemon gains one, this table is what it has to be consistent
+// with, and changing it is a deliberate edit rather than a silent drift.
+func TestTheDaemonsOwnFaultsAreNotCallerRefusals(t *testing.T) {
+	// The control first: a caller's own mistakes, which a refusal counter is
+	// exactly the metric for. Without these, "server faults are 503" would pass
+	// on a daemon that answered 503 to everything.
+	for _, row := range []struct {
+		err    error
+		status int
+		what   string
+	}{
+		{output.ErrUnauthorized, http.StatusForbidden, "a capability that does not authorize this"},
+		{output.ErrNotFound, http.StatusNotFound, "an identity this node does not know"},
+		{output.ErrConflict, http.StatusConflict, "a fact that disagrees with a durable one"},
+		{output.ErrSealed, http.StatusConflict, "a write over a sealed source"},
+		{output.ErrIncomplete, http.StatusBadRequest, "a request missing a required fact"},
+		{output.ErrInvalidIdentity, http.StatusBadRequest, "a malformed identity"},
+		{output.ErrSealUnconfirmed, http.StatusPreconditionFailed, "an unproved drain"},
+	} {
+		recorder := httptest.NewRecorder()
+		writeError(recorder, row.err)
+		if recorder.Code != row.status {
+			t.Errorf("%s answered %d, not %d", row.what, recorder.Code, row.status)
+		}
+		if recorder.Code == http.StatusServiceUnavailable {
+			t.Errorf("%s was classified as a daemon fault; it is the caller's", row.what)
+		}
+	}
+
+	// And the daemon's own, which a refusal counter must never include.
+	for _, row := range []struct {
+		err  error
+		what string
+	}{
+		{output.ErrInfrastructure, "a store that will not answer"},
+		{output.ErrCorrupt, "a record this node cannot read"},
+	} {
+		recorder := httptest.NewRecorder()
+		writeError(recorder, row.err)
+		if recorder.Code != http.StatusServiceUnavailable {
+			t.Errorf("%s answered %d; a server-side fault reported as a client error is how a "+
+				"bucket outage gets read as bad pipelines", row.what, recorder.Code)
+		}
 	}
 }

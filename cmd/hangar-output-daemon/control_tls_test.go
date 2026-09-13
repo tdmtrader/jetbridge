@@ -37,6 +37,8 @@ import (
 
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
+	"reflect"
+	"sort"
 )
 
 func TestTheControlAPIRequiresAClientCertificateExceptForTheNodeLocalHold(t *testing.T) {
@@ -178,6 +180,30 @@ func TestTheControlAPIRequiresAClientCertificateExceptForTheNodeLocalHold(t *tes
 		if response.StatusCode != http.StatusOK {
 			t.Errorf("%s answered %d to a probe with no client certificate", path, response.StatusCode)
 		}
+	}
+}
+
+// EXACTLY ONE route is exempt from the client certificate, and it is named.
+//
+// The two tables above drive the routes a scenario names. This is the
+// structural half: a route added later with `nodeLocal: true` -- or a
+// misplaced `true` in a copied row -- would open the control API to anything
+// that can reach the port, and no drive test names a route nobody wrote yet.
+// Phase 5 adds `canonicalize` and this is what says it did not become exempt.
+func TestExactlyOneControlRouteIsExemptFromTheClientCertificate(t *testing.T) {
+	var exempt []string
+	for pattern, declared := range (&Server{}).routes() {
+		if declared.nodeLocal {
+			exempt = append(exempt, pattern)
+		}
+	}
+	sort.Strings(exempt)
+
+	want := []string{"POST /capture/v1/hold"}
+	if !reflect.DeepEqual(exempt, want) {
+		t.Errorf("the routes exempt from the client certificate are %v; the exemption exists for "+
+			"the capture control init, which is a container in a Pod on this node and holds no "+
+			"certificate, and it is %v", exempt, want)
 	}
 }
 

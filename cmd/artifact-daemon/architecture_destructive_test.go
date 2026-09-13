@@ -179,15 +179,16 @@ var destructiveInventory = map[string]struct {
 	}},
 
 	// ---- the output daemon's own authority ----
+	//
+	// The output daemon destroys NOTHING. finishRelease used to remove the
+	// released incarnation and was pinned here; a release releases the HOLD
+	// now, and the incarnation is the step's own output, aliased read-only at
+	// the ordinary path and subject to the artifact daemon's ordinary
+	// lifecycle. Deleting a settled incarnation is reclamation by policy, and
+	// when that lands it is a new entry here rather than this one returning.
+	//
+	// The two entries left are record management: neither touches a source.
 
-	"hangar-output-daemon/source_ledger.go | SourceLedger.finishRelease | ledger.steps.RemoveAll(incarnationDir())": {1, admission{
-		guard: "ReleaseIntentID", guardedIn: "SourceLedger.AcknowledgeRelease",
-		why: "the output plane destroying its OWN source, and the only place that may. It is " +
-			"admitted by the release intent the control plane issued, and the record is " +
-			"written released before the bytes go. It sits in finishRelease because the " +
-			"replay path has to be able to re-run it: a crash between the record and the gate " +
-			"close leaves an execution that is never cleanup-eligible again.",
-	}},
 	"hangar-output-daemon/control_store.go | controlStore.put | store.root.Rename(temp)": {1, admission{
 		why: "the ledger's own atomic record replacement. This IS the writer authority the " +
 			"artifact daemon's read-only classifier reads; it touches no source.",
@@ -307,7 +308,7 @@ func TestArchitecture_EveryDestructiveCallIsAdmittedByANamedGuardOrPinnedAsExemp
 	// scan silently matched nothing passes, and a scan that stops finding
 	// calls -- a renamed directory, a parse that quietly failed -- looks
 	// exactly like a daemon that stopped destroying things.
-	const pinnedTotal = 32
+	const pinnedTotal = 31
 	if total != pinnedTotal {
 		t.Errorf("found %d destructive calls across both daemons and %d are pinned. "+
 			"Every Remove/RemoveAll/Rename must be listed in destructiveInventory with the "+

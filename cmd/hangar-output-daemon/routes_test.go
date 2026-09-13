@@ -264,6 +264,7 @@ func TestTheRouteTableReadsBothIdentityShapesAndNoFacetCrosses(t *testing.T) {
 		"/capture/v1/writer-ticket":       "issue-writer-ticket",
 		"/capture/v1/release":             "release-hold",
 		"/capture/v1/reserve-incarnation": "reserve-incarnation",
+		"/capture/v1/canonicalize":        "canonicalize",
 	} {
 		status, body := fixture.call(t, path, executioncontrol.BaseFacet, operation,
 			identifiedBy(identity(1)))
@@ -373,6 +374,7 @@ func TestAnUnreadyDaemonAnswersNoControlRequestAtAll(t *testing.T) {
 		"/execution/v1/cleanup-eligible":  "cleanup-eligible",
 		"/capture/v1/hold":                "hold",
 		"/capture/v1/reserve-incarnation": "reserve-incarnation",
+		"/capture/v1/canonicalize":        "canonicalize",
 	} {
 		facet := executioncontrol.BaseFacet
 		if strings.HasPrefix(path, "/capture/") {
@@ -706,5 +708,135 @@ func TestASpentCapabilityIsStillSpentAfterARestart(t *testing.T) {
 	}
 	if _, recorded := kept["nonce-spent-across-a-restart"]; !recorded {
 		t.Error("the spent nonce was pruned along with the expired one")
+	}
+}
+
+// Canonicalization is its own operation, and it creates nothing.
+//
+// Requirement 21 puts a durable logical resolution BETWEEN canonicalization and
+// the first object create: "after canonicalization and before the first GCS
+// create, the current capture owner durably resolves its reservation to the
+// server-derived scope and logical digest", so that every possibly-created
+// object has a pre-existing reservation recovery and inventory can correlate.
+// The publish route canonicalizes and creates in one call, so a control plane
+// driving only that route can commit the resolution only AFTER the object
+// exists -- which is the ordering the requirement exists to forbid.
+//
+// So the daemon answers the question separately. The route derives the scope
+// from the same namespace the publish derives it from and the digest from the
+// same canonicalizer, and it stores nothing: the bucket is still empty when it
+// returns. The seal is still a precondition, for the same reason it is one for
+// publish -- a canonical read may not begin over bytes a writer may still be
+// changing (Req 15).
+func TestCanonicalizationAnswersTheDigestThePublishThenUsesAndCreatesNothing(t *testing.T) {
+	fixture := newRoutes(t, "")
+	admitted(t, &fixture.ledgerFixture)
+
+	status, body := fixture.call(t, "/capture/v1/hold", output.CaptureFacet, "hold",
+		fixture.reserveOverHTTP(t, identity(1), admission()))
+	if status != http.StatusOK {
+		t.Fatalf("the hold was refused: %d %s", status, body)
+	}
+	var hold output.CaptureAcknowledgement
+	if err := json.Unmarshal(body, &hold); err != nil {
+		t.Fatalf("decoding the hold: %v", err)
+	}
+
+	root, err := fixture.source.ResolveIncarnation(hold.Incarnation)
+	if err != nil {
+		t.Fatalf("resolving: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "artifact.txt"), []byte("the bytes"), 0o600); err != nil {
+		t.Fatalf("writing: %v", err)
+	}
+
+	request := output.PublicationRequest{
+		ProtocolVersion: output.ProtocolVersion,
+		Execution:       identity(1),
+		ActivationEpoch: fixture.epoch,
+		HandoffID:       testHandoff,
+		ReservationID:   "44444444-4444-4444-8444-444444444444",
+		CaptureFence:    captureFence,
+	}
+
+	// Before the seal, the same refusal publish gets. Asserted first, so that
+	// "canonicalization answers" below cannot pass on a route that answers
+	// whatever it is asked.
+	if status, body := fixture.call(t, "/capture/v1/canonicalize",
+		output.CaptureFacet, "canonicalize", request); status != http.StatusPreconditionFailed {
+		t.Errorf("an unsealed source was canonicalized: %d %s", status, body)
+	}
+
+	sealed := output.SealRequest{
+		ProtocolVersion: output.ProtocolVersion,
+		Execution:       identity(1),
+		ActivationEpoch: fixture.epoch,
+		HandoffID:       testHandoff,
+		Incarnation:     hold.Incarnation,
+		CaptureFence:    captureFence,
+		DeadlineAt:      output.NewTimestamp(fixedNow().Add(time.Hour)),
+	}
+	if status, body := fixture.call(t, "/capture/v1/seal",
+		output.CaptureFacet, "begin-seal", sealed); status != http.StatusOK {
+		t.Fatalf("the seal was refused: %d %s", status, body)
+	}
+	started, err := fixture.source.InspectSeal(testHandoff, identity(1))
+	if err != nil {
+		t.Fatalf("inspecting the seal: %v", err)
+	}
+	if _, err := fixture.source.ConfirmSeal(t.Context(), output.SealConfirmation{
+		Started:      started,
+		CaptureFence: captureFence,
+		ObservedAt:   output.NewTimestamp(fixedNow()),
+	}); err != nil {
+		t.Fatalf("confirming: %v", err)
+	}
+
+	status, body = fixture.call(t, "/capture/v1/canonicalize",
+		output.CaptureFacet, "canonicalize", request)
+	if status != http.StatusOK {
+		t.Fatalf("the sealed source was not canonicalized: %d %s", status, body)
+	}
+	var canonical output.CanonicalizationResult
+	if err := json.Unmarshal(body, &canonical); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if err := canonical.Validate(); err != nil {
+		t.Fatalf("the canonicalization does not validate: %v", err)
+	}
+	if canonical.Scope != fixture.daemon.Namespace().Scope() {
+		t.Errorf("the canonicalization named scope %q and this daemon publishes into %q",
+			canonical.Scope, fixture.daemon.Namespace().Scope())
+	}
+	if canonical.LogicalBytes <= 0 {
+		t.Errorf("the canonicalization reported %d logical bytes", canonical.LogicalBytes)
+	}
+
+	// It created nothing. This is the half that makes the resolution genuinely
+	// pre-create rather than a second name for the publish.
+	if keys := listKeys(t, fixture.store, fixture.bucket); len(keys) != 0 {
+		t.Fatalf("canonicalizing left %d object(s) in the bucket: %v", len(keys), keys)
+	}
+
+	// And the publish that follows lands on exactly the identity the
+	// canonicalization named. Without this the resolution could be over bytes
+	// nobody publishes, which is a correlation handle for nothing.
+	status, body = fixture.call(t, "/capture/v1/publish",
+		output.CaptureFacet, "publish", request)
+	if status != http.StatusOK {
+		t.Fatalf("the sealed tree was not published: %d %s", status, body)
+	}
+	var result output.PublicationResult
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if result.Ref.Digest != canonical.Digest {
+		t.Errorf("the object is %s and the resolution committed before it was over %s; a "+
+			"reservation resolved to a digest nobody publishes correlates nothing",
+			result.Ref.Digest, canonical.Digest)
+	}
+	if result.Ref.Scope != canonical.Scope {
+		t.Errorf("the object landed in scope %q and the resolution named %q",
+			result.Ref.Scope, canonical.Scope)
 	}
 }

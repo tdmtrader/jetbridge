@@ -1,0 +1,10 @@
+{
+  "protocol_version": "hangar-output-v1",
+  "handoff_id": "7f3c1a80-25d4-4e6b-9a17-c0be48d5f931",
+  "reservation_id": "e2c7b9a4-1d38-4f60-b5a2-9c4e7d1f0836",
+  "capture_fence": 5,
+  "scope": "o1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0",
+  "digest": "sha256:9f2b1d4ca7e58306bd41c9f0e27a6b5384dcf1029e6b7a4c8d5f0e3b1a2c7d64",
+  "logical_bytes": 3512,
+  "observed_at": "2026-09-08T21:47:31.000000000Z"
+}

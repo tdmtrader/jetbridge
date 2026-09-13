@@ -168,6 +168,33 @@ CREATE TABLE hangar_handoff_predeclarations (
     created_at           timestamp with time zone NOT NULL DEFAULT now(),
     hold_acknowledged_at timestamp with time zone,
 
+    -- The daemon's answer to `reserve-incarnation`, recorded because a
+    -- coordinator that has to RELEASE a source needs to know which node holds
+    -- it and which incarnation it is, and after a crash there is nowhere else
+    -- to learn either: the reservation is taken before the Pod exists, the
+    -- ledger that knows it is node-local, and the control plane cannot ask
+    -- every node in the cluster whether it happens to be holding something.
+    --
+    -- The locator is OPAQUE to Hangar. It is whatever a deployment's source
+    -- dialer needs to reach that one node, stored and handed back unchanged;
+    -- nothing here parses it, exactly as nothing here parses an object key.
+    reserved_locator     text CHECK (reserved_locator <> ''),
+    reserved_incarnation jsonb,
+    reserved_directory   text CHECK (reserved_directory <> ''),
+    reserved_at          timestamp with time zone,
+
+    -- A hold binds to an incarnation this node issued FIRST. A hold over no
+    -- reservation is the Phase 4 seam reopening -- a producer writing into a
+    -- directory nothing protects -- and the schema is where that stays shut.
+    CONSTRAINT hangar_predeclaration_reservation_is_whole CHECK (
+        (reserved_at IS NULL) = (reserved_locator IS NULL)
+        AND (reserved_at IS NULL) = (reserved_incarnation IS NULL)
+        AND (reserved_at IS NULL) = (reserved_directory IS NULL)
+    ),
+    CONSTRAINT hangar_predeclaration_hold_needs_a_reservation CHECK (
+        hold_acknowledged_at IS NULL OR reserved_at IS NOT NULL
+    ),
+
     -- 24 hours by default, configurable from 1 hour through 7 days (Req 11).
     CONSTRAINT hangar_predeclaration_deadline_bounded CHECK (
         capture_deadline_at - created_at BETWEEN interval '1 hour' AND interval '7 days'
@@ -196,6 +223,15 @@ BEGIN
     END IF;
     IF NEW.hold_acknowledged_at IS NULL AND OLD.hold_acknowledged_at IS NOT NULL THEN
         RAISE EXCEPTION 'hangar: the source hold for handoff % cannot be un-acknowledged', OLD.handoff_id
+            USING ERRCODE = 'JB001';
+    END IF;
+    IF OLD.reserved_at IS NOT NULL
+        AND (NEW.reserved_at IS DISTINCT FROM OLD.reserved_at
+             OR NEW.reserved_locator IS DISTINCT FROM OLD.reserved_locator
+             OR NEW.reserved_incarnation IS DISTINCT FROM OLD.reserved_incarnation
+             OR NEW.reserved_directory IS DISTINCT FROM OLD.reserved_directory) THEN
+        RAISE EXCEPTION 'hangar: handoff % already reserved a source incarnation; a reservation is issued once and a second location is a second capture',
+            OLD.handoff_id
             USING ERRCODE = 'JB001';
     END IF;
 
@@ -254,6 +290,18 @@ CREATE TABLE hangar_capture_reservations (
     finish_successful               boolean NOT NULL CHECK (finish_successful),
     capture_fence                   bigint NOT NULL CHECK (capture_fence > 0),
     capture_deadline_at             timestamp with time zone NOT NULL,
+    -- The Req 17 seal deadline, on the DATABASE clock, stamped once when the
+    -- seal begins. It is a column and not a value the coordinator holds
+    -- because the process that begins a seal is not necessarily the process
+    -- that has to decide whether it was proved in time: a capture crosses an
+    -- ATC restart, and a deadline in a dead process's memory is a deadline
+    -- that never expires. Without it `seal_unconfirmed` had no producer at
+    -- all, and a seal an hour past its deadline registered a receipt.
+    --
+    -- Nullable, because it is meaningless before a seal begins, and one-way:
+    -- every writer coalesces, so a repeat after a lost answer inherits the
+    -- deadline the first attempt set rather than granting itself a fresh one.
+    seal_deadline_at                timestamp with time zone,
     state                           text NOT NULL DEFAULT 'unresolved'
         CHECK (state IN ('unresolved', 'resolved', 'registered', 'failed', 'cancelled')),
     first_create_attempted_at       timestamp with time zone,
@@ -425,9 +473,47 @@ CREATE TABLE hangar_no_capture_dispositions (
     )
 );
 
+-- What a capture told a watcher, in emission order.
+--
+-- Requirement 18 says a capture-enabled task exposes the loss of
+-- post-completion hijack and the checkpoint, sealing and capture outcomes in
+-- existing diagnostics, and nothing else in this plane emits anything a
+-- watcher can see -- the daemon has logs and metrics, and those are for an
+-- operator. This is the durable half of that: the coordinator appends, and
+-- whatever renders a task's diagnostics reads.
+--
+-- IT IS DURABLE AND NOT A LOG LINE because the process that announces a
+-- selection is not the process that announces the outcome: a capture crosses
+-- an ATC restart, and an announcement stream held in memory would lose exactly
+-- the announcement that explains why hijack stopped working.
+--
+-- THE PAYLOAD IS CLOSED. A disposition and a reason word, both constrained,
+-- and nowhere to put a grant, a key, a path or a consumer reference. A jsonb
+-- detail column here would be the column one eventually appears in.
+CREATE TABLE hangar_capture_announcements (
+    id           bigserial PRIMARY KEY,
+    handoff_id   uuid NOT NULL
+        REFERENCES hangar_handoff_predeclarations (handoff_id) ON DELETE RESTRICT,
+    kind         text NOT NULL
+        CHECK (kind IN ('capture-selected', 'capture-seal-started', 'capture-disposition')),
+    disposition  text
+        CHECK (disposition IS NULL
+               OR disposition IN ('capture', 'no_capture', 'pre_reservation_cancel')),
+    reason       text NOT NULL CHECK (octet_length(reason) BETWEEN 1 AND 64),
+    announced_at timestamp with time zone NOT NULL DEFAULT now(),
+
+    -- One announcement of each kind per handoff. A capture that announced its
+    -- selection twice across a restart would be telling a watcher that hijack
+    -- went away twice, and the retry that produced it is not news.
+    CONSTRAINT hangar_announcement_once UNIQUE (handoff_id, kind)
+);
+
+CREATE INDEX hangar_capture_announcements_handoff_idx
+    ON hangar_capture_announcements (handoff_id, id);
+
 -- The pre_reservation_cancel branch: cancellation winning before Stage 2.
 --
--- `hold_acknowledged` is the fork. Without an acknowledged hold there is
+-- `source_reserved` is the fork. With no incarnation reserved anywhere there is
 -- nothing on any node to release, so the branch closes with no daemon call and
 -- a release intent would be a promise to no one; with one, the intent and its
 -- acknowledgement are both required before the branch may finalize.
@@ -438,28 +524,35 @@ CREATE TABLE hangar_pre_reservation_cancel_dispositions (
     activation_epoch        bigint NOT NULL
         REFERENCES hangar_output_activation_epochs (epoch_id) ON DELETE RESTRICT,
     source_lease_id         uuid NOT NULL,
-    hold_acknowledged       boolean NOT NULL,
+    -- The fork this branch takes, and it is NOT "was a hold acknowledged".
+    --
+    -- The incarnation is reserved and its directory created before the
+    -- producing Pod exists, so a cancellation that beats the control init
+    -- still has bytes on a node to release. A column that asked about the hold
+    -- would close those cancellations with no daemon call and leave a
+    -- directory behind for every capture cancelled before it started.
+    source_reserved         boolean NOT NULL,
     release_intent_id       uuid UNIQUE,
     intent_recorded_at      timestamp with time zone NOT NULL DEFAULT now(),
     release_acknowledged_at timestamp with time zone,
     release_acknowledgement jsonb,
     finalized_at            timestamp with time zone,
 
-    CONSTRAINT hangar_cancel_unheld_carries_no_release CHECK (
-        hold_acknowledged
+    CONSTRAINT hangar_cancel_unreserved_carries_no_release CHECK (
+        source_reserved
         OR (release_intent_id IS NULL
             AND release_acknowledged_at IS NULL
             AND release_acknowledgement IS NULL)
     ),
-    CONSTRAINT hangar_cancel_held_records_intent CHECK (
-        NOT hold_acknowledged OR release_intent_id IS NOT NULL
+    CONSTRAINT hangar_cancel_reserved_records_intent CHECK (
+        NOT source_reserved OR release_intent_id IS NOT NULL
     ),
     CONSTRAINT hangar_cancel_release_pairs CHECK (
         (release_acknowledged_at IS NULL) = (release_acknowledgement IS NULL)
     ),
-    CONSTRAINT hangar_cancel_held_finalizes_on_acknowledgement CHECK (
+    CONSTRAINT hangar_cancel_reserved_finalizes_on_acknowledgement CHECK (
         finalized_at IS NULL
-        OR NOT hold_acknowledged
+        OR NOT source_reserved
         OR release_acknowledged_at IS NOT NULL
     )
 );
@@ -1008,12 +1101,32 @@ CREATE CONSTRAINT TRIGGER hangar_stage_two_matches_predeclaration
 
 -- Logical resolution runs after canonicalization and only under the current
 -- capture ownership fence. A stale owner resolves nothing.
+--
+-- The FENCED ACT is the resolution itself -- the insert, and any statement that
+-- moves the fence the resolution was made under. It is not every later write to
+-- the row: `capture_fence` here is the fence the resolution was recorded at and
+-- is never rewritten, so comparing it to the CURRENT lease on an UPDATE that
+-- touches only `state` refuses exactly the writes a takeover exists to permit.
+-- `RegisterReceipt` updates `state` to 'registered'; under a new owner that
+-- update raised JB003 at commit, so an ATC restart anywhere between the
+-- resolution and the receipt -- which includes the upload, the slow half --
+-- left a marked object in the bucket that no owner could ever register and no
+-- owner could ever fail. The lease is the one fence source (see
+-- hangarCurrentCaptureFence); this is the reader that had not joined it.
+--
+-- Every statement that IS fenced still checks its own fence: RegisterReceipt,
+-- the irreversible publish point, the seal deadline and the terminal failure
+-- all derive the current fence from the lease and refuse a stale one.
 CREATE FUNCTION hangar_check_logical_resolution() RETURNS trigger
     LANGUAGE plpgsql AS $$
 DECLARE
     current_fence bigint;
     reservation   hangar_capture_reservations%ROWTYPE;
 BEGIN
+    IF TG_OP = 'UPDATE' AND NEW.capture_fence = OLD.capture_fence THEN
+        RETURN NULL;
+    END IF;
+
     SELECT * INTO reservation FROM hangar_capture_reservations WHERE reservation_id = NEW.reservation_id;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'hangar: logical reservation % has no Stage 2 reservation', NEW.reservation_id

@@ -67,8 +67,36 @@ func hangarLeaseInterval(term time.Duration) (string, error) {
 			output.ErrIncomplete, term, output.MinLeaseTerm)
 	}
 
-	return fmt.Sprintf("%d seconds", int(term.Round(time.Second).Seconds())), nil
+	return hangarInterval(term), nil
 }
+
+// hangarInterval renders a term with NO floor, for the bounded windows that are
+// not ownership leases: a stat challenge's freshness window is capped at five
+// minutes by the schema and would fail the lease floor, and a challenge is not
+// a lease -- nothing is owned for its duration.
+func hangarInterval(term time.Duration) string {
+	return fmt.Sprintf("%d seconds", int(term.Round(time.Second).Seconds()))
+}
+
+// hangarCurrentCaptureFence is the ONE spelling of "the fence this capture is
+// currently owned at", as a SQL scalar over a reservation aliased `r`.
+//
+// The lease is the authority the moment it exists. AcquireCaptureLease advances
+// hangar_capture_attempt_leases.capture_fence on every takeover, and
+// hangar_capture_reservations.capture_fence is written once, at Stage 2, and
+// never again -- so it is the fence a capture is admitted under before anybody
+// has taken a lease, and nothing else.
+//
+// Two readers of two columns is not a redundancy, it is a split brain: the
+// writes that joined the lease (the irreversible publish point, the
+// logical-resolution trigger) honoured a takeover and the writes that read the
+// row refused it, so a capture that survived an ATC restart past Stage 2 -- and
+// OwnerID is minted per process, so every restart is a takeover -- reached the
+// object create and could then neither obtain a receipt nor fail terminally.
+// It stayed incomplete until a deadline nothing enforces.
+const hangarCurrentCaptureFence = `coalesce(
+		(SELECT l.capture_fence FROM hangar_capture_attempt_leases l
+		 WHERE l.reservation_id = r.reservation_id), r.capture_fence)`
 
 // The four classes of refusal the output plane's schema raises, as SQLSTATEs.
 //

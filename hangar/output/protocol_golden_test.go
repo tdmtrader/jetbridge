@@ -194,6 +194,9 @@ var protocolFixtures = map[string]func(*testing.T, []byte){
 	"publication-result.json": func(t *testing.T, raw []byte) {
 		roundTrip[PublicationResult](t, raw)
 	},
+	"canonicalization-result.json": func(t *testing.T, raw []byte) {
+		roundTrip[CanonicalizationResult](t, raw)
+	},
 
 	"receipt.json":           func(t *testing.T, raw []byte) { roundTrip[Receipt](t, raw) },
 	"receipt-admission.json": func(t *testing.T, raw []byte) { roundTrip[ReceiptAdmission](t, raw) },

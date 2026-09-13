@@ -290,18 +290,25 @@ func (disposition NoCaptureDisposition) Validate() error {
 // PreReservationCancelDisposition is cancellation winning the arbiter before
 // Stage 2.
 //
-// HoldAcknowledged is the fork: without an acknowledged hold there is nothing
-// on any node to release and the branch closes with no daemon call at all, so a
-// release intent would be a promise to no one. With one, the intent is required.
+// SourceReserved is the fork: with no incarnation reserved anywhere there is
+// nothing on any node to release and the branch closes with no daemon call at
+// all, so a release intent would be a promise to no one. With one, the intent
+// is required.
+//
+// It is deliberately NOT "was a hold acknowledged", which is what it used to
+// be. The incarnation is reserved and its directory created BEFORE the
+// producing Pod exists, so those are two different questions and the wrong one
+// closes every cancellation that beat the control init with a directory still
+// on a node. A hold implies a reservation; a reservation does not imply a hold.
 type PreReservationCancelDisposition struct {
-	ProtocolVersion  string                           `json:"protocol_version"`
-	Disposition      Disposition                      `json:"disposition"`
-	Execution        executioncontrol.Identity        `json:"execution"`
-	ActivationEpoch  executioncontrol.ActivationEpoch `json:"activation_epoch"`
-	HandoffID        HandoffID                        `json:"handoff_id"`
-	SourceLeaseID    SourceLeaseID                    `json:"source_lease_id"`
-	HoldAcknowledged bool                             `json:"hold_acknowledged"`
-	ReleaseIntentID  ReleaseIntentID                  `json:"release_intent_id"`
+	ProtocolVersion string                           `json:"protocol_version"`
+	Disposition     Disposition                      `json:"disposition"`
+	Execution       executioncontrol.Identity        `json:"execution"`
+	ActivationEpoch executioncontrol.ActivationEpoch `json:"activation_epoch"`
+	HandoffID       HandoffID                        `json:"handoff_id"`
+	SourceLeaseID   SourceLeaseID                    `json:"source_lease_id"`
+	SourceReserved  bool                             `json:"source_reserved"`
+	ReleaseIntentID ReleaseIntentID                  `json:"release_intent_id"`
 }
 
 func (disposition PreReservationCancelDisposition) Validate() error {
@@ -325,12 +332,13 @@ func (disposition PreReservationCancelDisposition) Validate() error {
 		return err
 	}
 
-	if disposition.HoldAcknowledged {
+	if disposition.SourceReserved {
 		return disposition.ReleaseIntentID.Validate()
 	}
 	if disposition.ReleaseIntentID != "" {
-		return fmt.Errorf("%w: cancellation before any acknowledged hold recorded release intent "+
-			"%q; there is nothing on any node to release", ErrIncomplete, disposition.ReleaseIntentID)
+		return fmt.Errorf("%w: cancellation before any source incarnation was reserved recorded "+
+			"release intent %q; there is nothing on any node to release", ErrIncomplete,
+			disposition.ReleaseIntentID)
 	}
 
 	return nil

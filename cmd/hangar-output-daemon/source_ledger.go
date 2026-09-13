@@ -102,6 +102,32 @@ type sourceRecord struct {
 	DrainSet      []output.WriterTicketID        `json:"drain_set,omitempty"`
 	SealConfirmed *output.CaptureAcknowledgement `json:"seal_confirmed,omitempty"`
 
+	// SealDeadlineAt is the deadline the control plane composed on the DATABASE
+	// clock and handed over with the seal. It is stored here, with the captured
+	// drain set and for the same reason: a deadline that is recomputed on every
+	// call is not a deadline. What it buys is defence in depth -- the deciding
+	// clock is still the database's -- so that a control plane which lost track
+	// of its own deadline cannot have a boundary confirmed hours after the
+	// moment the evidence was supposed to cover.
+	SealDeadlineAt output.Timestamp `json:"seal_deadline_at,omitzero"`
+
+	// CaptureFence is the capture-ownership fence this source was last sealed
+	// under, and it is the daemon's half of Req 10: "a stale owner may not
+	// seal, publish, sign/register a receipt, finalize, or release".
+	//
+	// It is a DIFFERENT fence from the execution's, which is what made the gap:
+	// `admitted` compares the base ledger's execution fence, and a capture-lease
+	// takeover does not move that -- the incarnation is the same, the writer set
+	// is the same, and the seal is idempotent across it by design. So every
+	// stale-capture-owner refusal lived in PostgreSQL, and a superseded owner
+	// that still held a valid capability could drive this node's seal
+	// confirmation, canonical read, publication and attestation.
+	//
+	// It moves FORWARD only, and it follows the lease rather than pinning the
+	// first value it saw: the control plane's lease is the authority for who
+	// owns a capture, and a takeover's BeginSeal is how this node learns.
+	CaptureFence output.CaptureFence `json:"capture_fence,omitempty"`
+
 	// Release is the fenced release pair's second half, stored so a repeat of
 	// the same intent returns the same statement and a different intent is a
 	// conflict.
@@ -352,10 +378,35 @@ func (ledger *SourceLedger) ResolveIncarnation(incarnation output.SourceIncarnat
 // Holds reports whether the incarnation's bytes are still on this node. It is
 // an outcome, not a call count: "the daemon was not asked to delete it" is not
 // something this file can say and not something a caller should want.
-func (ledger *SourceLedger) Holds(incarnation output.SourceIncarnation) bool {
+// HasIncarnation reports whether this incarnation's directory is still on this
+// node.
+//
+// It is a question about BYTES and not about the hold, and the two are separate
+// questions now: a release closes the hold and leaves the bytes to the artifact
+// daemon's ordinary lifecycle, so after a release this stays true and Released
+// below turns true. They were one question while a release deleted, which is
+// exactly the conflation that let every settlement destroy a step's output.
+func (ledger *SourceLedger) HasIncarnation(incarnation output.SourceIncarnation) bool {
 	_, err := ledger.ResolveIncarnation(incarnation)
 
 	return err == nil
+}
+
+// Released reports whether this handoff's hold has been released.
+//
+// The hold is a RECORD, and this reads it. Nothing about the directory: the
+// bytes outlive the hold by design.
+func (ledger *SourceLedger) Released(handoff output.HandoffID) (bool, error) {
+	record, found, err := ledger.load(handoff)
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		return false, fmt.Errorf("%w: handoff %s holds no source on this node",
+			output.ErrNotFound, handoff)
+	}
+
+	return record.State == sourceReleased, nil
 }
 
 // admitted is the precondition every acting operation shares: this handoff is
@@ -397,6 +448,70 @@ func (ledger *SourceLedger) admitted(handoff output.HandoffID,
 	}
 
 	return record, nil
+}
+
+// admitCapture is `admitted` plus the CAPTURE fence, and it is the precondition
+// every capture-facet operation past the seal shares.
+//
+// The two fences answer different questions and neither substitutes for the
+// other. The execution fence says a replacement Pod has not superseded this
+// writer; the capture fence says a second coordinator has not taken ownership
+// of this capture. A takeover moves only the second, so `admitted` alone would
+// serve a superseded owner every operation this node has.
+//
+// A HIGHER fence moves the stored one forward, and that is what makes the check
+// engage on the takeover it was written for. BeginSeal advances it too, but a
+// takeover past the seal never calls BeginSeal -- the captured drain set is
+// captured once and the new owner inherits it, which is why every crash-half
+// spec asserts `begin-seal == 1` across a takeover. So the node learned a new
+// owner only on the takeover that did not need teaching, and served the
+// superseded fence on the one that did. The new owner's first capture-facet
+// call is the lesson, whichever call that is.
+//
+// Monotonic, and never downward: the fence a lease has issued is a fact, and a
+// node that could be talked backwards would be a node a stale owner could
+// re-admit itself at. The durable refusal is Postgres's regardless -- a stale
+// owner is refused at the lease before it reaches this node at all.
+func (ledger *SourceLedger) admitCapture(handoff output.HandoffID,
+	execution executioncontrol.Identity, epoch executioncontrol.ActivationEpoch,
+	fence output.CaptureFence) (sourceRecord, error) {
+	record, err := ledger.admitted(handoff, execution, epoch)
+	if err != nil {
+		return sourceRecord{}, err
+	}
+	if fence == 0 {
+		return sourceRecord{}, fmt.Errorf("%w: a capture operation over handoff %s names no "+
+			"capture fence", output.ErrIncomplete, handoff)
+	}
+	if fence < record.CaptureFence {
+		return sourceRecord{}, fmt.Errorf("%w: capture fence %d over handoff %s was superseded "+
+			"by %d; a stale owner may not seal, publish, sign, finalize or release",
+			executioncontrol.ErrStaleFence, fence, handoff, record.CaptureFence)
+	}
+	if fence > record.CaptureFence {
+		record.CaptureFence = fence
+		if err := ledger.save(record); err != nil {
+			return sourceRecord{}, err
+		}
+	}
+
+	return record, nil
+}
+
+// AdmitCaptureFence is the fence check on its own, for the attestation route.
+//
+// Signing a receipt reads no source bytes -- it is a stat against the object
+// store -- so it has no other reason to reach this ledger, and Req 10 lists
+// signing among the things a stale owner may not do.
+func (ledger *SourceLedger) AdmitCaptureFence(handoff output.HandoffID,
+	execution executioncontrol.Identity, epoch executioncontrol.ActivationEpoch,
+	fence output.CaptureFence) error {
+	ledger.mu.Lock()
+	defer ledger.mu.Unlock()
+
+	_, err := ledger.admitCapture(handoff, execution, epoch, fence)
+
+	return err
 }
 
 func (ledger *SourceLedger) next() executioncontrol.LedgerSequence {
@@ -972,9 +1087,28 @@ func (ledger *SourceLedger) BeginSeal(_ context.Context, request output.SealRequ
 		return output.SealStarted{}, fmt.Errorf("%w: handoff %s released its source",
 			output.ErrConflict, request.HandoffID)
 	}
+	if request.CaptureFence < record.CaptureFence {
+		return output.SealStarted{}, fmt.Errorf(
+			"%w: capture fence %d over handoff %s was superseded by %d; a stale owner may not seal",
+			executioncontrol.ErrStaleFence, request.CaptureFence, request.HandoffID,
+			record.CaptureFence)
+	}
 	if record.SealStarted != nil {
 		// Idempotent: the captured set is captured once. Re-capturing it on a
 		// repeat is exactly the live-query defect this field exists to avoid.
+		//
+		// The FENCE still moves, and that is not a contradiction: a takeover
+		// inherits the seal this node already made -- the incarnation and its
+		// writer set have not changed -- and how this node learns that
+		// ownership moved is the new owner's own BeginSeal. Pinning the first
+		// fence seen would refuse every operation the takeover then owes.
+		if request.CaptureFence > record.CaptureFence {
+			record.CaptureFence = request.CaptureFence
+			if err := ledger.save(record); err != nil {
+				return output.SealStarted{}, err
+			}
+		}
+
 		return output.SealStarted{
 			Acknowledgement: *record.SealStarted,
 			DrainSet:        append([]output.WriterTicketID(nil), record.DrainSet...),
@@ -1000,6 +1134,8 @@ func (ledger *SourceLedger) BeginSeal(_ context.Context, request output.SealRequ
 
 	record.State = sourceSealing
 	record.SealStarted = &ack
+	record.SealDeadlineAt = request.DeadlineAt
+	record.CaptureFence = request.CaptureFence
 	record.DrainSet = record.openTickets()
 	record.HighWater = ledger.sequence
 	if err := ledger.save(record); err != nil {
@@ -1025,7 +1161,8 @@ func (ledger *SourceLedger) ConfirmSeal(_ context.Context, confirmation output.S
 	defer ledger.mu.Unlock()
 
 	started := confirmation.Started.Acknowledgement
-	record, err := ledger.admitted(started.HandoffID, started.Execution, started.ActivationEpoch)
+	record, err := ledger.admitCapture(started.HandoffID, started.Execution,
+		started.ActivationEpoch, confirmation.CaptureFence)
 	if err != nil {
 		return output.CaptureAcknowledgement{}, err
 	}
@@ -1047,6 +1184,22 @@ func (ledger *SourceLedger) ConfirmSeal(_ context.Context, confirmation output.S
 	}
 	if record.SealConfirmed != nil {
 		return *record.SealConfirmed, nil
+	}
+	// The deadline the seal was begun under. Checked AFTER the idempotent
+	// return, because a confirmation that already happened is a fact and not a
+	// request, and refusing to hand back a statement this node made would turn
+	// a lost answer into a permanent one.
+	//
+	// The deciding clock is the database's -- this refusal is defence in depth,
+	// and it is why it is typed as an unconfirmed seal rather than as a
+	// conflict: the answer it gives the control plane is exactly the one the
+	// control plane then weighs against its own deadline.
+	if !record.SealDeadlineAt.IsZero() && ledger.clock().After(record.SealDeadlineAt.Time) {
+		return output.CaptureAcknowledgement{}, fmt.Errorf(
+			"%w: the seal over handoff %s was begun with a deadline of %s and this node's clock "+
+				"reads %s; evidence for a boundary is evidence for the moment it covered",
+			output.ErrSealUnconfirmed, started.HandoffID,
+			record.SealDeadlineAt.UTC().Format(time.RFC3339), ledger.clock().UTC().Format(time.RFC3339))
 	}
 	for _, ticket := range record.openTickets() {
 		return output.CaptureAcknowledgement{}, fmt.Errorf(
@@ -1166,17 +1319,31 @@ func (ledger *SourceLedger) AcknowledgeRelease(_ context.Context, intent output.
 // finishRelease is everything a release does after its record is durable, and
 // it is idempotent so that a replay can re-run it.
 //
+// IT DOES NOT REMOVE THE BYTES, and that is the whole of the rule: a release
+// releases the HOLD. The incarnation is the step's own output directory --
+// after the Phase 4 ruling it is reserved and created before the producing Pod
+// exists, and the artifact daemon has registered a read-only alias at the
+// ordinary `<handle>/<output>` path that points into it. Removing it here made
+// every no_capture, cancellation and terminal failure delete a step's output at
+// the moment it settled, leaving that alias pointing at a directory that was
+// gone; Req 2 says a failed producer follows existing task semantics, and
+// existing semantics keep a failed task's outputs for the build's lifetime.
+//
+// What is left is what a release actually is: the record says released, and the
+// gate this hold held open is closed, so the execution becomes cleanup-eligible
+// and the incarnation becomes sweepable exactly as an unselected output is.
+//
+// TODO(phase 7, reclamation): a settled incarnation is deleted by the reclaim
+// policy that owns retention -- age, residency and the rule that every
+// uncertainty KEEPS -- and never as a side effect of a release. Until that
+// lands the artifact daemon's ordinary lifecycle is what reclaims it.
+//
 // The identity is the REQUEST's, not the record's. `admitted` has just proved
 // the request names the fence this node currently holds; the record's copy was
 // written when the hold was taken and a takeover since then would make closing
-// the gate refuse as stale -- after the bytes were already gone.
+// the gate refuse as stale.
 func (ledger *SourceLedger) finishRelease(execution executioncontrol.Identity,
 	record sourceRecord) error {
-	if err := ledger.steps.RemoveAll(incarnationDir(record.Incarnation)); err != nil {
-		return fmt.Errorf("%w: removing the released source incarnation: %v",
-			output.ErrInfrastructure, err)
-	}
-
 	return ledger.base.CloseGate(execution, SourceHoldGate)
 }
 
@@ -1205,6 +1372,7 @@ func (ledger *SourceLedger) InspectSeal(handoff output.HandoffID,
 	return output.SealStarted{
 		Acknowledgement: *record.SealStarted,
 		DrainSet:        append([]output.WriterTicketID(nil), record.DrainSet...),
+		Confirmed:       record.State == sourceSealed,
 	}, nil
 }
 
@@ -1215,11 +1383,12 @@ func (ledger *SourceLedger) InspectSeal(handoff output.HandoffID,
 // may still be changing, and Req 15 is exactly the rule that no canonical read
 // begins before both halves of the seal hold.
 func (ledger *SourceLedger) SealedIncarnation(handoff output.HandoffID,
-	execution executioncontrol.Identity, epoch executioncontrol.ActivationEpoch) (string, sourceRecord, error) {
+	execution executioncontrol.Identity, epoch executioncontrol.ActivationEpoch,
+	fence output.CaptureFence) (string, sourceRecord, error) {
 	ledger.mu.Lock()
 	defer ledger.mu.Unlock()
 
-	record, err := ledger.admitted(handoff, execution, epoch)
+	record, err := ledger.admitCapture(handoff, execution, epoch, fence)
 	if err != nil {
 		return "", sourceRecord{}, err
 	}
