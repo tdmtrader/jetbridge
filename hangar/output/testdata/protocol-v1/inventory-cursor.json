@@ -1,0 +1,9 @@
+{
+  "protocol_version": "hangar-output-v1",
+  "activation_epoch": 3,
+  "cursor_fence": 6,
+  "after_key": "deployment-a/0192b3c4d5e6f708/sha256:9f2c0c4a",
+  "after_generation": 1725830823000001,
+  "cycle": 12,
+  "updated_at": "2026-09-08T22:00:00.000000000Z"
+}

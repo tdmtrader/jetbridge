@@ -148,3 +148,120 @@ normal exact destination is kubelet-created and root-owned, so no `FOWNER` is
 needed. A custom non-root daemon image or pre-chowned destination fails closed
 rather than widening capabilities. Container-level root settings are not
 applied to task or init containers.
+
+## Durable output publication (contracts only, not enabled)
+
+A second plane is being built beside the strict-input one: turning a task's
+declared ordinary output into durable content a consumer can protect for as
+long as it needs it. Nothing described in this section is enabled, or usable,
+or reachable from any route. What exists today is the product-neutral contract:
+`hangar/executioncontrol` and `hangar/output`, with their language-neutral wire
+fixtures under each package's `testdata/protocol-v1`. Storage, persistence,
+workers, chart identities and activation come later, each behind its own gate.
+
+The contract is documented here rather than in a design note because two of the
+things it says are easy to lose, and both of them are limits rather than
+features.
+
+### The ordinary-task cost of a durable capture
+
+Selecting an output for capture is not free, and the cost is intentional and
+visible rather than hidden.
+
+Once sealing starts for a capture-selected task, that task can no longer be
+hijacked. Its sidecars and any active hijack sessions are terminated at the
+seal boundary, and no recovered or replacement pod may remount the output for
+writing — a recreated pod is a new Pod UID, and a new Pod UID gets a typed
+refusal rather than a race with the capture. This is the price of the tree
+being exactly what the producer left: a writer admitted after the seal would
+make "exact" untrue, and there is no way to have both.
+
+Capture applies only after the producer's main command exits *successfully*.
+A failed or cancelled producer is not eligible and follows existing task
+semantics unchanged. Capturing from a non-successful producer is a separate
+future contract, not a flag on this one.
+
+Ordinary tasks and unselected outputs keep their current behaviour exactly.
+Resource-cache routes, the fail-open durable cache tier, and the original
+`concourse.dev/hangar-v1` strict-input capability are untouched, and the output
+plane deliberately does not reuse any of them.
+
+### The lifetime promise is conditional, and says so
+
+Hangar can serialize its own publishers, claimants, readers and reclaimers. It
+cannot prevent a cloud administrator, or a changed bucket lifecycle rule, from
+deleting an object out of band.
+
+So the promise is stated conditionally. Activation requires an authoritative
+whole-bucket lifecycle-policy read proving no Delete rule, refreshed at least
+every 15 minutes and recorded with the bucket identity, metageneration, policy
+hash and observation time. That is a **bounded-staleness trust check, not
+prevention**: a functioning monitor detects a policy change within the refresh
+window, and does not stop a deletion inside it.
+
+On a stale, failed, unreadable or unsafe check — or an unexpected exact absence,
+or a platform-principal mismatch — Hangar enters a durable `at-risk` state,
+marks affected refs at risk in status and read outcomes, and alerts. From that
+point it blocks new captures, claim acquires, managed-output grants, orphan
+adoption and reclaim admission. Releases and diagnosis stay possible, existing
+claims and read leases stay recorded, and already-admitted conditional delete
+work may finish. Recovery needs a fresh safe attestation *and* reconciliation
+of the violation: re-attesting alone never rewrites an out-of-band absence as
+normal reclamation.
+
+The enforceable half of the promise covers the isolated JetBridge principals
+and the provider configuration Hangar can inspect. Everything outside that —
+organization- and project-level credentials, and administrator behaviour — is
+outside it, and failure of that precondition is typed and visible rather than
+silently accepted.
+
+### Storage profiles: native GCS only, in a bucket of its own
+
+Only the strict native-GCS profile supports output capture. The
+S3-compatible and filesystem stores cannot advertise this capability, and this
+is a refusal rather than a to-do: the plane depends on generation-conditioned
+deletes, exact-generation metadata stats and immutable-at-creation object
+metadata, and a profile that emulates those has emulated the one property the
+lifetime promise rests on.
+
+Output capture uses a **dedicated** native-GCS bucket containing only
+Hangar-managed output-plane objects. It is never the durable cache bucket and
+never the strict-input bucket. The reason is a fact about GCS IAM rather than a
+preference: `storage.objects.get` authorizes both metadata and body reads, and
+`storage.objects.list` covers the whole bucket with no caller-visible prefix
+boundary. There is no permission that grants metadata-only access, and none
+that scopes a list to a prefix. Prefix-only isolation inside a shared bucket is
+therefore not a substitute, and configuring one is an activation failure rather
+than a supported alternative. Trust domains needing IAM isolation get separate
+output buckets.
+
+The bucket, its opaque scope and its key prefix are derived from authenticated
+deployment context alone. No task, consumer, path parameter or receipt can
+select or broaden them, and no API in `hangar/output` accepts a bucket, object
+key, absolute path, hostPath or caller-chosen scope — a guard in
+`hangar/output/architecture_test.go` fails the test suite if one appears.
+
+### External responsibility
+
+The chart does not create cloud buckets, lifecycle rules or GCP IAM, and will
+not. An operator or external infrastructure provisions the dedicated output
+bucket, the cloud principals, the Workload Identity bindings and the bucket
+IAM; the chart renders explicit identities and refuses activation until the
+attestor proves the externally provisioned policy.
+
+Four distinct identities are required because a Kubernetes service account is
+Pod-wide, so any output permission added to an existing daemon would also be
+granted to that daemon's cache and strict-input identity:
+
+- the publisher/materializer daemon may create and get objects, never list or
+  delete;
+- inventory may list and get bucket-wide, never create or delete;
+- the reclaimer may get and delete, never create or list; and
+- the policy attestor may read bucket lifecycle and IAM, and has no object
+  access at all.
+
+Shared service accounts, shared Workload Identity principals, task credentials,
+or granting delete to the daemon or cache identity are activation failures. No
+runtime principal holds lifecycle or IAM mutation authority: policy
+administration stays an operator trust root, which is the same boundary the
+conditional promise above describes.

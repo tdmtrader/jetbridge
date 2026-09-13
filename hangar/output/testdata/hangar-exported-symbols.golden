@@ -1,0 +1,37 @@
+const DefaultMaxTreeContentBytes int64
+const DefaultMaxTreeEntries int64
+const MaxGrantTTL
+func (*CapturedTree) Close() error
+func (*CapturedTree) OpenRoot() (*os.Root, error)
+func (*GrantSigner) Sign(ref TreeRef, handle, volume string) (string, error)
+func (*GrantVerifier) Verify(token string, ref TreeRef, handle, volume string) error
+func (*Materializer) Materialize(ctx context.Context, ref TreeRef, handle, volume string) (err error)
+func (Canonicalizer) Capture(ctx context.Context, rawTar io.Reader) (tree *CapturedTree, err error)
+func (Digest) Validate() error
+func (Scope) Validate() error
+func (TreeRef) Validate() error
+func CanonicalArchiveByteLimit(maxContentBytes, maxEntries int64) (int64, error)
+func NewGrantSigner(key []byte, ttl time.Duration, clock func() time.Time) (*GrantSigner, error)
+func NewGrantVerifier(key []byte, maxTTL time.Duration, clock func() time.Time) (*GrantVerifier, error)
+func NewTreeRef(scope Scope, digest Digest, generation int64) (TreeRef, error)
+func TreeKey(prefix string, scope Scope, digest Digest) (string, error)
+func ValidateArchiveLimits(ctx context.Context, source io.Reader, limits TreeLimits) error
+func ValidateDeploymentPrefix(prefix string) error
+func ValidateTempDir(tempDir string) error
+type Canonicalizer struct { MaxEntries int64 MaxContentBytes int64 TempDir string }
+type CapturedTree struct { Root string ArchivePath string Digest Digest ByteSize int64 FileCount int64 }
+type Digest string
+type GrantSigner struct { }
+type GrantVerifier struct { }
+type Materializer struct { Store Store Canonicalizer Canonicalizer StoragePath string MaxTreeBytes int64 }
+type Scope string
+type Store interface { EnsureTree(context.Context, Scope, Digest, io.Reader, int64) (TreeAttributes, bool, error) InspectTree(context.Context, Scope, Digest, int64) (TreeAttributes, error) OpenTree(context.Context, TreeRef, int64) (io.ReadCloser, TreeAttributes, error) DeleteTree(context.Context, TreeRef) error }
+type TreeAttributes struct { Ref TreeRef StoredBytes int64 LogicalBytes int64 CreatedAt time.Time }
+type TreeLimits struct { MaxContentBytes int64 MaxEntries int64 }
+type TreeRef struct { Scope Scope Digest Digest Generation int64 }
+var ErrConflict
+var ErrCorrupt
+var ErrInfrastructure
+var ErrLimitExceeded
+var ErrNotFound
+var ErrUnauthorized

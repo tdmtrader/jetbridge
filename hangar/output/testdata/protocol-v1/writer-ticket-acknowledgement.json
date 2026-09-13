@@ -1,0 +1,24 @@
+{
+  "protocol_version": "hangar-output-v1",
+  "kind": "writer_ticket_issued",
+  "execution": {
+    "execution_id": "0f8a5b1c-3d2e-4a6f-9b70-1c2d3e4f5a6b",
+    "fence": 7
+  },
+  "activation_epoch": 3,
+  "ledger_sequence": 44,
+  "node_uid": "node-9f2b1d4c",
+  "pod_uid": "3f1b2c4d-5e6f-4708-9a1b-2c3d4e5f6071",
+  "handoff_id": "6b1e9d40-2a77-4c11-8f3e-5d0a9c8b7e62",
+  "source_lease_id": "a4d2c8f1-9e03-4b55-86ad-71f0c3e29b48",
+  "incarnation": {
+    "execution_id": "0f8a5b1c-3d2e-4a6f-9b70-1c2d3e4f5a6b",
+    "node_uid": "node-9f2b1d4c",
+    "handle_generation": 4,
+    "output": "built-image"
+  },
+  "writer_ticket_id": "d0c7b6a5-4e3f-4210-9876-543210fedcba",
+  "writer_fence": 2,
+  "observed_at": "2026-09-08T21:47:02.000000000Z",
+  "signature": "c2lnbmF0dXJlLXdyaXRlcg"
+}

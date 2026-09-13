@@ -2,8 +2,12 @@ package concourse
 
 import (
 	"encoding/json"
+	"go/parser"
+	"go/token"
+	"os"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -534,4 +538,275 @@ func TestHangarGCSStoreIsImportedOnlyByTheDaemon(t *testing.T) {
 				"cloud client.", pkg, hangarGCSPackage, pkg)
 		}
 	}
+}
+
+// The second seam this file defends, added by the Hangar output-publication
+// track under the owner's 2026-09-04 ruling on loupe finding hangar-2:
+//
+//	The durable cache tier and Hangar are separate stores, in both directions.
+//
+// cmd/artifact-daemon/durable is a fail-open, name-keyed cache. Its own file
+// says so: it "takes the key as given and never inspects it"
+// (cmd/artifact-daemon/durable_tier.go:19), the node-local copy "stays a cache
+// with a TTL" (:30), and "Nothing here may fail a build ... Every method
+// swallows its errors" (:33-35). That is exactly right for a resource cache,
+// which is re-derivable by re-running the get step — and exactly wrong for a
+// durable result, whose whole promise is that losing it is not recoverable by
+// re-running anything.
+//
+// So the tier never carries a Hangar or v4 result record, and Hangar never
+// reaches for the tier. The direction that actually protects the tier is the
+// second one: a Hangar import inside it is how a store whose errors are
+// swallowed acquires a caller who cannot tolerate that.
+const durableCacheTier = "cmd/artifact-daemon/durable"
+
+// durableTierFile is the file declaring DurableTier. It is checked separately
+// from the import graph because it is package main in cmd/artifact-daemon and
+// therefore unimportable — a graph clause naming it would be vacuous by
+// language rule, not by accident.
+const durableTierFile = "cmd/artifact-daemon/durable_tier.go"
+
+// excludedTree is one side of the rule.
+type excludedTree struct {
+	// name is the package path, which also matches everything beneath it.
+	name string
+	// requireNonEmpty says whether the tree must exist. hangar/ does and must:
+	// a rule about a tree that vanished is a rule that stopped applying.
+	// agent/ and atc/agent/ do not, matching the convention agenticPrefixes
+	// states above -- they are reserved for v4, and listing them now means the
+	// rule already binds when the first package arrives.
+	requireNonEmpty bool
+	why             string
+}
+
+var durableTierExcludedTrees = []excludedTree{
+	{
+		name:            "hangar",
+		requireNonEmpty: true,
+		why: "Hangar is the durable result plane. Its promise is that an exact tree survives " +
+			"payload reclamation and node loss; a tier that swallows its errors cannot make it",
+	},
+	{name: "agent", why: "reserved for v4"},
+	{name: "atc/agent", why: "reserved for v4"},
+}
+
+func inTree(pkg string, tree excludedTree) bool {
+	return pkg == tree.name || strings.HasPrefix(pkg, tree.name+"/")
+}
+
+// durableTierSeparation is the rule, as a pure function over an injected graph,
+// so that TestDurableTierSeparationGuardIsNotVacuous can drive it with a
+// fixture that violates it. An assertion that nothing was found is also what a
+// broken listing reports.
+func durableTierSeparation(graph importGraph, trees []excludedTree) []string {
+	var problems []string
+
+	if len(graph.all) == 0 {
+		return []string{"the import graph is empty; every clause below would pass vacuously"}
+	}
+	if len(trees) == 0 {
+		return []string{"no excluded tree is declared; this rule describes nothing"}
+	}
+
+	for _, tree := range trees {
+		members := 0
+		for pkg := range graph.all {
+			if inTree(pkg, tree) {
+				members++
+			}
+		}
+		if tree.requireNonEmpty && members == 0 {
+			problems = append(problems, "no package under "+tree.name+"/ is in the import graph, "+
+				"but this rule requires one. Either it was renamed or the listing failed; either "+
+				"way the clauses below would pass vacuously.")
+		}
+	}
+
+	// (a) Nothing in an excluded tree may reach the tier. Test edges count: a
+	// test dependency is how the production import arrives a week later.
+	for pkg, imports := range graph.all {
+		for _, tree := range trees {
+			if !inTree(pkg, tree) {
+				continue
+			}
+			for _, imported := range imports {
+				if imported != durableCacheTier {
+					continue
+				}
+				problems = append(problems, pkg+" imports "+durableCacheTier+": "+tree.why+". "+
+					"The durable tier is a fail-open cache; a durable result plane must not be "+
+					"built on a store whose every method swallows its errors.")
+			}
+		}
+	}
+
+	// (b) And the tier may not reach back. This is the direction that protects
+	// the tier: a Hangar import inside it gives a store designed to fail open a
+	// caller that cannot tolerate failing open.
+	for _, imported := range graph.all[durableCacheTier] {
+		for _, tree := range trees {
+			if !inTree(imported, tree) {
+				continue
+			}
+			problems = append(problems, durableCacheTier+" imports "+imported+": the tier is a "+
+				"resource cache and must stay one. Keeping a "+tree.name+" record in it is how "+
+				"a swallowed error becomes a lost result.")
+		}
+	}
+
+	return problems
+}
+
+func TestDurableTierAndHangarAreSeparateStores(t *testing.T) {
+	graph := loadImportGraph(t)
+
+	if _, ok := graph.all[durableCacheTier]; !ok {
+		t.Fatalf("%s is not in the import graph; this rule would pass vacuously", durableCacheTier)
+	}
+
+	scanned := 0
+	for pkg := range graph.all {
+		for _, tree := range durableTierExcludedTrees {
+			if inTree(pkg, tree) {
+				scanned++
+			}
+		}
+	}
+	if scanned == 0 {
+		t.Fatal("no package matched any excluded tree; the rule scanned nothing")
+	}
+	t.Logf("import graph has %d packages, %d of them in an excluded tree", len(graph.all), scanned)
+
+	for _, problem := range durableTierSeparation(graph, durableTierExcludedTrees) {
+		t.Errorf("%s", problem)
+	}
+}
+
+// TestDurableTierFileDoesNotImportHangar covers the half the import graph
+// cannot: DurableTier is declared in package main, which nothing can import, so
+// go list reports its edges under cmd/artifact-daemon along with the whole
+// daemon's -- including its legitimate hangar import. The file is therefore
+// read directly.
+func TestDurableTierFileDoesNotImportHangar(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), durableTierFile, nil, parser.ImportsOnly)
+	if err != nil {
+		t.Fatalf("parsing %s: %v", durableTierFile, err)
+	}
+	if len(file.Imports) == 0 {
+		t.Fatalf("%s declares no import at all; this check would pass vacuously", durableTierFile)
+	}
+
+	// The file must still be the one that declares DurableTier, or this test is
+	// guarding a path that moved.
+	body, err := os.ReadFile(durableTierFile)
+	if err != nil {
+		t.Fatalf("reading %s: %v", durableTierFile, err)
+	}
+	if !strings.Contains(string(body), "type DurableTier struct") {
+		t.Fatalf("%s no longer declares DurableTier. Point durableTierFile at the file that "+
+			"does, so this check keeps guarding the tier rather than a filename.", durableTierFile)
+	}
+
+	checked := 0
+	for _, spec := range file.Imports {
+		path, err := strconv.Unquote(spec.Path.Value)
+		if err != nil {
+			t.Errorf("unquoting an import in %s: %v", durableTierFile, err)
+			continue
+		}
+		checked++
+		if !strings.HasPrefix(path, modulePrefix) {
+			continue
+		}
+		short := strings.TrimPrefix(path, modulePrefix)
+		for _, tree := range durableTierExcludedTrees {
+			if inTree(short, tree) {
+				t.Errorf("%s imports %s: the tier is a resource cache whose every method "+
+					"swallows its errors. %s", durableTierFile, path, tree.why)
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatalf("no import in %s was readable; this check passed over nothing", durableTierFile)
+	}
+}
+
+// TestDurableTierSeparationGuardIsNotVacuous drives the rule with fixtures, the
+// way TestUnpinnedAgenticPackagesGuardFailsOnAnEmptyScan does for D9.
+func TestDurableTierSeparationGuardIsNotVacuous(t *testing.T) {
+	trees := []excludedTree{{name: "hangar", requireNonEmpty: true, why: "because"}}
+
+	t.Run("objects to an empty graph", func(t *testing.T) {
+		if problems := durableTierSeparation(importGraph{}, trees); len(problems) == 0 {
+			t.Fatal("the rule passed over an empty import graph. That is the vacuous green " +
+				"this assertion exists to prevent.")
+		}
+	})
+
+	t.Run("objects when the required tree is absent", func(t *testing.T) {
+		graph := importGraph{all: map[string][]string{
+			durableCacheTier: {},
+			"atc/db":         {"atc"},
+		}}
+		problems := durableTierSeparation(graph, trees)
+		if len(problems) == 0 {
+			t.Fatal("the rule passed over a graph with no hangar package at all")
+		}
+		if !strings.Contains(problems[0], "no package under hangar/") {
+			t.Errorf("first problem should name the missing tree, got: %q", problems[0])
+		}
+	})
+
+	t.Run("catches hangar reaching for the tier", func(t *testing.T) {
+		graph := importGraph{all: map[string][]string{
+			durableCacheTier: {},
+			"hangar":         {},
+			"hangar/output":  {durableCacheTier},
+		}}
+		problems := durableTierSeparation(graph, trees)
+		if len(problems) != 1 || !strings.Contains(problems[0], "hangar/output imports") {
+			t.Fatalf("expected exactly the hangar/output edge to be reported, got %v", problems)
+		}
+	})
+
+	t.Run("catches the tier reaching for hangar", func(t *testing.T) {
+		graph := importGraph{all: map[string][]string{
+			durableCacheTier: {"hangar"},
+			"hangar":         {},
+		}}
+		problems := durableTierSeparation(graph, trees)
+		if len(problems) != 1 || !strings.Contains(problems[0], durableCacheTier+" imports hangar") {
+			t.Fatalf("expected exactly the tier's own edge to be reported, got %v", problems)
+		}
+	})
+
+	t.Run("is silent on the shape core actually has", func(t *testing.T) {
+		graph := importGraph{all: map[string][]string{
+			durableCacheTier:      {},
+			"hangar":              {},
+			"hangar/gcs":          {"hangar"},
+			"cmd/artifact-daemon": {"hangar", "hangar/gcs", durableCacheTier},
+		}}
+		if problems := durableTierSeparation(graph, trees); len(problems) != 0 {
+			t.Errorf("expected no problems, got %v", problems)
+		}
+	})
+
+	// The trees that are deliberately allowed to be empty must not be reported
+	// as missing, or the convention agenticPrefixes states would be broken the
+	// moment this rule adopted it.
+	t.Run("does not require the reserved v4 trees to exist", func(t *testing.T) {
+		reserved := []excludedTree{
+			{name: "hangar", requireNonEmpty: true, why: "because"},
+			{name: "agent", why: "reserved for v4"},
+			{name: "atc/agent", why: "reserved for v4"},
+		}
+		graph := importGraph{all: map[string][]string{
+			durableCacheTier: {},
+			"hangar":         {},
+		}}
+		if problems := durableTierSeparation(graph, reserved); len(problems) != 0 {
+			t.Errorf("expected no problems, got %v", problems)
+		}
+	})
 }

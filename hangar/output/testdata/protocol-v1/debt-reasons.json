@@ -1,0 +1,9 @@
+[
+  "poison_metadata",
+  "corrupt_cursor",
+  "stat_failure",
+  "list_failure",
+  "unmanaged_object",
+  "marker_mismatch",
+  "generation_conflict"
+]
