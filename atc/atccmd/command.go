@@ -144,6 +144,11 @@ type RunCommand struct {
 	// once at startup rather than at the first receipt.
 	hangarOutputReceiptKeys hangaroutput.ReceiptKeyRing
 
+	// hangarOutputCapabilityMinter mints the capability every control call on
+	// the output daemon presents. Built once during startup validation, from
+	// the key the flag names, and handed to the worker factory.
+	hangarOutputCapabilityMinter *executioncontrol.CapabilityMinter
+
 	BindIP   flag.IP `long:"bind-ip"   default:"0.0.0.0" description:"IP address on which to listen for web traffic."`
 	BindPort uint16  `long:"bind-port" default:"8080"    description:"Port on which to listen for HTTP traffic."`
 
@@ -214,6 +219,10 @@ type RunCommand struct {
 		OutputDaemonPort                   int           `long:"kubernetes-hangar-output-daemon-port" default:"7781" description:"Control port of the node-local Hangar output daemon. It is a different daemon on a different port from the artifact daemon, because the two may not share a bucket and a Kubernetes service account is Pod-wide."`
 		OutputCaptureEnabled               bool          `long:"kubernetes-hangar-output-capture-enabled"   description:"Enable web-side durable output SELECTION. It is a second switch on top of --kubernetes-hangar-output-enabled: the base one wires the exact-execution control calls, this one is what lets an admitted task carry a capture at all. A worker whose output facet is not enabled builds no capture pod, and the refusal is at admission rather than an omission in the Pod."`
 		OutputCapabilityKey                string        `long:"kubernetes-hangar-output-capability-key"    description:"Path to the raw 32-byte key the control plane mints Hangar output CONTROL capabilities with. The output daemon verifies with the same key; nothing else holds it."`
+		OutputDaemonTLSCert                string        `long:"kubernetes-hangar-output-tls-cert"          description:"Path to the ATC's CLIENT certificate for the Hangar output daemon's control API. It is the output plane's own credential, issued in the same trust domain as the daemon's server Secret: the artifact daemon's is a different daemon, a different bucket and a different identity, and a certificate from its CA handshakes and is then refused by every control route."`
+		OutputDaemonTLSKey                 string        `long:"kubernetes-hangar-output-tls-key"           description:"Path to the private key for --kubernetes-hangar-output-tls-cert."`
+		OutputDaemonTLSCACert              string        `long:"kubernetes-hangar-output-tls-ca-cert"       description:"Path to the CA certificate the Hangar output daemon's SERVER certificate is verified against."`
+		OutputDaemonTLSServerName          string        `long:"kubernetes-hangar-output-tls-server-name"   description:"DNS name the output daemon's server certificate carries. The daemon is dialed at <node IP> and has no Service, and a node IP cannot be a SAN in a certificate issued before that node existed, so verification is against this name."`
 		OutputReceiptKeys                  string        `long:"kubernetes-hangar-output-receipt-keys"      description:"Path to the versioned receipt PUBLIC key ring. Verification material only: the control plane checks every receipt before registration and can sign none of them."`
 		OutputMaterializationKey           string        `long:"kubernetes-hangar-output-materialization-key" description:"Path to the exact 32-byte key output READ GRANTS are minted with, under the hangar-output-materialize-v1 domain. It is never the receipt key -- a grant must not be signable by anything that can mint a publication receipt -- and never the foundation's strict-input materialization key."`
 		OutputActivationEpoch              int64         `long:"kubernetes-hangar-output-activation-epoch"  description:"The activation epoch this control plane speaks for. Every capture records it; a stale label or handshake authorizes nothing."`
@@ -1351,6 +1360,10 @@ func (cmd *RunCommand) backendComponents(
 		k8sCfg.OutputPlaneEnabled = cmd.Kubernetes.OutputPlaneEnabled
 		k8sCfg.OutputActivationEpoch = cmd.Kubernetes.OutputActivationEpoch
 		k8sCfg.OutputDaemonPort = cmd.Kubernetes.OutputDaemonPort
+		k8sCfg.OutputDaemonTLSCert = cmd.Kubernetes.OutputDaemonTLSCert
+		k8sCfg.OutputDaemonTLSKey = cmd.Kubernetes.OutputDaemonTLSKey
+		k8sCfg.OutputDaemonTLSCACert = cmd.Kubernetes.OutputDaemonTLSCACert
+		k8sCfg.OutputDaemonTLSServerName = cmd.Kubernetes.OutputDaemonTLSServerName
 		if cmd.Kubernetes.CacheStore != "" && !jetbridge.ValidCacheStores[cmd.Kubernetes.CacheStore] {
 			return nil, fmt.Errorf("invalid --kubernetes-cache-store value %q (valid: hostpath, emptydir)", cmd.Kubernetes.CacheStore)
 		}
@@ -1395,11 +1408,7 @@ func (cmd *RunCommand) backendComponents(
 		})
 	}
 
-	components = append(components, cmd.hangarOutputCaptureComponent(dbConn))
-	components = append(components, cmd.hangarOutputReadLeaseCleanupComponent(dbConn))
-	if status := cmd.hangarOutputStatusComponent(dbConn); status != nil {
-		components = append(components, *status)
-	}
+	components = append(components, cmd.hangarOutputComponents(dbConn)...)
 
 	if syslogDrainConfigured {
 		components = append(components, RunnableComponent{
@@ -1496,6 +1505,10 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 		k8sCfg.OutputPlaneEnabled = cmd.Kubernetes.OutputPlaneEnabled
 		k8sCfg.OutputActivationEpoch = cmd.Kubernetes.OutputActivationEpoch
 		k8sCfg.OutputDaemonPort = cmd.Kubernetes.OutputDaemonPort
+		k8sCfg.OutputDaemonTLSCert = cmd.Kubernetes.OutputDaemonTLSCert
+		k8sCfg.OutputDaemonTLSKey = cmd.Kubernetes.OutputDaemonTLSKey
+		k8sCfg.OutputDaemonTLSCACert = cmd.Kubernetes.OutputDaemonTLSCACert
+		k8sCfg.OutputDaemonTLSServerName = cmd.Kubernetes.OutputDaemonTLSServerName
 		if cmd.Kubernetes.ImageRegistryPrefix != "" || cmd.Kubernetes.ImageRegistrySecret != "" {
 			k8sCfg.ImageRegistry = &jetbridge.ImageRegistryConfig{
 				Prefix:     cmd.Kubernetes.ImageRegistryPrefix,
@@ -1517,6 +1530,18 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 		factory.K8sConfig = &k8sCfg
 		factory.K8sExecutor = jetbridge.NewSPDYExecutor(k8sClientset, k8sRestConfig)
 		factory.K8sArtifactLocator = cmd.k8sArtifactLocator
+		if k8sCfg.OutputPlaneEnabled && cmd.hangarOutputCapabilityMinter != nil {
+			// The output daemon's control API, reachable from the worker that
+			// would use it. Inert until something selects a capture -- nothing
+			// assigns ContainerSpec.ExecutionControl in this track, which is
+			// the sibling's first piece -- and this is what stops the
+			// capability key being a secret the process validates and never
+			// opens.
+			factory.K8sOutputControls = jetbridge.NewOutputControls(k8sCfg,
+				jetbridge.NewNodeIPResolver(k8sClientset),
+				cmd.hangarOutputCapabilityMinter,
+				executioncontrol.ActivationEpoch(k8sCfg.OutputActivationEpoch))
+		}
 
 		if k8sCfg.ArtifactDaemonService != "" {
 			daemonPort := k8sCfg.ArtifactDaemonPort
@@ -1609,6 +1634,41 @@ func (cmd *RunCommand) gcComponents(
 	components = append(components, newPipelineRunReclaimerComponent(dbPipelineRunReclaimLifecycle, time.Now, cmd.PipelineRunReclaimBatch))
 
 	return components, nil
+}
+
+// hangarOutputComponents is everything the output plane contributes to the
+// component table, and the one place the plane's own flag decides whether any
+// of it runs.
+//
+// TWO OF THE THREE RAN ON EVERY DEPLOYMENT. The capture advancer and the
+// read-lease cleanup were appended outside both the Kubernetes block and any
+// output-plane check, so an upgraded deployment that never opted in -- a
+// non-Kubernetes one included -- grew two `components` rows, two advisory
+// locks and two queries a minute, for a plane it does not have. Each pass is
+// one bounded indexed SELECT rolled back immediately, so the cost was small;
+// Req 59 asks for a deployment with capture disabled to behave as it did
+// before, and "small" is not that.
+//
+// The status component keeps its own additional condition, and it is a
+// different question: the flag says this deployment HAS an output plane, and
+// the activation epoch says there is one to describe. A status surface
+// reporting "0 live generations, not at risk" about a plane nobody has
+// activated is an alert rule that will never fire looking exactly like
+// coverage.
+func (cmd *RunCommand) hangarOutputComponents(dbConn db.DbConn) []RunnableComponent {
+	if !cmd.Kubernetes.OutputPlaneEnabled {
+		return nil
+	}
+
+	components := []RunnableComponent{
+		cmd.hangarOutputCaptureComponent(dbConn),
+		cmd.hangarOutputReadLeaseCleanupComponent(dbConn),
+	}
+	if status := cmd.hangarOutputStatusComponent(dbConn); status != nil {
+		components = append(components, *status)
+	}
+
+	return components
 }
 
 // hangarOutputCaptureComponent advances every incomplete durable output
@@ -2655,6 +2715,52 @@ func (cmd *RunCommand) validateHangarOutputPlane() error {
 			"daemon presents a capability minted with it, and a control plane that cannot mint " +
 			"one can make no call at all")
 	}
+	// THE EPOCH BELONGS TO THE BASE FACET TOO, and this gate asked for it only
+	// under capture. Every capability -- base or capture -- carries the
+	// activation epoch in its claims and CapabilityClaims.Validate refuses a
+	// zero, so a base-only deployment with no epoch is one whose every control
+	// call fails at mint time. The chart has always refused it in the same
+	// block that requires the capability key; this is the half that catches a
+	// deployment that did not come from the chart.
+	if cmd.Kubernetes.OutputActivationEpoch <= 0 {
+		return errors.New("--kubernetes-hangar-output-activation-epoch is required when " +
+			"--kubernetes-hangar-output-enabled is set: every capability this control plane " +
+			"mints names the epoch it was minted under, and zero is the absence of one")
+	}
+	// READ HERE rather than at the first call, for the reason the receipt ring
+	// is read here: a control plane that cannot mint is one that will make no
+	// call at all, and "minted nothing" and "minted successfully" are the same
+	// observable outcome on any path that discovers the problem late. Until
+	// this, the flag was required, compared with two other flags for
+	// distinctness, and never opened -- a validated secret whose validation
+	// was a statement about a file nobody had looked at.
+	//
+	// The consumer is the worker factory, which hands every jetbridge Worker
+	// the resolver built from this minter. NOTHING SELECTS A CAPTURE YET, so
+	// no production path spends a capability; what this removes is the gap
+	// between a startup refusal and what it was refusing about.
+	capabilityKey, err := os.ReadFile(cmd.Kubernetes.OutputCapabilityKey)
+	if err != nil {
+		return fmt.Errorf("--kubernetes-hangar-output-capability-key: %w", err)
+	}
+	minter, err := executioncontrol.NewCapabilityMinter(capabilityKey,
+		executioncontrol.MaxCapabilityTTL, nil)
+	if err != nil {
+		return fmt.Errorf("--kubernetes-hangar-output-capability-key: %w", err)
+	}
+	cmd.hangarOutputCapabilityMinter = minter
+	// The output plane's transport is TLS, and only TLS: the daemon's control
+	// API has no plaintext branch and its routes refuse an operation whose
+	// request carries no VERIFIED peer certificate. A partially-configured or
+	// absent client credential is therefore not a weaker deployment, it is one
+	// that fails at the first capture instead of at startup.
+	if err := jetbridge.ValidateOutputDaemonTLSFlags(
+		cmd.Kubernetes.OutputDaemonTLSCert,
+		cmd.Kubernetes.OutputDaemonTLSKey,
+		cmd.Kubernetes.OutputDaemonTLSCACert,
+	); err != nil {
+		return err
+	}
 	if err := output.ValidateSealDeadline(cmd.Kubernetes.OutputSealDeadline); err != nil {
 		return fmt.Errorf("--kubernetes-hangar-output-seal-deadline: %w", err)
 	}
@@ -2678,11 +2784,6 @@ func (cmd *RunCommand) validateHangarOutputPlane() error {
 	}
 	if !cmd.Kubernetes.OutputCaptureEnabled {
 		return nil
-	}
-	if cmd.Kubernetes.OutputActivationEpoch <= 0 {
-		return errors.New("--kubernetes-hangar-output-activation-epoch is required when " +
-			"--kubernetes-hangar-output-capture-enabled is set: every capture records the " +
-			"epoch it was admitted under, and zero is the absence of one")
 	}
 	if cmd.Kubernetes.OutputReceiptKeys == "" {
 		return errors.New("--kubernetes-hangar-output-receipt-keys is required when " +

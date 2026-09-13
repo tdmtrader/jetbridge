@@ -478,6 +478,32 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o artifact-daemon-linux-amd64 ./cmd/artifact-daemon
           ls -lh artifact-daemon-linux-amd64
 
+          # The Hangar output plane's five commands. The chart runs every one of
+          # them by absolute path out of THIS image, and this task -- not
+          # Dockerfile.build, which no release path uses -- is what produces it.
+          # A command missing here is five CrashLoopBackOffs with "no such file
+          # or directory" on a Pod nobody is watching;
+          # deploy/chart/tests/image_parity_test.go reads this file's heredoc
+          # below for exactly that reason.
+          #
+          # Four isolated roles and the internal activation command. Four and
+          # not one because a Kubernetes service account is Pod-wide: the
+          # publisher may create and get, inventory may list and get, the
+          # reclaimer may get and delete, and the attestor holds no object
+          # permission at all. They share an image because an image is not an
+          # identity.
+          echo "=== Building hangar-output-daemon binary ==="
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o hangar-output-daemon-linux-amd64 ./cmd/hangar-output-daemon
+          echo "=== Building hangar-output-inventory binary ==="
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o hangar-output-inventory-linux-amd64 ./cmd/hangar-output-inventory
+          echo "=== Building hangar-output-reclaimer binary ==="
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o hangar-output-reclaimer-linux-amd64 ./cmd/hangar-output-reclaimer
+          echo "=== Building hangar-output-policy-attestor binary ==="
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o hangar-output-policy-attestor-linux-amd64 ./cmd/hangar-output-policy-attestor
+          echo "=== Building hangar-output-activate binary ==="
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o hangar-output-activate-linux-amd64 ./cmd/hangar-output-activate
+          ls -lh hangar-output-*-linux-amd64
+
           # Every platform, in the RC image -- not deferred to release.
           #
           # fly/rc/target.go hard-errors on a MAJOR.MINOR mismatch against the
@@ -581,6 +607,11 @@ jobs:
           echo "=== Copying binaries to builder pod ==="
           kubectl cp concourse-linux-amd64 cicd/${BUILDER_POD}:/tmp/concourse-linux-amd64
           kubectl cp artifact-daemon-linux-amd64 cicd/${BUILDER_POD}:/tmp/artifact-daemon-linux-amd64
+          for command in hangar-output-daemon hangar-output-inventory \
+                         hangar-output-reclaimer hangar-output-policy-attestor \
+                         hangar-output-activate; do
+            kubectl cp "${command}-linux-amd64" "cicd/${BUILDER_POD}:/tmp/${command}-linux-amd64"
+          done
           kubectl cp fly-assets cicd/${BUILDER_POD}:/tmp/fly-assets
 
           # The runtime base (ubuntu + ca-certificates + dumb-init) is built
@@ -618,8 +649,13 @@ jobs:
           FROM ${BASE_IMAGE}
           COPY concourse-linux-amd64 /usr/local/concourse/bin/concourse
           COPY artifact-daemon-linux-amd64 /usr/local/concourse/bin/artifact-daemon
+          COPY hangar-output-daemon-linux-amd64 /usr/local/concourse/bin/hangar-output-daemon
+          COPY hangar-output-inventory-linux-amd64 /usr/local/concourse/bin/hangar-output-inventory
+          COPY hangar-output-reclaimer-linux-amd64 /usr/local/concourse/bin/hangar-output-reclaimer
+          COPY hangar-output-policy-attestor-linux-amd64 /usr/local/concourse/bin/hangar-output-policy-attestor
+          COPY hangar-output-activate-linux-amd64 /usr/local/concourse/bin/hangar-output-activate
           COPY fly-assets /usr/local/concourse/fly-assets
-          RUN chmod +x /usr/local/concourse/bin/concourse /usr/local/concourse/bin/artifact-daemon
+          RUN chmod +x /usr/local/concourse/bin/*
           ENV PATH="/usr/local/concourse/bin:\${PATH}"
           ENTRYPOINT ["dumb-init", "concourse"]
           DOCKERFILE

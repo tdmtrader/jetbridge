@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"os"
 	"time"
 
 	"github.com/concourse/concourse/hangar/executioncontrol"
@@ -54,4 +55,24 @@ func (config controllerConfig) namespace() (output.OutputNamespace, error) {
 		TenantID:         config.Tenant,
 		ActivationEpoch:  executioncontrol.ActivationEpoch(config.ActivationEpoch),
 	})
+}
+
+// dsnEnvironmentVariable is where this command reads its PostgreSQL connection
+// string when --database is not given, and is how the chart supplies it.
+//
+// Not `--database=$(HANGAR_OUTPUT_DSN)`: the kubelet expands $(VAR) in args, so
+// the credential lands in /proc/<pid>/cmdline, which is world-readable inside
+// the container. /proc/<pid>/environ is readable only by the process's own uid.
+// The flag stays, because a developer running this by hand has no environment
+// set up for it and a flag is the honest way to say so.
+const dsnEnvironmentVariable = "HANGAR_OUTPUT_DSN"
+
+// resolveDSN fills the connection string from the environment when the flag
+// left it empty.
+func resolveDSN(dsn string) string {
+	if dsn != "" {
+		return dsn
+	}
+
+	return os.Getenv(dsnEnvironmentVariable)
 }

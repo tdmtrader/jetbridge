@@ -273,6 +273,37 @@ func (inventory *Inventory) classify(attrs objectstore.Attrs) (output.InventoryO
 	marker, err := output.ParseObjectMarker(attrs.Metadata)
 	switch {
 	case err == nil:
+		// The marker has to be a marker FOR THIS KEY, and that comparison was
+		// missing.
+		//
+		// Every later step builds the TreeRef out of the marker: the adoption
+		// pass reads (scope, digest) off it, AdoptionRequest.Validate then
+		// checks Marker.Matches(request.Ref) against the ref it just built from
+		// that same marker, and a check both sides of which come from one
+		// source is a check that cannot fail. A validly-marked object at a key
+		// its own (scope, digest) does not derive would be adopted; the
+		// lifecycle row would name a ref whose derived key is somewhere else;
+		// the real object would never be reclaimed; and the eventual
+		// conditional delete at the derived key would 404 into a FALSE
+		// reclaimed_inferred. Req 45's "verified output marker" is this
+		// comparison.
+		//
+		// Reachability is bounded by Req 53's residual trust boundary -- only
+		// the publisher principal can create a marked object, and it derives
+		// the key -- so this is defence in depth. DebtMarkerMismatch's own doc
+		// comment already promised it.
+		derived, keyErr := hangar.TreeKey(inventory.namespace.Prefix(), marker.Scope, marker.Digest)
+		if keyErr != nil {
+			return output.InventoryObject{},
+				inventory.debtFor(attrs, output.DebtMarkerMismatch, keyErr.Error()), false
+		}
+		if derived != attrs.Key {
+			return output.InventoryObject{}, inventory.debtFor(attrs, output.DebtMarkerMismatch,
+				fmt.Sprintf("the marker names scope %s digest %s, which derives the key %s, and "+
+					"this object is at %s. A marker is evidence about the object it is on",
+					marker.Scope, marker.Digest, derived, attrs.Key)), false
+		}
+
 		// A marker carrying another epoch's scope is still this deployment's
 		// object and still managed; it is just not this epoch's, which is what
 		// the marker's own epoch says.

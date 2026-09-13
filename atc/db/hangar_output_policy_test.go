@@ -261,6 +261,74 @@ var _ = Describe("the lifetime-policy admission gate", func() {
 		})
 	})
 
+	Describe("whose clock an attestation is dated by", func() {
+		// THE FRESHNESS BOUND COMPARED TWO CLOCKS. The admission gate asks
+		// whether now() - observed_at is inside fifteen minutes; now() is
+		// PostgreSQL's and observed_at was stamped by the attestor process. An
+		// attestor running fast therefore made stale evidence look fresh for
+		// as long as its clock was wrong, which is the whole of the bounded-
+		// staleness promise defeated by NTP.
+		record := func(observedAt time.Time) error {
+			GinkgoHelper()
+			tx := begin()
+			defer db.Rollback(tx)
+
+			if err := repository.RecordPolicyAttestation(ctx, tx, output.PolicySnapshot{
+				ProtocolVersion:      output.ProtocolVersion,
+				ActivationEpoch:      1,
+				BucketFingerprint:    "gs://output-bucket",
+				Metageneration:       9,
+				PolicyHash:           "sha256:safe",
+				LifecycleDeleteRules: 0,
+				State:                output.PolicySafe,
+				ObservedAt:           output.NewTimestamp(observedAt),
+			}, nil); err != nil {
+				return err
+			}
+
+			return tx.Commit()
+		}
+		observedAtOf := func() time.Time {
+			GinkgoHelper()
+			var observed time.Time
+			Expect(dbConn.QueryRow(`SELECT observed_at FROM hangar_policy_snapshots
+				ORDER BY id DESC LIMIT 1`).Scan(&observed)).To(Succeed())
+
+			return observed
+		}
+
+		It("does not let an attestor's fast clock buy freshness it did not earn", func() {
+			Expect(record(time.Now().Add(5 * time.Minute))).To(Succeed())
+
+			var future bool
+			Expect(dbConn.QueryRow(`SELECT observed_at > now() FROM hangar_policy_snapshots
+				ORDER BY id DESC LIMIT 1`).Scan(&future)).To(Succeed())
+			Expect(future).To(BeFalse(),
+				"an observation is dated after the transaction that recorded it, so an attestor "+
+					"whose clock runs fast makes evidence the gate reads as fresher than it is")
+		})
+
+		It("refuses a reading from a clock that is wrong by more than the bound", func() {
+			err := record(time.Now().Add(2 * time.Hour))
+			Expect(err).To(MatchError(output.ErrIncomplete))
+			Expect(err.Error()).To(ContainSubstring("ahead of the database clock"),
+				"a two-hour skew was silently corrected, so the attestor stays wrong about "+
+					"every other instant it stamps and nobody is told")
+		})
+
+		It("keeps an observation that really was made earlier", func() {
+			// The non-vacuity. Without this the two above would pass against a
+			// writer that stamped now() and discarded the attestor's reading,
+			// which would make a hung pass's hour-old evidence look current --
+			// the same defect in the other direction.
+			earlier := time.Now().Add(-9 * time.Minute)
+			Expect(record(earlier)).To(Succeed())
+			Expect(observedAtOf()).To(BeTemporally("~", earlier, time.Second),
+				"the stored observation is not the one the attestor made; a reading taken nine "+
+					"minutes ago was recorded as current")
+		})
+	})
+
 	Describe("what an attestation records", func() {
 		It("keeps the findings when the snapshot they came from is superseded", func() {
 			finding := output.PolicyFinding{

@@ -1795,7 +1795,15 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				To(Succeed())
 
 			// The canceller starts while the row still reads live, and blocks
-			// on the publisher's lock at its UPDATE.
+			// on the publisher's lock at the capture row.
+			//
+			// That block is now the SUFFIX's rather than the bare UPDATE's --
+			// the cancellation takes class 3 on the way in -- and the
+			// correlation this reservation resolves to appears while it waits,
+			// which is the one window hangarLockTerminalCapture cannot lock
+			// ahead of and says so at its site. What this vector asserts is
+			// unchanged: the cancellation lands, and it lands on the far side
+			// of the publish point.
 			cancelled := make(chan error, 1)
 			go func() {
 				racing, err := dbConn.Begin()

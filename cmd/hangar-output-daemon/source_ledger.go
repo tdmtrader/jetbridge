@@ -352,6 +352,19 @@ func (ledger *SourceLedger) ResolveIncarnation(incarnation output.SourceIncarnat
 	// than followed, even to a location inside the tree. The bytes a capture
 	// seals are the ones the producer wrote, and a link is somebody saying they
 	// are somewhere else.
+	//
+	// A HARD link is the gap in that sentence, and what closes it is the mount
+	// shape rather than this check. tarDirectory classifies by entry.Info(),
+	// which is an lstat, so a hard link is an ordinary regular file and its
+	// bytes are copied into the sealed tree -- measured: a file created outside
+	// the capture root and hard-linked in publishes cleanly, while every
+	// symlink spelling of the same move is refused. It is closed today because
+	// the managed hostPath is mounted into INIT containers only (read-only for
+	// the daemon's own, read-write for the cleanup one) and never into the main
+	// container or a sidecar, which receive the per-output volumes instead. So
+	// the producer and its sidecars can see no path to link FROM. If that mount
+	// shape ever changes, the hard-link case reopens and this check does not
+	// catch it.
 	info, err := ledger.steps.Lstat(relative)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -498,20 +511,57 @@ func (ledger *SourceLedger) admitCapture(handoff output.HandoffID,
 	return record, nil
 }
 
-// AdmitCaptureFence is the fence check on its own, for the attestation route.
+// AdmitCaptureFence is the fence check on its own, for the attestation route,
+// and it answers with the WRITER fence this node admitted for that source.
 //
 // Signing a receipt reads no source bytes -- it is a stat against the object
 // store -- so it has no other reason to reach this ledger, and Req 10 lists
 // signing among the things a stale owner may not do.
+//
+// The writer fence comes back because a receipt claims one, and it was the only
+// claim in the whole receipt taken verbatim from the caller. The control plane
+// filled it with a CAST OF THE CAPTURE FENCE and then revalidated it against
+// that same capture fence, so the comparison could not fail for any receipt
+// this plane produced -- while Req 25 names the two as separate bound claims
+// and AC 9 asks for tamper and replay across both. They are separate fences
+// with separate writers: a capture-lease takeover moves the capture fence and
+// leaves writer admission exactly where it was. Nothing observed the
+// conflation because the writer fence is the constant 1 today.
+//
+// This node is the authority for it. The source ledger is where writer tickets
+// are issued and where the fence they were issued at is durable, so the
+// attestation takes the value from here the way it already takes the ref from a
+// fresh stat and the epoch from the daemon's own namespace.
 func (ledger *SourceLedger) AdmitCaptureFence(handoff output.HandoffID,
 	execution executioncontrol.Identity, epoch executioncontrol.ActivationEpoch,
-	fence output.CaptureFence) error {
+	fence output.CaptureFence) (output.WriterFence, error) {
 	ledger.mu.Lock()
 	defer ledger.mu.Unlock()
 
-	_, err := ledger.admitCapture(handoff, execution, epoch, fence)
+	record, err := ledger.admitCapture(handoff, execution, epoch, fence)
+	if err != nil {
+		return 0, err
+	}
 
-	return err
+	return record.writerFence(), nil
+}
+
+// writerFence is the writer-admission epoch this node has admitted for the
+// source: the highest fence any ticket was issued at, floored at the fence of
+// an incarnation nobody has been fenced out of.
+//
+// The floor is not a guess. A capture whose producer wrote nothing has no
+// ticket and still has a writer-admission epoch, and a receipt must be able to
+// claim it: ReceiptClaims.Validate refuses zero.
+func (record sourceRecord) writerFence() output.WriterFence {
+	fence := output.FirstWriterFence
+	for _, ticket := range record.Tickets {
+		if ticket.WriterFence > fence {
+			fence = ticket.WriterFence
+		}
+	}
+
+	return fence
 }
 
 func (ledger *SourceLedger) next() executioncontrol.LedgerSequence {

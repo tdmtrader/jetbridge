@@ -382,12 +382,14 @@ secrets:
 networkPolicy:
   # -- Enable NetworkPolicy resources for the web pod and the bundled database.
   #
-  # This switch does NOT emit a policy for the artifact daemon. It used to, and
-  # the policy it emitted carried the same name as the daemon's own template's,
+  # This switch no longer emits its OWN copy of the artifact daemon's policy. It
+  # used to, and that copy carried the same name as the daemon's own template's,
   # so with both switches on one namespace held one object and apply order
-  # decided which rules were in the cluster. The daemon's policy now has exactly
-  # one switch -- artifactDaemon.networkPolicy.enabled -- and one selector that
-  # covers one-off builds and checks as well as pipeline jobs.
+  # decided which rules were in the cluster. There is now one template, with one
+  # selector that covers one-off builds and checks as well as pipeline jobs --
+  # and it renders under EITHER switch, so an install that has this one set
+  # keeps its daemon policy across the upgrade. A pod selected by no
+  # NetworkPolicy is not default-deny; it is unrestricted.
   enabled: false
 
   # -- Allow ingress from these pod selectors to the web pod.
@@ -724,7 +726,7 @@ artifactDaemon:
 #   policy attestor
 #     storage.buckets.get, storage.buckets.getIamPolicy
 #
-# and two of those grants are weaker than they read, so they are written down
+# and three of those grants are weaker than they read, so they are written down
 # here rather than discovered:
 #
 #   * storage.objects.get is BODY-CAPABLE. GCS has no metadata-only object
@@ -737,12 +739,44 @@ artifactDaemon:
 #     application-level property and not an IAM one. That is why inventory is
 #     the only workload granted list at all, and why the output bucket contains
 #     nothing but output-plane objects.
+#   * storage.objects.create IS THE OVERWRITE PERMISSION. GCS has no create-only
+#     object permission: a principal that may create an object at a key may also
+#     replace the object already at that key, so the publisher can DESTROY a
+#     published object without holding storage.objects.delete. What stops it is
+#     not IAM. It is the code -- every publish is conditional on the object not
+#     existing (ifGenerationMatch=0), so a second create at a live key is
+#     refused by the store rather than allowed to overwrite -- together with the
+#     dedicated bucket, which is why the bucket holds nothing but this plane's
+#     objects. An operator approving "create only" for the publisher is
+#     approving overwrite, and the argument that it is safe lives in the
+#     publisher role, not here.
 #
-# No runtime principal holds lifecycle or IAM MUTATION on the bucket. Policy
-# administration stays an operator trust root, and requirement 53's residual
-# boundary is exactly that: Hangar cannot attest every organization-level
-# credential, and a cloud administrator can delete objects it manages. What it
-# can do is notice, within the 15-minute attestation bound, and say so.
+# PERMISSIONS NO RUNTIME PRINCIPAL HOLDS. An absent grant is a promise, and a
+# promise nobody wrote down is one the next role addition breaks by accident.
+# These are the ones whose absence the design leans on:
+#
+#   storage.objects.update
+#     The permission that REWRITES an object's metadata, and therefore its
+#     ownership marker. Requirement 22's "the publisher cannot update the
+#     marker" is what the whole immutable-marker argument rests on: a marker
+#     that can be rewritten is not evidence of who created an object. It is
+#     forbidden to all four principals -- including the publisher, which is the
+#     one that would want it -- and note that roles/storage.objectAdmin and
+#     roles/storage.objectUser GRANT it, so "the reclaimer just has objectAdmin"
+#     is not a compatible binding.
+#   storage.objects.delete
+#     Held by the reclaimer alone. It is the only destructive permission in the
+#     plane and the entire reason the reclaimer is a separate Pod under a
+#     separate identity.
+#   storage.buckets.update, storage.buckets.setIamPolicy
+#     Lifecycle rules and IAM policy. The attestor READS the policy and can
+#     change nothing; a monitor that can rewrite what it monitors is not one.
+#
+# Policy administration stays an operator trust root, and requirement 53's
+# residual boundary is exactly that: Hangar cannot attest every
+# organization-level credential, and a cloud administrator can delete objects it
+# manages. What it can do is notice, within the 15-minute attestation bound, and
+# say so.
 hangarOutput:
   # -- The BASE facet: exact execution control.
   #
@@ -767,6 +801,15 @@ hangarOutput:
     # It is NOT the receipt key and NOT the read-grant key; an activation epoch
     # pins the three separately so rotating one does not rotate the others.
     keySecret: ""
+    # -- Key id of the control key above, and the id every node in the cohort
+    # reports over the attestation handshake. Required whenever enabled.
+    #
+    # It names KEY MATERIAL and not the Secret. This used to render the Secret
+    # NAME, so two nodes holding different private keys under one Secret name
+    # reported one id and a cohort half-way through a control-key rollout
+    # attested as homogeneous on the base facet's only key material. Move this
+    # value when you move the key, exactly as receipt.keyID is moved.
+    keyID: ""
 
   # -- Existing Secret holding capability.key: the raw 32 bytes control
   # capabilities are minted and verified with, shared between the control plane
@@ -853,11 +896,46 @@ hangarOutput:
   daemon:
     # -- Control API port.
     port: 7781
-    # -- Existing Secret with tls.crt/tls.key/ca.crt for the control API. The
-    # ATC calls this daemon from another node, and a bearer capability over
-    # plaintext off-node is interceptable inside its TTL.
+    # -- The control API's TLS, which is the OUTPUT plane's own trust domain.
+    #
+    # This daemon is TLS-only. Its listener is wrapped unconditionally and its
+    # control routes refuse any operation whose request carries no VERIFIED
+    # peer certificate, so there is no plaintext mode to fall back to and no
+    # switch to turn it off. `artifactDaemon.tls.enabled` is a DIFFERENT
+    # daemon's switch, on a different bucket under a different identity, and it
+    # has nothing to say about this plane.
+    #
+    # WHAT AN OPERATOR MUST PROVISION, and the chart cannot check any of it:
+    #
+    #   * one certificate authority for the output plane. `existingSecret`'s
+    #     ca.crt must verify `clientSecret`'s certificate and vice versa. Two
+    #     independently-issued Secrets complete a handshake and are then
+    #     refused by every control route, which looks like an authorization bug
+    #     and is a trust-domain one;
+    #   * the SERVER certificate in `existingSecret` must carry `serverName`
+    #     below as a DNS SAN. The ATC dials this daemon at <node IP> -- there is
+    #     no Service -- and a node IP cannot be a SAN in a certificate issued
+    #     before the node existed, so the ATC verifies against that name
+    #     instead;
+    #   * the CLIENT certificate in `clientSecret` is what the ATC and the
+    #     `attest` activation Job present. It is a separate Secret because
+    #     `existingSecret` holds tls.key, the key this daemon SERVES with:
+    #     whatever holds it can impersonate the daemon to the ATC.
     tls:
+      # -- Existing Secret with tls.crt/tls.key/ca.crt: the certificate this
+      # daemon SERVES with. Mounted in the output daemon Pod and nowhere else.
+      # Required whenever executionControl.enabled is true.
       existingSecret: ""
+      # -- Existing Secret with tls.crt/tls.key/ca.crt: the CLIENT certificate
+      # the ATC and the attest Job present to this daemon. Issued by the same
+      # CA as existingSecret, and never the same Secret. Required whenever
+      # executionControl.enabled is true.
+      clientSecret: ""
+      # -- DNS name the server certificate above carries, and the name the ATC
+      # verifies it against. Empty derives
+      # <fullname>-hangar-output-daemon.<namespace>.svc; it need not resolve,
+      # it only has to be in the certificate.
+      serverName: ""
     # -- Private control directory, inside the managed artifact hostPath. It
     # holds the execution and source ledgers and is excluded from every sweep.
     controlPath: /var/concourse/artifacts/hangar-output-control
@@ -886,9 +964,19 @@ hangarOutput:
       # -- Override the rendered name. Leave empty for
       # <fullname>-hangar-output-daemon.
       name: ""
-      # -- Workload Identity annotation, e.g.
-      # iam.gke.io/gcp-service-account: publisher@project.iam.gserviceaccount.com
-      # The chart cannot verify the binding; activation does.
+      # -- Workload Identity annotation. REQUIRED for all four output roles
+      # when the output facet is on:
+      #
+      #   annotations:
+      #     iam.gke.io/gcp-service-account: publisher@project.iam.gserviceaccount.com
+      #
+      # The policy attestor compares the output bucket's IAM policy against
+      # these four CLOUD members -- they are what --publisher-identity and its
+      # three siblings carry. The chart cannot verify the binding; activation
+      # does, and it can only do so if it is told what the binding is. An
+      # undeclared one is refused rather than rendered, because an empty member
+      # matches no binding and is indistinguishable from a principal that
+      # genuinely holds nothing.
       annotations: {}
     resources: {}
     nodeSelector: {}
@@ -929,7 +1017,9 @@ hangarOutput:
     replicas: 1
     # -- Refresh interval for the whole-bucket lifecycle-policy read. Evidence
     # older than 15 minutes is stale and the plane goes at-risk, so this is a
-    # third of that by default.
+    # third of that by default and the chart refuses anything above 15m: a
+    # longer interval does not make detection slower, it makes the plane
+    # at-risk between every pass.
     interval: "5m"
     serviceAccount:
       name: ""
@@ -960,6 +1050,13 @@ hangarOutput:
       # what is still live; with it the facet may reach the terminal disabled
       # state, and only if the live tables say it holds nothing.
       finalize: false
+      # -- How long a completed activation Job is kept before Kubernetes
+      # deletes it. The Job's name carries the mode AND the epoch, so a
+      # rotation renders a NEW Job rather than colliding with the previous
+      # epoch's immutable pod template -- which means they accumulate, one per
+      # mode per epoch, without this. A day is long enough to read the logs.
+      # Empty or 0 keeps them forever.
+      ttlSecondsAfterFinished: 86400
 
   networkPolicy:
     # -- Enable NetworkPolicies for the four output workloads.

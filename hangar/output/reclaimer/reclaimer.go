@@ -120,9 +120,13 @@ func (reclaimer *Reclaimer) DeleteExactGeneration(ctx context.Context, ref hanga
 		return output.DeleteInfrastructure, err
 	}
 
+	// The generation and only the generation. The registered metageneration is
+	// evidence about the object, not a condition on removing it: a benign
+	// metadata change moves it without moving the generation, and a delete
+	// conditioned on the recorded value 412s forever against an object nobody
+	// has touched the bytes of. See DeletePrecondition.
 	conditions := objectstore.Conditions{
-		GenerationMatch:     precondition.Generation,
-		MetagenerationMatch: precondition.Metageneration,
+		GenerationMatch: precondition.Generation,
 	}
 	if err := conditions.Validate(); err != nil {
 		return output.DeleteInfrastructure, err
@@ -137,11 +141,31 @@ func (reclaimer *Reclaimer) DeleteExactGeneration(ctx context.Context, ref hanga
 	case err == nil:
 		return output.DeleteConfirmed, nil
 
+	case errors.Is(err, objectstore.ErrBucketNotFound):
+		// The BUCKET is gone, or was never this one. That is not absence of an
+		// object and must never be reported as any kind of reclamation: a
+		// controller pointed at the wrong bucket would otherwise finalize every
+		// admitted job in a registered set as its own successful deletion while
+		// every object was still there.
+		return output.DeleteInfrastructure, fmt.Errorf("%w: deleting %s: the bucket does not "+
+			"exist. This is a misconfiguration or a deleted bucket, and it is never absence of "+
+			"an object: %v", output.ErrInfrastructure, key, err)
+
 	case errors.Is(err, objectstore.ErrNotFound):
 		// Absent. Whether this plane removed it is a question for the reclaim
-		// job's own evidence: absence with a prior admitted delete is inferred
-		// reclamation, and absence without one is an out-of-band lifetime
-		// violation. This method reports what it saw and does not decide.
+		// job's own evidence: absence with a prior admitted delete whose
+		// response was LOST is inferred reclamation, and absence with no such
+		// attempt is an out-of-band lifetime violation. This method reports
+		// what it saw and does not decide.
+		//
+		// It cannot decide, and the reason is measured rather than assumed: the
+		// JSON API answers an object delete in a bucket that does not exist
+		// with an ordinary object 404, so this arm is reached by "the object is
+		// gone", "somebody else removed it" and "this process is pointed at the
+		// wrong bucket" alike. Only the control plane's own record of what this
+		// job previously attempted can tell them apart, which is why the
+		// inference lives there and under the schema's evidence trigger rather
+		// than here.
 		return output.DeleteAlreadyAbsent, nil
 
 	case errors.Is(err, objectstore.ErrPreconditionFailed):
@@ -186,6 +210,9 @@ func (reclaimer *Reclaimer) ObserveExactAbsence(ctx context.Context, ref hangar.
 	switch {
 	case err == nil:
 		return false, nil
+	case errors.Is(err, objectstore.ErrBucketNotFound):
+		return false, fmt.Errorf("%w: the bucket does not exist, which is not absence of an "+
+			"object: %v", output.ErrInfrastructure, err)
 	case errors.Is(err, objectstore.ErrNotFound):
 		return true, nil
 	case errors.Is(err, objectstore.ErrUnauthorized):

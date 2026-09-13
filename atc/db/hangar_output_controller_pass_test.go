@@ -202,6 +202,14 @@ var _ = Describe("the output-plane controller passes", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 
+		// THE BUCKET EXISTS, because a deployment's does. The tier-1 store
+		// started modelling bucket existence when a missing bucket stopped
+		// being indistinguishable from an empty one (GCS-F2), and a fixture
+		// that never creates one makes every sweep over a bucket with no
+		// objects in it yet answer "bucket not found" -- which is a true
+		// answer to a question this fixture did not mean to ask.
+		store.CreateBucket(namespace.Bucket())
+
 		hangarActivateEpoch(ctx, repository)
 	})
 
@@ -707,6 +715,87 @@ var _ = Describe("the output-plane controller passes", func() {
 			Expect(err).To(MatchError(output.ErrTimeout))
 			Expect(lifecycleStateOf(second)).To(Equal("reclaiming"),
 				"a job the store did not answer for was closed rather than left open")
+		})
+
+		It("refuses to call an absence it never deleted its own successful deletion", func() {
+			// GCS-F2. The object API cannot tell "gone because we deleted it
+			// and lost the answer" from "gone because something else removed
+			// it" -- a 404 is a 404, and a delete in a bucket that does not
+			// exist at all answers already_absent too. The distinction is not
+			// in the store's answer and never can be; it is in this job's own
+			// attempt history, which is why it is decided here.
+			//
+			// Before this, the pass inferred on the FIRST attempt, because the
+			// attempt row was committed microseconds before the call and the
+			// schema asked only whether one existed. "A prior admitted delete"
+			// was true by construction, so a wrong --output-prefix or a deleted
+			// bucket finalized every registered generation as this plane's own
+			// successful deletions, with the epoch never leaving healthy.
+			ref := published(hangarDigest(87))
+			healthy := published(hangarDigest(91))
+			ageRegistration(ref, output.DefaultPublicationGrace+time.Hour)
+			key, err := hangar.TreeKey(namespace.Prefix(), ref.Scope, ref.Digest)
+			Expect(err).NotTo(HaveOccurred())
+
+			admitted, err := newAdmission().Run(ctx, leaseFor(output.OperationReclaimAdmission))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(admitted).To(Equal(1))
+
+			// Somebody else's deletion, between the admission and the delete.
+			// This plane has admitted a job and made no call at all.
+			Expect(store.ObjectToDelete(namespace.Bucket(), key).Delete(ctx)).To(Succeed())
+
+			_, err = newDeletes().Run(ctx, leaseFor(output.OperationReclaimDelete))
+			Expect(err).To(MatchError(output.ErrAtRisk),
+				"a pass that found its object already gone on its FIRST attempt reported a "+
+					"healthy reclamation")
+
+			Expect(lifecycleStateOf(ref)).NotTo(Equal("reclaimed_inferred"),
+				"the plane claimed a deletion it never made: nothing it did can explain this "+
+					"absence, and inferring from an attempt whose response never went missing "+
+					"is inferring from the attempt it just wrote itself")
+			Expect(lifecycleStateOf(ref)).To(Equal("missing_out_of_band"))
+			Expect(openViolations()).To(ConsistOf(string(output.ViolationOutOfBandAbsence)))
+			Expect(policyStateOf(1)).To(Equal("at_risk"))
+			Expect(admissionRefusal(healthy)).To(ContainSubstring("at_risk"),
+				"the plane went on admitting new protection into a bucket whose objects are "+
+					"disappearing")
+		})
+
+		It("still infers a deletion whose response it really did lose", func() {
+			// The other side of the branch above, and the thing that stops it
+			// being "never infer anything". The attempt that timed out is what
+			// makes the later absence this plane's own: a delete WAS issued
+			// and its answer never arrived, which is the exact state Req 49
+			// calls inferred rather than confirmed.
+			ref := published(hangarDigest(92))
+			ageRegistration(ref, output.DefaultPublicationGrace+time.Hour)
+			key, err := hangar.TreeKey(namespace.Prefix(), ref.Scope, ref.Digest)
+			Expect(err).NotTo(HaveOccurred())
+
+			admitted, err := newAdmission().Run(ctx, leaseFor(output.OperationReclaimAdmission))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(admitted).To(Equal(1))
+
+			// The delete lands and the answer is lost. The job stays open.
+			store.Inject(gcstest.Faults{DeleteTimeout: true})
+			_, err = newDeletes().Run(ctx, leaseFor(output.OperationReclaimDelete))
+			Expect(err).To(MatchError(output.ErrTimeout))
+			Expect(lifecycleStateOf(ref)).To(Equal("reclaiming"))
+
+			// It really did land: the object is gone, and the next pass finds
+			// it absent with a lost response of its own behind it.
+			store.Inject(gcstest.Faults{})
+			Expect(store.ObjectToDelete(namespace.Bucket(), key).Delete(ctx)).To(Succeed())
+
+			advanced, err := newDeletes().Run(ctx, leaseFor(output.OperationReclaimDelete))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(advanced).To(Equal(1))
+			Expect(lifecycleStateOf(ref)).To(Equal("reclaimed_inferred"))
+			Expect(openViolations()).To(BeEmpty(),
+				"a deletion this plane issued and lost the answer to was reported as somebody "+
+					"else removing the object")
+			Expect(policyStateOf(1)).NotTo(Equal("at_risk"))
 		})
 
 		It("puts the epoch at risk when the store refuses the reclaimer a delete it is configured to make", func() {

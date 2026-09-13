@@ -95,6 +95,15 @@ type LeaseQuestion struct {
 
 	// RequiredRemainingSeconds is the work the daemon is about to start, or
 	// zero for a release. The DATABASE decides whether that fits.
+	//
+	// A validate or a renew may not name ZERO, and that refusal is Req 36's
+	// margin rather than tidiness. "Work starts only with the operation's
+	// timeout plus two minutes remaining" is enforced by this number and by
+	// nothing else -- the database's check is
+	// `expires_at < now() + required_remaining` -- so a caller that passes zero
+	// degenerates the whole rule to "not yet expired", and a read admitted with
+	// thirty seconds left starts and is cut off mid-transfer. Every production
+	// caller passed zero.
 	RequiredRemainingSeconds int64 `json:"required_remaining_seconds"`
 
 	IssuedAt  Timestamp `json:"issued_at"`
@@ -128,6 +137,14 @@ func (question LeaseQuestion) Validate() error {
 	if question.Operation == LeaseRelease && question.RequiredRemainingSeconds != 0 {
 		return fmt.Errorf("%w: a release names work it is about to start; a release starts none",
 			ErrIncomplete)
+	}
+	if question.Operation != LeaseRelease && question.RequiredRemainingSeconds == 0 {
+		return fmt.Errorf("%w: a %s names no work at all. Req 36 lets work begin only with the "+
+			"operation's timeout plus %s remaining, and the database applies that as "+
+			"`expires_at < now() + required_remaining` -- so zero asks only whether the lease "+
+			"has expired, which is a different and much weaker rule. The bound itself stays the "+
+			"caller's to compute, because only the caller knows what it is about to start",
+			ErrIncomplete, question.Operation, LeaseStartMargin)
 	}
 	if question.Signature == "" {
 		return fmt.Errorf("%w: a lease question is unsigned", ErrUnsigned)

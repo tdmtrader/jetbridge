@@ -1261,9 +1261,24 @@ func TestATakeoverCarriesTheCaptureThroughToRegistration(t *testing.T) {
 			if record.Receipt == nil {
 				t.Fatal("the new owner published an object and could never obtain a receipt for it")
 			}
-			if record.Receipt.Claims.WriterFence != output.WriterFence(2) {
-				t.Errorf("the receipt is bound to writer fence %d and the takeover holds 2",
-					record.Receipt.Claims.WriterFence)
+			// THE TWO FENCES ARE NOT ONE NUMBER, and a takeover is where
+			// that stops being a distinction without a difference. The capture
+			// fence moved 1 -> 2 above: the new owner owns the capture. The
+			// WRITER fence did not move and must not have -- nobody took the
+			// source incarnation over, the tickets the original Pod holds are
+			// still the tickets that exist, and the node's ledger says so. This
+			// assertion read `== 2` while the receipt's writer fence was a cast
+			// of the capture fence the control plane itself supplied, so it was
+			// the conflation written down as an expectation.
+			if record.Receipt.Claims.WriterFence != output.FirstWriterFence {
+				t.Errorf("the receipt is bound to writer fence %d after a CAPTURE takeover; the "+
+					"capture fence moved to %d and the writer fence is a different claim, about "+
+					"who was admitted to write the source",
+					record.Receipt.Claims.WriterFence, record.CaptureFence)
+			}
+			if output.WriterFence(record.CaptureFence) == record.Receipt.Claims.WriterFence {
+				t.Error("the capture fence and the writer fence are the same number after a " +
+					"takeover, so this case cannot tell one from the other")
 			}
 			if keys := h.bucketKeys(t); len(keys) != 1 {
 				t.Errorf("the takeover created %d object(s): %v", len(keys), keys)

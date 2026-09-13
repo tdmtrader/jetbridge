@@ -80,6 +80,12 @@ var reachabilityTrees = []string{
 	// The controllers' composition. These packages exist BECAUSE four
 	// capabilities had no production caller, so they are the last place that
 	// should be allowed to grow a fifth.
+	// The activation surface. The enable step's ten typed preconditions
+	// shipped implemented, tested and called by nothing -- the third instance
+	// of this defect on this track -- because this tree was outside the rule
+	// while every other composition root was inside it.
+	"atc/hangaroutput/activation",
+
 	"atc/hangaroutput/inventorypass",
 	"atc/hangaroutput/reclaimpass",
 	"atc/hangaroutput/attestpass",
@@ -128,6 +134,8 @@ var deferredEntryPoints = []deferredEntryPoint{
 
 	{name: "DeriveCohortFindings", why: cohortIdentities},
 
+	{name: "Rotate", pkg: "atc/hangaroutput/activation", why: rotationHasNoOperatorPath},
+
 	// The managed read's daemon half. It is composed in specs against the real
 	// control plane and the real materializer, and nothing in production builds
 	// one yet: a managed read reaches a consumer pod through a lease acquired
@@ -164,6 +172,13 @@ const (
 		"off the list"
 	cohortIdentities = "mixed-cohort detection needs a per-role observed identity the IAM read " +
 		"does not return; Phase 8, with the activation verification"
+	rotationHasNoOperatorPath = "rotation is the only one of the five transitions with no " +
+		"operator path: the activation command has four modes and the chart's activation Job " +
+		"renders those four, so neither a receipt-key rotation nor an epoch handover can be " +
+		"asked for. Wiring it is a fifth mode, a second epoch flag and the Job name that " +
+		"carries both, and it belongs with the first rotation rather than ahead of the first " +
+		"activation: this plane ships dormant, and an epoch nobody has enabled has nothing to " +
+		"rotate off"
 	separateAbsenceStat = "the delete pass's own answer already reports absence; a separate " +
 		"stat belongs to the ambiguous-response recovery path in Phase 8"
 	runnerBeliefIsNotAuthority = "Holds is read by the liveness specs and by the Phase 8 " +

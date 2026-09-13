@@ -199,9 +199,18 @@ func TestTheCleanupInitAsksTheLedgerBeforeRemovingAnything(t *testing.T) {
 	script := strings.Join(cleanup.Command, " ")
 
 	for _, want := range []string{
-		"/capture-held/steps/reused-handle", // it asks
-		`"class":"unmanaged"`,               // and only then removes
-		`"class":"held"`,                    // a held source is a refusal
+		// It asks, about THIS handle. The handle reaches the URL through a
+		// shell variable rather than by interpolation, because it used to be
+		// interpolated into `rm -rf`, into this URL and into the messages
+		// below with nothing between it and the shell's parser -- see
+		// TestTheCleanupScriptTreatsAHandleAsOneWord, which runs the script.
+		// So the two halves are asserted separately: the handle is bound once,
+		// as one quoted word, and the question is asked about what it is bound
+		// to.
+		"HANDLE='reused-handle'",
+		"/capture-held/steps/${HANDLE}",
+		`"class":"unmanaged"`, // and only then removes
+		`"class":"held"`,      // a held source is a refusal
 		"rm -rf",
 		"exit 1",
 	} {
@@ -694,5 +703,49 @@ func TestTheLedgerClassifierIsAssignedInExactlyOnePlace(t *testing.T) {
 		t.Errorf("the ledger classifier is assigned in %v; it is assigned once, in "+
 			"newContainer, because a second site is a second answer to \"does this container "+
 			"ask the ledger\" and only the first one is pinned", sites)
+	}
+}
+
+// The output plane's scheme does not move with the artifact daemon's switch.
+//
+// It used to. Both output-plane call sites asked `daemonURLScheme`, a predicate
+// over `ArtifactDaemonTLSEnabled`, which the chart derives from
+// `artifactDaemon.tls.enabled` -- a different daemon, a different bucket, a
+// different identity, and false by default. The output daemon's control API has
+// no plaintext branch at all, so under the chart's own documented values the
+// generated hold dialed `http://` at an HTTPS listener, was answered "Client
+// sent an HTTP request to an HTTPS server", and the producer never started.
+//
+// Both directions are asserted, because a rule that only checks the default
+// would pass on a scheme that follows the wrong flag upward.
+func TestTheControlInitDialsHTTPSWhateverTheArtifactDaemonsTLSSwitchSays(t *testing.T) {
+	for _, artifactTLS := range []bool{false, true} {
+		cfg := capturePodConfig(true)
+		cfg.ArtifactDaemonTLSEnabled = artifactTLS
+
+		script := capturingContainer(t, cfg, false, admittedCapture()).
+			buildCaptureControlInitContainer().Command[2]
+
+		fallback := "https://${" + captureEnvHostIP + "}:${" + captureEnvOutputPort + "}"
+		if !strings.Contains(script, fallback) {
+			t.Errorf("with ArtifactDaemonTLSEnabled=%v the control init composes no %q; the "+
+				"output daemon is TLS-only and a plaintext dial is refused at the transport, "+
+				"before any capability is read",
+				artifactTLS, fallback)
+		}
+		if strings.Contains(script, "http://${"+captureEnvHostIP+"}") {
+			t.Errorf("with ArtifactDaemonTLSEnabled=%v the control init composes a plaintext "+
+				"dial at the output daemon", artifactTLS)
+		}
+		if !strings.Contains(script, `WGET_OPTS="--no-check-certificate"`) {
+			t.Errorf("with ArtifactDaemonTLSEnabled=%v the control init passes no "+
+				"--no-check-certificate; it dials its own node by IP, which can be no "+
+				"certificate SAN, so the handshake fails however correct the deployment is",
+				artifactTLS)
+		}
+	}
+
+	if got := outputDaemonURLScheme(); got != "https" {
+		t.Errorf("outputDaemonURLScheme is %q", got)
 	}
 }

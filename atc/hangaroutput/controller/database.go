@@ -125,10 +125,25 @@ type SQLTransactor struct {
 	// CommitError classifies a commit failure in the output leaf's vocabulary.
 	// It is a function rather than an import so that this package, which the
 	// three controllers share, does not name the database package they wire.
+	//
+	// It is REQUIRED, and Begin refuses without it. It stayed optional with a
+	// silent fallback for several phases, which made a fourth controller one
+	// forgotten field away from reading a denial as an ambiguous commit and
+	// retrying it forever -- and the symptom of that would appear nowhere near
+	// the wiring that caused it. Wiring is a programming error, not a runtime
+	// condition, so it is refused where it is made.
 	CommitError func(error) error
 }
 
 func (transactor SQLTransactor) Begin() (Transaction, error) {
+	if transactor.CommitError == nil {
+		return nil, fmt.Errorf("%w: a controller transactor was wired with no commit error "+
+			"classifier. Two of this plane's constraint triggers are deferred, so their "+
+			"refusals arrive at COMMIT as a bare driver error; without a classifier a denial "+
+			"is indistinguishable from a lost answer and the controller retries it forever. "+
+			"Pass db.HangarCommitError.", output.ErrIncomplete)
+	}
+
 	tx, err := transactor.DB.BeginTx(context.Background(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("%w: beginning a controller transaction: %v",
@@ -151,13 +166,10 @@ func (transaction sqlTransaction) QueryContext(ctx context.Context, query string
 	return transaction.tx.QueryContext(ctx, query, args...)
 }
 
+// Commit maps unconditionally: Begin refuses a transactor with no classifier,
+// so there is no transaction here that has one to fall back from.
 func (transaction sqlTransaction) Commit() error {
-	err := transaction.tx.Commit()
-	if transaction.commitError == nil {
-		return err
-	}
-
-	return transaction.commitError(err)
+	return transaction.commitError(transaction.tx.Commit())
 }
 
 func (transaction sqlTransaction) Rollback() error { return transaction.tx.Rollback() }

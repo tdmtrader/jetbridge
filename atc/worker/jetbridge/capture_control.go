@@ -126,8 +126,8 @@ func (c *Container) buildCaptureControlInitContainer() *corev1.Container {
 	return &corev1.Container{
 		Name:  captureControlInitName,
 		Image: c.helperImage(),
-		Command: []string{"sh", "-c", captureHoldScript(daemonURLScheme(c.config),
-			wgetTLSOptions(c.config))},
+		Command: []string{"sh", "-c", captureHoldScript(outputDaemonURLScheme(),
+			outputWgetTLSOptions())},
 		Env: append([]corev1.EnvVar{
 			{Name: captureEnvProtocol, Value: output.ProtocolVersion},
 			{Name: captureEnvEndpoint, Value: control.Endpoint},
@@ -190,13 +190,14 @@ func downwardAPIPodAndNodeFields() []corev1.EnvVar {
 // a refusal and a malformed body are all "no hold", and no hold means the
 // producer does not start.
 //
-// The scheme and the wget options are the deployment's, not this file's. J6
-// wrapped the output daemon's ONE listener in tls.NewListener, so the
-// node-local hold exemption is a client-CERTIFICATE exemption and not a
-// plaintext port: a script that hard-coded `http://` is answered "Client sent
-// an HTTP request to an HTTPS server" and the producer never starts. Both come
-// from the same two helpers the cleanup init has used since the artifact daemon
-// got mTLS, so there is one spelling of "is TLS on" per pod.
+// The scheme and the wget options come from the OUTPUT plane's own two
+// helpers, and no longer from the artifact daemon's. J6 wrapped the output
+// daemon's ONE listener in tls.NewListener, so the node-local hold exemption is
+// a client-CERTIFICATE exemption and not a plaintext port: a script that
+// hard-coded `http://` -- or that derived its scheme from
+// `artifactDaemon.tls.enabled`, a switch belonging to a different daemon and
+// false by default, which is what it used to do -- is answered "Client sent an
+// HTTP request to an HTTPS server" and the producer never starts.
 func captureHoldScript(scheme, wgetOpts string) string {
 	return fmt.Sprintf(`
 set -u

@@ -196,14 +196,35 @@ spec:
             - --kubernetes-hangar-output-enabled
             - --kubernetes-hangar-output-daemon-port={{ .Values.hangarOutput.daemon.port }}
             - --kubernetes-hangar-output-capability-key=/etc/concourse/hangar-output/capability/capability.key
+            # The OUTPUT plane's client certificate, its CA and the name the
+            # daemon's server certificate carries. Unconditional, because the
+            # output daemon is TLS-only: it has no plaintext branch and its
+            # control routes refuse every operation whose request carries no
+            # verified peer certificate. This used to be derived from
+            # artifactDaemon.tls.enabled -- a different daemon's switch, false
+            # by default -- so the ATC dialed http:// at an HTTPS listener, and
+            # when that switch was on it presented the artifact daemon's
+            # certificate to a daemon that trusts a different CA.
+            - --kubernetes-hangar-output-tls-cert=/etc/concourse/hangar-output/tls/tls.crt
+            - --kubernetes-hangar-output-tls-key=/etc/concourse/hangar-output/tls/tls.key
+            - --kubernetes-hangar-output-tls-ca-cert=/etc/concourse/hangar-output/tls/ca.crt
+            - --kubernetes-hangar-output-tls-server-name={{ include "concourse.hangarOutput.daemonTLSServerName" . }}
             - --kubernetes-hangar-output-seal-deadline={{ .Values.hangarOutput.sealDeadline }}
             - --kubernetes-hangar-output-capture-deadline={{ .Values.hangarOutput.captureDeadline }}
             - --kubernetes-hangar-output-lease-term={{ .Values.hangarOutput.leaseTerm }}
             - --kubernetes-hangar-output-lease-renew-interval={{ .Values.hangarOutput.leaseRenewInterval }}
+            # THE EPOCH BELONGS TO THE BASE FACET, and it used to render only
+            # under the capture one. Every capability this node mints -- base
+            # or capture -- carries the activation epoch in its claims, and a
+            # capability claiming epoch zero is refused before it is signed. So
+            # a base-only deployment rendered a control plane whose every call
+            # would fail at mint time, while this chart's own validation
+            # already required hangarOutput.activationEpoch under the base
+            # switch: the value was demanded and then not passed on.
+            - --kubernetes-hangar-output-activation-epoch={{ int .Values.hangarOutput.activationEpoch }}
             {{- if .Values.hangarOutput.enabled }}
             - --kubernetes-hangar-output-receipt-keys=/etc/concourse/hangar-output/receipt-keys/receipt-keys.json
             - --kubernetes-hangar-output-materialization-key=/etc/concourse/hangar-output/materialize/materialize.key
-            - --kubernetes-hangar-output-activation-epoch={{ int .Values.hangarOutput.activationEpoch }}
             # The bucket and tenant reach web so the operator STATUS surface can
             # key a cursor by the same bucket the sweep does. They are server
             # configuration and never a request field: no task, consumer, path
@@ -331,6 +352,9 @@ spec:
             - name: hangar-output-capability
               mountPath: /etc/concourse/hangar-output/capability
               readOnly: true
+            - name: hangar-output-client-tls
+              mountPath: /etc/concourse/hangar-output/tls
+              readOnly: true
             {{- if .Values.hangarOutput.enabled }}
             - name: hangar-output-receipt-keys
               mountPath: /etc/concourse/hangar-output/receipt-keys
@@ -406,6 +430,12 @@ spec:
         - name: hangar-output-capability
           secret:
             secretName: {{ .Values.hangarOutput.capabilityKeySecret }}
+        - name: hangar-output-client-tls
+          secret:
+            # The CLIENT certificate, and never the daemon's server Secret:
+            # that one holds the key the daemon serves with, and a web pod
+            # holding it could impersonate the output daemon to itself.
+            secretName: {{ .Values.hangarOutput.daemon.tls.clientSecret }}
         {{- if .Values.hangarOutput.enabled }}
         - name: hangar-output-receipt-keys
           configMap:

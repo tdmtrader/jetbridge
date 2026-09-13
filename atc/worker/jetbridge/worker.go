@@ -41,6 +41,17 @@ func (w *Worker) SetOutputControls(resolver OutputControlResolver) {
 	w.outputControls = resolver
 }
 
+// OutputControls is what this worker would reach the output daemon through.
+//
+// Nil is the ordinary deployment and means every exact-execution call is
+// unreachable -- which is what it was on EVERY deployment, because nothing
+// called the setter. It is readable so that the wiring can be asserted where
+// the wiring happens, rather than inferred from a startup validation that
+// opened no file.
+func (w *Worker) OutputControls() OutputControlResolver {
+	return w.outputControls
+}
+
 // NewWorker creates a new Worker backed by the given Kubernetes clientset.
 func NewWorker(dbWorker db.Worker, clientset kubernetes.Interface, config Config) *Worker {
 	nodeIPResolver := NewNodeIPResolver(clientset)

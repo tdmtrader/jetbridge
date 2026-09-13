@@ -23,7 +23,7 @@ func TestAManagedReadIsAdmittedByTheLeaseAndNotByTheGrant(t *testing.T) {
 	grant := admittedGrant(t, h)
 	fixture := newLeaseFixture(t, h, grant)
 
-	profile, err := output.NewLeaseReadProfile(fixture.Client, fixture.Grant)
+	profile, err := output.NewLeaseReadProfile(fixture.Client, fixture.Grant, time.Minute)
 	if err != nil {
 		t.Fatalf("building the profile: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestAFailedManagedReadStillReleasesItsLease(t *testing.T) {
 	grant := admittedGrant(t, h)
 	fixture := newLeaseFixture(t, h, grant)
 
-	profile, err := output.NewLeaseReadProfile(fixture.Client, fixture.Grant)
+	profile, err := output.NewLeaseReadProfile(fixture.Client, fixture.Grant, time.Minute)
 	if err != nil {
 		t.Fatalf("building the profile: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestReleasingTwiceIsNotAnError(t *testing.T) {
 	grant := admittedGrant(t, h)
 	fixture := newLeaseFixture(t, h, grant)
 
-	profile, err := output.NewLeaseReadProfile(fixture.Client, fixture.Grant)
+	profile, err := output.NewLeaseReadProfile(fixture.Client, fixture.Grant, time.Minute)
 	if err != nil {
 		t.Fatalf("building the profile: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestARenewalCarriesTheReMintedGrantForward(t *testing.T) {
 	grant := admittedGrant(t, h)
 	fixture := newLeaseFixture(t, h, grant)
 
-	profile, err := output.NewLeaseReadProfile(fixture.Client, fixture.Grant)
+	profile, err := output.NewLeaseReadProfile(fixture.Client, fixture.Grant, time.Minute)
 	if err != nil {
 		t.Fatalf("building the profile: %v", err)
 	}
@@ -146,13 +146,13 @@ func TestARenewalCarriesTheReMintedGrantForward(t *testing.T) {
 // A profile with no client or no grant is refused at construction, rather than
 // producing a materialization that reads without authority.
 func TestAProfileWithoutAuthorityIsRefusedAtConstruction(t *testing.T) {
-	if _, err := output.NewLeaseReadProfile(nil, "token"); err == nil {
+	if _, err := output.NewLeaseReadProfile(nil, "token", time.Minute); err == nil {
 		t.Error("a profile was built with no lease-control client")
 	} else if !strings.Contains(err.Error(), "never by a grant alone") {
 		t.Errorf("the refusal does not say why: %v", err)
 	}
 
-	if _, err := output.NewLeaseReadProfile(&output.LeaseControlClient{}, ""); err == nil {
+	if _, err := output.NewLeaseReadProfile(&output.LeaseControlClient{}, "", time.Minute); err == nil {
 		t.Error("a profile was built with no grant")
 	}
 }

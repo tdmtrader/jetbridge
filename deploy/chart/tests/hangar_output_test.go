@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/concourse/concourse/hangar/output"
+	"github.com/concourse/concourse/hangar/output/policy"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -46,8 +48,10 @@ var baseControlSets = []string{
 	"artifactDaemon.enabled=true",
 	"hangarOutput.executionControl.enabled=true",
 	"hangarOutput.executionControl.keySecret=op-control-key",
+	"hangarOutput.executionControl.keyID=control-key-7",
 	"hangarOutput.capabilityKeySecret=op-capability-key",
 	"hangarOutput.daemon.tls.existingSecret=op-output-daemon-tls",
+	"hangarOutput.daemon.tls.clientSecret=op-output-daemon-client-tls",
 	"hangarOutput.activationEpoch=7",
 	// Required under the BASE switch, not the output one: the DaemonSet, its
 	// scratch emptyDir and its --scratch-dir flag all render here.
@@ -69,6 +73,14 @@ var outputSets = append(append([]string{}, baseControlSets...),
 	"hangarOutput.receipt.publicKeys[0].key=cHVibGljLWtleS1ieXRlcw==",
 	"hangarOutput.materializationKeySecret=op-output-materialize",
 	"hangarOutput.database.existingSecret=op-activation-db",
+	// The four Workload Identity annotations. The output facet requires them:
+	// the policy attestor compares the bucket's IAM policy against these four
+	// members, so a plane that does not declare them can attest nothing. See
+	// hangar_output_principals_test.go.
+	`hangarOutput.daemon.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=publisher@p.iam.gserviceaccount.com`,
+	`hangarOutput.inventory.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=inventory@p.iam.gserviceaccount.com`,
+	`hangarOutput.reclaimer.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=reclaimer@p.iam.gserviceaccount.com`,
+	`hangarOutput.policyAttestor.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=attestor@p.iam.gserviceaccount.com`,
 )
 
 func renderBaseControl(t *testing.T, extra ...string) string {
@@ -217,6 +229,37 @@ func TestBaseControlRendersWithoutTheOutputFacet(t *testing.T) {
 		if hasObject(t, out, "Deployment", "-"+controller) {
 			t.Errorf("base control alone rendered %s; the controllers belong to the output "+
 				"facet and have nothing to sweep", controller)
+		}
+	}
+}
+
+// THE WEB NODE'S EPOCH RENDERED ONLY UNDER THE CAPTURE FACET.
+//
+// Every control capability the ATC mints -- base or capture -- carries the
+// activation epoch in its claims, and a capability claiming zero is refused
+// before it is signed. This chart's own validation has always required
+// hangarOutput.activationEpoch under the BASE switch, and then passed it to the
+// web node only when the capture facet was on: a base-only deployment rendered
+// a control plane whose every call to the daemon would fail at mint time. The
+// value was demanded and not handed over.
+func TestTheWebNodeIsGivenTheActivationEpochUnderTheBaseFacet(t *testing.T) {
+	web := objectNamed(t, renderBaseControl(t), "Deployment", "-web")
+
+	if !strings.Contains(web.body, "--kubernetes-hangar-output-activation-epoch=") {
+		t.Error("a base-control-only web node is given no activation epoch, so every control " +
+			"capability it mints names epoch zero and is refused before it is signed")
+	}
+	// And the capture facet's own flags are still the capture facet's: this
+	// moved one line, and a test that only asked for the epoch would pass
+	// against a base render that had quietly gained all of them.
+	for _, captureOnly := range []string{
+		"--kubernetes-hangar-output-receipt-keys=",
+		"--kubernetes-hangar-output-materialization-key=",
+		"--kubernetes-hangar-output-bucket=",
+	} {
+		if strings.Contains(web.body, captureOnly) {
+			t.Errorf("a base-control-only web node is given %s, which belongs to capture",
+				captureOnly)
 		}
 	}
 }
@@ -1135,6 +1178,19 @@ func TestTheChartDocumentsTheHonestGCSPermissions(t *testing.T) {
 	if !strings.Contains(strings.ToLower(body), "bucket-wide") {
 		t.Error("the documentation does not say that list authority is bucket-wide")
 	}
+	// The third weaker-than-it-reads grant, and the one an operator is most
+	// likely to approve without noticing: storage.objects.create IS the
+	// overwrite permission. GCS has no create-only object permission, so the
+	// publisher can destroy a published object without holding delete, and
+	// what makes that safe is the code's create-if-absent precondition and the
+	// dedicated bucket -- not IAM. The matrix said two such limits and there
+	// are three.
+	if !strings.Contains(strings.ToLower(body), "overwrite") {
+		t.Error("the documentation does not say that storage.objects.create is the OVERWRITE " +
+			"permission, so an operator reads the publisher's grant as create-only and the " +
+			"one thing that actually stops it destroying a published object -- the " +
+			"create-if-absent precondition in the code -- is written down nowhere they look")
+	}
 	if !strings.Contains(strings.ToLower(body), "does not create") &&
 		!strings.Contains(strings.ToLower(body), "never creates") {
 		t.Error("the documentation does not say the chart creates no bucket, lifecycle rule " +
@@ -1191,25 +1247,80 @@ var roleOperations = map[string]map[string]string{
 		"Generation": "",
 		"Object":     "",
 	},
+	// The attestor's capability is a CONCRETE type rather than a role
+	// interface -- hangar/gcs.BucketPolicySource is what the process holds --
+	// so its entry is keyed on that type's methods. It was absent entirely,
+	// which is how the fourth principal stayed outside a guard named for the
+	// whole matrix.
+	"policy_attestor": {
+		"ReadLifetimePolicy":    "storage.buckets.get",
+		"ReadPrincipalBindings": "storage.buckets.getIamPolicy",
+	},
 }
 
-// documentedRolePermissions is what deploy/chart/values.yaml tells an operator
-// to grant, per workload.
-var documentedRolePermissions = map[string][]string{
-	"publisher": {"storage.objects.create", "storage.objects.get"},
-	"inventory": {"storage.objects.list", "storage.objects.get"},
-	"reclaimer": {"storage.objects.get", "storage.objects.delete"},
+// roleCapabilitySource is where each principal's capability is DECLARED, and
+// what kind of declaration it is.
+//
+// Three roles are interfaces in their own package under hangar/output. The
+// attestor is a concrete type in hangar/gcs, because it holds a bucket handle
+// and not an object handle -- the difference the whole fourth identity exists
+// for. Both are read, so a new method on either is a permission somebody has
+// to have written down.
+var roleCapabilitySource = map[string]struct {
+	path     string
+	concrete string // empty means "every interface in the file"
+}{
+	"publisher":       {path: "hangar/output/publisher/publisher.go"},
+	"inventory":       {path: "hangar/output/inventory/inventory.go"},
+	"reclaimer":       {path: "hangar/output/reclaimer/reclaimer.go"},
+	"policy_attestor": {path: "hangar/gcs/lifetime.go", concrete: "BucketPolicySource"},
+}
+
+// documentedRolePermissions is what an operator must grant each workload, READ
+// FROM THE CODE THAT REQUIRES IT rather than copied here.
+//
+// It was three hand-written rows, and the fourth principal was not one of them:
+// the attestor's two bucket permissions were checked by a different test and
+// its capability by nothing, so "the documented IAM matrix" guarded three
+// quarters of the matrix. A role added to output.PrincipalRoles() inherited no
+// rule at all, silently -- the same shape as the defect this file exists for.
+//
+// The source of truth is policy.RequiredPermissions, which is what the ATTESTOR
+// compares a real IAM policy against. Deriving from it means the chart's prose,
+// the runtime conformance check and this guard cannot disagree: there is one
+// list, and values.yaml either names it or fails here.
+func documentedRolePermissions(t *testing.T) map[string][]string {
+	t.Helper()
+
+	permissions := map[string][]string{}
+	for _, role := range output.PrincipalRoles() {
+		required := policy.RequiredPermissions(role)
+		if len(required) == 0 {
+			t.Errorf("output.PrincipalRoles() names %q and policy.RequiredPermissions answers "+
+				"nothing for it. A principal with no required permissions is one the attestor "+
+				"cannot check, the chart cannot document and this rule cannot cover.", role)
+
+			continue
+		}
+		permissions[string(role)] = required
+	}
+	if len(permissions) < 4 {
+		t.Fatalf("derived %d principal roles; there are four, and this rule would cover only "+
+			"what it happened to find", len(permissions))
+	}
+
+	return permissions
 }
 
 func TestTheDocumentedIAMMatrixMatchesWhatEachRoleCanActuallyDo(t *testing.T) {
 	values := readChartFile(t, "values.yaml")
 	root := repoRoot(t)
 
-	for role, permissions := range documentedRolePermissions {
+	for role, permissions := range documentedRolePermissions(t) {
 		// Every documented permission appears in values.yaml, verbatim. A
 		// matrix an operator cannot copy is a matrix they will approximate.
 		for _, permission := range permissions {
-			if !strings.Contains(values, permission) {
+			if !namesPermission(values, permission) {
 				t.Errorf("deploy/chart/values.yaml does not name %s, which the %s role needs",
 					permission, role)
 			}
@@ -1218,16 +1329,42 @@ func TestTheDocumentedIAMMatrixMatchesWhatEachRoleCanActuallyDo(t *testing.T) {
 		// And the reverse: every method the role's own interfaces declare maps
 		// to a permission the documentation grants. A method with no mapping is
 		// a capability nobody wrote down.
-		methods := declaredRoleMethods(t, filepath.Join(root, "hangar", "output", role, role+".go"))
-		if len(methods) < 3 {
-			t.Fatalf("parsed only %d interface methods out of the %s role; the declaration "+
-				"moved and this rule would pass vacuously", len(methods), role)
+		source, declared := roleCapabilitySource[role]
+		if !declared {
+			t.Errorf("%s is one of output.PrincipalRoles() and roleCapabilitySource does not "+
+				"say where its capability is declared, so nothing checks what it can actually "+
+				"do against what the chart tells an operator to grant", role)
+
+			continue
+		}
+		var methods map[string]bool
+		if source.concrete == "" {
+			methods = declaredRoleMethods(t, filepath.Join(root, filepath.FromSlash(source.path)))
+		} else {
+			methods = declaredMethodsOnType(t,
+				filepath.Join(root, filepath.FromSlash(source.path)), source.concrete)
+		}
+		if len(methods) < 2 {
+			t.Fatalf("parsed only %d methods out of the %s role's capability at %s; the "+
+				"declaration moved and this rule would pass vacuously",
+				len(methods), role, source.path)
 		}
 
 		granted := map[string]bool{}
 		for _, permission := range permissions {
 			granted[permission] = true
 		}
+		// And no row for a method that is no longer declared. A mapping that
+		// outlives its method is how a guard keeps reporting on a capability
+		// nobody has any more, while the one that replaced it goes unmapped.
+		for method := range roleOperations[role] {
+			if !methods[method] {
+				t.Errorf("roleOperations maps %s.%s to a permission and %s declares no such "+
+					"method; the mapping outlived what it described",
+					role, method, source.path)
+			}
+		}
+
 		for method := range methods {
 			permission, known := roleOperations[role][method]
 			if !known {
@@ -1248,6 +1385,33 @@ func TestTheDocumentedIAMMatrixMatchesWhatEachRoleCanActuallyDo(t *testing.T) {
 					role, method, permission, permissions)
 			}
 		}
+	}
+}
+
+// namesPermission reports whether the documentation names this permission as
+// itself, rather than as the prefix of a longer one.
+//
+// SUBSTRING MATCHING MADE ONE ROW UNFALSIFIABLE. storage.buckets.get is a
+// prefix of storage.buckets.getIamPolicy, so deleting the attestor's read
+// permission from the matrix left this guard green -- measured, by deleting it.
+// Any permission that is a prefix of another has the same hole, and the set is
+// not fixed: it grows whenever Google adds a longer name beside a shorter one.
+func namesPermission(documentation, permission string) bool {
+	for offset := 0; ; {
+		index := strings.Index(documentation[offset:], permission)
+		if index < 0 {
+			return false
+		}
+		after := offset + index + len(permission)
+		if after >= len(documentation) {
+			return true
+		}
+		next := documentation[after]
+		if !(next >= 'a' && next <= 'z') && !(next >= 'A' && next <= 'Z') &&
+			!(next >= '0' && next <= '9') && next != '.' {
+			return true
+		}
+		offset = after
 	}
 }
 
@@ -1573,5 +1737,317 @@ func TestOnlyTheReclaimerPrincipalIsGrantedObjectDelete(t *testing.T) {
 	if !strings.Contains(runAs[0], "reclaimer") {
 		t.Fatalf("the account holding storage.objects.delete is used by %s, which is not the "+
 			"reclaimer", runAs[0])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The control key's identity
+// ---------------------------------------------------------------------------
+
+// A key id names KEY MATERIAL, and the chart used to give the control key the
+// name of its Secret.
+//
+// `--control-key-id={{ .executionControl.keySecret }}` means two nodes holding
+// different private keys under one Secret name report one id. Base attestation
+// collects `control_key_id` into the evidence bundle and the digest, so a
+// cohort half-way through a control-key rollout attests as homogeneous on the
+// base facet's ONLY key material -- and the in-place replacement that the
+// receipt key's ring rules refuse was unguarded for the control key precisely
+// because the id could not move.
+//
+// `receipt.keyID` has been a value of its own since Phase 8, with the ring rule
+// that a key id is never reused for different material and rotation creates a
+// new epoch. The control key now gets the same shape.
+func TestTheControlKeyIdNamesKeyMaterialAndNotItsSecret(t *testing.T) {
+	daemon := objectNamed(t, renderBaseControl(t), "DaemonSet", "-"+outputDaemonComponent)
+
+	id := ""
+	for _, line := range strings.Split(daemon.body, "\n") {
+		if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "- --control-key-id=") {
+			id = strings.TrimPrefix(trimmed, "- --control-key-id=")
+		}
+	}
+	if id == "" {
+		t.Fatal("the output daemon renders no --control-key-id; this rule would pass vacuously")
+	}
+	if id == "op-control-key" {
+		t.Error("--control-key-id carries hangarOutput.executionControl.keySecret, the SECRET " +
+			"NAME. Two nodes holding different key material under one Secret name then report " +
+			"one id, and base attestation compares ids: a cohort half-way through a " +
+			"control-key rollout attests as homogeneous.")
+	}
+
+	// The id moves independently of the Secret. Same Secret name, different
+	// key: a different id, which is the whole property.
+	rotated := objectNamed(t,
+		renderBaseControl(t, "hangarOutput.executionControl.keyID=control-key-8"),
+		"DaemonSet", "-"+outputDaemonComponent)
+	if !strings.Contains(rotated.body, "- --control-key-id=control-key-8") {
+		t.Error("hangarOutput.executionControl.keyID does not reach --control-key-id, so the " +
+			"id cannot be moved without renaming the Secret")
+	}
+	if !strings.Contains(rotated.body, "secretName: op-control-key") {
+		t.Error("the rotated render no longer mounts the same Secret; the two are supposed to " +
+			"be independent")
+	}
+}
+
+// An id shared across key ROLES is the same ambiguity one level up: a control
+// statement and a receipt say different things, and "which key checks this" has
+// to have one answer per id.
+func TestAKeyIdIsNotSharedBetweenTheControlReceiptAndReadGrantKeys(t *testing.T) {
+	for _, collision := range []string{
+		"hangarOutput.executionControl.keyID=receipt-7",
+		"hangarOutput.materializationKeyID=receipt-7",
+	} {
+		message := renderOutputError(t, collision)
+		if !strings.Contains(message, "key id") {
+			t.Errorf("%s was refused, but not by the key-id rule:\n%s", collision, message)
+		}
+	}
+}
+
+// The base facet cannot render without one. A daemon started with no id
+// refuses at startup (cmd/hangar-output-daemon/config.go), and the refusal an
+// operator most needs is the one at render time.
+func TestTheControlKeyIdIsRequiredWithTheBaseFacet(t *testing.T) {
+	message := renderHangarError(t, append(append([]string{}, baseControlSets...),
+		"hangarOutput.executionControl.keyID=")...)
+	if !strings.Contains(message, "executionControl.keyID") {
+		t.Errorf("an empty control key id rendered, or was refused by something else:\n%s",
+			message)
+	}
+}
+
+// forbiddenPermissionMatrix reads the second half of values.yaml's matrix: the
+// permissions no runtime principal holds, each with its reason.
+func forbiddenPermissionMatrix(t *testing.T) map[string]string {
+	t.Helper()
+
+	const marker = "PERMISSIONS NO RUNTIME PRINCIPAL HOLDS"
+
+	lines := strings.Split(readChartFile(t, "values.yaml"), "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.Contains(line, marker) {
+			start = i
+
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("deploy/chart/values.yaml no longer contains %q; the block moved and this "+
+			"rule would pass over nothing", marker)
+	}
+
+	forbidden := map[string]string{}
+	permission := ""
+	for _, line := range lines[start+1:] {
+		if !strings.HasPrefix(line, "#") {
+			break
+		}
+		body := strings.TrimPrefix(line, "#")
+		trimmed := strings.TrimSpace(body)
+		if trimmed == "" {
+			continue
+		}
+		indent := len(body) - len(strings.TrimLeft(body, " "))
+		switch {
+		case indent == 3 && strings.HasPrefix(trimmed, "storage."):
+			for _, name := range strings.Split(trimmed, ",") {
+				if name = strings.TrimSpace(name); name != "" {
+					forbidden[name] = ""
+					permission = name
+				}
+			}
+		case indent == 3:
+			// Prose resumed; the block is over.
+			return forbidden
+		case indent == 5 && permission != "":
+			forbidden[permission] += " " + trimmed
+		}
+	}
+
+	return forbidden
+}
+
+// Req 22: the publisher cannot update the marker.
+//
+// That sentence is what the ownership-evidence story rests on -- a marker that
+// can be rewritten is not evidence of who created an object -- and it was
+// enforced by nothing but the Go `Handle` type having no update method.
+// `storage.objects.update` was absent from this matrix, so nothing said the
+// absence was deliberate, and it is absent from `permissionsOf`'s role
+// expansion too, so even `roles/storage.objectAdmin` -- which really does grant
+// it -- is invisible to the attestation on that axis. This is the matrix half;
+// the expansion half is in hangar/gcs and hangar/output/policy.
+func TestTheMatrixForbidsRewritingTheOwnershipMarker(t *testing.T) {
+	const update = "storage.objects.update"
+
+	granted := documentedPermissionMatrix(t)
+	if len(granted) != 4 {
+		t.Fatalf("parsed %d workloads out of the granted matrix, not four", len(granted))
+	}
+	for workload, permissions := range granted {
+		for _, permission := range permissions {
+			if permission == update {
+				t.Errorf("the documented matrix grants %s to %s. It rewrites object "+
+					"metadata, which is the ownership marker: Req 22's \"the publisher "+
+					"cannot update the marker\" is the sentence the whole immutable-marker "+
+					"argument rests on.", update, workload)
+			}
+		}
+	}
+
+	forbidden := forbiddenPermissionMatrix(t)
+	if len(forbidden) < 3 {
+		t.Fatalf("parsed %d forbidden permissions out of values.yaml (%v); the block's shape "+
+			"changed and this rule would pass vacuously", len(forbidden), forbidden)
+	}
+	reason, named := forbidden[update]
+	if !named {
+		t.Errorf("values.yaml does not name %s among the permissions no runtime principal "+
+			"holds (it names %v).\n\n"+
+			"An absent grant is a promise, and this one is load-bearing: "+
+			"roles/storage.objectAdmin and roles/storage.objectUser both GRANT it, so an "+
+			"operator binding either one satisfies every other line of this matrix and "+
+			"breaks Req 22.", update, sortedForbidden(forbidden))
+
+		return
+	}
+	if !strings.Contains(reason, "marker") {
+		t.Errorf("%s is named but its reason does not mention the marker: %q", update, reason)
+	}
+}
+
+func sortedForbidden(forbidden map[string]string) []string {
+	var names []string
+	for name := range forbidden {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	return names
+}
+
+// ---------------------------------------------------------------------------
+// Two refusals the plane was missing
+// ---------------------------------------------------------------------------
+
+// The output plane cannot schedule a single pod without the artifact daemon.
+//
+// `BuildAffinity` seeds EVERY pod's required node affinity with
+// `concourse.dev/artifact-cache=ready` before it appends the two output labels,
+// and the only thing in the tree that sets that label is the artifact daemon.
+// With the daemon disabled no node ever carries it, so every capture pod -- and
+// every ordinary pod -- sits Pending until its deadline expires, and the failure
+// names a timeout rather than a label. The render succeeded.
+func TestTheOutputPlaneRefusesToRenderWithoutTheArtifactDaemon(t *testing.T) {
+	message := renderHangarError(t, append(append([]string{}, baseControlSets...),
+		"artifactDaemon.enabled=false")...)
+	if !strings.Contains(message, "artifactDaemon.enabled") {
+		t.Errorf("the output plane rendered with the artifact daemon disabled, or was "+
+			"refused by something else:\n%s", message)
+	}
+	if !strings.Contains(message, "concourse.dev/artifact-cache") {
+		t.Errorf("the refusal does not name the label that is the reason:\n%s", message)
+	}
+}
+
+// Every other duration in this plane is checked at render time. The attestor's
+// interval was not, and it is the one whose bound has a consequence written
+// into the schema: policy evidence older than fifteen minutes is stale, and a
+// stale snapshot puts the plane at-risk, which blocks five kinds of admission.
+func TestTheControllerIntervalsAreValidated(t *testing.T) {
+	for _, bad := range []struct {
+		set, names string
+	}{
+		{"hangarOutput.policyAttestor.interval=20m", "policyAttestor.interval"},
+		{"hangarOutput.policyAttestor.interval=0s", "policyAttestor.interval"},
+		{"hangarOutput.policyAttestor.interval=every-so-often", "policyAttestor.interval"},
+		{"hangarOutput.inventory.interval=nope", "inventory.interval"},
+		{"hangarOutput.reclaimer.interval=nope", "reclaimer.interval"},
+	} {
+		message := renderOutputError(t, bad.set)
+		if !strings.Contains(message, bad.names) {
+			t.Errorf("%s rendered, or was refused by something else:\n%s", bad.set, message)
+		}
+	}
+
+	// And the default is accepted, so the rule is not simply "refuse".
+	renderOutput(t, "hangarOutput.policyAttestor.interval=15m")
+}
+
+// ---------------------------------------------------------------------------
+// The low set
+// ---------------------------------------------------------------------------
+
+// The database credential does not reach argv.
+//
+// `--database=$(HANGAR_OUTPUT_DSN)` is expanded by the KUBELET, so the
+// connection string -- user, password and all -- ends up in
+// /proc/<pid>/cmdline, which is world-readable inside the container, while
+// /proc/<pid>/environ is readable only by the process's own uid. The commands
+// read the variable themselves instead.
+func TestTheDatabaseCredentialNeverReachesArgv(t *testing.T) {
+	out := renderOutput(t,
+		"hangarOutput.activation.job.mode=attest",
+		"hangarOutput.activation.job.facet=base")
+
+	carriers := 0
+	for _, subject := range documentsIn(t, out) {
+		if !strings.Contains(subject.body, "HANGAR_OUTPUT_DSN") {
+			continue
+		}
+		carriers++
+		if strings.Contains(subject.body, "--database=$(HANGAR_OUTPUT_DSN)") {
+			t.Errorf("%s %s expands the DSN into its argv. The kubelet substitutes $(VAR) "+
+				"in args, so the credential lands in /proc/<pid>/cmdline, which is readable "+
+				"by anything in the container; the environment is not.",
+				subject.kind, subject.name)
+		}
+	}
+	if carriers < 4 {
+		t.Fatalf("only %d workloads take a DSN from the environment; this rule is looking at "+
+			"the wrong render", carriers)
+	}
+}
+
+// readOnlyRootFilesystem with nowhere to write is a runtime error waiting for
+// the first operation that wants a temp file -- on a Pod that passed every
+// render check. The GCS client library spools resumable uploads.
+func TestTheControllersHaveSomewhereToWrite(t *testing.T) {
+	out := renderOutput(t)
+
+	for _, component := range []string{
+		outputInventoryComponent, outputReclaimerComponent, outputAttestorComponent,
+	} {
+		controller := objectNamed(t, out, "Deployment", "-"+component)
+
+		var object appsv1.Deployment
+		if err := yaml.UnmarshalStrict([]byte(controller.body), &object); err != nil {
+			t.Fatalf("%s: %v", controller.source, err)
+		}
+		spec := object.Spec.Template.Spec
+		if len(spec.Containers) == 0 || spec.Containers[0].SecurityContext == nil {
+			t.Fatalf("%s has no container security context; this rule is looking at nothing",
+				component)
+		}
+		readOnly := spec.Containers[0].SecurityContext.ReadOnlyRootFilesystem
+		if readOnly == nil || !*readOnly {
+			continue // Nothing to guarantee.
+		}
+
+		writable := false
+		for _, mount := range spec.Containers[0].VolumeMounts {
+			if mount.MountPath == "/tmp" {
+				writable = true
+			}
+		}
+		if !writable {
+			t.Errorf("%s runs with readOnlyRootFilesystem and mounts nothing at /tmp. The "+
+				"GCS client spools resumable uploads to a temp file, and the failure would "+
+				"be a runtime error on a Pod that passed every render check.", component)
+		}
 	}
 }

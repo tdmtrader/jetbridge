@@ -199,6 +199,7 @@ func tier1(t *testing.T) substrate {
 	t.Helper()
 
 	memory := gcstest.NewMemory()
+	memory.CreateBucket("tier-1-output")
 	tier := substrate{
 		name:    "tier-1 (in-memory adapter fake)",
 		bucket:  "tier-1-output",

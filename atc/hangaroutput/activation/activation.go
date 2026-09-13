@@ -260,11 +260,27 @@ func (epochs Epochs) Enable(ctx context.Context, epoch executioncontrol.Activati
 		 WHERE epoch_id = $1
 		   AND %s = 'attested'`, column, column)
 	if facet == FacetOutput {
-		// Output effective admission is the conjunction of base readiness, the
-		// output facets and the CURRENT policy, so the base check is here as
-		// well as in the schema's CHECK: the constraint admits `attested`,
-		// which is a base facet that has not been put into service.
-		statement += ` AND base_state = 'enabled'`
+		// The SCHEMA's own readiness predicate, which is the same one Rotate
+		// takes. Output effective admission is the conjunction of base
+		// readiness, the output facets and the CURRENT policy, so the base
+		// check is here as well as in the CHECK -- but it is the same check.
+		//
+		// It used to be the stricter `base_state = 'enabled'`, and that was a
+		// one-way door. A rotation leaves the incoming row at
+		// base=attested/output=enabled, because the incoming row's base facet
+		// cannot be enabled while the outgoing row's still is; so after the
+		// first output rotation the serving row's base sits at `attested`
+		// permanently. Take the output facet out of service from there and
+		// there is nothing left to rotate FROM and nothing whose base is
+		// `enabled` to rotate TO -- the only such row's output facet is
+		// terminally disabled -- and the plane's output half could not be
+		// turned back on at all.
+		//
+		// base=attested with output=enabled is not a state this loosens the
+		// plane into: it is the state every output rotation already produces
+		// and runs in, and the schema's hangar_output_epoch_needs_base admits
+		// it by name.
+		statement += ` AND base_state IN ('attested', 'enabled')`
 	}
 
 	return epochs.apply(ctx, epoch, facet, column, "enabled", statement, []any{int64(epoch)})
@@ -385,6 +401,14 @@ func (epochs Epochs) apply(ctx context.Context, epoch executioncontrol.Activatio
 		state.Base, state.Output, state.Revision)
 }
 
+// Deferred: rotation is the only one of the five transitions with no operator
+// path: the activation command has four modes and the chart's activation Job
+// renders those four, so neither a receipt-key rotation nor an epoch handover
+// can be asked for. Wiring it is a fifth mode, a second epoch flag and the Job
+// name that carries both, and it belongs with the first rotation rather than
+// ahead of the first activation: this plane ships dormant, and an epoch nobody
+// has enabled has nothing to rotate off.
+//
 // Rotate moves a facet from one epoch to the next in ONE transaction.
 //
 // Two statements and one transaction, and the transaction is the whole point.

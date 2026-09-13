@@ -124,6 +124,11 @@ func (repository *HangarOutputRepository) RecordSourceReservation(ctx context.Co
 //
 // The fence is checked, so a stale owner cannot fail a capture the current
 // owner is still publishing.
+//
+// It can return ErrHangarLockRetry, for the same reason CancelOrSettle can:
+// this closes two Hangar rows in two lock classes, so it enters the suffix, and
+// a suffix can always be told the facts it was derived from have moved. The
+// caller rolls back and comes round again.
 func (repository *HangarOutputRepository) RecordTerminalCaptureFailure(ctx context.Context, tx output.Tx, reservation output.ReservationID, fence output.CaptureFence, failure string) error {
 	if err := reservation.Validate(); err != nil {
 		return err
@@ -137,9 +142,12 @@ func (repository *HangarOutputRepository) RecordTerminalCaptureFailure(ctx conte
 			output.ErrUnauthorized)
 	}
 
-	if _, err := LockHangarSuffix(ctx, tx, repository.prefix, HangarLockRequest{
-		Captures: []output.ReservationID{reservation},
-	}); err != nil {
+	// Class 1 BEFORE class 3, because hangarTerminalizeLogical below writes the
+	// logical reservation and a bare UPDATE takes that row's lock. Taking only
+	// the capture class here left this writer holding class 3 and reaching back
+	// for class 1, which deadlocks against any publisher taking the stated
+	// order.
+	if err := hangarLockTerminalCapture(ctx, tx, repository.prefix, reservation); err != nil {
 		return err
 	}
 
@@ -216,6 +224,15 @@ func (repository *HangarOutputRepository) RecordSealDeadline(ctx context.Context
 			output.ErrUnauthorized)
 	}
 
+	// The capture class, named rather than taken by the UPDATE below: see
+	// RecordFirstObjectCreate for why an unnamed single-class lock is still a
+	// lock this order has to be able to see.
+	if _, err := LockHangarSuffix(ctx, tx, repository.prefix, HangarLockRequest{
+		Captures: []output.ReservationID{reservation},
+	}); err != nil {
+		return output.Timestamp{}, err
+	}
+
 	var deadline time.Time
 	if err := hangarQueryRow(ctx, tx, `
 		UPDATE hangar_capture_reservations r
@@ -236,9 +253,25 @@ func (repository *HangarOutputRepository) RecordSealDeadline(ctx context.Context
 // SealDeadlinePassed answers, on the database clock, whether this capture's
 // seal deadline has elapsed.
 //
-// The comparison is `now()` in SQL and not a value any process computed, which
-// is the same rule the ownership lease follows: a node whose clock drifts must
-// not be able to expire -- or extend -- a deadline it is subject to.
+// The comparison is made in SQL and not from a value any process computed,
+// which is the same rule the ownership lease follows: a node whose clock drifts
+// must not be able to expire -- or extend -- a deadline it is subject to.
+//
+// It is clock_timestamp() and NOT now(), and the seal deadline is the one place
+// in this plane where that distinction is load-bearing. now() is
+// transaction_timestamp(), so a transaction open for N seconds reads it N
+// seconds early; the plane rules on that imprecision rather than fixing it (see
+// the note at the top of hangar_output_reclaim.go), and the ruling holds for
+// LEASES because every lease here is floored at fifteen minutes by a CHECK and
+// N is milliseconds. The seal deadline is not a lease: Req 17 makes it
+// configurable down to THIRTY SECONDS, so a slow check transaction reading its
+// own start instant judges a seal in-time that is not -- the exact failure
+// seal_deadline_at was added to prevent. hangarStatProofFresh uses
+// clock_timestamp() for the same reason.
+//
+// The STAMP above stays on now(): what it needs is the same instant the rest of
+// the transaction is writing under, and a deadline stamped from a later reading
+// than the row it lands beside is the mixture of two moments this plane refuses.
 func (repository *HangarOutputRepository) SealDeadlinePassed(ctx context.Context, tx output.Tx, reservation output.ReservationID) (bool, error) {
 	if err := reservation.Validate(); err != nil {
 		return false, err
@@ -246,7 +279,8 @@ func (repository *HangarOutputRepository) SealDeadlinePassed(ctx context.Context
 
 	var passed bool
 	if err := hangarQueryRow(ctx, tx, `
-		SELECT coalesce(seal_deadline_at IS NOT NULL AND now() >= seal_deadline_at, false)
+		SELECT coalesce(
+		       seal_deadline_at IS NOT NULL AND clock_timestamp() >= seal_deadline_at, false)
 		FROM hangar_capture_reservations WHERE reservation_id = $1`,
 		[]any{string(reservation)}, &passed); err != nil {
 		return false, err

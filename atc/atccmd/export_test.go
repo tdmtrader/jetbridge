@@ -31,3 +31,17 @@ func GCComponentsForTest(cmd *RunCommand, logger lager.Logger, gcConn db.DbConn,
 func ValidateCustomRolesForTest(cmd *RunCommand) error {
 	return cmd.validateCustomRoles()
 }
+
+// HangarOutputComponentsForTest exports the private hangarOutputComponents
+// method so a spec can assert what a deployment actually registers. The
+// component constructors only store their collaborators, so a nil connection is
+// enough to build the list; nothing here runs a component.
+func HangarOutputComponentsForTest(cmd *RunCommand, dbConn db.DbConn) []RunnableComponent {
+	return cmd.hangarOutputComponents(dbConn)
+}
+
+// ValidateHangarOutputPlaneForTest exports the private
+// validateHangarOutputPlane method for external test packages.
+func ValidateHangarOutputPlaneForTest(cmd *RunCommand) error {
+	return cmd.validateHangarOutputPlane()
+}

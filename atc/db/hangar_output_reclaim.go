@@ -28,6 +28,11 @@ package db
 // same reading is what every earlier phase's lease arithmetic uses, and
 // tightening one site alone would make two kinds of lease mean two things.
 // Revisit if a lease is ever tightened below a minute.
+//
+// The SEAL DEADLINE is the exception, and it is not a lease. Req 17 makes it
+// configurable down to thirty seconds, which is inside the error the ruling
+// above accepts, so SealDeadlinePassed reads clock_timestamp() and says why at
+// its own site. The ruling here is about leases and stays about leases.
 
 import (
 	"context"
@@ -352,6 +357,41 @@ func (repository *HangarOutputRepository) FinalizeReclaim(ctx context.Context, t
 	return nil
 }
 
+// AbsenceExplainedByALostResponse reports whether an earlier attempt on this
+// job could be the reason the object is gone.
+//
+// THE OBJECT API CANNOT ANSWER THIS AND NEVER WILL. A conditional delete
+// against an object that is not there answers 404, and so does one against a
+// bucket that is not there; measured against both the emulator and the real
+// client's error table, "already absent" is one answer covering "we deleted it
+// and lost the acknowledgement", "somebody else deleted it" and "this plane is
+// pointed at the wrong prefix entirely". The distinction is not in the store's
+// answer, so it is made from the only place that holds it: this job's own
+// attempt history.
+//
+// An attempt explains an absence only if its answer never arrived -- `timeout`,
+// `infrastructure_failure`, or a NULL outcome left by a pass that died between
+// admitting the delete and recording what happened. An attempt that was
+// ANSWERED explains nothing, whatever it said, and the attempt that observed
+// the absence least of all: the pass commits it microseconds before the call,
+// which is what made "a prior admitted delete exists" true by construction.
+//
+// `before` is the attempt that observed the absence. A lost response after it
+// cannot be why the object went missing.
+func (repository *HangarOutputRepository) AbsenceExplainedByALostResponse(ctx context.Context,
+	tx output.Tx, job HangarReclaimJob, before int64) (bool, error) {
+	var lost int
+	if err := hangarQueryRow(ctx, tx, `
+		SELECT count(*) FROM hangar_reclaim_attempts
+		 WHERE job_id = $1 AND id < $2
+		   AND (outcome IS NULL OR outcome IN ('timeout', 'infrastructure_failure'))`,
+		[]any{job.ID, before}, &lost); err != nil {
+		return false, err
+	}
+
+	return lost > 0, nil
+}
+
 // RecordOutOfBandAbsence is what an exact generation's disappearance means when
 // no admitted delete explains it.
 //
@@ -372,20 +412,34 @@ func (repository *HangarOutputRepository) RecordOutOfBandAbsence(ctx context.Con
 		return err
 	}
 
-	var admitted int
+	// Attempts that COULD HAVE REMOVED IT, rather than every attempt on
+	// record. The two are not the same thing, and reading them as the same is
+	// what made this capability and the inference above mutually exclusive: the
+	// delete pass admits an attempt before every call, so by the time it learns
+	// the object is gone there is always "an admitted delete" -- and this
+	// refused to report the violation for exactly the case that needs it.
+	//
+	// A delete that was acknowledged, or whose answer never came, may be why
+	// the object is absent. One the store answered with `already_absent`,
+	// `generation_conflict` or `unauthorized` removed nothing and explains
+	// nothing.
+	var explaining int
 	if err := hangarQueryRow(ctx, tx, `
 		SELECT count(*)
 		  FROM hangar_reclaim_attempts a
 		  JOIN hangar_reclaim_jobs j ON j.id = a.job_id
 		  JOIN hangar_exact_lifecycles l ON l.id = j.lifecycle_id
-		 WHERE l.scope = $1 AND l.digest = $2 AND l.generation = $3`,
-		[]any{string(ref.Scope), string(ref.Digest), ref.Generation}, &admitted); err != nil {
+		 WHERE l.scope = $1 AND l.digest = $2 AND l.generation = $3
+		   AND (a.outcome IS NULL
+		        OR a.outcome IN ('deleted', 'timeout', 'infrastructure_failure'))`,
+		[]any{string(ref.Scope), string(ref.Digest), ref.Generation}, &explaining); err != nil {
 		return err
 	}
-	if admitted > 0 {
-		return fmt.Errorf("%w: %s/%s/%d has %d admitted delete(s) on record; its absence is this "+
-			"plane's reclamation to finalize, not an out-of-band violation to report",
-			output.ErrConflict, ref.Scope, ref.Digest, ref.Generation, admitted)
+	if explaining > 0 {
+		return fmt.Errorf("%w: %s/%s/%d has %d admitted delete(s) on record that could have "+
+			"removed it; its absence is this plane's reclamation to finalize, not an "+
+			"out-of-band violation to report",
+			output.ErrConflict, ref.Scope, ref.Digest, ref.Generation, explaining)
 	}
 
 	result, err := tx.ExecContext(ctx, `
@@ -644,6 +698,14 @@ func (repository *HangarOutputRepository) LifetimeAuditCandidates(ctx context.Co
 // finding an object where this plane said it was is not news.
 func (repository *HangarOutputRepository) RecordLifetimePresence(ctx context.Context, tx output.Tx, ref hangar.TreeRef) error {
 	if err := ref.Validate(); err != nil {
+		return err
+	}
+	// The exact class, named rather than taken by the UPDATE below: see
+	// RecordFirstObjectCreate for why an unnamed single-class lock is still a
+	// lock this order has to be able to see.
+	if _, err := LockHangarSuffix(ctx, tx, repository.prefix, HangarLockRequest{
+		Exact: []hangar.TreeRef{ref},
+	}); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `

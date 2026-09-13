@@ -569,7 +569,20 @@ func (b *DaemonSetBackend) BuildCleanupInitContainer(handle string, containerTyp
 
 	helperImage := b.helperImage()
 	cleanupPath := filepath.Join(ArtifactMountPath, "steps", handle)
-	script := fmt.Sprintf(`echo "[cleanup-stale] removing stale hostPath data: %s" >&2; rm -rf %s; mkdir -p %s`, cleanupPath, cleanupPath, cleanupPath)
+	// THE TARGET IS ONE WORD, and it reaches the shell as one. This is the
+	// only container in the deployment that mounts the whole managed hostPath
+	// read-write, and the path it removes ends in a handle -- so the handle
+	// was interpolated into `rm -rf` with nothing between it and the shell's
+	// own parser. Demonstrated, by running the emitted script: a handle
+	// carrying `; touch x` ran it, and one carrying `$(...)` ran that too,
+	// including through the probe's URL and its messages. Handles are the
+	// ATC's own UUIDs today, which is a fact about a caller rather than a
+	// property of this function, and it is the one container where being
+	// wrong costs a node's worth of somebody else's sources.
+	script := fmt.Sprintf(`TARGET=%s
+echo "[cleanup-stale] removing stale hostPath data: ${TARGET}" >&2
+rm -rf "${TARGET}"
+mkdir -p "${TARGET}"`, shellQuote(cleanupPath))
 	if b.config.OutputPlaneEnabled {
 		script = b.ledgerCheckedCleanupScript(handle, cleanupPath)
 	}
@@ -602,25 +615,34 @@ func (b *DaemonSetBackend) ledgerCheckedCleanupScript(handle, cleanupPath string
 		port = 7780
 	}
 
+	// The handle and the target are shell VARIABLES, assigned once from a
+	// quoted word and expanded inside double quotes from there on. Neither is
+	// interpolated into a command, a URL or a message, because every one of
+	// those contexts parses: `;` escapes an unquoted word, an apostrophe
+	// escapes a single-quoted one, and `$(...)` runs inside the double-quoted
+	// URL this probe fetches. All three were demonstrated against the script
+	// this function used to emit.
 	return fmt.Sprintf(`
 set -u
-CLASS="$(wget -q -O - %[4]s "%[3]s://${HOST_IP}:%[2]d/capture-held/steps/%[1]s" 2>/dev/null || true)"
+HANDLE=%[1]s
+TARGET=%[5]s
+CLASS="$(wget -q -O - %[4]s "%[3]s://${HOST_IP}:%[2]d/capture-held/steps/${HANDLE}" 2>/dev/null || true)"
 case "${CLASS}" in
   *'"class":"unmanaged"'*)
-    echo "[cleanup-stale] the output ledger holds nothing here; removing stale hostPath data: %[5]s" >&2
-    rm -rf %[5]s
-    mkdir -p %[5]s
+    echo "[cleanup-stale] the output ledger holds nothing here; removing stale hostPath data: ${TARGET}" >&2
+    rm -rf "${TARGET}"
+    mkdir -p "${TARGET}"
     ;;
   *'"class":"held"'*)
-    echo "[cleanup-stale] REFUSED: a durable output capture still holds %[1]s. This step's stale workspace is somebody else's unsettled source, and removing it would destroy bytes no receipt has been written for yet." >&2
+    echo "[cleanup-stale] REFUSED: a durable output capture still holds ${HANDLE}. This step's stale workspace is somebody else's unsettled source, and removing it would destroy bytes no receipt has been written for yet." >&2
     exit 1
     ;;
   *)
-    echo "[cleanup-stale] REFUSED: the output ledger did not answer for %[1]s (got: ${CLASS}). An unreadable ledger is not an empty one." >&2
+    echo "[cleanup-stale] REFUSED: the output ledger did not answer for ${HANDLE} (got: ${CLASS}). An unreadable ledger is not an empty one." >&2
     exit 1
     ;;
 esac
-`, handle, port, b.daemonScheme(), b.wgetTLSOpts(), cleanupPath)
+`, shellQuote(handle), port, b.daemonScheme(), b.wgetTLSOpts(), shellQuote(cleanupPath))
 }
 
 // BuildAffinity places the pod on a node that can serve every facet it needs.

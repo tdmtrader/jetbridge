@@ -206,6 +206,34 @@ func (classifier *Classifier) Reason(stepsRelative string, class Class) error {
 	return nil
 }
 
+// PublicReason is what an UNAUTHENTICATED caller may be told, per class.
+//
+// It is a fixed sentence per class and names nothing the caller did not already
+// name. Reason above is the operator's text, and the Unavailable arm of it
+// carries the classifier's own directory and the underlying OS error -- which
+// is the node's control-directory path and the raw errno, both of which the
+// output daemon's redaction rule forbids any route to emit. The route that
+// serves this question is deliberately mTLS-exempt, because a pod on the node
+// has to be able to ask it, so its audience is every pod on the node including
+// a task pod.
+//
+// The detailed text keeps its readers: the authenticated refuseIfCaptureHeld
+// callers and the daemon's log.
+func PublicReason(class Class) string {
+	switch class {
+	case Held:
+		return "the source is held by a durable output capture and must survive until the " +
+			"capture releases it"
+	case Sealed:
+		return "the source is sealed and its exact bytes are being read now"
+	case Unavailable:
+		return "the output source ledger on this node could not be read, so whether this step " +
+			"directory is held is unknown; the daemon's log says why"
+	}
+
+	return ""
+}
+
 func (classifier *Classifier) load() (map[string]Class, error) {
 	entries, err := os.ReadDir(classifier.dir)
 	if err != nil {

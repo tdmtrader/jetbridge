@@ -30,6 +30,25 @@ func hangarExecutionID(value string) executioncontrol.ExecutionID {
 // other than the one the lease currently holds, so a stale owner resolves
 // nothing. Scope and Digest arrive on the value the control plane filled in;
 // there is no parameter here a task could reach.
+//
+// RECORDED, NOT FIXED: a resolution can land for a correlation whose generation
+// has ALREADY been admitted to reclamation. hangar_check_reclaim_exclusion
+// counts unresolved logical reservations and is attached to
+// hangar_reclaim_jobs, hangar_claims and hangar_read_leases, not to this table;
+// and AdmitReclaim's class-1 lock locks the rows that exist and cannot block an
+// INSERT of one that does not. So Req 46's "no unresolved reservation" is an
+// ADMISSION-TIME precondition, and a later resolution loses rather than being
+// refused.
+//
+// It stays a precondition because the harm is bounded and self-healing and the
+// alternative is not. A second capture of identical bytes dedupes onto the
+// reclaiming generation, RegisterReceipt registers a receipt against it --
+// upsertLifecycle deliberately does not rewrite `state`, so nothing is
+// resurrected -- and the consumer's AcquireClaim then refuses with
+// `reclaiming`. One capture fails; no consumer is handed a binding to bytes
+// that are going away. Making this a refusal instead would mean a trigger on
+// this table that failed a live capture for the sake of a reclamation that has
+// not deleted anything yet.
 func (repository *HangarOutputRepository) ResolveLogicalReservation(ctx context.Context, tx output.Tx, resolution output.LogicalResolution) error {
 	if err := resolution.Validate(); err != nil {
 		return err
@@ -120,6 +139,17 @@ func (repository *HangarOutputRepository) RecordFirstObjectCreate(ctx context.Co
 	if fence <= 0 {
 		return fmt.Errorf("%w: the irreversible publish point is recorded under the capture fence "+
 			"it was reached at; %d names no ownership", output.ErrIncomplete, fence)
+	}
+
+	// The capture class, named rather than taken by the UPDATE below. One class
+	// taken implicitly cannot invert against anything -- there is nothing to
+	// invert with -- but a lock the suffix never hears about is a lock the
+	// order rule cannot see, and that invisibility is what let two writers take
+	// classes 3 and 1 the wrong way round for ten phases.
+	if _, err := LockHangarSuffix(ctx, tx, repository.prefix, HangarLockRequest{
+		Captures: []output.ReservationID{reservation},
+	}); err != nil {
+		return err
 	}
 
 	result, err := tx.ExecContext(ctx, `
@@ -507,6 +537,17 @@ func (repository *HangarOutputRepository) upsertLifecycle(ctx context.Context, t
 // reclaim admission one winner: claimant first and the reclaimer rechecks and
 // skips, reclaimer first and this transaction rolls back with no usable
 // binding.
+//
+// THE COMMIT IS THE CONSUMER'S, AND SO IS THE REFUSAL. This runs inside the
+// consumer's transaction (Reqs 30 and 31), so the deferred
+// hangar_policy_admits_new_protection fires at the CONSUMER's COMMIT and
+// arrives there as a bare driver error carrying SQLSTATE JB002 -- nothing this
+// method returns, and nothing a caller can branch on. A consumer composing this
+// into its own transaction MUST pass its commit error through
+// db.HangarCommitError (or commit through db.HangarOutputTx, which is that
+// function with a Commit around it). A consumer that does not will read a
+// policy denial as an ambiguous commit and retry a refusal that never clears.
+// ReleaseClaim says the same, for the same reason.
 func (repository *HangarOutputRepository) AcquireClaim(ctx context.Context, tx output.Tx, acquisition output.ClaimAcquisition) error {
 	if err := acquisition.Validate(); err != nil {
 		return err
@@ -575,6 +616,10 @@ func (repository *HangarOutputRepository) AcquireClaim(ctx context.Context, tx o
 // Releasing an active or already-released claim is idempotent. The identity is
 // never reused: the row is the tombstone, and the schema refuses both its
 // deletion and its reactivation.
+//
+// Like AcquireClaim, this runs inside the CONSUMER's transaction, so a deferred
+// refusal reaches the consumer at its own COMMIT as an unclassified driver
+// error. Pass it through db.HangarCommitError.
 func (repository *HangarOutputRepository) ReleaseClaim(ctx context.Context, tx output.Tx, release output.ClaimRelease) error {
 	if err := release.Validate(); err != nil {
 		return err
@@ -796,15 +841,25 @@ func (repository *HangarOutputRepository) RenewReadLease(ctx context.Context, tx
 		return output.ReadLease{}, err
 	}
 
-	// The suffix, for the one row this writes. Requirement 33 and "lock order
-	// is an API, not a convention" put grant and read-lease work inside one
-	// complete suffix, and a bare UPDATE takes the row at the write's own
-	// moment instead. The deferred hangar_reclaim_exclusion trigger does catch
-	// a renewal racing a reclaim admission -- each commit's trigger sees the
-	// other's committed row and the second one rolls back -- but that is the
-	// schema's doing and not this transaction's, and a rule that holds by
-	// accident is one the next statement breaks.
+	// The suffix, and it names the generation as well as the lease.
+	//
+	// Class 4 alone does not intersect AdmitReclaim's class 1 and 2, so the two
+	// took DISJOINT lock sets and nothing serialized them at all. What was left
+	// was the deferred hangar_reclaim_exclusion trigger, and a deferred
+	// constraint trigger is a SNAPSHOT READ, not a mutex: it fires inside its
+	// own transaction, before that transaction's commit is visible, so two
+	// transactions whose constraint phases overlap each see the other as
+	// uncommitted and BOTH commit. That was reproduced: a live renewed read
+	// lease and an admitted reclaim job committed together for the same
+	// generation, which is what AC 13 and Req 36 forbid.
+	//
+	// The trigger stays, and it is a good backstop -- it closes every SEQUENTIAL
+	// pair, which is what a backstop is for. It is the exact-lifecycle row,
+	// class 2, that both this and AdmitReclaim now hold, that makes the
+	// concurrent pair impossible rather than unlikely.
 	if _, err := LockHangarSuffix(ctx, tx, repository.prefix, HangarLockRequest{
+		Logical:    []HangarLogicalKey{{Scope: lease.Ref.Scope, Digest: lease.Ref.Digest}},
+		Exact:      []hangar.TreeRef{lease.Ref},
 		ReadLeases: []output.ReadLeaseID{lease.ReadLeaseID},
 	}); err != nil {
 		return output.ReadLease{}, err
@@ -844,7 +899,17 @@ func (repository *HangarOutputRepository) ReleaseReadLease(ctx context.Context, 
 	if err := lease.ReadLeaseID.Validate(); err != nil {
 		return err
 	}
+	// The same set the renewal takes, for symmetry rather than for necessity:
+	// a release only ever REMOVES protection, so a reclaim admission that ran
+	// beside it could not be made wrong by it. Two writers of the same row that
+	// take different sets is how the renewal's disjoint set went unnoticed, so
+	// they take the same one.
+	if err := lease.Ref.Validate(); err != nil {
+		return err
+	}
 	if _, err := LockHangarSuffix(ctx, tx, repository.prefix, HangarLockRequest{
+		Logical:    []HangarLogicalKey{{Scope: lease.Ref.Scope, Digest: lease.Ref.Digest}},
+		Exact:      []hangar.TreeRef{lease.Ref},
 		ReadLeases: []output.ReadLeaseID{lease.ReadLeaseID},
 	}); err != nil {
 		return err
@@ -981,11 +1046,19 @@ func (repository *HangarOutputRepository) RecordPolicySnapshot(ctx context.Conte
 	if err := snapshot.Validate(); err != nil {
 		return err
 	}
+	// The same clock discipline the attestation writer applies, and for the
+	// same reason: this table's observed_at is measured against the database's
+	// now() by the admission gate, so an observation dated by a process clock
+	// is stored no later than the transaction that recorded it. See
+	// hangarPolicyObservationOnTheDatabaseClock.
+	if err := hangarPolicyObservationOnTheDatabaseClock(ctx, tx, snapshot); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO hangar_policy_snapshots
 			(activation_epoch, bucket_fingerprint, metageneration, policy_hash,
 			 lifecycle_delete_rules, state, observed_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		VALUES ($1, $2, $3, $4, $5, $6, least(now(), $7))`,
 		int64(snapshot.ActivationEpoch), snapshot.BucketFingerprint, snapshot.Metageneration,
 		snapshot.PolicyHash, snapshot.LifecycleDeleteRules, string(snapshot.State),
 		snapshot.ObservedAt.Time); err != nil {
@@ -1271,6 +1344,16 @@ func (repository *HangarOutputRepository) CloseAbandonedReadLeases(ctx context.C
 	// Then the suffix, over exactly those identities, in the one order this
 	// system has -- the helper sorts them, so two passes given overlapping
 	// batches take them the same way round.
+	//
+	// Class 4 ALONE, deliberately, and unlike RenewReadLease beside it. A
+	// renewal extends protection, so a reclaim admission that ran beside it
+	// could be admitted over a generation a reader still holds; that is why the
+	// renewal now takes classes 1 and 2 as well, and meets AdmitReclaim on the
+	// exact-lifecycle row. Recovery only ever REMOVES protection. A reclaim
+	// admission racing it either sees the lease still live and refuses, or sees
+	// it closed and proceeds, and both are correct: the pass closes leases the
+	// database itself says have run out. Locking the generation here would be a
+	// batch pass taking class 2 over every correlation it swept, for nothing.
 	if _, err := LockHangarSuffix(ctx, tx, repository.prefix, HangarLockRequest{
 		ReadLeases: candidates,
 	}); err != nil {

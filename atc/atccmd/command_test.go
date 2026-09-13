@@ -449,3 +449,107 @@ func (s *CommandSuite) TestHangarRuntimeRejectsCapabilityTTLOutsideCoreBound() {
 		s.Contains(err.Error(), "kubernetes-hangar-capability-ttl")
 	}
 }
+
+// TWO NEW COMPONENTS RAN ON EVERY DEPLOYMENT, INCLUDING NON-KUBERNETES ONES.
+//
+// The capture advancer and the read-lease cleanup were appended to the
+// component table outside both the Kubernetes block and any output-plane
+// check. Requirement 59 asks for a deployment with capture disabled to behave
+// as it did before, and two `components` rows, two advisory locks and two
+// queries a minute is not that -- however cheap each pass is.
+func (s *CommandSuite) TestTheOutputPlanesComponentsRunOnlyWhereThePlaneIsEnabled() {
+	names := func(components []atccmd.RunnableComponent) []string {
+		var named []string
+		for _, component := range components {
+			named = append(named, component.Component.Name)
+		}
+
+		return named
+	}
+
+	off := &atccmd.RunCommand{}
+	s.Empty(names(atccmd.HangarOutputComponentsForTest(off, nil)),
+		"a deployment that never opted into the output plane registers one of its components")
+
+	// The plane, with no activation epoch: the two that do the plane's work,
+	// and not the status surface, which has a plane to describe only once one
+	// has been activated.
+	on := &atccmd.RunCommand{}
+	on.Kubernetes.OutputPlaneEnabled = true
+	s.ElementsMatch([]string{
+		atc.ComponentHangarOutputCapture,
+		atc.ComponentHangarOutputReadLeaseCleanup,
+	}, names(atccmd.HangarOutputComponentsForTest(on, nil)))
+
+	// And with one, all three -- without which the assertions above would
+	// pass against a plane that registers nothing at all.
+	activated := &atccmd.RunCommand{}
+	activated.Kubernetes.OutputPlaneEnabled = true
+	activated.Kubernetes.OutputActivationEpoch = 7
+	activated.Kubernetes.OutputBucket = "output-bucket"
+	activated.Kubernetes.OutputTenant = "tenant-a"
+	s.ElementsMatch([]string{
+		atc.ComponentHangarOutputCapture,
+		atc.ComponentHangarOutputReadLeaseCleanup,
+		atc.ComponentHangarOutputStatus,
+	}, names(atccmd.HangarOutputComponentsForTest(activated, nil)))
+}
+
+// A REQUIRED SECRET THAT NOTHING EVER OPENED.
+//
+// --kubernetes-hangar-output-capability-key was refused when empty, compared
+// with two other flags for distinctness, and never read: the message said "a
+// control plane that cannot mint one can make no call at all" while nothing
+// established that the file contained a key at all, let alone one a minter
+// would accept. That is the failure class this track spent three review rounds
+// removing -- a refusal claiming more than the code checks.
+func (s *CommandSuite) TestTheOutputCapabilityKeyIsReadAtStartupAndNotMerelyNamed() {
+	dir := s.T().TempDir()
+	valid := filepath.Join(dir, "capability.key")
+	s.Require().NoError(os.WriteFile(valid, []byte("0123456789abcdef0123456789abcdef"), 0600))
+	short := filepath.Join(dir, "short.key")
+	s.Require().NoError(os.WriteFile(short, []byte("too short"), 0600))
+
+	plane := func(key string) *atccmd.RunCommand {
+		cmd := &atccmd.RunCommand{}
+		cmd.Kubernetes.OutputPlaneEnabled = true
+		cmd.Kubernetes.OutputCapabilityKey = key
+		cmd.Kubernetes.OutputActivationEpoch = 7
+		cmd.Kubernetes.OutputDaemonTLSCert = filepath.Join(dir, "tls.crt")
+		cmd.Kubernetes.OutputDaemonTLSKey = filepath.Join(dir, "tls.key")
+		cmd.Kubernetes.OutputDaemonTLSCACert = filepath.Join(dir, "ca.crt")
+		cmd.Kubernetes.OutputSealDeadline = 30 * time.Minute
+		cmd.Kubernetes.OutputCaptureDeadline = 2 * time.Hour
+		cmd.Kubernetes.OutputLeaseTerm = 15 * time.Minute
+		cmd.Kubernetes.OutputLeaseRenewInterval = 30 * time.Second
+
+		return cmd
+	}
+
+	err := atccmd.ValidateHangarOutputPlaneForTest(plane(filepath.Join(dir, "absent.key")))
+	s.Require().Error(err, "a capability key that is not there was accepted, so the refusal for "+
+		"an EMPTY flag is the only thing that was ever checked about it")
+	s.Contains(err.Error(), "kubernetes-hangar-output-capability-key")
+
+	err = atccmd.ValidateHangarOutputPlaneForTest(plane(short))
+	s.Require().Error(err, "a file too short to be a capability key was accepted at startup; the "+
+		"first control call would be the thing that discovered it")
+	s.Contains(err.Error(), "kubernetes-hangar-output-capability-key")
+
+	// The control: a real key passes, so the two refusals above are about the
+	// key rather than about the rest of the configuration.
+	s.NoError(atccmd.ValidateHangarOutputPlaneForTest(plane(valid)))
+
+	// And the epoch, which every minted capability names and which this gate
+	// asked for only under capture. The chart has always refused it here.
+	noEpoch := plane(valid)
+	noEpoch.Kubernetes.OutputActivationEpoch = 0
+	err = atccmd.ValidateHangarOutputPlaneForTest(noEpoch)
+	s.Require().Error(err)
+	s.Contains(err.Error(), "kubernetes-hangar-output-activation-epoch")
+
+	// A deployment with no output plane neither requires nor opens a key.
+	off := &atccmd.RunCommand{}
+	off.Kubernetes.OutputCapabilityKey = "/does/not/exist"
+	s.NoError(atccmd.ValidateHangarOutputPlaneForTest(off))
+}

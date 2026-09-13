@@ -16,12 +16,18 @@ import (
 // booleans computed here would be this package's opinion of a binding; a list
 // of permission names is the binding.
 //
-// Two limits are stated rather than modelled, and Req 41 is explicit about
-// both. `storage.objects.get` authorizes metadata AND body reads: there is no
-// metadata-only object permission, so inventory and the reclaimer can read the
-// bytes even though their code does not. And `storage.objects.list` cannot be
-// scoped to a prefix: list authority covers the bucket. The dedicated bucket,
-// the distinct principals and application-level key validation are the boundary
+// Three limits are stated rather than modelled, and Req 41 is explicit about
+// the first two. `storage.objects.get` authorizes metadata AND body reads:
+// there is no metadata-only object permission, so inventory and the reclaimer
+// can read the bytes even though their code does not. `storage.objects.list`
+// cannot be scoped to a prefix: list authority covers the bucket. And
+// `storage.objects.create` is DESTROY-CAPABLE: GCS has no separate
+// content-update permission, so create is the overwrite permission, and on a
+// bucket without versioning an overwrite destroys the previous generation as
+// thoroughly as a delete would. "The publisher may create and get but not
+// delete" therefore does not mean "the publisher cannot destroy data". What
+// makes it true is the code always sending a create-if-absent precondition,
+// which is an application-level property; the dedicated bucket is the boundary
 // -- not an IAM condition this code could assert and does not have.
 const (
 	PermissionObjectCreate = "storage.objects.create"
@@ -29,14 +35,29 @@ const (
 	PermissionObjectList   = "storage.objects.list"
 	PermissionObjectDelete = "storage.objects.delete"
 
+	// PermissionObjectUpdate is the permission that REWRITES an object's
+	// metadata. GCS has no separate content-update permission -- an overwrite
+	// is a create -- so this is exactly and only the marker-rewrite authority
+	// Req 22's second sentence forbids the publisher, and it was in neither
+	// this matrix nor the role expansion.
+	PermissionObjectUpdate = "storage.objects.update"
+
 	PermissionBucketGet          = "storage.buckets.get"
 	PermissionBucketGetIAMPolicy = "storage.buckets.getIamPolicy"
 	PermissionBucketUpdate       = "storage.buckets.update"
 	PermissionBucketSetIAMPolicy = "storage.buckets.setIamPolicy"
 )
 
-// requiredPermissions is what each role must hold to do its work.
-func requiredPermissions(role output.PrincipalRole) []string {
+// RequiredPermissions is what each role must hold to do its work.
+//
+// Exported because it is the ONE list, and three descriptions of it had grown:
+// this one, the prose matrix in deploy/chart/values.yaml that an operator
+// copies into Terraform, and the chart guard that was supposed to keep the two
+// in step -- which had three of the four principals hand-written into it and
+// therefore covered three quarters of the matrix. The chart test derives from
+// this now, so a role that gains a permission here either reaches values.yaml
+// or reddens there.
+func RequiredPermissions(role output.PrincipalRole) []string {
 	switch role {
 	case output.PrincipalPublisher:
 		return []string{PermissionObjectCreate, PermissionObjectGet}
@@ -59,7 +80,16 @@ func requiredPermissions(role output.PrincipalRole) []string {
 // could rewrite the lifecycle policy could delete everything this plane
 // protects by editing one rule.
 func forbiddenPermissions(role output.PrincipalRole) []string {
-	administration := []string{PermissionBucketUpdate, PermissionBucketSetIAMPolicy}
+	// Every role is forbidden the two administration permissions AND
+	// storage.objects.update. No role in this plane ever rewrites an object's
+	// metadata: the marker is written once, at creation, by the publisher, and
+	// "the publisher cannot update the marker" (Req 22) is the sentence the
+	// whole ownership-evidence story rests on. It was enforced by nothing but
+	// the Go Handle type having no update method, which is a property of this
+	// binary rather than of the principal.
+	administration := []string{
+		PermissionBucketUpdate, PermissionBucketSetIAMPolicy, PermissionObjectUpdate,
+	}
 
 	switch role {
 	case output.PrincipalPublisher:
@@ -127,9 +157,21 @@ func (expectation Expectation) Validate() error {
 // It is safe only when the bucket has NO rule that can remove an object and the
 // reading is for the bucket that was expected. The state is computed here and
 // the freshness is not: the snapshot records when it was observed, and every
-// admission gate compares that against its own bound on the database clock,
-// because a boolean computed by a controller is a boolean that was true when
-// that controller ran.
+// admission gate compares that against its own bound, because a boolean
+// computed by a controller is a boolean that was true when that controller ran.
+//
+// ObservedAt here is stamped by the attestor PROCESS, from the clock wired into
+// BucketPolicySource, while `now()` in hangar_check_policy_admission is
+// PostgreSQL's -- so for a while the bounded-staleness promise of Req 51/52 was
+// a comparison between two clocks, and an attestor running fast by more than
+// MaxPolicyEvidenceAge made stale evidence look permanently fresh. That is
+// closed on the control-plane side, where it had to be: the repository stores
+// observed_at as least(now(), this stamp) and refuses a reading dated well
+// ahead of the database, so this value is an upper bound on the truth and never
+// a way to buy freshness. See hangarPolicyObservationOnTheDatabaseClock in
+// atc/db. What this package supplies is still the attestor's own observation,
+// and it is right that it does: a slow clock dates the reading early, evidence
+// expires early, and the plane fails closed.
 func DeriveSnapshot(expectation Expectation, observation output.BucketLifetimePolicy) (output.PolicySnapshot, []output.PolicyFinding, error) {
 	if err := expectation.Validate(); err != nil {
 		return output.PolicySnapshot{}, nil, err
@@ -250,7 +292,7 @@ func DeriveBindingFindings(expectation Expectation, bindings output.PrincipalBin
 	for _, role := range output.PrincipalRoles() {
 		held := permissionSet(bindings.Permissions[role])
 
-		for _, permission := range requiredPermissions(role) {
+		for _, permission := range RequiredPermissions(role) {
 			if !held[permission] {
 				findings = append(findings, output.PolicyFinding{
 					Violation: output.ViolationInsufficientRole,

@@ -85,15 +85,26 @@ spec:
         - protocol: TCP
           port: 8080
 {{- if $output.enabled }}
-{{- range $component := list
-  (include "concourse.hangarOutput.inventoryName" .)
-  (include "concourse.hangarOutput.reclaimerName" .)
-  (include "concourse.hangarOutput.attestorName" .) }}
+{{/*
+Name AND component, carried together.
+
+The component used to be re-derived by trimming the fullname prefix off the
+object's name -- and the name is truncated, so once truncation bit the label
+disagreed with the literal the Deployments set and the podSelector matched
+nothing. A NetworkPolicy that selects no pod is not an error and is not a deny:
+the three controllers simply had no policy, silently, from a render that reads
+correctly. The literal is now the same value in the selector, in the label and
+in the workload.
+*/}}
+{{- range $controller := list
+  (dict "name" (include "concourse.hangarOutput.inventoryName" .) "component" "hangar-output-inventory")
+  (dict "name" (include "concourse.hangarOutput.reclaimerName" .) "component" "hangar-output-reclaimer")
+  (dict "name" (include "concourse.hangarOutput.attestorName" .) "component" "hangar-output-policy-attestor") }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ $component }}
+  name: {{ $controller.name }}
   namespace: {{ $.Release.Namespace }}
   labels:
     {{- /*
@@ -106,12 +117,12 @@ metadata:
       one thing this chart's labels are read for.
     */}}
     {{- include "concourse.commonLabels" $ | nindent 4 }}
-    app.kubernetes.io/component: {{ trimPrefix (printf "%s-" (include "concourse.fullname" $)) $component }}
+    app.kubernetes.io/component: {{ $controller.component }}
 spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: {{ include "concourse.name" $ }}
-      app.kubernetes.io/component: {{ trimPrefix (printf "%s-" (include "concourse.fullname" $)) $component }}
+      app.kubernetes.io/component: {{ $controller.component }}
   policyTypes:
     - Ingress
     - Egress

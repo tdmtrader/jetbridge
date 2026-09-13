@@ -2,14 +2,17 @@ package main
 
 import (
 	"crypto/ed25519"
+	"crypto/subtle"
 	"encoding/pem"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/output"
 )
 
@@ -290,6 +293,57 @@ func (config Config) validateOutputFacet() error {
 	return nil
 }
 
+// RefuseCollidingKeyMaterial compares the key BYTES, not the paths.
+//
+// Validate above refuses five path pairs and two equal key ids, and every one
+// of those comparisons is over NAMES: two flags pointing at symlinks to one
+// file pass all of them, and so do two Secrets holding identical material. The
+// separation the plan promises is a separation of authority -- a read grant
+// must not be signable by anything that can mint a publication receipt -- and
+// authority follows the bytes.
+//
+// The comparison is constant-time. It compares secrets, and a comparison that
+// returns early on the first differing byte is a comparison somebody can time.
+// The refusal names the two flags and nothing about the material.
+func (config Config) RefuseCollidingKeyMaterial() error {
+	loaded := map[string][]byte{}
+	for _, key := range []struct{ flag, file string }{
+		{"--control-key-file", config.ControlKeyFile},
+		{"--receipt-key-file", config.ReceiptKeyFile},
+		{"--materialization-key-file", config.MaterializationKeyFile},
+		{"--capability-key", config.CapabilityKeyFile},
+	} {
+		if strings.TrimSpace(key.file) == "" {
+			continue
+		}
+		material, err := os.ReadFile(key.file)
+		if err != nil {
+			return fmt.Errorf("%w: reading the key named by %s: %v",
+				output.ErrIncomplete, key.flag, err)
+		}
+		loaded[key.flag] = material
+	}
+
+	flags := make([]string, 0, len(loaded))
+	for flag := range loaded {
+		flags = append(flags, flag)
+	}
+	sort.Strings(flags)
+	for i := range flags {
+		for j := i + 1; j < len(flags); j++ {
+			if subtle.ConstantTimeCompare(loaded[flags[i]], loaded[flags[j]]) == 1 {
+				return fmt.Errorf("%w: %s and %s name different files holding the SAME key "+
+					"material. They say different things and an activation epoch pins them "+
+					"separately, so one key would mean rotating either rotates both -- and a "+
+					"read grant must not be signable by anything that can mint a publication "+
+					"receipt", output.ErrIncomplete, flags[i], flags[j])
+			}
+		}
+	}
+
+	return nil
+}
+
 // TLSEnabled is the single predicate for "this daemon serves the control API
 // over mTLS". All three files or none: a partial configuration has no honest
 // reading, and silently falling back to plaintext would put the control plane's
@@ -333,12 +387,31 @@ func (config Config) Namespace() (output.OutputNamespace, error) {
 	})
 }
 
-// PrepareScratch creates the canonicalization scratch directory.
+// PrepareScratch creates the canonicalization scratch directory AND sweeps what
+// a previous process left in it.
 //
 // It must be ABSOLUTE. The canonicalizer resolves it once and then works
 // descriptor-relative beneath it, and a relative path would be resolved against
 // whatever directory this process happened to start in -- which on a DaemonSet
 // is not a thing anybody chose.
+//
+// The sweep is not tidiness. hangar.Canonicalizer spools a tree into
+// `hangar-tree-*` beneath here and removes it in CapturedTree.Close, which both
+// PublishSealedTree and CanonicalizeSealedTree defer -- and a SIGKILL between
+// the two loses it. What is left is `canonical.tar`: the PLAINTEXT of a durable
+// output, outliving its capture on the node with no record that it is there,
+// and an emptyDir is per-Pod rather than per-container, so a crash-loop keeps
+// every one of them. It also invalidates the arithmetic this file and the chart
+// both reason from -- the scratch volume's ceiling is concurrency times the
+// content limit, and an emptyDir that exceeds its sizeLimit evicts the Pod --
+// because both assume the directory starts empty.
+//
+// It is safe by the plane's own rules: a restarted daemon owns no in-flight
+// canonicalization, every capture is retried under its capture fence, and
+// SealedIncarnation re-derives the tree from the held source rather than from
+// scratch. Only `hangar-tree-*` entries are removed, and deliberately so: a
+// misconfigured --scratch-dir pointing at something shared must not turn a
+// restart into a deletion of somebody else's data.
 func (config Config) PrepareScratch() error {
 	if strings.TrimSpace(config.ScratchDir) == "" {
 		return fmt.Errorf("%w: --scratch-dir is required; canonicalization needs a trusted "+
@@ -350,6 +423,21 @@ func (config Config) PrepareScratch() error {
 	if err := os.MkdirAll(config.ScratchDir, 0o700); err != nil {
 		return fmt.Errorf("%w: creating the canonicalization scratch directory: %v",
 			output.ErrInfrastructure, err)
+	}
+
+	entries, err := os.ReadDir(config.ScratchDir)
+	if err != nil {
+		return fmt.Errorf("%w: reading the canonicalization scratch directory: %v",
+			output.ErrInfrastructure, err)
+	}
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), hangar.CanonicalizerTempPrefix) {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(config.ScratchDir, entry.Name())); err != nil {
+			return fmt.Errorf("%w: removing %s, which a killed canonicalization left in the "+
+				"scratch volume: %v", output.ErrInfrastructure, entry.Name(), err)
+		}
 	}
 
 	return nil

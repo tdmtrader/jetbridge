@@ -615,6 +615,12 @@ var outputRoleImporters = map[string]string{
 		"roles against real PostgreSQL and the tier-1 store, because the composition -- which " +
 		"record precedes which effect -- is what the phase shipped unwired. The package's " +
 		"production code links no role",
+
+	"deploy/chart/tests": "TEST-ONLY: the chart's documented IAM matrix is DERIVED from " +
+		"policy.RequiredPermissions rather than hand-copied beside it, because three " +
+		"descriptions of one permission list had grown and the guard that was supposed to " +
+		"keep them in step had three of the four principals written into it by hand. The " +
+		"package renders Helm templates and links into no binary",
 }
 
 // testOnlyRoleImporters are the exemptions above whose reason says TEST-ONLY.
@@ -628,6 +634,7 @@ var testOnlyRoleImporters = map[string]bool{
 	"hangar/output/conformance": true,
 	"atc/hangaroutput":          true,
 	"atc/db":                    true,
+	"deploy/chart/tests":        true,
 }
 
 // TestTheOutputRolesAreLinkedOnlyByTheirOwnPrincipals is the import half of the

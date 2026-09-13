@@ -347,13 +347,16 @@ func (repository *HangarOutputRepository) RecordPolicyAttestation(ctx context.Co
 	if err := snapshot.Validate(); err != nil {
 		return err
 	}
+	if err := hangarPolicyObservationOnTheDatabaseClock(ctx, tx, snapshot); err != nil {
+		return err
+	}
 
 	var id int64
 	if err := hangarQueryRow(ctx, tx, `
 		INSERT INTO hangar_policy_snapshots
 			(activation_epoch, bucket_fingerprint, metageneration, policy_hash,
 			 lifecycle_delete_rules, state, observed_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		VALUES ($1, $2, $3, $4, $5, $6, least(now(), $7))
 		RETURNING id`,
 		[]any{
 			int64(snapshot.ActivationEpoch), snapshot.BucketFingerprint, snapshot.Metageneration,
@@ -377,6 +380,52 @@ func (repository *HangarOutputRepository) RecordPolicyAttestation(ctx context.Co
 			finding.Subject, finding.Detail); err != nil {
 			return hangarConflict(err)
 		}
+	}
+
+	return nil
+}
+
+// hangarPolicyObservationOnTheDatabaseClock refuses an attestation dated well
+// ahead of the database, and is half of why observed_at is stored as
+// least(now(), the attestor's stamp).
+//
+// THE FRESHNESS BOUND COMPARED TWO CLOCKS. `hangar_check_policy_admission` asks
+// whether now() - observed_at is inside MaxPolicyEvidenceAge; now() is
+// PostgreSQL's and observed_at was stamped by the attestor PROCESS, from the
+// clock wired into its BucketPolicySource. An attestor whose clock ran fast by
+// more than the bound therefore made stale evidence look permanently fresh --
+// which is the whole of Req 51/52's bounded-staleness promise, defeated by NTP
+// rather than by anything an attacker had to do.
+//
+// Both halves are needed and they do different jobs. The `least` is what makes
+// the deployment SAFE: a fast clock gains nothing at all, because no
+// observation can be dated after the transaction that recorded it, and the gate
+// then compares two values from one clock. This refusal is what makes the
+// broken clock VISIBLE: silently correcting a two-hour skew leaves an attestor
+// that is wrong about everything else it timestamps and an operator who is
+// never told. A slow clock is not refused -- its observation is older than the
+// truth, evidence expires early, and the plane fails closed, which is the
+// direction this whole gate exists to fail in.
+//
+// The tolerance is MaxPolicyEvidenceAge itself, matching hangarStatProofFresh's
+// symmetric window: milliseconds of skew between two hosts must never be a
+// refusal, and a stamp minutes into the future is the same broken clock a stale
+// one is.
+func hangarPolicyObservationOnTheDatabaseClock(ctx context.Context, tx output.Tx,
+	snapshot output.PolicySnapshot) error {
+	var ahead bool
+	if err := hangarQueryRow(ctx, tx, `
+		SELECT $1::timestamptz > now() + $2::interval`,
+		[]any{snapshot.ObservedAt.Time, hangarInterval(output.MaxPolicyEvidenceAge)},
+		&ahead); err != nil {
+		return err
+	}
+	if ahead {
+		return fmt.Errorf("%w: the lifetime-policy attestation is dated more than %s ahead of "+
+			"the database clock. The attestor stamps its own observation and the admission "+
+			"gate measures that stamp against the database's clock, so a reading from a clock "+
+			"this far out cannot be evidence of anything: fix the attestor's time source",
+			output.ErrIncomplete, output.MaxPolicyEvidenceAge)
 	}
 
 	return nil

@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"time"
@@ -51,7 +52,7 @@ func run(ctx context.Context, config Config, out *os.File) error {
 		return err
 	}
 
-	conn, err := controller.OpenDatabase(config.DSN, 2)
+	conn, err := controller.OpenDatabase(resolveDSN(config.DSN), 2)
 	if err != nil {
 		return err
 	}
@@ -79,10 +80,9 @@ func run(ctx context.Context, config Config, out *os.File) error {
 			epoch, config.Facet, evidence.CohortDigest)
 
 	case ModeEnable:
-		if err := epochs.Enable(ctx, epoch, config.Facet); err != nil {
+		if err := enable(ctx, epochs, epoch, config, out); err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "enabled epoch %d's %s facet\n", epoch, config.Facet)
 
 	case ModeDrain:
 		if err := drain(ctx, epochs, epoch, config, out); err != nil {
@@ -102,6 +102,62 @@ func run(ctx context.Context, config Config, out *os.File) error {
 		state.Epoch, state.Base, state.Output, state.Revision)
 
 	return nil
+}
+
+// enable reads the facet's activation preconditions, and enables it only if
+// every one of them is met.
+//
+// THE PRECONDITIONS WERE DEAD CODE. Ten typed checks against the live tables
+// shipped implemented, tested and called by nothing, because this branch called
+// `Epochs.Enable` -- the bare CAS -- and the checks were held by a sentence in
+// the runbook instead. That is the third capability on this track to ship with
+// no production caller, which is why `atc/hangaroutput/activation` is now
+// inside the repository's reachability rule: a fourth fails a suite rather than
+// costing a reviewer.
+//
+// The DECISION is activation.EnableStep's -- check first, enable second, and
+// refuse with every unmet reason rather than the first -- for the same reason
+// DrainStep owns the drain's. What is left here is printing, which is this
+// binary's job, and the whole list is printed either way: an operator who is
+// refused wants to see what WAS met as much as what was not, and one who
+// succeeds wants the record of what was true at the moment they turned it on.
+func enable(ctx context.Context, epochs activation.Epochs,
+	epoch executioncontrol.ActivationEpoch, config Config, out *os.File) error {
+	outcome, err := epochs.EnableStep(ctx, epoch, config.Facet, true)
+	reportPreconditions(out, epoch, config.Facet, outcome.Preconditions)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "enabled epoch %d's %s facet\n", epoch, config.Facet)
+
+	return nil
+}
+
+// reportPreconditions prints every precondition, met and unmet, with what was
+// found and why it matters.
+//
+// Unmet ones are printed with their reason as well as their finding, because a
+// refusal an operator cannot act on is a refusal they will work around; met
+// ones are printed at all because a list that shrinks to nothing when everything
+// is fine gives an operator no way to see that the step asked anything.
+func reportPreconditions(out io.Writer, epoch executioncontrol.ActivationEpoch,
+	facet activation.Facet, preconditions []activation.Precondition) {
+	if len(preconditions) == 0 {
+		return
+	}
+
+	fmt.Fprintf(out, "epoch %d's %s facet, %d activation preconditions:\n",
+		epoch, facet, len(preconditions))
+	for _, precondition := range preconditions {
+		mark := "met "
+		if !precondition.Met {
+			mark = "UNMET"
+		}
+		fmt.Fprintf(out, "  [%s] %s: %s\n", mark, precondition.Name, precondition.Detail)
+		if !precondition.Met {
+			fmt.Fprintf(out, "          why it matters: %s\n", precondition.Why)
+		}
+	}
 }
 
 // drain formats what activation.DrainStep decided, one facet at a time.

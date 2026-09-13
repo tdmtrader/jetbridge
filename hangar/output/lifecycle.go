@@ -270,14 +270,31 @@ func ReadGrantFor(claims ReadGrantClaims, remaining time.Duration) ReadLeaseVali
 	}
 }
 
-// DeletePrecondition is the exact generation and metageneration a conditional
-// delete must match.
+// DeletePrecondition is the exact generation a conditional delete must match,
+// plus the metageneration the object was registered at.
 //
 // It is a required parameter of the one delete route rather than an option on
 // it. GCS IAM cannot require a caller to send a generation precondition once
 // delete permission exists (Req 55), so the only place that requirement can
 // live is the signature -- and architecture_test.go fails the test suite if a delete
 // appears anywhere without one.
+//
+// Metageneration is RECORDED EVIDENCE about the object at registration and is
+// deliberately not sent as a delete precondition, which it used to be. A real
+// object's generation is stable while its metageneration moves on any metadata
+// change -- a SetStorageClass lifecycle transition, Autoclass, an ACL or
+// metadata edit, a retention hold -- and none of those is a Delete rule, so the
+// bucket keeps attesting safe. Conditioned on the metageneration recorded at
+// receipt registration, every delete in such a bucket 412s;
+// DeleteGenerationConflict is TERMINAL and there is no re-stat-and-re-register
+// path anywhere, so the whole registered set became permanently unreclaimable,
+// silently, forever. Req 47 asks for generation-exact deletion, not
+// metadata-exact, and .Generation(g) plus ifGenerationMatch is already exact.
+//
+// The alternative was to keep the conjunct and add a re-stat arm that refreshes
+// the registered metageneration and re-admits under the same lease. That is a
+// new state machine on the delete path to buy a property the generation pin
+// already has, so it is not what this does.
 type DeletePrecondition struct {
 	Generation     int64 `json:"generation"`
 	Metageneration int64 `json:"metageneration"`

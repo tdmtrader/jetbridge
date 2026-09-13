@@ -517,6 +517,36 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	// root.Open — and migrating one branch and not the other is how this broke
 	// once already. Registry values are now locations under the same root, so
 	// there is one representation and one code path.
+	//
+	// FILESYSTEM FIRST is what makes a read-only alias shadowable, and the
+	// argument that closes it is written here rather than in a phase document,
+	// because it is the thing that could stop being true.
+	//
+	// The shape: a capture-selected output gets a read-only alias so that
+	// downstream steps resolve it in the ordinary way, and this handler stats
+	// the literal path before consulting the registry. refuseIfCaptureHeld
+	// classifies the KEY the caller named -- `steps/<volume handle>` -- which
+	// is not the held incarnation `steps/<exec>.<gen>/result`, so the
+	// output-plane guard has nothing to say about it: read-only is enforced at
+	// the incarnation, not across the name that points at it. A literal planted
+	// at the alias key would therefore be served to a peer GET in place of the
+	// captured tree, and the held incarnation would be untouched and none the
+	// wiser. Demonstrated.
+	//
+	// What closes it is NOT "there is no production output read path" -- that
+	// is true of the MANAGED read, and the alias is not a managed read; it is a
+	// production path today and cross-node it comes through here. What closes
+	// it is that the alias key is `ArtifactKey(vol.Handle())`, the OUTPUT
+	// volume's handle verbatim, and no production route creates a literal
+	// there: handleStreamIn and PUT /artifacts/ are both mTLS-protected and are
+	// driven at INPUT volume handles, which are different volumes with
+	// different handles. The shadow needs a literal at the alias key and
+	// nothing makes one.
+	//
+	// If that ever stops being true -- a route that writes at an output volume
+	// handle, or an alias keyed on something a caller can also name -- the fix
+	// is the daemon-wide precedence rule resolveOne already uses: consult the
+	// registry before the filesystem.
 	info, err := s.root.Stat(osName(loc))
 	if err != nil && os.IsNotExist(err) {
 		if regLoc, found := s.lookupRegistryAlias(r); found {
@@ -944,9 +974,18 @@ func (s *Server) handleCaptureClass(w http.ResponseWriter, r *http.Request) {
 		Class  string `json:"class"`
 		Handle string `json:"handle"`
 		Reason string `json:"reason,omitempty"`
-	}{Class: string(class), Handle: handle}
+	}{Class: string(class), Handle: handle, Reason: ledger.PublicReason(class)}
 	if reason != nil {
-		body.Reason = reason.Error()
+		// The detailed reason goes to the LOG and not to the body. This route
+		// requires no client certificate -- a pod on this node has to be able
+		// to ask about its own step directory -- so its audience is every pod
+		// on the node, task pods included, and the ledger's `unavailable` text
+		// carries the node's control-directory path and the raw OS error.
+		// Those are exactly the values the output daemon's own redaction rule
+		// forbids any route to emit, and this route was never held to it.
+		s.logger.Info("capture-class", lager.Data{
+			"class": string(class), "handle": handle, "detail": reason.Error(),
+		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")

@@ -220,6 +220,26 @@ func hangarPublish(ctx context.Context, repository *db.HangarOutputRepository, d
 func hangarReserve(ctx context.Context, repository *db.HangarOutputRepository, digest hangar.Digest, deadline output.Timestamp) HangarCapture {
 	GinkgoHelper()
 
+	return hangarReserveWith(ctx, repository, digest, deadline, true)
+}
+
+// hangarReserveBeforePublishPoint stops one statement earlier than hangarReserve
+// does: everything through the resolved logical identity, and no first object
+// create.
+//
+// That one statement is the irreversible publish point, so this is the only
+// state in which the product-neutral cancel seam still has something to cancel.
+// A spec about cancellation that started from hangarReserve would be a spec
+// about settlement wearing cancellation's name.
+func hangarReserveBeforePublishPoint(ctx context.Context, repository *db.HangarOutputRepository, digest hangar.Digest, deadline output.Timestamp) HangarCapture {
+	GinkgoHelper()
+
+	return hangarReserveWith(ctx, repository, digest, deadline, false)
+}
+
+func hangarReserveWith(ctx context.Context, repository *db.HangarOutputRepository, digest hangar.Digest, deadline output.Timestamp, pastPublishPoint bool) HangarCapture {
+	GinkgoHelper()
+
 	capture := HangarCapture{
 		HandoffID:     output.HandoffID(uuid.NewString()),
 		SourceLeaseID: output.SourceLeaseID(uuid.NewString()),
@@ -280,7 +300,9 @@ func hangarReserve(ctx context.Context, repository *db.HangarOutputRepository, d
 		LogicalBytes:    4096,
 		ResolvedAt:      output.NewTimestamp(time.Now()),
 	})).To(Succeed())
-	Expect(repository.RecordFirstObjectCreate(ctx, tx, capture.ReservationID, 1)).To(Succeed())
+	if pastPublishPoint {
+		Expect(repository.RecordFirstObjectCreate(ctx, tx, capture.ReservationID, 1)).To(Succeed())
+	}
 	Expect(tx.Commit()).To(Succeed())
 
 	return capture

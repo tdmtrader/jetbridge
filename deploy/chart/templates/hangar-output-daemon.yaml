@@ -117,7 +117,10 @@ spec:
             - --control-dir={{ $output.daemon.controlPath }}
             - --steps-dir={{ $output.daemon.stepsPath }}
             - --scratch-dir={{ $output.daemon.scratch.path }}
-            - --control-key-id={{ $output.executionControl.keySecret }}
+            # The key's id, not its Secret's name. Two nodes holding
+            # different material under one Secret name reported one id, and
+            # base attestation compares ids.
+            - --control-key-id={{ $output.executionControl.keyID }}
             - --control-key-file=/etc/concourse/hangar-output/control/control.key
             - --capability-key=/etc/concourse/hangar-output/capability/capability.key
             - --activation-epoch={{ int $output.activationEpoch }}
@@ -152,8 +155,20 @@ spec:
                   # the node that issued it.
                   fieldPath: metadata.uid
           ports:
+            # hostPort, and for the same reason artifact-daemon has one: every
+            # client of this daemon dials the NODE IP. The ATC composes
+            # `scheme://<node InternalIP>:<port>` (NodeIPResolver), and the
+            # capture control init dials `${HOST_IP}:${PORT}` from
+            # `status.hostIP`. A DaemonSet pod with neither hostNetwork nor a
+            # hostPort listens on the POD IP only, so without this line nothing
+            # is bound where every caller calls and the facet does nothing at
+            # all on a cluster -- while rendering perfectly well.
+            #
+            # hostPort rather than hostNetwork: one port on the node, not the
+            # node's whole network namespace.
             - name: control
               containerPort: {{ $output.daemon.port }}
+              hostPort: {{ $output.daemon.port }}
               protocol: TCP
           livenessProbe:
             httpGet:

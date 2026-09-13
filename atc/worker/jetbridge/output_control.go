@@ -426,9 +426,13 @@ func (controls *nodeOutputControls) ForNode(ctx context.Context, nodeName string
 		port = DefaultOutputDaemonPort
 	}
 
+	// The OUTPUT plane's scheme and the OUTPUT plane's client. Not the
+	// artifact daemon's: that predicate is a switch on a different daemon
+	// serving a different bucket under a different identity, and its client
+	// certificate is issued by a CA this daemon does not trust.
 	return NewOutputControlClient(
-		fmt.Sprintf("%s://%s:%d", daemonURLScheme(controls.config), nodeIP, port),
-		newDaemonHTTPClient(controls.config, 30*time.Second),
+		fmt.Sprintf("%s://%s:%d", outputDaemonURLScheme(), nodeIP, port),
+		newOutputDaemonHTTPClient(controls.config, 30*time.Second),
 		controls.minter, controls.epoch), nil
 }
 
