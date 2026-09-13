@@ -17,6 +17,16 @@
 -- is not; the difference form is also the honest one, because these are terms,
 -- not wall-clock instants.
 
+-- Every refusal below names its class on the RAISE itself, and the classes are
+-- JB001 conflict, JB002 at-risk policy, JB003 stale fence or epoch, JB004
+-- incomplete. One rule decides between the first and the last where they could
+-- both be argued for: **a rewrite of an immutable identity is JB001**. It is a
+-- conflict -- two statements about one fact, the first of which already won --
+-- and never JB004, which is reserved for a structurally valid value whose parts
+-- contradict each other. Review finding R2-4: three of these refusals said
+-- JB004 and three said JB001, so the same refusal reached a caller as
+-- ErrIncomplete or ErrConflict depending on which table it came from.
+
 -- The six states each activation facet moves through, as an ordinal, so that
 -- "may not move backwards" is expressible in a CHECK. There is deliberately no
 -- `retired` state: `disabled` is terminal, and rotation creates a new epoch row
@@ -121,7 +131,7 @@ BEGIN
     END IF;
     IF NEW.epoch_id <> OLD.epoch_id OR NEW.created_at <> OLD.created_at THEN
         RAISE EXCEPTION 'hangar: activation epoch identity is immutable'
-            USING ERRCODE = 'JB004';
+            USING ERRCODE = 'JB001';
     END IF;
     IF NEW.revision <= OLD.revision THEN
         RAISE EXCEPTION 'hangar: activation epoch % was written without advancing its revision (% -> %)',
@@ -177,7 +187,7 @@ BEGIN
         OR NEW.created_at <> OLD.created_at THEN
         RAISE EXCEPTION 'hangar: the predeclaration for handoff % is immutable; a new build uses new identities',
             OLD.handoff_id
-            USING ERRCODE = 'JB004';
+            USING ERRCODE = 'JB001';
     END IF;
     IF OLD.hold_acknowledged_at IS NOT NULL AND NEW.hold_acknowledged_at IS DISTINCT FROM OLD.hold_acknowledged_at THEN
         RAISE EXCEPTION 'hangar: the source hold for handoff % is already acknowledged; it is acknowledged once',
@@ -186,7 +196,7 @@ BEGIN
     END IF;
     IF NEW.hold_acknowledged_at IS NULL AND OLD.hold_acknowledged_at IS NOT NULL THEN
         RAISE EXCEPTION 'hangar: the source hold for handoff % cannot be un-acknowledged', OLD.handoff_id
-            USING ERRCODE = 'JB004';
+            USING ERRCODE = 'JB001';
     END IF;
 
     RETURN NEW;
@@ -303,6 +313,36 @@ END $$;
 CREATE TRIGGER hangar_capture_release_one_way_guard
     BEFORE UPDATE ON hangar_capture_reservations
     FOR EACH ROW EXECUTE FUNCTION hangar_capture_release_is_one_way();
+
+-- A decided capture is decided. Req 11 says a capture may *terminally* cancel
+-- before sealing or object creation, and `terminally` is the word this trigger
+-- makes true: without it `cancelled` was a state the row could leave, so an
+-- owner still holding the current capture fence -- the cancellation does not
+-- take the lease away -- could resolve a logical identity, publish and register
+-- a receipt over a capture the control plane had already given up on, and the
+-- source release owed for that cancellation would then be owed for a capture
+-- that had published. `registered` and `failed` are terminal for the same
+-- reason and were already unreachable-from only by convention.
+--
+-- Settlement, release acknowledgement and the publish-point columns are not
+-- states and may still be stamped on a terminal row: that is precisely how a
+-- cancelled capture becomes settled once its release is acknowledged.
+CREATE FUNCTION hangar_capture_state_is_terminal() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.state IS DISTINCT FROM OLD.state
+        AND OLD.state IN ('registered', 'failed', 'cancelled') THEN
+        RAISE EXCEPTION 'hangar: capture reservation % is %, which is terminal; it cannot become %',
+            OLD.reservation_id, OLD.state, NEW.state
+            USING ERRCODE = 'JB001';
+    END IF;
+
+    RETURN NEW;
+END $$;
+
+CREATE TRIGGER hangar_reservation_transition
+    BEFORE UPDATE ON hangar_capture_reservations
+    FOR EACH ROW EXECUTE FUNCTION hangar_capture_state_is_terminal();
 
 -- Renewable capture ownership on the database clock: a 15-minute floor, and a
 -- monotonic fence advanced by takeover (Req 10). A stale owner may not seal,
@@ -1146,6 +1186,17 @@ CREATE CONSTRAINT TRIGGER hangar_read_lease_matches_claim
 -- hangar_reclaim_jobs (reclaim admission). A renewal reaches the ON CONFLICT
 -- UPDATE path and fires none of them, which is the "existing claims and read
 -- leases remain recorded" half of the same requirement.
+--
+-- A sixth attachment, on hangar_handoff_predeclarations, is the *earliest* of
+-- those admissions rather than a new one (review finding R2-2, ruled by the
+-- orchestrator). A predeclaration is what makes a producer hold its source, and
+-- a capture admitted while the policy is healthy whose policy goes at-risk
+-- before Stage 2 holds that source through a reservation the fifth attachment
+-- will refuse, and then has to be routed down no_capture to let it go. Safe,
+-- but a hold for nothing: nothing downstream of a predeclaration can be
+-- admitted while at risk, so admitting the predeclaration buys only work to
+-- undo. PredeclareHandoff's ON CONFLICT (handoff_id) DO NOTHING re-admission
+-- fires no INSERT trigger, so an idempotent repeat stays idempotent.
 CREATE FUNCTION hangar_check_policy_admission() RETURNS trigger
     LANGUAGE plpgsql AS $$
 DECLARE
@@ -1174,6 +1225,10 @@ BEGIN
     RETURN NULL;
 END $$;
 
+CREATE CONSTRAINT TRIGGER hangar_policy_admits_new_protection
+    AFTER INSERT ON hangar_handoff_predeclarations
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION hangar_check_policy_admission();
 CREATE CONSTRAINT TRIGGER hangar_policy_admits_new_protection
     AFTER INSERT ON hangar_claims
     DEFERRABLE INITIALLY DEFERRED

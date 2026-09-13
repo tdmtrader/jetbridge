@@ -24,6 +24,14 @@ const ReceiptAlgorithm = "ed25519"
 // cannot be replayed for another capture, source, output or fence -- which is
 // exactly what binding all of those together buys.
 //
+// ChallengeNonce and ChallengeIssuedAt are what make the facts true *now*
+// rather than once. Without them a receipt is bound to a set of facts, so it
+// answers every later challenge naming the same facts and cannot prove its stat
+// post-dates the challenge at all -- and the database's one-use row cannot
+// catch that, because it consumes a nonce the receipt never named. They are
+// signed, so the daemon that performed the stat is what attests to which
+// challenge it was answering.
+//
 // Attributes is the wire projection of the foundation's hangar.TreeAttributes,
 // declared below. The projection exists for exactly one reason: the foundation
 // encodes its CreatedAt with trailing zeros trimmed, so one instant has several
@@ -36,6 +44,8 @@ type ReceiptClaims struct {
 	HandoffID            HandoffID                        `json:"handoff_id"`
 	ProducerCheckpointID OpaqueID                         `json:"producer_checkpoint_id"`
 	ReservationID        ReservationID                    `json:"reservation_id"`
+	ChallengeNonce       string                           `json:"challenge_nonce"`
+	ChallengeIssuedAt    Timestamp                        `json:"challenge_issued_at"`
 	Incarnation          SourceIncarnation                `json:"incarnation"`
 	Output               OutputName                       `json:"output"`
 	CaptureFence         CaptureFence                     `json:"capture_fence"`
@@ -68,6 +78,19 @@ func (claims ReceiptClaims) Validate() error {
 		return err
 	}
 	if err := claims.ReservationID.Validate(); err != nil {
+		return err
+	}
+	if claims.ChallengeNonce == "" {
+		return fmt.Errorf("%w: the receipt names no stat challenge; a signature over old facts "+
+			"proves only that the facts were once true", ErrIncomplete)
+	}
+	if len(claims.ChallengeNonce) < MinChallengeNonceBytes ||
+		len(claims.ChallengeNonce) > MaxChallengeNonceBytes {
+		return fmt.Errorf("%w: the challenge nonce is %d bytes and the schema issues between %d "+
+			"and %d", ErrLimitExceeded, len(claims.ChallengeNonce),
+			MinChallengeNonceBytes, MaxChallengeNonceBytes)
+	}
+	if err := claims.ChallengeIssuedAt.Validate(); err != nil {
 		return err
 	}
 	if err := claims.Incarnation.Validate(); err != nil {

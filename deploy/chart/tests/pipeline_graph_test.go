@@ -516,6 +516,75 @@ func TestEveryPipelineTaskHasATimeout(t *testing.T) {
 	t.Logf("checked %d tasks", checked)
 }
 
+// One fake-gcs-server deployment serves both test runners, and the way they
+// find it is this one variable. The Go tier-2 conformance suite reads it
+// (hangar/output/conformance) and so does the brine Hangar fixture
+// (atc/worker/jetbridge/brine/steps/hangar_fixture.go); a task that runs either
+// one without it silently gets an in-process server instead, which is a
+// substrate nobody deployed and a failure mode the two runners no longer share.
+//
+// It was added to unit-tests and not to brine-suite, and nothing noticed,
+// because a missing param is a valid pipeline.
+func TestBothHangarRunnersNameTheSameFakeGCSEndpoint(t *testing.T) {
+	const variable = "HANGAR_FAKE_GCS_ENDPOINT"
+
+	required := map[string]bool{"unit-tests": false, "brine-suite": false}
+	values := map[string]string{}
+
+	for _, path := range pipelineFiles(t) {
+		if filepath.Base(path) != "concourse-pipeline.yml" {
+			continue
+		}
+		pipeline := loadPipeline(t, path)
+
+		for _, job := range pipeline.Jobs {
+			for _, step := range flattenPlan(job.Plan) {
+				if step.Task == "" {
+					continue
+				}
+				if _, wanted := required[step.Task]; !wanted {
+					continue
+				}
+				endpoint, set := step.Config.Params[variable]
+				if !set || strings.TrimSpace(endpoint) == "" {
+					t.Errorf("task %q in job %q carries no %s. It runs a Hangar substrate "+
+						"consumer, so without the variable it starts its own emulator and "+
+						"reports against a substrate nobody deployed.", step.Task, job.Name, variable)
+
+					continue
+				}
+				required[step.Task] = true
+				values[step.Task] = endpoint
+			}
+		}
+	}
+
+	for task, found := range required {
+		if !found {
+			t.Errorf("task %q was not found in concourse-pipeline.yml with a %s param",
+				task, variable)
+		}
+	}
+	if len(values) < 2 {
+		t.Fatalf("only %d task(s) name %s; this check would pass vacuously", len(values), variable)
+	}
+
+	var first, firstTask string
+	for task, endpoint := range values {
+		if first == "" {
+			first, firstTask = endpoint, task
+
+			continue
+		}
+		if endpoint != first {
+			t.Errorf("task %q names %s=%s and task %q names %s. One deployment serves both "+
+				"runners; two values is two deployments, and the shared failure mode is gone.",
+				task, variable, endpoint, firstTask, first)
+		}
+	}
+	t.Logf("%d tasks share %s=%s", len(values), variable, first)
+}
+
 type pipelineDoc struct {
 	Jobs []struct {
 		Name string `json:"name"`
@@ -553,6 +622,7 @@ type step struct {
 			Path string   `json:"path"`
 			Args []string `json:"args"`
 		} `json:"run"`
+		Params map[string]string `json:"params"`
 	} `json:"config"`
 }
 

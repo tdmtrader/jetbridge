@@ -218,6 +218,101 @@ func hangarRenderString(expression ast.Node, known map[string]string) string {
 	return strings.Join(parts, " ")
 }
 
+// hangarRenderStatement renders an assembled statement in its own order.
+//
+// hangarRenderString above answers "do a lock clause and a Hangar table appear
+// together", for which an unordered join is enough. The table rule asks a
+// harder question -- *which* relation does this statement name -- and that one
+// needs the pieces in the places they will actually occupy. `fmt.Sprintf("…
+// FROM %s … FOR UPDATE", consumerTable)` joined out of order reads as a
+// statement whose only relation is `%s`, which is exactly the shape review
+// finding R2-1 found evading all three structural rules.
+//
+// So this substitutes rather than concatenates: the format verbs of a Sprintf
+// are filled, in order, from the arguments this file can resolve, and a `+`
+// chain is joined left to right. An argument it cannot resolve stays as its
+// verb, which keeps the answer honest -- an unreadable table is reported by
+// TestARuntimeTableIsAlwaysNamedByALiteral, not silently rendered into
+// something harmless.
+func hangarRenderStatement(expression ast.Node, known map[string]string) string {
+	switch node := expression.(type) {
+	case *ast.BasicLit:
+		if node.Kind != token.STRING {
+			return ""
+		}
+		value, err := strconv.Unquote(node.Value)
+		if err != nil {
+			return ""
+		}
+
+		return value
+
+	case *ast.Ident:
+		return known[node.Name]
+
+	case *ast.BinaryExpr:
+		if node.Op != token.ADD {
+			return ""
+		}
+
+		return hangarRenderStatement(node.X, known) + hangarRenderStatement(node.Y, known)
+
+	case *ast.CallExpr:
+		selector, ok := node.Fun.(*ast.SelectorExpr)
+		if !ok || selector.Sel.Name != "Sprintf" || len(node.Args) == 0 {
+			return ""
+		}
+		format := hangarRenderStatement(node.Args[0], known)
+		if format == "" {
+			return ""
+		}
+
+		return hangarFillVerbs(format, node.Args[1:], known)
+	}
+
+	return ""
+}
+
+// hangarFillVerbs replaces each %-verb in order with the argument's value.
+func hangarFillVerbs(format string, args []ast.Expr, known map[string]string) string {
+	var (
+		rendered strings.Builder
+		next     int
+	)
+	for index := 0; index < len(format); index++ {
+		if format[index] != '%' || index+1 >= len(format) {
+			rendered.WriteByte(format[index])
+
+			continue
+		}
+		verb := format[index+1]
+		if verb == '%' {
+			rendered.WriteString("%%")
+			index++
+
+			continue
+		}
+		substituted := ""
+		if next < len(args) {
+			substituted = hangarRenderStatement(args[next], known)
+		}
+		next++
+		if substituted == "" {
+			// Unresolvable: leave the verb standing so the statement still
+			// says "a table is substituted here".
+			rendered.WriteByte('%')
+			rendered.WriteByte(verb)
+			index++
+
+			continue
+		}
+		rendered.WriteString(substituted)
+		index++
+	}
+
+	return rendered.String()
+}
+
 // hangarLocksARow is the rule itself, over one rendered statement, so that the
 // same predicate drives the real scan and the fixtures below.
 func hangarLocksARow(statement string) bool {
@@ -521,22 +616,23 @@ func hangarPlaneFiles(t *testing.T) (map[string]*ast.File, *token.FileSet, strin
 func TestTheOutputPlaneNamesNoTableOutsideItself(t *testing.T) {
 	files, _, _ := hangarPlaneFiles(t)
 
+	// The package's string declarations, so a statement assembled out of a
+	// constant declared in another file of the same package can still be read.
+	known := map[string]string{}
+	for _, parsed := range files {
+		for name, value := range hangarStringDeclarations(parsed) {
+			known[name] = value
+		}
+	}
+
 	named := 0
 	for name, parsed := range files {
-		ast.Inspect(parsed, func(node ast.Node) bool {
-			literal, ok := node.(*ast.BasicLit)
-			if !ok || literal.Kind != token.STRING {
-				return true
-			}
-			value, err := strconv.Unquote(literal.Value)
-			if err != nil {
-				return true
-			}
-			for _, table := range hangarTablesNamedBy(value) {
-				// A table substituted at run time is checked at its call
-				// sites below, not here: this literal does not know what it
-				// will say.
-				if table == "%s" {
+		check := func(statement string) {
+			for _, table := range hangarTablesNamedBy(statement) {
+				// A table substituted at run time and still unresolved is
+				// checked at its call sites below, not here: this statement
+				// does not know what it will say.
+				if strings.HasPrefix(table, "%") {
 					continue
 				}
 				named++
@@ -545,8 +641,43 @@ func TestTheOutputPlaneNamesNoTableOutsideItself(t *testing.T) {
 						"names only its own tables. A consumer's rows are the consumer's -- Hangar "+
 						"cannot know what locks the caller already holds on them, so touching one "+
 						"is how an already-held domain lock gets acquired or inverted, which AC 11 "+
-						"forbids. Statement: %q", name, table, firstLine(value))
+						"forbids. Statement: %q", name, table, firstLine(statement))
 				}
+			}
+		}
+
+		ast.Inspect(parsed, func(node ast.Node) bool {
+			switch expression := node.(type) {
+			case *ast.BasicLit:
+				if expression.Kind != token.STRING {
+					return true
+				}
+				value, err := strconv.Unquote(expression.Value)
+				if err != nil {
+					return true
+				}
+				check(value)
+			case *ast.CallExpr:
+				// R2-1: a statement assembled by Sprintf is one statement,
+				// whatever the source does with the pieces. Reading only the
+				// format literal reports its relation as `%s` and lets a
+				// consumer table named by a constant through all three rules.
+				selector, ok := expression.Fun.(*ast.SelectorExpr)
+				if !ok || selector.Sel.Name != "Sprintf" {
+					return true
+				}
+				check(hangarRenderStatement(expression, known))
+
+				// Rendered whole; descending would read the format literal
+				// again and, for a nested `+` chain, once per node.
+				return false
+			case *ast.BinaryExpr:
+				if expression.Op != token.ADD {
+					return true
+				}
+				check(hangarRenderStatement(expression, known))
+
+				return false
 			}
 
 			return true
@@ -670,4 +801,72 @@ func TestTheTableRuleIsNotVacuous(t *testing.T) {
 			}
 		}
 	}
+
+	// M-evade-consumer, the shape review finding R2-1 found evading all three
+	// structural rules: the lock clause and the consumer table are both in one
+	// statement, written as two pieces, and the piece naming the relation is a
+	// constant. The lock rule does not object -- correctly, it is not a Hangar
+	// table -- and the runtime-table rule does not follow it, because the
+	// function it is written in takes no parameter named `table`. This rule is
+	// the one that has to see it.
+	t.Run("it reads a consumer table assembled out of pieces", func(t *testing.T) {
+		source := `package db
+
+import "fmt"
+
+const hangarConsumerBindingsTable = "opaque_consumer_bindings"
+const hangarClaimsTable = "hangar_claims"
+
+func probe(tx Tx) {
+	_, _ = tx.Exec(fmt.Sprintf("SELECT 1 FROM %s WHERE binding_id = $1 FOR UPDATE", hangarConsumerBindingsTable))
+	_, _ = tx.Exec("SELECT 1 FROM " + hangarConsumerBindingsTable + " WHERE binding_id = $1")
+	_, _ = tx.Exec(fmt.Sprintf("SELECT 1 FROM %s WHERE claim_id = $1 FOR UPDATE", hangarClaimsTable))
+}
+`
+		fileSet := token.NewFileSet()
+		parsed, err := parser.ParseFile(fileSet, "probe.go", source, 0)
+		if err != nil {
+			t.Fatalf("parsing the fixture: %v", err)
+		}
+		known := hangarStringDeclarations(parsed)
+
+		var read []string
+		ast.Inspect(parsed, func(node ast.Node) bool {
+			switch expression := node.(type) {
+			case *ast.CallExpr:
+				selector, ok := expression.Fun.(*ast.SelectorExpr)
+				if !ok || selector.Sel.Name != "Sprintf" {
+					return true
+				}
+			case *ast.BinaryExpr:
+				if expression.Op != token.ADD {
+					return true
+				}
+			default:
+				return true
+			}
+			read = append(read, hangarTablesNamedBy(hangarRenderStatement(node, known))...)
+
+			return false
+		})
+
+		outside := 0
+		for _, table := range read {
+			if !strings.HasPrefix(table, hangarTablePrefix) && !strings.HasPrefix(table, "%") {
+				outside++
+			}
+		}
+		if outside != 2 {
+			t.Errorf("the rule read %v from the fixture and found %d table(s) outside the plane, "+
+				"expected 2. A `FROM %%s` whose relation is a constant, and a relation "+
+				"concatenated onto its own statement, both name a consumer table in one "+
+				"statement -- and the behavioural spec cannot see either, because a row lock in "+
+				"the consumer's own mode is invisible in pg_locks.", read, outside)
+		}
+		if len(read) != 3 {
+			t.Errorf("the rule read %v; it must still read the plane's own table out of the "+
+				"third statement, or a green here would mean it stopped reading rather than "+
+				"that the statements are clean", read)
+		}
+	})
 }

@@ -53,6 +53,7 @@ var fixturedTypes = map[string]string{
 	outputPackageDir + ":InventoryDebt":                   "inventory-debt.json",
 	outputPackageDir + ":PolicySnapshot":                  "policy-snapshot.json",
 	outputPackageDir + ":ExtensionHandshake":              "capture-extension-handshake.json",
+	outputPackageDir + ":CallerNamespaceRequest":          "caller-namespace-request.json",
 
 	basePackageDir + ":Identity":                           "identity.json",
 	basePackageDir + ":Envelope":                           "envelope.json",

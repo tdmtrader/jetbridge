@@ -122,26 +122,28 @@ var _ = Describe("the Hangar output lock suffix", func() {
 
 	// The one-use stat challenge the daemon would have been issued, for one
 	// exact ref. Written as SQL because minting it is not the repository's job.
-	issueChallenge := func(handoff output.HandoffID, reservation output.ReservationID, ref hangar.TreeRef) string {
+	issueChallenge := func(handoff output.HandoffID, reservation output.ReservationID, ref hangar.TreeRef) (string, time.Time) {
 		GinkgoHelper()
 
 		nonce := "nonce-" + uuid.NewString()
-		_, err := dbConn.Exec(`
+		var issuedAt time.Time
+		err := dbConn.QueryRow(`
 			INSERT INTO hangar_receipt_stat_challenges
 				(nonce, handoff_id, reservation_id, activation_epoch, receipt_public_key_id,
 				 scope, digest, generation, capture_fence, not_after)
-			VALUES ($1, $2, $3, 1, 'receipt-key-1', $4, $5, $6, 1, now() + interval '5 minutes')`,
+			VALUES ($1, $2, $3, 1, 'receipt-key-1', $4, $5, $6, 1, now() + interval '5 minutes')
+			RETURNING issued_at`,
 			nonce, string(handoff), string(reservation), string(ref.Scope), string(ref.Digest),
-			ref.Generation)
+			ref.Generation).Scan(&issuedAt)
 		Expect(err).NotTo(HaveOccurred())
 
-		return nonce
+		return nonce, issuedAt
 	}
 
 	// One receipt admission, in one place, because a second spelling of it is
 	// a second set of facts and the guards under test are exactly about facts
 	// agreeing.
-	admissionFor := func(handoff output.HandoffID, execution executioncontrol.Identity, reservation output.ReservationID, ref hangar.TreeRef, nonce string) output.ReceiptAdmission {
+	admissionFor := func(handoff output.HandoffID, execution executioncontrol.Identity, reservation output.ReservationID, ref hangar.TreeRef, nonce string, issuedAt time.Time) output.ReceiptAdmission {
 		name := output.OutputName("result")
 
 		return output.ReceiptAdmission{
@@ -155,6 +157,8 @@ var _ = Describe("the Hangar output lock suffix", func() {
 					HandoffID:            handoff,
 					ProducerCheckpointID: output.OpaqueID("checkpoint-" + string(handoff)),
 					ReservationID:        reservation,
+					ChallengeNonce:       nonce,
+					ChallengeIssuedAt:    output.NewTimestamp(issuedAt),
 					Incarnation: output.SourceIncarnation{
 						ExecutionID:      execution.ExecutionID,
 						NodeUID:          "node-uid",
@@ -244,13 +248,13 @@ var _ = Describe("the Hangar output lock suffix", func() {
 		Expect(tx.Commit()).To(Succeed())
 
 		ref := hangar.TreeRef{Scope: "team-a", Digest: digest, Generation: generation}
-		nonce := issueChallenge(handoff, reservation, ref)
+		nonce, issuedAt := issueChallenge(handoff, reservation, ref)
 
 		tx, err = dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		defer db.Rollback(tx)
 		Expect(repository.RegisterReceipt(ctx, tx,
-			admissionFor(handoff, execution, reservation, ref, nonce))).To(Succeed())
+			admissionFor(handoff, execution, reservation, ref, nonce, issuedAt))).To(Succeed())
 		Expect(tx.Commit()).To(Succeed())
 
 		return reservation, ref
@@ -750,8 +754,9 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			tx, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(tx)
+			elsewhereNonce, elsewhereIssuedAt := issueChallenge(handoff, reservation, elsewhere)
 			err = repository.RegisterReceipt(ctx, tx, admissionFor(handoff, execution, reservation,
-				elsewhere, issueChallenge(handoff, reservation, elsewhere)))
+				elsewhere, elsewhereNonce, elsewhereIssuedAt))
 			Expect(err).To(MatchError(output.ErrConflict))
 			Expect(err.Error()).To(ContainSubstring("against a reservation resolved to"))
 			Expect(tx.Rollback()).To(Succeed())
@@ -943,6 +948,119 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			Expect(reading.Rollback()).To(Succeed())
 		})
 
+		// Review finding R2-3. Cancellation is terminal by Req 11's own word,
+		// but it does not take the capture lease away -- so the owner that was
+		// running when the control plane gave up is still the owner at the
+		// current fence, and every write on the publish path was fenced and
+		// nothing else. The control comes first: the same call, by the same
+		// owner, at the same fence, succeeds while the capture is live.
+		It("refuses the live owner's publish writes after a terminal cancellation", func() {
+			activate()
+
+			handoff := output.HandoffID(uuid.NewString())
+			lease := output.SourceLeaseID(uuid.NewString())
+			execution := identity()
+			name := output.OutputName("result")
+			deadline := output.NewTimestamp(time.Now().Add(24 * time.Hour))
+
+			tx, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(tx)
+			Expect(repository.PredeclareHandoff(ctx, tx, output.CaptureAdmission{
+				ProtocolVersion: output.ProtocolVersion,
+				Execution:       execution,
+				ActivationEpoch: 1,
+				HandoffID:       handoff,
+				SourceLeaseID:   lease,
+				Output:          name,
+				CaptureDeadline: deadline,
+			})).To(Succeed())
+			Expect(repository.AcknowledgeSourceHold(ctx, tx, holdFor(handoff, lease, execution, name))).
+				To(Succeed())
+			reservation, err := repository.CommitCaptureReservation(ctx, tx,
+				output.SuccessfulFinishDisposition{
+					ProtocolVersion:       output.ProtocolVersion,
+					Disposition:           output.DispositionCapture,
+					Execution:             execution,
+					ActivationEpoch:       1,
+					HandoffID:             handoff,
+					SourceLeaseID:         lease,
+					ProducerCheckpointID:  output.OpaqueID("checkpoint-" + string(handoff)),
+					Output:                name,
+					CaptureFence:          1,
+					CaptureDeadline:       deadline,
+					FinishAcknowledgement: finishFor(execution),
+				})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = repository.AcquireCaptureLease(ctx, tx, reservation, uuid.NewString(),
+				output.MinLeaseTerm)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(tx.Commit()).To(Succeed())
+
+			resolution := output.LogicalResolution{
+				ProtocolVersion: output.ProtocolVersion,
+				Execution:       execution,
+				ActivationEpoch: 1,
+				HandoffID:       handoff,
+				ReservationID:   reservation,
+				CaptureFence:    1,
+				Scope:           "team-a",
+				Digest:          hangarDigest(31),
+				LogicalBytes:    4096,
+				ResolvedAt:      output.NewTimestamp(time.Now()),
+			}
+
+			// The control, thrown away: while the capture is live this owner
+			// resolves and passes the publish point. Without it, the refusals
+			// below would also pass on a repository that had stopped writing.
+			live, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(live)
+			Expect(repository.ResolveLogicalReservation(ctx, live, resolution)).To(Succeed())
+			Expect(repository.RecordFirstObjectCreate(ctx, live, reservation, 1)).To(Succeed())
+			Expect(live.Rollback()).To(Succeed())
+
+			cancelling, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(cancelling)
+			status, err := repository.CancelOrSettle(ctx, cancelling, handoff)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(status.PastIrreversiblePublishPoint).To(BeFalse())
+			Expect(cancelling.Commit()).To(Succeed())
+
+			after, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(after)
+			err = repository.ResolveLogicalReservation(ctx, after, resolution)
+			Expect(err).To(MatchError(output.ErrConflict))
+			Expect(err.Error()).To(ContainSubstring("terminally cancelled"))
+			Expect(after.Rollback()).To(Succeed())
+
+			publishing, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(publishing)
+			err = repository.RecordFirstObjectCreate(ctx, publishing, reservation, 1)
+			Expect(err).To(MatchError(output.ErrConflict))
+			Expect(err.Error()).To(ContainSubstring("terminally cancelled"))
+			Expect(publishing.Rollback()).To(Succeed())
+
+			var past bool
+			var state string
+			Expect(dbConn.QueryRow(`
+				SELECT past_irreversible_publish_point, state FROM hangar_capture_reservations
+				WHERE reservation_id = $1`, string(reservation)).Scan(&past, &state)).To(Succeed())
+			Expect(state).To(Equal("cancelled"))
+			Expect(past).To(BeFalse(),
+				"a cancelled capture was moved past the point nothing walks back")
+
+			var resolved bool
+			Expect(dbConn.QueryRow(`
+				SELECT EXISTS(SELECT 1 FROM hangar_logical_reservations WHERE reservation_id = $1)`,
+				string(reservation)).Scan(&resolved)).To(Succeed())
+			Expect(resolved).To(BeFalse(),
+				"a cancelled capture resolved a logical identity nothing will ever publish")
+		})
+
 		It("reports a registered capture settled without any release", func() {
 			// The other way a capture settles: the receipt is registered, the
 			// object exists, and there is nothing to release.
@@ -1014,8 +1132,9 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			tx, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(tx)
+			secondNonce, secondIssuedAt := issueChallenge(handoff, reservation, second)
 			registerErr := repository.RegisterReceipt(ctx, tx, admissionFor(handoff, execution,
-				reservation, second, issueChallenge(handoff, reservation, second)))
+				reservation, second, secondNonce, secondIssuedAt))
 			if registerErr == nil {
 				// Committing is what a caller told "no error" would do, and it
 				// is what makes the damage countable below.
@@ -1051,8 +1170,9 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			tx, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(tx)
+			lateNonce, lateIssuedAt := issueChallenge(handoff, reservation, ref)
 			Expect(repository.RegisterReceipt(ctx, tx, admissionFor(handoff, execution,
-				reservation, ref, issueChallenge(handoff, reservation, ref)))).To(Succeed())
+				reservation, ref, lateNonce, lateIssuedAt))).To(Succeed())
 			Expect(tx.Commit()).To(Succeed())
 
 			Expect(lifecyclesFor(ref.Digest)).To(Equal(1))

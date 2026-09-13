@@ -1,0 +1,203 @@
+package gcs
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+
+	"cloud.google.com/go/storage"
+	"google.golang.org/api/googleapi"
+	"google.golang.org/api/iterator"
+
+	"github.com/concourse/concourse/hangar/objectstore"
+)
+
+// The exported object adapter, for the output plane's four cloud roles.
+//
+// It is a second adapter beside the unexported one GCSStore uses, and that is
+// deliberate. GCSStore is the strict-input foundation and its behaviour is
+// frozen byte-for-byte; re-expressing it through a new interface to save sixty
+// lines would put the one store this repository already depends on inside the
+// blast radius of an output-plane change. The two adapters wrap the same
+// *storage.ObjectHandle and are therefore the same behaviour, and the tier-2
+// conformance suite is what keeps that claim honest.
+//
+// Nothing here interprets a key. The bucket and key arrive already derived from
+// authenticated configuration (hangar/output.OutputNamespace), and this file's
+// only judgement is turning a transport status into a typed sentinel.
+
+// NewObjectClient adapts a storage client to the shared seam.
+func NewObjectClient(client *storage.Client) (objectstore.Client, error) {
+	if client == nil {
+		return nil, fmt.Errorf("hangar: GCS client is required")
+	}
+
+	return outputObjectClient{client: client}, nil
+}
+
+type outputObjectClient struct{ client *storage.Client }
+
+func (client outputObjectClient) Object(bucket, key string) objectstore.Handle {
+	return outputObjectHandle{handle: client.client.Bucket(bucket).Object(key)}
+}
+
+// List is bucket-wide with a caller-applied prefix.
+//
+// GCS grants storage.objects.list on the bucket and cannot scope it to a
+// prefix, so the prefix here narrows *what is read*, not what may be read. The
+// policy attestor is what says the bucket contains only this plane's objects;
+// this method cannot and does not claim it.
+func (client outputObjectClient) List(ctx context.Context, bucket string, request objectstore.ListRequest) (objectstore.Page, error) {
+	if request.PageSize <= 0 {
+		return objectstore.Page{}, fmt.Errorf("%w: a list page size must be positive",
+			objectstore.ErrInfrastructure)
+	}
+
+	query := &storage.Query{Prefix: request.Prefix}
+	if request.After != "" {
+		// StartOffset is inclusive, so the resumed-from key comes back and is
+		// dropped below. A page token would have been one call shorter and is
+		// exactly what this seam refuses to carry: it expires, and the cursor
+		// it would live in does not.
+		query.StartOffset = request.After
+	}
+	// Only the fields the inventory classifies on. A projection that fetched
+	// everything would make one page's metadata budget unpredictable.
+	if err := query.SetAttrSelection([]string{"Name", "Generation", "Metageneration", "Size", "Created", "Metadata"}); err != nil {
+		return objectstore.Page{}, translate(err)
+	}
+
+	iterated := client.client.Bucket(bucket).Objects(ctx, query)
+
+	page := objectstore.Page{Objects: make([]objectstore.Attrs, 0, request.PageSize)}
+	for len(page.Objects) < request.PageSize {
+		attrs, err := iterated.Next()
+		if errors.Is(err, iterator.Done) {
+			page.Done = true
+
+			break
+		}
+		if err != nil {
+			return objectstore.Page{}, translate(err)
+		}
+		if attrs.Name == request.After {
+			continue
+		}
+		page.Objects = append(page.Objects, outputAttrs(attrs))
+	}
+	if len(page.Objects) > 0 {
+		page.LastKey = page.Objects[len(page.Objects)-1].Key
+	}
+
+	return page, nil
+}
+
+type outputObjectHandle struct{ handle *storage.ObjectHandle }
+
+func (handle outputObjectHandle) If(conditions objectstore.Conditions) objectstore.Handle {
+	return outputObjectHandle{handle: handle.handle.If(storage.Conditions{
+		DoesNotExist:        conditions.DoesNotExist,
+		GenerationMatch:     conditions.GenerationMatch,
+		MetagenerationMatch: conditions.MetagenerationMatch,
+	})}
+}
+
+func (handle outputObjectHandle) Generation(generation int64) objectstore.Handle {
+	return outputObjectHandle{handle: handle.handle.Generation(generation)}
+}
+
+func (handle outputObjectHandle) NewWriter(ctx context.Context) objectstore.Writer {
+	return &outputObjectWriter{writer: handle.handle.NewWriter(ctx)}
+}
+
+func (handle outputObjectHandle) NewReader(ctx context.Context) (io.ReadCloser, error) {
+	reader, err := handle.handle.NewReader(ctx)
+	if err != nil {
+		return nil, translate(err)
+	}
+
+	return reader, nil
+}
+
+func (handle outputObjectHandle) Attrs(ctx context.Context) (objectstore.Attrs, error) {
+	attrs, err := handle.handle.Attrs(ctx)
+	if err != nil {
+		return objectstore.Attrs{}, translate(err)
+	}
+
+	return outputAttrs(attrs), nil
+}
+
+func (handle outputObjectHandle) Delete(ctx context.Context) error {
+	return translate(handle.handle.Delete(ctx))
+}
+
+type outputObjectWriter struct{ writer *storage.Writer }
+
+func (writer *outputObjectWriter) Write(content []byte) (int, error) {
+	count, err := writer.writer.Write(content)
+
+	return count, translate(err)
+}
+
+func (writer *outputObjectWriter) Close() error { return translate(writer.writer.Close()) }
+
+func (writer *outputObjectWriter) Abort(cause error) error {
+	return writer.writer.CloseWithError(cause)
+}
+
+func (writer *outputObjectWriter) SetMetadata(metadata map[string]string) {
+	writer.writer.Metadata = metadata
+}
+
+func (writer *outputObjectWriter) Attrs() objectstore.Attrs {
+	return outputAttrs(writer.writer.Attrs())
+}
+
+func outputAttrs(attrs *storage.ObjectAttrs) objectstore.Attrs {
+	if attrs == nil {
+		return objectstore.Attrs{}
+	}
+
+	return objectstore.Attrs{
+		Key:            attrs.Name,
+		Generation:     attrs.Generation,
+		Metageneration: attrs.Metageneration,
+		Size:           attrs.Size,
+		Created:        attrs.Created,
+		Metadata:       attrs.Metadata,
+	}
+}
+
+// translate is the 404/412/403 split.
+//
+// It is the whole reason this adapter exists as code rather than as a type
+// assertion: a caller that saw a *googleapi.Error would have to know that 412
+// on a create means "something is already there" and 412 on a delete means "not
+// this generation", and every caller would decide that separately.
+func translate(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	if errors.Is(err, storage.ErrObjectNotExist) || errors.Is(err, storage.ErrBucketNotExist) {
+		return fmt.Errorf("%w: %v", objectstore.ErrNotFound, err)
+	}
+
+	var api *googleapi.Error
+	if errors.As(err, &api) {
+		switch api.Code {
+		case 404:
+			return fmt.Errorf("%w: %v", objectstore.ErrNotFound, err)
+		case 403, 401:
+			return fmt.Errorf("%w: %v", objectstore.ErrUnauthorized, err)
+		case 412:
+			return fmt.Errorf("%w: %v", objectstore.ErrPreconditionFailed, err)
+		}
+	}
+
+	return fmt.Errorf("%w: %v", objectstore.ErrInfrastructure, err)
+}

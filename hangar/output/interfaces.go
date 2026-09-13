@@ -508,6 +508,16 @@ type SourceControl interface {
 // The nonce is consumed by the caller's transaction, which revalidates every
 // bound fact before the deadline, so a receipt cannot be replayed for another
 // capture, source, output or fence.
+// The bounds a challenge is issued under, mirroring
+// hangar_receipt_stat_challenges' own CHECK constraints. They are restated here
+// because the daemon that signs against a challenge never sees the schema, and
+// a bound only the database knows is a bound the signer cannot enforce.
+const (
+	MinChallengeNonceBytes = 16
+	MaxChallengeNonceBytes = 128
+	MaxChallengeWindow     = 5 * time.Minute
+)
+
 type StatChallenge struct {
 	Nonce           string
 	HandoffID       HandoffID
@@ -515,12 +525,17 @@ type StatChallenge struct {
 	ActivationEpoch executioncontrol.ActivationEpoch
 	Ref             hangar.TreeRef
 	CaptureFence    CaptureFence
+	IssuedAt        Timestamp
 	NotAfter        Timestamp
 }
 
 func (challenge StatChallenge) Validate() error {
 	if challenge.Nonce == "" {
 		return fmt.Errorf("%w: stat challenge carries no nonce", ErrIncomplete)
+	}
+	if len(challenge.Nonce) < MinChallengeNonceBytes || len(challenge.Nonce) > MaxChallengeNonceBytes {
+		return fmt.Errorf("%w: the nonce is %d bytes and the schema issues between %d and %d",
+			ErrLimitExceeded, len(challenge.Nonce), MinChallengeNonceBytes, MaxChallengeNonceBytes)
 	}
 	if err := challenge.HandoffID.Validate(); err != nil {
 		return err
@@ -537,8 +552,24 @@ func (challenge StatChallenge) Validate() error {
 	if challenge.CaptureFence == 0 {
 		return fmt.Errorf("%w: capture fence is zero", ErrIncomplete)
 	}
+	if err := challenge.IssuedAt.Validate(); err != nil {
+		return err
+	}
+	if err := challenge.NotAfter.Validate(); err != nil {
+		return err
+	}
+	if !challenge.NotAfter.After(challenge.IssuedAt.Time) {
+		return fmt.Errorf("%w: the challenge expires at %s and was issued at %s", ErrIncomplete,
+			challenge.NotAfter.UTC(), challenge.IssuedAt.UTC())
+	}
+	if window := challenge.NotAfter.Sub(challenge.IssuedAt.Time); window > MaxChallengeWindow {
+		return fmt.Errorf("%w: the challenge window is %s and the bound is %s. The window is the "+
+			"interval in which a stale observation can still be presented as fresh, and it is the "+
+			"schema's five minutes rather than the caller's choice", ErrLimitExceeded,
+			window, MaxChallengeWindow)
+	}
 
-	return challenge.NotAfter.Validate()
+	return nil
 }
 
 // ReceiptVerifier checks a receipt before anything is bound to it.

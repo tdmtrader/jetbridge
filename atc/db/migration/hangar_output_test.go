@@ -842,6 +842,38 @@ var _ = Describe("the Hangar output plane schema", func() {
 					WHERE reservation_id = '%s'`, reservationID))
 			})
 
+			// Req 11 says a capture may *terminally* cancel, and this is the
+			// word made true (review finding R2-3). The live twin comes first:
+			// a rule that refused every state change would pass the refusal
+			// below on a schema that had frozen the table.
+			It("refuses a terminal capture moving to any other state", func() {
+				expectAccepted(database, "a live capture resolving", fmt.Sprintf(`
+					UPDATE hangar_capture_reservations SET state = 'resolved'
+					WHERE reservation_id = '%s'`, reservationID))
+
+				mustExec(database, fmt.Sprintf(`
+					UPDATE hangar_capture_reservations SET state = 'cancelled'
+					WHERE reservation_id = '%s'`, reservationID))
+
+				for _, target := range []string{"resolved", "unresolved", "registered"} {
+					Expect(expectRefusal(database, "a cancelled capture becoming "+target,
+						fmt.Sprintf(`UPDATE hangar_capture_reservations SET state = '%s'
+							WHERE reservation_id = '%s'`, target, reservationID))).
+						To(ContainSubstring("which is terminal"))
+				}
+			})
+
+			It("still lets a terminal capture record its release and settle", func() {
+				mustExec(database, fmt.Sprintf(`
+					UPDATE hangar_capture_reservations SET state = 'cancelled'
+					WHERE reservation_id = '%s'`, reservationID))
+
+				expectAccepted(database, "a cancelled capture settling on its release",
+					fmt.Sprintf(`UPDATE hangar_capture_reservations
+						SET release_acknowledged_at = now(), settled_at = now()
+						WHERE reservation_id = '%s'`, reservationID))
+			})
+
 			It("refuses a settlement time on a capture that is not terminal", func() {
 				Expect(expectRefusal(database, "an unresolved capture with a settlement time",
 					fmt.Sprintf(`
@@ -1272,6 +1304,44 @@ var _ = Describe("the Hangar output plane schema", func() {
 					otherDigest, sampleGeneration+2))
 			})
 
+			// The sixth attachment, and the earliest of the admissions
+			// (review finding R2-2). A predeclaration is what makes a producer
+			// hold its source, so admitting one under an at-risk policy buys a
+			// hold for a Stage 2 that the fifth attachment will refuse.
+			It("refuses a predeclaration while at risk", func() {
+				predeclare := fmt.Sprintf(`
+					INSERT INTO hangar_handoff_predeclarations
+						(handoff_id, source_lease_id, execution_id, execution_fence, output_name,
+						 activation_epoch, capture_deadline_at)
+					VALUES ('%s', '%s', '%s', 1, 'result', 1, now() + interval '24 hours')`,
+					secondHandoffID, secondLeaseID, secondExecutionID)
+
+				expectAccepted(database, "a predeclaration on a safe policy", predeclare)
+
+				goAtRisk()
+
+				Expect(expectRefusal(database, "a predeclaration while at risk", predeclare)).
+					To(ContainSubstring("new captures, claim acquires, grants, adoption and reclaim admission stop"))
+			})
+
+			// The other half of Req 6: a repeat of the same handoff is
+			// idempotent, and the ON CONFLICT DO NOTHING path fires no INSERT
+			// trigger -- so a producer that predeclared while the policy was
+			// healthy still gets the same answer when it retries afterwards.
+			It("still admits an idempotent repeat of a predeclaration made while safe", func() {
+				repeat := fmt.Sprintf(`
+					INSERT INTO hangar_handoff_predeclarations
+						(handoff_id, source_lease_id, execution_id, execution_fence, output_name,
+						 activation_epoch, capture_deadline_at)
+					VALUES ('%s', '%s', '%s', 1, 'result', 1, now() + interval '24 hours')
+					ON CONFLICT (handoff_id) DO NOTHING`,
+					handoffID, sourceLeaseID, executionID)
+
+				goAtRisk()
+
+				expectAccepted(database, "a repeated predeclaration while at risk", repeat)
+			})
+
 			It("refuses a new capture while at risk", func() {
 				seedPredeclaration(secondHandoffID, secondLeaseID, secondExecutionID, true)
 				capture := stage2(secondHandoffID, secondReservation)
@@ -1333,10 +1403,36 @@ var _ = Describe("the Hangar output plane schema", func() {
 					To(ContainSubstring("SQLSTATE JB003"))
 			})
 
-			It("raises an immutable rewrite as JB004", func() {
-				Expect(expectRefusal(database, "a rewritten predeclaration", fmt.Sprintf(`
-					UPDATE hangar_handoff_predeclarations SET output_name = 'other'
-					WHERE handoff_id = '%s'`, handoffID))).
+			// Review finding R2-4: a rewrite of an immutable identity is one
+			// refusal and must reach a caller as one sentinel. Three of these
+			// said JB004 and three said JB001, so the same refusal arrived as
+			// ErrIncomplete or ErrConflict depending on which table raised it.
+			It("raises every rewrite of an immutable identity as JB001", func() {
+				for because, statement := range map[string]string{
+					"a rewritten predeclaration": fmt.Sprintf(`
+						UPDATE hangar_handoff_predeclarations SET output_name = 'other'
+						WHERE handoff_id = '%s'`, handoffID),
+					"a rewritten epoch identity": `
+						UPDATE hangar_output_activation_epochs
+						SET epoch_id = 2, revision = revision + 1 WHERE epoch_id = 1`,
+					"an un-acknowledged source hold": fmt.Sprintf(`
+						UPDATE hangar_handoff_predeclarations SET hold_acknowledged_at = NULL
+						WHERE handoff_id = '%s'`, handoffID),
+					"a rewritten logical identity": fmt.Sprintf(`
+						UPDATE hangar_logical_reservations SET digest = '%s'
+						WHERE reservation_id = '%s'`, otherDigest, reservationID),
+				} {
+					Expect(expectRefusal(database, because, statement)).
+						To(ContainSubstring("SQLSTATE JB001"), because)
+				}
+			})
+
+			It("raises a value whose parts contradict each other as JB004", func() {
+				seedPredeclaration(secondHandoffID, secondLeaseID, secondExecutionID, true)
+
+				Expect(expectRefusal(database, "a decided handoff with no branch record",
+					fmt.Sprintf(`INSERT INTO hangar_handoff_dispositions (handoff_id, disposition)
+						VALUES ('%s', 'capture')`, secondHandoffID))).
 					To(ContainSubstring("SQLSTATE JB004"))
 			})
 		})
@@ -1654,6 +1750,40 @@ var _ = Describe("the Hangar output plane schema", func() {
 			Expect(attempt(database, vector...)).To(HaveOccurred())
 			Expect(attempt(database, append(dropTriggerOnEach("hangar_policy_admits_new_protection",
 				"hangar_capture_reservations"), vector...)...)).To(Succeed())
+		})
+
+		It("without hangar_policy_admits_new_protection on hangar_handoff_predeclarations, an at-risk plane predeclares", func() {
+			mustExec(database, `
+				INSERT INTO hangar_policy_snapshots
+					(activation_epoch, bucket_fingerprint, metageneration, policy_hash,
+					 lifecycle_delete_rules, state)
+				VALUES (1, 'gs://output-bucket', 4, 'policy-hash-2', 1, 'at_risk')`)
+			vector := []string{fmt.Sprintf(`
+				INSERT INTO hangar_handoff_predeclarations
+					(handoff_id, source_lease_id, execution_id, execution_fence, output_name,
+					 activation_epoch, capture_deadline_at)
+				VALUES ('%s', '%s', '%s', 1, 'result', 1, now() + interval '24 hours')`,
+				secondHandoffID, secondLeaseID, secondExecutionID)}
+
+			Expect(attempt(database, vector...)).To(HaveOccurred())
+			Expect(attempt(database, append(dropTriggerOnEach("hangar_policy_admits_new_protection",
+				"hangar_handoff_predeclarations"), vector...)...)).To(Succeed())
+		})
+
+		It("without hangar_reservation_transition, a cancelled capture is registered", func() {
+			commitStage2(handoffID, reservationID)
+			mustExec(database, fmt.Sprintf(`
+				UPDATE hangar_capture_reservations SET state = 'cancelled'
+				WHERE reservation_id = '%s'`, reservationID))
+			vector := []string{fmt.Sprintf(`
+				UPDATE hangar_capture_reservations SET state = 'registered'
+				WHERE reservation_id = '%s'`, reservationID)}
+
+			Expect(attempt(database, vector...)).To(HaveOccurred())
+			Expect(attempt(database, append([]string{
+				`DROP TRIGGER hangar_reservation_transition ON hangar_capture_reservations`,
+			}, vector...)...)).To(Succeed(),
+				"dropping the trigger did not change the answer, so the vector was not testing it")
 		})
 
 		It("without hangar_read_lease_matches_claim, a lease reads past its claim", func() {

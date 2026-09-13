@@ -23,11 +23,13 @@ module github.com/concourse/concourse/atc/worker/jetbridge/brine
 go 1.25.6
 
 require (
+	cloud.google.com/go/storage v1.64.0
 	code.cloudfoundry.org/clock v1.57.0
 	code.cloudfoundry.org/lager/v3 v3.57.0
 	github.com/brine-dev/brine-go v0.0.0
 	github.com/concourse/concourse v0.0.0
 	github.com/creack/pty v1.1.24
+	github.com/fsouza/fake-gcs-server v1.52.3
 	github.com/klauspost/compress v1.18.4
 	github.com/onsi/gomega v1.39.0
 	github.com/patrickmn/go-cache v2.1.0+incompatible
@@ -35,6 +37,7 @@ require (
 	go.opentelemetry.io/otel/sdk v1.44.0
 	golang.org/x/sys v0.46.0
 	golang.org/x/time v0.15.0
+	google.golang.org/api v0.287.1
 	k8s.io/api v0.35.0
 	k8s.io/apimachinery v0.35.0
 	k8s.io/client-go v0.35.0
@@ -50,7 +53,6 @@ require (
 	cloud.google.com/go/iam v1.11.0 // indirect
 	cloud.google.com/go/monitoring v1.29.0 // indirect
 	cloud.google.com/go/pubsub/v2 v2.5.1 // indirect
-	cloud.google.com/go/storage v1.64.0 // indirect
 	cloud.google.com/go/trace v1.16.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.32.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.57.0 // indirect
@@ -75,7 +77,6 @@ require (
 	github.com/envoyproxy/protoc-gen-validate v1.3.3 // indirect
 	github.com/evanphx/json-patch/v5 v5.9.11 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
-	github.com/fsouza/fake-gcs-server v1.52.3 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
@@ -172,7 +173,6 @@ require (
 	golang.org/x/term v0.44.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
 	golang.org/x/tools v0.45.0 // indirect
-	google.golang.org/api v0.287.1 // indirect
 	google.golang.org/genproto v0.0.0-20260519071638-aa98bba5eb94 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260630182238-925bb5da69e7 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260630182238-925bb5da69e7 // indirect
