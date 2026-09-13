@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 )
 
@@ -125,9 +126,6 @@ func (repository *HangarOutputRepository) RenewOperationLease(ctx context.Contex
 	return renewed, nil
 }
 
-// Deferred: the operator status and diagnosis surface is Phase 8's; no running
-// process reads it yet
-//
 // ReadOperationLease reads one kind's lease back, whether or not it is held.
 //
 // Diagnosis stays possible in every state this plane can be in, which is why
@@ -288,9 +286,6 @@ func (repository *HangarOutputRepository) RecordInventoryDebt(ctx context.Contex
 	return nil
 }
 
-// Deferred: the operator status and diagnosis surface is Phase 8's; no running
-// process reads it yet
-//
 // ReadInventoryDebt reads a bounded page of what the sweep still owes.
 func (repository *HangarOutputRepository) ReadInventoryDebt(ctx context.Context, tx output.Tx, bucket string, epoch int64, limit int) ([]output.InventoryDebt, error) {
 	if limit <= 0 {
@@ -450,9 +445,6 @@ func (repository *HangarOutputRepository) RecordRuntimeAtRisk(ctx context.Contex
 	return nil
 }
 
-// Deferred: the operator status and diagnosis surface is Phase 8's; no running
-// process reads it yet
-//
 // OpenPolicyViolations reads what is still unreconciled for one epoch.
 //
 // A fresh safe attestation does not close these, and that is the whole reason
@@ -489,8 +481,11 @@ func (repository *HangarOutputRepository) OpenPolicyViolations(ctx context.Conte
 	return findings, nil
 }
 
-// Deferred: the operator status and diagnosis surface is Phase 8's; no running
-// process reads it yet
+// Deferred: reconciling a policy violation is a deliberate operator act with
+// its own record, and this track ships no API for it. The status surface is
+// deliberately read-only: a surface with a write in its port is one an operator
+// can be persuaded to "just clear", and a cleared violation is the record of
+// what was wrong while the plane refused work
 //
 // ReconcilePolicyViolation closes one finding.
 //
@@ -519,4 +514,152 @@ func (repository *HangarOutputRepository) ReconcilePolicyViolation(ctx context.C
 	}
 
 	return nil
+}
+
+// LatestPolicySnapshot is the newest lifetime-policy attestation for an epoch.
+//
+// Newest by OBSERVATION time and not by insertion order: a snapshot is evidence
+// of a reading, and an attestor whose row arrived late still read the bucket
+// when it read it. A reader that took the last inserted row would call a
+// re-inserted old reading fresh.
+//
+// A missing snapshot is not an error here. "Nothing has attested this epoch
+// yet" is a real state -- it is the state every epoch starts in -- and the
+// caller's own staleness check is what turns it into a refusal, because "we
+// have not checked" and "the check failed" are the same amount of evidence.
+func (repository *HangarOutputRepository) LatestPolicySnapshot(ctx context.Context, tx output.Tx,
+	epoch int64) (output.PolicySnapshot, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT bucket_fingerprint, metageneration, policy_hash, lifecycle_delete_rules,
+		       state, observed_at
+		  FROM hangar_policy_snapshots
+		 WHERE activation_epoch = $1
+		 ORDER BY observed_at DESC, id DESC
+		 LIMIT 1`, epoch)
+	if err != nil {
+		return output.PolicySnapshot{}, hangarConflict(err)
+	}
+	defer Close(rows)
+
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return output.PolicySnapshot{}, hangarConflict(err)
+		}
+
+		return output.PolicySnapshot{}, nil
+	}
+
+	var snapshot output.PolicySnapshot
+	var observed time.Time
+	var state string
+	if err := rows.Scan(&snapshot.BucketFingerprint, &snapshot.Metageneration,
+		&snapshot.PolicyHash, &snapshot.LifecycleDeleteRules, &state, &observed); err != nil {
+		return output.PolicySnapshot{}, hangarConflict(err)
+	}
+
+	snapshot.ProtocolVersion = output.ProtocolVersion
+	snapshot.ActivationEpoch = executioncontrol.ActivationEpoch(epoch)
+	snapshot.State = output.PolicyState(state)
+	snapshot.ObservedAt = output.NewTimestamp(observed)
+
+	return snapshot, nil
+}
+
+// CountOutputPlaneState counts what this plane is holding, in ONE statement.
+//
+// One statement because the numbers are compared with each other: a plane with
+// six live generations and six open claims is a plane doing its job, and a plane
+// with six live generations and one open claim from a build that finished
+// yesterday is a leak. Counting them at five different instants would let an
+// operator draw a conclusion about a state that never existed.
+func (repository *HangarOutputRepository) CountOutputPlaneState(ctx context.Context, tx output.Tx,
+	epoch int64) (output.PlaneCounts, error) {
+	var counts output.PlaneCounts
+	rows, err := tx.QueryContext(ctx, `
+		SELECT
+			(SELECT count(*) FROM hangar_exact_lifecycles
+			  WHERE activation_epoch = $1
+			    AND state IN ('registered', 'adopted', 'reclaiming')),
+			(SELECT count(*) FROM hangar_capture_reservations
+			  WHERE activation_epoch = $1 AND state IN ('unresolved', 'resolved')),
+			(SELECT count(*) FROM hangar_claims
+			  WHERE activation_epoch = $1 AND released_at IS NULL),
+			(SELECT count(*) FROM hangar_read_leases lease
+			   JOIN hangar_exact_lifecycles lifecycle ON lifecycle.id = lease.lifecycle_id
+			  WHERE lifecycle.activation_epoch = $1 AND lease.released_at IS NULL),
+			(SELECT count(*) FROM hangar_reclaim_jobs
+			  WHERE activation_epoch = $1 AND finalized_at IS NULL)`, epoch)
+	if err != nil {
+		return output.PlaneCounts{}, hangarConflict(err)
+	}
+	defer Close(rows)
+
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return output.PlaneCounts{}, hangarConflict(err)
+		}
+
+		return output.PlaneCounts{}, fmt.Errorf("%w: counting the output plane returned no row",
+			output.ErrCorrupt)
+	}
+	if err := rows.Scan(&counts.LiveGenerations, &counts.NonterminalCaptures, &counts.OpenClaims,
+		&counts.OpenReadLeases, &counts.UnfinalizedReclaimJobs); err != nil {
+		return output.PlaneCounts{}, hangarConflict(err)
+	}
+
+	return counts, nil
+}
+
+// ReadInventoryCursorProgress is the STATUS read of a sweep's position.
+//
+// A different method from LoadInventoryCursor, and the difference is the point:
+// that one takes a fence, upserts the row and refuses a stale owner, because it
+// is what a sweep calls when it is about to reserve a page. A status reader is
+// not about to reserve anything, and a surface that had to hold a fence to say
+// where the cursor is would be one that MOVED the cursor to report on it.
+//
+// A cursor that does not exist yet is not an error. Every bucket starts without
+// one, and a status surface that failed on a plane that has never swept would
+// fail on exactly the plane whose lack of sweeping is the thing worth reporting.
+func (repository *HangarOutputRepository) ReadInventoryCursorProgress(ctx context.Context,
+	tx output.Tx, bucket string, epoch int64) (output.InventoryCursor, error) {
+	if bucket == "" {
+		return output.InventoryCursor{}, fmt.Errorf("%w: the inventory cursor names its bucket",
+			output.ErrIncomplete)
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT cursor_fence, after_key, after_generation, cycle, updated_at
+		  FROM hangar_inventory_cursors
+		 WHERE bucket_fingerprint = $1 AND activation_epoch = $2`, bucket, epoch)
+	if err != nil {
+		return output.InventoryCursor{}, hangarConflict(err)
+	}
+	defer Close(rows)
+
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return output.InventoryCursor{}, hangarConflict(err)
+		}
+
+		return output.InventoryCursor{
+			ProtocolVersion: output.ProtocolVersion,
+			ActivationEpoch: executioncontrol.ActivationEpoch(epoch),
+		}, nil
+	}
+
+	cursor := output.InventoryCursor{
+		ProtocolVersion: output.ProtocolVersion,
+		ActivationEpoch: executioncontrol.ActivationEpoch(epoch),
+	}
+	var storedFence int64
+	var updatedAt time.Time
+	if err := rows.Scan(&storedFence, &cursor.AfterKey, &cursor.AfterGeneration,
+		&cursor.Cycle, &updatedAt); err != nil {
+		return output.InventoryCursor{}, hangarConflict(err)
+	}
+	cursor.CursorFence = output.CursorFence(storedFence)
+	cursor.UpdatedAt = output.NewTimestamp(updatedAt.UTC())
+
+	return cursor, nil
 }

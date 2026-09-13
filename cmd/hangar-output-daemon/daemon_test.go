@@ -74,6 +74,7 @@ func validConfig(t *testing.T, endpoint, bucket string) Config {
 
 	keyFile, _ := writeReceiptKey(t)
 	controlKeyFile, _ := writeReceiptKey(t)
+	materializeKeyFile := writeMaterializationKey(t)
 
 	return Config{
 		OutputStore:       output.StoreGCS,
@@ -85,13 +86,17 @@ func validConfig(t *testing.T, endpoint, bucket string) Config {
 		StrictInputBucket: "deployment-strict-input",
 		ReceiptKeyID:      "receipt-key-1",
 		ReceiptKeyFile:    keyFile,
-		ControlKeyID:      "control-key-1",
-		ControlKeyFile:    controlKeyFile,
-		NodeUID:           "node-1",
-		ScratchDir:        t.TempDir(),
-		CapabilityTTL:     time.Minute,
-		ActivationEpoch:   7,
-		OperationTimeout:  10 * time.Second,
+
+		MaterializationKeyID:   "materialize-key-1",
+		MaterializationKeyFile: materializeKeyFile,
+		ControlKeyID:           "control-key-1",
+		ControlKeyFile:         controlKeyFile,
+		NodeUID:                "node-1",
+		ScratchDir:             t.TempDir(),
+		CapabilityTTL:          time.Minute,
+		ActivationEpoch:        7,
+		PublishConcurrency:     1,
+		OperationTimeout:       10 * time.Second,
 	}
 }
 
@@ -610,6 +615,24 @@ func writePrivateKey(t *testing.T, private ed25519.PrivateKey) string {
 	path := filepath.Join(t.TempDir(), "control.pem")
 	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
 		t.Fatalf("writing: %v", err)
+	}
+
+	return path
+}
+
+// writeMaterializationKey writes the exact 32 raw bytes an output read grant is
+// signed with. It is a third key on purpose: a grant must not be signable by
+// anything that can mint a publication receipt.
+func writeMaterializationKey(t *testing.T) string {
+	t.Helper()
+
+	material := make([]byte, output.ReadGrantKeyBytes)
+	if _, err := rand.Read(material); err != nil {
+		t.Fatalf("generating the read-grant key: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "materialize.key")
+	if err := os.WriteFile(path, material, 0o600); err != nil {
+		t.Fatalf("writing the read-grant key: %v", err)
 	}
 
 	return path

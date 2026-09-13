@@ -22,13 +22,31 @@ Fully qualified app name, truncated to 63 chars.
 {{- end }}
 
 {{/*
-Common labels.
+Common labels, with NO component. Every object that is not the web deployment
+includes this one and supplies its own `app.kubernetes.io/component`.
+
+The split exists because `concourse.labels` carries `component: web` (through
+the selector labels) and twenty-three objects that are not web then added their
+own, so every one of them rendered the key TWICE. YAML's last-wins made the
+effective value right and installs work, which is why it survived from the
+chart's first commit; a strict decoder -- `kubectl apply --validate=strict`,
+server-side apply, a policy engine, or
+TestEveryRenderedObjectDecodesAsTheKubernetesObjectItClaimsToBe -- rejects the
+object outright.
 */}}
-{{- define "concourse.labels" -}}
+{{- define "concourse.commonLabels" -}}
 helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/instance: {{ .Release.Name }}
-{{ include "concourse.selectorLabels" . }}
+app.kubernetes.io/name: {{ include "concourse.name" . }}
+{{- end }}
+
+{{/*
+Common labels for the WEB objects: the common set plus component: web.
+*/}}
+{{- define "concourse.labels" -}}
+{{ include "concourse.commonLabels" . }}
+app.kubernetes.io/component: web
 {{- end }}
 
 {{/*

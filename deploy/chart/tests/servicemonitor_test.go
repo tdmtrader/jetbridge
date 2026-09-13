@@ -97,8 +97,8 @@ func webListener(t *testing.T, docs []string) (bindPort string, byName map[strin
 				Template struct {
 					Spec struct {
 						Containers []struct {
-							Name  string `yaml:"name"`
-							Env   []struct {
+							Name string `yaml:"name"`
+							Env  []struct {
 								Name  string `yaml:"name"`
 								Value string `yaml:"value"`
 							} `yaml:"env"`

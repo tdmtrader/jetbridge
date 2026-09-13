@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/hangar/executioncontrol"
+	"github.com/concourse/concourse/hangar/output"
 )
 
 const (
@@ -148,6 +149,18 @@ func startOutputDaemonWith(secure bool) (*outputDaemonHarness, error) {
 	if err := os.WriteFile(capabilityKey, secret, 0o600); err != nil {
 		return nil, err
 	}
+	// The output read-grant key: a THIRD key, distinct from the receipt key and
+	// from the control capability key. A grant must not be signable by anything
+	// that can mint a publication receipt, and the daemon refuses a
+	// configuration where two of the three are one file.
+	materializeSecret := make([]byte, output.ReadGrantKeyBytes)
+	if _, err := rand.Read(materializeSecret); err != nil {
+		return nil, err
+	}
+	materializeKey := filepath.Join(dir, "materialize.key")
+	if err := os.WriteFile(materializeKey, materializeSecret, 0o600); err != nil {
+		return nil, err
+	}
 
 	port, err := freeLocalPort()
 	if err != nil {
@@ -172,6 +185,8 @@ func startOutputDaemonWith(secure bool) (*outputDaemonHarness, error) {
 		"--control-key-id", "harness-control-1",
 		"--control-key-file", controlKey,
 		"--capability-key", capabilityKey,
+		"--materialization-key-id", "harness-materialize-1",
+		"--materialization-key-file", materializeKey,
 		"--node-uid", harnessNodeUID,
 		"--activation-epoch", fmt.Sprint(uint64(harnessEpoch)),
 		"--control-dir", filepath.Join(dir, "control"),

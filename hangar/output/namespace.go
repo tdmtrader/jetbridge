@@ -167,6 +167,20 @@ func deriveScope(tenant string, epoch executioncontrol.ActivationEpoch) hangar.S
 }
 
 // Bucket is the dedicated output bucket.
+// BucketFingerprint is how this namespace's bucket is named to other
+// components, and it takes nothing: the bucket it fingerprints is the
+// server-derived one this namespace was built from, so there is no argument a
+// caller could supply. That shape is the rule rather than a preference --
+// checkNoAPIAcceptsAStorageLocation rejects an exported function in this package
+// that takes a bucket, and it found this one when it was first written that way.
+func (namespace OutputNamespace) BucketFingerprint() string {
+	if namespace.bucket == "" || strings.HasPrefix(namespace.bucket, BucketFingerprintScheme) {
+		return namespace.bucket
+	}
+
+	return BucketFingerprintScheme + namespace.bucket
+}
+
 func (namespace OutputNamespace) Bucket() string { return namespace.bucket }
 
 // Prefix is the authenticated deployment prefix.

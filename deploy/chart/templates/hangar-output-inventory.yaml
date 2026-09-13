@@ -1,0 +1,25 @@
+{{/*
+Inventory: the sweep.
+
+It is the ONLY workload in this system whose cloud principal holds
+storage.objects.list, and list authority in GCS is BUCKET-WIDE -- there is no
+caller-visible prefix boundary -- so "inventory only enumerates its own prefix"
+is a property of this code and of the dedicated bucket, never of IAM. It holds
+no create and no delete: those calls do not exist for it to make.
+*/}}
+{{- if .Values.hangarOutput.enabled }}
+{{- $values := .Values.hangarOutput.inventory }}
+{{- include "concourse.hangarOutput.controllerHead" (dict
+      "root" .
+      "component" "hangar-output-inventory"
+      "name" (include "concourse.hangarOutput.inventoryName" .)
+      "account" (include "concourse.hangarOutput.inventoryServiceAccount" .)
+      "values" $values) }}
+          command:
+            - /usr/local/concourse/bin/hangar-output-inventory
+            {{- include "concourse.hangarOutput.namespaceFlags" . | nindent 12 }}
+            - --publication-grace={{ .Values.hangarOutput.publicationGrace }}
+            - --interval={{ $values.interval }}
+            - --database=$(HANGAR_OUTPUT_DSN)
+{{- include "concourse.hangarOutput.controllerTail" (dict "root" . "values" $values) }}
+{{- end }}

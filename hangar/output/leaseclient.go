@@ -49,26 +49,17 @@ type LeaseControlClient struct {
 	Clock Clock
 }
 
-// Deferred: the consumer-side verification half is Phase 8's; nothing in this
-// phase reads a grant, a receipt or a lease answer back
-//
 // ValidateLease asks whether this grant's lease may authorize work of the given
 // length. It is called BEFORE the object is opened.
 func (client *LeaseControlClient) ValidateLease(ctx context.Context, grant string, work time.Duration) (LeaseAnswer, error) {
 	return client.ask(ctx, LeaseValidate, grant, work)
 }
 
-// Deferred: the consumer-side verification half is Phase 8's; nothing in this
-// phase reads a grant, a receipt or a lease answer back
-//
 // RenewLease extends the lease while work proceeds.
 func (client *LeaseControlClient) RenewLease(ctx context.Context, grant string, work time.Duration) (LeaseAnswer, error) {
 	return client.ask(ctx, LeaseRenew, grant, work)
 }
 
-// Deferred: the consumer-side verification half is Phase 8's; nothing in this
-// phase reads a grant, a receipt or a lease answer back
-//
 // ReleaseLease closes the reader's protection after verified staging. It is
 // idempotent by the control plane's own rule, so a retry after a lost answer is
 // safe.

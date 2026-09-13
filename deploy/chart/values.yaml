@@ -380,7 +380,14 @@ secrets:
 
 # -- Network policy configuration
 networkPolicy:
-  # -- Enable NetworkPolicy resources
+  # -- Enable NetworkPolicy resources for the web pod and the bundled database.
+  #
+  # This switch does NOT emit a policy for the artifact daemon. It used to, and
+  # the policy it emitted carried the same name as the daemon's own template's,
+  # so with both switches on one namespace held one object and apply order
+  # decided which rules were in the cluster. The daemon's policy now has exactly
+  # one switch -- artifactDaemon.networkPolicy.enabled -- and one selector that
+  # covers one-off builds and checks as well as pipeline jobs.
   enabled: false
 
   # -- Allow ingress from these pod selectors to the web pod.
@@ -485,6 +492,16 @@ artifactDaemon:
     # path disjoint from artifactDaemon.hostPath; the chart mounts a dedicated
     # emptyDir here only in the artifact-daemon Pod.
     scratchPath: /var/concourse/hangar-scratch
+    # -- Size limit for the scratch emptyDir above. Kubernetes quantity syntax,
+    # e.g. "32Gi"; empty leaves it unbounded.
+    #
+    # Unbounded means bounded by the NODE'S DISK: canonicalization spools a
+    # whole tree here, and an emptyDir that fills the disk evicts every Pod on
+    # the node rather than only this one. It defaults to empty because setting
+    # a limit on an existing install is a behaviour change for trees that were
+    # already fitting; the output daemon's equivalent value is REQUIRED, which
+    # is the shape a new volume can afford.
+    scratchSizeLimit: ""
     # -- Maximum regular-file content admitted in one immutable tree.
     maxContentBytes: 10737418240
     # -- Maximum filesystem entries admitted in one immutable tree.
@@ -676,4 +693,274 @@ artifactDaemon:
     # -- Enable NetworkPolicy restricting daemon ingress to Concourse pods and
     # egress to required services. Current GKE standard/Calico and Dataplane V2
     # metadata profiles are included; validate CNI-specific routing before use.
+    enabled: false
+
+# ---------------------------------------------------------------------------
+# Hangar output plane
+# ---------------------------------------------------------------------------
+#
+# Durable output capture and the exact-execution-control protocol it extends.
+# Two facets, two switches, and OFF is the default for both: with the plane
+# disabled this chart renders exactly what it rendered before, which is what
+# requirement 59 asks for.
+#
+# WHAT THE CHART DOES NOT DO. It never creates a bucket, a bucket lifecycle
+# rule, a cloud service account, a Workload Identity binding or an IAM policy.
+# Those are an operator or Terraform concern, and activation is what proves they
+# exist and are what they claim -- the chart renders identities and refuses
+# configurations, it enforces nothing in the cloud.
+#
+# THE HONEST PERMISSION MATRIX. Four workloads, four Kubernetes service
+# accounts, four cloud principals, because a Kubernetes service account is
+# Pod-wide: a process that holds a role has that role for everything else it
+# does. The minimum roles are
+#
+#   output daemon (publisher/materializer)
+#     storage.objects.create, storage.objects.get
+#   inventory
+#     storage.objects.list, storage.objects.get
+#   reclaimer
+#     storage.objects.get, storage.objects.delete
+#   policy attestor
+#     storage.buckets.get, storage.buckets.getIamPolicy
+#
+# and two of those grants are weaker than they read, so they are written down
+# here rather than discovered:
+#
+#   * storage.objects.get is BODY-CAPABLE. GCS has no metadata-only object
+#     permission: a principal that can stat an object can download it. The
+#     inventory and reclaim code paths perform metadata-only requests, but IAM
+#     is not what makes that true -- code is, and the dedicated bucket is the
+#     boundary.
+#   * storage.objects.list is BUCKET-WIDE. There is no caller-visible prefix
+#     boundary in list authority, so "inventory only lists its own prefix" is an
+#     application-level property and not an IAM one. That is why inventory is
+#     the only workload granted list at all, and why the output bucket contains
+#     nothing but output-plane objects.
+#
+# No runtime principal holds lifecycle or IAM MUTATION on the bucket. Policy
+# administration stays an operator trust root, and requirement 53's residual
+# boundary is exactly that: Hangar cannot attest every organization-level
+# credential, and a cloud administrator can delete objects it manages. What it
+# can do is notice, within the 15-minute attestation bound, and say so.
+hangarOutput:
+  # -- The BASE facet: exact execution control.
+  #
+  # A node whose daemon, runtime and control key are a homogeneous attested
+  # cohort advertises concourse.dev/hangar-execution-control-v1. This is a real
+  # deployment on its own -- durable output capture is an extension of it, never
+  # a synonym for it.
+  # A node whose daemon, runtime and control key are a homogeneous attested
+  # cohort advertises `concourse.dev/hangar-execution-control-v1`. Once the
+  # output facet passes as well, the same daemon adds
+  # `concourse.dev/hangar-output-v1`. A capture-selected pod's affinity requires
+  # BOTH, and neither alone admits it. Neither is authority -- the authenticated
+  # daemon handshake and the activation epoch row are -- so a label buys only
+  # that the pod does not land somewhere its hold could never be acknowledged.
+  #
+  # `concourse.dev/hangar-v1` is a THIRD label and is not this plane's: it
+  # attests strict INPUTS and belongs to the existing artifact daemon.
+  executionControl:
+    enabled: false
+    # -- Existing Secret holding control.key: a PKCS#8 PEM Ed25519 private key
+    # the node signs execution and source ledger statements with. Required.
+    # It is NOT the receipt key and NOT the read-grant key; an activation epoch
+    # pins the three separately so rotating one does not rotate the others.
+    keySecret: ""
+
+  # -- Existing Secret holding capability.key: the raw 32 bytes control
+  # capabilities are minted and verified with, shared between the control plane
+  # and this daemon and with nothing else.
+  capabilityKeySecret: ""
+
+  # -- The OUTPUT facet: durable capture, claims and reclamation.
+  # Requires executionControl.enabled. Never the other way round.
+  enabled: false
+  # -- Enable web-side capture selection and checkpoint emission. Requires
+  # enabled, and an activation epoch whose output facet is enabled.
+  webEnabled: false
+
+  # -- The dedicated output bucket. Externally provisioned, contains only
+  # Hangar output-plane objects, and is never the durable cache bucket or the
+  # caller-published strict-input bucket. Required when enabled.
+  bucket: ""
+  # -- Authenticated deployment key prefix inside that bucket. Server
+  # configuration; no task, consumer, path parameter or receipt can select or
+  # broaden it.
+  prefix: ""
+  # -- Authenticated deployment/tenant identity the opaque scope is derived
+  # from. It is never rendered into an object key. Required when enabled.
+  tenant: ""
+  # -- The activation epoch every workload speaks for. Rotation creates a NEW
+  # epoch rather than replacing a key in place. Required when enabled.
+  activationEpoch: 0
+
+  # -- The two buckets this plane may not be, named so the daemon can refuse to
+  # be pointed at them. Empty means this deployment has no such bucket.
+  cacheBucket: ""
+  strictInputBucket: ""
+  # -- Declare that trust domains are separated by key prefix inside one shared
+  # bucket. It is REFUSED: object-level permission is not expressible in a
+  # bucket policy, so prefix-only IAM is not an activation-compatible
+  # substitute for a dedicated bucket.
+  sharedBucketPrefixOnlyIsolation: false
+
+  # -- Endpoint override for the OUTPUT bucket's store. Empty means real GCS;
+  # set it for an emulator. This is NOT artifactDaemon.durable.endpoint, which
+  # serves the durable CACHE bucket under a different identity: requirement 20
+  # forbids the output plane sharing that bucket or its client, so the two
+  # values are independent and a render test asserts that setting one never
+  # populates the other.
+  endpoint: ""
+
+  # -- Deadlines, grace and leases. The chart enforces the relationships
+  # between them, because a grace that does not exceed the maximum capture
+  # deadline can collect an object a capture is still allowed to register.
+  captureDeadline: "24h"     # 1h .. 168h
+  sealDeadline: "5m"         # 30s .. 30m
+  publicationGrace: "192h"   # >= captureDeadline + 1h, <= 720h
+  leaseTerm: "15m"           # at least 15m
+  leaseRenewInterval: "1m"   # at most 1m
+  operationTimeout: "1m"
+
+  receipt:
+    # -- Key id of the ACTIVE Ed25519 receipt signing key. A receipt names it so
+    # a verifier knows which activation-pinned public key can check it.
+    keyID: ""
+    # -- Existing Secret holding receipt.key: the PKCS#8 PEM Ed25519 PRIVATE
+    # half. It is mounted in the output daemon Pod and nowhere else -- not web,
+    # not the controllers, not the activation Jobs, not tasks.
+    privateKeySecret: ""
+    # -- The versioned PUBLIC verification ring the control plane holds. Each
+    # entry is {id, epoch, key (base64), retired}. Rotation ADDS an entry under
+    # a new epoch; a retired entry stays while any durable state still
+    # references its epoch.
+    publicKeys: []
+    # -- Epochs that durable state still references, declared by the operator
+    # (activation reports them). The chart refuses to render a ring that has
+    # dropped the verification key for one of them.
+    referencedEpochs: []
+
+  # -- Existing Secret holding materialize.key: the exact raw 32 bytes output
+  # READ GRANTS are signed with, under the hangar-output-materialize-v1 domain.
+  # A third key: a read grant must not be signable by anything that can mint a
+  # publication receipt, and it is never the foundation's strict-input
+  # materialization key either.
+  materializationKeySecret: ""
+  # -- Key id for the above.
+  materializationKeyID: "output-materialize-1"
+
+  daemon:
+    # -- Control API port.
+    port: 7781
+    # -- Existing Secret with tls.crt/tls.key/ca.crt for the control API. The
+    # ATC calls this daemon from another node, and a bearer capability over
+    # plaintext off-node is interceptable inside its TTL.
+    tls:
+      existingSecret: ""
+    # -- Private control directory, inside the managed artifact hostPath. It
+    # holds the execution and source ledgers and is excluded from every sweep.
+    controlPath: /var/concourse/artifacts/hangar-output-control
+    # -- Managed steps directory holding source incarnations.
+    stepsPath: /var/concourse/artifacts/hangar-output-steps
+    scratch:
+      # -- Absolute canonicalization scratch directory, disjoint from the
+      # storage root.
+      path: /var/concourse/hangar-output-scratch
+      # -- REQUIRED whenever hangarOutput.executionControl.enabled is true --
+      # that is, in base-control-only mode as well as with the output facet on.
+      # The DaemonSet, this emptyDir and --scratch-dir all render under the BASE
+      # switch, and an emptyDir with no sizeLimit is bounded only by the node's
+      # disk: filling it evicts every Pod on the node, not only this one.
+      # Use Kubernetes quantity syntax, e.g. "32Gi".
+      sizeLimit: ""
+      # -- Largest regular-file content admitted in one captured tree.
+      maxContentBytes: 10737418240
+      # -- Largest number of filesystem entries admitted in one captured tree.
+      maxEntries: 100000
+      # -- How many trees may be spooled to scratch at once. concurrency times
+      # maxContentBytes must fit inside sizeLimit; the chart refuses a product
+      # that does not.
+      concurrency: 1
+    serviceAccount:
+      # -- Override the rendered name. Leave empty for
+      # <fullname>-hangar-output-daemon.
+      name: ""
+      # -- Workload Identity annotation, e.g.
+      # iam.gke.io/gcp-service-account: publisher@project.iam.gserviceaccount.com
+      # The chart cannot verify the binding; activation does.
+      annotations: {}
+    resources: {}
+    nodeSelector: {}
+    tolerations: []
+
+  inventory:
+    # -- Disabling a controller while the output facet is on is refused: an
+    # activation epoch attests recovery, inventory and reclaim workers, and a
+    # plane with no reclaimer keeps every published object forever while
+    # claiming it does not.
+    enabled: true
+    # -- Exactly one. There is one durable cursor and one renewable lease owner
+    # per bucket and epoch; a second replica is a second cursor owner.
+    replicas: 1
+    interval: "1m"
+    serviceAccount:
+      name: ""
+      annotations: {}
+    resources: {}
+
+  reclaimer:
+    enabled: true
+    replicas: 1
+    interval: "1m"
+    # -- How long one conditional delete may take. The lease term is derived
+    # from it, and work begins only with the timeout plus two minutes of lease
+    # remaining.
+    deleteTimeout: "2m"
+    # -- How many jobs one pass may admit or advance.
+    batch: 10
+    serviceAccount:
+      name: ""
+      annotations: {}
+    resources: {}
+
+  policyAttestor:
+    enabled: true
+    replicas: 1
+    # -- Refresh interval for the whole-bucket lifecycle-policy read. Evidence
+    # older than 15 minutes is stale and the plane goes at-risk, so this is a
+    # third of that by default.
+    interval: "5m"
+    serviceAccount:
+      name: ""
+      annotations: {}
+    resources: {}
+
+  # -- The activation/downgrade Jobs' own identity (decision F4). They do NOT
+  # inherit the web pod's database credential: the architecture guard saying
+  # only the activation command writes hangar_output_activation_epochs is
+  # enforceable only while that command has a PostgreSQL role of its own.
+  database:
+    # -- Existing Secret with the activation role's connection string under the
+    # key `dsn`. Required when the output facet is on.
+    existingSecret: ""
+  activation:
+    serviceAccount:
+      name: ""
+      annotations: {}
+    # -- Render one activation Job. Empty renders none. One of
+    # begin|attest|enable|drain, with facet base|output. No single Helm boolean
+    # and no single Job invocation enables a capability: the CAS row's
+    # transition constraints are what do, and `enable` refuses without a fresh
+    # attestation.
+    job:
+      mode: ""
+      facet: ""
+      # -- For mode: drain. Without it a drain stops new admission and reports
+      # what is still live; with it the facet may reach the terminal disabled
+      # state, and only if the live tables say it holds nothing.
+      finalize: false
+
+  networkPolicy:
+    # -- Enable NetworkPolicies for the four output workloads.
     enabled: false

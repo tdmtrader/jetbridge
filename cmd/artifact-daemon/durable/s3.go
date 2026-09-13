@@ -79,6 +79,13 @@ func NewS3(ctx context.Context, cfg S3Config) (*S3, error) {
 	if cfg.Bucket == "" {
 		return nil, errors.New("durable: s3 bucket is required")
 	}
+	// The same bound as the GCS backend's, for the same reason: the prefix is
+	// concatenated ahead of the key, so leaving it unvalidated makes
+	// ValidateKey bound the last one or two segments of an object name rather
+	// than the object name.
+	if err := ValidatePrefix(cfg.Prefix); err != nil {
+		return nil, err
+	}
 
 	region := cfg.Region
 	if region == "" {

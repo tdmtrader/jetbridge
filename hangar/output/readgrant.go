@@ -278,8 +278,11 @@ func NewReadGrantSigner(material []byte) (*ReadGrantSigner, error) {
 	return signer, nil
 }
 
-// Deferred: the consumer-side verification half is Phase 8's; nothing in this
-// phase reads a grant, a receipt or a lease answer back
+// Deferred: the consumer-side verification half needs a consumer: these
+// five verify a receipt or a key id some process read BACK, and the process
+// that does that is the ATC's receipt registration. Three names this reason
+// once covered -- ValidateLease, RenewLease, ReleaseLease -- are now spent
+// by hangar/output.LeaseReadProfile and are off the list
 func NewReadGrantVerifier(material []byte, clock Clock) (*ReadGrantVerifier, error) {
 	if len(material) != ReadGrantKeyBytes {
 		return nil, fmt.Errorf("%w: an output read grant key is exactly %d raw bytes, this one "+

@@ -29,9 +29,25 @@ func activationEpoch(value uint64) executioncontrol.ActivationEpoch {
 // half of a capture is the control plane's transaction, and this process's
 // contribution to it is a signed receipt it hands back.
 type Daemon struct {
+	// namespace, publisher and signer are the OUTPUT facet, and all three are
+	// zero on a base-control-only daemon. That is a real deployment and not a
+	// degraded one: the sibling `exact_execution_control` track schedules onto
+	// it, and Req 58's output-only downgrade has to reach it from a running
+	// plane. What makes it safe is that the route table already names a facet
+	// per route, so "there is no publisher" is a typed refusal at the boundary
+	// rather than a nil dereference three calls in.
 	namespace output.OutputNamespace
 	publisher *publisher.Publisher
 	signer    *output.ReceiptSigner
+
+	// epoch is the base facet's activation epoch, which exists whether or not
+	// the output facet does. It is read from configuration rather than from the
+	// namespace for exactly that reason.
+	epoch executioncontrol.ActivationEpoch
+
+	// materializationKeyID is what the extension handshake reports so a control
+	// plane knows which pinned key checks this node's read grants.
+	materializationKeyID string
 
 	// canonicalizer turns a sealed source directory into the one canonical form
 	// this repository has. It is the foundation's, not a second implementation:
@@ -60,45 +76,60 @@ func Build(ctx context.Context, config Config) (*Daemon, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
+	var err error
 
-	namespace, err := config.Namespace()
-	if err != nil {
-		return nil, err
-	}
+	// The output facet, or nothing. Everything between here and the control key
+	// is the capture extension, and a base-only daemon builds none of it -- no
+	// namespace, no object client, no publisher, and above all no receipt
+	// signing key. A key mounted into a process that cannot need it is a key an
+	// exploit of that process gets for free.
+	var (
+		namespace     output.OutputNamespace
+		signer        *output.ReceiptSigner
+		role          *publisher.Publisher
+		canonicalizer hangar.Canonicalizer
+	)
+	if config.OutputFacetEnabled() {
+		namespace, err = config.Namespace()
+		if err != nil {
+			return nil, err
+		}
 
-	private, err := config.LoadReceiptKey()
-	if err != nil {
-		return nil, err
-	}
+		private, err := config.LoadReceiptKey()
+		if err != nil {
+			return nil, err
+		}
 
-	signer, err := output.NewReceiptSigner(config.ReceiptKeyID, namespace.ActivationEpoch(),
-		private, output.ClockFunc(nowUTC))
-	if err != nil {
-		return nil, err
-	}
+		signer, err = output.NewReceiptSigner(config.ReceiptKeyID, namespace.ActivationEpoch(),
+			private, output.ClockFunc(nowUTC))
+		if err != nil {
+			return nil, err
+		}
 
-	// The object seam, and no client above it. This root cannot name a
-	// *storage.Client at all: hangar/gcs opens its own behind this constructor
-	// and hands back an interface with no delete on it, which is what makes
-	// `client.Bucket(b).Object(k).Delete(ctx)` here a compile error rather than
-	// a line that built and passed every guard.
-	objects, _, err := hangargcs.NewObjectClient(ctx, config.OutputEndpoint)
-	if err != nil {
-		return nil, fmt.Errorf("%w: building the output object client: %v",
-			output.ErrInfrastructure, err)
-	}
+		// The object seam, and no client above it. This root cannot name a
+		// *storage.Client at all: hangar/gcs opens its own behind this
+		// constructor and hands back an interface with no delete on it, which
+		// is what makes `client.Bucket(b).Object(k).Delete(ctx)` here a compile
+		// error rather than a line that built and passed every guard.
+		objects, _, err := hangargcs.NewObjectClient(ctx, config.OutputEndpoint)
+		if err != nil {
+			return nil, fmt.Errorf("%w: building the output object client: %v",
+				output.ErrInfrastructure, err)
+		}
 
-	role, err := publisher.New(namespace, publisher.Restrict(objects), config.OperationTimeout)
-	if err != nil {
-		return nil, err
-	}
+		role, err = publisher.New(namespace, publisher.Restrict(objects), config.OperationTimeout)
+		if err != nil {
+			return nil, err
+		}
 
-	// The canonicalizer needs a trusted temporary parent that exists and is
-	// owned by this process. The DaemonSet mounts the hostPath; the
-	// subdirectory beneath it is the daemon's own, so it is created here rather
-	// than assumed.
-	if err := config.PrepareScratch(); err != nil {
-		return nil, err
+		// The canonicalizer needs a trusted temporary parent that exists and is
+		// owned by this process. The DaemonSet mounts the hostPath; the
+		// subdirectory beneath it is the daemon's own, so it is created here
+		// rather than assumed.
+		if err := config.PrepareScratch(); err != nil {
+			return nil, err
+		}
+		canonicalizer = hangar.Canonicalizer{TempDir: config.ScratchDir}
 	}
 
 	controlPrivate, err := config.LoadControlKey()
@@ -116,11 +147,66 @@ func Build(ctx context.Context, config Config) (*Daemon, error) {
 
 	return &Daemon{
 		namespace: namespace, publisher: role, signer: signer,
-		canonicalizer: hangar.Canonicalizer{TempDir: config.ScratchDir},
-		controlKeyID:  config.ControlKeyID,
-		controlSigner: controlSigner,
-		captureSigner: captureSigner,
+		epoch:                activationEpoch(config.ActivationEpoch),
+		materializationKeyID: config.MaterializationKeyID,
+		canonicalizer:        canonicalizer,
+		controlKeyID:         config.ControlKeyID,
+		controlSigner:        controlSigner,
+		captureSigner:        captureSigner,
 	}, nil
+}
+
+// OutputEnabled reports whether this daemon carries the capture extension.
+func (daemon *Daemon) OutputEnabled() bool { return !daemon.namespace.IsZero() }
+
+// ActivationEpoch is the BASE facet's epoch, which exists on every daemon.
+//
+// The capability verifier and the base handshake read it from here rather than
+// from the namespace, because a base-only daemon has an epoch and no namespace,
+// and reading it off the namespace is how that daemon would start answering
+// every capability check against epoch zero.
+func (daemon *Daemon) ActivationEpoch() executioncontrol.ActivationEpoch { return daemon.epoch }
+
+// ReceiptSigner and Publisher are the output facet, and are nil without it.
+func (daemon *Daemon) ReceiptSigner() *output.ReceiptSigner { return daemon.signer }
+
+func (daemon *Daemon) Publisher() *publisher.Publisher { return daemon.publisher }
+
+// ExtensionHandshake is the authenticated evidence Req 56 requires before a
+// checkpoint or a capture: what this cohort speaks, which keys check its
+// statements, and which bucket and namespace it publishes into.
+//
+// It embeds the base handshake rather than restating it, so a base-only cohort
+// is attestable for exact control while output_state is still initial. None of
+// it is authority; the activation epoch row is.
+func (daemon *Daemon) ExtensionHandshake() output.ExtensionHandshake {
+	return output.ExtensionHandshake{
+		Base:                    daemon.BaseHandshake(),
+		CaptureExtensionVersion: output.ProtocolVersion,
+		SourceLedgerVersion:     output.SourceLedgerVersion,
+		ReceiptPublicKeyID:      daemon.receiptKeyID(),
+		MaterializationKeyID:    daemon.materializationKeyID,
+		BucketFingerprint:       daemon.namespace.BucketFingerprint(),
+		DerivedNamespace:        daemon.namespace.ListPrefix(),
+	}
+}
+
+// BaseHandshake is what this daemon speaks for the base protocol.
+func (daemon *Daemon) BaseHandshake() executioncontrol.Handshake {
+	return executioncontrol.Handshake{
+		ProtocolVersion: executioncontrol.ProtocolVersion,
+		LedgerVersion:   executioncontrol.LedgerVersion,
+		ControlKeyID:    daemon.controlKeyID,
+		ActivationEpoch: daemon.epoch,
+	}
+}
+
+func (daemon *Daemon) receiptKeyID() string {
+	if daemon.signer == nil {
+		return ""
+	}
+
+	return daemon.signer.KeyID()
 }
 
 // ControlKeyID is what the handshake reports, so a control plane knows which

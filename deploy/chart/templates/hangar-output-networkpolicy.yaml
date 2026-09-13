@@ -1,0 +1,140 @@
+{{/*
+NetworkPolicies for the output plane's four workloads.
+
+Every name here is distinct and distinct from every other policy this chart
+renders: two NetworkPolicies with one name in one namespace are one object, and
+which one survives is decided by apply order. tests/networkpolicy_test.go
+asserts uniqueness over the whole render in every supported mode.
+
+The three controllers accept NO ingress at all. They serve nothing -- each is a
+bounded worker woken by a ticker and a NOTIFY -- so an ingress rule would be
+permission for a connection nothing makes.
+*/}}
+{{- if and .Values.hangarOutput.executionControl.enabled .Values.hangarOutput.networkPolicy.enabled }}
+{{- $output := .Values.hangarOutput }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "concourse.hangarOutput.daemonName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.commonLabels" . | nindent 4 }}
+    app.kubernetes.io/component: hangar-output-daemon
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "concourse.name" . }}
+      app.kubernetes.io/component: hangar-output-daemon
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # The ATC. Every control-plane operation on this API -- revalidating a hold,
+    # taking a writer ticket, recording a start and an outcome, sealing,
+    # publishing -- comes from the web pod on another node.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "concourse.name" . }}
+              app.kubernetes.io/component: web
+      ports:
+        - protocol: TCP
+          port: {{ $output.daemon.port }}
+    # The capture control init container, in a task pod on this node. It holds
+    # no client certificate and requirement 24 will not give it one; its one
+    # route is the node-local capture hold, and its grant is a signed,
+    # facet-scoped, single-use capability.
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: concourse.ci/worker
+                operator: Exists
+      ports:
+        - protocol: TCP
+          port: {{ $output.daemon.port }}
+  egress:
+    # DNS.
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # The Kubernetes API server, to advertise and withdraw its two ready
+    # labels, and Cloud Storage. Both are 443; a policy cannot tell them apart
+    # without an ipBlock nobody can maintain.
+    - ports:
+        - protocol: TCP
+          port: 443
+    # GKE standard/Calico metadata server, for Workload Identity token refresh.
+    - to:
+        - ipBlock:
+            cidr: 169.254.169.252/32
+      ports:
+        - protocol: TCP
+          port: 987
+        - protocol: TCP
+          port: 988
+    # GKE Dataplane V2 metadata server. Both profiles, because Helm cannot infer
+    # the cluster's network policy provider.
+    - to:
+        - ipBlock:
+            cidr: 169.254.169.254/32
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 8080
+{{- if $output.enabled }}
+{{- range $component := list
+  (include "concourse.hangarOutput.inventoryName" .)
+  (include "concourse.hangarOutput.reclaimerName" .)
+  (include "concourse.hangarOutput.attestorName" .) }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $component }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" $ | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "concourse.name" $ }}
+      app.kubernetes.io/component: {{ trimPrefix (printf "%s-" (include "concourse.fullname" $)) $component }}
+  policyTypes:
+    - Ingress
+    - Egress
+  # No ingress rules at all: these workloads serve nothing.
+  ingress: []
+  egress:
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # PostgreSQL and Cloud Storage.
+    - ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 443
+    - to:
+        - ipBlock:
+            cidr: 169.254.169.252/32
+      ports:
+        - protocol: TCP
+          port: 987
+        - protocol: TCP
+          port: 988
+    - to:
+        - ipBlock:
+            cidr: 169.254.169.254/32
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 8080
+{{- end }}
+{{- end }}
+{{- end }}

@@ -58,16 +58,20 @@ type HangarReclaimJob struct {
 	AdmittedDeletes int
 }
 
-// Deferred: the operator status and diagnosis surface is Phase 8's; no running
-// process reads it yet
+// Deferred: the operator status surface reports the reclaim backlog as a
+// count, because a series per in-flight object is cardinality nobody can
+// alert on. Loading one job and reading its remaining term is a diagnosis
+// of a SPECIFIC object, and this track ships no API that names one
 //
 // Remaining is how much of the lease is left at a database-clock instant.
 func (job HangarReclaimJob) Remaining(now output.Timestamp) time.Duration {
 	return job.ExpiresAt.UTC().Sub(now.UTC())
 }
 
-// Deferred: the operator status and diagnosis surface is Phase 8's; no running
-// process reads it yet
+// Deferred: the operator status surface reports the reclaim backlog as a
+// count, because a series per in-flight object is cardinality nobody can
+// alert on. Loading one job and reading its remaining term is a diagnosis
+// of a SPECIFIC object, and this track ships no API that names one
 //
 // LoadReclaimJob reads the open job for one exact ref.
 func (repository *HangarOutputRepository) LoadReclaimJob(ctx context.Context, tx output.Tx, ref hangar.TreeRef) (HangarReclaimJob, error) {
@@ -489,9 +493,6 @@ func (repository *HangarOutputRepository) DueReclaimJobs(ctx context.Context, tx
 	return jobs, nil
 }
 
-// Deferred: the operator status and diagnosis surface is Phase 8's; no running
-// process reads it yet
-//
 // HangarDatabaseNow is the database clock, read as a value.
 //
 // Every deadline in this plane is measured against it rather than a node's own

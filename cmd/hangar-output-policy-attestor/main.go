@@ -88,12 +88,19 @@ func (config attestorConfig) expectation() policy.Expectation {
 	}
 }
 
+// fingerprint is the attestor's half of the one fingerprint format.
+//
+// Its bucket comes from this process's own authenticated flag rather than from
+// a derived namespace -- the attestor reads a bucket's POLICY and has no
+// namespace inside it -- so it composes the two parts itself. The scheme is the
+// shared constant and not a second literal, because two spellings of one bucket
+// is how an expectation stops matching the observation it is compared against.
 func fingerprint(bucket string) string {
-	if bucket == "" || strings.HasPrefix(bucket, "gs://") {
+	if bucket == "" || strings.HasPrefix(bucket, output.BucketFingerprintScheme) {
 		return bucket
 	}
 
-	return "gs://" + bucket
+	return output.BucketFingerprintScheme + bucket
 }
 
 func main() {

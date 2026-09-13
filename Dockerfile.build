@@ -76,6 +76,28 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
       -o /artifact-daemon \
       ./cmd/artifact-daemon
 
+# Build the Hangar output plane's four isolated binaries.
+#
+# Four and not one. A Kubernetes service account is Pod-wide, so a process that
+# holds a cloud role has that role for everything else it does: the publisher may
+# create and get, inventory may list and get bucket-wide, the reclaimer may get
+# and delete, and the attestor holds no object permission at all. Those are four
+# disjoint identities, which means four Pods, which means four binaries -- and
+# architecture_test.go reads the real build graph to keep each one linking only
+# its own role.
+#
+# They share this image because an image is not an identity. What separates them
+# is the KSA the Pod runs under; shipping four images would cost four builds and
+# buy nothing, and deploy/chart/tests asserts every binary the chart runs is
+# actually in here.
+RUN for command in hangar-output-daemon hangar-output-inventory \
+                   hangar-output-reclaimer hangar-output-policy-attestor \
+                   hangar-output-activate; do \
+      echo "=== Building ${command} ==="; \
+      CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
+        go build -ldflags "-s -w" -o "/${command}" "./cmd/${command}"; \
+    done
+
 # Cross-compile the fly CLI for common platforms. The web server serves
 # these archives at /api/v1/cli so users can download fly directly.
 RUN mkdir -p /fly-assets && \
@@ -108,6 +130,11 @@ RUN apt-get update && \
 
 COPY --from=backend /concourse /usr/local/concourse/bin/concourse
 COPY --from=backend /artifact-daemon /usr/local/concourse/bin/artifact-daemon
+COPY --from=backend /hangar-output-daemon /usr/local/concourse/bin/hangar-output-daemon
+COPY --from=backend /hangar-output-inventory /usr/local/concourse/bin/hangar-output-inventory
+COPY --from=backend /hangar-output-reclaimer /usr/local/concourse/bin/hangar-output-reclaimer
+COPY --from=backend /hangar-output-policy-attestor /usr/local/concourse/bin/hangar-output-policy-attestor
+COPY --from=backend /hangar-output-activate /usr/local/concourse/bin/hangar-output-activate
 COPY --from=backend /fly-assets/ /usr/local/concourse/fly-assets/
 
 ENV PATH="/usr/local/concourse/bin:${PATH}"

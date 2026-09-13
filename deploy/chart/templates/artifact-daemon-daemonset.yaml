@@ -76,7 +76,7 @@ kind: DaemonSet
 metadata:
   name: {{ include "concourse.fullname" . }}-artifact-daemon
   labels:
-    {{- include "concourse.labels" . | nindent 4 }}
+    {{- include "concourse.commonLabels" . | nindent 4 }}
     app.kubernetes.io/component: artifact-daemon
 spec:
   selector:
@@ -261,7 +261,12 @@ spec:
         {{- end }}
         {{- if $hangarEnabled }}
         - name: hangar-scratch
+          {{- if .Values.artifactDaemon.hangar.scratchSizeLimit }}
+          emptyDir:
+            sizeLimit: {{ .Values.artifactDaemon.hangar.scratchSizeLimit }}
+          {{- else }}
           emptyDir: {}
+          {{- end }}
         {{- end }}
         {{- with .Values.artifactDaemon.resolveCapability.existingSecret }}
         - name: resolve-capability

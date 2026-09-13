@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/concourse/concourse/hangar/output"
 )
 
 // An alerting rule that names a metric the binary never emits is not a broken
@@ -40,9 +42,16 @@ func TestAlertRulesReferenceMetricsTheBinaryEmits(t *testing.T) {
 			"parse -- an oracle that finds nothing passes everything.", len(declared))
 	}
 
+	// The output plane's rules are rendered too, and that matters more than it
+	// looks: they are behind `{{- if .Values.hangarOutput.enabled }}`, so a
+	// default render would check none of them and this guard would report
+	// coverage it does not have -- which is the exact shape of the defect it
+	// was written for, one level up.
 	rendered := renderChart(t,
-		"alertingRules.enabled=true",
-		"kubernetes.artifactHelperImage=alpine@sha256:aaaa",
+		append([]string{
+			"alertingRules.enabled=true",
+			"kubernetes.artifactHelperImage=alpine@sha256:aaaa",
+		}, outputSets...)...,
 	)
 
 	exprs := alertExpressions(rendered)
@@ -178,4 +187,108 @@ func nearestMetrics(declared map[string]bool, want string) []string {
 		out = append(out, all[i].name)
 	}
 	return out
+}
+
+// ---------------------------------------------------------------------------
+// Alert COVERAGE: the other direction
+// ---------------------------------------------------------------------------
+//
+// The rule above runs the arrow rule -> metric: no alert may name a series
+// nothing emits. This is the arrow the Phase 8 box actually asked for and
+// nothing implemented -- state -> rule: no way for the plane to go at risk may
+// exist with no alert behind it.
+//
+// They are different failures. The first is a rule that can never fire; this is
+// a state that can never be alerted on, and it is the worse of the two, because
+// the plane is FAIL-CLOSED from detection onward. An at-risk epoch blocks new
+// captures, claim acquisitions, managed-output grants, orphan adoption and
+// reclaim admission; a class with no alert behind it is builds refusing to run
+// with nothing on the Prometheus rules page to say why.
+//
+// `output.PolicyViolations()` is a closed vocabulary, so the coverage question
+// is answerable rather than approximate.
+func TestEveryAtRiskTransitionIsCoveredByARenderedAlert(t *testing.T) {
+	classes := output.PolicyViolations()
+	if len(classes) < 10 {
+		t.Fatalf("the policy-violation vocabulary is %d classes; it collapsed and this rule "+
+			"would pass over almost nothing", len(classes))
+	}
+
+	rendered := renderChart(t,
+		append([]string{
+			"alertingRules.enabled=true",
+			"kubernetes.artifactHelperImage=alpine@sha256:aaaa",
+		}, outputSets...)...,
+	)
+	exprs := alertExpressions(rendered)
+
+	outputRules := 0
+	for _, expr := range exprs {
+		if strings.Contains(expr, "concourse_hangar_output_") {
+			outputRules++
+		}
+	}
+	if outputRules < 4 {
+		t.Fatalf("only %d rendered alerts mention an output-plane metric; the output rules "+
+			"did not render and every claim below would be about the wrong document",
+			outputRules)
+	}
+
+	// The catch-all, found rather than assumed. `Status.AtRisk` is
+	// `len(reasons) != 0` over every open violation of any class, and
+	// TestEveryPolicyViolationClassPutsThePlaneAtRisk proves that against the
+	// real schema for all eleven -- which is what makes one aggregate rule
+	// legitimate coverage rather than a blanket excuse.
+	var catchAll []string
+	for alert, expr := range exprs {
+		if strings.Contains(expr, "concourse_hangar_output_at_risk") {
+			catchAll = append(catchAll, alert)
+		}
+	}
+	sort.Strings(catchAll)
+	if len(catchAll) != 1 {
+		t.Fatalf("%d rendered alerts are over concourse_hangar_output_at_risk (%v).\n\n"+
+			"Exactly one is the catch-all that covers every violation class. With none, a "+
+			"class with no rule of its own has no alert at all and the plane refuses work "+
+			"silently; with several, the coverage claim below names no particular rule.",
+			len(catchAll), catchAll)
+	}
+
+	for _, class := range classes {
+		specific := ""
+		for alert, expr := range exprs {
+			if strings.Contains(expr, string(class)) {
+				specific = alert
+			}
+		}
+		if specific != "" {
+			t.Logf("%s: covered directly by %s", class, specific)
+
+			continue
+		}
+		t.Logf("%s: covered by the catch-all %s", class, catchAll[0])
+	}
+
+	// The two at-risk reasons that are NOT violation rows. `evidence_stale` is
+	// set by the reader from the age bound with no row anywhere, and a policy
+	// state that does not admit new work contributes `policy_<state>`. The
+	// first has a rule of its own, on the AGE rather than on a failed read,
+	// because past the bound "we have not checked" and "the check failed" are
+	// the same amount of evidence.
+	if !hasExpressionOver(exprs, "concourse_hangar_output_policy_evidence_age_seconds") {
+		t.Error("no rendered alert is over the policy evidence age.\n\n" +
+			"Stale evidence puts the plane at risk with no violation row anywhere, so the " +
+			"per-class coverage above says nothing about it. Past the 15-minute bound the " +
+			"monitor is not watching, and nothing else notices.")
+	}
+}
+
+func hasExpressionOver(exprs map[string]string, metric string) bool {
+	for _, expr := range exprs {
+		if strings.Contains(expr, metric) {
+			return true
+		}
+	}
+
+	return false
 }

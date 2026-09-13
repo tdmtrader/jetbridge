@@ -25,6 +25,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -51,6 +52,19 @@ type Server struct {
 	// daemon that may answer questions about what it says.
 	unreadyBecause string
 
+	// spool bounds how many trees are being canonicalized or published at once.
+	//
+	// It is a bound on DISK rather than on CPU. Canonicalization spools a whole
+	// tree into the scratch emptyDir, and that volume has a sizeLimit: exceeding
+	// it evicts this Pod, and an emptyDir with no sizeLimit at all fills the
+	// node's disk and evicts every Pod on the node. The number an operator can
+	// reason about is concurrency times the maximum tree, so the concurrency is
+	// configuration and the chart refuses a product that does not fit.
+	//
+	// Waiting is the right behaviour rather than refusing: a capture holds a
+	// lease it renews, and the caller's own deadline is what bounds the wait.
+	spool chan struct{}
+
 	// mutualTLS is set when the daemon serves HTTPS with a client CA. It makes
 	// every route but the node-local one require a verified client
 	// certificate. It is a server fact rather than a per-request one because
@@ -65,9 +79,36 @@ func (server *Server) RequireClientCertificates() { server.mutualTLS = true }
 
 func NewServer(daemon *Daemon, base *ExecutionLedger, source *SourceLedger,
 	capability *executioncontrol.CapabilityVerifier, unreadyBecause string) *Server {
+	return NewServerWithSpool(daemon, base, source, capability, unreadyBecause, 1)
+}
+
+// NewServerWithSpool is NewServer with the scratch concurrency bound named.
+func NewServerWithSpool(daemon *Daemon, base *ExecutionLedger, source *SourceLedger,
+	capability *executioncontrol.CapabilityVerifier, unreadyBecause string,
+	concurrency int) *Server {
+	if concurrency < 1 {
+		concurrency = 1
+	}
+
 	return &Server{
 		daemon: daemon, base: base, source: source,
 		capability: capability, unreadyBecause: unreadyBecause,
+		spool: make(chan struct{}, concurrency),
+	}
+}
+
+// spooling holds one of the scratch slots for the duration of the call.
+//
+// The context is honoured while waiting, so a caller whose own deadline expires
+// in the queue gets its deadline's error rather than being admitted late into
+// work nobody is waiting for any more.
+func (server *Server) spooling(ctx context.Context) (func(), error) {
+	select {
+	case server.spool <- struct{}{}:
+		return func() { <-server.spool }, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("%w: waiting for a canonicalization scratch slot: %v",
+			output.ErrTimeout, ctx.Err())
 	}
 }
 
@@ -145,12 +186,30 @@ func (server *Server) Handler() http.Handler {
 		// Node labels are hints; this is the authority. It is unauthenticated
 		// on purpose: it says what this daemon speaks and nothing about any
 		// execution.
-		writeJSON(w, http.StatusOK, executioncontrol.Handshake{
-			ProtocolVersion: executioncontrol.ProtocolVersion,
-			LedgerVersion:   executioncontrol.LedgerVersion,
-			ControlKeyID:    server.daemon.ControlKeyID(),
-			ActivationEpoch: server.daemon.Namespace().ActivationEpoch(),
-		})
+		writeJSON(w, http.StatusOK, server.daemon.BaseHandshake())
+	})
+	mux.HandleFunc("GET /capture/v1/handshake", func(w http.ResponseWriter, request *http.Request) {
+		// Req 56's extension handshake. It is the capture facet's, so a daemon
+		// without the facet refuses it with the same typed result every other
+		// capture route gives -- an empty handshake would be a cohort claiming
+		// to speak a protocol it does not.
+		if !server.daemon.OutputEnabled() {
+			writeError(w, fmt.Errorf("%w: this daemon carries the base "+
+				"exact-execution-control facet only, so it publishes nothing and has no "+
+				"extension to describe", output.ErrCaptureDisabled))
+
+			return
+		}
+		// It names a bucket and a derived namespace, which the base handshake
+		// does not, so it is behind the same client-certificate requirement as
+		// every other off-node call when the control API is configured for one.
+		if server.mutualTLS && (request.TLS == nil || len(request.TLS.PeerCertificates) == 0) {
+			http.Error(w, "a verified client certificate is required for the capture "+
+				"extension handshake", http.StatusUnauthorized)
+
+			return
+		}
+		writeJSON(w, http.StatusOK, server.daemon.ExtensionHandshake())
 	})
 
 	for pattern, declared := range server.routes() {
@@ -214,6 +273,21 @@ func (server *Server) protect(declared route) http.Handler {
 			return
 		}
 
+		// The facet gate, and it is FIRST because it is the only refusal here
+		// that is about this daemon rather than about this request. Req 58: a
+		// component without the capture facet refuses durable output capture
+		// with a typed result and no cache-tier fallback. Answering "forbidden"
+		// or "bad request" would tell a caller to fix the call; answering 501
+		// tells it the cohort does not do this, which is the one answer that
+		// does not produce a retry.
+		if declared.facet == output.CaptureFacet && !server.daemon.OutputEnabled() {
+			writeError(w, fmt.Errorf("%w: the %s operation needs the durable-capture "+
+				"extension, and this daemon carries the base exact-execution-control facet "+
+				"only", output.ErrCaptureDisabled, declared.operation))
+
+			return
+		}
+
 		// The transport check comes before the capability check, and that
 		// order is the point: a capability presented over an unauthenticated
 		// transport has already been on the wire in the clear, and verifying
@@ -258,7 +332,7 @@ func (server *Server) protect(declared route) http.Handler {
 				Facet:           declared.facet,
 				Operation:       declared.operation,
 				Identity:        identity,
-				ActivationEpoch: server.daemon.Namespace().ActivationEpoch(),
+				ActivationEpoch: server.daemon.ActivationEpoch(),
 			}); err != nil {
 			writeError(w, fmt.Errorf("%w: %s facet, %s operation: %v",
 				output.ErrUnauthorized, declared.facet, declared.operation, err))
@@ -521,6 +595,12 @@ func (server *Server) publish(_ http.ResponseWriter, request *http.Request,
 		return nil, err
 	}
 
+	release, err := server.spooling(request.Context())
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
 	return server.PublishSealedTree(request.Context(), publication)
 }
 
@@ -537,6 +617,12 @@ func (server *Server) canonicalize(_ http.ResponseWriter, request *http.Request,
 	if err := decode(request, &publication); err != nil {
 		return nil, err
 	}
+
+	release, err := server.spooling(request.Context())
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 
 	return server.CanonicalizeSealedTree(request.Context(), publication)
 }
@@ -590,6 +676,12 @@ func writeError(w http.ResponseWriter, err error) {
 		status = http.StatusBadRequest
 	case errors.Is(err, output.ErrUnsupportedProtocol), errors.Is(err, executioncontrol.ErrUnsupportedProtocol):
 		status = http.StatusNotAcceptable
+	case errors.Is(err, output.ErrCaptureDisabled):
+		// 501 and not 403 or 404. "This component does not implement the
+		// capture extension" is a statement about the cohort; a caller that
+		// read it as "not permitted" or "no such route" would retry, and the
+		// retry Req 58 forbids is the cache tier.
+		status = http.StatusNotImplemented
 	case errors.Is(err, output.ErrInfrastructure), errors.Is(err, output.ErrCorrupt):
 		status = http.StatusServiceUnavailable
 	}

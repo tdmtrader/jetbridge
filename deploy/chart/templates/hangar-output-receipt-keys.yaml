@@ -1,0 +1,39 @@
+{{/*
+The control plane's versioned receipt PUBLIC key ring.
+
+A ConfigMap and not a Secret, deliberately: everything in it is public
+verification material, and putting it in a Secret would suggest the private half
+is somewhere nearby. The private half is an operator-provided Secret mounted in
+the output daemon Pod alone.
+
+Entries are retained while any durable state references their epoch -- a
+reservation, a receipt, a recovery row -- because dropping one makes those
+receipts unverifiable forever rather than merely unusable. Rotation ADDS an
+entry under a new activation epoch; it never replaces a key in place.
+*/}}
+{{- if .Values.hangarOutput.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "concourse.hangarOutput.receiptKeysName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.commonLabels" . | nindent 4 }}
+    app.kubernetes.io/component: hangar-output
+data:
+  receipt-keys.json: |
+    {
+      "active_key_id": {{ .Values.hangarOutput.receipt.keyID | quote }},
+      "activation_epoch": {{ int .Values.hangarOutput.activationEpoch }},
+      "keys": [
+      {{- range $index, $entry := .Values.hangarOutput.receipt.publicKeys }}
+        {{ if $index }},{{ end }}{
+          "id": {{ $entry.id | quote }},
+          "epoch": {{ int $entry.epoch }},
+          "retired": {{ $entry.retired | default false }},
+          "public_key": {{ $entry.key | quote }}
+        }
+      {{- end }}
+      ]
+    }
+{{- end }}

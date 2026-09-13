@@ -102,12 +102,26 @@ CREATE TABLE hangar_output_activation_epochs (
 );
 
 -- At most one `enabled` row PER FACET, and nothing said about any other state
--- (decision F1). Rotation begins the next epoch in `initial`, attests it, CASes
--- it to `enabled`, and only then moves the outgoing row enabled -> draining ->
--- disabled: for that moment a `draining` row and an `enabled` row coexist for
--- the same facet, which is exactly what gives rotation no emission gap. An
--- index phrased "at most one non-terminal row" would forbid the overlap and
--- force a gap on every rotation.
+-- (decision F1). Rotation begins the next epoch in `initial` and attests it,
+-- and then, IN ONE TRANSACTION, moves the outgoing row enabled -> draining
+-- FIRST and the incoming row attested -> enabled SECOND; the outgoing row later
+-- moves draining -> disabled once the drain predicate holds. The order inside
+-- that transaction is not a preference: this index is a partial unique index,
+-- it is checked per statement and cannot be deferred, so enabling the incoming
+-- row while the outgoing one is still `enabled` is not a sequence this schema
+-- admits at all.
+--
+-- For the moment between those two statements a `draining` row and an `enabled`
+-- row coexist for the same facet, which is exactly what gives rotation no
+-- emission gap. An index phrased "at most one non-terminal row" would forbid
+-- the overlap and force a gap on every rotation.
+--
+-- (Comment corrected 2026-09-11 per Phase 8 review R1-F5. It previously said
+-- "CASes it to `enabled`, and only then moves the outgoing row", inherited from
+-- decision F1's summary paragraph. The authoritative sequence is plan.md's
+-- "Rotation overlaps; it does not gap", which is what Epochs.Rotate implements
+-- and what this index requires. The schema is unchanged and was never in
+-- question.)
 CREATE UNIQUE INDEX hangar_output_one_enabled_base_epoch
     ON hangar_output_activation_epochs ((true)) WHERE base_state = 'enabled';
 CREATE UNIQUE INDEX hangar_output_one_enabled_output_epoch

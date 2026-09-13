@@ -55,4 +55,82 @@ spec:
           annotations:
             summary: "A worker is stalled"
             description: "{{ `{{ $value }}` }} worker(s) have stopped re-registering and are marked stalled; steps scheduled to them will not run."
+{{- if .Values.hangarOutput.enabled }}
+        # The Hangar output plane. Requirement 52 asks the plane to ALERT when
+        # its lifetime-policy trust cannot be proved safe, and these are that
+        # alert: the ATC publishes the plane's operational state on the existing
+        # scrape path every minute, and these rules are what make an at-risk
+        # epoch and a stalled sweep visible without reading the database.
+        - alert: HangarOutputPlaneAtRisk
+          # `for` is deliberately short. At-risk is FAIL-CLOSED: from detection
+          # onward the plane blocks new captures, claim acquires, managed-output
+          # grants, orphan adoption and reclaim admission. Waiting five minutes
+          # to say so would be five minutes of refused builds with no alert.
+          expr: concourse_hangar_output_at_risk > 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "The Hangar output plane is at risk and has stopped admitting new work"
+            description: "The output plane cannot currently prove its bucket's lifetime policy safe ({{ `{{ $labels.reasons }}` }}). New captures, claim acquisitions, managed-output grants, orphan adoption and reclaim admission are all blocked; releases and diagnosis still work. Recovery needs a fresh safe attestation, and the open violations need reconciling separately -- a safe reading does not close them."
+        - alert: HangarOutputPolicyEvidenceStale
+          # The attestation refreshes every 15 minutes at most (requirement 51).
+          # Past that bound, "we have not checked" and "the check failed" are
+          # the same amount of evidence -- which is why this fires on the AGE
+          # rather than on a failed read.
+          expr: concourse_hangar_output_policy_evidence_age_seconds > 900
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "The Hangar output bucket's lifetime-policy attestation is stale"
+            description: "The newest whole-bucket policy reading is {{ `{{ $value }}` }}s old and the bound is 900s. The monitor detects a policy change within the refresh window; it does not prevent a deletion inside it, so a stale reading is a window nobody is watching."
+        - alert: HangarOutputInventorySweepStalled
+          # The cursor's cycle counter is what moves. A sweep that stopped shows
+          # a flat counter, and `changes(...) == 0` over an hour is that
+          # statement -- 100 objects a pass at a one-minute wake means an hour
+          # with no cycle change is a sweep doing nothing rather than a sweep
+          # working through a large bucket.
+          expr: changes(concourse_hangar_output_inventory_cycle[1h]) == 0 and concourse_hangar_output_plane_inventory{kind="live_generations"} > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "The Hangar output bucket sweep has stopped making progress"
+            description: "The inventory cursor's cycle counter has not moved in an hour while the plane holds live generations. Orphaned objects are not being adopted and nothing is becoming eligible for reclamation."
+        - alert: HangarOutputInventoryDebtGrowing
+          expr: sum(concourse_hangar_output_inventory_debt) > 0
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "The Hangar output sweep has unresolved debt"
+            description: "{{ `{{ $value }}` }} object(s) could not be disposed of by the sweep. Debt is committed before the cursor advances, so nothing is lost -- but nothing revisits it either until an operator looks."
+        - alert: HangarOutputOperationLeaseUnheld
+          # -1 is "no owner at all", which the publisher emits deliberately
+          # rather than 0 or an absent series: zero reads as "expired right now"
+          # and absence reads as "not scraped".
+          #
+          # The series exists only for the operation kinds a workload in this
+          # chart actually takes a lease for. Five of the schema's nine kinds
+          # have no leased worker -- see atc/hangaroutput/leaseowners.go -- and
+          # emitting -1 for those made this rule fire five permanent warnings
+          # ten minutes after a clean install, each blaming a controller that
+          # does not exist.
+          expr: concourse_hangar_output_operation_lease_remaining_seconds == -1
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "No worker holds the {{ `{{ $labels.kind }}` }} lease"
+            description: "The {{ `{{ $labels.kind }}` }} operation has had no lease owner for ten minutes. Its controller is not running, or it cannot reach the database."
+        - alert: HangarOutputReclaimBacklog
+          expr: concourse_hangar_output_plane_inventory{kind="unfinalized_reclaim_jobs"} > 0
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Hangar output reclaim jobs are not finalizing"
+            description: "{{ `{{ $value }}` }} admitted conditional delete(s) have no outcome after an hour. Every one of them is an object whose disposition is unknown: the delete may have happened and the answer may have been lost."
+{{- end }}
 {{- end }}

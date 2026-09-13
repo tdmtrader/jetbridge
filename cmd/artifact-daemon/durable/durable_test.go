@@ -875,3 +875,51 @@ func TestListReportsWhenAnObjectWasWritten(t *testing.T) {
 		}
 	})
 }
+
+// The prefix is bounded, and not only the key.
+//
+// Round 3 of the Hangar output-publication review found that GCSConfig.Prefix
+// was `strings.Trim(cfg.Prefix, "/")` with no validation and was concatenated
+// ahead of the key in objectName -- so ValidateKey's "at most one prefix
+// segment" rule bounded the last one or two segments of the OBJECT NAME and
+// said nothing about what came before them. That is what made a key-only delete
+// through this tier reach any key rather than a shallow one.
+func TestThePrefixIsBoundedTheSameWayAKeyIs(t *testing.T) {
+	// The control, first: the prefixes a deployment legitimately uses.
+	for _, valid := range []string{"", "/", "cluster-a", "cluster-a/tenant-b", "a/b/c/d"} {
+		if err := durable.ValidatePrefix(valid); err != nil {
+			t.Errorf("the legitimate prefix %q was refused: %v", valid, err)
+		}
+	}
+
+	for _, invalid := range []string{
+		"any/deep/path/segments/and/more",
+		"../..",
+		"a/../b",
+		"a//b",
+		"a/ b",
+		"-leading-dash",
+	} {
+		if err := durable.ValidatePrefix(invalid); err == nil {
+			t.Errorf("the prefix %q was accepted. It is concatenated ahead of every key, so "+
+				"an unbounded one is an object name nothing in this package bounds", invalid)
+		}
+	}
+}
+
+// And the constructors refuse one, so the bound is not a function nobody calls.
+func TestAStoreIsNotBuiltWithAnUnboundedPrefix(t *testing.T) {
+	if _, err := durable.NewGCS(context.Background(), durable.GCSConfig{
+		Bucket: "some-bucket",
+		Prefix: "any/deep/path/segments/and/more",
+	}); err == nil {
+		t.Error("a GCS tier was built with an unbounded prefix")
+	}
+
+	if _, err := durable.NewS3(context.Background(), durable.S3Config{
+		Bucket: "some-bucket",
+		Prefix: "../..",
+	}); err == nil {
+		t.Error("an S3 tier was built with a traversing prefix")
+	}
+}

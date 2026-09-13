@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"sort"
@@ -1135,19 +1136,50 @@ func TestDurableTierSeparationGuardIsNotVacuous(t *testing.T) {
 	})
 }
 
-// The delete capability, measured at the ROOT rather than at the import.
+// What this rule claims, and what it does not.
 //
-// Every guard above is a rule about which package may NAME another. This one
-// asks the toolchain what each binary actually links, which is the question the
-// requirement is about: GCS IAM cannot require a caller to send a generation
-// precondition once delete permission exists (Req 55), so the boundary has to be
-// that exactly one process can make the call at all. An allowlist entry that
-// turned out to matter is caught here by the fact it was supposed to prevent
-// rather than by a reviewer noticing.
+// It claims exactly one thing: NO COMMAND ROOT REACHES AN OBJECT DELETE THROUGH
+// THE GO COMPOSITION. It is measured at the ROOT rather than at the import --
+// every guard above is a rule about which package may NAME another; this one
+// asks the toolchain what each binary actually links, so an allowlist entry that
+// turned out to matter is caught by the fact it was supposed to prevent rather
+// than by a reviewer noticing. It is not parameterised over "the roots we
+// remembered": it discovers every main package in cmd/ and checks all of them,
+// so a binary added next year inherits the rule without anyone adding it to a
+// list.
 //
-// It is deliberately not parameterised over "the roots we remembered": it
-// discovers every main package in cmd/ and checks all of them, so a binary added
-// next year inherits the rule without anyone adding it to a list.
+// SOURCE GUARDS CANNOT BOUND A CREDENTIAL HOLDER; IAM IS THE CONTROL. A Go
+// program holding application default credentials can do anything those
+// credentials permit, and no rule written over imports can say otherwise. Round
+// 4 of review demonstrated three routes that are green here and will stay green:
+//
+//	L  golang.org/x/oauth2/google.DefaultClient and a net/http DELETE to
+//	   https://storage.googleapis.com/storage/v1/b/<bucket>/o/<key> -- fifteen
+//	   lines, no go.mod change, no storage SDK named anywhere
+//	M  os/exec of `gcloud storage rm gs://<bucket>/<key>`
+//	N  github.com/aws/aws-sdk-go-v2/service/s3 DeleteObject -- a cloud storage
+//	   SDK that was not on the list, already required at v1.107.1
+//
+// Chasing those with source rules is unbounded work ending in a guard nobody can
+// satisfy. They are not defects in the composition; they are the fact that
+// credentials are the boundary. Reqs 54 and 55 say so, and the control is IAM:
+// the daemon, inventory and attestor principals hold no storage.objects.delete,
+// and every one of L, M and N gets a 403. That half is made load-bearing by
+// deploy/chart/tests/hangar_output_test.go's
+// TestOnlyTheReclaimerPrincipalIsGrantedObjectDelete, which asserts the rendered
+// Workload Identity annotations and the generated IAM documentation grant delete
+// to the reclaimer principal and to no other, and by activation, which attests
+// the real policy.
+//
+// What these rules buy is that the capability is not RE-ACQUIRED BY ACCIDENT
+// through the composition: a refactor that hands the wrong adapter to the wrong
+// binary, a helper that opens its own client, a role that grows a method. That
+// is a real and recurring failure -- it happened three times in three rounds --
+// and it is what is checked here. The three tripwires below
+// (TestNoPackageOutsideTheCapabilityPackagesNamesACloudStorageSDK's widened SDK
+// list, TestNoCommandRootShellsOutToACloudCLI and
+// TestNoPackageAddressesACloudStorageEndpointOverRawHTTP) cover the
+// plausible-accident shape of L, M and N without pretending to close them.
 const outputDeleteRole = "github.com/concourse/concourse/hangar/output/reclaimer"
 
 // outputDeleteCapability is the package that can construct an object delete
@@ -1166,7 +1198,7 @@ const outputDeleteCapability = "github.com/concourse/concourse/hangar/gcsdelete"
 // outputDeleteRoot is the one binary allowed to link either.
 const outputDeleteRoot = "./cmd/hangar-output-reclaimer"
 
-func TestOnlyTheReclaimerBinaryCanInvokeAnOutputDelete(t *testing.T) {
+func TestNoCommandRootReachesAnObjectDeleteThroughTheGoComposition(t *testing.T) {
 	roots := commandRoots(t)
 	if len(roots) < 4 {
 		t.Fatalf("found %d command roots, which is far too few to be this repository's cmd/ "+
@@ -1188,19 +1220,22 @@ func TestOnlyTheReclaimerBinaryCanInvokeAnOutputDelete(t *testing.T) {
 			continue
 		}
 		if linksPackage(t, root, outputDeleteCapability) {
-			t.Errorf("%s links %s.\n\nThat package is the object-delete CAPABILITY: it is the "+
-				"only place in this repository that can construct a deleter over a real cloud "+
-				"client, and a binary that links it can issue objects.delete whether or not it "+
-				"names a role. GCS IAM cannot require a caller to send a generation precondition "+
-				"once delete permission exists, so the boundary is that exactly one process can "+
-				"make the call at all.", root, outputDeleteCapability)
+			t.Errorf("%s reaches an object delete through the Go composition: it links %s.\n\n"+
+				"That package is the object-delete CAPABILITY: it is the only place in this "+
+				"repository that can construct a deleter over a real cloud client, and a binary "+
+				"that links it can issue objects.delete whether or not it names a role. This "+
+				"rule does not claim the binary CANNOT delete -- a process holding credentials "+
+				"can, and IAM is what stops it. It claims the composition does not hand it the "+
+				"capability, which is the accident this has been three times.",
+				root, outputDeleteCapability)
 		}
 		if linksPackage(t, root, outputDeleteRole) {
-			t.Errorf("%s links %s.\n\nOnly the isolated reclaimer workload may import or invoke "+
-				"the output delete client. A Kubernetes service account is Pod-wide, so a "+
-				"second binary that linked this would be a second identity holding "+
-				"storage.objects.delete for everything else it does. This is the second line: "+
-				"the capability guard above is the first.", root, outputDeleteRole)
+			t.Errorf("%s reaches an object delete through the Go composition: it links %s.\n\n"+
+				"Only the isolated reclaimer workload may import or invoke the output delete "+
+				"client. A Kubernetes service account is Pod-wide, so a second binary that "+
+				"linked this would be a second Pod whose identity IAM would then have to be "+
+				"trusted to keep delete away from. This is the second line: the capability "+
+				"guard above is the first.", root, outputDeleteRole)
 		}
 	}
 
@@ -1210,110 +1245,13 @@ func TestOnlyTheReclaimerBinaryCanInvokeAnOutputDelete(t *testing.T) {
 	// three of four binaries take, which is the shape that was demonstrated.
 	assertSharedHandleHasNoDelete(t)
 
-	// The third line, and the one the first two were blind to.
-	assertNoCommandRootNamesTheStorageSDK(t)
-}
-
-// storageSDKExemptions are the packages under cmd/ allowed to name the Cloud
-// Storage SDK, with the reason. There is one.
-var storageSDKExemptions = map[string]string{
-	"cmd/artifact-daemon/durable": "the durable CACHE tier's own GCS backend, which predates the " +
-		"output plane and is a different store over a different bucket: it is fail-open, " +
-		"name-keyed and re-derivable, and durableTierSeparation above is what keeps it and " +
-		"Hangar from becoming each other. It builds its own client with the SDK because it IS a " +
-		"backend; it is not a command root, and no main package is exempt",
-}
-
-// assertNoCommandRootNamesTheStorageSDK is the arm that closes the route the
-// first two guards certified against and did not measure.
-//
-// Both of those ask the build graph which PACKAGES a binary links. Neither can
-// see the cheapest delete there is, because it needs no package: while
-// hangar/gcs.NewStorageClient was exported, three non-reclaimer roots held the
-// raw *storage.Client in a local variable, and
-//
-//	storageClient.Bucket(bucket).Object("any/key").Delete(ctx)
-//
-// compiled in cmd/hangar-output-daemon, cmd/hangar-output-inventory and
-// cmd/hangar-output-policy-attestor alike -- no new import, nothing added to any
-// dependency graph, every guard in this file green. That was demonstrated in all
-// three. A method call on an already-typed value is invisible to an import rule.
-//
-// What makes that line a compile error now is that no root can obtain the value:
-// the client is opened by hangar/internal/gcsclient, which Go's internal rule
-// puts out of reach of everything outside hangar/, and each capability package
-// hands back an interface carrying only the operations its role may issue. This
-// arm is the belt to that brace -- it stops a root reaching around the
-// capability packages to storage.NewClient directly -- and it applies to the
-// RECLAIMER too: the one binary allowed to delete should be doing it through
-// hangar/gcsdelete, not through the SDK.
-func assertNoCommandRootNamesTheStorageSDK(t *testing.T) {
-	t.Helper()
-
-	root := filepath.Join(repositoryRoot(), "cmd")
-	fileSet := token.NewFileSet()
-	scanned, exercised := 0, map[string]bool{}
-
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() || !strings.HasSuffix(path, ".go") {
-			return nil
-		}
-		relative, err := filepath.Rel(repositoryRoot(), path)
-		if err != nil {
-			return err
-		}
-		relative = filepath.ToSlash(relative)
-		pkg := filepath.ToSlash(filepath.Dir(relative))
-
-		file, err := parser.ParseFile(fileSet, path, nil, parser.ImportsOnly)
-		if err != nil {
-			return fmt.Errorf("parsing %s: %w", relative, err)
-		}
-		scanned++
-
-		for _, spec := range file.Imports {
-			imported, err := strconv.Unquote(spec.Path.Value)
-			if err != nil {
-				return fmt.Errorf("%s: unquoting %s: %w", relative, spec.Path.Value, err)
-			}
-			if imported != cloudStorageModule && !strings.HasPrefix(imported, cloudStorageModule+"/") {
-				continue
-			}
-			if reason, ok := storageSDKExemptions[pkg]; ok {
-				exercised[pkg] = true
-				t.Logf("allowed: %s names %s — %s", relative, cloudStorageModule, reason)
-				continue
-			}
-			t.Errorf("%s names %s.\n\nA file under cmd/ that can reach the SDK can open its own "+
-				"client, and a *storage.Client is an arbitrary, unconditional, key-only "+
-				"objects.delete one method call away -- with no further import, invisible to "+
-				"every import-graph rule in this file. That exact line was demonstrated in three "+
-				"roots. Take the capability from hangar/gcs, hangar/gcsstore or "+
-				"hangar/gcsdelete, each of which opens and owns its own client behind a "+
-				"(ctx, endpoint) constructor and returns only the operations the role may "+
-				"issue. The reclaimer is not an exception: it reaches delete through "+
-				"%s.", relative, cloudStorageModule, outputDeleteCapability)
-		}
-
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("scanning cmd/: %v", err)
-	}
-	if scanned < 20 {
-		t.Fatalf("scanned only %d files under cmd/, which is far too few to be this "+
-			"repository's command roots; the walk failed and this rule would pass vacuously",
-			scanned)
-	}
-	for pkg := range storageSDKExemptions {
-		if !exercised[pkg] {
-			t.Errorf("%s is exempted to name %s and no file in it does; the exemption is stale",
-				pkg, cloudStorageModule)
-		}
-	}
+	// The third line is no longer here: it is
+	// TestNoPackageOutsideTheCapabilityPackagesNamesACloudStorageSDK below,
+	// which is repository-wide. The arm that used to live here parsed files
+	// under cmd/ and compared against ONE import path, so it stopped a root
+	// reaching for the SDK directly and nothing else -- the same call written
+	// in a package the root LINKS was invisible to it, and a sibling SDK with
+	// a different path was invisible twice over. Both were demonstrated.
 }
 
 // assertSharedHandleHasNoDelete reads the interface declaration rather than the
@@ -1446,6 +1384,830 @@ func TestEachOutputControllerLinksOnlyItsOwnRole(t *testing.T) {
 					"one role: a process holding two is one cloud identity with two sets of "+
 					"permissions.", root, role, own)
 			}
+		}
+	}
+}
+
+// activationTableWriters are the packages allowed to write the activation epoch
+// row, and there is one.
+//
+// The epoch row is the plane's single authority: a node label is a hint, a
+// daemon handshake is evidence, a Helm value is an intention, and none of them
+// authorizes a capture, a receipt registration, a claim acquisition or a
+// finalization. This row does. So the set of things that can move it is the set
+// of things that can turn the plane on, and it is one internal command run as a
+// one-shot Job under its own least-privilege PostgreSQL role.
+//
+// The rule is stated over SOURCE rather than over the build graph because what
+// it is about is a STATEMENT: any package that can open a database handle can
+// write any table, and no import rule can see that. What it can see is an
+// UPDATE, an INSERT or a DELETE naming the table.
+var activationTableWriters = map[string]string{
+	"atc/hangaroutput/activation": "the activation command's own package. Its four guarded " +
+		"transitions ARE the protocol, and the Jobs that run them hold a PostgreSQL role " +
+		"distinct from the web pod's -- which is what makes this rule enforceable at the " +
+		"credential as well as at the code",
+	"atc/worker/jetbridge/brine/steps": "TEST HARNESS: the brine adapter's step definitions, " +
+		"which arrange an activated plane so a scenario can start from one. They are ordinary " +
+		"Go files rather than _test.go files because a brine adapter is a BINARY, so the " +
+		"suffix rule cannot see them -- which is why the check below reads the nested go.mod " +
+		"rather than believing this sentence",
+}
+
+// nestedTestModules are the exemptions above whose reason says TEST HARNESS,
+// with the nested go.mod that makes the claim checkable.
+//
+// A comment saying "this is only a harness" is a comment a later edit can
+// quietly make untrue. A separate module is not: the root module's build graph
+// cannot reach it at all, so nothing this repository ships can link it.
+var nestedTestModules = map[string]string{
+	"atc/worker/jetbridge/brine/steps": "atc/worker/jetbridge/brine/go.mod",
+}
+
+const activationTable = "hangar_output_activation_epochs"
+
+// TestOnlyTheActivationCommandWritesTheEpochRow reads every non-test Go file in
+// the repository for a write against the activation table.
+func TestOnlyTheActivationCommandWritesTheEpochRow(t *testing.T) {
+	root := repositoryRoot()
+
+	// A write is an UPDATE, an INSERT or a DELETE naming the table. A SELECT is
+	// not: half this plane reads the epoch row, and reading an authority is
+	// what an authority is for.
+	writes := regexp.MustCompile(`(?is)\b(UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+` + activationTable + `\b`)
+
+	scanned, readers, exercised := 0, 0, map[string]bool{}
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			if entry.Name() == "vendor" || entry.Name() == ".git" || entry.Name() == "node_modules" {
+				return filepath.SkipDir
+			}
+
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		body, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		scanned++
+		if !strings.Contains(string(body), activationTable) {
+			return nil
+		}
+		readers++
+
+		relative, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
+		}
+		pkg := filepath.ToSlash(filepath.Dir(relative))
+		if !writes.MatchString(string(body)) {
+			return nil
+		}
+		if reason, ok := activationTableWriters[pkg]; ok {
+			exercised[pkg] = true
+			t.Logf("allowed: %s writes %s — %s", filepath.ToSlash(relative), activationTable, reason)
+
+			return nil
+		}
+		t.Errorf("%s writes %s.\n\nThat row is the output plane's single authority: every "+
+			"capture records the epoch it was admitted under, and a stale label or handshake "+
+			"cannot authorize emission, receipt registration, claim acquisition or "+
+			"finalization. It moves only through the four guarded transitions in %s, which "+
+			"run as one-shot Jobs under a PostgreSQL role distinct from the web pod's. A "+
+			"second writer is a second way to turn the plane on.",
+			filepath.ToSlash(relative), activationTable, "atc/hangaroutput/activation")
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scanning the repository: %v", err)
+	}
+
+	if scanned < 500 {
+		t.Fatalf("scanned only %d non-test Go files; the walk failed and this rule would pass "+
+			"vacuously", scanned)
+	}
+	if readers < 2 {
+		t.Fatalf("only %d non-test files name %s at all. Half this plane reads the epoch row, "+
+			"so a repository where nothing does is one where the table was renamed and this "+
+			"rule is guarding a string", readers, activationTable)
+	}
+	for pkg := range activationTableWriters {
+		if !exercised[pkg] {
+			t.Errorf("%s is exempted to write %s and no file in it does; the exemption is stale",
+				pkg, activationTable)
+		}
+	}
+	for pkg, module := range nestedTestModules {
+		if _, statErr := os.Stat(filepath.Join(root, filepath.FromSlash(module))); statErr != nil {
+			t.Errorf("%s is exempted as a TEST HARNESS in a nested module, and %s does not "+
+				"exist: %v. Without the separate module the root build graph can reach it, and "+
+				"the exemption is a sentence rather than a fact.", pkg, module, statErr)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The delete capability, guarded as a capability
+// ---------------------------------------------------------------------------
+//
+// Three rounds of review found the same defect three times, and the lesson is
+// written down here rather than left in the review: **a capability guard that
+// names a route is a guard against that route, not against the capability.**
+//
+//	round 1  a Delete method on the object adapter every root took
+//	round 2  a raw *storage.Client in a local variable in three roots, one
+//	         method call from an arbitrary delete with no new import
+//	round 3  three routes the guards could not see at all -- a key-only delete
+//	         exported by the durable cache tier, the raw JSON API for the same
+//	         service under a different import path, and the same SDK named one
+//	         package away from any file under cmd/
+//
+// Each fix measured the shape the previous finding had; each was green while
+// the next one was open. So the rules below are stated over what a package may
+// NAME and what a binary may LINK, repository-wide, rather than over where a
+// particular call could be written.
+//
+// None of this is the primary control. GCS IAM is: the daemon, inventory and
+// attestor principals hold no storage.objects.delete, and the call gets a 403.
+// What these rules buy is that the isolation stays true in code somebody writes
+// next year, when the IAM binding is somebody else's memory of a Terraform file.
+
+// cloudStorageSDKs are every import path that IS a Cloud Storage SDK.
+//
+// The second entry is the reason this is a list at all. Round 3 demonstrated
+// `rawstorage "google.golang.org/api/storage/v1"` in cmd/hangar-output-daemon
+// with `svc.Objects.Delete(bucket, key).Do()` -- an arbitrary, unconditional,
+// key-only delete, with no go.mod change (google.golang.org/api is already
+// required) and with `cloud.google.com/go/storage` appearing nowhere in the
+// file. A rule comparing against one constant saw nothing.
+//
+// The third is round 4's route N: the AWS S3 SDK is already required at
+// v1.107.1 for the durable cache tier's S3 backend, so `s3.DeleteObject` was a
+// delete with no go.mod change and no Google SDK named. Cheap to close, because
+// the one package that legitimately names it -- cmd/artifact-daemon/durable --
+// is already an allowed importer.
+//
+// The rest name SDKs nothing in this repository imports today. They are
+// TRIPWIRES for the first accident shape: reaching for a different cloud's
+// object storage from a package that had no object-storage business. An entry
+// with no importer cannot go stale the way an exemption can -- and
+// TestEveryCloudStorageSDKEntryIsRecognised proves each one is matched by
+// isCloudStorageSDK rather than being a string nothing reads.
+var cloudStorageSDKs = []string{
+	"cloud.google.com/go/storage",
+	"google.golang.org/api/storage/v1",
+	"github.com/aws/aws-sdk-go-v2/service/s3",
+	"github.com/aws/aws-sdk-go/service/s3",
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob",
+	"github.com/minio/minio-go",
+	"gocloud.dev/blob",
+}
+
+// cloudStorageSDKImporters are the packages allowed to name a Cloud Storage
+// SDK anywhere in the repository, each with the reason.
+//
+// REPOSITORY-WIDE and not "under cmd/". The previous form parsed files under
+// cmd/ and compared against one import path, so it stopped a root reaching for
+// the SDK directly and nothing else: the same call written in a package the
+// root LINKS was invisible to it, and round 3 demonstrated exactly that by
+// putting `storage.NewClient` in hangar/output/publisher and calling it from
+// the daemon. The build graph is the thing that decides what a binary can do,
+// and the set of packages that may name a cloud client is the honest statement
+// of it.
+var cloudStorageSDKImporters = map[string]string{
+	"hangar/internal/gcsclient": "the ONE place a *storage.Client is opened. Go's internal " +
+		"rule is what makes \"nothing outside hangar/ can obtain one through this " +
+		"repository's own seam\" checked by the toolchain on every build rather than by a " +
+		"reviewer reading a comment",
+	"hangar/gcs": "the output plane's object and bucket-policy seams. Each capability it " +
+		"hands back is an interface carrying only the operations its role may issue, and none " +
+		"of them carries Delete",
+	"hangar/gcsstore": "the artifact daemon's strict-input store. Its DeleteTree is a delete " +
+		"BY KEY, which is why it is a separate package with a separate importer rule below",
+	"hangar/gcsdelete": "the object-delete capability's own package. It names the SDK because " +
+		"it IS the adapter, and exactly one binary links it",
+	"cmd/artifact-daemon/durable": "the durable CACHE tier's own GCS and S3 backends, which " +
+		"predate the output plane and are a different store over a different bucket. It builds " +
+		"its own client because it IS a backend; which binaries may LINK it is the subject of " +
+		"TestTheDurableCacheTierIsLinkedOnlyByTheArtifactDaemon below, and the answer is one",
+	"hangar/output/conformance": "TEST-ONLY: the tier-2 conformance suite drives the real " +
+		"adapter against fake-gcs-server, because a conformance claim proved through a " +
+		"hand-written fake is a claim about the fake",
+	"atc/worker/jetbridge/brine/steps": "TEST HARNESS: the brine adapter's step definitions, " +
+		"in their own nested module, which the root module's build graph cannot reach at all",
+}
+
+// TestNoPackageOutsideTheCapabilityPackagesNamesACloudStorageSDK is the
+// repository-wide arm.
+//
+// It reads IMPORTS and not text: cmd/hangar-output-daemon and
+// cmd/hangar-output-reclaimer both mention `cloud.google.com/go/storage` in a
+// comment explaining why they do not import it, and a textual rule would either
+// fail on those or be written to skip comments -- which is a parser with extra
+// steps.
+func TestNoPackageOutsideTheCapabilityPackagesNamesACloudStorageSDK(t *testing.T) {
+	root := repositoryRoot()
+	fileSet := token.NewFileSet()
+
+	scanned, named := 0, 0
+	exercised := map[string]bool{}
+
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			switch entry.Name() {
+			case "vendor", ".git", "node_modules":
+				return filepath.SkipDir
+			}
+
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+		relative, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
+		}
+		relative = filepath.ToSlash(relative)
+		pkg := filepath.ToSlash(filepath.Dir(relative))
+
+		file, parseErr := parser.ParseFile(fileSet, path, nil, parser.ImportsOnly)
+		if parseErr != nil {
+			return fmt.Errorf("parsing %s: %w", relative, parseErr)
+		}
+		scanned++
+
+		for _, spec := range file.Imports {
+			imported, unquoteErr := strconv.Unquote(spec.Path.Value)
+			if unquoteErr != nil {
+				return fmt.Errorf("%s: unquoting %s: %w", relative, spec.Path.Value, unquoteErr)
+			}
+			if !isCloudStorageSDK(imported) {
+				continue
+			}
+			named++
+			if reason, ok := cloudStorageSDKImporters[pkg]; ok {
+				exercised[pkg] = true
+				t.Logf("allowed: %s names %s — %s", relative, imported, reason)
+
+				continue
+			}
+			t.Errorf("%s names the Cloud Storage SDK %s.\n\nA package that can reach the SDK "+
+				"can open its own client, and an arbitrary, unconditional, key-only "+
+				"objects.delete is one method call away -- with no further import, invisible "+
+				"to every import-graph rule in this file, and reachable from every binary "+
+				"that links this package. Take the capability from hangar/gcs, "+
+				"hangar/gcsstore or hangar/gcsdelete instead: each opens and owns its own "+
+				"client behind a (ctx, endpoint) constructor and returns only the operations "+
+				"its role may issue. The reclaimer is not an exception -- it reaches delete "+
+				"through %s.", relative, imported, outputDeleteCapability)
+		}
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scanning the repository: %v", err)
+	}
+
+	if scanned < 1000 {
+		t.Fatalf("parsed only %d Go files; the walk failed and this rule would pass vacuously",
+			scanned)
+	}
+	if named < 5 {
+		t.Fatalf("only %d imports of a Cloud Storage SDK were found anywhere. This repository "+
+			"talks to Cloud Storage; a tree where almost nothing names the SDK is one where "+
+			"the import paths moved and this rule is guarding two strings", named)
+	}
+	for pkg := range cloudStorageSDKImporters {
+		if !exercised[pkg] {
+			t.Errorf("%s is exempted to name a Cloud Storage SDK and no file in it does; the "+
+				"exemption is stale, and an exemption nobody uses is a hole nobody is watching",
+				pkg)
+		}
+	}
+}
+
+func isCloudStorageSDK(imported string) bool {
+	for _, sdk := range cloudStorageSDKs {
+		if imported == sdk || strings.HasPrefix(imported, sdk+"/") {
+			return true
+		}
+	}
+
+	return false
+}
+
+// TestEveryCloudStorageSDKEntryIsRecognised is R1-F9's fix: proof that each
+// entry in the list is load-bearing.
+//
+// The importer allowlist has a staleness arm -- an exemption nobody uses fails.
+// The SDK list had none, and could not have the same one: two of its entries are
+// MEANT to guard an import nothing makes, and `google.golang.org/api/storage/v1`
+// is named in exactly one file in the repository, this one, as the list entry.
+// Replacing it with a nonsense path left the whole guard green, so the entry
+// that closes round 3's route I could be deleted in a refactor with nothing to
+// say so.
+//
+// What is actually assertable is that each entry is a path the matcher matches,
+// exactly and by sub-path, and that a near miss does not match. That reddens on
+// a typo, on a deletion (the case count drops below the list length), and on a
+// matcher that stops working.
+func TestEveryCloudStorageSDKEntryIsRecognised(t *testing.T) {
+	if len(cloudStorageSDKs) < 3 {
+		t.Fatalf("cloudStorageSDKs has %d entries; the list collapsed and the rules over it "+
+			"guard almost nothing", len(cloudStorageSDKs))
+	}
+
+	for _, sdk := range cloudStorageSDKs {
+		if !isCloudStorageSDK(sdk) {
+			t.Errorf("isCloudStorageSDK(%q) is false for an entry of its own list", sdk)
+		}
+		if !isCloudStorageSDK(sdk + "/internal/apiv2") {
+			t.Errorf("isCloudStorageSDK does not match a sub-path of %q. Every one of these "+
+				"SDKs has sub-packages, and a rule that matches only the root path is one "+
+				"`import \"%s/types\"` away from silent.", sdk, sdk)
+		}
+		if isCloudStorageSDK(sdk + "-notreally") {
+			t.Errorf("isCloudStorageSDK matches %q by prefix alone; the separator is what keeps "+
+				"a neighbouring module out", sdk+"-notreally")
+		}
+	}
+
+	// The two entries whose whole job is to close a demonstrated route, named
+	// so that deleting one fails here and not in review a year later.
+	for _, required := range []string{
+		"cloud.google.com/go/storage",
+		"google.golang.org/api/storage/v1",
+		"github.com/aws/aws-sdk-go-v2/service/s3",
+	} {
+		if !isCloudStorageSDK(required) {
+			t.Errorf("%s is no longer in cloudStorageSDKs. It is there because a delete through "+
+				"it was DEMONSTRATED past the guards of its round; removing it reopens that "+
+				"route.", required)
+		}
+	}
+
+	for _, harmless := range []string{
+		"net/http", "cloud.google.com/go/iam", "google.golang.org/api/option",
+		"github.com/aws/aws-sdk-go-v2/config",
+	} {
+		if isCloudStorageSDK(harmless) {
+			t.Errorf("isCloudStorageSDK(%q) is true; the list has grown a path that is not an "+
+				"object-storage SDK, and every allowlist over it is now about the wrong thing",
+				harmless)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The two accident tripwires that are not about imports of an SDK
+// ---------------------------------------------------------------------------
+//
+// Neither closes its route. Route M (`gcloud storage rm`) and route L (a raw
+// HTTPS DELETE with application default credentials) are open to any binary that
+// holds credentials, and no source rule changes that -- IAM does. What these
+// catch is the shape the accident takes: somebody reaching for a cloud CLI or
+// for a storage endpoint by hand, in a tree where neither has ever appeared.
+//
+// Both are stated over a PREDICATE with its own table test, because the corpus
+// is clean: there is nothing for the scan to find today, so "it found nothing"
+// is not by itself evidence it is looking. The scan floors say the walk ran; the
+// predicate tables say the matcher works.
+
+// cloudCLIProgram matches an invocation of a cloud vendor's command-line tool.
+//
+// Deliberately narrow. `aws`, `az` and `mc` alone are ordinary English and
+// ordinary variable names, so this matches the distinctive tokens and the
+// two-word forms, which is what an actual shell-out reads like.
+var cloudCLIProgram = regexp.MustCompile(
+	`\b(gcloud|gsutil|s3cmd|rclone|awscli|aws\s+s3|az\s+storage|azcopy)\b`)
+
+// cloudStorageEndpointHost matches a cloud object-storage API host.
+var cloudStorageEndpointHost = regexp.MustCompile(
+	`\b(storage\.googleapis\.com|storage\.cloud\.google\.com|` +
+		`[a-z0-9.-]*s3[a-z0-9.-]*\.amazonaws\.com|` +
+		`[a-z0-9.-]*\.blob\.core\.windows\.net|` +
+		`[a-z0-9.-]*\.r2\.cloudflarestorage\.com)\b`)
+
+// cloudCLIShellOutAllowed and cloudStorageEndpointAllowed are the packages
+// permitted to trip each tripwire, with the reason. Both are empty: nothing in
+// this repository does either, and that is the point -- the first entry added
+// is a decision somebody has to write a sentence for.
+var cloudCLIShellOutAllowed = map[string]string{}
+
+var cloudStorageEndpointAllowed = map[string]string{}
+
+// TestNoCommandRootShellsOutToACloudCLI is route M's tell.
+//
+// `os/exec` in a composition root is the same shape as `unsafe` in one: a root
+// wires things together, and a binary that can start a subprocess can run
+// `gcloud storage rm gs://bucket/key` with the same credentials the SDK would
+// have used, naming no SDK at all. Scoped to cmd/ and to the output plane's own
+// trees, because exec has legitimate uses elsewhere in this repository (the
+// worker runs things for a living) and a rule that had to exempt half the tree
+// would be a list, not a boundary.
+func TestNoCommandRootShellsOutToACloudCLI(t *testing.T) {
+	trees := []string{"cmd", "hangar", "atc/hangaroutput"}
+	root := repositoryRoot()
+	fileSet := token.NewFileSet()
+	scanned := 0
+
+	for _, tree := range trees {
+		err := filepath.WalkDir(filepath.Join(root, filepath.FromSlash(tree)),
+			func(path string, entry os.DirEntry, walkErr error) error {
+				if walkErr != nil {
+					return walkErr
+				}
+				if entry.IsDir() || !strings.HasSuffix(path, ".go") ||
+					strings.HasSuffix(path, "_test.go") {
+					return nil
+				}
+				relative, relErr := filepath.Rel(root, path)
+				if relErr != nil {
+					return relErr
+				}
+				relative = filepath.ToSlash(relative)
+				pkg := filepath.ToSlash(filepath.Dir(relative))
+				scanned++
+
+				file, parseErr := parser.ParseFile(fileSet, path, nil, 0)
+				if parseErr != nil {
+					return fmt.Errorf("parsing %s: %w", relative, parseErr)
+				}
+
+				importsExec := false
+				for _, spec := range file.Imports {
+					imported, unquoteErr := strconv.Unquote(spec.Path.Value)
+					if unquoteErr != nil {
+						return unquoteErr
+					}
+					if imported == "os/exec" {
+						importsExec = true
+					}
+				}
+
+				named := ""
+				ast.Inspect(file, func(node ast.Node) bool {
+					literal, ok := node.(*ast.BasicLit)
+					if !ok || literal.Kind != token.STRING {
+						return true
+					}
+					value, unquoteErr := strconv.Unquote(literal.Value)
+					if unquoteErr != nil {
+						return true
+					}
+					if match := cloudCLIProgram.FindString(value); match != "" {
+						named = match
+					}
+
+					return true
+				})
+
+				if !importsExec && named == "" {
+					return nil
+				}
+				if reason, ok := cloudCLIShellOutAllowed[pkg]; ok {
+					t.Logf("allowed: %s (exec=%v, names=%q) — %s",
+						relative, importsExec, named, reason)
+
+					return nil
+				}
+				switch {
+				case importsExec && named != "":
+					t.Errorf("%s imports os/exec and names the cloud CLI %q.\n\nThat is a "+
+						"delete with the Pod's own credentials, naming no SDK and making no "+
+						"import any rule in this file reads. It is not closed here -- IAM "+
+						"closes it -- but nothing in this tree has ever needed it, so the "+
+						"first time something does it should be a decision with a sentence "+
+						"in cloudCLIShellOutAllowed.", relative, named)
+				case importsExec:
+					t.Errorf("%s imports os/exec.\n\nA composition root and the output plane "+
+						"wire things together; they do not start subprocesses. This is route "+
+						"M's tell, the way `unsafe` is route K's: a subprocess runs with the "+
+						"same credentials and is invisible to every import rule here.",
+						relative)
+				default:
+					t.Errorf("%s names the cloud CLI %q.\n\nNothing in this tree drives a "+
+						"vendor CLI. A program name in a string is how a shell-out arrives "+
+						"one commit before the os/exec import does.", relative, named)
+				}
+
+				return nil
+			})
+		if err != nil {
+			t.Fatalf("scanning %s/: %v", tree, err)
+		}
+	}
+
+	if scanned < 100 {
+		t.Fatalf("scanned only %d non-test files across %v; the walk failed and this rule "+
+			"would pass vacuously", scanned, trees)
+	}
+}
+
+// TestNoPackageAddressesACloudStorageEndpointOverRawHTTP is route L's tell.
+//
+// Route L is the sharpest one found: `golang.org/x/oauth2/google.DefaultClient`
+// plus `net/http` DELETE to
+// https://storage.googleapis.com/storage/v1/b/<bucket>/o/<key>. Fifteen lines,
+// no go.mod change, no SDK named, and route I one layer down -- the same JSON
+// API, reached with net/http instead of the generated client. An import rule
+// cannot see a URL.
+//
+// This is repository-wide because the URL can be built anywhere the binary
+// links, and it is over string literals because that is what a host in a URL
+// is. Comments are not scanned: several files legitimately explain this route,
+// including the paragraph above.
+func TestNoPackageAddressesACloudStorageEndpointOverRawHTTP(t *testing.T) {
+	root := repositoryRoot()
+	fileSet := token.NewFileSet()
+	scanned := 0
+
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			switch entry.Name() {
+			case "vendor", ".git", "node_modules", "elm-stuff":
+				return filepath.SkipDir
+			}
+
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		relative, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
+		}
+		relative = filepath.ToSlash(relative)
+		pkg := filepath.ToSlash(filepath.Dir(relative))
+		scanned++
+
+		// Cheap pre-filter: parse only files whose bytes mention a host at all.
+		body, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if !cloudStorageEndpointHost.Match(body) {
+			return nil
+		}
+
+		file, parseErr := parser.ParseFile(fileSet, path, body, 0)
+		if parseErr != nil {
+			return fmt.Errorf("parsing %s: %w", relative, parseErr)
+		}
+
+		ast.Inspect(file, func(node ast.Node) bool {
+			literal, ok := node.(*ast.BasicLit)
+			if !ok || literal.Kind != token.STRING {
+				return true
+			}
+			value, unquoteErr := strconv.Unquote(literal.Value)
+			if unquoteErr != nil {
+				return true
+			}
+			match := cloudStorageEndpointHost.FindString(value)
+			if match == "" {
+				return true
+			}
+			if reason, ok := cloudStorageEndpointAllowed[pkg]; ok {
+				t.Logf("allowed: %s names %s — %s", relative, match, reason)
+
+				return true
+			}
+			t.Errorf("%s names the cloud object-storage endpoint %s in a string literal.\n\n"+
+				"An SDK takes its endpoint from a (ctx, endpoint) constructor in "+
+				"hangar/internal/gcsclient or from the tier's own config; a host written into "+
+				"a literal is a URL somebody is about to build by hand. `DELETE "+
+				"https://storage.googleapis.com/storage/v1/b/<bucket>/o/<key>` with "+
+				"application default credentials is a working object delete that names no SDK "+
+				"and makes no import any rule in this file reads. IAM is what refuses it; this "+
+				"is what notices it was written.", relative, match)
+
+			return true
+		})
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scanning the repository: %v", err)
+	}
+
+	if scanned < 1000 {
+		t.Fatalf("scanned only %d non-test Go files; the walk failed and this rule would pass "+
+			"vacuously", scanned)
+	}
+}
+
+// TestTheAccidentTripwiresRecogniseWhatTheyAreLookingFor is the positive control
+// for both rules above.
+//
+// Neither has anything to find in this repository, so a green says only that the
+// walk completed. These cases say the matchers work -- including the near misses
+// that must NOT match, because a tripwire that fires on ordinary code is a
+// tripwire somebody disables.
+func TestTheAccidentTripwiresRecogniseWhatTheyAreLookingFor(t *testing.T) {
+	for _, tripping := range []string{
+		"gcloud storage rm gs://bucket/key",
+		"gsutil -m rm gs://bucket/**",
+		"aws s3 rm s3://bucket/key",
+		"az storage blob delete",
+		"rclone delete remote:bucket/key",
+		"s3cmd del s3://bucket/key",
+		"azcopy remove",
+	} {
+		if !cloudCLIProgram.MatchString(tripping) {
+			t.Errorf("cloudCLIProgram does not match %q, which is a cloud CLI delete", tripping)
+		}
+	}
+	for _, harmless := range []string{
+		"gcloudy", "the aws region", "az", "mc", "team storage", "s3 bucket name",
+		"downloading azcopying",
+	} {
+		if cloudCLIProgram.MatchString(harmless) {
+			t.Errorf("cloudCLIProgram matches %q, which is ordinary text; a tripwire that "+
+				"fires on ordinary code is one somebody turns off", harmless)
+		}
+	}
+
+	for _, tripping := range []string{
+		"https://storage.googleapis.com/storage/v1/b/jb-output/o/key",
+		"storage.cloud.google.com",
+		"https://jb-output.s3.amazonaws.com/key",
+		"https://s3.us-east-2.amazonaws.com/jb-output",
+		"https://account.blob.core.windows.net/c/k",
+		"https://abc.r2.cloudflarestorage.com/jb",
+	} {
+		if !cloudStorageEndpointHost.MatchString(tripping) {
+			t.Errorf("cloudStorageEndpointHost does not match %q, which is an object-storage "+
+				"API host", tripping)
+		}
+	}
+	for _, harmless := range []string{
+		"https://www.googleapis.com/auth/devstorage.read_only",
+		"http://localhost:4443",
+		"https://iam.googleapis.com",
+		"https://sts.amazonaws.com",
+		"storage",
+	} {
+		if cloudStorageEndpointHost.MatchString(harmless) {
+			t.Errorf("cloudStorageEndpointHost matches %q, which is not an object-storage API "+
+				"host", harmless)
+		}
+	}
+}
+
+// TestNoCommandRootReachesForUnsafe closes route K by its tell.
+//
+// //go:linkname needs `import _ "unsafe"` in the file that declares the body-less
+// symbol, and every output root already links cloud.google.com/go/storage
+// transitively through hangar/gcs -- so the SDK's own functions ARE in the build
+// graph, and a linkname declaration could call one without importing anything
+// the rules above can see. Round 3 recorded the route as theoretical rather than
+// closed, which is a state that lasts exactly until somebody needs it.
+//
+// The rule is over cmd/ rather than the repository because that is where a
+// composition root is, and because unsafe has legitimate uses elsewhere in a Go
+// program. A root has none: it wires things together.
+func TestNoCommandRootReachesForUnsafe(t *testing.T) {
+	root := filepath.Join(repositoryRoot(), "cmd")
+	fileSet := token.NewFileSet()
+	scanned := 0
+
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+		relative, relErr := filepath.Rel(repositoryRoot(), path)
+		if relErr != nil {
+			return relErr
+		}
+		file, parseErr := parser.ParseFile(fileSet, path, nil, parser.ImportsOnly)
+		if parseErr != nil {
+			return fmt.Errorf("parsing %s: %w", relative, parseErr)
+		}
+		scanned++
+
+		for _, spec := range file.Imports {
+			imported, unquoteErr := strconv.Unquote(spec.Path.Value)
+			if unquoteErr != nil {
+				return unquoteErr
+			}
+			if imported != "unsafe" {
+				continue
+			}
+			t.Errorf("%s imports unsafe.\n\nEvery output root already links "+
+				"cloud.google.com/go/storage transitively, so its functions are in the build "+
+				"graph whether or not anything imports the package -- and //go:linkname needs "+
+				"exactly this import to declare a body-less symbol that calls one. A "+
+				"composition root wires things together; it has no other use for unsafe.",
+				filepath.ToSlash(relative))
+		}
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scanning cmd/: %v", err)
+	}
+	if scanned < 20 {
+		t.Fatalf("scanned only %d files under cmd/; the walk failed and this rule would pass "+
+			"vacuously", scanned)
+	}
+}
+
+// durableCacheTierImporters are the binaries allowed to LINK the durable cache
+// tier, and there is one.
+//
+// Round 3's route H: `durable.NewGCS(ctx, durable.GCSConfig{Bucket: …})` is an
+// exported constructor over a real cloud client, and `(*GCS).Delete(ctx, key)`
+// is an exported, unconditional, key-only delete with the bucket taken from a
+// caller-supplied field. The output daemon could construct one pointed at the
+// OUTPUT bucket and remove any object in it -- one intra-repo import, no storage
+// SDK named, every guard in this file green.
+//
+// TestTheHangarStoreIsLinkedOnlyByTheArtifactDaemon was written for the
+// identical shape one package over, and its doc comment says so word for word:
+// "A root that can construct one can delete a key in any bucket it can name --
+// including the output bucket." The exemption that existed for this package
+// answered a different question -- whether `durable` may BE a root -- and not
+// who may import it.
+var durableCacheTierImporters = map[string]string{
+	"cmd/artifact-daemon": "the artifact daemon is the only process that talks to the durable " +
+		"resource-cache bucket, and the only one that has any business holding a tier whose " +
+		"Delete takes a key",
+}
+
+// TestTheDurableCacheTierIsLinkedOnlyByTheArtifactDaemon mirrors
+// hangarStoreImporters onto the tier round 3 found unguarded.
+func TestTheDurableCacheTierIsLinkedOnlyByTheArtifactDaemon(t *testing.T) {
+	graph := loadImportGraph(t)
+
+	if _, ok := graph.all[durableCacheTier]; !ok {
+		t.Fatalf("%s does not exist; this rule would pass vacuously", durableCacheTier)
+	}
+	for importer := range durableCacheTierImporters {
+		imports, ok := graph.all[importer]
+		if !ok {
+			t.Errorf("allowed importer %q does not exist; the exemption is stale", importer)
+
+			continue
+		}
+		if !slices.Contains(imports, durableCacheTier) {
+			t.Errorf("%s is exempted to import %s and does not import it; the exemption is "+
+				"stale, and an exemption nobody uses is a hole nobody is watching",
+				importer, durableCacheTier)
+		}
+	}
+
+	for pkg, imports := range graph.all {
+		if pkg == durableCacheTier {
+			continue
+		}
+		for _, imported := range imports {
+			if imported != durableCacheTier {
+				continue
+			}
+			if reason, ok := durableCacheTierImporters[pkg]; ok {
+				t.Logf("allowed: %s imports %s — %s", pkg, durableCacheTier, reason)
+
+				continue
+			}
+			t.Errorf("%s imports %s.\n\nThat package exports NewGCS over a real cloud client "+
+				"and Delete(ctx, key) over whatever bucket its config names. A package that "+
+				"can construct one can remove an object from any bucket it can name -- "+
+				"including the dedicated output bucket -- which is the \"key-only delete "+
+				"route\" requirement 55 asks the guards to reject. It is the artifact "+
+				"daemon's cache tier, and nothing else has business holding it.",
+				pkg, durableCacheTier)
+		}
+	}
+
+	// And the roots, so a green says it was checked at the level that decides:
+	// no output root links it, however many intermediaries it went through.
+	for _, root := range []string{
+		"./cmd/hangar-output-daemon", "./cmd/hangar-output-inventory",
+		"./cmd/hangar-output-policy-attestor", "./cmd/hangar-output-reclaimer",
+		"./cmd/hangar-output-activate", "./cmd/concourse",
+	} {
+		if linksPackage(t, root, modulePrefix+durableCacheTier) {
+			t.Errorf("%s links %s, whose Delete is a delete by key over any bucket its config "+
+				"names", root, durableCacheTier)
 		}
 	}
 }

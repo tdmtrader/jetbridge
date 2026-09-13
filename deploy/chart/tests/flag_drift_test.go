@@ -43,7 +43,26 @@ type flagSurface struct {
 var flagSurfaces = []flagSurface{
 	{template: "web-deployment.yaml", pkg: "./cmd/concourse"},
 	{template: "artifact-daemon-daemonset.yaml", pkg: "./cmd/artifact-daemon"},
+
+	// The output plane's four workloads. Each controller has its own template
+	// rather than sharing one, precisely so this rule can attribute its flags
+	// to its binary: three binaries' flags in one file is a file no single
+	// binary accepts, and the rule would go either vacuous or permanently red.
+	{template: "hangar-output-daemon.yaml", pkg: "./cmd/hangar-output-daemon"},
+	{template: "hangar-output-inventory.yaml", pkg: "./cmd/hangar-output-inventory"},
+	{template: "hangar-output-reclaimer.yaml", pkg: "./cmd/hangar-output-reclaimer"},
+	{template: "hangar-output-policy-attestor.yaml", pkg: "./cmd/hangar-output-policy-attestor"},
+	{template: "hangar-output-activation-job.yaml", pkg: "./cmd/hangar-output-activate"},
 }
+
+// expectedFlagSurfaces is the floor, and it is a NUMBER rather than a list on
+// purpose.
+//
+// The rule below iterates flagSurfaces, so deleting an entry silently shrinks
+// what it covers -- and the drift it exists to catch is exactly the kind that
+// arrives with "this template moved". A count that must not fall makes the
+// deletion a decision somebody writes down.
+const expectedFlagSurfaces = 7
 
 var (
 	// "- --flag", "- --flag=value", "- --flag={{ .Values.x }}"
@@ -116,8 +135,12 @@ func TestChartRendersOnlyFlagsTheBinaryAccepts(t *testing.T) {
 		t.Fatalf("resolve repo root: %v", err)
 	}
 	binDir := t.TempDir()
-	if len(flagSurfaces) == 0 {
-		t.Fatal("flag drift test has no chart surfaces to inspect")
+	if len(flagSurfaces) < expectedFlagSurfaces {
+		t.Fatalf("flag drift covers %d chart surfaces and expected at least %d. Every "+
+			"template that renders a flag into a container needs an entry: a rendered flag "+
+			"the binary does not accept is every pod CrashLoopBackOffing on the first sync, "+
+			"and helm lint, every other render test and go vet are all satisfied by a "+
+			"well-formed argument.", len(flagSurfaces), expectedFlagSurfaces)
 	}
 
 	for _, surface := range flagSurfaces {

@@ -92,6 +92,11 @@ func ContainerGapDefinitions() []brine.StepDefinition {
 				return newConfiguredWorker(res, func(cfg *jetbridge.Config) {
 					cfg.ArtifactDaemonHostPath = "/var/concourse/artifacts"
 					cfg.OutputPlaneEnabled = true
+					// And the epoch this cohort speaks for. Without one the
+					// worker's stale-epoch refusal is unconfigured and checks
+					// nothing, so every capture scenario in this family would
+					// be exercising a plane with that arm switched off.
+					cfg.OutputActivationEpoch = int64(hangarEpoch)
 				})
 			},
 		),

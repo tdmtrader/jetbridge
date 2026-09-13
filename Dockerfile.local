@@ -6,8 +6,19 @@ RUN apt-get update && \
 
 COPY concourse-linux-arm64 /usr/local/concourse/bin/concourse
 COPY artifact-daemon-linux-arm64 /usr/local/concourse/bin/artifact-daemon
+# The output plane's four isolated binaries plus the internal activation
+# command. They are here for the same reason the daemon is: the chart runs them
+# by absolute path out of this image, and an image missing one is a Pod that
+# CrashLoopBackOffs with "no such file or directory" rather than a render that
+# fails. deploy/chart/tests/image_parity_test.go is what keeps the two files in
+# step with the chart.
+COPY hangar-output-daemon-linux-arm64 /usr/local/concourse/bin/hangar-output-daemon
+COPY hangar-output-inventory-linux-arm64 /usr/local/concourse/bin/hangar-output-inventory
+COPY hangar-output-reclaimer-linux-arm64 /usr/local/concourse/bin/hangar-output-reclaimer
+COPY hangar-output-policy-attestor-linux-arm64 /usr/local/concourse/bin/hangar-output-policy-attestor
+COPY hangar-output-activate-linux-arm64 /usr/local/concourse/bin/hangar-output-activate
 COPY fly-assets /usr/local/concourse/fly-assets
-RUN chmod +x /usr/local/concourse/bin/concourse /usr/local/concourse/bin/artifact-daemon
+RUN chmod +x /usr/local/concourse/bin/*
 
 ENV PATH="/usr/local/concourse/bin:${PATH}"
 

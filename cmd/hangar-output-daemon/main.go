@@ -19,7 +19,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
+
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
@@ -70,16 +75,23 @@ func run(ctx context.Context, config Config, out *os.File) error {
 	}
 
 	base, err := OpenExecutionLedger(store, executioncontrol.NodeUID(config.NodeUID),
-		daemon.Namespace().ActivationEpoch(), daemon.ControlSigner(), nowUTC)
+		daemon.ActivationEpoch(), daemon.ControlSigner(), nowUTC)
 	if err != nil {
 		return err
 	}
-	source, err := OpenSourceLedger(store, base, executioncontrol.NodeUID(config.NodeUID),
-		daemon.Namespace().ActivationEpoch(), daemon.CaptureSigner(), nowUTC, config.StepsDir)
-	if err != nil {
-		return err
+	// The source ledger belongs to the OUTPUT facet: it holds capture
+	// incarnations, and a daemon that captures nothing opens none. The route
+	// table refuses every capture route on such a daemon before a handler could
+	// reach this, so a nil here is unreachable rather than tolerated.
+	var source *SourceLedger
+	if daemon.OutputEnabled() {
+		source, err = OpenSourceLedger(store, base, executioncontrol.NodeUID(config.NodeUID),
+			daemon.ActivationEpoch(), daemon.CaptureSigner(), nowUTC, config.StepsDir)
+		if err != nil {
+			return err
+		}
+		defer source.Close()
 	}
-	defer source.Close()
 
 	secret, err := os.ReadFile(config.CapabilityKeyFile)
 	if err != nil {
@@ -96,7 +108,8 @@ func run(ctx context.Context, config Config, out *os.File) error {
 		return err
 	}
 
-	server := NewServer(daemon, base, source, capability, unready)
+	server := NewServerWithSpool(daemon, base, source, capability, unready,
+		config.PublishConcurrency)
 
 	// The first off-node caller landed in Phase 4: execProcess revalidates the
 	// hold, takes writer tickets, records the start and the outcome, and asks
@@ -125,18 +138,24 @@ func run(ctx context.Context, config Config, out *os.File) error {
 		listener = tls.NewListener(listener, tlsConfig)
 	}
 
-	namespace := daemon.Namespace()
 	fmt.Fprintf(out, "hangar-output-daemon listening on %s\n", listener.Addr())
-	fmt.Fprintf(out, "  bucket:           %s\n", namespace.Bucket())
-	fmt.Fprintf(out, "  key prefix:       %s\n", namespace.Prefix())
-	fmt.Fprintf(out, "  derived scope:    %s\n", namespace.Scope())
-	fmt.Fprintf(out, "  activation epoch: %d\n", namespace.ActivationEpoch())
+	fmt.Fprintf(out, "  activation epoch: %d\n", daemon.ActivationEpoch())
 	fmt.Fprintf(out, "  node uid:         %s\n", config.NodeUID)
 	fmt.Fprintf(out, "  control ledger:   %s\n", store.Path())
-	fmt.Fprintf(out, "  receipt key:      %s (public key %x)\n",
-		config.ReceiptKeyID, daemon.ReceiptPublicKey()[:8])
 	fmt.Fprintf(out, "  control key:      %s (public key %x)\n",
 		config.ControlKeyID, daemon.ControlPublicKey()[:8])
+	if daemon.OutputEnabled() {
+		namespace := daemon.Namespace()
+		fmt.Fprintf(out, "  bucket:           %s\n", namespace.Bucket())
+		fmt.Fprintf(out, "  key prefix:       %s\n", namespace.Prefix())
+		fmt.Fprintf(out, "  derived scope:    %s\n", namespace.Scope())
+		fmt.Fprintf(out, "  receipt key:      %s (public key %x)\n",
+			config.ReceiptKeyID, daemon.ReceiptPublicKey()[:8])
+		fmt.Fprintf(out, "  materialize key:  %s\n", config.MaterializationKeyID)
+	} else {
+		fmt.Fprintf(out, "  facets:           base exact-execution-control only; "+
+			"durable output capture is NOT enabled on this node\n")
+	}
 	if tlsConfig != nil {
 		fmt.Fprintf(out, "  control API:      https, client certificate required "+
 			"(node-local capture hold exempt)\n")
@@ -147,12 +166,73 @@ func run(ctx context.Context, config Config, out *os.File) error {
 		fmt.Fprintf(out, "\nNOT READY: %s\n", unready)
 	}
 
-	http := &http.Server{Handler: server.Handler(), ReadHeaderTimeout: 10 * time.Second}
-	if err := http.Serve(listener); err != nil && !errors.Is(err, net.ErrClosed) {
+	// The two ready labels go on LAST, after everything above has built and the
+	// listener exists. A label advertised before the daemon can answer is a pod
+	// scheduled onto a node whose hold is refused on arrival, and the whole
+	// point of the hint is that it does not send work somewhere it cannot land.
+	//
+	// A quarantined ledger advertises nothing at all: readiness is false, and
+	// telling the scheduler otherwise would be this daemon's one visible claim
+	// contradicting its own /readyz.
+	labeler, err := buildFacetLabeler(config)
+	if err != nil {
+		return err
+	}
+	if unready == "" {
+		if err := labeler.Advertise(ctx, daemon.OutputEnabled()); err != nil {
+			return err
+		}
+	}
+
+	httpServer := &http.Server{Handler: server.Handler(), ReadHeaderTimeout: 10 * time.Second}
+
+	// Shutdown takes the labels off before the listener closes, and in that
+	// order: a node that still advertises a facet it has stopped serving is
+	// where the scheduler sends the next capture.
+	//
+	// signal.Notify rather than a shell trap, and SIGTERM explicitly, because
+	// SIGTERM is what a kubelet sends and a disposition inherited from the
+	// process that started this one is not something a handler can recover.
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		<-signals
+		withdrawal, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := labeler.WithdrawAll(withdrawal); err != nil {
+			fmt.Fprintf(os.Stderr, "hangar-output-daemon: withdrawing node labels: %v\n", err)
+		}
+		_ = httpServer.Shutdown(withdrawal)
+	}()
+
+	if err := httpServer.Serve(listener); err != nil &&
+		!errors.Is(err, net.ErrClosed) && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 
 	return nil
+}
+
+// buildFacetLabeler connects to the API server only when there is a node to
+// label. Outside a cluster -- the conformance tier, this package's own tests --
+// there is none, and that is a configuration rather than a failure.
+func buildFacetLabeler(config Config) (*FacetLabeler, error) {
+	if config.NodeName == "" {
+		return nil, nil
+	}
+	restConfig, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, fmt.Errorf("%w: this daemon was given --node-name %q and cannot reach the "+
+			"Kubernetes API to advertise its facets: %v",
+			output.ErrInfrastructure, config.NodeName, err)
+	}
+	client, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		return nil, fmt.Errorf("%w: building the Kubernetes client: %v",
+			output.ErrInfrastructure, err)
+	}
+
+	return NewFacetLabeler(client, config.NodeName), nil
 }
 
 // buildControlTLSConfig is the server half of the ATC's own client-certificate

@@ -52,39 +52,25 @@ spec:
             matchLabels:
               {{- include "concourse.selectorLabels" . | nindent 14 }}
 {{- end }}
-{{- if .Values.artifactDaemon.enabled }}
----
-# Artifact daemon: only accept connections from Concourse web pods and
-# task/check init containers (which fetch artifacts via HTTP).
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: {{ include "concourse.fullname" . }}-artifact-daemon
-  namespace: {{ .Release.Namespace }}
-  labels:
-    {{- include "concourse.labels" . | nindent 4 }}
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: {{ include "concourse.name" . }}
-      app.kubernetes.io/component: artifact-daemon
-  policyTypes:
-    - Ingress
-  ingress:
-    - ports:
-        - port: {{ .Values.artifactDaemon.port | default 7780 }}
-          protocol: TCP
-      from:
-        # Web pods (ATC) that register caches and stream artifacts
-        - podSelector:
-            matchLabels:
-              {{- include "concourse.selectorLabels" . | nindent 14 }}
-        # Task/check pods that fetch artifacts via init containers
-        - podSelector:
-            matchExpressions:
-              - key: concourse.ci/pipeline
-                operator: Exists
-{{- end }}
+{{/*
+The artifact daemon's NetworkPolicy is NOT rendered here.
+
+It used to be, and it rendered `<fullname>-artifact-daemon` -- the same name
+templates/artifact-daemon-networkpolicy.yaml renders. Two NetworkPolicies with
+one name in one namespace are one object: whichever Helm sent last won, with no
+error and no event, so which pods could reach the daemon was decided by apply
+order. The two copies disagreed, which made that a correctness fork and not
+only untidiness -- this copy selected task pods by `concourse.ci/pipeline
+Exists`, and a one-off build's pod carries no pipeline, so under this copy a
+one-off build could not fetch an artifact at all.
+
+The daemon's policy therefore lives in exactly one template, selects
+`concourse.ci/worker Exists` (which the K8s runtime puts on every task and check
+pod it builds) and is switched by `artifactDaemon.networkPolicy.enabled`.
+`networkPolicy.enabled` covers web and the bundled database; it no longer emits
+a daemon policy, so a deployment that wants the daemon isolated sets the
+daemon's own switch. tests/networkpolicy_test.go holds both halves.
+*/}}
 {{- if .Values.networkPolicy.taskEgressTo }}
 ---
 # Task pod egress: restrict outbound traffic from CI task pods.
@@ -98,9 +84,17 @@ metadata:
   labels:
     {{- include "concourse.labels" . | nindent 4 }}
 spec:
+  # concourse.ci/worker, not concourse.ci/pipeline. The runtime sets the worker
+  # label on every pod it builds and the pipeline label only when the build HAS
+  # a pipeline, so a one-off build (`fly execute`) carried the first and not the
+  # second. A pod selected by NO NetworkPolicy is unrestricted, so this policy
+  # -- whose entire job is to confine task egress -- exempted exactly the builds
+  # with no pipeline, while the operator read the render and believed egress was
+  # restricted. Same defect as the daemon-policy collision one template over,
+  # and the more security-relevant half of it.
   podSelector:
     matchExpressions:
-      - key: concourse.ci/pipeline
+      - key: concourse.ci/worker
         operator: Exists
   policyTypes:
     - Egress

@@ -51,6 +51,23 @@ const (
 	// is that something, and until Phase 7 it did not exist: the repository
 	// method was written, specified and unreachable.
 	ComponentHangarOutputReadLeaseCleanup = "hangar_output_read_lease_cleanup"
+
+	// ComponentHangarOutputStatus publishes the output plane's operational
+	// state as metrics on the existing scrape path.
+	//
+	// Requirement 52 says the plane "alerts operators" when its lifetime-policy
+	// trust cannot be proved safe, and requirement 53 says its status surfaces
+	// state the residual trust boundary. Until this component existed the plane
+	// emitted no metric at all: at-risk epochs, open violations, cursor
+	// progress, debt, reclaim backlog and lease inventories were all in the
+	// database, readable by anyone who knew the schema and invisible to
+	// everyone who did not. A deletion plane that has gone fail-closed and says
+	// so only in a table is one that stays fail-closed over a weekend.
+	//
+	// It is a component and not an API endpoint, deliberately: an alert is a
+	// rule over a series somebody is already scraping, and a status page nobody
+	// has open at three in the morning is the same as no status page.
+	ComponentHangarOutputStatus = "hangar_output_status"
 )
 
 type Component struct {
