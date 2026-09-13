@@ -48,8 +48,16 @@ const (
 	PermissionBucketSetIAMPolicy = "storage.buckets.setIamPolicy"
 )
 
-// requiredPermissions is what each role must hold to do its work.
-func requiredPermissions(role output.PrincipalRole) []string {
+// RequiredPermissions is what each role must hold to do its work.
+//
+// Exported because it is the ONE list, and three descriptions of it had grown:
+// this one, the prose matrix in deploy/chart/values.yaml that an operator
+// copies into Terraform, and the chart guard that was supposed to keep the two
+// in step -- which had three of the four principals hand-written into it and
+// therefore covered three quarters of the matrix. The chart test derives from
+// this now, so a role that gains a permission here either reaches values.yaml
+// or reddens there.
+func RequiredPermissions(role output.PrincipalRole) []string {
 	switch role {
 	case output.PrincipalPublisher:
 		return []string{PermissionObjectCreate, PermissionObjectGet}
@@ -284,7 +292,7 @@ func DeriveBindingFindings(expectation Expectation, bindings output.PrincipalBin
 	for _, role := range output.PrincipalRoles() {
 		held := permissionSet(bindings.Permissions[role])
 
-		for _, permission := range requiredPermissions(role) {
+		for _, permission := range RequiredPermissions(role) {
 			if !held[permission] {
 				findings = append(findings, output.PolicyFinding{
 					Violation: output.ViolationInsufficientRole,

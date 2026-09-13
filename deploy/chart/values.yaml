@@ -726,7 +726,7 @@ artifactDaemon:
 #   policy attestor
 #     storage.buckets.get, storage.buckets.getIamPolicy
 #
-# and two of those grants are weaker than they read, so they are written down
+# and three of those grants are weaker than they read, so they are written down
 # here rather than discovered:
 #
 #   * storage.objects.get is BODY-CAPABLE. GCS has no metadata-only object
@@ -739,6 +739,17 @@ artifactDaemon:
 #     application-level property and not an IAM one. That is why inventory is
 #     the only workload granted list at all, and why the output bucket contains
 #     nothing but output-plane objects.
+#   * storage.objects.create IS THE OVERWRITE PERMISSION. GCS has no create-only
+#     object permission: a principal that may create an object at a key may also
+#     replace the object already at that key, so the publisher can DESTROY a
+#     published object without holding storage.objects.delete. What stops it is
+#     not IAM. It is the code -- every publish is conditional on the object not
+#     existing (ifGenerationMatch=0), so a second create at a live key is
+#     refused by the store rather than allowed to overwrite -- together with the
+#     dedicated bucket, which is why the bucket holds nothing but this plane's
+#     objects. An operator approving "create only" for the publisher is
+#     approving overwrite, and the argument that it is safe lives in the
+#     publisher role, not here.
 #
 # PERMISSIONS NO RUNTIME PRINCIPAL HOLDS. An absent grant is a promise, and a
 # promise nobody wrote down is one the next role addition breaks by accident.

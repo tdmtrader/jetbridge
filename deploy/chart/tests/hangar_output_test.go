@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/concourse/concourse/hangar/output"
+	"github.com/concourse/concourse/hangar/output/policy"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -1145,6 +1147,19 @@ func TestTheChartDocumentsTheHonestGCSPermissions(t *testing.T) {
 	if !strings.Contains(strings.ToLower(body), "bucket-wide") {
 		t.Error("the documentation does not say that list authority is bucket-wide")
 	}
+	// The third weaker-than-it-reads grant, and the one an operator is most
+	// likely to approve without noticing: storage.objects.create IS the
+	// overwrite permission. GCS has no create-only object permission, so the
+	// publisher can destroy a published object without holding delete, and
+	// what makes that safe is the code's create-if-absent precondition and the
+	// dedicated bucket -- not IAM. The matrix said two such limits and there
+	// are three.
+	if !strings.Contains(strings.ToLower(body), "overwrite") {
+		t.Error("the documentation does not say that storage.objects.create is the OVERWRITE " +
+			"permission, so an operator reads the publisher's grant as create-only and the " +
+			"one thing that actually stops it destroying a published object -- the " +
+			"create-if-absent precondition in the code -- is written down nowhere they look")
+	}
 	if !strings.Contains(strings.ToLower(body), "does not create") &&
 		!strings.Contains(strings.ToLower(body), "never creates") {
 		t.Error("the documentation does not say the chart creates no bucket, lifecycle rule " +
@@ -1201,25 +1216,80 @@ var roleOperations = map[string]map[string]string{
 		"Generation": "",
 		"Object":     "",
 	},
+	// The attestor's capability is a CONCRETE type rather than a role
+	// interface -- hangar/gcs.BucketPolicySource is what the process holds --
+	// so its entry is keyed on that type's methods. It was absent entirely,
+	// which is how the fourth principal stayed outside a guard named for the
+	// whole matrix.
+	"policy_attestor": {
+		"ReadLifetimePolicy":    "storage.buckets.get",
+		"ReadPrincipalBindings": "storage.buckets.getIamPolicy",
+	},
 }
 
-// documentedRolePermissions is what deploy/chart/values.yaml tells an operator
-// to grant, per workload.
-var documentedRolePermissions = map[string][]string{
-	"publisher": {"storage.objects.create", "storage.objects.get"},
-	"inventory": {"storage.objects.list", "storage.objects.get"},
-	"reclaimer": {"storage.objects.get", "storage.objects.delete"},
+// roleCapabilitySource is where each principal's capability is DECLARED, and
+// what kind of declaration it is.
+//
+// Three roles are interfaces in their own package under hangar/output. The
+// attestor is a concrete type in hangar/gcs, because it holds a bucket handle
+// and not an object handle -- the difference the whole fourth identity exists
+// for. Both are read, so a new method on either is a permission somebody has
+// to have written down.
+var roleCapabilitySource = map[string]struct {
+	path     string
+	concrete string // empty means "every interface in the file"
+}{
+	"publisher":       {path: "hangar/output/publisher/publisher.go"},
+	"inventory":       {path: "hangar/output/inventory/inventory.go"},
+	"reclaimer":       {path: "hangar/output/reclaimer/reclaimer.go"},
+	"policy_attestor": {path: "hangar/gcs/lifetime.go", concrete: "BucketPolicySource"},
+}
+
+// documentedRolePermissions is what an operator must grant each workload, READ
+// FROM THE CODE THAT REQUIRES IT rather than copied here.
+//
+// It was three hand-written rows, and the fourth principal was not one of them:
+// the attestor's two bucket permissions were checked by a different test and
+// its capability by nothing, so "the documented IAM matrix" guarded three
+// quarters of the matrix. A role added to output.PrincipalRoles() inherited no
+// rule at all, silently -- the same shape as the defect this file exists for.
+//
+// The source of truth is policy.RequiredPermissions, which is what the ATTESTOR
+// compares a real IAM policy against. Deriving from it means the chart's prose,
+// the runtime conformance check and this guard cannot disagree: there is one
+// list, and values.yaml either names it or fails here.
+func documentedRolePermissions(t *testing.T) map[string][]string {
+	t.Helper()
+
+	permissions := map[string][]string{}
+	for _, role := range output.PrincipalRoles() {
+		required := policy.RequiredPermissions(role)
+		if len(required) == 0 {
+			t.Errorf("output.PrincipalRoles() names %q and policy.RequiredPermissions answers "+
+				"nothing for it. A principal with no required permissions is one the attestor "+
+				"cannot check, the chart cannot document and this rule cannot cover.", role)
+
+			continue
+		}
+		permissions[string(role)] = required
+	}
+	if len(permissions) < 4 {
+		t.Fatalf("derived %d principal roles; there are four, and this rule would cover only "+
+			"what it happened to find", len(permissions))
+	}
+
+	return permissions
 }
 
 func TestTheDocumentedIAMMatrixMatchesWhatEachRoleCanActuallyDo(t *testing.T) {
 	values := readChartFile(t, "values.yaml")
 	root := repoRoot(t)
 
-	for role, permissions := range documentedRolePermissions {
+	for role, permissions := range documentedRolePermissions(t) {
 		// Every documented permission appears in values.yaml, verbatim. A
 		// matrix an operator cannot copy is a matrix they will approximate.
 		for _, permission := range permissions {
-			if !strings.Contains(values, permission) {
+			if !namesPermission(values, permission) {
 				t.Errorf("deploy/chart/values.yaml does not name %s, which the %s role needs",
 					permission, role)
 			}
@@ -1228,16 +1298,42 @@ func TestTheDocumentedIAMMatrixMatchesWhatEachRoleCanActuallyDo(t *testing.T) {
 		// And the reverse: every method the role's own interfaces declare maps
 		// to a permission the documentation grants. A method with no mapping is
 		// a capability nobody wrote down.
-		methods := declaredRoleMethods(t, filepath.Join(root, "hangar", "output", role, role+".go"))
-		if len(methods) < 3 {
-			t.Fatalf("parsed only %d interface methods out of the %s role; the declaration "+
-				"moved and this rule would pass vacuously", len(methods), role)
+		source, declared := roleCapabilitySource[role]
+		if !declared {
+			t.Errorf("%s is one of output.PrincipalRoles() and roleCapabilitySource does not "+
+				"say where its capability is declared, so nothing checks what it can actually "+
+				"do against what the chart tells an operator to grant", role)
+
+			continue
+		}
+		var methods map[string]bool
+		if source.concrete == "" {
+			methods = declaredRoleMethods(t, filepath.Join(root, filepath.FromSlash(source.path)))
+		} else {
+			methods = declaredMethodsOnType(t,
+				filepath.Join(root, filepath.FromSlash(source.path)), source.concrete)
+		}
+		if len(methods) < 2 {
+			t.Fatalf("parsed only %d methods out of the %s role's capability at %s; the "+
+				"declaration moved and this rule would pass vacuously",
+				len(methods), role, source.path)
 		}
 
 		granted := map[string]bool{}
 		for _, permission := range permissions {
 			granted[permission] = true
 		}
+		// And no row for a method that is no longer declared. A mapping that
+		// outlives its method is how a guard keeps reporting on a capability
+		// nobody has any more, while the one that replaced it goes unmapped.
+		for method := range roleOperations[role] {
+			if !methods[method] {
+				t.Errorf("roleOperations maps %s.%s to a permission and %s declares no such "+
+					"method; the mapping outlived what it described",
+					role, method, source.path)
+			}
+		}
+
 		for method := range methods {
 			permission, known := roleOperations[role][method]
 			if !known {
@@ -1258,6 +1354,33 @@ func TestTheDocumentedIAMMatrixMatchesWhatEachRoleCanActuallyDo(t *testing.T) {
 					role, method, permission, permissions)
 			}
 		}
+	}
+}
+
+// namesPermission reports whether the documentation names this permission as
+// itself, rather than as the prefix of a longer one.
+//
+// SUBSTRING MATCHING MADE ONE ROW UNFALSIFIABLE. storage.buckets.get is a
+// prefix of storage.buckets.getIamPolicy, so deleting the attestor's read
+// permission from the matrix left this guard green -- measured, by deleting it.
+// Any permission that is a prefix of another has the same hole, and the set is
+// not fixed: it grows whenever Google adds a longer name beside a shorter one.
+func namesPermission(documentation, permission string) bool {
+	for offset := 0; ; {
+		index := strings.Index(documentation[offset:], permission)
+		if index < 0 {
+			return false
+		}
+		after := offset + index + len(permission)
+		if after >= len(documentation) {
+			return true
+		}
+		next := documentation[after]
+		if !(next >= 'a' && next <= 'z') && !(next >= 'A' && next <= 'Z') &&
+			!(next >= '0' && next <= '9') && next != '.' {
+			return true
+		}
+		offset = after
 	}
 }
 
