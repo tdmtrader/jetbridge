@@ -199,9 +199,18 @@ func TestTheCleanupInitAsksTheLedgerBeforeRemovingAnything(t *testing.T) {
 	script := strings.Join(cleanup.Command, " ")
 
 	for _, want := range []string{
-		"/capture-held/steps/reused-handle", // it asks
-		`"class":"unmanaged"`,               // and only then removes
-		`"class":"held"`,                    // a held source is a refusal
+		// It asks, about THIS handle. The handle reaches the URL through a
+		// shell variable rather than by interpolation, because it used to be
+		// interpolated into `rm -rf`, into this URL and into the messages
+		// below with nothing between it and the shell's parser -- see
+		// TestTheCleanupScriptTreatsAHandleAsOneWord, which runs the script.
+		// So the two halves are asserted separately: the handle is bound once,
+		// as one quoted word, and the question is asked about what it is bound
+		// to.
+		"HANDLE='reused-handle'",
+		"/capture-held/steps/${HANDLE}",
+		`"class":"unmanaged"`, // and only then removes
+		`"class":"held"`,      // a held source is a refusal
 		"rm -rf",
 		"exit 1",
 	} {
