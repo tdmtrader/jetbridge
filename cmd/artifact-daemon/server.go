@@ -24,6 +24,7 @@ import (
 
 	"github.com/concourse/concourse/artifactcap"
 	"github.com/concourse/concourse/cmd/artifact-daemon/durable"
+	"github.com/concourse/concourse/hangar/output/ledger"
 )
 
 // Server is the artifact-daemon HTTP server that stores and serves
@@ -39,6 +40,20 @@ type Server struct {
 	guard         *ReadGuard
 	durable       *DurableTier
 	hangar        *HangarService
+
+	// captureLedger is the READ-ONLY view of the output daemon's source ledger.
+	//
+	// The two daemons are two authorities over one node's disk: that one owns
+	// which sources a capture holds, and this one owns everything else. This
+	// field is how the second respects the first without being able to change
+	// it -- the package it comes from has no mutator at all, and its own guard
+	// keeps that true.
+	//
+	// It fails CLOSED. A ledger this daemon cannot read is not a ledger that
+	// says nothing is held; it is a daemon that does not know, and destroying
+	// on that basis is how a build's declared output disappears with no record
+	// it existed.
+	captureLedger *ledger.Classifier
 
 	// restoreFlight collapses concurrent durable restores of one key.
 	restoreFlight singleflight.Group
@@ -204,11 +219,20 @@ func NewServer(logger lager.Logger, storagePath, nodeName string) (*Server, erro
 		return nil, fmt.Errorf("open storage root %q: %w", storagePath, err)
 	}
 
+	// ONE classifier, shared by every component on this node that destroys
+	// something. Two would be two readers of one ledger that could disagree
+	// about whether a source is held, and the disagreement would only show up
+	// as a deleted source.
+	classifier := ledger.New(storagePath)
+
+	registry := NewRegistry(logger, storagePath)
+	registry.SetCaptureLedger(classifier)
+
 	return &Server{
 		logger:      logger,
 		storagePath: storagePath,
 		nodeName:    nodeName,
-		registry:    NewRegistry(logger, storagePath),
+		registry:    registry,
 		metrics:     newMetrics(),
 		guard:       NewReadGuard(),
 		uploadSem:   make(chan struct{}, maxConcurrentDurableUploads),
@@ -216,6 +240,14 @@ func NewServer(logger lager.Logger, storagePath, nodeName string) (*Server, erro
 		hangarSem:   make(chan struct{}, maxConcurrentHangarMaterializations),
 		destLocks:   make(map[string]*destLock),
 		root:        root,
+
+		// The classifier is always attached, and it is attached here rather
+		// than behind a flag on purpose: a node that gained an output daemon
+		// after this one started would otherwise keep destroying held sources
+		// until somebody restarted it. New() does not touch the filesystem;
+		// the absence of a control directory is a real answer meaning "no
+		// output plane on this node", and it is answered on every call.
+		captureLedger: classifier,
 	}, nil
 }
 
@@ -237,6 +269,13 @@ func (s *Server) SetHangarService(service *HangarService) {
 // being deleted.
 func (s *Server) Guard() *ReadGuard {
 	return s.guard
+}
+
+// CaptureLedger exposes the read-only output-plane classifier so components
+// that destroy things outside this type -- the Sweeper -- ask the same
+// question the handlers do, of the same reader.
+func (s *Server) CaptureLedger() *ledger.Classifier {
+	return s.captureLedger
 }
 
 // stepHandle returns the guard key for a location: the {handle} segment for
@@ -560,6 +599,15 @@ func (s *Server) handlePutArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	absPath := filepath.Join(s.storagePath, key)
 
+	// The output plane's hold, before anything is created or replaced. A PUT
+	// under a held source replaces the producer's bytes with no writer ticket
+	// and no record that it happened (Req 12: a daemon replacement exercises
+	// write capability, and write capability needs a ticket).
+	if class, err := s.refuseIfCaptureHeld(RelKey(key)); err != nil {
+		s.captureRefusal(w, r, RelKey(key), class, err)
+		return
+	}
+
 	if dir := path.Dir(key); dir != "." {
 		if err := s.root.MkdirAll(dir, 0755); err != nil {
 			s.logger.Error("failed-to-create-artifact-dir", err, lager.Data{"path": absPath})
@@ -613,6 +661,20 @@ func (s *Server) handlePutArtifact(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 }
 
+// captureRefusal answers a destructive request the output plane's ledger
+// refused, in one place so every path refuses with the same status, the same
+// reason code and the same log line.
+//
+// s.refuse already names the route and the reason; this adds the two facts it
+// cannot know -- which location, and which class the ledger answered.
+func (s *Server) captureRefusal(w http.ResponseWriter, r *http.Request, loc RelKey,
+	class ledger.Class, err error) {
+	s.refuse(w, r, http.StatusConflict, reasonCaptureHeld, err)
+	s.logger.Info("refused-destructive-operation-on-capture-source", lager.Data{
+		"rel": string(loc), "class": string(class),
+	})
+}
+
 // handleStreamIn accepts a tar stream (optionally gzip-compressed) and extracts
 // it to steps/{key}/ so that resolveOne can discover it via the filesystem
 // fallback. The key is also registered in the in-memory registry for fast lookups.
@@ -646,6 +708,15 @@ func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
 	// error — stated once here and derived everywhere else.
 	loc := RelKey(path.Join("steps", key))
 	dest := filepath.Join(s.storagePath, "steps", key)
+
+	// The output plane's hold. Stream-in REPLACES: it removes whatever is at
+	// the key and renames a freshly extracted tree over it, so pointed at a
+	// held source it is the whole damage in one call -- and it leaves a tree
+	// that looks perfectly healthy.
+	if class, err := s.refuseIfCaptureHeld(loc); err != nil {
+		s.captureRefusal(w, r, loc, class, err)
+		return
+	}
 
 	// The steps/ boundary is a HANDLE, not an argument.
 	//
@@ -781,6 +852,17 @@ func (s *Server) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	loc := RelKey(key) // validated by artifactKey
 
+	// The output plane's hold, before anything is removed. An ordinary path is
+	// unchanged; a capture-held or sealed one is refused, and so is a path this
+	// daemon could not classify.
+	if class, err := s.refuseIfCaptureHeld(loc); err != nil {
+		s.refuse(w, r, http.StatusConflict, reasonCaptureHeld, err)
+		s.logger.Info("refused-delete-of-capture-source", lager.Data{
+			"rel": string(loc), "class": string(class),
+		})
+		return
+	}
+
 	// Deletion is destructive like a sweep: wait out in-flight reads so a
 	// concurrent copy never sees a half-removed tree.
 	release := s.guard.BeginSweep(s.stepHandle(loc))
@@ -793,6 +875,54 @@ func (s *Server) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// refuseIfCaptureHeld is the one place this daemon asks the output plane's
+// ledger, so every destructive path asks the same question the same way.
+//
+// The key is namespaced -- artifacts live under "steps/" -- and the ledger
+// speaks in incarnations relative to that directory, so the prefix is stripped
+// here rather than at each call site. A key outside steps/ is not a source
+// incarnation and cannot be held.
+func (s *Server) refuseIfCaptureHeld(loc RelKey) (ledger.Class, error) {
+	if s.captureLedger == nil {
+		// No output plane configured on this node. Every path is unmanaged and
+		// the ordinary behaviour is unchanged.
+		return ledger.Unmanaged, nil
+	}
+
+	relative, inSteps := strings.CutPrefix(string(loc), "steps/")
+	if !inSteps {
+		return ledger.Unmanaged, nil
+	}
+
+	class := s.captureLedger.Classify(relative)
+	if class.Destructive() {
+		return class, nil
+	}
+
+	return class, s.captureLedger.Reason(relative, class)
+}
+
+// refuseIfCaptureHeldPath is the same question for a caller holding an ABSOLUTE
+// path rather than a key: a resolve destination and a register's local_path are
+// both client-supplied absolute paths inside the store.
+//
+// A path that will not relativize into the store is not a source incarnation
+// and cannot be held. This must not become a second, weaker containment check:
+// the callers that take one validate containment separately, and this returns
+// "unmanaged" rather than an error for anything it cannot place.
+func (s *Server) refuseIfCaptureHeldPath(absolute string) (ledger.Class, error) {
+	if s.captureLedger == nil {
+		return ledger.Unmanaged, nil
+	}
+
+	rel, err := containedRelKey(s.storagePath, absolute)
+	if err != nil {
+		return ledger.Unmanaged, nil
+	}
+
+	return s.refuseIfCaptureHeld(rel)
 }
 
 func (s *Server) handleHeadArtifact(w http.ResponseWriter, r *http.Request) {
@@ -975,6 +1105,14 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	loc, err := s.registry.RegisterAlias(req.Key, req.LocalPath)
 	if err != nil {
 		s.logger.Info("register-refused", lager.Data{"key": req.Key, "path": req.LocalPath, "reason": err.Error()})
+		// Two different refusals with two different statuses. An uncontained
+		// path is the caller's mistake (400); a capture-held one is a conflict
+		// with another authority on this node (409), and answering 400 for it
+		// would tell the ATC to stop retrying something that will clear.
+		if errors.Is(err, ledger.ErrRefused) {
+			s.captureRefusal(w, r, RelKey(req.LocalPath), ledger.Held, err)
+			return
+		}
 		s.refuse(w, r, http.StatusBadRequest, reasonUncontained, err)
 		return
 	}
@@ -1007,6 +1145,16 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolve
 		return resolveResponse{Status: "error", Error: fmt.Sprintf("waiting for destination %q: %v", dest, err)}
 	}
 	defer releaseDest()
+
+	// The output plane's hold on the DESTINATION, asked once for all three
+	// branches below. Every one of them clears dest and renames over it --
+	// copyArtifact for the registry and filesystem branches, peers.FetchInto
+	// for the peer one -- and dest is caller-supplied. Asking here rather than
+	// in each writer is what makes "the peer branch forgot" impossible.
+	if class, err := s.refuseIfCaptureHeldPath(dest); err != nil {
+		logger.Info("refused-resolve-into-capture-source", lager.Data{"class": string(class)})
+		return resolveResponse{Status: "error", Method: "refused", Error: err.Error()}
+	}
 
 	// Step 1: Check registry for explicit registration.
 	//

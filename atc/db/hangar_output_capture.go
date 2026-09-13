@@ -214,16 +214,19 @@ func (repository *HangarOutputRepository) CancelOrSettle(ctx context.Context, tx
 		// asserting something only the node holding the source can say. The
 		// schema refuses it too.
 		//
-		// TODO(phase 3, capture release pair): the daemon-side half -- minting
-		// the release intent, offering it under the capture fence and admitting
-		// the signed acknowledgement that sets release_acknowledged_at -- is
-		// the fenced release ledger Phase 3 builds, alongside the same pair the
-		// no_capture and pre_reservation_cancel branches already carry. Until
-		// then a cancelled capture stays decided and unsettled, which is the
-		// honest state and the one drain has to wait on.
+		// The release INTENT is recorded here, and only the intent. The
+		// acknowledgement is the node's to make: the source is on some node's
+		// disk, and this transaction cannot say it is gone.
+		//
+		// The intent id is minted by the database because the generic seam
+		// takes a handoff and nothing else -- T7 calls CancelOrSettle and must
+		// not learn what a release intent is. `coalesce` rather than an
+		// overwrite: a repeat of the cancellation is the same cancellation, and
+		// a second intent id would orphan the first.
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE hangar_capture_reservations
 			SET state = 'cancelled',
+			    release_intent_id = coalesce(release_intent_id, gen_random_uuid()),
 			    settled_at = CASE
 			        WHEN release_acknowledged_at IS NOT NULL THEN coalesce(settled_at, now())
 			        ELSE settled_at

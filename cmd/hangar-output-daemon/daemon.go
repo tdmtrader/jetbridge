@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	hangargcs "github.com/concourse/concourse/hangar/gcs"
 	"github.com/concourse/concourse/hangar/objectstore"
@@ -31,6 +32,20 @@ type Daemon struct {
 	namespace output.OutputNamespace
 	publisher *publisher.Publisher
 	signer    *output.ReceiptSigner
+
+	// canonicalizer turns a sealed source directory into the one canonical form
+	// this repository has. It is the foundation's, not a second implementation:
+	// two answers to "what are these bytes" is two digests for one tree.
+	canonicalizer hangar.Canonicalizer
+
+	// controlKeyID names the Ed25519 key this node signs execution and source
+	// ledger statements with. It is a DIFFERENT key from the receipt key: a
+	// receipt says an object exists in a bucket, a control statement says a
+	// process on this node did something, and an epoch pins both separately so
+	// that rotating one does not rotate the other.
+	controlKeyID  string
+	controlSigner *executioncontrol.AcknowledgementSigner
+	captureSigner *output.CaptureStatementSigner
 }
 
 // Build constructs the daemon from a validated configuration.
@@ -77,8 +92,51 @@ func Build(ctx context.Context, config Config) (*Daemon, error) {
 		return nil, err
 	}
 
-	return &Daemon{namespace: namespace, publisher: role, signer: signer}, nil
+	// The canonicalizer needs a trusted temporary parent that exists and is
+	// owned by this process. The DaemonSet mounts the hostPath; the
+	// subdirectory beneath it is the daemon's own, so it is created here rather
+	// than assumed.
+	if err := config.PrepareScratch(); err != nil {
+		return nil, err
+	}
+
+	controlPrivate, err := config.LoadControlKey()
+	if err != nil {
+		return nil, err
+	}
+	controlSigner, err := executioncontrol.NewAcknowledgementSigner(controlPrivate)
+	if err != nil {
+		return nil, err
+	}
+	captureSigner, err := output.NewCaptureStatementSigner(controlPrivate)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Daemon{
+		namespace: namespace, publisher: role, signer: signer,
+		canonicalizer: hangar.Canonicalizer{TempDir: config.ScratchDir},
+		controlKeyID:  config.ControlKeyID,
+		controlSigner: controlSigner,
+		captureSigner: captureSigner,
+	}, nil
 }
+
+// ControlKeyID is what the handshake reports, so a control plane knows which
+// pinned public key checks this node's statements.
+func (daemon *Daemon) ControlKeyID() string { return daemon.controlKeyID }
+
+// ControlSigner and CaptureSigner are the node's two statement signers over one
+// key. They are handed to the ledgers at construction and to nothing else.
+func (daemon *Daemon) ControlSigner() *executioncontrol.AcknowledgementSigner {
+	return daemon.controlSigner
+}
+
+func (daemon *Daemon) CaptureSigner() *output.CaptureStatementSigner { return daemon.captureSigner }
+
+// ControlPublicKey is the half an activation epoch pins for this node's
+// execution and source statements.
+func (daemon *Daemon) ControlPublicKey() ed25519.PublicKey { return daemon.controlSigner.PublicKey() }
 
 // Namespace is what this daemon publishes into.
 func (daemon *Daemon) Namespace() output.OutputNamespace { return daemon.namespace }
@@ -177,15 +235,21 @@ func (daemon *Daemon) StatExact(ctx context.Context, challenge output.StatChalle
 			challenge.Ref.Scope, challenge.Ref.Digest, challenge.Ref.Generation,
 			fresh.Attributes.Ref.Scope, fresh.Attributes.Ref.Digest, fresh.Attributes.Ref.Generation)
 	}
-	if fresh.Marker.ReservationID != challenge.ReservationID {
-		// A *marked* stat, which is what the plan asks for: the object at that
-		// exact generation has to be this capture's, not merely present.
-		return output.Receipt{}, output.PublishedObject{}, fmt.Errorf(
-			"%w: the object at %s/%s/%d is marked for reservation %s and the challenge names %s",
-			output.ErrConflict,
-			challenge.Ref.Scope, challenge.Ref.Digest, challenge.Ref.Generation,
-			fresh.Marker.ReservationID, challenge.ReservationID)
-	}
+	// The MARKED half of "a fresh exact-generation marked stat" is already
+	// enforced, and enforced in one place: StatExactObject classifies what it
+	// finds, and that classifier refuses an unmarked object, an object marked
+	// for another scope, and an object marked with another digest, each with
+	// its own message. Restating any of those here would be a second statement
+	// of the rule that could drift from the first.
+	//
+	// What is deliberately NOT required anywhere is that the marker name THIS
+	// challenge's reservation. It cannot be: two captures of identical
+	// canonical bytes deduplicate to one object, and that object carries the
+	// marker of whichever wrote it first -- so a reservation-equality rule
+	// would make AC 8's "one object and two receipts" unreachable. The brine
+	// dedup scenario is what found that. The reservation binding is in the
+	// signed claims, taken from the challenge, and is revalidated against
+	// durable state in the transaction that consumes the nonce (Req 26).
 
 	claims.ProtocolVersion = output.ProtocolVersion
 	claims.ReceiptVersion = output.ReceiptDomain

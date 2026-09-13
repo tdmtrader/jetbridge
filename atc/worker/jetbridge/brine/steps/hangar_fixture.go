@@ -39,29 +39,32 @@ package steps
 // before EVERY scenario in the corpus, and a daemon registered that way cost
 // 70 seconds to serve five scenarios.
 //
-// TODO(hangar-output, Phase 3 Green): the OUTPUT plane is a separate binary
-// against a bucket that is never the durable cache bucket (Req 20).
-// hangarOutputDaemonFlags below is the one place that changes.
+// THE OUTPUT PLANE IS A SECOND DAEMON, and this fixture now starts both.
 //
-// Half of what that hook was waiting for now exists. Phase 2 added
-// cmd/hangar-output-daemon with --output-endpoint, --output-bucket,
-// --output-prefix, --output-tenant and its own receipt key, and its publish
-// path creates a marked object and signs a receipt. The hook is still not
-// flipped, and the reason is precise rather than a matter of taste: the fixture
-// starts a daemon and polls it for readiness over HTTP, and the output daemon
-// serves no HTTP at all. The plan puts its route table in Phase 3 Green ("Add
-// protected versioned output-daemon endpoints ... establish/inspect hold ...
-// publish sealed tree") and says of Phase 2 Green "Do not add readiness yet".
+// It has to be two processes and not two roles in one. A Kubernetes service
+// account is Pod-wide, so giving the artifact daemon an output-bucket role
+// would give its cache and strict-input identity the same role, and Req 20
+// forbids the output bucket ever being the durable cache bucket or the
+// caller-published strict-input one. The isolation is a second Pod with a
+// second service account, which means a second binary -- so a fixture that ran
+// one daemon could not express the thing under test.
 //
-// So the flip is Phase 3's first act, and it is two lines: return the four
-// flags below, and point the readiness poll at the output daemon's own health
-// route once it has one. Everything above this comment is unchanged by it.
+// The artifact daemon here serves the STRICT-INPUT surface, which is what the
+// proving sentences at the bottom of this file exercise end to end against the
+// emulator. The output daemon serves the capture control API and the publish
+// route, against ITS OWN bucket, under its own control and receipt keys.
+// hangarOutputDaemonFlags below is where that separation is stated, and a
+// fixture that pointed both at one bucket would be testing a deployment the
+// daemon refuses to be.
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
@@ -77,6 +80,7 @@ import (
 	"google.golang.org/api/iterator"
 
 	"github.com/concourse/concourse/hangar"
+	"github.com/concourse/concourse/hangar/executioncontrol"
 	hangargcs "github.com/concourse/concourse/hangar/gcs"
 	hangaroutput "github.com/concourse/concourse/hangar/output"
 )
@@ -122,25 +126,57 @@ type HangarDaemon struct {
 	// yet. It is bytes on their way to the daemon, not a record of anything the
 	// daemon did.
 	Pending []byte
+
+	// Output is the second daemon: the output plane's own process, its own
+	// bucket, its own keys. OutputBucket is deliberately not Bucket -- Req 20
+	// is that they are never the same one, and this state could not express a
+	// violation of it if it held one field.
+	Output       *realDaemon
+	OutputBucket string
+
+	// Minter is the control plane's half of the capability seam. A scenario
+	// never sees it: the step definitions mint per call, for the facet and
+	// operation the route they are about to call declares.
+	Minter *executioncontrol.CapabilityMinter
+
+	// ControlPublic is the activation-pinned public key a scenario verifies a
+	// ledger statement under. It is the fixture's, read back from the same file
+	// the daemon was given, so an assertion is against production verification
+	// rather than against a string a step wrote.
+	ControlPublic ed25519.PublicKey
+	ReceiptPublic ed25519.PublicKey
 }
 
-// hangarOutputDaemonFlags is the single place the output plane's endpoint is
-// wired. See the TODO at the head of this file.
-func hangarOutputDaemonFlags(endpoint, bucket string) []string {
-	// TODO(hangar-output, Phase 3 Green): return
-	//   []string{"--output-endpoint", endpoint, "--output-bucket", bucket,
-	//            "--output-prefix", …, "--output-tenant", …}
-	// and start cmd/hangar-output-daemon instead of cmd/artifact-daemon.
-	//
-	// The flags exist as of Phase 2; the daemon that would serve this fixture's
-	// requests does not, because its route table and readiness are Phase 3
-	// Green. Returning them now would put four flags on a binary that would
-	// then be polled for a readiness endpoint it does not have, which is a
-	// fixture death rather than a scenario failure -- the least useful shape a
-	// red can take.
-	_, _ = endpoint, bucket
-	return nil
+// hangarOutputDaemonFlags is the output daemon's whole argv beyond the address
+// and state flags the launcher supplies.
+//
+// It names a DIFFERENT bucket from the artifact daemon's, which is the point:
+// the two buckets are the trust boundary between the planes.
+func hangarOutputDaemonFlags(endpoint, bucket, receiptKey, controlKey, capabilityKey string) []string {
+	return []string{
+		"--output-endpoint", endpoint,
+		"--output-bucket", bucket,
+		"--output-prefix", "brine/deployments/one",
+		"--output-tenant", "brine-tenant",
+		"--receipt-key-id", hangarReceiptKeyID,
+		"--receipt-key-file", receiptKey,
+		"--control-key-id", hangarControlKeyID,
+		"--control-key-file", controlKey,
+		"--capability-key", capabilityKey,
+		"--node-uid", hangarNodeUID,
+		"--activation-epoch", fmt.Sprint(hangarEpoch),
+	}
 }
+
+// The identities the fixture mints. They are constants rather than parameters
+// because no scenario may choose one: an activation epoch a feature file could
+// set would be a feature file choosing which key signs its receipts.
+const (
+	hangarReceiptKeyID = "brine-receipt-key-1"
+	hangarControlKeyID = "brine-control-key-1"
+	hangarNodeUID      = "brine-node-1"
+	hangarEpoch        = uint64(7)
+)
 
 // startHangarDaemon brings up the emulator (or adopts CI's), creates the output
 // bucket, mints the mTLS material every Hangar route requires, and starts the
@@ -210,7 +246,7 @@ func startHangarDaemon(rec *brine.Recorder) (HangarDaemon, error) {
 		return HangarDaemon{}, fmt.Errorf("resolve the Hangar scratch directory: %w", err)
 	}
 
-	args := append([]string{
+	args := []string{
 		"--hangar-enabled",
 		"--hangar-scratch-dir", scratch,
 		"--hangar-capability-key", filepath.Join(certDir, "capability.key"),
@@ -220,7 +256,7 @@ func startHangarDaemon(rec *brine.Recorder) (HangarDaemon, error) {
 		"--tls-cert", filepath.Join(certDir, "server.crt"),
 		"--tls-key", filepath.Join(certDir, "server.key"),
 		"--tls-ca-cert", filepath.Join(certDir, "ca.crt"),
-	}, hangarOutputDaemonFlags(endpoint, bucket)...)
+	}
 
 	atcCert, err := tls.X509KeyPair(material.clientCert, material.clientKey)
 	if err != nil {
@@ -249,14 +285,100 @@ func startHangarDaemon(rec *brine.Recorder) (HangarDaemon, error) {
 	}
 	rec.RegisterDisposer(func() { _ = daemon.stop() })
 
-	return HangarDaemon{
+	state := HangarDaemon{
 		Daemon:   daemon,
 		Ctx:      ctx,
 		Endpoint: endpoint,
 		Bucket:   bucket,
 		Client:   client,
 		HTTP:     httpClient,
-	}, nil
+	}
+
+	return startOutputDaemon(rec, state, certDir)
+}
+
+// startOutputDaemon brings up the second binary: its own bucket, its own two
+// Ed25519 keys, its own capability secret.
+//
+// The bucket is created here and named by the fixture, never by a feature file
+// -- convention 3 applied to the fixture itself -- and it is a different bucket
+// from the artifact daemon's, which is the whole reason there are two daemons.
+func startOutputDaemon(rec *brine.Recorder, state HangarDaemon, certDir string) (HangarDaemon, error) {
+	state.OutputBucket = uniqueBucketName()
+	if err := createOutputBucket(state.Ctx, state.Endpoint, state.OutputBucket,
+		hangarBucketCreateAttempts, hangarBucketCreateTimeout,
+		func(attemptCtx context.Context) error {
+			return state.Client.Bucket(state.OutputBucket).Create(attemptCtx, "brine-hangar-output", nil)
+		}); err != nil {
+		return HangarDaemon{}, err
+	}
+
+	receiptKey, receiptPublic, err := writeEd25519Key(certDir, "receipt.pem")
+	if err != nil {
+		return HangarDaemon{}, err
+	}
+	controlKey, controlPublic, err := writeEd25519Key(certDir, "control.pem")
+	if err != nil {
+		return HangarDaemon{}, err
+	}
+	state.ReceiptPublic, state.ControlPublic = receiptPublic, controlPublic
+
+	capabilitySecret := make([]byte, executioncontrol.CapabilityKeyBytes)
+	if _, err := rand.Read(capabilitySecret); err != nil {
+		return HangarDaemon{}, err
+	}
+	capabilityFile := filepath.Join(certDir, "capability-control.key")
+	if err := os.WriteFile(capabilityFile, capabilitySecret, 0o600); err != nil {
+		return HangarDaemon{}, err
+	}
+	minter, err := executioncontrol.NewCapabilityMinter(capabilitySecret, time.Minute,
+		func() time.Time { return time.Now().UTC() })
+	if err != nil {
+		return HangarDaemon{}, err
+	}
+	state.Minter = minter
+
+	output, err := startNamedDaemonProbed("hangar-output-daemon", "http", func(url string) error {
+		resp, err := http.Get(url + "/readyz")
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("the output daemon is not ready: %d", resp.StatusCode)
+		}
+
+		return nil
+	}, hangarOutputDaemonFlags(state.Endpoint, state.OutputBucket,
+		receiptKey, controlKey, capabilityFile)...)
+	if err != nil {
+		return HangarDaemon{}, err
+	}
+	rec.RegisterDisposer(func() { _ = output.stop() })
+	state.Output = output
+
+	return state, nil
+}
+
+// writeEd25519Key mints one key pair and writes the private half where the
+// daemon expects it, returning the public half so a scenario can verify against
+// the same key the daemon signed with.
+func writeEd25519Key(dir, name string) (string, ed25519.PublicKey, error) {
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return "", nil, err
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(private)
+	if err != nil {
+		return "", nil, err
+	}
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
+		return "", nil, err
+	}
+
+	return path, public, nil
 }
 
 // hangarEmulatorEndpoint adopts CI's shared fake-gcs-server when one is named,
@@ -391,8 +513,8 @@ func (s HangarDaemon) seedObject(key, body string, metadata map[string]string) e
 }
 
 // HangarFixtureDefinitions is the fixture family: the one Given every Hangar
-// scenario starts from, the two store-seeding refinements the dedup scenarios
-// need, and the small set of sentences that prove the fixture itself is real.
+// scenario starts from, and the small set of sentences that prove the fixture
+// itself is real.
 //
 // The proving sentences are strict-input ones on purpose. They exercise the
 // only Hangar surface the daemon has today — canonicalize a tar, store it under
@@ -411,38 +533,21 @@ func HangarFixtureDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// The seeding refinements. Neither needs production code that does not
-		// exist: an object at a key is an object at a key, and what makes the
-		// collision scenarios honest is that the bytes DIFFER from the ones the
-		// capture would write.
-		brine.DefineMap[HangarDaemon, HangarDaemon](
-			"the output bucket already holds {string} whose tree reads {string}",
-			func(in HangarDaemon, p brine.Params, _ *brine.Recorder) (HangarDaemon, error) {
-				const pattern = "the output bucket already holds {string} whose tree reads {string}"
-				key, err := paramAt(pattern, p, 0)
-				if err != nil {
-					return in, err
-				}
-				body, err := paramAt(pattern, p, 1)
-				if err != nil {
-					return in, err
-				}
-				return in, in.seedObject(key, body, map[string]string{
-					hangaroutput.MarkerKeyVersion: hangaroutput.MarkerVersion,
-				})
-			},
-		),
-
-		brine.DefineMap[HangarDaemon, HangarDaemon](
-			"the output bucket already holds {string} with no marker",
-			func(in HangarDaemon, p brine.Params, _ *brine.Recorder) (HangarDaemon, error) {
-				key, err := paramAt("the output bucket already holds {string} with no marker", p, 0)
-				if err != nil {
-					return in, err
-				}
-				return in, in.seedObject(key, "an object nobody's cohort wrote", nil)
-			},
-		),
+		// THE SEEDING REFINEMENTS MOVED, and where they went is the point.
+		//
+		// They used to take a key -- `the output bucket already holds
+		// "hangar/v1/scopes/build/trees/sha256/deadbeef.tar.zst" ...` -- and
+		// that key is not one production would ever choose: the scope is an
+		// opaque per-tenant, per-epoch hash and the digest is over bytes this
+		// process did not canonicalize. A scenario seeded at a key like that
+		// collides with nothing, and would have gone green against a collision
+		// that never happened.
+		//
+		// So they are now `the output bucket's key for this tree already holds
+		// …` in hangar_publication.go, which LEARNS the key by running a probe
+		// capture of the same bytes and reading back what the bucket then
+		// holds. Convention 3 applied to the fixture: not even the fixture
+		// names a location.
 
 		// The proving sentences.
 		brine.DefineMap[HangarDaemon, HangarDaemon](

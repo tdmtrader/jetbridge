@@ -107,6 +107,15 @@ var (
 	// release, not cleanup.
 	ErrUnresolved = errors.New("hangar/output: unresolved")
 
+	// ErrSealed is a writer admission refused because sealing has begun.
+	//
+	// It is a distinct value from ErrSealUnconfirmed and the distinction is the
+	// point: this one says the source stopped accepting writers, which is the
+	// system working; that one says a seal could not be PROVED, which is the
+	// system failing closed. A caller that conflated them would retry the first
+	// and give up on the second, both backwards.
+	ErrSealed = errors.New("hangar/output: the source is sealed")
+
 	// ErrSealUnconfirmed is a writer drain or container boundary that could not
 	// be proved before the seal deadline. It publishes no receipt, and it never
 	// re-executes the producer.

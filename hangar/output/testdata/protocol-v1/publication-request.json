@@ -1,0 +1,12 @@
+{
+  "protocol_version": "hangar-output-v1",
+  "execution": {
+    "execution_id": "0f8a5b1c-3d2e-4a6f-9b70-1c2d3e4f5a6b",
+    "fence": 7
+  },
+  "activation_epoch": 3,
+  "handoff_id": "6b1e9d40-2a77-4c11-8f3e-5d0a9c8b7e62",
+  "reservation_id": "e2c7b9a4-1d38-4f60-b5a2-9c4e7d1f0836",
+  "capture_fence": 5,
+  "namespace": {}
+}

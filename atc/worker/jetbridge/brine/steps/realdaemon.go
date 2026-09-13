@@ -59,32 +59,45 @@ type realDaemon struct {
 	cmd  *exec.Cmd
 }
 
-var (
-	daemonBinOnce sync.Once
-	daemonBinPath string
-	daemonBinErr  error
-)
+type builtBinary struct {
+	once sync.Once
+	path string
+	err  error
+}
 
-// artifactDaemonBinary builds the daemon once per process and reuses it. The
-// build is ~10s cold and instant warm, which is why it is not per scenario.
-func artifactDaemonBinary() (string, error) {
-	daemonBinOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "brine-artifact-daemon-*")
+var builtBinaries sync.Map // command name -> *builtBinary
+
+// daemonBinary builds one of the repository's daemons once per process and
+// reuses it. The build is ~10s cold and instant warm, which is why it is not
+// per scenario.
+//
+// It takes the command name because there are two daemons now. The output
+// plane is a SEPARATE BINARY -- Req 20 forbids it sharing a bucket with the
+// cache, and a Kubernetes service account is Pod-wide, so the isolation has to
+// be a second process -- and a fixture that could only build one would be a
+// fixture that could not express the thing under test.
+func daemonBinary(command string) (string, error) {
+	entry, _ := builtBinaries.LoadOrStore(command, &builtBinary{})
+	built := entry.(*builtBinary)
+	built.once.Do(func() {
+		dir, err := os.MkdirTemp("", "brine-"+command+"-*")
 		if err != nil {
-			daemonBinErr = err
+			built.err = err
 			return
 		}
-		bin := filepath.Join(dir, "artifact-daemon")
-		cmd := exec.Command("go", "build", "-o", bin, "./cmd/artifact-daemon")
+		bin := filepath.Join(dir, command)
+		cmd := exec.Command("go", "build", "-o", bin, "./cmd/"+command)
 		cmd.Dir = repoRoot()
 		if out, err := cmd.CombinedOutput(); err != nil {
-			daemonBinErr = fmt.Errorf("build artifact-daemon: %w\n%s", err, out)
+			built.err = fmt.Errorf("build %s: %w\n%s", command, err, out)
 			return
 		}
-		daemonBinPath = bin
+		built.path = bin
 	})
-	return daemonBinPath, daemonBinErr
+	return built.path, built.err
 }
+
+func artifactDaemonBinary() (string, error) { return daemonBinary("artifact-daemon") }
 
 // repoRoot walks up from this package to the module root holding cmd/.
 func repoRoot() string {
@@ -134,7 +147,17 @@ func startRealDaemon(extraArgs ...string) (*realDaemon, error) {
 // certificate to answer anything but /healthz — so the probe belongs to the
 // fixture that knows those things, not to this launcher.
 func startRealDaemonProbed(scheme string, ready func(url string) error, extraArgs ...string) (*realDaemon, error) {
-	bin, err := artifactDaemonBinary()
+	return startNamedDaemonProbed("artifact-daemon", scheme, ready, extraArgs...)
+}
+
+// startNamedDaemonProbed is the same launcher for either daemon.
+//
+// The port and storage flags are the artifact daemon's spelling, so the output
+// daemon -- which listens on --listen and keeps its ledgers under --control-dir
+// -- passes its own and gets them through addressableArgs below rather than
+// having this function learn two vocabularies.
+func startNamedDaemonProbed(command, scheme string, ready func(url string) error, extraArgs ...string) (*realDaemon, error) {
+	bin, err := daemonBinary(command)
 	if err != nil {
 		return nil, err
 	}
@@ -150,10 +173,7 @@ func startRealDaemonProbed(scheme string, ready func(url string) error, extraArg
 		return nil, err
 	}
 
-	args := append([]string{
-		"--port", fmt.Sprint(port),
-		"--storage-path", root,
-	}, extraArgs...)
+	args := append(addressableArgs(command, port, root), extraArgs...)
 	cmd := exec.Command(bin, args...)
 	// The daemon logs to stderr; keep it off the event stream, which is stdout.
 	cmd.Stdout, cmd.Stderr = nil, nil
@@ -179,7 +199,7 @@ func startRealDaemonProbed(scheme string, ready func(url string) error, extraArg
 	for time.Now().Before(deadline) {
 		select {
 		case err := <-died:
-			return nil, fmt.Errorf("artifact-daemon exited during startup: %w", err)
+			return nil, fmt.Errorf("%s exited during startup: %w", command, err)
 		default:
 		}
 		if err := ready(d.URL); err == nil {
@@ -188,7 +208,22 @@ func startRealDaemonProbed(scheme string, ready func(url string) error, extraArg
 		time.Sleep(100 * time.Millisecond)
 	}
 	_ = d.stop()
-	return nil, fmt.Errorf("artifact-daemon did not answer within 20s")
+	return nil, fmt.Errorf("%s did not answer within 20s", command)
+}
+
+// addressableArgs is each daemon's own spelling of "listen here, keep your
+// state there". Two daemons, two flag names, one launcher.
+func addressableArgs(command string, port int, root string) []string {
+	if command == "hangar-output-daemon" {
+		return []string{
+			"--listen", fmt.Sprintf("127.0.0.1:%d", port),
+			"--control-dir", root,
+			"--steps-dir", filepath.Join(root, "steps"),
+			"--scratch-dir", filepath.Join(root, "scratch"),
+		}
+	}
+
+	return []string{"--port", fmt.Sprint(port), "--storage-path", root}
 }
 
 func (d *realDaemon) stop() error {

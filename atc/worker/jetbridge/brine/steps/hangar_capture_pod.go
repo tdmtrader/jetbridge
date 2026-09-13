@@ -11,7 +11,13 @@ package steps
 // them passes.
 
 import (
+	"fmt"
+	"time"
+
 	"github.com/brine-dev/brine-go/pkg/brine"
+
+	"github.com/concourse/concourse/hangar/executioncontrol"
+	hangaroutput "github.com/concourse/concourse/hangar/output"
 )
 
 const capturePodPhase = "Phase 4 Green"
@@ -35,10 +41,75 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 		// above, because brine's registry is keyed on the sentence alone: one
 		// pattern has exactly one input type, and a duplicate pattern is caught
 		// by TestNoStepLineMatchesTwoDefinitions.
-		stubMap[HangarDaemon, CaptureDraft](
+		//
+		// WHAT IT BUILDS IS AN ADMISSION, not a Pod. Everything a Phase 3
+		// scenario needs from this sentence is the identities the control plane
+		// predeclares before anything may run -- the handoff, the source lease,
+		// the exact execution, the declared output and the activation epoch --
+		// and none of that is a Pod fact. The Pod-shaped assertions still enter
+		// through `the capture pod is built`, which stays Phase 4's.
+		//
+		// The identities are MINTED HERE, not named by the feature file. A
+		// scenario that could choose a handoff id could make two scenarios
+		// collide on one node's ledger, and a scenario that could choose an
+		// activation epoch would be choosing which key signs its receipts.
+		brine.DefineMap[HangarDaemon, CaptureDraft](
 			"a capture-selected task {string} built from image {string} declares the output {string}",
-			capturePodPhase,
-			"the capture-selected execution path through Container.buildPod"),
+			func(in HangarDaemon, p brine.Params, _ *brine.Recorder) (CaptureDraft, error) {
+				const pattern = "a capture-selected task {string} built from image {string} declares the output {string}"
+				name, err := paramAt(pattern, p, 0)
+				if err != nil {
+					return CaptureDraft{}, err
+				}
+				image, err := paramAt(pattern, p, 1)
+				if err != nil {
+					return CaptureDraft{}, err
+				}
+				outputName, err := paramAt(pattern, p, 2)
+				if err != nil {
+					return CaptureDraft{}, err
+				}
+
+				draft := CaptureDraft{
+					Daemon: in,
+					Output: hangaroutput.OutputName(outputName),
+					Admission: hangaroutput.CaptureAdmission{
+						ProtocolVersion: hangaroutput.ProtocolVersion,
+						Execution: executioncontrol.Identity{
+							ExecutionID: executioncontrol.ExecutionID(freshUUID()),
+							Fence:       1,
+						},
+						ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch),
+						HandoffID:       hangaroutput.HandoffID(freshUUID()),
+						SourceLeaseID:   hangaroutput.SourceLeaseID(freshUUID()),
+						Output:          hangaroutput.OutputName(outputName),
+						CaptureDeadline: hangaroutput.NewTimestamp(time.Now().UTC().Add(time.Hour)),
+					},
+				}
+				draft.Draft.StepName, draft.Draft.ImageURL = name, image
+
+				// The execution is admitted before anything may hold or start.
+				// That is the ordering the base protocol exists to impose, and
+				// doing it here rather than inside `the daemon holds the
+				// source` keeps the two facts separable: a scenario can admit
+				// and then never hold.
+				answer := in.base("admit", "/execution/v1/admit", draft.Admission.Execution,
+					executioncontrol.Envelope{
+						ProtocolVersion: executioncontrol.ProtocolVersion,
+						Identity:        draft.Admission.Execution,
+						ActivationEpoch: draft.Admission.ActivationEpoch,
+						NodeUID:         hangarNodeUID,
+						PodUID:          executioncontrol.PodUID(freshUUID()),
+						Capability:      "opaque-admission-capability",
+					})
+				if _, err := decodeControl[executioncontrol.ClassifyResult](answer); err != nil {
+					return CaptureDraft{}, fmt.Errorf("admitting the capture-selected execution: %w", err)
+				}
+				draft.PodUID = executioncontrol.PodUID(freshUUID())
+
+				return draft, nil
+			},
+		),
 
 		stubMap[CaptureDraft, CaptureDraft](
 			"a second output {string} is also selected for capture",

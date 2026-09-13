@@ -301,9 +301,45 @@ func (repository *HangarOutputRepository) acknowledgeRelease(ctx context.Context
 		return err
 	}
 
+	// Each branch's terminal fact has a different name, so the one that
+	// finalizes it is named per branch rather than assumed. The capture branch
+	// SETTLES: with the release acknowledged there is nothing still owed, which
+	// is what settled already means on the other two.
 	finalize := ""
-	if branch == output.DispositionPreReservationCancel {
+	switch branch {
+	case output.DispositionPreReservationCancel:
 		finalize = ", finalized_at = coalesce(finalized_at, now())"
+	case output.DispositionCapture:
+		finalize = ", settled_at = coalesce(settled_at, now())"
+	}
+
+	// The capture branch may only release before the irreversible publish
+	// point. After it the capture settles a registered receipt or a terminal
+	// orphan, and a release offered there is a caller working from stale state.
+	//
+	// Two clauses, and only one of them has a vector today.
+	//
+	// `NOT past_irreversible_publish_point` does: the state is reachable by a
+	// publish in flight passing the point while a canceller is blocked on the
+	// row lock, and the spec drives that race.
+	//
+	// `state = 'cancelled'` does NOT, and it is kept anyway rather than removed
+	// as redundant. It looks redundant because `release_intent_id = $2` above
+	// already implies it -- the only writer of that column is CancelOrSettle,
+	// which sets both in one statement, and cancellation is terminal. But that
+	// implication is a fact about the code as it stands, not about the schema,
+	// and it is one Req 11 is going to break: a capture that terminally
+	// **fails** before the publish point owes a fenced release too, and when
+	// that branch is implemented an intent will exist on a row whose state is
+	// `failed`. Removing this clause now would silently admit those releases
+	// the day that lands.
+	//
+	// Its vector belongs to the phase that adds the failure branch. Making it
+	// structural instead -- a CHECK that an intent implies `cancelled` -- would
+	// be actively wrong for the same reason.
+	guard := ""
+	if branch == output.DispositionCapture {
+		guard = " AND state = 'cancelled' AND NOT past_irreversible_publish_point"
 	}
 
 	result, err := tx.ExecContext(ctx, fmt.Sprintf(`
@@ -311,7 +347,7 @@ func (repository *HangarOutputRepository) acknowledgeRelease(ctx context.Context
 		SET release_acknowledged_at = now(), release_acknowledgement = $3%s
 		WHERE handoff_id = $1
 		  AND release_intent_id = $2
-		  AND release_acknowledged_at IS NULL`, table, finalize),
+		  AND release_acknowledged_at IS NULL%s`, table, finalize, guard),
 		string(acknowledgement.HandoffID),
 		string(acknowledgement.ReleaseIntentID),
 		body,
@@ -336,6 +372,32 @@ func (repository *HangarOutputRepository) acknowledgeRelease(ctx context.Context
 			acknowledgement.ReleaseIntentID, acknowledgement.HandoffID)
 	}
 	if !acknowledged.Valid {
+		// The intent is this branch's and it is unacknowledged, so the UPDATE
+		// was stopped by the capture branch's own guard rather than by the
+		// intent. Say WHICH, because the two answers mean opposite things to
+		// the caller: "not yet" is retried and "never" is not.
+		//
+		// The state is reachable -- a publish already in flight passes the
+		// point while the row is still live, and the canceller that classified
+		// a moment earlier blocks on its row lock and then cancels a row that
+		// is now past the point. A node offering a release there is working
+		// from stale state: the object may exist, and the capture settles a
+		// registered receipt or a terminal orphan under its own fence.
+		if branch == output.DispositionCapture {
+			var state string
+			var past bool
+			if err := hangarQueryRow(ctx, tx, `
+				SELECT state, past_irreversible_publish_point FROM hangar_capture_reservations
+				WHERE handoff_id = $1`,
+				[]any{string(acknowledgement.HandoffID)}, &state, &past,
+			); err == nil && past {
+				return fmt.Errorf("%w: handoff %s is past the irreversible publish point and a "+
+					"release is admitted only before it. The capture settles a registered "+
+					"receipt or a terminal orphan under its own fence; retrying this release "+
+					"will never admit it", output.ErrConflict, acknowledgement.HandoffID)
+			}
+		}
+
 		return fmt.Errorf("%w: release intent %s is recorded but unacknowledged",
 			output.ErrUnresolved, acknowledgement.ReleaseIntentID)
 	}
@@ -392,4 +454,26 @@ func hangarMarshalWitness(acknowledgement *executioncontrol.Acknowledgement) (an
 	}
 
 	return json.Marshal(*acknowledgement)
+}
+
+// AcknowledgeCaptureRelease completes the capture branch's own fenced release.
+//
+// The capture branch owes one in exactly one situation, and the branch review's
+// F7 is where that was settled: a capture that terminally cancels or fails
+// before the irreversible publish point has decided something and released
+// nothing, so the source is still held on some node until this statement says
+// otherwise. `Settled` means the same thing on all three branches -- nothing is
+// still owed -- and a cancelled capture with no acknowledged release is decided
+// and unsettled, which is the state drain has to wait on.
+//
+// It is not owed past the publish point. There the capture settles a registered
+// receipt or a terminal orphan, and there is nothing left to release; the state
+// guard above is what refuses one offered anyway.
+func (repository *HangarOutputRepository) AcknowledgeCaptureRelease(ctx context.Context, tx output.Tx, acknowledgement output.ReleaseAcknowledgement) error {
+	// The branch check is acknowledgeRelease's, and it is not repeated here:
+	// there is one statement of "this acknowledgement belongs to this branch",
+	// and a second copy could only drift from it. Mutation is what found this
+	// one redundant -- removing it reddened nothing.
+	return repository.acknowledgeRelease(ctx, tx, acknowledgement,
+		output.DispositionCapture, "hangar_capture_reservations")
 }

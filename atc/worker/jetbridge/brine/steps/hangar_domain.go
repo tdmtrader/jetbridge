@@ -28,6 +28,7 @@ package steps
 // thing the daemon must refuse.
 
 import (
+	"crypto/rand"
 	"fmt"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
@@ -119,6 +120,28 @@ type CaptureDraft struct {
 	// terminal pause pod is recreated for an ordinary source and refused for a
 	// capture-held one.
 	PausePodTerminal bool
+
+	// PodUID is the Pod the execution was admitted for. In Phase 3 the chain
+	// has no cluster and this is the identity the daemon was told; in Phase 4
+	// it is the Pod the cluster handed back, and the same field carries it.
+	PodUID executioncontrol.PodUID
+}
+
+// freshUUID mints an identity no feature file chose.
+//
+// Every identity in this family is server- or fixture-generated for the same
+// reason: a scenario that could name a handoff could make two scenarios collide
+// on one node's ledger, and one that could name an activation epoch would be
+// choosing which key signs its receipts.
+func freshUUID() string {
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
+		panic("brine: no randomness for a Hangar identity: " + err.Error())
+	}
+	raw[6] = (raw[6] & 0x0f) | 0x40
+	raw[8] = (raw[8] & 0x3f) | 0x80
+
+	return fmt.Sprintf("%x-%x-%x-%x-%x", raw[0:4], raw[4:6], raw[6:8], raw[8:10], raw[10:16])
 }
 
 // CapturePodCreated is the capture pod as the cluster hands it back — or the
@@ -165,6 +188,28 @@ type HeldSource struct {
 	// Fence is the epoch every later control operation is admitted against.
 	Fence hangaroutput.CaptureFence
 
+	// Execution is the exact identity every control operation is admitted
+	// against. It is the BASE ledger's, carried here so a takeover can advance
+	// it and the line after can ask the daemon about the new one.
+	Execution executioncontrol.Identity
+
+	// Admission is what was predeclared. Every later request re-derives its
+	// identities from this rather than from anything a scenario said.
+	Admission hangaroutput.CaptureAdmission
+
+	// PodUID is the pod the execution was admitted for.
+	PodUID executioncontrol.PodUID
+
+	// ReservationID is the Stage 2 reservation a publication is made under. The
+	// control plane mints it after a successful finish; here the fixture does,
+	// for the same reason it mints every other identity -- a scenario that
+	// could name one could make two scenarios collide on one key.
+	ReservationID string
+
+	// Repeated is what a repeated hold returned, so the idempotency pair can
+	// compare two statements rather than one statement with itself.
+	Repeated hangaroutput.CaptureAcknowledgement
+
 	// Status, Body and Err are the last answer, the same shape the daemon
 	// families already use.
 	Status int
@@ -188,17 +233,32 @@ type HeldDraft struct {
 type FinishWitnessed struct {
 	Source HeldSource
 
-	// Outcome is what the process did.
+	// Outcome is what the process did, as the supervisor recorded it.
 	Outcome executioncontrol.ExitOutcome
 
-	// Witness is what the daemon durably acknowledged about it.
+	// Witness is what the daemon durably acknowledged about it, as the outcome
+	// route returned it.
 	Witness executioncontrol.Acknowledgement
 
 	// Reported is what the step told the build, which is the value the contract
-	// says must equal the witness.
-	Reported executioncontrol.ExitOutcome
+	// says must equal the witness. It is read back through the daemon's OBSERVE
+	// route rather than remembered from the write, which is what makes "the
+	// witness is what the step reports" a claim about durability rather than a
+	// value compared with itself.
+	Reported executioncontrol.Acknowledgement
+
+	// Asked is the last eligibility answer, kept as a value so a refusal is
+	// assertable.
+	Asked controlAnswer
 
 	Err error
+}
+
+// asked records an eligibility answer.
+func (witnessed FinishWitnessed) asked(answer controlAnswer) FinishWitnessed {
+	witnessed.Asked = answer
+
+	return witnessed
 }
 
 // CaptureOutcome is a receipt OR a typed failure, in the shape of VolumeRead.
@@ -230,6 +290,19 @@ type CaptureOutcome struct {
 	// two-halves scenarios assert on directly.
 	Settled bool
 
+	// Published is the exact reference the store assigned, as the publish route
+	// reported it.
+	Published hangaroutput.PublicationResult
+
+	// Answer is the raw publish answer, kept as a value so a typed refusal --
+	// collision, unauthorized, sealed -- is assertable rather than fatal.
+	Answer controlAnswer
+
+	// Challenge is the one-use stat challenge the receipt answers. Verifying
+	// without it would skip the freshness half of the contract, which is the
+	// half that stops a receipt over old facts being replayed.
+	Challenge hangaroutput.StatChallenge
+
 	Err error
 }
 
@@ -244,6 +317,14 @@ type PublishedTree struct {
 
 	Ref        hangar.TreeRef
 	Attributes hangar.TreeAttributes
+
+	// BucketKeys and MarkerVersions are read back from the store at assertion
+	// time. They are what makes "holds exactly one object" an outcome.
+	BucketKeys     []string
+	MarkerVersions []string
+
+	// Second is the second capture of the same bytes, for the dedup pair.
+	Second CaptureOutcome
 
 	// Receipts accumulates every receipt issued for this key, so the dedup
 	// scenario can say one object and two DISTINCT receipts.

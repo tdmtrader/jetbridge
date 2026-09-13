@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
+
+	"github.com/concourse/concourse/hangar/output/ledger"
 )
 
 // Sweeper periodically removes expired artifacts from the hostPath storage.
@@ -32,6 +34,22 @@ type Sweeper struct {
 	// (tests without a server); main wires the server's guard. Set before
 	// Run starts.
 	guard *ReadGuard
+
+	// captureLedger is the output plane's read-only source ledger.
+	//
+	// The sweeper is the destructive path a held source is most likely to
+	// meet. Nothing refreshes a held source's mtime -- the producer wrote it
+	// and exited, and the capture is waiting for a seal -- so a source waiting
+	// to be sealed ages exactly like an abandoned one, and this loop is the
+	// thing that decides. Nil-safe: a nil ledger is a node with no output
+	// plane, and the sweep is unchanged.
+	captureLedger *ledger.Classifier
+}
+
+// SetCaptureLedger wires the output plane's read-only classifier. Must be
+// called before Run starts.
+func (s *Sweeper) SetCaptureLedger(classifier *ledger.Classifier) {
+	s.captureLedger = classifier
 }
 
 // SetGuard wires the read/sweep coordination guard. Must be called before
@@ -147,6 +165,27 @@ func (s *Sweeper) removeStepDir(logger lager.Logger, handleDir, handle string, c
 	if !info.ModTime().Before(cutoff) {
 		logger.Debug("spared-recently-read-step-dir", lager.Data{"path": handleDir})
 		return false
+	}
+
+	// The output plane's hold, under the same exclusive lock the removal takes.
+	//
+	// Asked HERE rather than in sweep() above: between the expiry check and
+	// this point the guard has drained in-flight reads, and a hold established
+	// in that window is a hold this sweep must see. The classifier reads the
+	// ledger on every call for the same reason.
+	//
+	// A step directory is the PARENT of an incarnation, so this asks the
+	// ancestor question -- the one the first version of the classifier could
+	// not answer, and the reason this loop deleted held sources on a timer.
+	if s.captureLedger != nil {
+		class := s.captureLedger.Classify(handle)
+		if !class.Destructive() {
+			logger.Info("spared-capture-held-step-dir", lager.Data{
+				"path": handleDir, "class": string(class),
+			})
+
+			return false
+		}
 	}
 
 	if err := os.RemoveAll(handleDir); err != nil {

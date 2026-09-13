@@ -268,10 +268,18 @@ CREATE TABLE hangar_capture_reservations (
     -- drain predicate needs it to mean here.
     --
     -- One nullable column with a one-way trigger, the same shape as
-    -- `hold_acknowledged_at`. The intent identity and the signed
-    -- acknowledgement body that the daemon-side release pair carries land with
-    -- that pair; this column is the fact the rest of the plane reads.
+    -- `hold_acknowledged_at`, plus the pair's other two halves: the intent this
+    -- release is for, and the signed statement the daemon made about it.
+    --
+    -- The intent id is DATABASE-issued rather than caller-supplied. The generic
+    -- CancelOrSettle seam takes a handoff and nothing else -- T7 calls it and
+    -- must not learn what a release intent is -- so the identity is minted
+    -- where the decision is recorded. It is still exact and still fenced: a
+    -- release acknowledgement names one intent, and one intent is acknowledged
+    -- once.
+    release_intent_id               uuid,
     release_acknowledged_at         timestamp with time zone,
+    release_acknowledgement         jsonb,
     created_at                      timestamp with time zone NOT NULL DEFAULT now(),
 
     -- A settlement time means a terminal state, and a terminal state that is
@@ -285,6 +293,13 @@ CREATE TABLE hangar_capture_reservations (
         settled_at IS NULL
         OR state = 'registered'
         OR release_acknowledged_at IS NOT NULL
+    ),
+    -- A release is acknowledged for an INTENT. Without this a row could carry
+    -- an acknowledgement naming nothing, and "which release was this" would
+    -- have no answer -- which is the whole reason the pair has two halves.
+    CONSTRAINT hangar_reservation_release_names_its_intent CHECK (
+        release_acknowledged_at IS NULL
+        OR (release_intent_id IS NOT NULL AND release_acknowledgement IS NOT NULL)
     ),
     CONSTRAINT hangar_reservation_failure_is_typed CHECK (
         (state = 'failed') = (terminal_failure IS NOT NULL)

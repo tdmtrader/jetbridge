@@ -73,6 +73,7 @@ func validConfig(t *testing.T, endpoint, bucket string) Config {
 	t.Helper()
 
 	keyFile, _ := writeReceiptKey(t)
+	controlKeyFile, _ := writeReceiptKey(t)
 
 	return Config{
 		OutputStore:       output.StoreGCS,
@@ -84,6 +85,11 @@ func validConfig(t *testing.T, endpoint, bucket string) Config {
 		StrictInputBucket: "deployment-strict-input",
 		ReceiptKeyID:      "receipt-key-1",
 		ReceiptKeyFile:    keyFile,
+		ControlKeyID:      "control-key-1",
+		ControlKeyFile:    controlKeyFile,
+		NodeUID:           "node-1",
+		ScratchDir:        t.TempDir(),
+		CapabilityTTL:     time.Minute,
 		ActivationEpoch:   7,
 		OperationTimeout:  10 * time.Second,
 	}
@@ -108,7 +114,12 @@ func TestTheDaemonRefusesToBePointedAtAnotherPlanesBucket(t *testing.T) {
 		"no epoch":                                   func(c *Config) { c.ActivationEpoch = 0 },
 		"no receipt key id":                          func(c *Config) { c.ReceiptKeyID = "" },
 		"no receipt key file":                        func(c *Config) { c.ReceiptKeyFile = "" },
-		"a non-positive timeout":                     func(c *Config) { c.OperationTimeout = 0 },
+		"no control key id":                          func(c *Config) { c.ControlKeyID = "" },
+		"no control key file":                        func(c *Config) { c.ControlKeyFile = "" },
+		// One key for both would mean rotating either rotates both, and an
+		// activation epoch pins them separately.
+		"one key for receipts and control": func(c *Config) { c.ControlKeyFile = c.ReceiptKeyFile },
+		"a non-positive timeout":           func(c *Config) { c.OperationTimeout = 0 },
 	} {
 		config := validConfig(t, server.URL(), bucket)
 		mutate(&config)
@@ -320,6 +331,8 @@ func TestTheDaemonBindsEveryFlagItNeeds(t *testing.T) {
 		"output-store", "output-endpoint", "output-bucket", "output-prefix", "output-tenant",
 		"cache-bucket", "strict-input-bucket", "shared-bucket-prefix-only-isolation",
 		"receipt-key-id", "receipt-key-file", "activation-epoch", "output-timeout",
+		"control-key-id", "control-key-file", "node-uid", "listen", "control-dir",
+		"steps-dir", "scratch-dir", "capability-key", "capability-ttl",
 	} {
 		if flags.Lookup(name) == nil {
 			t.Errorf("the daemon has no --%s flag", name)
@@ -412,4 +425,192 @@ func listKeys(t *testing.T, server *fakestorage.Server, bucket string) []string 
 
 func hangarDigest(fill string) hangar.Digest {
 	return hangar.Digest("sha256:" + strings.Repeat(fill, 32))
+}
+
+// StatExact's own refusals (Phase 2 checkpoint review round 2, R2-1).
+//
+// Each of these is defence in depth: the receipt copies ReservationID and
+// ActivationEpoch out of the challenge, Verify.bind compares them, and
+// hangar_receipt_admission refuses a challenge issued for another capture at
+// registration time. But they are three branches of new production code, and
+// before this test each of them could be deleted with the suite staying green.
+//
+// The control is the happy path in
+// TestThePublishPathCreatesAnObjectAndSignsAVerifiableReceipt above; here each
+// row starts from a real published object and changes exactly one fact.
+func TestTheAttestingStatRefusesAChallengeItCannotAnswer(t *testing.T) {
+	server, bucket := emulator(t)
+	config := validConfig(t, server.URL(), bucket)
+
+	daemon, err := Build(context.Background(), config)
+	if err != nil {
+		t.Fatalf("building: %v", err)
+	}
+
+	namespace := daemon.Namespace()
+	const mine = output.ReservationID("44444444-4444-4444-8444-444444444444")
+	const somebodyElse = output.ReservationID("55555555-5555-4555-8555-555555555555")
+	digest := hangarDigest("ab")
+
+	body := []byte("a sealed canonical tree")
+	object, err := daemon.Publish(context.Background(), PublishRequest{
+		Reservation: output.ResolvedReservation{
+			ReservationID:   mine,
+			Execution:       executioncontrol.Identity{ExecutionID: "33333333-3333-4333-8333-333333333333", Fence: 1},
+			ActivationEpoch: 7,
+			HandoffID:       "11111111-1111-4111-8111-111111111111",
+			CaptureFence:    5,
+			Scope:           namespace.Scope(),
+			Digest:          digest,
+			Marker: namespace.MarkerFor(mine, digest,
+				output.NewTimestamp(time.Now().UTC())),
+		},
+	}, bytes.NewReader(body), int64(len(body)))
+	if err != nil {
+		t.Fatalf("publishing: %v", err)
+	}
+
+	// The control: the challenge this object really answers is answered.
+	valid := func() output.StatChallenge {
+		issuedAt := time.Now().UTC()
+
+		return output.StatChallenge{
+			Nonce:           "nonce-0123456789abcdef",
+			HandoffID:       "11111111-1111-4111-8111-111111111111",
+			ReservationID:   mine,
+			ActivationEpoch: namespace.ActivationEpoch(),
+			Ref:             object.Attributes.Ref,
+			CaptureFence:    5,
+			IssuedAt:        output.NewTimestamp(issuedAt),
+			NotAfter:        output.NewTimestamp(issuedAt.Add(5 * time.Minute)),
+		}
+	}
+	claims := output.ReceiptClaims{
+		Execution:            executioncontrol.Identity{ExecutionID: "33333333-3333-4333-8333-333333333333", Fence: 1},
+		ProducerCheckpointID: "opaque-checkpoint",
+		Incarnation: output.SourceIncarnation{
+			ExecutionID:      "33333333-3333-4333-8333-333333333333",
+			NodeUID:          "node-1",
+			HandleGeneration: 3,
+			Output:           "result",
+		},
+		Output:      "result",
+		WriterFence: 9,
+	}
+	if _, _, err := daemon.StatExact(context.Background(), valid(), claims); err != nil {
+		t.Fatalf("the control challenge was refused: %v", err)
+	}
+
+	for _, row := range []struct {
+		name    string
+		mutate  func(*output.StatChallenge)
+		sentine error
+		says    []string
+	}{
+		{
+			// A challenge minted under the next epoch, offered to the daemon
+			// still holding this one's private key. Signing it would produce a
+			// receipt claiming an epoch whose pinned public key cannot check it.
+			name:    "a challenge from another activation epoch",
+			mutate:  func(c *output.StatChallenge) { c.ActivationEpoch++ },
+			sentine: output.ErrConflict,
+			says:    []string{"8", "7"},
+		},
+		{
+			// The reachable variant of the ref check. A generation that is not
+			// there fails in the stat itself, before any comparison, which is
+			// why this row asserts ErrNotFound and not ErrConflict.
+			name: "a challenge naming a generation that is not there",
+			mutate: func(c *output.StatChallenge) {
+				c.Ref.Generation = object.Attributes.Ref.Generation + 1000
+			},
+			sentine: output.ErrNotFound,
+		},
+	} {
+		challenge := valid()
+		row.mutate(&challenge)
+
+		receipt, _, err := daemon.StatExact(context.Background(), challenge, claims)
+		if !errors.Is(err, row.sentine) {
+			t.Errorf("%s was answered with %v, expected %v", row.name, err, row.sentine)
+		}
+		if receipt.Signature != "" {
+			t.Errorf("%s produced a signed receipt", row.name)
+		}
+		for _, fragment := range row.says {
+			if err == nil || !strings.Contains(err.Error(), fragment) {
+				t.Errorf("the refusal of %s does not name %q: %v", row.name, fragment, err)
+			}
+		}
+	}
+
+	// The marked half of "a fresh exact-generation marked stat", which needs an
+	// object seeded at the challenged KEY rather than a mutated challenge: a
+	// different digest is a different key, so it 404s before the marker is ever
+	// read.
+	//
+	// The rule is about the LOGICAL TREE and not about the reservation, and the
+	// brine dedup scenario is what settled that: two captures of identical
+	// bytes deduplicate to one object carrying the first one's marker, so a
+	// reservation-equality rule would make AC 8's "one object and two receipts"
+	// unreachable. The reservation binding lives in the signed claims and is
+	// revalidated durably in the transaction that consumes the nonce -- so the
+	// control below is a challenge from ANOTHER reservation, which must be
+	// answered, and the refusal is a marker for another tree.
+	key, err := namespace.ObjectKey(digest)
+	if err != nil {
+		t.Fatalf("deriving the key: %v", err)
+	}
+
+	elsewhere := valid()
+	elsewhere.ReservationID = somebodyElse
+	elsewhere.Nonce = "nonce-fedcba9876543210"
+	if _, _, err := daemon.StatExact(context.Background(), elsewhere, claims); err != nil {
+		t.Errorf("a challenge from the reservation that deduplicated against this object was "+
+			"refused: %v. Two captures of identical bytes share one object and get two "+
+			"receipts; the marker names whichever wrote first.", err)
+	}
+
+	// The refusal comes from the publisher's own classifier, which the stat goes
+	// through: there is one statement of "marked" in this codebase and it is
+	// there, so this row asserts the rule holds end to end rather than that a
+	// second copy of it exists in the daemon.
+	foreign := namespace.MarkerFor(mine, hangarDigest("cd"), output.NewTimestamp(time.Now().UTC()))
+	server.CreateObject(fakestorage.Object{
+		ObjectAttrs: fakestorage.ObjectAttrs{
+			BucketName: bucket, Name: key, Metadata: foreign.Metadata(),
+		},
+		Content: []byte("an object marked for another tree"),
+	})
+	seeded, err := server.GetObject(bucket, key)
+	if err != nil {
+		t.Fatalf("reading back the seeded object: %v", err)
+	}
+
+	mismatched := valid()
+	mismatched.Nonce = "nonce-0f1e2d3c4b5a6978"
+	mismatched.Ref.Generation = seeded.Generation
+	_, _, err = daemon.StatExact(context.Background(), mismatched, claims)
+	if !errors.Is(err, output.ErrConflict) {
+		t.Errorf("an object marked for another logical tree was attested: %v", err)
+	}
+	if err != nil && !strings.Contains(err.Error(), "collision") {
+		t.Errorf("the refusal does not say what was wrong: %v", err)
+	}
+}
+
+// writePrivateKey puts an existing key on disk in the form the daemon reads.
+func writePrivateKey(t *testing.T, private ed25519.PrivateKey) string {
+	t.Helper()
+
+	der, err := x509.MarshalPKCS8PrivateKey(private)
+	if err != nil {
+		t.Fatalf("encoding: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "control.pem")
+	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
+		t.Fatalf("writing: %v", err)
+	}
+
+	return path
 }
