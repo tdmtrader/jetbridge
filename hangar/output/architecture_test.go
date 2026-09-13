@@ -443,9 +443,9 @@ func checkDeleteIsIsolatedToTheReclaimer(found surface) []string {
 			if strings.Contains(param.Type, "DeletePrecondition") {
 				hasPrecondition = true
 			}
-			if param.Type == "string" {
+			if isCallerChosenString(param.Type) {
 				problems = append(problems, callable.File+": "+callable.Owner+"."+callable.Name+
-					" takes a bare string parameter "+param.Name+". A key-only or unconditional "+
+					" takes a bare string parameter "+param.Name+" ("+param.Type+"). A key-only or unconditional "+
 					"delete route is exactly what Req 55 forbids.")
 			}
 		}
@@ -503,6 +503,24 @@ var locationParamNames = []string{
 // locationParamTypes are types that carry the same authority.
 var locationParamTypes = []string{"hangar.Scope"}
 
+// isCallerChosenString reports whether a rendered parameter type is a string a
+// caller picked, in any of the shapes one can travel in.
+//
+// The rule used to be `param.Type == "string"`, which is the one spelling out
+// of five that a reviewer thinks of first. `[]string`, `...string`, `*string`
+// and `map[string]string` are each exactly "a string a caller chose" (Req 7,
+// AC 7) and each walked straight past it. Tokenizing is what makes the rule
+// about the type rather than about how it was written.
+func isCallerChosenString(rendered string) bool {
+	for _, token := range tokenize(rendered) {
+		if token == "string" {
+			return true
+		}
+	}
+
+	return false
+}
+
 func checkNoAPIAcceptsAStorageLocation(found surface) []string {
 	var problems []string
 
@@ -536,13 +554,13 @@ func checkNoAPIAcceptsAStorageLocation(found surface) []string {
 			// string can be is a name somebody chose, and Req 7 says a handle
 			// string alone is never an identity. The delete rule already says
 			// this for Reclaimer; there was no reason it stopped there.
-			if roles[callable.Owner] && param.Type == "string" {
+			if roles[callable.Owner] && isCallerChosenString(param.Type) {
 				name := param.Name
 				if name == "" {
 					name = "(unnamed)"
 				}
 				problems = append(problems, callable.File+": "+describe(callable)+
-					" takes a bare string parameter "+name+". The control plane derives every "+
+					" takes a bare string parameter "+name+" ("+param.Type+"). The control plane derives every "+
 					"bucket, scope, key and path from authenticated deployment context; a role "+
 					"that accepts a string accepts one a caller chose.")
 			}
@@ -771,12 +789,33 @@ func TestArchitectureGuardsAreNotVacuous(t *testing.T) {
 			Callables: []declaredCallable{
 				{File: "output.go", Owner: "SourceControl", Name: "BeginSeal",
 					Params: []declaredParam{{Name: "b", Type: "string"}}},
+				// The shape that walked past the rule while it compared the
+				// rendered type to "string" exactly: a slice of them, under a
+				// name the diagnostic name list does not carry either.
+				{File: "output.go", Owner: "Publisher", Name: "StatExactObject",
+					Params: []declaredParam{{Name: "keys", Type: "[]string"}}},
+				// And the three remaining spellings, so no one of them is the
+				// next thing to slip through.
+				{File: "output.go", Owner: "Inventory", Name: "ListPage",
+					Params: []declaredParam{{Name: "only", Type: "...string"}}},
+				{File: "output.go", Owner: "ReceiptVerifier", Name: "VerifyReceipt",
+					Params: []declaredParam{{Name: "at", Type: "*string"}}},
+				{File: "output.go", Owner: "Reclaimer", Name: "DeleteExactGeneration",
+					Params: []declaredParam{{Name: "labels", Type: "map[string]string"}}},
 			},
 		}
 		problems := checkNoAPIAcceptsAStorageLocation(roles)
 		joined := strings.Join(problems, "\n")
-		if !strings.Contains(joined, "SourceControl.BeginSeal takes a bare string parameter b") {
-			t.Errorf("the rule did not object to a bare string parameter named b. It reported:\n%s", joined)
+		for _, expected := range []string{
+			"SourceControl.BeginSeal takes a bare string parameter b",
+			"Publisher.StatExactObject takes a bare string parameter keys ([]string)",
+			"Inventory.ListPage takes a bare string parameter only (...string)",
+			"ReceiptVerifier.VerifyReceipt takes a bare string parameter at (*string)",
+			"Reclaimer.DeleteExactGeneration takes a bare string parameter labels (map[string]string)",
+		} {
+			if !strings.Contains(joined, expected) {
+				t.Errorf("the rule did not object to %q. It reported:\n%s", expected, joined)
+			}
 		}
 	})
 

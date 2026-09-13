@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
@@ -21,16 +22,41 @@ import (
 //
 // These are cheap to check and they only get more useful as the corpus grows.
 
-func loadFeatures(t *testing.T) []*brine.ParsedFeature {
+// featureGlobs is every directory these guards read.
+//
+// The second one is the difference the Hangar family made. Its six feature
+// files describe a plane that does not exist yet, so they live in
+// features/pending/ and the .brine manifest's `features: "features/*.feature"`
+// glob deliberately does not match them: they are CHECKED but not RUN, which
+// is the only way a phrase can be defined before its first executable scenario
+// without either a red suite or a dead definition.
+//
+// Reading them here is what keeps that arrangement honest. A pending phrase
+// nobody says is still dead, a pending sentence nobody defined is still
+// undefined, and both are reported by the tests below exactly as a running
+// one would be.
+var featureGlobs = []string{"../features/*.feature", "../features/pending/*.feature"}
+
+func featurePaths(t *testing.T) []string {
 	t.Helper()
-	paths, err := filepath.Glob("../features/*.feature")
-	if err != nil {
-		t.Fatalf("glob features: %v", err)
+	var paths []string
+	for _, glob := range featureGlobs {
+		matched, err := filepath.Glob(glob)
+		if err != nil {
+			t.Fatalf("glob %s: %v", glob, err)
+		}
+		paths = append(paths, matched...)
 	}
 	if len(paths) == 0 {
 		wd, _ := os.Getwd()
 		t.Fatalf("no feature files found from %s — this test would pass vacuously", wd)
 	}
+	return paths
+}
+
+func loadFeatures(t *testing.T) []*brine.ParsedFeature {
+	t.Helper()
+	paths := featurePaths(t)
 	parsed := make([]*brine.ParsedFeature, 0, len(paths))
 	for _, p := range paths {
 		f, err := brine.ParseFeatureFile(p)
@@ -132,6 +158,91 @@ func TestNoStepLineMatchesTwoDefinitions(t *testing.T) {
 			sort.Strings(matched)
 			t.Errorf("the step %q matches %d definitions, and only the first one runs: %q",
 				line, len(matched), matched)
+		}
+	}
+}
+
+// TestEveryHangarScenarioCitesARequirement is the fourth guard, and the Hangar
+// family is why it exists.
+//
+// Convention 4 of learnings/brine-as-the-test-runner.md asks every scenario in
+// this family to cite the numbered requirement it is about, as an @HOP-<n> tag
+// ON THE SCENARIO and not only on the feature. The reason is measurable: of the
+// 143 archive requirement IDs, 98 are greppable as tags and 45 are not, and the
+// proposal's own finding is that the problem was never coverage but
+// traceability. A citation grep is the only thing that makes traceability real,
+// and a grep can only find a tag that is there.
+//
+// It is scoped to hangar-*.feature deliberately. Retro-fitting the rule onto
+// the 35 files that predate it would be a different change, and the families
+// migrated from Go suites that never had IDs say so and cite mutations instead.
+func TestEveryHangarScenarioCitesARequirement(t *testing.T) {
+	var checked int
+	for _, path := range featurePaths(t) {
+		if !strings.HasPrefix(filepath.Base(path), "hangar-") {
+			continue
+		}
+		parsed, err := brine.ParseFeatureFile(path)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		for _, feat := range parsed.Features {
+			for _, sc := range feat.Scenarios {
+				checked++
+				if !citesHangarRequirement(sc.Tags) {
+					t.Errorf("%s: scenario %q carries no @HOP-<n> tag, so no requirement grep "+
+						"will ever find it. Tag the scenario with the spec.md requirement "+
+						"numbers it is about.", filepath.Base(path), sc.Name)
+				}
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no hangar-*.feature scenarios were examined — this test would pass vacuously")
+	}
+}
+
+func citesHangarRequirement(tags []string) bool {
+	for _, tag := range tags {
+		if strings.HasPrefix(tag, "@HOP-") && len(tag) > len("@HOP-") {
+			return true
+		}
+	}
+	return false
+}
+
+// TestPendingHangarFeaturesAreNotRun pins the arrangement the guards above
+// depend on: features/pending/ is CHECKED, never executed.
+//
+// Without this, the directory would be one manifest edit away from turning a
+// set of deliberately-red skeletons into a red suite — or, worse, from being
+// quietly counted as coverage. The manifest glob is the fact, so the manifest
+// is what this reads.
+func TestPendingHangarFeaturesAreNotRun(t *testing.T) {
+	manifest, err := os.ReadFile("../.brine")
+	if err != nil {
+		t.Fatalf("read the brine manifest: %v", err)
+	}
+	if !strings.Contains(string(manifest), `features: "features/*.feature"`) {
+		t.Fatalf(`the manifest no longer says features: "features/*.feature". If the glob now ` +
+			`reaches features/pending/, every skeleton in it runs and fails: move the scenarios ` +
+			`up a directory as their phases land instead of widening the glob.`)
+	}
+	pending, err := filepath.Glob("../features/pending/*.feature")
+	if err != nil {
+		t.Fatalf("glob pending features: %v", err)
+	}
+	if len(pending) == 0 {
+		t.Skip("no pending features left — the family has fully landed")
+	}
+	for _, path := range pending {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if !strings.Contains(string(body), "NOT RUN YET") {
+			t.Errorf("%s does not say NOT RUN YET in its Feature description. A reader who "+
+				"finds a pending file has to be told it is not coverage.", filepath.Base(path))
 		}
 	}
 }
