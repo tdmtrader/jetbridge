@@ -152,18 +152,18 @@ func (expectation Expectation) Validate() error {
 // admission gate compares that against its own bound, because a boolean
 // computed by a controller is a boolean that was true when that controller ran.
 //
-// One half of that comparison is NOT on the database clock, and this comment
-// used to say it was. `now()` in hangar_check_policy_admission is PostgreSQL's;
-// ObservedAt is stamped by the attestor PROCESS, from the clock wired into
-// BucketPolicySource. An attestor whose clock runs fast by more than
-// MaxPolicyEvidenceAge therefore makes stale evidence look permanently fresh,
-// which is the whole of Req 51/52's bounded-staleness promise. Closing it means
-// stamping observed_at from the database in RecordPolicyAttestation, or reading
-// HangarDatabaseNow in the attest pass and refusing a snapshot whose
-// adapter-stamped observation is far from it -- both of which are on the
-// control plane, in atc/db and atc/hangaroutput, and neither of which this
-// package can do for itself. AdmitDelete already applies exactly that
-// two-timestamps-from-one-clock discipline for the lease start margin.
+// ObservedAt here is stamped by the attestor PROCESS, from the clock wired into
+// BucketPolicySource, while `now()` in hangar_check_policy_admission is
+// PostgreSQL's -- so for a while the bounded-staleness promise of Req 51/52 was
+// a comparison between two clocks, and an attestor running fast by more than
+// MaxPolicyEvidenceAge made stale evidence look permanently fresh. That is
+// closed on the control-plane side, where it had to be: the repository stores
+// observed_at as least(now(), this stamp) and refuses a reading dated well
+// ahead of the database, so this value is an upper bound on the truth and never
+// a way to buy freshness. See hangarPolicyObservationOnTheDatabaseClock in
+// atc/db. What this package supplies is still the attestor's own observation,
+// and it is right that it does: a slow clock dates the reading early, evidence
+// expires early, and the plane fails closed.
 func DeriveSnapshot(expectation Expectation, observation output.BucketLifetimePolicy) (output.PolicySnapshot, []output.PolicyFinding, error) {
 	if err := expectation.Validate(); err != nil {
 		return output.PolicySnapshot{}, nil, err

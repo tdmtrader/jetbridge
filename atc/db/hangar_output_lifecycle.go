@@ -1046,11 +1046,19 @@ func (repository *HangarOutputRepository) RecordPolicySnapshot(ctx context.Conte
 	if err := snapshot.Validate(); err != nil {
 		return err
 	}
+	// The same clock discipline the attestation writer applies, and for the
+	// same reason: this table's observed_at is measured against the database's
+	// now() by the admission gate, so an observation dated by a process clock
+	// is stored no later than the transaction that recorded it. See
+	// hangarPolicyObservationOnTheDatabaseClock.
+	if err := hangarPolicyObservationOnTheDatabaseClock(ctx, tx, snapshot); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO hangar_policy_snapshots
 			(activation_epoch, bucket_fingerprint, metageneration, policy_hash,
 			 lifecycle_delete_rules, state, observed_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		VALUES ($1, $2, $3, $4, $5, $6, least(now(), $7))`,
 		int64(snapshot.ActivationEpoch), snapshot.BucketFingerprint, snapshot.Metageneration,
 		snapshot.PolicyHash, snapshot.LifecycleDeleteRules, string(snapshot.State),
 		snapshot.ObservedAt.Time); err != nil {
