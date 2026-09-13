@@ -256,6 +256,29 @@ func TestIntegrationCommitIsAnAncestorOfHEAD(t *testing.T) {
 			root, integrationCommit)
 	}
 
+	// A clone that does not carry the object cannot answer the question, and
+	// `merge-base` reports that the same way it reports a real negative: exit
+	// 128. Ask whether the object is here before asking where it sits, or a
+	// shallow CI checkout fails this test for having a short history rather
+	// than a wrong foundation. That is not hypothetical: the pipeline's repo
+	// resource clones shallow, `.git` exists so the skip above does not fire,
+	// and the first run of this test on `core` failed with "Not a valid object
+	// name". `hack/ci-check.sh` could not have caught it — it builds from a
+	// `git archive`, so there is no `.git` at all and the skip above fires.
+	probe := exec.Command("git", "cat-file", "-e", integrationCommit+"^{commit}")
+	probe.Dir = root
+	if err := probe.Run(); err != nil {
+		shallow := exec.Command("git", "rev-parse", "--is-shallow-repository")
+		shallow.Dir = root
+		depth, _ := shallow.Output()
+		t.Skipf("SKIPPED, AND THIS CHECK IS LOAD-BEARING: the pinned integration commit %s "+
+			"is not present in this clone (shallow=%s), so its ancestry cannot be proven "+
+			"here. This is a truncated history, not a wrong foundation — a clone with the "+
+			"object answers the question. Every other assertion in this file still ran; "+
+			"this one did not.",
+			integrationCommit, strings.TrimSpace(string(depth)))
+	}
+
 	cmd := exec.Command("git", "merge-base", "--is-ancestor", integrationCommit, "HEAD")
 	cmd.Dir = root
 	out, err := cmd.CombinedOutput()
