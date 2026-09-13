@@ -903,12 +903,17 @@ func (coordinator *Coordinator) registerReceipt(ctx context.Context, record outp
 		return err
 	}
 
+	// The writer fence is NOT among the claims this asks for. It is the node's
+	// own answer -- the highest fence any writer ticket over this source
+	// incarnation carries -- and the daemon fills it in from its source ledger.
+	// What used to be here was a cast of the CAPTURE fence, which the check
+	// below then compared against that same capture fence: a claim the caller
+	// dictated and then verified against its own dictation.
 	receipt, err := control.Attest(ctx, challenge, output.ReceiptClaims{
 		Execution:            record.Execution,
 		ProducerCheckpointID: record.ProducerCheckpointID,
 		Incarnation:          record.Source.Incarnation,
 		Output:               record.Output,
-		WriterFence:          output.WriterFence(lease.CaptureFence),
 	})
 	if err != nil {
 		return err
@@ -925,7 +930,8 @@ func (coordinator *Coordinator) registerReceipt(ctx context.Context, record outp
 	// half only the control plane can do: the daemon signed what it observed,
 	// and whether what it observed is THIS capture's checkpoint, incarnation,
 	// output and fence is a question about rows.
-	if err := checkReceiptClaims(receipt, record, lease.CaptureFence); err != nil {
+	if err := checkReceiptClaims(receipt, record, lease.CaptureFence,
+		writerFenceThisControlPlaneAdmits); err != nil {
 		return err
 	}
 
@@ -950,6 +956,25 @@ func (coordinator *Coordinator) registerReceipt(ctx context.Context, record outp
 	})
 }
 
+// writerFenceThisControlPlaneAdmits is the writer fence every writer ticket
+// this control plane issues carries.
+//
+// TWO FENCES, AND THEY ARE NOT ONE NUMBER. The CAPTURE fence is ownership of
+// the capture: it advances when a lease is taken over, which an ATC restart
+// does routinely. The WRITER fence is admission to write the source
+// incarnation, and it advances only on a writer takeover, which this plane does
+// not perform -- `acquireWriterTickets` admits every writer of every Pod at
+// output.FirstWriterFence, and there is no other admitter. So a receipt bound
+// to any other writer fence is a receipt about tickets this control plane did
+// not issue, which is exactly the thing worth refusing, and it stays true of a
+// capture whose lease has been taken over three times.
+//
+// It is a constant rather than a lookup because there is nothing durable to
+// look up: writer tickets live in the ATC process that took them. When writer
+// takeover lands, this is the one site that has to learn where the fence comes
+// from, and the refusal above names it.
+const writerFenceThisControlPlaneAdmits = output.FirstWriterFence
+
 // checkReceiptClaims matches a receipt's signed claims to the durable record.
 //
 // Requirement 26: syntactic validity and a caller-provided reference are not
@@ -957,7 +982,8 @@ func (coordinator *Coordinator) registerReceipt(ctx context.Context, record outp
 // about THIS capture. Every field here is one a replayed receipt from another
 // capture, source, output or fence would differ in, which is the whole reason
 // the list is long rather than a spot check.
-func checkReceiptClaims(receipt output.Receipt, record output.HandoffRecord, fence output.CaptureFence) error {
+func checkReceiptClaims(receipt output.Receipt, record output.HandoffRecord,
+	fence output.CaptureFence, writerFence output.WriterFence) error {
 	claims := receipt.Claims
 
 	switch {
@@ -979,9 +1005,17 @@ func checkReceiptClaims(receipt output.Receipt, record output.HandoffRecord, fen
 	case claims.ActivationEpoch != record.ActivationEpoch:
 		return fmt.Errorf("%w: the receipt is signed under epoch %d and this capture is admitted "+
 			"under %d", output.ErrInvalidIdentity, claims.ActivationEpoch, record.ActivationEpoch)
-	case claims.WriterFence != output.WriterFence(fence):
-		return fmt.Errorf("%w: the receipt is bound to fence %d and this owner holds %d",
-			output.ErrInvalidIdentity, claims.WriterFence, fence)
+	case claims.CaptureFence != fence:
+		return fmt.Errorf("%w: the receipt is signed at capture fence %d and this owner's lease "+
+			"is at %d; a stale owner may not register", output.ErrInvalidIdentity,
+			claims.CaptureFence, fence)
+	case claims.WriterFence != writerFence:
+		return fmt.Errorf("%w: the receipt is signed over writer fence %d and this control "+
+			"plane admits its writers at %d. The writer fence is the node's answer about who "+
+			"was allowed to WRITE the source, and a fence this plane never issued a ticket at "+
+			"is a writer somebody else admitted -- the capture fence, %d here, is a different "+
+			"claim about a different thing and moves without it",
+			output.ErrInvalidIdentity, claims.WriterFence, writerFence, fence)
 	}
 
 	return nil

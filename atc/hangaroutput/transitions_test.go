@@ -617,12 +617,24 @@ func TestAReceiptIsMatchedToTheCaptureItIsFor(t *testing.T) {
 				Scope: record.Scope, Digest: record.Digest, Generation: 12,
 			},
 			ActivationEpoch: record.ActivationEpoch,
-			WriterFence:     output.WriterFence(record.CaptureFence),
+			CaptureFence:    record.CaptureFence,
+			WriterFence:     output.FirstWriterFence,
 		},
 	}
 
+	// The two fences are DIFFERENT NUMBERS in this fixture, deliberately. While
+	// the receipt's writer fence was a cast of the capture fence, every arm
+	// below passed against a check that compared the capture fence with
+	// itself, and the "another writer fence" arm was the only one of the eight
+	// that could not fail for the reason it names.
+	if record.CaptureFence == 1 {
+		t.Fatal("this fixture needs a capture fence that is not the first writer fence, or it " +
+			"cannot tell the two fences apart")
+	}
+
 	// The control: the receipt this capture would really get.
-	if err := checkReceiptClaims(whole, record, record.CaptureFence); err != nil {
+	if err := checkReceiptClaims(whole, record, record.CaptureFence,
+		output.FirstWriterFence); err != nil {
 		t.Fatalf("a receipt for this exact capture was refused: %v", err)
 	}
 
@@ -643,10 +655,20 @@ func TestAReceiptIsMatchedToTheCaptureItIsFor(t *testing.T) {
 		"another scope":            func(r *output.Receipt) { r.Claims.Ref.Scope = "someone-elses-scope" },
 		"another activation epoch": func(r *output.Receipt) { r.Claims.ActivationEpoch = 99 },
 		"another writer fence":     func(r *output.Receipt) { r.Claims.WriterFence = 99 },
+		"another capture fence": func(r *output.Receipt) {
+			r.Claims.CaptureFence = record.CaptureFence + 1
+		},
+		// The conflation itself: a receipt whose writer fence is this capture's
+		// fence, which is what the control plane used to dictate and then
+		// check against its own dictation.
+		"the capture fence in the writer fence's place": func(r *output.Receipt) {
+			r.Claims.WriterFence = output.WriterFence(record.CaptureFence)
+		},
 	} {
 		tampered := whole
 		tamper(&tampered)
-		if err := checkReceiptClaims(tampered, record, record.CaptureFence); err == nil {
+		if err := checkReceiptClaims(tampered, record, record.CaptureFence,
+			output.FirstWriterFence); err == nil {
 			t.Errorf("a receipt bound to %s was admitted for this capture", name)
 		}
 	}
