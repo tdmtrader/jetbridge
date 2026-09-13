@@ -91,15 +91,24 @@ func AttestBase(ctx context.Context, source CohortSource, handshakes Handshaker,
 
 	sort.Slice(records, func(i, j int) bool { return records[i].Node < records[j].Node })
 
-	protocols, ledgers := map[string]bool{}, map[string]bool{}
+	// THREE FIELDS, AND THE THIRD IS THE ONE PLAN.MD ASKS FOR BY NAME. The
+	// control key id was collected into the record and into the digest and
+	// compared with nothing, so a cohort half-way through a key rollout --
+	// exactly the state this attestation exists to refuse -- attested as
+	// homogeneous. It is comparable at all only because the chart stopped
+	// rendering the SECRET's name into the flag: two nodes holding different
+	// private keys under one Secret name reported one id, and an id that
+	// cannot differ is one no comparison can catch.
+	protocols, ledgers, keys := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, one := range records {
 		protocols[one.ProtocolVersion] = true
 		ledgers[one.LedgerVersion] = true
+		keys[one.ControlKeyID] = true
 	}
-	if len(protocols) != 1 || len(ledgers) != 1 {
+	if len(protocols) != 1 || len(ledgers) != 1 || len(keys) != 1 {
 		return Evidence{}, mixedCohort(epoch, []string{
-			fmt.Sprintf("protocol versions %v and ledger versions %v",
-				sortedKeysOf(protocols), sortedKeysOf(ledgers)),
+			fmt.Sprintf("protocol versions %v, ledger versions %v and control key ids %v",
+				sortedKeysOf(protocols), sortedKeysOf(ledgers), sortedKeysOf(keys)),
 		})
 	}
 

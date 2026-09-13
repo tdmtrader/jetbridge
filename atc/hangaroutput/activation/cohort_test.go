@@ -160,6 +160,24 @@ func TestTheBaseCohortIsAttestedOnlyWhenItIsHomogeneous(t *testing.T) {
 			sentinel:  output.ErrIncomplete,
 			substring: "node-b answered an invalid base handshake",
 		},
+		"two members holding different control key material": {
+			// K8S-4's other half. The flag that carries this id used to render
+			// the SECRET's name, so two nodes holding different private keys
+			// under one Secret name reported one id; that is fixed in the
+			// chart, and this is what makes the id worth reporting. AttestBase
+			// collected it into the record and the digest and compared it with
+			// nothing, so a cohort half-way through a key rollout attested as
+			// homogeneous -- which is the one thing "a homogeneous attested
+			// cohort" is supposed to mean. AttestOutput loops over six fields;
+			// this loop had two.
+			spoil: func(_ *[]activation.Member, shakes *handshaker) {
+				answer := healthyBase()
+				answer.ControlKeyID = "control-key-2"
+				shakes.base["node-a"] = answer
+			},
+			sentinel:  output.ErrUnsupportedProtocol,
+			substring: "control key ids",
+		},
 		"two members on different ledger versions": {
 			spoil: func(_ *[]activation.Member, shakes *handshaker) {
 				answer := healthyBase()
