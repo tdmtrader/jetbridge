@@ -202,6 +202,14 @@ var _ = Describe("the output-plane controller passes", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 
+		// THE BUCKET EXISTS, because a deployment's does. The tier-1 store
+		// started modelling bucket existence when a missing bucket stopped
+		// being indistinguishable from an empty one (GCS-F2), and a fixture
+		// that never creates one makes every sweep over a bucket with no
+		// objects in it yet answer "bucket not found" -- which is a true
+		// answer to a question this fixture did not mean to ask.
+		store.CreateBucket(namespace.Bucket())
+
 		hangarActivateEpoch(ctx, repository)
 	})
 
