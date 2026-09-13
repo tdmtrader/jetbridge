@@ -1629,3 +1629,150 @@ func TestDaemonSetBackend_DaemonResolveCommand_DefaultPort(t *testing.T) {
 
 // Suppress unused import warning for os
 var _ = os.Stderr
+
+// ---------------------------------------------------------------------------
+// The cleanup init container's script, RUN
+// ---------------------------------------------------------------------------
+
+// A handle reaches `rm -rf` in the one container that mounts the whole managed
+// hostPath read-write, and it used to reach it unquoted.
+//
+// This does not read the script for quotes; it RUNS it, with rm, mkdir and
+// wget replaced by recorders on PATH, and asks what the shell actually did. A
+// quoting rule asserted by grepping for apostrophes is a rule that passes for
+// the wrong reason the first time somebody reformats the string.
+//
+// The payload is the shape that matters: it closes the word, runs a command of
+// its own, and reopens it, so a script that interpolates it unquoted stays
+// syntactically valid and does something extra. Under correct quoting the
+// shell sees ONE word -- a path with punctuation in it -- and nothing else
+// runs.
+func TestTheCleanupScriptTreatsAHandleAsOneWord(t *testing.T) {
+	// TWO PAYLOADS, because the two contexts break differently and a single
+	// one proves only half. Bare metacharacters escape an UNQUOTED
+	// interpolation; an embedded apostrophe escapes a naively quoted one. A
+	// fix that only wraps the word in quotes passes the first and fails the
+	// second, which is why both run against both arms.
+	payloads := map[string]func(marker string) string{
+		"bare metacharacters":    func(marker string) string { return "h1; touch " + marker + "; echo x" },
+		"an embedded apostrophe": func(marker string) string { return "h1'; touch " + marker + "; :'x" },
+		// The vector for the DOUBLE-quoted contexts -- the URL the probe
+		// fetches and the messages it echoes. `;` is literal inside double
+		// quotes and a command substitution is not.
+		"a command substitution": func(marker string) string { return "h1$(touch " + marker + ")x" },
+	}
+
+	cases := map[string]bool{"with no output plane": false, "with the output plane": true}
+	for name, plane := range cases {
+		for payloadName, payload := range payloads {
+			t.Run(name+", "+payloadName, func(t *testing.T) {
+				runOneCleanupScriptCase(t, plane, payload)
+			})
+		}
+	}
+}
+
+func runOneCleanupScriptCase(t *testing.T, plane bool, payload func(marker string) string) {
+	t.Helper()
+
+	{
+		{
+			marker := filepath.Join(t.TempDir(), "executed")
+			handle := payload(marker)
+
+			backend := testBackend(nil)
+			backend.config.OutputPlaneEnabled = plane
+			container, err := backend.BuildCleanupInitContainer(handle, db.ContainerTypeTask, true)
+			if err != nil {
+				t.Fatalf("building the cleanup init container: %v", err)
+			}
+			if container == nil {
+				t.Fatal("no cleanup init container for a reused task")
+			}
+
+			calls := runScriptWithRecordedTools(t, container.Command[2])
+
+			if _, err := os.Stat(marker); err == nil {
+				t.Errorf("a handle carrying a shell command RAN it, in the one container that "+
+					"mounts the managed hostPath read-write:\n%s", container.Command[2])
+			}
+			removals := calls["rm"]
+			if plane {
+				// The ledger stub answers nothing, which is the refusal arm:
+				// an unreadable ledger is not an empty one, so nothing is
+				// removed at all.
+				if len(removals) != 0 {
+					t.Errorf("the ledger said nothing and %d removal(s) happened anyway: %v",
+						len(removals), removals)
+				}
+
+				return
+			}
+			if len(removals) != 1 {
+				t.Fatalf("expected exactly one rm, got %d: %v", len(removals), removals)
+			}
+			if want := []string{"-rf", filepath.Join(ArtifactMountPath, "steps", handle)}; !slicesEqual(removals[0], want) {
+				t.Errorf("rm was called with %q; the target is one word, the step directory "+
+					"whose name is the handle verbatim, and nothing else", removals[0])
+			}
+		}
+	}
+}
+
+// runScriptWithRecordedTools runs one `sh -c` script with rm, mkdir and wget
+// replaced by recorders, and returns each tool's argv per invocation.
+//
+// The recorders are what make this safe to run: the script's real target is
+// /artifacts/steps/<handle> on a node, and nothing here touches it.
+func runScriptWithRecordedTools(t *testing.T, script string) map[string][][]string {
+	t.Helper()
+
+	bin := t.TempDir()
+	log := filepath.Join(t.TempDir(), "calls")
+	for _, tool := range []string{"rm", "mkdir", "wget"} {
+		recorder := "#!/bin/sh\nprintf '%s' \"" + tool + "\" >> " + log +
+			"\nfor argument in \"$@\"; do printf '\\037%s' \"$argument\" >> " + log +
+			"; done\nprintf '\\036' >> " + log + "\nexit 0\n"
+		if err := os.WriteFile(filepath.Join(bin, tool), []byte(recorder), 0o755); err != nil {
+			t.Fatalf("writing the %s recorder: %v", tool, err)
+		}
+	}
+
+	command := exec.Command("sh", "-c", script)
+	command.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "HOST_IP=127.0.0.1")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		// A refusal arm exits non-zero on purpose; the assertions are about
+		// what ran, not about the exit code.
+		t.Logf("the script exited with %v; output: %s", err, output)
+	}
+
+	recorded, err := os.ReadFile(log)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("reading the recorded calls: %v", err)
+	}
+
+	calls := map[string][][]string{}
+	for _, line := range strings.Split(string(recorded), "\036") {
+		if line == "" {
+			continue
+		}
+		fields := strings.Split(line, "\037")
+		calls[fields[0]] = append(calls[fields[0]], fields[1:])
+	}
+
+	return calls
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+
+	return true
+}
