@@ -401,6 +401,14 @@ func (epochs Epochs) apply(ctx context.Context, epoch executioncontrol.Activatio
 		state.Base, state.Output, state.Revision)
 }
 
+// Deferred: rotation is the only one of the five transitions with no operator
+// path: the activation command has four modes and the chart's activation Job
+// renders those four, so neither a receipt-key rotation nor an epoch handover
+// can be asked for. Wiring it is a fifth mode, a second epoch flag and the Job
+// name that carries both, and it belongs with the first rotation rather than
+// ahead of the first activation: this plane ships dormant, and an epoch nobody
+// has enabled has nothing to rotate off.
+//
 // Rotate moves a facet from one epoch to the next in ONE transaction.
 //
 // Two statements and one transaction, and the transaction is the whole point.
