@@ -200,7 +200,7 @@ func terminalPausePod(res brine.Resources, daemon HangarDaemon, handle string,
 	}
 
 	cluster, err := NewCluster(res,
-		WithExecutor(closingShellAdapter{}),
+		WithExecutor(localExecutor{}),
 		WithConfig(func(cfg *jetbridge.Config) {
 			cfg.OutputPlaneEnabled = true
 			cfg.ArtifactDaemonHostPath = daemon.Daemon.Root
