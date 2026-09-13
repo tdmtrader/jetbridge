@@ -298,12 +298,24 @@ func (pass *DeletePass) admitDelete(ctx context.Context, job db.HangarReclaimJob
 //
 // The mapping from a store's answer to a job's outcome is the whole of Req 49,
 // and every arm of it is about what this plane is entitled to CLAIM. A
-// confirmed delete finalizes confirmed. Absence finalizes inferred, because
-// there IS a prior admitted delete -- that record was committed above. A
-// generation conflict is debt and never a broader retry. Anything else leaves
-// the job open for the next pass under a renewed lease.
+// confirmed delete finalizes confirmed. A generation conflict is debt and never
+// a broader retry. Anything else leaves the job open for the next pass under a
+// renewed lease.
+//
+// ABSENCE IS THE ARM THAT BRANCHES, and it used to finalize inferred on the
+// grounds that "there IS a prior admitted delete -- that record was committed
+// above", which is the defect stated as the reason: the record committed above
+// is this pass's own, written microseconds before the call it is now
+// interpreting. The store cannot tell the two causes apart -- a 404 for an
+// object we deleted and lost the answer to, a 404 for an object somebody else
+// removed, and a 404 for a bucket that does not exist are one answer -- so the
+// job's own attempt history is asked instead. An absence with a lost response
+// behind it is this plane's reclamation, inferred. An absence with nothing
+// behind it is something else deleting this bucket's objects, which is a
+// lifetime violation, an at-risk epoch, and a pass that says so.
 func (pass *DeletePass) record(ctx context.Context, job db.HangarReclaimJob, attempt int64, outcome output.DeleteOutcome, deleteErr error) error {
 	unauthorized := false
+	unexplained := false
 
 	tx, err := pass.Transactor.Begin()
 	if err != nil {
@@ -323,11 +335,38 @@ func (pass *DeletePass) record(ctx context.Context, job db.HangarReclaimJob, att
 		}
 
 	case outcome == output.DeleteAlreadyAbsent:
-		// Absent, with a durable admitted delete behind it. That is INFERRED
-		// and never confirmed: this plane did not see the acknowledgement, and
-		// claiming it would be claiming evidence it does not have.
+		explained, err := pass.Repository.AbsenceExplainedByALostResponse(ctx, tx, job, attempt)
+		if err != nil {
+			return err
+		}
+		if explained {
+			// Absent, with an EARLIER delete whose response never arrived. That
+			// is INFERRED and never confirmed: this plane did not see the
+			// acknowledgement, and claiming it would be claiming evidence it
+			// does not have.
+			if err := pass.Repository.FinalizeReclaim(ctx, tx, job,
+				output.ReclaimInferred, true); err != nil {
+				return err
+			}
+
+			break
+		}
+
+		// Nothing this plane did can explain it. The job is given up on --
+		// which puts the generation back where it was rather than recording a
+		// deletion nobody made -- and the absence is reported as the lifetime
+		// violation it is, which puts the epoch at risk and stops new
+		// admissions from here on. Req 52's first trigger, arriving through
+		// the delete path rather than through the inventory sweep.
+		//
+		// The order matters: finalizing abandoned returns the lifecycle to its
+		// origin state, and the violation then moves it to missing_out_of_band.
+		unexplained = true
 		if err := pass.Repository.FinalizeReclaim(ctx, tx, job,
-			output.ReclaimInferred, true); err != nil {
+			output.ReclaimAbandoned, false); err != nil {
+			return err
+		}
+		if err := pass.Repository.RecordOutOfBandAbsence(ctx, tx, job.Ref); err != nil {
 			return err
 		}
 
@@ -380,6 +419,16 @@ func (pass *DeletePass) record(ctx context.Context, job db.HangarReclaimJob, att
 		return fmt.Errorf("%w: the object store refused reclaim job %d a conditional delete; "+
 			"the generation is protected again and the epoch is at risk", output.ErrUnauthorized,
 			job.ID)
+	}
+	if unexplained {
+		// Reported, not swallowed, for the same reason the refusal above is: a
+		// pass that finalized this job and returned nil is a plane reporting
+		// class=ok while the bucket it publishes into is losing objects to
+		// something it cannot see.
+		return fmt.Errorf("%w: reclaim job %d found %s/%s/%d already absent on an attempt that "+
+			"was the first this plane made, so no lost response explains it; the generation is "+
+			"recorded as an out-of-band lifetime violation and the epoch is at risk",
+			output.ErrAtRisk, job.ID, job.Ref.Scope, job.Ref.Digest, job.Ref.Generation)
 	}
 	if deleteErr != nil {
 		// A timeout or an infrastructure failure, recorded and left open for

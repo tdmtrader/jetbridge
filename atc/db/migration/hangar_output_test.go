@@ -1452,6 +1452,69 @@ var _ = Describe("the Hangar output plane schema", func() {
 						WHERE id = %d`, job))
 			})
 
+			It("refuses to infer a deletion from an attempt that was answered", func() {
+				// "An attempt exists" was true by construction: the delete pass
+				// commits the attempt row microseconds before it calls the
+				// store, so the very attempt that observed the object absent
+				// satisfied the rule that was supposed to prove somebody had
+				// tried before. A wrong prefix or a deleted bucket answers 404
+				// for every object, and the whole registered set was finalized
+				// as this plane's own successful deletions.
+				mustExec(database, admitReclaim(lifecycle))
+				var job int64
+				Expect(database.QueryRow(`SELECT id FROM hangar_reclaim_jobs LIMIT 1`).
+					Scan(&job)).To(Succeed())
+				mustExec(database, fmt.Sprintf(`
+					INSERT INTO hangar_reclaim_attempts (job_id, lease_fence, outcome, observed_at)
+					VALUES (%d, 1, 'already_absent', now())`, job))
+
+				Expect(expectRefusal(database, "a first-attempt absence called this plane's own deletion",
+					fmt.Sprintf(`UPDATE hangar_reclaim_jobs
+						SET outcome = 'reclaimed_inferred', finalized_at = now(),
+						    absence_observed_at = now()
+						WHERE id = %d`, job))).
+					To(ContainSubstring("no earlier admitted delete whose response was lost"))
+			})
+
+			It("refuses to infer from a lost response that came after the absence", func() {
+				// Ordering, not merely existence. A delete whose answer went
+				// missing AFTER the object was already observed absent cannot
+				// be the reason it went missing.
+				mustExec(database, admitReclaim(lifecycle))
+				var job int64
+				Expect(database.QueryRow(`SELECT id FROM hangar_reclaim_jobs LIMIT 1`).
+					Scan(&job)).To(Succeed())
+				mustExec(database, fmt.Sprintf(`
+					INSERT INTO hangar_reclaim_attempts (job_id, lease_fence, outcome, observed_at)
+					VALUES (%d, 1, 'already_absent', now())`, job))
+				mustExec(database, fmt.Sprintf(`
+					INSERT INTO hangar_reclaim_attempts (job_id, lease_fence, outcome, observed_at)
+					VALUES (%d, 1, 'timeout', now())`, job))
+
+				Expect(expectRefusal(database, "an absence explained by a later lost response",
+					fmt.Sprintf(`UPDATE hangar_reclaim_jobs
+						SET outcome = 'reclaimed_inferred', finalized_at = now(),
+						    absence_observed_at = now()
+						WHERE id = %d`, job))).
+					To(ContainSubstring("no earlier admitted delete whose response was lost"))
+
+				// And with one BEFORE it, the same job is inferable -- without
+				// this the two cases above would pass against a rule that
+				// refused every inference.
+				mustExec(database, fmt.Sprintf(`
+					INSERT INTO hangar_reclaim_attempts (job_id, lease_fence, outcome, observed_at)
+					VALUES (%d, 1, 'infrastructure_failure', now())`, job))
+				mustExec(database, fmt.Sprintf(`
+					UPDATE hangar_reclaim_attempts SET id = -id WHERE job_id = %d
+					   AND outcome = 'infrastructure_failure'`, job))
+
+				expectAccepted(database, "an absence with an earlier lost response behind it",
+					fmt.Sprintf(`UPDATE hangar_reclaim_jobs
+						SET outcome = 'reclaimed_inferred', finalized_at = now(),
+						    absence_observed_at = now()
+						WHERE id = %d`, job))
+			})
+
 			It("refuses finalizing a lifecycle that was never admitted to reclaim", func() {
 				Expect(expectRefusal(database, "a lifecycle reclaimed without admission", fmt.Sprintf(`
 					UPDATE hangar_exact_lifecycles SET state = 'reclaimed_confirmed' WHERE id = %d`,

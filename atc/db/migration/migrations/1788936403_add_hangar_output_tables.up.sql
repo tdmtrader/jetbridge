@@ -1644,15 +1644,32 @@ CREATE CONSTRAINT TRIGGER hangar_reclaim_admission_needs_reconciliation
     FOR EACH ROW EXECUTE FUNCTION hangar_check_reclaim_admission();
 
 -- What a finalized reclaim job may claim to have proved. `reclaimed_confirmed`
--- needs an acknowledged conditional delete; `reclaimed_inferred` needs a
--- durable admitted-delete record whose response was lost, plus observed exact
--- absence. Absence without a prior admitted delete is an out-of-band lifetime
--- violation, and this is where that distinction is kept.
+-- needs an acknowledged conditional delete; `reclaimed_inferred` needs an
+-- earlier admitted delete WHOSE RESPONSE WAS LOST, plus observed exact absence.
+-- Absence that no lost response explains is an out-of-band lifetime violation,
+-- and this is where that distinction is kept.
+--
+-- "AN ATTEMPT EXISTS" WAS TRUE BY CONSTRUCTION, which is what this rule used to
+-- ask. The delete pass commits its attempt row microseconds before it calls the
+-- store, so the very attempt that observed the object absent satisfied the
+-- condition that was supposed to prove somebody had tried before. A first-
+-- attempt 404 -- a wrong --output-prefix, a bucket that no longer exists, or
+-- somebody else's lifecycle rule -- was therefore finalized as this plane's own
+-- successful deletion, and the epoch never left healthy while a whole
+-- registered set disappeared.
+--
+-- The attempt that can explain an absence is one whose answer never arrived:
+-- outcome `timeout`, `infrastructure_failure`, or NULL for a pass that died
+-- between admitting and recording. `already_absent`, `generation_conflict` and
+-- `unauthorized` are answers -- the store said something, and what it said was
+-- not "removed". And it has to be EARLIER: a lost response after the object was
+-- already observed absent cannot be the reason it went missing.
 CREATE FUNCTION hangar_check_reclaim_evidence() RETURNS trigger
     LANGUAGE plpgsql AS $$
 DECLARE
     confirmed integer;
-    admitted  integer;
+    absent_at bigint;
+    lost      integer;
 BEGIN
     IF NEW.outcome IS NULL THEN
         RETURN NULL;
@@ -1660,7 +1677,6 @@ BEGIN
 
     SELECT count(*) INTO confirmed FROM hangar_reclaim_attempts
         WHERE job_id = NEW.id AND outcome = 'deleted';
-    SELECT count(*) INTO admitted FROM hangar_reclaim_attempts WHERE job_id = NEW.id;
 
     IF NEW.outcome = 'reclaimed_confirmed' AND confirmed = 0 THEN
         RAISE EXCEPTION 'hangar: reclaim job % finalized as reclaimed_confirmed with no acknowledged conditional delete; an ambiguous deletion is inferred at best',
@@ -1668,8 +1684,18 @@ BEGIN
             USING ERRCODE = 'JB004';
     END IF;
     IF NEW.outcome = 'reclaimed_inferred' THEN
-        IF admitted = 0 THEN
-            RAISE EXCEPTION 'hangar: reclaim job % finalized as reclaimed_inferred with no durable admitted-delete record; absence without a prior admitted delete is an out-of-band lifetime violation, not normal reclamation',
+        -- The first observation of absence, if there is one. A lost response
+        -- has to come before it to be its explanation.
+        SELECT min(id) INTO absent_at FROM hangar_reclaim_attempts
+            WHERE job_id = NEW.id AND outcome = 'already_absent';
+
+        SELECT count(*) INTO lost FROM hangar_reclaim_attempts
+            WHERE job_id = NEW.id
+              AND (outcome IS NULL OR outcome IN ('timeout', 'infrastructure_failure'))
+              AND (absent_at IS NULL OR id < absent_at);
+
+        IF lost = 0 THEN
+            RAISE EXCEPTION 'hangar: reclaim job % finalized as reclaimed_inferred with no earlier admitted delete whose response was lost; every attempt on this job was answered, so nothing this plane did can explain the absence, and an absence this plane cannot explain is an out-of-band lifetime violation rather than normal reclamation',
                 NEW.id
             USING ERRCODE = 'JB004';
         END IF;
