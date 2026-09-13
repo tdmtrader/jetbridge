@@ -8,6 +8,7 @@ import (
 	"github.com/concourse/concourse/artifactcap"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -656,7 +657,18 @@ func (b *DaemonSetBackend) RecordOutputs(ctx context.Context, handle, nodeName s
 		if subdir == "" {
 			subdir = "unknown"
 		}
-		daemonKey := handle + "/" + subdir
+		// path.Join, not concatenation: this key and the diskPath below are two
+		// derivations of one directory, and the join that builds the path — in
+		// StepVolume too — cleans a leading slash away. An output the pipeline
+		// named "/data" (a task may name one for the directory it wants to
+		// capture, and the ATC resolves an absolute name to itself) then lands
+		// in steps/<handle>/data while a concatenated key says
+		// "<handle>//data". The daemon refuses that key outright rather than
+		// cleaning it — a caller splitting it on "/" gets an empty segment
+		// where the sweeper gets a handle — so the next step's fetch 400s on
+		// the one node holding the data, and the mirror was refused the same
+		// way and swallowed. Slash-separated key, so path and not filepath.
+		daemonKey := path.Join(handle, subdir)
 		b.artifactLocator.Record(key, nodeName, daemonKey)
 
 		if nodeName != "" {

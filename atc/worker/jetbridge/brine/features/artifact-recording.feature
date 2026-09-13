@@ -224,6 +224,49 @@ Feature: Recording where a step's outputs went
     Then the fetch succeeded, so the step starts
     And what the step finds at "/tmp/build/workdir/from-earlier" is "compiled binary"
 
+  # An output the pipeline named with an absolute path, which is how a step
+  # captures a directory its own image owns. A task may declare an output named
+  # "/data" and give it no path: of its own — the ATC resolves an absolute NAME
+  # to itself — and the mount lands at /data, so a Postgres container's data
+  # directory becomes an artifact the next step can read.
+  #
+  # The two halves of the index are built differently for such a name. The
+  # directory comes from joining <store>/steps/<handle> with the name, and a
+  # join CLEANS the leading slash away: the bytes land in steps/<handle>/data.
+  # The key was built by concatenation — handle + "/" + name — which does not:
+  # the index says "<handle>//data". One name, two directories.
+  #
+  # The daemon will not paper over it. It refuses a non-canonical key outright
+  # rather than cleaning it, because callers derive guard keys by splitting on
+  # "/": "<handle>//data" yields an empty segment where the sweeper derives a
+  # handle, so the lock excludes nobody and the sweeper is free to delete the
+  # tree mid-read. The refusal is correct; the key it refuses is the defect.
+  #
+  # Nothing before the consuming step can see it. The producing step writes its
+  # files through the mount and exits 0. The alias registered alongside the
+  # index carries the JOINED path, so it is right, and a web-side read by
+  # volume handle — "the output ... reads back as ..." above — resolves through
+  # that alias and returns the bytes. Only the next step's init container asks
+  # for the recorded key, and it asks the one daemon that holds the data and
+  # will not answer to that name. The build fails on the fetch, in the step
+  # after the one that was wrong, and the mirror that would have protected the
+  # output was refused the same way and swallowed.
+  #
+  # Every other output in this file is named "result", "binary", "report" — a
+  # name with no separator in it, for which joining and concatenating agree by
+  # accident. That is why the two derivations could disagree for a year with
+  # every scenario green.
+  Scenario: An output the pipeline named by an absolute path is fetched from the directory it was written to
+    Given a jetbridge worker whose step outputs stay on the node that ran them
+    And the step "build-42" ran on node "node-1"
+    And its output "/data" is the volume "vol-data" holding "the postgres data directory"
+    And a later step "consume-42" takes the artifact "vol-data" at "/tmp/build/workdir/pgdata"
+    When the worker records where the step's outputs went
+    And that step's pod is built
+    And the node's daemon answers its fetch
+    Then the fetch succeeded, so the step starts
+    And what the step finds at "/tmp/build/workdir/pgdata" is "the postgres data directory"
+
   # And the failure this file exists to make loud. The daemon refuses a batch
   # it could only partly deliver — it answers 500, with an overall status of
   # "error" — and the init container must turn that into a failed build.

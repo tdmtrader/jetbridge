@@ -69,6 +69,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -790,7 +791,18 @@ func newArtifactCluster(res brine.Resources, disk nodeDisk) (ArtifactCluster, er
 
 // outputMountPath is where an output of the described step is mounted. The
 // name is what the daemon key is built from, so the two travel together.
+//
+// It is the ATC's own rule, not a convenience: atc/exec/task_step.go's
+// resolvePath returns an ABSOLUTE output name unchanged and hangs a relative
+// one off the build directory. A task that wants to capture a directory its
+// image owns — a Postgres data directory at /data — names the output for that
+// path and gives it no path: of its own, and the mount lands there. Joining
+// such a name onto /tmp/build here would describe a step no pipeline can
+// write, and the scenarios built on it would be asserting about nothing.
 func outputMountPath(name string) string {
+	if filepath.IsAbs(name) {
+		return name
+	}
 	return "/tmp/build/" + name
 }
 
@@ -922,7 +934,13 @@ func artifactClusterDefinitions() []brine.StepDefinition {
 				in.Outputs[name] = outputMountPath(name)
 				in.Volumes = append(in.Volumes,
 					jetbridge.NewStubVolume(handle, in.WorkerRow.Name(), outputMountPath(name)))
-				if err := in.Disk.write("steps/"+in.Handle+"/"+name, content); err != nil {
+				// path.Join, because this fixture stands in for the kubelet:
+				// the directory it makes is the one the pod's hostPath names,
+				// and that is built by joining. Concatenating instead would
+				// put an output named "/data" at steps/<handle>//data — the
+				// production defect, reproduced in the fixture, where it would
+				// cancel out rather than show.
+				if err := in.Disk.write(path.Join("steps", in.Handle, name), content); err != nil {
 					return ArtifactCluster{}, err
 				}
 				return in, nil
