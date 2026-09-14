@@ -27,12 +27,12 @@ var _ = Describe("logout", func() {
 			"test1": {
 				API:      logoutATCServer.URL() + "/test1",
 				TeamName: "main",
-				Token:    &rc.TargetToken{Type: "Bearer", Value: validAccessToken(date(2020, 1, 1))},
+				Token:    &rc.TargetToken{Type: "Bearer", Value: validAccessToken(date(2020, 1, 1)), RefreshToken: "refresh-1", OAuthClientID: "fly"},
 			},
 			"test2": {
 				API:      logoutATCServer.URL() + "/test2",
 				TeamName: "main",
-				Token:    &rc.TargetToken{Type: "Bearer", Value: validAccessToken(date(2020, 1, 2))},
+				Token:    &rc.TargetToken{Type: "Bearer", Value: validAccessToken(date(2020, 1, 2)), RefreshToken: "refresh-2", OAuthClientID: "fly"},
 			},
 		})
 
@@ -86,11 +86,11 @@ var _ = Describe("logout", func() {
 
 	Describe("delete all", func() {
 		It("removes all tokens and all targets remain in flyrc", func() {
-			logoutATCServer.RouteToHandler("GET", "/test1/sky/logout",
+			logoutATCServer.RouteToHandler("POST", "/test1/sky/logout",
 				ghttp.CombineHandlers(
 					ghttp.RespondWith(200, ""),
 				))
-			logoutATCServer.RouteToHandler("GET", "/test2/sky/logout",
+			logoutATCServer.RouteToHandler("POST", "/test2/sky/logout",
 				ghttp.CombineHandlers(
 					ghttp.RespondWith(200, ""),
 				))
@@ -127,7 +127,7 @@ var _ = Describe("logout", func() {
 		It("removes token of the target and the target should remain in .flyrc", func() {
 			logoutATCServer.AppendHandlers(
 				ghttp.CombineHandlers(
-					ghttp.VerifyRequest("GET", "/test2/sky/logout"),
+					ghttp.VerifyRequest("POST", "/test2/sky/logout"),
 					ghttp.RespondWith(200, ""),
 				),
 			)
@@ -162,11 +162,11 @@ var _ = Describe("logout", func() {
 
 	Describe("try to delete all, but logout API fails", func() {
 		It("try to logout from all targets, but one fails", func() {
-			logoutATCServer.RouteToHandler("GET", "/test1/sky/logout",
+			logoutATCServer.RouteToHandler("POST", "/test1/sky/logout",
 				ghttp.CombineHandlers(
 					ghttp.RespondWith(200, ""),
 				))
-			logoutATCServer.RouteToHandler("GET", "/test2/sky/logout",
+			logoutATCServer.RouteToHandler("POST", "/test2/sky/logout",
 				ghttp.CombineHandlers(
 					ghttp.RespondWith(500, ""),
 				))
@@ -179,7 +179,7 @@ var _ = Describe("logout", func() {
 			Expect(sess.ExitCode()).To(Equal(1))
 
 			Expect(sess.Out).To(gbytes.Say(`logged out of target: test1`))
-			Expect(sess.Err).To(gbytes.Say(`logout failed with status: 500 Internal Server Error`))
+			Expect(sess.Err).To(gbytes.Say(`remote renewal revocation was not confirmed: server returned HTTP 500`))
 
 			flyCmd = exec.Command(flyPath, "targets")
 			sess, err = gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
@@ -194,7 +194,7 @@ var _ = Describe("logout", func() {
 				},
 				Data: []ui.TableRow{
 					{{Contents: "test1"}, {Contents: logoutATCServer.URL() + "/test1"}, {Contents: "main"}, {Contents: "n/a"}},
-					{{Contents: "test2"}, {Contents: logoutATCServer.URL() + "/test2"}, {Contents: "main"}, {Contents: "Thu, 02 Jan 2020 00:00:00 UTC"}},
+					{{Contents: "test2"}, {Contents: logoutATCServer.URL() + "/test2"}, {Contents: "main"}, {Contents: "n/a"}},
 				},
 			}))
 		})

@@ -26,6 +26,10 @@ type SkyConfig struct {
 	OAuthConfig     *oauth2.Config
 	HTTPClient      *http.Client
 	StateSigningKey []byte
+	// RevokeRefresh is called only with a subject obtained from a successful,
+	// client-bound token exchange against our configured issuer.
+	RevokeRefresh        func(context.Context, string, string) error
+	RefreshTokenLifetime time.Duration
 }
 
 func NewSkyHandler(server *SkyServer) http.Handler {
@@ -163,8 +167,8 @@ func (s *SkyServer) Redirect(w http.ResponseWriter, r *http.Request, oauth2Token
 	// Extract ID token from Dex's response — this is our bearer token
 	idToken, _ := oauth2Token.Extra("id_token").(string)
 	if idToken == "" {
-		// Fallback to access token if id_token not present (e.g. during tests)
-		idToken = oauth2Token.AccessToken
+		http.Error(w, "issuer response missing identity token", http.StatusBadGateway)
+		return
 	}
 
 	err = s.config.TokenMiddleware.SetAuthToken(w, "bearer "+idToken, oauth2Token.Expiry)
@@ -177,13 +181,17 @@ func (s *SkyServer) Redirect(w http.ResponseWriter, r *http.Request, oauth2Token
 	// Store refresh token in a separate cookie if present
 	if oauth2Token.RefreshToken != "" {
 		// Refresh tokens have longer lifetime — use 30 days as default
-		refreshExpiry := time.Now().Add(30 * 24 * time.Hour)
+		refreshExpiry := time.Now().Add(s.refreshLifetime())
 		err = s.config.TokenMiddleware.SetRefreshToken(w, oauth2Token.RefreshToken, refreshExpiry)
 		if err != nil {
 			logger.Error("failed-to-set-refresh-token", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
+	} else {
+		// A connector without offline access must not inherit a previous
+		// login's renewal cookie, potentially for a different account.
+		s.config.TokenMiddleware.UnsetRefreshToken(w)
 	}
 
 	csrfToken := randomString()
@@ -215,23 +223,35 @@ func (s *SkyServer) Refresh(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
+	if !s.sameOrigin(r) {
+		http.Error(w, "same-origin request required", http.StatusForbidden)
+		return
+	}
 
-	ctx := context.WithValue(r.Context(), oauth2.HTTPClient, s.config.HTTPClient)
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, s.config.HTTPClient)
 
 	// Exchange refresh token with Dex for new tokens
 	newToken, err := s.config.OAuthConfig.TokenSource(ctx, &oauth2.Token{
 		RefreshToken: refreshToken,
 	}).Token()
 	if err != nil {
-		logger.Error("failed-to-refresh-token", err)
-		w.WriteHeader(http.StatusUnauthorized)
+		logger.Info("failed-to-refresh-token")
+		var retrieve *oauth2.RetrieveError
+		if errors.As(err, &retrieve) && retrieve.Response != nil && retrieve.Response.StatusCode < 500 {
+			w.WriteHeader(http.StatusUnauthorized)
+		} else {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
 		return
 	}
 
 	// Extract new ID token
 	idToken, _ := newToken.Extra("id_token").(string)
 	if idToken == "" {
-		idToken = newToken.AccessToken
+		http.Error(w, "issuer response missing identity token", http.StatusBadGateway)
+		return
 	}
 
 	err = s.config.TokenMiddleware.SetAuthToken(w, "bearer "+idToken, newToken.Expiry)
@@ -243,7 +263,7 @@ func (s *SkyServer) Refresh(w http.ResponseWriter, r *http.Request) {
 
 	// Rotate refresh token if Dex issued a new one
 	if newToken.RefreshToken != "" {
-		refreshExpiry := time.Now().Add(30 * 24 * time.Hour)
+		refreshExpiry := time.Now().Add(s.refreshLifetime())
 		err = s.config.TokenMiddleware.SetRefreshToken(w, newToken.RefreshToken, refreshExpiry)
 		if err != nil {
 			logger.Error("failed-to-set-refresh-token", err)
@@ -267,9 +287,108 @@ func (s *SkyServer) Refresh(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *SkyServer) Logout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	refresh := s.config.TokenMiddleware.GetRefreshToken(r)
+	conf := *s.config.OAuthConfig
+	if refresh != "" {
+		if !s.sameOrigin(r) {
+			http.Error(w, "same-origin request required", http.StatusForbidden)
+			return
+		}
+	} else {
+		r.Body = http.MaxBytesReader(w, r.Body, 16*1024)
+		if err := r.ParseForm(); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		refresh = r.PostForm.Get("refresh_token")
+		if refresh != "" {
+			switch r.PostForm.Get("client_id") {
+			case "fly":
+				conf.ClientID, conf.ClientSecret = "fly", "Zmx5"
+			case "fly-browser":
+				conf.ClientID, conf.ClientSecret = "fly-browser", ""
+			default:
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			conf.Endpoint.AuthStyle = oauth2.AuthStyleInParams
+		}
+	}
+	// Clear local browser state even when remote revocation is unavailable, but
+	// report that distinction instead of claiming a completed remote logout.
 	s.config.TokenMiddleware.UnsetAuthToken(w)
 	s.config.TokenMiddleware.UnsetCSRFToken(w)
 	s.config.TokenMiddleware.UnsetRefreshToken(w)
+	if refresh == "" {
+		return
+	}
+	if s.config.RevokeRefresh == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, s.config.HTTPClient)
+	refreshed, err := conf.TokenSource(ctx, &oauth2.Token{RefreshToken: refresh}).Token()
+	if err != nil {
+		var retrieve *oauth2.RetrieveError
+		if errors.As(err, &retrieve) && retrieve.Response != nil && retrieve.Response.StatusCode < 500 {
+			// Already rejected/expired grants cannot renew and need no revocation.
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	idToken, _ := refreshed.Extra("id_token").(string)
+	parts := strings.Split(idToken, ".")
+	if len(parts) != 3 {
+		w.WriteHeader(http.StatusBadGateway)
+		return
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	var claims struct {
+		Subject string `json:"sub"`
+	}
+	if err != nil || json.Unmarshal(payload, &claims) != nil || claims.Subject == "" {
+		w.WriteHeader(http.StatusBadGateway)
+		return
+	}
+	if err := s.config.RevokeRefresh(ctx, claims.Subject, conf.ClientID); err != nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+}
+
+func (s *SkyServer) refreshLifetime() time.Duration {
+	if s.config.RefreshTokenLifetime > 0 {
+		return s.config.RefreshTokenLifetime
+	}
+	return 30 * 24 * time.Hour
+}
+
+// Origin remains available after the short-lived auth/CSRF cookies expire.
+// Requiring it prevents cookie renewal or revocation through cross-site forms.
+func (s *SkyServer) sameOrigin(r *http.Request) bool {
+	origin, err := url.Parse(r.Header.Get("Origin"))
+	if err != nil || origin.Host == "" || origin.RawQuery != "" || origin.Fragment != "" || origin.Path != "" {
+		return false
+	}
+	expected, err := url.Parse(s.config.OAuthConfig.RedirectURL)
+	if err != nil {
+		return false
+	}
+	if expected.Host == "" {
+		expected.Host = r.Host
+		expected.Scheme = "http"
+		if r.TLS != nil {
+			expected.Scheme = "https"
+		}
+	}
+	return origin.Scheme == expected.Scheme && strings.EqualFold(origin.Host, expected.Host)
 }
 
 type stateToken struct {

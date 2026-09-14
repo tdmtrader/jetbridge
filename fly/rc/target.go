@@ -505,10 +505,7 @@ func defaultHttpClient(token *TargetToken, insecure bool, caCertPool *x509.CertP
 			// Use refreshing token source for JWT tokens with refresh tokens
 			source = newRefreshingTokenSource(token, targetName, targetAPI, baseTransport)
 		} else {
-			source = oauth2.StaticTokenSource(&oauth2.Token{
-				TokenType:   token.Type,
-				AccessToken: token.Value,
-			})
+			source = legacyTokenSource{token: *token}
 		}
 		return &http.Client{
 			Transport: &oauth2.Transport{

@@ -19,15 +19,19 @@ import (
 )
 
 type DexConfig struct {
-	Logger            lager.Logger
-	IssuerURL         string
-	SigningKey        *rsa.PrivateKey
-	Expiration        time.Duration
-	Clients           map[string]string
-	Users             map[string]string
-	PasswordConnector string
-	RedirectURL       string
-	Storage           s.Storage
+	Logger                      lager.Logger
+	IssuerURL                   string
+	SigningKey                  *rsa.PrivateKey
+	Expiration                  time.Duration
+	Clients                     map[string]string
+	ExtraClients                []storage.Client
+	Users                       map[string]string
+	PasswordConnector           string
+	RedirectURL                 string
+	Storage                     s.Storage
+	RefreshTokenIdleTimeout     time.Duration
+	RefreshTokenAbsoluteTimeout time.Duration
+	RefreshTokenReuseInterval   time.Duration
 }
 
 //go:embed web
@@ -87,12 +91,17 @@ func NewDexServerConfig(config *DexConfig) (server.Config, error) {
 	}
 
 	for clientId, clientSecret := range config.Clients {
+		if clientId == "fly-browser" {
+			continue // The built-in desktop client is public, never confidential.
+		}
 		clients = append(clients, storage.Client{
 			ID:           clientId,
 			Secret:       clientSecret,
 			RedirectURIs: []string{config.RedirectURL},
 		})
 	}
+	clients = append(clients, storage.Client{ID: "fly-browser", Name: "fly CLI", Public: true})
+	clients = append(clients, config.ExtraClients...)
 
 	if err := replacePasswords(config.Storage, passwords); err != nil {
 		return server.Config{}, err
@@ -117,8 +126,27 @@ func NewDexServerConfig(config *DexConfig) (server.Config, error) {
 		Theme:   "concourse",
 		Issuer:  "Concourse",
 	}
+	idle, absolute, reuse := config.RefreshTokenIdleTimeout, config.RefreshTokenAbsoluteTimeout, config.RefreshTokenReuseInterval
+	if idle == 0 {
+		idle = 30 * 24 * time.Hour
+	}
+	if absolute == 0 {
+		absolute = 90 * 24 * time.Hour
+	}
+	if reuse == 0 {
+		reuse = 5 * time.Second
+	}
+	if idle < 0 || absolute < 0 || reuse < 0 || reuse >= idle || idle > absolute {
+		return server.Config{}, errors.New("refresh policy requires 0 < reuse < idle <= absolute lifetime")
+	}
+	// The pinned Dex constructor's boolean means disable rotation, despite its name.
+	policy, err := server.NewRefreshTokenPolicy(slog.New(lager.NewHandler(config.Logger)), false, idle.String(), absolute.String(), reuse.String())
+	if err != nil {
+		return server.Config{}, err
+	}
 
 	return server.Config{
+		RefreshTokenPolicy:     policy,
 		PasswordConnector:      config.PasswordConnector,
 		SupportedResponseTypes: []string{"code", "token", "id_token"},
 		SkipApprovalScreen:     true,

@@ -230,7 +230,7 @@ var _ = Describe("Sky Server API", func() {
 			})
 		})
 
-		Describe("GET /sky/logout", func() {
+		Describe("POST /sky/logout", func() {
 			var (
 				err      error
 				request  *http.Request
@@ -238,7 +238,7 @@ var _ = Describe("Sky Server API", func() {
 			)
 
 			BeforeEach(func() {
-				request, err = http.NewRequest("GET", skyServer.URL+"/sky/logout", nil)
+				request, err = http.NewRequest("POST", skyServer.URL+"/sky/logout", nil)
 				Expect(err).NotTo(HaveOccurred())
 			})
 
@@ -576,6 +576,7 @@ var _ = Describe("Sky Server API", func() {
 			Context("when a refresh token is present", func() {
 				BeforeEach(func() {
 					request.AddCookie(&http.Cookie{Name: refreshCookieName, Value: "old-refresh-token"})
+					request.Header.Set("Origin", skyServer.URL)
 				})
 
 				Context("when Dex returns a new token", func() {

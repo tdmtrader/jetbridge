@@ -3,7 +3,7 @@
 # ci-check.sh -- run the real CI tasks against a ref, before offering it for merge.
 #
 # The local test tiers run on macOS. CI runs on Linux, in the
-# registry.home/concourse-test-runner:v9 image, on the theborg cluster. Two
+# registry.home/concourse-test-runner:v10 image, on the theborg cluster. Two
 # whole classes of failure live in that gap and no amount of `make test-unit`
 # will show them:
 #

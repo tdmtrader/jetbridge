@@ -1,181 +1,63 @@
+// Package mcpserver provides MCP transport without dependencies on the CI platform.
 package mcpserver
 
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"io"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"net/http"
 )
 
-const protocolVersion = "2024-11-05"
-
-// ToolHandler is a function that handles an MCP tool call.
-type ToolHandler func(ctx context.Context, args json.RawMessage) (any, error)
-
-// Server is an MCP server that dispatches tool calls over HTTP.
-// It implements http.Handler using the MCP Streamable HTTP transport.
+type ToolHandler func(context.Context, json.RawMessage) (any, error)
 type Server struct {
-	tools    []ToolDef
-	handlers map[string]ToolHandler
+	server  *mcp.Server
+	handler http.Handler
 }
 
-// NewServer creates an MCP server with no tools registered.
 func NewServer() *Server {
-	return &Server{
-		handlers: make(map[string]ToolHandler),
-	}
+	s := &Server{server: NewProtocolServer()}
+	s.handler = NewHTTPHandler(func(*http.Request) *mcp.Server { return s.server })
+	return s
+}
+func NewProtocolServer() *mcp.Server {
+	return mcp.NewServer(&mcp.Implementation{Name: "jetbridge-mcp", Version: "0.1.0"},
+		&mcp.ServerOptions{Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}})
 }
 
-// AddTool registers a tool with the server.
+// NewHTTPHandler serves the 2025-11-25 Streamable HTTP compatibility profile.
+// Each POST is independent: tokens are checked by the caller on every request,
+// and no in-memory session affinity is needed across replicas or restarts.
+// The initial read-only surface has no server-initiated event stream.
+func NewHTTPHandler(selectServer func(*http.Request) *mcp.Server) http.Handler {
+	sdk := mcp.NewStreamableHTTPHandler(selectServer, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
+	return http.NewCrossOriginProtection().Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 1024*1024)
+		sdk.ServeHTTP(w, r)
+	}))
+}
+
+// AddTool preserves the generic registration interface; product adapters should
+// prefer the SDK's typed AddTool for generated and validated argument schemas.
 func (s *Server) AddTool(name, description string, schema json.RawMessage, handler ToolHandler) {
-	s.tools = append(s.tools, ToolDef{
-		Name:        name,
-		Description: description,
-		InputSchema: schema,
-	})
-	s.handlers[name] = handler
+	s.server.AddTool(&mcp.Tool{Name: name, Description: description, InputSchema: schema},
+		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			value, err := handler(ctx, req.Params.Arguments)
+			if err != nil {
+				return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}}, nil
+			}
+			data, err := json.Marshal(value)
+			if err != nil {
+				return nil, err
+			}
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(data)}}}, nil
+		})
 }
-
-// ServeHTTP implements http.Handler for the MCP Streamable HTTP transport.
-// POST requests contain JSON-RPC messages; responses are JSON.
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-
-	body, err := io.ReadAll(io.LimitReader(r.Body, 10*1024*1024))
-	if err != nil {
-		writeHTTPError(w, -32700, "failed to read request body")
-		return
-	}
-
-	var req jsonRPCRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		writeHTTPError(w, -32700, "parse error")
-		return
-	}
-
-	resp := s.dispatch(r.Context(), &req)
-	if resp == nil {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
-}
-
-func (s *Server) dispatch(ctx context.Context, req *jsonRPCRequest) *jsonRPCResponse {
-	switch req.Method {
-	case "initialize":
-		return s.handleInitialize(req)
-	case "notifications/initialized":
-		return nil
-	case "tools/list":
-		return s.handleToolsList(req)
-	case "tools/call":
-		return s.handleToolsCall(ctx, req)
-	case "ping":
-		return &jsonRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{}}
-	default:
-		return &jsonRPCResponse{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Error:   &jsonRPCError{Code: -32601, Message: fmt.Sprintf("method not found: %s", req.Method)},
-		}
-	}
-}
-
-func (s *Server) handleInitialize(req *jsonRPCRequest) *jsonRPCResponse {
-	return &jsonRPCResponse{
-		JSONRPC: "2.0",
-		ID:      req.ID,
-		Result: initializeResult{
-			ProtocolVersion: protocolVersion,
-			Capabilities:    serverCapability{Tools: &toolCapability{}},
-			ServerInfo:      entityInfo{Name: "concourse-mcp", Version: "0.1.0"},
-		},
-	}
-}
-
-func (s *Server) handleToolsList(req *jsonRPCRequest) *jsonRPCResponse {
-	tools := s.tools
-	if tools == nil {
-		tools = []ToolDef{}
-	}
-	return &jsonRPCResponse{
-		JSONRPC: "2.0",
-		ID:      req.ID,
-		Result:  toolsListResult{Tools: tools},
-	}
-}
-
-func (s *Server) handleToolsCall(ctx context.Context, req *jsonRPCRequest) *jsonRPCResponse {
-	var params callToolParams
-	if err := json.Unmarshal(req.Params, &params); err != nil {
-		return &jsonRPCResponse{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Error:   &jsonRPCError{Code: -32602, Message: "invalid params"},
-		}
-	}
-
-	handler, ok := s.handlers[params.Name]
-	if !ok {
-		return &jsonRPCResponse{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Result: callToolResult{
-				Content: []contentBlock{{Type: "text", Text: fmt.Sprintf("unknown tool: %s", params.Name)}},
-				IsError: true,
-			},
-		}
-	}
-
-	result, err := handler(ctx, params.Arguments)
-	if err != nil {
-		return &jsonRPCResponse{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Result: callToolResult{
-				Content: []contentBlock{{Type: "text", Text: fmt.Sprintf("error: %s", err.Error())}},
-				IsError: true,
-			},
-		}
-	}
-
-	resultJSON, err := json.Marshal(result)
-	if err != nil {
-		return &jsonRPCResponse{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Result: callToolResult{
-				Content: []contentBlock{{Type: "text", Text: fmt.Sprintf("error marshaling result: %s", err.Error())}},
-				IsError: true,
-			},
-		}
-	}
-
-	return &jsonRPCResponse{
-		JSONRPC: "2.0",
-		ID:      req.ID,
-		Result: callToolResult{
-			Content: []contentBlock{{Type: "text", Text: string(resultJSON)}},
-		},
-	}
-}
-
-func writeHTTPError(w http.ResponseWriter, code int, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(&jsonRPCResponse{
-		JSONRPC: "2.0",
-		Error:   &jsonRPCError{Code: code, Message: message},
-	})
-}
-
-// MustJSON marshals v to JSON or panics. Used for tool schema definitions.
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.handler.ServeHTTP(w, r) }
 func MustJSON(v any) json.RawMessage {
 	data, err := json.Marshal(v)
 	if err != nil {

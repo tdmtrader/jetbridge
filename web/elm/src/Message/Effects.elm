@@ -613,7 +613,7 @@ runNonPipelineRunEffect effect key csrfToken =
                 |> Task.attempt (PipelinesOrdered id.teamName)
 
         SendLogOutRequest ->
-            Api.get Endpoints.Logout
+            Api.post Endpoints.Logout csrfToken
                 |> Api.request
                 |> Task.attempt LoggedOut
 

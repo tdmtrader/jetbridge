@@ -43,12 +43,15 @@ func WireTeamConnectors(group *flags.Group) {
 }
 
 type AuthFlags struct {
-	SecureCookies     bool              `long:"cookie-secure" description:"Force sending secure flag on http cookies"`
-	Expiration        time.Duration     `long:"auth-duration" default:"24h" description:"Length of time for which tokens are valid. Afterwards, users will have to log back in."`
-	SigningKey        *flag.PrivateKey  `long:"session-signing-key" required:"true" description:"File containing an RSA private key, used to sign auth tokens."`
-	PasswordConnector string            `long:"password-connector" default:"local" choice:"local" choice:"ldap" description:"Connector to use when authenticating via 'fly login -u ... -p ...'"`
-	LocalUsers        map[string]string `long:"add-local-user" description:"List of username:password combinations for all your local users. The password can be bcrypted - if so, it must have a minimum cost of 10." value-name:"USERNAME:PASSWORD"`
-	Clients           map[string]string `long:"add-client" description:"List of client_id:client_secret combinations" value-name:"CLIENT_ID:CLIENT_SECRET"`
+	SecureCookies               bool              `long:"cookie-secure" description:"Force sending secure flag on http cookies"`
+	Expiration                  time.Duration     `long:"auth-duration" default:"24h" description:"Lifetime of an access token. Renewable logins refresh automatically after expiry."`
+	RefreshTokenIdleTimeout     time.Duration     `long:"auth-refresh-idle-timeout" default:"720h" description:"Maximum time a renewable login may remain unused (default 30 days)."`
+	RefreshTokenAbsoluteTimeout time.Duration     `long:"auth-refresh-absolute-timeout" default:"2160h" description:"Maximum renewable login lifetime before another login (default 90 days)."`
+	RefreshTokenReuseInterval   time.Duration     `long:"auth-refresh-reuse-interval" default:"5s" description:"Brief recovery window for a retried refresh exchange."`
+	SigningKey                  *flag.PrivateKey  `long:"session-signing-key" required:"true" description:"File containing an RSA private key, used to sign auth tokens."`
+	PasswordConnector           string            `long:"password-connector" default:"local" choice:"local" choice:"ldap" description:"Connector to use when authenticating via 'fly login -u ... -p ...'"`
+	LocalUsers                  map[string]string `long:"add-local-user" description:"List of username:password combinations for all your local users. The password can be bcrypted - if so, it must have a minimum cost of 10." value-name:"USERNAME:PASSWORD"`
+	Clients                     map[string]string `long:"add-client" description:"List of client_id:client_secret combinations" value-name:"CLIENT_ID:CLIENT_SECRET"`
 }
 
 type AuthTeamFlags struct {

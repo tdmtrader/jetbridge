@@ -17,6 +17,7 @@ var encryptedColumns = []encryptedColumn{
 	{"builds", "private_plan", "id"},
 	{"cert_cache", "cert", "domain"},
 	{"pipelines", "var_sources", "id"},
+	{"mcp_oauth_state", "data", "id"},
 }
 
 type encryptedColumn struct {
@@ -28,6 +29,16 @@ type encryptedColumn struct {
 func (m migrator) encryptPlaintext(key *encryption.Key) error {
 	logger := m.logger.Session("encrypt")
 	for _, ec := range encryptedColumns {
+		if ec.Table == "mcp_oauth_state" {
+			exists, err := checkTableExist(m.db, ec.Table)
+			if err != nil {
+				return err
+			}
+			// Historical migration targets predate MCP authorization state.
+			if !exists {
+				continue
+			}
+		}
 		rows, err := m.db.Query(`
 			SELECT ` + ec.PrimaryKey + `, ` + ec.Column + `
 			FROM ` + ec.Table + `
@@ -96,6 +107,15 @@ func (m migrator) encryptPlaintext(key *encryption.Key) error {
 func (m migrator) decryptToPlaintext(oldKey *encryption.Key) error {
 	logger := m.logger.Session("decrypt")
 	for _, ec := range encryptedColumns {
+		if ec.Table == "mcp_oauth_state" {
+			exists, err := checkTableExist(m.db, ec.Table)
+			if err != nil {
+				return err
+			}
+			if !exists {
+				continue
+			}
+		}
 		rows, err := m.db.Query(`
 			SELECT ` + ec.PrimaryKey + `, nonce, ` + ec.Column + `
 			FROM ` + ec.Table + `
@@ -161,6 +181,15 @@ var ErrEncryptedWithUnknownKey = errors.New("row encrypted with neither old nor 
 func (m migrator) encryptWithNewKey(newKey *encryption.Key, oldKey *encryption.Key) error {
 	logger := m.logger.Session("rotate")
 	for _, ec := range encryptedColumns {
+		if ec.Table == "mcp_oauth_state" {
+			exists, err := checkTableExist(m.db, ec.Table)
+			if err != nil {
+				return err
+			}
+			if !exists {
+				continue
+			}
+		}
 		rows, err := m.db.Query(`
 			SELECT ` + ec.PrimaryKey + `, nonce, ` + ec.Column + `
 			FROM ` + ec.Table + `

@@ -26,8 +26,8 @@ var _ = Describe("Server", func() {
 	Describe("protocol types marshaling", func() {
 		It("returns valid JSON-RPC 2.0 responses", func() {
 			body := jsonRPCBody("initialize", 1, map[string]any{
-				"protocolVersion": "2024-11-05",
-				"clientInfo":      map[string]any{"name": "test-client"},
+				"protocolVersion": "2025-11-25",
+				"clientInfo":      map[string]any{"name": "test-client", "version": "1"},
 			})
 			resp := doMCP(server, body)
 			Expect(resp.StatusCode).To(Equal(http.StatusOK))
@@ -42,41 +42,42 @@ var _ = Describe("Server", func() {
 		It("returns error for malformed JSON", func() {
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/mcp", bytes.NewBufferString(`{not json`))
 			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+			req.Header.Set("MCP-Protocol-Version", "2025-11-25")
 			w := httptest.NewRecorder()
 			server.ServeHTTP(w, req)
 
-			var rpcResp jsonRPCResponse
-			Expect(json.NewDecoder(w.Result().Body).Decode(&rpcResp)).To(Succeed())
-			Expect(rpcResp.Error).NotTo(BeNil())
-			Expect(rpcResp.Error.Code).To(Equal(-32700))
+			Expect(w.Result().StatusCode).To(Equal(http.StatusBadRequest))
 		})
 	})
 
 	Describe("dispatch", func() {
 		It("handles initialize", func() {
 			body := jsonRPCBody("initialize", 1, map[string]any{
-				"protocolVersion": "2024-11-05",
-				"clientInfo":      map[string]any{"name": "test"},
+				"protocolVersion": "2025-11-25",
+				"clientInfo":      map[string]any{"name": "test", "version": "1"},
 			})
 			resp := doMCP(server, body)
 			result := decodeResult(resp)
 
 			Expect(result).To(HaveKey("protocolVersion"))
-			Expect(result["protocolVersion"]).To(Equal("2024-11-05"))
+			Expect(result["protocolVersion"]).To(Equal("2025-11-25"))
 			Expect(result).To(HaveKey("capabilities"))
 			Expect(result).To(HaveKey("serverInfo"))
 			serverInfo := result["serverInfo"].(map[string]any)
-			Expect(serverInfo["name"]).To(Equal("concourse-mcp"))
+			Expect(serverInfo["name"]).To(Equal("jetbridge-mcp"))
 		})
 
-		It("handles notifications/initialized with 204", func() {
+		It("handles notifications/initialized with 202", func() {
 			body := jsonRPCBodyNoID("notifications/initialized", nil)
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/mcp", body)
 			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+			req.Header.Set("MCP-Protocol-Version", "2025-11-25")
 			w := httptest.NewRecorder()
 			server.ServeHTTP(w, req)
 
-			Expect(w.Result().StatusCode).To(Equal(http.StatusNoContent))
+			Expect(w.Result().StatusCode).To(Equal(http.StatusAccepted))
 		})
 
 		It("handles ping", func() {
@@ -95,14 +96,11 @@ var _ = Describe("Server", func() {
 			Expect(tools).To(BeEmpty())
 		})
 
-		It("returns method not found for unknown methods", func() {
+		It("rejects unknown methods", func() {
 			body := jsonRPCBody("unknown/method", 4, nil)
 			resp := doMCP(server, body)
 
-			var rpcResp jsonRPCResponse
-			Expect(json.NewDecoder(resp.Body).Decode(&rpcResp)).To(Succeed())
-			Expect(rpcResp.Error).NotTo(BeNil())
-			Expect(rpcResp.Error.Code).To(Equal(-32601))
+			Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
 		})
 
 		It("handles tools/call for a registered tool", func() {
@@ -129,14 +127,15 @@ var _ = Describe("Server", func() {
 			Expect(echoed["echoed"]).To(ContainSubstring("hello"))
 		})
 
-		It("returns error result for unknown tool", func() {
+		It("returns invalid params for unknown tool", func() {
 			body := jsonRPCBody("tools/call", 6, map[string]any{
 				"name": "nonexistent",
 			})
 			resp := doMCP(server, body)
-			result := decodeResult(resp)
-			Expect(result).To(HaveKey("isError"))
-			Expect(result["isError"]).To(BeTrue())
+			var rpcResp jsonRPCResponse
+			Expect(json.NewDecoder(resp.Body).Decode(&rpcResp)).To(Succeed())
+			Expect(rpcResp.Error).NotTo(BeNil())
+			Expect(rpcResp.Error.Code).To(Equal(-32602))
 		})
 
 		It("returns error result when tool handler errors", func() {
@@ -225,6 +224,8 @@ func jsonRPCBodyNoID(method string, params any) io.Reader {
 func doMCP(server *mcpserver.Server, body io.Reader) *http.Response {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/mcp", body)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("MCP-Protocol-Version", "2025-11-25")
 	w := httptest.NewRecorder()
 	server.ServeHTTP(w, req)
 	return w.Result()

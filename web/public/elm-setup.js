@@ -67,30 +67,50 @@ app.ports.renderPipeline.subscribe(function (values) {
   );
 });
 
-app.ports.requestLoginRedirect.subscribe(function (message) {
-  // Attempt transparent token refresh before redirecting to login.
-  // The refresh endpoint exchanges the refresh token cookie with Dex
-  // for a new ID token, avoiding a full re-login for expired access tokens.
-  fetch("/sky/token/refresh", { method: "POST", credentials: "same-origin" })
+let loginRefreshInFlight = false;
+app.ports.requestLoginRedirect.subscribe(function () {
+  if (loginRefreshInFlight) return;
+  loginRefreshInFlight = true;
+  function retryMessage() {
+    loginRefreshInFlight = false;
+    let notice = document.getElementById("auth-renewal-notice");
+    if (!notice) {
+      notice = document.createElement("div");
+      notice.id = "auth-renewal-notice";
+      notice.setAttribute("role", "alert");
+      notice.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:10000;padding:16px;background:#252a32;color:white;text-align:center";
+      document.body.appendChild(notice);
+    }
+    notice.textContent = "Your login could not be renewed. Check the connection, then reload to retry.";
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(function() { controller.abort(); }, 20000);
+  fetch("/sky/token/refresh", { method: "POST", credentials: "same-origin", signal: controller.signal })
     .then(function(resp) {
       if (resp.ok) {
-        // Refresh succeeded — reload the current page with the new token
-        document.location.reload();
-      } else {
-        // Refresh failed (expired/revoked refresh token) — redirect to login
-        var path = document.location.pathname;
-        var query = document.location.search;
-        var redirect = encodeURIComponent(path + query);
+        return resp.json().then(function(tokens) {
+          if (!tokens.csrf_token || typeof tokens.csrf_token !== "string") {
+            retryMessage();
+            return;
+          }
+          // Elm reads this value after reload; retaining the previous token
+          // would make the next mutation fail despite successful renewal.
+          localStorage.setItem("csrf_token", JSON.stringify(tokens.csrf_token));
+          // Stop a repeated authorization failure from becoming a reload loop.
+          const last = Number(sessionStorage.getItem("jetbridge-auth-refresh") || 0);
+          if (Date.now() - last < 5000) { retryMessage(); return; }
+          sessionStorage.setItem("jetbridge-auth-refresh", String(Date.now()));
+          document.location.reload();
+        });
+      } else if (resp.status === 401) {
+        const redirect = encodeURIComponent(document.location.pathname + document.location.search);
         document.location.href = "/login?redirect_uri=" + redirect;
+      } else {
+        retryMessage();
       }
     })
-    .catch(function() {
-      // Network error — redirect to login
-      var path = document.location.pathname;
-      var query = document.location.search;
-      var redirect = encodeURIComponent(path + query);
-      document.location.href = "/login?redirect_uri=" + redirect;
-    });
+    .catch(retryMessage)
+    .finally(function() { clearTimeout(timeout); });
 });
 
 app.ports.saveToLocalStorage.subscribe(function(params) {

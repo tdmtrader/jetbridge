@@ -16,14 +16,6 @@ runs the whole suite.** Ginkgo v2's `GinkgoTestingT` is `interface{ Fail() }`, s
 subtests exist and the pattern after the slash is discarded. Use
 `-ginkgo.focus='Pod Cleanup'`, which is registered onto `flag.CommandLine`.
 
-**Run database-backed suites with `ginkgo`, never `go test ./...`.**
-`atc/postgresrunner/ginkgo.go` picks its port as `5433 + GinkgoParallelProcess()`, which
-is always 5434 under plain `go test`. Two database-backed packages running concurrently
-bind the same port and, through the shared `/tmp` socket, silently reach *each other's*
-server — it surfaces as `database "testdb_template" already exists` or
-`cannot drop a template database`, from a suite that did nothing wrong. `make test-unit`
-uses `ginkgo -r -p`, which gives each suite its own postmaster.
-
 **Nothing in `make test-unit` runs the two shell scripts injected into task images under
 the shell they actually meet.** `supervisorScriptTemplate`
 (`atc/worker/jetbridge/supervisor.go`) and `pauseCommand`

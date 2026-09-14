@@ -216,7 +216,11 @@ func (command *HijackCommand) Execute([]string) error {
 		}
 
 		ctx := context.Background()
-		h := hijacker.New(target.TLSConfig(), reqGenerator, target.Token())
+		token, err := rc.CurrentTargetToken(target)
+		if err != nil {
+			return 0, err
+		}
+		h := hijacker.New(target.TLSConfig(), reqGenerator, token)
 		result, exeNotFound, err := h.Hijack(ctx, team.Name(), chosenContainer.ID, spec, io)
 
 		if exeNotFound && someShell {

@@ -9,13 +9,22 @@
 runner:
   name: jetbridge
   binary: .build/brine-adapter-jetbridge
-  contract: 3
+  contract: 5
 
-# The FROZEN conformance version. 4 is current-but-growing (it minted with 34
-# goldens and holds 60); 3 is byte-frozen forever. A first consumer wants the
-# version that cannot move underneath it. The cost is one advisory
-# CONTRACT_LAG finding, which never fails a run or a gate.
-contract: 3
+# 3 -> 5, and THE FROZEN-VERSION PREFERENCE HAD TO YIELD (2026-09-09). The
+# original pin was deliberate: 3 is byte-frozen forever, and a first consumer
+# wants the version that cannot move underneath it, at the price of one
+# advisory CONTRACT_LAG finding.
+#
+# Contract 5 removes that choice rather than making it less attractive.
+# Contracts 3 and 4 are the FLAGS ERA — an adapter conforming to either reads
+# `--features`, `--tags`, `--exclude-tags`, `--line` and `--resources` — and
+# brine-dispatch stopped emitting all five UNCONDITIONALLY at the v5 mint
+# (dispatch/src/lib.rs: "ALWAYS, since contract 5"; no contract-3 branch
+# survives). So a `contract: 3` claim from this adapter is now simply false:
+# the binary beside it is document-native and cannot honour the era it names.
+# 5 is current-but-growing, which is the cost we now carry instead.
+contract: 5
 
 features: "features/*.feature"
 budgets:

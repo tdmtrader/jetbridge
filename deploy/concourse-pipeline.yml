@@ -35,7 +35,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v9
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v10
       inputs:
       - name: repo
       run:
@@ -83,7 +83,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v9
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v10
       inputs:
       - name: repo
       # The Hangar output plane's tier-2 conformance suite runs against the
@@ -173,7 +173,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v9
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v10
       inputs:
       - name: repo
       run:
@@ -190,9 +190,20 @@ jobs:
 # jetbridge adapter built from
 # atc/worker/jetbridge/brine. The CLI's verdict is the one that counts -- it
 # folds in the manifest's `budgets.undefined: 0` and any unsatisfied wiring,
-# neither of which the adapter's own exit code can see. v9 already ships
+# neither of which the adapter's own exit code can see. v10 ships
 # /usr/local/bin/brine and its engine, built from the same brine-private
 # revision this module's replace pins.
+#
+# CONTRACT 5 (v10, 2026-09-09). The runner moved from brine-private NEW-NAME
+# (Aug 22) to main-20260909, which crosses the v5 mint: brine-dispatch no
+# longer emits `--features`, `--tags`, `--exclude-tags`, `--line` or
+# `--resources` on any invocation, and hands the adapter a `--document`
+# instead. The adapter was migrated in the same change and `.brine` now claims
+# `contract: 5`. Build the rootfs using the BRINE_COMMIT resolved from the
+# pseudo-version in atc/worker/jetbridge/brine/go.mod, then verify the image's
+# /etc/brine-commit. The image and adapter must use the same revision; changing
+# either alone puts core's half of the protocol out of step with the adapter.
+# The build/publish procedure is documented in deploy/test-runner.md.
 #
 # The module fetch reaches github.com/MarkDucommun/brine-private, a private
 # repository this project does not own, through ((github-token)). That was the
@@ -219,7 +230,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v9
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v10
       inputs:
       - name: repo
       # HANGAR_FAKE_GCS_ENDPOINT is the same value the unit-tests task carries
@@ -241,9 +252,13 @@ jobs:
           # GOPRIVATE (above, and baked into v9) keeps the fetch off
           # proxy.golang.org and the checksum database. It does not
           # authenticate anything -- this rewrite does.
+          # Do not trace the credential into logs when this task is also run
+          # through fly execute with a locally supplied pipeline variable.
+          set +x
           git config --global \
             url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf \
             "https://github.com/"
+          set -x
 
           cd repo/atc/worker/jetbridge/brine
 
@@ -254,11 +269,14 @@ jobs:
           # Root Go test jobs do not discover this nested module.
           go test -count=1 -timeout 5m ./...
 
-          # Run through the CLI, never `adapter run` -- the adapter without
-          # --features executes zero scenarios and exits 0, which is a green
-          # build that tested nothing.
-          # Require >=40% production Jetbridge statement coverage from brine
-          # alone; the script runs the full CLI and rejects empty profiles.
+          # Run through the CLI, never `adapter run`. Under contract 5 the
+          # adapter REFUSES a run with no --document (exit 2, the refusal
+          # naming the five retired selection tokens) rather than exiting 0
+          # over zero scenarios as it did under the flags era -- but the
+          # reason to go through the CLI is unchanged and larger than that
+          # refusal: the CLI is what builds the execution document, and its
+          # verdict is what folds in the budgets.
+          # Preserve the production JetBridge statement coverage gate.
           sh scripts/coverage
 
 - name: tag-rc
@@ -273,7 +291,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v9
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v10
       inputs:
       - name: repo
       run:
@@ -414,7 +432,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v9
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v10
       inputs:
       - name: repo
       - name: web-public
@@ -722,7 +740,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v9
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v10
       inputs:
       - name: repo
       run:
@@ -783,7 +801,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v9
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v10
       inputs:
       - name: repo
       run:
@@ -894,7 +912,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v9
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v10
       inputs:
       - name: repo
       run:
@@ -970,7 +988,7 @@ jobs:
     timeout: 10m
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v9
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v10
       inputs:
       - name: repo
       run:
@@ -1007,7 +1025,7 @@ jobs:
     privileged: true
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v9
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v10
       inputs:
       - name: repo
       params:

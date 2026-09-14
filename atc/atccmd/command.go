@@ -119,6 +119,8 @@ type ATCCommand struct {
 }
 
 type RunCommand struct {
+	mcpHandler                   http.Handler
+	mcpCleanup                   ifrit.Runner
 	artifactResolveCapabilityMu  sync.Mutex
 	artifactResolveCapabilityKey []byte
 
@@ -321,7 +323,9 @@ type RunCommand struct {
 		MainTeamFlags skycmd.AuthTeamFlags `group:"Authentication (Main Team)" namespace:"main-team"`
 	} `group:"Authentication"`
 
-	ConfigRBAC flag.File `long:"config-rbac" description:"Customize RBAC role-action mapping."`
+	ConfigRBAC      flag.File `long:"config-rbac" description:"Customize RBAC role-action mapping."`
+	EnableMCP       bool      `long:"enable-mcp" description:"Enable the authenticated MCP endpoint and OAuth consent flow."`
+	MCPClientConfig flag.File `long:"mcp-client-config" description:"JSON array of registered public MCP clients (client_id, client_name, redirect_uris). Required with --enable-mcp."`
 
 	SystemClaimKey    string   `long:"system-claim-key" default:"aud" description:"The token claim key to use when matching system-claim-values"`
 	SystemClaimValues []string `long:"system-claim-value" default:"concourse-worker" description:"Configure which token requests should be considered 'system' requests."`
@@ -1037,6 +1041,7 @@ func (cmd *RunCommand) constructAPIMembers(
 		logger,
 		httpClient,
 		middleware,
+		storage,
 	)
 	if err != nil {
 		return nil, err
@@ -1047,6 +1052,10 @@ func (cmd *RunCommand) constructAPIMembers(
 	)
 
 	if err != nil {
+		return nil, err
+	}
+
+	if err := cmd.constructMCPHandler(logger, dbConn, httpClient, apiHandler); err != nil {
 		return nil, err
 	}
 
@@ -1132,6 +1141,9 @@ func (cmd *RunCommand) constructAPIMembers(
 		)})
 	}
 
+	if cmd.mcpCleanup != nil {
+		members = append(members, grouper.Member{Name: "mcp-auth-cleanup", Runner: cmd.mcpCleanup})
+	}
 	return members, nil
 }
 
@@ -2364,6 +2376,16 @@ func (cmd *RunCommand) constructHTTPHandler(
 	webMux.Handle("/.well-known/", apiHandler)
 	webMux.Handle("/", webHandler)
 
+	// MCP uses its own bearer credentials and browser consent cookies. In
+	// particular an MCP 401 must not clear an unrelated web login's cookies.
+	routes := http.NewServeMux()
+	routes.Handle("/", auth.WebAuthHandler{Handler: webMux, Middleware: middleware})
+	if cmd.mcpHandler != nil {
+		for _, path := range []string{"/api/v1/mcp", "/mcp/oauth/", "/.well-known/oauth-authorization-server/mcp/oauth", "/.well-known/oauth-protected-resource/api/v1/mcp"} {
+			routes.Handle(path, cmd.mcpHandler)
+		}
+	}
+
 	httpHandler := wrappa.LoggerHandler{
 		Logger: logger,
 
@@ -2372,12 +2394,7 @@ func (cmd *RunCommand) constructHTTPHandler(
 			ContentSecurityPolicy:   cmd.Server.ContentSecurityPolicy,
 			StrictTransportSecurity: cmd.Server.StrictTransportSecurity,
 
-			// proxy Authorization header to/from auth cookie,
-			// to support auth from JS (EventSource) and custom JWT auth
-			Handler: auth.WebAuthHandler{
-				Handler:    webMux,
-				Middleware: middleware,
-			},
+			Handler: routes,
 		},
 	}
 
@@ -2409,15 +2426,19 @@ func (cmd *RunCommand) constructAuthHandler(
 	cmd.Auth.AuthFlags.Clients[flyClientID] = flyClientSecret
 
 	dexServer, err := dexserver.NewDexServer(&dexserver.DexConfig{
-		Logger:            logger.Session("dex"),
-		PasswordConnector: cmd.Auth.AuthFlags.PasswordConnector,
-		Users:             cmd.Auth.AuthFlags.LocalUsers,
-		Clients:           cmd.Auth.AuthFlags.Clients,
-		Expiration:        cmd.Auth.AuthFlags.Expiration,
-		IssuerURL:         issuerURL.String(),
-		RedirectURL:       redirectURL.String(),
-		SigningKey:        cmd.Auth.AuthFlags.SigningKey.PrivateKey,
-		Storage:           storage,
+		Logger:                      logger.Session("dex"),
+		PasswordConnector:           cmd.Auth.AuthFlags.PasswordConnector,
+		Users:                       cmd.Auth.AuthFlags.LocalUsers,
+		Clients:                     cmd.Auth.AuthFlags.Clients,
+		Expiration:                  cmd.Auth.AuthFlags.Expiration,
+		IssuerURL:                   issuerURL.String(),
+		RedirectURL:                 redirectURL.String(),
+		SigningKey:                  cmd.Auth.AuthFlags.SigningKey.PrivateKey,
+		Storage:                     storage,
+		RefreshTokenIdleTimeout:     cmd.Auth.AuthFlags.RefreshTokenIdleTimeout,
+		RefreshTokenAbsoluteTimeout: cmd.Auth.AuthFlags.RefreshTokenAbsoluteTimeout,
+		RefreshTokenReuseInterval:   cmd.Auth.AuthFlags.RefreshTokenReuseInterval,
+		ExtraClients:                cmd.mcpIdentityClients(),
 	})
 	if err != nil {
 		return nil, err
@@ -2427,7 +2448,7 @@ func (cmd *RunCommand) constructAuthHandler(
 	// JWT validation happens in the JWKS verifier on API requests.
 	return token.EnsureUser(
 		logger.Session("dex-server"),
-		dexServer,
+		dexserver.RequireDesktopPKCE(dexServer),
 		token.NewClaimsParser(),
 		userFactory,
 		displayUserIdGenerator,
@@ -2438,6 +2459,7 @@ func (cmd *RunCommand) constructSkyHandler(
 	logger lager.Logger,
 	httpClient *http.Client,
 	middleware token.Middleware,
+	store storage.Storage,
 ) (http.Handler, error) {
 
 	authPath, _ := url.Parse("/sky/issuer/auth")
@@ -2463,10 +2485,12 @@ func (cmd *RunCommand) constructSkyHandler(
 	}
 
 	skyServer, err := skyserver.NewSkyServer(&skyserver.SkyConfig{
-		Logger:          logger.Session("sky"),
-		TokenMiddleware: middleware,
-		OAuthConfig:     oauth2Config,
-		HTTPClient:      httpClient,
+		Logger:               logger.Session("sky"),
+		TokenMiddleware:      middleware,
+		OAuthConfig:          oauth2Config,
+		HTTPClient:           httpClient,
+		RevokeRefresh:        newRefreshRevoker(store, logger.Session("revoke-refresh")),
+		RefreshTokenLifetime: cmd.Auth.AuthFlags.RefreshTokenIdleTimeout,
 		StateSigningKey: deriveStateSigningKey(
 			oauth2Config.ClientID,
 			oauth2Config.ClientSecret,
@@ -2489,7 +2513,7 @@ func deriveStateSigningKey(clientID, clientSecret, dbUser, dbPassword string) []
 }
 
 func (cmd *RunCommand) constructTokenVerifier() accessor.TokenVerifier {
-	validClients := []string{flyClientID}
+	validClients := []string{flyClientID, "fly-browser"}
 	for clientId := range cmd.Auth.AuthFlags.Clients {
 		validClients = append(validClients, clientId)
 	}
@@ -2497,7 +2521,7 @@ func (cmd *RunCommand) constructTokenVerifier() accessor.TokenVerifier {
 	issuerPath, _ := url.Parse("/sky/issuer/keys")
 	jwksURL := cmd.ExternalURL.URL.ResolveReference(issuerPath)
 
-	return accessor.NewJWKSVerifier(jwksURL.String(), validClients)
+	return accessor.NewTrustedTokenVerifier(accessor.NewJWKSVerifier(jwksURL.String(), validClients))
 }
 
 func (cmd *RunCommand) constructAPIHandler(

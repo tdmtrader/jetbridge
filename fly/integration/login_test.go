@@ -1,16 +1,17 @@
 package integration_test
 
 import (
-	"bufio"
-	"bytes"
-	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
 	"fmt"
+	"github.com/concourse/concourse/fly/rc"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -331,7 +332,7 @@ var _ = Describe("login", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				Eventually(sess.Out).Should(gbytes.Say("navigate to the following URL in your browser:"))
-				Eventually(sess.Out).Should(gbytes.Say("http://127.0.0.1:(\\d+)/login\\?fly_port=(\\d+)"))
+				Eventually(sess.Out).Should(gbytes.Say("http://127.0.0.1:(\\d+)/sky/issuer/auth\\?"))
 				Eventually(sess.Out).Should(gbytes.Say("or enter token manually"))
 
 				_, err = fmt.Fprintf(stdin, "Bearer some-token\r")
@@ -412,96 +413,56 @@ var _ = Describe("login", func() {
 				})
 			})
 
-			Context("token callback listener", func() {
-				var resp *http.Response
-				var req *http.Request
-				var sess *gexec.Session
-
-				BeforeEach(func() {
+			Context("authorization code callback", func() {
+				It("checks state and exchanges a PKCE-bound code, retaining renewal credentials", func() {
+					idToken := "header." + base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"exp":%d}`, time.Now().Add(time.Hour).Unix()))) + ".signature"
+					var loginURL *url.URL
+					loginATCServer.RouteToHandler("POST", "/sky/issuer/token", func(w http.ResponseWriter, r *http.Request) {
+						Expect(r.ParseForm()).To(Succeed())
+						Expect(r.PostForm.Get("client_id")).To(Equal("fly-browser"))
+						Expect(r.PostForm.Get("grant_type")).To(Equal("authorization_code"))
+						Expect(r.PostForm.Get("code")).To(Equal("one-time-code"))
+						digest := sha256.Sum256([]byte(r.PostForm.Get("code_verifier")))
+						Expect(base64.RawURLEncoding.EncodeToString(digest[:])).To(Equal(loginURL.Query().Get("code_challenge")))
+						Expect(r.PostForm.Get("redirect_uri")).To(Equal(loginURL.Query().Get("redirect_uri")))
+						ghttp.RespondWithJSONEncoded(200, map[string]string{"token_type": "Bearer", "access_token": "access", "id_token": idToken, "refresh_token": "renewable-credential"})(w, r)
+					})
 					flyCmd = exec.Command(flyPath, "-t", "some-target", "login", "-c", loginATCServer.URL())
-					_, err := flyCmd.StdinPipe()
+					stdin, err := flyCmd.StdinPipe()
 					Expect(err).NotTo(HaveOccurred())
-					sess, err = gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+					defer stdin.Close()
+					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 					Expect(err).NotTo(HaveOccurred())
+					defer sess.Kill()
 					Eventually(sess.Out).Should(gbytes.Say("or enter token manually"))
-					scanner := bufio.NewScanner(bytes.NewBuffer(sess.Out.Contents()))
-					var match []string
-					for scanner.Scan() {
-						re := regexp.MustCompile(`fly_port=(\d+)`)
-						match = re.FindStringSubmatch(scanner.Text())
-						if len(match) > 0 {
-							break
-						}
-					}
-					flyPort := match[1]
-					listenerURL := fmt.Sprintf("http://127.0.0.1:%s?token=Bearer%%20some-token", flyPort)
-					req, err = http.NewRequest("GET", listenerURL, nil)
+					match := regexp.MustCompile(`http://127.0.0.1:\d+/sky/issuer/auth\?[^\s]+`).FindString(string(sess.Out.Contents()))
+					Expect(match).NotTo(BeEmpty())
+					loginURL, err = url.Parse(match)
 					Expect(err).NotTo(HaveOccurred())
-				})
-
-				JustBeforeEach(func() {
-					loginATCServer.AppendHandlers(ghttp.CombineHandlers(
-						ghttp.VerifyRequest("GET", "/fly_success"),
-						ghttp.RespondWith(200, ""),
-					))
-					client := &http.Client{
-						CheckRedirect: func(req *http.Request, via []*http.Request) error {
-							return http.ErrUseLastResponse
-						},
-					}
-					var err error
-					resp, err = client.Do(req)
+					Expect(loginURL.Query().Get("code_challenge_method")).To(Equal("S256"))
+					callback, err := url.Parse(loginURL.Query().Get("redirect_uri"))
 					Expect(err).NotTo(HaveOccurred())
-					<-sess.Exited
-					Expect(sess.ExitCode()).To(Equal(0))
-				})
-
-				It("sets a CORS header for the ATC being logged in to", func() {
-					corsHeader := resp.Header.Get("Access-Control-Allow-Origin")
-					Expect(corsHeader).To(Equal(loginATCServer.URL()))
-				})
-
-				It("responds successfully", func() {
-					Expect(resp.StatusCode).To(Equal(http.StatusOK))
-				})
-
-				Context("when the request comes from a human operating a browser", func() {
-					BeforeEach(func() {
-						req.Header.Add("Upgrade-Insecure-Requests", "1")
-					})
-
-					It("redirects back to noop fly success page", func() {
-						Expect(resp.StatusCode).To(Equal(http.StatusFound))
-						locationHeader := resp.Header.Get("Location")
-						Expect(locationHeader).To(Equal(fmt.Sprintf("%s/fly_success?noop=true", loginATCServer.URL())))
-					})
-				})
-
-				Context("when the request comes from a Chromium browser", func() {
-					// Why this test exists: https://developer.chrome.com/blog/private-network-access-preflight/
-					var preflightResp *http.Response
-
-					BeforeEach(func() {
-						preflightReq := req.Clone(context.Background())
-						preflightReq.Header.Add("Access-Control-Request-Method", "GET")
-						preflightReq.Header.Add("Access-Control-Request-Private-Network", "true")
-
-						client := &http.Client{
-							CheckRedirect: func(req *http.Request, via []*http.Request) error {
-								return http.ErrUseLastResponse
-							},
-						}
-						var err error
-						preflightResp, err = client.Do(preflightReq)
-						Expect(err).NotTo(HaveOccurred())
-					})
-
-					It("handles the preflight request", func() {
-						Expect(preflightResp.StatusCode).To(Equal(http.StatusOK))
-						Expect(resp.StatusCode).To(Equal(http.StatusOK))
-					})
+					values := url.Values{"code": {"one-time-code"}, "state": {"wrong-state"}}
+					callback.RawQuery = values.Encode()
+					response, err := http.Get(callback.String())
+					Expect(err).NotTo(HaveOccurred())
+					response.Body.Close()
+					Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
+					values.Set("state", loginURL.Query().Get("state"))
+					callback.RawQuery = values.Encode()
+					response, err = http.Get(callback.String())
+					Expect(err).NotTo(HaveOccurred())
+					response.Body.Close()
+					Expect(response.StatusCode).To(Equal(http.StatusOK))
+					Eventually(sess).Should(gexec.Exit(0))
+					targets, err := rc.LoadTargets()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(targets["some-target"].Token.RefreshToken).To(Equal("renewable-credential"))
+					Expect(targets["some-target"].Token.OAuthClientID).To(Equal("fly-browser"))
+					Expect(string(sess.Out.Contents())).NotTo(ContainSubstring("renewable-credential"))
 				})
 			})
+
 		})
 
 		Context("with password grant", func() {

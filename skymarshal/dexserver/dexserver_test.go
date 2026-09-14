@@ -214,10 +214,8 @@ var _ = Describe("Dex Server", func() {
 			It("should contain the configured clients", func() {
 				clients, err := storage.ListClients(context.TODO())
 				Expect(err).NotTo(HaveOccurred())
-				Expect(clients).To(HaveLen(1))
-				Expect(clients[0].ID).To(Equal("some-client-id"))
-				Expect(clients[0].Secret).To(Equal("some-client-secret"))
-				Expect(clients[0].RedirectURIs).To(ContainElement("http://example.com"))
+				Expect(clients).To(ContainElement(And(HaveField("ID", "some-client-id"), HaveField("Secret", "some-client-secret"), HaveField("RedirectURIs", ContainElement("http://example.com")))))
+				Expect(clients).To(ContainElement(And(HaveField("ID", "fly-browser"), HaveField("Public", true), HaveField("RedirectURIs", BeEmpty()))))
 			})
 		})
 	})

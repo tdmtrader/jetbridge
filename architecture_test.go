@@ -46,6 +46,9 @@ var agenticPackages = []string{
 	// an LLM drive Concourse. Deliberately kept when the rest of the agentic
 	// platform was stripped.
 	"atc/api/mcpserver",
+	"atc/mcp",
+	"internal/mcpclient",
+	"cmd/jb-mcp-client",
 }
 
 // agenticPrefixes are reserved for v4. Nothing lives under them yet; listing
@@ -63,15 +66,15 @@ var agenticPrefixes = []string{
 // point of the allowlist is that "somewhere" is one named place with a stated
 // justification, rather than wherever it was convenient.
 //
-// It is empty, which is the end state worth defending: core does not name the
-// agentic layer at all. atc/api held the only entry until the MCP tool surface
-// and its route were removed; what remains of mcpserver is transport with no
-// Concourse imports and no registration.
+// The web composition root mounts MCP around the complete API handler. The
+// adapter cannot fetch data directly or bypass API authorization and auditing.
 //
 // Adding an entry here is the moment to ask whether the dependency should be
 // inverted instead -- the agentic side depending on core costs nothing, and
 // core depending on the agentic side is what made v1/v2/v3 inseparable.
-var wiringPoints = map[string]string{}
+var wiringPoints = map[string]string{
+	"atc/atccmd": "web composition root mounts MCP over the fully wrapped API",
+}
 
 type goListPackage struct {
 	ImportPath     string   `json:"ImportPath"`
@@ -277,7 +280,10 @@ var agenticCoreReach = map[string][]string{
 	// enforced the same authorization. When v4 rebuilds the tools, they should
 	// compose with core's handlers rather than re-implement them, and this pin
 	// should stay empty.
-	"atc/api/mcpserver": {},
+	"atc/api/mcpserver":  {},
+	"atc/mcp":            {"atc", "atc/api/accessor", "skymarshal/mcpauth"},
+	"internal/mcpclient": {},
+	"cmd/jb-mcp-client":  {},
 
 	// v4's first package, and the first consumer of core's run-admission port.
 	//

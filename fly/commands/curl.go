@@ -34,7 +34,11 @@ func (command *CurlCommand) Execute([]string) error {
 		return err
 	}
 
-	argsList := command.makeArgsList(target.Token(), fullUrl, command.Args.Rest)
+	token, err := rc.CurrentTargetToken(target)
+	if err != nil {
+		return err
+	}
+	argsList := command.makeArgsList(token, fullUrl, command.Args.Rest)
 
 	cmd := exec.Command("curl", argsList...)
 	cmd.Stdout = os.Stdout

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
@@ -32,6 +33,7 @@ type LoginCommand struct {
 	ClientCertPath atc.PathFlag `long:"client-cert" description:"Path to a PEM-encoded client certificate file."`
 	ClientKeyPath  atc.PathFlag `long:"client-key" description:"Path to a PEM-encoded client key file."`
 	OpenBrowser    bool         `short:"b" long:"open-browser" description:"Open browser to the auth endpoint"`
+	Manual         bool         `long:"manual" description:"Use a one-time authorization code instead of a local browser callback"`
 }
 
 func (command *LoginCommand) Execute(args []string) error {
@@ -98,6 +100,7 @@ func (command *LoginCommand) Execute(args []string) error {
 	var tokenType string
 	var tokenValue string
 	var refreshToken string
+	var oauthClientID string
 
 	version, err := target.Version()
 	if err != nil {
@@ -124,8 +127,13 @@ func (command *LoginCommand) Execute(args []string) error {
 	} else {
 		if command.Username != "" && command.Password != "" {
 			tokenType, tokenValue, refreshToken, err = command.passwordGrant(client, command.Username, command.Password)
+			oauthClientID = "fly"
 		} else {
-			tokenType, tokenValue, err = command.authCodeGrant(client.URL())
+			var loginToken *rc.TargetToken
+			loginToken, err = command.renewableBrowserGrant(client)
+			if err == nil {
+				tokenType, tokenValue, refreshToken, oauthClientID = loginToken.Type, loginToken.Value, loginToken.RefreshToken, loginToken.OAuthClientID
+			}
 		}
 	}
 
@@ -152,9 +160,10 @@ func (command *LoginCommand) Execute(args []string) error {
 	return command.saveTarget(
 		client.URL(),
 		&rc.TargetToken{
-			Type:         tokenType,
-			Value:        tokenValue,
-			RefreshToken: refreshToken,
+			Type:          tokenType,
+			Value:         tokenValue,
+			RefreshToken:  refreshToken,
+			OAuthClientID: oauthClientID,
 		},
 		target.CACert(),
 		target.ClientCertPath(),
@@ -171,11 +180,13 @@ func (command *LoginCommand) passwordGrant(client concourse.Client, username, pa
 		Scopes:       []string{"openid", "profile", "email", "federated:id", "groups", "offline_access"},
 	}
 
-	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, client.HTTPClient())
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, rc.AuthHTTPClient(client.HTTPClient()))
 
 	token, err := oauth2Config.PasswordCredentialsToken(ctx, username, password)
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", errors.New("password login failed; verify credentials and server availability")
 	}
 
 	// Prefer ID token over access token (Dex's ID token contains our claims)
@@ -185,55 +196,6 @@ func (command *LoginCommand) passwordGrant(client concourse.Client, username, pa
 	}
 
 	return token.TokenType, token.AccessToken, token.RefreshToken, nil
-}
-
-func (command *LoginCommand) authCodeGrant(targetUrl string) (string, string, error) {
-	var tokenStr string
-
-	stdinChannel := make(chan string)
-	tokenChannel := make(chan string)
-	errorChannel := make(chan error)
-	portChannel := make(chan string)
-
-	go listenForTokenCallback(tokenChannel, errorChannel, portChannel, targetUrl)
-
-	port := <-portChannel
-
-	var openURL string
-
-	fmt.Println("navigate to the following URL in your browser:\r")
-	fmt.Println("\r")
-
-	openURL = fmt.Sprintf("%s/login?fly_port=%s", targetUrl, port)
-
-	fmt.Printf("  %s\r\n", openURL)
-
-	if command.OpenBrowser {
-		// try to open the browser window, but don't get all hung up if it
-		// fails, since we already printed about it.
-		_ = open.Start(openURL)
-	}
-
-	prg := interaction.TokenProgram()
-	defer prg.Quit()
-	go waitForTokenInput(prg, stdinChannel, errorChannel)
-
-	select {
-	case tokenStrMsg := <-tokenChannel:
-		tokenStr = tokenStrMsg
-	case tokenStrMsg := <-stdinChannel:
-		tokenStr = tokenStrMsg
-	case errorMsg := <-errorChannel:
-		return "", "", errorMsg
-	}
-
-	segments := strings.SplitN(tokenStr, " ", 2)
-
-	if len(segments) > 1 {
-		return segments[0], segments[1], nil
-	} else {
-		return "", "", fmt.Errorf("invalid token: %v", tokenStr)
-	}
 }
 
 func listenForTokenCallback(tokenChannel chan string, errorChannel chan error, portChannel chan string, targetUrl string) {
@@ -307,10 +269,7 @@ func (command *LoginCommand) saveTarget(url string, token *rc.TargetToken, caCer
 		url,
 		command.Insecure,
 		command.TeamName,
-		&rc.TargetToken{
-			Type:  token.Type,
-			Value: token.Value,
-		},
+		token,
 		caCert,
 		clientCertPath,
 		clientKeyPath,

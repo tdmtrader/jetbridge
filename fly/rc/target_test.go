@@ -149,10 +149,12 @@ Lfkzl8ebb+tt0XFMUFc42WNr
 				Expect(err).NotTo(HaveOccurred())
 				transport, ok := target.Client().HTTPClient().Transport.(*oauth2.Transport)
 				Expect(ok).To(BeTrue())
-				Expect((*transport).Source).To(Equal(oauth2.StaticTokenSource(&oauth2.Token{
+				bearer, err := transport.Source.Token()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(bearer).To(Equal(&oauth2.Token{
 					TokenType:   "Bearer",
 					AccessToken: "some-token",
-				})))
+				}))
 				base, ok := (*transport).Base.(*http.Transport)
 				Expect(ok).To(BeTrue())
 				Expect((*base).TLSClientConfig).To(Equal(&tls.Config{

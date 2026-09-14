@@ -228,12 +228,12 @@ var _ = Describe("Targets", func() {
 					Expect(err).ToNot(HaveOccurred())
 				})
 
-				It("preserves those permissions", func() {
+				It("restricts credential file permissions", func() {
 					err := rc.SaveTarget("foo", "url", false, "main", nil, "", "", "")
 					Expect(err).ToNot(HaveOccurred())
 					fi, statErr := os.Stat(flyrc)
 					Expect(statErr).To(BeNil())
-					Expect(fi.Mode().Perm()).To(Equal(os.FileMode(0755)))
+					Expect(fi.Mode().Perm()).To(Equal(os.FileMode(0600)))
 				})
 			})
 		})

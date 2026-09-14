@@ -17,6 +17,10 @@ web:
   # -- Number of web node replicas
   replicas: 1
 
+  # -- Optional Deployment strategy. Use {type: Recreate} when first enabling
+  # database encryption so a keyless web pod cannot overlap the encrypted one.
+  strategy: {}
+
   # -- Concourse external URL (how users reach the UI)
   externalUrl: http://localhost:8080
 
