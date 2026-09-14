@@ -1,0 +1,9 @@
+## Ship summary
+
+Renewable fly/browser sessions, independent user-selected MCP scopes, persistent OAuth grants, authenticated pipeline status, a reference client, and a pinned Brine contract-5 runner.
+
+85 scoped source paths; tree eeb5e3559dfb5e120388e5251e8da503fe97436c exactly matches verified candidate ab8052ca120e41ecae8172ce0e4c3616f70d739b.
+
+CI: build/vet 837280, unit 837291 (93 tested packages), Brine 837331 (620 scenarios, including25 auth scenarios) all passed on runner v10 digest sha256:a44b363891eed7a68b0551cc6006b047ad5cf211ea66da9a593e874ecc2367fc.
+
+This source commit requires integration onto current origin/core before deployment; the current deployed Hangar functionality must be preserved.
