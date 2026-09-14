@@ -1,0 +1,3 @@
+Shipped renewable fly/browser login and scoped MCP authentication, with one read-only pipeline_status tool. Integrated onto deployed core without dropping Hangar changes.
+
+Validation on 62afc93a6b5ef371bc36d65a8c0b4acf800ba2b3: build/vet 837438 passed; root unit tests 837447 passed; full Brine 837481 passed (661 scenarios, 73.076923% production coverage). Frontend: 3096 tests passed and production assets rebuilt. Independent integration and home-infra reviews found no blockers.
