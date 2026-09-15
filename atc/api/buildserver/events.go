@@ -8,6 +8,10 @@ import (
 
 func (s *Server) BuildEvents(build db.BuildForAPI) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("format") == "json" {
+			s.eventPage(w, r, build)
+			return
+		}
 		streamDone := make(chan struct{})
 
 		go func() {

@@ -12,6 +12,9 @@ import (
 
 // Status reports the HTTP status for a known, user-actionable domain error.
 func Status(err error) (int, bool) {
+	if errors.Is(err, db.ErrConfigPreconditionFailed) {
+		return http.StatusConflict, true
+	}
 	var invalidParams atc.InvalidRunParamsError
 	if errors.As(err, &invalidParams) {
 		return http.StatusBadRequest, true
@@ -48,6 +51,10 @@ func Write(w http.ResponseWriter, err error) bool {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	helpers.WriteSaveConfigResponse(w, atc.SaveConfigResponse{Errors: []string{err.Error()}})
+	response := atc.SaveConfigResponse{Errors: []string{err.Error()}}
+	if errors.Is(err, db.ErrConfigPreconditionFailed) {
+		response.Code = atc.ConfigVersionConflictCode
+	}
+	helpers.WriteSaveConfigResponse(w, response)
 	return true
 }

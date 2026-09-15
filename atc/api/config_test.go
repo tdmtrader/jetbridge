@@ -137,6 +137,12 @@ func (team *configAPITeam) SavePipeline(
 	from db.ConfigVersion,
 	initiallyPaused bool,
 ) (db.Pipeline, bool, error) {
+	return team.savePipeline(ref, config, from, initiallyPaused, false)
+}
+func (team *configAPITeam) SavePipelineConditional(ref atc.PipelineRef, config atc.Config, from db.ConfigVersion, initiallyPaused bool) (db.Pipeline, bool, error) {
+	return team.savePipeline(ref, config, from, initiallyPaused, true)
+}
+func (team *configAPITeam) savePipeline(ref atc.PipelineRef, config atc.Config, from db.ConfigVersion, initiallyPaused, strict bool) (db.Pipeline, bool, error) {
 	clonedConfig, err := cloneConfigAPIConfig(config)
 	if err != nil {
 		return nil, false, err
@@ -154,6 +160,9 @@ func (team *configAPITeam) SavePipeline(
 
 	if saveErr != nil {
 		return nil, false, saveErr
+	}
+	if strict {
+		return team.Team.SavePipelineConditional(ref, config, from, initiallyPaused)
 	}
 	return team.Team.SavePipeline(ref, config, from, initiallyPaused)
 }

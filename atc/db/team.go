@@ -14,6 +14,7 @@ import (
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/gobwas/glob"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db/encryption"
@@ -22,6 +23,8 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
+
+var ErrConfigPreconditionFailed = errors.New("pipeline config version precondition failed")
 
 var ErrConfigComparisonFailed = errors.New("comparison with existing config failed during save")
 
@@ -47,6 +50,7 @@ type Team interface {
 		from ConfigVersion,
 		initiallyPaused bool,
 	) (Pipeline, bool, error)
+	SavePipelineConditional(atc.PipelineRef, atc.Config, ConfigVersion, bool) (Pipeline, bool, error)
 	RenamePipeline(oldName string, newName string) (bool, error)
 
 	Pipeline(pipelineRef atc.PipelineRef) (Pipeline, bool, error)
@@ -495,6 +499,7 @@ func savePipeline(
 }
 
 type pipelineSaveOptions struct {
+	strictPrecondition      bool
 	persistTemplateMetadata bool
 	pipelineRunID           sql.NullInt64
 	runJobs                 map[string]runJobMetadata
@@ -533,15 +538,28 @@ func savePipelineWithOptions(
 	}
 
 	var existingConfig bool
-	err := psql.Select("1").
-		From("pipelines").
-		Where(pipelineRefWhereClause).
-		Prefix("SELECT EXISTS (").Suffix(")").
-		RunWith(tx).
-		QueryRow().
-		Scan(&existingConfig)
-	if err != nil {
-		return 0, false, err
+	var err error
+	if options.strictPrecondition {
+		var current ConfigVersion
+		err = psql.Select("version").From("pipelines").Where(pipelineRefWhereClause).Suffix("FOR UPDATE").RunWith(tx).QueryRow().Scan(&current)
+		switch err {
+		case nil:
+			existingConfig = true
+			if from <= 0 || from != current {
+				return 0, false, ErrConfigPreconditionFailed
+			}
+		case sql.ErrNoRows:
+			if from != 0 {
+				return 0, false, ErrConfigPreconditionFailed
+			}
+		default:
+			return 0, false, err
+		}
+	} else {
+		err = psql.Select("1").From("pipelines").Where(pipelineRefWhereClause).Prefix("SELECT EXISTS (").Suffix(")").RunWith(tx).QueryRow().Scan(&existingConfig)
+		if err != nil {
+			return 0, false, err
+		}
 	}
 	if existingConfig {
 		var existingRunID sql.NullInt64
@@ -671,6 +689,10 @@ func savePipelineWithOptions(
 			RunWith(tx).
 			QueryRow().Scan(&pipelineID)
 		if err != nil {
+			var pgErr *pgconn.PgError
+			if options.strictPrecondition && errors.As(err, &pgErr) && pgErr.Code == "23505" && (pgErr.ConstraintName == "pipelines_name_team_id" || pgErr.ConstraintName == "pipelines_name_team_id_instance_vars") {
+				return 0, false, ErrConfigPreconditionFailed
+			}
 			return 0, false, err
 		}
 
@@ -714,6 +736,9 @@ func savePipelineWithOptions(
 			Scan(&pipelineID)
 		if err != nil {
 			if err == sql.ErrNoRows {
+				if options.strictPrecondition {
+					return 0, false, ErrConfigPreconditionFailed
+				}
 				var currentParentBuildID sql.NullInt64
 				err := psql.Select("parent_build_id").
 					From("pipelines").
@@ -793,6 +818,16 @@ func (t *team) SavePipeline(
 	from ConfigVersion,
 	initiallyPaused bool,
 ) (Pipeline, bool, error) {
+	return t.savePipeline(pipelineRef, config, from, initiallyPaused, false)
+}
+
+// SavePipelineConditional preserves the receipt captured in the committing
+// transaction. A zero precondition creates only, including for archived rows.
+func (t *team) SavePipelineConditional(ref atc.PipelineRef, config atc.Config, from ConfigVersion, paused bool) (Pipeline, bool, error) {
+	return t.savePipeline(ref, config, from, paused, true)
+}
+
+func (t *team) savePipeline(pipelineRef atc.PipelineRef, config atc.Config, from ConfigVersion, initiallyPaused, strict bool) (Pipeline, bool, error) {
 	tx, err := t.conn.Begin()
 	if err != nil {
 		return nil, false, err
@@ -801,7 +836,7 @@ func (t *team) SavePipeline(
 	defer Rollback(tx)
 
 	nullID := sql.NullInt64{Valid: false}
-	pipelineID, isNewPipeline, err := savePipeline(tx, pipelineRef, config, from, initiallyPaused, t.id, nullID, nullID)
+	pipelineID, isNewPipeline, err := savePipelineWithOptions(tx, pipelineRef, config, from, initiallyPaused, t.id, nullID, nullID, pipelineSaveOptions{persistTemplateMetadata: true, strictPrecondition: strict})
 	if err != nil {
 		return nil, false, err
 	}
@@ -1667,7 +1702,7 @@ func scanPipelines(conn DbConn, lockFactory lock.LockFactory, rows *sql.Rows) ([
 		pipelines = append(pipelines, pipeline)
 	}
 
-	return pipelines, nil
+	return pipelines, rows.Err()
 }
 
 func scanContainers(rows *sql.Rows, conn DbConn, initContainers []Container) ([]Container, error) {

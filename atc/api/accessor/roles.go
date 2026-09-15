@@ -116,6 +116,7 @@ var DefaultRoles = map[string]string{
 // are layered over the defaults. It is the one rule RequiredRole enforces at
 // request time, so validation and enforcement cannot drift apart.
 func EffectiveRole(customRoles map[string]string, action string) string {
+	action = atc.CanonicalAction(action)
 	if role := customRoles[action]; role != "" {
 		return role
 	}

@@ -5,6 +5,7 @@ type ClearTaskCacheResponse struct {
 }
 
 type SaveConfigResponse struct {
+	Code     string          `json:"code,omitempty"`
 	Errors   []string        `json:"errors,omitempty"`
 	Warnings []ConfigWarning `json:"warnings,omitempty"`
 }
@@ -29,4 +30,15 @@ type DeprecatedScope struct {
 	ID           int    `json:"id"`
 	DeprecatedAt string `json:"deprecated_at"`
 	ConfigID     int    `json:"config_id"`
+}
+
+// PipelinePage and BuildPage are the bounded format=page views. Legacy list
+// arrays and their ordering stay unchanged when the format is not requested.
+type PipelinePage struct {
+	Items      []Pipeline `json:"items"`
+	NextCursor *string    `json:"next_cursor"`
+}
+type BuildPage struct {
+	Items      []Build `json:"items"`
+	NextCursor *string `json:"next_cursor"`
 }

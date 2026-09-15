@@ -1,0 +1,14 @@
+{
+  "original_source": "/Users/tdmtrader/concourse/concourse/.worktrees/mcp-tool-benchmark/benchmarks/tool-shapes",
+  "baseline_repository_head": "62afc93a6b5ef371bc36d65a8c0b4acf800ba2b3",
+  "source_was_committed": false,
+  "source_sha256": {
+    "run.py": "384fb7ed0e8f8b85d9e70116ce862a21ce5349511bd89c97b5870368686883a1",
+    "world.py": "e800e499bf4f31cfd77179d239652a3af23c9430c5d1a14c58fbc22c73a2f433",
+    "shapes.py": "483a14d97a5100320c856c78f445a76c34e832a47bf91a0f79d46082695fa928",
+    "scenarios.py": "d39fcc575c5599e215aeb02535ee4df6a37d075cb173cf2862021b105f75a64b",
+    "server.py": "fa7e45511a620e6808f19510eb048b347089b7c83c40895af1b7233597e8deb9"
+  },
+  "original_evidence": "Sibling benchmark evidence/screen-20260914 and runs/screen-20260914 are untouched and not copied.",
+  "followup": "Only resource_union, four scope diagnosis cases, two repetitions. Changes stay in this isolated copy."
+}

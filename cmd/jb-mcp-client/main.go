@@ -28,12 +28,12 @@ func main() {
 }
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: jb-mcp-client connect|list|status|logout --endpoint URL --client-id ID [options]")
+		return errors.New("usage: jb-mcp-client connect|list|status|call|logout --endpoint URL --client-id ID [options]")
 	}
 	command := args[0]
 	flags := flag.NewFlagSet("jb-mcp-client "+command, flag.ContinueOnError)
 	var cfg mcpclient.Config
-	var scope, team, pipeline string
+	var scope, team, pipeline, tool, arguments string
 	var browser bool
 	flags.StringVar(&cfg.Endpoint, "endpoint", "", "MCP resource URL, ending in /api/v1/mcp")
 	flags.StringVar(&cfg.ClientID, "client-id", "jetbridge-reference", "Pre-registered public OAuth client ID")
@@ -42,6 +42,8 @@ func run(args []string) error {
 	flags.StringVar(&scope, "scope", "read offline_access", "Space- or comma-separated requested capabilities")
 	flags.StringVar(&team, "team", "main", "Team for pipeline status")
 	flags.StringVar(&pipeline, "pipeline", "", "Pipeline for status")
+	flags.StringVar(&tool, "tool", "", "Exact tool name for call")
+	flags.StringVar(&arguments, "arguments", "{}", "JSON argument object for call")
 	flags.BoolVar(&browser, "open-browser", true, "Open the authorization URL automatically")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
@@ -87,11 +89,19 @@ func run(args []string) error {
 		fmt.Println("MCP connection revoked and local credentials removed")
 		return nil
 	}
-	if command != "list" && command != "status" {
-		return errors.New("command must be connect, list, status, or logout")
+	if command != "list" && command != "status" && command != "call" {
+		return errors.New("command must be connect, list, status, call, or logout")
 	}
 	if command == "status" && pipeline == "" {
 		return errors.New("status requires --pipeline")
+	}
+	var callArgs json.RawMessage
+	if command == "call" {
+		callArgs = json.RawMessage(arguments)
+		var object map[string]json.RawMessage
+		if tool == "" || len(arguments) > 1024*1024 || json.Unmarshal(callArgs, &object) != nil || object == nil {
+			return errors.New("call requires --tool and a JSON object in --arguments (maximum 1 MiB)")
+		}
 	}
 	session, err := client.Connect(timeout)
 	if err != nil {
@@ -107,7 +117,12 @@ func run(args []string) error {
 		}
 		return encoder.Encode(result)
 	}
-	result, err := session.CallTool(timeout, &sdk.CallToolParams{Name: "pipeline_status", Arguments: map[string]any{"team": team, "pipeline": pipeline}})
+	params := &sdk.CallToolParams{Name: "pipeline_status", Arguments: map[string]any{"team": team, "pipeline": pipeline}}
+	if command == "call" {
+		params.Name = tool
+		params.Arguments = callArgs
+	}
+	result, err := session.CallTool(timeout, params)
 	if err != nil {
 		return err
 	}
@@ -115,7 +130,7 @@ func run(args []string) error {
 		return err
 	}
 	if result.IsError {
-		return errors.New("pipeline status failed")
+		return errors.New("tool call failed")
 	}
 	return nil
 }

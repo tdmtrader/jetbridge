@@ -103,3 +103,11 @@ func (s *Server) RequireScope(w http.ResponseWriter, p Principal, scope string) 
 	s.challenge(w, http.StatusForbidden, "insufficient_scope", scope)
 	return false
 }
+
+func scopeNames() []string {
+	names := make([]string, 0, len(Scopes))
+	for _, scope := range Scopes {
+		names = append(names, scope.Name)
+	}
+	return names
+}

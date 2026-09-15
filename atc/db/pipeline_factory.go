@@ -1,11 +1,13 @@
 package db
 
 import (
+	"fmt"
 	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/atc/db/lock"
 )
 
 type PipelineFactory interface {
+	PipelinePage(teamNames []string, admin bool, team, query string, after, limit int) ([]Pipeline, error)
 	VisiblePipelines([]string) ([]Pipeline, error)
 	AllPipelines() ([]Pipeline, error)
 	PipelinesToSchedule() ([]Pipeline, error)
@@ -94,5 +96,28 @@ func (f *pipelineFactory) PipelinesToSchedule() ([]Pipeline, error) {
 		return nil, err
 	}
 
+	return scanPipelines(f.conn, f.lockFactory, rows)
+}
+
+// PipelinePage applies the same public/team visibility as VisiblePipelines before
+// literal name filtering and a stable, live ID page. It excludes run payloads.
+func (f *pipelineFactory) PipelinePage(teamNames []string, admin bool, team, query string, after, limit int) ([]Pipeline, error) {
+	if limit < 1 || limit > 101 || after < 0 {
+		return nil, fmt.Errorf("invalid pipeline page")
+	}
+	q := pipelinesQuery.Where(sq.Eq{"p.pipeline_run_id": nil}).Where(sq.Gt{"p.id": after})
+	if !admin {
+		q = q.Where(sq.Or{sq.Eq{"t.name": teamNames}, sq.Eq{"p.public": true}})
+	}
+	if team != "" {
+		q = q.Where(sq.Eq{"t.name": team})
+	}
+	if query != "" {
+		q = q.Where(sq.Expr("strpos(lower(p.name),lower(?)) > 0", query))
+	}
+	rows, err := q.OrderBy("p.id ASC").Limit(uint64(limit)).RunWith(f.conn).Query()
+	if err != nil {
+		return nil, err
+	}
 	return scanPipelines(f.conn, f.lockFactory, rows)
 }

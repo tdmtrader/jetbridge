@@ -1055,7 +1055,7 @@ func (cmd *RunCommand) constructAPIMembers(
 		return nil, err
 	}
 
-	if err := cmd.constructMCPHandler(logger, dbConn, httpClient, apiHandler); err != nil {
+	if err := cmd.constructMCPHandler(logger, dbConn, httpClient, apiHandler, accessFactory); err != nil {
 		return nil, err
 	}
 

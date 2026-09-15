@@ -1,9 +1,11 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/concourse/concourse/atc"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -56,6 +58,7 @@ type BuildForAPI interface {
 
 	Artifacts() ([]WorkerArtifact, error)
 	Events(uint) (EventSource, error)
+	EventPage(context.Context, atc.BuildEventPageRequest) (atc.BuildEventPage, error)
 	Resources() ([]BuildInput, []BuildOutput, error)
 	Preparation() (BuildPreparation, bool, error)
 
@@ -365,6 +368,12 @@ func getBuildsWithPagination(buildsQuery sq.SelectBuilder, page Page, conn DbCon
 		builds = append(builds, build)
 	}
 
+	if err = rows.Err(); err != nil {
+		return nil, Pagination{}, err
+	}
+	if err = rows.Close(); err != nil {
+		return nil, Pagination{}, err
+	}
 	if reverse {
 		for i, j := 0, len(builds)-1; i < j; i, j = i+1, j-1 {
 			builds[i], builds[j] = builds[j], builds[i]
@@ -382,7 +391,7 @@ func getBuildsWithPagination(buildsQuery sq.SelectBuilder, page Page, conn DbCon
 
 	row := origBuildsQuery.
 		Where(sq.Lt{"b.id": oldestBuild.ID()}).
-		OrderBy("COALESCE(b.rerun_of, b.rerun_of_old, b.id) DESC, b.id DESC").
+		OrderBy(desc).
 		Limit(1).
 		RunWith(tx).
 		QueryRow()
@@ -400,7 +409,7 @@ func getBuildsWithPagination(buildsQuery sq.SelectBuilder, page Page, conn DbCon
 
 	row = origBuildsQuery.
 		Where(sq.Gt{"b.id": newestBuild.ID()}).
-		OrderBy("COALESCE(b.rerun_of, b.rerun_of_old, b.id) ASC, b.id ASC").
+		OrderBy(asc).
 		Limit(1).
 		RunWith(tx).
 		QueryRow()

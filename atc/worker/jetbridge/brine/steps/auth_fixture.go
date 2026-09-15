@@ -32,7 +32,9 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/auth"
+	"github.com/concourse/concourse/atc/api/buildserver"
 	"github.com/concourse/concourse/atc/api/configserver"
+	"github.com/concourse/concourse/atc/api/jobserver"
 	"github.com/concourse/concourse/atc/api/pipelineserver"
 	"github.com/concourse/concourse/atc/api/policychecker"
 	"github.com/concourse/concourse/atc/api/teamserver"
@@ -42,6 +44,7 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/encryption"
 	"github.com/concourse/concourse/atc/policy"
+	"github.com/concourse/concourse/atc/util"
 	"github.com/concourse/concourse/atc/wrappa"
 	"github.com/concourse/concourse/skymarshal/dexserver"
 	"github.com/concourse/concourse/skymarshal/skycmd"
@@ -228,6 +231,9 @@ func (f *AuthFixture) apiHandler(verifier accessor.TokenVerifier) (http.Handler,
 	}
 	pipelines := pipelineserver.NewServer(logger, f.DB.TeamFactory, db.NewPipelineFactory(f.DB.Conn, f.DB.LockFactory), f.URL)
 	scoped := pipelineserver.NewScopedHandlerFactory(f.DB.TeamFactory)
+	builds := buildserver.NewServer(logger, f.URL, f.DB.TeamFactory, f.DB.BuildFactory, buildserver.NewEventHandler)
+	buildScoped := buildserver.NewScopedHandlerFactory(logger)
+	jobs := jobserver.NewServer(logger, f.URL, noop.Noop{}, db.NewJobFactory(f.DB.Conn, f.DB.LockFactory), db.NewCheckFactory(f.DB.Conn, f.DB.LockFactory, nil, util.NewSequenceGenerator(0)))
 	configs := configserver.NewServer(logger, f.DB.TeamFactory, noop.Noop{})
 	teams := teamserver.NewServer(logger, f.DB.TeamFactory, f.URL)
 	users := usersserver.NewServer(logger, db.NewUserFactory(f.DB.Conn))
@@ -236,20 +242,29 @@ func (f *AuthFixture) apiHandler(verifier accessor.TokenVerifier) (http.Handler,
 		checker = policy.NoopChecker{}
 	}
 	handlers := rata.Handlers{
-		atc.GetPipeline:   scoped.HandlerFor(pipelines.GetPipeline),
-		atc.PausePipeline: scoped.HandlerFor(pipelines.PausePipeline),
-		atc.ListPipelines: http.HandlerFunc(pipelines.ListPipelines),
-		atc.SaveConfig:    http.HandlerFunc(configs.SaveConfig),
-		atc.GetConfig:     http.HandlerFunc(configs.GetConfig),
-		atc.ListTeams:     http.HandlerFunc(teams.ListTeams),
-		atc.GetUser:       http.HandlerFunc(users.GetUser),
+		atc.GetPipeline:           scoped.HandlerFor(pipelines.GetPipeline),
+		atc.UnpausePipeline:       scoped.HandlerFor(pipelines.UnpausePipeline),
+		atc.ListAllPipelines:      http.HandlerFunc(pipelines.ListAllPipelines),
+		atc.ListPipelineBuilds:    scoped.HandlerFor(pipelines.ListPipelineBuilds),
+		atc.SaveConfigConditional: http.HandlerFunc(configs.SaveConfigConditional),
+		atc.GetBuild:              buildScoped.HandlerFor(builds.GetBuild),
+		atc.BuildEvents:           buildScoped.HandlerFor(builds.BuildEvents),
+		atc.AbortBuild:            buildScoped.HandlerFor(builds.AbortBuild),
+		atc.CreateJobBuild:        scoped.HandlerFor(jobs.CreateJobBuild),
+		atc.PausePipeline:         scoped.HandlerFor(pipelines.PausePipeline),
+		atc.ListPipelines:         http.HandlerFunc(pipelines.ListPipelines),
+		atc.SaveConfig:            http.HandlerFunc(configs.SaveConfig),
+		atc.GetConfig:             http.HandlerFunc(configs.GetConfig),
+		atc.ListTeams:             http.HandlerFunc(teams.ListTeams),
+		atc.GetUser:               http.HandlerFunc(users.GetUser),
 		atc.GetInfo: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(atc.Info{Version: concourse.Version, WorkerVersion: "1.2.3"})
 		}),
 	}
 	wrapper := wrappa.MultiWrappa{
 		wrappa.NewPolicyCheckWrappa(logger, policychecker.NewApiPolicyChecker(checker)),
-		wrappa.NewAPIAuthWrappa(auth.NewCheckPipelineAccessHandlerFactory(f.DB.TeamFactory), nil, nil, nil),
+		wrappa.NewRejectArchivedWrappa(pipelineserver.NewRejectArchivedHandlerFactory(f.DB.TeamFactory)),
+		wrappa.NewAPIAuthWrappa(auth.NewCheckPipelineAccessHandlerFactory(f.DB.TeamFactory), auth.NewCheckBuildReadAccessHandlerFactory(f.DB.BuildFactory), auth.NewCheckBuildWriteAccessHandlerFactory(f.DB.BuildFactory), nil),
 		wrappa.NewAccessorWrappa(logger, accessor.NewAccessFactory(verifier, f.DB.TeamFactory, "", nil, displayUserID),
 			auditor.NewAuditor(true, true, true, true, true, true, true, true, true, logger), f.CustomRoles),
 	}

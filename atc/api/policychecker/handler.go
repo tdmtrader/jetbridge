@@ -6,6 +6,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/policy"
 )
@@ -19,7 +20,7 @@ func NewHandler(
 	return policyCheckingHandler{
 		logger:        logger,
 		handler:       handler,
-		action:        action,
+		action:        atc.CanonicalAction(action),
 		policyChecker: policyChecker,
 	}
 }

@@ -52,7 +52,7 @@ type auditor struct {
 }
 
 func (a *auditor) ValidateAction(action string) bool {
-	switch action {
+	switch atc.CanonicalAction(action) {
 	case atc.GetBuild,
 		atc.GetBuildPlan,
 		atc.CreateBuild,
@@ -169,6 +169,7 @@ func (a *auditor) ValidateAction(action string) bool {
 }
 
 func (a *auditor) Audit(action string, userName string, r *http.Request) {
+	action = atc.CanonicalAction(action)
 	err := r.ParseForm()
 	if err == nil && a.ValidateAction(action) {
 		a.logger.Info("audit", lager.Data{"action": action, "user": userName, "parameters": r.Form})

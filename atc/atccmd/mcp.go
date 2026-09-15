@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
+	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/mcp"
 	"github.com/concourse/concourse/skymarshal/mcpauth"
@@ -51,7 +52,7 @@ func newRefreshRevoker(store storage.Storage, logger lager.Logger) func(context.
 	}
 }
 
-func (cmd *RunCommand) constructMCPHandler(logger lager.Logger, conn db.DbConn, client *http.Client, api http.Handler) error {
+func (cmd *RunCommand) constructMCPHandler(logger lager.Logger, conn db.DbConn, client *http.Client, api http.Handler, accessFactory accessor.AccessFactory) error {
 	cmd.mcpHandler, cmd.mcpCleanup = nil, nil
 	if !cmd.EnableMCP {
 		return nil
@@ -108,7 +109,7 @@ func (cmd *RunCommand) constructMCPHandler(logger lager.Logger, conn db.DbConn, 
 		return err
 	}
 	mux := http.NewServeMux()
-	mux.Handle("/api/v1/mcp", mcp.NewHandler(auth, api))
+	mux.Handle("/api/v1/mcp", mcp.NewHandler(auth, api, mcp.HandlerOptions{AccessFactory: accessFactory, CustomRoles: cmd.customRoles}))
 	mux.Handle("/", auth)
 	cmd.mcpHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if cmd.isTLSEnabled() && r.TLS == nil {

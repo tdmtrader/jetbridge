@@ -29,7 +29,7 @@ func NewHandler(
 		logger:        logger,
 		handler:       handler,
 		accessFactory: accessFactory,
-		action:        action,
+		action:        atc.CanonicalAction(action),
 		auditor:       auditor,
 		customRoles:   customRoles,
 	}

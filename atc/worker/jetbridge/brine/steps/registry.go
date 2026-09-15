@@ -86,6 +86,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, HangarBindingDefinitions()...)
 	defs = append(defs, AuthenticationDefinitions()...)
 	defs = append(defs, MCPAuthenticationDefinitions()...)
+	defs = append(defs, MCPOperationDefinitions()...)
 	defs = append(defs, MCPBoundaryDefinitions()...)
 	defs = append(defs, MCPReferenceDefinitions()...)
 	return defs

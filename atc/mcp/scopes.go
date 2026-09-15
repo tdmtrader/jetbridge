@@ -10,19 +10,20 @@ import (
 // An unclassified operation is denied until its authority is explicitly chosen.
 // These classifications do not register tools; only pipeline_status ships now.
 func ScopeForAction(action string) (string, bool) {
-	switch action {
-	case atc.GetPipeline:
-		return mcpauth.ScopeRead, true
-	case atc.SaveConfig, atc.CreatePipelineRun, atc.CreateBuild:
-		return mcpauth.ScopePipelines, true
-	case atc.CreateJobBuild, atc.AbortBuild:
-		return mcpauth.ScopeBuilds, true
-	case atc.HijackContainer:
-		return mcpauth.ScopeHijack, true
-	default:
-		return "", false
-	}
+	scope, known := actionScopes[atc.CanonicalAction(action)]
+	return scope, known
 }
+
+var actionScopes = func() map[string]string {
+	result := map[string]string{}
+	for _, op := range Operations() {
+		if old, exists := result[op.Action]; exists && old != op.Scope {
+			panic("conflicting MCP scopes for action " + op.Action)
+		}
+		result[op.Action] = op.Scope
+	}
+	return result
+}()
 
 func AllowsAction(principal mcpauth.Principal, action string) bool {
 	scope, known := ScopeForAction(action)

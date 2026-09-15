@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
@@ -194,6 +195,7 @@ type Build interface {
 	SetInterceptible(bool) error
 
 	Events(uint) (EventSource, error)
+	EventPage(context.Context, atc.BuildEventPageRequest) (atc.BuildEventPage, error)
 	SaveEvent(event atc.Event) error
 
 	Artifacts() ([]WorkerArtifact, error)

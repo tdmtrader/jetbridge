@@ -119,8 +119,9 @@ func NewHandler(
 	idTokenServer := idtokenserver.NewServer(logger, oidcIssuer, dbSigningKeyFactory)
 
 	handlers := map[string]http.Handler{
-		atc.GetConfig:  http.HandlerFunc(configServer.GetConfig),
-		atc.SaveConfig: http.HandlerFunc(configServer.SaveConfig),
+		atc.GetConfig:             http.HandlerFunc(configServer.GetConfig),
+		atc.SaveConfig:            http.HandlerFunc(configServer.SaveConfig),
+		atc.SaveConfigConditional: http.HandlerFunc(configServer.SaveConfigConditional),
 
 		atc.GetCC: http.HandlerFunc(ccServer.GetCC),
 

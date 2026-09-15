@@ -88,6 +88,7 @@ type Pipeline interface {
 	CreateOneOffBuild() (Build, error)
 	CreateStartedBuild(plan atc.Plan) (Build, error)
 
+	BuildsFiltered(job string, status atc.BuildStatus, page Page) ([]BuildForAPI, Pagination, error)
 	Builds(page Page) ([]BuildForAPI, Pagination, error)
 	BuildsWithTime(page Page) ([]BuildForAPI, Pagination, error)
 	ChronoRunBuilds(runJobKey string, page Page) ([]BuildForAPI, Pagination, error)
@@ -526,6 +527,22 @@ func (p *pipeline) resource(where map[string]any) (Resource, bool, error) {
 func (p *pipeline) Builds(page Page) ([]BuildForAPI, Pagination, error) {
 	return getBuildsWithPagination(
 		buildsQuery.Where(sq.Eq{"b.pipeline_id": p.id}), page, p.conn, p.lockFactory, false)
+}
+
+// BuildsFiltered uses this exact pipeline authority even when a job filter is
+// supplied. Newest build ID ordering includes recent reruns in their real place.
+func (p *pipeline) BuildsFiltered(job string, status atc.BuildStatus, page Page) ([]BuildForAPI, Pagination, error) {
+	if page.Limit < 1 || page.Limit > 100 {
+		return nil, Pagination{}, fmt.Errorf("invalid build page limit")
+	}
+	q := buildsQuery.Where(sq.Eq{"b.pipeline_id": p.id})
+	if job != "" {
+		q = q.Where(sq.Expr("COALESCE(j.name,b.run_job_name) = ?", job))
+	}
+	if status != "" {
+		q = q.Where(sq.Eq{"b.status": string(status)})
+	}
+	return getBuildsWithPagination(q, page, p.conn, p.lockFactory, true)
 }
 
 func (p *pipeline) BuildsWithTime(page Page) ([]BuildForAPI, Pagination, error) {

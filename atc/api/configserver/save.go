@@ -20,6 +20,12 @@ import (
 )
 
 func (s *Server) SaveConfig(w http.ResponseWriter, r *http.Request) {
+	s.saveConfig(w, r, false)
+}
+func (s *Server) SaveConfigConditional(w http.ResponseWriter, r *http.Request) {
+	s.saveConfig(w, r, true)
+}
+func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request, strict bool) {
 	session := s.logger.Session("set-config")
 
 	query := r.URL.Query()
@@ -30,7 +36,14 @@ func (s *Server) SaveConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var version db.ConfigVersion
-	if configVersionStr := r.Header.Get(atc.ConfigVersionHeader); len(configVersionStr) != 0 {
+	if strict {
+		parsed, err := atc.ParseConfigVersion(r.Header.Get(atc.ConfigVersionHeader))
+		if err != nil {
+			HandleBadRequest(w, err.Error())
+			return
+		}
+		version = db.ConfigVersion(parsed)
+	} else if configVersionStr := r.Header.Get(atc.ConfigVersionHeader); len(configVersionStr) != 0 {
 		_, err := fmt.Sscanf(configVersionStr, "%d", &version)
 		if err != nil {
 			session.Error("malformed-config-version", err)
@@ -149,7 +162,13 @@ func (s *Server) SaveConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, created, err := team.SavePipeline(pipelineRef, config, version, true)
+	var saved db.Pipeline
+	var created bool
+	if strict {
+		saved, created, err = team.SavePipelineConditional(pipelineRef, config, version, true)
+	} else {
+		saved, created, err = team.SavePipeline(pipelineRef, config, version, true)
+	}
 	if err != nil {
 		session.Error("failed-to-save-config", err)
 		if errormap.Write(w, err) {
@@ -169,6 +188,9 @@ func (s *Server) SaveConfig(w http.ResponseWriter, r *http.Request) {
 	session.Info("saved")
 
 	w.Header().Set("Content-Type", "application/json")
+	if strict {
+		w.Header().Set(atc.ConfigVersionHeader, fmt.Sprint(saved.ConfigVersion()))
+	}
 
 	if created {
 		w.WriteHeader(http.StatusCreated)

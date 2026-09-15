@@ -16,9 +16,10 @@ import (
 )
 
 type SetPipelineCommand struct {
-	SkipInteractive  bool `short:"n"  long:"non-interactive"               description:"Skips interactions, uses default values"`
-	DisableAnsiColor bool `long:"no-color"               description:"Disable color output"`
-	DryRun           bool `short:"d"  long:"dry-run"               description:"Run a set pipeline step but in dry-run mode"`
+	StrictConfigWrite bool `long:"strict-config-write" description:"Require an atomic create-only or exact-version write; fail rather than fall back to legacy saves"`
+	SkipInteractive   bool `short:"n"  long:"non-interactive"               description:"Skips interactions, uses default values"`
+	DisableAnsiColor  bool `long:"no-color"               description:"Disable color output"`
+	DryRun            bool `short:"d"  long:"dry-run"               description:"Run a set pipeline step but in dry-run mode"`
 
 	CheckCredentials bool `long:"check-creds"  description:"Validate credential variables against credential manager"`
 
@@ -94,13 +95,14 @@ func (command *SetPipelineCommand) Execute(args []string) error {
 			Name:         pipelineName,
 			InstanceVars: instanceVars,
 		},
-		TargetName:       Fly.Target,
-		Target:           target.Client().URL(),
-		SkipInteraction:  command.SkipInteractive || command.Config.FromStdin(),
-		CheckCredentials: command.CheckCredentials,
-		DryRun:           command.DryRun,
-		CommandWarnings:  warnings,
-		GivenTeamName:    string(command.Team),
+		TargetName:        Fly.Target,
+		Target:            target.Client().URL(),
+		SkipInteraction:   command.SkipInteractive || command.Config.FromStdin(),
+		CheckCredentials:  command.CheckCredentials,
+		StrictConfigWrite: command.StrictConfigWrite,
+		DryRun:            command.DryRun,
+		CommandWarnings:   warnings,
+		GivenTeamName:     string(command.Team),
 	}
 
 	yamlTemplateWithParams := templatehelpers.NewYamlTemplateWithParams(configPath, templateVariablesFiles, command.Var, command.YAMLVar, instanceVars)

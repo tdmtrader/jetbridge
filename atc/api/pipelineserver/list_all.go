@@ -11,6 +11,10 @@ import (
 
 // show all public pipelines and team private pipelines if authorized
 func (s *Server) ListAllPipelines(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("format") == "page" {
+		s.pipelinePage(w, r)
+		return
+	}
 	logger := s.logger.Session("list-all-pipelines")
 
 	acc := accessor.GetAccessor(r)

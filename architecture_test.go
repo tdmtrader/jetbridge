@@ -49,6 +49,8 @@ var agenticPackages = []string{
 	"atc/mcp",
 	"internal/mcpclient",
 	"cmd/jb-mcp-client",
+	// Local schema/client experiment is part of the MCP surface, not core.
+	"hack/mcp-schema-probe",
 }
 
 // agenticPrefixes are reserved for v4. Nothing lives under them yet; listing
@@ -280,10 +282,12 @@ var agenticCoreReach = map[string][]string{
 	// enforced the same authorization. When v4 rebuilds the tools, they should
 	// compose with core's handlers rather than re-implement them, and this pin
 	// should stay empty.
-	"atc/api/mcpserver":  {},
-	"atc/mcp":            {"atc", "atc/api/accessor", "skymarshal/mcpauth"},
-	"internal/mcpclient": {},
-	"cmd/jb-mcp-client":  {},
+	"atc/api/mcpserver": {},
+	// Shared authorization-kind classification, never direct domain execution.
+	"atc/mcp":               {"atc", "atc/api/accessor", "atc/api/auth", "skymarshal/mcpauth"},
+	"hack/mcp-schema-probe": {},
+	"internal/mcpclient":    {},
+	"cmd/jb-mcp-client":     {},
 
 	// v4's first package, and the first consumer of core's run-admission port.
 	//

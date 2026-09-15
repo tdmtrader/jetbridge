@@ -68,6 +68,7 @@ var templateRouteEffects = map[string][]string{
 		atc.PausePipeline,
 		atc.RenamePipeline,
 		atc.SaveConfig,
+		atc.SaveConfigConditional,
 		atc.UnpausePipeline,
 	},
 	"inert": {

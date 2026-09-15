@@ -104,6 +104,7 @@ var auditCategories = map[string][]string{
 	},
 	"system": {
 		atc.SaveConfig,
+		atc.SaveConfigConditional,
 		atc.GetConfig,
 		atc.GetCC,
 		atc.GetVersionsDB,
@@ -188,7 +189,11 @@ var _ = Describe("Audit categories", func() {
 
 	for category, expected := range auditCategories {
 		It("logs exactly the checked-in routes for "+category, func() {
-			Expect(auditAllRoutes(category)).To(ConsistOf(expected))
+			canonical := make([]string, len(expected))
+			for i, action := range expected {
+				canonical[i] = atc.CanonicalAction(action)
+			}
+			Expect(auditAllRoutes(category)).To(ConsistOf(canonical))
 		})
 	}
 

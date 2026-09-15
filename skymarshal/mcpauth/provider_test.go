@@ -70,8 +70,8 @@ func TestMetadataAndRedirectValidation(t *testing.T) {
 	w = h.request("GET", "/.well-known/oauth-protected-resource/api/v1/mcp", nil)
 	requireStatus(t, w, 200)
 	_ = json.Unmarshal(w.Body.Bytes(), &metadata)
-	if scopes := metadata["scopes_supported"].([]any); len(scopes) != 1 || scopes[0] != ScopeRead {
-		t.Fatal("resource discovery should request only read")
+	if scopes := metadata["scopes_supported"].([]any); len(scopes) != len(Scopes) || scopes[0] != ScopeRead {
+		t.Fatal("resource discovery must describe the independent supported consent categories")
 	}
 	for _, redirect := range []string{"https://unregistered.example/callback", "http://127.0.0.1:7001/callback", "http://127.0.0.1:7000/callback/extra"} {
 		q := url.Values{"client_id": {"desktop"}, "redirect_uri": {redirect}}

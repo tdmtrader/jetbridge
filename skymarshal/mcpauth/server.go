@@ -154,7 +154,7 @@ func (s *Server) resourceMetadata(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, http.MethodGet) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"resource": s.config.Resource, "authorization_servers": []string{s.config.Issuer}, "scopes_supported": []string{ScopeRead}, "bearer_methods_supported": []string{"header"}, "resource_name": "JetBridge MCP"})
+	writeJSON(w, http.StatusOK, map[string]any{"resource": s.config.Resource, "authorization_servers": []string{s.config.Issuer}, "scopes_supported": scopeNames(), "bearer_methods_supported": []string{"header"}, "resource_name": "JetBridge MCP"})
 }
 
 func (s *Server) challenge(w http.ResponseWriter, status int, code, scope string) {

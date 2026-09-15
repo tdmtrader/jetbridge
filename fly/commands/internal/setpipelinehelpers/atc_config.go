@@ -21,15 +21,16 @@ import (
 )
 
 type ATCConfig struct {
-	PipelineRef      atc.PipelineRef
-	Team             concourse.Team
-	TargetName       rc.TargetName
-	Target           string
-	SkipInteraction  bool
-	CheckCredentials bool
-	DryRun           bool
-	CommandWarnings  []concourse.ConfigWarning
-	GivenTeamName    string
+	StrictConfigWrite bool
+	PipelineRef       atc.PipelineRef
+	Team              concourse.Team
+	TargetName        rc.TargetName
+	Target            string
+	SkipInteraction   bool
+	CheckCredentials  bool
+	DryRun            bool
+	CommandWarnings   []concourse.ConfigWarning
+	GivenTeamName     string
 }
 
 func (atcConfig ATCConfig) ApplyConfigInteraction() bool {
@@ -109,6 +110,9 @@ func (atcConfig ATCConfig) Set(yamlTemplateWithParams templatehelpers.YamlTempla
 	if err != nil {
 		return err
 	}
+	if atcConfig.StrictConfigWrite && pipeline.Archived {
+		return errors.New("pipeline is archived and has no readable config version; --strict-config-write cannot restore it, run set-pipeline without the flag")
+	}
 	if pipeline.ParentJobID != 0 && pipeline.ParentBuildID != 0 {
 		fmt.Println("\x1b[1;33mWARNING: pipeline has been configured through the 'set_pipeline' step, your changes may be overwritten on the next 'set_pipeline' step execution\x1b[0m")
 		fmt.Println()
@@ -119,12 +123,19 @@ func (atcConfig ATCConfig) Set(yamlTemplateWithParams templatehelpers.YamlTempla
 		return nil
 	}
 
-	created, updated, warnings, err := atcConfig.Team.CreateOrUpdatePipelineConfig(
-		atcConfig.PipelineRef,
-		existingConfigVersion,
-		evaluatedTemplate,
-		atcConfig.CheckCredentials,
-	)
+	var created, updated bool
+	var warnings []concourse.ConfigWarning
+	if atcConfig.StrictConfigWrite {
+		if existingConfigVersion == "" {
+			existingConfigVersion = "0"
+		}
+		var receipt concourse.ConfigWriteReceipt
+		receipt, err = atcConfig.Team.SetPipelineConfigConditional(atcConfig.PipelineRef, existingConfigVersion, evaluatedTemplate, atcConfig.CheckCredentials)
+		created, updated, warnings = receipt.Created, !receipt.Created, receipt.Warnings
+	} else {
+		created, updated, warnings, err = atcConfig.Team.CreateOrUpdatePipelineConfig(atcConfig.PipelineRef, existingConfigVersion, evaluatedTemplate, atcConfig.CheckCredentials)
+	}
+
 	if err != nil {
 		return err
 	}

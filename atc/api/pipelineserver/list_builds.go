@@ -13,6 +13,10 @@ import (
 
 func (s *Server) ListPipelineBuilds(pipeline db.Pipeline) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("format") == "page" {
+			s.buildPage(w, r, pipeline)
+			return
+		}
 		var (
 			err        error
 			from       int

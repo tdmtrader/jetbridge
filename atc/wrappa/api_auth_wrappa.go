@@ -3,7 +3,6 @@ package wrappa
 import (
 	"fmt"
 
-	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/tedsuo/rata"
 )
@@ -37,134 +36,29 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 	for name, handler := range handlers {
 		newHandler := handler
 
-		switch name {
-		// pipeline is public or authorized
-		case atc.GetBuild,
-			atc.BuildResources:
-			newHandler = wrappa.checkBuildReadAccessHandlerFactory.AnyJobHandler(handler, rejector)
-
-		// pipeline and job are public or authorized
-		case atc.GetBuildPreparation,
-			atc.BuildEvents,
-			atc.GetBuildPlan,
-			atc.ListBuildArtifacts:
-			newHandler = wrappa.checkBuildReadAccessHandlerFactory.CheckIfPrivateJobHandler(handler, rejector)
-
-			// resource belongs to authorized team
-		case atc.AbortBuild,
-			atc.SetBuildComment:
-			newHandler = wrappa.checkBuildWriteAccessHandlerFactory.HandlerFor(handler, rejector)
-
-		// pipeline is public or authorized
-		case atc.GetPipeline,
-			atc.ListPipelineRuns,
-			atc.GetPipelineRun,
-			atc.GetJobBuild,
-			atc.PipelineBadge,
-			atc.JobBadge,
-			atc.ListJobs,
-			atc.GetJob,
-			atc.ListJobBuilds,
-			atc.ListPipelineBuilds,
-			atc.GetResource,
-			atc.ListBuildsWithVersionAsInput,
-			atc.ListBuildsWithVersionAsOutput,
-			atc.GetDownstreamResourceCausality,
-			atc.GetUpstreamResourceCausality,
-			atc.GetResourceVersion,
-			atc.ListResources,
-			atc.ListResourceTypes,
-			atc.ListResourceVersions:
-			newHandler = wrappa.checkPipelineAccessHandlerFactory.HandlerFor(handler, rejector)
-
-		// authenticated
-		case atc.ListWorkers,
-			atc.RegisterWorker,
-			atc.DeleteWorker,
-			atc.ListTeamBuilds,
-			atc.GetUser:
-			newHandler = auth.CheckAuthenticationHandler(handler, rejector)
-
-		// unauthenticated / delegating to handler (validate token if provided)
-		case atc.DownloadCLI,
-			atc.CheckResourceWebHook,
-			atc.GetInfo,
-			atc.GetHealth,
-			atc.GetCC,
-			atc.ListTeams,
-			atc.ListAllPipelines,
-			atc.ListPipelines,
-			atc.ListAllJobs,
-			atc.ListAllResources,
-			atc.ListBuilds,
-			atc.MainJobBadge,
-			atc.GetWall,
-			atc.GetOpenIDConfiguration,
-			atc.GetSigningKeys:
-			newHandler = auth.CheckAuthenticationIfProvidedHandler(handler, rejector)
-
-		// admin
-		case atc.GetLogLevel,
-			atc.DestroyTeam,
-			atc.ListActiveUsersSince,
-			atc.SetLogLevel,
-			atc.GetInfoCreds,
-			atc.SetWall,
-			atc.ClearWall,
-			atc.ClearResourceVersions,
-			atc.ClearResourceTypeVersions,
-			atc.ListSharedForResource,
-			atc.ListSharedForResourceType:
-			newHandler = auth.CheckAdminHandler(handler, rejector)
-
-		// authorized (requested team matches resource team and has required role, or is admin)
-		case atc.GetTeam,
-			atc.SetTeam,
-			atc.RenameTeam,
-			atc.ListContainers,
-			atc.GetContainer,
-			atc.HijackContainer,
-			atc.ListVolumes,
-			atc.CreateBuild,
-			atc.CheckResource,
-			atc.CheckResourceType,
-			atc.CheckPrototype,
-			atc.CreateJobBuild,
-			atc.RerunJobBuild,
-			atc.CreatePipelineBuild,
-			atc.CreatePipelineRun,
-			atc.DeletePipeline,
-			atc.DisableResourceVersion,
-			atc.EnableResourceVersion,
-			atc.PinResourceVersion,
-			atc.UnpinResource,
-			atc.SetPinCommentOnResource,
-			atc.GetConfig,
-			atc.GetVersionsDB,
-			atc.ListJobInputs,
-			atc.OrderPipelines,
-			atc.OrderPipelinesWithinGroup,
-			atc.PauseJob,
-			atc.UnpauseJob,
-			atc.PausePipeline,
-			atc.UnpausePipeline,
-			atc.RenamePipeline,
-			atc.ExposePipeline,
-			atc.HidePipeline,
-			atc.SaveConfig,
-			atc.ArchivePipeline,
-			atc.ClearTaskCache,
-			atc.ClearResourceCache,
-			atc.CreateArtifact,
-			atc.ScheduleJob,
-			atc.GetArtifact,
-			atc.CopyResourceVersions,
-			atc.ListDeprecatedScopes:
-			newHandler = auth.CheckAuthorizationHandler(handler, rejector)
-
-		// think about it!
-		default:
+		kind, known := auth.AuthorizationKindForAction(name)
+		if !known {
 			panic(fmt.Sprintf("you missed a spot: %q", name))
+		}
+		switch kind {
+		case auth.AuthorizationBuildRead:
+			newHandler = wrappa.checkBuildReadAccessHandlerFactory.AnyJobHandler(handler, rejector)
+		case auth.AuthorizationBuildOutput:
+			newHandler = wrappa.checkBuildReadAccessHandlerFactory.CheckIfPrivateJobHandler(handler, rejector)
+		case auth.AuthorizationBuildWrite:
+			newHandler = wrappa.checkBuildWriteAccessHandlerFactory.HandlerFor(handler, rejector)
+		case auth.AuthorizationPipelineRead:
+			newHandler = wrappa.checkPipelineAccessHandlerFactory.HandlerFor(handler, rejector)
+		case auth.AuthorizationAuthenticated:
+			newHandler = auth.CheckAuthenticationHandler(handler, rejector)
+		case auth.AuthorizationDelegated:
+			newHandler = auth.CheckAuthenticationIfProvidedHandler(handler, rejector)
+		case auth.AuthorizationAdmin:
+			newHandler = auth.CheckAdminHandler(handler, rejector)
+		case auth.AuthorizationTeam:
+			newHandler = auth.CheckAuthorizationHandler(handler, rejector)
+		default:
+			panic(fmt.Sprintf("you missed an authorization kind: %v", kind))
 		}
 
 		wrapped[name] = newHandler

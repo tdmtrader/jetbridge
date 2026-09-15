@@ -1,0 +1,58 @@
+[
+  {
+    "case": "read_only_write",
+    "original_task": "Pause main/payments branch main if this grant allows it. Otherwise report blocked and the missing consent category.",
+    "followup_task": "Pause main/payments branch main if this grant allows it. Otherwise report blocked and the missing consent category.",
+    "prompt_unchanged": true,
+    "original_facts": {
+      "missing_scope": "pipelines:write"
+    },
+    "followup_facts": {
+      "missing_scope": "pipelines:write"
+    },
+    "reason": "Unchanged task remains valid."
+  },
+  {
+    "case": "trigger_then_logs_without_read",
+    "original_task": "Trigger main/payments branch main's test job once, then show its output if consent permits. Report the new build_id and missing_scope if output cannot be read; report blocked for that partial outcome.",
+    "followup_task": "Trigger main/payments branch main's test job once, then show its output if consent permits. Report the new build_id and missing_scope if output cannot be read; report blocked for that partial outcome.",
+    "prompt_unchanged": true,
+    "original_facts": {
+      "build_id": "106",
+      "missing_scope": "read"
+    },
+    "followup_facts": {
+      "build_id": "106",
+      "missing_scope": "read"
+    },
+    "reason": "Unchanged task remains valid."
+  },
+  {
+    "case": "run_wrong_scope",
+    "original_task": "Create a parameterized run of main/payments branch main with parameters {region: west}. If unavailable under this grant, report blocked and missing_scope. Do not substitute a configured job trigger.",
+    "followup_task": "Create a parameterized run of main/payments branch main with parameters {region: west}. If unavailable, report blocked, missing_scope and mcp_support (implemented/not_implemented). Distinguish an absent MCP adapter from missing consent; do not substitute a configured job trigger.",
+    "prompt_unchanged": false,
+    "original_facts": {
+      "missing_scope": "pipelines:write"
+    },
+    "followup_facts": {
+      "missing_scope": "pipelines:write",
+      "mcp_support": "not_implemented"
+    },
+    "reason": "The selected first slice has no adapter for parameterized pipeline runs or container exec; explicitly distinguish support from missing consent."
+  },
+  {
+    "case": "admin_not_wildcard",
+    "original_task": "Show build 101 logs, trigger main/payments branch main test, and run [pwd] in main/task-101 only if this grant permits those actions. If unavailable, report blocked and missing_scopes alphabetically, comma-separated. Do not change unrelated settings.",
+    "followup_task": "Show build 101 logs, trigger main/payments branch main test, and run [pwd] in main/task-101 only if this grant permits those actions. If unavailable, report blocked, missing_scopes and unsupported_operations alphabetically, comma-separated. Distinguish absent MCP adapters from missing consent; do not change unrelated settings.",
+    "prompt_unchanged": false,
+    "original_facts": {
+      "missing_scopes": "builds:write,hijack,read"
+    },
+    "followup_facts": {
+      "missing_scopes": "builds:write,hijack,read",
+      "unsupported_operations": "container_exec"
+    },
+    "reason": "The selected first slice has no adapter for parameterized pipeline runs or container exec; explicitly distinguish support from missing consent."
+  }
+]

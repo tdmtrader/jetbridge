@@ -74,7 +74,7 @@ func (s *MCPScenario) install() error {
 	if err != nil {
 		return err
 	}
-	mcp := jetbridgemcp.NewHandler(server, api)
+	mcp := jetbridgemcp.NewHandler(server, api, jetbridgemcp.HandlerOptions{AccessFactory: accessor.NewAccessFactory(accessor.NewTrustedTokenVerifier(s.Fixture.Verifier), s.Fixture.DB.TeamFactory, "", nil, nil), CustomRoles: s.Fixture.CustomRoles})
 	// This tiny boundary exercises scope enforcement for future mutation
 	// adapters. It does not pretend pipeline-write or hijack MCP tools exist.
 	probe := server.AuthorizeHTTP(func(w http.ResponseWriter, r *http.Request, p mcpauth.Principal) {
