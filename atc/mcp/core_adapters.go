@@ -9,11 +9,22 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"unicode/utf8"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/mcpserver"
 	"sigs.k8s.io/yaml"
 )
+
+// boundChars truncates to the schema's character bound rather than letting a
+// long value fail validation: the caller has already committed a mutation by
+// the time the receipt is built, and a truncated warning beats INVALID_RESULT.
+func boundChars(s string, max int) string {
+	if utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	return string([]rune(s)[:max-1]) + "\u2026"
+}
 
 func coreAdapter(api http.Handler, id string) mcpserver.ToolHandler {
 	switch id {
@@ -123,7 +134,7 @@ func coreAdapter(api http.Handler, id string) mcpserver.ToolHandler {
 			}
 			warnings := []string{}
 			for _, warning := range envelope.Warnings {
-				warnings = append(warnings, warning.Message)
+				warnings = append(warnings, boundChars(warning.Message, configWarningMaxChars))
 			}
 			return map[string]any{"version": version, "created": r.status == http.StatusCreated, "warnings": warnings}, nil
 		}

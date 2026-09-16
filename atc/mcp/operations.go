@@ -48,7 +48,7 @@ func Operations() []Operation {
 			pipelineArgs(nil), object(map[string]*jsonschema.Schema{"config_yaml": configSchema(), "version": versionSchema()}, "config_yaml", "version")),
 		write("pipeline_config_set", "pipeline", atc.SaveConfig, mcpauth.ScopePipelines, "Apply supplied YAML with an atomic version precondition. Version 0 creates only; a positive version updates only that version. Never retry a conflict automatically. No implicit read or credential expansion.",
 			pipelineArgs(map[string]*jsonschema.Schema{"config_yaml": configSchema(), "version": versionSchema()}, "config_yaml", "version"),
-			object(map[string]*jsonschema.Schema{"version": versionSchema(), "created": {Type: "boolean"}, "warnings": {Type: "array", Items: textSchema(4096)}}, "version", "created", "warnings"), false),
+			object(map[string]*jsonschema.Schema{"version": versionSchema(), "created": {Type: "boolean"}, "warnings": {Type: "array", Items: textSchema(configWarningMaxChars)}}, "version", "created", "warnings"), false),
 		write("pipeline_pause", "pipeline", atc.PausePipeline, mcpauth.ScopePipelines, "Pause scheduling for the exact pipeline instance. Authorized independently of unpause.", pipelineArgs(nil), acceptedResult(), true),
 		write("pipeline_unpause", "pipeline", atc.UnpausePipeline, mcpauth.ScopePipelines, "Resume scheduling for the exact pipeline instance. Authorized independently of pause.", pipelineArgs(nil), acceptedResult(), true),
 		read("builds_list", "build", atc.ListPipelineBuilds, "List builds in an exact pipeline, newest build ID first. Optional job/status filters precede pagination. Live view; default 20, maximum 100.",
@@ -111,6 +111,13 @@ func constant(value string) *any { return pointer[any](value) }
 func object(properties map[string]*jsonschema.Schema, required ...string) *jsonschema.Schema {
 	return &jsonschema.Schema{Type: "object", Properties: properties, Required: required, AdditionalProperties: &jsonschema.Schema{Not: &jsonschema.Schema{}}}
 }
+
+// configWarningMaxChars bounds a single config warning in both the result
+// schema and the adapter that fills it. A warning longer than the schema
+// allows would fail outbound validation and report INVALID_RESULT for a
+// config that is already committed, so the two must not drift apart.
+const configWarningMaxChars = 4096
+
 func textSchema(max int) *jsonschema.Schema {
 	return &jsonschema.Schema{Type: "string", MaxLength: pointer(max)}
 }

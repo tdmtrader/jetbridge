@@ -108,8 +108,12 @@ func (cmd *RunCommand) constructMCPHandler(logger lager.Logger, conn db.DbConn, 
 	if err != nil {
 		return err
 	}
+	disabled := map[string]bool{}
+	for _, id := range cmd.MCPDisableOperation {
+		disabled[id] = true
+	}
 	mux := http.NewServeMux()
-	mux.Handle("/api/v1/mcp", mcp.NewHandler(auth, api, mcp.HandlerOptions{AccessFactory: accessFactory, CustomRoles: cmd.customRoles}))
+	mux.Handle("/api/v1/mcp", mcp.NewHandler(auth, api, mcp.HandlerOptions{AccessFactory: accessFactory, CustomRoles: cmd.customRoles, DisabledOperations: disabled}))
 	mux.Handle("/", auth)
 	cmd.mcpHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if cmd.isTLSEnabled() && r.TLS == nil {

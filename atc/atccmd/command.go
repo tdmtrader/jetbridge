@@ -48,6 +48,7 @@ import (
 	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/lidar"
+	"github.com/concourse/concourse/atc/mcp"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/pauser"
 	"github.com/concourse/concourse/atc/policy"
@@ -323,9 +324,10 @@ type RunCommand struct {
 		MainTeamFlags skycmd.AuthTeamFlags `group:"Authentication (Main Team)" namespace:"main-team"`
 	} `group:"Authentication"`
 
-	ConfigRBAC      flag.File `long:"config-rbac" description:"Customize RBAC role-action mapping."`
-	EnableMCP       bool      `long:"enable-mcp" description:"Enable the authenticated MCP endpoint and OAuth consent flow."`
-	MCPClientConfig flag.File `long:"mcp-client-config" description:"JSON array of registered public MCP clients (client_id, client_name, redirect_uris). Required with --enable-mcp."`
+	ConfigRBAC          flag.File `long:"config-rbac" description:"Customize RBAC role-action mapping."`
+	EnableMCP           bool      `long:"enable-mcp" description:"Enable the authenticated MCP endpoint and OAuth consent flow."`
+	MCPClientConfig     flag.File `long:"mcp-client-config" description:"JSON array of registered public MCP clients (client_id, client_name, redirect_uris). Required with --enable-mcp."`
+	MCPDisableOperation []string  `long:"mcp-disable-operation" description:"MCP operation id to refuse regardless of the caller's scopes. Repeatable. A deployment restriction, never an authority grant."`
 
 	SystemClaimKey    string   `long:"system-claim-key" default:"aud" description:"The token claim key to use when matching system-claim-values"`
 	SystemClaimValues []string `long:"system-claim-value" default:"concourse-worker" description:"Configure which token requests should be considered 'system' requests."`
@@ -2143,7 +2145,28 @@ func (cmd *RunCommand) validate() error {
 		errs = multierror.Append(errs, err)
 	}
 
+	if err := cmd.validateMCPDisabledOperations(); err != nil {
+		errs = multierror.Append(errs, err)
+	}
+
 	return errs.ErrorOrNil()
+}
+
+// validateMCPDisabledOperations refuses an id no operation answers to. A typo
+// would otherwise leave the operation enabled while the operator believes it is
+// off -- the one failure mode a deployment restriction must not have.
+func (cmd *RunCommand) validateMCPDisabledOperations() error {
+	known := map[string]bool{}
+	for _, op := range mcp.Operations() {
+		known[op.ID] = true
+	}
+	var errs error
+	for _, id := range cmd.MCPDisableOperation {
+		if !known[id] {
+			errs = multierror.Append(errs, fmt.Errorf("--mcp-disable-operation: no such MCP operation: %s", id))
+		}
+	}
+	return errs
 }
 
 // validateK8sRuntime enforces the DaemonSet artifact cache as a hard

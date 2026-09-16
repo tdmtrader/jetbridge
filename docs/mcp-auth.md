@@ -44,6 +44,13 @@ to the web command's existing configuration. Use an HTTPS `--external-url`
 (HTTP is permitted on loopback for local development). This initial surface is
 mounted at the origin root, not beneath a reverse-proxy path prefix.
 
+Repeat `--mcp-disable-operation=<id>` to withhold an operation from every
+caller regardless of consent. It is a deployment restriction, never an
+authority grant: a disabled operation is absent from the catalog, answers
+`DISABLED`, and `capabilities_explain` says more consent will not enable it.
+The web node refuses to start on an id no operation answers to, aliases
+included -- disable `pipeline_get`, not `pipeline_status`.
+
 Example public-client configuration:
 
 ```json
