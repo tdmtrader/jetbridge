@@ -11,12 +11,12 @@ import (
 func HandleBadRequest(w http.ResponseWriter, errorMessages ...string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusBadRequest)
-	WriteSaveConfigResponse(w, atc.SaveConfigResponse{
+	WriteErrorResponse(w, atc.ErrorResponse{
 		Errors: errorMessages,
 	})
 }
 
-func WriteSaveConfigResponse(w http.ResponseWriter, saveConfigResponse atc.SaveConfigResponse) {
+func WriteErrorResponse(w http.ResponseWriter, saveConfigResponse atc.ErrorResponse) {
 	responseJSON, err := json.Marshal(saveConfigResponse)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)

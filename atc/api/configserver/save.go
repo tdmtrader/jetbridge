@@ -198,7 +198,7 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request, strict bool)
 		w.WriteHeader(http.StatusOK)
 	}
 
-	WriteSaveConfigResponse(w, atc.SaveConfigResponse{Warnings: warnings})
+	WriteErrorResponse(w, atc.SaveConfigResponse{Warnings: warnings})
 }
 
 // Simply validate that the credentials exist; don't do anything with the actual secrets

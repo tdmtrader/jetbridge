@@ -48,7 +48,7 @@ func coreAdapter(api http.Handler, id string) mcpserver.ToolHandler {
 				return nil, err
 			}
 			if r.status != http.StatusOK {
-				var envelope atc.SaveConfigResponse
+				var envelope atc.ErrorResponse
 				if json.Unmarshal(r.body.Bytes(), &envelope) == nil {
 					switch envelope.Code {
 					case "AMBIGUOUS_EVENT_STREAM", "INVALID_CURSOR", "STREAM_CHANGED", "OUTPUT_RETAINED_AWAY", "EVENT_TOO_LARGE", "STORED_EVENT_TOO_LARGE", "PAGE_TOO_SMALL", "TEMPORARY_OUTPUT_FAILURE":
@@ -223,7 +223,7 @@ func buildView(b atc.Build) map[string]any {
 // Keep upstream validation errors compact and useful without exposing raw HTTP
 // pages or infrastructure details. References in user-supplied YAML stay intact.
 func configValidationError(r *boundedResponse) error {
-	var envelope atc.SaveConfigResponse
+	var envelope atc.ErrorResponse
 	if json.Unmarshal(r.body.Bytes(), &envelope) == nil && len(envelope.Errors) > 0 {
 		return fmt.Errorf("INVALID_ARGUMENTS: %s", envelope.Errors[0])
 	}

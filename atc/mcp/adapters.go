@@ -100,7 +100,7 @@ func responseError(r *boundedResponse) error {
 	case http.StatusConflict:
 		// The archived-pipeline guard answers 409 before authorization, so an
 		// untyped conflict must read like any other unavailable target.
-		var envelope atc.SaveConfigResponse
+		var envelope atc.ErrorResponse
 		if json.Unmarshal(r.body.Bytes(), &envelope) == nil && envelope.Code != "" {
 			return configValidationError(r)
 		}

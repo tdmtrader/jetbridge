@@ -37,7 +37,7 @@ credentials, refresh credentials, fixture passwords, or full authorization URLs.
 Raw child diagnostics are discarded. The saved evidence contains only fixture
 pipeline data and these redacted observations.
 
-Evidence lives outside the repository in `~/jetbridge-evidence/precise-mcp-20260915/` (sha256 in its `MANIFEST.sha256`, out of tree),
+Evidence lives outside the repository in the `precise-mcp-20260915` evidence archive, which is held by the maintainer and not published with this repository (141 files; its `MANIFEST.sha256` hashes each one and itself hashes to `1f01774d208039524db30cc7aee81213c14ea7a8f0d849d53782c7a83f2d9151`),
 under `hack/mcp-oauth-probe/evidence/`. The final-candidate run is `codex-final-20260915/evidence.json`;
 `verification.json` records the deterministic checks. The earlier
 `codex-20260915/` cohort remains intact as historical evidence from an

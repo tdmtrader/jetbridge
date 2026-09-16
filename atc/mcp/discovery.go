@@ -182,8 +182,10 @@ type explainArgs struct {
 	Cursor    string `json:"cursor,omitempty"`
 }
 type capability struct {
-	Operation               string   `json:"operation"`
-	Title                   string   `json:"title"`
+	Operation string `json:"operation"`
+	// The field carries the operation's description, so it says so: a client
+	// rendering this as a short label would have rendered a paragraph.
+	Description             string   `json:"description"`
 	MCPSupport              string   `json:"mcp_support"`
 	ExecutableBranchPresent bool     `json:"executable_branch_present"`
 	MissingScopes           []string `json:"missing_scopes"`
@@ -232,7 +234,7 @@ func (c catalog) explain(ctx context.Context, args explainArgs) (explanationPage
 		if offset != 0 {
 			return page, errors.New("INVALID_CURSOR")
 		}
-		page.Items = append(page.Items, capability{Operation: args.Operation, Title: "Unknown capability", MCPSupport: "unknown", MissingScopes: []string{}, AccountAccess: "not_evaluated", NextStep: "clarify", Explanation: "This ID is not in this deployment's capability metadata. Clarify the requested action; this does not establish product impossibility."})
+		page.Items = append(page.Items, capability{Operation: args.Operation, Description: "Unknown capability", MCPSupport: "unknown", MissingScopes: []string{}, AccountAccess: "not_evaluated", NextStep: "clarify", Explanation: "This ID is not in this deployment's capability metadata. Clarify the requested action; this does not establish product impossibility."})
 		return page, nil
 	}
 	if offset > len(matches) {
@@ -246,16 +248,20 @@ func (c catalog) explain(ctx context.Context, args explainArgs) (explanationPage
 			break
 		}
 		op := matches[i]
-		e := capability{Operation: op.ID, Title: op.Description, MCPSupport: "not_implemented", MissingScopes: []string{}, AccountAccess: "not_evaluated", NextStep: "stop", Explanation: "No MCP adapter is installed. More consent cannot enable this capability. A separate CLI/API action may exist."}
-		if !c.principal.HasScope(op.Scope) {
-			e.MissingScopes = append(e.MissingScopes, op.Scope)
-		}
+		e := capability{Operation: op.ID, Description: op.Description, MCPSupport: "not_implemented", MissingScopes: []string{}, AccountAccess: "not_evaluated", NextStep: "stop", Explanation: "No MCP adapter is installed. More consent cannot enable this capability. A separate CLI/API action may exist."}
 		if op.Implemented() {
 			if c.disabled[op.ID] {
 				e.MCPSupport = "disabled"
 				e.NextStep = "contact_operator"
 				e.Explanation = "The operator disabled this MCP adapter. More consent does not enable it."
 			} else {
+				// missing_scopes is only listed where consent is the thing that
+				// would change the answer. On an entry whose explanation says
+				// consent cannot help, a scope list invites the client to open a
+				// consent flow that resolves nothing.
+				if !c.principal.HasScope(op.Scope) {
+					e.MissingScopes = append(e.MissingScopes, op.Scope)
+				}
 				access, err := c.access(ctx, op.Action)
 				if err != nil {
 					return explanationPage{}, errors.New("TEMPORARY_ACCESS_FAILURE: capability access is temporarily unavailable")

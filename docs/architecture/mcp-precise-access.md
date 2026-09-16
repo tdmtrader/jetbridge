@@ -102,7 +102,7 @@ capabilities_explain({resource: "pipeline", operation: "pipeline_config_set"})
 {
   "items": [{
     "operation": "pipeline_config_set",
-    "title": "Set pipeline configuration",
+    "description": "Apply supplied YAML with an atomic version precondition. Version 0 creates only; a positive version updates only that version. Never retry a conflict automatically. No implicit read or credential expansion.",
     "mcp_support": "implemented",
     "executable_branch_present": false,
     "missing_scopes": ["pipelines:write"],

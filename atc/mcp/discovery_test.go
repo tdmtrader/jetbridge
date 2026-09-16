@@ -49,6 +49,11 @@ func TestExplanationsSeparateSupportConsentAndAccount(t *testing.T) {
 	if err != nil || result.Items[0].MCPSupport != "not_implemented" || result.Items[0].NextStep != "stop" {
 		t.Fatalf("unsupported: %+v %v", result, err)
 	}
+	// The entry's own explanation says consent cannot enable it; a scope list
+	// beside that invites a consent flow that resolves nothing.
+	if len(result.Items[0].MissingScopes) != 0 {
+		t.Fatalf("unsupported entry advertises consent: %+v", result.Items[0])
+	}
 	result, err = c.explain(context.Background(), explainArgs{Resource: "worker", Operation: "unknown"})
 	if err != nil || result.Items[0].MCPSupport != "unknown" {
 		t.Fatalf("unknown: %+v %v", result, err)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/helpers"
@@ -46,9 +47,13 @@ func (s *Server) eventPage(w http.ResponseWriter, r *http.Request, build db.Buil
 		case errors.Is(err, db.ErrBuildEventPageTooSmall):
 			code, message, status = "PAGE_TOO_SMALL", err.Error(), http.StatusBadRequest
 		}
+		// Each sentinel's text already opens with the code the envelope carries.
+		// Sending both makes every client that prefixes the code -- the MCP
+		// adapter does -- print it twice: "INVALID_CURSOR: INVALID_CURSOR: ...".
+		message = strings.TrimPrefix(message, code+": ")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
-		helpers.WriteSaveConfigResponse(w, atc.SaveConfigResponse{Code: code, Errors: []string{message}})
+		helpers.WriteErrorResponse(w, atc.ErrorResponse{Code: code, Errors: []string{message}})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

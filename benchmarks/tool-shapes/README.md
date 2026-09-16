@@ -8,7 +8,7 @@ It is a synthetic behavior experiment, not production conformance or an OAuth te
 The five original harness files were copied from the sibling `mcp-tool-benchmark`
 worktree. `PROVENANCE.json` records that uncommitted source and its exact hashes;
 the original six-shape experiment and all 192 run traces remain untouched there.
-A portable unchanged copy lives out of tree in `~/jetbridge-evidence/precise-mcp-20260915/` (sha256 in its `MANIFEST.sha256`, out of tree) under `benchmarks/tool-shapes/baseline/`, including
+A portable unchanged copy lives out of tree in the `precise-mcp-20260915` evidence archive, which is held by the maintainer and not published with this repository (141 files; its `MANIFEST.sha256` hashes each one and itself hashes to `1f01774d208039524db30cc7aee81213c14ea7a8f0d849d53782c7a83f2d9151`) under `benchmarks/tool-shapes/baseline/`, including
 source, aggregate results and a compressed archive of all 192 traces;
 its `ARCHIVE.json` records hashes. Run its `run.py` to repeat the full
 six-shape screen, or the commands below for the precise diagnosis follow-up.

@@ -55,6 +55,6 @@ func Write(w http.ResponseWriter, err error) bool {
 	if errors.Is(err, db.ErrConfigPreconditionFailed) {
 		response.Code = atc.ConfigVersionConflictCode
 	}
-	helpers.WriteSaveConfigResponse(w, response)
+	helpers.WriteErrorResponse(w, response)
 	return true
 }

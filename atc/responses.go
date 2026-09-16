@@ -10,6 +10,13 @@ type SaveConfigResponse struct {
 	Warnings []ConfigWarning `json:"warnings,omitempty"`
 }
 
+// ErrorResponse is the same envelope under the name the rest of the API uses it
+// by: a typed code with sentences. It started life on save-config and grew into
+// the general error shape, and the paginated endpoints and the MCP adapters
+// read it that way. Same type, so the wire format cannot drift between the two
+// names.
+type ErrorResponse = SaveConfigResponse
+
 type ConfigResponse struct {
 	Config Config `json:"config"`
 }

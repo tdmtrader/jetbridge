@@ -529,13 +529,18 @@ func waitForAPI(url string, timeout time.Duration) {
 }
 
 func mustRepoRoot() string {
+	// Ginkgo runs a precompiled suite from the binary's own directory, where
+	// `git rev-parse` finds nothing. The old fallback answered /src -- whatever
+	// source the runner image happened to bake in -- so the suite deployed one
+	// commit's chart against another commit's binaries and nobody could see it
+	// in the log. Take the checkout from the environment when the caller knows
+	// it, and fail loudly rather than substitute a tree nobody asked for.
+	if root := os.Getenv("JETBRIDGE_REPO_ROOT"); root != "" {
+		return root
+	}
 	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
 	if err != nil {
-		// Fallback for CI images where source is copied (not a git clone).
-		if _, statErr := os.Stat("/src/go.mod"); statErr == nil {
-			return "/src"
-		}
-		log.Fatalf("failed to find repo root: %v", err)
+		log.Fatalf("repo root unknown: not a git checkout here and JETBRIDGE_REPO_ROOT is unset: %v", err)
 	}
 	return strings.TrimSpace(string(out))
 }

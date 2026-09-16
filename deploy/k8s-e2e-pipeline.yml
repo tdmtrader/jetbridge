@@ -410,7 +410,7 @@ jobs:
           docker pull rancher/k3s:v1.31.6-k3s1
 
           echo "=== Running K8s integration tests (pre-compiled, KinD cluster) ==="
-          FLY_PATH=/tmp/fly /tmp/integration.test -test.v -test.timeout 30m -test.count 1 || {
+          JETBRIDGE_REPO_ROOT="$PWD" FLY_PATH=/tmp/fly /tmp/integration.test -test.v -test.timeout 30m -test.count 1 || {
             echo "=== TEST FAILED — dumping diagnostics ==="
             echo "--- Docker containers ---"
             docker ps -a 2>/dev/null || true
@@ -428,7 +428,7 @@ jobs:
           # automatically) and re-runs the Artifact* specs — daemon mTLS
           # enforcement, artifact passing (stream-in/out), and read-after-reap
           # (peer fetch) — so the mTLS data path is exercised end-to-end.
-          ARTIFACT_DAEMON_TLS=true FLY_PATH=/tmp/fly /tmp/integration.test \
+          ARTIFACT_DAEMON_TLS=true JETBRIDGE_REPO_ROOT="$PWD" FLY_PATH=/tmp/fly /tmp/integration.test \
             -test.v -test.timeout 25m -test.count 1 -ginkgo.focus 'Artifact' || {
             echo "=== mTLS VERIFICATION FAILED — dumping diagnostics ==="
             docker ps -a 2>/dev/null || true
@@ -540,7 +540,10 @@ jobs:
           # Run with 1 process — concurrent K3s cluster creation overwhelms
           # Docker's containerd with image layer lock contention in DinD.
           # Single-process mode is slower but reliable.
-          FLY_PATH=/tmp/fly ginkgo --procs=${K8S_PROCS:-1} -v --timeout=4h /tmp/behavioral.test
+          # ginkgo runs a precompiled suite from /tmp, so the suite cannot find
+          # the checkout by itself; name it explicitly or it deploys the runner
+          # image's baked chart against these binaries.
+          JETBRIDGE_REPO_ROOT="$PWD" FLY_PATH=/tmp/fly ginkgo --procs=${K8S_PROCS:-1} -v --timeout=4h /tmp/behavioral.test
           echo "=== K8s behavioral tests passed ==="
 
           kill $DOCKERD_PID 2>/dev/null || true
