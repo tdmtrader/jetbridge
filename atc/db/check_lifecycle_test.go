@@ -230,6 +230,22 @@ var _ = Describe("Check Lifecycle", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(numBuildEventsForCheck(build)).To(Equal(0))
 		})
+
+		It("keeps the events of the scope's last check while a newer build is only half-started", func() {
+			newBuild, err := defaultResource.CreateInMemoryBuild(context.Background(), plan, seqGen)
+			Expect(err).ToNot(HaveOccurred())
+
+			// `OnCheckBuildStart` claims `resources.in_memory_build_id` in its
+			// own transaction; the scope's `last_check_build_id` still names the
+			// older build until `UpdateLastCheckStartTime` commits. The API
+			// resolves that older build the whole time, so its events must stay.
+			err = newBuild.OnCheckBuildStart()
+			Expect(err).ToNot(HaveOccurred())
+
+			err = lifecycle.DeleteCompletedChecks(logger)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(numBuildEventsForCheck(build)).To(Equal(2))
+		})
 	})
 })
 

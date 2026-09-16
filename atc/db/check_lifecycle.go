@@ -59,11 +59,21 @@ func (cl *checkLifecycle) DeleteCompletedChecks(logger lager.Logger) error {
 		counter++
 	}
 
+	// A build whose events these are is still fetchable through the API for as
+	// long as it is a resource's current in-memory build or a scope's last
+	// check -- `inMemoryCheckBuildForApi.EventPage` resolves it by either. The
+	// resource's `in_memory_build_id` advances one transaction before the
+	// scope's `last_check_build_id` does, and a scope outlives the resource
+	// that ran its last check, so the two are not interchangeable: deleting on
+	// the strength of one alone leaves the other resolving to a build with no
+	// events, reported as a clean empty `finished` page rather than
+	// OUTPUT_RETAINED_AWAY. Keep the events while either still points here.
 	_, err2 := cl.conn.Exec(`
       WITH expired_imb_ids AS (
           SELECT distinct(build_id) AS build_id
               FROM check_build_events cbe
               WHERE NOT EXISTS (SELECT 1 FROM resources WHERE in_memory_build_id = cbe.build_id)
+                AND NOT EXISTS (SELECT 1 FROM resource_config_scopes WHERE last_check_build_id = cbe.build_id)
                 AND NOT EXISTS (SELECT 1 FROM builds WHERE id = cbe.build_id)
       )
       DELETE FROM check_build_events cbe2 USING expired_imb_ids 
