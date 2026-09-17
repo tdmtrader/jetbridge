@@ -1066,6 +1066,22 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 				return p.reportExactOutcomeWithoutRerunning(ctx)
 			}
 
+			// A non-zero exit is not evidence that the command chose it. A Pod
+			// destroyed under a running command kills that command, and the
+			// exit the transport carries out is the signal's -- 137 for a
+			// SIGKILL -- which reads as a step that failed on its own terms.
+			// Ask the Pod before the code is believed. This is the same
+			// question the no-error path asks below, on the narrower evidence
+			// a non-zero exit may use.
+			if destroyed := p.confirmPodSurvivedExec(ctx, exitCode); destroyed != nil {
+				if p.control != nil {
+					return p.reportExactOutcomeWithoutRerunning(ctx)
+				}
+				logger.Error("pod-destroyed-during-exec", destroyed)
+				spanErr = destroyed
+				return runtime.ProcessResult{}, destroyed
+			}
+
 			// The outcome is durable before the result is exposed. An exit
 			// code the engine has seen and the ledger has not is a terminal
 			// answer nothing can corroborate.
@@ -1113,7 +1129,7 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	// transport reports the same nil a clean exit does. The absence of an
 	// error is only evidence of success if the container that ran the command
 	// is still there to have exited.
-	if destroyed := p.confirmPodSurvivedExec(ctx); destroyed != nil {
+	if destroyed := p.confirmPodSurvivedExec(ctx, 0); destroyed != nil {
 		// Same rule the lost-transport path above follows: for a controlled
 		// execution the ledger says what happened, and "we do not know" stays
 		// unresolved rather than becoming a success or a failure.
@@ -1150,13 +1166,16 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 }
 
 // confirmPodSurvivedExec reports the destruction of the pause Pod that
-// happened while its step's command was running, or nil when the Pod is still
-// alive and an exec that returned no error really did mean exit 0.
+// happened while its step's command was running, or nil when the Pod survived
+// and the exit the transport reported is the command's own.
 //
-// It is called only on that no-error path, because that is the only one that
-// cannot tell the two apart. A Pod deleted, evicted, or taken with its node
-// ends the exec stream exactly the way a command exiting 0 does.
-func (p *execProcess) confirmPodSurvivedExec(ctx context.Context) error {
+// Both exit paths ask it, because neither can tell on its own. A Pod deleted,
+// evicted, or taken with its node ends the exec stream exactly the way a
+// command exiting 0 does, and kills a running command with a signal whose 137
+// is exactly the way a command failing on its own terms looks. exitCode is
+// what the transport reported -- 0 on the no-error path -- and it decides
+// which evidence about the Pod is admissible.
+func (p *execProcess) confirmPodSurvivedExec(ctx context.Context, exitCode int) error {
 	fetchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -1164,10 +1183,10 @@ func (p *execProcess) confirmPodSurvivedExec(ctx context.Context) error {
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return destroyedDuringExec(runtime.InterruptionPodDeleted,
-				fmt.Sprintf("pod %s no longer exists", p.podName))
+				fmt.Sprintf("pod %s no longer exists", p.podName), exitCode)
 		}
 		// An API server we could not reach is not evidence that the step
-		// died, and a command that did exit 0 must not be failed for it.
+		// died, and a command that reported its own exit must not lose it.
 		return nil
 	}
 
@@ -1175,7 +1194,7 @@ func (p *execProcess) confirmPodSurvivedExec(ctx context.Context) error {
 	// command was running in, whatever phase the Pod still reports.
 	if pod.DeletionTimestamp != nil {
 		return destroyedDuringExec(runtime.InterruptionPodDeleted,
-			fmt.Sprintf("pod %s is being deleted", p.podName))
+			fmt.Sprintf("pod %s is being deleted", p.podName), exitCode)
 	}
 
 	// A classified lifecycle event -- evicted, preempted, node lost -- names
@@ -1183,13 +1202,25 @@ func (p *execProcess) confirmPodSurvivedExec(ctx context.Context) error {
 	if reason, ok := interruptionReasonForPod(pod, false); ok {
 		writePodDiagnostics(pod, p.processIO.Stderr)
 		writeNodeDiagnostics(ctx, p.clientset, pod, p.processIO.Stderr)
-		return destroyedDuringExec(reason, fmt.Sprintf("pod %s is %s", p.podName, pod.Status.Phase))
+		return destroyedDuringExec(reason,
+			fmt.Sprintf("pod %s is %s", p.podName, pod.Status.Phase), exitCode)
 	}
 
-	// The pause container outlives every exec -- it sleeps for the life of the
-	// step -- so finding it terminated means the container the command ran in
-	// is gone. A plain `kubectl delete pod` leaves exactly this and sets no
-	// Reason the classification above could use: phase Failed, main container
+	// Past here only a clean exit may go. The pause container outlives every
+	// exec -- it sleeps for the life of the step -- so finding it terminated
+	// says the Pod died whatever the transport reported. But after a NON-zero
+	// exit that reading has nothing to add and one way to be wrong: the
+	// command's own code is already a truthful answer, and a destruction that
+	// could have overwritten it leaves a DeletionTimestamp or a lifecycle
+	// reason, both of which the checks above have already had. Keeping the
+	// exit the command gave is the smaller claim, so that is what a non-zero
+	// exit gets.
+	if exitCode != 0 {
+		return nil
+	}
+
+	// A plain `kubectl delete pod` leaves exactly this and sets no Reason the
+	// classification above could use: phase Failed, main container
 	// ContainerStatusUnknown, "the container could not be located when the pod
 	// was terminated".
 	for _, cs := range pod.Status.ContainerStatuses {
@@ -1197,15 +1228,16 @@ func (p *execProcess) confirmPodSurvivedExec(ctx context.Context) error {
 			writePodDiagnostics(pod, p.processIO.Stderr)
 			return destroyedDuringExec(runtime.InterruptionPodDeleted, fmt.Sprintf(
 				"container %q of pod %s terminated: %s (exit code %d)",
-				mainContainerName, p.podName, cs.State.Terminated.Reason, cs.State.Terminated.ExitCode))
+				mainContainerName, p.podName, cs.State.Terminated.Reason,
+				cs.State.Terminated.ExitCode), exitCode)
 		}
 	}
 
 	return nil
 }
 
-// destroyedDuringExec names what took the Pod, and is deliberately NOT a
-// runtime.InterruptionError.
+// destroyedDuringExec names what took the Pod and what the transport made of
+// it, and is deliberately NOT a runtime.InterruptionError.
 //
 // An interruption is retryable, and a retryable step error leaves the build
 // started for the tracker to resume, which re-runs the whole plan. That is the
@@ -1214,9 +1246,13 @@ func (p *execProcess) confirmPodSurvivedExec(ctx context.Context) error {
 // claims -- and the wrong one here: the command has already run, and running it
 // again is the second invocation recreatePausePod refuses once the exec
 // transport has carried a byte. The reason is still in the message, because an
-// operator needs to tell an eviction from a deletion.
-func destroyedDuringExec(reason runtime.InterruptionReason, detail string) error {
-	return fmt.Errorf("the step's command was running when its pod was destroyed (%s): %s", reason, detail)
+// operator needs to tell an eviction from a deletion, and so is the exit code,
+// because the build log will be showing it.
+func destroyedDuringExec(reason runtime.InterruptionReason, evidence string, exitCode int) error {
+	return fmt.Errorf(
+		"the step's command was running when its pod was destroyed (%s): %s; "+
+			"the exec transport reported exit code %d",
+		reason, evidence, exitCode)
 }
 
 // deleteAbandonedPod deletes the pause Pod of a step whose context has ended.

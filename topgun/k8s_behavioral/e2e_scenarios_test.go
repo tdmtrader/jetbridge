@@ -15,7 +15,7 @@ var _ = Describe("End to End Pipeline Scenarios", func() {
 resources:
 - name: src
   type: mock
-  source: {mirror_self: true}
+  source: {create_files: {code.txt: "simple-ci"}}
 
 jobs:
 - name: test
@@ -48,7 +48,7 @@ jobs:
 resources:
 - name: src
   type: mock
-  source: {mirror_self: true}
+  source: {create_files: {code.txt: "build-push"}}
 - name: image
   type: mock
   source: {mirror_self: true}
@@ -475,7 +475,7 @@ resource_types:
 resources:
 - name: custom-res
   type: custom-mock
-  source: {mirror_self: true}
+  source: {create_files: {code.txt: "custom-type"}}
 
 jobs:
 - name: custom-type-job

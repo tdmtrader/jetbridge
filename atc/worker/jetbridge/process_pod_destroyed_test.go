@@ -1,10 +1,14 @@
 package jetbridge
 
-// A pause Pod destroyed while its step's command is running ends the exec
-// stream the same way a command exiting 0 does: the SPDY error stream carries
-// the exit status, and a Pod that is taken away closes it with nothing on it.
-// The transport returns nil in both cases, so the Pod's own state is the only
-// thing that can tell them apart.
+// A pause Pod destroyed while its step's command is running is invisible to
+// the exec transport, in both directions.
+//
+// Deleted with nothing left to say, it closes the SPDY error stream empty, and
+// the transport returns the same nil it returns for a command that exited 0.
+// Deleted while the command is still in the kernel, it kills the command, and
+// the transport carries out the signal's exit code -- 137 -- which is what a
+// command failing on its own terms looks like. Neither is the command's answer,
+// and the Pod's own state is the only thing that can say so.
 
 import (
 	"bytes"
@@ -23,10 +27,11 @@ import (
 )
 
 // destroyingExecutor runs onExec while the command is "running" and then
-// returns nil, which is what the real transport does when the Pod vanishes
-// underneath it.
+// reports exitCode the way the real transport does: nil for 0, an
+// ExecExitError otherwise.
 type destroyingExecutor struct {
-	onExec func()
+	onExec   func()
+	exitCode int
 }
 
 func (e *destroyingExecutor) ExecInPod(_ context.Context, _, _, _ string, _ []string,
@@ -36,6 +41,9 @@ func (e *destroyingExecutor) ExecInPod(_ context.Context, _, _, _ string, _ []st
 	}
 	if e.onExec != nil {
 		e.onExec()
+	}
+	if e.exitCode != 0 {
+		return &ExecExitError{ExitCode: e.exitCode}
 	}
 
 	return nil
@@ -152,6 +160,61 @@ func TestExecProcessDoesNotReportExitZeroWhenPodIsDestroyed(t *testing.T) {
 		result, err := newWait(clientset, executor)
 		if err == nil {
 			t.Fatalf("Wait() = (%+v, nil), want an error: the pod was deleted while the command ran", result)
+		}
+	})
+
+	// The other direction, and the one the cluster actually produces: a
+	// graceful delete SIGKILLs the command and the supervisor carries 137 out
+	// over the error stream before the Pod goes. Nothing about that 137 is the
+	// command's own answer, and a build that ends `failed` on it has been told
+	// the wrong story about why.
+	t.Run("a pod being deleted does not let the signal's exit code stand", func(t *testing.T) {
+		clientset := fake.NewSimpleClientset(runningPausePod())
+
+		executor := &destroyingExecutor{exitCode: 137, onExec: func() {
+			pod, err := clientset.CoreV1().Pods("test-ns").Get(ctx, "destroyed-pod", metav1.GetOptions{})
+			if err != nil {
+				t.Fatalf("getting the pause pod: %v", err)
+			}
+			// Deletion in flight: the object is still there, with a grace
+			// period left to run, and the container is already being killed.
+			deleting := metav1.Now()
+			pod.DeletionTimestamp = &deleting
+			if _, err := clientset.CoreV1().Pods("test-ns").Update(ctx, pod, metav1.UpdateOptions{}); err != nil {
+				t.Fatalf("marking the pause pod as deleting: %v", err)
+			}
+		}}
+
+		result, err := newWait(clientset, executor)
+		if err == nil {
+			t.Fatalf("Wait() = (%+v, nil), want an error: the pod was being deleted while the command ran", result)
+		}
+		if !strings.Contains(err.Error(), string(runtime.InterruptionPodDeleted)) {
+			t.Fatalf("Wait() error = %q, want it to name %q", err, runtime.InterruptionPodDeleted)
+		}
+		if !strings.Contains(err.Error(), "137") {
+			t.Fatalf("Wait() error = %q, want it to carry the exit code the transport reported", err)
+		}
+		var retryable runtime.RetryableError
+		if errors.As(err, &retryable) && retryable.IsRetryable() {
+			t.Fatalf("Wait() error = %T (%v), want a NON-retryable error: "+
+				"the command had already run, so the build must not be re-run", err, err)
+		}
+	})
+
+	// The control for the arm above, and the one that keeps it from being
+	// satisfied by failing every unhappy step. A command that really exited
+	// non-zero on a Pod nothing touched keeps its own exit code, and the step
+	// fails rather than errors.
+	t.Run("a surviving pod keeps its command's own non-zero exit", func(t *testing.T) {
+		clientset := fake.NewSimpleClientset(runningPausePod())
+
+		result, err := newWait(clientset, &destroyingExecutor{exitCode: 2})
+		if err != nil {
+			t.Fatalf("Wait() = %v, want no error: the command failed, the pod did not", err)
+		}
+		if result.ExitStatus != 2 {
+			t.Fatalf("Wait() ExitStatus = %d, want 2", result.ExitStatus)
 		}
 	})
 }
