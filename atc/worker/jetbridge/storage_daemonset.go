@@ -492,23 +492,46 @@ func (b *DaemonSetBackend) daemonResolveBatchCommand(items []batchItem) []string
 	}
 	payload, _ := json.Marshal(batchPayload{Items: items})
 
+	// The keys, named in the script itself. BusyBox wget discards the response
+	// BODY on a non-2xx and prints only the status line, so on the failure
+	// that matters the daemon's own account of which artifact it could not
+	// find never reaches the build log. What the log can always have is what
+	// this pod ASKED for, because that is a constant of the script.
+	keys := make([]string, 0, len(items))
+	for _, it := range items {
+		keys = append(keys, it.Key)
+	}
+
 	script := fmt.Sprintf(`
 set -e
 PORT=%d
 DAEMON="%s://${HOST_IP}:${PORT}"
 WGET_OPTS="%s"
 PAYLOAD='%s'
-echo "[artifact-fetch] batch resolving %d artifacts via ${DAEMON}/resolve-batch" >&2
+KEYS=%s
+echo "[artifact-fetch] batch resolving %d artifacts via ${DAEMON}/resolve-batch: ${KEYS}" >&2
 ATTEMPT=0
 MAX=10
 while true; do
   ATTEMPT=$((ATTEMPT + 1))
   RESP=$(wget ${WGET_OPTS} -qO- -T 180 --header='Content-Type: application/json' --post-data="${PAYLOAD}" "${DAEMON}/resolve-batch" 2>&1) && break
+  # A 4xx is the daemon's considered answer about these keys — missing
+  # artifact, refused destination, expired capability — and no number of
+  # retries turns it into a different one. Retrying it burned twenty seconds
+  # and buried the answer under nine identical lines.
+  case "${RESP}" in
+    *"HTTP/1.1 4"*)
+      echo "[artifact-fetch] FAILED (not retryable): ${RESP}" >&2
+      echo "[artifact-fetch] the daemon at ${DAEMON} would not resolve: ${KEYS}" >&2
+      exit 1
+      ;;
+  esac
   if [ "$ATTEMPT" -ge "$MAX" ]; then
     echo "[artifact-fetch] FAILED after ${MAX} attempts: ${RESP}" >&2
+    echo "[artifact-fetch] the daemon at ${DAEMON} would not resolve: ${KEYS}" >&2
     exit 1
   fi
-  echo "[artifact-fetch] attempt ${ATTEMPT}/${MAX} failed, retrying in 2s..." >&2
+  echo "[artifact-fetch] attempt ${ATTEMPT}/${MAX} failed, retrying in 2s: ${RESP}" >&2
   sleep 2
 done
 echo "[artifact-fetch] batch resolved: ${RESP}" >&2
@@ -516,7 +539,7 @@ echo "[artifact-fetch] batch resolved: ${RESP}" >&2
 case "${RESP}" in
   *'"status":"error"'*) echo "[artifact-fetch] batch had failures — see above" >&2; exit 1 ;;
 esac
-`, port, b.daemonScheme(), b.wgetTLSOpts(), string(payload), len(items))
+`, port, b.daemonScheme(), b.wgetTLSOpts(), string(payload), shellQuote(strings.Join(keys, " ")), len(items))
 
 	return []string{"sh", "-c", script}
 }

@@ -1776,3 +1776,117 @@ func slicesEqual(a, b []string) bool {
 
 	return true
 }
+
+// ---------------------------------------------------------------------------
+// What the fetch-inputs script puts in a build log when the daemon says no
+// ---------------------------------------------------------------------------
+
+// runFetchScript runs the emitted init-container script with wget and sleep
+// stubbed, the way the node would run it, and returns its combined output.
+//
+// The wget stub is BusyBox's behaviour on a non-2xx: it prints the status LINE
+// and discards the body. That is not a simplification — it is the constraint
+// the whole diagnosis has to live inside, and a stub that handed the script a
+// body would test a daemon reply the pod can never see.
+func runFetchScript(t *testing.T, script, status, body string) string {
+	t.Helper()
+
+	rc := "1"
+	if strings.HasPrefix(status, "2") {
+		rc = "0"
+	}
+	prelude := `
+ATTEMPTS=0
+wget() {
+  ATTEMPTS=$((ATTEMPTS + 1))
+  echo "wget-attempts=${ATTEMPTS}" >&2
+  if [ "${STUB_RC}" = "0" ]; then printf '%s' "${STUB_BODY}"; return 0; fi
+  echo "wget: server returned error: HTTP/1.1 ${STUB_STATUS}" >&2
+  return 1
+}
+sleep() { :; }
+`
+	cmd := exec.Command("sh", "-c", prelude+script)
+	cmd.Env = append(os.Environ(),
+		"HOST_IP=10.0.0.1",
+		"STUB_RC="+rc,
+		"STUB_STATUS="+status,
+		"STUB_BODY="+body,
+	)
+	out, err := cmd.CombinedOutput()
+	if err == nil && rc != "0" {
+		t.Fatalf("script succeeded although the daemon refused: %s", out)
+	}
+	return string(out)
+}
+
+func fetchInputsScript(t *testing.T, keys ...string) string {
+	t.Helper()
+
+	b := testBackend(nil)
+	var inputs []runtime.Input
+	var mounts []corev1.VolumeMount
+	var volumes []corev1.Volume
+	for i, key := range keys {
+		dest := "/tmp/input-" + strconv.Itoa(i)
+		name := "input-" + strconv.Itoa(i)
+		inputs = append(inputs, runtime.Input{Artifact: &testArtifact{handle: key}, DestinationPath: dest})
+		mounts = append(mounts, corev1.VolumeMount{Name: name, MountPath: dest})
+		volumes = append(volumes, b.StepVolume(name, "consumer-handle", name))
+	}
+
+	inits, err := b.BuildFetchInitContainers("consumer-handle", inputs, volumes, mounts)
+	if err != nil {
+		t.Fatalf("BuildFetchInitContainers: %v", err)
+	}
+	if len(inits) != 1 {
+		t.Fatalf("expected 1 fetch init container, got %d", len(inits))
+	}
+	argv := inits[0].Command
+	if len(argv) != 3 || argv[0] != "sh" || argv[1] != "-c" {
+		t.Fatalf("fetch init container is not a shell script: %v", argv)
+	}
+	return argv[2]
+}
+
+// A 404 is the daemon's answer about these artifacts, not a symptom of a
+// daemon that is not up yet. Retrying it ten times spent twenty seconds and
+// printed nine identical lines that said nothing; and because BusyBox wget
+// throws the body away, the ONLY record of which artifacts were wanted is the
+// one the script writes itself.
+func TestFetchInputsScript_NamesTheArtifactsAndDoesNotRetryARefusal(t *testing.T) {
+	script := fetchInputsScript(t, "rc-deadbeef", "producer-handle/out")
+
+	out := runFetchScript(t, script, "404 Not Found", "")
+
+	if strings.Count(out, "wget-attempts=") != 1 {
+		t.Errorf("a 404 was retried; the daemon's answer will not change:\n%s", out)
+	}
+	for _, key := range []string{"rc-deadbeef", "producer-handle/out"} {
+		if !strings.Contains(out, key) {
+			t.Errorf("the failure does not name artifact %q:\n%s", key, out)
+		}
+	}
+	if !strings.Contains(out, "404") {
+		t.Errorf("the failure does not carry the daemon's status:\n%s", out)
+	}
+}
+
+// A 5xx may well be a daemon that is still coming up, so it keeps its
+// retries — but every attempt now says what the daemon actually returned
+// instead of "attempt N/10 failed".
+func TestFetchInputsScript_RetriesAServerErrorAndSaysWhatItWas(t *testing.T) {
+	script := fetchInputsScript(t, "rc-deadbeef")
+
+	out := runFetchScript(t, script, "500 Internal Server Error", "")
+
+	if strings.Count(out, "wget-attempts=") != 10 {
+		t.Errorf("expected the 5xx to keep its 10 retries, got:\n%s", out)
+	}
+	if strings.Count(out, "500 Internal Server Error") < 2 {
+		t.Errorf("the per-attempt lines do not carry the daemon's answer:\n%s", out)
+	}
+	if !strings.Contains(out, "rc-deadbeef") {
+		t.Errorf("the failure does not name the artifact:\n%s", out)
+	}
+}

@@ -22,6 +22,7 @@ type batchItem struct {
 type batchResponse struct {
 	Status  string            `json:"status"`
 	Results []resolveResponse `json:"results"`
+	Error   string            `json:"error,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -93,6 +94,13 @@ func TestResolveBatch_HappyPath(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Partial failure: one artifact exists, one does not
+//
+// A missing artifact is 404, the same answer /resolve gives for the same
+// outcome on one item. It used to be 500, and the difference is the whole
+// diagnosis: an init container's BusyBox wget prints the status line and
+// throws the body away, so 500 told an operator "the daemon is broken" for
+// the one condition where the daemon is fine and the artifact is simply not
+// there.
 // ---------------------------------------------------------------------------
 
 func TestResolveBatch_PartialFailure(t *testing.T) {
@@ -119,9 +127,9 @@ func TestResolveBatch_PartialFailure(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	// Partial failure → 500.
-	if resp.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("expected 500 for partial failure, got %d", resp.StatusCode)
+	// A missing artifact is a miss, not a server error.
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for a batch whose only failure is a missing artifact, got %d", resp.StatusCode)
 	}
 
 	var result batchResponse
@@ -141,6 +149,68 @@ func TestResolveBatch_PartialFailure(t *testing.T) {
 	// Second item should fail.
 	if result.Results[1].Status == "ok" {
 		t.Errorf("result[1]: expected failure for missing artifact")
+	}
+
+	// Each result names its own artifact, and the batch names the failing one
+	// in a single line. Without both, a caller reading this body knows only
+	// that "something" in a list it did not keep went wrong.
+	if result.Results[0].Key != "exists/output" || result.Results[1].Key != "missing/output" {
+		t.Errorf("results do not name their artifacts: %q, %q",
+			result.Results[0].Key, result.Results[1].Key)
+	}
+	if !strings.Contains(result.Error, "missing/output") {
+		t.Errorf("batch summary does not name the missing artifact: %q", result.Error)
+	}
+	if strings.Contains(result.Error, "exists/output") {
+		t.Errorf("batch summary names an artifact that resolved fine: %q", result.Error)
+	}
+}
+
+// A real failure — one that is about this daemon rather than about whether an
+// artifact exists — still has to be a 500, and has to outrank a miss in the
+// same batch. Otherwise the new 404 would just move the ambiguity.
+func TestResolveBatch_HardFailureOutranksAMiss(t *testing.T) {
+	ts, storagePath := setupServer(t)
+
+	dir := filepath.Join(storagePath, "steps", "present/output")
+	os.MkdirAll(dir, 0755)
+	os.WriteFile(filepath.Join(dir, "file.txt"), []byte("ok"), 0644)
+
+	// Contained, and validated as such, but its parent directory does not
+	// exist — so the copy fails rather than the lookup.
+	unwritable := filepath.Join(storagePath, "resolved", "no-such-parent", "dest")
+	if err := os.MkdirAll(filepath.Join(storagePath, "resolved"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	body, _ := json.Marshal(batchRequest{
+		Items: []batchItem{
+			{Key: "absent/output", Dest: destUnder(t, storagePath, "miss")},
+			{Key: "present/output", Dest: unwritable},
+		},
+	})
+
+	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatalf("POST /resolve-batch: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected 500 when an item failed for a reason other than absence, got %d", resp.StatusCode)
+	}
+
+	var result batchResponse
+	json.NewDecoder(resp.Body).Decode(&result)
+	if len(result.Results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(result.Results))
+	}
+	if result.Results[0].Status != "not_found" {
+		t.Errorf("result[0]: expected not_found for the absent artifact, got %q", result.Results[0].Status)
+	}
+	if result.Results[1].Status != "error" {
+		t.Errorf("result[1]: expected error for the failed copy, got %q (err %q)",
+			result.Results[1].Status, result.Results[1].Error)
 	}
 }
 

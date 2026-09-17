@@ -1153,7 +1153,14 @@ type resolveRequest struct {
 }
 
 // resolveResponse is the JSON body returned by POST /resolve.
+//
+// Key is echoed on every result. A batch answers N items in one body, and
+// without it a caller reading a failed batch knows only an INDEX into a list
+// it has to have kept — which the one caller that matters, an init container
+// shell script, has not. Naming the artifact in its own result is what lets a
+// failure be read out of a build log.
 type resolveResponse struct {
+	Key      string `json:"key,omitempty"`
 	Status   string `json:"status"`
 	Source   string `json:"source"`
 	Method   string `json:"method"`
@@ -1241,6 +1248,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolveResponse) {
 	start := time.Now()
 	defer func() {
+		// Every return below builds its own resolveResponse and none of them
+		// carried the key. Set once, here, so a new branch cannot forget it.
+		resp.Key = key
 		s.metrics.recordResolve(resp.Method, resp.Status, time.Since(start))
 	}()
 	logger := s.logger.Session("resolve", lager.Data{"key": key, "dest": dest})
@@ -1365,7 +1375,7 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 	select {
 	case s.resolveSem <- struct{}{}:
 	case <-r.Context().Done():
-		writeJSON(w, http.StatusInternalServerError, resolveResponse{Status: "error", Error: r.Context().Err().Error()})
+		writeJSON(w, http.StatusInternalServerError, resolveResponse{Key: req.Key, Status: "error", Error: r.Context().Err().Error()})
 		return
 	}
 	defer func() { <-s.resolveSem }()
@@ -1387,15 +1397,31 @@ type batchResolveRequest struct {
 }
 
 // batchResolveResponse is the JSON body returned by POST /resolve-batch.
+//
+// Error summarises the failing items in one line. Results already carries the
+// detail, but a caller that can only log one string — again, the init
+// container — gets nothing from a list it cannot index.
 type batchResolveResponse struct {
 	Status  string            `json:"status"`
 	Results []resolveResponse `json:"results"`
+	Error   string            `json:"error,omitempty"`
 }
 
 // handleResolveBatch accepts POST /resolve-batch with a JSON body containing
 // {"items": [{key, dest}, ...]}. It resolves all artifacts concurrently and
 // returns an aggregated response. If any item fails, the overall status is
-// "error" and the HTTP status is 500.
+// "error".
+//
+// The HTTP status SEPARATES the two ways an item can fail, because they are
+// two different things to do about it. An artifact that is not on this node or
+// any peer is 404, exactly as /resolve reports the same outcome for one item;
+// anything that broke while resolving one that IS here is 500. Collapsing both
+// into 500 is what this endpoint used to do, and the cost is not cosmetic: the
+// only thing a BusyBox wget puts in a build log for a non-2xx is the status
+// line -- it discards the body -- so "the artifact is missing" and "the daemon
+// is sick" reached the operator as the same sentence, and the init container
+// spent ten retries and twenty seconds on a 404 that was never going to
+// change.
 func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 	var req batchResolveRequest
@@ -1438,7 +1464,7 @@ func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request) {
 			select {
 			case s.resolveSem <- struct{}{}:
 			case <-r.Context().Done():
-				results[idx] = resolveResponse{Status: "error", Error: r.Context().Err().Error()}
+				results[idx] = resolveResponse{Key: key, Status: "error", Error: r.Context().Err().Error()}
 				return
 			}
 			defer func() { <-s.resolveSem }()
@@ -1447,20 +1473,45 @@ func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	wg.Wait()
 
-	overall := "ok"
+	overall, status, summary := summariseBatch(results)
+
+	writeJSON(w, status, batchResolveResponse{Status: overall, Results: results, Error: summary})
+}
+
+// summariseBatch reduces per-item results to the batch's status, HTTP status
+// and one-line explanation.
+//
+// A hard error outranks a miss: a batch where one artifact is absent and
+// another failed mid-copy is a 500, because the 500 is the one that says
+// something is wrong with this daemon.
+func summariseBatch(results []resolveResponse) (overall string, status int, summary string) {
+	overall, status = "ok", http.StatusOK
+
+	var failures []string
 	for _, res := range results {
-		if res.Status != "ok" {
-			overall = "error"
-			break
+		if res.Status == "ok" {
+			continue
 		}
+		overall = "error"
+		if res.Status == "not_found" {
+			if status == http.StatusOK {
+				status = http.StatusNotFound
+			}
+		} else {
+			status = http.StatusInternalServerError
+		}
+		reason := res.Error
+		if reason == "" {
+			reason = res.Status
+		}
+		failures = append(failures, fmt.Sprintf("%q: %s", res.Key, reason))
+	}
+	if len(failures) == 0 {
+		return overall, status, ""
 	}
 
-	status := http.StatusOK
-	if overall == "error" {
-		status = http.StatusInternalServerError
-	}
-
-	writeJSON(w, status, batchResolveResponse{Status: overall, Results: results})
+	return overall, status, fmt.Sprintf("%d of %d artifacts unresolved: %s",
+		len(failures), len(results), strings.Join(failures, "; "))
 }
 
 // copyArtifactGuarded wraps copyArtifact with the read guard and a

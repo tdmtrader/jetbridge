@@ -26,6 +26,7 @@ import (
 
 // resolveResponse mirrors the server's response struct for JSON decoding.
 type resolveResponse struct {
+	Key      string `json:"key,omitempty"`
 	Status   string `json:"status"`
 	Source   string `json:"source"`
 	Method   string `json:"method"`
