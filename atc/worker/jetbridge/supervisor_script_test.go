@@ -235,7 +235,10 @@ var _ = Describe("Task exec supervisor script execution", func() {
 			"the ordinary script grew the exact start record; an ordinary task's re-exec must "+
 				"still restart a command whose runner died, which is the whole reason the "+
 				"supervisor exists")
-		Expect(ordinary).ToNot(ContainSubstring(strconv.Itoa(ExactUnresolvedExitCode)))
+		// Match the statement, not the digits: the script embeds a state path
+		// carrying a pid and a nanosecond timestamp, and "254" turns up inside
+		// those often enough to fail a release check on nothing.
+		Expect(ordinary).ToNot(ContainSubstring("exit " + strconv.Itoa(ExactUnresolvedExitCode)))
 	})
 
 	It("shields the command from SIGHUP so pty teardown cannot kill it", func() {
