@@ -220,10 +220,10 @@ jobs:
 resources:
 - name: src-a
   type: mock
-  source: {mirror_self: true}
+  source: {create_files: {a.txt: "src-a"}}
 - name: src-b
   type: mock
-  source: {mirror_self: true}
+  source: {create_files: {b.txt: "src-b"}}
 
 jobs:
 - name: combined

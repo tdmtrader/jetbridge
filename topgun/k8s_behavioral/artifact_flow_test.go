@@ -8,12 +8,23 @@ import (
 
 var _ = Describe("Artifact Flow", func() {
 
+	// A mock resource's `mirror_self` output is the resource container's own
+	// rootfs, and that carries hundreds of ABSOLUTE symlinks. The artifact
+	// daemon refuses an absolute symlink target on every copy path, by policy:
+	// the target names the PRODUCING machine's filesystem, so delivered into a
+	// consumer it resolves against a different one
+	// (cmd/artifact-daemon/absolute_symlink_test.go). So a mirror_self artifact
+	// can never be a task INPUT — the resolve is refused and the build errors in
+	// its fetch-inputs init container, before the step this spec is about runs.
+	// Fixtures that only need "an artifact with bytes in it" use `create_files`.
+	// `mirror_self` is left alone where the artifact is a put target or an image
+	// and is never copied into a task's input mount.
 	It("passes a get output to a task input", func() {
 		cfg := writePipelineFile("get-to-task.yml", `
 resources:
 - name: src
   type: mock
-  source: {mirror_self: true}
+  source: {create_files: {code.txt: "get-to-task"}}
 
 jobs:
 - name: get-task-job
@@ -69,7 +80,7 @@ jobs:
 resources:
 - name: src
   type: mock
-  source: {mirror_self: true}
+  source: {create_files: {code.txt: "chain-src"}}
 - name: dest
   type: mock
   source: {mirror_self: true}
@@ -104,10 +115,10 @@ jobs:
 resources:
 - name: res-a
   type: mock
-  source: {mirror_self: true}
+  source: {create_files: {a.txt: "res-a"}}
 - name: res-b
   type: mock
-  source: {mirror_self: true}
+  source: {create_files: {b.txt: "res-b"}}
 
 jobs:
 - name: parallel-job
@@ -141,7 +152,7 @@ jobs:
 resources:
 - name: dest
   type: mock
-  source: {mirror_self: true}
+  source: {create_files: {file.txt: "from-implicit-get"}}
 
 jobs:
 - name: implicit-job
@@ -327,7 +338,7 @@ jobs:
 resources:
 - name: shared
   type: mock
-  source: {mirror_self: true}
+  source: {create_files: {value.txt: "cross-node"}}
 
 jobs:
 - name: producer

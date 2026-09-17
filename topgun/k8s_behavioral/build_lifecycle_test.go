@@ -242,7 +242,7 @@ jobs:
 resources:
 - name: src
   type: mock
-  source: {mirror_self: true}
+  source: {create_files: {code.txt: "prep-src"}}
 
 jobs:
 - name: prep-job

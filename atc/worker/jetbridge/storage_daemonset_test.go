@@ -1849,26 +1849,35 @@ func fetchInputsScript(t *testing.T, keys ...string) string {
 	return argv[2]
 }
 
-// A 404 is the daemon's answer about these artifacts, not a symptom of a
+// A 4xx is the daemon's answer about these artifacts, not a symptom of a
 // daemon that is not up yet. Retrying it ten times spent twenty seconds and
 // printed nine identical lines that said nothing; and because BusyBox wget
 // throws the body away, the ONLY record of which artifacts were wanted is the
 // one the script writes itself.
+//
+// Both 4xx answers this endpoint gives are covered. 404 is "not on this node
+// or any peer"; 422 is "here, and refused" — an absolute symlink target, say.
+// Neither changes on a retry, and the status line is all the pod ever sees of
+// either, so the script has to name the keys itself in both cases.
 func TestFetchInputsScript_NamesTheArtifactsAndDoesNotRetryARefusal(t *testing.T) {
-	script := fetchInputsScript(t, "rc-deadbeef", "producer-handle/out")
+	for _, status := range []string{"404 Not Found", "422 Unprocessable Entity"} {
+		t.Run(status, func(t *testing.T) {
+			script := fetchInputsScript(t, "rc-deadbeef", "producer-handle/out")
 
-	out := runFetchScript(t, script, "404 Not Found", "")
+			out := runFetchScript(t, script, status, "")
 
-	if strings.Count(out, "wget-attempts=") != 1 {
-		t.Errorf("a 404 was retried; the daemon's answer will not change:\n%s", out)
-	}
-	for _, key := range []string{"rc-deadbeef", "producer-handle/out"} {
-		if !strings.Contains(out, key) {
-			t.Errorf("the failure does not name artifact %q:\n%s", key, out)
-		}
-	}
-	if !strings.Contains(out, "404") {
-		t.Errorf("the failure does not carry the daemon's status:\n%s", out)
+			if strings.Count(out, "wget-attempts=") != 1 {
+				t.Errorf("a %s was retried; the daemon's answer will not change:\n%s", status, out)
+			}
+			for _, key := range []string{"rc-deadbeef", "producer-handle/out"} {
+				if !strings.Contains(out, key) {
+					t.Errorf("the failure does not name artifact %q:\n%s", key, out)
+				}
+			}
+			if !strings.Contains(out, status) {
+				t.Errorf("the failure does not carry the daemon's status:\n%s", out)
+			}
+		})
 	}
 }
 

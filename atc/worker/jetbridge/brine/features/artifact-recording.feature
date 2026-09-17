@@ -269,9 +269,9 @@ Feature: Recording where a step's outputs went
 
   # And the failure this file exists to make loud. The daemon refuses a batch
   # it could only partly deliver — 404 when an artifact is simply not on this
-  # node, 500 when resolving one that IS here broke, with an overall status of
-  # "error" either way — and the init container must turn that into a failed
-  # build.
+  # node, 422 when one that IS here is refused (an absolute symlink target),
+  # 500 when resolving it broke, with an overall status of "error" in every
+  # case — and the init container must turn that into a failed build.
   #
   # A fetch that exits 0 instead is the worst shape a build can take. The
   # kubelet reads success, the step's own command starts, and it runs against a

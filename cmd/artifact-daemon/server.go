@@ -1243,6 +1243,49 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 }
 
+// failedResolve is the ONE place a resolve failure decides whose fault it is.
+//
+// ErrRefused (containment.go) means the ARCHIVE is answerable rather than this
+// daemon: an absolute symlink target, a key naming the control ledger. That is
+// a CONSIDERED ANSWER about these bytes, identical on every retry, so it is
+// reported with Method "refused" — the same value the capture-held branch
+// below already uses — and resolveHTTPStatus turns that into a 422 instead of
+// a 500. Every failing branch of resolveOne goes through here so a new one
+// cannot quietly re-acquire the old "everything is a 500" behaviour.
+func failedResolve(source, method string, err error) resolveResponse {
+	if errors.Is(err, ErrRefused) {
+		method = "refused"
+	}
+	return resolveResponse{Status: "error", Source: source, Method: method, Error: err.Error()}
+}
+
+// resolveHTTPStatus is the status ONE result would be answered with on its own.
+// Shared by /resolve and /resolve-batch so the single-item and batch endpoints
+// cannot drift into answering the same outcome differently.
+func resolveHTTPStatus(res resolveResponse) int {
+	switch {
+	case res.Status == "ok":
+		return http.StatusOK
+	case res.Status == "not_found":
+		return http.StatusNotFound
+	case res.Method == "refused":
+		return http.StatusUnprocessableEntity
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+// resolveStatusRank orders those statuses for a batch, worst last. A hard
+// error outranks a refusal outranks a miss, because the ranking answers "what
+// should the caller DO", and only the 500 says something is wrong with this
+// daemon and might be different next time.
+var resolveStatusRank = map[int]int{
+	http.StatusOK:                  0,
+	http.StatusNotFound:            1,
+	http.StatusUnprocessableEntity: 2,
+	http.StatusInternalServerError: 3,
+}
+
 // resolveOne resolves a single artifact key to a destination path.
 // It is the core logic shared by handleResolve and handleResolveBatch.
 func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolveResponse) {
@@ -1272,6 +1315,12 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolve
 	// copyArtifact for the registry and filesystem branches, peers.FetchInto
 	// for the peer one -- and dest is caller-supplied. Asking here rather than
 	// in each writer is what makes "the peer branch forgot" impossible.
+	//
+	// Method "refused" here is the same signal failedResolve sets for a
+	// containment refusal, so this answers 422 too. That is the right shape: a
+	// hold is a considered answer about this destination, not a symptom of a
+	// sick daemon, and the register route already reports the same condition as
+	// a 4xx. Retrying it ten times inside one init container never released it.
 	if class, err := s.refuseIfCaptureHeldPath(dest); err != nil {
 		logger.Info("refused-resolve-into-capture-source", lager.Data{"class": string(class)})
 		return resolveResponse{Status: "error", Method: "refused", Error: err.Error()}
@@ -1288,7 +1337,7 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolve
 		sourcePath := s.registry.AmbientPath(sourceLoc)
 		if err := s.copyArtifactGuarded(ctx, sourceLoc, dest); err != nil {
 			logger.Error("copy-failed", err, lager.Data{"source": sourcePath})
-			return resolveResponse{Status: "error", Source: sourcePath, Method: "local", Error: err.Error()}
+			return failedResolve(sourcePath, "local", err)
 		}
 		duration := time.Since(start)
 		logger.Info("resolved", lager.Data{"method": "registry", "source": sourcePath, "duration": duration.String()})
@@ -1298,19 +1347,19 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolve
 	// Step 2: Fallback — check if key maps to a steps/ directory on disk.
 	stepsPath, keyErr := s.artifactLocation(filepath.Join(s.storagePath, "steps"), key)
 	if keyErr != nil {
-		return resolveResponse{Status: "error", Error: keyErr.Error()}
+		return failedResolve("", "", keyErr)
 	}
 	if info, err := os.Stat(stepsPath); err == nil && info.IsDir() {
 		// Take the location Register stored rather than deriving a second one.
 		stepsLoc, err := s.registry.Register(key, stepsPath)
 		if err != nil {
 			logger.Error("register-failed", err, lager.Data{"source": stepsPath})
-			return resolveResponse{Status: "error", Source: stepsPath, Method: "filesystem", Error: err.Error()}
+			return failedResolve(stepsPath, "filesystem", err)
 		}
 
 		if err := s.copyArtifactGuarded(ctx, stepsLoc, dest); err != nil {
 			logger.Error("copy-failed", err, lager.Data{"source": stepsPath})
-			return resolveResponse{Status: "error", Source: stepsPath, Method: "filesystem", Error: err.Error()}
+			return failedResolve(stepsPath, "filesystem", err)
 		}
 		duration := time.Since(start)
 		logger.Info("resolved", lager.Data{"method": "filesystem", "source": stepsPath, "duration": duration.String()})
@@ -1323,7 +1372,7 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolve
 		if found {
 			if err := s.fetchFromPeer(ctx, peerIP, key, dest); err != nil {
 				logger.Error("peer-fetch-failed", err, lager.Data{"peer": peerIP})
-				return resolveResponse{Status: "error", Source: peerIP, Method: "peer", Error: err.Error()}
+				return failedResolve(peerIP, "peer", err)
 			}
 			duration := time.Since(start)
 			logger.Info("resolved", lager.Data{"method": "peer", "peer": peerIP, "duration": duration.String()})
@@ -1382,13 +1431,7 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 
 	resp := s.resolveOne(r.Context(), req.Key, req.Dest)
 
-	status := http.StatusOK
-	if resp.Status == "error" {
-		status = http.StatusInternalServerError
-	} else if resp.Status == "not_found" {
-		status = http.StatusNotFound
-	}
-	writeJSON(w, status, resp)
+	writeJSON(w, resolveHTTPStatus(resp), resp)
 }
 
 // batchResolveRequest is the JSON body for POST /resolve-batch.
@@ -1412,16 +1455,18 @@ type batchResolveResponse struct {
 // returns an aggregated response. If any item fails, the overall status is
 // "error".
 //
-// The HTTP status SEPARATES the two ways an item can fail, because they are
-// two different things to do about it. An artifact that is not on this node or
-// any peer is 404, exactly as /resolve reports the same outcome for one item;
-// anything that broke while resolving one that IS here is 500. Collapsing both
-// into 500 is what this endpoint used to do, and the cost is not cosmetic: the
-// only thing a BusyBox wget puts in a build log for a non-2xx is the status
-// line -- it discards the body -- so "the artifact is missing" and "the daemon
-// is sick" reached the operator as the same sentence, and the init container
-// spent ten retries and twenty seconds on a 404 that was never going to
-// change.
+// The HTTP status SEPARATES the ways an item can fail, because they are
+// different things to do about it. An artifact that is not on this node or any
+// peer is 404, exactly as /resolve reports the same outcome for one item; one
+// this daemon REFUSED -- an absolute symlink, a key naming the control ledger
+// -- is 422, because the request is well formed and the answer is simply no;
+// anything that broke while resolving an artifact that IS here is 500.
+// Collapsing all of them into 500 is what this endpoint used to do, and the
+// cost is not cosmetic: the only thing a BusyBox wget puts in a build log for
+// a non-2xx is the status line -- it discards the body -- so "the artifact is
+// missing", "this artifact can never be delivered" and "the daemon is sick"
+// reached the operator as the same sentence, and the init container spent ten
+// retries and twenty seconds on an answer that was never going to change.
 func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 	var req batchResolveRequest
@@ -1481,9 +1526,10 @@ func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request) {
 // summariseBatch reduces per-item results to the batch's status, HTTP status
 // and one-line explanation.
 //
-// A hard error outranks a miss: a batch where one artifact is absent and
-// another failed mid-copy is a 500, because the 500 is the one that says
-// something is wrong with this daemon.
+// The batch takes the WORST item's status, by resolveStatusRank: a hard error
+// outranks a refusal outranks a miss. A batch holding both an absent artifact
+// and one that broke mid-copy is a 500, because the 500 is the one that says
+// something is wrong with this daemon and might not say it again.
 func summariseBatch(results []resolveResponse) (overall string, status int, summary string) {
 	overall, status = "ok", http.StatusOK
 
@@ -1493,12 +1539,8 @@ func summariseBatch(results []resolveResponse) (overall string, status int, summ
 			continue
 		}
 		overall = "error"
-		if res.Status == "not_found" {
-			if status == http.StatusOK {
-				status = http.StatusNotFound
-			}
-		} else {
-			status = http.StatusInternalServerError
+		if itemStatus := resolveHTTPStatus(res); resolveStatusRank[itemStatus] > resolveStatusRank[status] {
+			status = itemStatus
 		}
 		reason := res.Error
 		if reason == "" {

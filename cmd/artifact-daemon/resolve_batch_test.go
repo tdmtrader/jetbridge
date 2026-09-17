@@ -260,3 +260,117 @@ func TestResolveBatch_InvalidJSON(t *testing.T) {
 		t.Errorf("expected 400 for invalid JSON, got %d", resp.StatusCode)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// A refusal is a considered answer, not a server error
+// ---------------------------------------------------------------------------
+
+// The daemon refuses an absolute symlink target on every copy path, by policy:
+// the target names the PRODUCING machine's filesystem, so delivered into a
+// consumer it resolves against a different one (absolute_symlink_test.go). The
+// policy is not in question here; what this pins is the ANSWER.
+//
+// It is a 422. Not a 500, which says this daemon is sick and buys the artifact
+// ten more retries of an answer that cannot change. Not a 404, which says the
+// artifact is not here when it plainly is and an operator would go looking on
+// the wrong node. And the summary has to name both the key and the rule,
+// because a BusyBox wget in an init container discards the body and the ATC's
+// log of this response is the only place either ever appears.
+//
+// The miss in the same batch is deliberate: the refusal must OUTRANK it, or a
+// two-input step reports "artifact missing" for an artifact that is present.
+func TestResolveBatch_RefusalIs422AndOutranksAMiss(t *testing.T) {
+	ts, storagePath := setupServer(t)
+
+	out := filepath.Join(storagePath, "steps", "venv-build", "output")
+	if err := os.MkdirAll(filepath.Join(out, "venv", "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(out, "app.py"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Exactly what `python -m venv` writes.
+	if err := os.Symlink("/usr/local/bin/python3.11", filepath.Join(out, "venv", "bin", "python")); err != nil {
+		t.Fatal(err)
+	}
+
+	body, _ := json.Marshal(batchRequest{
+		Items: []batchItem{
+			{Key: "absent/output", Dest: destUnder(t, storagePath, "miss")},
+			{Key: "venv-build/output", Dest: destUnder(t, storagePath, "refused")},
+		},
+	})
+
+	resp, err := http.Post(ts.URL+"/resolve-batch", "application/json", strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatalf("POST /resolve-batch: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422 for a refused artifact, got %d", resp.StatusCode)
+	}
+
+	var result batchResponse
+	json.NewDecoder(resp.Body).Decode(&result)
+	if len(result.Results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(result.Results))
+	}
+	if result.Results[0].Status != "not_found" {
+		t.Errorf("result[0]: expected not_found for the absent artifact, got %q", result.Results[0].Status)
+	}
+	if result.Results[1].Method != "refused" {
+		t.Errorf("result[1]: expected method=refused, got %q (status %q, err %q)",
+			result.Results[1].Method, result.Results[1].Status, result.Results[1].Error)
+	}
+	if !strings.Contains(result.Error, "venv-build/output") {
+		t.Errorf("the summary does not name the refused artifact: %q", result.Error)
+	}
+	if !strings.Contains(result.Error, "absolute") {
+		t.Errorf("the summary does not say which rule refused it: %q", result.Error)
+	}
+	if !strings.Contains(result.Error, "venv/bin/python") {
+		t.Errorf("the summary does not name the offending entry: %q", result.Error)
+	}
+
+	// Nothing was delivered. A refusal that half-populated the mount would give
+	// the step an input that looks fetched.
+	if _, err := os.Stat(filepath.Join(storagePath, "resolved", "refused")); !os.IsNotExist(err) {
+		t.Errorf("the refused destination was populated anyway: %v", err)
+	}
+}
+
+// The same refusal on the single-item endpoint. Two endpoints reaching one
+// resolveOne answered the same outcome differently once already; this is the
+// assertion that stops them drifting apart again.
+func TestResolve_RefusalIs422(t *testing.T) {
+	ts, storagePath := setupServer(t)
+
+	out := filepath.Join(storagePath, "steps", "venv-build", "output")
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/usr/local/bin/python3.11", filepath.Join(out, "python")); err != nil {
+		t.Fatal(err)
+	}
+
+	body := `{"key":"venv-build/output","dest":"` + destUnder(t, storagePath, "one") + `"}`
+	resp, err := http.Post(ts.URL+"/resolve", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /resolve: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422 for a refused artifact, got %d", resp.StatusCode)
+	}
+
+	var result resolveResponse
+	json.NewDecoder(resp.Body).Decode(&result)
+	if result.Key != "venv-build/output" || result.Method != "refused" {
+		t.Errorf("expected the result to name the key and the refusal, got %+v", result)
+	}
+	if !strings.Contains(result.Error, "absolute") {
+		t.Errorf("the error does not say which rule refused it: %q", result.Error)
+	}
+}
