@@ -150,9 +150,8 @@ var _ = Describe("Finite build event pages", func() {
 		_, err = build.EventPage(context.Background(), atc.BuildEventPageRequest{Cursor: *page.NextCursor})
 		Expect(err).To(MatchError(db.ErrBuildEventsReaped))
 	})
-	It("reads old-column events and refuses canceled requests", func() {
-		_, err := dbConn.Exec("INSERT INTO "+table+" (event_id,build_id_old,type,version,payload) VALUES (7,$1,'log','1.0',$2)", build.ID(), `{"payload":"historic","origin":{"name":"old"}}`)
-		Expect(err).NotTo(HaveOccurred())
+	It("refuses canceled requests", func() {
+		insert(7, `{"payload":"historic","origin":{"name":"old"}}`)
 		page, err := build.EventPage(context.Background(), atc.BuildEventPageRequest{})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(page.Events).To(ContainElement(HaveField("ID", "7")))
@@ -161,13 +160,8 @@ var _ = Describe("Finite build event pages", func() {
 		_, err = build.EventPage(ctx, atc.BuildEventPageRequest{})
 		Expect(err).To(HaveOccurred())
 	})
-	It("fails explicitly on ambiguous legacy IDs and indivisible bounds", func() {
-		insert(5, `{"payload":"new","origin":{}}`)
-		_, err := dbConn.Exec("INSERT INTO "+table+" (event_id,build_id_old,type,version,payload) VALUES (5,$1,'log','1.0',$2)", build.ID(), `{"payload":"old","origin":{}}`)
-		Expect(err).NotTo(HaveOccurred())
-		_, err = build.EventPage(context.Background(), atc.BuildEventPageRequest{})
-		Expect(err).To(MatchError(db.ErrBuildEventAmbiguous))
-		_, err = dbConn.Exec("DELETE FROM " + table)
+	It("fails explicitly on indivisible bounds", func() {
+		_, err := dbConn.Exec("DELETE FROM " + table)
 		Expect(err).NotTo(HaveOccurred())
 		payload, _ := json.Marshal(map[string]any{"payload": strings.Repeat("x", 8*1024*1024)})
 		insert(8, string(payload))

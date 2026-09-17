@@ -3,7 +3,6 @@ package db
 import (
 	"encoding/json"
 	"errors"
-	"math"
 	"strconv"
 	"sync"
 
@@ -153,15 +152,7 @@ func (source *buildEventSource) collectEvents(from uint, completed bool) {
 		eventsQuery := psql.Select("event_id", "type", "version", "payload").
 			From(source.table)
 
-		var query sq.SelectBuilder
-		if source.buildID > math.MaxInt32 {
-			query = eventsQuery.Where(sq.Eq{"build_id": source.buildID})
-		} else {
-			query = eventsQuery.Where(sq.Or{
-				sq.Eq{"build_id": source.buildID},
-				sq.Eq{"build_id_old": source.buildID},
-			})
-		}
+		query := eventsQuery.Where(sq.Eq{"build_id": source.buildID})
 
 		rows, err := query.
 			Where(sq.Gt{"event_id": cursor}).

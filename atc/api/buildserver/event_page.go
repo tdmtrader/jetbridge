@@ -30,8 +30,6 @@ func (s *Server) eventPage(w http.ResponseWriter, r *http.Request, build db.Buil
 		code, message, status := "TEMPORARY_OUTPUT_FAILURE", "build output is temporarily unavailable", http.StatusServiceUnavailable
 		var pgErr *pgconn.PgError
 		switch {
-		case errors.Is(err, db.ErrBuildEventAmbiguous):
-			code, message, status = "AMBIGUOUS_EVENT_STREAM", err.Error(), http.StatusConflict
 		case errors.Is(err, db.ErrBuildEventCursor):
 			code, message, status = "INVALID_CURSOR", err.Error(), http.StatusBadRequest
 		case errors.Is(err, db.ErrBuildEventStreamChanged):

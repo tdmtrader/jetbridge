@@ -1069,27 +1069,6 @@ var _ = Describe("Build", func() {
 			Expect(err).To(Equal(db.ErrEndOfBuildEventStream))
 		})
 
-		It("emits pre-bigint migration events", func() {
-			started, err := build.Start(atc.Plan{})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(started).To(BeTrue())
-
-			found, err := build.Reload()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-
-			_, err = dbConn.Exec(`UPDATE build_events SET build_id_old = build_id, build_id = NULL WHERE build_id = $1`, build.ID())
-			Expect(err).NotTo(HaveOccurred())
-
-			events, err := build.Events(0)
-			Expect(err).NotTo(HaveOccurred())
-
-			defer db.Close(events)
-			Expect(events.Next()).To(Equal(envelope(event.Status{
-				Status: atc.StatusStarted,
-				Time:   build.StartTime().Unix(),
-			}, "0")))
-		})
 	})
 
 	Describe("SaveEvent", func() {

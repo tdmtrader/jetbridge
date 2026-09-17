@@ -51,7 +51,7 @@ func coreAdapter(api http.Handler, id string) mcpserver.ToolHandler {
 				var envelope atc.ErrorResponse
 				if json.Unmarshal(r.body.Bytes(), &envelope) == nil {
 					switch envelope.Code {
-					case "AMBIGUOUS_EVENT_STREAM", "INVALID_CURSOR", "STREAM_CHANGED", "OUTPUT_RETAINED_AWAY", "EVENT_TOO_LARGE", "STORED_EVENT_TOO_LARGE", "PAGE_TOO_SMALL", "TEMPORARY_OUTPUT_FAILURE":
+					case "INVALID_CURSOR", "STREAM_CHANGED", "OUTPUT_RETAINED_AWAY", "EVENT_TOO_LARGE", "STORED_EVENT_TOO_LARGE", "PAGE_TOO_SMALL", "TEMPORARY_OUTPUT_FAILURE":
 						message := envelope.Code
 						if len(envelope.Errors) > 0 {
 							message += ": " + envelope.Errors[0]

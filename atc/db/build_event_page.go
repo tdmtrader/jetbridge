@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"strconv"
 	"time"
 	"unicode/utf8"
@@ -16,7 +15,6 @@ import (
 )
 
 var (
-	ErrBuildEventAmbiguous      = errors.New("AMBIGUOUS_EVENT_STREAM: duplicate legacy/current event IDs prevent lossless paging")
 	ErrBuildEventCursor         = errors.New("INVALID_CURSOR: event cursor is stale, malformed or belongs to another build")
 	ErrBuildEventStreamChanged  = errors.New("STREAM_CHANGED: earlier output changed; restart and replace accumulated output")
 	ErrBuildEventsReaped        = errors.New("OUTPUT_RETAINED_AWAY: build output has been removed by retention")
@@ -114,13 +112,6 @@ func finiteEventPage(ctx context.Context, conn DbConn, table string, buildID int
 		return page, ErrBuildEventsReaped
 	}
 	predicate := "build_id=$1"
-	// Only pipeline partitions index build_id_old; team partitions may still
-	// hold legacy one-off events under it, check builds never do.
-	// ponytail: the OR arm sequential-scans team partitions (same as SSE); add
-	// a build_id_old index migration there if pages time out in production.
-	if buildID <= math.MaxInt32 && table != "check_build_events" {
-		predicate = "(build_id=$1 OR build_id_old=$1)"
-	}
 	if request.Cursor != "" && cursor.Event >= 0 {
 		var count int64
 		var anchor bool
@@ -156,10 +147,6 @@ func finiteEventPage(ctx context.Context, conn DbConn, table string, buildID int
 		if err = rows.Scan(&row.id, &row.kind, &row.version, &row.size); err != nil {
 			rows.Close()
 			return page, err
-		}
-		if len(listed) > 0 && listed[len(listed)-1].id == row.id {
-			rows.Close()
-			return page, ErrBuildEventAmbiguous
 		}
 		listed = append(listed, row)
 	}
