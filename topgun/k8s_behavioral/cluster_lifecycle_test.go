@@ -396,8 +396,15 @@ func startPortForward(kubeconfig, namespace string) (string, *portForwardManager
 	return fmt.Sprintf("http://localhost:%d", port), mgr
 }
 
+// portForwardGiveUp bounds how long the manager keeps trying to rebuild a
+// forwarder that will not come back. A pod that moves is back inside seconds;
+// anything still failing after this is a cluster that has gone away.
+const portForwardGiveUp = 2 * time.Minute
+
 func (m *portForwardManager) run(initialReady chan<- struct{}) {
 	first := true
+	var downSince time.Time
+
 	for {
 		select {
 		case <-m.done:
@@ -410,6 +417,7 @@ func (m *portForwardManager) run(initialReady chan<- struct{}) {
 			readySig = initialReady
 		}
 
+		started := time.Now()
 		err := m.forward(readySig)
 		first = false
 
@@ -417,9 +425,29 @@ func (m *portForwardManager) run(initialReady chan<- struct{}) {
 		case <-m.done:
 			return
 		default:
-			log.Printf("Port-forward died (%v), restarting...", err)
-			time.Sleep(time.Second)
 		}
+
+		// A forwarder that carried traffic and then dropped is a transient; only
+		// consecutive immediate failures mean the API server is gone.
+		if time.Since(started) > 5*time.Second {
+			downSince = time.Time{}
+		}
+		if downSince.IsZero() {
+			downSince = time.Now()
+			log.Printf("Port-forward died (%v), restarting...", err)
+		}
+
+		if time.Since(downSince) > portForwardGiveUp {
+			// Retrying once a second until the job's four-hour timeout buries the
+			// real failure under thousands of identical lines and reports no
+			// verdict at all. Stop here: the next request meets a closed port and
+			// fails the spec that asked for it, with the reason attached.
+			log.Printf("Port-forward has failed continuously for %s (%v); giving up, the cluster is gone",
+				portForwardGiveUp, err)
+			return
+		}
+
+		time.Sleep(time.Second)
 	}
 }
 
