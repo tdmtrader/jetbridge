@@ -1107,6 +1107,24 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		return runtime.ProcessResult{}, wrapIfTransient(fmt.Errorf("exec in pod: %w", err))
 	}
 
+	// An exec stream that ended without an error is not by itself an exit 0.
+	// The command's exit status arrives on the SPDY error stream, so a Pod
+	// destroyed mid-exec closes that stream with nothing on it and the
+	// transport reports the same nil a clean exit does. The absence of an
+	// error is only evidence of success if the container that ran the command
+	// is still there to have exited.
+	if destroyed := p.confirmPodSurvivedExec(ctx); destroyed != nil {
+		// Same rule the lost-transport path above follows: for a controlled
+		// execution the ledger says what happened, and "we do not know" stays
+		// unresolved rather than becoming a success or a failure.
+		if p.control != nil {
+			return p.reportExactOutcomeWithoutRerunning(ctx)
+		}
+		logger.Error("pod-destroyed-during-exec", destroyed)
+		spanErr = destroyed
+		return runtime.ProcessResult{}, destroyed
+	}
+
 	if p.control != nil {
 		if recordErr := p.finishExactCommand(ctx,
 			executioncontrol.ExitOutcome{ExitCode: 0},
@@ -1129,6 +1147,76 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	p.annotateExitStatus(ctx, 0)
 	span.SetAttributes(attribute.String("exit-code", "0"))
 	return runtime.ProcessResult{ExitStatus: 0}, nil
+}
+
+// confirmPodSurvivedExec reports the destruction of the pause Pod that
+// happened while its step's command was running, or nil when the Pod is still
+// alive and an exec that returned no error really did mean exit 0.
+//
+// It is called only on that no-error path, because that is the only one that
+// cannot tell the two apart. A Pod deleted, evicted, or taken with its node
+// ends the exec stream exactly the way a command exiting 0 does.
+func (p *execProcess) confirmPodSurvivedExec(ctx context.Context) error {
+	fetchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	pod, err := p.clientset.CoreV1().Pods(p.config.Namespace).Get(fetchCtx, p.podName, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return destroyedDuringExec(runtime.InterruptionPodDeleted,
+				fmt.Sprintf("pod %s no longer exists", p.podName))
+		}
+		// An API server we could not reach is not evidence that the step
+		// died, and a command that did exit 0 must not be failed for it.
+		return nil
+	}
+
+	// Deletion is already in flight: the kubelet is killing the container the
+	// command was running in, whatever phase the Pod still reports.
+	if pod.DeletionTimestamp != nil {
+		return destroyedDuringExec(runtime.InterruptionPodDeleted,
+			fmt.Sprintf("pod %s is being deleted", p.podName))
+	}
+
+	// A classified lifecycle event -- evicted, preempted, node lost -- names
+	// what happened, so it outranks the generic diagnosis below.
+	if reason, ok := interruptionReasonForPod(pod, false); ok {
+		writePodDiagnostics(pod, p.processIO.Stderr)
+		writeNodeDiagnostics(ctx, p.clientset, pod, p.processIO.Stderr)
+		return destroyedDuringExec(reason, fmt.Sprintf("pod %s is %s", p.podName, pod.Status.Phase))
+	}
+
+	// The pause container outlives every exec -- it sleeps for the life of the
+	// step -- so finding it terminated means the container the command ran in
+	// is gone. A plain `kubectl delete pod` leaves exactly this and sets no
+	// Reason the classification above could use: phase Failed, main container
+	// ContainerStatusUnknown, "the container could not be located when the pod
+	// was terminated".
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.Name == mainContainerName && cs.State.Terminated != nil {
+			writePodDiagnostics(pod, p.processIO.Stderr)
+			return destroyedDuringExec(runtime.InterruptionPodDeleted, fmt.Sprintf(
+				"container %q of pod %s terminated: %s (exit code %d)",
+				mainContainerName, p.podName, cs.State.Terminated.Reason, cs.State.Terminated.ExitCode))
+		}
+	}
+
+	return nil
+}
+
+// destroyedDuringExec names what took the Pod, and is deliberately NOT a
+// runtime.InterruptionError.
+//
+// An interruption is retryable, and a retryable step error leaves the build
+// started for the tracker to resume, which re-runs the whole plan. That is the
+// right answer for a Pod destroyed BEFORE its command ran -- the case
+// waitForRunning classifies, recreatePausePod absorbs, and step-closing.feature
+// claims -- and the wrong one here: the command has already run, and running it
+// again is the second invocation recreatePausePod refuses once the exec
+// transport has carried a byte. The reason is still in the message, because an
+// operator needs to tell an eviction from a deletion.
+func destroyedDuringExec(reason runtime.InterruptionReason, detail string) error {
+	return fmt.Errorf("the step's command was running when its pod was destroyed (%s): %s", reason, detail)
 }
 
 // deleteAbandonedPod deletes the pause Pod of a step whose context has ended.

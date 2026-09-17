@@ -2,16 +2,34 @@ package behavioral_test
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/onsi/gomega/gbytes"
+	"github.com/onsi/gomega/gexec"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 var _ = Describe("Pod Resilience", func() {
 
-	It("handles pod eviction gracefully", func() {
+	// Deletion DURING the step's command, not before it.
+	//
+	// A pause pod taken away BEFORE its command runs is replaced in place and
+	// the step goes on -- deliberate policy, see recreatePausePod -- so a spec
+	// that deletes the pod the moment it appears exercises that path and
+	// legitimately ends green. This one waits for the command's own output to
+	// reach `fly watch` first. That is the point past which the runtime
+	// refuses to run anything a second time, and from there the pod's
+	// destruction has to end the build rather than be absorbed.
+	//
+	// It is the case the exec transport cannot see on its own: a command's
+	// exit status arrives on the SPDY error stream, and a pod destroyed
+	// mid-exec closes that stream with nothing on it, exactly the way a
+	// command exiting 0 does. Before the fix this build reported `succeeded`.
+	It("errors the build when the pod is deleted while the step's command is running", func() {
 		cfg := writePipelineFile("eviction.yml", `
 jobs:
 - name: eviction-job
@@ -22,25 +40,48 @@ jobs:
       image_resource: {type: registry-image, source: {repository: busybox}}
       run:
         path: sh
-        args: ["-c", "echo running && sleep 30"]
+        args: ["-c", "echo command-running && sleep 120"]
 `)
 		setAndUnpausePipeline(cfg)
 		triggerJob("eviction-job")
 
-		By("waiting for the build pod to appear")
-		pods := waitForConcoursePodsAtLeast(1)
-		podName := pods[0].Name
+		By("waiting for the task pod to appear")
+		var taskPodName string
+		Eventually(func() bool {
+			selector := fmt.Sprintf(
+				"concourse.ci/worker,concourse.ci/pipeline=%s,concourse.ci/type=task",
+				pipelineName,
+			)
+			pods := getPods(selector)
+			for i := range pods {
+				if pods[i].DeletionTimestamp == nil {
+					taskPodName = pods[i].Name
+					return true
+				}
+			}
+			return false
+		}, 2*time.Minute, time.Second).Should(BeTrue(), "expected a task pod to be created")
 
-		By("deleting the pod to simulate eviction")
-		err := kubeClient.CoreV1().Pods(config.Namespace).Delete(
-			context.Background(), podName, metav1.DeleteOptions{},
-		)
-		Expect(err).ToNot(HaveOccurred())
+		By("waiting for the step's command to actually start")
+		// The command's own first line is the only evidence that it is
+		// running. A pod in phase Running is not: the pause container sleeps
+		// whether or not anything has been exec'd into it.
+		sess := fly.Start("watch", "-j", inPipeline("eviction-job"), "-b", "1")
+		Eventually(sess.Out, 3*time.Minute).Should(gbytes.Say("command-running"))
 
-		By("verifying the build eventually completes with an error/abort")
-		sess := waitForBuildAndWatch("eviction-job")
-		// Build should fail or error when pod is evicted
-		Expect(sess.ExitCode()).ToNot(Equal(0))
+		By("deleting the pod out from under the running command")
+		Expect(kubeClient.CoreV1().Pods(config.Namespace).Delete(
+			context.Background(), taskPodName, metav1.DeleteOptions{},
+		)).To(Succeed())
+
+		By("verifying the build ends non-zero and says what took the pod")
+		Eventually(sess, 5*time.Minute).Should(gexec.Exit())
+		Expect(sess.ExitCode()).ToNot(Equal(0),
+			"a pod destroyed while its command was running must not report success")
+		// The reason -- pod_deleted, evicted, node_lost -- follows in
+		// parentheses; the sentence itself is the same whichever one it was.
+		Expect(string(sess.Out.Contents()) + string(sess.Err.Contents())).To(
+			ContainSubstring("the step's command was running when its pod was destroyed"))
 	})
 
 	// Triggers OOM using a static Go binary that allocates 10 MB slices

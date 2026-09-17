@@ -771,9 +771,12 @@ var _ = Describe("Container", func() {
 		By("simulate pod running so Wait can proceed")
 		pod, podErr := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "noop-stream-handle", metav1.GetOptions{})
 		Expect(podErr).ToNot(HaveOccurred())
+		// The pause container is RUNNING, not terminated: it sleeps for the
+		// life of the step and the command is exec'd into it. A terminated
+		// one would mean the pod was destroyed while the exec was in flight.
 		pod.Status.Phase = corev1.PodRunning
 		pod.Status.ContainerStatuses = []corev1.ContainerStatus{
-			{Name: "main", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0}}},
+			{Name: "main", Ready: true, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
 		}
 		_, podErr = fakeClientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
 		Expect(podErr).ToNot(HaveOccurred())
