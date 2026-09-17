@@ -130,6 +130,11 @@ var _ = SynchronizedBeforeSuite(
 		namespace := envOr("K8S_NAMESPACE", "concourse")
 		image := envOr("CONCOURSE_IMAGE", "concourse-local:latest")
 
+		// Cheap periodic trend line (docker-root %, free mem, running
+		// containers) so a slow climb toward the tmpfs limit is visible in
+		// the log before a death, not just a "gone" line at the end.
+		startResourceStamp()
+
 		kubeconfig := createK3sCluster()
 		loadImagesIntoCluster(image)
 
@@ -179,12 +184,17 @@ var _ = SynchronizedBeforeSuite(
 var _ = SynchronizedAfterSuite(
 	// All processes: stop port-forward, delete per-process KinD cluster.
 	func() {
+		stopResourceStamp()
 		if suiteFlyHome != "" {
 			os.RemoveAll(suiteFlyHome)
 		}
 		if pfMgr != nil {
 			pfMgr.Stop()
 		}
+		// Fallback dump: if the port-forward manager never gave up (e.g. the
+		// suite finished normally, or died some other way) this is the last
+		// chance to capture cluster state before the container is terminated.
+		dumpDockerDiagnostics("AfterSuite")
 		deleteK3sCluster()
 	},
 	// Process 1 only: clean up shared fly binary build artifacts.
@@ -220,6 +230,7 @@ var _ = BeforeEach(func() {
 
 var _ = AfterEach(func() {
 	dumpWebLogsOnFailure()
+	dumpArtifactDaemonLogsOnFailure()
 	destroyPipeline()
 	if pipelineName != "" {
 		cleanupPodsWithLabel(fmt.Sprintf(
@@ -259,6 +270,28 @@ func dumpWebLogsOnFailure() {
 		return
 	}
 	log.Printf("=== concourse-web logs (tail 800) for FAILED spec %q ===\n%s=== end concourse-web logs ===",
+		CurrentSpecReport().FullText(), string(out))
+}
+
+// dumpArtifactDaemonLogsOnFailure prints recent artifact-daemon logs when the
+// current spec failed. The daemon is a DaemonSet (one pod per node); its
+// side of e.g. a /resolve-batch 500 has no other capture, so without this a
+// daemon-side failure is invisible in the build log's fly output.
+func dumpArtifactDaemonLogsOnFailure() {
+	if !CurrentSpecReport().Failed() || config.Kubeconfig == "" {
+		return
+	}
+	out, err := exec.Command("kubectl",
+		"--kubeconfig", config.Kubeconfig,
+		"-n", config.Namespace,
+		"logs", "-l", "app.kubernetes.io/component=artifact-daemon",
+		"--tail=300", "--prefix",
+	).CombinedOutput()
+	if err != nil {
+		log.Printf("dumpArtifactDaemonLogsOnFailure: kubectl logs failed: %v", err)
+		return
+	}
+	log.Printf("=== artifact-daemon logs (tail 300) for FAILED spec %q ===\n%s=== end artifact-daemon logs ===",
 		CurrentSpecReport().FullText(), string(out))
 }
 

@@ -444,6 +444,7 @@ func (m *portForwardManager) run(initialReady chan<- struct{}) {
 			// fails the spec that asked for it, with the reason attached.
 			log.Printf("Port-forward has failed continuously for %s (%v); giving up, the cluster is gone",
 				portForwardGiveUp, err)
+			dumpDockerDiagnostics("port-forward gave up, cluster presumed gone")
 			return
 		}
 
@@ -571,6 +572,142 @@ func mustRepoRoot() string {
 		log.Fatalf("repo root unknown: not a git checkout here and JETBRIDGE_REPO_ROOT is unset: %v", err)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// ---------------------------------------------------------------------
+// Diagnostics
+//
+// The K3s container runs as a privileged Docker container inside a DinD
+// task pod with no external log aggregation. When it dies (OOM, disk
+// full, engine crash), the only record of why is whatever we capture
+// here before the container/pod is gone. Every command below is
+// best-effort: a diagnostic that fails to run must never fail or panic
+// the suite, it just logs its own failure and moves on.
+// ---------------------------------------------------------------------
+
+// dumpDockerDiagnostics captures host-level Docker/K3s state to the suite
+// log. Called when the port-forward manager gives up on a dead cluster,
+// and again as a fallback in AfterSuite.
+func dumpDockerDiagnostics(reason string) {
+	log.Printf("=== docker diagnostics (%s) ===", reason)
+
+	runDiagCmd("docker ps -a", "docker", "ps", "-a")
+
+	if k3sContainer != nil {
+		if id := k3sContainer.GetContainerID(); id != "" {
+			runDiagCmd("k3s container logs (tail 200)", "docker", "logs", "--tail", "200", id)
+			runDiagCmd("k3s container inspect state (OOMKilled ExitCode Error)", "docker", "inspect",
+				"--format", "{{.State.OOMKilled}} {{.State.ExitCode}} {{.State.Error}}", id)
+		}
+	}
+
+	runDiagCmd("df /var/lib/docker", "df", "-h", "/var/lib/docker")
+	runDiagCmd("free -m", "free", "-m")
+	// dmesg has no portable --tail; pipe through the shell instead. Often
+	// unreadable without CAP_SYSLOG inside the task pod -- that's fine,
+	// runDiagCmd just logs the failure.
+	runDiagCmd("dmesg tail 50", "sh", "-c", "dmesg | tail -50")
+
+	log.Printf("=== end docker diagnostics (%s) ===", reason)
+}
+
+// runDiagCmd runs a diagnostic command and logs its output (or, if it
+// failed to run, logs that failure). Never panics, never fails the suite.
+func runDiagCmd(label, name string, args ...string) {
+	out, err := exec.Command(name, args...).CombinedOutput()
+	if err != nil {
+		log.Printf("diag %s: failed to run: %v\n%s", label, err, string(out))
+		return
+	}
+	log.Printf("diag %s:\n%s", label, string(out))
+}
+
+// resourceStampDone stops the periodic resource-stamp goroutine started by
+// startResourceStamp. nil until startResourceStamp runs.
+var resourceStampDone chan struct{}
+
+// resourceStampInterval is how often the trend line below is printed.
+// Cheap enough to run often; every 5 minutes gives ~30-40 samples across a
+// 2-3 hour run, enough to see a slow climb toward the tmpfs limit before a
+// death rather than only a "gone" line at the end.
+const resourceStampInterval = 5 * time.Minute
+
+// startResourceStamp begins printing a one-line resource trend stamp every
+// resourceStampInterval. Call stopResourceStamp to stop it.
+func startResourceStamp() {
+	resourceStampDone = make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(resourceStampInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-resourceStampDone:
+				return
+			case <-ticker.C:
+				logResourceStamp()
+			}
+		}
+	}()
+}
+
+// stopResourceStamp stops the goroutine started by startResourceStamp, if any.
+func stopResourceStamp() {
+	if resourceStampDone != nil {
+		close(resourceStampDone)
+		resourceStampDone = nil
+	}
+}
+
+func logResourceStamp() {
+	log.Printf("resource-stamp: time=%s docker-root-use=%s free-mem-avail-mb=%s running-containers=%s",
+		time.Now().UTC().Format(time.RFC3339),
+		diagDfPercent("/var/lib/docker"), diagFreeAvailMB(), diagRunningContainers())
+}
+
+// diagDfPercent returns the use% of the filesystem containing path, or "?"
+// if it can't be determined.
+func diagDfPercent(path string) string {
+	out, err := exec.Command("df", "--output=pcent", path).Output()
+	if err != nil {
+		return "?"
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) == 0 {
+		return "?"
+	}
+	return fields[len(fields)-1]
+}
+
+// diagFreeAvailMB returns the "available" column of `free -m`, or "?" if it
+// can't be determined.
+func diagFreeAvailMB() string {
+	out, err := exec.Command("free", "-m").Output()
+	if err != nil {
+		return "?"
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 7 && fields[0] == "Mem:" {
+			return fields[6]
+		}
+	}
+	return "?"
+}
+
+// diagRunningContainers returns the number of running Docker containers, or
+// "?" if it can't be determined.
+func diagRunningContainers() string {
+	out, err := exec.Command("docker", "ps", "-q").Output()
+	if err != nil {
+		return "?"
+	}
+	n := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line != "" {
+			n++
+		}
+	}
+	return fmt.Sprintf("%d", n)
 }
 
 // deleteK3sCluster terminates the K3s testcontainer unless SKIP_TEARDOWN is set.
