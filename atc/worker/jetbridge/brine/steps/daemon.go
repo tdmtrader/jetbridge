@@ -42,13 +42,9 @@ package steps
 // contract; the durable scenarios now learn the capability from the route that
 // really carries it, and would fail if that route stopped carrying it.
 //
-// ONE double survives, for one scenario, and the scenario says why in the
-// feature file: a daemon that answers /resolve while holding nothing locally
-// cannot be built from the real binary. Peer-served resolve needs DAEMON-side
-// peer discovery, which main.go builds only from rest.InClusterConfig() and
-// cannot be pointed anywhere outside a cluster. A real daemon with no peers
-// simply misses — which reproduces the wire signature of that scenario and not
-// its situation, and loses the regression it exists to catch.
+// The peer-only probe also uses real daemons and Kubernetes discovery. Its
+// setup verifies a successful peer resolve and the exact bytes, reclaims the
+// demonstration copy, then leaves only the empty node visible to the ATC.
 //
 // The domain-state structs are declared here rather than in domain.go so this
 // family can be read, and reviewed, as one file.
@@ -62,12 +58,11 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
+	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/brine-dev/brine-go/pkg/brine"
@@ -76,7 +71,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/kubernetes"
 )
 
 // -----------------------------------------------------------------------
@@ -104,8 +99,9 @@ type DaemonPlan struct {
 
 	// IPs is what the EndpointSlice publishes. It may name addresses that
 	// nothing answers on.
-	IPs   []string
-	Nodes map[string]string
+	IPs       []string
+	live      *liveArtifactDaemon
+	nodeReads *execObservation
 
 	SourceNode string
 	KnownIP    string
@@ -133,13 +129,17 @@ type DaemonFetch struct {
 	Message string
 }
 
-// ProbeOutcome is everything a probe told its caller. Note what it does NOT
-// carry: how many requests went out, or where they went.
+// ProbeOutcome retains the returned values and passive observation of the
+// actual requests, so misses cannot hide an unwanted resolve fallback.
 type ProbeOutcome struct {
 	Found          bool
 	IP             string
 	DurableCapable bool
 	EndpointCount  int
+	Err            error
+	expectedIP     string
+	fetch          *DaemonFetch
+	observation    *daemonProbeObservation
 }
 
 // -----------------------------------------------------------------------
@@ -177,6 +177,33 @@ func (p DaemonPlan) baseURL() string {
 	return fmt.Sprintf("http://%s:%d", p.DaemonIP, p.Port)
 }
 
+// Live plans write through the independent observer's owned mount. The host
+// path is never accessed through the adapter's local filesystem.
+func (p DaemonPlan) writeFile(full, content string) error {
+	if p.live == nil {
+		return writeArtifactFile(full, content)
+	}
+	return p.live.store.writeFile(p.Ctx, full, content)
+}
+
+func startLiveDaemonPlan(rec *brine.Recorder) (DaemonPlan, error) {
+	ctx, cancel := context.WithTimeout(execLogger("live-daemon-read"), 3*time.Minute)
+	rec.RegisterDisposer(cancel)
+	d, err := newLiveArtifactDaemon(ctx, rec)
+	if err != nil {
+		return DaemonPlan{}, err
+	}
+	return DaemonPlan{Ctx: ctx, Namespace: d.store.cluster.Namespace, Service: liveArtifactDaemonService,
+		Port: int(d.port), DaemonIP: d.nodeIP, Root: d.store.root, IPs: []string{d.nodeIP}, live: d}, nil
+}
+
+func (p DaemonPlan) requireNodeRead() error {
+	if p.live == nil || p.SourceNode == "" {
+		return nil
+	}
+	return p.nodeReads.requireNodeRead(p.SourceNode)
+}
+
 // writeArtifactFile writes one file, creating the directories above it.
 func writeArtifactFile(full, content string) error {
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
@@ -192,18 +219,7 @@ func writeArtifactFile(full, content string) error {
 // daemon can already see on its disk. The daemon refuses a key whose path is
 // not there, so a fixture that writes nothing cannot pretend to hold anything.
 func (p DaemonPlan) register(key, path string) error {
-	body := fmt.Sprintf("{\"key\":%q,\"local_path\":%q}", key, path)
-	resp, err := http.Post(p.baseURL()+"/register", "application/json", strings.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("register %q with the daemon: %w", key, err)
-	}
-	defer resp.Body.Close()
-	answer, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("the daemon refused to register %q at %q: %d %s",
-			key, path, resp.StatusCode, strings.TrimSpace(string(answer)))
-	}
-	return nil
+	return registerDaemonArtifact(p.Ctx, http.DefaultClient, p.baseURL(), key, path)
 }
 
 // requireDaemon reports the missing daemon in the scenario's own terms rather
@@ -219,14 +235,29 @@ func (p DaemonPlan) requireDaemon(what string) error {
 // Wiring the ATC side up from the plan
 // -----------------------------------------------------------------------
 
-// cluster builds the fake Kubernetes the ATC discovers daemons and nodes
-// through. fake.Clientset is a real implementation of the client interface
-// whose behavioral property is deterministic delivery; it is not the subject
-// of any assertion here. It is also the only half of discovery that can be
-// faked from outside a cluster — the daemon's own peer discovery cannot, which
-// is what keeps one scenario on a double.
-func (p DaemonPlan) cluster() (*fake.Clientset, error) {
-	cs := fake.NewSimpleClientset()
+// cluster publishes the plan to the real API. The consumer still uses its
+// production discovery code, including the service label selector.
+func (p *DaemonPlan) cluster(res brine.Resources, rec *brine.Recorder) (kubernetes.Interface, error) {
+	if p.live != nil {
+		p.nodeReads = new(execObservation)
+		return kubernetes.NewForConfig(p.nodeReads.config(p.live.store.cluster.Config))
+	}
+	cluster, ok := res.Get("real-cluster").(*realCluster)
+	if !ok {
+		return nil, fmt.Errorf("real-cluster resource is %T", res.Get("real-cluster"))
+	}
+	cs := cluster.Clientset
+	ctx, cancel := context.WithTimeout(p.Ctx, 10*time.Second)
+	defer cancel()
+	// Namespaces belong to this suite's control plane and disappear with it.
+	// EndpointSlices have scenario-scoped UID-protected disposers.
+	ns, err := cs.CoreV1().Namespaces().Create(ctx,
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "daemon-discovery-"}},
+		metav1.CreateOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("create daemon discovery namespace: %w", err)
+	}
+	p.Namespace = ns.Name
 
 	endpoints := make([]discoveryv1.Endpoint, 0, len(p.IPs))
 	for _, ip := range p.IPs {
@@ -238,23 +269,17 @@ func (p DaemonPlan) cluster() (*fake.Clientset, error) {
 			Namespace: p.Namespace,
 			Labels:    map[string]string{discoveryv1.LabelServiceName: p.Service},
 		},
-		Endpoints: endpoints,
+		AddressType: discoveryv1.AddressTypeIPv4,
+		Endpoints:   endpoints,
 	}
-	if _, err := cs.DiscoveryV1().EndpointSlices(p.Namespace).Create(p.Ctx, slice, metav1.CreateOptions{}); err != nil {
+	published, err := cs.DiscoveryV1().EndpointSlices(p.Namespace).Create(ctx, slice, metav1.CreateOptions{})
+	if err != nil {
 		return nil, fmt.Errorf("publish daemon endpoints: %w", err)
 	}
-
-	for name, ip := range p.Nodes {
-		node := &corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{Name: name},
-			Status: corev1.NodeStatus{
-				Addresses: []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: ip}},
-			},
-		}
-		if _, err := cs.CoreV1().Nodes().Create(p.Ctx, node, metav1.CreateOptions{}); err != nil {
-			return nil, fmt.Errorf("create node %q: %w", name, err)
-		}
-	}
+	registerAPICleanup(rec, "daemon endpoint slice "+published.Name, func(ctx context.Context) error {
+		return cs.DiscoveryV1().EndpointSlices(published.Namespace).Delete(ctx, published.Name,
+			metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &published.UID}})
+	})
 
 	return cs, nil
 }
@@ -263,7 +288,7 @@ func (p DaemonPlan) config() jetbridge.Config {
 	return jetbridge.Config{Namespace: p.Namespace, ArtifactDaemonPort: p.Port}
 }
 
-func (p DaemonPlan) daemonClient(cs *fake.Clientset) *jetbridge.DaemonClient {
+func (p DaemonPlan) daemonClient(cs kubernetes.Interface) *jetbridge.DaemonClient {
 	return jetbridge.NewDaemonClient(
 		lagertest.NewTestLogger("brine-daemon"),
 		cs, p.Namespace, p.Service, p.Port, nil,
@@ -272,7 +297,7 @@ func (p DaemonPlan) daemonClient(cs *fake.Clientset) *jetbridge.DaemonClient {
 
 // volume builds the volume the way the runtime builds it: from a known daemon
 // address after a cache probe, or from the node the artifact was recorded on.
-func (p DaemonPlan) volume(key string, cs *fake.Clientset) *jetbridge.DaemonSetVolume {
+func (p DaemonPlan) volume(key string, cs kubernetes.Interface) *jetbridge.DaemonSetVolume {
 	var vol *jetbridge.DaemonSetVolume
 	if p.UseKnownIP {
 		vol = jetbridge.NewDaemonSetVolumeFromIP(key, key, "k8s-worker-1", p.KnownIP, p.config())
@@ -304,6 +329,12 @@ func (p DaemonPlan) read(vol *jetbridge.DaemonSetVolume) DaemonFetch {
 	}
 
 	stream, err := vol.StreamOut(p.Ctx, path, enc)
+	if nodeErr := p.requireNodeRead(); nodeErr != nil {
+		if stream != nil {
+			_ = stream.Close()
+		}
+		return DaemonFetch{Err: nodeErr, Message: nodeErr.Error()}
+	}
 	if err != nil {
 		out.Err, out.Message = err, err.Error()
 		return out
@@ -336,7 +367,11 @@ func startDaemonPlan(rec *brine.Recorder, extraArgs ...string) (DaemonPlan, erro
 	}
 	rec.RegisterDisposer(func() { _ = d.stop() })
 
-	host, port, err := hostPortOfURL(d.URL)
+	_, port, err := hostPortOfURL(d.URL)
+	if err != nil {
+		return DaemonPlan{}, err
+	}
+	host, err := discoveryIPv4()
 	if err != nil {
 		return DaemonPlan{}, err
 	}
@@ -349,7 +384,6 @@ func startDaemonPlan(rec *brine.Recorder, extraArgs ...string) (DaemonPlan, erro
 		DaemonIP:  host,
 		Root:      d.Root,
 		IPs:       []string{host},
-		Nodes:     map[string]string{},
 	}, nil
 }
 
@@ -366,6 +400,13 @@ func DaemonDefinitions() []brine.StepDefinition {
 			"an artifact daemon",
 			func(_ brine.Empty, _ brine.Params, rec *brine.Recorder) (DaemonPlan, error) {
 				return startDaemonPlan(rec)
+			},
+		),
+
+		brine.DefineMap[brine.Empty, DaemonPlan](
+			"an artifact daemon on a real node",
+			func(_ brine.Empty, _ brine.Params, rec *brine.Recorder) (DaemonPlan, error) {
+				return startLiveDaemonPlan(rec)
 			},
 		),
 
@@ -394,48 +435,22 @@ func DaemonDefinitions() []brine.StepDefinition {
 					Namespace: "cicd",
 					Service:   "artifact-daemon",
 					Port:      7780,
-					Nodes:     map[string]string{},
 				}, nil
 			},
 		),
 
-		// THE ONE DOUBLE LEFT IN THIS FILE, and the reason is in the scenario
-		// that uses it: the real binary cannot be made to answer /resolve
-		// while holding nothing locally, because a peer-served resolve needs
-		// the daemon's own EndpointSlice discovery and that is built from
-		// rest.InClusterConfig() alone. A real daemon with no peers misses on
-		// /resolve too, which would reproduce the wire signature of the
-		// scenario and not its situation.
-		//
-		// It answers /resolve enthusiastically and 404s everything else,
-		// including the HEAD /resource-caches/ the probe actually sends. A hit
-		// therefore means one thing: the probe fell back to /resolve again.
-		brine.DefineMap[brine.Empty, DaemonPlan](
-			"a daemon that answers resolve requests but holds nothing locally",
-			func(_ brine.Empty, _ brine.Params, rec *brine.Recorder) (DaemonPlan, error) {
-				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if r.URL.Path == "/resolve" || r.URL.Path == "/resolve-batch" {
-						w.Header().Set("Content-Type", "application/json")
-						_, _ = w.Write([]byte(`{"status":"ok","method":"registry"}`))
-						return
-					}
-					w.WriteHeader(http.StatusNotFound)
-				}))
-				rec.RegisterDisposer(server.Close)
-
-				host, port, err := hostAndPort(server)
-				if err != nil {
-					return DaemonPlan{}, err
+		// Real peers establish a successful resolve while the ATC discovers
+		// only the empty node. Resolve success must not count as a local hit.
+		brine.DefineMapUsing[brine.Empty, DaemonPlan](
+			"a daemon that can resolve {string} containing {string} only from a peer",
+			[]string{"jetbridge-db", "real-cluster"},
+			func(_ brine.Empty, p brine.Params, rec *brine.Recorder, res brine.Resources) (DaemonPlan, error) {
+				key, keyOK := p.GetString(0)
+				content, contentOK := p.GetString(1)
+				if !keyOK || !contentOK {
+					return DaemonPlan{}, fmt.Errorf("expected a cache key and its contents")
 				}
-				return DaemonPlan{
-					Ctx:       context.Background(),
-					Namespace: "cicd",
-					Service:   "artifact-daemon",
-					Port:      port,
-					DaemonIP:  host,
-					IPs:       []string{host},
-					Nodes:     map[string]string{},
-				}, nil
+				return peerResolveDaemon(res, rec, key, content)
 			},
 		),
 
@@ -456,7 +471,7 @@ func DaemonDefinitions() []brine.StepDefinition {
 					return DaemonPlan{}, err
 				}
 				path := in.producedPath(key)
-				if err := writeArtifactFile(path, content); err != nil {
+				if err := in.writeFile(path, content); err != nil {
 					return DaemonPlan{}, err
 				}
 				return in, in.register(key, path)
@@ -493,7 +508,7 @@ func DaemonDefinitions() []brine.StepDefinition {
 				if err := in.requireDaemon("the mirrored copy of " + key); err != nil {
 					return DaemonPlan{}, err
 				}
-				return in, writeArtifactFile(filepath.Join(in.mirrorPath(key), name), content)
+				return in, in.writeFile(filepath.Join(in.mirrorPath(key), name), content)
 			},
 		),
 
@@ -510,37 +525,36 @@ func DaemonDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// 203.0.113.99 is TEST-NET-3: reserved for documentation, routed
-		// nowhere. It behaves exactly like a daemon pod that has stopped
-		// answering, which is the point.
-		Refine[DaemonPlan]("a second daemon address that never answers",
-			func(in DaemonPlan, _ Args) DaemonPlan {
-				in.IPs = append(append([]string{}, in.IPs...), "203.0.113.99")
-				return in
+		Transform[DaemonPlan, DaemonPlan]("the unreachable daemon count is {int}",
+			func(in DaemonPlan, args Args) (DaemonPlan, error) {
+				count := args.Int(0)
+				if count != 0 && count != 1 {
+					return DaemonPlan{}, fmt.Errorf("expected zero or one unreachable peer, got %d", count)
+				}
+				if count == 1 {
+					address := net.JoinHostPort("203.0.113.99", strconv.Itoa(in.Port))
+					conn, err := net.DialTimeout("tcp", address, 200*time.Millisecond)
+					if conn != nil {
+						conn.Close()
+					}
+					if err == nil {
+						return DaemonPlan{}, fmt.Errorf("the unreachable peer %s accepted a connection", address)
+					}
+					in.IPs = append(append([]string{}, in.IPs...), "203.0.113.99")
+				}
+				return in, nil
 			}),
 
 		// --- what the ATC remembers about where the artifact came from ---
 
-		brine.DefineMap[DaemonPlan, DaemonPlan](
-			"the artifact was produced on node {string}",
-			func(in DaemonPlan, p brine.Params, _ *brine.Recorder) (DaemonPlan, error) {
-				node, ok := p.GetString(0)
-				if !ok {
-					return DaemonPlan{}, fmt.Errorf("expected a node name parameter")
+		Transform[DaemonPlan, DaemonPlan]("the artifact was produced on that real node",
+			func(in DaemonPlan, _ Args) (DaemonPlan, error) {
+				if in.live == nil || in.live.pod.Spec.NodeName == "" {
+					return in, fmt.Errorf("named-producer reads require a real scheduled daemon")
 				}
-				if in.DaemonIP == "" {
-					return DaemonPlan{}, fmt.Errorf("no daemon is running for node %q to point at", node)
-				}
-				nodes := map[string]string{}
-				for k, v := range in.Nodes {
-					nodes[k] = v
-				}
-				nodes[node] = in.DaemonIP
-				in.Nodes = nodes
-				in.SourceNode = node
+				in.SourceNode = in.live.pod.Spec.NodeName
 				return in, nil
-			},
-		),
+			}),
 
 		// The node is still recorded against the artifact; it is simply not in
 		// the cluster any more. Spot preemption, a crash, a drain. The daemon
@@ -549,7 +563,6 @@ func DaemonDefinitions() []brine.StepDefinition {
 		Refine[DaemonPlan]("the node that produced the artifact has left the cluster",
 			func(in DaemonPlan, _ Args) DaemonPlan {
 				in.SourceNode = "node-1"
-				in.Nodes = map[string]string{}
 				return in
 			}),
 
@@ -600,14 +613,15 @@ func DaemonDefinitions() []brine.StepDefinition {
 
 		// --- reading ---
 
-		brine.DefineMap[DaemonPlan, DaemonFetch](
+		brine.DefineMapUsing[DaemonPlan, DaemonFetch](
 			"a consumer reads the artifact {string}",
-			func(in DaemonPlan, p brine.Params, _ *brine.Recorder) (DaemonFetch, error) {
+			[]string{"real-cluster"},
+			func(in DaemonPlan, p brine.Params, rec *brine.Recorder, res brine.Resources) (DaemonFetch, error) {
 				key, ok := p.GetString(0)
 				if !ok {
 					return DaemonFetch{}, fmt.Errorf("expected an artifact key parameter")
 				}
-				cs, err := in.cluster()
+				cs, err := in.cluster(res, rec)
 				if err != nil {
 					return DaemonFetch{}, err
 				}
@@ -618,19 +632,27 @@ func DaemonDefinitions() []brine.StepDefinition {
 		// The production path for a resource-cache hit, end to end: probe,
 		// bind a volume to whatever the probe named, stream. A probe that
 		// returns an address nothing can be fetched from fails here.
-		brine.DefineMap[DaemonPlan, DaemonFetch](
+		brine.DefineMapUsing[DaemonPlan, DaemonFetch](
 			"a consumer fetches the resource cache {string} from wherever the probe finds it",
-			func(in DaemonPlan, p brine.Params, _ *brine.Recorder) (DaemonFetch, error) {
+			[]string{"real-cluster"},
+			func(in DaemonPlan, p brine.Params, rec *brine.Recorder, res brine.Resources) (DaemonFetch, error) {
 				key, ok := p.GetString(0)
 				if !ok {
 					return DaemonFetch{}, fmt.Errorf("expected a cache key parameter")
 				}
-				cs, err := in.cluster()
+				cs, err := in.cluster(res, rec)
 				if err != nil {
 					return DaemonFetch{}, err
 				}
 
-				probe, found := in.daemonClient(cs).ProbeResourceCache(in.Ctx, key)
+				client, observation, err := in.probeClient(cs, "/resource-caches/"+key)
+				if err != nil {
+					return DaemonFetch{}, err
+				}
+				probe, found := client.ProbeResourceCache(in.Ctx, key)
+				if err := observation.requireRequests(); err != nil {
+					return DaemonFetch{Err: err, Message: err.Error()}, nil
+				}
 				if !found {
 					return DaemonFetch{
 						Err:     fmt.Errorf("no daemon reported holding the resource cache %q", key),
@@ -638,6 +660,10 @@ func DaemonDefinitions() []brine.StepDefinition {
 					}, nil
 				}
 
+				if probe.IP != in.DaemonIP {
+					err := fmt.Errorf("probe named %q, want holder address %q", probe.IP, in.DaemonIP)
+					return DaemonFetch{Err: err, Message: err.Error()}, nil
+				}
 				bound := in
 				bound.UseKnownIP, bound.KnownIP, bound.Fallback = true, probe.IP, false
 				return bound.read(bound.volume(key, cs)), nil
@@ -646,45 +672,59 @@ func DaemonDefinitions() []brine.StepDefinition {
 
 		// --- probing ---
 
-		brine.DefineMap[DaemonPlan, ProbeOutcome](
+		brine.DefineMapUsing[DaemonPlan, ProbeOutcome](
 			"the ATC probes for the resource cache {string}",
-			func(in DaemonPlan, p brine.Params, _ *brine.Recorder) (ProbeOutcome, error) {
+			[]string{"real-cluster"},
+			func(in DaemonPlan, p brine.Params, rec *brine.Recorder, res brine.Resources) (ProbeOutcome, error) {
 				key, ok := p.GetString(0)
 				if !ok {
 					return ProbeOutcome{}, fmt.Errorf("expected a cache key parameter")
 				}
-				cs, err := in.cluster()
+				cs, err := in.cluster(res, rec)
 				if err != nil {
 					return ProbeOutcome{}, err
 				}
 
-				probe, found := in.daemonClient(cs).ProbeResourceCache(in.Ctx, key)
+				client, observation, err := in.probeClient(cs, "/resource-caches/"+key)
+				if err != nil {
+					return ProbeOutcome{}, err
+				}
+				probe, found := client.ProbeResourceCache(in.Ctx, key)
 				return ProbeOutcome{
 					Found:          found,
 					IP:             probe.IP,
 					DurableCapable: probe.DurableCapable,
 					EndpointCount:  len(probe.Endpoints),
+					observation:    observation,
 				}, nil
 			},
 		),
 
-		brine.DefineMap[DaemonPlan, ProbeOutcome](
+		brine.DefineMapUsing[DaemonPlan, ProbeOutcome](
 			"the ATC probes for a mirrored copy of {string}",
-			func(in DaemonPlan, p brine.Params, _ *brine.Recorder) (ProbeOutcome, error) {
+			[]string{"real-cluster"},
+			func(in DaemonPlan, p brine.Params, rec *brine.Recorder, res brine.Resources) (ProbeOutcome, error) {
 				key, ok := p.GetString(0)
 				if !ok {
 					return ProbeOutcome{}, fmt.Errorf("expected an artifact key parameter")
 				}
-				cs, err := in.cluster()
+				cs, err := in.cluster(res, rec)
 				if err != nil {
 					return ProbeOutcome{}, err
 				}
 
-				ip, found, probeErr := in.daemonClient(cs).ProbeStepArtifact(in.Ctx, key)
-				if probeErr != nil {
-					return ProbeOutcome{}, fmt.Errorf("probe for %q: %w", key, probeErr)
+				client, observation, err := in.probeClient(cs, "/artifacts/steps/"+key)
+				if err != nil {
+					return ProbeOutcome{}, err
 				}
-				return ProbeOutcome{Found: found, IP: ip}, nil
+				ip, found, probeErr := client.ProbeStepArtifact(in.Ctx, key)
+				out := ProbeOutcome{Found: found, IP: ip, Err: probeErr, expectedIP: in.DaemonIP, observation: observation}
+				if probeErr == nil && found && ip == in.DaemonIP {
+					bound := jetbridge.NewDaemonSetVolumeFromIP("steps/"+key, key, "k8s-worker-1", ip, in.config())
+					fetch := in.read(bound)
+					out.fetch = &fetch
+				}
+				return out, nil
 			},
 		),
 
@@ -867,8 +907,60 @@ func DaemonDefinitions() []brine.StepDefinition {
 
 		CheckThat[ProbeOutcome]("the probe reports a miss",
 			func(in ProbeOutcome) error {
+				if in.Err != nil {
+					return fmt.Errorf("probe returned an error: %w", in.Err)
+				}
+				if err := in.observation.requireRequests(); err != nil {
+					return err
+				}
 				if in.Found {
 					return fmt.Errorf("expected a miss, but a daemon at %q reported holding it", in.IP)
+				}
+				return nil
+			}),
+
+		Assert[ProbeOutcome]("the named daemon serves {string} containing {string}",
+			func(in ProbeOutcome, args Args) error {
+				if in.Err != nil {
+					return fmt.Errorf("probe returned an error: %w", in.Err)
+				}
+				if !in.Found {
+					return fmt.Errorf("probe missed the daemon holding the artifact")
+				}
+				if in.IP != in.expectedIP {
+					return fmt.Errorf("probe named %q, want exact holder %q", in.IP, in.expectedIP)
+				}
+				requests, err := in.observation.wire.requests()
+				if err != nil {
+					return err
+				}
+				seen := false
+				for address, actual := range requests {
+					host, _, err := net.SplitHostPort(address)
+					if err != nil {
+						return err
+					}
+					for _, request := range actual {
+						if request != "HEAD "+in.observation.path {
+							return fmt.Errorf("probe sent %q, want HEAD %s", request, in.observation.path)
+						}
+						if host == in.IP {
+							seen = true
+						}
+					}
+				}
+				if !seen {
+					return fmt.Errorf("the named holder received no probe")
+				}
+				if in.fetch == nil {
+					return fmt.Errorf("named holder was not read")
+				}
+				if in.fetch.Err != nil {
+					return fmt.Errorf("read named holder: %w", in.fetch.Err)
+				}
+				file, content := args.String(0), args.String(1)
+				if got, ok := in.fetch.Files[file]; !ok || got != content {
+					return fmt.Errorf("named holder file %q = %q (present %t), want %q", file, got, ok, content)
 				}
 				return nil
 			}),
@@ -925,7 +1017,7 @@ func addProducedFile(in DaemonPlan, p brine.Params) (DaemonPlan, error) {
 	}
 
 	dir := in.producedPath(key)
-	if err := writeArtifactFile(filepath.Join(dir, name), content); err != nil {
+	if err := in.writeFile(filepath.Join(dir, name), content); err != nil {
 		return DaemonPlan{}, err
 	}
 	return in, in.register(key, dir)
@@ -967,18 +1059,6 @@ func decodeArchive(raw []byte) (gzipped bool, isTar bool, files map[string]strin
 		files[hdr.Name] = string(body)
 		entries++
 	}
-}
-
-func hostAndPort(server *httptest.Server) (string, int, error) {
-	host, portStr, err := net.SplitHostPort(server.Listener.Addr().String())
-	if err != nil {
-		return "", 0, fmt.Errorf("split daemon address: %w", err)
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		return "", 0, fmt.Errorf("parse daemon port: %w", err)
-	}
-	return host, port, nil
 }
 
 // hostPortOfURL splits the address a started daemon reported.

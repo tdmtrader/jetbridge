@@ -1,7 +1,7 @@
 // Package steps hosts the brine step registry for the jetbridge runtime's
 // behavioral contract.
 //
-// Contract-3/4 authoring: every step is a transition between NAMED DOMAIN
+// Every step is a transition between NAMED DOMAIN
 // STATES. The chain walk keeps a SINGLE live state and replaces it wholesale
 // on each map step, so a state must carry forward everything its successors
 // need. `brine check` verifies each scenario's path without running anything.
@@ -13,33 +13,22 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/watch"
-	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 )
 
-// ClusterReady is the state after a jetbridge worker is registered against a
-// fake Kubernetes cluster. Reached from brine.Empty.
-type ClusterReady struct {
-	Namespace string
-	Worker    *jetbridge.Worker
-	Clientset *fake.Clientset
-	Ctx       context.Context
-	// TeamID is a real team row, needed by anything that persists a volume;
-	// the volumes table has a foreign key onto teams.
-	TeamID int
-}
-
-// StepRunning is the state after a task container has been created and its
-// process started. It carries the clientset forward because the live state is
-// replaced wholesale — ClusterReady is gone once this step runs.
+// StepRunning carries a process handle after Run creates its API pod. This
+// does not imply that a kubelet started a command: API-backed status fixtures
+// report input state explicitly. Other families use actual live Kubernetes execution.
 type StepRunning struct {
 	Namespace string
-	Clientset *fake.Clientset
+	Clientset kubernetes.Interface
 	Ctx       context.Context
 	Handle    string
 	Process   runtime.Process
@@ -49,34 +38,33 @@ type StepRunning struct {
 // StepOutcome is the terminal state: what the process reported when it was
 // waited on. Check steps read this and cannot transition out of it.
 type StepOutcome struct {
-	Err     error
-	Message string
-	Stderr  string
+	schedulingRefusal string
+	Err               error
+	Message           string
+	Stderr            string
 	// ExitStatus is what the step actually reports. Process.Wait returns a
 	// non-zero exit as a RESULT, not an error, so Err alone cannot tell a
 	// failed task from a successful one.
 	ExitStatus int
 }
 
-// noopDelegate satisfies runtime.BuildStepDelegate for scenarios that need
-// neither volume streaming nor build timing. Mirrors the ginkgo suite's
-// helper of the same name.
-type noopDelegate struct{}
-
 // ContainerDraft is a container spec under description. Map steps that refine
 // the draft take ContainerDraft in and out — the live state's type is
 // unchanged, so any number of them may appear in any order before the
 // container runs.
 type ContainerDraft struct {
-	Namespace    string
-	Worker       *jetbridge.Worker
-	Clientset    *fake.Clientset
-	Ctx          context.Context
-	Handle       string
-	ImageURL     string
-	Dir          string
-	ContainerEnv []string
-	ProcessEnv   []string
+	Namespace string
+	Worker    *jetbridge.Worker
+	Clientset kubernetes.Interface
+	// MountExecutor is the transport used when creating deferred volumes.
+	// Real worker drafts retain the production SPDY executor.
+	MountExecutor jetbridge.PodExecutor
+	Ctx           context.Context
+	Handle        string
+	ImageURL      string
+	Dir           string
+	ContainerEnv  []string
+	ProcessEnv    []string
 
 	// Inputs are destination paths, each of which gets a real artifact volume
 	// when the container runs. There is no artifact-less form: production's
@@ -84,18 +72,21 @@ type ContainerDraft struct {
 	// atc/exec/task_step.go — both skip a name the artifact repository has no
 	// artifact for, so an input with a nil Artifact is a state no pipeline can
 	// reach, and the runtime now rejects one outright.
-	Inputs           []string
-	Outputs          []string
-	Caches           []string
-	Scratch          []string
-	LimitCPU         *uint64
-	LimitMemory      *uint64
-	RequestCPU       *uint64
-	RequestMemory    *uint64
-	LimitEphemeral   *uint64
-	RequestEphemeral *uint64
-	JobID            int
-	StepName         string
+	Inputs       []string
+	Outputs      []string
+	NamedOutputs map[string]string
+	// CacheIdentityOmitted keeps metadata independent of the optional runtime key.
+	CacheIdentityOmitted bool
+	Caches               []string
+	Scratch              []string
+	LimitCPU             *uint64
+	LimitMemory          *uint64
+	RequestCPU           *uint64
+	RequestMemory        *uint64
+	LimitEphemeral       *uint64
+	RequestEphemeral     *uint64
+	JobID                int
+	StepName             string
 
 	// A materialized run job has no JobID of its own — its pipeline is
 	// created and destroyed per run — so it names itself by the template and
@@ -113,7 +104,7 @@ type ContainerDraft struct {
 	// RanBefore makes the run step create the container row once first, so
 	// the run under test finds it already created and is REUSED.
 	RanBefore bool
-	// TeamID carried from ClusterReady, so artifact volumes satisfy the
+	// TeamID carried from WorkerReady, so artifact volumes satisfy the
 	// volumes table's foreign key onto teams.
 	TeamID int
 }
@@ -134,6 +125,9 @@ type ContainerDraft struct {
 // ever reads again; what persists is the template it came from and the job's
 // name within it.
 func (d ContainerDraft) taskCacheIdentity() *atc.TaskCacheIdentity {
+	if d.CacheIdentityOmitted {
+		return nil
+	}
 	if d.RunJobName != "" {
 		return &atc.TaskCacheIdentity{
 			TeamID:             d.RunTeamID,
@@ -175,45 +169,37 @@ type PodCreated struct {
 	Ctx       context.Context
 	Handle    string
 	Pod       *corev1.Pod
-}
-
-// ExecClusterReady is ClusterReady plus a span recorder and an exec-mode
-// executor. It is a separate state rather than a field on ClusterReady because
-// the chain walk matches on nominal type: a scenario that never records spans
-// should not be able to reach a span assertion.
-type ExecClusterReady struct {
-	Namespace string
-	Worker    *jetbridge.Worker
-	Clientset *fake.Clientset
-	Ctx       context.Context
-	Capture   SpanCapture
+	Process   runtime.Process
 }
 
 // ExecStepRunning is the exec-mode counterpart of StepRunning.
 type ExecStepRunning struct {
-	Namespace string
-	Clientset *fake.Clientset
-	Ctx       context.Context
-	Handle    string
-	Process   runtime.Process
-	Capture   SpanCapture
+	live       *liveStartup
+	Namespace  string
+	Clientset  kubernetes.Interface
+	Ctx        context.Context
+	Handle     string
+	Process    runtime.Process
+	Capture    SpanCapture
+	watchReady <-chan struct{}
+	recorder   *brine.Recorder
 }
 
 // SpansRecorded is the terminal state for observability scenarios.
 type SpansRecorded struct {
+	live       *liveStartup
 	Capture    SpanCapture
 	ExitStatus int
 	WaitErr    error
 	Message    string
 }
 
-// VolumeSet and VolumeRead are the volume states. Note what they do NOT
-// carry: no recorded exec calls, no command slice, no pod name. There is
-// nothing to assert on but the artifact.
+// VolumeSet owns streaming handles and passive observations of real exec requests.
 type VolumeSet struct {
 	Volumes   map[string]*jetbridge.Volume
 	Ctx       context.Context
-	Workspace TaskWorkspace
+	live      *liveKubernetes
+	execTrace *volumeExecObservation
 }
 
 func (v VolumeSet) volume(name string) (*jetbridge.Volume, error) {
@@ -231,9 +217,17 @@ func (v VolumeSet) volume(name string) (*jetbridge.Volume, error) {
 // VolumeRead is the outcome of reading a volume — or of trying to. An error
 // is a value here, so a scenario can assert on failure without dying.
 type VolumeRead struct {
-	Files   map[string]string
-	Err     error
-	Message string
+	Files        map[string]string
+	Err          error
+	Message      string
+	readAttempts []volumeReadAttempt
+	source       *VolumeSet
+	remote       *remoteArtifactRead
+}
+
+type volumeReadAttempt struct {
+	encoding                   string
+	openErr, readErr, closeErr error
 }
 
 func containsFold(haystack, needle string) bool {
@@ -248,10 +242,16 @@ type TaskWorkspace struct {
 	ownedDir string
 }
 
-// TaskCluster is a worker whose executor really runs commands.
+// TaskCluster runs supervised commands in a real Kubernetes pod.
+// Its filesystem and lifetime belong to the scenario namespace.
 type TaskCluster struct {
-	ClusterReady
-	Workspace TaskWorkspace
+	WorkerReady
+	metadata    db.ContainerMetadata
+	image       string
+	application *taskApplication
+	execTrace   *execObservation
+	directory   string
+	outputs     runtime.OutputPaths
 }
 
 // TaskOutcome is what the consumer saw: the build log, the exit status, and
@@ -273,6 +273,11 @@ type TaskOutcome struct {
 
 	AttachErr     error
 	AttachMessage string
+
+	// Preserve the actual completed runtime object across fresh-handle recovery.
+	completedContainer runtime.Container
+	completedPodUID    types.UID
+	mounts             []runtime.VolumeMount
 }
 
 // PodNameRequest and GeneratedPodName are the pod-naming states. The seam is
@@ -309,7 +314,7 @@ type ResourceTypeImages struct {
 // RegistrarReady and RegistrationOutcome are the worker-registration states.
 type RegistrarReady struct {
 	Namespace string
-	Clientset *fake.Clientset
+	Clientset kubernetes.Interface
 	DB        JetbridgeDB
 	Config    jetbridge.Config
 	Registrar *jetbridge.Registrar
@@ -323,40 +328,16 @@ type RegistrationOutcome struct {
 	Message string
 }
 
-// WatchedPod and WatchObservation are the pod-watch states. Feed and
-// SecondFeed are client-go's own controllable watch fakes — real
-// implementations of watch.Interface, used to make a connection drop
-// deterministic rather than to record calls.
-type WatchedPod struct {
-	Name       string
-	Clientset  *fake.Clientset
-	Pod        *corev1.Pod
-	Ctx        context.Context
-	Watcher    *jetbridge.PodWatcher
-	Feed       *watch.RaceFreeFakeWatcher
-	SecondFeed *watch.RaceFreeFakeWatcher
-	Version    int
-	// Replay is shared by pointer because the watch reactor writes into it
-	// after this struct has already been copied down the chain.
-	Replay *WatchReplay
-}
-
-type WatchObservation struct {
-	Watched WatchedPod
-	Pod     *corev1.Pod
-	Err     error
-	Message string
-}
-
 // ReaperReady and ReaperOutcome are the garbage-collection states.
 type ReaperReady struct {
 	DB          JetbridgeDB
 	Worker      db.Worker
-	Clientset   *fake.Clientset
+	Clientset   kubernetes.Interface
 	Config      jetbridge.Config
 	Reaper      *jetbridge.Reaper
 	Ctx         context.Context
 	BuildLookup bool
+	RacePod     *corev1.Pod
 }
 
 type ReaperOutcome struct {
@@ -364,35 +345,19 @@ type ReaperOutcome struct {
 	Err   error
 }
 
-// VolumeIdentity is the state for a volume's identity and its database row.
+// VolumeIdentity retains independently persisted volumes and their artifact links.
 type VolumeIdentity struct {
-	Volume       *jetbridge.Volume
+	Volumes      []VolumeIdentityRow
 	DaemonVolume *jetbridge.DaemonSetVolume
-	DBHandle     string
 	WorkerName   string
+	TeamID       int
 }
 
-// Status constructors share only Kubernetes literal wrapping. Callers retain
-// phases, ordering, exit details and any exceptional status fields explicitly.
-func terminatedStatus(name string, state corev1.ContainerStateTerminated) corev1.ContainerStatus {
-	return corev1.ContainerStatus{
-		Name:  name,
-		State: corev1.ContainerState{Terminated: &state},
-	}
-}
-
-func waitingStatus(name string, state corev1.ContainerStateWaiting) corev1.ContainerStatus {
-	return corev1.ContainerStatus{
-		Name:  name,
-		State: corev1.ContainerState{Waiting: &state},
-	}
-}
-
-func runningStatus(name string) corev1.ContainerStatus {
-	return corev1.ContainerStatus{
-		Name:  name,
-		State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
-	}
+type VolumeIdentityRow struct {
+	Volume   *jetbridge.Volume
+	DBVolume db.CreatedVolume
+	DBHandle string
+	Artifact db.WorkerArtifact
 }
 
 // errorMessage preserves the error snapshot each outcome records, including

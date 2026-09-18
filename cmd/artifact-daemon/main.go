@@ -30,6 +30,7 @@ func main() {
 	ttl := flag.Duration("ttl", 2*time.Hour, "TTL for artifact cleanup sweep")
 	resolveCapabilityKeyFile := flag.String("resolve-capability-key", "", "Path to the raw 32-byte key required to authorize resolve operations")
 	nodeName := flag.String("node-name", "", "Kubernetes node name (for node labeling)")
+	peerDiscovery := flag.Bool("peer-discovery", false, "Enable EndpointSlice peer discovery without node labeling; --node-name continues to enable both")
 	namespace := flag.String("namespace", "default", "Kubernetes namespace")
 	kubeconfig := flag.String("kubeconfig", "", "Path to a kubeconfig file. When empty the in-cluster config is used, which is what the daemon does in a pod. Set this to run the daemon against a cluster from outside one — for debugging against a live cluster, and for tests that need two daemons able to discover each other.")
 	serviceName := flag.String("service-name", "artifact-daemon", "Headless service name for EndpointSlice peer discovery")
@@ -257,9 +258,10 @@ func main() {
 	sweeper := NewSweeper(logger, *storagePath, *ttl, 5*time.Minute, server.Registry())
 	sweeper.SetGuard(server.Guard())
 
-	// Set up peer resolver for cross-node artifact resolution.
+	// Peer discovery can run with namespace-local read access only. Keep
+	// node labeling opt-in via --node-name and preserve its existing behavior.
 	var mirror *Mirror
-	if *nodeName != "" {
+	if *peerDiscovery || *nodeName != "" {
 		k8sClientForPeers, err := buildK8sClient(*kubeconfig)
 		if err != nil {
 			logger.Error("failed-to-create-peer-k8s-client", err)

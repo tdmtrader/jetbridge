@@ -159,9 +159,9 @@ jobs:
 # jetbridge adapter built from
 # atc/worker/jetbridge/brine. The CLI's verdict is the one that counts -- it
 # folds in the manifest's `budgets.undefined: 0` and any unsatisfied wiring,
-# neither of which the adapter's own exit code can see. v9 already ships
-# /usr/local/bin/brine and its engine, built from the same brine-private
-# revision this module's replace pins.
+# neither of which the adapter's own exit code can see. The runner image must
+# ship a CLI and engine built from the module's pinned Brine revision; the
+# receipt check below rejects an old image before any test can false-green.
 #
 # The module fetch reaches github.com/MarkDucommun/brine-private, a private
 # repository this project does not own, through ((github-token)). That was the
@@ -184,7 +184,7 @@ jobs:
     params: {depth: 1}
     passed: [unit-tests]
   - task: brine-suite
-    timeout: 30m
+    timeout: 60m
     attempts: 2
     config:
       platform: linux
@@ -194,6 +194,15 @@ jobs:
       params:
         GITHUB_TOKEN: ((github-token))
         GOPRIVATE: github.com/MarkDucommun/*
+        # Explicitly authorize the bounded live tier on the task cluster.
+        # Its service account must be allowed to create/delete test namespaces.
+        BRINE_KUBE_CONTEXT: in-cluster
+        # Set these only for the explicitly approved test node and port.
+        # Missing approval is a hard failure, never a local-only fallback.
+        BRINE_ALLOW_HOSTPATH_TESTS: ((brine-allow-hostpath-tests))
+        BRINE_ALLOW_HOSTPORT_TESTS: ((brine-allow-hostport-tests))
+        BRINE_LIVE_ARTIFACT_NODE: ((brine-artifact-node))
+        BRINE_LIVE_ARTIFACT_DAEMON_PORT: ((brine-artifact-daemon-port))
       run:
         path: sh
         args:
@@ -208,17 +217,37 @@ jobs:
 
           cd repo/atc/worker/jetbridge/brine
 
+          # brine --version is still 0.1.0 across contract generations.
+          # Compare the image's build receipt to the actual module pin.
+          brine_module_version="$(go list -m -f '{{.Replace.Version}}' github.com/brine-dev/brine-go)"
+          brine_expected_revision="${brine_module_version##*-}"
+          test -n "$brine_expected_revision"
+          brine_image_revision="$(cat /etc/brine-commit)"
+          case "$brine_image_revision" in
+            "$brine_expected_revision"*) ;;
+            *) echo "Brine image revision $brine_image_revision does not match module $brine_expected_revision; rebuild the runner and bump its tag" >&2; exit 1 ;;
+          esac
+
           # Rebuild the adapter every time. The CLI executes this binary, not
           # the sources next to it, so a stale one silently tests old steps.
-          go build -o .build/brine-adapter-jetbridge ./cmd/brine-adapter-jetbridge
+          sh scripts/build-private-network
           go vet ./...
-          # Root Go test jobs do not discover this nested module.
-          go test -count=1 -timeout 5m ./...
+          # Root jobs do not discover this nested module. Run its native
+          # tests serially through the module-pinned Ginkgo CLI because the
+          # adapter contract tests start real database-backed resources.
+          BRINE_PROTOCOL_LAUNCHER="$PWD/scripts/run-private-network" \
+            go run github.com/onsi/ginkgo/v2/ginkgo -r --timeout=5m
 
-          # Run through the CLI, never `adapter run` -- the adapter without
-          # --features executes zero scenarios and exits 0, which is a green
-          # build that tested nothing.
-          # Require >=40% production Jetbridge statement coverage from brine
+          # The live daemon must match this source and the Linux node. Build
+          # from its owning Go module, not the nested adapter module.
+          export BRINE_LIVE_ARTIFACT_DAEMON_BINARY="$PWD/.build/brine-live-artifact-daemon"
+          (
+            cd ../../../..
+            CGO_ENABLED=0 go build -ldflags='-s -w' -o "$BRINE_LIVE_ARTIFACT_DAEMON_BINARY" ./cmd/artifact-daemon
+          )
+
+          # The CLI owns document selection and budget enforcement.
+          # Require >=50% production Jetbridge statement coverage from brine
           # alone; the script runs the full CLI and rejects empty profiles.
           sh scripts/coverage
 

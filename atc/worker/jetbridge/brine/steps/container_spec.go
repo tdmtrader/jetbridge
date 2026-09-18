@@ -17,28 +17,11 @@ import (
 func ContainerSpecDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		// ClusterReady -> ContainerDraft.
-		brine.DefineMap[ClusterReady, ContainerDraft](
-			"a task container {string} built from image {string}",
-			func(in ClusterReady, p brine.Params, _ *brine.Recorder) (ContainerDraft, error) {
-				handle, ok := p.GetString(0)
-				if !ok {
-					return ContainerDraft{}, fmt.Errorf("expected a container handle parameter")
-				}
-				image, ok := p.GetString(1)
-				if !ok {
-					return ContainerDraft{}, fmt.Errorf("expected an image parameter")
-				}
-				return ContainerDraft{
-					Namespace: in.Namespace,
-					Worker:    in.Worker,
-					Clientset: in.Clientset,
-					Ctx:       in.Ctx,
-					Handle:    handle,
-					ImageURL:  image,
-					Dir:       "/workdir",
-					TeamID:    in.TeamID,
-				}, nil
+		// Reuse draft refinements and mount assertions with the real worker.
+		Transform[WorkerReady, ContainerDraft](
+			"the worker prepares task {string} from image {string}",
+			func(in WorkerReady, a Args) (ContainerDraft, error) {
+				return workerContainerDraft(in, a.String(0), a.String(1), "")
 			},
 		),
 
@@ -60,36 +43,9 @@ func ContainerSpecDefinitions() []brine.StepDefinition {
 		brine.DefineMap[ContainerDraft, PodCreated](
 			"the container runs",
 			func(in ContainerDraft, _ brine.Params, _ *brine.Recorder) (PodCreated, error) {
-				inputs, err := draftInputs(in)
+				spec, err := containerSpecFromDraft(in)
 				if err != nil {
 					return PodCreated{}, err
-				}
-				outputs := runtime.OutputPaths{}
-				for i, path := range in.Outputs {
-					outputs[fmt.Sprintf("output-%d", i)] = path
-				}
-
-				spec := runtime.ContainerSpec{
-					TeamID:            1,
-					Dir:               in.Dir,
-					ImageSpec:         runtime.ImageSpec{ImageURL: in.ImageURL, Privileged: in.Privileged},
-					Env:               in.ContainerEnv,
-					Inputs:            inputs,
-					Caches:            in.Caches,
-					TaskCacheIdentity: in.taskCacheIdentity(),
-					ScratchPaths:      in.Scratch,
-					Sidecars:          in.Sidecars,
-					Limits: runtime.ContainerLimits{
-						CPU:                     in.LimitCPU,
-						Memory:                  in.LimitMemory,
-						CPURequest:              in.RequestCPU,
-						MemoryRequest:           in.RequestMemory,
-						EphemeralStorage:        in.LimitEphemeral,
-						EphemeralStorageRequest: in.RequestEphemeral,
-					},
-				}
-				if len(outputs) > 0 {
-					spec.Outputs = outputs
 				}
 
 				owner := db.NewFixedHandleContainerOwner(in.Handle)
@@ -101,7 +57,7 @@ func ContainerSpecDefinitions() []brine.StepDefinition {
 				// container's pod clears the workspace its last attempt left.
 				if in.RanBefore {
 					if _, _, err := in.Worker.FindOrCreateContainer(
-						in.Ctx, owner, metadata, spec, &noopDelegate{},
+						in.Ctx, owner, metadata, spec, nil,
 					); err != nil {
 						return PodCreated{}, fmt.Errorf("pre-create container %q: %w", in.Handle, err)
 					}
@@ -112,17 +68,22 @@ func ContainerSpecDefinitions() []brine.StepDefinition {
 					owner,
 					metadata,
 					spec,
-					&noopDelegate{},
+					nil,
 				)
 				if err != nil {
 					return PodCreated{}, fmt.Errorf("find or create container %q: %w", in.Handle, err)
 				}
 
-				if _, err := container.Run(in.Ctx,
+				process, err := container.Run(in.Ctx,
 					runtime.ProcessSpec{Path: "/bin/sh", Env: in.ProcessEnv},
 					runtime.ProcessIO{},
-				); err != nil {
+				)
+				if err != nil {
 					return PodCreated{}, fmt.Errorf("run container %q: %w", in.Handle, err)
+				}
+
+				if process == nil {
+					return PodCreated{}, fmt.Errorf("run container %q returned no process", in.Handle)
 				}
 
 				pods, err := in.Clientset.CoreV1().Pods(in.Namespace).List(in.Ctx, metav1.ListOptions{})
@@ -139,6 +100,7 @@ func ContainerSpecDefinitions() []brine.StepDefinition {
 					Ctx:       in.Ctx,
 					Handle:    in.Handle,
 					Pod:       &pod,
+					Process:   process,
 				}, nil
 			},
 		),
@@ -146,6 +108,15 @@ func ContainerSpecDefinitions() []brine.StepDefinition {
 		// Checks over the resulting pod spec. Each says which field it is
 		// about and nothing else; the parameter handling, the comparison and
 		// the message are the same for all three, so they come from assert.go.
+		CheckString[PodCreated]("the pod is named {string}",
+			"the pod's name",
+			func(in PodCreated) (string, error) {
+				if in.Pod == nil {
+					return "", fmt.Errorf("no pod was created")
+				}
+				return in.Pod.Name, nil
+			}),
+
 		CheckString[PodCreated]("the main container is named {string}",
 			"the main container's name",
 			func(in PodCreated) (string, error) {
@@ -222,4 +193,59 @@ func mainContainer(pod *corev1.Pod) (corev1.Container, error) {
 		}
 	}
 	return corev1.Container{}, fmt.Errorf("pod %q has no container named \"main\"", pod.Name)
+}
+
+// containerSpecFromDraft gives every draft-consuming action the same spec.
+// Inputs, cache identity and resource limits must not depend on which action runs.
+func containerSpecFromDraft(in ContainerDraft) (runtime.ContainerSpec, error) {
+	inputs, err := draftInputs(in)
+	if err != nil {
+		return runtime.ContainerSpec{}, err
+	}
+	outputs := runtime.OutputPaths{}
+	for i, path := range in.Outputs {
+		outputs[fmt.Sprintf("output-%d", i)] = path
+	}
+	for name, path := range in.NamedOutputs {
+		if _, exists := outputs[name]; exists {
+			return runtime.ContainerSpec{}, fmt.Errorf("duplicate output name %q", name)
+		}
+		outputs[name] = path
+	}
+
+	spec := runtime.ContainerSpec{
+		TeamID:            in.TeamID,
+		Dir:               in.Dir,
+		ImageSpec:         runtime.ImageSpec{ImageURL: in.ImageURL, Privileged: in.Privileged},
+		Env:               in.ContainerEnv,
+		Inputs:            inputs,
+		Caches:            in.Caches,
+		TaskCacheIdentity: in.taskCacheIdentity(),
+		ScratchPaths:      in.Scratch,
+		Sidecars:          in.Sidecars,
+		Limits: runtime.ContainerLimits{
+			CPU:                     in.LimitCPU,
+			Memory:                  in.LimitMemory,
+			CPURequest:              in.RequestCPU,
+			MemoryRequest:           in.RequestMemory,
+			EphemeralStorage:        in.LimitEphemeral,
+			EphemeralStorageRequest: in.RequestEphemeral,
+		},
+	}
+	if len(outputs) > 0 {
+		spec.Outputs = outputs
+	}
+	return spec, nil
+}
+
+// workerContainerDraft carries the real worker into each container-kind draft.
+func workerContainerDraft(in WorkerReady, handle, image string, kind db.ContainerType) (ContainerDraft, error) {
+	if in.ProducerExecutor == nil {
+		return ContainerDraft{}, fmt.Errorf("worker has no production execution transport")
+	}
+	return ContainerDraft{
+		Namespace: in.Namespace, Worker: in.Worker, Clientset: in.Clientset,
+		Ctx: in.Ctx, TeamID: in.TeamID, Handle: handle, ImageURL: image,
+		Dir: "/workdir", ContainerType: kind, MountExecutor: in.ProducerExecutor,
+	}, nil
 }

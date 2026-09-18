@@ -58,7 +58,7 @@ func TestActionCarriesStateResourcesAndErrorsThroughBrine(t *testing.T) {
 `)
 			var events bytes.Buffer
 			pipeline := brine.NewPipeline(brine.NewStepRegistry(defs), brine.NewEmitter(&events)).WithResources(brine.NewResourceState(resources))
-			result, code, err := pipeline.Run([]*brine.ParsedFeature{feature}, brine.TagFilter{}, nil)
+			result, code, err := pipeline.Run([]*brine.ParsedFeature{feature}, brine.TagFilter{})
 			if err != nil || result.Scenarios != 1 || result.Undefined != 0 || result.Unsatisfied != 0 {
 				t.Fatalf("invalid run: %+v, %v; %s", result, err, events.String())
 			}

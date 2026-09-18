@@ -285,17 +285,9 @@ func (c *Container) Attach(ctx context.Context, processID string, io runtime.Pro
 	// For exec-mode containers (pause pods), in-memory properties are lost
 	// on web restart. Check the pod annotation for a persisted exit status.
 	if c.executor != nil {
-		if statusStr, ok := pod.Annotations[exitStatusAnnotationKey]; ok {
-			status, err := strconv.Atoi(statusStr)
-			if err == nil {
-				return &exitedProcess{id: processID, result: runtime.ProcessResult{ExitStatus: status}}, nil
-			}
-		}
-		// Exec hasn't completed yet (no annotation). Return an error so
-		// the engine falls through to Run(), which detects the existing
-		// pod and re-execs the command.
-		spanErr = fmt.Errorf("attach: exec-mode pod %q has no completion status", c.podName)
-		return nil, spanErr
+		var process runtime.Process
+		process, spanErr = recoverExecProcess(c.podName, processID, pod)
+		return process, spanErr
 	}
 
 	return newProcess(processID, c.podName, c.clientset, c.config, c, io), nil

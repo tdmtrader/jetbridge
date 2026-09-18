@@ -12,8 +12,8 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes/fake"
 )
 
 // RegistrarDefinitions migrates registrar_test.go — how the Kubernetes worker
@@ -26,7 +26,7 @@ func RegistrarDefinitions() []brine.StepDefinition {
 
 		brine.DefineMapUsing[brine.Empty, RegistrarReady](
 			"a Kubernetes worker registrar for namespace {string}",
-			[]string{"jetbridge-db"},
+			[]string{"jetbridge-db", "real-cluster"},
 			func(_ brine.Empty, p brine.Params, _ *brine.Recorder, res brine.Resources) (RegistrarReady, error) {
 				ns, ok := p.GetString(0)
 				if !ok {
@@ -36,7 +36,18 @@ func RegistrarDefinitions() []brine.StepDefinition {
 				if !ok {
 					return RegistrarReady{}, fmt.Errorf("jetbridge-db resource is %T", res.Get("jetbridge-db"))
 				}
-				clientset := fake.NewSimpleClientset()
+				cluster, ok := res.Get("real-cluster").(*realCluster)
+				if !ok {
+					return RegistrarReady{}, fmt.Errorf("real-cluster resource is %T", res.Get("real-cluster"))
+				}
+				clientset := cluster.Clientset
+				// The suite owns this API server. Keep the requested namespace
+				// literal so the worker-name assertion still tests derivation.
+				_, err := clientset.CoreV1().Namespaces().Create(context.Background(),
+					&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}, metav1.CreateOptions{})
+				if err != nil && !apierrors.IsAlreadyExists(err) {
+					return RegistrarReady{}, fmt.Errorf("create registrar namespace: %w", err)
+				}
 				cfg := jetbridge.NewConfig(ns, "")
 				return RegistrarReady{
 					Namespace: ns,
@@ -67,30 +78,18 @@ func RegistrarDefinitions() []brine.StepDefinition {
 			}),
 
 		brine.DefineMap[RegistrarReady, RegistrarReady](
-			"{int} pods belonging to this worker are running",
-			func(in RegistrarReady, p brine.Params, _ *brine.Recorder) (RegistrarReady, error) {
+			"{int} pods belonging to {string} exist",
+			func(in RegistrarReady, p brine.Params, rec *brine.Recorder) (RegistrarReady, error) {
 				n, ok := p.GetInt(0)
 				if !ok {
 					return RegistrarReady{}, fmt.Errorf("expected a count parameter")
 				}
-				for i := 0; i < n; i++ {
-					if err := in.createPod(fmt.Sprintf("worker-pod-%d", i), true); err != nil {
-						return RegistrarReady{}, err
-					}
-				}
-				return in, nil
-			},
-		),
-
-		brine.DefineMap[RegistrarReady, RegistrarReady](
-			"{int} pods belonging to nobody are running",
-			func(in RegistrarReady, p brine.Params, _ *brine.Recorder) (RegistrarReady, error) {
-				n, ok := p.GetInt(0)
-				if !ok {
-					return RegistrarReady{}, fmt.Errorf("expected a count parameter")
+				owner, ok := p.GetString(1)
+				if !ok || (owner != "this worker" && owner != "nobody") {
+					return RegistrarReady{}, fmt.Errorf("expected pod owner this worker or nobody, got %q", owner)
 				}
 				for i := 0; i < n; i++ {
-					if err := in.createPod(fmt.Sprintf("stranger-pod-%d", i), false); err != nil {
+					if err := in.createPod(owner == "this worker", rec); err != nil {
 						return RegistrarReady{}, err
 					}
 				}
@@ -291,18 +290,36 @@ func RegistrarDefinitions() []brine.StepDefinition {
 	}
 }
 
-func (r RegistrarReady) createPod(name string, mine bool) error {
+func (r RegistrarReady) createPod(mine bool, rec *brine.Recorder) error {
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.Namespace},
-		Status:     corev1.PodStatus{Phase: corev1.PodRunning},
+		ObjectMeta: metav1.ObjectMeta{GenerateName: "registrar-", Namespace: r.Namespace},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{
+			{Name: "main", Image: "busybox"},
+		}},
 	}
 	if mine {
 		pod.ObjectMeta.Labels = map[string]string{"concourse.ci/worker": r.Registrar.WorkerName()}
 	}
-	_, err := r.Clientset.CoreV1().Pods(r.Namespace).Create(r.Ctx, pod, metav1.CreateOptions{})
+	pods := r.Clientset.CoreV1().Pods(r.Namespace)
+	created, err := pods.Create(r.Ctx, pod, metav1.CreateOptions{})
 	if err != nil {
-		return fmt.Errorf("create pod %q: %w", name, err)
+		return fmt.Errorf("create registrar pod: %w", err)
 	}
+	// No fabricated Running status: the registrar counts persisted objects,
+	// not executions, and envtest deliberately has no kubelet. Delete only
+	// the pod this scenario created, including on cancellation.
+	rec.RegisterDisposer(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		zero := int64(0)
+		err := pods.Delete(ctx, created.Name, metav1.DeleteOptions{
+			GracePeriodSeconds: &zero,
+			Preconditions:      &metav1.Preconditions{UID: &created.UID},
+		})
+		if err != nil && !apierrors.IsNotFound(err) {
+			panic(fmt.Sprintf("delete registrar pod %s: %v", created.Name, err))
+		}
+	})
 	return nil
 }
 

@@ -26,7 +26,7 @@ Feature: The daemon's own fallback to the node that has the artifact
       --kubeconfig, --node-name and --namespace, which is what wires its
       PeerResolver at all.
     - A real kube-apiserver (the suite's envtest control plane, already
-      running for pod-watch-real.feature — this feature adds nothing to its
+      running for pod-watch.feature — this feature adds nothing to its
       cost), a real Node object, and a real EndpointSlice, read live on every
       probe. The API server's validation is part of the test: it refuses
       loopback addresses in an EndpointSlice, which no fake clientset ever

@@ -8,52 +8,26 @@ package steps
 //   2. storage_daemonset_durable_test.go — the durable resource-cache tier
 //   3. artifact_locator_test.go       — the in-memory artifact index
 //
-// Every double below is a REAL implementation with a named behavioral
-// difference, per coverage_matrix.md Addendum 2:
-//
-//   - localExecutor is a real PodExecutor that RUNS the command, in this
-//     process's shell instead of in a pod. It records nothing. It replaces the
-//     `expectSupervisedExec(fakeExecutor.execCalls[0].command, ...)` family,
-//     which asserted the shape of a string nothing ever executed.
-//
-//   - closingDaemon is a real http.Server speaking the artifact daemon's wire
-//     contract, holding its artifacts in two maps — a node-local one and a
-//     "durable store" — instead of on disk and in a bucket. It records
-//     nothing: there is no restores counter, no gotDurableKey. The suite it
-//     replaces asserted `d.restores.Load() == 0` and `got.DurableKey == key`;
-//     what a consumer actually experiences is whether the bytes arrive, and
-//     what the OPERATOR experiences is the four warm counters. Both of those
-//     are production output, not a double's memory.
+// Cache scenarios use production daemons and a real filesystem durable store.
+// Whole-step execution and typed eviction are covered by the live features.
 //
 // Prefix note: every exported identifier here is `Closing*` because other
 // migrations are landing in this package concurrently.
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"sync"
 	"time"
 
-	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/brine-dev/brine-go/pkg/brine"
-	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
-	corev1 "k8s.io/api/core/v1"
-	discoveryv1 "k8s.io/api/discovery/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	apiruntime "k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/kubernetes/fake"
-	k8stesting "k8s.io/client-go/testing"
 )
 
 // ClosingDefinitions is the single entry point this file exports.
@@ -68,8 +42,100 @@ func ClosingDefinitions() []brine.StepDefinition {
 // Family 1 — a whole step, end to end (integration_test.go)
 // ===========================================================================
 
+// Capture business failures for the scenario's exit-status assertion.
+func attachTaskResult(in TaskOutcome, container runtime.Container) TaskOutcome {
+	out := in
+	out.Container = container
+	out.ExitStatus, out.Err, out.Message = -1, nil, ""
+	out.AttachErr, out.AttachMessage = nil, ""
+	process, err := container.Attach(in.Cluster.Ctx, in.Handle, runtime.ProcessIO{})
+	if err != nil {
+		out.AttachErr, out.AttachMessage = err, err.Error()
+		out.Err, out.Message = err, err.Error()
+		return out
+	}
+	result, err := process.Wait(in.Cluster.Ctx)
+	if err != nil {
+		out.Err, out.Message = err, err.Error()
+		return out
+	}
+	out.ExitStatus = result.ExitStatus
+	return out
+}
+
+func attachFinishedTask(in TaskOutcome, container runtime.Container) (TaskOutcome, error) {
+	out := attachTaskResult(in, container)
+	if out.Err != nil {
+		return out, nil
+	}
+	pod, err := in.Cluster.Clientset.CoreV1().Pods(in.Cluster.Namespace).
+		Get(in.Cluster.Ctx, in.podName(), metav1.GetOptions{})
+	if err != nil {
+		return TaskOutcome{}, fmt.Errorf("read recovered task pod: %w", err)
+	}
+	fmt.Printf("live task reattach %s/%s UID %s exited %d\n",
+		in.Cluster.Namespace, pod.Name, pod.UID, out.ExitStatus)
+	return out, nil
+}
+
+// recoverTaskWithoutPod keeps the original runtime object, not a completion
+// value supplied by the fixture. The command's real Wait populated its memory.
+func recoverTaskWithoutPod(in TaskOutcome) (TaskOutcome, error) {
+	if in.Err != nil || in.completedContainer == nil || in.completedPodUID == "" {
+		return TaskOutcome{}, fmt.Errorf("memory recovery requires a completed real task")
+	}
+	ctx, cancel := context.WithTimeout(in.Cluster.Ctx, 20*time.Second)
+	defer cancel()
+	pods := in.Cluster.Clientset.CoreV1().Pods(in.Cluster.Namespace)
+	pod, err := pods.Get(ctx, in.podName(), metav1.GetOptions{})
+	if err != nil {
+		return TaskOutcome{}, err
+	}
+	if pod.UID != in.completedPodUID {
+		return TaskOutcome{}, fmt.Errorf("refuse to delete a replacement task pod")
+	}
+	grace := int64(1)
+	if err := pods.Delete(ctx, pod.Name, metav1.DeleteOptions{
+		GracePeriodSeconds: &grace, Preconditions: &metav1.Preconditions{UID: &pod.UID},
+	}); err != nil {
+		return TaskOutcome{}, err
+	}
+	for {
+		current, err := pods.Get(ctx, pod.Name, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			break
+		}
+		if err != nil {
+			return TaskOutcome{}, err
+		}
+		if current.UID != pod.UID {
+			return TaskOutcome{}, fmt.Errorf("task pod was replaced during deletion")
+		}
+		select {
+		case <-ctx.Done():
+			return TaskOutcome{}, fmt.Errorf("task pod must be absent before memory recovery: %w", ctx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	fmt.Printf("actual completed task pod %s/%s UID %s is absent before original-container recovery\n", in.Cluster.Namespace, pod.Name, pod.UID)
+	out := attachTaskResult(in, in.completedContainer)
+	// A successful cached Attach must not create a replacement pod either.
+	if _, err := pods.Get(ctx, pod.Name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		return TaskOutcome{}, fmt.Errorf("task pod must remain absent after memory recovery: %v", err)
+	}
+	fmt.Printf("live task memory-only recovery %s/%s UID %s exited %d error=%v\n", in.Cluster.Namespace, pod.Name, pod.UID, out.ExitStatus, out.Err)
+	return out, nil
+}
+
 func closingStepDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
+
+		brine.DefineMap[TaskOutcome, TaskOutcome](
+			"the original web recovers the finished task after its pod is removed",
+			func(in TaskOutcome, _ brine.Params, _ *brine.Recorder) (TaskOutcome, error) {
+				return recoverTaskWithoutPod(in)
+			},
+		),
 
 		// The reattach case: web 1 finished, but died before the exit status
 		// was recorded, so the pod survives with no completion annotation.
@@ -77,16 +143,16 @@ func closingStepDefinitions() []brine.StepDefinition {
 			"the web dies before the exit status is recorded and a new web takes over",
 			func(in TaskOutcome, _ brine.Params, _ *brine.Recorder) (TaskOutcome, error) {
 				pods := in.Cluster.Clientset.CoreV1().Pods(in.Cluster.Namespace)
-				pod, err := pods.Get(in.Cluster.Ctx, in.Handle, metav1.GetOptions{})
+				pod, err := pods.Get(in.Cluster.Ctx, in.podName(), metav1.GetOptions{})
 				if err != nil {
-					return TaskOutcome{}, fmt.Errorf("get pod %q: %w", in.Handle, err)
+					return TaskOutcome{}, fmt.Errorf("get pod %q: %w", in.podName(), err)
 				}
 				pod.Annotations = nil
 				if _, err := pods.Update(in.Cluster.Ctx, pod, metav1.UpdateOptions{}); err != nil {
 					return TaskOutcome{}, fmt.Errorf("strip completion annotation: %w", err)
 				}
 
-				container, err := findTaskContainer(in.Cluster, in.Handle)
+				container, _, err := findTaskContainer(in.Cluster, in.Handle)
 				if err != nil {
 					return TaskOutcome{}, err
 				}
@@ -102,43 +168,27 @@ func closingStepDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// The other side of that story, and the one that pins the WRITE.
-		//
-		// Above, the annotation is stripped to reach the no-record branch. Here
-		// it is left exactly as the finished step wrote it, and a new web
-		// attaches. Until this existed, only the READ was covered: the scenario
-		// for it hand-builds a pod and spells "concourse.ci/exit-status" itself,
-		// so production's annotateExitStatus could write the wrong number and
-		// nothing noticed. Measured — writing exitCode+1 left all 328 scenarios
-		// green.
+		brine.DefineMap[TaskOutcome, TaskOutcome](
+			"the current web reattaches to the finished task",
+			func(in TaskOutcome, _ brine.Params, _ *brine.Recorder) (TaskOutcome, error) {
+				return attachFinishedTask(in, in.Container)
+			},
+		),
+
+		// Read the status production wrote to the real pod. A fresh runtime
+		// container cannot use the previous object's in-memory completion.
 		brine.DefineMap[TaskOutcome, TaskOutcome](
 			"the web dies after the step finished and a new web takes over",
 			func(in TaskOutcome, _ brine.Params, _ *brine.Recorder) (TaskOutcome, error) {
 				// A new container object, which is what a restarted web has:
 				// the exit status it held in memory is gone, so the only
 				// surviving record is the one the step left on the pod.
-				container, err := findTaskContainer(in.Cluster, in.Handle)
+				container, _, err := findTaskContainer(in.Cluster, in.Handle)
 				if err != nil {
 					return TaskOutcome{}, err
 				}
 
-				out := in
-				out.Container = container
-				out.ExitStatus, out.Err, out.Message = -1, nil, ""
-
-				process, attachErr := container.Attach(in.Cluster.Ctx, in.Handle, runtime.ProcessIO{})
-				if attachErr != nil {
-					out.AttachErr, out.AttachMessage = attachErr, attachErr.Error()
-					out.Err, out.Message = attachErr, attachErr.Error()
-					return out, nil
-				}
-				result, waitErr := process.Wait(in.Cluster.Ctx)
-				if waitErr != nil {
-					out.Err, out.Message = waitErr, waitErr.Error()
-					return out, nil
-				}
-				out.ExitStatus = result.ExitStatus
-				return out, nil
+				return attachFinishedTask(in, container)
 			},
 		),
 
@@ -155,36 +205,6 @@ func closingStepDefinitions() []brine.StepDefinition {
 				// story, and the live state is replaced wholesale.
 				out.AttachErr, out.AttachMessage = in.AttachErr, in.AttachMessage
 				return out, nil
-			},
-		),
-
-		// The node takes the pod away before the command can run, and keeps
-		// doing it. The ginkgo case asserted this is a TYPED, retryable
-		// interruption rather than a plain failure — a different build
-		// classification — and no feature file says so yet.
-		//
-		// It has to keep doing it: a single eviction before the command runs
-		// is now absorbed by the one pause-pod replacement the runtime is
-		// allowed, so a node that evicts once no longer reaches the build at
-		// all. The classification is what the scenario is about, and it is
-		// the SECOND eviction that carries it.
-		Transform[TaskCluster, TaskOutcome](
-			"the node keeps evicting the step {string} before its command runs",
-			func(in TaskCluster, a Args) (TaskOutcome, error) {
-				evict := func(pod *corev1.Pod) {
-					pod.Status.Phase = corev1.PodFailed
-					pod.Status.Reason = "Evicted"
-					pod.Status.Message = "The node was low on resource: memory."
-				}
-				// Every pod this node is given, including the replacement.
-				in.Clientset.PrependReactor("create", "pods",
-					func(action k8stesting.Action) (bool, apiruntime.Object, error) {
-						if pod, ok := action.(k8stesting.CreateActionImpl).GetObject().(*corev1.Pod); ok {
-							evict(pod)
-						}
-						return false, nil, nil
-					})
-				return runTask(in, a.String(0), "echo unreachable", nil, evict)
 			},
 		),
 
@@ -243,17 +263,6 @@ func closingStepDefinitions() []brine.StepDefinition {
 				return nil
 			}),
 
-		// Diagnostics are inspected on a failed Wait, separately from successful
-		// command output. The ordinary task log check continues to reject errors.
-		CheckContains[TaskOutcome]("the interrupted task's diagnostic log contains {string}",
-			"the task diagnostics",
-			func(in TaskOutcome) (string, error) {
-				if in.Err == nil {
-					return "", fmt.Errorf("expected task diagnostics after an interrupted Wait, but it succeeded")
-				}
-				return in.Log, nil
-			}),
-
 		// The refusal has to have happened at all before its wording means
 		// anything, so "it succeeded" is reported from the getter.
 		CheckContains[TaskOutcome]("attaching was refused saying {string}",
@@ -274,9 +283,9 @@ func closingStepDefinitions() []brine.StepDefinition {
 		// Keeps its own body: it asserts a TYPE as well as a reason, and the
 		// message on the wrong type explains the classification rule — a plain
 		// error fails the build where an InterruptionError retries it.
-		Assert[TaskOutcome](
+		Assert[StepOutcome](
 			"the step was interrupted rather than failed, because it was {string}",
-			func(in TaskOutcome, args Args) error {
+			func(in StepOutcome, args Args) error {
 				want := args.String(0)
 
 				if in.Err == nil {
@@ -310,12 +319,14 @@ func closingStepDefinitions() []brine.StepDefinition {
 // Nothing is wired until a When step: readiness has to be decided before the
 // EndpointSlice is published.
 type ClosingCachePlan struct {
-	CacheCtx    context.Context
-	CacheDaemon *closingDaemon
-	CacheServer *httptest.Server
-	CacheHost   string
-	CachePort   int
-	CacheReady  bool
+	CacheCtx       context.Context
+	CacheRuntime   *closingCacheRuntime
+	CacheLocal     map[string]string
+	CacheDurable   map[string]string
+	CachePeer      map[string]string
+	CacheReady     bool
+	CacheCapable   bool
+	CacheReachable bool
 }
 
 // ClosingCacheLookup is what a consumer got — the bytes, or nothing — and what
@@ -337,196 +348,52 @@ type ClosingCacheLookup struct {
 	CacheSuppressed float64
 }
 
-// closingDaemon is a real artifact daemon: an http.Handler over two maps.
-//
-// `node` is what this node has on disk; `store` is the durable bucket behind
-// the whole DaemonSet; `mirror` is what a peer holds under steps/. Its named
-// behavioral difference from the deployed daemon is that all three are maps in
-// this process. It records nothing.
-type closingDaemon struct {
-	mu     sync.Mutex
-	node   map[string]string
-	store  map[string]string
-	mirror map[string]string
-
-	durableCapable bool
-	storeReachable bool
-}
-
-func newClosingDaemon() *closingDaemon {
-	return &closingDaemon{
-		node:           map[string]string{},
-		store:          map[string]string{},
-		mirror:         map[string]string{},
-		durableCapable: true,
-		storeReachable: true,
-	}
-}
-
-func (d *closingDaemon) handler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		d.mu.Lock()
-		defer d.mu.Unlock()
-
-		// Capability rides every response, at any status — that is how an ATC
-		// learns the cluster can warm at all without probing a route that may
-		// not exist.
-		if d.durableCapable {
-			w.Header().Set(jetbridge.DurableTierHeader, "enabled")
-		}
-
-		switch {
-		case strings.HasPrefix(r.URL.Path, "/resource-caches/"):
-			key := strings.TrimPrefix(r.URL.Path, "/resource-caches/")
-			if _, held := d.node[key]; held {
-				w.WriteHeader(http.StatusOK)
-				return
-			}
-			w.WriteHeader(http.StatusNotFound)
-
-		case r.Method == http.MethodPost && r.URL.Path == "/durable/restore":
-			var body struct {
-				Key        string `json:"key"`
-				DurableKey string `json:"durable_key"`
-			}
-			_ = json.NewDecoder(r.Body).Decode(&body)
-
-			if !d.storeReachable {
-				w.WriteHeader(http.StatusNotFound)
-				return
-			}
-			content, inStore := d.store[body.DurableKey]
-			if !inStore {
-				w.WriteHeader(http.StatusNotFound)
-				return
-			}
-			// A restore makes its own answer true: the object lands on this
-			// node under the local alias the ATC asked for.
-			d.node[body.Key] = content
-			w.Header().Set("X-Artifact-Tier", "durable")
-			w.WriteHeader(http.StatusCreated)
-
-		case r.Method == http.MethodPost && r.URL.Path == "/register":
-			var body struct {
-				Key        string `json:"key"`
-				LocalPath  string `json:"local_path"`
-				DurableKey string `json:"durable_key"`
-			}
-			_ = json.NewDecoder(r.Body).Decode(&body)
-
-			// The two names are different namespaces. Only a content key gets
-			// the object filed in permanent storage; a bare local alias is a
-			// Postgres row id, and filing that is the defect the content key
-			// exists to prevent.
-			if body.DurableKey != "" {
-				d.store[body.DurableKey] = d.node[body.Key]
-			}
-			w.WriteHeader(http.StatusCreated)
-
-		case strings.HasPrefix(r.URL.Path, "/artifacts/steps/"):
-			key := strings.TrimPrefix(r.URL.Path, "/artifacts/steps/")
-			content, held := d.mirror[key]
-			if !held {
-				w.WriteHeader(http.StatusNotFound)
-				return
-			}
-			closingServeTar(w, r, content)
-
-		case strings.HasPrefix(r.URL.Path, "/artifacts/"):
-			key := strings.TrimPrefix(r.URL.Path, "/artifacts/")
-			content, held := d.node[key]
-			if !held {
-				w.WriteHeader(http.StatusNotFound)
-				return
-			}
-			closingServeTar(w, r, content)
-
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	})
-}
-
-// closingServeTar answers with the one-member archive a daemon serves.
-func closingServeTar(w http.ResponseWriter, r *http.Request, content string) {
-	body, err := plainTarOfOneFile("cached.txt", content)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/x-tar")
-	w.WriteHeader(http.StatusOK)
-	if r.Method != http.MethodHead {
-		_, _ = w.Write(body)
-	}
-}
-
 func closingCacheDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		brine.DefineMap[brine.Empty, ClosingCachePlan](
+		brine.DefineMapUsing[brine.Empty, ClosingCachePlan](
 			"an artifact daemon with a durable store behind it",
-			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder) (ClosingCachePlan, error) {
-				daemon := newClosingDaemon()
-				server := httptest.NewServer(daemon.handler())
-
-				host, port, err := hostAndPort(server)
-				if err != nil {
-					server.Close()
-					return ClosingCachePlan{}, err
+			[]string{"real-cluster"},
+			func(_ brine.Empty, _ brine.Params, rec *brine.Recorder, res brine.Resources) (ClosingCachePlan, error) {
+				api, ok := res.Get("real-cluster").(*realCluster)
+				if !ok {
+					return ClosingCachePlan{}, fmt.Errorf("real-cluster resource is %T", res.Get("real-cluster"))
 				}
-
-				return ClosingCachePlan{
-					CacheCtx:    context.Background(),
-					CacheDaemon: daemon,
-					CacheServer: server,
-					CacheHost:   host,
-					CachePort:   port,
-					CacheReady:  true,
-				}, nil
-			},
-		),
+				return ClosingCachePlan{CacheCtx: context.Background(), CacheRuntime: &closingCacheRuntime{api: api, rec: rec},
+					CacheLocal: map[string]string{}, CacheDurable: map[string]string{}, CachePeer: map[string]string{},
+					CacheReady: true, CacheCapable: true, CacheReachable: true}, nil
+			}),
 
 		Refine[ClosingCachePlan]("the node already holds the resource cache {string} containing {string}",
 			func(in ClosingCachePlan, a Args) ClosingCachePlan {
 				key, content := a.String(0), a.String(1)
-				in.CacheDaemon.mu.Lock()
-				in.CacheDaemon.node[key] = content
-				in.CacheDaemon.mu.Unlock()
+				in.CacheLocal[key] = content
 				return in
 			}),
 
 		Refine[ClosingCachePlan]("the durable store holds {string} containing {string}",
 			func(in ClosingCachePlan, a Args) ClosingCachePlan {
 				key, content := a.String(0), a.String(1)
-				in.CacheDaemon.mu.Lock()
-				in.CacheDaemon.store[key] = content
-				in.CacheDaemon.mu.Unlock()
+				in.CacheDurable[key] = content
 				return in
 			}),
 
 		Refine[ClosingCachePlan]("a peer still holds a mirrored copy of {string} containing {string}",
 			func(in ClosingCachePlan, a Args) ClosingCachePlan {
 				key, content := a.String(0), a.String(1)
-				in.CacheDaemon.mu.Lock()
-				in.CacheDaemon.mirror[key] = content
-				in.CacheDaemon.mu.Unlock()
+				in.CachePeer[key] = content
 				return in
 			}),
 
 		Refine[ClosingCachePlan]("the daemon predates the durable tier",
 			func(in ClosingCachePlan, _ Args) ClosingCachePlan {
-				in.CacheDaemon.mu.Lock()
-				in.CacheDaemon.durableCapable = false
-				in.CacheDaemon.mu.Unlock()
+				in.CacheCapable = false
 				return in
 			}),
 
 		Refine[ClosingCachePlan]("the durable store cannot be reached",
 			func(in ClosingCachePlan, _ Args) ClosingCachePlan {
-				in.CacheDaemon.mu.Lock()
-				in.CacheDaemon.storeReachable = false
-				in.CacheDaemon.mu.Unlock()
+				in.CacheReachable = false
 				return in
 			}),
 
@@ -552,19 +419,12 @@ func closingCacheDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		Refine[ClosingCachePlan]("the node's own copy of {string} is reclaimed",
-			func(in ClosingCachePlan, a Args) ClosingCachePlan {
-				key := a.String(0)
-				in.CacheDaemon.mu.Lock()
-				delete(in.CacheDaemon.node, key)
-				in.CacheDaemon.mu.Unlock()
-				return in
-			}),
+		Transform[ClosingCachePlan, ClosingCachePlan]("the node's own copy of {string} is reclaimed",
+			func(in ClosingCachePlan, a Args) (ClosingCachePlan, error) { return in, in.reclaimCache(a.String(0)) }),
 
 		// ------------------------------------------------------------------
-		// The consumer's action. Every one of these closes the daemon: the
-		// resource plane cannot own an httptest server a step created, and
-		// nothing after a When needs it alive.
+		// The consumer's action. Recorder disposal owns all real processes,
+		// including failures before the final lookup.
 		// ------------------------------------------------------------------
 
 		Transform[ClosingCachePlan, ClosingCacheLookup](
@@ -688,64 +548,14 @@ func closingCacheDefinitions() []brine.StepDefinition {
 	}
 }
 
-// closingConfig is the ATC-side config. The warm timeout is deliberately
-// short: a scenario that somehow wedged on an unanswered restore must fail
-// fast rather than sit on the 90s default.
-func (p ClosingCachePlan) closingConfig() jetbridge.Config {
-	return jetbridge.Config{
-		Namespace:                 "cicd",
-		ArtifactDaemonService:     "artifact-daemon",
-		ArtifactDaemonPort:        p.CachePort,
-		ArtifactDaemonHostPath:    "/artifact-store",
-		ArtifactDaemonWarmTimeout: 5 * time.Second,
-	}
-}
-
-// closingCluster publishes the daemon in an EndpointSlice the way the
-// DaemonSet's Service does — including the readiness condition the API
-// reports, which is the whole subject of two scenarios.
-func (p ClosingCachePlan) closingCluster() *fake.Clientset {
-	ready := p.CacheReady
-	return fake.NewSimpleClientset(&discoveryv1.EndpointSlice{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "artifact-daemon-brine",
-			Namespace: "cicd",
-			Labels:    map[string]string{discoveryv1.LabelServiceName: "artifact-daemon"},
-		},
-		Endpoints: []discoveryv1.Endpoint{{
-			Addresses:  []string{p.CacheHost},
-			NodeName:   closingPtr("node-a"),
-			Conditions: discoveryv1.EndpointConditions{Ready: &ready},
-		}},
-	})
-}
-
-func (p ClosingCachePlan) closingClient(cs *fake.Clientset) *jetbridge.DaemonClient {
-	return jetbridge.NewDaemonClient(
-		lagertest.NewTestLogger("brine-closing"),
-		cs, "cicd", "artifact-daemon", p.CachePort, nil,
-	)
-}
-
-func closingPtr[T any](v T) *T { return &v }
-
-func closingRegister(p ClosingCachePlan, key, durableKey string) error {
-	cs := p.closingCluster()
-	client := p.closingClient(cs)
-	if err := client.RegisterAlias(p.CacheCtx, key, "/artifact-store/steps/"+key, durableKey); err != nil {
-		return fmt.Errorf("register alias %q: %w", key, err)
-	}
-	return nil
-}
-
 // closingLookup runs the consumer's action N times and reads the artifact the
 // last lookup handed back.
 func closingLookup(p ClosingCachePlan, key, durableKey string, times int, sweep bool) (ClosingCacheLookup, error) {
-	defer p.CacheServer.Close()
-
-	cs := p.closingCluster()
+	if err := p.ensureCache(); err != nil {
+		return ClosingCacheLookup{}, err
+	}
 	backend := jetbridge.NewDaemonSetBackend(p.closingConfig(), jetbridge.NewArtifactLocator(), nil)
-	backend.SetDaemonClient(p.closingClient(cs))
+	backend.SetDaemonClient(p.CacheRuntime.client)
 
 	// Drain whatever earlier scenarios left on the process-wide counters, so
 	// what follows is this scenario's own.
@@ -768,9 +578,12 @@ func closingLookup(p ClosingCachePlan, key, durableKey string, times int, sweep 
 	}
 
 	if sweep {
-		p.CacheDaemon.mu.Lock()
-		delete(p.CacheDaemon.node, key)
-		p.CacheDaemon.mu.Unlock()
+		if err := p.reclaimCache(key); err != nil {
+			return out, err
+		}
+		if err := p.revealCachePeer(); err != nil {
+			return out, err
+		}
 	}
 
 	stream, err := vol.StreamOut(p.CacheCtx, ".", nil)
@@ -981,119 +794,4 @@ func closingLocatorDefinitions() []brine.StepDefinition {
 				return nil
 			}),
 	}
-}
-
-// Cancellation keeps resource pods available for hijack, but must delete a
-// supervised task's pod: its background command survives loss of the stream.
-type CancelledExecOutcome struct {
-	Cluster   Cluster
-	Workspace TaskWorkspace
-	Kind      string
-	Handle    string
-	PID       string
-	Err       error
-}
-
-func CancelledExecDefinitions() []brine.StepDefinition {
-	return []brine.StepDefinition{
-		TransformUsing[brine.Empty, CancelledExecOutcome](
-			"an exec-mode {string} step {string} is cancelled {string}",
-			[]string{"jetbridge-db", "task-workspace"},
-			func(_ brine.Empty, a Args, res brine.Resources) (CancelledExecOutcome, error) {
-				workspace, ok := res.Get("task-workspace").(TaskWorkspace)
-				if !ok {
-					return CancelledExecOutcome{}, fmt.Errorf("missing task workspace")
-				}
-				cluster, err := NewCluster(res)
-				if err != nil {
-					return CancelledExecOutcome{}, err
-				}
-				cluster.Worker.SetExecutor(localExecutor{client: cluster.Clientset, supervisorRoot: workspace.Dir})
-				return cancelExec(cluster, workspace, a.String(0), a.String(1), a.String(2))
-			}),
-		CheckThat[CancelledExecOutcome]("the cancelled command stops and reports cancellation",
-			func(in CancelledExecOutcome) error {
-				if !errors.Is(in.Err, context.Canceled) {
-					return fmt.Errorf("expected context cancellation, got %v", in.Err)
-				}
-				if in.PID != "" {
-					if err := processStopped(in.PID); err != nil {
-						return err
-					}
-					if in.Kind == "task" {
-						return in.Workspace.requireSupervisorState()
-					}
-				}
-				return nil
-			}),
-		CheckString[CancelledExecOutcome]("the cancelled step's pod is {string}",
-			"the cancelled step's pod",
-			func(in CancelledExecOutcome) (string, error) {
-				_, err := in.Cluster.Clientset.CoreV1().Pods(in.Cluster.Namespace).Get(in.Cluster.Ctx, in.Handle, metav1.GetOptions{})
-				if apierrors.IsNotFound(err) {
-					return "removed", nil
-				}
-				if err != nil {
-					return "", err
-				}
-				return "retained", nil
-			}),
-	}
-}
-
-func cancelExec(cluster Cluster, workspace TaskWorkspace, kind, handle, when string) (CancelledExecOutcome, error) {
-	out := CancelledExecOutcome{Cluster: cluster, Workspace: workspace, Kind: kind, Handle: handle}
-	if kind != "task" && kind != "get" || when != "before-start" && when != "running" {
-		return out, fmt.Errorf("unknown cancellation case: %q %q", kind, when)
-	}
-	ctx, cancel := context.WithTimeout(cluster.Ctx, 10*time.Second)
-	defer cancel()
-	container, _, err := cluster.Worker.FindOrCreateContainer(ctx,
-		db.NewFixedHandleContainerOwner(handle), db.ContainerMetadata{Type: db.ContainerType(kind)},
-		runtime.ContainerSpec{TeamID: 1, Type: db.ContainerType(kind),
-			ImageSpec: runtime.ImageSpec{ImageURL: "busybox"}}, &noopDelegate{})
-	if err != nil {
-		return out, err
-	}
-	reader, writer := io.Pipe()
-	defer reader.Close()
-	defer writer.Close()
-	var stdin io.Reader
-	if kind == "get" {
-		stdin = strings.NewReader("{}")
-	}
-	// Nil task stdin selects the actual supervisor. The workspace argument
-	// makes its command hash unique across runs without changing the script.
-	process, err := container.Run(ctx, runtime.ProcessSpec{
-		Path: "sh", Args: []string{"-c", "sleep 60 & echo $!; wait", workspace.Dir},
-	}, runtime.ProcessIO{Stdin: stdin, Stdout: writer, Stderr: io.Discard})
-	if err != nil {
-		return out, err
-	}
-	if when == "before-start" {
-		cancel()
-		_, out.Err = process.Wait(ctx)
-		return out, nil
-	}
-	if err := markPodRunning(ctx, cluster.Clientset, cluster.Namespace, handle); err != nil {
-		return out, err
-	}
-	done := make(chan error, 1)
-	go func() {
-		_, err := process.Wait(ctx)
-		_ = writer.CloseWithError(err)
-		done <- err
-	}()
-	pid, err := bufio.NewReader(reader).ReadString('\n')
-	if err != nil {
-		return out, fmt.Errorf("wait for running child: %w", err)
-	}
-	out.PID = strings.TrimSpace(pid)
-	cancel()
-	select {
-	case out.Err = <-done:
-	case <-time.After(3 * time.Second):
-		return out, fmt.Errorf("cancelled command did not finish")
-	}
-	return out, nil
 }

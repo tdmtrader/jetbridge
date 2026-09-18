@@ -15,7 +15,6 @@ import (
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes/fake"
 )
 
 // ReaperDefinitions migrates reaper_test.go — garbage collection of pods and
@@ -31,17 +30,29 @@ func ReaperDefinitions() []brine.StepDefinition {
 
 		brine.DefineMapUsing[brine.Empty, ReaperReady](
 			"a Kubernetes worker whose reaper is running",
-			[]string{"jetbridge-db"},
+			[]string{"jetbridge-db", "real-cluster"},
 			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder, res brine.Resources) (ReaperReady, error) {
 				database, ok := res.Get("jetbridge-db").(JetbridgeDB)
 				if !ok {
 					return ReaperReady{}, fmt.Errorf("jetbridge-db resource is %T", res.Get("jetbridge-db"))
 				}
 				ctx := context.Background()
-				clientset := fake.NewSimpleClientset()
-				cfg := jetbridge.NewConfig("test-namespace", "")
+				cluster, ok := res.Get("real-cluster").(*realCluster)
+				if !ok {
+					return ReaperReady{}, fmt.Errorf("real-cluster resource is %T", res.Get("real-cluster"))
+				}
+				clientset := cluster.Clientset
+				// Each scenario gets its own namespace in the suite-owned
+				// control plane. Stopping that control plane disposes them all.
+				ns, err := clientset.CoreV1().Namespaces().Create(ctx,
+					&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "reaper-"}},
+					metav1.CreateOptions{})
+				if err != nil {
+					return ReaperReady{}, fmt.Errorf("create reaper namespace: %w", err)
+				}
+				cfg := jetbridge.NewConfig(ns.Name, "")
 
-				worker, err := database.PersistNamedWorker("k8s-test-namespace")
+				worker, err := database.PersistNamedWorker("k8s-" + ns.Name)
 				if err != nil {
 					return ReaperReady{}, err
 				}
@@ -113,18 +124,7 @@ func ReaperDefinitions() []brine.StepDefinition {
 		),
 
 		brine.DefineMap[ReaperReady, ReaperReady](
-			"a pod {string} is running for it",
-			func(in ReaperReady, p brine.Params, _ *brine.Recorder) (ReaperReady, error) {
-				name, ok := p.GetString(0)
-				if !ok {
-					return ReaperReady{}, fmt.Errorf("expected a pod name parameter")
-				}
-				return in, in.createPod(name, name, "", "")
-			},
-		),
-
-		brine.DefineMap[ReaperReady, ReaperReady](
-			"a pod {string} is running, labelled with the handle {string}",
+			"a pod {string} exists with container handle {string}",
 			func(in ReaperReady, p brine.Params, _ *brine.Recorder) (ReaperReady, error) {
 				name, _ := p.GetString(0)
 				handle, ok := p.GetString(1)
@@ -172,8 +172,7 @@ func ReaperDefinitions() []brine.StepDefinition {
 		brine.DefineMap[ReaperReady, ReaperOutcome](
 			"the reaper runs",
 			func(in ReaperReady, _ brine.Params, _ *brine.Recorder) (ReaperOutcome, error) {
-				err := in.Reaper.Run(in.Ctx)
-				return ReaperOutcome{Ready: in, Err: err}, nil
+				return runReaper(in)
 			},
 		),
 
@@ -315,7 +314,7 @@ func (r ReaperReady) createPod(name, handle, buildID, ctype string) error {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name, Namespace: r.Config.Namespace, Labels: labels,
 		},
-		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main", Image: "busybox"}}},
 	}
 	if ctype != "" || buildID != "" {
 		pod.ObjectMeta.Annotations = map[string]string{"concourse.ci/exit-status": "0"}

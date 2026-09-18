@@ -7,10 +7,11 @@ package steps
 // node does not lose the build. ../features/artifact-daemon.feature has
 // carried this as a written-down gap since the migration started: nothing
 // anywhere asserted that asking a daemon to mirror causes a copy to exist.
-// From the ATC's side it cannot be asserted at all — DaemonClient.TriggerMirror
+// The return value alone cannot assert it — DaemonClient.TriggerMirror
 // returns nil on 202, on non-202, on a transport failure and on a request it
 // could not even build, deliberately, so that failing to schedule a copy never
-// fails a step that already succeeded.
+// fails a step that already succeeded. artifact_recording.go now follows
+// the ATC call through to real peer files; this family drives the daemon directly.
 //
 // So the assertion is made at the other end: ask the producer, then READ THE
 // ARTIFACT OFF THE PEER. Both are real artifact-daemon processes with storage
@@ -60,7 +61,7 @@ package steps
 // suite to serve the six here — measured at +70 seconds the first time. The
 // API server is the exception and is deliberately NOT started here: it is the
 // suite-scoped "real-cluster" resource, already paid for by
-// pod-watch-real.feature, so this feature adds nothing to its cost.
+// pod-watch.feature, so this feature adds nothing to its cost.
 
 import (
 	"archive/tar"

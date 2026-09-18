@@ -8,211 +8,49 @@ Feature: Moving artifacts through volumes
   Source: jetbridge_storage_behavioral_spec_20260330 — VT-02 (StreamIn),
   VT-03 (StreamOut), VT-04 (path resolution), VT-05 (stub volumes).
 
-  Direct-volume scenarios cover the legacy exec-only API. The returned-volume
-  handoff outline exercises production's daemon-backed artifact read path.
+  Direct-volume round trips live in live/volume-io.feature and exercise real
+  pod exec for the legacy direct-volume API. The returned-volume
+  handoff outline in live/artifact-handoff.feature exercises production's
+  daemon-backed read, input-init and real task execution paths.
   Focused Go tests remain for constructor arguments, execution attributes and
   cache wiring that these scenarios do not fully cover; see DISPOSITION-jetbridge.md.
 
-  Scenario: An artifact comes back out as it went in
-    Given a volume "inputs" mounted at "/tmp/build/inputs"
-    And a file "hello.txt" containing "hello world" is put into volume "inputs" at "."
-    When volume "inputs" is read from "."
-    Then the artifact "hello.txt" containing "hello world" is there
 
-  # This is the production read path: the worker wraps a returned output
-  # volume, the daemon serves it after pod removal, and a returned input
-  # volume streams it into a second task. The task reads its actual mount.
-  # Before collection, the returned volume's compatibility StreamOut API also
-  # returns the exact files via gzip, including output.txt = hello-from-the-step.
-  # That direct exec read is not the production artifact-read route.
-  # The S2 row proves StreamIn decompresses: tar cannot decode S2 itself.
-  # The requested encoding is checked independently of the production codec.
-  @artifact-handoff @VT-08
-  Scenario Outline: Artifact handoff delivers exact files or reports the transfer failure
-    Given a jetbridge worker whose step outputs stay on the node that ran them
-    When a task produces "<file>" containing "<content>" and hands it to a following task using "<encoding>" with fault "<fault>"
-    Then the handoff reports "<outcome>"
+  @VT-05
+  Scenario Outline: A resource-cache placeholder refuses I/O with or without compression — <operation>
+    Given a resource-cache placeholder volume
+    When the placeholder is asked to "<operation>" with and without compression
+    Then it reports no executor and refuses "<operation>"
 
     Examples:
-      | file              | content           | encoding | fault            | outcome                                               |
-      | result.json       | built ok          | raw      | none             | exact artifact delivered                              |
-      | nested/result.txt | nested build data | gzip     | none             | exact artifact delivered                              |
-      | deep/tree/out.txt | packed build data | s2       | none             | exact artifact delivered                              |
-      | result.json       | built ok          | raw      | write-refused    | stream into returned input volume: stream in via exec: transfer refused |
-      | result.json       | built ok          | raw      | producer-offline | artifact not found on node node-1 or any peer           |
+      | operation |
+      | read      |
+      | write     |
 
-  # The round trip is NOT symmetric, and a consumer has to know it. StreamIn
-  # resolves the path into the extraction target, so the artifact lands at
-  # <mount>/sub/dir/nested.txt. StreamOut keeps the mount as the extraction
-  # root and passes the path as a member SELECTOR, so members come back
-  # carrying their path — whichever path you ask for. VT-02 and VT-03 specify
-  # exactly this; no test had made it visible, because the ginkgo tests
-  # compared command strings and command strings do not show it.
-  Scenario: A member keeps its path when read back from that path
-    Given a volume "inputs" mounted at "/tmp/build/inputs"
-    And a file "nested.txt" containing "deep content" is put into volume "inputs" at "sub/dir"
-    When volume "inputs" is read from "sub/dir"
-    Then the artifact "sub/dir/nested.txt" containing "deep content" is there
+  # Preserve both error paths: losing a write error lets the next step
+  # believe output landed, while losing a read error conceals missing input.
+  Scenario Outline: A cluster failure reaches the caller — <operation>
+    Given volume "broken" sits on a cluster that cannot run commands
+    When <action>
+    Then it fails rather than panicking, saying "exec stream:"
+    And it fails rather than panicking, saying "not found"
 
-  Scenario: The same member is reachable from the volume root
-    Given a volume "inputs" mounted at "/tmp/build/inputs"
-    And a file "nested.txt" containing "deep content" is put into volume "inputs" at "sub/dir"
-    When volume "inputs" is read from "."
-    Then the artifact "sub/dir/nested.txt" containing "deep content" is there
-
-  # The story the volume-to-volume ginkgo test was really about. It asserted
-  # two pod names, two command strings, and that the fake's canned bytes
-  # reached the fake's recorded stdin. What matters is that the artifact
-  # arrives.
-  Scenario: One step's output becomes the next step's input
-    Given a volume "output" mounted at "/tmp/build/workdir/output"
-    And another volume "input" mounted at "/tmp/build/workdir/input"
-    And a file "result.json" containing "built ok" is put into volume "output" at "."
-    When the contents of volume "output" are moved into volume "input"
-    And volume "input" is read from "."
-    Then the artifact "result.json" containing "built ok" is there
-
-  @VT-05
-  Scenario: A stub volume refuses to be read rather than panicking
-    Given a volume "real" mounted at "/tmp/build/inputs"
-    And a stub volume "stub" with no cluster behind it
-    When volume "stub" is read from "."
-    Then it fails rather than panicking, saying "no executor"
-
-  @VT-05
-  Scenario: A stub volume refuses to be written rather than panicking
-    Given a volume "real" mounted at "/tmp/build/inputs"
-    And a stub volume "stub" with no cluster behind it
-    When a file is put into volume "stub"
-    Then it fails rather than panicking, saying "no executor"
-
-  Scenario: A cluster failure reaches the reader rather than being swallowed
-    Given a volume "real" mounted at "/tmp/build/inputs"
-    And volume "broken" sits on a cluster that cannot run commands
-    When volume "broken" is read from "."
-    Then it fails rather than panicking, saying "exec failed"
+    Examples:
+      | operation | action                                                                    |
+      | read      | volume "broken" is opened then drained with and without compression         |
+      | write     | a file is put into volume "broken"                                         |
 
   # A volume's identity is what the artifact repository keys on. A volume that
   # reported the wrong handle would hand the next step somebody else's
   # artifact — which is why this is asserted rather than assumed.
-  Scenario: A volume identifies itself by its database handle
-    Given a persisted volume on this worker
+  Scenario: Volumes retain distinct database identities
+    Given two persisted volumes on this worker
     Then the volumes retain their handles, worker and database rows
     # The DB row is what survives a web restart; a volume that lost it would be
     # invisible to garbage collection.
 
-  # The write half of the swallow check. The scenario above it covers a read
-  # that cannot reach the cluster; a WRITE that cannot reach it and reports
-  # success is worse, because the step carries on believing its output landed
-  # and the next step reads an empty directory.
-  Scenario: A cluster failure reaches the writer rather than being swallowed
-    Given a volume "real" mounted at "/tmp/build/inputs"
-    And volume "broken" sits on a cluster that cannot run commands
-    When a file is put into volume "broken"
-    Then it fails rather than panicking, saying "exec failed"
-
-  # ==========================================================================
-  # Artifacts that live on another node (VT-06, VT-07)
-  # ==========================================================================
-
-  # Everything above moves bytes through a pod's own filesystem. Every input a
-  # step did NOT produce itself arrives the other way: over the network, from
-  # the artifact daemon on the node that produced it. That fetch has its own
-  # failure modes, and until now none of them were stated as an outcome — the
-  # tests that covered them built the volume by hand, swapped the HTTP
-  # transport for one that rewrote every URL, and finished by reading a
-  # counter the request handler had incremented.
-  #
-  # Below, the node is a real Node in the cluster, its address is resolved the
-  # way production resolves it, and the daemon is a real HTTP server whose one
-  # named difference is how it treats a connection.
-
-  # VT-06's "retry up to 3 times" clause, which artifact-daemon.feature
-  # deliberately left for this pass. A daemon pod that is rescheduled mid-build
-  # drops connections that were already open; without the retry, every such
-  # drop is a red build for an artifact sitting intact on disk one
-  # reconnection away.
-  #
-  # This scenario really waits: the backoff is two seconds and two connections
-  # are dropped, so it costs about four seconds. That is the price of stating
-  # the retry as something a consumer experiences instead of as a call count.
-  @VT-06
-  Scenario: An artifact still arrives from a daemon that drops the first connections
-    Given an artifact on another node holding the file "release.tgz" containing "built on another node"
-    And that node's daemon drops the first 2 connections
-    When the next step fetches the artifact from that node
-    Then the artifact "release.tgz" containing "built on another node" is there
-
-  # The other half of the same loop, and the more dangerous one. A daemon that
-  # never completes a connection has to become a FAILED read. The alternative —
-  # an empty stream and no error — sets a step to work on an input that was
-  # never delivered, and it dies later on a missing file with nothing pointing
-  # at the real cause.
-  #
-  # About four seconds as well, and for the same reason: three attempts.
-  @VT-06
-  Scenario: A daemon that never answers is a failed read, not an empty artifact
-    Given an artifact on another node holding the file "release.tgz" containing "built on another node"
-    And that node's daemon never completes a connection
-    When the next step fetches the artifact from that node
-    Then the read fails rather than handing back an empty artifact
-
-  # "Gone" and "broken" send an operator to different places: a missing
-  # artifact is a pipeline bug, a daemon returning 500 is an outage on that
-  # node. artifact-daemon.feature covers the 404, so a 5xx was until now
-  # indistinguishable from a miss anywhere in these features.
-  @VT-06
-  Scenario: A daemon that is failing says so rather than looking like a miss
-    Given an artifact on another node holding the file "release.tgz" containing "built on another node"
-    And that node's daemon is failing and answers every request with an internal error
-    When the next step fetches the artifact from that node
-    Then the read fails rather than handing back an empty artifact
-    And the failure says the daemon is broken rather than that the artifact is gone
-
-  # A producer that is asked and refuses is not the same situation as a
-  # producer there is nobody to ask, and until now only the second was stated.
-  # Every fallback scenario in these features — here and in
-  # artifact-daemon.feature — takes the producing node OUT of the cluster, so
-  # the ATC never gets as far as an address: the fallback it exercises is the
-  # one that starts from having nowhere to look. The node in the two
-  # scenarios below is still there. It resolves, the ATC builds the address
-  # and dials it, and the fetch dies on the wire — the connection dropped in
-  # the first, the port closed against it in the second — and everything that
-  # keeps the build alive happens after that. A runtime that treated a failed
-  # dial as the end of the search would pass every scenario written before
-  # these two and lose the build on every rescheduled daemon pod.
-  #
-  # Both cost about four seconds: three attempts and two backoffs before the
-  # producer is given up on, which is the retry that the scenarios above pin.
-
-  # The half that keeps the build: the artifact is one mirror away, and the
-  # step gets it. The peer's copy holds different text from the producer's, so
-  # the scenario names which one arrived rather than only that something did.
-  @VT-06
-  Scenario: A peer's mirror still arrives when the producing node's daemon has stopped answering
-    Given an artifact on another node holding the file "release.tgz" containing "built on another node"
-    And that node's daemon never completes a connection
-    And a peer daemon holds a mirrored copy of it containing "mirrored to a peer"
-    And the ATC can ask the other daemons for a mirrored copy
-    When the next step fetches the artifact from that node
-    Then the artifact "release.tgz" containing "mirrored to a peer" is there
-
-  # The half that diagnoses: nothing has the artifact, and the failure has to
-  # be about the search, not about the first dial. "connection refused"
-  # reaching the build log means the ATC stopped at the producer — it sends an
-  # operator to hunt a network fault on a node that is up, for an artifact
-  # that no daemon in the cluster is holding.
-  @VT-06
-  Scenario: A refused producer that nobody mirrored fails as a search that came up empty
-    Given an artifact on another node holding the file "release.tgz" containing "built on another node"
-    And that node is still in the cluster, and its daemon port refuses the connection
-    And the ATC can ask the other daemons for a mirrored copy
-    When the next step fetches the artifact from that node
-    Then the read fails rather than handing back an empty artifact
-    And the failure names the node and its peers rather than the refused connection
-
-  # VT-07, and the write-side twin of "A cluster failure reaches the writer
-  # rather than being swallowed" above. The locator that remembers which node
+  # VT-07, and the daemon-write counterpart of the cluster-failure write row
+  # above. The locator that remembers which node
   # produced an artifact lives in memory, so a web restart forgets it; when
   # daemon discovery is not configured there is then nowhere at all to send
   # the bytes. Reporting success there is the worst available outcome: the
@@ -243,32 +81,25 @@ Feature: Moving artifacts through volumes
   # container-pod.feature states the same rule about the POD's volumes, which
   # a different function builds. The two have to agree, and nothing had said
   # so on this side.
+  # Both spellings must reuse the input: trailing slashes are common in
+  # Concourse output paths and must not defeat normalization.
   @CO-05
-  Scenario: An output that lands on an input's path reuses that input's volume
-    Given a jetbridge worker on a fake Kubernetes cluster
-    And a task container "shared-path-handle" built from image "docker:///busybox"
+  Scenario Outline: An overlapping output reuses its input volume — <spelling>
+    Given a Kubernetes worker "mount-worker" with a database behind it
+    And the worker prepares task "shared-path-handle" from image "docker:///busybox"
     And it works in "/tmp/build/workdir"
     And it takes an input at "/tmp/build/workdir/shared"
-    And it produces an output at "/tmp/build/workdir/shared"
+    And it produces an output at "/tmp/build/workdir/<output>"
     When the container is created but not yet run
-    Then the caller is handed 2 volumes in all
-    And the caller is handed a volume mounted at "/tmp/build/workdir/shared"
+    Then the caller is handed these deferred volumes
+      | mount path |
+      | /tmp/build/workdir |
+      | /tmp/build/workdir/shared |
 
-  # The realistic spelling of the case above: Concourse output paths routinely
-  # carry a trailing slash, and "shared/" and "shared" are the same directory.
-  # Normalising the path is what makes them match — without it the dedup
-  # quietly stops applying to most real pipelines while the scenario above
-  # keeps passing.
-  @CO-05
-  Scenario: A trailing slash on the output path does not defeat the dedup
-    Given a jetbridge worker on a fake Kubernetes cluster
-    And a task container "trailing-slash-handle" built from image "docker:///busybox"
-    And it works in "/tmp/build/workdir"
-    And it takes an input at "/tmp/build/workdir/shared"
-    And it produces an output at "/tmp/build/workdir/shared/"
-    When the container is created but not yet run
-    Then the caller is handed 2 volumes in all
-    And the caller is handed a volume mounted at "/tmp/build/workdir/shared"
+    Examples:
+      | spelling       | output  |
+      | exact path     | shared  |
+      | trailing slash | shared/ |
 
   # CO-06/CO-12. A task declares its caches relative to its working directory
   # — `caches: [{path: my-cache}]` — and Kubernetes rejects a relative
@@ -277,27 +108,15 @@ Feature: Moving artifacts through volumes
   # so the branch that resolves one ran nowhere.
   @CO-06 @CO-12
   Scenario: A cache named relative to the working directory is mounted inside it
-    Given a jetbridge worker on a fake Kubernetes cluster
-    And a task container "relative-cache-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "mount-worker" with a database behind it
+    And the worker prepares task "relative-cache-handle" from image "docker:///busybox"
     And it works in "/tmp/build/workdir"
     And it caches "my-cache"
     When the container is created but not yet run
-    Then the caller is handed 2 volumes in all
-    And the caller is handed a volume mounted at "/tmp/build/workdir/my-cache"
+    Then the caller is handed these deferred volumes
+      | mount path |
+      | /tmp/build/workdir |
+      | /tmp/build/workdir/my-cache |
 
-  # CO-10. A step reads its inputs from the artifact daemon on whatever node
-  # it lands on, and any input that is not already there crosses the network
-  # first. container-pod.feature states the REQUIREMENT — the node must be
-  # running an artifact daemon at all — and that is not the same thing: it is
-  # satisfied by every node in the cluster. The preference on top of it is
-  # what actually keeps the bytes local, and nothing in these features had
-  # mentioned it, so a step placed away from every one of its own inputs was
-  # invisible.
-  @CO-10
-  Scenario: A step is preferably placed on the node holding most of its inputs
-    Given a jetbridge worker that places steps near their inputs
-    And an input artifact that already lives on node "node-1"
-    And an input artifact that already lives on node "node-2"
-    And an input artifact that already lives on node "node-2"
-    When the step is scheduled
-    Then the step prefers to run on node "node-2"
+  # CO-10 now lives in artifact-recording.feature: one real-worker case
+  # checks persisted inputs, majority placement and a unique positive preference.

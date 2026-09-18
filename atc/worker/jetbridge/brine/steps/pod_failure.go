@@ -1,16 +1,13 @@
 package steps
 
 import (
-	"bytes"
+	"context"
 	"fmt"
 	"strings"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
-	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // PodFailureDefinitions covers the ways a step's pod can die, migrated from
@@ -25,52 +22,26 @@ import (
 func PodFailureDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		// RF-01: an OOM kill in the CURRENT termination state, as opposed to
-		// the restart-cycle case the priority scenarios already cover.
-		brine.DefineMap[StepRunning, StepOutcome](
-			"the main container is killed for using too much memory",
-			func(in StepRunning, _ brine.Params, _ *brine.Recorder) (StepOutcome, error) {
-				return in.settlePod(func(pod *corev1.Pod) {
-					pod.Status.Phase = corev1.PodRunning
-					pod.Status.ContainerStatuses = []corev1.ContainerStatus{{
-						Name: "main",
-						State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
-							Reason: "OOMKilled", ExitCode: 137,
-						}},
-					}}
-				})
-			},
-		),
-
-		// RF-05: the node reclaimed the pod. The build did not fail; the
-		// cluster took it away, and the log has to say so or the user blames
-		// their own pipeline.
-		brine.DefineMap[StepRunning, StepOutcome](
-			"the node evicts the pod",
-			func(in StepRunning, _ brine.Params, _ *brine.Recorder) (StepOutcome, error) {
-				return in.settlePod(func(pod *corev1.Pod) {
-					pod.Status.Phase = corev1.PodFailed
-					pod.Status.Reason = "Evicted"
-					pod.Status.Message = "The node was low on resource: memory"
-				})
+		// RF-05: actual pod-local storage eviction, not supplied status or
+		// node-wide pressure. The kubelet owns the failure and its event.
+		brine.DefineMap[LiveTaskPlan, StepOutcome](
+			"the kubelet evicts a pod that exceeds its scratch volume limit",
+			func(in LiveTaskPlan, _ brine.Params, rec *brine.Recorder) (StepOutcome, error) {
+				return observeLiveVolumeEviction(in, rec)
 			},
 		),
 
 		// RF-06: eviction, node failure, spot preemption, or a human with
 		// kubectl. All arrive the same way.
-		brine.DefineMap[StepRunning, StepOutcome](
-			"the pod is deleted from the cluster",
-			func(in StepRunning, _ brine.Params, _ *brine.Recorder) (StepOutcome, error) {
-				pods := in.Clientset.CoreV1().Pods(in.Namespace)
-				if err := pods.Delete(in.Ctx, in.Handle, metav1.DeleteOptions{}); err != nil {
-					return StepOutcome{}, fmt.Errorf("delete pod %q: %w", in.Handle, err)
+		TransformUsing[WorkerReady, StepOutcome](
+			"the runtime watches pod {string} until it is deleted",
+			[]string{"real-cluster"},
+			func(in WorkerReady, a Args, res brine.Resources) (StepOutcome, error) {
+				cluster, ok := res.Get("real-cluster").(*realCluster)
+				if !ok {
+					return StepOutcome{}, fmt.Errorf("real-cluster resource is %T", res.Get("real-cluster"))
 				}
-				_, waitErr := in.Process.Wait(in.Ctx)
-				msg := ""
-				if waitErr != nil {
-					msg = waitErr.Error()
-				}
-				return StepOutcome{Err: waitErr, Message: msg, Stderr: in.Stderr.String()}, nil
+				return observeProcessDeletion(in, a.String(0), cluster)
 			},
 		),
 
@@ -87,49 +58,17 @@ func PodFailureDefinitions() []brine.StepDefinition {
 			"the build log",
 			func(in StepOutcome) (string, error) { return in.Stderr, nil }),
 
-		CheckContains[StepOutcome]("the failure explains {string}",
-			"the failure",
-			func(in StepOutcome) (string, error) {
-				if in.Err == nil {
-					return "", fmt.Errorf("expected the step to fail, it succeeded")
-				}
-				return in.Message, nil
-			}),
-
 		CheckThat[StepOutcome]("the step is told the pod was deleted",
 			func(in StepOutcome) error {
 				if in.Err == nil {
 					return fmt.Errorf("expected the step to fail, it succeeded")
 				}
-				if !strings.Contains(in.Message, "deleted") {
+				if !strings.HasPrefix(in.Message, "pod deleted externally:") {
 					return fmt.Errorf("expected the failure to say the pod was deleted, got %q", in.Message)
 				}
 				return nil
 			}),
 	}
-}
-
-// settlePod applies a status mutation and then waits, returning what the step
-// saw. It is the shared shape of every failure scenario.
-func (in StepRunning) settlePod(mutate func(*corev1.Pod)) (StepOutcome, error) {
-	pods := in.Clientset.CoreV1().Pods(in.Namespace)
-	pod, err := pods.Get(in.Ctx, in.Handle, metav1.GetOptions{})
-	if err != nil {
-		return StepOutcome{}, fmt.Errorf("get pod %q: %w", in.Handle, err)
-	}
-	mutate(pod)
-	if _, err := pods.UpdateStatus(in.Ctx, pod, metav1.UpdateOptions{}); err != nil {
-		return StepOutcome{}, fmt.Errorf("update pod status: %w", err)
-	}
-	result, waitErr := in.Process.Wait(in.Ctx)
-	msg := ""
-	if waitErr != nil {
-		msg = waitErr.Error()
-	}
-	return StepOutcome{
-		Err: waitErr, Message: msg, Stderr: in.Stderr.String(),
-		ExitStatus: result.ExitStatus,
-	}, nil
 }
 
 // SeveredExecOutcome is what a step and its downstream see after the exec
@@ -139,6 +78,9 @@ type SeveredExecOutcome struct {
 	Message   string
 	Locator   *jetbridge.ArtifactLocator
 	OutputKey string
+	artifact  runtime.Artifact
+	ctx       context.Context
+	daemon    *liveArtifactDaemon
 }
 
 // SeveredExecDefinitions covers F23 — what must NOT happen when the exec
@@ -153,72 +95,14 @@ type SeveredExecOutcome struct {
 func SeveredExecDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		brine.DefineMapUsing[brine.Empty, SeveredExecOutcome](
+		brine.DefineMap[LiveTaskPlan, SeveredExecOutcome](
 			"a task step whose connection to its pod is severed while it writes {string}",
-			[]string{"jetbridge-db"},
-			func(_ brine.Empty, p brine.Params, _ *brine.Recorder, res brine.Resources) (SeveredExecOutcome, error) {
+			func(in LiveTaskPlan, p brine.Params, rec *brine.Recorder) (SeveredExecOutcome, error) {
 				output, ok := p.GetString(0)
 				if !ok {
-					return SeveredExecOutcome{}, fmt.Errorf("expected an output name")
+					return SeveredExecOutcome{}, fmt.Errorf("expected output name")
 				}
-				cluster, err := NewCluster(res,
-					// Model a broken exec transport, not successful command output.
-					WithExecutor(localExecutor{failure: "error dialing backend: EOF"}),
-				)
-				if err != nil {
-					return SeveredExecOutcome{}, err
-				}
-				ctx, clientset, worker := cluster.Ctx, cluster.Clientset, cluster.Worker
-				handle := "severed-handle"
-				locator := jetbridge.NewArtifactLocator()
-				worker.SetArtifactLocator(locator)
-
-				container, _, err := worker.FindOrCreateContainer(
-					ctx,
-					db.NewFixedHandleContainerOwner(handle),
-					db.ContainerMetadata{Type: db.ContainerTypeTask},
-					runtime.ContainerSpec{
-						TeamID:    1,
-						Dir:       "/tmp/build/workdir",
-						ImageSpec: runtime.ImageSpec{ImageURL: "busybox"},
-						Outputs:   runtime.OutputPaths{output: "/tmp/build/workdir/" + output},
-					},
-					&noopDelegate{},
-				)
-				if err != nil {
-					return SeveredExecOutcome{}, fmt.Errorf("find or create container: %w", err)
-				}
-
-				process, err := container.Run(ctx,
-					runtime.ProcessSpec{Path: "/bin/sh", Args: []string{"-c", "echo hi"}},
-					runtime.ProcessIO{Stdout: new(bytes.Buffer), Stderr: new(bytes.Buffer)},
-				)
-				if err != nil {
-					return SeveredExecOutcome{}, fmt.Errorf("run step: %w", err)
-				}
-
-				pods := clientset.CoreV1().Pods("test-namespace")
-				pod, err := pods.Get(ctx, handle, metav1.GetOptions{})
-				if err != nil {
-					return SeveredExecOutcome{}, fmt.Errorf("get pod: %w", err)
-				}
-				pod.Status.Phase = corev1.PodRunning
-				pod.Status.Conditions = []corev1.PodCondition{
-					{Type: corev1.PodReady, Status: corev1.ConditionTrue},
-				}
-				if _, err := pods.UpdateStatus(ctx, pod, metav1.UpdateOptions{}); err != nil {
-					return SeveredExecOutcome{}, fmt.Errorf("update pod: %w", err)
-				}
-
-				_, waitErr := process.Wait(ctx)
-				msg := ""
-				if waitErr != nil {
-					msg = waitErr.Error()
-				}
-				return SeveredExecOutcome{
-					Err: waitErr, Message: msg, Locator: locator,
-					OutputKey: handle + "-output-" + output,
-				}, nil
+				return severLiveArtifact(in, rec, output)
 			},
 		),
 
@@ -241,7 +125,7 @@ func SeveredExecDefinitions() []brine.StepDefinition {
 							"half-written artifact and get NO error, which is the failure this guards",
 						in.OutputKey)
 				}
-				return nil
+				return requireUnpublishedLiveArtifact(in)
 			}),
 	}
 }

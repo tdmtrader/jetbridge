@@ -1,0 +1,14 @@
+#!/bin/sh
+# The live tier needs the host's route to the explicitly selected cluster.
+set -eu
+cd "$(dirname "$0")/.."
+: "${BRINE_KUBE_CONTEXT:?Set BRINE_KUBE_CONTEXT to an explicitly authorized test cluster}"
+brine_adapter=${BRINE_ADAPTER_BINARY:-$PWD/.build/brine-adapter-jetbridge}
+case "$brine_adapter" in /*) ;; *) echo "Adapter path must be absolute" >&2; exit 2 ;; esac
+test -x "$brine_adapter"
+# PostgreSQL refuses uid 0. Map only this process tree to nobody; do not alter
+# host identities, interfaces or filesystem permissions.
+if [ "$(id -u)" = 0 ]; then
+    exec unshare --user --map-user=65534 --map-group=65534 "$brine_adapter" "$@"
+fi
+exec "$brine_adapter" "$@"

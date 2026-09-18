@@ -193,27 +193,9 @@ func (p *Process) pollUntilDone(ctx context.Context) (runtime.ProcessResult, err
 
 		tracker.emitPodLifecycleEvents(ctx, pod)
 
-		// Check for terminal failure states before checking exit code.
-		// OOM check runs first — "OOMKilled" is more actionable than the
-		// generic "CrashLoopBackOff" that often wraps it.
-		if containerName, oom := isPodOOMKilled(pod); oom {
-			metric.RecordK8sPodFailure(ctx, "OOMKilled")
-			writePodDiagnostics(pod, p.processIO.Stderr)
-			return runtime.ProcessResult{}, fmt.Errorf("pod failed: OOMKilled: container %q exceeded memory limit", containerName)
-		}
-		if reason, message, failed := isPodFailedFast(pod); failed {
-			if reason == "ImagePullBackOff" || reason == "ErrImagePull" {
-				metric.Metrics.K8sImagePullFailures.Inc()
-			}
-			metric.RecordK8sPodFailure(ctx, reason)
-			writePodDiagnostics(pod, p.processIO.Stderr)
-			return runtime.ProcessResult{}, fmt.Errorf("pod failed: %s: %s", reason, message)
-		}
-		if interruption := interruptionErrorForPod(pod, false, nil); interruption != nil {
-			metric.RecordK8sPodFailure(ctx, string(interruption.InterruptionReason()))
-			writePodDiagnostics(pod, p.processIO.Stderr)
-			writeNodeDiagnostics(ctx, p.clientset, pod, p.processIO.Stderr)
-			return runtime.ProcessResult{}, preferContextCancellation(ctx, interruption)
+		state := podStateFor(pod)
+		if err := reportPodFailure(ctx, p.clientset, pod, p.processIO.Stderr, state); err != nil {
+			return runtime.ProcessResult{}, err
 		}
 		if message, unschedulable := isPodUnschedulable(pod); unschedulable {
 			if unschedulableFirstSeen.IsZero() {
@@ -232,9 +214,8 @@ func (p *Process) pollUntilDone(ctx context.Context) (runtime.ProcessResult, err
 			unschedulableNotified = false
 		}
 
-		exitCode, done := podExitCode(pod)
-		if done {
-			return runtime.ProcessResult{ExitStatus: exitCode}, nil
+		if state.complete {
+			return state.result, nil
 		}
 	}
 }
@@ -470,7 +451,7 @@ func writePodDiagnostics(pod *corev1.Pod, w io.Writer) {
 		fmt.Fprintf(w, "Message: %s\n", pod.Status.Message)
 	}
 	for _, cond := range pod.Status.Conditions {
-		if cond.Status == corev1.ConditionFalse || cond.Reason != "" {
+		if cond.Type == corev1.PodScheduled || cond.Status == corev1.ConditionFalse || cond.Reason != "" {
 			fmt.Fprintf(w, "Condition: %s=%s Reason=%s Message=%s\n",
 				cond.Type, cond.Status, cond.Reason, cond.Message)
 		}
@@ -517,37 +498,42 @@ func writeNodeDiagnostics(ctx context.Context, clientset kubernetes.Interface, p
 		return
 	}
 
+	writeNodeStatus(node, w)
+}
+
+// writeNodeStatus formats reported input without fetching or modifying API state.
+func writeNodeStatus(node *corev1.Node, w io.Writer) {
 	// Surface node pressure conditions (MemoryPressure, DiskPressure, PIDPressure).
 	for _, cond := range node.Status.Conditions {
 		switch cond.Type {
 		case corev1.NodeMemoryPressure, corev1.NodeDiskPressure, corev1.NodePIDPressure:
 			if cond.Status == corev1.ConditionTrue {
-				fmt.Fprintf(w, "Node %s: %s=True: %s\n", pod.Spec.NodeName, cond.Type, cond.Message)
+				fmt.Fprintf(w, "Node %s: %s=True: %s\n", node.Name, cond.Type, cond.Message)
 			}
 		case corev1.NodeReady:
 			if cond.Status != corev1.ConditionTrue {
-				fmt.Fprintf(w, "Node %s: NotReady: %s: %s\n", pod.Spec.NodeName, cond.Reason, cond.Message)
+				fmt.Fprintf(w, "Node %s: NotReady: %s: %s\n", node.Name, cond.Reason, cond.Message)
 			}
 		}
 	}
 
 	// Check for spot/preemptible node labels (GKE and generic K8s).
 	if v, ok := node.Labels["cloud.google.com/gke-spot"]; ok && v == "true" {
-		fmt.Fprintf(w, "Node %s: spot/preemptible instance (cloud.google.com/gke-spot=true)\n", pod.Spec.NodeName)
+		fmt.Fprintf(w, "Node %s: spot/preemptible instance (cloud.google.com/gke-spot=true)\n", node.Name)
 	}
 	if v, ok := node.Labels["cloud.google.com/gke-preemptible"]; ok && v == "true" {
-		fmt.Fprintf(w, "Node %s: preemptible instance (cloud.google.com/gke-preemptible=true)\n", pod.Spec.NodeName)
+		fmt.Fprintf(w, "Node %s: preemptible instance (cloud.google.com/gke-preemptible=true)\n", node.Name)
 	}
 	if _, ok := node.Labels["kubernetes.azure.com/scalesetpriority"]; ok {
-		fmt.Fprintf(w, "Node %s: spot instance (kubernetes.azure.com/scalesetpriority=%s)\n", pod.Spec.NodeName, node.Labels["kubernetes.azure.com/scalesetpriority"])
+		fmt.Fprintf(w, "Node %s: spot instance (kubernetes.azure.com/scalesetpriority=%s)\n", node.Name, node.Labels["kubernetes.azure.com/scalesetpriority"])
 	}
 	if v, ok := node.Labels["eks.amazonaws.com/capacityType"]; ok && v == "SPOT" {
-		fmt.Fprintf(w, "Node %s: spot instance (eks.amazonaws.com/capacityType=SPOT)\n", pod.Spec.NodeName)
+		fmt.Fprintf(w, "Node %s: spot instance (eks.amazonaws.com/capacityType=SPOT)\n", node.Name)
 	}
 
 	// Check if node is being drained / cordoned (unschedulable).
 	if node.Spec.Unschedulable {
-		fmt.Fprintf(w, "Node %s: cordoned (unschedulable) — node may be draining\n", pod.Spec.NodeName)
+		fmt.Fprintf(w, "Node %s: cordoned (unschedulable) — node may be draining\n", node.Name)
 	}
 }
 
@@ -605,9 +591,8 @@ func isPodUnschedulable(pod *corev1.Pod) (message string, unschedulable bool) {
 
 // podExitCode extracts the exit code from the Pod's main container status.
 // Returns the exit code and whether the main container has terminated.
-// When sidecars are present, the pod phase may still be Running even after
-// the main container exits, so we also check for main container termination
-// in that phase.
+// A completed main may coexist with Running sidecars or a Pending sidecar
+// whose image cannot be pulled. In either phase, main owns the step result.
 func podExitCode(pod *corev1.Pod) (int, bool) {
 	switch pod.Status.Phase {
 	case corev1.PodSucceeded, corev1.PodFailed:
@@ -623,9 +608,8 @@ func podExitCode(pod *corev1.Pod) (int, bool) {
 		}
 		return 1, true
 
-	case corev1.PodRunning:
-		// When sidecars are present, the pod stays Running after main exits.
-		// Check if the main container has terminated.
+	case corev1.PodRunning, corev1.PodPending:
+		// A running or not-yet-started sidecar must not hide main completion.
 		for _, cs := range pod.Status.ContainerStatuses {
 			if cs.Name == mainContainerName && cs.State.Terminated != nil {
 				return int(cs.State.Terminated.ExitCode), true
@@ -812,7 +796,7 @@ func (p *execProcess) supervised() bool {
 // Wait waits for the pause Pod to reach Running state, streams input
 // artifacts into the pod, then exec-s the actual command with ProcessIO
 // piped through.
-func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
+func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, retErr error) {
 	logger := lagerctx.FromContext(ctx).Session("exec-process-wait", lager.Data{
 		"pod":        p.podName,
 		"process-id": p.id,
@@ -838,9 +822,9 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	// runs until the pause pod's own 24h sleep is up. So delete it, on
 	// whichever path Wait returns.
 	//
-	// Only supervised steps: a get/put/check command dies with the SPDY
-	// stream on its own, so deleting its pod would cost fly hijack into an
-	// aborted build's resource containers and buy nothing. And never for a
+	// Only supervised steps: get/put/check commands are stopped by their
+	// invocation-scoped process group below, retaining the pod for hijack.
+	// And never for a
 	// looked-up Container — that is a fly hijack session on somebody else's
 	// pod, ending when the operator closes the window.
 	defer func() {
@@ -874,23 +858,33 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	}
 	tracing.End(streamSpan, nil)
 
-	// Stream sidecar container logs in parallel with the exec command.
-	// Sidecar logs are written to dedicated per-sidecar event writers so
-	// fly watch can render them. The WaitGroup ensures all sidecar log
-	// streams finish before we return (preventing log loss).
+	// Main output and fallback sidecars share a writer, which need not be
+	// concurrency-safe. Dedicated sidecar streams remain separate.
+	var stdout io.Writer
+	if p.processIO.Stdout != nil {
+		stdout = &serializedLogWriter{writer: p.processIO.Stdout}
+	}
+	sidecarCtx, cancelSidecars := context.WithCancel(ctx)
+	defer cancelSidecars()
 	var sidecarWg sync.WaitGroup
-	if p.container != nil && len(p.processIO.SidecarWriters) > 0 {
+	if p.container != nil {
 		for _, sc := range p.container.containerSpec.Sidecars {
-			if w, ok := p.processIO.SidecarWriters[sc.Name]; ok {
-				sidecarWg.Add(1)
-				go func(name string, writer io.Writer) {
-					defer sidecarWg.Done()
-					p.streamSidecarLogs(ctx, name, writer)
-				}(sc.Name, w)
+			writer := p.processIO.SidecarWriters[sc.Name]
+			prefix := ""
+			if writer == nil {
+				writer = stdout
+				prefix = fmt.Sprintf("[%s] ", sc.Name)
 			}
+			if writer == nil {
+				continue
+			}
+			sidecarWg.Add(1)
+			go func(name, prefix string, writer io.Writer) {
+				defer sidecarWg.Done()
+				p.streamSidecarLogs(sidecarCtx, name, writer, prefix)
+			}(sc.Name, prefix, writer)
 		}
 	}
-
 	// Build the command: [path, arg1, arg2, ...]
 	command := append([]string{p.processSpec.Path}, p.processSpec.Args...)
 
@@ -899,6 +893,20 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	// instead of starting a second copy (see supervisor.go).
 	if p.supervised() {
 		command = supervisorCommand(p.id, p.processSpec)
+	}
+	if p.resourceCommand() {
+		var state string
+		command, state = cancellableResourceCommand(command)
+		defer func() {
+			if ctx.Err() != nil {
+				err := p.cancelResourceCommand(state)
+				if err != nil {
+					logger.Error("failed-to-stop-resource-command", err)
+				}
+				result = runtime.ProcessResult{}
+				retErr = errors.Join(retErr, ctx.Err(), err)
+			}
+		}()
 	}
 
 	// Exec with retry: if the SPDY dial fails because the pause pod was
@@ -912,7 +920,7 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	// that a retry can tell "the dial never connected" from "the command
 	// has started talking". Only the first is safe to run again.
 	execStdin := p.watchExecReader(p.processIO.Stdin)
-	execStdout := p.watchExecWriter(p.processIO.Stdout)
+	execStdout := p.watchExecWriter(stdout)
 	execStderr := p.watchExecWriter(p.processIO.Stderr)
 	for attempt := 0; attempt <= maxExecRetries; attempt++ {
 		execCtx, execSpan := tracing.StartSpan(ctx, "k8s.exec-process.exec", tracing.Attrs{
@@ -932,6 +940,10 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 			ExecAttrs{Purpose: "step-command"},
 		)
 		tracing.End(execSpan, err)
+		if ctx.Err() != nil {
+			err = ctx.Err()
+			break
+		}
 
 		if err == nil {
 			break
@@ -1104,11 +1116,9 @@ func (p *execProcess) recreatePausePod(ctx context.Context, pod *corev1.Pod) err
 	if p.container == nil {
 		return fmt.Errorf("no container reference to recreate pause pod %s", p.podName)
 	}
-	if p.execTransportLive.Load() {
-		return fmt.Errorf("pause pod %s died after the step's command started — not re-running it", p.podName)
-	}
-	if p.pausePodRecreated {
-		return fmt.Errorf("pause pod %s has already been replaced once", p.podName)
+	transportLive, recreated := p.execTransportLive.Load(), p.pausePodRecreated
+	if err := pauseReplacementError(p.podName, transportLive, recreated, nil); err != nil {
+		return err
 	}
 
 	if pod == nil {
@@ -1123,8 +1133,8 @@ func (p *execProcess) recreatePausePod(ctx context.Context, pod *corev1.Pod) err
 	// Its inputs could not be staged, and a replacement would fail the same
 	// way while replacing the only explanation the user has with a startup
 	// timeout. Leave it for the caller's diagnostics.
-	if name, exitCode, failed := failedInitContainer(pod); failed {
-		return fmt.Errorf("pause pod %s did not die, its init container %q exited %d", p.podName, name, exitCode)
+	if err := pauseReplacementError(p.podName, transportLive, recreated, pod); err != nil {
+		return err
 	}
 
 	logger := lagerctx.FromContext(ctx).Session("recreate-pause-pod")
@@ -1164,6 +1174,22 @@ func (p *execProcess) recreatePausePod(ctx context.Context, pod *corev1.Pod) err
 
 	if _, createErr := p.container.createPausePod(ctx, p.processSpec); createErr != nil {
 		return fmt.Errorf("recreate pause pod %s: %w", p.podName, createErr)
+	}
+	return nil
+}
+
+// pauseReplacementError classifies replacement policy without Kubernetes I/O.
+// The runtime checks the cheap guards before lookup, then includes the fetched
+// pod so a failed input init cannot be mistaken for a lost pause process.
+func pauseReplacementError(podName string, transportLive, recreated bool, pod *corev1.Pod) error {
+	if transportLive {
+		return fmt.Errorf("pause pod %s died after the step's command started — not re-running it", podName)
+	}
+	if recreated {
+		return fmt.Errorf("pause pod %s has already been replaced once", podName)
+	}
+	if name, exitCode, failed := failedInitContainer(pod); failed {
+		return fmt.Errorf("pause pod %s did not die, its init container %q exited %d", podName, name, exitCode)
 	}
 	return nil
 }
@@ -1241,7 +1267,7 @@ func (p *execProcess) fetchPodNodeName(ctx context.Context) string {
 // streamSidecarLogs streams logs from a sidecar container to the given writer
 // using the K8s log API. Retries until the container is ready or the context
 // is cancelled.
-func (p *execProcess) streamSidecarLogs(ctx context.Context, containerName string, w io.Writer) {
+func (p *execProcess) streamSidecarLogs(ctx context.Context, containerName string, w io.Writer, prefix string) {
 	for {
 		req := p.clientset.CoreV1().Pods(p.config.Namespace).GetLogs(p.podName, &corev1.PodLogOptions{
 			Follow:    true,
@@ -1250,7 +1276,11 @@ func (p *execProcess) streamSidecarLogs(ctx context.Context, containerName strin
 
 		stream, err := req.Stream(ctx)
 		if err == nil {
-			io.Copy(w, stream)
+			if prefix == "" {
+				io.Copy(w, stream)
+			} else {
+				copyPrefixedLogs(w, stream, prefix)
+			}
 			stream.Close()
 			return
 		}
@@ -1361,27 +1391,9 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 			})
 		}
 
-		// Check for terminal failure states BEFORE checking Running phase,
-		// because CrashLoopBackOff can occur while the pod phase is Running.
-		// OOM check first — more actionable than generic CrashLoopBackOff.
-		if containerName, oom := isPodOOMKilled(pod); oom {
-			metric.RecordK8sPodFailure(ctx, "OOMKilled")
-			writePodDiagnostics(pod, p.processIO.Stderr)
-			return fmt.Errorf("pod failed: OOMKilled: container %q exceeded memory limit", containerName)
-		}
-		if reason, message, failed := isPodFailedFast(pod); failed {
-			if reason == "ImagePullBackOff" || reason == "ErrImagePull" {
-				metric.Metrics.K8sImagePullFailures.Inc()
-			}
-			metric.RecordK8sPodFailure(ctx, reason)
-			writePodDiagnostics(pod, p.processIO.Stderr)
-			return fmt.Errorf("pod failed: %s: %s", reason, message)
-		}
-		if interruption := interruptionErrorForPod(pod, false, nil); interruption != nil {
-			metric.RecordK8sPodFailure(ctx, string(interruption.InterruptionReason()))
-			writePodDiagnostics(pod, p.processIO.Stderr)
-			writeNodeDiagnostics(ctx, p.clientset, pod, p.processIO.Stderr)
-			return preferContextCancellation(ctx, interruption)
+		state := podStateFor(pod)
+		if err := reportPodFailure(ctx, p.clientset, pod, p.processIO.Stderr, state); err != nil {
+			return err
 		}
 		if message, unschedulable := isPodUnschedulable(pod); unschedulable {
 			if unschedulableFirstSeen.IsZero() {

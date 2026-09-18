@@ -1,10 +1,8 @@
 package steps
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"strings"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
@@ -13,7 +11,8 @@ import (
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 )
 
 // ContainerLifecycleDefinitions migrates container_test.go's reuse, property
@@ -23,23 +22,26 @@ import (
 // LeftoverPod is the state where a pod from a previous run is already on the
 // cluster before the step starts.
 type LeftoverPod struct {
-	Namespace string
-	Worker    *jetbridge.Worker
-	Clientset *fake.Clientset
-	Ctx       context.Context
-	Handle    string
-	Metadata  db.ContainerMetadata
-	PodName   string
+	TeamID      int
+	PreviousUID types.UID
+	Namespace   string
+	Worker      *jetbridge.Worker
+	Clientset   kubernetes.Interface
+	Ctx         context.Context
+	Handle      string
+	Metadata    db.ContainerMetadata
+	PodName     string
 }
 
 // ReusedPod is the state after the step has run against that cluster.
 type ReusedPod struct {
-	Namespace string
-	Clientset *fake.Clientset
-	Ctx       context.Context
-	PodName   string
-	Pod       *corev1.Pod
-	Err       error
+	PreviousUID types.UID
+	Namespace   string
+	Clientset   kubernetes.Interface
+	Ctx         context.Context
+	PodName     string
+	Pod         *corev1.Pod
+	Err         error
 }
 
 // ContainerProperties is the state for the property store.
@@ -52,43 +54,14 @@ type ContainerProperties struct {
 func ContainerLifecycleDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		// PE-01. A check container's pause pod finishes when its sleep
-		// expires. The next check must get a fresh pod — exec-ing into a dead
-		// one fails in a way that looks like the resource is broken.
-		TransformUsing[brine.Empty, LeftoverPod](
-			"a check step whose previous pod is {string}",
-			[]string{"jetbridge-db"},
-			func(_ brine.Empty, a Args, res brine.Resources) (LeftoverPod, error) {
-				cluster, err := NewCluster(res,
-					WithExecutor(localExecutor{}),
-				)
-				if err != nil {
-					return LeftoverPod{}, err
+		brine.DefineMap[LiveTaskPlan, LeftoverPod]("the worker has a previous check pod in phase {string}",
+			func(in LiveTaskPlan, p brine.Params, rec *brine.Recorder) (LeftoverPod, error) {
+				phase, ok := p.GetString(0)
+				if !ok {
+					return LeftoverPod{}, fmt.Errorf("expected previous pod phase")
 				}
-				ctx, namespace := cluster.Ctx, cluster.Namespace
-				clientset, worker := cluster.Clientset, cluster.Worker
-
-				handle := "aaaa1111-bbbb-cccc-dddd-eeee2222ffff"
-				metadata := db.ContainerMetadata{Type: db.ContainerTypeCheck, StepName: "my-time"}
-				podName := jetbridge.GeneratePodName(metadata, handle)
-
-				leftover := &corev1.Pod{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: podName, Namespace: namespace,
-						Labels: map[string]string{"concourse.ci/worker": "k8s-worker-1"},
-					},
-					Status: corev1.PodStatus{Phase: corev1.PodPhase(a.String(0))},
-				}
-				if _, err := clientset.CoreV1().Pods(namespace).Create(ctx, leftover, metav1.CreateOptions{}); err != nil {
-					return LeftoverPod{}, fmt.Errorf("create leftover pod: %w", err)
-				}
-
-				return LeftoverPod{
-					Namespace: namespace, Worker: worker, Clientset: clientset,
-					Ctx: ctx, Handle: handle, Metadata: metadata, PodName: podName,
-				}, nil
-			},
-		),
+				return prepareLivePreviousCheck(in, rec, phase)
+			}),
 
 		brine.DefineMap[LeftoverPod, ReusedPod](
 			"the check runs again",
@@ -98,11 +71,11 @@ func ContainerLifecycleDefinitions() []brine.StepDefinition {
 					db.NewFixedHandleContainerOwner(in.Handle),
 					in.Metadata,
 					runtime.ContainerSpec{
-						TeamID:    1,
+						TeamID:    in.TeamID,
 						Dir:       "/tmp/build/workdir",
 						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///concourse/time-resource"},
 					},
-					&noopDelegate{},
+					nil,
 				)
 				if err != nil {
 					return ReusedPod{}, fmt.Errorf("find or create container: %w", err)
@@ -110,7 +83,7 @@ func ContainerLifecycleDefinitions() []brine.StepDefinition {
 
 				out := ReusedPod{
 					Namespace: in.Namespace, Clientset: in.Clientset,
-					Ctx: in.Ctx, PodName: in.PodName,
+					Ctx: in.Ctx, PodName: in.PodName, PreviousUID: in.PreviousUID,
 				}
 				if _, err := container.Run(in.Ctx,
 					runtime.ProcessSpec{Path: "/opt/resource/check"},
@@ -129,7 +102,7 @@ func ContainerLifecycleDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		CheckThat[ReusedPod]("the step gets a live pod, not the dead one",
+		CheckThat[ReusedPod]("the check gets a new unfinished pod",
 			func(in ReusedPod) error {
 				if in.Err != nil {
 					return fmt.Errorf("the step failed instead of replacing the pod: %v", in.Err)
@@ -142,31 +115,24 @@ func ContainerLifecycleDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected a live pod, %q is still %s — the dead pod was reused",
 						in.PodName, in.Pod.Status.Phase)
 				}
+				if in.PreviousUID == "" || in.Pod.UID == "" || in.Pod.ResourceVersion == "" {
+					return fmt.Errorf("pod identities must come from the API")
+				}
+				if in.Pod.UID == in.PreviousUID {
+					return fmt.Errorf("the previous pod %q was reused rather than replaced", in.Pod.UID)
+				}
 				return nil
 			}),
 
 		// A container's properties are how the runtime remembers a step's
 		// result in-process, which is what Attach reads before it asks
 		// Kubernetes anything.
-		TransformUsing[brine.Empty, ContainerProperties](
-			"a container that has recorded {string} as {string}",
-			[]string{"jetbridge-db"},
-			func(_ brine.Empty, a Args, res brine.Resources) (ContainerProperties, error) {
-				cluster, err := NewCluster(res)
+		Transform[WorkerReady, ContainerProperties](
+			"the container records {string} as {string}",
+			func(in WorkerReady, a Args) (ContainerProperties, error) {
+				container, err := recoveryContainer(in, "props-handle")
 				if err != nil {
 					return ContainerProperties{}, err
-				}
-				ctx, worker := cluster.Ctx, cluster.Worker
-
-				container, _, err := worker.FindOrCreateContainer(
-					ctx,
-					db.NewFixedHandleContainerOwner("props-handle"),
-					db.ContainerMetadata{},
-					runtime.ContainerSpec{ImageSpec: runtime.ImageSpec{ImageURL: "docker:///alpine"}},
-					&noopDelegate{},
-				)
-				if err != nil {
-					return ContainerProperties{}, fmt.Errorf("find or create container: %w", err)
 				}
 				if err := container.SetProperty(a.String(0), a.String(1)); err != nil {
 					return ContainerProperties{}, fmt.Errorf("set property: %w", err)
@@ -193,9 +159,10 @@ func ContainerLifecycleDefinitions() []brine.StepDefinition {
 
 // RecoveredStep is what a re-attaching web sees when it picks a step back up.
 type RecoveredStep struct {
-	ExitStatus int
-	Err        error
-	Message    string
+	AttachRefused bool
+	ExitStatus    int
+	Err           error
+	Message       string
 }
 
 // AttachDefinitions covers PE-11/PE-12 — how a restarted web recovers a step's
@@ -207,81 +174,12 @@ type RecoveredStep struct {
 func AttachDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		// PE-12 first branch: the in-process property store still remembers.
-		TransformUsing[brine.Empty, RecoveredStep](
-			"a step the runtime still remembers finishing with exit code {int}",
-			[]string{"jetbridge-db"},
-			func(_ brine.Empty, a Args, res brine.Resources) (RecoveredStep, error) {
-				container, ctx, err := attachableContainer(res, "attach-handle", nil)
-				if err != nil {
-					return RecoveredStep{}, err
-				}
-				if err := container.SetProperty("concourse:exit-status", fmt.Sprintf("%d", a.Int(0))); err != nil {
-					return RecoveredStep{}, fmt.Errorf("record exit status: %w", err)
-				}
-				return attachAndWait(ctx, container)
+		Transform[WorkerReady, RecoveredStep](
+			"the pending pod has no recorded completion",
+			func(in WorkerReady, _ Args) (RecoveredStep, error) {
+				return recoverUnrecordedPod(in, "attach-unannotated")
 			},
 		),
-
-		// PE-12 second branch: the web restarted, so the property store is
-		// empty and the pod annotation is the only surviving record.
-		TransformUsing[brine.Empty, RecoveredStep](
-			"a web restart, and a pod annotated as having finished with exit code {int}",
-			[]string{"jetbridge-db"},
-			func(_ brine.Empty, a Args, res brine.Resources) (RecoveredStep, error) {
-				handle := "attach-annotated"
-				container, ctx, err := attachableContainer(res, handle, func(clientset *fake.Clientset) error {
-					pod := &corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: handle, Namespace: "test-namespace",
-							Annotations: map[string]string{
-								"concourse.ci/exit-status": fmt.Sprintf("%d", a.Int(0)),
-							},
-						},
-						Status: corev1.PodStatus{Phase: corev1.PodRunning},
-					}
-					_, err := clientset.CoreV1().Pods("test-namespace").
-						Create(context.Background(), pod, metav1.CreateOptions{})
-					return err
-				})
-				if err != nil {
-					return RecoveredStep{}, err
-				}
-				return attachAndWait(ctx, container)
-			},
-		),
-
-		// PE-12 last branch: nothing recorded the result, so re-attaching must
-		// FAIL. Reporting success here would mark an unfinished step complete.
-		brine.DefineMapUsing[brine.Empty, RecoveredStep](
-			"a web restart, and a pod with no record of having finished",
-			[]string{"jetbridge-db"},
-			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder, res brine.Resources) (RecoveredStep, error) {
-				handle := "attach-unannotated"
-				container, ctx, err := attachableContainer(res, handle, func(clientset *fake.Clientset) error {
-					pod := &corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{Name: handle, Namespace: "test-namespace"},
-						Status:     corev1.PodStatus{Phase: corev1.PodRunning},
-					}
-					_, err := clientset.CoreV1().Pods("test-namespace").
-						Create(context.Background(), pod, metav1.CreateOptions{})
-					return err
-				})
-				if err != nil {
-					return RecoveredStep{}, err
-				}
-				return attachAndWait(ctx, container)
-			},
-		),
-
-		CheckInt[RecoveredStep]("the step is recovered as having exited {int}",
-			"the recovered exit status",
-			func(in RecoveredStep) (int, error) {
-				if in.Err != nil {
-					return 0, fmt.Errorf("the step was not recovered at all: %v", in.Err)
-				}
-				return in.ExitStatus, nil
-			}),
 
 		CheckThat[RecoveredStep]("the step cannot be recovered and must be run again",
 			func(in RecoveredStep) error {
@@ -291,143 +189,108 @@ func AttachDefinitions() []brine.StepDefinition {
 							"it reported success with exit %d, which would mark an unfinished step complete",
 						in.ExitStatus)
 				}
+				if !in.AttachRefused {
+					return fmt.Errorf("Attach succeeded; a later Wait error is not a recovery refusal: %v", in.Err)
+				}
+				if !strings.Contains(in.Message, "no completion status") {
+					return fmt.Errorf("expected Attach to refuse missing completion status, got %q", in.Message)
+				}
 				return nil
 			}),
 	}
 }
 
-func attachableContainer(res brine.Resources, handle string, seed func(*fake.Clientset) error) (runtime.Container, context.Context, error) {
-	cluster, err := NewCluster(res, WithExecutor(localExecutor{}))
+// recoveryContainer uses the real API/database worker and its production transport.
+// Recovery must not execute commands; the cases return a recorded result or refuse.
+func recoveryContainer(in WorkerReady, handle string) (runtime.Container, error) {
+	if in.ProducerExecutor == nil {
+		return nil, fmt.Errorf("recovery worker has no production exec transport")
+	}
+	in.Executor = in.ProducerExecutor
+	in = in.rebuild()
+	container, _, err := in.Worker.FindOrCreateContainer(in.Ctx, db.NewFixedHandleContainerOwner(handle), db.ContainerMetadata{}, runtime.ContainerSpec{TeamID: in.TeamID, ImageSpec: runtime.ImageSpec{ImageURL: "docker:///alpine"}}, nil)
 	if err != nil {
-		return nil, nil, err
+		return nil, fmt.Errorf("find or create recovery container: %w", err)
 	}
-	ctx, clientset, worker := cluster.Ctx, cluster.Clientset, cluster.Worker
-	// Seeding only adds objects to the fake, so it is equivalent after
-	// construction — the worker reads the clientset lazily.
-	if seed != nil {
-		if err := seed(clientset); err != nil {
-			return nil, nil, fmt.Errorf("seed cluster: %w", err)
-		}
-	}
-
-	container, _, err := worker.FindOrCreateContainer(
-		ctx,
-		db.NewFixedHandleContainerOwner(handle),
-		db.ContainerMetadata{},
-		runtime.ContainerSpec{ImageSpec: runtime.ImageSpec{ImageURL: "docker:///alpine"}},
-		&noopDelegate{},
-	)
-	if err != nil {
-		return nil, nil, fmt.Errorf("find or create container: %w", err)
-	}
-	return container, ctx, nil
+	return container, nil
 }
 
+// recoverUnrecordedPod observes the API-default Pending state without writing
+// status. Literal unreported-phase policy is covered by TestExecRecoveryPolicy.
+func recoverUnrecordedPod(in WorkerReady, handle string) (RecoveredStep, error) {
+	pods := in.Clientset.CoreV1().Pods(in.Namespace)
+	pod, err := pods.Create(in.Ctx, &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: handle, Namespace: in.Namespace, Labels: map[string]string{"concourse.ci/worker": in.Worker.Name()}},
+		Spec:       corev1.PodSpec{RestartPolicy: corev1.RestartPolicyNever, Containers: []corev1.Container{{Name: "main", Image: "alpine", Command: []string{"sh", "-c", "sleep 86400"}}}},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		return RecoveredStep{}, fmt.Errorf("create recovery pod: %w", err)
+	}
+	if pod.UID == "" || pod.ResourceVersion == "" {
+		return RecoveredStep{}, fmt.Errorf("recovery pod has no API identity")
+	}
+
+	observed, err := pods.Get(in.Ctx, handle, metav1.GetOptions{})
+	if err != nil {
+		return RecoveredStep{}, fmt.Errorf("read reported recovery pod: %w", err)
+	}
+	if observed.UID != pod.UID || observed.Status.Phase != corev1.PodPending {
+		return RecoveredStep{}, fmt.Errorf("recovery input was not persisted: UID %q, phase %q", observed.UID, observed.Status.Phase)
+	}
+	if observed.ResourceVersion != pod.ResourceVersion {
+		return RecoveredStep{}, fmt.Errorf("Pending recovery pod changed after creation")
+	}
+	fmt.Printf("actual API-default recovery: pod %s/%s UID %s unchanged RV %s phase Pending; no status write\n", in.Namespace, handle, observed.UID, observed.ResourceVersion)
+	container, err := recoveryContainer(in, handle)
+	if err != nil {
+		return RecoveredStep{}, err
+	}
+	return attachAndWait(in.Ctx, container)
+}
 func attachAndWait(ctx context.Context, container runtime.Container) (RecoveredStep, error) {
 	process, err := container.Attach(ctx, "some-process-id", runtime.ProcessIO{})
 	if err != nil {
-		return RecoveredStep{Err: err, Message: err.Error()}, nil
+		return RecoveredStep{AttachRefused: true, Err: err, Message: err.Error()}, nil
 	}
 	result, waitErr := process.Wait(ctx)
 	msg := errorMessage(waitErr)
 	return RecoveredStep{ExitStatus: result.ExitStatus, Err: waitErr, Message: msg}, nil
 }
 
-// SidecarLogs is the state after a step with sidecars has run and its output
-// has been collected.
-type SidecarLogs struct {
-	Stdout        string
-	SidecarWriter string
-	Err           error
-}
-
-// SidecarLogDefinitions covers SC-07 — where a sidecar's output ends up.
-//
-// The ginkgo tests assert that `GetLogs` was REQUESTED for the sidecar by
-// name, which is a call, not an effect. What a user experiences is whether the
-// database container's log appears in their build output at all, and whether
-// it is distinguishable from the step's own. So these scenarios assert the
-// bytes arrive, and where.
-func SidecarLogDefinitions() []brine.StepDefinition {
-	return []brine.StepDefinition{
-
-		Transform[ContainerDraft, SidecarLogs](
-			"the step runs with a dedicated log stream for sidecar {string}",
-			func(in ContainerDraft, a Args) (SidecarLogs, error) {
-				sidecarBuf := new(bytes.Buffer)
-				return runWithSidecarIO(in, runtime.ProcessIO{
-					Stdout:         new(bytes.Buffer),
-					SidecarWriters: map[string]io.Writer{a.String(0): sidecarBuf},
-				}, sidecarBuf)
-			},
-		),
-
-		brine.DefineMap[ContainerDraft, SidecarLogs](
-			"the step runs with nowhere separate to put sidecar output",
-			func(in ContainerDraft, _ brine.Params, _ *brine.Recorder) (SidecarLogs, error) {
-				return runWithSidecarIO(in, runtime.ProcessIO{Stdout: new(bytes.Buffer)}, nil)
-			},
-		),
-
-		CheckThat[SidecarLogs]("the sidecar's output arrives on its own stream",
-			func(in SidecarLogs) error {
-				if in.SidecarWriter == "" {
-					return fmt.Errorf(
-						"expected the sidecar's log on its dedicated stream; nothing arrived, so a user watching " +
-							"that sidecar would see an empty pane")
-				}
-				return nil
-			}),
-
-		// The combinator abbreviates the log it prints, which is what this
-		// used to hand-roll; truncating inside the getter would instead NARROW
-		// the assertion, because a label past the cut would stop matching.
-		CheckContains[SidecarLogs]("the sidecar's output is folded into the build log, labelled {string}",
-			"the build log",
-			func(in SidecarLogs) (string, error) { return in.Stdout, nil },
-			func(SidecarLogs) string {
-				return "the label is what makes the sidecar's output distinguishable from the step's own"
-			}),
+// The kubelet supplies the previous check pod's terminal state and logs.
+// The following Run/assertion still tests replacement, not resource execution.
+func prepareLivePreviousCheck(in LiveTaskPlan, rec *brine.Recorder, phase string) (LeftoverPod, error) {
+	code := 0
+	switch corev1.PodPhase(phase) {
+	case corev1.PodSucceeded:
+	case corev1.PodFailed:
+		code = 1
+	default:
+		return LeftoverPod{}, fmt.Errorf("expected a terminal previous pod, got %q", phase)
 	}
-}
-
-func runWithSidecarIO(in ContainerDraft, io0 runtime.ProcessIO, sidecarBuf *bytes.Buffer) (SidecarLogs, error) {
-	container, _, err := in.Worker.FindOrCreateContainer(
-		in.Ctx,
-		db.NewFixedHandleContainerOwner(in.Handle),
-		db.ContainerMetadata{Type: db.ContainerTypeTask},
-		runtime.ContainerSpec{
-			TeamID:    1,
-			Dir:       in.Dir,
-			ImageSpec: runtime.ImageSpec{ImageURL: in.ImageURL},
-			Sidecars:  in.Sidecars,
-		},
-		&noopDelegate{},
-	)
+	w, err := newLiveRuntimeWorker(in.Database, rec)
 	if err != nil {
-		return SidecarLogs{}, fmt.Errorf("find or create container: %w", err)
+		return LeftoverPod{}, err
 	}
-
-	process, err := container.Run(in.Ctx, runtime.ProcessSpec{Path: "/bin/sh"}, io0)
+	const handle = "aaaa1111-bbbb-cccc-dddd-eeee2222ffff"
+	metadata := db.ContainerMetadata{Type: db.ContainerTypeCheck, StepName: "my-time"}
+	name := jetbridge.GeneratePodName(metadata, handle)
+	grace := int64(1)
+	pods := w.Clientset.CoreV1().Pods(w.Namespace)
+	original, err := pods.Create(w.Ctx, &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Labels: map[string]string{"concourse.ci/worker": w.Worker.Name(), "concourse.ci/type": "check"}},
+		Spec: corev1.PodSpec{RestartPolicy: corev1.RestartPolicyNever, TerminationGracePeriodSeconds: &grace, Containers: []corev1.Container{
+			{Name: "main", Image: "busybox:1.37.0", Command: []string{"sh", "-ec", fmt.Sprintf("printf 'previous-check-finished\\n'; exit %d", code)}},
+		}},
+	}, metav1.CreateOptions{})
 	if err != nil {
-		return SidecarLogs{}, fmt.Errorf("run container: %w", err)
+		return LeftoverPod{}, err
 	}
-
-	if err := updateTaskPodStatus(in.Ctx, in.Clientset, in.Namespace, in.Handle, func(pod *corev1.Pod) {
-		pod.Status.Phase = corev1.PodSucceeded
-		pod.Status.ContainerStatuses = []corev1.ContainerStatus{terminatedStatus("main", corev1.ContainerStateTerminated{ExitCode: 0})}
-	}); err != nil {
-		return SidecarLogs{}, err
+	pod, log, err := awaitLivePodExit(w.Ctx, w.Clientset, original, code, "previous-check-finished\n")
+	if err != nil {
+		return LeftoverPod{}, err
 	}
-
-	_, waitErr := process.Wait(in.Ctx)
-
-	out := SidecarLogs{Err: waitErr}
-	if b, ok := io0.Stdout.(*bytes.Buffer); ok {
-		out.Stdout = b.String()
-	}
-	if sidecarBuf != nil {
-		out.SidecarWriter = sidecarBuf.String()
-	}
-	return out, nil
+	c := pod.Status.ContainerStatuses[0]
+	fmt.Printf("actual previous check: pod %s/%s UID %s RV %s node %s phase %s container %s exit=%d reason=%s log=%q\n", w.Namespace, name, pod.UID, pod.ResourceVersion, pod.Spec.NodeName, pod.Status.Phase, c.ContainerID, code, c.State.Terminated.Reason, log)
+	return LeftoverPod{Namespace: w.Namespace, Worker: w.Worker, Clientset: w.Clientset, Ctx: w.Ctx, TeamID: w.TeamID, Handle: handle, Metadata: metadata, PodName: name, PreviousUID: pod.UID}, nil
 }

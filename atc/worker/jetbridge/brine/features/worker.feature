@@ -15,8 +15,11 @@ Feature: A Kubernetes worker serving containers, volumes and artifacts
   Addendum 2. It never asserts which pod name was handed to the executor, and
   it never asserts that a volume is of a particular Go type. Both are replaced
   by the effect: a read that reaches the artifact daemon, or a read that dies
-  with the producer pod. The executor here is a real one that runs commands;
-  the daemon is a real HTTP server.
+  with the producer pod. The daemon is the production binary. The producer
+  fallback uses the real Kubernetes exec API. Running-pod lookup and intercept
+  fixtures live in live/interception.feature and require real kubelet execution.
+  Reaped-producer fixtures here establish an API identity and verify its deletion;
+  they do not claim that the deleted pod executed.
 
   # --------------------------------------------------------------------------
   # Identity
@@ -52,7 +55,8 @@ Feature: A Kubernetes worker serving containers, volumes and artifacts
     Given a Kubernetes worker "k8s-worker-1" with a database behind it
     And the database cannot transition containers to created
     When a task container "test-handle" is requested for step "my-task"
-    Then the container request fails saying "db connection lost"
+    Then the container request fails saying "brine_container_creation"
+    And the container request fails saying "mark container as created"
     And the container "test-handle" is left in state "failed"
 
   # A step that is retried, or a web that restarted mid-step, asks for the same
@@ -78,65 +82,13 @@ Feature: A Kubernetes worker serving containers, volumes and artifacts
     Then the container is found
     And it carries the database row for handle "lookup-handle"
 
-  # A pod nobody has a row for is not a container. Reporting it as one would
-  # let a caller hijack a pod Concourse cannot account for.
-  Scenario: A pod with no container row is not a container
-    Given a Kubernetes worker "k8s-worker-1" with a database behind it
-    And the cluster is running a pod "orphan-pod" that no container row refers to
-    When the container "orphan-pod" is looked up
-    Then the container is not found
-
   Scenario: A handle that was never issued is not found
     Given a Kubernetes worker "k8s-worker-1" with a database behind it
     When the container "nonexistent" is looked up
     Then the container is not found
 
-  # --------------------------------------------------------------------------
-  # Intercepting a step
-  # --------------------------------------------------------------------------
-  #
-  # `fly intercept -j my-pipeline/unit-test`. The database handle is an opaque
-  # UUID; the pod the step created is named from its metadata. These three
-  # scenarios are the whole reason that distinction matters.
-
-  Scenario: Intercepting a step attaches to the pod the step created
-    Given a Kubernetes worker "k8s-worker-1" with a database behind it
-    And the worker can exec into pods
-    And a task step of build 42 of "my-pipeline/unit-test" was recorded under the opaque handle "550e8400-e29b-41d4-a716-446655440000"
-    And the step created the pod "my-pipeline-unit-test-b42-task-550e8400"
-    When the operator intercepts the container "550e8400-e29b-41d4-a716-446655440000" and runs "echo interactive"
-    Then the interception succeeds
-    And the operator sees "interactive"
-    And the cluster still holds only the pod "my-pipeline-unit-test-b42-task-550e8400"
-
-  # The decoy is the point. It is named after the raw handle, so a worker that
-  # resolved the handle straight to a pod name would find it, attach, and
-  # report success. Only a worker that generated the pod name from the step's
-  # metadata can fail here — and failing is the correct answer, because
-  # fabricating a pod from an empty ContainerSpec produces a misleading
-  # "empty image for resource type (unknown)".
-  Scenario: An interception whose pod is gone says so rather than fabricating one
-    Given a Kubernetes worker "k8s-worker-1" with a database behind it
-    And the worker can exec into pods
-    And a task step of build 42 of "my-pipeline/unit-test" was recorded under the opaque handle "550e8400-e29b-41d4-a716-446655440000"
-    And the step created the pod "my-pipeline-unit-test-b42-task-550e8400"
-    And that pod has since been reaped
-    And a decoy pod named after the handle is running
-    When the operator intercepts the container "550e8400-e29b-41d4-a716-446655440000" and runs "echo interactive"
-    Then the interception fails saying "has no pod to intercept"
-    And the cluster still holds only the pod "550e8400-e29b-41d4-a716-446655440000"
-
-  # Replacing a completed pod would destroy the exit-status annotation a
-  # restarted web reads to resume the step, turning a hijack into data loss.
-  Scenario: An interception does not replace a pod that already exited
-    Given a Kubernetes worker "k8s-worker-1" with a database behind it
-    And the worker can exec into pods
-    And a task step of build 42 of "my-pipeline/unit-test" was recorded under the opaque handle "550e8400-e29b-41d4-a716-446655440000"
-    And the step created the pod "my-pipeline-unit-test-b42-task-550e8400"
-    And that pod has since finished with exit status "0"
-    When the operator intercepts the container "550e8400-e29b-41d4-a716-446655440000" and runs "echo interactive"
-    Then the interception fails saying "already exited"
-    And the pod "my-pipeline-unit-test-b42-task-550e8400" still records exit status "0"
+  # Interception routing, real execution and completed-pod preservation live
+  # together in live/interception.feature.
 
   # --------------------------------------------------------------------------
   # Artifact volumes
@@ -195,14 +147,14 @@ Feature: A Kubernetes worker serving containers, volumes and artifacts
     Given a Kubernetes worker "k8s-worker-1" with a database behind it
     And the volume repository cannot transition volumes to created
     When the worker creates a volume for an artifact
-    Then creating the volume fails saying "transition error"
+    Then creating the volume fails saying "brine_volume_creation"
     And a volume for this worker is left in state "creating"
 
   Scenario: A volume whose artifact cannot be initialised leaves no artifact behind
     Given a Kubernetes worker "k8s-worker-1" with a database behind it
     And the volume repository cannot initialise artifacts
     When the worker creates a volume for an artifact
-    Then creating the volume fails saying "artifact init error"
+    Then creating the volume fails saying "brine_artifact_initialization"
     And no artifact is recorded
 
   # --------------------------------------------------------------------------
@@ -249,6 +201,8 @@ Feature: A Kubernetes worker serving containers, volumes and artifacts
   # Resource caches already on a daemon
   # --------------------------------------------------------------------------
 
+  # These cases use legacy database rows with no durable key. Their local
+  # daemon alias is rc-<id>; they do not exercise content-addressed naming.
   Scenario: A resource cache a daemon already holds is found and readable
     Given a Kubernetes worker "k8s-worker-1" with a database behind it
     And the cluster runs an artifact daemon holding the resource cache 42
@@ -314,7 +268,8 @@ Feature: A Kubernetes worker serving containers, volumes and artifacts
     And the worker has no artifact daemon configured
     When a mounted step output volume "legacy-handle" is turned into an artifact
     Then the artifact's handle is "legacy-handle"
-    And reading the artifact fails saying "the producer pod has been reaped"
+    And reading the artifact fails saying "producer-pod"
+    And reading the artifact fails saying "not found"
 
   # A step with nothing to publish must get nothing back, not a wrapper around
   # nothing — get_step.go calls ArtifactFromVolume unconditionally and would
@@ -330,3 +285,10 @@ Feature: A Kubernetes worker serving containers, volumes and artifacts
     And the worker has no artifact daemon configured
     When a step with no output volume asks for an artifact
     Then no artifact is handed back
+
+
+  # API-only submission: no kubelet, command execution or reported pod status.
+  Scenario: Concurrent submissions retain independent container and pod identities
+    Given a Kubernetes worker "k8s-worker-1" with a database behind it
+    When 5 independent containers are created and submitted concurrently
+    Then all 5 containers have independent records and submitted pods

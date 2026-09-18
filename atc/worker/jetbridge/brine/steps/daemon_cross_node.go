@@ -79,7 +79,7 @@ package steps
 // was measured at +70 seconds when the first real-daemon scenarios were
 // wired up. The API server is the exception and is deliberately NOT started
 // here: it is the suite-scoped "real-cluster" resource, already paid for by
-// pod-watch-real.feature, and this feature adds nothing to its cost.
+// pod-watch.feature, and this feature adds nothing to its cost.
 //
 // WHAT IS ASSERTED IS THE OUTCOME. Every check below reads the destination
 // directory the consumer named: which bytes are in it, whether a link is
@@ -276,33 +276,20 @@ var onlyLoopback = []string{"--listen-address", "127.0.0.1"}
 // peers on its own --port, so on one host the two daemons can only be told
 // apart by the address they answer on.
 func routeToPeer(listenAddr, targetAddr string) (net.Listener, error) {
-	ln, err := net.Listen("tcp", listenAddr)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"listen on %s to publish the peer there: %w (the asking daemon is started with "+
-				"--listen-address 127.0.0.1 precisely so this port is free at every other address; "+
-				"something else on this host holds it)",
-			listenAddr, err)
-	}
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return // the listener was closed at scenario end
-			}
-			go forwardConn(conn, targetAddr)
-		}
-	}()
-	return ln, nil
+	return routeWithDrops(listenAddr, targetAddr, 0, false)
 }
 
-func forwardConn(client net.Conn, targetAddr string) {
+func forwardConn(ctx context.Context, client net.Conn, targetAddr string) {
+	stopClient := context.AfterFunc(ctx, func() { _ = client.Close() })
+	defer stopClient()
 	defer client.Close()
-	upstream, err := net.DialTimeout("tcp", targetAddr, 10*time.Second)
+	upstream, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp", targetAddr)
 	if err != nil {
 		return
 	}
 	defer upstream.Close()
+	stopUpstream := context.AfterFunc(ctx, func() { _ = upstream.Close() })
+	defer stopUpstream()
 
 	// Half-close in each direction as it drains, so the peer sees the end of a
 	// request body and the daemon sees the end of a response.

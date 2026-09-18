@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagerctx"
@@ -25,141 +24,12 @@ import (
 // component that decides, once a tick, which resources and resource types the
 // cluster is going to look at.
 //
-// THE ONE DOUBLE IN THIS FILE, AND WHY IT ANSWERS RATHER THAN RECORDS.
-//
-// The scanner is constructed with an imageresolver.Resolver, and the ginkgo
-// suite passed a counterfeiter FakeResolver: it recorded its arguments and the
-// tests asserted ResolveCallCount() and ResolveArgsForCall(0). That is a call
-// count, twice over, and it is also weaker than it looks — a scanner that
-// resolved the right repository and then persisted somebody else's digest
-// would pass every one of those assertions.
-//
-// imageRegistry below is a working double instead. It holds images at
-// (repository, tag) and answers with the digest it holds, refusing what it
-// does not hold and refusing a private image unless the credentials match. So
-// every assertion in the feature file is on a digest that reached the
-// database, and the digest identifies WHICH image was asked for: seed two
-// repositories with two digests and the persisted digest says which one the
-// scan resolved. The credential test is the same trick — a wrong password
-// means no digest, so "the digest landed" IS the assertion that the
-// credentials arrived intact.
-//
-// A REAL registry was the other option and is nearly available: go-containerregistry
-// ships an in-process one (pkg/registry), and atc/imageresolver/resolver_test.go
-// already runs the production resolver against it over httptest. It is not
-// used here only because this module has its own go.mod and reaching it needs
-// a require line, which is outside what this migration is allowed to touch.
-// Nothing else stands in the way, and it is the obvious next strengthening:
-// it would put atc/imageresolver's HTTP path under these scenarios too.
-//
-// THE OTHER DOUBLES ARE FAULTS, NOT ANSWERS.
-//
-// Three failures are injected, and none of them fabricates an error:
-//
-//   - "the database has gone away" builds the check factory over a connection
-//     that has been closed, exactly as the gc pilot does. The refusal is
-//     PostgreSQL's.
-//   - "the resource types table has been renamed" renames a real table, so the
-//     second of the scanner's two enumerations fails against real PostgreSQL
-//     while the first still succeeds. There is no way to fail one and not the
-//     other through a closed connection, and this needs no wrapper at all.
-//   - "the garbage collector deletes the scope" DELETES THE ROW. The
-//     FK violation that follows is raised by PostgreSQL, on the real
-//     constraint, at the real moment. The ginkgo suite constructed a
-//     *pgconn.PgError with SQLSTATE 23503 by hand; a scanner that classified
-//     on a string rather than on the driver error would have passed that.
-//
-// WHAT THE TABLES ARE READ FOR. Every outcome here is a row: the digest on the
-// resource's scope, whether a scope was ever attached, the last-check time
-// that decides whether the next tick bothers, and the check build the scanner
-// pushed onto the channel the build tracker reads. Nothing counts calls.
-
-// -----------------------------------------------------------------------
-// The registry
-// -----------------------------------------------------------------------
-
-// imageRegistry is an OCI registry that answers. It is the seam the scanner
-// takes when it resolves an image natively instead of scheduling a check pod.
-type imageRegistry struct {
-	mu      sync.Mutex
-	images  map[string]registryImage
-	crashes map[string]bool
-}
-
-type registryImage struct {
-	digest string
-	// username empty means the image is public. A private image is refused
-	// unless the credentials the scanner carried match exactly, which is what
-	// makes "the digest landed" a statement about credentials.
-	username string
-	password string
-}
-
-func newImageRegistry() *imageRegistry {
-	return &imageRegistry{
-		images:  map[string]registryImage{},
-		crashes: map[string]bool{},
-	}
-}
-
-func (r *imageRegistry) hold(ref, digest, username, password string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.images[canonicalRef(ref)] = registryImage{digest: digest, username: username, password: password}
-}
-
-// crashOn arms a panic for one reference. Resolve answers the crash BEFORE it
-// looks the image up, so a reference can be both held and crashing — which is
-// what the crash scenario needs: an image the registry would otherwise resolve
-// is the only way "left unresolved" can witness the panic rather than merely
-// re-stating that the registry does not hold it.
-func (r *imageRegistry) crashOn(ref string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.crashes[canonicalRef(ref)] = true
-}
-
-// Resolve mirrors imageresolver.registryResolver's contract, including both of
-// its edge rules: an empty tag means "latest", and an empty repository is
-// refused before anything else happens. Both belong to production and are
-// pinned there — atc/imageresolver/resolver_test.go's TestResolver_DefaultTag
-// and TestResolver_EmptyRepository — and are repeated here so a scenario can
-// leave the tag off a reference the way a pipeline author does, and so a
-// scenario cannot accidentally be written over a registry more permissive than
-// the real one.
-//
-// The empty-repository refusal is also why no scenario in this file exercises
-// lidar's own `repository == ""` guard: production refuses at this same line,
-// so the guard changes nothing observable, and a double that answered for the
-// empty repository would only manufacture a state no registry can reach. See
-// the last DISPOSITION in features/resource-checking.feature.
-func (r *imageRegistry) Resolve(_ context.Context, repository, tag string, auth *imageresolver.BasicAuth) (string, error) {
-	if repository == "" {
-		return "", fmt.Errorf("empty repository")
-	}
-	ref := canonicalRef(repository + ":" + tag)
-
-	r.mu.Lock()
-	image, held := r.images[ref]
-	crash := r.crashes[ref]
-	r.mu.Unlock()
-
-	if crash {
-		panic("the registry crashed answering for " + ref)
-	}
-	if !held {
-		return "", fmt.Errorf("resolving digest for %q: MANIFEST_UNKNOWN", ref)
-	}
-	if image.username != "" {
-		if auth == nil {
-			return "", fmt.Errorf("resolving digest for %q: UNAUTHORIZED, no credentials were offered", ref)
-		}
-		if auth.Username != image.username || auth.Password != image.password {
-			return "", fmt.Errorf("resolving digest for %q: UNAUTHORIZED, wrong credentials", ref)
-		}
-	}
-	return image.digest, nil
-}
+// Scanner outcomes are persisted in real PostgreSQL. Image resolution uses the
+// production OCI resolver and real TLS registries, including Distribution
+// authentication. See scan_images.go for publication and identity assertions.
+// The single explicit panic injector remains unresolved migration work.
+// Database failures still come from closed connections, renamed tables and
+// actual scope deletion, not constructed error values.
 
 func splitRef(ref string) (string, string) {
 	slash := strings.LastIndex(ref, "/")
@@ -176,18 +46,6 @@ func canonicalRef(ref string) string {
 		tag = "latest"
 	}
 	return repository + ":" + tag
-}
-
-// refSource is the pipeline source a scenario's "reading <ref>" produces. The
-// tag is only written when the scenario gave one, so a reference with no tag
-// exercises the empty-tag path rather than quietly filling it in.
-func refSource(ref string) atc.Source {
-	repository, tag := splitRef(ref)
-	source := atc.Source{"repository": repository}
-	if tag != "" {
-		source["tag"] = tag
-	}
-	return source
 }
 
 // -----------------------------------------------------------------------
@@ -226,7 +84,7 @@ func (d *pipelineDraft) jobs() atc.JobConfigs {
 // been arranged to go wrong.
 type ScanReady struct {
 	DB       JetbridgeDB
-	Registry *imageRegistry
+	Registry *scanImages
 
 	// Resolver is a nil INTERFACE when lidar was started without one, which is
 	// the switch the scanner branches on. A typed nil would not be.
@@ -288,30 +146,31 @@ func scanSetupDefinitions() []brine.StepDefinition {
 				return in
 			}),
 
-		Refine[ScanReady]("the registry holds {string} at the digest {string}",
-			func(in ScanReady, a Args) ScanReady {
-				in.Registry.hold(a.String(0), a.String(1), "", "")
-				return in
+		Transform[ScanReady, ScanReady]("the registry holds {string} as image {string}",
+			func(in ScanReady, a Args) (ScanReady, error) {
+				return in, in.Registry.publish(a.String(0), a.String(1), "", "")
 			}),
-
-		Refine[ScanReady]("the registry holds {string} at the digest {string} behind the login {string} and the password {string}",
-			func(in ScanReady, a Args) ScanReady {
-				in.Registry.hold(a.String(0), a.String(1), a.String(2), a.String(3))
-				return in
+		Transform[ScanReady, ScanReady]("the registry holds {string} as image {string} behind the login {string} and the password {string}",
+			func(in ScanReady, a Args) (ScanReady, error) {
+				return in, in.Registry.publish(a.String(0), a.String(1), a.String(2), a.String(3))
 			}),
-
-		// The panic seam. util.DumpPanic guards one scan unit at a time; a
-		// registry that crashes is the only way to reach it without wrapping
-		// production, and the crash lands inside exactly the same recover.
-		//
-		// Pair this with a "holds" step for the SAME reference. Without one the
-		// registry refuses the image anyway, the scan leaves the same row
-		// untouched whether the panic fired or not, and the scenario asserts
-		// nothing about the crash.
-		Refine[ScanReady]("the registry crashes when asked for {string}",
-			func(in ScanReady, a Args) ScanReady {
-				in.Registry.crashOn(a.String(0))
-				return in
+		Transform[ScanReady, ScanReady]("a resolver panic is injected for {string}",
+			func(in ScanReady, a Args) (ScanReady, error) {
+				if in.Resolver == nil {
+					return in, fmt.Errorf("panic injection needs a resolver")
+				}
+				source := in.Registry.source(a.String(0))
+				repository := source["repository"].(string)
+				tag, _ := source["tag"].(string)
+				// Witness that this actual image resolves before injecting a
+				// panic; a missing image would make the absence assertion empty.
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if _, err := in.Resolver.Resolve(ctx, repository, tag, nil); err != nil {
+					return in, fmt.Errorf("panic premise image does not resolve: %w", err)
+				}
+				in.Resolver = panicImageResolver{next: in.Resolver, ref: canonicalRef(repository + ":" + tag)}
+				return in, nil
 			}),
 
 		Refine[ScanReady]("everything after this is on a second pipeline in another team",
@@ -382,7 +241,7 @@ func scanSetupDefinitions() []brine.StepDefinition {
 				in.addResource(atc.ResourceConfig{
 					Name:   a.String(0),
 					Type:   "registry-image",
-					Source: refSource(a.String(1)),
+					Source: in.Registry.source(a.String(1)),
 				}, true)
 				return in
 			}),
@@ -392,7 +251,7 @@ func scanSetupDefinitions() []brine.StepDefinition {
 				in.addResourceType(atc.ResourceType{
 					Name:   a.String(0),
 					Type:   "registry-image",
-					Source: refSource(a.String(1)),
+					Source: in.Registry.source(a.String(1)),
 				})
 				return in
 			}),
@@ -450,13 +309,13 @@ func scanSetupDefinitions() []brine.StepDefinition {
 
 		Refine[ScanReady]("the resource {string} reads {string} instead",
 			func(in ScanReady, a Args) ScanReady {
-				in.editResource(a.String(0), func(r *atc.ResourceConfig) { r.Source = refSource(a.String(1)) })
+				in.editResource(a.String(0), func(r *atc.ResourceConfig) { r.Source = in.Registry.source(a.String(1)) })
 				return in
 			}),
 
 		Refine[ScanReady]("the resource type {string} reads {string} instead",
 			func(in ScanReady, a Args) ScanReady {
-				in.editResourceType(a.String(0), func(r *atc.ResourceType) { r.Source = refSource(a.String(1)) })
+				in.editResourceType(a.String(0), func(r *atc.ResourceType) { r.Source = in.Registry.source(a.String(1)) })
 				return in
 			}),
 
@@ -493,17 +352,21 @@ func newScan(pattern string, withRegistry bool) brine.StepDefinition {
 	return brine.DefineMapUsing[brine.Empty, ScanReady](
 		pattern,
 		[]string{"jetbridge-db"},
-		func(_ brine.Empty, _ brine.Params, _ *brine.Recorder, res brine.Resources) (ScanReady, error) {
+		func(_ brine.Empty, _ brine.Params, rec *brine.Recorder, res brine.Resources) (ScanReady, error) {
 			database, ok := res.Get("jetbridge-db").(JetbridgeDB)
 			if !ok {
 				return ScanReady{}, fmt.Errorf("jetbridge-db resource is %T", res.Get("jetbridge-db"))
 			}
 
+			images, err := newScanImages(rec)
+			if err != nil {
+				return ScanReady{}, err
+			}
 			active := true
 			checkBuilds := make(chan db.Build, 128)
 			ready := ScanReady{
 				DB:          database,
-				Registry:    newImageRegistry(),
+				Registry:    images,
 				Workers:     10,
 				CheckBuilds: checkBuilds,
 				CheckFactory: db.NewCheckFactory(
@@ -518,7 +381,7 @@ func newScan(pattern string, withRegistry bool) brine.StepDefinition {
 				}},
 			}
 			if withRegistry {
-				ready.Resolver = ready.Registry
+				ready.Resolver = images.resolver()
 			}
 			return ready, nil
 		},
@@ -908,14 +771,16 @@ func scanRunDefinitions() []brine.StepDefinition {
 		),
 
 		brine.DefineMap[ScanDone, ScanDone](
-			"the registry now holds {string} at the digest {string}",
+			"the registry now holds {string} as image {string}",
 			func(in ScanDone, p brine.Params, _ *brine.Recorder) (ScanDone, error) {
-				pattern := "the registry now holds {string} at the digest {string}"
+				pattern := "the registry now holds {string} as image {string}"
 				ref, digest, err := twoParams(pattern, p)
 				if err != nil {
 					return ScanDone{}, err
 				}
-				in.Ready.Registry.hold(ref, digest, "", "")
+				if err := in.Ready.Registry.publish(ref, digest, "", ""); err != nil {
+					return in, err
+				}
 				return in, nil
 			},
 		),
@@ -1108,12 +973,10 @@ func scanOutcomeDefinitions() []brine.StepDefinition {
 		CheckThat[ScanDone]("every resource in the pipeline was checked exactly once",
 			func(in ScanDone) error { return in.everyResourceCheckedOnce() }),
 
-		CheckStringFor[ScanDone]("the resource {string} resolved to the digest {string}",
-			"the digest on the resource",
+		resolvedScanImage("the resource {string} resolved to image {string}",
 			func(in ScanDone, name string) (string, error) { return in.resourceDigest(name) }),
 
-		CheckStringFor[ScanDone]("the resource type {string} resolved to the digest {string}",
-			"the digest on the resource type",
+		resolvedScanImage("the resource type {string} resolved to image {string}",
 			func(in ScanDone, name string) (string, error) { return in.resourceTypeDigest(name) }),
 
 		// "left unresolved" is the strong absence: the scan touched neither
@@ -1142,14 +1005,21 @@ func scanOutcomeDefinitions() []brine.StepDefinition {
 		// What a step actually pulls. The digest is only useful once it is
 		// joined back to the repository, and this is the joined form the image
 		// fetch uses.
-		CheckStringFor[ScanDone]("the resource type {string} will be pulled as {string}",
-			"the image the resource type resolves to",
-			func(in ScanDone, name string) (string, error) {
-				resourceType, err := in.Ready.findResourceType(name)
+		Assert[ScanDone]("the resource type {string} will pull image {string} from {string}",
+			func(in ScanDone, a Args) error {
+				resourceType, err := in.Ready.findResourceType(a.String(0))
 				if err != nil {
-					return "", err
+					return err
 				}
-				return resourceType.ResolvedImage(), nil
+				digest, err := in.Ready.Registry.expectedDigest(a.String(1))
+				if err != nil {
+					return err
+				}
+				expected := in.Ready.Registry.repository(a.String(2)) + "@" + digest
+				if actual := resourceType.ResolvedImage(); actual != expected {
+					return fmt.Errorf("expected pinned image %q, got %q", expected, actual)
+				}
+				return nil
 			}),
 
 		// The clock that decides whether the next tick bothers. A resolve that

@@ -1,41 +1,7 @@
 package steps
 
-// Daemon mTLS and warm ownership: the executable half of
-// ../features/daemon-mtls.feature.
-//
-// Two families live here, and they share one conviction with daemon.go — the
-// double is a REAL implementation with one named behavioural difference, and it
-// records NOTHING. There is no gotClientCert, no restores counter, no
-// warmedNode field written by a handler. Every assertion below is on what a
-// production call handed back: the artifact bytes, the refusal text, or the
-// node a real probe reports the cache is now resident on.
-//
-// Family 1 — mTLS. The suite this replaces (daemon_tls_test.go) reached into
-// `client.Transport.(*http.Transport).TLSClientConfig` and counted
-// Certificates, checked RootCAs != nil, compared ServerName to a string. Those
-// are fields. A certificate that is configured but never presented, or a
-// ServerName copied into a config that is then never used to verify anything,
-// passes all of them. The daemon here is a real TLS server that only serves
-// clients it can authenticate, holding a certificate that names the headless
-// service and not the loopback address it is actually dialled at — which is
-// exactly the deployed shape, and the shape the "certificate is valid for
-// 127.0.0.1, not <podIP>" regression was about. The observable is whether the
-// artifact arrives.
-//
-// Family 2 — which node owns a warm. warmOwners keys its rendezvous hash on
-// the NODE NAME rather than the pod IP, so that a DaemonSet rolling update —
-// every pod IP replaced at once, the commonest churn event in the cluster —
-// does not move who owns a key and invalidate every warmed multi-gigabyte
-// cache at the same moment. Observing that needs more than one daemon, and a
-// daemon has to be reachable at an address of its own.
-//
-// One listener serves both nodes, as two VIRTUAL HOSTS. That is the named
-// behavioural difference: in the cluster each node's daemon is its own pod
-// with its own address, and here they are one process distinguished by the
-// address they were addressed AS — which is a thing real HTTP servers do, and
-// which keeps the ATC's choice of daemon expressed the only way it is ever
-// expressed, in the address it dialled. Each virtual host keeps its own node's
-// disk; the durable bucket behind them is shared, because it is one bucket.
+// The mTLS cases run the production artifact-daemon with real certificates,
+// registered files and HTTPS. Real warm ownership lives in real_warm.go.
 
 import (
 	"context"
@@ -45,26 +11,18 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
 	"math/big"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
-	"sync"
 	"time"
 
-	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
-	discoveryv1 "k8s.io/api/discovery/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes/fake"
 )
 
 // -----------------------------------------------------------------------
@@ -72,9 +30,8 @@ import (
 // -----------------------------------------------------------------------
 
 // MTLSPlan is a TLS-speaking artifact daemon and the ATC that will talk to it,
-// under description. Nothing is wired until the When step: whether the daemon
-// demands a client certificate, and which names its own certificate carries,
-// have to be decided before a listener exists.
+// under description. Nothing is wired until the When step: the certificate
+// names must be settled before its real TLS listener starts.
 type MTLSPlan struct {
 	Ctx       context.Context
 	Namespace string
@@ -84,8 +41,9 @@ type MTLSPlan struct {
 	// which is how a scenario can tell arrival from mere connectivity.
 	Artifacts map[string]string
 
-	// RequireClientCert makes the daemon refuse anyone it cannot authenticate,
-	// which is the whole of what "mTLS" means on the wire.
+	// RequireClientCert verifies the Given's authentication premise with a
+	// real unauthenticated read of a held artifact. TLS artifact routes are
+	// always protected in the production daemon.
 	RequireClientCert bool
 
 	// CertOmitsAddress narrows the daemon's own certificate to the service DNS
@@ -123,8 +81,8 @@ type mtlsMaterial struct {
 	caPEM      []byte
 	clientCert []byte
 	clientKey  []byte
-	server     tls.Certificate
-	clientPool *x509.CertPool
+	serverCert []byte
+	serverKey  []byte
 }
 
 func mintMTLSMaterial(dnsName string, ips []net.IP) (mtlsMaterial, error) {
@@ -156,28 +114,18 @@ func mintMTLSMaterial(dnsName string, ips []net.IP) (mtlsMaterial, error) {
 	if err != nil {
 		return mtlsMaterial{}, fmt.Errorf("server certificate: %w", err)
 	}
-	serverCert, err := tls.X509KeyPair(serverPEM, serverKeyPEM)
-	if err != nil {
-		return mtlsMaterial{}, fmt.Errorf("assemble server key pair: %w", err)
-	}
-
 	clientPEM, clientKeyPEM, err := signLeaf(ca, caKey, 3, "atc-client",
 		x509.ExtKeyUsageClientAuth, nil, nil)
 	if err != nil {
 		return mtlsMaterial{}, fmt.Errorf("client certificate: %w", err)
 	}
 
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(caPEM) {
-		return mtlsMaterial{}, fmt.Errorf("the minted CA certificate does not parse as PEM")
-	}
-
 	return mtlsMaterial{
 		caPEM:      caPEM,
 		clientCert: clientPEM,
 		clientKey:  clientKeyPEM,
-		server:     serverCert,
-		clientPool: pool,
+		serverCert: serverPEM,
+		serverKey:  serverKeyPEM,
 	}, nil
 }
 
@@ -217,80 +165,117 @@ func signLeaf(
 		nil
 }
 
-// writeATCCredentials puts the client certificate and the daemon CA where the
-// ATC's config says they are. The chart mounts them from a Secret; here they
-// are files in a directory that is removed when the scenario ends.
-func writeATCCredentials(m mtlsMaterial) (dir string, cfgCert, cfgKey, cfgCA string, err error) {
-	dir, err = os.MkdirTemp("", "brine-daemon-mtls-")
+// writeMTLSCredentials writes the real daemon and ATC credentials into one
+// scenario-owned directory. Missing ATC paths are derived beneath this owned
+// directory too, so another process cannot accidentally satisfy the setup.
+func writeMTLSCredentials(m mtlsMaterial) (string, error) {
+	dir, err := os.MkdirTemp("", "brine-daemon-mtls-")
 	if err != nil {
-		return "", "", "", "", fmt.Errorf("make certificate directory: %w", err)
+		return "", fmt.Errorf("make certificate directory: %w", err)
 	}
-	cfgCert = filepath.Join(dir, "client.crt")
-	cfgKey = filepath.Join(dir, "client.key")
-	cfgCA = filepath.Join(dir, "ca.crt")
-	for path, body := range map[string][]byte{
-		cfgCert: m.clientCert,
-		cfgKey:  m.clientKey,
-		cfgCA:   m.caPEM,
+	for name, body := range map[string][]byte{
+		"client.crt": m.clientCert,
+		"client.key": m.clientKey,
+		"server.crt": m.serverCert,
+		"server.key": m.serverKey,
+		"ca.crt":     m.caPEM,
 	} {
-		if writeErr := os.WriteFile(path, body, 0o600); writeErr != nil {
-			os.RemoveAll(dir)
-			return "", "", "", "", fmt.Errorf("write %s: %w", path, writeErr)
+		if err := os.WriteFile(filepath.Join(dir, name), body, 0o600); err != nil {
+			_ = os.RemoveAll(dir)
+			return "", fmt.Errorf("write %s: %w", name, err)
 		}
 	}
-	return dir, cfgCert, cfgKey, cfgCA, nil
+	return dir, nil
 }
 
-// -----------------------------------------------------------------------
-// The TLS daemon double
-// -----------------------------------------------------------------------
-
-// mtlsArtifactHandler answers the one route these scenarios use, and 404s
-// everything else — so a client that asks for a key the daemon does not have
-// gets nothing, and arrival means arrival.
-func mtlsArtifactHandler(artifacts map[string]string) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/artifacts/") {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		body, held := artifacts[strings.TrimPrefix(r.URL.Path, "/artifacts/")]
-		if !held {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Content-Type", "application/x-tar")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(body))
-	})
-}
-
-// serve starts the daemon described by the plan and returns it along with the
-// TLS material it was built from.
-func (p MTLSPlan) serve() (*httptest.Server, mtlsMaterial, error) {
+// serve uses an independent, verified TLS client for fixture setup. It must
+// not call the ATC TLS helper under test: an ATC mutation should break the
+// consumer's read, not the daemon's readiness probe or artifact registration.
+func (p MTLSPlan) serve() (_ *realDaemon, _ string, err error) {
 	dnsName := fmt.Sprintf("%s.%s.svc", p.Service, p.Namespace)
-
 	var ips []net.IP
 	if !p.CertOmitsAddress {
 		ips = []net.IP{net.ParseIP("127.0.0.1")}
 	}
 	material, err := mintMTLSMaterial(dnsName, ips)
 	if err != nil {
-		return nil, mtlsMaterial{}, err
+		return nil, "", err
 	}
-
-	server := httptest.NewUnstartedServer(mtlsArtifactHandler(p.Artifacts))
-	server.TLS = &tls.Config{
+	dir, err := writeMTLSCredentials(material)
+	if err != nil {
+		return nil, "", err
+	}
+	defer func() {
+		if err != nil {
+			_ = os.RemoveAll(dir)
+		}
+	}()
+	cert, err := tls.X509KeyPair(material.clientCert, material.clientKey)
+	if err != nil {
+		return nil, "", fmt.Errorf("assemble setup client certificate: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(material.caPEM) {
+		return nil, "", fmt.Errorf("the minted CA certificate does not parse as PEM")
+	}
+	transport := &http.Transport{TLSClientConfig: &tls.Config{
 		MinVersion:   tls.VersionTLS12,
-		Certificates: []tls.Certificate{material.server},
+		RootCAs:      pool,
+		ServerName:   dnsName,
+		Certificates: []tls.Certificate{cert},
+	}}
+	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+	defer client.CloseIdleConnections()
+	daemon, err := startRealDaemonWithClient("https", client,
+		"--tls-cert", filepath.Join(dir, "server.crt"),
+		"--tls-key", filepath.Join(dir, "server.key"),
+		"--tls-ca-cert", filepath.Join(dir, "ca.crt"))
+	if err != nil {
+		return nil, "", err
+	}
+	defer func() {
+		if err != nil {
+			_ = daemon.stop()
+		}
+	}()
+	for key, body := range p.Artifacts {
+		if !filepath.IsLocal(key) || key == "." {
+			return nil, "", fmt.Errorf("artifact key must name a local file: %q", key)
+		}
+		path := filepath.Join(daemon.Root, "produced", key)
+		// The daemon's existing file-serving path preserves these exact
+		// bytes. Its directory/tar behavior has separate behavioral cases.
+		if err := writeArtifactFile(path, body); err != nil {
+			return nil, "", err
+		}
+		if err := registerDaemonArtifact(p.Ctx, client, daemon.URL, key, path); err != nil {
+			return nil, "", err
+		}
 	}
 	if p.RequireClientCert {
-		server.TLS.ClientCAs = material.clientPool
-		server.TLS.ClientAuth = tls.RequireAndVerifyClientCert
+		if len(p.Artifacts) == 0 {
+			return nil, "", fmt.Errorf("client authentication requires a held artifact to probe")
+		}
+		anonymous := transport.Clone()
+		anonymous.TLSClientConfig.Certificates = nil
+		guest := &http.Client{Transport: anonymous, Timeout: 5 * time.Second}
+		defer guest.CloseIdleConnections()
+		for key := range p.Artifacts {
+			req, err := http.NewRequestWithContext(p.Ctx, http.MethodGet, daemon.URL+"/artifacts/"+key, nil)
+			if err != nil {
+				return nil, "", err
+			}
+			resp, err := guest.Do(req)
+			if err != nil {
+				return nil, "", fmt.Errorf("probe unauthenticated artifact read: %w", err)
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusUnauthorized {
+				return nil, "", fmt.Errorf("daemon served an unauthenticated artifact read with status %d, want 401", resp.StatusCode)
+			}
+		}
 	}
-	server.StartTLS()
-
-	return server, material, nil
+	return daemon, dir, nil
 }
 
 // config is the ATC side: TLS on, and the certificate paths in whichever of
@@ -308,209 +293,6 @@ func (p MTLSPlan) config(port int, cert, key, ca string) jetbridge.Config {
 }
 
 // -----------------------------------------------------------------------
-// Domain states — warm ownership
-// -----------------------------------------------------------------------
-
-// WarmRollPlan is a two-node cluster with a durable bucket behind it, plus
-// what each warm so far was answered with. The Whens take it in and out, so a
-// scenario can warm, let the cluster change underneath, and warm again.
-type WarmRollPlan struct {
-	Ctx      context.Context
-	Daemons  *rollingDaemons
-	Server   *httptest.Server
-	Cluster  *fake.Clientset
-	Client   *jetbridge.DaemonClient
-	Backend  *jetbridge.DaemonSetBackend
-	Rolled   bool
-	Observed []warmObservation
-}
-
-// warmObservation is one warm's outcome: whether a cache came back at all, and
-// which node a subsequent probe reports is now holding it. Both halves are
-// production output — FindResourceCache's own answer, and ProbeResourceCache's
-// — not anything a handler wrote down.
-type warmObservation struct {
-	Served bool
-	Node   string
-}
-
-// rollingDaemons is the artifact daemon on every node, as one listener.
-//
-// Each address is a pod; nodeFor says which node's pod is answering at that
-// address today, which is the only thing a DaemonSet roll actually changes.
-// disk is per node, because a node's hostPath belongs to the node and survives
-// its pod. store is the durable bucket, shared, because there is one bucket.
-type rollingDaemons struct {
-	mu      sync.Mutex
-	nodeFor map[string]string
-	disk    map[string]map[string]string
-	store   map[string]string
-}
-
-func newRollingDaemons() *rollingDaemons {
-	return &rollingDaemons{
-		nodeFor: map[string]string{},
-		disk:    map[string]map[string]string{},
-		store:   map[string]string{},
-	}
-}
-
-// handler answers as whichever node's daemon it was addressed as. A request
-// naming an address no pod answers on is a 404, exactly as it would be if
-// nothing were listening there.
-//
-// There is no /artifacts route: no scenario in this family reads the bytes.
-// What is being described is which node ends up holding the cache, and a
-// second scenario re-proving that a warmed cache is readable would only repeat
-// step-closing.feature.
-func (d *rollingDaemons) handler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		d.mu.Lock()
-		defer d.mu.Unlock()
-
-		host, _, err := net.SplitHostPort(r.Host)
-		if err != nil {
-			host = r.Host
-		}
-		node, answering := d.nodeFor[host]
-		if !answering {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-
-		// Capability rides every response at any status, which is how the ATC
-		// learns the cluster can warm at all.
-		w.Header().Set(jetbridge.DurableTierHeader, "enabled")
-
-		switch {
-		case strings.HasPrefix(r.URL.Path, "/resource-caches/"):
-			key := strings.TrimPrefix(r.URL.Path, "/resource-caches/")
-			if _, held := d.disk[node][key]; held {
-				w.WriteHeader(http.StatusOK)
-				return
-			}
-			w.WriteHeader(http.StatusNotFound)
-
-		case r.Method == http.MethodPost && r.URL.Path == "/durable/restore":
-			var body struct {
-				Key        string `json:"key"`
-				DurableKey string `json:"durable_key"`
-			}
-			_ = json.NewDecoder(r.Body).Decode(&body)
-
-			content, inStore := d.store[body.DurableKey]
-			if !inStore {
-				w.WriteHeader(http.StatusNotFound)
-				return
-			}
-			// A restore makes its own answer true: the object lands on THIS
-			// node's disk, which is what makes "where did it land" a question
-			// the cluster can be asked afterwards.
-			if d.disk[node] == nil {
-				d.disk[node] = map[string]string{}
-			}
-			d.disk[node][body.Key] = content
-			w.WriteHeader(http.StatusCreated)
-
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	})
-}
-
-// The two addresses the two pods answer on.
-//
-// Two spellings of loopback, because a second listener cannot have a second
-// address: the ATC reaches every daemon on ONE port — that is how the
-// DaemonSet is deployed, one containerPort — and a machine this suite has to
-// run on unattended cannot be relied on to let anything bind a loopback alias.
-// Two names for one listener is what is left, and it is enough: an address is
-// all the ATC ever has to go on, and the daemon behind each one keeps its own
-// node's disk.
-//
-// The roll hands the same two addresses back out the other way round rather
-// than inventing new ones. That is a faithful roll — pods come back with
-// addresses from a pool, and an address a departing pod held can be handed to
-// the pod that replaces it on another node — and it is the sharper form of the
-// question: production must follow the NODE, not the address, and here the two
-// answers differ.
-const (
-	warmAddrOne = "127.0.0.1"
-	warmAddrTwo = "localhost"
-)
-
-const (
-	warmNodeOne = "node-a"
-	warmNodeTwo = "node-b"
-)
-
-func (p WarmRollPlan) nodeOn(addr string) string {
-	if p.Rolled {
-		if addr == warmAddrOne {
-			return warmNodeTwo
-		}
-		return warmNodeOne
-	}
-	if addr == warmAddrOne {
-		return warmNodeOne
-	}
-	return warmNodeTwo
-}
-
-// publish writes the EndpointSlice the DaemonSet's headless Service would,
-// naming each pod's address and the node it runs on.
-func (p WarmRollPlan) publish() *discoveryv1.EndpointSlice {
-	ready := true
-	endpoints := make([]discoveryv1.Endpoint, 0, 2)
-	for _, addr := range []string{warmAddrOne, warmAddrTwo} {
-		node := p.nodeOn(addr)
-		endpoints = append(endpoints, discoveryv1.Endpoint{
-			Addresses:  []string{addr},
-			NodeName:   &node,
-			Conditions: discoveryv1.EndpointConditions{Ready: &ready},
-		})
-	}
-	return &discoveryv1.EndpointSlice{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "artifact-daemon-brine",
-			Namespace: "cicd",
-			Labels:    map[string]string{discoveryv1.LabelServiceName: "artifact-daemon"},
-		},
-		Endpoints: endpoints,
-	}
-}
-
-func warmRollConfig(port int) jetbridge.Config {
-	return jetbridge.Config{
-		Namespace:                 "cicd",
-		ArtifactDaemonService:     "artifact-daemon",
-		ArtifactDaemonPort:        port,
-		ArtifactDaemonHostPath:    "/artifact-store",
-		ArtifactDaemonWarmTimeout: 5 * time.Second,
-	}
-}
-
-// warm runs the consumer's action and then asks the cluster where the cache
-// ended up. The second question is a plain production probe — the same call
-// the next get step on any other web would make — so "which node owns this
-// key" is answered by the runtime, not by the fixture.
-func (p WarmRollPlan) warm(cacheKey, durableKey string) WarmRollPlan {
-	obs := warmObservation{}
-
-	_, found := p.Backend.FindResourceCache(p.Ctx, cacheKey, durableKey, "k8s-worker-1")
-	obs.Served = found
-	if found {
-		probe, hit := p.Client.ProbeResourceCache(p.Ctx, cacheKey)
-		if hit {
-			obs.Node = probe.Node
-		}
-	}
-
-	p.Observed = append(append([]warmObservation{}, p.Observed...), obs)
-	return p
-}
-
-// -----------------------------------------------------------------------
 // Steps
 // -----------------------------------------------------------------------
 
@@ -518,7 +300,7 @@ func (p WarmRollPlan) warm(cacheKey, durableKey string) WarmRollPlan {
 // warm lands on. Nothing here names a transport field, a URL or a request
 // count.
 func DaemonMTLSDefinitions() []brine.StepDefinition {
-	return []brine.StepDefinition{
+	return append([]brine.StepDefinition{
 
 		// --- mTLS: describing the daemon and the ATC ---
 
@@ -575,7 +357,7 @@ func DaemonMTLSDefinitions() []brine.StepDefinition {
 		// --- mTLS: reading ---
 
 		// Everything is wired here, because the daemon's certificate and its
-		// client-auth policy are settled by the Givens and a listener cannot
+		// trust material are settled by the Givens and a listener cannot
 		// be started before them.
 		brine.DefineMap[MTLSPlan, MTLSFetch](
 			"a consumer reads the artifact {string} over mTLS",
@@ -585,35 +367,29 @@ func DaemonMTLSDefinitions() []brine.StepDefinition {
 					return MTLSFetch{}, fmt.Errorf("expected an artifact key parameter")
 				}
 
-				server, material, err := in.serve()
+				daemon, credentials, err := in.serve()
 				if err != nil {
 					return MTLSFetch{}, err
 				}
-				defer server.Close()
+				defer os.RemoveAll(credentials)
+				defer daemon.stop()
 
-				host, port, err := hostAndPort(server)
+				host, port, err := hostPortOfURL(daemon.URL)
 				if err != nil {
 					return MTLSFetch{}, err
 				}
 
-				cert, keyPath, ca := "", "", ""
+				atcCredentials := credentials
 				switch {
 				case in.ATCHasCerts:
-					dir, c, k, a, writeErr := writeATCCredentials(material)
-					if writeErr != nil {
-						return MTLSFetch{}, writeErr
-					}
-					defer os.RemoveAll(dir)
-					cert, keyPath, ca = c, k, a
 				case in.ATCCertsMissing:
-					// Configured, and pointing at nothing — a Secret that did
-					// not project, a key rotated out from under a running web.
-					cert = filepath.Join(os.TempDir(), "brine-absent", "client.crt")
-					keyPath = filepath.Join(os.TempDir(), "brine-absent", "client.key")
-					ca = filepath.Join(os.TempDir(), "brine-absent", "ca.crt")
+					atcCredentials = filepath.Join(credentials, "absent")
 				default:
 					return MTLSFetch{}, fmt.Errorf("the scenario did not say how the ATC is configured for mTLS")
 				}
+				cert := filepath.Join(atcCredentials, "client.crt")
+				keyPath := filepath.Join(atcCredentials, "client.key")
+				ca := filepath.Join(atcCredentials, "ca.crt")
 
 				vol := jetbridge.NewDaemonSetVolumeFromIP(
 					key, key, "k8s-worker-1", host, in.config(port, cert, keyPath, ca))
@@ -656,173 +432,5 @@ func DaemonMTLSDefinitions() []brine.StepDefinition {
 				}
 				return in.Message, nil
 			}),
-
-		// --- warm ownership ---
-
-		brine.DefineMap[brine.Empty, WarmRollPlan](
-			"artifact daemons on two nodes with one durable store behind them",
-			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder) (WarmRollPlan, error) {
-				daemons := newRollingDaemons()
-				server := httptest.NewServer(daemons.handler())
-
-				_, port, err := hostAndPort(server)
-				if err != nil {
-					server.Close()
-					return WarmRollPlan{}, err
-				}
-
-				plan := WarmRollPlan{
-					Ctx:     context.Background(),
-					Daemons: daemons,
-					Server:  server,
-				}
-				daemons.nodeFor[warmAddrOne] = plan.nodeOn(warmAddrOne)
-				daemons.nodeFor[warmAddrTwo] = plan.nodeOn(warmAddrTwo)
-
-				// Both pods have to be genuinely reachable or the ranking is
-				// unobservable and the scenario would pass for the wrong
-				// reason. Say so here rather than leaving a mystery timeout.
-				if err := warmAddressReachable(port, warmAddrTwo); err != nil {
-					server.Close()
-					return WarmRollPlan{}, err
-				}
-
-				plan.Cluster = fake.NewSimpleClientset(plan.publish())
-				plan.Client = jetbridge.NewDaemonClient(
-					lagertest.NewTestLogger("brine-warm-roll"),
-					plan.Cluster, "cicd", "artifact-daemon", port, nil,
-				)
-				plan.Backend = jetbridge.NewDaemonSetBackend(
-					warmRollConfig(port), jetbridge.NewArtifactLocator(), nil)
-				plan.Backend.SetDaemonClient(plan.Client)
-
-				return plan, nil
-			},
-		),
-
-		// The object is named by its CONTENT key, which is the name it has in
-		// the bucket — the node-local alias it will be registered under is the
-		// get step's business, and is what the warm asks for.
-		Refine[WarmRollPlan]("only the durable store holds the object {string} containing {string}",
-			func(in WarmRollPlan, a Args) WarmRollPlan {
-				in.Daemons.mu.Lock()
-				in.Daemons.store[a.String(0)] = a.String(1)
-				in.Daemons.mu.Unlock()
-				return in
-			}),
-
-		brine.DefineMap[WarmRollPlan, WarmRollPlan](
-			"a get step warms the resource cache {string} under content key {string}",
-			func(in WarmRollPlan, p brine.Params, _ *brine.Recorder) (WarmRollPlan, error) {
-				cacheKey, _ := p.GetString(0)
-				durableKey, ok := p.GetString(1)
-				if !ok {
-					return WarmRollPlan{}, fmt.Errorf("expected a cache key and a content key")
-				}
-				return in.warm(cacheKey, durableKey), nil
-			},
-		),
-
-		// Age-based reclamation runs on every node, so the copy goes wherever
-		// it landed. Without this the next lookup is a local hit and never
-		// asks the ranking anything.
-		brine.DefineMap[WarmRollPlan, WarmRollPlan](
-			"the sweeper reclaims every node's copy of {string}",
-			func(in WarmRollPlan, p brine.Params, _ *brine.Recorder) (WarmRollPlan, error) {
-				key, ok := p.GetString(0)
-				if !ok {
-					return WarmRollPlan{}, fmt.Errorf("expected a cache key parameter")
-				}
-				in.Daemons.mu.Lock()
-				for _, disk := range in.Daemons.disk {
-					delete(disk, key)
-				}
-				in.Daemons.mu.Unlock()
-				return in, nil
-			},
-		),
-
-		// The roll. Every pod is replaced and the addresses come back attached
-		// to different nodes, which is what an IP pool does — the nodes are
-		// the only thing that did not move.
-		brine.DefineMap[WarmRollPlan, WarmRollPlan](
-			"the DaemonSet rolls and every pod comes back answering on a different address",
-			func(in WarmRollPlan, _ brine.Params, _ *brine.Recorder) (WarmRollPlan, error) {
-				in.Rolled = true
-
-				in.Daemons.mu.Lock()
-				in.Daemons.nodeFor[warmAddrOne] = in.nodeOn(warmAddrOne)
-				in.Daemons.nodeFor[warmAddrTwo] = in.nodeOn(warmAddrTwo)
-				in.Daemons.mu.Unlock()
-
-				if _, err := in.Cluster.DiscoveryV1().EndpointSlices("cicd").
-					Update(in.Ctx, in.publish(), metav1.UpdateOptions{}); err != nil {
-					return WarmRollPlan{}, fmt.Errorf("republish daemon endpoints after the roll: %w", err)
-				}
-				return in, nil
-			},
-		),
-
-		// The last action in the family, so it takes the cluster down: the
-		// resource plane cannot own an httptest server a step created.
-		brine.DefineMap[WarmRollPlan, WarmRollPlan](
-			"a get step warms the resource cache {string} under content key {string} again",
-			func(in WarmRollPlan, p brine.Params, _ *brine.Recorder) (WarmRollPlan, error) {
-				defer in.Server.Close()
-
-				cacheKey, _ := p.GetString(0)
-				durableKey, ok := p.GetString(1)
-				if !ok {
-					return WarmRollPlan{}, fmt.Errorf("expected a cache key and a content key")
-				}
-				return in.warm(cacheKey, durableKey), nil
-			},
-		),
-
-		CheckThat[WarmRollPlan]("every warm was served",
-			func(in WarmRollPlan) error {
-				if len(in.Observed) == 0 {
-					return fmt.Errorf("no warm was attempted")
-				}
-				for i, obs := range in.Observed {
-					if !obs.Served {
-						return fmt.Errorf("warm %d was not served from the durable store", i+1)
-					}
-				}
-				return nil
-			}),
-
-		CheckThat[WarmRollPlan]("both warms left the cache on the same node",
-			func(in WarmRollPlan) error {
-				if len(in.Observed) != 2 {
-					return fmt.Errorf("expected two warms to compare, got %d", len(in.Observed))
-				}
-				for i, obs := range in.Observed {
-					if obs.Node == "" {
-						return fmt.Errorf(
-							"warm %d left the cache on no node the cluster can name, so ownership is unobservable", i+1)
-					}
-				}
-				if in.Observed[0].Node != in.Observed[1].Node {
-					return fmt.Errorf(
-						"the cache moved from %s to %s across a pod-address roll; every warmed copy in the cluster moves with it",
-						in.Observed[0].Node, in.Observed[1].Node)
-				}
-				return nil
-			}),
-	}
-}
-
-// reachable confirms an address really does reach the listener, so a scenario
-// that depends on two pods answering fails here with a reason rather than
-// later with a ranking that could not be observed.
-func warmAddressReachable(port int, addr string) error {
-	client := &http.Client{Timeout: 5 * time.Second}
-	url := fmt.Sprintf("http://%s:%d/resource-caches/brine-reachability", addr, port)
-	resp, err := client.Head(url)
-	if err != nil {
-		return fmt.Errorf("the second daemon pod is not reachable at %q: %w", addr, err)
-	}
-	resp.Body.Close()
-	return nil
+	}, daemonWarmDefinitions()...)
 }

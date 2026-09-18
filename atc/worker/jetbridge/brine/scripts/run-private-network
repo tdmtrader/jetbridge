@@ -1,0 +1,24 @@
+#!/bin/sh
+# All suite resources share the private addresses used by real daemon peers.
+set -eu
+cd "$(dirname "$0")/.."
+brine_adapter=${BRINE_ADAPTER_BINARY:-$PWD/.build/brine-adapter-jetbridge}
+brine_daemon=${BRINE_ARTIFACT_DAEMON_BINARY:-$PWD/.build/brine-artifact-daemon}
+brine_launcher=$PWD/.build/brine-netns-exec
+brine_busybox=${BRINE_BUSYBOX_BINARY:-$PWD/.build/busybox}
+for brine_binary in "$brine_adapter" "$brine_daemon" "$brine_launcher" "$brine_busybox"; do
+    case "$brine_binary" in
+        /*) ;;
+        *) echo "Private-network executable must have an absolute path: $brine_binary" >&2; exit 2 ;;
+    esac
+    if [ ! -x "$brine_binary" ]; then
+        echo "Missing executable $brine_binary; run sh scripts/build-private-network first." >&2
+        exit 2
+    fi
+done
+export BRINE_ARTIFACT_DAEMON_BINARY="$brine_daemon"
+export BRINE_BUSYBOX_BINARY="$brine_busybox"
+# All addresses in this process are local to its namespace, never proxy targets.
+export NO_PROXY='*'
+export no_proxy='*'
+exec "$brine_launcher" "$brine_adapter" "$@"

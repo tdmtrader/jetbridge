@@ -1,12 +1,8 @@
 package jetbridge_test
 
 import (
-	"bytes"
-	"context"
 	"database/sql"
 	"fmt"
-	"io"
-	"sync"
 	"testing"
 	"time"
 
@@ -17,8 +13,6 @@ import (
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/postgresrunner"
-	"github.com/concourse/concourse/atc/runtime"
-	"github.com/concourse/concourse/atc/worker/jetbridge"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -121,12 +115,6 @@ func TestJetbridge(t *testing.T) {
 	RunSpecs(t, "Jetbridge Suite")
 }
 
-// noopDelegate satisfies runtime.BuildStepDelegate for tests that don't
-// need volume streaming or build timing.
-type noopDelegate struct{}
-
-func (d *noopDelegate) BuildStartTime() time.Time { return time.Time{} }
-
 // expectSupervisedExec asserts that a task exec command was wrapped in the
 // in-pod task supervisor, embedding the original command as quoted words.
 // quotedCommand is the shell-quoted form, e.g. `'/bin/sh' '-c' 'npm test'`.
@@ -136,160 +124,6 @@ func expectSupervisedExec(command []string, quotedCommand string) {
 	ExpectWithOffset(1, command[1]).To(Equal("-c"))
 	ExpectWithOffset(1, command[2]).To(ContainSubstring(quotedCommand))
 	ExpectWithOffset(1, command[2]).To(ContainSubstring(`trap '' HUP`))
-}
-
-// The decorators below wrap the real PostgreSQL-backed worker so that exactly
-// one transition in the middle of a sequence fails. Everything before the
-// fault is a real row, so what the worker leaves behind is asserted against
-// the database rather than against a call count.
-//
-// They lived in worker_test.go until that suite was retired under the brine
-// migration; container_test.go is the remaining consumer.
-
-type failCreatedTransition struct{ db.Worker }
-
-func (w failCreatedTransition) CreateContainer(owner db.ContainerOwner, meta db.ContainerMetadata) (db.CreatingContainer, error) {
-	creating, err := w.Worker.CreateContainer(owner, meta)
-	if err != nil {
-		return nil, err
-	}
-	return creatingContainerCreatedFails{creating}, nil
-}
-
-type failStaleCreatedTransition struct{ db.Worker }
-
-func (w failStaleCreatedTransition) FindContainer(owner db.ContainerOwner) (db.CreatingContainer, db.CreatedContainer, error) {
-	creating, created, err := w.Worker.FindContainer(owner)
-	if err != nil || creating == nil {
-		return creating, created, err
-	}
-	return creatingContainerCreatedFails{creating}, created, nil
-}
-
-type creatingContainerCreatedFails struct{ db.CreatingContainer }
-
-func (creatingContainerCreatedFails) Created() (db.CreatedContainer, error) {
-	return nil, fmt.Errorf("db connection lost")
-}
-
-// filterMountsByPaths lived in container_test.go until that suite was retired
-// under the brine migration; podname_integration_test.go is the remaining
-// consumer.
-func filterMountsByPaths(mounts []runtime.VolumeMount, paths []string) []runtime.VolumeMount {
-	pathSet := make(map[string]bool, len(paths))
-	for _, p := range paths {
-		pathSet[p] = true
-	}
-	var result []runtime.VolumeMount
-	for _, m := range mounts {
-		if pathSet[m.MountPath] {
-			result = append(result, m)
-		}
-	}
-	return result
-}
-
-// fakeExecExecutor lived in volume_test.go until that suite was retired under
-// the brine migration. Four suites still use it:
-// artifact_integration_test.go, integration_test.go, resource_test.go and
-// podname_integration_test.go.
-//
-// fakeExecExecutor is a test double for jetbridge.PodExecutor.
-// It consumes stdin (like a real executor) to prevent io.Pipe deadlocks.
-type fakeExecExecutor struct {
-	mu         sync.Mutex
-	execCalls  []execCall
-	execErr    error
-	execStdout []byte
-	execFunc   func() error // per-call error function; takes priority over execErr when set
-	// execFuncIO is execFunc with the step's own streams in hand, for the
-	// specs that turn on what the transport carried before it broke. It takes
-	// priority over both, and stdin is handed over undrained: reading it is
-	// itself evidence that the transport was up.
-	execFuncIO func(stdin io.Reader, stdout, stderr io.Writer) error
-}
-
-func (f *fakeExecExecutor) setExecFuncIO(fn func(stdin io.Reader, stdout, stderr io.Writer) error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.execFuncIO = fn
-}
-
-func (f *fakeExecExecutor) callCount() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return len(f.execCalls)
-}
-
-type execCall struct {
-	podName       string
-	namespace     string
-	containerName string
-	command       []string
-	stdin         io.Reader
-	tty           bool
-	attrs         jetbridge.ExecAttrs
-}
-
-func (f *fakeExecExecutor) ExecInPod(
-	ctx context.Context,
-	namespace, podName, containerName string,
-	command []string,
-	stdin io.Reader,
-	stdout, stderr io.Writer,
-	tty bool,
-	attrs jetbridge.ExecAttrs,
-) error {
-	f.mu.Lock()
-	ioFunc := f.execFuncIO
-	f.mu.Unlock()
-	if ioFunc != nil {
-		f.mu.Lock()
-		f.execCalls = append(f.execCalls, execCall{
-			podName:       podName,
-			namespace:     namespace,
-			containerName: containerName,
-			command:       command,
-			tty:           tty,
-			attrs:         attrs,
-		})
-		f.mu.Unlock()
-		return ioFunc(stdin, stdout, stderr)
-	}
-
-	// Consume stdin into a buffer (mimics real executor behavior and
-	// unblocks io.Pipe writers used by streaming StreamOut).
-	var stdinBuf io.Reader
-	if stdin != nil {
-		data, _ := io.ReadAll(stdin)
-		stdinBuf = bytes.NewReader(data)
-	}
-
-	f.mu.Lock()
-	f.execCalls = append(f.execCalls, execCall{
-		podName:       podName,
-		namespace:     namespace,
-		containerName: containerName,
-		command:       command,
-		stdin:         stdinBuf,
-		tty:           tty,
-		attrs:         attrs,
-	})
-	execFunc := f.execFunc
-	execErr := f.execErr
-	execStdout := f.execStdout
-	f.mu.Unlock()
-
-	if execFunc != nil {
-		return execFunc()
-	}
-	if execErr != nil {
-		return execErr
-	}
-	if stdout != nil && execStdout != nil {
-		_, _ = stdout.Write(execStdout)
-	}
-	return nil
 }
 
 // expectPersistedContainer lived in podname_integration_test.go until that

@@ -8,7 +8,6 @@ import (
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
-	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -63,38 +62,22 @@ func ContainerGapDefinitions() []brine.StepDefinition {
 		// "With no explicit choice, caches follow the artifact store onto the
 		// node". The sibling Given that names a cache store cannot express
 		// that scenario, because naming one is the thing it has to not do.
-		brine.DefineMapUsing[brine.Empty, ClusterReady](
-			"a jetbridge worker with an artifact store",
-			[]string{"jetbridge-db"},
-			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder, res brine.Resources) (ClusterReady, error) {
-				return newConfiguredWorker(res, func(cfg *jetbridge.Config) {
-					cfg.ArtifactDaemonHostPath = "/var/concourse/artifacts"
-				})
-			},
-		),
+		Refine[WorkerReady]("the worker keeps artifacts under {string}",
+			func(in WorkerReady, a Args) WorkerReady {
+				in.Config.ArtifactDaemonHostPath = a.String(0)
+				return in.rebuild()
+			}),
 
 		// A check container's working directory must be ephemeral even when
 		// the worker keeps step data on the node. The same container handle
 		// is reused for every check of a resource, so node-local storage
 		// would carry one check's state into the next.
-		Transform[ClusterReady, ContainerDraft](
-			"a check container {string} built from image {string}",
-			func(in ClusterReady, a Args) (ContainerDraft, error) {
-				return ContainerDraft{
-					Namespace:     in.Namespace,
-					Worker:        in.Worker,
-					Clientset:     in.Clientset,
-					Ctx:           in.Ctx,
-					Handle:        a.String(0),
-					ImageURL:      a.String(1),
-					Dir:           "/workdir",
-					TeamID:        in.TeamID,
-					ContainerType: db.ContainerTypeCheck,
-				}, nil
+		Transform[WorkerReady, ContainerDraft](
+			"the worker prepares check {string} from image {string}",
+			func(in WorkerReady, a Args) (ContainerDraft, error) {
+				return workerContainerDraft(in, a.String(0), a.String(1), db.ContainerTypeCheck)
 			},
-		),
-
-		// A container whose row already exists is REUSED, and a reused
+		), // A container whose row already exists is REUSED, and a reused
 		// container's pod has to clear the workspace the previous run left on
 		// the node before anything else starts.
 		Refine[ContainerDraft]("the container has run before on this worker",
@@ -358,24 +341,12 @@ func ContainerGapDefinitions() []brine.StepDefinition {
 		// reason the check container has its own: the type has to be on the
 		// draft before the container runs, so the run sentence can put it on
 		// the CONTAINER SPEC as well as on the metadata.
-		Transform[ClusterReady, ContainerDraft](
-			"a get container {string} built from image {string}",
-			func(in ClusterReady, a Args) (ContainerDraft, error) {
-				return ContainerDraft{
-					Namespace:     in.Namespace,
-					Worker:        in.Worker,
-					Clientset:     in.Clientset,
-					Ctx:           in.Ctx,
-					Handle:        a.String(0),
-					ImageURL:      a.String(1),
-					Dir:           "/workdir",
-					TeamID:        in.TeamID,
-					ContainerType: db.ContainerTypeGet,
-				}, nil
+		Transform[WorkerReady, ContainerDraft](
+			"the worker prepares get {string} from image {string}",
+			func(in WorkerReady, a Args) (ContainerDraft, error) {
+				return workerContainerDraft(in, a.String(0), a.String(1), db.ContainerTypeGet)
 			},
-		),
-
-		// Its own sentence rather than "the container runs", for two reasons.
+		), // Its own sentence rather than "the container runs", for two reasons.
 		// The general step leaves ContainerSpec.Type empty — so a get is
 		// indistinguishable from a task to anything keyed on the spec, which
 		// is what decides whether the working directory counts as an output.
@@ -559,13 +530,13 @@ func runDraft(in ContainerDraft, kind db.ContainerType, spec runtime.ContainerSp
 
 	if ranBefore {
 		if _, _, err := in.Worker.FindOrCreateContainer(
-			in.Ctx, owner, metadata, spec, &noopDelegate{},
+			in.Ctx, owner, metadata, spec, nil,
 		); err != nil {
 			return PodCreated{}, fmt.Errorf("first run of %q: %w", in.Handle, err)
 		}
 	}
 
-	container, _, err := in.Worker.FindOrCreateContainer(in.Ctx, owner, metadata, spec, &noopDelegate{})
+	container, _, err := in.Worker.FindOrCreateContainer(in.Ctx, owner, metadata, spec, nil)
 	if err != nil {
 		return PodCreated{}, fmt.Errorf("find or create container %q: %w", in.Handle, err)
 	}

@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
@@ -32,7 +33,8 @@ func WatchPod(ctx context.Context, clientset kubernetes.Interface, namespace, po
 
 // PodWatcher wraps the Kubernetes Watch API for a single pod, providing
 // automatic reconnection when the watch channel closes and fallback to
-// a single Get() call when watch re-establishment fails consecutively.
+// a single Get() call when history expires or watch re-establishment fails
+// consecutively.
 type PodWatcher struct {
 	mu                  sync.Mutex
 	clientset           kubernetes.Interface
@@ -122,6 +124,9 @@ func (pw *PodWatcher) Next(ctx context.Context) (*corev1.Pod, error) {
 			w, err := WatchPod(ctx, pw.clientset, pw.namespace, pw.podName, pw.lastResourceVersion)
 			if err != nil {
 				pw.mu.Unlock()
+				if apierrors.IsResourceExpired(err) || apierrors.IsGone(err) {
+					return pw.getPod(ctx)
+				}
 				consecutiveWatchErrors++
 				if consecutiveWatchErrors >= maxConsecutiveAPIErrors {
 					// Fall back to a single Get().
@@ -147,6 +152,21 @@ func (pw *PodWatcher) Next(ctx context.Context) (*corev1.Pod, error) {
 				pw.watcher = nil
 				pw.mu.Unlock()
 				continue
+			}
+
+			if event.Type == watch.Error {
+				err := apierrors.FromObject(event.Object)
+				if apierrors.IsResourceExpired(err) || apierrors.IsGone(err) {
+					// An expired stream is terminal. Reconnecting at the same
+					// version can never recover; refresh before watching again.
+					pw.mu.Lock()
+					if pw.watcher != nil {
+						pw.watcher.Stop()
+						pw.watcher = nil
+					}
+					pw.mu.Unlock()
+					return pw.getPod(ctx)
+				}
 			}
 
 			pod, isPod := event.Object.(*corev1.Pod)

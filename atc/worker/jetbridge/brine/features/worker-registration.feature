@@ -27,8 +27,8 @@ Feature: A Kubernetes worker presenting itself to Concourse
   @WR-04
   Scenario Outline: The container count reflects this worker's pods only — <case>
     Given a Kubernetes worker registrar for namespace "test-namespace"
-    And <mine> pods belonging to this worker are running
-    And <theirs> pods belonging to nobody are running
+    And <mine> pods belonging to "this worker" exist
+    And <theirs> pods belonging to "nobody" exist
     When the worker registers itself
     Then it reports <counted> active containers
 

@@ -58,7 +58,7 @@ func runCheck(t *testing.T, def brine.StepDefinition, line string, state probe) 
 `, line))
 	var events bytes.Buffer
 	pipeline := brine.NewPipeline(brine.NewStepRegistry([]brine.StepDefinition{given, def}), brine.NewEmitter(&events))
-	result, code, err := pipeline.Run([]*brine.ParsedFeature{feature}, brine.TagFilter{}, nil)
+	result, code, err := pipeline.Run([]*brine.ParsedFeature{feature}, brine.TagFilter{})
 	if err != nil || result.Scenarios != 1 || result.Undefined != 0 || result.Unsatisfied != 0 || result.Skipped != 0 {
 		t.Fatalf("invalid check run: %+v, code=%d, err=%v; %s", result, code, err, events.String())
 	}

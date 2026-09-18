@@ -1,30 +1,17 @@
 package jetbridge
 
 import (
-	"archive/tar"
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
-	"net/http/httptest"
-	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/hangar"
 	corev1 "k8s.io/api/core/v1"
-	discoveryv1 "k8s.io/api/discovery/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes/fake"
 )
 
 // TestDaemonSetMode_PodHasHostPathVolume verifies that in DaemonSet mode,
@@ -110,7 +97,7 @@ func TestDaemonSetMode_StrictInputValidationFailsClosed(t *testing.T) {
 		Digest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		Generation: 1,
 	}
-	ordinary := &stubArtifact{handle: "ordinary"}
+	ordinary := constructionArtifact("ordinary", "test-worker")
 
 	tests := map[string]struct {
 		cfg     Config
@@ -266,7 +253,7 @@ func TestDaemonSetMode_OrdinaryOverlappingInputRemainsWritable(t *testing.T) {
 		containerSpec: runtime.ContainerSpec{
 			Dir: "/work", Type: db.ContainerTypeTask,
 			ImageSpec: runtime.ImageSpec{ImageURL: "busybox"},
-			Inputs:    []runtime.Input{{Artifact: &stubArtifact{handle: "ordinary"}, DestinationPath: "/work/shared"}},
+			Inputs:    []runtime.Input{{Artifact: constructionArtifact("ordinary", "test-worker"), DestinationPath: "/work/shared"}},
 			Outputs:   runtime.OutputPaths{"result": "/work/shared/"},
 		},
 		config: cfg, storageBackend: NewDaemonSetBackend(cfg, nil, nil),
@@ -330,7 +317,7 @@ func TestDaemonSetMode_SoftAffinity(t *testing.T) {
 			Type: db.ContainerTypeTask,
 			Inputs: []runtime.Input{
 				{
-					Artifact:        &stubArtifact{handle: "input-vol-1"},
+					Artifact:        constructionArtifact("input-vol-1", "test-worker"),
 					DestinationPath: "/tmp/build/input",
 				},
 			},
@@ -404,7 +391,7 @@ func TestDaemonSetMode_InitContainerResolveCommand(t *testing.T) {
 			Type: db.ContainerTypeTask,
 			Inputs: []runtime.Input{
 				{
-					Artifact:        &stubArtifact{handle: "vol-1"},
+					Artifact:        constructionArtifact("vol-1", "test-worker"),
 					DestinationPath: "/tmp/build/input",
 				},
 			},
@@ -704,7 +691,7 @@ func TestDaemonSetMode_InputVolumesAreHostPath(t *testing.T) {
 			Type: db.ContainerTypeTask,
 			Inputs: []runtime.Input{
 				{
-					Artifact:        &stubArtifact{handle: "src-vol"},
+					Artifact:        constructionArtifact("src-vol", "test-worker"),
 					DestinationPath: "/tmp/build/src",
 				},
 			},
@@ -779,7 +766,7 @@ func TestDaemonSetMode_CachesAreDirectHostPath(t *testing.T) {
 			Caches:            []string{"/tmp/build/.cache"},
 			Inputs: []runtime.Input{
 				{
-					Artifact:        &stubArtifact{handle: "src-vol"},
+					Artifact:        constructionArtifact("src-vol", "test-worker"),
 					DestinationPath: "/tmp/build/src",
 				},
 			},
@@ -855,7 +842,7 @@ func TestDaemonSetMode_InitContainerUsesDaemonResolve(t *testing.T) {
 			Type: db.ContainerTypeTask,
 			Inputs: []runtime.Input{
 				{
-					Artifact:        &stubArtifact{handle: "src-vol"},
+					Artifact:        constructionArtifact("src-vol", "test-worker"),
 					DestinationPath: "/tmp/build/src",
 				},
 			},
@@ -902,7 +889,7 @@ func TestDaemonSetMode_MissingLocatorFallsBackToVolumeHandle(t *testing.T) {
 			Type: db.ContainerTypeTask,
 			Inputs: []runtime.Input{
 				{
-					Artifact:        &stubArtifact{handle: "cached-vol"},
+					Artifact:        constructionArtifact("cached-vol", "test-worker"),
 					DestinationPath: "/tmp/build/input",
 				},
 			},
@@ -964,7 +951,7 @@ func TestDaemonSetMode_RecordAndLocateRoundTrip(t *testing.T) {
 			Type: db.ContainerTypeTask,
 			Inputs: []runtime.Input{
 				{
-					Artifact:        &stubArtifact{handle: artifactHandle},
+					Artifact:        constructionArtifact(artifactHandle, "test-worker"),
 					DestinationPath: "/tmp/build/input",
 				},
 			},
@@ -1035,7 +1022,7 @@ func TestDaemonSetMode_InitContainerUsesResolveCommand(t *testing.T) {
 			Type: db.ContainerTypeTask,
 			Inputs: []runtime.Input{
 				{
-					Artifact:        &stubArtifact{handle: "remote-vol"},
+					Artifact:        constructionArtifact("remote-vol", "test-worker"),
 					DestinationPath: "/tmp/build/input",
 				},
 			},
@@ -1220,7 +1207,7 @@ func TestDaemonSetMode_CleanupPrecedesArtifactInits(t *testing.T) {
 			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 			Inputs: []runtime.Input{
 				{
-					Artifact:        &stubArtifact{handle: "src-vol"},
+					Artifact:        constructionArtifact("src-vol", "test-worker"),
 					DestinationPath: "/tmp/build/src",
 				},
 			},
@@ -1256,130 +1243,6 @@ func TestDaemonSetMode_CleanupPrecedesArtifactInits(t *testing.T) {
 // =======================================================================
 // Phase: Daemon alias registration
 // =======================================================================
-
-// TestDaemonSetMode_RecordOutputLocationRegistersAlias verifies that
-// recordOutputLocations calls registerDaemonAlias for each output volume
-// when nodeName is non-empty and DaemonSet mode is enabled.
-func TestDaemonSetMode_RecordOutputLocationRegistersAlias(t *testing.T) {
-	// Set up a test HTTP server that simulates the daemon's /register endpoint.
-	var registrations []struct{ Key, LocalPath string }
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/register" {
-			http.NotFound(w, r)
-			return
-		}
-		var req struct {
-			Key       string `json:"key"`
-			LocalPath string `json:"local_path"`
-		}
-		json.NewDecoder(r.Body).Decode(&req)
-		registrations = append(registrations, struct{ Key, LocalPath string }{req.Key, req.LocalPath})
-		w.WriteHeader(http.StatusCreated)
-	})
-	srv := httptest.NewServer(handler)
-	defer srv.Close()
-
-	// Parse the test server's host:port to use as daemon address.
-	// We override the daemon service resolution by using registerDaemonAlias directly.
-	locator := NewArtifactLocator()
-	cfg := daemonSetConfig()
-
-	vol := NewStubVolume("output-vol-handle", "test-worker", "/tmp/build/out")
-
-	c := &Container{
-		handle:   "producer-handle",
-		podName:  "test-pod",
-		metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
-		containerSpec: runtime.ContainerSpec{
-			Dir:     "/tmp/build",
-			Type:    db.ContainerTypeTask,
-			Outputs: runtime.OutputPaths{"out": "/tmp/build/out"},
-		},
-		config:         cfg,
-		properties:     make(map[string]string),
-		volumes:        []*Volume{vol},
-		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
-	}
-
-	p := &execProcess{
-		id:             "test",
-		podName:        "test-pod",
-		config:         cfg,
-		container:      c,
-		storageBackend: c.storageBackend,
-	}
-
-	// Call registerDaemonAlias directly (since we can't mock DNS resolution
-	// for the K8s service name in unit tests).
-	volumeKey := ArtifactKey(vol.Handle())
-	diskPath := filepath.Join(cfg.ArtifactDaemonHostPath, "steps", "producer-handle", "out")
-	p.storageBackend.(*DaemonSetBackend).registerDaemonAlias("test-node", volumeKey, diskPath)
-
-	// The actual HTTP call fails (no real daemon running), but we can verify
-	// the method runs without panicking. In a real cluster, the daemon would
-	// receive this registration.
-	// For the full integration path, verify recordOutputLocations populates
-	// the locator AND the alias fields.
-	p.storageBackend.RecordOutputs(context.Background(), p.container.handle, "test-node", p.container.volumes, p.container.containerSpec)
-
-	key := ArtifactKey(vol.Handle())
-	loc, found := locator.Locate(key)
-	if !found {
-		t.Fatalf("expected locator entry for %s", key)
-	}
-	if loc.HostDir != "producer-handle/out" {
-		t.Errorf("expected hostDir producer-handle/out, got %s", loc.HostDir)
-	}
-	if loc.NodeName != "test-node" {
-		t.Errorf("expected nodeName test-node, got %s", loc.NodeName)
-	}
-}
-
-// TestDaemonSetMode_RegisterDaemonAliasWithTestServer verifies the
-// registerDaemonAlias method successfully calls a real HTTP server.
-func TestDaemonSetMode_RegisterDaemonAliasWithTestServer(t *testing.T) {
-	var registeredKey, registeredPath string
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/register" || r.Method != http.MethodPost {
-			http.NotFound(w, r)
-			return
-		}
-		var req struct {
-			Key       string `json:"key"`
-			LocalPath string `json:"local_path"`
-		}
-		json.NewDecoder(r.Body).Decode(&req)
-		registeredKey = req.Key
-		registeredPath = req.LocalPath
-		w.WriteHeader(http.StatusCreated)
-	})
-	srv := httptest.NewServer(handler)
-	defer srv.Close()
-
-	// Parse host:port from test server URL (e.g. "http://127.0.0.1:PORT").
-	// We can't use the K8s service DNS in tests, so we monkey-patch by
-	// calling the method with a custom URL. Instead, test registerDaemonAlias
-	// indirectly: verify the HTTP body format is correct by hitting our test server.
-
-	// Since registerDaemonAlias constructs the URL from node/service/namespace,
-	// we test the HTTP payload format by making a direct POST.
-	body := fmt.Sprintf(`{"key":%q,"local_path":%q}`, "vol-handle-123", "/var/concourse/artifacts/steps/c-handle/dir")
-	resp, err := http.Post(srv.URL+"/register", "application/json", strings.NewReader(body))
-	if err != nil {
-		t.Fatalf("POST /register: %v", err)
-	}
-	resp.Body.Close()
-
-	if resp.StatusCode != http.StatusCreated {
-		t.Errorf("expected 201, got %d", resp.StatusCode)
-	}
-	if registeredKey != "vol-handle-123" {
-		t.Errorf("expected key vol-handle-123, got %s", registeredKey)
-	}
-	if registeredPath != "/var/concourse/artifacts/steps/c-handle/dir" {
-		t.Errorf("expected path /var/concourse/artifacts/steps/c-handle/dir, got %s", registeredPath)
-	}
-}
 
 // TestDaemonSetMode_NoAliasRegistrationWithoutNodeName verifies that
 // registerDaemonAlias is not called when nodeName is empty.
@@ -1451,7 +1314,7 @@ func TestDaemonSetMode_CacheHitFlow(t *testing.T) {
 			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 			Inputs: []runtime.Input{
 				{
-					Artifact:        &stubArtifact{handle: cachedVolHandle},
+					Artifact:        constructionArtifact(cachedVolHandle, "test-worker"),
 					DestinationPath: "/tmp/build/resource",
 				},
 			},
@@ -1532,7 +1395,7 @@ func TestDaemonSetMode_CacheMissFlow(t *testing.T) {
 			Type: db.ContainerTypeTask,
 			Inputs: []runtime.Input{
 				{
-					Artifact:        &stubArtifact{handle: producerVol.Handle()},
+					Artifact:        constructionArtifact(producerVol.Handle(), "test-worker"),
 					DestinationPath: "/tmp/build/input",
 				},
 			},
@@ -1593,7 +1456,7 @@ func TestDaemonSetMode_CacheHitATCRestart(t *testing.T) {
 			Type: db.ContainerTypeTask,
 			Inputs: []runtime.Input{
 				{
-					Artifact:        &stubArtifact{handle: cachedVolHandle},
+					Artifact:        constructionArtifact(cachedVolHandle, "test-worker"),
 					DestinationPath: "/tmp/build/resource",
 				},
 			},
@@ -1650,7 +1513,7 @@ func TestDaemonSetMode_CacheHitDaemonRestartLimitation(t *testing.T) {
 			Type: db.ContainerTypeTask,
 			Inputs: []runtime.Input{
 				{
-					Artifact:        &stubArtifact{handle: cachedVolHandle},
+					Artifact:        constructionArtifact(cachedVolHandle, "test-worker"),
 					DestinationPath: "/tmp/build/input",
 				},
 			},
@@ -1716,7 +1579,7 @@ func TestDaemonSetMode_ConcurrentBuildsShareCache(t *testing.T) {
 			Type: db.ContainerTypeTask,
 			Inputs: []runtime.Input{
 				{
-					Artifact:        &stubArtifact{handle: "shared-vol"},
+					Artifact:        constructionArtifact("shared-vol", "test-worker"),
 					DestinationPath: "/tmp/build/input",
 				},
 			},
@@ -1870,7 +1733,7 @@ func TestDaemonSetMode_ProducerModifierConsumerChain(t *testing.T) {
 			Type: db.ContainerTypeTask,
 			Inputs: []runtime.Input{
 				{
-					Artifact:        &stubArtifact{handle: producerVol.Handle()},
+					Artifact:        constructionArtifact(producerVol.Handle(), "test-worker"),
 					DestinationPath: "/tmp/build/shared",
 				},
 			},
@@ -2173,196 +2036,4 @@ func TestDaemonSetMode_SidecarWithOverlappingInputOutput(t *testing.T) {
 			}
 		}
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Integration: ATC StreamOut peer-fallback against a daemon-shaped peer
-// HTTP server (P2d.2 of artifact_daemon_resilience_20260425).
-//
-// The daemon-side behavioral test covers the full mirror loop end-to-end.
-// This test focuses on the ATC piece: given a recorded sourceNode whose
-// daemon is dead AND a live peer that has the data on disk, the ATC's
-// DaemonSetVolume.StreamOut peer-probes via DaemonClient and reads from
-// the peer's /artifacts/steps/{key} path.
-//
-// We use a routing transport (mirroring the Phase 1 test pattern) so the
-// volume and the DaemonClient share a single http.Client — that lets us
-// route a "dead" producer host to a synthetic refused error and a "live"
-// peer host to a real httptest server.
-// ---------------------------------------------------------------------------
-
-func TestDaemonSetMode_StreamOut_FallsBackToPeer_AfterProducerDeath(t *testing.T) {
-	// Peer's hostPath: pre-populated with the mirrored step output.
-	storageB := t.TempDir()
-	bData := filepath.Join(storageB, "steps", "build-handle", "result")
-	if err := os.MkdirAll(bData, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(bData, "out.txt"), []byte("peer-payload"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Live peer's HTTP server: serves HEAD /artifacts/steps/{key} (probe)
-	// and GET /artifacts/steps/{key} (tar fetch) by reading from storageB.
-	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		const prefix = "/artifacts/"
-		if !strings.HasPrefix(r.URL.Path, prefix) {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		key := strings.TrimPrefix(r.URL.Path, prefix)
-		path := filepath.Join(storageB, key)
-		info, err := os.Stat(path)
-		if err != nil {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		if r.Method == http.MethodHead {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		if info.IsDir() {
-			tarDirOrFile(w, path)
-			return
-		}
-		f, _ := os.Open(path)
-		defer f.Close()
-		io.Copy(w, f)
-	}))
-	defer peer.Close()
-
-	const (
-		// Synthetic peer hostnames keyed by the routing transport.
-		producerHost = "node-a-dead.svc"
-		peerHost     = "node-b-live.svc"
-		port         = 7780
-	)
-	transport := &integrationRoutingTransport{routes: map[string]string{
-		producerHost + ":" + itoa(port): "", // refuse — simulates dead producer
-		peerHost + ":" + itoa(port):     peer.URL,
-	}}
-
-	// ATC state: Node maps node-a → producerHost; EndpointSlice has only
-	// the live peer.
-	ready := true
-	atcClientset := fake.NewSimpleClientset(
-		&corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{Name: "node-a"},
-			Status: corev1.NodeStatus{
-				Addresses: []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: producerHost}},
-			},
-		},
-		&discoveryv1.EndpointSlice{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "artifact-daemon-slice",
-				Namespace: "concourse",
-				Labels:    map[string]string{discoveryv1.LabelServiceName: "artifact-daemon"},
-			},
-			AddressType: discoveryv1.AddressTypeIPv4,
-			Endpoints: []discoveryv1.Endpoint{
-				{Addresses: []string{peerHost}, Conditions: discoveryv1.EndpointConditions{Ready: &ready}},
-			},
-		},
-	)
-
-	cfg := Config{
-		Namespace:              "concourse",
-		ArtifactDaemonHostPath: "/var/concourse/artifacts",
-		ArtifactDaemonPort:     port,
-		ArtifactDaemonService:  "artifact-daemon",
-	}
-	httpClient := &http.Client{Transport: transport, Timeout: 5 * 1e9} // 5s
-
-	logger := lagertest.NewTestLogger("atc")
-	resolver := NewNodeIPResolver(atcClientset)
-	// White-box DaemonClient construction so we can inject the routing
-	// transport (NewDaemonClient builds its own client).
-	dc := &DaemonClient{
-		logger:    logger,
-		clientset: atcClientset,
-		namespace: "concourse",
-		service:   "artifact-daemon",
-		port:      port,
-		client:    httpClient,
-		scheme:    "http",
-	}
-
-	// Volume keyed by daemonKey ("build-handle/result"). This matches what
-	// the daemon's filesystem has at storage/steps/build-handle/result on
-	// the peer post-mirror — and what /resolve (init container) uses.
-	vol := NewDaemonSetVolume("build-handle/result", "build-handle/result", "worker-x", nil, "node-a", cfg, resolver)
-	vol.httpClient = httpClient
-	vol.daemonClient = dc
-
-	reader, err := vol.StreamOut(context.Background(), ".", nil)
-	if err != nil {
-		t.Fatalf("StreamOut should fall back to peer: %v", err)
-	}
-	defer reader.Close()
-
-	body, _ := io.ReadAll(reader)
-	if !strings.Contains(string(body), "peer-payload") {
-		t.Errorf("expected peer-payload in body, got: %q", string(body))
-	}
-}
-
-// integrationRoutingTransport routes by URL host:port to a target server
-// URL. "" simulates a refused / unreachable host (returns a synthetic
-// error without actually attempting a TCP dial).
-type integrationRoutingTransport struct {
-	routes map[string]string
-}
-
-func (t *integrationRoutingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	target, ok := t.routes[req.URL.Host]
-	if !ok || target == "" {
-		return nil, fmt.Errorf("connection refused: %s", req.URL.Host)
-	}
-	if strings.HasPrefix(target, "http://") {
-		target = strings.TrimPrefix(target, "http://")
-	}
-	req.URL.Scheme = "http"
-	req.URL.Host = target
-	return http.DefaultTransport.RoundTrip(req)
-}
-
-// itoa is just strconv.Itoa, inlined so the test reads cleanly.
-func itoa(n int) string { return strconv.Itoa(n) }
-
-// tarDirOrFile mirrors the daemon's directory-tar-on-the-fly behavior
-// closely enough to satisfy DaemonSetVolume.StreamOut. Used only by the
-// peer's httptest server in TestDaemonSetMode_StreamOut_FallsBackToPeer_*.
-func tarDirOrFile(w http.ResponseWriter, path string) {
-	w.Header().Set("Content-Type", "application/x-tar")
-	tw := tar.NewWriter(w)
-	defer tw.Close()
-	filepath.Walk(path, func(p string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
-			return err
-		}
-		rel, _ := filepath.Rel(path, p)
-		tw.WriteHeader(&tar.Header{
-			Name:     rel,
-			Mode:     int64(info.Mode().Perm()),
-			Size:     info.Size(),
-			Typeflag: tar.TypeReg,
-		})
-		f, _ := os.Open(p)
-		defer f.Close()
-		io.Copy(tw, f)
-		return nil
-	})
-}
-
-// stubArtifact is a minimal runtime.Artifact for testing.
-type stubArtifact struct {
-	handle string
-}
-
-var _ runtime.Artifact = (*stubArtifact)(nil)
-
-func (a *stubArtifact) Handle() string { return a.handle }
-func (a *stubArtifact) Source() string { return "test-worker" }
-func (a *stubArtifact) StreamOut(_ context.Context, _ string, _ compression.Compression) (io.ReadCloser, error) {
-	return nil, nil
 }

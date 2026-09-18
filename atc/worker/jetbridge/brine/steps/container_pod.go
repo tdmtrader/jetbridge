@@ -2,6 +2,9 @@ package steps
 
 import (
 	"fmt"
+	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
@@ -16,13 +19,12 @@ import (
 // which storage backs them, the resource envelope the pod is scheduled under,
 // its security posture, and the sidecars alongside it.
 //
-// All of these read `pod.Spec` from the fake clientset. That is NOT a spy
-// assertion: the PodSpec is a real artifact submitted through a real client
-// interface, and it is exactly what a consumer — the Kubernetes scheduler —
-// receives. The double is not the subject of the assertion.
+// Checks inspect the stored pod. The migrated fixtures use the real API;
+// legacy fake-backed configuration and execution fixtures remain separate.
+// QoS is read from API-assigned status, never reimplemented by the fixture.
 
 func ContainerPodDefinitions() []brine.StepDefinition {
-	return []brine.StepDefinition{
+	return append([]brine.StepDefinition{
 
 		// --- Draft refinements. In and Out are the same type, so these
 		// compose freely and in any order before the container runs. ---
@@ -44,6 +46,22 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 			func(in ContainerDraft, a Args) ContainerDraft {
 				in.Outputs = append(in.Outputs, a.String(0))
 				return in
+			}),
+
+		Transform[ContainerDraft, ContainerDraft]("it produces output {string} at {string}",
+			func(in ContainerDraft, a Args) (ContainerDraft, error) {
+				name := a.String(0)
+				if name == "" {
+					return ContainerDraft{}, fmt.Errorf("expected a nonempty output name")
+				}
+				if in.NamedOutputs == nil {
+					in.NamedOutputs = map[string]string{}
+				}
+				if _, exists := in.NamedOutputs[name]; exists {
+					return ContainerDraft{}, fmt.Errorf("duplicate output name %q", name)
+				}
+				in.NamedOutputs[name] = a.String(1)
+				return in, nil
 			}),
 
 		Refine[ContainerDraft]("it caches {string}",
@@ -112,20 +130,8 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 				return in
 			}),
 
-		Transform[ContainerDraft, ContainerDraft](
-			"the sidecar {string} declares its working directory as {string}",
-			func(in ContainerDraft, a Args) (ContainerDraft, error) {
-				name := a.String(0)
-
-				for i := range in.Sidecars {
-					if in.Sidecars[i].Name == name {
-						in.Sidecars[i].WorkingDir = a.String(1)
-						return in, nil
-					}
-				}
-				return ContainerDraft{}, fmt.Errorf("no sidecar named %q", name)
-			},
-		),
+		refineSidecar("the sidecar {string} declares its working directory as {string}",
+			func(sc *atc.SidecarConfig, a Args) { sc.WorkingDir = a.String(1) }),
 
 		// --- Checks over the resulting pod ---
 
@@ -153,18 +159,7 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 				return paths, nil
 			}),
 
-		// CO-06/CO-07/CF-04: which storage backs a volume decides whether its
-		// contents survive the pod.
-		CheckThat[PodCreated]("every volume is ephemeral",
-			func(in PodCreated) error {
-				for _, v := range in.Pod.Spec.Volumes {
-					if v.EmptyDir == nil {
-						return fmt.Errorf("expected volume %q to be ephemeral, it is not (hostPath=%v)",
-							v.Name, v.HostPath != nil)
-					}
-				}
-				return nil
-			}),
+		ephemeralMountDefinition(),
 
 		// Every VolumeMount in the pod — the step's own container and every
 		// init container before it — must name exactly one of the volumes the
@@ -206,13 +201,18 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 				}
 			}),
 
-		// PE-07: the QoS class is the observable consequence of the envelope,
-		// so the failure carries the limits and requests it was derived from —
-		// the evidence the rule is actually about.
-		CheckString[PodCreated]("the pod is scheduled as {string}",
+		// PE-07: Kubernetes assigns QoS when it admits the pod, accounting
+		// for every container. Include the main envelope in failure diagnostics.
+		CheckString[PodCreated]("the API assigns the pod QoS class {string}",
 			"the pod's QoS class",
 			func(in PodCreated) (string, error) {
-				return qosClassOf(in.Pod), nil
+				if in.Pod == nil || in.Pod.UID == "" || in.Pod.ResourceVersion == "" {
+					return "", fmt.Errorf("QoS observation requires an API-persisted pod")
+				}
+				if in.Pod.Status.QOSClass == "" {
+					return "", fmt.Errorf("API reported no QoS class for pod %q", in.Pod.Name)
+				}
+				return string(in.Pod.Status.QOSClass), nil
 			},
 			func(in PodCreated) string {
 				main, _ := mainContainer(in.Pod)
@@ -229,34 +229,61 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 			resourceExpectation{corev1.ResourceCPU, "request", true},
 			resourceExpectation{corev1.ResourceMemory, "request", true},
 		),
-		// PE-04
-		CheckThat[PodCreated]("the step can escalate its privileges",
+		CheckThat[PodCreated]("the step has no resource limits",
 			func(in PodCreated) error {
 				main, err := mainContainer(in.Pod)
 				if err != nil {
 					return err
 				}
-				sc := main.SecurityContext
-				if sc == nil || sc.Privileged == nil || !*sc.Privileged {
-					return fmt.Errorf("expected a privileged container, got %+v", sc)
+				if len(main.Resources.Limits) != 0 {
+					return fmt.Errorf("expected no resource limits, got %v", main.Resources.Limits)
 				}
 				return nil
 			}),
 
-		CheckThat[PodCreated]("the step cannot escalate its privileges",
-			func(in PodCreated) error {
+		// PE-04: both privilege modes retain the pod-level hardening policy.
+		brine.DefineCheck[PodCreated]("the step uses the {string} security policy",
+			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
+				mode, ok := p.GetString(0)
+				if !ok || (mode != "privileged" && mode != "unprivileged") {
+					return fmt.Errorf("expected privileged or unprivileged security policy, got %q", mode)
+				}
 				main, err := mainContainer(in.Pod)
 				if err != nil {
 					return err
 				}
+				podSC := in.Pod.Spec.SecurityContext
+				if podSC == nil {
+					return fmt.Errorf("expected a pod security context")
+				}
+				if podSC.RunAsNonRoot != nil {
+					return fmt.Errorf("expected RunAsNonRoot to remain unset, got %t", *podSC.RunAsNonRoot)
+				}
+				if podSC.SeccompProfile == nil || podSC.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+					return fmt.Errorf("expected RuntimeDefault seccomp, got %+v", podSC.SeccompProfile)
+				}
 				sc := main.SecurityContext
-				if sc == nil || sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
+				if mode == "privileged" {
+					if sc == nil || sc.Privileged == nil || !*sc.Privileged {
+						return fmt.Errorf("expected a privileged container, got %+v", sc)
+					}
+				} else if sc == nil || sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
 					return fmt.Errorf("expected privilege escalation to be denied, got %+v", sc)
 				}
 				return nil
 			}),
 
 		// --- Sidecars ---
+
+		CheckCount[PodCreated]("the pod has {int} init containers",
+			"init containers",
+			func(in PodCreated) ([]string, error) {
+				names := make([]string, 0, len(in.Pod.Spec.InitContainers))
+				for _, c := range in.Pod.Spec.InitContainers {
+					names = append(names, c.Name)
+				}
+				return names, nil
+			}),
 
 		CheckCount[PodCreated]("the pod runs {int} containers",
 			"containers",
@@ -268,17 +295,10 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 				return names, nil
 			}),
 
-		// containerNamed's error is how "there is no such sidecar" is reported;
-		// it already names the containers the pod does run.
-		CheckStringFor[PodCreated]("the sidecar {string} runs image {string}",
-			"the sidecar image",
-			func(in PodCreated, name string) (string, error) {
-				c, err := containerNamed(in.Pod, name)
-				return c.Image, err
-			}),
+		containerRosterDefinition(),
 
-		CheckStringFor[PodCreated]("the sidecar {string} works in {string}",
-			"the sidecar's working directory",
+		CheckStringFor[PodCreated]("the container {string} works in {string}",
+			"the container's working directory",
 			func(in PodCreated, name string) (string, error) {
 				c, err := containerNamed(in.Pod, name)
 				return c.WorkingDir, err
@@ -306,72 +326,39 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// SC-02: a sidecar sees the same working set as the step, or it cannot
-		// do its job (a log shipper with no log directory is useless).
-		// Keeps its own body: the parameter names the sidecar, and the
-		// assertion is that one set of mounts covers another — a subset, not
-		// membership of the string the sentence carries.
-		Assert[PodCreated](
-			"the sidecar {string} sees the same volumes as the step",
+		// SC-02: preserve the complete mount list, including permissions and order.
+		Assert[PodCreated]("the sidecar {string} sees the same volumes as the step",
 			func(in PodCreated, args Args) error {
-				name := args.String(0)
-
 				main, err := mainContainer(in.Pod)
 				if err != nil {
 					return err
 				}
-				side, err := containerNamed(in.Pod, name)
+				side, err := containerNamed(in.Pod, args.String(0))
 				if err != nil {
 					return err
 				}
-				mainPaths := map[string]bool{}
-				for _, vm := range main.VolumeMounts {
-					mainPaths[vm.MountPath] = true
+				if !reflect.DeepEqual(side.VolumeMounts, main.VolumeMounts) {
+					return fmt.Errorf("expected sidecar %q mounts %+v to equal main mounts %+v", side.Name, side.VolumeMounts, main.VolumeMounts)
 				}
-				sidePaths := map[string]bool{}
-				for _, vm := range side.VolumeMounts {
-					sidePaths[vm.MountPath] = true
-				}
-				for p := range mainPaths {
-					if !sidePaths[p] {
-						return fmt.Errorf("the step sees %q but sidecar %q does not", p, name)
-					}
-				}
-				return nil
-			},
-		),
-
-		// PE-03 / CF-05
-		CheckMember[PodCreated]("the pod pulls images using the secret {string}",
-			"the pod's image pull secrets",
-			func(in PodCreated) ([]string, error) {
-				var names []string
-				for _, s := range in.Pod.Spec.ImagePullSecrets {
-					names = append(names, s.Name)
-				}
-				return names, nil
+				return validatePodMounts(in.Pod)
 			}),
 
-		// Keeps its own body: it counts occurrences, and "exactly once" is not
-		// membership — the duplicate this check exists to catch would satisfy
-		// a member check.
-		Assert[PodCreated](
-			"the pod names the secret {string} exactly once",
+		// CF-05: compare the complete list, including duplicate multiplicity.
+		// Credential names cannot contain commas; use the configuration vocabulary.
+		Assert[PodCreated]("the pod pulls images using exactly {string}",
 			func(in PodCreated, args Args) error {
-				secret := args.String(0)
-
-				n := 0
-				for _, s := range in.Pod.Spec.ImagePullSecrets {
-					if s.Name == secret {
-						n++
-					}
+				want := splitList(args.String(0))
+				got := make([]string, len(in.Pod.Spec.ImagePullSecrets))
+				for i, secret := range in.Pod.Spec.ImagePullSecrets {
+					got[i] = secret.Name
 				}
-				if n != 1 {
-					return fmt.Errorf("expected the secret %q exactly once, found it %d times", secret, n)
+				slices.Sort(want)
+				slices.Sort(got)
+				if !slices.Equal(want, got) {
+					return fmt.Errorf("expected exactly image pull secrets %v, got %v", want, got)
 				}
 				return nil
-			},
-		),
+			}),
 
 		CheckString[PodCreated]("the pod runs as the service account {string}",
 			"the pod's service account",
@@ -400,7 +387,7 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 				}
 				return nil
 			}),
-	}
+	}, sidecarSpecDefinitions()...)
 }
 
 func volumeAt(pod *corev1.Pod, path string) (corev1.Volume, error) {
@@ -438,34 +425,6 @@ func containerNamed(pod *corev1.Pod, name string) (corev1.Container, error) {
 	}
 	return corev1.Container{}, fmt.Errorf("the pod has no container %q (it runs %s)",
 		name, strings.Join(names, ", "))
-}
-
-// qosClassOf derives the class Kubernetes would assign, from the main
-// container's envelope. Guaranteed: limits == requests on every resource.
-// BestEffort: neither set. Burstable: anything else.
-func qosClassOf(pod *corev1.Pod) string {
-	main, err := mainContainer(pod)
-	if err != nil {
-		return "unknown"
-	}
-	lim, req := main.Resources.Limits, main.Resources.Requests
-	if len(lim) == 0 && len(req) == 0 {
-		return "BestEffort"
-	}
-	if len(lim) > 0 && len(lim) == len(req) {
-		same := true
-		for k, lv := range lim {
-			rv, ok := req[k]
-			if !ok || lv.Cmp(rv) != 0 {
-				same = false
-				break
-			}
-		}
-		if same {
-			return "Guaranteed"
-		}
-	}
-	return "Burstable"
 }
 
 type resourceExpectation struct {
@@ -522,44 +481,19 @@ func matchResourceQuantity(list corev1.ResourceList, name corev1.ResourceName, r
 // so they belong to the worker rather than to any one container spec.
 func ClusterConfigDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
-
-		TransformUsing[brine.Empty, ClusterReady](
-			"a jetbridge worker that pulls with the secrets {string} as the service account {string}",
-			[]string{"jetbridge-db"},
-			func(_ brine.Empty, a Args, res brine.Resources) (ClusterReady, error) {
-				return newConfiguredWorker(res, func(cfg *jetbridge.Config) {
-					cfg.ImagePullSecrets = splitList(a.String(0))
-					cfg.ServiceAccount = a.String(1)
-				})
-			},
-		),
-
-		// CF-05: a private registry's credentials are added to every pod, and
-		// must not be added twice when the operator already listed them.
-		TransformUsing[brine.Empty, ClusterReady](
-			"a jetbridge worker pulling from a private registry with secret {string}, already pulling with {string}",
-			[]string{"jetbridge-db"},
-			func(_ brine.Empty, a Args, res brine.Resources) (ClusterReady, error) {
-				return newConfiguredWorker(res, func(cfg *jetbridge.Config) {
-					cfg.ImagePullSecrets = splitList(a.String(1))
-					cfg.ImageRegistry = &jetbridge.ImageRegistryConfig{
-						Prefix:     "gcr.io/my-project/concourse",
-						SecretName: a.String(0),
-					}
-				})
-			},
-		),
+		Refine[WorkerReady]("the worker pulls with secrets {string} as service account {string}",
+			func(in WorkerReady, a Args) WorkerReady {
+				in.Config.ImagePullSecrets = splitList(a.String(0))
+				in.Config.ServiceAccount = a.String(1)
+				return in.rebuild()
+			}),
+		Refine[WorkerReady]("the worker uses private registry secret {string}, alongside {string}",
+			func(in WorkerReady, a Args) WorkerReady {
+				in.Config.ImagePullSecrets = splitList(a.String(1))
+				in.Config.ImageRegistry = &jetbridge.ImageRegistryConfig{Prefix: "gcr.io/my-project/concourse", SecretName: a.String(0)}
+				return in.rebuild()
+			}),
 	}
-}
-
-// newConfiguredWorker is now a thin alias over the shared fixture. It keeps
-// its own name because six steps read better with it.
-func newConfiguredWorker(res brine.Resources, apply func(*jetbridge.Config)) (ClusterReady, error) {
-	cluster, err := NewCluster(res, WithConfig(apply), WithVolumeRepo(), WithTeam())
-	if err != nil {
-		return ClusterReady{}, err
-	}
-	return cluster.Ready(), nil
 }
 
 func splitList(s string) []string {
@@ -581,26 +515,22 @@ func splitList(s string) []string {
 func CacheStorageDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		TransformUsing[brine.Empty, ClusterReady](
-			"a jetbridge worker keeping caches on the node under {string}",
-			[]string{"jetbridge-db"},
-			func(_ brine.Empty, a Args, res brine.Resources) (ClusterReady, error) {
-				return newConfiguredWorker(res, func(cfg *jetbridge.Config) {
-					cfg.CacheHostPath = a.String(0)
-				})
-			},
-		),
+		Refine[WorkerReady]("the worker keeps standalone caches under {string}",
+			func(in WorkerReady, a Args) WorkerReady {
+				in.Config.CacheHostPath = a.String(0)
+				return in.rebuild()
+			}),
+		Refine[WorkerReady]("the worker uses {string} cache storage",
+			func(in WorkerReady, a Args) WorkerReady {
+				in.Config.CacheStore = a.String(0)
+				return in.rebuild()
+			}),
 
-		TransformUsing[brine.Empty, ClusterReady](
-			"a jetbridge worker with an artifact store, told to keep caches {string}",
-			[]string{"jetbridge-db"},
-			func(_ brine.Empty, a Args, res brine.Resources) (ClusterReady, error) {
-				return newConfiguredWorker(res, func(cfg *jetbridge.Config) {
-					cfg.ArtifactDaemonHostPath = "/var/concourse/artifacts"
-					cfg.CacheStore = a.String(0)
-				})
-			},
-		),
+		Refine[ContainerDraft]("it has no reusable cache identity",
+			func(in ContainerDraft, _ Args) ContainerDraft {
+				in.CacheIdentityOmitted = true
+				return in
+			}),
 
 		// The job and step identify a cache across builds. Without them the
 		// key varies per build and the cache never hits.
@@ -656,4 +586,65 @@ func CacheStorageDefinitions() []brine.StepDefinition {
 			},
 		),
 	}
+}
+
+func ephemeralMountDefinition() brine.StepDefinition {
+	return brine.DefineCheck[PodCreated]("the step has exactly these ephemeral mounts",
+		func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
+			rows := p.RequireDataTable()
+			if len(rows) < 2 || (len(rows[0]) != 1 && len(rows[0]) != 2) || rows[0][0] != "mount path" ||
+				(len(rows[0]) == 2 && rows[0][1] != "volume prefix") {
+				return fmt.Errorf("expected a nonempty table headed 'mount path', optionally followed by 'volume prefix'")
+			}
+			expected := map[string]bool{}
+			prefixes := map[string]string{}
+			for _, row := range rows[1:] {
+				if len(row) != len(rows[0]) || !filepath.IsAbs(row[0]) || expected[row[0]] {
+					return fmt.Errorf("expected distinct absolute mount paths, got %v", row)
+				}
+				expected[row[0]] = true
+				if len(row) == 2 {
+					prefixes[row[0]] = row[1]
+				}
+			}
+			if len(in.Pod.Spec.Volumes) != len(expected) {
+				return fmt.Errorf("expected %d volumes, got %d", len(expected), len(in.Pod.Spec.Volumes))
+			}
+			for _, volume := range in.Pod.Spec.Volumes {
+				if volume.EmptyDir == nil {
+					return fmt.Errorf("expected volume %q to be ephemeral", volume.Name)
+				}
+			}
+			main, err := mainContainer(in.Pod)
+			if err != nil {
+				return err
+			}
+			if len(main.VolumeMounts) != len(expected) {
+				return fmt.Errorf("expected %d step mounts, got %d", len(expected), len(main.VolumeMounts))
+			}
+			if err := validatePodMounts(in.Pod); err != nil {
+				return err
+			}
+			mounted := map[string]bool{}
+			for _, mount := range main.VolumeMounts {
+				if mount.SubPath != "" || mount.SubPathExpr != "" {
+					return fmt.Errorf("expected the whole volume at %q, got subPath=%q subPathExpr=%q", mount.MountPath, mount.SubPath, mount.SubPathExpr)
+				}
+				if !expected[mount.MountPath] {
+					return fmt.Errorf("unexpected step mount at %q", mount.MountPath)
+				}
+				if prefix := prefixes[mount.MountPath]; prefix != "" && !strings.HasPrefix(mount.Name, prefix) {
+					return fmt.Errorf("mount at %q uses volume %q, want prefix %q", mount.MountPath, mount.Name, prefix)
+				}
+				if mounted[mount.Name] {
+					return fmt.Errorf("independent directories share volume %q", mount.Name)
+				}
+				mounted[mount.Name] = true
+				delete(expected, mount.MountPath)
+			}
+			if len(expected) != 0 {
+				return fmt.Errorf("missing step mounts: %v", expected)
+			}
+			return nil
+		})
 }

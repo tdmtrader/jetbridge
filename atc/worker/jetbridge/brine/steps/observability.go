@@ -1,218 +1,39 @@
 package steps
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
-	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/metric"
-	"github.com/concourse/concourse/atc/runtime"
-	"github.com/concourse/concourse/tracing"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	"go.opentelemetry.io/otel/sdk/trace/tracetest"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// This file migrates the observability family (OE-*) from
-// behavioral_runtime_spec_test.go. It is the hardest family in Group A and the
-// one that shows what migration actually costs:
-//
-//   - Commands use the shared local executor; the fake Kubernetes client
-//     supplies pod lifecycle events, not command results.
-//   - It mutates PROCESS-GLOBAL tracing state via tracing.ConfigureTraceProvider.
-//     Under ginkgo that was an AfterEach; here it is a scenario-scoped resource
-//     whose Disposer restores it, which the machinery runs even under SIGTERM.
-//   - One case requires the pod to transition WHILE Wait() blocks, so the step
-//     schedules the transition on a goroutine exactly as the ginkgo test did.
+// Startup contracts use real kubelet-backed pods in live_observability.go,
+// live_image_pull.go and live_init_recovery.go; no executor or status is substituted.
+// All trace assertions read the production OTLP exporter via a real collector.
 
-// SpanCapture is the scenario-scoped tracing resource: a recorder plus the
-// restore of the global tracing flag.
-type SpanCapture struct {
-	Recorder *tracetest.SpanRecorder
-}
-
-// EventNames returns the event names recorded on the named span, and whether
-// that span was seen at all.
-func (s SpanCapture) EventNames(spanName string) ([]string, bool) {
-	for _, span := range s.Recorder.Ended() {
-		if span.Name() == spanName {
-			names := make([]string, 0, len(span.Events()))
-			for _, e := range span.Events() {
-				names = append(names, e.Name)
-			}
-			return names, true
-		}
-	}
-	return nil, false
-}
-
-// TracingResourceDefinition is scenario-scoped because the trace provider is
-// process-global: two scenarios sharing one recorder would see each other's
-// spans.
+// TracingResourceDefinition owns an actual OTLP collector and the production
+// trace provider. Each scenario exports to its own file and restores globals.
 func TracingResourceDefinition() brine.ResourceDefinition {
 	return brine.ResourceDefinition{
-		Name:  "span-capture",
-		Scope: brine.ScopeScenario,
-		Factory: func(map[string]any) (any, error) {
-			recorder := new(tracetest.SpanRecorder)
-			tp := sdktrace.NewTracerProvider(
-				sdktrace.WithSpanProcessor(recorder),
-				sdktrace.WithSyncer(tracetest.NewInMemoryExporter()),
-			)
-			tracing.ConfigureTraceProvider(tp)
-			return SpanCapture{Recorder: recorder}, nil
-		},
-		Disposer: func(any) error {
-			// The ginkgo suite's AfterEach. Here the machinery owns it.
-			tracing.Configured = false
-			return nil
+		Name:    "span-capture",
+		Scope:   brine.ScopeScenario,
+		Factory: func(map[string]any) (any, error) { return startTraceCapture() },
+		Disposer: func(value any) error {
+			capture, ok := value.(SpanCapture)
+			if !ok {
+				return fmt.Errorf("span-capture disposer got %T", value)
+			}
+			return capture.export.close()
 		},
 	}
 }
 
 // ObservabilityDefinitions carries the OE family.
 func ObservabilityDefinitions() []brine.StepDefinition {
-	return []brine.StepDefinition{
-
-		// Empty -> ExecClusterReady. Needs both the database and the span
-		// capture, so it declares both resources.
-		brine.DefineMapUsing[brine.Empty, ExecClusterReady](
-			"a jetbridge worker whose spans are recorded",
-			[]string{"jetbridge-db", "span-capture"},
-			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder, res brine.Resources) (ExecClusterReady, error) {
-				capture, ok := res.Get("span-capture").(SpanCapture)
-				if !ok {
-					return ExecClusterReady{}, fmt.Errorf("span-capture resource is %T", res.Get("span-capture"))
-				}
-
-				cluster, err := NewCluster(res, WithExecutor(localExecutor{}))
-				if err != nil {
-					return ExecClusterReady{}, err
-				}
-				namespace, clientset, worker := cluster.Namespace, cluster.Clientset, cluster.Worker
-
-				return ExecClusterReady{
-					Namespace: namespace,
-					Worker:    worker,
-					Clientset: clientset,
-					Ctx:       context.Background(),
-					Capture:   capture,
-				}, nil
-			},
-		),
-
-		// ExecClusterReady -> ExecStepRunning.
-		Transform[ExecClusterReady, ExecStepRunning](
-			"an exec-mode task container {string} is running",
-			func(in ExecClusterReady, a Args) (ExecStepRunning, error) {
-				handle := a.String(0)
-
-				container, _, err := in.Worker.FindOrCreateContainer(
-					in.Ctx,
-					db.NewFixedHandleContainerOwner(handle),
-					db.ContainerMetadata{Type: db.ContainerTypeTask},
-					runtime.ContainerSpec{
-						TeamID:    1,
-						Dir:       "/workdir",
-						ImageSpec: runtime.ImageSpec{ImageURL: "busybox"},
-						Type:      db.ContainerTypeTask,
-					},
-					&noopDelegate{},
-				)
-				if err != nil {
-					return ExecStepRunning{}, fmt.Errorf("find or create container %q: %w", handle, err)
-				}
-
-				process, err := container.Run(in.Ctx,
-					runtime.ProcessSpec{Path: "/bin/cat"},
-					runtime.ProcessIO{
-						Stdin:  bytes.NewBufferString(`{}`),
-						Stdout: new(bytes.Buffer),
-						Stderr: new(bytes.Buffer),
-					},
-				)
-				if err != nil {
-					return ExecStepRunning{}, fmt.Errorf("run container %q: %w", handle, err)
-				}
-
-				return ExecStepRunning{
-					Namespace: in.Namespace,
-					Clientset: in.Clientset,
-					Ctx:       in.Ctx,
-					Handle:    handle,
-					Process:   process,
-					Capture:   in.Capture,
-				}, nil
-			},
-		),
-
-		// The pod reaches Running with the Initialized condition already true,
-		// before Wait observes it. OE-02.
-		brine.DefineMap[ExecStepRunning, SpansRecorded](
-			"the pod reports itself initialized and then running",
-			func(in ExecStepRunning, _ brine.Params, _ *brine.Recorder) (SpansRecorded, error) {
-				pods := in.Clientset.CoreV1().Pods(in.Namespace)
-				pod, err := pods.Get(in.Ctx, in.Handle, metav1.GetOptions{})
-				if err != nil {
-					return SpansRecorded{}, fmt.Errorf("get pod %q: %w", in.Handle, err)
-				}
-
-				pod.Status.Phase = corev1.PodPending
-				pod.Status.Conditions = []corev1.PodCondition{
-					{Type: corev1.PodInitialized, Status: corev1.ConditionTrue},
-				}
-				if _, err := pods.UpdateStatus(in.Ctx, pod, metav1.UpdateOptions{}); err != nil {
-					return SpansRecorded{}, fmt.Errorf("update pod status: %w", err)
-				}
-
-				pod.Status.Phase = corev1.PodRunning
-				pod.Status.Conditions = append(pod.Status.Conditions, corev1.PodCondition{
-					Type: corev1.PodReady, Status: corev1.ConditionTrue,
-				})
-				if _, err := pods.UpdateStatus(in.Ctx, pod, metav1.UpdateOptions{}); err != nil {
-					return SpansRecorded{}, fmt.Errorf("update pod status: %w", err)
-				}
-
-				return waitAndCapture(in)
-			},
-		),
-
-		// The container is pre-staged in ContainerCreating so the watcher's
-		// initial sync sees it, then transitions out WHILE Wait blocks. OE-04.
-		brine.DefineMap[ExecStepRunning, SpansRecorded](
-			"the pod pulls its image and then starts while the step waits",
-			func(in ExecStepRunning, _ brine.Params, _ *brine.Recorder) (SpansRecorded, error) {
-				pods := in.Clientset.CoreV1().Pods(in.Namespace)
-				pod, err := pods.Get(in.Ctx, in.Handle, metav1.GetOptions{})
-				if err != nil {
-					return SpansRecorded{}, fmt.Errorf("get pod %q: %w", in.Handle, err)
-				}
-
-				pod.Status.Phase = corev1.PodPending
-				pod.Status.ContainerStatuses = []corev1.ContainerStatus{waitingStatus("main", corev1.ContainerStateWaiting{Reason: "ContainerCreating"})}
-				if _, err := pods.UpdateStatus(in.Ctx, pod, metav1.UpdateOptions{}); err != nil {
-					return SpansRecorded{}, fmt.Errorf("update pod status: %w", err)
-				}
-
-				// The transition must arrive as a watch event while Wait is
-				// blocked, which is why this is a goroutine and not a second
-				// step: the pod has to move mid-wait, and a step boundary
-				// would serialize it.
-				go func() {
-					time.Sleep(20 * time.Millisecond)
-					pod.Status.Phase = corev1.PodRunning
-					pod.Status.ContainerStatuses = []corev1.ContainerStatus{runningStatus("main")}
-					_, _ = pods.UpdateStatus(in.Ctx, pod, metav1.UpdateOptions{})
-				}()
-
-				return waitAndCapture(in)
-			},
-		),
+	return append([]brine.StepDefinition{
 
 		// Keeps its own body: this is membership in a collection the FIRST
 		// parameter selects. CheckMember lists what was there instead, which
@@ -230,7 +51,10 @@ func ObservabilityDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("the step failed before spans could be asserted: %w", in.WaitErr)
 				}
 
-				names, found := in.Capture.EventNames(spanName)
+				names, found, err := in.Capture.EventNames(spanName)
+				if err != nil {
+					return err
+				}
 				if !found {
 					return fmt.Errorf("expected a %q span, none was recorded", spanName)
 				}
@@ -254,11 +78,23 @@ func ObservabilityDefinitions() []brine.StepDefinition {
 				}
 				return in.ExitStatus, nil
 			}),
-	}
+	}, LiveObservabilityDefinitions()...)
 }
 
-func waitAndCapture(in ExecStepRunning) (SpansRecorded, error) {
-	result, waitErr := in.Process.Wait(in.Ctx)
+func waitAndCapture(in ExecStepRunning, timeouts ...time.Duration) (SpansRecorded, error) {
+	timeout := 15 * time.Second
+	if len(timeouts) > 1 {
+		return SpansRecorded{}, fmt.Errorf("at most one observation timeout is allowed")
+	}
+	if len(timeouts) == 1 {
+		timeout = timeouts[0]
+	}
+	if timeout <= 0 {
+		return SpansRecorded{}, fmt.Errorf("observation timeout must be positive")
+	}
+	ctx, cancel := context.WithTimeout(in.Ctx, timeout)
+	defer cancel()
+	result, waitErr := in.Process.Wait(ctx)
 	return SpansRecorded{
 		Capture:    in.Capture,
 		ExitStatus: result.ExitStatus,
@@ -276,90 +112,19 @@ func waitAndCapture(in ExecStepRunning) (SpansRecorded, error) {
 func ObservabilityExtraDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		// OE-01
-		Transform[ExecStepRunning, SpansRecorded](
-			"the pod is placed on node {string} and then starts",
-			func(in ExecStepRunning, a Args) (SpansRecorded, error) {
-				return in.stageThenRun(func(pod *corev1.Pod) {
-					pod.Spec.NodeName = a.String(0)
-					pod.Status.Phase = corev1.PodPending
-					pod.Status.Conditions = []corev1.PodCondition{
-						{Type: corev1.PodScheduled, Status: corev1.ConditionTrue},
-					}
-				})
-			},
-		),
-
-		// OE-05 / OE-06: an init container is where artifact staging happens,
-		// so its outcome is the difference between "the step failed" and "the
-		// step never got its inputs".
-		Transform[ExecStepRunning, SpansRecorded](
-			"an init container finishes with exit code {int} and the pod then starts",
-			func(in ExecStepRunning, a Args) (SpansRecorded, error) {
-				return in.stageThenRun(func(pod *corev1.Pod) {
-					pod.Status.Phase = corev1.PodPending
-					pod.Status.InitContainerStatuses = []corev1.ContainerStatus{terminatedStatus("artifact-init", corev1.ContainerStateTerminated{
-						ExitCode: int32(a.Int(0)), Reason: "Completed",
-					})}
-				})
-			},
-		),
-
-		// OE-07
-		Transform[ExecStepRunning, SpansRecorded](
-			"a sidecar {string} reaches running and the pod then starts",
-			func(in ExecStepRunning, a Args) (SpansRecorded, error) {
-				return in.stageThenRun(func(pod *corev1.Pod) {
-					pod.Status.Phase = corev1.PodPending
-					pod.Status.ContainerStatuses = []corev1.ContainerStatus{runningStatus(a.String(0))}
-				})
-			},
-		),
-
-		// OE-09: the same condition observed twice must not produce two
-		// events, or a trace of a slow step becomes unreadable noise.
-		Transform[ExecStepRunning, SpansRecorded](
-			"the pod is placed on node {string}, observed twice, and then starts",
-			func(in ExecStepRunning, a Args) (SpansRecorded, error) {
-				node := a.String(0)
-				pods := in.Clientset.CoreV1().Pods(in.Namespace)
-				pod, err := pods.Get(in.Ctx, in.Handle, metav1.GetOptions{})
-				if err != nil {
-					return SpansRecorded{}, fmt.Errorf("get pod: %w", err)
-				}
-				pod.Spec.NodeName = node
-				pod.Status.Phase = corev1.PodPending
-				pod.Status.Conditions = []corev1.PodCondition{
-					{Type: corev1.PodScheduled, Status: corev1.ConditionTrue},
-				}
-				if _, err := pods.UpdateStatus(in.Ctx, pod, metav1.UpdateOptions{}); err != nil {
-					return SpansRecorded{}, fmt.Errorf("update pod: %w", err)
-				}
-				// Observed a second time in the same condition.
-				if _, err := pods.UpdateStatus(in.Ctx, pod, metav1.UpdateOptions{}); err != nil {
-					return SpansRecorded{}, fmt.Errorf("re-update pod: %w", err)
-				}
-				go func(p *corev1.Pod) {
-					time.Sleep(20 * time.Millisecond)
-					p.Status.Phase = corev1.PodRunning
-					p.Status.ContainerStatuses = []corev1.ContainerStatus{runningStatus("main")}
-					_, _ = pods.UpdateStatus(in.Ctx, p, metav1.UpdateOptions{})
-				}(pod.DeepCopy())
-				return waitAndCapture(in)
-			},
-		),
-
-		// Keeps its own body: CheckCount compares the LENGTH of a collection
-		// the state alone supplies against an {int} parameter. Neither half
-		// fits — the number is fixed in the sentence, and what is counted is
-		// the occurrences of parameter 1 within the span named by parameter 0.
+		// Count occurrences of the selected event, not the collection length.
+		// Failure spans are valid inputs too. Even an expected count of zero
+		// requires the named span to exist, so absent telemetry cannot pass.
 		Assert[SpansRecorded](
-			"the {string} span records the event {string} exactly once",
+			"the {string} span records the event {string} exactly {int} time(s)",
 			func(in SpansRecorded, args Args) error {
 				spanName := args.String(0)
 				eventName := args.String(1)
 
-				names, found := in.Capture.EventNames(spanName)
+				names, found, err := in.Capture.EventNames(spanName)
+				if err != nil {
+					return err
+				}
 				if !found {
 					return fmt.Errorf("expected a %q span, none was recorded", spanName)
 				}
@@ -369,57 +134,14 @@ func ObservabilityExtraDefinitions() []brine.StepDefinition {
 						n++
 					}
 				}
-				if n != 1 {
-					return fmt.Errorf("expected %q exactly once on the %q span, found it %d times (all: %s)",
-						eventName, spanName, n, strings.Join(names, ", "))
+				if want := args.Int(2); n != want {
+					return fmt.Errorf("expected %q exactly %d time(s) on the %q span, found it %d times (all: %s)",
+						eventName, want, spanName, n, strings.Join(names, ", "))
 				}
 				return nil
 			},
 		),
-
-		// OE-01's node.name is the attribute that makes the event actionable —
-		// "waited for scheduling" is not useful without "onto which node".
-		CheckStringFor[SpansRecorded]("the {string} event names the node {string}",
-			"the node named by the event",
-			func(in SpansRecorded, eventName string) (string, error) {
-				for _, span := range in.Capture.Recorder.Ended() {
-					for _, e := range span.Events() {
-						if e.Name != eventName {
-							continue
-						}
-						for _, a := range e.Attributes {
-							if string(a.Key) == "node.name" {
-								return a.Value.AsString(), nil
-							}
-						}
-						return "", fmt.Errorf("the %q event carries no node.name attribute", eventName)
-					}
-				}
-				return "", fmt.Errorf("no %q event was recorded", eventName)
-			}),
 	}
-}
-
-// stageThenRun applies a pre-Wait pod state, then transitions the pod to
-// Running on a goroutine so Wait can complete. The staged state has to be
-// visible to the watcher's initial sync, which is why it is not a second step.
-func (in ExecStepRunning) stageThenRun(stage func(*corev1.Pod)) (SpansRecorded, error) {
-	pods := in.Clientset.CoreV1().Pods(in.Namespace)
-	pod, err := pods.Get(in.Ctx, in.Handle, metav1.GetOptions{})
-	if err != nil {
-		return SpansRecorded{}, fmt.Errorf("get pod %q: %w", in.Handle, err)
-	}
-	stage(pod)
-	if _, err := pods.UpdateStatus(in.Ctx, pod, metav1.UpdateOptions{}); err != nil {
-		return SpansRecorded{}, fmt.Errorf("update pod status: %w", err)
-	}
-	go func(p *corev1.Pod) {
-		time.Sleep(20 * time.Millisecond)
-		p.Status.Phase = corev1.PodRunning
-		p.Status.ContainerStatuses = append(p.Status.ContainerStatuses, runningStatus("main"))
-		_, _ = pods.UpdateStatus(in.Ctx, p, metav1.UpdateOptions{})
-	}(pod.DeepCopy())
-	return waitAndCapture(in)
 }
 
 // ObservabilityMetricDefinitions covers OE-08 and OE-10 — the phase timeline
@@ -430,18 +152,6 @@ func (in ExecStepRunning) stageThenRun(stage func(*corev1.Pod)) (SpansRecorded, 
 // slow to start, shows up here first or not at all.
 func ObservabilityMetricDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
-
-		// OE-08 / OE-10: the ordinary successful startup, which is what makes
-		// the phase timeline and the startup-duration gauge meaningful.
-		brine.DefineMap[ExecStepRunning, SpansRecorded](
-			"the pod is pending and then starts normally",
-			func(in ExecStepRunning, _ brine.Params, _ *brine.Recorder) (SpansRecorded, error) {
-				metric.Metrics.K8sPodStartupDuration.Max() // reset max-tracking
-				return in.stageThenRun(func(pod *corev1.Pod) {
-					pod.Status.Phase = corev1.PodPending
-				})
-			},
-		),
 
 		CheckThat[SpansRecorded]("a pod startup duration was recorded",
 			func(in SpansRecorded) error {
@@ -466,32 +176,6 @@ func ObservabilityMetricDefinitions() []brine.StepDefinition {
 func InitContainerDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		Transform[ExecStepRunning, SpansRecorded](
-			"the init container {string} fails before the step can start",
-			func(in ExecStepRunning, a Args) (SpansRecorded, error) {
-				if err := updateTaskPodStatus(in.Ctx, in.Clientset, in.Namespace, in.Handle, func(pod *corev1.Pod) {
-					// PodSucceeded rather than PodFailed keeps waitForRunning out
-					// of the pause-pod recreate branch, so the init diagnostics
-					// are reported directly — the same choice the original makes.
-					pod.Status.Phase = corev1.PodSucceeded
-					pod.Status.InitContainerStatuses = []corev1.ContainerStatus{{
-						Name: a.String(0), Image: "alpine:latest",
-						State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
-							ExitCode: 1, Reason: "Error",
-						}},
-					}}
-				}); err != nil {
-					return SpansRecorded{}, err
-				}
-				result, waitErr := in.Process.Wait(in.Ctx)
-				msg := errorMessage(waitErr)
-				return SpansRecorded{
-					Capture: in.Capture, ExitStatus: result.ExitStatus,
-					WaitErr: waitErr, Message: msg,
-				}, nil
-			},
-		),
-
 		// Keeps its own body: the message says WHY the name has to be there —
 		// that the step never ran at all — which is the whole point of the
 		// check and is more than a generic "expected … to mention" can say.
@@ -509,6 +193,9 @@ func InitContainerDefinitions() []brine.StepDefinition {
 					return fmt.Errorf(
 						"expected the failure to name the init container %q so the user knows the step never ran; got %q",
 						name, in.Message)
+				}
+				if in.live != nil {
+					return checkLiveInitDiagnostics(in)
 				}
 				return nil
 			},

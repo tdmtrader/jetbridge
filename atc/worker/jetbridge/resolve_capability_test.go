@@ -62,7 +62,7 @@ func backendWith(t *testing.T, key []byte, ttl time.Duration) *DaemonSetBackend 
 // without the matching pair BuildFetchInitContainers produces no items at all
 // and every assertion below would pass on an empty payload.
 func oneInput(b *DaemonSetBackend) ([]runtime.Input, []corev1.Volume, []corev1.VolumeMount) {
-	return []runtime.Input{{Artifact: &testArtifact{handle: "vol-1"}, DestinationPath: "/tmp/build/in"}},
+	return []runtime.Input{{Artifact: constructionArtifact("vol-1", "worker-1"), DestinationPath: "/tmp/build/in"}},
 		[]corev1.Volume{b.StepVolume("input-0", "handle-1", "input-0")},
 		[]corev1.VolumeMount{{Name: "input-0", MountPath: "/tmp/build/in"}}
 }

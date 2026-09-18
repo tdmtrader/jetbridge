@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
@@ -23,7 +24,16 @@ import (
 
 func loadFeatures(t *testing.T) []*brine.ParsedFeature {
 	t.Helper()
-	paths, err := filepath.Glob("../features/*.feature")
+	var paths []string
+	err := filepath.WalkDir("../features", func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() && strings.HasSuffix(path, ".feature") {
+			paths = append(paths, path)
+		}
+		return nil
+	})
 	if err != nil {
 		t.Fatalf("glob features: %v", err)
 	}

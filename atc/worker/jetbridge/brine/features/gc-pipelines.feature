@@ -541,6 +541,11 @@ Feature: Reclaiming pipelines, build logs, and the right to intercept a build
   # reaped in the same pass, which is the outcome the log line was standing in
   # for, and it is asserted on every row.
   #
+  # Event deletion and cursor advancement fail through actual PostgreSQL
+  # locks on only the first pipeline's event table or job row. The two reads
+  # fail by cancelling the identified blocked query on an owned backend, then
+  # restoring access so the healthy pipeline can continue.
+  #
   # The last row is the one with a different fate, and it is the safe
   # direction: the events are gone but the cursor never moved, so the next
   # sweep re-reads builds it has already dealt with rather than advancing past

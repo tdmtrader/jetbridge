@@ -78,6 +78,16 @@ nor damaged it, and that debt is unchanged.
 
 ## container_collector_test.go
 
+The three container-collector failure-isolation Brine scenarios now use real
+PostgreSQL privilege refusals and a contended failed row, not repository
+decorators. Four production faults retain six paired old/new assertion
+detections. An additional unrelated-error mutation passes old Brine but fails
+all three new SQLSTATE assertions. This improves cause preservation, but does
+not claim a new per-Go-leaf replay or retire the REFUTED entries below: their
+historical error-text obligations remain explicitly unproven by that narrower
+check. Evidence: /tmp/brine-gc-real-errors.k5B2jy/evidence.json (2026-09-14).
+
+
 **[DELETED]** keeps a container missing for less than the grace period
   - mutation: atc/db/container_repository.go:178 (RemoveMissingContainers) — the grace-period comparison replaced by `sq.Expr("missing_since IS NOT NULL")`, i.e. delete on the first missed report. (overlay M3b; isolates this row, where the M3 inversion reddens both missing-container rows)
   - brine: FAIL  A container the worker stopped reporting is deleted once the grace period passes, but not while the worker itself is stalled (11/12 steps, 20ms) — `Step FAILED: And the container "just-missing" is still in the database` / `Error: expected the container rows the sweep left behind to include "ju

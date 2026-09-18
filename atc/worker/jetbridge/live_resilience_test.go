@@ -45,7 +45,7 @@ func setupLiveResilienceWorker(t *testing.T, handle string, podStartupTimeout ti
 	executor := jetbridge.NewSPDYExecutor(clientset, restConfig)
 	worker.SetExecutor(executor)
 
-	return worker, &noopDelegate{}, clientset, cfg, database
+	return worker, nil, clientset, cfg, database
 }
 
 // TestLiveInvalidImageFailsFast verifies that a pod with a nonexistent image

@@ -195,7 +195,10 @@ func (v *Volume) StreamIn(ctx context.Context, path string, enc compression.Comp
 		actualReader = decompressed
 	}
 
-	cmd := []string{"tar", "xf", "-", "-C", targetPath}
+	// Pass the path as an argument, never as shell source: artifact paths
+	// may contain whitespace or shell metacharacters. Create nested upload
+	// destinations before extracting, including for an empty archive.
+	cmd := []string{"sh", "-c", `mkdir -p -- "$1" && exec tar xf - -C "$1"`, "stream-in", targetPath}
 
 	err := v.executor.ExecInPod(ctx, v.namespace, v.podName, v.containerName, cmd, actualReader, nil, nil, false,
 		ExecAttrs{Purpose: "stream-in", VolumeMountPath: v.mountPath})

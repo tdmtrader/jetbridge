@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -18,45 +19,22 @@ import (
 	"github.com/brine-dev/brine-go/pkg/brine"
 )
 
-// A REAL artifact daemon, as a process.
+// Runs the production artifact-daemon in a subprocess with an owned storage
+// root and a free port. HTTP and HTTPS fixtures share this lifecycle.
 //
-// The rest of the artifact scenarios drive a DOUBLE of the daemon — a real
-// http.Server answering the daemon's routes out of a map. That double is
-// honest about being one, and for asserting what the ATC does with an answer
-// it is the right tool: it can be made to 404, to refuse, to go away.
+// Other families still contain HTTP stand-ins; those cannot verify the real
+// daemon's registration, file-serving, tar or authentication behavior.
 //
-// What it cannot do is tell you the answer is RIGHT. Three things this suite
-// already asserts turn out to rest on the double's own implementation rather
-// than the daemon's:
-//
-//   - "the archive holds X containing Y" reads bytes the double was handed
-//     pre-built. Nothing asserted that the daemon, asked for a directory on
-//     its disk, produces a tar whose members carry their relative paths.
-//   - "an output whose node the worker could not identify is still fetched by
-//     its directory" is green because the double looks up "steps/"+key in its
-//     map. If the daemon's filesystem fallback regressed, that scenario would
-//     stay green and every build after a web restart would break.
-//   - the double's /register invents the rule that a daemon whose node does
-//     not hold the path answers 404. That is a decisive property of the whole
-//     scheme, and it was guessed.
-//
-// So this resource runs the actual binary: `go build ./cmd/artifact-daemon`,
-// then a process per scenario with its own storage root on a free port. No
-// Kubernetes is involved — the daemon only builds a client when asked to label
-// a node, and these scenarios do not ask.
-//
-// MIRRORING IS OUT OF REACH HERE, and the reason is worth writing down: peer
-// discovery goes through EndpointSlices, and main.go builds that client with
-// rest.InClusterConfig() alone. There is no --kubeconfig flag, and client-go
-// hardcodes the service-account token path, so a daemon cannot be pointed at
-// envtest's API server from outside a cluster. Two real daemons therefore
-// cannot find each other. Closing that needs a production flag, which is a
-// decision rather than a detail.
+// The binary also supports --kubeconfig, --listen-address and a filesystem
+// durable store for multi-daemon fixtures. Real discovery additionally needs
+// reachable addresses that the Kubernetes EndpointSlice API accepts; envtest
+// itself does not run daemon pods.
 
 type realDaemon struct {
 	Root string // the storage path this daemon serves
-	URL  string // http://127.0.0.1:<port>
+	URL  string // http(s)://127.0.0.1:<port>
 	cmd  *exec.Cmd
+	done chan error
 }
 
 var (
@@ -65,10 +43,47 @@ var (
 	daemonBinErr  error
 )
 
-// artifactDaemonBinary builds the daemon once per process and reuses it. The
-// build is ~10s cold and instant warm, which is why it is not per scenario.
+// readDaemonHTTP checks a response from an actual daemon, without supplying
+// protocol behavior. Local and live fixtures share this independent readback.
+func readDaemonHTTP(ctx context.Context, client *http.Client, method, url string, body io.Reader, status int) ([]byte, error) {
+	request, err := http.NewRequestWithContext(ctx, method, url, body)
+	if err != nil {
+		return nil, err
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	content, readErr := io.ReadAll(response.Body)
+	closeErr := response.Body.Close()
+	if response.StatusCode != status {
+		return nil, fmt.Errorf("%s %s: HTTP %d, want %d: %s", method, url, response.StatusCode, status, content)
+	}
+	return content, errors.Join(readErr, closeErr)
+}
+
+// artifactDaemonBinary builds once per process, not once per scenario.
 func artifactDaemonBinary() (string, error) {
 	daemonBinOnce.Do(func() {
+		// The private-network runner builds outside the namespace, where
+		// dependency downloads are possible. Direct runs retain lazy builds.
+		if binary := os.Getenv("BRINE_ARTIFACT_DAEMON_BINARY"); binary != "" {
+			if !filepath.IsAbs(binary) {
+				daemonBinErr = fmt.Errorf("prebuilt artifact-daemon path must be absolute: %q", binary)
+				return
+			}
+			info, err := os.Stat(binary)
+			if err != nil {
+				daemonBinErr = fmt.Errorf("prebuilt artifact-daemon: %w", err)
+				return
+			}
+			if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+				daemonBinErr = fmt.Errorf("prebuilt artifact-daemon is not an executable file: %q", binary)
+				return
+			}
+			daemonBinPath = binary
+			return
+		}
 		dir, err := os.MkdirTemp("", "brine-artifact-daemon-*")
 		if err != nil {
 			daemonBinErr = err
@@ -116,6 +131,25 @@ func freePort() (int, error) {
 
 // startRealDaemon brings up one daemon and waits until it answers.
 func startRealDaemon(extraArgs ...string) (*realDaemon, error) {
+	return startRealDaemonWithClient("http", http.DefaultClient, extraArgs...)
+}
+
+// TLS callers supply an independently configured, verifying client. Readiness
+// must complete HTTPS and receive healthz's 200; the TLS listener's HTTP 400
+// is not evidence that a correctly configured TLS daemon is ready.
+func startRealDaemonWithClient(scheme string, client *http.Client, extraArgs ...string) (*realDaemon, error) {
+	return startConfiguredDaemon(scheme, client, daemonOptions{}, extraArgs...)
+}
+
+// A real peer pair binds two actual addresses at the same DaemonSet port.
+// All callers share readiness, process ownership and filesystem cleanup.
+type daemonOptions struct {
+	Host string
+	Port int
+	Env  []string
+}
+
+func startConfiguredDaemon(scheme string, client *http.Client, options daemonOptions, extraArgs ...string) (_ *realDaemon, err error) {
 	bin, err := artifactDaemonBinary()
 	if err != nil {
 		return nil, err
@@ -124,12 +158,26 @@ func startRealDaemon(extraArgs ...string) (*realDaemon, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		if err != nil {
+			_ = os.RemoveAll(root)
+		}
+	}()
 	if err := os.MkdirAll(filepath.Join(root, "steps"), 0o755); err != nil {
 		return nil, err
 	}
-	port, err := freePort()
-	if err != nil {
-		return nil, err
+	port := options.Port
+	if port == 0 {
+		port, err = freePort()
+		if err != nil {
+			return nil, err
+		}
+	}
+	host := options.Host
+	if host == "" {
+		host = "127.0.0.1"
+	} else {
+		extraArgs = append(extraArgs, "--listen-address", host)
 	}
 
 	args := append([]string{
@@ -137,13 +185,14 @@ func startRealDaemon(extraArgs ...string) (*realDaemon, error) {
 		"--storage-path", root,
 	}, extraArgs...)
 	cmd := exec.Command(bin, args...)
+	cmd.Env = append(os.Environ(), options.Env...)
 	// The daemon logs to stderr; keep it off the event stream, which is stdout.
 	cmd.Stdout, cmd.Stderr = nil, nil
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start artifact-daemon: %w", err)
 	}
 
-	d := &realDaemon{Root: root, URL: fmt.Sprintf("http://127.0.0.1:%d", port), cmd: cmd}
+	d := &realDaemon{Root: root, URL: fmt.Sprintf("%s://%s:%d", scheme, host, port), cmd: cmd}
 
 	// Readiness: a route that answers even with nothing stored. A daemon that
 	// died on startup must be reported as that, not as a scenario failure
@@ -155,7 +204,11 @@ func startRealDaemon(extraArgs ...string) (*realDaemon, error) {
 	// reported twenty seconds later as "did not answer", hiding its exit code
 	// and the reason. Waiting in a goroutine makes the death observable.
 	died := make(chan error, 1)
-	go func() { died <- cmd.Wait() }()
+	d.done = died
+	go func() {
+		died <- cmd.Wait()
+		close(died)
+	}()
 
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
@@ -165,12 +218,14 @@ func startRealDaemon(extraArgs ...string) (*realDaemon, error) {
 		default:
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, d.URL+"/artifacts/steps/__ready__", nil)
-		resp, err := http.DefaultClient.Do(req)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, d.URL+"/healthz", nil)
+		resp, err := client.Do(req)
 		cancel()
 		if err == nil {
 			resp.Body.Close()
-			return d, nil
+			if resp.StatusCode == http.StatusOK {
+				return d, nil
+			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -178,11 +233,38 @@ func startRealDaemon(extraArgs ...string) (*realDaemon, error) {
 	return nil, fmt.Errorf("artifact-daemon did not answer within 20s")
 }
 
+// registerDaemonArtifact asks the production daemon to register a file it
+// already holds. Both plaintext and mTLS fixtures use this request path.
+func registerDaemonArtifact(ctx context.Context, client *http.Client, baseURL, key, path string) error {
+	body := fmt.Sprintf("{\"key\":%q,\"local_path\":%q}", key, path)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/register", strings.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("registration request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("register %q with the daemon: %w", key, err)
+	}
+	defer resp.Body.Close()
+	answer, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusCreated {
+		return fmt.Errorf("the daemon refused to register %q at %q: %d %s",
+			key, path, resp.StatusCode, strings.TrimSpace(string(answer)))
+	}
+	return nil
+}
+
 func (d *realDaemon) stop() error {
 	if d.cmd != nil && d.cmd.Process != nil {
 		// The goroutine started in startRealDaemon owns Wait; calling it here
 		// too would race for the same exit status.
 		_ = d.cmd.Process.Kill()
+		select {
+		case <-d.done:
+		case <-time.After(20 * time.Second):
+			return fmt.Errorf("artifact-daemon did not exit after kill")
+		}
 	}
 	if d.Root != "" {
 		return os.RemoveAll(d.Root)

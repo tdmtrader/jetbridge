@@ -10,8 +10,8 @@ Feature: Collecting the containers and volumes a finished build left behind
 
   Both suites migrated here already ran against real PostgreSQL and already
   asserted outcomes: the state column after the sweep, or whether the row is
-  still there. There was no double to remove and no traffic to stop counting,
-  so every scenario below has to be justified by its sentence alone.
+  still there. Failure-isolation scenarios now use actual database permissions
+  and row contention as well, with no repository error-returning doubles.
 
   What the migration does add is siblings. Nine of the sixteen ginkgo specs
   asserted a row's fate with no row beside it that the same sweep had to treat
@@ -168,16 +168,11 @@ Feature: Collecting the containers and volumes a finished build left behind
   # it. Orphaned containers would accumulate for as long as the deadlock
   # lasted, and the only symptom is a containers table that grows.
   #
-  # Each scenario disables one step and then asserts the OUTCOMES of the other
-  # three on real rows: nothing here counts calls or inspects the error text.
-  # The failure is injected by wrapping the real repository and failing exactly
-  # one of its methods; the other three go to PostgreSQL as usual. That is a
-  # narrower version of the pilot's "the database has gone away" and it is the
-  # only lever that works, because a closed connection fails all four steps at
-  # once and PostgreSQL will not fail just one of them on request: the FK from
-  # volumes to containers is ON DELETE SET NULL, so even a volume attached to a
-  # missing container cannot make its deletion fail. See the note in
-  # steps/gc_containers.go on why this wrapper is admitted and what it is not.
+  # Each scenario makes one stage fail in real PostgreSQL and then asserts
+  # the outcomes of the other three on real rows. An owned NOLOGIN role loses
+  # SELECT on builds or DELETE on containers; a competing transaction holds
+  # the failed row. Independent SQL probes verify each database refusal, and
+  # the sweep must report its actual SQLSTATE. No repository method is replaced.
   #
   # The three positions are three scenarios rather than an outline because the
   # mutation each one catches is position-specific: a `return errs` added
@@ -204,11 +199,12 @@ Feature: Collecting the containers and volumes a finished build left behind
   # Reddened by: `return errs` after the failed-containers block in Run().
   Scenario: A collector that cannot destroy failed containers still collects the orphaned, the missing and the excess
     Given a container collector sweeping a real database
+    And the container "locked-failed-container" failed while it was being created
     And the container "orphaned-container" belongs to a build that has finished
     And the container "missing-container" belongs to a build that is still running
     And the worker stopped reporting the container "missing-container" an hour ago
     And the resource "some-resource" has the check containers "excess-check" and "newest-check", oldest first
-    And the collector cannot destroy failed containers
+    And a competing transaction holds the failed container "locked-failed-container"
     When the container collector sweeps
     Then the sweep reported the failure rather than a clean pass
     And the container "orphaned-container" is now destroying

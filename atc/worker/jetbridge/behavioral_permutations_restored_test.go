@@ -17,35 +17,19 @@ package jetbridge
 // original domain assertions; the substring helpers now use strings.Contains.
 
 import (
-	"context"
-	"fmt"
-	"io"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/client-go/kubernetes/fake"
 )
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-// permStubArtifact is a minimal runtime.Artifact for permutation tests.
-type permStubArtifact struct{ handle string }
-
-var _ runtime.Artifact = (*permStubArtifact)(nil)
-
-func (a *permStubArtifact) Handle() string { return a.handle }
-func (a *permStubArtifact) Source() string { return "worker-1" }
-func (a *permStubArtifact) StreamOut(_ context.Context, _ string, _ compression.Compression) (io.ReadCloser, error) {
-	return nil, fmt.Errorf("not implemented")
-}
 
 func permDaemonSetConfig() Config {
 	return Config{
@@ -73,7 +57,7 @@ func makeContainer(handle string, metadata db.ContainerMetadata, spec runtime.Co
 		metadata,
 		spec,
 		nil, // dbContainer
-		fake.NewSimpleClientset(),
+		volumeConstructionExecutor().clientset,
 		cfg,
 		"worker-1",
 		nil, // executor
@@ -467,9 +451,9 @@ func TestBuildArtifactInitContainers_MultipleInputs(t *testing.T) {
 		Dir:  "/tmp/build",
 		Type: db.ContainerTypeTask,
 		Inputs: []runtime.Input{
-			{Artifact: &permStubArtifact{handle: "vol-a"}, DestinationPath: "/tmp/input-a"},
-			{Artifact: &permStubArtifact{handle: "vol-b"}, DestinationPath: "/tmp/input-b"},
-			{Artifact: &permStubArtifact{handle: "vol-c"}, DestinationPath: "/tmp/input-c"},
+			{Artifact: constructionArtifact("vol-a", "worker-1"), DestinationPath: "/tmp/input-a"},
+			{Artifact: constructionArtifact("vol-b", "worker-1"), DestinationPath: "/tmp/input-b"},
+			{Artifact: constructionArtifact("vol-c", "worker-1"), DestinationPath: "/tmp/input-c"},
 		},
 	}
 
@@ -552,7 +536,7 @@ func TestBuildArtifactInitContainers_NoDaemonSet_ReturnsNil(t *testing.T) {
 		Dir:  "/tmp/build",
 		Type: db.ContainerTypeTask,
 		Inputs: []runtime.Input{
-			{Artifact: &permStubArtifact{handle: "vol-a"}, DestinationPath: "/tmp/input-a"},
+			{Artifact: constructionArtifact("vol-a", "worker-1"), DestinationPath: "/tmp/input-a"},
 		},
 	}
 

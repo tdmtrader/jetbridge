@@ -1,58 +1,18 @@
 Feature: Copying a step's output off the node that made it
 
-  Every artifact a step produces lives on exactly one node's disk. Losing that
-  node — a spot reclaim, a drain, a crash — loses the outputs and forces a
-  rerun of everything upstream, so the daemon copies each one to a peer as soon
-  as it settles. The copy is best-effort by design: nothing fails when it is
-  skipped, which is precisely why skipping it is silent, and precisely why it
-  needs a scenario.
+  Step outputs are copied to a peer so losing their original node does not
+  force upstream work to run again. Copying is best-effort: failure to schedule
+  it must not turn a successful producing step into a failure.
 
-  ../features/artifact-daemon.feature has carried this as a WRITTEN-DOWN GAP
-  since the migration began: "asking a daemon to mirror has no scenario". From
-  the ATC's side it cannot be closed at all. DaemonClient.TriggerMirror returns
-  nil on 202, on non-202, on a transport failure and on a request it could not
-  even build — deliberately, so that failing to schedule a copy never fails a
-  step that already succeeded — so `func TriggerMirror(...) error { return nil }`
-  satisfies every ATC-side assertion there is.
+  Copy-arrival cases read exact bytes from a second real daemon. The ATC client
+  cases observe real request bytes and the returned error. They distinguish
+  preserving the best-effort policy from silently dropping or corrupting the
+  request. Both checks matter.
 
-  The assertion therefore has to be made at the other end: ask the producer,
-  then READ THE ARTIFACT OFF THE PEER. Both are real artifact-daemon processes
-  with storage roots of their own, and every Then below reads the second one's
-  disk — which files came with the copy, and what they say. Nothing counts
-  requests.
-
-  # -------------------------------------------------------------------------
-  # The two nodes, and the one piece of scaffolding between them
-  # -------------------------------------------------------------------------
-  #
-  #   producer — holds the output and is asked to copy it. Started with
-  #              --kubeconfig, --node-name, --namespace and a --service-name of
-  #              its own, so its peers come from a real EndpointSlice on the
-  #              suite's real API server. Until --kubeconfig landed this was
-  #              impossible: peer discovery goes through EndpointSlices,
-  #              main.go built that client from rest.InClusterConfig() alone,
-  #              and --node-name — which is what wires the mirror up at all —
-  #              made the process exit outside a cluster.
-  #   peer     — the other node's daemon. No --node-name, so it builds no
-  #              Kubernetes client, has no peers of its own and cannot pass a
-  #              copy on. What arrives there arrived from the producer.
-  #
-  # One TCP forwarder sits between them, and it is the same one the cross-node
-  # scenarios use. A daemon PUTs to peers on its OWN --port (main.go hands
-  # *port to NewMirror) and binds the wildcard, so two daemons on one host can
-  # only be told apart by the address they answer on. In a cluster the problem
-  # does not exist — every pod has its own network namespace and every daemon
-  # is 7780 on its own address. The forwarder restores that: it parses nothing,
-  # answers nothing, records nothing, and a check fetches an artifact only the
-  # peer holds through the published address before a scenario's first step
-  # runs — so a host that will not let the two listeners coexist says so in one
-  # sentence rather than leaving six scenarios to fail as "the copy never
-  # came".
-  #
-  # A copy is SCHEDULED, not performed inline — POST /mirror answers 202 before
-  # the tar walk starts — so every arrival here is polled to a deadline, and
-  # every scenario that asserts no copy watches the peer for two seconds and
-  # fails the moment one appears.
+  The daemons have independent storage roots and use actual API discovery.
+  A byte-forwarding TCP route supplies their shared service port on separate
+  private addresses; it supplies no protocol responses. Copy arrival is polled,
+  while no-copy checks observe the peer for a bounded settling window.
 
   # -------------------------------------------------------------------------
   # The copy
@@ -179,47 +139,22 @@ Feature: Copying a step's output off the node that made it
     And no copy ever arrives on the peer under the key "solo/result"
     And the producer still serves the output it was asked to mirror
 
-  # -------------------------------------------------------------------------
-  # WHAT STAYED IN GO, and why
-  # -------------------------------------------------------------------------
-  #
-  # - TestMirrorJob_PutsCarryMirrorOriginHeader, and the matching refusal in
-  #   handleStreamIn to re-trigger on a write that carries the header. Without
-  #   it two daemons trade an artifact indefinitely, which is a real defect —
-  #   but a re-fanout delivers the copy to a daemon that ALREADY HAS IT, so no
-  #   artifact, no answer and no error differs either way. It is visible only
-  #   as a request count, on any number of nodes, and a scenario for it here
-  #   could only be a recording double. Left in Go by the rule, not by any
-  #   limitation of this topology.
-  #
-  # - The Mirror.Evacuate family: flushing the unmirrored on preemption notice,
-  #   respecting the budget, refusing new work afterwards. Evacuation fires
-  #   from exactly one place, the preemption watcher's callback, and main.go
-  #   builds that watcher with DefaultPreemptionMetadataURL — a constant naming
-  #   metadata.google.internal, with no flag to point it elsewhere. The path
-  #   cannot be entered from outside the process at all, so the behaviour is
-  #   not expressible here at any price; its Go tests assert the list of keys a
-  #   peer was PUT, which is a request record in any case. Closing this needs a
-  #   production seam (an overridable metadata URL, or an evacuate verb), which
-  #   is a decision rather than a detail.
-  #
-  # - The per-peer outcome vocabulary — ok / rejected / unreachable — and the
-  #   worker pool's concurrency and drain semantics. Both are unexported state,
-  #   and the artifact a rejecting peer leaves behind is exactly what a peer
-  #   that was never chosen leaves behind: nothing. "Ten outputs handed over at
-  #   once" is the pool property that DOES have an outcome, and it is above.
-  #
-  # - TestMirrorJob_Run_StreamsBodyInsteadOfBuffering, which asserts the PUT
-  #   announces no Content-Length, so the tar streams rather than staging in
-  #   heap — 4GB of daemon RSS, once. That is a property of the request; the
-  #   artifact that arrives is identical either way.
-  #
-  # - TestMirrorJob_TarWalkWaitsForExclusiveHolder: the mirror's walk holding
-  #   the handle's shared lock while a stream-in replace holds it exclusively.
-  #   The outcome — a truncated copy mirrored as complete — needs the walk and
-  #   the replace interleaved at an instant no external caller can choose.
-  #
-  # - The mirror's key rules (a key naming the store rather than an artifact, a
-  #   key with a relative segment) are not duplicated here. They are asserted
-  #   against POST /mirror in ../features/daemon-containment.feature, where the
-  #   refusal and its reason are the subject.
+  # Daemon-internal native tests remain in cmd/artifact-daemon for origin
+  # headers, evacuation, per-peer results, pool behavior, streaming framing
+  # and handle locking. The client checks below do not retire those tests.
+
+  # This is the ATC client contract, separate from the copy-arrival cases.
+  # The real daemon rejects an invalid key with 400; the old synthetic 500
+  # exercised the same status != 202 branch. Neither may escape as an error.
+  Scenario Outline: Requesting a mirror is best-effort — <condition>
+    Given a real mirror endpoint with condition "<condition>"
+    When the ATC requests the best-effort mirror
+    Then the client reports no error and sends only the expected mirror request
+
+    Examples:
+      | condition     |
+      | accepted      |
+      | rejected      |
+      | stopped       |
+      | empty address |
+      | cancelled     |

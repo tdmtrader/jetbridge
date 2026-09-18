@@ -5,9 +5,9 @@ Feature: Closing the loop — a whole step, the durable tier, and the artifact i
   `integration_test.go` drove whole workflows through a worker whose executor
   was a recording spy, and then asserted the SHAPE OF A STRING that nothing
   ever ran — seventeen sites, nine of them `expectSupervisedExec(...)`. The
-  worker below runs the command. Every assertion is on what came back: the
-  build log, the exit status, the row the next web reads, the pods on the
-  cluster.
+  ordinary execution contracts now live in live/task-command.feature. The eviction
+  classification now shares live/compatibility-process.feature and the pure
+  pod-status policy table; no lifecycle status is supplied here.
 
   `storage_daemonset_durable_test.go` asserted `d.restores.Load() == 0` to
   mean "it did not warm", and `got.DurableKey == durableKey` to mean "the key
@@ -27,25 +27,11 @@ Feature: Closing the loop — a whole step, the durable tier, and the artifact i
   # ==========================================================================
 
   # Ordinary completion, persisted exit status and both restart routes now
-  # share the task-command.feature contracts. This file retains the distinct
-  # interruption classification and diagnostic checks.
-
-  # "detects pod eviction in a resource get step". The claim worth keeping is
-  # not the diagnostics — pod-lifecycle.feature and failure-priority.feature
-  # already have those — it is that an eviction is a TYPED, RETRYABLE
-  # interruption rather than a plain error. That is a different build
-  # classification, and no feature file said so before this one.
-  # The node has to keep evicting: one eviction before the command runs is now
-  # absorbed by the single pause-pod replacement the runtime is allowed.
-  Scenario: An evicted step is a retryable interruption, not a failed build
-    Given a jetbridge worker that really runs task commands
-    When the node keeps evicting the step "get-evicted" before its command runs
-    Then the step was interrupted rather than failed, because it was "evicted"
-    And the interrupted task's diagnostic log contains "Pod Failure Diagnostics"
-    And the interrupted task's diagnostic log contains "Evicted"
+  # share the live/task-command.feature contracts. Typed eviction is checked on
+  # actual kubelet output in live/compatibility-process.feature.
 
   # DISPOSITION — "handles task failure with non-zero exit code" is
-  # task-command.feature's "A failing command's exit code reaches the
+  # live/task-command.feature's "A failing command's exit code reaches the
   # consumer", which additionally proves the exit code came from a command
   # that really ran rather than from a preset field on a fake. Not duplicated.
 
@@ -56,12 +42,11 @@ Feature: Closing the loop — a whole step, the durable tier, and the artifact i
   # step's command", stated as behavior rather than as a literal argv.
 
   # DISPOSITION — "runs a get step followed by a put step with the resource
-  # protocol" is step-integration.feature's "A get step's request reaches its
-  # resource and the answer comes back" plus "A put step's inputs are mounted
-  # where its resource expects them". Its one unique assertion,
-  # `io.ReadAll(fakeExecutor.execCalls[0].stdin) == getStdin`, is Addendum 2's
-  # streaming class: the round trip already covers it, because the answer that
-  # comes back is the answer to the request that went in.
+  # protocol" now maps to live/git-resource.feature's actual Git in/out cases.
+  # They verify real requests, returned commits and checkout/pushed bytes.
+  # The put mount is populated through production volume streaming; this is
+  # not daemon publication or automatic input fetching. Exact generic stdin
+  # bytes are additionally covered by live/cancellation.feature's protocol rows.
 
   # DISPOSITION, WITH A FINDING — "returns an error when the context is
   # cancelled during exec-mode task" and its resource-step twin never cancel a
@@ -72,7 +57,7 @@ Feature: Closing the loop — a whole step, the durable tier, and the artifact i
   #
   # Real cancellation distinguishes ownership: aborting a supervised task
   # deletes its pause pod, while resource steps retain theirs. The cancellation
-  # outline below checks both kinds before start and while running. A looked-up
+  # outline in live/cancellation.feature checks before start and while running. A looked-up
   # hijack session also leaves its pod alone; that and the exact zero-grace
   # deletion option remain focused Go contracts.
 
@@ -136,8 +121,9 @@ Feature: Closing the loop — a whole step, the durable tier, and the artifact i
   # issue zero requests to a route that does not exist — otherwise every cache
   # miss during a rolling upgrade costs an extra failed round trip.
   #
-  # The store holds the object, so asking would SUCCEED. "Not found" is
-  # therefore the strongest available statement that nothing was asked.
+  # The real daemon runs without a durable tier configured, so it does not
+  # advertise the capability. Its restore route would refuse a request; the
+  # zero-activity counter assertion distinguishes no request from that refusal.
   Scenario: A daemon that predates the durable tier is never asked to warm
     Given an artifact daemon with a durable store behind it
     And the daemon predates the durable tier
@@ -163,7 +149,7 @@ Feature: Closing the loop — a whole step, the durable tier, and the artifact i
   # unreachable bucket would otherwise cost a full warm timeout every few
   # seconds indefinitely.
   #
-  # One miss then three suppressions is the split that tells an operator a
+  # One miss then four suppressions is the split that tells an operator a
   # degraded bucket is being CONTAINED rather than retried into the ground.
   # Without suppression the same five lookups read 0/0/5/0.
   Scenario: A failed warm is not retried on every scheduler tick
@@ -175,8 +161,8 @@ Feature: Closing the loop — a whole step, the durable tier, and the artifact i
 
   # The producing half. The ginkgo case asserted the daemon received the same
   # `durable_key` string it was handed; what that string is FOR is that the
-  # object can be found again by content on a node that never had it.
-  Scenario: An artifact filed under a content key can be restored on a node that never had it
+  # object can be found again by content after its local copy is reclaimed.
+  Scenario: A cache filed under a content key survives reclamation of its local copy
     Given an artifact daemon with a durable store behind it
     And the node already holds the resource cache "rc-42" containing "produced by an earlier build"
     When the ATC registers the resource cache "rc-42" under content key "resource-caches/rc-abc"
@@ -222,21 +208,18 @@ Feature: Closing the loop — a whole step, the durable tier, and the artifact i
   # not something a build can experience. What a build experiences is below.
   # The node's copy and the peer's copy hold DIFFERENT text, so the assertion
   # names which one served the read.
-  Scenario: A cache hit whose alias vanishes before the read still gets its bytes
+  Scenario Outline: A cache whose alias vanishes before the read still gets its bytes
     Given an artifact daemon with a durable store behind it
-    And the node already holds the resource cache "rc-42" containing "swept away mid-read"
+    And <cache_setup>
     And a peer still holds a mirrored copy of "rc-42" containing "served by the peer"
     When a get step looks up the resource cache "rc-42" offering content key "resource-caches/rc-content", and the node's alias vanishes before the bytes are read
     Then the resource cache is found
     And the cached artifact reads "served by the peer"
 
-  Scenario: A warmed cache whose alias vanishes before the read still gets its bytes
-    Given an artifact daemon with a durable store behind it
-    And the durable store holds "resource-caches/rc-content" containing "swept away mid-read"
-    And a peer still holds a mirrored copy of "rc-42" containing "served by the peer"
-    When a get step looks up the resource cache "rc-42" offering content key "resource-caches/rc-content", and the node's alias vanishes before the bytes are read
-    Then the resource cache is found
-    And the cached artifact reads "served by the peer"
+    Examples:
+      | cache_setup                                                                                 |
+      | the node already holds the resource cache "rc-42" containing "swept away mid-read"            |
+      | the durable store holds "resource-caches/rc-content" containing "swept away mid-read"          |
 
   # DISPOSITION — "the four counters partition every lookup exactly once" is
   # not a scenario of its own. Its three table rows are the local-hit, warm-hit
@@ -314,18 +297,4 @@ Feature: Closing the loop — a whole step, the durable tier, and the artifact i
     Then every artifact that was recorded is still held
     And every artifact that was collected is gone
 
-  # Resource commands end with the exec stream, and keep their pause pod for
-  # hijack. A supervised task can outlive that stream, so cancellation must
-  # delete its pod. The running rows wait for a real child PID before aborting.
-  @PE-10 @supervised-cancellation
-  Scenario Outline: Cancellation stops work and preserves only hijackable resource pods
-    When an exec-mode "<kind>" step "<handle>" is cancelled "<when>"
-    Then the cancelled command stops and reports cancellation
-    And the cancelled step's pod is "<pod>"
-
-    Examples:
-      | kind | handle         | when         | pod      |
-      | get  | hijackable     | before-start | retained |
-      | get  | running-get    | running      | retained |
-      | task | waiting-task   | before-start | removed  |
-      | task | running-task   | running      | removed  |
+  # Cancellation of running commands is covered in live/cancellation.feature.

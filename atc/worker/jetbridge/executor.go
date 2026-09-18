@@ -14,6 +14,7 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
+	"k8s.io/client-go/transport/spdy"
 	utilexec "k8s.io/utils/exec"
 )
 
@@ -100,7 +101,13 @@ func (e *SPDYExecutor) ExecInPod(
 		"container": containerName,
 	})
 
-	exec, err := remotecommand.NewSPDYExecutor(e.restConfig, http.MethodPost, req.URL())
+	transport, upgrader, err := spdy.RoundTripperFor(e.restConfig)
+	if err != nil {
+		logger.Error("failed-to-create-spdy-transport", err)
+		spanErr = err
+		return fmt.Errorf("create spdy transport: %w", err)
+	}
+	exec, err := remotecommand.NewSPDYExecutorForTransports(transport, statusCheckingUpgrader{upgrader}, http.MethodPost, req.URL())
 	if err != nil {
 		logger.Error("failed-to-create-spdy-executor", err)
 		spanErr = err

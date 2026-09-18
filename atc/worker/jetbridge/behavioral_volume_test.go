@@ -2,22 +2,14 @@ package jetbridge
 
 import (
 	"context"
-	"fmt"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/atc/compression"
-	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 )
 
 // ---------------------------------------------------------------------------
@@ -42,7 +34,7 @@ func TestVT01_DeferredVolume_SetPodNameUpdates(t *testing.T) {
 }
 
 func TestVT01_DeferredVolume_HasExecutorWhenSet(t *testing.T) {
-	executor := &noopPodExecutor{}
+	executor := volumeConstructionExecutor()
 	vol := NewDeferredVolume("handle-1", "worker-1", executor, "ns", "main", "/mnt/data")
 
 	if !vol.HasExecutor() {
@@ -129,116 +121,6 @@ func TestVT05_StubVolume_DBVolumeNil(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// VT-06: DaemonSetVolume StreamOut
-// ---------------------------------------------------------------------------
-
-func TestVT06_DaemonSetVolume_StreamOut_RetrySucceeds(t *testing.T) {
-	var attempts int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		n := atomic.AddInt32(&attempts, 1)
-		if n <= 2 {
-			// Close the connection abruptly to simulate a transport error
-			hj, ok := w.(http.Hijacker)
-			if ok {
-				conn, _, _ := hj.Hijack()
-				conn.Close()
-				return
-			}
-		}
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("success-data"))
-	}))
-	defer srv.Close()
-
-	resolver := fakeNodeIPResolver(testNode("node-1", "10.0.0.1"))
-
-	vol := &DaemonSetVolume{
-		key:            "retry-key",
-		handle:         "retry-handle",
-		workerName:     "w1",
-		sourceNode:     "node-1",
-		config:         Config{Namespace: "test-ns", ArtifactDaemonPort: 7780},
-		httpClient:     &http.Client{},
-		nodeIPResolver: resolver,
-	}
-	vol.httpClient.Transport = rewriteTransport{url: srv.URL}
-
-	reader, err := vol.StreamOut(context.Background(), ".", nil)
-	if err != nil {
-		t.Fatalf("expected StreamOut to succeed after retries, got: %v", err)
-	}
-	defer reader.Close()
-
-	data, _ := io.ReadAll(reader)
-	if string(data) != "success-data" {
-		t.Errorf("expected 'success-data', got %q", string(data))
-	}
-
-	if atomic.LoadInt32(&attempts) < 3 {
-		t.Errorf("expected at least 3 attempts, got %d", atomic.LoadInt32(&attempts))
-	}
-}
-
-func TestVT06_DaemonSetVolume_StreamOut_GivesUpAfter3Failures(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hj, ok := w.(http.Hijacker)
-		if ok {
-			conn, _, _ := hj.Hijack()
-			conn.Close()
-			return
-		}
-	}))
-	defer srv.Close()
-
-	resolver := fakeNodeIPResolver(testNode("node-1", "10.0.0.1"))
-
-	vol := &DaemonSetVolume{
-		key:            "fail-key",
-		handle:         "fail-handle",
-		workerName:     "w1",
-		sourceNode:     "node-1",
-		config:         Config{Namespace: "test-ns", ArtifactDaemonPort: 7780},
-		httpClient:     &http.Client{},
-		nodeIPResolver: resolver,
-	}
-	vol.httpClient.Transport = rewriteTransport{url: srv.URL}
-
-	_, err := vol.StreamOut(context.Background(), ".", nil)
-	if err == nil {
-		t.Fatal("expected error after exhausting retries")
-	}
-}
-
-func TestVT06_DaemonSetVolume_StreamOut_Non200Status(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("server error"))
-	}))
-	defer srv.Close()
-
-	resolver := fakeNodeIPResolver(testNode("node-1", "10.0.0.1"))
-
-	vol := &DaemonSetVolume{
-		key:            "err-key",
-		handle:         "err-handle",
-		workerName:     "w1",
-		sourceNode:     "node-1",
-		config:         Config{Namespace: "test-ns", ArtifactDaemonPort: 7780},
-		httpClient:     srv.Client(),
-		nodeIPResolver: resolver,
-	}
-	vol.httpClient.Transport = rewriteTransport{url: srv.URL}
-
-	_, err := vol.StreamOut(context.Background(), ".", nil)
-	if err == nil {
-		t.Fatal("expected error for 500 status code")
-	}
-	if !strings.Contains(err.Error(), "unexpected status 500") {
-		t.Errorf("expected 'unexpected status 500' in error, got: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // VT-07: DaemonSetVolume StreamIn requires daemon client or source node
 // ---------------------------------------------------------------------------
 
@@ -254,43 +136,6 @@ func TestVT07_DaemonSetVolume_StreamIn_ErrorsWithoutDaemonClient(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no source node or daemon client") {
 		t.Errorf("expected error about missing daemon client, got: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// VT-08: DaemonSetVolume no compression handling
-// ---------------------------------------------------------------------------
-
-func TestVT08_DaemonSetVolume_StreamOut_PassesRawBody(t *testing.T) {
-	rawContent := "raw-tar-bytes-no-compression"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(rawContent))
-	}))
-	defer srv.Close()
-
-	resolver := fakeNodeIPResolver(testNode("node-1", "10.0.0.1"))
-
-	vol := &DaemonSetVolume{
-		key:            "raw-key",
-		handle:         "raw-handle",
-		workerName:     "w1",
-		sourceNode:     "node-1",
-		config:         Config{Namespace: "test-ns", ArtifactDaemonPort: 7780},
-		httpClient:     srv.Client(),
-		nodeIPResolver: resolver,
-	}
-	vol.httpClient.Transport = rewriteTransport{url: srv.URL}
-
-	// Pass a non-nil compression but the DaemonSetVolume should ignore it
-	reader, err := vol.StreamOut(context.Background(), ".", nil)
-	if err != nil {
-		t.Fatalf("StreamOut: %v", err)
-	}
-	defer reader.Close()
-
-	data, _ := io.ReadAll(reader)
-	if string(data) != rawContent {
-		t.Errorf("expected raw passthrough %q, got %q", rawContent, string(data))
 	}
 }
 
@@ -375,197 +220,6 @@ func TestVT10_StubVolume_Handle_ReturnsConstructionHandle(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// CO-04/CO-05/CO-06: Volume mount construction via buildVolumeMountsForSpec
-// ---------------------------------------------------------------------------
-
-func TestCO04_BuildVolumeMounts_DirOnly(t *testing.T) {
-	w := newTestWorker(nil)
-	spec := runtime.ContainerSpec{Dir: "/workdir"}
-
-	mounts, _ := w.buildVolumeMountsForSpec("h", spec)
-
-	if len(mounts) != 1 {
-		t.Fatalf("expected 1 mount for Dir only, got %d", len(mounts))
-	}
-	if mounts[0].MountPath != "/workdir" {
-		t.Errorf("expected mount at /workdir, got %s", mounts[0].MountPath)
-	}
-}
-
-func TestCO04_BuildVolumeMounts_WithInputs(t *testing.T) {
-	w := newTestWorker(nil)
-	spec := runtime.ContainerSpec{
-		Dir: "/workdir",
-		Inputs: []runtime.Input{
-			{DestinationPath: "/workdir/input-a"},
-			{DestinationPath: "/workdir/input-b"},
-		},
-	}
-
-	mounts, _ := w.buildVolumeMountsForSpec("h", spec)
-
-	// 1 dir + 2 inputs = 3
-	if len(mounts) != 3 {
-		t.Fatalf("expected 3 mounts, got %d", len(mounts))
-	}
-	if mounts[1].MountPath != "/workdir/input-a" {
-		t.Errorf("expected input-a mount, got %s", mounts[1].MountPath)
-	}
-	if mounts[2].MountPath != "/workdir/input-b" {
-		t.Errorf("expected input-b mount, got %s", mounts[2].MountPath)
-	}
-}
-
-func TestCO05_BuildVolumeMounts_WithOutputs(t *testing.T) {
-	w := newTestWorker(nil)
-	spec := runtime.ContainerSpec{
-		Dir:     "/workdir",
-		Outputs: runtime.OutputPaths{"result": "/workdir/result"},
-	}
-
-	mounts, _ := w.buildVolumeMountsForSpec("h", spec)
-
-	// 1 dir + 1 output = 2
-	if len(mounts) != 2 {
-		t.Fatalf("expected 2 mounts, got %d", len(mounts))
-	}
-	if mounts[1].MountPath != "/workdir/result" {
-		t.Errorf("expected output mount at /workdir/result, got %s", mounts[1].MountPath)
-	}
-}
-
-func TestCO05_BuildVolumeMounts_OverlappingInputAndOutput_Deduped(t *testing.T) {
-	w := newTestWorker(nil)
-	spec := runtime.ContainerSpec{
-		Dir: "/workdir",
-		Inputs: []runtime.Input{
-			{DestinationPath: "/workdir/shared"},
-		},
-		Outputs: runtime.OutputPaths{"shared": "/workdir/shared"},
-	}
-
-	mounts, _ := w.buildVolumeMountsForSpec("h", spec)
-
-	// 1 dir + 1 input (output deduped) = 2
-	if len(mounts) != 2 {
-		t.Fatalf("expected 2 mounts (output deduped), got %d", len(mounts))
-	}
-}
-
-func TestCO05_BuildVolumeMounts_NonOverlappingInputAndOutput_BothCreated(t *testing.T) {
-	w := newTestWorker(nil)
-	spec := runtime.ContainerSpec{
-		Dir: "/workdir",
-		Inputs: []runtime.Input{
-			{DestinationPath: "/workdir/input"},
-		},
-		Outputs: runtime.OutputPaths{"output": "/workdir/output"},
-	}
-
-	mounts, _ := w.buildVolumeMountsForSpec("h", spec)
-
-	// 1 dir + 1 input + 1 output = 3
-	if len(mounts) != 3 {
-		t.Fatalf("expected 3 mounts, got %d", len(mounts))
-	}
-}
-
-func TestCO06_BuildVolumeMounts_WithCaches(t *testing.T) {
-	w := newTestWorker(nil)
-	spec := runtime.ContainerSpec{
-		Dir:    "/workdir",
-		Caches: []string{"cache-a"},
-	}
-
-	mounts, _ := w.buildVolumeMountsForSpec("h", spec)
-
-	// 1 dir + 1 cache = 2
-	if len(mounts) != 2 {
-		t.Fatalf("expected 2 mounts, got %d", len(mounts))
-	}
-	// Relative cache path resolved against Dir
-	expectedPath := filepath.Join("/workdir", "cache-a")
-	if mounts[1].MountPath != expectedPath {
-		t.Errorf("expected cache mount at %s, got %s", expectedPath, mounts[1].MountPath)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// CO-11: Volume naming conventions
-// ---------------------------------------------------------------------------
-
-func TestCO11_VolumeNaming(t *testing.T) {
-	w := newTestWorker(nil)
-	spec := runtime.ContainerSpec{
-		Dir: "/workdir",
-		Inputs: []runtime.Input{
-			{DestinationPath: "/workdir/my-input"},
-		},
-		Outputs: runtime.OutputPaths{"my-output": "/workdir/my-output"},
-		Caches:  []string{"my-cache"},
-	}
-
-	_, volumes := w.buildVolumeMountsForSpec("abc", spec)
-
-	if len(volumes) != 4 {
-		t.Fatalf("expected 4 volumes, got %d", len(volumes))
-	}
-
-	// dir volume
-	if volumes[0].Handle() != "abc-dir" {
-		t.Errorf("expected dir handle 'abc-dir', got %q", volumes[0].Handle())
-	}
-	// input volume
-	if volumes[1].Handle() != "abc-input-0" {
-		t.Errorf("expected input handle 'abc-input-0', got %q", volumes[1].Handle())
-	}
-	// output volume
-	if volumes[2].Handle() != "abc-output-my-output" {
-		t.Errorf("expected output handle 'abc-output-my-output', got %q", volumes[2].Handle())
-	}
-	// cache volume
-	if volumes[3].Handle() != "abc-cache-0" {
-		t.Errorf("expected cache handle 'abc-cache-0', got %q", volumes[3].Handle())
-	}
-}
-
-// ---------------------------------------------------------------------------
-// CO-12: Relative path resolution for caches
-// ---------------------------------------------------------------------------
-
-func TestCO12_CachePath_RelativeResolvedAgainstDir(t *testing.T) {
-	w := newTestWorker(nil)
-	spec := runtime.ContainerSpec{
-		Dir:    "/workdir",
-		Caches: []string{"my-cache"},
-	}
-
-	mounts, _ := w.buildVolumeMountsForSpec("h", spec)
-
-	// dir + cache = 2
-	cacheMount := mounts[1]
-	expected := filepath.Join("/workdir", "my-cache")
-	if cacheMount.MountPath != expected {
-		t.Errorf("expected cache at %s, got %s", expected, cacheMount.MountPath)
-	}
-}
-
-func TestCO12_CachePath_AbsoluteStaysAbsolute(t *testing.T) {
-	w := newTestWorker(nil)
-	spec := runtime.ContainerSpec{
-		Dir:    "/workdir",
-		Caches: []string{"/absolute/cache"},
-	}
-
-	mounts, _ := w.buildVolumeMountsForSpec("h", spec)
-
-	cacheMount := mounts[1]
-	if cacheMount.MountPath != "/absolute/cache" {
-		t.Errorf("expected cache at /absolute/cache, got %s", cacheMount.MountPath)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // CO-10: Scheduling affinity
 // ---------------------------------------------------------------------------
 
@@ -587,9 +241,9 @@ func TestCO10_PreferredInputNode_InputsOnDifferentNodes_ReturnsMostPopular(t *te
 
 	backend := NewDaemonSetBackend(Config{ArtifactDaemonHostPath: "/artifacts"}, locator, nil)
 	inputs := []runtime.Input{
-		{Artifact: &stubArtifactBehavioral{handle: "vol-a"}, DestinationPath: "/in/a"},
-		{Artifact: &stubArtifactBehavioral{handle: "vol-b"}, DestinationPath: "/in/b"},
-		{Artifact: &stubArtifactBehavioral{handle: "vol-c"}, DestinationPath: "/in/c"},
+		{Artifact: constructionArtifact("vol-a", "test-worker"), DestinationPath: "/in/a"},
+		{Artifact: constructionArtifact("vol-b", "test-worker"), DestinationPath: "/in/b"},
+		{Artifact: constructionArtifact("vol-c", "test-worker"), DestinationPath: "/in/c"},
 	}
 
 	node := backend.preferredInputNode(inputs)
@@ -613,7 +267,7 @@ func TestCO10_BuildAffinity_WithoutArtifactDaemonHostPath_ReturnsNil(t *testing.
 func TestCO10_PreferredInputNode_NilLocator_ReturnsEmpty(t *testing.T) {
 	backend := NewDaemonSetBackend(Config{ArtifactDaemonHostPath: "/artifacts"}, nil, nil)
 	inputs := []runtime.Input{
-		{Artifact: &stubArtifactBehavioral{handle: "vol-a"}, DestinationPath: "/in/a"},
+		{Artifact: constructionArtifact("vol-a", "test-worker"), DestinationPath: "/in/a"},
 	}
 
 	node := backend.preferredInputNode(inputs)
@@ -626,58 +280,17 @@ func TestCO10_PreferredInputNode_NilLocator_ReturnsEmpty(t *testing.T) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-// nameOnlyWorker supplies the one db.Worker method buildVolumeMountsForSpec
-// reaches. Every other method is nil, so any test that strays into the database
-// panics rather than silently observing a stub.
-type nameOnlyWorker struct{ db.Worker }
-
-func (nameOnlyWorker) Name() string { return "test-worker" }
-
-// newTestWorker creates a Worker suitable for unit testing the private
-// buildVolumeMountsForSpec runtime helper.
-func newTestWorker(executor PodExecutor) *Worker {
-	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: "node-1"},
-		Status: corev1.NodeStatus{
-			Addresses: []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: "10.0.0.1"}},
-		},
-	}
-	cs := fake.NewSimpleClientset(node)
-	cfg := NewConfig("test-ns", "")
-
-	w := NewWorker(nameOnlyWorker{}, cs, cfg)
-	if executor != nil {
-		w.SetExecutor(executor)
-	}
-	return w
+// These tests inspect construction only: use the actual client/executor
+// types without supplying any API response or pretending a command ran.
+func volumeConstructionExecutor() *SPDYExecutor {
+	config := &rest.Config{Host: "https://127.0.0.1:1"}
+	return NewSPDYExecutor(kubernetes.NewForConfigOrDie(config), config)
 }
 
-// noopPodExecutor is a minimal PodExecutor for testing HasExecutor.
-type noopPodExecutor struct{}
-
-func (e *noopPodExecutor) ExecInPod(
-	ctx context.Context,
-	namespace, podName, containerName string,
-	command []string,
-	stdin io.Reader,
-	stdout, stderr io.Writer,
-	tty bool,
-	attrs ExecAttrs,
-) error {
-	return nil
-}
-
-// stubArtifactBehavioral is a minimal runtime.Artifact for behavioral tests.
-type stubArtifactBehavioral struct {
-	handle string
-}
-
-var _ runtime.Artifact = (*stubArtifactBehavioral)(nil)
-
-func (a *stubArtifactBehavioral) Handle() string { return a.handle }
-func (a *stubArtifactBehavioral) Source() string { return "test-worker" }
-func (a *stubArtifactBehavioral) StreamOut(_ context.Context, _ string, _ compression.Compression) (io.ReadCloser, error) {
-	return nil, fmt.Errorf("not implemented")
+// constructionArtifact uses the production volume and executor. Its callers
+// inspect pod layout, affinity and fetch commands; they never stream data.
+func constructionArtifact(handle, workerName string) *Volume {
+	return NewDeferredVolume(handle, workerName, volumeConstructionExecutor(), "test-ns", mainContainerName, "/artifact")
 }
 
 // behavioralDaemonSetConfig returns a DaemonSet-mode config for behavioral tests.
@@ -727,77 +340,12 @@ func TestVT01_Volume_MountPath(t *testing.T) {
 	}
 }
 
-// Verify buildVolumeMountsForSpec creates deferred volumes when executor is set.
-func TestCO04_BuildVolumeMounts_WithExecutor_CreatesDeferredVolumes(t *testing.T) {
-	executor := &noopPodExecutor{}
-	w := newTestWorker(executor)
-	spec := runtime.ContainerSpec{Dir: "/workdir"}
-
-	_, volumes := w.buildVolumeMountsForSpec("h", spec)
-
-	if len(volumes) != 1 {
-		t.Fatalf("expected 1 volume, got %d", len(volumes))
-	}
-	if !volumes[0].HasExecutor() {
-		t.Error("expected deferred volume to have executor when worker has executor set")
-	}
-}
-
-// Verify buildVolumeMountsForSpec creates stub volumes when no executor.
-func TestCO04_BuildVolumeMounts_WithoutExecutor_CreatesStubVolumes(t *testing.T) {
-	w := newTestWorker(nil)
-	spec := runtime.ContainerSpec{Dir: "/workdir"}
-
-	_, volumes := w.buildVolumeMountsForSpec("h", spec)
-
-	if len(volumes) != 1 {
-		t.Fatalf("expected 1 volume, got %d", len(volumes))
-	}
-	if volumes[0].HasExecutor() {
-		t.Error("expected stub volume to NOT have executor when worker has no executor")
-	}
-}
-
-// Verify overlapping output with trailing slash is still deduped.
-func TestCO05_BuildVolumeMounts_OverlappingWithTrailingSlash_Deduped(t *testing.T) {
-	w := newTestWorker(nil)
-	spec := runtime.ContainerSpec{
-		Dir: "/workdir",
-		Inputs: []runtime.Input{
-			{DestinationPath: "/workdir/shared"},
-		},
-		Outputs: runtime.OutputPaths{"shared": "/workdir/shared/"},
-	}
-
-	mounts, _ := w.buildVolumeMountsForSpec("h", spec)
-
-	// 1 dir + 1 input (output deduped even with trailing slash) = 2
-	if len(mounts) != 2 {
-		t.Fatalf("expected 2 mounts (trailing slash deduped), got %d", len(mounts))
-	}
-}
-
 // Verify ArtifactKey is identity function.
 func TestArtifactKey_IdentityFunction(t *testing.T) {
 	handle := "vol-handle-abc-123"
 	key := ArtifactKey(handle)
 	if key != handle {
 		t.Errorf("ArtifactKey should be identity, got %q for input %q", key, handle)
-	}
-}
-
-// Verify empty Dir produces no dir mount.
-func TestCO04_BuildVolumeMounts_EmptyDir_NoDirMount(t *testing.T) {
-	w := newTestWorker(nil)
-	spec := runtime.ContainerSpec{
-		Outputs: runtime.OutputPaths{"out": "/workdir/out"},
-	}
-
-	mounts, _ := w.buildVolumeMountsForSpec("h", spec)
-
-	// Only 1 output, no dir
-	if len(mounts) != 1 {
-		t.Fatalf("expected 1 mount (output only, no dir), got %d", len(mounts))
 	}
 }
 
@@ -808,48 +356,4 @@ func TestVT10_DaemonSetVolume_DBVolume_Nil(t *testing.T) {
 	if vol.DBVolume() != nil {
 		t.Error("expected DBVolume() to return nil")
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Helpers that outlived volume_daemonset_test.go
-//
-// That suite was deleted once every one of its sixteen tests had both-red
-// evidence. These three were used from here as well, so they moved rather
-// than going with it.
-// ---------------------------------------------------------------------------
-
-// fakeNodeIPResolver creates a NodeIPResolver backed by a fake K8s client
-// with nodes pre-loaded so Resolve() returns deterministic IPs.
-func fakeNodeIPResolver(nodes ...corev1.Node) *NodeIPResolver {
-	objs := make([]interface{}, 0, len(nodes))
-	for i := range nodes {
-		objs = append(objs, &nodes[i])
-	}
-	// Use runtime.Object slice for NewSimpleClientset.
-	cs := fake.NewSimpleClientset()
-	for i := range nodes {
-		cs.CoreV1().Nodes().Create(context.Background(), &nodes[i], metav1.CreateOptions{})
-	}
-	return NewNodeIPResolver(cs)
-}
-
-func testNode(name, ip string) corev1.Node {
-	return corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Status: corev1.NodeStatus{
-			Addresses: []corev1.NodeAddress{
-				{Type: corev1.NodeInternalIP, Address: ip},
-			},
-		},
-	}
-}
-
-type rewriteTransport struct {
-	url string
-}
-
-func (t rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	req.URL.Scheme = "http"
-	req.URL.Host = strings.TrimPrefix(t.url, "http://")
-	return http.DefaultTransport.RoundTrip(req)
 }

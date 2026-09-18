@@ -6,9 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"code.cloudfoundry.org/clock"
@@ -25,305 +23,32 @@ import (
 	"github.com/concourse/concourse/atc/policy"
 	atcresource "github.com/concourse/concourse/atc/resource"
 	"github.com/concourse/concourse/atc/runtime"
-	"github.com/concourse/concourse/atc/runtime/runtimetest"
 	atcworker "github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/vars"
 )
 
-// StepExecutionDefinitions migrates the parts of atc/exec that describe what a
-// KIND of step promises: which version a get fetches, what a put publishes,
-// what set_pipeline does to a pipeline somebody else already set, what a task
-// says when it cannot find its image or its inputs, and how a retry and an
-// abort differ.
+// StepExecutionDefinitions covers version selection/publication, pipeline
+// updates, task preflight, retries and aborts. Assertions read real build events,
+// resource/cache rows, pipeline state and the artifact repository.
 //
-// MOST OF THE USUAL PAYOFF WAS COLLECTED BEFORE BRINE EXISTED, AND THAT
-// CHANGED WHAT GOT WRITTEN.
+// Pipeline artifact reads, task preflight and retry classification now use
+// real dependencies; see exec_artifacts.go and exec_retry.go. The partial-output
+// put uses an explicitly approved executable fault in a real resource pod; see
+// live_partial_put.go. Live gets use live_get.go; publication and retries use
+// live_time.go and live_retry_abort.go; hooks use live_hooks.go. There are no
+// runtimetest workers, containers, processes or pool substitutes here.
 //
-// atc/exec's suite already runs against real PostgreSQL with the real engine
-// delegates, reading real build_events back out. So the bar for every scenario
-// below was the sentence alone, and most of what atc/exec asserts did not
-// clear it. What is here is the handful of claims a pipeline author or an
-// operator would recognise as a promise: a version that was pinned is the one
-// that arrives, a put that failed publishes nothing, a pipeline is not rolled
-// back by an older build, on_abort means abort.
-//
-// A CORRECTION TO WHAT THIS COMMENT FIRST SAID. Its heading was "there is no
-// recording double to replace here", and that is false. worker_pool_test.go:69
-// scriptedPool records the arguments the step hands the pool;
-// get_step_test.go:49 recordingGetDelegate records the ORDER of the delegate
-// calls; get_step_test.go:1115 recordingLockFactory counts lock acquisitions.
-// The narrower statement that IS true is the reason all three are still there:
-// each records something PostgreSQL cannot show, and those are exactly the
-// assertions the dispositions in the feature file decline. execStepPool below
-// is one of them replaced with a working one — so this file did the thing the
-// heading said there was nothing left to do.
-//
-// THE RESOURCE ANSWERS. The ginkgo suite scripts a container process with a
-// canned reply (`runtimetest.ProcessStub{Output: ...}`): the version that comes
-// back is a constant the spec supplied, it comes back whatever was asked for,
-// and nothing there reads the request the step wrote on stdin. The resource
-// below holds versions and answers ONLY for a version it holds, refusing
-// anything else the way a real `in` script refuses a ref that is not in the
-// repository.
-//
-// What that buys, stated exactly, because the first version of this comment
-// overstated it. It does NOT buy catching a get that lost its version pin —
-// ginkgo catches that on the ROW rather than on the wire. MEASURED: with the
-// `getPlan.Version != nil` arm of NewVersionSourceFromPlan disabled through a
-// build overlay (production untouched),
-//
-//	go test -overlay=/tmp/ov.json ./atc/exec/ -run TestExec -args \
-//	    -ginkgo.focus="constructs the resource cache correctly"
-//
-// reports "Ran 1 of 563 Specs ... 1 Failed", against "1 Passed" unmutated.
-// What it does buy is a resource that can say NO: "pinned to v2" fails on the
-// step itself rather than only on a row read afterwards, the cache-hit
-// scenario can hold nothing at all, and a resource that refuses is a failed
-// build rather than an errored one.
-//
-// It is also what makes the put/get chain real. A put creates a version by
-// adding it to the same catalogue the get reads, so "the version the put
-// created is the one the get after it fetched" is a round trip through the
-// resource and the run state, not two constants compared.
-//
-// THE POOL ANSWERS TOO. exec.Pool is asked two questions, and both answers
-// here come from state a scenario described rather than from a script:
-// FindOrSelectWorker hands back the one worker (or the failure the scenario
-// named), and FindResourceCacheVolumeOnWorker answers by the VERSION of the
-// cache it is asked about. Keying on the version is deliberate: a step that
-// resolved the wrong version misses a cache that is right there, which is what
-// the cache-hit scenario is really pinning.
-//
-// WHAT IS READ AFTERWARDS. Every assertion is a row or a returned value:
-// `build_events` (the log an operator reads, the finish events the UI renders,
-// the error events that colour a step), `build_resource_config_version_outputs`
-// via db.Build.Resources (the versions a build published), `resource_caches`
-// via `resource_cache_uses` (which version this build's cache is for),
-// `pipelines` (the config, its version, and the build recorded as having set
-// it), and the artifact repository the next step reads. Nothing counts calls.
+// Old/new controls and mutation evidence live in V5-MIGRATION.md. The original
+// Go tests retain argument/order/locking assertions not established by these
+// observable outcomes; no retirement is implied by a passing Brine scenario.
 
 // -----------------------------------------------------------------------
 // The resource
 // -----------------------------------------------------------------------
 
-// resourceRequest is what a resource script reads on stdin. It mirrors
-// atc/resource.Resource's own JSON shape, which is the wire the production
-// code writes — decoding it here is how a scenario finds out what the step
-// actually asked for.
-type execResourceRequest struct {
-	Source  atc.Source  `json:"source"`
-	Params  atc.Params  `json:"params,omitempty"`
-	Version atc.Version `json:"version,omitempty"`
-}
-
-// resourceReply is what a resource script writes on stdout.
-type execResourceReply struct {
-	Version  atc.Version  `json:"version"`
-	Metadata atc.Metadata `json:"metadata,omitempty"`
-}
-
-// resourceScript is one run of `/opt/resource/in` or `/opt/resource/out`.
-type execResourceScript func(context.Context, *runtimetest.Process, execResourceRequest) (runtime.ProcessResult, error)
-
-// versionCatalogue is what the resource holds. A get answers from it; a put
-// adds to it, which is what makes a put followed by a get a round trip rather
-// than two unrelated constants.
-type execVersionCatalogue struct {
-	mu   sync.Mutex
-	held map[string]atc.Metadata
-}
-
-func newExecVersionCatalogue() *execVersionCatalogue {
-	return &execVersionCatalogue{held: map[string]atc.Metadata{}}
-}
-
-func (c *execVersionCatalogue) hold(ref string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.held[ref] = atc.Metadata{{Name: "ref", Value: ref}}
-}
-
-func (c *execVersionCatalogue) metadata(ref string) (atc.Metadata, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	md, ok := c.held[ref]
-	return md, ok
-}
-
-// execVersionRef is the single field every version in this file carries. Using one
-// field keeps the Gherkin able to name a version as a bare word while the
-// value on the wire stays a real atc.Version map.
 const execVersionRef = "ref"
 
 func execVersionOf(ref string) atc.Version { return atc.Version{execVersionRef: ref} }
-
-// servesHeldVersions is the `in` script: it answers for a version the
-// catalogue holds and refuses anything else, which is how a lost or wrong
-// version pin becomes a failing step rather than a silent success.
-func (c *execVersionCatalogue) servesHeldVersions() execResourceScript {
-	return func(_ context.Context, p *runtimetest.Process, req execResourceRequest) (runtime.ProcessResult, error) {
-		ref := req.Version[execVersionRef]
-		md, ok := c.metadata(ref)
-		if !ok {
-			fmt.Fprintf(p.Stderr(), "no version %q in this resource\n", ref)
-			return runtime.ProcessResult{ExitStatus: 1}, nil
-		}
-		if err := json.NewEncoder(p.Stdout()).Encode(execResourceReply{Version: execVersionOf(ref), Metadata: md}); err != nil {
-			return runtime.ProcessResult{}, err
-		}
-		return runtime.ProcessResult{ExitStatus: 0}, nil
-	}
-}
-
-// createsVersion is the `out` script: it creates whatever version the step's
-// params named, and holds it afterwards so a get can fetch it.
-func (c *execVersionCatalogue) createsVersion(announce string) execResourceScript {
-	return func(_ context.Context, p *runtimetest.Process, req execResourceRequest) (runtime.ProcessResult, error) {
-		if announce != "" {
-			fmt.Fprintf(p.Stderr(), "%s\n", announce)
-		}
-		ref, _ := req.Params["create"].(string)
-		if ref == "" {
-			fmt.Fprintln(p.Stderr(), "no version to create")
-			return runtime.ProcessResult{ExitStatus: 1}, nil
-		}
-		c.hold(ref)
-		if err := json.NewEncoder(p.Stdout()).Encode(execResourceReply{
-			Version:  execVersionOf(ref),
-			Metadata: atc.Metadata{{Name: "published", Value: ref}},
-		}); err != nil {
-			return runtime.ProcessResult{}, err
-		}
-		return runtime.ProcessResult{ExitStatus: 0}, nil
-	}
-}
-
-// refuses is a resource script that runs and reports a non-zero exit. That is
-// a resource saying no, which is a FAILED step; it is not the same as the
-// script being unreachable, which is an ERRORED one, and the two scenarios
-// that use these are about exactly that difference.
-func scriptRefuses(announce string, status int) execResourceScript {
-	return func(_ context.Context, p *runtimetest.Process, _ execResourceRequest) (runtime.ProcessResult, error) {
-		if announce != "" {
-			fmt.Fprintf(p.Stderr(), "%s\n", announce)
-		}
-		fmt.Fprintln(p.Stderr(), "the resource refused")
-		return runtime.ProcessResult{ExitStatus: status}, nil
-	}
-}
-
-// namesAVersionThenFails is the `out` script that got HALFWAY: it prints the
-// version it was creating and then exits non-zero, which is what a push that
-// wrote a tag and then lost the registry looks like.
-//
-// It has to print the version, because "a failed put publishes nothing" is
-// only a claim about the step when there is something it COULD have
-// published. Without this, no change to put_step.go can make that assertion
-// fail, and it would be a sentence with nothing behind it.
-func scriptNamesAVersionThenFails(status int) execResourceScript {
-	return func(_ context.Context, p *runtimetest.Process, req execResourceRequest) (runtime.ProcessResult, error) {
-		if ref, ok := req.Params["create"].(string); ok && ref != "" {
-			if err := json.NewEncoder(p.Stdout()).Encode(execResourceReply{Version: execVersionOf(ref)}); err != nil {
-				return runtime.ProcessResult{}, err
-			}
-		}
-		fmt.Fprintln(p.Stderr(), "the resource got halfway and then failed")
-		return runtime.ProcessResult{ExitStatus: status}, nil
-	}
-}
-
-// unreachable is a resource script whose HOST goes away mid-run: the process
-// returns an error rather than an exit status.
-func scriptUnreachable(announce string) execResourceScript {
-	return func(_ context.Context, p *runtimetest.Process, _ execResourceRequest) (runtime.ProcessResult, error) {
-		if announce != "" {
-			fmt.Fprintf(p.Stderr(), "%s\n", announce)
-		}
-		return runtime.ProcessResult{}, errors.New("the resource host went away")
-	}
-}
-
-// stalls never answers, so a step with a timeout hits its deadline.
-func scriptStalls() execResourceScript {
-	return func(ctx context.Context, _ *runtimetest.Process, _ execResourceRequest) (runtime.ProcessResult, error) {
-		<-ctx.Done()
-		return runtime.ProcessResult{}, ctx.Err()
-	}
-}
-
-// abortsTheBuild announces itself, cancels the build the way the abort button
-// does, and then waits for the cancellation to reach it.
-func scriptAbortsTheBuild(announce string, cancel func()) execResourceScript {
-	return func(ctx context.Context, p *runtimetest.Process, _ execResourceRequest) (runtime.ProcessResult, error) {
-		if announce != "" {
-			fmt.Fprintf(p.Stderr(), "%s\n", announce)
-		}
-		cancel()
-		<-ctx.Done()
-		return runtime.ProcessResult{}, ctx.Err()
-	}
-}
-
-// resourceStub adapts a resourceScript to the runtime's process contract,
-// decoding the request the step wrote on stdin.
-func execResourceStub(script execResourceScript) runtimetest.ProcessStub {
-	return runtimetest.ProcessStub{
-		Call: func(ctx context.Context, p *runtimetest.Process) (runtime.ProcessResult, error) {
-			raw, err := io.ReadAll(p.Stdin())
-			if err != nil {
-				return runtime.ProcessResult{}, fmt.Errorf("read the resource request: %w", err)
-			}
-			var req execResourceRequest
-			if err := json.Unmarshal(raw, &req); err != nil {
-				return runtime.ProcessResult{}, fmt.Errorf("decode the resource request %q: %w", string(raw), err)
-			}
-			return script(ctx, p, req)
-		},
-	}
-}
-
-// -----------------------------------------------------------------------
-// The pool
-// -----------------------------------------------------------------------
-
-// execPool is exec.Pool answering from what a scenario said is true, rather
-// than from a script. There is one worker, so which one gets chosen is not
-// what any scenario here is about; what IS answered from state is the cache
-// lookup, keyed by the version of the cache being asked about.
-type execStepPool struct {
-	worker    runtime.Worker
-	selectErr error
-
-	mu     sync.Mutex
-	cached map[string]runtime.Volume
-}
-
-func (p *execStepPool) FindOrSelectWorker(context.Context, db.ContainerOwner, runtime.ContainerSpec, atcworker.Spec) (runtime.Worker, error) {
-	if p.selectErr != nil {
-		return nil, p.selectErr
-	}
-	return p.worker, nil
-}
-
-func (p *execStepPool) FindResourceCacheVolumeOnWorker(_ context.Context, cache db.ResourceCache, _ atcworker.Spec, _ string, _ time.Time) (runtime.Volume, bool, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	volume, found := p.cached[cache.Version()[execVersionRef]]
-	if !found {
-		return nil, false, nil
-	}
-	return volume, true, nil
-}
-
-func (p *execStepPool) LocateVolume(context.Context, int, string) (runtime.Volume, runtime.Worker, bool, error) {
-	return nil, nil, false, nil
-}
-
-func (p *execStepPool) holdsCacheOf(ref string, volume runtime.Volume) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.cached[ref] = volume
-}
 
 // -----------------------------------------------------------------------
 // Delegate factories
@@ -371,8 +96,12 @@ type execCore struct {
 	Job      db.Job
 	Build    db.Build
 
-	Caches db.ResourceCacheFactory
-	State  exec.RunState
+	Caches   db.ResourceCacheFactory
+	State    exec.RunState
+	cached   *execCachedResource
+	liveGit  *execLiveGit
+	liveTime *execLiveTime
+	liveHook *execLiveHook
 
 	// set_pipeline only. targetTeam is the OTHER team, and priorVersion is the
 	// config version the target pipeline had before the step ran — read up
@@ -387,29 +116,10 @@ type execCore struct {
 type ExecBuild struct {
 	core *execCore
 
-	Catalogue *execVersionCatalogue
-	Pool      *execStepPool
-	Worker    *runtimetest.Worker
-
-	getTimeout     string
-	stall          bool
 	putGetsHalfway bool
 
-	attempts []execAttempt
-	hook     string
-
-	stepFate  string
-	selectErr error
-	aborted   bool
-}
-
-// execAttempt is one attempt of a retried step. Each attempt is a real put
-// step, so what an attempt leaves behind when it runs is a version in the
-// database rather than a mark in a counter.
-type execAttempt struct {
-	number  int
-	creates string
-	abort   bool
+	retryFailure string
+	aborted      bool
 }
 
 // ExecPipelineBuild is a build whose step sets pipelines.
@@ -503,8 +213,9 @@ func (c *execCore) errorMessages() ([]string, error) {
 }
 
 type execFinish struct {
-	ExitStatus int         `json:"exit_status"`
-	Version    atc.Version `json:"version"`
+	Origin     event.Origin `json:"origin"`
+	ExitStatus int          `json:"exit_status"`
+	Version    atc.Version  `json:"version"`
 }
 
 func (c *execCore) finishes(eventType atc.EventType) ([]execFinish, error) {
@@ -523,23 +234,21 @@ func (c *execCore) finishes(eventType atc.EventType) ([]execFinish, error) {
 	return finishes, nil
 }
 
-// publishedVersions are the versions this build put onto its resources — the
-// rows the resource page and the build's own output list are drawn from.
-func (c *execCore) publishedVersions() ([]string, error) {
-	_, outputs, err := c.Build.Resources()
+// cachedVersions are the versions of every resource cache this build holds a
+// use on.
+func (c *execCore) cachedVersions() ([]string, error) {
+	versions, err := c.resourceCacheVersions()
 	if err != nil {
-		return nil, fmt.Errorf("read the build's outputs: %w", err)
+		return nil, err
 	}
-	refs := make([]string, 0, len(outputs))
-	for _, output := range outputs {
-		refs = append(refs, output.Version[execVersionRef])
+	refs := make([]string, 0, len(versions))
+	for _, version := range versions {
+		refs = append(refs, version[execVersionRef])
 	}
 	return refs, nil
 }
 
-// cachedVersions are the versions of every resource cache this build holds a
-// use on.
-func (c *execCore) cachedVersions() ([]string, error) {
+func (c *execCore) resourceCacheVersions() ([]atc.Version, error) {
 	rows, err := c.DB.Conn.Query(
 		`SELECT resource_cache_id FROM resource_cache_uses WHERE build_id = $1`,
 		c.Build.ID(),
@@ -562,7 +271,7 @@ func (c *execCore) cachedVersions() ([]string, error) {
 	}
 	rows.Close()
 
-	refs := make([]string, 0, len(ids))
+	refs := make([]atc.Version, 0, len(ids))
 	for _, id := range ids {
 		cache, found, err := c.Caches.FindResourceCacheByID(id)
 		if err != nil {
@@ -571,7 +280,7 @@ func (c *execCore) cachedVersions() ([]string, error) {
 		if !found {
 			return nil, fmt.Errorf("the build uses resource cache %d, which does not exist", id)
 		}
-		refs = append(refs, cache.Version()[execVersionRef])
+		refs = append(refs, cache.Version())
 	}
 	return refs, nil
 }
@@ -666,32 +375,7 @@ func (b ExecBuild) stepMetadata() exec.StepMetadata {
 	}
 }
 
-// mountedContainer registers the container the step will find on the worker,
-// with the resource process the scenario armed and a volume where the step
-// looks for its result.
-func (b ExecBuild) mountedContainer(planID atc.PlanID, spec runtime.ProcessSpec, script execResourceScript, mountPath string) {
-	owner := db.NewBuildStepContainerOwner(b.core.Build.ID(), planID, b.core.Team.ID())
-	container := runtimetest.NewContainer().WithProcess(spec, execResourceStub(script))
-	volume := runtimetest.NewVolume("volume-" + string(planID))
-	b.Worker.AddContainer(owner, container, []runtime.VolumeMount{
-		{Volume: volume, MountPath: mountPath},
-	})
-}
-
-var execGetProcess = runtime.ProcessSpec{
-	ID:   "resource",
-	Path: "/opt/resource/in",
-	Args: []string{atcresource.ResourcesDir("get")},
-}
-
-var execPutProcess = runtime.ProcessSpec{
-	ID:   "resource",
-	Path: "/opt/resource/out",
-	Args: []string{atcresource.ResourcesDir("put")},
-}
-
-func (b ExecBuild) getStep(planID atc.PlanID, plan atc.GetPlan, script execResourceScript) exec.Step {
-	b.mountedContainer(planID, execGetProcess, script, atcresource.ResourcesDir("get"))
+func (b ExecBuild) getStepWithPool(planID atc.PlanID, plan atc.GetPlan, pool exec.Pool) exec.Step {
 	return exec.NewGetStep(
 		planID,
 		plan,
@@ -707,13 +391,12 @@ func (b ExecBuild) getStep(planID atc.PlanID, plan atc.GetPlan, script execResou
 		execGetDelegates(func(state exec.RunState) exec.GetDelegate {
 			return engine.NewGetDelegate(b.core.Build, planID, state, clock.NewClock(), policy.NoopChecker{})
 		}),
-		b.Pool,
+		pool,
 		0,
 	)
 }
 
-func (b ExecBuild) putStep(planID atc.PlanID, plan atc.PutPlan, script execResourceScript) exec.Step {
-	b.mountedContainer(planID, execPutProcess, script, atcresource.ResourcesDir("put"))
+func (b ExecBuild) putStepWithPool(planID atc.PlanID, plan atc.PutPlan, pool exec.Pool) exec.Step {
 	return exec.NewPutStep(
 		planID,
 		plan,
@@ -724,7 +407,7 @@ func (b ExecBuild) putStep(planID atc.PlanID, plan atc.PutPlan, script execResou
 			Type:             db.ContainerTypePut,
 			StepName:         plan.Name,
 		},
-		b.Pool,
+		pool,
 		execPutDelegates(func(state exec.RunState) exec.PutDelegate {
 			return engine.NewPutDelegate(b.core.Build, planID, state, clock.NewClock(), policy.NoopChecker{})
 		}),
@@ -778,6 +461,10 @@ func execPlainPipeline() atc.Config {
 // StepExecutionDefinitions is registered from registry.go.
 func StepExecutionDefinitions() []brine.StepDefinition {
 	defs := execResourceStepDefinitions()
+	defs = append(defs, LiveGetStepDefinitions()...)
+	defs = append(defs, LiveTimeDefinitions()...)
+	defs = append(defs, LiveRetryAbortDefinitions()...)
+	defs = append(defs, LiveHookDefinitions()...)
 	defs = append(defs, execSetPipelineDefinitions()...)
 	defs = append(defs, execTaskDefinitions()...)
 	defs = append(defs, execOutcomeDefinitions()...)
@@ -799,39 +486,21 @@ func execResourceStepDefinitions() []brine.StepDefinition {
 				if err != nil {
 					return ExecBuild{}, err
 				}
-				worker := runtimetest.NewWorker("some-worker")
 				return ExecBuild{
-					core:      core,
-					Catalogue: newExecVersionCatalogue(),
-					Worker:    worker,
-					Pool:      &execStepPool{worker: worker, cached: map[string]runtime.Volume{}},
+					core: core,
 				}, nil
 			},
 		),
 
-		Refine[ExecBuild]("the resource holds version {string}",
-			func(in ExecBuild, a Args) ExecBuild {
-				in.Catalogue.hold(a.String(0))
-				return in
-			}),
-
-		Refine[ExecBuild]("the chosen worker already holds a cache of version {string}",
-			func(in ExecBuild, a Args) ExecBuild {
-				ref := a.String(0)
-				in.Pool.holdsCacheOf(ref, runtimetest.NewVolume("cache-of-"+ref))
-				return in
-			}),
-
-		Refine[ExecBuild]("the resource script never answers",
-			func(in ExecBuild, _ Args) ExecBuild {
-				in.stall = true
-				return in
-			}),
-
-		Refine[ExecBuild]("the get step is allowed {string} to finish",
-			func(in ExecBuild, a Args) ExecBuild {
-				in.getTimeout = a.String(0)
-				return in
+		brine.DefineMapUsing[ExecBuild, ExecBuild]("the chosen worker already holds a cache of version {string}",
+			[]string{"real-cluster"},
+			func(in ExecBuild, p brine.Params, rec *brine.Recorder, res brine.Resources) (ExecBuild, error) {
+				ref, err := paramAt("the chosen worker already holds a cache of version {string}", p, 0)
+				if err != nil {
+					return in, err
+				}
+				in.core.cached, err = in.prepareCachedResource(rec, res, ref)
+				return in, err
 			}),
 
 		Refine[ExecBuild]("the resource names a version and then fails",
@@ -840,77 +509,19 @@ func execResourceStepDefinitions() []brine.StepDefinition {
 				return in
 			}),
 
-		Refine[ExecBuild]("attempt {int} of the retried step fails",
-			func(in ExecBuild, a Args) ExecBuild {
-				in.attempts = append(in.attempts, execAttempt{number: a.Int(0)})
-				return in
-			}),
-
-		Refine[ExecBuild]("attempt {int} of the retried step publishes version {string}",
-			func(in ExecBuild, a Args) ExecBuild {
-				in.attempts = append(in.attempts, execAttempt{number: a.Int(0), creates: a.String(1)})
-				return in
-			}),
-
-		Refine[ExecBuild]("attempt {int} of the retried step fails, and the build is aborted while it runs",
-			func(in ExecBuild, a Args) ExecBuild {
-				in.attempts = append(in.attempts, execAttempt{number: a.Int(0), abort: true})
-				return in
-			}),
-
-		Refine[ExecBuild]("the step is aborted while it runs",
-			func(in ExecBuild, _ Args) ExecBuild {
-				in.stepFate = "abort"
-				return in
-			}),
-
-		Refine[ExecBuild]("the step cannot reach its resource host",
-			func(in ExecBuild, _ Args) ExecBuild {
-				in.stepFate = "unreachable"
-				return in
-			}),
-
-		// The two fates the on_abort outline was missing. A resource that
-		// refuses is a step that FAILED without erroring, which is the arm
-		// on_abort.go returns from before it ever tests for cancellation; a
-		// resource that answers is a step that succeeded. Neither may run the
-		// hook, and neither had a row until the audit asked which one covered
-		// "not for failures".
-		Refine[ExecBuild]("the resource refuses the step",
-			func(in ExecBuild, _ Args) ExecBuild {
-				in.stepFate = "refused"
-				return in
-			}),
-
-		Refine[ExecBuild]("the step does what it was asked",
-			func(in ExecBuild, _ Args) ExecBuild {
-				in.stepFate = "succeeds"
-				return in
-			}),
-
-		Refine[ExecBuild]("the on_abort hook publishes version {string}",
-			func(in ExecBuild, a Args) ExecBuild {
-				in.hook = a.String(0)
-				return in
-			}),
-
 		Refine[ExecBuild]("the step fails with an unreachable Kubernetes API",
 			func(in ExecBuild, _ Args) ExecBuild {
-				in.selectErr = &url.Error{
-					Op:  "Get",
-					URL: "https://10.96.0.1:443/api/v1/namespaces/concourse/pods",
-					Err: errors.New("dial tcp 10.96.0.1:443: connect: connection refused"),
-				}
+				in.retryFailure = "api"
 				return in
 			}),
 
-		Refine[ExecBuild]("the step fails with an unknown resource type",
+		Refine[ExecBuild]("the step requires an input artifact that was never produced",
 			func(in ExecBuild, _ Args) ExecBuild {
-				in.selectErr = errors.New("unknown resource type: some-made-up-type")
+				in.retryFailure = "input"
 				return in
 			}),
 
-		Refine[ExecBuild]("the build has already been aborted",
+		Refine[ExecBuild]("the build is aborted as the API request fails",
 			func(in ExecBuild, _ Args) ExecBuild {
 				in.aborted = true
 				return in
@@ -930,153 +541,26 @@ func execResourceStepDefinitions() []brine.StepDefinition {
 				plan := execGetPlan("some-resource")
 				pinned := execVersionOf(ref)
 				plan.Version = &pinned
-				plan.Timeout = in.getTimeout
-
-				script := in.Catalogue.servesHeldVersions()
-				if in.stall {
-					script = scriptStalls()
-				}
-
-				ok, runErr := in.getStep("get-1", plan, script).Run(in.core.Ctx, in.core.State)
-				return ExecRun{core: in.core, Ok: ok, Err: runErr}, nil
+				return in.runCachedGet(plan)
 			},
 		),
 
 		brine.DefineMap[ExecBuild, ExecRun](
 			"the put step runs, publishing version {string}",
-			func(in ExecBuild, p brine.Params, _ *brine.Recorder) (ExecRun, error) {
+			func(in ExecBuild, p brine.Params, rec *brine.Recorder) (ExecRun, error) {
 				ref, err := paramAt("the put step runs, publishing version {string}", p, 0)
 				if err != nil {
 					return ExecRun{}, err
 				}
-				script := in.Catalogue.createsVersion("")
-				if in.putGetsHalfway {
-					script = scriptNamesAVersionThenFails(4)
-				}
-				ok, runErr := in.putStep("put-1", execPutPlan("some-resource", ref), script).Run(in.core.Ctx, in.core.State)
-				return ExecRun{core: in.core, Ok: ok, Err: runErr}, nil
+				return in.runPartialPut(rec, ref)
 			},
 		),
 
-		// The put/get chain. This is one When rather than two because the
-		// whole claim is that the SECOND step reads what the FIRST one left:
-		// the get names no version of its own, only the plan the put ran under.
-		brine.DefineMap[ExecBuild, ExecRun](
-			"the build puts version {string} and then gets what the put created",
-			func(in ExecBuild, p brine.Params, _ *brine.Recorder) (ExecRun, error) {
-				ref, err := paramAt("the build puts version {string} and then gets what the put created", p, 0)
-				if err != nil {
-					return ExecRun{}, err
-				}
-
-				const putPlanID = atc.PlanID("put-1")
-				putOk, putErr := in.putStep(putPlanID, execPutPlan("some-resource", ref), in.Catalogue.createsVersion("")).
-					Run(in.core.Ctx, in.core.State)
-				if putErr != nil {
-					return ExecRun{core: in.core, Ok: putOk, Err: putErr}, nil
-				}
-				if !putOk {
-					return ExecRun{core: in.core, Ok: false, Err: nil}, nil
-				}
-
-				getPlan := execGetPlan("some-resource")
-				from := putPlanID
-				getPlan.VersionFrom = &from
-
-				ok, runErr := in.getStep("get-1", getPlan, in.Catalogue.servesHeldVersions()).
-					Run(in.core.Ctx, in.core.State)
-				return ExecRun{core: in.core, Ok: ok, Err: runErr}, nil
-			},
-		),
-
-		brine.DefineMap[ExecBuild, ExecRun](
-			"the retried step runs",
-			func(in ExecBuild, _ brine.Params, _ *brine.Recorder) (ExecRun, error) {
-				if len(in.attempts) == 0 {
-					return ExecRun{}, errors.New("no attempts were described for the retried step")
-				}
-				// The number in "attempt 2 of the retried step ..." is for the
-				// reader; the ORDER of the Givens is what decides which attempt
-				// is which. This check keeps those two from disagreeing. It
-				// guards the sentence, not production — deleting it changes no
-				// scenario's verdict, only the message when one is misnumbered.
-				steps := make([]exec.Step, 0, len(in.attempts))
-				for i, attempt := range in.attempts {
-					if attempt.number != i+1 {
-						return ExecRun{}, fmt.Errorf(
-							"the scenario describes attempt %d in position %d; attempts are run in the order they are written",
-							attempt.number, i+1)
-					}
-					planID := atc.PlanID(fmt.Sprintf("attempt-%d", attempt.number))
-					announce := fmt.Sprintf("attempt %d", attempt.number)
-
-					var script execResourceScript
-					switch {
-					case attempt.abort:
-						script = scriptAbortsTheBuild(announce, in.core.Cancel)
-					case attempt.creates == "":
-						script = scriptRefuses(announce, 3)
-					default:
-						script = in.Catalogue.createsVersion(announce)
-					}
-
-					steps = append(steps, in.putStep(planID, execPutPlan("some-resource", attempt.creates), script))
-				}
-
-				ok, runErr := exec.Retry(steps...).Run(in.core.Ctx, in.core.State)
-				return ExecRun{core: in.core, Ok: ok, Err: runErr}, nil
-			},
-		),
-
-		brine.DefineMap[ExecBuild, ExecRun](
-			"the step runs with its on_abort hook",
-			func(in ExecBuild, _ brine.Params, _ *brine.Recorder) (ExecRun, error) {
-				if in.hook == "" {
-					return ExecRun{}, errors.New("no on_abort hook was described")
-				}
-
-				var script execResourceScript
-				switch in.stepFate {
-				case "abort":
-					script = scriptAbortsTheBuild("the step ran", in.core.Cancel)
-				case "unreachable":
-					script = scriptUnreachable("the step ran")
-				case "refused":
-					script = scriptRefuses("the step ran", 1)
-				case "succeeds":
-					script = in.Catalogue.createsVersion("the step ran")
-				default:
-					return ExecRun{}, fmt.Errorf("no fate was described for the step under the hook")
-				}
-
-				step := in.putStep("guarded", execPutPlan("guarded", "guarded"), script)
-				hook := in.putStep("hook", execPutPlan("hook", in.hook), in.Catalogue.createsVersion("the hook ran"))
-
-				ok, runErr := exec.OnAbort(step, hook).Run(in.core.Ctx, in.core.State)
-				return ExecRun{core: in.core, Ok: ok, Err: runErr}, nil
-			},
-		),
-
-		brine.DefineMap[ExecBuild, ExecRun](
+		brine.DefineMapUsing[ExecBuild, ExecRun](
 			"the step runs, with its failures classified for retry",
-			func(in ExecBuild, _ brine.Params, _ *brine.Recorder) (ExecRun, error) {
-				if in.selectErr == nil {
-					return ExecRun{}, errors.New("no failure was described for the step")
-				}
-				in.Pool.selectErr = in.selectErr
-
-				ctx := in.core.Ctx
-				if in.aborted {
-					in.core.Cancel()
-				}
-
-				step := in.putStep("classified", execPutPlan("classified", "unreachable"), in.Catalogue.createsVersion(""))
-				classified := exec.RetryError(step, execBuildStepDelegates(func(state exec.RunState) exec.BuildStepDelegate {
-					return engine.NewBuildStepDelegate(in.core.Build, "classified", state, clock.NewClock(), policy.NoopChecker{}, false)
-				}))
-
-				ok, runErr := classified.Run(ctx, in.core.State)
-				return ExecRun{core: in.core, Ok: ok, Err: runErr}, nil
+			[]string{"real-cluster"},
+			func(in ExecBuild, _ brine.Params, rec *brine.Recorder, res brine.Resources) (ExecRun, error) {
+				return in.classifyRealFailure(rec, res)
 			},
 		),
 	}
@@ -1231,30 +715,30 @@ func execSetPipelineDefinitions() []brine.StepDefinition {
 
 		brine.DefineMap[ExecPipelineBuild, ExecRun](
 			"the step sets \"some-pipeline\" to the job {string}",
-			func(in ExecPipelineBuild, p brine.Params, _ *brine.Recorder) (ExecRun, error) {
+			func(in ExecPipelineBuild, p brine.Params, rec *brine.Recorder) (ExecRun, error) {
 				jobName, err := paramAt("the step sets \"some-pipeline\" to the job {string}", p, 0)
 				if err != nil {
 					return ExecRun{}, err
 				}
-				return in.runSetPipeline(execPipelineYAML(jobName), "")
+				return in.runSetPipeline(rec, execPipelineYAML(jobName), "")
 			},
 		),
 
 		brine.DefineMap[ExecPipelineBuild, ExecRun](
 			"the step sets the \"other-team\" pipeline \"some-pipeline\" to the job {string}",
-			func(in ExecPipelineBuild, p brine.Params, _ *brine.Recorder) (ExecRun, error) {
+			func(in ExecPipelineBuild, p brine.Params, rec *brine.Recorder) (ExecRun, error) {
 				jobName, err := paramAt("the step sets the \"other-team\" pipeline \"some-pipeline\" to the job {string}", p, 0)
 				if err != nil {
 					return ExecRun{}, err
 				}
-				return in.runSetPipeline(execPipelineYAML(jobName), "other-team")
+				return in.runSetPipeline(rec, execPipelineYAML(jobName), "other-team")
 			},
 		),
 
 		brine.DefineMap[ExecPipelineBuild, ExecRun](
 			"the step sets \"some-pipeline\" from a file with no jobs in it",
-			func(in ExecPipelineBuild, _ brine.Params, _ *brine.Recorder) (ExecRun, error) {
-				return in.runSetPipeline(execInvalidPipelineYAML, "")
+			func(in ExecPipelineBuild, _ brine.Params, rec *brine.Recorder) (ExecRun, error) {
+				return in.runSetPipeline(rec, execInvalidPipelineYAML, "")
 			},
 		),
 
@@ -1310,12 +794,18 @@ func execSetPipelineDefinitions() []brine.StepDefinition {
 	}
 }
 
-func (in ExecPipelineBuild) runSetPipeline(fileContent, targetTeam string) (ExecRun, error) {
+func (in ExecPipelineBuild) runSetPipeline(rec *brine.Recorder, fileContent, targetTeam string) (ExecRun, error) {
 	const planID = atc.PlanID("set-1")
 
-	volume := runtimetest.NewVolume("pipeline-bits").WithContent(runtimetest.VolumeContent{
-		"pipeline.yml": {Data: []byte(fileContent)},
+	ctx, cancel := context.WithTimeout(in.core.Ctx, 20*time.Second)
+	defer cancel()
+	volume, err := serveExecArtifact(ctx, rec, "pipeline-bits", map[string]string{
+		"pipeline.yml": fileContent,
+		"a-decoy.yml":  execPipelineYAML("not-the-requested-job"),
 	})
+	if err != nil {
+		return ExecRun{}, err
+	}
 	in.core.State.ArtifactRepository().RegisterArtifact(execbuild.ArtifactName("some-source"), volume, false)
 
 	step := exec.NewSetPipelineStep(
@@ -1343,7 +833,7 @@ func (in ExecPipelineBuild) runSetPipeline(fileContent, targetTeam string) (Exec
 		atcworker.NewStreamer(compression.NewGzipCompression()),
 	)
 
-	ok, err := step.Run(in.core.Ctx, in.core.State)
+	ok, err := step.Run(ctx, in.core.State)
 	return ExecRun{core: in.core, Ok: ok, Err: err}, nil
 }
 
@@ -1426,21 +916,54 @@ func execTaskDefinitions() []brine.StepDefinition {
 				return in
 			}),
 
-		Refine[ExecTaskBuild]("the build has produced the artifact {string}",
-			func(in ExecTaskBuild, a Args) ExecTaskBuild {
-				name := a.String(0)
+		brine.DefineMap[ExecTaskBuild, ExecTaskBuild]("the build has produced the artifact {string}",
+			func(in ExecTaskBuild, p brine.Params, rec *brine.Recorder) (ExecTaskBuild, error) {
+				name, ok := p.GetString(0)
+				if !ok {
+					return in, fmt.Errorf("expected an artifact name")
+				}
+				ctx, cancel := context.WithTimeout(in.core.Ctx, 20*time.Second)
+				defer cancel()
+				artifact, err := serveExecArtifact(ctx, rec, "artifact-"+name, map[string]string{"content": "produced " + name})
+				if err != nil {
+					return in, err
+				}
+				// Verify the present input is readable, not just an entry whose
+				// name happens to satisfy the repository lookup.
+				stream, err := atcworker.NewStreamer(compression.NewGzipCompression()).StreamFile(ctx, artifact, "content")
+				if err != nil {
+					return in, err
+				}
+				body, readErr := io.ReadAll(stream)
+				closeErr := stream.Close()
+				if readErr != nil || closeErr != nil || string(body) != "produced "+name {
+					return in, fmt.Errorf("real artifact read: data=%q read=%v close=%v", body, readErr, closeErr)
+				}
 				in.core.State.ArtifactRepository().RegisterArtifact(
 					execbuild.ArtifactName(name),
-					runtimetest.NewVolume("artifact-"+name),
+					artifact,
 					false,
 				)
-				return in
+				return in, nil
 			}),
 
-		brine.DefineMap[ExecTaskBuild, ExecRun](
+		brine.DefineMapUsing[ExecTaskBuild, ExecRun](
 			"the task step runs",
-			func(in ExecTaskBuild, _ brine.Params, _ *brine.Recorder) (ExecRun, error) {
+			[]string{"real-cluster"},
+			func(in ExecTaskBuild, _ brine.Params, rec *brine.Recorder, res brine.Resources) (ExecRun, error) {
 				const planID = atc.PlanID("task-1")
+				ctx, cancel := context.WithTimeout(in.core.Ctx, 20*time.Second)
+				defer cancel()
+				pool, err := realExecTaskPool(ctx, rec, in.core.DB, res)
+				if err != nil {
+					return ExecRun{}, err
+				}
+				owner := db.NewBuildStepContainerOwner(in.core.Build.ID(), planID, in.core.Team.ID())
+				selected, err := pool.FindOrSelectWorker(ctx, owner, runtime.ContainerSpec{Type: db.ContainerTypeTask}, atcworker.Spec{TeamID: in.core.Team.ID()})
+				if err != nil || selected == nil || selected.Name() != execTaskWorkerName {
+					return ExecRun{}, fmt.Errorf("real pool could not select its persisted worker: %v", err)
+				}
+				fmt.Printf("real task preflight pool selected %s\n", selected.Name())
 
 				config := in.config
 				step := exec.NewTaskStep(
@@ -1464,7 +987,7 @@ func execTaskDefinitions() []brine.StepDefinition {
 						Type:             db.ContainerTypeTask,
 						StepName:         "some-task",
 					},
-					&execStepPool{worker: runtimetest.NewWorker("some-worker"), cached: map[string]runtime.Volume{}},
+					pool,
 					atcworker.NewStreamer(compression.NewGzipCompression()),
 					execTaskDelegates(func(state exec.RunState) exec.TaskDelegate {
 						return engine.NewTaskDelegate(
@@ -1475,7 +998,7 @@ func execTaskDefinitions() []brine.StepDefinition {
 					0,
 				)
 
-				ok, err := step.Run(in.core.Ctx, in.core.State)
+				ok, err := step.Run(ctx, in.core.State)
 				return ExecRun{core: in.core, Ok: ok, Err: err}, nil
 			},
 		),
@@ -1614,12 +1137,6 @@ func execOutcomeDefinitions() []brine.StepDefinition {
 		// Finish events
 		// --------------------------------------------------------------
 
-		CheckInt[ExecRun]("the build reported the get finishing with exit status {int}",
-			"the exit status the get reported",
-			func(in ExecRun) (int, error) {
-				return in.core.soleFinish(event.EventTypeFinishGet)
-			}),
-
 		CheckInt[ExecRun]("the build reported the put finishing with exit status {int}",
 			"the exit status the put reported",
 			func(in ExecRun) (int, error) {
@@ -1658,14 +1175,10 @@ func execOutcomeDefinitions() []brine.StepDefinition {
 		// Rows the build left behind
 		// --------------------------------------------------------------
 
-		CheckMember[ExecRun]("the build published version {string}",
-			"the versions this build published",
-			func(in ExecRun) ([]string, error) { return in.core.publishedVersions() }),
-
 		brine.DefineCheck[ExecRun](
 			"the build published nothing at all",
 			func(in ExecRun, _ brine.Params, _ *brine.Recorder) error {
-				published, err := in.core.publishedVersions()
+				_, published, err := in.core.Build.Resources()
 				if err != nil {
 					return err
 				}
@@ -1676,14 +1189,6 @@ func execOutcomeDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		CheckNotMember[ExecRun]("the build published no version {string}",
-			"the versions this build published",
-			func(in ExecRun) ([]string, error) { return in.core.publishedVersions() }),
-
-		CheckMember[ExecRun]("the build holds a resource cache for version {string}",
-			"the versions of the resource caches this build holds",
-			func(in ExecRun) ([]string, error) { return in.core.cachedVersions() }),
-
 		// A get registers its artifact under the PLAN's name whichever path
 		// ran, so the name alone says only that something was registered —
 		// which is why the two rows that used to assert it now assert the
@@ -1692,21 +1197,9 @@ func execOutcomeDefinitions() []brine.StepDefinition {
 			"the build's artifact {string} came from a cache on the worker",
 			func(in ExecRun, p brine.Params, _ *brine.Recorder) error {
 				return in.core.artifactProvenance(
-					"the build's artifact {string} came from a cache on the worker", p, true)
+					"the build's artifact {string} came from a cache on the worker", p)
 			},
 		),
-
-		brine.DefineCheck[ExecRun](
-			"the build's artifact {string} was fetched rather than taken from a cache",
-			func(in ExecRun, p brine.Params, _ *brine.Recorder) error {
-				return in.core.artifactProvenance(
-					"the build's artifact {string} was fetched rather than taken from a cache", p, false)
-			},
-		),
-
-		CheckNotMember[ExecRun]("the build's artifacts do not include {string}",
-			"the artifacts the next step would see",
-			func(in ExecRun) ([]string, error) { return in.core.artifactNames(), nil }),
 	}
 }
 
@@ -1714,25 +1207,23 @@ func execOutcomeDefinitions() []brine.StepDefinition {
 // its artifact — the one thing about a get's result that separates bytes that
 // were fetched from bytes the worker already had. artifactNames() cannot say
 // it: the name is the plan's either way.
-func (c *execCore) artifactProvenance(pattern string, p brine.Params, wantFromCache bool) error {
+func (c *execCore) artifactProvenance(pattern string, p brine.Params) error {
 	name, err := paramAt(pattern, p, 0)
 	if err != nil {
 		return err
 	}
-	_, fromCache, found := c.State.ArtifactRepository().ArtifactFor(execbuild.ArtifactName(name))
+	artifact, fromCache, found := c.State.ArtifactRepository().ArtifactFor(execbuild.ArtifactName(name))
 	if !found {
 		return fmt.Errorf("expected the build to hold an artifact %q, the next step would see %v",
 			name, c.artifactNames())
 	}
-	if fromCache != wantFromCache {
-		if wantFromCache {
-			return fmt.Errorf("expected the artifact %q to have come from a cache on the worker, "+
-				"it was registered as freshly fetched", name)
-		}
-		return fmt.Errorf("expected the artifact %q to have been fetched, "+
-			"it was registered as coming from a cache on the worker", name)
+	if !fromCache {
+		return fmt.Errorf("expected the artifact %q to have come from a cache on the worker, it was registered as freshly fetched", name)
 	}
-	return nil
+	if c.cached == nil {
+		return fmt.Errorf("cache provenance requires a real cached resource")
+	}
+	return c.cached.verify(c.Ctx, artifact)
 }
 
 // soleFinish reads the exit status of the single finish event of a kind,

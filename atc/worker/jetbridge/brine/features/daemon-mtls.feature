@@ -24,9 +24,10 @@ Feature: Reaching the artifact daemon over mTLS, and agreeing on who warms a cac
   # The mTLS data plane
   # -------------------------------------------------------------------------
 
-  # The daemon is deployed with `--client-auth=require`, so a web whose client
-  # certificate is configured but never presented cannot read a single
-  # artifact: every get step that needs a peer's output fails, and the build
+  # The daemon protects artifact routes with client-certificate middleware.
+  # A web whose client certificate is configured but never presented cannot
+  # read a single artifact: every get step that needs a peer's output fails,
+  # and the build
   # goes red for a reason that looks like a network fault. The daemon here
   # really does refuse anyone it cannot verify, so the artifact arriving is
   # the proof that the certificate reached the handshake.
@@ -47,8 +48,9 @@ Feature: Reaching the artifact daemon over mTLS, and agreeing on who warms a cac
   # the ATC dials it at an address the certificate never mentions — the exact
   # shape of the outage — and the artifact still has to arrive.
   #
-  # This daemon does not demand a client certificate, so the client-certificate
-  # question above cannot be what decides this one.
+  # Like the deployed daemon, this one requires client authentication too.
+  # The missing-ServerName mutation still isolates this scenario: the first
+  # scenario's certificate also names the dial address, while this one does not.
   Scenario: An artifact arrives from a daemon reached at an address its certificate does not name
     Given an artifact daemon serving over TLS
     And its certificate names only the service, not the address it is dialled at
@@ -93,16 +95,19 @@ Feature: Reaching the artifact daemon over mTLS, and agreeing on who warms a cac
   # warmed cache in the fleet simultaneously, which is worse than not caching
   # at all. Ranking on the node name survives it: pods come and go, nodes stay.
   #
-  # The cache is reclaimed between the two warms because an age-based sweep
-  # runs on every node; without that the second lookup would be a local hit and
-  # would never ask the ranking anything.
+  # Real daemon processes bind two private addresses and restart on swapped
+  # addresses; a real EndpointSlice publishes the new mapping. This checks
+  # ownership through daemon replacement, not the DaemonSet controller itself.
+  # Before replacement the daemon DELETE API reclaims every local copy;
+  # otherwise the next lookup would be a local hit and bypass ranking.
+  # The durable key uses the production store's accepted prefix/key format.
   Scenario: A rolling update does not move which node owns a cache
     Given artifact daemons on two nodes with one durable store behind them
-    And only the durable store holds the object "sha256:cafe" containing "cached resource data"
-    When a get step warms the resource cache "rc-42" under content key "sha256:cafe"
-    And the sweeper reclaims every node's copy of "rc-42"
+    And only the durable store holds the object "resource-caches/rc-cafe" containing "cached resource data"
+    When a get step warms the resource cache "rc-42" under content key "resource-caches/rc-cafe"
+    And every node's local copy of "rc-42" is reclaimed
     And the DaemonSet rolls and every pod comes back answering on a different address
-    And a get step warms the resource cache "rc-42" under content key "sha256:cafe" again
+    And a get step warms the resource cache "rc-42" under content key "resource-caches/rc-cafe"
     Then every warm was served
     And both warms left the cache on the same node
 

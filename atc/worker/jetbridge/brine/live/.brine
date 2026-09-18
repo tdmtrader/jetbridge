@@ -1,0 +1,8 @@
+runner:
+  name: jetbridge
+  binary: ../scripts/run-live-cluster
+  contract: 5
+contract: 5
+features: ../features/live/*.feature
+budgets:
+  undefined: 0

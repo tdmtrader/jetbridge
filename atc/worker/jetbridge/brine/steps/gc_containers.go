@@ -2,7 +2,6 @@ package steps
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -20,33 +19,10 @@ import (
 // db.ContainerRepository and db.VolumeRepository the ATC wires in production.
 // Every assertion reads a table after the sweep. Nothing counts a call.
 //
-// On the one wrapper in this file, and why it is here when the pilot rejected
-// its ancestors.
-//
-// gc_reclamation.go replaced the ginkgo suite's failing-repository decorators
-// with a closed connection, on the grounds that a decorator returning
-// errors.New("I am le tired") makes an error-passthrough assertion vacuous —
-// the destroyer could have invented an error of its own and passed. That
-// objection is exactly right for a scenario whose assertion IS the error.
-//
-// It does not reach the three scenarios here. Their assertion is not the
-// error; it is which ROWS moved while one of Run's four steps was down, and
-// every one of those rows is real and read back out of PostgreSQL. The
-// wrappers below embed the live repository, delegate all but one method to it,
-// and record nothing — there is no expectation to set and no call to count.
-// They are the pilot's "the database has gone away" narrowed to one statement.
-//
-// A closed connection cannot express this, because it takes down all four
-// steps at once, and PostgreSQL will not fail one of them on request: the FK
-// from volumes to containers is ON DELETE SET NULL (initial_schema:1380), so
-// even a volume still attached to a container being deleted does not make the
-// delete fail. Checked, not assumed — that FK is also the mechanism by which a
-// volume becomes orphaned, which is the last scenario in the feature file.
-//
-// The scenarios also assert that the sweep REPORTED the failure, and do so
-// with a step that takes no parameter — "the sweep reported the failure rather
-// than a clean pass" — precisely so that nothing here compares against a
-// string this file supplied.
+// Failure-isolation scenarios use the same production repository on separate
+// real PostgreSQL sessions. Owned NOLOGIN roles deny one query privilege; a
+// competing transaction locks one failed row. SQLSTATE checks and independent
+// probes verify real database refusals while the healthy rows still move.
 
 // gcGracePeriod is the missing/hijack grace period the collectors are built with, the
 // same one minute the ginkgo suites used. Fixtures backdate a column by an
@@ -71,6 +47,8 @@ type ContainerGCReady struct {
 	// name is the reverse, so a table read reports names a reader can place.
 	handle map[string]string
 	name   map[string]string
+
+	faultState string
 }
 
 // ContainerGCSwept is a completed container-collector pass.
@@ -195,15 +173,10 @@ func containerCollectorDefinitions() []brine.StepDefinition {
 		makeGCCheckContainers("the resource {string} has the check containers {string} and {string}, oldest first", 2),
 		makeGCCheckContainers("the resource {string} has the check containers {string}, {string} and {string}, oldest first", 3),
 
-		// The three fault injectors. Each replaces the collector with one over
-		// a repository whose single named method fails; the other three still
-		// reach PostgreSQL, which is the whole point of the scenario.
-		failOneGCStep("the collector cannot look up orphaned containers",
-			func(r db.ContainerRepository) db.ContainerRepository { return noOrphanLookup{r} }),
-		failOneGCStep("the collector cannot destroy failed containers",
-			func(r db.ContainerRepository) db.ContainerRepository { return noFailedDestroy{r} }),
-		failOneGCStep("the collector cannot delete missing containers",
-			func(r db.ContainerRepository) db.ContainerRepository { return noMissingDelete{r} }),
+		// Real PostgreSQL refusals isolate one stage without replacing a repository.
+		gcPermissionFailure("the collector cannot look up orphaned containers", "builds", "SELECT"),
+		gcFailedContainerContention(),
+		gcPermissionFailure("the collector cannot delete missing containers", "containers", "DELETE"),
 
 		brine.DefineMap[ContainerGCReady, ContainerGCSwept](
 			"the container collector sweeps",
@@ -231,6 +204,10 @@ func containerCollectorDefinitions() []brine.StepDefinition {
 						"a step that could not run and said nothing is a whole collection interval " +
 						"in which nothing was collected and nothing complained")
 				}
+				if in.Ready.faultState == "" || gcSQLState(in.Err) != in.Ready.faultState {
+					return fmt.Errorf("expected PostgreSQL SQLSTATE %s from the isolated stage, got %v", in.Ready.faultState, in.Err)
+				}
+				fmt.Printf("actual GC sweep reported SQLSTATE %s\n", gcSQLState(in.Err))
 				return nil
 			}),
 
@@ -439,36 +416,6 @@ func setGCContainerColumn(pattern, column, value string) brine.StepDefinition {
 			return in, mustHaveTouchedOneGCRow(res, column, name)
 		},
 	)
-}
-
-func failOneGCStep(pattern string, wrap func(db.ContainerRepository) db.ContainerRepository) brine.StepDefinition {
-	return brine.DefineMap[ContainerGCReady, ContainerGCReady](pattern,
-		func(in ContainerGCReady, _ brine.Params, _ *brine.Recorder) (ContainerGCReady, error) {
-			in.Collector = gc.NewContainerCollector(wrap(in.Repo), gcGracePeriod, gcGracePeriod)
-			return in, nil
-		},
-	)
-}
-
-// errGCStepUnavailable is what one wrapped repository method returns. Nothing
-// asserts on its text — see the header, and "the sweep reported the failure
-// rather than a clean pass", which takes no parameter.
-var errGCStepUnavailable = errors.New("this repository call is unavailable")
-
-type noOrphanLookup struct{ db.ContainerRepository }
-
-func (noOrphanLookup) FindOrphanedContainers() ([]db.CreatingContainer, []db.CreatedContainer, []db.DestroyingContainer, error) {
-	return nil, nil, nil, errGCStepUnavailable
-}
-
-type noFailedDestroy struct{ db.ContainerRepository }
-
-func (noFailedDestroy) DestroyFailedContainers() (int, error) { return 0, errGCStepUnavailable }
-
-type noMissingDelete struct{ db.ContainerRepository }
-
-func (noMissingDelete) RemoveMissingContainers(time.Duration) (int, error) {
-	return 0, errGCStepUnavailable
 }
 
 func (c ContainerGCSwept) containersInState(state string) ([]string, error) {

@@ -18,7 +18,7 @@ import (
 // atc/gc/build_log_collector_test.go, and adds the atc/gc build collector,
 // which has no test file of its own.
 //
-// Nothing here is a double. The three collectors run against the scenario's
+// The ordinary collectors run against the scenario's
 // own PostgreSQL through the same db.PipelineFactory, db.PipelineLifecycle and
 // db.BuildFactory the ATC wires in production, and every assertion reads a
 // table: `pipelines.archived`, the rows left in `pipeline_build_events_<id>`,
@@ -44,11 +44,12 @@ import (
 // the broken one was still reaped. Nothing looks at the error at all, because
 // the collector swallows it. Those cannot be produced by a closed connection,
 // because the call that has to fail is the fourth or fifth one and a closed
-// connection fails the first; so they are produced by wrapping the real,
-// PostgreSQL-backed row in a type that fails exactly one method. That wrapper
-// records nothing and answers nothing — it is a fault, not a recording double,
-// and the ginkgo source it comes from uses the same technique for the same
-// reason.
+// connection fails the first. Event deletion and cursor advancement now use
+// real PostgreSQL contention on the first pipeline's event table or job row,
+// after initial cursors are set. Their production factories are unwrapped.
+// The read cases cancel an identified blocked query on an owned real backend,
+// then release access before the healthy pipeline continues. No repository
+// interface is replaced in any of these four cases.
 
 // -----------------------------------------------------------------------
 // State
@@ -147,11 +148,6 @@ const (
 	faultDeleteRefused
 	faultCursorRefused
 )
-
-// errLogFault is what a wrapped row returns. No scenario asserts on it: the
-// four faults it backs are all swallowed by the collector, and what the
-// scenarios assert is what the sweep did afterwards.
-var errLogFault = errors.New("the database refused")
 
 // logBatchSize is the batch the ginkgo suite's collector used, kept because the
 // boundary it draws is the whole subject of one scenario in the feature file.
@@ -527,8 +523,8 @@ func buildLogCollectorDefinitions() []brine.StepDefinition {
 
 		brine.DefineMap[LogReady, LogSwept](
 			"the build log collector sweeps",
-			func(in LogReady, _ brine.Params, _ *brine.Recorder) (LogSwept, error) {
-				return in.sweep()
+			func(in LogReady, _ brine.Params, rec *brine.Recorder) (LogSwept, error) {
+				return in.sweep(rec)
 			},
 		),
 
@@ -731,7 +727,7 @@ func (in LogReady) eventCount(pipelineID, buildID int) (int, error) {
 // sweep starts every job's cursor on its oldest build, assembles the collector
 // the scenario described, and runs it. The error is recorded rather than
 // returned: whether the sweep was refused is what the scenario goes on to say.
-func (in LogReady) sweep() (LogSwept, error) {
+func (in LogReady) sweep(rec *brine.Recorder) (LogSwept, error) {
 	for _, under := range in.jobs {
 		oldest := 0
 		for _, name := range under.builds {
@@ -753,10 +749,7 @@ func (in LogReady) sweep() (LogSwept, error) {
 	factory := db.NewPipelineFactory(in.DB.Conn, in.DB.LockFactory)
 	lifecycle := db.NewPipelineLifecycle(in.DB.Conn, in.DB.LockFactory)
 
-	first := ""
-	if len(in.jobs) > 0 {
-		first = in.jobs[0].pipeline.Name()
-	}
+	var interruption *logReadInterruption
 
 	switch in.fault {
 	case faultCleanupConnClosed:
@@ -771,22 +764,20 @@ func (in LogReady) sweep() (LogSwept, error) {
 			return LogSwept{}, err
 		}
 		factory = db.NewPipelineFactory(closed, in.DB.LockFactory)
-	case faultJobsUnreadable:
-		factory = faultedPipelines{factory, first, func(p db.Pipeline) db.Pipeline {
-			return unlistableJobs{p}
-		}}
-	case faultDeleteRefused:
-		factory = faultedPipelines{factory, first, func(p db.Pipeline) db.Pipeline {
-			return undeletableEvents{p}
-		}}
-	case faultBuildsUnreadable:
-		factory = faultedPipelines{factory, first, func(p db.Pipeline) db.Pipeline {
-			return faultedJobs{p, func(j db.Job) db.Job { return unlistableBuilds{j} }}
-		}}
-	case faultCursorRefused:
-		factory = faultedPipelines{factory, first, func(p db.Pipeline) db.Pipeline {
-			return faultedJobs{p, func(j db.Job) db.Job { return unmovableCursor{j} }}
-		}}
+	case faultJobsUnreadable, faultBuildsUnreadable:
+		var err error
+		interruption, err = in.holdLogRead(rec)
+		if err != nil {
+			return LogSwept{}, err
+		}
+		factory = db.NewPipelineFactory(interruption.collector, in.DB.LockFactory)
+	case faultDeleteRefused, faultCursorRefused:
+		conn, err := in.holdLogWrite(rec)
+		if err != nil {
+			return LogSwept{}, err
+		}
+		factory = db.NewPipelineFactory(conn, in.DB.LockFactory)
+
 	}
 
 	collector := gc.NewBuildLogCollector(
@@ -794,7 +785,7 @@ func (in LogReady) sweep() (LogSwept, error) {
 		gc.NewBuildLogRetentionCalculator(0, in.spec.maxBuilds, 0, 0),
 		in.drainer,
 	)
-	return LogSwept{Ready: in, Err: collector.Run(in.Ctx)}, nil
+	return observeLogSweep(in, collector.Run, interruption)
 }
 
 // buildsWithLogs answers with the scenario's own build names, split by whether
@@ -842,71 +833,6 @@ func (s LogSwept) cursor() (string, error) {
 	}
 	return fmt.Sprintf("build %d, which this scenario did not create", id), nil
 }
-
-// -----------------------------------------------------------------------
-// The faults
-//
-// Each wraps a real, PostgreSQL-backed row and fails exactly one method.
-// Nothing is recorded and nothing is answered from a script; every other call
-// still reaches the database, which is what lets the assertions afterwards be
-// about real row state.
-// -----------------------------------------------------------------------
-
-// faultedPipelines keeps the real AllPipelines lookup and wraps only the
-// pipeline the scenario named, so the healthy neighbour beside it is untouched
-// and its reaping is evidence the sweep carried on.
-type faultedPipelines struct {
-	db.PipelineFactory
-	target   string
-	decorate func(db.Pipeline) db.Pipeline
-}
-
-func (f faultedPipelines) AllPipelines() ([]db.Pipeline, error) {
-	pipelines, err := f.PipelineFactory.AllPipelines()
-	if err != nil {
-		return nil, err
-	}
-	for i, pipeline := range pipelines {
-		if pipeline.Name() == f.target {
-			pipelines[i] = f.decorate(pipeline)
-		}
-	}
-	return pipelines, nil
-}
-
-type faultedJobs struct {
-	db.Pipeline
-	decorate func(db.Job) db.Job
-}
-
-func (f faultedJobs) Jobs() (db.Jobs, error) {
-	jobs, err := f.Pipeline.Jobs()
-	if err != nil {
-		return nil, err
-	}
-	for i, job := range jobs {
-		jobs[i] = f.decorate(job)
-	}
-	return jobs, nil
-}
-
-type unlistableJobs struct{ db.Pipeline }
-
-func (unlistableJobs) Jobs() (db.Jobs, error) { return nil, errLogFault }
-
-type undeletableEvents struct{ db.Pipeline }
-
-func (undeletableEvents) DeleteBuildEventsByBuildIDs([]int) error { return errLogFault }
-
-type unlistableBuilds struct{ db.Job }
-
-func (unlistableBuilds) ChronoBuilds(db.Page) ([]db.BuildForAPI, db.Pagination, error) {
-	return nil, db.Pagination{}, errLogFault
-}
-
-type unmovableCursor struct{ db.Job }
-
-func (unmovableCursor) UpdateFirstLoggedBuildID(int) error { return errLogFault }
 
 // -----------------------------------------------------------------------
 // The build collector

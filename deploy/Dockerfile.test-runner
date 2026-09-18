@@ -19,13 +19,10 @@
 # layer of the shipped image -- but the mount is what keeps it out of the build
 # LOG, which is the part that actually went wrong the first time.
 FROM rust:1.98-bookworm AS brine
-# NOT main. brine's default branch is 987 commits behind and does not contain
-# the engine crate at all -- building from it fails with "package ID
-# specification `brine-engine` did not match any packages". NEW-NAME is where
-# the Go runner and contract 4 live, and is what the developer machine builds
-# from. The resolved commit is recorded at /etc/brine-commit in the final image
-# so a given runner tag can always be traced back to an exact brine revision.
-ARG BRINE_REF=NEW-NAME
+# This branch contains v5; the default main branch is older. The revision is
+# derived from the consuming module, never from the moving branch tip.
+ARG BRINE_REF=main-20260910
+COPY atc/worker/jetbridge/brine/go.mod /brine-go.mod
 RUN apt-get update && apt-get install -y --no-install-recommends \
       protobuf-compiler ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
@@ -38,28 +35,50 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # .git/config even within this discarded stage.
 RUN --mount=type=secret,id=gh,required=true \
     GH="$(cat /run/secrets/gh)" \
-    && git clone --depth 1 --branch "${BRINE_REF}" \
+    && revision="$(sed -n 's/^replace github.com\/brine-dev\/brine-go => .* v0.0.0-[0-9]*-\([0-9a-f]*\)$/\1/p' /brine-go.mod)" \
+    && test -n "$revision" \
+    && git clone --no-checkout --single-branch --branch "${BRINE_REF}" \
          "https://x-access-token:${GH}@github.com/MarkDucommun/brine-private.git" /brine \
+    && git -C /brine checkout --detach "$revision" \
     && git -C /brine rev-parse HEAD > /brine-commit \
     && git -C /brine remote set-url origin https://github.com/MarkDucommun/brine-private.git
 WORKDIR /brine
 # brine run spawns brine-engine as a separate process and looks it up on PATH;
 # building only brine-cli yields engine_unreachable at the first scenario.
-RUN cargo build --release -p brine-cli --bin brine \
-    && cargo build --release -p brine-engine
+RUN cargo build --locked --release -p brine-cli --bin brine \
+    && cargo build --locked --release -p brine-engine
 
 # --- runner -----------------------------------------------------------------
 FROM golang:1.25-bookworm
 
-# The brine adapter module (atc/worker/jetbridge/brine) declares go 1.26 while
-# this image ships 1.25. The golang image exports GOTOOLCHAIN=local, which
-# overrides the go env file and turns that into a hard failure instead of a
-# download. Tasks that only build the root module are unaffected either way.
+# Let Go select the toolchain required by each module's go.mod. The golang
+# image exports GOTOOLCHAIN=local, which would prevent downloading a newer
+# required toolchain.
 ENV GOTOOLCHAIN=auto
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      curl git jq zip unzip ca-certificates gnupg \
+      curl git jq zip unzip ca-certificates gnupg gcc libc6-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Run fetch scripts with real BusyBox applets. Debian's 1.35 builds crash on
+# wget -T in this environment; use the tested upstream musl binary, pinned by
+# content. This runner already targets linux/amd64 below (kubectl and helm).
+RUN curl --fail --location --silent --show-error \
+      https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox \
+      -o /usr/local/bin/busybox \
+    && echo "6e123e7f3202a8c1e9b1f94d8941580a25135382b99e8d3e34fb858bba311348  /usr/local/bin/busybox" | sha256sum -c - \
+    && chmod 0755 /usr/local/bin/busybox
+
+# Observability tests use the production OTLP exporter and an official
+# collector, not an in-memory trace recorder. Keep its archive content pinned.
+ARG OTELCOL_VERSION=0.160.0
+ARG OTELCOL_SHA256=5415b8daf782f17cc463c3e46816abf181a68a04b7bcf98c273c3c204096c743
+RUN curl --fail --location --silent --show-error \
+      "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v${OTELCOL_VERSION}/otelcol_${OTELCOL_VERSION}_linux_amd64.tar.gz" \
+      -o /tmp/otelcol.tar.gz \
+    && echo "${OTELCOL_SHA256}  /tmp/otelcol.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/otelcol.tar.gz -C /usr/local/bin otelcol \
+    && rm /tmp/otelcol.tar.gz
 
 # PostgreSQL 17 server AND client: the unit and integration tiers need a real
 # server, and postgresrunner spawns its own instances from these binaries.

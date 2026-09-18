@@ -261,7 +261,7 @@ func TestDaemonSetVolume_DaemonURLSchemeFollowsTLS(t *testing.T) {
 func TestBuildFetchInitContainers_TLSWiring(t *testing.T) {
 	b := NewDaemonSetBackend(tlsDaemonConfig(t), nil, nil)
 	inputs := []runtime.Input{
-		{Artifact: &testArtifact{handle: "vol-a"}, DestinationPath: "/tmp/input"},
+		{Artifact: constructionArtifact("vol-a", "worker-1"), DestinationPath: "/tmp/input"},
 	}
 	mounts := []corev1.VolumeMount{{Name: "input-0", MountPath: "/tmp/input"}}
 	volumes := []corev1.Volume{b.StepVolume("input-0", "handle", "input-0")}
@@ -300,7 +300,7 @@ func TestBuildFetchInitContainers_TLSWiring(t *testing.T) {
 func TestBuildFetchInitContainers_NoTLSMountWhenDisabled(t *testing.T) {
 	b := NewDaemonSetBackend(testDaemonConfig(), nil, nil)
 	inputs := []runtime.Input{
-		{Artifact: &testArtifact{handle: "vol-a"}, DestinationPath: "/tmp/input"},
+		{Artifact: constructionArtifact("vol-a", "worker-1"), DestinationPath: "/tmp/input"},
 	}
 	mounts := []corev1.VolumeMount{{Name: "input-0", MountPath: "/tmp/input"}}
 	volumes := []corev1.Volume{b.StepVolume("input-0", "handle", "input-0")}

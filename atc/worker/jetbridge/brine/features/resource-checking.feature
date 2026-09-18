@@ -25,13 +25,12 @@ Feature: Deciding what to check, and resolving what can be answered without a po
   registry and then wrote somebody else's digest into the database passed
   every one of those assertions.
 
-  The registry below answers instead of recording. It holds images at
-  repository and tag and hands back the digest it holds, so a scenario that
-  seeds two repositories with two digests can say WHICH one was resolved by
-  naming the digest that reached the row. Credentials work the same way: the
-  registry refuses a private image unless the password matches, so "the digest
-  landed" IS the assertion that the credentials survived the trip, rather than
-  a comparison against a struct field the test itself supplied.
+  The registry serves real OCI images over TLS. The scanner uses the production
+  resolver; expected digests are independently hashed from the published image
+  manifests. Named images distinguish repositories and tag changes without
+  inventing digest strings. Private registries use Distribution authentication.
+  The explicit resolver-panic injector remains a test substitute; an HTTP
+  failure would not exercise panic recovery in the scanner's goroutine.
 
   The three failures are injected without fabricating a single error. A closed
   connection for the database going away; a REAL `ALTER TABLE ... RENAME` for
@@ -213,8 +212,8 @@ Feature: Deciding what to check, and resolving what can be answered without a po
   Scenario: A crash scanning one resource does not cost the resources behind it
     Given a lidar scan backed by an image registry
     And the scan runs 1 resources at a time
-    And the registry holds "broken/image:latest" at the digest "sha256:broken"
-    And the registry crashes when asked for "broken/image:latest"
+    And the registry holds "broken/image:latest" as image "broken"
+    And a resolver panic is injected for "broken/image:latest"
     And the pipeline has the image resource "broken-image" reading "broken/image:latest"
     And the pipeline has the resource "ordinary-resource"
     When the scan runs
@@ -311,12 +310,12 @@ Feature: Deciding what to check, and resolving what can be answered without a po
   # UpdateLastCheckEndTime call, which fails the third clause alone.
   Scenario: An image resource is resolved from the registry while an ordinary one goes to a pod
     Given a lidar scan backed by an image registry
-    And the registry holds "my-org/my-image:latest" at the digest "sha256:mixed123"
+    And the registry holds "my-org/my-image:latest" as image "mixed123"
     And the pipeline has the image resource "native-image" reading "my-org/my-image:latest"
     And the pipeline has the resource "ordinary-resource"
     When the scan runs
     Then the scan completed without error
-    And the resource "native-image" resolved to the digest "sha256:mixed123"
+    And the resource "native-image" resolved to image "mixed123"
     And the resource "native-image" recorded a successful check
     And a check was enqueued for "ordinary-resource"
     And no check was enqueued for "native-image"
@@ -337,7 +336,7 @@ Feature: Deciding what to check, and resolving what can be answered without a po
   # and no check is enqueued for a resource that should have had one.
   Scenario: Without a resolver an image resource is checked the ordinary way
     Given a lidar scan that was given no image resolver
-    And the registry holds "my-org/my-image:latest" at the digest "sha256:never-asked-for"
+    And the registry holds "my-org/my-image:latest" as image "never-asked-for"
     And the pipeline has the image resource "native-image" reading "my-org/my-image:latest"
     When the scan runs
     Then the scan completed without error
@@ -387,8 +386,8 @@ Feature: Deciding what to check, and resolving what can be answered without a po
   # first two rows and leaves the third passing, which is why the third is here.
   Scenario: A private image resolves with the credentials it carries and not without them
     Given a lidar scan backed by an image registry
-    And the registry holds "private-registry/app:v2" at the digest "sha256:private-app" behind the login "appuser" and the password "apppass"
-    And the registry holds "private-registry/type:v3" at the digest "sha256:private-type" behind the login "typeuser" and the password "typepass"
+    And the registry holds "private-registry/app:v2" as image "private-app" behind the login "appuser" and the password "apppass"
+    And the registry holds "private-registry/type:v3" as image "private-type" behind the login "typeuser" and the password "typepass"
     And the pipeline has the image resource "private-image" reading "private-registry/app:v2"
     And the resource "private-image" signs in as "appuser" with the password "apppass"
     And the pipeline has the resource type "private-type" reading "private-registry/type:v3"
@@ -397,8 +396,8 @@ Feature: Deciding what to check, and resolving what can be answered without a po
     And the resource "wrong-password" signs in as "appuser" with the password "not-the-password"
     When the scan runs
     Then the scan completed without error
-    And the resource "private-image" resolved to the digest "sha256:private-app"
-    And the resource type "private-type" resolved to the digest "sha256:private-type"
+    And the resource "private-image" resolved to image "private-app"
+    And the resource type "private-type" resolved to image "private-type"
     And the resource "wrong-password" was left unresolved
 
   # The digest on its own is not what a step pulls. What it pulls is the
@@ -412,12 +411,12 @@ Feature: Deciding what to check, and resolving what can be answered without a po
   # or from a repository other than the one in the resource type's source.
   Scenario: A resolved resource type is pulled by digest and not by tag
     Given a lidar scan backed by an image registry
-    And the registry holds "my-registry/my-image:latest" at the digest "sha256:abc123"
+    And the registry holds "my-registry/my-image:latest" as image "abc123"
     And the pipeline has the resource type "my-custom-type" reading "my-registry/my-image:latest"
     When the scan runs
     Then the scan completed without error
-    And the resource type "my-custom-type" resolved to the digest "sha256:abc123"
-    And the resource type "my-custom-type" will be pulled as "my-registry/my-image@sha256:abc123"
+    And the resource type "my-custom-type" resolved to image "abc123"
+    And the resource type "my-custom-type" will pull image "abc123" from "my-registry/my-image"
 
   # Resource types are collected across EVERY pipeline before they are
   # resolved, not per pipeline as resources are. A bug that resolved only the
@@ -434,15 +433,15 @@ Feature: Deciding what to check, and resolving what can be answered without a po
   # than ranging over the map — the second pipeline's type never resolves.
   Scenario: Resource types in every pipeline are resolved, not only the first one
     Given a lidar scan backed by an image registry
-    And the registry holds "my-registry/my-image:latest" at the digest "sha256:first"
-    And the registry holds "other-registry/other-image:latest" at the digest "sha256:second"
+    And the registry holds "my-registry/my-image:latest" as image "first"
+    And the registry holds "other-registry/other-image:latest" as image "second"
     And the pipeline has the resource type "my-custom-type" reading "my-registry/my-image:latest"
     And everything after this is on a second pipeline in another team
     And the pipeline has the resource type "other-type" reading "other-registry/other-image"
     When the scan runs
     Then the scan completed without error
-    And the resource type "my-custom-type" resolved to the digest "sha256:first"
-    And the resource type "other-type" resolved to the digest "sha256:second"
+    And the resource type "my-custom-type" resolved to image "first"
+    And the resource type "other-type" resolved to image "second"
 
   # The two reasons a registry-image resource is not resolved, and they are two
   # because each one is a different decision made at a different line. A
@@ -465,15 +464,15 @@ Feature: Deciding what to check, and resolving what can be answered without a po
   # `CheckEvery().Never` guard from resolveResource.
   Scenario Outline: A registry-image resource is not resolved when <case>
     Given a lidar scan backed by an image registry
-    And the registry holds "quiet/app:latest" at the digest "sha256:quiet"
-    And the registry holds "bystander/app:latest" at the digest "sha256:bystander"
+    And the registry holds "quiet/app:latest" as image "quiet"
+    And the registry holds "bystander/app:latest" as image "bystander"
     And the pipeline has the image resource "quiet-image" reading "quiet/app:latest"
     And the pipeline has the image resource "bystander-image" reading "bystander/app:latest"
     And <state>
     When the scan runs
     Then the scan completed without error
     And the resource "quiet-image" was left unresolved
-    And the resource "bystander-image" resolved to the digest "sha256:bystander"
+    And the resource "bystander-image" resolved to image "bystander"
 
     Examples:
       | case                                  | state                                                        |
@@ -497,15 +496,15 @@ Feature: Deciding what to check, and resolving what can be answered without a po
   # row by dropping the `rt.Image() != ""` skip.
   Scenario Outline: A resource type is not resolved when <case>
     Given a lidar scan backed by an image registry
-    And the registry holds "quiet/type:latest" at the digest "sha256:quiet"
-    And the registry holds "bystander/type:latest" at the digest "sha256:bystander"
+    And the registry holds "quiet/type:latest" as image "quiet"
+    And the registry holds "bystander/type:latest" as image "bystander"
     And the pipeline has the resource type "quiet-type" reading "quiet/type:latest"
     And the pipeline has the resource type "bystander-type" reading "bystander/type:latest"
     And <state>
     When the scan runs
     Then the scan completed without error
     And the resource type "quiet-type" was left unresolved
-    And the resource type "bystander-type" resolved to the digest "sha256:bystander"
+    And the resource type "bystander-type" resolved to image "bystander"
 
     Examples:
       | case                                  | state                                                            |
@@ -534,14 +533,14 @@ Feature: Deciding what to check, and resolving what can be answered without a po
   # default interval of zero — the second scan then overwrites the digest.
   Scenario: A resource type resolved inside its interval is not resolved again
     Given a lidar scan backed by an image registry
-    And the registry holds "app/type:latest" at the digest "sha256:type-first"
+    And the registry holds "app/type:latest" as image "type-first"
     And the pipeline has the resource type "app-type" reading "app/type:latest"
     And the resource type "app-type" is checked every "1h"
     When the scan runs
-    And the registry now holds "app/type:latest" at the digest "sha256:type-second"
+    And the registry now holds "app/type:latest" as image "type-second"
     And the scan runs again
     Then the scan completed without error
-    And the resource type "app-type" resolved to the digest "sha256:type-first"
+    And the resource type "app-type" resolved to image "type-first"
 
   # ==========================================================================
   # A collector that got there first
@@ -585,8 +584,8 @@ Feature: Deciding what to check, and resolving what can be answered without a po
   # classification of the violation changes no control flow at all.
   Scenario: A scope collected before the version is saved leaves the next scan free to retry
     Given a lidar scan backed by an image registry
-    And the registry holds "retry/app:latest" at the digest "sha256:resource"
-    And the registry holds "retry/type:latest" at the digest "sha256:type"
+    And the registry holds "retry/app:latest" as image "resource"
+    And the registry holds "retry/type:latest" as image "type"
     And the pipeline has the image resource "retried-image" reading "retry/app:latest"
     And the pipeline has the resource type "retried-type" reading "retry/type:latest"
     And the resource type "retried-type" is checked every "1h"
@@ -600,8 +599,8 @@ Feature: Deciding what to check, and resolving what can be answered without a po
     And the resource type "retried-type" holds no resolved digest
     When the scan runs again
     Then the scan completed without error
-    And the resource "retried-image" resolved to the digest "sha256:resource"
-    And the resource type "retried-type" resolved to the digest "sha256:type"
+    And the resource "retried-image" resolved to image "resource"
+    And the resource type "retried-type" resolved to image "type"
 
   # The earlier moment, and a different constraint: here the scope is gone
   # before the resource can even be pointed at it, so the violation is on
@@ -625,7 +624,7 @@ Feature: Deciding what to check, and resolving what can be answered without a po
   # would fail on the check beside it rather than passing on the vacuum.
   Scenario: A scope collected before it can be attached leaves the next scan free to retry
     Given a lidar scan backed by an image registry
-    And the registry holds "attach/app:latest" at the digest "sha256:attached"
+    And the registry holds "attach/app:latest" as image "attached"
     And the pipeline has the image resource "attached-image" reading "attach/app:latest"
     And the pipeline has the resource "unaffected-resource"
     And the garbage collector deletes the scope before the scan can attach it
@@ -636,7 +635,7 @@ Feature: Deciding what to check, and resolving what can be answered without a po
     And the resource "attached-image" holds no resolved digest
     When the scan runs again
     Then the scan completed without error
-    And the resource "attached-image" resolved to the digest "sha256:attached"
+    And the resource "attached-image" resolved to image "attached"
 
   # ==========================================================================
   # The number on the dashboard

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -18,8 +18,9 @@ import (
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/kubernetes"
 )
 
 // WorkerDefinitions migrates worker_test.go — the object the ATC holds when it
@@ -43,16 +44,18 @@ import (
 // Domain states
 // ---------------------------------------------------------------------------
 
-// WorkerReady is a jetbridge worker on a fake Kubernetes cluster, backed by a
-// real PostgreSQL database. Every Given in worker.feature refines this state
-// and rebuilds the worker from it, because the worker's collaborators are all
+// WorkerReady is a jetbridge worker using a real Kubernetes API and real
+// PostgreSQL database. Most fixtures use a local API without a kubelet and
+// report pod state explicitly; live tasks/interception use real kubelets.
+// Each Given refines this state
+// and rebuilds the worker from it, because its collaborators are all
 // constructor- or setter-injected and several of the setters replace each other
 // (SetArtifactLocator swaps the whole storage backend, dropping the daemon
 // client — a real ordering hazard the ginkgo suite worked around by hand).
 type WorkerReady struct {
 	DB        JetbridgeDB
 	Namespace string
-	Clientset *fake.Clientset
+	Clientset kubernetes.Interface
 	Config    jetbridge.Config
 	DBWorker  db.Worker
 	Worker    *jetbridge.Worker
@@ -60,13 +63,13 @@ type WorkerReady struct {
 	Ctx       context.Context
 
 	// Knobs the Given steps turn. rebuild() reads all of them.
-	VolumeRepo      db.VolumeRepository
-	Executor        jetbridge.PodExecutor
-	DaemonClient    *jetbridge.DaemonClient
-	Locator         *jetbridge.ArtifactLocator
-	ContainerFault  bool
-	ProducerReaped  bool
-	DaemonBodyByKey map[string]string
+	VolumeRepo       db.VolumeRepository
+	Executor         jetbridge.PodExecutor
+	DaemonClient     *jetbridge.DaemonClient
+	Locator          *jetbridge.ArtifactLocator
+	ProducerExecutor jetbridge.PodExecutor
+	Daemon           *realDaemon
+	StoreNewOutputs  bool
 
 	// The build-step container the intercept scenarios attach to.
 	StepHandle   string
@@ -126,99 +129,78 @@ type ArtifactOutcome struct {
 }
 
 // ---------------------------------------------------------------------------
-// Real adapters (not spies)
+// Database-backed cache and failure fixtures
 // ---------------------------------------------------------------------------
 
-// stubResourceCache is a db.ResourceCache carrying only the two fields the key
-// formatters read. It mirrors resource_cache_stub_test.go, which lives in a
-// _test.go file and so cannot be imported: every method the code under test
-// does not use panics rather than returning a zero value, so this cannot
-// quietly grow into a stand-in for a real cache.
-type stubResourceCache struct {
-	id         int
-	durableKey string
-}
-
-func (c stubResourceCache) ID() int            { return c.id }
-func (c stubResourceCache) DurableKey() string { return c.durableKey }
-
-func (stubResourceCache) Version() atc.Version {
-	panic("stubResourceCache.Version: not modelled — see the type comment")
-}
-
-func (stubResourceCache) ResourceConfig() db.ResourceConfig {
-	panic("stubResourceCache.ResourceConfig: not modelled — see the type comment")
-}
-
-func (stubResourceCache) Destroy(db.Tx) (bool, error) {
-	panic("stubResourceCache.Destroy: not modelled — see the type comment")
-}
-
-func (stubResourceCache) BaseResourceType() *db.UsedBaseResourceType {
-	panic("stubResourceCache.BaseResourceType: not modelled — see the type comment")
-}
-
-// The decorators below wrap the real PostgreSQL-backed worker and volume
-// repository so that exactly one transition in the middle of a sequence fails.
-// Everything before the fault is a real row, so what the worker leaves behind
-// is asserted against the database rather than against a call count. Ported
-// from the bottom of worker_test.go, which cannot be imported.
-type failContainerCreatedTransition struct{ db.Worker }
-
-func (w failContainerCreatedTransition) CreateContainer(owner db.ContainerOwner, meta db.ContainerMetadata) (db.CreatingContainer, error) {
-	creating, err := w.Worker.CreateContainer(owner, meta)
-	if err != nil {
-		return nil, err
+// legacyResourceCache persists the pre-durable-key cache shape used by these
+// rc-ID scenarios. Use the production factory for the config, cache and build
+// use, then reload the deliberately legacy row through that same factory.
+func (w WorkerReady) legacyResourceCache(id int) (db.ResourceCache, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("resource cache ID must be positive, got %d", id)
 	}
-	return creatingContainerFailsCreated{creating}, nil
-}
-
-type creatingContainerFailsCreated struct{ db.CreatingContainer }
-
-func (creatingContainerFailsCreated) Created() (db.CreatedContainer, error) {
-	return nil, fmt.Errorf("db connection lost")
-}
-
-type failVolumeCreatedTransitionRepo struct{ db.VolumeRepository }
-
-func (r failVolumeCreatedTransitionRepo) CreateVolume(teamID int, workerName string, volumeType db.VolumeType) (db.CreatingVolume, error) {
-	creating, err := r.VolumeRepository.CreateVolume(teamID, workerName, volumeType)
-	if err != nil {
-		return nil, err
+	factory := db.NewResourceCacheFactory(w.DB.Conn, w.DB.LockFactory)
+	cache, found, err := factory.FindResourceCacheByID(id)
+	if err != nil || found {
+		return cache, err
 	}
-	return creatingVolumeFailsCreated{creating}, nil
-}
-
-type creatingVolumeFailsCreated struct{ db.CreatingVolume }
-
-func (creatingVolumeFailsCreated) Created() (db.CreatedVolume, error) {
-	return nil, fmt.Errorf("transition error")
-}
-
-type failInitializeArtifactRepo struct{ db.VolumeRepository }
-
-func (r failInitializeArtifactRepo) CreateVolume(teamID int, workerName string, volumeType db.VolumeType) (db.CreatingVolume, error) {
-	creating, err := r.VolumeRepository.CreateVolume(teamID, workerName, volumeType)
+	team, found, err := w.DB.TeamFactory.FindTeam("main")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("find cache user's team: %w", err)
 	}
-	return creatingVolumeFailsArtifact{creating}, nil
-}
-
-type creatingVolumeFailsArtifact struct{ db.CreatingVolume }
-
-func (v creatingVolumeFailsArtifact) Created() (db.CreatedVolume, error) {
-	created, err := v.CreatingVolume.Created()
+	if !found {
+		return nil, fmt.Errorf("cache user's team is missing")
+	}
+	build, err := team.CreateOneOffBuild()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create cache user's build: %w", err)
 	}
-	return createdVolumeFailsArtifact{created}, nil
+	// IDs are part of the scenario's input. This sequence belongs only to its
+	// private database; no cache exists at the requested ID (checked above).
+	if _, err := w.DB.Conn.Exec(
+		"SELECT setval(pg_get_serial_sequence('resource_caches', 'id'), $1, false)", id); err != nil {
+		return nil, fmt.Errorf("set fixture cache ID: %w", err)
+	}
+	cache, err = factory.FindOrCreateResourceCache(db.ForBuild(build.ID()), "registry-image",
+		atc.Version{"digest": "sha256:" + strings.Repeat("a", 64)},
+		atc.Source{"repository": "example.invalid/brine-cache", "tag": strconv.Itoa(id)}, nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create resource cache: %w", err)
+	}
+	if cache.ID() != id {
+		return nil, fmt.Errorf("created resource cache %d, want %d", cache.ID(), id)
+	}
+	result, err := w.DB.Conn.Exec("UPDATE resource_caches SET durable_key = NULL WHERE id = $1", id)
+	if err != nil {
+		return nil, fmt.Errorf("make cache a legacy row: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil || changed != 1 {
+		return nil, fmt.Errorf("legacy cache update affected %d rows, want 1: %v", changed, err)
+	}
+	cache, found, err = factory.FindResourceCacheByID(id)
+	if err != nil {
+		return nil, fmt.Errorf("reload legacy cache: %w", err)
+	}
+	if !found || cache.DurableKey() != "" {
+		return nil, fmt.Errorf("legacy cache %d was not reloaded without a durable key", id)
+	}
+	return cache, nil
 }
 
-type createdVolumeFailsArtifact struct{ db.CreatedVolume }
-
-func (createdVolumeFailsArtifact) InitializeArtifact(string, int) (db.WorkerArtifact, error) {
-	return nil, fmt.Errorf("artifact init error")
+// workerDatabaseRefusal installs a real CHECK constraint in this scenario's
+// private database. The ordinary db.Worker/VolumeRepository still issue every
+// SQL statement; PostgreSQL rejects only the named mutation. No method is
+// replaced and no error object or message is fabricated. The scenario's DB
+// resource drops the whole database, including this constraint, at disposal.
+func workerDatabaseRefusal(pattern, ddl string) brine.StepDefinition {
+	return Transform[WorkerReady, WorkerReady](pattern,
+		func(in WorkerReady, _ Args) (WorkerReady, error) {
+			if _, err := in.DB.Conn.Exec(ddl); err != nil {
+				return WorkerReady{}, fmt.Errorf("install database refusal: %w", err)
+			}
+			return in, nil
+		})
 }
 
 // ---------------------------------------------------------------------------
@@ -248,8 +230,8 @@ func workerSetupDefinitions() []brine.StepDefinition {
 
 		brine.DefineMapUsing[brine.Empty, WorkerReady](
 			"a Kubernetes worker {string} with a database behind it",
-			[]string{"jetbridge-db"},
-			func(_ brine.Empty, p brine.Params, _ *brine.Recorder, res brine.Resources) (WorkerReady, error) {
+			[]string{"jetbridge-db", "real-cluster"},
+			func(_ brine.Empty, p brine.Params, rec *brine.Recorder, res brine.Resources) (WorkerReady, error) {
 				name, ok := p.GetString(0)
 				if !ok {
 					return WorkerReady{}, fmt.Errorf("expected a worker name parameter")
@@ -258,6 +240,19 @@ func workerSetupDefinitions() []brine.StepDefinition {
 				if !ok {
 					return WorkerReady{}, fmt.Errorf("jetbridge-db resource is %T", res.Get("jetbridge-db"))
 				}
+
+				cluster, ok := res.Get("real-cluster").(*realCluster)
+				if !ok {
+					return WorkerReady{}, fmt.Errorf("real-cluster resource is %T", res.Get("real-cluster"))
+				}
+				ctx := context.Background()
+				ns, err := cluster.Clientset.CoreV1().Namespaces().Create(ctx,
+					&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "worker-"}},
+					metav1.CreateOptions{})
+				if err != nil {
+					return WorkerReady{}, fmt.Errorf("create worker namespace: %w", err)
+				}
+				registerNamespacePodCleanup(rec, cluster.Clientset, ns.Name)
 
 				dbWorker, err := database.PersistNamedWorker(name)
 				if err != nil {
@@ -269,14 +264,15 @@ func workerSetupDefinitions() []brine.StepDefinition {
 				}
 
 				ready := WorkerReady{
-					DB:         database,
-					Namespace:  "test-namespace",
-					Clientset:  fake.NewSimpleClientset(),
-					Config:     jetbridge.NewConfig("test-namespace", ""),
-					DBWorker:   dbWorker,
-					TeamID:     team.ID(),
-					Ctx:        context.Background(),
-					VolumeRepo: database.VolumeRepository,
+					DB:               database,
+					Namespace:        ns.Name,
+					Clientset:        cluster.Clientset,
+					Config:           jetbridge.NewConfig(ns.Name, ""),
+					DBWorker:         dbWorker,
+					TeamID:           team.ID(),
+					Ctx:              ctx,
+					VolumeRepo:       database.VolumeRepository,
+					ProducerExecutor: jetbridge.NewSPDYExecutor(cluster.Clientset, cluster.RESTConfig),
 				}
 				return ready.rebuild(), nil
 			},
@@ -299,21 +295,12 @@ func workerSetupDefinitions() []brine.StepDefinition {
 				return nil
 			}),
 
-		Refine[WorkerReady]("the database cannot transition containers to created",
-			func(in WorkerReady, _ Args) WorkerReady {
-				in.ContainerFault = true
-				return in.rebuild()
-			}),
+		workerDatabaseRefusal("the database cannot transition containers to created",
+			"ALTER TABLE containers ADD CONSTRAINT brine_container_creation CHECK (state <> 'created')"),
 
-		TransformUsing[WorkerReady, WorkerReady]("the worker can exec into pods",
-			[]string{"task-workspace"},
-			func(in WorkerReady, _ Args, res brine.Resources) (WorkerReady, error) {
-				workspace, ok := res.Get("task-workspace").(TaskWorkspace)
-				if !ok || workspace.Dir == "" {
-					return WorkerReady{}, fmt.Errorf("task-workspace resource has no intercept root: %T", res.Get("task-workspace"))
-				}
-				in.Executor = localExecutor{supervisorRoot: workspace.Dir}
-				return in.rebuild(), nil
+		brine.DefineMap[LiveTaskPlan, WorkerReady]("the worker can exec into pods",
+			func(in LiveTaskPlan, _ brine.Params, rec *brine.Recorder) (WorkerReady, error) {
+				return newLiveRuntimeWorker(in.Database, rec)
 			}),
 
 		Refine[WorkerReady]("the worker has no volume repository configured",
@@ -334,61 +321,61 @@ func workerSetupDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		Refine[WorkerReady]("the volume repository cannot transition volumes to created",
-			func(in WorkerReady, _ Args) WorkerReady {
-				in.VolumeRepo = failVolumeCreatedTransitionRepo{in.DB.VolumeRepository}
-				return in.rebuild()
+		workerDatabaseRefusal("the volume repository cannot transition volumes to created",
+			"ALTER TABLE volumes ADD CONSTRAINT brine_volume_creation CHECK (state <> 'created')"),
+
+		workerDatabaseRefusal("the volume repository cannot initialise artifacts",
+			"ALTER TABLE volumes ADD CONSTRAINT brine_artifact_initialization CHECK (worker_artifact_id IS NULL)"),
+
+		Transform[WorkerReady, WorkerReady]("the producing pod has been reaped",
+			func(in WorkerReady, _ Args) (WorkerReady, error) {
+				// The API owns this pod's identity and deletion. No kubelet is
+				// involved: the downstream fallback must meet a real API 404.
+				if _, err := in.Clientset.CoreV1().Pods(in.Namespace).Create(in.Ctx, &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{Name: "producer-pod"},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "main", Image: "busybox:1.37.0"}}},
+				}, metav1.CreateOptions{}); err != nil {
+					return WorkerReady{}, err
+				}
+				return in, in.reapPod("producer-pod")
 			}),
 
-		Refine[WorkerReady]("the volume repository cannot initialise artifacts",
-			func(in WorkerReady, _ Args) WorkerReady {
-				in.VolumeRepo = failInitializeArtifactRepo{in.DB.VolumeRepository}
-				return in.rebuild()
-			}),
-
-		Refine[WorkerReady]("the producing pod has been reaped",
-			func(in WorkerReady, _ Args) WorkerReady {
-				in.ProducerReaped = true
-				return in
-			}),
-
-		// The daemon steps below all stand up a REAL HTTP server and a real
-		// EndpointSlice, then point a real DaemonClient at it. Nothing is
-		// simulated: the worker discovers the daemon the way it does in a
-		// cluster, and the bytes a scenario asserts on travel over TCP.
+		// Run the production daemon with real files and registration. Discovery
+		// uses the real API; envtest does not execute producer containers.
 		brine.DefineMap[WorkerReady, WorkerReady](
 			"the cluster runs an artifact daemon holding every step output",
-			func(in WorkerReady, _ brine.Params, _ *brine.Recorder) (WorkerReady, error) {
-				return in.withDaemon(map[string]string{daemonWildcardKey: stepOutputBody})
+			func(in WorkerReady, _ brine.Params, rec *brine.Recorder) (WorkerReady, error) {
+				in.StoreNewOutputs = true
+				return in.withDaemon(rec, nil)
 			},
 		),
 
 		brine.DefineMap[WorkerReady, WorkerReady](
 			"the cluster runs an artifact daemon holding the step output {string}",
-			func(in WorkerReady, p brine.Params, _ *brine.Recorder) (WorkerReady, error) {
+			func(in WorkerReady, p brine.Params, rec *brine.Recorder) (WorkerReady, error) {
 				key, ok := p.GetString(0)
 				if !ok {
 					return WorkerReady{}, fmt.Errorf("expected a step output key parameter")
 				}
-				return in.withDaemon(map[string]string{key: stepOutputBody})
+				return in.withDaemon(rec, map[string]string{key: stepOutputBody})
 			},
 		),
 
 		brine.DefineMap[WorkerReady, WorkerReady](
 			"the cluster runs an artifact daemon holding the resource cache {int}",
-			func(in WorkerReady, p brine.Params, _ *brine.Recorder) (WorkerReady, error) {
+			func(in WorkerReady, p brine.Params, rec *brine.Recorder) (WorkerReady, error) {
 				id, ok := p.GetInt(0)
 				if !ok {
 					return WorkerReady{}, fmt.Errorf("expected a cache id parameter")
 				}
-				return in.withDaemon(map[string]string{fmt.Sprintf("rc-%d", id): cachedBody})
+				return in.withDaemon(rec, map[string]string{fmt.Sprintf("rc-%d", id): cachedBody})
 			},
 		),
 
 		brine.DefineMap[WorkerReady, WorkerReady](
 			"the cluster runs an artifact daemon holding nothing",
-			func(in WorkerReady, _ brine.Params, _ *brine.Recorder) (WorkerReady, error) {
-				return in.withDaemon(map[string]string{})
+			func(in WorkerReady, _ brine.Params, rec *brine.Recorder) (WorkerReady, error) {
+				return in.withDaemon(rec, map[string]string{})
 			},
 		),
 
@@ -419,6 +406,50 @@ func workerSetupDefinitions() []brine.StepDefinition {
 func workerContainerDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
+		// The same real worker, request and result vocabulary handles fresh
+		// creation, interrupted creation and database failures.
+		Transform[WorkerReady, WorkerReady]("the worker has lost its database connection",
+			func(in WorkerReady, _ Args) (WorkerReady, error) {
+				conn := in.DB.runner.OpenConn()
+				logger := lagertest.NewTestLogger("brine-closed-worker")
+				factory := db.NewWorkerFactory(conn, db.NewStaticWorkerCache(logger, conn, 0))
+				worker, found, err := factory.GetWorker(in.DBWorker.Name())
+				closeErr := conn.Close()
+				if err != nil {
+					return WorkerReady{}, fmt.Errorf("load worker before disconnecting: %w", err)
+				}
+				if closeErr != nil {
+					return WorkerReady{}, fmt.Errorf("close worker database connection: %w", closeErr)
+				}
+				if !found {
+					return WorkerReady{}, fmt.Errorf("worker was not found before disconnecting")
+				}
+				in.DBWorker = worker
+				return in.rebuild(), nil
+			}),
+
+		Transform[WorkerReady, WorkerReady]("another worker already holds container {string}",
+			func(in WorkerReady, a Args) (WorkerReady, error) {
+				other, err := in.DB.PersistNamedWorker(in.DBWorker.Name() + "-other")
+				if err != nil {
+					return WorkerReady{}, err
+				}
+				if _, err := other.CreateContainer(db.NewFixedHandleContainerOwner(a.String(0)),
+					db.ContainerMetadata{Type: db.ContainerTypeTask}); err != nil {
+					return WorkerReady{}, fmt.Errorf("create the other worker's container: %w", err)
+				}
+				return in, nil
+			}),
+
+		Transform[WorkerReady, WorkerReady]("a task container {string} was left half-created by a crash",
+			func(in WorkerReady, a Args) (WorkerReady, error) {
+				if _, err := in.DBWorker.CreateContainer(db.NewFixedHandleContainerOwner(a.String(0)),
+					db.ContainerMetadata{Type: db.ContainerTypeTask}); err != nil {
+					return WorkerReady{}, fmt.Errorf("leave a creating container behind: %w", err)
+				}
+				return in, nil
+			}),
+
 		brine.DefineMap[WorkerReady, WorkerReady](
 			"a task container {string} has already been created for step {string}",
 			func(in WorkerReady, p brine.Params, _ *brine.Recorder) (WorkerReady, error) {
@@ -448,7 +479,7 @@ func workerContainerDefinitions() []brine.StepDefinition {
 				if !ok {
 					return WorkerReady{}, fmt.Errorf("expected a pod name parameter")
 				}
-				return in, in.createPod(name, nil, corev1.PodRunning)
+				return in, createInterceptPod(in, name, nil)
 			},
 		),
 
@@ -470,7 +501,7 @@ func workerContainerDefinitions() []brine.StepDefinition {
 						Dir:       "/workdir",
 						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					},
-					&noopDelegate{},
+					nil,
 				)
 				return newContainerOutcome(in, handle, container, err), nil
 			},
@@ -766,7 +797,7 @@ func workerInterceptDefinitions() []brine.StepDefinition {
 					"concourse.ci/worker": in.Worker.Name(),
 					"concourse.ci/handle": in.StepHandle,
 				}
-				if err := in.createPod(name, labels, corev1.PodRunning); err != nil {
+				if err := createInterceptPod(in, name, labels); err != nil {
 					return WorkerReady{}, err
 				}
 				in.StepPodName = name
@@ -777,12 +808,7 @@ func workerInterceptDefinitions() []brine.StepDefinition {
 		brine.DefineMap[WorkerReady, WorkerReady](
 			"that pod has since been reaped",
 			func(in WorkerReady, _ brine.Params, _ *brine.Recorder) (WorkerReady, error) {
-				err := in.Clientset.CoreV1().Pods(in.Namespace).Delete(
-					in.Ctx, in.StepPodName, metav1.DeleteOptions{})
-				if err != nil {
-					return WorkerReady{}, fmt.Errorf("delete pod %q: %w", in.StepPodName, err)
-				}
-				return in, nil
+				return in, in.reapPod(in.StepPodName)
 			},
 		),
 
@@ -793,15 +819,8 @@ func workerInterceptDefinitions() []brine.StepDefinition {
 				if !ok {
 					return WorkerReady{}, fmt.Errorf("expected an exit status parameter")
 				}
-				pods := in.Clientset.CoreV1().Pods(in.Namespace)
-				pod, err := pods.Get(in.Ctx, in.StepPodName, metav1.GetOptions{})
-				if err != nil {
-					return WorkerReady{}, fmt.Errorf("get pod %q: %w", in.StepPodName, err)
-				}
-				pod.Status.Phase = corev1.PodSucceeded
-				pod.Annotations = map[string]string{exitStatusAnnotation: status}
-				if _, err := pods.Update(in.Ctx, pod, metav1.UpdateOptions{}); err != nil {
-					return WorkerReady{}, fmt.Errorf("update pod %q: %w", in.StepPodName, err)
+				if err := finishInterceptPod(in, status); err != nil {
+					return WorkerReady{}, err
 				}
 				return in, nil
 			},
@@ -813,23 +832,17 @@ func workerInterceptDefinitions() []brine.StepDefinition {
 		brine.DefineMap[WorkerReady, WorkerReady](
 			"a decoy pod named after the handle is running",
 			func(in WorkerReady, _ brine.Params, _ *brine.Recorder) (WorkerReady, error) {
-				return in, in.createPod(in.StepHandle, nil, corev1.PodRunning)
+				return in, createInterceptPod(in, in.StepHandle, nil)
 			},
 		),
 
-		brine.DefineMapUsing[WorkerReady, InterceptOutcome](
+		brine.DefineMap[WorkerReady, InterceptOutcome](
 			"the operator intercepts the container {string} and runs {string}",
-			[]string{"task-workspace"},
-			func(in WorkerReady, p brine.Params, _ *brine.Recorder, res brine.Resources) (InterceptOutcome, error) {
+			func(in WorkerReady, p brine.Params, _ *brine.Recorder) (InterceptOutcome, error) {
 				handle, _ := p.GetString(0)
 				command, ok := p.GetString(1)
 				if !ok {
 					return InterceptOutcome{}, fmt.Errorf("expected a handle and a command")
-				}
-
-				workspace, ok := res.Get("task-workspace").(TaskWorkspace)
-				if !ok || workspace.Dir == "" {
-					return InterceptOutcome{}, fmt.Errorf("task-workspace resource has no intercept root: %T", res.Get("task-workspace"))
 				}
 
 				out := InterceptOutcome{Ready: in}
@@ -856,7 +869,7 @@ func workerInterceptDefinitions() []brine.StepDefinition {
 				// Successful exec (including a non-zero exit) must use this
 				// scenario's state; execution errors keep their original message.
 				if out.Err == nil {
-					if err := workspace.requireSupervisorState(); err != nil {
+					if err := requirePodSupervisorState(in, in.StepPodName); err != nil {
 						return InterceptOutcome{}, err
 					}
 				}
@@ -957,6 +970,22 @@ func workerVolumeDefinitions() []brine.StepDefinition {
 			"the worker creates a volume for an artifact",
 			func(in WorkerReady, _ brine.Params, _ *brine.Recorder) (VolumeOutcome, error) {
 				vol, artifact, err := in.Worker.CreateVolumeForArtifact(in.Ctx, in.TeamID)
+				if err == nil && in.StoreNewOutputs {
+					if artifact == nil {
+						return VolumeOutcome{}, fmt.Errorf("created volume has no database artifact")
+					}
+					// Seed from persisted identity, not the returned volume's key:
+					// a wrong-key production mutation must still miss this file.
+					var handle string
+					if err := in.DB.Conn.QueryRow(
+						"SELECT handle FROM volumes WHERE worker_artifact_id = $1",
+						artifact.ID()).Scan(&handle); err != nil {
+						return VolumeOutcome{}, fmt.Errorf("read artifact's persisted handle: %w", err)
+					}
+					if err := in.storeDaemonArtifact(handle, stepOutputBody); err != nil {
+						return VolumeOutcome{}, err
+					}
+				}
 				out := VolumeOutcome{Ready: in, Volume: vol, Artifact: artifact, Found: err == nil, Err: err}
 				if err != nil {
 					out.Message = err.Error()
@@ -988,7 +1017,11 @@ func workerVolumeDefinitions() []brine.StepDefinition {
 				if !ok {
 					return VolumeOutcome{}, fmt.Errorf("expected a cache id parameter")
 				}
-				vol, found, err := in.Worker.FindDaemonResourceCache(in.Ctx, stubResourceCache{id: id})
+				cache, err := in.legacyResourceCache(id)
+				if err != nil {
+					return VolumeOutcome{}, err
+				}
+				vol, found, err := in.Worker.FindDaemonResourceCache(in.Ctx, cache)
 				out := VolumeOutcome{Ready: in, Volume: vol, Found: found, Err: err}
 				if err != nil {
 					out.Message = err.Error()
@@ -1199,7 +1232,7 @@ func workerArtifactDefinitions() []brine.StepDefinition {
 					return ArtifactOutcome{}, fmt.Errorf("expected a handle parameter")
 				}
 				vol := jetbridge.NewDeferredVolume(
-					handle, in.Worker.Name(), in.producerExecutor(),
+					handle, in.Worker.Name(), in.ProducerExecutor,
 					in.Namespace, "main", "/mnt/data")
 				vol.SetPodName("producer-pod")
 				return in.wrapArtifact(vol, handle), nil
@@ -1293,10 +1326,6 @@ const (
 	// restarted web can resume rather than re-run it.
 	exitStatusAnnotation = "concourse.ci/exit-status"
 
-	// daemonWildcardKey makes the test daemon answer for any step-output key.
-	// Scenarios that are testing the KEY name hold exactly one instead.
-	daemonWildcardKey = "*"
-
 	stepOutputBody = "step-output-bytes"
 	cachedBody     = "cached-tar-data"
 )
@@ -1305,11 +1334,7 @@ const (
 // is the reason this exists: SetArtifactLocator replaces the whole storage
 // backend, which silently drops a daemon client set before it.
 func (w WorkerReady) rebuild() WorkerReady {
-	dbWorker := w.DBWorker
-	if w.ContainerFault {
-		dbWorker = failContainerCreatedTransition{w.DBWorker}
-	}
-	worker := jetbridge.NewWorker(dbWorker, w.Clientset, w.Config)
+	worker := jetbridge.NewWorker(w.DBWorker, w.Clientset, w.Config)
 	if w.VolumeRepo != nil {
 		worker.SetVolumeRepo(w.VolumeRepo)
 	}
@@ -1326,37 +1351,32 @@ func (w WorkerReady) rebuild() WorkerReady {
 	return w
 }
 
-// withDaemon stands up a real HTTP artifact daemon, publishes it as an
-// EndpointSlice the way the DaemonSet does, and points the worker at it.
-//
-// The server is deliberately not closed: brine's disposal hooks live on the
-// resource plane, and this file may not add a resource. One listener per
-// daemon-using scenario lives until the adapter process exits, which is the
-// same lifetime the ginkgo suite's `defer daemon.Close()` effectively gave it
-// within a spec.
-func (w WorkerReady) withDaemon(bodies map[string]string) (WorkerReady, error) {
-	server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		body, ok := daemonBodyFor(bodies, r.URL.Path)
-		if !ok {
-			rw.WriteHeader(http.StatusNotFound)
-			return
-		}
-		if r.Method == http.MethodHead {
-			rw.WriteHeader(http.StatusOK)
-			return
-		}
-		_, _ = rw.Write([]byte(body))
-	}))
-
-	addr := server.Listener.Addr().String()
-	colon := strings.LastIndex(addr, ":")
-	if colon < 0 {
-		return WorkerReady{}, fmt.Errorf("daemon listening on %q, which has no port", addr)
-	}
-	host := addr[:colon]
-	port, err := strconv.Atoi(addr[colon+1:])
+// withDaemon runs the production artifact daemon with only the named artifacts.
+// StoreNewOutputs additionally registers files when a scenario creates outputs;
+// there is no wildcard HTTP response or fixture implementation of a daemon route.
+func (w WorkerReady) withDaemon(rec *brine.Recorder, bodies map[string]string) (WorkerReady, error) {
+	host, err := discoveryIPv4()
 	if err != nil {
-		return WorkerReady{}, fmt.Errorf("daemon port %q: %w", addr[colon+1:], err)
+		return WorkerReady{}, err
+	}
+	d, err := startRealDaemon()
+	if err != nil {
+		return WorkerReady{}, err
+	}
+	rec.RegisterDisposer(func() {
+		if err := d.stop(); err != nil {
+			panic(fmt.Sprintf("stop worker artifact daemon: %v", err))
+		}
+	})
+	_, port, err := hostPortOfURL(d.URL)
+	if err != nil {
+		return WorkerReady{}, err
+	}
+	w.Daemon = d
+	for key, body := range bodies {
+		if err := w.storeDaemonArtifact(key, body); err != nil {
+			return WorkerReady{}, err
+		}
 	}
 
 	_, err = w.Clientset.DiscoveryV1().EndpointSlices(w.Namespace).Create(w.Ctx, &discoveryv1.EndpointSlice{
@@ -1365,71 +1385,56 @@ func (w WorkerReady) withDaemon(bodies map[string]string) (WorkerReady, error) {
 			Namespace: w.Namespace,
 			Labels:    map[string]string{discoveryv1.LabelServiceName: "artifact-daemon"},
 		},
-		Endpoints: []discoveryv1.Endpoint{{Addresses: []string{host}}},
+		AddressType: discoveryv1.AddressTypeIPv4,
+		Endpoints:   []discoveryv1.Endpoint{{Addresses: []string{host}}},
 	}, metav1.CreateOptions{})
 	if err != nil {
 		return WorkerReady{}, fmt.Errorf("publish the daemon endpoint slice: %w", err)
 	}
 
-	w.Config.ArtifactDaemonHostPath = "/var/artifacts"
+	w.Config.ArtifactDaemonHostPath = d.Root
 	w.Config.ArtifactDaemonService = "artifact-daemon"
 	w.Config.ArtifactDaemonPort = port
-	w.DaemonBodyByKey = bodies
 	w.DaemonClient = jetbridge.NewDaemonClient(
 		lagertest.NewTestLogger("daemon"), w.Clientset, w.Namespace, "artifact-daemon", port, nil)
 	return w.rebuild(), nil
 }
 
-// daemonBodyFor mirrors the three URL shapes the runtime asks a daemon for:
-// the resource-cache probe, the alias fetch, and the on-disk step fetch.
-func daemonBodyFor(bodies map[string]string, path string) (string, bool) {
-	trimmed := strings.TrimPrefix(path, "/")
-	var key string
-	switch {
-	case strings.HasPrefix(trimmed, "resource-caches/"):
-		key = strings.TrimPrefix(trimmed, "resource-caches/")
-	case strings.HasPrefix(trimmed, "artifacts/steps/"):
-		key = strings.TrimPrefix(trimmed, "artifacts/steps/")
-	case strings.HasPrefix(trimmed, "artifacts/"):
-		key = strings.TrimPrefix(trimmed, "artifacts/")
-	default:
-		return "", false
+func (w WorkerReady) storeDaemonArtifact(key, body string) error {
+	if w.Daemon == nil {
+		return fmt.Errorf("cannot store artifact %q without a running daemon", key)
 	}
-	if body, ok := bodies[key]; ok {
-		return body, true
+	// These cases assert exact bytes, not tar encoding. Register a real file.
+	path := filepath.Join(w.Daemon.Root, "outputs", key, "data")
+	if err := writeArtifactFile(path, body); err != nil {
+		return err
 	}
-	if body, ok := bodies[daemonWildcardKey]; ok {
-		return body, true
-	}
-	return "", false
+	return registerDaemonArtifact(w.Ctx, http.DefaultClient, w.Daemon.URL, key, path)
 }
 
-// producerExecutor is what a container-mount volume would use to read itself:
-// an exec into the pod that produced it. In these scenarios that pod is gone,
-// which is the whole reason ArtifactFromVolume wraps the volume at all.
-func (w WorkerReady) producerExecutor() jetbridge.PodExecutor {
-	if w.ProducerReaped {
-		return localExecutor{failure: "exec stream: the producer pod has been reaped"}
+// reapPod deletes only the observed UID and verifies API absence. Both
+// intercept and artifact-lifetime scenarios use the same real deletion path.
+func (w WorkerReady) reapPod(name string) error {
+	pods := w.Clientset.CoreV1().Pods(w.Namespace)
+	pod, err := pods.Get(w.Ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("get pod before deletion: %w", err)
 	}
-	return localExecutor{}
+	zero := int64(0)
+	if err := pods.Delete(w.Ctx, pod.Name, metav1.DeleteOptions{
+		GracePeriodSeconds: &zero,
+		Preconditions:      &metav1.Preconditions{UID: &pod.UID},
+	}); err != nil {
+		return fmt.Errorf("delete pod %q: %w", pod.Name, err)
+	}
+	if _, err := pods.Get(w.Ctx, pod.Name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		return fmt.Errorf("reaped pod %q still exists or cannot be observed: %v", pod.Name, err)
+	}
+	return nil
 }
 
 func (w WorkerReady) wrapArtifact(vol runtime.Volume, handle string) ArtifactOutcome {
 	return ArtifactOutcome{Ready: w, Artifact: w.Worker.ArtifactFromVolume(vol), Handle: handle}
-}
-
-func (w WorkerReady) createPod(name string, labels map[string]string, phase corev1.PodPhase) error {
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: w.Namespace, Labels: labels},
-		Status: corev1.PodStatus{
-			Phase:      phase,
-			Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}},
-		},
-	}
-	if _, err := w.Clientset.CoreV1().Pods(w.Namespace).Create(w.Ctx, pod, metav1.CreateOptions{}); err != nil {
-		return fmt.Errorf("create pod %q: %w", name, err)
-	}
-	return nil
 }
 
 func (w WorkerReady) podNames() ([]string, error) {

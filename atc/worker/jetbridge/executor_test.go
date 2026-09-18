@@ -3,47 +3,37 @@ package jetbridge
 import (
 	"testing"
 
-	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
 
-func TestNewSPDYExecutorCreation(t *testing.T) {
-	clientset := fake.NewSimpleClientset()
-	config := &rest.Config{Host: "https://localhost:6443"}
-
-	executor := NewSPDYExecutor(clientset, config)
-	if executor == nil {
-		t.Fatal("NewSPDYExecutor returned nil")
-	}
-	if executor.clientset != clientset {
-		t.Error("clientset not stored correctly")
-	}
-	if executor.restConfig != config {
-		t.Error("restConfig not stored correctly")
-	}
-}
-
-func TestNewSPDYExecutorWithDifferentConfigs(t *testing.T) {
-	tests := []struct {
-		name string
-		host string
-	}{
+func TestNewSPDYExecutor(t *testing.T) {
+	// This is a construction contract, not an API-response test. Use the actual
+	// client implementation; creating it makes no network request.
+	for _, tc := range []struct{ name, host string }{
+		{"default", "https://localhost:6443"},
 		{"in-cluster", "https://kubernetes.default.svc"},
 		{"external", "https://my-cluster.example.com:6443"},
 		{"localhost", "https://127.0.0.1:6443"},
-	}
-
-	for _, tc := range tests {
+	} {
 		t.Run(tc.name, func(t *testing.T) {
-			clientset := fake.NewSimpleClientset()
 			config := &rest.Config{Host: tc.host}
-
+			clientset, err := kubernetes.NewForConfig(config)
+			if err != nil {
+				t.Fatal(err)
+			}
 			executor := NewSPDYExecutor(clientset, config)
 			if executor == nil {
 				t.Fatal("NewSPDYExecutor returned nil")
 			}
-			if executor.restConfig.Host != tc.host {
-				t.Errorf("expected host %s, got %s", tc.host, executor.restConfig.Host)
+			if executor.clientset != clientset {
+				t.Error("clientset not stored correctly")
+			}
+			if executor.restConfig != config {
+				t.Error("restConfig not stored correctly")
+			}
+			if executor.restConfig == nil || executor.restConfig.Host != tc.host {
+				t.Errorf("expected host %s, got config %+v", tc.host, executor.restConfig)
 			}
 		})
 	}
