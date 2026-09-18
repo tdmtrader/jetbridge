@@ -75,6 +75,16 @@ func createK3sCluster() string {
 	ctx := context.Background()
 	kubeconfigPath := filepath.Join(os.TempDir(), "k3s-kubeconfig-integration")
 
+	// No Ryuk. The reaper is the thing that has been killing the cluster:
+	// every unexplained K3s death in CI (integration 283/285, behavioral 188)
+	// has the same shape -- the API stops answering, the K3s container is
+	// gone ~10s later, and the Ryuk container exits a second after that.
+	// That is Ryuk losing its client connection, waiting its 10s reconnection
+	// timeout, and force-stopping every container in the session. The cluster
+	// lives in an ephemeral DinD that dies with the build, and the suite
+	// terminates it itself in AfterSuite, so the reaper protects nothing here.
+	os.Setenv("TESTCONTAINERS_RYUK_DISABLED", "true")
+
 	log.Printf("Creating K3s cluster via testcontainers (%s)...", k3sImage)
 	var err error
 	k3sContainer, err = k3s.Run(ctx, k3sImage)
