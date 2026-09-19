@@ -70,7 +70,7 @@ type Job interface {
 	MaxInFlight() int
 	DisableManualTrigger() bool
 	RunExpected() bool
-	RunPolicyKey() string
+	RunJobKey() string
 	TaskCacheIdentity() (atc.TaskCacheIdentity, error)
 
 	Config() (atc.JobConfig, error)
@@ -136,7 +136,7 @@ var jobsQuery = psql.Select(
 	"j.paused_by",
 	"j.paused_at",
 	"j.run_expected",
-	"j.run_policy_key",
+	"j.run_job_key",
 	"p.pipeline_run_id").
 	From("jobs j").
 	LeftJoin("pipelines p ON j.pipeline_id = p.id").
@@ -178,7 +178,7 @@ type job struct {
 	maxInFlight           int
 	disableManualTrigger  bool
 	runExpected           bool
-	runPolicyKey          string
+	runJobKey             string
 
 	config    *atc.JobConfig
 	rawConfig *string
@@ -243,7 +243,7 @@ func (j *job) ScheduleRequestedTime() time.Time { return j.scheduleRequestedTime
 func (j *job) MaxInFlight() int                 { return j.maxInFlight }
 func (j *job) DisableManualTrigger() bool       { return j.disableManualTrigger }
 func (j *job) RunExpected() bool                { return j.runExpected }
-func (j *job) RunPolicyKey() string             { return j.runPolicyKey }
+func (j *job) RunJobKey() string                { return j.runJobKey }
 
 // TaskCacheIdentity resolves the base template lazily rather than carrying it
 // inline on jobsQuery. The only caller is ClearTaskCache (fly
@@ -1503,12 +1503,12 @@ func scanJob(j *job, row scannable) error {
 		pipelineInstanceVars sql.NullString
 		pausedBy             sql.NullString
 		pausedAt             sql.NullTime
-		runPolicyKey         sql.NullString
+		runJobKey            sql.NullString
 		pipelineRunID        sql.NullInt64
 	)
 
 	m := pgtype.NewMap()
-	err := row.Scan(&j.id, &j.name, &config, &j.paused, &j.public, &j.firstLoggedBuildID, &j.pipelineID, &j.pipelineName, &pipelineInstanceVars, &j.teamID, &j.teamName, &nonce, m.SQLScanner(&j.tags), &j.hasNewInputs, &j.scheduleRequestedTime, &j.maxInFlight, &j.disableManualTrigger, &pausedBy, &pausedAt, &j.runExpected, &runPolicyKey, &pipelineRunID)
+	err := row.Scan(&j.id, &j.name, &config, &j.paused, &j.public, &j.firstLoggedBuildID, &j.pipelineID, &j.pipelineName, &pipelineInstanceVars, &j.teamID, &j.teamName, &nonce, m.SQLScanner(&j.tags), &j.hasNewInputs, &j.scheduleRequestedTime, &j.maxInFlight, &j.disableManualTrigger, &pausedBy, &pausedAt, &j.runExpected, &runJobKey, &pipelineRunID)
 	if err != nil {
 		return err
 	}
@@ -1535,7 +1535,7 @@ func scanJob(j *job, row scannable) error {
 	if pausedAt.Valid {
 		j.pausedAt = pausedAt.Time
 	}
-	j.runPolicyKey = runPolicyKey.String
+	j.runJobKey = runJobKey.String
 	j.pipelineRunID = int(pipelineRunID.Int64)
 
 	return nil

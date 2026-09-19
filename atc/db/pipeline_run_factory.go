@@ -138,11 +138,14 @@ func (f *pipelineRunFactory) CreateRunInTx(_ context.Context, tx Tx, base Pipeli
 
 	runJobs := make(map[string]runJobMetadata, len(materialized.Config.Jobs))
 	for _, job := range materialized.Config.Jobs {
-		policyKey := materialized.PolicyKeyByJobName[job.Name]
-		if policyKey == "" {
-			policyKey = job.Name
+		runJobKey := materialized.RunJobKeyByJobName[job.Name]
+		if runJobKey == "" {
+			// Materialization keys every job; a missing key here is a bug in
+			// it, not something to paper over with the run name -- the key is
+			// what history is read by after the payload is reclaimed.
+			return RunCreation{}, fmt.Errorf("materialized job %q has no run job key", job.Name)
 		}
-		runJobs[job.Name] = runJobMetadata{expected: materialized.ExpectedJobNames[job.Name], policyKey: policyKey}
+		runJobs[job.Name] = runJobMetadata{expected: materialized.ExpectedJobNames[job.Name], runJobKey: runJobKey}
 	}
 	childRef := atc.PipelineRef{Name: locked.Name(), InstanceVars: atc.InstanceVars{"run": float64(number)}}
 	childID, _, err := savePipelineWithOptions(tx, childRef, materialized.Config, 0, false, locked.TeamID(), sql.NullInt64{}, sql.NullInt64{}, pipelineSaveOptions{

@@ -31,13 +31,13 @@ var _ = Describe("PipelineRun", func() {
 		Expect(found).To(BeTrue())
 		Expect(baseRef).To(Equal(atc.PipelineRef{Name: "run-base"}))
 
-		_, err = dbConn.Exec(`INSERT INTO jobs(name, pipeline_id, config, active, run_expected, run_policy_key) VALUES ('run-job', $1, '{}', true, true, 'policy')`, childID)
+		_, err = dbConn.Exec(`INSERT INTO jobs(name, pipeline_id, config, active, run_expected, run_job_key) VALUES ('run-job', $1, '{}', true, true, 'entry-key')`, childID)
 		Expect(err).NotTo(HaveOccurred())
 		job, found, err := pipeline.Job("run-job")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
 		Expect(job.RunExpected()).To(BeTrue())
-		Expect(job.RunPolicyKey()).To(Equal("policy"))
+		Expect(job.RunJobKey()).To(Equal("entry-key"))
 		jobRunID, jobHasRun := job.PipelineRunID()
 		Expect(jobHasRun).To(BeTrue())
 		Expect(jobRunID).To(Equal(runID))
@@ -64,7 +64,7 @@ var _ = Describe("PipelineRun", func() {
 		Expect(tx.Commit()).To(Succeed())
 
 		Expect(dbConn.QueryRow(`INSERT INTO jobs(name, pipeline_id, config, active) VALUES ('run-job', $1, '{}', true) RETURNING id`, childID).Scan(&jobID)).To(Succeed())
-		Expect(dbConn.QueryRow(`INSERT INTO builds(name, status, team_id, job_id, pipeline_id, pipeline_run_id, run_job_name, run_job_key) VALUES ('1', 'pending', $1, $2, $3, $4, 'run-job', 'policy') RETURNING id`, defaultTeam.ID(), jobID, childID, runID).Scan(&buildID)).To(Succeed())
+		Expect(dbConn.QueryRow(`INSERT INTO builds(name, status, team_id, job_id, pipeline_id, pipeline_run_id, run_job_name, run_job_key) VALUES ('1', 'pending', $1, $2, $3, $4, 'run-job', 'entry-key') RETURNING id`, defaultTeam.ID(), jobID, childID, runID).Scan(&buildID)).To(Succeed())
 		_, err = dbConn.Exec(`UPDATE builds SET job_id = NULL, pipeline_id = NULL WHERE id = $1`, buildID)
 		Expect(err).NotTo(HaveOccurred())
 

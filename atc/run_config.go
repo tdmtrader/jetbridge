@@ -18,7 +18,7 @@ type RunMaterialization struct {
 	CanonicalJSON      []byte
 	EntryJobNames      []string
 	ExpectedJobNames   map[string]bool
-	PolicyKeyByJobName map[string]string
+	RunJobKeyByJobName map[string]string
 }
 
 func MaterializeRunConfig(config Config, identity RunIdentity, params RunParams) (RunMaterialization, error) {
@@ -63,7 +63,7 @@ func MaterializeRunConfig(config Config, identity RunIdentity, params RunParams)
 	materialized.RunRetention = nil
 	clearUnpassedTriggers(materialized.Jobs)
 
-	policyKeys, err := policyKeysByMaterializedJobName(config.Jobs, materialized.Jobs)
+	runJobKeys, err := runJobKeysByMaterializedJobName(config.Jobs, materialized.Jobs)
 	if err != nil {
 		return RunMaterialization{}, err
 	}
@@ -78,7 +78,7 @@ func MaterializeRunConfig(config Config, identity RunIdentity, params RunParams)
 		CanonicalJSON:      canonicalJSON,
 		EntryJobNames:      entries,
 		ExpectedJobNames:   expectedJobNames(materialized.Jobs, entries),
-		PolicyKeyByJobName: policyKeys,
+		RunJobKeyByJobName: runJobKeys,
 	}, nil
 }
 
@@ -125,7 +125,13 @@ func clearUnpassedTriggers(jobs JobConfigs) {
 	}
 }
 
-func policyKeysByMaterializedJobName(sourceJobs, materializedJobs JobConfigs) (map[string]string, error) {
+// runJobKeysByMaterializedJobName maps every materialized job to its run job
+// key: the template's source job name, which is the one identity a job keeps
+// across runs of the template. A job whose name interpolation left alone keys
+// on its own name; one it rewrote keys on the placeholder form it came from.
+// Every job gets a key, because the key is what build history is read by once
+// the run's payload has been reclaimed and the jobs row is gone.
+func runJobKeysByMaterializedJobName(sourceJobs, materializedJobs JobConfigs) (map[string]string, error) {
 	if len(sourceJobs) != len(materializedJobs) {
 		return nil, fmt.Errorf("materialized job count does not match template")
 	}
@@ -137,9 +143,7 @@ func policyKeysByMaterializedJobName(sourceJobs, materializedJobs JobConfigs) (m
 			return nil, fmt.Errorf("duplicate job name %s", job.Name)
 		}
 		seenNames[job.Name] = struct{}{}
-		if job.Name != sourceJobs[index].Name {
-			keys[job.Name] = sourceJobs[index].Name
-		}
+		keys[job.Name] = sourceJobs[index].Name
 	}
 	return keys, nil
 }

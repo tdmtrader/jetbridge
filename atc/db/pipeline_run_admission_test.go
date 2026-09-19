@@ -108,14 +108,14 @@ var _ = Describe("run build admission", func() {
 			_, enableErr := dbConn.Exec("ALTER TABLE jobs ENABLE TRIGGER USER")
 			Expect(enableErr).NotTo(HaveOccurred())
 		})
-		_, err = dbConn.Exec("UPDATE jobs SET name = 'renamed-work', run_policy_key = 'renamed-policy' WHERE id = $1", workJob.ID())
+		_, err = dbConn.Exec("UPDATE jobs SET name = 'renamed-work', run_job_key = 'renamed-key' WHERE id = $1", workJob.ID())
 		Expect(err).NotTo(HaveOccurred())
 		_, err = dbConn.Exec("ALTER TABLE jobs ENABLE TRIGGER USER")
 		Expect(err).NotTo(HaveOccurred())
 
 		build, err := workJob.CreateBuild("manual-user")
 		Expect(err).NotTo(HaveOccurred())
-		assertIdentity(build, "renamed-work", "renamed-policy")
+		assertIdentity(build, "renamed-work", "renamed-key")
 	})
 
 	It("refuses every door into a terminal run and defensively refuses a pending build start", func() {

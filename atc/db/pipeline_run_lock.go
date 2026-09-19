@@ -43,7 +43,7 @@ type jobBuildArgs struct {
 type jobBuildAdmission struct {
 	jobID      int
 	jobName    string
-	policyKey  string
+	runJobKey  string
 	pipelineID int
 	teamID     int
 	runID      int
@@ -93,7 +93,7 @@ func createAdmittedJobBuild(tx Tx, build *build, admission jobBuildAdmission, ar
 	if admission.runID != 0 {
 		values["pipeline_run_id"] = admission.runID
 		values["run_job_name"] = admission.jobName
-		values["run_job_key"] = admission.policyKey
+		values["run_job_key"] = admission.runJobKey
 	}
 
 	if args.NextBuildName {
@@ -168,16 +168,16 @@ func lockJobBuildAdmission(tx Tx, jobID, hydratedRunID int) (jobBuildAdmission, 
 
 	var admission jobBuildAdmission
 	var liveRunID sql.NullInt64
-	var policyKey sql.NullString
+	var runJobKey sql.NullString
 	err = tx.QueryRow(`
-		SELECT j.id, j.name, j.run_policy_key, p.id, p.team_id, p.pipeline_run_id, p.template
+		SELECT j.id, j.name, j.run_job_key, p.id, p.team_id, p.pipeline_run_id, p.template
 		FROM jobs j
 		JOIN pipelines p ON p.id = j.pipeline_id
 		WHERE j.id = $1
 		`+lockClause, jobID).Scan(
 		&admission.jobID,
 		&admission.jobName,
-		&policyKey,
+		&runJobKey,
 		&admission.pipelineID,
 		&admission.teamID,
 		&liveRunID,
@@ -189,7 +189,7 @@ func lockJobBuildAdmission(tx Tx, jobID, hydratedRunID int) (jobBuildAdmission, 
 	if err != nil {
 		return jobBuildAdmission{}, err
 	}
-	admission.policyKey = policyKey.String
+	admission.runJobKey = runJobKey.String
 
 	if !liveRunID.Valid {
 		if lockedRun != nil {

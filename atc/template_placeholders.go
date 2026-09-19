@@ -54,7 +54,7 @@ func declaredTemplateParameter(text string, declared map[string]struct{}) (strin
 //     literally and can never resolve.
 //
 // Interpolated job, resource and task-cache identities are deliberately still
-// permitted: run_policy_key, TaskCacheIdentity.RunJobName and ChronoRunBuilds
+// permitted: jobs.run_job_key, TaskCacheIdentity.RunJobName and ChronoRunBuilds
 // exist precisely to carry them.
 //
 // Adapted from the ANVIL branch's location-class table

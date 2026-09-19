@@ -507,7 +507,7 @@ type pipelineSaveOptions struct {
 
 type runJobMetadata struct {
 	expected  bool
-	policyKey string
+	runJobKey string
 }
 
 func savePipelineWithOptions(
@@ -1463,8 +1463,8 @@ func saveJob(tx Tx, job atc.JobConfig, pipelineID int, groups []string, runMetad
 	columns := []string{"name", "pipeline_id", "config", "public", "max_in_flight", "disable_manual_trigger", "interruptible", "active", "nonce", "tags"}
 	values := []any{job.Name, pipelineID, encryptedPayload, job.Public, job.MaxInFlight(), job.DisableManualTrigger, job.Interruptible, true, nonce, groups}
 	if runMetadata != nil {
-		columns = append(columns, "run_expected", "run_policy_key")
-		values = append(values, runMetadata.expected, runMetadata.policyKey)
+		columns = append(columns, "run_expected", "run_job_key")
+		values = append(values, runMetadata.expected, runMetadata.runJobKey)
 	}
 	query := psql.Insert("jobs").Columns(columns...).Values(values...)
 	var jobID int

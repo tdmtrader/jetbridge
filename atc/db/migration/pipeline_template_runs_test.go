@@ -71,7 +71,7 @@ var _ = Describe("Pipeline template run schema", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("enforces immutable run ownership, policy keys, and complete build labels", func() {
+	It("enforces immutable run ownership, run job keys, and complete build labels", func() {
 		var templateID, runID, childID, jobID, buildID int
 		Expect(database.QueryRow(`INSERT INTO pipelines(team_id, name, template, secondary_ordering) SELECT id, 'immutable-base', true, 1 FROM teams WHERE name = 'template-runs' RETURNING id`).Scan(&templateID)).To(Succeed())
 		tx, err := database.Begin()

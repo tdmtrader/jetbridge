@@ -93,9 +93,11 @@ var _ = Describe("Run config materialization", func() {
 		Expect(err).To(MatchError(ContainSubstring("duplicate job name deploy-staging")))
 	})
 
-	It("maps dynamic job names to their source policy keys", func() {
-		// This fails if later policy lookup uses an interpolated job name instead of
-		// the template job identity from which it was produced.
+	It("keys every materialized job on its template source name", func() {
+		// This fails if a job whose name interpolation left alone gets no run job
+		// key. The key is what build history is read by once the run's payload is
+		// reclaimed, so every job needs one, not only the renamed ones -- and a
+		// renamed job keys on the placeholder form it came from, not its run name.
 		result, err := MaterializeRunConfig(Config{
 			Params: []ParamSchema{{Name: "environment", Type: ParamTypeString}},
 			Jobs: JobConfigs{
@@ -105,7 +107,8 @@ var _ = Describe("Run config materialization", func() {
 		}, RunIdentity{}, RunParams{"environment": "staging"})
 
 		Expect(err).NotTo(HaveOccurred())
-		Expect(result.PolicyKeyByJobName).To(Equal(map[string]string{
+		Expect(result.RunJobKeyByJobName).To(Equal(map[string]string{
+			"entry":          "entry",
 			"deploy-staging": "deploy-((environment))",
 		}))
 	})

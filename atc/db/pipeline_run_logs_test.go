@@ -44,7 +44,7 @@ var _ = Describe("Run build log query", func() {
 		return creation.Run, builds
 	}
 
-	It("paginates all live and reclaimed builds by immutable policy key and hydrates detached display names", func() {
+	It("paginates all live and reclaimed builds by immutable run job key and hydrates detached display names", func() {
 		firstRun, first := createRun("staging")
 		_, second := createRun("production")
 		_, third := createRun("canary")
@@ -68,7 +68,7 @@ var _ = Describe("Run build log query", func() {
 		Expect(next.Newer).To(BeNil())
 	})
 
-	It("isolates templates and policy keys", func() {
+	It("isolates templates and run job keys", func() {
 		_, own := createRun("staging")
 		otherTemplate, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "other-run-log-template"}, atc.Config{
 			Template: true,
@@ -151,3 +151,43 @@ func buildWasReaped(buildID int) bool {
 	Expect(dbConn.QueryRow("SELECT reap_time IS NOT NULL FROM builds WHERE id = $1", buildID).Scan(&reaped)).To(Succeed())
 	return reaped
 }
+
+var _ = Describe("Run job key of an uninterpolated job", func() {
+	// The run job key is what history is read by once the payload is gone.
+	// A job whose name interpolation never touched used to get no key at all,
+	// so its builds carried the empty string and vanished from history the
+	// moment their payload was reclaimed.
+	It("is the source job name, and finds the build after its payload is reclaimed", func() {
+		factory := db.NewPipelineRunFactory(dbConn, lockFactory)
+		template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "plain-run-log-template"}, atc.Config{
+			Template: true,
+			Jobs:     atc.JobConfigs{{Name: "entry"}},
+		}, 0, false)
+		Expect(err).NotTo(HaveOccurred())
+
+		creation, err := factory.CreateRun(context.Background(), template, db.RunParams{}, "creator")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(creation.EntryBuilds).To(HaveLen(1))
+		build := creation.EntryBuilds[0]
+		Expect(build.RunJobKey()).To(Equal("entry"))
+
+		payload, found, err := defaultTeam.Pipeline(atc.PipelineRef{Name: template.Name(), InstanceVars: atc.InstanceVars{"run": float64(creation.Run.Number())}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		job, found, err := payload.Job("entry")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(job.RunJobKey()).To(Equal("entry"))
+
+		reclaimRunPayloadForTest(template, creation.Run)
+		expectPipelineExists(payload.ID(), false)
+
+		var key string
+		Expect(dbConn.QueryRow(`SELECT run_job_key FROM builds WHERE id = $1`, build.ID()).Scan(&key)).To(Succeed())
+		Expect(key).To(Equal("entry"))
+
+		history, _, err := template.ChronoRunBuilds("entry", db.Page{Limit: 10})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(buildIDs(history)).To(Equal([]int{build.ID()}))
+	})
+})

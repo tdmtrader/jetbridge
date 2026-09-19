@@ -56,7 +56,7 @@ var _ = Describe("PipelineRunFactory", func() {
 				Expect(nextBuildID).To(Equal(got.EntryBuilds[0].ID()))
 				Expect(scheduleRequestedAfterLast).To(BeTrue())
 
-				rows, err := callbackTx.Query("SELECT name, run_expected, run_policy_key FROM jobs WHERE pipeline_id = $1 ORDER BY name", payloadID)
+				rows, err := callbackTx.Query("SELECT name, run_expected, run_job_key FROM jobs WHERE pipeline_id = $1 ORDER BY name", payloadID)
 				Expect(err).NotTo(HaveOccurred())
 				defer rows.Close()
 				flags := map[string]runJobFlags{}
@@ -64,12 +64,12 @@ var _ = Describe("PipelineRunFactory", func() {
 					var name, key string
 					var expected bool
 					Expect(rows.Scan(&name, &expected, &key)).To(Succeed())
-					flags[name] = runJobFlags{Expected: expected, PolicyKey: key}
+					flags[name] = runJobFlags{Expected: expected, RunJobKey: key}
 				}
 				Expect(rows.Err()).NotTo(HaveOccurred())
 				Expect(flags).To(Equal(map[string]runJobFlags{
-					"downstream": {Expected: true, PolicyKey: "downstream"},
-					"entry-one":  {Expected: true, PolicyKey: "entry-((value))"},
+					"downstream": {Expected: true, RunJobKey: "downstream"},
+					"entry-one":  {Expected: true, RunJobKey: "entry-((value))"},
 				}))
 				return nil
 			},
@@ -522,7 +522,7 @@ func runNumbers(runs []db.PipelineRun) []int {
 
 type runJobFlags struct {
 	Expected  bool
-	PolicyKey string
+	RunJobKey string
 }
 
 type runResult struct {
