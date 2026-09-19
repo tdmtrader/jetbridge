@@ -9,7 +9,6 @@ package reclaimer_test
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/concourse/concourse/hangar"
@@ -17,6 +16,7 @@ import (
 	"github.com/concourse/concourse/hangar/gcstest"
 	"github.com/concourse/concourse/hangar/output"
 	"github.com/concourse/concourse/hangar/output/reclaimer"
+	testsupport "github.com/concourse/concourse/hangar/output/testsupport"
 )
 
 const (
@@ -25,48 +25,21 @@ const (
 )
 
 func namespaceFor(t *testing.T) output.OutputNamespace {
-	t.Helper()
-
-	namespace, err := output.DeriveNamespace(output.NamespaceConfig{
-		Store:            output.StoreGCS,
-		Bucket:           bucket,
-		DeploymentPrefix: "deployments/blue",
-		TenantID:         "tenant-a",
-		ActivationEpoch:  epoch,
-	})
-	if err != nil {
-		t.Fatalf("deriving the namespace: %v", err)
-	}
-
-	return namespace
+	return testsupport.Namespace(t, bucket, "tenant-a", epoch)
 }
 
-func digestOf(fill string) hangar.Digest {
-	return hangar.Digest("sha256:" + strings.Repeat(fill, 64)[:64])
-}
-
-func role(t *testing.T, namespace output.OutputNamespace) (*reclaimer.Reclaimer, *gcstest.Recorder) {
+// role builds a reclaimer over a recorded tier-1 store. The memory comes back
+// too, for the one case that seeds an object to delete.
+func role(t *testing.T, namespace output.OutputNamespace) (*reclaimer.Reclaimer, *gcstest.Memory, *gcstest.Recorder) {
 	t.Helper()
 
-	memory := gcstest.NewMemory()
-	memory.CreateBucket(bucket)
-	recorder := gcstest.Record(memory)
+	memory, recorder := testsupport.RecordedMemory(bucket)
 	built, err := reclaimer.New(namespace, reclaimer.Restrict(recorder.RecordDeletes(memory)))
 	if err != nil {
 		t.Fatalf("building the reclaimer: %v", err)
 	}
 
-	return built, recorder
-}
-
-func expectNoRPC(t *testing.T, recorder *gcstest.Recorder) {
-	t.Helper()
-
-	if calls := recorder.Calls(); len(calls) != 0 {
-		t.Errorf("the store was reached: %v. A delete refused from its arguments must be "+
-			"refused before any RPC; the whole point of the precondition is that no delete "+
-			"leaves this process without one", calls)
-	}
+	return built, memory, recorder
 }
 
 func TestNewRefusesAnIncompleteRole(t *testing.T) {
@@ -100,13 +73,13 @@ func TestNewRefusesAnIncompleteRole(t *testing.T) {
 func TestDeleteExactGenerationRefusesBeforeTheStoreIsReached(t *testing.T) {
 	ctx := context.Background()
 	namespace := namespaceFor(t)
-	ref := namespace.Ref(digestOf("ab"), 3)
+	ref := namespace.Ref(testsupport.Digest("ab"), 3)
 
 	// A precondition about a generation other than the one the ref names is
 	// an unconditional delete with extra steps: it would remove whatever is
 	// at the key so long as it is not the thing the caller was asked about.
 	t.Run("a precondition naming another generation", func(t *testing.T) {
-		built, recorder := role(t, namespace)
+		built, _, recorder := role(t, namespace)
 		outcome, err := built.DeleteExactGeneration(ctx, ref, output.DeletePrecondition{
 			Generation:     ref.Generation + 1,
 			Metageneration: 1,
@@ -117,11 +90,11 @@ func TestDeleteExactGenerationRefusesBeforeTheStoreIsReached(t *testing.T) {
 		if outcome != output.DeleteInfrastructure {
 			t.Errorf("outcome %q; a refused delete is not any kind of reclamation", outcome)
 		}
-		expectNoRPC(t, recorder)
+		testsupport.ExpectNoRPC(t, recorder)
 	})
 
 	t.Run("a precondition with no generation", func(t *testing.T) {
-		built, recorder := role(t, namespace)
+		built, _, recorder := role(t, namespace)
 		outcome, err := built.DeleteExactGeneration(ctx, ref, output.DeletePrecondition{Metageneration: 1})
 		if !errors.Is(err, output.ErrIncomplete) {
 			t.Errorf("expected ErrIncomplete, got %v", err)
@@ -129,11 +102,11 @@ func TestDeleteExactGenerationRefusesBeforeTheStoreIsReached(t *testing.T) {
 		if outcome != output.DeleteInfrastructure {
 			t.Errorf("outcome %q; a refused delete is not any kind of reclamation", outcome)
 		}
-		expectNoRPC(t, recorder)
+		testsupport.ExpectNoRPC(t, recorder)
 	})
 
 	t.Run("a ref that does not validate", func(t *testing.T) {
-		built, recorder := role(t, namespace)
+		built, _, recorder := role(t, namespace)
 		outcome, err := built.DeleteExactGeneration(ctx, hangar.TreeRef{Scope: namespace.Scope()},
 			output.DeletePrecondition{Generation: 3, Metageneration: 1})
 		if err == nil {
@@ -142,28 +115,21 @@ func TestDeleteExactGenerationRefusesBeforeTheStoreIsReached(t *testing.T) {
 		if outcome != output.DeleteInfrastructure {
 			t.Errorf("outcome %q; a refused delete is not any kind of reclamation", outcome)
 		}
-		expectNoRPC(t, recorder)
+		testsupport.ExpectNoRPC(t, recorder)
 	})
 }
 
 func TestTheOneDeleteIsPinnedAndConditioned(t *testing.T) {
 	ctx := context.Background()
 	namespace := namespaceFor(t)
-	digest := digestOf("cd")
+	digest := testsupport.Digest("cd")
+	built, memory, recorder := role(t, namespace)
 
-	memory := gcstest.NewMemory()
-	memory.CreateBucket(bucket)
 	key, err := hangar.TreeKey(namespace.Prefix(), namespace.Scope(), digest)
 	if err != nil {
 		t.Fatalf("deriving the key: %v", err)
 	}
 	seeded := memory.Seed(bucket, key, []byte("tree"), nil)
-
-	recorder := gcstest.Record(memory)
-	built, err := reclaimer.New(namespace, reclaimer.Restrict(recorder.RecordDeletes(memory)))
-	if err != nil {
-		t.Fatalf("building the reclaimer: %v", err)
-	}
 
 	// The precondition is the generation and only the generation: a
 	// metageneration the registration recorded is evidence about the object,

@@ -10,7 +10,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +18,7 @@ import (
 	"github.com/concourse/concourse/hangar/gcstest"
 	"github.com/concourse/concourse/hangar/output"
 	"github.com/concourse/concourse/hangar/output/publisher"
+	testsupport "github.com/concourse/concourse/hangar/output/testsupport"
 )
 
 const (
@@ -28,60 +28,15 @@ const (
 	timeout     = 10 * time.Second
 )
 
-var fixedInstant = time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
-
-func namespaceFor(t *testing.T, tenant string, activation executioncontrol.ActivationEpoch) output.OutputNamespace {
-	t.Helper()
-
-	namespace, err := output.DeriveNamespace(output.NamespaceConfig{
-		Store:            output.StoreGCS,
-		Bucket:           bucket,
-		DeploymentPrefix: "deployments/blue",
-		TenantID:         tenant,
-		ActivationEpoch:  activation,
-	})
-	if err != nil {
-		t.Fatalf("deriving the namespace: %v", err)
-	}
-
-	return namespace
+func namespaceFor(t *testing.T, tenant string) output.OutputNamespace {
+	return testsupport.Namespace(t, bucket, tenant, epoch)
 }
 
-func digestOf(fill string) hangar.Digest {
-	return hangar.Digest("sha256:" + strings.Repeat(fill, 64)[:64])
-}
-
-func reservationFor(t *testing.T, namespace output.OutputNamespace, digest hangar.Digest) output.ResolvedReservation {
-	t.Helper()
-
-	resolved := output.ResolvedReservation{
-		ReservationID: reservation,
-		Execution: executioncontrol.Identity{
-			ExecutionID: "33333333-3333-4333-8333-333333333333",
-			Fence:       1,
-		},
-		ActivationEpoch: namespace.ActivationEpoch(),
-		HandoffID:       "11111111-1111-4111-8111-111111111111",
-		CaptureFence:    1,
-		Scope:           namespace.Scope(),
-		Digest:          digest,
-		Marker:          namespace.MarkerFor(reservation, digest, output.NewTimestamp(fixedInstant)),
-	}
-	if err := resolved.Validate(); err != nil {
-		t.Fatalf("the fixture reservation does not validate: %v", err)
-	}
-
-	return resolved
-}
-
-// role builds a publisher over a recorded tier-1 store, so a test can say
-// which RPCs the role issued and, for the refusals here, that it issued none.
+// role builds a publisher over a recorded tier-1 store.
 func role(t *testing.T, namespace output.OutputNamespace) (*publisher.Publisher, *gcstest.Recorder) {
 	t.Helper()
 
-	memory := gcstest.NewMemory()
-	memory.CreateBucket(bucket)
-	recorder := gcstest.Record(memory)
+	_, recorder := testsupport.RecordedMemory(bucket)
 	built, err := publisher.New(namespace, publisher.Restrict(recorder), timeout)
 	if err != nil {
 		t.Fatalf("building the publisher: %v", err)
@@ -90,17 +45,8 @@ func role(t *testing.T, namespace output.OutputNamespace) (*publisher.Publisher,
 	return built, recorder
 }
 
-func expectNoRPC(t *testing.T, recorder *gcstest.Recorder) {
-	t.Helper()
-
-	if calls := recorder.Calls(); len(calls) != 0 {
-		t.Errorf("the store was reached: %v. A refusal decided from the arguments must be "+
-			"decided before any RPC, or the refused caller learns something about the bucket", calls)
-	}
-}
-
 func TestNewRefusesAnIncompleteRole(t *testing.T) {
-	namespace := namespaceFor(t, "tenant-a", epoch)
+	namespace := namespaceFor(t, "tenant-a")
 	store := publisher.Restrict(gcstest.NewMemory())
 
 	for name, build := range map[string]func() (*publisher.Publisher, error){
@@ -135,37 +81,39 @@ func TestNewRefusesAnIncompleteRole(t *testing.T) {
 
 func TestEnsureObjectRefusesBeforeTheStoreIsReached(t *testing.T) {
 	ctx := context.Background()
-	namespace := namespaceFor(t, "tenant-a", epoch)
-	digest := digestOf("ab")
+	namespace := namespaceFor(t, "tenant-a")
+	digest := testsupport.Digest("ab")
+	resolved := func(t *testing.T, in output.OutputNamespace) output.ResolvedReservation {
+		return testsupport.Reservation(t, in, reservation, digest)
+	}
 
 	t.Run("no canonical bytes", func(t *testing.T) {
 		built, recorder := role(t, namespace)
-		_, err := built.EnsureObject(ctx, reservationFor(t, namespace, digest), nil, 3)
+		_, err := built.EnsureObject(ctx, resolved(t, namespace), nil, 3)
 		if !errors.Is(err, output.ErrIncomplete) {
 			t.Errorf("expected ErrIncomplete, got %v", err)
 		}
-		expectNoRPC(t, recorder)
+		testsupport.ExpectNoRPC(t, recorder)
 	})
 
 	t.Run("a negative canonical size", func(t *testing.T) {
 		built, recorder := role(t, namespace)
-		_, err := built.EnsureObject(ctx, reservationFor(t, namespace, digest),
-			bytes.NewReader([]byte("abc")), -1)
+		_, err := built.EnsureObject(ctx, resolved(t, namespace), bytes.NewReader([]byte("abc")), -1)
 		if !errors.Is(err, output.ErrIncomplete) {
 			t.Errorf("expected ErrIncomplete, got %v", err)
 		}
-		expectNoRPC(t, recorder)
+		testsupport.ExpectNoRPC(t, recorder)
 	})
 
 	t.Run("a reservation that does not validate", func(t *testing.T) {
 		built, recorder := role(t, namespace)
-		unresolved := reservationFor(t, namespace, digest)
+		unresolved := resolved(t, namespace)
 		unresolved.CaptureFence = 0
 		_, err := built.EnsureObject(ctx, unresolved, bytes.NewReader([]byte("abc")), 3)
 		if !errors.Is(err, output.ErrIncomplete) {
 			t.Errorf("expected ErrIncomplete, got %v", err)
 		}
-		expectNoRPC(t, recorder)
+		testsupport.ExpectNoRPC(t, recorder)
 	})
 
 	// A capture publishes into the namespace its epoch derived and no other.
@@ -174,13 +122,12 @@ func TestEnsureObjectRefusesBeforeTheStoreIsReached(t *testing.T) {
 	// publisher being asked to write into somebody else's namespace.
 	t.Run("a reservation resolved to another tenant's scope", func(t *testing.T) {
 		built, recorder := role(t, namespace)
-		other := namespaceFor(t, "tenant-b", epoch)
-		_, err := built.EnsureObject(ctx, reservationFor(t, other, digest),
+		_, err := built.EnsureObject(ctx, resolved(t, namespaceFor(t, "tenant-b")),
 			bytes.NewReader([]byte("abc")), 3)
 		if !errors.Is(err, output.ErrUnauthorized) {
 			t.Errorf("expected ErrUnauthorized, got %v", err)
 		}
-		expectNoRPC(t, recorder)
+		testsupport.ExpectNoRPC(t, recorder)
 	})
 
 	// The marker is the ownership evidence written once at creation. A
@@ -188,7 +135,7 @@ func TestEnsureObjectRefusesBeforeTheStoreIsReached(t *testing.T) {
 	// evidence about an epoch this publisher was not derived under.
 	t.Run("a marker naming another activation epoch", func(t *testing.T) {
 		built, recorder := role(t, namespace)
-		stale := reservationFor(t, namespace, digest)
+		stale := resolved(t, namespace)
 		stale.ActivationEpoch = epoch + 1
 		stale.Marker.ActivationEpoch = epoch + 1
 		if err := stale.Validate(); err != nil {
@@ -198,21 +145,21 @@ func TestEnsureObjectRefusesBeforeTheStoreIsReached(t *testing.T) {
 		if !errors.Is(err, output.ErrConflict) {
 			t.Errorf("expected ErrConflict, got %v", err)
 		}
-		expectNoRPC(t, recorder)
+		testsupport.ExpectNoRPC(t, recorder)
 	})
 }
 
 func TestStatExactObjectRefusesARefOutsideItsNamespace(t *testing.T) {
 	ctx := context.Background()
-	namespace := namespaceFor(t, "tenant-a", epoch)
+	namespace := namespaceFor(t, "tenant-a")
 	built, recorder := role(t, namespace)
 
-	other := namespaceFor(t, "tenant-b", epoch)
-	_, err := built.StatExactObject(ctx, other.Ref(digestOf("cd"), 1))
+	other := namespaceFor(t, "tenant-b")
+	_, err := built.StatExactObject(ctx, other.Ref(testsupport.Digest("cd"), 1))
 	if !errors.Is(err, output.ErrUnauthorized) {
 		t.Errorf("expected ErrUnauthorized, got %v", err)
 	}
-	expectNoRPC(t, recorder)
+	testsupport.ExpectNoRPC(t, recorder)
 
 	// And a ref that does not validate is refused as what it is, not as
 	// somebody else's.
@@ -223,40 +170,28 @@ func TestStatExactObjectRefusesARefOutsideItsNamespace(t *testing.T) {
 	if errors.Is(err, output.ErrUnauthorized) {
 		t.Errorf("an incomplete ref was reported as unauthorized: %v", err)
 	}
-	expectNoRPC(t, recorder)
+	testsupport.ExpectNoRPC(t, recorder)
 }
 
 func TestOpenExactObjectRefusesALeaseForAnotherRefBeforeTheStoreIsReached(t *testing.T) {
 	ctx := context.Background()
-	namespace := namespaceFor(t, "tenant-a", epoch)
+	namespace := namespaceFor(t, "tenant-a")
 	built, recorder := role(t, namespace)
 
-	ref := namespace.Ref(digestOf("ef"), 1)
-	lease := output.ReadLease{
-		ProtocolVersion: output.ProtocolVersion,
-		ReadLeaseID:     "22222222-2222-4222-8222-222222222222",
-		ClaimID:         "66666666-6666-4666-8666-666666666666",
-		Ref:             ref,
-		ActivationEpoch: epoch,
-		LeaseFence:      1,
-		GrantedAt:       output.NewTimestamp(fixedInstant),
-		ExpiresAt:       output.NewTimestamp(fixedInstant.Add(20 * time.Minute)),
-	}
-	if err := lease.Validate(); err != nil {
-		t.Fatalf("the fixture lease does not validate: %v", err)
-	}
+	ref := namespace.Ref(testsupport.Digest("ef"), 1)
+	lease := testsupport.Lease(t, ref, epoch)
 
 	another := ref
 	another.Generation++
 	if _, _, err := built.OpenExactObject(ctx, another, lease); !errors.Is(err, output.ErrUnauthorized) {
 		t.Errorf("a read outside the lease was answered with %v, expected ErrUnauthorized", err)
 	}
-	expectNoRPC(t, recorder)
+	testsupport.ExpectNoRPC(t, recorder)
 
 	unleased := lease
 	unleased.LeaseFence = 0
 	if _, _, err := built.OpenExactObject(ctx, ref, unleased); err == nil {
 		t.Error("a lease that does not validate authorized a read")
 	}
-	expectNoRPC(t, recorder)
+	testsupport.ExpectNoRPC(t, recorder)
 }

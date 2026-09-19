@@ -8,6 +8,7 @@ import (
 
 	"github.com/concourse/concourse/hangar/output"
 	"github.com/concourse/concourse/hangar/output/inventory"
+	testsupport "github.com/concourse/concourse/hangar/output/testsupport"
 )
 
 // A marked object with no lifecycle row is an orphan, and telling it apart from
@@ -22,12 +23,12 @@ import (
 func TestAMarkedUnregisteredObjectIsAnOrphanAndNotAMiss(t *testing.T) {
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := namespaceFor(t, tier.bucket)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 		role, _ := publisherFor(t, tier, namespace)
 
-		digest := digestOf("7a")
+		digest := testsupport.Digest("7a")
 		object, err := role.EnsureObject(ctx,
-			reservationFor(t, namespace, testReservation, digest),
+			testsupport.Reservation(t, namespace, testReservation, digest),
 			bytes.NewReader(canonicalBytes("published, never registered")), 27)
 		if err != nil {
 			t.Fatalf("publishing: %v", err)
@@ -42,7 +43,7 @@ func TestAMarkedUnregisteredObjectIsAnOrphanAndNotAMiss(t *testing.T) {
 			ProtocolVersion: output.ProtocolVersion,
 			ActivationEpoch: testEpoch,
 			CursorFence:     1,
-			UpdatedAt:       output.NewTimestamp(fixedInstant),
+			UpdatedAt:       output.NewTimestamp(testsupport.FixedInstant),
 		}, output.DefaultPageBudget())
 		if err != nil {
 			t.Fatalf("listing: %v", err)

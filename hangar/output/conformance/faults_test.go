@@ -28,6 +28,7 @@ import (
 	"github.com/concourse/concourse/hangar/gcstest"
 	"github.com/concourse/concourse/hangar/output"
 	"github.com/concourse/concourse/hangar/output/reclaimer"
+	testsupport "github.com/concourse/concourse/hangar/output/testsupport"
 )
 
 // publishedForDeletion puts one object in a tier-1 store and returns the
@@ -37,11 +38,11 @@ func publishedForDeletion(t *testing.T, tier substrate, fill string) (
 	t.Helper()
 
 	ctx := context.Background()
-	namespace := namespaceFor(t, tier.bucket)
+	namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 	role, _ := publisherFor(t, tier, namespace)
 
 	object, err := role.EnsureObject(ctx,
-		reservationFor(t, namespace, testReservation, digestOf(fill)),
+		testsupport.Reservation(t, namespace, testReservation, testsupport.Digest(fill)),
 		bytes.NewReader(canonicalBytes("to be reclaimed")), 15)
 	if err != nil {
 		t.Fatalf("publishing: %v", err)
@@ -186,9 +187,9 @@ func TestEveryTypedDeleteOutcomeIsExercisedSomewhere(t *testing.T) {
 func TestARetryAfterAnAmbiguousCreateConvergesOnOneGeneration(t *testing.T) {
 	tier := tier1(t)
 	ctx := context.Background()
-	namespace := namespaceFor(t, tier.bucket)
+	namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 	role, _ := publisherFor(t, tier, namespace)
-	reservation := reservationFor(t, namespace, testReservation, digestOf("a4"))
+	reservation := testsupport.Reservation(t, namespace, testReservation, testsupport.Digest("a4"))
 
 	// The first attempt commits the object and loses the response.
 	tier.memory.Inject(gcstest.Faults{CreateResponseLost: true})

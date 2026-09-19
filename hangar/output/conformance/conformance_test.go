@@ -10,21 +10,14 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/hangar"
-	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/gcstest"
 	"github.com/concourse/concourse/hangar/objectstore"
 	"github.com/concourse/concourse/hangar/output"
 	"github.com/concourse/concourse/hangar/output/inventory"
 	"github.com/concourse/concourse/hangar/output/publisher"
 	"github.com/concourse/concourse/hangar/output/reclaimer"
+	testsupport "github.com/concourse/concourse/hangar/output/testsupport"
 )
-
-func executionIdentity() executioncontrol.Identity {
-	return executioncontrol.Identity{
-		ExecutionID: "33333333-3333-4333-8333-333333333333",
-		Fence:       1,
-	}
-}
 
 const publishTimeout = 10 * time.Second
 
@@ -54,11 +47,11 @@ func publisherFor(t *testing.T, tier substrate, namespace output.OutputNamespace
 func TestCreateIfAbsentPublishesOnceAndReportsAnExactGeneration(t *testing.T) {
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := namespaceFor(t, tier.bucket)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 		role, _ := publisherFor(t, tier, namespace)
 
-		digest := digestOf("ab")
-		reservation := reservationFor(t, namespace, testReservation, digest)
+		digest := testsupport.Digest("ab")
+		reservation := testsupport.Reservation(t, namespace, testReservation, digest)
 
 		object, err := role.EnsureObject(ctx, reservation,
 			bytes.NewReader(canonicalBytes("sealed tree")), 11)
@@ -131,8 +124,8 @@ func TestCreateIfAbsentPublishesOnceAndReportsAnExactGeneration(t *testing.T) {
 			t.Fatal("the two tenants derived the same scope; this case would assert nothing")
 		}
 
-		foreignDigest := digestOf("ef")
-		foreign := reservationFor(t, elsewhere, otherReservation, foreignDigest)
+		foreignDigest := testsupport.Digest("ef")
+		foreign := testsupport.Reservation(t, elsewhere, otherReservation, foreignDigest)
 		if _, err := role.EnsureObject(ctx, foreign,
 			bytes.NewReader(canonicalBytes("another namespace's tree")), 24); !errors.Is(err, output.ErrUnauthorized) {
 			t.Errorf("a reservation resolved to scope %q was published into %q and answered with "+
@@ -162,11 +155,11 @@ func TestCreateIfAbsentPublishesOnceAndReportsAnExactGeneration(t *testing.T) {
 func TestIdenticalBytesDeduplicateAndADifferentVariantIsATypedCollision(t *testing.T) {
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := namespaceFor(t, tier.bucket)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 		role, _ := publisherFor(t, tier, namespace)
 
-		digest := digestOf("cd")
-		first := reservationFor(t, namespace, testReservation, digest)
+		digest := testsupport.Digest("cd")
+		first := testsupport.Reservation(t, namespace, testReservation, digest)
 
 		created, err := role.EnsureObject(ctx, first,
 			bytes.NewReader(canonicalBytes("the first tree")), 14)
@@ -177,7 +170,7 @@ func TestIdenticalBytesDeduplicateAndADifferentVariantIsATypedCollision(t *testi
 		// The control, and the whole reason convention 6 asks for a twin: a
 		// second capture of the same canonical bytes deduplicates to one
 		// object, and gets its own answer rather than the first one's.
-		second := reservationFor(t, namespace, otherReservation, digest)
+		second := testsupport.Reservation(t, namespace, otherReservation, digest)
 		deduplicated, err := role.EnsureObject(ctx, second,
 			bytes.NewReader(canonicalBytes("the first tree")), 14)
 		if err != nil {
@@ -199,16 +192,16 @@ func TestIdenticalBytesDeduplicateAndADifferentVariantIsATypedCollision(t *testi
 		// the publisher -- the key is derived from the digest -- so the store
 		// is seeded with the wrong variant, which is the only honest way to
 		// tell dedup from overwrite.
-		collisionDigest := digestOf("ef")
+		collisionDigest := testsupport.Digest("ef")
 		key, err := namespace.ObjectKey(collisionDigest)
 		if err != nil {
 			t.Fatalf("deriving the collision key: %v", err)
 		}
-		strangerMarker := namespace.MarkerFor(otherReservation, digestOf("99"),
-			output.NewTimestamp(fixedInstant))
+		strangerMarker := namespace.MarkerFor(otherReservation, testsupport.Digest("99"),
+			output.NewTimestamp(testsupport.FixedInstant))
 		seed(t, tier, key, canonicalBytes("somebody else's bytes"), strangerMarker.Metadata())
 
-		colliding := reservationFor(t, namespace, testReservation, collisionDigest)
+		colliding := testsupport.Reservation(t, namespace, testReservation, collisionDigest)
 		_, err = role.EnsureObject(ctx, colliding,
 			bytes.NewReader(canonicalBytes("our bytes")), 9)
 		if !errors.Is(err, output.ErrConflict) {
@@ -231,22 +224,22 @@ func TestIdenticalBytesDeduplicateAndADifferentVariantIsATypedCollision(t *testi
 func TestAnUnmarkedObjectIsATypedCollisionAndAMarkedOneStillDeduplicates(t *testing.T) {
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := namespaceFor(t, tier.bucket)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 		role, _ := publisherFor(t, tier, namespace)
 
 		// The positive control, asserted first (convention 5): a marked object
 		// at the key deduplicates. Without it, the refusal below would pass on
 		// a publisher that refused everything at an occupied key.
-		markedDigest := digestOf("11")
+		markedDigest := testsupport.Digest("11")
 		markedKey, err := namespace.ObjectKey(markedDigest)
 		if err != nil {
 			t.Fatalf("deriving the marked key: %v", err)
 		}
-		marker := namespace.MarkerFor(otherReservation, markedDigest, output.NewTimestamp(fixedInstant))
+		marker := namespace.MarkerFor(otherReservation, markedDigest, output.NewTimestamp(testsupport.FixedInstant))
 		seed(t, tier, markedKey, canonicalBytes("already published"), marker.Metadata())
 
 		object, err := role.EnsureObject(ctx,
-			reservationFor(t, namespace, testReservation, markedDigest),
+			testsupport.Reservation(t, namespace, testReservation, markedDigest),
 			bytes.NewReader(canonicalBytes("already published")), 17)
 		if err != nil {
 			t.Fatalf("publishing against a correctly marked object: %v", err)
@@ -256,7 +249,7 @@ func TestAnUnmarkedObjectIsATypedCollisionAndAMarkedOneStillDeduplicates(t *test
 		}
 
 		// And the absence: no marker at all.
-		unmarkedDigest := digestOf("22")
+		unmarkedDigest := testsupport.Digest("22")
 		unmarkedKey, err := namespace.ObjectKey(unmarkedDigest)
 		if err != nil {
 			t.Fatalf("deriving the unmarked key: %v", err)
@@ -264,7 +257,7 @@ func TestAnUnmarkedObjectIsATypedCollisionAndAMarkedOneStillDeduplicates(t *test
 		seed(t, tier, unmarkedKey, canonicalBytes("stranger"), map[string]string{"note": "not ours"})
 
 		_, err = role.EnsureObject(ctx,
-			reservationFor(t, namespace, testReservation, unmarkedDigest),
+			testsupport.Reservation(t, namespace, testReservation, unmarkedDigest),
 			bytes.NewReader(canonicalBytes("stranger")), 8)
 		if !errors.Is(err, output.ErrConflict) {
 			t.Fatalf("an unmarked object at the key was answered with %v, expected ErrConflict", err)
@@ -275,18 +268,18 @@ func TestAnUnmarkedObjectIsATypedCollisionAndAMarkedOneStillDeduplicates(t *test
 
 		// A wrong marker version is a deliberate statement by another cohort
 		// and is likewise never overwritten.
-		wrongDigest := digestOf("33")
+		wrongDigest := testsupport.Digest("33")
 		wrongKey, err := namespace.ObjectKey(wrongDigest)
 		if err != nil {
 			t.Fatalf("deriving the wrong-version key: %v", err)
 		}
 		wrongMetadata := namespace.MarkerFor(otherReservation, wrongDigest,
-			output.NewTimestamp(fixedInstant)).Metadata()
+			output.NewTimestamp(testsupport.FixedInstant)).Metadata()
 		wrongMetadata[output.MarkerKeyVersion] = "hangar-output-v2"
 		seed(t, tier, wrongKey, canonicalBytes("another cohort"), wrongMetadata)
 
 		_, err = role.EnsureObject(ctx,
-			reservationFor(t, namespace, testReservation, wrongDigest),
+			testsupport.Reservation(t, namespace, testReservation, wrongDigest),
 			bytes.NewReader(canonicalBytes("another cohort")), 14)
 		if !errors.Is(err, output.ErrConflict) {
 			t.Errorf("a wrong marker version was answered with %v, expected ErrConflict", err)
@@ -313,20 +306,20 @@ func TestAnUnmarkedObjectIsATypedCollisionAndAMarkedOneStillDeduplicates(t *test
 func TestAnObjectWhoseBodyDoesNotMatchTheCaptureIsATypedCollision(t *testing.T) {
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := namespaceFor(t, tier.bucket)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 		role, _ := publisherFor(t, tier, namespace)
 
-		digest := digestOf("44")
+		digest := testsupport.Digest("44")
 		key, err := namespace.ObjectKey(digest)
 		if err != nil {
 			t.Fatalf("deriving the key: %v", err)
 		}
 		body := canonicalBytes("the tree this capture canonicalized")
-		marker := namespace.MarkerFor(otherReservation, digest, output.NewTimestamp(fixedInstant))
+		marker := namespace.MarkerFor(otherReservation, digest, output.NewTimestamp(testsupport.FixedInstant))
 		seed(t, tier, key, body, marker.Metadata())
 
 		object, err := role.EnsureObject(ctx,
-			reservationFor(t, namespace, testReservation, digest),
+			testsupport.Reservation(t, namespace, testReservation, digest),
 			bytes.NewReader(body), int64(len(body)))
 		if err != nil {
 			t.Fatalf("publishing against identical bytes: %v", err)
@@ -338,19 +331,19 @@ func TestAnObjectWhoseBodyDoesNotMatchTheCaptureIsATypedCollision(t *testing.T) 
 		// And the same key, the same marker metadata, a different body. This
 		// is the lost-response path: the capture repeats its create, the store
 		// answers "already there", and what is there is not what it wrote.
-		replacedDigest := digestOf("55")
+		replacedDigest := testsupport.Digest("55")
 		replacedKey, err := namespace.ObjectKey(replacedDigest)
 		if err != nil {
 			t.Fatalf("deriving the replaced key: %v", err)
 		}
 		replacedMarker := namespace.MarkerFor(otherReservation, replacedDigest,
-			output.NewTimestamp(fixedInstant))
+			output.NewTimestamp(testsupport.FixedInstant))
 		seed(t, tier, replacedKey, canonicalBytes("somebody else's much longer body"),
 			replacedMarker.Metadata())
 
 		captured := canonicalBytes("short")
 		_, err = role.EnsureObject(ctx,
-			reservationFor(t, namespace, testReservation, replacedDigest),
+			testsupport.Reservation(t, namespace, testReservation, replacedDigest),
 			bytes.NewReader(captured), int64(len(captured)))
 		if !errors.Is(err, output.ErrConflict) {
 			t.Fatalf("an object whose body is not this capture's tree was answered with %v, "+
@@ -373,12 +366,12 @@ func TestTheMarkerIsImmutableAtCreationAndThePublisherCannotChangeIt(t *testing.
 	// writes.
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := namespaceFor(t, tier.bucket)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 		role, recorder := publisherFor(t, tier, namespace)
 
-		digest := digestOf("44")
+		digest := testsupport.Digest("44")
 		created, err := role.EnsureObject(ctx,
-			reservationFor(t, namespace, testReservation, digest),
+			testsupport.Reservation(t, namespace, testReservation, digest),
 			bytes.NewReader(canonicalBytes("once")), 4)
 		if err != nil {
 			t.Fatalf("publishing: %v", err)
@@ -386,7 +379,7 @@ func TestTheMarkerIsImmutableAtCreationAndThePublisherCannotChangeIt(t *testing.
 
 		recorder.Reset()
 		if _, err := role.EnsureObject(ctx,
-			reservationFor(t, namespace, otherReservation, digest),
+			testsupport.Reservation(t, namespace, otherReservation, digest),
 			bytes.NewReader(canonicalBytes("once")), 4); err != nil {
 			t.Fatalf("the deduplicating publish: %v", err)
 		}
@@ -411,13 +404,13 @@ func TestTheMarkerIsImmutableAtCreationAndThePublisherCannotChangeIt(t *testing.
 func TestBucketWideListPagesUnderTheServerDerivedPrefix(t *testing.T) {
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := namespaceFor(t, tier.bucket)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 		role, _ := publisherFor(t, tier, namespace)
 
 		for _, fill := range []string{"55", "66", "77"} {
-			digest := digestOf(fill)
+			digest := testsupport.Digest(fill)
 			if _, err := role.EnsureObject(ctx,
-				reservationFor(t, namespace, testReservation, digest),
+				testsupport.Reservation(t, namespace, testReservation, digest),
 				bytes.NewReader(canonicalBytes("tree "+fill)), 7); err != nil {
 				t.Fatalf("seeding %s: %v", fill, err)
 			}
@@ -437,7 +430,7 @@ func TestBucketWideListPagesUnderTheServerDerivedPrefix(t *testing.T) {
 			ProtocolVersion: output.ProtocolVersion,
 			ActivationEpoch: testEpoch,
 			CursorFence:     1,
-			UpdatedAt:       output.NewTimestamp(fixedInstant),
+			UpdatedAt:       output.NewTimestamp(testsupport.FixedInstant),
 		}
 		budget := output.DefaultPageBudget()
 		budget.MaxObjects = 2
@@ -482,12 +475,12 @@ func TestBucketWideListPagesUnderTheServerDerivedPrefix(t *testing.T) {
 func TestTheExactGenerationDeleteIsConditionalAndTyped(t *testing.T) {
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := namespaceFor(t, tier.bucket)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 		role, _ := publisherFor(t, tier, namespace)
 
-		digest := digestOf("88")
+		digest := testsupport.Digest("88")
 		object, err := role.EnsureObject(ctx,
-			reservationFor(t, namespace, testReservation, digest),
+			testsupport.Reservation(t, namespace, testReservation, digest),
 			bytes.NewReader(canonicalBytes("to be reclaimed")), 15)
 		if err != nil {
 			t.Fatalf("publishing: %v", err)
@@ -561,7 +554,7 @@ func TestTheExactGenerationDeleteIsConditionalAndTyped(t *testing.T) {
 			// And it is gone, so the rest of this row needs a new one at the
 			// same reservation, which is what a re-publication is.
 			object, err = role.EnsureObject(ctx,
-				reservationFor(t, namespace, testReservation, digest),
+				testsupport.Reservation(t, namespace, testReservation, digest),
 				bytes.NewReader(canonicalBytes("to be reclaimed")), 15)
 			if err != nil {
 				t.Fatalf("re-publishing after the generation-exact delete: %v", err)
@@ -607,12 +600,12 @@ func TestASameKeyNewGenerationIsANewExactObject(t *testing.T) {
 	// rather than the key. This is the API fact that makes an exact ref exact.
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := namespaceFor(t, tier.bucket)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 		role, _ := publisherFor(t, tier, namespace)
 
-		digest := digestOf("99")
+		digest := testsupport.Digest("99")
 		first, err := role.EnsureObject(ctx,
-			reservationFor(t, namespace, testReservation, digest),
+			testsupport.Reservation(t, namespace, testReservation, digest),
 			bytes.NewReader(canonicalBytes("generation one")), 14)
 		if err != nil {
 			t.Fatalf("publishing: %v", err)
@@ -622,7 +615,7 @@ func TestASameKeyNewGenerationIsANewExactObject(t *testing.T) {
 		if err != nil {
 			t.Fatalf("deriving the key: %v", err)
 		}
-		replacement := namespace.MarkerFor(otherReservation, digest, output.NewTimestamp(fixedInstant))
+		replacement := namespace.MarkerFor(otherReservation, digest, output.NewTimestamp(testsupport.FixedInstant))
 		attrs := seed(t, tier, key, canonicalBytes("generation two"), replacement.Metadata())
 
 		if attrs.Generation == first.Attributes.Ref.Generation {
@@ -650,11 +643,11 @@ func TestASameKeyNewGenerationIsANewExactObject(t *testing.T) {
 func TestAnAmbiguousUploadIsReconciledByAnExactStat(t *testing.T) {
 	tier := tier1(t)
 	ctx := context.Background()
-	namespace := namespaceFor(t, tier.bucket)
+	namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 	role, _ := publisherFor(t, tier, namespace)
 
-	digest := digestOf("aa")
-	reservation := reservationFor(t, namespace, testReservation, digest)
+	digest := testsupport.Digest("aa")
+	reservation := testsupport.Reservation(t, namespace, testReservation, digest)
 
 	// The object commits and the response is lost. A caller that assumed
 	// failure would retry into its own object and call it a collision; a
@@ -682,7 +675,7 @@ func TestAnAmbiguousUploadIsReconciledByAnExactStat(t *testing.T) {
 	// infrastructure, and the capture has not passed its publish point.
 	tier.memory.Inject(gcstest.Faults{CreateTimeout: true})
 	if _, err := role.EnsureObject(ctx,
-		reservationFor(t, namespace, testReservation, digestOf("bb")),
+		testsupport.Reservation(t, namespace, testReservation, testsupport.Digest("bb")),
 		bytes.NewReader(canonicalBytes("never landed")), 12); !errors.Is(err, output.ErrTimeout) {
 		t.Errorf("a create that timed out was answered with %v, expected ErrTimeout", err)
 	}
@@ -691,12 +684,12 @@ func TestAnAmbiguousUploadIsReconciledByAnExactStat(t *testing.T) {
 func TestALostDeleteResponseIsNeverReportedAsConfirmed(t *testing.T) {
 	tier := tier1(t)
 	ctx := context.Background()
-	namespace := namespaceFor(t, tier.bucket)
+	namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 	role, _ := publisherFor(t, tier, namespace)
 
-	digest := digestOf("cc")
+	digest := testsupport.Digest("cc")
 	object, err := role.EnsureObject(ctx,
-		reservationFor(t, namespace, testReservation, digest),
+		testsupport.Reservation(t, namespace, testReservation, digest),
 		bytes.NewReader(canonicalBytes("to be reclaimed")), 15)
 	if err != nil {
 		t.Fatalf("publishing: %v", err)
@@ -741,12 +734,12 @@ func TestALostDeleteResponseIsNeverReportedAsConfirmed(t *testing.T) {
 func TestATruncatedOrCorruptBodyIsNotAValidRead(t *testing.T) {
 	tier := tier1(t)
 	ctx := context.Background()
-	namespace := namespaceFor(t, tier.bucket)
+	namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 	role, _ := publisherFor(t, tier, namespace)
 
-	digest := digestOf("dd")
+	digest := testsupport.Digest("dd")
 	object, err := role.EnsureObject(ctx,
-		reservationFor(t, namespace, testReservation, digest),
+		testsupport.Reservation(t, namespace, testReservation, digest),
 		bytes.NewReader(canonicalBytes("a whole canonical tree")), 22)
 	if err != nil {
 		t.Fatalf("publishing: %v", err)
@@ -759,8 +752,8 @@ func TestATruncatedOrCorruptBodyIsNotAValidRead(t *testing.T) {
 		Ref:             object.Attributes.Ref,
 		ActivationEpoch: testEpoch,
 		LeaseFence:      1,
-		GrantedAt:       output.NewTimestamp(fixedInstant),
-		ExpiresAt:       output.NewTimestamp(fixedInstant.Add(20 * time.Minute)),
+		GrantedAt:       output.NewTimestamp(testsupport.FixedInstant),
+		ExpiresAt:       output.NewTimestamp(testsupport.FixedInstant.Add(20 * time.Minute)),
 	}
 
 	// The control: a whole read returns the whole object.
@@ -807,14 +800,14 @@ func TestATruncatedOrCorruptBodyIsNotAValidRead(t *testing.T) {
 
 func TestACancelledContextIsNeverAnAbsentObject(t *testing.T) {
 	tier := tier1(t)
-	namespace := namespaceFor(t, tier.bucket)
+	namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 	role, _ := publisherFor(t, tier, namespace)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	_, err := role.EnsureObject(ctx,
-		reservationFor(t, namespace, testReservation, digestOf("ee")),
+		testsupport.Reservation(t, namespace, testReservation, testsupport.Digest("ee")),
 		bytes.NewReader(canonicalBytes("cancelled")), 9)
 	if errors.Is(err, output.ErrNotFound) {
 		t.Fatalf("a cancelled publish was reported as absence: %v", err)
@@ -828,13 +821,13 @@ func TestACancelledContextIsNeverAnAbsentObject(t *testing.T) {
 func TestAnUnauthorizedStoreIsNeverACacheMiss(t *testing.T) {
 	tier := tier1(t)
 	ctx := context.Background()
-	namespace := namespaceFor(t, tier.bucket)
+	namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 	role, _ := publisherFor(t, tier, namespace)
 
 	tier.memory.Inject(gcstest.Faults{Unauthorized: true})
 
 	_, err := role.EnsureObject(ctx,
-		reservationFor(t, namespace, testReservation, digestOf("ff")),
+		testsupport.Reservation(t, namespace, testReservation, testsupport.Digest("ff")),
 		bytes.NewReader(canonicalBytes("forbidden")), 9)
 	if !errors.Is(err, output.ErrUnauthorized) {
 		t.Errorf("an unauthorized create returned %v, expected ErrUnauthorized", err)
@@ -851,9 +844,9 @@ func TestAnUnauthorizedStoreIsNeverACacheMiss(t *testing.T) {
 func TestEachRoleIssuesOnlyItsOwnRPCs(t *testing.T) {
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := namespaceFor(t, tier.bucket)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 
-		digest := digestOf("12")
+		digest := testsupport.Digest("12")
 
 		publishRecorder := gcstest.Record(tier.client)
 		publishRole, err := publisher.New(namespace, publisher.Restrict(publishRecorder), publishTimeout)
@@ -861,7 +854,7 @@ func TestEachRoleIssuesOnlyItsOwnRPCs(t *testing.T) {
 			t.Fatalf("building the publisher: %v", err)
 		}
 		object, err := publishRole.EnsureObject(ctx,
-			reservationFor(t, namespace, testReservation, digest),
+			testsupport.Reservation(t, namespace, testReservation, digest),
 			bytes.NewReader(canonicalBytes("role honesty")), 12)
 		if err != nil {
 			t.Fatalf("publishing: %v", err)
@@ -881,7 +874,7 @@ func TestEachRoleIssuesOnlyItsOwnRPCs(t *testing.T) {
 			ProtocolVersion: output.ProtocolVersion,
 			ActivationEpoch: testEpoch,
 			CursorFence:     1,
-			UpdatedAt:       output.NewTimestamp(fixedInstant),
+			UpdatedAt:       output.NewTimestamp(testsupport.FixedInstant),
 		}, output.DefaultPageBudget()); err != nil {
 			t.Fatalf("listing: %v", err)
 		}
@@ -1133,12 +1126,12 @@ func TestTheSubstrateGapsAreNamed(t *testing.T) {
 func TestABenignMetadataChangeDoesNotWedgeReclamationForever(t *testing.T) {
 	tier := tier1(t)
 	ctx := context.Background()
-	namespace := namespaceFor(t, tier.bucket)
+	namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 	role, _ := publisherFor(t, tier, namespace)
 
-	digest := digestOf("ef")
+	digest := testsupport.Digest("ef")
 	object, err := role.EnsureObject(ctx,
-		reservationFor(t, namespace, testReservation, digest),
+		testsupport.Reservation(t, namespace, testReservation, digest),
 		bytes.NewReader(canonicalBytes("a transitioned object")), 21)
 	if err != nil {
 		t.Fatalf("publishing: %v", err)

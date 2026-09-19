@@ -9,15 +9,14 @@ package inventory_test
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/gcstest"
 	"github.com/concourse/concourse/hangar/output"
 	"github.com/concourse/concourse/hangar/output/inventory"
+	testsupport "github.com/concourse/concourse/hangar/output/testsupport"
 )
 
 const (
@@ -25,45 +24,17 @@ const (
 	epoch  = executioncontrol.ActivationEpoch(7)
 )
 
-var fixedInstant = time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+var clock = output.ClockFunc(func() time.Time { return testsupport.FixedInstant })
 
-func namespaceFor(t *testing.T, activation executioncontrol.ActivationEpoch) output.OutputNamespace {
-	t.Helper()
-
-	namespace, err := output.DeriveNamespace(output.NamespaceConfig{
-		Store:            output.StoreGCS,
-		Bucket:           bucket,
-		DeploymentPrefix: "deployments/blue",
-		TenantID:         "tenant-a",
-		ActivationEpoch:  activation,
-	})
-	if err != nil {
-		t.Fatalf("deriving the namespace: %v", err)
-	}
-
-	return namespace
+func namespaceFor(t *testing.T) output.OutputNamespace {
+	return testsupport.Namespace(t, bucket, "tenant-a", epoch)
 }
 
-func digestOf(fill string) hangar.Digest {
-	return hangar.Digest("sha256:" + strings.Repeat(fill, 64)[:64])
-}
-
-func cursorFor(activation executioncontrol.ActivationEpoch) output.InventoryCursor {
-	return output.InventoryCursor{
-		ProtocolVersion: output.ProtocolVersion,
-		ActivationEpoch: activation,
-		CursorFence:     1,
-		UpdatedAt:       output.NewTimestamp(fixedInstant),
-	}
-}
-
+// role builds an inventory over a recorded tier-1 store.
 func role(t *testing.T, namespace output.OutputNamespace) (*inventory.Inventory, *gcstest.Recorder) {
 	t.Helper()
 
-	memory := gcstest.NewMemory()
-	memory.CreateBucket(bucket)
-	recorder := gcstest.Record(memory)
-	clock := output.ClockFunc(func() time.Time { return fixedInstant })
+	_, recorder := testsupport.RecordedMemory(bucket)
 	built, err := inventory.New(namespace, inventory.Restrict(recorder), clock)
 	if err != nil {
 		t.Fatalf("building the inventory: %v", err)
@@ -72,19 +43,9 @@ func role(t *testing.T, namespace output.OutputNamespace) (*inventory.Inventory,
 	return built, recorder
 }
 
-func expectNoRPC(t *testing.T, recorder *gcstest.Recorder) {
-	t.Helper()
-
-	if calls := recorder.Calls(); len(calls) != 0 {
-		t.Errorf("the store was reached: %v. A refusal decided from the cursor must be decided "+
-			"before any listing, or a stale owner still spends a bucket-wide list", calls)
-	}
-}
-
 func TestNewRefusesAnIncompleteRole(t *testing.T) {
-	namespace := namespaceFor(t, epoch)
+	namespace := namespaceFor(t)
 	store := inventory.Restrict(gcstest.NewMemory())
-	clock := output.ClockFunc(func() time.Time { return fixedInstant })
 
 	for name, build := range map[string]func() (*inventory.Inventory, error){
 		"a zero namespace": func() (*inventory.Inventory, error) {
@@ -115,46 +76,47 @@ func TestNewRefusesAnIncompleteRole(t *testing.T) {
 
 func TestListPageRefusesBeforeTheStoreIsReached(t *testing.T) {
 	ctx := context.Background()
-	namespace := namespaceFor(t, epoch)
+	namespace := namespaceFor(t)
 
 	// The cursor carries the epoch it was reserved under. A cursor from
 	// another epoch is another namespace's position, and listing from it
 	// would sweep this prefix from a point that means nothing here.
 	t.Run("a cursor from another epoch", func(t *testing.T) {
 		built, recorder := role(t, namespace)
-		_, err := built.ListPage(ctx, cursorFor(epoch+1), output.DefaultPageBudget())
+		_, err := built.ListPage(ctx, testsupport.Cursor(epoch+1), output.DefaultPageBudget())
 		if !errors.Is(err, output.ErrConflict) {
 			t.Errorf("expected ErrConflict, got %v", err)
 		}
-		expectNoRPC(t, recorder)
+		testsupport.ExpectNoRPC(t, recorder)
 	})
 
 	t.Run("a cursor with no fence", func(t *testing.T) {
 		built, recorder := role(t, namespace)
-		unfenced := cursorFor(epoch)
+		unfenced := testsupport.Cursor(epoch)
 		unfenced.CursorFence = 0
 		_, err := built.ListPage(ctx, unfenced, output.DefaultPageBudget())
 		if !errors.Is(err, output.ErrIncomplete) {
 			t.Errorf("expected ErrIncomplete, got %v", err)
 		}
-		expectNoRPC(t, recorder)
+		testsupport.ExpectNoRPC(t, recorder)
 	})
 
 	t.Run("a budget with no stop condition", func(t *testing.T) {
 		built, recorder := role(t, namespace)
-		_, err := built.ListPage(ctx, cursorFor(epoch), output.PageBudget{})
+		_, err := built.ListPage(ctx, testsupport.Cursor(epoch), output.PageBudget{})
 		if err == nil {
 			t.Error("an empty budget was accepted; a pass with no bound is a pass nothing checks")
 		}
-		expectNoRPC(t, recorder)
+		testsupport.ExpectNoRPC(t, recorder)
 	})
 }
 
 func TestRecoverCursorRefusesAHealthyCursor(t *testing.T) {
-	built, recorder := role(t, namespaceFor(t, epoch))
+	namespace := namespaceFor(t)
+	built, recorder := role(t, namespace)
 
-	healthy := cursorFor(epoch)
-	healthy.AfterKey = namespace(t).ListPrefix() + "somewhere"
+	healthy := testsupport.Cursor(epoch)
+	healthy.AfterKey = namespace.ListPrefix() + "somewhere"
 	healthy.AfterGeneration = 4
 
 	_, _, err := built.RecoverCursor(healthy)
@@ -162,17 +124,16 @@ func TestRecoverCursorRefusesAHealthyCursor(t *testing.T) {
 		t.Errorf("expected ErrConflict, got %v. Recovering a cursor that validates would restart "+
 			"every sweep at the prefix, and no object past the first page would ever be reached", err)
 	}
-	expectNoRPC(t, recorder)
+	testsupport.ExpectNoRPC(t, recorder)
 }
 
-func namespace(t *testing.T) output.OutputNamespace { return namespaceFor(t, epoch) }
-
 func TestRecoverCursorRestartsAtThePrefixAndRecordsTheClaimedPosition(t *testing.T) {
-	built, recorder := role(t, namespace(t))
+	namespace := namespaceFor(t)
+	built, recorder := role(t, namespace)
 
 	// A generation with no after-key orders against nothing: the one corrupt
 	// shape a restart at the prefix repairs, with no key to name.
-	corrupt := cursorFor(epoch)
+	corrupt := testsupport.Cursor(epoch)
 	corrupt.AfterGeneration = 9
 	corrupt.Cycle = 3
 	if corrupt.Validate() == nil {
@@ -183,7 +144,7 @@ func TestRecoverCursorRestartsAtThePrefixAndRecordsTheClaimedPosition(t *testing
 	if err != nil {
 		t.Fatalf("recovering: %v", err)
 	}
-	expectNoRPC(t, recorder)
+	testsupport.ExpectNoRPC(t, recorder)
 
 	if !restarted.AtCycleStart() {
 		t.Errorf("the restarted cursor is at %q#%d, not at the cycle start",
@@ -207,9 +168,9 @@ func TestRecoverCursorRestartsAtThePrefixAndRecordsTheClaimedPosition(t *testing
 	// The debt names the position the cursor CLAIMED. It claimed no key, so
 	// the only honest object identity is the output prefix itself; inventing
 	// a key would be recording a fact about an object nothing observed.
-	if debt.ObjectKey != namespace(t).ListPrefix() {
+	if debt.ObjectKey != namespace.ListPrefix() {
 		t.Errorf("debt names %q; with no after-key the position is the output prefix %q",
-			debt.ObjectKey, namespace(t).ListPrefix())
+			debt.ObjectKey, namespace.ListPrefix())
 	}
 	if debt.Generation != corrupt.AfterGeneration {
 		t.Errorf("debt names generation %d, the cursor claimed %d", debt.Generation, corrupt.AfterGeneration)
@@ -223,23 +184,23 @@ func TestRecoverCursorRestartsAtThePrefixAndRecordsTheClaimedPosition(t *testing
 }
 
 func TestRecoverCursorRefusesCorruptionARestartDoesNotRepair(t *testing.T) {
-	built, recorder := role(t, namespace(t))
+	built, recorder := role(t, namespaceFor(t))
 
 	// No epoch at all is not a bad position; it is a cursor with no owner,
 	// and restarting it at the prefix would sweep under nobody's authority.
-	unowned := cursorFor(0)
-	_, _, err := built.RecoverCursor(unowned)
+	_, _, err := built.RecoverCursor(testsupport.Cursor(0))
 	if !errors.Is(err, output.ErrCorrupt) {
 		t.Errorf("expected ErrCorrupt, got %v", err)
 	}
-	expectNoRPC(t, recorder)
+	testsupport.ExpectNoRPC(t, recorder)
 }
 
 func TestStatExactObjectAnswersAbsenceAsNotFound(t *testing.T) {
 	ctx := context.Background()
-	built, recorder := role(t, namespace(t))
+	namespace := namespaceFor(t)
+	built, recorder := role(t, namespace)
 
-	_, err := built.StatExactObject(ctx, namespace(t).Ref(digestOf("ab"), 1))
+	_, err := built.StatExactObject(ctx, namespace.Ref(testsupport.Digest("ab"), 1))
 	if !errors.Is(err, output.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}

@@ -14,7 +14,6 @@ import (
 	"github.com/fsouza/fake-gcs-server/fakestorage"
 	"google.golang.org/api/option"
 
-	"github.com/concourse/concourse/hangar"
 	hangargcs "github.com/concourse/concourse/hangar/gcs"
 	"github.com/concourse/concourse/hangar/gcsdelete"
 	"github.com/concourse/concourse/hangar/gcstest"
@@ -439,49 +438,6 @@ const (
 	testReservation  = output.ReservationID("44444444-4444-4444-8444-444444444444")
 	otherReservation = output.ReservationID("55555555-5555-4555-8555-555555555555")
 )
-
-var fixedInstant = time.Date(2026, 3, 4, 5, 6, 7, 890123456, time.UTC)
-
-func namespaceFor(t *testing.T, bucket string) output.OutputNamespace {
-	t.Helper()
-
-	namespace, err := output.DeriveNamespace(output.NamespaceConfig{
-		Store:            output.StoreGCS,
-		Bucket:           bucket,
-		DeploymentPrefix: "deployments/blue",
-		TenantID:         testTenant,
-		ActivationEpoch:  testEpoch,
-	})
-	if err != nil {
-		t.Fatalf("deriving the namespace: %v", err)
-	}
-
-	return namespace
-}
-
-func digestOf(fill string) hangar.Digest {
-	return hangar.Digest("sha256:" + strings.Repeat(fill, 32/len(fill)*2)[:64])
-}
-
-func reservationFor(t *testing.T, namespace output.OutputNamespace, id output.ReservationID, digest hangar.Digest) output.ResolvedReservation {
-	t.Helper()
-
-	reservation := output.ResolvedReservation{
-		ReservationID:   id,
-		Execution:       executionIdentity(),
-		ActivationEpoch: testEpoch,
-		HandoffID:       "11111111-1111-4111-8111-111111111111",
-		CaptureFence:    1,
-		Scope:           namespace.Scope(),
-		Digest:          digest,
-		Marker:          namespace.MarkerFor(id, digest, output.NewTimestamp(fixedInstant)),
-	}
-	if err := reservation.Validate(); err != nil {
-		t.Fatalf("the fixture reservation does not validate: %v", err)
-	}
-
-	return reservation
-}
 
 // listen is a free port helper used by the unreachable-endpoint case, so that
 // "nothing is listening there" is a fact rather than a guess about port 1.
