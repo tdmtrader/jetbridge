@@ -76,7 +76,13 @@ func main() {
 	logger := lager.NewLogger("artifact-daemon")
 	logger.RegisterSink(lager.NewWriterSink(os.Stdout, lager.INFO))
 
-	// Build K8s client for node labeling.
+	// How the daemon reaches the cluster is an INPUT, resolved once here and
+	// handed to everything that needs it: the node labelers and, below, peer
+	// discovery. Two adapters sit on this one seam — the in-cluster config in a
+	// pod, an explicit --kubeconfig from outside one — and the modules that
+	// consume the client (NodeLabeler, PeerResolver) never learn which. A
+	// daemon with no --node-name labels nothing and has no peers, so it builds
+	// no client at all.
 	var labeler *NodeLabeler
 	var hangarLabeler *NodeLabeler
 	var k8sClient kubernetes.Interface
@@ -258,60 +264,56 @@ func main() {
 	sweeper.SetGuard(server.Guard())
 	sweeper.SetCaptureLedger(server.CaptureLedger())
 
-	// Set up peer resolver for cross-node artifact resolution.
+	// Set up peer resolver for cross-node artifact resolution. It shares the
+	// client built above: peer discovery is one more consumer of the same
+	// seam, not a second place that works out how to reach the cluster.
 	var mirror *Mirror
-	if *nodeName != "" {
-		k8sClientForPeers, err := buildK8sClient(*kubeconfig)
-		if err != nil {
-			logger.Error("failed-to-create-peer-k8s-client", err)
-			// Non-fatal — cross-node resolution won't work but local still does.
-		} else {
-			podIP := os.Getenv("POD_IP")
+	if k8sClient != nil {
+		podIP := os.Getenv("POD_IP")
 
-			var peerTLS *PeerTLSConfig
+		var peerTLS *PeerTLSConfig
+		if tlsEnabled {
+			peerTLS = &PeerTLSConfig{
+				CertPath:   *tlsCert, // daemon uses its own server cert as client cert for peers
+				KeyPath:    *tlsKey,
+				CACertPath: *tlsCACert,
+			}
+		}
+
+		peers := NewPeerResolver(logger, k8sClient, *namespace, *serviceName, *port, podIP, peerTLS)
+		server.SetPeerResolver(peers)
+		logger.Info("peer-resolver-configured", lager.Data{"service": *serviceName, "my-ip": podIP})
+
+		// Wire up the outbound mirror manager. The mirror reuses the
+		// peer resolver for endpoint discovery and shares the daemon's
+		// TLS config (when enabled) for cross-node PUTs.
+		if *mirrorReplicas != 0 {
+			mirrorClient := buildMirrorHTTPClient(logger, peerTLS, *mirrorTimeout)
+			scheme := "http"
 			if tlsEnabled {
-				peerTLS = &PeerTLSConfig{
-					CertPath:   *tlsCert, // daemon uses its own server cert as client cert for peers
-					KeyPath:    *tlsKey,
-					CACertPath: *tlsCACert,
-				}
+				scheme = "https"
 			}
-
-			peers := NewPeerResolver(logger, k8sClientForPeers, *namespace, *serviceName, *port, podIP, peerTLS)
-			server.SetPeerResolver(peers)
-			logger.Info("peer-resolver-configured", lager.Data{"service": *serviceName, "my-ip": podIP})
-
-			// Wire up the outbound mirror manager. The mirror reuses the
-			// peer resolver for endpoint discovery and shares the daemon's
-			// TLS config (when enabled) for cross-node PUTs.
-			if *mirrorReplicas != 0 {
-				mirrorClient := buildMirrorHTTPClient(logger, peerTLS, *mirrorTimeout)
-				scheme := "http"
-				if tlsEnabled {
-					scheme = "https"
-				}
-				mirror = NewMirror(MirrorConfig{
-					StoragePath:    *storagePath,
-					Port:           *port,
-					Scheme:         scheme,
-					Replicas:       *mirrorReplicas,
-					Concurrency:    *mirrorConcurrency,
-					PerPeerTimeout: *mirrorTimeout,
-					Peers:          peers,
-					Client:         mirrorClient,
-					Logger:         logger.Session("mirror"),
-					Guard:          server.Guard(),
-					Root:           server.Root(),
-				})
-				server.SetMirrorTrigger(mirror.Trigger)
-				logger.Info("mirror-configured", lager.Data{
-					"replicas":    *mirrorReplicas,
-					"concurrency": *mirrorConcurrency,
-					"timeout":     mirrorTimeout.String(),
-				})
-			} else {
-				logger.Info("mirror-disabled", lager.Data{"reason": "--mirror-replicas=0"})
-			}
+			mirror = NewMirror(MirrorConfig{
+				StoragePath:    *storagePath,
+				Port:           *port,
+				Scheme:         scheme,
+				Replicas:       *mirrorReplicas,
+				Concurrency:    *mirrorConcurrency,
+				PerPeerTimeout: *mirrorTimeout,
+				Peers:          peers,
+				Client:         mirrorClient,
+				Logger:         logger.Session("mirror"),
+				Guard:          server.Guard(),
+				Root:           server.Root(),
+			})
+			server.SetMirrorTrigger(mirror.Trigger)
+			logger.Info("mirror-configured", lager.Data{
+				"replicas":    *mirrorReplicas,
+				"concurrency": *mirrorConcurrency,
+				"timeout":     mirrorTimeout.String(),
+			})
+		} else {
+			logger.Info("mirror-disabled", lager.Data{"reason": "--mirror-replicas=0"})
 		}
 	}
 
