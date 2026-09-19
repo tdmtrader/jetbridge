@@ -1,5 +1,14 @@
 # Agent Instructions
 
+## Vocabulary
+
+The repo has four bounded contexts, each with a glossary. Read `CONTEXT-MAP.md`
+first, then the `CONTEXT.md` of the context you are touching (`atc/`,
+`atc/agent/`, `atc/worker/jetbridge/`, `hangar/`). Use the canonical term for
+a thing and never a term its entry lists under _Avoid_. Standing decisions
+that explain why the code is shaped the way it is live in `docs/adr/`;
+relationship and lifecycle models per context live in `docs/architecture/`.
+
 ## Running Tests
 
 PostgreSQL must be running locally for unit and integration tests. Check with `pg_isready`.
