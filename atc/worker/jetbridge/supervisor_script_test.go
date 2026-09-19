@@ -176,11 +176,30 @@ var _ = Describe("Task exec supervisor script execution", func() {
 			return err == nil
 		}, 3*time.Second, 50*time.Millisecond).Should(BeTrue())
 
-		pidBytes, err := os.ReadFile(filepath.Join(state, "pid"))
-		Expect(err).ToNot(HaveOccurred())
+		// The start record is written BEFORE the runner forks the command
+		// and BEFORE the pid file, so its existence proves neither that the
+		// command has run nor that the pid is readable yet. On a loaded CI
+		// worker the kills below landed in that gap: the runner died before
+		// `echo run-marker` ever executed, and the log the re-exec replayed
+		// held zero markers (unit-tests #998, "Expected 0 to equal 1" -- a
+		// producer that never ran, not one that ran twice). Req 6 is about a
+		// command that really ran, so wait for its own first output, and read
+		// the pid file with the same patience: the parent writes it only after
+		// the fork, and nothing orders that write before the child's echo.
+		Eventually(func() string {
+			logBytes, _ := os.ReadFile(filepath.Join(state, "log"))
+			return string(logBytes)
+		}, 5*time.Second, 50*time.Millisecond).Should(ContainSubstring("run-marker"))
+
 		var runnerPid int
-		_, err = fmt.Sscanf(strings.TrimSpace(string(pidBytes)), "%d", &runnerPid)
-		Expect(err).ToNot(HaveOccurred())
+		Eventually(func() error {
+			pidBytes, err := os.ReadFile(filepath.Join(state, "pid"))
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Sscanf(strings.TrimSpace(string(pidBytes)), "%d", &runnerPid)
+			return err
+		}, 3*time.Second, 50*time.Millisecond).Should(Succeed())
 
 		Expect(web1.Process.Kill()).To(Succeed())
 		_ = web1.Wait()
