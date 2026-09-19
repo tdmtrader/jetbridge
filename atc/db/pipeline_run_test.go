@@ -26,10 +26,10 @@ var _ = Describe("PipelineRun", func() {
 		id, found := pipeline.PipelineRunID()
 		Expect(found).To(BeTrue())
 		Expect(id).To(Equal(runID))
-		Expect(pipeline.BasePipelineID()).To(Equal(templateID))
-		baseRef, found := pipeline.BasePipelineRef()
+		Expect(pipeline.TemplatePipelineID()).To(Equal(templateID))
+		templateRef, found := pipeline.TemplatePipelineRef()
 		Expect(found).To(BeTrue())
-		Expect(baseRef).To(Equal(atc.PipelineRef{Name: "run-base"}))
+		Expect(templateRef).To(Equal(atc.PipelineRef{Name: "run-base"}))
 
 		_, err = dbConn.Exec(`INSERT INTO jobs(name, pipeline_id, config, active, run_expected, run_job_key) VALUES ('run-job', $1, '{}', true, true, 'entry-key')`, childID)
 		Expect(err).NotTo(HaveOccurred())
@@ -74,7 +74,7 @@ var _ = Describe("PipelineRun", func() {
 		buildRunID, hasRun := build.PipelineRunID()
 		Expect(hasRun).To(BeTrue())
 		Expect(buildRunID).To(Equal(runID))
-		Expect(build.BasePipelineID()).To(Equal(templateID))
+		Expect(build.TemplatePipelineID()).To(Equal(templateID))
 		identity, found := build.TaskCacheIdentity()
 		Expect(found).To(BeTrue())
 		Expect(identity).To(Equal(atc.TaskCacheIdentity{
@@ -82,9 +82,9 @@ var _ = Describe("PipelineRun", func() {
 			TemplatePipelineID: templateID,
 			RunJobName:         "run-job",
 		}))
-		baseRef, found := build.BasePipelineRef()
+		templateRef, found := build.TemplatePipelineRef()
 		Expect(found).To(BeTrue())
-		Expect(baseRef).To(Equal(atc.PipelineRef{Name: "detached-base"}))
+		Expect(templateRef).To(Equal(atc.PipelineRef{Name: "detached-base"}))
 	})
 
 	It("hydrates a live unstamped run check build's base template without stamping run identity", func() {
@@ -106,12 +106,12 @@ var _ = Describe("PipelineRun", func() {
 		buildRunID, hasRun := build.PipelineRunID()
 		Expect(hasRun).To(BeFalse())
 		Expect(buildRunID).To(BeZero())
-		Expect(build.BasePipelineID()).To(Equal(templateID))
+		Expect(build.TemplatePipelineID()).To(Equal(templateID))
 		_, found = build.TaskCacheIdentity()
 		Expect(found).To(BeFalse())
-		baseRef, found := build.BasePipelineRef()
+		templateRef, found := build.TemplatePipelineRef()
 		Expect(found).To(BeTrue())
-		Expect(baseRef).To(Equal(atc.PipelineRef{Name: "live-base"}))
+		Expect(templateRef).To(Equal(atc.PipelineRef{Name: "live-base"}))
 	})
 
 	It("excludes payloads from normal pipeline lists while retaining templates and ordinary instances", func() {

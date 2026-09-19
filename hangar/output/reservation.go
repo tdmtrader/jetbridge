@@ -20,7 +20,7 @@ package output
 //
 // The request body is CaptureAdmission unchanged. A reservation and a hold are
 // admitted for exactly the same facts -- the exact execution and its fence, the
-// handoff, the source lease, the declared output and the epoch -- and a second
+// handoff, the source hold, the declared output and the epoch -- and a second
 // request type carrying the same seven fields would be two spellings of one
 // contract, which is how the two of them come to disagree.
 
@@ -69,7 +69,7 @@ type ReservedIncarnation struct {
 	Execution       executioncontrol.Identity        `json:"execution"`
 	ActivationEpoch executioncontrol.ActivationEpoch `json:"activation_epoch"`
 	HandoffID       HandoffID                        `json:"handoff_id"`
-	SourceLeaseID   SourceLeaseID                    `json:"source_lease_id"`
+	SourceHoldID    SourceHoldID                     `json:"source_hold_id"`
 	NodeUID         executioncontrol.NodeUID         `json:"node_uid"`
 	Incarnation     SourceIncarnation                `json:"incarnation"`
 	Directory       string                           `json:"directory"`
@@ -91,7 +91,7 @@ func (reserved ReservedIncarnation) Validate() error {
 	if err := reserved.HandoffID.Validate(); err != nil {
 		return err
 	}
-	if err := reserved.SourceLeaseID.Validate(); err != nil {
+	if err := reserved.SourceHoldID.Validate(); err != nil {
 		return err
 	}
 	if reserved.NodeUID == "" {

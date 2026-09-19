@@ -659,19 +659,19 @@ func writePrivateKey(t *testing.T, private ed25519.PrivateKey) string {
 	return path
 }
 
-// writeMaterializationKey writes the exact 32 raw bytes an output read grant is
-// signed with. It is a third key on purpose: a grant must not be signable by
+// writeMaterializationKey writes the exact 32 raw bytes an output read warrant is
+// signed with. It is a third key on purpose: a warrant must not be signable by
 // anything that can mint a publication receipt.
 func writeMaterializationKey(t *testing.T) string {
 	t.Helper()
 
-	material := make([]byte, output.ReadGrantKeyBytes)
+	material := make([]byte, output.ReadWarrantKeyBytes)
 	if _, err := rand.Read(material); err != nil {
-		t.Fatalf("generating the read-grant key: %v", err)
+		t.Fatalf("generating the read-warrant key: %v", err)
 	}
 	path := filepath.Join(t.TempDir(), "materialize.key")
 	if err := os.WriteFile(path, material, 0o600); err != nil {
-		t.Fatalf("writing the read-grant key: %v", err)
+		t.Fatalf("writing the read-warrant key: %v", err)
 	}
 
 	return path

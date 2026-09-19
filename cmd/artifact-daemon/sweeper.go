@@ -35,7 +35,7 @@ type Sweeper struct {
 	// Run starts.
 	guard *ReadGuard
 
-	// captureLedger is the output plane's read-only source ledger.
+	// sourceLedger is the output plane's read-only source ledger.
 	//
 	// The sweeper is the destructive path a held source is most likely to
 	// meet. Nothing refreshes a held source's mtime -- the producer wrote it
@@ -43,13 +43,13 @@ type Sweeper struct {
 	// to be sealed ages exactly like an abandoned one, and this loop is the
 	// thing that decides. Nil-safe: a nil ledger is a node with no output
 	// plane, and the sweep is unchanged.
-	captureLedger *ledger.Classifier
+	sourceLedger *ledger.Classifier
 }
 
-// SetCaptureLedger wires the output plane's read-only classifier. Must be
+// SetSourceLedger wires the output plane's read-only classifier. Must be
 // called before Run starts.
-func (s *Sweeper) SetCaptureLedger(classifier *ledger.Classifier) {
-	s.captureLedger = classifier
+func (s *Sweeper) SetSourceLedger(classifier *ledger.Classifier) {
+	s.sourceLedger = classifier
 }
 
 // SetGuard wires the read/sweep coordination guard. Must be called before
@@ -177,8 +177,8 @@ func (s *Sweeper) removeStepDir(logger lager.Logger, handleDir, handle string, c
 	// A step directory is the PARENT of an incarnation, so this asks the
 	// ancestor question -- the one the first version of the classifier could
 	// not answer, and the reason this loop deleted held sources on a timer.
-	if s.captureLedger != nil {
-		class := s.captureLedger.Classify(handle)
+	if s.sourceLedger != nil {
+		class := s.sourceLedger.Classify(handle)
 		if !class.Destructive() {
 			logger.Info("spared-capture-held-step-dir", lager.Data{
 				"path": handleDir, "class": string(class),

@@ -54,7 +54,7 @@ func (request PublicationRequest) Validate() error {
 	return request.Namespace.Validate()
 }
 
-// PublicationResult is the exact reference the store assigned, plus what the
+// PublicationResult is the tree ref the store assigned, plus what the
 // object turned out to be.
 //
 // Deduplicated is a fact about the store, not about this call: the same

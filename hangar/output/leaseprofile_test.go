@@ -21,7 +21,7 @@ import (
 func TestAReadProfileCarriesTheTimeoutItsMarginIsMadeOf(t *testing.T) {
 	client := &LeaseControlClient{}
 
-	profile, err := NewLeaseReadProfile(client, "a-grant", 10*time.Minute)
+	profile, err := NewLeaseReadProfile(client, "a-warrant", 10*time.Minute)
 	if err != nil {
 		t.Fatalf("building the profile: %v", err)
 	}
@@ -32,7 +32,7 @@ func TestAReadProfileCarriesTheTimeoutItsMarginIsMadeOf(t *testing.T) {
 
 	// A profile with no timeout cannot be built at all. One that could would be
 	// one that asks the control plane whether the lease has expired.
-	if _, err := NewLeaseReadProfile(client, "a-grant", 0); err == nil {
+	if _, err := NewLeaseReadProfile(client, "a-warrant", 0); err == nil {
 		t.Error("a managed read profile was built with no materialization timeout; its Admit " +
 			"would ask for zero remaining term, which is not Req 36's rule")
 	}
@@ -48,7 +48,7 @@ func TestAValidateOrRenewMayNotNameZeroWork(t *testing.T) {
 			Operation:                operation,
 			KeyID:                    "control-key-1",
 			NodeUID:                  executioncontrol.NodeUID("node-1"),
-			Grant:                    "a-grant",
+			Warrant:                  "a-warrant",
 			RequiredRemainingSeconds: int64(work.Seconds()),
 			IssuedAt:                 NewTimestamp(time.Now().UTC()),
 			Signature:                "signed",

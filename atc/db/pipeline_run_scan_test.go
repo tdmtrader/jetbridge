@@ -43,7 +43,7 @@ var _ = Describe("Pipeline run shared query scanners", func() {
 		runNumber, hasRun := payload.RunNumber()
 		Expect(hasRun).To(BeTrue())
 		Expect(runNumber).To(Equal(creation.Run.Number()))
-		Expect(payload.BasePipelineID()).To(Equal(template.ID()))
+		Expect(payload.TemplatePipelineID()).To(Equal(template.ID()))
 
 		// resourcesQuery / resourceTypesQuery / prototypesQuery / jobsQuery must
 		// still scan cleanly now that the run presentation columns are gone.

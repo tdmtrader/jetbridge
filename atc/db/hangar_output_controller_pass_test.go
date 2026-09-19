@@ -328,7 +328,7 @@ var _ = Describe("the output-plane controller passes", func() {
 
 		It("waits for reconciliation before admitting another delete beside an unexplained one", func() {
 			// R1-F15's ruling, in the half where the blip reading is wrong. A
-			// fresh safe attestation reopens captures, claims and grants,
+			// fresh safe attestation reopens captures, claims and warrants,
 			// because a twenty-minute network problem must not need a human
 			// before the plane resumes. It does NOT reopen deletion while a
 			// violation says something else may be removing this bucket's

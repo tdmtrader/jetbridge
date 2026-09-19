@@ -139,9 +139,9 @@ type RunCommand struct {
 	// k8sArtifactLocator is shared between the Reaper and Worker factory
 	// for DaemonSet mode. Created in backendComponents, used in constructPool.
 	k8sArtifactLocator *jetbridge.ArtifactLocator
-	// k8sHangarGrantSigner is constructed once during startup validation and
+	// k8sHangarWarrantSigner is constructed once during startup validation and
 	// shared by every separately composed JetBridge Config.
-	k8sHangarGrantSigner *hangar.GrantSigner
+	k8sHangarWarrantSigner *hangar.WarrantSigner
 
 	// hangarOutputReceiptKeys is the versioned receipt VERIFICATION ring, loaded
 	// once at startup rather than at the first receipt.
@@ -221,13 +221,14 @@ type RunCommand struct {
 		OutputPlaneEnabled                 bool          `long:"kubernetes-hangar-output-enabled"           description:"Enable the durable output-capture extension: the capture control init, the ledger-checked stale-workspace cleanup, and the ATC's exact-execution control calls. Off, every one of those is absent and an ordinary pod is byte-identical to the one built without it."`
 		OutputDaemonPort                   int           `long:"kubernetes-hangar-output-daemon-port" default:"7781" description:"Control port of the node-local Hangar output daemon. It is a different daemon on a different port from the artifact daemon, because the two may not share a bucket and a Kubernetes service account is Pod-wide."`
 		OutputCaptureEnabled               bool          `long:"kubernetes-hangar-output-capture-enabled"   description:"Enable web-side durable output SELECTION. It is a second switch on top of --kubernetes-hangar-output-enabled: the base one wires the exact-execution control calls, this one is what lets an admitted task carry a capture at all. A worker whose output facet is not enabled builds no capture pod, and the refusal is at admission rather than an omission in the Pod."`
-		OutputCapabilityKey                string        `long:"kubernetes-hangar-output-capability-key"    description:"Path to the raw 32-byte key the control plane mints Hangar output CONTROL capabilities with. The output daemon verifies with the same key; nothing else holds it."`
+		OutputWarrantKey                   string        `long:"kubernetes-hangar-output-warrant-key"    description:"Path to the raw 32-byte key the control plane mints Hangar output CONTROL capabilities with. The output daemon verifies with the same key; nothing else holds it."`
+		OutputWarrantKeyLegacy             string        `long:"kubernetes-hangar-output-capability-key" hidden:"true" description:"Deprecated alias for --kubernetes-hangar-output-warrant-key."`
 		OutputDaemonTLSCert                string        `long:"kubernetes-hangar-output-tls-cert"          description:"Path to the ATC's CLIENT certificate for the Hangar output daemon's control API. It is the output plane's own credential, issued in the same trust domain as the daemon's server Secret: the artifact daemon's is a different daemon, a different bucket and a different identity, and a certificate from its CA handshakes and is then refused by every control route."`
 		OutputDaemonTLSKey                 string        `long:"kubernetes-hangar-output-tls-key"           description:"Path to the private key for --kubernetes-hangar-output-tls-cert."`
 		OutputDaemonTLSCACert              string        `long:"kubernetes-hangar-output-tls-ca-cert"       description:"Path to the CA certificate the Hangar output daemon's SERVER certificate is verified against."`
 		OutputDaemonTLSServerName          string        `long:"kubernetes-hangar-output-tls-server-name"   description:"DNS name the output daemon's server certificate carries. The daemon is dialed at <node IP> and has no Service, and a node IP cannot be a SAN in a certificate issued before that node existed, so verification is against this name."`
 		OutputReceiptKeys                  string        `long:"kubernetes-hangar-output-receipt-keys"      description:"Path to the versioned receipt PUBLIC key ring. Verification material only: the control plane checks every receipt before registration and can sign none of them."`
-		OutputMaterializationKey           string        `long:"kubernetes-hangar-output-materialization-key" description:"Path to the exact 32-byte key output READ GRANTS are minted with, under the hangar-output-materialize-v1 domain. It is never the receipt key -- a grant must not be signable by anything that can mint a publication receipt -- and never the foundation's strict-input materialization key."`
+		OutputMaterializationKey           string        `long:"kubernetes-hangar-output-materialization-key" description:"Path to the exact 32-byte key output READ WARRANTS are minted with, under the hangar-output-materialize-v1 domain. It is never the receipt key -- a warrant must not be signable by anything that can mint a publication receipt -- and never the foundation's strict-input materialization key."`
 		OutputActivationEpoch              int64         `long:"kubernetes-hangar-output-activation-epoch"  description:"The activation epoch this control plane speaks for. Every capture records it; a stale label or handshake authorizes nothing."`
 		OutputBucket                       string        `long:"kubernetes-hangar-output-bucket"            description:"The dedicated output bucket. The control plane derives the bucket, scope and key prefix from authenticated deployment context alone; it is here so the status surface can key a cursor by the same bucket the sweep does, and never so a caller can choose one."`
 		OutputTenant                       string        `long:"kubernetes-hangar-output-tenant"            description:"Authenticated deployment/tenant identity the opaque output scope is derived from. It is never rendered into an object key."`
@@ -236,8 +237,10 @@ type RunCommand struct {
 		OutputLeaseTerm                    time.Duration `long:"kubernetes-hangar-output-lease-term"        default:"15m" description:"Term of the capture, read and reclaim leases. At least 15 minutes."`
 		OutputLeaseRenewInterval           time.Duration `long:"kubernetes-hangar-output-lease-renew-interval" default:"1m" description:"How often a held lease is renewed. At most one minute: a longer interval is a lease that expires under its own owner."`
 		HangarEnabled                      bool          `long:"kubernetes-hangar-enabled"                  description:"Enable exact immutable Hangar tree inputs for Kubernetes task Pods."`
-		HangarCapabilityKey                string        `long:"kubernetes-hangar-capability-key"           description:"Path to the raw 32-byte Hangar materialization capability key."`
-		HangarCapabilityTTL                time.Duration `long:"kubernetes-hangar-capability-ttl"           default:"15m" description:"Lifetime of exact Hangar materialization grants (maximum 15m)."`
+		HangarWarrantKey                   string        `long:"kubernetes-hangar-warrant-key"           description:"Path to the raw 32-byte Hangar materialization warrant key."`
+		HangarWarrantTTL                   time.Duration `long:"kubernetes-hangar-warrant-ttl"           default:"15m" description:"Lifetime of exact Hangar materialization warrants (maximum 15m)."`
+		HangarWarrantKeyLegacy             string        `long:"kubernetes-hangar-capability-key" hidden:"true" description:"Deprecated alias for --kubernetes-hangar-warrant-key."`
+		HangarWarrantTTLLegacy             time.Duration `long:"kubernetes-hangar-capability-ttl" hidden:"true" description:"Deprecated alias for --kubernetes-hangar-warrant-ttl."`
 		ImageRegistryPrefix                string        `long:"kubernetes-image-registry-prefix"     description:"Registry path prefix for custom resource type images (e.g. gcr.io/my-project/concourse). Images are resolved as <prefix>/<type-name>."`
 		ImageRegistrySecret                string        `long:"kubernetes-image-registry-secret"     description:"Kubernetes Secret name (type kubernetes.io/dockerconfigjson) for registry auth. Auto-added to imagePullSecrets on every pod."`
 		BaseResourceTypes                  []string      `long:"kubernetes-base-resource-type"        description:"Override or add a base resource type image. Format: name=image (e.g. git=my-registry/git-resource:v2). Can be specified multiple times. Merges with built-in defaults." value-name:"NAME=IMAGE"`
@@ -1370,7 +1373,7 @@ func (cmd *RunCommand) backendComponents(
 			cmd.Kubernetes.ArtifactDaemonTLSCACert,
 		)
 		k8sCfg.HangarEnabled = cmd.Kubernetes.HangarEnabled
-		k8sCfg.HangarGrantSigner = cmd.k8sHangarGrantSigner
+		k8sCfg.HangarWarrantSigner = cmd.k8sHangarWarrantSigner
 		k8sCfg.OutputPlaneEnabled = cmd.Kubernetes.OutputPlaneEnabled
 		k8sCfg.OutputActivationEpoch = cmd.Kubernetes.OutputActivationEpoch
 		k8sCfg.OutputDaemonPort = cmd.Kubernetes.OutputDaemonPort
@@ -1515,7 +1518,7 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 			cmd.Kubernetes.ArtifactDaemonTLSCACert,
 		)
 		k8sCfg.HangarEnabled = cmd.Kubernetes.HangarEnabled
-		k8sCfg.HangarGrantSigner = cmd.k8sHangarGrantSigner
+		k8sCfg.HangarWarrantSigner = cmd.k8sHangarWarrantSigner
 		k8sCfg.OutputPlaneEnabled = cmd.Kubernetes.OutputPlaneEnabled
 		k8sCfg.OutputActivationEpoch = cmd.Kubernetes.OutputActivationEpoch
 		k8sCfg.OutputDaemonPort = cmd.Kubernetes.OutputDaemonPort
@@ -2181,7 +2184,42 @@ func (cmd *RunCommand) validateMCPDisabledOperations() error {
 //
 // See track
 // route_artifact_reads_through_daemonset_remove_exec_backed_artifact_io_20260418.
+// applyDeprecatedHangarWarrantFlags folds the pre-rename `-capability-` flag
+// spellings into the `-warrant-` fields they now alias. A deprecated key flag
+// fills an empty new one and is refused when both name different files; a
+// deprecated TTL, when given, replaces the new flag's value outright, because a
+// duration flag cannot tell "left at the default" from "set to the default".
+func (cmd *RunCommand) applyDeprecatedHangarWarrantFlags() error {
+	aliases := []struct {
+		current, legacy         *string
+		currentName, legacyName string
+	}{
+		{&cmd.Kubernetes.HangarWarrantKey, &cmd.Kubernetes.HangarWarrantKeyLegacy,
+			"--kubernetes-hangar-warrant-key", "--kubernetes-hangar-capability-key"},
+		{&cmd.Kubernetes.OutputWarrantKey, &cmd.Kubernetes.OutputWarrantKeyLegacy,
+			"--kubernetes-hangar-output-warrant-key", "--kubernetes-hangar-output-capability-key"},
+	}
+	for _, alias := range aliases {
+		if *alias.legacy == "" {
+			continue
+		}
+		if *alias.current != "" && *alias.current != *alias.legacy {
+			return fmt.Errorf("%s and its deprecated alias %s name different files; set only %s",
+				alias.currentName, alias.legacyName, alias.currentName)
+		}
+		*alias.current = *alias.legacy
+	}
+	if cmd.Kubernetes.HangarWarrantTTLLegacy != 0 {
+		cmd.Kubernetes.HangarWarrantTTL = cmd.Kubernetes.HangarWarrantTTLLegacy
+	}
+
+	return nil
+}
+
 func (cmd *RunCommand) validateK8sRuntime() error {
+	if err := cmd.applyDeprecatedHangarWarrantFlags(); err != nil {
+		return err
+	}
 	if cmd.Kubernetes.HangarEnabled && cmd.Kubernetes.Namespace == "" {
 		return errors.New("--kubernetes-namespace is required when --kubernetes-hangar-enabled is set")
 	}
@@ -2206,29 +2244,29 @@ func (cmd *RunCommand) validateK8sRuntime() error {
 	if !cmd.Kubernetes.HangarEnabled {
 		return nil
 	}
-	if cmd.Kubernetes.HangarCapabilityTTL <= 0 || cmd.Kubernetes.HangarCapabilityTTL > hangar.MaxGrantTTL {
-		return fmt.Errorf("--kubernetes-hangar-capability-ttl must be positive and no greater than %s", hangar.MaxGrantTTL)
+	if cmd.Kubernetes.HangarWarrantTTL <= 0 || cmd.Kubernetes.HangarWarrantTTL > hangar.MaxWarrantTTL {
+		return fmt.Errorf("--kubernetes-hangar-warrant-ttl must be positive and no greater than %s", hangar.MaxWarrantTTL)
 	}
 	if cmd.Kubernetes.ArtifactDaemonTLSCert == "" || cmd.Kubernetes.ArtifactDaemonTLSKey == "" || cmd.Kubernetes.ArtifactDaemonTLSCACert == "" {
 		return errors.New("--kubernetes-hangar-enabled requires complete artifact daemon TLS: " +
 			"--kubernetes-artifact-daemon-tls-cert, --kubernetes-artifact-daemon-tls-key, and --kubernetes-artifact-daemon-tls-ca-cert")
 	}
-	if cmd.Kubernetes.HangarCapabilityKey == "" {
-		return errors.New("--kubernetes-hangar-capability-key is required when --kubernetes-hangar-enabled is set")
+	if cmd.Kubernetes.HangarWarrantKey == "" {
+		return errors.New("--kubernetes-hangar-warrant-key is required when --kubernetes-hangar-enabled is set")
 	}
-	if cmd.k8sHangarGrantSigner == nil {
-		key, err := os.ReadFile(cmd.Kubernetes.HangarCapabilityKey)
+	if cmd.k8sHangarWarrantSigner == nil {
+		key, err := os.ReadFile(cmd.Kubernetes.HangarWarrantKey)
 		if err != nil {
-			return fmt.Errorf("read --kubernetes-hangar-capability-key: %w", err)
+			return fmt.Errorf("read --kubernetes-hangar-warrant-key: %w", err)
 		}
 		if len(key) != sha256.Size {
-			return fmt.Errorf("--kubernetes-hangar-capability-key must contain exactly %d raw bytes", sha256.Size)
+			return fmt.Errorf("--kubernetes-hangar-warrant-key must contain exactly %d raw bytes", sha256.Size)
 		}
-		signer, err := hangar.NewGrantSigner(key, cmd.Kubernetes.HangarCapabilityTTL, nil)
+		signer, err := hangar.NewWarrantSigner(key, cmd.Kubernetes.HangarWarrantTTL, nil)
 		if err != nil {
-			return fmt.Errorf("construct Hangar materialization grant signer: %w", err)
+			return fmt.Errorf("construct Hangar materialization warrant signer: %w", err)
 		}
-		cmd.k8sHangarGrantSigner = signer
+		cmd.k8sHangarWarrantSigner = signer
 	}
 	return nil
 }
@@ -2740,13 +2778,16 @@ func (cmd *RunCommand) loadArtifactResolveCapabilityKey() ([]byte, error) {
 // Two facets, checked in the order they depend on each other. The BASE facet
 // wires this node's exact-execution control calls and needs the capability key
 // the daemon verifies with; the CAPTURE facet needs the receipt ring it
-// verifies receipts against, the read-grant key it mints grants with, and an
+// verifies receipts against, the read-warrant key it mints warrants with, and an
 // activation epoch, and it can never be on while the base facet is off.
 //
 // Every refusal here is one the chart also refuses at render time. Both, and
 // deliberately: the chart is what an operator reviews, and this is what catches
 // a deployment that did not come from the chart.
 func (cmd *RunCommand) validateHangarOutputPlane() error {
+	if err := cmd.applyDeprecatedHangarWarrantFlags(); err != nil {
+		return err
+	}
 	if cmd.Kubernetes.OutputCaptureEnabled && !cmd.Kubernetes.OutputPlaneEnabled {
 		return errors.New("--kubernetes-hangar-output-capture-enabled requires " +
 			"--kubernetes-hangar-output-enabled: durable output capture is an extension of " +
@@ -2756,8 +2797,8 @@ func (cmd *RunCommand) validateHangarOutputPlane() error {
 	if !cmd.Kubernetes.OutputPlaneEnabled {
 		return nil
 	}
-	if cmd.Kubernetes.OutputCapabilityKey == "" {
-		return errors.New("--kubernetes-hangar-output-capability-key is required when " +
+	if cmd.Kubernetes.OutputWarrantKey == "" {
+		return errors.New("--kubernetes-hangar-output-warrant-key is required when " +
 			"--kubernetes-hangar-output-enabled is set: every control operation on the output " +
 			"daemon presents a capability minted with it, and a control plane that cannot mint " +
 			"one can make no call at all")
@@ -2786,14 +2827,14 @@ func (cmd *RunCommand) validateHangarOutputPlane() error {
 	// the resolver built from this minter. NOTHING SELECTS A CAPTURE YET, so
 	// no production path spends a capability; what this removes is the gap
 	// between a startup refusal and what it was refusing about.
-	capabilityKey, err := os.ReadFile(cmd.Kubernetes.OutputCapabilityKey)
+	capabilityKey, err := os.ReadFile(cmd.Kubernetes.OutputWarrantKey)
 	if err != nil {
-		return fmt.Errorf("--kubernetes-hangar-output-capability-key: %w", err)
+		return fmt.Errorf("--kubernetes-hangar-output-warrant-key: %w", err)
 	}
 	minter, err := executioncontrol.NewCapabilityMinter(capabilityKey,
 		executioncontrol.MaxCapabilityTTL, nil)
 	if err != nil {
-		return fmt.Errorf("--kubernetes-hangar-output-capability-key: %w", err)
+		return fmt.Errorf("--kubernetes-hangar-output-warrant-key: %w", err)
 	}
 	cmd.hangarOutputCapabilityMinter = minter
 	// The output plane's transport is TLS, and only TLS: the daemon's control
@@ -2857,19 +2898,19 @@ func (cmd *RunCommand) validateHangarOutputPlane() error {
 	if cmd.Kubernetes.OutputMaterializationKey == "" {
 		return errors.New("--kubernetes-hangar-output-materialization-key is required when " +
 			"--kubernetes-hangar-output-capture-enabled is set: a managed read is delivered " +
-			"as a lease-bound grant, and there is nothing to sign one with")
+			"as a lease-bound warrant, and there is nothing to sign one with")
 	}
-	if cmd.Kubernetes.OutputMaterializationKey == cmd.Kubernetes.OutputCapabilityKey {
+	if cmd.Kubernetes.OutputMaterializationKey == cmd.Kubernetes.OutputWarrantKey {
 		return errors.New("--kubernetes-hangar-output-materialization-key and " +
-			"--kubernetes-hangar-output-capability-key name the same file. A read grant " +
+			"--kubernetes-hangar-output-warrant-key name the same file. A read warrant " +
 			"authorizes one staged read of one object; a control capability authorizes one " +
 			"operation on a daemon. One key for both means either can be spent as the other")
 	}
-	if cmd.Kubernetes.OutputMaterializationKey == cmd.Kubernetes.HangarCapabilityKey {
+	if cmd.Kubernetes.OutputMaterializationKey == cmd.Kubernetes.HangarWarrantKey {
 		return errors.New("--kubernetes-hangar-output-materialization-key and " +
-			"--kubernetes-hangar-capability-key name the same file. The output read grant " +
+			"--kubernetes-hangar-warrant-key name the same file. The output read warrant " +
 			"uses its own key and its own domain; reusing the foundation's strict-input key " +
-			"would make a strict-input grant spendable against a managed output")
+			"would make a strict-input warrant spendable against a managed output")
 	}
 
 	return nil

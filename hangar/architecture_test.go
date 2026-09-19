@@ -110,7 +110,7 @@ func TestArchitectureHangarPackageIsALeaf(t *testing.T) {
 	}
 }
 
-// AC 20's second clause: no output grant path reaches the daemon without a
+// AC 20's second clause: no output warrant path reaches the daemon without a
 // claim/read-lease check.
 //
 // The clause is about a PATH, and a path is hard to state as an import rule --
@@ -127,7 +127,7 @@ func TestArchitectureHangarPackageIsALeaf(t *testing.T) {
 //     endpoints. A second implementation is a second answer to "may I read
 //     this", and the one that does not ask is the one somebody will wire.
 //
-// A caller-provided grant is not authority in either half: requirement 36 puts
+// A caller-provided warrant is not authority in either half: requirement 36 puts
 // the authority on the committed lease, and the lease is decided in one
 // caller-owned transaction that revalidates the active claim, the registered
 // exact lifecycle, a fresh stat proof, and the policy and reclaim exclusion.
@@ -194,7 +194,7 @@ func TestAManagedReadAdmitsBeforeItOpens(t *testing.T) {
 	}
 	if admit > open {
 		t.Error("MaterializeManaged opens the object BEFORE it admits the lease.\n\n" +
-			"A caller-provided grant is not authority: requirement 36 puts it on the " +
+			"A caller-provided warrant is not authority: requirement 36 puts it on the " +
 			"committed lease, and the daemon validates the exact lease is still active " +
 			"before it opens anything. Asking afterwards means the bytes are on disk by the " +
 			"time the answer arrives.")
@@ -287,7 +287,7 @@ func TestExactlyOneProductionTypeImplementsTheOutputReadProfile(t *testing.T) {
 			"exactly one: %s.\n\nA second implementation is a second answer to \"may I read "+
 			"this\", and the one that does not ask the control plane is the one somebody "+
 			"will wire. %s's Admit is an HTTP round trip to the lease endpoints; a profile "+
-			"that decided locally would be a grant authorizing itself.",
+			"that decided locally would be a warrant authorizing itself.",
 			complete, only, only)
 	}
 }

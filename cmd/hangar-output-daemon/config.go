@@ -50,9 +50,9 @@ type Config struct {
 	ReceiptKeyID   string
 	ReceiptKeyFile string
 
-	// The output read-grant key: a THIRD key, an exact 32-byte HMAC secret
+	// The output read-warrant key: a THIRD key, an exact 32-byte HMAC secret
 	// under the hangar-output-materialize-v1 domain. It is neither the receipt
-	// key (a read grant must not be signable by anything that can mint a
+	// key (a read warrant must not be signable by anything that can mint a
 	// publication receipt) nor the foundation's strict-input materialization
 	// key (which attests inputs and belongs to the other daemon).
 	MaterializationKeyID   string
@@ -131,9 +131,9 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 	flags.StringVar(&config.ReceiptKeyFile, "receipt-key-file", "",
 		"Path to the PKCS#8 PEM Ed25519 private key used to sign receipts. It is mounted only in this Pod: the control plane, the web node, the existing artifact daemon, the controllers, the control init container, the task and the sidecar hold the public key and the key id only.")
 	flags.StringVar(&config.MaterializationKeyID, "materialization-key-id", "",
-		"Identifier of the key output read grants are minted and verified with. A grant names it so a verifier knows which activation-pinned key can check it.")
+		"Identifier of the key output read warrants are minted and verified with. A warrant names it so a verifier knows which activation-pinned key can check it.")
 	flags.StringVar(&config.MaterializationKeyFile, "materialization-key-file", "",
-		"Path to the raw 32-byte key output read grants are signed with, under the hangar-output-materialize-v1 domain. It is never the receipt key and never the foundation's strict-input materialization key.")
+		"Path to the raw 32-byte key output read warrants are signed with, under the hangar-output-materialize-v1 domain. It is never the receipt key and never the foundation's strict-input materialization key.")
 	flags.StringVar(&config.ControlKeyID, "control-key-id", "",
 		"Identifier of the Ed25519 key this node signs execution and source ledger statements with. A control plane pins its public half per activation epoch.")
 	flags.StringVar(&config.ControlKeyFile, "control-key-file", "",
@@ -258,9 +258,9 @@ func (config Config) validateOutputFacet() error {
 		{"--receipt-key-file", config.ReceiptKeyFile,
 			"this is the only process that holds the private half"},
 		{"--materialization-key-id", config.MaterializationKeyID,
-			"a read grant names the key that can check it"},
+			"a read warrant names the key that can check it"},
 		{"--materialization-key-file", config.MaterializationKeyFile,
-			"the output read grant uses its own key and its own domain, never the receipt key"},
+			"the output read warrant uses its own key and its own domain, never the receipt key"},
 	} {
 		if strings.TrimSpace(required.value) == "" {
 			return fmt.Errorf("%w: %s is required when --output-bucket is set; %s",
@@ -286,7 +286,7 @@ func (config Config) validateOutputFacet() error {
 	}
 	if config.ReceiptKeyID == config.MaterializationKeyID {
 		return fmt.Errorf("%w: the receipt and materialization key ids are the same; a read "+
-			"grant must not be signable by anything that can mint a publication receipt",
+			"warrant must not be signable by anything that can mint a publication receipt",
 			output.ErrIncomplete)
 	}
 
@@ -298,7 +298,7 @@ func (config Config) validateOutputFacet() error {
 // Validate above refuses five path pairs and two equal key ids, and every one
 // of those comparisons is over NAMES: two flags pointing at symlinks to one
 // file pass all of them, and so do two Secrets holding identical material. The
-// separation the plan promises is a separation of authority -- a read grant
+// separation the plan promises is a separation of authority -- a read warrant
 // must not be signable by anything that can mint a publication receipt -- and
 // authority follows the bytes.
 //
@@ -335,7 +335,7 @@ func (config Config) RefuseCollidingKeyMaterial() error {
 				return fmt.Errorf("%w: %s and %s name different files holding the SAME key "+
 					"material. They say different things and an activation epoch pins them "+
 					"separately, so one key would mean rotating either rotates both -- and a "+
-					"read grant must not be signable by anything that can mint a publication "+
+					"read warrant must not be signable by anything that can mint a publication "+
 					"receipt", output.ErrIncomplete, flags[i], flags[j])
 			}
 		}

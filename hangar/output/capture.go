@@ -58,7 +58,7 @@ type CaptureAdmission struct {
 	Execution       executioncontrol.Identity        `json:"execution"`
 	ActivationEpoch executioncontrol.ActivationEpoch `json:"activation_epoch"`
 	HandoffID       HandoffID                        `json:"handoff_id"`
-	SourceLeaseID   SourceLeaseID                    `json:"source_lease_id"`
+	SourceHoldID    SourceHoldID                     `json:"source_hold_id"`
 	Output          OutputName                       `json:"output"`
 	CaptureDeadline Timestamp                        `json:"capture_deadline_at"`
 }
@@ -77,7 +77,7 @@ func (admission CaptureAdmission) Validate() error {
 	if err := admission.HandoffID.Validate(); err != nil {
 		return err
 	}
-	if err := admission.SourceLeaseID.Validate(); err != nil {
+	if err := admission.SourceHoldID.Validate(); err != nil {
 		return err
 	}
 	if err := admission.Output.Validate(); err != nil {
@@ -215,7 +215,7 @@ type CaptureAcknowledgement struct {
 	NodeUID         executioncontrol.NodeUID         `json:"node_uid"`
 	PodUID          executioncontrol.PodUID          `json:"pod_uid"`
 	HandoffID       HandoffID                        `json:"handoff_id"`
-	SourceLeaseID   SourceLeaseID                    `json:"source_lease_id"`
+	SourceHoldID    SourceHoldID                     `json:"source_hold_id"`
 	Incarnation     SourceIncarnation                `json:"incarnation"`
 	WriterTicketID  WriterTicketID                   `json:"writer_ticket_id"`
 	WriterFence     WriterFence                      `json:"writer_fence"`
@@ -245,7 +245,7 @@ func (ack CaptureAcknowledgement) Validate() error {
 	if err := ack.HandoffID.Validate(); err != nil {
 		return err
 	}
-	if err := ack.SourceLeaseID.Validate(); err != nil {
+	if err := ack.SourceHoldID.Validate(); err != nil {
 		return err
 	}
 	if err := ack.Incarnation.Validate(); err != nil {

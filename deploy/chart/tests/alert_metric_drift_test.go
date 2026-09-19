@@ -201,7 +201,7 @@ func nearestMetrics(declared map[string]bool, want string) []string {
 // They are different failures. The first is a rule that can never fire; this is
 // a state that can never be alerted on, and it is the worse of the two, because
 // the plane is FAIL-CLOSED from detection onward. An at-risk epoch blocks new
-// captures, claim acquisitions, managed-output grants, orphan adoption and
+// captures, claim acquisitions, managed-output warrants, orphan adoption and
 // reclaim admission; a class with no alert behind it is builds refusing to run
 // with nothing on the Prometheus rules page to say why.
 //

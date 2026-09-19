@@ -99,7 +99,7 @@ func admittedCapture() *runtime.ExecutionControl {
 		Identity:           control.Identity,
 		ActivationEpoch:    control.ActivationEpoch,
 		HandoffID:          hangaroutput.HandoffID("22222222-2222-4222-8222-222222222222"),
-		SourceLeaseID:      hangaroutput.SourceLeaseID("33333333-3333-4333-8333-333333333333"),
+		SourceHoldID:       hangaroutput.SourceHoldID("33333333-3333-4333-8333-333333333333"),
 		Output:             "result",
 		SourceControlGrant: "source-control-grant",
 		CaptureDeadline:    time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC),

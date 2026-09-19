@@ -520,7 +520,7 @@ artifactDaemon:
     maxContentBytes: 10737418240
     # -- Maximum filesystem entries admitted in one immutable tree.
     maxEntries: 100000
-    # -- Lifetime of attenuated per-input materialization grants, expressed as
+    # -- Lifetime of attenuated per-input materialization warrants, expressed as
     # positive whole seconds. Maximum 900s (Hangar's core 15-minute bound).
     capabilityTTL: "900s"
 
@@ -810,7 +810,7 @@ hangarOutput:
     enabled: false
     # -- Existing Secret holding control.key: a PKCS#8 PEM Ed25519 private key
     # the node signs execution and source ledger statements with. Required.
-    # It is NOT the receipt key and NOT the read-grant key; an activation epoch
+    # It is NOT the receipt key and NOT the read-warrant key; an activation epoch
     # pins the three separately so rotating one does not rotate the others.
     keySecret: ""
     # -- Key id of the control key above, and the id every node in the cohort
@@ -897,8 +897,8 @@ hangarOutput:
     referencedEpochs: []
 
   # -- Existing Secret holding materialize.key: the exact raw 32 bytes output
-  # READ GRANTS are signed with, under the hangar-output-materialize-v1 domain.
-  # A third key: a read grant must not be signable by anything that can mint a
+  # READ WARRANTS are signed with, under the hangar-output-materialize-v1 domain.
+  # A third key: a read warrant must not be signable by anything that can mint a
   # publication receipt, and it is never the foundation's strict-input
   # materialization key either.
   materializationKeySecret: ""

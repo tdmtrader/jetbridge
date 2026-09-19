@@ -130,7 +130,7 @@ Feature: Which outcome a finished producer selects, and what the build is told
     Then the capture is refused as "predeclaration"
 
   @HOP-6
-  Scenario: A new build gets a new handoff identity and a new source lease
+  Scenario: A new build gets a new handoff identity and a new source hold
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
     And the daemon holds the source

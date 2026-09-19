@@ -203,7 +203,7 @@ Feature: What a capture-selected task's Pod says
   # bucket {string}", citing ../container-pod.feature:367-373 and :442-446 for
   # its control. Running it in Phase 9 found both halves wrong. There is no
   # strict-input scenario in container-pod.feature at all, and NO BUCKET APPEARS
-  # IN A POD: the strict-input init carries a TreeRef and a signed grant and the
+  # IN A POD: the strict-input init carries a TreeRef and a signed warrant and the
   # daemon resolves the bucket from its own configuration, which is the
   # containment Req 20 asks for. The phrase named a state production cannot
   # reach, and features/pending/ is where that could sit unnoticed.

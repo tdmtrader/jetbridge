@@ -62,19 +62,19 @@ func TestHangarEnabledRendersSharedBoundedConfiguration(t *testing.T) {
 	)
 	for _, want := range []string{
 		"--hangar-enabled", "--hangar-scratch-dir=/private/hangar-scratch",
-		"--hangar-capability-key=/etc/concourse/daemon-tls/hangar.key",
-		"--hangar-capability-ttl=420s", "--hangar-max-content-bytes=123456", "--hangar-max-entries=321",
+		"--hangar-warrant-key=/etc/concourse/daemon-tls/hangar.key",
+		"--hangar-warrant-ttl=420s", "--hangar-max-content-bytes=123456", "--hangar-max-entries=321",
 		"--durable-store=gcs", "--durable-bucket=hangar-bucket", "--durable-prefix=cluster-a",
 		"--durable-endpoint=http://gcs.test", "--durable-timeout=45s",
-		"--kubernetes-hangar-enabled", "--kubernetes-hangar-capability-key=/etc/concourse/daemon-tls/hangar.key",
-		"--kubernetes-hangar-capability-ttl=420s", "concourse.dev/hangar-v1", "name: hangar-scratch",
+		"--kubernetes-hangar-enabled", "--kubernetes-hangar-warrant-key=/etc/concourse/daemon-tls/hangar.key",
+		"--kubernetes-hangar-warrant-ttl=420s", "concourse.dev/hangar-v1", "name: hangar-scratch",
 		"mountPath: /private/hangar-scratch", "emptyDir: {}",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("enabled render missing %q", want)
 		}
 	}
-	if got := strings.Count(out, "--hangar-capability-ttl=420s") + strings.Count(out, "--kubernetes-hangar-capability-ttl=420s"); got != 2 {
+	if got := strings.Count(out, "--hangar-warrant-ttl=420s") + strings.Count(out, "--kubernetes-hangar-warrant-ttl=420s"); got != 2 {
 		t.Errorf("capability TTL was not rendered once to each binary: count=%d", got)
 	}
 	for _, unwanted := range []string{"GOOGLE_APPLICATION_CREDENTIALS", "credentials.json", "artifactDaemon.hangar.existingSecret"} {
@@ -195,14 +195,14 @@ func TestHangarStagesDaemonSupportBeforeWebEmission(t *testing.T) {
 func TestHangarAcceptsWholeSecondCapabilityTTLBoundaries(t *testing.T) {
 	for _, ttl := range []string{"1s", "900s"} {
 		out := renderHangar(t, "artifactDaemon.hangar.capabilityTTL="+ttl)
-		for _, want := range []string{"--hangar-capability-ttl=" + ttl, "--kubernetes-hangar-capability-ttl=" + ttl} {
+		for _, want := range []string{"--hangar-warrant-ttl=" + ttl, "--kubernetes-hangar-warrant-ttl=" + ttl} {
 			if !strings.Contains(out, want) {
 				t.Errorf("TTL %s render missing %q", ttl, want)
 			}
 		}
 	}
 	defaulted := renderHangar(t)
-	for _, want := range []string{"--hangar-capability-ttl=900s", "--kubernetes-hangar-capability-ttl=900s"} {
+	for _, want := range []string{"--hangar-warrant-ttl=900s", "--kubernetes-hangar-warrant-ttl=900s"} {
 		if !strings.Contains(defaulted, want) {
 			t.Errorf("default render missing %q", want)
 		}
@@ -353,7 +353,7 @@ func TestHangarKeyAndScratchRemainPrivateToControlPlanePods(t *testing.T) {
 	if strings.Count(out, "mountPath: /var/concourse/hangar-scratch") != 1 {
 		t.Fatalf("private scratch should mount only in artifact-daemon")
 	}
-	if strings.Contains(out, "--kubernetes-hangar-capability-key=hangar.key") {
+	if strings.Contains(out, "--kubernetes-hangar-warrant-key=hangar.key") {
 		t.Fatal("key was rendered without its private control-plane mount path")
 	}
 }

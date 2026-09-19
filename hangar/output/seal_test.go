@@ -32,7 +32,7 @@ const (
 	testNodeUID         = executioncontrol.NodeUID("node-9f2b1d4c")
 	testPodUID          = executioncontrol.PodUID("3f1b2c4d-5e6f-4708-9a1b-2c3d4e5f6071")
 	testHandoffID       = HandoffID("6b1e9d40-2a77-4c11-8f3e-5d0a9c8b7e62")
-	testSourceLeaseID   = SourceLeaseID("a4d2c8f1-9e03-4b55-86ad-71f0c3e29b48")
+	testSourceHoldID    = SourceHoldID("a4d2c8f1-9e03-4b55-86ad-71f0c3e29b48")
 	testWriterTicketA   = WriterTicketID("d0c7b6a5-4e3f-4210-9876-543210fedcba")
 	testWriterTicketB   = WriterTicketID("b1c2d3e4-f506-4172-8394-a5b6c7d8e9f0")
 	testUnknownTicketID = WriterTicketID("11112222-3333-4444-8555-666677778888")
@@ -66,7 +66,7 @@ func testAcknowledgement(t *testing.T, kind CaptureAcknowledgementKind, ticket W
 		NodeUID:         testNodeUID,
 		PodUID:          testPodUID,
 		HandoffID:       testHandoffID,
-		SourceLeaseID:   testSourceLeaseID,
+		SourceHoldID:    testSourceHoldID,
 		Incarnation:     testIncarnation(),
 		WriterFence:     2,
 		ObservedAt:      NewTimestamp(mustParse(t, "2026-09-08T21:47:04Z")),

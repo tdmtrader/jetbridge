@@ -49,7 +49,7 @@ func (acquisition ClaimAcquisition) Validate() error {
 // own binding unusable in the same transaction; there is nothing left for
 // Hangar to hold onto. Releasing an active or already-released claim is
 // idempotent, and released identities stay tombstoned for the lifetime of the
-// exact-ref lifecycle record so a stale release cannot silently reactivate one.
+// tree-ref lifecycle record so a stale release cannot silently reactivate one.
 type ClaimRelease struct {
 	ProtocolVersion string         `json:"protocol_version"`
 	ClaimID         ClaimID        `json:"claim_id"`
@@ -74,7 +74,7 @@ func (release ClaimRelease) Validate() error {
 // ClaimRecord is one claim as the plane records it -- active or tombstoned.
 //
 // The tombstone is a field rather than an absence, and that is the whole point:
-// a released identity stays for the lifetime of the exact-ref lifecycle record,
+// a released identity stays for the lifetime of the tree-ref lifecycle record,
 // so "no claim is left behind" and "the tombstone is permanent" are different
 // questions about the same row and a reader that could not see a released claim
 // could not tell them apart.
@@ -129,7 +129,7 @@ func (record ClaimRecord) Validate() error {
 // last claim is gone.
 //
 // The lease is created inside the caller's transaction, together with the claim
-// and policy revalidation. Minting the grant that carries it is deliberately
+// and policy revalidation. Minting the warrant that carries it is deliberately
 // *not* atomic with that transaction: signing is not a database operation, and
 // pretending otherwise would be the atomic-commit claim this design avoids
 // everywhere else.
@@ -180,7 +180,7 @@ func (lease ReadLease) Validate() error {
 	return nil
 }
 
-// ReadLeaseRecord is a committed lease plus everything its grant binds.
+// ReadLeaseRecord is a committed lease plus everything its warrant binds.
 //
 // It exists because minting is deliberately not atomic with the transaction
 // that created the lease: after the commit, the minter loads the exact facts
@@ -188,9 +188,9 @@ func (lease ReadLease) Validate() error {
 // then answered by identity -- load by lease id and fence, mint only if what
 // came back matches -- instead of by hoping.
 type ReadLeaseRecord struct {
-	Lease       ReadLease
-	Destination ReadDestination
-	GrantNonce  string
+	Lease        ReadLease
+	Destination  ReadDestination
+	WarrantNonce string
 }
 
 func (record ReadLeaseRecord) Validate() error {
@@ -201,13 +201,13 @@ func (record ReadLeaseRecord) Validate() error {
 		return err
 	}
 
-	return validateReadGrantNonce(record.GrantNonce)
+	return validateReadWarrantNonce(record.WarrantNonce)
 }
 
 // ReadLeaseValidation is the question the materializing daemon asks the control
 // plane before it opens a single object.
 //
-// It repeats every field the grant carried, and the control plane compares each
+// It repeats every field the warrant carried, and the control plane compares each
 // one against the committed row rather than against the token. That is the
 // whole point of asking: a valid HMAC bound to a lease that is missing,
 // released, expired, superseded or reclaim-conflicted authorizes nothing, and
@@ -223,7 +223,7 @@ type ReadLeaseValidation struct {
 	Ref               hangar.TreeRef
 	Destination       ReadDestination
 	ActivationEpoch   executioncontrol.ActivationEpoch
-	GrantNonce        string
+	WarrantNonce      string
 	RequiredRemaining time.Duration
 }
 
@@ -243,7 +243,7 @@ func (validation ReadLeaseValidation) Validate() error {
 	if validation.ActivationEpoch == 0 {
 		return fmt.Errorf("%w: a lease validation names no activation epoch", ErrIncomplete)
 	}
-	if err := validateReadGrantNonce(validation.GrantNonce); err != nil {
+	if err := validateReadWarrantNonce(validation.WarrantNonce); err != nil {
 		return err
 	}
 	if validation.RequiredRemaining < 0 {
@@ -253,19 +253,19 @@ func (validation ReadLeaseValidation) Validate() error {
 	return nil
 }
 
-// ReadGrantFor is the validation a grant's own claims imply.
+// ReadWarrantFor is the validation a warrant's own claims imply.
 //
 // It exists so the daemon cannot compose a different question from the one the
 // token answered: every field comes from the verified claims, and the only
 // thing the caller adds is how much work it is about to start.
-func ReadGrantFor(claims ReadGrantClaims, remaining time.Duration) ReadLeaseValidation {
+func ReadWarrantFor(claims ReadWarrantClaims, remaining time.Duration) ReadLeaseValidation {
 	return ReadLeaseValidation{
 		ReadLeaseID:       claims.ReadLeaseID,
 		ClaimID:           claims.ClaimID,
 		Ref:               claims.Ref,
 		Destination:       claims.Destination,
 		ActivationEpoch:   claims.ActivationEpoch,
-		GrantNonce:        claims.Nonce,
+		WarrantNonce:      claims.Nonce,
 		RequiredRemaining: remaining,
 	}
 }

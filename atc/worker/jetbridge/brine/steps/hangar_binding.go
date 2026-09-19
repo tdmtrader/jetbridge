@@ -49,14 +49,14 @@ const (
 	brineOutputTenant = "brine-tenant"
 )
 
-// brineReadGrantKey is the output plane's materialization key for this fixture.
+// brineReadWarrantKey is the output plane's materialization key for this fixture.
 // It is exactly 32 raw bytes, which is what the signer requires and what makes
-// "an Ed25519 receipt key cannot sign a read grant" true by construction.
-var brineReadGrantKey = []byte("0123456789abcdef0123456789abcdef")
+// "an Ed25519 receipt key cannot sign a read warrant" true by construction.
+var brineReadWarrantKey = []byte("0123456789abcdef0123456789abcdef")
 
 // freshReader is the randomness a nonce comes from. It is the real one: a
 // deterministic reader would make two scenarios' nonces collide, and a nonce
-// that repeats is a grant that replays.
+// that repeats is a warrant that replays.
 func freshReader() io.Reader { return rand.Reader }
 
 // neutralConsumer is the product-neutral test consumer: a table of opaque
@@ -270,11 +270,11 @@ func managedRead(in BoundOutput) (hangaroutputleaf.ReadLease, error) {
 		return hangaroutputleaf.ReadLease{}, err
 	}
 	defer func() { _ = closeStat() }()
-	signer, err := hangaroutputleaf.NewReadGrantSigner(brineReadGrantKey)
+	signer, err := hangaroutputleaf.NewReadWarrantSigner(brineReadWarrantKey)
 	if err != nil {
 		return hangaroutputleaf.ReadLease{}, err
 	}
-	nonce, err := hangaroutputleaf.NewReadGrantNonce(freshReader())
+	nonce, err := hangaroutputleaf.NewReadWarrantNonce(freshReader())
 	if err != nil {
 		return hangaroutputleaf.ReadLease{}, err
 	}
@@ -287,9 +287,9 @@ func managedRead(in BoundOutput) (hangaroutputleaf.ReadLease, error) {
 		Clock:      hangaroutputleaf.ClockFunc(func() time.Time { return time.Now().UTC() }),
 	}
 
-	grant, err := admission.Admit(context.Background(), hangaroutput.ReadRequest{
+	warrant, err := admission.Admit(context.Background(), hangaroutput.ReadRequest{
 		ReadLeaseID:            hangaroutputleaf.ReadLeaseID(freshUUID()),
-		GrantNonce:             nonce,
+		WarrantNonce:           nonce,
 		ClaimID:                in.Acquisition.ClaimID,
 		Ref:                    in.Tree.Ref,
 		Destination:            hangaroutputleaf.ReadDestination{Handle: "consumer", Volume: "input-0"},
@@ -300,7 +300,7 @@ func managedRead(in BoundOutput) (hangaroutputleaf.ReadLease, error) {
 		return hangaroutputleaf.ReadLease{}, err
 	}
 
-	return grant.Lease, nil
+	return warrant.Lease, nil
 }
 
 // refusalWords is the closed vocabulary, in one place, so that a phrase taking

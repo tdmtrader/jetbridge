@@ -288,7 +288,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			Expect(reclaimer.Commit()).To(Succeed())
 		})
 
-		It("refuses a grant for a ref that is already reclaiming", func() {
+		It("refuses a warrant for a ref that is already reclaiming", func() {
 			tx, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(tx)
@@ -322,7 +322,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 
 	// A MANAGED READ is admitted by a transaction and validated by another.
 	//
-	// Requirement 35 names four things that must hold together before a grant
+	// Requirement 35 names four things that must hold together before a warrant
 	// exists: an exact stat proving the registered marked generation is
 	// PRESENT, a readable lifecycle state, at least one active claim, and a
 	// current activation epoch. Requirement 36 adds the lease term. The control
@@ -378,14 +378,14 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				request.MaterializationTimeout+output.LeaseTermMargin))
 			Expect(output.MayStartWork(term, request.MaterializationTimeout)).To(BeTrue())
 
-			// And what the grant will bind is stored, so a re-mint is the same
+			// And what the warrant will bind is stored, so a re-mint is the same
 			// bytes rather than a second lease.
 			tx, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(tx)
 			record, err := repository.LoadReadLease(ctx, tx, id)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(record.GrantNonce).To(Equal(request.GrantNonce))
+			Expect(record.WarrantNonce).To(Equal(request.WarrantNonce))
 			Expect(record.Destination).To(Equal(request.Destination))
 			Expect(record.Lease.LeaseFence).To(Equal(lease.LeaseFence))
 		})
@@ -429,8 +429,8 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				func(request *output.ReadLeaseRequest) {
 					request.Destination.Volume = "../elsewhere"
 				}),
-			Entry("no nonce for the grant", output.ErrIncomplete, "read grant nonce",
-				func(request *output.ReadLeaseRequest) { request.GrantNonce = "" }),
+			Entry("no nonce for the warrant", output.ErrIncomplete, "read warrant nonce",
+				func(request *output.ReadLeaseRequest) { request.WarrantNonce = "" }),
 			// The term's CEILING, refused where the policy is read rather than
 			// by the column's CHECK. Both refusals are typed ErrIncomplete, so
 			// what tells them apart is which sentence comes back: the schema's
@@ -477,7 +477,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 		// violation is detected -- the consumer's binding does not evaporate --
 		// so a claimed ref really can be sitting in `missing_out_of_band` or
 		// `conflicted` when a read is asked for, and a read admitted against
-		// one would be a grant for content the plane has said is not there.
+		// one would be a warrant for content the plane has said is not there.
 		//
 		// Phase 7 owns the code that writes those states; the fixture sets them
 		// directly, which is what a spec for a state whose writer has not
@@ -568,7 +568,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 
 		// The daemon's independent question, asked of the committed row rather
 		// than of the token.
-		Describe("validating the lease a grant names", func() {
+		Describe("validating the lease a warrant names", func() {
 			var id output.ReadLeaseID
 			var request output.ReadLeaseRequest
 			var lease output.ReadLease
@@ -589,7 +589,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 					Ref:               ref,
 					Destination:       request.Destination,
 					ActivationEpoch:   1,
-					GrantNonce:        request.GrantNonce,
+					WarrantNonce:      request.WarrantNonce,
 					RequiredRemaining: request.MaterializationTimeout + output.LeaseStartMargin,
 				}
 			}
@@ -607,7 +607,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				record, err := validate(validation())
 				Expect(err).NotTo(HaveOccurred())
 				Expect(record.Lease.ReadLeaseID).To(Equal(id))
-				Expect(record.GrantNonce).To(Equal(request.GrantNonce))
+				Expect(record.WarrantNonce).To(Equal(request.WarrantNonce))
 			})
 
 			It("still admits it after the consumer released its last claim", func() {
@@ -629,7 +629,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 						"what protects a read once it has one")
 			})
 
-			DescribeTable("refuses a grant that does not describe the committed lease",
+			DescribeTable("refuses a warrant that does not describe the committed lease",
 				func(sentinel error, spoil func(*output.ReadLeaseValidation)) {
 					question := validation()
 					spoil(&question)
@@ -655,9 +655,9 @@ var _ = Describe("the Hangar output lock suffix", func() {
 					func(question *output.ReadLeaseValidation) { question.ActivationEpoch = 2 }),
 				Entry("another nonce", output.ErrUnauthorized,
 					func(question *output.ReadLeaseValidation) {
-						nonce, err := output.NewReadGrantNonce(rand.Reader)
+						nonce, err := output.NewReadWarrantNonce(rand.Reader)
 						Expect(err).NotTo(HaveOccurred())
-						question.GrantNonce = nonce
+						question.WarrantNonce = nonce
 					}),
 				Entry("work that would outlive the lease", output.ErrTimeout,
 					func(question *output.ReadLeaseValidation) {
@@ -756,7 +756,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			// The row is aged so that renewing has something to do; ageing
 			// moves both instants together, so what changes is how much is
 			// left, never the term itself.
-			It("grants exactly one term from now, however often it is renewed", func() {
+			It("warrants exactly one term from now, however often it is renewed", func() {
 				term := output.LeaseTermFor(request.MaterializationTimeout)
 
 				_, err := dbConn.Exec(`
@@ -886,7 +886,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 					Ref:               ref,
 					Destination:       liveRequest.Destination,
 					ActivationEpoch:   1,
-					GrantNonce:        liveRequest.GrantNonce,
+					WarrantNonce:      liveRequest.WarrantNonce,
 					RequiredRemaining: time.Minute,
 				})
 				Expect(err).NotTo(HaveOccurred(),
@@ -1080,7 +1080,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				Expect(released).To(BeTrue())
 			})
 
-			It("refuses a released lease even though its grant is still signed", func() {
+			It("refuses a released lease even though its warrant is still signed", func() {
 				tx, err := dbConn.Begin()
 				Expect(err).NotTo(HaveOccurred())
 				defer db.Rollback(tx)
@@ -1117,7 +1117,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				// The same identity, a different nonce: another read wearing
 				// this one's lease id.
 				other := readLeaseRequest(id, claimID, ref)
-				Expect(other.GrantNonce).NotTo(Equal(request.GrantNonce))
+				Expect(other.WarrantNonce).NotTo(Equal(request.WarrantNonce))
 				_, err = admit(other)
 				Expect(err).To(MatchError(output.ErrConflict))
 				Expect(err.Error()).To(ContainSubstring("already protects another read"))
@@ -1173,7 +1173,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			// registered a generation: exactly the gap inventory must not
 			// adopt into.
 			handoff := output.HandoffID(uuid.NewString())
-			lease := output.SourceLeaseID(uuid.NewString())
+			lease := output.SourceHoldID(uuid.NewString())
 			execution := identity()
 			deadline := output.NewTimestamp(time.Now().Add(24 * time.Hour))
 
@@ -1185,7 +1185,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				Execution:       execution,
 				ActivationEpoch: 1,
 				HandoffID:       handoff,
-				SourceLeaseID:   lease,
+				SourceHoldID:    lease,
 				Output:          "result",
 				CaptureDeadline: deadline,
 			})).To(Succeed())
@@ -1200,7 +1200,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 					Execution:             execution,
 					ActivationEpoch:       1,
 					HandoffID:             handoff,
-					SourceLeaseID:         lease,
+					SourceHoldID:          lease,
 					ProducerCheckpointID:  "checkpoint-orphan",
 					Output:                "result",
 					CaptureFence:          1,
@@ -1405,7 +1405,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			activate()
 
 			handoff := output.HandoffID(uuid.NewString())
-			lease := output.SourceLeaseID(uuid.NewString())
+			lease := output.SourceHoldID(uuid.NewString())
 			execution := identity()
 			name := output.OutputName("result")
 			deadline := output.NewTimestamp(time.Now().Add(24 * time.Hour))
@@ -1418,7 +1418,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				Execution:       execution,
 				ActivationEpoch: 1,
 				HandoffID:       handoff,
-				SourceLeaseID:   lease,
+				SourceHoldID:    lease,
 				Output:          name,
 				CaptureDeadline: deadline,
 			})).To(Succeed())
@@ -1433,7 +1433,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 					Execution:             execution,
 					ActivationEpoch:       1,
 					HandoffID:             handoff,
-					SourceLeaseID:         lease,
+					SourceHoldID:          lease,
 					ProducerCheckpointID:  output.OpaqueID("checkpoint-" + string(handoff)),
 					Output:                name,
 					CaptureFence:          1,
@@ -1509,7 +1509,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			activate()
 
 			handoff := output.HandoffID(uuid.NewString())
-			lease := output.SourceLeaseID(uuid.NewString())
+			lease := output.SourceHoldID(uuid.NewString())
 			execution := identity()
 			name := output.OutputName("result")
 			deadline := output.NewTimestamp(time.Now().Add(24 * time.Hour))
@@ -1522,7 +1522,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				Execution:       execution,
 				ActivationEpoch: 1,
 				HandoffID:       handoff,
-				SourceLeaseID:   lease,
+				SourceHoldID:    lease,
 				Output:          name,
 				CaptureDeadline: deadline,
 			})).To(Succeed())
@@ -1537,7 +1537,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 					Execution:             execution,
 					ActivationEpoch:       1,
 					HandoffID:             handoff,
-					SourceLeaseID:         lease,
+					SourceHoldID:          lease,
 					ProducerCheckpointID:  output.OpaqueID("checkpoint-" + string(handoff)),
 					Output:                name,
 					CaptureFence:          1,
@@ -1586,7 +1586,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				Execution:       execution,
 				ActivationEpoch: 1,
 				HandoffID:       handoff,
-				SourceLeaseID:   lease,
+				SourceHoldID:    lease,
 				ReleaseIntentID: output.ReleaseIntentID(intent),
 				Incarnation: output.SourceIncarnation{
 					ExecutionID:      execution.ExecutionID,
@@ -1684,7 +1684,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 
 			setUp := func() (output.HandoffID, output.ReservationID, output.ReleaseAcknowledgement) {
 				handoff := output.HandoffID(uuid.NewString())
-				lease := output.SourceLeaseID(uuid.NewString())
+				lease := output.SourceHoldID(uuid.NewString())
 				execution := identity()
 				name := output.OutputName("result")
 				deadline := output.NewTimestamp(time.Now().Add(24 * time.Hour))
@@ -1697,7 +1697,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 					Execution:       execution,
 					ActivationEpoch: 1,
 					HandoffID:       handoff,
-					SourceLeaseID:   lease,
+					SourceHoldID:    lease,
 					Output:          name,
 					CaptureDeadline: deadline,
 				})).To(Succeed())
@@ -1712,7 +1712,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 						Execution:             execution,
 						ActivationEpoch:       1,
 						HandoffID:             handoff,
-						SourceLeaseID:         lease,
+						SourceHoldID:          lease,
 						ProducerCheckpointID:  output.OpaqueID("checkpoint-" + string(handoff)),
 						Output:                name,
 						CaptureFence:          1,
@@ -1731,7 +1731,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 					Execution:       execution,
 					ActivationEpoch: 1,
 					HandoffID:       handoff,
-					SourceLeaseID:   lease,
+					SourceHoldID:    lease,
 					Incarnation: output.SourceIncarnation{
 						ExecutionID:      execution.ExecutionID,
 						NodeUID:          "node-uid",
@@ -1888,7 +1888,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			activate()
 
 			handoff := output.HandoffID(uuid.NewString())
-			lease := output.SourceLeaseID(uuid.NewString())
+			lease := output.SourceHoldID(uuid.NewString())
 			execution := identity()
 			name := output.OutputName("result")
 			deadline := output.NewTimestamp(time.Now().Add(24 * time.Hour))
@@ -1901,7 +1901,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				Execution:       execution,
 				ActivationEpoch: 1,
 				HandoffID:       handoff,
-				SourceLeaseID:   lease,
+				SourceHoldID:    lease,
 				Output:          name,
 				CaptureDeadline: deadline,
 			})).To(Succeed())
@@ -1916,7 +1916,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 					Execution:             execution,
 					ActivationEpoch:       1,
 					HandoffID:             handoff,
-					SourceLeaseID:         lease,
+					SourceHoldID:          lease,
 					ProducerCheckpointID:  output.OpaqueID("checkpoint-" + string(handoff)),
 					Output:                name,
 					CaptureFence:          1,
@@ -2005,7 +2005,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 
 			var handoffID, intent, executionID, leaseID string
 			Expect(dbConn.QueryRow(`
-				SELECT handoff_id, release_intent_id, execution_id, source_lease_id
+				SELECT handoff_id, release_intent_id, execution_id, source_hold_id
 				FROM hangar_capture_reservations WHERE reservation_id = $1`, string(reservation)).
 				Scan(&handoffID, &intent, &executionID, &leaseID)).To(Succeed())
 			handoff := output.HandoffID(handoffID)
@@ -2054,7 +2054,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				Execution:       execution,
 				ActivationEpoch: 1,
 				HandoffID:       handoff,
-				SourceLeaseID:   output.SourceLeaseID(leaseID),
+				SourceHoldID:    output.SourceHoldID(leaseID),
 				ReleaseIntentID: output.ReleaseIntentID(intent),
 				Incarnation: output.SourceIncarnation{
 					ExecutionID:      execution.ExecutionID,
@@ -2346,7 +2346,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 
 			var locks db.HangarLocks
 			Expect(locked).To(Receive(&locks))
-			Expect(locks.Exact).To(HaveLen(2), "the duplicated exact ref was locked twice")
+			Expect(locks.Exact).To(HaveLen(2), "the duplicated tree ref was locked twice")
 			Expect(locks.Lifecycles).To(HaveLen(2))
 		})
 
@@ -2433,7 +2433,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 	Describe("what a coordinator reads back", func() {
 		var (
 			handoff   output.HandoffID
-			lease     output.SourceLeaseID
+			lease     output.SourceHoldID
 			execution executioncontrol.Identity
 			name      output.OutputName
 			deadline  output.Timestamp
@@ -2443,7 +2443,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			activate()
 
 			handoff = output.HandoffID(uuid.NewString())
-			lease = output.SourceLeaseID(uuid.NewString())
+			lease = output.SourceHoldID(uuid.NewString())
 			execution = identity()
 			name = output.OutputName("result")
 			deadline = output.NewTimestamp(time.Now().Add(24 * time.Hour))
@@ -2456,7 +2456,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				Execution:       execution,
 				ActivationEpoch: 1,
 				HandoffID:       handoff,
-				SourceLeaseID:   lease,
+				SourceHoldID:    lease,
 				Output:          name,
 				CaptureDeadline: deadline,
 			})).To(Succeed())
@@ -2550,7 +2550,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			// there is a directory on a node, and only that node can say it is
 			// gone.
 			reservedHandoff := output.HandoffID(uuid.NewString())
-			reservedLease := output.SourceLeaseID(uuid.NewString())
+			reservedLease := output.SourceHoldID(uuid.NewString())
 			reservedExecution := identity()
 
 			second, err := dbConn.Begin()
@@ -2561,7 +2561,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 				Execution:       reservedExecution,
 				ActivationEpoch: 1,
 				HandoffID:       reservedHandoff,
-				SourceLeaseID:   reservedLease,
+				SourceHoldID:    reservedLease,
 				Output:          name,
 				CaptureDeadline: output.NewTimestamp(time.Now().Add(24 * time.Hour)),
 			})).To(Succeed())
@@ -2608,7 +2608,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 					Execution:             execution,
 					ActivationEpoch:       1,
 					HandoffID:             handoff,
-					SourceLeaseID:         lease,
+					SourceHoldID:          lease,
 					ProducerCheckpointID:  "checkpoint",
 					Output:                name,
 					CaptureFence:          1,
@@ -2665,7 +2665,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 					Execution:             execution,
 					ActivationEpoch:       1,
 					HandoffID:             handoff,
-					SourceLeaseID:         lease,
+					SourceHoldID:          lease,
 					ProducerCheckpointID:  "checkpoint",
 					Output:                name,
 					CaptureFence:          1,

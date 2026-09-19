@@ -54,11 +54,11 @@ func Pipeline(savedPipeline db.Pipeline, options PipelineOptions) atc.Pipeline {
 		if runNumber, found := savedPipeline.RunNumber(); found {
 			atcPipeline.RunNumber = &runNumber
 		}
-		if baseRef, found := savedPipeline.BasePipelineRef(); found {
+		if templateRef, found := savedPipeline.TemplatePipelineRef(); found {
 			atcPipeline.RunTemplateRef = &atc.PipelineIdentifier{
 				TeamName:     savedPipeline.TeamName(),
-				PipelineName: baseRef.Name,
-				InstanceVars: baseRef.InstanceVars,
+				PipelineName: templateRef.Name,
+				InstanceVars: templateRef.InstanceVars,
 			}
 		}
 	}

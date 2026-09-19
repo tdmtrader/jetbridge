@@ -136,7 +136,7 @@ var _ = Describe("the lifetime-policy admission gate", func() {
 					Execution:       hangarIdentity(),
 					ActivationEpoch: 1,
 					HandoffID:       output.HandoffID(uuid.NewString()),
-					SourceLeaseID:   output.SourceLeaseID(uuid.NewString()),
+					SourceHoldID:    output.SourceHoldID(uuid.NewString()),
 					Output:          output.OutputName("result"),
 					CaptureDeadline: output.NewTimestamp(
 						time.Now().Add(output.DefaultCaptureDeadline)),

@@ -266,7 +266,7 @@ func (publisher *Publisher) reconcileAmbiguous(ctx context.Context, key string, 
 func (publisher *Publisher) verifyExact(ctx context.Context, key string, reservation output.ResolvedReservation, generation, size int64) (output.PublishedObject, error) {
 	if generation <= 0 {
 		return output.PublishedObject{}, fmt.Errorf("%w: the store reported no generation for "+
-			"%s; an object with no generation cannot be registered as an exact ref",
+			"%s; an object with no generation cannot be registered as a tree ref",
 			output.ErrInfrastructure, key)
 	}
 

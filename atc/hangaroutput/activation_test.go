@@ -428,7 +428,7 @@ func TestAnAttestationWithoutEvidenceIsRefused(t *testing.T) {
 	sameKey := outputEvidence()
 	sameKey.MaterializationKeyID = sameKey.ReceiptPublicKeyID
 	if err := epochs.Attest(ctx, epoch, activation.FacetOutput, sameKey); !errors.Is(err, output.ErrIncomplete) {
-		t.Errorf("one key id for receipts and read grants was accepted: %v", err)
+		t.Errorf("one key id for receipts and read warrants was accepted: %v", err)
 	}
 }
 

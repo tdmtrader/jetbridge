@@ -543,7 +543,7 @@ type ReleaseIntent struct {
 	Execution       executioncontrol.Identity        `json:"execution"`
 	ActivationEpoch executioncontrol.ActivationEpoch `json:"activation_epoch"`
 	HandoffID       HandoffID                        `json:"handoff_id"`
-	SourceLeaseID   SourceLeaseID                    `json:"source_lease_id"`
+	SourceHoldID    SourceHoldID                     `json:"source_hold_id"`
 	ReleaseIntentID ReleaseIntentID                  `json:"release_intent_id"`
 	Incarnation     SourceIncarnation                `json:"incarnation"`
 }
@@ -564,7 +564,7 @@ func (intent ReleaseIntent) Validate() error {
 	if err := intent.HandoffID.Validate(); err != nil {
 		return err
 	}
-	if err := intent.SourceLeaseID.Validate(); err != nil {
+	if err := intent.SourceHoldID.Validate(); err != nil {
 		return err
 	}
 	if err := intent.ReleaseIntentID.Validate(); err != nil {
@@ -715,14 +715,14 @@ type ReceiptVerifier interface {
 // outcome enum would have meant callers checking twice and eventually checking
 // once.
 type ClaimRepository interface {
-	// AcquireClaim is idempotent for the same id and exact ref.
+	// AcquireClaim is idempotent for the same id and tree ref.
 	AcquireClaim(ctx context.Context, tx Tx, acquisition ClaimAcquisition) error
 
 	// ReleaseClaim is idempotent, and tombstones the identity for the lifetime
-	// of the exact-ref lifecycle record.
+	// of the tree-ref lifecycle record.
 	ReleaseClaim(ctx context.Context, tx Tx, release ClaimRelease) error
 
-	// ReadClaims reports every claim recorded for one exact ref -- active and
+	// ReadClaims reports every claim recorded for one tree ref -- active and
 	// tombstoned -- in acquisition order.
 	//
 	// It is on the contract rather than left to callers' SQL because it is the
@@ -747,16 +747,16 @@ type ReadLeaseRequest struct {
 	RequestedAt            Timestamp
 	MaterializationTimeout time.Duration
 
-	// Destination and GrantNonce are what the grant for this lease will bind.
-	// They are on the REQUEST, and stored with the lease, because the grant is
+	// Destination and WarrantNonce are what the warrant for this lease will bind.
+	// They are on the REQUEST, and stored with the lease, because the warrant is
 	// minted after the transaction commits and may have to be minted again: a
 	// nonce chosen at mint time would make two mints of one lease differ.
-	Destination ReadDestination
-	GrantNonce  string
+	Destination  ReadDestination
+	WarrantNonce string
 
 	// StatProof is the exact-generation metadata stat, performed OUTSIDE the
 	// locks and revalidated inside them. Requirement 35 admits a managed-output
-	// grant only after a stat proves the registered marked generation is
+	// warrant only after a stat proves the registered marked generation is
 	// present; a lease created without one would be protection for content
 	// nobody looked at.
 	StatProof PublishedObject
@@ -786,7 +786,7 @@ func (request ReadLeaseRequest) Validate() error {
 	if err := request.Destination.Validate(); err != nil {
 		return err
 	}
-	if err := validateReadGrantNonce(request.GrantNonce); err != nil {
+	if err := validateReadWarrantNonce(request.WarrantNonce); err != nil {
 		return err
 	}
 	// The marker is checked BEFORE the generic stat validation, because both
@@ -828,7 +828,7 @@ const MaxStatProofAge = MaxChallengeWindow
 //
 // Acquisition happens inside the caller's transaction, together with claim,
 // registration, policy and reclaim-exclusion revalidation. Only after that
-// transaction commits may a usable grant be minted -- and minting is
+// transaction commits may a usable warrant be minted -- and minting is
 // deliberately not atomic with the database, because signing is not a database
 // operation and saying otherwise would be the atomic-commit claim this design
 // refuses to make anywhere else.

@@ -11,7 +11,7 @@ package hangaroutput
 //     marked lifecycle, the policy and epoch, the reclaim exclusion and that
 //     stat, and creates the fenced read lease. It signs nothing and calls
 //     nobody.
-//  3. Only after that transaction's commit is AUTHORITATIVE may a usable grant
+//  3. Only after that transaction's commit is AUTHORITATIVE may a usable warrant
 //     be minted, and it is minted from the row loaded back rather than from the
 //     values the caller passed in.
 //
@@ -53,20 +53,20 @@ type ExactStat interface {
 	StatExactObject(ctx context.Context, ref hangar.TreeRef) (output.PublishedObject, error)
 }
 
-// GrantMinter turns a committed lease into a usable token.
-type GrantMinter interface {
+// WarrantMinter turns a committed lease into a usable token.
+type WarrantMinter interface {
 	Sign(lease output.ReadLease, destination output.ReadDestination, nonce string) (string, error)
 }
 
 // ReadRequest is what a consumer asks for.
 //
-// ReadLeaseID and GrantNonce are the CALLER's, generated before the attempt, so
+// ReadLeaseID and WarrantNonce are the CALLER's, generated before the attempt, so
 // that a retry after an ambiguous commit asks about the same lease rather than
 // creating a second one. That is the same rule the capture side follows for its
 // handoff identity, and for the same reason.
 type ReadRequest struct {
 	ReadLeaseID            output.ReadLeaseID
-	GrantNonce             string
+	WarrantNonce           string
 	ClaimID                output.ClaimID
 	Ref                    hangar.TreeRef
 	Destination            output.ReadDestination
@@ -99,8 +99,8 @@ func (request ReadRequest) Validate() error {
 	return nil
 }
 
-// ReadGrant is what a consumer receives: the token and the facts it carries.
-type ReadGrant struct {
+// ReadWarrant is what a consumer receives: the token and the facts it carries.
+type ReadWarrant struct {
 	Token  string
 	Lease  output.ReadLease
 	Record output.ReadLeaseRecord
@@ -111,45 +111,45 @@ type ReadAdmission struct {
 	Transactor Transactor
 	Leases     ReadLeaseStore
 	Stat       ExactStat
-	Minter     GrantMinter
+	Minter     WarrantMinter
 	Clock      output.Clock
 }
 
 // Admit performs the whole boundary: stat, one transaction, then mint.
-func (admission *ReadAdmission) Admit(ctx context.Context, request ReadRequest) (ReadGrant, error) {
+func (admission *ReadAdmission) Admit(ctx context.Context, request ReadRequest) (ReadWarrant, error) {
 	if err := request.Validate(); err != nil {
-		return ReadGrant{}, err
+		return ReadWarrant{}, err
 	}
 	if err := admission.wired(); err != nil {
-		return ReadGrant{}, err
+		return ReadWarrant{}, err
 	}
 
 	// (1) Outside the locks.
 	observed := output.NewTimestamp(admission.Clock.Now().UTC())
 	object, err := admission.Stat.StatExactObject(ctx, request.Ref)
 	if err != nil {
-		return ReadGrant{}, fmt.Errorf("the exact-generation stat a managed read is admitted on: %w",
+		return ReadWarrant{}, fmt.Errorf("the exact-generation stat a managed read is admitted on: %w",
 			err)
 	}
 
 	// (2) One transaction. It creates the lease and does nothing else.
 	committed, err := admission.commitLease(ctx, request, object, observed)
 	if err != nil {
-		return ReadGrant{}, err
+		return ReadWarrant{}, err
 	}
 	if !committed {
 		// The commit's answer was lost. Resolve by identity: the lease id and
 		// the nonce are the caller's, so the question "did my lease commit" has
 		// an answer that does not depend on having seen one.
 		if err := admission.resolveAmbiguity(ctx, request); err != nil {
-			return ReadGrant{}, err
+			return ReadWarrant{}, err
 		}
 	}
 
 	// (3) After the commit is authoritative, and only then.
 	record, err := admission.load(ctx, request)
 	if err != nil {
-		return ReadGrant{}, err
+		return ReadWarrant{}, err
 	}
 
 	return admission.mint(record)
@@ -173,7 +173,7 @@ func (admission *ReadAdmission) commitLease(ctx context.Context, request ReadReq
 		RequestedAt:            output.NewTimestamp(admission.Clock.Now().UTC()),
 		MaterializationTimeout: request.MaterializationTimeout,
 		Destination:            request.Destination,
-		GrantNonce:             request.GrantNonce,
+		WarrantNonce:           request.WarrantNonce,
 		StatProof:              object,
 		StatObservedAt:         observed,
 	}); err != nil {
@@ -239,7 +239,7 @@ func (admission *ReadAdmission) resolveAmbiguity(ctx context.Context, request Re
 
 // load reads the committed lease back.
 //
-// Loading rather than remembering is the point: a grant is minted from the row
+// Loading rather than remembering is the point: a warrant is minted from the row
 // the database has, not from the values the caller passed in, so an ambiguous
 // commit is answered by asking and a mint cannot describe a lease that never
 // committed.
@@ -262,17 +262,17 @@ func (admission *ReadAdmission) load(ctx context.Context, request ReadRequest) (
 
 // mint is step 3. It opens no transaction, which is a rule this file's guard
 // enforces rather than a habit.
-func (admission *ReadAdmission) mint(record output.ReadLeaseRecord) (ReadGrant, error) {
+func (admission *ReadAdmission) mint(record output.ReadLeaseRecord) (ReadWarrant, error) {
 	if err := record.Validate(); err != nil {
-		return ReadGrant{}, err
+		return ReadWarrant{}, err
 	}
 
-	token, err := admission.Minter.Sign(record.Lease, record.Destination, record.GrantNonce)
+	token, err := admission.Minter.Sign(record.Lease, record.Destination, record.WarrantNonce)
 	if err != nil {
-		return ReadGrant{}, err
+		return ReadWarrant{}, err
 	}
 
-	return ReadGrant{Token: token, Lease: record.Lease, Record: record}, nil
+	return ReadWarrant{Token: token, Lease: record.Lease, Record: record}, nil
 }
 
 func (admission *ReadAdmission) wired() error {
@@ -285,7 +285,7 @@ func (admission *ReadAdmission) wired() error {
 		return fmt.Errorf("%w: a managed read needs the exact-generation stat it is admitted on",
 			output.ErrIncomplete)
 	case admission.Minter == nil:
-		return fmt.Errorf("%w: a managed read needs a grant minter", output.ErrIncomplete)
+		return fmt.Errorf("%w: a managed read needs a warrant minter", output.ErrIncomplete)
 	case admission.Clock == nil:
 		return fmt.Errorf("%w: a managed read needs a clock", output.ErrIncomplete)
 	}

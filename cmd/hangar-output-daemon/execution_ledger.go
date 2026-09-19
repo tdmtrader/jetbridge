@@ -583,7 +583,7 @@ func (ledger *ExecutionLedger) OpenGate(identity executioncontrol.Identity, gate
 // superseded, which is a READ and must stay one.
 //
 // Opening a gate is the fail-closed direction. It can only withhold cleanup,
-// never authorize it, so a repair that takes no fence grants nobody anything.
+// never authorize it, so a repair that takes no fence warrants nobody anything.
 // CLOSING one still takes admission at the current fence, because that is the
 // direction that lets bytes be destroyed.
 func (ledger *ExecutionLedger) EnsureGateOpen(id executioncontrol.ExecutionID, gate string) error {

@@ -173,7 +173,7 @@ func capturedControl(in HeldSource) (*runtime.ExecutionControl, error) {
 		Identity:            in.Execution,
 		ActivationEpoch:     in.Admission.ActivationEpoch,
 		HandoffID:           in.Admission.HandoffID,
-		SourceLeaseID:       in.Admission.SourceLeaseID,
+		SourceHoldID:        in.Admission.SourceHoldID,
 		Output:              string(in.Admission.Output),
 		SourceControlGrant:  captureGrantForScenario,
 		CaptureDeadline:     in.Admission.CaptureDeadline.Time,

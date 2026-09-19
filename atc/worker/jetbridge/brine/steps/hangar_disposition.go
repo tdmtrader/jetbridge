@@ -196,9 +196,9 @@ func HangarDispositionDefinitions() []brine.StepDefinition {
 				if in.Admission.HandoffID == in.PreviousAdmission.HandoffID {
 					return fmt.Errorf("the new build reused handoff %s", in.Admission.HandoffID)
 				}
-				if in.Admission.SourceLeaseID == in.PreviousAdmission.SourceLeaseID {
-					return fmt.Errorf("the new build reused source lease %s",
-						in.Admission.SourceLeaseID)
+				if in.Admission.SourceHoldID == in.PreviousAdmission.SourceHoldID {
+					return fmt.Errorf("the new build reused source hold %s",
+						in.Admission.SourceHoldID)
 				}
 				if in.Admission.Execution.ExecutionID ==
 					in.PreviousAdmission.Execution.ExecutionID {
@@ -315,7 +315,7 @@ func HangarDispositionDefinitions() []brine.StepDefinition {
 			}),
 
 		// The payload asserted WHOLE, which is the only form in which "never a
-		// grant, key, path or consumer ref" can fail.
+		// warrant, key, path or consumer ref" can fail.
 		CheckThat[CaptureOutcome](
 			"the announcement carries the disposition and reason and nothing else",
 			func(in CaptureOutcome) error {
@@ -336,7 +336,7 @@ func HangarDispositionDefinitions() []brine.StepDefinition {
 				}
 
 				// And the payload as a WHOLE: the three fields, and every one
-				// of them a closed word. A grant, a key, a path or a consumer
+				// of them a closed word. A warrant, a key, a path or a consumer
 				// reference would have to arrive in one of these, so each is
 				// checked against what it may be rather than for what it must
 				// not contain -- an absence check passes on anything it did not
@@ -360,7 +360,7 @@ func HangarDispositionDefinitions() []brine.StepDefinition {
 // It is a shape rule and not a list, because the list is the production
 // vocabulary and duplicating it here would make this check pass whenever the
 // two copies were edited together. What it really refuses is the thing a leak
-// looks like: a path, a URL, a base64 grant, a sentence.
+// looks like: a path, a URL, a base64 warrant, a sentence.
 func isClosedWord(value string) bool {
 	if value == "" || len(value) > 40 {
 		return false

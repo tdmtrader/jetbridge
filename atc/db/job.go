@@ -245,7 +245,7 @@ func (j *job) DisableManualTrigger() bool       { return j.disableManualTrigger 
 func (j *job) RunExpected() bool                { return j.runExpected }
 func (j *job) RunJobKey() string                { return j.runJobKey }
 
-// TaskCacheIdentity resolves the base template lazily rather than carrying it
+// TaskCacheIdentity resolves the template lazily rather than carrying it
 // inline on jobsQuery. The only caller is ClearTaskCache (fly
 // clear-task-cache), which is cold, and the two remaining branches already
 // loaded the pipeline anyway -- so keeping two LEFT JOINs on the scheduler's
@@ -256,8 +256,8 @@ func (j *job) TaskCacheIdentity() (atc.TaskCacheIdentity, error) {
 		return atc.TaskCacheIdentity{}, err
 	}
 	if found {
-		if basePipelineID := pipeline.BasePipelineID(); basePipelineID != 0 {
-			return atc.TaskCacheIdentity{TeamID: j.teamID, TemplatePipelineID: basePipelineID, RunJobName: j.name}, nil
+		if templatePipelineID := pipeline.TemplatePipelineID(); templatePipelineID != 0 {
+			return atc.TaskCacheIdentity{TeamID: j.teamID, TemplatePipelineID: templatePipelineID, RunJobName: j.name}, nil
 		}
 		if pipeline.Template() {
 			if len(vars.NewTemplate([]byte(j.name)).ExtraVarNames()) != 0 {

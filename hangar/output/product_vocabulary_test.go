@@ -1,6 +1,10 @@
 package output
 
 import (
+	"io/fs"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -61,6 +65,65 @@ var forbiddenVocabulary = map[string][]string{
 	coordinatorPackageDir: coordinatorVocabulary,
 }
 
+// hangarTreeRoot is the hangar module root, relative to this package. Every Go
+// package under it is subject to at least productVocabulary: the three
+// packages forbiddenVocabulary states keep their stricter lists, and any other
+// package found by the walk -- a store, a ledger, a publisher, a reclaimer --
+// gets the product list. A new package under hangar/ is therefore covered the
+// day it is created, not the day someone remembers to name it here.
+const hangarTreeRoot = ".."
+
+// hangarPackageDirs walks hangar/... and returns every directory holding a
+// non-test Go file, spelled the way contractFields keys the inventory (relative
+// to this package, so hangar/output is "." and hangar/executioncontrol is
+// "../executioncontrol"). testdata directories are not packages and are
+// skipped.
+func hangarPackageDirs(t *testing.T) []string {
+	t.Helper()
+
+	var dirs []string
+	err := filepath.WalkDir(hangarTreeRoot, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() {
+			return nil
+		}
+		if entry.Name() == "testdata" {
+			return fs.SkipDir
+		}
+		entries, err := os.ReadDir(path)
+		if err != nil {
+			return err
+		}
+		for _, file := range entries {
+			name := file.Name()
+			if file.IsDir() || filepath.Ext(name) != ".go" || strings.HasSuffix(name, "_test.go") {
+				continue
+			}
+			// Spell the directory relative to THIS package as the walk sees
+			// it (hangar/output), so that hangar/output comes back as "."
+			// and hangar/executioncontrol as "../executioncontrol" -- the
+			// keys forbiddenVocabulary and the inventory already use.
+			rel, err := filepath.Rel(filepath.Join(hangarTreeRoot, "output"), path)
+			if err != nil {
+				return err
+			}
+			dirs = append(dirs, rel)
+
+			break
+		}
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking %s: %v", hangarTreeRoot, err)
+	}
+	sort.Strings(dirs)
+
+	return dirs
+}
+
 // vocabularyExemptions are the exported fields whose name or wire spelling
 // contains a forbidden token for a reason that is Hangar's own.
 //
@@ -82,16 +145,28 @@ var vocabularyExemptions = map[string]string{
 // checkNoProductVocabulary is the rule, as a pure function over an inventory,
 // so that TestTheProductVocabularyGuardIsNotVacuous can drive it with fields
 // that violate it.
-func checkNoProductVocabulary(fields []declaredField) []string {
+//
+// treePackages are the packages the hangar/... walk found. A package
+// forbiddenVocabulary states keeps its stricter list whether or not the walk
+// found it; any other walked package is held to productVocabulary; a package
+// in neither is undescribed and refused, so the rule still cannot be satisfied
+// by a package it has never heard of.
+func checkNoProductVocabulary(fields []declaredField, treePackages []string) []string {
 	var problems []string
 
 	if len(fields) == 0 {
 		return []string{"the field inventory is empty; this rule would pass vacuously"}
 	}
 
+	walked := map[string]bool{}
+	for _, pkg := range treePackages {
+		walked[pkg] = true
+	}
+
 	usedExemptions := map[string]bool{}
 	perPackage := map[string]int{}
 	tagged := 0
+	treeOnlyFields := 0
 
 	for _, field := range fields {
 		// An embedded field carries no name of its own; the type it embeds is
@@ -105,6 +180,10 @@ func checkNoProductVocabulary(fields []declaredField) []string {
 		}
 
 		forbidden, described := forbiddenVocabulary[field.Package]
+		if !described && walked[field.Package] {
+			forbidden, described = productVocabulary, true
+			treeOnlyFields++
+		}
 		if !described {
 			problems = append(problems, field.Package+" declares exported fields and "+
 				"forbiddenVocabulary does not describe it. Every scanned package states its own "+
@@ -147,6 +226,11 @@ func checkNoProductVocabulary(fields []declaredField) []string {
 				"found no exported field there. The rule would pass vacuously for that package.")
 		}
 	}
+	if len(treePackages) > 0 && treeOnlyFields == 0 {
+		problems = append(problems, "the hangar/... walk named packages beyond the ones "+
+			"forbiddenVocabulary states, and the inventory found no exported field in any of "+
+			"them. The widened rule would pass vacuously over the rest of the tree.")
+	}
 	for key, reason := range vocabularyExemptions {
 		if !usedExemptions[key] {
 			problems = append(problems, "vocabularyExemptions exempts "+key+" ("+reason+"), and "+
@@ -159,9 +243,29 @@ func checkNoProductVocabulary(fields []declaredField) []string {
 }
 
 func TestNeitherContractPackageCarriesProductMeaning(t *testing.T) {
-	fields := contractFields(t, []string{outputPackageDir, basePackageDir, coordinatorPackageDir})
+	tree := hangarPackageDirs(t)
 
-	for _, problem := range checkNoProductVocabulary(fields) {
+	// The walk must find the two stated packages that live under hangar/ by
+	// the same spelling forbiddenVocabulary uses, or the stricter lists would
+	// silently apply to nothing while the walk reported the tree covered.
+	found := map[string]bool{}
+	for _, dir := range tree {
+		found[dir] = true
+	}
+	for _, stated := range []string{outputPackageDir, basePackageDir} {
+		if !found[stated] {
+			t.Fatalf("the hangar/... walk did not find %s; it found %v", stated, tree)
+		}
+	}
+	if len(tree) <= len(forbiddenVocabulary) {
+		t.Fatalf("the hangar/... walk found only %v; the widened rule is meant to reach "+
+			"packages forbiddenVocabulary does not state", tree)
+	}
+
+	dirs := append(append([]string{}, tree...), coordinatorPackageDir)
+	fields := contractFields(t, dirs)
+
+	for _, problem := range checkNoProductVocabulary(fields, tree) {
 		t.Errorf("product vocabulary: %s", problem)
 	}
 
@@ -172,7 +276,7 @@ func TestNeitherContractPackageCarriesProductMeaning(t *testing.T) {
 		}
 	}
 	t.Logf("inventoried %d exported fields (%d with a wire name) across %v",
-		len(fields), tagged, []string{outputPackageDir, basePackageDir, coordinatorPackageDir})
+		len(fields), tagged, dirs)
 }
 
 // TestTheProductVocabularyGuardIsNotVacuous drives the rule with the two shapes
@@ -180,7 +284,7 @@ func TestNeitherContractPackageCarriesProductMeaning(t *testing.T) {
 // benign shapes it must not object to.
 func TestTheProductVocabularyGuardIsNotVacuous(t *testing.T) {
 	t.Run("an empty inventory is fatal", func(t *testing.T) {
-		if problems := checkNoProductVocabulary(nil); len(problems) == 0 {
+		if problems := checkNoProductVocabulary(nil, nil); len(problems) == 0 {
 			t.Fatal("the rule passed over an empty inventory")
 		}
 	})
@@ -199,8 +303,32 @@ func TestTheProductVocabularyGuardIsNotVacuous(t *testing.T) {
 
 	violations := map[string]struct {
 		fields []declaredField
+		tree   []string
 		want   string
 	}{
+		// The widened rule: a package the walk found, and nothing states, is
+		// held to the product list.
+		"a product word in a walked package nobody stated": {
+			fields: with(declaredField{"../gcsstore", "Store", "AgentID", "agent_id", "string"}),
+			tree:   []string{outputPackageDir, basePackageDir, "../gcsstore"},
+			want:   "../gcsstore: Store.AgentID carries agent meaning in its Go field name (AgentID)",
+		},
+		"a walked package on the wire": {
+			fields: with(declaredField{"ledger", "Entry", "Origin", "workflow_id", "string"}),
+			tree:   []string{outputPackageDir, basePackageDir, "ledger"},
+			want:   "ledger: Entry.Origin carries workflow meaning in its wire name (workflow_id)",
+		},
+		// The stricter list wins over the walk for a package both name.
+		"a base-only extra still bites when the walk also found the base package": {
+			fields: with(declaredField{basePackageDir, "Envelope", "OutputName", "output", "string"}),
+			tree:   []string{outputPackageDir, basePackageDir, "../gcsstore"},
+			want:   "Envelope.OutputName carries output meaning",
+		},
+		"a walk that reaches no field outside the stated packages is refused": {
+			fields: with(declaredField{outputPackageDir, "ReadLease", "LeaseFence", "lease_fence", "string"}),
+			tree:   []string{outputPackageDir, basePackageDir, "../gcsstore"},
+			want:   "found no exported field in any of them",
+		},
 		// M-B: the Go name is innocent and the wire says run_id.
 		"a product word on the base envelope's wire": {
 			fields: with(declaredField{basePackageDir, "Envelope", "Origin", "run_id", "string"}),
@@ -234,7 +362,7 @@ func TestTheProductVocabularyGuardIsNotVacuous(t *testing.T) {
 
 	for name, violation := range violations {
 		t.Run(name, func(t *testing.T) {
-			problems := checkNoProductVocabulary(violation.fields)
+			problems := checkNoProductVocabulary(violation.fields, violation.tree)
 			if len(problems) == 0 {
 				t.Fatalf("the rule found nothing wrong with an inventory built to violate it: %v",
 					violation.fields)
@@ -260,8 +388,13 @@ func TestTheProductVocabularyGuardIsNotVacuous(t *testing.T) {
 			// control plane's half of the same extension, and it says nothing
 			// about what a capture is for.
 			declaredField{coordinatorPackageDir, "Coordinator", "ReceiptKeyID", "", "string"},
+			// A walked package may use Hangar's own capture words freely; only
+			// the product list reaches it.
+			declaredField{"../gcsstore", "Store", "BucketName", "bucket", "string"},
+			declaredField{"reclaimer", "Pass", "HeldReceipts", "held_receipts", "int"},
 		)
-		if problems := checkNoProductVocabulary(benign); len(problems) != 0 {
+		tree := []string{outputPackageDir, basePackageDir, "../gcsstore", "reclaimer"}
+		if problems := checkNoProductVocabulary(benign, tree); len(problems) != 0 {
 			t.Errorf("the rule objected to Hangar's own vocabulary: %v", problems)
 		}
 	})

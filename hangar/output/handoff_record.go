@@ -59,7 +59,7 @@ func ParseCaptureState(value string) (CaptureState, error) {
 		ErrUnknownMember, value, CaptureStates())
 }
 
-// CaptureLease is one renewable, fenced grant of capture ownership.
+// CaptureLease is one renewable, fenced warrant of capture ownership.
 //
 // It lives in the leaf rather than beside the SQL because the coordinator that
 // renews it and the repository that issues it are in different packages, and a
@@ -103,7 +103,7 @@ func (placement SourcePlacement) Reserved() bool {
 type HandoffRecord struct {
 	// The predeclaration: what was true before anything could start.
 	HandoffID       HandoffID
-	SourceLeaseID   SourceLeaseID
+	SourceHoldID    SourceHoldID
 	Execution       executioncontrol.Identity
 	ActivationEpoch executioncontrol.ActivationEpoch
 	Output          OutputName

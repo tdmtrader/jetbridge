@@ -149,11 +149,11 @@ func startOutputDaemonWith(secure bool) (*outputDaemonHarness, error) {
 	if err := os.WriteFile(capabilityKey, secret, 0o600); err != nil {
 		return nil, err
 	}
-	// The output read-grant key: a THIRD key, distinct from the receipt key and
-	// from the control capability key. A grant must not be signable by anything
+	// The output read-warrant key: a THIRD key, distinct from the receipt key and
+	// from the control capability key. A warrant must not be signable by anything
 	// that can mint a publication receipt, and the daemon refuses a
 	// configuration where two of the three are one file.
-	materializeSecret := make([]byte, output.ReadGrantKeyBytes)
+	materializeSecret := make([]byte, output.ReadWarrantKeyBytes)
 	if _, err := rand.Read(materializeSecret); err != nil {
 		return nil, err
 	}

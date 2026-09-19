@@ -306,7 +306,7 @@ this table:
   - **Reddened by:** *no mutation is named in the feature file.* See "32 scenarios name no mutation" below.
   - **Not measured in Phase 9.** No mutation in this phase's set targets it directly.
 
-**A new build gets a new handoff identity and a new source lease**  `@HOP-6`  (:133)
+**A new build gets a new handoff identity and a new source hold**  `@HOP-6`  (:133)
   - **Reddened by:** *no mutation is named in the feature file.* See "32 scenarios name no mutation" below.
   - **Not measured in Phase 9.** No mutation in this phase's set targets it directly.
 

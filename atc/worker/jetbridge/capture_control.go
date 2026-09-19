@@ -65,7 +65,7 @@ const (
 	captureEnvFence      = "HANGAR_EXECUTION_FENCE"
 	captureEnvEpoch      = "HANGAR_ACTIVATION_EPOCH"
 	captureEnvHandoff    = "HANGAR_HANDOFF_ID"
-	captureEnvLease      = "HANGAR_SOURCE_LEASE_ID"
+	captureEnvHold       = "HANGAR_SOURCE_HOLD_ID"
 	captureEnvOutput     = "HANGAR_OUTPUT_NAME"
 	captureEnvDeadline   = "HANGAR_CAPTURE_DEADLINE"
 	captureEnvPodUID     = "HANGAR_POD_UID"
@@ -135,7 +135,7 @@ func (c *Container) buildCaptureControlInitContainer() *corev1.Container {
 			{Name: captureEnvFence, Value: strconv.FormatUint(uint64(control.Identity.Fence), 10)},
 			{Name: captureEnvEpoch, Value: strconv.FormatUint(uint64(control.ActivationEpoch), 10)},
 			{Name: captureEnvHandoff, Value: string(capture.HandoffID)},
-			{Name: captureEnvLease, Value: string(capture.SourceLeaseID)},
+			{Name: captureEnvHold, Value: string(capture.SourceHoldID)},
 			{Name: captureEnvOutput, Value: capture.Output},
 			{Name: captureEnvDeadline, Value: capture.CaptureDeadline.UTC().Format(time.RFC3339Nano)},
 			{Name: captureEnvOutputPort, Value: strconv.Itoa(port)},
@@ -207,7 +207,7 @@ if [ -z "${ENDPOINT}" ]; then
 fi
 WGET_OPTS="%[20]s"
 INCARNATION='{"execution_id":"'"${%[3]s}"'","node_uid":"'"${%[17]s}"'","handle_generation":'"${%[18]s}"',"output":"'"${%[8]s}"'"}'
-BODY='{"protocol_version":"'"${%[1]s}"'","execution":{"execution_id":"'"${%[3]s}"'","fence":'"${%[4]s}"'},"activation_epoch":'"${%[5]s}"',"handoff_id":"'"${%[6]s}"'","source_lease_id":"'"${%[7]s}"'","output":"'"${%[8]s}"'","capture_deadline_at":"'"${%[9]s}"'","pod_uid":"'"${%[10]s}"'","incarnation":'"${INCARNATION}"'}'
+BODY='{"protocol_version":"'"${%[1]s}"'","execution":{"execution_id":"'"${%[3]s}"'","fence":'"${%[4]s}"'},"activation_epoch":'"${%[5]s}"',"handoff_id":"'"${%[6]s}"'","source_hold_id":"'"${%[7]s}"'","output":"'"${%[8]s}"'","capture_deadline_at":"'"${%[9]s}"'","pod_uid":"'"${%[10]s}"'","incarnation":'"${INCARNATION}"'}'
 echo "[hangar-capture-control] holding the source for output ${%[8]s} on node ${%[12]s} (pod ${%[10]s})" >&2
 ATTEMPT=0
 while [ "${ATTEMPT}" -lt "${%[13]s}" ]; do
@@ -231,7 +231,7 @@ exit 1
 		captureEnvFence,      // 4
 		captureEnvEpoch,      // 5
 		captureEnvHandoff,    // 6
-		captureEnvLease,      // 7
+		captureEnvHold,       // 7
 		captureEnvOutput,     // 8
 		captureEnvDeadline,   // 9
 		captureEnvPodUID,     // 10

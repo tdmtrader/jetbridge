@@ -67,8 +67,12 @@ func main() {
 	// cache tier. It deliberately reuses only the GCS connection settings.
 	hangarEnabled := flag.Bool("hangar-enabled", false, "Enable strict Hangar tree publication and materialization")
 	hangarScratchDir := flag.String("hangar-scratch-dir", "/var/concourse/hangar-scratch", "Absolute private scratch directory for Hangar verification")
-	hangarCapabilityKey := flag.String("hangar-capability-key", "", "Path to the raw 32-byte materialization capability key")
-	hangarCapabilityTTL := flag.Duration("hangar-capability-ttl", 15*time.Minute, "Maximum accepted Hangar materialization grant lifetime")
+	hangarWarrantKey := flag.String("hangar-warrant-key", "", "Path to the raw 32-byte materialization warrant key")
+	hangarWarrantTTL := flag.Duration("hangar-warrant-ttl", 15*time.Minute, "Maximum accepted Hangar materialization warrant lifetime")
+	// The pre-rename spellings stay accepted so a chart or operator still
+	// passing them keeps working; both names write the same variable.
+	flag.StringVar(hangarWarrantKey, "hangar-capability-key", "", "Deprecated alias for --hangar-warrant-key")
+	flag.DurationVar(hangarWarrantTTL, "hangar-capability-ttl", 15*time.Minute, "Deprecated alias for --hangar-warrant-ttl")
 	hangarMaxContentBytes := flag.Int64("hangar-max-content-bytes", 10<<30, "Maximum regular-file content admitted in one Hangar tree")
 	hangarMaxEntries := flag.Int64("hangar-max-entries", 100000, "Maximum filesystem entries admitted in one Hangar tree")
 
@@ -248,8 +252,8 @@ func main() {
 	}
 
 	hangarService, hangarClose, err := buildHangarService(context.Background(), logger, *storagePath, hangarOptions{
-		Enabled: *hangarEnabled, ScratchDir: *hangarScratchDir, CapabilityKey: *hangarCapabilityKey,
-		MaxContentBytes: *hangarMaxContentBytes, MaxEntries: *hangarMaxEntries, CapabilityTTL: *hangarCapabilityTTL,
+		Enabled: *hangarEnabled, ScratchDir: *hangarScratchDir, WarrantKey: *hangarWarrantKey,
+		MaxContentBytes: *hangarMaxContentBytes, MaxEntries: *hangarMaxEntries, WarrantTTL: *hangarWarrantTTL,
 		DurableKind: *durableStore, Bucket: *durableBucket, Prefix: *durablePrefix, Endpoint: *durableEndpoint, Timeout: *durableTimeout,
 		TLSCert: *tlsCert, TLSKey: *tlsKey, TLSCACert: *tlsCACert,
 	})
@@ -267,7 +271,7 @@ func main() {
 
 	sweeper := NewSweeper(logger, *storagePath, *ttl, 5*time.Minute, server.Registry())
 	sweeper.SetGuard(server.Guard())
-	sweeper.SetCaptureLedger(server.CaptureLedger())
+	sweeper.SetSourceLedger(server.SourceLedger())
 
 	// Set up peer resolver for cross-node artifact resolution. It shares the
 	// client built above: peer discovery is one more consumer of the same

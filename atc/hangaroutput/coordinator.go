@@ -360,7 +360,7 @@ func (coordinator *Coordinator) commitStageTwo(ctx context.Context, record outpu
 				Execution:             record.Execution,
 				ActivationEpoch:       record.ActivationEpoch,
 				HandoffID:             record.HandoffID,
-				SourceLeaseID:         record.SourceLeaseID,
+				SourceHoldID:          record.SourceHoldID,
 				ProducerCheckpointID:  checkpointFor(record.HandoffID),
 				Output:                record.Output,
 				CaptureFence:          1,
@@ -383,7 +383,7 @@ func (coordinator *Coordinator) recordNoCapture(ctx context.Context, record outp
 		Execution:       record.Execution,
 		ActivationEpoch: record.ActivationEpoch,
 		HandoffID:       record.HandoffID,
-		SourceLeaseID:   record.SourceLeaseID,
+		SourceHoldID:    record.SourceHoldID,
 		ReleaseIntentID: releaseIntentFor(record.HandoffID, output.DispositionNoCapture),
 	}
 
@@ -481,7 +481,7 @@ func (coordinator *Coordinator) releaseFor(ctx context.Context, record output.Ha
 		Execution:       record.Execution,
 		ActivationEpoch: record.ActivationEpoch,
 		HandoffID:       record.HandoffID,
-		SourceLeaseID:   record.SourceLeaseID,
+		SourceHoldID:    record.SourceHoldID,
 		ReleaseIntentID: intent,
 		Incarnation:     record.Source.Incarnation,
 	})

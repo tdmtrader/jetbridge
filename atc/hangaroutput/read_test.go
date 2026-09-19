@@ -37,13 +37,13 @@ import (
 	"github.com/concourse/concourse/hangar/output/publisher"
 )
 
-// readGrantKey is the output plane's materialization key. It is not the receipt
+// readWarrantKey is the output plane's materialization key. It is not the receipt
 // key and it is not the foundation's strict-input key, and nothing in this file
 // lets it be either.
-var readGrantKey = []byte("0123456789abcdef0123456789abcdef")
+var readWarrantKey = []byte("0123456789abcdef0123456789abcdef")
 
 // registeredRef drives one whole capture to a registered receipt and returns
-// the exact ref it published.
+// the tree ref it published.
 func registeredRef(t *testing.T, h *harness) hangar.TreeRef {
 	t.Helper()
 
@@ -55,7 +55,7 @@ func registeredRef(t *testing.T, h *harness) hangar.TreeRef {
 		t.Fatalf("the capture is %s, so there is no registered ref to read", record.State)
 	}
 	if record.Ref.Validate() != nil {
-		t.Fatalf("the registered capture has no exact ref: %+v", record.Ref)
+		t.Fatalf("the registered capture has no tree ref: %+v", record.Ref)
 	}
 
 	return record.Ref
@@ -119,12 +119,12 @@ func claimOn(t *testing.T, h *harness, ref hangar.TreeRef) output.ClaimID {
 
 // countingMinter is the real signer with a call counter around it.
 //
-// The counter is the assertion. "No usable grant exists before the commit" is
+// The counter is the assertion. "No usable warrant exists before the commit" is
 // weaker than what requirement 35 asks for: the SIGNER must not have run, so
 // that a rolled-back admission cannot have leaked a token into a log, a metric
 // or an error message on its way out.
 type countingMinter struct {
-	inner *output.ReadGrantSigner
+	inner *output.ReadWarrantSigner
 	calls int
 }
 
@@ -137,9 +137,9 @@ func (minter *countingMinter) Sign(lease output.ReadLease, destination output.Re
 func readAdmission(t *testing.T, h *harness) (*hangaroutput.ReadAdmission, *countingMinter) {
 	t.Helper()
 
-	signer, err := output.NewReadGrantSigner(readGrantKey)
+	signer, err := output.NewReadWarrantSigner(readWarrantKey)
 	if err != nil {
-		t.Fatalf("read grant signer: %v", err)
+		t.Fatalf("read warrant signer: %v", err)
 	}
 	minter := &countingMinter{inner: signer}
 
@@ -155,14 +155,14 @@ func readAdmission(t *testing.T, h *harness) (*hangaroutput.ReadAdmission, *coun
 func readRequest(t *testing.T, claimID output.ClaimID, ref hangar.TreeRef) hangaroutput.ReadRequest {
 	t.Helper()
 
-	nonce, err := output.NewReadGrantNonce(rand.Reader)
+	nonce, err := output.NewReadWarrantNonce(rand.Reader)
 	if err != nil {
 		t.Fatalf("nonce: %v", err)
 	}
 
 	return hangaroutput.ReadRequest{
 		ReadLeaseID:            output.ReadLeaseID(uuid.NewString()),
-		GrantNonce:             nonce,
+		WarrantNonce:           nonce,
 		ClaimID:                claimID,
 		Ref:                    ref,
 		Destination:            output.ReadDestination{Handle: "consumer-handle", Volume: "input-0"},
@@ -172,9 +172,9 @@ func readRequest(t *testing.T, claimID output.ClaimID, ref hangar.TreeRef) hanga
 }
 
 // The control, asserted before every refusal below: a claimed, registered,
-// marked generation admits a read and the grant it hands back verifies with the
+// marked generation admits a read and the warrant it hands back verifies with the
 // production verifier.
-func TestAManagedReadOverAPublishedRefMintsAVerifiableGrant(t *testing.T) {
+func TestAManagedReadOverAPublishedRefMintsAVerifiableWarrant(t *testing.T) {
 	h := newHarness(t)
 	ref := registeredRef(t, h)
 	claimID := claimOn(t, h, ref)
@@ -182,7 +182,7 @@ func TestAManagedReadOverAPublishedRefMintsAVerifiableGrant(t *testing.T) {
 	admission, minter := readAdmission(t, h)
 	request := readRequest(t, claimID, ref)
 
-	grant, err := admission.Admit(context.Background(), request)
+	warrant, err := admission.Admit(context.Background(), request)
 	if err != nil {
 		t.Fatalf("admitting a managed read over a claimed registered ref: %v", err)
 	}
@@ -190,21 +190,21 @@ func TestAManagedReadOverAPublishedRefMintsAVerifiableGrant(t *testing.T) {
 		t.Errorf("the signer ran %d times for one admission", minter.calls)
 	}
 
-	verifier, err := output.NewReadGrantVerifier(readGrantKey,
+	verifier, err := output.NewReadWarrantVerifier(readWarrantKey,
 		output.ClockFunc(func() time.Time { return time.Now().UTC() }))
 	if err != nil {
-		t.Fatalf("read grant verifier: %v", err)
+		t.Fatalf("read warrant verifier: %v", err)
 	}
-	claims, err := verifier.Verify(grant.Token, ref, request.Destination)
+	claims, err := verifier.Verify(warrant.Token, ref, request.Destination)
 	if err != nil {
-		t.Fatalf("the grant a managed read handed back does not verify: %v", err)
+		t.Fatalf("the warrant a managed read handed back does not verify: %v", err)
 	}
 	if claims.ReadLeaseID != request.ReadLeaseID {
-		t.Errorf("the grant names lease %q, the request asked for %q",
+		t.Errorf("the warrant names lease %q, the request asked for %q",
 			claims.ReadLeaseID, request.ReadLeaseID)
 	}
-	if claims.Nonce != request.GrantNonce {
-		t.Error("the grant carries a nonce the caller did not generate; a re-mint could not be " +
+	if claims.Nonce != request.WarrantNonce {
+		t.Error("the warrant carries a nonce the caller did not generate; a re-mint could not be " +
 			"byte-identical")
 	}
 
@@ -215,8 +215,8 @@ func TestAManagedReadOverAPublishedRefMintsAVerifiableGrant(t *testing.T) {
 	}
 	defer db.Rollback(tx)
 	if _, err := h.Repository.ValidateReadLease(context.Background(), tx,
-		output.ReadGrantFor(claims, request.MaterializationTimeout+output.LeaseStartMargin)); err != nil {
-		t.Fatalf("the control plane refused the lease its own grant names: %v", err)
+		output.ReadWarrantFor(claims, request.MaterializationTimeout+output.LeaseStartMargin)); err != nil {
+		t.Fatalf("the control plane refused the lease its own warrant names: %v", err)
 	}
 }
 
@@ -234,7 +234,7 @@ func TestARolledBackManagedReadNeverReachesTheSigner(t *testing.T) {
 	failing.FailNext = true
 
 	if _, err := admission.Admit(context.Background(), request); err == nil {
-		t.Fatal("a managed read whose transaction could not commit handed back a grant")
+		t.Fatal("a managed read whose transaction could not commit handed back a warrant")
 	}
 	if minter.calls != 0 {
 		t.Errorf("the signer ran %d times for an admission that never committed", minter.calls)
@@ -255,7 +255,7 @@ func TestARolledBackManagedReadNeverReachesTheSigner(t *testing.T) {
 //
 // The retry asks about the SAME lease identity and delivers the SAME bytes. A
 // second lease would be a second protection nobody would ever release.
-func TestAnAmbiguousReadLeaseCommitRedeliversTheSameGrant(t *testing.T) {
+func TestAnAmbiguousReadLeaseCommitRedeliversTheSameWarrant(t *testing.T) {
 	h := newHarness(t)
 	ref := registeredRef(t, h)
 	claimID := claimOn(t, h, ref)
@@ -278,7 +278,7 @@ func TestAnAmbiguousReadLeaseCommitRedeliversTheSameGrant(t *testing.T) {
 		t.Fatalf("the retry after an ambiguous commit failed: %v", err)
 	}
 	if first.Token != second.Token {
-		t.Error("the retry delivered a different grant; requirement 37 asks for the same " +
+		t.Error("the retry delivered a different warrant; requirement 37 asks for the same " +
 			"nonce-bound bytes rather than another lease")
 	}
 	if minter.calls != 2 {
@@ -335,11 +335,11 @@ func TestAnUnadmittedManagedReadReachesNoSigner(t *testing.T) {
 	}
 }
 
-// A grant is minted from the committed row, never from the request.
+// A warrant is minted from the committed row, never from the request.
 //
 // The case is a lease id that already belongs to another read. Minting over it
-// would hand this caller a grant for protection somebody else owns.
-func TestAGrantIsNeverMintedForAnotherReadsLease(t *testing.T) {
+// would hand this caller a warrant for protection somebody else owns.
+func TestAWarrantIsNeverMintedForAnotherReadsLease(t *testing.T) {
 	h := newHarness(t)
 	ref := registeredRef(t, h)
 	claimID := claimOn(t, h, ref)

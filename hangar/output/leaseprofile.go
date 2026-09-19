@@ -12,12 +12,12 @@ import (
 // LeaseReadProfile is the daemon's half of a managed read.
 //
 // It is the thing that turns `hangar.Materializer.MaterializeManaged` from a
-// shape into a transfer: Admit asks the control plane whether this grant's lease
+// shape into a transfer: Admit asks the control plane whether this warrant's lease
 // may authorize work of the length about to be attempted, Renew keeps it current
 // while bytes move, and Release gives the protection back on BOTH paths.
 //
 // The ordering it enforces is the requirement rather than a convenience.
-// Requirement 36: a caller-provided grant is not authority; the committed lease
+// Requirement 36: a caller-provided warrant is not authority; the committed lease
 // is, and the daemon validates the exact lease is still active BEFORE it opens
 // anything. A profile that opened first and asked afterwards would be reading
 // under authority the control plane may already have given away -- and the
@@ -25,7 +25,7 @@ import (
 //
 // It holds no claim logic of its own. The claim, the registered lifecycle, the
 // fresh stat proof and the policy and reclaim exclusion are all decided in ONE
-// caller-owned transaction on the control plane before a grant is minted at all;
+// caller-owned transaction on the control plane before a warrant is minted at all;
 // this type's job is to keep the daemon from reading outside what that
 // transaction decided.
 type LeaseReadProfile struct {
@@ -34,11 +34,11 @@ type LeaseReadProfile struct {
 	// package must not decide that.
 	Control *LeaseControlClient
 
-	// Grant is the lease-bound token this read was delivered with. It moves:
+	// Warrant is the lease-bound token this read was delivered with. It moves:
 	// a renewal answers with a re-minted token for the new window, and the
 	// daemon's own pre-open window check is what would otherwise start failing
 	// on a lease that is perfectly live.
-	grant string
+	warrant string
 
 	// materializationTimeout is how long the transfer this profile authorizes
 	// is allowed to take, and it is what makes Req 36's margin real.
@@ -52,7 +52,7 @@ type LeaseReadProfile struct {
 	// appeared to pin it supplied the margin itself.
 	materializationTimeout time.Duration
 
-	// mutex guards grant. Renew runs on a ticker in RenewWhile's goroutine
+	// mutex guards warrant. Renew runs on a ticker in RenewWhile's goroutine
 	// while Release may run on the caller's, and a token read half-written is
 	// a token no verifier accepts.
 	mutex sync.Mutex
@@ -70,22 +70,22 @@ type LeaseReadProfile struct {
 // managed-read box this phase did not land. The profile itself is composed
 // against the real control plane and the real materializer in atc/hangaroutput
 //
-// NewLeaseReadProfile binds one profile to one delivered grant and to the
+// NewLeaseReadProfile binds one profile to one delivered warrant and to the
 // timeout of the transfer it is about.
 //
 // The timeout is a parameter and not an option: it is the whole of Req 36's
 // "work starts only with the timeout plus two minutes remaining", and a profile
 // that could be built without one is a profile that asks the control plane
 // whether the lease has expired.
-func NewLeaseReadProfile(control *LeaseControlClient, grant string,
+func NewLeaseReadProfile(control *LeaseControlClient, warrant string,
 	materializationTimeout time.Duration) (*LeaseReadProfile, error) {
 	if control == nil {
 		return nil, fmt.Errorf("%w: a managed read needs a lease-control client; an output "+
-			"read is authorized by a committed lease and never by a grant alone",
+			"read is authorized by a committed lease and never by a warrant alone",
 			ErrUnauthorized)
 	}
-	if grant == "" {
-		return nil, fmt.Errorf("%w: a managed read needs its lease-bound grant",
+	if warrant == "" {
+		return nil, fmt.Errorf("%w: a managed read needs its lease-bound warrant",
 			ErrIncomplete)
 	}
 	if err := ValidateMaterializationTimeout(materializationTimeout); err != nil {
@@ -93,7 +93,7 @@ func NewLeaseReadProfile(control *LeaseControlClient, grant string,
 	}
 
 	return &LeaseReadProfile{
-		Control: control, grant: grant, materializationTimeout: materializationTimeout,
+		Control: control, warrant: warrant, materializationTimeout: materializationTimeout,
 	}, nil
 }
 
@@ -112,11 +112,11 @@ func (profile *LeaseReadProfile) requiredRemaining() time.Duration {
 // is waiting to reclaim.
 //
 // The ref, handle and volume are checked against the ANSWER rather than sent as
-// the question's subject. The grant already binds them -- an exact ref, a
+// the question's subject. The warrant already binds them -- a tree ref, a
 // destination and a lease UUID are inside the signed bytes -- so what matters
 // here is that the lease the control plane just described is the one this
 // materialization is about. A profile that took the caller's word for that
-// would let a grant for one object authorize a read of another.
+// would let a warrant for one object authorize a read of another.
 func (profile *LeaseReadProfile) Admit(ctx context.Context, ref hangar.TreeRef,
 	handle, volume string) (time.Duration, error) {
 	answer, err := profile.Control.ValidateLease(ctx, profile.current(), profile.requiredRemaining())
@@ -156,8 +156,8 @@ func (profile *LeaseReadProfile) Renew(ctx context.Context) error {
 		return fmt.Errorf("%w: the control plane refused to renew this read lease: %s",
 			ErrUnauthorized, answer.Refusal)
 	}
-	if answer.Grant == "" {
-		return fmt.Errorf("%w: the renewal carried no re-minted grant. A grant is dated with "+
+	if answer.Warrant == "" {
+		return fmt.Errorf("%w: the renewal carried no re-minted warrant. A warrant is dated with "+
 			"its lease's own instants, so a renewal that did not answer with a current token "+
 			"would leave this reader holding one describing a window that has passed -- and "+
 			"the pre-open window check would refuse a lease that is perfectly live",
@@ -165,7 +165,7 @@ func (profile *LeaseReadProfile) Renew(ctx context.Context) error {
 	}
 
 	profile.mutex.Lock()
-	profile.grant = answer.Grant
+	profile.warrant = answer.Warrant
 	profile.mutex.Unlock()
 
 	return nil
@@ -189,10 +189,10 @@ func (profile *LeaseReadProfile) Release(ctx context.Context, _ error) error {
 		return nil
 	}
 	profile.released = true
-	grant := profile.grant
+	warrant := profile.warrant
 	profile.mutex.Unlock()
 
-	answer, err := profile.Control.ReleaseLease(ctx, grant)
+	answer, err := profile.Control.ReleaseLease(ctx, warrant)
 	if err != nil {
 		return err
 	}
@@ -208,7 +208,7 @@ func (profile *LeaseReadProfile) current() string {
 	profile.mutex.Lock()
 	defer profile.mutex.Unlock()
 
-	return profile.grant
+	return profile.warrant
 }
 
 // matches is the check that makes the lease the authority rather than the
@@ -217,7 +217,7 @@ func (profile *LeaseReadProfile) matches(answer LeaseAnswer, ref hangar.TreeRef,
 	handle, volume string) error {
 	if answer.Lease.Ref != ref {
 		return fmt.Errorf("%w: this read is for %s/%s/%d and the admitted lease names "+
-			"%s/%s/%d. A grant for one object may not authorize a read of another",
+			"%s/%s/%d. A warrant for one object may not authorize a read of another",
 			ErrUnauthorized, ref.Scope, ref.Digest, ref.Generation,
 			answer.Lease.Ref.Scope, answer.Lease.Ref.Digest, answer.Lease.Ref.Generation)
 	}

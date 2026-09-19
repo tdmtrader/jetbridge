@@ -49,25 +49,25 @@ type LeaseControlClient struct {
 	Clock Clock
 }
 
-// ValidateLease asks whether this grant's lease may authorize work of the given
+// ValidateLease asks whether this warrant's lease may authorize work of the given
 // length. It is called BEFORE the object is opened.
-func (client *LeaseControlClient) ValidateLease(ctx context.Context, grant string, work time.Duration) (LeaseAnswer, error) {
-	return client.ask(ctx, LeaseValidate, grant, work)
+func (client *LeaseControlClient) ValidateLease(ctx context.Context, warrant string, work time.Duration) (LeaseAnswer, error) {
+	return client.ask(ctx, LeaseValidate, warrant, work)
 }
 
 // RenewLease extends the lease while work proceeds.
-func (client *LeaseControlClient) RenewLease(ctx context.Context, grant string, work time.Duration) (LeaseAnswer, error) {
-	return client.ask(ctx, LeaseRenew, grant, work)
+func (client *LeaseControlClient) RenewLease(ctx context.Context, warrant string, work time.Duration) (LeaseAnswer, error) {
+	return client.ask(ctx, LeaseRenew, warrant, work)
 }
 
 // ReleaseLease closes the reader's protection after verified staging. It is
 // idempotent by the control plane's own rule, so a retry after a lost answer is
 // safe.
-func (client *LeaseControlClient) ReleaseLease(ctx context.Context, grant string) (LeaseAnswer, error) {
-	return client.ask(ctx, LeaseRelease, grant, 0)
+func (client *LeaseControlClient) ReleaseLease(ctx context.Context, warrant string) (LeaseAnswer, error) {
+	return client.ask(ctx, LeaseRelease, warrant, 0)
 }
 
-func (client *LeaseControlClient) ask(ctx context.Context, operation LeaseOperation, grant string, work time.Duration) (LeaseAnswer, error) {
+func (client *LeaseControlClient) ask(ctx context.Context, operation LeaseOperation, warrant string, work time.Duration) (LeaseAnswer, error) {
 	if err := client.wired(); err != nil {
 		return LeaseAnswer{}, err
 	}
@@ -77,7 +77,7 @@ func (client *LeaseControlClient) ask(ctx context.Context, operation LeaseOperat
 		Operation:                operation,
 		KeyID:                    client.KeyID,
 		NodeUID:                  client.NodeUID,
-		Grant:                    grant,
+		Warrant:                  warrant,
 		RequiredRemainingSeconds: int64(work.Round(time.Second).Seconds()),
 		IssuedAt:                 NewTimestamp(client.Clock.Now().UTC()),
 		Signature:                "unsigned",

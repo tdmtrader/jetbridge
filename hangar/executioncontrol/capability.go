@@ -34,7 +34,7 @@ import (
 )
 
 // CapabilityDomain separates a control capability from every other HMAC in the
-// system, including the materialization grant that uses the same primitive.
+// system, including the materialization warrant that uses the same primitive.
 const CapabilityDomain = "hangar-execution-capability-v1"
 
 // CapabilityKeyBytes is the exact key length. A short key is a configuration

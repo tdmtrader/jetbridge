@@ -342,7 +342,7 @@ func TestTheBaseSurfaceNeverMentionsTheExtension(t *testing.T) {
 			t.Fatalf("%s answered %d: %s", path, status, body)
 		}
 		for _, forbidden := range []string{
-			"capture", "handoff", "source_lease", "incarnation", "bucket", "scope",
+			"capture", "handoff", "source_hold", "incarnation", "bucket", "scope",
 			"digest", "receipt", "writer_ticket",
 		} {
 			if strings.Contains(string(body), forbidden) {
@@ -354,7 +354,7 @@ func TestTheBaseSurfaceNeverMentionsTheExtension(t *testing.T) {
 
 // An unready daemon fails closed on every control route.
 //
-// Output-daemon unavailability never grants destructive authority, and
+// Output-daemon unavailability never warrants destructive authority, and
 // "unavailable" includes "cannot read its own ledger".
 func TestAnUnreadyDaemonAnswersNoControlRequestAtAll(t *testing.T) {
 	// The control: the same fixture, ready, serves.

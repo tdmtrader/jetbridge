@@ -54,12 +54,12 @@ func (repository *HangarOutputRepository) PredeclareHandoff(ctx context.Context,
 
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO hangar_handoff_predeclarations
-			(handoff_id, source_lease_id, execution_id, execution_fence, output_name,
+			(handoff_id, source_hold_id, execution_id, execution_fence, output_name,
 			 activation_epoch, capture_deadline_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (handoff_id) DO NOTHING`,
 		string(admission.HandoffID),
-		string(admission.SourceLeaseID),
+		string(admission.SourceHoldID),
 		string(admission.Execution.ExecutionID),
 		int64(admission.Execution.Fence),
 		string(admission.Output),
@@ -79,7 +79,7 @@ func (repository *HangarOutputRepository) PredeclareHandoff(ctx context.Context,
 		fence, epoch           int64
 	)
 	if err := hangarQueryRow(ctx, tx, `
-		SELECT source_lease_id, execution_id, execution_fence, output_name, activation_epoch
+		SELECT source_hold_id, execution_id, execution_fence, output_name, activation_epoch
 		FROM hangar_handoff_predeclarations WHERE handoff_id = $1`,
 		[]any{string(admission.HandoffID)},
 		&lease, &execution, &fence, &name, &epoch,
@@ -87,7 +87,7 @@ func (repository *HangarOutputRepository) PredeclareHandoff(ctx context.Context,
 		return err
 	}
 
-	if lease != string(admission.SourceLeaseID) ||
+	if lease != string(admission.SourceHoldID) ||
 		execution != string(admission.Execution.ExecutionID) ||
 		fence != int64(admission.Execution.Fence) ||
 		name != string(admission.Output) ||
@@ -116,11 +116,11 @@ func (repository *HangarOutputRepository) AcknowledgeSourceHold(ctx context.Cont
 		UPDATE hangar_handoff_predeclarations
 		SET hold_acknowledged_at = now()
 		WHERE handoff_id = $1
-		  AND source_lease_id = $2
+		  AND source_hold_id = $2
 		  AND execution_id = $3
 		  AND hold_acknowledged_at IS NULL`,
 		string(acknowledgement.HandoffID),
-		string(acknowledgement.SourceLeaseID),
+		string(acknowledgement.SourceHoldID),
 		string(acknowledgement.Execution.ExecutionID),
 	)
 	if err != nil {
@@ -136,10 +136,10 @@ func (repository *HangarOutputRepository) AcknowledgeSourceHold(ctx context.Cont
 	var acknowledged sql.NullTime
 	if err := hangarQueryRow(ctx, tx, `
 		SELECT hold_acknowledged_at FROM hangar_handoff_predeclarations
-		WHERE handoff_id = $1 AND source_lease_id = $2 AND execution_id = $3`,
+		WHERE handoff_id = $1 AND source_hold_id = $2 AND execution_id = $3`,
 		[]any{
 			string(acknowledgement.HandoffID),
-			string(acknowledgement.SourceLeaseID),
+			string(acknowledgement.SourceHoldID),
 			string(acknowledgement.Execution.ExecutionID),
 		}, &acknowledged); err != nil {
 		return fmt.Errorf("%w: no predeclaration matches the acknowledged hold for handoff %s",
@@ -179,13 +179,13 @@ func (repository *HangarOutputRepository) RecordNoCaptureIntent(ctx context.Cont
 
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO hangar_no_capture_dispositions
-			(handoff_id, execution_id, activation_epoch, source_lease_id, reason,
+			(handoff_id, execution_id, activation_epoch, source_hold_id, reason,
 			 release_intent_id, finish_acknowledgement)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		string(disposition.HandoffID),
 		string(disposition.Execution.ExecutionID),
 		int64(disposition.ActivationEpoch),
-		string(disposition.SourceLeaseID),
+		string(disposition.SourceHoldID),
 		string(disposition.Reason),
 		string(disposition.ReleaseIntentID),
 		witness,
@@ -265,13 +265,13 @@ func (repository *HangarOutputRepository) RecordPreReservationCancelIntent(ctx c
 
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
 		INSERT INTO hangar_pre_reservation_cancel_dispositions
-			(handoff_id, execution_id, activation_epoch, source_lease_id, source_reserved,
+			(handoff_id, execution_id, activation_epoch, source_hold_id, source_reserved,
 			 release_intent_id, finalized_at)
 		VALUES ($1, $2, $3, $4, $5, $6, %s)`, finalized),
 		string(disposition.HandoffID),
 		string(disposition.Execution.ExecutionID),
 		int64(disposition.ActivationEpoch),
-		string(disposition.SourceLeaseID),
+		string(disposition.SourceHoldID),
 		disposition.SourceReserved,
 		intent,
 	); err != nil {

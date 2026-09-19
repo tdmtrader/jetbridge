@@ -4,11 +4,11 @@ package hangaroutput
 // neutral endpoints the materializing daemon calls.
 //
 // Nothing here knows what a build, a job, a Run, a workflow or a consumer is.
-// The whole vocabulary is a signed question from a node, a grant, and a lease.
+// The whole vocabulary is a signed question from a node, a warrant, and a lease.
 //
 // EVERY ANSWER COMES OUT OF THE DATABASE. The handler verifies who is asking
 // (the node's Ed25519 control key, under the lease-control domain), verifies
-// the grant itself rather than the daemon's reading of it, and then asks the
+// the warrant itself rather than the daemon's reading of it, and then asks the
 // repository -- inside a transaction it owns -- whether that exact fenced lease
 // may authorize work of the length the daemon named. A valid HMAC over a
 // missing, released, expired, superseded or reclaim-conflicted lease is
@@ -62,20 +62,20 @@ func (fn NodeKeysFunc) PublicKeyFor(node executioncontrol.NodeUID, keyID string)
 type LeaseControl struct {
 	Transactor Transactor
 	Leases     LeaseControlStore
-	Grants     *output.ReadGrantVerifier
+	Warrants   *output.ReadWarrantVerifier
 	Keys       NodeKeys
 	Clock      output.Clock
 	Logger     lager.Logger
 
-	// Minter re-mints the grant a RENEWAL produces.
+	// Minter re-mints the warrant a RENEWAL produces.
 	//
-	// A grant is dated with its lease's own instants, so a renewal moves the
+	// A warrant is dated with its lease's own instants, so a renewal moves the
 	// row and cannot move the token the reader already holds. Without a token
 	// for the new window the daemon's own pre-open window check -- which is
-	// where a stale grant is supposed to be caught -- would start failing on a
+	// where a stale warrant is supposed to be caught -- would start failing on a
 	// lease that is perfectly live. It is the same signer the admission uses,
 	// over the row this transaction just wrote.
-	Minter GrantMinter
+	Minter WarrantMinter
 }
 
 // Routes are the three paths, versioned and product-neutral.
@@ -169,9 +169,9 @@ func (control *LeaseControl) answer(request *http.Request, operation output.Leas
 				age, output.MaxLeaseQuestionAge))
 	}
 
-	// The grant, verified HERE. The daemon holds it and could have sent
+	// The warrant, verified HERE. The daemon holds it and could have sent
 	// different fields from the ones it holds.
-	claims, err := control.grantClaims(question)
+	claims, err := control.warrantClaims(question)
 	if err != nil {
 		return refuse(output.LeaseRefusedUnauthorized, err)
 	}
@@ -194,26 +194,26 @@ func (control *LeaseControl) answer(request *http.Request, operation output.Leas
 	// keeps, and for the same reason: a token minted beside an uncommitted row
 	// is a token for a lease that may never have existed.
 	if operation == output.LeaseRenew {
-		token, err := control.Minter.Sign(record.Lease, record.Destination, record.GrantNonce)
+		token, err := control.Minter.Sign(record.Lease, record.Destination, record.WarrantNonce)
 		if err != nil {
 			return refuse(output.LeaseRefusedInfra, err)
 		}
-		answer.Grant = token
+		answer.Warrant = token
 	}
 
 	return answer, http.StatusOK
 }
 
-// grantClaims verifies the grant against the ref and destination the grant
+// warrantClaims verifies the warrant against the ref and destination the warrant
 // itself names.
 //
 // There is nothing else to check it against: the question carries the token and
 // no separate copy of its fields, which is exactly what stops a daemon from
 // asking about a read its token does not authorize.
-func (control *LeaseControl) grantClaims(question output.LeaseQuestion) (output.ReadGrantClaims, error) {
-	var unverified output.ReadGrantClaims
-	if err := output.DecodeReadGrantClaims(question.Grant, &unverified); err != nil {
-		return output.ReadGrantClaims{}, err
+func (control *LeaseControl) warrantClaims(question output.LeaseQuestion) (output.ReadWarrantClaims, error) {
+	var unverified output.ReadWarrantClaims
+	if err := output.DecodeReadWarrantClaims(question.Warrant, &unverified); err != nil {
+		return output.ReadWarrantClaims{}, err
 	}
 
 	// VerifyBinding, not Verify: what the token BINDS is the MAC's to settle and
@@ -224,10 +224,10 @@ func (control *LeaseControl) grantClaims(question output.LeaseQuestion) (output.
 	// protection nobody needs would be held until recovery closed it. The
 	// daemon's own Verify, before it opens anything, is where a stale window
 	// stops a read.
-	return control.Grants.VerifyBinding(question.Grant, unverified.Ref, unverified.Destination)
+	return control.Warrants.VerifyBinding(question.Warrant, unverified.Ref, unverified.Destination)
 }
 
-func (control *LeaseControl) decide(ctx context.Context, operation output.LeaseOperation, claims output.ReadGrantClaims, remaining time.Duration) (output.ReadLeaseRecord, error) {
+func (control *LeaseControl) decide(ctx context.Context, operation output.LeaseOperation, claims output.ReadWarrantClaims, remaining time.Duration) (output.ReadLeaseRecord, error) {
 	tx, err := control.Transactor.Begin()
 	if err != nil {
 		return output.ReadLeaseRecord{}, err
@@ -235,11 +235,11 @@ func (control *LeaseControl) decide(ctx context.Context, operation output.LeaseO
 	defer func() { _ = tx.Rollback() }()
 
 	// Validation runs for all three: a renewal or a release presented for a
-	// lease this grant does not describe is the same forgery a staging request
+	// lease this warrant does not describe is the same forgery a staging request
 	// would be, and answering it would let a token for one read close another
 	// read's protection.
 	record, err := control.Leases.ValidateReadLease(ctx, tx,
-		output.ReadGrantFor(claims, remaining))
+		output.ReadWarrantFor(claims, remaining))
 	if err != nil {
 		return output.ReadLeaseRecord{}, err
 	}
@@ -292,10 +292,10 @@ func (control *LeaseControl) wired() error {
 		return fmt.Errorf("%w: lease control needs a transactor", output.ErrIncomplete)
 	case control.Leases == nil:
 		return fmt.Errorf("%w: lease control needs a lease store", output.ErrIncomplete)
-	case control.Grants == nil:
-		return fmt.Errorf("%w: lease control needs a grant verifier", output.ErrIncomplete)
+	case control.Warrants == nil:
+		return fmt.Errorf("%w: lease control needs a warrant verifier", output.ErrIncomplete)
 	case control.Minter == nil:
-		return fmt.Errorf("%w: lease control needs the minter a renewal re-mints its grant with",
+		return fmt.Errorf("%w: lease control needs the minter a renewal re-mints its warrant with",
 			output.ErrIncomplete)
 	case control.Keys == nil:
 		return fmt.Errorf("%w: lease control needs the node keys it checks questions against",

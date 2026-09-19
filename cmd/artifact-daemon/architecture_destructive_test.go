@@ -142,7 +142,7 @@ var destructiveInventory = map[string]struct {
 		why: "unwinds directories this same call created, on its error path.",
 	}},
 	"artifact-daemon/sweeper.go | Sweeper.removeStepDir | os.RemoveAll(handleDir)": {1, admission{
-		guard: "captureLedger",
+		guard: "sourceLedger",
 		why: "the TTL sweep. Nothing refreshes a held source's mtime, so this is the path a " +
 			"source waiting to be sealed is most likely to meet.",
 	}},

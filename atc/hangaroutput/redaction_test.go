@@ -3,7 +3,7 @@ package hangaroutput
 // What this package is allowed to SAY.
 //
 // A capture's state is full of things that must not be repeated: a one-shot
-// control grant, a receipt-signing key id, an absolute hostPath, an object key,
+// control warrant, a receipt-signing key id, an absolute hostPath, an object key,
 // an opaque consumer reference. None of them is secret in the sense of a
 // password, and all of them are things an operator's log aggregator, a metrics
 // store or a support bundle should not accumulate.
@@ -25,7 +25,7 @@ import (
 // permittedLogKeys is everything this package may put in a structured log.
 //
 // A handoff id is here and an incarnation, a directory, a scope, a digest, a
-// grant and a key id are not. The handoff is the one identity an operator needs
+// warrant and a key id are not. The handoff is the one identity an operator needs
 // to find a capture, it is opaque by construction, and Hangar attaches no
 // meaning to it -- which is exactly the property that makes it safe to say.
 var permittedLogKeys = map[string]string{
@@ -73,7 +73,7 @@ func TestThisPackageSaysNothingItShouldNot(t *testing.T) {
 					word := strings.Trim(key.Value, `"`)
 					if _, permitted := permittedLogKeys[word]; !permitted {
 						t.Errorf("%s logs %q. This package may say %v and nothing else: a "+
-							"grant, a key id, a raw path, a scope, a digest or a consumer "+
+							"warrant, a key id, a raw path, a scope, a digest or a consumer "+
 							"reference in a log is an accumulation nobody audits. If %q is "+
 							"genuinely bounded and safe, name it in permittedLogKeys with the "+
 							"reason.", name, word, keysOf(permittedLogKeys), word)

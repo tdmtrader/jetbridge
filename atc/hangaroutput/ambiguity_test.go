@@ -30,7 +30,7 @@ import (
 type capture struct {
 	harness   *harness
 	Handoff   output.HandoffID
-	Lease     output.SourceLeaseID
+	Lease     output.SourceHoldID
 	Execution executioncontrol.Identity
 	Output    output.OutputName
 	Reserved  output.ReservedIncarnation
@@ -47,7 +47,7 @@ func (h *harness) admit(t *testing.T) *capture {
 	admitted := &capture{
 		harness:   h,
 		Handoff:   output.HandoffID(uuid.NewString()),
-		Lease:     output.SourceLeaseID(uuid.NewString()),
+		Lease:     output.SourceHoldID(uuid.NewString()),
 		Execution: executioncontrol.Identity{ExecutionID: executioncontrol.ExecutionID(uuid.NewString()), Fence: 1},
 		Output:    "result",
 		Deadline:  output.NewTimestamp(time.Now().Add(24 * time.Hour)),
@@ -68,7 +68,7 @@ func (h *harness) admit(t *testing.T) *capture {
 		Execution:       admitted.Execution,
 		ActivationEpoch: harnessEpoch,
 		HandoffID:       admitted.Handoff,
-		SourceLeaseID:   admitted.Lease,
+		SourceHoldID:    admitted.Lease,
 		Output:          admitted.Output,
 		CaptureDeadline: admitted.Deadline,
 	}
@@ -123,7 +123,7 @@ func (c *capture) hold(t *testing.T) *capture {
 		Execution:       c.Execution,
 		ActivationEpoch: harnessEpoch,
 		HandoffID:       c.Handoff,
-		SourceLeaseID:   c.Lease,
+		SourceHoldID:    c.Lease,
 		Output:          c.Output,
 		CaptureDeadline: c.Deadline,
 	}, c.Reserved.Incarnation, pod)

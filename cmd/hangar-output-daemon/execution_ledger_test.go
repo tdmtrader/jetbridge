@@ -813,14 +813,14 @@ func TestABaseExecutionNeedsNoExtensionToBeComplete(t *testing.T) {
 	}
 
 	// And it carries no extension field. This is the wire half: a base
-	// acknowledgement that mentioned a hold, a capture, a source lease or an
+	// acknowledgement that mentioned a hold, a capture, a source hold or an
 	// output would be the extension leaking into the base truth.
 	encoded, err := json.Marshal(finish)
 	if err != nil {
 		t.Fatalf("encoding: %v", err)
 	}
 	for _, forbidden := range []string{
-		"capture", "handoff", "source_lease", "handle_generation", "output", "hold",
+		"capture", "handoff", "source_hold", "handle_generation", "output", "hold",
 		"writer_ticket", "writer_fence", "incarnation", "receipt", "scope", "digest",
 	} {
 		if strings.Contains(string(encoded), forbidden) {
@@ -839,7 +839,7 @@ func TestABaseExecutionNeedsNoExtensionToBeComplete(t *testing.T) {
 		if err != nil {
 			t.Fatalf("reading %s: %v", name, err)
 		}
-		for _, forbidden := range []string{"capture", "handoff", "source_lease", "incarnation"} {
+		for _, forbidden := range []string{"capture", "handoff", "source_hold", "incarnation"} {
 			if strings.Contains(string(raw), forbidden) {
 				t.Errorf("the base execution record %s carries %q: %s", name, forbidden, raw)
 			}

@@ -179,15 +179,15 @@ func TestDaemonSetMode_StrictInputAllowsSiblingOutput(t *testing.T) {
 
 func TestDaemonSetMode_StrictInputsAreReadOnlyEverywhereAndPodMountsResolve(t *testing.T) {
 	key := []byte("0123456789abcdef0123456789abcdef")
-	signer, err := hangar.NewGrantSigner(key, hangar.MaxGrantTTL, func() time.Time {
+	signer, err := hangar.NewWarrantSigner(key, hangar.MaxWarrantTTL, func() time.Time {
 		return time.Unix(1_800_000_000, 0).UTC()
 	})
 	if err != nil {
-		t.Fatalf("new grant signer: %v", err)
+		t.Fatalf("new warrant signer: %v", err)
 	}
 	cfg := daemonSetConfig()
 	cfg.HangarEnabled = true
-	cfg.HangarGrantSigner = signer
+	cfg.HangarWarrantSigner = signer
 	ref := hangar.TreeRef{
 		Scope:      "builds",
 		Digest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

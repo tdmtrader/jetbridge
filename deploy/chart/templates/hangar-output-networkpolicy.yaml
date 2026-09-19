@@ -42,8 +42,8 @@ spec:
           port: {{ $output.daemon.port }}
     # The capture control init container, in a task pod on this node. It holds
     # no client certificate and requirement 24 will not give it one; its one
-    # route is the node-local capture hold, and its grant is a signed,
-    # facet-scoped, single-use capability.
+    # route is the node-local capture hold, and its warrant is a signed,
+    # facet-scoped, single-use authorization.
     - from:
         - podSelector:
             matchExpressions:

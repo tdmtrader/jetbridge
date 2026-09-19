@@ -361,7 +361,7 @@ func TestHangarDaemonStrictGCSFullTreeFlowFailsClosed(t *testing.T) {
 
 	materialize := func(handle, volume string) *httptest.ResponseRecorder {
 		t.Helper()
-		signer, signErr := hangar.NewGrantSigner(key, time.Minute, nil)
+		signer, signErr := hangar.NewWarrantSigner(key, time.Minute, nil)
 		if signErr != nil {
 			t.Fatal(signErr)
 		}
@@ -370,7 +370,7 @@ func TestHangarDaemonStrictGCSFullTreeFlowFailsClosed(t *testing.T) {
 			t.Fatal(signErr)
 		}
 		body, marshalErr := json.Marshal(hangarMaterializationRequest{Items: []hangarMaterializationItem{{
-			Ref: attributes.Ref, Handle: handle, Volume: volume, Grant: "Bearer " + token,
+			Ref: attributes.Ref, Handle: handle, Volume: volume, Warrant: "Bearer " + token,
 		}}})
 		if marshalErr != nil {
 			t.Fatal(marshalErr)

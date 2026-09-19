@@ -189,8 +189,8 @@ spec:
             {{- end }}
             {{- if .Values.artifactDaemon.hangar.webEnabled }}
             - --kubernetes-hangar-enabled
-            - --kubernetes-hangar-capability-key=/etc/concourse/daemon-tls/hangar.key
-            - --kubernetes-hangar-capability-ttl={{ .Values.artifactDaemon.hangar.capabilityTTL }}
+            - --kubernetes-hangar-warrant-key=/etc/concourse/daemon-tls/hangar.key
+            - --kubernetes-hangar-warrant-ttl={{ .Values.artifactDaemon.hangar.capabilityTTL }}
             {{- end }}
             {{- end }}
             {{- if .Values.hangarOutput.executionControl.enabled }}
@@ -199,7 +199,7 @@ spec:
             # key, no GCS credential and no role on the output bucket.
             - --kubernetes-hangar-output-enabled
             - --kubernetes-hangar-output-daemon-port={{ .Values.hangarOutput.daemon.port }}
-            - --kubernetes-hangar-output-capability-key=/etc/concourse/hangar-output/capability/capability.key
+            - --kubernetes-hangar-output-warrant-key=/etc/concourse/hangar-output/capability/capability.key
             # The OUTPUT plane's client certificate, its CA and the name the
             # daemon's server certificate carries. Unconditional, because the
             # output daemon is TLS-only: it has no plaintext branch and its
@@ -449,7 +449,7 @@ spec:
             name: {{ include "concourse.hangarOutput.receiptKeysName" . }}
         - name: hangar-output-materialize
           secret:
-            # The read-grant key. The control plane MINTS grants, so it holds
+            # The read-warrant key. The control plane MINTS warrants, so it holds
             # this one -- and it is a different key and a different domain from
             # the receipt key, so holding it does not let web sign a receipt.
             secretName: {{ .Values.hangarOutput.materializationKeySecret }}

@@ -178,7 +178,7 @@ func (epochs Epochs) EnablePreconditions(ctx context.Context,
 		fmt.Sprintf("receipt key %s, materialization key %s, bucket %s, namespace %s",
 			quoted(receiptKey), quoted(materializeKey), quoted(bucket), quoted(namespace)),
 		"these four facts are what every later refusal is measured against: the receipt "+
-			"trigger compares a receipt's key id to this row, and the marker, the grant and the "+
+			"trigger compares a receipt's key id to this row, and the marker, the warrant and the "+
 			"inventory cursor are all scoped by the bucket and namespace")
 
 	add("receipt key is currently valid", keyWindowCovers != nil && *keyWindowCovers,

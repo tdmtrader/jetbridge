@@ -9,7 +9,7 @@ package hangaroutput
 // whoever is watching the execution, and it is the only reason they ever learn
 // that hijack went away.
 //
-// THE PAYLOAD IS THE WHOLE ASSERTION. "Never a grant, key, path or consumer
+// THE PAYLOAD IS THE WHOLE ASSERTION. "Never a warrant, key, path or consumer
 // ref" can only fail if the payload is a closed set of fields, so it is: a
 // kind, a disposition and a reason, and there is nowhere to put anything else.
 // A struct with an escape hatch -- a map, a free-text detail, an error value --

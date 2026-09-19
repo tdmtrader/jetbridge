@@ -50,13 +50,13 @@ func NewPipelineRunFactory(conn DbConn, lockFactory lock.LockFactory) PipelineRu
 	return &pipelineRunFactory{conn: conn, lockFactory: lockFactory}
 }
 
-func (f *pipelineRunFactory) CreateRun(ctx context.Context, base Pipeline, params RunParams, createdBy string) (RunCreation, error) {
+func (f *pipelineRunFactory) CreateRun(ctx context.Context, template Pipeline, params RunParams, createdBy string) (RunCreation, error) {
 	tx, err := f.conn.BeginTx(ctx, nil)
 	if err != nil {
 		return RunCreation{}, err
 	}
 	defer Rollback(tx)
-	creation, err := f.CreateRunInTx(ctx, tx, base, params, createdBy, RunCreationOpts{})
+	creation, err := f.CreateRunInTx(ctx, tx, template, params, createdBy, RunCreationOpts{})
 	if err != nil {
 		return RunCreation{}, err
 	}
@@ -69,9 +69,9 @@ func (f *pipelineRunFactory) CreateRun(ctx context.Context, base Pipeline, param
 	return creation, nil
 }
 
-func (f *pipelineRunFactory) CreateRunInTx(_ context.Context, tx Tx, base Pipeline, params RunParams, createdBy string, opts RunCreationOpts) (RunCreation, error) {
+func (f *pipelineRunFactory) CreateRunInTx(_ context.Context, tx Tx, template Pipeline, params RunParams, createdBy string, opts RunCreationOpts) (RunCreation, error) {
 	locked := newPipeline(f.conn, f.lockFactory)
-	err := scanPipeline(locked, pipelinesQuery.Where(sq.Eq{"p.id": base.ID()}).Suffix("FOR UPDATE OF p").RunWith(tx).QueryRow())
+	err := scanPipeline(locked, pipelinesQuery.Where(sq.Eq{"p.id": template.ID()}).Suffix("FOR UPDATE OF p").RunWith(tx).QueryRow())
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return RunCreation{}, ErrPipelineRunNotTemplate
@@ -200,11 +200,11 @@ func (f *pipelineRunFactory) CreateRunInTx(_ context.Context, tx Tx, base Pipeli
 	return creation, nil
 }
 
-func (f *pipelineRunFactory) effectiveConfig(tx Tx, base *pipeline, override *atc.Config) (atc.Config, error) {
+func (f *pipelineRunFactory) effectiveConfig(tx Tx, template *pipeline, override *atc.Config) (atc.Config, error) {
 	if override != nil {
 		return *override, nil
 	}
-	jobsRows, err := jobsQuery.Where(sq.Eq{"j.pipeline_id": base.ID(), "j.active": true}).OrderBy("j.id ASC").RunWith(tx).Query()
+	jobsRows, err := jobsQuery.Where(sq.Eq{"j.pipeline_id": template.ID(), "j.active": true}).OrderBy("j.id ASC").RunWith(tx).Query()
 	if err != nil {
 		return atc.Config{}, err
 	}
@@ -212,7 +212,7 @@ func (f *pipelineRunFactory) effectiveConfig(tx Tx, base *pipeline, override *at
 	if err != nil {
 		return atc.Config{}, err
 	}
-	resourcesRows, err := resourcesQuery.Where(sq.Eq{"r.pipeline_id": base.ID()}).OrderBy("r.name").RunWith(tx).Query()
+	resourcesRows, err := resourcesQuery.Where(sq.Eq{"r.pipeline_id": template.ID()}).OrderBy("r.name").RunWith(tx).Query()
 	if err != nil {
 		return atc.Config{}, err
 	}
@@ -221,11 +221,11 @@ func (f *pipelineRunFactory) effectiveConfig(tx Tx, base *pipeline, override *at
 	if err != nil {
 		return atc.Config{}, err
 	}
-	resourceTypes, err := f.resourceTypesInTx(tx, base.ID())
+	resourceTypes, err := f.resourceTypesInTx(tx, template.ID())
 	if err != nil {
 		return atc.Config{}, err
 	}
-	prototypes, err := f.prototypesInTx(tx, base.ID())
+	prototypes, err := f.prototypesInTx(tx, template.ID())
 	if err != nil {
 		return atc.Config{}, err
 	}
@@ -233,7 +233,7 @@ func (f *pipelineRunFactory) effectiveConfig(tx Tx, base *pipeline, override *at
 	if err != nil {
 		return atc.Config{}, err
 	}
-	return atc.Config{Groups: base.Groups(), VarSources: base.VarSources(), Resources: Resources(resources).Configs(), ResourceTypes: resourceTypes.Configs(), Prototypes: prototypes.Configs(), Jobs: jobConfigs, Display: base.Display(), Template: base.Template(), Params: base.Params(), RunRetention: base.RunRetention(), CacheScope: base.CacheScope()}, nil
+	return atc.Config{Groups: template.Groups(), VarSources: template.VarSources(), Resources: Resources(resources).Configs(), ResourceTypes: resourceTypes.Configs(), Prototypes: prototypes.Configs(), Jobs: jobConfigs, Display: template.Display(), Template: template.Template(), Params: template.Params(), RunRetention: template.RunRetention(), CacheScope: template.CacheScope()}, nil
 }
 
 func (f *pipelineRunFactory) resourceTypesInTx(tx Tx, pipelineID int) (ResourceTypes, error) {
@@ -270,10 +270,10 @@ func (f *pipelineRunFactory) prototypesInTx(tx Tx, pipelineID int) (Prototypes, 
 	return values, rows.Err()
 }
 
-func (f *pipelineRunFactory) allocateNumber(tx Tx, base *pipeline) (int, error) {
+func (f *pipelineRunFactory) allocateNumber(tx Tx, template *pipeline) (int, error) {
 	for {
 		var number int
-		if err := tx.QueryRow("UPDATE pipelines SET last_run_number = last_run_number + 1 WHERE id = $1 RETURNING last_run_number", base.ID()).Scan(&number); err != nil {
+		if err := tx.QueryRow("UPDATE pipelines SET last_run_number = last_run_number + 1 WHERE id = $1 RETURNING last_run_number", template.ID()).Scan(&number); err != nil {
 			return 0, err
 		}
 		instanceVars, _ := json.Marshal(atc.InstanceVars{"run": float64(number)})
@@ -291,7 +291,7 @@ func (f *pipelineRunFactory) allocateNumber(tx Tx, base *pipeline) (int, error) 
 		// last_run_number 0, the probe reports {run: 1} free, and
 		// savePipelineWithOptions refuses it with ErrPipelineRunPayloadMutation
 		// on every attempt, forever.
-		err := tx.QueryRow("SELECT EXISTS (SELECT 1 FROM pipelines WHERE team_id = $1 AND name = $2 AND instance_vars = $3::jsonb)", base.TeamID(), base.Name(), string(instanceVars)).Scan(&occupied)
+		err := tx.QueryRow("SELECT EXISTS (SELECT 1 FROM pipelines WHERE team_id = $1 AND name = $2 AND instance_vars = $3::jsonb)", template.TeamID(), template.Name(), string(instanceVars)).Scan(&occupied)
 		if err != nil || !occupied {
 			return number, err
 		}
@@ -307,8 +307,8 @@ func (f *pipelineRunFactory) AfterRunCreated(_ context.Context, creation RunCrea
 	return schedulerErr
 }
 
-func (f *pipelineRunFactory) GetRun(base Pipeline, number int) (PipelineRun, bool, error) {
-	return f.getRun(pipelineRunsQuery.Where(sq.Eq{"r.template_pipeline_id": base.ID(), "r.number": number}).RunWith(f.conn).QueryRow())
+func (f *pipelineRunFactory) GetRun(template Pipeline, number int) (PipelineRun, bool, error) {
+	return f.getRun(pipelineRunsQuery.Where(sq.Eq{"r.template_pipeline_id": template.ID(), "r.number": number}).RunWith(f.conn).QueryRow())
 }
 
 func (f *pipelineRunFactory) GetRunByID(id int) (PipelineRun, bool, error) {
@@ -385,7 +385,7 @@ func (f *pipelineRunFactory) getRun(row scannable) (PipelineRun, bool, error) {
 	return run, true, nil
 }
 
-func (f *pipelineRunFactory) Runs(base Pipeline, page Page) ([]PipelineRun, Pagination, error) {
+func (f *pipelineRunFactory) Runs(template Pipeline, page Page) ([]PipelineRun, Pagination, error) {
 	if page.From != nil && page.To != nil && *page.From > *page.To {
 		return nil, Pagination{}, fmt.Errorf("invalid range boundaries")
 	}
@@ -395,7 +395,7 @@ func (f *pipelineRunFactory) Runs(base Pipeline, page Page) ([]PipelineRun, Pagi
 	}
 	defer Rollback(tx)
 
-	original := pipelineRunsQuery.Where(sq.Eq{"r.template_pipeline_id": base.ID()})
+	original := pipelineRunsQuery.Where(sq.Eq{"r.template_pipeline_id": template.ID()})
 	query, reverse := original.Limit(uint64(page.Limit)), false
 	switch {
 	case page.From == nil && page.To == nil:

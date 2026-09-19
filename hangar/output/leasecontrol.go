@@ -3,9 +3,9 @@ package output
 // The lease-control protocol: the daemon's question and the control plane's
 // answer.
 //
-// It exists because a read grant is not authority by itself. The materializing
-// daemon verifies the grant's HMAC, which proves the control plane minted it,
-// and then asks INDEPENDENTLY whether the exact lease that grant names is still
+// It exists because a read warrant is not authority by itself. The materializing
+// daemon verifies the warrant's HMAC, which proves the control plane minted it,
+// and then asks INDEPENDENTLY whether the exact lease that warrant names is still
 // active -- because "this token was minted" and "this protection still holds"
 // are different claims and only the database knows the second. A valid HMAC
 // bound to a missing, released, expired, superseded or reclaim-conflicted lease
@@ -19,13 +19,13 @@ package output
 // one epoch, and the domain is what keeps a lease question from being
 // presentable as a release acknowledgement.
 //
-// THE QUESTION CARRIES THE GRANT, not a set of fields copied out of it. A
+// THE QUESTION CARRIES THE WARRANT, not a set of fields copied out of it. A
 // daemon that sent the fields could send different ones from the token it holds,
 // and the control plane would be answering about a read nobody asked for.
 //
 // Three operations and no more. Validate before staging, renew while work
 // proceeds, release after verified staging. There is no "extend indefinitely",
-// no "take over" and no read of anything but the lease named by the grant.
+// no "take over" and no read of anything but the lease named by the warrant.
 
 import (
 	"crypto/ed25519"
@@ -87,11 +87,11 @@ type LeaseQuestion struct {
 	KeyID           string                   `json:"key_id"`
 	NodeUID         executioncontrol.NodeUID `json:"node_uid"`
 
-	// Grant is the token the consuming Pod presented, verbatim. The control
+	// Warrant is the token the consuming Pod presented, verbatim. The control
 	// plane verifies it itself rather than trusting the daemon's reading of it:
 	// a daemon that sent the fields could send different ones from the token it
 	// holds.
-	Grant string `json:"grant"`
+	Warrant string `json:"warrant"`
 
 	// RequiredRemainingSeconds is the work the daemon is about to start, or
 	// zero for a release. The DATABASE decides whether that fits.
@@ -127,9 +127,9 @@ func (question LeaseQuestion) Validate() error {
 	if question.NodeUID == "" {
 		return fmt.Errorf("%w: a lease question names no node", ErrInvalidIdentity)
 	}
-	if question.Grant == "" || len(question.Grant) > MaxReadGrantBytes {
-		return fmt.Errorf("%w: a lease question carries the grant it is about, and this one is "+
-			"%d bytes", ErrIncomplete, len(question.Grant))
+	if question.Warrant == "" || len(question.Warrant) > MaxReadWarrantBytes {
+		return fmt.Errorf("%w: a lease question carries the warrant it is about, and this one is "+
+			"%d bytes", ErrIncomplete, len(question.Warrant))
 	}
 	if question.RequiredRemainingSeconds < 0 {
 		return fmt.Errorf("%w: a lease question asks for a negative remaining term", ErrIncomplete)
@@ -166,7 +166,7 @@ func CanonicalLeaseQuestionBytes(question LeaseQuestion) []byte {
 	writer.field(string(question.Operation))
 	writer.field(question.KeyID)
 	writer.field(string(question.NodeUID))
-	writer.field(question.Grant)
+	writer.field(question.Warrant)
 	writer.number(uint64(question.RequiredRemainingSeconds))
 	writer.field(question.IssuedAt.UTC().Format("2006-01-02T15:04:05.000000000Z07:00"))
 	writer.field(question.Signature)
@@ -219,22 +219,22 @@ type LeaseAnswer struct {
 	Lease           ReadLease       `json:"lease,omitempty"`
 	Destination     ReadDestination `json:"destination,omitempty"`
 
-	// Grant is the RE-MINTED token for the window this answer describes, and a
+	// Warrant is the RE-MINTED token for the window this answer describes, and a
 	// renewal is the only operation that carries one.
 	//
-	// A grant is dated with its lease's granted-at and expires-at -- nothing in
+	// A warrant is dated with its lease's granted-at and expires-at -- nothing in
 	// it comes from the instant it was minted, which is what makes requirement
 	// 37's byte-identical re-mint possible. The consequence is that a renewal
 	// moves the row and cannot move a token already handed out, so unless the
 	// renewal answers with a current one the reader carries a token describing
 	// a window that has passed. That token still BINDS the same read, and the
 	// control plane decides the window on the row; but the daemon checks the
-	// grant's own window before it opens anything, and a reader whose token
+	// warrant's own window before it opens anything, and a reader whose token
 	// never caught up would fail that check while its lease was perfectly live.
 	//
 	// It is empty on a validate, on a release and on every refusal: a caller
 	// told no reads no facts it was not admitted to, and that includes a token.
-	Grant string `json:"grant,omitempty"`
+	Warrant string `json:"warrant,omitempty"`
 }
 
 // LeaseRefusal is the closed set of reasons a lease question is answered no.
@@ -270,17 +270,17 @@ func (answer LeaseAnswer) Validate() error {
 		if err := answer.Lease.Validate(); err != nil {
 			return err
 		}
-		if answer.Operation == LeaseRenew && answer.Grant == "" {
-			return fmt.Errorf("%w: an admitted renewal carries no re-minted grant; the reader's "+
+		if answer.Operation == LeaseRenew && answer.Warrant == "" {
+			return fmt.Errorf("%w: an admitted renewal carries no re-minted warrant; the reader's "+
 				"token would still name the window this renewal moved", ErrIncomplete)
 		}
-		if answer.Operation != LeaseRenew && answer.Grant != "" {
-			return fmt.Errorf("%w: a %s answer carries a grant; only a renewal re-mints one",
+		if answer.Operation != LeaseRenew && answer.Warrant != "" {
+			return fmt.Errorf("%w: a %s answer carries a warrant; only a renewal re-mints one",
 				ErrIncomplete, answer.Operation)
 		}
-		if len(answer.Grant) > MaxReadGrantBytes {
-			return fmt.Errorf("%w: the re-minted grant is %d bytes, the bound is %d",
-				ErrLimitExceeded, len(answer.Grant), MaxReadGrantBytes)
+		if len(answer.Warrant) > MaxReadWarrantBytes {
+			return fmt.Errorf("%w: the re-minted warrant is %d bytes, the bound is %d",
+				ErrLimitExceeded, len(answer.Warrant), MaxReadWarrantBytes)
 		}
 
 		return answer.Destination.Validate()
@@ -289,7 +289,7 @@ func (answer LeaseAnswer) Validate() error {
 		return err
 	}
 	if answer.Lease.ReadLeaseID != "" || answer.Destination != (ReadDestination{}) ||
-		answer.Grant != "" {
+		answer.Warrant != "" {
 		return fmt.Errorf("%w: a refused answer describes a lease; a caller told no would read "+
 			"facts it was not admitted to", ErrIncomplete)
 	}

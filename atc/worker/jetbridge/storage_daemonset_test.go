@@ -294,22 +294,22 @@ func TestDaemonSetBackend_BuildFetchInitContainers_NoInputs(t *testing.T) {
 
 func TestDaemonSetBackend_BuildFetchInitContainers_AppendsExactHangarBatch(t *testing.T) {
 	key := []byte("0123456789abcdef0123456789abcdef")
-	signer, err := hangar.NewGrantSigner(key, hangar.MaxGrantTTL, func() time.Time {
+	signer, err := hangar.NewWarrantSigner(key, hangar.MaxWarrantTTL, func() time.Time {
 		return time.Unix(1_800_000_000, 0).UTC()
 	})
 	if err != nil {
-		t.Fatalf("new grant signer: %v", err)
+		t.Fatalf("new warrant signer: %v", err)
 	}
-	verifier, err := hangar.NewGrantVerifier(key, hangar.MaxGrantTTL, func() time.Time {
+	verifier, err := hangar.NewWarrantVerifier(key, hangar.MaxWarrantTTL, func() time.Time {
 		return time.Unix(1_800_000_001, 0).UTC()
 	})
 	if err != nil {
-		t.Fatalf("new grant verifier: %v", err)
+		t.Fatalf("new warrant verifier: %v", err)
 	}
 
 	cfg := testDaemonConfig()
 	cfg.HangarEnabled = true
-	cfg.HangarGrantSigner = signer
+	cfg.HangarWarrantSigner = signer
 	b := NewDaemonSetBackend(cfg, nil, nil)
 	ref := hangar.TreeRef{
 		Scope:      "builds",
@@ -358,10 +358,10 @@ func TestDaemonSetBackend_BuildFetchInitContainers_AppendsExactHangarBatch(t *te
 	}
 	var request struct {
 		Items []struct {
-			Ref    hangar.TreeRef `json:"ref"`
-			Handle string         `json:"handle"`
-			Volume string         `json:"volume"`
-			Grant  string         `json:"grant"`
+			Ref     hangar.TreeRef `json:"ref"`
+			Handle  string         `json:"handle"`
+			Volume  string         `json:"volume"`
+			Warrant string         `json:"warrant"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(payload, &request); err != nil {
@@ -374,9 +374,9 @@ func TestDaemonSetBackend_BuildFetchInitContainers_AppendsExactHangarBatch(t *te
 	if item.Ref != ref || item.Handle != "task-handle" || item.Volume != "input-1" {
 		t.Fatalf("unexpected exact request binding: %+v", item)
 	}
-	token := strings.TrimPrefix(item.Grant, "Bearer ")
-	if token == item.Grant || verifier.Verify(token, ref, "task-handle", "input-1") != nil {
-		t.Fatal("Hangar item did not carry a valid exact bearer grant")
+	token := strings.TrimPrefix(item.Warrant, "Bearer ")
+	if token == item.Warrant || verifier.Verify(token, ref, "task-handle", "input-1") != nil {
+		t.Fatal("Hangar item did not carry a valid exact bearer warrant")
 	}
 	if strings.Contains(command, string(key)) {
 		t.Fatal("capability signing key entered the init command")
@@ -539,15 +539,15 @@ type hangarShellResult struct {
 func runHangarInitShell(t *testing.T, ref hangar.TreeRef, fixture hangarShellFixture) hangarShellResult {
 	t.Helper()
 	key := []byte("0123456789abcdef0123456789abcdef")
-	signer, err := hangar.NewGrantSigner(key, hangar.MaxGrantTTL, func() time.Time {
+	signer, err := hangar.NewWarrantSigner(key, hangar.MaxWarrantTTL, func() time.Time {
 		return time.Unix(1_800_000_000, 0).UTC()
 	})
 	if err != nil {
-		t.Fatalf("new grant signer: %v", err)
+		t.Fatalf("new warrant signer: %v", err)
 	}
 	cfg := testDaemonConfig()
 	cfg.HangarEnabled = true
-	cfg.HangarGrantSigner = signer
+	cfg.HangarWarrantSigner = signer
 	b := NewDaemonSetBackend(cfg, nil, nil)
 	inputs := []runtime.Input{{HangarTree: &ref, DestinationPath: "/work/exact"}}
 	mounts := []corev1.VolumeMount{{Name: "input-0", MountPath: "/work/exact", ReadOnly: true}}

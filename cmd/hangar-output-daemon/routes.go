@@ -131,10 +131,10 @@ type route struct {
 	// certificate -- a bearer capability over plaintext off-node is
 	// interceptable inside its TTL. The capture control init holds no client
 	// certificate and cannot be given one (Req 24 gives the task's Pod no
-	// output-plane credential beyond its one-shot grant), so its route stays
+	// output-plane credential beyond its one-shot warrant), so its route stays
 	// reachable without one, exactly as cmd/artifact-daemon exempts /resolve
 	// for the same caller and the same reason. It is node-local traffic on the
-	// node's own loopback or CNI path, and the grant is still a signed,
+	// node's own loopback or CNI path, and the warrant is still a signed,
 	// facet-scoped, single-use capability.
 	nodeLocal bool
 }
@@ -266,7 +266,7 @@ func (server *Server) routes() map[string]route {
 func (server *Server) protect(declared route) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if server.unreadyBecause != "" {
-			// Fail closed. Output-daemon unavailability never grants authority,
+			// Fail closed. Output-daemon unavailability never warrants authority,
 			// and "unavailable" includes "cannot read its own ledger".
 			http.Error(w, server.unreadyBecause, http.StatusServiceUnavailable)
 

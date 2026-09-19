@@ -18,7 +18,7 @@ import (
 // This file is the dependency manifest for the reviewed Hangar strict-input
 // foundation that this track extends.
 //
-// None of TreeRef, Store, Canonicalizer, GrantSigner or Materializer carries a
+// None of TreeRef, Store, Canonicalizer, WarrantSigner or Materializer carries a
 // version field, so there is no number to compare and "the accepted foundation"
 // cannot be asserted by asking the code what version it is. It is asserted by
 // three concrete checks instead:
@@ -208,7 +208,7 @@ func TestFoundationExportedSurfaceMatchesTheGolden(t *testing.T) {
 		"type TreeRef ",
 		"type Store ",
 		"type Canonicalizer ",
-		"type GrantSigner ",
+		"type WarrantSigner ",
 		"type Materializer ",
 		"type TreeAttributes ",
 		"type Scope ",

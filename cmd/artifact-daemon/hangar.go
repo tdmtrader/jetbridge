@@ -26,7 +26,7 @@ type HangarService struct {
 	Store           hangar.Store
 	Canonicalizer   hangar.Canonicalizer
 	Materializer    *hangar.Materializer
-	GrantVerifier   *hangar.GrantVerifier
+	WarrantVerifier *hangar.WarrantVerifier
 	MaxContentBytes int64
 	MaxEntries      int64
 	MaxArchiveBytes int64
@@ -36,10 +36,10 @@ type HangarService struct {
 type hangarOptions struct {
 	Enabled         bool
 	ScratchDir      string
-	CapabilityKey   string
+	WarrantKey      string
 	MaxContentBytes int64
 	MaxEntries      int64
-	CapabilityTTL   time.Duration
+	WarrantTTL      time.Duration
 	DurableKind     string
 	Bucket          string
 	Prefix          string
@@ -129,8 +129,8 @@ func validateHangarOptions(opts hangarOptions, storagePath string) error {
 	if opts.MaxContentBytes <= 0 || opts.MaxEntries <= 0 {
 		return fmt.Errorf("Hangar content and entry limits must be positive")
 	}
-	if opts.CapabilityTTL <= 0 || opts.CapabilityTTL > hangar.MaxGrantTTL {
-		return fmt.Errorf("--hangar-capability-ttl must be positive and no greater than %s", hangar.MaxGrantTTL)
+	if opts.WarrantTTL <= 0 || opts.WarrantTTL > hangar.MaxWarrantTTL {
+		return fmt.Errorf("--hangar-warrant-ttl must be positive and no greater than %s", hangar.MaxWarrantTTL)
 	}
 	if opts.Timeout <= 0 {
 		return fmt.Errorf("Hangar store timeout must be positive")
@@ -138,12 +138,12 @@ func validateHangarOptions(opts hangarOptions, storagePath string) error {
 	if err := validatePrivateHangarScratch(opts.ScratchDir, storagePath); err != nil {
 		return err
 	}
-	key, err := os.ReadFile(opts.CapabilityKey)
+	key, err := os.ReadFile(opts.WarrantKey)
 	if err != nil {
-		return fmt.Errorf("read --hangar-capability-key: %w", err)
+		return fmt.Errorf("read --hangar-warrant-key: %w", err)
 	}
 	if len(key) != 32 {
-		return fmt.Errorf("--hangar-capability-key must contain exactly 32 raw bytes")
+		return fmt.Errorf("--hangar-warrant-key must contain exactly 32 raw bytes")
 	}
 	return nil
 }
@@ -155,14 +155,14 @@ func buildHangarService(ctx context.Context, logger lager.Logger, storagePath st
 	if err := validateHangarOptions(opts, storagePath); err != nil {
 		return nil, nil, err
 	}
-	key, err := os.ReadFile(opts.CapabilityKey)
+	key, err := os.ReadFile(opts.WarrantKey)
 	if err != nil {
-		return nil, nil, fmt.Errorf("read --hangar-capability-key: %w", err)
+		return nil, nil, fmt.Errorf("read --hangar-warrant-key: %w", err)
 	}
 	if len(key) != 32 {
-		return nil, nil, fmt.Errorf("--hangar-capability-key must contain exactly 32 raw bytes")
+		return nil, nil, fmt.Errorf("--hangar-warrant-key must contain exactly 32 raw bytes")
 	}
-	verifier, err := hangar.NewGrantVerifier(key, opts.CapabilityTTL, nil)
+	verifier, err := hangar.NewWarrantVerifier(key, opts.WarrantTTL, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -190,7 +190,7 @@ func buildHangarService(ctx context.Context, logger lager.Logger, storagePath st
 	}
 	canonicalizer := hangar.Canonicalizer{TempDir: opts.ScratchDir, MaxContentBytes: opts.MaxContentBytes, MaxEntries: opts.MaxEntries}
 	service := &HangarService{
-		Store: store, Canonicalizer: canonicalizer, GrantVerifier: verifier,
+		Store: store, Canonicalizer: canonicalizer, WarrantVerifier: verifier,
 		Materializer:    &hangar.Materializer{Store: store, Canonicalizer: canonicalizer, StoragePath: storagePath, MaxTreeBytes: archiveLimit},
 		MaxContentBytes: opts.MaxContentBytes, MaxEntries: opts.MaxEntries, MaxArchiveBytes: archiveLimit, MaxControlBytes: defaultHangarControlBytes,
 	}

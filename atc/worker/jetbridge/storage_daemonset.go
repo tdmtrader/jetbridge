@@ -165,10 +165,10 @@ type batchItem struct {
 }
 
 type hangarMaterializationItem struct {
-	Ref    hangar.TreeRef `json:"ref"`
-	Handle string         `json:"handle"`
-	Volume string         `json:"volume"`
-	Grant  string         `json:"grant"`
+	Ref     hangar.TreeRef `json:"ref"`
+	Handle  string         `json:"handle"`
+	Volume  string         `json:"volume"`
+	Warrant string         `json:"warrant"`
 }
 
 type hangarMaterializationRequest struct {
@@ -192,8 +192,8 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 			if !b.config.HangarEnabled {
 				return nil, fmt.Errorf("Hangar tree input requires Hangar to be enabled")
 			}
-			if b.config.HangarGrantSigner == nil {
-				return nil, fmt.Errorf("Hangar tree input requires a materialization grant signer")
+			if b.config.HangarWarrantSigner == nil {
+				return nil, fmt.Errorf("Hangar tree input requires a materialization warrant signer")
 			}
 			if err := input.HangarTree.Validate(); err != nil {
 				return nil, fmt.Errorf("invalid Hangar tree input: %w", err)
@@ -206,12 +206,12 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 			if actualHostPath := hostPathForVolume(podVolumes, volumeName); actualHostPath != expectedHostPath {
 				return nil, fmt.Errorf("Hangar tree input %q volume does not resolve to its exact node-local destination", input.DestinationPath)
 			}
-			grant, err := b.config.HangarGrantSigner.Sign(*input.HangarTree, handle, volumeName)
+			warrant, err := b.config.HangarWarrantSigner.Sign(*input.HangarTree, handle, volumeName)
 			if err != nil {
-				return nil, fmt.Errorf("sign Hangar tree input grant: %w", err)
+				return nil, fmt.Errorf("sign Hangar tree input warrant: %w", err)
 			}
 			hangarItems = append(hangarItems, hangarMaterializationItem{
-				Ref: *input.HangarTree, Handle: handle, Volume: volumeName, Grant: "Bearer " + grant,
+				Ref: *input.HangarTree, Handle: handle, Volume: volumeName, Warrant: "Bearer " + warrant,
 			})
 			receipt, err := json.Marshal(*input.HangarTree)
 			if err != nil {

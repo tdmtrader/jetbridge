@@ -32,7 +32,7 @@ const (
 	PolicySafe PolicyState = "safe"
 
 	// PolicyAtRisk is durable and fail-closed. From detection onward, new
-	// captures, claim acquires, managed-output grants, orphan adoption and
+	// captures, claim acquires, managed-output warrants, orphan adoption and
 	// reclaim admission all stop. Releases and diagnosis remain possible,
 	// existing claims and read leases remain recorded, and already-admitted
 	// conditional delete work may finish. Recovery needs a fresh safe
@@ -81,7 +81,7 @@ func (state PolicyState) Validate() error {
 }
 
 // AdmitsNewWork reports whether this state permits new captures, claim
-// acquires, grants, adoption and reclaim admission. Only PolicySafe does;
+// acquires, warrants, adoption and reclaim admission. Only PolicySafe does;
 // PolicyUnknown is treated exactly as PolicyAtRisk, because "we have not
 // checked" and "the check failed" are the same amount of evidence.
 func (state PolicyState) AdmitsNewWork() bool { return state == PolicySafe }
@@ -172,7 +172,7 @@ func (handshake ExtensionHandshake) Validate() error {
 		return fmt.Errorf("%w: handshake reports no materialization key id", ErrIncomplete)
 	}
 	if handshake.ReceiptPublicKeyID == handshake.MaterializationKeyID {
-		return fmt.Errorf("%w: the receipt and materialization keys are the same; a read grant "+
+		return fmt.Errorf("%w: the receipt and materialization keys are the same; a read warrant "+
 			"must not be signable by anything that can mint a publication receipt", ErrIncomplete)
 	}
 	if handshake.BucketFingerprint == "" {

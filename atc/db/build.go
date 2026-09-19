@@ -262,10 +262,10 @@ type build struct {
 	runJobName string
 	runJobKey  string
 
-	// baseCacheScope is the cache_scope declared by this build's base
+	// templateCacheScope is the cache_scope declared by this build's
 	// template, carried inline because TaskCacheIdentity is on the step-build
 	// path and must not pay for a second read.
-	baseCacheScope string
+	templateCacheScope string
 
 	rerunOf     int
 	rerunOfName string
@@ -415,7 +415,7 @@ func (b *build) RunJobKey() string                { return b.runJobKey }
 // TaskCacheIdentity reports the scope a task cache created by this build is
 // keyed on, and whether it has one at all.
 //
-// A run payload has one only when its base template opts in with
+// A run payload has one only when its template opts in with
 // `cache_scope: template`. The run scope is keyed on template identity, so it
 // is shared by every run of that template and nothing ever reclaims the bytes
 // behind it -- the artifact daemon's sweeper does not walk /caches/, and the
@@ -426,13 +426,13 @@ func (b *build) RunJobKey() string                { return b.runJobKey }
 //
 // Ordinary pipelines are untouched: their caches stay keyed on their own job.
 func (b *build) TaskCacheIdentity() (atc.TaskCacheIdentity, bool) {
-	if b.pipelineRunID != 0 && b.basePipelineID != 0 && b.runJobName != "" {
-		if b.baseCacheScope != atc.CacheScopeTemplate {
+	if b.pipelineRunID != 0 && b.templatePipelineID != 0 && b.runJobName != "" {
+		if b.templateCacheScope != atc.CacheScopeTemplate {
 			return atc.TaskCacheIdentity{}, false
 		}
 		return atc.TaskCacheIdentity{
 			TeamID:             b.teamID,
-			TemplatePipelineID: b.basePipelineID,
+			TemplatePipelineID: b.templatePipelineID,
 			RunJobName:         b.runJobName,
 		}, true
 	}
@@ -1997,9 +1997,9 @@ func scanBuild(b *build, row scannable, encryptionStrategy encryption.Strategy) 
 		nonce, spanContext, createdBy                                                     sql.NullString
 		drained, aborted, completed                                                       bool
 		status                                                                            string
-		pipelineInstanceVars, comment, basePipelineName, runJobName, runJobKey            sql.NullString
-		baseCacheScope                                                                    sql.NullString
-		basePipelineID, buildPipelineRunID, payloadPipelineRunID                          sql.NullInt64
+		pipelineInstanceVars, comment, templatePipelineName, runJobName, runJobKey        sql.NullString
+		templateCacheScope                                                                sql.NullString
+		templatePipelineID, buildPipelineRunID, payloadPipelineRunID                      sql.NullInt64
 	)
 
 	err := row.Scan(
@@ -2025,9 +2025,9 @@ func scanBuild(b *build, row scannable, encryptionStrategy encryption.Strategy) 
 		&pipelineID,
 		&pipelineName,
 		&pipelineInstanceVars,
-		&basePipelineID,
-		&basePipelineName,
-		&baseCacheScope,
+		&templatePipelineID,
+		&templatePipelineName,
+		&templateCacheScope,
 		&buildPipelineRunID,
 		&payloadPipelineRunID,
 		&runJobName,
@@ -2057,9 +2057,9 @@ func scanBuild(b *build, row scannable, encryptionStrategy encryption.Strategy) 
 	b.pipelineID = int(pipelineID.Int64)
 	b.pipelineName = pipelineName.String
 	b.pipelineRunID = 0
-	b.basePipelineID = int(basePipelineID.Int64)
-	b.basePipelineName = basePipelineName.String
-	b.baseCacheScope = baseCacheScope.String
+	b.templatePipelineID = int(templatePipelineID.Int64)
+	b.templatePipelineName = templatePipelineName.String
+	b.templateCacheScope = templateCacheScope.String
 	if buildPipelineRunID.Valid {
 		b.pipelineRunID = int(buildPipelineRunID.Int64)
 	}

@@ -12,15 +12,15 @@ import (
 	"time"
 )
 
-func TestMaterializationGrantBindsExactRequestAndTime(t *testing.T) {
+func TestMaterializationWarrantBindsExactRequestAndTime(t *testing.T) {
 	now := time.Unix(1_800_000_000, 123).UTC()
 	key := []byte("0123456789abcdef0123456789abcdef")
-	ref := mustGrantRef(t, "builds", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 7)
-	signer, err := NewGrantSigner(key, 15*time.Minute, func() time.Time { return now })
+	ref := mustWarrantRef(t, "builds", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 7)
+	signer, err := NewWarrantSigner(key, 15*time.Minute, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
-	verifier, err := NewGrantVerifier(key, 15*time.Minute, func() time.Time { return now })
+	verifier, err := NewWarrantVerifier(key, 15*time.Minute, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +30,7 @@ func TestMaterializationGrantBindsExactRequestAndTime(t *testing.T) {
 		t.Fatal(err)
 	}
 	if strings.Contains(token, "=") {
-		t.Fatalf("grant is padded rather than raw base64url: %q", token)
+		t.Fatalf("warrant is padded rather than raw base64url: %q", token)
 	}
 	if err := verifier.Verify(token, ref, "handle-1", "volume-1"); err != nil {
 		t.Fatalf("verify exact request: %v", err)
@@ -45,7 +45,7 @@ func TestMaterializationGrantBindsExactRequestAndTime(t *testing.T) {
 			return verifier.Verify(token, changed, "handle-1", "volume-1")
 		},
 		"digest": func() error {
-			changed := mustGrantRef(t, "builds", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 7)
+			changed := mustWarrantRef(t, "builds", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 7)
 			return verifier.Verify(token, changed, "handle-1", "volume-1")
 		},
 		"generation": func() error { return verifier.Verify(token, otherRef, "handle-1", "volume-1") },
@@ -61,11 +61,11 @@ func TestMaterializationGrantBindsExactRequestAndTime(t *testing.T) {
 
 	verifier.clock = func() time.Time { return now.Add(15 * time.Minute) }
 	if err := verifier.Verify(token, ref, "handle-1", "volume-1"); !errors.Is(err, ErrUnauthorized) {
-		t.Fatalf("grant at exact expiry: %v", err)
+		t.Fatalf("warrant at exact expiry: %v", err)
 	}
 }
 
-func TestGrantSignerRequiresExactRawKeyAndBoundedTTL(t *testing.T) {
+func TestWarrantSignerRequiresExactRawKeyAndBoundedTTL(t *testing.T) {
 	now := func() time.Time { return time.Unix(1_800_000_000, 0).UTC() }
 	for name, key := range map[string][]byte{
 		"short":  make([]byte, 31),
@@ -73,31 +73,31 @@ func TestGrantSignerRequiresExactRawKeyAndBoundedTTL(t *testing.T) {
 		"base64": []byte("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="),
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := NewGrantSigner(key, time.Minute, now); err == nil {
+			if _, err := NewWarrantSigner(key, time.Minute, now); err == nil {
 				t.Fatal("accepted a key other than 32 raw bytes")
 			}
 		})
 	}
 	key := []byte("0123456789abcdef0123456789abcdef")
 	for _, ttl := range []time.Duration{0, -time.Second, 15*time.Minute + time.Nanosecond} {
-		if _, err := NewGrantSigner(key, ttl, now); err == nil {
+		if _, err := NewWarrantSigner(key, ttl, now); err == nil {
 			t.Fatalf("accepted invalid TTL %v", ttl)
 		}
 	}
 }
 
-func TestGrantSignerRejectsUnixNanoAliasesAndOverflow(t *testing.T) {
+func TestWarrantSignerRejectsUnixNanoAliasesAndOverflow(t *testing.T) {
 	key := []byte("0123456789abcdef0123456789abcdef")
 	for name, now := range map[string]time.Time{
 		"clock outside UnixNano range":  time.Date(2300, time.January, 1, 0, 0, 0, 0, time.UTC),
 		"expiry outside UnixNano range": time.Unix(0, math.MaxInt64).Add(-30 * time.Second),
 	} {
 		t.Run(name, func(t *testing.T) {
-			signer, err := NewGrantSigner(key, time.Minute, func() time.Time { return now })
+			signer, err := NewWarrantSigner(key, time.Minute, func() time.Time { return now })
 			if err != nil {
 				t.Fatal(err)
 			}
-			ref := mustGrantRef(t, "builds", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1)
+			ref := mustWarrantRef(t, "builds", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1)
 			if _, err := signer.Sign(ref, "handle-1", "volume-1"); err == nil {
 				t.Fatal("UnixNano alias/overflow was signed")
 			}
@@ -121,12 +121,12 @@ func TestMaterializationSegmentGrammar(t *testing.T) {
 	}
 }
 
-func TestMaterializationGrantStrictParsingAndSafeErrors(t *testing.T) {
+func TestMaterializationWarrantStrictParsingAndSafeErrors(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0).UTC()
 	key := []byte("0123456789abcdef0123456789abcdef")
-	ref := mustGrantRef(t, "builds", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1)
-	signer, _ := NewGrantSigner(key, time.Minute, func() time.Time { return now })
-	verifier, _ := NewGrantVerifier(key, time.Minute, func() time.Time { return now })
+	ref := mustWarrantRef(t, "builds", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1)
+	signer, _ := NewWarrantSigner(key, time.Minute, func() time.Time { return now })
+	verifier, _ := NewWarrantVerifier(key, time.Minute, func() time.Time { return now })
 	token, err := signer.Sign(ref, "handle", "volume")
 	if err != nil {
 		t.Fatal(err)
@@ -149,18 +149,18 @@ func TestMaterializationGrantStrictParsingAndSafeErrors(t *testing.T) {
 	for _, malformed := range variants {
 		err := verifier.Verify(malformed, ref, "handle", "volume")
 		if !errors.Is(err, ErrUnauthorized) {
-			t.Fatalf("malformed grant got %v", err)
+			t.Fatalf("malformed warrant got %v", err)
 		}
 		if strings.Contains(err.Error(), malformed) {
-			t.Fatalf("error leaked grant: %v", err)
+			t.Fatalf("error leaked warrant: %v", err)
 		}
 	}
 }
 
-func TestMaterializationGrantUsesFreshNonce(t *testing.T) {
+func TestMaterializationWarrantUsesFreshNonce(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0).UTC()
-	ref := mustGrantRef(t, "builds", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1)
-	signer, _ := NewGrantSigner([]byte("0123456789abcdef0123456789abcdef"), time.Minute, func() time.Time { return now })
+	ref := mustWarrantRef(t, "builds", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1)
+	signer, _ := NewWarrantSigner([]byte("0123456789abcdef0123456789abcdef"), time.Minute, func() time.Time { return now })
 	first, err := signer.Sign(ref, "handle", "volume")
 	if err != nil {
 		t.Fatal(err)
@@ -170,37 +170,37 @@ func TestMaterializationGrantUsesFreshNonce(t *testing.T) {
 		t.Fatal(err)
 	}
 	if first == second {
-		t.Fatal("two grants shared a nonce")
+		t.Fatal("two warrants shared a nonce")
 	}
 }
 
-func TestMaterializationGrantRejectsAuthenticatedNoncanonicalAndInvalidClaims(t *testing.T) {
+func TestMaterializationWarrantRejectsAuthenticatedNoncanonicalAndInvalidClaims(t *testing.T) {
 	now := time.Unix(1_800_000_000, 123).UTC()
 	key := []byte("0123456789abcdef0123456789abcdef")
-	ref := mustGrantRef(t, "builds", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1)
-	verifier, _ := NewGrantVerifier(key, time.Minute, func() time.Time { return now })
-	valid := materializationGrantClaims{
-		Domain: grantDomain, Version: grantVersion, Ref: ref, Handle: "handle", Volume: "volume",
+	ref := mustWarrantRef(t, "builds", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1)
+	verifier, _ := NewWarrantVerifier(key, time.Minute, func() time.Time { return now })
+	valid := materializationWarrantClaims{
+		Domain: warrantDomain, Version: warrantVersion, Ref: ref, Handle: "handle", Volume: "volume",
 		IssuedAt: now.UnixNano(), ExpiresAt: now.Add(time.Minute).UnixNano(),
 		Nonce: base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef")),
 	}
-	mutations := map[string]func(*materializationGrantClaims){
-		"domain":     func(claims *materializationGrantClaims) { claims.Domain = "other" },
-		"version":    func(claims *materializationGrantClaims) { claims.Version++ },
-		"scope":      func(claims *materializationGrantClaims) { claims.Ref.Scope = "other" },
-		"digest":     func(claims *materializationGrantClaims) { claims.Ref.Digest = "sha256:invalid" },
-		"generation": func(claims *materializationGrantClaims) { claims.Ref.Generation = 0 },
-		"handle":     func(claims *materializationGrantClaims) { claims.Handle = "../escape" },
-		"volume":     func(claims *materializationGrantClaims) { claims.Volume = "a/b" },
-		"future issue": func(claims *materializationGrantClaims) {
+	mutations := map[string]func(*materializationWarrantClaims){
+		"domain":     func(claims *materializationWarrantClaims) { claims.Domain = "other" },
+		"version":    func(claims *materializationWarrantClaims) { claims.Version++ },
+		"scope":      func(claims *materializationWarrantClaims) { claims.Ref.Scope = "other" },
+		"digest":     func(claims *materializationWarrantClaims) { claims.Ref.Digest = "sha256:invalid" },
+		"generation": func(claims *materializationWarrantClaims) { claims.Ref.Generation = 0 },
+		"handle":     func(claims *materializationWarrantClaims) { claims.Handle = "../escape" },
+		"volume":     func(claims *materializationWarrantClaims) { claims.Volume = "a/b" },
+		"future issue": func(claims *materializationWarrantClaims) {
 			claims.IssuedAt = now.Add(time.Nanosecond).UnixNano()
 			claims.ExpiresAt = now.Add(time.Minute).UnixNano()
 		},
-		"expired": func(claims *materializationGrantClaims) { claims.ExpiresAt = now.UnixNano() },
-		"excess TTL": func(claims *materializationGrantClaims) {
+		"expired": func(claims *materializationWarrantClaims) { claims.ExpiresAt = now.UnixNano() },
+		"excess TTL": func(claims *materializationWarrantClaims) {
 			claims.ExpiresAt = now.Add(time.Minute + time.Nanosecond).UnixNano()
 		},
-		"nonce": func(claims *materializationGrantClaims) {
+		"nonce": func(claims *materializationWarrantClaims) {
 			claims.Nonce = base64.RawURLEncoding.EncodeToString([]byte("short"))
 		},
 	}
@@ -208,7 +208,7 @@ func TestMaterializationGrantRejectsAuthenticatedNoncanonicalAndInvalidClaims(t 
 		t.Run(name, func(t *testing.T) {
 			claims := valid
 			mutate(&claims)
-			token := authenticatedGrantToken(t, key, claims)
+			token := authenticatedWarrantToken(t, key, claims)
 			if err := verifier.Verify(token, ref, "handle", "volume"); !errors.Is(err, ErrUnauthorized) {
 				t.Fatalf("got %v", err)
 			}
@@ -222,7 +222,7 @@ func TestMaterializationGrantRejectsAuthenticatedNoncanonicalAndInvalidClaims(t 
 		"trailing":   append(append([]byte(nil), canonical...), []byte(`{}`)...),
 	} {
 		t.Run(name, func(t *testing.T) {
-			token := authenticatedGrantPayload(key, payload)
+			token := authenticatedWarrantPayload(key, payload)
 			if err := verifier.Verify(token, ref, "handle", "volume"); !errors.Is(err, ErrUnauthorized) {
 				t.Fatalf("got %v", err)
 			}
@@ -230,24 +230,24 @@ func TestMaterializationGrantRejectsAuthenticatedNoncanonicalAndInvalidClaims(t 
 	}
 }
 
-func authenticatedGrantToken(t *testing.T, key []byte, claims materializationGrantClaims) string {
+func authenticatedWarrantToken(t *testing.T, key []byte, claims materializationWarrantClaims) string {
 	t.Helper()
 	payload, err := json.Marshal(claims)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return authenticatedGrantPayload(key, payload)
+	return authenticatedWarrantPayload(key, payload)
 }
 
-func authenticatedGrantPayload(key, payload []byte) string {
+func authenticatedWarrantPayload(key, payload []byte) string {
 	mac := hmac.New(sha256.New, key)
-	_, _ = mac.Write([]byte(grantDomain))
+	_, _ = mac.Write([]byte(warrantDomain))
 	_, _ = mac.Write([]byte{0})
 	_, _ = mac.Write(payload)
 	return base64.RawURLEncoding.EncodeToString(append(append([]byte(nil), payload...), mac.Sum(nil)...))
 }
 
-func mustGrantRef(t *testing.T, scope, hexDigest string, generation int64) TreeRef {
+func mustWarrantRef(t *testing.T, scope, hexDigest string, generation int64) TreeRef {
 	t.Helper()
 	ref, err := NewTreeRef(Scope(scope), Digest("sha256:"+hexDigest), generation)
 	if err != nil {

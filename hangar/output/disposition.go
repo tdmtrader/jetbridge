@@ -93,7 +93,7 @@ type SuccessfulFinishDisposition struct {
 	Execution             executioncontrol.Identity        `json:"execution"`
 	ActivationEpoch       executioncontrol.ActivationEpoch `json:"activation_epoch"`
 	HandoffID             HandoffID                        `json:"handoff_id"`
-	SourceLeaseID         SourceLeaseID                    `json:"source_lease_id"`
+	SourceHoldID          SourceHoldID                     `json:"source_hold_id"`
 	ProducerCheckpointID  OpaqueID                         `json:"producer_checkpoint_id"`
 	Output                OutputName                       `json:"output"`
 	CaptureFence          CaptureFence                     `json:"capture_fence"`
@@ -118,7 +118,7 @@ func (disposition SuccessfulFinishDisposition) Validate() error {
 	if err := disposition.HandoffID.Validate(); err != nil {
 		return err
 	}
-	if err := disposition.SourceLeaseID.Validate(); err != nil {
+	if err := disposition.SourceHoldID.Validate(); err != nil {
 		return err
 	}
 	if err := disposition.ProducerCheckpointID.Validate(); err != nil {
@@ -227,7 +227,7 @@ type NoCaptureDisposition struct {
 	Execution             executioncontrol.Identity         `json:"execution"`
 	ActivationEpoch       executioncontrol.ActivationEpoch  `json:"activation_epoch"`
 	HandoffID             HandoffID                         `json:"handoff_id"`
-	SourceLeaseID         SourceLeaseID                     `json:"source_lease_id"`
+	SourceHoldID          SourceHoldID                      `json:"source_hold_id"`
 	Reason                NoCaptureReason                   `json:"reason"`
 	ReleaseIntentID       ReleaseIntentID                   `json:"release_intent_id"`
 	FinishAcknowledgement *executioncontrol.Acknowledgement `json:"finish_acknowledgement,omitempty"`
@@ -250,7 +250,7 @@ func (disposition NoCaptureDisposition) Validate() error {
 	if err := disposition.HandoffID.Validate(); err != nil {
 		return err
 	}
-	if err := disposition.SourceLeaseID.Validate(); err != nil {
+	if err := disposition.SourceHoldID.Validate(); err != nil {
 		return err
 	}
 	if err := disposition.Reason.Validate(); err != nil {
@@ -306,7 +306,7 @@ type PreReservationCancelDisposition struct {
 	Execution       executioncontrol.Identity        `json:"execution"`
 	ActivationEpoch executioncontrol.ActivationEpoch `json:"activation_epoch"`
 	HandoffID       HandoffID                        `json:"handoff_id"`
-	SourceLeaseID   SourceLeaseID                    `json:"source_lease_id"`
+	SourceHoldID    SourceHoldID                     `json:"source_hold_id"`
 	SourceReserved  bool                             `json:"source_reserved"`
 	ReleaseIntentID ReleaseIntentID                  `json:"release_intent_id"`
 }
@@ -328,7 +328,7 @@ func (disposition PreReservationCancelDisposition) Validate() error {
 	if err := disposition.HandoffID.Validate(); err != nil {
 		return err
 	}
-	if err := disposition.SourceLeaseID.Validate(); err != nil {
+	if err := disposition.SourceHoldID.Validate(); err != nil {
 		return err
 	}
 
@@ -369,7 +369,7 @@ type ReleaseAcknowledgement struct {
 	Execution       executioncontrol.Identity        `json:"execution"`
 	ActivationEpoch executioncontrol.ActivationEpoch `json:"activation_epoch"`
 	HandoffID       HandoffID                        `json:"handoff_id"`
-	SourceLeaseID   SourceLeaseID                    `json:"source_lease_id"`
+	SourceHoldID    SourceHoldID                     `json:"source_hold_id"`
 	ReleaseIntentID ReleaseIntentID                  `json:"release_intent_id"`
 	Incarnation     SourceIncarnation                `json:"incarnation"`
 	LedgerSequence  executioncontrol.LedgerSequence  `json:"ledger_sequence"`
@@ -393,7 +393,7 @@ func (ack ReleaseAcknowledgement) Validate() error {
 	if err := ack.HandoffID.Validate(); err != nil {
 		return err
 	}
-	if err := ack.SourceLeaseID.Validate(); err != nil {
+	if err := ack.SourceHoldID.Validate(); err != nil {
 		return err
 	}
 	if err := ack.ReleaseIntentID.Validate(); err != nil {

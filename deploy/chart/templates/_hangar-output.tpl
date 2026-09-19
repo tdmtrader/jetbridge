@@ -268,7 +268,7 @@ does not set is read once and believed.
 {{- fail "hangarOutput.receipt.privateKeySecret is required: the output daemon is the only process that holds the private half." -}}
 {{- end -}}
 {{- if not $output.materializationKeySecret -}}
-{{- fail "hangarOutput.materializationKeySecret is required: output read grants use their own key and their own domain, never the receipt key." -}}
+{{- fail "hangarOutput.materializationKeySecret is required: output read warrants use their own key and their own domain, never the receipt key." -}}
 {{- end -}}
 
 {{/*

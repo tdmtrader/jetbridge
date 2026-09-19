@@ -18,17 +18,17 @@ import (
 
 const maxHangarMaterializationItems = 128
 
-var errDuplicateHangarGrant = errors.New("duplicate materialization grant")
+var errDuplicateHangarWarrant = errors.New("duplicate materialization warrant")
 
 type hangarMaterializationRequest struct {
 	Items []hangarMaterializationItem `json:"items"`
 }
 
 type hangarMaterializationItem struct {
-	Ref    hangar.TreeRef `json:"ref"`
-	Handle string         `json:"handle"`
-	Volume string         `json:"volume"`
-	Grant  string         `json:"grant"`
+	Ref     hangar.TreeRef `json:"ref"`
+	Handle  string         `json:"handle"`
+	Volume  string         `json:"volume"`
+	Warrant string         `json:"warrant"`
 }
 
 func (s *Server) handleHangarPublish(w http.ResponseWriter, r *http.Request) {
@@ -99,7 +99,7 @@ func (s *Server) handleHangarMaterializations(w http.ResponseWriter, r *http.Req
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
 			s.refuseHangar(w, r, hangar.ErrLimitExceeded)
-		} else if errors.Is(err, errDuplicateHangarGrant) {
+		} else if errors.Is(err, errDuplicateHangarWarrant) {
 			s.refuseHangar(w, r, hangar.ErrUnauthorized)
 		} else {
 			s.refuseHangarMalformed(w, r)
@@ -118,8 +118,8 @@ func (s *Server) handleHangarMaterializations(w http.ResponseWriter, r *http.Req
 	// This loop must finish for the entire batch before Materialize is called.
 	// An invalid capability therefore cannot leave an authorized prefix visible.
 	for _, item := range request.Items {
-		token, ok := exactBearerGrant(item.Grant)
-		if !ok || service.GrantVerifier == nil || service.GrantVerifier.Verify(token, item.Ref, item.Handle, item.Volume) != nil {
+		token, ok := exactBearerWarrant(item.Warrant)
+		if !ok || service.WarrantVerifier == nil || service.WarrantVerifier.Verify(token, item.Ref, item.Handle, item.Volume) != nil {
 			s.refuseHangar(w, r, hangar.ErrUnauthorized)
 			return
 		}
@@ -150,7 +150,7 @@ func (s *Server) handleHangarMaterializations(w http.ResponseWriter, r *http.Req
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func exactBearerGrant(value string) (string, bool) {
+func exactBearerWarrant(value string) (string, bool) {
 	const prefix = "Bearer "
 	if !strings.HasPrefix(value, prefix) {
 		return "", false
@@ -218,8 +218,8 @@ func validateHangarControlSchema(body []byte) error {
 				return fmt.Errorf("unknown or noncanonical JSON field")
 			}
 			if _, duplicate := seen[key]; duplicate {
-				if key == "grant" {
-					return errDuplicateHangarGrant
+				if key == "warrant" {
+					return errDuplicateHangarWarrant
 				}
 				return fmt.Errorf("duplicate JSON field")
 			}
@@ -238,7 +238,7 @@ func validateHangarControlSchema(body []byte) error {
 		return parseObject(map[string]func() error{"scope": parseScalar, "digest": parseScalar, "generation": parseScalar})
 	}
 	parseItem := func() error {
-		return parseObject(map[string]func() error{"ref": parseRef, "handle": parseScalar, "volume": parseScalar, "grant": parseScalar})
+		return parseObject(map[string]func() error{"ref": parseRef, "handle": parseScalar, "volume": parseScalar, "warrant": parseScalar})
 	}
 	parseItems := func() error {
 		start, err := decoder.Token()

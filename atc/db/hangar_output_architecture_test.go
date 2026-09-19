@@ -981,7 +981,7 @@ func TestEveryReadLeaseWriteTakesTheReadLeaseSuffix(t *testing.T) {
 			if !locked {
 				t.Errorf("atc/db/%s: %s writes hangar_read_leases without entering the suffix "+
 					"for the lease it writes.\n\nRequirement 33 and \"lock order is an API, not a "+
-					"convention\" put grant and read-lease work inside one complete suffix. A bare "+
+					"convention\" put warrant and read-lease work inside one complete suffix. A bare "+
 					"UPDATE takes the row at the write's own moment, in whatever order the writes "+
 					"arrive; that the deferred hangar_reclaim_exclusion trigger happens to catch "+
 					"the race today is the schema's doing, not this transaction's. Call "+

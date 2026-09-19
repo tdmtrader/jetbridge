@@ -93,13 +93,13 @@ func newHangarTestServerWithLogger(t *testing.T, store hangar.Store, logger lage
 	storage := t.TempDir()
 	scratch := t.TempDir()
 	key := bytes.Repeat([]byte{0x42}, 32)
-	verifier, err := hangar.NewGrantVerifier(key, hangar.MaxGrantTTL, nil)
+	verifier, err := hangar.NewWarrantVerifier(key, hangar.MaxWarrantTTL, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	canonicalizer := hangar.Canonicalizer{TempDir: scratch, MaxEntries: 10, MaxContentBytes: 1024}
 	service := &HangarService{
-		Store: store, Canonicalizer: canonicalizer, GrantVerifier: verifier,
+		Store: store, Canonicalizer: canonicalizer, WarrantVerifier: verifier,
 		Materializer:    &hangar.Materializer{Store: store, Canonicalizer: canonicalizer, StoragePath: storage, MaxTreeBytes: 1 << 20},
 		MaxContentBytes: 1024, MaxEntries: 10, MaxArchiveBytes: 1 << 20, MaxControlBytes: 16 << 10,
 	}
@@ -315,11 +315,11 @@ func TestHangarMaterializationAuthorizesEntireBatchBeforeMutation(t *testing.T) 
 		return io.NopCloser(bytes.NewReader(canonical)), hangar.TreeAttributes{Ref: ref, LogicalBytes: int64(len(canonical))}, nil
 	}
 	server, _, key := newHangarTestServer(t, store)
-	signer, _ := hangar.NewGrantSigner(key, time.Minute, nil)
+	signer, _ := hangar.NewWarrantSigner(key, time.Minute, nil)
 	valid, _ := signer.Sign(ref, "handle", "volume-a")
 	body := map[string]any{"items": []any{
-		map[string]any{"ref": ref, "handle": "handle", "volume": "volume-a", "grant": "Bearer " + valid},
-		map[string]any{"ref": ref, "handle": "handle", "volume": "volume-b", "grant": "Bearer invalid"},
+		map[string]any{"ref": ref, "handle": "handle", "volume": "volume-a", "warrant": "Bearer " + valid},
+		map[string]any{"ref": ref, "handle": "handle", "volume": "volume-b", "warrant": "Bearer invalid"},
 	}}
 	encoded, _ := json.Marshal(body)
 	recorder := httptest.NewRecorder()
@@ -332,7 +332,7 @@ func TestHangarMaterializationAuthorizesEntireBatchBeforeMutation(t *testing.T) 
 	}
 }
 
-func TestHangarMaterializesWithExactGrantAndSafeSegments(t *testing.T) {
+func TestHangarMaterializesWithExactWarrantAndSafeSegments(t *testing.T) {
 	raw := rawHangarTar(t, "file", "content")
 	canonical, digest := canonicalHangarTree(t, t.TempDir(), raw)
 	ref := hangar.TreeRef{Scope: "ci", Digest: digest, Generation: 1}
@@ -343,9 +343,9 @@ func TestHangarMaterializesWithExactGrantAndSafeSegments(t *testing.T) {
 		return io.NopCloser(bytes.NewReader(canonical)), hangar.TreeAttributes{Ref: ref, LogicalBytes: int64(len(canonical))}, nil
 	}
 	server, _, key := newHangarTestServer(t, store)
-	signer, _ := hangar.NewGrantSigner(key, time.Minute, nil)
+	signer, _ := hangar.NewWarrantSigner(key, time.Minute, nil)
 	token, _ := signer.Sign(ref, "handle", "volume")
-	body, _ := json.Marshal(map[string]any{"items": []any{map[string]any{"ref": ref, "handle": "handle", "volume": "volume", "grant": "Bearer " + token}}})
+	body, _ := json.Marshal(map[string]any{"items": []any{map[string]any{"ref": ref, "handle": "handle", "volume": "volume", "warrant": "Bearer " + token}}})
 	recorder := httptest.NewRecorder()
 	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/hangar/v1/materializations", bytes.NewReader(body)))
 	if recorder.Code != http.StatusNoContent {
@@ -357,7 +357,7 @@ func TestHangarMaterializesWithExactGrantAndSafeSegments(t *testing.T) {
 	}
 }
 
-func TestHangarRejectsMissingDuplicateAndAlternateGrantsUniformly(t *testing.T) {
+func TestHangarRejectsMissingDuplicateAndAlternateWarrantsUniformly(t *testing.T) {
 	digest := "sha256:" + strings.Repeat("a", 64)
 	store := &hangarStoreStub{ensure: func(context.Context, hangar.Scope, hangar.Digest, io.Reader, int64) (hangar.TreeAttributes, bool, error) {
 		panic("unexpected")
@@ -365,13 +365,13 @@ func TestHangarRejectsMissingDuplicateAndAlternateGrantsUniformly(t *testing.T) 
 	server, _, _ := newHangarTestServer(t, store)
 	for _, body := range []string{
 		`{"items":[{"ref":{"scope":"ci","digest":"` + digest + `","generation":1},"handle":"h","volume":"v"}]}`,
-		`{"items":[{"ref":{"scope":"ci","digest":"` + digest + `","generation":1},"handle":"h","volume":"v","grant":"Basic abc"}]}`,
-		`{"items":[{"ref":{"scope":"ci","digest":"` + digest + `","generation":1},"handle":"h","volume":"v","grant":"Bearer first","grant":"Bearer second"}]}`,
+		`{"items":[{"ref":{"scope":"ci","digest":"` + digest + `","generation":1},"handle":"h","volume":"v","warrant":"Basic abc"}]}`,
+		`{"items":[{"ref":{"scope":"ci","digest":"` + digest + `","generation":1},"handle":"h","volume":"v","warrant":"Bearer first","warrant":"Bearer second"}]}`,
 	} {
 		recorder := httptest.NewRecorder()
 		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/hangar/v1/materializations", strings.NewReader(body)))
 		if recorder.Code != http.StatusUnauthorized || recorder.Body.String() != "unauthorized\n" {
-			t.Fatalf("grant rejection = %d %q, want uniform sanitized 401", recorder.Code, recorder.Body.String())
+			t.Fatalf("warrant rejection = %d %q, want uniform sanitized 401", recorder.Code, recorder.Body.String())
 		}
 	}
 }
@@ -385,10 +385,10 @@ func TestHangarMaterializationRequiresExactCaseSensitiveJSONVocabulary(t *testin
 	validRef := `{"scope":"ci","digest":"` + digest + `","generation":1}`
 	for _, body := range []string{
 		`{"Items":[]}`,
-		`{"items":[{"Ref":` + validRef + `,"handle":"h","volume":"v","grant":"Bearer x"}]}`,
-		`{"items":[{"ref":{"Scope":"ci","digest":"` + digest + `","generation":1},"handle":"h","volume":"v","grant":"Bearer x"}]}`,
-		`{"items":[{"ref":{"scope":"ci","digest":"` + digest + `","Generation":1},"handle":"h","volume":"v","grant":"Bearer x"}]}`,
-		`{"items":[{"ref":` + validRef + `,"handle":"h","volume":"v","grant":"Bearer x","Grant":"Bearer y"}]}`,
+		`{"items":[{"Ref":` + validRef + `,"handle":"h","volume":"v","warrant":"Bearer x"}]}`,
+		`{"items":[{"ref":{"Scope":"ci","digest":"` + digest + `","generation":1},"handle":"h","volume":"v","warrant":"Bearer x"}]}`,
+		`{"items":[{"ref":{"scope":"ci","digest":"` + digest + `","Generation":1},"handle":"h","volume":"v","warrant":"Bearer x"}]}`,
+		`{"items":[{"ref":` + validRef + `,"handle":"h","volume":"v","warrant":"Bearer x","Warrant":"Bearer y"}]}`,
 	} {
 		recorder := httptest.NewRecorder()
 		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/hangar/v1/materializations", strings.NewReader(body)))
@@ -421,9 +421,9 @@ func TestHangarMaterializationStoreFailureLeavesTargetUntouched(t *testing.T) {
 		return nil, hangar.TreeAttributes{}, hangar.ErrInfrastructure
 	}
 	server, _, key := newHangarTestServer(t, store)
-	signer, _ := hangar.NewGrantSigner(key, time.Minute, nil)
+	signer, _ := hangar.NewWarrantSigner(key, time.Minute, nil)
 	token, _ := signer.Sign(ref, "handle", "volume")
-	body, _ := json.Marshal(map[string]any{"items": []any{map[string]any{"ref": ref, "handle": "handle", "volume": "volume", "grant": "Bearer " + token}}})
+	body, _ := json.Marshal(map[string]any{"items": []any{map[string]any{"ref": ref, "handle": "handle", "volume": "volume", "warrant": "Bearer " + token}}})
 	recorder := httptest.NewRecorder()
 	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/hangar/v1/materializations", bytes.NewReader(body)))
 	if recorder.Code != http.StatusServiceUnavailable {
@@ -449,7 +449,7 @@ func TestHangarInfrastructureFailureIsNotCountedAsARefusal(t *testing.T) {
 	}
 	logger := lagertest.NewTestLogger("hangar-fault")
 	server, _, key := newHangarTestServerWithLogger(t, store, logger)
-	signer, err := hangar.NewGrantSigner(key, time.Minute, nil)
+	signer, err := hangar.NewWarrantSigner(key, time.Minute, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,7 +458,7 @@ func TestHangarInfrastructureFailureIsNotCountedAsARefusal(t *testing.T) {
 		t.Fatal(err)
 	}
 	body, err := json.Marshal(map[string]any{"items": []any{map[string]any{
-		"ref": ref, "handle": "handle", "volume": "volume", "grant": "Bearer " + token,
+		"ref": ref, "handle": "handle", "volume": "volume", "warrant": "Bearer " + token,
 	}}})
 	if err != nil {
 		t.Fatal(err)
@@ -482,7 +482,7 @@ func TestHangarInfrastructureFailureIsNotCountedAsARefusal(t *testing.T) {
 	before = refusalCount(t, server)
 	recorder = httptest.NewRecorder()
 	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/hangar/v1/materializations",
-		strings.NewReader(`{"items":[{"ref":{"scope":"ci","digest":"`+string(digest)+`","generation":1},"handle":"handle","volume":"volume","grant":"Bearer t","extra":true}]}`)))
+		strings.NewReader(`{"items":[{"ref":{"scope":"ci","digest":"`+string(digest)+`","generation":1},"handle":"handle","volume":"volume","warrant":"Bearer t","extra":true}]}`)))
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("malformed request = %d %q, want 400", recorder.Code, recorder.Body.String())
 	}
@@ -498,7 +498,7 @@ func TestHangarMaterializationRejectsAbsoluteAndInvalidSegments(t *testing.T) {
 	}}
 	server, _, _ := newHangarTestServer(t, store)
 	for _, fields := range [][2]string{{"/absolute", "volume"}, {"handle", "../escape"}, {"a/b", "volume"}} {
-		body := `{"items":[{"ref":{"scope":"ci","digest":"` + digest + `","generation":1},"handle":"` + fields[0] + `","volume":"` + fields[1] + `","grant":"Bearer opaque"}]}`
+		body := `{"items":[{"ref":{"scope":"ci","digest":"` + digest + `","generation":1},"handle":"` + fields[0] + `","volume":"` + fields[1] + `","warrant":"Bearer opaque"}]}`
 		recorder := httptest.NewRecorder()
 		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/hangar/v1/materializations", strings.NewReader(body)))
 		if recorder.Code != http.StatusUnauthorized {
@@ -565,7 +565,7 @@ func TestHangarAuthorizationFailureDoesNotLeakTokenOrFieldsToResponseOrLogs(t *t
 	}}
 	server, _, _ := newHangarTestServerWithLogger(t, store, logger)
 	secret := "Bearer secret-token-value"
-	body := `{"items":[{"ref":{"scope":"opaque-scope","digest":"sha256:` + strings.Repeat("d", 64) + `","generation":1},"handle":"secret-handle","volume":"secret-volume","grant":"` + secret + `"}]}`
+	body := `{"items":[{"ref":{"scope":"opaque-scope","digest":"sha256:` + strings.Repeat("d", 64) + `","generation":1},"handle":"secret-handle","volume":"secret-volume","warrant":"` + secret + `"}]}`
 	recorder := httptest.NewRecorder()
 	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/hangar/v1/materializations", strings.NewReader(body)))
 	combined := recorder.Body.String() + string(logger.Buffer().Contents())
@@ -633,11 +633,11 @@ func TestHangarConcurrentIdenticalPublish(t *testing.T) {
 
 func TestHangarConfigRequiresStrictPrerequisitesBeforeStoreConstruction(t *testing.T) {
 	base := hangarOptions{
-		Enabled: true, ScratchDir: filepath.Join(t.TempDir(), "scratch"), CapabilityKey: filepath.Join(t.TempDir(), "key"),
-		MaxContentBytes: 1024, MaxEntries: 10, CapabilityTTL: 15 * time.Minute, DurableKind: "gcs", Bucket: "bucket", Timeout: time.Minute,
+		Enabled: true, ScratchDir: filepath.Join(t.TempDir(), "scratch"), WarrantKey: filepath.Join(t.TempDir(), "key"),
+		MaxContentBytes: 1024, MaxEntries: 10, WarrantTTL: 15 * time.Minute, DurableKind: "gcs", Bucket: "bucket", Timeout: time.Minute,
 		TLSCert: "cert", TLSKey: "key", TLSCACert: "ca",
 	}
-	if err := os.WriteFile(base.CapabilityKey, bytes.Repeat([]byte{1}, 32), 0600); err != nil {
+	if err := os.WriteFile(base.WarrantKey, bytes.Repeat([]byte{1}, 32), 0600); err != nil {
 		t.Fatal(err)
 	}
 	tests := []struct {
@@ -649,8 +649,8 @@ func TestHangarConfigRequiresStrictPrerequisitesBeforeStoreConstruction(t *testi
 		{"empty-bucket", func(o *hangarOptions) { o.Bucket = "" }},
 		{"relative-scratch", func(o *hangarOptions) { o.ScratchDir = "relative" }},
 		{"bad-key", func(o *hangarOptions) {
-			o.CapabilityKey = filepath.Join(t.TempDir(), "short")
-			_ = os.WriteFile(o.CapabilityKey, []byte("short"), 0600)
+			o.WarrantKey = filepath.Join(t.TempDir(), "short")
+			_ = os.WriteFile(o.WarrantKey, []byte("short"), 0600)
 		}},
 	}
 	for _, tc := range tests {
@@ -670,16 +670,16 @@ func TestHangarConfigRejectsCapabilityTTLOutsideCoreBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := hangarOptions{
-		Enabled: true, ScratchDir: filepath.Join(t.TempDir(), "scratch"), CapabilityKey: keyPath,
-		MaxContentBytes: 1024, MaxEntries: 10, CapabilityTTL: 15 * time.Minute,
+		Enabled: true, ScratchDir: filepath.Join(t.TempDir(), "scratch"), WarrantKey: keyPath,
+		MaxContentBytes: 1024, MaxEntries: 10, WarrantTTL: 15 * time.Minute,
 		DurableKind: "gcs", Bucket: "bucket", Timeout: time.Minute,
 		TLSCert: "cert", TLSKey: "key", TLSCACert: "ca",
 	}
-	for _, ttl := range []time.Duration{0, -time.Second, hangar.MaxGrantTTL + time.Nanosecond} {
+	for _, ttl := range []time.Duration{0, -time.Second, hangar.MaxWarrantTTL + time.Nanosecond} {
 		opts := base
-		opts.CapabilityTTL = ttl
-		if err := validateHangarOptions(opts, filepath.Join(t.TempDir(), "artifacts")); err == nil || !strings.Contains(err.Error(), "hangar-capability-ttl") {
-			t.Fatalf("TTL %s: got %v, want bounded capability TTL error", ttl, err)
+		opts.WarrantTTL = ttl
+		if err := validateHangarOptions(opts, filepath.Join(t.TempDir(), "artifacts")); err == nil || !strings.Contains(err.Error(), "hangar-warrant-ttl") {
+			t.Fatalf("TTL %s: got %v, want bounded warrant TTL error", ttl, err)
 		}
 	}
 }
@@ -712,7 +712,7 @@ func TestHangarAndDurableGCSShareRootEndpointAndValidateBucket(t *testing.T) {
 	storage := t.TempDir()
 	scratch := filepath.Join(t.TempDir(), "scratch")
 	service, closeService, err := buildHangarService(context.Background(), lagertest.NewTestLogger("hangar-build"), storage, hangarOptions{
-		Enabled: true, ScratchDir: scratch, CapabilityKey: keyPath, MaxContentBytes: 1024, MaxEntries: 10, CapabilityTTL: 15 * time.Minute,
+		Enabled: true, ScratchDir: scratch, WarrantKey: keyPath, MaxContentBytes: 1024, MaxEntries: 10, WarrantTTL: 15 * time.Minute,
 		DurableKind: "gcs", Bucket: "bucket", Endpoint: fakeGCS.URL, Timeout: time.Second,
 		TLSCert: "cert", TLSKey: "key", TLSCACert: "ca",
 	})

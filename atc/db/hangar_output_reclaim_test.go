@@ -46,7 +46,7 @@ var _ = Describe("reclaiming an exact generation", func() {
 	}
 
 	// reclaimable publishes a capture, settles it completely, and returns an
-	// exact ref nothing protects: no claim, no read lease, no unresolved
+	// tree ref nothing protects: no claim, no read lease, no unresolved
 	// reservation, a terminal and settled capture past its deadline.
 	// published is a settled capture whose generation is still inside its
 	// publication grace. Elapsed grace is a precondition in its own right and

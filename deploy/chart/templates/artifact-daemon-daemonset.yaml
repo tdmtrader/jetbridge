@@ -126,8 +126,8 @@ spec:
             # after strict GCS, key, TLS, and scratch validation succeeds.
             - --hangar-enabled
             - --hangar-scratch-dir={{ .Values.artifactDaemon.hangar.scratchPath }}
-            - --hangar-capability-key=/etc/concourse/daemon-tls/hangar.key
-            - --hangar-capability-ttl={{ .Values.artifactDaemon.hangar.capabilityTTL }}
+            - --hangar-warrant-key=/etc/concourse/daemon-tls/hangar.key
+            - --hangar-warrant-ttl={{ .Values.artifactDaemon.hangar.capabilityTTL }}
             - --hangar-max-content-bytes={{ .Values.artifactDaemon.hangar.maxContentBytes | int64 }}
             - --hangar-max-entries={{ .Values.artifactDaemon.hangar.maxEntries | int64 }}
             {{- end }}

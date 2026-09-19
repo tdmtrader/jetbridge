@@ -225,7 +225,7 @@ func (namespace OutputNamespace) ListPrefix() string {
 	return namespace.prefix + "/hangar/v1/scopes/"
 }
 
-// Ref is the exact reference for a digest and the generation the store
+// Ref is the tree ref for a digest and the generation the store
 // assigned it.
 func (namespace OutputNamespace) Ref(digest hangar.Digest, generation int64) hangar.TreeRef {
 	return hangar.TreeRef{Scope: namespace.scope, Digest: digest, Generation: generation}

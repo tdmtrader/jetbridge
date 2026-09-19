@@ -144,7 +144,7 @@ func (runner *Runner) Run(ctx context.Context) error {
 	runner.report(ctx, processed, classOf(err))
 	if err != nil {
 		// The redaction rule, at the one place a controller says anything. A
-		// kind, a count and a class -- never a key, a ref, a grant or a path,
+		// kind, a count and a class -- never a key, a ref, a warrant or a path,
 		// and never the error's own text, which is where a store's message
 		// about an object would arrive.
 		logger.Info("hangar-output-pass-failed", lager.Data{

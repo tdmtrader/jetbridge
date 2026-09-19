@@ -261,7 +261,7 @@ func (repository *HangarOutputRepository) RegisterReceipt(ctx context.Context, t
 
 	// A receipt already registered for this reservation answers the question
 	// before anything is written, and the answer is one of exactly two. The
-	// same exact ref is one admission repeated -- an ambiguous create response
+	// same tree ref is one admission repeated -- an ambiguous create response
 	// converges through verified per-capture retry, so the retry must return
 	// the state the first attempt made. Another generation is Req 6's reuse
 	// for different facts, and it is a conflict.
@@ -531,7 +531,7 @@ func (repository *HangarOutputRepository) upsertLifecycle(ctx context.Context, t
 
 // AcquireClaim composes Hangar protection with a consumer's own write.
 //
-// Idempotent for the same id and exact ref; the same id on another ref is a
+// Idempotent for the same id and tree ref; the same id on another ref is a
 // conflict, because a claim protects one immutable generation and cannot float
 // to replacement content. The exact-lifecycle lock is what makes this and
 // reclaim admission one winner: claimant first and the reclaimer rechecks and
@@ -599,12 +599,12 @@ func (repository *HangarOutputRepository) AcquireClaim(ctx context.Context, tx o
 		return err
 	}
 	if existing != lifecycle {
-		return fmt.Errorf("%w: claim %s already protects another exact ref; reuse for another ref "+
+		return fmt.Errorf("%w: claim %s already protects another tree ref; reuse for another ref "+
 			"is a conflict", output.ErrConflict, acquisition.ClaimID)
 	}
 	if released.Valid {
 		return fmt.Errorf("%w: claim %s was released at %s and stays tombstoned for the lifetime "+
-			"of the exact-ref lifecycle record", output.ErrConflict, acquisition.ClaimID, released.Time)
+			"of the tree-ref lifecycle record", output.ErrConflict, acquisition.ClaimID, released.Time)
 	}
 
 	return nil
@@ -656,7 +656,7 @@ func (repository *HangarOutputRepository) ReleaseClaim(ctx context.Context, tx o
 // AcquireReadLease creates the reader's fenced protection inside the caller's
 // transaction.
 //
-// It signs nothing and calls nobody. Minting the grant that carries this lease
+// It signs nothing and calls nobody. Minting the warrant that carries this lease
 // happens after the transaction commits, deliberately: signing is not a
 // database operation, and saying the two were atomic would be the cross-system
 // atomic-commit claim this design refuses to make anywhere else.
@@ -680,7 +680,7 @@ func (repository *HangarOutputRepository) AcquireReadLease(ctx context.Context, 
 	}
 
 	// The exact lifecycle, under the lock, before anything is written. Req 35
-	// admits a managed-output grant only for a REGISTERED MARKED generation
+	// admits a managed-output warrant only for a REGISTERED MARKED generation
 	// whose lifecycle state is readable: a caller-supplied ref, a stale receipt
 	// or the ordinary strict-input path cannot reach this, and neither can a
 	// generation that reclamation has already admitted.
@@ -736,7 +736,7 @@ func (repository *HangarOutputRepository) AcquireReadLease(ctx context.Context, 
 		}
 
 		return output.ReadLease{}, fmt.Errorf("%w: no claim %s protects %s/%s/%d; a managed-output "+
-			"grant needs at least one active claim", output.ErrNotFound, request.ClaimID,
+			"warrant needs at least one active claim", output.ErrNotFound, request.ClaimID,
 			request.Ref.Scope, request.Ref.Digest, request.Ref.Generation)
 	}
 	if released.Valid {
@@ -744,7 +744,7 @@ func (repository *HangarOutputRepository) AcquireReadLease(ctx context.Context, 
 			output.ErrConflict, request.ClaimID)
 	}
 
-	// The admitted term, derived once and STORED, because a renewal grants one
+	// The admitted term, derived once and STORED, because a renewal warrants one
 	// of them and the row is the only place that length can come from later.
 	term := output.LeaseTermFor(request.MaterializationTimeout)
 	interval, err := hangarLeaseInterval(term)
@@ -770,7 +770,7 @@ func (repository *HangarOutputRepository) AcquireReadLease(ctx context.Context, 
 		ON CONFLICT (read_lease_id) DO NOTHING`,
 		string(request.ReadLeaseID), string(request.ClaimID), lifecycle,
 		int64(request.ActivationEpoch), interval, int(term.Round(time.Second).Seconds()),
-		request.GrantNonce, request.Destination.Handle, request.Destination.Volume,
+		request.WarrantNonce, request.Destination.Handle, request.Destination.Volume,
 		request.StatProof.Metageneration, request.StatProof.Marker.Version,
 		request.StatObservedAt.Time,
 	); err != nil {
@@ -799,7 +799,7 @@ func (repository *HangarOutputRepository) AcquireReadLease(ctx context.Context, 
 	}
 	if existingClaim != string(request.ClaimID) || existingLifecycle != lifecycle ||
 		existingEpoch != int64(request.ActivationEpoch) ||
-		existingNonce != request.GrantNonce ||
+		existingNonce != request.WarrantNonce ||
 		existingHandle != request.Destination.Handle ||
 		existingVolume != request.Destination.Volume {
 		return output.ReadLease{}, fmt.Errorf("%w: read lease %s already protects another read; "+
@@ -1110,7 +1110,7 @@ func hangarStatProofFresh(ctx context.Context, tx output.Tx, observed output.Tim
 // It is what the minter calls AFTER the transaction commits, and what recovery
 // calls after an ambiguous one. Loading rather than remembering is the point:
 // an ambiguous commit is answered by asking the database what it has, and a
-// mint over the caller's idea of the lease would be a grant for a row that may
+// mint over the caller's idea of the lease would be a warrant for a row that may
 // never have existed.
 func (repository *HangarOutputRepository) LoadReadLease(ctx context.Context, tx output.Tx, id output.ReadLeaseID) (output.ReadLeaseRecord, error) {
 	if err := id.Validate(); err != nil {
@@ -1153,14 +1153,14 @@ func (repository *HangarOutputRepository) LoadReadLease(ctx context.Context, tx 
 			GrantedAt:       output.NewTimestamp(granted),
 			ExpiresAt:       output.NewTimestamp(expires),
 		},
-		Destination: output.ReadDestination{Handle: handle, Volume: volume},
-		GrantNonce:  nonce,
+		Destination:  output.ReadDestination{Handle: handle, Volume: volume},
+		WarrantNonce: nonce,
 	}, nil
 }
 
 // ValidateReadLease answers the materializing daemon's independent question.
 //
-// Every field the grant carried is compared against the committed row, and the
+// Every field the warrant carried is compared against the committed row, and the
 // row's own state -- released, expired, superseded by a later fence, or beside
 // a lifecycle that reclamation has admitted -- is what decides. A valid HMAC
 // bound to any of those authorizes nothing, and this is the method that says so.
@@ -1191,15 +1191,15 @@ func (repository *HangarOutputRepository) ValidateReadLease(ctx context.Context,
 	// is the kind of check that passes for a reason nobody can state.
 	//
 	// The column stays, with a note at the migration, because a column with no
-	// reader is cheaper than renumbering a migration; the grant no longer binds
+	// reader is cheaper than renumbering a migration; the warrant no longer binds
 	// one. What supersession this lease HAS is the released tombstone, which
 	// LoadReadLease above has already refused.
 	if record.Lease.ClaimID != validation.ClaimID ||
 		record.Lease.Ref != validation.Ref ||
 		record.Lease.ActivationEpoch != validation.ActivationEpoch ||
 		record.Destination != validation.Destination ||
-		subtle.ConstantTimeCompare([]byte(record.GrantNonce), []byte(validation.GrantNonce)) != 1 {
-		return output.ReadLeaseRecord{}, fmt.Errorf("%w: the grant presented for read lease %s "+
+		subtle.ConstantTimeCompare([]byte(record.WarrantNonce), []byte(validation.WarrantNonce)) != 1 {
+		return output.ReadLeaseRecord{}, fmt.Errorf("%w: the warrant presented for read lease %s "+
 			"does not describe the lease this transaction committed", output.ErrUnauthorized,
 			validation.ReadLeaseID)
 	}
@@ -1209,7 +1209,7 @@ func (repository *HangarOutputRepository) ValidateReadLease(ctx context.Context,
 	// Requirement 36 and AC 13 are explicit: reclaim admission is refused while
 	// any read lease is active EVEN IF the domain releases its last claim, and
 	// releasing the last claim during a transfer must not delete the bytes out
-	// from under a reader. A claim is what admits a grant; the lease is what
+	// from under a reader. A claim is what admits a warrant; the lease is what
 	// protects the read once it has one. A daemon that refused to stage because
 	// the consumer had already unbound would be enforcing the opposite rule.
 	// There is no reclaim check here, and its absence is the schema's doing
@@ -1239,7 +1239,7 @@ func (repository *HangarOutputRepository) ValidateReadLease(ctx context.Context,
 	return record, nil
 }
 
-// ReadClaims reports every claim recorded for one exact ref, active and
+// ReadClaims reports every claim recorded for one tree ref, active and
 // tombstoned, in acquisition order.
 //
 // It takes no lock. It is a read for a caller that wants to know what is there,

@@ -56,7 +56,7 @@ func outputDaemonURLScheme() string {
 // cannot succeed however correctly the deployment is provisioned. What the
 // transport buys the hold is confidentiality for the one-shot capability it
 // carries in a header. The AUTHORIZATION is that signed, facet-scoped,
-// single-use grant, verified by the daemon, and it is unchanged by this.
+// single-use warrant, verified by the daemon, and it is unchanged by this.
 //
 // The ATC's own off-node calls are a different matter and DO verify: they are
 // given a server name the operator puts in the daemon's certificate
@@ -104,7 +104,7 @@ func ValidateOutputDaemonTLSFlags(certPath, keyPath, caCertPath string) error {
 			"The output daemon's control API is TLS-only and refuses every control operation "+
 			"whose request carries no verified peer certificate, so an ATC without a client "+
 			"certificate of its own cannot hold a source, issue a writer ticket, seal, publish "+
-			"or grant a read. This is the output plane's OWN certificate and CA, issued in the "+
+			"or warrant a read. This is the output plane's OWN certificate and CA, issued in the "+
 			"same trust domain as hangarOutput.daemon.tls.existingSecret: the artifact daemon's "+
 			"is a different daemon, a different bucket and a different identity",
 		strings.Join(missing, " and "),

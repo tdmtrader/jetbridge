@@ -164,7 +164,7 @@ type ReceiptChecker interface {
 // for whoever is watching the execution. What a deployment does with it -- an
 // event, a log line on the step -- is the deployment's, and the redaction rule
 // is not: an announcement carries a disposition and a reason, and never a
-// grant, key, path or consumer reference.
+// warrant, key, path or consumer reference.
 //
 // It takes the CALLER's transaction, and that is the whole of what makes an
 // announcement survivable. An announcement emitted after the commit it

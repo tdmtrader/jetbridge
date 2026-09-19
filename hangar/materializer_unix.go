@@ -91,7 +91,7 @@ func materializeCapturedTree(ctx context.Context, storagePath, handle, volume st
 		return fmt.Errorf("hangar: rebind staged tree digest: %w", err)
 	}
 	if stageDigest != ref.Digest {
-		return fmt.Errorf("hangar: staged tree digest differs from exact reference: %w", ErrCorrupt)
+		return fmt.Errorf("hangar: staged tree digest differs from tree ref: %w", ErrCorrupt)
 	}
 	receipt, err := json.Marshal(ref)
 	if err != nil {

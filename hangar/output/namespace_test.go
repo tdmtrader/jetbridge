@@ -286,7 +286,7 @@ func TestTheMarkerAndTheKeyAgreeByConstruction(t *testing.T) {
 		t.Errorf("the marker did not round-trip: wrote %+v, read %+v", marker, parsed)
 	}
 	if !parsed.Matches(namespace.Ref(digest, 1725830823000001)) {
-		t.Error("the parsed marker does not match the exact ref for the same identity")
+		t.Error("the parsed marker does not match the tree ref for the same identity")
 	}
 
 	// A wrong version is a typed collision, not a parse failure: it is a

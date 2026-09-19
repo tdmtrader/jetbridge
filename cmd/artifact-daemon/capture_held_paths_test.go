@@ -168,7 +168,7 @@ func TestTheSweeperSparesACaptureHeldStepDirectoryAndStillSweepsAnExpiredOne(t *
 
 	sweeper := NewSweeper(lagertest.NewTestLogger("sweep"), storage, time.Hour, time.Hour, server.registry)
 	sweeper.SetGuard(server.guard)
-	sweeper.SetCaptureLedger(server.captureLedger)
+	sweeper.SetSourceLedger(server.sourceLedger)
 	sweeper.SweepOnce()
 
 	// The control: an expired, unheld step directory is swept. If it survives,

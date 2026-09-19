@@ -1795,7 +1795,7 @@ func TestTheControlKeyIdNamesKeyMaterialAndNotItsSecret(t *testing.T) {
 // An id shared across key ROLES is the same ambiguity one level up: a control
 // statement and a receipt say different things, and "which key checks this" has
 // to have one answer per id.
-func TestAKeyIdIsNotSharedBetweenTheControlReceiptAndReadGrantKeys(t *testing.T) {
+func TestAKeyIdIsNotSharedBetweenTheControlReceiptAndReadWarrantKeys(t *testing.T) {
 	for _, collision := range []string{
 		"hangarOutput.executionControl.keyID=receipt-7",
 		"hangarOutput.materializationKeyID=receipt-7",

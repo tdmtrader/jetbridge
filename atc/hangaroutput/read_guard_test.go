@@ -6,7 +6,7 @@ package hangaroutput_test
 // rolled-back admission reaches none. That is the right assertion and it is not
 // sufficient: it covers the paths the specs drive, and the rule requirement 35
 // states is about every path there is -- "only after that transaction commits
-// may the control plane mint and deliver a usable lease-bound grant".
+// may the control plane mint and deliver a usable lease-bound warrant".
 //
 // So this reads the source. A function that holds an open transaction and signs
 // inside it is minting under a transaction that may still roll back, and that
@@ -34,8 +34,8 @@ import (
 	"testing"
 )
 
-// mintingFiles is every file in this package that reaches a grant signer.
-// read.go admits a read; leasecontrol.go re-mints the grant a renewal produces.
+// mintingFiles is every file in this package that reaches a warrant signer.
+// read.go admits a read; leasecontrol.go re-mints the warrant a renewal produces.
 var mintingFiles = []string{"read.go", "leasecontrol.go"}
 
 func TestNoFunctionBothOpensATransactionAndSigns(t *testing.T) {
@@ -125,8 +125,8 @@ func TestNoFunctionBothOpensATransactionAndSigns(t *testing.T) {
 			}
 			if len(function.begins) > 0 && function.signing {
 				t.Errorf("atc/hangaroutput/%s: %s both opens a transaction (%s) and signs (%s).\n\n"+
-					"A grant minted inside a transaction is a grant minted under a commit that may "+
-					"still roll back, and requirement 35 admits a usable grant only after the commit "+
+					"A warrant minted inside a transaction is a warrant minted under a commit that may "+
+					"still roll back, and requirement 35 admits a usable warrant only after the commit "+
 					"is authoritative. The mint belongs in a function that holds no transaction and "+
 					"takes a value only a committed row can produce.",
 					path, function.name, strings.Join(function.begins, ", "),

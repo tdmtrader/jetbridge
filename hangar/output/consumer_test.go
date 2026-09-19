@@ -218,7 +218,7 @@ func TestTheCaptureExtensionCannotForkTheBaseExecution(t *testing.T) {
 		Execution:       identity,
 		ActivationEpoch: 3,
 		HandoffID:       "6b1e9d40-2a77-4c11-8f3e-5d0a9c8b7e62",
-		SourceLeaseID:   "a4d2c8f1-9e03-4b55-86ad-71f0c3e29b48",
+		SourceHoldID:    "a4d2c8f1-9e03-4b55-86ad-71f0c3e29b48",
 		Output:          "built-image",
 		CaptureDeadline: NewTimestamp(mustParse(t, "2026-09-09T21:47:03Z")),
 	}

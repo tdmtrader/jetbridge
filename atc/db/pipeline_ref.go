@@ -18,8 +18,8 @@ type PipelineRef interface {
 	PipelineInstanceVars() atc.InstanceVars
 	PipelineRef() atc.PipelineRef
 	PipelineRunID() (int, bool)
-	BasePipelineID() int
-	BasePipelineRef() (atc.PipelineRef, bool)
+	TemplatePipelineID() int
+	TemplatePipelineRef() (atc.PipelineRef, bool)
 	Pipeline() (Pipeline, bool, error)
 }
 
@@ -28,8 +28,8 @@ type pipelineRef struct {
 	pipelineName         string
 	pipelineInstanceVars atc.InstanceVars
 	pipelineRunID        int
-	basePipelineID       int
-	basePipelineName     string
+	templatePipelineID   int
+	templatePipelineName string
 
 	conn        DbConn
 	lockFactory lock.LockFactory
@@ -64,18 +64,18 @@ func (r pipelineRef) PipelineRef() atc.PipelineRef {
 	}
 }
 
-// BasePipelineID and BasePipelineRef are only populated for pipeline and build
+// TemplatePipelineID and TemplatePipelineRef are only populated for pipeline and build
 // -- the two queries that still carry run identity inline (pipelinesQuery,
 // buildsQuery). resource, resourceType, prototype and job deliberately do NOT
-// join pipeline_runs, so they report a zero base pipeline; resolve the base
+// join pipeline_runs, so they report a zero template pipeline; resolve the template
 // through Pipeline() instead, as job.TaskCacheIdentity does.
 func (r pipelineRef) PipelineRunID() (int, bool) { return r.pipelineRunID, r.pipelineRunID != 0 }
-func (r pipelineRef) BasePipelineID() int        { return r.basePipelineID }
-func (r pipelineRef) BasePipelineRef() (atc.PipelineRef, bool) {
-	if r.basePipelineID == 0 {
+func (r pipelineRef) TemplatePipelineID() int    { return r.templatePipelineID }
+func (r pipelineRef) TemplatePipelineRef() (atc.PipelineRef, bool) {
+	if r.templatePipelineID == 0 {
 		return atc.PipelineRef{}, false
 	}
-	return atc.PipelineRef{Name: r.basePipelineName}, true
+	return atc.PipelineRef{Name: r.templatePipelineName}, true
 }
 
 func (r pipelineRef) Pipeline() (Pipeline, bool, error) {

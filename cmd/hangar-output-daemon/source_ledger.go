@@ -72,7 +72,7 @@ type sourceRecord struct {
 	Execution       executioncontrol.Identity        `json:"execution"`
 	ActivationEpoch executioncontrol.ActivationEpoch `json:"activation_epoch"`
 	HandoffID       output.HandoffID                 `json:"handoff_id"`
-	SourceLeaseID   output.SourceLeaseID             `json:"source_lease_id"`
+	SourceHoldID    output.SourceHoldID              `json:"source_hold_id"`
 	Output          output.OutputName                `json:"output"`
 	Incarnation     output.SourceIncarnation         `json:"incarnation"`
 
@@ -581,7 +581,7 @@ func (ledger *SourceLedger) next() executioncontrol.LedgerSequence {
 // hold protects the bytes the producer writes.
 //
 // It still issues rather than accepts. The caller sends the same admission a
-// hold sends -- an exact execution and its fence, a handoff, a source lease, a
+// hold sends -- an exact execution and its fence, a handoff, a source hold, a
 // declared output, an epoch -- and gets back a directory this daemon chose. Req
 // 7 is intact: no API here accepts a path, and the ATC's whole part is to
 // repeat the answer.
@@ -651,7 +651,7 @@ func (ledger *SourceLedger) ReserveIncarnation(_ context.Context,
 		Execution:       admission.Execution,
 		ActivationEpoch: admission.ActivationEpoch,
 		HandoffID:       admission.HandoffID,
-		SourceLeaseID:   admission.SourceLeaseID,
+		SourceHoldID:    admission.SourceHoldID,
 		Output:          admission.Output,
 		Incarnation:     incarnation,
 		HighWater:       ledger.sequence,
@@ -679,7 +679,7 @@ func (ledger *SourceLedger) reservationOf(record sourceRecord) output.ReservedIn
 		Execution:       record.Execution,
 		ActivationEpoch: record.ActivationEpoch,
 		HandoffID:       record.HandoffID,
-		SourceLeaseID:   record.SourceLeaseID,
+		SourceHoldID:    record.SourceHoldID,
 		NodeUID:         record.Incarnation.NodeUID,
 		Incarnation:     record.Incarnation,
 		Directory:       incarnationDir(record.Incarnation),
@@ -701,9 +701,9 @@ func conflictsWithRecord(record sourceRecord, admission output.CaptureAdmission)
 				"%s at fence %d", output.ErrConflict, admission.HandoffID,
 			record.Execution.ExecutionID, record.Execution.Fence,
 			admission.Execution.ExecutionID, admission.Execution.Fence)
-	case record.SourceLeaseID != admission.SourceLeaseID:
-		return fmt.Errorf("%w: handoff %s holds source lease %s and this request names %s",
-			output.ErrConflict, admission.HandoffID, record.SourceLeaseID, admission.SourceLeaseID)
+	case record.SourceHoldID != admission.SourceHoldID:
+		return fmt.Errorf("%w: handoff %s holds source hold %s and this request names %s",
+			output.ErrConflict, admission.HandoffID, record.SourceHoldID, admission.SourceHoldID)
 	case record.Output != admission.Output:
 		return fmt.Errorf("%w: handoff %s holds the source for output %q and this request names %q",
 			output.ErrConflict, admission.HandoffID, record.Output, admission.Output)
@@ -792,7 +792,7 @@ func (ledger *SourceLedger) AcknowledgeHold(_ context.Context, admission output.
 	// CONFLICT -- this handoff already holds a source for other facts -- and
 	// saying "unauthorized" there would tell a caller its fence was wrong when
 	// what is wrong is that it is reusing a handoff. Nothing is written on this
-	// path, so consulting the record first grants no authority.
+	// path, so consulting the record first warrants no authority.
 	if err := conflictsWithRecord(record, admission); err != nil {
 		return output.CaptureAcknowledgement{}, err
 	}
@@ -873,7 +873,7 @@ func (ledger *SourceLedger) AcknowledgeHold(_ context.Context, admission output.
 		NodeUID:         ledger.node,
 		PodUID:          pod,
 		HandoffID:       admission.HandoffID,
-		SourceLeaseID:   admission.SourceLeaseID,
+		SourceHoldID:    admission.SourceHoldID,
 		Incarnation:     incarnation,
 		ObservedAt:      output.NewTimestamp(ledger.clock()),
 	})
@@ -905,7 +905,7 @@ func (ledger *SourceLedger) AcknowledgeHold(_ context.Context, admission output.
 //
 // It takes the identity the CAPABILITY was bound to, not just the handoff. A
 // read is not harmless here: the hold statement carries the incarnation, the
-// pod and the source lease, and a route that verified a token against one
+// pod and the source hold, and a route that verified a token against one
 // execution and then answered about another's handoff would have made the
 // binding decorative on every read.
 func (ledger *SourceLedger) InspectHold(handoff output.HandoffID,
@@ -1097,7 +1097,7 @@ func (ledger *SourceLedger) signTicketStatement(record sourceRecord,
 		NodeUID:         ledger.node,
 		PodUID:          admission.PodUID,
 		HandoffID:       record.HandoffID,
-		SourceLeaseID:   record.SourceLeaseID,
+		SourceHoldID:    record.SourceHoldID,
 		Incarnation:     record.Incarnation,
 		WriterTicketID:  admission.WriterTicketID,
 		WriterFence:     admission.WriterFence,
@@ -1174,7 +1174,7 @@ func (ledger *SourceLedger) BeginSeal(_ context.Context, request output.SealRequ
 		NodeUID:         ledger.node,
 		PodUID:          record.Hold.PodUID,
 		HandoffID:       record.HandoffID,
-		SourceLeaseID:   record.SourceLeaseID,
+		SourceHoldID:    record.SourceHoldID,
 		Incarnation:     record.Incarnation,
 		ObservedAt:      output.NewTimestamp(ledger.clock()),
 	})
@@ -1266,7 +1266,7 @@ func (ledger *SourceLedger) ConfirmSeal(_ context.Context, confirmation output.S
 		NodeUID:         ledger.node,
 		PodUID:          record.Hold.PodUID,
 		HandoffID:       record.HandoffID,
-		SourceLeaseID:   record.SourceLeaseID,
+		SourceHoldID:    record.SourceHoldID,
 		Incarnation:     record.Incarnation,
 		ObservedAt:      output.NewTimestamp(ledger.clock()),
 	})
@@ -1337,7 +1337,7 @@ func (ledger *SourceLedger) AcknowledgeRelease(_ context.Context, intent output.
 		Execution:       record.Execution,
 		ActivationEpoch: record.ActivationEpoch,
 		HandoffID:       record.HandoffID,
-		SourceLeaseID:   record.SourceLeaseID,
+		SourceHoldID:    record.SourceHoldID,
 		ReleaseIntentID: intent.ReleaseIntentID,
 		Incarnation:     record.Incarnation,
 		LedgerSequence:  ledger.next(),

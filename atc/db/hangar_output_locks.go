@@ -84,7 +84,7 @@ type HangarLockRequest struct {
 
 // HangarLocks is what the helper locked, in the order it locked it.
 //
-// Lifecycles maps each exact ref that exists to its lifecycle row id, because
+// Lifecycles maps each tree ref that exists to its lifecycle row id, because
 // every caller wants it and re-reading it outside the lock would be reading a
 // fact the lock was taken to freeze.
 type HangarLocks struct {
@@ -103,7 +103,7 @@ type HangarLocks struct {
 // capture and reservation rows in stable capture-identity order; then the
 // subordinate receipt, claim and read-lease rows. Claimant and reader first
 // makes a reclaimer recheck and skip; reclaimer first makes the claimant's
-// transaction roll back without a usable binding or grant. Both are correct
+// transaction roll back without a usable binding or warrant. Both are correct
 // outcomes and neither is a deadlock, which is the entire reason the order is
 // an API and not a convention.
 //
@@ -215,7 +215,7 @@ func LockHangarSuffix(ctx context.Context, tx output.Tx, prefix HangarConsumerPr
 	return locks, nil
 }
 
-// LifecycleID is the locked lifecycle row for an exact ref, or ErrNotFound.
+// LifecycleID is the locked lifecycle row for a tree ref, or ErrNotFound.
 func (locks HangarLocks) LifecycleID(ref hangar.TreeRef) (int64, error) {
 	id, ok := locks.Lifecycles[ref]
 	if !ok {

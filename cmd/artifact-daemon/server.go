@@ -41,7 +41,7 @@ type Server struct {
 	durable       *DurableTier
 	hangar        *HangarService
 
-	// captureLedger is the READ-ONLY view of the output daemon's source ledger.
+	// sourceLedger is the READ-ONLY view of the output daemon's source ledger.
 	//
 	// The two daemons are two authorities over one node's disk: that one owns
 	// which sources a capture holds, and this one owns everything else. This
@@ -53,7 +53,7 @@ type Server struct {
 	// says nothing is held; it is a daemon that does not know, and destroying
 	// on that basis is how a build's declared output disappears with no record
 	// it existed.
-	captureLedger *ledger.Classifier
+	sourceLedger *ledger.Classifier
 
 	// restoreFlight collapses concurrent durable restores of one key.
 	restoreFlight singleflight.Group
@@ -226,7 +226,7 @@ func NewServer(logger lager.Logger, storagePath, nodeName string) (*Server, erro
 	classifier := ledger.New(storagePath)
 
 	registry := NewRegistry(logger, storagePath)
-	registry.SetCaptureLedger(classifier)
+	registry.SetSourceLedger(classifier)
 
 	return &Server{
 		logger:      logger,
@@ -247,7 +247,7 @@ func NewServer(logger lager.Logger, storagePath, nodeName string) (*Server, erro
 		// until somebody restarted it. New() does not touch the filesystem;
 		// the absence of a control directory is a real answer meaning "no
 		// output plane on this node", and it is answered on every call.
-		captureLedger: classifier,
+		sourceLedger: classifier,
 	}, nil
 }
 
@@ -271,11 +271,11 @@ func (s *Server) Guard() *ReadGuard {
 	return s.guard
 }
 
-// CaptureLedger exposes the read-only output-plane classifier so components
+// SourceLedger exposes the read-only output-plane classifier so components
 // that destroy things outside this type -- the Sweeper -- ask the same
 // question the handlers do, of the same reader.
-func (s *Server) CaptureLedger() *ledger.Classifier {
-	return s.captureLedger
+func (s *Server) SourceLedger() *ledger.Classifier {
+	return s.sourceLedger
 }
 
 // stepHandle returns the guard key for a location: the {handle} segment for
@@ -921,7 +921,7 @@ func (s *Server) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
 // here rather than at each call site. A key outside steps/ is not a source
 // incarnation and cannot be held.
 func (s *Server) refuseIfCaptureHeld(loc RelKey) (ledger.Class, error) {
-	if s.captureLedger == nil {
+	if s.sourceLedger == nil {
 		// No output plane configured on this node. Every path is unmanaged and
 		// the ordinary behaviour is unchanged.
 		return ledger.Unmanaged, nil
@@ -932,12 +932,12 @@ func (s *Server) refuseIfCaptureHeld(loc RelKey) (ledger.Class, error) {
 		return ledger.Unmanaged, nil
 	}
 
-	class := s.captureLedger.Classify(relative)
+	class := s.sourceLedger.Classify(relative)
 	if class.Destructive() {
 		return class, nil
 	}
 
-	return class, s.captureLedger.Reason(relative, class)
+	return class, s.sourceLedger.Reason(relative, class)
 }
 
 // handleCaptureClass answers what the output ledger says about a step
@@ -1002,7 +1002,7 @@ func (s *Server) handleCaptureClass(w http.ResponseWriter, r *http.Request) {
 // the callers that take one validate containment separately, and this returns
 // "unmanaged" rather than an error for anything it cannot place.
 func (s *Server) refuseIfCaptureHeldPath(absolute string) (ledger.Class, error) {
-	if s.captureLedger == nil {
+	if s.sourceLedger == nil {
 		return ledger.Unmanaged, nil
 	}
 

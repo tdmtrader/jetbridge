@@ -26,7 +26,7 @@ import (
 //     fail-open, name-keyed cache whose every method swallows its errors.
 //     (Reqs 20, 59)
 //  4. Exactly one interface can delete a published object, its method requires
-//     an exact ref and a generation precondition, and nothing else in the
+//     a tree ref and a generation precondition, and nothing else in the
 //     package offers a delete. GCS IAM cannot require a caller to send a
 //     generation precondition once delete permission exists, so the boundary
 //     has to be the code. (Reqs 47, 55; AC 20)
@@ -307,7 +307,7 @@ func tokenize(s string) []string {
 	return tokens
 }
 
-// treeRefNames are the names a second exact-reference type would plausibly take.
+// treeRefNames are the names a second tree-ref type would plausibly take.
 var treeRefNames = []string{"TreeRef", "TreeReference", "ExactRef", "OutputRef", "ObjectRef"}
 
 func checkNoSecondTreeRef(found surface) []string {
@@ -321,7 +321,7 @@ func checkNoSecondTreeRef(found surface) []string {
 		for _, name := range treeRefNames {
 			if declared.Name == name {
 				problems = append(problems, declared.File+" declares type "+declared.Name+
-					": there is exactly one exact reference in this system and it is "+
+					": there is exactly one tree ref in this system and it is "+
 					"hangar.TreeRef. A second one is where two object models start diverging.")
 			}
 		}
@@ -329,7 +329,7 @@ func checkNoSecondTreeRef(found surface) []string {
 
 	// Non-vacuity in the other direction: if nothing referenced hangar.TreeRef
 	// at all, the rule above would be trivially satisfied by a package that
-	// simply has no exact references — which is not the shape being defended.
+	// simply has no tree refs — which is not the shape being defended.
 	referenced := false
 	for _, file := range found.Files {
 		if bytes.Contains(file.Body, []byte("hangar.TreeRef")) {
@@ -339,7 +339,7 @@ func checkNoSecondTreeRef(found surface) []string {
 	}
 	if !referenced {
 		problems = append(problems, "no scanned file references hangar.TreeRef. This rule exists "+
-			"because the output plane binds the foundation's exact reference; a package that "+
+			"because the output plane binds the foundation's tree ref; a package that "+
 			"references none satisfies it for the wrong reason.")
 	}
 
@@ -434,7 +434,7 @@ func checkDeleteIsIsolatedToTheReclaimer(found surface) []string {
 			continue
 		}
 
-		// The one allowed delete must take an exact ref and a precondition.
+		// The one allowed delete must take a tree ref and a precondition.
 		hasRef, hasPrecondition := false, false
 		for _, param := range callable.Params {
 			if strings.Contains(param.Type, "hangar.TreeRef") {

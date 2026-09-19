@@ -32,7 +32,7 @@ var _ = Describe("APIAuthWrappa", func() {
 	})
 
 	Describe("Wrap", func() {
-		It("uses public base-pipeline access for list and detail", func() {
+		It("uses public template-pipeline access for list and detail", func() {
 			// This fails if durable history starts requiring member authorization or resolves an instance instead of the base.
 			pipeline := &authRoutePipeline{public: true}
 			team := &authRouteTeam{pipeline: pipeline}

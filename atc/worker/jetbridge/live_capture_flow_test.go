@@ -98,7 +98,7 @@ const (
 	liveCaptureLease     = "33333333-3333-4333-8333-333333333333"
 	liveCaptureOutput    = "result"
 	liveCaptureNodeUID   = "live-node-uid"
-	liveCaptureGrant     = "live-source-control-grant"
+	liveCaptureWarrant   = "live-source-control-grant"
 	liveCapturePort      = 31781
 )
 
@@ -215,9 +215,9 @@ func TestLiveCaptureSelectedProducerHoldsAndWrites(t *testing.T) {
 		Identity:            control.Identity,
 		ActivationEpoch:     control.ActivationEpoch,
 		HandoffID:           hangaroutput.HandoffID(liveCaptureHandoff),
-		SourceLeaseID:       hangaroutput.SourceLeaseID(liveCaptureLease),
+		SourceHoldID:        hangaroutput.SourceHoldID(liveCaptureLease),
 		Output:              liveCaptureOutput,
-		SourceControlGrant:  liveCaptureGrant,
+		SourceControlGrant:  liveCaptureWarrant,
 		CaptureDeadline:     time.Now().Add(time.Hour).UTC(),
 		ReservedIncarnation: incarnation,
 		ReservedDirectory:   reservedDirectory,
@@ -427,7 +427,7 @@ printf 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 34\
 	// else would not pass.
 	for _, want := range []string{
 		fmt.Sprintf(`"handoff_id":"%s"`, liveCaptureHandoff),
-		fmt.Sprintf(`"source_lease_id":"%s"`, liveCaptureLease),
+		fmt.Sprintf(`"source_hold_id":"%s"`, liveCaptureLease),
 		fmt.Sprintf(`"execution_id":"%s"`, liveCaptureExecution),
 		fmt.Sprintf(`"output":"%s"`, liveCaptureOutput),
 	} {
@@ -436,7 +436,7 @@ printf 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 34\
 		}
 	}
 
-	// Req 24, on a Pod a kubelet actually ran: the source-control grant is in
+	// Req 24, on a Pod a kubelet actually ran: the source-control warrant is in
 	// the control init and in nothing else.
 	for _, container := range append(
 		append([]corev1.Container{}, scheduled.Spec.InitContainers...),
@@ -444,16 +444,16 @@ printf 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 34\
 	) {
 		carries := false
 		for _, variable := range container.Env {
-			if variable.Value == liveCaptureGrant {
+			if variable.Value == liveCaptureWarrant {
 				carries = true
 			}
 		}
 		if carries && container.Name != captureControlInitName {
-			t.Errorf("container %q carries the source-control grant; only %q may",
+			t.Errorf("container %q carries the source-control warrant; only %q may",
 				container.Name, captureControlInitName)
 		}
 		if !carries && container.Name == captureControlInitName {
-			t.Errorf("%q does not carry the source-control grant, so the check above proves "+
+			t.Errorf("%q does not carry the source-control warrant, so the check above proves "+
 				"nothing", captureControlInitName)
 		}
 	}

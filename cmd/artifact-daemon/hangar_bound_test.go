@@ -65,19 +65,19 @@ func TestHangarMaterializationBoundsConcurrentWorkAndCountsTheRefusal(t *testing
 	server, _, key := newHangarTestServer(t, store)
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
-	signer, err := hangar.NewGrantSigner(key, time.Minute, nil)
+	signer, err := hangar.NewWarrantSigner(key, time.Minute, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	client := &http.Client{Timeout: 60 * time.Second}
 
 	post := func(volume string) (int, string) {
-		grant, err := signer.Sign(ref, "handle", volume)
+		warrant, err := signer.Sign(ref, "handle", volume)
 		if err != nil {
 			return 0, err.Error()
 		}
 		body, _ := json.Marshal(map[string]any{"items": []any{
-			map[string]any{"ref": ref, "handle": "handle", "volume": volume, "grant": "Bearer " + grant},
+			map[string]any{"ref": ref, "handle": "handle", "volume": volume, "warrant": "Bearer " + warrant},
 		}})
 		resp, err := client.Post(ts.URL+"/hangar/v1/materializations", "application/json", bytes.NewReader(body))
 		if err != nil {

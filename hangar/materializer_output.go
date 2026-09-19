@@ -4,7 +4,7 @@ package hangar
 // for a managed output.
 //
 // Requirement 59 and the plan's Green box both say the same thing in different
-// words -- strict input v1 grants and ordinary inputs remain unchanged. So this
+// words -- strict input v1 warrants and ordinary inputs remain unchanged. So this
 // file adds no branch to Materialize. `MaterializeManaged` is a second entry
 // point that wraps the SAME call with a profile's admission, renewal and
 // release; the strict-input path does not know it exists, and materializer.go
@@ -48,7 +48,7 @@ type OutputReadProfile interface {
 func (materializer *Materializer) MaterializeManaged(ctx context.Context, ref TreeRef, handle, volume string, profile OutputReadProfile) (err error) {
 	if profile == nil {
 		return fmt.Errorf("hangar: a managed-output materialization needs its read profile; an "+
-			"output read is authorized by a committed lease and never by a grant alone: %w",
+			"output read is authorized by a committed lease and never by a warrant alone: %w",
 			ErrUnauthorized)
 	}
 	if err := ref.Validate(); err != nil {

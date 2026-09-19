@@ -70,7 +70,7 @@ var ErrInvalidExecutionControl = fmt.Errorf("runtime: invalid execution control"
 //
 // It contains an opaque exact identity, its fence, the activation epoch it was
 // admitted under, the node-local control endpoint and an attenuated control
-// capability. It contains no output, no handoff, no source lease, no bucket and
+// capability. It contains no output, no handoff, no source hold, no bucket and
 // no product-domain field of any kind -- there is a test that walks this
 // struct's fields and fails if one appears.
 type ExecutionControl struct {
@@ -106,8 +106,8 @@ type DurableOutputCapture struct {
 	// The identities the control plane PREDECLARES before the producing Pod
 	// may start. They are minted by the caller at admission; nothing on the
 	// node and nothing in a task configuration chooses them.
-	HandoffID     hangaroutput.HandoffID
-	SourceLeaseID hangaroutput.SourceLeaseID
+	HandoffID    hangaroutput.HandoffID
+	SourceHoldID hangaroutput.SourceHoldID
 
 	// Output is the NAME of the one declared task output selected for capture.
 	// It is a name into ContainerSpec.Outputs, never a path: a path here would
@@ -263,7 +263,7 @@ func (control *ExecutionControl) validateCapture(spec ContainerSpec) error {
 	if err := capture.HandoffID.Validate(); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidExecutionControl, err)
 	}
-	if err := capture.SourceLeaseID.Validate(); err != nil {
+	if err := capture.SourceHoldID.Validate(); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidExecutionControl, err)
 	}
 	if capture.CaptureDeadline.IsZero() {

@@ -98,7 +98,7 @@ func (recoverer *Recoverer) Run(ctx context.Context) error {
 		}
 
 		// The redaction rule, at the one place this component says anything.
-		// A handoff id, a transition and a class -- never a grant, a key, a
+		// A handoff id, a transition and a class -- never a warrant, a key, a
 		// path or a consumer reference, and never the error's own text, which
 		// is where a daemon's message about a directory would arrive.
 		logger.Info("capture-transition-failed", lager.Data{

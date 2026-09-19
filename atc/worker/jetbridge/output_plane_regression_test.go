@@ -63,15 +63,15 @@ var strictInputRegressionRef = hangar.TreeRef{
 func strictInputConfig(t *testing.T, outputPlane bool) Config {
 	t.Helper()
 
-	signer, err := hangar.NewGrantSigner(
-		[]byte("0123456789abcdef0123456789abcdef"), hangar.MaxGrantTTL, time.Now)
+	signer, err := hangar.NewWarrantSigner(
+		[]byte("0123456789abcdef0123456789abcdef"), hangar.MaxWarrantTTL, time.Now)
 	if err != nil {
-		t.Fatalf("build the strict-input grant signer: %v", err)
+		t.Fatalf("build the strict-input warrant signer: %v", err)
 	}
 
 	cfg := capturePodConfig(outputPlane)
 	cfg.HangarEnabled = true
-	cfg.HangarGrantSigner = signer
+	cfg.HangarWarrantSigner = signer
 
 	return cfg
 }
@@ -101,8 +101,8 @@ func strictInputContainer(t *testing.T, cfg Config) *Container {
 // byte of a strict-input consumer's Pod -- except the one byte-range that
 // CANNOT be equal, which is named rather than papered over.
 //
-// The strict-input init's command carries a signed materialization grant, and
-// a grant carries a fresh nonce and a fresh issue/expiry pair on every Sign.
+// The strict-input init's command carries a signed materialization warrant, and
+// a warrant carries a fresh nonce and a fresh issue/expiry pair on every Sign.
 // Two renders can therefore never be byte-identical, and a test that asserted
 // they were would fail for a reason that says nothing. Measured at this head:
 // the whole-spec diff between plane-off and plane-on is exactly one line, the
@@ -111,7 +111,7 @@ func strictInputContainer(t *testing.T, cfg Config) *Container {
 //
 // So the comparison is in two halves, and the FIRST half is the one that
 // matters. The request the two renders encode is compared field by field --
-// the exact ref, the handle, the volume, and the grant's own subject -- and
+// the exact ref, the handle, the volume, and the warrant's own subject -- and
 // only then is the encoded blob normalised away and the rest of the spec
 // compared for equality. An output plane that re-derived the volume name,
 // renamed the handle, reordered the inputs or signed a different ref would be
@@ -132,15 +132,15 @@ func TestEnablingTheOutputPlaneChangesNoStrictInputPod(t *testing.T) {
 		t.Fatalf("building the strict-input pod with the output plane on: %v", err)
 	}
 
-	// Half one: what the two renders ASK FOR, and what the grant in each one
-	// AUTHORISES. Not the grant's bytes -- those carry a nonce and two
+	// Half one: what the two renders ASK FOR, and what the warrant in each one
+	// AUTHORISES. Not the warrant's bytes -- those carry a nonce and two
 	// timestamps and are unequal by construction -- but its subject, which is
 	// the thing a re-derived volume name or a renamed handle would change.
 	offRequest := strictInputSubject(t, off)
 	onRequest := strictInputSubject(t, on)
 	if !reflect.DeepEqual(offRequest, onRequest) {
 		t.Errorf("enabling the output plane changed what the strict-input init asks for, or "+
-			"what its grant authorises:\n off: %+v\n  on: %+v", offRequest, onRequest)
+			"what its warrant authorises:\n off: %+v\n  on: %+v", offRequest, onRequest)
 	}
 	// Non-vacuity: the comparison above would pass on two empty subjects.
 	if offRequest.Ref != strictInputRegressionRef {
@@ -152,20 +152,20 @@ func TestEnablingTheOutputPlaneChangesNoStrictInputPod(t *testing.T) {
 		t.Fatalf("the plane-off request is incomplete (%+v); two incomplete requests compare "+
 			"equal and say nothing", offRequest)
 	}
-	if offRequest.GrantRef != offRequest.Ref || offRequest.GrantVolume != offRequest.Volume {
-		t.Fatalf("the plane-off grant authorises %v into %q while the request asks for %v into "+
-			"%q; the grant is what the daemon checks, so a subject that does not match the "+
+	if offRequest.WarrantRef != offRequest.Ref || offRequest.WarrantVolume != offRequest.Volume {
+		t.Fatalf("the plane-off warrant authorises %v into %q while the request asks for %v into "+
+			"%q; the warrant is what the daemon checks, so a subject that does not match the "+
 			"request is a materialization the daemon refuses at task startup",
-			offRequest.GrantRef, offRequest.GrantVolume, offRequest.Ref, offRequest.Volume)
+			offRequest.WarrantRef, offRequest.WarrantVolume, offRequest.Ref, offRequest.Volume)
 	}
 
 	// Half two: everything else, with the one unequal-by-construction blob
 	// normalised to a constant in BOTH renders.
-	normaliseGrant(off)
-	normaliseGrant(on)
+	normaliseWarrant(off)
+	normaliseWarrant(on)
 	if !reflect.DeepEqual(off.Spec, on.Spec) {
 		t.Errorf("enabling the output plane changed a strict-input consumer's pod somewhere "+
-			"other than the signed grant. Req 59 says the original strict-input capability is "+
+			"other than the signed warrant. Req 59 says the original strict-input capability is "+
 			"byte-compatible, and this step selects no capture at all.\n off: %+v\n  on: %+v",
 			off.Spec, on.Spec)
 	}
@@ -173,17 +173,17 @@ func TestEnablingTheOutputPlaneChangesNoStrictInputPod(t *testing.T) {
 
 // materializationItem is the init's request, as encoded.
 type materializationItem struct {
-	Ref    hangar.TreeRef `json:"ref"`
-	Handle string         `json:"handle"`
-	Volume string         `json:"volume"`
-	Grant  string         `json:"grant"`
+	Ref     hangar.TreeRef `json:"ref"`
+	Handle  string         `json:"handle"`
+	Volume  string         `json:"volume"`
+	Warrant string         `json:"warrant"`
 }
 
-// grantSubject is the stable half of a signed materialization grant: what it
+// warrantSubject is the stable half of a signed materialization warrant: what it
 // authorises, without the nonce and the two timestamps that make every token
 // unique. Comparing this rather than the token is what lets Req 59's claim be
 // asserted at all.
-type grantSubject struct {
+type warrantSubject struct {
 	Domain  string         `json:"domain"`
 	Version int            `json:"version"`
 	Ref     hangar.TreeRef `json:"ref"`
@@ -192,48 +192,48 @@ type grantSubject struct {
 }
 
 // requestSubject is the whole comparable claim: the request, plus what its
-// grant authorises.
+// warrant authorises.
 type requestSubject struct {
-	Ref          hangar.TreeRef
-	Handle       string
-	Volume       string
-	GrantDomain  string
-	GrantVersion int
-	GrantRef     hangar.TreeRef
-	GrantHandle  string
-	GrantVolume  string
+	Ref            hangar.TreeRef
+	Handle         string
+	Volume         string
+	WarrantDomain  string
+	WarrantVersion int
+	WarrantRef     hangar.TreeRef
+	WarrantHandle  string
+	WarrantVolume  string
 }
 
-// strictInputSubject decodes the request AND its grant into the comparable
+// strictInputSubject decodes the request AND its warrant into the comparable
 // claim.
 func strictInputSubject(t *testing.T, pod *corev1.Pod) requestSubject {
 	t.Helper()
 
 	item := strictInputRequest(t, pod)
-	token := strings.TrimPrefix(item.Grant, "Bearer ")
-	if token == item.Grant {
-		t.Fatalf("the grant is not a bearer token: %q", item.Grant)
+	token := strings.TrimPrefix(item.Warrant, "Bearer ")
+	if token == item.Warrant {
+		t.Fatalf("the warrant is not a bearer token: %q", item.Warrant)
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(token)
 	if err != nil {
 		raw, err = base64.StdEncoding.DecodeString(token)
 	}
 	if err != nil {
-		t.Fatalf("decoding the grant %q: %v", token, err)
+		t.Fatalf("decoding the warrant %q: %v", token, err)
 	}
 
-	// A grant is a JSON claim set with its signature appended, so the decoder
+	// A warrant is a JSON claim set with its signature appended, so the decoder
 	// reads the first value and leaves the rest. Unmarshal would refuse the
 	// trailing bytes.
-	var subject grantSubject
+	var subject warrantSubject
 	if err := json.NewDecoder(bytes.NewReader(raw)).Decode(&subject); err != nil {
-		t.Fatalf("parsing the grant's claims from %s: %v", raw, err)
+		t.Fatalf("parsing the warrant's claims from %s: %v", raw, err)
 	}
 
 	return requestSubject{
 		Ref: item.Ref, Handle: item.Handle, Volume: item.Volume,
-		GrantDomain: subject.Domain, GrantVersion: subject.Version,
-		GrantRef: subject.Ref, GrantHandle: subject.Handle, GrantVolume: subject.Volume,
+		WarrantDomain: subject.Domain, WarrantVersion: subject.Version,
+		WarrantRef: subject.Ref, WarrantHandle: subject.Handle, WarrantVolume: subject.Volume,
 	}
 }
 
@@ -276,10 +276,10 @@ func strictInputRequest(t *testing.T, pod *corev1.Pod) materializationItem {
 	return materializationItem{}
 }
 
-// normaliseGrant replaces the encoded request with a constant, because a signed
-// grant carries a fresh nonce and fresh timestamps and can never be equal
+// normaliseWarrant replaces the encoded request with a constant, because a signed
+// warrant carries a fresh nonce and fresh timestamps and can never be equal
 // across two calls. What it encodes is compared separately, above.
-func normaliseGrant(pod *corev1.Pod) {
+func normaliseWarrant(pod *corev1.Pod) {
 	for i, init := range pod.Spec.InitContainers {
 		for j, argument := range init.Command {
 			pod.Spec.InitContainers[i].Command[j] = strictRequestPattern.

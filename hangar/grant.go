@@ -14,15 +14,15 @@ import (
 )
 
 const (
-	grantDomain   = "hangar-materialize-v1"
-	grantVersion  = 1
-	grantKeyBytes = sha256.Size
-	grantNonceLen = 16
-	maxGrantBytes = 4096
-	MaxGrantTTL   = 15 * time.Minute
+	warrantDomain   = "hangar-materialize-v1"
+	warrantVersion  = 1
+	warrantKeyBytes = sha256.Size
+	warrantNonceLen = 16
+	maxWarrantBytes = 4096
+	MaxWarrantTTL   = 15 * time.Minute
 )
 
-type materializationGrantClaims struct {
+type materializationWarrantClaims struct {
 	Domain    string  `json:"domain"`
 	Version   int     `json:"version"`
 	Ref       TreeRef `json:"ref"`
@@ -33,109 +33,109 @@ type materializationGrantClaims struct {
 	Nonce     string  `json:"nonce"`
 }
 
-type GrantSigner struct {
-	key    [grantKeyBytes]byte
+type WarrantSigner struct {
+	key    [warrantKeyBytes]byte
 	ttl    time.Duration
 	clock  func() time.Time
 	random io.Reader
 }
 
-type GrantVerifier struct {
-	key    [grantKeyBytes]byte
+type WarrantVerifier struct {
+	key    [warrantKeyBytes]byte
 	maxTTL time.Duration
 	clock  func() time.Time
 }
 
-func NewGrantSigner(key []byte, ttl time.Duration, clock func() time.Time) (*GrantSigner, error) {
-	if len(key) != grantKeyBytes {
-		return nil, fmt.Errorf("hangar: materialization grant key must contain exactly %d raw bytes", grantKeyBytes)
+func NewWarrantSigner(key []byte, ttl time.Duration, clock func() time.Time) (*WarrantSigner, error) {
+	if len(key) != warrantKeyBytes {
+		return nil, fmt.Errorf("hangar: materialization warrant key must contain exactly %d raw bytes", warrantKeyBytes)
 	}
-	if ttl <= 0 || ttl > MaxGrantTTL {
-		return nil, fmt.Errorf("hangar: materialization grant TTL must be positive and no greater than %s", MaxGrantTTL)
+	if ttl <= 0 || ttl > MaxWarrantTTL {
+		return nil, fmt.Errorf("hangar: materialization warrant TTL must be positive and no greater than %s", MaxWarrantTTL)
 	}
 	if clock == nil {
 		clock = time.Now
 	}
-	signer := &GrantSigner{ttl: ttl, clock: clock, random: rand.Reader}
+	signer := &WarrantSigner{ttl: ttl, clock: clock, random: rand.Reader}
 	copy(signer.key[:], key)
 	return signer, nil
 }
 
-func NewGrantVerifier(key []byte, maxTTL time.Duration, clock func() time.Time) (*GrantVerifier, error) {
-	if len(key) != grantKeyBytes {
-		return nil, fmt.Errorf("hangar: materialization grant key must contain exactly %d raw bytes", grantKeyBytes)
+func NewWarrantVerifier(key []byte, maxTTL time.Duration, clock func() time.Time) (*WarrantVerifier, error) {
+	if len(key) != warrantKeyBytes {
+		return nil, fmt.Errorf("hangar: materialization warrant key must contain exactly %d raw bytes", warrantKeyBytes)
 	}
-	if maxTTL <= 0 || maxTTL > MaxGrantTTL {
-		return nil, fmt.Errorf("hangar: materialization grant TTL must be positive and no greater than %s", MaxGrantTTL)
+	if maxTTL <= 0 || maxTTL > MaxWarrantTTL {
+		return nil, fmt.Errorf("hangar: materialization warrant TTL must be positive and no greater than %s", MaxWarrantTTL)
 	}
 	if clock == nil {
 		clock = time.Now
 	}
-	verifier := &GrantVerifier{maxTTL: maxTTL, clock: clock}
+	verifier := &WarrantVerifier{maxTTL: maxTTL, clock: clock}
 	copy(verifier.key[:], key)
 	return verifier, nil
 }
 
-func (signer *GrantSigner) Sign(ref TreeRef, handle, volume string) (string, error) {
+func (signer *WarrantSigner) Sign(ref TreeRef, handle, volume string) (string, error) {
 	if err := ref.Validate(); err != nil {
-		return "", fmt.Errorf("hangar: sign materialization grant: %w", err)
+		return "", fmt.Errorf("hangar: sign materialization warrant: %w", err)
 	}
 	if !validMaterializationSegment(handle) || !validMaterializationSegment(volume) {
-		return "", fmt.Errorf("hangar: sign materialization grant: handle and volume must be canonical path segments")
+		return "", fmt.Errorf("hangar: sign materialization warrant: handle and volume must be canonical path segments")
 	}
 	now := signer.clock().UTC()
 	issuedAt, ok := exactUnixNano(now)
 	if now.IsZero() || !ok || issuedAt <= 0 {
-		return "", fmt.Errorf("hangar: sign materialization grant: clock is outside the supported range")
+		return "", fmt.Errorf("hangar: sign materialization warrant: clock is outside the supported range")
 	}
 	expires := now.Add(signer.ttl)
 	expiresAt, ok := exactUnixNano(expires)
 	if !ok || expiresAt <= issuedAt || expiresAt-issuedAt != signer.ttl.Nanoseconds() {
-		return "", fmt.Errorf("hangar: sign materialization grant: expiry is outside the supported range")
+		return "", fmt.Errorf("hangar: sign materialization warrant: expiry is outside the supported range")
 	}
-	nonce := make([]byte, grantNonceLen)
+	nonce := make([]byte, warrantNonceLen)
 	if _, err := io.ReadFull(signer.random, nonce); err != nil {
-		return "", fmt.Errorf("hangar: generate materialization grant nonce: %w", err)
+		return "", fmt.Errorf("hangar: generate materialization warrant nonce: %w", err)
 	}
-	claims := materializationGrantClaims{
-		Domain: grantDomain, Version: grantVersion, Ref: ref, Handle: handle, Volume: volume,
+	claims := materializationWarrantClaims{
+		Domain: warrantDomain, Version: warrantVersion, Ref: ref, Handle: handle, Volume: volume,
 		IssuedAt: issuedAt, ExpiresAt: expiresAt,
 		Nonce: base64.RawURLEncoding.EncodeToString(nonce),
 	}
 	payload, err := json.Marshal(claims)
 	if err != nil {
-		return "", fmt.Errorf("hangar: marshal materialization grant: %w", err)
+		return "", fmt.Errorf("hangar: marshal materialization warrant: %w", err)
 	}
 	mac := hmac.New(sha256.New, signer.key[:])
-	_, _ = mac.Write([]byte(grantDomain))
+	_, _ = mac.Write([]byte(warrantDomain))
 	_, _ = mac.Write([]byte{0})
 	_, _ = mac.Write(payload)
 	raw := append(payload, mac.Sum(nil)...)
 	token := base64.RawURLEncoding.EncodeToString(raw)
-	if len(payload) > maxGrantBytes || len(token) > maxGrantBytes {
-		return "", fmt.Errorf("hangar: materialization grant exceeds maximum size")
+	if len(payload) > maxWarrantBytes || len(token) > maxWarrantBytes {
+		return "", fmt.Errorf("hangar: materialization warrant exceeds maximum size")
 	}
 	return token, nil
 }
 
-func (verifier *GrantVerifier) Verify(token string, ref TreeRef, handle, volume string) error {
+func (verifier *WarrantVerifier) Verify(token string, ref TreeRef, handle, volume string) error {
 	unauthorized := func() error { return ErrUnauthorized }
-	if len(token) == 0 || len(token) > maxGrantBytes || !validMaterializationSegment(handle) || !validMaterializationSegment(volume) || ref.Validate() != nil {
+	if len(token) == 0 || len(token) > maxWarrantBytes || !validMaterializationSegment(handle) || !validMaterializationSegment(volume) || ref.Validate() != nil {
 		return unauthorized()
 	}
 	raw, err := base64.RawURLEncoding.Strict().DecodeString(token)
-	if err != nil || base64.RawURLEncoding.EncodeToString(raw) != token || len(raw) <= sha256.Size || len(raw)-sha256.Size > maxGrantBytes {
+	if err != nil || base64.RawURLEncoding.EncodeToString(raw) != token || len(raw) <= sha256.Size || len(raw)-sha256.Size > maxWarrantBytes {
 		return unauthorized()
 	}
 	payload, providedMAC := raw[:len(raw)-sha256.Size], raw[len(raw)-sha256.Size:]
 	mac := hmac.New(sha256.New, verifier.key[:])
-	_, _ = mac.Write([]byte(grantDomain))
+	_, _ = mac.Write([]byte(warrantDomain))
 	_, _ = mac.Write([]byte{0})
 	_, _ = mac.Write(payload)
 	if !hmac.Equal(providedMAC, mac.Sum(nil)) {
 		return unauthorized()
 	}
-	var claims materializationGrantClaims
+	var claims materializationWarrantClaims
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&claims); err != nil {
@@ -146,10 +146,10 @@ func (verifier *GrantVerifier) Verify(token string, ref TreeRef, handle, volume 
 	}
 	canonical, err := json.Marshal(claims)
 	nonce, nonceErr := base64.RawURLEncoding.Strict().DecodeString(claims.Nonce)
-	if err != nil || !bytes.Equal(canonical, payload) || claims.Domain != grantDomain || claims.Version != grantVersion ||
+	if err != nil || !bytes.Equal(canonical, payload) || claims.Domain != warrantDomain || claims.Version != warrantVersion ||
 		claims.Ref.Validate() != nil || !validMaterializationSegment(claims.Handle) || !validMaterializationSegment(claims.Volume) ||
 		claims.IssuedAt <= 0 || claims.ExpiresAt <= claims.IssuedAt || claims.ExpiresAt-claims.IssuedAt > verifier.maxTTL.Nanoseconds() ||
-		nonceErr != nil || len(nonce) != grantNonceLen || base64.RawURLEncoding.EncodeToString(nonce) != claims.Nonce {
+		nonceErr != nil || len(nonce) != warrantNonceLen || base64.RawURLEncoding.EncodeToString(nonce) != claims.Nonce {
 		return unauthorized()
 	}
 	now := verifier.clock().UTC()

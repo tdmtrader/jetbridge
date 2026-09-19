@@ -496,7 +496,7 @@ func TestMaterializerKeepsStagePrivateUntilPublication(t *testing.T) {
 }
 
 func TestMaterializerRejectsUnsafeArchiveWithoutVisiblePartialTree(t *testing.T) {
-	ref := mustGrantRef(t, "builds", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 2)
+	ref := mustWarrantRef(t, "builds", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 2)
 	for name, raw := range map[string][]byte{
 		"escaping symlink": testTreeArchive(t, []testTreeEntry{{name: "link", kind: tar.TypeSymlink, link: "../escape"}}),
 		"special file":     testTreeArchive(t, []testTreeEntry{{name: "device", kind: tar.TypeChar}}),

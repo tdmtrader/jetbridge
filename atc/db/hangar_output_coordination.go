@@ -61,14 +61,14 @@ func (repository *HangarOutputRepository) RecordSourceReservation(ctx context.Co
 		    reserved_directory = $4,
 		    reserved_at = now()
 		WHERE handoff_id = $1
-		  AND source_lease_id = $5
+		  AND source_hold_id = $5
 		  AND execution_id = $6
 		  AND reserved_at IS NULL`,
 		string(reserved.HandoffID),
 		locator,
 		incarnation,
 		reserved.Directory,
-		string(reserved.SourceLeaseID),
+		string(reserved.SourceHoldID),
 		string(reserved.Execution.ExecutionID),
 	)
 	if err != nil {
@@ -85,10 +85,10 @@ func (repository *HangarOutputRepository) RecordSourceReservation(ctx context.Co
 	if err := hangarQueryRow(ctx, tx, `
 		SELECT reserved_locator, reserved_incarnation, reserved_directory
 		FROM hangar_handoff_predeclarations
-		WHERE handoff_id = $1 AND source_lease_id = $2 AND execution_id = $3`,
+		WHERE handoff_id = $1 AND source_hold_id = $2 AND execution_id = $3`,
 		[]any{
 			string(reserved.HandoffID),
-			string(reserved.SourceLeaseID),
+			string(reserved.SourceHoldID),
 			string(reserved.Execution.ExecutionID),
 		}, &stored_locator, &stored, &directory); err != nil {
 		return fmt.Errorf("%w: no predeclaration matches the reservation for handoff %s",
@@ -324,7 +324,7 @@ func (repository *HangarOutputRepository) LoadHandoffRecord(ctx context.Context,
 	)
 
 	if err := hangarQueryRow(ctx, tx, `
-		SELECT p.source_lease_id, p.execution_id, p.execution_fence, p.output_name,
+		SELECT p.source_hold_id, p.execution_id, p.execution_fence, p.output_name,
 		       p.activation_epoch, p.capture_deadline_at,
 		       p.reserved_locator, p.reserved_incarnation, p.reserved_directory, p.reserved_at,
 		       p.hold_acknowledged_at,
@@ -364,7 +364,7 @@ func (repository *HangarOutputRepository) LoadHandoffRecord(ctx context.Context,
 
 	record := output.HandoffRecord{
 		HandoffID:       handoff,
-		SourceLeaseID:   output.SourceLeaseID(lease),
+		SourceHoldID:    output.SourceHoldID(lease),
 		ActivationEpoch: hangarEpoch(epoch),
 		Output:          output.OutputName(name),
 		CaptureDeadline: output.NewTimestamp(deadline),

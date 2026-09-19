@@ -37,11 +37,11 @@ type Registry struct {
 	aliasStore  *AliasStore       // optional persistence; nil disables persistence
 	logger      lager.Logger
 
-	// captureLedger is the output plane's read-only source ledger. A mapping is
+	// sourceLedger is the output plane's read-only source ledger. A mapping is
 	// not a file, but a remap or a reuse is destructive in the way Req 3 means:
 	// one hands another consumer a name for bytes a capture is about to seal,
 	// the other takes away the only name those bytes had.
-	captureLedger *ledger.Classifier
+	sourceLedger *ledger.Classifier
 }
 
 // NewRegistry creates an empty Registry rooted at storagePath.
@@ -180,10 +180,10 @@ func (r *Registry) registerAlias(key, localPath string, readOnly bool) (RelKey, 
 	return rk, nil
 }
 
-// SetCaptureLedger wires the output plane's read-only classifier. Nil is a node
+// SetSourceLedger wires the output plane's read-only classifier. Nil is a node
 // with no output plane, and every mapping is unchanged.
-func (r *Registry) SetCaptureLedger(classifier *ledger.Classifier) {
-	r.captureLedger = classifier
+func (r *Registry) SetSourceLedger(classifier *ledger.Classifier) {
+	r.sourceLedger = classifier
 }
 
 // refuseIfCaptureHeld asks the output plane's ledger about one stored location.
@@ -192,7 +192,7 @@ func (r *Registry) SetCaptureLedger(classifier *ledger.Classifier) {
 // stripped here. A location outside steps/ is not a source incarnation and
 // cannot be held.
 func (r *Registry) refuseIfCaptureHeld(rel RelKey) error {
-	if r.captureLedger == nil {
+	if r.sourceLedger == nil {
 		return nil
 	}
 
@@ -201,12 +201,12 @@ func (r *Registry) refuseIfCaptureHeld(rel RelKey) error {
 		return nil
 	}
 
-	class := r.captureLedger.Classify(relative)
+	class := r.sourceLedger.Classify(relative)
 	if class.Destructive() {
 		return nil
 	}
 
-	return r.captureLedger.Reason(relative, class)
+	return r.sourceLedger.Reason(relative, class)
 }
 
 // LoadAliases reads persisted aliases from the AliasStore and merges them

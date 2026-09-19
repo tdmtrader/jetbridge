@@ -434,15 +434,15 @@ func startDaemon(t *testing.T, endpoint, bucket string) *daemonProcess {
 	if err := os.WriteFile(capabilityKey, secret, 0o600); err != nil {
 		t.Fatalf("capability key: %v", err)
 	}
-	// The output read-grant key, and it is the SAME material the control-plane
-	// side of this harness mints grants with: one key on both sides is what
-	// makes a grant the harness signs one the daemon can verify. It is a THIRD
-	// key -- a grant must not be signable by anything that can mint a
+	// The output read-warrant key, and it is the SAME material the control-plane
+	// side of this harness mints warrants with: one key on both sides is what
+	// makes a warrant the harness signs one the daemon can verify. It is a THIRD
+	// key -- a warrant must not be signable by anything that can mint a
 	// publication receipt -- and the daemon refuses a configuration where two
 	// of the three are one file.
 	materializeKey := filepath.Join(dir, "materialize.key")
-	if err := os.WriteFile(materializeKey, readGrantKey, 0o600); err != nil {
-		t.Fatalf("read-grant key: %v", err)
+	if err := os.WriteFile(materializeKey, readWarrantKey, 0o600); err != nil {
+		t.Fatalf("read-warrant key: %v", err)
 	}
 
 	port := freePort(t)
@@ -583,7 +583,7 @@ func freePort(t *testing.T) int {
 //
 // It is a raw POST rather than a client method because in production there IS
 // no client method: the hold is established by a generated shell script inside
-// the producing Pod, presenting a one-shot grant and the Downward API Pod UID,
+// the producing Pod, presenting a one-shot warrant and the Downward API Pod UID,
 // over a route that is exempt from the client certificate for exactly that
 // reason. A method on the ATC's client would be a hold the ATC could take, and
 // the ATC is not the Pod the hold binds to.
@@ -591,9 +591,9 @@ func (process *daemonProcess) holdSource(t *testing.T, admission output.CaptureA
 	incarnation output.SourceIncarnation, pod executioncontrol.PodUID) output.CaptureAcknowledgement {
 	t.Helper()
 
-	grant, err := process.Client.MintGrant(output.CaptureFacet, "hold", admission.Execution)
+	warrant, err := process.Client.MintGrant(output.CaptureFacet, "hold", admission.Execution)
 	if err != nil {
-		t.Fatalf("minting the hold grant: %v", err)
+		t.Fatalf("minting the hold warrant: %v", err)
 	}
 
 	body, err := json.Marshal(map[string]any{
@@ -601,7 +601,7 @@ func (process *daemonProcess) holdSource(t *testing.T, admission output.CaptureA
 		"execution":           admission.Execution,
 		"activation_epoch":    admission.ActivationEpoch,
 		"handoff_id":          admission.HandoffID,
-		"source_lease_id":     admission.SourceLeaseID,
+		"source_hold_id":      admission.SourceHoldID,
 		"output":              admission.Output,
 		"capture_deadline_at": admission.CaptureDeadline,
 		"incarnation":         incarnation,
@@ -617,7 +617,7 @@ func (process *daemonProcess) holdSource(t *testing.T, admission output.CaptureA
 		t.Fatalf("building the hold request: %v", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set(jetbridge.CapabilityHeaderName, string(grant))
+	request.Header.Set(jetbridge.CapabilityHeaderName, string(warrant))
 
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {

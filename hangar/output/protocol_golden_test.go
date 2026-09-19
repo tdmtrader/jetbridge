@@ -229,10 +229,10 @@ var protocolFixtures = map[string]func(*testing.T, []byte){
 		refuse[CallerNamespaceRequest](t, raw)
 	},
 
-	"claim-record.json":      func(t *testing.T, raw []byte) { roundTrip[ClaimRecord](t, raw) },
-	"read-grant-claims.json": func(t *testing.T, raw []byte) { roundTrip[ReadGrantClaims](t, raw) },
-	"lease-question.json":    func(t *testing.T, raw []byte) { roundTrip[LeaseQuestion](t, raw) },
-	"lease-answer.json":      func(t *testing.T, raw []byte) { roundTrip[LeaseAnswer](t, raw) },
+	"claim-record.json":        func(t *testing.T, raw []byte) { roundTrip[ClaimRecord](t, raw) },
+	"read-warrant-claims.json": func(t *testing.T, raw []byte) { roundTrip[ReadWarrantClaims](t, raw) },
+	"lease-question.json":      func(t *testing.T, raw []byte) { roundTrip[LeaseQuestion](t, raw) },
+	"lease-answer.json":        func(t *testing.T, raw []byte) { roundTrip[LeaseAnswer](t, raw) },
 
 	"dispositions.json":                  assertClosedDispositions,
 	"capture-acknowledgement-kinds.json": assertClosedCaptureAcknowledgementKinds,

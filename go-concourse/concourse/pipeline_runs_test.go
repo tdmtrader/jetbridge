@@ -17,7 +17,7 @@ var _ = Describe("Pipeline runs client", func() {
 	const collectionPath = "/api/v1/teams/some-team/pipelines/template/runs"
 
 	Describe("CreatePipelineRun", func() {
-		It("posts typed variables to the base pipeline and returns the committed child reference", func() {
+		It("posts typed variables to the template pipeline and returns the committed child reference", func() {
 			expected := pipelineRun(3)
 			expected.InstanceRef = &atc.PipelineIdentifier{
 				TeamName:     "child-team",

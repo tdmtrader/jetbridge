@@ -101,7 +101,7 @@ func (materializer *Materializer) Materialize(ctx context.Context, ref TreeRef, 
 		return fmt.Errorf("hangar: canonical capture returned no tree: %w", ErrCorrupt)
 	}
 	if captured.Digest != ref.Digest {
-		return fmt.Errorf("hangar: captured tree digest differs from exact reference: %w", ErrCorrupt)
+		return fmt.Errorf("hangar: captured tree digest differs from tree ref: %w", ErrCorrupt)
 	}
 	if materializer.hooks.afterCapture != nil {
 		if err := materializer.hooks.afterCapture(captured); err != nil {

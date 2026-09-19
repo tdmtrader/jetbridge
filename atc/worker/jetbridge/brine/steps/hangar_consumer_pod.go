@@ -46,11 +46,11 @@ const hangarInitName = "materialize-hangar-inputs"
 // The signer is the FOUNDATION's strict-input materialization signer, because
 // that is what BuildFetchInitContainers uses today and the consumer-pod
 // contract is about the pod's shape rather than about which key signs. The
-// output plane's own read grant is asserted where it lives -- over the
+// output plane's own read warrant is asserted where it lives -- over the
 // repository and the lease-control endpoints -- and wiring it into the pod
 // builder is Phase 8's, beside the chart values that carry the key.
 func newHangarConsumerWorker(res brine.Resources, rec *brine.Recorder) (WorkerReady, error) {
-	signer, err := hangar.NewGrantSigner(brineReadGrantKey, hangar.MaxGrantTTL, time.Now)
+	signer, err := hangar.NewWarrantSigner(brineReadWarrantKey, hangar.MaxWarrantTTL, time.Now)
 	if err != nil {
 		return WorkerReady{}, err
 	}
@@ -59,7 +59,7 @@ func newHangarConsumerWorker(res brine.Resources, rec *brine.Recorder) (WorkerRe
 		cfg.ArtifactDaemonHostPath = "/var/concourse/artifacts"
 		cfg.OutputPlaneEnabled = true
 		cfg.HangarEnabled = true
-		cfg.HangarGrantSigner = signer
+		cfg.HangarWarrantSigner = signer
 	})
 }
 

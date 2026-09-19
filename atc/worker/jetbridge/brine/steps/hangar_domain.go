@@ -108,7 +108,7 @@ type CaptureDraft struct {
 
 	// PreviousAdmission is the admission a PREVIOUS build of the same step was
 	// given, carried so "a new build gets a new handoff identity and a new
-	// source lease" has both halves to compare. Zero on a first build.
+	// source hold" has both halves to compare. Zero on a first build.
 	PreviousAdmission hangaroutput.CaptureAdmission
 
 	// ReadyFacets and CohortHandshaked are the scheduling refinements. A label

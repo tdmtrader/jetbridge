@@ -65,9 +65,9 @@ const (
 	// private key is mounted only in the output daemon.
 	ReceiptDomain = "hangar-output-receipt-v1"
 
-	// MaterializeDomain is the HMAC domain for managed-output read grants. It
+	// MaterializeDomain is the HMAC domain for managed-output read warrants. It
 	// is a separate key from ReceiptDomain and from the foundation's
-	// strict-input materialization key: a read grant is not a publication
+	// strict-input materialization key: a read warrant is not a publication
 	// authority and must not be signable by anything that can mint one.
 	MaterializeDomain = "hangar-output-materialize-v1"
 )
@@ -162,7 +162,7 @@ var (
 
 	// ErrAtRisk is the fail-closed state entered when the bucket's lifetime
 	// policy cannot currently be proved safe. It blocks new captures, claims,
-	// grants, adoption and reclaim admission while leaving releases and
+	// warrants, adoption and reclaim admission while leaving releases and
 	// diagnosis possible.
 	ErrAtRisk = errors.New("hangar/output: policy trust is at risk")
 
@@ -242,12 +242,12 @@ type HandoffID string
 
 func (id HandoffID) Validate() error { return validateUUID("handoff id", string(id)) }
 
-// SourceLeaseID is the provisional, non-authorizing hold on the source
+// SourceHoldID is the provisional, non-authorizing hold on the source
 // incarnation. It prevents cleanup, replacement, remap, reuse and loss; it
 // authorizes no sealing, termination, deletion, publication or binding.
-type SourceLeaseID string
+type SourceHoldID string
 
-func (id SourceLeaseID) Validate() error { return validateUUID("source lease id", string(id)) }
+func (id SourceHoldID) Validate() error { return validateUUID("source hold id", string(id)) }
 
 // ReleaseIntentID names one exact fenced release of a source hold. The two
 // halves of a release -- the caller's recorded intent and the daemon's
@@ -273,7 +273,7 @@ type WriterTicketID string
 func (id WriterTicketID) Validate() error { return validateUUID("writer ticket id", string(id)) }
 
 // ClaimID is a caller-generated UUID with no domain meaning. Acquiring the same
-// id for the same exact ref is idempotent; reusing it for another ref is a
+// id for the same tree ref is idempotent; reusing it for another ref is a
 // typed conflict. A consumer that moves a binding from hidden to published
 // keeps the same id -- Hangar neither replaces nor reacquires it.
 type ClaimID string

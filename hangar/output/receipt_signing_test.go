@@ -359,7 +359,7 @@ func TestTheVersionPinsAreRefusedBeforeAnySignature(t *testing.T) {
 func TestTheReceiptDomainIsSeparateFromTheMaterializationDomain(t *testing.T) {
 	if ReceiptDomain == MaterializeDomain {
 		t.Fatal("the receipt and materialization domains are the same string. A receipt says " +
-			"these bytes were published and a grant says you may read them; one domain means " +
+			"these bytes were published and a warrant says you may read them; one domain means " +
 			"one authority")
 	}
 

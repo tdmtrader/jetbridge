@@ -188,7 +188,7 @@ func hangarOutputDaemonFlags(endpoint, bucket, receiptKey, controlKey, capabilit
 // set would be a feature file choosing which key signs its receipts.
 const (
 	hangarReceiptKeyID = "brine-receipt-key-1"
-	// The read-grant key's id. A THIRD key: a grant must not be signable by
+	// The read-warrant key's id. A THIRD key: a warrant must not be signable by
 	// anything that can mint a publication receipt, and the daemon refuses a
 	// configuration where two of the three are one file.
 	hangarMaterializationKeyID = "brine-materialize-key-1"
@@ -268,7 +268,7 @@ func startHangarDaemon(rec *brine.Recorder) (HangarDaemon, error) {
 	args := []string{
 		"--hangar-enabled",
 		"--hangar-scratch-dir", scratch,
-		"--hangar-capability-key", filepath.Join(certDir, "capability.key"),
+		"--hangar-warrant-key", filepath.Join(certDir, "capability.key"),
 		"--durable-store", "gcs",
 		"--durable-bucket", bucket,
 		"--durable-endpoint", endpoint,
@@ -357,11 +357,11 @@ func startOutputDaemon(rec *brine.Recorder, state HangarDaemon, certDir string) 
 	if err := os.WriteFile(capabilityFile, capabilitySecret, 0o600); err != nil {
 		return HangarDaemon{}, err
 	}
-	// The output read-grant key, which is the SAME material the consumer-side
-	// fixture mints grants with (brineReadGrantKey): one key on both sides is
-	// what makes a grant this fixture signs one the daemon can verify.
+	// The output read-warrant key, which is the SAME material the consumer-side
+	// fixture mints warrants with (brineReadWarrantKey): one key on both sides is
+	// what makes a warrant this fixture signs one the daemon can verify.
 	materializeFile := filepath.Join(certDir, "materialize.key")
-	if err := os.WriteFile(materializeFile, brineReadGrantKey, 0o600); err != nil {
+	if err := os.WriteFile(materializeFile, brineReadWarrantKey, 0o600); err != nil {
 		return HangarDaemon{}, err
 	}
 

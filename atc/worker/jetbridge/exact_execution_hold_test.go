@@ -14,13 +14,13 @@ import (
 // postHold is the capture control init container's one request, made from the
 // spec because no container runs here. It is written out rather than reused
 // from OutputControlClient on purpose: the init container is NOT the ATC, it
-// presents its own one-shot grant on a node-local plaintext path, and a fixture
+// presents its own one-shot warrant on a node-local plaintext path, and a fixture
 // that used the ATC's client would be asserting the ATC twice.
 // postHold is the capture control init's request, spelled as it is spelled in
 // the generated script: the admission, the incarnation the control plane
 // reserved and put in this container's environment, and the Pod UID the
 // container reads off the Downward API.
-func postHold(endpoint, grant string, admission hangaroutput.CaptureAdmission,
+func postHold(endpoint, warrant string, admission hangaroutput.CaptureAdmission,
 	incarnation hangaroutput.SourceIncarnation, pod executioncontrol.PodUID) error {
 	body, err := json.Marshal(struct {
 		hangaroutput.CaptureAdmission
@@ -35,7 +35,7 @@ func postHold(endpoint, grant string, admission hangaroutput.CaptureAdmission,
 		return err
 	}
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set(CapabilityHeaderName, grant)
+	request.Header.Set(CapabilityHeaderName, warrant)
 
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {

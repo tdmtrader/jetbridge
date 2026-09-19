@@ -24,7 +24,7 @@ import (
 const (
 	testExecutionID = executioncontrol.ExecutionID("11111111-1111-4111-8111-111111111111")
 	testHandoffID   = hangaroutput.HandoffID("22222222-2222-4222-8222-222222222222")
-	testLeaseID     = hangaroutput.SourceLeaseID("33333333-3333-4333-8333-333333333333")
+	testLeaseID     = hangaroutput.SourceHoldID("33333333-3333-4333-8333-333333333333")
 	testEpoch       = executioncontrol.ActivationEpoch(7)
 )
 
@@ -45,7 +45,7 @@ func captureExtension() runtime.DurableOutputCapture {
 		Identity:           executioncontrol.Identity{ExecutionID: testExecutionID, Fence: 1},
 		ActivationEpoch:    testEpoch,
 		HandoffID:          testHandoffID,
-		SourceLeaseID:      testLeaseID,
+		SourceHoldID:       testLeaseID,
 		Output:             "result",
 		SourceControlGrant: "source-control-grant",
 		CaptureDeadline:    time.Now().Add(time.Hour),
@@ -207,11 +207,11 @@ func TestTheControlEnvelopeRefusesEveryMalformedShape(t *testing.T) {
 			mutate: func(c *runtime.ExecutionControl, _ *runtime.ContainerSpec) { c.Capture.HandoffID = "" },
 			says:   "handoff id",
 		},
-		"a capture with no predeclared source lease": {
+		"a capture with no predeclared source hold": {
 			mutate: func(c *runtime.ExecutionControl, _ *runtime.ContainerSpec) {
-				c.Capture.SourceLeaseID = ""
+				c.Capture.SourceHoldID = ""
 			},
-			says: "source lease id",
+			says: "source hold id",
 		},
 		// The reservation. An unreserved execution cannot be capture-selected:
 		// the incarnation is issued by the daemon before the Pod is built, and

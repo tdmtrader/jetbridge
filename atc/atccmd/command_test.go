@@ -376,14 +376,14 @@ func (s *CommandSuite) TestHangarRuntimeRequiresCompleteDaemonTLSAndExactCapabil
 			want: "complete artifact daemon TLS",
 		},
 		"capability key path": {
-			configure: func(cmd *atccmd.RunCommand) { cmd.Kubernetes.HangarCapabilityKey = "" },
-			want:      "kubernetes-hangar-capability-key",
+			configure: func(cmd *atccmd.RunCommand) { cmd.Kubernetes.HangarWarrantKey = "" },
+			want:      "kubernetes-hangar-warrant-key",
 		},
 		"exact raw key": {
 			configure: func(cmd *atccmd.RunCommand) {
 				shortKey := filepath.Join(s.T().TempDir(), "short.key")
 				s.Require().NoError(os.WriteFile(shortKey, []byte("too-short"), 0600))
-				cmd.Kubernetes.HangarCapabilityKey = shortKey
+				cmd.Kubernetes.HangarWarrantKey = shortKey
 			},
 			want: "exactly 32 raw bytes",
 		},
@@ -398,8 +398,8 @@ func (s *CommandSuite) TestHangarRuntimeRequiresCompleteDaemonTLSAndExactCapabil
 			cmd.Kubernetes.ArtifactDaemonTLSKey = "/tls/client.key"
 			cmd.Kubernetes.ArtifactDaemonTLSCACert = "/tls/ca.crt"
 			cmd.Kubernetes.HangarEnabled = true
-			cmd.Kubernetes.HangarCapabilityKey = validKey
-			cmd.Kubernetes.HangarCapabilityTTL = 15 * time.Minute
+			cmd.Kubernetes.HangarWarrantKey = validKey
+			cmd.Kubernetes.HangarWarrantTTL = 15 * time.Minute
 			test.configure(cmd)
 
 			err := atccmd.ValidateK8sRuntimeForTest(cmd)
@@ -420,21 +420,21 @@ func (s *CommandSuite) TestHangarRuntimeAcceptsCompleteConfigurationAndDisabledC
 	enabled.Kubernetes.ArtifactDaemonTLSKey = "/tls/client.key"
 	enabled.Kubernetes.ArtifactDaemonTLSCACert = "/tls/ca.crt"
 	enabled.Kubernetes.HangarEnabled = true
-	enabled.Kubernetes.HangarCapabilityKey = validKey
-	enabled.Kubernetes.HangarCapabilityTTL = 15 * time.Minute
+	enabled.Kubernetes.HangarWarrantKey = validKey
+	enabled.Kubernetes.HangarWarrantTTL = 15 * time.Minute
 	s.NoError(atccmd.ValidateK8sRuntimeForTest(enabled))
 
 	disabled := &atccmd.RunCommand{}
 	disabled.Kubernetes.Namespace = "concourse"
 	disabled.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
-	disabled.Kubernetes.HangarCapabilityKey = "/does/not/exist"
+	disabled.Kubernetes.HangarWarrantKey = "/does/not/exist"
 	s.NoError(atccmd.ValidateK8sRuntimeForTest(disabled), "disabled Hangar must not load or require its key")
 }
 
 func (s *CommandSuite) TestHangarRuntimeRejectsCapabilityTTLOutsideCoreBound() {
 	validKey := filepath.Join(s.T().TempDir(), "hangar.key")
 	s.Require().NoError(os.WriteFile(validKey, []byte("0123456789abcdef0123456789abcdef"), 0600))
-	for _, ttl := range []time.Duration{0, -time.Second, hangar.MaxGrantTTL + time.Nanosecond} {
+	for _, ttl := range []time.Duration{0, -time.Second, hangar.MaxWarrantTTL + time.Nanosecond} {
 		cmd := &atccmd.RunCommand{}
 		cmd.Kubernetes.Namespace = "concourse"
 		cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
@@ -442,11 +442,11 @@ func (s *CommandSuite) TestHangarRuntimeRejectsCapabilityTTLOutsideCoreBound() {
 		cmd.Kubernetes.ArtifactDaemonTLSKey = "/tls/client.key"
 		cmd.Kubernetes.ArtifactDaemonTLSCACert = "/tls/ca.crt"
 		cmd.Kubernetes.HangarEnabled = true
-		cmd.Kubernetes.HangarCapabilityKey = validKey
-		cmd.Kubernetes.HangarCapabilityTTL = ttl
+		cmd.Kubernetes.HangarWarrantKey = validKey
+		cmd.Kubernetes.HangarWarrantTTL = ttl
 		err := atccmd.ValidateK8sRuntimeForTest(cmd)
 		s.Error(err)
-		s.Contains(err.Error(), "kubernetes-hangar-capability-ttl")
+		s.Contains(err.Error(), "kubernetes-hangar-warrant-ttl")
 	}
 }
 
@@ -497,7 +497,7 @@ func (s *CommandSuite) TestTheOutputPlanesComponentsRunOnlyWhereThePlaneIsEnable
 
 // A REQUIRED SECRET THAT NOTHING EVER OPENED.
 //
-// --kubernetes-hangar-output-capability-key was refused when empty, compared
+// --kubernetes-hangar-output-warrant-key was refused when empty, compared
 // with two other flags for distinctness, and never read: the message said "a
 // control plane that cannot mint one can make no call at all" while nothing
 // established that the file contained a key at all, let alone one a minter
@@ -513,7 +513,7 @@ func (s *CommandSuite) TestTheOutputCapabilityKeyIsReadAtStartupAndNotMerelyName
 	plane := func(key string) *atccmd.RunCommand {
 		cmd := &atccmd.RunCommand{}
 		cmd.Kubernetes.OutputPlaneEnabled = true
-		cmd.Kubernetes.OutputCapabilityKey = key
+		cmd.Kubernetes.OutputWarrantKey = key
 		cmd.Kubernetes.OutputActivationEpoch = 7
 		cmd.Kubernetes.OutputDaemonTLSCert = filepath.Join(dir, "tls.crt")
 		cmd.Kubernetes.OutputDaemonTLSKey = filepath.Join(dir, "tls.key")
@@ -529,12 +529,12 @@ func (s *CommandSuite) TestTheOutputCapabilityKeyIsReadAtStartupAndNotMerelyName
 	err := atccmd.ValidateHangarOutputPlaneForTest(plane(filepath.Join(dir, "absent.key")))
 	s.Require().Error(err, "a capability key that is not there was accepted, so the refusal for "+
 		"an EMPTY flag is the only thing that was ever checked about it")
-	s.Contains(err.Error(), "kubernetes-hangar-output-capability-key")
+	s.Contains(err.Error(), "kubernetes-hangar-output-warrant-key")
 
 	err = atccmd.ValidateHangarOutputPlaneForTest(plane(short))
 	s.Require().Error(err, "a file too short to be a capability key was accepted at startup; the "+
 		"first control call would be the thing that discovered it")
-	s.Contains(err.Error(), "kubernetes-hangar-output-capability-key")
+	s.Contains(err.Error(), "kubernetes-hangar-output-warrant-key")
 
 	// The control: a real key passes, so the two refusals above are about the
 	// key rather than about the rest of the configuration.
@@ -550,6 +550,6 @@ func (s *CommandSuite) TestTheOutputCapabilityKeyIsReadAtStartupAndNotMerelyName
 
 	// A deployment with no output plane neither requires nor opens a key.
 	off := &atccmd.RunCommand{}
-	off.Kubernetes.OutputCapabilityKey = "/does/not/exist"
+	off.Kubernetes.OutputWarrantKey = "/does/not/exist"
 	s.NoError(atccmd.ValidateHangarOutputPlaneForTest(off))
 }

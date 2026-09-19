@@ -95,7 +95,7 @@ func TestADeleteRefusedByIAMIsUnauthorizedAndNotAnInfrastructureFailure(t *testi
 	}
 	if errors.Is(err, output.ErrInfrastructure) {
 		t.Error("an authorization refusal is typed as an infrastructure failure; a pass that " +
-			"retried it would retry forever, and the operator would never learn the grant is gone")
+			"retried it would retry forever, and the operator would never learn the warrant is gone")
 	}
 
 	// WHAT IS NOT ASSERTED HERE, and why. "And the object is still there" reads

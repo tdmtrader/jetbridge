@@ -134,7 +134,7 @@ func TestNothingTheDaemonEmitsNamesAPathBucketObjectKeyOrCapability(t *testing.T
 	// A hold repeated with a different fence: a typed conflict, and the first
 	// refusal on the list.
 	conflicting := held
-	conflicting.SourceLeaseID = "99999999-9999-4999-8999-999999999999"
+	conflicting.SourceHoldID = "99999999-9999-4999-8999-999999999999"
 	fixture.call(t, "/capture/v1/hold", output.CaptureFacet, "hold", conflicting)
 
 	// And a hold naming an incarnation the daemon never reserved: the refusal
@@ -150,7 +150,7 @@ func TestNothingTheDaemonEmitsNamesAPathBucketObjectKeyOrCapability(t *testing.T
 		"execution":        identity(1),
 		"activation_epoch": fixture.epoch,
 		"handoff_id":       testHandoff,
-		"source_lease_id":  testLease,
+		"source_hold_id":   testLease,
 		"output":           testOutput,
 		"source_path":      filepath.Join(fixture.dir, "steps", "somewhere-i-chose"),
 	})
@@ -292,7 +292,7 @@ func TestNothingTheDaemonEmitsNamesAPathBucketObjectKeyOrCapability(t *testing.T
 		Execution:       identity(1),
 		ActivationEpoch: fixture.epoch,
 		HandoffID:       testHandoff,
-		SourceLeaseID:   testLease,
+		SourceHoldID:    testLease,
 		ReleaseIntentID: "66666666-6666-4666-8666-666666666666",
 		Incarnation:     hold.Incarnation,
 	}

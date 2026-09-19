@@ -46,7 +46,7 @@ type Daemon struct {
 	epoch executioncontrol.ActivationEpoch
 
 	// materializationKeyID is what the extension handshake reports so a control
-	// plane knows which pinned key checks this node's read grants.
+	// plane knows which pinned key checks this node's read warrants.
 	materializationKeyID string
 
 	// canonicalizer turns a sealed source directory into the one canonical form
@@ -302,7 +302,7 @@ func (daemon *Daemon) Publish(ctx context.Context, request PublishRequest, canon
 // selected output -- which this process cannot check and does not pretend to.
 // What it fills in itself is everything it *can* observe or is authoritative
 // for: the protocol and receipt versions, its own activation epoch, the
-// challenge's identities and fences, the exact ref and strict attributes the
+// challenge's identities and fences, the tree ref and strict attributes the
 // stat returned, the marker version the store reported, and the nonce and
 // issued-at of the challenge in hand. Req 26 is what revalidates the rest,
 // against durable state, in the transaction that consumes the nonce.

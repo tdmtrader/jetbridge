@@ -11,7 +11,7 @@ import (
 // The announcement's field set is the assertion.
 //
 // Requirement 18 says a capture's outcome reaches existing diagnostics
-// carrying the redacted disposition and reason and "no grant, key, path or
+// carrying the redacted disposition and reason and "no warrant, key, path or
 // consumer ref". That sentence can only FAIL if the payload is a closed set of
 // fields, so this walks the type: three fields, all of closed vocabularies or
 // a closed reason word, and no map, slice, interface or error through which an
@@ -34,7 +34,7 @@ func TestAnAnnouncementCarriesNothingButAKindADispositionAndAReason(t *testing.T
 			got = append(got, announcement.Field(i).Name)
 		}
 		t.Fatalf("an announcement carries %v; requirement 18's payload is a disposition and a "+
-			"reason, and a fourth field is where a grant, key, path or consumer reference "+
+			"reason, and a fourth field is where a warrant, key, path or consumer reference "+
 			"eventually travels", got)
 	}
 

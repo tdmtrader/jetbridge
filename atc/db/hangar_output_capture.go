@@ -61,7 +61,7 @@ func (repository *HangarOutputRepository) CommitCaptureReservation(ctx context.C
 	reservation := output.ReservationID(uuid.NewString())
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO hangar_capture_reservations
-			(reservation_id, handoff_id, execution_id, activation_epoch, source_lease_id,
+			(reservation_id, handoff_id, execution_id, activation_epoch, source_hold_id,
 			 producer_checkpoint_id, finish_acknowledgement, finish_successful,
 			 capture_fence, capture_deadline_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, $9)`,
@@ -69,7 +69,7 @@ func (repository *HangarOutputRepository) CommitCaptureReservation(ctx context.C
 		string(disposition.HandoffID),
 		string(disposition.Execution.ExecutionID),
 		int64(disposition.ActivationEpoch),
-		string(disposition.SourceLeaseID),
+		string(disposition.SourceHoldID),
 		string(disposition.ProducerCheckpointID),
 		witness,
 		int64(disposition.CaptureFence),
@@ -310,7 +310,7 @@ func (repository *HangarOutputRepository) CancelOrSettle(ctx context.Context, tx
 	// that beat the control init still has bytes on a node to release; a fork
 	// on the hold would close it with no daemon call and leave them there.
 	if err := hangarQueryRow(ctx, tx, `
-		SELECT source_lease_id, execution_id, execution_fence, activation_epoch, reserved_at
+		SELECT source_hold_id, execution_id, execution_fence, activation_epoch, reserved_at
 		FROM hangar_handoff_predeclarations WHERE handoff_id = $1`,
 		[]any{string(handoff)}, &lease, &execution, &fence, &epoch, &reserved); err != nil {
 		return output.HandoffStatus{}, err
@@ -321,7 +321,7 @@ func (repository *HangarOutputRepository) CancelOrSettle(ctx context.Context, tx
 		Disposition:     output.DispositionPreReservationCancel,
 		ActivationEpoch: hangarEpoch(epoch),
 		HandoffID:       handoff,
-		SourceLeaseID:   output.SourceLeaseID(lease),
+		SourceHoldID:    output.SourceHoldID(lease),
 		SourceReserved:  reserved.Valid,
 	}
 	disposition.Execution.ExecutionID = hangarExecutionID(execution)

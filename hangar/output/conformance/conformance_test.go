@@ -70,7 +70,7 @@ func TestCreateIfAbsentPublishesOnceAndReportsAnExactGeneration(t *testing.T) {
 		}
 		if object.Attributes.Ref.Generation <= 0 {
 			t.Errorf("the store reported generation %d; a generation is assigned at creation "+
-				"and is what an exact ref is", object.Attributes.Ref.Generation)
+				"and is what a tree ref is", object.Attributes.Ref.Generation)
 		}
 		if object.Attributes.Ref.Scope != namespace.Scope() {
 			t.Errorf("the object was published into scope %q, the derived namespace is %q",
@@ -604,7 +604,7 @@ func TestTheExactGenerationDeleteIsConditionalAndTyped(t *testing.T) {
 func TestASameKeyNewGenerationIsANewExactObject(t *testing.T) {
 	// The store may hold a second generation at one key -- a replacement is
 	// exactly that -- and the plane's identity has to follow the generation
-	// rather than the key. This is the API fact that makes an exact ref exact.
+	// rather than the key. This is the API fact that makes a tree ref exact.
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
 		namespace := namespaceFor(t, tier.bucket)
@@ -627,7 +627,7 @@ func TestASameKeyNewGenerationIsANewExactObject(t *testing.T) {
 
 		if attrs.Generation == first.Attributes.Ref.Generation {
 			t.Fatalf("the store reused generation %d for a new write; generations are assigned "+
-				"per object version and an exact ref would name two different objects",
+				"per object version and a tree ref would name two different objects",
 				attrs.Generation)
 		}
 

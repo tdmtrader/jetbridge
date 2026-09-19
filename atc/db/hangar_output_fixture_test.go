@@ -63,7 +63,7 @@ func hangarIdentity() executioncontrol.Identity {
 	}
 }
 
-func hangarHoldFor(handoff output.HandoffID, lease output.SourceLeaseID, execution executioncontrol.Identity, name output.OutputName) output.CaptureAcknowledgement {
+func hangarHoldFor(handoff output.HandoffID, lease output.SourceHoldID, execution executioncontrol.Identity, name output.OutputName) output.CaptureAcknowledgement {
 	return output.CaptureAcknowledgement{
 		ProtocolVersion: output.ProtocolVersion,
 		Kind:            output.CaptureHoldAcknowledged,
@@ -72,7 +72,7 @@ func hangarHoldFor(handoff output.HandoffID, lease output.SourceLeaseID, executi
 		LedgerSequence:  1,
 		NodeUID:         "node-uid",
 		HandoffID:       handoff,
-		SourceLeaseID:   lease,
+		SourceHoldID:    lease,
 		Incarnation: output.SourceIncarnation{
 			ExecutionID:      execution.ExecutionID,
 			NodeUID:          "node-uid",
@@ -89,13 +89,13 @@ func hangarHoldFor(handoff output.HandoffID, lease output.SourceLeaseID, executi
 // hold over no reservation is the Phase 4 seam -- a producer writing into a
 // directory nothing protects. Every hold below reserves first, because
 // every hold in production does.
-func hangarReserveFor(handoff output.HandoffID, lease output.SourceLeaseID, execution executioncontrol.Identity, name output.OutputName) output.ReservedIncarnation {
+func hangarReserveFor(handoff output.HandoffID, lease output.SourceHoldID, execution executioncontrol.Identity, name output.OutputName) output.ReservedIncarnation {
 	return output.ReservedIncarnation{
 		ProtocolVersion: output.ProtocolVersion,
 		Execution:       execution,
 		ActivationEpoch: 1,
 		HandoffID:       handoff,
-		SourceLeaseID:   lease,
+		SourceHoldID:    lease,
 		NodeUID:         "node-uid",
 		Incarnation: output.SourceIncarnation{
 			ExecutionID:      execution.ExecutionID,
@@ -125,7 +125,7 @@ func hangarFinishFor(execution executioncontrol.Identity) executioncontrol.Ackno
 }
 
 // The one-use stat challenge the daemon would have been issued, for one
-// exact ref. Written as SQL because minting it is not the repository's job.
+// tree ref. Written as SQL because minting it is not the repository's job.
 func hangarIssueChallenge(handoff output.HandoffID, reservation output.ReservationID, ref hangar.TreeRef) (string, time.Time) {
 	GinkgoHelper()
 
@@ -196,7 +196,7 @@ func hangarAdmissionFor(handoff output.HandoffID, execution executioncontrol.Ide
 // to go looking for them in the rows.
 type HangarCapture struct {
 	HandoffID     output.HandoffID
-	SourceLeaseID output.SourceLeaseID
+	SourceHoldID  output.SourceHoldID
 	Execution     executioncontrol.Identity
 	Output        output.OutputName
 	ReservationID output.ReservationID
@@ -241,11 +241,11 @@ func hangarReserveWith(ctx context.Context, repository *db.HangarOutputRepositor
 	GinkgoHelper()
 
 	capture := HangarCapture{
-		HandoffID:     output.HandoffID(uuid.NewString()),
-		SourceLeaseID: output.SourceLeaseID(uuid.NewString()),
-		Execution:     hangarIdentity(),
-		Output:        output.OutputName("result"),
-		Deadline:      deadline,
+		HandoffID:    output.HandoffID(uuid.NewString()),
+		SourceHoldID: output.SourceHoldID(uuid.NewString()),
+		Execution:    hangarIdentity(),
+		Output:       output.OutputName("result"),
+		Deadline:     deadline,
 	}
 
 	tx, err := dbConn.Begin()
@@ -257,15 +257,15 @@ func hangarReserveWith(ctx context.Context, repository *db.HangarOutputRepositor
 		Execution:       capture.Execution,
 		ActivationEpoch: 1,
 		HandoffID:       capture.HandoffID,
-		SourceLeaseID:   capture.SourceLeaseID,
+		SourceHoldID:    capture.SourceHoldID,
 		Output:          capture.Output,
 		CaptureDeadline: capture.Deadline,
 	})).To(Succeed())
 	Expect(repository.RecordSourceReservation(ctx, tx,
-		hangarReserveFor(capture.HandoffID, capture.SourceLeaseID, capture.Execution,
+		hangarReserveFor(capture.HandoffID, capture.SourceHoldID, capture.Execution,
 			capture.Output), "node-a")).To(Succeed())
 	Expect(repository.AcknowledgeSourceHold(ctx, tx,
-		hangarHoldFor(capture.HandoffID, capture.SourceLeaseID, capture.Execution,
+		hangarHoldFor(capture.HandoffID, capture.SourceHoldID, capture.Execution,
 			capture.Output))).To(Succeed())
 
 	capture.ReservationID, err = repository.CommitCaptureReservation(ctx, tx,
@@ -275,7 +275,7 @@ func hangarReserveWith(ctx context.Context, repository *db.HangarOutputRepositor
 			Execution:             capture.Execution,
 			ActivationEpoch:       1,
 			HandoffID:             capture.HandoffID,
-			SourceLeaseID:         capture.SourceLeaseID,
+			SourceHoldID:          capture.SourceHoldID,
 			ProducerCheckpointID:  output.OpaqueID("checkpoint-" + string(capture.HandoffID)),
 			Output:                capture.Output,
 			CaptureFence:          1,
@@ -349,7 +349,7 @@ func hangarReleaseSource(ctx context.Context, repository *db.HangarOutputReposit
 		Execution:       capture.Execution,
 		ActivationEpoch: 1,
 		HandoffID:       capture.HandoffID,
-		SourceLeaseID:   capture.SourceLeaseID,
+		SourceHoldID:    capture.SourceHoldID,
 		ReleaseIntentID: output.ReleaseIntentID(intent),
 		Incarnation: output.SourceIncarnation{
 			ExecutionID:      capture.Execution.ExecutionID,
@@ -371,7 +371,7 @@ func hangarReleaseSource(ctx context.Context, repository *db.HangarOutputReposit
 // than "a lease was refused".
 func hangarReadLeaseRequest(id output.ReadLeaseID, claimID output.ClaimID, ref hangar.TreeRef) output.ReadLeaseRequest {
 	GinkgoHelper()
-	nonce, err := output.NewReadGrantNonce(rand.Reader)
+	nonce, err := output.NewReadWarrantNonce(rand.Reader)
 	Expect(err).NotTo(HaveOccurred())
 
 	// The marker on a real stat carries the reservation that published the
@@ -390,7 +390,7 @@ func hangarReadLeaseRequest(id output.ReadLeaseID, claimID output.ClaimID, ref h
 		RequestedAt:            output.NewTimestamp(time.Now()),
 		MaterializationTimeout: 10 * time.Minute,
 		Destination:            output.ReadDestination{Handle: "task-handle", Volume: "input-0"},
-		GrantNonce:             nonce,
+		WarrantNonce:           nonce,
 		StatProof: output.PublishedObject{
 			Attributes: hangar.TreeAttributes{
 				Ref: ref, StoredBytes: 1024, LogicalBytes: 4096,

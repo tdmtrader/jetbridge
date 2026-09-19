@@ -57,7 +57,7 @@ func TestPrepareScratchSweepsWhatAKilledCanonicalizationLeft(t *testing.T) {
 // Validate refuses five path pairs and two equal key ids, and every one of
 // those comparisons is over names: two flags pointing at symlinks to one file
 // pass all of them, and so do two Secrets holding identical material. The
-// separation the plan promises is a separation of AUTHORITY -- a read grant
+// separation the plan promises is a separation of AUTHORITY -- a read warrant
 // must not be signable by anything that can mint a publication receipt -- and
 // authority follows the material.
 func TestTwoKeyFilesHoldingOneKeyAreRefused(t *testing.T) {

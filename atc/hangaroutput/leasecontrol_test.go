@@ -3,14 +3,14 @@ package hangaroutput_test
 // Lease control over a real HTTP round trip, with a real signer on the daemon's
 // side and the real repository on the control plane's.
 //
-// The whole point of these endpoints is that a grant is not authority: the
+// The whole point of these endpoints is that a warrant is not authority: the
 // daemon holds a token the control plane really minted, and the control plane
 // still answers `no` when the lease behind it is gone. So every refusal row
-// below presents a VALID, unexpired, correctly signed grant and changes only
+// below presents a VALID, unexpired, correctly signed warrant and changes only
 // what the database says. A row that tampered with the token would be testing
 // the HMAC again, which readgrant_test.go already does.
 //
-// The control row is first: the same grant, the same client, the same route,
+// The control row is first: the same warrant, the same client, the same route,
 // admitted -- because a control plane that refused everything would pass a
 // table made only of refusals.
 
@@ -33,11 +33,11 @@ type leaseFixture struct {
 	Control *hangaroutput.LeaseControl
 	Server  *httptest.Server
 	Client  *output.LeaseControlClient
-	Grant   string
+	Warrant string
 	Lease   output.ReadLease
 }
 
-func newLeaseFixture(t *testing.T, h *harness, grant hangaroutput.ReadGrant) *leaseFixture {
+func newLeaseFixture(t *testing.T, h *harness, warrant hangaroutput.ReadWarrant) *leaseFixture {
 	t.Helper()
 
 	public, private, err := ed25519.GenerateKey(nil)
@@ -48,21 +48,21 @@ func newLeaseFixture(t *testing.T, h *harness, grant hangaroutput.ReadGrant) *le
 	if err != nil {
 		t.Fatalf("statement signer: %v", err)
 	}
-	verifier, err := output.NewReadGrantVerifier(readGrantKey,
+	verifier, err := output.NewReadWarrantVerifier(readWarrantKey,
 		output.ClockFunc(func() time.Time { return time.Now().UTC() }))
 	if err != nil {
-		t.Fatalf("grant verifier: %v", err)
+		t.Fatalf("warrant verifier: %v", err)
 	}
 
-	minter, err := output.NewReadGrantSigner(readGrantKey)
+	minter, err := output.NewReadWarrantSigner(readWarrantKey)
 	if err != nil {
-		t.Fatalf("grant signer: %v", err)
+		t.Fatalf("warrant signer: %v", err)
 	}
 
 	control := &hangaroutput.LeaseControl{
 		Transactor: h.Coordinator.Transactor,
 		Leases:     h.Repository,
-		Grants:     verifier,
+		Warrants:   verifier,
 		Minter:     minter,
 		Keys: hangaroutput.NodeKeysFunc(
 			func(node executioncontrol.NodeUID, keyID string) (ed25519.PublicKey, error) {
@@ -89,34 +89,34 @@ func newLeaseFixture(t *testing.T, h *harness, grant hangaroutput.ReadGrant) *le
 			Signer:  signer,
 			Clock:   output.ClockFunc(func() time.Time { return time.Now().UTC() }),
 		},
-		Grant: grant.Token,
-		Lease: grant.Lease,
+		Warrant: warrant.Token,
+		Lease:   warrant.Lease,
 	}
 }
 
-func admittedGrant(t *testing.T, h *harness) hangaroutput.ReadGrant {
+func admittedWarrant(t *testing.T, h *harness) hangaroutput.ReadWarrant {
 	t.Helper()
 
 	ref := registeredRef(t, h)
 	claimID := claimOn(t, h, ref)
 	admission, _ := readAdmission(t, h)
 
-	grant, err := admission.Admit(context.Background(), readRequest(t, claimID, ref))
+	warrant, err := admission.Admit(context.Background(), readRequest(t, claimID, ref))
 	if err != nil {
 		t.Fatalf("admitting the read this lease-control fixture is about: %v", err)
 	}
 
-	return grant
+	return warrant
 }
 
-// The control: a real grant over a live lease is admitted, and the answer
+// The control: a real warrant over a live lease is admitted, and the answer
 // carries the lease and the destination the control plane has rather than the
 // ones the caller sent.
 func TestLeaseControlAdmitsALiveLease(t *testing.T) {
 	h := newHarness(t)
-	fixture := newLeaseFixture(t, h, admittedGrant(t, h))
+	fixture := newLeaseFixture(t, h, admittedWarrant(t, h))
 
-	answer, err := fixture.Client.ValidateLease(context.Background(), fixture.Grant, 10*time.Minute)
+	answer, err := fixture.Client.ValidateLease(context.Background(), fixture.Warrant, 10*time.Minute)
 	if err != nil {
 		t.Fatalf("validating a live lease: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestLeaseControlAdmitsALiveLease(t *testing.T) {
 		t.Fatalf("a live lease was refused as %q", answer.Refusal)
 	}
 	if answer.Lease.ReadLeaseID != fixture.Lease.ReadLeaseID {
-		t.Errorf("the answer names lease %q, the grant named %q",
+		t.Errorf("the answer names lease %q, the warrant named %q",
 			answer.Lease.ReadLeaseID, fixture.Lease.ReadLeaseID)
 	}
 	if answer.Destination.Handle != "consumer-handle" || answer.Destination.Volume != "input-0" {
@@ -132,28 +132,28 @@ func TestLeaseControlAdmitsALiveLease(t *testing.T) {
 	}
 }
 
-// A released lease, with the same valid grant.
-func TestLeaseControlRefusesAGrantWhoseLeaseIsGone(t *testing.T) {
+// A released lease, with the same valid warrant.
+func TestLeaseControlRefusesAWarrantWhoseLeaseIsGone(t *testing.T) {
 	h := newHarness(t)
-	fixture := newLeaseFixture(t, h, admittedGrant(t, h))
+	fixture := newLeaseFixture(t, h, admittedWarrant(t, h))
 
 	// The control first, so "refused" below is about the release.
-	if answer, err := fixture.Client.ValidateLease(context.Background(), fixture.Grant,
+	if answer, err := fixture.Client.ValidateLease(context.Background(), fixture.Warrant,
 		time.Minute); err != nil || !answer.Admitted {
 		t.Fatalf("the lease was not live before it was released: %v %+v", err, answer)
 	}
 
-	answer, err := fixture.Client.ReleaseLease(context.Background(), fixture.Grant)
+	answer, err := fixture.Client.ReleaseLease(context.Background(), fixture.Warrant)
 	if err != nil || !answer.Admitted {
 		t.Fatalf("releasing a live lease: %v %+v", err, answer)
 	}
 
-	answer, err = fixture.Client.ValidateLease(context.Background(), fixture.Grant, time.Minute)
+	answer, err = fixture.Client.ValidateLease(context.Background(), fixture.Warrant, time.Minute)
 	if err != nil {
 		t.Fatalf("validating a released lease was a transport error: %v", err)
 	}
 	if answer.Admitted {
-		t.Fatal("a grant whose lease was released still authorized a read; its HMAC is still " +
+		t.Fatal("a warrant whose lease was released still authorized a read; its HMAC is still " +
 			"perfectly valid, which is the whole reason the daemon asks")
 	}
 	if answer.Refusal != output.LeaseRefusedConflict {
@@ -165,9 +165,9 @@ func TestLeaseControlRefusesAGrantWhoseLeaseIsGone(t *testing.T) {
 // Work that would outrun the lease.
 func TestLeaseControlRefusesWorkThatWouldOutliveTheLease(t *testing.T) {
 	h := newHarness(t)
-	fixture := newLeaseFixture(t, h, admittedGrant(t, h))
+	fixture := newLeaseFixture(t, h, admittedWarrant(t, h))
 
-	answer, err := fixture.Client.ValidateLease(context.Background(), fixture.Grant, 24*time.Hour)
+	answer, err := fixture.Client.ValidateLease(context.Background(), fixture.Warrant, 24*time.Hour)
 	if err != nil {
 		t.Fatalf("validating: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestLeaseControlRefusesWorkThatWouldOutliveTheLease(t *testing.T) {
 // Who is asking.
 func TestLeaseControlRefusesAQuestionItCannotAttribute(t *testing.T) {
 	h := newHarness(t)
-	fixture := newLeaseFixture(t, h, admittedGrant(t, h))
+	fixture := newLeaseFixture(t, h, admittedWarrant(t, h))
 
 	for _, test := range []struct {
 		name  string
@@ -215,7 +215,7 @@ func TestLeaseControlRefusesAQuestionItCannotAttribute(t *testing.T) {
 			client := *fixture.Client
 			test.spoil(&client)
 
-			answer, err := client.ValidateLease(context.Background(), fixture.Grant, time.Minute)
+			answer, err := client.ValidateLease(context.Background(), fixture.Warrant, time.Minute)
 			if err != nil {
 				t.Fatalf("validating: %v", err)
 			}
@@ -232,10 +232,10 @@ func TestLeaseControlRefusesAQuestionItCannotAttribute(t *testing.T) {
 // A renewal keeps the reader going, and a release afterwards is idempotent.
 func TestLeaseControlRenewsAndThenReleasesIdempotently(t *testing.T) {
 	h := newHarness(t)
-	fixture := newLeaseFixture(t, h, admittedGrant(t, h))
+	fixture := newLeaseFixture(t, h, admittedWarrant(t, h))
 
 	before := fixture.Lease.ExpiresAt.Time
-	answer, err := fixture.Client.RenewLease(context.Background(), fixture.Grant, time.Minute)
+	answer, err := fixture.Client.RenewLease(context.Background(), fixture.Warrant, time.Minute)
 	if err != nil || !answer.Admitted {
 		t.Fatalf("renewing a live lease: %v %+v", err, answer)
 	}
@@ -244,7 +244,7 @@ func TestLeaseControlRenewsAndThenReleasesIdempotently(t *testing.T) {
 	}
 
 	for attempt := 0; attempt < 2; attempt++ {
-		answer, err := fixture.Client.ReleaseLease(context.Background(), fixture.Grant)
+		answer, err := fixture.Client.ReleaseLease(context.Background(), fixture.Warrant)
 		if err != nil {
 			t.Fatalf("release attempt %d: %v", attempt, err)
 		}
@@ -272,23 +272,23 @@ func TestLeaseControlRenewsAndThenReleasesIdempotently(t *testing.T) {
 	}
 }
 
-// A renewal or a release presented for a lease the grant does not describe.
+// A renewal or a release presented for a lease the warrant does not describe.
 //
 // This is the case that makes validation run for all three operations: a token
 // for one read must not be able to close another read's protection.
 func TestLeaseControlRefusesAReleaseForAnotherReadsLease(t *testing.T) {
 	h := newHarness(t)
 
-	first := admittedGrant(t, h)
+	first := admittedWarrant(t, h)
 	fixture := newLeaseFixture(t, h, first)
 
 	// A second read of the same ref under its own claim and its own lease.
-	second := admittedGrant(t, h)
+	second := admittedWarrant(t, h)
 	if second.Lease.ReadLeaseID == first.Lease.ReadLeaseID {
 		t.Fatal("the two reads share a lease id, so this proves nothing")
 	}
 
-	// The first grant closes the FIRST lease and nothing else.
+	// The first warrant closes the FIRST lease and nothing else.
 	if answer, err := fixture.Client.ReleaseLease(context.Background(),
 		first.Token); err != nil || !answer.Admitted {
 		t.Fatalf("releasing the first lease: %v %+v", err, answer)
@@ -302,7 +302,7 @@ func TestLeaseControlRefusesAReleaseForAnotherReadsLease(t *testing.T) {
 		t.Fatalf("counting: %v", err)
 	}
 	if stillOpen != 1 {
-		t.Error("one read's grant closed another read's lease")
+		t.Error("one read's warrant closed another read's lease")
 	}
 
 	// And the daemon's own database view agrees.
@@ -320,19 +320,19 @@ func TestLeaseControlRefusesAReleaseForAnotherReadsLease(t *testing.T) {
 // A refusal is a value, and an outage is not a refusal.
 func TestAnUnreachableControlPlaneIsNotARevocation(t *testing.T) {
 	h := newHarness(t)
-	fixture := newLeaseFixture(t, h, admittedGrant(t, h))
+	fixture := newLeaseFixture(t, h, admittedWarrant(t, h))
 	fixture.Server.Close()
 
-	_, err := fixture.Client.ValidateLease(context.Background(), fixture.Grant, time.Minute)
+	_, err := fixture.Client.ValidateLease(context.Background(), fixture.Warrant, time.Minute)
 	if !errors.Is(err, output.ErrInfrastructure) {
 		t.Fatalf("an unreachable control plane answered %v; a daemon that read that as a "+
 			"revocation would fail a task for an outage", err)
 	}
 }
 
-// A RENEWED READER OUTLIVES ITS ORIGINAL GRANT WINDOW.
+// A RENEWED READER OUTLIVES ITS ORIGINAL WARRANT WINDOW.
 //
-// The grant is dated with the lease's granted-at and expires-at, and requirement
+// The warrant is dated with the lease's granted-at and expires-at, and requirement
 // 37's byte-identical re-mint is why: nothing in the token may come from the
 // instant it was minted. But a RENEWAL moves the row's expiry and cannot move a
 // token that has already been handed out, so if the control plane decided the
@@ -348,41 +348,41 @@ func TestAnUnreachableControlPlaneIsNotARevocation(t *testing.T) {
 //   - the control plane checks what the token BINDS and takes the window from
 //     the row it names, because the row is the only thing that knows about a
 //     renewal;
-//   - a renewal answers with a grant RE-MINTED over the renewed row, so the
+//   - a renewal answers with a warrant RE-MINTED over the renewed row, so the
 //     reader's token catches up and the daemon's own window check -- which
 //     stays, and is what stops a stale token from ever opening anything --
 //     keeps passing.
-func TestARenewedReaderKeepsWorkingPastItsOriginalGrantWindow(t *testing.T) {
+func TestARenewedReaderKeepsWorkingPastItsOriginalWarrantWindow(t *testing.T) {
 	h := newHarness(t)
-	grant := admittedGrant(t, h)
-	fixture := newLeaseFixture(t, h, grant)
+	warrant := admittedWarrant(t, h)
+	fixture := newLeaseFixture(t, h, warrant)
 
-	renewed, err := fixture.Client.RenewLease(context.Background(), fixture.Grant, time.Minute)
+	renewed, err := fixture.Client.RenewLease(context.Background(), fixture.Warrant, time.Minute)
 	if err != nil || !renewed.Admitted {
 		t.Fatalf("renewing a live lease: %v %+v", err, renewed)
 	}
-	if renewed.Grant == "" {
-		t.Fatal("a renewal answered with no grant; the reader's token still names the window " +
+	if renewed.Warrant == "" {
+		t.Fatal("a renewal answered with no warrant; the reader's token still names the window " +
 			"the renewal just moved, and nothing else will ever hand it a current one")
 	}
-	if renewed.Grant == fixture.Grant {
+	if renewed.Warrant == fixture.Warrant {
 		t.Error("the renewal handed back the same token it was given, so the renewed window is " +
 			"in no token the reader holds")
 	}
 
 	// The verifier's clock, one second past the ORIGINAL window. The row is
 	// untouched and live on the database clock, which is the clock that decides.
-	past, err := output.NewReadGrantVerifier(readGrantKey,
-		output.ClockFunc(func() time.Time { return grant.Lease.ExpiresAt.Add(time.Second).UTC() }))
+	past, err := output.NewReadWarrantVerifier(readWarrantKey,
+		output.ClockFunc(func() time.Time { return warrant.Lease.ExpiresAt.Add(time.Second).UTC() }))
 	if err != nil {
 		t.Fatal(err)
 	}
-	fixture.Control.Grants = past
+	fixture.Control.Warrants = past
 
 	// The ORIGINAL token, past its own expiry, over a row that is still live.
-	answer, err := fixture.Client.ValidateLease(context.Background(), fixture.Grant, time.Minute)
+	answer, err := fixture.Client.ValidateLease(context.Background(), fixture.Warrant, time.Minute)
 	if err != nil {
-		t.Fatalf("validating with the original grant: %v", err)
+		t.Fatalf("validating with the original warrant: %v", err)
 	}
 	if !answer.Admitted {
 		t.Errorf("a live lease was refused as %q because the TOKEN's window had passed; the "+
@@ -404,19 +404,19 @@ func TestARenewedReaderKeepsWorkingPastItsOriginalGrantWindow(t *testing.T) {
 			return fixture.Client.ReleaseLease(context.Background(), token)
 		}},
 	} {
-		answer, err := step.ask(renewed.Grant)
+		answer, err := step.ask(renewed.Warrant)
 		if err != nil {
-			t.Fatalf("%s with the re-minted grant: %v", step.name, err)
+			t.Fatalf("%s with the re-minted warrant: %v", step.name, err)
 		}
 		if !answer.Admitted {
-			t.Fatalf("%s with the re-minted grant was refused as %q", step.name, answer.Refusal)
+			t.Fatalf("%s with the re-minted warrant was refused as %q", step.name, answer.Refusal)
 		}
 	}
 
 	var released bool
 	if err := h.Conn.QueryRow(
 		`SELECT released_at IS NOT NULL FROM hangar_read_leases WHERE read_lease_id = $1`,
-		string(grant.Lease.ReadLeaseID)).Scan(&released); err != nil {
+		string(warrant.Lease.ReadLeaseID)).Scan(&released); err != nil {
 		t.Fatalf("reading the row back: %v", err)
 	}
 	if !released {
@@ -431,7 +431,7 @@ func TestARenewedReaderKeepsWorkingPastItsOriginalGrantWindow(t *testing.T) {
 // moves by is the microseconds of wall clock between the two calls, and every
 // question it then asks goes through the CONTROL PLANE -- which takes the window
 // from the row and does not look at the token's. What holds its line is
-// `renewed.Grant != fixture.Grant`, and that catches only a byte-identical
+// `renewed.Warrant != fixture.Warrant`, and that catches only a byte-identical
 // re-mint: a token carrying the PRE-RENEWAL expiry with any other field
 // differing would pass it. The distinguishing check is the daemon's own Verify,
 // which is where a stale window actually stops a read, and nothing ran it on a
@@ -451,11 +451,11 @@ func TestARenewedReaderKeepsWorkingPastItsOriginalGrantWindow(t *testing.T) {
 //   - the daemon ADMITS the re-minted one, and it names the renewed row's
 //     expiry, so the reader carries authority it can actually use;
 //   - the control plane still admits the stale token's BINDING, because what a
-//     grant binds is the MAC's to settle and whether the lease is live is the
+//     warrant binds is the MAC's to settle and whether the lease is live is the
 //     row's. A renewed reader must still be able to release.
 func TestARenewalRemintsTheWindowTheDaemonChecks(t *testing.T) {
 	h := newHarness(t)
-	admitted := admittedGrant(t, h)
+	admitted := admittedWarrant(t, h)
 
 	if _, err := h.Conn.Exec(`
 		UPDATE hangar_read_leases
@@ -480,30 +480,30 @@ func TestARenewalRemintsTheWindowTheDaemonChecks(t *testing.T) {
 		t.Fatalf("rollback: %v", err)
 	}
 
-	minter, err := output.NewReadGrantSigner(readGrantKey)
+	minter, err := output.NewReadWarrantSigner(readWarrantKey)
 	if err != nil {
-		t.Fatalf("grant signer: %v", err)
+		t.Fatalf("warrant signer: %v", err)
 	}
-	stale, err := minter.Sign(record.Lease, record.Destination, record.GrantNonce)
+	stale, err := minter.Sign(record.Lease, record.Destination, record.WarrantNonce)
 	if err != nil {
 		t.Fatalf("minting the reader's token over the aged row: %v", err)
 	}
 
-	fixture := newLeaseFixture(t, h, hangaroutput.ReadGrant{
+	fixture := newLeaseFixture(t, h, hangaroutput.ReadWarrant{
 		Token: stale, Lease: record.Lease, Record: record})
 
 	renewed, err := fixture.Client.RenewLease(context.Background(), stale, time.Minute)
 	if err != nil || !renewed.Admitted {
 		t.Fatalf("renewing a lease with five minutes left: %v %+v", err, renewed)
 	}
-	if renewed.Grant == "" || renewed.Grant == stale {
+	if renewed.Warrant == "" || renewed.Warrant == stale {
 		t.Fatal("the renewal handed back no new token, so the reader still carries the window " +
 			"this renewal just moved")
 	}
 
 	// The daemon's verifier, past the reader's own window and well inside the
 	// renewed one. Its clock is the NODE's; the row is live on the database's.
-	daemon, err := output.NewReadGrantVerifier(readGrantKey, output.ClockFunc(func() time.Time {
+	daemon, err := output.NewReadWarrantVerifier(readWarrantKey, output.ClockFunc(func() time.Time {
 		return record.Lease.ExpiresAt.Add(5 * time.Second).UTC()
 	}))
 	if err != nil {
@@ -512,11 +512,11 @@ func TestARenewalRemintsTheWindowTheDaemonChecks(t *testing.T) {
 
 	if _, err := daemon.Verify(stale, record.Lease.Ref, record.Destination); !errors.Is(err,
 		output.ErrUnauthorized) {
-		t.Errorf("the daemon answered %v to a token whose window has passed; a stale grant "+
+		t.Errorf("the daemon answered %v to a token whose window has passed; a stale warrant "+
 			"opening an object is what the window is for", err)
 	}
 
-	claims, err := daemon.Verify(renewed.Grant, record.Lease.Ref, record.Destination)
+	claims, err := daemon.Verify(renewed.Warrant, record.Lease.Ref, record.Destination)
 	if err != nil {
 		t.Fatalf("the daemon refused the RE-MINTED token as %v; the reader's lease is live, it "+
 			"has just been renewed, and the one token it carries opens nothing", err)
@@ -561,9 +561,9 @@ func TestARenewalRemintsTheWindowTheDaemonChecks(t *testing.T) {
 // plane itself produces still decode as answers.
 func TestAStatusTheControlPlaneNeverSendsIsAnOutageAndNotACorruptAnswer(t *testing.T) {
 	h := newHarness(t)
-	fixture := newLeaseFixture(t, h, admittedGrant(t, h))
+	fixture := newLeaseFixture(t, h, admittedWarrant(t, h))
 
-	if answer, err := fixture.Client.ValidateLease(context.Background(), fixture.Grant,
+	if answer, err := fixture.Client.ValidateLease(context.Background(), fixture.Warrant,
 		time.Minute); err != nil || !answer.Admitted {
 		t.Fatalf("the real handler did not answer before this spec replaced it: %v %+v",
 			err, answer)
@@ -590,7 +590,7 @@ func TestAStatusTheControlPlaneNeverSendsIsAnOutageAndNotACorruptAnswer(t *testi
 			client.BaseURL = proxy.URL
 			client.HTTP = proxy.Client()
 
-			_, err := client.ValidateLease(context.Background(), fixture.Grant, time.Minute)
+			_, err := client.ValidateLease(context.Background(), fixture.Warrant, time.Minute)
 			if !errors.Is(err, output.ErrInfrastructure) {
 				t.Fatalf("%s was answered %v; a daemon that read that as a revocation would "+
 					"fail a task for an outage", gateway.name, err)

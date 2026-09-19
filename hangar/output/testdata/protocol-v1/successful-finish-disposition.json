@@ -7,7 +7,7 @@
   },
   "activation_epoch": 3,
   "handoff_id": "6b1e9d40-2a77-4c11-8f3e-5d0a9c8b7e62",
-  "source_lease_id": "a4d2c8f1-9e03-4b55-86ad-71f0c3e29b48",
+  "source_hold_id": "a4d2c8f1-9e03-4b55-86ad-71f0c3e29b48",
   "producer_checkpoint_id": "opaque-producer-checkpoint-1",
   "output": "built-image",
   "capture_fence": 1,

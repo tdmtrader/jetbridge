@@ -101,7 +101,7 @@ func TestEveryDaemonTheATCDialsByNodeIPPublishesThatPortOnTheNode(t *testing.T) 
 				"(declared container ports: %v, hostNetwork: false).\n\n"+
 				"A DaemonSet pod with neither hostNetwork nor a hostPort listens on the POD "+
 				"IP only, so nothing is bound where every client calls: the pre-start source "+
-				"hold, the writer ticket, the seal, the publication and the read grant all "+
+				"hold, the writer ticket, the seal, the publication and the read warrant all "+
 				"fail, and the facet does nothing at all on a cluster. The render is "+
 				"well-formed and every suite stays green.",
 				set.source, set.name, port, daemon.portFlag, port, declared)

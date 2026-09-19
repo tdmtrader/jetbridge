@@ -77,7 +77,7 @@ var _ = Describe("An execProcess under exact control", func() {
 	const (
 		executionID = executioncontrol.ExecutionID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 		handoffID   = hangaroutput.HandoffID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
-		leaseID     = hangaroutput.SourceLeaseID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+		leaseID     = hangaroutput.SourceHoldID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
 	)
 
 	identity := executioncontrol.Identity{ExecutionID: executionID, Fence: 1}
@@ -96,7 +96,7 @@ var _ = Describe("An execProcess under exact control", func() {
 			Execution:       identity,
 			ActivationEpoch: harnessEpoch,
 			HandoffID:       handoffID,
-			SourceLeaseID:   leaseID,
+			SourceHoldID:    leaseID,
 			Output:          "result",
 			CaptureDeadline: hangaroutput.NewTimestamp(time.Now().UTC().Add(time.Hour)),
 		}
@@ -137,9 +137,9 @@ var _ = Describe("An execProcess under exact control", func() {
 		reserved, err := harness.Client.ReserveIncarnation(ctx, admission)
 		Expect(err).ToNot(HaveOccurred())
 
-		grant, err := harness.Client.MintGrant(hangaroutput.CaptureFacet, "hold", identity)
+		warrant, err := harness.Client.MintGrant(hangaroutput.CaptureFacet, "hold", identity)
 		Expect(err).ToNot(HaveOccurred())
-		Expect(postHold(harness.Endpoint, string(grant), admission,
+		Expect(postHold(harness.Endpoint, string(warrant), admission,
 			reserved.Incarnation, executioncontrol.PodUID(podUID))).To(Succeed())
 	}
 
@@ -186,7 +186,7 @@ var _ = Describe("An execProcess under exact control", func() {
 			Identity:           identity,
 			ActivationEpoch:    harnessEpoch,
 			HandoffID:          handoffID,
-			SourceLeaseID:      leaseID,
+			SourceHoldID:       leaseID,
 			Output:             "result",
 			SourceControlGrant: "source-control-grant",
 			CaptureDeadline:    time.Now().Add(time.Hour),
@@ -346,9 +346,9 @@ var _ = Describe("An execProcess under exact control", func() {
 		Expect(pod.UID).ToNot(BeEmpty())
 
 		// 4. The control init's hold, presenting the Downward API's value.
-		grant, err := harness.Client.MintGrant(hangaroutput.CaptureFacet, "hold", identity)
+		warrant, err := harness.Client.MintGrant(hangaroutput.CaptureFacet, "hold", identity)
 		Expect(err).ToNot(HaveOccurred())
-		Expect(postHold(harness.Endpoint, string(grant), admission,
+		Expect(postHold(harness.Endpoint, string(warrant), admission,
 			reserved.Incarnation, executioncontrol.PodUID(pod.UID))).To(Succeed())
 
 		// The hold binds THAT Pod, not the empty one an admission could offer.

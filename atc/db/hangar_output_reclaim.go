@@ -46,7 +46,7 @@ import (
 
 // HangarReclaimJob is one admitted reclamation.
 //
-// It carries the exact ref and metageneration the delete will be conditioned
+// It carries the tree ref and metageneration the delete will be conditioned
 // on, read back from the row rather than from the caller: a job whose
 // precondition came from the process that is about to delete would be a
 // precondition that process chose.
@@ -78,7 +78,7 @@ func (job HangarReclaimJob) Remaining(now output.Timestamp) time.Duration {
 // alert on. Loading one job and reading its remaining term is a diagnosis
 // of a SPECIFIC object, and this track ships no API that names one
 //
-// LoadReclaimJob reads the open job for one exact ref.
+// LoadReclaimJob reads the open job for one tree ref.
 func (repository *HangarOutputRepository) LoadReclaimJob(ctx context.Context, tx output.Tx, ref hangar.TreeRef) (HangarReclaimJob, error) {
 	if err := ref.Validate(); err != nil {
 		return HangarReclaimJob{}, err
@@ -486,7 +486,7 @@ func (repository *HangarOutputRepository) RecordOutOfBandAbsence(ctx context.Con
 //
 // The IAM matrix says what the bucket's bindings CLAIM. This is the store
 // saying otherwise: a controller was refused while doing work its own role is
-// supposed to authorize, which is either a grant that was removed or a
+// supposed to authorize, which is either a warrant that was removed or a
 // principal that is not the one the deployment configured. Either way the plane
 // is not the plane that was attested, and carrying on admitting work under an
 // identity that has just been refused is exactly the state Req 52 stops.

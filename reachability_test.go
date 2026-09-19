@@ -124,12 +124,12 @@ var deferredEntryPoints = []deferredEntryPoint{
 	{name: "LoadReclaimJob", pkg: "atc/db", why: reclaimJobDetailHasNoReader},
 	{name: "ReconcilePolicyViolation", why: operatorReconciliationHasNoAPI},
 
-	// The consumer half: verifying a grant, a receipt or a lease answer that
+	// The consumer half: verifying a warrant, a receipt or a lease answer that
 	// this plane issued. This phase issues them and reads none of them back.
 	{name: "KeyIDs", why: consumerHalf},
 	{name: "ConstantTimeKeyIDEqual", why: consumerHalf},
 	{name: "ReceiptEnvelopeIsUnaltered", why: consumerHalf},
-	{name: "NewReadGrantVerifier", why: consumerHalf},
+	{name: "NewReadWarrantVerifier", why: consumerHalf},
 	{name: "VerifyReleaseAcknowledgement", why: consumerHalf},
 
 	{name: "DeriveCohortFindings", why: cohortIdentities},

@@ -44,7 +44,7 @@ import (
 //
 // It needs no Hangar store: the daemon endpoint the generated Pod's init
 // container calls is stood up below as a BusyBox fixture Pod, and the
-// materialization grants are signed here with a key held in process. What is
+// materialization warrants are signed here with a key held in process. What is
 // under test is the Pod the runtime generates and the tree its init container
 // will accept, not the store behind a real daemon.
 func TestLiveHangarGeneratedPodMaterializesStrictTree(t *testing.T) {
@@ -106,7 +106,7 @@ func TestLiveHangarGeneratedPodMaterializesStrictTree(t *testing.T) {
 		Generation: 7,
 	}
 	key := []byte("0123456789abcdef0123456789abcdef")
-	signer, err := hangar.NewGrantSigner(key, time.Minute, nil)
+	signer, err := hangar.NewWarrantSigner(key, time.Minute, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestLiveHangarGeneratedPodMaterializesStrictTree(t *testing.T) {
 	cfg.ArtifactDaemonPort = 31780
 	cfg.ArtifactHelperImage = "busybox:latest"
 	cfg.HangarEnabled = true
-	cfg.HangarGrantSigner = signer
+	cfg.HangarWarrantSigner = signer
 
 	handle := "strict-consumer"
 	container := &Container{

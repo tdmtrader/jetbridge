@@ -34,7 +34,7 @@ func (outcome ExitOutcome) Successful() bool {
 // Acknowledgement is an immutable, signed statement from the node's control
 // ledger. It is the only thing in this protocol that constitutes proof.
 //
-// A base acknowledgement carries no capture identity, source lease, handle
+// A base acknowledgement carries no capture identity, source hold, handle
 // generation or output name. Those belong to the optional extension's own
 // acknowledgement type in hangar/output, which references this Identity rather
 // than restating it.

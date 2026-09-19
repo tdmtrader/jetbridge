@@ -14,7 +14,7 @@ contract and are unsupported for Hangar.
 
 Hangar requires the artifact DaemonSet, artifact-daemon TLS, a native GCS
 durable store and bucket, positive content and entry limits, a whole-second
-grant TTL from `1s` through `900s`, and a private absolute scratch path
+warrant TTL from `1s` through `900s`, and a private absolute scratch path
 disjoint from the artifact hostPath:
 
 ```yaml
@@ -71,12 +71,12 @@ The chart mounts that selected key read-only into only the web and daemon
 containers. A missing entry prevents the Pods from starting; a wrong-length
 entry is rejected by both binaries at startup.
 
-The web process signs short-lived grants and the daemon verifies the same
+The web process signs short-lived warrants and the daemon verifies the same
 configured `capabilityTTL`. Chart values use positive whole-second syntax; the
 default and maximum are `900s` (15 minutes), and `1s` is the minimum. Shorter
-values reduce replay exposure. Task Pod specs contain only attenuated grants
+values reduce replay exposure. Task Pod specs contain only attenuated warrants
 bound to one exact reference, handle, volume, and expiry. Anyone who can read
-Pod specs during that window can see those grants, but the long-lived signing
+Pod specs during that window can see those warrants, but the long-lived signing
 key is never placed in a task Pod command, environment, or volume.
 
 ## Runtime and failure semantics
@@ -202,7 +202,7 @@ window, and does not stop a deletion inside it.
 On a stale, failed, unreadable or unsafe check — or an unexpected exact absence,
 or a platform-principal mismatch — Hangar enters a durable `at-risk` state,
 marks affected refs at risk in status and read outcomes, and alerts. From that
-point it blocks new captures, claim acquires, managed-output grants, orphan
+point it blocks new captures, claim acquires, managed-output warrants, orphan
 adoption and reclaim admission. Releases and diagnosis stay possible, existing
 claims and read leases stay recorded, and already-admitted conditional delete
 work may finish. Recovery needs a fresh safe attestation *and* reconciliation

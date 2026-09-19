@@ -27,7 +27,7 @@ import (
 // encoding built here, and the JSON on the wire is a rendering of the same
 // claims that the verifier re-canonicalizes before checking.
 //
-// **The domain is part of the message.** A receipt and a materialization grant
+// **The domain is part of the message.** A receipt and a materialization warrant
 // are different authorities -- one says "these bytes were published", the other
 // says "you may read them" -- and a signer that could be persuaded to produce
 // one while believing it produced the other is a signer with one authority.
@@ -492,7 +492,7 @@ func (verifier *ReceiptSignatureVerifier) bind(receipt Receipt, challenge StatCh
 // something the claims did not -- a duplicate key, say, or a field the decoder
 // ignored. Decoding strictly and re-encoding is what turns "the claims verify"
 // into "this body is those claims".
-// It is the same three steps ReadGrantVerifier.VerifyBinding performs, and for
+// It is the same three steps ReadWarrantVerifier.VerifyBinding performs, and for
 // the same reason: this used to be json.Unmarshal plus Validate, which is
 // neither half of what the paragraph above describes. Measured before the fix,
 // it accepted a body carrying an unknown top-level field outright, and accepted

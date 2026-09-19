@@ -126,7 +126,7 @@ func (claims ReceiptClaims) Validate() error {
 		return err
 	}
 	if claims.Attributes.Ref != claims.Ref {
-		return fmt.Errorf("%w: the signed attributes describe a different exact ref",
+		return fmt.Errorf("%w: the signed attributes describe a different tree ref",
 			ErrInvalidIdentity)
 	}
 	if claims.MarkerVersion != MarkerVersion {
@@ -170,7 +170,7 @@ func (receipt Receipt) Validate() error {
 	return nil
 }
 
-// Ref is the exact reference this receipt is about. It exists so callers stop
+// Ref is the tree ref this receipt is about. It exists so callers stop
 // reaching two levels into the claims for the one field they always want.
 func (receipt Receipt) Ref() hangar.TreeRef { return receipt.Claims.Ref }
 

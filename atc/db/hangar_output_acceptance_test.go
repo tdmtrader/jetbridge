@@ -294,7 +294,7 @@ var _ = Describe("the Hangar output plane, end to end", func() {
 
 		// --- and the far end of the chain holds ----------------------------
 		//
-		// The released claim stays tombstoned for the lifetime of the exact-ref
+		// The released claim stays tombstoned for the lifetime of the tree-ref
 		// record (Req 32), and a caller cannot re-acquire on a reclaimed ref
 		// (Req 38). Both are read from the state the legs above committed, not
 		// from a row this spec wrote.

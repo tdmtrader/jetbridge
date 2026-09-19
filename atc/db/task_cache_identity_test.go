@@ -77,7 +77,7 @@ var _ = Describe("Task cache identity", func() {
 	})
 
 	It("deletes run caches when their base template is deleted", func() {
-		// This fails if a base pipeline can be removed while its shared cache row survives.
+		// This fails if a template pipeline can be removed while its shared cache row survives.
 		template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "cascade-run-cache-template"}, atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "deploy"}}}, 0, false)
 		Expect(err).NotTo(HaveOccurred())
 		identity := atc.TaskCacheIdentity{TeamID: defaultTeam.ID(), TemplatePipelineID: template.ID(), RunJobName: "deploy"}

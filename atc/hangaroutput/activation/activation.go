@@ -76,7 +76,7 @@ func ParseFacet(value string) (Facet, error) {
 // The base half is the cohort: what the daemons on this cluster speak, and a
 // digest over the whole set so that "homogeneous" is a value somebody can
 // compare rather than a claim somebody made. The output half is the identity a
-// receipt and a read grant are checked against.
+// receipt and a read warrant are checked against.
 //
 // It is one struct with both halves because the two attestations write into one
 // row and the schema's CHECK constraints are stated across them: a row cannot be
@@ -132,7 +132,7 @@ func (evidence Evidence) Validate(facet Facet) error {
 	}
 	if evidence.ReceiptPublicKeyID == evidence.MaterializationKeyID {
 		return fmt.Errorf("%w: the receipt and materialization key ids are the same. A read "+
-			"grant must not be signable by anything that can mint a publication receipt",
+			"warrant must not be signable by anything that can mint a publication receipt",
 			output.ErrIncomplete)
 	}
 	if !evidence.ReceiptKeyValidUntil.After(evidence.ReceiptKeyValidFrom) {

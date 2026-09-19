@@ -18,19 +18,19 @@ import (
 // double control plane would answer whatever the test wanted in whatever order
 // it was asked, which is the one property this composition exists to have.
 
-func TestAManagedReadIsAdmittedByTheLeaseAndNotByTheGrant(t *testing.T) {
+func TestAManagedReadIsAdmittedByTheLeaseAndNotByTheWarrant(t *testing.T) {
 	h := newHarness(t)
-	grant := admittedGrant(t, h)
-	fixture := newLeaseFixture(t, h, grant)
+	warrant := admittedWarrant(t, h)
+	fixture := newLeaseFixture(t, h, warrant)
 
-	profile, err := output.NewLeaseReadProfile(fixture.Client, fixture.Grant, time.Minute)
+	profile, err := output.NewLeaseReadProfile(fixture.Client, fixture.Warrant, time.Minute)
 	if err != nil {
 		t.Fatalf("building the profile: %v", err)
 	}
 
-	// The control: the lease this grant names, its own destination.
-	work, err := profile.Admit(context.Background(), grant.Lease.Ref,
-		grant.Record.Destination.Handle, grant.Record.Destination.Volume)
+	// The control: the lease this warrant names, its own destination.
+	work, err := profile.Admit(context.Background(), warrant.Lease.Ref,
+		warrant.Record.Destination.Handle, warrant.Record.Destination.Volume)
 	if err != nil {
 		t.Fatalf("a live lease was not admitted: %v", err)
 	}
@@ -40,20 +40,20 @@ func TestAManagedReadIsAdmittedByTheLeaseAndNotByTheGrant(t *testing.T) {
 
 	// A DIFFERENT object. The token is valid, unexpired and correctly signed;
 	// what is wrong is that the caller is reading something else.
-	other := grant.Lease.Ref
+	other := warrant.Lease.Ref
 	other.Generation++
 	if _, err := profile.Admit(context.Background(), other,
-		grant.Record.Destination.Handle, grant.Record.Destination.Volume); err == nil {
-		t.Error("a grant for one object authorized a read of another")
+		warrant.Record.Destination.Handle, warrant.Record.Destination.Volume); err == nil {
+		t.Error("a warrant for one object authorized a read of another")
 	} else if !errors.Is(err, output.ErrUnauthorized) {
 		t.Errorf("the refusal is not typed unauthorized: %v", err)
 	}
 
 	// A DIFFERENT destination. A managed output landing somewhere the control
 	// plane never agreed to is the same defect wearing a different hat.
-	if _, err := profile.Admit(context.Background(), grant.Lease.Ref,
-		grant.Record.Destination.Handle, grant.Record.Destination.Volume+"-elsewhere"); err == nil {
-		t.Error("a grant for one destination authorized staging into another")
+	if _, err := profile.Admit(context.Background(), warrant.Lease.Ref,
+		warrant.Record.Destination.Handle, warrant.Record.Destination.Volume+"-elsewhere"); err == nil {
+		t.Error("a warrant for one destination authorized staging into another")
 	}
 }
 
@@ -66,10 +66,10 @@ func TestAManagedReadIsAdmittedByTheLeaseAndNotByTheGrant(t *testing.T) {
 // it most.
 func TestAFailedManagedReadStillReleasesItsLease(t *testing.T) {
 	h := newHarness(t)
-	grant := admittedGrant(t, h)
-	fixture := newLeaseFixture(t, h, grant)
+	warrant := admittedWarrant(t, h)
+	fixture := newLeaseFixture(t, h, warrant)
 
-	profile, err := output.NewLeaseReadProfile(fixture.Client, fixture.Grant, time.Minute)
+	profile, err := output.NewLeaseReadProfile(fixture.Client, fixture.Warrant, time.Minute)
 	if err != nil {
 		t.Fatalf("building the profile: %v", err)
 	}
@@ -78,14 +78,14 @@ func TestAFailedManagedReadStillReleasesItsLease(t *testing.T) {
 	// fails -- there is no object under this materializer -- and the lease must
 	// still be gone afterwards.
 	materializer := &hangar.Materializer{}
-	staged := materializer.MaterializeManaged(context.Background(), grant.Lease.Ref,
-		grant.Record.Destination.Handle, grant.Record.Destination.Volume, profile)
+	staged := materializer.MaterializeManaged(context.Background(), warrant.Lease.Ref,
+		warrant.Record.Destination.Handle, warrant.Record.Destination.Volume, profile)
 	if staged == nil {
 		t.Fatal("the staging succeeded against a materializer with no store; this row cannot " +
 			"say anything about the failure path")
 	}
 
-	answer, err := fixture.Client.ValidateLease(context.Background(), fixture.Grant, time.Minute)
+	answer, err := fixture.Client.ValidateLease(context.Background(), fixture.Warrant, time.Minute)
 	if err != nil {
 		t.Fatalf("asking about the lease afterwards: %v", err)
 	}
@@ -102,10 +102,10 @@ func TestAFailedManagedReadStillReleasesItsLease(t *testing.T) {
 // successful read into an error.
 func TestReleasingTwiceIsNotAnError(t *testing.T) {
 	h := newHarness(t)
-	grant := admittedGrant(t, h)
-	fixture := newLeaseFixture(t, h, grant)
+	warrant := admittedWarrant(t, h)
+	fixture := newLeaseFixture(t, h, warrant)
 
-	profile, err := output.NewLeaseReadProfile(fixture.Client, fixture.Grant, time.Minute)
+	profile, err := output.NewLeaseReadProfile(fixture.Client, fixture.Warrant, time.Minute)
 	if err != nil {
 		t.Fatalf("building the profile: %v", err)
 	}
@@ -119,16 +119,16 @@ func TestReleasingTwiceIsNotAnError(t *testing.T) {
 
 // A renewal moves the ROW and the TOKEN together.
 //
-// A grant is dated with its lease's own instants, so a renewal that did not
+// A warrant is dated with its lease's own instants, so a renewal that did not
 // answer with a re-minted token would leave the reader holding one describing a
 // window that has passed -- and the daemon's own pre-open window check would
 // refuse a lease that is perfectly live.
-func TestARenewalCarriesTheReMintedGrantForward(t *testing.T) {
+func TestARenewalCarriesTheReMintedWarrantForward(t *testing.T) {
 	h := newHarness(t)
-	grant := admittedGrant(t, h)
-	fixture := newLeaseFixture(t, h, grant)
+	warrant := admittedWarrant(t, h)
+	fixture := newLeaseFixture(t, h, warrant)
 
-	profile, err := output.NewLeaseReadProfile(fixture.Client, fixture.Grant, time.Minute)
+	profile, err := output.NewLeaseReadProfile(fixture.Client, fixture.Warrant, time.Minute)
 	if err != nil {
 		t.Fatalf("building the profile: %v", err)
 	}
@@ -137,22 +137,22 @@ func TestARenewalCarriesTheReMintedGrantForward(t *testing.T) {
 	}
 
 	// The re-minted token is what the profile now spends, and it still works.
-	if _, err := profile.Admit(context.Background(), grant.Lease.Ref,
-		grant.Record.Destination.Handle, grant.Record.Destination.Volume); err != nil {
+	if _, err := profile.Admit(context.Background(), warrant.Lease.Ref,
+		warrant.Record.Destination.Handle, warrant.Record.Destination.Volume); err != nil {
 		t.Errorf("the profile could not use the token its renewal returned: %v", err)
 	}
 }
 
-// A profile with no client or no grant is refused at construction, rather than
+// A profile with no client or no warrant is refused at construction, rather than
 // producing a materialization that reads without authority.
 func TestAProfileWithoutAuthorityIsRefusedAtConstruction(t *testing.T) {
 	if _, err := output.NewLeaseReadProfile(nil, "token", time.Minute); err == nil {
 		t.Error("a profile was built with no lease-control client")
-	} else if !strings.Contains(err.Error(), "never by a grant alone") {
+	} else if !strings.Contains(err.Error(), "never by a warrant alone") {
 		t.Errorf("the refusal does not say why: %v", err)
 	}
 
 	if _, err := output.NewLeaseReadProfile(&output.LeaseControlClient{}, "", time.Minute); err == nil {
-		t.Error("a profile was built with no grant")
+		t.Error("a profile was built with no warrant")
 	}
 }

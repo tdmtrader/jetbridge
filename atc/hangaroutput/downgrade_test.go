@@ -255,7 +255,7 @@ func TestTheBaseFacetRefusesWhileACaptureSelectedExecutionIsUnsettled(t *testing
 
 	if _, err := conn.Exec(`
 		INSERT INTO hangar_handoff_predeclarations
-			(handoff_id, source_lease_id, execution_id, execution_fence, output_name,
+			(handoff_id, source_hold_id, execution_id, execution_fence, output_name,
 			 activation_epoch, capture_deadline_at)
 		VALUES (gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 1, 'result',
 			$1, now() + interval '1 hour')`, int64(epoch)); err != nil {

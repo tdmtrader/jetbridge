@@ -155,7 +155,7 @@ jobs:
 # mint and nothing to point at GCS. The contract plants its own daemon stand-in
 # -- a hostNetwork BusyBox Pod that writes the strict tree onto the node and
 # answers POST /hangar/v1/materializations on 31780 with an exact empty 204 --
-# and signs its own materialization grants with a key it holds in process. What
+# and signs its own materialization warrants with a key it holds in process. What
 # is under test is the Pod the runtime GENERATES and the tree the init container
 # will accept, not the store behind the daemon.
 #

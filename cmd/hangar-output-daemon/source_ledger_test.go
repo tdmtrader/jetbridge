@@ -26,7 +26,7 @@ import (
 
 const (
 	testHandoff  = output.HandoffID("11111111-1111-4111-8111-111111111111")
-	testLease    = output.SourceLeaseID("22222222-2222-4222-8222-222222222222")
+	testLease    = output.SourceHoldID("22222222-2222-4222-8222-222222222222")
 	testTicket   = output.WriterTicketID("66666666-6666-4666-8666-666666666666")
 	testTicketB  = output.WriterTicketID("77777777-7777-4777-8777-777777777777")
 	testIntent   = output.ReleaseIntentID("88888888-8888-4888-8888-888888888888")
@@ -77,7 +77,7 @@ func admission() output.CaptureAdmission {
 		Execution:       identity(1),
 		ActivationEpoch: testEpoch,
 		HandoffID:       testHandoff,
-		SourceLeaseID:   testLease,
+		SourceHoldID:    testLease,
 		Output:          testOutput,
 		CaptureDeadline: output.NewTimestamp(fixedNow().Add(time.Hour)),
 	}
@@ -180,7 +180,7 @@ func TestARepeatedHoldReturnsTheSameStatementAndADifferentFenceIsAConflict(t *te
 
 	for name, mutate := range map[string]func(*output.CaptureAdmission){
 		"a different execution fence": func(a *output.CaptureAdmission) { a.Execution.Fence = 2 },
-		"a different source lease":    func(a *output.CaptureAdmission) { a.SourceLeaseID = "99999999-9999-4999-8999-999999999999" },
+		"a different source hold":     func(a *output.CaptureAdmission) { a.SourceHoldID = "99999999-9999-4999-8999-999999999999" },
 		"a different output":          func(a *output.CaptureAdmission) { a.Output = "other" },
 	} {
 		different := admission()
@@ -385,7 +385,7 @@ func TestNoSourceControlOperationAcceptsAPathAndASwappedSymlinkIsRefused(t *test
 // PublicationRequest.CaptureFence were validated non-zero and otherwise unread:
 // `admitted` compares only the EXECUTION fence, which a capture-lease takeover
 // does not move. So every stale-owner refusal on the capture branch lived in
-// PostgreSQL, and Req 10 says the daemon persists the matching source lease and
+// PostgreSQL, and Req 10 says the daemon persists the matching source hold and
 // epoch and that a stale owner may not seal, publish, sign, finalize or
 // release.
 //
@@ -564,7 +564,7 @@ func TestAReleaseClosesTheHoldAndLeavesTheStepsOutputOnTheNode(t *testing.T) {
 		Execution:       identity(1),
 		ActivationEpoch: testEpoch,
 		HandoffID:       testHandoff,
-		SourceLeaseID:   testLease,
+		SourceHoldID:    testLease,
 		ReleaseIntentID: testIntent,
 		Incarnation:     hold.Incarnation,
 	}); err != nil {
@@ -612,7 +612,7 @@ func TestAReleasedHoldIsGoneFromTheNodeAndAHeldOneIsNot(t *testing.T) {
 		Execution:       identity(1),
 		ActivationEpoch: testEpoch,
 		HandoffID:       testHandoff,
-		SourceLeaseID:   testLease,
+		SourceHoldID:    testLease,
 		ReleaseIntentID: testIntent,
 		Incarnation:     hold.Incarnation,
 	}
@@ -652,7 +652,7 @@ func TestAReleasedHoldIsGoneFromTheNodeAndAHeldOneIsNot(t *testing.T) {
 		Execution:       identity(1),
 		ActivationEpoch: testEpoch,
 		HandoffID:       testHandoff,
-		SourceLeaseID:   testLease,
+		SourceHoldID:    testLease,
 		ReleaseIntentID: testIntent,
 		Incarnation:     secondHold.Incarnation,
 	})
@@ -693,7 +693,7 @@ func TestAStaleFenceIsRefusedWhileTheCurrentOneIsServed(t *testing.T) {
 
 	// A REPEATED hold at the superseded fence is a read, and reads are served.
 	// It returns the stored statement -- the one the first hold returned, at
-	// fence 1 -- and grants nothing; a takeover keeps every durable statement,
+	// fence 1 -- and warrants nothing; a takeover keeps every durable statement,
 	// and the previous owner asking what this node said is not the previous
 	// owner acting.
 	//
@@ -948,7 +948,7 @@ func TestAReleaseReplayedAfterACrashStillClosesTheGate(t *testing.T) {
 		Execution:       identity(1),
 		ActivationEpoch: testEpoch,
 		HandoffID:       testHandoff,
-		SourceLeaseID:   testLease,
+		SourceHoldID:    testLease,
 		ReleaseIntentID: testIntent,
 		Incarnation:     hold.Incarnation,
 	}
@@ -1239,7 +1239,7 @@ func TestAReservationSurvivesARestartAndTheReplayReturnsTheSameLocation(t *testi
 	// issuing.
 	other := admission()
 	other.HandoffID = output.HandoffID("33333333-3333-4333-8333-333333333333")
-	other.SourceLeaseID = output.SourceLeaseID("44444444-4444-4444-8444-444444444444")
+	other.SourceHoldID = output.SourceHoldID("44444444-4444-4444-8444-444444444444")
 	fresh, err := fixture.source.ReserveIncarnation(context.Background(), other)
 	if err != nil {
 		t.Fatalf("reserving for a second handoff: %v", err)

@@ -67,7 +67,7 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 						},
 						ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch),
 						HandoffID:       hangaroutput.HandoffID(freshUUID()),
-						SourceLeaseID:   hangaroutput.SourceLeaseID(freshUUID()),
+						SourceHoldID:    hangaroutput.SourceHoldID(freshUUID()),
 						Output:          hangaroutput.OutputName(outputName),
 						CaptureDeadline: hangaroutput.NewTimestamp(time.Now().UTC().Add(24 * time.Hour)),
 					},
@@ -83,7 +83,7 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 		//
 		// WHAT IT BUILDS IS AN ADMISSION, not a Pod. Everything a Phase 3
 		// scenario needs from this sentence is the identities the control plane
-		// predeclares before anything may run -- the handoff, the source lease,
+		// predeclares before anything may run -- the handoff, the source hold,
 		// the exact execution, the declared output and the activation epoch --
 		// and none of that is a Pod fact. The Pod-shaped assertions still enter
 		// through `the capture pod is built`, which stays Phase 4's.
@@ -120,7 +120,7 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 						},
 						ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch),
 						HandoffID:       hangaroutput.HandoffID(freshUUID()),
-						SourceLeaseID:   hangaroutput.SourceLeaseID(freshUUID()),
+						SourceHoldID:    hangaroutput.SourceHoldID(freshUUID()),
 						Output:          hangaroutput.OutputName(outputName),
 						CaptureDeadline: hangaroutput.NewTimestamp(time.Now().UTC().Add(24 * time.Hour)),
 					},
@@ -360,7 +360,7 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 		// were wrong, and only running it found out: container-pod.feature
 		// contains no strict-input scenario at all (grep: zero hits for
 		// `strict`, `Hangar` or `hangar`), and NO BUCKET APPEARS IN A POD. The
-		// strict-input init carries a TreeRef and a signed grant; the daemon
+		// strict-input init carries a TreeRef and a signed warrant; the daemon
 		// resolves the bucket from its own configuration, which is exactly the
 		// containment Req 20 requires. A phrase naming a bucket would have been
 		// a phrase constructing a state production cannot reach -- convention 3
@@ -429,7 +429,7 @@ func buildCapturePod(in CaptureDraft) (CapturePodCreated, error) {
 		Identity:            in.Admission.Execution,
 		ActivationEpoch:     in.Admission.ActivationEpoch,
 		HandoffID:           in.Admission.HandoffID,
-		SourceLeaseID:       in.Admission.SourceLeaseID,
+		SourceHoldID:        in.Admission.SourceHoldID,
 		Output:              string(in.Output),
 		SourceControlGrant:  captureGrantForScenario,
 		CaptureDeadline:     in.Admission.CaptureDeadline.Time,
@@ -525,7 +525,7 @@ func scenarioReservation(in CaptureDraft) hangaroutput.ReservedIncarnation {
 		Execution:       in.Admission.Execution,
 		ActivationEpoch: in.Admission.ActivationEpoch,
 		HandoffID:       in.Admission.HandoffID,
-		SourceLeaseID:   in.Admission.SourceLeaseID,
+		SourceHoldID:    in.Admission.SourceHoldID,
 		NodeUID:         hangarNodeUID,
 		Incarnation:     incarnation,
 		Directory:       incarnation.Directory(),
@@ -663,7 +663,7 @@ func captureCarriesHandshakeAndDownwardAPI(in CapturePodCreated) error {
 		"HANGAR_EXECUTION_FENCE":  fmt.Sprintf("%d", in.Draft.Admission.Execution.Fence),
 		"HANGAR_ACTIVATION_EPOCH": fmt.Sprintf("%d", in.Draft.Admission.ActivationEpoch),
 		"HANGAR_HANDOFF_ID":       string(in.Draft.Admission.HandoffID),
-		"HANGAR_SOURCE_LEASE_ID":  string(in.Draft.Admission.SourceLeaseID),
+		"HANGAR_SOURCE_HOLD_ID":   string(in.Draft.Admission.SourceHoldID),
 	} {
 		got, present := values[name]
 		if !present {

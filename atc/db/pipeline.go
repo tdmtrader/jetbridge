@@ -74,8 +74,8 @@ type Pipeline interface {
 	PipelineRef() atc.PipelineRef
 	PipelineRunID() (int, bool)
 	RunNumber() (int, bool)
-	BasePipelineID() int
-	BasePipelineRef() (atc.PipelineRef, bool)
+	TemplatePipelineID() int
+	TemplatePipelineRef() (atc.PipelineRef, bool)
 
 	CheckPaused() (bool, error)
 	Reload() (bool, error)
@@ -140,32 +140,32 @@ type Pipeline interface {
 }
 
 type pipeline struct {
-	id               int
-	name             string
-	teamID           int
-	teamName         string
-	instanceVars     atc.InstanceVars
-	parentJobID      int
-	parentBuildID    int
-	groups           atc.GroupConfigs
-	varSources       atc.VarSourceConfigs
-	display          *atc.DisplayConfig
-	configVersion    ConfigVersion
-	paused           bool
-	pausedBy         string
-	pausedAt         time.Time
-	public           bool
-	archived         bool
-	template         bool
-	params           []atc.ParamSchema
-	runRetention     *atc.RunRetentionConfig
-	cacheScope       string
-	lastRunNumber    int
-	lastUpdated      time.Time
-	pipelineRunID    int
-	runNumber        int
-	basePipelineID   int
-	basePipelineName string
+	id                   int
+	name                 string
+	teamID               int
+	teamName             string
+	instanceVars         atc.InstanceVars
+	parentJobID          int
+	parentBuildID        int
+	groups               atc.GroupConfigs
+	varSources           atc.VarSourceConfigs
+	display              *atc.DisplayConfig
+	configVersion        ConfigVersion
+	paused               bool
+	pausedBy             string
+	pausedAt             time.Time
+	public               bool
+	archived             bool
+	template             bool
+	params               []atc.ParamSchema
+	runRetention         *atc.RunRetentionConfig
+	cacheScope           string
+	lastRunNumber        int
+	lastUpdated          time.Time
+	pipelineRunID        int
+	runNumber            int
+	templatePipelineID   int
+	templatePipelineName string
 
 	conn        DbConn
 	lockFactory lock.LockFactory
@@ -202,11 +202,11 @@ var pipelinesQuery = psql.Select(`
 		p.pipeline_run_id,
 		pr.template_pipeline_id,
 		pr.number,
-		base.name`).
+		tpl.name`).
 	From("pipelines p").
 	LeftJoin("teams t ON p.team_id = t.id").
 	LeftJoin("pipeline_runs pr ON p.pipeline_run_id = pr.id").
-	LeftJoin("(SELECT id, name FROM pipelines) base ON pr.template_pipeline_id = base.id")
+	LeftJoin("(SELECT id, name FROM pipelines) tpl ON pr.template_pipeline_id = tpl.id")
 
 func newPipeline(conn DbConn, lockFactory lock.LockFactory) *pipeline {
 	return &pipeline{
@@ -242,12 +242,12 @@ func (p *pipeline) PipelineRef() atc.PipelineRef {
 }
 func (p *pipeline) PipelineRunID() (int, bool) { return p.pipelineRunID, p.pipelineRunID != 0 }
 func (p *pipeline) RunNumber() (int, bool)     { return p.runNumber, p.pipelineRunID != 0 }
-func (p *pipeline) BasePipelineID() int        { return p.basePipelineID }
-func (p *pipeline) BasePipelineRef() (atc.PipelineRef, bool) {
-	if p.basePipelineID == 0 {
+func (p *pipeline) TemplatePipelineID() int    { return p.templatePipelineID }
+func (p *pipeline) TemplatePipelineRef() (atc.PipelineRef, bool) {
+	if p.templatePipelineID == 0 {
 		return atc.PipelineRef{}, false
 	}
-	return atc.PipelineRef{Name: p.basePipelineName}, true
+	return atc.PipelineRef{Name: p.templatePipelineName}, true
 }
 
 func (p *pipeline) CheckPaused() (bool, error) {

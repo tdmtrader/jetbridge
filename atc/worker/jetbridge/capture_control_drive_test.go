@@ -97,7 +97,7 @@ func driveCaptureHold(t *testing.T, harness *outputDaemonHarness, cfg Config, en
 		Execution:       identity,
 		ActivationEpoch: harnessEpoch,
 		HandoffID:       "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-		SourceLeaseID:   "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+		SourceHoldID:    "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
 		Output:          "result",
 		CaptureDeadline: hangaroutput.NewTimestamp(time.Now().UTC().Add(time.Hour)),
 	}
@@ -144,7 +144,7 @@ func driveCaptureHold(t *testing.T, harness *outputDaemonHarness, cfg Config, en
 		Identity:            identity,
 		ActivationEpoch:     harnessEpoch,
 		HandoffID:           admission.HandoffID,
-		SourceLeaseID:       admission.SourceLeaseID,
+		SourceHoldID:        admission.SourceHoldID,
 		Output:              string(admission.Output),
 		SourceControlGrant:  executioncontrol.ControlCapability(grant),
 		CaptureDeadline:     admission.CaptureDeadline.Time,
