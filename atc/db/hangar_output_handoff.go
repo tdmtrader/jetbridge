@@ -15,7 +15,8 @@ import (
 // It lives here rather than in hangar/output because atc/db.Tx already exists
 // here, and a repository that accepted the caller's transaction from the leaf
 // would have made the leaf depend on this package. The leaf declares the
-// interfaces; this satisfies them.
+// capture interface; this satisfies it, and the ports in atc/hangaroutput name
+// the rest.
 //
 // Every method takes the caller's Tx and nothing that can commit. A consumer's
 // binding write and the Hangar operation beside it commit together or roll back
@@ -33,12 +34,11 @@ func NewHangarOutputRepository(prefix HangarConsumerPrefix) *HangarOutputReposit
 	return &HangarOutputRepository{prefix: prefix}
 }
 
-var (
-	_ output.CaptureRepository   = (*HangarOutputRepository)(nil)
-	_ output.ClaimRepository     = (*HangarOutputRepository)(nil)
-	_ output.ReadLeaseRepository = (*HangarOutputRepository)(nil)
-	_ output.CancelSettler       = (*HangarOutputRepository)(nil)
-)
+// CaptureRepository is the one leaf interface the coordinator dials through
+// this type. The claim, read-lease and cancel methods below are reached through
+// atc/hangaroutput's own ports instead, which is why no leaf interface names
+// them: an interface nobody dials is a second description of a method set.
+var _ output.CaptureRepository = (*HangarOutputRepository)(nil)
 
 // PredeclareHandoff records the pre-start, non-authorizing predeclaration.
 //

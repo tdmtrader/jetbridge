@@ -82,8 +82,6 @@ func New(namespace output.OutputNamespace, store Store, clock output.Clock) (*In
 	return &Inventory{namespace: namespace, store: store, clock: clock}, nil
 }
 
-var _ output.Inventory = (*Inventory)(nil)
-
 // ListPage reads one bounded page under the server-derived prefix.
 //
 // Every field of the budget is a stop condition, and the page is Complete only

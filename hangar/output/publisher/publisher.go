@@ -103,8 +103,6 @@ func New(namespace output.OutputNamespace, store Store, timeout time.Duration) (
 	return &Publisher{namespace: namespace, store: store, timeout: timeout}, nil
 }
 
-var _ output.Publisher = (*Publisher)(nil)
-
 // EnsureObject creates the canonical tree if absent and reports the exact
 // generation either way.
 //

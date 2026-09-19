@@ -91,8 +91,6 @@ func New(namespace output.OutputNamespace, store Store) (*Reclaimer, error) {
 	return &Reclaimer{namespace: namespace, store: store}, nil
 }
 
-var _ output.Reclaimer = (*Reclaimer)(nil)
-
 // DeleteExactGeneration removes one generation, conditionally.
 //
 // Every branch below returns an outcome, including the failures, because the
