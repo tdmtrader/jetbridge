@@ -59,3 +59,15 @@ port-forward itself. Jobs whose task config interpolates `((var))` need the valu
 - `fly/integration` builds the fly binary and tests it against a mock ATC. The mock's `atcVersion` (`0.1.0`, in `fly/integration/suite_test.go`) is a self-contained fixture — it is deliberately *not* tied to `versions.go`, and does not need updating when the release version moves. The specs that care about version skew set `flyVersion` from it explicitly.
 - The three release version strings — the `VERSION` file, `JetBridgeVersion` in `versions.go`, and `appVersion` in `deploy/chart/Chart.yaml` — must agree. `TestVersionDeclarationsAgree` enforces it; nothing syncs them automatically.
 - `web/public/elm.js` is a gitignored build intermediate. The tracked, served bundle is `web/public/elm.min.js` (see `web/public/index.html`), and `web/handler.go` embeds the whole `public` directory. After changing any Elm source, run `yarn run build` or the bundle goes stale.
+
+## Agent skills
+
+### Issue tracker
+
+Work is tracked in the anvil hearth at `../jetbridge-hearth` (tracks under proposals; sparks for
+unscoped ideas), never GitHub Issues or `.scratch/`. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Multi-context: `CONTEXT-MAP.md` at the root indexes four `CONTEXT.md` glossaries; ADRs in
+`docs/adr/`. See `docs/agents/domain.md`.
