@@ -273,14 +273,16 @@ Feature: Getting artifacts from the artifact daemon
   # the race and get bound to as the source. Here the daemon answers /resolve
   # enthusiastically and holds nothing; a hit would mean the fallback is back.
   #
-  # THE ONE STAND-IN LEFT IN THIS FEATURE, and not for want of trying. A real
-  # daemon cannot be put in this position: a peer-served resolve needs the
-  # DAEMON's own EndpointSlice discovery, which main.go builds from
-  # rest.InClusterConfig() alone and cannot be pointed at anything outside a
-  # cluster. A real daemon with no peers misses on /resolve as well, which
-  # would reproduce this scenario's wire signature and not its situation — and
-  # would lose the regression it exists to catch. So the daemon here is a
-  # server that answers /resolve and nothing else.
+  # THE ONE STAND-IN LEFT IN THIS FEATURE, and the reason is a gate the real
+  # daemon keeps on purpose. This scenario needs a daemon that answers
+  # /resolve YES unconditionally while holding nothing, so that ANY return of
+  # the fallback is caught. The real binary refuses /resolve to a caller with
+  # no capability grant, and the probe carries none: against it the fallback
+  # would be refused, the probe would report a miss, and the regression would
+  # be back with the scenario still green. So the daemon here is a server that
+  # answers /resolve and nothing else. (Two real daemons can find each other
+  # now — the daemon takes --kubeconfig, and daemon-mirroring.feature runs a
+  # real producer and a real peer — so peer discovery is no longer the reason.)
   #
   # The other half of that regression — /resolve also wrote a full copy of the
   # artifact into the daemon pod's /tmp, outside the swept storage path, where
@@ -316,34 +318,18 @@ Feature: Getting artifacts from the artifact daemon
     And the daemon is not known to have a durable tier
 
   # -------------------------------------------------------------------------
-  # NOT WHOLE: asking a daemon to mirror has no scenario
+  # Asking a daemon to mirror: covered in daemon-mirroring.feature
   # -------------------------------------------------------------------------
   #
-  # Reading a mirrored copy is covered above. Asking for one is not, and the
-  # gap is deliberate rather than overlooked, so it is written down here.
+  # Reading a mirrored copy is covered above. Asking for one was a
+  # written-down gap here for as long as two real daemons could not find each
+  # other outside a cluster. The daemon now takes --kubeconfig, so
+  # daemon-mirroring.feature starts a real producer and a real peer against
+  # the suite's real API server, asks the producer to mirror, and reads the
+  # copy off the peer's disk. The gap is closed there, not here: from the
+  # ATC's side DaemonClient.TriggerMirror returns nil on every path by
+  # contract, so nothing at this seam can observe whether a copy was made.
   #
-  # DaemonClient.TriggerMirror returns nil on every path BY CONTRACT — 202,
-  # non-202, transport failure and a request that could not even be built all
-  # return nil, because failing to schedule a mirror must not fail a step that
-  # already succeeded. Five step definitions existed for its branches and no
-  # scenario ever used them; they were deleted in the vocabulary pass rather
-  # than left standing as coverage that was not there (recover them from git
-  # if this is picked up).
-  #
-  # They were not simply wired to scenarios because the only assertion those
-  # steps could make was "the producing step is not failed", and against a
-  # function that always returns nil that assertion cannot fail. Five green
-  # scenarios asserting nothing is worse than an acknowledged gap.
-  #
-  # Closing it is now a smaller job than it was, and the shape has changed
-  # with the daemon: POST /mirror on a real daemon with no peer resolver
-  # schedules nothing, so "the mirror arrived" still has no observable form
-  # here. Two daemons could show it — and cannot be had, for the same reason
-  # the resolve scenario above keeps its stand-in: peer discovery is
-  # in-cluster-only, so two real daemons cannot find each other outside one.
-  # Closing this needs a production flag, which is a decision rather than a
-  # detail.
-
   # -------------------------------------------------------------------------
   # Finding which daemon holds a step artifact
   # -------------------------------------------------------------------------

@@ -41,17 +41,20 @@ import (
 //     scheme, and it was guessed.
 //
 // So this resource runs the actual binary: `go build ./cmd/artifact-daemon`,
-// then a process per scenario with its own storage root on a free port. No
-// Kubernetes is involved — the daemon only builds a client when asked to label
-// a node, and these scenarios do not ask.
+// then a process per scenario with its own storage root on a free port. The
+// daemon only builds a Kubernetes client when given --node-name, and most of
+// these scenarios do not ask, so no cluster is involved for them.
 //
-// MIRRORING IS OUT OF REACH HERE, and the reason is worth writing down: peer
-// discovery goes through EndpointSlices, and main.go builds that client with
-// rest.InClusterConfig() alone. There is no --kubeconfig flag, and client-go
-// hardcodes the service-account token path, so a daemon cannot be pointed at
-// envtest's API server from outside a cluster. Two real daemons therefore
-// cannot find each other. Closing that needs a production flag, which is a
-// decision rather than a detail.
+// PEERS ARE IN REACH TOO. How the daemon reaches the cluster is an input to
+// the binary rather than something it works out inline: --kubeconfig when
+// set, the in-cluster config otherwise. One seam, two adapters — in-cluster
+// in a pod, injected here — which is exactly what lets two real daemons find
+// each other outside a cluster. Peer discovery reads EndpointSlices, so a
+// scenario that needs peers starts the producer with --kubeconfig pointed at
+// the suite's "real-cluster" resource (envtest.go, a real kube-apiserver) and
+// publishes the other daemon's address in a slice there. daemon_cross_node.go
+// and daemon_mirroring.go are built that way, on this launcher, and
+// peerproof_test.go is the proof that the seam holds end to end.
 
 type realDaemon struct {
 	Root string // the storage path this daemon serves

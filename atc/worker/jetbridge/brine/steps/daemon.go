@@ -43,12 +43,17 @@ package steps
 // really carries it, and would fail if that route stopped carrying it.
 //
 // ONE double survives, for one scenario, and the scenario says why in the
-// feature file: a daemon that answers /resolve while holding nothing locally
-// cannot be built from the real binary. Peer-served resolve needs DAEMON-side
-// peer discovery, which main.go builds only from rest.InClusterConfig() and
-// cannot be pointed anywhere outside a cluster. A real daemon with no peers
-// simply misses — which reproduces the wire signature of that scenario and not
-// its situation, and loses the regression it exists to catch.
+// feature file: it needs a daemon that answers /resolve YES unconditionally
+// while holding nothing, so that any return of the probe's old /resolve
+// fallback is caught. The real binary cannot be put in that position by
+// design. /resolve is behind a capability the probe does not carry, so a real
+// daemon refuses the fallback with 403 and the probe reports a miss either
+// way — the regression would come back and the scenario would stay green.
+// That is a controllable answer the real binary will not give, which is the
+// only ground on which a double is kept here. (Two real daemons CAN now find
+// each other — the daemon takes --kubeconfig, and daemon_mirroring.go runs a
+// real producer and a real peer — so "peer discovery is in-cluster-only" is
+// no longer the reason, and is not the reason.)
 //
 // The domain-state structs are declared here rather than in domain.go so this
 // family can be read, and reviewed, as one file.
@@ -400,12 +405,13 @@ func DaemonDefinitions() []brine.StepDefinition {
 		),
 
 		// THE ONE DOUBLE LEFT IN THIS FILE, and the reason is in the scenario
-		// that uses it: the real binary cannot be made to answer /resolve
-		// while holding nothing locally, because a peer-served resolve needs
-		// the daemon's own EndpointSlice discovery and that is built from
-		// rest.InClusterConfig() alone. A real daemon with no peers misses on
-		// /resolve too, which would reproduce the wire signature of the
-		// scenario and not its situation.
+		// that uses it: the real binary will not answer /resolve YES to a
+		// caller with no capability grant, and the probe carries none. A real
+		// daemon here would refuse the fallback with 403, the probe would
+		// report a miss, and the regression this scenario exists to catch
+		// would be invisible. Peer discovery is not the obstacle any more —
+		// the daemon takes --kubeconfig, see daemon_mirroring.go — the
+		// capability gate is, and it is there on purpose.
 		//
 		// It answers /resolve enthusiastically and 404s everything else,
 		// including the HEAD /resource-caches/ the probe actually sends. A hit
