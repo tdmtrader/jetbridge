@@ -211,8 +211,10 @@ func TestMirrorJob_Run_RecordsPerPeerOutcomes(t *testing.T) {
 	// Three peers:
 	//   ok       — accepts /stream-in/handle/output and 201's
 	//   rejects  — always 500
-	//   slow     — sleeps longer than per-peer timeout
+	//   slow     — never answers until the test releases it, so the
+	//              per-peer timeout is the only thing that can end it
 	var okHits, rejectHits, slowHits int32
+	release := make(chan struct{})
 
 	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&okHits, 1)
@@ -232,7 +234,7 @@ func TestMirrorJob_Run_RecordsPerPeerOutcomes(t *testing.T) {
 
 	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&slowHits, 1)
-		time.Sleep(500 * time.Millisecond) // longer than perPeerTimeout below
+		<-release // only closed after Run has returned
 		w.WriteHeader(http.StatusCreated)
 	}))
 	defer slow.Close()
@@ -257,13 +259,19 @@ func TestMirrorJob_Run_RecordsPerPeerOutcomes(t *testing.T) {
 		peers:          []string{peerOK, peerReject, peerSlow},
 		port:           7780,
 		scheme:         "http",
-		client:         &http.Client{Transport: transport, Timeout: 5 * time.Second},
+		client:         &http.Client{Transport: transport, Timeout: 30 * time.Second},
 		logger:         lagertest.NewTestLogger("mirror"),
-		perPeerTimeout: 100 * time.Millisecond, // forces slow peer to timeout
+		// Generous so the ok and rejecting peers never time out under
+		// load (build 868788 saw all three deadline-exceeded at 100ms);
+		// the slow peer still times out because it never answers.
+		perPeerTimeout: 2 * time.Second,
 	}
 
 	// Must NOT panic, must NOT return any error.
 	outcomes := job.Run(context.Background())
+	// Release the slow handler now: the deferred slow.Close() waits for
+	// active handlers, and Run has already given up on this one.
+	close(release)
 
 	if len(outcomes) != 3 {
 		t.Fatalf("expected 3 outcomes (one per peer), got %d", len(outcomes))
