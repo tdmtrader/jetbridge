@@ -5,12 +5,26 @@ Each entry includes the test ID, failure description, root cause analysis, and p
 
 ## Full Suite Run Results
 
-**Current (verified 2026-05-31, kind-runner v35, CI build k8s-e2e/k8s-behavioral-tests/103; #102 identical):**
+**Current (verified 2026-09-19, kind-runner v35, CI build k8s-e2e/k8s-behavioral-tests/193; #191 identical):**
+
+```
+Ran 299 of 304 Specs in 2308 seconds (~38 min)
+299 Passed | 0 Failed | 1 Pending | 4 Skipped
+```
+
+Wall clock for the job is ~40 min (build 193: 40m7s) once cluster bring-up
+and image builds are added. The only specs that still flake are the two
+`pod_resilience_test.go` pod-deletion specs (build 192, attempt 1); both are
+timing races in the specs themselves, fixed alongside this note.
+
+<details>
+<summary>Previous snapshot (2026-05-31, build #103; #102 identical)</summary>
 
 ```
 Ran 298 of 304 Specs in 1743 seconds (~29 min)
 298 Passed | 0 Failed | 1 Pending | 5 Skipped
 ```
+</details>
 
 The suite is **green** across two consecutive runs (#102, #103). The DaemonSet
 artifact-cache architecture resolved the former artifact-streaming failures

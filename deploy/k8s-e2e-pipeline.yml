@@ -535,8 +535,8 @@ jobs:
           docker pull rancher/k3s:v1.31.6-k3s1
 
           echo ""
-          echo "=== Running K8s behavioral tests (pre-compiled, 2 parallel KinD clusters) ==="
-          echo "This will take 2-3 hours."
+          echo "=== Running K8s behavioral tests (pre-compiled, one K3s cluster, --procs=${K8S_PROCS:-1}) ==="
+          echo "A green run takes about 40 minutes."
           echo ""
           # Run with 1 process — concurrent K3s cluster creation overwhelms
           # Docker's containerd with image layer lock contention in DinD.
