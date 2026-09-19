@@ -144,11 +144,11 @@ type DrainConfirmer interface {
 // ReceiptChecker verifies a receipt's signature against the activation-pinned
 // key and the one-use challenge it answers.
 //
-// It is narrower than the leaf's ReceiptVerifier on purpose. That interface
-// also promises an exact-generation metadata stat, and the control plane holds
-// no bucket credential to make one with -- Req 20 puts the object role on the
-// publisher principal and Req 24 keeps it away from everything else. The stat
-// IS performed, by the daemon, inside the attestation the receipt comes from;
+// It is deliberately narrower than a full verification. Req 26 asks for an
+// exact-generation metadata stat as well, and the control plane holds no bucket
+// credential to make one with -- Req 20 puts the object role on the publisher
+// principal and Req 24 keeps it away from everything else. The stat IS
+// performed, by the daemon, inside the attestation the receipt comes from;
 // what is left for the control plane is the half it can do and must:
 // the signature under the epoch's key, and every signed claim matched against
 // the durable checkpoint, reservation and fence, which this package does

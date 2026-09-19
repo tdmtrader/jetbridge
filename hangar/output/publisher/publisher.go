@@ -400,6 +400,12 @@ func (publisher *Publisher) StatExactObject(ctx context.Context, ref hangar.Tree
 	return publisher.classify(attrs, output.ResolvedReservation{Digest: ref.Digest}, sizeUnknown)
 }
 
+// Deferred: a managed read reaches a consumer pod through a read lease the ATC
+// acquires before the Pod is built, and that acquisition -- the claim, the lease
+// transaction and the init-container route -- is the half of the Phase 8
+// managed-read box this phase did not land. The profile itself is composed
+// against the real control plane and the real materializer in atc/hangaroutput
+//
 // OpenExactObject reads the bytes, under an active read lease.
 func (publisher *Publisher) OpenExactObject(ctx context.Context, ref hangar.TreeRef, lease output.ReadLease) (io.ReadCloser, output.PublishedObject, error) {
 	if err := lease.Validate(); err != nil {

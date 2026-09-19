@@ -143,6 +143,10 @@ var deferredEntryPoints = []deferredEntryPoint{
 	// this phase did not land.
 	{name: "NewLeaseReadProfile", pkg: "hangar/output", why: managedReadHasNoConsumer},
 	{name: "Renew", pkg: "hangar/output", why: managedReadHasNoConsumer},
+	// The publisher's read-under-lease is the daemon end of the same half. It
+	// used to be credited through the leaf's Publisher interface, which no
+	// production code held; the interface is gone and the credit with it.
+	{name: "OpenExactObject", pkg: "hangar/output/publisher", why: managedReadHasNoConsumer},
 	{name: "ObserveExactAbsence", why: separateAbsenceStat},
 	{name: "Holds", why: runnerBeliefIsNotAuthority},
 
@@ -613,13 +617,13 @@ var interfaceSatisfied = map[string]satisfiedEntry{
 	"RecordNoCaptureIntent":                  {pkg: "atc/db", port: "atc/hangaroutput.Repository and hangar/output.CaptureRepository"},
 	"RegisterReceipt":                        {pkg: "atc/db", port: "atc/hangaroutput.Repository and hangar/output.CaptureRepository"},
 	"ResolveLogicalReservation":              {pkg: "atc/db", port: "atc/hangaroutput.Repository and hangar/output.CaptureRepository"},
-	"CancelOrSettle":                         {pkg: "atc/db", port: "atc/hangaroutput.Repository and hangar/output.CancelSettler"},
+	"CancelOrSettle":                         {pkg: "atc/db", port: "atc/hangaroutput.Repository"},
 
 	// The read-lease ports, split so a holder of one cannot use the other.
-	"AcquireReadLease":  {pkg: "atc/db", port: "atc/hangaroutput.ReadLeaseStore and hangar/output.ReadLeaseRepository"},
-	"ReleaseReadLease":  {pkg: "atc/db", port: "atc/hangaroutput.LeaseControlStore and hangar/output.ReadLeaseRepository"},
-	"RenewReadLease":    {pkg: "atc/db", port: "atc/hangaroutput.LeaseControlStore and hangar/output.ReadLeaseRepository"},
-	"ValidateReadLease": {pkg: "atc/db", port: "atc/hangaroutput.LeaseControlStore and hangar/output.ReadLeaseRepository"},
+	"AcquireReadLease":  {pkg: "atc/db", port: "atc/hangaroutput.ReadLeaseStore"},
+	"ReleaseReadLease":  {pkg: "atc/db", port: "atc/hangaroutput.LeaseControlStore"},
+	"RenewReadLease":    {pkg: "atc/db", port: "atc/hangaroutput.LeaseControlStore"},
+	"ValidateReadLease": {pkg: "atc/db", port: "atc/hangaroutput.LeaseControlStore"},
 
 	"CloseAbandonedReadLeases": {pkg: "atc/db", port: "atc/hangaroutput.AbandonedReadLeases"},
 	"IncompleteHandoffs":       {pkg: "atc/db", port: "atc/hangaroutput.IncompleteReader"},
@@ -628,8 +632,6 @@ var interfaceSatisfied = map[string]satisfiedEntry{
 	// the same implementation without linking atc/db's package name.
 	"ClaimOperationLease": {pkg: "atc/db", port: "atc/hangaroutput/controller.Leases"},
 	"RenewOperationLease": {pkg: "atc/db", port: "atc/hangaroutput/controller.Leases"},
-
-	"OpenExactObject": {pkg: "hangar/output/publisher", port: "hangar/output.Publisher"},
 
 	// The operator status surface's read port. Its implementation is
 	// db.HangarOutputRepository, and atc/hangaroutput/status.go holds the port
