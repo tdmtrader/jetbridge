@@ -40,7 +40,7 @@ jobs:
       image_resource: {type: registry-image, source: {repository: busybox}}
       run:
         path: sh
-        args: ["-c", "echo command-running && sleep 120"]
+        args: ["-c", 'printf "command-%s\n" running && sleep 120']
 `)
 		setAndUnpausePipeline(cfg)
 		triggerJob("eviction-job")
@@ -65,7 +65,12 @@ jobs:
 		By("waiting for the step's command to actually start")
 		// The command's own first line is the only evidence that it is
 		// running. A pod in phase Running is not: the pause container sleeps
-		// whether or not anything has been exec'd into it.
+		// whether or not anything has been exec'd into it. Nor is fly's own
+		// `running sh -c ...` line, which echoes the command before the exec
+		// exists -- so the sentinel is assembled by printf at run time and
+		// never appears verbatim in the command line. Build 192 matched the
+		// echo, deleted the pod 360ms before the exec was created, and got a
+		// generic "cannot exec in a stopped state" instead of this sentence.
 		sess := fly.Start("watch", "-j", inPipeline("eviction-job"), "-b", "1")
 		Eventually(sess.Out, 3*time.Minute).Should(gbytes.Say("command-running"))
 
@@ -115,6 +120,13 @@ jobs:
 		// This test validates that when a pod's node becomes unavailable,
 		// the build is eventually marked as errored. We simulate this by
 		// deleting the pod (since we cannot safely drain a node in tests).
+		//
+		// The deletion has to land while the command is running, for the
+		// reason the eviction spec above spells out: a pause pod taken away
+		// before its command starts is replaced and the build goes green.
+		// Build 192 deleted the pod ~200ms after the trigger and failed on
+		// exactly that. Same sentinel discipline as above -- printf keeps it
+		// out of the command line fly echoes.
 		cfg := writePipelineFile("node-fail.yml", `
 jobs:
 - name: node-fail-job
@@ -125,19 +137,23 @@ jobs:
       image_resource: {type: registry-image, source: {repository: busybox}}
       run:
         path: sh
-        args: ["-c", "echo started && sleep 60"]
+        args: ["-c", 'printf "node-fail-%s\n" running && sleep 60']
 `)
 		setAndUnpausePipeline(cfg)
 		triggerJob("node-fail-job")
 
-		By("waiting for pod to appear then deleting it")
+		By("waiting for the pod to appear and its command to start")
 		pods := waitForConcoursePodsAtLeast(1)
-		_ = kubeClient.CoreV1().Pods(config.Namespace).Delete(
+		sess := fly.Start("watch", "-j", inPipeline("node-fail-job"), "-b", "1")
+		Eventually(sess.Out, 3*time.Minute).Should(gbytes.Say("node-fail-running"))
+
+		By("deleting the pod out from under the running command")
+		Expect(kubeClient.CoreV1().Pods(config.Namespace).Delete(
 			context.Background(), pods[0].Name, metav1.DeleteOptions{},
-		)
+		)).To(Succeed())
 
 		By("verifying the build errors out")
-		sess := waitForBuildAndWatch("node-fail-job")
+		Eventually(sess, 5*time.Minute).Should(gexec.Exit())
 		Expect(sess.ExitCode()).ToNot(Equal(0))
 	})
 
