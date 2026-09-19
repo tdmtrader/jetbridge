@@ -55,21 +55,44 @@ import (
 // scannedPackages are the leaf directories this file inventories.
 var scannedPackages = []string{".", "../executioncontrol"}
 
-// roleDirs are the four role packages: one binary and one service account
-// each. They are inventoried separately from the leaf because the rules over
-// them are about what a process holds, not about what the leaf declares.
-var roleDirs = []string{"publisher", "inventory", "reclaimer", "policy"}
+// role is a package under this rule: one of the four cloud-permission
+// personas, or the leaf they all depend on.
+type role string
 
-// roleOf names the role package a declaration belongs to, or "" for the leaf.
-func roleOf(file string) string {
+const (
+	leafRole      role = "leaf"
+	publisherRole role = "publisher"
+	inventoryRole role = "inventory"
+	reclaimerRole role = "reclaimer"
+	policyRole    role = "policy"
+)
+
+// roles are the four role packages: one binary and one service account each.
+// They are inventoried separately from the leaf because the rules over them
+// are about what a process holds, not about what the leaf declares.
+var roles = []role{publisherRole, inventoryRole, reclaimerRole, policyRole}
+
+// roleDirs are the directories the role packages live in, relative to this
+// file.
+func roleDirs() []string {
+	dirs := make([]string, 0, len(roles))
+	for _, each := range roles {
+		dirs = append(dirs, string(each))
+	}
+
+	return dirs
+}
+
+// roleOf names the role a declaration belongs to, by the directory it is in.
+func roleOf(file string) role {
 	dir := filepath.Base(filepath.Dir(file))
-	for _, role := range roleDirs {
-		if dir == role {
-			return role
+	for _, each := range roles {
+		if dir == string(each) {
+			return each
 		}
 	}
 
-	return ""
+	return leafRole
 }
 
 // scannedFile is one file in the inventory. Extensionless files are included
@@ -447,7 +470,7 @@ var deleteVocabularyExemptions = map[string]string{
 // deleteRole is the one role package that may delete, and deleteRoleType the
 // one exported type in it that carries the delete a binary calls.
 const (
-	deleteRole     = "reclaimer"
+	deleteRole     = reclaimerRole
 	deleteRoleType = "Reclaimer"
 	deleteSeamType = "Handle"
 )
@@ -472,8 +495,8 @@ func checkOnlyTheReclaimerDeletes(found surface) []string {
 		if !namesTerm(callable.Name, "delete") {
 			continue
 		}
-		role := roleOf(callable.File)
-		if role == "" {
+		owner := roleOf(callable.File)
+		if owner == leafRole {
 			if _, ok := deleteVocabularyExemptions[callable.Name]; ok && callable.Owner == "" {
 				exempted[callable.Name] = true
 
@@ -485,9 +508,9 @@ func checkOnlyTheReclaimerDeletes(found surface) []string {
 
 			continue
 		}
-		if role != deleteRole {
-			problems = append(problems, callable.File+": "+role+"."+describe(callable)+
-				" offers a delete. Only the "+deleteRole+" may, because GCS IAM cannot require "+
+		if owner != deleteRole {
+			problems = append(problems, callable.File+": "+string(owner)+"."+describe(callable)+
+				" offers a delete. Only the "+string(deleteRole)+" may, because GCS IAM cannot require "+
 				"a caller to send a generation precondition once delete permission exists — the "+
 				"seam has to be the code.")
 
@@ -527,27 +550,27 @@ func checkOnlyTheReclaimerDeletes(found surface) []string {
 					"from a conditional one.")
 			}
 		default:
-			owner := callable.Owner
-			if owner == "" {
-				owner = "a package function"
+			holder := callable.Owner
+			if holder == "" {
+				holder = "a package function"
 			}
 			problems = append(problems, callable.File+": "+describe(callable)+" is a delete on "+
-				owner+". In package "+deleteRole+" a delete lives on "+deleteRoleType+" (the role "+
+				holder+". In package "+string(deleteRole)+" a delete lives on "+deleteRoleType+" (the role "+
 				"type, with its precondition) or on "+deleteSeamType+" (the pinned store seam) and "+
 				"nowhere else; a third route is a route without the precondition.")
 		}
 	}
 
 	if roleDeletes == 0 {
-		problems = append(problems, "no delete on "+deleteRole+"."+deleteRoleType+" was found. "+
+		problems = append(problems, "no delete on "+string(deleteRole)+"."+deleteRoleType+" was found. "+
 			"The isolation rule has nothing to bind to and would pass vacuously.")
 	}
 	if roleDeletes > 1 {
-		problems = append(problems, deleteRole+"."+deleteRoleType+" offers more than one delete; "+
+		problems = append(problems, string(deleteRole)+"."+deleteRoleType+" offers more than one delete; "+
 			"one conditional route is the whole point.")
 	}
 	if seamDeletes == 0 {
-		problems = append(problems, "no Delete on "+deleteRole+"."+deleteSeamType+" was found; "+
+		problems = append(problems, "no Delete on "+string(deleteRole)+"."+deleteSeamType+" was found; "+
 			"the role type's delete has no store seam to reach, or the seam was renamed and "+
 			"this rule no longer describes it.")
 	}
@@ -569,26 +592,26 @@ func checkOnlyTheReclaimerDeletes(found surface) []string {
 // The delete verb is deliberately absent from every row: the delete rule above
 // states where the one delete lives, and a second statement of it here would be
 // a second rule to keep in step.
-var roleVerbs = map[string]struct {
+var roleVerbs = map[role]struct {
 	forbidden []string
 	because   string
 }{
-	"publisher": {
+	publisherRole: {
 		forbidden: []string{"list", "update"},
 		because: "the publisher creates and reads. objects.list is bucket-wide and cannot be " +
 			"narrowed by IAM, and the marker's immutability rests on there being no way to " +
 			"rewrite metadata after creation",
 	},
-	"inventory": {
+	inventoryRole: {
 		forbidden: []string{"create", "ensure", "write", "writer", "update"},
 		because:   "inventory lists and stats. It cannot create",
 	},
-	"reclaimer": {
+	reclaimerRole: {
 		forbidden: []string{"create", "ensure", "write", "writer", "read", "reader", "list", "update"},
 		because: "a reclaimer that could read could exfiltrate and one that could write could " +
 			"resurrect; it deletes what it was told to delete and does not go looking",
 	},
-	"policy": {
+	policyRole: {
 		forbidden: []string{"object", "list", "create", "ensure", "write", "writer", "read", "reader", "stat"},
 		because: "the attestor is the workload whose word the plane trusts about whether the " +
 			"bucket is safe. One that could also touch an object would be a workload whose " +
@@ -603,26 +626,26 @@ func checkEachRoleOffersOnlyItsOwnVerbs(found surface) []string {
 		return []string{"the inventory found no exported callable; this rule would pass vacuously"}
 	}
 
-	seen := map[string]int{}
+	seen := map[role]int{}
 	for _, callable := range found.Callables {
-		role := roleOf(callable.File)
-		verbs, isRole := roleVerbs[role]
+		owner := roleOf(callable.File)
+		verbs, isRole := roleVerbs[owner]
 		if !isRole {
 			continue
 		}
-		seen[role]++
+		seen[owner]++
 		for _, verb := range verbs.forbidden {
 			if !namesTerm(callable.Name, verb) {
 				continue
 			}
-			problems = append(problems, callable.File+": "+role+"."+describe(callable)+
+			problems = append(problems, callable.File+": "+string(owner)+"."+describe(callable)+
 				" names "+verb+". "+verbs.because+".")
 		}
 	}
-	for _, role := range roleDirs {
-		if seen[role] == 0 {
+	for _, each := range roles {
+		if seen[each] == 0 {
 			problems = append(problems, "the inventory found no exported callable in package "+
-				role+"; the privilege split has nothing to bind to there.")
+				string(each)+"; the privilege split has nothing to bind to there.")
 		}
 	}
 
@@ -648,7 +671,7 @@ func checkTheAttestorTouchesNoObject(found surface) []string {
 
 	imports, callables := 0, 0
 	for _, edge := range found.Imports {
-		if roleOf(edge.File) != "policy" {
+		if roleOf(edge.File) != policyRole {
 			continue
 		}
 		imports++
@@ -661,7 +684,7 @@ func checkTheAttestorTouchesNoObject(found surface) []string {
 		}
 	}
 	for _, callable := range found.Callables {
-		if roleOf(callable.File) != "policy" {
+		if roleOf(callable.File) != policyRole {
 			continue
 		}
 		callables++
@@ -717,7 +740,7 @@ func checkRoleTypesTakeNoCallerChosenLocation(found surface) []string {
 	declared := map[string]bool{}
 	for _, typ := range found.Types {
 		if typ.Kind == "interface" {
-			declared[roleOf(typ.File)+"/"+typ.Name] = true
+			declared[string(roleOf(typ.File))+"/"+typ.Name] = true
 		}
 	}
 	for seam, reason := range storeSeams {
@@ -730,11 +753,11 @@ func checkRoleTypesTakeNoCallerChosenLocation(found surface) []string {
 
 	checked := 0
 	for _, callable := range found.Callables {
-		role := roleOf(callable.File)
-		if role == "" || role == "policy" {
+		owner := roleOf(callable.File)
+		if owner == leafRole || owner == policyRole {
 			continue
 		}
-		if _, seam := storeSeams[role+"/"+callable.Owner]; seam {
+		if _, seam := storeSeams[string(owner)+"/"+callable.Owner]; seam {
 			continue
 		}
 		checked++
@@ -744,14 +767,14 @@ func checkRoleTypesTakeNoCallerChosenLocation(found surface) []string {
 				name = "(unnamed)"
 			}
 			if isCallerChosenString(param.Type) {
-				problems = append(problems, callable.File+": "+role+"."+describe(callable)+
+				problems = append(problems, callable.File+": "+string(owner)+"."+describe(callable)+
 					" takes a bare string parameter "+name+" ("+param.Type+"). The control plane derives "+
 					"every bucket, scope, key and path from authenticated deployment context; a role "+
 					"that accepts a string accepts one a caller chose.")
 			}
 			for _, forbidden := range locationParamTypes {
 				if param.Type == forbidden {
-					problems = append(problems, callable.File+": "+role+"."+describe(callable)+
+					problems = append(problems, callable.File+": "+string(owner)+"."+describe(callable)+
 						" accepts a "+param.Type+" parameter. A scope is server-derived; accepting "+
 						"one as an argument is how a caller chooses its own namespace.")
 				}
@@ -767,11 +790,11 @@ func checkRoleTypesTakeNoCallerChosenLocation(found surface) []string {
 }
 
 // principalBinaries are the four cmd/ roots and the one role each may link.
-var principalBinaries = map[string]string{
-	"cmd/hangar-output-daemon":          "publisher",
-	"cmd/hangar-output-inventory":       "inventory",
-	"cmd/hangar-output-reclaimer":       "reclaimer",
-	"cmd/hangar-output-policy-attestor": "policy",
+var principalBinaries = map[string]role{
+	"cmd/hangar-output-daemon":          publisherRole,
+	"cmd/hangar-output-inventory":       inventoryRole,
+	"cmd/hangar-output-reclaimer":       reclaimerRole,
+	"cmd/hangar-output-policy-attestor": policyRole,
 }
 
 const rolePackagePrefix = "github.com/concourse/concourse/hangar/output/"
@@ -786,7 +809,7 @@ func checkEachPrincipalLinksExactlyItsRole(linked map[string][]string) []string 
 		return []string{"no principal binary was listed; this rule would pass vacuously"}
 	}
 
-	for binary, role := range principalBinaries {
+	for binary, own := range principalBinaries {
 		deps, listed := linked[binary]
 		if !listed || len(deps) == 0 {
 			problems = append(problems, binary+" was not listed, or links nothing; either it moved "+
@@ -794,20 +817,20 @@ func checkEachPrincipalLinksExactlyItsRole(linked map[string][]string) []string 
 
 			continue
 		}
-		links := map[string]bool{}
+		links := map[role]bool{}
 		for _, dep := range deps {
 			if strings.HasPrefix(dep, rolePackagePrefix) {
-				links[strings.TrimPrefix(dep, rolePackagePrefix)] = true
+				links[role(strings.TrimPrefix(dep, rolePackagePrefix))] = true
 			}
 		}
-		if !links[role] {
-			problems = append(problems, binary+" does not link "+rolePackagePrefix+role+
+		if !links[own] {
+			problems = append(problems, binary+" does not link "+rolePackagePrefix+string(own)+
 				". The binary is that role's principal; a principal that holds no role is a "+
 				"process nothing can attest.")
 		}
-		for _, other := range roleDirs {
-			if other != role && links[other] {
-				problems = append(problems, binary+" links "+rolePackagePrefix+other+
+		for _, other := range roles {
+			if other != own && links[other] {
+				problems = append(problems, binary+" links "+rolePackagePrefix+string(other)+
 					" as well as its own role. A Pod's identity is Pod-wide, so a binary that "+
 					"links two roles holds two roles' permissions.")
 			}
@@ -1030,10 +1053,10 @@ func principalLinks(t *testing.T) map[string][]string {
 }
 
 func TestArchitecture(t *testing.T) {
-	leaf := inventory(t, scannedPackages)
-	roles := inventory(t, roleDirs)
+	leafSurface := inventory(t, scannedPackages)
+	personas := inventory(t, roleDirs())
 
-	for name, found := range map[string]surface{"leaf": leaf, "roles": roles} {
+	for name, found := range map[string]surface{"leaf": leafSurface, "roles": personas} {
 		if len(found.Files) == 0 {
 			t.Fatalf("the %s inventory scanned no file at all", name)
 		}
@@ -1049,16 +1072,16 @@ func TestArchitecture(t *testing.T) {
 		t.Logf("%s: scanned %d files (%d Go)", name, len(found.Files), goFiles)
 	}
 
-	report(t, "product-domain vocabulary", checkNoProductDomainImports(leaf))
-	report(t, "one TreeRef", checkNoSecondTreeRef(leaf))
-	report(t, "not the durable cache tier", checkNotRoutedThroughTheDurableCache(leaf))
-	report(t, "no caller-chosen storage location", checkNoAPIAcceptsAStorageLocation(leaf))
-	report(t, "leaf packages", checkPackagesAreLeaves(leaf))
+	report(t, "product-domain vocabulary", checkNoProductDomainImports(leafSurface))
+	report(t, "one TreeRef", checkNoSecondTreeRef(leafSurface))
+	report(t, "not the durable cache tier", checkNotRoutedThroughTheDurableCache(leafSurface))
+	report(t, "no caller-chosen storage location", checkNoAPIAcceptsAStorageLocation(leafSurface))
+	report(t, "leaf packages", checkPackagesAreLeaves(leafSurface))
 
-	report(t, "delete isolation", checkOnlyTheReclaimerDeletes(union(leaf, roles)))
-	report(t, "role verbs", checkEachRoleOffersOnlyItsOwnVerbs(roles))
-	report(t, "attestor touches no object", checkTheAttestorTouchesNoObject(roles))
-	report(t, "role types take no location", checkRoleTypesTakeNoCallerChosenLocation(roles))
+	report(t, "delete isolation", checkOnlyTheReclaimerDeletes(union(leafSurface, personas)))
+	report(t, "role verbs", checkEachRoleOffersOnlyItsOwnVerbs(personas))
+	report(t, "attestor touches no object", checkTheAttestorTouchesNoObject(personas))
+	report(t, "role types take no location", checkRoleTypesTakeNoCallerChosenLocation(personas))
 	report(t, "principal binaries", checkEachPrincipalLinksExactlyItsRole(principalLinks(t)))
 }
 
@@ -1219,7 +1242,7 @@ func TestArchitectureGuardsAreNotVacuous(t *testing.T) {
 	// string travels in -- and must stop at the store seams, which are exactly
 	// where the derived key is handed over.
 	t.Run("a bare string on a role type is caught whatever it is called", func(t *testing.T) {
-		roles := surface{
+		seams := surface{
 			Types: []declaredType{
 				{File: "publisher/publisher.go", Name: "Store", Kind: "interface"},
 				{File: "publisher/publisher.go", Name: "Handle", Kind: "interface"},
@@ -1244,7 +1267,7 @@ func TestArchitectureGuardsAreNotVacuous(t *testing.T) {
 					Params: []declaredParam{{Name: "bucket", Type: "string"}, {Name: "key", Type: "string"}}},
 			},
 		}
-		problems := checkRoleTypesTakeNoCallerChosenLocation(roles)
+		problems := checkRoleTypesTakeNoCallerChosenLocation(seams)
 		joined := strings.Join(problems, "\n")
 		for _, expected := range []string{
 			"publisher.Publisher.StatExactObject takes a bare string parameter keys ([]string)",
