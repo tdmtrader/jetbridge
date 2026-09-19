@@ -20,6 +20,14 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// unixSecondsTolerance is the slack for asserting that a build summary's
+// StartTime/EndTime is "now". Summaries carry whole Unix seconds, so
+// time.Unix(summary.StartTime, 0) can sit up to a full second before the
+// instant the database wrote with now(); the previous 1s tolerance was
+// therefore consumed by truncation alone and failed as soon as the spec body
+// ran a fraction of a second late on a loaded CI worker.
+const unixSecondsTolerance = 5 * time.Second
+
 var _ = Describe("Resource", func() {
 	var pipeline db.Pipeline
 
@@ -197,8 +205,8 @@ var _ = Describe("Resource", func() {
 					Expect(buildSummary.TeamName).To(Equal(scenario.Team.Name()))
 					Expect(buildSummary.PipelineName).To(Equal(scenario.Pipeline.Name()))
 					Expect(buildSummary.JobName).To(BeEmpty())
-					Expect(time.Unix(buildSummary.StartTime, 0)).Should(BeTemporally("~", time.Now(), time.Second))
-					Expect(time.Unix(buildSummary.EndTime, 0)).Should(BeTemporally("~", time.Now(), time.Second))
+					Expect(time.Unix(buildSummary.StartTime, 0)).Should(BeTemporally("~", time.Now(), unixSecondsTolerance))
+					Expect(time.Unix(buildSummary.EndTime, 0)).Should(BeTemporally("~", time.Now(), unixSecondsTolerance))
 					Expect(buildSummary.PublicPlan).ToNot(BeNil())
 
 					var plan atc.Plan
@@ -2154,7 +2162,7 @@ var _ = Describe("Resource", func() {
 				Expect(bs.ID).ToNot(BeZero())
 				Expect(bs.ID).To(Equal(build.ID()))
 				Expect(bs.Status).To(Equal(atc.StatusStarted))
-				Expect(time.Unix(bs.StartTime, 0)).Should(BeTemporally("~", time.Now(), time.Second))
+				Expect(bs.StartTime).To(Equal(build.StartTime().Unix()))
 				Expect(bs.EndTime).To(BeZero())
 				Expect(bs.PublicPlan).To(Equal(build.PublicPlan()))
 			})
@@ -2173,8 +2181,8 @@ var _ = Describe("Resource", func() {
 					Expect(bs.ID).ToNot(BeZero())
 					Expect(bs.ID).To(Equal(build.ID()))
 					Expect(bs.Status).To(Equal(atc.StatusFailed))
-					Expect(time.Unix(bs.StartTime, 0)).Should(BeTemporally("~", time.Now(), time.Second))
-					Expect(time.Unix(bs.EndTime, 0)).Should(BeTemporally("~", time.Now(), time.Second))
+					Expect(time.Unix(bs.StartTime, 0)).Should(BeTemporally("~", time.Now(), unixSecondsTolerance))
+					Expect(time.Unix(bs.EndTime, 0)).Should(BeTemporally("~", time.Now(), unixSecondsTolerance))
 					Expect(bs.PublicPlan).To(Equal(build.PublicPlan()))
 				})
 
@@ -2188,8 +2196,8 @@ var _ = Describe("Resource", func() {
 						bs := resource.BuildSummary()
 						Expect(bs.ID).To(Equal(999999))
 						Expect(bs.Status).To(Equal(atc.StatusSucceeded))
-						Expect(time.Unix(bs.StartTime, 0)).Should(BeTemporally("~", time.Now(), time.Second))
-						Expect(time.Unix(bs.EndTime, 0)).Should(BeTemporally("~", time.Now(), time.Second))
+						Expect(time.Unix(bs.StartTime, 0)).Should(BeTemporally("~", time.Now(), unixSecondsTolerance))
+						Expect(time.Unix(bs.EndTime, 0)).Should(BeTemporally("~", time.Now(), unixSecondsTolerance))
 						Expect(bs.PublicPlan).To(Equal(build.PublicPlan()))
 					})
 
@@ -2209,7 +2217,7 @@ var _ = Describe("Resource", func() {
 							Expect(bs.ID).ToNot(BeZero())
 							Expect(bs.ID).To(Equal(build2.ID()))
 							Expect(bs.Status).To(Equal(atc.StatusStarted))
-							Expect(time.Unix(bs.StartTime, 0)).Should(BeTemporally("~", time.Now(), time.Second))
+							Expect(bs.StartTime).To(Equal(build2.StartTime().Unix()))
 							Expect(bs.EndTime).To(BeZero())
 							Expect(bs.PublicPlan).To(Equal(build.PublicPlan()))
 						})
