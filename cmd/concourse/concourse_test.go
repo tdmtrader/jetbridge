@@ -81,7 +81,9 @@ var _ = Describe("Web Command", func() {
 		})
 
 		It("prints an error and exits", func() {
-			Eventually(concourseRunner.Err()).Should(gbytes.Say("'InvalidAction' is not a valid action"))
+			// The binary prints this immediately, but spawning it can take
+			// longer than Eventually's default 1s on a loaded machine.
+			Eventually(concourseRunner.Err(), "30s", "2s").Should(gbytes.Say("'InvalidAction' is not a valid action"))
 		})
 	})
 })
