@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
@@ -32,7 +33,8 @@ func WatchPod(ctx context.Context, clientset kubernetes.Interface, namespace, po
 
 // PodWatcher wraps the Kubernetes Watch API for a single pod, providing
 // automatic reconnection when the watch channel closes and fallback to
-// a single Get() call when watch re-establishment fails consecutively.
+// a single Get() call when history expires or watch re-establishment fails
+// consecutively.
 type PodWatcher struct {
 	mu                  sync.Mutex
 	clientset           kubernetes.Interface
@@ -122,6 +124,9 @@ func (pw *PodWatcher) Next(ctx context.Context) (*corev1.Pod, error) {
 			w, err := WatchPod(ctx, pw.clientset, pw.namespace, pw.podName, pw.lastResourceVersion)
 			if err != nil {
 				pw.mu.Unlock()
+				if apierrors.IsResourceExpired(err) || apierrors.IsGone(err) {
+					return pw.getPod(ctx)
+				}
 				consecutiveWatchErrors++
 				if consecutiveWatchErrors >= maxConsecutiveAPIErrors {
 					// Fall back to a single Get().
@@ -149,6 +154,21 @@ func (pw *PodWatcher) Next(ctx context.Context) (*corev1.Pod, error) {
 				continue
 			}
 
+			if event.Type == watch.Error {
+				err := apierrors.FromObject(event.Object)
+				if apierrors.IsResourceExpired(err) || apierrors.IsGone(err) {
+					// An expired stream is terminal. Reconnecting at the same
+					// version can never recover; refresh before watching again.
+					pw.mu.Lock()
+					if pw.watcher != nil {
+						pw.watcher.Stop()
+						pw.watcher = nil
+					}
+					pw.mu.Unlock()
+					return pw.getPod(ctx)
+				}
+			}
+
 			pod, isPod := event.Object.(*corev1.Pod)
 			if !isPod {
 				// Skip non-pod events (e.g., Status objects on error).
@@ -172,15 +192,28 @@ func (pw *PodWatcher) Next(ctx context.Context) (*corev1.Pod, error) {
 	}
 }
 
-// getPod does a single Get() call to retrieve the current pod state. This
-// is the fallback when watch re-establishment fails.
+// getPod reads the current pod state once. This is the fallback when the
+// watch history has expired or watch re-establishment keeps failing.
+//
+// If the pod's resourceVersion advanced, the next watch resumes from it to
+// replay events from the checkpoint we just observed. If it is unchanged,
+// it is the version the apiserver just called expired, so the next watch
+// omits resourceVersion to resume from most recent. An advanced version that
+// is itself already expired costs one more 410 round trip; an unchanged
+// recovery read then clears it, preventing a loop. The read itself stays a
+// GET of the named pod: that is the request shape the runtime's RBAC is
+// granted for and the one the live scenarios inject faults against.
 func (pw *PodWatcher) getPod(ctx context.Context) (*corev1.Pod, error) {
 	pod, err := pw.clientset.CoreV1().Pods(pw.namespace).Get(ctx, pw.podName, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("fallback Get() failed: %w", err)
 	}
 	pw.mu.Lock()
-	pw.lastResourceVersion = pod.ResourceVersion
+	if pod.ResourceVersion != pw.lastResourceVersion {
+		pw.lastResourceVersion = pod.ResourceVersion
+	} else {
+		pw.lastResourceVersion = ""
+	}
 	// Reset watcher so the next call to Next() tries to re-establish.
 	pw.watcher = nil
 	pw.mu.Unlock()

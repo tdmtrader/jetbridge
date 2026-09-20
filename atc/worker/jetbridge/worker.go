@@ -3,7 +3,6 @@ package jetbridge
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
@@ -172,67 +171,10 @@ func (w *Worker) FindOrCreateContainer(
 }
 
 // buildVolumeMountsForSpec creates runtime.VolumeMount entries for the
-// container's Dir, inputs, outputs, and caches. When the worker has an
-// executor configured, volumes are created as deferred volumes that support
-// StreamIn/StreamOut once the pod name is set. Otherwise, stub volumes are
-// used as placeholders for resource cache tracking.
+// container's Dir, inputs, outputs, and caches. The layout is pure
+// (volume_mounts.go); the worker only supplies its identity and executor.
 func (w *Worker) buildVolumeMountsForSpec(handle string, spec runtime.ContainerSpec) ([]runtime.VolumeMount, []*Volume) {
-	var mounts []runtime.VolumeMount
-	var volumes []*Volume
-
-	addMount := func(vol *Volume, mountPath string) {
-		volumes = append(volumes, vol)
-		mounts = append(mounts, runtime.VolumeMount{
-			Volume:    vol,
-			MountPath: mountPath,
-		})
-	}
-
-	if spec.Dir != "" {
-		addMount(w.newVolumeForMount(handle+"-dir", spec.Dir), spec.Dir)
-	}
-
-	// Track input mount paths so overlapping outputs reuse the same volume.
-	// This must match the dedup logic in Container.buildVolumeMounts() — both
-	// use filepath.Clean to normalize trailing slashes on output paths.
-	inputMountPaths := make(map[string]bool, len(spec.Inputs))
-	for i, input := range spec.Inputs {
-		addMount(w.newVolumeForMount(fmt.Sprintf("%s-input-%d", handle, i), input.DestinationPath), input.DestinationPath)
-		inputMountPaths[filepath.Clean(input.DestinationPath)] = true
-	}
-
-	for name, path := range spec.Outputs {
-		// Skip output volumes when an input already covers the same path.
-		// The input volume is the one actually mounted in the K8s pod
-		// (buildVolumeMounts skips the duplicate output), so both
-		// registerOutputs (task_step.go) and recordOutputLocations
-		// (process.go) must agree on using the same volume handle.
-		if inputMountPaths[filepath.Clean(path)] {
-			continue
-		}
-		addMount(w.newVolumeForMount(fmt.Sprintf("%s-output-%s", handle, name), path), path)
-	}
-
-	for i, cachePath := range spec.Caches {
-		resolvedPath := cachePath
-		if !filepath.IsAbs(cachePath) && spec.Dir != "" {
-			resolvedPath = filepath.Join(spec.Dir, cachePath)
-		}
-		addMount(w.newVolumeForMount(fmt.Sprintf("%s-cache-%d", handle, i), resolvedPath), resolvedPath)
-	}
-
-	return mounts, volumes
-}
-
-// newVolumeForMount creates a Volume for the given handle and mount path.
-// If the worker has an executor, it creates a deferred volume that will
-// support StreamIn/StreamOut once the pod name is set. Otherwise it creates
-// a stub volume for placeholder use.
-func (w *Worker) newVolumeForMount(handle, mountPath string) *Volume {
-	if w.executor != nil {
-		return NewDeferredVolume(handle, w.Name(), w.executor, w.config.Namespace, mainContainerName, mountPath)
-	}
-	return NewStubVolume(handle, w.Name(), mountPath)
+	return buildVolumeMounts(w.Name(), w.config.Namespace, w.executor, handle, spec)
 }
 
 func (w *Worker) CreateVolumeForArtifact(ctx context.Context, teamID int) (runtime.Volume, db.WorkerArtifact, error) {

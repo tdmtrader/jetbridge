@@ -195,7 +195,13 @@ func (v *Volume) StreamIn(ctx context.Context, path string, enc compression.Comp
 		actualReader = decompressed
 	}
 
-	cmd := []string{"tar", "xf", "-", "-C", targetPath}
+	// The mount root always exists, so an upload to it is a bare tar: no
+	// shell in the image is needed, which keeps a distroless volume target
+	// working as it always has. A nested destination is created first,
+	// including for an empty archive; the path travels as an argument,
+	// never as shell source, since artifact paths may carry whitespace or
+	// shell metacharacters.
+	cmd := streamInCommand(v.mountPath, targetPath)
 
 	err := v.executor.ExecInPod(ctx, v.namespace, v.podName, v.containerName, cmd, actualReader, nil, nil, false,
 		ExecAttrs{Purpose: "stream-in", VolumeMountPath: v.mountPath})
@@ -341,4 +347,14 @@ func (v *Volume) InitializeTaskCache(ctx context.Context, identity atc.TaskCache
 	start := time.Now()
 	defer func() { metric.RecordVolumeOperationDuration(ctx, time.Since(start), "initialize") }()
 	return v.dbVolume.InitializeTaskCache(identity, stepName, path)
+}
+
+// streamInCommand is the argv StreamIn execs to unpack a tar stream at
+// target. Only a destination below the mount root needs creating, and only
+// that form needs sh.
+func streamInCommand(mountPath, target string) []string {
+	if target == mountPath {
+		return []string{"tar", "xf", "-", "-C", target}
+	}
+	return []string{"sh", "-c", `mkdir -p -- "$1" && exec tar xf - -C "$1"`, "stream-in", target}
 }
