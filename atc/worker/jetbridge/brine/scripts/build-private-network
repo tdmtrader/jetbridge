@@ -1,0 +1,46 @@
+#!/bin/sh
+# Build every executable before entering the network-isolated test process.
+set -eu
+cd "$(dirname "$0")/.."
+brine_module=$PWD
+if [ "$(uname -s)" != Linux ]; then
+    echo "Private-network Brine tests require Linux user/network namespaces." >&2
+    exit 2
+fi
+mkdir -p .build
+brine_busybox=${BRINE_BUSYBOX_BINARY:-}
+if [ -z "$brine_busybox" ]; then
+    brine_busybox=$(command -v busybox || true)
+fi
+case "$brine_busybox" in
+    /*) ;;
+    *) echo "Install BusyBox or set BRINE_BUSYBOX_BINARY to its absolute executable path." >&2; exit 2 ;;
+esac
+if [ ! -x "$brine_busybox" ]; then
+    echo "BusyBox is not executable: $brine_busybox" >&2
+    exit 2
+fi
+if [ "$brine_busybox" != "$PWD/.build/busybox" ]; then
+    install -m 0755 "$brine_busybox" .build/busybox
+fi
+# BusyBox dispatches by argv[0]; preserve its actual executable name.
+"$PWD/.build/busybox" --list >/dev/null
+brine_cc=${CC:-cc}
+"$brine_cc" -Wall -Wextra -Werror -o .build/brine-netns-exec scripts/netns-exec.c
+# No service exists on port 1 in this new owned namespace. Require an ordinary
+# refusal, not a crash or unsupported wget option, before starting any suite.
+if brine_probe_output=$(LC_ALL=C "$PWD/.build/brine-netns-exec" "$PWD/.build/busybox" wget -T 1 -qO- http://127.0.0.1:1 2>&1); then
+    echo "BusyBox probe unexpectedly reached a service in an empty namespace." >&2
+    exit 2
+else
+    brine_probe_status=$?
+fi
+case "$brine_probe_status:$brine_probe_output" in
+    1:*"Connection refused"*) ;;
+    *) echo "BusyBox/namespace prerequisite failed ($brine_probe_status): $brine_probe_output" >&2; exit 2 ;;
+esac
+go build -o .build/brine-adapter-jetbridge ./cmd/brine-adapter-jetbridge
+(
+    cd ../../../..
+    go build -o "$brine_module/.build/brine-artifact-daemon" ./cmd/artifact-daemon
+)

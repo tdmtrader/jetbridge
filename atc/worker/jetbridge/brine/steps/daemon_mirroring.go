@@ -7,10 +7,11 @@ package steps
 // node does not lose the build. ../features/artifact-daemon.feature has
 // carried this as a written-down gap since the migration started: nothing
 // anywhere asserted that asking a daemon to mirror causes a copy to exist.
-// From the ATC's side it cannot be asserted at all — DaemonClient.TriggerMirror
+// The return value alone cannot assert it — DaemonClient.TriggerMirror
 // returns nil on 202, on non-202, on a transport failure and on a request it
 // could not even build, deliberately, so that failing to schedule a copy never
-// fails a step that already succeeded.
+// fails a step that already succeeded. artifact_recording.go now follows
+// the ATC call through to real peer files; this family drives the daemon directly.
 //
 // So the assertion is made at the other end: ask the producer, then READ THE
 // ARTIFACT OFF THE PEER. Both are real artifact-daemon processes with storage
@@ -60,7 +61,7 @@ package steps
 // suite to serve the six here — measured at +70 seconds the first time. The
 // API server is the exception and is deliberately NOT started here: it is the
 // suite-scoped "real-cluster" resource, already paid for by
-// pod-watch-real.feature, so this feature adds nothing to its cost.
+// pod-watch.feature, so this feature adds nothing to its cost.
 
 import (
 	"archive/tar"
@@ -227,9 +228,9 @@ func mirroringGiven(pattern string, toldItsOwnAddress bool, producerArgs ...stri
 		pattern,
 		[]string{"real-cluster"},
 		func(_ brine.Empty, _ brine.Params, rec *brine.Recorder, res brine.Resources) (Mirroring, error) {
-			rc, ok := res.Get("real-cluster").(*realCluster)
-			if !ok {
-				return Mirroring{}, fmt.Errorf("real-cluster resource is %T", res.Get("real-cluster"))
+			rc, err := getRealCluster(res)
+			if err != nil {
+				return Mirroring{}, err
 			}
 			cfg := rc.env.Config
 			if cfg == nil {
@@ -264,11 +265,11 @@ func mirroringGiven(pattern string, toldItsOwnAddress bool, producerArgs ...stri
 			// scenario would otherwise become one of this producer's peers.
 			service := "artifact-daemon-mirror-" + uniq
 
-			dir, err := os.MkdirTemp("", "brine-mirroring-*")
+			dir, err := AttributedTempDir("brine-mirroring-*")
 			if err != nil {
 				return Mirroring{}, fmt.Errorf("temp dir for the kubeconfig: %w", err)
 			}
-			rec.RegisterDisposer(func() { _ = os.RemoveAll(dir) })
+			TrackDisposer(rec, "the kubeconfig directory", func() error { return os.RemoveAll(dir) })
 
 			kubeconfig := filepath.Join(dir, "kubeconfig")
 			api := clientcmdapi.NewConfig()
@@ -295,9 +296,9 @@ func mirroringGiven(pattern string, toldItsOwnAddress bool, producerArgs ...stri
 				metav1.CreateOptions{}); err != nil {
 				return Mirroring{}, fmt.Errorf("create node %q: %w", nodeName, err)
 			}
-			rec.RegisterDisposer(func() {
-				_ = rc.Clientset.CoreV1().Nodes().Delete(
-					context.Background(), nodeName, metav1.DeleteOptions{})
+			TrackDisposer(rec, "the peer node "+nodeName, func() error {
+				return releasedIfGone(rc.Clientset.CoreV1().Nodes().Delete(
+					context.Background(), nodeName, metav1.DeleteOptions{}))
 			})
 
 			// The other node's daemon. No --node-name, so it has no peers of
@@ -307,7 +308,7 @@ func mirroringGiven(pattern string, toldItsOwnAddress bool, producerArgs ...stri
 			if err != nil {
 				return Mirroring{}, fmt.Errorf("start the other node's daemon: %w", err)
 			}
-			rec.RegisterDisposer(func() { _ = peer.stop() })
+			TrackDisposer(rec, "the other node's artifact daemon", peer.stop)
 
 			args := append([]string{
 				"--kubeconfig", kubeconfig,
@@ -340,7 +341,7 @@ func mirroringGiven(pattern string, toldItsOwnAddress bool, producerArgs ...stri
 			if err != nil {
 				return Mirroring{}, fmt.Errorf("start the producing node's daemon: %w", err)
 			}
-			rec.RegisterDisposer(func() { _ = producer.stop() })
+			TrackDisposer(rec, "the producing node's artifact daemon", producer.stop)
 
 			producerPort, err := daemonPort(producer)
 			if err != nil {
@@ -357,7 +358,7 @@ func mirroringGiven(pattern string, toldItsOwnAddress bool, producerArgs ...stri
 			if err != nil {
 				return Mirroring{}, err
 			}
-			rec.RegisterDisposer(func() { _ = route.Close() })
+			TrackDisposer(rec, "the route to the peer", route.Close)
 
 			if _, err := rc.Clientset.DiscoveryV1().EndpointSlices("default").Create(ctx,
 				&discoveryv1.EndpointSlice{
@@ -371,9 +372,9 @@ func mirroringGiven(pattern string, toldItsOwnAddress bool, producerArgs ...stri
 				}, metav1.CreateOptions{}); err != nil {
 				return Mirroring{}, fmt.Errorf("publish the peer's endpoints: %w", err)
 			}
-			rec.RegisterDisposer(func() {
-				_ = rc.Clientset.DiscoveryV1().EndpointSlices("default").Delete(
-					context.Background(), service, metav1.DeleteOptions{})
+			TrackDisposer(rec, "the peer's endpoints", func() error {
+				return releasedIfGone(rc.Clientset.DiscoveryV1().EndpointSlices("default").Delete(
+					context.Background(), service, metav1.DeleteOptions{}))
 			})
 
 			if err := verifyPeerRoute(peer, host, producerPort); err != nil {

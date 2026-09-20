@@ -6,14 +6,11 @@ Feature: Reclaiming pods and the rows that track them
   deleted too early loses a running build, and a row deleted too early makes a
   live container invisible to the scheduler.
 
-  Source: k8s_runtime_behavioral_spec_20260331 — GC-01 to GC-07. Migrated
-  from reaper_test.go — NOT whole. Five of its nineteen cases remain uncovered:
-  the pod that vanishes between the list and the delete, the
-  GetAllStartedBuilds error branch (distinct from the nil-lookup branch), the
-  retained-pod-through-destroying path, and two production branches no
-  scenario here can reach, because every pod these scenarios build has
-  handle == pod.Name.
-  From reaper_test.go, which carried no requirement identifiers.
+  Source: k8s_runtime_behavioral_spec_20260331 — GC-01 to GC-07, and
+  reaper_test.go. These scenarios use real PostgreSQL and a real Kubernetes
+  API server. There is no kubelet: pods exist but do not execute. The reaper
+  reads their labels and exit-status annotations, not a simulated pod phase.
+  Retained Go tests still require test-level mutation evidence before removal.
 
   # GC-04. A container whose pod is present is alive; one whose pod is gone is
   # marked missing so the scheduler can eventually give up on it.
@@ -23,8 +20,8 @@ Feature: Reclaiming pods and the rows that track them
     And a container "pod-aaa" exists on this worker
     And a container "pod-bbb" exists on this worker
     And a container "unreported-decoy" exists on this worker
-    And a pod "pod-aaa" is running for it
-    And a pod "pod-bbb" is running for it
+    And a pod "pod-aaa" exists with container handle "pod-aaa"
+    And a pod "pod-bbb" exists with container handle "pod-bbb"
     When the reaper runs
     Then the reaper completes without error
     And the container "pod-aaa" is not marked as missing
@@ -39,7 +36,7 @@ Feature: Reclaiming pods and the rows that track them
     And a container "pod-ccc" exists on this worker
     And a container "pod-ddd" on this worker is being destroyed
     And a container "other-worker-pod" on another worker is being destroyed
-    And a pod "pod-ccc" is running for it
+    And a pod "pod-ccc" exists with container handle "pod-ccc"
     When the reaper runs
     Then the container "pod-ddd" is no longer tracked
     And the container "pod-ccc" is still tracked as "created"
@@ -50,7 +47,7 @@ Feature: Reclaiming pods and the rows that track them
   Scenario: A pod belonging to a destroyed container is deleted
     Given a Kubernetes worker whose reaper is running
     And a container "doomed" on this worker is being destroyed
-    And a pod "doomed" is running for it
+    And a pod "doomed" exists with container handle "doomed"
     When the reaper runs
     Then the pod "doomed" is gone
     # The row is NOT dropped in the same sweep — it stays destroying and is
@@ -69,7 +66,7 @@ Feature: Reclaiming pods and the rows that track them
   Scenario: A live container is left alone
     Given a Kubernetes worker whose reaper is running
     And a container "keeper" exists on this worker
-    And a pod "keeper" is running for it
+    And a pod "keeper" exists with container handle "keeper"
     When the reaper runs
     Then the pod "keeper" is still there
     And the container "keeper" is still tracked as "created"
@@ -128,7 +125,7 @@ Feature: Reclaiming pods and the rows that track them
   Scenario: A pod is matched to its container by label, not by name
     Given a Kubernetes worker whose reaper is running
     And a container "handle-aaa" exists on this worker
-    And a pod "my-pipeline-my-job-b1-task-handle-a" is running, labelled with the handle "handle-aaa"
+    And a pod "my-pipeline-my-job-b1-task-handle-a" exists with container handle "handle-aaa"
     When the reaper runs
     Then the container "handle-aaa" is not marked as missing
     And the pod "my-pipeline-my-job-b1-task-handle-a" is still there
@@ -138,7 +135,7 @@ Feature: Reclaiming pods and the rows that track them
   Scenario: Reaping is safe to repeat
     Given a Kubernetes worker whose reaper is running
     And a container "twice" on this worker is being destroyed
-    And a pod "twice" is running for it
+    And a pod "twice" exists with container handle "twice"
     When the reaper runs
     And the reaper runs again
     Then the reaper completes without error
@@ -160,7 +157,7 @@ Feature: Reclaiming pods and the rows that track them
   @GC-06
   Scenario: A pod nothing in the database knows about is reclaimed
     Given a Kubernetes worker whose reaper is running
-    And a pod "unknown-pod" is running for it
+    And a pod "unknown-pod" exists with container handle "unknown-pod"
     When the reaper runs
     And the reaper runs again
     Then the pod "unknown-pod" is gone
@@ -170,7 +167,7 @@ Feature: Reclaiming pods and the rows that track them
   Scenario: A newly created container is never reaped
     Given a Kubernetes worker whose reaper is running
     And a container "brand-new" exists on this worker
-    And a pod "brand-new" is running for it
+    And a pod "brand-new" exists with container handle "brand-new"
     When the reaper runs
     And the reaper runs again
     Then the pod "brand-new" is still there
@@ -200,7 +197,7 @@ Feature: Reclaiming pods and the rows that track them
   Scenario: A destroyed container's readable pod is deleted by its pod name
     Given a Kubernetes worker whose reaper is running
     And a container "handle-bbb" on this worker is being destroyed
-    And a pod "my-pipeline-my-job-b2-task-handle-b" is running, labelled with the handle "handle-bbb"
+    And a pod "my-pipeline-my-job-b2-task-handle-b" exists with container handle "handle-bbb"
     When the reaper runs
     Then the pod "my-pipeline-my-job-b2-task-handle-b" is gone
 
@@ -219,7 +216,7 @@ Feature: Reclaiming pods and the rows that track them
   Scenario: A pod deleted by someone else mid-sweep does not fail the reaper
     Given a Kubernetes worker whose reaper is running
     And a container "racing" on this worker is being destroyed
-    And a pod "racing" is running, labelled with the handle "racing"
+    And a pod "racing" exists with container handle "racing"
     And the pod is deleted by someone else before the reaper gets to it
     When the reaper runs
     Then the reaper completes without error
@@ -242,7 +239,7 @@ Feature: Reclaiming pods and the rows that track them
   @GC-01
   Scenario: Another worker's pods in the same namespace are left alone
     Given a Kubernetes worker whose reaper is running
-    And a pod "someone-elses-pod" belonging to another worker is running in the same namespace
+    And a pod "someone-elses-pod" belonging to another worker exists in the same namespace
     When the reaper runs
     And the reaper runs again
     Then the pod "someone-elses-pod" is still there

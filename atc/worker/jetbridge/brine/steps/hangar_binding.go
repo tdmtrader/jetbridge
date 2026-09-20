@@ -350,8 +350,8 @@ func HangarBindingDefinitions() []brine.StepDefinition {
 
 		brine.DefineMapUsing[PublishedTree, ConsumerDraft](
 			"a later step {string} takes the published output {string} at {string}",
-			[]string{"jetbridge-db"},
-			func(in PublishedTree, p brine.Params, _ *brine.Recorder, res brine.Resources) (ConsumerDraft, error) {
+			[]string{"jetbridge-db", "real-cluster"},
+			func(in PublishedTree, p brine.Params, rec *brine.Recorder, res brine.Resources) (ConsumerDraft, error) {
 				const pattern = "a later step {string} takes the published output {string} at {string}"
 				name, err := paramAt(pattern, p, 0)
 				if err != nil {
@@ -370,7 +370,7 @@ func HangarBindingDefinitions() []brine.StepDefinition {
 				// and a materialization signer, because a Hangar tree input is
 				// refused outright without both -- which is itself a rule the
 				// pod-shape family already covers.
-				cluster, err := newHangarConsumerWorker(res)
+				cluster, err := newHangarConsumerWorker(res, rec)
 				if err != nil {
 					return ConsumerDraft{}, err
 				}

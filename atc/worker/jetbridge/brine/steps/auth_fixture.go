@@ -62,11 +62,13 @@ import (
 const authPassword = "brine-local-password"
 
 type authBinaries struct {
+	lazy      *lazyResource[authBinaries]
 	Root, Fly string
 	Key       *rsa.PrivateKey
 }
 
 type AuthFixture struct {
+	lazy        *lazyResource[*AuthFixture]
 	DB          JetbridgeDB
 	Bin         authBinaries
 	Home        string
@@ -91,43 +93,76 @@ type AuthFixture struct {
 func AuthenticationResourceDefinitions() []brine.ResourceDefinition {
 	return []brine.ResourceDefinition{
 		{Name: "auth-binaries", Scope: brine.ScopeSuite, Factory: func(map[string]any) (any, error) {
-			root, err := os.Getwd()
-			if err != nil {
-				return nil, err
-			}
-			for {
-				if _, err := os.Stat(filepath.Join(root, "skymarshal/dexserver/dexserver.go")); err == nil {
-					break
-				}
-				parent := filepath.Dir(root)
-				if parent == root {
-					return nil, errors.New("cannot locate authentication source root")
-				}
-				root = parent
-			}
-			dir, err := os.MkdirTemp("", "brine-auth-binaries-")
-			if err != nil {
-				return nil, err
-			}
-			key, err := rsa.GenerateKey(rand.Reader, 2048)
-			if err != nil {
-				_ = os.RemoveAll(dir)
-				return nil, err
-			}
-			bin := authBinaries{Root: dir, Fly: filepath.Join(dir, "fly"), Key: key}
-			cmd := exec.Command("go", "build", "-buildvcs=false", "-o", bin.Fly, "./fly")
-			cmd.Dir = root
-			if out, err := cmd.CombinedOutput(); err != nil {
-				_ = os.RemoveAll(dir)
-				return nil, fmt.Errorf("build fly: %w: %s", err, out)
-			}
-			return bin, nil
-		}, Disposer: func(v any) error { return os.RemoveAll(v.(authBinaries).Root) }},
+			return authBinaries{lazy: &lazyResource[authBinaries]{start: buildAuthBinaries}}, nil
+		}, Disposer: func(v any) error { return v.(authBinaries).close() }},
 		{Name: "auth-server", Scope: brine.ScopeScenario, DependsOn: []string{"jetbridge-db", "auth-binaries"},
 			Factory: func(deps map[string]any) (any, error) {
-				return newAuthFixture(deps["jetbridge-db"].(JetbridgeDB), deps["auth-binaries"].(authBinaries))
+				database, bin := deps["jetbridge-db"].(JetbridgeDB), deps["auth-binaries"].(authBinaries)
+				return &AuthFixture{lazy: &lazyResource[*AuthFixture]{start: func() (*AuthFixture, error) {
+					ready, err := bin.ready()
+					if err != nil {
+						return nil, err
+					}
+					return newAuthFixture(database, ready)
+				}}}, nil
 			}, Disposer: func(v any) error { return v.(*AuthFixture).Close() }},
 	}
+}
+
+func buildAuthBinaries() (authBinaries, error) {
+	root, err := os.Getwd()
+	if err != nil {
+		return authBinaries{}, err
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(root, "skymarshal/dexserver/dexserver.go")); err == nil {
+			break
+		}
+		parent := filepath.Dir(root)
+		if parent == root {
+			return authBinaries{}, errors.New("cannot locate authentication source root")
+		}
+		root = parent
+	}
+	dir, err := AttributedTempDir("brine-auth-binaries-")
+	if err != nil {
+		return authBinaries{}, err
+	}
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return authBinaries{}, err
+	}
+	bin := authBinaries{Root: dir, Fly: filepath.Join(dir, "fly"), Key: key}
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-o", bin.Fly, "./fly")
+	cmd.Dir = root
+	if out, err := cmd.CombinedOutput(); err != nil {
+		_ = os.RemoveAll(dir)
+		return authBinaries{}, fmt.Errorf("build fly: %w: %s", err, out)
+	}
+	return bin, nil
+}
+
+func (b authBinaries) ready() (authBinaries, error) {
+	if b.lazy != nil {
+		return b.lazy.get()
+	}
+	return b, nil
+}
+
+func (b authBinaries) close() error {
+	if b.lazy != nil {
+		return b.lazy.close(func(ready authBinaries) error { return ready.close() })
+	}
+	return os.RemoveAll(b.Root)
+}
+
+// ready is called by the authentication Given before it exposes fixture fields.
+func (f *AuthFixture) ready() (*AuthFixture, error) {
+	if f.lazy != nil {
+		return f.lazy.get()
+	}
+	return f, nil
 }
 
 func newAuthFixture(database JetbridgeDB, bin authBinaries) (_ *AuthFixture, err error) {
@@ -137,7 +172,7 @@ func newAuthFixture(database JetbridgeDB, bin authBinaries) (_ *AuthFixture, err
 			_ = f.Close()
 		}
 	}()
-	f.Home, err = os.MkdirTemp("", "brine-auth-home-")
+	f.Home, err = AttributedTempDir("brine-auth-home-")
 	if err != nil {
 		return nil, err
 	}
@@ -297,6 +332,9 @@ func (f *AuthFixture) serveHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *AuthFixture) Close() error {
+	if f.lazy != nil {
+		return f.lazy.close(func(ready *AuthFixture) error { return ready.Close() })
+	}
 	if f.Cancel != nil {
 		f.Cancel()
 	}

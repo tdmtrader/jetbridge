@@ -6,46 +6,13 @@ package steps
 // What a step leaves behind when it finishes — where its outputs are, who else
 // has a copy, and what the next step is told to fetch.
 //
-// THE DAEMON IS THE DAEMON. Every scenario here but three runs the actual
-// artifact-daemon binary as a process with its own storage root on a free
-// port — ../steps/realdaemon.go builds it once and starts one per scenario.
-// "The node holds this output" therefore means files on a disk, and what comes
-// back is whatever the daemon made of them.
-//
-// That is not a cosmetic upgrade. Two scenarios below RUN the init container's
-// script, and against a map-backed double both were green for the wrong
-// reason. "An output whose node the worker could not identify is still fetched
-// by its directory" passed because the double looked up "steps/"+key in a map,
-// where the real daemon has to fall back to its own filesystem; and "what the
-// step finds at <path>" passed because the double echoed the bytes it had been
-// handed, where the real daemon has to copy a DIRECTORY onto the destination
-// the pod named and serve it back as a tar.
-//
-// THREE SCENARIOS KEEP A STAND-IN, and the reason is a production gap rather
-// than a preference. A real daemon mirrors to peers it discovers through
-// EndpointSlices, and cmd/artifact-daemon builds that client with
-// rest.InClusterConfig() alone: there is no --kubeconfig flag, client-go
-// hardcodes the service-account token path, and --node-name — which is what
-// wires the mirror up at all — makes the process os.Exit(1) outside a cluster.
-// Two real daemons started here therefore cannot find each other. The mirror
-// scenarios say as much in their own opening Given, and what stands in really
-// does copy to a real peer, which the check really does fetch from over HTTP.
-// Closing the gap needs a production flag, which is a decision rather than a
-// detail.
-//
-// The stand-ins record NOTHING — no gotKey, no mirrorCount, no requests
-// channel. That is the rule ../steps/daemon.go's header states, and it is why
-// the ordering halves of two ginkgo tests are NOT here: see the DISPOSITION
-// notes in the feature file. Every assertion below is on what a later fetch
-// brought back, what the pod carries, or what the database holds.
-//
-// ../features/artifact-daemon.feature says in prose that asking a daemon to
-// mirror has no scenario anywhere in brine, and names the two ways to close
-// it: a double that records the keys it was asked for, or one that ACTUALLY
-// MIRRORS so the copy can be fetched afterwards. It prefers the second, and
-// notes that doing it honestly needs a PEER, because a daemon mirrors to its
-// peers rather than to itself. That is what is here — two servers, and the
-// copy is fetched over HTTP from the second one.
+// Every daemon here is the production binary, with its own real storage root.
+// Mirroring scenarios use real kubelet-run peers with independent stores.
+// Their checks observe asynchronous disk arrival before any HTTP read, so
+// read-through fallback cannot make an absent mirror look successful.
+// Kubernetes validation and persistence are real in every scenario here.
+// Envtest has no kubelet; pod shape and host-run fetch scripts are not proof
+// of in-cluster container execution.
 //
 // On the two backends. The worker builds pods through its own storage backend,
 // which is unexported and unreachable from here; RecordOutputs and
@@ -63,17 +30,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"net/http/httptest"
-	"net/url"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
+	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/brine-dev/brine-go/pkg/brine"
@@ -82,19 +46,9 @@ import (
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
-	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/kubernetes"
 )
-
-// standInStoreRoot is the hostPath the STAND-IN daemons claim to serve.
-//
-// It is a name and not a directory, and it can be: the three scenarios on
-// stand-ins build no pod and run no script, so nothing under it is ever
-// opened. Every other scenario's store root is a real temporary directory the
-// daemon process was started on, carried in ArtifactCluster.StoreRoot — which
-// is why this is no longer a constant the whole file shares.
-const standInStoreRoot = "/artifact-store"
 
 // stepOutputFileName is the one file a described output holds.
 //
@@ -109,96 +63,24 @@ const stepOutputFileName = "artifact"
 // through.
 const artifactDaemonService = "artifact-daemon"
 
-// artifactCacheLabelKey and artifactCacheLabelValue are what the daemon writes
-// on its OWN node when it comes up — cmd/artifact-daemon's NodeLabeler, whose
-// -label-key defaults to this key and whose value is always "ready".
-//
-// The daemon here does not write them itself, and cannot: labelling is what
-// --node-name turns on, and that flag makes main.go build a Kubernetes client
-// and exit outside a cluster. So the fixture labels the node the way a node
-// with a running daemon is labelled, and nothing more. No check reads these to
-// compare against the pod — the pod is held against the NODE, which is the
-// only way to see a requirement no node in the fleet can satisfy.
-const (
-	artifactCacheLabelKey   = "concourse.dev/artifact-cache"
-	artifactCacheLabelValue = "ready"
-)
-
-// -----------------------------------------------------------------------
-// The node's artifact store
-// -----------------------------------------------------------------------
-
-// nodeDisk is what a scenario needs of the node its step ran on: where the
-// artifact store is, which daemon serves it, and how a step's bytes get onto
-// it.
-//
-// It exists for exactly one reason — the three mirror scenarios cannot have a
-// real daemon (see the header) — and it is deliberately this small. Nothing
-// downstream branches on which implementation it holds: the pod checks read
-// the pod, and every read of an artifact goes over HTTP to whichever daemon is
-// serving, in the same tar either way.
-type nodeDisk interface {
-	// storeRoot is the hostPath the daemon serves, which is also what the ATC
-	// is configured with and what every pod's hostPath is built from.
-	storeRoot() string
-	daemonHost() string
-	daemonPort() int
-
-	// write puts one output's bytes on the node at a location under the store
-	// root, as a step would: a directory with a file in it.
-	write(rel, content string) error
-}
-
-// realNode is a node whose daemon is the actual artifact-daemon binary.
-//
-// startRealDaemon hands back a root and a URL; host and port are split out
-// once here because the ATC is configured with a port (one DaemonSet, one
-// containerPort) and the fake cluster's Node object is given an address.
+// realNode is the production daemon and the actual address it serves.
 type realNode struct {
-	*realDaemon
-	host string
-	port int
+	Root, URL string
+	host      string
+	port      int
+	store     *liveArtifactStore
+	ctx       context.Context
+	pod       *corev1.Pod
 }
-
-func startNodeDaemon() (*realNode, error) {
-	d, err := startRealDaemon()
-	if err != nil {
-		return nil, err
-	}
-	parsed, err := url.Parse(d.URL)
-	if err != nil {
-		_ = d.stop()
-		return nil, fmt.Errorf("the daemon reported an address that will not parse (%q): %w", d.URL, err)
-	}
-	host, portText, err := net.SplitHostPort(parsed.Host)
-	if err != nil {
-		_ = d.stop()
-		return nil, fmt.Errorf("the daemon reported no port in %q: %w", d.URL, err)
-	}
-	port, err := strconv.Atoi(portText)
-	if err != nil {
-		_ = d.stop()
-		return nil, fmt.Errorf("the daemon reported a non-numeric port in %q: %w", d.URL, err)
-	}
-	return &realNode{realDaemon: d, host: host, port: port}, nil
-}
-
-func (n *realNode) storeRoot() string  { return n.Root }
-func (n *realNode) daemonHost() string { return n.host }
-func (n *realNode) daemonPort() int    { return n.port }
 
 // write is what a step does: it writes a file into the directory it was given,
 // and the directory is the output. Nothing tells the daemon it is there.
 func (n *realNode) write(rel, content string) error {
-	dir := filepath.Join(n.Root, rel)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("make the output directory %q on the node: %w", dir, err)
+	file := filepath.Join(n.Root, rel, stepOutputFileName)
+	if n.store != nil {
+		return n.store.writeFile(n.ctx, file, content)
 	}
-	file := filepath.Join(dir, stepOutputFileName)
-	if err := os.WriteFile(file, []byte(content), 0o644); err != nil {
-		return fmt.Errorf("write the step's output to %q: %w", file, err)
-	}
-	return nil
+	return writeArtifactFile(file, content)
 }
 
 // contained turns an absolute path on the node into its location under the
@@ -313,229 +195,6 @@ func oneFileInTar(body []byte) (string, error) {
 }
 
 // -----------------------------------------------------------------------
-// The stand-in, for the mirror scenarios only
-// -----------------------------------------------------------------------
-
-// storeDaemon is a stand-in for one node's artifact daemon, and the ONLY
-// reason it still exists is that a real daemon cannot be given a peer here.
-//
-// disk is the node's storage tree, keyed the way the daemon keys it: a path
-// relative to the storage root, so a step output lives at
-// "steps/<handle>/<output>". aliases is the daemon's registry — the map POST
-// /register writes. Keeping them apart is not decoration: it is what makes
-// "the bytes are on this node" and "this node answers to this name" two
-// different questions.
-//
-// Two named behavioural differences from the real daemon and no others: the
-// storage tree is a map rather than a filesystem, and a mirror has landed on
-// the peer by the time the request returns, where the real daemon schedules it
-// and answers 202 first. What it serves is a real tar, because that is the
-// contract DaemonSetVolume.StreamOut reads and the reads below are the same
-// reads either way.
-//
-// Both servers are closed on the Recorder at scenario end. That used to be
-// impossible — the reads here are in the Then steps, so no When could close
-// one — and the disposer drain is the point where it became safe: it runs
-// after the last step, on pass, on failure and on SIGTERM.
-type storeDaemon struct {
-	mu      sync.Mutex
-	root    string
-	disk    map[string]string
-	aliases map[string]string
-	peers   []*storeDaemon
-
-	server *httptest.Server
-	host   string
-	port   int
-}
-
-func newStoreDaemon(root string) (*storeDaemon, error) {
-	d := &storeDaemon{
-		root:    root,
-		disk:    map[string]string{},
-		aliases: map[string]string{},
-	}
-	d.server = httptest.NewServer(d.handler())
-	host, port, err := hostAndPort(d.server)
-	if err != nil {
-		d.server.Close()
-		return nil, err
-	}
-	d.host, d.port = host, port
-	return d, nil
-}
-
-func (d *storeDaemon) storeRoot() string  { return d.root }
-func (d *storeDaemon) daemonHost() string { return d.host }
-func (d *storeDaemon) daemonPort() int    { return d.port }
-
-func (d *storeDaemon) write(rel, content string) error {
-	d.put(rel, content)
-	return nil
-}
-
-func (d *storeDaemon) put(key, content string) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.disk[key] = content
-}
-
-// contained turns the absolute local path the ATC sends into the key this
-// daemon files data under, refusing anything outside its own storage root the
-// way the real handler's containment check does.
-func (d *storeDaemon) contained(localPath string) (string, bool) {
-	prefix := d.root + "/"
-	if !strings.HasPrefix(localPath, prefix) {
-		return "", false
-	}
-	return strings.TrimPrefix(localPath, prefix), true
-}
-
-func (d *storeDaemon) handler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/register":
-			d.serveRegister(w, r)
-		case r.Method == http.MethodPost && r.URL.Path == "/mirror":
-			d.serveMirror(w, r)
-		case strings.HasPrefix(r.URL.Path, "/artifacts/"):
-			d.serveArtifact(w, r, strings.TrimPrefix(r.URL.Path, "/artifacts/"))
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	})
-}
-
-// serveRegister mirrors the real handler's decisive property: a daemon whose
-// node does not hold the path answers 404 rather than claiming the alias.
-// Without that, every daemon would accept every registration and "which node
-// can serve this" would stop meaning anything.
-func (d *storeDaemon) serveRegister(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Key       string `json:"key"`
-		LocalPath string `json:"local_path"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Key == "" || req.LocalPath == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-	rel, ok := d.contained(req.LocalPath)
-	if !ok {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if _, held := d.disk[rel]; !held {
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
-	d.aliases[req.Key] = rel
-	w.WriteHeader(http.StatusCreated)
-}
-
-// serveMirror copies what this node holds under steps/<key> onto its peers.
-//
-// A key this node does not hold is still a 202: the real daemon schedules the
-// mirror and reports nothing about whether it found anything, which is what
-// makes "the copy arrived" the only assertable outcome.
-func (d *storeDaemon) serveMirror(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Key string `json:"key"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Key == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-
-	d.mu.Lock()
-	content, held := d.disk["steps/"+req.Key]
-	peers := append([]*storeDaemon(nil), d.peers...)
-	d.mu.Unlock()
-
-	if held {
-		for _, peer := range peers {
-			peer.put("steps/"+req.Key, content)
-		}
-	}
-	w.WriteHeader(http.StatusAccepted)
-}
-
-// serveArtifact answers for a path on disk first and for a registered alias
-// second, which is the order the real daemon resolves in, and answers with a
-// TAR of the directory, which is what the real daemon returns and what
-// DaemonSetVolume.StreamOut hands its caller.
-func (d *storeDaemon) serveArtifact(w http.ResponseWriter, r *http.Request, key string) {
-	d.mu.Lock()
-	content, held := d.disk[key]
-	if !held {
-		if target, aliased := d.aliases[key]; aliased {
-			content, held = d.disk[target]
-		}
-	}
-	d.mu.Unlock()
-
-	if !held {
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
-
-	archive, err := tarOfOneOutput(content)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/x-tar")
-	w.WriteHeader(http.StatusOK)
-	if r.Method != http.MethodHead {
-		_, _ = w.Write(archive)
-	}
-}
-
-// tarOfOneOutput packs an output directory holding one file, which is the
-// shape realNode.write leaves on a real node's disk.
-func tarOfOneOutput(content string) ([]byte, error) {
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-	if err := tw.WriteHeader(&tar.Header{
-		Name: stepOutputFileName, Mode: 0o644, Size: int64(len(content)), Typeflag: tar.TypeReg,
-	}); err != nil {
-		return nil, err
-	}
-	if _, err := tw.Write([]byte(content)); err != nil {
-		return nil, err
-	}
-	if err := tw.Close(); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
-}
-
-// fetch reads an artifact back out of this daemon over the wire, the way any
-// consumer would.
-func (d *storeDaemon) fetch(ctx context.Context, path string) ([]byte, error) {
-	url := fmt.Sprintf("http://%s:%d%s", d.host, d.port, path)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("build request for %s: %w", url, err)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("fetch %s: %w", url, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s answered %d", url, resp.StatusCode)
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", url, err)
-	}
-	return body, nil
-}
-
-// -----------------------------------------------------------------------
 // Domain states
 // -----------------------------------------------------------------------
 
@@ -552,33 +211,25 @@ func (d *storeDaemon) fetch(ctx context.Context, path string) ([]byte, error) {
 const cachedStepJobID = 7
 
 type ArtifactCluster struct {
-	Ctx       context.Context
-	Namespace string
-	Worker    *jetbridge.Worker
-	Clientset *fake.Clientset
-	Backend   *jetbridge.DaemonSetBackend
-	Locator   *jetbridge.ArtifactLocator
-	DB        JetbridgeDB
-	Team      db.Team
-	WorkerRow db.Worker
+	mirrorRecorder *brine.Recorder
+	live           *liveArtifactDaemon
+	nodeReads      *execObservation
+	recording      *artifactRecordingObservation
+	Ctx            context.Context
+	Namespace      string
+	Worker         *jetbridge.Worker
+	Clientset      kubernetes.Interface
+	Backend        *jetbridge.DaemonSetBackend
+	Locator        *jetbridge.ArtifactLocator
+	DB             JetbridgeDB
+	Team           db.Team
+	WorkerRow      db.Worker
 
-	// Disk is the artifact store on the node that ran the step, and StoreRoot
-	// is where that store lives — the hostPath the ATC is configured with and
-	// every pod's hostPath is built from. It is a real temporary directory
-	// under a real daemon and a name under a stand-in, which is why it is
-	// carried here rather than being a constant.
-	Disk      nodeDisk
+	// Both stores are owned production-daemon filesystems.
 	StoreRoot string
-
-	// Node is the REAL daemon on that node. The three mirror scenarios leave
-	// it nil: they run on stand-ins, and none of them builds a pod or runs a
-	// fetch script, which is everything that reads this.
-	Node *realNode
-
-	// Peer is a second node's stand-in daemon, present only when a scenario
-	// asked for one.
-	Peer     *storeDaemon
-	NodeName string
+	Node      *realNode
+	Peer      *realNode
+	NodeName  string
 
 	// CacheIdentity is the job a described task cache belongs to, set by the
 	// sentence that asks for a cache. Nil everywhere else, which is what a
@@ -586,9 +237,11 @@ type ArtifactCluster struct {
 	CacheIdentity *atc.TaskCacheIdentity
 
 	// The producing step under description.
-	Handle  string
-	Outputs map[string]string
-	Volumes []*jetbridge.Volume
+	Handle          string
+	Outputs         map[string]string
+	Volumes         []*jetbridge.Volume
+	Producer        runtime.Container
+	ExpectedVolumes map[string]string // mount path -> independently expected handle
 
 	// ProducerDir and ProducerType are the working directory and the kind of
 	// step the producer is. They matter together: a get step's working
@@ -622,8 +275,9 @@ type ArtifactCluster struct {
 }
 
 type consumerInput struct {
-	Key  string
-	Path string
+	Key      string
+	Path     string
+	Artifact runtime.Artifact // retain worker-created references when available
 }
 
 // producerWrite is one thing a finished step left behind: the name the ATC
@@ -650,7 +304,7 @@ type FollowingPod struct {
 	// nodes that actually exist. A requirement is only wrong relative to the
 	// fleet it is asked of, and comparing the pod against a copy of what
 	// production was expected to write would assert nothing about that.
-	Clientset *fake.Clientset
+	Clientset kubernetes.Interface
 	Ctx       context.Context
 	// Caches are the paths the step asked to keep, so a check can find the
 	// mount by the path the STEP named rather than by the volume-naming
@@ -682,15 +336,6 @@ type FetchOutcome struct {
 	Output    string
 }
 
-// ArtifactLookup is what a lookup produced: the bytes, or the failure, or the
-// database association initialising the volume as a resource cache wrote.
-type ArtifactLookup struct {
-	Content     string
-	Association *db.UsedWorkerResourceCache
-	Err         error
-	Message     string
-}
-
 // -----------------------------------------------------------------------
 // Preamble
 // -----------------------------------------------------------------------
@@ -702,91 +347,42 @@ func applyArtifactConfig(cfg *jetbridge.Config, root string, port int) {
 	cfg.ArtifactHelperImage = "alpine:latest"
 }
 
-// newArtifactCluster wires a worker to a node whose artifact store is already
-// standing.
-//
-// The daemon is started by the Given rather than here, because its port is the
-// port the whole cluster is configured with — one DaemonSet, one
-// containerPort, so the ATC reaches every daemon on the same one — and its
-// storage root is the hostPath every pod is built from.
-func newArtifactCluster(res brine.Resources, disk nodeDisk) (ArtifactCluster, error) {
-	root, host, port := disk.storeRoot(), disk.daemonHost(), disk.daemonPort()
-
-	cluster, err := NewCluster(res,
-		WithNamespace("test-namespace"),
-		WithConfig(func(cfg *jetbridge.Config) { applyArtifactConfig(cfg, root, port) }),
-		WithVolumeRepo(),
-	)
-	if err != nil {
-		return ArtifactCluster{}, err
-	}
-
-	ctx := cluster.Ctx
-	nodeName := "node-1"
-	if _, err := cluster.Clientset.CoreV1().Nodes().Create(ctx, &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: nodeName,
-			// A node in this cluster is a node with a daemon on it, so it
-			// carries the label that daemon's own labeller writes when it
-			// comes up. It cannot write it from here — see the constants.
-			Labels: map[string]string{artifactCacheLabelKey: artifactCacheLabelValue},
-		},
-		Status: corev1.NodeStatus{
-			Addresses: []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: host}},
-		},
-	}, metav1.CreateOptions{}); err != nil {
-		return ArtifactCluster{}, fmt.Errorf("create node %q: %w", nodeName, err)
-	}
-
-	if _, err := cluster.Clientset.DiscoveryV1().
-		EndpointSlices(cluster.Namespace).
-		Create(ctx, &discoveryv1.EndpointSlice{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      artifactDaemonService + "-brine",
-				Namespace: cluster.Namespace,
-				Labels:    map[string]string{discoveryv1.LabelServiceName: artifactDaemonService},
-			},
-			Endpoints: []discoveryv1.Endpoint{{Addresses: []string{host}}},
-		}, metav1.CreateOptions{}); err != nil {
-		return ArtifactCluster{}, fmt.Errorf("publish daemon endpoints: %w", err)
-	}
-
-	team, err := cluster.DB.TeamFactory.CreateTeam(atc.Team{Name: "artifact-recording"})
+// Both single-node and real peer fixtures use the same production worker,
+// backend, locator and database wiring.
+func wireArtifactCluster(in ArtifactCluster, executor jetbridge.PodExecutor) (ArtifactCluster, error) {
+	team, err := in.DB.TeamFactory.CreateTeam(atc.Team{Name: "artifact-recording"})
 	if err != nil {
 		return ArtifactCluster{}, fmt.Errorf("create team: %w", err)
 	}
-
-	cfg := jetbridge.NewConfig(cluster.Namespace, "")
-	applyArtifactConfig(&cfg, root, port)
-
-	locator := jetbridge.NewArtifactLocator()
+	in.Team = team
+	cfg := jetbridge.NewConfig(in.Namespace, "")
+	port := 0
+	if in.Node != nil {
+		port = in.Node.port
+	}
+	applyArtifactConfig(&cfg, in.StoreRoot, port)
+	cfg.ArtifactDaemonService = in.daemonService()
+	if in.live != nil {
+		cfg.ArtifactHelperImage = "busybox:1.37.0"
+		cfg.PodStartupTimeout, cfg.PodSchedulingTimeout = 30*time.Second, 30*time.Second
+	}
+	in.Worker = jetbridge.NewWorker(in.WorkerRow, in.Clientset, cfg)
+	in.Worker.SetVolumeRepo(in.DB.VolumeRepository)
+	in.Worker.SetExecutor(executor)
+	in.Locator = jetbridge.NewArtifactLocator()
 	client := jetbridge.NewDaemonClient(
 		lagertest.NewTestLogger("brine-artifact-recording"),
-		cluster.Clientset, cluster.Namespace, artifactDaemonService, port, nil,
+		in.Clientset, in.Namespace, cfg.ArtifactDaemonService, cfg.ArtifactDaemonPort, nil,
 	)
-	backend := jetbridge.NewDaemonSetBackend(cfg, locator, jetbridge.NewNodeIPResolver(cluster.Clientset))
-	backend.SetDaemonClient(client)
-
-	cluster.Worker.SetArtifactLocator(locator)
-	cluster.Worker.SetDaemonClient(client)
-
-	return ArtifactCluster{
-		Ctx:          ctx,
-		Namespace:    cluster.Namespace,
-		Worker:       cluster.Worker,
-		Clientset:    cluster.Clientset,
-		Backend:      backend,
-		Locator:      locator,
-		DB:           cluster.DB,
-		Team:         team,
-		WorkerRow:    cluster.DBWorker,
-		Disk:         disk,
-		StoreRoot:    root,
-		NodeName:     nodeName,
-		Outputs:      map[string]string{},
-		ProducerDir:  "/tmp/build",
-		ProducerType: db.ContainerTypeTask,
-	}, nil
+	in.Backend = jetbridge.NewDaemonSetBackend(cfg, in.Locator, jetbridge.NewNodeIPResolver(in.Clientset))
+	in.Backend.SetDaemonClient(client)
+	in.Worker.SetArtifactLocator(in.Locator)
+	in.Worker.SetDaemonClient(client)
+	in.Outputs = map[string]string{}
+	in.ExpectedVolumes = map[string]string{}
+	in.ProducerDir = "/tmp/build"
+	in.ProducerType = db.ContainerTypeTask
+	return in, nil
 }
 
 // outputMountPath is where an output of the described step is mounted. The
@@ -825,6 +421,7 @@ func (c ArtifactCluster) producerSpec() runtime.ContainerSpec {
 // ArtifactRecordingDefinitions is the single entry point this file exports.
 func ArtifactRecordingDefinitions() []brine.StepDefinition {
 	defs := artifactClusterDefinitions()
+	defs = append(defs, liveArtifactRecordingDefinitions()...)
 	defs = append(defs, artifactRecordDefinitions()...)
 	defs = append(defs, artifactPodDefinitions()...)
 	defs = append(defs, artifactSchedulingDefinitions()...)
@@ -847,69 +444,9 @@ func artifactClusterDefinitions() []brine.StepDefinition {
 		// this; the note is repeated because it is easy to undo.
 		brine.DefineMapUsing[brine.Empty, ArtifactCluster](
 			"a jetbridge worker whose step outputs stay on the node that ran them",
-			[]string{"jetbridge-db"},
+			[]string{"jetbridge-db", "real-cluster"},
 			func(_ brine.Empty, _ brine.Params, rec *brine.Recorder, res brine.Resources) (ArtifactCluster, error) {
-				node, err := startNodeDaemon()
-				if err != nil {
-					return ArtifactCluster{}, err
-				}
-				rec.RegisterDisposer(func() { _ = node.stop() })
-
-				cluster, err := newArtifactCluster(res, node)
-				if err != nil {
-					return ArtifactCluster{}, err
-				}
-				cluster.Node = node
-				return cluster, nil
-			},
-		),
-
-		// The mirror family's opening, and it says what it is. A real daemon
-		// discovers the peers it mirrors to through EndpointSlices, using a
-		// client main.go builds with rest.InClusterConfig() alone — and the
-		// flag that wires the mirror up at all, --node-name, makes the process
-		// exit outside a cluster. So these three scenarios drive stand-ins
-		// that really do copy to a real second server, which the check really
-		// does fetch the copy back from.
-		brine.DefineMapUsing[brine.Empty, ArtifactCluster](
-			"a jetbridge worker whose stand-in daemons can mirror to a peer",
-			[]string{"jetbridge-db"},
-			func(_ brine.Empty, _ brine.Params, rec *brine.Recorder, res brine.Resources) (ArtifactCluster, error) {
-				stand, err := newStoreDaemon(standInStoreRoot)
-				if err != nil {
-					return ArtifactCluster{}, err
-				}
-				rec.RegisterDisposer(stand.server.Close)
-				return newArtifactCluster(res, stand)
-			},
-		),
-
-		// A peer is a whole second daemon, on its own address, because a
-		// daemon mirrors to its peers and not to itself. It is deliberately
-		// NOT published in the EndpointSlice: peer discovery is the daemon's
-		// own business, and the ATC never needs to know the peers to ask for
-		// a mirror.
-		brine.DefineMap[ArtifactCluster, ArtifactCluster](
-			"a second node whose daemon can hold mirrored copies",
-			func(in ArtifactCluster, _ brine.Params, rec *brine.Recorder) (ArtifactCluster, error) {
-				producer, standing := in.Disk.(*storeDaemon)
-				if !standing {
-					return ArtifactCluster{}, fmt.Errorf(
-						"a mirror needs a daemon that can be GIVEN a peer, and this scenario's " +
-							"is the real binary, which finds its peers through EndpointSlices " +
-							"and cannot be pointed at one from outside a cluster")
-				}
-				peer, err := newStoreDaemon(standInStoreRoot)
-				if err != nil {
-					return ArtifactCluster{}, err
-				}
-				rec.RegisterDisposer(peer.server.Close)
-
-				producer.mu.Lock()
-				producer.peers = append(producer.peers, peer)
-				producer.mu.Unlock()
-				in.Peer = peer
-				return in, nil
+				return newArtifactCluster(res, rec, false)
 			},
 		),
 
@@ -932,15 +469,14 @@ func artifactClusterDefinitions() []brine.StepDefinition {
 				content, _ := p.GetString(2)
 
 				in.Outputs[name] = outputMountPath(name)
-				in.Volumes = append(in.Volumes,
-					jetbridge.NewStubVolume(handle, in.WorkerRow.Name(), outputMountPath(name)))
+				in.ExpectedVolumes[outputMountPath(name)] = handle
 				// path.Join, because this fixture stands in for the kubelet:
 				// the directory it makes is the one the pod's hostPath names,
 				// and that is built by joining. Concatenating instead would
 				// put an output named "/data" at steps/<handle>//data — the
 				// production defect, reproduced in the fixture, where it would
 				// cancel out rather than show.
-				if err := in.Disk.write(path.Join("steps", in.Handle, name), content); err != nil {
+				if err := in.Node.write(path.Join("steps", in.Handle, name), content); err != nil {
 					return ArtifactCluster{}, err
 				}
 				return in, nil
@@ -955,7 +491,7 @@ func artifactClusterDefinitions() []brine.StepDefinition {
 		// because the registration goes over the wire and its refusal would
 		// be reported rather than swallowed.
 		brine.DefineMap[ArtifactCluster, ArtifactCluster](
-			"the node's daemon holds the resource cache {string} containing {string}",
+			"the node's daemon holds the artifact {string} containing {string}",
 			func(in ArtifactCluster, p brine.Params, _ *brine.Recorder) (ArtifactCluster, error) {
 				key, _ := p.GetString(0)
 				content, _ := p.GetString(1)
@@ -974,12 +510,6 @@ func artifactClusterDefinitions() []brine.StepDefinition {
 				return in, nil
 			},
 		),
-
-		Refine[ArtifactCluster]("the worker already knows the cache {string} is on node {string}",
-			func(in ArtifactCluster, a Args) ArtifactCluster {
-				in.Locator.Record(a.String(0), a.String(1), a.String(0))
-				return in
-			}),
 
 		brine.DefineMap[ArtifactCluster, ArtifactCluster](
 			"an artifact volume {string} the worker can look up",
@@ -1006,9 +536,57 @@ func artifactRecordDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
 		brine.DefineMap[ArtifactCluster, ArtifactCluster](
+			"the worker records the outputs using equivalent handle {string}",
+			func(in ArtifactCluster, p brine.Params, _ *brine.Recorder) (ArtifactCluster, error) {
+				handle, ok := p.GetString(0)
+				if !ok || handle == in.Handle || filepath.Clean(handle) != in.Handle || len(in.Outputs) == 0 {
+					return in, fmt.Errorf("expected a noncanonical spelling of the same producer handle")
+				}
+				if _, err := prepareProducer(&in); err != nil {
+					return in, err
+				}
+				// The pod and its files are real and unchanged. Only the spelling
+				// passed to RecordOutputs differs. All paths remain in this root.
+				for name := range in.Outputs {
+					status, _, err := in.Node.request(in.Ctx, http.MethodPost, "/mirror",
+						fmt.Sprintf("{\"key\":%q}", handle+"/"+name))
+					if err != nil || status != http.StatusBadRequest {
+						return in, fmt.Errorf("real mirror must reject the noncanonical key: status=%d error=%v", status, err)
+					}
+				}
+				in.Handle = handle
+				if err := in.observeRecording("", func() {
+					defer func() {
+						if failure := recover(); failure != nil {
+							in.Err = fmt.Errorf("recording panicked after mirror refusal: %v", failure)
+						}
+					}()
+					in.Backend.RecordOutputs(in.Ctx, in.Handle, in.NodeName, in.Volumes, in.producerSpec())
+				}); err != nil {
+					return in, err
+				}
+				return in, nil
+			},
+		),
+		CheckThat[ArtifactCluster]("recording succeeds despite the mirror refusal",
+			func(in ArtifactCluster) error {
+				if in.Err != nil {
+					return in.Err
+				}
+				return in.requireRecording()
+			}),
+
+		brine.DefineMap[ArtifactCluster, ArtifactCluster](
 			"the worker records where the step's outputs went",
 			func(in ArtifactCluster, _ brine.Params, _ *brine.Recorder) (ArtifactCluster, error) {
-				in.Backend.RecordOutputs(in.Ctx, in.Handle, in.NodeName, in.Volumes, in.producerSpec())
+				if _, err := prepareProducer(&in); err != nil {
+					return in, err
+				}
+				if err := in.observeRecording("", func() {
+					in.Backend.RecordOutputs(in.Ctx, in.Handle, in.NodeName, in.Volumes, in.producerSpec())
+				}); err != nil {
+					return in, err
+				}
 				return in, nil
 			},
 		),
@@ -1020,10 +598,18 @@ func artifactRecordDefinitions() []brine.StepDefinition {
 				if !ok {
 					return ArtifactCluster{}, fmt.Errorf("expected a cache key parameter")
 				}
-				// A get step's output volume is named after its container
-				// with a "-dir" suffix, which is how the backend derives the
-				// directory the cache actually lives in.
-				in.Err = in.Backend.RegisterResourceCache(in.Ctx, key, "", in.Handle+"-dir", in.NodeName)
+				if _, err := prepareProducer(&in); err != nil {
+					return in, err
+				}
+				volume, err := producerVolumeAt(in, in.ProducerDir)
+				if err != nil {
+					return in, err
+				}
+				if err := in.observeRecording(key, func() {
+					in.Err = in.Backend.RegisterResourceCache(in.Ctx, key, "", volume.Handle(), in.NodeName)
+				}); err != nil {
+					return in, err
+				}
 				in.Message = ""
 				if in.Err != nil {
 					in.Message = in.Err.Error()
@@ -1053,6 +639,14 @@ func artifactRecordDefinitions() []brine.StepDefinition {
 		CheckStringFor[ArtifactCluster]("the output {string} reads back as {string}",
 			"the artifact's contents",
 			func(in ArtifactCluster, handle string) (string, error) {
+				if len(in.Volumes) == 0 {
+					return "", fmt.Errorf("producer returned no volumes")
+				}
+				for _, volume := range in.Volumes {
+					if volume.Source() != in.WorkerRow.Name() || !volume.HasExecutor() {
+						return "", fmt.Errorf("producer volume %q lost worker or executor binding", volume.Handle())
+					}
+				}
 				vol := in.Backend.WrapVolumeForLookup(
 					in.Ctx, jetbridge.ArtifactKey(handle), handle, in.WorkerRow.Name(), nil)
 				stream, err := vol.StreamOut(in.Ctx, ".", nil)
@@ -1064,13 +658,18 @@ func artifactRecordDefinitions() []brine.StepDefinition {
 				if err != nil {
 					return "", fmt.Errorf("draining %q: %w", handle, err)
 				}
+				if in.live != nil {
+					if err := in.nodeReads.requireNodeRead(in.NodeName); err != nil {
+						return "", err
+					}
+				}
 				return oneFileInTar(body)
 			}),
 
 		// Keeps its own body: three parameters, and the failure has to say
 		// what losing the copy costs.
 		brine.DefineCheck[ArtifactCluster](
-			"the other node holds a copy of the output {string} containing {string}",
+			"the independent peer holds a copy of the output {string} containing {string}",
 			func(in ArtifactCluster, p brine.Params, _ *brine.Recorder) error {
 				name, _ := p.GetString(0)
 				want, ok := p.GetString(1)
@@ -1078,18 +677,28 @@ func artifactRecordDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("expected an output name and its contents")
 				}
 				if in.Peer == nil {
-					return fmt.Errorf("no second node was set up, so nothing could hold a copy")
+					return fmt.Errorf("no independent peer was set up, so nothing could hold a copy")
+				}
+				if err := in.requireRecording(); err != nil {
+					return err
 				}
 				key := in.Handle + "/" + name
-				body, err := in.Peer.fetch(in.Ctx, "/artifacts/steps/"+key)
+				// GET can fetch from the producer on a miss. First require the
+				// mirror itself to have delivered the file to the peer's disk.
+				ctx, cancel := context.WithTimeout(in.Ctx, 10*time.Second)
+				defer cancel()
+				path := filepath.Join(in.Peer.Root, "steps", key, stepOutputFileName)
+				if err := waitForPeerFile(ctx, in.Peer, path, want); err != nil {
+					return fmt.Errorf("the independent peer has no completed mirror of %q: %w", key, err)
+				}
+				body, err := in.Peer.fetchArtifact(ctx, "/artifacts/steps/"+key)
 				if err != nil {
 					return fmt.Errorf(
-						"the second node has no copy of %q, so losing the node that produced it "+
-							"loses the build's output and forces a rerun: %w", key, err)
+						"the independent peer has no readable copy of %q: %w", key, err)
 				}
 				got, err := oneFileInTar(body)
 				if err != nil {
-					return fmt.Errorf("the copy of %q on the second node: %w", key, err)
+					return fmt.Errorf("the copy of %q on the independent peer: %w", key, err)
 				}
 				if got != want {
 					return fmt.Errorf("expected the copy of %q to be %q, got %q", key, want, got)
@@ -1134,8 +743,22 @@ func artifactPodDefinitions() []brine.StepDefinition {
 			func(in ArtifactCluster, _ brine.Params, _ *brine.Recorder) (FollowingPod, error) {
 				var inputs []runtime.Input
 				for _, input := range in.Inputs {
+					// Restored or external references use the real backend lookup.
+					// Locally produced inputs use the worker's returned volume, as
+					// task output registration does in production.
+					artifact := input.Artifact
+					for _, volume := range in.Volumes {
+						if artifact == nil && volume.Handle() == input.Key {
+							artifact = in.Worker.ArtifactFromVolume(volume)
+							break
+						}
+					}
+					if artifact == nil {
+						artifact = in.Backend.WrapVolumeForLookup(
+							in.Ctx, jetbridge.ArtifactKey(input.Key), input.Key, in.WorkerRow.Name(), nil)
+					}
 					inputs = append(inputs, runtime.Input{
-						Artifact:        jetbridge.NewStubVolume(input.Key, in.WorkerRow.Name(), input.Path),
+						Artifact:        artifact,
 						DestinationPath: input.Path,
 					})
 				}
@@ -1159,7 +782,7 @@ func artifactPodDefinitions() []brine.StepDefinition {
 				// the second FindOrCreateContainer finds the first one.
 				if in.RanBefore {
 					if _, _, err := in.Worker.FindOrCreateContainer(
-						in.Ctx, owner, metadata, spec, &noopDelegate{},
+						in.Ctx, owner, metadata, spec, nil,
 					); err != nil {
 						return FollowingPod{}, fmt.Errorf(
 							"pre-create container %q: %w", in.Consumer, err)
@@ -1171,7 +794,7 @@ func artifactPodDefinitions() []brine.StepDefinition {
 					owner,
 					metadata,
 					spec,
-					&noopDelegate{},
+					nil,
 				)
 				if err != nil {
 					return FollowingPod{}, fmt.Errorf("find or create container %q: %w", in.Consumer, err)
@@ -1343,13 +966,60 @@ func artifactPodDefinitions() []brine.StepDefinition {
 // step named, rather than trusting the volume-naming convention.
 func artifactSchedulingDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
-
-		Refine[ArtifactCluster]("the worker already knows the artifact {string} is on node {string}",
-			func(in ArtifactCluster, a Args) ArtifactCluster {
-				handle, node := a.String(0), a.String(1)
-				in.Locator.Record(jetbridge.ArtifactKey(handle), node, handle)
-				return in
+		Transform[ArtifactCluster, ArtifactCluster]("an input artifact is recorded on node {string}",
+			func(in ArtifactCluster, a Args) (ArtifactCluster, error) {
+				nodeName := a.String(0)
+				if nodeName == "" {
+					return in, fmt.Errorf("expected a recorded node name")
+				}
+				volume, _, err := in.Worker.CreateVolumeForArtifact(in.Ctx, in.Team.ID())
+				if err != nil {
+					return in, fmt.Errorf("create input artifact: %w", err)
+				}
+				key := jetbridge.ArtifactKey(volume.Handle())
+				in.Locator.Record(key, nodeName, key)
+				in.Inputs = append(in.Inputs, consumerInput{
+					Key: volume.Handle(), Artifact: volume,
+					Path: fmt.Sprintf("/tmp/build/workdir/input-%d", len(in.Inputs)),
+				})
+				return in, nil
 			}),
+		// Only the index and submitted pod are under test here. No daemon,
+		// node status, mirrored bytes or running task is needed for placement.
+		brine.DefineMapUsing[brine.Empty, ArtifactCluster](
+			"a jetbridge worker placing step {string} from recorded artifact locations",
+			[]string{"jetbridge-db", "real-cluster"},
+			func(_ brine.Empty, p brine.Params, rec *brine.Recorder, res brine.Resources) (ArtifactCluster, error) {
+				handle, ok := p.GetString(0)
+				if !ok || handle == "" {
+					return ArtifactCluster{}, fmt.Errorf("expected a consuming step handle")
+				}
+				api, err := getRealCluster(res)
+				if err != nil {
+					return ArtifactCluster{}, err
+				}
+				database, ok := res.Get("jetbridge-db").(JetbridgeDB)
+				if !ok {
+					return ArtifactCluster{}, fmt.Errorf("jetbridge-db resource is %T", res.Get("jetbridge-db"))
+				}
+				ctx := context.Background()
+				ns, err := api.Clientset.CoreV1().Namespaces().Create(ctx,
+					&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "artifact-placement-"}}, metav1.CreateOptions{})
+				if err != nil {
+					return ArtifactCluster{}, err
+				}
+				registerNamespacePodCleanup(rec, api.Clientset, ns.Name)
+				row, err := database.PersistNamedWorker("artifact-placement-worker")
+				if err != nil {
+					return ArtifactCluster{}, err
+				}
+				return wireArtifactCluster(ArtifactCluster{
+					Ctx: ctx, Namespace: ns.Name, Clientset: api.Clientset,
+					DB: database, WorkerRow: row, StoreRoot: "/brine/artifacts",
+					Consumer: handle, ConsumerType: db.ContainerTypeTask,
+				}, jetbridge.NewSPDYExecutor(api.Clientset, api.RESTConfig))
+			},
+		),
 
 		Refine[ArtifactCluster]("it keeps a task cache at {string}",
 			func(in ArtifactCluster, a Args) ArtifactCluster {
@@ -1730,135 +1400,17 @@ func storeMountOf(in FollowingPod, container string) (corev1.VolumeMount, error)
 }
 
 func artifactLookupDefinitions() []brine.StepDefinition {
-	return []brine.StepDefinition{
-
-		brine.DefineMap[ArtifactCluster, ArtifactLookup](
-			"the worker looks up the volume {string}",
-			func(in ArtifactCluster, p brine.Params, _ *brine.Recorder) (ArtifactLookup, error) {
-				handle, ok := p.GetString(0)
-				if !ok {
-					return ArtifactLookup{}, fmt.Errorf("expected a volume handle parameter")
-				}
-				vol, err := lookupVolume(in, handle)
-				if err != nil {
-					return ArtifactLookup{Err: err, Message: err.Error()}, nil
-				}
-				stream, err := vol.StreamOut(in.Ctx, ".", nil)
-				if err != nil {
-					return ArtifactLookup{Err: err, Message: err.Error()}, nil
-				}
-				defer stream.Close()
-				body, err := io.ReadAll(stream)
-				if err != nil {
-					return ArtifactLookup{Err: err, Message: err.Error()}, nil
-				}
-				content, err := oneFileInTar(body)
-				if err != nil {
-					return ArtifactLookup{Err: err, Message: err.Error()}, nil
-				}
-				return ArtifactLookup{Content: content}, nil
-			},
-		),
-
-		brine.DefineMap[ArtifactCluster, ArtifactLookup](
-			"the worker looks up the volume {string} and initialises it as a resource cache",
-			func(in ArtifactCluster, p brine.Params, _ *brine.Recorder) (ArtifactLookup, error) {
-				handle, ok := p.GetString(0)
-				if !ok {
-					return ArtifactLookup{}, fmt.Errorf("expected a volume handle parameter")
-				}
-				cache, err := oneResourceCache(in)
-				if err != nil {
-					return ArtifactLookup{}, err
-				}
-				vol, err := lookupVolume(in, handle)
-				if err != nil {
-					return ArtifactLookup{Err: err, Message: err.Error()}, nil
-				}
-				association, err := vol.InitializeResourceCache(in.Ctx, cache)
-				out := ArtifactLookup{Association: association}
-				if err != nil {
-					out.Err, out.Message = err, err.Error()
-				}
-				return out, nil
-			},
-		),
-
-		CheckString[ArtifactLookup]("the artifact comes back as {string}",
-			"the artifact's contents",
-			func(in ArtifactLookup) (string, error) {
-				if in.Err != nil {
-					return "", fmt.Errorf("the lookup could not read the artifact: %s", in.Message)
-				}
-				return in.Content, nil
-			}),
-
-		// Unpublishing the daemon is how a scenario says "the index is the only
-		// route to this artifact".
-		//
-		// It is needed because the real daemon resolves /artifacts/steps/<key>
-		// by STRIPPING the steps/ prefix and retrying the registry
-		// (server.go's lookupRegistryAlias). The hand-written double 404'd
-		// that URL, so an ATC that had lost the index failed. Against the real
-		// daemon the ATC's peer fallback asks exactly that URL, finds the
-		// alias, and succeeds — which silently turned two scenarios from
-		// pinning two things into pinning one. Measured on the built binary:
-		// HEAD /artifacts/steps/vol-result answers 200 where the double
-		// answered 404.
+	return append(artifactLookupContractDefinitions(),
 		brine.DefineMap[ArtifactCluster, ArtifactCluster](
 			"the ATC cannot go looking for daemons it was not told about",
 			func(in ArtifactCluster, _ brine.Params, _ *brine.Recorder) (ArtifactCluster, error) {
-				slices := in.Clientset.DiscoveryV1().EndpointSlices(in.Namespace)
-				slice, err := slices.Get(in.Ctx, artifactDaemonService+"-brine", metav1.GetOptions{})
-				if err != nil {
-					return in, fmt.Errorf("read the published daemons: %w", err)
-				}
-				slice.Endpoints = nil
-				if _, err := slices.Update(in.Ctx, slice, metav1.UpdateOptions{}); err != nil {
-					return in, fmt.Errorf("unpublish the daemons: %w", err)
+				if err := in.unpublishDaemons(); err != nil {
+					return in, err
 				}
 				return in, nil
 			},
 		),
-
-		// The probe branch's signature, and the only thing that distinguishes
-		// it from the peer fallback now that both find the artifact.
-		//
-		// A probe hit binds the volume with NewDaemonSetVolumeFromIP, which
-		// takes no dbVolume, so InitializeResourceCache writes nothing. That
-		// is a real cost and the scenario below says so out loud rather than
-		// leaving it as an unstated difference. It is also what makes the
-		// branch observable: delete the probe and the lookup falls through to
-		// NewDaemonSetVolume, which DOES carry the row, and this check fails.
-		CheckThat[ArtifactLookup]("the cache arrives without a database identity",
-			func(in ArtifactLookup) error {
-				if in.Err != nil {
-					return fmt.Errorf("the lookup failed before it could be judged: %s", in.Message)
-				}
-				if in.Association != nil {
-					return fmt.Errorf(
-						"the cache came back carrying a database row, so the lookup did NOT take the " +
-							"probe branch — it fell through to the recorded-node path and found the " +
-							"artifact by asking every daemon instead. The probe is then dead code that " +
-							"nothing would notice the removal of")
-				}
-				return nil
-			}),
-
-		CheckThat[ArtifactLookup]("the cache is recorded against the worker in the database",
-			func(in ArtifactLookup) error {
-				if in.Err != nil {
-					return fmt.Errorf("initialising the cache failed: %s", in.Message)
-				}
-				if in.Association == nil {
-					return fmt.Errorf(
-						"nothing was written associating this worker with the resource cache. The " +
-							"volume that came back carries no database row, so InitializeResourceCache " +
-							"silently did nothing and the next build re-runs the get step")
-				}
-				return nil
-			}),
-	}
+	)
 }
 
 // lookupVolume is the production entry point a consumer uses: the worker finds
@@ -1976,17 +1528,23 @@ func preferredNode(in FollowingPod) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	var named []string
 	for _, term := range terms {
 		for _, expr := range term.Preference.MatchExpressions {
-			if expr.Key == "kubernetes.io/hostname" && len(expr.Values) > 0 {
-				return expr.Values[0], nil
+			if expr.Key != "kubernetes.io/hostname" {
+				continue
 			}
+			if term.Weight <= 0 || expr.Operator != corev1.NodeSelectorOpIn {
+				return "", fmt.Errorf("pod %q does not positively prefer its named node: weight=%d operator=%s",
+					in.Handle, term.Weight, expr.Operator)
+			}
+			named = append(named, expr.Values...)
 		}
 	}
-	return "", fmt.Errorf(
-		"the pod for %q asks for no particular node, so the scheduler is free to put it anywhere "+
-			"and the fetch of its inputs crosses the network instead of reading the local disk",
-		in.Handle)
+	if len(named) != 1 {
+		return "", fmt.Errorf("pod %q must prefer exactly one node, got %v", in.Handle, named)
+	}
+	return named[0], nil
 }
 
 // -----------------------------------------------------------------------
@@ -2000,10 +1558,15 @@ func preferredNode(in FollowingPod) (string, error) {
 // disagree and the scenarios cannot see it when production's two halves do.
 //
 // They are separate halves. The pod's hostPath comes from container.go's
-// buildVolumeMounts, which names the subdirectory after the output; the daemon
-// key comes from storage_daemonset.go's RecordOutputs, which derives it
-// independently from the same spec. Nothing joins them. Rename the subdirectory
-// on one side and every read by handle 404s on a node that has the bytes.
+// Container.buildVolumeMounts, which names the subdirectory after the output
+// (`subdir = outName`); the daemon key comes from storage_daemonset.go's
+// RecordOutputs, which derives it independently from the same spec. Nothing
+// joins them. Rename the subdirectory on one side and every read by handle
+// 404s on a node that has the bytes.
+//
+// Not to be confused with Worker.buildVolumeMountsForSpec (worker.go), which
+// builds the runtime.VolumeMount list and knows nothing about hostPath
+// subdirectories.
 //
 // The steps below take the layout from the POD instead. The producing step's
 // pod is built, its mounts are followed to the directories they point at, and
@@ -2021,14 +1584,6 @@ const getStepWorkDir = "/tmp/build/get"
 func artifactLayoutDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		Refine[ArtifactCluster]("the get step {string} ran on node {string}",
-			func(in ArtifactCluster, a Args) ArtifactCluster {
-				in.Handle, in.NodeName = a.String(0), a.String(1)
-				in.ProducerType = db.ContainerTypeGet
-				in.ProducerDir = getStepWorkDir
-				return in
-			}),
-
 		// A step whose pod could not be found when it finished — the node
 		// lookup failed, or the pod was already gone. The outputs are on a
 		// node's disk either way; what is missing is the name of the node.
@@ -2045,8 +1600,7 @@ func artifactLayoutDefinitions() []brine.StepDefinition {
 				content, name, handle := a.String(0), a.String(1), a.String(2)
 				path := outputMountPath(name)
 				in.Outputs[name] = path
-				in.Volumes = append(in.Volumes,
-					jetbridge.NewStubVolume(handle, in.WorkerRow.Name(), path))
+				in.ExpectedVolumes[path] = handle
 				in.Writes = append(in.Writes,
 					producerWrite{Name: name, Path: path, Content: content})
 				return in
@@ -2058,8 +1612,7 @@ func artifactLayoutDefinitions() []brine.StepDefinition {
 		Refine[ArtifactCluster]("it fetched {string} into its working directory, which is the volume {string}",
 			func(in ArtifactCluster, a Args) ArtifactCluster {
 				content, handle := a.String(0), a.String(1)
-				in.Volumes = append(in.Volumes,
-					jetbridge.NewStubVolume(handle, in.WorkerRow.Name(), in.ProducerDir))
+				in.ExpectedVolumes[in.ProducerDir] = handle
 				in.Writes = append(in.Writes,
 					producerWrite{Name: "dir", Path: in.ProducerDir, Content: content})
 				return in
@@ -2079,7 +1632,7 @@ func artifactLayoutDefinitions() []brine.StepDefinition {
 					return ArtifactCluster{}, fmt.Errorf(
 						"this scenario has no real node for the step's bytes to land on")
 				}
-				pod, err := buildProducerPod(in)
+				pod, err := buildProducerPod(&in)
 				if err != nil {
 					return ArtifactCluster{}, err
 				}
@@ -2098,7 +1651,12 @@ func artifactLayoutDefinitions() []brine.StepDefinition {
 								"there, so the output is unreachable however it is recorded",
 							in.Handle, write.Name, hostDir, in.StoreRoot)
 					}
-					if err := in.Node.write(rel, write.Content); err != nil {
+					if in.live != nil {
+						_, err = in.live.store.exec(in.Ctx, pod.Name, []string{"sh", "-ec", "mkdir -p \"$1\"; cat > \"$1/$2\"", "write-producer-output", write.Path, stepOutputFileName}, strings.NewReader(write.Content))
+					} else {
+						err = in.Node.write(rel, write.Content)
+					}
+					if err != nil {
 						return ArtifactCluster{}, err
 					}
 				}
@@ -2108,22 +1666,71 @@ func artifactLayoutDefinitions() []brine.StepDefinition {
 	}
 }
 
-// buildProducerPod runs the producing step far enough to get its pod, which is
-// the only thing that knows where the step's directories are on the node.
-func buildProducerPod(in ArtifactCluster) (*corev1.Pod, error) {
+// prepareProducer gets volumes from the same worker factory used by task/get
+// steps. Feature handles are expectations, never constructor arguments. Keep
+// scratch mounts too: RecordOutputs must decide which paths are outputs.
+func prepareProducer(in *ArtifactCluster) (runtime.Container, error) {
+	if in.Producer != nil {
+		return in.Producer, nil
+	}
+	if len(in.ExpectedVolumes) == 0 {
+		return nil, fmt.Errorf("producer %q declares no volume expectations", in.Handle)
+	}
 	spec := in.producerSpec()
 	spec.TeamID = in.Team.ID()
 	spec.ImageSpec = runtime.ImageSpec{ImageURL: "docker:///busybox"}
-
-	container, _, err := in.Worker.FindOrCreateContainer(
-		in.Ctx,
-		db.NewFixedHandleContainerOwner(in.Handle),
-		db.ContainerMetadata{Type: in.ProducerType},
-		spec,
-		&noopDelegate{},
-	)
+	if in.live != nil {
+		spec.ImageSpec.ImageURL = "busybox:1.37.0"
+	}
+	container, mounts, err := in.Worker.FindOrCreateContainer(
+		in.Ctx, db.NewFixedHandleContainerOwner(in.Handle),
+		db.ContainerMetadata{Type: in.ProducerType}, spec, nil)
 	if err != nil {
-		return nil, fmt.Errorf("find or create the producing container %q: %w", in.Handle, err)
+		return nil, fmt.Errorf("create producer %q: %w", in.Handle, err)
+	}
+	for _, mount := range mounts {
+		volume, ok := mount.Volume.(*jetbridge.Volume)
+		if !ok || !volume.HasExecutor() {
+			return nil, fmt.Errorf("producer %q returned a non-executable volume at %q", in.Handle, mount.MountPath)
+		}
+		in.Volumes = append(in.Volumes, volume)
+	}
+	for path, handle := range in.ExpectedVolumes {
+		volume, err := producerVolumeAt(*in, path)
+		if err != nil {
+			return nil, err
+		}
+		if volume.Handle() != handle {
+			return nil, fmt.Errorf("producer %q volume at %q: expected handle %q, got %q",
+				in.Handle, path, handle, volume.Handle())
+		}
+	}
+	in.Producer = container
+	return container, nil
+}
+
+func producerVolumeAt(in ArtifactCluster, path string) (*jetbridge.Volume, error) {
+	var found *jetbridge.Volume
+	for _, volume := range in.Volumes {
+		if volume.MountPath() != path {
+			continue
+		}
+		if found != nil {
+			return nil, fmt.Errorf("producer %q returned duplicate volumes at %q", in.Handle, path)
+		}
+		found = volume
+	}
+	if found == nil {
+		return nil, fmt.Errorf("producer %q returned no volume at %q", in.Handle, path)
+	}
+	return found, nil
+}
+
+// buildProducerPod starts the producer far enough to inspect its actual pod.
+func buildProducerPod(in *ArtifactCluster) (*corev1.Pod, error) {
+	container, err := prepareProducer(in)
+	if err != nil {
+		return nil, err
 	}
 	if _, err := container.Run(in.Ctx,
 		runtime.ProcessSpec{Path: "/bin/sh"}, runtime.ProcessIO{},
@@ -2131,7 +1738,7 @@ func buildProducerPod(in ArtifactCluster) (*corev1.Pod, error) {
 		return nil, fmt.Errorf("run the producing container %q: %w", in.Handle, err)
 	}
 
-	pods, err := in.Clientset.CoreV1().Pods(in.Namespace).List(in.Ctx, metav1.ListOptions{})
+	pods, err := in.Clientset.CoreV1().Pods(in.Namespace).List(in.Ctx, metav1.ListOptions{LabelSelector: "concourse.ci/handle=" + in.Handle})
 	if err != nil {
 		return nil, fmt.Errorf("list pods: %w", err)
 	}
@@ -2141,6 +1748,19 @@ func buildProducerPod(in ArtifactCluster) (*corev1.Pod, error) {
 			in.Handle, len(pods.Items))
 	}
 	pod := pods.Items[0]
+	if in.live != nil {
+		ready, err := awaitLiveStoragePod(in.Ctx, in.live.store, &pod)
+		if err != nil {
+			return nil, err
+		}
+		if ready.Spec.NodeName != in.NodeName {
+			return nil, fmt.Errorf("producer ran on %q instead of artifact node %q", ready.Spec.NodeName, in.NodeName)
+		}
+		if err := validatePodMounts(ready); err != nil {
+			return nil, err
+		}
+		return ready, nil
+	}
 	return &pod, nil
 }
 
@@ -2160,24 +1780,11 @@ func buildProducerPod(in ArtifactCluster) (*corev1.Pod, error) {
 // DIRECTORY on the second. A map keyed by "steps/"+key answers both without
 // either derivation being right.
 //
-// Two things are supplied rather than performed, and both are named where they
-// are done. The script's request is made by this fixture and the status and
-// body handed to the script's wget, because BusyBox wget is not on the machine
-// running this; and the destination directories are created before the request,
-// because on a node the kubelet has already made them — every hostPath the pod
-// declares is DirectoryOrCreate — and the daemon walks to a destination's
-// parent rather than creating it. The retry backoff is not waited out either.
-const fetchShellPrelude = `
-wget() {
-  if [ "${BRINE_DAEMON_RC}" = "0" ]; then
-    printf '%s' "${BRINE_DAEMON_BODY}"
-    return 0
-  fi
-  echo "wget: server returned error: HTTP/1.1 ${BRINE_DAEMON_STATUS}" >&2
-  return 1
-}
-sleep() { :; }
-`
+// The unchanged script runs under actual BusyBox sh/wget/sleep. It makes its
+// own HTTP requests, reads their real responses, and waits through retries.
+// The fixture only prepares the owned destination directories, which the
+// kubelet would create before running an init container. There is no kubelet
+// here; this proves the script/daemon boundary, not pod execution.
 
 func artifactFetchRunDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
@@ -2215,28 +1822,11 @@ func artifactFetchRunDefinitions() []brine.StepDefinition {
 						"preparing the destinations the pod for %q named: %w", in.Handle, err)
 				}
 
-				status, answer, err := in.Node.request(
-					in.Ctx, http.MethodPost, "/resolve-batch", payload)
-				if err != nil {
-					return FetchOutcome{}, fmt.Errorf(
-						"asking the node's daemon to resolve the batch for %q: %w", in.Handle, err)
-				}
-				body := string(answer)
-				rc := "0"
-				if status < 200 || status > 299 {
-					rc = "1"
-				}
-
-				cmd := exec.CommandContext(in.Ctx, argv[0], argv[1], fetchShellPrelude+argv[2])
-				cmd.Env = []string{
-					"PATH=" + os.Getenv("PATH"),
-					// What the kubelet puts here from the downward API.
-					"HOST_IP=" + in.Node.host,
-					"BRINE_DAEMON_RC=" + rc,
-					"BRINE_DAEMON_STATUS=" + strconv.Itoa(status),
-					"BRINE_DAEMON_BODY=" + body,
-				}
-				out, runErr := cmd.CombinedOutput()
+				// Local requests and nine real two-second retry waits fit this
+				// budget. A timeout is a fixture failure, never an expected fetch refusal.
+				ctx, cancel := context.WithTimeout(in.Ctx, 30*time.Second)
+				defer cancel()
+				out, runErr := runBusyboxScript(ctx, argv, []string{"HOST_IP=" + in.Node.host})
 
 				exitCode := 0
 				if runErr != nil {
@@ -2283,6 +1873,15 @@ func artifactFetchRunDefinitions() []brine.StepDefinition {
 							"the fetch that never happened, and with nothing in the log to "+
 							"connect the two: %s",
 						in.Handle, abbrev(in.Output))
+				}
+				// The daemon answers a batch with its worst item's status: 404
+				// when an artifact is simply not on this node, 422 when one
+				// that is here is refused, 500 when resolving it broke. This
+				// scenario's missing "vol-lost" is the 404 case; what the
+				// step must not do is retry it or start.
+				if !strings.Contains(in.Output, "server returned error: HTTP/1.1 404") {
+					return fmt.Errorf("fetch exited %d without the daemon's 404 for the missing artifact: %s",
+						in.ExitCode, abbrev(in.Output))
 				}
 				return nil
 			}),

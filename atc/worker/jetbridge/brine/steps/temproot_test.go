@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -125,54 +126,107 @@ func TestAStaleAdapterRootWhoseProcessIsGoneIsSwept(t *testing.T) {
 	}
 }
 
-// Every temp directory a daemon fixture makes goes under the adapter's root.
+// Every temp directory this package makes goes under the adapter's root.
 //
 // The sweep can only remove what it can attribute, and it attributes by the pid
 // in the name -- which it can only put there for the directories it creates
-// itself. One `os.MkdirTemp("", ...)` added back to realdaemon.go is a
-// directory nothing removes and nothing reports, which is exactly how 42 GB
-// accumulated. The rule is read out of the source rather than remembered.
-func TestEveryDaemonFixtureTempDirIsUnderTheAdapterRoot(t *testing.T) {
-	fileSet := token.NewFileSet()
-	parsed, err := parser.ParseFile(fileSet, "realdaemon.go", nil, 0)
+// itself. One `os.MkdirTemp("", ...)` is a directory nothing removes and
+// nothing reports, which is exactly how 42 GB accumulated. The rule is read out
+// of the source rather than remembered.
+//
+// It reads EVERY non-test file in the package, and that is the fix this spec
+// carries. It used to parse realdaemon.go alone -- the one file whose author
+// had the rule in mind -- and so it reported a clean package while twenty other
+// fixtures (auth binaries, TLS material, registry htpasswd, trace captures,
+// durable stores, task scratch) went on calling os.MkdirTemp("", ...) directly.
+// A guard aimed at one file measures that file's discipline, not the package's.
+func TestEveryFixtureTempDirIsUnderTheAdapterRoot(t *testing.T) {
+	sources := packageSourceFiles(t, ".")
+	if len(sources) == 0 {
+		t.Fatal("no non-test sources scanned; the temp-root guard would pass vacuously")
+	}
+
+	for _, source := range sources {
+		fileSet := token.NewFileSet()
+		parsed, err := parser.ParseFile(fileSet, source, nil, 0)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", source, err)
+		}
+
+		ast.Inspect(parsed, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			maker, ok := unattributableTempMaker(call)
+			if !ok {
+				return true
+			}
+			// temproot.go composes the root ITSELF, and it is the one call
+			// that has nowhere else to go. The exemption is narrow rather than
+			// by filename: the name it passes must be computed (the
+			// fmt.Sprintf carrying daemonRootPrefix and the pid), never a plain
+			// literal, so a second `os.MkdirTemp("", "something")` smuggled
+			// into this file is still reported.
+			if source == "temproot.go" {
+				if _, literal := call.Args[1].(*ast.BasicLit); !literal {
+					return true
+				}
+			}
+			t.Errorf("steps/%s:%d calls os.%s with an empty directory, so it puts bytes "+
+				"straight into the user's temp directory under a name nothing can attribute "+
+				"and nothing sweeps. Call AttributedTempDir/AttributedTempFile instead.",
+				source, fileSet.Position(call.Pos()).Line, maker)
+
+			return true
+		})
+	}
+}
+
+// unattributableTempMaker answers whether a call is os.MkdirTemp or
+// os.CreateTemp asked for the user's temp directory rather than for a directory
+// this process owns.
+func unattributableTempMaker(call *ast.CallExpr) (string, bool) {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return "", false
+	}
+	if selector.Sel.Name != "MkdirTemp" && selector.Sel.Name != "CreateTemp" {
+		return "", false
+	}
+	package_, ok := selector.X.(*ast.Ident)
+	if !ok || package_.Name != "os" || len(call.Args) != 2 {
+		return "", false
+	}
+	literal, ok := call.Args[0].(*ast.BasicLit)
+	if !ok || literal.Value != `""` {
+		return "", false
+	}
+
+	return selector.Sel.Name, true
+}
+
+// packageSourceFiles lists the non-test Go files of one directory, sorted, so
+// a guard reads the package as it is rather than as its author remembers it.
+func packageSourceFiles(t *testing.T, dir string) []string {
+	t.Helper()
+
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		t.Fatalf("parsing realdaemon.go: %v", err)
+		t.Fatalf("reading %s: %v", dir, err)
 	}
 
-	found := 0
-	ast.Inspect(parsed, func(node ast.Node) bool {
-		call, ok := node.(*ast.CallExpr)
-		if !ok {
-			return true
+	var sources []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
 		}
-		selector, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || selector.Sel.Name != "MkdirTemp" {
-			return true
-		}
-		package_, ok := selector.X.(*ast.Ident)
-		if !ok || package_.Name != "os" {
-			return true
-		}
-		found++
-		if len(call.Args) == 0 {
-			return true
-		}
-		literal, ok := call.Args[0].(*ast.BasicLit)
-		if ok && literal.Value == `""` {
-			t.Errorf("steps/realdaemon.go:%d calls os.MkdirTemp with an empty directory, so it "+
-				"puts a daemon's bytes straight into the user's temp directory under a name "+
-				"nothing can attribute and nothing sweeps. Call daemonTempDir instead.",
-				fileSet.Position(call.Pos()).Line)
-		}
-
-		return true
-	})
-
-	if found != 0 {
-		t.Errorf("realdaemon.go calls os.MkdirTemp %d time(s) directly; every daemon fixture "+
-			"directory goes through daemonTempDir, which is what puts this process's pid in the "+
-			"name", found)
+		sources = append(sources, name)
 	}
+	sort.Strings(sources)
+
+	return sources
 }
 
 func makeAdapterDir(t *testing.T, parent, name string) string {

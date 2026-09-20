@@ -171,14 +171,14 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 		// draft would be a sentence with nothing behind it.
 		brine.DefineMapUsing[CaptureDraft, CaptureDraft](
 			"the worker's cohort is ready for {string}",
-			[]string{"jetbridge-db"},
-			func(in CaptureDraft, p brine.Params, _ *brine.Recorder, res brine.Resources) (CaptureDraft, error) {
+			[]string{"jetbridge-db", "real-cluster"},
+			func(in CaptureDraft, p brine.Params, rec *brine.Recorder, res brine.Resources) (CaptureDraft, error) {
 				facet, ok := p.GetString(0)
 				if !ok {
 					return CaptureDraft{}, fmt.Errorf("expected a facet parameter")
 				}
 
-				return withCohort(in, res, facet, int64(hangarEpoch))
+				return withCohort(in, res, rec, facet, int64(hangarEpoch))
 			},
 		),
 
@@ -811,7 +811,8 @@ func captureResolvedMountCount(in CapturePodCreated) (int, error) {
 // configuration the worker was started with. The draft is a description at this
 // point -- no container has been created -- so replacing the cluster under it is
 // safe, and it is what makes the phrase a construction rather than a note.
-func withCohort(in CaptureDraft, res brine.Resources, facet string, epoch int64) (CaptureDraft, error) {
+func withCohort(in CaptureDraft, res brine.Resources, rec *brine.Recorder,
+	facet string, epoch int64) (CaptureDraft, error) {
 	outputFacet := false
 	switch facet {
 	case executioncontrol.ReadyLabel:
@@ -824,33 +825,37 @@ func withCohort(in CaptureDraft, res brine.Resources, facet string, epoch int64)
 			"%s and %s", facet, executioncontrol.ReadyLabel, hangaroutput.ReadyLabel)
 	}
 
-	// A DISTINCT worker name per rebuild, because the cluster preamble derives
-	// its team's name from it and the team name is unique.
+	// A DISTINCT worker name per rebuild, because a worker is a row keyed on its
+	// name: two rebuilds sharing one would be the second redefining the first's
+	// registration rather than standing beside it.
 	//
 	// The EPOCH is in the name and not only the facet: the handshake scenario
 	// rebuilds twice for the SAME facet -- once ready, once speaking for another
-	// epoch -- and a name keyed on the facet alone made the second rebuild fail
-	// on the team constraint rather than on anything the phrase is about. That
-	// is a fixture collision wearing the costume of a production refusal, which
-	// is the worst shape a green can have.
-	cluster, err := NewCluster(res,
-		WithWorkerName(fmt.Sprintf("k8s-worker-cohort-%s-%d",
-			strings.TrimPrefix(facet, "concourse.dev/"), epoch)),
-		WithVolumeRepo(), WithTeam(),
-		WithConfig(func(cfg *jetbridge.Config) {
+	// epoch -- and a name keyed on the facet alone made the second rebuild land
+	// on the first's row rather than on anything the phrase is about. That is a
+	// fixture collision wearing the costume of a production refusal, which is
+	// the worst shape a green can have.
+	ready, err := newWorkerReady(res, rec,
+		fmt.Sprintf("k8s-worker-cohort-%s-%d",
+			strings.TrimPrefix(facet, "concourse.dev/"), epoch), "",
+		func(cfg *jetbridge.Config) {
 			cfg.ArtifactDaemonHostPath = "/var/concourse/artifacts"
 			cfg.OutputPlaneEnabled = outputFacet
 			cfg.OutputActivationEpoch = epoch
-		}))
+		})
 	if err != nil {
 		return CaptureDraft{}, err
 	}
-	ready := cluster.Ready()
 
 	in.Draft.Namespace = ready.Namespace
 	in.Draft.Worker = ready.Worker
 	in.Draft.Clientset = ready.Clientset
+	in.Draft.MountExecutor = ready.ProducerExecutor
 	in.Draft.Ctx = ready.Ctx
+	// The team the rebuilt worker's volumes hang off. The draft was carrying
+	// the team of the worker this one replaces, and an input volume created
+	// against a team row is the one thing in this chain that reads it.
+	in.Draft.TeamID = ready.TeamID
 	in.ReadyFacets = append(in.ReadyFacets, facet)
 	in.CohortHandshaked = true
 

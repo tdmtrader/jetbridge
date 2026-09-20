@@ -3,14 +3,10 @@ package steps
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
-	"net/http"
-	"net/http/httptest"
-	"os"
 	"strings"
-	"sync/atomic"
 
-	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/compression"
@@ -18,9 +14,8 @@ import (
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
-	discoveryv1 "k8s.io/api/discovery/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes/fake"
 )
 
 // VolumeStreamingDefinitions expresses volume behavior as artifact movement.
@@ -29,55 +24,68 @@ func VolumeStreamingDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
 		brine.DefineMapUsing[brine.Empty, VolumeSet](
-			"a volume {string} mounted at {string}",
-			[]string{"task-workspace"},
-			func(_ brine.Empty, p brine.Params, _ *brine.Recorder, res brine.Resources) (VolumeSet, error) {
-				workspace, ok := res.Get("task-workspace").(TaskWorkspace)
-				if !ok || workspace.Dir == "" {
-					return VolumeSet{}, fmt.Errorf("task-workspace resource has no volume root: %T", res.Get("task-workspace"))
+			"a volume {string} mounted at {string} with {string} binding",
+			[]string{"span-capture"},
+			func(_ brine.Empty, p brine.Params, rec *brine.Recorder, resources brine.Resources) (VolumeSet, error) {
+				capture, ok := resources.Get("span-capture").(SpanCapture)
+				if !ok {
+					return VolumeSet{}, fmt.Errorf("volume tracing resource is %T", resources.Get("span-capture"))
 				}
-				set := VolumeSet{
-					Volumes:   map[string]*jetbridge.Volume{},
-					Ctx:       context.Background(),
-					Workspace: workspace,
+				capture, err := capture.ready()
+				if err != nil {
+					return VolumeSet{}, err
+				}
+				set, err := newLiveVolumeSet(rec, capture)
+				if err != nil {
+					return VolumeSet{}, err
 				}
 				return addVolume(set, p)
 			},
 		),
 
 		brine.DefineMap[VolumeSet, VolumeSet](
-			"another volume {string} mounted at {string}",
+			"another volume {string} mounted at {string} with {string} binding",
 			func(in VolumeSet, p brine.Params, _ *brine.Recorder) (VolumeSet, error) {
 				return addVolume(in, p)
 			},
 		),
 
-		// VT-05: a stub volume has no executor and cannot perform I/O.
-		Refine[VolumeSet]("a stub volume {string} with no cluster behind it",
-			func(in VolumeSet, a Args) VolumeSet {
-				name := a.String(0)
-				in.Volumes[name] = jetbridge.NewStubVolume(name+"-handle", "k8s-worker-1", "/tmp/stub")
-				return in
-			}),
-
-		Transform[VolumeSet, VolumeSet](
+		TransformUsing[brine.Empty, VolumeSet](
 			"volume {string} sits on a cluster that cannot run commands",
-			func(in VolumeSet, a Args) (VolumeSet, error) {
+			[]string{"real-cluster"},
+			func(_ brine.Empty, a Args, res brine.Resources) (VolumeSet, error) {
+				in := newVolumeSet()
+				cluster, err := getRealCluster(res)
+				if err != nil {
+					return VolumeSet{}, err
+				}
 				name := a.String(0)
-
+				ns, err := cluster.Clientset.CoreV1().Namespaces().Create(in.Ctx,
+					&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "volume-error-"}},
+					metav1.CreateOptions{})
+				if err != nil {
+					return VolumeSet{}, fmt.Errorf("create volume-error namespace: %w", err)
+				}
+				// No kubelet is needed to reject exec into an absent pod. Verify
+				// that premise against the API, then use the production transport.
+				podName := name + "-pod"
+				if _, err := cluster.Clientset.CoreV1().Pods(ns.Name).Get(in.Ctx, podName,
+					metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+					return VolumeSet{}, fmt.Errorf("expected absent pod %q: %v", podName, err)
+				}
 				volume := jetbridge.NewDeferredVolume(
 					name+"-handle", "k8s-worker-1",
-					&localExecutor{failure: "exec failed: pod terminated"},
-					"test-namespace", "main", "/tmp/build/inputs",
+					jetbridge.NewSPDYExecutor(cluster.Clientset, cluster.RESTConfig),
+					ns.Name, "main", "/tmp/build/inputs",
 				)
-				volume.SetPodName(name + "-pod")
+				volume.SetPodName(podName)
 				in.Volumes[name] = volume
 				return in, nil
 			},
 		),
 
 		Transform[VolumeSet, VolumeSet](
-			"a file {string} containing {string} is put into volume {string} at {string}",
+			"a file {string} containing {string} is put into volume {string} at {string} using {string}",
 			func(in VolumeSet, a Args) (VolumeSet, error) {
 				volName := a.String(2)
 
@@ -89,8 +97,29 @@ func VolumeStreamingDefinitions() []brine.StepDefinition {
 				if err != nil {
 					return VolumeSet{}, err
 				}
-				if err := volume.StreamIn(in.Ctx, a.String(3), compression.NewGzipCompression(), 0, archive); err != nil {
+				var encoding compression.Compression
+				switch a.String(4) {
+				case "gzip":
+					encoding = compression.NewGzipCompression()
+				case "raw":
+					decompressed, err := compression.NewGzipCompression().NewReader(io.NopCloser(archive))
+					if err != nil {
+						return VolumeSet{}, err
+					}
+					defer decompressed.Close()
+					archive = decompressed
+				default:
+					return VolumeSet{}, fmt.Errorf("unsupported upload encoding %q", a.String(4))
+				}
+				expected, err := plainTarOfOneFile(a.String(0), a.String(1))
+				if err != nil {
+					return VolumeSet{}, err
+				}
+				if err := volume.StreamIn(in.Ctx, a.String(3), encoding, 0, archive); err != nil {
 					return VolumeSet{}, fmt.Errorf("stream into %q: %w", volName, err)
+				}
+				if err := in.requireVolumeBytes(volName, a.String(3), "stdin", expected); err != nil {
+					return VolumeSet{}, err
 				}
 				return in, nil
 			},
@@ -101,30 +130,41 @@ func VolumeStreamingDefinitions() []brine.StepDefinition {
 		Transform[VolumeSet, VolumeSet](
 			"the contents of volume {string} are moved into volume {string}",
 			func(in VolumeSet, a Args) (VolumeSet, error) {
-				srcName := a.String(0)
-				dstName := a.String(1)
-
-				src, err := in.volume(srcName)
-				if err != nil {
+				if err := moveVolumeBytes(in, a.String(0), a.String(1)); err != nil {
 					return VolumeSet{}, err
-				}
-				dst, err := in.volume(dstName)
-				if err != nil {
-					return VolumeSet{}, err
-				}
-
-				stream, err := src.StreamOut(in.Ctx, ".", compression.NewGzipCompression())
-				if err != nil {
-					return VolumeSet{}, fmt.Errorf("stream out of %q: %w", srcName, err)
-				}
-				defer stream.Close()
-
-				if err := dst.StreamIn(in.Ctx, ".", compression.NewGzipCompression(), 0, stream); err != nil {
-					return VolumeSet{}, fmt.Errorf("stream into %q: %w", dstName, err)
 				}
 				return in, nil
 			},
 		),
+
+		Transform[VolumeSet, VolumeRead](
+			"volume {string} is opened then drained with and without compression",
+			func(in VolumeSet, a Args) (VolumeRead, error) {
+				volume, err := in.volume(a.String(0))
+				if err != nil {
+					return VolumeRead{}, err
+				}
+				out := VolumeRead{}
+				for _, encoding := range []struct {
+					name        string
+					compression compression.Compression
+				}{
+					{"raw", nil}, {"gzip", compression.NewGzipCompression()},
+				} {
+					stream, openErr := volume.StreamOut(in.Ctx, ".", encoding.compression)
+					attempt := volumeReadAttempt{encoding: encoding.name, openErr: openErr}
+					if stream != nil {
+						if openErr == nil {
+							_, attempt.readErr = io.ReadAll(stream)
+						}
+						attempt.closeErr = stream.Close()
+					} else if openErr == nil {
+						attempt.openErr = fmt.Errorf("StreamOut returned no reader")
+					}
+					out.readAttempts = append(out.readAttempts, attempt)
+				}
+				return out, nil
+			}),
 
 		// Reading is an attempt, so that failure is assertable rather than
 		// fatal to the scenario.
@@ -136,7 +176,14 @@ func VolumeStreamingDefinitions() []brine.StepDefinition {
 					return VolumeRead{}, err
 				}
 
-				return readArtifactFiles(in.Ctx, volume, a.String(1)), nil
+				var out VolumeRead
+				if in.execTrace != nil {
+					out = readVolumeBytes(in, a.String(0), a.String(1))
+				} else {
+					out = readArtifactFiles(in.Ctx, volume, a.String(1))
+				}
+				out.source = &in
+				return out, nil
 			},
 		),
 
@@ -165,6 +212,11 @@ func VolumeStreamingDefinitions() []brine.StepDefinition {
 				if in.Err != nil {
 					return "", fmt.Errorf("reading the volume failed: %w", in.Err)
 				}
+				if in.remote != nil {
+					if err := in.remote.requireBytesAndRetries(); err != nil {
+						return "", err
+					}
+				}
 				got, found := in.Files[name]
 				if !found {
 					names := make([]string, 0, len(in.Files))
@@ -183,6 +235,23 @@ func VolumeStreamingDefinitions() []brine.StepDefinition {
 			func(in VolumeRead, args Args) error {
 				want := args.String(0)
 
+				if len(in.readAttempts) != 0 {
+					for _, attempt := range in.readAttempts {
+						if attempt.openErr != nil {
+							return fmt.Errorf("%s stream did not open successfully: %w", attempt.encoding, attempt.openErr)
+						}
+						if attempt.closeErr != nil {
+							return fmt.Errorf("%s reader did not close: %w", attempt.encoding, attempt.closeErr)
+						}
+						if attempt.readErr == nil {
+							return fmt.Errorf("%s reader swallowed the exec failure", attempt.encoding)
+						}
+						if !containsFold(attempt.readErr.Error(), want) {
+							return fmt.Errorf("%s reader error must mention %q, got %q", attempt.encoding, want, attempt.readErr.Error())
+						}
+					}
+					return nil
+				}
 				if in.Err == nil {
 					return fmt.Errorf("expected a failure mentioning %q, but it succeeded", want)
 				}
@@ -212,39 +281,18 @@ func readArtifactFiles(ctx context.Context, volume runtime.Artifact, path string
 	return VolumeRead{Files: files}
 }
 
-func addVolume(set VolumeSet, p brine.Params) (VolumeSet, error) {
-	name, _ := p.GetString(0)
-	mountPath, ok := p.GetString(1)
-	if !ok {
-		return VolumeSet{}, fmt.Errorf("expected a name and a mount path")
-	}
-
-	root, err := os.MkdirTemp(set.Workspace.Dir, "volume-")
-	if err != nil {
-		return VolumeSet{}, fmt.Errorf("create volume root: %w", err)
-	}
-
-	volume := jetbridge.NewDeferredVolume(
-		name+"-handle", "k8s-worker-1",
-		&localExecutor{root: root},
-		"test-namespace", "main", mountPath,
-	)
-	volume.SetPodName(name + "-pod")
-	set.Volumes[name] = volume
-	return set, nil
+// Failure-only Givens need no live cluster. Mounted volumes opt into the live tier.
+func newVolumeSet() VolumeSet {
+	return VolumeSet{Volumes: map[string]*jetbridge.Volume{}, Ctx: context.Background()}
 }
 
-// VolumeIdentityDefinitions covers the rest of volume_test.go — a volume's
-// identity, its source worker, and the database row behind it.
-//
-// Identity is what the artifact repository keys on, so a volume that reported
-// the wrong handle would hand the next step somebody else's artifact.
+// VolumeIdentityDefinitions checks constructor identity, owning workers and
+// the persisted artifact associations. Streaming has its own live scenarios.
 func VolumeIdentityDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
-
 		brine.DefineMapUsing[brine.Empty, VolumeIdentity](
-			"a persisted volume on this worker",
-			[]string{"jetbridge-db"},
+			"two persisted volumes on this worker",
+			[]string{"jetbridge-db", "real-cluster"},
 			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder, res brine.Resources) (VolumeIdentity, error) {
 				database, ok := res.Get("jetbridge-db").(JetbridgeDB)
 				if !ok {
@@ -258,52 +306,101 @@ func VolumeIdentityDefinitions() []brine.StepDefinition {
 				if err != nil {
 					return VolumeIdentity{}, fmt.Errorf("create team: %w", err)
 				}
-				creating, err := database.VolumeRepository.CreateVolume(
-					team.ID(), dbWorker.Name(), db.VolumeTypeArtifact)
+				cluster, err := getRealCluster(res)
 				if err != nil {
-					return VolumeIdentity{}, fmt.Errorf("create volume: %w", err)
+					return VolumeIdentity{}, err
 				}
-				created, err := creating.Created()
-				if err != nil {
-					return VolumeIdentity{}, fmt.Errorf("mark volume created: %w", err)
+				executor := jetbridge.NewSPDYExecutor(cluster.Clientset, cluster.RESTConfig)
+				out := VolumeIdentity{WorkerName: dbWorker.Name(), TeamID: team.ID()}
+				for _, spec := range []struct{ handle, pod, mount, artifact string }{
+					{"vol-handle-123", "test-pod", "/tmp/build/inputs", "volume-test-artifact"},
+					{"vol-handle-456", "other-pod", "/tmp/build/outputs", "volume-test-artifact-2"},
+				} {
+					creating, err := database.VolumeRepository.CreateVolumeWithHandle(
+						spec.handle, team.ID(), dbWorker.Name(), db.VolumeTypeArtifact)
+					if err != nil {
+						return VolumeIdentity{}, fmt.Errorf("create volume: %w", err)
+					}
+					created, err := creating.Created()
+					if err != nil {
+						return VolumeIdentity{}, fmt.Errorf("mark volume created: %w", err)
+					}
+					artifact, err := created.InitializeArtifact(spec.artifact, 0)
+					if err != nil {
+						return VolumeIdentity{}, fmt.Errorf("initialize volume artifact: %w", err)
+					}
+					if artifact.ID() <= 0 {
+						return VolumeIdentity{}, fmt.Errorf("volume artifact has no persisted identity")
+					}
+					row, found, err := database.VolumeRepository.FindVolume(spec.handle)
+					if err != nil || !found {
+						return VolumeIdentity{}, fmt.Errorf("reload volume %q: found=%t, error=%v", spec.handle, found, err)
+					}
+					// Identity-only construction: the real executor never runs.
+					volume := jetbridge.NewVolume(row, executor,
+						spec.pod, "test-namespace", "main", spec.mount)
+					out.Volumes = append(out.Volumes, VolumeIdentityRow{
+						Volume: volume, DBVolume: row, DBHandle: spec.handle, Artifact: artifact,
+					})
 				}
-
-				// This fixture checks identity only; it never streams or runs a command.
-				vol := jetbridge.NewVolume(created, &localExecutor{},
-					"identity-pod", "test-namespace", "main", "/tmp/build/inputs")
-
-				daemonVol := jetbridge.NewDaemonSetVolume(
-					"key", "runtime-handle", dbWorker.Name(), created, "",
+				out.DaemonVolume = jetbridge.NewDaemonSetVolume(
+					"key", "runtime-handle", dbWorker.Name(), out.Volumes[0].DBVolume, "",
 					jetbridge.NewConfig("test-namespace", ""), nil)
-
-				return VolumeIdentity{
-					Volume: vol, DaemonVolume: daemonVol,
-					DBHandle: created.Handle(), WorkerName: dbWorker.Name(),
-				}, nil
+				return out, nil
 			},
 		),
 
-		// Identity is one contract: the runtime handle, owning worker and
-		// database rows must all survive construction. Keep each field check.
 		CheckThat[VolumeIdentity]("the volumes retain their handles, worker and database rows",
 			func(in VolumeIdentity) error {
-				if in.Volume.Handle() != in.DBHandle {
-					return fmt.Errorf(
-						"expected the volume to identify as %q — the handle the artifact repository keys on — got %q",
-						in.DBHandle, in.Volume.Handle())
+				if len(in.Volumes) != 2 {
+					return fmt.Errorf("identity comparison requires two persisted volumes, got %d", len(in.Volumes))
 				}
-				if in.Volume.Source() != in.WorkerName {
-					return fmt.Errorf("expected the volume to name worker %q, got %q",
-						in.WorkerName, in.Volume.Source())
+				for _, entry := range in.Volumes {
+					if entry.Volume.Handle() != entry.DBHandle {
+						return fmt.Errorf(
+							"expected the volume to identify as %q — the handle the artifact repository keys on — got %q",
+							entry.DBHandle, entry.Volume.Handle())
+					}
+					if entry.Volume.Source() != in.WorkerName {
+						return fmt.Errorf("expected the volume to name worker %q, got %q",
+							in.WorkerName, entry.Volume.Source())
+					}
+					if entry.Volume.DBVolume() == nil {
+						return fmt.Errorf("the deferred volume lost its database row")
+					}
+					if entry.Volume.DBVolume() != entry.DBVolume {
+						return fmt.Errorf("the exec-backed volume replaced its original database object")
+					}
+					if entry.DBVolume.Handle() != entry.DBHandle {
+						return fmt.Errorf("expected persisted handle %q, got %q", entry.DBHandle, entry.DBVolume.Handle())
+					}
+					artifactVolume, found, err := entry.Artifact.Volume(in.TeamID)
+					if err != nil || !found {
+						return fmt.Errorf("resolve artifact %d: found=%t, error=%v", entry.Artifact.ID(), found, err)
+					}
+					if artifactVolume.Handle() != entry.Volume.Handle() {
+						return fmt.Errorf("artifact %d resolves to %q, but its runtime volume reports %q",
+							entry.Artifact.ID(), artifactVolume.Handle(), entry.Volume.Handle())
+					}
 				}
-				if in.Volume.DBVolume() == nil {
-					return fmt.Errorf("the deferred volume lost its database row")
+				if in.Volumes[0].Volume.Handle() == in.Volumes[1].Volume.Handle() {
+					return fmt.Errorf("independent volumes report the same runtime handle")
 				}
+				first := in.Volumes[0]
 				if in.DaemonVolume.DBVolume() == nil {
 					return fmt.Errorf("the daemonset volume lost its database row")
 				}
-				if got := in.DaemonVolume.DBVolume().Handle(); got != in.DBHandle {
-					return fmt.Errorf("expected the daemonset volume's row to be %q, got %q", in.DBHandle, got)
+				if in.DaemonVolume.DBVolume() != first.DBVolume {
+					return fmt.Errorf("the daemonset volume replaced its original database object")
+				}
+				if got := in.DaemonVolume.DBVolume().TeamID(); got != in.TeamID {
+					return fmt.Errorf("expected the row to belong to team %d, got %d", in.TeamID, got)
+				}
+				if got := in.DaemonVolume.DBVolume().Type(); got != db.VolumeTypeArtifact {
+					return fmt.Errorf("expected an artifact row, got volume type %q", got)
+				}
+				if got := in.DaemonVolume.DBVolume().Handle(); got != first.DBHandle {
+					return fmt.Errorf("expected the daemonset volume's row to be %q, got %q", first.DBHandle, got)
 				}
 				if got := in.DaemonVolume.DBVolume().WorkerName(); got != in.WorkerName {
 					return fmt.Errorf("expected the row to name worker %q, got %q", in.WorkerName, got)
@@ -317,48 +414,28 @@ func VolumeIdentityDefinitions() []brine.StepDefinition {
 // Artifacts that live on another node
 // ---------------------------------------------------------------------------
 
-// The volumes above move bytes through a pod's own filesystem. The ones below
-// move them across the network, from the artifact daemon on the node that
-// produced them — which is where every input a step did not produce itself
-// comes from.
-//
-// The daemon here is a REAL http.Server speaking the daemon's wire contract,
-// the same argument localExecutor makes for exec. Its ONE named
-// behavioural difference is how it treats a connection: it may drop the first
-// few, drop every one, or answer with an internal error. It records nothing an
-// assertion reads. The counter behind "drops the first N" decides what the
-// server DOES; no scenario asks it what it saw.
-//
-// The Go tests these replace reached inside the struct — they built a
-// DaemonSetVolume by literal, swapped in a transport that rewrote every URL to
-// the test server, and one of them finished by asserting the handler's own
-// attempt counter. Here the node is a real Node object in the cluster, the
-// address is resolved out of it the way production resolves it, and the
-// assertion is on what the consumer got: the artifact, or the failure.
+// Remote artifacts use production daemons and real Kubernetes discovery.
+// Faults affect actual TCP connections or the daemon's owned filesystem;
+// no HTTP handler implements artifact serving for the tests.
 
-// remoteArtifactNode is the node the artifact was produced on, and the only
-// one in the cluster. Its address is the live server's, so the fetch really
-// is dialled.
-const (
-	remoteArtifactNode = "producer-node"
-
-	// remoteArtifactKey is the artifact under discussion. It is the key the
-	// daemon is addressed by, so a failure that does not mention it did not
-	// say which artifact went missing.
-	remoteArtifactKey = "step-output"
-)
+// remoteArtifactKey identifies the artifact in requests and diagnostics.
+const remoteArtifactKey = "step-output"
 
 // RemoteArtifact is an artifact on another node's daemon, described but not
 // yet fetched. Refinements adjust how that node's daemon behaves, so a
 // scenario says what it holds and how it misbehaves in either order.
 type RemoteArtifact struct {
-	Ctx      context.Context
-	Key      string
-	FileName string
-	Content  string
+	Ctx         context.Context
+	Key         string
+	FileName    string
+	Content     string
+	expectedRaw []byte
+	trace       *daemonWireObservation
+	nodeReads   *execObservation
+	nodeName    string
 
-	// DropFirst, NeverAnswers and ServerError are the daemon's behaviour, not
-	// a record of what it was asked.
+	// Transport drops and unreadable storage are injected at real boundaries.
+	// These settings are not request records.
 	DropFirst    int
 	NeverAnswers bool
 	ServerError  bool
@@ -387,14 +464,6 @@ type RemoteArtifact struct {
 	Fallback bool
 }
 
-// remoteDaemonService is the headless service the daemon pods are published
-// under, and the one the ATC discovers them through.
-const remoteDaemonService = "artifact-daemon"
-
-// remoteDaemonNamespace is the namespace both the daemons and the ATC's
-// discovery of them are scoped to.
-const remoteDaemonNamespace = "test-namespace"
-
 // refusedPort returns a loopback port with nothing listening on it: a listener
 // is opened to reserve a free port and closed again, so the dial that follows
 // is really refused by the kernel rather than black-holed. A black hole would
@@ -416,177 +485,14 @@ func refusedPort() (int, error) {
 	return addr.Port, nil
 }
 
-// nodeAndPeers builds the cluster the ATC reads: the producing node, with the
-// address the runtime will resolve out of it, and the EndpointSlice the daemon
-// fleet is published under.
-func nodeAndPeers(ip string) *fake.Clientset {
-	return fake.NewSimpleClientset(
-		&corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{Name: remoteArtifactNode},
-			Status: corev1.NodeStatus{
-				Addresses: []corev1.NodeAddress{
-					{Type: corev1.NodeInternalIP, Address: ip},
-				},
-			},
-		},
-		&discoveryv1.EndpointSlice{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      remoteDaemonService + "-brine",
-				Namespace: remoteDaemonNamespace,
-				Labels:    map[string]string{discoveryv1.LabelServiceName: remoteDaemonService},
-			},
-			Endpoints: []discoveryv1.Endpoint{{Addresses: []string{ip}}},
-		},
-	)
-}
-
-// volumeAtAddress uses the same node resolution and optional peer discovery
-// for live and refused endpoints. Only their transport availability differs.
-func (r RemoteArtifact) volumeAtAddress(ip string, port int) *jetbridge.DaemonSetVolume {
-	cs := nodeAndPeers(ip)
-	cfg := jetbridge.NewConfig(remoteDaemonNamespace, "")
-	cfg.ArtifactDaemonPort = port
-	vol := jetbridge.NewDaemonSetVolume(
-		r.Key, r.Key, "k8s-worker-1", nil, remoteArtifactNode,
-		cfg, jetbridge.NewNodeIPResolver(cs),
-	)
-	if !r.Fallback {
-		return vol
-	}
-	vol.SetDaemonClient(jetbridge.NewDaemonClient(
-		lagertest.NewTestLogger("brine-remote-artifact"),
-		cs, remoteDaemonNamespace, remoteDaemonService, port, nil,
-	))
-	return vol
-}
-
-// daemon starts the node's artifact daemon and builds the volume the runtime
-// would build for an artifact recorded on that node. The returned func stops
-// the daemon.
-func (r RemoteArtifact) daemon() (*jetbridge.DaemonSetVolume, func(), error) {
-	if r.Forgotten {
-		cfg := jetbridge.NewConfig(remoteDaemonNamespace, "")
-		return jetbridge.NewDaemonSetVolume(
-			r.Key, r.Key, "k8s-worker-1", nil, "", cfg, nil,
-		), func() {}, nil
-	}
-
-	// The node is still in the cluster and still resolves; the daemon on it
-	// is simply not accepting connections. Nothing is started, so the address
-	// the runtime dials is a real address whose port is really closed.
-	if r.Refused {
-		port, err := refusedPort()
-		if err != nil {
-			return nil, nil, err
-		}
-		return r.volumeAtAddress("127.0.0.1", port), func() {}, nil
-	}
-
-	body, err := plainTarOfOneFile(r.FileName, r.Content)
-	if err != nil {
-		return nil, nil, err
-	}
-	mirror, err := plainTarOfOneFile(r.FileName, r.Mirror)
-	if err != nil {
-		return nil, nil, err
-	}
-	server := httptest.NewServer(r.handler(body, mirror))
-
-	addr, ok := server.Listener.Addr().(*net.TCPAddr)
-	if !ok {
-		server.Close()
-		return nil, nil, fmt.Errorf("the daemon is listening on %T, not TCP", server.Listener.Addr())
-	}
-
-	return r.volumeAtAddress(addr.IP.String(), addr.Port), server.Close, nil
-}
-
-// handler answers the two routes the artifact daemon answers for a step
-// artifact and 404s everything else, so the bytes arriving at all is what
-// proves the right artifact was asked for.
-//
-// The two routes are two DIFFERENT copies, which is production's own
-// distinction and not an invention here: the producing node serves its own
-// copy at /artifacts/{key} through a registry alias, while a peer that
-// received a mirror has it on disk at /artifacts/steps/{key} and serves it
-// from there. A daemon that has stopped completing connections stops
-// completing them for its own copy; the mirror is another daemon's, and
-// answers.
-//
-// ONE address plays both daemons, and that is a fixture limit worth naming.
-// The ATC reaches every daemon on a single configured port, so a live peer
-// and a dead producer would have to be two addresses sharing one port —
-// which on a loopback interface is one address. What the scenarios need is
-// the branch: a recorded source that resolves, is asked, and fails at the
-// transport, with a peer that then answers. The route split gives exactly
-// that, and no scenario asks this server what it saw.
-func (r RemoteArtifact) handler(body, mirror []byte) http.Handler {
-	var connections atomic.Int32
-	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		// The peer's mirrored copy. A HEAD is the probe and a GET is the
-		// fetch, and they are the same route, so a peer that answers one
-		// answers the other.
-		if req.URL.Path == "/artifacts/steps/"+r.Key {
-			if r.Mirror == "" {
-				w.WriteHeader(http.StatusNotFound)
-				return
-			}
-			w.Header().Set("Content-Type", "application/x-tar")
-			_, _ = w.Write(mirror)
-			return
-		}
-
-		if r.NeverAnswers || (r.DropFirst > 0 && int(connections.Add(1)) <= r.DropFirst) {
-			// Hijack and close: a connection that dies after the request was
-			// written, which is what a daemon pod being rescheduled looks
-			// like from the ATC. Go's transport does not silently retry a
-			// fresh connection, so this really does reach the runtime.
-			if hj, ok := w.(http.Hijacker); ok {
-				if conn, _, hjErr := hj.Hijack(); hjErr == nil {
-					_ = conn.Close()
-					return
-				}
-			}
-			panic(http.ErrAbortHandler)
-		}
-		if r.ServerError {
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = w.Write([]byte("artifact daemon: disk is gone"))
-			return
-		}
-		if req.URL.Path != "/artifacts/"+r.Key {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Content-Type", "application/x-tar")
-		_, _ = w.Write(body)
-	})
-}
-
 // ---------------------------------------------------------------------------
 // Where a step is placed, and which volumes it is handed
 // ---------------------------------------------------------------------------
 
-// InputPlacement is a worker that records where artifacts live, the inputs a
-// step is about to take, and — once it has been scheduled — the pod the
-// Kubernetes scheduler will read.
-type InputPlacement struct {
-	Cluster Cluster
-	Locator *jetbridge.ArtifactLocator
-	Inputs  []runtime.Input
-	Pod     *corev1.Pod
-}
-
-// VolumeGapDefinitions covers the parts of a volume's life the scenarios above
-// do not reach: fetching one across the network, writing one that has nowhere
-// to go, and being placed near the ones a step already needs.
-func VolumeGapDefinitions() []brine.StepDefinition {
-	defs := remoteArtifactDefinitions()
-	defs = append(defs, inputPlacementDefinitions()...)
-	return defs
-}
-
-func remoteArtifactDefinitions() []brine.StepDefinition {
+// RemoteArtifactDefinitions covers fetching node-local artifacts and refusing
+// writes when no daemon can receive them. Placement uses the shared real
+// artifact-recording vocabulary.
+func RemoteArtifactDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
 		Transform[brine.Empty, RemoteArtifact](
@@ -663,28 +569,24 @@ func remoteArtifactDefinitions() []brine.StepDefinition {
 		// and it lands in the same state, so it can reuse their checks.
 		brine.DefineMap[RemoteArtifact, VolumeRead](
 			"the next step fetches the artifact from that node",
-			func(in RemoteArtifact, _ brine.Params, _ *brine.Recorder) (VolumeRead, error) {
-				volume, stop, err := in.daemon()
+			func(in RemoteArtifact, _ brine.Params, rec *brine.Recorder) (VolumeRead, error) {
+				volume, err := in.daemon(rec)
 				if err != nil {
 					return VolumeRead{}, err
 				}
-				defer stop()
 
-				// gzip is what Streamer.StreamFile asks for, and it is what
-				// makes the answer readable as an archive rather than as an
-				// opaque body.
-				return readArtifactFiles(in.Ctx, volume, "."), nil
+				// Preserve both opaque raw delivery and the gzip StreamFile route.
+				return in.read(volume), nil
 			},
 		),
 
 		brine.DefineMap[RemoteArtifact, VolumeRead](
 			"the step writes its output into that artifact",
-			func(in RemoteArtifact, _ brine.Params, _ *brine.Recorder) (VolumeRead, error) {
-				volume, stop, err := in.daemon()
+			func(in RemoteArtifact, _ brine.Params, rec *brine.Recorder) (VolumeRead, error) {
+				volume, err := in.daemon(rec)
 				if err != nil {
 					return VolumeRead{}, err
 				}
-				defer stop()
 
 				archive, err := tarOfOneFile("result.json", "built ok")
 				if err != nil {
@@ -705,6 +607,19 @@ func remoteArtifactDefinitions() []brine.StepDefinition {
 		// that diagnoses it.
 		CheckThat[VolumeRead]("the read fails rather than handing back an empty artifact",
 			func(in VolumeRead) error {
+				if in.remote != nil {
+					if in.remote.observationErr != nil {
+						return in.remote.observationErr
+					}
+					if len(in.readAttempts) != 2 {
+						return fmt.Errorf("expected raw and gzip open attempts")
+					}
+					for _, attempt := range in.readAttempts {
+						if attempt.openErr == nil {
+							return fmt.Errorf("%s StreamOut must fail at open, not merely decode an invalid archive", attempt.encoding)
+						}
+					}
+				}
 				if in.Err == nil {
 					return fmt.Errorf(
 						"expected the read to fail, but it succeeded and handed back %d files (%v) — "+
@@ -723,7 +638,7 @@ func remoteArtifactDefinitions() []brine.StepDefinition {
 				if in.Err == nil {
 					return fmt.Errorf("expected the read to fail against a failing daemon, but it succeeded")
 				}
-				if !strings.Contains(in.Message, "500") {
+				if !strings.Contains(in.Message, "unexpected status 500") {
 					return fmt.Errorf(
 						"expected the failure to carry the daemon's status so an operator can see it is "+
 							"an outage, got %q", in.Message)
@@ -788,120 +703,6 @@ func remoteArtifactDefinitions() []brine.StepDefinition {
 						remoteArtifactKey, in.Message)
 				}
 				return nil
-			}),
-	}
-}
-
-func inputPlacementDefinitions() []brine.StepDefinition {
-	return []brine.StepDefinition{
-
-		brine.DefineMapUsing[brine.Empty, InputPlacement](
-			"a jetbridge worker that places steps near their inputs",
-			[]string{"jetbridge-db"},
-			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder, res brine.Resources) (InputPlacement, error) {
-				locator := jetbridge.NewArtifactLocator()
-				cluster, err := NewCluster(res,
-					WithConfig(func(cfg *jetbridge.Config) {
-						cfg.ArtifactDaemonHostPath = "/var/concourse/artifacts"
-					}),
-					WithVolumeRepo(),
-					WithTeam(),
-					WithArtifactLocator(locator),
-				)
-				if err != nil {
-					return InputPlacement{}, err
-				}
-				return InputPlacement{Cluster: cluster, Locator: locator}, nil
-			},
-		),
-
-		// A real artifact volume, with a real database handle, recorded where
-		// the producing step left it. Nothing here stands in for an artifact:
-		// the handle the scheduler is asked about is the one the volume
-		// reports.
-		Transform[InputPlacement, InputPlacement](
-			"an input artifact that already lives on node {string}",
-			func(in InputPlacement, a Args) (InputPlacement, error) {
-				volume, _, err := in.Cluster.Worker.CreateVolumeForArtifact(
-					in.Cluster.Ctx, in.Cluster.TeamID)
-				if err != nil {
-					return InputPlacement{}, fmt.Errorf("create artifact volume: %w", err)
-				}
-				in.Locator.Record(jetbridge.ArtifactKey(volume.Handle()), a.String(0), "")
-				in.Inputs = append(in.Inputs, runtime.Input{
-					Artifact:        volume,
-					DestinationPath: fmt.Sprintf("/tmp/build/workdir/input-%d", len(in.Inputs)),
-				})
-				return in, nil
-			},
-		),
-
-		brine.DefineMap[InputPlacement, InputPlacement](
-			"the step is scheduled",
-			func(in InputPlacement, _ brine.Params, _ *brine.Recorder) (InputPlacement, error) {
-				const handle = "placed-step"
-				container, _, err := in.Cluster.Worker.FindOrCreateContainer(
-					in.Cluster.Ctx,
-					db.NewFixedHandleContainerOwner(handle),
-					db.ContainerMetadata{Type: db.ContainerTypeTask},
-					runtime.ContainerSpec{
-						TeamID:    in.Cluster.TeamID,
-						Dir:       "/tmp/build/workdir",
-						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-						Inputs:    in.Inputs,
-					},
-					&noopDelegate{},
-				)
-				if err != nil {
-					return InputPlacement{}, fmt.Errorf("find or create container: %w", err)
-				}
-				if _, err := container.Run(in.Cluster.Ctx,
-					runtime.ProcessSpec{Path: "/bin/sh", Args: []string{"-c", "true"}},
-					runtime.ProcessIO{},
-				); err != nil {
-					return InputPlacement{}, fmt.Errorf("run step: %w", err)
-				}
-
-				pod, err := in.Cluster.Clientset.CoreV1().Pods(in.Cluster.Namespace).
-					Get(in.Cluster.Ctx, handle, metav1.GetOptions{})
-				if err != nil {
-					return InputPlacement{}, fmt.Errorf("get pod %q: %w", handle, err)
-				}
-				in.Pod = pod
-				return in, nil
-			},
-		),
-
-		// The preference is what keeps a step's inputs off the network. A pod
-		// with no preference is scheduled anywhere, and every input then
-		// crosses between nodes to reach it.
-		CheckString[InputPlacement]("the step prefers to run on node {string}",
-			"the node the step prefers",
-			func(in InputPlacement) (string, error) {
-				if in.Pod == nil {
-					return "", fmt.Errorf("no pod was created")
-				}
-				aff := in.Pod.Spec.Affinity
-				if aff == nil || aff.NodeAffinity == nil ||
-					len(aff.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution) == 0 {
-					return "", fmt.Errorf(
-						"the pod carries no scheduling preference, so it may be placed anywhere the " +
-							"artifact cache is ready — including a node holding none of its inputs, " +
-							"which then all cross the network")
-				}
-				var named []string
-				for _, term := range aff.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution {
-					for _, expr := range term.Preference.MatchExpressions {
-						if expr.Key == "kubernetes.io/hostname" {
-							named = append(named, expr.Values...)
-						}
-					}
-				}
-				if len(named) != 1 {
-					return "", fmt.Errorf(
-						"expected the pod to prefer exactly one node, it names %v", named)
-				}
-				return named[0], nil
 			}),
 	}
 }

@@ -1,0 +1,10 @@
+runner:
+  name: jetbridge
+  binary: ../scripts/run-live-cluster
+  contract: 5
+contract: 5
+features: ../features/live/*.feature
+budgets:
+  undefined: 0
+  # See ../.brine: counted out of ../features/live/*.feature on 2026-09-19.
+  scenarios_min: 134

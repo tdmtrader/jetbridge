@@ -10,66 +10,117 @@ Feature: What a step's pod actually looks like
   CF-05) and jetbridge_storage_behavioral_spec_20260330 (CO-04 to CO-08).
   Migrated from container_test.go.
 
-  # CO-04. A step gets its working directory plus one volume per input.
-  @CO-04
-  Scenario: A step sees its working directory and every input
-    Given a jetbridge worker on a fake Kubernetes cluster
-    And a task container "input-vol-handle" built from image "docker:///busybox"
+  # Exact-set contracts share one table assertion: no extra/missing mounts,
+  # no persistent volume, and every mount resolves to a distinct declared volume.
+  # Tables are explicit: the current v5 runner leaves outline table cells unexpanded.
+  @CO-04 @CO-05 @CO-07 @CO-08
+  Scenario: A step's working directory is an ephemeral volume
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker prepares task "dir-vol-handle" from image "docker:///busybox"
+    And it works in "/tmp/build/workdir"
+    When the container runs
+    Then the step has exactly these ephemeral mounts
+      | mount path |
+      | /tmp/build/workdir |
+
+
+  @CO-04 @CO-05 @CO-07 @CO-08
+  Scenario: A step gets every independent input directory
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker prepares task "input-vol-handle" from image "docker:///busybox"
     And it works in "/tmp/build/workdir"
     And it takes an input at "/tmp/build/workdir/input-a"
     And it takes an input at "/tmp/build/workdir/input-b"
     When the container runs
-    Then the pod has 3 volumes
-    And the step sees a volume mounted at "/tmp/build/workdir"
-    And the step sees a volume mounted at "/tmp/build/workdir/input-a"
-    And the step sees a volume mounted at "/tmp/build/workdir/input-b"
-    And every volume is ephemeral
-    And every mount in the pod names exactly one of its volumes
+    Then the step has exactly these ephemeral mounts
+      | mount path |
+      | /tmp/build/workdir |
+      | /tmp/build/workdir/input-a |
+      | /tmp/build/workdir/input-b |
 
-  # CO-05. An output written into an input's directory must not get a second
-  # volume, or the step would write into one and the next step would read the
-  # other.
-  @CO-05
-  Scenario: An output that shares an input's path gets one volume, not two
-    Given a jetbridge worker on a fake Kubernetes cluster
-    And a task container "overlap-handle" built from image "docker:///busybox"
+
+  @CO-04 @CO-05 @CO-07 @CO-08
+  Scenario: A step gets every independent output directory
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker prepares task "output-vol-handle" from image "docker:///busybox"
     And it works in "/tmp/build/workdir"
-    And it takes an input at "/tmp/build/workdir/shared"
-    And it produces an output at "/tmp/build/workdir/shared"
+    And it produces an output at "/tmp/build/workdir/result"
+    And it produces an output at "/tmp/build/workdir/metadata"
     When the container runs
-    Then the pod has 2 volumes
-    And the step sees a volume mounted at "/tmp/build/workdir/shared"
-    And every mount in the pod names exactly one of its volumes
+    Then the step has exactly these ephemeral mounts
+      | mount path |
+      | /tmp/build/workdir |
+      | /tmp/build/workdir/result |
+      | /tmp/build/workdir/metadata |
+
+
+  @CO-04 @CO-05 @CO-07 @CO-08
+  Scenario: A step's cache directory is ephemeral
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker uses "emptydir" cache storage
+    And the worker prepares task "cache-vol-handle" from image "docker:///busybox"
+    And it works in "/tmp/build/workdir"
+    And it belongs to job 42 step "build-step"
+    And it has no reusable cache identity
+    And it caches "/tmp/build/workdir/.cache"
+    When the container runs
+    Then the step has exactly these ephemeral mounts
+      | mount path |
+      | /tmp/build/workdir |
+      | /tmp/build/workdir/.cache |
+
+
+  @CO-04 @CO-05 @CO-07 @CO-08
+  Scenario: A step's scratch directory is ephemeral
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker prepares task "scratch-vol-handle" from image "docker:///busybox"
+    And it works in "/tmp/build/workdir"
+    And it uses scratch space at "/scratch/buildkit"
+    When the container runs
+    Then the step has exactly these ephemeral mounts
+      | mount path |
+      | /tmp/build/workdir |
+      | /scratch/buildkit |
+    And the pod has 0 init containers
+
+  # A shared output must keep the input volume, including when the output
+  # path has a trailing slash. The table is fixed; only step text uses Examples.
+  @CO-05
+  Scenario Outline: An overlapping output keeps its input volume — <spelling>
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker prepares task "shared-io-handle" from image "docker:///busybox"
+    And it works in "/tmp/build/workdir"
+    And it takes an input at "/tmp/build/workdir/repo"
+    And it produces an output at "<output>"
+    When the container runs
+    Then the step has exactly these ephemeral mounts
+      | mount path              | volume prefix |
+      | /tmp/build/workdir       |               |
+      | /tmp/build/workdir/repo  | input-        |
+
+    Examples:
+      | spelling       | output                    |
+      | exact path     | /tmp/build/workdir/repo    |
+      | trailing slash | /tmp/build/workdir/repo/   |
 
   @CO-05
   Scenario: An output on its own path gets its own volume
-    Given a jetbridge worker on a fake Kubernetes cluster
-    And a task container "distinct-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker prepares task "nonoverlap-io-handle" from image "docker:///busybox"
     And it works in "/tmp/build/workdir"
-    And it takes an input at "/tmp/build/workdir/in"
-    And it produces an output at "/tmp/build/workdir/out"
+    And it takes an input at "/tmp/build/workdir/source"
+    And it produces an output at "/tmp/build/workdir/binary/"
     When the container runs
-    Then the pod has 3 volumes
-    And the step sees a volume mounted at "/tmp/build/workdir/in"
-    And the step sees a volume mounted at "/tmp/build/workdir/out"
-    And every mount in the pod names exactly one of its volumes
-
-  # CO-08. Scratch space is ephemeral by design — persisting it across pods
-  # would leak one build's temporary state into the next.
-  @CO-08
-  Scenario: Scratch space never outlives the pod
-    Given a jetbridge worker on a fake Kubernetes cluster
-    And a task container "scratch-handle" built from image "docker:///busybox"
-    And it works in "/tmp/build/workdir"
-    And it uses scratch space at "/tmp/scratch"
-    When the container runs
-    Then the step sees a volume mounted at "/tmp/scratch"
-    And the volume mounted at "/tmp/scratch" uses "ephemeral" storage
+    Then the step has exactly these ephemeral mounts
+      | mount path                  |
+      | /tmp/build/workdir           |
+      | /tmp/build/workdir/source    |
+      | /tmp/build/workdir/binary/   |
 
   @CO-07
   Scenario: A cache and a scratch path are different volumes
-    Given a jetbridge worker on a fake Kubernetes cluster
-    And a task container "cache-scratch-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker prepares task "cache-scratch-handle" from image "docker:///busybox"
     And it works in "/tmp/build/workdir"
     And it caches "/tmp/cache"
     And it uses scratch space at "/tmp/scratch"
@@ -84,55 +135,55 @@ Feature: What a step's pod actually looks like
   # of the resource envelope — not an implementation detail.
   @PE-07
   Scenario: Limits alone reserve exactly what they cap
-    Given a jetbridge worker on a fake Kubernetes cluster
-    And a task container "limits-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker prepares task "limits-handle" from image "docker:///busybox"
     And it is limited to 1024 CPU shares and 1073741824 bytes of memory
     When the container runs
     Then the step may use at most "1024m" CPU and "1Gi" memory
     And the step is reserved "1024m" CPU and "1Gi" memory
-    And the pod is scheduled as "Guaranteed"
+    And the API assigns the pod QoS class "Guaranteed"
 
   @PE-07
   Scenario: Independent requests below the limits make the pod burstable
-    Given a jetbridge worker on a fake Kubernetes cluster
-    And a task container "burstable-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker prepares task "burstable-handle" from image "docker:///busybox"
     And it is limited to 2048 CPU shares and 4294967296 bytes of memory
     And it requests 512 CPU shares and 1073741824 bytes of memory
     When the container runs
     Then the step may use at most "2048m" CPU and "4Gi" memory
     And the step is reserved "512m" CPU and "1Gi" memory
-    And the pod is scheduled as "Burstable"
+    And the API assigns the pod QoS class "Burstable"
 
   @PE-07
   Scenario: A step that asks for nothing is evicted first
-    Given a jetbridge worker on a fake Kubernetes cluster
-    And a task container "nolimits-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker prepares task "nolimits-handle" from image "docker:///busybox"
     When the container runs
-    Then the pod is scheduled as "BestEffort"
+    Then the API assigns the pod QoS class "BestEffort"
 
   # PE-04. Privilege is the difference between a task that can mount things and
   # one that cannot; getting it backwards is a security hole in one direction
   # and a broken pipeline in the other.
   @PE-04
   Scenario: An unprivileged step cannot gain privileges
-    Given a jetbridge worker on a fake Kubernetes cluster
-    And a task container "unpriv-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker prepares task "secure-handle" from image "docker:///busybox"
     When the container runs
-    Then the step cannot escalate its privileges
+    Then the step uses the "unprivileged" security policy
 
   @PE-04
   Scenario: A privileged step is granted privilege
-    Given a jetbridge worker on a fake Kubernetes cluster
-    And a task container "priv-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker prepares task "priv-handle" from image "docker:///busybox"
     And it runs privileged
     When the container runs
-    Then the step can escalate its privileges
+    Then the step uses the "privileged" security policy
 
   # PE-03
   @PE-03
   Scenario: A step's pod is never restarted behind the scheduler's back
-    Given a jetbridge worker on a fake Kubernetes cluster
-    And a task container "restart-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker prepares task "restart-handle" from image "docker:///busybox"
     When the container runs
     Then the pod is never restarted
 
@@ -141,133 +192,193 @@ Feature: What a step's pod actually looks like
   # not inherit the step's privilege.
   @SC-01
   Scenario: A step with no sidecars runs alone
-    Given a jetbridge worker on a fake Kubernetes cluster
-    And a task container "nosidecar-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker prepares task "nosidecar-handle" from image "docker:///busybox"
     When the container runs
     Then the pod runs 1 containers
 
   @SC-01 @SC-02 @SC-04
   Scenario: A sidecar runs alongside the step and shares its working set
-    Given a jetbridge worker on a fake Kubernetes cluster
-    And a task container "sidecar-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker prepares task "one-sidecar-handle" from image "docker:///busybox"
     And it works in "/tmp/build/workdir"
-    And it takes an input at "/tmp/build/workdir/input-a"
+    And it takes an input at "/tmp/build/workdir/my-repo"
     And a sidecar "postgres" runs "postgres:15" alongside it
+    And the sidecar "postgres" declares environment "POSTGRES_PASSWORD" as "test"
+    And the sidecar "postgres" declares port 5432
     When the container runs
-    Then the pod runs 2 containers
-    And the sidecar "postgres" runs image "postgres:15"
+    Then the pod runs these containers in order
+      | name     | image       |
+      | main     | busybox     |
+      | postgres | postgres:15 |
+    And the container "postgres" has environment "POSTGRES_PASSWORD" set to "test"
+    And the sidecar "postgres" exposes TCP port 5432
     And the sidecar "postgres" sees the same volumes as the step
     And the sidecar "postgres" cannot escalate its privileges
+    And the sidecar "postgres" is pulled only when absent
+    And the step uses the "unprivileged" security policy
 
   @SC-01
   Scenario: Several sidecars all run
-    Given a jetbridge worker on a fake Kubernetes cluster
-    And a task container "multisidecar-handle" built from image "docker:///busybox"
-    And a sidecar "postgres" runs "postgres:15" alongside it
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker prepares task "multi-sidecar-handle" from image "docker:///busybox"
+    And it works in "/tmp/build/workdir"
     And a sidecar "redis" runs "redis:7" alongside it
+    And the sidecar "redis" declares port 6379
+    And a sidecar "nginx" runs "nginx:latest" alongside it
+    And the sidecar "nginx" declares command "nginx,-g,daemon off;" and arguments ""
+    And the sidecar "nginx" declares port 80
     When the container runs
-    Then the pod runs 3 containers
-    And the sidecar "postgres" runs image "postgres:15"
-    And the sidecar "redis" runs image "redis:7"
+    Then the pod runs these containers in order
+      | name  | image        |
+      | main  | busybox      |
+      | redis | redis:7      |
+      | nginx | nginx:latest |
+
+  @SC-01 @SC-03
+  Scenario: A sidecar retains its command and resource envelope
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker prepares task "sidecar-full-handle" from image "docker:///busybox"
+    And a sidecar "app" runs "myapp:latest" alongside it
+    And the sidecar "app" declares command "/usr/bin/app" and arguments "--port,8080"
+    And the sidecar "app" declares its working directory as "/app"
+    And the sidecar "app" requests "100m" CPU and "128Mi" memory with limits "500m" CPU and "512Mi" memory
+    When the container runs
+    Then the pod runs these containers in order
+      | name | image        |
+      | main | busybox      |
+      | app  | myapp:latest |
+    And the container "app" runs command "/usr/bin/app" with arguments "--port,8080"
+    And the container "app" works in "/app"
+    And the sidecar "app" has requests "100m" CPU and "128Mi" memory and limits "500m" CPU and "512Mi" memory
+
+  @SC-01 @SC-02
+  Scenario: Artifact inputs do not add a helper sidecar
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker prepares task "sidecar-artifact-handle" from image "docker:///busybox"
+    And it works in "/tmp/build/workdir"
+    And it takes an input at "/tmp/build/workdir/my-input"
+    And a sidecar "redis" runs "redis:7" alongside it
+    And the sidecar "redis" declares port 6379
+    When the container runs
+    Then the pod runs these containers in order
+      | name  | image   |
+      | main  | busybox |
+      | redis | redis:7 |
+    And the sidecar "redis" sees the same volumes as the step
+
+  @SC-01 @SC-02 @PE-01
+  Scenario: A task awaiting exec keeps its sidecar alongside it
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker prepares task "sidecar-exec-handle" from image "docker:///busybox"
+    And the worker provides its exec transport to the task
+    And a sidecar "postgres" runs "postgres:15" alongside it
+    And the sidecar "postgres" declares port 5432
+    When the container runs
+    Then the pod runs these containers in order
+      | name     | image       |
+      | main     | busybox     |
+      | postgres | postgres:15 |
+    And the main container waits for exec
+    And the sidecar "postgres" sees the same volumes as the step
+
+  @SC-01
+  Scenario: Sidecar image handoffs retain names and strip only transport prefixes
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker prepares task "sidecar-prefix-handle" from image "docker:///busybox"
+    And a sidecar "from-artifact" runs "docker:///us-docker.pkg.dev/myproject/repo/myimage@sha256:abc123" alongside it
+    And a sidecar "from-artifact-no-slash" runs "docker://us-docker.pkg.dev/myproject/repo/other@sha256:def456" alongside it
+    And a sidecar "raw-prefix" runs "raw:///some-image:latest" alongside it
+    And a sidecar "plain-ref" runs "redis:7" alongside it
+    When the container runs
+    Then the pod runs these containers in order
+      | name                   | image                                                       |
+      | main                   | busybox                                                     |
+      | from-artifact          | us-docker.pkg.dev/myproject/repo/myimage@sha256:abc123         |
+      | from-artifact-no-slash | us-docker.pkg.dev/myproject/repo/other@sha256:def456           |
+      | raw-prefix             | some-image:latest                                           |
+      | plain-ref              | redis:7                                                     |
 
   # SC-03: a sidecar inherits the step's working directory unless it names one.
   @SC-03
   Scenario: A sidecar inherits the step's working directory
-    Given a jetbridge worker on a fake Kubernetes cluster
-    And a task container "sidecar-inherit-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker prepares task "sidecar-inherit-handle" from image "docker:///busybox"
     And it works in "/tmp/build/workdir"
     And a sidecar "helper" runs "busybox" alongside it
     When the container runs
-    Then the sidecar "helper" works in "/tmp/build/workdir"
+    Then the container "helper" works in "/tmp/build/workdir"
 
   @SC-03
   Scenario: A sidecar that names a working directory keeps its own
-    Given a jetbridge worker on a fake Kubernetes cluster
-    And a task container "sidecar-own-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker prepares task "sidecar-own-handle" from image "docker:///busybox"
     And it works in "/tmp/build/workdir"
     And a sidecar "helper" runs "busybox" alongside it
     And the sidecar "helper" declares its working directory as "/opt/helper"
     When the container runs
-    Then the sidecar "helper" works in "/opt/helper"
+    Then the container "helper" works in "/opt/helper"
 
   # CF-05. Registry credentials are an operator setting that has to reach every
   # pod, or images fail to pull with an error that looks like a pipeline bug.
   @CF-05
   Scenario: Operator-configured pull secrets and service account reach the pod
-    Given a jetbridge worker that pulls with the secrets "registry-creds,gcr-key" as the service account "ci-runner"
-    And a task container "secrets-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "configured-worker" with a database behind it
+    And the worker pulls with secrets "registry-creds,gcr-key" as service account "ci-runner"
+    And the worker prepares task "secrets-handle" from image "docker:///busybox"
     When the container runs
-    Then the pod pulls images using the secret "registry-creds"
-    And the pod pulls images using the secret "gcr-key"
+    Then the pod pulls images using exactly "registry-creds,gcr-key"
     And the pod runs as the service account "ci-runner"
 
   @CF-05
   Scenario: With nothing configured the pod names no credentials
-    Given a jetbridge worker on a fake Kubernetes cluster
-    And a task container "nosecrets-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker prepares task "nosecrets-handle" from image "docker:///busybox"
     When the container runs
     Then the pod names no image pull secret and no service account
 
   @CF-05
   Scenario: A private registry's secret is added to the pod
-    Given a jetbridge worker pulling from a private registry with secret "gcr-auth", already pulling with "existing-secret"
-    And a task container "registry-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "configured-worker" with a database behind it
+    And the worker uses private registry secret "gcr-auth", alongside "existing-secret"
+    And the worker prepares task "registry-handle" from image "docker:///busybox"
     When the container runs
-    Then the pod pulls images using the secret "gcr-auth"
-    And the pod pulls images using the secret "existing-secret"
+    Then the pod pulls images using exactly "gcr-auth,existing-secret"
 
   # Adding it twice would be harmless to Kubernetes but is a sign the merge is
   # wrong, and the original suite guarded it explicitly.
   @CF-05
   Scenario: A registry secret the operator already listed is not duplicated
-    Given a jetbridge worker pulling from a private registry with secret "gcr-auth", already pulling with "gcr-auth"
-    And a task container "registry-dup-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "configured-worker" with a database behind it
+    And the worker uses private registry secret "gcr-auth", alongside "gcr-auth"
+    And the worker prepares task "registry-dup-handle" from image "docker:///busybox"
     When the container runs
-    Then the pod names the secret "gcr-auth" exactly once
+    Then the pod pulls images using exactly "gcr-auth"
 
   # PE-07, the clause the QoS scenarios do not reach. Requests without limits
   # reserve capacity without capping it — a step that may burst but must be
   # guaranteed a floor.
   @PE-07
   Scenario: Requests without limits reserve a floor but set no ceiling
-    Given a jetbridge worker on a fake Kubernetes cluster
-    And a task container "requests-only-handle" built from image "docker:///busybox"
-    And it requests 512 CPU shares and 1073741824 bytes of memory
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker prepares task "requests-only-handle" from image "docker:///busybox"
+    And it requests 256 CPU shares and 536870912 bytes of memory
     When the container runs
-    Then the step is reserved "512m" CPU and "1Gi" memory
-    And the pod is scheduled as "Burstable"
+    Then the step has no resource limits
+    And the step is reserved "256m" CPU and "512Mi" memory
+    And the API assigns the pod QoS class "Burstable"
 
   # A step that writes a large artifact to local disk is evicted without an
   # ephemeral-storage reservation, and that eviction reads as an unexplained
   # failure rather than a capacity problem.
   @PE-07
   Scenario: Local disk is reserved and capped like any other resource
-    Given a jetbridge worker on a fake Kubernetes cluster
-    And a task container "ephemeral-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker prepares task "ephemeral-handle" from image "docker:///busybox"
     And it is limited to 2147483648 bytes of local disk, requesting 1073741824
     When the container runs
     Then the step may use at most "2Gi" of local disk, reserving "1Gi"
 
-  # SC-07. A sidecar exists to serve the step — a database, a log shipper. If
-  # its output never reaches the build, a user debugging a failing integration
-  # test has no way to see why the database rejected the connection.
-  @SC-07
-  Scenario: A sidecar's output reaches its own stream when there is one
-    Given a jetbridge worker on a fake Kubernetes cluster
-    And a task container "sc07-dedicated" built from image "docker:///busybox"
-    And a sidecar "postgres" runs "postgres:15" alongside it
-    When the step runs with a dedicated log stream for sidecar "postgres"
-    Then the sidecar's output arrives on its own stream
-
-  # And when there is no separate pane for it, the output still has to appear —
-  # labelled, so it is distinguishable from the step's own.
-  @SC-07
-  Scenario: Without a separate stream the sidecar's output is labelled in the build log
-    Given a jetbridge worker on a fake Kubernetes cluster
-    And a task container "sc07-fallback" built from image "docker:///busybox"
-    And a sidecar "postgres" runs "postgres:15" alongside it
-    When the step runs with nowhere separate to put sidecar output
-    Then the sidecar's output is folded into the build log, labelled "[postgres]"
 
   # CO-07 / CF-04. A cache exists to survive between builds, and whether it
   # does depends on which storage backs it and what key it is filed under. A
@@ -275,8 +386,10 @@ Feature: What a step's pod actually looks like
   # indistinguishable from a working cache that never hits.
   @CO-07 @CF-04
   Scenario: A cache is kept on the node, under a key stable across builds
-    Given a jetbridge worker keeping caches on the node under "/var/concourse/cache"
-    And a task container "cache-hostpath-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "configured-worker" with a database behind it
+    And the worker keeps standalone caches under "/var/concourse/cache"
+    And the worker uses "hostpath" cache storage
+    And the worker prepares task "cache-hostpath-handle" from image "docker:///busybox"
     And it works in "/tmp/build/workdir"
     And it belongs to job 7 step "compile"
     And it caches "/tmp/build/workdir/.cache"
@@ -299,8 +412,9 @@ Feature: What a step's pod actually looks like
   # and no symptom but builds that stopped getting faster.
   @CO-07 @CF-04
   Scenario: A run job's cache is keyed on the template it came from, not on its per-run pipeline
-    Given a jetbridge worker keeping caches on the node under "/var/concourse/cache"
-    And a task container "cache-run-identity-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "configured-worker" with a database behind it
+    And the worker keeps standalone caches under "/var/concourse/cache"
+    And the worker prepares task "cache-run-identity-handle" from image "docker:///busybox"
     And it works in "/tmp/build/workdir"
     And it belongs to run job "deploy-staging" of template pipeline 23 in team 17, step "build.assets"
     And it caches "/work/cache"
@@ -312,19 +426,26 @@ Feature: What a step's pod actually looks like
   # stable to file a cache under and it falls back to ephemeral storage.
   @CO-07
   Scenario: A one-off build with no job gets an ephemeral cache
-    Given a jetbridge worker keeping caches on the node under "/var/concourse/cache"
-    And a task container "cache-oneoff-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "configured-worker" with a database behind it
+    And the worker keeps standalone caches under "/var/concourse/cache"
+    And the worker uses "hostpath" cache storage
+    And the worker prepares task "cache-oneoff-handle" from image "docker:///busybox"
     And it works in "/tmp/build/workdir"
     And it caches "/tmp/build/workdir/.cache"
     When the container runs
-    Then the volume mounted at "/tmp/build/workdir/.cache" uses "ephemeral" storage
+    Then the step has exactly these ephemeral mounts
+      | mount path |
+      | /tmp/build/workdir |
+      | /tmp/build/workdir/.cache |
 
   # CF-04. The operator's explicit choice overrides the artifact store's
   # default, in both directions.
   @CF-04
   Scenario Outline: An explicit cache store overrides the artifact store default
-    Given a jetbridge worker with an artifact store, told to keep caches "<store>"
-    And a task container "cache-<store>-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "configured-worker" with a database behind it
+    And the worker keeps artifacts under "/var/concourse/artifacts"
+    And the worker uses "<store>" cache storage
+    And the worker prepares task "cache-<store>-handle" from image "docker:///busybox"
     And it works in "/tmp/build/workdir"
     And it belongs to job 7 step "compile"
     And it caches "/tmp/build/workdir/.cache"
@@ -350,8 +471,10 @@ Feature: What a step's pod actually looks like
   # log that anything shared it.
   @CO-07 @CF-04
   Scenario: An explicit node-local cache store is refused a step with nothing to key on
-    Given a jetbridge worker with an artifact store, told to keep caches "hostpath"
-    And a task container "cache-keyless-hostpath-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "configured-worker" with a database behind it
+    And the worker keeps artifacts under "/var/concourse/artifacts"
+    And the worker uses "hostpath" cache storage
+    And the worker prepares task "cache-keyless-hostpath-handle" from image "docker:///busybox"
     And it works in "/tmp/build/workdir"
     And it caches "/tmp/build/workdir/.cache"
     When the container runs
@@ -373,8 +496,10 @@ Feature: What a step's pod actually looks like
   # worker still has no backend and every volume is ephemeral regardless.
   @CO-08
   Scenario: A check's workspace is ephemeral even on a node-local worker
-    Given a jetbridge worker with an artifact store, told to keep caches "node"
-    And a check container "check-ephemeral-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "configured-worker" with a database behind it
+    And the worker keeps artifacts under "/var/concourse/artifacts"
+    And the worker uses "node" cache storage
+    And the worker prepares check "check-ephemeral-handle" from image "docker:///busybox"
     And it works in "/tmp/build/check"
     When the container runs
     Then the volume mounted at "/tmp/build/check" uses "ephemeral" storage
@@ -384,8 +509,10 @@ Feature: What a step's pod actually looks like
   # "ephemeral" assertion cannot distinguish a check being handled correctly
   # from a backend that was never configured.
   Scenario: A task's workspace on the same worker is kept on the node
-    Given a jetbridge worker with an artifact store, told to keep caches "node"
-    And a task container "task-hostpath-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "configured-worker" with a database behind it
+    And the worker keeps artifacts under "/var/concourse/artifacts"
+    And the worker uses "node" cache storage
+    And the worker prepares task "task-hostpath-handle" from image "docker:///busybox"
     And it works in "/tmp/build/workdir"
     When the container runs
     Then the volume mounted at "/tmp/build/workdir" uses "node-local" storage
@@ -395,8 +522,10 @@ Feature: What a step's pod actually looks like
   # step meets its own half-written outputs — the "destination path already
   # exists" failure.
   Scenario: A retried step clears the workspace its last attempt left behind
-    Given a jetbridge worker with an artifact store, told to keep caches "node"
-    And a task container "reused-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "configured-worker" with a database behind it
+    And the worker keeps artifacts under "/var/concourse/artifacts"
+    And the worker uses "node" cache storage
+    And the worker prepares task "reused-handle" from image "docker:///busybox"
     And it works in "/tmp/build/workdir"
     And the container has run before on this worker
     When the container runs
@@ -405,8 +534,10 @@ Feature: What a step's pod actually looks like
   # The other direction: a fresh container has nothing to clean, and the
   # cleanup would only cost an image pull on every step.
   Scenario: A first attempt does not clear a workspace nothing has used
-    Given a jetbridge worker with an artifact store, told to keep caches "node"
-    And a task container "fresh-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "configured-worker" with a database behind it
+    And the worker keeps artifacts under "/var/concourse/artifacts"
+    And the worker uses "node" cache storage
+    And the worker prepares task "fresh-handle" from image "docker:///busybox"
     And it works in "/tmp/build/workdir"
     When the container runs
     Then the pod does not clear the workspace
@@ -416,8 +547,10 @@ Feature: What a step's pod actually looks like
   # requirement the scheduler is free to place it on a node with no artifact
   # cache, and the step cannot read its inputs at all.
   Scenario: A pod is pinned to a node that can serve its artifacts
-    Given a jetbridge worker with an artifact store, told to keep caches "node"
-    And a task container "affinity-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "configured-worker" with a database behind it
+    And the worker keeps artifacts under "/var/concourse/artifacts"
+    And the worker uses "node" cache storage
+    And the worker prepares task "affinity-handle" from image "docker:///busybox"
     And it works in "/tmp/build/workdir"
     When the container runs
     Then the pod is only scheduled where the artifact cache is ready
@@ -426,8 +559,10 @@ Feature: What a step's pod actually looks like
   # step's own command. Without them the step starts against an empty
   # directory and fails on a file it was handed.
   Scenario: A step's inputs are fetched before its command runs
-    Given a jetbridge worker with an artifact store, told to keep caches "node"
-    And a task container "fetch-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "configured-worker" with a database behind it
+    And the worker keeps artifacts under "/var/concourse/artifacts"
+    And the worker uses "node" cache storage
+    And the worker prepares task "fetch-handle" from image "docker:///busybox"
     And it works in "/tmp/build/workdir"
     And it takes an input at "/tmp/build/workdir/from-earlier"
     When the container runs
@@ -456,8 +591,9 @@ Feature: What a step's pod actually looks like
   # succeeded.
   @CO-05
   Scenario: An input sharing an output's path is filed under the output's name
-    Given a jetbridge worker with an artifact store
-    And a task container "overlap-store-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "configured-worker" with a database behind it
+    And the worker keeps artifacts under "/var/concourse/artifacts"
+    And the worker prepares task "overlap-store-handle" from image "docker:///busybox"
     And it works in "/tmp/build/workdir"
     When the container runs with an input and the output "repo-modified" both at "/tmp/build/workdir/repo"
     Then the volume mounted at "/tmp/build/workdir/repo" is the node directory recorded for the output "repo-modified"
@@ -475,8 +611,8 @@ Feature: What a step's pod actually looks like
   # the build.
   @CO-08
   Scenario: A relative scratch path lands inside the working directory
-    Given a jetbridge worker on a fake Kubernetes cluster
-    And a task container "rel-scratch-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker prepares task "rel-scratch-handle" from image "docker:///busybox"
     And it works in "/tmp/build/workdir"
     And it uses scratch space at "tmp-work"
     When the container runs
@@ -494,8 +630,9 @@ Feature: What a step's pod actually looks like
   # failure by another route.
   @CO-07 @CF-04
   Scenario: With no explicit choice, caches follow the artifact store onto the node
-    Given a jetbridge worker with an artifact store
-    And a task container "cache-default-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "configured-worker" with a database behind it
+    And the worker keeps artifacts under "/var/concourse/artifacts"
+    And the worker prepares task "cache-default-handle" from image "docker:///busybox"
     And it works in "/tmp/build/workdir"
     And it belongs to job 7 step "compile"
     And it caches "/tmp/build/workdir/.cache"
@@ -515,8 +652,9 @@ Feature: What a step's pod actually looks like
   # The two scenarios above ask whether each container is present. Presence
   # survives the swap; only the order does not.
   Scenario: A retried step clears its workspace before fetching, not after
-    Given a jetbridge worker with an artifact store
-    And a task container "order-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "configured-worker" with a database behind it
+    And the worker keeps artifacts under "/var/concourse/artifacts"
+    And the worker prepares task "order-handle" from image "docker:///busybox"
     And it works in "/tmp/build/workdir"
     And it takes an input at "/tmp/build/workdir/from-earlier"
     And the container has run before on this worker
@@ -541,8 +679,9 @@ Feature: What a step's pod actually looks like
   # a check from a task here.
   @CO-08
   Scenario: A repeated check is not handed a workspace to clear
-    Given a jetbridge worker with an artifact store
-    And a check container "check-reused-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "configured-worker" with a database behind it
+    And the worker keeps artifacts under "/var/concourse/artifacts"
+    And the worker prepares check "check-reused-handle" from image "docker:///busybox"
     And it works in "/tmp/build/check"
     When the same check runs again
     Then the check's pod does not try to clear a workspace it never kept
@@ -603,8 +742,9 @@ Feature: What a step's pod actually looks like
   # directory of a task is not an output at all — so this rule is invisible
   # from any of them.
   Scenario: A get step's resource lands in the node directory the daemon will serve
-    Given a jetbridge worker with an artifact store
-    And a get container "get-store-handle" built from image "docker:///git-resource"
+    Given a Kubernetes worker "configured-worker" with a database behind it
+    And the worker keeps artifacts under "/var/concourse/artifacts"
+    And the worker prepares get "get-store-handle" from image "docker:///git-resource"
     And it works in "/tmp/resource"
     When the get container runs
     Then the step sees a volume mounted at "/tmp/resource"
@@ -630,8 +770,9 @@ Feature: What a step's pod actually looks like
   # from the overlap and a different line of code chooses it. This is the
   # ordinary output, where nothing forces the choice.
   Scenario: An output's directory on the node carries the name the pipeline gave it
-    Given a jetbridge worker with an artifact store
-    And a task container "compile-output-handle" built from image "docker:///busybox"
+    Given a Kubernetes worker "configured-worker" with a database behind it
+    And the worker keeps artifacts under "/var/concourse/artifacts"
+    And the worker prepares task "compile-output-handle" from image "docker:///busybox"
     And it works in "/tmp/build/workdir"
     When the container runs producing the output "compiled" at "/tmp/build/workdir/compiled"
     Then the step sees a volume mounted at "/tmp/build/workdir/compiled"

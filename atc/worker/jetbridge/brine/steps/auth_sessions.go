@@ -48,7 +48,10 @@ func AuthenticationDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 		brine.DefineMapUsing[brine.Empty, AuthScenario]("an authentication server with a private pipeline", []string{"auth-server"},
 			func(_ brine.Empty, _ brine.Params, recorder *brine.Recorder, res brine.Resources) (AuthScenario, error) {
-				fixture := res.Get("auth-server").(*AuthFixture)
+				fixture, err := res.Get("auth-server").(*AuthFixture).ready()
+				if err != nil {
+					return AuthScenario{}, err
+				}
 				recorder.Log("Authentication fixture: " + fixture.URL)
 				return AuthScenario{Fixture: fixture}, nil
 			}),

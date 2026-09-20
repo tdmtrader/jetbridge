@@ -406,7 +406,7 @@ type ConsumerDraft struct {
 	// carried down from the capture chain because a capture chain has no
 	// cluster in it: the daemon fixture is a process and a bucket, and a
 	// consumer needs a worker to build a pod on.
-	Cluster ClusterReady
+	Cluster WorkerReady
 
 	StepName    string
 	Output      hangaroutput.OutputName

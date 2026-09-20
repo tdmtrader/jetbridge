@@ -50,9 +50,10 @@ type PausePodReplacement struct {
 	//
 	// The UID is what tells a replacement from a refusal. "A pod exists
 	// afterwards" is true either way -- a refusal leaves the terminal one in
-	// place -- so the assertion has to be about WHICH pod, and the fake API
-	// server assigns no UIDs, so the fixture stamps the terminal one and a
-	// replacement is recognised by NOT carrying it.
+	// place -- so the assertion has to be about WHICH pod. Both UIDs are the
+	// API server's own: it minted one for the pod production created and
+	// another for whatever production put in its place, and nothing in the
+	// fixture chooses either.
 	Before  types.UID
 	After   types.UID
 	Present bool
@@ -63,10 +64,12 @@ type PausePodReplacement struct {
 	Err error
 }
 
-// hangarPausePodNode is the node both the pod and the daemon are on. The daemon
-// listens on loopback, so the node's address is loopback: the ATC resolves the
-// node's IP the way it does in production and reaches the real process.
-const hangarPausePodNode = "node-1"
+// hangarPausePodNodePrefix names the node both the pod and the daemon are on.
+// The daemon listens on loopback, so the node's address is loopback: the ATC
+// resolves the node's IP the way it does in production and reaches the real
+// process. It is a GenerateName prefix because Nodes are cluster-scoped on an
+// API server this whole suite shares.
+const hangarPausePodNodePrefix = "hangar-pause-node-"
 
 // HangarPausePodDefinitions is the pause-pod regression family.
 func HangarPausePodDefinitions() []brine.StepDefinition {
@@ -81,24 +84,24 @@ func HangarPausePodDefinitions() []brine.StepDefinition {
 		// replacing pause pods at all.
 		brine.DefineMapUsing[CaptureDraft, PausePodReplacement](
 			"an ordinary step's pause pod reaches a terminal state",
-			[]string{"jetbridge-db"},
-			func(in CaptureDraft, _ brine.Params, _ *brine.Recorder,
+			[]string{"jetbridge-db", "real-cluster"},
+			func(in CaptureDraft, _ brine.Params, rec *brine.Recorder,
 				res brine.Resources) (PausePodReplacement, error) {
-				return terminalPausePod(res, in.Daemon, "ordinary-step", nil)
+				return terminalPausePod(res, rec, in.Daemon, "ordinary-step", nil)
 			},
 		),
 
 		brine.DefineMapUsing[HeldSource, PausePodReplacement](
 			"its pause pod reaches a terminal state",
-			[]string{"jetbridge-db"},
-			func(in HeldSource, _ brine.Params, _ *brine.Recorder,
+			[]string{"jetbridge-db", "real-cluster"},
+			func(in HeldSource, _ brine.Params, rec *brine.Recorder,
 				res brine.Resources) (PausePodReplacement, error) {
 				control, err := capturedControl(in)
 				if err != nil {
 					return PausePodReplacement{}, err
 				}
 
-				return terminalPausePod(res, in.Draft.Daemon, "capture-step", control)
+				return terminalPausePod(res, rec, in.Draft.Daemon, "capture-step", control)
 			},
 		),
 
@@ -192,16 +195,15 @@ func capturedControl(in HeldSource) (*runtime.ExecutionControl, error) {
 // hostPath root, and the ATC's own client certificate, because every route on
 // that daemon but the node-local ones is behind mTLS. The classifier the
 // refusal reads is therefore the production one over a real HTTPS call.
-func terminalPausePod(res brine.Resources, daemon HangarDaemon, handle string,
+func terminalPausePod(res brine.Resources, rec *brine.Recorder, daemon HangarDaemon, handle string,
 	control *runtime.ExecutionControl) (PausePodReplacement, error) {
 	port, err := hangarDaemonPort(daemon.Daemon.URL)
 	if err != nil {
 		return PausePodReplacement{}, err
 	}
 
-	cluster, err := NewCluster(res,
-		WithExecutor(localExecutor{}),
-		WithConfig(func(cfg *jetbridge.Config) {
+	ready, err := newWorkerReady(res, rec, "k8s-worker-pause-"+handle, "",
+		func(cfg *jetbridge.Config) {
 			cfg.OutputPlaneEnabled = true
 			cfg.ArtifactDaemonHostPath = daemon.Daemon.Root
 			cfg.ArtifactDaemonPort = port
@@ -209,29 +211,50 @@ func terminalPausePod(res brine.Resources, daemon HangarDaemon, handle string,
 			cfg.ArtifactDaemonTLSCert = filepath.Join(daemon.CertDir, "client.crt")
 			cfg.ArtifactDaemonTLSKey = filepath.Join(daemon.CertDir, "client.key")
 			cfg.ArtifactDaemonTLSCACert = filepath.Join(daemon.CertDir, "ca.crt")
-		}),
-		WithArtifactLocator(jetbridge.NewArtifactLocator()),
-		WithTeam(),
-	)
+		})
 	if err != nil {
 		return PausePodReplacement{}, err
 	}
+	// A pause pod is what a worker with an exec transport builds; without one
+	// the runtime takes the direct-mode path, which bakes the command into the
+	// Pod and has no replacement decision in it at all. The transport is the
+	// production SPDY one and nothing here execs: Run creates the pause pod and
+	// hands back a process, and this fixture never drives it.
+	ready.Executor = ready.ProducerExecutor
+	// The DaemonSet storage backend, which is what carries the ledger
+	// classifier the refusal is read from.
+	ready.Locator = jetbridge.NewArtifactLocator()
+	ready = ready.rebuild()
 
 	// The node the daemon is on. The ATC resolves a node's address before it
 	// asks that node's daemon anything, so without this the question could not
 	// be posed at all -- and the guard fails closed, which would make the
 	// control scenario refuse for the wrong reason.
-	if _, err := cluster.Clientset.CoreV1().Nodes().Create(cluster.Ctx, &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: hangarPausePodNode},
-		Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{
-			{Type: corev1.NodeInternalIP, Address: "127.0.0.1"},
-		}},
-	}, metav1.CreateOptions{}); err != nil {
+	//
+	// A Node is cluster-scoped and the API server is shared by the suite, so
+	// the name is generated rather than chosen: two scenarios in this family
+	// each need one, and a fixed name would make the second collide with the
+	// first's.
+	node, err := ready.Clientset.CoreV1().Nodes().Create(ready.Ctx, &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{GenerateName: hangarPausePodNodePrefix},
+	}, metav1.CreateOptions{})
+	if err != nil {
 		return PausePodReplacement{}, fmt.Errorf("creating the node: %w", err)
+	}
+	registerAPICleanup(rec, "node "+node.Name, func(ctx context.Context) error {
+		return ready.Clientset.CoreV1().Nodes().Delete(ctx, node.Name,
+			metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &node.UID}})
+	})
+	// Addresses live on the status subresource, so the address a real kubelet
+	// would publish is published the way it publishes it.
+	node.Status.Addresses = []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: "127.0.0.1"}}
+	if _, err := ready.Clientset.CoreV1().Nodes().UpdateStatus(ready.Ctx, node,
+		metav1.UpdateOptions{}); err != nil {
+		return PausePodReplacement{}, fmt.Errorf("publishing the node's address: %w", err)
 	}
 
 	spec := runtime.ContainerSpec{
-		TeamID:           cluster.TeamID,
+		TeamID:           ready.TeamID,
 		Dir:              "/tmp/build/task",
 		ImageSpec:        runtime.ImageSpec{ImageURL: "busybox"},
 		Outputs:          runtime.OutputPaths{"result": "/tmp/build/result"},
@@ -243,55 +266,69 @@ func terminalPausePod(res brine.Resources, daemon HangarDaemon, handle string,
 
 	owner := db.NewFixedHandleContainerOwner(handle)
 	metadata := db.ContainerMetadata{Type: db.ContainerTypeTask, StepName: handle}
-	container, _, err := cluster.Worker.FindOrCreateContainer(cluster.Ctx, owner, metadata,
-		spec, &noopDelegate{})
+	container, _, err := ready.Worker.FindOrCreateContainer(ready.Ctx, owner, metadata, spec, nil)
 	if err != nil {
 		return PausePodReplacement{}, fmt.Errorf("creating the container: %w", err)
 	}
-	if _, err := container.Run(cluster.Ctx,
+	if _, err := container.Run(ready.Ctx,
 		runtime.ProcessSpec{Path: "/bin/sh"}, runtime.ProcessIO{}); err != nil {
 		return PausePodReplacement{}, fmt.Errorf("the first run: %w", err)
 	}
 
-	pods, err := cluster.Clientset.CoreV1().Pods(cluster.Namespace).List(cluster.Ctx,
-		metav1.ListOptions{})
-	if err != nil || len(pods.Items) != 1 {
+	pods := ready.Clientset.CoreV1().Pods(ready.Namespace)
+	list, err := pods.List(ready.Ctx, metav1.ListOptions{})
+	if err != nil || len(list.Items) != 1 {
 		return PausePodReplacement{}, fmt.Errorf("expected one pause pod, found %d (%v)",
-			len(pods.Items), err)
+			len(list.Items), err)
 	}
 
 	// The pause pod dies before the step's command runs: the sleep expired, or
-	// the node drained, or it was evicted. The fixture plays the kubelet here,
-	// and it also binds the pod to a node -- which the scheduler does and a
-	// fake clientset does not.
-	terminal := pods.Items[0].DeepCopy()
-	// The fake API server assigns no UIDs, so the fixture stamps one. It is the
-	// only way to tell "this pod was replaced" from "this pod is still here":
-	// a replacement is created by production and carries none.
-	terminal.UID = types.UID("terminal-pause-pod")
-	terminal.Spec.NodeName = hangarPausePodNode
-	terminal.Status.Phase = corev1.PodFailed
-	terminal.Status.Reason = "Evicted"
-	if _, err := cluster.Clientset.CoreV1().Pods(cluster.Namespace).Update(cluster.Ctx,
-		terminal, metav1.UpdateOptions{}); err != nil {
+	// the node drained, or it was evicted. There is no kubelet here, so the two
+	// facts a kubelet and a scheduler would write are written through the two
+	// subresources they write them through -- a real Binding and a real status
+	// update, both of them API writes the server validates. Nothing about the
+	// runtime is replaced to produce them.
+	created := list.Items[0]
+	if err := pods.Bind(ready.Ctx, &corev1.Binding{
+		ObjectMeta: metav1.ObjectMeta{Name: created.Name, Namespace: ready.Namespace},
+		Target:     corev1.ObjectReference{Kind: "Node", Name: node.Name},
+	}, metav1.CreateOptions{}); err != nil {
+		return PausePodReplacement{}, fmt.Errorf("scheduling the pause pod onto %s: %w", node.Name, err)
+	}
+
+	bound, err := pods.Get(ready.Ctx, created.Name, metav1.GetOptions{})
+	if err != nil {
+		return PausePodReplacement{}, fmt.Errorf("reading the scheduled pause pod: %w", err)
+	}
+	bound.Status.Phase = corev1.PodFailed
+	bound.Status.Reason = "Evicted"
+	terminal, err := pods.UpdateStatus(ready.Ctx, bound, metav1.UpdateOptions{})
+	if err != nil {
 		return PausePodReplacement{}, fmt.Errorf("driving the pause pod terminal: %w", err)
+	}
+	if terminal.Spec.NodeName != node.Name || terminal.Status.Phase != corev1.PodFailed {
+		return PausePodReplacement{}, fmt.Errorf(
+			"the pause pod is on node %q in phase %q, not terminal on %q",
+			terminal.Spec.NodeName, terminal.Status.Phase, node.Name)
+	}
+	if terminal.UID == "" {
+		return PausePodReplacement{}, fmt.Errorf("the pause pod carries no API identity to be replaced")
 	}
 
 	replacement := PausePodReplacement{
-		Ctx:       cluster.Ctx,
-		Namespace: cluster.Namespace,
+		Ctx:       ready.Ctx,
+		Namespace: ready.Namespace,
 		Handle:    handle,
 		Before:    terminal.UID,
 	}
 
 	// And the decision: run it again. Production either replaces the terminal
 	// pod or refuses to.
-	_, runErr := container.Run(cluster.Ctx,
+	_, runErr := container.Run(ready.Ctx,
 		runtime.ProcessSpec{Path: "/bin/sh"}, runtime.ProcessIO{})
 	replacement.Err = runErr
 
-	after, getErr := cluster.Clientset.CoreV1().Pods(cluster.Namespace).Get(cluster.Ctx,
-		terminal.Name, metav1.GetOptions{})
+	after, getErr := pods.Get(ready.Ctx, terminal.Name, metav1.GetOptions{})
 	if getErr == nil {
 		replacement.After, replacement.Present = after.UID, true
 	}

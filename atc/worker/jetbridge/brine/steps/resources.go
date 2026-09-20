@@ -101,6 +101,7 @@ func RegisterGomegaFailHandler() {
 // ResourceDefinitions is the adapter's resource plan.
 func ResourceDefinitions() []brine.ResourceDefinition {
 	resources := append([]brine.ResourceDefinition{
+		LiveNamespaceResourceDefinition(),
 		TracingResourceDefinition(),
 		TaskWorkspaceResourceDefinition(),
 		RealClusterResourceDefinition(),

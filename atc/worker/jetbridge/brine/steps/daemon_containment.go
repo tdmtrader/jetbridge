@@ -321,7 +321,7 @@ func DaemonContainmentDefinitions() []brine.StepDefinition {
 				if err != nil {
 					return ContainedDaemon{}, err
 				}
-				rec.RegisterDisposer(func() { _ = d.stop() })
+				TrackDisposer(rec, "the artifact daemon guarding its storage root", d.stop)
 				return ContainedDaemon{Daemon: d, Registered: map[string]string{}}, nil
 			},
 		),
@@ -338,11 +338,12 @@ func DaemonContainmentDefinitions() []brine.StepDefinition {
 				if err != nil {
 					return in, err
 				}
-				dir, err := os.MkdirTemp("", "brine-outside-root-*")
+				dir, err := AttributedTempDir("brine-outside-root-*")
 				if err != nil {
 					return in, fmt.Errorf("make a directory outside the storage root: %w", err)
 				}
-				rec.RegisterDisposer(func() { _ = os.RemoveAll(dir) })
+				TrackDisposer(rec, "the directory outside the storage root",
+					func() error { return os.RemoveAll(dir) })
 				file := filepath.Join(dir, "victim.txt")
 				if err := os.WriteFile(file, []byte(content), 0o644); err != nil {
 					return in, err
@@ -667,12 +668,13 @@ func DaemonContainmentDefinitions() []brine.StepDefinition {
 					// the handler took no Recorder, so nothing removed the
 					// directory. One empty brine-outside-root-* per run, for
 					// the life of the temp dir.
-					in.Outside, err = os.MkdirTemp("", "brine-outside-root-*")
+					in.Outside, err = AttributedTempDir("brine-outside-root-*")
 					if err != nil {
 						return in, err
 					}
 					outside := in.Outside
-					rec.RegisterDisposer(func() { _ = os.RemoveAll(outside) })
+					TrackDisposer(rec, "the directory outside the storage root",
+						func() error { return os.RemoveAll(outside) })
 				}
 				first := in.storePath(rel)
 				if err := os.MkdirAll(filepath.Dir(first), 0o755); err != nil {

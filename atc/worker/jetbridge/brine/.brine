@@ -6,26 +6,27 @@
 # flag that `config.binary` becomes. A consuming repo hosting its own registry
 # is a third-party runner by brine's own definition
 # (docs/RUNNER-AUTHORS.md §3), and names itself here.
+#
+# The binary is a wrapper, not the adapter itself: scripts/run-private-network
+# builds .build/brine-adapter-jetbridge and runs it inside an unprivileged
+# user+network namespace so the local tier owns its own loopback and ports.
+# The live tier (live/.brine) runs the same adapter against a real cluster.
 runner:
   name: jetbridge
-  binary: .build/brine-adapter-jetbridge
+  binary: scripts/run-private-network
   contract: 5
 
-# 3 -> 5, and THE FROZEN-VERSION PREFERENCE HAD TO YIELD (2026-09-09). The
-# original pin was deliberate: 3 is byte-frozen forever, and a first consumer
-# wants the version that cannot move underneath it, at the price of one
-# advisory CONTRACT_LAG finding.
-#
-# Contract 5 removes that choice rather than making it less attractive.
-# Contracts 3 and 4 are the FLAGS ERA — an adapter conforming to either reads
-# `--features`, `--tags`, `--exclude-tags`, `--line` and `--resources` — and
-# brine-dispatch stopped emitting all five UNCONDITIONALLY at the v5 mint
-# (dispatch/src/lib.rs: "ALWAYS, since contract 5"; no contract-3 branch
-# survives). So a `contract: 3` claim from this adapter is now simply false:
-# the binary beside it is document-native and cannot honour the era it names.
-# 5 is current-but-growing, which is the cost we now carry instead.
+# Document-native conformance (contract 5, since 2026-09-09). Contracts 3 and 4
+# were the flags era; brine-dispatch no longer emits those flags, so the
+# adapter is document-native and this pin must say so. The Go registry's
+# authoring model remains 3; it is independent of this conformance pin.
 contract: 5
 
 features: "features/*.feature"
 budgets:
   undefined: 0
+  # De-enrolment guard: the run must resolve to at least this many scenarios
+  # (outline rows expanded). Counted out of features/*.feature on 2026-09-19;
+  # raise it with every batch that adds scenarios, never lower it without a
+  # disposition row in DISPOSITION-jetbridge.md for each scenario that left.
+  scenarios_min: 543

@@ -2,16 +2,55 @@
 # Run from any directory. Keep each run's raw data and profile for inspection.
 set -eu
 cd "$(dirname "$0")/.."
+# Resolve through any symlinks in the checkout path so this matches brine's
+# own getcwd-resolved view of the repo, not just the shell's $PWD.
+module_root=$(pwd -P)
+
+# Guard tests are fast (no cluster, no build) and catch regressions that would
+# otherwise waste the rest of this run's time. Abort before doing anything else.
+if ! go test ./steps/ -run 'Guard|Import|TempDir|Pending|Definition|NoStepLine|CitesARequirement' -count=1; then
+    echo "Guard tests failed; aborting before build/run" >&2
+    exit 1
+fi
+
+# Both tiers are required; never call a local-only result the full suite.
+: "${BRINE_KUBE_CONTEXT:?Full coverage requires an explicitly authorized live Kubernetes context}"
+# Validate live-fixture approval before spending time building or running the
+# local tier. The fixtures still independently enforce these boundaries.
+if [ "${BRINE_ALLOW_HOSTPATH_TESTS:-}" != 1 ] || [ "${BRINE_ALLOW_HOSTPORT_TESTS:-}" != 1 ]; then
+    echo "Full coverage requires explicit BRINE_ALLOW_HOSTPATH_TESTS=1 and BRINE_ALLOW_HOSTPORT_TESTS=1 approval" >&2
+    exit 1
+fi
+: "${BRINE_LIVE_ARTIFACT_NODE:?Set the explicitly approved artifact node}"
+: "${BRINE_LIVE_ARTIFACT_DAEMON_PORT:?Set the approved unused high TCP port}"
+: "${BRINE_LIVE_ARTIFACT_DAEMON_BINARY:?Build and name the current static Linux artifact daemon}"
+case "$BRINE_LIVE_ARTIFACT_DAEMON_BINARY" in
+    /*) ;;
+    *) echo "Artifact daemon binary path must be absolute" >&2; exit 1 ;;
+esac
+if [ ! -f "$BRINE_LIVE_ARTIFACT_DAEMON_BINARY" ] || [ ! -x "$BRINE_LIVE_ARTIFACT_DAEMON_BINARY" ]; then
+    echo "Artifact daemon binary must be an existing executable" >&2
+    exit 1
+fi
+
+# The peer tests need two real addresses at one daemon port. Prepare every
+# executable before entering the isolated network; never build inside it.
+sh scripts/build-private-network
 
 production_package=github.com/concourse/concourse/atc/worker/jetbridge
-minimum_percent=40
+minimum_percent=50
 report_dir=$(mktemp -d "${TMPDIR:-/tmp}/brine-coverage.XXXXXX")
 mkdir "$report_dir/raw"
 printf 'Coverage evidence: %s\n' "$report_dir"
 
 # Instrument main as well: Go installs its coverage exit hook there. Only the
 # production package belongs in the reported denominator, not adapter code.
+# Catch cancellation (INT/TERM/HUP) too, not just a normal EXIT: otherwise a
+# killed run leaves the -cover adapter binary sitting in .build/. The signal
+# trap only exits; `exit` runs the EXIT trap once, so the rebuild happens
+# exactly once and the script never continues past a signal.
 trap 'go build -o .build/brine-adapter-jetbridge ./cmd/brine-adapter-jetbridge' 0
+trap 'exit 130' INT TERM HUP
 go build -cover -covermode=atomic \
     -coverpkg="$production_package,$production_package/brine/cmd/brine-adapter-jetbridge" \
     -o .build/brine-adapter-jetbridge ./cmd/brine-adapter-jetbridge
@@ -19,11 +58,47 @@ go build -cover -covermode=atomic \
 # The persistent engine inherits its own startup environment. Bypass it so
 # this run's GOCOVERDIR reaches the adapter. This still uses the full CLI gate.
 export GOCOVERDIR="$report_dir/raw"
-if ! brine run --no-engine --mode sync --format brief > "$report_dir/brine.log" 2>&1; then
-    tail -60 "$report_dir/brine.log"
+# Where the time went, on every run: the log itself never leaves the task
+# container, and an hour-long gate is only tunable when its cost is
+# attributable to tiers, feature files and scenarios.
+trap 'go run ./cmd/brine-profile-run "$report_dir/brine.log" >&2 || true; go build -o .build/brine-adapter-jetbridge ./cmd/brine-adapter-jetbridge' 0
+if ! brine run --no-engine --mode sync --format jsonl > "$report_dir/brine.log" 2>&1; then
+    # The log interleaves protocol events with every fixture's diagnostics,
+    # so the last sixty lines are usually namespace chatter and say nothing
+    # about WHICH scenario failed (CI build 873481). Lead with the verdict:
+    # every scenario_end that is not a pass, the run_end, the failure count.
+    echo "brine run failed. Scenarios that did not pass:" >&2
+    grep '"type":"scenario_end"' "$report_dir/brine.log" | grep -v '"status":"passed"' >&2 || true
+    printf 'scenario_end records: %s total, %s passed\n' \
+        "$(grep -c '"type":"scenario_end"' "$report_dir/brine.log" || true)" \
+        "$(grep '"type":"scenario_end"' "$report_dir/brine.log" | grep -c '"status":"passed"' || true)" >&2
+    grep '"type":"run_end"' "$report_dir/brine.log" >&2 || true
+    # The fixtures' own diagnostics (what a step cancelled, which lock it
+    # released) are the lines just before each failing scenario_end; the
+    # tail alone never reaches them. Print the forty non-protocol lines
+    # before each failure, at most the first twenty failures.
+    grep -n '"type":"scenario_end"' "$report_dir/brine.log" | grep -v '"status":"passed"' | cut -d: -f1 | head -20 |
+    while read -r line; do
+        from=$((line - 40)); [ "$from" -ge 1 ] || from=1
+        echo "--- diagnostics before failing record at line $line:" >&2
+        sed -n "${from},${line}p" "$report_dir/brine.log" | grep -v '^{' >&2
+    done
+    echo "Last lines of $report_dir/brine.log:" >&2
+    tail -60 "$report_dir/brine.log" >&2
     exit 1
 fi
-tail -2 "$report_dir/brine.log"
+# Brine recursively discovers live/.brine; each scenario event names its
+# manifest, by the same absolute path the manifest was discovered at.
+#
+# NAME=PATH, not a bare NAME: brine-verify-run rejects a manifest with no
+# declared floor, because "at least one scenario passed" certified a run of 3
+# out of 568. Here the name and the path are the same string -- the name
+# because that is what `scenario_end.manifest` carries, the path so the floor
+# is COUNTED OUT OF each manifest's own feature files rather than restated as
+# a number in this script that would rot the next time a feature is added.
+go run ./cmd/brine-verify-run "$report_dir/brine.log" \
+    "$module_root/.brine=$module_root/.brine" \
+    "$module_root/live/.brine=$module_root/live/.brine"
 go tool covdata textfmt -i="$GOCOVERDIR" -pkg="$production_package" \
     -o="$report_dir/coverage.out"
 go tool covdata percent -i="$GOCOVERDIR" -pkg="$production_package"

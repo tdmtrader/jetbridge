@@ -49,13 +49,13 @@ const hangarInitName = "materialize-hangar-inputs"
 // output plane's own read grant is asserted where it lives -- over the
 // repository and the lease-control endpoints -- and wiring it into the pod
 // builder is Phase 8's, beside the chart values that carry the key.
-func newHangarConsumerWorker(res brine.Resources) (ClusterReady, error) {
+func newHangarConsumerWorker(res brine.Resources, rec *brine.Recorder) (WorkerReady, error) {
 	signer, err := hangar.NewGrantSigner(brineReadGrantKey, hangar.MaxGrantTTL, time.Now)
 	if err != nil {
-		return ClusterReady{}, err
+		return WorkerReady{}, err
 	}
 
-	return newConfiguredWorker(res, func(cfg *jetbridge.Config) {
+	return newWorkerReady(res, rec, "k8s-worker-consumer", "", func(cfg *jetbridge.Config) {
 		cfg.ArtifactDaemonHostPath = "/var/concourse/artifacts"
 		cfg.OutputPlaneEnabled = true
 		cfg.HangarEnabled = true
@@ -77,6 +77,7 @@ func buildConsumerPod(in ConsumerDraft) (PodCreated, error) {
 		Namespace:     in.Cluster.Namespace,
 		Worker:        in.Cluster.Worker,
 		Clientset:     in.Cluster.Clientset,
+		MountExecutor: in.Cluster.ProducerExecutor,
 		Ctx:           in.Cluster.Ctx,
 		Handle:        "consumer-" + in.StepName,
 		StepName:      in.StepName,

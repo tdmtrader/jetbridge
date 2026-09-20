@@ -3,9 +3,11 @@ package steps
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"reflect"
 	"strings"
+	"time"
 
-	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/metric"
@@ -13,46 +15,23 @@ import (
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	apiruntime "k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/kubernetes/fake"
-	k8stesting "k8s.io/client-go/testing"
+	"k8s.io/client-go/kubernetes"
 )
 
 // ---------------------------------------------------------------------------
 // container_extra.go — the remainder of container_test.go.
 //
-// Everything here is named with a Run/RunExtra prefix because this package is
-// worked on by several agents at once and a bare `DirectRun` would collide.
-//
-// Three of the migrated blocks were spy tests in the sense of
-// coverage_matrix.md Addendum 2 — they read `execCalls[0].command`,
-// `execCalls[0].podName`, `execCalls[0].tty`, or `len(execCalls)`. Those are
-// converted by giving the double real work to do (localExecutor, which
-// runs the command; localExecutor's sibling behavior for tar) and asserting
-// the round trip, or dispositioned in container-run.feature where no
-// seam-level equivalent exists.
+// Earlier spy assertions inspected executor calls. Command and stream
+// behavior now runs through real Kubernetes exec; API-only cases below inspect
+// pod assembly. See container-run.feature for the disposition of seam checks.
 // ---------------------------------------------------------------------------
-
-// RunExtraDirectRun is a step whose pod IS the step: no exec transport is
-// configured, so the kubelet runs the command itself. The recorded Command is
-// carried so the check can compare the pod against what the scenario asked
-// for rather than against a literal.
-type RunExtraDirectRun struct {
-	Namespace string
-	Clientset *fake.Clientset
-	Ctx       context.Context
-	Handle    string
-	Pod       *corev1.Pod
-	Command   []string
-	Process   runtime.Process
-}
 
 // RunExtraMounts is what FindOrCreateContainer handed back BEFORE anything was
 // scheduled: the container and one volume mount per declared path. The pod
 // does not exist yet, which is the whole point of the block it replaces.
 type RunExtraMounts struct {
 	Namespace string
-	Clientset *fake.Clientset
+	Clientset kubernetes.Interface
 	Ctx       context.Context
 	Handle    string
 	Container runtime.Container
@@ -67,36 +46,7 @@ type RunExtraMetrics struct {
 	Created float64
 	Failed  float64
 	RunErr  error
-}
-
-// RunExtraDBOutcome is what a caller of FindOrCreateContainer got when the
-// database, rather than Kubernetes, was the thing that went wrong.
-type RunExtraDBOutcome struct {
-	DB      JetbridgeDB
-	Handle  string
-	Err     error
-	Message string
-}
-
-// runExtraStaleCreatedFails is a real db.Worker with one transition broken:
-// a container found in `creating` cannot be completed. It mirrors the ginkgo
-// suite's failStaleCreatedTransition, which lives in a _test.go file and so
-// cannot be imported. Everything before the fault is a real row, so what the
-// worker leaves behind is asserted against the database.
-type runExtraStaleCreatedFails struct{ db.Worker }
-
-func (w runExtraStaleCreatedFails) FindContainer(owner db.ContainerOwner) (db.CreatingContainer, db.CreatedContainer, error) {
-	creating, created, err := w.Worker.FindContainer(owner)
-	if err != nil || creating == nil {
-		return creating, created, err
-	}
-	return runExtraCreatedFails{creating}, created, nil
-}
-
-type runExtraCreatedFails struct{ db.CreatingContainer }
-
-func (runExtraCreatedFails) Created() (db.CreatedContainer, error) {
-	return nil, fmt.Errorf("db connection lost")
+	Pods    []corev1.Pod
 }
 
 // ContainerExtraDefinitions is the single entry point for this file.
@@ -105,7 +55,8 @@ func ContainerExtraDefinitions() []brine.StepDefinition {
 	defs = append(defs, runExtraPauseDefinitions()...)
 	defs = append(defs, runExtraMountDefinitions()...)
 	defs = append(defs, runExtraMetricDefinitions()...)
-	defs = append(defs, runExtraDBDefinitions()...)
+	defs = append(defs, containerConcurrencyDefinitions()...)
+
 	return defs
 }
 
@@ -116,96 +67,60 @@ func ContainerExtraDefinitions() []brine.StepDefinition {
 func runExtraDirectDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		Transform[ContainerDraft, RunExtraDirectRun](
-			"the step runs {string} with no exec transport configured",
-			func(in ContainerDraft, a Args) (RunExtraDirectRun, error) {
-				spec, err := runExtraSpecFromDraft(in)
+		Transform[ContainerDraft, PodCreated](
+			"the step runs command {string} with arguments {string} directly",
+			func(in ContainerDraft, a Args) (PodCreated, error) {
+				spec, err := containerSpecFromDraft(in)
 				if err != nil {
-					return RunExtraDirectRun{}, err
+					return PodCreated{}, err
 				}
+
+				spec.Type = db.ContainerTypeTask
 
 				container, _, err := in.Worker.FindOrCreateContainer(
 					in.Ctx,
 					db.NewFixedHandleContainerOwner(in.Handle),
 					db.ContainerMetadata{Type: db.ContainerTypeTask},
 					spec,
-					&noopDelegate{},
+					nil,
 				)
 				if err != nil {
-					return RunExtraDirectRun{}, fmt.Errorf("find or create container %q: %w", in.Handle, err)
+					return PodCreated{}, fmt.Errorf("find or create container %q: %w", in.Handle, err)
 				}
 
-				command := []string{"/bin/sh", "-c", a.String(0)}
+				// Snapshot the creation counter around this same direct Run.
+				metric.Metrics.ContainersCreated.Delta()
 				process, err := container.Run(in.Ctx, runtime.ProcessSpec{
-					Path: command[0],
-					Args: command[1:],
+					Path: a.String(0),
+					Args: splitList(a.String(1)),
 					Dir:  in.Dir,
 				}, runtime.ProcessIO{})
 				if err != nil {
-					return RunExtraDirectRun{}, fmt.Errorf("run container %q: %w", in.Handle, err)
+					return PodCreated{}, fmt.Errorf("run container %q: %w", in.Handle, err)
 				}
 
+				if _, direct := process.(*jetbridge.Process); !direct {
+					return PodCreated{}, fmt.Errorf("expected direct process, got %T", process)
+				}
+				if created := metric.Metrics.ContainersCreated.Delta(); created < 1 {
+					return PodCreated{}, fmt.Errorf("direct Run did not count its created container: %v", created)
+				}
 				pod, err := runExtraTheOnlyPod(in.Ctx, in.Clientset, in.Namespace)
 				if err != nil {
-					return RunExtraDirectRun{}, err
+					return PodCreated{}, err
 				}
 
-				return RunExtraDirectRun{
-					Namespace: in.Namespace, Clientset: in.Clientset, Ctx: in.Ctx,
-					Handle: in.Handle, Pod: pod, Command: command, Process: process,
+				return PodCreated{
+					Namespace: in.Namespace, Ctx: in.Ctx,
+					Handle: in.Handle, Pod: pod, Process: process,
 				}, nil
 			},
 		),
 
-		// PE-02. With no exec transport there is nowhere to exec FROM, so the
-		// pod has to carry the command. A pause pod here would leave the step
-		// running `sleep` forever and nothing would ever execute the command.
-		CheckThat[RunExtraDirectRun]("the pod itself carries the step's command",
-			func(in RunExtraDirectRun) error {
-				main, err := mainContainer(in.Pod)
-				if err != nil {
-					return err
-				}
-				got := append(append([]string{}, main.Command...), main.Args...)
-				if strings.Join(got, "\x00") != strings.Join(in.Command, "\x00") {
-					return fmt.Errorf(
-						"expected the pod to run %v itself, it runs %v — the step's command is not what the kubelet will execute",
-						in.Command, got)
-				}
-				return nil
-			}),
-
-		CheckString[RunExtraDirectRun]("that pod works in {string}",
-			"the step's working directory",
-			func(in RunExtraDirectRun) (string, error) {
-				main, err := mainContainer(in.Pod)
-				return main.WorkingDir, err
-			}),
-
-		// The pod-level half of PE-04, which the matrix records as having no
-		// named test. A step that runs without a seccomp profile can issue
-		// syscalls the runtime default blocks — on a shared build cluster that
-		// is the difference between a sandbox and a foothold.
-		CheckThat[RunExtraDirectRun]("the step is confined by the runtime's default seccomp profile",
-			func(in RunExtraDirectRun) error {
-				sc := in.Pod.Spec.SecurityContext
-				if sc == nil {
-					return fmt.Errorf("expected the pod to carry a security context, it has none")
-				}
-				if sc.SeccompProfile == nil {
-					return fmt.Errorf("expected the pod to name a seccomp profile, it names none")
-				}
-				if sc.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
-					return fmt.Errorf("expected the seccomp profile %q, got %q",
-						corev1.SeccompProfileTypeRuntimeDefault, sc.SeccompProfile.Type)
-				}
-				return nil
-			}),
-
 		// The process ID is what a restarted web passes back to Attach. An
 		// empty one cannot be re-attached to, so the step would be re-run.
-		CheckThat[RunExtraDirectRun]("the step has an identity a restarted web could attach to",
-			func(in RunExtraDirectRun) error {
+		CheckThat[PodCreated]("the step has an identity a restarted web could attach to",
+			func(in PodCreated) error {
 				if in.Process == nil {
 					return fmt.Errorf("expected a process, got none")
 				}
@@ -250,19 +165,22 @@ func runExtraDirectDefinitions() []brine.StepDefinition {
 func runExtraPauseDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		// The observable difference between the two modes. The ginkgo test
-		// pinned the exact pause string; what matters to a consumer is that
-		// the pod is NOT the step, so the pod outlives the command.
+		// Preserve the literal pause argv as well as separation from the task.
+		// Equivalent-looking entrypoints must not silently weaken this contract.
 		CheckThat[TaskOutcome]("the pod is a placeholder, not the step's command",
 			func(in TaskOutcome) error {
 				pod, err := in.Cluster.Clientset.CoreV1().Pods(in.Cluster.Namespace).
-					Get(in.Cluster.Ctx, in.Handle, metav1.GetOptions{})
+					Get(in.Cluster.Ctx, in.podName(), metav1.GetOptions{})
 				if err != nil {
-					return fmt.Errorf("get pod %q: %w", in.Handle, err)
+					return fmt.Errorf("get pod %q: %w", in.podName(), err)
 				}
 				main, err := mainContainer(pod)
 				if err != nil {
 					return err
+				}
+				want := []string{"sh", "-c", "trap 'exit 0' TERM; sleep 86400 & wait"}
+				if !reflect.DeepEqual(main.Command, want) || len(main.Args) != 0 {
+					return fmt.Errorf("pause argv: command=%q args=%q, want command=%q and no args", main.Command, main.Args, want)
 				}
 				all := strings.Join(append(append([]string{}, main.Command...), main.Args...), " ")
 				if all == "" {
@@ -288,14 +206,14 @@ func runExtraPauseDefinitions() []brine.StepDefinition {
 					return fmt.Errorf("list pods: %w", err)
 				}
 				for _, pod := range pods.Items {
-					if pod.Name == in.Handle {
+					if pod.Name == in.podName() {
 						return nil
 					}
 				}
 				return fmt.Errorf(
 					"expected the pod %q to still be on the cluster after the step finished, it is gone — "+
 						"its outputs can no longer be streamed out and it cannot be intercepted",
-					in.Handle)
+					in.podName())
 			}),
 
 		// fly hijack: the intercepted command's exit code is what the operator
@@ -328,9 +246,13 @@ func runExtraMountDefinitions() []brine.StepDefinition {
 				// An exec transport is what makes the handed-back volumes
 				// capable of I/O at all; without one the worker hands back
 				// stubs (covered separately in volume-streaming.feature).
-				in.Worker.SetExecutor(localExecutor{})
+				executor := in.MountExecutor
+				if executor == nil {
+					return RunExtraMounts{}, fmt.Errorf("draft has no production execution transport")
+				}
+				in.Worker.SetExecutor(executor)
 
-				spec, err := runExtraSpecFromDraft(in)
+				spec, err := containerSpecFromDraft(in)
 				if err != nil {
 					return RunExtraMounts{}, err
 				}
@@ -340,7 +262,7 @@ func runExtraMountDefinitions() []brine.StepDefinition {
 					db.NewFixedHandleContainerOwner(in.Handle),
 					db.ContainerMetadata{Type: db.ContainerTypeTask},
 					spec,
-					&noopDelegate{},
+					nil,
 				)
 				if err != nil {
 					return RunExtraMounts{}, fmt.Errorf("find or create container %q: %w", in.Handle, err)
@@ -366,81 +288,53 @@ func runExtraMountDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// CO-04/CO-05: the caller is a build step, and these mounts are how it
-		// finds its own inputs, outputs and caches. A missing one means the
-		// step's artifact never gets registered. Keeps its own body: it asserts
-		// two things — that a mount at that path was handed over AND that the
-		// mount carries a volume — and CheckMember, which is membership and
-		// nothing else, cannot say the second.
-		Assert[RunExtraMounts](
-			"the caller is handed a volume mounted at {string}",
-			func(in RunExtraMounts, args Args) error {
-				want := args.String(0)
-
-				var seen []string
-				for _, m := range in.Mounts {
-					if m.MountPath == want {
-						if m.Volume == nil {
-							return fmt.Errorf("the mount at %q carries no volume", want)
-						}
-						return nil
-					}
-					seen = append(seen, m.MountPath)
+		// One table states the complete pre-Run contract, not just membership.
+		brine.DefineCheck[RunExtraMounts]("the caller is handed these deferred volumes",
+			func(in RunExtraMounts, p brine.Params, _ *brine.Recorder) error {
+				rows := p.RequireDataTable()
+				if len(rows) < 2 || len(rows[0]) != 1 || rows[0][0] != "mount path" {
+					return fmt.Errorf("expected a nonempty table headed 'mount path'")
 				}
-				return fmt.Errorf("expected a volume mounted at %q, the caller was handed [%s]",
-					want, strings.Join(seen, ", "))
-			},
-		),
-
-		// A wrong count is only actionable alongside the list of paths that were
-		// handed over, which says WHICH mount is missing or extra.
-		CheckCount[RunExtraMounts]("the caller is handed {int} volumes in all",
-			"volumes",
-			func(in RunExtraMounts) ([]string, error) {
-				paths := make([]string, 0, len(in.Mounts))
-				for _, m := range in.Mounts {
-					paths = append(paths, m.MountPath)
+				expected := map[string]bool{}
+				for _, row := range rows[1:] {
+					if len(row) != 1 || !filepath.IsAbs(row[0]) || expected[row[0]] {
+						return fmt.Errorf("expected distinct absolute mount paths, got %v", row)
+					}
+					expected[row[0]] = true
 				}
-				return paths, nil
-			}),
-
-		// Two mounts sharing a handle would make the artifact registry point
-		// two paths at one blob — the CO-05 failure, one step's outputs
-		// overwriting another's.
-		CheckThat[RunExtraMounts]("every volume the caller was handed has its own handle",
-			func(in RunExtraMounts) error {
-				seen := map[string]string{}
-				for _, m := range in.Mounts {
-					if m.Volume == nil {
-						return fmt.Errorf("the mount at %q carries no volume", m.MountPath)
-					}
-					handle := m.Volume.Handle()
-					if handle == "" {
-						return fmt.Errorf("the volume mounted at %q has an empty handle, "+
-							"so nothing downstream can refer to it", m.MountPath)
-					}
-					if other, dup := seen[handle]; dup {
-						return fmt.Errorf("the volumes at %q and %q share the handle %q",
-							other, m.MountPath, handle)
-					}
-					seen[handle] = m.MountPath
+				if in.Ran {
+					return fmt.Errorf("expected deferred volumes before Run")
 				}
-				return nil
-			}),
-
-		// The deferral itself: the pod name is not known until Run, because
-		// the command is not known until Run.
-		CheckThat[RunExtraMounts]("no volume the caller was handed knows a pod yet",
-			func(in RunExtraMounts) error {
-				for _, m := range in.Mounts {
-					vol, ok := m.Volume.(*jetbridge.Volume)
-					if !ok {
-						return fmt.Errorf("the volume at %q is %T, not a jetbridge volume", m.MountPath, m.Volume)
+				if len(in.Mounts) != len(expected) {
+					return fmt.Errorf("expected %d returned mounts, got %d", len(expected), len(in.Mounts))
+				}
+				handles := map[string]string{}
+				for _, mount := range in.Mounts {
+					if !expected[mount.MountPath] {
+						return fmt.Errorf("unexpected or repeated returned mount %q", mount.MountPath)
+					}
+					vol, ok := mount.Volume.(*jetbridge.Volume)
+					if !ok || vol == nil {
+						return fmt.Errorf("mount %q must carry a non-nil *jetbridge.Volume, got %T", mount.MountPath, mount.Volume)
+					}
+					if !vol.HasExecutor() {
+						return fmt.Errorf("volume at %q has no executor before Run", mount.MountPath)
 					}
 					if vol.PodName() != "" {
-						return fmt.Errorf("the volume at %q already names the pod %q before the step ran",
-							m.MountPath, vol.PodName())
+						return fmt.Errorf("volume at %q already names pod %q before Run", mount.MountPath, vol.PodName())
 					}
+					handle := vol.Handle()
+					if handle == "" {
+						return fmt.Errorf("volume at %q has an empty handle", mount.MountPath)
+					}
+					if other, exists := handles[handle]; exists {
+						return fmt.Errorf("volumes at %q and %q share handle %q", other, mount.MountPath, handle)
+					}
+					handles[handle] = mount.MountPath
+					delete(expected, mount.MountPath)
+				}
+				if len(expected) != 0 {
+					return fmt.Errorf("missing returned mounts: %v", expected)
 				}
 				return nil
 			}),
@@ -480,29 +374,47 @@ func runExtraMountDefinitions() []brine.StepDefinition {
 func runExtraMetricDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		brine.DefineMap[ClusterReady, RunExtraMetrics](
-			"a step is run on it",
-			func(in ClusterReady, _ brine.Params, _ *brine.Recorder) (RunExtraMetrics, error) {
-				return runExtraCountedRun(in, "metric-direct-handle")
-			},
-		),
-
-		brine.DefineMap[ClusterReady, RunExtraMetrics](
-			"a step is run on it through an exec transport",
-			func(in ClusterReady, _ brine.Params, _ *brine.Recorder) (RunExtraMetrics, error) {
-				in.Worker.SetExecutor(localExecutor{})
-				return runExtraCountedRun(in, "metric-exec-handle")
-			},
-		),
-
-		brine.DefineMap[ClusterReady, RunExtraMetrics](
-			"a step is run on it but the cluster refuses to create the pod",
-			func(in ClusterReady, _ brine.Params, _ *brine.Recorder) (RunExtraMetrics, error) {
-				in.Clientset.PrependReactor("create", "pods",
-					func(k8stesting.Action) (bool, apiruntime.Object, error) {
-						return true, nil, fmt.Errorf("simulated pod creation failure")
-					})
-				return runExtraCountedRun(in, "metric-fail-handle")
+		brine.DefineMap[WorkerReady, RunExtraMetrics](
+			"a step's pod creation is {string} using {string} mode",
+			func(in WorkerReady, p brine.Params, _ *brine.Recorder) (RunExtraMetrics, error) {
+				outcome, okOutcome := p.GetString(0)
+				mode, okMode := p.GetString(1)
+				if !okOutcome || !okMode || (outcome != "accepted" && outcome != "refused") {
+					return RunExtraMetrics{}, fmt.Errorf("expected an accepted/refused outcome and direct/exec mode")
+				}
+				switch mode {
+				case "direct":
+					in.Worker.SetExecutor(nil)
+				case "exec":
+					if in.ProducerExecutor == nil {
+						return RunExtraMetrics{}, fmt.Errorf("worker has no production execution transport")
+					}
+					in.Worker.SetExecutor(in.ProducerExecutor)
+				default:
+					return RunExtraMetrics{}, fmt.Errorf("unknown pod creation mode %q", mode)
+				}
+				ctx, cancel := context.WithTimeout(in.Ctx, 10*time.Second)
+				defer cancel()
+				in.Ctx = ctx
+				if outcome == "refused" {
+					// NamespaceLifecycle admission, not a reactor, refuses new
+					// pods after this scenario's namespace starts terminating.
+					namespaces := in.Clientset.CoreV1().Namespaces()
+					ns, err := namespaces.Get(ctx, in.Namespace, metav1.GetOptions{})
+					if err != nil {
+						return RunExtraMetrics{}, err
+					}
+					if err := namespaces.Delete(ctx, ns.Name, metav1.DeleteOptions{
+						Preconditions: &metav1.Preconditions{UID: &ns.UID},
+					}); err != nil {
+						return RunExtraMetrics{}, err
+					}
+					ns, err = namespaces.Get(ctx, ns.Name, metav1.GetOptions{})
+					if err != nil || ns.DeletionTimestamp == nil {
+						return RunExtraMetrics{}, fmt.Errorf("namespace must be terminating before refusal: %v", err)
+					}
+				}
+				return runExtraCountedRun(in, "metric-"+mode+"-handle")
 			},
 		),
 
@@ -522,6 +434,14 @@ func runExtraMetricDefinitions() []brine.StepDefinition {
 						"expected the operator to see %d created and %d failed, they see %.0f created and %.0f failed (run error: %v)",
 						created, failed, in.Created, in.Failed, in.RunErr)
 				}
+				if (failed > 0) != (in.RunErr != nil) || len(in.Pods) != created {
+					return fmt.Errorf("counts do not describe the API outcome: %d pods, run error %v", len(in.Pods), in.RunErr)
+				}
+				for _, pod := range in.Pods {
+					if pod.UID == "" {
+						return fmt.Errorf("created pod %q has no API-assigned identity", pod.Name)
+					}
+				}
 				return nil
 			},
 		),
@@ -530,17 +450,17 @@ func runExtraMetricDefinitions() []brine.StepDefinition {
 
 // runExtraCountedRun drains both counters, performs one Run, and reads them
 // back — all inside one step, so the pair describes that Run and nothing else.
-func runExtraCountedRun(in ClusterReady, handle string) (RunExtraMetrics, error) {
+func runExtraCountedRun(in WorkerReady, handle string) (RunExtraMetrics, error) {
 	container, _, err := in.Worker.FindOrCreateContainer(
 		in.Ctx,
 		db.NewFixedHandleContainerOwner(handle),
 		db.ContainerMetadata{Type: db.ContainerTypeTask},
 		runtime.ContainerSpec{
-			TeamID:    1,
+			TeamID:    in.TeamID,
 			Dir:       "/workdir",
 			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 		},
-		&noopDelegate{},
+		nil,
 	)
 	if err != nil {
 		return RunExtraMetrics{}, fmt.Errorf("find or create container %q: %w", handle, err)
@@ -554,7 +474,12 @@ func runExtraCountedRun(in ClusterReady, handle string) (RunExtraMetrics, error)
 		Args: []string{"-c", "echo hello"},
 	}, runtime.ProcessIO{})
 
+	pods, err := in.Clientset.CoreV1().Pods(in.Namespace).List(in.Ctx, metav1.ListOptions{})
+	if err != nil {
+		return RunExtraMetrics{}, fmt.Errorf("observe actual pod creation: %w", err)
+	}
 	return RunExtraMetrics{
+		Pods:    pods.Items,
 		Created: metric.Metrics.ContainersCreated.Delta(),
 		Failed:  metric.Metrics.FailedContainers.Delta(),
 		RunErr:  runErr,
@@ -562,247 +487,10 @@ func runExtraCountedRun(in ClusterReady, handle string) (RunExtraMetrics, error)
 }
 
 // ---------------------------------------------------------------------------
-// When the database, not Kubernetes, is what went wrong
-// ---------------------------------------------------------------------------
-
-func runExtraDBDefinitions() []brine.StepDefinition {
-	return []brine.StepDefinition{
-
-		// The lookup is the FIRST thing FindOrCreateContainer does, so a lost
-		// connection has to surface as a lookup failure and not as a second
-		// row for a container that already exists.
-		brine.DefineMapUsing[brine.Empty, RunExtraDBOutcome](
-			"a worker that lost its database connection before the container was requested",
-			[]string{"jetbridge-db"},
-			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder, res brine.Resources) (RunExtraDBOutcome, error) {
-				database, ok := res.Get("jetbridge-db").(JetbridgeDB)
-				if !ok {
-					return RunExtraDBOutcome{}, fmt.Errorf("jetbridge-db resource is %T", res.Get("jetbridge-db"))
-				}
-				if _, err := database.PersistNamedWorker("k8s-worker-1"); err != nil {
-					return RunExtraDBOutcome{}, err
-				}
-
-				// Load the worker over its own connection and then close it,
-				// so every statement it issues fails the way a lost connection
-				// does. Mirrors the ginkgo suite's closedConnWorker.
-				conn := database.runner.OpenConn()
-				logger := lagertest.NewTestLogger("brine-closed-conn")
-				factory := db.NewWorkerFactory(conn, db.NewStaticWorkerCache(logger, conn, 0))
-				lost, found, err := factory.GetWorker("k8s-worker-1")
-				if err != nil {
-					return RunExtraDBOutcome{}, fmt.Errorf("get worker over the second connection: %w", err)
-				}
-				if !found {
-					return RunExtraDBOutcome{}, fmt.Errorf("worker k8s-worker-1 not found over the second connection")
-				}
-				if err := conn.Close(); err != nil {
-					return RunExtraDBOutcome{}, fmt.Errorf("close the second connection: %w", err)
-				}
-
-				return runExtraRequest(database, lost, "db-fail-handle"), nil
-			},
-		),
-
-		// Handles are globally unique. One already taken on another worker
-		// misses this worker's lookup and then collides on insert; reporting
-		// that as anything other than a create failure would have the step
-		// scheduled against a container row it does not own.
-		TransformUsing[brine.Empty, RunExtraDBOutcome](
-			"a container {string} whose handle another worker already holds",
-			[]string{"jetbridge-db"},
-			func(_ brine.Empty, a Args, res brine.Resources) (RunExtraDBOutcome, error) {
-				handle := a.String(0)
-
-				database, ok := res.Get("jetbridge-db").(JetbridgeDB)
-				if !ok {
-					return RunExtraDBOutcome{}, fmt.Errorf("jetbridge-db resource is %T", res.Get("jetbridge-db"))
-				}
-				mine, err := database.PersistNamedWorker("k8s-worker-1")
-				if err != nil {
-					return RunExtraDBOutcome{}, err
-				}
-				theirs, err := database.PersistNamedWorker("k8s-worker-2")
-				if err != nil {
-					return RunExtraDBOutcome{}, err
-				}
-				if _, err := theirs.CreateContainer(
-					db.NewFixedHandleContainerOwner(handle),
-					db.ContainerMetadata{Type: db.ContainerTypeTask},
-				); err != nil {
-					return RunExtraDBOutcome{}, fmt.Errorf("create the other worker's container: %w", err)
-				}
-				return runExtraRequest(database, mine, handle), nil
-			},
-		),
-
-		// A row left in `creating` by a crashed web is invisible to the
-		// collector. The next request must adopt it — a second row would
-		// orphan the first one's pod.
-		TransformUsing[brine.Empty, RunExtraDBOutcome](
-			"a container {string} left half-created by a crash, requested again",
-			[]string{"jetbridge-db"},
-			func(_ brine.Empty, a Args, res brine.Resources) (RunExtraDBOutcome, error) {
-				handle := a.String(0)
-
-				database, dbWorker, err := runExtraStaleContainer(res, handle)
-				if err != nil {
-					return RunExtraDBOutcome{}, err
-				}
-				return runExtraRequest(database, dbWorker, handle), nil
-			},
-		),
-
-		TransformUsing[brine.Empty, RunExtraDBOutcome](
-			"a container {string} left half-created by a crash on a database that still cannot complete it",
-			[]string{"jetbridge-db"},
-			func(_ brine.Empty, a Args, res brine.Resources) (RunExtraDBOutcome, error) {
-				handle := a.String(0)
-
-				database, dbWorker, err := runExtraStaleContainer(res, handle)
-				if err != nil {
-					return RunExtraDBOutcome{}, err
-				}
-				return runExtraRequest(database, runExtraStaleCreatedFails{dbWorker}, handle), nil
-			},
-		),
-
-		// The sentence presumes the request failed; a request that succeeded has
-		// no message to match, so that is the getter's error.
-		CheckContains[RunExtraDBOutcome]("requesting the container fails saying {string}",
-			"the failure",
-			func(in RunExtraDBOutcome) (string, error) {
-				if in.Err == nil {
-					return "", fmt.Errorf("expected the request to fail, it succeeded")
-				}
-				return in.Message, nil
-			}),
-
-		CheckThat[RunExtraDBOutcome]("requesting the container succeeds",
-			func(in RunExtraDBOutcome) error {
-				if in.Err != nil {
-					return fmt.Errorf("expected the request to succeed, it failed: %v", in.Err)
-				}
-				return nil
-			}),
-
-		CheckStringFor[RunExtraDBOutcome]("the container row {string} is left in state {string}",
-			"the container's state",
-			func(in RunExtraDBOutcome, handle string) (string, error) {
-				var state string
-				if err := in.DB.Conn.QueryRow(
-					`SELECT state FROM containers WHERE handle = $1`, handle,
-				).Scan(&state); err != nil {
-					return "", fmt.Errorf("read the state of container %q: %w", handle, err)
-				}
-				return state, nil
-			}),
-
-		// Keeps its own body: this sentence names its expectation FIRST and the
-		// handle second, so the count is parameter 0 and the key is parameter
-		// 1 — the reverse of what the "For" combinators route.
-		Assert[RunExtraDBOutcome](
-			"the database holds exactly {int} row for the handle {string}",
-			func(in RunExtraDBOutcome, args Args) error {
-				want := args.Int(0)
-				handle := args.String(1)
-
-				var count int
-				if err := in.DB.Conn.QueryRow(
-					`SELECT count(*) FROM containers WHERE handle = $1`, handle,
-				).Scan(&count); err != nil {
-					return fmt.Errorf("count rows for handle %q: %w", handle, err)
-				}
-				if count != want {
-					return fmt.Errorf("expected %d row(s) for the handle %q, the database holds %d",
-						want, handle, count)
-				}
-				return nil
-			},
-		),
-	}
-}
-
-// runExtraStaleContainer leaves a real row in `creating`, the way a web that
-// died between the insert and the transition would.
-func runExtraStaleContainer(res brine.Resources, handle string) (JetbridgeDB, db.Worker, error) {
-	database, ok := res.Get("jetbridge-db").(JetbridgeDB)
-	if !ok {
-		return JetbridgeDB{}, nil, fmt.Errorf("jetbridge-db resource is %T", res.Get("jetbridge-db"))
-	}
-	dbWorker, err := database.PersistNamedWorker("k8s-worker-1")
-	if err != nil {
-		return JetbridgeDB{}, nil, err
-	}
-	if _, err := dbWorker.CreateContainer(
-		db.NewFixedHandleContainerOwner(handle),
-		db.ContainerMetadata{Type: db.ContainerTypeTask},
-	); err != nil {
-		return JetbridgeDB{}, nil, fmt.Errorf("leave a creating container behind: %w", err)
-	}
-	return database, dbWorker, nil
-}
-
-func runExtraRequest(database JetbridgeDB, dbWorker db.Worker, handle string) RunExtraDBOutcome {
-	worker := jetbridge.NewWorker(dbWorker, fake.NewSimpleClientset(), jetbridge.NewConfig("test-namespace", ""))
-	_, _, err := worker.FindOrCreateContainer(
-		context.Background(),
-		db.NewFixedHandleContainerOwner(handle),
-		db.ContainerMetadata{Type: db.ContainerTypeTask},
-		runtime.ContainerSpec{
-			TeamID:    1,
-			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-		},
-		&noopDelegate{},
-	)
-	out := RunExtraDBOutcome{DB: database, Handle: handle, Err: err}
-	if err != nil {
-		out.Message = err.Error()
-	}
-	return out
-}
-
-// ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-// runExtraSpecFromDraft mirrors the spec container_spec.go's "the container
-// runs" builds, so a draft refined by the shared Given steps means the same
-// thing on this path.
-func runExtraSpecFromDraft(in ContainerDraft) (runtime.ContainerSpec, error) {
-	inputs, err := draftInputs(in)
-	if err != nil {
-		return runtime.ContainerSpec{}, err
-	}
-	outputs := runtime.OutputPaths{}
-	for i, path := range in.Outputs {
-		outputs[fmt.Sprintf("output-%d", i)] = path
-	}
-
-	spec := runtime.ContainerSpec{
-		TeamID:            1,
-		Dir:               in.Dir,
-		ImageSpec:         runtime.ImageSpec{ImageURL: in.ImageURL, Privileged: in.Privileged},
-		Env:               in.ContainerEnv,
-		Inputs:            inputs,
-		Caches:            in.Caches,
-		TaskCacheIdentity: in.taskCacheIdentity(),
-		ScratchPaths:      in.Scratch,
-		Sidecars:          in.Sidecars,
-		Limits: runtime.ContainerLimits{
-			CPU:           in.LimitCPU,
-			Memory:        in.LimitMemory,
-			CPURequest:    in.RequestCPU,
-			MemoryRequest: in.RequestMemory,
-		},
-	}
-	if len(outputs) > 0 {
-		spec.Outputs = outputs
-	}
-	return spec, nil
-}
-
-func runExtraTheOnlyPod(ctx context.Context, clientset *fake.Clientset, namespace string) (*corev1.Pod, error) {
+func runExtraTheOnlyPod(ctx context.Context, clientset kubernetes.Interface, namespace string) (*corev1.Pod, error) {
 	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("list pods: %w", err)

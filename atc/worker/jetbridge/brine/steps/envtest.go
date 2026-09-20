@@ -8,34 +8,24 @@ import (
 
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
 
-// A REAL Kubernetes API server, for scenarios whose subject is the API's own
-// behaviour rather than the runtime's.
+// A suite-owned kube-apiserver and etcd, run as local binaries. Persistence,
+// validation, selectors, resource versions and watches are Kubernetes's own
+// implementations; fixtures must not reimplement them in a fake client.
 //
-// The rest of this package drives client-go's fake.NewSimpleClientset, and for
-// most scenarios that is fine: they set pod status by hand and assert what the
-// runtime did with it, so the API is a store, not a participant.
-//
-// It is NOT fine when the API's own semantics are the thing under test. The
-// fake does not honour FIELD SELECTORS, which is the entire content of PW-03 —
-// "a step is never told about somebody else's pod". Covering that against the
-// fake required WatchBus: a hand-written reimplementation of API-server
-// selector filtering, buffering pre-connect events and applying the runtime's
-// own selector at delivery. That is a double written to compensate for a
-// weaker double, and it can only ever be as correct as my model of the API.
-//
-// envtest runs the real kube-apiserver and etcd as local binaries — no
-// containers, so it fits this tier rather than the 23-minute K3s one. There is
-// no kubelet and no scheduler, so pods never actually run; scenarios still
-// drive status by hand exactly as they do today. What changes is that watch,
-// field selectors, resourceVersion and validation are the real
-// implementations.
+// There is no kubelet or scheduler. Creating a pod proves API behavior, not
+// container execution. Local watch cases observe metadata, deletion and
+// cancellation; lifecycle transitions run against the live kubelet. Registrar
+// and reaper scenarios need only the real objects and metadata.
 
 type realCluster struct {
-	env       *envtest.Environment
-	Clientset kubernetes.Interface
+	lazy       *lazyResource[*realCluster]
+	env        *envtest.Environment
+	Clientset  kubernetes.Interface
+	RESTConfig *rest.Config
 }
 
 // envtestAssets locates the kube-apiserver/etcd binaries setup-envtest placed.
@@ -61,34 +51,70 @@ func RealClusterResourceDefinition() brine.ResourceDefinition {
 		Name:  "real-cluster",
 		Scope: brine.ScopeSuite,
 		Factory: func(map[string]any) (any, error) {
-			assets := envtestAssets()
-			if assets == "" {
-				return nil, fmt.Errorf(
-					"no envtest assets: run `setup-envtest use --bin-dir ~/.envtest` " +
-						"or set KUBEBUILDER_ASSETS")
-			}
-			env := &envtest.Environment{
-				BinaryAssetsDirectory:    assets,
-				ControlPlaneStartTimeout: 60 * time.Second,
-				ControlPlaneStopTimeout:  30 * time.Second,
-			}
-			cfg, err := env.Start()
-			if err != nil {
-				return nil, fmt.Errorf("start real control plane: %w", err)
-			}
-			clientset, err := kubernetes.NewForConfig(cfg)
-			if err != nil {
-				_ = env.Stop()
-				return nil, fmt.Errorf("build clientset for real control plane: %w", err)
-			}
-			return &realCluster{env: env, Clientset: clientset}, nil
+			return &realCluster{lazy: &lazyResource[*realCluster]{start: startRealCluster}}, nil
 		},
 		Disposer: func(value any) error {
 			rc, ok := value.(*realCluster)
 			if !ok {
 				return fmt.Errorf("real-cluster disposer got %T", value)
 			}
-			return rc.env.Stop()
+			return rc.close()
 		},
 	}
+}
+
+func startRealCluster() (*realCluster, error) {
+	assets := envtestAssets()
+	if assets == "" {
+		return nil, fmt.Errorf(
+			"no envtest assets: run `setup-envtest use --bin-dir ~/.envtest` " +
+				"or set KUBEBUILDER_ASSETS")
+	}
+	env := &envtest.Environment{
+		BinaryAssetsDirectory:    assets,
+		ControlPlaneStartTimeout: 60 * time.Second,
+		ControlPlaneStopTimeout:  30 * time.Second,
+	}
+	// The isolated peer topology intentionally has no default route.
+	// Its launcher supplies an address actually owned by that namespace.
+	if address := os.Getenv("BRINE_PEER_ADDRESS_1"); address != "" {
+		env.ControlPlane.GetAPIServer().Configure().Set("advertise-address", address)
+	}
+	cfg, err := env.Start()
+	if err != nil {
+		return nil, fmt.Errorf("start real control plane: %w", err)
+	}
+	clientset, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		_ = env.Stop()
+		return nil, fmt.Errorf("build clientset for real control plane: %w", err)
+	}
+	return &realCluster{env: env, Clientset: clientset, RESTConfig: cfg}, nil
+}
+
+// getRealCluster is the first-use boundary. Callers retain their concrete
+// *realCluster and existing field accesses; merely acquiring the suite resource
+// (including in the live tier) does not launch a local control plane.
+func getRealCluster(resources brine.Resources) (*realCluster, error) {
+	cluster, ok := resources.Get("real-cluster").(*realCluster)
+	if !ok {
+		return nil, fmt.Errorf("real-cluster resource is %T", resources.Get("real-cluster"))
+	}
+	if cluster.lazy != nil {
+		return cluster.lazy.get()
+	}
+	return cluster, nil
+}
+
+func (r *realCluster) close() error {
+	if r.lazy != nil {
+		return r.lazy.close(func(ready *realCluster) error { return ready.close() })
+	}
+	return r.env.Stop()
+}
+
+// StartRealCluster warms the lazy resource before any local step deadline opens.
+func StartRealCluster(resources brine.Resources) error {
+	_, err := getRealCluster(resources)
+	return err
 }

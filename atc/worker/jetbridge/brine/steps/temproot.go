@@ -54,13 +54,54 @@ var adapterDaemonRoot = func() string {
 	return root
 }()
 
-// daemonTempDir makes a directory for one purpose UNDER this process's root.
+// AttributedTempDir makes a directory for one purpose UNDER this process's
+// root, and is the ONLY way a fixture in this package is allowed to ask for
+// scratch space on disk.
 //
-// Every caller in realdaemon.go goes through it, and the source guard in
-// temproot_test.go is what keeps that true: a single `os.MkdirTemp("", ...)`
-// added back is a directory nothing can attribute and nothing will remove.
+// "Attributed" is the whole point of the name: because the directory is inside
+// a root whose name carries this process's pid, a human looking at a full
+// /tmp can say which adapter run left it, and the sweep above can say whether
+// the owner is still running. A directory made with os.MkdirTemp("", ...) can
+// answer neither question, which is how 571 of them reached 42 GB.
+//
+// Every non-test caller in this package goes through it -- not only the daemon
+// fixtures -- and the source guard in temproot_test.go is what keeps that true:
+// it reads every non-test file in the package and fails on a single
+// `os.MkdirTemp("", ...)` or `os.CreateTemp("", ...)` added back.
+//
+// The prefix is normalised rather than trusted, because the twenty call sites
+// this replaced spelled theirs five different ways ("brine-task",
+// "brine-hangar-tls-*", "brine-daemon-mtls-"): a trailing "-" or "-*" is the
+// caller saying "and then something unique", which os.MkdirTemp already does.
+func AttributedTempDir(prefix string) (string, error) {
+	return os.MkdirTemp(adapterDaemonRoot, temperedPrefix(prefix)+"-*")
+}
+
+// AttributedTempFile is AttributedTempDir for a single file, for the one
+// fixture that wants a path to stream an archive into rather than a directory.
+//
+// The pattern keeps os.CreateTemp's meaning: a "*" in it is where the random
+// part goes, so a caller that needs a suffix ("...-*.gz") keeps it.
+func AttributedTempFile(pattern string) (*os.File, error) {
+	if !strings.Contains(pattern, "*") {
+		pattern = temperedPrefix(pattern) + "-*"
+	}
+
+	return os.CreateTemp(adapterDaemonRoot, pattern)
+}
+
+// temperedPrefix strips the "unique part goes here" punctuation a caller may
+// have written, so the composed name has exactly one of it.
+func temperedPrefix(prefix string) string {
+	return strings.TrimRight(prefix, "-*")
+}
+
+// daemonTempDir makes a directory for one purpose under this process's root.
+//
+// It is AttributedTempDir under the name the daemon fixtures in realdaemon.go
+// already called it by.
 func daemonTempDir(purpose string) (string, error) {
-	return os.MkdirTemp(adapterDaemonRoot, purpose+"-*")
+	return AttributedTempDir(purpose)
 }
 
 // SweepAdapterDaemonRoots removes this process's daemon root and reports, as

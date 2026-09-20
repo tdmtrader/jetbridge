@@ -4,79 +4,52 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/retry"
 )
 
-// PW-03 against a REAL kube-apiserver.
-//
-// The fake-clientset version of this needed WatchBus — a hand-written
-// reimplementation of API-server field-selector filtering, with buffering for
-// events that arrive before the runtime establishes its lazy watch. About a
-// hundred lines whose correctness rests on my model of the API.
-//
-// Here there is no double at all. The runtime asks for
-// metadata.name=<pod> and the real API server enforces it, so a neighbour's
-// event is filtered by the thing that filters it in production.
+// PW-03 uses real kubelet transitions in an owned live namespace.
+// Other watch fixtures below still use an owned API-only control plane.
 
-// RealWatch is a real cluster with two pods in it.
+// RealWatch owns a watch route to the real API and its scenario's pod(s).
 type RealWatch struct {
-	Clientset kubernetes.Interface
-	Namespace string
-	Name      string
-	Ctx       context.Context
-	Watcher   *jetbridge.PodWatcher
-	Observed  *corev1.Pod
-	Err       error
+	Clientset    kubernetes.Interface
+	Namespace    string
+	Name         string
+	Ctx          context.Context
+	Watcher      *jetbridge.PodWatcher
+	Observed     *corev1.Pod
+	Err          error
+	route        net.Listener
+	target       string
+	config       *rest.Config
+	directConfig *rest.Config
+	access       *podAccess
 }
 
 func PodWatchRealDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		brine.DefineMapUsing[brine.Empty, RealWatch](
-			"a real cluster running pods {string} and {string}",
-			[]string{"real-cluster"},
-			func(_ brine.Empty, p brine.Params, _ *brine.Recorder, res brine.Resources) (RealWatch, error) {
-				mine, _ := p.GetString(0)
-				theirs, ok := p.GetString(1)
-				if !ok {
+		brine.DefineMap[brine.Empty, RealWatch](
+			"a Kubernetes cluster with gated pods {string} and {string}",
+			func(_ brine.Empty, p brine.Params, rec *brine.Recorder) (RealWatch, error) {
+				mine, mineOK := p.GetString(0)
+				theirs, theirsOK := p.GetString(1)
+				if !mineOK || !theirsOK {
 					return RealWatch{}, fmt.Errorf("expected two pod names")
 				}
-				rc, ok := res.Get("real-cluster").(*realCluster)
-				if !ok {
-					return RealWatch{}, fmt.Errorf("real-cluster resource is %T", res.Get("real-cluster"))
-				}
-
-				ctx := context.Background()
-				ns := fmt.Sprintf("pw03-%d", time.Now().UnixNano())
-				if _, err := rc.Clientset.CoreV1().Namespaces().Create(ctx,
-					&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}},
-					metav1.CreateOptions{}); err != nil {
-					return RealWatch{}, fmt.Errorf("create namespace: %w", err)
-				}
-
-				for _, name := range []string{mine, theirs} {
-					pod := &corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
-						Spec: corev1.PodSpec{Containers: []corev1.Container{
-							{Name: "main", Image: "busybox"},
-						}},
-					}
-					if _, err := rc.Clientset.CoreV1().Pods(ns).Create(ctx, pod, metav1.CreateOptions{}); err != nil {
-						return RealWatch{}, fmt.Errorf("create pod %q: %w", name, err)
-					}
-				}
-
-				return RealWatch{
-					Clientset: rc.Clientset, Namespace: ns, Name: mine, Ctx: ctx,
-					Watcher: jetbridge.NewPodWatcher(rc.Clientset, ns, mine),
-				}, nil
+				return newLiveScopedWatch(rec, mine, theirs)
 			},
 		),
 
@@ -89,130 +62,87 @@ func PodWatchRealDefinitions() []brine.StepDefinition {
 					return RealWatch{}, fmt.Errorf("expected two pod names")
 				}
 
-				// First read: comes from Get, establishing lastResourceVersion.
-				first, cancel := context.WithTimeout(in.Ctx, 20*time.Second)
-				defer cancel()
-				if _, err := in.Watcher.Next(first); err != nil {
-					return RealWatch{}, fmt.Errorf("initial read: %w", err)
-				}
-
-				pods := in.Clientset.CoreV1().Pods(in.Namespace)
-				setPhase := func(name string, phase corev1.PodPhase) error {
-					pod, err := pods.Get(in.Ctx, name, metav1.GetOptions{})
-					if err != nil {
-						return fmt.Errorf("get %q: %w", name, err)
-					}
-					pod.Status.Phase = phase
-					_, err = pods.UpdateStatus(in.Ctx, pod, metav1.UpdateOptions{})
-					return err
-				}
-				// The neighbour changes FIRST. An unscoped watch delivers this
-				// one before ours, and the step is told the wrong thing.
-				if err := setPhase(theirs, corev1.PodFailed); err != nil {
-					return RealWatch{}, err
-				}
-				if err := setPhase(mine, corev1.PodRunning); err != nil {
-					return RealWatch{}, err
-				}
-
-				next, cancel2 := context.WithTimeout(in.Ctx, 20*time.Second)
-				defer cancel2()
-				pod, err := in.Watcher.Next(next)
-				in.Observed, in.Err = pod, err
-				return in, nil
-			},
-		),
-
-		// Keeps its own body: it pins the pod's IDENTITY as well as its phase,
-		// and the identity mismatch is the whole point of the scenario, so its
-		// message says what an unscoped watch would do to the step.
-		brine.DefineCheck[RealWatch](
-			"the real API server told the runtime only about its own pod, now {string}",
-			func(in RealWatch, p brine.Params, _ *brine.Recorder) error {
-				want, ok := p.GetString(0)
-				if !ok {
-					return fmt.Errorf("expected a phase parameter")
-				}
-				if in.Err != nil {
-					return fmt.Errorf("expected to be told the pod is %s, got error: %v", want, in.Err)
-				}
-				if in.Observed == nil {
-					return fmt.Errorf("expected a pod, got nil")
-				}
-				if in.Observed.Name != in.Name {
-					return fmt.Errorf(
-						"the runtime was told about pod %q, but it is watching %q — the watch is not "+
-							"scoped, so a step acts on a phase belonging to somebody else's pod",
-						in.Observed.Name, in.Name)
-				}
-				if string(in.Observed.Status.Phase) != want {
-					return fmt.Errorf("expected phase %q, got %q", want, in.Observed.Status.Phase)
-				}
-				return nil
+				return in.observeLiveScopedTransitions(mine, theirs)
 			},
 		),
 	}
 }
 
-// The rest of PW-01..PW-07 that a real API server can carry. What stays on the
-// fake is exactly the set that needs a FORCED failure the real server will not
-// produce on demand: a watch that drops and comes back, one that cannot be
-// re-established, and a watch error arriving as a Status object.
+// Real API state changes, stream interruption/replay and cancellation.
+// Expiry observes history aging out of the live control plane.
 
 func PodWatchRealExtraDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		brine.DefineMapUsing[brine.Empty, RealWatch](
-			"a real cluster running pod {string}",
-			[]string{"real-cluster"},
-			func(_ brine.Empty, p brine.Params, _ *brine.Recorder, res brine.Resources) (RealWatch, error) {
+		brine.DefineMap[brine.Empty, RealWatch](
+			"a live cluster with gated pod {string}",
+			func(_ brine.Empty, p brine.Params, rec *brine.Recorder) (RealWatch, error) {
 				name, ok := p.GetString(0)
 				if !ok {
-					return RealWatch{}, fmt.Errorf("expected a pod name parameter")
+					return RealWatch{}, fmt.Errorf("expected a pod name")
 				}
-				rc, ok := res.Get("real-cluster").(*realCluster)
-				if !ok {
-					return RealWatch{}, fmt.Errorf("real-cluster resource is %T", res.Get("real-cluster"))
-				}
-				ctx := context.Background()
-				ns := fmt.Sprintf("pw-%d", time.Now().UnixNano())
-				if _, err := rc.Clientset.CoreV1().Namespaces().Create(ctx,
-					&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}},
-					metav1.CreateOptions{}); err != nil {
-					return RealWatch{}, fmt.Errorf("create namespace: %w", err)
-				}
-				pod := &corev1.Pod{
-					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
-					Spec: corev1.PodSpec{Containers: []corev1.Container{
-						{Name: "main", Image: "busybox"},
-					}},
-				}
-				if _, err := rc.Clientset.CoreV1().Pods(ns).Create(ctx, pod, metav1.CreateOptions{}); err != nil {
-					return RealWatch{}, fmt.Errorf("create pod %q: %w", name, err)
-				}
-				return RealWatch{
-					Clientset: rc.Clientset, Namespace: ns, Name: name, Ctx: ctx,
-					Watcher: jetbridge.NewPodWatcher(rc.Clientset, ns, name),
-				}, nil
+				return newLiveGatedWatch(rec, name)
 			},
 		),
 
-		Refine[RealWatch]("the runtime asks the real cluster what its pod is doing",
+		brine.DefineMapUsing[brine.Empty, RealWatch](
+			"a Kubernetes API with a Pending pod {string}",
+			[]string{"real-cluster"},
+			func(_ brine.Empty, p brine.Params, rec *brine.Recorder, res brine.Resources) (RealWatch, error) {
+				name, ok := p.GetString(0)
+				if !ok {
+					return RealWatch{}, fmt.Errorf("expected a pod name")
+				}
+				return newRealWatch(res, rec, name)
+			},
+		),
+
+		brine.DefineMap[RealWatch, RealWatch](
+			"the runtime has revocable permission to watch its pod",
+			func(in RealWatch, _ brine.Params, rec *brine.Recorder) (RealWatch, error) {
+				return in.withRevocableWatch(rec)
+			},
+		),
+
+		brine.DefineMap[RealWatch, RealWatch](
+			"the watch connection drops after its watch permission is revoked",
+			func(in RealWatch, _ brine.Params, rec *brine.Recorder) (RealWatch, error) {
+				return in.dropRevokedWatch(rec)
+			},
+		),
+
+		Refine[RealWatch]("the runtime asks what its pod is doing",
 			func(in RealWatch, _ Args) RealWatch {
 				return in.next()
 			}),
 
 		brine.DefineMap[RealWatch, RealWatch](
-			"the pod really becomes {string}",
+			"the watched pod becomes {string}",
 			func(in RealWatch, p brine.Params, _ *brine.Recorder) (RealWatch, error) {
 				phase, ok := p.GetString(0)
 				if !ok {
 					return RealWatch{}, fmt.Errorf("expected a phase parameter")
 				}
-				if err := in.setPhase(corev1.PodPhase(phase)); err != nil {
+				if phase != string(corev1.PodRunning) {
+					return RealWatch{}, fmt.Errorf("live watched pod startup requires Running, got %q", phase)
+				}
+				running, err := in.startLiveWatchedPod()
+				if err != nil {
 					return RealWatch{}, err
 				}
+				fmt.Printf("actual fallback Running %s/%s UID %s RV %s node %s container %s after watch revocation\n", in.Namespace, in.Name, running.UID, running.ResourceVersion, running.Spec.NodeName, running.Status.ContainerStatuses[0].ContainerID)
 				return in.next(), nil
+			},
+		),
+
+		brine.DefineMap[RealWatch, RealWatch](
+			"the watch is interrupted and the pod becomes {string} before being deleted",
+			func(in RealWatch, p brine.Params, rec *brine.Recorder) (RealWatch, error) {
+				phase, ok := p.GetString(0)
+				if !ok {
+					return RealWatch{}, fmt.Errorf("expected a pod phase")
+				}
+				return in.replayAfterDisconnect(corev1.PodPhase(phase), rec)
 			},
 		),
 
@@ -220,31 +150,19 @@ func PodWatchRealExtraDefinitions() []brine.StepDefinition {
 		// runtime that settled on the first would be waiting on a state the
 		// cluster has already left.
 		brine.DefineMap[RealWatch, RealWatch](
-			"the pod really goes {string} then {string} before the runtime looks",
+			"the pod goes {string} then {string} before the runtime looks",
 			func(in RealWatch, p brine.Params, _ *brine.Recorder) (RealWatch, error) {
 				first, _ := p.GetString(0)
 				second, ok := p.GetString(1)
 				if !ok {
 					return RealWatch{}, fmt.Errorf("expected two phases")
 				}
-				if err := in.setPhase(corev1.PodPhase(first)); err != nil {
-					return RealWatch{}, err
-				}
-				if err := in.setPhase(corev1.PodPhase(second)); err != nil {
-					return RealWatch{}, err
-				}
-				// Drain to the latest the cluster holds.
-				out := in.next()
-				for out.Err == nil && out.Observed != nil &&
-					string(out.Observed.Status.Phase) != second {
-					out = out.next()
-				}
-				return out, nil
+				return in.observeLiveBurst(first, second)
 			},
 		),
 
 		brine.DefineMap[RealWatch, RealWatch](
-			"the pod is really deleted out from under the step",
+			"the pod is deleted out from under the step",
 			func(in RealWatch, _ brine.Params, _ *brine.Recorder) (RealWatch, error) {
 				zero := int64(0)
 				if err := in.Clientset.CoreV1().Pods(in.Namespace).Delete(in.Ctx, in.Name,
@@ -269,37 +187,12 @@ func PodWatchRealExtraDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		Refine[RealWatch]("the build is cancelled while the runtime waits on the real cluster",
+		Refine[RealWatch]("the build is cancelled while the runtime waits for its pod",
 			func(in RealWatch, _ Args) RealWatch {
-				ctx, cancel := context.WithCancel(in.Ctx)
-				type answer struct {
-					pod *corev1.Pod
-					err error
-				}
-				done := make(chan answer, 1)
-				go func() {
-					defer func() {
-						if r := recover(); r != nil {
-							done <- answer{nil, fmt.Errorf("the runtime panicked: %v", r)}
-						}
-					}()
-					pod, err := in.Watcher.Next(ctx)
-					done <- answer{pod, err}
-				}()
-				// Let it reach the blocking read, then pull the context.
-				time.Sleep(200 * time.Millisecond)
-				cancel()
-				select {
-				case a := <-done:
-					in.Observed, in.Err = a.pod, a.err
-				case <-time.After(10 * time.Second):
-					in.Observed, in.Err = nil, fmt.Errorf(
-						"the runtime was still waiting 10s after the build was cancelled")
-				}
-				return in
+				return in.cancelEstablishedRead()
 			}),
 
-		CheckString[RealWatch]("the runtime is really told the pod is {string}",
+		CheckString[RealWatch]("the runtime is told its pod is {string}",
 			"the pod's phase",
 			func(in RealWatch) (string, error) {
 				if in.Err != nil {
@@ -308,10 +201,13 @@ func PodWatchRealExtraDefinitions() []brine.StepDefinition {
 				if in.Observed == nil {
 					return "", fmt.Errorf("expected a pod, got nil")
 				}
+				if in.Observed.Name != in.Name {
+					return "", fmt.Errorf("the runtime was told about pod %q, but it is watching %q", in.Observed.Name, in.Name)
+				}
 				return string(in.Observed.Status.Phase), nil
 			}),
 
-		CheckThat[RealWatch]("the runtime is really told the pod was deleted",
+		CheckThat[RealWatch]("the runtime is told its pod was deleted",
 			func(in RealWatch) error {
 				if in.Err == nil {
 					return fmt.Errorf(
@@ -324,7 +220,7 @@ func PodWatchRealExtraDefinitions() []brine.StepDefinition {
 				return nil
 			}),
 
-		CheckThat[RealWatch]("the runtime really stops waiting",
+		CheckThat[RealWatch]("the runtime stops waiting",
 			func(in RealWatch) error {
 				if in.Err == nil {
 					return fmt.Errorf("expected an error when the build was cancelled, got none")
@@ -345,15 +241,375 @@ func (w RealWatch) next() RealWatch {
 	return w
 }
 
-func (w RealWatch) setPhase(phase corev1.PodPhase) error {
-	pods := w.Clientset.CoreV1().Pods(w.Namespace)
-	pod, err := pods.Get(w.Ctx, w.Name, metav1.GetOptions{})
+// cancelEstablishedRead gives the HTTP watch and the next read independent
+// lifetimes. Cancelling the read must interrupt Next even while the real
+// API stream stays open; closing both would also wake the outer retry loop.
+func (w RealWatch) cancelEstablishedRead() RealWatch {
+	if w.Err != nil || w.Observed == nil {
+		w.Err = fmt.Errorf("establish cancellation premise: initial pod read failed: %v", w.Err)
+		return w
+	}
+	watchCtx, stopWatch := context.WithTimeout(w.Ctx, 10*time.Second)
+	defer stopWatch()
+	defer w.Watcher.Stop()
+
+	// A persisted metadata change establishes the real stream without
+	// inventing a kubelet phase. The shared checkpoint checks the exact
+	// API-assigned resourceVersion observed by the production watcher.
+	if _, err := w.watchCheckpoint(watchCtx); err != nil {
+		w.Err = fmt.Errorf("establish real watch before cancellation: %w", err)
+		return w
+	}
+
+	readCtx, cancelRead := context.WithCancel(w.Ctx)
+	defer cancelRead()
+	done := make(chan RealWatch, 1)
+	started := make(chan struct{})
+	go func() {
+		out := w
+		defer func() {
+			if r := recover(); r != nil {
+				out.Err = fmt.Errorf("the runtime panicked while waiting: %v", r)
+			}
+			done <- out
+		}()
+		close(started)
+		out.Observed, out.Err = w.Watcher.Next(readCtx)
+	}()
+	<-started
+	// There must be no queued update completing this read. The API has no
+	// kubelet or scheduler, and this scenario publishes no further update.
+	select {
+	case out := <-done:
+		w.Err = fmt.Errorf("expected an idle watch read before cancellation, got pod %v, error %v", out.Observed, out.Err)
+		return w
+	case <-time.After(100 * time.Millisecond):
+	}
+	cancelRead()
+	select {
+	case out := <-done:
+		return out
+	case <-time.After(3 * time.Second):
+		// A missing cancellation branch must fail without leaking its
+		// goroutine. Close the real stream, then join the failed read.
+		stopWatch()
+		w.Watcher.Stop()
+		select {
+		case <-done:
+			w.Err = fmt.Errorf("the runtime was still waiting 3s after the read was cancelled")
+		case <-time.After(3 * time.Second):
+			w.Err = fmt.Errorf("the runtime did not stop even after its real watch was closed")
+		}
+		return w
+	}
+}
+
+func ownWatchRoute(rec *brine.Recorder, address, target string) (net.Listener, error) {
+	route, err := routeWithDrops(address, target, 0, false)
 	if err != nil {
-		return fmt.Errorf("get pod: %w", err)
+		return nil, err
 	}
-	pod.Status.Phase = phase
-	if _, err := pods.UpdateStatus(w.Ctx, pod, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("update pod status: %w", err)
+	TrackDisposer(rec, "the watch route on "+address, route.Close)
+	return route, nil
+}
+
+// One fixture owns the real API objects, watch, and transparent TCP route.
+// The route forwards TLS bytes unchanged; it implements no Kubernetes behavior.
+func newRealWatch(res brine.Resources, rec *brine.Recorder, names ...string) (RealWatch, error) {
+	if len(names) == 0 {
+		return RealWatch{}, fmt.Errorf("a real watch needs a pod")
 	}
-	return nil
+	api, err := getRealCluster(res)
+	if err != nil {
+		return RealWatch{}, err
+	}
+	return newRealWatchOn(api, rec, names...)
+}
+
+func newRealWatchOn(api *realCluster, rec *brine.Recorder, names ...string) (RealWatch, error) {
+	if len(names) == 0 {
+		return RealWatch{}, fmt.Errorf("a real watch needs a pod")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ns, err := api.Clientset.CoreV1().Namespaces().Create(ctx,
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "pod-watch-"}}, metav1.CreateOptions{})
+	if err != nil {
+		return RealWatch{}, err
+	}
+	registerNamespacePodCleanup(rec, api.Clientset, ns.Name)
+	for _, name := range names {
+		_, err := api.Clientset.CoreV1().Pods(ns.Name).Create(ctx, &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns.Name},
+			Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "main", Image: "busybox"}}},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			return RealWatch{}, fmt.Errorf("create watched pod %q: %w", name, err)
+		}
+	}
+	return (RealWatch{
+		Clientset: api.Clientset, Namespace: ns.Name, Name: names[0],
+		Ctx: context.Background(), config: api.RESTConfig,
+	}).withWatchRoute(rec)
+}
+
+// withWatchRoute owns a transparent TCP route without changing API responses.
+func (w RealWatch) withWatchRoute(rec *brine.Recorder) (RealWatch, error) {
+	endpoint, err := url.Parse(w.config.Host)
+	if err != nil {
+		return RealWatch{}, err
+	}
+	target := apiRouteAddress(endpoint)
+	route, err := ownWatchRoute(rec, "127.0.0.1:0", target)
+	if err != nil {
+		return RealWatch{}, err
+	}
+	config := rest.CopyConfig(w.config)
+	if config.ServerName == "" {
+		config.ServerName = endpoint.Hostname()
+	}
+	endpoint.Host = route.Addr().String()
+	config.Host = endpoint.String()
+	client, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return RealWatch{}, err
+	}
+	if w.Watcher != nil {
+		w.Watcher.Stop()
+	}
+	watcher := jetbridge.NewPodWatcher(client, w.Namespace, w.Name)
+	w.Watcher = watcher
+	TrackDisposer(rec, "the routed pod watcher for "+w.Name,
+		func() error { watcher.Stop(); return nil })
+	w.directConfig = w.config
+	w.route, w.target, w.config = route, target, config
+	return w, nil
+}
+
+// The checkpoint is observed through a live watch before its TCP path closes.
+// Both a phase change and deletion then happen while no connection can deliver
+// them. Reconnecting must replay history: neither an initial snapshot nor Get
+// can supply the phase of a pod which is already gone.
+func (w RealWatch) replayAfterDisconnect(phase corev1.PodPhase, rec *brine.Recorder) (RealWatch, error) {
+	if w.Err != nil || w.Observed == nil || w.route == nil {
+		return RealWatch{}, fmt.Errorf("replay requires a successful initial real-pod read")
+	}
+	if phase != corev1.PodRunning && phase != corev1.PodSucceeded {
+		return RealWatch{}, fmt.Errorf("real replay requires Running or Succeeded, got %q", phase)
+	}
+	initialVersion := w.Observed.ResourceVersion
+	watchCtx, cancelWatch := context.WithTimeout(w.Ctx, 60*time.Second)
+	defer cancelWatch()
+	defer w.Watcher.Stop()
+	pods := w.Clientset.CoreV1().Pods(w.Namespace)
+	checkpoint, err := w.watchCheckpoint(watchCtx)
+	if err != nil {
+		return RealWatch{}, err
+	}
+	address := w.route.Addr().String()
+	if err := w.route.Close(); err != nil {
+		return RealWatch{}, fmt.Errorf("interrupt real watch connection: %w", err)
+	}
+	// The direct admin client and exec connection do not traverse the closed
+	// runtime route. Both real transitions happen while its stream is disconnected.
+	target, err := w.startLiveWatchedPod()
+	if err != nil {
+		return RealWatch{}, err
+	}
+	if phase == corev1.PodSucceeded {
+		target, err = w.completeLiveWatchedPod(target)
+		if err != nil {
+			return RealWatch{}, err
+		}
+	}
+	fmt.Printf("actual disconnected replay target %s/%s UID %s RV %s phase %s node %s container %s checkpoint %s\n",
+		w.Namespace, w.Name, target.UID, target.ResourceVersion, target.Status.Phase, target.Spec.NodeName,
+		target.Status.ContainerStatuses[0].ContainerID, checkpoint.ResourceVersion)
+	grace := int64(1)
+	if err := pods.Delete(watchCtx, w.Name, metav1.DeleteOptions{
+		GracePeriodSeconds: &grace, Preconditions: &metav1.Preconditions{UID: &checkpoint.UID},
+	}); err != nil {
+		return RealWatch{}, err
+	}
+	for {
+		remaining, err := pods.Get(watchCtx, w.Name, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			break
+		}
+		if err != nil {
+			return RealWatch{}, err
+		}
+		if remaining.UID != checkpoint.UID {
+			return RealWatch{}, fmt.Errorf("replay deletion encountered a replacement pod")
+		}
+		select {
+		case <-watchCtx.Done():
+			return RealWatch{}, fmt.Errorf("pod must be gone before reconnecting: %w", watchCtx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	fmt.Printf("actual replay pod %s/%s UID %s is absent before reconnecting at checkpoint %s\n",
+		w.Namespace, w.Name, checkpoint.UID, checkpoint.ResourceVersion)
+	resumed, err := ownWatchRoute(rec, address, w.target)
+	if err != nil {
+		return RealWatch{}, fmt.Errorf("restore real watch connection: %w", err)
+	}
+	w.route = resumed
+	readCtx, cancelRead := context.WithTimeout(w.Ctx, 5*time.Second)
+	defer cancelRead()
+	for {
+		w.Observed, w.Err = w.Watcher.Next(readCtx)
+		if w.Err != nil || w.Observed == nil {
+			return w, nil
+		}
+		if w.Observed.UID != checkpoint.UID || w.Observed.Name != w.Name {
+			w.Err = fmt.Errorf("replay returned a different pod identity")
+			return w, nil
+		}
+		// Do not hide a stale resume version by draining its already-consumed
+		// checkpoint along with legitimate kubelet startup updates.
+		if w.Observed.ResourceVersion == checkpoint.ResourceVersion || w.Observed.ResourceVersion == initialVersion {
+			w.Err = fmt.Errorf("replay returned an already-consumed checkpoint")
+			return w, nil
+		}
+		if w.Observed.Status.Phase == corev1.PodPending ||
+			(phase == corev1.PodSucceeded && w.Observed.Status.Phase == corev1.PodRunning) {
+			continue
+		}
+		return w, nil
+	}
+}
+
+// watchCheckpoint proves that the production watcher has a live stream and
+// has consumed the API-assigned version before a connection is disrupted.
+func (w RealWatch) watchCheckpoint(ctx context.Context) (*corev1.Pod, error) {
+	pods := w.Clientset.CoreV1().Pods(w.Namespace)
+	pod, err := pods.Get(ctx, w.Name, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	if pod.Annotations == nil {
+		pod.Annotations = map[string]string{}
+	}
+	pod.Annotations["brine.jetbridge/watch-checkpoint"] = pod.ResourceVersion
+	checkpoint, err := pods.Update(ctx, pod, metav1.UpdateOptions{})
+	if err != nil {
+		return nil, err
+	}
+	seen, err := w.Watcher.Next(ctx)
+	if err != nil || seen == nil || seen.Name != w.Name || seen.ResourceVersion != checkpoint.ResourceVersion {
+		return nil, fmt.Errorf("real watch did not observe its checkpoint: pod %v, error %v", seen, err)
+	}
+	return checkpoint, nil
+}
+
+// newLiveScopedWatch uses the same bounded namespace as the other live cases.
+// Both pods are gated so the first runtime read precedes their real transitions.
+func newLiveScopedWatch(rec *brine.Recorder, mine, theirs string) (RealWatch, error) {
+	if mine == theirs {
+		return RealWatch{}, fmt.Errorf("selector premise requires two distinct pods")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	rec.RegisterDisposer(cancel)
+	cluster, err := newLiveKubernetes(ctx, rec)
+	if err != nil {
+		return RealWatch{}, err
+	}
+	grace := int64(1)
+	for i, name := range []string{mine, theirs} {
+		command := "exec sleep 900"
+		if i == 1 {
+			command = "printf 'selector-neighbour-failed\\n'; exit 1"
+		}
+		pod, err := cluster.Clientset.CoreV1().Pods(cluster.Namespace).Create(ctx, &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec: corev1.PodSpec{
+				RestartPolicy: corev1.RestartPolicyNever, TerminationGracePeriodSeconds: &grace,
+				SchedulingGates: []corev1.PodSchedulingGate{{Name: startupSchedulingGate}},
+				Containers:      []corev1.Container{{Name: "main", Image: "busybox:1.37.0", Command: []string{"sh", "-ec", command}}},
+			},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			return RealWatch{}, err
+		}
+		if pod.UID == "" || pod.ResourceVersion == "" || pod.Status.Phase != corev1.PodPending || pod.Spec.NodeName != "" {
+			return RealWatch{}, fmt.Errorf("selector pod %q lacks an actual unscheduled Pending identity", name)
+		}
+		fmt.Printf("actual gated selector pod %s/%s UID %s RV %s\n", cluster.Namespace, name, pod.UID, pod.ResourceVersion)
+	}
+	watcher := jetbridge.NewPodWatcher(cluster.Clientset, cluster.Namespace, mine)
+	TrackDisposer(rec, "the scoped pod watcher for "+mine,
+		func() error { watcher.Stop(); return nil })
+	return RealWatch{Clientset: cluster.Clientset, Namespace: cluster.Namespace, Name: mine,
+		Ctx: ctx, Watcher: watcher, config: cluster.Config}, nil
+}
+
+// releaseSchedulingGate changes only the original owned pod spec, never status.
+func (w RealWatch) releaseSchedulingGate(original *corev1.Pod) error {
+	pods := w.Clientset.CoreV1().Pods(w.Namespace)
+	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		pod, err := pods.Get(w.Ctx, original.Name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		if pod.UID == "" || pod.UID != original.UID || pod.Spec.NodeName != "" ||
+			len(pod.Spec.SchedulingGates) != 1 || pod.Spec.SchedulingGates[0].Name != startupSchedulingGate {
+			return fmt.Errorf("selector gate no longer belongs to the original unscheduled pod %q", original.Name)
+		}
+		pod.Spec.SchedulingGates = nil
+		_, err = pods.Update(w.Ctx, pod, metav1.UpdateOptions{})
+		return err
+	})
+}
+
+func (w RealWatch) observeLiveScopedTransitions(mine, theirs string) (RealWatch, error) {
+	if mine != w.Name || theirs == mine {
+		return w, fmt.Errorf("selector transition names do not match the two-pod premise")
+	}
+	pods := w.Clientset.CoreV1().Pods(w.Namespace)
+	initial, err := w.Watcher.Next(w.Ctx)
+	if err != nil {
+		return w, fmt.Errorf("initial selector read: %w", err)
+	}
+	if initial == nil || initial.Name != mine || initial.UID == "" || initial.Status.Phase != corev1.PodPending || initial.Spec.NodeName != "" {
+		return w, fmt.Errorf("initial selector read did not observe the gated Pending pod")
+	}
+	neighbour, err := pods.Get(w.Ctx, theirs, metav1.GetOptions{})
+	if err != nil {
+		return w, err
+	}
+
+	if err := w.releaseSchedulingGate(neighbour); err != nil {
+		return w, err
+	}
+	failed, _, err := awaitLivePodExit(w.Ctx, w.Clientset, neighbour, 1, "selector-neighbour-failed\n")
+	if err != nil {
+		return w, err
+	}
+	fmt.Printf("actual selector neighbour %s/%s UID %s RV %s node %s container %s exited 1 before watched pod release\n",
+		w.Namespace, theirs, failed.UID, failed.ResourceVersion, failed.Spec.NodeName, failed.Status.ContainerStatuses[0].ContainerID)
+	if err := w.releaseSchedulingGate(initial); err != nil {
+		return w, err
+	}
+	running, err := awaitLivePod(w.Ctx, liveKubernetes{Clientset: w.Clientset, Namespace: w.Namespace}, mine)
+	if err != nil {
+		return w, err
+	}
+	if running.UID != initial.UID || running.ResourceVersion == initial.ResourceVersion {
+		return w, fmt.Errorf("watched pod did not advance the original API identity")
+	}
+	fmt.Printf("actual selector watched pod %s/%s UID %s RV %s node %s is Running after neighbour failure\n",
+		w.Namespace, mine, running.UID, running.ResourceVersion, running.Spec.NodeName)
+
+	// A kubelet produces intermediate Pending updates. Consume only those
+	// belonging to this pod; never discard a neighbour event to make scoping pass.
+	// Return every unexpected identity/phase to the original assertion.
+	next, cancel := context.WithTimeout(w.Ctx, 20*time.Second)
+	defer cancel()
+	for {
+		w.Observed, w.Err = w.Watcher.Next(next)
+		if w.Err != nil || w.Observed == nil || w.Observed.Name != mine || w.Observed.Status.Phase != corev1.PodPending {
+			return w, nil
+		}
+	}
 }

@@ -2,23 +2,24 @@ package steps
 
 import (
 	"fmt"
+	"time"
 
+	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/brine-dev/brine-go/pkg/brine"
+	"github.com/concourse/concourse/atc/gc"
+	"github.com/concourse/concourse/atc/worker/jetbridge"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	apiruntime "k8s.io/apimachinery/pkg/runtime"
-	k8stesting "k8s.io/client-go/testing"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 )
 
 // ReaperGapDefinitions closes the three places where reaper_test.go was
 // STRONGER than brine, found by mutating reaper.go and watching only the
 // ginkgo suite go red, plus one place where neither suite looked.
 //
-// Every double here is a working one. The API server really does return
-// NotFound for a pod that is already gone, and really does refuse to list when
-// it cannot be reached; nothing below asserts on a call, only on what the
-// reaper does afterwards.
+// The race deletes a real API object while PostgreSQL holds the sweep at a
+// lock. The outage uses a closed TCP endpoint. Neither fabricates responses.
 
 func ReaperGapDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
@@ -77,7 +78,7 @@ func ReaperGapDefinitions() []brine.StepDefinition {
 		// loop removes it. That is one Concourse worker deleting another
 		// worker's running builds.
 		brine.DefineMap[ReaperReady, ReaperReady](
-			"a pod {string} belonging to another worker is running in the same namespace",
+			"a pod {string} belonging to another worker exists in the same namespace",
 			func(in ReaperReady, p brine.Params, _ *brine.Recorder) (ReaperReady, error) {
 				name, ok := p.GetString(0)
 				if !ok {
@@ -89,7 +90,7 @@ func ReaperGapDefinitions() []brine.StepDefinition {
 						Namespace: in.Config.Namespace,
 						Labels:    map[string]string{"concourse.ci/worker": "k8s-somebody-else"},
 					},
-					Status: corev1.PodStatus{Phase: corev1.PodRunning},
+					Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main", Image: "busybox"}}},
 				}
 				_, err := in.Clientset.CoreV1().Pods(in.Config.Namespace).
 					Create(in.Ctx, pod, metav1.CreateOptions{})
@@ -103,29 +104,43 @@ func ReaperGapDefinitions() []brine.StepDefinition {
 		// Blocker 3. The pod vanished between the list and the delete. NotFound
 		// is what the API server returns, and the reaper has to treat it as
 		// routine rather than failing the whole sweep.
-		Refine[ReaperReady]("the pod is deleted by someone else before the reaper gets to it",
-			func(in ReaperReady, _ Args) ReaperReady {
-				in.Clientset.PrependReactor("delete", "pods",
-					func(action k8stesting.Action) (bool, apiruntime.Object, error) {
-						name := ""
-						if d, ok := action.(k8stesting.DeleteAction); ok {
-							name = d.GetName()
-						}
-						return true, nil, apierrors.NewNotFound(corev1.Resource("pods"), name)
-					})
-				return in
+		Transform[ReaperReady, ReaperReady]("the pod is deleted by someone else before the reaper gets to it",
+			func(in ReaperReady, _ Args) (ReaperReady, error) {
+				pods, err := in.Clientset.CoreV1().Pods(in.Config.Namespace).List(in.Ctx, metav1.ListOptions{})
+				if err != nil {
+					return in, err
+				}
+				if len(pods.Items) != 1 {
+					return in, fmt.Errorf("deletion race needs one target pod, got %d", len(pods.Items))
+				}
+				in.RacePod = pods.Items[0].DeepCopy()
+				return in, nil
 			}),
 
 		// Neither suite looked here: a sweep that cannot list pods has swept
 		// nothing, and reporting success makes it look healthy to the component
 		// runner while the cluster fills up.
-		Refine[ReaperReady]("the cluster stops answering when the reaper lists pods",
-			func(in ReaperReady, _ Args) ReaperReady {
-				in.Clientset.PrependReactor("list", "pods",
-					func(k8stesting.Action) (bool, apiruntime.Object, error) {
-						return true, nil, fmt.Errorf("connection refused")
-					})
-				return in
+		Transform[ReaperReady, ReaperReady]("the cluster stops answering when the reaper lists pods",
+			func(in ReaperReady, _ Args) (ReaperReady, error) {
+				port, err := refusedPort()
+				if err != nil {
+					return in, err
+				}
+				// Keep the real API available for observations. Only the
+				// reaper's client loses its endpoint; the kernel refuses it.
+				unreachable, err := kubernetes.NewForConfig(&rest.Config{
+					Host: fmt.Sprintf("http://127.0.0.1:%d", port), Timeout: time.Second,
+				})
+				if err != nil {
+					return in, err
+				}
+				logger := lagertest.NewTestLogger("reaper")
+				destroyer := gc.NewDestroyer(logger, in.DB.ContainerRepository, in.DB.VolumeRepository)
+				in.Reaper = jetbridge.NewReaper(logger, unreachable, in.Config, in.DB.ContainerRepository, destroyer)
+				if in.BuildLookup {
+					in.Reaper.SetBuildLookup(in.DB.BuildFactory)
+				}
+				return in, nil
 			}),
 
 		CheckThat[ReaperOutcome]("the reaper reports that it could not sweep",

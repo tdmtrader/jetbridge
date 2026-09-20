@@ -19,7 +19,7 @@ Feature: What a capture-selected task's Pod says
   @HOP-1 @HOP-3 @HOP-12
   Scenario: Selecting capture for a declared output puts the hold init container before every writer
     Given a jetbridge worker with an artifact store and the output plane on
-    And a task container "build" built from image "busybox"
+    And the worker prepares task "build" from image "busybox"
     And it takes an input at "/tmp/build/src"
     And it produces an output at "/tmp/build/result"
     And its output "result" is captured when the step succeeds
@@ -42,7 +42,7 @@ Feature: What a capture-selected task's Pod says
   @HOP-1 @HOP-59
   Scenario: A task whose output is not selected for capture builds the pod it builds today
     Given a jetbridge worker with an artifact store and the output plane on
-    And a task container "build" built from image "busybox"
+    And the worker prepares task "build" from image "busybox"
     And it produces an output at "/tmp/build/result"
     When the container runs
     Then the pod has 3 volumes
@@ -73,7 +73,7 @@ Feature: What a capture-selected task's Pod says
   @HOP-24
   Scenario: The capture control init is the only container that carries the source-control grant
     Given a jetbridge worker with an artifact store and the output plane on
-    And a task container "build" built from image "busybox"
+    And the worker prepares task "build" from image "busybox"
     And it produces an output at "/tmp/build/result"
     And its output "result" is captured when the step succeeds
     When the capture pod is built
@@ -83,7 +83,7 @@ Feature: What a capture-selected task's Pod says
   @HOP-1
   Scenario: Exactly one declared output is selected, and a second selection is refused
     Given a jetbridge worker with an artifact store and the output plane on
-    And a task container "build" built from image "busybox"
+    And the worker prepares task "build" from image "busybox"
     And it produces an output at "/tmp/build/result"
     And it produces an output at "/tmp/build/report"
     And its output "result" is captured when the step succeeds
@@ -94,7 +94,7 @@ Feature: What a capture-selected task's Pod says
   @HOP-3 @HOP-58
   Scenario: A capture pod carries the base control handshake and the exact Downward API pod and node fields
     Given a jetbridge worker with an artifact store and the output plane on
-    And a task container "build" built from image "busybox"
+    And the worker prepares task "build" from image "busybox"
     And it produces an output at "/tmp/build/result"
     And its output "result" is captured when the step succeeds
     When the capture pod is built
@@ -106,7 +106,7 @@ Feature: What a capture-selected task's Pod says
   @HOP-12 @HOP-20
   Scenario: A capture pod's mounts all resolve to a declared Volume
     Given a jetbridge worker with an artifact store and the output plane on
-    And a task container "build" built from image "busybox"
+    And the worker prepares task "build" from image "busybox"
     And it takes an input at "/tmp/build/src"
     And it produces an output at "/tmp/build/result"
     And its output "result" is captured when the step succeeds
@@ -134,8 +134,9 @@ Feature: What a capture-selected task's Pod says
   # kubernetes.io/hostname expression — the two label lines above it stay green.
   @HOP-58
   Scenario: A capture pod requires both ready labels, and neither alone admits it
-    Given a jetbridge worker with an artifact store
-    And a task container "build" built from image "busybox"
+    Given a Kubernetes worker "k8s-worker-1" with a database behind it
+    And the worker keeps artifacts under "/var/concourse/artifacts"
+    And the worker prepares task "build" from image "busybox"
     And it produces an output at "/tmp/build/result"
     And its output "result" is captured when the step succeeds
     And the worker's cohort is ready for "concourse.dev/hangar-output-v1"
@@ -158,8 +159,9 @@ Feature: What a capture-selected task's Pod says
   # and the ordinary-pod control stays green.
   @HOP-58 @HOP-59
   Scenario: A worker whose output facet is not enabled builds no capture pod, while the base-only cohort still builds an ordinary one
-    Given a jetbridge worker with an artifact store
-    And a task container "build" built from image "busybox"
+    Given a Kubernetes worker "k8s-worker-1" with a database behind it
+    And the worker keeps artifacts under "/var/concourse/artifacts"
+    And the worker prepares task "build" from image "busybox"
     And it produces an output at "/tmp/build/result"
     And its output "result" is captured when the step succeeds
     And the worker's cohort is ready for "concourse.dev/hangar-execution-control-v1"
@@ -182,8 +184,9 @@ Feature: What a capture-selected task's Pod says
   # refusal line reddens and the matching-epoch control stays green.
   @HOP-58
   Scenario: A ready label without a matching handshake admits nothing, while the handshaken cohort admits
-    Given a jetbridge worker with an artifact store
-    And a task container "build" built from image "busybox"
+    Given a Kubernetes worker "k8s-worker-1" with a database behind it
+    And the worker keeps artifacts under "/var/concourse/artifacts"
+    And the worker prepares task "build" from image "busybox"
     And it produces an output at "/tmp/build/result"
     And its output "result" is captured when the step succeeds
     And the worker's cohort is ready for "concourse.dev/hangar-output-v1"
@@ -215,7 +218,7 @@ Feature: What a capture-selected task's Pod says
   @HOP-19 @HOP-59
   Scenario: A capture-selected step's strict input is untouched by the output plane
     Given a jetbridge worker with an artifact store and the output plane on
-    And a task container "build" built from image "busybox"
+    And the worker prepares task "build" from image "busybox"
     And it produces an output at "/tmp/build/result"
     And its output "result" is captured when the step succeeds
     And it also takes a strict-input tree at "/tmp/build/from-cache"

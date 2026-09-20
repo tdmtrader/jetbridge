@@ -212,7 +212,7 @@ func startHangarDaemon(rec *brine.Recorder) (HangarDaemon, error) {
 	if err != nil {
 		return HangarDaemon{}, err
 	}
-	rec.RegisterDisposer(func() { _ = client.Close() })
+	TrackDisposer(rec, "the GCS client", client.Close)
 
 	bucket := uniqueBucketName()
 	if err := createOutputBucket(ctx, endpoint, bucket,
@@ -230,11 +230,11 @@ func startHangarDaemon(rec *brine.Recorder) (HangarDaemon, error) {
 	if err != nil {
 		return HangarDaemon{}, fmt.Errorf("mint the daemon's TLS material: %w", err)
 	}
-	certDir, err := os.MkdirTemp("", "brine-hangar-tls-*")
+	certDir, err := AttributedTempDir("brine-hangar-tls-*")
 	if err != nil {
 		return HangarDaemon{}, err
 	}
-	rec.RegisterDisposer(func() { _ = os.RemoveAll(certDir) })
+	TrackDisposer(rec, "the Hangar certificate directory", func() error { return os.RemoveAll(certDir) })
 
 	paths := map[string][]byte{
 		"server.crt":     material.serverCert,
@@ -255,11 +255,11 @@ func startHangarDaemon(rec *brine.Recorder) (HangarDaemon, error) {
 
 	// The scratch directory must be absolute and outside the storage root; the
 	// daemon checks both and refuses otherwise.
-	scratch, err := os.MkdirTemp("", "brine-hangar-scratch-*")
+	scratch, err := AttributedTempDir("brine-hangar-scratch-*")
 	if err != nil {
 		return HangarDaemon{}, err
 	}
-	rec.RegisterDisposer(func() { _ = os.RemoveAll(scratch) })
+	TrackDisposer(rec, "the Hangar scratch directory", func() error { return os.RemoveAll(scratch) })
 	scratch, err = filepath.EvalSymlinks(scratch)
 	if err != nil {
 		return HangarDaemon{}, fmt.Errorf("resolve the Hangar scratch directory: %w", err)
@@ -281,11 +281,17 @@ func startHangarDaemon(rec *brine.Recorder) (HangarDaemon, error) {
 	if err != nil {
 		return HangarDaemon{}, fmt.Errorf("assemble the ATC's client key pair: %w", err)
 	}
+	// Verify the daemon against the CA that signed it, the way the ATC does
+	// from the PEM on disk, rather than against a pool the fixture kept.
+	rootCAs := x509.NewCertPool()
+	if !rootCAs.AppendCertsFromPEM(material.caPEM) {
+		return HangarDaemon{}, fmt.Errorf("the fixture CA certificate is not parseable PEM")
+	}
 	httpClient := &http.Client{
 		Timeout: 60 * time.Second,
 		Transport: &http.Transport{TLSClientConfig: &tls.Config{
 			Certificates: []tls.Certificate{atcCert},
-			RootCAs:      material.clientPool,
+			RootCAs:      rootCAs,
 			ServerName:   "artifact-daemon",
 		}},
 	}
@@ -302,7 +308,7 @@ func startHangarDaemon(rec *brine.Recorder) (HangarDaemon, error) {
 	if err != nil {
 		return HangarDaemon{}, err
 	}
-	rec.RegisterDisposer(func() { _ = daemon.stop() })
+	TrackDisposer(rec, "the Hangar artifact daemon", daemon.stop)
 
 	state := HangarDaemon{
 		Daemon:   daemon,
@@ -391,7 +397,7 @@ func startOutputDaemon(rec *brine.Recorder, state HangarDaemon, certDir string) 
 	if err != nil {
 		return HangarDaemon{}, err
 	}
-	rec.RegisterDisposer(func() { _ = output.stop() })
+	TrackDisposer(rec, "the Hangar output daemon", output.stop)
 	state.Output = output
 
 	return state, nil
@@ -433,7 +439,7 @@ func hangarEmulatorEndpoint(rec *brine.Recorder) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("start the in-process GCS emulator: %w", err)
 	}
-	rec.RegisterDisposer(server.Stop)
+	TrackDisposer(rec, "the in-process GCS emulator", func() error { server.Stop(); return nil })
 	return server.URL(), nil
 }
 

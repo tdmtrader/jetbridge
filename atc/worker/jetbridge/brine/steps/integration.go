@@ -1,14 +1,10 @@
 package steps
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -20,17 +16,18 @@ import (
 	"github.com/concourse/concourse/vars"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/kubernetes"
 )
 
 // IntegrationDefinitions migrates the jetbridge suite's INTEGRATION files —
 // the ones that drive a real worker against a real PostgreSQL database and a
-// fake Kubernetes cluster, end to end:
+// real Kubernetes API. API/row cases use a real SPDY executor without waiting
+// on a process. Artifact-chain cases use real tasks, daemon storage and Git:
 //
 //	behavioral_worker_test.go     15 cases  (RC / CO / LR families)
 //	podname_integration_test.go    9 cases  (PN-07 and the pod-name seam)
 //	artifact_integration_test.go   8 cases  (artifact passing between steps)
-//	resource_test.go               6 cases  (get / put / check step protocol)
+//	resource_test.go               now in live/git-resource.feature
 //	secret_env_test.go             2 cases  (SecretEnv -> SecretKeyRef)
 //	node_ip_resolver_test.go       4 cases  (node name -> internal IP)
 //	executor_test.go               3 cases  (see executorDisposition)
@@ -39,25 +36,15 @@ import (
 // carries a disposition comment in this file. Dispositions are grouped at the
 // bottom under "Dispositions".
 //
-// Two conventions inherited from the files this joins:
-//
-//   - coverage_matrix.md Addendum 2 — a recording double can only tell you
-//     what it recorded, so replace it with a WORKING one and assert the round
-//     trip. resource_test.go's six spy sites and artifact_integration_test.go's
-//     five are answered by localExecutor and localExecutor below,
-//     which really run the command. Nothing here asserts a pod name, a
-//     namespace, a container name or a command slice that was handed to a
-//     collaborator.
-//
-//   - worker.feature's rule — never assert that a volume is of a particular Go
-//     type. `Expect(vol).To(BeAssignableToTypeOf(&DaemonSetVolume{}))` is not
-//     something a consumer of runtime.Volume can observe. The effect is.
+// The two artifact-chain cases execute in the live tier. API-only pod
+// construction does not claim kubelet execution. Volume assertions read
+// observable behavior rather than requiring a particular Go implementation.
 
 // ---------------------------------------------------------------------------
 // Domain states
 // ---------------------------------------------------------------------------
 
-// IntegrationCluster is a jetbridge worker on a fake Kubernetes cluster backed
+// IntegrationCluster refines the shared real-API WorkerReady, backed
 // by a real PostgreSQL database, plus a team to own the rows. Every Given in
 // step-integration.feature refines this state.
 //
@@ -65,11 +52,8 @@ import (
 // A scenario that waits on a Kubernetes deadline HANGS rather than failing,
 // and a hang is worse than an absent test.
 type IntegrationCluster struct {
-	Cluster
+	WorkerReady
 	Team db.Team
-
-	// Workspace owns both supervisor state and any installed resource image.
-	Workspace TaskWorkspace
 
 	// Artifacts holds artifact volumes a scenario created and named, so a
 	// later step can feed one to a container as an input.
@@ -112,14 +96,14 @@ type StepCreated struct {
 // scenario waited on it, after the process reported. It carries the pod that
 // was created so checks can read the spec Kubernetes was actually asked for.
 type StepRan struct {
-	Created    StepCreated
-	Pod        *corev1.Pod
-	PodCount   int
-	Stdout     string
-	ExitStatus int
-	ProcessID  string
-	Err        error
-	Message    string
+	Created     StepCreated
+	Pod         *corev1.Pod
+	PodCount    int
+	Stdout      string
+	ExitStatus  int
+	Err         error
+	Message     string
+	publication *integrationPublication
 
 	// BoundBefore and BoundAfter record which pod each mount's volume reads
 	// from, before and after Run. A volume that is never bound reads from
@@ -169,40 +153,20 @@ type IntegrationVolume struct {
 // the Kubernetes Nodes API.
 type NodeCluster struct {
 	Ctx       context.Context
-	Clientset *fake.Clientset
+	Clientset kubernetes.Interface
 	Resolver  *jetbridge.NodeIPResolver
+	Node      *corev1.Node
+	trace     *execObservation
 }
 
 type NodeIPOutcome struct {
-	IPs     []string
-	Err     error
-	Message string
-	IsIPArg bool
-}
-
-// ---------------------------------------------------------------------------
-// Working doubles
-// ---------------------------------------------------------------------------
-
-// installResourceScripts writes a tiny but real resource implementation: three
-// scripts that read the request from stdin, echo it back with the directory
-// they were given, and exit with the code the scenario asked for.
-func installResourceScripts(root string, exitCode int) error {
-	dir := filepath.Join(root, "opt", "resource")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create resource dir: %w", err)
-	}
-	for _, name := range []string{"in", "out", "check"} {
-		body := "#!/bin/sh\n" +
-			"request=$(cat)\n" +
-			"printf 'script=" + name + " dir=%s request=%s' \"$1\" \"$request\"\n" +
-			"exit " + strconv.Itoa(exitCode) + "\n"
-		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
-			return fmt.Errorf("write %s: %w", path, err)
-		}
-	}
-	return nil
+	IPs      []string
+	Expected string
+	NodePath string
+	Err      error
+	Message  string
+	IsIPArg  bool
+	trace    *execObservation
 }
 
 // ---------------------------------------------------------------------------
@@ -211,35 +175,39 @@ func installResourceScripts(root string, exitCode int) error {
 
 // IntegrationDefinitions is the single entry point this file exports.
 func IntegrationDefinitions() []brine.StepDefinition {
-	defs := integrationClusterDefinitions()
+	defs := liveArtifactIntegrationDefinitions()
+	defs = append(defs, integrationClusterDefinitions()...)
 	defs = append(defs, integrationStepDefinitions()...)
 	defs = append(defs, integrationRunDefinitions()...)
 	defs = append(defs, integrationPodCheckDefinitions()...)
 	defs = append(defs, integrationVolumeDefinitions()...)
 	defs = append(defs, integrationNodeIPDefinitions()...)
+	defs = append(defs, liveNodeResolverDefinitions()...)
 	return defs
 }
 
 func integrationClusterDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		TransformUsing[brine.Empty, IntegrationCluster](
-			"a jetbridge cluster in namespace {string}",
-			[]string{"jetbridge-db", "task-workspace"},
-			func(_ brine.Empty, a Args, res brine.Resources) (IntegrationCluster, error) {
-				return newIntegrationCluster(res, a.String(0))
-			},
-		),
-
-		Transform[IntegrationCluster, IntegrationCluster](
-			"the worker runs resource scripts that exit {int}",
-			func(in IntegrationCluster, a Args) (IntegrationCluster, error) {
-				root := filepath.Join(in.Workspace.Dir, "resource-image")
-				if err := installResourceScripts(root, a.Int(0)); err != nil {
-					return IntegrationCluster{}, err
+		Transform[WorkerReady, IntegrationCluster](
+			"the worker tracks integration containers and artifacts",
+			func(in WorkerReady, _ Args) (IntegrationCluster, error) {
+				team, found, err := in.DB.TeamFactory.FindTeam("main")
+				if err != nil {
+					return IntegrationCluster{}, fmt.Errorf("find integration team: %w", err)
 				}
-				in.Worker.SetExecutor(localExecutor{root: root, supervisorRoot: in.Workspace.Dir})
-				return in, nil
+				if !found || team.ID() != in.TeamID {
+					return IntegrationCluster{}, fmt.Errorf("integration worker has no matching team")
+				}
+				if in.ProducerExecutor == nil {
+					return IntegrationCluster{}, fmt.Errorf("integration worker has no real SPDY executor")
+				}
+				// Use the production exec-mode path even for API-only pod
+				// construction. These cases do not invoke Process.Wait.
+				in.Executor = in.ProducerExecutor
+				in.Config.PodStartupTimeout = 5 * time.Second
+				in.Config.PodSchedulingTimeout = 5 * time.Second
+				return IntegrationCluster{WorkerReady: in.rebuild(), Team: team, Artifacts: map[string]NamedArtifact{}}, nil
 			},
 		),
 
@@ -342,27 +310,6 @@ func integrationStepDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		// A resource step is described by its type, not by an image URL: the
-		// worker resolves "git" to concourse/git-resource itself.
-		Transform[IntegrationCluster, StepDraft](
-			"a {string} step {string} for resource type {string}",
-			func(in IntegrationCluster, a Args) (StepDraft, error) {
-				containerType := db.ContainerType(a.String(0))
-				return StepDraft{
-					Cluster:  in,
-					Handle:   a.String(1),
-					Metadata: db.ContainerMetadata{Type: containerType},
-					Spec: runtime.ContainerSpec{
-						TeamID:         in.Team.ID(),
-						TeamName:       in.Team.Name(),
-						ImageSpec:      runtime.ImageSpec{ResourceType: a.String(2)},
-						Type:           containerType,
-						CertsBindMount: true,
-					},
-				}, nil
-			},
-		),
-
 		// Draft refinements. In and Out are the same type, so any number may
 		// appear in any order before the container is created.
 		Refine[StepDraft]("the step works in {string}",
@@ -393,32 +340,6 @@ func integrationStepDefinitions() []brine.StepDefinition {
 				in.Spec.Inputs = append(in.Spec.Inputs, runtime.Input{
 					Artifact:        vol,
 					DestinationPath: path,
-				})
-				return in, nil
-			},
-		),
-
-		Transform[StepDraft, StepDraft](
-			"the step takes the artifact {string} as an input at {string}",
-			func(in StepDraft, a Args) (StepDraft, error) {
-				name := a.String(0)
-
-				named, found := in.Cluster.Artifacts[name]
-				if !found {
-					return StepDraft{}, fmt.Errorf("no artifact volume named %q was created", name)
-				}
-				// Look it up the way the next step does, rather than reusing
-				// the object the producing step happened to hold.
-				vol, ok2, err := in.Cluster.Worker.LookupVolume(in.Cluster.Ctx, named.Handle)
-				if err != nil {
-					return StepDraft{}, fmt.Errorf("look up artifact %q: %w", name, err)
-				}
-				if !ok2 {
-					return StepDraft{}, fmt.Errorf("artifact volume %q is not in the database", name)
-				}
-				in.Spec.Inputs = append(in.Spec.Inputs, runtime.Input{
-					Artifact:        vol,
-					DestinationPath: a.String(1),
 				})
 				return in, nil
 			},
@@ -465,7 +386,7 @@ func integrationStepDefinitions() []brine.StepDefinition {
 					db.NewFixedHandleContainerOwner(in.Handle),
 					in.Metadata,
 					in.Spec,
-					&noopDelegate{},
+					nil,
 				)
 				if err != nil {
 					return StepCreated{}, fmt.Errorf("find or create container %q: %w", in.Handle, err)
@@ -497,121 +418,26 @@ func integrationStepDefinitions() []brine.StepDefinition {
 			func(in StepCreated) ([]string, error) {
 				return mountPaths(in.Mounts), nil
 			}),
-
-		// Three parameters, and three independent claims about the row: that
-		// it is created, that it is of that type, and that it is on that
-		// worker. No combinator compares more than one value, and folding two
-		// of the three into a getter error would demote them to presumptions.
-		Assert[StepCreated](
-			"the container row for {string} is a created {string} container on worker {string}",
-			func(in StepCreated, args Args) error {
-				handle := args.String(0)
-				wantType := args.String(1)
-				wantWorker := args.String(2)
-
-				return checkContainerRow(in.Cluster, handle, wantType, wantWorker)
-			},
-		),
 	}
 }
 
 func integrationRunDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 
-		// Direct mode: no executor, so the command is baked into the pod spec
-		// and Run returns as soon as the pod exists. Nothing is waited on, so
-		// nothing can hang.
+		// This action observes the created API pod without waiting for a
+		// command. It checks pod construction, not kubelet execution.
 		brine.DefineMap[StepCreated, StepRan](
-			"the step's container runs",
+			"the step's pause pod is created",
 			func(in StepCreated, _ brine.Params, _ *brine.Recorder) (StepRan, error) {
 				return runStep(in, runtime.ProcessSpec{
 					Path: "/bin/sh",
 					Args: []string{"-c", "echo hello"},
-				}, runtime.ProcessIO{}, false)
+				}, runtime.ProcessIO{})
 			},
 		),
 
-		// The scenario-owned supervisor root prevents cross-run replay without
-		// changing the command. The task must leave its state inside that root.
-		Transform[StepCreated, StepRan](
-			"the step's container runs the command {string}",
-			func(in StepCreated, a Args) (StepRan, error) {
-				log := new(bytes.Buffer)
-				out, err := runStep(in, runtime.ProcessSpec{
-					Path: "/bin/sh",
-					Args: []string{"-c", a.String(0)},
-				}, runtime.ProcessIO{Stdout: log, Stderr: log}, true, log)
-				if err == nil {
-					err = out.Err
-				}
-				if err == nil && in.Metadata.Type == db.ContainerTypeTask {
-					err = in.Cluster.Workspace.requireSupervisorState()
-				}
-				return out, err
-			},
-		),
-
-		// The resource protocol: a request on stdin, an answer on stdout.
-		Transform[StepCreated, StepRan](
-			"the resource is asked for {string} into {string}",
-			func(in StepCreated, a Args) (StepRan, error) {
-				script := "/opt/resource/in"
-				if in.Metadata.Type == db.ContainerTypePut {
-					script = "/opt/resource/out"
-				}
-				out := new(bytes.Buffer)
-				return runStep(in, runtime.ProcessSpec{
-					ID:   "resource",
-					Path: script,
-					Args: []string{a.String(1)},
-				}, runtime.ProcessIO{
-					Stdin:  bytes.NewBufferString(a.String(0)),
-					Stdout: out,
-					Stderr: new(bytes.Buffer),
-				}, true, out)
-			},
-		),
-
-		Transform[StepCreated, StepRan](
-			"the resource is checked with {string}",
-			func(in StepCreated, a Args) (StepRan, error) {
-				out := new(bytes.Buffer)
-				return runStep(in, runtime.ProcessSpec{
-					Path: "/opt/resource/check",
-				}, runtime.ProcessIO{
-					Stdin:  bytes.NewBufferString(a.String(0)),
-					Stdout: out,
-					Stderr: new(bytes.Buffer),
-				}, true, out)
-			},
-		),
-
-		// A pipeline is more than one step. The cluster travels inside the
-		// outcome, so the next step is described from where the last one
-		// finished rather than from a fresh Given.
-		Transform[StepRan, StepDraft](
-			"next, a {string} step {string} for resource type {string}",
-			func(in StepRan, a Args) (StepDraft, error) {
-				containerType := db.ContainerType(a.String(0))
-				cluster := in.Created.Cluster
-				return StepDraft{
-					Cluster:  cluster,
-					Handle:   a.String(1),
-					Metadata: db.ContainerMetadata{Type: containerType},
-					Spec: runtime.ContainerSpec{
-						TeamID:         cluster.Team.ID(),
-						TeamName:       cluster.Team.Name(),
-						ImageSpec:      runtime.ImageSpec{ResourceType: a.String(2)},
-						Type:           containerType,
-						CertsBindMount: true,
-					},
-				}, nil
-			},
-		),
-
-		// Attaching. Both halves of the pod-name seam live here: a step that
-		// already exited is resumed from its recorded status, and a step whose
-		// pod is gone has to say WHICH pod is gone.
+		// A missing pod must be diagnosed by its metadata-based name. Successful
+		// completion recovery runs against real task pods in the live tier.
 		brine.DefineMap[StepCreated, AttachOutcome](
 			"the web restarts and attaches to the step",
 			func(in StepCreated, _ brine.Params, _ *brine.Recorder) (AttachOutcome, error) {
@@ -632,38 +458,6 @@ func integrationRunDefinitions() []brine.StepDefinition {
 				return out, nil
 			},
 		),
-
-		// The exit status a completed step left behind, plus the pod it left
-		// behind. Both are prerequisites for a successful re-attach.
-		Transform[StepCreated, StepCreated](
-			"the step finished with exit status {string} and left its pod behind",
-			func(in StepCreated, a Args) (StepCreated, error) {
-				podName := jetbridge.GeneratePodName(in.Metadata, in.Handle)
-				pod := &corev1.Pod{
-					ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: in.Cluster.Namespace},
-					Spec: corev1.PodSpec{
-						Containers: []corev1.Container{{Name: "main", Image: "busybox"}},
-					},
-				}
-				if _, err := in.Cluster.Clientset.CoreV1().Pods(in.Cluster.Namespace).
-					Create(in.Cluster.Ctx, pod, metav1.CreateOptions{}); err != nil {
-					return StepCreated{}, fmt.Errorf("create pod %q: %w", podName, err)
-				}
-				if err := in.Container.SetProperty("concourse:exit-status", a.String(0)); err != nil {
-					return StepCreated{}, fmt.Errorf("record exit status: %w", err)
-				}
-				return in, nil
-			},
-		),
-
-		CheckInt[AttachOutcome]("the step resumes reporting exit status {int}",
-			"the resumed exit status",
-			func(in AttachOutcome) (int, error) {
-				if in.Err != nil {
-					return 0, fmt.Errorf("expected the step to resume, attaching failed: %v", in.Err)
-				}
-				return in.ExitStatus, nil
-			}),
 
 		CheckThat[AttachOutcome]("attaching fails naming the pod the step would have created",
 			func(in AttachOutcome) error {
@@ -755,47 +549,6 @@ func integrationPodCheckDefinitions() []brine.StepDefinition {
 					return nil, fmt.Errorf("no pod was created")
 				}
 				return sortedKeys(in.Pod.Labels), nil
-			}),
-
-		// PN-07's hard half: Kubernetes rejects a pod whose label value is
-		// longer than 63 characters, so a long pipeline name has to be cut.
-		CheckThat[StepRan]("every pod label value fits in a Kubernetes label",
-			func(in StepRan) error {
-				if in.Pod == nil {
-					return fmt.Errorf("no pod was created")
-				}
-				for key, value := range in.Pod.Labels {
-					if len(value) > 63 {
-						return fmt.Errorf("label %q is %d characters, over the 63-character limit: %q",
-							key, len(value), value)
-					}
-				}
-				return nil
-			}),
-
-		CheckString[StepRan]("the step's pod runs the image {string}",
-			"the image the step's pod runs",
-			func(in StepRan) (string, error) {
-				main, err := integrationMainContainer(in.Pod)
-				return main.Image, err
-			}),
-
-		// PE-01: the pod is a pause pod. Baking the resource script into the
-		// pod spec would run it once, at pod start, with no stdin and nowhere
-		// to send stdout — the resource protocol needs an exec.
-		CheckThat[StepRan]("the pod's own command is not the resource script",
-			func(in StepRan) error {
-				main, err := integrationMainContainer(in.Pod)
-				if err != nil {
-					return err
-				}
-				if len(main.Command) == 0 {
-					return fmt.Errorf("expected the pod to carry a pause command, it has none")
-				}
-				if strings.HasPrefix(main.Command[0], "/opt/resource/") {
-					return fmt.Errorf("expected a pause command, the pod runs %v", main.Command)
-				}
-				return nil
 			}),
 
 		CheckMember[StepRan]("the step's pod mounts {string}",
@@ -902,15 +655,6 @@ func integrationPodCheckDefinitions() []brine.StepDefinition {
 			},
 		),
 
-		CheckString[StepRan]("the resource answers {string}",
-			"the resource's answer",
-			func(in StepRan) (string, error) {
-				if in.Err != nil {
-					return "", fmt.Errorf("the resource step failed: %v", in.Err)
-				}
-				return in.Stdout, nil
-			}),
-
 		CheckContains[StepRan]("the step's output is {string}",
 			"the step's output",
 			func(in StepRan) (string, error) {
@@ -920,8 +664,8 @@ func integrationPodCheckDefinitions() []brine.StepDefinition {
 				return in.Stdout, nil
 			}),
 
-		// Same three claims as the StepCreated form above — created, of that
-		// type, on that worker — so the same reason it keeps its own body.
+		// Created state, container type and worker identity are independent
+		// claims. Share the row comparison with the real Git resource cases.
 		Assert[StepRan](
 			"the step's container row is a created {string} container on worker {string}",
 			func(in StepRan, args Args) error {
@@ -942,12 +686,6 @@ func integrationPodCheckDefinitions() []brine.StepDefinition {
 			func(in StepRan) (int, error) { return in.ExitStatus, nil },
 			func(in StepRan) string {
 				return fmt.Sprintf("err: %v, output: %q", in.Err, in.Stdout)
-			}),
-
-		CheckString[StepRan]("the running process is identified as {string}",
-			"the running process's id",
-			func(in StepRan) (string, error) {
-				return in.ProcessID, nil
 			}),
 	}
 }
@@ -1285,89 +1023,47 @@ func integrationVolumeDefinitions() []brine.StepDefinition {
 
 func integrationNodeIPDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
-
-		Transform[brine.Empty, NodeCluster](
-			"a cluster whose node {string} has internal address {string} and external address {string}",
-			func(_ brine.Empty, a Args) (NodeCluster, error) {
-				internal := a.String(1)
-				external := a.String(2)
-
-				var addresses []corev1.NodeAddress
-				if internal != "" {
-					addresses = append(addresses, corev1.NodeAddress{
-						Type: corev1.NodeInternalIP, Address: internal})
+		brine.DefineMapUsing[brine.Empty, NodeCluster](
+			"a cluster containing node {string} with no reported addresses",
+			[]string{"real-cluster"},
+			func(_ brine.Empty, p brine.Params, rec *brine.Recorder, res brine.Resources) (NodeCluster, error) {
+				name, ok := p.GetString(0)
+				if !ok {
+					return NodeCluster{}, fmt.Errorf("expected node name")
 				}
-				if external != "" {
-					addresses = append(addresses, corev1.NodeAddress{
-						Type: corev1.NodeExternalIP, Address: external})
+				in, err := emptyNodeCluster(res)
+				if err != nil {
+					return in, err
 				}
-				clientset := fake.NewSimpleClientset(&corev1.Node{
-					ObjectMeta: metav1.ObjectMeta{Name: a.String(0)},
-					Status:     corev1.NodeStatus{Addresses: addresses},
-				})
-				return NodeCluster{
-					Ctx:       context.Background(),
-					Clientset: clientset,
-					Resolver:  jetbridge.NewNodeIPResolver(clientset),
-				}, nil
+				ctx, cancel := context.WithTimeout(in.Ctx, 10*time.Second)
+				defer cancel()
+				in.Node, err = createRealNode(ctx, in.Clientset, rec, name)
+				if err != nil {
+					return in, err
+				}
+				if len(in.Node.Status.Addresses) != 0 {
+					return in, fmt.Errorf("new node unexpectedly reports addresses")
+				}
+				return in, nil
 			},
 		),
 
-		brine.DefineMap[brine.Empty, NodeCluster](
-			"a cluster with no nodes",
-			func(_ brine.Empty, _ brine.Params, _ *brine.Recorder) (NodeCluster, error) {
-				clientset := fake.NewSimpleClientset()
-				return NodeCluster{
-					Ctx:       context.Background(),
-					Clientset: clientset,
-					Resolver:  jetbridge.NewNodeIPResolver(clientset),
-				}, nil
-			},
-		),
+		TransformUsing[brine.Empty, NodeCluster]("a cluster with no nodes",
+			[]string{"real-cluster"},
+			func(_ brine.Empty, _ Args, res brine.Resources) (NodeCluster, error) {
+				return emptyNodeCluster(res)
+			}),
 
-		// Resolving twice is the cache case. The consumer-visible claim is
-		// that the second answer is the same as the first — not that the
-		// Nodes API went unasked, which only a recording double could say.
-		Transform[NodeCluster, NodeIPOutcome](
-			"a caller resolves {string} twice",
+		Transform[NodeCluster, NodeIPOutcome]("a caller resolves {string} twice",
 			func(in NodeCluster, a Args) (NodeIPOutcome, error) {
 				out := NodeIPOutcome{}
 				for i := 0; i < 2; i++ {
-					ip, err := in.Resolver.Resolve(in.Ctx, a.String(0))
-					if err != nil {
-						out.Err, out.Message = err, err.Error()
-						out.IsIPArg = errors.Is(err, jetbridge.ErrNodeNameIsIP)
-						return out, nil
+					if !out.resolve(in, a.String(0)) {
+						break
 					}
-					out.IPs = append(out.IPs, ip)
 				}
 				return out, nil
-			},
-		),
-
-		// EVERY element must equal the parameter, and there must be at least
-		// one. That is neither membership — which one matching element would
-		// satisfy — nor a count, and the failure has to say which answer of
-		// the several differed.
-		Assert[NodeIPOutcome](
-			"every answer is {string}",
-			func(in NodeIPOutcome, args Args) error {
-				want := args.String(0)
-
-				if in.Err != nil {
-					return fmt.Errorf("resolving failed: %v", in.Err)
-				}
-				if len(in.IPs) == 0 {
-					return fmt.Errorf("no address came back")
-				}
-				for i, got := range in.IPs {
-					if got != want {
-						return fmt.Errorf("expected answer %d to be %q, got %q", i+1, want, got)
-					}
-				}
-				return nil
-			},
-		),
+			}),
 
 		CheckThat[NodeIPOutcome]("resolving fails",
 			func(in NodeIPOutcome) error {
@@ -1377,39 +1073,21 @@ func integrationNodeIPDefinitions() []brine.StepDefinition {
 				return nil
 			}),
 
-		// The sentinel is the whole point: an IP-shaped argument is rejected
-		// as a misuse, not reported as a node that happens not to exist. On a
-		// cluster with no nodes at all the two outcomes are indistinguishable
-		// by anything BUT the sentinel.
-		CheckThat[NodeIPOutcome]("it is refused as an IP address rather than reported as a missing node",
+		// Fixture setup uses the original client; this trace observes only
+		// the resolver's real requests, including an unnecessary lookup that
+		// still returns the correct typed sentinel afterwards.
+		CheckThat[NodeIPOutcome]("the node-name argument is refused as an IP address",
 			func(in NodeIPOutcome) error {
+				if in.trace == nil {
+					return fmt.Errorf("node refusal has no API observation")
+				}
+				in.trace.mu.Lock()
+				defer in.trace.mu.Unlock()
+				if len(in.trace.requests) != 0 {
+					return fmt.Errorf("IP-shaped argument must make zero API requests; observed %d", len(in.trace.requests))
+				}
 				if in.Err == nil {
 					return fmt.Errorf("expected the argument to be refused, resolving returned %v", in.IPs)
-				}
-				if !in.IsIPArg {
-					return fmt.Errorf("expected an ErrNodeNameIsIP refusal, got %q", in.Message)
-				}
-				return nil
-			}),
-
-		// The refusal has to come BEFORE the Nodes API, and "before" is a
-		// claim about a call, which nothing here records. What can be stated
-		// as an outcome is the consequence: on the one cluster where asking
-		// and not asking differ in what comes back — a cluster that has a
-		// node registered under that very IP-shaped name — the answer the API
-		// would have given must not appear. A resolver that fell through
-		// returns that node's internal address here, and returns it with no
-		// error at all.
-		//
-		// The residue, stated rather than faked: a mutation that made the Get
-		// and then threw the answer away in favour of the sentinel is
-		// indistinguishable from production by any value that comes back out.
-		// Only a call record separates those two, and this file does not keep
-		// one.
-		CheckThat[NodeIPOutcome]("it is refused as an IP address even though a node is registered under that name",
-			func(in NodeIPOutcome) error {
-				if in.Err == nil {
-					return fmt.Errorf("expected the argument to be refused, resolving answered %v — the Nodes API was consulted and its answer used", in.IPs)
 				}
 				if !in.IsIPArg {
 					return fmt.Errorf("expected an ErrNodeNameIsIP refusal, got %q", in.Message)
@@ -1422,38 +1100,47 @@ func integrationNodeIPDefinitions() []brine.StepDefinition {
 	}
 }
 
+func emptyNodeCluster(res brine.Resources) (NodeCluster, error) {
+	cluster, err := getRealCluster(res)
+	if err != nil {
+		return NodeCluster{}, err
+	}
+	trace := new(execObservation)
+	resolverClient, err := kubernetes.NewForConfig(trace.config(cluster.RESTConfig))
+	if err != nil {
+		return NodeCluster{}, err
+	}
+	in := NodeCluster{
+		Ctx: context.Background(), Clientset: cluster.Clientset,
+		Resolver: jetbridge.NewNodeIPResolver(resolverClient), trace: trace,
+	}
+	ctx, cancel := context.WithTimeout(in.Ctx, 10*time.Second)
+	defer cancel()
+	nodes, err := in.Clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return in, fmt.Errorf("read initial nodes: %w", err)
+	}
+	if len(nodes.Items) != 0 {
+		return in, fmt.Errorf("expected an empty scenario node inventory, found %d nodes", len(nodes.Items))
+	}
+	return in, nil
+}
+
+func (out *NodeIPOutcome) resolve(in NodeCluster, name string) bool {
+	out.trace = in.trace
+	ip, err := in.Resolver.Resolve(in.Ctx, name)
+	if err != nil {
+		out.Err, out.Message = err, err.Error()
+		out.IsIPArg = errors.Is(err, jetbridge.ErrNodeNameIsIP)
+		return false
+	}
+	out.IPs = append(out.IPs, ip)
+	return true
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-func newIntegrationCluster(res brine.Resources, namespace string) (IntegrationCluster, error) {
-	workspace, ok := res.Get("task-workspace").(TaskWorkspace)
-	if !ok {
-		return IntegrationCluster{}, fmt.Errorf("task-workspace resource is %T", res.Get("task-workspace"))
-	}
-	cluster, err := NewCluster(res, WithNamespace(namespace), WithVolumeRepo(),
-		WithExecutor(localExecutor{supervisorRoot: workspace.Dir}),
-		WithConfig(func(cfg *jetbridge.Config) {
-			cfg.PodStartupTimeout = 5 * time.Second
-			cfg.PodSchedulingTimeout = 5 * time.Second
-		}))
-	if err != nil {
-		return IntegrationCluster{}, err
-	}
-	team, err := cluster.DB.TeamFactory.CreateTeam(atc.Team{Name: "main"})
-	if err != nil {
-		return IntegrationCluster{}, fmt.Errorf("create team: %w", err)
-	}
-
-	cluster.TeamID = team.ID()
-
-	return IntegrationCluster{
-		Cluster:   cluster,
-		Team:      team,
-		Workspace: workspace,
-		Artifacts: map[string]NamedArtifact{},
-	}, nil
-}
 
 func persistArtifactVolume(in IntegrationCluster, name string, teamID int) (IntegrationCluster, error) {
 	vol, artifact, err := in.Worker.CreateVolumeForArtifact(in.Ctx, teamID)
@@ -1487,10 +1174,9 @@ func otherTeamIDs(in IntegrationCluster, exclude int) []int {
 	return ids
 }
 
-// runStep drives one container to a pod, and — when the scenario waits on it —
-// to a process result. The optional log buffer is read after the wait so the
-// scenario can assert what a consumer saw.
-func runStep(in StepCreated, spec runtime.ProcessSpec, pio runtime.ProcessIO, wait bool, log ...*bytes.Buffer) (StepRan, error) {
+// runStep observes API-only pod construction. Actual command execution and
+// artifact integration live in live_artifact_integration.go.
+func runStep(in StepCreated, spec runtime.ProcessSpec, pio runtime.ProcessIO) (StepRan, error) {
 	out := StepRan{
 		Created:     in,
 		BoundBefore: map[string]string{},
@@ -1500,11 +1186,10 @@ func runStep(in StepCreated, spec runtime.ProcessSpec, pio runtime.ProcessIO, wa
 		out.BoundBefore[m.MountPath] = podNameOf(m.Volume)
 	}
 
-	process, err := in.Container.Run(in.Cluster.Ctx, spec, pio)
+	_, err := in.Container.Run(in.Cluster.Ctx, spec, pio)
 	if err != nil {
 		return StepRan{}, fmt.Errorf("run container %q: %w", in.Handle, err)
 	}
-	out.ProcessID = process.ID()
 
 	for _, m := range in.Mounts {
 		out.BoundAfter[m.MountPath] = podNameOf(m.Volume)
@@ -1519,6 +1204,9 @@ func runStep(in StepCreated, spec runtime.ProcessSpec, pio runtime.ProcessIO, wa
 	if err != nil {
 		return StepRan{}, fmt.Errorf("the step created no pod named %q: %w", podName, err)
 	}
+	if pod.UID == "" || pod.ResourceVersion == "" {
+		return StepRan{}, fmt.Errorf("integration pod has no API identity")
+	}
 	out.Pod = pod
 
 	pods, listErr := in.Cluster.Clientset.CoreV1().Pods(in.Cluster.Namespace).
@@ -1528,31 +1216,6 @@ func runStep(in StepCreated, spec runtime.ProcessSpec, pio runtime.ProcessIO, wa
 	}
 	out.PodCount = len(pods.Items)
 
-	if !wait {
-		return out, nil
-	}
-
-	// The pause pod has to be Running before the exec, exactly as the kubelet
-	// would have made it. Doing this BEFORE Wait is what keeps the scenario
-	// from sitting on the startup deadline.
-	if err := markPodRunning(in.Cluster.Ctx, in.Cluster.Clientset, in.Cluster.Namespace, pod.Name); err != nil {
-		return StepRan{}, err
-	}
-
-	result, waitErr := process.Wait(in.Cluster.Ctx)
-	out.ExitStatus = result.ExitStatus
-	if waitErr != nil {
-		out.Err, out.Message = waitErr, waitErr.Error()
-	}
-	if len(log) > 0 && log[0] != nil {
-		out.Stdout = log[0].String()
-	}
-
-	refreshed, getErr := in.Cluster.Clientset.CoreV1().Pods(in.Cluster.Namespace).
-		Get(in.Cluster.Ctx, pod.Name, metav1.GetOptions{})
-	if getErr == nil {
-		out.Pod = refreshed
-	}
 	return out, nil
 }
 

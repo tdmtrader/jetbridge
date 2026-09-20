@@ -25,16 +25,23 @@ about those changes.
 ## `features/pending/`: checked, never run
 
 `.brine` says `features: "features/*.feature"`. That glob does **not** reach
-`features/pending/`, and that is the point.
+`features/pending/` — the mechanism is a directory that both `.brine` manifests
+(this one and `live/.brine`) exclude, while every vocabulary and citation guard
+still walks it, so a scenario can be checked for shape without ever being run.
 
-The Hangar output family's six feature files describe a plane that does not
-exist yet. Their step definitions are written — every phrase in
-`steps/hangar_*.go` is real, registered, and returns a typed
-"not yet implemented in production" error naming the phase that closes it — but
-the production code behind them lands across Phases 2 through 8. A scenario over
-those steps can only be red.
+As of `c96fac16a7`, `features/pending/` does not exist: the Hangar output
+family it held has landed, and every `hangar-*.feature` scenario now runs from
+`features/` like any other. This section documents the arrangement generically,
+for the next family that needs to stage step definitions ahead of the
+production code they exercise — described below as it worked for Hangar, not
+as a claim about what is pending today.
 
-Three things had to be true at once, and `features/pending/` is what makes them
+The pattern applies when a family's step definitions are written — every
+phrase real, registered, and returning a typed "not yet implemented in
+production" error naming the phase that closes it — but the production code
+behind them has not landed yet. A scenario over those steps can only be red.
+
+Three things have to be true at once, and `features/pending/` is what makes them
 compatible:
 
 1. **No phrase may be dead.** `TestEveryStepDefinitionIsUsedByAScenario` fails on
@@ -74,3 +81,32 @@ When the phase a scenario's steps name has landed, the doer for that phase:
 The `Reddened by:` comments already in the pending files come from the plan and
 name the one production line and the one step that should redden. They are the
 mutation to run, not evidence that it was run.
+
+## `features/live/pending/`: the same arrangement, for the opposite reason
+
+`live/.brine` says `features: ../features/live/*.feature`, which does not reach
+a `features/live/pending/` directory either.
+
+This directory existed for part of 2026-09-18 and is gone: commit
+`388692eb54` reverted every production fix the migration had made, and the
+scenarios that were red against `origin/core` as a result were parked there
+rather than deleted or left red in the running corpus. The fix round
+(`brine-v5-fix/prod-fixes`) re-applied the seven fixes and moved every parked
+scenario back into its `features/live/` file, removing the directory.
+`TestPendingHangarFeaturesAreNotRun` now asserts it stays absent and that no
+running live feature carries the `NOT RUN YET` marker.
+
+The difference from `features/pending/` was why the scenarios were there. A
+`features/pending/` scenario is **ahead of production** — its plane has not
+been written. A `features/live/pending/` scenario was **behind a revert**: its
+production change *was* written, and a commit took it back out. Each file named
+the function and file that would make it green and documented the defect core
+had. Everything else was identical: `NOT RUN YET` in the Feature description,
+`TestPendingHangarFeaturesAreNotRun` (which reads both manifests and both
+directories) enforcing it, and every vocabulary guard applying because
+`featurePaths` walks all of `../features`. Moving one up meant restoring the
+production change the file named, then moving the scenario back into
+`features/live/<file>`.
+
+`./pendingcheck.sh` still covers only `features/pending/`; the live tier's
+`brine check` runs on the cluster image, not here.

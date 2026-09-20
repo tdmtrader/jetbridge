@@ -79,7 +79,7 @@ package steps
 // was measured at +70 seconds when the first real-daemon scenarios were
 // wired up. The API server is the exception and is deliberately NOT started
 // here: it is the suite-scoped "real-cluster" resource, already paid for by
-// pod-watch-real.feature, and this feature adds nothing to its cost.
+// pod-watch.feature, and this feature adds nothing to its cost.
 //
 // WHAT IS ASSERTED IS THE OUTCOME. Every check below reads the destination
 // directory the consumer named: which bytes are in it, whether a link is
@@ -276,33 +276,20 @@ var onlyLoopback = []string{"--listen-address", "127.0.0.1"}
 // peers on its own --port, so on one host the two daemons can only be told
 // apart by the address they answer on.
 func routeToPeer(listenAddr, targetAddr string) (net.Listener, error) {
-	ln, err := net.Listen("tcp", listenAddr)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"listen on %s to publish the peer there: %w (the asking daemon is started with "+
-				"--listen-address 127.0.0.1 precisely so this port is free at every other address; "+
-				"something else on this host holds it)",
-			listenAddr, err)
-	}
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return // the listener was closed at scenario end
-			}
-			go forwardConn(conn, targetAddr)
-		}
-	}()
-	return ln, nil
+	return routeWithDrops(listenAddr, targetAddr, 0, false)
 }
 
-func forwardConn(client net.Conn, targetAddr string) {
+func forwardConn(ctx context.Context, client net.Conn, targetAddr string) {
+	stopClient := context.AfterFunc(ctx, func() { _ = client.Close() })
+	defer stopClient()
 	defer client.Close()
-	upstream, err := net.DialTimeout("tcp", targetAddr, 10*time.Second)
+	upstream, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp", targetAddr)
 	if err != nil {
 		return
 	}
 	defer upstream.Close()
+	stopUpstream := context.AfterFunc(ctx, func() { _ = upstream.Close() })
+	defer stopUpstream()
 
 	// Half-close in each direction as it drains, so the peer sees the end of a
 	// request body and the daemon sees the end of a response.
@@ -363,9 +350,9 @@ func DaemonCrossNodeDefinitions() []brine.StepDefinition {
 			"two real artifact daemons, this node's and another node's",
 			[]string{"real-cluster"},
 			func(_ brine.Empty, _ brine.Params, rec *brine.Recorder, res brine.Resources) (CrossNode, error) {
-				rc, ok := res.Get("real-cluster").(*realCluster)
-				if !ok {
-					return CrossNode{}, fmt.Errorf("real-cluster resource is %T", res.Get("real-cluster"))
+				rc, err := getRealCluster(res)
+				if err != nil {
+					return CrossNode{}, err
 				}
 				cfg := rc.env.Config
 				if cfg == nil {
@@ -391,11 +378,11 @@ func DaemonCrossNodeDefinitions() []brine.StepDefinition {
 				// A kubeconfig the daemon can be pointed at. --node-name is
 				// what wires peer discovery at all, and it makes the daemon
 				// build a Kubernetes client, so --kubeconfig must come with it.
-				dir, err := os.MkdirTemp("", "brine-cross-node-*")
+				dir, err := AttributedTempDir("brine-cross-node-*")
 				if err != nil {
 					return CrossNode{}, fmt.Errorf("temp dir for the kubeconfig: %w", err)
 				}
-				rec.RegisterDisposer(func() { _ = os.RemoveAll(dir) })
+				TrackDisposer(rec, "the kubeconfig directory", func() error { return os.RemoveAll(dir) })
 
 				kubeconfig := filepath.Join(dir, "kubeconfig")
 				api := clientcmdapi.NewConfig()
@@ -422,16 +409,16 @@ func DaemonCrossNodeDefinitions() []brine.StepDefinition {
 					metav1.CreateOptions{}); err != nil {
 					return CrossNode{}, fmt.Errorf("create node %q: %w", nodeName, err)
 				}
-				rec.RegisterDisposer(func() {
-					_ = rc.Clientset.CoreV1().Nodes().Delete(
-						context.Background(), nodeName, metav1.DeleteOptions{})
+				TrackDisposer(rec, "the peer node "+nodeName, func() error {
+					return releasedIfGone(rc.Clientset.CoreV1().Nodes().Delete(
+						context.Background(), nodeName, metav1.DeleteOptions{}))
 				})
 
 				peer, err := startRealDaemon()
 				if err != nil {
 					return CrossNode{}, fmt.Errorf("start the other node's daemon: %w", err)
 				}
-				rec.RegisterDisposer(func() { _ = peer.stop() })
+				TrackDisposer(rec, "the other node's artifact daemon", peer.stop)
 
 				local, err := startRealDaemon(append([]string{
 					"--kubeconfig", kubeconfig,
@@ -446,7 +433,7 @@ func DaemonCrossNodeDefinitions() []brine.StepDefinition {
 				if err != nil {
 					return CrossNode{}, fmt.Errorf("start this node's daemon: %w", err)
 				}
-				rec.RegisterDisposer(func() { _ = local.stop() })
+				TrackDisposer(rec, "this node's artifact daemon", local.stop)
 
 				localPort, err := daemonPort(local)
 				if err != nil {
@@ -463,7 +450,7 @@ func DaemonCrossNodeDefinitions() []brine.StepDefinition {
 				if err != nil {
 					return CrossNode{}, err
 				}
-				rec.RegisterDisposer(func() { _ = route.Close() })
+				TrackDisposer(rec, "the route to the peer", route.Close)
 
 				if _, err := rc.Clientset.DiscoveryV1().EndpointSlices("default").Create(ctx,
 					&discoveryv1.EndpointSlice{
@@ -477,9 +464,9 @@ func DaemonCrossNodeDefinitions() []brine.StepDefinition {
 					}, metav1.CreateOptions{}); err != nil {
 					return CrossNode{}, fmt.Errorf("publish the peer's endpoints: %w", err)
 				}
-				rec.RegisterDisposer(func() {
-					_ = rc.Clientset.DiscoveryV1().EndpointSlices("default").Delete(
-						context.Background(), service, metav1.DeleteOptions{})
+				TrackDisposer(rec, "the peer's endpoints", func() error {
+					return releasedIfGone(rc.Clientset.DiscoveryV1().EndpointSlices("default").Delete(
+						context.Background(), service, metav1.DeleteOptions{}))
 				})
 
 				if err := verifyPeerRoute(peer, host, localPort); err != nil {

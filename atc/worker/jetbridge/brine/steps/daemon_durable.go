@@ -122,18 +122,18 @@ func (s DurableDaemon) restoreAnswer() (restoreAnswer, error) {
 // own store directory, and arranges for both to be cleaned up whether the
 // scenario passes, fails or is interrupted.
 func startDurableDaemon(rec *brine.Recorder, extra ...string) (DurableDaemon, error) {
-	store, err := os.MkdirTemp("", "brine-durable-store-*")
+	store, err := AttributedTempDir("brine-durable-store-*")
 	if err != nil {
 		return DurableDaemon{}, err
 	}
-	rec.RegisterDisposer(func() { _ = os.RemoveAll(store) })
+	TrackDisposer(rec, "the durable store directory", func() error { return os.RemoveAll(store) })
 
 	args := append([]string{"--durable-store", "filesystem", "--durable-path", store}, extra...)
 	d, err := startRealDaemon(args...)
 	if err != nil {
 		return DurableDaemon{}, err
 	}
-	rec.RegisterDisposer(func() { _ = d.stop() })
+	TrackDisposer(rec, "the durable artifact daemon", d.stop)
 
 	return DurableDaemon{Daemon: d, StorePath: store, Snapshot: rootEntries(d.Root)}, nil
 }
@@ -371,11 +371,12 @@ func DaemonDurableDefinitions() []brine.StepDefinition {
 					return in, err
 				}
 
-				outside, err := os.MkdirTemp("", "brine-durable-outside-*")
+				outside, err := AttributedTempDir("brine-durable-outside-*")
 				if err != nil {
 					return in, err
 				}
-				rec.RegisterDisposer(func() { _ = os.RemoveAll(outside) })
+				TrackDisposer(rec, "the directory outside the durable store",
+					func() error { return os.RemoveAll(outside) })
 
 				victim := filepath.Join(outside, "victim.txt")
 				if err := os.WriteFile(victim, []byte(content), 0o644); err != nil {

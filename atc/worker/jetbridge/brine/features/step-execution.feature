@@ -10,155 +10,46 @@ Feature: What each kind of step promises
   set_pipeline_step_test.go, task_step_test.go, retry_step_test.go,
   retry_error_step_test.go and on_abort_test.go.
 
-  WHY THIS FILE IS SHORT, WHICH IS THE FINDING.
+  These cases assert build-visible outcomes through real PostgreSQL and engine
+  delegates. Pipeline artifact reads, task preflight and retry classification
+  use real dependencies. Live resource gets, publication and retries are grouped
+  under features/live, including the explicitly approved partial-output put fault.
 
-  The migration's engine is "replace the recording double with a working one
-  and assert the round trip", and in atc/exec most of that payoff had been
-  collected before brine existed: the suite already runs on real PostgreSQL,
-  with the real engine delegates, reading real build_events back out. So there
-  was little left to collect, and every scenario below had to earn its place
-  on the sentence alone.
+  The real retry cases distinguish an interrupted API route from a missing
+  required input, and ensure cancellation prevents retry. An unmapped resource
+  type is an image name in the Kubernetes worker, not the fabricated "unknown
+  resource type" error the previous fixture supplied.
 
-  A CORRECTION TO WHAT THAT PARAGRAPH FIRST SAID. It said atc/exec "has no
-  recording double left to replace". The tree says otherwise:
-  worker_pool_test.go:69 scriptedPool records the arguments handed to the
-  pool, get_step_test.go:49 recordingGetDelegate records the ORDER of delegate
-  calls, and get_step_test.go:1115 recordingLockFactory counts lock
-  acquisitions. The true, narrower statement is that each of those records
-  something PostgreSQL cannot show — which is also why the dispositions below
-  decline the assertions built on them, and why steps/step_execution.go's own
-  execStepPool exists: it is one of those doubles replaced with a working one,
-  answering the cache lookup from what a scenario said is true.
-
-  Most of atc/exec's assertions do not. They are true and worth keeping and
-  they are not sentences: "sets the worker spec with teamID", "adds
-  state-transition span events", "calls Errored but not Finished", "gets the
-  container owner from the delegate". A Gherkin line for any of those is a
-  worse Go test with a longer name. The disposition comments at the foot of
-  each section say which ones and why, and those tests stay exactly where they
-  are.
-
-  WHAT WAS WORTH BUILDING: A RESOURCE THAT ANSWERS.
-
-  The suite scripts the resource process with a canned reply —
-  `ProcessStub{Output: someVersion}` — so the version that comes back is a
-  constant the test supplied, it comes back no matter what was asked for, and
-  nothing there reads the request the step wrote on stdin.
-
-  WHAT THAT DOES NOT MEAN, because this file first said it did. It does not
-  mean "a get that had lost its version pin entirely would pass" in ginkgo. It
-  would not. get_step_test.go:312 reads the resource cache row back out of
-  resource_cache_uses and asserts its version. MEASURED: with the
-  `getPlan.Version != nil` arm of NewVersionSourceFromPlan disabled through a
-  build overlay (go build -overlay, production untouched),
-  `go test -overlay=... ./atc/exec/ -run TestExec -args
-  -ginkgo.focus="constructs the resource cache correctly"` reports "Ran 1 of
-  563 Specs ... 1 Failed", against "1 Passed" unmutated. The pin is pinned
-  there, one layer below the wire.
-
-  What the answering resource does buy is a resource that can say NO. It
-  holds versions and answers only for a version it holds, refusing anything
-  else the way a real `in` script refuses a ref that is not in the repository.
-  So "pinned to v2" can fail on the step itself rather than only on a row read
-  afterwards, a put followed by a get is a round trip — the put adds the
-  version to the catalogue the get then reads — rather than two constants
-  compared, and the cache-hit scenario can hold nothing at all, which is a
-  discriminator no canned reply can express.
+  Mutation evidence and migration history are recorded in V5-MIGRATION.md.
+  Dispositions below retain Go assertions not established by these scenarios.
 
   # ==========================================================================
   # Getting a version
   # ==========================================================================
 
-  # The central promise of a get. The resource holds two versions and is asked
-  # for one of them, so the answer names which one was requested; a step that
-  # dropped the pin would ask for the empty version, which this resource does
-  # not hold, so the get would be refused and the scenario would go red on its
-  # very first row. Measured: making NewVersionSourceFromPlan ignore
-  # getPlan.Version does exactly that.
-  #
-  # TWO consumers of the version are checked, and they are written by
-  # different lines of get_step.go: the finish event the build page renders,
-  # and the resource_caches row that decides whether the next build
-  # re-fetches.
-  #
-  # A CORRECTION. This comment used to count the artifact repository as a
-  # third consumer of the version. It is not one. The artifact row resolved
-  # through the repository's KEYS, which are the plan's name — no version
-  # travels with them, and the row would have passed for any version the
-  # resource happened to hold. It went red under the pin mutation only because
-  # the step failed outright. What a get's artifact CAN say is the other half
-  # of its result, fromCache, so that is what the last row says now: fetched
-  # here, taken from the worker's cache in the cache-hit scenario below.
-  #
-  # Reddened by: NewVersionSourceFromPlan ignoring getPlan.Version — measured,
-  # the get asks for the empty version, the resource refuses it, and the
-  # scenario stops red on its first Then. The last row is separately reddened
-  # by get_step.go registering the artifact with `true` in place of fromCache —
-  # measured, and that mutation reddens nothing else in this file.
-  Scenario: A get step fetches the version its plan pinned
-    Given a build of a job whose pipeline has the resource "some-resource"
-    And the resource holds version "v1"
-    And the resource holds version "v2"
-    When the get step runs, pinned to version "v2"
-    Then the step succeeded
-    And the build fetched version "v2"
-    And the build holds a resource cache for version "v2"
-    And the build's artifact "some-resource" was fetched rather than taken from a cache
+  # A get step fetches the version its plan pinned
+  # now runs against an actual Git HTTP repository in live/get-step.feature.
 
-  # `put: some-resource` in a job is followed by an implicit get of what the
-  # put just created — that is how the artifact a later task consumes comes
-  # into existence. The get names no version of its own; it names the PLAN the
-  # put ran under, and reads the result out of the run state.
-  #
-  # The resource makes this a real round trip: the put's `out` script adds
-  # "v3" to the catalogue, and the get's `in` script would refuse "v3" if it
-  # were not there. So the get could not succeed on a version the put did not
-  # actually create, and could not succeed at all if the version failed to
-  # travel between the two steps.
-  #
-  # The publication half is the other consumer of the same version and is
-  # written by a different collaborator — the put delegate's SaveOutput — so a
-  # break in either half fails one row and not the other.
-  #
-  # Reddened by: DynamicVersionSource returning an empty version instead of the
-  # one it found (the get half), or by SaveOutput being skipped for a resource
-  # the plan names (the publication half). Both measured; each reddens one row
-  # and leaves the other alone.
-  Scenario: The version a put created is published, and is the one the get after it fetches
-    Given a build of a job whose pipeline has the resource "some-resource"
-    When the build puts version "v3" and then gets what the put created
-    Then the step succeeded
-    And the build published version "v3"
-    And the build fetched version "v3"
-    And the build holds a resource cache for version "v3"
 
-  # A cache already on the chosen worker must not be fetched again. Going back
-  # to the resource for bytes that are already on the node is the whole cost
-  # of a get with none of its purpose, and on a busy pipeline it is most of
-  # the gets.
+  # The version a put created is published, and is the one the get after it fetches
+  # now uses the actual time resource in live/time-resource.feature.
+
+
+  # A cached get reads a real volume associated with its version and worker in
+  # PostgreSQL. A separate producer build owns the original cache; the real
+  # artifact daemon serves its bytes through a published EndpointSlice.
   #
-  # The resource holds NOTHING in this scenario. That is the discriminator and
-  # it is stronger than counting the script's invocations: an implementation
-  # that ran the script would be refused, because there is no version "v2" to
-  # serve, so "succeeded" is unreachable except by using the cache.
+  # The existing provenance assertion checks both fromCache and the returned
+  # artifact's actual version file, and requires no resource pod to exist.
+  # Cache lookup and bytes are independently verified before the get runs.
   #
-  # The cache lookup is answered by the VERSION of the cache being asked
-  # about, which is why the third row is here — the message the operator sees
-  # is only correct if the cache that was found is a cache of what they asked
-  # for.
+  # Pin loss or bypassing the cache makes the get miss this association and
+  # attempt a resource pod. Local envtest does not execute pods, so that path
+  # cannot succeed and is bounded by a deadline. This proves cache reuse, not
+  # resource-script execution or producer publication.
   #
-  # The last row is what separates this scenario from the one at the top of
-  # the file, and it is not the artifact's NAME: that is the plan's name in
-  # both, whichever path ran. It is the fromCache flag the get registers
-  # alongside the artifact, which is the only thing about a get's result that
-  # says whether the bytes were fetched or were already on the node.
-  #
-  # Reddened by: anything that makes the cache probe ask about the wrong
-  # version — measured with NewVersionSourceFromPlan ignoring the pin, which
-  # sends the lookup after the empty version, misses the cache, runs the script
-  # and is refused. The last row is separately reddened by get_step.go
-  # registering the artifact with `false` in place of fromCache — measured,
-  # and that mutation reddens nothing else in this file.
+  # Paired mutations preserve pin/provenance/refetch sensitivity. Registering a
+  # nil artifact used to pass; the real returned-artifact read now rejects it.
   Scenario: A cache the worker already holds is served without running the resource script again
     Given a build of a job whose pipeline has the resource "some-resource"
     And the chosen worker already holds a cache of version "v2"
@@ -168,51 +59,13 @@ Feature: What each kind of step promises
     And the build fetched version "v2"
     And the build's artifact "some-resource" came from a cache on the worker
 
-  # A resource that says no is a FAILED build, not an ERRORED one. The
-  # difference is the one an operator reads off the colour of the step: red
-  # means the pipeline did something wrong, and the other colour means the
-  # platform did. Returning an error here would tell them their cluster broke
-  # when in fact a version they asked for does not exist.
-  #
-  # The third row is an absence, and its precondition is the second: the
-  # finish event with exit status 1 says the script really ran and really
-  # answered, so "no artifact" is a statement about what the get registered
-  # rather than about a build that never started. A downstream task that
-  # consumed a half-fetched artifact would be the defect.
-  #
-  # Reddened by: `return false, err` replacing the exit-status branch in
-  # get_step.go, or by RegisterArtifact moving out from under
-  # `if processResult.ExitStatus == 0`.
-  Scenario: A get the resource refuses is a failed build, and hands nothing downstream
-    Given a build of a job whose pipeline has the resource "some-resource"
-    And the resource holds version "v1"
-    When the get step runs, pinned to version "v9"
-    Then the step failed rather than erroring
-    And the build reported the get finishing with exit status 1
-    And the build's artifacts do not include "some-resource"
+  # A get the resource refuses is a failed build, and hands nothing downstream
+  # now runs against an actual Git HTTP repository in live/get-step.feature.
 
-  # A get that runs out of time reports WHY. The step itself returns a
-  # failure — so the build goes red rather than being wedged — but the reason
-  # is written to the build as an error event, which is the only place the
-  # operator can find out that it was the timeout and not the resource.
-  #
-  # The absence in the last row is witnessed by the row above it: a step that
-  # both errored and finished would tell the build page two contradictory
-  # things about the same step, and the finish event is the one that carries
-  # an exit status the UI would render as a real result.
-  #
-  # Reddened by: the DeadlineExceeded branch calling Finished as well
-  # (measured: the last row goes red), or by dropping delegate.Errored
-  # (measured: the error row goes red). Both halves are live.
-  Scenario: A get that outruns its timeout says so, and never reports a finish
-    Given a build of a job whose pipeline has the resource "some-resource"
-    And the resource holds version "v2"
-    And the resource script never answers
-    And the get step is allowed "200ms" to finish
-    When the get step runs, pinned to version "v2"
-    Then the step failed rather than erroring
-    And the build log records the error "timeout exceeded"
-    And the build never reported the get finishing
+
+  # The get timeout now runs against a physically stalled Git HTTP server in
+  # live/get-step.feature, with a real resource process observed before expiry.
+
 
   # DISPOSITION — "runs with the correct ContainerSpec", "sets the worker spec
   # with teamID", "gets the container owner from the delegate" and "emits a
@@ -262,13 +115,8 @@ Feature: What each kind of step promises
   # `if processResult.ExitStatus != 0` early return in put_step.go being
   # dropped — the step then reports success, and the finish it records carries
   # exit status 0.
-  Scenario: A put that named a version and then failed publishes nothing
-    Given a build of a job whose pipeline has the resource "some-resource"
-    And the resource names a version and then fails
-    When the put step runs, publishing version "v3"
-    Then the step failed rather than erroring
-    And the build reported the put finishing with exit status 4
-    And the build published nothing at all
+  # The version-then-exit-4 contract now runs with the explicitly approved
+  # executable fault in features/live/partial-put.feature.
 
   # DISPOSITION — "detects inputs from params" / "passes all inputs" /
   # "passes specified inputs" are put_inputs.go, a pure function over the
@@ -448,96 +296,9 @@ Feature: What each kind of step promises
   # Retrying, and aborting
   # ==========================================================================
 
-  # `attempts: 3` means AT MOST three. The attempts below are real put steps,
-  # so what an attempt leaves behind when it runs is a version on the resource
-  # rather than a mark in a counter — and attempt 3 is armed to succeed, so if
-  # the loop kept going after attempt 2 there would be a version "attempt-3"
-  # to find. There is not.
-  #
-  # A retry that did not stop would triple the cost of every flaky step and,
-  # worse, run a step's side effects again after it had already succeeded.
-  #
-  # Reddened by: the `if attemptOk { break }` going away.
-  Scenario: A retried step stops at the first attempt that succeeds
-    Given a build of a job whose pipeline has the resource "some-resource"
-    And attempt 1 of the retried step fails
-    And attempt 2 of the retried step publishes version "attempt-2"
-    And attempt 3 of the retried step publishes version "attempt-3"
-    When the retried step runs
-    Then the step succeeded
-    And the build log mentions "attempt 1"
-    And the build published version "attempt-2"
-    And the build published no version "attempt-3"
+  # A retried step stops at the first attempt that succeeds
+  # now uses the actual time resource in live/time-resource.feature.
 
-  # Abort means now. An operator who hits abort on a step with attempts left
-  # is telling the platform to stop, and a retry loop that read the
-  # cancellation as merely another failed attempt would keep going — spending
-  # the remaining attempts, and holding the build open, after the person
-  # asking has already walked away.
-  #
-  # The absence in the last row has its precondition in the one above it: the
-  # build log carries attempt 1's own line, so the loop demonstrably started.
-  # Attempt 2 is armed to publish, so it would leave a version if it ran.
-  #
-  # Reddened by: the `if ctx.Err() != nil` check at the top of RetryStep's
-  # loop body being removed.
-  Scenario: An aborted build does not spend its remaining attempts
-    Given a build of a job whose pipeline has the resource "some-resource"
-    And attempt 1 of the retried step fails, and the build is aborted while it runs
-    And attempt 2 of the retried step publishes version "attempt-2"
-    When the retried step runs
-    Then the step was refused, saying "context canceled"
-    And the build log mentions "attempt 1"
-    And the build published no version "attempt-2"
-
-  # `on_abort` is for aborts. Not for failures, and not for every error — a
-  # hook that fired on any error would run cleanup on a cluster blip, and
-  # people put destructive things in on_abort precisely because they believe
-  # it only runs when a human stopped the build.
-  #
-  # Every row asserts something present. The hook is a real put, so "the hook
-  # ran" is a version on the resource; and the guarded step announces itself
-  # to the build log before its fate arrives, so the rows where the hook did
-  # NOT run still show that the step it guards did.
-  #
-  # FOUR rows, because "on nothing else" is three other fates and this outline
-  # first had only one of them. It had the abort and the error. The two the
-  # sentence turns on hardest — a step that FAILED without erroring, and a
-  # step that simply succeeded — were missing, which left on_abort.go's
-  # `if stepRunErr == nil { return stepRunOk, nil }` arm unexercised by any
-  # row here, and left "not for failures" as a claim with no row behind it.
-  #
-  # Reddened by: the errors.Is(stepRunErr, context.Canceled) test being
-  # widened to any error at all — measured, the errored row goes red and the
-  # other three stay green. Or by the hook firing on any unsuccessful step:
-  # `!stepRunOk ||` in front of the errors.Is test, with the
-  # `stepRunErr == nil` early return weakened to match — measured, the errored
-  # row AND the failed row go red, and that is the mutation the failed row
-  # exists for.
-  #
-  # No mutation reddens the failed row ALONE, and that is a property of the
-  # production code rather than of this table: the early-return arm cannot be
-  # lost on its own, because errors.Is(nil, context.Canceled) is false anyway,
-  # so deleting the arm changes no outcome. The succeeded row goes red only
-  # when the hook runs unconditionally — measured, rows 2, 3 and 4 red. Those
-  # two rows are the standing form of "and on nothing else"; they are here
-  # because the outline was an abort and an error, while the sentence above it
-  # claimed all four.
-  Scenario Outline: An on_abort hook runs on an abort and on nothing else — <case>
-    Given a build of a job whose pipeline has the resource "some-resource"
-    And <fate>
-    And the on_abort hook publishes version "hook-ran"
-    When the step runs with its on_abort hook
-    Then <outcome>
-    And the build log mentions "the step ran"
-    And the build <verdict> version "hook-ran"
-
-    Examples:
-      | case                             | fate                                    | outcome                                                    | verdict      |
-      | the build was aborted            | the step is aborted while it runs       | the step was refused, saying "context canceled"            | published    |
-      | the step errored some other way  | the step cannot reach its resource host | the step was refused, saying "the resource host went away" | published no |
-      | the step failed without erroring | the resource refuses the step           | the step failed rather than erroring                       | published no |
-      | the step did what it was asked   | the step does what it was asked         | the step succeeded                                         | published no |
 
   # Some failures are worth trying again and most are not, and the platform
   # decides which without asking the author. A cluster the ATC could not
@@ -590,15 +351,15 @@ Feature: What each kind of step promises
     And <notice>
 
     Examples:
-      | case                             | failure                                           | message               | verdict                             | notice                                                                         |
-      | the cluster could not be reached | the step fails with an unreachable Kubernetes API | connection refused    | the refusal is marked for retry     | the build log records an error mentioning "connection refused, will retry ..." |
-      | the pipeline names nothing real  | the step fails with an unknown resource type      | unknown resource type | the refusal is not marked for retry | the build log records no error at all                                          |
+      | case                             | failure                                                         | message                           | verdict                             | notice                                                                         |
+      | the cluster could not be reached | the step fails with an unreachable Kubernetes API               | connection refused                | the refusal is marked for retry     | the build log records an error mentioning "connection refused, will retry ..." |
+      | the pipeline names nothing real  | the step requires an input artifact that was never produced      | input not found: missing-artifact | the refusal is not marked for retry | the build log records no error at all                                          |
 
   # The two rules meet here, and the abort wins. A build that a person
   # stopped must not be restarted by the platform's own judgement that the
-  # failure looked transient — the failure did look transient, because the
-  # cancellation is why the call failed. Retrying it would ignore the abort
-  # and start the work again.
+  # failure looked transient. Here the real API request hits connection
+  # refusal, and the build is aborted before that failure is classified.
+  # Retrying it would ignore the abort and start the work again.
   #
   # The discriminator is the first row of the outline above: the same failure,
   # on a build that was not aborted, IS marked for retry.
@@ -608,7 +369,7 @@ Feature: What each kind of step promises
   Scenario: A build somebody aborted is not turned into a retry
     Given a build of a job whose pipeline has the resource "some-resource"
     And the step fails with an unreachable Kubernetes API
-    And the build has already been aborted
+    And the build is aborted as the API request fails
     When the step runs, with its failures classified for retry
     Then the step was refused, saying "connection refused"
     And the refusal is not marked for retry

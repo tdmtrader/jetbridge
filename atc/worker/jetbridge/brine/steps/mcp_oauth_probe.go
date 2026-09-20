@@ -59,7 +59,7 @@ func NewMCPOAuthProbe(clientID, callback string) (probe *MCPOAuthProbe, err erro
 		values[name] = value
 		p.dispose = append(p.dispose, func() error { return definition.Disposer(value) })
 	}
-	p.scenario, err = newMCPScenario(values["auth-server"].(*AuthFixture))
+	p.scenario, err = newMCPProbeScenario(values["auth-server"].(*AuthFixture))
 	if err != nil {
 		return nil, err
 	}
@@ -73,6 +73,15 @@ func NewMCPOAuthProbe(clientID, callback string) (probe *MCPOAuthProbe, err erro
 	f.extra = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { p.observe(next, w, r) })
 	f.mu.Unlock()
 	return p, nil
+}
+
+// Use the same first-use boundary as the authentication steps.
+func newMCPProbeScenario(fixture *AuthFixture) (*MCPScenario, error) {
+	ready, err := fixture.ready()
+	if err != nil {
+		return nil, err
+	}
+	return newMCPScenario(ready)
 }
 
 func (p *MCPOAuthProbe) Endpoint() string { return p.scenario.Config.Resource }
