@@ -1,0 +1,76 @@
+{{- if and .Values.rbac.create .Values.rbac.brineLive }}
+---
+# What the brine live tier (atc/worker/jetbridge/brine/live) does from inside
+# a task pod with BRINE_KUBE_CONTEXT=in-cluster: creates a brine-runtime-*
+# namespace per scenario, runs real pods, services, secrets, service accounts
+# and endpoint slices in it, reads nodes and every pod on the approved node
+# to check the host port it was given, and deletes the namespace on the way
+# out. Namespace names are generated, so this cannot be a Role.
+#
+# It binds to the service account TASK pods run as, which is one global
+# setting (kubernetes.serviceAccount, the namespace default when empty): every
+# task pod on this deployment inherits it. That is why it is off by default
+# and meant for a single-tenant cluster whose pipelines are its own tests.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "concourse.fullname" . }}-brine-live
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["create", "get", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "secrets", "services", "serviceaccounts", "resourcequotas", "limitranges"]
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods/exec", "pods/portforward"]
+    verbs: ["create"]
+  # The mirroring scenario grants its own daemon a namespace-scoped Role over
+  # endpointslices; the escalation check passes because every verb it hands
+  # out is already granted above.
+  # The pod-access scenarios also UPDATE their Role in place to revoke and
+  # restore a permission mid-scenario (build 875225, three scenarios).
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["create", "get", "list", "update", "patch", "delete"]
+  # The pod-access scenarios grant a Role to a made-up user and then act AS
+  # that user to prove the runtime's reads survive a revoked or transient
+  # permission. Impersonating a user, in the system:authenticated group, is
+  # its own verb; without it every impersonated request is forbidden and the
+  # probe waits out its deadline (build 874205, four scenarios).
+  - apiGroups: [""]
+    resources: ["users", "groups"]
+    verbs: ["impersonate"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["daemonsets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "concourse.fullname" . }}-brine-live
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.kubernetes.serviceAccount | default "default" }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: {{ include "concourse.fullname" . }}-brine-live
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

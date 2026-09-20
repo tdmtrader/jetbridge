@@ -75,8 +75,9 @@ var typedModes = []struct {
 			"postgresql.enabled=true",
 			"artifactDaemon.durable.store=gcs",
 			"artifactDaemon.durable.bucket=jb-durable",
+			"rbac.brineLive=true",
 		),
-		floor: 32,
+		floor: 34,
 	},
 	{
 		name: "activation Job, mode=attest facet=base",

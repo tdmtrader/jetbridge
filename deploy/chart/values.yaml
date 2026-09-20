@@ -158,7 +158,9 @@ kubernetes:
   # Defaults to the release namespace.
   namespace: ""
 
-  # -- ServiceAccount for task pods (uses web SA if empty)
+  # -- ServiceAccount for task pods. Empty means the pod spec names none and
+  # Kubernetes assigns the namespace's `default` ServiceAccount (not the web
+  # SA: the web command passes the value through as-is).
   serviceAccount: ""
 
   # -- Pod startup timeout
@@ -325,6 +327,12 @@ ingress:
 rbac:
   # -- Create RBAC resources (Role, RoleBinding) for the web pod
   create: true
+  # -- Grant the task pods' ServiceAccount what the brine live tier needs:
+  # cluster-wide namespace create/delete and pod/service/secret management in
+  # the namespaces it generates (templates/brine-live-rbac.yaml). Every task
+  # pod inherits it, so this is for a single-tenant cluster whose pipelines
+  # are its own tests.
+  brineLive: false
 
 # -- ServiceAccount configuration
 serviceAccount:
