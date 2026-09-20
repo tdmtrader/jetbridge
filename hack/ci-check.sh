@@ -184,6 +184,15 @@ for job in "${JOBS[@]}"; do
     break
   fi
 
+  # `privileged: true` lives on the STEP, outside the config fly is given, and
+  # fly execute only applies it as -p. Dropping it turned the brine job's
+  # namespace launcher into an EPERM that looked like a branch failure.
+  privileged=()
+  if [ "$(go run "$REPO_ROOT/hack/ci-extract-task" -privileged "$WORK/src/deploy/concourse-pipeline.yml" "$job")" = "true" ]; then
+    privileged=(-p)
+    log "'$job' runs privileged"
+  fi
+
   if ! vars_for "$cfg" "$job"; then
     VERDICTS+=("$job: SKIPPED (unresolved pipeline vars)")
     FAILED=1
@@ -199,6 +208,7 @@ for job in "${JOBS[@]}"; do
   fly -t "$FLY_TARGET" execute \
     -c "$cfg" \
     --include-ignored \
+    ${privileged+"${privileged[@]}"} \
     "${inputs[@]}" \
     ${FLY_VARS+"${FLY_VARS[@]}"} 2>&1 | tee "$WORK/$job.out" || status=1
 

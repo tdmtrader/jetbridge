@@ -10,7 +10,8 @@ PostgreSQL must be running locally for unit and integration tests. Check with `p
 |---------|-------------|------|---------------|
 | `make test-unit` | 69 Ginkgo suites (atc, fly, skymarshal, go-concourse, tracing) | ~3 min | PostgreSQL |
 | `make test-elm` | Elm frontend (2972 specs) | ~30 sec | `yarn install` |
-| `make test-quick` | Unit + Elm | ~5 min | PostgreSQL, yarn |
+| `make test-brine-guards` | Brine guard tests (nested `atc/worker/jetbridge/brine` module, no cluster) | ~1 sec | None |
+| `make test-quick` | Unit + Elm + brine guards | ~5 min | PostgreSQL, yarn |
 | `make test-fly-integration` | Fly CLI against mock ATC (591 specs) | ~30 sec | None |
 | `make test-integration` | ATC integration with real Postgres (21 specs) | ~12 sec | PostgreSQL |
 | `make test-k8s-integration` | K8s integration via testcontainers K3s | ~23 min | Docker, Helm, kubectl |

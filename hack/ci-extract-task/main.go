@@ -13,6 +13,7 @@
 //
 //	ci-extract-task <pipeline.yml> <job-name>            # print the task config as YAML
 //	ci-extract-task -inputs <pipeline.yml> <job-name>    # print the task's input names
+//	ci-extract-task -privileged <pipeline.yml> <job-name> # print "true" if the step is privileged
 //	ci-extract-task -jobs <pipeline.yml>                 # print every job that has a task
 //
 // A job with more than one task is rejected rather than guessed at.
@@ -36,6 +37,11 @@ type pipelineDoc struct {
 type step struct {
 	Task   string          `json:"task"`
 	Config json.RawMessage `json:"config"`
+	// Privileged is a STEP field, not part of the config, and `fly execute`
+	// only honours it as its own -p flag. A task that needs it (the brine
+	// job's namespace launcher does) silently runs unprivileged if the
+	// step field is dropped on the floor here.
+	Privileged bool `json:"privileged"`
 
 	// Nesting. These pipelines are nearly flat, but a task hidden inside an
 	// in_parallel or a do is still a task.
@@ -88,7 +94,7 @@ func flatten(plan []step) []step {
 }
 
 func main() {
-	var wantInputs, wantJobs bool
+	var wantInputs, wantJobs, wantPrivileged bool
 
 	args := os.Args[1:]
 	for len(args) > 0 && len(args[0]) > 1 && args[0][0] == '-' {
@@ -97,6 +103,8 @@ func main() {
 			wantInputs = true
 		case "-jobs", "--jobs":
 			wantJobs = true
+		case "-privileged", "--privileged":
+			wantPrivileged = true
 		default:
 			fatalf("unknown flag %q", args[0])
 		}
@@ -107,7 +115,7 @@ func main() {
 		fatalf("usage: ci-extract-task -jobs <pipeline.yml>")
 	}
 	if !wantJobs && len(args) != 2 {
-		fatalf("usage: ci-extract-task [-inputs] <pipeline.yml> <job-name>")
+		fatalf("usage: ci-extract-task [-inputs|-privileged] <pipeline.yml> <job-name>")
 	}
 
 	raw, err := os.ReadFile(args[0])
@@ -158,6 +166,10 @@ func main() {
 		}
 
 		task := tasks[0]
+		if wantPrivileged {
+			fmt.Println(task.Privileged)
+			return
+		}
 		if len(task.Config) == 0 {
 			fatalf("job %q task %q has no inline config (a `file:` task cannot be extracted)", jobName, task.Task)
 		}

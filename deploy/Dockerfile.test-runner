@@ -55,9 +55,32 @@ FROM golang:1.25-bookworm AS runner
 # Allow a checked-out task's Go module to select its required toolchain.
 ENV GOTOOLCHAIN=auto
 
+# gcc: the brine local tier runs its adapter inside an unprivileged user+net
+# namespace entered by atc/worker/jetbridge/brine/scripts/netns-exec.c, which
+# scripts/build-private-network compiles on the runner.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      curl git jq zip unzip ca-certificates gnupg \
+      curl git jq zip unzip ca-certificates gnupg gcc libc6-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# The brine steps run fetch scripts with real BusyBox applets. Debian's 1.35
+# builds crash on wget -T in this environment; use the upstream musl binary,
+# pinned by content. This runner already targets linux/amd64 (kubectl, envtest).
+RUN curl --fail --location --silent --show-error \
+      https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox \
+      -o /usr/local/bin/busybox \
+    && echo "6e123e7f3202a8c1e9b1f94d8941580a25135382b99e8d3e34fb858bba311348  /usr/local/bin/busybox" | sha256sum -c - \
+    && chmod 0755 /usr/local/bin/busybox
+
+# The brine observability scenarios export through the production OTLP
+# exporter to a real collector, not an in-memory trace recorder.
+ARG OTELCOL_VERSION=0.160.0
+ARG OTELCOL_SHA256=5415b8daf782f17cc463c3e46816abf181a68a04b7bcf98c273c3c204096c743
+RUN curl --fail --location --silent --show-error \
+      "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v${OTELCOL_VERSION}/otelcol_${OTELCOL_VERSION}_linux_amd64.tar.gz" \
+      -o /tmp/otelcol.tar.gz \
+    && echo "${OTELCOL_SHA256}  /tmp/otelcol.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/otelcol.tar.gz -C /usr/local/bin otelcol \
+    && rm /tmp/otelcol.tar.gz
 
 # PostgreSQL 17 server AND client: the unit and integration tiers need a real
 # server, and postgresrunner spawns its own instances from these binaries.

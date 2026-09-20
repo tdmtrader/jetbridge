@@ -17,16 +17,30 @@ limits and no service-account token. Delete it after the run so private source
 and intermediate build caches are removed. Publish only the final `runner`
 stage; do not export builder caches or intermediate images.
 
+## Tags
+
+- `v10` — contract 5, brine-private `1e9345da`.
+- `v11` — same Brine pin; adds what the brine harness's local tier needs on
+  the runner: `gcc`/`libc6-dev` (compiles `scripts/netns-exec.c` for the
+  unprivileged user+net namespace the adapter runs in), a pinned upstream
+  BusyBox at `/usr/local/bin/busybox` (real fetch-script applets), and a
+  pinned `otelcol` (real OTLP collector for the trace scenarios). Published
+  2026-09-19 (manifest digest `sha256:1e1fa432a1d3…`); every job in
+  `deploy/concourse-pipeline.yml` pins it. The registry ingress serves a
+  Traefik default certificate, so `docker push` fails TLS verification;
+  `docker save` the image and `crane push` the tarball over the plain-HTTP
+  ingress instead, then confirm the tag's digest with `crane digest`.
+
 ## Build
 
-The example uses an unpublished tag. Once a tag is published, treat it as
+The example names the current tag. Once a tag is published, treat it as
 immutable: task images use `PullIfNotPresent`. A subsequent image change needs
 a new tag and updated consuming pipeline references.
 
 ```sh
 set -eu
 set +x
-runner_tag=v10
+runner_tag=v11
 runner_image="registry.home/concourse-test-runner:${runner_tag}"
 brine_module_pin=$(awk '/^replace github.com\/brine-dev\/brine-go =>/ { print $NF }' atc/worker/jetbridge/brine/go.mod)
 test -n "$brine_module_pin"
@@ -66,6 +80,25 @@ hack/ci-check.sh <candidate-ref> build-and-vet unit-tests brine
 
 The Brine task needs its existing `GITHUB_TOKEN` pipeline variable for the
 private Go adapter dependency; that credential is not baked into the runner.
+It also needs four pipeline variables that do not exist until someone creates
+them (the task errors on an undefined `((var))` before a scenario runs), and
+one chart value on the cluster it runs in:
+
+| Pipeline variable | Task env | Value |
+|---|---|---|
+| `brine-allow-hostpath-tests` | `BRINE_ALLOW_HOSTPATH_TESTS` | `1` to approve the artifact-handoff hostPath fixture on this cluster |
+| `brine-allow-hostport-tests` | `BRINE_ALLOW_HOSTPORT_TESTS` | `1` to approve that fixture's hostPort daemon |
+| `brine-artifact-node` | `BRINE_LIVE_ARTIFACT_NODE` | the one node approved to carry the fixture's hostPath |
+| `brine-artifact-daemon-port` | `BRINE_LIVE_ARTIFACT_DAEMON_PORT` | an unused TCP port in 49152–60999 on that node |
+
+The live tier runs under the task pod's ServiceAccount and creates its own
+namespaces, so the chart must be deployed with `rbac.brineLive=true`
+(`deploy/chart/templates/brine-live-rbac.yaml`); a cluster still rendering a
+chart revision without that template grants nothing and every live scenario
+403s. `hack/ci-check.sh` forwards each `((var))` from an environment
+variable of the same name upper-cased with `_` for `-`
+(`BRINE_ALLOW_HOSTPATH_TESTS`, `BRINE_ARTIFACT_NODE`, ...), and names any
+that are missing before it runs the job.
 A passing build or `brine --version` alone does not establish contract-5
 compatibility: the Brine CLI must actually execute the current adapter and
 produce a non-empty passing verdict.

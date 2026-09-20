@@ -35,7 +35,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v10
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v11
       inputs:
       - name: repo
       run:
@@ -83,7 +83,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v10
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v11
       inputs:
       - name: repo
       # The Hangar output plane's tier-2 conformance suite runs against the
@@ -173,7 +173,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v10
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v11
       inputs:
       - name: repo
       run:
@@ -190,9 +190,9 @@ jobs:
 # jetbridge adapter built from
 # atc/worker/jetbridge/brine. The CLI's verdict is the one that counts -- it
 # folds in the manifest's `budgets.undefined: 0` and any unsatisfied wiring,
-# neither of which the adapter's own exit code can see. v10 ships
-# /usr/local/bin/brine and its engine, built from the same brine-private
-# revision this module's replace pins.
+# neither of which the adapter's own exit code can see. The runner image must
+# ship a CLI and engine built from the module's pinned Brine revision; the
+# receipt check below rejects an old image before any test can false-green.
 #
 # CONTRACT 5 (v10, 2026-09-09). The runner moved from brine-private NEW-NAME
 # (Aug 22) to main-20260909, which crosses the v5 mint: brine-dispatch no
@@ -226,24 +226,50 @@ jobs:
     params: {depth: 1}
     passed: [unit-tests]
   - task: brine-suite
-    timeout: 30m
+    # Measured 1h17m-1h19m end to end in CI (builds 872565, 873481): ~8 min
+    # of build and adapter suites, then the two-tier brine run, serial, with
+    # the live tier alone near 30 min. The profile the coverage script prints
+    # is what a shorter budget has to be argued from.
+    timeout: 120m
     attempts: 2
+    # The local tier's launcher (scripts/netns-exec.c) does
+    # unshare(CLONE_NEWUSER|CLONE_NEWNET). Every non-privileged task pod gets
+    # the RuntimeDefault seccomp profile (buildPodSecurityContext in
+    # atc/worker/jetbridge/container.go), which gates unshare on CAP_SYS_ADMIN
+    # and masks clone's namespace flags too, so build-private-network's probe
+    # dies with EPERM before a single scenario runs. Verified 2026-09-19 in
+    # the v11 image under the default profile, root and non-root; only a
+    # privileged container passes. Privileged is the one lever a task config
+    # exposes, and this is a single-tenant home cluster. The live tier's RBAC
+    # is the chart's rbac.brineLive value.
+    privileged: true
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v10
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v11
       inputs:
       - name: repo
-      # HANGAR_FAKE_GCS_ENDPOINT is the same value the unit-tests task carries
-      # (above): the brine Hangar fixture reads it instead of starting
-      # fake-gcs-server in this process, so one deployment serves both runners
-      # and both share one failure mode. HANGAR_CI is deliberately NOT here --
-      # that variable turns a missing endpoint into a FAILURE, which is the Go
-      # tier-2 suite's rule because Req 41 gates activation on it; the fixture
-      # has no fail-not-skip rule and should not grow one to match a variable.
+      # HANGAR_FAKE_GCS_ENDPOINT is deliberately NOT set here, unlike the
+      # unit-tests task above. The local tier runs the adapter inside an
+      # unprivileged network namespace (scripts/run-private-network) that has
+      # no route to cluster services, so the shared fake-gcs deployment is
+      # unreachable from it: 48 Hangar scenarios each spent 30s failing to
+      # create a bucket there (build 873827). Unset, the fixture starts the
+      # fake-gcs-server library in-process, inside the namespace. HANGAR_CI is
+      # not here either -- that variable turns a missing endpoint into a
+      # FAILURE, which is the Go tier-2 suite's rule because Req 41 gates
+      # activation on it; the fixture has no fail-not-skip rule.
       params:
         GITHUB_TOKEN: ((github-token))
         GOPRIVATE: github.com/MarkDucommun/*
-        HANGAR_FAKE_GCS_ENDPOINT: http://fake-gcs.cicd.svc:4443
+        # Explicitly authorize the bounded live tier on the task cluster.
+        # Its service account must be allowed to create/delete test namespaces.
+        BRINE_KUBE_CONTEXT: in-cluster
+        # Set these only for the explicitly approved test node and port.
+        # Missing approval is a hard failure, never a local-only fallback.
+        BRINE_ALLOW_HOSTPATH_TESTS: ((brine-allow-hostpath-tests))
+        BRINE_ALLOW_HOSTPORT_TESTS: ((brine-allow-hostport-tests))
+        BRINE_LIVE_ARTIFACT_NODE: ((brine-artifact-node))
+        BRINE_LIVE_ARTIFACT_DAEMON_PORT: ((brine-artifact-daemon-port))
       run:
         path: sh
         args:
@@ -262,21 +288,42 @@ jobs:
 
           cd repo/atc/worker/jetbridge/brine
 
+          # brine --version is still 0.1.0 across contract generations.
+          # Compare the image's build receipt to the actual module pin.
+          brine_module_version="$(go list -m -f '{{.Replace.Version}}' github.com/brine-dev/brine-go)"
+          brine_expected_revision="${brine_module_version##*-}"
+          test -n "$brine_expected_revision"
+          brine_image_revision="$(cat /etc/brine-commit)"
+          case "$brine_image_revision" in
+            "$brine_expected_revision"*) ;;
+            *) echo "Brine image revision $brine_image_revision does not match module $brine_expected_revision; rebuild the runner and bump its tag" >&2; exit 1 ;;
+          esac
+
           # Rebuild the adapter every time. The CLI executes this binary, not
           # the sources next to it, so a stale one silently tests old steps.
-          go build -o .build/brine-adapter-jetbridge ./cmd/brine-adapter-jetbridge
+          sh scripts/build-private-network
           go vet ./...
-          # Root Go test jobs do not discover this nested module.
-          go test -count=1 -timeout 5m ./...
+          # Root jobs do not discover this nested module. Run its native
+          # tests serially through the module-pinned Ginkgo CLI because the
+          # adapter contract tests start real database-backed resources.
+          BRINE_PROTOCOL_LAUNCHER="$PWD/scripts/run-private-network" \
+            go run github.com/onsi/ginkgo/v2/ginkgo -r --timeout=5m
+
+          # The live tier's daemon must match this source and the Linux node.
+          # Build it from its owning Go module, not the nested adapter module.
+          export BRINE_LIVE_ARTIFACT_DAEMON_BINARY="$PWD/.build/brine-live-artifact-daemon"
+          (
+            cd ../../../..
+            CGO_ENABLED=0 go build -ldflags='-s -w' -o "$BRINE_LIVE_ARTIFACT_DAEMON_BINARY" ./cmd/artifact-daemon
+          )
 
           # Run through the CLI, never `adapter run`. Under contract 5 the
-          # adapter REFUSES a run with no --document (exit 2, the refusal
-          # naming the five retired selection tokens) rather than exiting 0
-          # over zero scenarios as it did under the flags era -- but the
-          # reason to go through the CLI is unchanged and larger than that
-          # refusal: the CLI is what builds the execution document, and its
-          # verdict is what folds in the budgets.
-          # Preserve the production JetBridge statement coverage gate.
+          # adapter REFUSES a run with no --document rather than exiting 0
+          # over zero scenarios -- but the reason to go through the CLI is
+          # larger than that refusal: the CLI builds the execution document,
+          # owns selection, and its verdict folds in the budgets. The script
+          # runs both tiers (local, then live/.brine) and holds the production
+          # JetBridge statement coverage gate.
           sh scripts/coverage
 
 - name: tag-rc
@@ -291,7 +338,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v10
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v11
       inputs:
       - name: repo
       run:
@@ -432,7 +479,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v10
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v11
       inputs:
       - name: repo
       - name: web-public
@@ -740,7 +787,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v10
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v11
       inputs:
       - name: repo
       run:
@@ -801,7 +848,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v10
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v11
       inputs:
       - name: repo
       run:
@@ -912,7 +959,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v10
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v11
       inputs:
       - name: repo
       run:
@@ -988,7 +1035,7 @@ jobs:
     timeout: 10m
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v10
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v11
       inputs:
       - name: repo
       run:
@@ -1025,7 +1072,7 @@ jobs:
     privileged: true
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v10
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v11
       inputs:
       - name: repo
       params:

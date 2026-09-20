@@ -1,4 +1,4 @@
-.PHONY: test-unit test-elm test-fly-integration test-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all
+.PHONY: test-unit test-elm test-brine-guards test-fly-integration test-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all
 
 # Unit tests: all packages except integration/e2e suites (~9 min)
 # Requires: PostgreSQL running locally
@@ -54,6 +54,13 @@ test-k8s-behavioral:
 	@$(MAKE) --no-print-directory check-docker-tools
 	ginkgo --procs=$${K8S_PROCS:-2} -v --timeout=3h ./topgun/k8s_behavioral/
 
+# Brine guard tests (~1 sec)
+# Requires: nothing -- no cluster, no build. Nested module (its own go.mod), so
+# root go test never reaches it; run with a cd into it.
+test-brine-guards:
+	@echo "==> Running brine guard tests..."
+	cd atc/worker/jetbridge/brine && go test ./steps/ -run 'Guard|Import|TempDir|Pending|Definition|NoStepLine|CitesARequirement' -count=1
+
 .PHONY: check-docker-tools
 check-docker-tools:
 	@command -v docker  >/dev/null 2>&1 || { echo "ERROR: docker is required";  exit 1; }
@@ -63,9 +70,9 @@ check-docker-tools:
 # All K8s tests
 test-k8s: test-k8s-integration test-k8s-behavioral
 
-# Quick: unit + Elm (~5 min)
+# Quick: unit + Elm + brine guards (~5 min)
 # Good for local development iteration
-test-quick: test-unit test-elm
+test-quick: test-unit test-elm test-brine-guards
 
 # All tests in order of speed
 test-all: test-unit test-elm test-fly-integration test-integration test-k8s
