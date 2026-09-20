@@ -30,6 +30,7 @@ func main() {
 	ttl := flag.Duration("ttl", 2*time.Hour, "TTL for artifact cleanup sweep")
 	resolveCapabilityKeyFile := flag.String("resolve-capability-key", "", "Path to the raw 32-byte key required to authorize resolve operations")
 	nodeName := flag.String("node-name", "", "Kubernetes node name (for node labeling)")
+	peerDiscovery := flag.Bool("peer-discovery", false, "Enable EndpointSlice peer discovery without node labeling; this also enables outbound mirroring (--mirror-replicas, default 2); --node-name continues to enable both")
 	namespace := flag.String("namespace", "default", "Kubernetes namespace")
 	kubeconfig := flag.String("kubeconfig", "", "Path to a kubeconfig file. When empty the in-cluster config is used, which is what the daemon does in a pod. Set this to run the daemon against a cluster from outside one — for debugging against a live cluster, and for tests that need two daemons able to discover each other.")
 	serviceName := flag.String("service-name", "artifact-daemon", "Headless service name for EndpointSlice peer discovery")
@@ -81,19 +82,23 @@ func main() {
 	// discovery. Two adapters sit on this one seam — the in-cluster config in a
 	// pod, an explicit --kubeconfig from outside one — and the modules that
 	// consume the client (NodeLabeler, PeerResolver) never learn which. A
-	// daemon with no --node-name labels nothing and has no peers, so it builds
-	// no client at all.
+	// daemon with neither --node-name nor --peer-discovery labels nothing and
+	// has no peers, so it builds no client at all. --peer-discovery asks for
+	// the client and the peers without the labeling: the brine live tier runs
+	// the daemon with namespace-local read access only, which cannot patch a
+	// node.
 	var labeler *NodeLabeler
 	var hangarLabeler *NodeLabeler
 	var k8sClient kubernetes.Interface
-	if *nodeName != "" {
+	if daemonClientNeeded(*nodeName, *peerDiscovery) {
 		var err error
 		k8sClient, err = buildK8sClient(*kubeconfig)
 		if err != nil {
 			logger.Error("failed-to-create-k8s-client", err)
 			os.Exit(1)
 		}
-
+	}
+	if *nodeName != "" {
 		labeler = NewNodeLabeler(logger, k8sClient, *nodeName, *labelKey)
 		hangarLabeler = NewNodeLabeler(logger, k8sClient, *nodeName, HangarReadyLabel)
 
@@ -357,7 +362,7 @@ func main() {
 		})
 	} else if *preemptionWatch {
 		logger.Info("preemption-watch-disabled", lager.Data{
-			"reason": "mirror not configured (--mirror-replicas=0 or no node-name)",
+			"reason": "mirror not configured (--mirror-replicas=0, or neither --node-name nor --peer-discovery set)",
 		})
 	}
 
@@ -498,4 +503,12 @@ func buildMirrorHTTPClient(logger lager.Logger, peerTLS *PeerTLSConfig, timeout 
 		Transport: transport,
 		Timeout:   timeout,
 	}
+}
+
+// daemonClientNeeded reports whether the daemon must talk to the Kubernetes
+// API at all. A node name means labeling (and, through the same client,
+// peers); --peer-discovery means peers alone, for a namespace-scoped
+// ServiceAccount that may not patch nodes.
+func daemonClientNeeded(nodeName string, peerDiscovery bool) bool {
+	return nodeName != "" || peerDiscovery
 }
