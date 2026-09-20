@@ -1,14 +1,23 @@
 package jetbridge_test
 
-// RESTORED 2026-09-05 (rebase onto core for 0.3.2), from the deleted
-// atc/worker/jetbridge/integration_test.go (merge-base aef2244a63, via the
-// compile-adapted copy the port stage produced for this branch).
+// RESTORED 2026-09-18, from the file commit 3822b69a56 deleted whole.
 //
-// Three of that file's fourteen Its -- rows JB-integration-000, -011 and -012
-// of DISPOSITION-jetbridge.md -- were recorded DELETED on FILE-level evidence
-// only, and the rebase re-verification REFUTED all three. Restoring is always
-// acceptable; deleting on inference is not. The other eleven Its stay deleted,
-// their evidence intact; the Describes that held only those are gone with them.
+// Round 1 brought back one It: row JB-kept-001. It postdates the campaign's
+// merge base (core 2a9355e1e6), so no both-red pairing was ever recorded for
+// it, and its 2026-09-14 retirement note names a live running-task cancellation
+// row, which is `@live-kubernetes` and does not run under `make test-unit`.
+//
+// Round 2 (2026-09-18) brings back three more -- rows JB-integration-000, -011
+// and -012 -- retired against `features/live/task-command.feature`,
+// `features/live/s3-resource.feature` and the live npm/PostgreSQL sidecar case
+// respectively. All three are `@live-kubernetes`: they need a real cluster (and
+// a real MinIO, and a real PostgreSQL) and never run under `make test-unit`, so
+// with these Its gone the end-to-end task, the Put input-mount contract and the
+// sidecar pod contract had no unit-tier cover at all. Bodies are the originals,
+// unweakened.
+//
+// The remaining ten Its of the deleted file stay deleted, their evidence
+// intact.
 
 import (
 	"bytes"
@@ -28,43 +37,34 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 )
 
-// Integration tests exercise full workflows through the jetbridge package,
-// simulating realistic pipeline step execution using the fake K8s clientset.
-// All task types now use exec-mode (pause pod + SPDY exec).
 var _ = Describe("Integration", func() {
 	var (
-		database      jetbridgeDB
-		dbWorker      db.Worker
 		fakeClientset *fake.Clientset
 		fakeExecutor  *fakeExecExecutor
 		worker        *jetbridge.Worker
 		ctx           context.Context
-		cfg           jetbridge.Config
 		delegate      runtime.BuildStepDelegate
 	)
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		database = useJetbridgeDB()
-		var err error
-		dbWorker, err = persistNamedWorker(database, "k8s-worker-1")
+		database := useJetbridgeDB()
+		dbWorker, err := persistNamedWorker(database, "k8s-worker-1")
 		Expect(err).NotTo(HaveOccurred())
-		// PRUNE-ADAPT: the team handle is unused by the three restored Its;
-		// the team itself is still created because they run as team "main".
 		_, err = database.TeamFactory.CreateTeam(atc.Team{Name: "main"})
 		Expect(err).NotTo(HaveOccurred())
 		fakeClientset = fake.NewSimpleClientset()
-		cfg = jetbridge.NewConfig("ci-namespace", "")
 		delegate = &noopDelegate{}
 		fakeExecutor = &fakeExecExecutor{}
 
-		worker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
+		worker = jetbridge.NewWorker(dbWorker, fakeClientset, jetbridge.NewConfig("ci-namespace", ""))
 		worker.SetExecutor(fakeExecutor)
 	})
 
-	// createContainer persists a container with the given handle and returns the
-	// runtime container the worker builds for it.
+	// createContainer persists a container with the given handle and returns
+	// the runtime container the worker builds for it.
 	createContainer := func(handle string, containerType db.ContainerType, spec runtime.ContainerSpec) runtime.Container {
+		GinkgoHelper()
 		container, _, err := worker.FindOrCreateContainer(
 			ctx,
 			db.NewFixedHandleContainerOwner(handle),
@@ -77,6 +77,7 @@ var _ = Describe("Integration", func() {
 	}
 
 	simulatePodRunning := func(podName string) {
+		GinkgoHelper()
 		pod, err := fakeClientset.CoreV1().Pods("ci-namespace").Get(ctx, podName, metav1.GetOptions{})
 		Expect(err).ToNot(HaveOccurred())
 		pod.Status.Phase = corev1.PodRunning
@@ -85,11 +86,7 @@ var _ = Describe("Integration", func() {
 	}
 
 	// KEPT FROM CORE 2a9355e1e6 (added to integration_test.go after this
-	// branch's merge-base). No brine evidence exists for it, so it is carried
-	// here rather than deleted with the rest of the file. Core's sibling It in
-	// this Describe -- "returns an error when the context is cancelled during
-	// exec-mode task" -- is not carried: that one predates the merge-base and
-	// its own disposition row stands.
+	// branch's merge-base). No both-red evidence exists for it.
 	It("build cancellation deletes the pause pod when the step's own context is cancelled", func() {
 		// A task step runs under the in-pod supervisor, which keeps the
 		// command alive through the teardown of the exec stream. Leaving the
@@ -114,10 +111,17 @@ var _ = Describe("Integration", func() {
 			return abortCtx.Err()
 		}
 
-		container := createContainer("abort-task", db.ContainerTypeTask, runtime.ContainerSpec{
-			TeamID:    1,
-			ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
-		})
+		container, _, err := worker.FindOrCreateContainer(
+			ctx,
+			db.NewFixedHandleContainerOwner("abort-task"),
+			db.ContainerMetadata{Type: db.ContainerTypeTask},
+			runtime.ContainerSpec{
+				TeamID:    1,
+				ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+			},
+			delegate,
+		)
+		Expect(err).ToNot(HaveOccurred())
 
 		process, err := container.Run(abortCtx, runtime.ProcessSpec{
 			Path: "/bin/sh",
@@ -126,7 +130,11 @@ var _ = Describe("Integration", func() {
 		Expect(err).ToNot(HaveOccurred())
 
 		By("simulating the Pod reaching Running state")
-		simulatePodRunning("abort-task")
+		pod, err := fakeClientset.CoreV1().Pods("ci-namespace").Get(ctx, "abort-task", metav1.GetOptions{})
+		Expect(err).ToNot(HaveOccurred())
+		pod.Status.Phase = corev1.PodRunning
+		_, err = fakeClientset.CoreV1().Pods("ci-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+		Expect(err).ToNot(HaveOccurred())
 
 		waited := make(chan error, 1)
 		go func() {
@@ -152,11 +160,9 @@ var _ = Describe("Integration", func() {
 		Expect(deleteOptions).To(HaveLen(1))
 		Expect(deleteOptions[0].GracePeriodSeconds).ToNot(BeNil())
 		Expect(*deleteOptions[0].GracePeriodSeconds).To(BeEquivalentTo(0))
-
 	})
 
 	It("simple task pipeline runs a task step end-to-end: create container → run → wait → exit", func() {
-
 		By("creating a container for the task step")
 		container := createContainer("task-abc123", db.ContainerTypeTask, runtime.ContainerSpec{
 			TeamID:   1,
@@ -196,11 +202,9 @@ var _ = Describe("Integration", func() {
 		props, err := container.Properties()
 		Expect(err).ToNot(HaveOccurred())
 		Expect(props).To(HaveKeyWithValue("concourse:exit-status", "0"))
-
 	})
 
 	It("input/output passing between steps passes inputs from a get step to a put step via volume mounts", func() {
-
 		By("creating a put container with multiple inputs")
 		container := createContainer("put-multi-input", db.ContainerTypePut, runtime.ContainerSpec{
 			TeamID: 1,
@@ -250,11 +254,9 @@ var _ = Describe("Integration", func() {
 		Expect(err).ToNot(HaveOccurred())
 		Expect(result.ExitStatus).To(Equal(0))
 		Expect(stdout.String()).To(Equal(putStdout))
-
 	})
 
 	It("task with sidecar containers creates a pod with sidecars that share volume mounts and runs the task via exec", func() {
-
 		By("creating a container with a sidecar")
 		container := createContainer("task-sidecar", db.ContainerTypeTask, runtime.ContainerSpec{
 			TeamID:   1,
@@ -330,6 +332,5 @@ var _ = Describe("Integration", func() {
 		Expect(fakeExecutor.execCalls).To(HaveLen(1))
 		expectSupervisedExec(fakeExecutor.execCalls[0].command, `'/bin/sh' '-c' 'npm test'`)
 		Expect(fakeExecutor.execCalls[0].containerName).To(Equal("main"))
-
 	})
 })

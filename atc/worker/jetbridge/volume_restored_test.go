@@ -137,7 +137,7 @@ var _ = Describe("Volume", func() {
 			Expect(call.podName).To(Equal("test-pod"))
 			Expect(call.namespace).To(Equal("test-namespace"))
 			Expect(call.containerName).To(Equal("main"))
-			Expect(call.command).To(Equal([]string{"tar", "xf", "-", "-C", "/tmp/build/inputs"}))
+			Expect(call.command).To(Equal(streamInAtRoot("/tmp/build/inputs")))
 			Expect(call.attrs.Purpose).To(Equal("stream-in"))
 			Expect(call.attrs.VolumeMountPath).To(Equal("/tmp/build/inputs"))
 			Expect(call.stdin).ToNot(BeNil())
@@ -153,7 +153,7 @@ var _ = Describe("Volume", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			call := fakeExecutor.execCalls[0]
-			Expect(call.command).To(Equal([]string{"tar", "xf", "-", "-C", "/tmp/build/inputs/sub/dir"}))
+			Expect(call.command).To(Equal(streamInNested("/tmp/build/inputs/sub/dir")))
 		})
 
 	})
@@ -313,7 +313,7 @@ var _ = Describe("Volume-to-Volume Streaming (same worker)", func() {
 
 		streamInCall := fakeExecutor.execCalls[1]
 		Expect(streamInCall.podName).To(Equal("dest-pod"))
-		Expect(streamInCall.command).To(Equal([]string{"tar", "xf", "-", "-C", "/tmp/build/workdir/input"}))
+		Expect(streamInCall.command).To(Equal(streamInAtRoot("/tmp/build/workdir/input")))
 
 		By("the tar data piped from source to destination")
 		stdinData, err := io.ReadAll(streamInCall.stdin)
@@ -356,3 +356,15 @@ var _ = Describe("Volume-to-Volume Streaming (same worker)", func() {
 // jetbridge_suite_test.go when this file was removed, so restoring it here would
 // produce `fakeExecExecutor redeclared in this block` / `execCall redeclared`.
 // The suite-file copy is byte-identical, so no assertion above changed.
+
+// The argv Volume.StreamIn execs, written out independently of production:
+// the mount root is a bare tar (no shell needed in the image); a nested
+// destination is created first and travels as an argument, never as shell
+// source.
+func streamInAtRoot(mountPath string) []string {
+	return []string{"tar", "xf", "-", "-C", mountPath}
+}
+
+func streamInNested(target string) []string {
+	return []string{"sh", "-c", `mkdir -p -- "$1" && exec tar xf - -C "$1"`, "stream-in", target}
+}

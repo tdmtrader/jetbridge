@@ -62,6 +62,10 @@ var commandOrPodSites = map[string]string{
 		"no Pod; it is listed rather than filtered so the scan cannot be made to miss a step " +
 		"command by moving it into this file",
 	"volume.go:StreamOut->ExecInPod": "tar out of a volume, for the same reason",
+	"resource_process.go:cancelResourceCommand->ExecInPod": "the kill of a cancelled resource " +
+		"command's own process group, issued only from Wait's deferred cleanup once the step's " +
+		"context has ended. It starts no step command -- the script it runs signals and exits -- " +
+		"and it creates no Pod; the pause Pod is kept for hijack",
 	"executor.go:ExecInPod->": "the SPDYExecutor's own definition, which is the transport " +
 		"rather than a caller of it",
 }

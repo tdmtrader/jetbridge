@@ -94,7 +94,7 @@ func TestLiveSidecarLogStreamTimeout(t *testing.T) {
 					},
 				},
 			},
-			&noopDelegate{},
+			nil,
 		)
 		if err != nil {
 			t.Fatalf("FindOrCreateContainer: %v", err)

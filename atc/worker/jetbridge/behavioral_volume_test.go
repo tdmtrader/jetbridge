@@ -2,7 +2,6 @@ package jetbridge
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,12 +11,13 @@ import (
 	"testing"
 
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/rest"
 )
 
 // ---------------------------------------------------------------------------
@@ -42,7 +42,7 @@ func TestVT01_DeferredVolume_SetPodNameUpdates(t *testing.T) {
 }
 
 func TestVT01_DeferredVolume_HasExecutorWhenSet(t *testing.T) {
-	executor := &noopPodExecutor{}
+	executor := volumeConstructionExecutor()
 	vol := NewDeferredVolume("handle-1", "worker-1", executor, "ns", "main", "/mnt/data")
 
 	if !vol.HasExecutor() {
@@ -130,6 +130,13 @@ func TestVT05_StubVolume_DBVolumeNil(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // VT-06: DaemonSetVolume StreamOut
+//
+// RESTORED 2026-09-18. These four were retired on 2026-09-15 against
+// volume-streaming.feature scenarios named "Daemon drops the first
+// connections", "Daemon never answers" and "Failing daemon reports an internal
+// error". No such scenario exists anywhere under brine/features at this
+// commit, so nothing inherited the retry budget, the give-up boundary, the
+// HTTP-500 diagnostic or the raw-body passthrough.
 // ---------------------------------------------------------------------------
 
 func TestVT06_DaemonSetVolume_StreamOut_RetrySucceeds(t *testing.T) {
@@ -376,6 +383,12 @@ func TestVT10_StubVolume_Handle_ReturnsConstructionHandle(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // CO-04/CO-05/CO-06: Volume mount construction via buildVolumeMountsForSpec
+//
+// RESTORED 2026-09-18. These thirteen were deleted on 2026-09-18 with no
+// disposition row of any kind and no brine scenario named in their place.
+// They are the only coverage of the Worker-side mount builder: its dir/input/
+// output/cache ordering, its input-wins dedup (including the trailing-slash
+// spelling), its handle-naming scheme and its relative-cache resolution.
 // ---------------------------------------------------------------------------
 
 func TestCO04_BuildVolumeMounts_DirOnly(t *testing.T) {
@@ -565,6 +578,70 @@ func TestCO12_CachePath_AbsoluteStaysAbsolute(t *testing.T) {
 	}
 }
 
+// Verify buildVolumeMountsForSpec creates deferred volumes when executor is set.
+func TestCO04_BuildVolumeMounts_WithExecutor_CreatesDeferredVolumes(t *testing.T) {
+	w := newTestWorker(volumeConstructionExecutor())
+	spec := runtime.ContainerSpec{Dir: "/workdir"}
+
+	_, volumes := w.buildVolumeMountsForSpec("h", spec)
+
+	if len(volumes) != 1 {
+		t.Fatalf("expected 1 volume, got %d", len(volumes))
+	}
+	if !volumes[0].HasExecutor() {
+		t.Error("expected deferred volume to have executor when worker has executor set")
+	}
+}
+
+// Verify buildVolumeMountsForSpec creates stub volumes when no executor.
+func TestCO04_BuildVolumeMounts_WithoutExecutor_CreatesStubVolumes(t *testing.T) {
+	w := newTestWorker(nil)
+	spec := runtime.ContainerSpec{Dir: "/workdir"}
+
+	_, volumes := w.buildVolumeMountsForSpec("h", spec)
+
+	if len(volumes) != 1 {
+		t.Fatalf("expected 1 volume, got %d", len(volumes))
+	}
+	if volumes[0].HasExecutor() {
+		t.Error("expected stub volume to NOT have executor when worker has no executor")
+	}
+}
+
+// Verify overlapping output with trailing slash is still deduped.
+func TestCO05_BuildVolumeMounts_OverlappingWithTrailingSlash_Deduped(t *testing.T) {
+	w := newTestWorker(nil)
+	spec := runtime.ContainerSpec{
+		Dir: "/workdir",
+		Inputs: []runtime.Input{
+			{DestinationPath: "/workdir/shared"},
+		},
+		Outputs: runtime.OutputPaths{"shared": "/workdir/shared/"},
+	}
+
+	mounts, _ := w.buildVolumeMountsForSpec("h", spec)
+
+	// 1 dir + 1 input (output deduped even with trailing slash) = 2
+	if len(mounts) != 2 {
+		t.Fatalf("expected 2 mounts (trailing slash deduped), got %d", len(mounts))
+	}
+}
+
+// Verify empty Dir produces no dir mount.
+func TestCO04_BuildVolumeMounts_EmptyDir_NoDirMount(t *testing.T) {
+	w := newTestWorker(nil)
+	spec := runtime.ContainerSpec{
+		Outputs: runtime.OutputPaths{"out": "/workdir/out"},
+	}
+
+	mounts, _ := w.buildVolumeMountsForSpec("h", spec)
+
+	// Only 1 output, no dir
+	if len(mounts) != 1 {
+		t.Fatalf("expected 1 mount (output only, no dir), got %d", len(mounts))
+	}
+}
+
 // ---------------------------------------------------------------------------
 // CO-10: Scheduling affinity
 // ---------------------------------------------------------------------------
@@ -587,9 +664,9 @@ func TestCO10_PreferredInputNode_InputsOnDifferentNodes_ReturnsMostPopular(t *te
 
 	backend := NewDaemonSetBackend(Config{ArtifactDaemonHostPath: "/artifacts"}, locator, nil)
 	inputs := []runtime.Input{
-		{Artifact: &stubArtifactBehavioral{handle: "vol-a"}, DestinationPath: "/in/a"},
-		{Artifact: &stubArtifactBehavioral{handle: "vol-b"}, DestinationPath: "/in/b"},
-		{Artifact: &stubArtifactBehavioral{handle: "vol-c"}, DestinationPath: "/in/c"},
+		{Artifact: constructionArtifact("vol-a", "test-worker"), DestinationPath: "/in/a"},
+		{Artifact: constructionArtifact("vol-b", "test-worker"), DestinationPath: "/in/b"},
+		{Artifact: constructionArtifact("vol-c", "test-worker"), DestinationPath: "/in/c"},
 	}
 
 	node := backend.preferredInputNode(inputs)
@@ -613,7 +690,7 @@ func TestCO10_BuildAffinity_WithoutArtifactDaemonHostPath_ReturnsNil(t *testing.
 func TestCO10_PreferredInputNode_NilLocator_ReturnsEmpty(t *testing.T) {
 	backend := NewDaemonSetBackend(Config{ArtifactDaemonHostPath: "/artifacts"}, nil, nil)
 	inputs := []runtime.Input{
-		{Artifact: &stubArtifactBehavioral{handle: "vol-a"}, DestinationPath: "/in/a"},
+		{Artifact: constructionArtifact("vol-a", "test-worker"), DestinationPath: "/in/a"},
 	}
 
 	node := backend.preferredInputNode(inputs)
@@ -625,6 +702,19 @@ func TestCO10_PreferredInputNode_NilLocator_ReturnsEmpty(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// These tests inspect construction only: use the actual client/executor
+// types without supplying any API response or pretending a command ran.
+func volumeConstructionExecutor() *SPDYExecutor {
+	config := &rest.Config{Host: "https://127.0.0.1:1"}
+	return NewSPDYExecutor(kubernetes.NewForConfigOrDie(config), config)
+}
+
+// constructionArtifact uses the production volume and executor. Its callers
+// inspect pod layout, affinity and fetch commands; they never stream data.
+func constructionArtifact(handle, workerName string) *Volume {
+	return NewDeferredVolume(handle, workerName, volumeConstructionExecutor(), "test-ns", mainContainerName, "/artifact")
+}
 
 // nameOnlyWorker supplies the one db.Worker method buildVolumeMountsForSpec
 // reaches. Every other method is nil, so any test that strays into the database
@@ -652,32 +742,38 @@ func newTestWorker(executor PodExecutor) *Worker {
 	return w
 }
 
-// noopPodExecutor is a minimal PodExecutor for testing HasExecutor.
-type noopPodExecutor struct{}
-
-func (e *noopPodExecutor) ExecInPod(
-	ctx context.Context,
-	namespace, podName, containerName string,
-	command []string,
-	stdin io.Reader,
-	stdout, stderr io.Writer,
-	tty bool,
-	attrs ExecAttrs,
-) error {
-	return nil
+// fakeNodeIPResolver creates a NodeIPResolver backed by a fake K8s client
+// with nodes pre-loaded so Resolve() returns deterministic IPs.
+func fakeNodeIPResolver(nodes ...corev1.Node) *NodeIPResolver {
+	cs := fake.NewSimpleClientset()
+	for i := range nodes {
+		cs.CoreV1().Nodes().Create(context.Background(), &nodes[i], metav1.CreateOptions{})
+	}
+	return NewNodeIPResolver(cs)
 }
 
-// stubArtifactBehavioral is a minimal runtime.Artifact for behavioral tests.
-type stubArtifactBehavioral struct {
-	handle string
+func testNode(name, ip string) corev1.Node {
+	return corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Status: corev1.NodeStatus{
+			Addresses: []corev1.NodeAddress{
+				{Type: corev1.NodeInternalIP, Address: ip},
+			},
+		},
+	}
 }
 
-var _ runtime.Artifact = (*stubArtifactBehavioral)(nil)
+// rewriteTransport points every request at one test server while leaving the
+// URL the production code built otherwise intact, so the path and query it
+// chose are what the server sees.
+type rewriteTransport struct {
+	url string
+}
 
-func (a *stubArtifactBehavioral) Handle() string { return a.handle }
-func (a *stubArtifactBehavioral) Source() string { return "test-worker" }
-func (a *stubArtifactBehavioral) StreamOut(_ context.Context, _ string, _ compression.Compression) (io.ReadCloser, error) {
-	return nil, fmt.Errorf("not implemented")
+func (t rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.URL.Scheme = "http"
+	req.URL.Host = strings.TrimPrefix(t.url, "http://")
+	return http.DefaultTransport.RoundTrip(req)
 }
 
 // behavioralDaemonSetConfig returns a DaemonSet-mode config for behavioral tests.
@@ -727,77 +823,12 @@ func TestVT01_Volume_MountPath(t *testing.T) {
 	}
 }
 
-// Verify buildVolumeMountsForSpec creates deferred volumes when executor is set.
-func TestCO04_BuildVolumeMounts_WithExecutor_CreatesDeferredVolumes(t *testing.T) {
-	executor := &noopPodExecutor{}
-	w := newTestWorker(executor)
-	spec := runtime.ContainerSpec{Dir: "/workdir"}
-
-	_, volumes := w.buildVolumeMountsForSpec("h", spec)
-
-	if len(volumes) != 1 {
-		t.Fatalf("expected 1 volume, got %d", len(volumes))
-	}
-	if !volumes[0].HasExecutor() {
-		t.Error("expected deferred volume to have executor when worker has executor set")
-	}
-}
-
-// Verify buildVolumeMountsForSpec creates stub volumes when no executor.
-func TestCO04_BuildVolumeMounts_WithoutExecutor_CreatesStubVolumes(t *testing.T) {
-	w := newTestWorker(nil)
-	spec := runtime.ContainerSpec{Dir: "/workdir"}
-
-	_, volumes := w.buildVolumeMountsForSpec("h", spec)
-
-	if len(volumes) != 1 {
-		t.Fatalf("expected 1 volume, got %d", len(volumes))
-	}
-	if volumes[0].HasExecutor() {
-		t.Error("expected stub volume to NOT have executor when worker has no executor")
-	}
-}
-
-// Verify overlapping output with trailing slash is still deduped.
-func TestCO05_BuildVolumeMounts_OverlappingWithTrailingSlash_Deduped(t *testing.T) {
-	w := newTestWorker(nil)
-	spec := runtime.ContainerSpec{
-		Dir: "/workdir",
-		Inputs: []runtime.Input{
-			{DestinationPath: "/workdir/shared"},
-		},
-		Outputs: runtime.OutputPaths{"shared": "/workdir/shared/"},
-	}
-
-	mounts, _ := w.buildVolumeMountsForSpec("h", spec)
-
-	// 1 dir + 1 input (output deduped even with trailing slash) = 2
-	if len(mounts) != 2 {
-		t.Fatalf("expected 2 mounts (trailing slash deduped), got %d", len(mounts))
-	}
-}
-
 // Verify ArtifactKey is identity function.
 func TestArtifactKey_IdentityFunction(t *testing.T) {
 	handle := "vol-handle-abc-123"
 	key := ArtifactKey(handle)
 	if key != handle {
 		t.Errorf("ArtifactKey should be identity, got %q for input %q", key, handle)
-	}
-}
-
-// Verify empty Dir produces no dir mount.
-func TestCO04_BuildVolumeMounts_EmptyDir_NoDirMount(t *testing.T) {
-	w := newTestWorker(nil)
-	spec := runtime.ContainerSpec{
-		Outputs: runtime.OutputPaths{"out": "/workdir/out"},
-	}
-
-	mounts, _ := w.buildVolumeMountsForSpec("h", spec)
-
-	// Only 1 output, no dir
-	if len(mounts) != 1 {
-		t.Fatalf("expected 1 mount (output only, no dir), got %d", len(mounts))
 	}
 }
 
@@ -808,48 +839,4 @@ func TestVT10_DaemonSetVolume_DBVolume_Nil(t *testing.T) {
 	if vol.DBVolume() != nil {
 		t.Error("expected DBVolume() to return nil")
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Helpers that outlived volume_daemonset_test.go
-//
-// That suite was deleted once every one of its sixteen tests had both-red
-// evidence. These three were used from here as well, so they moved rather
-// than going with it.
-// ---------------------------------------------------------------------------
-
-// fakeNodeIPResolver creates a NodeIPResolver backed by a fake K8s client
-// with nodes pre-loaded so Resolve() returns deterministic IPs.
-func fakeNodeIPResolver(nodes ...corev1.Node) *NodeIPResolver {
-	objs := make([]interface{}, 0, len(nodes))
-	for i := range nodes {
-		objs = append(objs, &nodes[i])
-	}
-	// Use runtime.Object slice for NewSimpleClientset.
-	cs := fake.NewSimpleClientset()
-	for i := range nodes {
-		cs.CoreV1().Nodes().Create(context.Background(), &nodes[i], metav1.CreateOptions{})
-	}
-	return NewNodeIPResolver(cs)
-}
-
-func testNode(name, ip string) corev1.Node {
-	return corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Status: corev1.NodeStatus{
-			Addresses: []corev1.NodeAddress{
-				{Type: corev1.NodeInternalIP, Address: ip},
-			},
-		},
-	}
-}
-
-type rewriteTransport struct {
-	url string
-}
-
-func (t rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	req.URL.Scheme = "http"
-	req.URL.Host = strings.TrimPrefix(t.url, "http://")
-	return http.DefaultTransport.RoundTrip(req)
 }

@@ -1,23 +1,28 @@
 package jetbridge_test
 
-// RESTORED 2026-09-05 (rebase onto core for 0.3.2), from the deleted
-// atc/worker/jetbridge/behavioral_runtime_spec_test.go (merge-base aef2244a63,
-// which the port stage confirmed compiles and passes on this branch
-// byte-for-byte -- zero adaptations were required).
+// RESTORED 2026-09-18, from the file commit 3822b69a56 deleted whole.
 //
-// Five of that file's thirty-seven specs -- rows
-// JB-behavioral_runtime_spec-007, -008, -009, -010 and -031 of
-// DISPOSITION-jetbridge.md -- were recorded DELETED on FILE-level evidence
-// only, and the rebase re-verification did not sustain them (three REFUTED, one
-// GAP, one INERT). Restoring is always acceptable; deleting on inference is not.
+// Round 1 brought back one Entry: row JB-behavioral_runtime_spec-010, the
+// SC-07 prefix fallback path. Its newest ledger entry before the deletion was
+// the 2026-09-08 twenty-ninth-pass **RETAIN Go** on this DescribeTable, and
+// the 2026-09-18 retirement replaced it with a live sidecar-logs case, which
+// is `@live-kubernetes` and does not run under `make test-unit`.
 //
-// Requirements restored here:
-//   PE-08: TTY flag passed to ExecInPod in exec mode
-//   SC-07: Sidecar log streaming routing (dedicated writer vs prefix fallback)
-//   PE-02: direct mode command embedding
-// Everything else in the original file stays deleted, its evidence intact. The
-// [P3] Describe keeps only its PE-02 child; its PE-09, RF-14 and RF-15 children
-// are gone with the rest.
+// Round 2 (2026-09-18) applies the same rule to its siblings and brings back
+// three more:
+//
+//   - JB-behavioral_runtime_spec-009, the SC-07 dedicated-writer Entry. It was
+//     retired against the same `features/live/sidecar-logs.feature`, so the
+//     round-1 note that it "stays deleted" was wrong on the pass's own rule.
+//   - JB-behavioral_runtime_spec-007 and -008, the PE-08 TTY-true/TTY-false
+//     Entries, retired 2026-09-15 against live terminal rows that execute a
+//     real resource process and a real supervised task on a cluster.
+//
+// PE-02 (row -031) stays deleted: its replacement is the direct-mode outline in
+// `features/container-run.feature`, which is not a live-tier feature.
+//
+// These are retained Go contracts, not evidence that the historical
+// GAP/REFUTED rows have closed. Tables share execution, not weaker assertions.
 
 import (
 	"bytes"
@@ -25,8 +30,6 @@ import (
 	"io"
 
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	. "github.com/onsi/ginkgo/v2"
@@ -36,8 +39,6 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 )
 
-// These are retained Go contracts, not evidence that the historical brine
-// GAP/REFUTED rows have closed. Tables share execution, not weaker assertions.
 var _ = Describe("Restored runtime contracts", func() {
 	var (
 		ctx       context.Context
@@ -57,23 +58,17 @@ var _ = Describe("Restored runtime contracts", func() {
 
 	createContainer := func(handle string, spec runtime.ContainerSpec) runtime.Container {
 		GinkgoHelper()
-		// All five originals use this exact image, not docker:///busybox.
+		// All the originals use this exact image, not docker:///busybox.
 		spec.ImageSpec = runtime.ImageSpec{ImageURL: "busybox"}
 		container, _, err := restoredTask(worker, ctx, handle, spec, delegate)
 		Expect(err).ToNot(HaveOccurred())
 		return container
 	}
 
-	getPod := func(handle string) *corev1.Pod {
+	waitForPod := func(process runtime.Process, handle string, phase corev1.PodPhase) {
 		GinkgoHelper()
 		pod, err := clientset.CoreV1().Pods("test-namespace").Get(ctx, handle, metav1.GetOptions{})
 		Expect(err).ToNot(HaveOccurred())
-		return pod
-	}
-
-	waitForPod := func(process runtime.Process, handle string, phase corev1.PodPhase) {
-		GinkgoHelper()
-		pod := getPod(handle)
 		pod.Status.Phase = phase
 		if phase == corev1.PodSucceeded {
 			pod.Status.ContainerStatuses = []corev1.ContainerStatus{{
@@ -81,7 +76,7 @@ var _ = Describe("Restored runtime contracts", func() {
 				State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0}},
 			}}
 		}
-		_, err := clientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+		_, err = clientset.CoreV1().Pods("test-namespace").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
 		Expect(err).ToNot(HaveOccurred())
 		result, err := process.Wait(ctx)
 		Expect(err).ToNot(HaveOccurred())
@@ -152,37 +147,5 @@ var _ = Describe("Restored runtime contracts", func() {
 			Entry("[SC-07] when SidecarWriters is empty, GetLogs is still requested for the sidecar (prefix fallback path)",
 				"sc07-prefix-handle", atc.SidecarConfig{Name: "redis", Image: "redis:7"}, false),
 		)
-	})
-
-	Describe("[P3] Runtime edge cases (PE-02, PE-09, RF-14, RF-15)", func() {
-		It("PE-02: direct mode command embedding [PE-02] bakes the real command into the main container (no pause pod) and counts the container", func() {
-
-			// No executor: this explicitly retains the direct-mode contract.
-			container := createContainer("pe02-direct", runtime.ContainerSpec{
-				Dir:  "/workdir",
-				Type: db.ContainerTypeTask,
-			})
-			metric.Metrics.ContainersCreated.Delta()
-
-			_, err := container.Run(ctx, runtime.ProcessSpec{
-				Path: "/opt/resource/in",
-				Args: []string{"/tmp/build/get"},
-			}, runtime.ProcessIO{})
-			Expect(err).ToNot(HaveOccurred())
-
-			pod := getPod("pe02-direct")
-			var main *corev1.Container
-			for i := range pod.Spec.Containers {
-				if pod.Spec.Containers[i].Name == "main" {
-					main = &pod.Spec.Containers[i]
-				}
-			}
-			Expect(main).ToNot(BeNil(), "expected a main container")
-			Expect(main.Command).To(Equal([]string{"/opt/resource/in"}))
-			Expect(main.Args).To(Equal([]string{"/tmp/build/get"}))
-			Expect(main.Command).ToNot(ContainElement("sh"), "direct mode must not use the pause-pod sleep command")
-			Expect(metric.Metrics.ContainersCreated.Delta()).To(BeNumerically(">=", float64(1)))
-
-		})
 	})
 })

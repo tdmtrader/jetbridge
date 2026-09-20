@@ -84,7 +84,7 @@ func TestLiveSecretEnvRef(t *testing.T) {
 				},
 			},
 		},
-		&noopDelegate{},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("creating container: %v", err)

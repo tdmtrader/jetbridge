@@ -13,6 +13,13 @@ package jetbridge
 //
 // Only the three refuted tests and the helpers they alone use are here; the
 // other thirteen tests of the original file stay deleted, their evidence intact.
+//
+// RE-RESTORED 2026-09-18. The 2026-09-15 pass deleted this file again, citing
+// `features/live/peer-read.feature`. That feature exists, but it is
+// `@live-kubernetes`: it runs only against a real cluster and never under
+// `make test-unit`, so on every ordinary run the REFUTED/REFUTED/GAP verdicts
+// recorded for rows -011/-012/-013 would have had nothing carrying them. A
+// live-tier replacement does not retire a unit test.
 
 import (
 	"context"

@@ -121,7 +121,7 @@ func setupLiveWorkerWithLocatorAndDatabase(t *testing.T, _ string, locator *jetb
 		worker.SetArtifactLocator(locator)
 	}
 
-	return worker, &noopDelegate{}, locator, database
+	return worker, nil, locator, database
 }
 
 func setupLiveWorker(t *testing.T, handle string) (*jetbridge.Worker, runtime.BuildStepDelegate) {

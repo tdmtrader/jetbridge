@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -32,6 +33,10 @@ import (
 type destroyingExecutor struct {
 	onExec   func()
 	exitCode int
+	// statusMissing reports the way the status-checking transport
+	// (exec_status.go) does when the error stream closed with nothing on it:
+	// client-go's wrapping of that stream error, text and all.
+	statusMissing bool
 }
 
 func (e *destroyingExecutor) ExecInPod(_ context.Context, _, _, _ string, _ []string,
@@ -41,6 +46,10 @@ func (e *destroyingExecutor) ExecInPod(_ context.Context, _, _, _ string, _ []st
 	}
 	if e.onExec != nil {
 		e.onExec()
+	}
+	if e.statusMissing {
+		return fmt.Errorf("error reading from error stream: %w",
+			fmt.Errorf("%w: %w", errExecStatusMissing, io.ErrUnexpectedEOF))
 	}
 	if e.exitCode != 0 {
 		return &ExecExitError{ExitCode: e.exitCode}
@@ -69,7 +78,7 @@ func runningPausePod() *corev1.Pod {
 func TestExecProcessDoesNotReportExitZeroWhenPodIsDestroyed(t *testing.T) {
 	ctx := context.Background()
 
-	newWait := func(clientset *fake.Clientset, executor PodExecutor) (runtime.ProcessResult, error) {
+	newWaitWithStderr := func(clientset *fake.Clientset, executor PodExecutor, stderr io.Writer) (runtime.ProcessResult, error) {
 		config := NewConfig("test-ns", "")
 		container := &Container{
 			handle:        "destroyed-handle",
@@ -82,9 +91,12 @@ func TestExecProcessDoesNotReportExitZeroWhenPodIsDestroyed(t *testing.T) {
 		}
 		process := newExecProcess("proc-1", "destroyed-pod", clientset, config, container,
 			executor, runtime.ProcessSpec{Path: "sh", Args: []string{"-c", "echo running && sleep 30"}},
-			runtime.ProcessIO{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}, nil)
+			runtime.ProcessIO{Stdout: &bytes.Buffer{}, Stderr: stderr}, nil)
 
 		return process.Wait(ctx)
+	}
+	newWait := func(clientset *fake.Clientset, executor PodExecutor) (runtime.ProcessResult, error) {
+		return newWaitWithStderr(clientset, executor, &bytes.Buffer{})
 	}
 
 	// The control: nothing happened to the Pod, so the nil the transport
@@ -199,6 +211,64 @@ func TestExecProcessDoesNotReportExitZeroWhenPodIsDestroyed(t *testing.T) {
 		if errors.As(err, &retryable) && retryable.IsRetryable() {
 			t.Fatalf("Wait() error = %T (%v), want a NON-retryable error: "+
 				"the command had already run, so the build must not be re-run", err, err)
+		}
+	})
+
+	// The transport now says so itself (exec_status.go): an error stream that
+	// closed with no status is reported as an error rather than the nil above.
+	// The Pod is still asked, so the destruction is still what the step is
+	// told about, still not retried, and the build log still says what went.
+	t.Run("a transport reporting no status still names the destroyed pod", func(t *testing.T) {
+		clientset := fake.NewSimpleClientset(runningPausePod())
+		stderr := &bytes.Buffer{}
+
+		executor := &destroyingExecutor{statusMissing: true, onExec: func() {
+			if err := clientset.CoreV1().Pods("test-ns").Delete(ctx, "destroyed-pod", metav1.DeleteOptions{}); err != nil {
+				t.Fatalf("deleting the pause pod: %v", err)
+			}
+		}}
+
+		result, err := newWaitWithStderr(clientset, executor, stderr)
+		if err == nil {
+			t.Fatalf("Wait() = (%+v, nil), want an error: the pod was deleted while the command ran", result)
+		}
+		for _, want := range []string{
+			"exec in pod",
+			"the step's command was running when its pod was destroyed",
+			string(runtime.InterruptionPodDeleted),
+			"reported no exit status",
+		} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("Wait() error = %q, want it to say %q", err, want)
+			}
+		}
+		if strings.Contains(err.Error(), "exit code 0") {
+			t.Errorf("Wait() error = %q claims an exit code the transport never reported", err)
+		}
+		if !strings.Contains(stderr.String(), "pod no longer exists") {
+			t.Errorf("build log = %q, want it to say the pod no longer exists", stderr.String())
+		}
+		var retryable runtime.RetryableError
+		if errors.As(err, &retryable) && retryable.IsRetryable() {
+			t.Fatalf("Wait() error = %T (%v), want a NON-retryable error", err, err)
+		}
+	})
+
+	// The control: the stream broke but the Pod is fine. That is not an exit
+	// 0 either -- the command's status never arrived -- and it is not a
+	// destroyed Pod. It is the transport's error, in the transport's words.
+	t.Run("a transport reporting no status on a surviving pod is not exit 0", func(t *testing.T) {
+		clientset := fake.NewSimpleClientset(runningPausePod())
+
+		result, err := newWait(clientset, &destroyingExecutor{statusMissing: true})
+		if err == nil {
+			t.Fatalf("Wait() = (%+v, nil), want an error: no exit status ever arrived", result)
+		}
+		if !errors.Is(err, errExecStatusMissing) {
+			t.Errorf("Wait() error = %q, want it to wrap %q", err, errExecStatusMissing)
+		}
+		if strings.Contains(err.Error(), "destroyed") {
+			t.Errorf("Wait() error = %q blames a destruction that did not happen", err)
 		}
 	})
 

@@ -41,7 +41,7 @@ func setupLiveWorkerWithConfig(t *testing.T, cfgMutator func(*jetbridge.Config))
 	executor := jetbridge.NewSPDYExecutor(clientset, restConfig)
 	worker.SetExecutor(executor)
 
-	return worker, &noopDelegate{}, database
+	return worker, nil, database
 }
 
 // TestLiveResourceLimitsQoS verifies that pods created with CPU/Memory limits
