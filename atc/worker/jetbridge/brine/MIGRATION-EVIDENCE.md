@@ -96,7 +96,6 @@ KEPT, with the reason:
 | suite | why |
 |---|---|
 | daemonset_integration_test.go | 37 of 41 evidenced; 2 are script semantics, 4 are unmutatable negatives |
-| daemon_client_test.go | 9 of 16; TriggerMirror cannot be reddened by construction |
 | node_ip_resolver_test.go | the "no request was made" residue has no outcome |
 | errors_test.go, process_interruption_test.go, resource_cache_key_test.go, executor_test.go | pure functions and table-driven classification; Gherkin makes these worse |
 | storage_daemonset_test.go, behavioral_volume_test.go, daemon_tls_test.go | mixed; the behavioural half migrated, 47 tests are unit tests by nature |

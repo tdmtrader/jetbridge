@@ -1,11 +1,381 @@
 # Per-test disposition: the jetbridge campaign
 
+## Status-writer and native-mock retirement, 2026-09-15/16 (undated-file dispositions)
+
+The entries below cover test functions or whole files retired during the
+final no-doubles push where the source was one of several files sharing a
+disposition, or was retired by function rather than by whole-file deletion —
+so it has no dedicated `## <file>.go` section of its own. Full narration and
+inventory counts for each step are in V5-MIGRATION.md; this keeps only what
+was deleted, its replacement, and the evidence pointer.
+
+- Node-address recording/lookup/placement/remote-artifact/daemon-node-read
+  cases (2026-09-15/16): moved off supplied Node addresses onto the actual
+  named node and production artifact daemon, across recording, lookup,
+  placement, remote-artifact-retry and named-producer-read scenarios. No
+  Go test files were deleted by this group. Evidence:
+  `/tmp/brine-recorded-live-t1WmxB/`, `/tmp/brine-placement-node-QONO7d/`,
+  `/tmp/brine-remote-node-mYXuap/`, `/tmp/brine-daemon-node-rPGjEF/`.
+- Resolver status retirement: `TestNodeInternalAddressSelection` gained
+  literal mixed/external-address rows; the real-node case now proves a cached
+  InternalIP read without a supplied status. Evidence:
+  `/tmp/brine-node-policy-TIM5tB/`.
+- Failure/status consolidation: supplied-status cases for pod/node
+  diagnostics replaced by `TestPodStatusPolicy` / `TestNodeStatusDiagnostics`
+  pure-policy rows plus real main/sidecar pull-failure and pod-deletion
+  scenarios. Evidence: `/tmp/brine-failure-policy-yvglJO/`.
+- Expired-watch migration: the expiry scenario moved to observing real
+  kubelet/API expiry instead of a supplied status. The idle-object-version
+  limitation this did not fix is recorded below under "Known gaps" in
+  V5-MIGRATION.md. Evidence: `/tmp/brine-watch-expiry-RctO6k/`.
+- `nameOnlyWorker` removed (worker delegates to pure volume layout); recovery
+  moved off a supplied unreported-phase status onto a pure
+  `recoverExecProcess` policy table plus real Pending/Attach cases. Evidence:
+  `/tmp/brine-worker-layout-99eaUt/`, `/tmp/brine-recovery-policy-V5Dv8a/`.
+
+**Ledger resolution pass, 2026-09-18.** Every cell in this table used to name
+its replacement by paraphrase — "existing peer-copy scenario",
+"discovered-cache row", "real-refusal recording case" — and none of those
+strings resolves to a `Scenario:` line. Nine did resolve, once the paraphrase
+was traced to the step definition behind it; they now cite the feature, the
+line, the Examples row and the step file. Five did not: four named scenarios in
+`features/live/artifact-recording.feature` (`@live-kubernetes`, so they never
+run under `make test-unit`) and one — `RcKeyHonorsLocator` — named a row that
+had never been written. The pass marked those five **open** rather than quietly
+reworded; the round-2 live-only restoration (below) ran in the same round and
+independently brought the four `@live-kubernetes` ones back as Go
+(`storage_daemonset_live_only_restored_test.go`, `package jetbridge`). Round 3
+(2026-09-18, below) wrote the missing `recorded` Examples row, which the
+existing step definitions already checked for zero probes, so
+`RcKeyHonorsLocator` is closed too and **no row in this table is open**. The same pass rewrote 58
+per-test rows below; 44 resolved to a unit-tier scenario or to a Go leaf still
+in the tree, and 14 whose only replacement was `@live-kubernetes` were
+restored to `atc/worker/jetbridge/ledger_restored_test.go`. Thirteen of those
+fourteen were also restored by round 2, verbatim and into their original
+files; the integration merge kept the originals and dropped the copies, so
+`ledger_restored_test.go` now carries only `JB-process-023`. Each such row
+carries both passes' bullets.
+
+| Retired native test | Replacement, resolved to a real scenario 2026-09-18 |
+| --- | --- |
+| `TestDaemonSetMode_RecordOutputLocationRegistersAlias` | UNIT. `artifact-recording.feature:8` `Scenario: The next step fetches its input from the directory the producing step wrote it to`. `When the worker records where the step's outputs went` runs the same `RecordOutputs`; `Then that fetch asks the daemon for "build-42/result"` is the `HostDir` clause (`<handle>/<output>`) and `And the pod prefers the node "node-1"` is the `NodeName` clause. Steps: `steps/artifact_recording.go`. (Was: "existing peer-copy scenario", which names nothing.) |
+| `TestDaemonSetMode_RegisterDaemonAliasWithTestServer` | UNIT. `artifact-daemon-real.feature:61` `Scenario: A registered key serves the directory it was registered for` — `When the ATC registers "vol-alias" as living at the step output "handle/output"` / `Then the daemon answers 201`, against a real daemon process rather than an `httptest` stand-in, plus the two refusals at `:72` and `:80`. (Was: "existing peer-copy scenario".) |
+| `TestDaemonSetBackend_RecordOutputs_TriggerMirrorFailureDoesNotPanic` | **RESTORED Go 2026-09-18 (round 2) — live-only replacement.** The real-refusal recording case is `@live-kubernetes` under `features/live/`; nothing on a unit run asserted that a 500 from /mirror leaves RecordOutputs intact. Back in `atc/worker/jetbridge/storage_daemonset_live_only_restored_test.go`. The ledger resolution pass, merged alongside, also resolved the paraphrase to a unit-tier scenario, so the row is doubly covered: `daemon-mirroring.feature:149` `Scenario Outline: Requesting a mirror is best-effort — <condition>`, row `rejected` — `Then the client reports no error and sends only the expected mirror request`. The feature comment there records that the real daemon's 400 replaces the old synthetic 500 on the same `status != 202` branch. (Was: "real-refusal recording case", which names nothing.) |
+| `TestDaemonSetMode_StreamOut_FallsBackToPeer_AfterProducerDeath` | **RESTORED Go 2026-09-18 (round 2) — live-only replacement.** The cited row is the live stopped-producer/present-peer case in `features/live/peer-read.feature`. Back in `atc/worker/jetbridge/daemonset_peer_fallback_restored_test.go`, with its three helpers. The ledger resolution pass notes that the connection-refused sibling is also in the tree: The named replacement is `live/artifact-recording.feature` / `live/peer-read.feature`, both `@live-kubernetes`, so no unit-tier scenario carries it. Nothing is restored because an equivalent unit-tier Go test is already in the tree: `TestDaemonSetVolume_StreamOut_FallsBackToPeer_OnConnectionRefused` (`atc/worker/jetbridge/volume_daemonset_restored_test.go:100`), restored by the 2026-09-18 pass as row `JB-volume_daemonset-011`, with `_PreservesNotFoundOnProbeMiss` and `_HappyPath_PerformsZeroPeerProbes` beside it. (Was: "existing live stopped-producer/present-peer row" — correct that it is live, which is exactly why it cannot retire a unit test.) |
+| `TestDaemonSetBackend_WrapVolumeForLookup_RcKeyProbesDaemons` | UNIT. `artifact-recording.feature:174` `Scenario Outline: Volume lookup preserves location, database identity and delivery`, row `| rc-7 | unrecorded | published | no | the cached resource |` — an unrecorded `rc-` key is discovered through the daemon and the bytes come back. Steps: `steps/artifact_lookup.go:34` and `:42`. (Was: "discovered-cache row, `artifact-recording.feature`", which named the file but no scenario or row.) |
+| `TestDaemonSetBackend_WrapVolumeForLookup_RcKeyHonorsLocator` | **CLOSED 2026-09-18 (round 3) — the missing Examples row is written.** UNIT. `artifact-recording.feature:174` `Scenario Outline: Volume lookup preserves location, database identity and delivery`, new row `| rc-42 | recorded | published | yes | the cached resource |`. Both halves are now carried on a unit run. The locator-becomes-`sourceNode` half: `steps/artifact_lookup.go:127` reads `sourceNode`/`sourceIP` off the volume and, for `recorded`, requires `node == in.recordedNode` and `IP == ""` — exactly the original's two field checks. The zero-probe half: the same check builds `wantLookup` as `nil` whenever `identity` is `yes` (`steps/artifact_lookup.go:145`), and compares it against every request the daemon saw *during* the lookup (`steps/artifact_lookup.go:91`, `capturedRequests`), so the row fails if a locator hit probes at all — the original's `daemon.requestCount() != 0`. No step definition was added: `steps/artifact_lookup.go:57` already implemented the `recorded` location, and `features/live/artifact-recording.feature:33` `Scenario: A recorded volume lookup preserves database identity and delivery` already drives the identical row on the live tier; this pass only gives the unit tier the same row. The row additionally pins delivery (`GET /artifacts/rc-42`, exact bytes), which the Go original did not. `TestDaemonSetBackend_WrapVolumeForLookup_WithLocator` (`atc/worker/jetbridge/storage_daemonset_test.go:868`) still pins the `sourceNode` half in Go. (Was: **OPEN GAP** — "recorded-cache row", a row that had never been written.) |
+| `TestDaemonSetBackend_WrapVolumeForLookup_NonRcKeyNeverProbes` | UNIT. The same `artifact-recording.feature:174` outline, rows `artifact-handle-1`, `build-42-result` and `input-vol` — the original's three literal keys, each `| unrecorded | published | yes |`, i.e. resolved from the database rather than from a probe. (Was: "three ordinary-handle rows".) |
+| `TestDaemonSetBackend_WrapVolumeForLookup_RcKeyProbeErrorFallsThrough` | UNIT. The same `artifact-recording.feature:174` outline, row `| rc-42 | unrecorded | unpublished | yes | unavailable |` — discovery finds no daemon, and the lookup still yields a volume with database identity rather than an error or a nil. (Was: "empty-discovery row".) |
+| `TestDaemonSetBackend_WrapVolumeForLookup_SetsDaemonClient` / `NoDaemonClientStaysNil` | GO-FOR-GO. `TestDaemonSetBackend_WrapVolumeForLookup_PreservesDaemonClient` (`atc/worker/jetbridge/storage_daemonset_test.go:899`) is the "real-client constructor table": it runs both the configured and unconfigured arms and asserts pointer identity of `dsv.daemonClient`, which is strictly both originals, and it runs on every unit run. Nothing is restored. No `Scenario:` line is cited and none should be: the contract is which pointer the constructor stores, which no feature file describes. |
+| `TestDaemonSetBackend_RecordOutputs_CallsDaemon` | **RESTORED Go 2026-09-18 (round 2) — live-only replacement.** "A step's output is copied to a second node" occurs nowhere under `brine/features/`, live or otherwise. Back in `atc/worker/jetbridge/storage_daemonset_live_only_restored_test.go`. Resolved precisely by the ledger pass (which had left this cell **open** because the test is `package jetbridge` and could not go into its `jetbridge_test` file; the round-2 file is `package jetbridge`, which closes it): The scenario is `live/artifact-recording.feature:41` `Scenario: A step's output is copied to an independent peer`, tagged `@live-kubernetes`, so it does not run under `make test-unit`. (Was: "A step's output is copied to a second node" — no such title exists anywhere under `brine/features/`.) |
+| `TestDaemonSetBackend_RecordOutputs_TriggersMirrorAfterAlias` | **RESTORED Go 2026-09-18 (round 2) — live-only replacement.** Same missing scenario; and the /register-before-/mirror ordering it pins had no unit-tier cover. Back in the same file. Resolved precisely by the ledger pass (which had left this cell **open** because the test is `package jetbridge` and could not go into its `jetbridge_test` file; the round-2 file is `package jetbridge`, which closes it): Same `live/artifact-recording.feature:41` scenario, same `@live-kubernetes` tag. |
+| `TestDaemonSetBackend_RecordOutputs_MultipleOutputs_TriggersMirrorForEach` | **RESTORED Go 2026-09-18 (round 2) — live-only replacement.** "Every output is copied, not just the first" exists only in `features/live/artifact-recording.feature` (`@live-kubernetes`). Back in the same file. Resolved precisely by the ledger pass (which had left this cell **open** because the test is `package jetbridge` and could not go into its `jetbridge_test` file; the round-2 file is `package jetbridge`, which closes it): `live/artifact-recording.feature:48` `Scenario: Every output is copied, not just the first` — the title was right, the feature is `@live-kubernetes`. |
+| `TestDaemonSetBackend_RegisterResourceCache_TriggersMirrorBeforeAlias` | **RESTORED Go 2026-09-18 (round 2) — live-only replacement.** That scenario string occurs nowhere under `brine/features/`. Back in the same file. Resolved precisely by the ledger pass (which had left this cell **open** because the test is `package jetbridge` and could not go into its `jetbridge_test` file; the round-2 file is `package jetbridge`, which closes it): `live/artifact-recording.feature:70` `Scenario: A cache registered for a get step is copied to an independent peer`, tagged `@live-kubernetes`. (Was: "...copied off its node too" — no such title exists.) |
+
+The routing transport, imitation tar server and `noopDelegate` (six nil
+callers, AST-verified unread) are deleted. Evidence:
+`/tmp/brine-native-daemons-SEc6ib/`, `/tmp/brine-lookup-mgHIZq/`,
+`/tmp/brine-recording-GJX1aI/`.
+
+## `daemon_client_test.go` — DELETED, whole file
+
+Seven remaining tests map onto two Brine outlines: positive probes
+(`artifact-daemon.feature`) and best-effort mirror requests
+(`daemon-mirroring.feature`). The non-202 row uses the daemon's real 400
+(invalid mirror key), not a synthetic 500; both exercise the same client
+branch. Evidence: `/tmp/brine-client-contracts.GLhnTD/`,
+`/tmp/brine-probe-retirement.SCVSe0/`.
+
+| Native test | Brine replacement |
+| --- | --- |
+| `TestProbeStepArtifact_OneDaemonHit` | UNIT. `artifact-daemon.feature:128` `Scenario Outline: A holder is identified and read — unreachable peers: <unreachable>`, row `0` — `When the ATC probes for a mirrored copy of "handle/output"` / `Then the named daemon serves "f.txt" containing "peer-served-content"`, i.e. the probe names the sole holder and its bytes come back. Steps: `steps/daemon.go:705` and `:923`. (Was: "positive probe, sole holder", which names no scenario.) |
+| `TestProbeStepArtifact_OneHitOneError` | UNIT. The same `artifact-daemon.feature:128` outline, row `1` — `And the unreachable daemon count is 1`, so one peer errors and the probe still names the holder. Steps: `steps/daemon.go:705` and `:923`. (Was: "positive probe, holder plus unreachable peer".) |
+| `TestTriggerMirror_PostsCorrectBody` | UNIT. `daemon-mirroring.feature:149` `Scenario Outline: Requesting a mirror is best-effort — <condition>`, row `accepted` — `Then the client reports no error and sends only the expected mirror request` is the body/URL equality the original asserted. Steps: `steps/mirror_client.go:101` and `:121`. (Was: "mirror accepted".) |
+| `TestTriggerMirror_BestEffort_OnUnreachable` | UNIT. The same `daemon-mirroring.feature:149` outline, row `stopped` — the endpoint is gone, and the client still reports no error. (Was: "mirror stopped".) |
+| `TestTriggerMirror_EmptyDaemonIP` | UNIT. The same `daemon-mirroring.feature:149` outline, row `empty address` — no address to post to, no error, and no request sent. (Was: "mirror empty address".) |
+| `TestTriggerMirror_ContextCancelled` | UNIT. The same `daemon-mirroring.feature:149` outline, row `cancelled` — a cancelled context is swallowed like any other mirror failure. (Was: "mirror cancelled".) |
+| `TestTriggerMirror_BestEffort_OnNon202` | UNIT. The same `daemon-mirroring.feature:149` outline, row `rejected`. The feature comment at `:147` records that the real daemon's 400 on an invalid mirror key replaces the original's synthetic 500 on the same `status != 202` branch. (Was: "mirror rejected".) |
+| `TestProbeResourceCache_Found` | UNIT. `artifact-daemon.feature:67` `Scenario: A cached resource is fetchable from the daemon the probe names`. |
+| `TestProbeResourceCacheNeverFallsBackToResolve` | UNIT. `artifact-daemon.feature:83` `Scenario: A daemon that can only resolve from peers is not a cache hit`. |
+| `TestProbeResourceCache_NotFound` | UNIT. `artifact-daemon.feature:73` `Scenario: A cache no daemon holds is reported as a miss`. |
+| `TestProbeResourceCache_NoDaemons` | UNIT. `artifact-daemon.feature:78` `Scenario: A cluster with no daemons at all is a miss, not an error`. |
+| `TestProbeResourceCacheLearnsDurableCapabilityFromAMiss` | UNIT. `artifact-daemon.feature:88` `Scenario: A durable tier is learned from a miss, not just from a hit`. |
+| `TestProbeResourceCacheReportsNoCapabilityForAnOlderDaemon` | UNIT. `artifact-daemon.feature:95` `Scenario: A daemon that never advertised a durable tier is not credited with one`. |
+| `TestProbeStepArtifact_OneDaemonMiss` | UNIT. `artifact-daemon.feature:101` `Scenario: An artifact no daemon holds is reported as a miss with no address`. |
+| `TestProbeStepArtifact_NoDaemons` | UNIT. `artifact-daemon.feature:107` `Scenario: A cluster with no daemons has no mirrored copy either`. |
+| `TestProbeStepArtifact_AllMiss` | UNIT. `artifact-daemon.feature:113` `Scenario: Repeated discovery of an empty daemon is still a miss`. |
+
+## `node_ip_resolver_test.go` — four tests retired, file kept (2026-09-15), **one RESTORED 2026-09-18**
+
+Not a whole-file deletion: the current tree still carries this file with one
+renamed pure-policy test, `TestNodeInternalAddressSelection` (28 lines). The
+four tests below are what the 2026-09-15 retirement actually removed, in
+favor of the existing `step-integration.feature` discovery scenarios.
+Evidence: `/tmp/brine-node-resolution-OCKb1W/`.
+
+Round 3, 2026-09-18: all four cells named a mutation pair ("cached read /
+corrupt-cache") rather than a scenario, so none of them resolved to anything an
+auditor could open. Three do resolve, to `step-integration.feature`, which runs
+on every unit run. The fourth does not: the only cached-read scenario in the
+suite is `@live-kubernetes`, so `TestNodeIPResolver_Resolve` is restored.
+
+| Native test | Replacement, resolved to a real scenario 2026-09-18 |
+|---|---|
+| `TestNodeIPResolver_Resolve` | **RESTORED Go 2026-09-18 (round 3) — live-only replacement.** The successful-resolution-plus-cache half is carried only by `features/live/node-resolution.feature:7` `Scenario: A node keeps resolving after its API route becomes unavailable` (`Then both answers retain its published internal address with only one API read`, `steps/live_node_resolver.go:25`), which is `@live-kubernetes` and never runs under `make test-unit`. Back in `atc/worker/jetbridge/node_ip_resolver_test.go:28`, verbatim from core `b294dafc49` plus one added assertion: exactly one `Nodes.Get` action across the two `Resolve` calls, which is what makes the leaf pin the cache the old cell claimed for it. Nothing is weakened. (Was: "both exact addresses, cached read / external-address, corrupt-cache", a mutation pair, not a scenario.) |
+| `TestNodeIPResolver_NodeNotFound` | UNIT. `step-integration.feature:310` `Scenario: A node that is not in the cluster cannot be resolved` — `Given a cluster with no nodes` / `When a caller resolves "nonexistent" twice` / `Then resolving fails`, against a real API server rather than an empty fake clientset. Steps: `steps/integration.go`. (Was: "API failure reaches caller / swallow-api-error".) |
+| `TestNodeIPResolver_NoInternalIP` | UNIT. `step-integration.feature:319` `Scenario: A node with no reported internal address cannot be resolved` — the API itself supplies the empty status, so an external-only address is not accepted as a substitute. The external-only and mixed-address orderings stay as literal rows in `TestNodeInternalAddressSelection` (`atc/worker/jetbridge/node_ip_resolver_test.go:10`). (Was: "external address is not a substitute / external-address".) |
+| `TestNodeIPResolver_IPShapedInputRejected` | UNIT. `step-integration.feature:328` `Scenario Outline: An IP passed as a node name is refused, not looked up — <case>`, rows `loopback IPv4` / `CGNAT IPv4` / `loopback IPv6` / `documentation`, plus `step-integration.feature:344` `Scenario: An IP passed as a node name is refused even where the Nodes API would answer` for the fifth spelling `10.0.0.5` — all five of the original's spellings. `Then the node-name argument is refused as an IP address` requires `errors.Is(err, jetbridge.ErrNodeNameIsIP)` and zero resolver requests (`steps/integration.go:1093`, `:1134`). (Was: "typed refusal, zero API requests, all five original spellings / untyped-refusal, lookup-before-refusal".) |
+
+## `behavioral_volume_test.go` — four tests retired (2026-09-15), **all four RESTORED 2026-09-18**
+
+The 2026-09-15 retirement claimed it reused existing `volume-streaming.feature`
+scenarios and added no Brine case or definition. Recorded evidence:
+`/tmp/brine-volume-retry-ZxRIbF/`.
+
+**RESTORED Go 2026-09-18 — the named replacement scenarios do not exist.** A
+literal search of `atc/worker/jetbridge/brine/features/` (including
+`features/live/`) at this commit returns zero hits for "Daemon drops the first
+connections", "Daemon never answers" and "Failing daemon reports an internal
+error". The only occurrences in the tree are the three cells of the table
+below. `volume-streaming.feature` has six scenarios and none of them is about
+transport retry, retry exhaustion or a non-200 status. Nothing inherited these
+four contracts, so all four Go tests are back in
+`atc/worker/jetbridge/behavioral_volume_test.go`, together with the URL
+rewriter and fake-node factory they need.
+
+| Retired native test | Claimed Brine replacement | Disposition |
+|---|---|---|
+| `TestVT06_DaemonSetVolume_StreamOut_RetrySucceeds` | "Daemon drops the first connections" — **no such scenario** | RESTORED Go 2026-09-18 |
+| `TestVT06_DaemonSetVolume_StreamOut_GivesUpAfter3Failures` | "Daemon never answers" — **no such scenario** | RESTORED Go 2026-09-18 |
+| `TestVT06_DaemonSetVolume_StreamOut_Non200Status` | "Failing daemon reports an internal error" — **no such scenario** | RESTORED Go 2026-09-18 |
+| `TestVT08_DaemonSetVolume_StreamOut_PassesRawBody` | "Daemon drops the first connections" — **no such scenario** | RESTORED Go 2026-09-18 |
+
+The fake construction client and no-op executor stay removed: the 43 native
+volume checks that only construct really do use the actual client/executor
+types, and `TestCO04_BuildVolumeMounts_WithExecutor_CreatesDeferredVolumes`
+now uses the production `SPDYExecutor` in place of the deleted no-op double.
+
+## `behavioral_volume_test.go` — thirteen mount-builder tests deleted with no row at all (2026-09-18), **all thirteen RESTORED 2026-09-18**
+
+Commit `3822b69a56` also removed every test of
+`(*Worker).buildVolumeMountsForSpec` from this file, along with the
+`nameOnlyWorker` / `newTestWorker` fixture. No disposition row was written for
+any of them, no brine scenario was named, and no mutation was recorded. They
+are the sole coverage of the Worker-side mount builder — a different code path
+from `(*Container).buildVolumeMounts`, which is what the container-pod brine
+scenarios exercise.
+
+**RESTORED Go 2026-09-18 — deleted with no recorded evidence of any kind.**
+
+`TestCO04_BuildVolumeMounts_DirOnly`, `_WithInputs`, `_WithExecutor_CreatesDeferredVolumes`,
+`_WithoutExecutor_CreatesStubVolumes`, `_EmptyDir_NoDirMount`;
+`TestCO05_BuildVolumeMounts_WithOutputs`, `_OverlappingInputAndOutput_Deduped`,
+`_NonOverlappingInputAndOutput_BothCreated`, `_OverlappingWithTrailingSlash_Deduped`;
+`TestCO06_BuildVolumeMounts_WithCaches`; `TestCO11_VolumeNaming`;
+`TestCO12_CachePath_RelativeResolvedAgainstDir`, `_AbsoluteStaysAbsolute`.
+
+## `executor_test.go` — two tests merged, not retired (2026-09-18)
+
+`TestNewSPDYExecutorCreation` and `TestNewSPDYExecutorWithDifferentConfigs`
+have no disposition row because they were not deleted: `3822b69a56` merged them
+into a single table-driven `TestNewSPDYExecutor` that keeps every assertion
+either made (clientset identity, restConfig identity, per-host `restConfig.Host`)
+and adds the real `kubernetes.NewForConfig` client in place of the fake. No
+contract was dropped, so nothing is restored here — this row exists only so the
+two names resolve.
+
+| Absent native test | Replacement, resolved 2026-09-18 |
+|---|---|
+| `TestNewSPDYExecutorCreation` | GO-FOR-GO. `TestNewSPDYExecutor` (`atc/worker/jetbridge/executor_test.go:21`), case `default` (`https://localhost:6443`) — clientset pointer identity and `restConfig` pointer identity, the original's two assertions. No brine scenario is claimed. |
+| `TestNewSPDYExecutorWithDifferentConfigs` | GO-FOR-GO. The same `TestNewSPDYExecutor` (`atc/worker/jetbridge/executor_test.go:21`), the four table rows `default` / `in-cluster` / `external` / `localhost` — each asserts `restConfig.Host` for its own host, which is strictly the original's per-config loop. No brine scenario is claimed. |
+
+Both cells are Go-for-Go on purpose: the contract is constructor wiring, which
+no feature file describes, so naming a `Scenario:` line for either would be a
+false pointer.
+
 The gc/lidar campaign left a row per deleted It. The jetbridge campaign did
 not: it deleted twenty whole test files, 401 tests, and the record of why
 lived in twenty commit messages and one summary. An auditor asking "what
 evidence killed THIS test?" had nowhere to look. This file is that record,
 written after the fact from the deletion commits themselves, so it says
 plainly where the evidence is thin rather than dressing it up.
+
+## Restoration pass, 2026-09-18
+
+### Final count, computed 2026-09-18 (round 3)
+
+Counted by script, not by hand: list every test leaf in the top-level
+`atc/worker/jetbridge` `_test.go` files — `^func Test[A-Za-z0-9_]+(`, plus every
+`It("…")` and `Entry("…")` title — at core `b294dafc49`, at the branch's
+most-retired point `c96fac16a7` (the commit after the retirement, before any
+restoration), and at this commit, and difference the three sets. The
+classification of what is still absent is read from the rows below: a row counts
+as *unit-tier cited* only if it names a `.feature` file that is **not** under
+`features/live/`.
+
+| Measure | Count |
+| --- | --- |
+| Test leaves on core `b294dafc49` | 392 |
+| Test leaves at this commit | 351 |
+| Leaves this branch added (not on core) | 21 |
+| Core leaves absent at the most-retired point `c96fac16a7` | 108 |
+| — of those, **restored** and running at this commit | 46 |
+| — of those, **still absent** at this commit | 62 |
+| Still-absent leaves with a **valid unit-tier citation** (feature, scenario title, line) | 58 |
+| Still-absent leaves replaced **Go-for-Go** (surviving Go test named with `file:line`; no scenario claimed) | 4 |
+| Still-absent leaves cited only to a `@live-kubernetes` scenario | 0 |
+| Still-absent leaves with **no carrier named** (open) | 0 |
+
+The 108/46/62 split reconciles exactly (108 − 46 = 62). The four Go-for-Go
+leaves are `TestNewSPDYExecutorCreation`,
+`TestNewSPDYExecutorWithDifferentConfigs`,
+`TestDaemonSetBackend_WrapVolumeForLookup_SetsDaemonClient` and
+`_NoDaemonClientStaysNil`.
+
+Two limits of the method, stated rather than hidden. Leaf *names* are counted,
+so two `It`s that share a title anywhere in the package count once — the totals
+are therefore lower bounds on spec count, not spec counts. And a citation being
+*valid* here means it resolves to a real scenario at a real line on the unit
+tier; it is not a claim that the scenario reddens under the same mutations. The
+mutation evidence, where it exists, is in each row's own bullets.
+
+An audit of commit `3822b69a56` ("retire Go suites now covered by brine
+features") against the features actually present in this tree found three
+kinds of untrue retirement, and restored the Go tests behind each:
+
+1. **A named scenario that does not exist.** Four `behavioral_volume_test.go`
+   tests were retired against `volume-streaming.feature` scenarios called
+   "Daemon drops the first connections", "Daemon never answers" and "Failing
+   daemon reports an internal error". None of those strings occurs anywhere
+   under `brine/features/`. All four are restored.
+2. **Deleted with no row at all.** Thirteen `buildVolumeMountsForSpec` tests
+   were removed with no disposition row, no named scenario and no mutation.
+   All thirteen are restored.
+3. **Retired against a `@live-kubernetes` feature.** Twenty-six tests were
+   retired against `features/live/peer-read.feature`,
+   `features/live/sidecar-logs.feature`, `features/live/task-command.feature`,
+   `features/live/s3-resource.feature`, `features/live/terminal.feature`,
+   `features/live/artifact-recording.feature`, the live hijack, no-daemon
+   task-output and npm/PostgreSQL rows, and the live cancellation rows. Those
+   run only against a real cluster and never under `make test-unit`, so on an
+   ordinary unit run nothing carried the contract.
+
+   Round 1 restored seven of them — `JB-volume_daemonset-011/-012/-013`,
+   `JB-behavioral_runtime_spec-010`, `JB-container-055`,
+   `JB-kept-000/-001/-002` — and left nineteen in the same class. Round 2
+   (below) restores those nineteen.
+
+Every restored test passes against the code at this commit, so none of this is
+a regression report — it is a coverage restoration. A rule the pass applied
+throughout: a live-tier brine scenario is a valid *replacement* only for a Go
+test that itself only runs on the live tier. It cannot retire a test that ran
+on every unit run.
+
+### Round 2, 2026-09-18 — the live-only rows a mechanical scan can see
+
+Round 1 applied the live-tier rule to seven rows and stopped. Re-running it
+over the whole ledger found nineteen more, and all nineteen are restored. Each
+restored row carries a **RESTORED Go 2026-09-18 (round 2) — live-only
+replacement** bullet naming the live feature it was retired against.
+
+What round 2 scanned was every ledger row whose replacement cell either names a
+path under `features/live/` or quotes a scenario title that can be grepped for.
+That is what "the rest of the live-only class" meant, and it is narrower than
+the whole ledger: a row whose cell is prose ("the existing real-API absent-pod
+read case") names no path and quotes no title, so the scan could not place it on
+a tier either way. Round 3 (below) resolved those by hand.
+
+- **A cited scenario that does not exist, live or otherwise.** Three
+  `DaemonSetBackend` tests were retired against "A step's output is copied to
+  a second node" and "A cache registered for a get step is copied off its node
+  too". Neither string occurs anywhere under `brine/features/`.
+  `TestDaemonSetBackend_RecordOutputs_CallsDaemon`,
+  `_RecordOutputs_TriggersMirrorAfterAlias` and
+  `_RegisterResourceCache_TriggersMirrorBeforeAlias` are restored.
+- **Retired against a live-only scenario.** Sixteen more:
+  `TestDaemonSetBackend_RecordOutputs_MultipleOutputs_TriggersMirrorForEach`
+  and `_RecordOutputs_TriggerMirrorFailureDoesNotPanic` (the first cites
+  "Every output is copied, not just the first", which exists only in
+  `features/live/artifact-recording.feature`);
+  `TestDaemonSetMode_StreamOut_FallsBackToPeer_AfterProducerDeath` (PE-08,
+  `features/live/peer-read.feature`); `JB-behavioral_runtime_spec-007/-008`
+  (live terminal rows) and `-009` (`features/live/sidecar-logs.feature`, the
+  sibling of the row 1 already restored on this exact ground);
+  `JB-integration-000/-011/-012` (`live/task-command.feature`,
+  `live/s3-resource.feature`, the live npm/PostgreSQL workflow); and
+  `JB-container-030/-040/-041/-042/-044/-045/-046` (the live task-completion,
+  mounted-application, no-daemon task-output and three-row task-hijack
+  outlines).
+
+They are restored into two new files —
+`atc/worker/jetbridge/storage_daemonset_live_only_restored_test.go` and
+`atc/worker/jetbridge/daemonset_peer_fallback_restored_test.go` (which also
+brings back `integrationRoutingTransport`, `itoa` and `tarDirOrFile`, deleted
+with it as unused) — and into the three existing restored Ginkgo files.
+`fakeArtifact`, removed with `JB-integration-011`, comes back in
+`container_restored_test.go`. Every body is the original, unweakened; the whole
+package is green at `go test ./atc/worker/jetbridge/ -count=1`, so again this
+is coverage restoration and not a regression report.
+
+Three further rows — `JB-volume-013`, `JB-volume-020` and `JB-volume-021` —
+are retired in this ledger against live scenarios (the live round-trip
+scenario and the real-pod handoff outline), but need no action: their Go tests
+are still present and still run on every unit run, in
+`atc/worker/jetbridge/volume_restored_test.go`. Those rows are stale, not
+uncovered.
+
+### Round 3, 2026-09-18 — the prose rows, resolved by hand
+
+What round 2 left was the prose class: fifty of the 2026-09-15/16 retirements
+named a replacement without naming a feature file ("the existing real-API
+absent-pod read case", "the merged root-stream contract", and so on). A
+mechanical scan cannot decide which tier those live on, so round 3 went through
+them by hand, taking as the working set every test **absent from
+`atc/worker/jetbridge` at this commit but present on core `b294dafc49`** (the
+count table at the top of this section is computed from that comparison, by
+script, not by eye).
+
+Twenty-four cells were rewritten by hand in this pass; each names a file, a
+scenario title and a line (or, for a Go-for-Go replacement, a Go test name and
+`file:line`):
+
+- The seven `daemon_client_test.go` cells that read "positive probe, sole
+  holder", "mirror accepted" and so on now cite
+  `artifact-daemon.feature:128` and `daemon-mirroring.feature:149` by scenario
+  title, Examples row and step file. Both features are unit tier. The nine
+  cells in the same table that already quoted a scenario title but named no
+  file gained `artifact-daemon.feature:67`–`:113` line numbers; all nine
+  titles were verified to exist at those lines.
+- The four `node_ip_resolver_test.go` cells that named a mutation pair
+  ("cached read / corrupt-cache") now cite `step-integration.feature:310`,
+  `:319`, `:328` and `:344` — except `TestNodeIPResolver_Resolve`, whose only
+  carrier was `@live-kubernetes`, and which is therefore restored to Go.
+- The two `executor_test.go` names and the
+  `WrapVolumeForLookup_SetsDaemonClient` / `NoDaemonClientStaysNil` pair are
+  **Go-for-Go** replacements, not brine ones, and now say so while citing the
+  surviving Go test by name and `file:line`. Naming a `Scenario:` line for a
+  constructor-wiring contract would be a false pointer.
+- `TestDaemonSetBackend_WrapVolumeForLookup_RcKeyHonorsLocator`, the one row
+  round 2 left **open**, is closed by writing the `recorded` Examples row the
+  cell had always claimed. No step definition was added: the existing check
+  already required both halves (locator node, zero probes), and the live tier
+  already drove the identical row.
+- Thirteen container/runtime rows for tests that are absent at this commit
+  still ended with a bare "**the test is restored**" bullet from an earlier
+  round, contradicting the per-test retirement recorded above them. Each is now
+  annotated "historical restoration, superseded by the verified retirement
+  above", matching its already-annotated siblings.
+
+What round 3 did **not** do: it did not re-measure any retirement, and it did
+not audit the prose cells of rows whose tests are still in the tree — a row
+whose test runs on every unit run cannot leave a contract uncovered, whatever
+its cell says. Those cells remain imprecise and are the open remainder.
+
+Round 2 also recorded: `observability.feature` is cited thirteen times below and does not
+exist in `brine/features/` at this commit; every citation is now marked as a
+historical claim rather than a live pointer. The dangling pointer at
+`features/artifact-daemon.feature:7` ("connection retry and server failures
+remain in volume-streaming.feature") is corrected in that file.
 
 ## Verdict key
 
@@ -472,21 +842,53 @@ Restored tests from this file live in `atc/worker/jetbridge/behavioral_runtime_s
   - rebase impact: IMPACTED (b) — (b) scenario-level: container-spec.feature '@PE-06 Scenario: The process spec wins a collision' is built by the rebase-edited 'When the container runs' DefineMap in brine/steps/container_spec.go. The append order this row pins (container.go:423-424) is untouched by core.
   - re-verified 2026-09-05 (rebase onto core): HOLDS — mutation atc/worker/jetbridge/container.go, (*Container).buildPod (lines 423-424):; brine RED: Then the main container environment resolves "SHARED_VAR" to "from_process" (line 50) — error: expected the effective value for "SHARED_VAR" to be "from_process", got "from_container" (all values: SH…; go RED: behavioral_runtime_spec_test.go:260 — Expect(sharedVarValues[len(sharedVarValues)-1]).To(Equal("from_process")) → "[FAILED] Expected <string>: from_container to equal <string>: from_process"; skeptic: Four attacks run, none refuted: (1) unrelated/flaky brine red — clean control run of the whole feature; (2) red-by-adaptation — byte-compare of the restored file against the merge-base plus an unmuta… → HOLDS
 
-**[REFUTED]** [PE-08] TTY flag in exec mode [PE-08] passes TTY=true to ExecInPod when ProcessSpec.TTY is set  `JB-behavioral_runtime_spec-007`
+**[DELETED]** [PE-08] TTY flag in exec mode [PE-08] passes TTY=true to ExecInPod when ProcessSpec.TTY is set  `JB-behavioral_runtime_spec-007`
+  - **RESTORED Go 2026-09-18 (round 2) — live-only replacement.** The 2026-09-15 retirement replaced this Entry with live terminal rows that run a real resource process and a real supervised task on a cluster (`features/live/terminal.feature`, `features/live/task-command.feature`), both `@live-kubernetes`. They never run under `make test-unit`, so no unit-tier test asserted that ExecInPod is handed TTY=true. The Entry is back in `atc/worker/jetbridge/behavioral_runtime_spec_restored_test.go` under a `[PE-08] TTY flag in exec mode` DescribeTable, keeping the original exact-argument assertion.
+  - **Resolved 2026-09-18 (ledger resolution pass)** — the replacement is
+    `@live-kubernetes`. The 2026-09-15 note below says "both existing terminal
+    rows" and names no scenario. Resolved, the only brine case that observes a
+    TTY choice is `live/terminal.feature:8` `Scenario Outline: Both execution
+    paths retain the requested terminal mode`, whose feature tag line is
+    `@live-kubernetes @PE-08`; `live/task-command.feature` only asserts the
+    negative (`without stdin or a terminal`) and is also live. Nothing under
+    `features/*.feature` mentions TTY at all — `container-run.feature:147`
+    says so in a comment. The ledger pass independently restored the same spec to `ledger_restored_test.go` (dropped at integration as a duplicate of the verbatim original named above) as `Ledger-restored runtime
+    contracts [PE-08] TTY flag in exec mode forwards the requested terminal
+    mode [PE-08] passes TTY=true to ExecInPod when ProcessSpec.TTY is set`.
+  - retired 2026-09-15: Both existing terminal rows now execute a real resource process and a real nil-stdin supervised task. The resource observes its actual PTY; the task independently requires exactly one real request with the declared TTY choice, namespace/pod/container and supervised command. Three task-only faults (disable, enable, duplicate exec) fail the original Go assertions and new Brine checks while the prior resource-only cases remain green. No new scenario or step definition. Evidence: /tmp/brine-task-tty.cSIGDH/pairing.json and evidence.json; original source is preserved there. Only the two TTY entries were removed; sidecar/direct-mode contracts remain unchanged. Historical verdicts below are superseded.
   - consolidation 2026-09-08: Retained Go Entry `[PE-08] passes TTY=true to ExecInPod when ProcessSpec.TTY is set` in `behavioral_runtime_spec_restored_test.go`, now under the shared runtime fixture. It pins the exact nil-stdin executor argument, not merely terminal-like output. `tty-false` and `exec-exit-one` fail this same Entry before/after; no brine replacement claim. Evidence: `/tmp/brine-restored-runtime.5svis3`; see `CONSOLIDATION.md`, tenth pass.
   - recorded evidence: PER-FILE (deletion commit `49969fd6c4`; nothing names this test alone)
   - rebase impact: IMPACTED (b) — (b) at FEATURE granularity only: the named counterpart lives in container-run.feature, which the rebase's step_changes lists under brine/steps/container_extra.go (runExtraSpecFromDraft gained TaskCacheIdentity, reported INERT for that feature's drafts) — but the two @PE-08 scenarios themselves are backed by brine/step…
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/process.go, (*execProcess).Wait — the tty argument to PodExecutor.ExecInPod:; brine RED: Then the step reports "terminal" (line 293) — status failed, error verbatim: expected the command's output to mention "terminal", got "pipe " (a shell that believes it is talking to a pipe gives `fly…; go RED: behavioral_runtime_spec_test.go:334 — Expect(calls[0].tty).To(BeTrue(), "expected TTY=true to be passed to ExecInPod"). Ginkgo output verbatim: [FAILED] expected TTY=true to be passed to ExecInPod Ex…; skeptic: different-behaviour pairing (narrower mutation isolating the path the Go It exercises and brine deliberately avoids), plus red-by-adaptation and harness-liveness controls → REFUTED (the pairing broke)
   - **the test is restored** — `atc/worker/jetbridge/behavioral_runtime_spec_restored_test.go`
 
-**[GAP]** [PE-08] TTY flag in exec mode [PE-08] passes TTY=false to ExecInPod when ProcessSpec.TTY is nil  `JB-behavioral_runtime_spec-008`
+**[DELETED]** [PE-08] TTY flag in exec mode [PE-08] passes TTY=false to ExecInPod when ProcessSpec.TTY is nil  `JB-behavioral_runtime_spec-008`
+  - **RESTORED Go 2026-09-18 (round 2) — live-only replacement.** Same live terminal rows, same rule: the negative (nil-TTY) argument contract had no unit-tier cover. The Entry is back in `behavioral_runtime_spec_restored_test.go` as the second row of the same DescribeTable.
+  - **Resolved 2026-09-18 (ledger resolution pass)** — same as row -007:
+    `live/terminal.feature:8` is the only TTY scenario and it is
+    `@live-kubernetes`. The ledger pass independently restored the same spec to `ledger_restored_test.go` (dropped at integration as a duplicate of the verbatim original named above) as `[PE-08] passes
+    TTY=false to ExecInPod when ProcessSpec.TTY is nil` Entry. This row's own
+    re-verification below was GAP, which already said brine owed a scenario;
+    the unit tier still does not have one.
+  - retired 2026-09-15: Both existing terminal rows now execute a real resource process and a real nil-stdin supervised task. The resource observes its actual PTY; the task independently requires exactly one real request with the declared TTY choice, namespace/pod/container and supervised command. Three task-only faults (disable, enable, duplicate exec) fail the original Go assertions and new Brine checks while the prior resource-only cases remain green. No new scenario or step definition. Evidence: /tmp/brine-task-tty.cSIGDH/pairing.json and evidence.json; original source is preserved there. Only the two TTY entries were removed; sidecar/direct-mode contracts remain unchanged. Historical verdicts below are superseded.
   - consolidation 2026-09-08: Retained Go Entry `[PE-08] passes TTY=false to ExecInPod when ProcessSpec.TTY is nil` in `behavioral_runtime_spec_restored_test.go`. It pins the nil-TTY/nil-stdin argument directly. `tty-true` and `exec-exit-one` fail this same Entry before/after; no brine replacement claim. Evidence: `/tmp/brine-restored-runtime.5svis3`; see `CONSOLIDATION.md`, tenth pass.
   - recorded evidence: PER-FILE (deletion commit `49969fd6c4`; nothing names this test alone)
   - rebase impact: IMPACTED (b) — (b) at FEATURE granularity only, same as row 007: container-run.feature appears in step_changes via brine/steps/container_extra.go, while the @PE-08 negative scenario itself is backed by the unchanged brine/steps/tty.go. Core did not touch process.go:847 or anything else this pins.
   - re-verified 2026-09-05 (rebase onto core): GAP — mutation atc/worker/jetbridge/process.go, (*execProcess).Wait — the tty argument to executor.ExecInPod:; brine RED: Then the step reports "pipe" (line 301) — status failed, error verbatim: expected the command's output to mention "pipe", got "terminal\r " (a shell that believes it is talking to a pipe gives `fly h…; go RED: behavioral_runtime_spec_test.go:375 — [FAILED] expected TTY=false when ProcessSpec.TTY is nil / Expected / <bool>: true / to be false; skeptic: Four attacks run: (1) unrelated/flaky brine red — clean baseline of container-run.feature; (2) red-by-adaptation — sha-checked restoration, unmutated Go run; (3) order-masked/decorative assertion — s… → GAP
   - **the test is restored** — `atc/worker/jetbridge/behavioral_runtime_spec_restored_test.go`
 
-**[REFUTED]** [SC-07] Sidecar log streaming routing (direct mode) [SC-07] when SidecarWriters contains an entry, GetLogs is requested for the sidecar container by name  `JB-behavioral_runtime_spec-009`
+**[DELETED]** [SC-07] Sidecar log streaming routing (direct mode) [SC-07] when SidecarWriters contains an entry, GetLogs is requested for the sidecar container by name  `JB-behavioral_runtime_spec-009`
+  - **RESTORED Go 2026-09-18 (round 2) — live-only replacement.** Retired against `features/live/sidecar-logs.feature`, which is `@live-kubernetes`. The round-1 pass restored the sibling fallback Entry (row -010) on exactly this ground and then wrote that this one "stays deleted"; that was inconsistent with its own rule. The dedicated-writer Entry is back in `behavioral_runtime_spec_restored_test.go`, keeping the original weak any-GetLogs observation rather than a stronger one it never made.
+  - **Resolved 2026-09-18 (ledger resolution pass)** — the replacement is
+    `@live-kubernetes`. The 2026-09-15 note below names
+    `live/sidecar-logs.feature`, whose tag line is `@SC-07 @live-kubernetes`,
+    so it never runs under `make test-unit`. This is the same finding the
+    2026-09-18 pass already made for the sibling Entry (row -010); the
+    dedicated-writer Entry was left deleted. The ledger pass independently restored the same spec to `ledger_restored_test.go` (dropped at integration as a duplicate of the verbatim original named above) as `Ledger-restored runtime
+    contracts [SC-07] Sidecar log streaming routing (direct mode) [SC-07] when
+    SidecarWriters contains an entry, GetLogs is requested for the sidecar
+    container by name`.
+  - 2026-09-15 direct sidecar group: retired after matched original-Go/real-Brine faults for the selected writer path. The original asserted only any GetLogs request. The shared live/sidecar-logs.feature now covers exec/direct x dedicated/fallback, requiring a real runtime helper Follow request and exact output routing. Independent source probes use an unobserved client and real kubelet status; no fake executor or supplied status. Both direct-only log suppression faults fail the original assertion and the replacement Then while both exec rows pass. Normal/inactive controls pass all four rows. Evidence and preserved original source: /tmp/brine-direct-sidecars.aAJqqF; see V5-MIGRATION.md. Historical retention/verdict notes below are superseded.
   - consolidation name audit (2026-09-08, twenty-ninth pass): **RETAIN Go** `Restored runtime contracts [SC-07] Sidecar log streaming routing (direct mode) retains the log request on both writer paths [SC-07] when SidecarWriters contains an entry, GetLogs is requested for the sidecar container by name` in `behavioral_runtime_spec_restored_test.go`. The body still asserts only that some GetLogs request occurred; it does not prove sidecar identity or writer routing. Its prior retention and mutation evidence remain applicable. Current identity/source is recorded in `/tmp/brine-custom-checks.L1hyoZ/retained-specs.json`; this dry-run inventory is not a fresh execution or replacement-equivalence claim. No historical verdict changes.
   - consolidation 2026-09-08: Retained Go Entry with this original `[SC-07] when SidecarWriters contains an entry` name in `behavioral_runtime_spec_restored_test.go`, sharing the direct-mode fixture. Its actual assertion is only that some GetLogs request occurs, not the named sidecar or destination writer. `no-direct-logs` and `direct-exit-one` fail it before/after; `no-sidecar-logs` passes both versions. This known limitation remains open, not claimed closed by consolidation. Evidence: `/tmp/brine-restored-runtime.5svis3`; see `CONSOLIDATION.md`, tenth pass.
   - recorded evidence: PER-FILE (deletion commit `49969fd6c4`; nothing names this test alone)
@@ -494,7 +896,9 @@ Restored tests from this file live in `atc/worker/jetbridge/behavioral_runtime_s
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation TWO mutations, both in atc/worker/jetbridge/process.go, (*Process).streamLogs. (1) RECORDED mutation (recipe verbatim), at process.go ~262-275: for _, sc := range p.container.containerSpec.Sidecars {…; brine RED: Then the sidecar's output arrives on its own stream (line 260) - status failed, error: "expected the sidecar's log on its dedicated stream; nothing arrived, so a user watching that sidecar would see…; go RED: Under variant B: '[FAILED] expected GetLogs to be called for the sidecar container / Expected / <bool>: false / to be true' at behavioral_runtime_spec_test.go:464; summary 'Ran 1 of 56 Specs ... FAIL…; skeptic: different-behaviour pairing (primary, via a narrower mutation) + mutation-not-the-recorded-one; also ran red-by-adaptation and unrelated-brine-red controls → REFUTED (the pairing broke)
   - **the test is restored** — `atc/worker/jetbridge/behavioral_runtime_spec_restored_test.go`
 
-**[INERT]** [SC-07] Sidecar log streaming routing (direct mode) [SC-07] when SidecarWriters is empty, GetLogs is still requested for the sidecar (prefix fallback path)  `JB-behavioral_runtime_spec-010`
+**[DELETED]** [SC-07] Sidecar log streaming routing (direct mode) [SC-07] when SidecarWriters is empty, GetLogs is still requested for the sidecar (prefix fallback path)  `JB-behavioral_runtime_spec-010`
+  - **RESTORED Go 2026-09-18 — the replacement is `@live-kubernetes`.** `features/live/sidecar-logs.feature` is tagged `@SC-07 @live-kubernetes`; it runs only against a real cluster, never under `make test-unit`, and a second copy sits under `features/live/pending/`. With the Entry deleted, no test that runs on an ordinary unit run asserted that a sidecar with no dedicated writer still has its logs requested — which is precisely the prefix-fallback branch the 2026-09-05 re-verification marked INERT and therefore restored. The Entry is back in `atc/worker/jetbridge/behavioral_runtime_spec_restored_test.go`, keeping the original weak any-GetLogs observation rather than a stronger one it never made. The sibling dedicated-writer Entry (row -009) stays deleted.
+  - 2026-09-15 direct sidecar group: retired after matched original-Go/real-Brine faults for the selected writer path. The original asserted only any GetLogs request. The shared live/sidecar-logs.feature now covers exec/direct x dedicated/fallback, requiring a real runtime helper Follow request and exact output routing. Independent source probes use an unobserved client and real kubelet status; no fake executor or supplied status. Both direct-only log suppression faults fail the original assertion and the replacement Then while both exec rows pass. Normal/inactive controls pass all four rows. Evidence and preserved original source: /tmp/brine-direct-sidecars.aAJqqF; see V5-MIGRATION.md. Historical retention/verdict notes below are superseded.
   - consolidation 2026-09-08: Retained Go Entry with this original `[SC-07] when SidecarWriters is empty` name in `behavioral_runtime_spec_restored_test.go`, sharing the direct-mode fixture. It retains only the existing any-GetLogs observation on the empty-writer path. `no-direct-logs` and `direct-exit-one` fail it before/after; `no-sidecar-logs` passes both. This does not prove prefix routing. Evidence: `/tmp/brine-restored-runtime.5svis3`; see `CONSOLIDATION.md`, tenth pass.
   - recorded evidence: PER-FILE (deletion commit `49969fd6c4`; nothing names this test alone)
   - rebase impact: IMPACTED (b) — (b) at FEATURE granularity only, same as row 009: container-pod.feature is in step_changes' features_affected via container_spec.go/domain.go, while the @SC-07 fallback scenario runs through the untouched brine/steps/container_lifecycle.go. Nothing on core changed Process.streamLogs, streamContainerLogsPrefixed or cop…
@@ -528,6 +932,7 @@ Restored tests from this file live in `atc/worker/jetbridge/behavioral_runtime_s
 **[DELETED]** [RF-09] Failure detection priority order [RF-09] reports ImagePullBackOff before checking exit code when both are present  `JB-behavioral_runtime_spec-017`
   - recorded evidence: PER-FILE (deletion commit `49969fd6c4`; nothing names this test alone)
   - rebase impact: NOT IMPACTED — isPodFailedFast and podExitCode are unchanged on core, and failure-priority.feature 'Scenario: An image pull failure is reported ahead of the exit code' is backed by brine/steps/pod_failure.go / process.go, neither of which appears in the rebase's step_changes.
+  - fidelity correction 2026-09-11: the old Brine counterpart supplied Pending with a waiting reason but no terminal exit path; an exit-first production mutation stayed green. The case now supplies Failed plus ImagePullBackOff, and that same mutation fails its intended assertion. Evidence: /tmp/brine-failure-fidelity.1mIBct, isolated priority probes and full before/after matrix. This repairs Brine discrimination; it is not a fresh replay of this already-deleted Go leaf.
 
 **[DELETED]** [OE] Observability span events exec mode (waitForRunning span) [OE-02] emits pod.initialized span event when Initialized condition becomes True  `JB-behavioral_runtime_spec-018`
   - recorded evidence: PER-FILE (deletion commit `49969fd6c4`; nothing names this test alone)
@@ -535,11 +940,11 @@ Restored tests from this file live in `atc/worker/jetbridge/behavioral_runtime_s
 
 **[DELETED]** [OE] Observability span events exec mode (waitForRunning span) [OE-04] emits image.pulled span event when container transitions out of ContainerCreating  `JB-behavioral_runtime_spec-019`
   - recorded evidence: PER-FILE (deletion commit `49969fd6c4`; nothing names this test alone)
-  - rebase impact: NOT IMPACTED — Same waitForRunning refactor caveat: 1164f9db3d touched only the timeout line, not the image.pulling/image.pulled emission, and NewConfig supplies a positive PodStartupTimeout. NewPodWatcher (pod_watcher.go) has an empty core diff, and observability.feature '@OE-04' plus brine/steps/observability.go were untouched by…
+  - rebase impact: NOT IMPACTED — Same waitForRunning refactor caveat: 1164f9db3d touched only the timeout line, not the image.pulling/image.pulled emission, and NewConfig supplies a positive PodStartupTimeout. NewPodWatcher (pod_watcher.go) has an empty core diff, and observability.feature (feature does not exist at this commit; historical claim) '@OE-04' plus brine/steps/observability.go were untouched by…
 
 **[DELETED]** [OE] Observability span events init container failure events [OE-06] emits init.container.failed span event when init container exits non-zero  `JB-behavioral_runtime_spec-020`
   - recorded evidence: PER-FILE (deletion commit `49969fd6c4`; nothing names this test alone)
-  - rebase impact: NOT IMPACTED — The init.container.failed branch of podEventTracker.emitPodLifecycleEvents is byte-identical on core; the only process.go change in the range is the startup-timeout helper. observability.feature '@OE-06 Scenario: A failed init container is recorded as a failure, not a completion' and its backing brine/steps/observabil…
+  - rebase impact: NOT IMPACTED — The init.container.failed branch of podEventTracker.emitPodLifecycleEvents is byte-identical on core; the only process.go change in the range is the startup-timeout helper. observability.feature (feature does not exist at this commit; historical claim) '@OE-06 Scenario: A failed init container is recorded as a failure, not a completion' and its backing brine/steps/observabil…
 
 **[DELETED]** [OE-06] init.container.failed span event (dedicated test) [OE-06] emits init.container.failed event and then transitions to Running succeeds  `JB-behavioral_runtime_spec-021`
   - recorded evidence: PER-FILE (deletion commit `49969fd6c4`; nothing names this test alone)
@@ -547,7 +952,7 @@ Restored tests from this file live in `atc/worker/jetbridge/behavioral_runtime_s
 
 **[DELETED]** [OE-09] Observability event deduplication [OE-09] emits pod.scheduled event only once even when pod is observed in Scheduled state multiple times  `JB-behavioral_runtime_spec-022`
   - recorded evidence: PER-FILE (deletion commit `49969fd6c4`; nothing names this test alone)
-  - rebase impact: NOT IMPACTED — The podEventTracker seen-set is untouched on core (process.go's only change is podStartupTimeout/waitForRunning's timeout line), and observability.feature '@OE-09 Scenario: A condition seen twice is recorded once' plus brine/steps/observability.go are not in the rebase's step_changes.
+  - rebase impact: NOT IMPACTED — The podEventTracker seen-set is untouched on core (process.go's only change is podStartupTimeout/waitForRunning's timeout line), and observability.feature (feature does not exist at this commit; historical claim) '@OE-09 Scenario: A condition seen twice is recorded once' plus brine/steps/observability.go are not in the rebase's step_changes.
 
 **[DELETED]** [OE-09] Observability event deduplication [OE-09] emits sidecar.started event only once even when sidecar is observed Running multiple times  `JB-behavioral_runtime_spec-023`
   - recorded evidence: PER-FILE (deletion commit `49969fd6c4`; nothing names this test alone)
@@ -555,19 +960,19 @@ Restored tests from this file live in `atc/worker/jetbridge/behavioral_runtime_s
 
 **[DELETED]** [OE] Remaining observability coverage (OE-01, OE-05, OE-07, OE-08, OE-10) [OE-01] emits pod.scheduled with node.name when PodScheduled becomes True  `JB-behavioral_runtime_spec-024`
   - recorded evidence: PER-FILE (deletion commit `49969fd6c4`; nothing names this test alone)
-  - rebase impact: NOT IMPACTED — The pod.scheduled emission and its node.name attribute sit in the unchanged part of emitPodLifecycleEvents; 1164f9db3d only replaced waitForRunning's inline timeout default. observability.feature '@OE-01 Scenario: The trace records which node the step landed on' and brine/steps/observability.go were untouched by the r…
+  - rebase impact: NOT IMPACTED — The pod.scheduled emission and its node.name attribute sit in the unchanged part of emitPodLifecycleEvents; 1164f9db3d only replaced waitForRunning's inline timeout default. observability.feature (feature does not exist at this commit; historical claim) '@OE-01 Scenario: The trace records which node the step landed on' and brine/steps/observability.go were untouched by the r…
 
 **[DELETED]** [OE] Remaining observability coverage (OE-01, OE-05, OE-07, OE-08, OE-10) [OE-05] emits init.container.completed when an init container exits 0  `JB-behavioral_runtime_spec-025`
   - recorded evidence: PER-FILE (deletion commit `49969fd6c4`; nothing names this test alone)
-  - rebase impact: NOT IMPACTED — init.container.completed is emitted from a block core did not modify, and its evidence observability.feature '@OE-05 Scenario: A successful init container is recorded' is backed by the unchanged brine/steps/observability.go.
+  - rebase impact: NOT IMPACTED — init.container.completed is emitted from a block core did not modify, and its evidence observability.feature (feature does not exist at this commit; historical claim) '@OE-05 Scenario: A successful init container is recorded' is backed by the unchanged brine/steps/observability.go.
 
 **[DELETED]** [OE] Remaining observability coverage (OE-01, OE-05, OE-07, OE-08, OE-10) [OE-07] emits sidecar.started with container.name when a non-main container reaches Running  `JB-behavioral_runtime_spec-026`
   - recorded evidence: PER-FILE (deletion commit `49969fd6c4`; nothing names this test alone)
-  - rebase impact: NOT IMPACTED — The sidecar.started branch (and its non-"main" name test) is unchanged on core; buildSidecarContainers has no core diff. observability.feature '@OE-07 Scenario: A sidecar coming up is recorded' and its step file are not in the rebase's step_changes.
+  - rebase impact: NOT IMPACTED — The sidecar.started branch (and its non-"main" name test) is unchanged on core; buildSidecarContainers has no core diff. observability.feature (feature does not exist at this commit; historical claim) '@OE-07 Scenario: A sidecar coming up is recorded' and its step file are not in the rebase's step_changes.
 
 **[DELETED]** [OE] Remaining observability coverage (OE-01, OE-05, OE-07, OE-08, OE-10) [OE-08] emits pod.phase.<phase> events on phase transitions  `JB-behavioral_runtime_spec-027`
   - recorded evidence: PER-FILE (deletion commit `49969fd6c4`; nothing names this test alone)
-  - rebase impact: NOT IMPACTED — The span.AddEvent("pod.phase."+...) line inside waitForRunning is untouched by 1164f9db3d, which changed only the function's first two lines (timeout resolution) — exactly the case the rule calls out as not impacting span-event tests. observability.feature '@OE-08 @OE-10 Scenario: An ordinary startup is timed and its…
+  - rebase impact: NOT IMPACTED — The span.AddEvent("pod.phase."+...) line inside waitForRunning is untouched by 1164f9db3d, which changed only the function's first two lines (timeout resolution) — exactly the case the rule calls out as not impacting span-event tests. observability.feature (feature does not exist at this commit; historical claim) '@OE-08 @OE-10 Scenario: An ordinary startup is timed and its…
 
 **[DELETED]** [OE] Remaining observability coverage (OE-01, OE-05, OE-07, OE-08, OE-10) [OE-10] records K8sPodStartupDuration when the pod reaches Running  `JB-behavioral_runtime_spec-028`
   - recorded evidence: PER-FILE (deletion commit `49969fd6c4`; nothing names this test alone)
@@ -581,12 +986,26 @@ Restored tests from this file live in `atc/worker/jetbridge/behavioral_runtime_s
   - recorded evidence: PER-FILE (deletion commit `49969fd6c4`; nothing names this test alone)
   - rebase impact: NOT IMPACTED — Not rebase-impacted: metric.RecordK8sPodFailure, InitOTelMetrics and isPodOOMKilled are byte-identical between the merge-base and core, and no brine step file or feature that could carry this moved in the rebase. Independently of the rebase, the original assessment found NO counterpart at all (no brine feature or step…
 
-**[REFUTED]** [P3] Runtime edge cases (PE-02, PE-09, RF-14, RF-15) PE-02: direct mode command embedding [PE-02] bakes the real command into the main container (no pause pod) and counts the container  `JB-behavioral_runtime_spec-031`
+**[DELETED]** [P3] Runtime edge cases (PE-02, PE-09, RF-14, RF-15) PE-02: direct mode command embedding [PE-02] bakes the real command into the main container (no pause pod) and counts the container  `JB-behavioral_runtime_spec-031`
+  - resolved 2026-09-18: the direct-mode command clause is
+    `container-run.feature:23` `Scenario Outline: Without an exec transport
+    the pod runs the command itself`, row `/opt/resource/in | /tmp/build/get`
+    — `And the container "main" runs command "<command>" with arguments
+    "<arguments>"` is an exact Command/Args equality in
+    `steps/container_extra.go` (`containerCommandDefinitions`), so the
+    original's `Command).ToNot(ContainElement("sh"))` cannot pass under a
+    pause-pod command. The container-counting clause is
+    `container-run.feature:159` `Scenario Outline: Pod creation counters
+    describe the API outcome`, row `accepted | direct | 1 | 0`. The 2026-09-15
+    note below named only "the existing container-run.feature direct-mode
+    outline" and pointed at `/tmp/brine-direct-command.GldtoX`, which no
+    longer exists.
+  - 2026-09-15 direct command group: retired into the existing container-run.feature direct-mode outline. Shell and /opt/resource/in rows share exact pod command/argument, roster, environment, directory, security and attachment assertions. The fixture carries Type=task and snapshots ContainersCreated around that same Run. Three faults restricted to direct task /opt/resource/in construction (wrong command, wrong argument, missing counter) fail the exact original and replacement assertions; the shell row remains green. Real database and API-server construction only: no executor fake, supplied status or claim of kubelet execution. This was the last entry in behavioral_runtime_spec_restored_test.go, so the file is removed. Preserved source and matched evidence: /tmp/brine-direct-command.GldtoX; see V5-MIGRATION.md. Older retention/verdict notes below are superseded.
   - consolidation 2026-09-08: Retained named Go It `[PE-02] bakes the real command into the main container (no pause pod) and counts the container` in `behavioral_runtime_spec_restored_test.go`. The no-executor fixture intentionally protects the fallback's exact command/args and creation counter, not production exec behavior. `wrong-direct-command` and `no-created-metric` fail this same It before/after. Evidence: `/tmp/brine-restored-runtime.5svis3`; see `CONSOLIDATION.md`, tenth pass.
   - recorded evidence: PER-FILE (deletion commit `49969fd6c4`; nothing names this test alone)
   - rebase impact: IMPACTED (b) — (b) scenario-level and direct: the named counterpart container-run.feature '@PE-02 Scenario: Without an exec transport the pod runs the command itself' is defined at brine/steps/container_extra.go:142 and builds its spec through runExtraSpecFromDraft (line ~950) — the exact function the rebase edited for 0d336e062b. N…
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation Two mutations, one per clause of the row's test, applied separately (each reverted before the next). M1 (command-embedding clause) — atc/worker/jetbridge/container.go, (*Container).Run, line 115:; brine RED: M1: step 'Then the pod itself carries the step's command' (line 34) — status failed, error: "expected the pod to run [/bin/sh -c echo hello] itself, it runs [sh -c trap 'exit 0' TERM; sleep 86400 & w…; go RED: M1 (behavioral_runtime_spec_test.go:1796): "[FAILED] Expected <[]string | len:3, cap:3>: [ \"sh\", \"-c\", \"trap 'exit 0' TERM; sleep 86400 & wait\", ] to equal <[]string | len:1, cap:1>: [\"/opt/re…; skeptic: different-behaviour pairing, via a narrower mutation that breaks only what the Go It asserts (plus a red-by-adaptation control and a reproduction of the verifier's M1) → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/behavioral_runtime_spec_restored_test.go`
+  - **historical restoration, superseded by the verified retirement above** — `atc/worker/jetbridge/behavioral_runtime_spec_restored_test.go`
 
 **[DELETED]** [P3] Runtime edge cases (PE-02, PE-09, RF-14, RF-15) PE-09: direct mode process completion [PE-09] streams pod logs to Stdout, returns the main container exit code, and deletes the pod  `JB-behavioral_runtime_spec-032`
   - recorded evidence: PER-FILE (deletion commit `49969fd6c4`; nothing names this test alone)
@@ -602,7 +1021,7 @@ Restored tests from this file live in `atc/worker/jetbridge/behavioral_runtime_s
 
 **[DELETED]** [P3] Runtime edge cases (PE-02, PE-09, RF-14, RF-15) RF-14: init container failure reporting [RF-14] returns an error with the failed init container's name, state, and retrieved logs  `JB-behavioral_runtime_spec-035`
   - recorded evidence: PER-FILE (deletion commit `49969fd6c4`; nothing names this test alone)
-  - rebase impact: NOT IMPACTED — This pins waitForRunning's terminal-phase branch ("pod terminated before exec could run" plus init-container name/state/logs), which 1164f9db3d did not touch — that commit changed only the function's timeout resolution, and NewConfig gives a positive PodStartupTimeout. Its counterpart observability.feature '@RF-14 Sce…
+  - rebase impact: NOT IMPACTED — This pins waitForRunning's terminal-phase branch ("pod terminated before exec could run" plus init-container name/state/logs), which 1164f9db3d did not touch — that commit changed only the function's timeout resolution, and NewConfig gives a positive PodStartupTimeout. Its counterpart observability.feature (feature does not exist at this commit; historical claim) '@RF-14 Sce…
 
 **[DELETED]** [P3] Runtime edge cases (PE-02, PE-09, RF-14, RF-15) RF-15: exec mode failure context [RF-15] writes both pod and node diagnostics to stderr when an exec operation fails  `JB-behavioral_runtime_spec-036`
   - recorded evidence: PER-FILE (deletion commit `49969fd6c4`; nothing names this test alone)
@@ -620,7 +1039,19 @@ Deleted by `dbc96d3e6d` — "Delete integration_test.go; record the storage-back
 
 Restored tests from this file live in `atc/worker/jetbridge/integration_restored_test.go`.
 
-**[REFUTED]** Integration simple task pipeline runs a task step end-to-end: create container → run → wait → exit  `JB-integration-000`
+**[DELETED]** Integration simple task pipeline runs a task step end-to-end: create container → run → wait → exit  `JB-integration-000`
+  - **RESTORED Go 2026-09-18 (round 2) — live-only replacement.** Retired into `live/task-command.feature`, which is `@live-kubernetes` and needs a real cluster. With this It gone, no unit run exercised a task step end to end — pause argv, worker label, one supervised exec, stored exit status. Back in `atc/worker/jetbridge/integration_restored_test.go`.
+  - **Resolved 2026-09-18 (ledger resolution pass)** — the replacement is
+    `@live-kubernetes`. The 2026-09-15 note below names "the existing real
+    completion/recovery outline in live/task-command.feature", i.e.
+    `live/task-command.feature:23` `Scenario Outline: A task logs its output
+    and both current and restarted webs recover its completion`; that feature
+    is `@live-kubernetes`. No unit-tier feature carries a pause pod at all —
+    `container-run.feature:71` says the successful pause-pod assertions were
+    handed to that live scenario. The ledger pass independently restored the same spec to `ledger_restored_test.go` (dropped at integration as a duplicate of the verbatim original named above) as `Ledger-restored
+    integration contracts simple task pipeline runs a task step end-to-end:
+    create container → run → wait → exit`.
+  - 2026-09-15 basic workflow group: retired into the existing real completion/recovery outline in live/task-command.feature. The added Ubuntu row preserves task-abc123, ubuntu:22.04, the exact echo hello world && exit 0 command, the default process ID, pause command, worker label, one supervised exec, zero exit and stored completion. Eight Ubuntu-specific faults fail the exact old/new assertions; the original BusyBox row passes with every fault enabled. Both image rows pass normal/inactive controls and retain recovery checks. No fake executor or supplied status is used. The other two integration cases remain unchanged. Evidence and preserved source: /tmp/brine-basic-workflow.4Ajdp3; see V5-MIGRATION.md. Older restoration/verdict notes below are superseded.
   - Eighteenth-pass retention (2026-09-08): retain the named restored Go test. Integration workers now always install the shared executor, and paired pause-pod faults reach seven formerly fallback-only cases without losing the ten old failures. That execution-path evidence and owned supervisor state do not establish this Go fixture's exact ubuntu image, pause argv or supervised-command forwarding assertions. No Go test is deleted. Evidence: `/tmp/brine-integration-workspace.Wpi8d7/`.
   - retention update 2026-09-08 (task consolidation): RETAIN Go. The shared brine task now covers output, properties and worker ownership, but uses a scenario-scoped explicit process ID and common busybox/test-namespace fixture. This Go test retains the default process-ID rule, ci-namespace placement, exact ubuntu image and pause argv, and its command-forwarding seam.
   - recorded evidence: PER-FILE (deletion commit `dbc96d3e6d`; nothing names this test alone)
@@ -670,6 +1101,15 @@ Restored tests from this file live in `atc/worker/jetbridge/integration_restored
   - re-verified 2026-09-05 (rebase onto core): HOLDS — mutation atc/worker/jetbridge/container.go, (*Container).buildVolumeMounts — deleted the working-directory arm (the first block of the function), so a step with a Dir gets no volume/mount at its working direc…; brine RED: Then the pod has 3 volumes (line 22) — status "failed", error: expected 3 volumes, found 2: [input-0 input-1]; go RED: integration_test.go:533 — [FAILED] Expected <[]v1.VolumeMount | len:4, cap:4>: [ {Name: "input-0", MountPath: "/tmp/build/workdir/source-code"}, {Name: "input-1", MountPath: "/tmp/build/workdir/ci"},…; skeptic: Four attacks run, none refuted: (1) different-behaviour pairing via a NARROWER honest mutation aimed at the half of the Go assertion the named scenario does not exercise (multi-output); (2) unrelated… → HOLDS
 
 **[REFUTED]** Integration input/output passing between steps passes inputs from a get step to a put step via volume mounts  `JB-integration-011`
+  - **RESTORED Go 2026-09-18 (round 2) — live-only replacement.** Retired into `live/s3-resource.feature`, which is `@live-kubernetes` and additionally needs a real MinIO. The Put input-mount/stdout contract had no unit-tier cover. Back in `integration_restored_test.go`, along with the `fakeArtifact` fixture the retirement removed (now in `container_restored_test.go`).
+  - **Resolved 2026-09-18 (ledger resolution pass)** — the replacement is
+    `@live-kubernetes`. The 2026-09-15 note below names
+    `live/s3-resource.feature`, which is a live feature.
+    `container-pod.feature:561` covers input fetching for the daemon-backed
+    path, not a put step's two backed input mounts and resource stdout.
+    The ledger pass independently restored the same spec to `ledger_restored_test.go` (dropped at integration as a duplicate of the verbatim original named above) as `Ledger-restored integration contracts input/output passing between steps
+    passes inputs from a get step to a put step via volume mounts`.
+  - retired 2026-09-15: the real live/s3-resource.feature case preserves exactly two backed input mounts, zero exit and byte-for-byte resource stdout, and independently downloads matching uploaded bytes from an owned MinIO server. Explicit real Volume.StreamIn uploads establish inputs; this does not claim an upstream Get or automatic daemon staging. Five paired faults (missing/extra/wrong-path mount, stdout newline, exit status) fail the original and real assertions. The legacy file and now-unused fakeArtifact, restoredPod and fakeExecExecutor are removed. Evidence and recoverable sources: /tmp/brine-put-s3-rUGdAa. Historical retention notes below are superseded.
   - consolidation follow-up, 2026-09-08 (twenty-third pass): **RETAIN Go** `Integration input/output passing between steps passes inputs from a get step to a put step via volume mounts` in `integration_restored_test.go`. It checks exactly two Put input mounts, exact JSON stdout and exit status zero. Despite its title, this fixture creates a Put directly; it does not run a producer Get. Retain that focused Put mount/output contract, without claiming it proves a Get-to-Put transfer or deleting it on the new task handoff's evidence. Current source was inspected and remains unchanged; no deletion or historical verdict change is claimed.
   - Eighteenth-pass retention (2026-09-08): retain this named Go test for the put fixture with exactly two mounts at `/tmp/build/put/compiled-binary` and `/tmp/build/put/release-notes`, and exact JSON stdout propagation. The integration resource scripts still echo their protocol inputs; moving their image under scenario ownership does not replace those observations. The task-to-put scenario now catches a task exec error that previously disappeared when the next step replaced its state, but this gain does not close the distinct mount/JSON equivalence gap.
   - recorded evidence: PER-FILE (deletion commit `dbc96d3e6d`; nothing names this test alone)
@@ -677,7 +1117,19 @@ Restored tests from this file live in `atc/worker/jetbridge/integration_restored
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/container.go, (*Container).buildVolumeMounts — the exact recorded mutation, applied unchanged:; brine RED: Then the pod has 3 volumes (line 22) — status failed, error: `expected 3 volumes, found 1: [dir-0]`. The five preceding steps (Given a jetbridge worker on a fake Kubernetes cluster / And a task conta…; go RED: integration_test.go:598 — `[FAILED] Expected <[]v1.VolumeMount | len:0, cap:0>: nil to have length 2` (during STEP "verifying input volumes are mounted in the pause Pod"; the preceding STEP "creating…; skeptic: different-behaviour pairing (narrower mutation that breaks only what the Go test asserts), plus red-by-adaptation and unrelated-brine-red checks → REFUTED (the pairing broke)
   - **the test is restored** — `atc/worker/jetbridge/integration_restored_test.go`
 
-**[REFUTED]** Integration task with sidecar containers creates a pod with sidecars that share volume mounts and runs the task via exec  `JB-integration-012`
+**[DELETED]** Integration task with sidecar containers creates a pod with sidecars that share volume mounts and runs the task via exec  `JB-integration-012`
+  - **RESTORED Go 2026-09-18 (round 2) — live-only replacement.** Retired into the live npm/PostgreSQL workflow, which runs a real PostgreSQL sidecar and a real `npm test` on a cluster. The pod-shape contract (sidecar env, TCP port, ordered mount equality with main, exec target) had no unit-tier cover. Back in `integration_restored_test.go`.
+  - **Resolved 2026-09-18 (ledger resolution pass)** — the replacement is
+    `@live-kubernetes`. Resolved, the 2026-09-15 note's "existing live task
+    runner with one application-premise definition" is
+    `live/task-command.feature:186` `Scenario Outline: A task uses its mounted
+    application without runtime input streaming`, row `node:18 | my-app | ...
+    | npm test`; that feature is `@live-kubernetes`.
+    `container-pod.feature:201` covers a sidecar sharing the working set but
+    not the environment values, the TCP port, or the supervised exec. The ledger pass independently restored the same spec to `ledger_restored_test.go` (dropped at integration as a duplicate of the verbatim original named above) as `Ledger-restored
+    integration contracts task with sidecar containers creates a pod with
+    sidecars that share volume mounts and runs the task via exec`.
+  - 2026-09-15 npm/PostgreSQL workflow: retired after ten exact original-Go/real-Brine fault pairs for sidecar presence/image, both environment values, TCP port, ordered mount equality, supervised command/count/target and returned exit. The new case reuses the existing live task runner with one application-premise definition. Actual Volume.StreamIn prepares a mounted application, PostgreSQL answers SELECT 1, and real npm test reads the input and connects to PostgreSQL. Preparation uses an independent real executor and cannot satisfy the task-exec assertion. Every mount resolves to a pod Volume. This is not automatic input-staging coverage: streamInputs remains a no-op. Other integration and no-op tests remain. Source/evidence: /tmp/brine-npm-postgres.aikaVc; see V5-MIGRATION.md. Older restoration notes below are superseded.
   - consolidation follow-up, 2026-09-08 (twenty-third pass): **RETAIN Go** `Integration task with sidecar containers creates a pod with sidecars that share volume mounts and runs the task via exec` in `integration_restored_test.go`. It checks both sidecar environment values, its TCP port, full ordered VolumeMount equality with main, and exactly one supervised command call aimed at main. The Brine mount-sharing and successful-task assertions are not a replacement for this complete pod/protocol contract. Current source was inspected and remains unchanged; no deletion or historical verdict change is claimed.
   - Eighteenth-pass retention (2026-09-08): retain this named Go test for the node:18/postgres:15 fixture, its two sidecar env vars and TCP port 5432, full sidecar/main VolumeMount equality, and the supervised `npm test` command delivered to `main`. Default integration exec mode and owned task state do not prove that complete sidecar contract. No replacement or verdict change is claimed.
   - recorded evidence: PER-FILE (deletion commit `dbc96d3e6d`; nothing names this test alone)
@@ -955,93 +1407,183 @@ Deleted by `c67193f78f` — "Delete container_test.go; give brine a worker that 
 
 Restored tests from this file live in `atc/worker/jetbridge/container_restored_test.go`.
 
-**[REFUTED]** Container Run creates a Pod with the correct image, command, args, and env  `JB-container-000`
+**[DELETED]** Container Run creates a Pod with the correct image, command, args, and env  `JB-container-000`
+  - resolved 2026-09-18: `container-run.feature:23` `Scenario Outline: Without
+    an exec transport the pod runs the command itself` carries the whole leaf
+    — literal pod name (`Then the pod is named "run-test-handle"`), the
+    singleton name/image roster (`And the pod runs these containers in
+    order`), separate command and argument arrays, working directory, both
+    environment members, `And the pod is never restarted` and `And the step
+    uses the "unprivileged" security policy`. The assertions live in
+    `steps/container_extra.go` (`containerCommandDefinitions`,
+    `runExtraSpecFromDraft`) and `steps/container_pod.go:245` (the security
+    policy check, which also pins RunAsNonRoot unset and RuntimeDefault
+    seccomp). The 2026-09-15 note below said "one container-run.feature
+    scenario" without naming it and pointed at
+    `/tmp/brine-direct-pod.8ggD7y/pairing.json`, which no longer exists.
+  - Retirement 2026-09-15: the complete direct-mode contract now lives in one container-run.feature scenario using shared container checks: literal pod name, singleton name/image roster, separate command/args arrays, working directory, complete environment members, restart/security policy and process identity. Seventeen original Go assertion failures across 22 isolated faults validate the replacement; command/args boundary shifts now fail rather than passing a flattened comparison. Existing sidecar env/command/args/working-directory checks and the process-ID guard remain mutation-sensitive. One legacy Go case and one duplicate Brine seccomp scenario are removed. Proof: /tmp/brine-direct-pod.8ggD7y/pairing.json. Older retention/restoration notes below are historical.
   - consolidation 2026-09-08 (shared container fixture): retained named Go test `Container Run creates a Pod with the correct image, command, args, and env` in `container_restored_test.go` for literal pod name, image/command/args/env, working directory and security defaults. Its It callback and literal creation arguments are AST-identical before/after; shared setup does not establish a brine replacement. Mutation(s) `wrong-pod-name, allow-escalation, no-seccomp` fail the same leaf test before/after. Evidence: `/tmp/brine-container-fixture.eLhp8y/`; see `CONSOLIDATION.md`, twelfth pass.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): container_test.go is a rebase conflict file, modified on core by 0d336e062b and resolved by taking the branch's deletion. Rule (b): its evidence names container-run.feature, container-spec.feature and container-pod.feature, all three of which had their ContainerSpec literal changed by the rebase fix in steps…
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/container.go — (*Container).buildPod, the mainContainerName container literal:; brine RED: And that pod works in "/tmp/build/workdir" (line 35) — error: expected the step's working directory to be "/tmp/build/workdir", got ""; go RED: [FAILED] Expected <string>: to equal <string>: /workdir In [It] at: <wt>/atc/worker/jetbridge/container_test.go:93 — i.e. Expect(pod.Spec.Containers[0].WorkingDir).To(Equal("/workdir")); skeptic: different-behaviour pairing (narrower mutation on a clause the Go It pins and no brine scenario asserts: the Command/Args split), plus red-by-adaptation control and unrelated-brine-red control → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - **historical restoration, superseded by the verified retirement above** — `atc/worker/jetbridge/container_restored_test.go`
 
 **[DELETED]** Container Run returns a Process with an ID  `JB-container-001`
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): its only named counterpart is container-run.feature, whose ContainerSpec builder (steps/container_extra.go runExtraSpecFromDraft, plus steps/domain.go) changed in the rebase.
   - re-verified 2026-09-05 (rebase onto core): HOLDS — mutation atc/worker/jetbridge/container.go, func (*Container).Run, line 128 (recipe said 129; the line is 128 on 27d81692fa):; brine RED: And the step has an identity a restarted web could attach to (container-run.feature:36) — step_end status "failed", error verbatim: "expected the process to have an id, it has an empty one" (check de…; go RED: [FAILED] Expected <string>: not to be empty In [It] at: .../atc/worker/jetbridge/container_test.go:117 — i.e. `Expect(process.ID()).ToNot(BeEmpty())` at container_test.go:117, spec `Container Run [It…; skeptic: Four attacks run, all failed: (1) red-by-adaptation — reverted mutation with the restored Go test in place; (2) unrelated/flaky brine red — clean brine run of container-run.feature; (3) order-masked… → HOLDS
 
-**[REFUTED]** Container Run with Dir volume creates a Pod with an emptyDir volume for spec.Dir when Dir is set  `JB-container-002`
+**[DELETED]** Container Run with Dir volume creates a Pod with an emptyDir volume for spec.Dir when Dir is set  `JB-container-002`
+  - resolved 2026-09-18: `container-pod.feature:17` `Scenario: A step's
+    working directory is an ephemeral volume` (one row, `/tmp/build/workdir`).
+    `steps/container_pod.go:591` (`ephemeralMountDefinition`) carries the
+    assertion: exact pod volume count, every volume `EmptyDir != nil`, exact
+    main-container mount count, exact mount paths, no subPath, and no two
+    directories sharing a volume. The 2026-09-15 note below named no scenario
+    and pointed at `/tmp/brine-ephemeral-mounts.jpc0HJ`, which no longer
+    exists.
+  - retired 2026-09-15: Exact-set real-API mount checks preserve this leaf; the grouped audit verifies 21 exact-original-Expect mutation pairs across five leaves. Supersedes the historical verdict below. Evidence and recoverable original source: /tmp/brine-ephemeral-mounts.jpc0HJ (pairing.json, evidence.json, before-container_restored_test.go); see V5-MIGRATION.md.
   - consolidation follow-up, 2026-09-08 (twenty-third pass): **RETAIN Go** `Container Run with Dir volume creates a Pod with an emptyDir volume for spec.Dir when Dir is set` in `container_restored_test.go`. It requires exactly one pod volume and one main-container mount, a non-nil emptyDir, and the literal Dir path. Retain as a focused pod-construction compatibility test; it does not Wait or claim to execute an ordinary task via the fallback process. Current source was inspected and remains unchanged; no deletion or historical verdict change is claimed.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): the DISPOSITION that retired it lives in container-run.feature and hands coverage to container-pod.feature 'A step sees its working directory and every input'; both features are in step_changes via steps/container_spec.go and steps/domain.go. Not (a): buildVolumeMounts changed only i…
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/container.go, func (*Container).buildVolumeMounts (line 916 on 27d81692fa) — deleted the whole Dir block:; brine RED: Then the pod has 3 volumes -> status "failed", error: `expected 3 volumes, found 2: [input-0 input-1]` (scenario_end error identical). The first 6 steps (worker, task container "input-vol-handle", it…; go RED: [FAILED] Expected <[]v1.Volume | len:0, cap:0>: nil to have length 1 In [It] at: .../atc/worker/jetbridge/container_test.go:149 Summarizing 1 Failure: [FAIL] Container Run with Dir volume [It] create…; skeptic: Narrower-mutation attack (different-behaviour pairing): I isolated the clause of the Go It that the brine scenario does not state — the main container is handed EXACTLY ONE mount — and mutated only t… → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - **historical restoration, superseded by the verified retirement above** — `atc/worker/jetbridge/container_restored_test.go`
 
 **[DELETED]** Container Run with Dir volume does not create a Dir volume when spec.Dir is empty  `JB-container-003`
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): it migrated to container-run.feature 'A step that declares no working directory is given no workspace', and container-run.feature's draft-to-ContainerSpec builder changed in the rebase (steps/container_extra.go, steps/domain.go).
   - re-verified 2026-09-05 (rebase onto core): HOLDS — mutation atc/worker/jetbridge/container.go, func (*Container).buildVolumeMounts — make the Dir volume unconditional so an empty Dir still mints `dir-0`:; brine RED: Then the pod has 0 volumes (line 58) — error: "expected 0 volumes, found 1: [dir-0]"; go RED: [FAIL] Container Run with Dir volume [It] does not create a Dir volume when spec.Dir is empty — container_test.go:182 — `Expect(pod.Spec.Volumes).To(BeEmpty())`: "Expected <[]v1.Volume | len:1, cap:1…; skeptic: Four attacks run, all failed: (1) narrower differentiating mutation (mount-half-only, to test whether brine's second Then is decorative/order-masked — the verifier's own admitted "asserted-but-unexer… → HOLDS
 
-**[REFUTED]** Container Run with input volumes creates a Pod with emptyDir volumes mounted at input paths  `JB-container-004`
+**[DELETED]** Container Run with input volumes creates a Pod with emptyDir volumes mounted at input paths  `JB-container-004`
+  - resolved 2026-09-18: `container-pod.feature:28` `Scenario: A step gets
+    every independent input directory` (workdir plus `input-a` and `input-b`,
+    the original's three paths). `steps/container_pod.go:591`
+    (`ephemeralMountDefinition`) carries the assertion: exact pod volume
+    count, every volume `EmptyDir != nil`, exact main-container mount count,
+    exact mount paths, no subPath, and no two directories sharing a volume.
+    The 2026-09-15 note below named no scenario and pointed at
+    `/tmp/brine-ephemeral-mounts.jpc0HJ`, which no longer exists.
+  - retired 2026-09-15: Exact-set real-API mount checks preserve this leaf; the grouped audit verifies 21 exact-original-Expect mutation pairs across five leaves. Supersedes the historical verdict below. Evidence and recoverable original source: /tmp/brine-ephemeral-mounts.jpc0HJ (pairing.json, evidence.json, before-container_restored_test.go); see V5-MIGRATION.md.
   - consolidation name audit (2026-09-08, twenty-ninth pass): **RETAIN Go** `Container ephemeral working-set mounts creates a Pod with emptyDir volumes mounted at input paths` in `container_restored_test.go`. The entry retains exact input volume/mount cardinalities, paths and emptyDir checks. Current identity/source is recorded in `/tmp/brine-custom-checks.L1hyoZ/retained-specs.json`; this dry-run inventory is not a fresh execution or replacement-equivalence claim. No historical verdict changes.
   - consolidation follow-up, 2026-09-08 (twenty-sixth pass): **RETAIN Go**, now the identically named entry under `Container ephemeral working-set mounts` in `container_restored_test.go`. Literal fixture/command/paths and both cardinalities plus emptyDir checks are preserved. Before/after isolated missing-volume, extra-mount, wrong-path and wrong-storage faults all fail this exact leaf. This is shared Go execution, not a Brine replacement; historical verdict unchanged. Evidence: `CONSOLIDATION.md`, twenty-sixth pass, `/tmp/brine-mount-table.gB4M0T/`.
   - consolidation 2026-09-08 (shared container fixture): retained named Go test `Container Run with input volumes creates a Pod with emptyDir volumes mounted at input paths` in `container_restored_test.go` for exact input emptyDir/mount cardinality and destination paths. Its It callback and literal creation arguments are AST-identical before/after; shared setup does not establish a brine replacement. Mutation(s) `no-main-mounts` fail the same leaf test before/after. Evidence: `/tmp/brine-container-fixture.eLhp8y/`; see `CONSOLIDATION.md`, twelfth pass.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): it migrated to container-pod.feature 'A step sees its working directory and every input', a feature whose ContainerSpec literal changed in the rebase (steps/container_spec.go). Not (a): the input loop of buildVolumeMounts is byte-identical between merge-base and core.
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/container.go, (*Container).buildVolumeMounts — the input loop (line 952 on the rebased head, recorded as ~945):; brine RED: step_end failed | text: the step sees a volume mounted at "/tmp/build/workdir/input-a" | error: expected the step's mounts to include "/tmp/build/workdir/input-a", found [/tmp/build/workdir /tmp/buil…; go RED: Container Run with input volumes [It] creates a Pod with emptyDir volumes mounted at input paths — container_test.go:216, failed at container_test.go:243 during STEP "mounting volumes at the correct…; skeptic: different-behaviour pairing (narrower mutation on the clause brine never asserts), plus red-by-adaptation and unrelated-brine-red baselines, plus a reproduction of the recorded mutation to prove the… → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - **historical restoration, superseded by the verified retirement above** — `atc/worker/jetbridge/container_restored_test.go`
 
-**[REFUTED]** Container Run with output volumes creates a Pod with emptyDir volumes mounted at output paths  `JB-container-005`
+**[DELETED]** Container Run with output volumes creates a Pod with emptyDir volumes mounted at output paths  `JB-container-005`
+  - resolved 2026-09-18: `container-pod.feature:43` `Scenario: A step gets
+    every independent output directory` (workdir plus `result` and `metadata`,
+    the original's three paths). `steps/container_pod.go:591`
+    (`ephemeralMountDefinition`) carries the assertion: exact pod volume
+    count, every volume `EmptyDir != nil`, exact main-container mount count,
+    exact mount paths, no subPath, and no two directories sharing a volume.
+    The 2026-09-15 note below named no scenario and pointed at
+    `/tmp/brine-ephemeral-mounts.jpc0HJ`, which no longer exists.
+  - retired 2026-09-15: Exact-set real-API mount checks preserve this leaf; the grouped audit verifies 21 exact-original-Expect mutation pairs across five leaves. Supersedes the historical verdict below. Evidence and recoverable original source: /tmp/brine-ephemeral-mounts.jpc0HJ (pairing.json, evidence.json, before-container_restored_test.go); see V5-MIGRATION.md.
   - consolidation name audit (2026-09-08, twenty-ninth pass): **RETAIN Go** `Container ephemeral working-set mounts creates a Pod with emptyDir volumes mounted at output paths` in `container_restored_test.go`. The entry retains exact output volume/mount cardinalities and paths, with the added emptyDir assertion recorded in the twenty-sixth pass. Current identity/source is recorded in `/tmp/brine-custom-checks.L1hyoZ/retained-specs.json`; this dry-run inventory is not a fresh execution or replacement-equivalence claim. No historical verdict changes.
   - consolidation follow-up, 2026-09-08 (twenty-sixth pass): **RETAIN Go**, now the identically named entry under `Container ephemeral working-set mounts` in `container_restored_test.go`. Literal fixture/command/paths and both cardinalities are preserved; an emptyDir assertion is added to match the existing title. Missing-volume, extra-mount and wrong-path faults fail the exact leaf before/after; wrong-storage passes the old case and fails this entry, demonstrating the strengthened clause. This is not a Brine replacement; historical verdict unchanged. Evidence: `CONSOLIDATION.md`, twenty-sixth pass, `/tmp/brine-mount-table.gB4M0T/`.
   - consolidation 2026-09-08 (shared container fixture): retained named Go test `Container Run with output volumes creates a Pod with emptyDir volumes mounted at output paths` in `container_restored_test.go` for exact output volume/mount cardinality and destination paths. Its It callback and literal creation arguments are AST-identical before/after; shared setup does not establish a brine replacement. Mutation(s) `no-main-mounts` fail the same leaf test before/after. Evidence: `/tmp/brine-container-fixture.eLhp8y/`; see `CONSOLIDATION.md`, twelfth pass.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): it migrated to container-pod.feature 'An output on its own path gets its own volume', and that feature's spec builder changed in the rebase (steps/container_spec.go + steps/domain.go).
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/container.go, func (*Container).buildVolumeMounts — unconditional `continue` at the top of the output loop (line ~967 on 27d81692fa), so no output ever gets its own volume/mount:; brine RED: Then the pod has 3 volumes (line 52) — error: expected 3 volumes, found 2: [dir-0 input-1]; go RED: [FAIL] Container Run with output volumes [It] creates a Pod with emptyDir volumes mounted at output paths — STEP: adding emptyDir volumes for Dir and each output; [FAILED] Expected <[]v1.Volume | len…; skeptic: different-behaviour pairing (narrower mutation, two independent variants); plus red-by-adaptation and unrelated-brine-red controls → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - **historical restoration, superseded by the verified retirement above** — `atc/worker/jetbridge/container_restored_test.go`
 
-**[REFUTED]** Container Run with same-name input and output shares a single volume when input and output paths overlap  `JB-container-006`
+**[DELETED]** Container Run with same-name input and output shares a single volume when input and output paths overlap  `JB-container-006`
+  - resolved 2026-09-18: `container-pod.feature:89` `Scenario Outline: An
+    overlapping output keeps its input volume — <spelling>`, both rows (`exact
+    path` and `trailing slash`). Its `Then the step has exactly these
+    ephemeral mounts` table has two rows, so `steps/container_pod.go:591`
+    requires exactly two pod volumes and exactly two main-container mounts and
+    rejects any repeated mount path — the original's "2 volumes, 2 mounts, no
+    duplicate mount paths". The 2026-09-15 note below named no scenario.
+  - retired 2026-09-15: Shared exact-set/prefix assertions and real API duplicate-path rejection preserve this leaf. The grouped audit verifies eight exact-original-Expect pairs and preserves 21 earlier working-set failures. Supersedes the historical verdict below. Evidence and recoverable source: /tmp/brine-overlap-mounts.HB5vvX (pairing.json, evidence.json, before-container_restored_test.go); see V5-MIGRATION.md.
   - consolidation 2026-09-08 (shared container fixture): retained named Go test `Container Run with same-name input and output shares a single volume when input and output paths overlap` in `container_restored_test.go` for overlap volume/mount counts and absence of duplicate mount paths. Its It callback and literal creation arguments are AST-identical before/after; shared setup does not establish a brine replacement. Mutation(s) `no-main-mounts` fail the same leaf test before/after. Evidence: `/tmp/brine-container-fixture.eLhp8y/`; see `CONSOLIDATION.md`, twelfth pass.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): it migrated to container-pod.feature 'An output that shares an input's path gets one volume, not two', whose ContainerSpec literal changed in the rebase (steps/container_spec.go).
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/container.go, (*Container).buildVolumeMounts — deleted the overlap-dedup guard in the output loop (recorded mutation, applied verbatim):; brine RED: Then the pod has 2 volumes (line 40) — step_end status "failed", error: `expected 2 volumes, found 3: [dir-0 input-1 output-2]`; scenario_end status "failed" with the same error. Run totals with the…; go RED: container_test.go:343, inside By("creating only 2 volumes (dir + shared input/output), not 3"): `Expect(pod.Spec.Volumes).To(HaveLen(2))` — `[FAILED] Expected <[]v1.Volume | len:3, cap:3>: [ {Name: "…; skeptic: different-behaviour pairing (two narrower mutations that break exactly what the Go It asserts), plus red-by-adaptation control → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - **historical restoration, superseded by the verified retirement above** — `atc/worker/jetbridge/container_restored_test.go`
 
-**[REFUTED]** Container Run with same-name input and output uses the input volume for the shared mount (not a new output volume)  `JB-container-007`
+**[DELETED]** Container Run with same-name input and output uses the input volume for the shared mount (not a new output volume)  `JB-container-007`
+  - resolved 2026-09-18: the same `container-pod.feature:89` outline, via its
+    `volume prefix` column: the row `| /tmp/build/workdir/repo | input- |`
+    makes `steps/container_pod.go:591` assert `strings.HasPrefix(mount.Name,
+    "input-")` on the shared mount — the original's "named input-*, not
+    output-*", and over both spellings rather than one. The 2026-09-15 note
+    below named no scenario.
+  - retired 2026-09-15: Shared exact-set/prefix assertions and real API duplicate-path rejection preserve this leaf. The grouped audit verifies eight exact-original-Expect pairs and preserves 21 earlier working-set failures. Supersedes the historical verdict below. Evidence and recoverable source: /tmp/brine-overlap-mounts.HB5vvX (pairing.json, evidence.json, before-container_restored_test.go); see V5-MIGRATION.md.
   - consolidation 2026-09-08 (shared container fixture): retained named Go test `Container Run with same-name input and output uses the input volume for the shared mount (not a new output volume)` in `container_restored_test.go` for the shared mount's input-* name. Its It callback and literal creation arguments are AST-identical before/after; shared setup does not establish a brine replacement. Mutation(s) `wrong-mount-name` fail the same leaf test before/after. The existing conditional loop still does not assert that it found a shared mount; no-main-mounts passes this particular leaf in both versions, while wrong-mount-name fails it. Evidence: `/tmp/brine-container-fixture.eLhp8y/`; see `CONSOLIDATION.md`, twelfth pass.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): its only counterpart, container-pod.feature 'An input sharing an output's path is filed under the output's name', is in a feature whose spec builder changed in the rebase — and that scenario was written three days AFTER the deletion (b831d9cd36 / 4b37fe4ee0), so the evidence was neve…
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation TWO mutations were measured, both in atc/worker/jetbridge/container.go, (*Container).buildVolumeMounts. (A) THE RECORDED MUTATION — drop the input-loop subdir override (recipe's edit, target still ex…; brine RED: Then the pod has 2 volumes (line 40) — status failed — error verbatim: `expected 2 volumes, found 3: [dir-0 input-1 output-2]`. Run totals: scenarios 44, passed 43, failed 1, verdict failed. For the…; go RED: WITH mutation (B): `FAIL! -- 0 Passed | 1 Failed | 0 Pending | 91 Skipped`. Verbatim: STEP: the shared mount being named input-*, not output-* [FAILED] Expected <string>: output-2 to have prefix <str…; skeptic: Primary: different-behaviour pairing via a NARROWER mutation that breaks only what the Go assertion pins (mutation C) — brine stayed fully green. Supporting: mutation-not-the-recorded-one (the verifi… → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - **historical restoration, superseded by the verified retirement above** — `atc/worker/jetbridge/container_restored_test.go`
 
-**[REFUTED]** Container Run with non-overlapping inputs and outputs creates separate volumes for non-overlapping input and output  `JB-container-008`
+**[DELETED]** Container Run with non-overlapping inputs and outputs creates separate volumes for non-overlapping input and output  `JB-container-008`
+  - resolved 2026-09-18: `container-pod.feature:107` `Scenario: An output on
+    its own path gets its own volume` — three-row mount table over `source`
+    (input) and `binary/` (output), so `steps/container_pod.go:591` requires 3
+    volumes and 3 mounts and that no two of them share a volume, which is the
+    original leaf plus the non-sharing clause it left implicit. The 2026-09-15
+    note below named no scenario.
+  - retired 2026-09-15: Shared exact-set/prefix assertions and real API duplicate-path rejection preserve this leaf. The grouped audit verifies eight exact-original-Expect pairs and preserves 21 earlier working-set failures. Supersedes the historical verdict below. Evidence and recoverable source: /tmp/brine-overlap-mounts.HB5vvX (pairing.json, evidence.json, before-container_restored_test.go); see V5-MIGRATION.md.
   - consolidation 2026-09-08 (shared container fixture): retained named Go test `Container Run with non-overlapping inputs and outputs creates separate volumes for non-overlapping input and output` in `container_restored_test.go` for separate input/output volume and mount counts. Its It callback and literal creation arguments are AST-identical before/after; shared setup does not establish a brine replacement. Mutation(s) `no-main-mounts` fail the same leaf test before/after. Evidence: `/tmp/brine-container-fixture.eLhp8y/`; see `CONSOLIDATION.md`, twelfth pass.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): it migrated to container-pod.feature 'An output on its own path gets its own volume', a feature whose ContainerSpec builder changed in the rebase (steps/container_spec.go).
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/container.go, func (c *Container) buildVolumeMounts (the output loop's overlap-dedup guard):; brine RED: Then the pod has 3 volumes -> "expected 3 volumes, found 2: [dir-0 input-1]" (scenario_end status=failed, duration_ms=4); go RED: container_test.go:419 — [FAILED] Expected <[]v1.Volume | len:2, cap:2>: [ {Name: "dir-0", ...}, {Name: "input-1", ...} ] to have length 3 (STEP: creating 3 volumes (dir + input + output)); skeptic: Decorative/uncovered-clause: the Go It asserts TWO things (3 volumes AND 3 mounts on the main container). brine's paired scenario counts volumes but no brine step anywhere counts the pod's container… → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - **historical restoration, superseded by the verified retirement above** — `atc/worker/jetbridge/container_restored_test.go`
 
-**[REFUTED]** Container Run with cache volumes creates a Pod with emptyDir volumes mounted at cache paths  `JB-container-009`
+**[DELETED]** Container Run with cache volumes creates a Pod with emptyDir volumes mounted at cache paths  `JB-container-009`
+  - resolved 2026-09-18: `container-pod.feature:58` `Scenario: A step's cache
+    directory is ephemeral` (workdir plus `/tmp/build/workdir/.cache`, on an
+    `emptydir` cache-storage worker, the original's two paths).
+    `steps/container_pod.go:591` (`ephemeralMountDefinition`) carries the
+    assertion: exact pod volume count, every volume `EmptyDir != nil`, exact
+    main-container mount count, exact mount paths, no subPath, and no two
+    directories sharing a volume. The 2026-09-15 note below named no scenario
+    and pointed at `/tmp/brine-ephemeral-mounts.jpc0HJ`, which no longer
+    exists.
+  - retired 2026-09-15: Exact-set real-API mount checks preserve this leaf; the grouped audit verifies 21 exact-original-Expect mutation pairs across five leaves. Supersedes the historical verdict below. Evidence and recoverable original source: /tmp/brine-ephemeral-mounts.jpc0HJ (pairing.json, evidence.json, before-container_restored_test.go); see V5-MIGRATION.md.
   - consolidation name audit (2026-09-08, twenty-ninth pass): **RETAIN Go** `Container ephemeral working-set mounts creates a Pod with emptyDir volumes mounted at cache paths` in `container_restored_test.go`. The entry retains exact cache volume/mount cardinalities, paths and emptyDir checks. Current identity/source is recorded in `/tmp/brine-custom-checks.L1hyoZ/retained-specs.json`; this dry-run inventory is not a fresh execution or replacement-equivalence claim. No historical verdict changes.
   - consolidation follow-up, 2026-09-08 (twenty-sixth pass): **RETAIN Go**, now the identically named entry under `Container ephemeral working-set mounts` in `container_restored_test.go`. Literal cache fixture/command/paths and both cardinalities plus emptyDir checks are preserved. Missing-volume, extra-mount, wrong-path and wrong-storage faults all fail this exact leaf before/after. The complete mount cardinality remains a concrete reason for Go retention, not a Brine-equivalence claim. Evidence: `CONSOLIDATION.md`, twenty-sixth pass, `/tmp/brine-mount-table.gB4M0T/`.
   - consolidation 2026-09-08 (shared container fixture): retained named Go test `Container Run with cache volumes creates a Pod with emptyDir volumes mounted at cache paths` in `container_restored_test.go` for emptyDir cache volumes and exact cache mount paths. Its It callback and literal creation arguments are AST-identical before/after; shared setup does not establish a brine replacement. Mutation(s) `no-main-mounts` fail the same leaf test before/after. Evidence: `/tmp/brine-container-fixture.eLhp8y/`; see `CONSOLIDATION.md`, twelfth pass.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (a, b, c) — Rule (c): conflict file. Rule (a): 0d336e062b rewrote both auto-detect arms of the cacheMode switch in buildVolumeMounts, so the default (emptyDir) arm this row pins is now reached under different conditions even though this input's answer is unchanged. Rule (b): its counterparts are in container-pod.feature, whose sp…
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/container.go, (*Container).buildVolumeMounts — the `default:` arm of the cacheMode switch (line 1050 on 27d81692fa):; brine RED: Then the pod has 3 volumes (line 77) — status "failed", error: expected 3 volumes, found 2: [dir-0 scratch-0]; go RED: container_test.go:459 — STEP: adding emptyDir volumes for Dir and the cache; [FAILED] Expected <[]v1.Volume | len:1, cap:1>: [ { Name: "dir-0", VolumeSource: { HostPath: nil, EmptyDir: {Medium: "", S…; skeptic: narrower mutation that breaks only what the Go test asserts (mount-count clause), plus red-by-adaptation check, unrelated-brine-red check, and reproduction of the recorded coarse mutation → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - **historical restoration, superseded by the verified retirement above** — `atc/worker/jetbridge/container_restored_test.go`
 
-**[REFUTED]** Container Run with scratch path volumes creates a Pod with emptyDir volumes for scratch paths  `JB-container-010`
+**[DELETED]** Container Run with scratch path volumes creates a Pod with emptyDir volumes for scratch paths  `JB-container-010`
+  - resolved 2026-09-18: `container-pod.feature:74` `Scenario: A step's
+    scratch directory is ephemeral` (workdir plus `/scratch/buildkit`, the
+    original's two paths). `steps/container_pod.go:591`
+    (`ephemeralMountDefinition`) carries the assertion: exact pod volume
+    count, every volume `EmptyDir != nil`, exact main-container mount count,
+    exact mount paths, no subPath, and no two directories sharing a volume.
+    The 2026-09-15 note below named no scenario and pointed at
+    `/tmp/brine-ephemeral-mounts.jpc0HJ`, which no longer exists.
+  - retired 2026-09-15: Exact-set real-API mount checks preserve this leaf; the grouped audit verifies 21 exact-original-Expect mutation pairs across five leaves. Supersedes the historical verdict below. Evidence and recoverable original source: /tmp/brine-ephemeral-mounts.jpc0HJ (pairing.json, evidence.json, before-container_restored_test.go); see V5-MIGRATION.md.
   - consolidation name audit (2026-09-08, twenty-ninth pass): **RETAIN Go** `Container ephemeral working-set mounts creates a Pod with emptyDir volumes for scratch paths` in `container_restored_test.go`. The entry retains exact scratch volume/mount cardinalities, paths and emptyDir checks; the separate no-init test remains distinct. Current identity/source is recorded in `/tmp/brine-custom-checks.L1hyoZ/retained-specs.json`; this dry-run inventory is not a fresh execution or replacement-equivalence claim. No historical verdict changes.
   - consolidation follow-up, 2026-09-08 (twenty-sixth pass): **RETAIN Go**, now the identically named entry under `Container ephemeral working-set mounts` in `container_restored_test.go`. Literal scratch fixture/command/paths and both cardinalities plus emptyDir checks are preserved. Missing-volume, extra-mount, wrong-path and wrong-storage faults all fail this exact leaf before/after. The sibling no-init test (011) is unchanged and still alone rejects the scratch-init fault. No historical Brine verdict is relabelled. Evidence: `CONSOLIDATION.md`, twenty-sixth pass, `/tmp/brine-mount-table.gB4M0T/`.
   - consolidation 2026-09-08 (shared container fixture): retained named Go test `Container Run with scratch path volumes creates a Pod with emptyDir volumes for scratch paths` in `container_restored_test.go` for emptyDir scratch volumes and exact scratch mount paths. Its It callback and literal creation arguments are AST-identical before/after; shared setup does not establish a brine replacement. Mutation(s) `no-main-mounts` fail the same leaf test before/after. Evidence: `/tmp/brine-container-fixture.eLhp8y/`; see `CONSOLIDATION.md`, twelfth pass.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): it migrated to container-pod.feature 'Scratch space never outlives the pod', whose ContainerSpec literal changed in the rebase (steps/container_spec.go). Not (a): the ScratchPaths loop of buildVolumeMounts is untouched by 0d336e062b.
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/container.go, func (c *Container) buildVolumeMounts() — ScratchPaths loop:; brine RED: And the volume mounted at "/tmp/scratch" is lost with the pod -> error: mount "/tmp/scratch" names volume "scratch-0", which the pod does not define; go RED: container_test.go:510, STEP "adding emptyDir volumes for Dir and the scratch path": [FAILED] Expected <[]v1.Volume | len:1, cap:1>: [{Name: "dir-0", VolumeSource: {HostPath: nil, EmptyDir: {Medium: "…; skeptic: different-behaviour pairing (narrower mutation on the SAME recorded target), plus red-by-adaptation and unrelated-brine-red as controls → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - **historical restoration, superseded by the verified retirement above** — `atc/worker/jetbridge/container_restored_test.go`
 
-**[INERT]** Container Run with scratch path volumes does not create cache entries for scratch paths  `JB-container-011`
+**[DELETED]** Container Run with scratch path volumes does not create cache entries for scratch paths  `JB-container-011`
+  - resolved 2026-09-18: the same `container-pod.feature:74` `Scenario: A
+    step's scratch directory is ephemeral` closes with `And the pod has 0 init
+    containers`, which is exactly this leaf's single
+    `Expect(pod.Spec.InitContainers).To(BeEmpty())`; the check is
+    `steps/container_pod.go:278` (`the pod has {int} init containers`). The
+    2026-09-15 note below paraphrased "four existing Brine scenarios" without
+    naming one.
+  - Retirement 2026-09-15: four existing Brine scenarios now preserve scratch InitContainers absence, all-volume hostPath refusal, the standalone job-7-compile cache-key prefix, and all-main-mount SubPath absence. Explicit cache-store selection, job 42/build-step metadata with nil cache identity, and standalone rather than artifact-backed construction are retained where the original fixture used them. Eight exact original assertion failures across ten isolated production faults validate this group; subPathExpr and cache directory creation policy are additionally protected. No Brine scenario is added. Proof: /tmp/brine-cache-policy.wvrnQ9/pairing.json. Older retention and restoration notes below are historical; scratch init absence is not a DB cache-entry assertion.
   - consolidation 2026-09-08 (shared container fixture): retained named Go test `Container Run with scratch path volumes does not create cache entries for scratch paths` in `container_restored_test.go` for the existing empty InitContainers observation; this is not a database cache-entry assertion. Its It callback and literal creation arguments are AST-identical before/after; shared setup does not establish a brine replacement. Mutation(s) `extra-init` fail the same leaf test before/after. Evidence: `/tmp/brine-container-fixture.eLhp8y/`; see `CONSOLIDATION.md`, twelfth pass.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (a, b, c) — Rule (c): conflict file. Rule (a): both source functions this row names changed on core — buildVolumeMounts' cache arms (0d336e062b) and buildArtifactInitContainers, which 1e023e7ca4 turned into an error-returning call. Rule (b): its counterpart sits in container-pod.feature, whose spec builder changed in the rebase.
   - re-verified 2026-09-05 (rebase onto core): INERT — mutation Two mutations were measured, both in atc/worker/jetbridge/container.go, (*Container).buildVolumeMounts. M1 (the recorded mutation, verbatim from the recipe) — append the resolved ScratchPaths onto `r…; brine RED: And the volume mounted at "/tmp/scratch" is lost with the pod (line 67) -> error: expected the volume at "/tmp/scratch" to be ephemeral, it is node-local storage; go GREEN: No failing assertion in any of the three runs -- the test passed with M1 applied, with M2 applied, and with no mutation. The assertion under test is Expect(pod.Spec.InitContainers).To(BeEmpty()) (By(…; skeptic: not reached — the verifier stopped at INERT
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - **historical restoration, superseded by the verified retirement above** — `atc/worker/jetbridge/container_restored_test.go`
 
 **[DELETED]** Container Run with scratch paths and caches together creates separate volumes for caches and scratch paths  `JB-container-012`
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
@@ -1058,31 +1600,56 @@ Restored tests from this file live in `atc/worker/jetbridge/container_restored_t
   - rebase impact: IMPACTED (a, b, c, d) — Every criterion fires: (c) conflict file; (a)+(d) 0d336e062b rewrote both stableCacheKey's signature/branching and the auto-detect arm this test exercises, so the restored test now takes the emptyDir path and FAILS for a reason unrelated to any mutation; (b) container-pod.feature 'A cache is kept on the node...' had t…
   - re-verified 2026-09-05 (rebase onto core): HOLDS — mutation atc/worker/jetbridge/container.go :: stableCacheKey (line 894); brine RED: Then the cache at "/tmp/build/workdir/.cache" is kept on the node under "/var/concourse/cache/job-7-compile-" (line 284) — status failed, error: expected the cache filed under "/var/concourse/cache/j…; go RED: [FAILED] Expected <string>: /var/concourse/cache/job-7-e68dc0f30e98 to have prefix <string>: /var/concourse/cache/job-7-compile- In [It] at: .../atc/worker/jetbridge/container_test.go:691; skeptic: Three attacks run, all failed to refute: (1) red-by-adaptation — clean baseline of the restored Go spec; (2) different-behaviour pairing via a NARROWER second mutation aimed at the Go It's OTHER asse… → HOLDS
 
-**[REFUTED]** Container Run with cache hostPath configured when CacheHostPath is set but JobID is 0 (one-off build) falls back to emptyDir for one-off builds  `JB-container-015`
+**[DELETED]** Container Run with cache hostPath configured when CacheHostPath is set but JobID is 0 (one-off build) falls back to emptyDir for one-off builds  `JB-container-015`
+  - resolved 2026-09-18: `container-pod.feature:428` `Scenario: A one-off
+    build with no job gets an ephemeral cache` — a `configured-worker` with
+    `hostpath` cache storage and a standalone cache root, a cache path, and no
+    `belongs to job` step, checked by `steps/container_pod.go:591`, which
+    requires every pod volume to be `EmptyDir`. That is the original's
+    `Expect(vol.HostPath).To(BeNil())` for every volume. The 2026-09-15 note
+    below paraphrased "four existing Brine scenarios" without naming one.
+  - Retirement 2026-09-15: four existing Brine scenarios now preserve scratch InitContainers absence, all-volume hostPath refusal, the standalone job-7-compile cache-key prefix, and all-main-mount SubPath absence. Explicit cache-store selection, job 42/build-step metadata with nil cache identity, and standalone rather than artifact-backed construction are retained where the original fixture used them. Eight exact original assertion failures across ten isolated production faults validate this group; subPathExpr and cache directory creation policy are additionally protected. No Brine scenario is added. Proof: /tmp/brine-cache-policy.wvrnQ9/pairing.json. Older retention and restoration notes below are historical; scratch init absence is not a DB cache-entry assertion.
   - consolidation follow-up, 2026-09-08 (twenty-third pass): **RETAIN Go** `Container Run with cache hostPath configured when CacheHostPath is set but JobID is 0 (one-off build) falls back to emptyDir for one-off builds` in `container_restored_test.go`. With hostPath caching explicitly requested and no task-cache identity, it rejects HostPath on every returned pod volume. The assertion does not itself prove positive emptyDir allocation. Retain the complete no-hostPath compatibility check; a Brine check of only the named cache volume is not equivalent. Current source was inspected and remains unchanged; no deletion or historical verdict change is claimed.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (a, b, c, d) — Rule (c) conflict file; rules (a)+(d) 0d336e062b DELETED the exact gate this test exists to pin — `c.config.CacheHostPath != "" && c.metadata.JobID != 0` became `... && c.containerSpec.TaskCacheIdentity != nil` — so the restored test passes for a new reason and is vacuous; rule (b) container-pod.feature's one-off scen…
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/container.go, (*Container).buildVolumeMounts — remove the "no key => ephemeral cache" gate in both places it now lives, and give the deref sites a zero identity (as the merge-bas…; brine RED: Then the volume mounted at "/tmp/build/workdir/.cache" is lost with the pod (line 320) — status "failed", error: expected the volume at "/tmp/build/workdir/.cache" to be ephemeral, it is node-local s…; go RED: [FAILED] one-off builds should not use hostPath Expected <*v1.HostPathVolumeSource | 0x140004a48d0>: { Path: "/var/concourse/cache/run-0-0--5a116b607dc0", Type: "DirectoryOrCreate", } to be nil In [I…; skeptic: different-behaviour pairing (narrower mutation that breaks only what the Go test asserts) + mutation-not-the-recorded-one + unrelated-brine-red baseline + red-by-adaptation control → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - **historical restoration, superseded by the verified retirement above** — `atc/worker/jetbridge/container_restored_test.go`
 
-**[REFUTED]** Container Run with explicit CacheStore selector when CacheStore=hostpath overrides artifact store uses hostPath even though artifact store is configured  `JB-container-016`
+**[DELETED]** Container Run with explicit CacheStore selector when CacheStore=hostpath overrides artifact store uses hostPath even though artifact store is configured  `JB-container-016`
+  - resolved 2026-09-18: `container-pod.feature:444` `Scenario Outline: An
+    explicit cache store overrides the artifact store default`, row `|
+    hostpath | node-local |` — the worker keeps artifacts under
+    `/var/concourse/artifacts` and still selects hostPath, and `Then the
+    volume mounted at "/tmp/build/workdir/.cache" uses "node-local" storage`
+    (`steps/container_pod.go:187`) pins the storage kind. The step is `belongs
+    to job 7 step "compile"`, which is the original's `job-7-compile-`
+    host-path prefix. The 2026-09-15 note below paraphrased "four existing
+    Brine scenarios".
+  - Retirement 2026-09-15: four existing Brine scenarios now preserve scratch InitContainers absence, all-volume hostPath refusal, the standalone job-7-compile cache-key prefix, and all-main-mount SubPath absence. Explicit cache-store selection, job 42/build-step metadata with nil cache identity, and standalone rather than artifact-backed construction are retained where the original fixture used them. Eight exact original assertion failures across ten isolated production faults validate this group; subPathExpr and cache directory creation policy are additionally protected. No Brine scenario is added. Proof: /tmp/brine-cache-policy.wvrnQ9/pairing.json. Older retention and restoration notes below are historical; scratch init absence is not a DB cache-entry assertion.
   - consolidation follow-up, 2026-09-08 (twenty-third pass): **RETAIN Go** `Container Run with explicit CacheStore selector when CacheStore=hostpath overrides artifact store uses hostPath even though artifact store is configured` in `container_restored_test.go`. It requires a hostPath with literal prefix `/var/concourse/cache/job-7-compile-`, preserving the independently supplied job and step cache identity. The current fixture does not install an artifact backend despite the test title: retain it for the cache-key prefix, not as proof of artifact-store precedence. It is a pod-construction compatibility test. Current source was inspected and remains unchanged; no deletion or historical verdict change is claimed.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (a, b, c, d) — Rule (c) conflict file; rules (a)+(d) 0d336e062b added a downgrade that forces an EXPLICIT CacheStore=hostpath back to emptyDir when TaskCacheIdentity is nil, so the restored test now fails outright; rule (b) container-pod.feature's outline needed rebase commit 81d13b70203 to keep the hostpath row green.
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation RECORDED MUTATION (tried first, INERT for this row):; brine RED: Then the volume mounted at "/tmp/build/workdir/.cache" survives the pod (line 332) — status failed, error: expected the volume at "/tmp/build/workdir/.cache" to be node-local storage, it is ephemeral; go RED: [FAILED] expected a hostPath volume for cache — In [It] at: atc/worker/jetbridge/container_test.go:814, i.e. Expect(hostPathVol).ToNot(BeNil(), "expected a hostPath volume for cache"). Run summary: '…; skeptic: different-behaviour pairing (two narrow one-sided mutations, each isolating one arm of the `case CacheStoreHostPath` switch), plus a red-by-adaptation control and an unrelated-brine-red control → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - **historical restoration, superseded by the verified retirement above** — `atc/worker/jetbridge/container_restored_test.go`
 
 **[DELETED]** Container Run with explicit CacheStore selector when CacheStore=emptydir overrides artifact store uses emptyDir without init containers or cache uploads  `JB-container-017`
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (a, b, c) — Rule (c): conflict file. Rule (a): both functions it pins changed on core — the cacheMode switch in buildVolumeMounts (0d336e062b) and buildArtifactInitContainers, which 1e023e7ca4 made error-returning. Rule (b): its counterpart outline lives in container-pod.feature, whose spec builder changed in the rebase.
   - re-verified 2026-09-05 (rebase onto core): HOLDS — mutation atc/worker/jetbridge/container.go, (*Container).buildVolumeMounts, the `default:` (CacheStoreEmptyDir) arm of the cacheMode switch — emit a hostPath volume instead of an emptyDir:; brine RED: Then the volume mounted at "/tmp/build/workdir/.cache" is lost with the pod — status "failed", error: expected the volume at "/tmp/build/workdir/.cache" to be ephemeral, it is node-local storage; go RED: [FAILED] Expected <[]v1.Volume | len:0, cap:0>: nil to have length 1 In [It] at: .../atc/worker/jetbridge/container_test.go:864 — i.e. Expect(cacheVols).To(HaveLen(1)) under By("using emptyDir volume…; skeptic: narrower-mutation separator (plus red-by-adaptation, reproduction, decorative-assertion audit) → HOLDS
 
-**[GAP]** Container Run with explicit CacheStore selector when CacheStore=emptydir is explicitly set uses emptyDir for caches  `JB-container-018`
+**[DELETED]** Container Run with explicit CacheStore selector when CacheStore=emptydir is explicitly set uses emptyDir for caches  `JB-container-018`
+  - resolved 2026-09-18: the same `container-pod.feature:444` outline, row `|
+    emptydir | ephemeral |` — an artifact store is configured and the explicit
+    `emptydir` choice still wins, checked by `steps/container_pod.go:187`,
+    which for `ephemeral` requires an `EmptyDir` volume and a mount with no
+    subPath. That is the original's `Expect(m.SubPath).To(BeEmpty())`. The
+    2026-09-15 note below paraphrased "four existing Brine scenarios".
+  - Retirement 2026-09-15: four existing Brine scenarios now preserve scratch InitContainers absence, all-volume hostPath refusal, the standalone job-7-compile cache-key prefix, and all-main-mount SubPath absence. Explicit cache-store selection, job 42/build-step metadata with nil cache identity, and standalone rather than artifact-backed construction are retained where the original fixture used them. Eight exact original assertion failures across ten isolated production faults validate this group; subPathExpr and cache directory creation policy are additionally protected. No Brine scenario is added. Proof: /tmp/brine-cache-policy.wvrnQ9/pairing.json. Older retention and restoration notes below are historical; scratch init absence is not a DB cache-entry assertion.
   - consolidation follow-up, 2026-09-08 (twenty-third pass): **RETAIN Go** `Container Run with explicit CacheStore selector when CacheStore=emptydir is explicitly set uses emptyDir for caches` in `container_restored_test.go`. Its actual assertion is empty SubPath on every main-container mount when CacheStore is explicitly emptydir. It does not positively assert EmptyDir volume allocation. Retain this pod-construction compatibility check; storage-kind assertions alone do not replace the SubPath constraint. Current source was inspected and remains unchanged; no deletion or historical verdict change is claimed.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (a, b, c) — Rule (c): conflict file. Rule (a): it pins the cacheMode switch that 0d336e062b rewrote (its own arm is unchanged, but the switch is not). Rule (b): same container-pod.feature outline, whose builder changed in the rebase. It is also a near-duplicate of JB-container-017 (same Config, different StepName), so one re-run…
   - re-verified 2026-09-05 (rebase onto core): GAP — mutation atc/worker/jetbridge/container.go, (*Container).buildVolumeMounts — `default:` (CacheStoreEmptyDir) arm of the cacheMode switch, ~line 1046:; brine GREEN: none — the named scenario passed under the recorded mutation AND under the sharper variant. Both runs: 44 scenario_end events, 0 failures, exit 0. No other scenario in the feature reddened either (al…; go RED: [FAILED] emptyDir caches should not use subPath Expected <string>: cache to be empty In [It] at: .../atc/worker/jetbridge/container_test.go:915 (the STEP that failed: `cache volumes should be emptyDi…; skeptic: not reached — the verifier stopped at GAP
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - **historical restoration, superseded by the verified retirement above** — `atc/worker/jetbridge/container_restored_test.go`
 
 **[DELETED]** Container Run with resource limits when CPU and Memory limits are specified sets K8s resource requests and limits on the main container  `JB-container-019`
   - resource-check consolidation 2026-09-08: The unchanged `Limits alone reserve exactly what they cap` scenario now uses the shared quantity checker. Independent missing/wrong CPU-limit and memory-limit production mutations fail both original and current checks. This preserves the observed numeric/presence predicates; no additional Go deletion is inferred. The four original/current controls pass, all 60,000 comparison verdicts match, and all 20 mutation/case failures are preserved. Evidence: `/tmp/brine-resource-checks.6cJsRU/`; see `CONSOLIDATION.md`, fifteenth pass. No scenario or Go test is removed.
@@ -1101,13 +1668,22 @@ Restored tests from this file live in `atc/worker/jetbridge/container_restored_t
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): it migrated to container-pod.feature 'Independent requests below the limits make the pod burstable', a feature whose ContainerSpec literal changed in the rebase.
   - re-verified 2026-09-05 (rebase onto core): HOLDS — mutation atc/worker/jetbridge/container.go, func buildResourceRequirements (~line 780):; brine RED: And the step is reserved "512m" CPU and "1Gi" memory — error: expected a cpu request of 512m, got 2048m; go RED: [FAILED] Expected <int>: 1 to equal <int>: 0 In [It] at: atc/worker/jetbridge/container_test.go:1057 — i.e. Expect(mainContainer.Resources.Requests.Cpu().Cmp(*resource.NewMilliQuantity(512, resource.…; skeptic: Four attacks run, all failed: (1) NARROWER MUTATION that breaks only the single quantity the Go It pins (CPU request), leaving memory and ephemeral requests independent — the sharpest available separ… → HOLDS
 
-**[REFUTED]** Container Run with resource limits when only requests are specified with no limits (Burstable no-cap QoS) sets requests with no limits  `JB-container-022`
+**[DELETED]** Container Run with resource limits when only requests are specified with no limits (Burstable no-cap QoS) sets requests with no limits  `JB-container-022`
+  - resolved 2026-09-18: `container-pod.feature:362` `Scenario: Requests
+    without limits reserve a floor but set no ceiling` — 256 CPU shares and
+    536870912 bytes, the original's exact literals, with `Then the step has no
+    resource limits` (`steps/container_pod.go:232`) and `And the step is
+    reserved "256m" CPU and "512Mi" memory` (`steps/container_pod.go:228`),
+    plus the QoS consequence the original did not reach. The 2026-09-15 note
+    below named no scenario.
+  - 2026-09-15 security/resource group: legacy mock-backed It retired after exact original nil-limits/CPU/memory mutation failures. The existing real-API Brine case now explicitly rejects resource ceilings and retains exact 256m/512Mi requests and Burstable QoS. The wire-invisible nil-map clause is retained in pure Go TestRequestsOnlyResourceLimitsRemainNil (container_resources_test.go), with no fake client or database. An empty-map mutation passes both Brine versions but fails original and pure Go; adding a CPU ceiling fails new Brine while old Brine passes. This is a split replacement, NOT an all-Brine claim.
+  - Group evidence: /tmp/brine-security-policy.7kB73l/pairing.json, SHA256 817b45c9abc4b71b46489c4dd3fe9e5b5f8cb14faadd2fb72303ae31e27a4bad (14 original-Go failure pairs). Earlier restoration/retention notes below are historical and superseded by this evidence.
   - resource-check consolidation 2026-09-08: RETAIN the named Go test `Container Run with resource limits when only requests are specified with no limits (Burstable no-cap QoS) sets requests with no limits` in `container_restored_test.go`. The shared brine checker preserves CPU/memory request comparisons and detects missing/wrong requests, but the Go test's nil-limits assertion remains a distinct contract. This REFUTED row is not claimed closed. The four original/current controls pass, all 60,000 comparison verdicts match, and all 20 mutation/case failures are preserved. Evidence: `/tmp/brine-resource-checks.6cJsRU/`; see `CONSOLIDATION.md`, fifteenth pass. No scenario or Go test is removed.
   - consolidation 2026-09-08 (shared container fixture): retained named Go test `Container Run with resource limits when only requests are specified with no limits (Burstable no-cap QoS) sets requests with no limits` in `container_restored_test.go` for nil resource limits and exact CPU/memory request quantities. Its It callback and literal creation arguments are AST-identical before/after; shared setup does not establish a brine replacement. Mutation(s) `zero-cpu-request` fail the same leaf test before/after. Evidence: `/tmp/brine-container-fixture.eLhp8y/`; see `CONSOLIDATION.md`, twelfth pass.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): it migrated to container-pod.feature 'Requests without limits reserve a floor but set no ceiling', whose spec builder changed in the rebase.
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/container.go, func buildResourceRequirements (Burstable-no-cap branch, after the independent-requests ResourceList is assembled):; brine RED: Then/And "the pod is scheduled as \"Burstable\"" — scenario_end error: `expected the pod's QoS class to be "Burstable", got "Guaranteed" (limits=map[cpu:{{512 -3} {<nil>} DecimalSI} memory:{{10737418…; go RED: container_test.go:1100, under `By("not setting any limits")`: `Expect(mainContainer.Resources.Limits).To(BeNil())` → `[FAILED] Expected <v1.ResourceList | len:2>: {"cpu": {i: {value: 256, scale: -3},…; skeptic: different-behaviour pairing (narrower mutation that breaks only what the Go It asserts), plus red-by-adaptation and unrelated-brine-red controls → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - Historical restoration (now retired as above) — `atc/worker/jetbridge/container_restored_test.go`
 
 **[DELETED]** Container Run with resource limits when ephemeral-storage limits and requests are specified sets ephemeral-storage in K8s resource requirements  `JB-container-023`
   - resource-check consolidation 2026-09-08: The unchanged `Local disk is reserved and capped like any other resource` scenario now uses the shared quantity checker. Missing and wrong ephemeral-storage limit and request mutations each fail both versions. Disk values remain required; blank expectations are not silently ignored. The four original/current controls pass, all 60,000 comparison verdicts match, and all 20 mutation/case failures are preserved. Evidence: `/tmp/brine-resource-checks.6cJsRU/`; see `CONSOLIDATION.md`, fifteenth pass. No scenario or Go test is removed.
@@ -1115,50 +1691,98 @@ Restored tests from this file live in `atc/worker/jetbridge/container_restored_t
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): it migrated to container-pod.feature 'Local disk is reserved and capped like any other resource', a feature whose ContainerSpec literal changed in the rebase.
   - re-verified 2026-09-05 (rebase onto core): HOLDS — mutation atc/worker/jetbridge/container.go : buildResourceRequirements — deleted both ephemeral-storage mapping blocks (the recorded mutation, verbatim):; brine RED: Then the step may use at most "2Gi" of local disk, reserving "1Gi" (line 249) — status failed, error: "expected an ephemeral-storage limit of 2Gi, none is set"; go RED: [FAILED] expected ephemeral-storage limit of 5Gi, got 0 Expected <int>: -1 to equal <int>: 0 In [It] at: .../atc/worker/jetbridge/container_test.go:1151 (i.e. Expect(ephLimitQty.Cmp(*resource.NewQuan…; skeptic: Three attacks run, all failed to refute: (1) mutation-not-the-recorded-one / different-behaviour pairing, attacked with a NARROWER mutation than the recorded one — I deleted ONLY the `if limits.Ephem… → HOLDS
 
-**[REFUTED]** Container Run with security context when the container is not privileged sets AllowPrivilegeEscalation=false on non-privileged container  `JB-container-024`
+**[DELETED]** Container Run with security context when the container is not privileged sets AllowPrivilegeEscalation=false on non-privileged container  `JB-container-024`
+  - resolved 2026-09-18: `container-pod.feature:168` `Scenario: An
+    unprivileged step cannot gain privileges`. `Then the step uses the
+    "unprivileged" security policy` is `steps/container_pod.go:245`, which
+    asserts all three of this leaf's clauses: pod SecurityContext non-nil with
+    `RunAsNonRoot` unset, `SeccompProfile.Type == RuntimeDefault`, and
+    container `AllowPrivilegeEscalation` non-nil and false. The 2026-09-15
+    note below named no scenario.
+  - 2026-09-15 security/resource group: legacy mock-backed It retired after exact original assertion-line mutation pairing. The existing real-API Brine case uses the shared parameterized security policy check, retaining pod/container context checks, unset RunAsNonRoot, RuntimeDefault seccomp and the original privilege-pointer/value requirement. Old Brine missed all three pod-policy faults; the new check rejects them. No scenario was added.
+  - Group evidence: /tmp/brine-security-policy.7kB73l/pairing.json, SHA256 817b45c9abc4b71b46489c4dd3fe9e5b5f8cb14faadd2fb72303ae31e27a4bad (14 original-Go failure pairs). Earlier restoration/retention notes below are historical and superseded by this evidence.
   - consolidation 2026-09-08 (shared container fixture): retained named Go test `Container Run with security context when the container is not privileged sets AllowPrivilegeEscalation=false on non-privileged container` in `container_restored_test.go` for non-privileged escalation=false, nil RunAsNonRoot and RuntimeDefault seccomp. Its It callback and literal creation arguments are AST-identical before/after; shared setup does not establish a brine replacement. Mutation(s) `allow-escalation, no-seccomp` fail the same leaf test before/after. Evidence: `/tmp/brine-container-fixture.eLhp8y/`; see `CONSOLIDATION.md`, twelfth pass.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): its two clauses land in container-pod.feature 'An unprivileged step cannot gain privileges' and container-run.feature 'A step is confined even when nobody asked for confinement', both features whose ContainerSpec builders changed in the rebase.
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation Two mutations, applied and measured separately (the row's Go test asserts both clauses). MUTATION 1 (primary — privilege escalation), atc/worker/jetbridge/container.go, func buildContainerSecurityCon…; brine RED: MUTATION 1 — step_end status=failed, keyword "Then", text "the step cannot escalate its privileges" (container-pod.feature line 121), error: `expected privilege escalation to be denied, got &Security…; go RED: MUTATION 1 (the row's own clause) — `• [FAILED] Container Run with security context when the container is not privileged [It] sets AllowPrivilegeEscalation=false on non-privileged container`; last ST…; skeptic: Decorative/uncovered-clause attack (the sharpest available): the restored Go It asserts THREE clauses and one — the deliberate RunAsNonRoot carve-out — has no brine counterpart anywhere. I built an h… → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - Historical restoration (now retired as above) — `atc/worker/jetbridge/container_restored_test.go`
 
-**[REFUTED]** Container Run with security context when the container is privileged sets Privileged=true on privileged container  `JB-container-025`
+**[DELETED]** Container Run with security context when the container is privileged sets Privileged=true on privileged container  `JB-container-025`
+  - resolved 2026-09-18: `container-pod.feature:175` `Scenario: A privileged
+    step is granted privilege`. The same `steps/container_pod.go:245` check
+    takes the `privileged` branch: container `Privileged` non-nil and true,
+    with `RunAsNonRoot` still unset and RuntimeDefault seccomp still required
+    — the original's three clauses. The 2026-09-15 note below named no
+    scenario.
+  - 2026-09-15 security/resource group: legacy mock-backed It retired after exact original assertion-line mutation pairing. The existing real-API Brine case uses the shared parameterized security policy check, retaining pod/container context checks, unset RunAsNonRoot, RuntimeDefault seccomp and the original privilege-pointer/value requirement. Old Brine missed all three pod-policy faults; the new check rejects them. No scenario was added.
+  - Group evidence: /tmp/brine-security-policy.7kB73l/pairing.json, SHA256 817b45c9abc4b71b46489c4dd3fe9e5b5f8cb14faadd2fb72303ae31e27a4bad (14 original-Go failure pairs). Earlier restoration/retention notes below are historical and superseded by this evidence.
   - consolidation 2026-09-08 (shared container fixture): retained named Go test `Container Run with security context when the container is privileged sets Privileged=true on privileged container` in `container_restored_test.go` for Privileged=true, nil RunAsNonRoot and RuntimeDefault seccomp. Its It callback and literal creation arguments are AST-identical before/after; shared setup does not establish a brine replacement. Mutation(s) `unprivileged, no-seccomp` fail the same leaf test before/after. Evidence: `/tmp/brine-container-fixture.eLhp8y/`; see `CONSOLIDATION.md`, twelfth pass.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): it migrated to container-pod.feature 'A privileged step is granted privilege', whose ContainerSpec literal changed in the rebase. buildContainerSecurityContext itself is untouched on core.
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/container.go, func buildContainerSecurityContext (line 842 on 27d81692fa) — deleted the privileged early-return branch, so a privileged step now receives the hardened (AllowPrivi…; brine RED: Then the step can escalate its privileges — error: "expected a privileged container, got &SecurityContext{Capabilities:nil,Privileged:nil,SELinuxOptions:nil,RunAsUser:nil,RunAsNonRoot:nil,ReadOnlyRoo…; go RED: container_test.go:1254 — By("setting Privileged=true on container security context"); Expect(mainContainer.SecurityContext.Privileged).ToNot(BeNil()) => "[FAILED] Expected <*bool | 0x0>: nil not to b…; skeptic: decorative/insufficient-coverage via a NARROWER mutation (the "the It asserts more than any scenario" attack the Scanner and Destroyer skeptics used in DISPOSITION-gc-lidar.md) — mutate only the clau… → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - Historical restoration (now retired as above) — `atc/worker/jetbridge/container_restored_test.go`
 
-**[REFUTED]** Container Run with imagePullSecrets and serviceAccount when image pull secrets and service account are configured includes imagePullSecrets and serviceAccountName in the pod spec  `JB-container-026`
+**[DELETED]** Container Run with imagePullSecrets and serviceAccount when image pull secrets and service account are configured includes imagePullSecrets and serviceAccountName in the pod spec  `JB-container-026`
+  - resolved 2026-09-18: `container-pod.feature:325` `Scenario:
+    Operator-configured pull secrets and service account reach the pod` — the
+    worker pulls with `registry-creds,gcr-key` as service account `ci-runner`,
+    the original's exact literals; `Then the pod pulls images using exactly
+    "registry-creds,gcr-key"` is `steps/container_pod.go:348` (an exact set,
+    so the original's `HaveLen(2)` is covered) and `And the pod runs as the
+    service account "ci-runner"` is `steps/container_pod.go:363`. The
+    2026-09-15 note below named no scenario.
+  - 2026-09-15 credential group: legacy mock-backed It retired after seven exact original-Go assertion-line mutation failures across this pair. The existing real-API Brine case now compares the complete secret list, preserving count and membership without imposing order; the configured service-account assertion is retained. Extra secrets passed old Brine but fail the consolidated check. Independent configured/registry-name, missing registry secret, and service-account faults fail the corresponding original and new checks. Duplicate-secret rejection is preserved, and reverse-order controls pass both versions. No scenario was added; one definition and two redundant feature assertions were removed.
+  - Evidence: /tmp/brine-credentials.ohGaBJ/pairing.json, SHA256 bfb96c3599867c872d67440771e1218ae66a4f68a8ab62ae0e5576b759ec252d. Earlier restoration/retention notes below are historical and superseded.
   - consolidation follow-up, 2026-09-08 (twenty-third pass): **RETAIN Go** `Container Run with imagePullSecrets and serviceAccount when image pull secrets and service account are configured includes imagePullSecrets and serviceAccountName in the pod spec` in `container_restored_test.go`. It requires exactly two imagePullSecrets containing both configured names plus the literal service account `ci-runner`. Membership alone does not reject an extra secret. Retain this focused pod-spec compatibility contract; no fallback command execution is claimed. Current source was inspected and remains unchanged; no deletion or historical verdict change is claimed.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): it migrated to container-pod.feature 'Operator-configured pull secrets and service account reach the pod', a feature whose spec builder changed in the rebase. Not (a)/(d): `git log -S buildImagePullSecrets` over the range returns nothing.
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation Two mutations, applied and measured SEPARATELY (both from the recipe), in atc/worker/jetbridge/container.go on worktree base 27d81692fa. (1) (*Container).buildPod PodSpec literal, line 484:; brine RED: Mutation (1): step `And the pod runs as the service account "ci-runner"` (line 202) -> status failed, error: expected the pod's service account to be "ci-runner", got "" | Mutation (2): step `Then th…; go RED: Mutation (1): `[FAILED] Expected <string>: to equal <string>: ci-runner In [It] at: .../atc/worker/jetbridge/container_test.go:1311` (under `By("setting serviceAccountName from config")`). Mutation (…; skeptic: different-behaviour pairing (narrower mutation that breaks only what the Go test asserts), plus red-by-adaptation and unrelated-brine-red controls → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - Historical restoration (now retired as above) — `atc/worker/jetbridge/container_restored_test.go`
 
 **[DELETED]** Container Run with imagePullSecrets and serviceAccount when no image pull secrets or service account are configured creates a pod with no imagePullSecrets or serviceAccountName  `JB-container-027`
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): it migrated to container-pod.feature 'With nothing configured the pod names no credentials', a feature whose ContainerSpec literal changed in the rebase.
   - re-verified 2026-09-05 (rebase onto core): HOLDS — mutation atc/worker/jetbridge/container.go, func buildImagePullSecrets (line 857):; brine RED: Then the pod names no image pull secret and no service account (line 209) — step_end status "failed", error: "expected no image pull secrets, got 1"; go RED: [FAILED] Expected <[]v1.LocalObjectReference | len:1, cap:1>: [{Name: "default"}] to be empty In [It] at: .../atc/worker/jetbridge/container_test.go:1344 — i.e. `Expect(pod.Spec.ImagePullSecrets).To(…; skeptic: Ran four attacks: (1) unrelated/flaky brine red — clean baseline of container-pod.feature; (2) red-by-adaptation — clean Go baseline with the pre-adapted restored file; (3) mutation-not-the-recorded-… → HOLDS
 
-**[REFUTED]** Container Run with imagePullSecrets and serviceAccount when ImageRegistry is configured with a SecretName auto-includes the registry secret in imagePullSecrets  `JB-container-028`
+**[DELETED]** Container Run with imagePullSecrets and serviceAccount when ImageRegistry is configured with a SecretName auto-includes the registry secret in imagePullSecrets  `JB-container-028`
+  - resolved 2026-09-18: `container-pod.feature:341` `Scenario: A private
+    registry's secret is added to the pod` — private registry secret
+    `gcr-auth` alongside an already-listed `existing-secret`, and `Then the
+    pod pulls images using exactly "gcr-auth,existing-secret"`
+    (`steps/container_pod.go:348`) is an exact set, which is the original's
+    `HaveLen(2)` plus `ContainElements`. `container-pod.feature:351` adds the
+    de-duplication case the original did not have. The 2026-09-15 note below
+    named no scenario.
+  - 2026-09-15 credential group: legacy mock-backed It retired after seven exact original-Go assertion-line mutation failures across this pair. The existing real-API Brine case now compares the complete secret list, preserving count and membership without imposing order; the configured service-account assertion is retained. Extra secrets passed old Brine but fail the consolidated check. Independent configured/registry-name, missing registry secret, and service-account faults fail the corresponding original and new checks. Duplicate-secret rejection is preserved, and reverse-order controls pass both versions. No scenario was added; one definition and two redundant feature assertions were removed.
+  - Evidence: /tmp/brine-credentials.ohGaBJ/pairing.json, SHA256 bfb96c3599867c872d67440771e1218ae66a4f68a8ab62ae0e5576b759ec252d. Earlier restoration/retention notes below are historical and superseded.
   - consolidation follow-up, 2026-09-08 (twenty-third pass): **RETAIN Go** `Container Run with imagePullSecrets and serviceAccount when ImageRegistry is configured with a SecretName auto-includes the registry secret in imagePullSecrets` in `container_restored_test.go`. It requires exactly two imagePullSecrets: the existing configured secret and the injected registry secret. The automatic-inclusion Brine assertion does not establish the complete two-element secret list. This is a pod-spec compatibility test, not a task execution fixture. Current source was inspected and remains unchanged; no deletion or historical verdict change is claimed.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): it migrated to container-pod.feature 'A private registry's secret is added to the pod', whose spec builder changed in the rebase.
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/container.go, func buildImagePullSecrets (line ~866) — deleted the registry-append block:; brine RED: Then the pod pulls images using the secret "gcr-auth" (line 216) — status "failed", error: expected the pod's image pull secrets to include "gcr-auth", found [existing-secret]; go RED: container_test.go:1387 — [FAILED] Expected <[]v1.LocalObjectReference | len:1, cap:1>: [ { Name: "existing-secret", }, ] to have length 2 (i.e. `Expect(pod.Spec.ImagePullSecrets).To(HaveLen(2))`); skeptic: different-behaviour pairing via a narrower mutation (the Go It's `HaveLen(2)` clause is uncovered by brine's membership-only step); plus red-by-adaptation and harness-liveness controls → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - Historical restoration (now retired as above) — `atc/worker/jetbridge/container_restored_test.go`
 
 **[DELETED]** Container Run with imagePullSecrets and serviceAccount when ImageRegistry SecretName duplicates an existing imagePullSecret deduplicates the secret name  `JB-container-029`
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): it migrated to container-pod.feature 'A registry secret the operator already listed is not duplicated', a feature whose ContainerSpec literal changed in the rebase.
   - re-verified 2026-09-05 (rebase onto core): HOLDS — mutation atc/worker/jetbridge/container.go, func buildImagePullSecrets (line 866) — dropped the `&& !seen[registry.SecretName]` dedup guard:; brine RED: Then the pod names the secret "gcr-auth" exactly once (line 226) — error: expected the secret "gcr-auth" exactly once, found it 2 times; go RED: [FAILED] Expected <[]v1.LocalObjectReference | len:2, cap:2>: [ { Name: "shared-secret", }, { Name: "shared-secret", }, ] to have length 1 In [It] at: .../atc/worker/jetbridge/container_test.go:1432; skeptic: Ran four attacks: (1) unrelated/flaky brine red — clean run of container-pod.feature; (2) red-by-adaptation — unmutated Go run with the restored file; (3) order-masked assertion — step-level event in… → HOLDS
 
-**[REFUTED]** Container Run uses exec-mode for all tasks (universal pause pod) creates a pause pod even when stdin is nil  `JB-container-030`
+**[DELETED]** Container Run uses exec-mode for all tasks (universal pause pod) creates a pause pod even when stdin is nil  `JB-container-030`
+  - **RESTORED Go 2026-09-18 (round 2) — live-only replacement.** Retired against "the existing live task-completion scenario". Back in `atc/worker/jetbridge/container_restored_test.go`, pinning the literal pause argv, one executor call and the supervised command under nil stdin.
+  - **Resolved 2026-09-18 (ledger resolution pass)** — the replacement is
+    `@live-kubernetes`. The 2026-09-15 note below says "the existing live
+    task-completion scenario", i.e. `live/task-command.feature:23`, and says
+    so itself: it is live. No `features/*.feature` scenario asserts the pause
+    command `sh -c "trap 'exit 0' TERM; sleep 86400 & wait"`;
+    `container-run.feature:71` records that those assertions were handed to
+    the live feature. The ledger pass independently restored the same spec to `ledger_restored_test.go` (dropped at integration as a duplicate of the verbatim original named above) as `Ledger-restored container
+    contracts Run uses exec-mode for all tasks (universal pause pod) creates a
+    pause pod even when stdin is nil`.
+  - retirement 2026-09-15: The existing live task-completion scenario now checks literal pause Command/Args, one actual supervised exec request, nil stdin/TTY and nonnull process. Output, result, pod identity, persistence and recovery checks remain. Eleven exact original-Go failure pairs cover pause script/boundary, duplicate calls, quoted command, wrapper shell/option/length, HUP, exit status, nil process and Wait error. No scenario is added. Task and hijack checks share the passive real-transport predicate; input/output-specific Go leaves remain. Proof: `/tmp/brine-fresh-exec.pk3tmu/pairing.json`, SHA256 `8ac89afce4cb8531fd9da5208ebfbf0e734fe72a36048e4d3c8226c4e1ec3c48`. Historical retention notes below are superseded.
   - consolidation follow-up, 2026-09-08 (twenty-second pass): **RETAIN Go** `Container Run uses exec-mode for all tasks (universal pause pod) creates a pause pod even when stdin is nil` in `container_restored_test.go`. It pins the literal pause argv, one executor call and supervised command shape under nil stdin. The merged brine startup task checks actual output, nonempty placeholder separation and pod retention, not every literal/call-count clause. No Go test is deleted or historical verdict changed.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): it migrated to container-run.feature 'With an exec transport the pod is a placeholder the step runs inside', whose draft-to-ContainerSpec builder (steps/container_extra.go) changed in the rebase. Not (a): the only process.go change on core (1164f9db3d) is waitForRunning delegating to…
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation Two mutations, both in atc/worker/jetbridge/container.go on the rebased head 27d81692fa. (A) The RECORDED mutation, applied verbatim at the recorded line (still line 115 on the rebased tree):; brine RED: And the pod is a placeholder, not the step's command (line 88) — error: "expected the pod NOT to carry the step's command, its entrypoint is \"/bin/sh -c echo hello\" — the step was baked into the po…; go RED: container_test.go:1480 — [FAILED] Expected <[]string | len:3, cap:3>: ["/bin/sh", "-c", "echo hello"] to equal <[]string | len:3, cap:3>: [ "sh", "-c", "trap 'exit 0' TERM; sleep 86400 & wait", ] (un…; skeptic: Primary: different-behaviour pairing, executed as a NARROWER mutation that breaks only what the Go assertion pins (the exact pause string) and nothing the brine step can observe. Secondary: red-by-ad… → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - Original restored leaf is recoverable in `/tmp/brine-fresh-exec.pk3tmu/before-container_restored_test.go`.
 
 **[DELETED]** Container Run uses exec-mode for all tasks (universal pause pod) keeps pause pod alive after command completes with exit 0  `JB-container-031`
   - consolidation follow-up, 2026-09-08 (twenty-second pass): The old standalone successful placeholder scenario is merged into `A task's startup is timed and its output reaches the build log`. Its explicit placeholder and retained-pod checks move intact, with the PE-01 tag; the kept task's stronger `hello world` log assertion also implies the old `hello` containment assertion. Paired production faults (baked command, empty placeholder, delete pod on success) fail the old case and the merged case. Evidence: `/tmp/brine-placeholder-consolidation.drVCBG`. The failed-task case and output-bearing retained Go test remain distinct; no new Go deletion or verdict change is claimed.
@@ -1176,20 +1800,41 @@ Restored tests from this file live in `atc/worker/jetbridge/container_restored_t
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): it migrated to container-run.feature 'Every path the step declared comes back as its own volume', whose ContainerSpec builder changed in the rebase. Not (a): atc/worker/jetbridge/worker.go is byte-identical merge-base to core.
   - re-verified 2026-09-05 (rebase onto core): HOLDS — mutation atc/worker/jetbridge/worker.go, func (w *Worker) buildVolumeMountsForSpec — drop the addMount inside the inputs loop, keep the inputMountPaths bookkeeping (loop var i became unused, so `i` -> `_`; 1…; brine RED: Then the caller is handed 5 volumes in all -> expected 5 volumes, found 3: [/tmp/build/workdir /tmp/build/workdir/result /tmp/build/workdir/.cache]; go RED: [FAILED] Expected <[]runtime.VolumeMount | len:0, cap:0>: nil to have length 2 In [It] at: .../atc/worker/jetbridge/container_test.go:1587; skeptic: Four attacks run, all failed: (1) unrelated/flaky brine red — clean baseline run of container-run.feature; (2) red-by-adaptation — unmutated focused Go run with the pre-adapted restoration in place;… → HOLDS
 
-**[GAP]** Container FindOrCreateContainer returns VolumeMounts when container spec has inputs returns Volumes with an executor wired up for StreamIn/StreamOut  `JB-container-034`
+**[DELETED]** Container FindOrCreateContainer returns VolumeMounts when container spec has inputs returns Volumes with an executor wired up for StreamIn/StreamOut  `JB-container-034`
+  - resolved 2026-09-18: `container-run.feature:89` `Scenario: Every path the
+    step declared comes back as its own volume`, whose table includes
+    `/tmp/build/workdir/my-input` and `/tmp/build/workdir/other-input`.
+    `steps/container_extra.go:292` (`the caller is handed these deferred
+    volumes`) carries the assertion: one returned mount per declared path and
+    no others, each `mount.Volume` a non-nil `*jetbridge.Volume`, each
+    `vol.HasExecutor()` true, each `vol.Handle()` non-empty, and no two mounts
+    sharing a handle. That is this leaf's `vol, ok := ...(*jetbridge.Volume)`
+    plus `vol.HasExecutor()`, for every input rather than one. The 2026-09-15
+    note below named no scenario.
+  - Retirement 2026-09-15: the returned-volume lifecycle now uses one exact path table before Run, checking concrete nonnil volumes, executor availability, empty pod binding and distinct nonempty handles. Named result/metadata outputs preserve the original two-output premise. Eight failures at original Go assertion lines across these three cases are paired with the replacement; six additional faults protect duplicate paths, distinct handles, binding, overlap and relative-cache behavior. The three mock-backed cases and two redundant Brine lifecycle cases are removed. Proof: /tmp/brine-returned-volumes.AFMEq1/pairing.json. Earlier retention/restoration notes below are historical.
   - consolidation retention (2026-09-08, thirty-sixth pass): **RETAIN Go** `Container FindOrCreateContainer returns VolumeMounts when container spec has inputs returns Volumes with an executor wired up for StreamIn/StreamOut` in `container_restored_test.go`. Before any Run or pod binding, this no-daemon two-input fixture requires exactly one selected mount at `/tmp/build/workdir/my-input`, a non-nil concrete `*jetbridge.Volume`, and HasExecutor=true. The daemon-backed handoff streams only after Run has bound the returned volume; it does not assert the pre-Run accessor or concrete-type contract. This supplies the concrete retention reason missing from the earlier “pending equivalence” note; no test, assertion, or historical verdict changes.
   - consolidation follow-up, 2026-09-08: **RETAIN Go** pending full per-test equivalence challenge. Passing nil as the deferred volume executor now fails all three production-returned handoff rows and this focused Go test. Unlike the earlier constructor-only round trip, the new outline streams into the input returned by FindOrCreateContainer. See `CONSOLIDATION.md`; the historical GAP is not relabeled HOLDS on this one mutation.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): the DISPOSITION that deliberately dropped it hands coverage to volume-streaming.feature, which is in step_changes (steps/domain.go, steps/container_extra.go). Note it was NAMED as not-migrated, so this row's disposition is a coverage argument, not both-red evidence — worth re-checkin…
   - re-verified 2026-09-05 (rebase onto core): GAP — mutation atc/worker/jetbridge/worker.go, (*Worker).newVolumeForMount — exactly the recorded mutation:; brine GREEN: none — 20 of 20 scenarios passed under the recorded mutation; run_end {"features":1,"scenarios":20,"passed":20,"failed":0,"duration_ms":22999}, verdict "passed", brine exit 0. NO scenario in the feat…; go RED: [FAILED] volume should have an executor for StreamIn/StreamOut Expected <bool>: false to be true In [It] at: /Users/tdmtrader/concourse/concourse/.worktrees/rv-jb-container-034/atc/worker/jetbridge/c…; skeptic: not reached — the verifier stopped at GAP
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - **historical restoration, superseded by the verified retirement above** — `atc/worker/jetbridge/container_restored_test.go`
 
-**[REFUTED]** Container FindOrCreateContainer returns VolumeMounts when container spec has outputs returns a VolumeMount for each output with correct MountPath  `JB-container-035`
+**[DELETED]** Container FindOrCreateContainer returns VolumeMounts when container spec has outputs returns a VolumeMount for each output with correct MountPath  `JB-container-035`
+  - resolved 2026-09-18: the same `container-run.feature:89` scenario, whose
+    table includes `/tmp/build/workdir/result` and
+    `/tmp/build/workdir/metadata`. `steps/container_extra.go:292` (`the caller
+    is handed these deferred volumes`) carries the assertion: one returned
+    mount per declared path and no others, each `mount.Volume` a non-nil
+    `*jetbridge.Volume`, each `vol.HasExecutor()` true, each `vol.Handle()`
+    non-empty, and no two mounts sharing a handle. That is this leaf's "a
+    VolumeMount for each output with correct MountPath" and its
+    `Handle()).ToNot(BeEmpty())`. The 2026-09-15 note below named no scenario.
+  - Retirement 2026-09-15: the returned-volume lifecycle now uses one exact path table before Run, checking concrete nonnil volumes, executor availability, empty pod binding and distinct nonempty handles. Named result/metadata outputs preserve the original two-output premise. Eight failures at original Go assertion lines across these three cases are paired with the replacement; six additional faults protect duplicate paths, distinct handles, binding, overlap and relative-cache behavior. The three mock-backed cases and two redundant Brine lifecycle cases are removed. Proof: /tmp/brine-returned-volumes.AFMEq1/pairing.json. Earlier retention/restoration notes below are historical.
   - consolidation follow-up, 2026-09-08 (twenty-third pass): **RETAIN Go** `Container FindOrCreateContainer returns VolumeMounts when container spec has outputs returns a VolumeMount for each output with correct MountPath` in `container_restored_test.go`. It checks both separately named returned output mounts, each with a non-nil volume and non-empty handle. The handoff consumes one returned output volume and does not prove this two-output constructor result. Current source was inspected and remains unchanged; no deletion or historical verdict change is claimed.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): it migrated to container-run.feature 'Every path the step declared comes back as its own volume', a feature whose ContainerSpec builder changed in the rebase.
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/worker.go, (*Worker).buildVolumeMountsForSpec — unconditional `continue` at the top of the outputs loop, exactly as the recipe specified:; brine RED: Then the caller is handed 5 volumes in all — error: `expected 5 volumes, found 4: [/tmp/build/workdir /tmp/build/workdir/my-input /tmp/build/workdir/other-input /tmp/build/workdir/.cache]` (scenario_…; go RED: container_test.go:1637 — `[FAILED] Expected <[]runtime.VolumeMount | len:0, cap:0>: nil to have length 2`. Spec text: `Container FindOrCreateContainer returns VolumeMounts when container spec has out…; skeptic: different-behaviour pairing (narrower mutation aimed at the one clause the Go It asserts and no brine scenario can see: ONE mount PER declared output path, plural); plus red-by-adaptation control and… → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - **historical restoration, superseded by the verified retirement above** — `atc/worker/jetbridge/container_restored_test.go`
 
 **[DELETED]** Container FindOrCreateContainer returns VolumeMounts when container spec has outputs returns output Volumes with an executor wired up for StreamIn/StreamOut  `JB-container-036`
   - consolidation follow-up, 2026-09-08 (twentieth pass): The former standalone output round trip is now a direct gzip checkpoint within the artifact-handoff outline, before producer pod collection. A production mutation disconnecting only returned output executors fails the original case and all five consolidated rows. Missing-output, wrong-path and omitted-compression faults are also preserved; wrong output pod is newly detected. Evidence: `/tmp/brine-output-consolidation.pYDZue`. The later daemon-backed read is still exercised separately within the same handoff; no new Go deletion or verdict change is claimed.
@@ -1202,65 +1847,128 @@ Restored tests from this file live in `atc/worker/jetbridge/container_restored_t
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): it migrated to container-run.feature 'Every path the step declared comes back as its own volume', whose Then explicitly lists a volume at '/tmp/build/workdir/.cache'; that feature's spec builder changed in the rebase.
   - re-verified 2026-09-05 (rebase onto core): HOLDS — mutation atc/worker/jetbridge/worker.go, (*Worker).buildVolumeMountsForSpec — deleted the whole cache loop:; brine RED: Then the caller is handed 5 volumes in all — step_end status=failed, error: `expected 5 volumes, found 4: [/tmp/build/workdir /tmp/build/workdir/my-input /tmp/build/workdir/other-input /tmp/build/wor…; go RED: [FAILED] Expected <[]runtime.VolumeMount | len:0, cap:0>: nil to have length 1 In [It] at: .../atc/worker/jetbridge/container_test.go:1682 Summary: `Ran 1 of 92 Specs in 0.855 seconds` / `FAIL! -- 0…; skeptic: Ran four attacks: (1) unrelated/flaky brine red — clean baseline run of container-run.feature; (2) red-by-adaptation — restored pre-adapted container_test.go on the un-mutated tree and ran the focuse… → HOLDS
 
-**[GAP]** Container FindOrCreateContainer returns VolumeMounts when container spec has caches returns cache Volumes with an executor wired up for StreamIn/StreamOut  `JB-container-038`
+**[DELETED]** Container FindOrCreateContainer returns VolumeMounts when container spec has caches returns cache Volumes with an executor wired up for StreamIn/StreamOut  `JB-container-038`
+  - resolved 2026-09-18: the same `container-run.feature:89` scenario, whose
+    table includes `/tmp/build/workdir/.cache`. `steps/container_extra.go:292`
+    (`the caller is handed these deferred volumes`) carries the assertion: one
+    returned mount per declared path and no others, each `mount.Volume` a
+    non-nil `*jetbridge.Volume`, each `vol.HasExecutor()` true, each
+    `vol.Handle()` non-empty, and no two mounts sharing a handle. That is this
+    leaf's cache-mount assertion including `vol.HasExecutor()`. The 2026-09-15
+    note below named no scenario.
+  - Retirement 2026-09-15: the returned-volume lifecycle now uses one exact path table before Run, checking concrete nonnil volumes, executor availability, empty pod binding and distinct nonempty handles. Named result/metadata outputs preserve the original two-output premise. Eight failures at original Go assertion lines across these three cases are paired with the replacement; six additional faults protect duplicate paths, distinct handles, binding, overlap and relative-cache behavior. The three mock-backed cases and two redundant Brine lifecycle cases are removed. Proof: /tmp/brine-returned-volumes.AFMEq1/pairing.json. Earlier retention/restoration notes below are historical.
   - consolidation follow-up, 2026-09-08: **RETAIN Go** — the named cache-volume HasExecutor test in `container_restored_test.go`. The new handoff covers returned inputs and outputs, not caches; an input both-red cannot close this cache-specific row.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): third of the four not-migrated HasExecutor cases, whose DISPOSITION hands coverage to volume-streaming.feature — a feature in step_changes.
   - re-verified 2026-09-05 (rebase onto core): GAP — mutation atc/worker/jetbridge/worker.go, (*Worker).newVolumeForMount (line 204 on 27d81692fa) — remove the executor branch so every mount gets a stub volume:; brine GREEN: none — 20 of 20 scenarios passed under the mutation, and 20 of 20 again under the inverse-branch variant; no scenario_end event had status != passed in either run; go RED: [FAILED] volume should have an executor for StreamIn/StreamOut Expected <bool>: false to be true In [It] at: /Users/tdmtrader/concourse/concourse/.worktrees/rv-jb-container-038/atc/worker/jetbridge/c…; skeptic: not reached — the verifier stopped at GAP
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - **historical restoration, superseded by the verified retirement above** — `atc/worker/jetbridge/container_restored_test.go`
 
 **[DELETED]** Container FindOrCreateContainer returns VolumeMounts deferred pod name is set when Run creates the pod sets the pod name on deferred volumes after Run  `JB-container-039`
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): it migrated to the container-run.feature pair 'A volume handed back before the step runs knows no pod' / 'Running the step is what binds its volumes to a pod', a feature whose ContainerSpec builder changed in the rebase. bindVolumesToPod itself is untouched by core's three jetbridge…
   - re-verified 2026-09-05 (rebase onto core): HOLDS — mutation atc/worker/jetbridge/container.go, (*Container).Run, exec-mode branch:; brine RED: Then every volume the caller was handed now names the pod "deferred-pod-handle" | error: expected the volume at "/tmp/build/workdir" to name the pod "deferred-pod-handle", it names ""; go RED: [FAILED] Expected <string>: to equal <string>: deferred-pod-handle In [It] at: atc/worker/jetbridge/container_test.go:1740 -- under STEP: "pod name is set after Run"; skeptic: Three run attacks: (1) red-by-adaptation — restored test with mutation reverted; (2) unrelated/flaky brine red — clean unmutated feature run; (3) different-behaviour pairing — a NARROWER mutation tha… → HOLDS
 
-**[GAP]** Container Input streaming is a no-op (handled by init containers) does not exec any streaming commands for inputs  `JB-container-040`
+**[DELETED]** Container Input streaming is a no-op (handled by init containers) does not exec any streaming commands for inputs  `JB-container-040`
+  - **RESTORED Go 2026-09-18 (round 2) — live-only replacement.** Retired into "the existing mounted-application story", a live case that uses a real pod-backed Volume. The call-count contract — exactly one exec, no streaming exec for inputs — had no unit-tier cover. Back in `container_restored_test.go`.
+  - **Resolved 2026-09-18 (ledger resolution pass)** — the replacement is
+    `@live-kubernetes`, and the unit tier explicitly declined this one. The
+    2026-09-15 note's "existing mounted-application story" is
+    `live/task-command.feature:186`, row `busybox | input-vol-1 |
+    /tmp/build/workdir/my-input | no services | noop-stream-handle | echo
+    done`; that feature is `@live-kubernetes`. `container-run.feature:120-129`
+    states in its own DISPOSITION comment that this contract "has no
+    seam-level equivalent and is not migrated". The ledger pass independently restored the same spec to `ledger_restored_test.go` (dropped at integration as a duplicate of the verbatim original named above) as `Ledger-restored container
+    contracts Input streaming is a no-op (handled by init containers) does not
+    exec any streaming commands for inputs`.
+  - retirement 2026-09-15: The existing mounted-application story now includes the literal BusyBox/input-vol-1/echo-done fixture using a real pod-backed Volume. Three production-overlay faults (extra input exec, altered command, wrong exit result) fail the exact original assertions and corresponding Brine checks; the PostgreSQL row passes with all faults enabled. Runtime exec observation excludes explicit setup uploads. Evidence: /tmp/brine-input-noop.Bg6ny2/pairing.json. Historical retention notes below are superseded; this does not claim automatic init-container staging coverage.
   - consolidation follow-up, 2026-09-08 (twenty-third pass): **RETAIN Go** `Container Input streaming is a no-op (handled by init containers) does not exec any streaming commands for inputs` in `container_restored_test.go`. It requires exactly one executor call with the supervised user command after an artifact-bearing input is configured. Successful input delivery alone does not exclude an additional exec-based streaming call. Keep this call-count/protocol contract alongside the returned-volume transfer contract. Current source was inspected and remains unchanged; no deletion or historical verdict change is claimed.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (a, b, c) — Rule (c): conflict file. Rule (a): buildArtifactInitContainers, the function this row's title is about, changed on core (1e023e7ca4 — it now propagates a capability-signing error instead of discarding it). Rule (b): the DISPOSITION and the nearest positive scenario both live in container-run.feature/container-pod.feat…
   - re-verified 2026-09-05 (rebase onto core): GAP — mutation atc/worker/jetbridge/process.go, (*execProcess).streamInputs — make it issue one ExecInPod tar-in per declared input instead of returning nil:; brine GREEN: none — the scenario passed under the mutation. All 44 scenarios in container-pod.feature passed (44 scenario_end events, all status=passed; brine exit 0). No other scenario in the feature reddened ei…; go RED: [FAIL] Container Input streaming is a no-op (handled by init containers) [It] does not exec any streaming commands for inputs — container_test.go:1797: [FAILED] Expected <[]jetbridge_test.execCall |…; skeptic: not reached — the verifier stopped at GAP
   - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
 
-**[REFUTED]** Container Output volume extraction after exec output volumes can StreamOut after exec completes  `JB-container-041`
+**[DELETED]** Container Output volume extraction after exec output volumes can StreamOut after exec completes  `JB-container-041`
+  - **RESTORED Go 2026-09-18 (round 2) — live-only replacement.** Retired against "one live no-daemon task-output scenario". Back in `container_restored_test.go`, keeping PodName, HasExecutor, the concrete `*jetbridge.Volume` type, the exact `tar cf` argv and the raw stdout contract.
+  - **Resolved 2026-09-18 (ledger resolution pass)** — the replacement is
+    `@live-kubernetes`. The 2026-09-15 note's "one live no-daemon task-output
+    scenario" is `live/task-command.feature:177` `Scenario: A finished task
+    streams its returned output before collection`, in a `@live-kubernetes`
+    feature — the note calls it live itself. `container-run.feature:113-118`
+    says these two rows "retain their named Go tests", which the 2026-09-18
+    deletion then removed. The ledger pass independently restored the same spec to `ledger_restored_test.go` (dropped at integration as a duplicate of the verbatim original named above) as `Ledger-restored container
+    contracts Output volume extraction after exec output volumes can StreamOut
+    after exec completes`.
+  - retirement 2026-09-15: One live no-daemon task-output scenario replaces this pair after 15 exact original-Go assertion failures across 14 independent faults. It retains the actual returned *Volume, exact output mount count, bound pod/executor, successful Wait, byte-identical raw archive, exact download request and the sole original Running pod UID. Independent real exec observes the archive without reconstructing or repairing the returned volume. Daemon-backed handoff cases remain distinct. Proof: `/tmp/brine-task-output.CTNaeu/pairing.json`, SHA256 `dc0eb5415647d5a51008a513e7473e537e4b4d7b4420a3a8985a9279b985756b`. Historical retention notes below are superseded.
   - consolidation follow-up, 2026-09-08 (twentieth pass): **RETAIN Go** `Container Output volume extraction after exec output volumes can StreamOut after exec completes` in `container_restored_test.go`. The shared handoff now includes the old direct gzip/read-content assertion using a production-returned output before pod collection, with four paired production-fault checks. This does not replace the Go test's independently expected PodName, HasExecutor, concrete Volume type, exact tar argv and raw stdout contract on its no-daemon fixture. Only the redundant brine case and its private step definitions are removed; the historical REFUTED verdict remains.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): its counterpart container-run.feature 'A step's output can be read back out of the volume afterwards' (@VT-03) is in a feature whose ContainerSpec builder changed in the rebase.
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/volume.go, func (*Volume).StreamOut — the recorded "equivalently" form of the recipe (tar the wrong path instead of the mount):; brine RED: Then the streamed output holds "output.txt" containing "hello-from-the-step" (line 170) — status "failed", error: expected "output.txt" in the step's output, it holds []; go RED: container_test.go:1872 — [FAILED] Expected <[]string | len:6, cap:6>: ["tar", "cf", "-", "-C", "/", "dev/null"] to equal <[]string | len:6, cap:6>: ["tar", "cf", "-", "-C", "/tmp/build/workdir/result…; skeptic: different-behaviour pairing (narrower mutation that breaks only what the Go It uniquely asserts) — plus red-by-adaptation and unrelated-brine-red checks, both of which failed to refute; a liveness re… → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - Original restored test and shared fixture are recoverable in `/tmp/brine-task-output.CTNaeu/before-container_restored_test.go`.
 
-**[REFUTED]** Container Output volume extraction after exec pod remains running after exec for output extraction  `JB-container-042`
+**[DELETED]** Container Output volume extraction after exec pod remains running after exec for output extraction  `JB-container-042`
+  - **RESTORED Go 2026-09-18 (round 2) — live-only replacement.** Same live no-daemon task-output scenario. Back in `container_restored_test.go`: one retained pod after the exec completes.
+  - **Resolved 2026-09-18 (ledger resolution pass)** — the replacement is
+    `@live-kubernetes`: the same `live/task-command.feature:177` scenario as
+    row -041. The ledger pass independently restored the same spec to `ledger_restored_test.go` (dropped at integration as a duplicate of the verbatim original named above) as `Ledger-restored container contracts Output volume extraction after exec
+    pod remains running after exec for output extraction`.
+  - retirement 2026-09-15: One live no-daemon task-output scenario replaces this pair after 15 exact original-Go assertion failures across 14 independent faults. It retains the actual returned *Volume, exact output mount count, bound pod/executor, successful Wait, byte-identical raw archive, exact download request and the sole original Running pod UID. Independent real exec observes the archive without reconstructing or repairing the returned volume. Daemon-backed handoff cases remain distinct. Proof: `/tmp/brine-task-output.CTNaeu/pairing.json`, SHA256 `dc0eb5415647d5a51008a513e7473e537e4b4d7b4420a3a8985a9279b985756b`. Historical retention notes below are superseded.
   - consolidation follow-up, 2026-09-08 (twentieth pass): **RETAIN Go** `Container Output volume extraction after exec pod remains running after exec for output extraction` in `container_restored_test.go`. It independently asserts one retained pod for an output-bearing no-daemon container. The local handoff's direct read now checks a real pod before deliberate collection, but this pass does not challenge every clause of the Go retention test or delete it. See the twentieth-pass report for the brine-only equivalence evidence.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): the DISPOSITION that dropped it as a third duplicate points at container-run.feature 'A failed step's pod is kept for the operator', a feature in step_changes.
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/process.go — (*execProcess).Wait, success path:; brine RED: And the pod is a placeholder, not the step's command (line 88) — error: `get pod "placeholder-task": pods "placeholder-task" not found`; go RED: STEP: pod still exists after exec completes — not deleted [FAILED] Expected <[]v1.Pod | len:0, cap:0>: nil to have length 1 In [It] at: .../atc/worker/jetbridge/container_test.go:1895; skeptic: different-behaviour pairing, attacked with a NARROWER mutation (plus a red-by-adaptation control and a blanket-mutation positive control) → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - Original restored test and shared fixture are recoverable in `/tmp/brine-task-output.CTNaeu/before-container_restored_test.go`.
 
 **[DELETED]** Container Properties and SetProperty stores and retrieves properties  `JB-container-043`
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (c) — Rule (c) only: container_test.go is a rebase conflict file (core modified it in 0d336e062b; the rebase took the deletion). Its counterpart is container-lifecycle.feature, which is NOT in step_changes, and neither Container.SetProperty nor Container.Properties nor annotatePod was touched by core's three jetbridge commi…
   - re-verified 2026-09-05 (rebase onto core): HOLDS — mutation atc/worker/jetbridge/container.go, func (*Container) SetProperty (line 322 on 27d81692fa) — dropped the in-memory map write, kept the annotation-persistence branch:; brine RED: Then reading it back yields "my-key" as "my-value" (line 33) — status failed, error: expected property "my-key", the container has 0 properties. The preceding Given step (a container that has recorde…; go RED: [FAILED] Expected <map[string]string | len:0>: {} to have {key: value} <map[interface {}]interface {} | len:1>: { <string>"my-key": <string>"my-value", } In [It] at: <wt>/atc/worker/jetbridge/contain…; skeptic: Ran four: (1) different-behaviour pairing, probed with a NARROWER mutation N1 that breaks only the behaviour the Go It pins; (2) red-by-adaptation (clean restoration, no mutation); (3) unrelated/flak… → HOLDS
 
-**[REFUTED]** Container Run into existing pod (fly hijack) execs into the existing pod without creating a new one  `JB-container-044`
+**[DELETED]** Container Run into existing pod (fly hijack) execs into the existing pod without creating a new one  `JB-container-044`
+  - **RESTORED Go 2026-09-18 (round 2) — live-only replacement.** Retired against "one three-row live task-hijack outline". Back in `container_restored_test.go`: no second pod, one executor call, supervised argv, pod name.
+  - **Resolved 2026-09-18 (ledger resolution pass)** — the replacement is
+    `@live-kubernetes`. The 2026-09-15 note's "one three-row live task-hijack
+    outline" is `live/interception.feature:59` `Scenario Outline: A task
+    hijack forwards its command and terminal options — <session>`, and
+    `live/interception.feature` is a live feature; `container-run.feature:138`
+    and `:140-145` record that the hijack scenarios moved there. The ledger pass independently restored the same spec to `ledger_restored_test.go` (dropped at integration as a duplicate of the verbatim original named above) as `Ledger-restored container
+    contracts Run into existing pod (fly hijack) execs into the existing pod
+    without creating a new one`.
+  - retirement 2026-09-15: Supersedes the historical retention notes below. One three-row live task-hijack outline preserves login argv, non-nil/nil TTY, nil stdin, one real SPDY request, unchanged pod identity and successful Wait. Eighteen exact original-Go failure pairs cover independent routing, command/wrapper, call-count, TTY, process and result faults. The passive observer forwards real traffic unchanged; resource terminal cases remain distinct. Proof: `/tmp/brine-hijack-options.01zWm3/pairing.json` (SHA256 `6869ee3e0d676e99146503105d423038d2f195e8b326ab6016a8a31fc45c0add`).
   - ownership follow-up, 2026-09-08 (twenty-fifth pass): the Brine intercept now uses the shared scenario-owned TaskWorkspace instead of deleting a host-global prefix. The four existing scenarios and all result predicates remain unchanged; a pod-destination-only production fault and a swallowed-status fault retain their named failure sets. This does not replace this Go test's exact executor call count/command contract, or the raw TTY flag contracts retained by JB-container-045/-046. No Go test or historical verdict is removed. Evidence: `CONSOLIDATION.md`, twenty-fifth pass.
   - consolidation follow-up, 2026-09-08 (twenty-third pass): **RETAIN Go** `Container Run into existing pod (fly hijack) execs into the existing pod without creating a new one` in `container_restored_test.go`. It requires one existing named pod, exactly one supervised `/bin/bash -l` call targeting that pod, and exit status zero after LookupContainer. A working hijack session does not prove that exact call count and command shape. Current source was inspected and remains unchanged; no deletion or historical verdict change is claimed.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (c) — Rule (c) only. Its actual covering scenario is worker.feature 'Intercepting a step attaches to the pod the step created' — worker.feature is NOT in step_changes (the DISPOSITION merely lives in container-run.feature), and Container.Run's lookedUp branch is untouched by core's three jetbridge commits.
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation Two mutations were measured, both in atc/worker/jetbridge/container.go, func (*Container).Run, exec-mode branch. M1 = the recorded mutation (delete the lookedUp guard), line ~150:; brine RED: Then the interception succeeds (worker.feature:108) — error: expected the interception to succeed, it failed: container "550e8400-e29b-41d4-a716-446655440000" has no pod to intercept: pod "my-pipelin…; go RED: container_test.go:1970 — [FAILED] Unexpected error: <*errors.errorString | 0x14000795b30>: container "hijack-pod" has no pod to intercept: pod "hijack-pod" does not exist { s: "container \"hijack-pod…; skeptic: Primarily "different-behaviour pairing / narrower mutation": two independent narrow routing mutations that break exactly the assertion the ginkgo It uniquely makes (execCalls[0].podName) leave the pa… → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - Historical restoration is superseded by the retirement above; the original is recoverable in `/tmp/brine-hijack-options.01zWm3/before-container_restored_test.go`.
 
-**[REFUTED]** Container Run into existing pod (fly hijack) passes TTY flag through to executor for interactive sessions  `JB-container-045`
+**[DELETED]** Container Run into existing pod (fly hijack) passes TTY flag through to executor for interactive sessions  `JB-container-045`
+  - **RESTORED Go 2026-09-18 (round 2) — live-only replacement.** Same live hijack outline. Back in `container_restored_test.go`: exactly one executor call with tty=true.
+  - **Resolved 2026-09-18 (ledger resolution pass)** — the replacement is
+    `@live-kubernetes`: the same `live/interception.feature:59` outline, row
+    `tty`. `container-run.feature:147` says in terms that real TTY behaviour
+    is covered in `live/terminal.feature` and that "the focused Go attribute
+    assertions remain" — the 2026-09-18 deletion removed them anyway. The ledger pass independently restored the same spec to `ledger_restored_test.go` (dropped at integration as a duplicate of the verbatim original named above) as `Ledger-restored
+    container contracts Run into existing pod (fly hijack) passes TTY flag
+    through to executor for interactive sessions`.
+  - retirement 2026-09-15: Supersedes the historical retention notes below. One three-row live task-hijack outline preserves login argv, non-nil/nil TTY, nil stdin, one real SPDY request, unchanged pod identity and successful Wait. Eighteen exact original-Go failure pairs cover independent routing, command/wrapper, call-count, TTY, process and result faults. The passive observer forwards real traffic unchanged; resource terminal cases remain distinct. Proof: `/tmp/brine-hijack-options.01zWm3/pairing.json` (SHA256 `6869ee3e0d676e99146503105d423038d2f195e8b326ab6016a8a31fc45c0add`).
   - consolidation follow-up, 2026-09-08 (twenty-third pass): **RETAIN Go** `Container Run into existing pod (fly hijack) passes TTY flag through to executor for interactive sessions` in `container_restored_test.go`. For a looked-up existing pod and non-nil TTY spec, it checks exactly one executor call with tty=true and exit zero. A local PTY behavior check is not an assertion of the Kubernetes executor's raw TTY flag or exact call count. Current source was inspected and remains unchanged; no deletion or historical verdict change is claimed.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (c) — Rule (c) only: conflict file. It was NAMED as deliberately not migrated (PE-08 was ruled an integration-boundary contract), and the scenarios that now cover it — container-run.feature 'A step that asks for a terminal gets a real one' — were added after the deletion; container-run.feature's step changes in the rebase t…
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/process.go, func (p *execProcess) Wait (line 802), the ExecInPod call at line 882:; brine RED: Then the step reports "terminal" (line 293) — status failed, error: expected the command's output to mention "terminal", got "pipe " (a shell that believes it is talking to a pipe gives `fly hijack`…; go RED: [FAILED] Expected <bool>: false to be true In [It] at: .../atc/worker/jetbridge/container_test.go:2003 — i.e. Expect(hijackExecutor.execCalls[0].tty).To(BeTrue()); spec 'Container Run into existing p…; skeptic: different-behaviour pairing (narrower mutation that breaks only what the Go assertion pins), plus red-by-adaptation and unrelated-brine-red checks → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - Historical restoration is superseded by the retirement above; the original is recoverable in `/tmp/brine-hijack-options.01zWm3/before-container_restored_test.go`.
 
-**[REFUTED]** Container Run into existing pod (fly hijack) does not set TTY when ProcessSpec.TTY is nil  `JB-container-046`
+**[DELETED]** Container Run into existing pod (fly hijack) does not set TTY when ProcessSpec.TTY is nil  `JB-container-046`
+  - **RESTORED Go 2026-09-18 (round 2) — live-only replacement.** Same live hijack outline. Back in `container_restored_test.go`: exactly one executor call with tty=false.
+  - **Resolved 2026-09-18 (ledger resolution pass)** — the replacement is
+    `@live-kubernetes`: the same `live/interception.feature:59` outline, row
+    `no tty`. The ledger pass independently restored the same spec to `ledger_restored_test.go` (dropped at integration as a duplicate of the verbatim original named above) as `Ledger-restored container contracts Run into existing pod (fly hijack)
+    does not set TTY when ProcessSpec.TTY is nil`.
+  - retirement 2026-09-15: Supersedes the historical retention notes below. One three-row live task-hijack outline preserves login argv, non-nil/nil TTY, nil stdin, one real SPDY request, unchanged pod identity and successful Wait. Eighteen exact original-Go failure pairs cover independent routing, command/wrapper, call-count, TTY, process and result faults. The passive observer forwards real traffic unchanged; resource terminal cases remain distinct. Proof: `/tmp/brine-hijack-options.01zWm3/pairing.json` (SHA256 `6869ee3e0d676e99146503105d423038d2f195e8b326ab6016a8a31fc45c0add`).
   - consolidation follow-up, 2026-09-08 (twenty-third pass): **RETAIN Go** `Container Run into existing pod (fly hijack) does not set TTY when ProcessSpec.TTY is nil` in `container_restored_test.go`. For a looked-up existing pod and nil TTY spec, it checks exactly one executor call with tty=false and exit zero. Keep the negative flag contract separately from the interactive case and task-output assertions. Current source was inspected and remains unchanged; no deletion or historical verdict change is claimed.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (c) — Rule (c) only: conflict file. Second half of the same not-migrated PE-08 DISPOSITION as JB-container-045; its covering scenario is in container-run.feature but the rebase's container-run change was to the ContainerSpec builder, not the TTY path.
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/process.go, (*execProcess).Wait — the tty argument of the ExecInPod call is forced true:; brine RED: Then the step reports "pipe" — scenario_end error: expected the command's output to mention "pipe", got "terminal\r " (a shell that believes it is talking to a pipe gives `fly hijack` no line editing…; go RED: [FAILED] Expected <bool>: true to be false In [It] at: atc/worker/jetbridge/container_test.go:2018 (the line is `Expect(hijackExecutor.execCalls[0].tty).To(BeFalse())`); skeptic: different-behaviour pairing (narrower honest mutation that reddens only what the Go It asserts), plus red-by-adaptation control and an unrelated-brine-red control → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - Historical restoration is superseded by the retirement above; the original is recoverable in `/tmp/brine-hijack-options.01zWm3/before-container_restored_test.go`.
 
 **[DELETED]** Container Run into existing pod (fly hijack) propagates exit codes from hijacked commands  `JB-container-047`
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
@@ -1288,36 +1996,58 @@ Restored tests from this file live in `atc/worker/jetbridge/container_restored_t
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): it migrated to container-run.feature 'A placeholder pod counts the same as a step's own pod', whose spec builder changed in the rebase.
   - re-verified 2026-09-05 (rebase onto core): HOLDS — mutation atc/worker/jetbridge/container.go, (*Container).Run — execMode branch, line 179 (the increment immediately before `c.bindVolumesToPod(podName)`; the direct-mode one at line 197 was left intact).; brine RED: Then the operator sees 1 container created and 0 failed (line 234) — error: "expected the operator to see 1 created and 0 failed, they see 0 created and 0 failed (run error: <nil>)"; go RED: [FAIL] Container Run metrics when pod creation succeeds (exec mode) [It] increments ContainersCreated [FAILED] Expected <float64>: 0 to equal <float64>: 1 In [It] at: .../atc/worker/jetbridge/contain…; skeptic: Ran four attacks: (A) mutation-not-the-recorded-one / different-behaviour pairing, by mutating the SIBLING direct-mode increment to test whether the named exec scenario actually discriminates the exe… → HOLDS
 
-**[REFUTED]** Container Run metrics when pod creation fails increments FailedContainers  `JB-container-052`
+**[DELETED]** Container Run metrics when pod creation fails increments FailedContainers  `JB-container-052`
   - consolidation 2026-09-08 (shared container fixture): retained named Go test `Container Run metrics when pod creation fails increments FailedContainers` in `container_restored_test.go` for a failed Run and exact FailedContainers=1 / ContainersCreated=0 deltas. Its It callback and literal creation arguments are AST-identical before/after; shared setup does not establish a brine replacement. Mutation(s) `no-failure-metric` fail the same leaf test before/after. Evidence: `/tmp/brine-container-fixture.eLhp8y/`; see `CONSOLIDATION.md`, twelfth pass.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): it migrated to container-run.feature 'A pod the cluster refused is counted as a failure, not a creation', a feature whose ContainerSpec builder changed in the rebase.
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/container.go, (*Container).Run — direct fallback createPod error path, line 194:; brine RED: Then the operator sees 0 container created and 1 failed (line 239) — status "failed", error: "expected the operator to see 0 created and 1 failed, they see 1 created and 0 failed (run error: create p…; go RED: [FAILED] Expected <float64>: 0 to equal <float64>: 1 In [It] at: .../atc/worker/jetbridge/container_test.go:2223 — i.e. `Expect(metric.Metrics.FailedContainers.Delta()).To(Equal(float64(1)))`. Run su…; skeptic: different-behaviour pairing (narrower mutation that breaks only what the Go test asserts), plus red-by-adaptation and unrelated-brine-red controls → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - historical restoration (2026-09-05): the test was restored in `atc/worker/jetbridge/container_restored_test.go`; the 2026-09-10 per-test replay below now supersedes that retention.
+
+  - retirement 2026-09-10 (v5, per-test): the exact retained Go leaf and `Pod creation counters describe the API outcome (row 3)` both pass in control and both fail three independent production-only mutations: omit FailedContainers increment, add ContainersCreated increment on failure, and return nil instead of the creation error without changing counters. The last fault closes the historical narrower-assertion gap. Brine uses real PostgreSQL and real Kubernetes NamespaceLifecycle admission, not a creation reactor.
+  - evidence: `/tmp/brine-metric-retirement.8xzjsI/pre-deletion-proof.json` (SHA256 `af4b33a031412b4cecadac5956260721855680ebcd5bddc02f7b017eb0413117`), validated and saved before removal. Corrected `go-fixed-*` runs select exactly this leaf with fail-on-empty; initial zero-selection runs are excluded. Each Brine mutant fails only direct-refusal row 3, at its Then assertion, with complete resource drains.
+  - post-removal: `after-go-fixed.json` passes all 98 remaining JetBridge Ginkgo specs; its roster is exactly the previous 99 minus this leaf. AST comparison preserves all 36 other leaf bodies in the edited file. The first post-removal compile failed on two unused reactor imports; removing those imports and rerunning produced the passing report. The removed source is retained in Git and the evidence snapshot. No production code or Brine case changed during retirement.
 
 **[DELETED]** Container Attach when the process has already exited returns an already-exited process  `JB-container-053`
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (c) — Rule (c) only: conflict file. Its counterpart is container-lifecycle.feature 'A step the runtime still remembers is not run again', a feature absent from step_changes, and Container.Attach is untouched by core's three jetbridge commits.
   - re-verified 2026-09-05 (rebase onto core): HOLDS — mutation atc/worker/jetbridge/container.go, (*Container).Attach — deleted the in-process exit-status early return (lines 263-273 on 27d81692fa):; brine RED: Then the step is recovered as having exited 0 — error: `the step was not recovered at all: attach: pod "attach-handle" not found: pods "attach-handle" not found` (scenario_end status=failed; the Give…; go RED: container_test.go:2255 — `[FAILED] Unexpected error: <*fmt.wrapError | 0x14000a92200>: attach: pod "attach-handle" not found: pods "attach-handle" not found ... occurred` from `Expect(err).ToNot(Have…; skeptic: Ran four attacks: (1) unrelated/flaky brine red — clean run of the whole feature; (2) red-by-adaptation — clean Go run with the restored file; (3) mutation-not-the-recorded-one / flake — reproduced t… → HOLDS
 
+  - current replacement 2026-09-14: JB-container-053 now lives in the existing successful supervised-task scenario in `features/live/task-command.feature`. After actual command completion and the original recovery assertions, its final action UID-deletes the real pause pod, verifies NotFound, and calls Attach/Wait on the original runtime container. No completion property is seeded. The original local memory-only Brine case and its two private phrases are removed only after paired controls pass and four production-only cache faults fail both old/new exit assertions. Bypassing memory, requiring the pod, and corruption confined to a missing pod reach the new final assertion; unconditional cached-value corruption is caught by its earlier current-container assertion. See `/tmp/brine-memory-real.k6UCQB/evidence.json` and the migration journal. No additional Go test was retired.
+
 **[DELETED]** Container Attach exec-mode: when executor is set and pod has exit annotation returns exitedProcess from the pod annotation  `JB-container-054`
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (c) — Rule (c) only: conflict file. Its counterpart is container-lifecycle.feature Scenario Outline 'After a restart the pod's own record is enough', a feature not in step_changes; Attach's annotation path and annotateExitStatus are both untouched on core (`git log -S annotateExitStatus` over the range returns nothing).
   - re-verified 2026-09-05 (rebase onto core): HOLDS — mutation atc/worker/jetbridge/container.go, func (c *Container) Attach:; brine RED: Then the step is recovered as having exited 0 -> "the step was not recovered at all: attach: exec-mode pod \"attach-annotated\" has no completion status" (row 1, line 49); row 2 identical with "...ex…; go RED: container_test.go:2304 -- [FAILED] Unexpected error: <*errors.errorString | 0x140002d47c0>: attach: exec-mode pod "exec-attach-handle" has no completion status { s: "attach: exec-mode pod \"exec-atta…; skeptic: Four attacks run: (1) red-by-adaptation control, (2) unrelated/flaky brine red control, (3) different-behaviour pairing via two narrower phase-gate mutations (P1, P1b), (4) decorative/order-masked as… → HOLDS
 
-**[REFUTED]** Container Attach exec-mode: when executor is set and pod has no exit annotation returns error so engine falls through to Run  `JB-container-055`
+**[DELETED]** Container Attach exec-mode: when executor is set and pod has no exit annotation returns error so engine falls through to Run  `JB-container-055`
+  - **RESTORED Go 2026-09-18 — the exact-refusal half of the replacement is `@live-kubernetes`, and the Go test the feature file names does not exist.** The 2026-09-10 retirement rests on two things. (1) `container-lifecycle.feature` @PE-12 "With no record of the result the step is run again rather than assumed", which does run under brine's ordinary tier but asserts only that recovery is refused — not that the refusal says "no completion status", which is what `attachOrRun` keys on. (2) `features/live/task-command.feature`, which does assert the wording (`Then attaching was refused saying "no completion status"`) but is tagged `@live-kubernetes` and never runs under `make test-unit`. The comment at `container-lifecycle.feature:38` hands the unreported-phase input to a Go test named `TestExecRecoveryPolicy`; no such function exists anywhere in the tree at this commit. With the Go leaf deleted, the only non-live guard on the wording was `live_task_resume_test.go`, which is behind the `live` build tag. The leaf is back in `atc/worker/jetbridge/container_restored_test.go`.
   - retention update 2026-09-08 (task consolidation): RETAIN Go. Its hand-created pod has never run and has an unset phase; the merged task-command restart contract has a Running pod whose completion annotation is removed. Both require an Attach refusal, but those fixture states are not per-test equivalent. The successful Running-pod mutation pairing does not close this historical REFUTED row.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (c) — Rule (c) only: conflict file. Its counterpart is container-lifecycle.feature 'With no record of the result the step is run again rather than assumed', a feature not in step_changes; Attach is untouched on core.
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/container.go, (*Container).Attach (exec-mode branch, line ~294-298):; brine RED: Then the step cannot be recovered and must be run again (line 62) — status "failed", error: "expected re-attaching to fail so the engine re-runs the step; it reported success with exit 0, which would…; go RED: container_test.go:2349 — `[FAILED] Expected an error to have occurred. Got: <nil>: nil`. The spec body is: _, err := execContainer.Attach(ctx, "some-process", runtime.ProcessIO{}) Expect(err).To(Have…; skeptic: different-behaviour pairing / narrower mutation (primary); plus red-by-adaptation control and a full reproduction of the recorded pairing on both sides → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - historical restoration: the test was retained in `atc/worker/jetbridge/container_restored_test.go`; the 2026-09-10 per-test proof below supersedes that retention.
+  - retirement 2026-09-10 (v5, per-test): the real API accepts and persists an explicitly unreported pod phase; the new outline retains both that phase and the API-default Pending phase. Its assertion requires an error from Attach itself containing "no completion status", not an arbitrary error or a later Wait failure. This closes the prior phase and narrower-error gaps without a fake client.
+  - the exact Go leaf and Brine's unreported-phase row both pass control and both fail five independent production-only faults: accept unfinished pod; return an unrelated refusal; accept only the unreported phase; return an unrelated refusal only for that phase; defer the correctly worded refusal until Wait. The old Brine version was verified green on three of the first four faults. No old-Brine run is claimed for the fifth.
+  - evidence saved before deletion: /tmp/brine-recovery-refusal.s8BAjP/pre-deletion-proof.json, SHA256 5fd523d6219e4e28e8aec0cdac1641925fdb37177f80105804ddc089aea318b0. Each Go run selects exactly the named leaf with fail-on-empty. Brine setup/actions pass, intended Then assertions fail, and all scenario drains complete.
+  - post-removal: all 97 remaining JetBridge specs pass; the roster is exactly the previous 98 minus this leaf. All 35 other leaf bodies in the edited file are AST-identical. Only this leaf's private enclosing Attach setup was removed with it. Source is recoverable from Git and the evidence snapshot. Full Brine passes 577/577 at 1869/2368 statements (78.927365%); covered blocks are unchanged. after-proof.json verifies the final roster, source, coverage and binary hashes.
 
-**[REFUTED]** Container FindOrCreateContainer failure handling marks the container as failed when Created() fails  `JB-container-056`
+**[DELETED]** Container FindOrCreateContainer failure handling marks the container as failed when Created() fails  `JB-container-056`
+  - resolved 2026-09-18: `worker.feature:54` `Scenario: A container that
+    cannot be recorded is left for the collector` — the same fault (`And the
+    database cannot transition containers to created`), the same two
+    assertions (`Then the container request fails saying "mark container as
+    created"` at `steps/worker.go:524`, `And the container "test-handle" is
+    left in state "failed"` at `steps/worker.go:620`, which reads the
+    `containers` row out of real PostgreSQL), plus the
+    `brine_container_creation` error-context clause.
+    `container-run.feature:209` states the same rule for the stale-`creating`
+    path. The 2026-09-15 note below named no scenario.
+  - retirement 2026-09-15: The existing real-PostgreSQL creation-refusal scenario now checks the original error context as well as the constraint name and persisted failed state. Three exact original-Go mutation pairs cover missing context, omitted Failed transition and swallowed error. Normal/inactive controls pass; the old Brine case survives the context fault and the strengthened case rejects it. The stale-creation scenario rejects all three faults too. No Brine scenario or definition is added. The sole Go leaf and three unused transition wrappers are removed. Proof: /tmp/brine-created-transition.CFOAv4/pairing.json, SHA256 af22a71887876ab9bd6958bdd7653713b50d7a35f8a8e5b7a7c95494bd3631a8. Historical retention notes below are superseded.
   - consolidation follow-up, 2026-09-08 (twenty-third pass): **RETAIN Go** `Container FindOrCreateContainer failure handling marks the container as failed when Created() fails` in `container_restored_test.go`. It injects only the database Created transition failure, requires the `mark container as created` error context, and independently queries the real container row for state failed. Successful task cases do not cover this database transition/error contract. Current source was inspected and remains unchanged; no deletion or historical verdict change is claimed.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (c) — Rule (c) only: conflict file. Its covering scenario is worker.feature 'A container that cannot be recorded is left for the collector' — worker.feature is not in step_changes — and worker.go, atc/db/container.go and atc/db/creating_container.go are all byte-identical merge-base to core.
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/worker.go, (*Worker).FindOrCreateContainer (line 135-139) — deleted the markContainerAsFailed call on the Created() error path:; brine RED: And the container "test-handle" is left in state "failed" (worker.feature:56) — error verbatim: expected the state the container is left in for "test-handle" to be "failed", got "creating". The three…; go RED: container_test.go:2385, inside STEP "marking the container as failed in the DB": Expect(stateOf("fail-create-handle")).To(Equal(string(atc.ContainerStateFailed))) — [FAILED] Expected <string>: creati…; skeptic: different-behaviour pairing (narrower mutation that breaks only what the Go test asserts), plus red-by-adaptation and unrelated-brine-red controls, plus reproduction of the verifier's own mutation → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - **historical restoration, superseded by the verified retirement above** — `atc/worker/jetbridge/container_restored_test.go`
 
 **[DELETED]** Container FindOrCreateContainer failure handling returns error when FindContainer fails  `JB-container-057`
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
@@ -1339,58 +2069,93 @@ Restored tests from this file live in `atc/worker/jetbridge/container_restored_t
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): it migrated to container-run.feature 'A half-created container that still cannot be completed is left for the collector', a feature in step_changes.
   - re-verified 2026-09-05 (rebase onto core): HOLDS — mutation atc/worker/jetbridge/worker.go, (*Worker).FindOrCreateContainer — deleted the markContainerAsFailed call on the Created() error path:; brine RED: And the container row "stale-fail-handle" is left in state "failed" (line 276) -> status "failed", error: expected the container's state for "stale-fail-handle" to be "failed", got "creating". The tw…; go RED: [FAILED] Expected <string>: creating to equal <string>: failed In [It] at: atc/worker/jetbridge/container_test.go:2444 (STEP: marking the stale container as failed). Summary with mutation: 'Ran 1 of…; skeptic: Ran four attacks in my own worktree (rv-jb-container-060-skeptic @ 27d81692fa): (1) red-by-adaptation — reverted mutation with the restored Go test in place; (2) unrelated/flaky brine red — clean run… → HOLDS
 
-**[INERT]** Concurrent container operations handles concurrent SetProperty and Properties without races  `JB-container-061`
+**[DELETED]** Concurrent container operations handles concurrent SetProperty and Properties without races  `JB-container-061`
+  - resolved 2026-09-18: `container-lifecycle.feature:19` `Scenario: What a
+    container records can be read back` — `When 20 callers write distinct
+    properties while as many callers read them` / `Then all 20 property writes
+    survive and readback snapshots are independent`, defined at
+    `steps/container_concurrency.go:135` and asserted at
+    `steps/container_concurrency.go:156`. Same 20 writers and 20 concurrent
+    readers as the original, and it requires every write to survive rather
+    than `BeNumerically(">=", 20)`. The 2026-09-15 note below named no
+    scenario.
+  - retirement 2026-09-15: Three original concurrency leaves are replaced by one new real-API submission scenario and an extension of the existing property-readback case. Ten exact-leaf failures across eight production faults preserve concurrent creation success/non-nil results, Run errors and pod counts, and property retention. Independent workers share real PostgreSQL/API clients; start gates join every goroutine before disposal. Actual DB/pod identities and exact property values strengthen the old assertions. Pod submission is not command execution; this is not a race-detector claim. No fake client or supplied status is added. Proof: /tmp/brine-concurrent-containers.9KynD7/pairing.json, SHA256 ae4f96f6481055811ee873b5378304ee0c7079ce4d220dc03e9792a29c2616e9. Historical retention notes below are superseded.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (c) — Rule (c) only: conflict file. No brine counterpart exists (grepping the branch's features for concurrency/race hits only the daemon features), and neither SetProperty nor Properties changed on core — so nothing but the conflict makes this row unsafe to close.
   - re-verified 2026-09-05 (rebase onto core): INERT — mutation atc/worker/jetbridge/container.go, (*Container).Properties (line 304 on 27d81692fa) — recorded mutation, applied verbatim:; brine GREEN: none — under the recorded mutation the run reported {"type":"run_end","features":1,"scenarios":7,"passed":7,"failed":0,"duration_ms":4578}; 'What a container records can be read back' ended status "p…; go GREEN: none under the recorded mutation. 5 independent runs with the recorded mutation: all `Ran 1 of 92 Specs` / `SUCCESS! -- 1 Passed | 0 Failed | 0 Pending | 91 Skipped`, exit 0, zero 'fatal error'/'conc…; skeptic: not reached — the verifier stopped at INERT
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - **historical restoration, superseded by the verified retirement above** — `atc/worker/jetbridge/container_restored_test.go`
 
-**[GAP]** Concurrent container operations creates independent containers concurrently without interference  `JB-container-062`
+**[DELETED]** Concurrent container operations creates independent containers concurrently without interference  `JB-container-062`
+  - resolved 2026-09-18: `worker.feature:291` `Scenario: Concurrent
+    submissions retain independent container and pod identities` — `When 5
+    independent containers are created and submitted concurrently`
+    (`steps/container_concurrency.go:51`, one `jetbridge.NewWorker` per
+    goroutine, as the original did) / `Then all 5 containers have independent
+    records and submitted pods` (`steps/container_concurrency.go:80`), which
+    fails on any goroutine's create error or nil container — this leaf — and
+    additionally checks one `created` row per handle. The 2026-09-15 note
+    below named no scenario.
+  - retirement 2026-09-15: Three original concurrency leaves are replaced by one new real-API submission scenario and an extension of the existing property-readback case. Ten exact-leaf failures across eight production faults preserve concurrent creation success/non-nil results, Run errors and pod counts, and property retention. Independent workers share real PostgreSQL/API clients; start gates join every goroutine before disposal. Actual DB/pod identities and exact property values strengthen the old assertions. Pod submission is not command execution; this is not a race-detector claim. No fake client or supplied status is added. Proof: /tmp/brine-concurrent-containers.9KynD7/pairing.json, SHA256 ae4f96f6481055811ee873b5378304ee0c7079ce4d220dc03e9792a29c2616e9. Historical retention notes below are superseded.
   - consolidation follow-up, 2026-09-08 (twenty-third pass): **RETAIN Go** `Concurrent container operations creates independent containers concurrently without interference` in `container_restored_test.go`. Five goroutines use independent Worker instances against shared DB/client state; every creation must succeed and return a non-nil container. Retain as a concurrent construction test. It does not run commands and does not stand in for the ordinary production executor. Current source was inspected and remains unchanged; no deletion or historical verdict change is claimed.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (c) — Rule (c) only: conflict file. No brine counterpart; the nearest sentence, worker.feature 'A container is recorded before any pod exists', is single-threaded and worker.feature is not in step_changes. NewWorker and FindOrCreateContainer are unchanged on core.
   - re-verified 2026-09-05 (rebase onto core): GAP — mutation atc/worker/jetbridge/worker.go, func (w *Worker).FindOrCreateContainer — a concurrency-ONLY gate (sequentially inert: one caller in flight => no error, just 50ms slower; two or more simultaneous call…; brine GREEN: none — scenario_end status=passed; worker.feature 31/31 scenarios passed and container-pod.feature 44/44 scenarios passed WITH the mutation applied. No scenario anywhere in the feature set reddened:…; go RED: [FAILED] goroutine 0 should succeed Unexpected error: <*errors.errorString | 0x140006b67c0>: concurrent find-or-create container { s: \"concurrent find-or-create container\", } occurred In [It] at: .…; skeptic: not reached — the verifier stopped at GAP
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - **historical restoration, superseded by the verified retirement above** — `atc/worker/jetbridge/container_restored_test.go`
 
-**[GAP]** Concurrent container operations handles concurrent Run and pod creation on the fake clientset  `JB-container-063`
+**[DELETED]** Concurrent container operations handles concurrent Run and pod creation on the fake clientset  `JB-container-063`
+  - resolved 2026-09-18: the same `worker.feature:291` scenario. Its When also
+    calls `Run` in each goroutine with the original's `echo <n>` command and
+    the original's `concurrent-run-<n>` handles, and
+    `steps/container_concurrency.go:80` fails on any `runErrs[i]`, requires a
+    process per container, and ends with `len(pods.Items) != n` — this leaf's
+    "all 5 pods were created". The 2026-09-15 note below named no scenario.
+  - retirement 2026-09-15: Three original concurrency leaves are replaced by one new real-API submission scenario and an extension of the existing property-readback case. Ten exact-leaf failures across eight production faults preserve concurrent creation success/non-nil results, Run errors and pod counts, and property retention. Independent workers share real PostgreSQL/API clients; start gates join every goroutine before disposal. Actual DB/pod identities and exact property values strengthen the old assertions. Pod submission is not command execution; this is not a race-detector claim. No fake client or supplied status is added. Proof: /tmp/brine-concurrent-containers.9KynD7/pairing.json, SHA256 ae4f96f6481055811ee873b5378304ee0c7079ce4d220dc03e9792a29c2616e9. Historical retention notes below are superseded.
   - consolidation follow-up, 2026-09-08 (twenty-third pass): **RETAIN Go** `Concurrent container operations handles concurrent Run and pod creation on the fake clientset` in `container_restored_test.go`. Five goroutines create and Run distinct containers, every Run must succeed, and the shared fake clientset must contain exactly five pods. Retain as pod-construction concurrency compatibility coverage; these calls do not Wait and do not prove command execution through the fallback process. Current source was inspected and remains unchanged; no deletion or historical verdict change is claimed.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (c) — Rule (c) only: conflict file. No brine counterpart for concurrent pod creation; the nearest is container-run.feature 'A container the runtime created is counted', which counts one. Container.createPod is unchanged on core.
   - re-verified 2026-09-05 (rebase onto core): GAP — mutation atc/worker/jetbridge/container.go, (*Container).createPod (line 379 on 27d81692fa) — force a fixed pod name so concurrent Runs collide:; brine GREEN: none — scenario_end status "passed"; all three steps passed ("Given a jetbridge worker on a fake Kubernetes cluster", "When a step is run on it", "Then the operator sees 1 container created and 0 fai…; go RED: [FAILED] goroutine 0 Run should succeed Unexpected error: <*fmt.wrapError | 0x140006a89c0>: create pod: pods "jetbridge-pod" already exists { msg: "create pod: pods \"jetbridge-pod\" already exists",…; skeptic: not reached — the verifier stopped at GAP
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - **historical restoration, superseded by the verified retirement above** — `atc/worker/jetbridge/container_restored_test.go`
 
 **[DELETED]** Run with sidecar containers when no sidecars are configured creates a pod with only the main container  `JB-container-064`
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): it migrated to container-pod.feature 'A step with no sidecars runs alone', a feature whose ContainerSpec literal changed in the rebase. Not (a)/(d): `git log -S buildSidecarContainers aef2244a63..5133d0ddbc` returns no commits.
   - re-verified 2026-09-05 (rebase onto core): HOLDS — mutation atc/worker/jetbridge/container.go, func buildSidecarContainers (line 536-539) — the recorded target exists unchanged on the rebased head.; brine RED: Then the pod runs 1 containers (line 147) — status "failed", error: `expected 1 containers, found 2: [main mutant]`. scenario_end: {"type":"scenario_end","name":"A step with no sidecars runs alone","…; go RED: container_test.go:2680 — `Expect(pod.Spec.Containers).To(HaveLen(1))`. Ginkgo: `[FAILED] Expected <[]v1.Container | len:2, cap:2>: [ { Name: "main", Image: "busybox", Command: ["/bin/sh"], Args: ["-c…; skeptic: Four attacks run and measured, none refuted: (1) red-by-adaptation — clean restored Go test unmutated; (2) unrelated/pre-existing brine red — clean run of the whole feature, manifest-filtered; (3) na… → HOLDS
 
-**[REFUTED]** Run with sidecar containers when one sidecar is configured creates a pod with the main container and the sidecar  `JB-container-065`
+**[DELETED]** Run with sidecar containers when one sidecar is configured creates a pod with the main container and the sidecar  `JB-container-065`
+  - 2026-09-15 sidecar group: the named mock-backed Go case is retired. Its replacement is container-pod.feature "A sidecar runs alongside the step and shares its working set". Six original cases were paired against 26 isolated production faults, yielding 46 failures at the exact original Go assertion lines. Ordered name/image rosters, complete mount equality, environment/port/security/pull-policy fields, command/arguments/resources, image prefixes and pause/nonnil-process contracts are explicit. The exec-sidecar case wires the existing real SPDY transport; the other pod-spec cases retain the original no-exec compatibility construction. All read back pods from the real API; no supplied Kubernetes status is added.
+  - Group proof: /tmp/brine-sidecars.b0IYzH/pairing.json, SHA256 f098384fe3c88a5f11c618577439cc8b1765d9496f0c4cc57228bda11e0e40a4. The shared working-directory refinement also preserves all three Brine working-directory fault observations; see cleanup-evidence.json. Earlier restoration/retention notes below are historical and superseded.
   - consolidation 2026-09-08 (shared container fixture): retained named Go test `Container Run with sidecar containers when one sidecar is configured creates a pod with the main container and the sidecar` in `container_restored_test.go` for ordered main/sidecar fields, env, TCP port, security, image-pull policy and shared mounts. Its It callback and literal creation arguments are AST-identical before/after; shared setup does not establish a brine replacement. Mutation(s) `no-sidecars, no-main-mounts, allow-escalation, no-seccomp` fail the same leaf test before/after. Evidence: `/tmp/brine-container-fixture.eLhp8y/`; see `CONSOLIDATION.md`, twelfth pass.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): it migrated to container-pod.feature 'A sidecar runs alongside the step and shares its working set', a feature whose ContainerSpec builder changed in the rebase. Not (a): buildSidecarContainers and buildVolumeMounts' non-cache paths are unchanged on core.
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/container.go, func buildSidecarContainers (line ~552) — dropped `VolumeMounts: mounts` from the sidecar corev1.Container literal. `mounts` is still computed, so a `_ = mounts` li…; brine RED: And the sidecar "postgres" sees the same volumes as the step (line 159) — error: the step sees "/tmp/build/workdir" but sidecar "postgres" does not; go RED: container_test.go:2755, under STEP "giving the sidecar the same volume mounts as the main container": `Expect(sidecar.VolumeMounts).To(Equal(mainMounts))` -> [FAILED] Expected <[]v1.VolumeMount | len…; skeptic: different-behaviour pairing (narrower mutations that break only what the Go It asserts), plus red-by-adaptation and unrelated-brine-red controls → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - Historical restoration (now retired as above) — `atc/worker/jetbridge/container_restored_test.go`
 
-**[REFUTED]** Run with sidecar containers when multiple sidecars are configured creates a pod with the main container and all sidecars  `JB-container-066`
+**[DELETED]** Run with sidecar containers when multiple sidecars are configured creates a pod with the main container and all sidecars  `JB-container-066`
+  - 2026-09-15 sidecar group: the named mock-backed Go case is retired. Its replacement is container-pod.feature "Several sidecars all run". Six original cases were paired against 26 isolated production faults, yielding 46 failures at the exact original Go assertion lines. Ordered name/image rosters, complete mount equality, environment/port/security/pull-policy fields, command/arguments/resources, image prefixes and pause/nonnil-process contracts are explicit. The exec-sidecar case wires the existing real SPDY transport; the other pod-spec cases retain the original no-exec compatibility construction. All read back pods from the real API; no supplied Kubernetes status is added.
+  - Group proof: /tmp/brine-sidecars.b0IYzH/pairing.json, SHA256 f098384fe3c88a5f11c618577439cc8b1765d9496f0c4cc57228bda11e0e40a4. The shared working-directory refinement also preserves all three Brine working-directory fault observations; see cleanup-evidence.json. Earlier restoration/retention notes below are historical and superseded.
   - consolidation 2026-09-08 (shared container fixture): retained named Go test `Container Run with sidecar containers when multiple sidecars are configured creates a pod with the main container and all sidecars` in `container_restored_test.go` for the exact ordered main/redis/nginx container list. Its It callback and literal creation arguments are AST-identical before/after; shared setup does not establish a brine replacement. Mutation(s) `no-sidecars` fail the same leaf test before/after. Evidence: `/tmp/brine-container-fixture.eLhp8y/`; see `CONSOLIDATION.md`, twelfth pass.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): it migrated to container-pod.feature 'Several sidecars all run', a feature whose ContainerSpec literal changed in the rebase.
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/container.go, func buildSidecarContainers (line ~587 on 27d81692fa) — drop every sidecar after the first:; brine RED: Then the pod runs 3 containers (line 169) — status "failed", error: `expected 3 containers, found 2: [main postgres]`. scenario_end: {"type":"scenario_end","name":"Several sidecars all run","status":…; go RED: container_test.go:2804 — `Expect(pod.Spec.Containers).To(HaveLen(3))`: `[FAILED] Expected <[]v1.Container | len:2, cap:2>: [ {Name: "main", Image: "busybox", ...}, {Name: "redis", Image: "redis:7", P…; skeptic: Two narrower mutations that break only the clauses the Go test asserts beyond the count (declaration order), plus red-by-adaptation and unrelated-brine-red controls. The Go It asserts FOUR clauses —… → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - Historical restoration (now retired as above) — `atc/worker/jetbridge/container_restored_test.go`
 
-**[GAP]** Run with sidecar containers when a sidecar has resources, command, args, and workingDir maps all sidecar fields to the K8s container spec  `JB-container-067`
+**[DELETED]** Run with sidecar containers when a sidecar has resources, command, args, and workingDir maps all sidecar fields to the K8s container spec  `JB-container-067`
+  - 2026-09-15 sidecar group: the named mock-backed Go case is retired. Its replacement is container-pod.feature "A sidecar retains its command and resource envelope". Six original cases were paired against 26 isolated production faults, yielding 46 failures at the exact original Go assertion lines. Ordered name/image rosters, complete mount equality, environment/port/security/pull-policy fields, command/arguments/resources, image prefixes and pause/nonnil-process contracts are explicit. The exec-sidecar case wires the existing real SPDY transport; the other pod-spec cases retain the original no-exec compatibility construction. All read back pods from the real API; no supplied Kubernetes status is added.
+  - Group proof: /tmp/brine-sidecars.b0IYzH/pairing.json, SHA256 f098384fe3c88a5f11c618577439cc8b1765d9496f0c4cc57228bda11e0e40a4. The shared working-directory refinement also preserves all three Brine working-directory fault observations; see cleanup-evidence.json. Earlier restoration/retention notes below are historical and superseded.
   - consolidation 2026-09-08 (shared container fixture): retained named Go test `Container Run with sidecar containers when a sidecar has resources, command, args, and workingDir maps all sidecar fields to the K8s container spec` in `container_restored_test.go` for sidecar command, args, workingDir and exact request/limit quantities. Its It callback and literal creation arguments are AST-identical before/after; shared setup does not establish a brine replacement. Mutation(s) `no-sidecars` fail the same leaf test before/after. Evidence: `/tmp/brine-container-fixture.eLhp8y/`; see `CONSOLIDATION.md`, twelfth pass.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): its nearest counterparts are container-pod.feature 'A sidecar runs alongside the step and shares its working set' and 'A sidecar that names a working directory keeps its own', both in a feature whose spec builder changed in the rebase — but the row's evidence itself records that no s…
   - re-verified 2026-09-05 (rebase onto core): GAP — mutation atc/worker/jetbridge/container.go, func buildSidecarResourceRequirements — deleted the entire Limits block (recipe mutation (1)):; brine GREEN: none — no step failed. All 44 scenarios in container-pod.feature reported scenario_end status=passed under mutation (1), and again under the stacked mutation (1)+(2). Every sidecar scenario passed: "…; go RED: container_test.go:2867, inside STEP "mapping resource limits": [FAILED] Expected <string>: 0 to equal <string>: 500m (the assertion is `Expect(sidecar.Resources.Limits.Cpu().String()).To(Equal("500m"…; skeptic: not reached — the verifier stopped at GAP
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - Historical restoration (now retired as above) — `atc/worker/jetbridge/container_restored_test.go`
 
-**[REFUTED]** Run with sidecar containers when sidecars are configured alongside the artifact store includes main and user sidecar containers (no artifact-helper sidecar)  `JB-container-068`
+**[DELETED]** Run with sidecar containers when sidecars are configured alongside the artifact store includes main and user sidecar containers (no artifact-helper sidecar)  `JB-container-068`
+  - 2026-09-15 sidecar group: the named mock-backed Go case is retired. Its replacement is container-pod.feature "Artifact inputs do not add a helper sidecar". Six original cases were paired against 26 isolated production faults, yielding 46 failures at the exact original Go assertion lines. Ordered name/image rosters, complete mount equality, environment/port/security/pull-policy fields, command/arguments/resources, image prefixes and pause/nonnil-process contracts are explicit. The exec-sidecar case wires the existing real SPDY transport; the other pod-spec cases retain the original no-exec compatibility construction. All read back pods from the real API; no supplied Kubernetes status is added.
+  - Group proof: /tmp/brine-sidecars.b0IYzH/pairing.json, SHA256 f098384fe3c88a5f11c618577439cc8b1765d9496f0c4cc57228bda11e0e40a4. The shared working-directory refinement also preserves all three Brine working-directory fault observations; see cleanup-evidence.json. Earlier restoration/retention notes below are historical and superseded.
   - consolidation 2026-09-08 (shared container fixture): retained named Go test `Container Run with sidecar containers when sidecars are configured alongside the artifact store includes main and user sidecar containers (no artifact-helper sidecar)` in `container_restored_test.go` for the exact main/redis list and identical mounts; the fixture still does not independently prove artifact-backend configuration. Its It callback and literal creation arguments are AST-identical before/after; shared setup does not establish a brine replacement. Mutation(s) `no-sidecars, no-main-mounts` fail the same leaf test before/after. Evidence: `/tmp/brine-container-fixture.eLhp8y/`; see `CONSOLIDATION.md`, twelfth pass.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): its nearest counterpart is container-pod.feature 'A sidecar runs alongside the step and shares its working set', in a feature whose ContainerSpec builder changed in the rebase. The row's own premise is weak — NewConfig("test-namespace","") leaves ArtifactDaemonHostPath unset so no ba…
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation Target still exists and is unmoved: `(*Container).buildPod` in `atc/worker/jetbridge/container.go`, immediately after the `buildSidecarContainers` append (line 465 on 27d81692fa). MUTATION A — the re…; brine RED: Then the pod runs 2 containers (line 157) -> status "failed", error: `expected 2 containers, found 3: [main postgres artifact-helper]`; go RED: container_test.go:2921 -- [FAILED] Expected <[]string | len:3, cap:4>: ["main", "redis", "artifact-helper"] to equal <[]string | len:2, cap:2>: ["main", "redis"]; skeptic: different-behaviour pairing (narrower mutation targeting only what the Go It asserts), plus red-by-adaptation and unrelated-brine-red controls → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - Historical restoration (now retired as above) — `atc/worker/jetbridge/container_restored_test.go`
 
 **[DELETED]** Run with sidecar containers when a sidecar has no workingDir and the main container has a dir inherits the main container's working directory  `JB-container-069`
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
@@ -1402,19 +2167,23 @@ Restored tests from this file live in `atc/worker/jetbridge/container_restored_t
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): it migrated to container-pod.feature 'A sidecar that names a working directory keeps its own' (@SC-03), a feature whose spec builder changed in the rebase.
   - re-verified 2026-09-05 (rebase onto core): HOLDS — mutation atc/worker/jetbridge/container.go, func buildSidecarContainers (~line 550):; brine RED: Then the sidecar "helper" works in "/opt/helper" -> expected the sidecar's working directory for "helper" to be "/opt/helper", got "/tmp/build/workdir"; go RED: [FAILED] Expected <string>: /tmp/build/workdir to equal <string>: /app In [It] at: .../atc/worker/jetbridge/container_test.go:3017 (assertion source: `Expect(sidecar.WorkingDir).To(Equal("/app"))`); skeptic: Ran four: (1) red-by-adaptation — restored Go test with the mutation reverted; (2) mutation-not-the-recorded-one — re-derived the recipe edit myself and diffed; (3) decorative/order-masked assertion… → HOLDS
 
-**[GAP]** Run with sidecar containers when sidecars are configured in exec-mode (pause pod) creates a pause pod with sidecar containers  `JB-container-071`
+**[DELETED]** Run with sidecar containers when sidecars are configured in exec-mode (pause pod) creates a pause pod with sidecar containers  `JB-container-071`
+  - 2026-09-15 sidecar group: the named mock-backed Go case is retired. Its replacement is container-pod.feature "A task awaiting exec keeps its sidecar alongside it". Six original cases were paired against 26 isolated production faults, yielding 46 failures at the exact original Go assertion lines. Ordered name/image rosters, complete mount equality, environment/port/security/pull-policy fields, command/arguments/resources, image prefixes and pause/nonnil-process contracts are explicit. The exec-sidecar case wires the existing real SPDY transport; the other pod-spec cases retain the original no-exec compatibility construction. All read back pods from the real API; no supplied Kubernetes status is added.
+  - Group proof: /tmp/brine-sidecars.b0IYzH/pairing.json, SHA256 f098384fe3c88a5f11c618577439cc8b1765d9496f0c4cc57228bda11e0e40a4. The shared working-directory refinement also preserves all three Brine working-directory fault observations; see cleanup-evidence.json. Earlier restoration/retention notes below are historical and superseded.
   - consolidation 2026-09-08 (shared container fixture): retained named Go test `Container Run with sidecar containers when sidecars are configured in exec-mode (pause pod) creates a pause pod with sidecar containers` in `container_restored_test.go` for the literal pause command, sidecar name/image and identical mounts. Its It callback and literal creation arguments are AST-identical before/after; shared setup does not establish a brine replacement. Mutation(s) `no-sidecars, no-main-mounts` fail the same leaf test before/after. Evidence: `/tmp/brine-container-fixture.eLhp8y/`; see `CONSOLIDATION.md`, twelfth pass.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): its two nearest counterparts, container-pod.feature 'A sidecar runs alongside the step and shares its working set' and container-run.feature 'With an exec transport the pod is a placeholder the step runs inside', are both in features whose ContainerSpec builders changed in the rebase…
   - re-verified 2026-09-05 (rebase onto core): GAP — mutation atc/worker/jetbridge/container.go, func (c *Container) buildPod — drop sidecars from pause pods only:; brine GREEN: none — no step failed. container-pod.feature: 44 scenarios, 44 passed, 0 failed (run_end exit 0). container-run.feature: 19 scenarios, 19 passed, 0 failed (run_end exit 0). The named scenario emitted…; go RED: container_test.go:3071, under By("the sidecar is present in the pod") — Expect(pod.Spec.Containers).To(HaveLen(2)): [FAILED] Expected <[]v1.Container | len:1, cap:1>: [ { Name: "main", Image: "busybo…; skeptic: not reached — the verifier stopped at GAP
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - Historical restoration (now retired as above) — `atc/worker/jetbridge/container_restored_test.go`
 
-**[GAP]** Run with sidecar containers when a sidecar image has a docker:/// prefix (image_artifact handoff) strips Concourse URL prefixes from sidecar images in the pod spec  `JB-container-072`
+**[DELETED]** Run with sidecar containers when a sidecar image has a docker:/// prefix (image_artifact handoff) strips Concourse URL prefixes from sidecar images in the pod spec  `JB-container-072`
+  - 2026-09-15 sidecar group: the named mock-backed Go case is retired. Its replacement is container-pod.feature "Sidecar image handoffs retain names and strip only transport prefixes". Six original cases were paired against 26 isolated production faults, yielding 46 failures at the exact original Go assertion lines. Ordered name/image rosters, complete mount equality, environment/port/security/pull-policy fields, command/arguments/resources, image prefixes and pause/nonnil-process contracts are explicit. The exec-sidecar case wires the existing real SPDY transport; the other pod-spec cases retain the original no-exec compatibility construction. All read back pods from the real API; no supplied Kubernetes status is added.
+  - Group proof: /tmp/brine-sidecars.b0IYzH/pairing.json, SHA256 f098384fe3c88a5f11c618577439cc8b1765d9496f0c4cc57228bda11e0e40a4. The shared working-directory refinement also preserves all three Brine working-directory fault observations; see cleanup-evidence.json. Earlier restoration/retention notes below are historical and superseded.
   - consolidation 2026-09-08 (shared container fixture): retained named Go test `Container Run with sidecar containers when a sidecar image has a docker:/// prefix (image_artifact handoff) strips Concourse URL prefixes from sidecar images in the pod spec` in `container_restored_test.go` for four ordered image references and their exact prefix normalization. Its It callback and literal creation arguments are AST-identical before/after; shared setup does not establish a brine replacement. Mutation(s) `no-sidecars, sidecar-prefix` fail the same leaf test before/after. Evidence: `/tmp/brine-container-fixture.eLhp8y/`; see `CONSOLIDATION.md`, twelfth pass.
   - recorded evidence: PER-FILE (deletion commit `c67193f78f`; nothing names this test alone)
   - rebase impact: IMPACTED (b, c) — Rule (c): conflict file. Rule (b): its inferred counterpart is container-spec.feature Scenario Outline 'A Concourse image URL prefix is stripped', and container-spec.feature is in step_changes (steps/container_spec.go, steps/domain.go). The inference is also wrong on the merits — see the recipe.
   - re-verified 2026-09-05 (rebase onto core): GAP — mutation atc/worker/jetbridge/container.go : buildSidecarContainers; brine GREEN: none - all 4 Examples rows passed under the mutation. container-spec.feature run_end: {"features":1,"scenarios":7,"passed":7,"failed":0}. container-pod.feature run_end: {"features":1,"scenarios":44,"…; go RED: [FAILED] Expected <string>: "docker..." to equal | <string>: "us-doc..." In [It] at: .../atc/worker/jetbridge/container_test.go:3131 -- i.e. Expect(pod.Spec.Containers[1].Image).To(Equal("us-docker.p…; skeptic: not reached — the verifier stopped at GAP
-  - **the test is restored** — `atc/worker/jetbridge/container_restored_test.go`
+  - Historical restoration (now retired as above) — `atc/worker/jetbridge/container_restored_test.go`
 
 
 ## secret_env_test.go
@@ -1431,6 +2200,24 @@ Deleted by `65a62160d8` — "Delete resource, secret_env and artifact_integratio
 
 
 ## resource_test.go
+
+Current mapping (2026-09-12): the six host-resource scenarios were consolidated
+into live/git-resource.feature using the pinned upstream Git image. This is
+new evidence, not a rewrite of the historical deletion verdicts below.
+No Go tests were retired in this increment. See V5-MIGRATION.md, “Actual Git
+resource consolidation”, for paired mutations and limitations.
+
+| Historical ID | Current behavior check |
+| --- | --- |
+| JB-resource-000 | Creation-time DB row captured before Run; checked after real execution |
+| JB-resource-001 | Real Git get, pause pod, returned commit/files; container-spec base-git row preserves default-image fallback |
+| JB-resource-002 | Upstream Git rejects an invalid source with exit 1 |
+| JB-resource-003 | Real Git put consumes a mounted checkout; bare remote commit/files independently read |
+| JB-resource-004 | Real Git check returns the owned repository commit |
+| JB-resource-005 | Check process defaults to the container handle |
+
+The get/put protocol mapping also supersedes the old host-case references in
+JB-integration-003. Direct volume streaming is not daemon publication.
 
 Deleted by `65a62160d8` — "Delete resource, secret_env and artifact_integration; keep supervisor_script". Recorded evidence granularity: **none**. The deletion commit named no mutation at all.
 
@@ -1569,7 +2356,7 @@ options (`JB-kept-002`) or replace the scheduling-timeout case. See
 
 Deleted by `d3a0d151ab` — "Delete process_test.go; fix RF-07 by moving it to the chain that can fail". Recorded evidence granularity: **per-file**. No mutation was ever named for an individual test in this file; a file-level both-red is not per-test evidence.
 
-Restored tests from this file live in `atc/worker/jetbridge/process_restored_test.go`.
+The two remaining restored leaves have now been retired: JB-process-023 (real scheduling) and JB-kept-002 (real task cancellation). Their per-leaf mutation evidence is recorded below and in V5-MIGRATION.md; `process_restored_test.go` is removed. Earlier restoration notes below are historical.
 
 **[DELETED]** Process Wait when the Pod succeeds returns exit status 0  `JB-process-000`
   - compatibility review 2026-09-08: Retain the explicitly named legacy success case: it exercises Process.Wait/podExitCode and immediate completion deletion, unlike the supervised production task's exec exit and later reaper lifecycle. Wrong-exit-code and no-completion-delete mutations fail both old and current cases. Evidence: `/tmp/brine-compatibility-review.v3s34E/`, `CONSOLIDATION.md` fourteenth pass. No legacy Go test is removed or historical deletion retroactively justified by this feature consolidation.
@@ -1613,6 +2400,7 @@ Restored tests from this file live in `atc/worker/jetbridge/process_restored_tes
 **[DELETED]** Process Wait pod failure state detection (direct mode) detects external pod deletion as a terminal failure  `JB-process-009`
   - recorded evidence: PER-FILE (deletion commit `d3a0d151ab`; nothing names this test alone)
   - rebase impact: NOT IMPACTED — ErrPodDeleted and PodWatcher.Next live in atc/worker/jetbridge/watch.go, which `git diff --stat aef2244a63 5133d0ddbc` reports as byte-identical; writePodDiagnostics/writeNodeDiagnostics have no commits either. pod-watch.feature and failure-priority.feature @RF-06 were untouched by the rebase.
+  - fidelity correction 2026-09-11: the old Brine counterpart deleted before Process.Wait established a watch. It received an initial-sync API error and passed only because the pod handle contained "deleted"; renaming that handle exposed the false green. The replacement waits for a real API watch handshake, deletes the actual pod with UID preconditions, and requires the external-deletion diagnostic. Wrong-diagnostic and swallowed-deletion mutations now fail. Evidence: /tmp/brine-failure-fidelity.1mIBct. No fresh exact replay of this already-deleted Go leaf is claimed.
 
 **[DELETED]** Process Wait pod failure state detection (direct mode) detects CrashLoopBackOff as a terminal failure  `JB-process-010`
   - recorded evidence: PER-FILE (deletion commit `d3a0d151ab`; nothing names this test alone)
@@ -1677,13 +2465,29 @@ Restored tests from this file live in `atc/worker/jetbridge/process_restored_tes
   - recorded evidence: PER-FILE (deletion commit `d3a0d151ab`; nothing names this test alone)
   - rebase impact: NOT IMPACTED — Runs through waitForRunning but pins isPodFailedFast's terminal-waiting-reason detection, not the startup deadline — exactly the carve-out in the rule. isPodFailedFast has no commits in range, atc/metric/ is byte-identical, and this container uses NewConfig's positive DefaultPodStartupTimeout, for which podStartupTime…
 
-**[REFUTED]** Process execProcess failure state detection waits for Unschedulable pod and times out  `JB-process-023`
+**[DELETED]** Process execProcess failure state detection waits for Unschedulable pod and times out  `JB-process-023`
+  - **RESTORED Go 2026-09-18 (ledger resolution pass)** — the replacement is
+    `@live-kubernetes`. The 2026-09-14 note below names no scenario; resolved,
+    the only brine case that waits on an unschedulable pod is
+    `live/startup-failure.feature:60` `Scenario: A pod nothing can schedule
+    fails the step instead of waiting`, whose feature tag line is `@RF-04
+    @RF-01 @RF-02 @RF-03 @RF-10 @live-kubernetes` and whose step `a resource
+    step waits for an unschedulable pod with {int} milliseconds for startup
+    and {int} milliseconds for scheduling` (`steps/process_gaps.go:17`) calls
+    `diagnoseLiveScheduling` against a real cluster. `features/*.feature`
+    contains no `Unschedulable` scenario. Restored to
+    `atc/worker/jetbridge/ledger_restored_test.go`, `Ledger-restored process
+    contracts execProcess failure state detection waits for Unschedulable pod
+    and times out`.
+  - production-construction follow-up (2026-09-14): Brine now creates the git resource pod through production Run with bounded ContainerLimits, rather than supplying a pre-created pod. A get-only buildPod failure makes the exact original Go leaf fail its Run error assertion at line 103; the old Brine fixture stays green, and current Brine fails at Run. This closes the construction gap explicitly excluded by the preceding retirement audit. All five outcome mutations still fail their original Brine assertions. The request exceeds all observed nodes; unchanged node identity/capacity is required through the test, with no node or cluster-wide policy writes. No further Go test, Brine case or definition is added or removed. Evidence: /tmp/brine-scheduling-construction.UUCyyx/evidence.json.
+  - per-test retirement (2026-09-14): the existing real-scheduler RF-07 case now requests ResourceType=git, uses the declared default git image, and retains startup=2s / scheduling=3s, get execution, /opt/resource/in, its destination argument and JSON stdin. Five production-only faults fail this exact Go leaf at its five outcome assertions (error occurrence, scheduling prefix, Unschedulable classification, waiting notice and cluster-resources notice), and fail the corresponding existing Brine checks. Both controls pass. The scheduler supplies the actual unbound Pending refusal and matching event; no fake executor/client or status update is used in Brine. This retires the leaf’s asserted scheduling contract, not a claim that its fake pod-creation setup equals the real pre-created refusal fixture. Pod construction/image mapping remains covered separately by container-spec.feature. The independent zero-grace cancellation leaf stays retained. Evidence: /tmp/brine-scheduling-retirement.sE3VjA/evidence.json. Earlier REFUTED/RETAIN entries below are preserved as historical findings, superseded for this leaf only.
+  - real-API timeout follow-up (2026-09-11): **RETAIN Go**. The Brine case now uses the real API/database worker and production SPDY executor, keeping startup=2s, scheduling=3s, Pending and the reported Unschedulable condition. It checks the scheduling prefix, detailed reason, and both waiting-warning substrings. Before this edit, a missing-warning mutation passed Brine while the exact retained Go leaf failed; after it, both fail. A wrong-scheduling-classification mutation also fails both, with passing controls and exactly one selected Go leaf. Brine additionally detects a lost scheduling detail that its old case missed. Evidence: /tmp/brine-real-timeouts.SS5nlt, matrix.json. This closes those measured gaps, not a complete replacement-equivalence audit: the Go fixture still resolves ResourceType=git where this Brine fixture supplies ImageURL=busybox, and the remaining distinguishing mutations have not been replayed here. The retained Go source is byte-identical to the pre-migration snapshot; no deletion or full HOLDS claim is made.
   - consolidation name audit (2026-09-08, twenty-ninth pass): **RETAIN Go** `Process (restored) execProcess failure state detection waits for Unschedulable pod and times out` in `process_restored_test.go`. Its body requires both pod scheduling timeout and Unschedulable in the error, plus waiting up to and cluster resources in stderr. The narrower Brine error check still does not replace it. Current identity/source is recorded in `/tmp/brine-custom-checks.L1hyoZ/retained-specs.json`; this dry-run inventory is not a fresh execution or replacement-equivalence claim. No historical verdict changes.
   - retention update 2026-09-08 (executor consolidation): **RETAIN Go**. Both old and shared-executor brine controls accept an error that still names `Unschedulable` but omits `pod scheduling timeout`; the named restored It rejects it at `process_restored_test.go:122`. The Go control passes without the mutation. Evidence: `/tmp/brine-executor-review.gB40K4/missing-scheduling-prefix/` and `scheduling-go-{control,mutation}.log`. Replacing the no-op executor does not close this narrower-assertion gap.
   - recorded evidence: PER-FILE (deletion commit `d3a0d151ab`; nothing names this test alone)
   - rebase impact: IMPACTED (a, d) — (a)+(d): this is the only row that pins the interaction of BOTH deadlines (it sets PodStartupTimeout=2s and PodSchedulingTimeout=3s at process_test.go:915-917), and waitForRunning's `effectiveTimeout = max(timeout, schedTimeout)` is fed by the line 1164f9db3d rewrote. It is also the test the deletion commit is entirel…
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/process.go : func (*execProcess).waitForRunning — MUTATION 1 (the both-red one), in the `timeoutCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil` arm:; brine RED: Then the step fails naming "Unschedulable" (failure-priority.feature:133) — error: expected the failure to mention "Unschedulable", got "waiting for pod running: timed out waiting for pod to start (t…; go RED: MUTATION 1 — process_test.go:963: `[FAILED] Expected <string>: waiting for pod running: timed out waiting for pod to start (timeout: 2s, phase: Pending) to contain substring <string>: pod scheduling…; skeptic: Narrower-mutation / different-behaviour pairing (primary, SUCCEEDED), plus red-by-adaptation, unrelated-brine-red, and mutation-not-the-recorded-one (all three FAILED to refute). → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/process_restored_test.go`
+  - historical restoration: process_restored_test.go; this scheduling leaf is now retired by the per-test audit above.
 
 **[DELETED]** Process execProcess failure state detection waits for Unschedulable pod and succeeds when scheduled  `JB-process-024`
   - recorded evidence: PER-FILE (deletion commit `d3a0d151ab`; nothing names this test alone)
@@ -1784,23 +2588,23 @@ Restored tests from this file live in `atc/worker/jetbridge/process_restored_tes
 
 **[DELETED]** Pod phase transition spans exec mode (waitForRunning) emits pod.phase.running span event when pod reaches Running  `JB-process-046`
   - recorded evidence: PER-FILE (deletion commit `d3a0d151ab`; nothing names this test alone)
-  - rebase impact: NOT IMPACTED — This is the carve-out named verbatim in the rule: the span event is emitted from waitForRunning but 1164f9db3d changed only that function's timeout-resolution line, not its AddEvent block, and tracing/ is byte-identical. observability.feature @OE-08 @OE-10 was untouched by the rebase.
+  - rebase impact: NOT IMPACTED — This is the carve-out named verbatim in the rule: the span event is emitted from waitForRunning but 1164f9db3d changed only that function's timeout-resolution line, not its AddEvent block, and tracing/ is byte-identical. observability.feature (feature does not exist at this commit; historical claim) @OE-08 @OE-10 was untouched by the rebase.
 
 **[DELETED]** Pod phase transition spans init container and sidecar lifecycle events emits init.container.completed span event when init container terminates  `JB-process-047`
   - recorded evidence: PER-FILE (deletion commit `d3a0d151ab`; nothing names this test alone)
-  - rebase impact: NOT IMPACTED — podEventTracker.emitPodLifecycleEvents and newPodEventTracker have no commits in aef2244a63..5133d0ddbc and tracing/ is byte-identical; the waitForRunning change does not touch the tracker call. observability.feature @OE-05/@OE-06 is absent from step_changes.
+  - rebase impact: NOT IMPACTED — podEventTracker.emitPodLifecycleEvents and newPodEventTracker have no commits in aef2244a63..5133d0ddbc and tracing/ is byte-identical; the waitForRunning change does not touch the tracker call. observability.feature (feature does not exist at this commit; historical claim) @OE-05/@OE-06 is absent from step_changes.
 
 **[DELETED]** Pod phase transition spans init container and sidecar lifecycle events emits sidecar.started span event when sidecar container reaches Running  `JB-process-048`
   - recorded evidence: PER-FILE (deletion commit `d3a0d151ab`; nothing names this test alone)
-  - rebase impact: NOT IMPACTED — Same untouched emitPodLifecycleEvents (startedSidecars arm); no sidecar code changed on core (`-SSidecarConfig -- atc/` empty) and observability.feature @OE-07 was not rebase-affected.
+  - rebase impact: NOT IMPACTED — Same untouched emitPodLifecycleEvents (startedSidecars arm); no sidecar code changed on core (`-SSidecarConfig -- atc/` empty) and observability.feature (feature does not exist at this commit; historical claim) @OE-07 was not rebase-affected.
 
 **[DELETED]** Pod phase transition spans PVC bind and image pull events emits pod.scheduled span event when PodScheduled condition becomes True  `JB-process-049`
   - recorded evidence: PER-FILE (deletion commit `d3a0d151ab`; nothing names this test alone)
-  - rebase impact: NOT IMPACTED — The scheduled arm of emitPodLifecycleEvents has no commits in range and tracing/ is byte-identical, so the event and its dedup are unchanged. observability.feature @OE-01/@OE-09 was untouched by the rebase.
+  - rebase impact: NOT IMPACTED — The scheduled arm of emitPodLifecycleEvents has no commits in range and tracing/ is byte-identical, so the event and its dedup are unchanged. observability.feature (feature does not exist at this commit; historical claim) @OE-01/@OE-09 was untouched by the rebase.
 
 **[DELETED]** Pod phase transition spans PVC bind and image pull events emits image.pulling span event when container is in ContainerCreating  `JB-process-050`
   - recorded evidence: PER-FILE (deletion commit `d3a0d151ab`; nothing names this test alone)
-  - rebase impact: NOT IMPACTED — The pullingImages arm of emitPodLifecycleEvents is unchanged on core, watch.go (PodWatcher.Next's initial Get, which the 50ms goroutine races) is byte-identical, and tracing/ is byte-identical. observability.feature @OE-04 was not rebase-affected.
+  - rebase impact: NOT IMPACTED — The pullingImages arm of emitPodLifecycleEvents is unchanged on core, watch.go (PodWatcher.Next's initial Get, which the 50ms goroutine races) is byte-identical, and tracing/ is byte-identical. observability.feature (feature does not exist at this commit; historical claim) @OE-04 was not rebase-affected.
 
 
 ## volume_test.go
@@ -1829,7 +2633,7 @@ Go retentions for JB-volume-004/-005/-006/-007 still protect exact constructor
 routing, opaque bytes, subdirectory argv and execution attributes; the
 consumer's file assertions do not replace those contracts.
 
-Restored tests from this file live in `atc/worker/jetbridge/volume_restored_test.go`.
+The last restored tests from this file were retired on 2026-09-15; volume_restored_test.go is removed. Current per-row retirement evidence supersedes historical restoration/retention notes below.
 
 Consolidation follow-up, 2026-09-08 (twenty-eighth pass): the two Brine archive
 readers now share `readArtifactFiles`. Helper expansion reconstructs every
@@ -1842,7 +2646,18 @@ remain unchanged. Parsed gzip files do not replace these observations.
 No test or historical verdict changes; see `CONSOLIDATION.md`, twenty-eighth
 pass, and `/tmp/brine-artifact-read.3WEKJa/`.
 
-**[REFUTED]** Volume Handle returns the db volume handle  `JB-volume-000`
+**[DELETED]** Volume Handle returns the db volume handle  `JB-volume-000`
+  - resolved 2026-09-18: `volume-streaming.feature:46` `Scenario: Volumes
+    retain distinct database identities` (`Given two persisted volumes on this
+    worker` at `steps/volume_streaming.go:290`, `Then the volumes retain their
+    handles, worker and database rows` at `steps/volume_streaming.go:349`)
+    asserts `entry.Volume.Handle() != entry.DBHandle` for both volumes, with
+    `vol-handle-123` as the first handle — this leaf, twice over. The Go leaf
+    is also still in the tree as `Volume Handle returns the db volume handle`
+    (`atc/worker/jetbridge/volume_restored_test.go:99`), so nothing was
+    deleted here. The 2026-09-15 note below named no scenario and pointed at
+    `/tmp/brine-volume-uniqueness.H3AyYr/`, which no longer exists.
+  - retirement 2026-09-15: Empty-handle and specifically corrupted vol-handle-123 faults fail the original exact-handle Go assertion and the real two-volume Brine identity scenario. Five exact-leaf original-Go/Brine pairs support the two retirements, and four prior nil/clone identity faults remain detected. No new scenario or definition. Proof and final evidence: `/tmp/brine-volume-uniqueness.H3AyYr/pairing.json`, `/tmp/brine-volume-uniqueness.H3AyYr/evidence.json`; recoverable source: `before-volume_restored_test.go` there. The historical REFUTED/RETAIN notes below are superseded by these measurements.
   - consolidation follow-up, 2026-09-08 (twenty-first pass): **RETAIN Go** in `volume_restored_test.go`. `Volume Handle returns the db volume handle` fixes the independently supplied `vol-handle-123`; the brine fixture compares against a generated database handle. All named Go tests remain unchanged; this pass changes fixture ownership only and does not relabel the historical verdict. Evidence: `CONSOLIDATION.md`, twenty-first pass.
   - recorded evidence: PER-FILE (deletion commit `5a32670606`; nothing names this test alone)
   - rebase impact: IMPACTED (b) — [CRITIC REVISION → impacted by rule (b)] (b) collision the panel resolved substantively instead of by the rule. Its OWN named counterpart is volume-streaming.feature:77, and volume-streaming.feature is in features_affected of two rebase step_changes entries (steps/domain.go new ContainerDraft.taskCacheIdentity, steps/…
@@ -1854,42 +2669,104 @@ pass, and `/tmp/brine-artifact-read.3WEKJa/`.
   - rebase impact: IMPACTED (b) — [CRITIC REVISION → impacted by rule (b)] Same file, same (b) collision: primary counterpart volume-streaming.feature, which is in step_changes' features_affected via steps/domain.go and steps/container_extra.go. || original reason: (*Volume).Source lives in volume.go, whose only core change is InitializeTaskCache (0d3…
   - re-verified 2026-09-05 (rebase onto core): HOLDS — mutation atc/worker/jetbridge/volume.go :: func (v *Volume) Source() — deleted the dbVolume branch, exactly as the recipe specified:; brine RED: And the volume names the worker it lives on (line 80) — error: expected the volume to name worker "k8s-worker-1", got ""; go RED: [FAILED] Expected <string>: to equal <string>: k8s-worker-1 In [It] at: .../atc/worker/jetbridge/volume_test.go:89; skeptic: Three attacks run, none refuted: (1) different-behaviour pairing via an honest ALTERNATE mutation in the DB read-back path the Go fixture uses but brine's does not (scanVolume drops the persisted wor… → HOLDS
 
-**[REFUTED]** Volume DBVolume returns the underlying db volume  `JB-volume-002`
+**[DELETED]** Volume DBVolume returns the underlying db volume  `JB-volume-002`
+  - resolved 2026-09-18: `volume-streaming.feature:46` `Scenario: Volumes
+    retain distinct database identities` (`Given two persisted volumes on this
+    worker` at `steps/volume_streaming.go:290`, `Then the volumes retain their
+    handles, worker and database rows` at `steps/volume_streaming.go:349`)
+    asserts `entry.Volume.DBVolume() != entry.DBVolume` — object identity
+    against the supplied `db.CreatedVolume`, not just non-nil. The Go leaf is
+    also still in the tree as `Volume DBVolume returns the underlying db
+    volume` (`atc/worker/jetbridge/volume_restored_test.go:106`). The
+    2026-09-15 note below named no scenario and pointed at
+    `/tmp/brine-volume-db-identity.RrbR7w/`, which no longer exists.
+  - retirement 2026-09-15: The real Brine identity scenario now checks the exact supplied db.CreatedVolume object. Nil-return and distinct-real-object clone faults fail the original focused Go leaf (line 107) and the strengthened Brine Then; the clone fault passed the old Brine check. No new scenario or definition; only these two DBVolume Its were removed. Pre-retirement pairing and final evidence: `/tmp/brine-volume-db-identity.RrbR7w/pairing.json`, `/tmp/brine-volume-db-identity.RrbR7w/evidence.json`. Recoverable source: `before-volume_restored_test.go` there. The older REFUTED/RETAIN notes below are historical, superseded by these exact-leaf measurements.
   - consolidation follow-up, 2026-09-08 (twenty-first pass): **RETAIN Go** in `volume_restored_test.go`. `Volume DBVolume returns the underlying db volume` asserts pointer identity with `BeIdenticalTo`; brine only checks that its volume retains a non-nil row. All named Go tests remain unchanged; this pass changes fixture ownership only and does not relabel the historical verdict. Evidence: `CONSOLIDATION.md`, twenty-first pass.
   - recorded evidence: PER-FILE (deletion commit `5a32670606`; nothing names this test alone)
   - rebase impact: IMPACTED (b) — [CRITIC REVISION → impacted by rule (b)] Same (b) collision on volume-streaming.feature (in features_affected of the domain.go/container_extra.go step changes). || original reason: (*Volume).DBVolume is a one-line field return in volume.go and core touched only InitializeTaskCache there; nothing on core changes what a…
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/volume.go :: (*Volume).DBVolume; brine RED: And both volume kinds still carry their database row (feature line 83) — status "failed", error verbatim: "the deferred volume lost its database row". The two preceding Then/And steps ("the volume id…; go RED: [FAIL] Volume DBVolume [It] returns the underlying db volume — /Users/tdmtrader/concourse/concourse/.worktrees/rv-jb-volume-002/atc/worker/jetbridge/volume_test.go:95 [FAILED] Expected <nil>: nil to…; skeptic: different-behaviour pairing (narrower mutation that breaks ONLY what the Go It asserts), plus red-by-adaptation control and a recorded-mutation control run to prove the adapter rebuild is live → REFUTED (the pairing broke)
   - **the test is restored** — `atc/worker/jetbridge/volume_restored_test.go`
 
-**[REFUTED]** Volume DBVolume returns the persisted DB volume from a DaemonSetVolume  `JB-volume-003`
+**[DELETED]** Volume DBVolume returns the persisted DB volume from a DaemonSetVolume  `JB-volume-003`
+  - resolved 2026-09-18: `volume-streaming.feature:46` `Scenario: Volumes
+    retain distinct database identities` (`Given two persisted volumes on this
+    worker` at `steps/volume_streaming.go:290`, `Then the volumes retain their
+    handles, worker and database rows` at `steps/volume_streaming.go:349`)
+    builds a `jetbridge.NewDaemonSetVolume` over the first row and asserts
+    `in.DaemonVolume.DBVolume() != first.DBVolume` plus that row's handle
+    (`vol-handle-123`), `TeamID()` and `Type() == db.VolumeTypeArtifact` —
+    this leaf's object, handle, worker, team and artifact-type clauses. The Go
+    leaf is also still in the tree as `Volume DBVolume returns the persisted
+    DB volume from a DaemonSetVolume`
+    (`atc/worker/jetbridge/volume_restored_test.go:110`). The 2026-09-15 note
+    below named no scenario.
+  - retirement 2026-09-15: The same real Brine scenario now checks the exact supplied object plus handle vol-handle-123, worker, team and artifact type. Omitting the constructor row and returning a distinct-real-object clone fail the original focused Go leaf and the strengthened Brine Then; the clone fault passed old Brine. No new scenario or definition; only these two DBVolume Its were removed. Pre-retirement pairing and final evidence: `/tmp/brine-volume-db-identity.RrbR7w/pairing.json`, `/tmp/brine-volume-db-identity.RrbR7w/evidence.json`. Recoverable source: `before-volume_restored_test.go` there. The older REFUTED/RETAIN notes below are historical, superseded by these exact-leaf measurements.
   - consolidation follow-up, 2026-09-08 (twenty-first pass): **RETAIN Go** in `volume_restored_test.go`. `Volume DBVolume returns the persisted DB volume from a DaemonSetVolume` asserts pointer identity plus exact team, type, worker and handle; brine does not assert every field. All named Go tests remain unchanged; this pass changes fixture ownership only and does not relabel the historical verdict. Evidence: `CONSOLIDATION.md`, twenty-first pass.
   - recorded evidence: PER-FILE (deletion commit `5a32670606`; nothing names this test alone)
   - rebase impact: IMPACTED (b) — [CRITIC REVISION → impacted by rule (b)] Same (b) collision on volume-streaming.feature; also touches volume_daemonset.go, whose InitializeTaskCache core did change (the row correctly notes the test never calls it). || original reason: atc/worker/jetbridge/volume_daemonset.go changed on core only in (*DaemonSetVolume)…
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/volume_daemonset.go :: func NewDaemonSetVolume — dropped the dbVolume field assignment from the returned struct literal.; brine RED: And both volume kinds still carry their database row (line 83) — error: "the daemonset volume lost its database row"; go RED: [FAILED] Expected <nil>: nil to be identical to <*db.createdVolume | ...>{...} In [It] at: <wt>/atc/worker/jetbridge/volume_test.go:109 — i.e. Expect(daemonSetVolume.DBVolume()).To(BeIdenticalTo(dbVo…; skeptic: different-behaviour pairing via a narrower mutation (plus controls: unrelated-brine-red baseline, red-by-adaptation, and a reproduction of the recorded mutation) → REFUTED (the pairing broke)
   - **the test is restored** — `atc/worker/jetbridge/volume_restored_test.go`
 
-**[GAP]** Volume StreamIn execs tar extract in the correct Pod container at the specified path  `JB-volume-004`
+**[DELETED]** Volume StreamIn execs tar extract in the correct Pod container at the specified path  `JB-volume-004`
+  - resolved 2026-09-18: NOT carried by any unit-tier scenario — the only
+    brine counterpart is `live/volume-io.feature`, whose feature tag line is
+    `@live-kubernetes @VT-02 @VT-03 @VT-04 @VT-05`, so it runs only against a
+    real cluster and never under `make test-unit`. No unit-tier scenario
+    asserts the SPDY request itself. Nothing is restored because the Go leaf
+    was merged, not deleted: it is in the tree as `Volume StreamIn streams
+    exact input bytes to the intended tar destination with stream-in metadata`
+    (`atc/worker/jetbridge/volume_restored_test.go:130`), which keeps the
+    namespace/pod/container/argv assertions of this leaf together with those
+    of -005 and -007. The 2026-09-15 note below named no scenario and pointed
+    at `/tmp/brine-volume-wire.H1iwSm/`, which no longer exists.
+  - retired 2026-09-15: The merged root-stream contract now executes through real SPDY using the direct Volume constructor. Exact request count, namespace/pod/container/argv, caller-versus-wire bytes (raw/gzip), and exported purpose/mount metadata are asserted independently. Byte-padding pairs fail the original exact Go byte assertions and the real Brine comparisons; prior upload/download route and metadata pairs supply the other assertion classes. Evidence: /tmp/brine-volume-wire.H1iwSm/evidence.json, /tmp/brine-volume-metadata.Yy1JKv/pairing.json, and the route evidence indexed in V5-MIGRATION.md. Only the two merged root-stream Its were removed; original source is preserved in before-original-volume-tests.go. Historical retention notes below are superseded.
   - consolidation 2026-09-08: Retained in merged Go It `Volume StreamIn streams exact input bytes to the intended tar destination with stream-in metadata` in `volume_restored_test.go`. Exact NewVolume namespace/pod/container and tar argv remain asserted; returned-artifact behavior alone is not this constructor contract. Wrong namespace, pod, container and destination mutations fail the original row and merged It. Evidence: `/tmp/brine-volume-consolidation.iVOyIr`; see `CONSOLIDATION.md`, tenth pass.
   - recorded evidence: PER-FILE (deletion commit `5a32670606`; nothing names this test alone)
   - rebase impact: IMPACTED (b) — [CRITIC REVISION → impacted by rule (b)] Same (b) collision on volume-streaming.feature. || original reason: (*Volume).StreamIn and (*Volume).resolvedPath are byte-identical on core (volume.go's whole diff is 3+/2- inside InitializeTaskCache) and atc/worker/jetbridge/executor.go, which defines ExecInPod, has an empty…
   - re-verified 2026-09-05 (rebase onto core): GAP — mutation atc/worker/jetbridge/volume.go, func (v *Volume) StreamIn (line 200 on 27d81692fa) — blank the pod the tar-extract exec is aimed at:; brine GREEN: none — 20 of 20 scenarios passed with the mutation applied. run_end: {"features":1,"scenarios":20,"passed":20,"failed":0,"duration_ms":24346}. Sharper variant (namespace+pod+container all blanked) al…; go RED: [FAILED] Expected <string>: to equal <string>: test-pod In [It] at: <wt>/atc/worker/jetbridge/volume_test.go:126 @ 09/05/26 12:28:46.873 Summarizing 1 Failure: [FAIL] Volume StreamIn [It] execs tar e…; skeptic: not reached — the verifier stopped at GAP
   - **the test is restored** — `atc/worker/jetbridge/volume_restored_test.go`
 
-**[REFUTED]** Volume StreamIn pipes the reader data to stdin of the exec  `JB-volume-005`
+**[DELETED]** Volume StreamIn pipes the reader data to stdin of the exec  `JB-volume-005`
+  - resolved 2026-09-18: NOT carried by any unit-tier scenario — the only
+    brine counterpart is `live/volume-io.feature`, whose feature tag line is
+    `@live-kubernetes @VT-02 @VT-03 @VT-04 @VT-05`, so it runs only against a
+    real cluster and never under `make test-unit`. No unit-tier scenario
+    asserts the SPDY request itself. The Go leaf was merged, not deleted: the
+    stdin-bytes clause is in
+    `atc/worker/jetbridge/volume_restored_test.go:130`. The 2026-09-15 note
+    below named no scenario.
+  - retired 2026-09-15: The merged root-stream contract now executes through real SPDY using the direct Volume constructor. Exact request count, namespace/pod/container/argv, caller-versus-wire bytes (raw/gzip), and exported purpose/mount metadata are asserted independently. Byte-padding pairs fail the original exact Go byte assertions and the real Brine comparisons; prior upload/download route and metadata pairs supply the other assertion classes. Evidence: /tmp/brine-volume-wire.H1iwSm/evidence.json, /tmp/brine-volume-metadata.Yy1JKv/pairing.json, and the route evidence indexed in V5-MIGRATION.md. Only the two merged root-stream Its were removed; original source is preserved in before-original-volume-tests.go. Historical retention notes below are superseded.
   - consolidation 2026-09-08: Retained in merged Go It `Volume StreamIn streams exact input bytes to the intended tar destination with stream-in metadata` in `volume_restored_test.go`. The same opaque input payload is read byte-for-byte from non-nil exec stdin; an empty-stdin mutation fails the original row and merged It. A parseable artifact round-trip is not substituted for byte identity. Evidence: `/tmp/brine-volume-consolidation.iVOyIr`; see `CONSOLIDATION.md`, tenth pass.
   - recorded evidence: PER-FILE (deletion commit `5a32670606`; nothing names this test alone)
   - rebase impact: IMPACTED (b) — [CRITIC REVISION → impacted by rule (b)] Same (b) collision on volume-streaming.feature. || original reason: The stdin plumbing lives entirely in (*Volume).StreamIn and PodExecutor.ExecInPod, both byte-identical on core, and atc/compression has an empty diff over the range. The counterpart "An artifact comes back out…
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/volume.go, func (v *Volume) StreamIn — stop handing the caller's bytes to the exec:; brine RED: Then the artifact "hello.txt" containing "hello world" is there (line 21) — status failed, error: expected "hello.txt", found []; go RED: [FAILED] Expected <nil>: nil not to be nil In [It] at: .../atc/worker/jetbridge/volume_test.go:140 — i.e. Expect(call.stdin).ToNot(BeNil()); skeptic: different-behaviour pairing — a narrower mutation that breaks only what the Go It asserts (byte-for-byte identity of the caller's reader with ExecInPod's stdin) while leaving the artifact's arrival i… → REFUTED (the pairing broke)
   - **the test is restored** — `atc/worker/jetbridge/volume_restored_test.go`
 
-**[REFUTED]** Volume StreamIn uses a subdirectory path when path is not root  `JB-volume-006`
+**[DELETED]** Volume StreamIn uses a subdirectory path when path is not root  `JB-volume-006`
+  - resolved 2026-09-18: NOT carried by any unit-tier scenario — the only
+    brine counterpart is `live/volume-io.feature`, whose feature tag line is
+    `@live-kubernetes @VT-02 @VT-03 @VT-04 @VT-05`, so it runs only against a
+    real cluster and never under `make test-unit`. No unit-tier scenario
+    asserts the SPDY request itself. Nothing is restored: the Go leaf is
+    unchanged in the tree as `Volume StreamIn uses a subdirectory path when
+    path is not root` (`atc/worker/jetbridge/volume_restored_test.go:149`).
+    The 2026-09-15 note below named no scenario and pointed at
+    `/tmp/brine-upload-route.q7aEMC/`, which no longer exists.
+  - retired 2026-09-15: Four exact-original-Expect/raw-and-gzip Brine mutation pairs verify the real SPDY upload request, including faults invisible to artifact-content checks. Supersedes the historical verdict below. Evidence: /tmp/brine-upload-route.q7aEMC/pairing.json and evidence.json; recoverable original source in the same directory. See V5-MIGRATION.md.
   - consolidation 2026-09-08: Retained unchanged Go It `Volume StreamIn uses a subdirectory path when path is not root` in `volume_restored_test.go`; root-path consolidation does not cover its exact subdirectory argv. The wrong-destination mutation still fails this It before/after. Evidence: `/tmp/brine-volume-consolidation.iVOyIr`; see `CONSOLIDATION.md`, tenth pass.
   - recorded evidence: PER-FILE (deletion commit `5a32670606`; nothing names this test alone)
   - rebase impact: IMPACTED (b) — [CRITIC REVISION → impacted by rule (b)] Same (b) collision on volume-streaming.feature. || original reason: The path join it pins is (*Volume).resolvedPath, unchanged on core (`git log -SresolvedPath -- atc/worker/jetbridge` is empty over aef2244a63..5133d0ddbc). Its counterparts "A member keeps its path when read ba…
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/volume.go :: func (v *Volume) StreamIn diff --git a/atc/worker/jetbridge/volume.go b/atc/worker/jetbridge/volume.go index ae37b91046..d209976d69 100644; brine RED: Then the artifact "sub/dir/nested.txt" containing "deep content" is there (line 34) -- error: expected "sub/dir/nested.txt", found [] || line 40 same step text -- error: expected "sub/dir/nested.txt"…; go RED: volume_test.go:153 -- [FAILED] Expected <[]string | len:5, cap:5>: ["tar", "xf", "-", "-C", "/tmp/build/inputs"] to equal <[]string | len:5, cap:5>: [ "tar", "xf", "-", "-C", "/tmp/build/inputs/sub/d…; skeptic: different-behaviour pairing — narrower mutation of the SAME line and the same asserted behaviour (the resolved target handed to tar) that the Go It catches and every brine scenario misses; plus red-b… → REFUTED (the pairing broke)
-  - **the test is restored** — `atc/worker/jetbridge/volume_restored_test.go`
+  - **historical restoration, superseded by the verified retirement above** — `atc/worker/jetbridge/volume_restored_test.go`
 
-**[GAP]** Volume StreamIn passes stream-in purpose and volume mount path in ExecAttrs  `JB-volume-007`
+**[DELETED]** Volume StreamIn passes stream-in purpose and volume mount path in ExecAttrs  `JB-volume-007`
+  - resolved 2026-09-18: NOT carried by any unit-tier scenario — no brine step
+    asserts `ExecAttrs.Purpose` or `ExecAttrs.VolumeMountPath` at all (the
+    row's own rebase-impact note below concedes this). The Go leaf was merged,
+    not deleted: the metadata clause is in
+    `atc/worker/jetbridge/volume_restored_test.go:130`. The 2026-09-15 note
+    below named no scenario.
+  - retired 2026-09-15: The merged root-stream contract now executes through real SPDY using the direct Volume constructor. Exact request count, namespace/pod/container/argv, caller-versus-wire bytes (raw/gzip), and exported purpose/mount metadata are asserted independently. Byte-padding pairs fail the original exact Go byte assertions and the real Brine comparisons; prior upload/download route and metadata pairs supply the other assertion classes. Evidence: /tmp/brine-volume-wire.H1iwSm/evidence.json, /tmp/brine-volume-metadata.Yy1JKv/pairing.json, and the route evidence indexed in V5-MIGRATION.md. Only the two merged root-stream Its were removed; original source is preserved in before-original-volume-tests.go. Historical retention notes below are superseded.
   - consolidation 2026-09-08: Retained in merged Go It `Volume StreamIn streams exact input bytes to the intended tar destination with stream-in metadata` in `volume_restored_test.go`. Exact ExecAttrs.Purpose and VolumeMountPath are asserted, independently of artifact contents. Separate wrong-purpose and wrong-mount-attribute mutations fail the original row and merged It. Evidence: `/tmp/brine-volume-consolidation.iVOyIr`; see `CONSOLIDATION.md`, tenth pass.
   - recorded evidence: PER-FILE (deletion commit `5a32670606`; nothing names this test alone)
   - rebase impact: IMPACTED (b) — [CRITIC REVISION → impacted by rule (b)] Same (b) collision; additionally the reason itself records that no brine scenario asserts ExecAttrs.Purpose, so 'evidence stands' means 'no counterpart exists', which the disposition stage must not read as coverage. || original reason: ExecAttrs is declared in volume.go and Str…
@@ -1901,21 +2778,46 @@ pass, and `/tmp/brine-artifact-read.3WEKJa/`.
   - rebase impact: IMPACTED (b) — [CRITIC REVISION → impacted by rule (b)] Same (b) collision on volume-streaming.feature. || original reason: The swallowed-write behaviour lives in (*Volume).StreamIn's error return, byte-identical on core. The scenario that closes it, "A cluster failure reaches the writer rather than being swallowed" (added by the de…
   - re-verified 2026-09-05 (rebase onto core): HOLDS — mutation atc/worker/jetbridge/volume.go :: func (v *Volume) StreamIn — swallow the ExecInPod failure (lines 202-207):; brine RED: Then it fails rather than panicking, saying "exec failed" (line 105) — error: expected a failure mentioning "exec failed", but it succeeded; go RED: [FAILED] Expected an error, got nil In [It] at: <wt>/atc/worker/jetbridge/volume_test.go:174 (assertion: Expect(err).To(MatchError(ContainSubstring("exec failed")))) Summary: Ran 1 of 41 Specs ... FA…; skeptic: Three attacks run, all failed to refute: (1) red-by-adaptation — baseline the restored/adapted Go test unmutated; (2) unrelated/flaky brine red — the whole feature run clean; (3) different-behaviour… → HOLDS
 
-**[GAP]** Volume StreamOut execs tar create in the correct Pod container at the specified path  `JB-volume-009`
+**[DELETED]** Volume StreamOut execs tar create in the correct Pod container at the specified path  `JB-volume-009`
+  - resolved 2026-09-18: NOT carried by any unit-tier scenario — the only
+    brine counterpart is `live/volume-io.feature`, whose feature tag line is
+    `@live-kubernetes @VT-02 @VT-03 @VT-04 @VT-05`, so it runs only against a
+    real cluster and never under `make test-unit`. No unit-tier scenario
+    asserts the SPDY request itself. The Go leaf was merged, not deleted: it
+    is `Volume StreamOut streams exact output bytes from the intended tar
+    destination with stream-out metadata`
+    (`atc/worker/jetbridge/volume_restored_test.go:166`). The 2026-09-15 note
+    below named no scenario.
+  - retired 2026-09-15: The merged root-stream contract now executes through real SPDY using the direct Volume constructor. Exact request count, namespace/pod/container/argv, caller-versus-wire bytes (raw/gzip), and exported purpose/mount metadata are asserted independently. Byte-padding pairs fail the original exact Go byte assertions and the real Brine comparisons; prior upload/download route and metadata pairs supply the other assertion classes. Evidence: /tmp/brine-volume-wire.H1iwSm/evidence.json, /tmp/brine-volume-metadata.Yy1JKv/pairing.json, and the route evidence indexed in V5-MIGRATION.md. Only the two merged root-stream Its were removed; original source is preserved in before-original-volume-tests.go. Historical retention notes below are superseded.
   - consolidation 2026-09-08: Retained in merged Go It `Volume StreamOut streams exact output bytes from the intended tar destination with stream-out metadata` in `volume_restored_test.go`. Exact namespace/pod/container and tar argv retain the exec-backed compatibility contract, not the production daemon-backed artifact-read route. Wrong namespace, pod, container and destination mutations fail the original row and merged It. Evidence: `/tmp/brine-volume-consolidation.iVOyIr`; see `CONSOLIDATION.md`, tenth pass.
   - recorded evidence: PER-FILE (deletion commit `5a32670606`; nothing names this test alone)
   - rebase impact: IMPACTED (b) — [CRITIC REVISION → impacted by rule (b)] Same (b) collision; its assertion-class note is carried by container-run.feature, also in features_affected. || original reason: (*Volume).StreamOut is unchanged on core (`git log -SStreamOut -- atc/worker/jetbridge atc/db` is empty over the range) and executor.go has an empty…
   - re-verified 2026-09-05 (rebase onto core): GAP — mutation PRIMARY (the half this row uniquely asserts) — atc/worker/jetbridge/volume.go, func (v *Volume) StreamOut, inside the streaming goroutine:; brine GREEN: none — no step failed under the PRIMARY mutation. volume-streaming.feature ran fully GREEN: run_end {"features":1,"scenarios":20,"passed":20,"failed":0,"duration_ms":23048}; container-run.feature ran…; go RED: PRIMARY mutation, verbatim: [FAILED] Expected <string>: to equal <string>: test-pod In [It] at: .../atc/worker/jetbridge/volume_test.go:194 @ 09/05/26 12:43:03.328 Summarizing 1 Failure: [FAIL] Volum…; skeptic: not reached — the verifier stopped at GAP
   - **the test is restored** — `atc/worker/jetbridge/volume_restored_test.go`
 
-**[GAP]** Volume StreamOut passes stream-out purpose and volume mount path in ExecAttrs  `JB-volume-010`
+**[DELETED]** Volume StreamOut passes stream-out purpose and volume mount path in ExecAttrs  `JB-volume-010`
+  - resolved 2026-09-18: NOT carried by any unit-tier scenario — no brine step
+    asserts `ExecAttrs.Purpose`. The Go leaf was merged, not deleted: the
+    stream-out metadata clause is in
+    `atc/worker/jetbridge/volume_restored_test.go:166`. The 2026-09-15 note
+    below named no scenario.
+  - retired 2026-09-15: The merged root-stream contract now executes through real SPDY using the direct Volume constructor. Exact request count, namespace/pod/container/argv, caller-versus-wire bytes (raw/gzip), and exported purpose/mount metadata are asserted independently. Byte-padding pairs fail the original exact Go byte assertions and the real Brine comparisons; prior upload/download route and metadata pairs supply the other assertion classes. Evidence: /tmp/brine-volume-wire.H1iwSm/evidence.json, /tmp/brine-volume-metadata.Yy1JKv/pairing.json, and the route evidence indexed in V5-MIGRATION.md. Only the two merged root-stream Its were removed; original source is preserved in before-original-volume-tests.go. Historical retention notes below are superseded.
   - consolidation 2026-09-08: Retained in merged Go It `Volume StreamOut streams exact output bytes from the intended tar destination with stream-out metadata` in `volume_restored_test.go`. Exact ExecAttrs.Purpose and VolumeMountPath remain asserted on the exec-backed compatibility route. Separate wrong-purpose and wrong-mount-attribute mutations fail the original row and merged It. Evidence: `/tmp/brine-volume-consolidation.iVOyIr`; see `CONSOLIDATION.md`, tenth pass.
   - recorded evidence: PER-FILE (deletion commit `5a32670606`; nothing names this test alone)
   - rebase impact: IMPACTED (b) — [CRITIC REVISION → impacted by rule (b)] Same (b) collision; same ExecAttrs.Purpose no-counterpart caveat as JB-volume-007. || original reason: Same untouched surface as JB-volume-007: ExecAttrs and StreamOut's literal are in the unmodified region of volume.go. The absence of a brine counterpart for ExecAttrs.Purpose…
   - re-verified 2026-09-05 (rebase onto core): GAP — mutation atc/worker/jetbridge/volume.go :: (*Volume).StreamOut (line 272, inside the streaming goroutine); brine GREEN: n/a — 20 of 20 scenario_end events reported status=passed under the mutation; no scenario in the feature reddened; go RED: [FAILED] Expected <string>: to equal <string>: stream-out In [It] at: .../atc/worker/jetbridge/volume_test.go:208 (assertion source: Expect(call.attrs.Purpose).To(Equal("stream-out"))); skeptic: not reached — the verifier stopped at GAP
   - **the test is restored** — `atc/worker/jetbridge/volume_restored_test.go`
 
-**[REFUTED]** Volume StreamOut returns the stdout as a ReadCloser via streaming pipe  `JB-volume-011`
+**[DELETED]** Volume StreamOut returns the stdout as a ReadCloser via streaming pipe  `JB-volume-011`
+  - resolved 2026-09-18: NOT carried by any unit-tier scenario — the only
+    brine counterpart is `live/volume-io.feature`, whose feature tag line is
+    `@live-kubernetes @VT-02 @VT-03 @VT-04 @VT-05`, so it runs only against a
+    real cluster and never under `make test-unit`. No unit-tier scenario
+    asserts the SPDY request itself. The Go leaf was merged, not deleted: the
+    ReadCloser/pipe clause is in
+    `atc/worker/jetbridge/volume_restored_test.go:166`. The 2026-09-15 note
+    below named no scenario.
+  - retired 2026-09-15: The merged root-stream contract now executes through real SPDY using the direct Volume constructor. Exact request count, namespace/pod/container/argv, caller-versus-wire bytes (raw/gzip), and exported purpose/mount metadata are asserted independently. Byte-padding pairs fail the original exact Go byte assertions and the real Brine comparisons; prior upload/download route and metadata pairs supply the other assertion classes. Evidence: /tmp/brine-volume-wire.H1iwSm/evidence.json, /tmp/brine-volume-metadata.Yy1JKv/pairing.json, and the route evidence indexed in V5-MIGRATION.md. Only the two merged root-stream Its were removed; original source is preserved in before-original-volume-tests.go. Historical retention notes below are superseded.
   - consolidation 2026-09-08: Retained in merged Go It `Volume StreamOut streams exact output bytes from the intended tar destination with stream-out metadata` in `volume_restored_test.go`. ReadAll must succeed and preserve the exact original stdout bytes through the returned ReadCloser; discarding stdout fails the original row and merged It. Daemon-backed tar-member checks do not replace this byte-stream contract. Evidence: `/tmp/brine-volume-consolidation.iVOyIr`; see `CONSOLIDATION.md`, tenth pass.
   - recorded evidence: PER-FILE (deletion commit `5a32670606`; nothing names this test alone)
   - rebase impact: IMPACTED (b) — [CRITIC REVISION → impacted by rule (b)] (b) collision named explicitly in its own reason: counterpart container-run.feature:166 @VT-03, and container-run.feature is in features_affected of steps/container_extra.go. The reason argues inertness rather than applying the rule. || original reason: The io.Pipe goroutine is…
@@ -1927,35 +2829,82 @@ pass, and `/tmp/brine-artifact-read.3WEKJa/`.
   - rebase impact: IMPACTED (b) — [CRITIC REVISION → impacted by rule (b)] Same (b) collision on volume-streaming.feature. || original reason: The StreamIn/StreamOut path asymmetry it encodes is entirely inside volume.go's untouched region; core's only edit there is InitializeTaskCache. The counterpart "A member keeps its path when read back from that…
   - re-verified 2026-09-05 (rebase onto core): HOLDS — mutation atc/worker/jetbridge/volume.go, func (v *Volume) StreamOut (line 255 on rebased head 27d81692fa) — make StreamOut symmetric with StreamIn (descend into the path instead of selecting it as a tar membe…; brine RED: Then the artifact "sub/dir/nested.txt" containing "deep content" is there -> error: expected "sub/dir/nested.txt", found [nested.txt]; go RED: [FAILED] Expected <[]string | len:6, cap:6>: [ "tar", "cf", "-", "-C", "/tmp/build/inputs/sub/dir", ".", ] to equal <[]string | len:6, cap:6>: ["tar", "cf", "-", "-C", "/tmp/build/inputs", "sub/dir"]…; skeptic: Four attacks, all run, none refuted the pairing: (1) red-by-adaptation, (2) unrelated/flaky brine red, (3) mutation-not-the-recorded-one + order-masked assertion (full reproduction), (4) the sharpest… → HOLDS
 
-**[GAP]** Volume StreamOut handles a file path by tarring from the mount root  `JB-volume-013`
+**[DELETED]** Volume StreamOut handles a file path by tarring from the mount root  `JB-volume-013`
+  - resolved 2026-09-18: NOT carried by any unit-tier scenario — the
+    member-selector round trip is `live/volume-io.feature:8` `Scenario: An
+    artifact comes back out as it went in`, which is `@live-kubernetes`.
+    Nothing is restored: the Go leaf is unchanged in the tree as `Volume
+    StreamOut handles a file path by tarring from the mount root`
+    (`atc/worker/jetbridge/volume_restored_test.go:184`). The 2026-09-15 note
+    below named no scenario and pointed at
+    `/tmp/brine-volume-file-selector.xQNmet/`, which no longer exists.
+  - retirement 2026-09-15: The existing live round-trip scenario retains hello.txt and adds an independent raw pipeline.yml selection. It checks only that file/content, successful open/read/close, one real exec, and exact tar member/mount/options through the shared passive HTTP observer. Five exact original-Go/live mutation pairs cover member prefix, mount suffix, tar option, whole-volume selection and opening failure. The first three reach the request assertion despite correct extracted contents. No scenario or fake executor is added. Proof: /tmp/brine-volume-file-selector.xQNmet/pairing.json, SHA256 f21bb46ce0622d285c33e6dee9fd0ff4c2ea38c901d14bd6d4d1ae54cf3873ff. Historical retention notes below are superseded.
   - consolidation 2026-09-08: Retained unchanged Go It `Volume StreamOut handles a file path by tarring from the mount root` in `volume_restored_test.go`; the root-path merge does not cover its exact file-path argv. The wrong-destination mutation still fails this It before/after. Evidence: `/tmp/brine-volume-consolidation.iVOyIr`; see `CONSOLIDATION.md`, tenth pass.
   - recorded evidence: PER-FILE (deletion commit `5a32670606`; nothing names this test alone)
   - rebase impact: IMPACTED (b) — [CRITIC REVISION → impacted by rule (b)] Same (b) collision on volume-streaming.feature. || original reason: Same untouched (*Volume).StreamOut member-selector logic; no core commit in aef2244a63..5133d0ddbc touches it. Its inferred counterpart "The same member is reachable from the volume root" is unchanged in volume…
   - re-verified 2026-09-05 (rebase onto core): GAP — mutation Recorded/recipe mutation, applied verbatim to atc/worker/jetbridge/volume.go, func (v *Volume) StreamOut (line 251-256 on 27d81692fa):; brine GREEN: none — no step failed. Under the recorded mutation: volume-streaming.feature 20/20 scenario_end status=passed, exit 0; container-run.feature 19/19 passed, exit 0. Under the sharper variant: volume-st…; go RED: Under the recorded mutation (volume_test.go:242): [FAILED] Expected <[]string | len:6, cap:6>: ["tar", "cf", "-", "-C", "/tmp/build/inputs", "./pipeline.yml"] to equal <[]string | len:6, cap:6>: ["ta…; skeptic: not reached — the verifier stopped at GAP
   - **the test is restored** — `atc/worker/jetbridge/volume_restored_test.go`
 
-**[REFUTED]** Volume StreamOut when the exec returns an error propagates the error through the pipe reader  `JB-volume-014`
+**[DELETED]** Volume StreamOut when the exec returns an error propagates the error through the pipe reader  `JB-volume-014`
+  - resolved 2026-09-18: `volume-streaming.feature:32` `Scenario Outline: A
+    cluster failure reaches the caller — <operation>`, row `read` (`volume
+    "broken" is opened then drained with and without compression`): `Then it
+    fails rather than panicking, saying "exec stream:"` and `And it fails
+    rather than panicking, saying "not found"`, both
+    `steps/volume_streaming.go:230`, over a volume whose pod does not exist
+    (`steps/volume_streaming.go:50`). That is this leaf's "propagates the
+    error through the pipe reader", for raw and gzip separately. The Go leaf
+    is also still in the tree at
+    `atc/worker/jetbridge/volume_restored_test.go:195`. The 2026-09-15 note
+    below named no scenario and pointed at
+    `/tmp/brine-volume-read-error.zbLgMg/`, which no longer exists.
+  - retirement 2026-09-15: The existing real-API absent-pod read case now opens and drains raw and gzip streams separately, requires initial success and reader failure for each, and retains both exec-stream and not-found diagnostics. Four exact original-Go failure pairs cover all/raw-only swallowed errors, rewritten messages and eager failure. The old Brine case survives raw-only loss; the new one rejects it. A separate gzip-only fault still fails Brine while the raw Go leaf passes. No scenario is added; one shared action reuses the existing error assertions. Proof: /tmp/brine-volume-read-error.zbLgMg/pairing.json, SHA256 87525bcc3b8285a473e08c50038eacabc525b53013b7ce42e4f888a066e33e84. Historical retention notes below are superseded.
   - consolidation follow-up, 2026-09-08 (twenty-first pass): **RETAIN Go** in `volume_restored_test.go`. `Volume StreamOut when the exec returns an error propagates the error through the pipe reader` distinguishes initial StreamOut success from a later raw/uncompressed reader error; the brine fixture reads gzip. All named Go tests remain unchanged; this pass changes fixture ownership only and does not relabel the historical verdict. Evidence: `CONSOLIDATION.md`, twenty-first pass.
   - recorded evidence: PER-FILE (deletion commit `5a32670606`; nothing names this test alone)
   - rebase impact: IMPACTED (b) — [CRITIC REVISION → impacted by rule (b)] Same (b) collision on volume-streaming.feature. || original reason: The CloseWithError path in (*Volume).StreamOut is unchanged on core. Its pre-existing counterpart "A cluster failure reaches the reader rather than being swallowed" sits in volume-streaming.feature, which the r…
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/volume.go :: func (v *Volume) StreamOut — last statement of the streaming goroutine (line 288 on 27d81692fa):; brine RED: Then it fails rather than panicking, saying "exec failed" (line 72) — step_end status "failed", error verbatim: expected a failure mentioning "exec failed", but it succeeded; go RED: volume_test.go:256 — Expect(err).To(MatchError(ContainSubstring("exec failed"))) ; Ginkgo verbatim: [FAILED] Expected an error, got nil / In [It] at: .../atc/worker/jetbridge/volume_test.go:256; skeptic: different-behaviour pairing — narrower mutation that breaks only the code path the Go assertion pins (raw/uncompressed StreamOut), plus red-by-adaptation and unrelated-brine-red controls → REFUTED (the pairing broke)
   - **the test is restored** — `atc/worker/jetbridge/volume_restored_test.go`
 
-**[REFUTED]** Volume StubVolume (nil executor) StreamOut returns an error instead of panicking  `JB-volume-015`
+**[DELETED]** Volume StubVolume (nil executor) StreamOut returns an error instead of panicking  `JB-volume-015`
+  - resolved 2026-09-18: `volume-streaming.feature:20` `Scenario Outline: A
+    resource-cache placeholder refuses I/O with or without compression —
+    <operation>`, row `read` — `Given a resource-cache placeholder volume`
+    over the production `NewStubVolume`, `Then it reports no executor and
+    refuses "read"` at `steps/placeholder_volume.go:81`. That is this leaf's
+    "returns an error instead of panicking", with gzip as well as raw. The Go
+    leaf is also still in the tree at
+    `atc/worker/jetbridge/volume_restored_test.go:216`. The 2026-09-15 note
+    below named no scenario and pointed at
+    `/tmp/brine-placeholder-io.24Wd0x/`, which no longer exists.
+  - retirement 2026-09-15: Five original-Go/new-Brine read faults preserve raw error presence and exact diagnostic fragments; a gzip-only fault separately preserves the former Brine path. The existing two-row outline uses the production placeholder and no executor double. Exact pre-retirement proof and final evidence: `/tmp/brine-placeholder-io.24Wd0x/pairing.json`, `/tmp/brine-placeholder-io.24Wd0x/evidence.json`; recoverable original source: `before-volume_restored_test.go` there. The historical verdict below is superseded by these measurements.
   - consolidation follow-up, 2026-09-08 (twenty-first pass): **RETAIN Go** in `volume_restored_test.go`. `Volume StubVolume (nil executor) StreamOut returns an error instead of panicking` checks both `cannot stream out` and `no executor`; brine checks only the latter. All named Go tests remain unchanged; this pass changes fixture ownership only and does not relabel the historical verdict. Evidence: `CONSOLIDATION.md`, twenty-first pass.
   - recorded evidence: PER-FILE (deletion commit `5a32670606`; nothing names this test alone)
   - rebase impact: IMPACTED (b) — [CRITIC REVISION → impacted by rule (b)] Same (b) collision on volume-streaming.feature (@VT-05 stub scenarios). || original reason: NewStubVolume and the nil-executor guard in (*Volume).StreamOut are both in volume.go's untouched region (`git log -SNewStubVolume -- atc/worker/jetbridge` is empty over the range). The…
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation Two mutations, both in atc/worker/jetbridge/volume.go, func (v *Volume) StreamOut (the nil-executor guard, lines 233-235 on 27d81692fa). (A) RECORDED mutation — delete the guard entirely:; brine RED: Then it fails rather than panicking, saying "no executor" (line 59) — step_end status "failed", error: `expected the failure to mention "no executor", got "volume stub-handle is not ready"`; scenario…; go RED: Under mutation (B), verbatim: [FAILED] Expected <string>: volume rc-42 is not ready to contain substring <string>: cannot stream out In [It] at: <W>/atc/worker/jetbridge/volume_test.go:271 [FAIL] Vol…; skeptic: different-behaviour pairing — narrower mutation that breaks only what the Go It asserts beyond the brine step (plus red-by-adaptation control and an unrelated-red control) → REFUTED (the pairing broke)
   - **the test is restored** — `atc/worker/jetbridge/volume_restored_test.go`
 
-**[REFUTED]** Volume StubVolume (nil executor) StreamIn returns an error instead of panicking  `JB-volume-016`
+**[DELETED]** Volume StubVolume (nil executor) StreamIn returns an error instead of panicking  `JB-volume-016`
+  - resolved 2026-09-18: the same `volume-streaming.feature:20` outline, row
+    `write` — `Then it reports no executor and refuses "write"` at
+    `steps/placeholder_volume.go:81`. That is this leaf's StreamIn clause. The
+    Go leaf is also still in the tree at
+    `atc/worker/jetbridge/volume_restored_test.go:223`. The 2026-09-15 note
+    below named no scenario.
+  - retirement 2026-09-15: Five original-Go/new-Brine write faults preserve raw error presence and exact diagnostic fragments; a gzip-only fault separately preserves the former Brine path. The existing two-row outline uses the production placeholder and no executor double. Exact pre-retirement proof and final evidence: `/tmp/brine-placeholder-io.24Wd0x/pairing.json`, `/tmp/brine-placeholder-io.24Wd0x/evidence.json`; recoverable original source: `before-volume_restored_test.go` there. The historical verdict below is superseded by these measurements.
   - consolidation follow-up, 2026-09-08 (twenty-first pass): **RETAIN Go** in `volume_restored_test.go`. `Volume StubVolume (nil executor) StreamIn returns an error instead of panicking` checks both `cannot stream in` and `no executor`; brine checks only the latter. All named Go tests remain unchanged; this pass changes fixture ownership only and does not relabel the historical verdict. Evidence: `CONSOLIDATION.md`, twenty-first pass.
   - recorded evidence: PER-FILE (deletion commit `5a32670606`; nothing names this test alone)
   - rebase impact: IMPACTED (b) — [CRITIC REVISION → impacted by rule (b)] Same (b) collision on volume-streaming.feature (@VT-05 stub scenarios). || original reason: Mirror of JB-volume-015: the nil-executor guard in (*Volume).StreamIn is unchanged on core, and its @VT-05 counterpart "A stub volume refuses to be written rather than panicking" is byte…
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/volume.go :: func (v *Volume) StreamIn — delete the stub/nil-executor guard:; brine RED: When a file is put into volume "stub" (line 65) — the run stops dead at this step: the last event emitted is {"type":"step_start",...,"keyword":"When","text":"a file is put into volume \"stub\"","lin…; go RED: [PANICKED] Test Panicked / In [It] at: .../src/runtime/panic.go:262 @ 09/05/26 12:53:04.776 / "runtime error: invalid memory address or nil pointer dereference" / Full Stack Trace: github.com/concour…; skeptic: Primary: narrower mutation that breaks only what the Go It asserts (message-only, guard intact) — brine stayed green. Secondary: characterising the recorded brine "red" (it is a crash-hang, never a r… → REFUTED (the pairing broke)
   - **the test is restored** — `atc/worker/jetbridge/volume_restored_test.go`
 
-**[GAP]** Volume StubVolume (nil executor) HasExecutor returns false  `JB-volume-017`
+**[DELETED]** Volume StubVolume (nil executor) HasExecutor returns false  `JB-volume-017`
+  - resolved 2026-09-18: the same `volume-streaming.feature:20` outline — the
+    `reports no executor` half of `steps/placeholder_volume.go:81` calls
+    `HasExecutor()` on the production placeholder and requires false, on both
+    rows. That is this leaf. The Go leaf is also still in the tree at
+    `atc/worker/jetbridge/volume_restored_test.go:231`. The 2026-09-15 note
+    below named no scenario.
+  - retirement 2026-09-15: The real placeholder assertion now calls HasExecutor on the same production object. An inverted getter fails the exact original Go assertion and both Brine rows; the old Brine rows pass it. The existing two-row outline uses the production placeholder and no executor double. Exact pre-retirement proof and final evidence: `/tmp/brine-placeholder-io.24Wd0x/pairing.json`, `/tmp/brine-placeholder-io.24Wd0x/evidence.json`; recoverable original source: `before-volume_restored_test.go` there. The historical verdict below is superseded by these measurements.
   - consolidation follow-up, 2026-09-08 (twenty-first pass): **RETAIN Go** in `volume_restored_test.go`. `Volume StubVolume (nil executor) HasExecutor returns false` asserts the public wiring accessor, which refusal alone does not establish. All named Go tests remain unchanged; this pass changes fixture ownership only and does not relabel the historical verdict. Evidence: `CONSOLIDATION.md`, twenty-first pass.
   - recorded evidence: PER-FILE (deletion commit `5a32670606`; nothing names this test alone)
   - rebase impact: IMPACTED (b) — [CRITIC REVISION → impacted by rule (b)] Same (b) collision; its disposition lives in container-run.feature, which is in features_affected. || original reason: (*Volume).HasExecutor is unchanged on core (`git log -SHasExecutor -- atc/worker/jetbridge` empty over the range) and container-run.feature, which carries the…
@@ -1967,21 +2916,52 @@ pass, and `/tmp/brine-artifact-read.3WEKJa/`.
   - rebase impact: IMPACTED (b) — [CRITIC REVISION → impacted by rule (b)] Same (b) collision; the reason also records 'no counterpart named' — an evidence gap that predates the rebase but must be surfaced, not closed. || original reason: NewStubVolume and (*Volume).Handle are unchanged on core, so nothing about the stub-handle path moved. This row's…
   - re-verified 2026-09-05 (rebase onto core): HOLDS — mutation atc/worker/jetbridge/volume.go :: NewStubVolume — drop the caller's handle (recorded mutation, applied verbatim in effect; `_ = handle` added only to keep the signature compiling):; brine RED: step: `that fetch asks the daemon for "vol-a"` — error: `expected the batch of keys the pod asks for in one request to mention "vol-a", got "{\"items\":[{\"key\":\"\",\"dest\":\".../steps/wide-fan-in…; go RED: [FAILED] Expected <string>: to equal <string>: rc-42 In [It] at: <wt>/atc/worker/jetbridge/volume_test.go:288 Summarizing 1 Failure: [FAIL] Volume StubVolume (nil executor) [It] Handle returns the st…; skeptic: Ran three attacks: (1) NARROWER MUTATION / different-behaviour pairing — replaced the recorded whole-handle drop with `handle: handle + "-stub"`, which breaks exactly what the Go It asserts (Equal("r… → HOLDS
 
-**[REFUTED]** Volume volume uniqueness two volumes with different handles are distinguishable  `JB-volume-019`
+**[DELETED]** Volume volume uniqueness two volumes with different handles are distinguishable  `JB-volume-019`
+  - resolved 2026-09-18: `volume-streaming.feature:46` `Scenario: Volumes
+    retain distinct database identities` (`Given two persisted volumes on this
+    worker` at `steps/volume_streaming.go:290`, `Then the volumes retain their
+    handles, worker and database rows` at `steps/volume_streaming.go:349`)
+    ends with `in.Volumes[0].Volume.Handle() == in.Volumes[1].Volume.Handle()`
+    being an error, and resolves each row's `db.WorkerArtifact` back to its
+    volume and compares handles — this leaf's uniqueness and artifact-lookup
+    clauses. The Go leaf is also still in the tree as `Volume volume
+    uniqueness two volumes with different handles are distinguishable`
+    (`atc/worker/jetbridge/volume_restored_test.go:236`). The 2026-09-15 note
+    below named no scenario.
+  - retirement 2026-09-15: Collapsed handles, a wrong-but-distinct second handle, and a misdirected real artifact lookup fail the original Go uniqueness/artifact assertions and the two-volume Brine identity scenario. All three faults pass the former single-volume Brine fixture. Five exact-leaf original-Go/Brine pairs support the two retirements, and four prior nil/clone identity faults remain detected. No new scenario or definition. Proof and final evidence: `/tmp/brine-volume-uniqueness.H3AyYr/pairing.json`, `/tmp/brine-volume-uniqueness.H3AyYr/evidence.json`; recoverable source: `before-volume_restored_test.go` there. The historical REFUTED/RETAIN notes below are superseded by these measurements.
   - consolidation follow-up, 2026-09-08 (twenty-first pass): **RETAIN Go** in `volume_restored_test.go`. `Volume volume uniqueness two volumes with different handles are distinguishable` constructs two independently named persisted volumes and resolves their artifacts; the direct brine volume pair does not compare persisted identities. All named Go tests remain unchanged; this pass changes fixture ownership only and does not relabel the historical verdict. Evidence: `CONSOLIDATION.md`, twenty-first pass.
   - recorded evidence: PER-FILE (deletion commit `5a32670606`; nothing names this test alone)
   - rebase impact: IMPACTED (b) — [CRITIC REVISION → impacted by rule (b)] Strongest single suspect in the family: the reason CONCEDES that its counterpart container-run.feature:109 declares a cache and that 0d336e062b 'can now select an emptyDir where it previously selected hostPath', then closes the row anyway on the ground that the surviving assert…
   - re-verified 2026-09-05 (rebase onto core): REFUTED — mutation atc/worker/jetbridge/volume.go :: func (v *Volume) Handle() — collapse every db-backed volume onto one identity:; brine RED: Then the volume identifies itself by its database handle (volume-streaming.feature:79) — error: expected the volume to identify as "264a373c-09a9-4009-b498-8b224e5e15d9" — the handle the artifact rep…; go RED: [FAILED] Expected <string>: vol-handle-123 not to equal <string>: vol-handle-123 In [It] at: .../atc/worker/jetbridge/volume_test.go:319 — i.e. Expect(volume.Handle()).ToNot(Equal(volume2.Handle())); skeptic: different-behaviour pairing / narrower mutation that breaks only what the Go test asserts (plus red-by-adaptation control and an unrelated-brine-red control) → REFUTED (the pairing broke)
   - **the test is restored** — `atc/worker/jetbridge/volume_restored_test.go`
 
-**[GAP]** Volume-to-Volume Streaming (same worker) streams data from source volume (pod A) to destination volume (pod B)  `JB-volume-020`
+**[DELETED]** Volume-to-Volume Streaming (same worker) streams data from source volume (pod A) to destination volume (pod B)  `JB-volume-020`
+  - resolved 2026-09-18: NOT carried by any unit-tier scenario — the handoff
+    outline is `live/volume-io.feature:34` `Scenario Outline: One step's
+    output becomes the next step's input — <binding> binding`, row `direct`,
+    and that feature is `@live-kubernetes`. Nothing is restored: the Go leaf
+    is unchanged in the tree as `Volume-to-Volume Streaming (same worker)
+    streams data from source volume (pod A) to destination volume (pod B)`
+    (`atc/worker/jetbridge/volume_restored_test.go:284`). The 2026-09-15 note
+    below named no scenario and pointed at
+    `/tmp/brine-volume-handoff.JXFfCl/`, which no longer exists; its claim
+    that "their file is removed" is not true at this commit.
+  - retired 2026-09-15: Direct and deferred binding are now two rows of one real-pod handoff outline, using the same production executor and exact request-count, routing and byte assertions. Seven original-Go/live fault pairs cover all four source/destination binding paths, an extra transfer, and byte corruption in each direction. The ordinary fakeExecExecutor records after draining stdin, so its call-slice order is not invocation/HTTP order; no production ordering guarantee was dropped. Evidence: /tmp/brine-volume-handoff.JXFfCl/pairing.json and evidence.json; original source: before-volume_restored_test.go. No new step definition; the second outline row replaces the last two Go Its, and their file is removed. Historical restoration notes below are superseded.
   - consolidation follow-up, 2026-09-08 (twenty-first pass): **RETAIN Go** in `volume_restored_test.go`. `Volume-to-Volume Streaming (same worker) streams data from source volume (pod A) to destination volume (pod B)` pins NewVolume pod destinations, exact tar commands, two calls and opaque byte delivery; the local volume fixture does not validate pod identity. All named Go tests remain unchanged; this pass changes fixture ownership only and does not relabel the historical verdict. Evidence: `CONSOLIDATION.md`, twenty-first pass.
   - recorded evidence: PER-FILE (deletion commit `5a32670606`; nothing names this test alone)
   - rebase impact: IMPACTED (b) — [CRITIC REVISION → impacted by rule (b)] Same (b) collision on volume-streaming.feature. || original reason: Both halves — (*Volume).StreamOut and (*Volume).StreamIn — plus PodExecutor.ExecInPod are byte-identical on core. The counterpart named by the feature comment, "One step's output becomes the next step's input",…
   - re-verified 2026-09-05 (rebase onto core): GAP — mutation atc/worker/jetbridge/volume.go, func NewVolume — recorded mutation, applied verbatim:; brine GREEN: (none — scenario passed under the recorded mutation; 20/20 scenarios passed, verdict "passed", exit 0). Every step passed, including "Then the artifact \"result.json\" containing \"built ok\" is ther…; go RED: volume_test.go:367 — [FAILED] Expected <string>: to equal <string>: source-pod (i.e. `Expect(streamOutCall.podName).To(Equal("source-pod"))`, reached after the By("verifying the exec calls target dif…; skeptic: not reached — the verifier stopped at GAP
   - **the test is restored** — `atc/worker/jetbridge/volume_restored_test.go`
 
-**[REFUTED]** Volume-to-Volume Streaming (same worker) works with deferred volumes after pod name is set  `JB-volume-021`
+**[DELETED]** Volume-to-Volume Streaming (same worker) works with deferred volumes after pod name is set  `JB-volume-021`
+  - resolved 2026-09-18: NOT carried by any unit-tier scenario — the same
+    `live/volume-io.feature:34` outline, row `deferred`, in a
+    `@live-kubernetes` feature. Nothing is restored: the Go leaf is unchanged
+    in the tree as `Volume-to-Volume Streaming (same worker) works with
+    deferred volumes after pod name is set`
+    (`atc/worker/jetbridge/volume_restored_test.go:324`). The 2026-09-15 note
+    below named no scenario.
+  - retired 2026-09-15: Direct and deferred binding are now two rows of one real-pod handoff outline, using the same production executor and exact request-count, routing and byte assertions. Seven original-Go/live fault pairs cover all four source/destination binding paths, an extra transfer, and byte corruption in each direction. The ordinary fakeExecExecutor records after draining stdin, so its call-slice order is not invocation/HTTP order; no production ordering guarantee was dropped. Evidence: /tmp/brine-volume-handoff.JXFfCl/pairing.json and evidence.json; original source: before-volume_restored_test.go. No new step definition; the second outline row replaces the last two Go Its, and their file is removed. Historical restoration notes below are superseded.
   - consolidation follow-up, 2026-09-08 (twenty-first pass): **RETAIN Go** in `volume_restored_test.go`. `Volume-to-Volume Streaming (same worker) works with deferred volumes after pod name is set` pins both late-bound pod names and two calls; changing directory ownership does not observe that routing. All named Go tests remain unchanged; this pass changes fixture ownership only and does not relabel the historical verdict. Evidence: `CONSOLIDATION.md`, twenty-first pass.
   - recorded evidence: PER-FILE (deletion commit `5a32670606`; nothing names this test alone)
   - rebase impact: IMPACTED (b) — [CRITIC REVISION → impacted by rule (b)] (b) collision named in its own reason: counterparts are the container-run.feature @CO-04 pair, and the reason explicitly discusses the container_extra.go step change before dismissing it as inert. JB-podname_integration-008 was marked IMPACTED on this identical argument — the t…
@@ -2050,6 +3030,8 @@ pass, and `/tmp/brine-artifact-read.3WEKJa/`.
   - rebase impact: NOT IMPACTED — The empty-archive-on-miss quirk falls out of filterTarEntry plus newCompressWriter, both unchanged on core and both with zero git log -S hits across aef2244a63..5133d0ddbc. Nothing on core touches what this pins, and its artifact-daemon.feature scenario was not rewritten by the rebase.
 
 **[REFUTED]** TestDaemonSetVolume_StreamOut_FallsBackToPeer_OnConnectionRefused  `JB-volume_daemonset-011`
+  - **RESTORED Go 2026-09-18 — the 2026-09-15 replacement is `@live-kubernetes`.** `features/live/peer-read.feature` exists, but its only tag is `@live-kubernetes`: it runs against a real cluster and never under `make test-unit`, so on every ordinary run this REFUTED/GAP verdict had nothing carrying it. A live-tier scenario does not retire a unit test. The 2026-09-15 note is kept verbatim below.
+  - superseded note — **Current v5 disposition (2026-09-15): RETIRED.** Replaced by the shared live `peer-read.feature` outline, stopped/present row: independent real daemon routes and exact raw body; paired raw-body, probe-path and peer-path faults. Five grouped production mutations fail the intended old/new assertions; inactive and unrelated S3 controls pass. All 14 owned namespaces are verified absent. Evidence: `/tmp/brine-peer-read-UQcg1G/evidence.json`. Historical verdicts below are retained, not reused as proof.
   - consolidation follow-up, 2026-09-08 (twenty-third pass): **RETAIN Go** `TestDaemonSetVolume_StreamOut_FallsBackToPeer_OnConnectionRefused` in `volume_daemonset_restored_test.go`. It independently routes the refused producer and responding peer and asserts the exact opaque `peer-served-content` bytes from the raw StreamOut reader. Brine's parsed-archive assertions do not preserve that raw-body contract. No deletion or historical verdict change is claimed.
   - recorded evidence: PER-FILE (deletion commit `5be07a572c`; nothing names this test alone)
   - rebase impact: IMPACTED (b) — [CRITIC REVISION → impacted by rule (b)] (b) collision: its gap-closing evidence is named as volume-streaming.feature scenarios, and volume-streaming.feature is in features_affected of the domain.go/container_extra.go step changes. The reason argues the backing steps/volume_streaming.go did not change (true — the reba…
@@ -2057,6 +3039,8 @@ pass, and `/tmp/brine-artifact-read.3WEKJa/`.
   - **the test is restored** — `atc/worker/jetbridge/volume_daemonset_restored_test.go`
 
 **[GAP]** TestDaemonSetVolume_StreamOut_FallsBack_PreservesNotFoundOnProbeMiss  `JB-volume_daemonset-012`
+  - **RESTORED Go 2026-09-18 — the 2026-09-15 replacement is `@live-kubernetes`.** `features/live/peer-read.feature` exists, but its only tag is `@live-kubernetes`: it runs against a real cluster and never under `make test-unit`, so on every ordinary run this REFUTED/GAP verdict had nothing carrying it. A live-tier scenario does not retire a unit test. The 2026-09-15 note is kept verbatim below.
+  - superseded note — **Current v5 disposition (2026-09-15): RETIRED.** Replaced by the shared live `peer-read.feature` outline, stopped/absent row: exact HEAD /artifacts/steps/h/o on the live missing peer and no leaked refusal; paired probe-path and raw-miss faults. Five grouped production mutations fail the intended old/new assertions; inactive and unrelated S3 controls pass. All 14 owned namespaces are verified absent. Evidence: `/tmp/brine-peer-read-UQcg1G/evidence.json`. Historical verdicts below are retained, not reused as proof.
   - consolidation follow-up, 2026-09-08 (twenty-third pass): **RETAIN Go** `TestDaemonSetVolume_StreamOut_FallsBack_PreservesNotFoundOnProbeMiss` in `volume_daemonset_restored_test.go`. Besides rejecting a leaked connection-refused error, it requires at least one HEAD of `/artifacts/steps/h/o` on a responsive peer returning 404. The Brine error-message checks do not count HEAD requests and cannot replace the independently asserted probe attempt.
   - recorded evidence: PER-FILE (deletion commit `5be07a572c`; nothing names this test alone)
   - rebase impact: IMPACTED (b) — [CRITIC REVISION → impacted by rule (b)] Same (b) collision: the 'or any peer' evidence is a volume-streaming.feature gap-closing scenario, and that feature is in features_affected. || original reason: The "or any peer" error text and the probe-actually-ran assertion sit in fetchArtifactWithPeerFallback and DaemonClie…
@@ -2064,6 +3048,8 @@ pass, and `/tmp/brine-artifact-read.3WEKJa/`.
   - **the test is restored** — `atc/worker/jetbridge/volume_daemonset_restored_test.go`
 
 **[REFUTED]** TestDaemonSetVolume_StreamOut_HappyPath_PerformsZeroPeerProbes  `JB-volume_daemonset-013`
+  - **RESTORED Go 2026-09-18 — the 2026-09-15 replacement is `@live-kubernetes`.** `features/live/peer-read.feature` exists, but its only tag is `@live-kubernetes`: it runs against a real cluster and never under `make test-unit`, so on every ordinary run this REFUTED/GAP verdict had nothing carrying it. A live-tier scenario does not retire a unit test. The 2026-09-15 note is kept verbatim below.
+  - superseded note — **Current v5 disposition (2026-09-15): RETIRED.** Replaced by the shared live `peer-read.feature` outline, running/present row: exact raw body, one producer GET and zero peer requests; paired raw-body and extra-probe faults. Five grouped production mutations fail the intended old/new assertions; inactive and unrelated S3 controls pass. All 14 owned namespaces are verified absent. Evidence: `/tmp/brine-peer-read-UQcg1G/evidence.json`. Historical verdicts below are retained, not reused as proof.
   - consolidation follow-up, 2026-09-08 (twenty-third pass): **RETAIN Go** `TestDaemonSetVolume_StreamOut_HappyPath_PerformsZeroPeerProbes` in `volume_daemonset_restored_test.go`. Its exact producer body, exactly one producer request, and zero peer requests are separate assertions. A handoff delivering the right files could still make speculative peer requests; Brine's handoff has no matching request-count assertion. The current source was inspected and the full root Go suite passed in this pass; no Go source was changed.
   - recorded evidence: PER-FILE (deletion commit `5be07a572c`; nothing names this test alone)
   - rebase impact: IMPACTED (b) — [CRITIC REVISION → impacted by rule (b)] Same (b) collision: named test-for-test replacement is in artifact-daemon.feature (untouched), but its secondary evidence is volume-streaming.feature, which is in features_affected. || original reason: The producer-wins/no-speculative-fan-out ordering lives in fetchArtifactWith…
@@ -2349,27 +3335,35 @@ this branch deletes: `container_test.go`, `integration_test.go` and
 deletion, which is right for the file's HISTORY and wrong for these three
 tests: the campaign never measured them, so there is no both-red pairing for
 them and no brine scenario that inherits them. The protocol says a Go test may
-be deleted only with both-red evidence recorded here. They have none, so they
-are KEPT — appended to the matching `*_restored_test.go`, adapted only where
-the surrounding fixture had been pruned.
+be deleted only with both-red evidence recorded here. At that rebase they had
+none, so they were KEPT — appended to the matching `*_restored_test.go`, adapted
+only where the surrounding fixture had been pruned. Subsequent per-leaf
+retirement notes below supersede that initial decision where measured.
 
 Each was run in isolation after the move and passes (`Ran 1 of 89 Specs`,
 `SUCCESS! -- 1 Passed | 0 Failed`).
 
-**[KEPT]** Container Run into existing pod (fly hijack) leaves the pod alone when the hijack session's context ends  `JB-kept-000`
+**[DELETED]** Container Run into existing pod (fly hijack) leaves the pod alone when the hijack session's context ends  `JB-kept-000`
+  - **RESTORED Go 2026-09-18 — the 2026-09-14 retirement is a live hijack-cancellation case.** That case runs through production `Run`/`LookupContainer` against a real cluster and is reachable only on the `@live-kubernetes` tier, so under `make test-unit` nothing held the `!p.container.lookedUp` exclusion. This row never had both-red evidence to begin with (it postdates the campaign's merge base), so a tier that does not run on an ordinary unit run cannot retire it. Restored to `atc/worker/jetbridge/container_restored_test.go`.
   - source: core `2a9355e1e6`, `atc/worker/jetbridge/container_test.go`
   - recorded evidence: NONE — the test postdates the rebase base `09faf11a50`, so it was never classified, never measured, and no brine scenario was offered in its place.
   - what it holds: the teardown `2a9355e1e6` added to `(*execProcess).Wait` must NOT fire for a looked-up Container. A hijack session's context ends when the operator closes the window, and the pod belongs to the step being debugged, not to the session.
   - carried to: `atc/worker/jetbridge/container_restored_test.go`, inside the existing `Describe("Run into existing pod (fly hijack)")`, whose `hijackContainer`/`hijackExecutor` fixture the restored file already keeps. Verbatim but for the `// KEPT FROM CORE` header comment.
+  - follow-up audit 2026-09-14: Still KEPT. The live cancellation rows preserve fresh get/put/check resource pods, not a looked-up task container whose hijack session ends. The different-command restart scenario completes normally and does not cancel that session. Neither tests the `!p.container.lookedUp` exclusion. Add a real looked-up-task cancellation contract, prove the original task and pod survive, and replay this exact Go leaf before retirement.
+  - retirement 2026-09-14: A distinct live hijack case now creates the original task through production Run, looks it up through LookupContainer, starts a separate real session and cancels only that session. It requires context cancellation, zero DELETE attempts, the same lone Running pod UID, and the original task still alive and able to complete after its on-pod gate is released. Removing the lookedUp deletion guard and clearing the lookup flag both fail original Go line 966 and the new Then with an unwanted DELETE; suppressing looked-up cancellation fails original Go line 964 and the new Then with nil instead of cancellation. The original leaf is removed only after these independent pairs; shared hijack fixtures and other leaves remain. Snapshot and evidence: `/tmp/brine-hijack-cancel.28Zhxs/before-container-test.go`, `/tmp/brine-hijack-cancel.28Zhxs/evidence.json`.
 
-**[KEPT]** Integration build cancellation deletes the pause pod when the step's own context is cancelled  `JB-kept-001`
+**[DELETED]** Integration build cancellation deletes the pause pod when the step's own context is cancelled  `JB-kept-001`
+  - **RESTORED Go 2026-09-18 — the 2026-09-14 retirement is a live running-task cancellation row.** Its five replayed faults (omitted grace, nonzero grace, duplicate deletion, missing deletion, swallowed cancellation) were all proved against a real kubelet, i.e. on the `@live-kubernetes` tier, which `make test-unit` never runs. This row never had both-red evidence (it postdates the merge base). Restored to `atc/worker/jetbridge/integration_restored_test.go`, keeping the `GracePeriodSeconds == 0` assertion.
   - source: core `2a9355e1e6`, `atc/worker/jetbridge/integration_test.go`
   - recorded evidence: NONE — postdates the rebase base `09faf11a50`.
   - what it holds: an aborted supervised task's pause pod is deleted from `Wait`, with `GracePeriodSeconds: 0`, rather than left to the reaper — whose fast path only deletes pods carrying an exit-status annotation, which an abandoned step never records.
   - carried to: `atc/worker/jetbridge/integration_restored_test.go`. Its `Describe("build cancellation")` had been pruned entirely (its one pre-existing It, `JB-integration-004`, stays deleted on its own evidence), so the Describe is reintroduced as a wrapper holding only this It. The It itself is verbatim; it uses the `createContainer`, `simulatePodRunning`, `fakeExecutor` and `fakeClientset` fixtures the restored file already keeps.
+  - retirement 2026-09-14: The existing real running-task cancellation row now carries this leaf. Its five faults were replayed independently of JB-kept-002: omitted grace (Go line 153), nonzero grace (154), duplicate deletion (152), missing deletion (149) and swallowed running cancellation (144). Each fails the original focused leaf and Brine; missing deletion fails real kubelet-confirmed termination rather than a fabricated pod list. Brine also now lists the owned namespace and requires zero remaining pods. The single It and its three now-unused imports are removed; the other three integration leaves and shared fixture remain. Recoverable source and paired evidence: `/tmp/brine-running-cancel.t28y8n/before-integration.go`, `/tmp/brine-running-cancel.t28y8n/evidence.json`.
 
-**[KEPT]** Process execProcess failure state detection deletes a supervised task's pause pod when context is cancelled  `JB-kept-002`
+**[DELETED]** Process execProcess failure state detection deletes a supervised task's pause pod when context is cancelled  `JB-kept-002`
+  - **RESTORED Go 2026-09-18 — the 2026-09-14 retirement is the same live before-start/running cancellation pair.** "Passively observe the real API DELETE" means the live tier; on an ordinary unit run nothing required the supervised task's pause pod to be deleted with an explicit zero grace period. This row never had both-red evidence (it postdates the merge base). Restored to `atc/worker/jetbridge/process_restored_test.go`.
   - source: core `2a9355e1e6`, `atc/worker/jetbridge/process_test.go`
   - recorded evidence: NONE — postdates the rebase base `09faf11a50`.
   - what it holds: the same teardown at the unit seam, and its exclusion — core placed it beside `preserves the pause pod when context is cancelled (for fly hijack)` (a get step, whose command dies with the exec stream) so the two read as a pair. That sibling is `JB-process-027` and stays deleted on its own evidence; only the supervised half is carried.
   - carried to: `atc/worker/jetbridge/process_restored_test.go`, under a new `Describe("supervised step teardown on context end")`. The It is verbatim; the exec-mode fixture it needed (`fakeExecExecutor` + `execWorker` with the executor set) is reproduced from core's `Describe("execProcess failure state detection")` BeforeEach, minus the `execContainer` that only the deleted siblings used.
+  - retirement 2026-09-14: Existing live before-start/running task cancellation cases now passively observe the real API DELETE and require one HTTP attempt, 2xx, explicit nonnil zero grace, cancellation and pod absence. Five production-only faults (missing deletion, duplicate deletion, omitted grace, nonzero grace and lost cancellation) fail both the original focused Go leaf and the strengthened Brine case at the intended assertions. The previous Brine case passed duplicate deletion; omitted/nonzero grace already failed indirectly through pod presence in these runs. Evidence: `/tmp/brine-zero-grace.pSvGpa`. The sole remaining 120-line restored file is removed; its exact recoverable snapshot is `before-process_restored_test.go` there. Counts are wire attempts, including retries; no request or response is fabricated.

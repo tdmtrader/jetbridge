@@ -1,12 +1,19 @@
-# Brine consolidation completion audit
+# Historical Brine consolidation audit
+
+This 2026-09-08 audit describes an earlier, narrower consolidation checkpoint.
+It does **not** certify the active v5 migration, 50% coverage and no-doubles
+goal. Its measurements and verdicts below are historical, not current-state
+claims. See [README.md](README.md) and [V5-MIGRATION.md](V5-MIGRATION.md) for
+current validation and remaining doubles; the active migration is incomplete.
 
 Verified on `core`, 2026-09-08. The original seven-feature/support/restored-Go
 scope is unchanged. The additional requirement is at least 40% **Brine-only
 production statement coverage** of `atc/worker/jetbridge`, not repository-wide
 or combined Go-test coverage.
 
-The goal is complete in the workspace. Production behavior and shell templates
-were not changed. Nothing was pushed, merged or deployed.
+That earlier scoped goal was recorded as complete in the workspace. At that
+checkpoint, production behavior and shell templates were not changed, and
+nothing was pushed, merged or deployed.
 
 ## Before and after
 
