@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
+
+	"github.com/concourse/concourse/artifactwire"
 )
 
 // ---------------------------------------------------------------------------
@@ -234,7 +236,7 @@ func (j *mirrorJob) putToPeer(ctx context.Context, peer string) mirrorPeerOutcom
 		pw.CloseWithError(tarTree(pw, j.root, j.loc))
 	}()
 
-	url := peerURL(j.scheme, peer, j.port, "/stream-in/", j.key)
+	url := peerURL(j.scheme, peer, j.port, artifactwire.StreamInPrefix, j.key)
 	req, err := http.NewRequestWithContext(pctx, http.MethodPut, url, pr)
 	if err != nil {
 		pr.Close()

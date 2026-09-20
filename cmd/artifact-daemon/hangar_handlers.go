@@ -13,6 +13,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 
+	"github.com/concourse/concourse/artifactwire"
 	"github.com/concourse/concourse/hangar"
 )
 
@@ -20,15 +21,11 @@ const maxHangarMaterializationItems = 128
 
 var errDuplicateHangarWarrant = errors.New("duplicate materialization warrant")
 
-type hangarMaterializationRequest struct {
-	Items []hangarMaterializationItem `json:"items"`
-}
-
-type hangarMaterializationItem struct {
-	Ref     hangar.TreeRef `json:"ref"`
-	Handle  string         `json:"handle"`
-	Volume  string         `json:"volume"`
-	Warrant string         `json:"warrant"`
+// hangarTreeRef converts the wire shape at this edge. The wire module must
+// not import hangar (ADR-0002: the durable tier's handlers link it too), so
+// the body carries a shape and the handler names the type.
+func hangarTreeRef(ref artifactwire.TreeRef) hangar.TreeRef {
+	return hangar.TreeRef{Scope: hangar.Scope(ref.Scope), Digest: hangar.Digest(ref.Digest), Generation: ref.Generation}
 }
 
 func (s *Server) handleHangarPublish(w http.ResponseWriter, r *http.Request) {
@@ -94,7 +91,7 @@ func (s *Server) handleHangarMaterializations(w http.ResponseWriter, r *http.Req
 		http.NotFound(w, r)
 		return
 	}
-	var request hangarMaterializationRequest
+	var request artifactwire.MaterializationRequest
 	if err := decodeHangarControl(w, r, service.MaxControlBytes, &request); err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
@@ -119,7 +116,7 @@ func (s *Server) handleHangarMaterializations(w http.ResponseWriter, r *http.Req
 	// An invalid capability therefore cannot leave an authorized prefix visible.
 	for _, item := range request.Items {
 		token, ok := exactBearerWarrant(item.Warrant)
-		if !ok || service.WarrantVerifier == nil || service.WarrantVerifier.Verify(token, item.Ref, item.Handle, item.Volume) != nil {
+		if !ok || service.WarrantVerifier == nil || service.WarrantVerifier.Verify(token, hangarTreeRef(item.Ref), item.Handle, item.Volume) != nil {
 			s.refuseHangar(w, r, hangar.ErrUnauthorized)
 			return
 		}
@@ -142,7 +139,7 @@ func (s *Server) handleHangarMaterializations(w http.ResponseWriter, r *http.Req
 	defer func() { <-s.hangarSem }()
 
 	for _, item := range request.Items {
-		if err := service.Materializer.Materialize(r.Context(), item.Ref, item.Handle, item.Volume); err != nil {
+		if err := service.Materializer.Materialize(r.Context(), hangarTreeRef(item.Ref), item.Handle, item.Volume); err != nil {
 			s.refuseHangar(w, r, err)
 			return
 		}

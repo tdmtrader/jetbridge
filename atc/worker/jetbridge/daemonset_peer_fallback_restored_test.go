@@ -114,27 +114,23 @@ func TestDaemonSetMode_StreamOut_FallsBackToPeer_AfterProducerDeath(t *testing.T
 		ArtifactDaemonPort:     port,
 		ArtifactDaemonService:  "artifact-daemon",
 	}
-	httpClient := &http.Client{Transport: transport, Timeout: 5 * 1e9} // 5s
-
 	logger := lagertest.NewTestLogger("atc")
 	resolver := NewNodeIPResolver(atcClientset)
-	// White-box DaemonClient construction so we can inject the routing
-	// transport (NewDaemonClient builds its own client).
+	// White-box DaemonClient construction so we can route the wire client
+	// through the routing transport (NewDaemonClient builds its own).
 	dc := &DaemonClient{
 		logger:    logger,
 		clientset: atcClientset,
 		namespace: "concourse",
 		service:   "artifact-daemon",
-		port:      port,
-		client:    httpClient,
-		scheme:    "http",
+		wire:      plainWire(t, port, transport),
 	}
 
 	// Volume keyed by daemonKey ("build-handle/result"). This matches what
 	// the daemon's filesystem has at storage/steps/build-handle/result on
 	// the peer post-mirror — and what /resolve (init container) uses.
 	vol := NewDaemonSetVolume("build-handle/result", "build-handle/result", "worker-x", nil, "node-a", cfg, resolver)
-	vol.httpClient = httpClient
+	vol.wire = dc.wire
 	vol.daemonClient = dc
 
 	reader, err := vol.StreamOut(context.Background(), ".", nil)

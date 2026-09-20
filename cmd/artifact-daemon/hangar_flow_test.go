@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"github.com/concourse/concourse/artifactwire"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -369,8 +370,8 @@ func TestHangarDaemonStrictGCSFullTreeFlowFailsClosed(t *testing.T) {
 		if signErr != nil {
 			t.Fatal(signErr)
 		}
-		body, marshalErr := json.Marshal(hangarMaterializationRequest{Items: []hangarMaterializationItem{{
-			Ref: attributes.Ref, Handle: handle, Volume: volume, Warrant: "Bearer " + token,
+		body, marshalErr := json.Marshal(artifactwire.MaterializationRequest{Items: []artifactwire.MaterializationItem{{
+			Ref: artifactwire.TreeRef{Scope: string(attributes.Ref.Scope), Digest: string(attributes.Ref.Digest), Generation: attributes.Ref.Generation}, Handle: handle, Volume: volume, Warrant: "Bearer " + token,
 		}}})
 		if marshalErr != nil {
 			t.Fatal(marshalErr)

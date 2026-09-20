@@ -4,29 +4,17 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
-	"encoding/json"
-	"fmt"
-	"net/http"
+	"errors"
 	"sort"
-	"strings"
-	"time"
 
 	"code.cloudfoundry.org/lager/v3"
+
+	"github.com/concourse/concourse/artifactwire"
 )
 
-// DurableTierHeader is set by a daemon that has a durable tier configured. Its
-// presence — on any response, at any status — is how the ATC learns the cluster
-// can serve a warm at all.
-//
-// Capability rides an existing response rather than being probed for, so an ATC
-// talking to daemons that predate the tier makes zero requests to a route they
-// do not have.
-const DurableTierHeader = "X-Durable-Tier"
-
-// warmResponseHeaderTimeout bounds how long a daemon may take to say anything
-// at all about a restore. The transfer itself is bounded by the caller's
-// context, not this.
-const warmResponseHeaderTimeout = 30 * time.Second
+// DurableTierHeader is the wire module's header, named here as well because
+// the brine steps, a separate Go module, read it off the jetbridge package.
+const DurableTierHeader = artifactwire.DurableTierHeader
 
 // warmAttempts is how many candidate daemons a warm will try.
 //
@@ -50,10 +38,7 @@ func (d *DaemonClient) WarmResourceCache(ctx context.Context, cacheKey, durableK
 		return "", false
 	}
 
-	body, err := json.Marshal(durableRestoreRequest{Key: cacheKey, DurableKey: durableKey})
-	if err != nil {
-		return "", false
-	}
+	request := artifactwire.DurableRestoreRequest{Key: cacheKey, DurableKey: durableKey}
 
 	candidates := warmOwners(durableKey, eps)
 	if len(candidates) > warmAttempts {
@@ -61,32 +46,24 @@ func (d *DaemonClient) WarmResourceCache(ctx context.Context, cacheKey, durableK
 	}
 
 	for _, ep := range candidates {
-		url := fmt.Sprintf("%s://%s:%d/durable/restore", d.scheme, ep.IP, d.port)
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(body)))
-		if err != nil {
-			return "", false
+		err := d.wire.Restore(ctx, ep.IP, request)
+		if err == nil {
+			logger.Info("warmed", lager.Data{"ip": ep.IP, "node": ep.Node})
+			return ep.IP, true
 		}
-		req.Header.Set("Content-Type", "application/json")
 
-		resp, err := d.warmClient.Do(req)
-		if err != nil {
-			// Transport failure says nothing about the object — the pod may be
+		var refusal *artifactwire.Refusal
+		if !errors.As(err, &refusal) {
+			// Transport failure says nothing about the object: the pod may be
 			// rolling. The next candidate is worth a try.
 			logger.Debug("daemon-unreachable", lager.Data{"ip": ep.IP, "error": err.Error()})
 			continue
-		}
-		resp.Body.Close()
-
-		if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
-			logger.Info("warmed", lager.Data{"ip": ep.IP, "node": ep.Node, "status": resp.StatusCode})
-			return ep.IP, true
 		}
 
 		// Any other status is the bucket's answer, not this pod's. A 404 here
 		// means the object is not in the store; the next pod would ask the same
 		// store and get the same answer.
-		logger.Debug("warm-declined", lager.Data{"ip": ep.IP, "status": resp.StatusCode})
+		logger.Debug("warm-declined", lager.Data{"ip": ep.IP, "status": refusal.Status})
 
 		return "", false
 	}
@@ -145,23 +122,4 @@ func warmOwners(key string, eps []daemonEndpoint) []daemonEndpoint {
 	}
 
 	return owners
-}
-
-// durableRestoreRequest is the body of POST /durable/restore.
-//
-// The key travels in the body rather than the path deliberately. As a path
-// segment it would have to be un-escaped and joined onto the storage root,
-// where "%2e%2e%2f%2e%2e%2fpwned" decodes to "../../pwned" and escapes the
-// directory entirely. It also keeps this route consistent with /register,
-// /resolve and /mirror, and avoids a path wildcard rejecting the multi-segment
-// keys the daemon's own registry scan can produce.
-type durableRestoreRequest struct {
-	// Key is the node-local alias the daemon will register, and must be a single
-	// path segment: it becomes a direct child of steps/, which is the only thing
-	// the sweeper reclaims.
-	Key string `json:"key"`
-
-	// DurableKey names the object in the bucket, and carries the retention-class
-	// prefix an object lifecycle rule acts on.
-	DurableKey string `json:"durable_key"`
 }

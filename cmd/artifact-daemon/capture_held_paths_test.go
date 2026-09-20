@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/concourse/concourse/artifactwire"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -266,8 +267,8 @@ func TestResolveWillNotClearACaptureHeldDestinationAndStillClearsAnUnheldOne(t *
 		t.Fatalf("registering the source: %v", err)
 	}
 
-	resolve := func(dest string) resolveResponse {
-		body, err := json.Marshal(resolveRequest{Key: "some-artifact", Dest: dest})
+	resolve := func(dest string) artifactwire.ResolveResponse {
+		body, err := json.Marshal(artifactwire.ResolveRequest{Key: "some-artifact", Dest: dest})
 		if err != nil {
 			t.Fatalf("encoding: %v", err)
 		}
@@ -275,11 +276,11 @@ func TestResolveWillNotClearACaptureHeldDestinationAndStillClearsAnUnheldOne(t *
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, request)
 
-		var answer resolveResponse
+		var answer artifactwire.ResolveResponse
 		if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
 			// A structural 400 is plain text. Carry it through as the error so
 			// the assertion below reads the same either way.
-			return resolveResponse{Status: "error", Error: recorder.Body.String()}
+			return artifactwire.ResolveResponse{Status: "error", Error: recorder.Body.String()}
 		}
 
 		return answer
@@ -313,7 +314,7 @@ func TestAnAliasIsNeitherReusedForNorRemappedOffACaptureHeldSource(t *testing.T)
 	handler := server.Handler()
 
 	register := func(key, localPath string) int {
-		body, err := json.Marshal(registerRequest{Key: key, LocalPath: localPath})
+		body, err := json.Marshal(artifactwire.RegisterRequest{Key: key, LocalPath: localPath})
 		if err != nil {
 			t.Fatalf("encoding: %v", err)
 		}
@@ -419,7 +420,7 @@ func TestTheOutputLedgersControlDirectoryIsNotReachableThroughTheOrdinaryAPI(t *
 		filepath.Join(storage, "steps", "unheld-handle", "out")); err != nil {
 		t.Fatalf("registering the source: %v", err)
 	}
-	dest, err := json.Marshal(resolveRequest{
+	dest, err := json.Marshal(artifactwire.ResolveRequest{
 		Key: "some-artifact", Dest: filepath.Join(storage, ledger.ControlDirName, "quarantine"),
 	})
 	if err != nil {
@@ -428,7 +429,7 @@ func TestTheOutputLedgersControlDirectoryIsNotReachableThroughTheOrdinaryAPI(t *
 	if code := do(http.MethodPost, "/resolve", dest); code == http.StatusOK {
 		t.Error("a resolve destination inside the control directory was accepted")
 	}
-	registration, err := json.Marshal(registerRequest{Key: "the-ledger", LocalPath: recordPath})
+	registration, err := json.Marshal(artifactwire.RegisterRequest{Key: "the-ledger", LocalPath: recordPath})
 	if err != nil {
 		t.Fatalf("encoding: %v", err)
 	}
@@ -601,7 +602,7 @@ func TestAReadOnlyAliasOntoACaptureHeldSourceIsAdmittedAndAWriteCapableOneIsNot(
 	handler := server.Handler()
 
 	register := func(key, localPath string, readOnly bool) int {
-		body, err := json.Marshal(registerRequest{
+		body, err := json.Marshal(artifactwire.RegisterRequest{
 			Key: key, LocalPath: localPath, ReadOnly: readOnly,
 		})
 		if err != nil {

@@ -9,6 +9,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/concourse/concourse/artifactcap"
+	"github.com/concourse/concourse/artifactwire"
 	"github.com/concourse/concourse/atc/runtime"
 )
 
@@ -23,7 +24,7 @@ func capKey() []byte {
 // capabilitiesFrom pulls the signed tokens back out of the generated init
 // container, which is the only place they exist — asserting on the pod spec is
 // the only way to know the ATC actually signs.
-func capabilitiesFrom(t *testing.T, inits []corev1.Container) []batchItem {
+func capabilitiesFrom(t *testing.T, inits []corev1.Container) []artifactwire.ResolveRequest {
 	t.Helper()
 	if len(inits) != 1 {
 		t.Fatalf("expected 1 init container, got %d", len(inits))
@@ -39,7 +40,7 @@ func capabilitiesFrom(t *testing.T, inits []corev1.Container) []batchItem {
 		t.Fatalf("could not delimit the batch payload: %s", rest)
 	}
 	var payload struct {
-		Items []batchItem `json:"items"`
+		Items []artifactwire.ResolveRequest `json:"items"`
 	}
 	if err := json.Unmarshal([]byte(rest[:end+3]), &payload); err != nil {
 		t.Fatalf("payload is not valid JSON (%v): %s", err, rest[:end+3])

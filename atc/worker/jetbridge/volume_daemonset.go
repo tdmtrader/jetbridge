@@ -3,12 +3,12 @@ package jetbridge
 import (
 	"archive/tar"
 	"context"
+	"errors"
 	"fmt"
 	"io"
-	"net/http"
-	"strings"
 	"time"
 
+	"github.com/concourse/concourse/artifactwire"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
@@ -28,7 +28,7 @@ type DaemonSetVolume struct {
 	sourceNode     string
 	sourceIP       string // when set, used directly instead of resolving sourceNode
 	config         Config
-	httpClient     *http.Client
+	wire           *artifactwire.Client
 	nodeIPResolver *NodeIPResolver
 	daemonClient   *DaemonClient // for discovering daemon pods when sourceNode is empty
 }
@@ -42,7 +42,7 @@ func NewDaemonSetVolume(key, handle, workerName string, dbVolume db.CreatedVolum
 		dbVolume:       dbVolume,
 		sourceNode:     sourceNode,
 		config:         config,
-		httpClient:     newDaemonStreamingHTTPClient(config),
+		wire:           newWireClient(config),
 		nodeIPResolver: nodeIPResolver,
 	}
 }
@@ -57,7 +57,7 @@ func NewDaemonSetVolumeFromIP(key, handle, workerName string, daemonIP string, c
 		workerName: workerName,
 		sourceIP:   daemonIP,
 		config:     config,
-		httpClient: newDaemonStreamingHTTPClient(config),
+		wire:       newWireClient(config),
 	}
 }
 
@@ -102,7 +102,7 @@ func (v *DaemonSetVolume) StreamOut(ctx context.Context, path string, enc compre
 		return nil, fmt.Errorf("DaemonSetVolume.StreamOut: no source node known (key=%s)", v.key)
 	}
 
-	resp, err := v.fetchArtifactWithPeerFallback(ctx)
+	body, err := v.fetchArtifactWithPeerFallback(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +112,7 @@ func (v *DaemonSetVolume) StreamOut(ctx context.Context, path string, enc compre
 
 	// Fast path: no compression and no sub-path filtering needed.
 	if !needsCompression && !needsFilter {
-		return resp.Body, nil
+		return body, nil
 	}
 
 	// Pipe the daemon's raw tar through optional sub-path filtering and
@@ -132,11 +132,11 @@ func (v *DaemonSetVolume) StreamOut(ctx context.Context, path string, enc compre
 
 		var copyErr error
 		if needsFilter {
-			copyErr = filterTarEntry(resp.Body, dest, path)
+			copyErr = filterTarEntry(body, dest, path)
 		} else {
-			_, copyErr = io.Copy(dest, resp.Body)
+			_, copyErr = io.Copy(dest, body)
 		}
-		resp.Body.Close()
+		body.Close()
 
 		if compressor != nil {
 			if closeErr := compressor.Close(); closeErr != nil && copyErr == nil {
@@ -192,19 +192,16 @@ func (v *DaemonSetVolume) SetDaemonClient(client *DaemonClient) {
 }
 
 func (v *DaemonSetVolume) StreamIn(ctx context.Context, path string, compression compression.Compression, limitInMB float64, reader io.Reader) error {
-	port := v.config.ArtifactDaemonPort
-	if port == 0 {
-		port = 7780
-	}
-
-	var url string
+	// Stream in lands on the daemon that holds the key, or on any daemon when
+	// no source is known yet: it is the same key space as stream out, and the
+	// daemon extracts under it.
+	var host string
 	if v.sourceNode != "" || v.sourceIP != "" {
-		u, err := v.daemonURL(ctx)
+		h, err := v.daemonHost(ctx)
 		if err != nil {
 			return fmt.Errorf("DaemonSetVolume.StreamIn: %w", err)
 		}
-		// Rewrite /artifacts/ to /stream-in/ for tar extraction.
-		url = strings.Replace(u, "/artifacts/", "/stream-in/", 1)
+		host = h
 	} else if v.daemonClient != nil {
 		ips, err := v.daemonClient.daemonIPs(ctx)
 		if err != nil {
@@ -213,30 +210,17 @@ func (v *DaemonSetVolume) StreamIn(ctx context.Context, path string, compression
 		if len(ips) == 0 {
 			return fmt.Errorf("DaemonSetVolume.StreamIn: no daemon pods discovered")
 		}
-		url = fmt.Sprintf("%s://%s:%d/stream-in/%s", daemonURLScheme(v.config), ips[0], port, v.key)
+		host = ips[0]
 	} else {
 		return fmt.Errorf("DaemonSetVolume.StreamIn: no source node or daemon client (key=%s)", v.key)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, reader)
-	if err != nil {
-		return fmt.Errorf("DaemonSetVolume.StreamIn: create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/octet-stream")
-
-	// The volume's streaming client carries the mTLS client cert when TLS is
-	// enabled and has no whole-request timeout, so large uploads are not
-	// severed mid-body (the handshake is still bounded by the transport's
+	// The wire client's streaming path carries the mTLS client cert when TLS
+	// is enabled and has no whole-request timeout, so large uploads are not
+	// severed mid-body (the handshake is still bounded by its transport's
 	// ResponseHeaderTimeout).
-	resp, err := v.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("DaemonSetVolume.StreamIn: PUT %s: %w", url, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("DaemonSetVolume.StreamIn: status %d from %s: %s", resp.StatusCode, url, string(body))
+	if err := v.wire.StreamIn(ctx, host, v.key, reader); err != nil {
+		return fmt.Errorf("DaemonSetVolume.StreamIn: %w", err)
 	}
 
 	return nil
@@ -265,59 +249,52 @@ func (v *DaemonSetVolume) InitializeTaskCache(ctx context.Context, identity atc.
 
 // fetchArtifactWithPeerFallback gets the artifact tar from the recorded
 // source node, falling back to a peer daemon when the recorded node is
-// unreachable, has been removed from the cluster, returns an error
-// (4xx/5xx), or was never recorded at all (sourceNode=="" after a web
-// restart wiped the locator). Peer fallback only fires when a daemonClient
-// is configured; otherwise the recorded-source error is surfaced verbatim
-// (preserves existing behavior for tests / callers without daemon
-// discovery).
+// unreachable, has been removed from the cluster, refuses (4xx/5xx), or was
+// never recorded at all (sourceNode=="" after a web restart wiped the
+// locator). Peer fallback only fires when a daemonClient is configured;
+// otherwise the recorded-source error is surfaced verbatim (preserves
+// existing behavior for tests / callers without daemon discovery).
 //
 // The fallback path probes every live daemon for a step copy of the
-// artifact (HEAD /artifacts/steps/{key}), then fetches from the first
-// daemon that has it. A successful peer fetch returns a 200 response
-// whose body the caller is responsible for closing.
+// artifact, then streams out from the first daemon that has it. The caller
+// is responsible for closing the returned body.
 //
 // On a probe miss (no peer has the data), returns a "not found on node
 // or any peer" error so debug output makes the failure mode obvious.
-func (v *DaemonSetVolume) fetchArtifactWithPeerFallback(ctx context.Context) (*http.Response, error) {
-	primaryURL, primaryURLErr := v.daemonURL(ctx)
+func (v *DaemonSetVolume) fetchArtifactWithPeerFallback(ctx context.Context) (io.ReadCloser, error) {
+	primaryHost, primaryHostErr := v.daemonHost(ctx)
 
-	// Try the recorded source first (skip if URL resolution failed —
-	// e.g., NodeIPResolver returned ErrNodeNameIsIP).
-	var (
-		resp        *http.Response
-		fetchErr    error
-		recordedURL string
-	)
-	if primaryURLErr == nil {
-		recordedURL = primaryURL
-		resp, fetchErr = v.fetchOnce(ctx, primaryURL)
-		if fetchErr == nil && resp.StatusCode == http.StatusOK {
-			return resp, nil
+	// Try the recorded source first (skip if the host is unknown, e.g. the
+	// NodeIPResolver returned ErrNodeNameIsIP).
+	var fetchErr error
+	if primaryHostErr == nil {
+		body, err := v.fetchOnce(ctx, primaryHost, v.key)
+		if err == nil {
+			return body, nil
 		}
+		fetchErr = err
 	}
 
 	// No fallback configured — surface the recorded-source error verbatim.
 	if v.daemonClient == nil {
-		if primaryURLErr != nil {
-			return nil, primaryURLErr
+		if primaryHostErr != nil {
+			return nil, primaryHostErr
 		}
-		if resp != nil {
-			defer resp.Body.Close()
-			if resp.StatusCode == http.StatusNotFound {
-				return nil, fmt.Errorf("artifact not found on node %s (key=%s)", v.sourceNode, v.key)
-			}
-			return nil, fmt.Errorf("unexpected status %d from %s", resp.StatusCode, recordedURL)
+		if errors.Is(fetchErr, artifactwire.ErrNotFound) {
+			return nil, fmt.Errorf("artifact not found on node %s (key=%s)", v.sourceNode, v.key)
 		}
-		return nil, fmt.Errorf("fetch artifact from %s: %w", recordedURL, fetchErr)
+		var refusal *artifactwire.Refusal
+		if errors.As(fetchErr, &refusal) {
+			// The refusal carries the daemon's own account, which is what a
+			// reader needs: a 400 that says "certificate" is a different
+			// fix from a 400 that says "invalid key".
+			return nil, fmt.Errorf("unexpected status %d: %w", refusal.Status, fetchErr)
+		}
+		return nil, fmt.Errorf("fetch artifact: %w", fetchErr)
 	}
 
 	// Recorded source failed in some way (transport error, ErrNodeNameIsIP,
 	// 4xx, or 5xx). Probe peers and try again.
-	if resp != nil {
-		resp.Body.Close()
-	}
-
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	peerIP, found, _ := v.daemonClient.ProbeStepArtifact(probeCtx, v.key)
@@ -328,41 +305,34 @@ func (v *DaemonSetVolume) fetchArtifactWithPeerFallback(ctx context.Context) (*h
 		return nil, fmt.Errorf("artifact not found on node %s or any peer (key=%s)", v.sourceNode, v.key)
 	}
 
-	port := v.config.ArtifactDaemonPort
-	if port == 0 {
-		port = 7780
-	}
-	// Peer fallback URL uses the steps/ filesystem path. Peers receive
-	// mirrored data via /stream-in which extracts to {storage}/steps/{key}
-	// — they don't have the producer-side registry aliases. The producer
-	// served /artifacts/{key} via alias resolution; for peers the URL must
-	// hit the on-disk path directly.
-	peerURL := fmt.Sprintf("%s://%s:%d/artifacts/steps/%s", daemonURLScheme(v.config), peerIP, port, v.key)
-	resp, err := v.fetchOnce(ctx, peerURL)
+	// Peers hold mirrored bytes under the steps/ path, not under a
+	// producer-side registry alias: mirrored data arrives via stream in,
+	// which extracts to {storage}/steps/{key}. The producer served the key
+	// by alias resolution; for a peer the key must name the on-disk path.
+	body, err := v.fetchOnce(ctx, peerIP, artifactwire.StepsPrefix+v.key)
 	if err != nil {
 		return nil, fmt.Errorf("fetch artifact from peer %s: %w", peerIP, err)
 	}
-	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
-		return nil, fmt.Errorf("peer %s returned status %d (key=%s)", peerIP, resp.StatusCode, v.key)
-	}
-	return resp, nil
+	return body, nil
 }
 
-// fetchOnce performs a single GET attempt loop with the existing 3-attempt /
-// 2-second-backoff retry policy. Returns the response on success or the
-// last transport error after all retries fail.
-func (v *DaemonSetVolume) fetchOnce(ctx context.Context, url string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-
-	var resp *http.Response
+// fetchOnce streams key out of the daemon at host with the existing
+// 3-attempt / 2-second-backoff retry policy over TRANSPORT failures. A
+// refusal is the daemon's answer and is returned as is: retrying a 404 asks
+// the same disk the same question.
+func (v *DaemonSetVolume) fetchOnce(ctx context.Context, host, key string) (io.ReadCloser, error) {
+	var (
+		body io.ReadCloser
+		err  error
+	)
 	for attempt := 0; attempt < 3; attempt++ {
-		resp, err = v.httpClient.Do(req)
+		body, err = v.wire.StreamOut(ctx, host, key)
 		if err == nil {
-			return resp, nil
+			return body, nil
+		}
+		var refusal *artifactwire.Refusal
+		if errors.As(err, &refusal) {
+			return nil, err
 		}
 		if attempt < 2 {
 			time.Sleep(2 * time.Second)
@@ -371,15 +341,12 @@ func (v *DaemonSetVolume) fetchOnce(ctx context.Context, url string) (*http.Resp
 	return nil, err
 }
 
-func (v *DaemonSetVolume) daemonURL(ctx context.Context) (string, error) {
-	port := v.config.ArtifactDaemonPort
-	if port == 0 {
-		port = 7780
-	}
-
+// daemonHost is the daemon that holds this volume's key: the recorded pod IP
+// when one is known, else the node the artifact was recorded on, resolved.
+func (v *DaemonSetVolume) daemonHost(ctx context.Context) (string, error) {
 	// If we already have a direct IP (from ProbeResourceCache), use it.
 	if v.sourceIP != "" {
-		return fmt.Sprintf("%s://%s:%d/artifacts/%s", daemonURLScheme(v.config), v.sourceIP, port, v.key), nil
+		return v.sourceIP, nil
 	}
 
 	// No recorded source node (e.g. the locator was wiped by a web restart
@@ -399,5 +366,5 @@ func (v *DaemonSetVolume) daemonURL(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("resolve node IP for %s: %w", v.sourceNode, err)
 	}
 
-	return fmt.Sprintf("%s://%s:%d/artifacts/%s", daemonURLScheme(v.config), nodeIP, port, v.key), nil
+	return nodeIP, nil
 }

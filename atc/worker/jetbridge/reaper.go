@@ -2,13 +2,14 @@ package jetbridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
+	"github.com/concourse/concourse/artifactwire"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/gc"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -37,7 +38,7 @@ type Reaper struct {
 	executor            PodExecutor
 	artifactLocator     *ArtifactLocator
 	nodeIPResolver      *NodeIPResolver
-	httpClient          *http.Client
+	wire                *artifactwire.Client
 	buildLookup         RunningBuildLookup
 }
 
@@ -77,10 +78,13 @@ func (r *Reaper) SetExecutor(executor PodExecutor) {
 	r.executor = executor
 }
 
+// reaperDeleteTimeout bounds one daemon's answer to a delete.
+const reaperDeleteTimeout = 10 * time.Second
+
 // SetArtifactLocator sets the ArtifactLocator for DaemonSet cleanup.
 func (r *Reaper) SetArtifactLocator(locator *ArtifactLocator) {
 	r.artifactLocator = locator
-	r.httpClient = newDaemonHTTPClient(r.cfg, 10*time.Second)
+	r.wire = newWireClient(r.cfg)
 }
 
 // Run implements component.Runnable. It reports active pods to the DB,
@@ -207,13 +211,8 @@ func (r *Reaper) Run(ctx context.Context) error {
 // for destroyed container artifacts. Best-effort — failures are logged
 // but don't block GC.
 func (r *Reaper) cleanupDaemonSetArtifacts(ctx context.Context, logger lager.Logger, handles []string) {
-	if len(handles) == 0 || r.artifactLocator == nil || r.httpClient == nil {
+	if len(handles) == 0 || r.artifactLocator == nil || r.wire == nil {
 		return
-	}
-
-	port := r.cfg.ArtifactDaemonPort
-	if port == 0 {
-		port = 7780
 	}
 
 	for _, handle := range handles {
@@ -237,41 +236,43 @@ func (r *Reaper) cleanupDaemonSetArtifacts(ctx context.Context, logger lager.Log
 			continue
 		}
 
-		// DELETE the step directory (not a tar file).
-		url := fmt.Sprintf("%s://%s:%d/artifacts/steps/%s",
-			daemonURLScheme(r.cfg), nodeIP, port, handle)
+		// Delete the step directory (not a tar file), bounded per daemon so
+		// one silent node cannot stall the whole sweep.
+		deleteCtx, cancel := context.WithTimeout(ctx, reaperDeleteTimeout)
+		err = r.wire.Delete(deleteCtx, nodeIP, artifactwire.StepsPrefix+handle)
+		cancel()
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
-		if err != nil {
-			logger.Error("failed-to-create-delete-request", err, lager.Data{"handle": handle})
-			continue
-		}
+		var refusal *artifactwire.Refusal
+		switch {
+		case err == nil:
+		case errors.As(err, &refusal):
+			// A REFUSED delete is not a done delete. The daemon answers 409
+			// when a durable output capture still holds the source, which is
+			// the whole point of that refusal -- and the Reaper used to drop
+			// the key anyway, so the one caller that could come back and try
+			// again forgot the handle instead. The source is not leaked (once
+			// the capture releases, the classifier answers unmanaged and the
+			// sweeper's TTL reclaims it), but nothing retries, and "the Reaper
+			// will clean it up" stops being true for exactly the sources that
+			// most need cleaning up. A 5xx is the same: not done, try again.
+			if errors.Is(err, artifactwire.ErrHeld) || errors.Is(err, artifactwire.ErrUnavailable) {
+				logger.Info("delete-refused-keeping-locator-entry", lager.Data{
+					"handle": handle, "node": sourceNode, "status": refusal.Status,
+				})
 
-		resp, err := r.httpClient.Do(req)
-		if err != nil {
+				continue
+			}
+			// Any other refusal is the daemon's final word about this key: the
+			// bytes will not be found under it again, so the entry can go.
+			logger.Info("delete-refused-forgetting", lager.Data{
+				"handle": handle, "node": sourceNode, "status": refusal.Status,
+			})
+		default:
 			logger.Error("failed-to-delete-artifact", err, lager.Data{"handle": handle, "node": sourceNode})
 
 			// The bytes are still there and the locator is the only thing that
 			// knows where. Forgetting the key now would leave a source no
 			// sweep of ours can find again, so the next sweep retries.
-			continue
-		}
-		status := resp.StatusCode
-		resp.Body.Close()
-
-		// A REFUSED delete is not a done delete. The daemon answers 409 when a
-		// durable output capture still holds the source, which is the whole
-		// point of that refusal -- and the Reaper used to drop the key anyway,
-		// so the one caller that could come back and try again forgot the
-		// handle instead. The source is not leaked (once the capture releases,
-		// the classifier answers unmanaged and the sweeper's TTL reclaims it),
-		// but nothing retries, and "the Reaper will clean it up" stops being
-		// true for exactly the sources that most need cleaning up.
-		if status == http.StatusConflict || status >= 500 {
-			logger.Info("delete-refused-keeping-locator-entry", lager.Data{
-				"handle": handle, "node": sourceNode, "status": status,
-			})
-
 			continue
 		}
 

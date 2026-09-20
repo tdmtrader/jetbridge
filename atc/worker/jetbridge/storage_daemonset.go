@@ -4,16 +4,16 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"github.com/concourse/concourse/artifactcap"
-	"io"
-	"net/http"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/concourse/concourse/artifactcap"
+	"github.com/concourse/concourse/artifactwire"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/metric"
@@ -41,6 +41,7 @@ type DaemonSetBackend struct {
 	nodeIPResolver  *NodeIPResolver
 	daemonClient    *DaemonClient
 	warmNegative    *warmNegativeCache
+	wire            *artifactwire.Client
 }
 
 func NewDaemonSetBackend(config Config, locator *ArtifactLocator, resolver *NodeIPResolver) *DaemonSetBackend {
@@ -67,6 +68,7 @@ func NewDaemonSetBackend(config Config, locator *ArtifactLocator, resolver *Node
 		artifactLocator: locator,
 		nodeIPResolver:  resolver,
 		warmNegative:    newWarmNegativeCache(),
+		wire:            newWireClient(config),
 	}
 }
 
@@ -153,36 +155,22 @@ func (b *DaemonSetBackend) ArtifactStoreVolumeName() string {
 	return artifactDaemonHostPathVolumeName
 }
 
-// batchItem is a single key/dest pair for the /resolve-batch endpoint.
-type batchItem struct {
-	Key  string `json:"key"`
-	Dest string `json:"dest"`
-
-	// Capability authorizes this one copy: bound to Key and Dest, and
-	// short-lived. Empty when no signing key is configured, which the daemon
-	// accepts only if it too was started without a key.
-	Capability string `json:"capability,omitempty"`
-}
-
-type hangarMaterializationItem struct {
-	Ref     hangar.TreeRef `json:"ref"`
-	Handle  string         `json:"handle"`
-	Volume  string         `json:"volume"`
-	Warrant string         `json:"warrant"`
-}
-
-type hangarMaterializationRequest struct {
-	Items []hangarMaterializationItem `json:"items"`
+// artifactwire.ResolveRequest is a single key/dest pair for the /resolve-batch endpoint.
+// wireTreeRef converts at this edge: the wire module carries a shape-only
+// TreeRef because it cannot import hangar (ADR-0002), and the daemon
+// converts back at its own edge.
+func wireTreeRef(ref hangar.TreeRef) artifactwire.TreeRef {
+	return artifactwire.TreeRef{Scope: string(ref.Scope), Digest: string(ref.Digest), Generation: ref.Generation}
 }
 
 func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runtime.Input, podVolumes []corev1.Volume, mainMounts []corev1.VolumeMount) ([]corev1.Container, error) {
 	helperImage := b.helperImage()
 	allowEscalation := false
 
-	var items []batchItem
+	var items []artifactwire.ResolveRequest
 	var mounts []corev1.VolumeMount
 	seenVolumes := map[string]bool{}
-	var hangarItems []hangarMaterializationItem
+	var hangarItems []artifactwire.MaterializationItem
 	var hangarMounts []corev1.VolumeMount
 	var hangarReceiptBytes []string
 	seenHangarVolumes := map[string]bool{}
@@ -210,8 +198,8 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 			if err != nil {
 				return nil, fmt.Errorf("sign Hangar tree input warrant: %w", err)
 			}
-			hangarItems = append(hangarItems, hangarMaterializationItem{
-				Ref: *input.HangarTree, Handle: handle, Volume: volumeName, Warrant: "Bearer " + warrant,
+			hangarItems = append(hangarItems, artifactwire.MaterializationItem{
+				Ref: wireTreeRef(*input.HangarTree), Handle: handle, Volume: volumeName, Warrant: "Bearer " + warrant,
 			})
 			receipt, err := json.Marshal(*input.HangarTree)
 			if err != nil {
@@ -253,7 +241,7 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 			hostDestPath = filepath.Join(b.config.ArtifactDaemonHostPath, "steps", handle, volumeName)
 		}
 
-		item := batchItem{Key: daemonKey, Dest: hostDestPath}
+		item := artifactwire.ResolveRequest{Key: daemonKey, Dest: hostDestPath}
 		if b.resolveSigner != nil {
 			capability, err := b.resolveSigner.SignResolve(daemonKey, hostDestPath, resolveCapabilityExpiry(b.config))
 			if err != nil {
@@ -309,7 +297,7 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 		if len(hangarItems) > maxHangarMaterializationItems {
 			return nil, fmt.Errorf("Hangar materialization batch exceeds %d items", maxHangarMaterializationItems)
 		}
-		payload, err := json.Marshal(hangarMaterializationRequest{Items: hangarItems})
+		payload, err := json.Marshal(artifactwire.MaterializationRequest{Items: hangarItems})
 		if err != nil {
 			return nil, fmt.Errorf("marshal Hangar materialization batch: %w", err)
 		}
@@ -331,10 +319,6 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 }
 
 func (b *DaemonSetBackend) daemonHangarMaterializationCommand(payload []byte, expectedReceipts []string) []string {
-	port := b.config.ArtifactDaemonPort
-	if port == 0 {
-		port = 7780
-	}
 	request := base64.StdEncoding.EncodeToString(payload)
 	var receiptChecks strings.Builder
 	for index, expected := range expectedReceipts {
@@ -343,10 +327,7 @@ func (b *DaemonSetBackend) daemonHangarMaterializationCommand(payload []byte, ex
 	script := fmt.Sprintf(`
 set -u
 umask 077
-PORT=%d
-DAEMON="%s://${HOST_IP}:${PORT}"
-WGET_OPTS="%s"
-REQUEST_B64='%s'
+%sREQUEST_B64='%s'
 TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/hangar-materialize.XXXXXX") || exit 1
 cleanup_files() {
   rm -rf "$TMP_DIR"
@@ -377,7 +358,7 @@ while [ "$ATTEMPT" -lt "$MAX_ATTEMPTS" ]; do
   ATTEMPT=$((ATTEMPT + 1))
   : >"$RESPONSE"
   : >"$HEADERS"
-  wget ${WGET_OPTS} -S -q -O "$RESPONSE" -T 180 --header='Content-Type: application/json' --post-file="$REQUEST" "${DAEMON}/hangar/v1/materializations" 2>"$HEADERS"
+  wget ${WGET_OPTS} -S -q -O "$RESPONSE" -T 180 --header='Content-Type: application/json' --post-file="$REQUEST" "${DAEMON}%s" 2>"$HEADERS"
   WGET_STATUS=$?
   HTTP_STATUS=$(sed -n 's/^[[:space:]]*HTTP\/[0-9.]* \([0-9][0-9][0-9]\).*/\1/p' "$HEADERS" | tail -n 1)
   if [ -z "$HTTP_STATUS" ] || [ "$HTTP_STATUS" = 503 ]; then
@@ -421,19 +402,8 @@ verify_receipt() {
   fi
 }
 %sexit 0
-`, port, b.daemonScheme(), b.wgetTLSOpts(), request, receiptChecks.String())
+`, b.wire.ShellPrelude(), request, artifactwire.HangarMaterializations.Path, receiptChecks.String())
 	return []string{"sh", "-c", script}
-}
-
-func (b *DaemonSetBackend) daemonScheme() string {
-	return daemonURLScheme(b.config)
-}
-
-// wgetTLSOpts returns extra BusyBox wget options for daemon HTTPS calls. The
-// reasoning lives with the function it delegates to, which the capture control
-// init reads from too.
-func (b *DaemonSetBackend) wgetTLSOpts() string {
-	return wgetTLSOptions(b.config)
 }
 
 func (b *DaemonSetBackend) daemonResolveCommand(key, hostDest string) []string {
@@ -442,18 +412,15 @@ func (b *DaemonSetBackend) daemonResolveCommand(key, hostDest string) []string {
 		return []string{"sh", "-c", script}
 	}
 
-	port := b.config.ArtifactDaemonPort
-	if port == 0 {
-		port = 7780
-	}
+	// The body is the same ResolveRequest the daemon decodes, marshalled
+	// here rather than spelled out in shell.
+	payload, _ := json.Marshal(artifactwire.ResolveRequest{Key: key, Dest: hostDest})
 
 	script := fmt.Sprintf(`
 set -e
 KEY="%s"
 DST="%s"
-PORT=%d
-DAEMON="%s://${HOST_IP}:${PORT}"
-WGET_OPTS="%s"
+%sPAYLOAD='%s'
 echo "[artifact-fetch] resolving key=${KEY} dest=${DST} daemon=${DAEMON}" >&2
 # Retry up to 10 times with backoff — the daemon may not be reachable
 # immediately (hostPort iptables rules propagation, daemon restart after
@@ -462,7 +429,7 @@ ATTEMPT=0
 MAX=10
 while true; do
   ATTEMPT=$((ATTEMPT + 1))
-  RESP=$(wget ${WGET_OPTS} -qO- -T 180 --post-data='{"key":"'"${KEY}"'","dest":"'"${DST}"'"}' "${DAEMON}/resolve" 2>&1) && break
+  RESP=$(wget ${WGET_OPTS} -qO- -T 180 --header='Content-Type: application/json' --post-data="${PAYLOAD}" "${DAEMON}%s" 2>&1) && break
   if [ "$ATTEMPT" -ge "$MAX" ]; then
     echo "[artifact-fetch] FAILED after ${MAX} attempts: ${RESP}" >&2
     exit 1
@@ -471,26 +438,17 @@ while true; do
   sleep 2
 done
 echo "[artifact-fetch] resolved: ${RESP}" >&2
-`, key, hostDest, port, b.daemonScheme(), b.wgetTLSOpts())
+`, key, hostDest, b.wire.ShellPrelude(), string(payload), artifactwire.Resolve.Path)
 
 	return []string{"sh", "-c", script}
 }
 
-func (b *DaemonSetBackend) daemonResolveBatchCommand(items []batchItem) []string {
+func (b *DaemonSetBackend) daemonResolveBatchCommand(items []artifactwire.ResolveRequest) []string {
 	if len(items) == 0 {
 		return []string{"sh", "-c", "echo '[artifact-fetch] no items to resolve' >&2"}
 	}
 
-	port := b.config.ArtifactDaemonPort
-	if port == 0 {
-		port = 7780
-	}
-
-	// Build the JSON payload for /resolve-batch.
-	type batchPayload struct {
-		Items []batchItem `json:"items"`
-	}
-	payload, _ := json.Marshal(batchPayload{Items: items})
+	payload, _ := json.Marshal(artifactwire.BatchResolveRequest{Items: items})
 
 	// The keys, named in the script itself. BusyBox wget discards the response
 	// BODY on a non-2xx and prints only the status line, so on the failure
@@ -504,17 +462,14 @@ func (b *DaemonSetBackend) daemonResolveBatchCommand(items []batchItem) []string
 
 	script := fmt.Sprintf(`
 set -e
-PORT=%d
-DAEMON="%s://${HOST_IP}:${PORT}"
-WGET_OPTS="%s"
-PAYLOAD='%s'
+%sPAYLOAD='%s'
 KEYS=%s
-echo "[artifact-fetch] batch resolving %d artifacts via ${DAEMON}/resolve-batch: ${KEYS}" >&2
+echo "[artifact-fetch] batch resolving %d artifacts via ${DAEMON}%s: ${KEYS}" >&2
 ATTEMPT=0
 MAX=10
 while true; do
   ATTEMPT=$((ATTEMPT + 1))
-  RESP=$(wget ${WGET_OPTS} -qO- -T 180 --header='Content-Type: application/json' --post-data="${PAYLOAD}" "${DAEMON}/resolve-batch" 2>&1) && break
+  RESP=$(wget ${WGET_OPTS} -qO- -T 180 --header='Content-Type: application/json' --post-data="${PAYLOAD}" "${DAEMON}%s" 2>&1) && break
   # A 4xx is the daemon's considered answer about these keys — missing
   # artifact, refused destination, expired capability — and no number of
   # retries turns it into a different one. Retrying it burned twenty seconds
@@ -539,7 +494,7 @@ echo "[artifact-fetch] batch resolved: ${RESP}" >&2
 case "${RESP}" in
   *'"status":"error"'*) echo "[artifact-fetch] batch had failures — see above" >&2; exit 1 ;;
 esac
-`, port, b.daemonScheme(), b.wgetTLSOpts(), string(payload), shellQuote(strings.Join(keys, " ")), len(items))
+`, b.wire.ShellPrelude(), string(payload), shellQuote(strings.Join(keys, " ")), len(items), artifactwire.ResolveBatch.Path, artifactwire.ResolveBatch.Path)
 
 	return []string{"sh", "-c", script}
 }
@@ -633,11 +588,6 @@ mkdir -p "${TARGET}"`, shellQuote(cleanupPath))
 // including no answer at all, is a refusal. A guard whose failure mode is
 // "delete it anyway" would be the exposure it was written to close.
 func (b *DaemonSetBackend) ledgerCheckedCleanupScript(handle, cleanupPath string) string {
-	port := b.config.ArtifactDaemonPort
-	if port == 0 {
-		port = 7780
-	}
-
 	// The handle and the target are shell VARIABLES, assigned once from a
 	// quoted word and expanded inside double quotes from there on. Neither is
 	// interpolated into a command, a URL or a message, because every one of
@@ -648,8 +598,8 @@ func (b *DaemonSetBackend) ledgerCheckedCleanupScript(handle, cleanupPath string
 	return fmt.Sprintf(`
 set -u
 HANDLE=%[1]s
-TARGET=%[5]s
-CLASS="$(wget -q -O - %[4]s "%[3]s://${HOST_IP}:%[2]d/capture-held/steps/${HANDLE}" 2>/dev/null || true)"
+TARGET=%[4]s
+%[2]sCLASS="$(wget -q -O - ${WGET_OPTS} "${DAEMON}%[3]s${HANDLE}" 2>/dev/null || true)"
 case "${CLASS}" in
   *'"class":"unmanaged"'*)
     echo "[cleanup-stale] the output ledger holds nothing here; removing stale hostPath data: ${TARGET}" >&2
@@ -665,7 +615,7 @@ case "${CLASS}" in
     exit 1
     ;;
 esac
-`, shellQuote(handle), port, b.daemonScheme(), b.wgetTLSOpts(), shellQuote(cleanupPath))
+`, shellQuote(handle), b.wire.ShellPrelude(), artifactwire.CaptureHeldStepsPrefix, shellQuote(cleanupPath))
 }
 
 // BuildAffinity places the pod on a node that can serve every facet it needs.
@@ -701,32 +651,16 @@ func (b *DaemonSetBackend) CaptureClass(ctx context.Context, handle, nodeName st
 		return "", fmt.Errorf("resolving node %s: %w", nodeName, err)
 	}
 
-	port := b.config.ArtifactDaemonPort
-	if port == 0 {
-		port = 7780
-	}
-	url := fmt.Sprintf("%s://%s:%d/capture-held/steps/%s", b.daemonScheme(), nodeIP, port, handle)
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return "", err
-	}
-	response, err := newDaemonHTTPClient(b.config, 10*time.Second).Do(request)
-	if err != nil {
-		return "", err
-	}
-	defer response.Body.Close()
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 
-	if response.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("the daemon on %s answered %d", nodeName, response.StatusCode)
-	}
-	var answer struct {
-		Class string `json:"class"`
-	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<16)).Decode(&answer); err != nil {
+	answer, err := b.wire.CaptureClass(ctx, nodeIP, handle)
+	if err != nil {
+		var refusal *artifactwire.Refusal
+		if errors.As(err, &refusal) {
+			return "", fmt.Errorf("the daemon on %s answered %d", nodeName, refusal.Status)
+		}
 		return "", err
-	}
-	if answer.Class == "" {
-		return "", fmt.Errorf("the daemon on %s named no class for %s", nodeName, handle)
 	}
 
 	return answer.Class, nil
@@ -970,11 +904,6 @@ func (b *DaemonSetBackend) registerAlias(nodeName, volumeKey, diskPath string, r
 		return
 	}
 
-	port := b.config.ArtifactDaemonPort
-	if port == 0 {
-		port = 7780
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -984,28 +913,11 @@ func (b *DaemonSetBackend) registerAlias(nodeName, volumeKey, diskPath string, r
 		return
 	}
 
-	url := fmt.Sprintf("%s://%s:%d/register", b.daemonScheme(), nodeIP, port)
-	body := fmt.Sprintf(`{"key":%q,"local_path":%q,"read_only":%t}`, volumeKey, diskPath, readOnly)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
+	// /register is a protected daemon route; the wire client carries the
+	// client cert when TLS is enabled.
+	err = b.wire.Register(ctx, nodeIP, artifactwire.RegisterRequest{Key: volumeKey, LocalPath: diskPath, ReadOnly: readOnly})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "WARNING: registerDaemonAlias: create request: %v\n", err)
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	// /register is a protected daemon path; use the mTLS-aware client (carries
-	// the client cert when TLS is enabled) rather than http.DefaultClient.
-	client := newDaemonHTTPClient(b.config, 0)
-	resp, err := client.Do(req)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "WARNING: registerDaemonAlias: %s → %v (key=%s)\n", url, err, volumeKey)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusCreated {
-		fmt.Fprintf(os.Stderr, "WARNING: registerDaemonAlias: %s → status %d (key=%s)\n", url, resp.StatusCode, volumeKey)
+		fmt.Fprintf(os.Stderr, "WARNING: registerDaemonAlias: %v (key=%s)\n", err, volumeKey)
 	}
 }
 

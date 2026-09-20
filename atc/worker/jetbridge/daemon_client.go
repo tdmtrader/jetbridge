@@ -2,35 +2,34 @@ package jetbridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"net"
-	"net/http"
-	"strings"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
+
+	"github.com/concourse/concourse/artifactwire"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
 
-// DaemonClient discovers artifact-daemon pods via EndpointSlices and queries
-// them for resource cache existence. It mirrors the PeerResolver discovery
-// pattern in cmd/artifact-daemon/peers.go but runs on the ATC side.
+// DaemonClient discovers artifact-daemon pods via EndpointSlices and fans
+// out over them. It is the locality adapter: which daemons exist, which to
+// ask, and what a fan-out's answer means. Reaching any one of them is the
+// wire module's job, and every operation here goes through it.
 type DaemonClient struct {
 	logger    lager.Logger
 	clientset kubernetes.Interface
 	namespace string
 	service   string
-	port      int
-	client    *http.Client
-	// warmClient is used for durable restores, which legitimately take far
-	// longer than a probe. It has no overall Timeout — the caller supplies a
-	// context deadline — but does bound the dial and the wait for response
-	// headers, so a black-holed pod IP cannot eat the whole warm budget.
-	warmClient *http.Client
-	scheme     string // "http" or "https"
+	wire      *artifactwire.Client
 }
+
+// probeTimeout bounds one daemon's answer to a probe, a mirror trigger or a
+// registration. A daemon that has not said anything in this long is not the
+// daemon to bind to.
+const probeTimeout = 5 * time.Second
 
 // DaemonClientTLSConfig holds optional mTLS configuration for the DaemonClient.
 type DaemonClientTLSConfig struct {
@@ -40,25 +39,27 @@ type DaemonClientTLSConfig struct {
 }
 
 // NewDaemonClient creates a DaemonClient that discovers daemon pods via the
-// given headless service's EndpointSlices. When tlsCfg is non-nil, the client
-// uses HTTPS with mTLS (client certificate + CA trust).
+// given headless service's EndpointSlices. When tlsCfg is non-nil and names
+// the whole triple, the client uses HTTPS with mTLS (client certificate + CA
+// trust); a triple that cannot be loaded is logged and every request is then
+// refused naming the reason.
 func NewDaemonClient(logger lager.Logger, clientset kubernetes.Interface, namespace, service string, port int, tlsCfg *DaemonClientTLSConfig) *DaemonClient {
-	scheme := "http"
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-
-	if tlsCfg != nil && DaemonTLSConfigured(tlsCfg.CertPath, tlsCfg.KeyPath, tlsCfg.CACertPath) {
-		serverName := ""
+	triple := artifactwire.TLS{}
+	if tlsCfg != nil {
+		triple = artifactwire.TLS{CertPath: tlsCfg.CertPath, KeyPath: tlsCfg.KeyPath, CACertPath: tlsCfg.CACertPath}
 		if service != "" && namespace != "" {
-			serverName = fmt.Sprintf("%s.%s.svc", service, namespace)
+			triple.ServerName = fmt.Sprintf("%s.%s.svc", service, namespace)
 		}
-		tlsConfig, err := loadDaemonClientTLS(tlsCfg.CertPath, tlsCfg.KeyPath, tlsCfg.CACertPath, serverName)
-		if err != nil {
-			logger.Error("failed-to-load-daemon-client-tls", err)
-		} else {
-			transport.TLSClientConfig = tlsConfig
-			scheme = "https"
-			logger.Info("mtls-enabled")
-		}
+	}
+	// A triple that cannot be loaded is not a plaintext client: every request
+	// is refused naming the reason, so the misconfiguration surfaces rather
+	// than an unauthenticated probe that happened to work.
+	wire, err := artifactwire.NewClient(port, triple)
+	if err != nil {
+		logger.Error("failed-to-load-daemon-client-tls", err)
+		wire = artifactwire.Misconfigured(port, err)
+	} else if triple.Configured() {
+		logger.Info("mtls-enabled")
 	}
 
 	return &DaemonClient{
@@ -66,25 +67,8 @@ func NewDaemonClient(logger lager.Logger, clientset kubernetes.Interface, namesp
 		clientset: clientset,
 		namespace: namespace,
 		service:   service,
-		port:      port,
-		scheme:    scheme,
-		client: &http.Client{
-			Timeout:   5 * time.Second,
-			Transport: transport,
-		},
-		warmClient: &http.Client{Transport: warmTransport(transport)},
+		wire:      wire,
 	}
-}
-
-// warmTransport clones the probe transport and bounds the two phases a restore
-// must not stall in: connecting, and waiting for the daemon to say anything at
-// all. The body may then stream for as long as the caller's context allows.
-func warmTransport(base *http.Transport) *http.Transport {
-	t := base.Clone()
-	t.DialContext = (&net.Dialer{Timeout: 3 * time.Second}).DialContext
-	t.ResponseHeaderTimeout = warmResponseHeaderTimeout
-
-	return t
 }
 
 // daemonEndpoint is one artifact-daemon pod: where to reach it, and which node
@@ -213,27 +197,17 @@ func (d *DaemonClient) ProbeResourceCache(ctx context.Context, cacheKey string) 
 
 	for _, ep := range eps {
 		go func(ep daemonEndpoint) {
-			url := fmt.Sprintf("%s://%s:%d/resource-caches/%s", d.scheme, ep.IP, d.port, cacheKey)
-			req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
-			if err != nil {
-				results <- probeResult{}
-				return
-			}
+			probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+			defer cancel()
 
-			resp, err := d.client.Do(req)
+			probe, err := d.wire.HeadResourceCache(probeCtx, ep.IP, cacheKey)
 			if err != nil {
 				logger.Debug("daemon-unreachable", lager.Data{"ip": ep.IP, "error": err.Error()})
 				results <- probeResult{}
 				return
 			}
-			resp.Body.Close()
 
-			// Read capability on every status, not just 200. A daemon that
-			// answers 404 for this key is still the daemon that can warm it,
-			// and a transient 500 must not make a node look tier-incapable.
-			capable := resp.Header.Get(DurableTierHeader) != ""
-
-			results <- probeResult{ep: ep, found: resp.StatusCode == http.StatusOK, durableCapable: capable}
+			results <- probeResult{ep: ep, found: probe.Found, durableCapable: probe.DurableCapable}
 		}(ep)
 	}
 
@@ -295,25 +269,16 @@ func (d *DaemonClient) ProbeStepArtifact(ctx context.Context, key string) (strin
 
 	for _, ip := range ips {
 		go func(ip string) {
-			url := fmt.Sprintf("%s://%s:%d/artifacts/steps/%s", d.scheme, ip, d.port, key)
-			req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
-			if err != nil {
-				results <- probeResult{}
-				return
-			}
-			resp, err := d.client.Do(req)
+			probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+			defer cancel()
+
+			found, err := d.wire.HeadArtifact(probeCtx, ip, artifactwire.StepsPrefix+key)
 			if err != nil {
 				logger.Debug("daemon-unreachable", lager.Data{"ip": ip, "error": err.Error()})
 				results <- probeResult{}
 				return
 			}
-			resp.Body.Close()
-
-			if resp.StatusCode == http.StatusOK {
-				results <- probeResult{ip: ip, found: true}
-				return
-			}
-			results <- probeResult{}
+			results <- probeResult{ip: ip, found: found}
 		}(ip)
 	}
 
@@ -345,25 +310,17 @@ func (d *DaemonClient) ProbeStepArtifact(ctx context.Context, key string) (strin
 func (d *DaemonClient) TriggerMirror(ctx context.Context, daemonIP, key string) error {
 	logger := d.logger.Session("trigger-mirror", lager.Data{"daemon_ip": daemonIP, "key": key})
 
-	url := fmt.Sprintf("%s://%s:%d/mirror", d.scheme, daemonIP, d.port)
-	body := fmt.Sprintf(`{"key":%q}`, key)
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
-	if err != nil {
-		logger.Error("create-request-failed", err)
-		return nil
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := d.client.Do(req)
-	if err != nil {
+	err := d.wire.Mirror(ctx, daemonIP, key)
+	var refusal *artifactwire.Refusal
+	switch {
+	case err == nil:
+	case errors.As(err, &refusal):
+		logger.Info("non-202", lager.Data{"status": refusal.Status})
+	default:
 		logger.Debug("daemon-unreachable", lager.Data{"error": err.Error()})
-		return nil
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusAccepted {
-		logger.Info("non-202", lager.Data{"status": resp.StatusCode})
 	}
 	return nil
 }
@@ -384,31 +341,28 @@ func (d *DaemonClient) RegisterAlias(ctx context.Context, key, localPath, durabl
 		return fmt.Errorf("no daemon pods found")
 	}
 
-	body := fmt.Sprintf(`{"key":%q,"local_path":%q,"durable_key":%q}`, key, localPath, durableKey)
+	request := artifactwire.RegisterRequest{Key: key, LocalPath: localPath, DurableKey: durableKey}
 	registered := false
 
 	for _, ip := range ips {
-		url := fmt.Sprintf("%s://%s:%d/register", d.scheme, ip, d.port)
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
-		if err != nil {
-			continue
-		}
-		req.Header.Set("Content-Type", "application/json")
+		attemptCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+		err := d.wire.Register(attemptCtx, ip, request)
+		cancel()
 
-		resp, err := d.client.Do(req)
-		if err != nil {
-			logger.Debug("daemon-unreachable", lager.Data{"ip": ip, "error": err.Error()})
-			continue
-		}
-		resp.Body.Close()
-
-		if resp.StatusCode == http.StatusCreated {
+		var refusal *artifactwire.Refusal
+		switch {
+		case err == nil:
 			logger.Info("registered", lager.Data{"daemon_ip": ip})
 			registered = true
+		case errors.As(err, &refusal):
+			// 404 = path not found on this daemon's node, try next
+			logger.Debug("daemon-rejected", lager.Data{"ip": ip, "status": refusal.Status})
+		default:
+			logger.Debug("daemon-unreachable", lager.Data{"ip": ip, "error": err.Error()})
+		}
+		if registered {
 			break // Only need to register on the daemon that has the path
 		}
-		// 404 = path not found on this daemon's node, try next
-		logger.Debug("daemon-rejected", lager.Data{"ip": ip, "status": resp.StatusCode})
 	}
 
 	if !registered {

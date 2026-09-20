@@ -13,6 +13,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 
+	"github.com/concourse/concourse/artifactwire"
 	"github.com/concourse/concourse/cmd/artifact-daemon/durable"
 )
 
@@ -27,30 +28,11 @@ import (
 // It is set on error responses too. A daemon that answers 404 for one key is
 // still the daemon that can warm it, and a transient 500 must not make a node
 // look permanently tier-incapable.
-const DurableTierHeader = "X-Durable-Tier"
+const DurableTierHeader = artifactwire.DurableTierHeader
 
 // ArtifactTierHeader says where a restore's bytes came from: "durable" if this
 // call fetched them, "local" if they were already here.
-const ArtifactTierHeader = "X-Artifact-Tier"
-
-// durableRestoreRequest is the body of POST /durable/restore.
-//
-// The two names are different namespaces and must not be conflated. Key is the
-// node-local alias, and becomes a direct child of steps/ — which is the only
-// thing the sweeper reclaims, so it must be a single path segment. DurableKey
-// names an object in a bucket and carries a retention-class prefix that an
-// object lifecycle rule acts on.
-type durableRestoreRequest struct {
-	Key        string `json:"key"`
-	DurableKey string `json:"durable_key"`
-}
-
-type durableRestoreResponse struct {
-	Restored bool   `json:"restored"`
-	Node     string `json:"node,omitempty"`
-	Path     string `json:"path,omitempty"`
-	Duration string `json:"duration,omitempty"`
-}
+const ArtifactTierHeader = artifactwire.ArtifactTierHeader
 
 // handleDurableRestore pulls an object out of the durable store and registers
 // it locally, so that the caller may then read it from this daemon exactly as if
@@ -65,7 +47,7 @@ type durableRestoreResponse struct {
 // "who can get it", and makes its own answer true before returning.
 func (s *Server) handleDurableRestore(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
-	var req durableRestoreRequest
+	var req artifactwire.DurableRestoreRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.refuse(w, r, http.StatusBadRequest, reasonInvalidJSON, fmt.Errorf("invalid JSON: %v", err))
 		return
@@ -107,7 +89,7 @@ func (s *Server) handleDurableRestore(w http.ResponseWriter, r *http.Request) {
 			// Path in the response is the ABSOLUTE form: it is response JSON
 			// the caller acts on, an external contract rather than an internal
 			// representation.
-			s.writeRestoreResult(w, http.StatusOK, "local", durableRestoreResponse{
+			s.writeRestoreResult(w, http.StatusOK, "local", artifactwire.DurableRestoreResponse{
 				Restored: false, Node: s.nodeName, Path: s.registry.AmbientPath(loc),
 			})
 			return
@@ -156,12 +138,12 @@ func (s *Server) handleDurableRestore(w http.ResponseWriter, r *http.Request) {
 	}
 
 	logger.Info("restored", lager.Data{"duration": time.Since(start).String()})
-	s.writeRestoreResult(w, http.StatusCreated, "durable", durableRestoreResponse{
+	s.writeRestoreResult(w, http.StatusCreated, "durable", artifactwire.DurableRestoreResponse{
 		Restored: true, Node: s.nodeName, Path: dest, Duration: time.Since(start).String(),
 	})
 }
 
-func (s *Server) writeRestoreResult(w http.ResponseWriter, status int, tier string, body durableRestoreResponse) {
+func (s *Server) writeRestoreResult(w http.ResponseWriter, status int, tier string, body artifactwire.DurableRestoreResponse) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set(ArtifactTierHeader, tier)
 	if s.nodeName != "" {

@@ -81,7 +81,7 @@ func TestARefusedArtifactDeleteKeepsTheLocatorEntrySoTheNextSweepRetries(t *test
 			cfg:             Config{Namespace: "test-ns", ArtifactDaemonPort: port},
 			artifactLocator: locator,
 			nodeIPResolver:  NewNodeIPResolver(clientset),
-			httpClient:      daemon.Client(),
+			wire:            plainWire(t, port, daemon.Client().Transport),
 		}
 		reaper.cleanupDaemonSetArtifacts(context.Background(),
 			lagertest.NewTestLogger("cleanup"), []string{"held-handle"})

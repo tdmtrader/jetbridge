@@ -60,10 +60,10 @@ func peerFallbackEndpointSlice(namespace, service string, ips ...string) *discov
 }
 
 // newPeerFallbackTestRig wires up a DaemonSetVolume against a routingTransport
-// that maps producer/peer hostports to test servers. Both vol.httpClient and
-// vol.daemonClient.client share the transport so probe HEADs and fetch GETs
-// land on the right server.
-func newPeerFallbackTestRig(producerNode, producerIP string, transport routingTransport, peerIPs []string) *DaemonSetVolume {
+// that maps producer/peer hostports to test servers. The volume and its
+// daemonClient share one wire client over the transport so probe HEADs and
+// stream-out GETs land on the right server.
+func newPeerFallbackTestRig(t *testing.T, producerNode, producerIP string, transport routingTransport, peerIPs []string) *DaemonSetVolume {
 	resolver := fakeNodeIPResolver(testNode(producerNode, producerIP))
 	clientset := fake.NewSimpleClientset(peerFallbackEndpointSlice("ns", "artifact-daemon", peerIPs...))
 
@@ -79,9 +79,7 @@ func newPeerFallbackTestRig(producerNode, producerIP string, transport routingTr
 		clientset: clientset,
 		namespace: "ns",
 		service:   "artifact-daemon",
-		port:      7780,
-		client:    httpClient,
-		scheme:    "http",
+		wire:      plainWire(t, 7780, httpClient.Transport),
 	}
 
 	vol := &DaemonSetVolume{
@@ -90,7 +88,7 @@ func newPeerFallbackTestRig(producerNode, producerIP string, transport routingTr
 		workerName:     "w",
 		sourceNode:     producerNode,
 		config:         Config{ArtifactDaemonPort: 7780},
-		httpClient:     httpClient,
+		wire:           dc.wire,
 		nodeIPResolver: resolver,
 		daemonClient:   dc,
 	}
@@ -118,7 +116,7 @@ func TestDaemonSetVolume_StreamOut_FallsBackToPeer_OnConnectionRefused(t *testin
 		peerIP + ":7780":     peer.URL, // peer serves
 	}}
 
-	vol := newPeerFallbackTestRig("node-1", producerIP, transport, []string{peerIP})
+	vol := newPeerFallbackTestRig(t, "node-1", producerIP, transport, []string{peerIP})
 
 	reader, err := vol.StreamOut(context.Background(), ".", nil)
 	if err != nil {
@@ -154,7 +152,7 @@ func TestDaemonSetVolume_StreamOut_FallsBack_PreservesNotFoundOnProbeMiss(t *tes
 		peerIP + ":7780":     peer.URL, // peer responsive but lacks artifact
 	}}
 
-	vol := newPeerFallbackTestRig("node-1", producerIP, transport, []string{peerIP})
+	vol := newPeerFallbackTestRig(t, "node-1", producerIP, transport, []string{peerIP})
 
 	_, err := vol.StreamOut(context.Background(), ".", nil)
 	if err == nil {
@@ -198,7 +196,7 @@ func TestDaemonSetVolume_StreamOut_HappyPath_PerformsZeroPeerProbes(t *testing.T
 		peerIP + ":7780":     peer.URL,
 	}}
 
-	vol := newPeerFallbackTestRig("node-1", producerIP, transport, []string{peerIP})
+	vol := newPeerFallbackTestRig(t, "node-1", producerIP, transport, []string{peerIP})
 
 	reader, err := vol.StreamOut(context.Background(), ".", nil)
 	if err != nil {

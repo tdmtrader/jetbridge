@@ -9,13 +9,13 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/concourse/concourse/artifactwire"
 	"github.com/concourse/concourse/atc/runtime"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -99,8 +99,10 @@ func TestDaemonTLSConfiguredRequiresTheWholeTriple(t *testing.T) {
 	}
 }
 
-// The scheme the ATC dials and the client it dials with come from the same
-// predicate, so they cannot disagree: https always presents a certificate.
+// The scheme the ATC dials and the certificate it presents come from one
+// predicate inside the wire client, so they cannot disagree: https always
+// presents a certificate. A partial triple therefore dials plaintext, and
+// ValidateDaemonTLSFlags is what refuses it before it gets this far.
 func TestDaemonSchemeAndClientNeverDisagree(t *testing.T) {
 	for _, tc := range []struct{ name, cert, key, caCrt string }{
 		{name: "cert only", cert: "/etc/tls/client.crt"},
@@ -113,8 +115,8 @@ func TestDaemonSchemeAndClientNeverDisagree(t *testing.T) {
 		cfg.ArtifactDaemonTLSCACert = tc.caCrt
 		cfg.ArtifactDaemonTLSEnabled = DaemonTLSConfigured(tc.cert, tc.key, tc.caCrt)
 
-		if daemonURLScheme(cfg) == "https" && !daemonClientTLSConfigured(cfg) {
-			t.Errorf("%s: ATC dials https but presents no client certificate", tc.name)
+		if got := newWireClient(cfg).Scheme(); got != "http" {
+			t.Errorf("%s: ATC dials %s but presents no client certificate", tc.name, got)
 		}
 	}
 }
@@ -141,63 +143,56 @@ func TestValidateDaemonTLSFlags(t *testing.T) {
 	}
 }
 
-func TestDaemonURLScheme(t *testing.T) {
-	if got := daemonURLScheme(testDaemonConfig()); got != "http" {
+// wireTLS is the one adapter from Config to the wire client's triple: off
+// means plaintext whatever paths are set, on hands over the triple and the
+// service name to verify against.
+func TestWireTLSFollowsTheConfig(t *testing.T) {
+	off := testDaemonConfig()
+	off.ArtifactDaemonTLSCert, off.ArtifactDaemonTLSKey, off.ArtifactDaemonTLSCACert = "c", "k", "a"
+	if got := wireTLS(off); got.Configured() {
+		t.Errorf("TLS disabled: expected an empty triple, got %+v", got)
+	}
+	if got := newWireClient(off).Scheme(); got != "http" {
 		t.Errorf("TLS disabled: expected scheme http, got %q", got)
 	}
-	cfg := testDaemonConfig()
-	cfg.ArtifactDaemonTLSEnabled = true
-	if got := daemonURLScheme(cfg); got != "https" {
+
+	on := tlsDaemonConfig(t)
+	triple := wireTLS(on)
+	if !triple.Configured() || triple.ServerName != "artifact-daemon.test-ns.svc" {
+		t.Errorf("TLS enabled: expected the triple with the service SAN, got %+v", triple)
+	}
+	if got := newWireClient(on).Scheme(); got != "https" {
 		t.Errorf("TLS enabled: expected scheme https, got %q", got)
 	}
 }
 
-func TestNewDaemonHTTPClient_PlainWhenTLSDisabled(t *testing.T) {
-	client := newDaemonHTTPClient(testDaemonConfig(), 10*time.Second)
-	transport, ok := client.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("expected *http.Transport, got %T", client.Transport)
-	}
-	if transport.TLSClientConfig != nil && len(transport.TLSClientConfig.Certificates) > 0 {
-		t.Error("expected no client certificate when TLS disabled")
-	}
-	if client.Timeout != 10*time.Second {
-		t.Errorf("expected timeout 10s, got %v", client.Timeout)
-	}
-}
-
-func TestNewDaemonHTTPClient_PresentsClientCertWhenTLSEnabled(t *testing.T) {
-	client := newDaemonHTTPClient(tlsDaemonConfig(t), 30*time.Second)
-	transport, ok := client.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("expected *http.Transport, got %T", client.Transport)
-	}
-	if transport.TLSClientConfig == nil {
-		t.Fatal("expected TLSClientConfig to be set when TLS enabled")
-	}
-	if len(transport.TLSClientConfig.Certificates) != 1 {
-		t.Errorf("expected 1 client certificate, got %d", len(transport.TLSClientConfig.Certificates))
-	}
-	if transport.TLSClientConfig.RootCAs == nil {
-		t.Error("expected RootCAs (daemon CA trust) to be set")
-	}
-}
-
-func TestNewDaemonHTTPClient_FallsBackWhenCertsMissing(t *testing.T) {
+// TLS asked for and not loadable is NOT plaintext. The old fallback dialed
+// https with no certificate and failed at the handshake; a fallback to http
+// would be the unauthenticated path the certificate exists to close. The
+// client keeps https for the init containers and refuses every request
+// naming the certificate.
+func TestNewWireClient_RefusesWhenCertsMissing(t *testing.T) {
 	cfg := testDaemonConfig()
 	cfg.ArtifactDaemonTLSEnabled = true
 	cfg.ArtifactDaemonTLSCert = "/nonexistent/client.crt"
 	cfg.ArtifactDaemonTLSKey = "/nonexistent/client.key"
 	cfg.ArtifactDaemonTLSCACert = "/nonexistent/ca.crt"
 
-	// Should not panic; falls back to a plain client (warning to stderr).
-	client := newDaemonHTTPClient(cfg, 10*time.Second)
-	transport, ok := client.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("expected *http.Transport, got %T", client.Transport)
+	client := newWireClient(cfg)
+	if got := client.Scheme(); got != "https" {
+		t.Errorf("expected the scheme the deployment asked for, got %q", got)
 	}
-	if transport.TLSClientConfig != nil && len(transport.TLSClientConfig.Certificates) > 0 {
-		t.Error("expected fallback to plain client (no client cert) when certs cannot be loaded")
+	err := client.Mirror(context.Background(), "10.0.0.5", "k")
+	if err == nil || !strings.Contains(err.Error(), "cert") {
+		t.Errorf("expected every request refused naming the certificate, got %v", err)
+	}
+
+	partial := testDaemonConfig()
+	partial.ArtifactDaemonTLSEnabled = true
+	partial.ArtifactDaemonTLSCert = "/etc/tls/client.crt"
+	err = newWireClient(partial).Mirror(context.Background(), "10.0.0.5", "k")
+	if err == nil || !strings.Contains(err.Error(), "kubernetes-artifact-daemon-tls-key") {
+		t.Errorf("expected a partial triple refused naming the missing flags, got %v", err)
 	}
 }
 
@@ -218,39 +213,19 @@ func TestDaemonTLSServerName(t *testing.T) {
 	}
 }
 
-// TestNewDaemonHTTPClient_SetsServerName guards the regression where mTLS by pod
-// IP failed cert verification ("certificate is valid for 127.0.0.1, not
-// <podIP>") because no ServerName was set to the cert's service-DNS SAN.
-func TestNewDaemonHTTPClient_SetsServerName(t *testing.T) {
-	client := newDaemonHTTPClient(tlsDaemonConfig(t), 30*time.Second)
-	transport, ok := client.Transport.(*http.Transport)
-	if !ok || transport.TLSClientConfig == nil {
-		t.Fatal("expected an mTLS transport")
-	}
-	if got, want := transport.TLSClientConfig.ServerName, "artifact-daemon.test-ns.svc"; got != want {
-		t.Errorf("expected ServerName %q (cert SAN) so by-IP dials verify, got %q", want, got)
-	}
-}
-
 // TestDaemonSetVolume_DaemonURLSchemeFollowsTLS guards the regression where the
 // ATC-side data-plane URLs were hardcoded to http:// even with mTLS enabled.
+// The volume no longer assembles a URL; its wire client does, from the same
+// triple, so the check is on the client the volume was built with.
 func TestDaemonSetVolume_DaemonURLSchemeFollowsTLS(t *testing.T) {
-	httpVol := &DaemonSetVolume{key: "art-key", sourceIP: "10.0.0.5", config: testDaemonConfig()}
-	httpURL, err := httpVol.daemonURL(context.Background())
-	if err != nil {
-		t.Fatalf("daemonURL (http): %v", err)
-	}
-	if !strings.HasPrefix(httpURL, "http://10.0.0.5:7780/artifacts/art-key") {
-		t.Errorf("TLS disabled: expected http:// artifact URL, got %q", httpURL)
+	httpVol := NewDaemonSetVolumeFromIP("art-key", "h", "w", "10.0.0.5", testDaemonConfig())
+	if got := httpVol.wire.URL("10.0.0.5", artifactwire.ArtifactsPrefix+"art-key"); got != "http://10.0.0.5:7780/artifacts/art-key" {
+		t.Errorf("TLS disabled: expected http:// artifact URL, got %q", got)
 	}
 
-	httpsVol := &DaemonSetVolume{key: "art-key", sourceIP: "10.0.0.5", config: tlsDaemonConfig(t)}
-	httpsURL, err := httpsVol.daemonURL(context.Background())
-	if err != nil {
-		t.Fatalf("daemonURL (https): %v", err)
-	}
-	if !strings.HasPrefix(httpsURL, "https://10.0.0.5:7780/artifacts/art-key") {
-		t.Errorf("TLS enabled: expected https:// artifact URL, got %q", httpsURL)
+	httpsVol := NewDaemonSetVolumeFromIP("art-key", "h", "w", "10.0.0.5", tlsDaemonConfig(t))
+	if got := httpsVol.wire.URL("10.0.0.5", artifactwire.ArtifactsPrefix+"art-key"); got != "https://10.0.0.5:7780/artifacts/art-key" {
+		t.Errorf("TLS enabled: expected https:// artifact URL, got %q", got)
 	}
 }
 
@@ -328,32 +303,14 @@ func TestBuildFetchInitContainers_NoTLSMountWhenDisabled(t *testing.T) {
 	}
 }
 
-// A whole-request http.Client.Timeout covers reading the response body, which
-// severs long-running artifact tar streams mid-read ("unexpected EOF"). The
-// streaming client must bound only the handshake (via ResponseHeaderTimeout),
-// never the body read.
-func TestNewDaemonStreamingHTTPClient_NoWholeRequestTimeout(t *testing.T) {
-	client := newDaemonStreamingHTTPClient(testDaemonConfig())
-	if client.Timeout != 0 {
-		t.Errorf("expected no whole-request timeout, got %v", client.Timeout)
-	}
-	transport, ok := client.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("expected *http.Transport, got %T", client.Transport)
-	}
-	if transport.ResponseHeaderTimeout <= 0 {
-		t.Error("expected a ResponseHeaderTimeout to bound the handshake")
-	}
-}
-
 func TestDaemonSetVolumeUsesStreamingClient(t *testing.T) {
 	vol := NewDaemonSetVolume("key", "handle", "worker", nil, "node", testDaemonConfig(), nil)
-	if vol.httpClient.Timeout != 0 {
-		t.Errorf("NewDaemonSetVolume: expected no whole-request timeout, got %v", vol.httpClient.Timeout)
+	if vol.wire == nil {
+		t.Error("NewDaemonSetVolume: expected a wire client")
 	}
 
 	volFromIP := NewDaemonSetVolumeFromIP("key", "handle", "worker", "10.0.0.1", testDaemonConfig())
-	if volFromIP.httpClient.Timeout != 0 {
-		t.Errorf("NewDaemonSetVolumeFromIP: expected no whole-request timeout, got %v", volFromIP.httpClient.Timeout)
+	if volFromIP.wire == nil {
+		t.Error("NewDaemonSetVolumeFromIP: expected a wire client")
 	}
 }

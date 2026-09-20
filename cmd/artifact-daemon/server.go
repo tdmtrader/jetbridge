@@ -23,6 +23,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/concourse/concourse/artifactcap"
+	"github.com/concourse/concourse/artifactwire"
 	"github.com/concourse/concourse/cmd/artifact-daemon/durable"
 	"github.com/concourse/concourse/hangar/output/ledger"
 )
@@ -343,7 +344,7 @@ func (s *Server) SetResolveCapabilityKey(key []byte) error {
 
 // authorizeResolve fails CLOSED: once a key is configured, a missing or
 // unverifiable capability is refused rather than warned about.
-func (s *Server) authorizeResolve(req resolveRequest) bool {
+func (s *Server) authorizeResolve(req artifactwire.ResolveRequest) bool {
 	if s.resolveVerifier == nil {
 		return true
 	}
@@ -386,35 +387,46 @@ func (s *Server) Handler(opts ...HandlerOption) http.Handler {
 		return h
 	}
 
-	// Exempt paths — no client cert required (kubelet probes and Prometheus
-	// scrapers cannot present client certs; protected by NetworkPolicy).
-	mux.HandleFunc("GET /healthz", s.handleHealthz)
-	mux.HandleFunc("POST /resolve", s.handleResolve)
-	mux.HandleFunc("POST /resolve-batch", s.handleResolveBatch)
+	// Every route comes from the wire module's table, which also says whether
+	// it is mTLS-exempt. Exempt routes are the ones a kubelet probe, a
+	// Prometheus scraper or an init container in a pod on this node has to
+	// reach, none of which holds a client certificate; what protects each one
+	// is stated at its handler.
+	handle := func(route artifactwire.Route, h http.HandlerFunc) {
+		if route.MTLSExempt {
+			mux.HandleFunc(route.Pattern(), h)
+		} else {
+			mux.HandleFunc(route.Pattern(), protect(h))
+		}
+	}
+
+	handle(artifactwire.Healthz, s.handleHealthz)
+	handle(artifactwire.Resolve, s.handleResolve)
+	handle(artifactwire.ResolveBatch, s.handleResolveBatch)
 	// Read-only, and mTLS-exempt for the same reason /resolve is: the caller
 	// is an init container in a pod on this node, it holds no client
 	// certificate, and the question it needs answered is about its OWN step
 	// directory. It reads nothing but the class, writes nothing, and names no
 	// path the caller did not already name.
-	mux.HandleFunc("GET /capture-held/steps/{handle...}", s.handleCaptureClass)
+	handle(artifactwire.CaptureHeld, s.handleCaptureClass)
 	if s.metrics != nil {
-		mux.Handle("GET /metrics", s.metrics.handler())
+		mux.Handle(artifactwire.Metrics.Pattern(), s.metrics.handler())
 	}
 
-	// Protected paths — require client cert when TLS is enabled.
-	mux.HandleFunc("GET /artifacts/", protect(s.handleGetArtifact))
-	mux.HandleFunc("PUT /artifacts/", protect(s.handlePutArtifact))
-	mux.HandleFunc("DELETE /artifacts/", protect(s.handleDeleteArtifact))
-	mux.HandleFunc("HEAD /artifacts/", protect(s.handleHeadArtifact))
-	mux.HandleFunc("POST /register", protect(s.handleRegister))
-	mux.HandleFunc("POST /mirror", protect(s.handleMirrorTrigger))
-	mux.HandleFunc("PUT /stream-in/", protect(s.handleStreamIn))
-	mux.HandleFunc("POST /durable/restore", protect(s.handleDurableRestore))
-	mux.HandleFunc("HEAD /resource-caches/", protect(s.handleHeadResourceCache))
-	mux.HandleFunc("GET /resource-caches/", protect(s.handleGetResourceCache))
+	handle(artifactwire.GetArtifact, s.handleGetArtifact)
+	handle(artifactwire.PutArtifact, s.handlePutArtifact)
+	handle(artifactwire.DeleteArtifact, s.handleDeleteArtifact)
+	handle(artifactwire.HeadArtifact, s.handleHeadArtifact)
+	handle(artifactwire.Register, s.handleRegister)
+	handle(artifactwire.Mirror, s.handleMirrorTrigger)
+	handle(artifactwire.StreamIn, s.handleStreamIn)
+	handle(artifactwire.DurableRestore, s.handleDurableRestore)
+	handle(artifactwire.HeadResourceCache, s.handleHeadResourceCache)
+	handle(artifactwire.GetResourceCache, s.handleGetResourceCache)
 	if s.hangar != nil {
-		mux.HandleFunc("POST /hangar/v1/scopes/{scope}/trees", protect(s.handleHangarPublish))
-		mux.HandleFunc("POST /hangar/v1/materializations", s.handleHangarMaterializations)
+		handle(artifactwire.HangarPublish, s.handleHangarPublish)
+		// Exempt: each item carries its own signed grant.
+		handle(artifactwire.HangarMaterializations, s.handleHangarMaterializations)
 	}
 
 	return mux
@@ -486,7 +498,7 @@ func (s *Server) requestKey(r *http.Request, prefix string) (string, error) {
 // artifactPath above produces it — routed through artifactLocation so the
 // walked path keeps the containment check the walker itself does not have.
 func (s *Server) artifactKey(r *http.Request) (string, error) {
-	key, err := s.requestKey(r, "/artifacts/")
+	key, err := s.requestKey(r, artifactwire.ArtifactsPrefix)
 	if err != nil {
 		return "", err
 	}
@@ -719,7 +731,7 @@ func (s *Server) captureRefusal(w http.ResponseWriter, r *http.Request, loc RelK
 // number (\x1f\x8b). This allows both raw tar (from DaemonSetVolume.StreamIn)
 // and gzipped tar (from fly CLI uploads) to work.
 func (s *Server) handleStreamIn(w http.ResponseWriter, r *http.Request) {
-	key, err := s.requestKey(r, "/stream-in/")
+	key, err := s.requestKey(r, artifactwire.StreamInPrefix)
 	if err != nil {
 		s.refuse(w, r, http.StatusBadRequest, reasonInvalidKey, err)
 		return
@@ -927,7 +939,7 @@ func (s *Server) refuseIfCaptureHeld(loc RelKey) (ledger.Class, error) {
 		return ledger.Unmanaged, nil
 	}
 
-	relative, inSteps := strings.CutPrefix(string(loc), "steps/")
+	relative, inSteps := strings.CutPrefix(string(loc), artifactwire.StepsPrefix)
 	if !inSteps {
 		return ledger.Unmanaged, nil
 	}
@@ -962,7 +974,7 @@ func (s *Server) handleCaptureClass(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
-	key := "steps/" + handle
+	key := artifactwire.StepsPrefix + handle
 	if err := validateRequestKey(key); err != nil {
 		s.refuse(w, r, http.StatusBadRequest, reasonInvalidKey, err)
 
@@ -970,11 +982,7 @@ func (s *Server) handleCaptureClass(w http.ResponseWriter, r *http.Request) {
 	}
 
 	class, reason := s.refuseIfCaptureHeld(RelKey(key))
-	body := struct {
-		Class  string `json:"class"`
-		Handle string `json:"handle"`
-		Reason string `json:"reason,omitempty"`
-	}{Class: string(class), Handle: handle, Reason: ledger.PublicReason(class)}
+	body := artifactwire.CaptureClassResponse{Class: string(class), Handle: handle, Reason: ledger.PublicReason(class)}
 	if reason != nil {
 		// The detailed reason goes to the LOG and not to the body. This route
 		// requires no client certificate -- a pod on this node has to be able
@@ -1049,7 +1057,7 @@ func (s *Server) handleHeadArtifact(w http.ResponseWriter, r *http.Request) {
 // the key "steps/rc-42" — but the registry stores just "rc-42". We try the
 // full key first, then strip common prefixes.
 func (s *Server) lookupRegistryAlias(r *http.Request) (RelKey, bool) {
-	key, err := s.requestKey(r, "/artifacts/")
+	key, err := s.requestKey(r, artifactwire.ArtifactsPrefix)
 	if err != nil {
 		return "", false
 	}
@@ -1057,53 +1065,12 @@ func (s *Server) lookupRegistryAlias(r *http.Request) (RelKey, bool) {
 		return rel, true
 	}
 	// Strip "steps/" prefix — peer probes prepend it but aliases don't have it.
-	if stripped := strings.TrimPrefix(key, "steps/"); stripped != key {
+	if stripped := strings.TrimPrefix(key, artifactwire.StepsPrefix); stripped != key {
 		if rel, found := s.lookupRegistry(stripped); found {
 			return rel, true
 		}
 	}
 	return "", false
-}
-
-// registerRequest is the JSON body for POST /register.
-type registerRequest struct {
-	Key       string `json:"key"`
-	LocalPath string `json:"local_path"`
-
-	// DurableKey is the name to store this artifact under for the long term,
-	// or empty for "do not keep it".
-	//
-	// Its presence is the entire eligibility protocol: whether an artifact is
-	// re-derivable and how long to keep it are questions only the ATC can
-	// answer, so the daemon neither parses this nor derives it from Key.
-	//
-	// Deliberately a separate field: Key names a node-local alias and stays a
-	// single segment; DurableKey names a bucket object and carries a
-	// retention-class prefix that a lifecycle rule acts on.
-	DurableKey string `json:"durable_key,omitempty"`
-
-	// ReadOnly says this alias is a name for READING bytes another authority
-	// owns, and it is the one kind the capture guard admits onto a held
-	// incarnation.
-	//
-	// The guard refuses an alias onto a capture-held location because a second
-	// write-capable name for bytes a capture is about to seal reaches them
-	// under a name the capture never heard of. What Req 16 forbids is that
-	// mount, not a read -- and a capture-selected task's output is still an
-	// ordinary output that downstream steps must be able to fetch. So the
-	// caller declares which of the two it is asking for, and refusing an
-	// undeclared one is what keeps "read-only" from being a default nobody
-	// chose.
-	//
-	// Remapping a key that CURRENTLY names a held source is refused either
-	// way: that destroys the only way anything finds those bytes, which no
-	// amount of read-only-ness makes safe.
-	ReadOnly bool `json:"read_only,omitempty"`
-}
-
-// mirrorRequest is the JSON body for POST /mirror.
-type mirrorRequest struct {
-	Key string `json:"key"`
 }
 
 // handleMirrorTrigger accepts POST /mirror with a JSON body containing
@@ -1117,7 +1084,7 @@ type mirrorRequest struct {
 // off.
 func (s *Server) handleMirrorTrigger(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
-	var req mirrorRequest
+	var req artifactwire.MirrorRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.refuse(w, r, http.StatusBadRequest, reasonInvalidJSON, fmt.Errorf("invalid JSON: %v", err))
 		return
@@ -1141,38 +1108,11 @@ func (s *Server) handleMirrorTrigger(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-// resolveRequest is the JSON body for POST /resolve.
-type resolveRequest struct {
-	Key  string `json:"key"`
-	Dest string `json:"dest"`
-
-	// Capability is a short-lived token bound to this exact Key and Dest,
-	// signed by the ATC with a key both sides share. Required whenever the
-	// daemon was started with --resolve-capability-key.
-	Capability string `json:"capability,omitempty"`
-}
-
-// resolveResponse is the JSON body returned by POST /resolve.
-//
-// Key is echoed on every result. A batch answers N items in one body, and
-// without it a caller reading a failed batch knows only an INDEX into a list
-// it has to have kept — which the one caller that matters, an init container
-// shell script, has not. Naming the artifact in its own result is what lets a
-// failure be read out of a build log.
-type resolveResponse struct {
-	Key      string `json:"key,omitempty"`
-	Status   string `json:"status"`
-	Source   string `json:"source"`
-	Method   string `json:"method"`
-	Duration string `json:"duration,omitempty"`
-	Error    string `json:"error,omitempty"`
-}
-
 // handleRegister accepts POST /register with a JSON body containing
 // {key, local_path} and registers the artifact in the daemon's registry.
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
-	var req registerRequest
+	var req artifactwire.RegisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.refuse(w, r, http.StatusBadRequest, reasonInvalidJSON, fmt.Errorf("invalid JSON: %v", err))
 		return
@@ -1252,17 +1192,17 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 // below already uses — and resolveHTTPStatus turns that into a 422 instead of
 // a 500. Every failing branch of resolveOne goes through here so a new one
 // cannot quietly re-acquire the old "everything is a 500" behaviour.
-func failedResolve(source, method string, err error) resolveResponse {
+func failedResolve(source, method string, err error) artifactwire.ResolveResponse {
 	if errors.Is(err, ErrRefused) {
 		method = "refused"
 	}
-	return resolveResponse{Status: "error", Source: source, Method: method, Error: err.Error()}
+	return artifactwire.ResolveResponse{Status: "error", Source: source, Method: method, Error: err.Error()}
 }
 
 // resolveHTTPStatus is the status ONE result would be answered with on its own.
 // Shared by /resolve and /resolve-batch so the single-item and batch endpoints
 // cannot drift into answering the same outcome differently.
-func resolveHTTPStatus(res resolveResponse) int {
+func resolveHTTPStatus(res artifactwire.ResolveResponse) int {
 	switch {
 	case res.Status == "ok":
 		return http.StatusOK
@@ -1288,10 +1228,10 @@ var resolveStatusRank = map[int]int{
 
 // resolveOne resolves a single artifact key to a destination path.
 // It is the core logic shared by handleResolve and handleResolveBatch.
-func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolveResponse) {
+func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp artifactwire.ResolveResponse) {
 	start := time.Now()
 	defer func() {
-		// Every return below builds its own resolveResponse and none of them
+		// Every return below builds its own artifactwire.ResolveResponse and none of them
 		// carried the key. Set once, here, so a new branch cannot forget it.
 		resp.Key = key
 		s.metrics.recordResolve(resp.Method, resp.Status, time.Since(start))
@@ -1306,7 +1246,7 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolve
 	// while delivering another artifact's bytes.
 	releaseDest, err := s.acquireDest(ctx, dest)
 	if err != nil {
-		return resolveResponse{Status: "error", Error: fmt.Sprintf("waiting for destination %q: %v", dest, err)}
+		return artifactwire.ResolveResponse{Status: "error", Error: fmt.Sprintf("waiting for destination %q: %v", dest, err)}
 	}
 	defer releaseDest()
 
@@ -1323,12 +1263,12 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolve
 	// a 4xx. Retrying it ten times inside one init container never released it.
 	if class, err := s.refuseIfCaptureHeldPath(dest); err != nil {
 		logger.Info("refused-resolve-into-capture-source", lager.Data{"class": string(class)})
-		return resolveResponse{Status: "error", Method: "refused", Error: err.Error()}
+		return artifactwire.ResolveResponse{Status: "error", Method: "refused", Error: err.Error()}
 	}
 
 	// Step 1: Check registry for explicit registration.
 	//
-	// resolveResponse.Source stays the ABSOLUTE path. It is response JSON the
+	// artifactwire.ResolveResponse.Source stays the ABSOLUTE path. It is response JSON the
 	// ATC logs and surfaces, so it is an external contract, not an internal
 	// representation — the one place in this handler where the ambient form is
 	// the right answer rather than a leftover.
@@ -1341,7 +1281,7 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolve
 		}
 		duration := time.Since(start)
 		logger.Info("resolved", lager.Data{"method": "registry", "source": sourcePath, "duration": duration.String()})
-		return resolveResponse{Status: "ok", Source: sourcePath, Method: "registry", Duration: duration.String()}
+		return artifactwire.ResolveResponse{Status: "ok", Source: sourcePath, Method: "registry", Duration: duration.String()}
 	}
 
 	// Step 2: Fallback — check if key maps to a steps/ directory on disk.
@@ -1363,7 +1303,7 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolve
 		}
 		duration := time.Since(start)
 		logger.Info("resolved", lager.Data{"method": "filesystem", "source": stepsPath, "duration": duration.String()})
-		return resolveResponse{Status: "ok", Source: stepsPath, Method: "filesystem", Duration: duration.String()}
+		return artifactwire.ResolveResponse{Status: "ok", Source: stepsPath, Method: "filesystem", Duration: duration.String()}
 	}
 
 	// Step 3: Query peer daemons for cross-node resolution.
@@ -1376,14 +1316,14 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolve
 			}
 			duration := time.Since(start)
 			logger.Info("resolved", lager.Data{"method": "peer", "peer": peerIP, "duration": duration.String()})
-			return resolveResponse{Status: "ok", Source: peerIP, Method: "peer", Duration: duration.String()}
+			return artifactwire.ResolveResponse{Status: "ok", Source: peerIP, Method: "peer", Duration: duration.String()}
 		}
 	}
 
 	// Step 4: Not found anywhere.
 	duration := time.Since(start)
 	logger.Info("not-found", lager.Data{"duration": duration.String()})
-	return resolveResponse{Status: "not_found", Method: "exhausted", Duration: duration.String(), Error: fmt.Sprintf("artifact %q not found on this node or any peer", key)}
+	return artifactwire.ResolveResponse{Status: "not_found", Method: "exhausted", Duration: duration.String(), Error: fmt.Sprintf("artifact %q not found on this node or any peer", key)}
 }
 
 // handleResolve accepts POST /resolve with a JSON body containing {key, dest}.
@@ -1395,7 +1335,7 @@ func (s *Server) resolveOne(ctx context.Context, key, dest string) (resp resolve
 //  3. Query peer daemons for cross-node resolution
 func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
-	var req resolveRequest
+	var req artifactwire.ResolveRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.refuse(w, r, http.StatusBadRequest, reasonInvalidJSON, fmt.Errorf("invalid JSON: %v", err))
 		return
@@ -1424,7 +1364,7 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 	select {
 	case s.resolveSem <- struct{}{}:
 	case <-r.Context().Done():
-		writeJSON(w, http.StatusInternalServerError, resolveResponse{Key: req.Key, Status: "error", Error: r.Context().Err().Error()})
+		writeJSON(w, http.StatusInternalServerError, artifactwire.ResolveResponse{Key: req.Key, Status: "error", Error: r.Context().Err().Error()})
 		return
 	}
 	defer func() { <-s.resolveSem }()
@@ -1432,22 +1372,6 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 	resp := s.resolveOne(r.Context(), req.Key, req.Dest)
 
 	writeJSON(w, resolveHTTPStatus(resp), resp)
-}
-
-// batchResolveRequest is the JSON body for POST /resolve-batch.
-type batchResolveRequest struct {
-	Items []resolveRequest `json:"items"`
-}
-
-// batchResolveResponse is the JSON body returned by POST /resolve-batch.
-//
-// Error summarises the failing items in one line. Results already carries the
-// detail, but a caller that can only log one string — again, the init
-// container — gets nothing from a list it cannot index.
-type batchResolveResponse struct {
-	Status  string            `json:"status"`
-	Results []resolveResponse `json:"results"`
-	Error   string            `json:"error,omitempty"`
 }
 
 // handleResolveBatch accepts POST /resolve-batch with a JSON body containing
@@ -1469,7 +1393,7 @@ type batchResolveResponse struct {
 // retries and twenty seconds on an answer that was never going to change.
 func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
-	var req batchResolveRequest
+	var req artifactwire.BatchResolveRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.refuse(w, r, http.StatusBadRequest, reasonInvalidJSON, fmt.Errorf("invalid JSON: %v", err))
 		return
@@ -1497,7 +1421,7 @@ func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	results := make([]resolveResponse, len(req.Items))
+	results := make([]artifactwire.ResolveResponse, len(req.Items))
 
 	var wg sync.WaitGroup
 	for i, item := range req.Items {
@@ -1509,7 +1433,7 @@ func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request) {
 			select {
 			case s.resolveSem <- struct{}{}:
 			case <-r.Context().Done():
-				results[idx] = resolveResponse{Key: key, Status: "error", Error: r.Context().Err().Error()}
+				results[idx] = artifactwire.ResolveResponse{Key: key, Status: "error", Error: r.Context().Err().Error()}
 				return
 			}
 			defer func() { <-s.resolveSem }()
@@ -1520,7 +1444,7 @@ func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request) {
 
 	overall, status, summary := summariseBatch(results)
 
-	writeJSON(w, status, batchResolveResponse{Status: overall, Results: results, Error: summary})
+	writeJSON(w, status, artifactwire.BatchResolveResponse{Status: overall, Results: results, Error: summary})
 }
 
 // summariseBatch reduces per-item results to the batch's status, HTTP status
@@ -1530,7 +1454,7 @@ func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request) {
 // outranks a refusal outranks a miss. A batch holding both an absent artifact
 // and one that broke mid-copy is a 500, because the 500 is the one that says
 // something is wrong with this daemon and might not say it again.
-func summariseBatch(results []resolveResponse) (overall string, status int, summary string) {
+func summariseBatch(results []artifactwire.ResolveResponse) (overall string, status int, summary string) {
 	overall, status = "ok", http.StatusOK
 
 	var failures []string
@@ -1695,7 +1619,7 @@ func (s *Server) handleHeadResourceCache(w http.ResponseWriter, r *http.Request)
 	// on a hit would mean it is known exactly when it is not needed.
 	s.advertiseDurableTier(w)
 
-	key, err := s.requestKey(r, "/resource-caches/")
+	key, err := s.requestKey(r, artifactwire.ResourceCachesPrefix)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return
@@ -1731,7 +1655,7 @@ func (s *Server) handleHeadResourceCache(w http.ResponseWriter, r *http.Request)
 func (s *Server) handleGetResourceCache(w http.ResponseWriter, r *http.Request) {
 	s.advertiseDurableTier(w)
 
-	key, err := s.requestKey(r, "/resource-caches/")
+	key, err := s.requestKey(r, artifactwire.ResourceCachesPrefix)
 	if err != nil {
 		s.refuse(w, r, http.StatusBadRequest, reasonInvalidKey, err)
 		return

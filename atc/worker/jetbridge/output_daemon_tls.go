@@ -1,6 +1,8 @@
 package jetbridge
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net/http"
 	"os"
@@ -15,7 +17,7 @@ import (
 // isolation is a second Pod under a second identity. They are also not one
 // TRUST DOMAIN, and the code used to assume they were. Every output-plane call
 // site asked `daemonURLScheme` -- a predicate over `artifactDaemon.tls.enabled`
-// -- and dialed with `newDaemonHTTPClient`, which presents the ARTIFACT
+// -- and dialed with the artifact daemon's client, which presents the ARTIFACT
 // daemon's client certificate and trusts the ARTIFACT daemon's CA. Two
 // consequences, both silent:
 //
@@ -141,4 +143,28 @@ func newOutputDaemonHTTPClient(cfg Config, timeout time.Duration) *http.Client {
 	}
 
 	return &http.Client{Timeout: timeout, Transport: transport}
+}
+
+// loadDaemonClientTLS builds a *tls.Config that presents the configured client
+// certificate and trusts the daemon CA, for mTLS with the output daemon.
+// serverName (when non-empty) is the SAN to verify the daemon's server cert
+// against, because daemons are dialed by node IP, not by a name in the cert.
+func loadDaemonClientTLS(certPath, keyPath, caCertPath, serverName string) (*tls.Config, error) {
+	clientCert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("load daemon client cert: %w", err)
+	}
+	caPEM, err := os.ReadFile(caCertPath)
+	if err != nil {
+		return nil, fmt.Errorf("read daemon CA cert: %w", err)
+	}
+	caPool := x509.NewCertPool()
+	if !caPool.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("parse daemon CA cert: no certificates in %s", caCertPath)
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{clientCert},
+		RootCAs:      caPool,
+		ServerName:   serverName,
+	}, nil
 }

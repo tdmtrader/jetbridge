@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"github.com/concourse/concourse/artifactwire"
 	"os"
 	"path/filepath"
 	"testing"
@@ -119,7 +120,7 @@ func TestResolve_HoldsReadGuardDuringCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 	dest := filepath.Join(destParent, "input-0")
-	resolved := make(chan resolveResponse, 1)
+	resolved := make(chan artifactwire.ResolveResponse, 1)
 	go func() {
 		resolved <- srv.resolveOne(context.Background(), "handle-y/output", dest)
 	}()

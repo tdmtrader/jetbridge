@@ -165,10 +165,9 @@ func TestVT06_DaemonSetVolume_StreamOut_RetrySucceeds(t *testing.T) {
 		workerName:     "w1",
 		sourceNode:     "node-1",
 		config:         Config{Namespace: "test-ns", ArtifactDaemonPort: 7780},
-		httpClient:     &http.Client{},
 		nodeIPResolver: resolver,
 	}
-	vol.httpClient.Transport = rewriteTransport{url: srv.URL}
+	vol.wire = plainWire(t, 7780, rewriteTransport{url: srv.URL})
 
 	reader, err := vol.StreamOut(context.Background(), ".", nil)
 	if err != nil {
@@ -205,10 +204,9 @@ func TestVT06_DaemonSetVolume_StreamOut_GivesUpAfter3Failures(t *testing.T) {
 		workerName:     "w1",
 		sourceNode:     "node-1",
 		config:         Config{Namespace: "test-ns", ArtifactDaemonPort: 7780},
-		httpClient:     &http.Client{},
 		nodeIPResolver: resolver,
 	}
-	vol.httpClient.Transport = rewriteTransport{url: srv.URL}
+	vol.wire = plainWire(t, 7780, rewriteTransport{url: srv.URL})
 
 	_, err := vol.StreamOut(context.Background(), ".", nil)
 	if err == nil {
@@ -231,10 +229,9 @@ func TestVT06_DaemonSetVolume_StreamOut_Non200Status(t *testing.T) {
 		workerName:     "w1",
 		sourceNode:     "node-1",
 		config:         Config{Namespace: "test-ns", ArtifactDaemonPort: 7780},
-		httpClient:     srv.Client(),
 		nodeIPResolver: resolver,
 	}
-	vol.httpClient.Transport = rewriteTransport{url: srv.URL}
+	vol.wire = plainWire(t, 7780, rewriteTransport{url: srv.URL})
 
 	_, err := vol.StreamOut(context.Background(), ".", nil)
 	if err == nil {
@@ -283,10 +280,9 @@ func TestVT08_DaemonSetVolume_StreamOut_PassesRawBody(t *testing.T) {
 		workerName:     "w1",
 		sourceNode:     "node-1",
 		config:         Config{Namespace: "test-ns", ArtifactDaemonPort: 7780},
-		httpClient:     srv.Client(),
 		nodeIPResolver: resolver,
 	}
-	vol.httpClient.Transport = rewriteTransport{url: srv.URL}
+	vol.wire = plainWire(t, 7780, rewriteTransport{url: srv.URL})
 
 	// Pass a non-nil compression but the DaemonSetVolume should ignore it
 	reader, err := vol.StreamOut(context.Background(), ".", nil)

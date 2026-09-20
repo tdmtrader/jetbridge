@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/concourse/concourse/artifactwire"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -198,7 +199,7 @@ func TestDurableRestoreRejectsKeysThatEscapeTheStorageRoot(t *testing.T) {
 	for _, key := range []string{
 		"../../etc", "..", ".", "a/b/c", "/abs", "", "-leading-dash", "with space", "a/../b",
 	} {
-		body, _ := json.Marshal(durableRestoreRequest{Key: "rc-abc", DurableKey: key})
+		body, _ := json.Marshal(artifactwire.DurableRestoreRequest{Key: "rc-abc", DurableKey: key})
 		resp := post(t, ts, "/durable/restore", string(body))
 
 		if resp.StatusCode != http.StatusBadRequest {
