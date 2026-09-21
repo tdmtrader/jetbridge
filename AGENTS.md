@@ -121,8 +121,10 @@ scripts are extensionless 755 executables — `atc/scripts/*`, `hack/*`. An
 
 **Derivable facts get one declaration.** The version lives in `VERSION` and is asserted
 against `versions.go` and the chart's `appVersion` by `version_consistency_test.go`. The
-head migration is derived from the binary's own embedded set, not written down — an
-earlier hardcoded copy outlived the migration it named and took five specs red with it.
+test fixtures derive the head migration from the binary's embedded set. The standalone
+`docs/migration/migrate-preflight.sh` carries a checked copy because it runs without
+the binary; update `JETBRIDGE_VERSION` when adding a migration. Its migration-suite
+check must match the embedded head.
 
 **Every guard asserts it matched something.** A structural test that silently matches
 zero files passes forever. Where a test scans the tree, it must fail when the scan is

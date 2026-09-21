@@ -90,7 +90,9 @@ Consumer ──claim──▶ tree ref ◀──read lease── reader
 - A **read lease** is the reader's protection over one generation. It
   outlives the last claim and refuses reclaim admission while active. It
   closes by database-clock expiry, swept in bounded batches; a lease renewed
-  between candidate read and write is not closed.
+  between candidate read and write is not closed. The daemon gives it back
+  when a read ends, except after an unavailable answer, which the reader
+  retries under the same warrant: that lease stays until its term ends.
 - **Reclamation** is admission (the decision) then delete (the act) then
   finalization (the record), each its own operation kind.
 

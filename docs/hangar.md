@@ -1,7 +1,7 @@
 # Hangar exact tree storage
 
 Hangar is an opt-in, GCS-backed path for immutable filesystem-tree task
-inputs. It publishes canonical trees under exact references containing an
+inputs. It publishes canonical trees under tree refs containing an
 opaque scope, a SHA-256 logical-content digest, and a GCS generation. Task
 inputs name that complete reference; Hangar never substitutes a newer
 generation or different content.
@@ -75,7 +75,7 @@ The web process signs short-lived warrants and the daemon verifies the same
 configured `capabilityTTL`. Chart values use positive whole-second syntax; the
 default and maximum are `900s` (15 minutes), and `1s` is the minimum. Shorter
 values reduce replay exposure. Task Pod specs contain only attenuated warrants
-bound to one exact reference, handle, volume, and expiry. Anyone who can read
+bound to one tree ref, handle, volume, and expiry. Anyone who can read
 Pod specs during that window can see those warrants, but the long-lived signing
 key is never placed in a task Pod command, environment, or volume.
 

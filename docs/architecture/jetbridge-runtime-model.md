@@ -28,8 +28,16 @@ looked-up one never recreated.
 ## Pause pod and replacement
 
 A pause pod is created first and the step's command is exec'd into it; the
-supervisor makes the command survive a web restart. Replacement of a dead
-pause pod happens at most once, and never when:
+supervisor makes the command survive a web restart. Under exact execution
+control the supervisor, and for a check, get or put the resource session,
+keeps an exit journal the Run's signed start names, so a lost web can be
+recovered from and a Run can interrupt the command. The journal's start is
+claimed atomically (an `O_EXCL` create), so of a delivery and a late second
+one -- or a delivery and the closing of an undelivered start -- exactly one
+owns it and the producer runs at most once. A start that no delivery claimed
+is closed in the Pod as stopped by recovery or cancellation; nothing sends
+the command again. Replacement of a dead pause pod happens at most once, and
+never when:
 
 - the command has already started (the step, not the pod phase, decides);
 - a capture holds the pod's source incarnation;
@@ -72,4 +80,12 @@ team. Exactly one of those; anything else is per-pod.
 Executions whose outcome matters are recorded before they are believed:
 admitted, started, outcome. The classification vocabulary belongs to
 Hangar's execution control; the runtime applies it. An unresolved outcome
-is not a failure and not terminal; a lost one is both.
+is not a failure and not terminal; a lost one is both. A stall of the
+ledger or the Run's witness is unresolved, never the step's own timeout.
+
+A Run retains the node's signed start before any outcome is recorded. When
+it could not -- its database was down, or cancellation closed admission
+first -- Run cancellation reads the start from the node that signed it,
+retains it, and interrupts and closes the execution from the Pod's journal.
+An aborted Run build that cannot finish over an execution nothing else will
+close asks for its Run's cancellation, which the Run's abort implies anyway.

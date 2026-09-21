@@ -52,6 +52,16 @@ checks are suppressed per resource config scope in process; the scope also
 serializes checking and records check timing. Checks skip entirely until
 the scope's interval has elapsed unless triggered by hand.
 
+A check of a v2 run's payload is always a stored build, owned by the run. It
+is collected by the same rules as any other check: a resource keeps its
+scope's last check, and a resource type its newest. An executed check goes
+with its execution evidence, and only once every execution is closed: a check
+produces no run result, so a closed check execution is inert. So is a closed
+get inside the check build, which fetched the check's custom image on a
+resource cache miss. An executed check is also kept while it is its
+resource's newest check. An open execution, and a build a run output start
+names, is never collected.
+
 ## Pipeline runs
 
 ```
@@ -86,8 +96,23 @@ Reclamation, when a run is terminal and past its retention:
 
 1. Refuse if the run is running or any run build is still pending or
    started.
-2. Detach every retained build from its job and pipeline.
+2. Delete the run's checks, as deleting a pipeline deletes its checks; an
+   executed check goes with its closed execution evidence. Detach the job
+   builds (and any check whose execution is somehow still open) from their
+   job, pipeline, resource or resource type.
 3. Delete the payload. The header and detached builds stay.
+
+### Lock order
+
+Everything that touches a run locks in one order: the team, then the
+template, then the run, then the payload and its jobs, then the run's
+builds, taking only the ones it needs. The Hangar claim suffix comes after
+the run's locks. Run paths take the team `FOR SHARE`. Deleting a team
+takes it first, `FOR NO KEY UPDATE` so that run creation's payload insert
+(whose team foreign key takes `KEY SHARE`) is not blocked under the template
+lock. Team purge and reclamation lock the run's builds before deleting any
+evidence, because check collection locks a check build (`SKIP LOCKED`) and
+then deletes its executions.
 
 ## Invariants the store enforces
 
@@ -103,6 +128,16 @@ Reclamation, when a run is terminal and past its retention:
   both.
 - A payload cannot be deleted while it still has attached builds, except
   when its whole team is being purged.
+- A run's evidence (execution attributions and witnesses, output starts and
+  their decisions, cancellation work, credential handoffs, bound inputs) is
+  immutable and cannot be deleted, again except by the purge of its team.
+  The purge also releases the Hangar claims the team's runs held, leaving the
+  claim rows as Hangar's tombstones.
+- The one narrower exception is check collection: under its own
+  transaction-local allowance it may delete a closed check or image get
+  execution of a completed run check build, whose witnesses go with it.
+  Task and put evidence, any job build's evidence, open executions, anything
+  a run output start names, and a lone witness are refused.
 - Run retention counts are positive; run status is one of the five.
 
 ## The run admission port
