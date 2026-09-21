@@ -157,6 +157,8 @@ type HangarDaemon struct {
 	// rather than against a string a step wrote.
 	ControlPublic ed25519.PublicKey
 	ReceiptPublic ed25519.PublicKey
+	OutputTLS     bool
+	NodeUID       string
 }
 
 // hangarOutputDaemonFlags is the output daemon's whole argv beyond the address
@@ -165,7 +167,7 @@ type HangarDaemon struct {
 // It names a DIFFERENT bucket from the artifact daemon's, which is the point:
 // the two buckets are the trust boundary between the planes.
 func hangarOutputDaemonFlags(endpoint, bucket, receiptKey, controlKey, capabilityKey,
-	materializeKey string) []string {
+	materializeKey, nodeUID string) []string {
 	return []string{
 		"--output-endpoint", endpoint,
 		"--output-bucket", bucket,
@@ -178,7 +180,7 @@ func hangarOutputDaemonFlags(endpoint, bucket, receiptKey, controlKey, capabilit
 		"--capability-key", capabilityKey,
 		"--materialization-key-id", hangarMaterializationKeyID,
 		"--materialization-key-file", materializeKey,
-		"--node-uid", hangarNodeUID,
+		"--node-uid", nodeUID,
 		"--activation-epoch", fmt.Sprint(hangarEpoch),
 	}
 }
@@ -200,7 +202,11 @@ const (
 // startHangarDaemon brings up the emulator (or adopts CI's), creates the output
 // bucket, mints the mTLS material every Hangar route requires, and starts the
 // real daemon against all of it.
-func startHangarDaemon(rec *brine.Recorder) (HangarDaemon, error) {
+func startHangarDaemon(rec *brine.Recorder, outputTLS ...bool) (HangarDaemon, error) {
+	return startHangarDaemonOnNode(rec, hangarNodeUID, len(outputTLS) > 0 && outputTLS[0])
+}
+
+func startHangarDaemonOnNode(rec *brine.Recorder, nodeUID string, outputTLS bool) (HangarDaemon, error) {
 	ctx := context.Background()
 
 	endpoint, err := hangarEmulatorEndpoint(rec)
@@ -311,13 +317,15 @@ func startHangarDaemon(rec *brine.Recorder) (HangarDaemon, error) {
 	TrackDisposer(rec, "the Hangar artifact daemon", daemon.stop)
 
 	state := HangarDaemon{
-		Daemon:   daemon,
-		Ctx:      ctx,
-		Endpoint: endpoint,
-		Bucket:   bucket,
-		Client:   client,
-		HTTP:     httpClient,
-		CertDir:  certDir,
+		Daemon:    daemon,
+		Ctx:       ctx,
+		Endpoint:  endpoint,
+		Bucket:    bucket,
+		Client:    client,
+		HTTP:      httpClient,
+		CertDir:   certDir,
+		OutputTLS: outputTLS,
+		NodeUID:   nodeUID,
 	}
 
 	return startOutputDaemon(rec, state, certDir)
@@ -379,9 +387,17 @@ func startOutputDaemon(rec *brine.Recorder, state HangarDaemon, certDir string) 
 	// reads it before anything destructive happens. Two roots made the
 	// classifier answer "unmanaged" about every held source, because it was
 	// reading a directory the other daemon never wrote to.
-	output, err := startNamedDaemonInRoot("hangar-output-daemon", state.Daemon.Root, "http",
+	scheme := "http"
+	flags := hangarOutputDaemonFlags(state.Endpoint, state.OutputBucket,
+		receiptKey, controlKey, capabilityFile, materializeFile, state.NodeUID)
+	if state.OutputTLS {
+		scheme = "https"
+		flags = append(flags, "--tls-cert", filepath.Join(certDir, "server.crt"),
+			"--tls-key", filepath.Join(certDir, "server.key"), "--tls-ca-cert", filepath.Join(certDir, "ca.crt"))
+	}
+	output, err := startNamedDaemonInRoot("hangar-output-daemon", state.Daemon.Root, scheme,
 		func(url string) error {
-			resp, err := http.Get(url + "/readyz")
+			resp, err := state.HTTP.Get(url + "/readyz")
 			if err != nil {
 				return err
 			}
@@ -392,8 +408,7 @@ func startOutputDaemon(rec *brine.Recorder, state HangarDaemon, certDir string) 
 			}
 
 			return nil
-		}, hangarOutputDaemonFlags(state.Endpoint, state.OutputBucket,
-			receiptKey, controlKey, capabilityFile, materializeFile)...)
+		}, flags...)
 	if err != nil {
 		return HangarDaemon{}, err
 	}

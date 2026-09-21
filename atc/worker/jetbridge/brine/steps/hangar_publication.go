@@ -274,7 +274,7 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 		// It is not an overwrite and there is no API for one -- create-if-absent
 		// refuses a key that is occupied, which is what the collision scenarios
 		// above pin. Req 38's "a caller may recapture and claim a newly
-		// published generation" is this sequence, and the old exact ref is a
+		// published generation" is this sequence, and the old tree ref is a
 		// ref to a generation that is gone.
 		brine.DefineMap[PublishedTree, PublishedTree](
 			"an exact replacement generation is published",
@@ -307,7 +307,7 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 				if replacement.Published.Ref.Generation == in.Superseded.Generation {
 					return in, fmt.Errorf("the replacement was assigned the SAME generation %d "+
 						"as the object it replaced; a store that reuses a generation cannot "+
-						"make an exact ref mean one set of bytes",
+						"make a tree ref mean one set of bytes",
 						replacement.Published.Ref.Generation)
 				}
 
@@ -462,7 +462,7 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 		// finds -- by scope and digest -- and it would be a lifecycle about
 		// whichever bytes are at that key, which is exactly the float Req 28
 		// forbids.
-		CheckThat[PublishedTree]("the registered exact ref names the published generation",
+		CheckThat[PublishedTree]("the registered tree ref names the published generation",
 			func(in PublishedTree) error {
 				if in.Outcome.Plane == nil {
 					return fmt.Errorf("this capture never settled on a control plane, so " +
@@ -512,7 +512,7 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 			}),
 
 		// The absence half of the replacement pair. Its positive control is
-		// `the registered exact ref names the published generation`, asserted
+		// `the registered tree ref names the published generation`, asserted
 		// on the line above the replacement in the same scenario, because
 		// "the old ref does not resolve" passes against a chain that published
 		// nothing at all.
@@ -523,7 +523,7 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 						"old ref to fail on")
 				}
 				if in.Superseded == in.Ref {
-					return fmt.Errorf("the replacement carries the same exact ref %v as the "+
+					return fmt.Errorf("the replacement carries the same tree ref %v as the "+
 						"generation it replaced", in.Ref)
 				}
 
@@ -545,7 +545,7 @@ func HangarPublicationDefinitions() []brine.StepDefinition {
 					Object(keys[0]).Generation(in.Superseded.Generation).Attrs(daemon.Ctx)
 				if err == nil {
 					return fmt.Errorf("generation %d is still in the bucket at %q (created %v); "+
-						"a superseded exact ref must stop resolving",
+						"a superseded tree ref must stop resolving",
 						in.Superseded.Generation, keys[0], attrs.Created)
 				}
 				if !errors.Is(err, storage.ErrObjectNotExist) {

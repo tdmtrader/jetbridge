@@ -217,7 +217,7 @@ func HangarCapturePodDefinitions() []brine.StepDefinition {
 		),
 
 		// A strict-input tree beside the captured output. The ref is the
-		// fixture's, because a strict input is an exact ref a caller was given
+		// fixture's, because a strict input is a tree ref a caller was given
 		// and no phrase here may choose where bytes live.
 		brine.DefineMap[CaptureDraft, CaptureDraft](
 			"it also takes a strict-input tree at {string}",

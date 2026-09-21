@@ -70,7 +70,7 @@ func buildConsumerPod(in ConsumerDraft) (PodCreated, error) {
 	}
 	ref := in.Tree.Ref
 	if err := ref.Validate(); err != nil {
-		return PodCreated{}, fmt.Errorf("the published tree has no exact ref to consume: %w", err)
+		return PodCreated{}, fmt.Errorf("the published tree has no tree ref to consume: %w", err)
 	}
 
 	draft := ContainerDraft{
@@ -125,7 +125,7 @@ func hangarInit(in PodCreated) (corev1.Container, error) {
 // The receipt is compared whole, byte for byte in its encoded form, because
 // every field of a TreeRef is part of the identity: a check that looked for the
 // digest would pass for a command carrying the right digest at the wrong
-// generation, which is the exact confusion an exact ref exists to prevent.
+// generation, which is the exact confusion a tree ref exists to prevent.
 func verifiesExactlyTheReceipt(in PodCreated) error {
 	container, err := hangarInit(in)
 	if err != nil {
@@ -287,7 +287,7 @@ func asksForExactlyTheReceiptsTree(in PodCreated) error {
 		return err
 	}
 	// The request body is base64-encoded into the command. What is asserted is
-	// that the encoded batch names this exact ref: the body's own JSON, not a
+	// that the encoded batch names this tree ref: the body's own JSON, not a
 	// digest that happens to appear.
 	fragment := strings.TrimSuffix(strings.TrimPrefix(string(payload), "{"), "}")
 	decoded, err := decodedInitPayloads(command)

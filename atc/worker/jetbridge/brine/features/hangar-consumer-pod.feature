@@ -77,6 +77,6 @@ Feature: What a consuming step's Pod says about a published output
     And the capture settles
     And the published tree is read back from the output bucket
     And the consumer binds the output inside its own transaction
-    Then the managed read is granted
+    Then the managed read is warranted
     When the consumer holds no active claim
     Then the managed read is refused as "lifecycle conflict"

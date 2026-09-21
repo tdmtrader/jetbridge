@@ -30,11 +30,13 @@ import (
 	"github.com/brine-dev/brine-go/pkg/brine"
 	concourse "github.com/concourse/concourse"
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/api"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/api/buildserver"
 	"github.com/concourse/concourse/atc/api/configserver"
 	"github.com/concourse/concourse/atc/api/jobserver"
+	"github.com/concourse/concourse/atc/api/pipelinerunserver"
 	"github.com/concourse/concourse/atc/api/pipelineserver"
 	"github.com/concourse/concourse/atc/api/policychecker"
 	"github.com/concourse/concourse/atc/api/teamserver"
@@ -68,21 +70,24 @@ type authBinaries struct {
 }
 
 type AuthFixture struct {
-	lazy        *lazyResource[*AuthFixture]
-	DB          JetbridgeDB
-	Bin         authBinaries
-	Home        string
-	URL         string
-	Server      *httptest.Server
-	Store       skyStorage.Storage
-	API         http.Handler
-	Client      *http.Client
-	Cancel      context.CancelFunc
-	Dex         *dex.Server
-	Verifier    accessor.TokenVerifier
-	MCPConn     db.DbConn
-	CustomRoles map[string]string
-	Policy      policy.Checker
+	lazy         *lazyResource[*AuthFixture]
+	APILogger    *lagertest.TestLogger
+	DB           JetbridgeDB
+	Bin          authBinaries
+	Home         string
+	URL          string
+	Server       *httptest.Server
+	Store        skyStorage.Storage
+	API          http.Handler
+	Client       *http.Client
+	Cancel       context.CancelFunc
+	Dex          *dex.Server
+	Verifier     accessor.TokenVerifier
+	MCPConn      db.DbConn
+	CustomRoles  map[string]string
+	Policy       policy.Checker
+	ResultReader pipelinerunserver.ResultReader
+	RunServices  pipelinerunserver.Services
 
 	mu     sync.RWMutex
 	extra  http.Handler
@@ -107,6 +112,16 @@ func AuthenticationResourceDefinitions() []brine.ResourceDefinition {
 				}}}, nil
 			}, Disposer: func(v any) error { return v.(*AuthFixture).Close() }},
 	}
+}
+
+// authServer is the scenario's authentication fixture, started. The resource
+// value itself is only the lazy handle: its fields are empty until ready.
+func authServer(res brine.Resources) (*AuthFixture, error) {
+	fixture, ok := res.Get("auth-server").(*AuthFixture)
+	if !ok {
+		return nil, fmt.Errorf("auth-server resource is %T", res.Get("auth-server"))
+	}
+	return fixture.ready()
 }
 
 func buildAuthBinaries() (authBinaries, error) {
@@ -260,6 +275,7 @@ func newAuthFixture(database JetbridgeDB, bin authBinaries) (_ *AuthFixture, err
 
 func (f *AuthFixture) apiHandler(verifier accessor.TokenVerifier) (http.Handler, error) {
 	logger := lagertest.NewTestLogger("brine-auth-api")
+	f.APILogger = logger
 	displayUserID, err := skycmd.NewSkyDisplayUserIdGenerator(nil)
 	if err != nil {
 		return nil, err
@@ -291,11 +307,24 @@ func (f *AuthFixture) apiHandler(verifier accessor.TokenVerifier) (http.Handler,
 		atc.SaveConfig:            http.HandlerFunc(configs.SaveConfig),
 		atc.GetConfig:             http.HandlerFunc(configs.GetConfig),
 		atc.ListTeams:             http.HandlerFunc(teams.ListTeams),
-		atc.GetUser:               http.HandlerFunc(users.GetUser),
+		// fly set-pipeline --team resolves the team first.
+		atc.GetTeam: api.NewTeamScopedHandlerFactory(logger, f.DB.TeamFactory).HandlerFor(teams.GetTeam),
+		atc.GetUser: http.HandlerFunc(users.GetUser),
 		atc.GetInfo: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(atc.Info{Version: concourse.Version, WorkerVersion: "1.2.3"})
 		}),
 	}
+	runServer := pipelinerunserver.NewServer(logger, db.NewPipelineRunFactory(f.DB.Conn, f.DB.LockFactory), f.URL)
+	services := f.RunServices
+	services.Results = f.ResultReader
+	runServer.SetServices(services)
+	handlers[atc.UploadPipelineRunInput] = scoped.HandlerFor(runServer.UploadPipelineRunInput)
+	handlers[atc.HandoffPipelineRunCredentials] = scoped.HandlerFor(runServer.HandoffPipelineRunCredentials)
+	handlers[atc.GetPipelineRunCredentialSession] = scoped.HandlerFor(runServer.GetPipelineRunCredentialSession)
+	handlers[atc.CreatePipelineRunV2] = scoped.HandlerFor(runServer.CreatePipelineRunV2)
+	handlers[atc.GetPipelineRunResult] = scoped.HandlerFor(runServer.GetPipelineRunResult)
+	handlers[atc.GetPipelineRun] = scoped.HandlerFor(runServer.GetPipelineRun)
+	handlers[atc.CancelPipelineRun] = scoped.HandlerFor(runServer.CancelPipelineRun)
 	wrapper := wrappa.MultiWrappa{
 		wrappa.NewPolicyCheckWrappa(logger, policychecker.NewApiPolicyChecker(checker)),
 		wrappa.NewRejectArchivedWrappa(pipelineserver.NewRejectArchivedHandlerFactory(f.DB.TeamFactory)),

@@ -73,6 +73,11 @@ if ! brine run --no-engine --mode sync --format jsonl > "$report_dir/brine.log" 
         "$(grep -c '"type":"scenario_end"' "$report_dir/brine.log" || true)" \
         "$(grep '"type":"scenario_end"' "$report_dir/brine.log" | grep -c '"status":"passed"' || true)" >&2
     grep '"type":"run_end"' "$report_dir/brine.log" >&2 || true
+    # A run_end can count a failure no scenario_end carries: the adapter
+    # exits non-zero when a disposal fails or a temp root leaks, and says
+    # which on stderr, interleaved with everything else. Name it here.
+    echo "Adapter exit failures:" >&2
+    grep -E '^brine-adapter-jetbridge: (disposal failed|temp leak|panic):' "$report_dir/brine.log" >&2 || echo "(none)" >&2
     # The fixtures' own diagnostics (what a step cancelled, which lock it
     # released) are the lines just before each failing scenario_end; the
     # tail alone never reaches them. Print the forty non-protocol lines

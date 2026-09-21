@@ -610,31 +610,39 @@ func startDaemonProcess(bin, command, root, host, scheme string, port int, share
 	// run's event stream. Sending them to nil (/dev/null) kept the protocol
 	// safe and threw away the only account of why a daemon failed to boot.
 	output := newDaemonOutput()
+	d := &realDaemon{Root: root, URL: fmt.Sprintf("%s://%s:%d", scheme, host, port),
+		sharedRoot: shared}
+	if err := d.launch(cmd, output); err != nil {
+		return nil, nil, fmt.Errorf("start %s: %w", command, err)
+	}
+	return d, output, nil
+}
+
+// launch is the one way a daemon process is started -- first, and again after
+// a scenario crashed it -- so that stop() can always kill and join it: output
+// captured, a process group of its own, and exactly one Wait.
+//
+// A daemon that dies at boot has to be reported AS THAT. The first version of
+// the boot loop tested cmd.ProcessState, which exec.Cmd populates only in
+// Wait/Run -- nothing called either, so it was nil on every iteration and the
+// guard could not fire. Waiting in a goroutine makes the death observable, and
+// stop() waits on the same channel so a killed daemon is gone before its root
+// is removed. The channel is closed after the one exit status, so a second
+// reader -- stop() after crash() -- sees the exit too instead of blocking.
+func (d *realDaemon) launch(cmd *exec.Cmd, output *daemonOutput) error {
 	cmd.Stdout, cmd.Stderr = output, output
 	inOwnProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
-		return nil, nil, fmt.Errorf("start %s: %w", command, err)
+		return err
 	}
-
-	d := &realDaemon{Root: root, URL: fmt.Sprintf("%s://%s:%d", scheme, host, port), cmd: cmd,
-		sharedRoot: shared, output: output}
-
-	// A daemon that dies at boot has to be reported AS THAT. The first version
-	// of this loop tested cmd.ProcessState, which exec.Cmd populates only in
-	// Wait/Run — nothing here calls either, so it was nil on every iteration
-	// and the guard could not fire. A misconfigured daemon would have been
-	// reported twenty seconds later as "did not answer", hiding its exit code
-	// and the reason. Waiting in a goroutine makes the death observable, and
-	// stop() waits on the same channel so a killed daemon is gone before its
-	// root is removed.
+	d.cmd, d.output = cmd, output
 	died := make(chan error, 1)
 	d.done = died
 	go func() {
 		died <- cmd.Wait()
 		close(died)
 	}()
-
-	return d, output, nil
+	return nil
 }
 
 // awaitDaemon waits for one daemon to answer its readiness probe, and reports
@@ -662,6 +670,61 @@ func awaitDaemon(d *realDaemon, command string, ready func(url string) error,
 	_ = d.stop()
 
 	return false, fmt.Errorf("%s did not answer within 20s%s", command, output.report())
+}
+
+// crash preserves the node's storage and joins the real daemon process. The
+// original launcher remains the sole owner of Wait.
+func (d *realDaemon) crash() error {
+	if err := d.cmd.Process.Kill(); err != nil {
+		return err
+	}
+	select {
+	case <-d.done:
+		return nil
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("daemon did not exit after interruption")
+	}
+}
+
+// restart uses the same executable, keys, address and durable node directory,
+// and the same launch, so the restarted process is stopped like the first.
+func (d *realDaemon) restart(ctx context.Context, client *http.Client) error {
+	previous := d.cmd
+	next := exec.Command(previous.Path, previous.Args[1:]...)
+	next.Env, next.Dir = previous.Env, previous.Dir
+	output := d.output
+	if output == nil {
+		output = newDaemonOutput()
+	}
+	if err := d.launch(next, output); err != nil {
+		return err
+	}
+	done := d.done
+	for {
+		select {
+		case err := <-done:
+			return fmt.Errorf("restarted daemon exited: %w", err)
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, d.URL+"/readyz", nil)
+		if err != nil {
+			return err
+		}
+		response, err := client.Do(request)
+		if err == nil {
+			response.Body.Close()
+			if response.StatusCode == http.StatusOK {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
 
 // addressableArgs is each daemon's own spelling of "listen here, keep your
@@ -717,10 +780,11 @@ func (d *realDaemon) stop() error {
 		// those children holding the listening socket and the storage root: a
 		// scenario that passed, a root that could not be removed, and a port
 		// that the NEXT daemon could not bind.
-		if err := syscall.Kill(-d.cmd.Process.Pid, syscall.SIGKILL); err != nil &&
-			!errors.Is(err, syscall.ESRCH) {
+		if err := syscall.Kill(-d.cmd.Process.Pid, syscall.SIGKILL); err != nil {
 			// A group that is not ours to signal, or that has already gone:
-			// fall back to the one process we certainly own.
+			// fall back to the one process we certainly own. Killing one that
+			// already exited is harmless; skipping it on ESRCH left a daemon
+			// running that had no group of its own.
 			_ = d.cmd.Process.Kill()
 		}
 		if d.done != nil {
@@ -734,9 +798,27 @@ func (d *realDaemon) stop() error {
 	// A shared root belongs to whoever created it. Removing it here would take
 	// the other daemon's storage with it.
 	if d.Root != "" && !d.sharedRoot {
-		return os.RemoveAll(d.Root)
+		return removeDaemonRoot(d.Root)
 	}
 	return nil
+}
+
+// removeDaemonRoot removes a daemon's storage root, including the inputs it
+// sealed. A published input is sealed read-only (0555), and a daemon that runs
+// as the fixture's own unprivileged user has no CAP_DAC_OVERRIDE to unlink
+// inside it, so each directory is given back its owner write bit first. Only
+// directories are touched: they are all this fixture's own, and the files'
+// modes do not matter to unlink.
+func removeDaemonRoot(root string) error {
+	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err == nil && entry.IsDir() {
+			if info, statErr := entry.Info(); statErr == nil && info.Mode().Perm()&0o700 != 0o700 {
+				_ = os.Chmod(path, info.Mode().Perm()|0o700)
+			}
+		}
+		return nil
+	})
+	return os.RemoveAll(root)
 }
 
 // outputReport is the daemon's captured output for an error message, and is

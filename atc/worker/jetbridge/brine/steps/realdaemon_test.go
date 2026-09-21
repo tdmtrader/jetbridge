@@ -2,12 +2,15 @@ package steps
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -348,4 +351,90 @@ func portOf(rawURL string) (int, error) {
 		return 0, err
 	}
 	return strconv.Atoi(parsed.Port())
+}
+
+// A daemon the scenario crashed and restarted is disposed of like the one the
+// launcher started: its whole process group is killed and joined. The
+// restarted process used to be launched outside a group of its own, so the
+// group kill found nothing (ESRCH), the fallback was skipped, and disposal
+// failed with "daemon did not exit after kill" while every scenario passed.
+func TestARestartedDaemonIsStoppedWithWhatItSpawned(t *testing.T) {
+	ready := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ready.Close()
+
+	cmd := exec.Command("/bin/sh", "-c", `sleep 300 & echo "$!" > "$0"; wait`, t.TempDir()+"/first")
+	daemon := &realDaemon{URL: ready.URL}
+	if err := daemon.launch(cmd, newDaemonOutput()); err != nil {
+		t.Fatalf("starting a stand-in daemon: %v", err)
+	}
+	t.Cleanup(func() {
+		if daemon.cmd.Process != nil {
+			_ = syscall.Kill(-daemon.cmd.Process.Pid, syscall.SIGKILL)
+			_ = daemon.cmd.Process.Kill()
+		}
+	})
+	if err := daemon.crash(); err != nil {
+		t.Fatalf("crashing the daemon: %v", err)
+	}
+
+	childFile := t.TempDir() + "/child"
+	daemon.cmd.Args[len(daemon.cmd.Args)-1] = childFile
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := daemon.restart(ctx, ready.Client()); err != nil {
+		t.Fatalf("restarting the daemon: %v", err)
+	}
+	child := 0
+	for deadline := time.Now().Add(10 * time.Second); child == 0 && time.Now().Before(deadline); {
+		if data, err := os.ReadFile(childFile); err == nil {
+			child, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if child <= 0 || !processAlive(child) {
+		t.Fatalf("the restarted daemon's child never ran")
+	}
+	t.Cleanup(func() { _ = syscall.Kill(child, syscall.SIGKILL) })
+
+	started := time.Now()
+	if err := daemon.stop(); err != nil {
+		t.Fatalf("stopping the restarted daemon: %v", err)
+	}
+	if waited := time.Since(started); waited > 5*time.Second {
+		t.Fatalf("stopping the restarted daemon took %v", waited)
+	}
+	for deadline := time.Now().Add(5 * time.Second); processAlive(child) && time.Now().Before(deadline); {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if processAlive(child) {
+		t.Fatalf("the restarted daemon's child %d outlived the stop", child)
+	}
+}
+
+// A materialized input is sealed read-only (0555) once its receipt is
+// published. A daemon running as the fixture's own unprivileged user leaves
+// such trees under its root, and disposal must still remove them: CI build
+// 896444 failed every run on `unlinkat .../input-0/artifact.txt: permission
+// denied` with every scenario passing.
+func TestAStoppedDaemonRemovesARootHoldingSealedInputs(t *testing.T) {
+	root := t.TempDir()
+	sealed := root + "/steps/consumer/input-0"
+	if err := os.MkdirAll(sealed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sealed+"/artifact.txt", []byte("sealed"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(sealed, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	d := &realDaemon{Root: root}
+	if err := d.stop(); err != nil {
+		t.Fatalf("disposal refused a sealed input: %v", err)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("the root survived disposal: %v", err)
+	}
 }

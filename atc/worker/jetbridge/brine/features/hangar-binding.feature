@@ -83,7 +83,7 @@ Feature: What the ATC binds in PostgreSQL when a consumer takes a published outp
     Then the candidate claim ID is unchanged
 
   @HOP-28 @HOP-34
-  Scenario: A claim for an unregistered exact ref is refused, and the registered one is granted
+  Scenario: A claim for an unregistered tree ref is refused, and the registered one is granted
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
     And the daemon holds the source
@@ -92,7 +92,7 @@ Feature: What the ATC binds in PostgreSQL when a consumer takes a published outp
     And the published tree is read back from the output bucket
     When the consumer binds the output inside its own transaction
     Then exactly 1 claim is recorded
-    When the consumer names an unregistered exact ref
+    When the consumer names an unregistered tree ref
     Then the binding is refused as "not found"
 
   @HOP-28 @HOP-34
@@ -107,3 +107,16 @@ Feature: What the ATC binds in PostgreSQL when a consumer takes a published outp
     Then the binding is not visible
     When the binding is verified
     Then the binding is visible
+
+  @core-review @HOP-36
+  Scenario: Losing a read lease stops the work it was protecting
+    Given a real artifact daemon publishing to a Hangar output bucket
+    And a capture-selected task "build" built from image "busybox" declares the output "result"
+    And the daemon holds the source
+    And the step finishes and the daemon witnesses it
+    And the capture settles
+    And the published tree is read back from the output bucket
+    And the consumer binds the output inside its own transaction
+    And the binding is verified
+    When a live read lease is released while its work waits
+    Then the read work stops on renewal refusal without waiting for its own timeout

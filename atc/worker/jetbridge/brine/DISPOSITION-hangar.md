@@ -136,7 +136,7 @@ this table:
   - **Reddened by:** *no mutation is named in the feature file.* See "32 scenarios name no mutation" below.
   - **Not measured in Phase 9.** No mutation in this phase's set targets it directly.
 
-**A claim for an unregistered exact ref is refused, and the registered one is granted**  `@HOP-28 @HOP-34`  (:86)
+**A claim for an unregistered tree ref is refused, and the registered one is granted**  `@HOP-28 @HOP-34`  (:86)
   - **Reddened by:** *no mutation is named in the feature file.* See "32 scenarios name no mutation" below.
   - **Not measured in Phase 9.** No mutation in this phase's set targets it directly.
 
@@ -368,11 +368,11 @@ this table:
   - **BROADER THAN NAMED — M49** — `the publish handler takes its scope from the request's bucket` — RED at `the output bucket's key for this tree already holds an object with no marker`
   - **BROADER THAN NAMED — M53** — `create-if-absent drops its does-not-exist precondition` — RED at `the output bucket's key for this tree already holds an object with no marker`
 
-**A sealed source becomes a marked object, a signed receipt and a registered exact ref**  `@HOP-21 @HOP-22 @HOP-25 @HOP-26`  (:120)
+**A sealed source becomes a marked object, a signed receipt and a registered tree ref**  `@HOP-21 @HOP-22 @HOP-25 @HOP-26`  (:120)
   - **Reddened by (as the file states it):** RegisterReceipt registering the logical ref without its generation.
-  - **BROADER THAN NAMED — M49** — `the publish handler takes its scope from the request's bucket` — RED at `the registered exact ref names the published generation`
-  - **BROADER THAN NAMED — M53** — `create-if-absent drops its does-not-exist precondition` — RED at `the registered exact ref names the published generation`
-  - **MEASURED M55** — `the exact lifecycle is registered without its generation` — RED at `the registered exact ref names the published generation`
+  - **BROADER THAN NAMED — M49** — `the publish handler takes its scope from the request's bucket` — RED at `the registered tree ref names the published generation`
+  - **BROADER THAN NAMED — M53** — `create-if-absent drops its does-not-exist precondition` — RED at `the registered tree ref names the published generation`
+  - **MEASURED M55** — `the exact lifecycle is registered without its generation` — RED at `the registered tree ref names the published generation`
 
 **Two concurrent-in-sequence captures of identical bytes get one object and two distinct receipts**  `@HOP-23 @HOP-25`  (:135)
   - **Reddened by:** *no mutation is named in the feature file.* See "32 scenarios name no mutation" below.

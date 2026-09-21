@@ -2,12 +2,16 @@ package main
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc/worker/jetbridge/brine/steps"
 )
 
 func buildAppRegistry() brine.StepRegistry {
+	if os.Getenv("BRINE_REVIEW_LIVE_ROOT") != "" {
+		return brine.NewStepRegistry(steps.ReviewSubscriptionDefinitions())
+	}
 	return brine.NewStepRegistry(steps.Definitions())
 }
 
@@ -15,6 +19,12 @@ func buildAppRegistry() brine.StepRegistry {
 // disposer wrapped, so a teardown that fails is recorded rather than dropped
 // into the report the pipeline discards.
 func buildAppResources() (*brine.ResourceRegistry, error) {
+	// Brine acquires every registered resource eagerly. The explicit subscription
+	// smoke owns its disposable container and needs none of the main suite's DB,
+	// Kubernetes or source-compilation resources.
+	if os.Getenv("BRINE_REVIEW_LIVE_ROOT") != "" {
+		return brine.NewResourceRegistry(nil)
+	}
 	declared := steps.ResourceDefinitions()
 	watched := make([]brine.ResourceDefinition, len(declared))
 	for i, definition := range declared {

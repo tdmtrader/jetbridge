@@ -186,5 +186,6 @@ func ResourceDefinitions() []brine.ResourceDefinition {
 			},
 		},
 	}...)
+	resources = append(resources, ReviewResourceDefinitions()...)
 	return append(resources, AuthenticationResourceDefinitions()...)
 }

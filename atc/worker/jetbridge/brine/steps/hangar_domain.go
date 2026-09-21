@@ -101,7 +101,7 @@ type CaptureDraft struct {
 	SecondOutput hangaroutput.OutputName
 
 	// Admission is what is predeclared before the producing Pod may start: the
-	// caller-generated handoff and source-lease identities, the execution being
+	// caller-generated handoff and source-hold identities, the execution being
 	// extended, the declared output and the activation epoch. Nothing about
 	// success, scope, digest or receipt is knowable here, and the type says so.
 	Admission hangaroutput.CaptureAdmission
@@ -342,7 +342,7 @@ type CaptureOutcome struct {
 	// two-halves scenarios assert on directly.
 	Settled bool
 
-	// Published is the exact reference the store assigned, as the publish route
+	// Published is the tree reference the store assigned, as the publish route
 	// reported it.
 	Published hangaroutput.PublicationResult
 
@@ -358,7 +358,7 @@ type CaptureOutcome struct {
 	Err error
 }
 
-// PublishedTree is the exact reference, its strict attributes, and A READ OF
+// PublishedTree is the tree reference, its strict attributes, and A READ OF
 // THE OUTPUT BUCKET.
 //
 // BucketKeys and MarkerVersions are read back from the store at assertion time
@@ -455,7 +455,7 @@ type BoundOutput struct {
 	// halves.
 	Visible bool
 
-	// Lease is the read lease a granted managed read produced.
+	// Lease is the read lease a warranted managed read produced.
 	Lease hangaroutput.ReadLease
 
 	Err error

@@ -26,7 +26,6 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -1820,20 +1819,18 @@ func artifactFetchRunDefinitions() []brine.StepDefinition {
 						"the pod for %q does not fetch its inputs with a shell script (%v), so "+
 							"there is nothing here to run", in.Handle, argv)
 				}
-				payload, err := fetchPayload(in)
-				if err != nil {
-					return FetchOutcome{}, err
-				}
-
-				// The kubelet's half. Every hostPath the pod declares is
-				// DirectoryOrCreate, so by the time an init container runs its
-				// input directories exist on the node; the daemon walks to a
-				// destination's parent through its storage root and refuses
-				// one that is not there. Without this the batch would fail for
-				// a reason no scenario is about.
-				if err := makeFetchDestinations(in.Node, payload); err != nil {
-					return FetchOutcome{}, fmt.Errorf(
-						"preparing the destinations the pod for %q named: %w", in.Handle, err)
+				// Follow the actual pod's mounts, as the kubelet does. Do not
+				// parse or repair the request before the shell sends it.
+				for _, volume := range in.Pod.Spec.Volumes {
+					if volume.HostPath == nil {
+						continue
+					}
+					if _, contained := in.Node.contained(volume.HostPath.Path); !contained && volume.HostPath.Path != in.Node.Root {
+						return FetchOutcome{}, fmt.Errorf("pod mount escapes fixture: %q", volume.HostPath.Path)
+					}
+					if err := os.MkdirAll(volume.HostPath.Path, 0755); err != nil {
+						return FetchOutcome{}, err
+					}
 				}
 
 				// Local requests and nine real two-second retry waits fit this
@@ -2000,40 +1997,6 @@ func artifactFetchRunDefinitions() []brine.StepDefinition {
 						"HOST_IP, so the address it dials expands to nothing", in.Handle)
 			}),
 	}
-}
-
-// makeFetchDestinations creates, on the node, the input directories the pod
-// declared — the kubelet's work, done here because no kubelet is running.
-//
-// It reads them out of the pod's OWN payload rather than deriving them a
-// second time. Deriving them here would be a third copy of the layout the two
-// halves of production already derive independently, and the whole point of
-// this family is that nothing in the fixture holds those two together.
-func makeFetchDestinations(node *realNode, payload string) error {
-	var batch struct {
-		Items []struct {
-			Dest string `json:"dest"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal([]byte(payload), &batch); err != nil {
-		return fmt.Errorf("the pod's request payload is not readable JSON (%s): %w",
-			abbrev(payload), err)
-	}
-	if len(batch.Items) == 0 {
-		return fmt.Errorf("the pod's request payload asks for nothing: %s", abbrev(payload))
-	}
-	for _, item := range batch.Items {
-		if _, contained := node.contained(item.Dest); !contained {
-			return fmt.Errorf(
-				"the pod asks the daemon to deliver an input to %q, outside the node's artifact "+
-					"store at %q — the daemon refuses that, and no kubelet would have made it "+
-					"either", item.Dest, node.Root)
-		}
-		if err := os.MkdirAll(item.Dest, 0o755); err != nil {
-			return fmt.Errorf("make the input directory %q on the node: %w", item.Dest, err)
-		}
-	}
-	return nil
 }
 
 // scriptAssignment reads the VALUE a shell script assigns to a variable, so a

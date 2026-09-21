@@ -431,13 +431,16 @@ func HangarHandoffDefinitions() []brine.StepDefinition {
 		brine.DefineMap[HeldSource, FinishWitnessed](
 			"the step is stopped without destroying its source",
 			func(in HeldSource, _ brine.Params, _ *brine.Recorder) (FinishWitnessed, error) {
+				if err := in.recordStart(); err != nil {
+					return FinishWitnessed{}, err
+				}
 				stopped := in.Draft.Daemon.base("stop", "/execution/v1/stop", in.Execution,
 					identifiedBy(in.Execution))
 				if _, err := decodeControl[executioncontrol.RequestSourcePreservingStopResult](stopped); err != nil {
 					return FinishWitnessed{}, fmt.Errorf("requesting the stop: %w", err)
 				}
 
-				return in.witness(executioncontrol.AcknowledgementStop,
+				return in.recordWitness(executioncontrol.AcknowledgementStop,
 					executioncontrol.ExitOutcome{ExitCode: 143, Signalled: true, Signal: "TERM"})
 			},
 		),
@@ -752,13 +755,13 @@ type holdInspection struct {
 // than one value with itself.
 func (source HeldSource) witness(kind executioncontrol.AcknowledgementKind,
 	outcome executioncontrol.ExitOutcome) (FinishWitnessed, error) {
-	witnessed := FinishWitnessed{Source: source, Outcome: outcome}
+	if err := source.recordStart(); err != nil {
+		return FinishWitnessed{}, err
+	}
+	return source.recordWitness(kind, outcome)
+}
 
-	// The producer's bytes are already there: they are written when the hold is
-	// established, not here. Writing them at the witness made a stop that
-	// removed the incarnation fail on the `When` line, so the `Then` the box
-	// names -- "the source is still there after the stop" -- was never reached.
-
+func (source HeldSource) recordStart() error {
 	started := source.Draft.Daemon.base("start", "/execution/v1/start", source.Execution,
 		map[string]any{
 			"execution":        source.Execution,
@@ -766,8 +769,14 @@ func (source HeldSource) witness(kind executioncontrol.AcknowledgementKind,
 			"process_identity": "brine-supervisor-" + freshUUID(),
 		})
 	if _, err := decodeControl[executioncontrol.Acknowledgement](started); err != nil {
-		return witnessed, fmt.Errorf("recording the start: %w", err)
+		return fmt.Errorf("recording the start: %w", err)
 	}
+	return nil
+}
+
+func (source HeldSource) recordWitness(kind executioncontrol.AcknowledgementKind,
+	outcome executioncontrol.ExitOutcome) (FinishWitnessed, error) {
+	witnessed := FinishWitnessed{Source: source, Outcome: outcome}
 
 	recorded := source.Draft.Daemon.base("outcome", "/execution/v1/outcome", source.Execution,
 		map[string]any{

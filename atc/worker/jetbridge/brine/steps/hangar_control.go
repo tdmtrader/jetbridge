@@ -83,7 +83,7 @@ func (s HangarDaemon) control(facet executioncontrol.Facet, operation, path stri
 	}
 	request.Header.Set("Hangar-Control-Capability", string(token))
 
-	response, err := http.DefaultClient.Do(request)
+	response, err := s.HTTP.Do(request)
 	if err != nil {
 		return controlAnswer{Err: err}
 	}

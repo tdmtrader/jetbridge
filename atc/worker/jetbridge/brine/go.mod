@@ -37,10 +37,12 @@ require (
 	github.com/concourse/concourse v0.0.0
 	github.com/concourse/dex v1.12.0
 	github.com/concourse/flag/v2 v2.4.0
+	github.com/creack/pty v1.1.24
 	github.com/dexidp/dex/api/v2 v2.4.0
 	github.com/docker/distribution v2.8.3+incompatible
 	github.com/fsouza/fake-gcs-server v1.52.3
 	github.com/google/go-containerregistry v0.21.2
+	github.com/google/jsonschema-go v0.4.3
 	github.com/google/uuid v1.6.0
 	github.com/moby/spdystream v0.5.1
 	github.com/modelcontextprotocol/go-sdk v1.6.1
@@ -145,7 +147,6 @@ require (
 	github.com/google/gnostic-models v0.7.1 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/jsonapi v1.0.0 // indirect
-	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/pprof v0.0.0-20260106004452-d7df1bf2cac7 // indirect
 	github.com/google/renameio/v2 v2.0.0 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
@@ -197,6 +198,7 @@ require (
 	github.com/prometheus/common v0.67.5 // indirect
 	github.com/prometheus/procfs v0.19.2 // indirect
 	github.com/russellhaering/goxmldsig v1.5.0 // indirect
+	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect

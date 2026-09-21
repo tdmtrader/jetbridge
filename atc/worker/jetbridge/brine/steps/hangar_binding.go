@@ -260,23 +260,28 @@ func outputStat(daemon HangarDaemon) (hangaroutput.ExactStat, func() error, erro
 // managedRead admits one read through the production admission and reports what
 // happened.
 func managedRead(in BoundOutput) (hangaroutputleaf.ReadLease, error) {
+	warrant, err := managedReadWarrant(in)
+	return warrant.Lease, err
+}
+
+func managedReadWarrant(in BoundOutput) (hangaroutput.ReadWarrant, error) {
 	plane := in.Tree.Outcome.Plane
 	if plane == nil {
-		return hangaroutputleaf.ReadLease{}, fmt.Errorf("this chain never settled a capture")
+		return hangaroutput.ReadWarrant{}, fmt.Errorf("this chain never settled a capture")
 	}
 
 	stat, closeStat, err := outputStat(in.Tree.Outcome.Source.Draft.Daemon)
 	if err != nil {
-		return hangaroutputleaf.ReadLease{}, err
+		return hangaroutput.ReadWarrant{}, err
 	}
 	defer func() { _ = closeStat() }()
 	signer, err := hangaroutputleaf.NewReadWarrantSigner(brineReadWarrantKey)
 	if err != nil {
-		return hangaroutputleaf.ReadLease{}, err
+		return hangaroutput.ReadWarrant{}, err
 	}
 	nonce, err := hangaroutputleaf.NewReadWarrantNonce(freshReader())
 	if err != nil {
-		return hangaroutputleaf.ReadLease{}, err
+		return hangaroutput.ReadWarrant{}, err
 	}
 
 	admission := &hangaroutput.ReadAdmission{
@@ -297,10 +302,10 @@ func managedRead(in BoundOutput) (hangaroutputleaf.ReadLease, error) {
 		MaterializationTimeout: 10 * time.Minute,
 	})
 	if err != nil {
-		return hangaroutputleaf.ReadLease{}, err
+		return hangaroutput.ReadWarrant{}, err
 	}
 
-	return warrant.Lease, nil
+	return warrant, nil
 }
 
 // refusalWords is the closed vocabulary, in one place, so that a phrase taking
@@ -537,7 +542,7 @@ func HangarBindingDefinitions() []brine.StepDefinition {
 		// rather than a phrase that builds one, so there is no sentence that
 		// invents a ref: the generation is the published one, moved.
 		brine.DefineMap[BoundOutput, BoundOutput](
-			"the consumer names an unregistered exact ref",
+			"the consumer names an unregistered tree ref",
 			func(in BoundOutput, _ brine.Params, _ *brine.Recorder) (BoundOutput, error) {
 				unregistered := in.Tree.Ref
 				unregistered.Generation++
@@ -653,7 +658,7 @@ func HangarBindingDefinitions() []brine.StepDefinition {
 				}
 
 				return fmt.Errorf("claim %s is gone from the ledger; a released identity stays "+
-					"tombstoned for the lifetime of the exact-ref lifecycle record, and a row "+
+					"tombstoned for the lifetime of the tree-ref lifecycle record, and a row "+
 					"that was deleted cannot stop it being reacquired", in.Acquisition.ClaimID)
 			}),
 
@@ -723,7 +728,7 @@ func HangarBindingDefinitions() []brine.StepDefinition {
 				return nil
 			}),
 
-		CheckThat[BoundOutput]("the managed read is granted",
+		CheckThat[BoundOutput]("the managed read is warranted",
 			func(in BoundOutput) error {
 				lease, err := managedRead(in)
 				if err != nil {

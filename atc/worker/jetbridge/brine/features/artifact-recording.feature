@@ -90,6 +90,23 @@ Feature: Recording where a step's outputs went
     Then the fetch succeeded, so the step starts
     And what the step finds at "/tmp/build/workdir/pgdata" is "the postgres data directory"
 
+  @core-review
+  Scenario Outline: Output names survive the fetch shell unchanged
+    Given a jetbridge worker whose step outputs stay on the node that ran them
+    And the step "build-42" ran on node "node-1"
+    And its output "<name>" is the volume "build-42-output-<name>" holding "typed review findings"
+    And a later step "consume-42" takes the artifact "build-42-output-<name>" at "/tmp/build/workdir/review"
+    When the worker records where the step's outputs went
+    And that step's pod is built
+    And the node's daemon answers its fetch
+    Then the fetch succeeded, so the step starts
+    And what the step finds at "/tmp/build/workdir/review" is "typed review findings"
+
+    Examples:
+      | name                    |
+      | owner's-report          |
+      | report'$(printf wrong)' |
+
   # And the failure this file exists to make loud. The daemon refuses a batch
   # it could only partly deliver — 404 when an artifact is simply not on this
   # node, 422 when one that IS here is refused (an absolute symlink target),

@@ -117,7 +117,7 @@ Feature: What a sealed source becomes, and what the bucket then holds
   # Reddened by: RegisterReceipt registering the logical ref without its
   # generation.
   @HOP-21 @HOP-22 @HOP-25 @HOP-26
-  Scenario: A sealed source becomes a marked object, a signed receipt and a registered exact ref
+  Scenario: A sealed source becomes a marked object, a signed receipt and a registered tree ref
     Given a real artifact daemon publishing to a Hangar output bucket
     And a capture-selected task "build" built from image "busybox" declares the output "result"
     And the daemon holds the source
@@ -125,7 +125,7 @@ Feature: What a sealed source becomes, and what the bucket then holds
     And the capture settles
     When the published tree is read back from the output bucket
     Then the output bucket holds exactly one object, marked "hangar-output-v1"
-    And the registered exact ref names the published generation
+    And the registered tree ref names the published generation
 
   # The sequential form of AC 8, which is the only form this runner can honestly
   # say. It does NOT stand alone as a dedup assertion: its discriminators are
@@ -145,7 +145,7 @@ Feature: What a sealed source becomes, and what the bucket then holds
   # WHAT THIS SCENARIO PINS, AND WHAT IT DOES NOT. The distinction was found by
   # an independent review of Phase 9 and is recorded here rather than filed.
   #
-  # It pins: that a registered exact ref names the generation the store
+  # It pins: that a registered tree ref names the generation the store
   # assigned (the first Then, which is also the positive control -- without it
   # "the old ref does not resolve" passes against a chain that published
   # nothing), and that a superseded generation stops resolving when asked for
@@ -177,6 +177,6 @@ Feature: What a sealed source becomes, and what the bucket then holds
     And the step finishes and the daemon witnesses it
     And the capture settles
     And the published tree is read back from the output bucket
-    Then the registered exact ref names the published generation
+    Then the registered tree ref names the published generation
     When an exact replacement generation is published
     Then the old ref no longer resolves
