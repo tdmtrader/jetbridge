@@ -19,6 +19,7 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
+	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/tracing"
 	"github.com/concourse/concourse/vars"
 	corev1 "k8s.io/api/core/v1"
@@ -51,6 +52,8 @@ var _ runtime.Container = (*Container)(nil)
 // The Pod is created lazily when Run() is called, since the command
 // (ProcessSpec) isn't known at FindOrCreateContainer time.
 type Container struct {
+	recordWitness   func(context.Context, executioncontrol.Acknowledgement) error
+	checkStart      func(context.Context) error
 	handle          string
 	podName         string
 	metadata        db.ContainerMetadata
@@ -135,6 +138,11 @@ func newContainer(
 }
 
 func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtime.ProcessIO) (runtime.Process, error) {
+	if c.checkStart != nil {
+		if err := c.checkStart(ctx); err != nil {
+			return nil, err
+		}
+	}
 	logger := lagerctx.FromContext(ctx).Session("container-run", lager.Data{
 		"handle": c.handle,
 	})
@@ -625,6 +633,12 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 
 func (c *Container) validateInputs() error {
 	for _, input := range c.containerSpec.Inputs {
+		if input.RunInput != "" && input.HangarRead == nil {
+			return fmt.Errorf("Run input has no admitted read lease")
+		}
+		if input.HangarRead != nil && (input.HangarTree == nil || input.HangarRead.Validate() != nil || input.HangarRead.Ref != *input.HangarTree) {
+			return fmt.Errorf("managed input lacks its exact read authority")
+		}
 		hasArtifact := input.Artifact != nil
 		hasHangarTree := input.HangarTree != nil
 		if hasArtifact == hasHangarTree {
@@ -836,10 +850,31 @@ func hostPathForVolume(volumes []corev1.Volume, name string) string {
 // buildAffinity constructs pod affinity rules via the storage backend.
 // Returns nil when no backend is configured.
 func (c *Container) buildAffinity() *corev1.Affinity {
-	if c.storageBackend == nil {
-		return nil
+	var affinity *corev1.Affinity
+	if c.storageBackend != nil {
+		affinity = c.storageBackend.BuildAffinity(c.containerSpec.Inputs, c.containerSpec.ExecutionControl)
 	}
-	return c.storageBackend.BuildAffinity(c.containerSpec.Inputs, c.containerSpec.ExecutionControl)
+	control := c.containerSpec.ExecutionControl
+	if control == nil || control.Node == nil {
+		return affinity
+	}
+	if affinity == nil {
+		affinity = &corev1.Affinity{}
+	}
+	if affinity.NodeAffinity == nil {
+		affinity.NodeAffinity = &corev1.NodeAffinity{}
+	}
+	if affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
+		affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution = &corev1.NodeSelector{}
+	}
+	selector := affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution
+	if len(selector.NodeSelectorTerms) == 0 {
+		selector.NodeSelectorTerms = []corev1.NodeSelectorTerm{{}}
+	}
+	for i := range selector.NodeSelectorTerms {
+		selector.NodeSelectorTerms[i].MatchFields = append(selector.NodeSelectorTerms[i].MatchFields, corev1.NodeSelectorRequirement{Key: "metadata.name", Operator: corev1.NodeSelectorOpIn, Values: []string{control.Node.Name}})
+	}
+	return affinity
 }
 
 // buildPodLabels constructs the label map for the pod, including the
@@ -1146,6 +1181,14 @@ func (c *Container) outputVolume(name, outputName string) corev1.Volume {
 	return c.storageBackend.ReservedIncarnationVolume(name, reserved)
 }
 
+// inputVolumeName is shared by Pod construction and managed-read admission.
+func inputVolumeName(spec runtime.ContainerSpec, index int) string {
+	if spec.Dir != "" {
+		index++
+	}
+	return fmt.Sprintf("input-%d", index)
+}
+
 func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) {
 	var volumes []corev1.Volume
 	var mounts []corev1.VolumeMount
@@ -1176,8 +1219,8 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 		outputNameByPath[filepath.Clean(path)] = name
 	}
 
-	for _, input := range c.containerSpec.Inputs {
-		name := fmt.Sprintf("input-%d", idx)
+	for i, input := range c.containerSpec.Inputs {
+		name := inputVolumeName(c.containerSpec, i)
 		idx++
 		// When this input path overlaps an output, use the output name as
 		// the hostPath subdir so the daemon key matches the filesystem layout.

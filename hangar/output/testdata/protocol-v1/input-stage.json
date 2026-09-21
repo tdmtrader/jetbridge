@@ -1,0 +1,11 @@
+{
+  "version": "hangar-input/v1",
+  "reservation_id": "e2c7b9a4-1d38-4f60-b5a2-9c4e7d1f0836",
+  "node_uid": "node-fixture-1",
+  "activation_epoch": 7,
+  "scope": "o1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0",
+  "digest": "sha256:9f2b1d4ca7e58306bd41c9f0e27a6b5384dcf1029e6b7a4c8d5f0e3b1a2c7d64",
+  "bytes": 4096,
+  "created_at": "2026-09-15T08:00:00.000000000Z",
+  "expires_at": "2026-09-15T08:01:00.000000000Z"
+}

@@ -36,6 +36,13 @@ type buildStepContainerOwner struct {
 	TeamID  int
 }
 
+// BuildStepContainerIdentity exposes the existing durable owner without using
+// display metadata as execution identity. Other owner kinds remain distinct.
+func BuildStepContainerIdentity(owner ContainerOwner) (int, atc.PlanID, int, bool) {
+	build, ok := owner.(buildStepContainerOwner)
+	return build.BuildID, build.PlanID, build.TeamID, ok
+}
+
 func (c buildStepContainerOwner) Find(DbConn) (sq.Eq, bool, error) {
 	return sq.Eq(c.sqlMap()), true, nil
 }

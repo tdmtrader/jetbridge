@@ -83,6 +83,7 @@ func NewHandler(
 	clock clock.Clock,
 	dbSigningKeyFactory db.SigningKeyFactory,
 	dbPinger infoserver.DBPinger,
+	runServices ...pipelinerunserver.Services,
 ) (http.Handler, error) {
 
 	absCLIDownloadsDir, err := filepath.Abs(cliDownloadsDir)
@@ -101,6 +102,9 @@ func NewHandler(
 	versionServer := versionserver.NewServer(logger, externalURL)
 	pipelineServer := pipelineserver.NewServer(logger, dbTeamFactory, dbPipelineFactory, externalURL)
 	pipelineRunServer := pipelinerunserver.NewServer(logger, dbPipelineRunFactory, externalURL)
+	if len(runServices) > 0 {
+		pipelineRunServer.SetServices(runServices[0])
+	}
 	configServer := configserver.NewServer(logger, dbTeamFactory, secretManager)
 	ccServer := ccserver.NewServer(logger, dbTeamFactory, externalURL)
 	workerServer := workerserver.NewServer(logger, workerTeamFactory, dbWorkerFactory)
@@ -155,25 +159,31 @@ func NewHandler(
 
 		atc.ClearTaskCache: pipelineHandlerFactory.HandlerFor(jobServer.ClearTaskCache),
 
-		atc.ListAllPipelines:          http.HandlerFunc(pipelineServer.ListAllPipelines),
-		atc.ListPipelines:             http.HandlerFunc(pipelineServer.ListPipelines),
-		atc.CreatePipelineRun:         pipelineHandlerFactory.HandlerFor(pipelineRunServer.CreatePipelineRun),
-		atc.ListPipelineRuns:          pipelineHandlerFactory.HandlerFor(pipelineRunServer.ListPipelineRuns),
-		atc.GetPipelineRun:            pipelineHandlerFactory.HandlerFor(pipelineRunServer.GetPipelineRun),
-		atc.GetPipeline:               pipelineHandlerFactory.HandlerFor(pipelineServer.GetPipeline),
-		atc.DeletePipeline:            pipelineHandlerFactory.HandlerFor(pipelineServer.DeletePipeline),
-		atc.OrderPipelines:            teamHandlerFactory.HandlerFor(pipelineServer.OrderPipelines),
-		atc.OrderPipelinesWithinGroup: teamHandlerFactory.HandlerFor(pipelineServer.OrderPipelinesWithinGroup),
-		atc.PausePipeline:             pipelineHandlerFactory.HandlerFor(pipelineServer.PausePipeline),
-		atc.ArchivePipeline:           pipelineHandlerFactory.HandlerFor(pipelineServer.ArchivePipeline),
-		atc.UnpausePipeline:           pipelineHandlerFactory.HandlerFor(pipelineServer.UnpausePipeline),
-		atc.ExposePipeline:            pipelineHandlerFactory.HandlerFor(pipelineServer.ExposePipeline),
-		atc.HidePipeline:              pipelineHandlerFactory.HandlerFor(pipelineServer.HidePipeline),
-		atc.GetVersionsDB:             pipelineHandlerFactory.HandlerFor(pipelineServer.GetVersionsDB),
-		atc.RenamePipeline:            teamHandlerFactory.HandlerFor(pipelineServer.RenamePipeline),
-		atc.ListPipelineBuilds:        pipelineHandlerFactory.HandlerFor(pipelineServer.ListPipelineBuilds),
-		atc.CreatePipelineBuild:       pipelineHandlerFactory.HandlerFor(pipelineServer.CreateBuild),
-		atc.PipelineBadge:             pipelineHandlerFactory.HandlerFor(pipelineServer.PipelineBadge),
+		atc.ListAllPipelines:                http.HandlerFunc(pipelineServer.ListAllPipelines),
+		atc.ListPipelines:                   http.HandlerFunc(pipelineServer.ListPipelines),
+		atc.CreatePipelineRun:               pipelineHandlerFactory.HandlerFor(pipelineRunServer.CreatePipelineRun),
+		atc.CreatePipelineRunV2:             pipelineHandlerFactory.HandlerFor(pipelineRunServer.CreatePipelineRunV2),
+		atc.CancelPipelineRun:               pipelineHandlerFactory.HandlerFor(pipelineRunServer.CancelPipelineRun),
+		atc.ListPipelineRuns:                pipelineHandlerFactory.HandlerFor(pipelineRunServer.ListPipelineRuns),
+		atc.GetPipelineRun:                  pipelineHandlerFactory.HandlerFor(pipelineRunServer.GetPipelineRun),
+		atc.GetPipelineRunResult:            pipelineHandlerFactory.HandlerFor(pipelineRunServer.GetPipelineRunResult),
+		atc.UploadPipelineRunInput:          pipelineHandlerFactory.HandlerFor(pipelineRunServer.UploadPipelineRunInput),
+		atc.HandoffPipelineRunCredentials:   pipelineHandlerFactory.HandlerFor(pipelineRunServer.HandoffPipelineRunCredentials),
+		atc.GetPipelineRunCredentialSession: pipelineHandlerFactory.HandlerFor(pipelineRunServer.GetPipelineRunCredentialSession),
+		atc.GetPipeline:                     pipelineHandlerFactory.HandlerFor(pipelineServer.GetPipeline),
+		atc.DeletePipeline:                  pipelineHandlerFactory.HandlerFor(pipelineServer.DeletePipeline),
+		atc.OrderPipelines:                  teamHandlerFactory.HandlerFor(pipelineServer.OrderPipelines),
+		atc.OrderPipelinesWithinGroup:       teamHandlerFactory.HandlerFor(pipelineServer.OrderPipelinesWithinGroup),
+		atc.PausePipeline:                   pipelineHandlerFactory.HandlerFor(pipelineServer.PausePipeline),
+		atc.ArchivePipeline:                 pipelineHandlerFactory.HandlerFor(pipelineServer.ArchivePipeline),
+		atc.UnpausePipeline:                 pipelineHandlerFactory.HandlerFor(pipelineServer.UnpausePipeline),
+		atc.ExposePipeline:                  pipelineHandlerFactory.HandlerFor(pipelineServer.ExposePipeline),
+		atc.HidePipeline:                    pipelineHandlerFactory.HandlerFor(pipelineServer.HidePipeline),
+		atc.GetVersionsDB:                   pipelineHandlerFactory.HandlerFor(pipelineServer.GetVersionsDB),
+		atc.RenamePipeline:                  teamHandlerFactory.HandlerFor(pipelineServer.RenamePipeline),
+		atc.ListPipelineBuilds:              pipelineHandlerFactory.HandlerFor(pipelineServer.ListPipelineBuilds),
+		atc.CreatePipelineBuild:             pipelineHandlerFactory.HandlerFor(pipelineServer.CreateBuild),
+		atc.PipelineBadge:                   pipelineHandlerFactory.HandlerFor(pipelineServer.PipelineBadge),
 
 		atc.ListAllResources:          http.HandlerFunc(resourceServer.ListAllResources),
 		atc.ListSharedForResource:     pipelineHandlerFactory.HandlerFor(resourceServer.ListSharedForResource),

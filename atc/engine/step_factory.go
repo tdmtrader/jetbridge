@@ -33,6 +33,7 @@ type coreStepFactory struct {
 	defaultTaskTimeout    time.Duration
 	imageResolver         imageresolver.Resolver
 	childRunAdmitter      exec.ChildRunAdmitter
+	runTaskPreparer       exec.RunTaskPreparer
 }
 
 // CoreStepFactoryOption configures optional fields on coreStepFactory.
@@ -52,6 +53,10 @@ func WithChildRunAdmitter(admitter exec.ChildRunAdmitter) CoreStepFactoryOption 
 	return func(f *coreStepFactory) {
 		f.childRunAdmitter = admitter
 	}
+}
+
+func WithCoreRunTaskPreparer(p exec.RunTaskPreparer) CoreStepFactoryOption {
+	return func(f *coreStepFactory) { f.runTaskPreparer = p }
 }
 
 func NewCoreStepFactory(
@@ -206,6 +211,9 @@ func (factory *coreStepFactory) TaskStep(
 	containerMetadata.WorkingDirectory = filepath.Join("/tmp", "build", fmt.Sprintf("%x", sum[:4]))
 
 	var taskOpts []exec.TaskStepOption
+	if factory.runTaskPreparer != nil {
+		taskOpts = append(taskOpts, exec.WithRunTaskPreparer(factory.runTaskPreparer))
+	}
 	if factory.imageResolver != nil {
 		taskOpts = append(taskOpts, exec.WithImageResolver(factory.imageResolver))
 	}

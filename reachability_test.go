@@ -129,8 +129,6 @@ var deferredEntryPoints = []deferredEntryPoint{
 	{name: "KeyIDs", why: consumerHalf},
 	{name: "ConstantTimeKeyIDEqual", why: consumerHalf},
 	{name: "ReceiptEnvelopeIsUnaltered", why: consumerHalf},
-	{name: "NewReadWarrantVerifier", why: consumerHalf},
-	{name: "VerifyReleaseAcknowledgement", why: consumerHalf},
 
 	{name: "DeriveCohortFindings", why: cohortIdentities},
 
@@ -141,7 +139,6 @@ var deferredEntryPoints = []deferredEntryPoint{
 	// one yet: a managed read reaches a consumer pod through a lease acquired
 	// by the ATC before the Pod is built, and that acquisition is the piece
 	// this phase did not land.
-	{name: "NewLeaseReadProfile", pkg: "hangar/output", why: managedReadHasNoConsumer},
 	{name: "Renew", pkg: "hangar/output", why: managedReadHasNoConsumer},
 	// The publisher's read-under-lease is the daemon end of the same half. It
 	// used to be credited through the leaf's Publisher interface, which no
@@ -373,6 +370,16 @@ func productionReferences(t *testing.T, root string, declared map[string][]strin
 			switch info.Name() {
 			case ".git", "node_modules", "vendor", "web", "testdata":
 				return filepath.SkipDir
+			}
+			// Nested modules are not production callers in this module.
+			// In particular, Brine steps are ordinary .go files in their own
+			// module; counting them would turn tested APIs into wired APIs.
+			if path != root {
+				if _, err := os.Stat(filepath.Join(path, "go.mod")); err == nil {
+					return filepath.SkipDir
+				} else if !os.IsNotExist(err) {
+					return err
+				}
 			}
 
 			return nil
@@ -607,8 +614,10 @@ var interfaceSatisfied = map[string]satisfiedEntry{
 	// atc/hangaroutput.Repository -- the ATC-side port the passes hold. Its
 	// implementation is db.HangarOutputRepository and no pass imports atc/db.
 	"AcknowledgeCaptureRelease":    {pkg: "atc/db", port: "atc/hangaroutput.Repository"},
+	"AcknowledgeSourceHold":        {pkg: "atc/db", port: "atc/hangaroutput.Repository"},
 	"AcquireCaptureLease":          {pkg: "atc/db", port: "atc/hangaroutput.Repository"},
 	"IssueStatChallenge":           {pkg: "atc/db", port: "atc/hangaroutput.Repository"},
+	"LoadHandoffRecord":            {pkg: "atc/db", port: "atc/hangaroutput.Repository"},
 	"RecordFirstObjectCreate":      {pkg: "atc/db", port: "atc/hangaroutput.Repository"},
 	"RecordSealDeadline":           {pkg: "atc/db", port: "atc/hangaroutput.Repository"},
 	"RecordTerminalCaptureFailure": {pkg: "atc/db", port: "atc/hangaroutput.Repository"},
@@ -629,6 +638,7 @@ var interfaceSatisfied = map[string]satisfiedEntry{
 	"ReleaseReadLease":  {pkg: "atc/db", port: "atc/hangaroutput.LeaseControlStore"},
 	"RenewReadLease":    {pkg: "atc/db", port: "atc/hangaroutput.LeaseControlStore"},
 	"ValidateReadLease": {pkg: "atc/db", port: "atc/hangaroutput.LeaseControlStore"},
+	"Admitted":          {pkg: "atc/db", port: "atc/hangaroutput.ReadNodeMembership"},
 
 	"CloseAbandonedReadLeases": {pkg: "atc/db", port: "atc/hangaroutput.AbandonedReadLeases"},
 	"IncompleteHandoffs":       {pkg: "atc/db", port: "atc/hangaroutput.IncompleteReader"},

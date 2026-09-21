@@ -33,6 +33,9 @@ import (
 const baseFixtureDir = "../executioncontrol/testdata/protocol-v1"
 
 var fixturedTypes = map[string]string{
+	outputPackageDir + ":InputStage":                      "input-stage.json",
+	outputPackageDir + ":InputPublishRequest":             "input-publish-request.json",
+	outputPackageDir + ":InputPublication":                "input-publication.json",
 	outputPackageDir + ":SourceIncarnation":               "source-incarnation.json",
 	outputPackageDir + ":CaptureAdmission":                "capture-admission.json",
 	outputPackageDir + ":ReservedIncarnation":             "reserved-incarnation.json",
@@ -51,6 +54,7 @@ var fixturedTypes = map[string]string{
 	outputPackageDir + ":ReadLease":                       "read-lease.json",
 	outputPackageDir + ":ClaimRecord":                     "claim-record.json",
 	outputPackageDir + ":ReadWarrantClaims":               "read-warrant-claims.json",
+	outputPackageDir + ":ManagedReadRequest":              "managed-read-request.json",
 	outputPackageDir + ":ReadDestination":                 "read-warrant-claims.json",
 	outputPackageDir + ":LeaseQuestion":                   "lease-question.json",
 	outputPackageDir + ":LeaseAnswer":                     "lease-answer.json",
@@ -61,6 +65,7 @@ var fixturedTypes = map[string]string{
 	outputPackageDir + ":ExtensionHandshake":              "capture-extension-handshake.json",
 	outputPackageDir + ":CallerNamespaceRequest":          "caller-namespace-request.json",
 	outputPackageDir + ":WriterAdmission":                 "writer-admission.json",
+	outputPackageDir + ":WriterInspection":                "writer-inspection-closed.json",
 	outputPackageDir + ":SealRequest":                     "seal-request.json",
 	outputPackageDir + ":SealStarted":                     "seal-started.json",
 	outputPackageDir + ":DrainedWriter":                   "drained-writer.json",

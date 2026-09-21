@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
@@ -52,7 +53,9 @@ type Daemon struct {
 	// canonicalizer turns a sealed source directory into the one canonical form
 	// this repository has. It is the foundation's, not a second implementation:
 	// two answers to "what are these bytes" is two digests for one tree.
-	canonicalizer hangar.Canonicalizer
+	canonicalizer    hangar.Canonicalizer
+	nodeUID          executioncontrol.NodeUID
+	operationTimeout time.Duration
 
 	// controlKeyID names the Ed25519 key this node signs execution and source
 	// ledger statements with. It is a DIFFERENT key from the receipt key: a
@@ -155,6 +158,8 @@ func Build(ctx context.Context, config Config) (*Daemon, error) {
 		epoch:                activationEpoch(config.ActivationEpoch),
 		materializationKeyID: config.MaterializationKeyID,
 		canonicalizer:        canonicalizer,
+		nodeUID:              executioncontrol.NodeUID(config.NodeUID),
+		operationTimeout:     config.OperationTimeout,
 		controlKeyID:         config.ControlKeyID,
 		controlSigner:        controlSigner,
 		captureSigner:        captureSigner,

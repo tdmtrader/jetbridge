@@ -139,6 +139,7 @@ func TestABaseOnlyDaemonAnswersBaseRoutesAndTypedlyRefusesEveryCaptureRoute(t *t
 		{"/capture/v1/hold/inspect", "inspect-hold"},
 		{"/capture/v1/writer-ticket", "issue-writer-ticket"},
 		{"/capture/v1/writer-ticket/close", "close-writer-ticket"},
+		{"/capture/v1/writer-ticket/inspect", "inspect-writer-ticket"},
 		{"/capture/v1/seal", "begin-seal"},
 		{"/capture/v1/seal/confirm", "confirm-seal"},
 		{"/capture/v1/seal/inspect", "inspect-seal"},

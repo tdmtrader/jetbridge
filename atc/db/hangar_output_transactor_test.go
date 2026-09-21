@@ -51,7 +51,7 @@ var _ = Describe("the controller transactor", func() {
 		tx, err := dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		defer db.Rollback(tx)
-		Expect(repository.RecordPolicySnapshot(ctx, tx, output.PolicySnapshot{
+		Expect(repository.RecordPolicyAttestation(ctx, tx, output.PolicySnapshot{
 			ProtocolVersion:      output.ProtocolVersion,
 			ActivationEpoch:      1,
 			BucketFingerprint:    "gs://output-bucket",
@@ -60,7 +60,7 @@ var _ = Describe("the controller transactor", func() {
 			LifecycleDeleteRules: 1,
 			State:                output.PolicyAtRisk,
 			ObservedAt:           output.NewTimestamp(time.Now()),
-		})).To(Succeed())
+		}, nil)).To(Succeed())
 		Expect(tx.Commit()).To(Succeed())
 	})
 

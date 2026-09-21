@@ -9,36 +9,50 @@ import (
 )
 
 var encryptedColumns = []encryptedColumn{
-	{"teams", "legacy_auth", "id"},
-	{"resources", "config", "id"},
-	{"jobs", "config", "id"},
-	{"resource_types", "config", "id"},
-	{"prototypes", "config", "id"},
-	{"builds", "private_plan", "id"},
-	{"cert_cache", "cert", "domain"},
-	{"pipelines", "var_sources", "id"},
-	{"mcp_oauth_state", "data", "id"},
+	{"teams", "legacy_auth", "id", false},
+	{"resources", "config", "id", false},
+	{"jobs", "config", "id", false},
+	{"resource_types", "config", "id", false},
+	{"prototypes", "config", "id", false},
+	{"builds", "private_plan", "id", false},
+	{"cert_cache", "cert", "domain", false},
+	{"pipelines", "var_sources", "id", false},
+	{"pipeline_run_definitions", "config", "run_id", true},
+	{"mcp_oauth_state", "data", "id", true},
 }
 
 type encryptedColumn struct {
 	Table      string
 	Column     string
 	PrimaryKey string
+	// A newer table can be absent at a supported schema rollback target.
+	Optional bool
+}
+
+func (m migrator) encryptedColumnsInSchema() ([]encryptedColumn, error) {
+	var columns []encryptedColumn
+	for _, column := range encryptedColumns {
+		if column.Optional {
+			var present bool
+			if err := m.db.QueryRow("SELECT to_regclass($1) IS NOT NULL", column.Table).Scan(&present); err != nil {
+				return nil, err
+			}
+			if !present {
+				continue
+			}
+		}
+		columns = append(columns, column)
+	}
+	return columns, nil
 }
 
 func (m migrator) encryptPlaintext(key *encryption.Key) error {
 	logger := m.logger.Session("encrypt")
-	for _, ec := range encryptedColumns {
-		if ec.Table == "mcp_oauth_state" {
-			exists, err := checkTableExist(m.db, ec.Table)
-			if err != nil {
-				return err
-			}
-			// Historical migration targets predate MCP authorization state.
-			if !exists {
-				continue
-			}
-		}
+	columns, err := m.encryptedColumnsInSchema()
+	if err != nil {
+		return err
+	}
+	for _, ec := range columns {
 		rows, err := m.db.Query(`
 			SELECT ` + ec.PrimaryKey + `, ` + ec.Column + `
 			FROM ` + ec.Table + `
@@ -106,16 +120,11 @@ func (m migrator) encryptPlaintext(key *encryption.Key) error {
 
 func (m migrator) decryptToPlaintext(oldKey *encryption.Key) error {
 	logger := m.logger.Session("decrypt")
-	for _, ec := range encryptedColumns {
-		if ec.Table == "mcp_oauth_state" {
-			exists, err := checkTableExist(m.db, ec.Table)
-			if err != nil {
-				return err
-			}
-			if !exists {
-				continue
-			}
-		}
+	columns, err := m.encryptedColumnsInSchema()
+	if err != nil {
+		return err
+	}
+	for _, ec := range columns {
 		rows, err := m.db.Query(`
 			SELECT ` + ec.PrimaryKey + `, nonce, ` + ec.Column + `
 			FROM ` + ec.Table + `
@@ -180,16 +189,11 @@ var ErrEncryptedWithUnknownKey = errors.New("row encrypted with neither old nor 
 
 func (m migrator) encryptWithNewKey(newKey *encryption.Key, oldKey *encryption.Key) error {
 	logger := m.logger.Session("rotate")
-	for _, ec := range encryptedColumns {
-		if ec.Table == "mcp_oauth_state" {
-			exists, err := checkTableExist(m.db, ec.Table)
-			if err != nil {
-				return err
-			}
-			if !exists {
-				continue
-			}
-		}
+	columns, err := m.encryptedColumnsInSchema()
+	if err != nil {
+		return err
+	}
+	for _, ec := range columns {
 		rows, err := m.db.Query(`
 			SELECT ` + ec.PrimaryKey + `, nonce, ` + ec.Column + `
 			FROM ` + ec.Table + `

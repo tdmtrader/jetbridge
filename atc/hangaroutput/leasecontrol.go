@@ -42,11 +42,10 @@ type LeaseControlStore interface {
 
 // NodeKeys answers which public key a node's statements are checked against.
 //
-// It is a lookup rather than a single key because a cluster has many nodes and
-// one of them being compromised must not make every other node's statements
-// checkable by the same material. What it is NOT is a reader of the message: the
-// key is chosen by node identity, never taken out of the statement that claims
-// it.
+// The key is resolved from trusted deployment state and node membership,
+// never taken out of the statement that claims it. Isolation among nodes
+// depends on provisioning distinct signing identities; the epoch control ring
+// currently gives its attested cohort a shared signing identity.
 type NodeKeys interface {
 	PublicKeyFor(node executioncontrol.NodeUID, keyID string) (ed25519.PublicKey, error)
 }

@@ -27,6 +27,7 @@ func (rw *RejectArchivedWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.PausePipeline,
 			atc.UnpausePipeline,
 			atc.CreatePipelineRun,
+			atc.UploadPipelineRunInput,
 			atc.CreateJobBuild,
 			atc.ScheduleJob,
 			atc.CheckResource,
@@ -43,6 +44,11 @@ func (rw *RejectArchivedWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 
 			// leave the handler as-is
 		case
+			// Versioned admission checks replay before the archive state;
+			// its transaction refuses new Runs from archived templates.
+			atc.CreatePipelineRunV2,
+			atc.HandoffPipelineRunCredentials,
+			atc.GetPipelineRunCredentialSession,
 			atc.GetConfig,
 			atc.GetBuild,
 			atc.BuildResources,
@@ -55,6 +61,8 @@ func (rw *RejectArchivedWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.GetPipeline,
 			atc.ListPipelineRuns,
 			atc.GetPipelineRun,
+			atc.GetPipelineRunResult,
+			atc.CancelPipelineRun,
 			atc.GetJobBuild,
 			atc.PipelineBadge,
 			atc.JobBadge,

@@ -11,6 +11,10 @@ import (
 // PipelineRun is the durable header that owns one numbered payload pipeline.
 // Lifecycle operations intentionally live with the run service, not this model.
 type PipelineRun interface {
+	ContractVersion() atc.RunContractVersion
+	CancellationRequested() bool
+	CancellationRequest() *atc.RunCancellationRequest
+	ActivationEpoch() int64
 	ID() int
 	TemplatePipelineID() int
 	Number() int
@@ -25,6 +29,9 @@ type PipelineRun interface {
 }
 
 type pipelineRun struct {
+	cancellation       *atc.RunCancellationRequest
+	contractVersion    atc.RunContractVersion
+	activationEpoch    int64
 	id                 int
 	templatePipelineID int
 	number             int
@@ -37,6 +44,13 @@ type pipelineRun struct {
 	configHash         string
 	instancePipelineID int
 }
+
+func (r *pipelineRun) CancellationRequested() bool { return r.cancellation != nil }
+
+func (r *pipelineRun) CancellationRequest() *atc.RunCancellationRequest { return r.cancellation }
+
+func (r *pipelineRun) ContractVersion() atc.RunContractVersion { return r.contractVersion }
+func (r *pipelineRun) ActivationEpoch() int64                  { return r.activationEpoch }
 
 func (r *pipelineRun) ID() int                 { return r.id }
 func (r *pipelineRun) TemplatePipelineID() int { return r.templatePipelineID }
@@ -53,19 +67,27 @@ func (r *pipelineRun) InstancePipelineID() (int, bool) {
 func (r *pipelineRun) ReclaimRetryAfter() *time.Time { return r.reclaimRetryAfter }
 
 var pipelineRunsQuery = psql.Select(
-	"r.id", "r.template_pipeline_id", "r.number", "r.params", "r.status", "r.created_by",
+	"r.cancel_requested_at", "r.cancel_requested_by", "r.cancel_reason", "r.run_contract_version", "coalesce(r.activation_epoch, 0)", "r.id", "r.template_pipeline_id", "r.number", "r.params", "r.status", "r.created_by",
 	"r.created_at", "r.completed_at", "r.reclaim_retry_after", "r.config_hash", "child.id",
 ).From("pipeline_runs r").
 	LeftJoin("pipelines child ON child.pipeline_run_id = r.id")
 
 func scanPipelineRun(run *pipelineRun, row scannable) error {
+	var cancelAt sql.NullTime
+	var cancelBy, cancelReason sql.NullString
 	var params sql.NullString
 	var completedAt sql.NullTime
 	var reclaimRetryAfter sql.NullTime
 	var instancePipelineID sql.NullInt64
-	if err := row.Scan(&run.id, &run.templatePipelineID, &run.number, &params, &run.status, &run.createdBy,
+	if err := row.Scan(&cancelAt, &cancelBy, &cancelReason, &run.contractVersion, &run.activationEpoch, &run.id, &run.templatePipelineID, &run.number, &params, &run.status, &run.createdBy,
 		&run.createdAt, &completedAt, &reclaimRetryAfter, &run.configHash, &instancePipelineID); err != nil {
 		return err
+	}
+	if cancelAt.Valid {
+		run.cancellation = &atc.RunCancellationRequest{RequestedAt: cancelAt.Time.UTC(), RequestedBy: cancelBy.String}
+		if cancelReason.Valid {
+			run.cancellation.Reason = &cancelReason.String
+		}
 	}
 	if params.Valid && json.Unmarshal([]byte(params.String), &run.params) != nil {
 		return json.Unmarshal([]byte(params.String), &run.params)

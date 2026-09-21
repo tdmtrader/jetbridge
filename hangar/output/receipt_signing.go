@@ -351,6 +351,27 @@ func (verifier *ReceiptSignatureVerifier) Verify(receipt Receipt, challenge Stat
 		return err
 	}
 
+	if err := verifier.VerifySignature(receipt); err != nil {
+		return err
+	}
+	now := verifier.clock.Now().UTC()
+
+	if err := verifier.bind(receipt, challenge, now); err != nil {
+		return err
+	}
+
+	// Consumed last, and only on success: a nonce burned by a receipt that did
+	// not verify would let one forgery deny the capture its real answer.
+	return verifier.consume(challenge, now)
+}
+
+// VerifySignature rechecks retained evidence without consuming its historical
+// stat challenge. It does not attest current object metadata or replace Verify
+// during initial receipt admission.
+func (verifier *ReceiptSignatureVerifier) VerifySignature(receipt Receipt) error {
+	if err := receipt.Validate(); err != nil {
+		return err
+	}
 	key, pinned := verifier.ring.byKeyID[receipt.KeyID]
 	if !pinned {
 		return fmt.Errorf("%w: no pinned public key has id %q. A receipt names the key that can "+
@@ -385,13 +406,7 @@ func (verifier *ReceiptSignatureVerifier) Verify(receipt Receipt, challenge Stat
 			"activation-pinned public key for %q", ErrUnauthorized, receipt.KeyID)
 	}
 
-	if err := verifier.bind(receipt, challenge, now); err != nil {
-		return err
-	}
-
-	// Consumed last, and only on success: a nonce burned by a receipt that did
-	// not verify would let one forgery deny the capture its real answer.
-	return verifier.consume(challenge, now)
+	return nil
 }
 
 // consume records one nonce as used and refuses the second use.

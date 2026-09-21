@@ -346,6 +346,9 @@ func (step *PutStep) Visit(v StepVisitor) error {
 
 type TaskStep struct {
 	Name              string            `json:"task"`
+	TaskID            string            `json:"task_id,omitempty"`
+	RunResult         *RunResult        `json:"run_result,omitempty"`
+	RunInputs         []RunInput        `json:"run_inputs,omitempty"`
 	Privileged        bool              `json:"privileged,omitempty"`
 	Hermetic          bool              `json:"hermetic,omitempty"`
 	ConfigPath        string            `json:"file,omitempty"`

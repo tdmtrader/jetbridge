@@ -182,12 +182,14 @@ var _ = Describe("a build acting for itself", func() {
 			Expect(countRunRows()).To(Equal(before))
 		})
 
-		It("admits a build when both actions were raised together", func() {
+		It("admits a build when config and Run write actions were raised together", func() {
 			before := countRunRows()
 
 			run, err := admitUnder(map[string]string{
-				atc.CreatePipelineRun: "owner",
-				atc.SaveConfig:        "owner",
+				atc.CreatePipelineRun:      "owner",
+				atc.CreatePipelineRunV2:    "owner",
+				atc.UploadPipelineRunInput: "owner",
+				atc.SaveConfig:             "owner",
 			})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(run.CreatedBy).To(Equal(buildCreatedBy))

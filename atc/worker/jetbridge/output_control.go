@@ -67,6 +67,8 @@ type OutputControl interface {
 		admission output.WriterAdmission) (output.CaptureAcknowledgement, error)
 	RetireWriter(ctx context.Context,
 		admission output.WriterAdmission) (output.CaptureAcknowledgement, error)
+	InspectWriter(ctx context.Context, id executioncontrol.Identity,
+		handoff output.HandoffID, ticket output.WriterTicketID) (output.WriterInspection, error)
 
 	// The publication half, which the control plane's capture coordinator
 	// drives. They are on this interface rather than a second one because an
@@ -95,17 +97,18 @@ type OutputControl interface {
 // at a second daemon mid-execution is a client that could ask the wrong node
 // whether a process finished.
 type OutputControlClient struct {
-	endpoint string
-	http     *http.Client
-	minter   *executioncontrol.CapabilityMinter
-	epoch    executioncontrol.ActivationEpoch
+	endpoint    string
+	http        *http.Client
+	minter      *executioncontrol.CapabilityMinter
+	epoch       executioncontrol.ActivationEpoch
+	readTimeout time.Duration
 }
 
 // NewOutputControlClient builds the client for one node's daemon.
 func NewOutputControlClient(endpoint string, httpClient *http.Client,
 	minter *executioncontrol.CapabilityMinter,
 	epoch executioncontrol.ActivationEpoch) *OutputControlClient {
-	return &OutputControlClient{endpoint: endpoint, http: httpClient, minter: minter, epoch: epoch}
+	return &OutputControlClient{endpoint: endpoint, http: httpClient, minter: minter, epoch: epoch, readTimeout: output.DefaultOperationTimeout}
 }
 
 var _ OutputControl = (*OutputControlClient)(nil)
@@ -288,6 +291,19 @@ func (client *OutputControlClient) RecordStart(ctx context.Context, id execution
 	return ack, err
 }
 
+// InspectStart reads the node's stored, signed start, or refuses with
+// ErrNotFound when the node recorded none. It writes nothing.
+func (client *OutputControlClient) InspectStart(ctx context.Context,
+	id executioncontrol.Identity) (executioncontrol.Acknowledgement, error) {
+	var ack executioncontrol.Acknowledgement
+	err := client.call(ctx, executioncontrol.BaseFacet, "inspect-start", "/execution/v1/start/inspect", id,
+		executioncontrol.ClassifyRequest{
+			ProtocolVersion: executioncontrol.ProtocolVersion, Identity: id,
+		}, &ack)
+
+	return ack, err
+}
+
 func (client *OutputControlClient) RecordOutcome(ctx context.Context, id executioncontrol.Identity,
 	kind executioncontrol.AcknowledgementKind,
 	outcome executioncontrol.ExitOutcome) (executioncontrol.Acknowledgement, error) {
@@ -393,6 +409,16 @@ func (client *OutputControlClient) RetireWriter(ctx context.Context,
 	return ack, err
 }
 
+func (client *OutputControlClient) InspectWriter(ctx context.Context, id executioncontrol.Identity,
+	handoff output.HandoffID, ticket output.WriterTicketID) (output.WriterInspection, error) {
+	var answer output.WriterInspection
+	err := client.call(ctx, output.CaptureFacet, "inspect-writer-ticket",
+		"/capture/v1/writer-ticket/inspect", id, map[string]any{
+			"execution": id, "handoff_id": handoff, "writer_ticket_id": ticket,
+		}, &answer)
+	return answer, err
+}
+
 // nodeOutputControls resolves the output daemon for the node an execution
 // landed on, and dials it the way the ATC dials the artifact daemon: same
 // client certificate, same CA, same scheme predicate. The two daemons are
@@ -414,6 +440,10 @@ func NewOutputControls(config Config, resolver *NodeIPResolver,
 }
 
 func (controls *nodeOutputControls) ForNode(ctx context.Context, nodeName string) (OutputControl, error) {
+	return controls.clientForNode(ctx, nodeName)
+}
+
+func (controls *nodeOutputControls) clientForNode(ctx context.Context, nodeName string) (*OutputControlClient, error) {
 	if controls.resolver == nil || nodeName == "" {
 		return nil, fmt.Errorf("no node to reach the output daemon on")
 	}
@@ -430,10 +460,12 @@ func (controls *nodeOutputControls) ForNode(ctx context.Context, nodeName string
 	// artifact daemon's: that predicate is a switch on a different daemon
 	// serving a different bucket under a different identity, and its client
 	// certificate is issued by a CA this daemon does not trust.
-	return NewOutputControlClient(
+	client := NewOutputControlClient(
 		fmt.Sprintf("%s://%s:%d", outputDaemonURLScheme(), nodeIP, port),
 		newOutputDaemonHTTPClient(controls.config, 30*time.Second),
-		controls.minter, controls.epoch), nil
+		controls.minter, controls.epoch)
+	client.readTimeout = controls.config.OutputOperationTimeout
+	return client, nil
 }
 
 // The publication half, which Phase 5's coordinator drives.

@@ -29,7 +29,8 @@ type Worker struct {
 	// ordinary path: a worker with no output plane hands every container a
 	// nil resolver, and nothing in the exact-execution path is reachable
 	// without an ExecutionControl on the spec anyway.
-	outputControls OutputControlResolver
+	outputControls    OutputControlResolver
+	executionPreparer ExecutionPreparer
 }
 
 // SetOutputControls gives the worker its resolver for the output daemon's
@@ -119,6 +120,13 @@ func (w *Worker) FindOrCreateContainer(
 	containerSpec runtime.ContainerSpec,
 	delegate runtime.BuildStepDelegate,
 ) (runtime.Container, []runtime.VolumeMount, error) {
+	if w.executionPreparer != nil {
+		var err error
+		containerSpec, err = w.executionPreparer.PrepareContainer(ctx, owner, metadata, containerSpec)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
 	logger := lagerctx.FromContext(ctx).Session("find-or-create-container", lager.Data{
 		"worker": w.Name(),
 	})
@@ -144,6 +152,17 @@ func (w *Worker) FindOrCreateContainer(
 		containerHandle = creatingContainer.Handle()
 	}
 
+	if w.executionPreparer != nil {
+		volumeNames := make([]string, len(containerSpec.Inputs))
+		for i := range volumeNames {
+			volumeNames[i] = inputVolumeName(containerSpec, i)
+		}
+		containerSpec, err = w.executionPreparer.PrepareInputs(ctx, owner, containerHandle, volumeNames, containerSpec)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
 	// If we already have a created container in the DB, return it directly.
 	// The Pod may or may not exist yet (it gets created in Container.Run).
 	// Mark it as reused so Run() can clean up stale hostPath data.
@@ -151,6 +170,7 @@ func (w *Worker) FindOrCreateContainer(
 		mounts, volumes := w.buildVolumeMountsForSpec(containerHandle, containerSpec)
 		container := newContainer(containerHandle, metadata, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes, w.storageBackend, true, false)
 		container.outputControls = w.outputControls
+		w.bindStartCheck(container, owner, containerSpec)
 		return container, mounts, nil
 	}
 
@@ -167,6 +187,7 @@ func (w *Worker) FindOrCreateContainer(
 	mounts, volumes := w.buildVolumeMountsForSpec(containerHandle, containerSpec)
 	container := newContainer(containerHandle, metadata, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes, w.storageBackend, false, false)
 	container.outputControls = w.outputControls
+	w.bindStartCheck(container, owner, containerSpec)
 	return container, mounts, nil
 }
 
@@ -241,6 +262,9 @@ func (w *Worker) LookupContainer(ctx context.Context, handle string) (runtime.Co
 	// There is no ContainerSpec behind a lookup, so this Container must never
 	// create or replace a pod — it exists only to attach to one.
 	container.lookedUp = true
+	if w.executionPreparer != nil {
+		container.checkStart = func(ctx context.Context) error { return w.executionPreparer.CheckIntercept(ctx, handle) }
+	}
 	// It is the hijack path -- the one Req 18 takes away from a capture-enabled
 	// task -- and it gets its ledger classifier from newContainer above, like
 	// every other container this worker builds. It used to be assigned a second

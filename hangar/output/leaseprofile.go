@@ -119,25 +119,36 @@ func (profile *LeaseReadProfile) requiredRemaining() time.Duration {
 // would let a warrant for one object authorize a read of another.
 func (profile *LeaseReadProfile) Admit(ctx context.Context, ref hangar.TreeRef,
 	handle, volume string) (time.Duration, error) {
-	answer, err := profile.Control.ValidateLease(ctx, profile.current(), profile.requiredRemaining())
+	lease, err := profile.AdmitLease(ctx, ref, handle, volume)
 	if err != nil {
 		return 0, err
 	}
+	return lease.ExpiresAt.Time.Sub(profile.Control.Clock.Now().UTC()), nil
+}
+
+// AdmitLease returns the control plane's current fenced lease to an archive
+// reader. Materialization and streaming use the same pre-open validation.
+func (profile *LeaseReadProfile) AdmitLease(ctx context.Context, ref hangar.TreeRef,
+	handle, volume string) (ReadLease, error) {
+	answer, err := profile.Control.ValidateLease(ctx, profile.current(), profile.requiredRemaining())
+	if err != nil {
+		return ReadLease{}, err
+	}
 	if !answer.Admitted {
-		return 0, fmt.Errorf("%w: the control plane refused this read lease: %s",
+		return ReadLease{}, fmt.Errorf("%w: the control plane refused this read lease: %s",
 			ErrUnauthorized, answer.Refusal)
 	}
 	if err := profile.matches(answer, ref, handle, volume); err != nil {
-		return 0, err
+		return ReadLease{}, err
 	}
 
 	remaining := answer.Lease.ExpiresAt.Time.Sub(profile.Control.Clock.Now().UTC())
 	if remaining <= 0 {
-		return 0, fmt.Errorf("%w: the lease was admitted with no time left on it",
+		return ReadLease{}, fmt.Errorf("%w: the lease was admitted with no time left on it",
 			ErrUnauthorized)
 	}
 
-	return remaining, nil
+	return answer.Lease, nil
 }
 
 // Deferred: a managed read reaches a consumer pod through a read lease the ATC

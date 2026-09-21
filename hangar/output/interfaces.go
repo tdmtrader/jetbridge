@@ -265,6 +265,13 @@ type WriterAdmission struct {
 	PodUID          executioncontrol.PodUID          `json:"pod_uid"`
 }
 
+// WriterInspection returns the original signed statements, including a close
+// that a controller may have committed before losing its response.
+type WriterInspection struct {
+	Issued CaptureAcknowledgement  `json:"issued"`
+	Closed *CaptureAcknowledgement `json:"closed,omitempty"`
+}
+
 func (admission WriterAdmission) Validate() error {
 	if err := validateProtocol(admission.ProtocolVersion); err != nil {
 		return err

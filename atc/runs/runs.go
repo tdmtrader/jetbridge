@@ -52,10 +52,10 @@
 // the run -- which is the only way a consumer-side call record and the run it
 // admitted can be atomic. Begin is published for that reason and no other.
 //
-// It does not read any consumer's tables. A consumer's call record is the
-// consumer's; a SELECT from here into it would breach the boundary this
-// package exists to draw. The whole of the port's contract-key check is that a
-// non-empty key was presented.
+// It does not read any consumer's tables. A consumer's call record remains the
+// consumer's. Legacy admission requires only a non-empty contract key; versioned
+// admission additionally retains core's scoped invocation identity atomically
+// with its Run and repeats authorization before replay.
 package runs
 
 import (
@@ -161,16 +161,16 @@ type BuildPrincipal struct {
 type Admission struct {
 	Template  TemplateRef
 	Params    atc.RunParams
+	Inputs    map[string]atc.RunInputSource
 	Principal Principal
 
-	// ContractKey is the caller's identity for this invocation. It is opaque
-	// to the port, which checks only that it is non-empty: the record it keys
-	// lives in a consumer table, and core never reads one.
+	// ContractKey is the caller's identity for this invocation. Legacy admission
+	// requires only presence. Versioned admission validates the bounded alphabet
+	// and owns replay scoped to team, base template and stable principal.
 	ContractKey string
 
-	// CausedByRun is the causal-parent run, when there is one. The port passes
-	// it through and defines no column, no migration and none of the refusals
-	// that will attach to the edge; that is the run-contract track's work.
+	// CausedByRun is reserved for the causal-parent Run. Versioned admission
+	// explicitly refuses it until authorization and durable retention are wired.
 	CausedByRun *int
 
 	// BeforeCommit runs inside the caller's transaction after the run and its

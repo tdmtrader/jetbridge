@@ -16,6 +16,9 @@ import (
 // together, so a deployment cannot be configured into a state where a
 // reclaimer's lease can expire mid-delete.
 const (
+	// DefaultOperationTimeout is shared by the output daemon and its callers.
+	DefaultOperationTimeout = time.Minute
+
 	// DefaultCaptureDeadline is how long a capture may remain unresolved before
 	// it must be terminally settled. It is measured on the database clock.
 	DefaultCaptureDeadline = 24 * time.Hour
@@ -145,6 +148,12 @@ func ValidatePublicationGrace(grace time.Duration) error {
 	}
 
 	return nil
+}
+
+// ReadTransferTimeout leaves a bounded transport and verification margin beyond
+// the node operation. Callers, initializers and startup budgeting share it.
+func ReadTransferTimeout(operationTimeout time.Duration) time.Duration {
+	return operationTimeout + time.Minute
 }
 
 // LeaseTermFor derives the lease term covering an operation with the given

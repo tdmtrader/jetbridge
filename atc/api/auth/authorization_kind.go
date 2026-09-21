@@ -90,6 +90,7 @@ func AuthorizationKindForAction(action string) (AuthorizationKind, bool) {
 		atc.ListSharedForResourceType:
 		return AuthorizationAdmin, true
 	case atc.GetTeam,
+		atc.GetPipelineRunResult,
 		atc.SetTeam,
 		atc.RenameTeam,
 		atc.ListContainers,
@@ -104,6 +105,11 @@ func AuthorizationKindForAction(action string) (AuthorizationKind, bool) {
 		atc.RerunJobBuild,
 		atc.CreatePipelineBuild,
 		atc.CreatePipelineRun,
+		atc.CreatePipelineRunV2,
+		atc.UploadPipelineRunInput,
+		atc.HandoffPipelineRunCredentials,
+		atc.GetPipelineRunCredentialSession,
+		atc.CancelPipelineRun,
 		atc.DeletePipeline,
 		atc.DisableResourceVersion,
 		atc.EnableResourceVersion,

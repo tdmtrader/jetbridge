@@ -71,9 +71,11 @@ exit 255`
 // ran, its fate is unprovable from inside the pod, and only the daemon's ledger
 // can say more.
 //
-// The record is written with the same tmp-then-rename the exit file uses, so a
-// crash mid-write leaves either the old state or the new one and never half a
-// record.
+// The start is CLAIMED, not written: under noclobber the shell creates it with
+// O_EXCL, so of two deliveries racing -- or a delivery racing the closing of an
+// undelivered start (process_outcome_recovery.go) -- exactly one proceeds. Only
+// its existence is ever read. The stop check follows the claim and precedes the
+// launch, so a stop written before a delivery claims the start always stops it.
 const exactSupervisorScriptTemplate = `S=__STATE_DIR__
 alive() {
   pid="$(cat "$S/pid" 2>/dev/null)"
@@ -82,12 +84,36 @@ alive() {
 mkdir -p "$S"
 : >>"$S/log"
 if [ ! -f "$S/exit" ] && ! alive; then
-  if [ -f "$S/start" ]; then
+  if ! ( set -C; echo "started" >"$S/start" ) 2>/dev/null; then
     echo "[exact-supervisor] this command already started and left no outcome; it is not run again" >&2
     exit __UNRESOLVED_CODE__
   fi
-  echo "started" >"$S/start.tmp" && mv "$S/start.tmp" "$S/start"
-  ( trap '' HUP; __COMMAND__ >>"$S/log" 2>&1; echo $? >"$S/exit.tmp" && mv "$S/exit.tmp" "$S/exit" ) &
+  (
+    trap '' HUP
+    if [ -f "$S/stop" ]; then
+      E=143
+    else
+      setsid sh -c __DETACHED_COMMAND__ >>"$S/log" 2>&1 &
+      C=$!
+      (
+        while kill -0 "$C" 2>/dev/null; do
+          if [ -f "$S/stop" ]; then
+            kill -TERM "-$C" 2>/dev/null
+            sleep 2
+            kill -KILL "-$C" 2>/dev/null
+            exit 0
+          fi
+          sleep 1
+        done
+      ) &
+      W=$!
+      wait "$C"
+      E=$?
+      if [ ! -f "$S/stop" ]; then kill "$W" 2>/dev/null; fi
+      wait "$W" 2>/dev/null
+    fi
+    printf '%s\n' "$E" >"$S/exit.tmp" && mv "$S/exit.tmp" "$S/exit"
+  ) &
   echo $! >"$S/pid"
 fi
 tail -n +1 -f "$S/log" 2>/dev/null &
@@ -132,6 +158,16 @@ func exactSupervisorCommand(processID string, spec runtime.ProcessSpec) []string
 }
 
 func buildSupervisorCommand(processID string, spec runtime.ProcessSpec, template string) []string {
+	command, stateDir := supervisorCommandParts(processID, spec)
+	script := strings.ReplaceAll(template, "__STATE_DIR__", shellQuote(stateDir))
+	script = strings.ReplaceAll(script, "__COMMAND__", command)
+	script = strings.ReplaceAll(script, "__DETACHED_COMMAND__", shellQuote(command))
+	script = strings.ReplaceAll(script, "__UNRESOLVED_CODE__", strconv.Itoa(ExactUnresolvedExitCode))
+
+	return []string{"sh", "-c", script}
+}
+
+func supervisorCommandParts(processID string, spec runtime.ProcessSpec) (string, string) {
 	words := make([]string, 0, 1+len(spec.Args))
 	for _, w := range append([]string{spec.Path}, spec.Args...) {
 		words = append(words, shellQuote(w))
@@ -141,11 +177,7 @@ func buildSupervisorCommand(processID string, spec runtime.ProcessSpec, template
 	h := sha256.Sum256([]byte(command))
 	stateDir := taskStateDirPrefix + sanitizeForPath(processID) + "-" + hex.EncodeToString(h[:])[:8]
 
-	script := strings.ReplaceAll(template, "__STATE_DIR__", shellQuote(stateDir))
-	script = strings.ReplaceAll(script, "__COMMAND__", command)
-	script = strings.ReplaceAll(script, "__UNRESOLVED_CODE__", strconv.Itoa(ExactUnresolvedExitCode))
-
-	return []string{"sh", "-c", script}
+	return command, stateDir
 }
 
 // shellQuote returns s as a single-quoted POSIX shell word.

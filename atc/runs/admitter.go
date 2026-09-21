@@ -4,19 +4,26 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/runinput"
 )
 
 // Admitter is core's published run-admission surface.
 //
-// The first two operations are a pair, and the pairing is the design: a
-// consumer opens the transaction, so it can commit its own rows in the same
-// one as the run. The third is the read the pair implies -- a consumer that
-// recorded a run id and comes back later holds an id and nothing else, and
-// core will not have it read pipeline_runs for the rest.
+// A consumer opens the transaction, then chooses legacy or versioned admission,
+// so it can commit its own rows in the same transaction as the Run. LookupRun
+// reads a previously admitted Run through that same transaction boundary.
 type Admitter interface {
+	SetCredentialHandoffConfig(CredentialHandoffConfig)
+	InspectCredentialHandoff(context.Context, TemplateRef, Principal, int, string, int64) (atc.RunCredentialSession, error)
+	HandoffCredentials(context.Context, TemplateRef, Principal, int, string, int64, io.ReadCloser) (atc.RunCredentialSession, error)
+	SetInputUploadConfig(InputUploadConfig)
+	UploadInput(context.Context, TemplateRef, Principal, string, int64, io.Reader) (atc.RunInputSource, error)
+	// SetSealedInputAuthority is startup wiring; it supplies no public mint route.
+	SetSealedInputAuthority(*runinput.Authority)
 	// Begin opens a transaction the consumer owns and must finish.
 	Begin(context.Context) (Transaction, error)
 
@@ -28,14 +35,21 @@ type Admitter interface {
 	// transaction. It is a read and nothing else: it creates nothing, decides
 	// no authorization, and refuses an id that names no row.
 	LookupRun(ctx context.Context, tx Tx, runID int) (Run, error)
+
+	// AdmitVersionedRun requires the activation epoch and returns whether the
+	// invocation already committed. The caller still owns the transaction.
+	AdmitVersionedRun(context.Context, Tx, Admission, int64) (Run, bool, error)
 }
 
 type admitter struct {
-	conn           db.DbConn
-	runFactory     db.PipelineRunFactory
-	teamFactory    db.TeamFactory
-	displayUserIds atc.DisplayUserIdGenerator
-	customRoles    map[string]string
+	conn              db.DbConn
+	runFactory        db.PipelineRunFactory
+	teamFactory       db.TeamFactory
+	displayUserIds    atc.DisplayUserIdGenerator
+	customRoles       map[string]string
+	sealedInputs      *runinput.Authority
+	inputUploads      InputUploadConfig
+	credentialHandoff CredentialHandoffConfig
 }
 
 // NewAdmitter builds the port over its core collaborators.
@@ -64,6 +78,8 @@ func NewAdmitter(
 		customRoles:    customRoles,
 	}
 }
+
+func (a *admitter) SetSealedInputAuthority(authority *runinput.Authority) { a.sealedInputs = authority }
 
 // Begin opens the transaction admission runs in.
 //
@@ -124,6 +140,9 @@ func (a *admitter) AdmitRun(ctx context.Context, tx Tx, adm Admission) (Run, err
 	if adm.ContractKey == "" {
 		return Run{}, ErrMissingContractKey
 	}
+	if len(adm.Inputs) != 0 {
+		return Run{}, ErrUnsupportedInvocation
+	}
 
 	// The one place the port bridges its own interface back to the concrete
 	// transaction type the run factory and the tx-scoped reads name. Keeping it
@@ -153,9 +172,11 @@ func (a *admitter) AdmitRun(ctx context.Context, tx Tx, adm Admission) (Run, err
 		return Run{}, err
 	}
 
-	createdBy := auth.createdBy
+	run, _, err := a.createAdmission(ctx, dbTx, pipeline, adm, auth.createdBy, db.RunCreationOpts{})
+	return run, err
+}
 
-	opts := db.RunCreationOpts{}
+func (a *admitter) createAdmission(ctx context.Context, dbTx db.Tx, pipeline db.Pipeline, adm Admission, createdBy string, opts db.RunCreationOpts) (Run, bool, error) {
 	if adm.BeforeCommit != nil {
 		// The callback is handed the port's Tx and the port's Run. It runs
 		// inside this same transaction, after the run and its payload exist
@@ -163,17 +184,17 @@ func (a *admitter) AdmitRun(ctx context.Context, tx Tx, adm Admission) (Run, err
 		// the guarantee the underlying seam already makes and this preserves
 		// rather than flattens.
 		opts.BeforeCommit = func(hookTx db.Tx, creation db.RunCreation) error {
-			return adm.BeforeCommit(hookTx, portRun(creation, createdBy))
+			return adm.BeforeCommit(hookTx, portRun(creation))
 		}
 	}
 
 	creation, err := a.runFactory.CreateRunInTx(ctx, dbTx, pipeline,
 		db.RunParams{Vars: adm.Params}, createdBy, opts)
 	if err != nil {
-		return Run{}, refusal(err)
+		return Run{}, false, refusal(err)
 	}
 
-	return portRun(creation, createdBy), nil
+	return portRun(creation), creation.Replayed, nil
 }
 
 // lookupRunQuery reads one run's identity, and the identity is all of it.
@@ -336,6 +357,8 @@ func refusal(err error) error {
 	)
 
 	switch {
+	case errors.Is(err, db.ErrRunInvocationConflict):
+		return ErrInvocationConflict
 	case errors.Is(err, db.ErrPipelineRunNotTemplate):
 		return ErrNotATemplate
 	case errors.Is(err, db.ErrPipelineRunInstanced):
@@ -356,7 +379,7 @@ func refusal(err error) error {
 	}
 }
 
-func portRun(creation db.RunCreation, createdBy string) Run {
+func portRun(creation db.RunCreation) Run {
 	payloadID, _ := creation.Run.InstancePipelineID()
 
 	return Run{
@@ -364,6 +387,6 @@ func portRun(creation db.RunCreation, createdBy string) Run {
 		Number:             creation.Run.Number(),
 		TemplatePipelineID: creation.Run.TemplatePipelineID(),
 		PayloadPipelineID:  payloadID,
-		CreatedBy:          createdBy,
+		CreatedBy:          creation.Run.CreatedBy(),
 	}
 }

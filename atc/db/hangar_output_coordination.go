@@ -63,6 +63,9 @@ func (repository *HangarOutputRepository) RecordSourceReservation(ctx context.Co
 		WHERE handoff_id = $1
 		  AND source_hold_id = $5
 		  AND execution_id = $6
+		  AND execution_fence = $7
+		  AND activation_epoch = $8
+		  AND output_name = $9
 		  AND reserved_at IS NULL`,
 		string(reserved.HandoffID),
 		locator,
@@ -70,6 +73,9 @@ func (repository *HangarOutputRepository) RecordSourceReservation(ctx context.Co
 		reserved.Directory,
 		string(reserved.SourceHoldID),
 		string(reserved.Execution.ExecutionID),
+		int64(reserved.Execution.Fence),
+		int64(reserved.ActivationEpoch),
+		string(reserved.Incarnation.Output),
 	)
 	if err != nil {
 		return hangarConflict(err)
@@ -84,12 +90,16 @@ func (repository *HangarOutputRepository) RecordSourceReservation(ctx context.Co
 	)
 	if err := hangarQueryRow(ctx, tx, `
 		SELECT reserved_locator, reserved_incarnation, reserved_directory
-		FROM hangar_handoff_predeclarations
-		WHERE handoff_id = $1 AND source_hold_id = $2 AND execution_id = $3`,
+	FROM hangar_handoff_predeclarations
+		WHERE handoff_id = $1 AND source_hold_id = $2 AND execution_id = $3
+		  AND execution_fence = $4 AND activation_epoch = $5 AND output_name = $6`,
 		[]any{
 			string(reserved.HandoffID),
 			string(reserved.SourceHoldID),
 			string(reserved.Execution.ExecutionID),
+			int64(reserved.Execution.Fence),
+			int64(reserved.ActivationEpoch),
+			string(reserved.Incarnation.Output),
 		}, &stored_locator, &stored, &directory); err != nil {
 		return fmt.Errorf("%w: no predeclaration matches the reservation for handoff %s",
 			output.ErrInvalidIdentity, reserved.HandoffID)
@@ -647,36 +657,6 @@ func HangarConsumerPrefixForComponent() HangarConsumerPrefix {
 	}
 
 	return prefix
-}
-
-// ReadEveryAnnouncement returns what the plane told watchers about EVERY
-// handoff, in emission order.
-//
-// It exists for the absence half of requirement 18: "an ordinary step announces
-// none of them" is a statement about what is NOT in the store, and a reader
-// scoped to one handoff cannot make it. The whole store is small by
-// construction -- three rows per capture, and only captures produce any.
-func (repository *HangarOutputRepository) ReadEveryAnnouncement(ctx context.Context, tx output.Tx) ([]HangarAnnouncement, error) {
-	rows, err := tx.QueryContext(ctx, `
-		SELECT handoff_id, kind, coalesce(disposition, ''), reason
-		FROM hangar_capture_announcements
-		ORDER BY id`)
-	if err != nil {
-		return nil, hangarConflict(err)
-	}
-	defer rows.Close()
-
-	var announcements []HangarAnnouncement
-	for rows.Next() {
-		var announcement HangarAnnouncement
-		if err := rows.Scan(&announcement.Handoff, &announcement.Kind,
-			&announcement.Disposition, &announcement.Reason); err != nil {
-			return nil, err
-		}
-		announcements = append(announcements, announcement)
-	}
-
-	return announcements, rows.Err()
 }
 
 // hangarTerminalizeLogical closes the logical half of a terminal capture.

@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"time"
 
@@ -8,6 +9,7 @@ import (
 )
 
 type PipelineRunReclaimLifecycle interface {
+	ReleaseExpiredInputUploads(context.Context, int) error
 	ReclaimCandidateRunIDs(limit int) ([]int, error)
 	ReclaimBacklog() (int, error)
 	DestroyReclaimableRun(runID int) (bool, error)
@@ -184,12 +186,19 @@ func (l *pipelineRunReclaimLifecycle) DestroyReclaimableRun(runID int) (bool, er
 		return false, nil
 	}
 
+	// The Run's builds are locked before any evidence goes, in the Run ->
+	// builds order every Run path uses. Check collection locks a check build
+	// and then deletes its executions; deleting executions first would
+	// deadlock with it.
+	if _, err = tx.Exec(`SELECT id FROM builds WHERE pipeline_run_id = $1 ORDER BY id FOR UPDATE`, runID); err != nil {
+		return false, err
+	}
+
 	var blocked bool
 	err = tx.QueryRow(`
 		SELECT EXISTS (
 			SELECT 1 FROM builds
 			WHERE pipeline_run_id = $1
-			  AND run_job_name IS NOT NULL
 			  AND status IN ('pending', 'started')
 		)
 	`, runID).Scan(&blocked)
@@ -200,10 +209,41 @@ func (l *pipelineRunReclaimLifecycle) DestroyReclaimableRun(runID int) (bool, er
 		return false, nil
 	}
 
+	// Checks go with the payload's resources, exactly as an ordinary
+	// pipeline's checks go with its deletion; their events are reaped by check
+	// collection once nothing points at them. An executed check goes with its
+	// execution evidence (its check and any image get) once every execution is
+	// closed, which a terminal Run's builds always are. One somehow still open
+	// keeps its evidence and is detached below with the job builds.
+	if _, err = tx.Exec(runCheckGCMarker); err != nil {
+		return false, err
+	}
+	_, err = tx.Exec(`
+		DELETE FROM pipeline_run_executions e
+		USING builds b
+		WHERE e.build_id = b.id AND b.pipeline_run_id = $1 AND `+inertRunCheckEvidence, runID)
+	if err != nil {
+		return false, err
+	}
+	if _, err = tx.Exec(`SELECT set_config('concourse.pipeline_run_check_gc', '', true)`); err != nil {
+		return false, err
+	}
+	_, err = tx.Exec(`
+		DELETE FROM builds b
+		WHERE b.pipeline_run_id = $1 AND b.run_job_name IS NULL
+		  AND NOT EXISTS (SELECT 1 FROM pipeline_run_executions e WHERE e.build_id = b.id)
+	`, runID)
+	if err != nil {
+		return false, err
+	}
+
+	// Job builds are retained with the Run header. Remove every payload
+	// reference before its cascade, leaving build and execution identity
+	// intact.
 	_, err = tx.Exec(`
 		UPDATE builds
-		SET job_id = NULL, pipeline_id = NULL
-		WHERE pipeline_run_id = $1 AND run_job_name IS NOT NULL
+		SET job_id = NULL, pipeline_id = NULL, resource_id = NULL, resource_type_id = NULL
+		WHERE pipeline_run_id = $1
 	`, runID)
 	if err != nil {
 		return false, err

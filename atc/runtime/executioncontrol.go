@@ -87,10 +87,19 @@ type ExecutionControl struct {
 	// is never the capture extension's grant.
 	Capability executioncontrol.ControlCapability
 
+	// Node pins executions whose owning domain reserved an exact node before
+	// Pod creation. Nil preserves scheduler-selected ordinary control.
+	Node *ExecutionNode
+
 	// Capture is the optional extension. Nil is not a degraded state: it is a
 	// controlled execution that captures nothing, which is a complete and
 	// intended shape.
 	Capture *DurableOutputCapture
+}
+
+type ExecutionNode struct {
+	Name string
+	UID  executioncontrol.NodeUID
 }
 
 // DurableOutputCapture is the optional extension.
@@ -229,6 +238,14 @@ func (control *ExecutionControl) Validate(spec ContainerSpec) error {
 	if control.Capability == "" {
 		return fmt.Errorf("%w: no control capability", ErrInvalidExecutionControl)
 	}
+	if control.Node != nil {
+		if strings.TrimSpace(control.Node.Name) == "" || strings.TrimSpace(string(control.Node.UID)) == "" {
+			return fmt.Errorf("%w: incomplete execution node identity", ErrInvalidExecutionControl)
+		}
+		if control.Capture != nil && (control.Node.Name != control.Capture.ReservingNode || control.Node.UID != control.Capture.ReservedIncarnation.NodeUID) {
+			return fmt.Errorf("%w: execution and capture name different nodes", ErrInvalidExecutionControl)
+		}
+	}
 	if control.Capture == nil {
 		// A controlled execution that captures nothing. Complete, and
 		// deliberately so.
@@ -284,32 +301,8 @@ func (control *ExecutionControl) validateCapture(spec ContainerSpec) error {
 			"process whose output it is taking", ErrInvalidExecutionControl)
 	}
 
-	if strings.TrimSpace(capture.Output) == "" {
-		return fmt.Errorf("%w: the capture names no output", ErrInvalidExecutionControl)
-	}
-
-	selectedPath, declared := spec.Outputs[capture.Output]
-	if !declared {
-		names := make([]string, 0, len(spec.Outputs))
-		for name := range spec.Outputs {
-			names = append(names, name)
-		}
-
-		return fmt.Errorf("%w: output %q is selected for capture and the task declares %v. "+
-			"Capture is selected for a DECLARED ordinary task output; an undeclared one has no "+
-			"path, no volume and nothing to hold", ErrInvalidExecutionControl, capture.Output, names)
-	}
-
-	for _, input := range spec.Inputs {
-		if input.HangarTree == nil {
-			continue
-		}
-		if outputOverlapsInput(selectedPath, input.DestinationPath) {
-			return fmt.Errorf("%w: the captured output %q at %q overlaps the strict Hangar input "+
-				"at %q. A strict input is an exact immutable tree; an output written over it "+
-				"would be a capture of somebody else's bytes", ErrInvalidExecutionControl,
-				capture.Output, selectedPath, input.DestinationPath)
-		}
+	if err := ValidateCaptureOutput(spec, capture.Output); err != nil {
+		return err
 	}
 
 	// The reservation. An unreserved execution cannot be capture-selected: the
@@ -345,6 +338,40 @@ func (control *ExecutionControl) validateCapture(spec ContainerSpec) error {
 		return fmt.Errorf("%w: the capture names directory %q and the reserved incarnation it "+
 			"carries does not derive it. The ATC repeats the daemon's answer; it never composes "+
 			"a source path", ErrInvalidExecutionControl, capture.ReservedDirectory)
+	}
+
+	return nil
+}
+
+// ValidateCaptureOutput checks the selected output before source dispatch. The
+// final envelope validation repeats it so a later caller cannot skip the gate.
+func ValidateCaptureOutput(spec ContainerSpec, name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("%w: the capture names no output", ErrInvalidExecutionControl)
+	}
+
+	selectedPath, declared := spec.Outputs[name]
+	if !declared {
+		names := make([]string, 0, len(spec.Outputs))
+		for name := range spec.Outputs {
+			names = append(names, name)
+		}
+
+		return fmt.Errorf("%w: output %q is selected for capture and the task declares %v. "+
+			"Capture is selected for a DECLARED ordinary task output; an undeclared one has no "+
+			"path, no volume and nothing to hold", ErrInvalidExecutionControl, name, names)
+	}
+
+	for _, input := range spec.Inputs {
+		if input.HangarTree == nil {
+			continue
+		}
+		if outputOverlapsInput(selectedPath, input.DestinationPath) {
+			return fmt.Errorf("%w: the captured output %q at %q overlaps the strict Hangar input "+
+				"at %q. A strict input is an exact immutable tree; an output written over it "+
+				"would be a capture of somebody else's bytes", ErrInvalidExecutionControl,
+				name, selectedPath, input.DestinationPath)
+		}
 	}
 
 	return nil

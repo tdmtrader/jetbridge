@@ -1195,13 +1195,13 @@ var _ = Describe("the Hangar output plane schema", func() {
 
 			BeforeEach(func() { lifecycle = seedFullChain() })
 
-			It("refuses a claim on an unregistered exact ref", func() {
+			It("refuses a claim on an unregistered tree ref", func() {
 				Expect(expectRefusal(database, "a claim on a ref with no lifecycle record", fmt.Sprintf(`
 					INSERT INTO hangar_claims (claim_id, lifecycle_id, activation_epoch, consumer_binding_id)
 					VALUES ('%s', %d, 1, 'opaque-binding')`, claimID, lifecycle+9999))).
 					To(ContainSubstring("violates foreign key constraint"))
 
-				expectAccepted(database, "a claim on a registered exact ref", fmt.Sprintf(`
+				expectAccepted(database, "a claim on a registered tree ref", fmt.Sprintf(`
 					INSERT INTO hangar_claims (claim_id, lifecycle_id, activation_epoch, consumer_binding_id)
 					VALUES ('%s', %d, 1, 'opaque-binding')`, claimID, lifecycle))
 			})
@@ -1236,7 +1236,7 @@ var _ = Describe("the Hangar output plane schema", func() {
 					WHERE claim_id = '%s'`, claimID))
 			})
 
-			It("refuses moving a claim to another exact ref", func() {
+			It("refuses moving a claim to another tree ref", func() {
 				seedClaim(claimID, lifecycle)
 				other := seedLifecycle(otherDigest, sampleGeneration+1)
 
@@ -1258,15 +1258,15 @@ var _ = Describe("the Hangar output plane schema", func() {
 					To(ContainSubstring("hangar_read_lease_term"))
 			})
 
-			// What a grant binds is immutable for the life of the lease.
+			// What a warrant binds is immutable for the life of the lease.
 			//
-			// The grant is minted AFTER the transaction that created the lease
+			// The warrant is minted AFTER the transaction that created the lease
 			// commits, and requirement 37 wants an ambiguous mint retried with
 			// byte-identical bytes. If the nonce or the destination could move,
 			// a re-mint would be a different token for the same lease, and the
 			// daemon's comparison against the committed row would be comparing
 			// against something that had changed underneath it.
-			It("refuses changing what a read lease's grant binds", func() {
+			It("refuses changing what a read lease's warrant binds", func() {
 				seedClaim(claimID, lifecycle)
 				mustExec(database, fmt.Sprintf(`
 					INSERT INTO hangar_read_leases
@@ -1281,7 +1281,7 @@ var _ = Describe("the Hangar output plane schema", func() {
 					`destination_handle = 'another-handle'`,
 					`destination_volume = 'input-9'`,
 				} {
-					Expect(expectRefusal(database, "a grant's binding moved", fmt.Sprintf(
+					Expect(expectRefusal(database, "a warrant's binding moved", fmt.Sprintf(
 						`UPDATE hangar_read_leases SET %s WHERE read_lease_id = '%s'`,
 						change, readLeaseID))).
 						To(ContainSubstring("changed what its grant binds"))
@@ -1329,7 +1329,7 @@ var _ = Describe("the Hangar output plane schema", func() {
 					WHERE read_lease_id = '%s'`, readLeaseID))
 			})
 
-			It("refuses a read lease that names no grant, destination or stat", func() {
+			It("refuses a read lease that names no warrant, destination or stat", func() {
 				seedClaim(claimID, lifecycle)
 
 				for _, vector := range []struct{ name, columns, values string }{
@@ -1573,7 +1573,7 @@ var _ = Describe("the Hangar output plane schema", func() {
 			})
 
 			// Req 52 names five admissions that stop from detection onward:
-			// new captures, claim acquires, managed-output grants, orphan
+			// new captures, claim acquires, managed-output warrants, orphan
 			// adoption and reclaim admission. Each vector below is one of
 			// them, and each runs twice against the same statement -- once
 			// while the freshest attestation is safe, once after an at-risk
@@ -1588,9 +1588,9 @@ var _ = Describe("the Hangar output plane schema", func() {
 					VALUES (1, 'gs://output-bucket', 4, 'policy-hash-2', 1, 'at_risk')`)
 			}
 
-			It("refuses a managed-output grant while at risk", func() {
+			It("refuses a managed-output warrant while at risk", func() {
 				seedClaim(claimID, lifecycle)
-				grant := fmt.Sprintf(`
+				warrant := fmt.Sprintf(`
 					INSERT INTO hangar_read_leases
 						(read_lease_id, claim_id, lifecycle_id, activation_epoch, lease_fence, expires_at,
 					 grant_nonce, destination_handle, destination_volume,
@@ -1598,11 +1598,11 @@ var _ = Describe("the Hangar output plane schema", func() {
 					VALUES ('%s', '%s', %d, 1, 1, now() + interval '20 minutes', 'AAAAAAAAAAAAAAAAAAAAAA', 'task-handle', 'input-0', 1, 'hangar-output-v1', now(), 900)`,
 					readLeaseID, claimID, lifecycle)
 
-				expectAccepted(database, "a read lease granted on a safe policy", grant)
+				expectAccepted(database, "a read lease granted on a safe policy", warrant)
 
 				goAtRisk()
 
-				Expect(expectRefusal(database, "a read lease granted while at risk", grant)).
+				Expect(expectRefusal(database, "a read lease granted while at risk", warrant)).
 					To(ContainSubstring("new captures, claim acquires, grants, adoption and reclaim admission stop"))
 			})
 

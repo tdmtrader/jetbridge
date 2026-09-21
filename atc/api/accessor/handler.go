@@ -2,6 +2,7 @@ package accessor
 
 import (
 	"context"
+	"maps"
 	"net/http"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -75,4 +76,14 @@ func GetAccessor(r *http.Request) Access {
 	}
 
 	return &access{}
+}
+
+// VerifiedClaims carries the verified identity into core's transaction-scoped
+// authorization. It comes from the production accessor, never request fields.
+func VerifiedClaims(r *http.Request) map[string]any {
+	access, ok := GetAccessor(r).(*access)
+	if !ok || !access.IsAuthenticated() {
+		return nil
+	}
+	return maps.Clone(access.verification.RawClaims)
 }

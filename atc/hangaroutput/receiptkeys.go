@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"crypto/ed25519"
 
@@ -36,6 +37,32 @@ type ReceiptKeyEntry struct {
 	Epoch     executioncontrol.ActivationEpoch `json:"epoch"`
 	Retired   bool                             `json:"retired"`
 	PublicKey string                           `json:"public_key"`
+}
+
+// SignatureVerifier turns the deployed public ring into the verifier used at
+// receipt registration. Configured keys are retained by epoch, including retired
+// signing keys; this format declares no additional calendar expiry.
+func (ring ReceiptKeyRing) SignatureVerifier(clock output.Clock) (*output.ReceiptSignatureVerifier, error) {
+	if err := ring.Validate(); err != nil {
+		return nil, err
+	}
+	keys := make([]output.EpochKey, 0, len(ring.Keys))
+	for _, entry := range ring.Keys {
+		public, err := ring.VerifierFor(entry.ID)
+		if err != nil {
+			return nil, err
+		}
+		keys = append(keys, output.EpochKey{
+			KeyID: entry.ID, Epoch: entry.Epoch, PublicKey: public,
+			ValidFrom:  output.NewTimestamp(time.Unix(0, 0).UTC()),
+			ValidUntil: output.NewTimestamp(time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC)),
+		})
+	}
+	pinned, err := output.NewReceiptKeyRing(keys...)
+	if err != nil {
+		return nil, err
+	}
+	return output.NewReceiptSignatureVerifier(pinned, clock)
 }
 
 // LoadReceiptKeyRing reads and validates a ring from disk.

@@ -77,12 +77,14 @@ func (repository *HangarOutputRepository) PredeclareHandoff(ctx context.Context,
 	var (
 		lease, execution, name string
 		fence, epoch           int64
+		deadlineMatches        bool
 	)
 	if err := hangarQueryRow(ctx, tx, `
-		SELECT source_hold_id, execution_id, execution_fence, output_name, activation_epoch
+		SELECT source_hold_id, execution_id, execution_fence, output_name, activation_epoch,
+		       capture_deadline_at = $2
 		FROM hangar_handoff_predeclarations WHERE handoff_id = $1`,
-		[]any{string(admission.HandoffID)},
-		&lease, &execution, &fence, &name, &epoch,
+		[]any{string(admission.HandoffID), admission.CaptureDeadline.Time},
+		&lease, &execution, &fence, &name, &epoch, &deadlineMatches,
 	); err != nil {
 		return err
 	}
@@ -91,9 +93,9 @@ func (repository *HangarOutputRepository) PredeclareHandoff(ctx context.Context,
 		execution != string(admission.Execution.ExecutionID) ||
 		fence != int64(admission.Execution.Fence) ||
 		name != string(admission.Output) ||
-		epoch != int64(admission.ActivationEpoch) {
+		epoch != int64(admission.ActivationEpoch) || !deadlineMatches {
 		return fmt.Errorf("%w: handoff %s was predeclared for a different execution, source "+
-			"lease, output or epoch; a new build uses new identities",
+			"lease, output, epoch or deadline; a new build uses new identities",
 			output.ErrConflict, admission.HandoffID)
 	}
 
@@ -111,6 +113,10 @@ func (repository *HangarOutputRepository) AcknowledgeSourceHold(ctx context.Cont
 	if err := acknowledgement.ValidateAs(output.CaptureHoldAcknowledged); err != nil {
 		return err
 	}
+	incarnation, err := json.Marshal(acknowledgement.Incarnation)
+	if err != nil {
+		return err
+	}
 
 	result, err := tx.ExecContext(ctx, `
 		UPDATE hangar_handoff_predeclarations
@@ -118,10 +124,16 @@ func (repository *HangarOutputRepository) AcknowledgeSourceHold(ctx context.Cont
 		WHERE handoff_id = $1
 		  AND source_hold_id = $2
 		  AND execution_id = $3
+		  AND execution_fence = $4
+		  AND activation_epoch = $5
+		  AND reserved_incarnation = $6
 		  AND hold_acknowledged_at IS NULL`,
 		string(acknowledgement.HandoffID),
 		string(acknowledgement.SourceHoldID),
 		string(acknowledgement.Execution.ExecutionID),
+		int64(acknowledgement.Execution.Fence),
+		int64(acknowledgement.ActivationEpoch),
+		incarnation,
 	)
 	if err != nil {
 		return hangarConflict(err)
@@ -135,12 +147,16 @@ func (repository *HangarOutputRepository) AcknowledgeSourceHold(ctx context.Cont
 	// it is the former.
 	var acknowledged sql.NullTime
 	if err := hangarQueryRow(ctx, tx, `
-		SELECT hold_acknowledged_at FROM hangar_handoff_predeclarations
-		WHERE handoff_id = $1 AND source_hold_id = $2 AND execution_id = $3`,
+	SELECT hold_acknowledged_at FROM hangar_handoff_predeclarations
+		WHERE handoff_id = $1 AND source_hold_id = $2 AND execution_id = $3
+		  AND execution_fence = $4 AND activation_epoch = $5 AND reserved_incarnation = $6`,
 		[]any{
 			string(acknowledgement.HandoffID),
 			string(acknowledgement.SourceHoldID),
 			string(acknowledgement.Execution.ExecutionID),
+			int64(acknowledgement.Execution.Fence),
+			int64(acknowledgement.ActivationEpoch),
+			incarnation,
 		}, &acknowledged); err != nil {
 		return fmt.Errorf("%w: no predeclaration matches the acknowledged hold for handoff %s",
 			output.ErrInvalidIdentity, acknowledgement.HandoffID)

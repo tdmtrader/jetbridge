@@ -23,8 +23,9 @@ import (
 	"syscall"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
@@ -50,6 +51,26 @@ func main() {
 // daemon start and stay unready rather than start and answer. A daemon that
 // could not read its own ledger is not one that may say what it says.
 func run(ctx context.Context, config Config, out *os.File) error {
+
+	labeler, err := buildFacetLabeler(config)
+	if err != nil {
+		return err
+	}
+	if labeler != nil {
+		lookup, cancel := context.WithTimeout(ctx, 10*time.Second)
+		node, lookupErr := labeler.nodes.CoreV1().Nodes().Get(lookup, config.NodeName, metav1.GetOptions{})
+		cancel()
+		if lookupErr != nil {
+			return fmt.Errorf("resolve output daemon Node identity: %w", lookupErr)
+		}
+		if node.DeletionTimestamp != nil || node.UID == "" {
+			return fmt.Errorf("output daemon Node is unavailable")
+		}
+		if config.NodeUID != "" && config.NodeUID != string(node.UID) {
+			return fmt.Errorf("configured output daemon UID differs from the Kubernetes Node UID")
+		}
+		config.NodeUID = string(node.UID)
+	}
 	daemon, err := Build(ctx, config)
 	if err != nil {
 		return err
@@ -110,6 +131,9 @@ func run(ctx context.Context, config Config, out *os.File) error {
 
 	server := NewServerWithSpool(daemon, base, source, capability, unready,
 		config.PublishConcurrency)
+	if err := server.configureReads(config); err != nil {
+		return err
+	}
 
 	// The first off-node caller landed in Phase 4: execProcess revalidates the
 	// hold, takes writer tickets, records the start and the outcome, and asks
@@ -174,10 +198,6 @@ func run(ctx context.Context, config Config, out *os.File) error {
 	// A quarantined ledger advertises nothing at all: readiness is false, and
 	// telling the scheduler otherwise would be this daemon's one visible claim
 	// contradicting its own /readyz.
-	labeler, err := buildFacetLabeler(config)
-	if err != nil {
-		return err
-	}
 	if unready == "" {
 		if err := labeler.Advertise(ctx, daemon.OutputEnabled()); err != nil {
 			return err
@@ -220,7 +240,7 @@ func buildFacetLabeler(config Config) (*FacetLabeler, error) {
 	if config.NodeName == "" {
 		return nil, nil
 	}
-	restConfig, err := rest.InClusterConfig()
+	restConfig, err := clientcmd.BuildConfigFromFlags("", config.Kubeconfig)
 	if err != nil {
 		return nil, fmt.Errorf("%w: this daemon was given --node-name %q and cannot reach the "+
 			"Kubernetes API to advertise its facets: %v",

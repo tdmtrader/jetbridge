@@ -43,7 +43,7 @@ func hangarActivateEpoch(ctx context.Context, repository *db.HangarOutputReposit
 	tx, err := dbConn.Begin()
 	Expect(err).NotTo(HaveOccurred())
 	defer db.Rollback(tx)
-	Expect(repository.RecordPolicySnapshot(ctx, tx, output.PolicySnapshot{
+	Expect(repository.RecordPolicyAttestation(ctx, tx, output.PolicySnapshot{
 		ProtocolVersion:      output.ProtocolVersion,
 		ActivationEpoch:      1,
 		BucketFingerprint:    "gs://output-bucket",
@@ -52,7 +52,7 @@ func hangarActivateEpoch(ctx context.Context, repository *db.HangarOutputReposit
 		LifecycleDeleteRules: 0,
 		State:                output.PolicySafe,
 		ObservedAt:           output.NewTimestamp(time.Now()),
-	})).To(Succeed())
+	}, nil)).To(Succeed())
 	Expect(tx.Commit()).To(Succeed())
 }
 

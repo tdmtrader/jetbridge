@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -378,26 +377,10 @@ func requestScheduleForJobsUsingResourceConfigScope(tx Tx, rcsID int) error {
 		jobIDs = append(jobIDs, id)
 	}
 
-	for _, jID := range jobIDs {
-		_, err := psql.Update("jobs").
-			Set("schedule_requested", sq.Expr("now()")).
-			Where(sq.Eq{
-				"id": jID,
-			}).
-			RunWith(tx).
-			Exec()
-		if err != nil {
-			return err
-		}
+	if err := rows.Err(); err != nil {
+		Close(rows)
+		return err
 	}
-
-	if len(jobIDs) > 0 {
-		payload := intsToCSV(jobIDs)
-		_, err = tx.Exec(fmt.Sprintf("NOTIFY scheduler, '%s'", payload))
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
+	Close(rows)
+	return requestScheduleJobs(tx, jobIDs, false)
 }

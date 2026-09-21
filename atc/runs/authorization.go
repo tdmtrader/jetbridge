@@ -57,6 +57,10 @@ type authorization struct {
 // one GetTeamsInTx read below and no other, so adding the build form did not
 // add a connection to the budget connection_budget_test.go pins.
 func (a *admitter) authorize(tx db.Tx, teamName string, principal Principal) (authorization, error) {
+	return a.authorizeAction(tx, teamName, principal, atc.CreatePipelineRun)
+}
+
+func (a *admitter) authorizeAction(tx db.Tx, teamName string, principal Principal, action string) (authorization, error) {
 	// The principal has to be one identity before anything else can be said
 	// about it, so this comes before any read and before the operator's role
 	// mapping is weighed: a request that names two identities, or none, is
@@ -87,7 +91,7 @@ func (a *admitter) authorize(tx db.Tx, teamName string, principal Principal) (au
 	// verified the principal. The port authorizes; it does not authenticate.
 	access := accessor.NewAccessor(
 		accessor.Verification{HasToken: true, IsTokenValid: true, RawClaims: principal.Claims},
-		accessor.EffectiveRole(a.customRoles, atc.CreatePipelineRun),
+		accessor.EffectiveRole(a.customRoles, action),
 		"", nil,
 		teams,
 		a.displayUserIds,

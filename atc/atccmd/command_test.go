@@ -84,20 +84,11 @@ func (s *CommandSuite) TestBuildTrackerIntervalFlagRemoved() {
 }
 
 func (s *CommandSuite) TestPipelineRunReclaimerComponentIsBoundedAndPeriodic() {
-	component := atccmd.NewPipelineRunReclaimerComponentForTest(commandRunReclaimLifecycle{}, time.Now, gc.DefaultPipelineRunReclaimBatchSize)
+	component := atccmd.NewPipelineRunReclaimerComponentForTest(db.NewPipelineRunReclaimLifecycle(nil), time.Now, gc.DefaultPipelineRunReclaimBatchSize)
 	s.Equal(atc.ComponentReclaimerPipelineRuns, component.Component.Name)
 	s.Equal(time.Minute, component.Interval)
 	s.NotNil(component.Runnable)
 }
-
-type commandRunReclaimLifecycle struct{}
-
-func (commandRunReclaimLifecycle) ReclaimCandidateRunIDs(int) ([]int, error) { return nil, nil }
-func (commandRunReclaimLifecycle) ReclaimBacklog() (int, error)              { return 0, nil }
-func (commandRunReclaimLifecycle) DestroyReclaimableRun(int) (bool, error)   { return false, nil }
-func (commandRunReclaimLifecycle) DeferRunReclaim(int, time.Time) error      { return nil }
-
-var _ db.PipelineRunReclaimLifecycle = commandRunReclaimLifecycle{}
 
 // The batch size is operator-tunable because the backlog metric can show the
 // reclaimer failing to keep up with its one-minute interval, and there is no
@@ -476,9 +467,15 @@ func (s *CommandSuite) TestTheOutputPlanesComponentsRunOnlyWhereThePlaneIsEnable
 	// has been activated.
 	on := &atccmd.RunCommand{}
 	on.Kubernetes.OutputPlaneEnabled = true
+	for _, component := range atccmd.HangarOutputComponentsForTest(on, nil) {
+		if component.Component.Name == atc.ComponentRunCancellation {
+			s.True(component.Interval > 0 && component.Interval <= 30*time.Second, "cancellation must have a periodic fallback no slower than 30 seconds")
+		}
+	}
 	s.ElementsMatch([]string{
 		atc.ComponentHangarOutputCapture,
 		atc.ComponentHangarOutputReadLeaseCleanup,
+		atc.ComponentRunCancellation,
 	}, names(atccmd.HangarOutputComponentsForTest(on, nil)))
 
 	// And with one, all three -- without which the assertions above would
@@ -492,6 +489,7 @@ func (s *CommandSuite) TestTheOutputPlanesComponentsRunOnlyWhereThePlaneIsEnable
 		atc.ComponentHangarOutputCapture,
 		atc.ComponentHangarOutputReadLeaseCleanup,
 		atc.ComponentHangarOutputStatus,
+		atc.ComponentRunCancellation,
 	}, names(atccmd.HangarOutputComponentsForTest(activated, nil)))
 }
 
@@ -518,6 +516,7 @@ func (s *CommandSuite) TestTheOutputCapabilityKeyIsReadAtStartupAndNotMerelyName
 		cmd.Kubernetes.OutputDaemonTLSCert = filepath.Join(dir, "tls.crt")
 		cmd.Kubernetes.OutputDaemonTLSKey = filepath.Join(dir, "tls.key")
 		cmd.Kubernetes.OutputDaemonTLSCACert = filepath.Join(dir, "ca.crt")
+		cmd.Kubernetes.OutputOperationTimeout = 15 * time.Minute
 		cmd.Kubernetes.OutputSealDeadline = 30 * time.Minute
 		cmd.Kubernetes.OutputCaptureDeadline = 2 * time.Hour
 		cmd.Kubernetes.OutputLeaseTerm = 15 * time.Minute
@@ -539,6 +538,14 @@ func (s *CommandSuite) TestTheOutputCapabilityKeyIsReadAtStartupAndNotMerelyName
 	// The control: a real key passes, so the two refusals above are about the
 	// key rather than about the rest of the configuration.
 	s.NoError(atccmd.ValidateHangarOutputPlaneForTest(plane(valid)))
+
+	for _, timeout := range []time.Duration{0, -time.Second, 24 * time.Hour} {
+		invalid := plane(valid)
+		invalid.Kubernetes.OutputOperationTimeout = timeout
+		err = atccmd.ValidateHangarOutputPlaneForTest(invalid)
+		s.Require().Error(err)
+		s.Contains(err.Error(), "kubernetes-hangar-output-operation-timeout")
+	}
 
 	// And the epoch, which every minted capability names and which this gate
 	// asked for only under capture. The chart has always refused it here.

@@ -37,6 +37,41 @@ func materializeCapturedTree(ctx context.Context, storagePath, handle, volume st
 		return fmt.Errorf("hangar: anchor materialization steps: %w", err)
 	}
 	defer steps.Close()
+	verifySteps := func() error {
+		if same, err := sameOpenAbsoluteDirectory(resolvedStorage, storage); err != nil || !same {
+			return errors.Join(err, fmt.Errorf("materialization storage authority changed"))
+		}
+		if same, err := sameOpenEntryAt(storage, "steps", steps); err != nil || !same {
+			return errors.Join(err, fmt.Errorf("materialization steps authority changed"))
+		}
+		return nil
+	}
+	return materializeCapturedTreeAt(ctx, steps, filepath.Join(resolvedStorage, "steps"), handle, volume, ref, sourceRoot, hooks, verifySteps)
+}
+
+func materializeCapturedTreeRoot(ctx context.Context, steps *os.Root, handle, volume string, ref TreeRef, sourceRoot *os.Root) error {
+	parent, err := steps.Open(".")
+	if err != nil {
+		return err
+	}
+	defer parent.Close()
+	stepsPath, err := filepath.EvalSymlinks(steps.Name())
+	if err != nil {
+		return err
+	}
+	verifySteps := func() error {
+		if same, err := sameOpenAbsoluteDirectory(stepsPath, parent); err != nil || !same {
+			return errors.Join(err, fmt.Errorf("materialization steps authority changed"))
+		}
+		return nil
+	}
+	if err := verifySteps(); err != nil {
+		return err
+	}
+	return materializeCapturedTreeAt(ctx, parent, stepsPath, handle, volume, ref, sourceRoot, materializerHooks{}, verifySteps)
+}
+
+func materializeCapturedTreeAt(ctx context.Context, steps *os.File, stepsPath, handle, volume string, ref TreeRef, sourceRoot *os.Root, hooks materializerHooks, verifySteps func() error) (result error) {
 	handleDir, err := openDirectoryAt(steps, handle, true, 0755)
 	if err != nil {
 		return fmt.Errorf("hangar: anchor materialization handle: %w", err)
@@ -104,7 +139,7 @@ func materializeCapturedTree(ctx context.Context, storagePath, handle, volume st
 		return fmt.Errorf("hangar: sync materialization stage: %w", err)
 	}
 	if hooks.afterStage != nil {
-		if err := hooks.afterStage(filepath.Join(resolvedStorage, "steps", handle, stageName)); err != nil {
+		if err := hooks.afterStage(filepath.Join(stepsPath, handle, stageName)); err != nil {
 			return fmt.Errorf("hangar: after preparing materialization stage: %w", err)
 		}
 	}
@@ -113,11 +148,8 @@ func materializeCapturedTree(ctx context.Context, storagePath, handle, volume st
 			return fmt.Errorf("hangar: before materialization publication: %w", err)
 		}
 	}
-	if same, err := sameOpenAbsoluteDirectory(resolvedStorage, storage); err != nil || !same {
-		return fmt.Errorf("hangar: materialization storage changed before publication: %w", err)
-	}
-	if same, err := sameOpenEntryAt(storage, "steps", steps); err != nil || !same {
-		return fmt.Errorf("hangar: materialization steps changed before publication: %w", err)
+	if err := verifySteps(); err != nil {
+		return err
 	}
 	if same, err := sameOpenEntryAt(steps, handle, handleDir); err != nil || !same {
 		return fmt.Errorf("hangar: materialization handle changed before publication: %w", err)
@@ -127,11 +159,8 @@ func materializeCapturedTree(ctx context.Context, storagePath, handle, volume st
 	}
 
 	verifyAuthority := func(destination *os.File) error {
-		if same, err := sameOpenAbsoluteDirectory(resolvedStorage, storage); err != nil || !same {
-			return errors.Join(err, fmt.Errorf("materialization storage authority changed"))
-		}
-		if same, err := sameOpenEntryAt(storage, "steps", steps); err != nil || !same {
-			return errors.Join(err, fmt.Errorf("materialization steps authority changed"))
+		if err := verifySteps(); err != nil {
+			return err
 		}
 		if same, err := sameOpenEntryAt(steps, handle, handleDir); err != nil || !same {
 			return errors.Join(err, fmt.Errorf("materialization handle authority changed"))

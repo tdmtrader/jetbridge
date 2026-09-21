@@ -44,7 +44,7 @@ func (incarnation SourceIncarnation) Validate() error {
 // CaptureAdmission is what is predeclared before the producing Pod may start.
 //
 // Everything here is known before anything has run. It records only the
-// caller-generated handoff and provisional source-lease identities, the exact
+// caller-generated handoff and provisional source-hold identities, the exact
 // execution it extends, the declared output and the activation epoch. It
 // carries no producer checkpoint, no success fact, no capture lease, no
 // scope or digest, no receipt, no seal and no claim -- and the database API

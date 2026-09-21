@@ -33,8 +33,14 @@ import (
 var templateRouteEffects = map[string][]string{
 	"native": {
 		atc.CreatePipelineRun,
+		atc.CreatePipelineRunV2,
+		atc.UploadPipelineRunInput,
+		atc.HandoffPipelineRunCredentials,
+		atc.GetPipelineRunCredentialSession,
+		atc.CancelPipelineRun,
 		atc.ListPipelineRuns,
 		atc.GetPipelineRun,
+		atc.GetPipelineRunResult,
 	},
 	"refuses-work": {
 		atc.CheckPrototype,
@@ -165,8 +171,14 @@ var _ = Describe("Pipeline template route effects", func() {
 		// was filed under a bucket that hides it from the template question.
 		Expect(templateRouteEffects["native"]).To(ConsistOf(
 			atc.CreatePipelineRun,
+			atc.CreatePipelineRunV2,
+			atc.UploadPipelineRunInput,
+			atc.HandoffPipelineRunCredentials,
+			atc.GetPipelineRunCredentialSession,
+			atc.CancelPipelineRun,
 			atc.ListPipelineRuns,
 			atc.GetPipelineRun,
+			atc.GetPipelineRunResult,
 		))
 	})
 

@@ -23,6 +23,13 @@ func (cl *checkLifecycle) DeleteCompletedChecks(logger lager.Logger) error {
 	var err1 error
 	for {
 		var numChecksDeleted int
+		// An executed Run check is pinned by its execution evidence, which
+		// only deleteClosedRunChecks may remove. Exclude those before batching,
+		// so an executed check can neither fail this set-based batch on its
+		// evidence foreign key nor starve ordinary check GC. Every other Run
+		// check follows the ordinary rules below. The exclusion is race-free:
+		// an execution is admitted only to an uncompleted build under that
+		// build's row lock, and only completed builds are deleted.
 		err1 = cl.conn.QueryRow(`
       WITH resource_builds AS (
         SELECT distinct(last_check_build_id) as build_id
@@ -34,12 +41,14 @@ func (cl *checkLifecycle) DeleteCompletedChecks(logger lager.Logger) error {
           (SELECT id
           FROM builds b
           WHERE completed AND resource_id IS NOT NULL
+          AND NOT EXISTS ( SELECT 1 FROM pipeline_run_executions e WHERE e.build_id = b.id )
           AND NOT EXISTS ( SELECT 1 FROM resource_builds WHERE build_id = b.id )
 					LIMIT $1)
             UNION ALL
           SELECT id
           FROM builds b
           WHERE completed AND resource_type_id IS NOT NULL
+          AND NOT EXISTS ( SELECT 1 FROM pipeline_run_executions e WHERE e.build_id = b.id )
           AND EXISTS (SELECT * FROM builds b2 WHERE b.resource_type_id = b2.resource_type_id AND b.id < b2.id)
     ) AS deletable_builds WHERE builds.id = deletable_builds.id
       RETURNING builds.id
@@ -58,6 +67,8 @@ func (cl *checkLifecycle) DeleteCompletedChecks(logger lager.Logger) error {
 		}
 		counter++
 	}
+
+	errRunChecks := cl.deleteClosedRunChecks(logger)
 
 	// A build whose events these are is still fetchable through the API for as
 	// long as it is a resource's current in-memory build or a scope's last
@@ -82,6 +93,10 @@ func (cl *checkLifecycle) DeleteCompletedChecks(logger lager.Logger) error {
 
 	if err1 != nil {
 		return err1
+	}
+
+	if errRunChecks != nil {
+		return errRunChecks
 	}
 
 	if err2 != nil {

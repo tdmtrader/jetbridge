@@ -36,6 +36,12 @@ import (
 // simply by calling something an existing one already calls, which is exactly
 // the edit this inventory has to catch.
 var commandOrPodSites = map[string]string{
+	"process_interrupt.go:requestSupervisorStop->ExecInPod":        "writes only an idempotent stop marker to the original signed supervisor journal after node/Pod identity and stop admission checks, then closes a start no delivery claimed (O_EXCL, journaling the stopped 143); never relaunches a command, deletes a Pod or releases source data",
+	"process_outcome_recovery.go:closeUndeliveredStart->ExecInPod": "claims the original signed journal's start with the same O_EXCL creation the wrapper uses and, only if it won, journals the stopped exit; a delivery that claimed it first is untouched, and one that arrives after refuses. It never names or runs the producer, and rechecks the Pod and node identity around the exec",
+	"bound_session.go:ExecBoundSession->ExecInPod":                 "one-use session helper supplied by the authorized Run caller; requires the original signed start and running Pod/container, installs a bounded deadline before stdin, and rechecks identities after transfer; never launches or recreates a step",
+	"process_outcome_recovery.go:readJournaledOutcome->ExecInPod":  "reads only the retained supervisor or resource-session exit after verifying the original start, Pod UID and node UID; it never invokes the launch script, and rechecks identity before recording the outcome",
+	"process_outcome_recovery.go:readJournaledStdout->ExecInPod":   "reads only a resource session's journaled stdout, bounded, for an outcome the node already holds, after verifying the Pod UID and node UID a signed node fact names; it never invokes the launch script, and rechecks identity before the answer is exposed",
+	"process_interrupt.go:requestResourceStop->ExecInPod":          "runs only the resource cancel script -- a cancellation marker and a kill of the original command's own process group -- against the original signed journal after node/Pod identity and stop admission checks, then closes a start no delivery claimed (O_EXCL, journaling the stopped 130); never relaunches a command or deletes a Pod",
 	"container.go:Run->createPausePod": "the pause Pod a step's exec transport attaches to. " +
 		"The terminal-Pod replacement in the same function consults the ledger first " +
 		"(refuseIfCaptureHeld), because deleting a terminal Pod to make a fresh one is a new " +
@@ -45,10 +51,10 @@ var commandOrPodSites = map[string]string{
 		"retry path through it at all",
 	"container.go:createPod->":      "createPod's own declaration",
 	"container.go:createPausePod->": "createPausePod's own declaration",
-	"process.go:Wait->ExecInPod": "the ONE place a step's command is issued. Its retry loop " +
-		"only re-dials while the transport never carried a byte (execTransportLive), and for a " +
-		"controlled execution the exact supervisor refuses to relaunch a command whose start it " +
-		"already recorded",
+	"process.go:Wait->ExecInPod": "the one place a step's command is issued. Controlled " +
+		"executions never retry after recording start; reconnect reads the original outcome. " +
+		"A start the Run could not retain is issued as the stopped delivery, which never names " +
+		"the producer. Ordinary executions may retry a failed dial before the transport carried a byte",
 	"process.go:Wait->recreatePausePod": "the exec retry's replacement of a pause Pod that died " +
 		"before the command started",
 	"process.go:waitForRunning->recreatePausePod": "the same replacement from the readiness " +
@@ -63,8 +69,10 @@ var commandOrPodSites = map[string]string{
 		"command by moving it into this file",
 	"volume.go:StreamOut->ExecInPod": "tar out of a volume, for the same reason",
 	"resource_process.go:cancelResourceCommand->ExecInPod": "the kill of a cancelled resource " +
-		"command's own process group, issued only from Wait's deferred cleanup once the step's " +
-		"context has ended. It starts no step command -- the script it runs signals and exits -- " +
+		"command's own process group, issued once the step's context has ended, during exact " +
+		"execution or in ordinary Wait's deferred cleanup. It starts no step command -- " +
+		"the script it runs signals and exits, and for an exact command closes a start no " +
+		"delivery claimed -- " +
 		"and it creates no Pod; the pause Pod is kept for hijack",
 	"executor.go:ExecInPod->": "the SPDYExecutor's own definition, which is the transport " +
 		"rather than a caller of it",

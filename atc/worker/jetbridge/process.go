@@ -1,6 +1,7 @@
 package jetbridge
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -947,6 +948,7 @@ func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, r
 
 	// Build the command: [path, arg1, arg2, ...]
 	command := append([]string{p.processSpec.Path}, p.processSpec.Args...)
+	var stopCommand func(context.Context) error
 
 	// Task steps run under an in-pod supervisor so that a web restart can
 	// re-exec the same command and take over the still-running process
@@ -959,6 +961,10 @@ func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, r
 	if p.supervised() {
 		if p.control != nil {
 			command = exactSupervisorCommand(p.id, p.processSpec)
+			stopCommand = func(stopCtx context.Context) error {
+				_, err := p.stopPreservingSource(stopCtx)
+				return err
+			}
 		} else {
 			command = supervisorCommand(p.id, p.processSpec)
 		}
@@ -968,15 +974,57 @@ func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, r
 	// step can stop it: closing the SPDY stream does not (resource_process.go).
 	if p.resourceCommand() {
 		var state string
-		command, state = cancellableResourceCommand(command)
+		if p.control != nil {
+			// An exact resource command journals its exit where its signed
+			// start says, so the node's ledger has an outcome writer that
+			// outlives this ATC (resource_process.go).
+			state = exactResourceStateDir(p.control.Identity)
+			command = journaledResourceCommand(command, state)
+		} else {
+			command, state = cancellableResourceCommand(command)
+		}
+		var stopErr error
+		stopCommand = func(stopCtx context.Context) error {
+			stopErr = p.cancelResourceCommand(stopCtx, state)
+			return stopErr
+		}
 		defer func() {
 			if ctx.Err() != nil {
-				err := p.cancelResourceCommand(state)
-				if err != nil {
-					logger.Error("failed-to-stop-resource-command", err)
+				// Exact execution joins its stop callback before this defer.
+				// Ordinary execution retains its existing cleanup on return.
+				if p.control == nil {
+					stopErr = p.cancelResourceCommand(context.Background(), state)
+					if stopErr != nil {
+						logger.Error("failed-to-stop-resource-command", stopErr)
+					}
 				}
 				result = runtime.ProcessResult{}
-				retErr = errors.Join(retErr, ctx.Err(), err)
+				retErr = errors.Join(retErr, ctx.Err(), stopErr)
+			}
+		}()
+	}
+
+	// An exact resource command's answer -- its stdout -- is exposed only with
+	// an outcome: held here while the transport carries it, and handed to the
+	// step once the transport has reported the command's own exit and the
+	// node has recorded it. A transport that loses the answer hands the step
+	// nothing, and recovery reads the journaled answer instead, so a step
+	// never sees half of one and then all of it.
+	var exactAnswer *bytes.Buffer
+	if p.control != nil && p.resourceCommand() {
+		exactAnswer = &bytes.Buffer{}
+		stdout = exactAnswer
+	}
+
+	// A cancelled or timed-out step reports its context's error on every exact
+	// path out, as a resource step does, so the engine aborts a task whose
+	// ledger answer was lost instead of erroring it. The ledger calls
+	// themselves run detached (process_control.go), so their own errors never
+	// carry the step's cancellation.
+	if p.control != nil {
+		defer func() {
+			if retErr != nil && ctx.Err() != nil && !errors.Is(retErr, ctx.Err()) {
+				retErr = errors.Join(retErr, ctx.Err())
 			}
 		}()
 	}
@@ -984,20 +1032,50 @@ func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, r
 	// Everything that must be durable before the command runs: the admission,
 	// the revalidated hold, every writer's ticket, and the start record. A
 	// refusal here happens before the process and before its mounts.
+	var startWitnessErr error
 	if p.control != nil {
 		if err := joinAdmission(); err != nil {
 			spanErr = err
 			return runtime.ProcessResult{}, fmt.Errorf("exact execution admission: %w", err)
 		}
 		if err := p.beginExactCommand(ctx); err != nil {
-			if errors.Is(err, errExactAlreadyDurable) {
-				// Recovery: the outcome is on the ledger, so it is reported
-				// and the command is not run. The exec below is never
-				// reached, which is the whole of "never re-invokes".
+			if errors.Is(err, errExactReconcile) {
+				// A recorded start closes admission even when the original
+				// command delivery is uncertain. Read its existing outcome;
+				// never use absence of a local journal to launch it again.
 				return p.reportExactOutcomeWithoutRerunning(ctx)
 			}
-			spanErr = err
-			return runtime.ProcessResult{}, err
+			var unretained *startWitnessError
+			if !errors.As(err, &unretained) {
+				spanErr = err
+				return runtime.ProcessResult{}, err
+			}
+			// The node committed the start and the Run did not retain it.
+			// The command is still delivered -- stopped first, below -- so
+			// that the node's journal gets an outcome writer; the step then
+			// errors with the witness failure whatever the command reported.
+			logger.Error("run-start-witness-unretained", err)
+			startWitnessErr = err
+			defer func() {
+				result = runtime.ProcessResult{}
+				retErr = errors.Join(startWitnessErr, retErr)
+				spanErr = retErr
+			}()
+		}
+	}
+	commandCtx := ctx
+	if p.control != nil && stopCommand != nil {
+		var closeCommand func()
+		commandCtx, closeCommand = exactCommandContext(ctx, stopCommand)
+		defer closeCommand()
+		if startWitnessErr != nil {
+			// Stopped delivery. The stop is not a separate request whose
+			// failure could let the producer through: the one exec sent in
+			// place of the wrapper writes the stop, claims the start and
+			// journals the stopped exit -- 143 for a task, 130 for a resource
+			// command -- and never names the producer (process_outcome_recovery.go).
+			state, resource, _ := p.exactJournal()
+			command = exactStoppedDelivery(state, resource)
 		}
 	}
 
@@ -1015,7 +1093,7 @@ func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, r
 	execStdout := p.watchExecWriter(stdout)
 	execStderr := p.watchExecWriter(p.processIO.Stderr)
 	for attempt := 0; attempt <= maxExecRetries; attempt++ {
-		execCtx, execSpan := tracing.StartSpan(ctx, "k8s.exec-process.exec", tracing.Attrs{
+		execCtx, execSpan := tracing.StartSpan(commandCtx, "k8s.exec-process.exec", tracing.Attrs{
 			"pod-name": p.podName,
 			"attempt":  fmt.Sprintf("%d", attempt),
 		})
@@ -1046,6 +1124,12 @@ func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, r
 		}
 
 		if err == nil {
+			break
+		}
+		if p.control != nil {
+			// Start was durably recorded before this exec. Even a failed
+			// dial is reconciled against that identity, never retried on a
+			// fresh Pod or by sending the launch command again.
 			break
 		}
 		// Only retry on transient SPDY exec errors (container not found,
@@ -1099,7 +1183,7 @@ func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, r
 			// no outcome and nothing alive. The command may have run, so the
 			// ATC asks the ledger rather than deciding, and never re-invokes.
 			if p.control != nil && exitCode == ExactUnresolvedExitCode {
-				return p.reportExactOutcomeWithoutRerunning(ctx)
+				return p.reportExactOutcomeWithoutRerunning(commandCtx)
 			}
 
 			// A non-zero exit is not evidence that the command chose it. A Pod
@@ -1109,9 +1193,9 @@ func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, r
 			// Ask the Pod before the code is believed. This is the same
 			// question the no-error path asks below, on the narrower evidence
 			// a non-zero exit may use.
-			if destroyed := p.confirmPodSurvivedExec(ctx, exitCode); destroyed != nil {
+			if destroyed := p.confirmPodSurvivedExec(commandCtx, exitCode); destroyed != nil {
 				if p.control != nil {
-					return p.reportExactOutcomeWithoutRerunning(ctx)
+					return p.reportExactOutcomeWithoutRerunning(commandCtx)
 				}
 				logger.Error("pod-destroyed-during-exec", destroyed)
 				spanErr = destroyed
@@ -1122,11 +1206,14 @@ func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, r
 			// code the engine has seen and the ledger has not is a terminal
 			// answer nothing can corroborate.
 			if p.control != nil {
-				if recordErr := p.finishExactCommand(ctx,
+				if recordErr := p.finishExactCommand(commandCtx,
 					executioncontrol.ExitOutcome{ExitCode: exitCode},
 					executioncontrol.AcknowledgementFinish); recordErr != nil {
 					spanErr = recordErr
 					return runtime.ProcessResult{}, recordErr
+				}
+				if err := p.exposeLiveAnswer(exactAnswer); err != nil {
+					return runtime.ProcessResult{}, err
 				}
 			}
 
@@ -1154,9 +1241,9 @@ func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, r
 		// retried. A Pod that survived means the stream broke somewhere
 		// between here and the kubelet, and the generic path below says so.
 		if isExecStatusMissing(err) {
-			if destroyed := p.confirmPodSurvivedExec(ctx, execExitStatusUnknown); destroyed != nil {
+			if destroyed := p.confirmPodSurvivedExec(commandCtx, execExitStatusUnknown); destroyed != nil {
 				if p.control != nil {
-					return p.reportExactOutcomeWithoutRerunning(ctx)
+					return p.reportExactOutcomeWithoutRerunning(commandCtx)
 				}
 				logger.Error("pod-destroyed-during-exec", destroyed)
 				spanErr = destroyed
@@ -1168,8 +1255,8 @@ func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, r
 		// command had already started talking. It is not run again; the ledger
 		// is asked what is durably known, and "we do not know" stays unresolved
 		// rather than becoming a failure.
-		if p.control != nil && p.execTransportLive.Load() {
-			return p.reportExactOutcomeWithoutRerunning(ctx)
+		if p.control != nil {
+			return p.reportExactOutcomeWithoutRerunning(commandCtx)
 		}
 
 		fetchPodFailureContext(ctx, p.clientset, p.config.Namespace, p.podName, p.processIO.Stderr)
@@ -1183,12 +1270,12 @@ func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, r
 	// transport reports the same nil a clean exit does. The absence of an
 	// error is only evidence of success if the container that ran the command
 	// is still there to have exited.
-	if destroyed := p.confirmPodSurvivedExec(ctx, 0); destroyed != nil {
+	if destroyed := p.confirmPodSurvivedExec(commandCtx, 0); destroyed != nil {
 		// Same rule the lost-transport path above follows: for a controlled
 		// execution the ledger says what happened, and "we do not know" stays
 		// unresolved rather than becoming a success or a failure.
 		if p.control != nil {
-			return p.reportExactOutcomeWithoutRerunning(ctx)
+			return p.reportExactOutcomeWithoutRerunning(commandCtx)
 		}
 		logger.Error("pod-destroyed-during-exec", destroyed)
 		spanErr = destroyed
@@ -1196,11 +1283,14 @@ func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, r
 	}
 
 	if p.control != nil {
-		if recordErr := p.finishExactCommand(ctx,
+		if recordErr := p.finishExactCommand(commandCtx,
 			executioncontrol.ExitOutcome{ExitCode: 0},
 			executioncontrol.AcknowledgementFinish); recordErr != nil {
 			spanErr = recordErr
 			return runtime.ProcessResult{}, recordErr
+		}
+		if err := p.exposeLiveAnswer(exactAnswer); err != nil {
+			return runtime.ProcessResult{}, err
 		}
 	}
 
@@ -1217,6 +1307,16 @@ func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, r
 	p.annotateExitStatus(ctx, 0)
 	span.SetAttributes(attribute.String("exit-code", "0"))
 	return runtime.ProcessResult{ExitStatus: 0}, nil
+}
+
+// exposeLiveAnswer hands the step the answer the transport carried, once its
+// outcome is the node's.
+func (p *execProcess) exposeLiveAnswer(answer *bytes.Buffer) error {
+	if answer == nil || p.processIO.Stdout == nil {
+		return nil
+	}
+	_, err := p.processIO.Stdout.Write(answer.Bytes())
+	return err
 }
 
 // confirmPodSurvivedExec reports the destruction of the pause Pod that
@@ -1596,23 +1696,13 @@ func (p *execProcess) streamSidecarLogs(ctx context.Context, containerName strin
 	}
 }
 
-// waitForRunning uses the Watch API to wait for the Pod to reach the Running
-// phase. It enforces a startup timeout from Config.PodStartupTimeout.
+// waitForRunning bounds scheduling, startup and queued managed inputs with the
+// same readiness budget that protects those inputs' pre-admitted read leases.
 func (p *execProcess) waitForRunning(ctx context.Context) error {
-	timeout := podStartupTimeout(p.config)
+	timeout := p.podReadyTimeout()
 	startTime := time.Now()
-
-	// Use the larger of startup and scheduling timeouts as the context
-	// deadline. The scheduling timeout (default 15m) may exceed the
-	// startup timeout (default 5m) because cluster autoscalers can take
-	// minutes to provision new nodes. The Unschedulable state tracking
-	// below determines which error message to emit on expiry.
-	effectiveTimeout := timeout
 	schedTimeout := podSchedulingTimeout(p.config)
-	if schedTimeout > effectiveTimeout {
-		effectiveTimeout = schedTimeout
-	}
-	timeoutCtx, cancel := context.WithTimeout(ctx, effectiveTimeout)
+	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	watcher := NewPodWatcher(p.clientset, p.config.Namespace, p.podName)

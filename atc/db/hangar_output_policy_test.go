@@ -47,7 +47,7 @@ var _ = Describe("the lifetime-policy admission gate", func() {
 	attest := func(state output.PolicyState, rules int, observedAt time.Time) {
 		GinkgoHelper()
 		in(func(tx db.HangarOutputTx) {
-			Expect(repository.RecordPolicySnapshot(ctx, tx, output.PolicySnapshot{
+			Expect(repository.RecordPolicyAttestation(ctx, tx, output.PolicySnapshot{
 				ProtocolVersion:      output.ProtocolVersion,
 				ActivationEpoch:      1,
 				BucketFingerprint:    "gs://output-bucket",
@@ -56,7 +56,7 @@ var _ = Describe("the lifetime-policy admission gate", func() {
 				LifecycleDeleteRules: rules,
 				State:                state,
 				ObservedAt:           output.NewTimestamp(observedAt),
-			})).To(Succeed())
+			}, nil)).To(Succeed())
 		})
 	}
 
@@ -442,7 +442,7 @@ var _ = Describe("the lifetime-policy admission gate", func() {
 		It("refuses a safe snapshot that admits it saw a removal rule", func() {
 			tx := begin()
 			defer db.Rollback(tx)
-			err := repository.RecordPolicySnapshot(ctx, tx, output.PolicySnapshot{
+			err := repository.RecordPolicyAttestation(ctx, tx, output.PolicySnapshot{
 				ProtocolVersion:      output.ProtocolVersion,
 				ActivationEpoch:      1,
 				BucketFingerprint:    "gs://output-bucket",
@@ -451,7 +451,7 @@ var _ = Describe("the lifetime-policy admission gate", func() {
 				LifecycleDeleteRules: 1,
 				State:                output.PolicySafe,
 				ObservedAt:           output.NewTimestamp(time.Now()),
-			})
+			}, nil)
 			Expect(err).To(HaveOccurred(),
 				"a snapshot that is safe AND counts a removal rule was accepted; the two halves "+
 					"of one reading contradict each other and the safe half is the one a gate "+

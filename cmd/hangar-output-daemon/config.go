@@ -6,6 +6,7 @@ import (
 	"encoding/pem"
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -79,6 +80,7 @@ type Config struct {
 	PublishConcurrency int
 
 	// The node-local surfaces.
+	Kubeconfig        string
 	NodeName          string
 	NodeUID           string
 	ListenAddress     string
@@ -101,6 +103,7 @@ type Config struct {
 
 	ActivationEpoch  uint64
 	OperationTimeout time.Duration
+	ReadControlURL   string
 }
 
 // BindFlags declares the daemon's flags on a set.
@@ -110,6 +113,7 @@ type Config struct {
 // and no strict-input client, and a flag that let an operator give it one would
 // be the whole isolation undone by a helm value.
 func BindFlags(flags *flag.FlagSet, config *Config) {
+	flags.StringVar(&config.ReadControlURL, "read-control-url", "", "HTTPS control-plane base URL for validating and releasing managed-output read leases. Empty disables archive downloads.")
 	flags.StringVar(&config.OutputStore, "output-store", output.StoreGCS,
 		"Store profile for the output plane. Only \"gcs\" is admissible: the strict native-GCS profile is the one that offers create-if-absent at an exact generation, and a store that cannot refuse an overwrite cannot make the collision guarantee.")
 	flags.StringVar(&config.OutputEndpoint, "output-endpoint", "",
@@ -140,10 +144,11 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 		"Path to the PKCS#8 PEM Ed25519 private key used to sign ledger statements. It is a different key from the receipt key: rotating one must not rotate the other.")
 	flags.IntVar(&config.PublishConcurrency, "publish-concurrency", 1,
 		"How many trees may be canonicalized and spooled to scratch at once. The scratch volume's size limit must cover this many maximum-sized trees; the chart renders both from one pair of values and refuses a product that does not fit.")
+	flags.StringVar(&config.Kubeconfig, "kubeconfig", "", "Kubernetes configuration file; empty uses in-cluster service-account authentication.")
 	flags.StringVar(&config.NodeName, "node-name", "",
 		"This node's Kubernetes name, from the Downward API. It is what the daemon patches its two ready labels onto. Empty means no labeling at all, which is how this binary runs in the conformance tier and in its own tests.")
 	flags.StringVar(&config.NodeUID, "node-uid", "",
-		"This node's Kubernetes UID, from the Downward API. It is the UID and not the name: a name can be reused for new hardware, and a ledger sequence is only meaningful alongside the node that issued it.")
+		"Explicit node UID for standalone operation. With --node-name, the UID is resolved from Kubernetes and an explicit mismatch is refused.")
 	flags.StringVar(&config.ListenAddress, "listen", "127.0.0.1:0",
 		"Address the control API listens on. It is node-local: nothing outside this node's pods speaks this API.")
 	flags.StringVar(&config.ControlDir, "control-dir", "",
@@ -164,7 +169,7 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 		"Path to the CA certificate this daemon verifies control-plane client certificates against.")
 	flags.Uint64Var(&config.ActivationEpoch, "activation-epoch", 0,
 		"The active activation epoch this daemon publishes under. Rotation creates a new epoch rather than replacing a key in place.")
-	flags.DurationVar(&config.OperationTimeout, "output-timeout", time.Minute,
+	flags.DurationVar(&config.OperationTimeout, "output-timeout", output.DefaultOperationTimeout,
 		"Per-operation timeout against the output bucket.")
 }
 
@@ -213,6 +218,15 @@ func (config Config) Validate() error {
 	if err := config.validateTLS(); err != nil {
 		return err
 	}
+	if config.ReadControlURL != "" {
+		u, err := url.Parse(config.ReadControlURL)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || !config.TLSEnabled() {
+			return fmt.Errorf("%w: --read-control-url requires an HTTPS URL without credentials, query or fragment and a TLS-enabled daemon", output.ErrIncomplete)
+		}
+		if err := output.ValidateMaterializationTimeout(config.OperationTimeout); err != nil {
+			return err
+		}
+	}
 	if !config.OutputFacetEnabled() {
 		return nil
 	}
@@ -233,6 +247,7 @@ func (config Config) Validate() error {
 func (config Config) validateOutputFacet() error {
 	if !config.OutputFacetEnabled() {
 		for _, set := range []struct{ flag, value string }{
+			{"--read-control-url", config.ReadControlURL},
 			{"--output-prefix", config.OutputPrefix},
 			{"--output-tenant", config.OutputTenant},
 			{"--output-endpoint", config.OutputEndpoint},

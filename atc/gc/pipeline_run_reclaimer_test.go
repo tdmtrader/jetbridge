@@ -5,12 +5,16 @@ import (
 	"errors"
 	"time"
 
+	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/gc"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
 type fakeRunReclaimLifecycle struct {
+	// Existing loop tests retain their older substitutions. Upload expiry is
+	// the real repository operation, also exercised end to end by Brine.
+	db.PipelineRunReclaimLifecycle
 	candidates    []int
 	candidateErr  error
 	destroyed     []int
@@ -50,10 +54,11 @@ var _ = Describe("PipelineRunReclaimer", func() {
 	BeforeEach(func() {
 		now = time.Date(2026, time.August, 19, 12, 30, 0, 0, time.UTC)
 		lifecycle = &fakeRunReclaimLifecycle{
-			destroyResult: map[int]bool{},
-			destroyErr:    map[int]error{},
-			deferred:      map[int]time.Time{},
-			deferErr:      map[int]error{},
+			PipelineRunReclaimLifecycle: db.NewPipelineRunReclaimLifecycle(dbConn),
+			destroyResult:               map[int]bool{},
+			destroyErr:                  map[int]error{},
+			deferred:                    map[int]time.Time{},
+			deferErr:                    map[int]error{},
 		}
 		collector = gc.NewPipelineRunReclaimer(lifecycle, func() time.Time { return now }, gc.DefaultPipelineRunReclaimBatchSize)
 	})

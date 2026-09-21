@@ -113,6 +113,15 @@ func (c *checkFactory) TryCreateCheck(ctx context.Context, checkable Checkable, 
 	deserializedResourceTypes := resourceTypes.Filter(checkable).Deserialize()
 	plan := checkable.CheckPlan(c.planFactory, deserializedResourceTypes, from, interval, sourceDefaults, skipInterval, skipIntervalRecursively)
 
+	// A Run check belongs to the restart-safe build tracker. Routing it here
+	// also prevents enqueueing the same durable build on the in-memory channel.
+	if !toDB {
+		durable, err := durableRunChecks(ctx, c.conn, checkable)
+		if err != nil {
+			return nil, false, err
+		}
+		toDB = durable
+	}
 	if toDB {
 		build, created, err := checkable.CreateBuild(ctx, manuallyTriggered, plan)
 		if err != nil {

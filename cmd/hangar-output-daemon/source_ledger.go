@@ -1043,6 +1043,31 @@ func (ledger *SourceLedger) RetireWriter(_ context.Context, admission output.Wri
 	return ack, nil
 }
 
+// InspectWriter reads the existing ticket; it cannot admit or reopen a writer.
+func (ledger *SourceLedger) InspectWriter(handoff output.HandoffID,
+	execution executioncontrol.Identity, ticketID output.WriterTicketID) (output.WriterInspection, error) {
+	ledger.mu.Lock()
+	defer ledger.mu.Unlock()
+	if err := ticketID.Validate(); err != nil {
+		return output.WriterInspection{}, err
+	}
+	record, found, err := ledger.load(handoff)
+	if err != nil {
+		return output.WriterInspection{}, err
+	}
+	if !found {
+		return output.WriterInspection{}, output.ErrNotFound
+	}
+	if err := record.belongsTo(execution, handoff); err != nil {
+		return output.WriterInspection{}, err
+	}
+	ticket, found := record.ticket(ticketID)
+	if !found {
+		return output.WriterInspection{}, output.ErrNotFound
+	}
+	return output.WriterInspection{Issued: ticket.Issued, Closed: ticket.Closed}, nil
+}
+
 // admittedWriter is the validation the two ticket operations share, and it
 // mints nothing. Callers hold the lock.
 //

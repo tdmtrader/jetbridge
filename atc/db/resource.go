@@ -407,6 +407,15 @@ func (r *resource) CreateBuild(ctx context.Context, manuallyTriggered bool, plan
 }
 
 func (r *resource) CreateInMemoryBuild(ctx context.Context, plan atc.Plan, seqGen util.SequenceGenerator) (Build, error) {
+	durable, err := durableRunChecks(ctx, r.conn, r)
+	if err != nil {
+		return nil, err
+	}
+	if durable {
+		build, _, err := r.CreateBuild(ctx, true, plan)
+		return build, err
+	}
+
 	return newRunningInMemoryCheckBuild(r.conn, r.lockFactory, r, plan, NewSpanContext(ctx), seqGen)
 }
 
@@ -1225,28 +1234,12 @@ func requestScheduleForJobsUsingResource(tx Tx, resourceID int) error {
 		jobs = append(jobs, jid)
 	}
 
-	for _, j := range jobs {
-		_, err := psql.Update("jobs").
-			Set("schedule_requested", sq.Expr("now()")).
-			Where(sq.Eq{
-				"id": j,
-			}).
-			RunWith(tx).
-			Exec()
-		if err != nil {
-			return err
-		}
+	if err := rows.Err(); err != nil {
+		Close(rows)
+		return err
 	}
-
-	if len(jobs) > 0 {
-		payload := intsToCSV(jobs)
-		_, err = tx.Exec(fmt.Sprintf("NOTIFY scheduler, '%s'", payload))
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
+	Close(rows)
+	return requestScheduleJobs(tx, jobs, false)
 }
 
 // this allows us to reuse getCausalityResourceVersions to construct both upstream and downstream trees by passing in a different updater fn

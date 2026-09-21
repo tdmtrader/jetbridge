@@ -360,7 +360,7 @@ var _ = Describe("the output-plane controller passes", func() {
 				tx, err := dbConn.Begin()
 				Expect(err).NotTo(HaveOccurred())
 				defer db.Rollback(tx)
-				Expect(repository.RecordPolicySnapshot(ctx, db.HangarOutputTx{Tx: tx},
+				Expect(repository.RecordPolicyAttestation(ctx, db.HangarOutputTx{Tx: tx},
 					output.PolicySnapshot{
 						ProtocolVersion:   output.ProtocolVersion,
 						ActivationEpoch:   1,
@@ -369,7 +369,7 @@ var _ = Describe("the output-plane controller passes", func() {
 						PolicyHash:        "policy-hash-2",
 						State:             output.PolicySafe,
 						ObservedAt:        output.NewTimestamp(time.Now()),
-					})).To(Succeed())
+					}, nil)).To(Succeed())
 				Expect(tx.Commit()).To(Succeed())
 			}
 			attest()

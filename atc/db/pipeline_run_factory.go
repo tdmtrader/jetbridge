@@ -2,26 +2,36 @@ package db
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/concourse/concourse/hangar/executioncontrol"
+	"github.com/concourse/concourse/hangar/output"
 	"strings"
+	"time"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/configvalidate"
 	"github.com/concourse/concourse/atc/db/lock"
+	"github.com/concourse/concourse/atc/runinput"
 )
 
 type RunParams struct{ Vars atc.RunParams }
 
 type RunCreationOpts struct {
-	Config       *atc.Config
-	BeforeCommit func(Tx, RunCreation) error
+	// ActivationEpoch is internal-only until the joint v2 checkpoint. Zero
+	// preserves legacy admission; a nonzero value requires the durable marker.
+	ActivationEpoch      int64
+	Invocation           *RunInvocationIdentity
+	Inputs               map[string]atc.RunInputSource
+	SealedInputAuthority *runinput.Authority
+	Config               *atc.Config
+	BeforeCommit         func(Tx, RunCreation) error
 }
 
 type RunCreation struct {
+	Replayed      bool
 	Run           PipelineRun
 	Config        atc.Config
 	CanonicalJSON []byte
@@ -31,6 +41,40 @@ type RunCreation struct {
 }
 
 type PipelineRunFactory interface {
+	InputUploadAudience(context.Context, Tx, Pipeline, string, int64, string) (runinput.Audience, error)
+	ReserveRunInputUpload(context.Context, Tx, runinput.Audience, output.InputStage, string, time.Duration) error
+	RegisterRunInputUpload(context.Context, Tx, runinput.Audience, output.InputPublication, *output.ReceiptSignatureVerifier) (RunInputUploadClaim, error)
+	CaptureProgress(context.Context, int) ([]atc.RunCaptureProgress, error)
+	ExecuteCancellationFinality(context.Context, RunCancellationLease, RunCancellationOperation) (RunCancellationDebt, error)
+	CancellationRunExecution(context.Context, Tx, RunCancellationLease, RunCancellationOperation) (RunCancellationExecution, error)
+	RecordCancelledRunExecution(context.Context, Tx, RunCancellationLease, RunCancellationOperation, RunOutputCancellationEvidence, RunExecutionVerifier) error
+	RecordRunExecutionWitness(context.Context, Tx, int, atc.PlanID, executioncontrol.Acknowledgement, RunExecutionVerifier) error
+	RunExecutionContainer(context.Context, Tx, string) (bool, error)
+	RunExecutionOwner(context.Context, Tx, int) (int, bool, error)
+	RunExecution(context.Context, Tx, int, atc.PlanID) (RunExecutionAdmission, bool, error)
+	AdmitRunExecution(context.Context, Tx, RunExecutionRequest) (RunExecutionAdmission, bool, error)
+	CancellationOutputTask(context.Context, Tx, RunCancellationLease, RunCancellationOperation) (RunCancellationSource, error)
+	CheckCancellationOperation(context.Context, Tx, RunCancellationLease, RunCancellationOperation) error
+	ExecuteCancellationOperation(context.Context, RunCancellationLease, RunCancellationOperation) (RunCancellationDebt, error)
+	PendingRunCancellations(context.Context, Tx, RunCancellationLease, int) ([]int, error)
+	DiscoverRunCancellation(context.Context, Tx, RunCancellationLease, int, int) (int, error)
+	ClaimRunCancellationOperation(context.Context, Tx, RunCancellationLease, int) (RunCancellationOperation, bool, error)
+	RecordRunCancellationProgress(context.Context, Tx, RunCancellationLease, RunCancellationOperation, RunCancellationDebt) error
+	ClaimRunCancellationLease(context.Context, Tx, string, time.Duration) (RunCancellationLease, bool, error)
+	RenewRunCancellationLease(context.Context, Tx, RunCancellationLease, time.Duration) (RunCancellationLease, error)
+	RequestRunCancellation(context.Context, int, string, *string) (atc.RunCancelOutcome, error)
+	AcceptRunCancellation(context.Context, Tx, int, string, *string) (atc.RunCancelOutcome, error)
+	FinalizeOutputRun(context.Context, Tx, int) (bool, error)
+	PendingOutputRuns(context.Context, Tx, int, int) ([]int, error)
+	TerminalResult(context.Context, int) (RunTerminalResult, bool, error)
+	AfterRunCompleted()
+
+	OutputTask(context.Context, Tx, int, string) (RunOutputTask, bool, error)
+	PendingOutputSources(context.Context, Tx, int) ([]RunOutputTask, error)
+	PredeclareOutputTask(context.Context, Tx, int, atc.TaskPlan, int64, time.Duration, string, string) (output.HandoffRecord, error)
+	RequestOutputSource(context.Context, Tx, int, atc.TaskPlan, int64) error
+	RecordOutputSource(context.Context, Tx, int, atc.TaskPlan, output.ReservedIncarnation, string) error
+	Definition(int) (atc.RunDefinition, bool, error)
 	CreateRun(context.Context, Pipeline, RunParams, string) (RunCreation, error)
 	CreateRunInTx(context.Context, Tx, Pipeline, RunParams, string, RunCreationOpts) (RunCreation, error)
 	AfterRunCreated(context.Context, RunCreation) error
@@ -69,7 +113,26 @@ func (f *pipelineRunFactory) CreateRun(ctx context.Context, template Pipeline, p
 	return creation, nil
 }
 
-func (f *pipelineRunFactory) CreateRunInTx(_ context.Context, tx Tx, template Pipeline, params RunParams, createdBy string, opts RunCreationOpts) (RunCreation, error) {
+func (f *pipelineRunFactory) CreateRunInTx(ctx context.Context, tx Tx, template Pipeline, params RunParams, createdBy string, opts RunCreationOpts) (RunCreation, error) {
+	if opts.Invocation != nil && (opts.ActivationEpoch <= 0 || opts.Config != nil || !opts.Invocation.valid()) {
+		return RunCreation{}, ErrInvalidRunInvocation
+	}
+	if len(opts.Inputs) > 0 && opts.Invocation == nil {
+		return RunCreation{}, ErrInvalidRunInvocation
+	}
+	version := atc.RunContractLegacyV1
+	var birthEpoch *int64
+	if opts.ActivationEpoch != 0 {
+		var teamID int
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM teams WHERE id=$1 FOR SHARE`, template.TeamID()).Scan(&teamID); err != nil {
+			return RunCreation{}, err
+		}
+		if err := lockRunActivation(ctx, tx, opts.ActivationEpoch); err != nil {
+			return RunCreation{}, err
+		}
+		version = atc.RunContractV2
+		birthEpoch = &opts.ActivationEpoch
+	}
 	locked := newPipeline(f.conn, f.lockFactory)
 	err := scanPipeline(locked, pipelinesQuery.Where(sq.Eq{"p.id": template.ID()}).Suffix("FOR UPDATE OF p").RunWith(tx).QueryRow())
 	if err != nil {
@@ -78,17 +141,13 @@ func (f *pipelineRunFactory) CreateRunInTx(_ context.Context, tx Tx, template Pi
 		}
 		return RunCreation{}, err
 	}
-	if locked.InstanceVars() != nil {
-		return RunCreation{}, ErrPipelineRunInstanced
+	if opts.Invocation != nil {
+		if replay, found, err := f.replayRunInvocation(ctx, tx, locked, params.Vars, opts.Inputs, *opts.Invocation); err != nil || found {
+			return replay, err
+		}
 	}
-	if !locked.Template() {
-		return RunCreation{}, ErrPipelineRunNotTemplate
-	}
-	if locked.Archived() {
-		return RunCreation{}, ErrPipelineRunArchived
-	}
-	if locked.Paused() {
-		return RunCreation{}, ErrPipelineRunPaused
+	if err := validateRunnableTemplate(locked); err != nil {
+		return RunCreation{}, err
 	}
 
 	effective, err := f.effectiveConfig(tx, locked, opts.Config)
@@ -98,9 +157,28 @@ func (f *pipelineRunFactory) CreateRunInTx(_ context.Context, tx Tx, template Pi
 	if err = configvalidate.ValidateTemplateConfig(effective); err != nil {
 		return RunCreation{}, ErrPipelineTemplateInvalid{Err: err}
 	}
+	declarations, err := atc.RunTaskDeclarations(effective)
+	if err != nil {
+		return RunCreation{}, ErrPipelineTemplateInvalid{Err: err}
+	}
+	if len(declarations) > 0 && version != atc.RunContractV2 {
+		return RunCreation{}, atc.ErrRunResultsUnavailable
+	}
 	normalized, err := atc.ValidateRunParams(effective.Params, params.Vars)
 	if err != nil {
 		return RunCreation{}, err
+	}
+	var intent []byte
+	var inputs []pendingRunInput
+	if opts.Invocation != nil {
+		intent, err = runCallerIntent(effective.Params, params.Vars, opts.Inputs)
+		if err != nil {
+			return RunCreation{}, err
+		}
+		inputs, err = resolveRunInputs(ctx, tx, runinput.Audience{TeamID: locked.TeamID(), TemplateID: locked.ID(), PrincipalDigest: opts.Invocation.PrincipalDigest, Epoch: opts.ActivationEpoch}, declarations, opts.Inputs, opts.SealedInputAuthority)
+		if err != nil {
+			return RunCreation{}, err
+		}
 	}
 
 	number, err := f.allocateNumber(tx, locked)
@@ -118,22 +196,24 @@ func (f *pipelineRunFactory) CreateRunInTx(_ context.Context, tx Tx, template Pi
 	if _, errors := configvalidate.Validate(materialized.Config); len(errors) > 0 {
 		return RunCreation{}, atc.InvalidRunParamsError{Err: fmt.Errorf("materialized config is invalid: %s", strings.Join(errors, "\n"))}
 	}
-	hash := sha256.Sum256(append([]byte("run-instance-config/v1\x00"), materialized.CanonicalJSON...))
-	hashText := fmt.Sprintf("%x", hash)
+	hashText := materializedConfigDigest(materialized.CanonicalJSON)
 	paramsJSON, err := json.Marshal(normalized)
 	if err != nil {
 		return RunCreation{}, err
 	}
-	run := &pipelineRun{id: runID, templatePipelineID: locked.ID(), number: number, params: atc.Params(normalized), status: atc.RunStatusRunning, createdBy: createdBy, configHash: hashText}
+	run := &pipelineRun{contractVersion: version, activationEpoch: opts.ActivationEpoch, id: runID, templatePipelineID: locked.ID(), number: number, params: atc.Params(normalized), status: atc.RunStatusRunning, createdBy: createdBy, configHash: hashText}
 	// New runs are not completed; retain the nullable header value in creation
 	// memory so it stays consistent with later header reads.
 	var completedAt sql.NullTime
-	if err = tx.QueryRow(`INSERT INTO pipeline_runs (id, template_pipeline_id, number, params, status, created_by, config_hash)
-		VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING created_at, completed_at`, runID, locked.ID(), number, paramsJSON, atc.RunStatusRunning, createdBy, hashText).Scan(&run.createdAt, &completedAt); err != nil {
+	if err = tx.QueryRow(`INSERT INTO pipeline_runs (id, template_pipeline_id, number, params, status, created_by, config_hash, run_contract_version, activation_epoch)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING created_at, completed_at`, runID, locked.ID(), number, paramsJSON, atc.RunStatusRunning, createdBy, hashText, version, birthEpoch).Scan(&run.createdAt, &completedAt); err != nil {
 		return RunCreation{}, err
 	}
 	if completedAt.Valid {
 		run.completedAt = &completedAt.Time
+	}
+	if err := retainRunDefinition(tx, runID, atc.RunDefinition{Template: effective, Materialized: materialized.Config}); err != nil {
+		return RunCreation{}, err
 	}
 
 	runJobs := make(map[string]runJobMetadata, len(materialized.Config.Jobs))
@@ -192,6 +272,14 @@ func (f *pipelineRunFactory) CreateRunInTx(_ context.Context, tx Tx, template Pi
 	}
 
 	creation := RunCreation{Run: run, Config: materialized.Config, CanonicalJSON: materialized.CanonicalJSON, ConfigHash: hashText, EntryJobs: materialized.EntryJobNames, EntryBuilds: entryBuilds}
+	if opts.Invocation != nil {
+		if err = retainRunInputs(ctx, tx, runID, inputs); err != nil {
+			return RunCreation{}, err
+		}
+		if err = retainRunInvocation(ctx, tx, locked.TeamID(), creation, effective, intent, *opts.Invocation); err != nil {
+			return RunCreation{}, err
+		}
+	}
 	if opts.BeforeCommit != nil {
 		if err = opts.BeforeCommit(tx, creation); err != nil {
 			return RunCreation{}, err

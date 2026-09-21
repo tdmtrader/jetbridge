@@ -622,6 +622,9 @@ func (b *build) start(tx Tx, plan atc.Plan) (bool, error) {
 		if run.Status() != atc.RunStatusRunning {
 			return false, ErrPipelineRunNotRunning
 		}
+		if run.CancellationRequested() {
+			return false, ErrPipelineRunCancelling
+		}
 		payloadID, found := run.InstancePipelineID()
 		if !found || payloadID != b.pipelineID {
 			return false, ErrPipelineRunPayloadGone
@@ -674,20 +677,105 @@ func (b *build) start(tx Tx, plan atc.Plan) (bool, error) {
 }
 
 func (b *build) Finish(status BuildStatus) error {
-	tx, err := b.conn.Begin()
+	return b.finish(context.Background(), status, nil)
+}
+
+func (b *build) finish(ctx context.Context, status BuildStatus, cancellation *runCancellationCommit) error {
+	tx, err := b.conn.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 
 	defer Rollback(tx)
+	if cancellation != nil {
+		completed, err := cancellation.prepareBuild(ctx, tx, b.id)
+		if err != nil {
+			return err
+		}
+		if completed {
+			if err := cancellation.check(ctx, tx); err != nil {
+				return err
+			}
+			return tx.Commit()
+		}
+	}
 
 	var runID sql.NullInt64
 	if err = tx.QueryRow("SELECT pipeline_run_id FROM builds WHERE id = $1", b.id).Scan(&runID); err != nil {
 		return err
 	}
 	if runID.Valid {
-		if _, err = lockPipelineRun(tx, int(runID.Int64)); err != nil {
+		run, lockErr := lockPipelineRun(tx, int(runID.Int64))
+		if lockErr != nil {
+			return lockErr
+		}
+		// Once the Run publishes, a repeated exact completion is harmless, but
+		// changing a selected build would contradict its immutable observation.
+		if run.ContractVersion() == atc.RunContractV2 && run.Status() != atc.RunStatusRunning {
+			var complete bool
+			var previous BuildStatus
+			if err := tx.QueryRow(`SELECT completed,status FROM builds WHERE id=$1`, b.id).Scan(&complete, &previous); err != nil {
+				return err
+			}
+			if complete && previous == status {
+				return nil
+			}
+			return ErrPipelineRunNotRunning
+		}
+		var aborted bool
+		if err = tx.QueryRow(`SELECT aborted FROM builds WHERE id=$1 FOR UPDATE`, b.id).Scan(&aborted); err != nil {
 			return err
+		}
+		var outputPending bool
+		if err = tx.QueryRow(`SELECT EXISTS (
+			SELECT 1 FROM pipeline_run_output_starts s
+			LEFT JOIN pipeline_run_output_finishes f USING(handoff_id)
+			LEFT JOIN pipeline_run_output_releases l USING(handoff_id)
+			LEFT JOIN hangar_capture_reservations c USING(handoff_id)
+			LEFT JOIN pipeline_run_output_candidates candidate USING(handoff_id)
+			LEFT JOIN pipeline_run_output_discards discarded USING(handoff_id)
+			LEFT JOIN hangar_no_capture_dispositions n USING(handoff_id)
+			LEFT JOIN hangar_pre_reservation_cancel_dispositions x USING(handoff_id)
+			WHERE s.build_id=$1 AND NOT coalesce(CASE f.disposition
+				WHEN 'no_capture' THEN l.handoff_id IS NOT NULL AND n.release_acknowledged_at IS NOT NULL AND $2 IN ('failed','errored','aborted')
+				WHEN 'pre_reservation_cancel' THEN x.finalized_at IS NOT NULL AND (NOT x.source_reserved OR l.handoff_id IS NOT NULL) AND $2='aborted'
+				WHEN 'capture' THEN l.handoff_id IS NOT NULL AND c.release_acknowledged_at IS NOT NULL AND (
+					(c.state IN ('failed','cancelled') AND $2 IN ('failed','errored','aborted')) OR
+					(c.state='registered' AND (
+						(candidate.handoff_id IS NOT NULL AND $2 IN ('succeeded','failed','errored') AND NOT $3) OR
+						((candidate.handoff_id IS NOT NULL OR discarded.handoff_id IS NOT NULL) AND $2='aborted' AND $3))))
+				ELSE false END,false))`, b.id, string(status), aborted).Scan(&outputPending); err != nil {
+			return err
+		}
+		// Run-owned disposition must precede an externally terminal build.
+		// Non-success requires exact source-release closure. A successful
+		// capture also requires its retained hidden candidate. Aggregate result
+		// publication remains the Run terminalizer's separate transaction.
+		if outputPending {
+			return atc.ErrRunOutputPending
+		}
+		var executionClosed bool
+		if err = tx.QueryRow(`SELECT run_execution_closed($1)`, b.id).Scan(&executionClosed); err != nil {
+			return err
+		}
+		if !executionClosed {
+			// An aborted build that could not close its own execution -- no
+			// web was tracking it, or its in-band stop proved no outcome --
+			// has nothing left that would: its replays are refused admission.
+			// Run cancellation interrupts and closes an execution on the
+			// node's evidence, and the Run aborts with this build anyway, so
+			// the refusal asks for it. Finishing still waits for the closure.
+			if aborted && status == BuildStatusAborted && cancellation == nil &&
+				run.ContractVersion() == atc.RunContractV2 && !run.CancellationRequested() {
+				reason := fmt.Sprintf("build %d was aborted with an execution it could not close", b.id)
+				if _, err = acceptRunCancellation(ctx, tx, int(runID.Int64), AbortedBuildCancellationRequester, &reason); err != nil {
+					return err
+				}
+				if err = tx.Commit(); err != nil {
+					return err
+				}
+			}
+			return atc.ErrRunOutputPending
 		}
 	}
 
@@ -892,6 +980,11 @@ WITH RECURSIVE pipelines_to_archive AS (
 			return err
 		}
 	}
+	if cancellation != nil {
+		if err := cancellation.check(ctx, tx); err != nil {
+			return err
+		}
+	}
 
 	err = tx.Commit()
 	if err != nil {
@@ -899,6 +992,9 @@ WITH RECURSIVE pipelines_to_archive AS (
 	}
 	if completedRun {
 		announceRunCompletion(b.conn.Bus())
+	}
+	if cancellation != nil {
+		b.conn.Bus().Notify(buildAbortChannel(b.id))
 	}
 
 	err = b.conn.Bus().Notify(buildEventsChannel(b.id))
@@ -992,6 +1088,15 @@ func (b *build) MarkAsAborted() error {
 
 	defer Rollback(tx)
 
+	var cancelling bool
+	if b.pipelineRunID != 0 {
+		run, err := lockPipelineRun(tx, b.pipelineRunID)
+		if err != nil {
+			return err
+		}
+		cancelling = run.CancellationRequested()
+	}
+
 	_, err = psql.Update("builds").
 		Set("aborted", true).
 		Where(sq.Eq{"id": b.id}).
@@ -1001,7 +1106,7 @@ func (b *build) MarkAsAborted() error {
 		return err
 	}
 
-	if b.status == BuildStatusPending {
+	if b.status == BuildStatusPending && !cancelling {
 		err = requestSchedule(tx, b.jobID)
 		if err != nil {
 			return err
@@ -2150,8 +2255,11 @@ func (b *build) saveEvent(tx Tx, event atc.Event) error {
 	return err
 }
 
+// isForCheck must survive reclamation, which clears a Run check's resource
+// links but keeps its build. The Run identity says it is a check just as well:
+// a build owned by a Run with no run job name is one of that Run's checks.
 func (b *build) isForCheck() bool {
-	return b.resourceTypeID != 0 || b.resourceID != 0
+	return b.resourceTypeID != 0 || b.resourceID != 0 || (b.pipelineRunID != 0 && b.runJobName == "")
 }
 
 func (b *build) eventsTable() string {
@@ -2207,6 +2315,11 @@ type startedBuildArgs struct {
 }
 
 func createStartedBuild(tx Tx, build *build, args startedBuildArgs) error {
+	runID, err := admitRunCheck(tx, args.PipelineID)
+	if err != nil {
+		return err
+	}
+
 	spanContext, err := json.Marshal(args.SpanContext)
 	if err != nil {
 		return err
@@ -2225,6 +2338,9 @@ func createStartedBuild(tx Tx, build *build, args startedBuildArgs) error {
 	buildVals := make(map[string]any)
 	buildVals["name"] = args.Name
 	buildVals["pipeline_id"] = args.PipelineID
+	if runID != 0 {
+		buildVals["pipeline_run_id"] = runID
+	}
 	buildVals["team_id"] = args.TeamID
 	buildVals["manually_triggered"] = args.ManuallyTriggered
 	buildVals["private_plan"] = encryptedPlan

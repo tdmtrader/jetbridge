@@ -472,6 +472,15 @@ func (repository *HangarOutputRepository) AdoptManagedOrphan(ctx context.Context
 	// The shield first, and unconditionally. Every other refusal below is a
 	// "not yet"; this one is "not while that capture is alive", and it holds
 	// however old the object is.
+	var pendingInputs int
+	if err := hangarQueryRow(ctx, tx, `SELECT count(*) FROM hangar_input_publications
+		WHERE scope=$1 AND digest=$2 AND lifecycle_id IS NULL AND expires_at > clock_timestamp()`,
+		[]any{string(ref.Scope), string(ref.Digest)}, &pendingInputs); err != nil {
+		return "", err
+	}
+	if pendingInputs > 0 {
+		return output.AdoptionProtectedByReservation, fmt.Errorf("%w: an input publication still correlates this object", output.ErrConflict)
+	}
 	if unresolved > 0 || nonterminal > 0 {
 		return output.AdoptionProtectedByReservation, fmt.Errorf("%w: %d unresolved reservation(s) "+
 			"and %d nonterminal capture(s) still correlate %s/%s; an unresolved reservation "+
@@ -699,7 +708,7 @@ func (repository *HangarOutputRepository) AcquireReadLease(ctx context.Context, 
 		return output.ReadLease{}, err
 	}
 	if state != "registered" && state != "adopted" {
-		return output.ReadLease{}, fmt.Errorf("%w: %s/%s/%d is %s; a managed read is granted only "+
+		return output.ReadLease{}, fmt.Errorf("%w: %s/%s/%d is %s; a managed read is warranted only "+
 			"against a readable registered or adopted generation", output.ErrConflict,
 			request.Ref.Scope, request.Ref.Digest, request.Ref.Generation, state)
 	}
@@ -981,7 +990,9 @@ func (repository *HangarOutputRepository) AdmitReclaim(ctx context.Context, tx o
 		       (SELECT count(*) FROM hangar_read_leases
 		         WHERE lifecycle_id = l.id AND released_at IS NULL AND expires_at > now()),
 		       (SELECT count(*) FROM hangar_logical_reservations
-		         WHERE scope = l.scope AND digest = l.digest AND state = 'unresolved_generation')
+		         WHERE scope = l.scope AND digest = l.digest AND state = 'unresolved_generation') +
+		       (SELECT count(*) FROM hangar_input_publications
+		         WHERE scope = l.scope AND digest = l.digest AND lifecycle_id IS NULL AND expires_at > clock_timestamp())
 		FROM hangar_exact_lifecycles l WHERE l.id = $1`,
 		[]any{lifecycle, hangarInterval(grace)},
 		&state, &epoch, &withinGrace, &claims, &leases, &pending); err != nil {
@@ -1031,37 +1042,6 @@ func (repository *HangarOutputRepository) AdmitReclaim(ctx context.Context, tx o
 	if _, err := tx.ExecContext(ctx,
 		`SELECT pg_notify($1, '')`, output.NotifyChannel(output.OperationReclaimDelete),
 	); err != nil {
-		return hangarConflict(err)
-	}
-
-	return nil
-}
-
-// RecordPolicySnapshot stores one lifetime-policy attestation.
-//
-// It records what was observed and when. Whether that evidence is still fresh
-// enough is a question every later reader answers for itself, which is why the
-// snapshot is a row rather than a flag somebody flipped.
-func (repository *HangarOutputRepository) RecordPolicySnapshot(ctx context.Context, tx output.Tx, snapshot output.PolicySnapshot) error {
-	if err := snapshot.Validate(); err != nil {
-		return err
-	}
-	// The same clock discipline the attestation writer applies, and for the
-	// same reason: this table's observed_at is measured against the database's
-	// now() by the admission gate, so an observation dated by a process clock
-	// is stored no later than the transaction that recorded it. See
-	// hangarPolicyObservationOnTheDatabaseClock.
-	if err := hangarPolicyObservationOnTheDatabaseClock(ctx, tx, snapshot); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO hangar_policy_snapshots
-			(activation_epoch, bucket_fingerprint, metageneration, policy_hash,
-			 lifecycle_delete_rules, state, observed_at)
-		VALUES ($1, $2, $3, $4, $5, $6, least(now(), $7))`,
-		int64(snapshot.ActivationEpoch), snapshot.BucketFingerprint, snapshot.Metageneration,
-		snapshot.PolicyHash, snapshot.LifecycleDeleteRules, string(snapshot.State),
-		snapshot.ObservedAt.Time); err != nil {
 		return hangarConflict(err)
 	}
 

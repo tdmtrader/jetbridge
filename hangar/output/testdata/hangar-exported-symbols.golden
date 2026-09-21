@@ -3,6 +3,7 @@ const DefaultMaxTreeContentBytes int64
 const DefaultMaxTreeEntries int64
 const MaxWarrantTTL
 func (*CapturedTree) Close() error
+func (*CapturedTree) Materialize(ctx context.Context, steps *os.Root, ref TreeRef, handle, volume string) (err error)
 func (*CapturedTree) OpenRoot() (*os.Root, error)
 func (*Materializer) Materialize(ctx context.Context, ref TreeRef, handle, volume string) (err error)
 func (*Materializer) MaterializeManaged(ctx context.Context, ref TreeRef, handle, volume string, profile OutputReadProfile) (err error)

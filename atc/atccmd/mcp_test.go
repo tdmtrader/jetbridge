@@ -29,12 +29,15 @@ func TestMCPDoesNotConsumeOrClearWebLogin(t *testing.T) {
 			t.Fatalf("MCP route %s consumed/cleared the unrelated browser login: code=%d cookies=%d", path, w.Code, len(w.Result().Cookies()))
 		}
 	}
-	r := httptest.NewRequest(http.MethodGet, "/api/v1/user", nil)
-	r.AddCookie(&http.Cookie{Name: "skymarshal_auth", Value: "browser-login"})
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, r)
-	if apiAuthorization != "browser-login" || len(w.Result().Cookies()) == 0 {
-		t.Fatal("existing API cookie authentication no longer works")
+	for _, path := range []string{"/api/v1/user", "/api/v2/teams/main/pipelines/template/runs"} {
+		apiAuthorization = ""
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		r.AddCookie(&http.Cookie{Name: "skymarshal_auth", Value: "browser-login"})
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if apiAuthorization != "browser-login" || len(w.Result().Cookies()) == 0 {
+			t.Fatalf("API cookie authentication no longer works for %s", path)
+		}
 	}
 }
 

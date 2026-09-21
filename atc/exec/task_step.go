@@ -83,6 +83,15 @@ type TaskDelegate interface {
 	BuildStartTime() time.Time
 }
 
+// RunTaskPreparer resolves a retained task before worker selection.
+type RunTaskPreparer interface {
+	PrepareTask(context.Context, int, atc.TaskPlan, runtime.ContainerSpec) (runtime.ContainerSpec, error)
+}
+
+func WithRunTaskPreparer(p RunTaskPreparer) TaskStepOption {
+	return func(s *TaskStep) { s.runTaskPreparer = p }
+}
+
 // TaskStepOption configures optional fields on a TaskStep.
 type TaskStepOption func(*TaskStep)
 
@@ -107,6 +116,7 @@ type TaskStep struct {
 	delegateFactory    TaskDelegateFactory
 	defaultTaskTimeout time.Duration
 	imageResolver      imageresolver.Resolver
+	runTaskPreparer    RunTaskPreparer
 }
 
 func NewTaskStep(
@@ -170,6 +180,11 @@ func (step *TaskStep) Run(ctx context.Context, state RunState) (bool, error) {
 }
 
 func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDelegate) (bool, error) {
+	// A Run declaration requires the owning domain's retained-task admission.
+	runTask := step.plan.TaskID != "" || step.plan.RunResult != nil || len(step.plan.RunInputs) > 0
+	if runTask && step.runTaskPreparer == nil {
+		return false, atc.ErrRunResultsUnavailable
+	}
 	logger := lagerctx.FromContext(ctx)
 	logger = tracing.LoggerWithSpan(ctx, logger)
 	logger = logger.Session("task-step", lager.Data{
@@ -340,6 +355,13 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 		delegate.EmitSidecarPlans(logger, containerSpec.Sidecars)
 	}
 
+	if runTask {
+		containerSpec, err = step.runTaskPreparer.PrepareTask(ctx, step.metadata.BuildID, step.plan, containerSpec)
+		if err != nil {
+			return false, err
+		}
+	}
+
 	tracing.Inject(ctx, &containerSpec)
 
 	owner := db.NewBuildStepContainerOwner(step.metadata.BuildID, step.planID, step.metadata.TeamID)
@@ -481,7 +503,18 @@ func (step *TaskStep) containerInputs(logger lager.Logger, repository *build.Rep
 
 	var missingRequiredInputs []string
 
+	routes := make(map[string]string, len(step.plan.RunInputs))
+	for _, route := range step.plan.RunInputs {
+		if _, duplicate := routes[route.Input]; duplicate {
+			return nil, atc.ErrInvalidRunInputs
+		}
+		routes[route.Input] = route.Name
+	}
 	for _, input := range config.Inputs {
+		if name, named := routes[input.Name]; named {
+			inputs = append(inputs, runtime.Input{RunInput: name, DestinationPath: artifactPath(metadata.WorkingDirectory, input.Name, input.Path)})
+			continue
+		}
 		inputName := input.Name
 		if sourceName, ok := step.plan.InputMapping[inputName]; ok {
 			inputName = sourceName

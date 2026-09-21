@@ -261,10 +261,11 @@ func TestTheRouteTableReadsBothIdentityShapesAndNoFacetCrosses(t *testing.T) {
 	// is the ATC's own operation and therefore the one a base control
 	// capability is most plausibly already holding when it reaches for it.
 	for path, operation := range map[string]string{
-		"/capture/v1/writer-ticket":       "issue-writer-ticket",
-		"/capture/v1/release":             "release-hold",
-		"/capture/v1/reserve-incarnation": "reserve-incarnation",
-		"/capture/v1/canonicalize":        "canonicalize",
+		"/capture/v1/writer-ticket":         "issue-writer-ticket",
+		"/capture/v1/writer-ticket/inspect": "inspect-writer-ticket",
+		"/capture/v1/release":               "release-hold",
+		"/capture/v1/reserve-incarnation":   "reserve-incarnation",
+		"/capture/v1/canonicalize":          "canonicalize",
 	} {
 		status, body := fixture.call(t, path, executioncontrol.BaseFacet, operation,
 			identifiedBy(identity(1)))
@@ -838,5 +839,38 @@ func TestCanonicalizationAnswersTheDigestThePublishThenUsesAndCreatesNothing(t *
 	if result.Ref.Scope != canonical.Scope {
 		t.Errorf("the object landed in scope %q and the resolution named %q",
 			result.Ref.Scope, canonical.Scope)
+	}
+}
+
+// The signed start is read over the base surface, under its own operation: a
+// capability minted for classify does not read it, and the answer is the
+// stored statement.
+func TestTheStartInspectionRouteAnswersWithTheStoredStart(t *testing.T) {
+	fixture := newRoutes(t, "")
+	admitted(t, &fixture.ledgerFixture)
+
+	if status, body := fixture.call(t, "/execution/v1/start/inspect", executioncontrol.BaseFacet,
+		"inspect-start", identifiedBy(identity(1))); status != http.StatusNotFound {
+		t.Fatalf("an unstarted execution answered %d: %s", status, body)
+	}
+	started, err := fixture.ledger.RecordStart(identity(1), testPod, "proc-1")
+	if err != nil {
+		t.Fatalf("starting: %v", err)
+	}
+	status, body := fixture.call(t, "/execution/v1/start/inspect", executioncontrol.BaseFacet,
+		"inspect-start", identifiedBy(identity(1)))
+	if status != http.StatusOK {
+		t.Fatalf("the start inspection answered %d: %s", status, body)
+	}
+	var read executioncontrol.Acknowledgement
+	if err := json.Unmarshal(body, &read); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if !sameStatement(read, started) {
+		t.Fatalf("the route answered a different statement: %s", body)
+	}
+	if status, body := fixture.call(t, "/execution/v1/start/inspect", executioncontrol.BaseFacet,
+		"classify", identifiedBy(identity(1))); status != http.StatusForbidden {
+		t.Fatalf("a classify capability read the start: %d %s", status, body)
 	}
 }

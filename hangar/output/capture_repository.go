@@ -143,7 +143,7 @@ func (admission ReceiptAdmission) Validate() error {
 // before persistence work begins, rather than invented outside the leaf.
 type CaptureRepository interface {
 	// PredeclareHandoff records the pre-start, non-authorizing predeclaration:
-	// caller-generated handoff and source-lease ids, the exact execution, the
+	// caller-generated handoff and source-hold ids, the exact execution, the
 	// declared output and the activation epoch. It carries no producer
 	// checkpoint, success fact, capture lease, scope, digest, receipt, seal or
 	// claim, and CaptureAdmission has nowhere to put one.

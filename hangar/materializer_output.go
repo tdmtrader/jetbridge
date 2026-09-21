@@ -94,8 +94,10 @@ func RenewWhile(ctx context.Context, profile OutputReadProfile, every time.Durat
 	renewing, stop := context.WithCancel(ctx)
 	defer stop()
 
-	failed := make(chan error, 1)
+	finished := make(chan error, 1)
 	go func() {
+		var failure error
+		defer func() { finished <- failure }()
 		ticker := time.NewTicker(every)
 		defer ticker.Stop()
 		for {
@@ -104,8 +106,12 @@ func RenewWhile(ctx context.Context, profile OutputReadProfile, every time.Durat
 				return
 			case <-ticker.C:
 				if err := profile.Renew(renewing); err != nil {
-					failed <- err
-
+					// Cancellation after the work finishes is normal. A refusal
+					// while it is running revokes the work's authority immediately.
+					if renewing.Err() == nil {
+						failure = err
+						stop()
+					}
 					return
 				}
 			}
@@ -115,13 +121,7 @@ func RenewWhile(ctx context.Context, profile OutputReadProfile, every time.Durat
 	done := work(renewing)
 	stop()
 
-	select {
-	case err := <-failed:
-		// A renewal that failed while the work ran is not a warning: the lease
-		// may already be gone, and bytes staged under a lapsed lease are bytes
-		// reclamation was free to delete underneath.
-		return errors.Join(done, err)
-	default:
-		return done
-	}
+	// Join the renewer before returning so no renewal outlives the work it
+	// protects and any failure that stopped the work reaches the caller.
+	return errors.Join(done, <-finished)
 }

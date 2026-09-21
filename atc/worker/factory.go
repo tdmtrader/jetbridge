@@ -40,7 +40,8 @@ type DefaultFactory struct {
 	// nil is the ordinary path: a worker with no resolver hands every
 	// container a nil one, and nothing in the exact-execution path is
 	// reachable without an ExecutionControl on the spec.
-	K8sOutputControls jetbridge.OutputControlResolver
+	K8sOutputControls    jetbridge.OutputControlResolver
+	K8sExecutionPreparer jetbridge.ExecutionPreparer
 }
 
 func (f DefaultFactory) NewWorker(logger lager.Logger, dbWorker db.Worker) runtime.Worker {
@@ -61,6 +62,9 @@ func (f DefaultFactory) newK8sWorker(dbWorker db.Worker) *jetbridge.Worker {
 	}
 	if f.K8sOutputControls != nil {
 		w.SetOutputControls(f.K8sOutputControls)
+	}
+	if f.K8sExecutionPreparer != nil {
+		w.SetExecutionPreparer(f.K8sExecutionPreparer)
 	}
 	return w
 }

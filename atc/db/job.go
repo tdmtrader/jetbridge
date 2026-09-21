@@ -1560,35 +1560,7 @@ func scanJobs(conn DbConn, lockFactory lock.LockFactory, rows *sql.Rows) (Jobs, 
 }
 
 func requestSchedule(tx Tx, jobID int) error {
-	result, err := psql.Update("jobs").
-		Set("schedule_requested", sq.Expr("now()")).
-		Where(sq.Eq{
-			"id": jobID,
-		}).
-		RunWith(tx).
-		Exec()
-	if err != nil {
-		return err
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-
-	if rowsAffected != 1 {
-		return NonOneRowAffectedError{rowsAffected}
-	}
-
-	// Wake the scheduler immediately with the job ID as payload.
-	// Postgres defers NOTIFY until the enclosing transaction commits,
-	// so there is no race with readers.
-	_, err = tx.Exec(fmt.Sprintf("NOTIFY scheduler, '%d'", jobID))
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return requestScheduleJobs(tx, []int{jobID}, true)
 }
 
 // The SELECT query orders the jobs for updating to prevent deadlocking.
@@ -1619,28 +1591,12 @@ func requestScheduleOnDownstreamJobs(tx Tx, jobID int) error {
 		jobIDs = append(jobIDs, id)
 	}
 
-	for _, jID := range jobIDs {
-		_, err := psql.Update("jobs").
-			Set("schedule_requested", sq.Expr("now()")).
-			Where(sq.Eq{
-				"id": jID,
-			}).
-			RunWith(tx).
-			Exec()
-		if err != nil {
-			return err
-		}
+	if err := rows.Err(); err != nil {
+		Close(rows)
+		return err
 	}
-
-	if len(jobIDs) > 0 {
-		payload := intsToCSV(jobIDs)
-		_, err = tx.Exec(fmt.Sprintf("NOTIFY scheduler, '%s'", payload))
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
+	Close(rows)
+	return requestScheduleJobs(tx, jobIDs, false)
 }
 
 // intsToCSV converts a slice of ints to a comma-separated string,

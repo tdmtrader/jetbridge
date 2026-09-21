@@ -18,13 +18,16 @@ import (
 const defaultPipelineRunLimit = 50
 
 type Server struct {
+	services    Services
+	resultSlots chan struct{}
 	logger      lager.Logger
 	runFactory  db.PipelineRunFactory
 	externalURL string
 }
 
 func NewServer(logger lager.Logger, runFactory db.PipelineRunFactory, externalURL string) *Server {
-	return &Server{logger: logger, runFactory: runFactory, externalURL: externalURL}
+	return &Server{logger: logger, runFactory: runFactory, externalURL: externalURL,
+		resultSlots: make(chan struct{}, DefaultResultReadConcurrency)}
 }
 
 // presentRun is the single place the run presentation options are decided, so
@@ -33,8 +36,10 @@ func NewServer(logger lager.Logger, runFactory db.PipelineRunFactory, externalUR
 func (s *Server) presentRun(pipeline db.Pipeline, run db.PipelineRun, instance db.Pipeline, r *http.Request) atc.PipelineRun {
 	access := accessor.GetAccessor(r)
 	return present.PipelineRun(run, instance, present.PipelineRunOptions{
-		AuthorizedForParams: access.IsAuthorized(pipeline.TeamName()),
-		CanEnterPayload:     instance != nil && (instance.Public() || access.IsAuthorized(instance.TeamName())),
+		AuthorizedForParams:       access.IsAuthorized(pipeline.TeamName()),
+		AuthorizedForCancellation: access.IsAuthenticated() && access.IsAuthorized(pipeline.TeamName()),
+		CanCancel:                 canCancelRun(r, pipeline.TeamName()),
+		CanEnterPayload:           instance != nil && (instance.Public() || access.IsAuthorized(instance.TeamName())),
 	})
 }
 
@@ -46,7 +51,28 @@ func (s *Server) pipelineRun(pipeline db.Pipeline, run db.PipelineRun, r *http.R
 	if !found {
 		instance = nil
 	}
-	return s.presentRun(pipeline, run, instance, r), nil
+	presented := s.presentRun(pipeline, run, instance, r)
+	access := accessor.GetAccessor(r)
+	if run.ContractVersion() == atc.RunContractV2 && access.IsAuthenticated() && access.IsAuthorized(pipeline.TeamName()) {
+		presented.Captures, err = s.runFactory.CaptureProgress(r.Context(), run.ID())
+		if err != nil {
+			return atc.PipelineRun{}, err
+		}
+	}
+	if run.ContractVersion() == atc.RunContractV2 && run.Status() != atc.RunStatusRunning && access.IsAuthenticated() && access.IsAuthorized(pipeline.TeamName()) {
+		// Terminal headers are immutable. Read only after observing terminal
+		// status, so a concurrent completion cannot mix a running header with
+		// a published result. The payload is not needed to resolve the result.
+		terminal, found, err := s.runFactory.TerminalResult(r.Context(), run.ID())
+		if err != nil {
+			return atc.PipelineRun{}, err
+		}
+		if !found {
+			return atc.PipelineRun{}, fmt.Errorf("terminal Run has no retained observation")
+		}
+		presented.Terminal = &terminal
+	}
+	return presented, nil
 }
 
 func (s *Server) writeRun(w http.ResponseWriter, pipeline db.Pipeline, run db.PipelineRun, r *http.Request, status int) {
@@ -57,6 +83,7 @@ func (s *Server) writeRun(w http.ResponseWriter, pipeline db.Pipeline, run db.Pi
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "private, no-store")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(presentable); err != nil {
 		s.logger.Error("failed-to-encode-pipeline-run", err)

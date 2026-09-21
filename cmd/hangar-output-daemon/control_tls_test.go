@@ -146,6 +146,18 @@ func TestTheControlAPIRequiresAClientCertificateExceptForTheNodeLocalHold(t *tes
 		}
 	}
 
+	// The start inspection reads a signed node fact and is the control
+	// plane's alone. This execution has no start, so the certificate is
+	// answered with the ledger's 404 and its absence with 401.
+	if code := call(withCert, "/execution/v1/start/inspect", executioncontrol.BaseFacet, "inspect-start",
+		identifiedBy(identity(1))); code != http.StatusNotFound {
+		t.Fatalf("the start inspection answered %d to the control plane's own certificate", code)
+	}
+	if code := call(withoutCert, "/execution/v1/start/inspect", executioncontrol.BaseFacet, "inspect-start",
+		identifiedBy(identity(1))); code != http.StatusUnauthorized {
+		t.Errorf("the start inspection answered %d with no client certificate", code)
+	}
+
 	// And the node-local hold, from a caller with no certificate at all: this
 	// is the capture control init, and it must still work. It presents the
 	// incarnation the control plane reserved over mTLS a moment ago, which is

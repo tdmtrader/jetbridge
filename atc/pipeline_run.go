@@ -5,6 +5,13 @@ import (
 	"time"
 )
 
+type RunContractVersion string
+
+const (
+	RunContractLegacyV1 RunContractVersion = "legacy_v1"
+	RunContractV2       RunContractVersion = "v2"
+)
+
 type RunStatus string
 
 const (
@@ -35,18 +42,25 @@ const (
 const PipelineRunCompletedChannel = "pipeline_run_completed"
 
 type PipelineRun struct {
-	ID                 int                 `json:"id"`
-	TemplatePipelineID int                 `json:"template_pipeline_id"`
-	Number             int                 `json:"number"`
-	Params             *Params             `json:"params,omitempty"`
-	Status             RunStatus           `json:"status"`
-	CreatedBy          string              `json:"created_by"`
-	CreatedAt          time.Time           `json:"created_at"`
-	CompletedAt        *time.Time          `json:"completed_at,omitempty"`
-	ReclaimRetryAfter  *time.Time          `json:"reclaim_retry_after,omitempty"`
-	ConfigHash         *string             `json:"config_hash,omitempty"`
-	Reclaimed          bool                `json:"reclaimed"`
-	InstanceRef        *PipelineIdentifier `json:"instance_ref,omitempty"`
+	Captures []RunCaptureProgress `json:"captures,omitempty"`
+	// Terminal is included only in authorized detail responses, not listings.
+	Terminal           *RunTerminalResult      `json:"terminal,omitempty"`
+	CanCancel          bool                    `json:"can_cancel,omitempty"`
+	Cancellation       *RunCancellationRequest `json:"cancellation,omitempty"`
+	ContractVersion    RunContractVersion      `json:"run_contract_version"`
+	ActivationEpoch    int64                   `json:"activation_epoch,omitempty"`
+	ID                 int                     `json:"id"`
+	TemplatePipelineID int                     `json:"template_pipeline_id"`
+	Number             int                     `json:"number"`
+	Params             *Params                 `json:"params,omitempty"`
+	Status             RunStatus               `json:"status"`
+	CreatedBy          string                  `json:"created_by"`
+	CreatedAt          time.Time               `json:"created_at"`
+	CompletedAt        *time.Time              `json:"completed_at,omitempty"`
+	ReclaimRetryAfter  *time.Time              `json:"reclaim_retry_after,omitempty"`
+	ConfigHash         *string                 `json:"config_hash,omitempty"`
+	Reclaimed          bool                    `json:"reclaimed"`
+	InstanceRef        *PipelineIdentifier     `json:"instance_ref,omitempty"`
 }
 
 type pipelineRunAlias PipelineRun
@@ -103,4 +117,12 @@ func pipelineRunTime(seconds *int64) *time.Time {
 
 type CreatePipelineRunRequest struct {
 	Vars map[string]any `json:"vars"`
+}
+
+// CreatePipelineRunV2Request carries invocation intent. The principal and
+// activation epoch come from the server; input bearers are never retained.
+type CreatePipelineRunV2Request struct {
+	InvocationKey string                    `json:"invocation_key"`
+	Vars          RunParams                 `json:"vars,omitempty"`
+	Inputs        map[string]RunInputSource `json:"inputs,omitempty"`
 }

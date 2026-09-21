@@ -296,7 +296,7 @@ func activate(t *testing.T, conn db.DbConn, daemon *daemonProcess) {
 	if err != nil {
 		t.Fatalf("prefix: %v", err)
 	}
-	if err := db.NewHangarOutputRepository(prefix).RecordPolicySnapshot(
+	if err := db.NewHangarOutputRepository(prefix).RecordPolicyAttestation(
 		context.Background(), tx, output.PolicySnapshot{
 			ProtocolVersion:      output.ProtocolVersion,
 			ActivationEpoch:      harnessEpoch,
@@ -306,7 +306,7 @@ func activate(t *testing.T, conn db.DbConn, daemon *daemonProcess) {
 			LifecycleDeleteRules: 0,
 			State:                output.PolicySafe,
 			ObservedAt:           output.NewTimestamp(time.Now()),
-		}); err != nil {
+		}, nil); err != nil {
 		t.Fatalf("attesting: %v", err)
 	}
 	if err := tx.Commit(); err != nil {

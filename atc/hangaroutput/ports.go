@@ -46,6 +46,7 @@ type Transactor interface {
 // Repository is the durable half.
 type Repository interface {
 	LoadHandoffRecord(ctx context.Context, tx output.Tx, handoff output.HandoffID) (output.HandoffRecord, error)
+	AcknowledgeSourceHold(ctx context.Context, tx output.Tx, acknowledgement output.CaptureAcknowledgement) error
 
 	// HangarDatabaseNow is the plane's clock, and the coordinator holds it for
 	// exactly one decision: whether a capture whose object collided at a
@@ -86,6 +87,7 @@ type Repository interface {
 // capture needs: what the seal did, what the bytes are, where they went, what
 // the store says about them afterwards, and that the source may go.
 type SourceControl interface {
+	InspectHold(context.Context, executioncontrol.Identity, output.HandoffID) (output.CaptureAcknowledgement, error)
 	// Observe reports the exact execution's durable finish or stop
 	// acknowledgement, or that none exists yet.
 	//
@@ -125,6 +127,11 @@ type SourceDialer interface {
 	ForLocator(locator string) (SourceControl, error)
 }
 
+// SourceDialerFunc adapts a deployment's node resolver to the opaque source port.
+type SourceDialerFunc func(string) (SourceControl, error)
+
+func (dial SourceDialerFunc) ForLocator(locator string) (SourceControl, error) { return dial(locator) }
+
 // DrainConfirmer terminates every admitted writer for a sealed source and
 // proves the boundary a seal confirmation needs.
 //
@@ -141,6 +148,12 @@ type DrainConfirmer interface {
 	ConfirmDrain(ctx context.Context, locator string, started output.SealStarted) ([]output.DrainedWriter, error)
 }
 
+// DrainReleaser removes deployment-owned evidence pins after source release.
+// Deployments without such pins need not implement it.
+type DrainReleaser interface {
+	ReleaseDrain(context.Context, string, executioncontrol.Identity, output.HandoffID) error
+}
+
 // ReceiptChecker verifies a receipt's signature against the activation-pinned
 // key and the one-use challenge it answers.
 //
@@ -155,6 +168,11 @@ type DrainConfirmer interface {
 // itself in checkReceiptClaims.
 type ReceiptChecker interface {
 	Verify(receipt output.Receipt, challenge output.StatChallenge) error
+}
+
+// CaptureChecker verifies a node statement with deployment-pinned control keys.
+type CaptureChecker interface {
+	VerifyCapture(output.CaptureAcknowledgement) error
 }
 
 // Announcer puts what happened to a capture where the thing that owns the

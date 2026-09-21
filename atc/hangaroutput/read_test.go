@@ -526,7 +526,7 @@ func recordAtRiskPolicy(t *testing.T, h *harness) {
 	}
 	defer db.Rollback(tx)
 
-	if err := h.Repository.RecordPolicySnapshot(context.Background(), tx, output.PolicySnapshot{
+	if err := h.Repository.RecordPolicyAttestation(context.Background(), tx, output.PolicySnapshot{
 		ProtocolVersion:      output.ProtocolVersion,
 		ActivationEpoch:      harnessEpoch,
 		BucketFingerprint:    "gs://harness-output",
@@ -535,7 +535,7 @@ func recordAtRiskPolicy(t *testing.T, h *harness) {
 		LifecycleDeleteRules: 1,
 		State:                output.PolicyAtRisk,
 		ObservedAt:           output.NewTimestamp(time.Now()),
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("recording the at-risk snapshot: %v", err)
 	}
 	if err := tx.Commit(); err != nil {

@@ -15,7 +15,14 @@ import (
 )
 
 func ValidateTemplateDeclaration(ref atc.PipelineRef, config atc.Config) error {
+	declarations, err := atc.RunTaskDeclarations(config)
+	if err != nil {
+		return err
+	}
 	if !config.Template {
+		if len(declarations) > 0 {
+			return errors.New("task_id, run_inputs and run_result are only valid on templates")
+		}
 		if config.Params != nil {
 			return errors.New("params are only valid on templates")
 		}
@@ -47,6 +54,9 @@ func ValidateTemplateDeclaration(ref atc.PipelineRef, config atc.Config) error {
 var ParamNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func ValidateTemplateConfig(config atc.Config) error {
+	if _, err := atc.RunTaskDeclarations(config); err != nil {
+		return err
+	}
 	seenNames := map[string]struct{}{}
 	for _, schema := range config.Params {
 		if schema.Name == "" {

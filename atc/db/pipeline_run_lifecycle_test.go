@@ -659,6 +659,11 @@ var _ = Describe("Pipeline run lifecycle structural guard", func() {
 		Expect(finishStart).To(BeNumerically(">=", 0), "guard must find Build.Finish")
 		finishEnd := strings.Index(string(buildSource)[finishStart:], "\nfunc ")
 		Expect(finishEnd).To(BeNumerically(">", 0), "guard must bound Build.Finish")
+		Expect(string(buildSource)[finishStart:finishStart+finishEnd]).To(ContainSubstring("b.finish("), "public completion must use the shared completion owner")
+		finishStart = strings.Index(string(buildSource), "func (b *build) finish(")
+		Expect(finishStart).To(BeNumerically(">=", 0), "guard must find the shared completion owner")
+		finishEnd = strings.Index(string(buildSource)[finishStart:], "\nfunc ")
+		Expect(finishEnd).To(BeNumerically(">", 0), "guard must bound the shared completion owner")
 		finishBody := string(buildSource)[finishStart : finishStart+finishEnd]
 		lockIndex := strings.Index(finishBody, "lockPipelineRun(")
 		mutationIndex := strings.Index(finishBody, `Update("builds")`)

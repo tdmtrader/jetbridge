@@ -278,11 +278,6 @@ func NewReadWarrantSigner(material []byte) (*ReadWarrantSigner, error) {
 	return signer, nil
 }
 
-// Deferred: the consumer-side verification half needs a consumer: these
-// five verify a receipt or a key id some process read BACK, and the process
-// that does that is the ATC's receipt registration. Three names this reason
-// once covered -- ValidateLease, RenewLease, ReleaseLease -- are now spent
-// by hangar/output.LeaseReadProfile and are off the list
 func NewReadWarrantVerifier(material []byte, clock Clock) (*ReadWarrantVerifier, error) {
 	if len(material) != ReadWarrantKeyBytes {
 		return nil, fmt.Errorf("%w: an output read warrant key is exactly %d raw bytes, this one "+

@@ -41,6 +41,7 @@ const CapabilityHeader = "Hangar-Control-Capability"
 
 // Server is the daemon's HTTP surface.
 type Server struct {
+	inputs     inputStages
 	daemon     *Daemon
 	base       *ExecutionLedger
 	source     *SourceLedger
@@ -71,6 +72,7 @@ type Server struct {
 	// "this request arrived over TLS" is not the same claim as "this daemon
 	// requires TLS", and only the second one can be enforced.
 	mutualTLS bool
+	reads     *managedReads
 }
 
 // RequireClientCertificates turns on the client-certificate check for every
@@ -168,6 +170,11 @@ func (named identified) identity() executioncontrol.Identity {
 
 func (server *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /read/v1/stat", server.readStat)
+	mux.HandleFunc("POST /read/v1/archive", server.readArchive)
+	mux.HandleFunc("POST /read/v1/materialize", server.readMaterialize)
+	mux.HandleFunc("POST /input/v1/stage", server.stageInput)
+	mux.HandleFunc("POST /input/v1/publish", server.publishInput)
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		// Liveness is not readiness. A daemon whose ledger is quarantined is
@@ -233,7 +240,10 @@ func (server *Server) routes() map[string]route {
 		"POST /execution/v1/start":   {executioncontrol.BaseFacet, "start", (*Server).start, false},
 		"POST /execution/v1/outcome": {executioncontrol.BaseFacet, "outcome", (*Server).outcome, false},
 
-		"POST /execution/v1/classify":         {executioncontrol.BaseFacet, "classify", (*Server).classify, false},
+		"POST /execution/v1/classify": {executioncontrol.BaseFacet, "classify", (*Server).classify, false},
+		// A read of the node's stored, signed start: what a control plane
+		// that never retained it needs to interrupt and close the execution.
+		"POST /execution/v1/start/inspect":    {executioncontrol.BaseFacet, "inspect-start", (*Server).inspectStart, false},
 		"POST /execution/v1/observe":          {executioncontrol.BaseFacet, "observe", (*Server).observe, false},
 		"POST /execution/v1/stop":             {executioncontrol.BaseFacet, "stop", (*Server).stop, false},
 		"POST /execution/v1/cleanup-eligible": {executioncontrol.BaseFacet, "cleanup-eligible", (*Server).cleanupEligible, false},
@@ -248,17 +258,18 @@ func (server *Server) routes() map[string]route {
 		"POST /capture/v1/reserve-incarnation": {output.CaptureFacet, "reserve-incarnation",
 			(*Server).reserveIncarnation, false},
 
-		"POST /capture/v1/hold":                {output.CaptureFacet, "hold", (*Server).hold, true},
-		"POST /capture/v1/hold/inspect":        {output.CaptureFacet, "inspect-hold", (*Server).inspectHold, false},
-		"POST /capture/v1/writer-ticket":       {output.CaptureFacet, "issue-writer-ticket", (*Server).issueTicket, false},
-		"POST /capture/v1/writer-ticket/close": {output.CaptureFacet, "close-writer-ticket", (*Server).closeTicket, false},
-		"POST /capture/v1/seal":                {output.CaptureFacet, "begin-seal", (*Server).beginSeal, false},
-		"POST /capture/v1/seal/confirm":        {output.CaptureFacet, "confirm-seal", (*Server).confirmSeal, false},
-		"POST /capture/v1/seal/inspect":        {output.CaptureFacet, "inspect-seal", (*Server).inspectSeal, false},
-		"POST /capture/v1/release":             {output.CaptureFacet, "release-hold", (*Server).release, false},
-		"POST /capture/v1/canonicalize":        {output.CaptureFacet, "canonicalize", (*Server).canonicalize, false},
-		"POST /capture/v1/publish":             {output.CaptureFacet, "publish", (*Server).publish, false},
-		"POST /capture/v1/stat":                {output.CaptureFacet, "stat", (*Server).statExact, false},
+		"POST /capture/v1/hold":                  {output.CaptureFacet, "hold", (*Server).hold, true},
+		"POST /capture/v1/hold/inspect":          {output.CaptureFacet, "inspect-hold", (*Server).inspectHold, false},
+		"POST /capture/v1/writer-ticket":         {output.CaptureFacet, "issue-writer-ticket", (*Server).issueTicket, false},
+		"POST /capture/v1/writer-ticket/close":   {output.CaptureFacet, "close-writer-ticket", (*Server).closeTicket, false},
+		"POST /capture/v1/writer-ticket/inspect": {output.CaptureFacet, "inspect-writer-ticket", (*Server).inspectTicket, false},
+		"POST /capture/v1/seal":                  {output.CaptureFacet, "begin-seal", (*Server).beginSeal, false},
+		"POST /capture/v1/seal/confirm":          {output.CaptureFacet, "confirm-seal", (*Server).confirmSeal, false},
+		"POST /capture/v1/seal/inspect":          {output.CaptureFacet, "inspect-seal", (*Server).inspectSeal, false},
+		"POST /capture/v1/release":               {output.CaptureFacet, "release-hold", (*Server).release, false},
+		"POST /capture/v1/canonicalize":          {output.CaptureFacet, "canonicalize", (*Server).canonicalize, false},
+		"POST /capture/v1/publish":               {output.CaptureFacet, "publish", (*Server).publish, false},
+		"POST /capture/v1/stat":                  {output.CaptureFacet, "stat", (*Server).statExact, false},
 	}
 }
 
@@ -403,6 +414,11 @@ func (server *Server) outcome(_ http.ResponseWriter, request *http.Request,
 	return server.base.RecordOutcome(recorded.Execution, recorded.Kind, recorded.Outcome)
 }
 
+func (server *Server) inspectStart(_ http.ResponseWriter, _ *http.Request,
+	identity executioncontrol.Identity) (any, error) {
+	return server.base.InspectStart(identity)
+}
+
 func (server *Server) classify(_ http.ResponseWriter, _ *http.Request,
 	identity executioncontrol.Identity) (any, error) {
 	return server.base.Classify(identity)
@@ -511,6 +527,18 @@ func (server *Server) closeTicket(_ http.ResponseWriter, request *http.Request,
 	}
 
 	return server.source.RetireWriter(request.Context(), admission)
+}
+
+func (server *Server) inspectTicket(_ http.ResponseWriter, request *http.Request,
+	identity executioncontrol.Identity) (any, error) {
+	var query struct {
+		holdQuery
+		TicketID output.WriterTicketID `json:"writer_ticket_id"`
+	}
+	if err := decode(request, &query); err != nil {
+		return nil, err
+	}
+	return server.source.InspectWriter(query.HandoffID, identity, query.TicketID)
 }
 
 func (server *Server) beginSeal(_ http.ResponseWriter, request *http.Request,

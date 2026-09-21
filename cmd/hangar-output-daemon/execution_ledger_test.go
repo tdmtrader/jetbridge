@@ -846,3 +846,55 @@ func TestABaseExecutionNeedsNoExtensionToBeComplete(t *testing.T) {
 		}
 	}
 }
+
+// The node's signed start is readable by itself, as it was stored.
+//
+// Classify carries no acknowledgement for an executing record, and RecordStart
+// is a write that needs the Pod and process the caller may not know. A Run
+// that never retained its start -- its database was down when the node
+// answered -- needs the fact itself to interrupt and close the execution, and
+// only the node can give it. The read admits nothing and signs nothing new.
+func TestTheSignedStartIsReadableAsStoredAndNothingElse(t *testing.T) {
+	fixture := newLedger(t)
+
+	if _, err := fixture.ledger.InspectStart(identity(1)); !errors.Is(err, output.ErrNotFound) {
+		t.Fatalf("an unadmitted execution answered for a start: %v", err)
+	}
+	admitted(t, fixture)
+	if _, err := fixture.ledger.InspectStart(identity(1)); !errors.Is(err, output.ErrNotFound) {
+		t.Fatalf("an admitted, unstarted execution answered for a start: %v", err)
+	}
+
+	started, err := fixture.ledger.RecordStart(identity(1), testPod, "proc-1")
+	if err != nil {
+		t.Fatalf("starting: %v", err)
+	}
+	sequence := fixture.ledger.Sequence()
+	read, err := fixture.ledger.InspectStart(identity(1))
+	if err != nil {
+		t.Fatalf("reading the start: %v", err)
+	}
+	if !sameStatement(read, started) {
+		t.Fatalf("the read start is not the stored statement: %s != %s",
+			describeStatement(read), describeStatement(started))
+	}
+	if fixture.ledger.Sequence() != sequence {
+		t.Fatal("reading a start signed a new statement")
+	}
+	classified, err := fixture.ledger.Classify(identity(1))
+	if err != nil || classified.Classification != executioncontrol.ClassificationExecuting {
+		t.Fatalf("reading a start changed the classification: %v %v", classified.Classification, err)
+	}
+
+	// It survives a restart and an outcome: the start is a fact about the
+	// process, whatever happened next.
+	fixture.reopen(t)
+	if _, err := fixture.ledger.RecordOutcome(identity(1), executioncontrol.AcknowledgementFinish,
+		executioncontrol.ExitOutcome{ExitCode: 143}); err != nil {
+		t.Fatalf("finishing: %v", err)
+	}
+	read, err = fixture.ledger.InspectStart(identity(1))
+	if err != nil || !sameStatement(read, started) {
+		t.Fatalf("the start was not readable after its outcome: %v", err)
+	}
+}

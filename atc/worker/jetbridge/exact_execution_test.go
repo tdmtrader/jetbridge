@@ -14,8 +14,12 @@ package jetbridge
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -41,7 +45,12 @@ type controlExecutor struct {
 }
 
 func (executor *controlExecutor) ExecInPod(_ context.Context, _, _, _ string, command []string,
-	stdin io.Reader, stdout, stderr io.Writer, _ bool, _ ExecAttrs) error {
+	stdin io.Reader, stdout, stderr io.Writer, _ bool, attrs ExecAttrs) error {
+	if attrs.Purpose != "step-command" {
+		// This legacy transport has no supervisor filesystem. The real read
+		// and restart behavior is exercised by execution-outcome-recovery.feature.
+		return fmt.Errorf("test transport has no retained supervisor journal")
+	}
 	executor.mu.Lock()
 	executor.calls = append(executor.calls, command)
 	attempt := len(executor.calls)
@@ -145,6 +154,12 @@ var _ = Describe("An execProcess under exact control", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
+
+		// Every spec here shares one identity, so a resource command's
+		// journal, which is named after it, is cleared on both sides.
+		resourceJournal := exactResourceStateDir(identity)
+		Expect(os.RemoveAll(resourceJournal)).To(Succeed())
+		DeferCleanup(func() { Expect(os.RemoveAll(resourceJournal)).To(Succeed()) })
 
 		started, err := startOutputDaemon()
 		Expect(err).ToNot(HaveOccurred())
@@ -256,6 +271,365 @@ var _ = Describe("An execProcess under exact control", func() {
 		Expect(observed.Acknowledgement.Outcome.ExitCode).To(Equal(3),
 			"the witness says something the step does not")
 	})
+
+	DescribeTable("refuses a cancelled start before recording the node start or launching the command",
+		func(containerType db.ContainerType) {
+			hold()
+			container.metadata.Type = containerType
+			container.checkStart = func(context.Context) error { return db.ErrPipelineRunCancelling }
+
+			_, err := newProcess().Wait(ctx)
+			Expect(err).To(MatchError(db.ErrPipelineRunCancelling))
+			Expect(executor.count()).To(BeZero())
+			observed, err := harness.Client.Classify(ctx, identity)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(observed.Classification).To(Equal(executioncontrol.ClassificationNeverStarted))
+		},
+		Entry("task", db.ContainerTypeTask),
+		Entry("check", db.ContainerTypeCheck),
+		Entry("get", db.ContainerTypeGet),
+		Entry("put", db.ContainerTypePut),
+	)
+
+	DescribeTable("delivers an admitted supervisor through cancellation before transport dispatch",
+		func(cancelTaskContext bool) {
+			hold()
+			taskCtx, cancelTask := context.WithCancel(ctx)
+			DeferCleanup(cancelTask)
+			local := &stoppedSupervisorExecutor{stopDelivered: make(chan struct{})}
+			process := newProcess()
+			process.id = fmt.Sprintf("cancel-before-dispatch-%d", time.Now().UnixNano())
+			process.executor = local
+			producerMarker := filepath.Join(GinkgoT().TempDir(), "producer-ran")
+			process.processSpec.Args = []string{"-c", `touch "$1"`, "test-command", producerMarker}
+			_, state := supervisorCommandParts(process.id, process.processSpec)
+			DeferCleanup(func() { Expect(os.RemoveAll(state)).To(Succeed()) })
+			cancelled := false
+			var outcomes []executioncontrol.Acknowledgement
+			container.checkStart = func(context.Context) error {
+				if cancelled {
+					return db.ErrPipelineRunCancelling
+				}
+				return nil
+			}
+			container.recordWitness = func(witnessCtx context.Context, witness executioncontrol.Acknowledgement) error {
+				if witness.Kind != executioncontrol.AcknowledgementStart {
+					outcomes = append(outcomes, witness)
+					return nil
+				}
+				// The Run cancellation commits immediately after the signed start
+				// is retained. Its stop reaches the original Pod before dispatch.
+				cancelled = true
+				if cancelTaskContext {
+					cancelTask()
+					return witnessCtx.Err()
+				}
+				_, err := process.stopPreservingSource(ctx)
+				return err
+			}
+
+			result, err := process.Wait(taskCtx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(143))
+			Expect(local.commandCount()).To(Equal(1))
+			_, err = os.Stat(producerMarker)
+			Expect(os.IsNotExist(err)).To(BeTrue(), "cancelled supervisor launched the producer")
+			Expect(outcomes).To(HaveLen(1))
+			Expect(outcomes[0].Outcome.ExitCode).To(Equal(143))
+			observed, err := harness.Client.Classify(ctx, identity)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(observed.Classification.Authoritative()).To(BeTrue())
+			Expect(observed.Acknowledgement.Outcome.ExitCode).To(Equal(143))
+
+			// A controller reconnect reads the closed execution even though the
+			// Run gate is now closed. It must not dispatch another supervisor.
+			replay := newProcess()
+			replay.id, replay.executor = process.id, local
+			replay.processSpec = process.processSpec
+			result, err = replay.Wait(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(143))
+			Expect(local.commandCount()).To(Equal(1))
+		},
+		Entry("with a live task context", false),
+		Entry("with the task context already cancelled", true),
+	)
+
+	DescribeTable("delivers an admitted resource command after Run cancellation closes admission",
+		func(containerType db.ContainerType) {
+			hold()
+			container.metadata.Type = containerType
+			cancelled := false
+			container.checkStart = func(context.Context) error {
+				if cancelled {
+					return db.ErrPipelineRunCancelling
+				}
+				return nil
+			}
+			container.recordWitness = func(_ context.Context, witness executioncontrol.Acknowledgement) error {
+				if witness.Kind == executioncontrol.AcknowledgementStart {
+					cancelled = true
+				}
+				return nil
+			}
+
+			result, err := newProcess().Wait(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.ExitStatus).To(BeZero())
+			Expect(executor.count()).To(Equal(1))
+			observed, err := harness.Client.Classify(ctx, identity)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(observed.Classification.Authoritative()).To(BeTrue())
+
+			// The replay dispatches nothing. It asks for no answer either: this
+			// transport has no journal to read one from, and reading it back is
+			// exact_resource_journal_test.go's, against the real wrapper.
+			replay := newProcess()
+			replay.processIO.Stdout = nil
+			_, err = replay.Wait(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(executor.count()).To(Equal(1))
+		},
+		Entry("check", db.ContainerTypeCheck),
+		Entry("get", db.ContainerTypeGet),
+		Entry("put", db.ContainerTypePut),
+	)
+
+	DescribeTable("retains a resource cancellation outcome when its context ends before transport dispatch",
+		func(containerType db.ContainerType) {
+			hold()
+			container.metadata.Type = containerType
+			taskCtx, cancelTask := context.WithCancel(ctx)
+			DeferCleanup(cancelTask)
+			local := &stoppedResourceExecutor{stopDelivered: make(chan struct{})}
+			DeferCleanup(func() { Expect(os.RemoveAll(local.state)).To(Succeed()) })
+			process := newProcess()
+			process.executor = local
+			var outcomes []executioncontrol.Acknowledgement
+			container.recordWitness = func(witnessCtx context.Context, witness executioncontrol.Acknowledgement) error {
+				if witness.Kind == executioncontrol.AcknowledgementStart {
+					cancelTask()
+					return witnessCtx.Err()
+				}
+				outcomes = append(outcomes, witness)
+				return nil
+			}
+
+			_, err := process.Wait(taskCtx)
+			Expect(errors.Is(err, context.Canceled)).To(BeTrue(), "%v", err)
+			Expect(local.commands).To(Equal(1))
+			Expect(local.stops).To(Equal(1))
+			Expect(outcomes).To(HaveLen(1))
+			Expect(outcomes[0].Outcome.ExitCode).To(Equal(130))
+			observed, err := harness.Client.Classify(ctx, identity)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(observed.Classification.Authoritative()).To(BeTrue())
+			Expect(observed.Acknowledgement.Outcome.ExitCode).To(Equal(130))
+
+			replay := newProcess()
+			replay.executor = local
+			result, err := replay.Wait(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(130))
+			Expect(local.commands).To(Equal(1))
+			Expect(local.stops).To(Equal(1))
+		},
+		Entry("check", db.ContainerTypeCheck),
+		Entry("get", db.ContainerTypeGet),
+		Entry("put", db.ContainerTypePut),
+	)
+
+	// The node committed the start and the Run could not retain it: its
+	// database was unavailable, or the Run's publication lock was held past
+	// the witness budget. Returning there would leave an executing ledger with
+	// no supervisor to write an outcome and no retained start for cancellation
+	// to interrupt. What is delivered is the stopped delivery -- the stop, the
+	// claim of the start and the journaled 143 in one exec -- so the producer
+	// never runs. The daemon outcome waits for the start witness, because once
+	// an outcome exists the node no longer answers for its start and the Run
+	// could never close.
+	DescribeTable("stops and delivers a supervised command whose start the Run could not retain",
+		func(retainOnRetry bool) {
+			hold()
+			local := &hostPodExecutor{}
+			process := newProcess()
+			process.id = fmt.Sprintf("unretained-start-%d", time.Now().UnixNano())
+			process.executor = local
+			producerMarker := filepath.Join(GinkgoT().TempDir(), "producer-ran")
+			process.processSpec.Args = []string{"-c", `touch "$1"`, "test-command", producerMarker}
+			_, state := supervisorCommandParts(process.id, process.processSpec)
+			DeferCleanup(func() { Expect(os.RemoveAll(state)).To(Succeed()) })
+
+			starts := 0
+			var outcomes []executioncontrol.Acknowledgement
+			container.recordWitness = func(_ context.Context, witness executioncontrol.Acknowledgement) error {
+				if witness.Kind == executioncontrol.AcknowledgementStart {
+					starts++
+					if !retainOnRetry || starts == 1 {
+						return errors.New("db unavailable")
+					}
+					return nil
+				}
+				outcomes = append(outcomes, witness)
+				return nil
+			}
+
+			_, err := process.Wait(ctx)
+			Expect(err).To(MatchError(ContainSubstring("db unavailable")))
+			Expect(local.stepCommandCount()).To(Equal(1), "the admitted command was never delivered")
+			_, err = os.Stat(producerMarker)
+			Expect(os.IsNotExist(err)).To(BeTrue(), "an unwitnessed start ran the producer")
+			journal, err := os.ReadFile(filepath.Join(state, "exit"))
+			Expect(err).NotTo(HaveOccurred(), "the supervisor left no outcome writer behind")
+			Expect(string(journal)).To(Equal("143\n"))
+
+			observed, err := harness.Client.Classify(ctx, identity)
+			Expect(err).NotTo(HaveOccurred())
+			if retainOnRetry {
+				Expect(observed.Classification.Authoritative()).To(BeTrue())
+				Expect(observed.Acknowledgement.Outcome.ExitCode).To(Equal(143))
+				Expect(outcomes).To(HaveLen(1))
+			} else {
+				Expect(observed.Classification).To(Equal(executioncontrol.ClassificationExecuting),
+					"an outcome recorded before its start was retained can never close the Run")
+				Expect(outcomes).To(BeEmpty())
+			}
+
+			// The Run's database is back. Replay retains the node's original
+			// start, then records the journaled stop, and dispatches nothing.
+			container.recordWitness = func(_ context.Context, witness executioncontrol.Acknowledgement) error {
+				if witness.Kind == executioncontrol.AcknowledgementStart {
+					starts++
+					return nil
+				}
+				outcomes = append(outcomes, witness)
+				return nil
+			}
+			replay := newProcess()
+			replay.id, replay.executor, replay.processSpec = process.id, local, process.processSpec
+			result, err := replay.Wait(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(143))
+			Expect(local.stepCommandCount()).To(Equal(1))
+			observed, err = harness.Client.Classify(ctx, identity)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(observed.Classification.Authoritative()).To(BeTrue())
+			Expect(observed.Acknowledgement.Outcome.ExitCode).To(Equal(143))
+			Expect(outcomes).NotTo(BeEmpty())
+			Expect(outcomes[len(outcomes)-1].Outcome.ExitCode).To(Equal(143))
+		},
+		Entry("while the Run's database stays unavailable", false),
+		Entry("when the Run's database returns before the outcome", true),
+	)
+
+	DescribeTable("cancels and delivers a resource command whose start the Run could not retain",
+		func(containerType db.ContainerType) {
+			hold()
+			container.metadata.Type = containerType
+			local := &hostPodExecutor{}
+			state := exactResourceStateDir(identity)
+			process := newProcess()
+			process.executor = local
+			container.recordWitness = func(_ context.Context, witness executioncontrol.Acknowledgement) error {
+				if witness.Kind == executioncontrol.AcknowledgementStart {
+					return errors.New("db unavailable")
+				}
+				Fail("an outcome witness was retained without its start")
+				return nil
+			}
+
+			_, err := process.Wait(ctx)
+			Expect(err).To(MatchError(ContainSubstring("db unavailable")))
+			Expect(local.stepCommandCount()).To(Equal(1), "the admitted command was never delivered")
+			_, err = os.Stat(filepath.Join(state, "cancel"))
+			Expect(err).NotTo(HaveOccurred(), "the unwitnessed command was not cancelled before dispatch")
+			journal, err := os.ReadFile(filepath.Join(state, "exit"))
+			Expect(err).NotTo(HaveOccurred(), "the stopped delivery left no outcome writer behind")
+			Expect(string(journal)).To(Equal("130\n"))
+			observed, err := harness.Client.Classify(ctx, identity)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(observed.Classification).To(Equal(executioncontrol.ClassificationExecuting))
+		},
+		Entry("check", db.ContainerTypeCheck),
+		Entry("get", db.ContainerTypeGet),
+		Entry("put", db.ContainerTypePut),
+	)
+
+	// The stop grace expired with the answer still in flight. The step's
+	// context is gone, and the node's ledger is still owed the question: the
+	// in-pod supervisor journals an exit whether or not the transport lived to
+	// carry it.
+	DescribeTable("reads the ledger after the stop grace expires",
+		func(journaled bool) {
+			grace := exactStopGrace
+			exactStopGrace = 500 * time.Millisecond
+			DeferCleanup(func() { exactStopGrace = grace })
+
+			hold()
+			taskCtx, cancelTask := context.WithCancel(ctx)
+			DeferCleanup(cancelTask)
+			process := newProcess()
+			process.id = fmt.Sprintf("late-answer-%d", time.Now().UnixNano())
+			_, state := supervisorCommandParts(process.id, process.processSpec)
+			local := &lateAnswerExecutor{journal: journaled, dispatched: cancelTask, state: state}
+			process.executor = local
+			DeferCleanup(func() { Expect(os.RemoveAll(state)).To(Succeed()) })
+			container.recordWitness = func(context.Context, executioncontrol.Acknowledgement) error { return nil }
+
+			result, err := process.Wait(taskCtx)
+			Expect(local.commands).To(Equal(1))
+			if journaled {
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.ExitStatus).To(Equal(143))
+				observed, err := harness.Client.Classify(ctx, identity)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(observed.Classification.Authoritative()).To(BeTrue())
+				Expect(observed.Acknowledgement.Outcome.ExitCode).To(Equal(143))
+				return
+			}
+			Expect(err).To(MatchError(ErrExactOutcomeUnresolved))
+			Expect(err.Error()).NotTo(ContainSubstring("classifying after a lost answer"),
+				"the ledger was asked under the step's own cancelled context")
+			Expect(errors.Is(err, context.Canceled)).To(BeTrue(),
+				"a cancelled task must be classified as aborted like a cancelled resource: %v", err)
+		},
+		Entry("and the supervisor journaled its stop", true),
+		Entry("and the delivered supervisor has journaled no exit yet", false),
+	)
+
+	// The ledger and the Run's witness are asked under their own detached
+	// budget, whose deadline is not the step's. A step reads
+	// context.DeadlineExceeded as its own timeout and fails; a stall here is an
+	// outcome nobody can prove yet, so it must reach the step as unresolved and
+	// carry no deadline the step did not set.
+	DescribeTable("reports a ledger or witness stall as unresolved, never as a timeout",
+		func(stall string) {
+			budget := exactLedgerBudget
+			exactLedgerBudget = 300 * time.Millisecond
+			DeferCleanup(func() { exactLedgerBudget = budget })
+			hold()
+			stalled := &stallingOutputControl{OutputControl: harness.Client, stall: stall}
+			container.outputControls = staticOutputControls{control: stalled}
+			container.recordWitness = func(witnessCtx context.Context, witness executioncontrol.Acknowledgement) error {
+				if (stall == "start witness" && witness.Kind == executioncontrol.AcknowledgementStart) ||
+					(stall == "outcome witness" && witness.Kind != executioncontrol.AcknowledgementStart) {
+					<-witnessCtx.Done()
+					return witnessCtx.Err()
+				}
+				return nil
+			}
+
+			_, err := newProcess().Wait(ctx)
+			Expect(err).To(MatchError(ErrExactOutcomeUnresolved))
+			Expect(errors.Is(err, context.DeadlineExceeded)).To(BeFalse(),
+				"a ledger budget's deadline reached the step as its own timeout: %v", err)
+			Expect(ctx.Err()).To(BeNil())
+		},
+		Entry("recording the outcome", "outcome"),
+		Entry("observing the acknowledgement", "observe"),
+		Entry("retaining the start in the Run", "start witness"),
+		Entry("retaining the outcome in the Run", "outcome witness"),
+	)
 
 	It("refuses to launch the producer when the source hold is not acknowledged", func() {
 		// No hold. Req 3: the producer's main process may not start before the
@@ -369,13 +743,36 @@ var _ = Describe("An execProcess under exact control", func() {
 	It("holds a writer ticket for every writer in the pod before the command runs", func() {
 		hold()
 
-		process := newProcess()
-		_, err := process.Wait(ctx)
+		pod, err := clientset.CoreV1().Pods("test-ns").Get(ctx, "capture-pod", metav1.GetOptions{})
+		Expect(err).ToNot(HaveOccurred())
+		pod.Spec.InitContainers = []corev1.Container{{Name: "writer-init"}}
+		pod.Spec.Containers = append(pod.Spec.Containers, corev1.Container{Name: "writer-sidecar"})
+		_, err = clientset.CoreV1().Pods("test-ns").Update(ctx, pod, metav1.UpdateOptions{})
 		Expect(err).ToNot(HaveOccurred())
 
-		// One per writer container. The ATC takes them because the containers
-		// cannot: Req 24 gives the task and its sidecars no credential.
-		Expect(process.exact).ToNot(BeNil())
+		process := newProcess()
+		executor.run = func(int) error {
+			// The main container, init container, and sidecar are all writers.
+			// Check the daemon while the command is running: completion retires
+			// tickets, so inspecting afterward would only prove retirement.
+			Expect(process.exact).ToNot(BeNil())
+			Expect(process.exact.tickets).To(HaveLen(3))
+
+			seen := map[hangaroutput.WriterTicketID]bool{}
+			for _, ticket := range process.exact.tickets {
+				Expect(seen[ticket.WriterTicketID]).To(BeFalse())
+				seen[ticket.WriterTicketID] = true
+
+				inspection, err := harness.Client.InspectWriter(ctx, identity, handoffID, ticket.WriterTicketID)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(inspection.Issued.WriterTicketID).To(Equal(ticket.WriterTicketID))
+				Expect(inspection.Issued.PodUID).To(Equal(executioncontrol.PodUID(podUID)))
+			}
+
+			return nil
+		}
+		_, err = process.Wait(ctx)
+		Expect(err).ToNot(HaveOccurred())
 	})
 
 	It("never runs the command a second time when the transport loses its answer", func() {
@@ -460,12 +857,13 @@ var _ = Describe("An execProcess under exact control", func() {
 	})
 
 	// The stop/cleanup matrix. Every row is the SAME sequence -- classify,
-	// stop only what is executing, observe, ask about cleanup -- against a
-	// different state, and what changes is only the answer.
+	// observe, ask about cleanup -- against a
+	// different nonexecuting state. Active interruption runs real processes in
+	// Brine run-active-interruption.feature; this legacy transport has no journal.
 	//
 	// `wantStops` is the reviewer's F6: "classifies before it interrupts" was
 	// the name of this table and not an assertion in it, so issuing the stop
-	// whatever the classification left all three rows green. It matters
+	// whatever the classification left all nonexecuting rows green. It matters
 	// because the daemon ACCEPTS a stop for a never-started execution -- only a
 	// terminal one refuses -- and marks StopRequested on its record, so the
 	// ATC's ordering is the only thing that keeps a producer from being told to
@@ -511,13 +909,6 @@ var _ = Describe("An execProcess under exact control", func() {
 		},
 		Entry("never started: there is nothing to interrupt and nothing to destroy",
 			func() {}, false, true, 0),
-		Entry("executing: the interrupt is issued and the source survives it",
-			func() {
-				_, err := harness.Client.RecordStart(context.Background(), executioncontrol.Identity{
-					ExecutionID: executionID, Fence: 1,
-				}, executioncontrol.PodUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd"), "proc-1")
-				Expect(err).ToNot(HaveOccurred())
-			}, false, true, 1),
 		Entry("naturally finished with its hold still open: cleanup stays withheld",
 			func() {
 				id := executioncontrol.Identity{ExecutionID: executionID, Fence: 1}
@@ -572,6 +963,137 @@ var _ = Describe("An execProcess under exact control", func() {
 	})
 })
 
+// Run the generated supervisor only after its real stop script has completed.
+// The stop precedes setsid, so this regression also executes on macOS without
+// substituting a different supervisor or pretending that a stop is an outcome.
+type stoppedSupervisorExecutor struct {
+	mu            sync.Mutex
+	commands      int
+	stopDelivered chan struct{}
+	stopOnce      sync.Once
+}
+
+func (executor *stoppedSupervisorExecutor) ExecInPod(ctx context.Context, _, _, _ string, command []string,
+	stdin io.Reader, stdout, stderr io.Writer, _ bool, attrs ExecAttrs) error {
+	if attrs.Purpose == "step-command" {
+		select {
+		case <-executor.stopDelivered:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		executor.mu.Lock()
+		executor.commands++
+		executor.mu.Unlock()
+	}
+	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
+	if err := cmd.Run(); err != nil {
+		if exit, ok := err.(*exec.ExitError); ok {
+			return &ExecExitError{ExitCode: exit.ExitCode()}
+		}
+		return err
+	}
+	if attrs.Purpose == "exact-stop-request" {
+		executor.stopOnce.Do(func() { close(executor.stopDelivered) })
+	}
+	return nil
+}
+
+func (executor *stoppedSupervisorExecutor) commandCount() int {
+	executor.mu.Lock()
+	defer executor.mu.Unlock()
+	return executor.commands
+}
+
+// lateAnswerExecutor delivers the step command and loses its answer: the
+// transport stays open until the stop grace has expired. When journal is set
+// the delivered supervisor then runs to its exit journal on the "node", after
+// the transport that would have carried its status is gone. Otherwise the
+// delivery has claimed its start and has not exited: a command still running.
+// Every other exec (the stop request, the outcome read) runs the real script
+// on the host.
+type lateAnswerExecutor struct {
+	journal    bool
+	dispatched func()
+	commands   int
+	state      string
+}
+
+func (executor *lateAnswerExecutor) ExecInPod(ctx context.Context, _, _, _ string, command []string,
+	stdin io.Reader, stdout, stderr io.Writer, _ bool, attrs ExecAttrs) error {
+	if attrs.Purpose == "step-command" {
+		executor.commands++
+		if !executor.journal {
+			if err := os.MkdirAll(executor.state, 0o700); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(executor.state, "start"), []byte("started\n"), 0o600); err != nil {
+				return err
+			}
+		}
+		executor.dispatched()
+		<-ctx.Done()
+		if executor.journal {
+			_ = exec.Command(command[0], command[1:]...).Run()
+		}
+		return ctx.Err()
+	}
+	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
+	if err := cmd.Run(); err != nil {
+		if exit, ok := err.(*exec.ExitError); ok {
+			return &ExecExitError{ExitCode: exit.ExitCode()}
+		}
+		return err
+	}
+	return nil
+}
+
+// The resource cancel script can run without procfs when it precedes dispatch:
+// it creates the real cancellation marker and finds no PID to signal. The
+// wrapper's matching exit is exercised by resource_process_test.go on Linux;
+// here the transport reports that exit after checking the marker and context.
+type stoppedResourceExecutor struct {
+	commands      int
+	stops         int
+	state         string
+	stopDelivered chan struct{}
+}
+
+func (executor *stoppedResourceExecutor) ExecInPod(ctx context.Context, _, _, _ string, command []string,
+	_ io.Reader, _ io.Writer, _ io.Writer, _ bool, attrs ExecAttrs) error {
+	switch attrs.Purpose {
+	case "step-command":
+		select {
+		case <-executor.stopDelivered:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		state := resourceStateDir(command)
+		if state == "" || state != executor.state {
+			return fmt.Errorf("cancel targeted a different resource invocation")
+		}
+		if _, err := os.Stat(state + "/cancel"); err != nil {
+			return fmt.Errorf("resource dispatched without its cancellation marker: %w", err)
+		}
+		executor.commands++
+		return &ExecExitError{ExitCode: 130}
+	case "cancel-resource":
+		executor.state = resourceStateDir(command)
+		if output, err := exec.CommandContext(ctx, command[0], command[1:]...).CombinedOutput(); err != nil {
+			return fmt.Errorf("writing resource cancellation marker: %w: %s", err, output)
+		}
+		executor.stops++
+		close(executor.stopDelivered)
+		return nil
+	default:
+		return fmt.Errorf("unexpected exec purpose %q", attrs.Purpose)
+	}
+}
+
 // countingOutputControl is the real client with one call counted.
 //
 // It counts rather than answers: every operation still reaches the real daemon
@@ -588,6 +1110,31 @@ func (counted *countingOutputControl) RequestStop(ctx context.Context,
 	counted.stops++
 
 	return counted.OutputControl.RequestStop(ctx, id)
+}
+
+// stallingOutputControl is the real client with one call that never answers
+// until its caller gives up, as a daemon behind a partition does.
+type stallingOutputControl struct {
+	OutputControl
+	stall string
+}
+
+func (stalled *stallingOutputControl) RecordOutcome(ctx context.Context, id executioncontrol.Identity,
+	kind executioncontrol.AcknowledgementKind, outcome executioncontrol.ExitOutcome) (executioncontrol.Acknowledgement, error) {
+	if stalled.stall == "outcome" {
+		<-ctx.Done()
+		return executioncontrol.Acknowledgement{}, ctx.Err()
+	}
+	return stalled.OutputControl.RecordOutcome(ctx, id, kind, outcome)
+}
+
+func (stalled *stallingOutputControl) Observe(ctx context.Context, id executioncontrol.Identity,
+	wait time.Duration) (executioncontrol.ObserveFinishOrStopResult, error) {
+	if stalled.stall == "observe" {
+		<-ctx.Done()
+		return executioncontrol.ObserveFinishOrStopResult{}, ctx.Err()
+	}
+	return stalled.OutputControl.Observe(ctx, id, wait)
 }
 
 // staticOutputControls is one node, one control, which is what a spec with one
@@ -779,6 +1326,24 @@ var _ = Describe("Destructive operations over a capture-held source", func() {
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("could not be read"))
 	})
+
+	// The ledger's rule is that only `unmanaged` permits a destructive or
+	// write-capable operation. A sealed source is past its seal and still owed
+	// its publication; an unavailable answer is the ledger saying it cannot
+	// say. Refusing only `held` read both as "go ahead".
+	DescribeTable("refuses every answer but unmanaged",
+		func(class string) {
+			classifier.class = class
+			err := container.refuseIfCaptureHeld(ctx, "hijacking the container")
+			Expect(err).To(HaveOccurred(), "a %q source was treated as destroyable", class)
+			Expect(err.Error()).To(ContainSubstring(class))
+		},
+		Entry("held", captureClassHeld),
+		Entry("sealed", "sealed"),
+		Entry("unavailable", "unavailable"),
+		Entry("an answer this runtime does not know", "reserved-for-later"),
+		Entry("no answer at all", ""),
+	)
 
 	It("asks nothing at all when the output plane is off", func() {
 		container.config.OutputPlaneEnabled = false

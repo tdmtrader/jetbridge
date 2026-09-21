@@ -11,6 +11,7 @@ import (
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/hangar"
+	"github.com/concourse/concourse/hangar/output"
 	"github.com/concourse/concourse/vars"
 	"go.opentelemetry.io/otel/propagation"
 )
@@ -164,6 +165,8 @@ type Container interface {
 
 // ContainerSpec defines how to construct a container.
 type ContainerSpec struct {
+	// RunTaskID is populated only by retained Run task preparation.
+	RunTaskID string
 	// TeamID identifies the team to which the Container belongs.
 	TeamID int
 	// TeamName is the name of the team to which the Container belongs.
@@ -350,12 +353,19 @@ type ProcessResult struct {
 // Input represents a Volume (typically from a build artifact) to mount to the
 // container.
 type Input struct {
+	// RunInput names a retained Run binding selected by the owning task's
+	// declaration. It must receive managed read authority before pod creation.
+	RunInput string
 	// Artifact is the artifact to mount. This artifact may need to be
 	// streamed (if it is not a Volume on the target worker).
 	Artifact Artifact
 	// HangarTree is an exact immutable tree to materialize into this input.
 	// Exactly one of Artifact and HangarTree must be set.
 	HangarTree *hangar.TreeRef
+	// HangarRead carries a transient live lease for a managed output input.
+	// Nil selects the unchanged strict-input protocol. It never contains a
+	// provider credential and is not retained with the Run definition.
+	HangarRead *output.ManagedReadRequest
 	// DestinationPath is the path in the container to mount the input.
 	//
 	// May be absolute or relative to ContainerSpec.Dir.

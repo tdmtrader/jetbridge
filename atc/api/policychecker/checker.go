@@ -8,6 +8,7 @@ import (
 
 	"sigs.k8s.io/yaml"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/policy"
 )
@@ -49,7 +50,11 @@ func (c *checker) Check(action string, acc accessor.Access, req *http.Request) (
 		User:       acc.Claims().UserName,
 		Roles:      acc.TeamRoles()[team],
 		Team:       team,
-		Pipeline:   req.FormValue(":pipeline_name"),
+		Pipeline:   req.URL.Query().Get(":pipeline_name"),
+	}
+
+	if !policyIncludesRequestBody(action) {
+		return c.policyChecker.Check(input)
 	}
 
 	switch ct := req.Header.Get("Content-type"); ct {
@@ -72,4 +77,13 @@ func (c *checker) Check(action string, acc accessor.Access, req *http.Request) (
 	}
 
 	return c.policyChecker.Check(input)
+}
+
+// Credentials, input bearers, uploads and operational text belong only to
+// their authorized handlers (atc.RequestBodyIsSensitive, the declaration the
+// auditor shares). Policy still checks the caller, route and action, without
+// reading these bodies or exposing them to a remote policy service and its
+// logs.
+func policyIncludesRequestBody(action string) bool {
+	return !atc.RequestBodyIsSensitive(action)
 }

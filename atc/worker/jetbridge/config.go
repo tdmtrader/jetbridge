@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/hangar"
+	"github.com/concourse/concourse/hangar/output"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -235,6 +236,10 @@ type Config struct {
 	// account is Pod-wide, so the isolation is a second Pod.
 	OutputDaemonPort int
 
+	// OutputOperationTimeout matches the output daemon budget; managed-read
+	// leases and their callers must cover that same operation.
+	OutputOperationTimeout time.Duration
+
 	// OutputDaemonTLSCert, OutputDaemonTLSKey and OutputDaemonTLSCACert are
 	// the OUTPUT plane's client credential and trust root, and they are not
 	// the artifact daemon's.
@@ -305,9 +310,10 @@ func NewConfig(namespace, kubeconfigPath string) Config {
 		namespace = "default"
 	}
 	return Config{
-		Namespace:         namespace,
-		KubeconfigPath:    kubeconfigPath,
-		PodStartupTimeout: DefaultPodStartupTimeout,
+		Namespace:              namespace,
+		KubeconfigPath:         kubeconfigPath,
+		PodStartupTimeout:      DefaultPodStartupTimeout,
+		OutputOperationTimeout: output.DefaultOperationTimeout,
 	}
 }
 

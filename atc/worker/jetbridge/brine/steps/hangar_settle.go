@@ -23,8 +23,9 @@ package steps
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
-	"net/http"
 	"time"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
@@ -113,20 +114,28 @@ func newSettlementPlane(source HeldSource, res brine.Resources) (settlementPlane
 	client := jetbridgeOutputClient(source)
 	transactor := brineTransactor{conn: jdb.Conn}
 
-	verifier, err := hangaroutputleaf.NewReceiptSignatureVerifier(
-		hangarReceiptRing(source.Draft.Daemon), hangaroutputleaf.ClockFunc(func() time.Time {
-			return time.Now().UTC()
-		}))
+	configuredKeys := hangaroutput.ReceiptKeyRing{
+		ActiveKeyID: hangarReceiptKeyID, ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch),
+		Keys: []hangaroutput.ReceiptKeyEntry{{ID: hangarReceiptKeyID, Epoch: executioncontrol.ActivationEpoch(hangarEpoch),
+			PublicKey: base64.StdEncoding.EncodeToString(source.Draft.Daemon.ReceiptPublic)}},
+	}
+	verifier, err := configuredKeys.SignatureVerifier(hangaroutputleaf.ClockFunc(func() time.Time {
+		return time.Now().UTC()
+	}))
 	if err != nil {
 		return settlementPlane{}, err
 	}
 
 	coordinator := &hangaroutput.Coordinator{
-		Transactor:   transactor,
-		Repository:   repository,
-		Dialer:       oneDaemonDialer{control: client},
-		Drain:        brineDrain{},
-		Verifier:     verifier,
+		Transactor: transactor,
+		Repository: repository,
+		Dialer:     oneDaemonDialer{control: client},
+		Drain:      brineDrain{},
+		Verifier:   verifier,
+		HoldVerifier: hangaroutput.ControlKeyRing{
+			ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch),
+			Keys:            []hangaroutput.ControlKeyEntry{{Epoch: executioncontrol.ActivationEpoch(hangarEpoch), PublicKey: base64.StdEncoding.EncodeToString(source.Draft.Daemon.ControlPublic)}},
+		},
 		Announcer:    hangaroutput.AnnouncerFunc(repository.RecordAnnouncement),
 		OwnerID:      uuid.NewString(),
 		ReceiptKeyID: hangarReceiptKeyID,
@@ -163,7 +172,7 @@ func jetbridgeOutputClient(source HeldSource) hangaroutput.SourceControl {
 // shared with the daemon-handoff family, which has no database in it at all.
 // The ORDER is production's -- predeclare, then reserve, then hold -- and the
 // schema enforces it: a hold over an unreserved source is refused by a CHECK.
-func admitControlPlane(plane settlementPlane, source HeldSource) error {
+func admitControlPlane(plane settlementPlane, source HeldSource, locators ...string) error {
 	ctx := context.Background()
 
 	tx, err := plane.DB.Conn.Begin()
@@ -175,8 +184,11 @@ func admitControlPlane(plane settlementPlane, source HeldSource) error {
 	if err := plane.Repository.PredeclareHandoff(ctx, tx, source.Admission); err != nil {
 		return fmt.Errorf("predeclaring the handoff: %w", err)
 	}
-	if err := plane.Repository.RecordSourceReservation(ctx, tx, source.Reserved,
-		"brine-node"); err != nil {
+	locator := "brine-node"
+	if len(locators) > 0 {
+		locator = locators[0]
+	}
+	if err := plane.Repository.RecordSourceReservation(ctx, tx, source.Reserved, locator); err != nil {
 		return fmt.Errorf("recording the reservation: %w", err)
 	}
 	if source.Acknowledgement.Signature != "" {
@@ -330,17 +342,26 @@ func jetbridgeDBFrom(res brine.Resources) (JetbridgeDB, error) {
 // Without both, nothing admits anything -- which is the held state the
 // migration deliberately leaves behind, and is why this is a fixture step
 // rather than a default.
-func openActivationEpoch(jdb JetbridgeDB) error {
+func openActivationEpoch(jdb JetbridgeDB, cohort ...string) error {
+	attestation := "{}"
+	if len(cohort) > 0 {
+		body, err := json.Marshal(map[string]any{"members": []map[string]any{{"node": cohort[0], "control_key_id": hangarControlKeyID, "activation_epoch": hangarEpoch}}})
+		if err != nil {
+			return err
+		}
+		attestation = string(body)
+	}
+
 	if _, err := jdb.Conn.Exec(`
 		INSERT INTO hangar_output_activation_epochs
 			(epoch_id, base_state, output_state, base_attestation, output_attestation,
 			 receipt_public_key_id, receipt_key_valid_from, receipt_key_valid_until,
 			 materialization_key_id, bucket_fingerprint, derived_namespace)
-		VALUES ($1, 'enabled', 'enabled', '{}', '{}', $2,
+		VALUES ($1, 'enabled', 'enabled', $3::jsonb, '{}', $2,
 			now() - interval '1 day', now() + interval '30 days',
 			'brine-materialize-key-1', 'gs://brine-output', 'brine/one')
 		ON CONFLICT (epoch_id) DO NOTHING`,
-		int64(hangarEpoch), hangarReceiptKeyID); err != nil {
+		int64(hangarEpoch), hangarReceiptKeyID, attestation); err != nil {
 		return fmt.Errorf("opening the activation epoch: %w", err)
 	}
 
@@ -356,7 +377,7 @@ func openActivationEpoch(jdb JetbridgeDB) error {
 	}
 	defer db.Rollback(tx)
 
-	if err := db.NewHangarOutputRepository(prefix).RecordPolicySnapshot(ctx, tx,
+	if err := db.NewHangarOutputRepository(prefix).RecordPolicyAttestation(ctx, tx,
 		hangaroutputleaf.PolicySnapshot{
 			ProtocolVersion:      hangaroutputleaf.ProtocolVersion,
 			ActivationEpoch:      executioncontrol.ActivationEpoch(hangarEpoch),
@@ -366,36 +387,18 @@ func openActivationEpoch(jdb JetbridgeDB) error {
 			LifecycleDeleteRules: 0,
 			State:                hangaroutputleaf.PolicySafe,
 			ObservedAt:           hangaroutputleaf.NewTimestamp(time.Now()),
-		}); err != nil {
+		}, nil); err != nil {
 		return fmt.Errorf("attesting the bucket policy: %w", err)
 	}
 
 	return tx.Commit()
 }
 
-// hangarReceiptRing pins the daemon's receipt key for the activation epoch, so
-// a receipt is verified under a key the plane declares rather than under
-// whatever signed it.
-func hangarReceiptRing(daemon HangarDaemon) *hangaroutputleaf.ReceiptKeyRing {
-	ring, err := hangaroutputleaf.NewReceiptKeyRing(hangaroutputleaf.EpochKey{
-		KeyID:      hangarReceiptKeyID,
-		Epoch:      executioncontrol.ActivationEpoch(hangarEpoch),
-		PublicKey:  daemon.ReceiptPublic,
-		ValidFrom:  hangaroutputleaf.NewTimestamp(time.Now().Add(-time.Hour)),
-		ValidUntil: hangaroutputleaf.NewTimestamp(time.Now().Add(time.Hour)),
-	})
-	if err != nil {
-		panic("brine: the fixture's receipt key ring is invalid: " + err.Error())
-	}
-
-	return ring
-}
-
 // jetbridgeClientFor is the production client bound to this fixture's output
 // daemon, minting capabilities with the fixture's own minter.
 func jetbridgeClientFor(daemon HangarDaemon) hangaroutput.SourceControl {
 	return jetbridge.NewOutputControlClient(daemon.Output.URL,
-		&http.Client{Timeout: 30 * time.Second}, daemon.Minter,
+		daemon.HTTP, daemon.Minter,
 		executioncontrol.ActivationEpoch(hangarEpoch))
 }
 
@@ -422,7 +425,21 @@ func (plane settlementPlane) allAnnouncements() ([]db.HangarAnnouncement, error)
 	}
 	defer db.Rollback(tx)
 
-	return plane.Repository.ReadEveryAnnouncement(context.Background(), tx)
+	rows, err := tx.QueryContext(context.Background(), `SELECT handoff_id, kind, coalesce(disposition, ''), reason
+		FROM hangar_capture_announcements ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var all []db.HangarAnnouncement
+	for rows.Next() {
+		var item db.HangarAnnouncement
+		if err := rows.Scan(&item.Handoff, &item.Kind, &item.Disposition, &item.Reason); err != nil {
+			return nil, err
+		}
+		all = append(all, item)
+	}
+	return all, rows.Err()
 }
 
 // sealFromPredeclaration offers a predeclaration where a Stage 2 reservation

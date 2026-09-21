@@ -323,6 +323,14 @@ func (ledger *ExecutionLedger) RecordStart(identity executioncontrol.Identity,
 
 		return *record.Start, nil
 	}
+	// A stop recorded before first start is also a durable admission fence.
+	// Check it under the same ledger lock that writes Start; a delayed supervisor
+	// must not launch after the control plane has already accepted its stop.
+	// Exact replays above still recover an already-issued start acknowledgement.
+	if record.StopRequested {
+		return executioncontrol.Acknowledgement{}, fmt.Errorf(
+			"%w: execution %s was stopped before its first start", output.ErrConflict, identity.ExecutionID)
+	}
 
 	ack, err := ledger.sign(&record, executioncontrol.AcknowledgementStart, pod, process, nil)
 	if err != nil {
@@ -445,6 +453,36 @@ func (ledger *ExecutionLedger) Classify(identity executioncontrol.Identity) (exe
 	}
 
 	return result, result.Validate()
+}
+
+// InspectStart returns the node's signed start exactly as it was stored, or
+// ErrNotFound when none was recorded.
+//
+// Classify carries no acknowledgement for an executing record, and RecordStart
+// is a write that must name the Pod and process. A control plane that never
+// retained a start the node committed -- its database was down when the answer
+// came back -- needs the fact itself to interrupt the command and close the
+// execution, and this node is the only one that has it. It is a read like
+// Classify: no fence check, no admission, nothing signed. It answers after an
+// outcome too; a start is a fact about the process whatever happened next.
+func (ledger *ExecutionLedger) InspectStart(identity executioncontrol.Identity) (executioncontrol.Acknowledgement, error) {
+	if err := identity.Validate(); err != nil {
+		return executioncontrol.Acknowledgement{}, err
+	}
+
+	ledger.mu.Lock()
+	defer ledger.mu.Unlock()
+
+	record, found, err := ledger.load(identity.ExecutionID)
+	if err != nil {
+		return executioncontrol.Acknowledgement{}, err
+	}
+	if !found || record.Start == nil {
+		return executioncontrol.Acknowledgement{}, fmt.Errorf("%w: execution %s has no durable start",
+			output.ErrNotFound, identity.ExecutionID)
+	}
+
+	return *record.Start, nil
 }
 
 // Observe returns a durable acknowledgement or says there is not one. It polls;

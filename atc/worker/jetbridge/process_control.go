@@ -58,10 +58,9 @@ type OutputControlResolver interface {
 // capture.
 var ErrExactOutcomeUnresolved = errors.New("jetbridge: the exact execution's outcome is unresolved")
 
-// errExactAlreadyDurable is the internal signal that this execution's outcome
-// is already on the ledger, so there is nothing to launch and the recorded
-// answer is the answer.
-var errExactAlreadyDurable = errors.New("jetbridge: the exact execution already has a durable outcome")
+// errExactReconcile means start admission is closed. Recovery may read the
+// original supervisor or the ledger; it must not send another launch command.
+var errExactReconcile = errors.New("jetbridge: the exact execution requires reconciliation")
 
 // exactExecution is one controlled execution's live control state.
 type exactExecution struct {
@@ -76,6 +75,63 @@ type exactExecution struct {
 	// gives the task and its sidecars no output-plane credential -- a
 	// container cannot take its own ticket without holding one.
 	tickets []output.WriterAdmission
+
+	// unretainedStart is the node's signed start while the Run has not
+	// retained it. The node answers for a start only until an outcome exists,
+	// so no outcome is recorded while this is set: a Run that lost its start
+	// could never close the execution it admitted.
+	unretainedStart *executioncontrol.Acknowledgement
+}
+
+// startWitnessError is a start the node committed and the Run could not
+// retain. The command is still owed its delivery and its stop; the error is
+// surfaced once both have happened. It unwraps to the unresolved outcome it
+// is, never to the witness budget's deadline.
+type startWitnessError struct{ err error }
+
+func (e *startWitnessError) Error() string {
+	return "retaining the node's exact start in the Run: " + e.err.Error()
+}
+
+func (e *startWitnessError) Unwrap() error { return unresolvedLedgerError(e.err) }
+
+// exactLedgerBudget bounds a ledger or Run witness call made after the
+// command's start, when the step's own context may already be cancelled: the
+// node is owed the question whether or not anyone is still waiting for the
+// step. A variable only so specs need not wait it out.
+var exactLedgerBudget = 30 * time.Second
+
+// unresolvedLedgerError is every failure raised under that budget.
+//
+// The budget's deadline is not the step's timeout, and the steps read a
+// context.DeadlineExceeded in their error as one: a ledger that stalled past
+// it would fail the step, and a failed step is a decision taken on an outcome
+// nobody proved. So the cause is flattened into the typed unresolved outcome
+// it is, and keeps only its text. A cancelled or timed-out step's own context
+// error is joined by Wait, from the step's context, never carried through here.
+func unresolvedLedgerError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var flattened *unresolvedOutcomeError
+	if errors.As(err, &flattened) && flattened == err {
+		return err
+	}
+	message := err.Error()
+	if !errors.Is(err, ErrExactOutcomeUnresolved) {
+		message = ErrExactOutcomeUnresolved.Error() + ": " + message
+	}
+	return &unresolvedOutcomeError{message: message}
+}
+
+// unresolvedOutcomeError is ErrExactOutcomeUnresolved with its cause as text.
+type unresolvedOutcomeError struct{ message string }
+
+func (e *unresolvedOutcomeError) Error() string { return e.message }
+func (e *unresolvedOutcomeError) Unwrap() error { return ErrExactOutcomeUnresolved }
+
+func detachedLedgerContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), exactLedgerBudget)
 }
 
 func (p *execProcess) capturing() bool {
@@ -128,6 +184,9 @@ func (p *execProcess) admitExactExecution(ctx context.Context) error {
 	node, err := p.clientset.CoreV1().Nodes().Get(ctx, pod.Spec.NodeName, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("reading the UID of node %s: %w", pod.Spec.NodeName, err)
+	}
+	if pinned := p.control.Node; pinned != nil && (pinned.Name != node.Name || string(pinned.UID) != string(node.UID)) {
+		return fmt.Errorf("%w: execution was scheduled on a different node incarnation", ErrExactOutcomeUnresolved)
 	}
 
 	// The envelope names no Pod, and the ATC could not honestly put one here
@@ -204,10 +263,21 @@ func (p *execProcess) beginExactCommand(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("classifying before launching the command: %w", err)
 	}
-	if classified.Classification.Authoritative() {
-		logger.Info("already-durable", lager.Data{"classification": string(classified.Classification)})
+	if err := classified.Validate(); err != nil {
+		return err
+	}
+	if classified.Identity != p.control.Identity {
+		return fmt.Errorf("%w: classification names a different execution", ErrExactOutcomeUnresolved)
+	}
+	if classified.Classification != executioncontrol.ClassificationNeverStarted {
+		logger.Info("reconcile-existing-execution", lager.Data{"classification": string(classified.Classification)})
 
-		return errExactAlreadyDurable
+		return errExactReconcile
+	}
+	if p.container != nil && p.container.checkStart != nil {
+		if err := p.container.checkStart(ctx); err != nil {
+			return err
+		}
 	}
 
 	if p.capturing() {
@@ -230,13 +300,71 @@ func (p *execProcess) beginExactCommand(ctx context.Context) error {
 		logger.Info("hold-revalidated", lager.Data{"tickets": len(p.exact.tickets)})
 	}
 
-	if _, err := p.exact.client.RecordStart(ctx, p.control.Identity, p.exact.podUID,
-		executioncontrol.ProcessIdentity(p.id)); err != nil {
+	start, err := p.exact.client.RecordStart(ctx, p.control.Identity, p.exact.podUID, p.exactProcessIdentity())
+	if err != nil {
 		return fmt.Errorf("recording the exact start before launching the command: %w", err)
 	}
+	// Start admission is now committed. Closing the Run gate cannot retract
+	// this start: its original command must be delivered and stopped through
+	// the execution's interruption protocol, never abandoned at another gate.
+	// That holds when the Run fails to retain the start too -- returning here
+	// would leave an executing ledger with no supervisor to write its outcome.
 	p.control.MarkStarted()
+	if err = p.recordRunWitness(ctx, start); err != nil {
+		p.exact.unretainedStart = &start
+
+		return &startWitnessError{err: unresolvedLedgerError(err)}
+	}
 
 	return nil
+}
+
+// retainStartWitness retries retaining a start the Run could not retain at
+// launch. It must succeed before any outcome is recorded at the node.
+func (p *execProcess) retainStartWitness(ctx context.Context) error {
+	if p.exact == nil || p.exact.unretainedStart == nil {
+		return nil
+	}
+	if err := p.recordRunWitness(ctx, *p.exact.unretainedStart); err != nil {
+		return unresolvedLedgerError(fmt.Errorf("the Run has not retained the node's start, so "+
+			"the outcome stays with the node until it does: %w", err))
+	}
+	p.exact.unretainedStart = nil
+
+	return nil
+}
+
+// exactStopGrace is how long a stopped command has to report its exit before
+// its transport is abandoned. A variable only so specs need not wait it out.
+var exactStopGrace = 30 * time.Second
+
+// A signed start commits us to delivering this command once. Cancellation must
+// reach its interruption protocol, even before the exec transport opens;
+// abandoning delivery would leave an executing ledger with no outcome writer.
+// Give the original command a bounded grace period to report its stopped exit,
+// then detach if the node is unavailable. Never retry the launch.
+func exactCommandContext(ctx context.Context, stop func(context.Context) error) (context.Context, func()) {
+	executionCtx, cancelExecution := context.WithCancel(context.WithoutCancel(ctx))
+	stopped := make(chan struct{})
+	stopCancellation := context.AfterFunc(ctx, func() {
+		defer close(stopped)
+		stopCtx, cancelStop := context.WithTimeout(context.WithoutCancel(ctx), exactStopGrace)
+		defer cancelStop()
+		if err := stop(stopCtx); err != nil {
+			lagerctx.FromContext(ctx).Error("failed-to-stop-admitted-command", err)
+		}
+		select {
+		case <-executionCtx.Done():
+		case <-stopCtx.Done():
+			cancelExecution()
+		}
+	})
+	return executionCtx, func() {
+		cancelExecution()
+		if !stopCancellation() {
+			<-stopped
+		}
+	}
 }
 
 // acquireWriterTickets takes one ticket per writer this Pod will run.
@@ -299,11 +427,22 @@ func podWriterNames(pod *corev1.Pod) []string {
 }
 
 // finishExactCommand records the outcome and waits for the daemon to
-// acknowledge it, before the caller may expose a ProcessResult.
+// acknowledge it, before the caller may expose a ProcessResult. Anything that
+// stops it short leaves the outcome unresolved, whatever the cause.
 func (p *execProcess) finishExactCommand(ctx context.Context, outcome executioncontrol.ExitOutcome,
+	kind executioncontrol.AcknowledgementKind) error {
+	return unresolvedLedgerError(p.recordExactOutcome(ctx, outcome, kind))
+}
+
+func (p *execProcess) recordExactOutcome(ctx context.Context, outcome executioncontrol.ExitOutcome,
 	kind executioncontrol.AcknowledgementKind) error {
 	if p.exact == nil {
 		return fmt.Errorf("the exact execution was never admitted")
+	}
+	ctx, cancel := detachedLedgerContext(ctx)
+	defer cancel()
+	if err := p.retainStartWitness(ctx); err != nil {
+		return err
 	}
 
 	if _, err := p.exact.client.RecordOutcome(ctx, p.control.Identity, kind, outcome); err != nil {
@@ -320,6 +459,15 @@ func (p *execProcess) finishExactCommand(ctx context.Context, outcome executionc
 	if !observed.Classification.Authoritative() {
 		return fmt.Errorf("%w: the daemon classifies this execution as %s after its outcome was "+
 			"recorded", ErrExactOutcomeUnresolved, observed.Classification)
+	}
+	if err = observed.Validate(); err != nil {
+		return err
+	}
+	if observed.Identity != p.control.Identity {
+		return ErrExactOutcomeUnresolved
+	}
+	if err = p.recordRunWitness(ctx, *observed.Acknowledgement); err != nil {
+		return err
 	}
 
 	p.retireWriterTickets(ctx)
@@ -348,32 +496,87 @@ func (p *execProcess) retireWriterTickets(ctx context.Context) {
 //
 // The transport lost its answer, or the supervisor reported that it found a
 // recorded start with no outcome. Either way the command may have run, so the
-// ATC asks the ledger what is durably known and reports THAT. It never runs the
-// command again, and an answer that is not authoritative is unresolved rather
-// than a failure -- because "we do not know" and "it failed" authorize
-// different things, and only one of them is true.
+// ATC asks the ledger what is durably known. An executing task may also recover
+// its original supervisor's completed exit journal and record that outcome at
+// the daemon before returning it. It never reruns the launch script. Missing or
+// foreign state stays unresolved, rather than becoming an execution failure.
 func (p *execProcess) reportExactOutcomeWithoutRerunning(ctx context.Context) (runtime.ProcessResult, error) {
 	if p.exact == nil {
 		return runtime.ProcessResult{}, fmt.Errorf("%w: no control client for %s",
 			ErrExactOutcomeUnresolved, p.control.Identity.ExecutionID)
 	}
 
+	// The step's context may be the thing that ended; the ledger's answer is
+	// still owed. Recovery reads it detached and bounded, never re-launching.
+	// Its own errors are flattened with %v on purpose: the budget's deadline
+	// is not the step's timeout, and task_step reads DeadlineExceeded as one.
+	// A cancelled step's own context error is joined by Wait instead.
+	ctx, cancel := detachedLedgerContext(ctx)
+	defer cancel()
+
 	classified, err := p.exact.client.Classify(ctx, p.control.Identity)
 	if err != nil {
 		return runtime.ProcessResult{}, fmt.Errorf("%w: classifying after a lost answer: %v",
 			ErrExactOutcomeUnresolved, err)
 	}
+	if err := classified.Validate(); err != nil {
+		return runtime.ProcessResult{}, fmt.Errorf("%w: invalid classification: %v", ErrExactOutcomeUnresolved, err)
+	}
+	if classified.Identity != p.control.Identity {
+		return runtime.ProcessResult{}, fmt.Errorf("%w: classification names a different execution", ErrExactOutcomeUnresolved)
+	}
 	if classified.Classification.Authoritative() && classified.Acknowledgement != nil &&
 		classified.Acknowledgement.Outcome != nil {
+		if err := p.retainStartWitness(ctx); err != nil {
+			return runtime.ProcessResult{}, err
+		}
+		if err := p.recordRunWitness(ctx, *classified.Acknowledgement); err != nil {
+			return runtime.ProcessResult{}, unresolvedLedgerError(fmt.Errorf(
+				"retaining the node's outcome in the Run: %w", err))
+		}
 		p.retireWriterTickets(ctx)
 
-		return runtime.ProcessResult{ExitStatus: classified.Acknowledgement.Outcome.ExitCode}, nil
+		exitCode := classified.Acknowledgement.Outcome.ExitCode
+		if err := p.exposeJournaledAnswer(ctx, *classified.Acknowledgement, exitCode); err != nil {
+			return runtime.ProcessResult{}, err
+		}
+		return runtime.ProcessResult{ExitStatus: exitCode}, nil
+	}
+	if _, _, journaled := p.exactJournal(); classified.Classification == executioncontrol.ClassificationExecuting && journaled {
+		outcome, start, err := p.recoverJournaledOutcome(ctx)
+		if err != nil {
+			return runtime.ProcessResult{}, fmt.Errorf("%w: reading the original journaled outcome: %v", ErrExactOutcomeUnresolved, err)
+		}
+		if err := p.finishExactCommand(ctx, outcome, executioncontrol.AcknowledgementFinish); err != nil {
+			return runtime.ProcessResult{}, fmt.Errorf("%w: retaining recovered journaled outcome: %v", ErrExactOutcomeUnresolved, err)
+		}
+		// The outcome is now the node's. A resource command's answer is read
+		// from the same journal; failing to read it errors the step and
+		// leaves the outcome as recorded.
+		if err := p.exposeJournaledAnswer(ctx, start, outcome.ExitCode); err != nil {
+			return runtime.ProcessResult{}, err
+		}
+		return runtime.ProcessResult{ExitStatus: outcome.ExitCode}, nil
 	}
 
 	return runtime.ProcessResult{}, fmt.Errorf(
 		"%w: execution %s is %s. The producer started and no durable outcome exists, so it is "+
 			"neither re-executed nor reported as a failure; its source stays held",
 		ErrExactOutcomeUnresolved, p.control.Identity.ExecutionID, classified.Classification)
+}
+
+func (p *execProcess) recordRunWitness(ctx context.Context, witness executioncontrol.Acknowledgement) error {
+	if p.container != nil && p.container.recordWitness != nil {
+		if witness.Kind == executioncontrol.AcknowledgementStart {
+			// The node already committed this fact. Retaining it is no longer
+			// start admission, and task cancellation must not erase its reply.
+			var cancel context.CancelFunc
+			ctx, cancel = detachedLedgerContext(ctx)
+			defer cancel()
+		}
+		return p.container.recordWitness(ctx, witness)
+	}
+	return nil
 }
 
 // refuseIfCaptureHeld is the hijack and pod-replacement door.
@@ -416,10 +619,15 @@ func (c *Container) refuseIfCaptureHeld(ctx context.Context, why string) error {
 		return fmt.Errorf("%s is refused: the output ledger could not be read for %s: %w",
 			why, asked, err)
 	}
-	if class == captureClassHeld {
-		return fmt.Errorf("%s is refused: a durable output capture holds the source for %s. "+
-			"A capture-enabled task loses post-completion hijack and a held incarnation may not "+
-			"receive a new write-capable mount or a new Pod UID", why, asked)
+	// Only unmanaged permits it (hangar/output/ledger: Class.Destructive). A
+	// sealed source is still owed its publication, and unavailable -- or an
+	// answer this runtime does not know -- is not "probably fine".
+	if class != captureClassUnmanaged {
+		return fmt.Errorf("%s is refused: the output ledger classifies the source for %s as %q, "+
+			"and only an unmanaged source may be touched: a durable output capture holds the "+
+			"source until it is released. A capture-enabled task loses post-completion hijack "+
+			"and a held incarnation may not receive a new write-capable mount or a new Pod UID",
+			why, asked, class)
 	}
 
 	return nil
@@ -529,6 +737,19 @@ func (p *execProcess) stopPreservingSource(ctx context.Context) (bool, error) {
 			"accepted":       stopped.Accepted,
 			"classification": string(stopped.Classification),
 		})
+		if state, resource, journaled := p.exactJournal(); stopped.Accepted && journaled {
+			start, err := p.exact.client.RecordStart(ctx, p.control.Identity, p.exact.podUID, p.exactProcessIdentity())
+			if err != nil {
+				return false, err
+			}
+			stop := requestSupervisorStop
+			if resource {
+				stop = requestResourceStop
+			}
+			if err := stop(ctx, p.clientset, p.executor, p.config.Namespace, p.podName, p.exact.nodeName, state, start); err != nil {
+				return false, err
+			}
+		}
 	}
 
 	// The acknowledgement, not the request. Accepted is not an outcome.

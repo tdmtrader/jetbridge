@@ -6,8 +6,10 @@ import (
 )
 
 type PipelineRunOptions struct {
-	AuthorizedForParams bool
-	CanEnterPayload     bool
+	AuthorizedForCancellation bool
+	CanCancel                 bool
+	AuthorizedForParams       bool
+	CanEnterPayload           bool
 }
 
 // PipelineRun presents a durable run with its separately loaded child snapshot.
@@ -15,6 +17,8 @@ type PipelineRunOptions struct {
 // a child reference itself.
 func PipelineRun(savedRun db.PipelineRun, payload db.Pipeline, options PipelineRunOptions) atc.PipelineRun {
 	atcRun := atc.PipelineRun{
+		ContractVersion:    savedRun.ContractVersion(),
+		ActivationEpoch:    savedRun.ActivationEpoch(),
 		ID:                 savedRun.ID(),
 		TemplatePipelineID: savedRun.TemplatePipelineID(),
 		Number:             savedRun.Number(),
@@ -25,6 +29,10 @@ func PipelineRun(savedRun db.PipelineRun, payload db.Pipeline, options PipelineR
 		Reclaimed:          payload == nil,
 	}
 
+	if options.AuthorizedForCancellation {
+		atcRun.Cancellation = savedRun.CancellationRequest()
+		atcRun.CanCancel = options.CanCancel && savedRun.ContractVersion() == atc.RunContractV2 && savedRun.Status() == atc.RunStatusRunning && !savedRun.CancellationRequested()
+	}
 	if options.AuthorizedForParams {
 		params := savedRun.Params()
 		if params == nil {

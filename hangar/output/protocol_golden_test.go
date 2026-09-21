@@ -139,9 +139,30 @@ func roundTripAcknowledgementOfKind(kind CaptureAcknowledgementKind) func(*testi
 	}
 }
 
+// WriterInspection is an envelope of already-bounded statements. Freeze both
+// states: an open writer omits closed; a retired writer preserves both statements.
+func roundTripWriterInspection(t *testing.T, raw []byte) {
+	t.Helper()
+	value := decodeExact[WriterInspection](t, raw)
+	if err := value.Issued.ValidateAs(CaptureWriterTicketIssued); err != nil {
+		t.Fatalf("invalid issued statement: %v", err)
+	}
+	if value.Closed != nil {
+		if err := value.Closed.ValidateAs(CaptureWriterTicketClosed); err != nil {
+			t.Fatalf("invalid closed statement: %v", err)
+		}
+	}
+	if got := canonicalJSON(t, value); !bytes.Equal(got, raw) {
+		t.Errorf("writer inspection changed its frozen shape.\n--- got ---\n%s\n--- want ---\n%s", got, raw)
+	}
+}
+
 var protocolFixtures = map[string]func(*testing.T, []byte){
-	"source-incarnation.json": func(t *testing.T, raw []byte) { roundTrip[SourceIncarnation](t, raw) },
-	"capture-admission.json":  func(t *testing.T, raw []byte) { roundTrip[CaptureAdmission](t, raw) },
+	"input-stage.json":           func(t *testing.T, raw []byte) { roundTrip[InputStage](t, raw) },
+	"input-publish-request.json": func(t *testing.T, raw []byte) { roundTrip[InputPublishRequest](t, raw) },
+	"input-publication.json":     func(t *testing.T, raw []byte) { roundTrip[InputPublication](t, raw) },
+	"source-incarnation.json":    func(t *testing.T, raw []byte) { roundTrip[SourceIncarnation](t, raw) },
+	"capture-admission.json":     func(t *testing.T, raw []byte) { roundTrip[CaptureAdmission](t, raw) },
 
 	// The reservation the ATC repeats into the producing Pod's volume. Its
 	// refusal twin is a reservation whose directory does not derive from the
@@ -183,11 +204,13 @@ var protocolFixtures = map[string]func(*testing.T, []byte){
 	// The node-local control API's request bodies. They are wire in exactly the
 	// sense this file means it: another implementation of the output daemon
 	// reads them, so their shape is a promise and not an internal detail.
-	"writer-admission.json": func(t *testing.T, raw []byte) { roundTrip[WriterAdmission](t, raw) },
-	"seal-request.json":     func(t *testing.T, raw []byte) { roundTrip[SealRequest](t, raw) },
-	"seal-started.json":     func(t *testing.T, raw []byte) { roundTrip[SealStarted](t, raw) },
-	"drained-writer.json":   func(t *testing.T, raw []byte) { roundTrip[DrainedWriter](t, raw) },
-	"release-intent.json":   func(t *testing.T, raw []byte) { roundTrip[ReleaseIntent](t, raw) },
+	"writer-admission.json":         func(t *testing.T, raw []byte) { roundTrip[WriterAdmission](t, raw) },
+	"writer-inspection-open.json":   roundTripWriterInspection,
+	"writer-inspection-closed.json": roundTripWriterInspection,
+	"seal-request.json":             func(t *testing.T, raw []byte) { roundTrip[SealRequest](t, raw) },
+	"seal-started.json":             func(t *testing.T, raw []byte) { roundTrip[SealStarted](t, raw) },
+	"drained-writer.json":           func(t *testing.T, raw []byte) { roundTrip[DrainedWriter](t, raw) },
+	"release-intent.json":           func(t *testing.T, raw []byte) { roundTrip[ReleaseIntent](t, raw) },
 	"publication-request.json": func(t *testing.T, raw []byte) {
 		roundTrip[PublicationRequest](t, raw)
 	},
@@ -229,10 +252,11 @@ var protocolFixtures = map[string]func(*testing.T, []byte){
 		refuse[CallerNamespaceRequest](t, raw)
 	},
 
-	"claim-record.json":        func(t *testing.T, raw []byte) { roundTrip[ClaimRecord](t, raw) },
-	"read-warrant-claims.json": func(t *testing.T, raw []byte) { roundTrip[ReadWarrantClaims](t, raw) },
-	"lease-question.json":      func(t *testing.T, raw []byte) { roundTrip[LeaseQuestion](t, raw) },
-	"lease-answer.json":        func(t *testing.T, raw []byte) { roundTrip[LeaseAnswer](t, raw) },
+	"claim-record.json":         func(t *testing.T, raw []byte) { roundTrip[ClaimRecord](t, raw) },
+	"read-warrant-claims.json":  func(t *testing.T, raw []byte) { roundTrip[ReadWarrantClaims](t, raw) },
+	"managed-read-request.json": func(t *testing.T, raw []byte) { roundTrip[ManagedReadRequest](t, raw) },
+	"lease-question.json":       func(t *testing.T, raw []byte) { roundTrip[LeaseQuestion](t, raw) },
+	"lease-answer.json":         func(t *testing.T, raw []byte) { roundTrip[LeaseAnswer](t, raw) },
 
 	"dispositions.json":                  assertClosedDispositions,
 	"capture-acknowledgement-kinds.json": assertClosedCaptureAcknowledgementKinds,

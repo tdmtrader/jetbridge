@@ -1,7 +1,7 @@
 # Hangar
 
 The product-neutral durable result plane: immutable filesystem trees
-published under exact references, and the protocol by which a task's output
+published under tree refs, and the protocol by which a task's output
 becomes one. Hangar does not know what a tree is for. Its packages, and the
 control-plane coordinator in `atc/hangaroutput`, must not use the words run,
 workflow, ticket, agent, anvil or playbook; the coordinator must also not say
@@ -22,7 +22,7 @@ A canonical filesystem tree: a bytewise POSIX namespace with deterministic
 archive bytes.
 
 **Tree ref**:
-The complete exact reference to one tree: scope, digest and generation.
+The complete reference to one tree: scope, digest and generation.
 Hangar never substitutes a newer generation or different content.
 _Avoid_: exact ref, exact reference, exact tree
 
@@ -225,4 +225,6 @@ _Avoid_: capture ledger
 
 **Execution control**:
 The product-neutral protocol (classify, observe finish, request a
-source-preserving stop, may cleanup) that capture extends.
+source-preserving stop, may cleanup) that capture extends. A read of the
+node's stored, signed start sits beside it for a control plane that never
+retained one; it admits and signs nothing.

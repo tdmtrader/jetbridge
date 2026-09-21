@@ -80,8 +80,15 @@ const (
 	CreatePipelineBuild       = "CreatePipelineBuild"
 	PipelineBadge             = "PipelineBadge"
 	CreatePipelineRun         = "CreatePipelineRun"
-	ListPipelineRuns          = "ListPipelineRuns"
-	GetPipelineRun            = "GetPipelineRun"
+	// Separate capability; the v2 admission route remains activation-held.
+	CreatePipelineRunV2             = "CreatePipelineRunV2"
+	UploadPipelineRunInput          = "UploadPipelineRunInput"
+	HandoffPipelineRunCredentials   = "HandoffPipelineRunCredentials"
+	GetPipelineRunCredentialSession = "GetPipelineRunCredentialSession"
+	CancelPipelineRun               = "CancelPipelineRun"
+	ListPipelineRuns                = "ListPipelineRuns"
+	GetPipelineRun                  = "GetPipelineRun"
+	GetPipelineRunResult            = "GetPipelineRunResult"
 
 	RegisterWorker = "RegisterWorker"
 	ListWorkers    = "ListWorkers"
@@ -164,8 +171,14 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/pipelines", Method: "GET", Name: ListAllPipelines},
 	{Path: "/api/v1/teams/:team_name/pipelines", Method: "GET", Name: ListPipelines},
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/runs", Method: "POST", Name: CreatePipelineRun},
+	{Path: "/api/v2/teams/:team_name/pipelines/:pipeline_name/runs", Method: "POST", Name: CreatePipelineRunV2},
+	{Path: "/api/v2/teams/:team_name/pipelines/:pipeline_name/runs/:number/credentials/:result_name", Method: "POST", Name: HandoffPipelineRunCredentials},
+	{Path: "/api/v2/teams/:team_name/pipelines/:pipeline_name/runs/:number/credentials/:result_name", Method: "GET", Name: GetPipelineRunCredentialSession},
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/runs", Method: "GET", Name: ListPipelineRuns},
+	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/run-inputs/:input_name", Method: "POST", Name: UploadPipelineRunInput},
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/runs/:number", Method: "GET", Name: GetPipelineRun},
+	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/runs/:number/results/:result_name", Method: "GET", Name: GetPipelineRunResult},
+	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/runs/:number/cancel", Method: "POST", Name: CancelPipelineRun},
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name", Method: "GET", Name: GetPipeline},
 	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name", Method: "DELETE", Name: DeletePipeline},
 	{Path: "/api/v1/teams/:team_name/pipelines/ordering", Method: "PUT", Name: OrderPipelines},

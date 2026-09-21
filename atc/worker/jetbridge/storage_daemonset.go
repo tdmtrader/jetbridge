@@ -174,8 +174,20 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 	var hangarMounts []corev1.VolumeMount
 	var hangarReceiptBytes []string
 	seenHangarVolumes := map[string]bool{}
+	var managedInits []corev1.Container
 
 	for _, input := range inputs {
+		if input.HangarRead != nil {
+			if len(managedInits) >= maxHangarMaterializationItems {
+				return nil, fmt.Errorf("too many managed input materializations")
+			}
+			init, err := b.managedInputInit(handle, input, podVolumes, mainMounts, len(managedInits))
+			if err != nil {
+				return nil, err
+			}
+			managedInits = append(managedInits, init)
+			continue
+		}
 		if input.HangarTree != nil {
 			if !b.config.HangarEnabled {
 				return nil, fmt.Errorf("Hangar tree input requires Hangar to be enabled")
@@ -315,7 +327,7 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 		})
 	}
 
-	return initContainers, nil
+	return append(initContainers, managedInits...), nil
 }
 
 func (b *DaemonSetBackend) daemonHangarMaterializationCommand(payload []byte, expectedReceipts []string) []string {

@@ -116,6 +116,17 @@ func (publisher *Publisher) EnsureObject(ctx context.Context, reservation output
 	if err := reservation.Validate(); err != nil {
 		return output.PublishedObject{}, err
 	}
+	return publisher.EnsurePublication(ctx, reservation.Marker, canonical, size)
+}
+
+// EnsurePublication is the shared physical create operation. Its caller must
+// first durably reserve the server-derived logical identity. Capture callers
+// enter through EnsureObject, which retains all execution/capture validation;
+// input intake callers hold a node-owned canonical stage and an upload intent.
+func (publisher *Publisher) EnsurePublication(ctx context.Context, reservation output.ObjectMarker, canonical io.Reader, size int64) (output.PublishedObject, error) {
+	if err := reservation.Validate(); err != nil {
+		return output.PublishedObject{}, err
+	}
 	if canonical == nil {
 		return output.PublishedObject{}, fmt.Errorf("%w: no canonical bytes to publish",
 			output.ErrIncomplete)
@@ -130,10 +141,10 @@ func (publisher *Publisher) EnsureObject(ctx context.Context, reservation output
 			"its epoch derived and no other", output.ErrUnauthorized,
 			reservation.Scope, publisher.namespace.Scope())
 	}
-	if reservation.Marker.ActivationEpoch != publisher.namespace.ActivationEpoch() {
+	if reservation.ActivationEpoch != publisher.namespace.ActivationEpoch() {
 		return output.PublishedObject{}, fmt.Errorf("%w: the reservation's marker names epoch %d "+
 			"and this namespace was derived under %d", output.ErrConflict,
-			reservation.Marker.ActivationEpoch, publisher.namespace.ActivationEpoch())
+			reservation.ActivationEpoch, publisher.namespace.ActivationEpoch())
 	}
 
 	key, err := publisher.namespace.ObjectKey(reservation.Digest)
@@ -176,7 +187,7 @@ func (publisher *Publisher) EnsureObject(ctx context.Context, reservation output
 	}
 }
 
-func (publisher *Publisher) create(ctx context.Context, key string, reservation output.ResolvedReservation, canonical io.Reader) (objectstore.Attrs, error) {
+func (publisher *Publisher) create(ctx context.Context, key string, reservation output.ObjectMarker, canonical io.Reader) (objectstore.Attrs, error) {
 	conditions := objectstore.Conditions{DoesNotExist: true}
 	if err := conditions.Validate(); err != nil {
 		return objectstore.Attrs{}, err
@@ -185,7 +196,7 @@ func (publisher *Publisher) create(ctx context.Context, key string, reservation 
 	writer := publisher.store.Object(publisher.namespace.Bucket(), key).
 		If(conditions).
 		NewWriter(ctx)
-	writer.SetMetadata(reservation.Marker.Metadata())
+	writer.SetMetadata(reservation.Metadata())
 
 	if _, err := io.Copy(writer, canonical); err != nil {
 		// Abort rather than Close: closing commits, and committing a truncated
@@ -204,7 +215,7 @@ func (publisher *Publisher) create(ctx context.Context, key string, reservation 
 
 // reconcileExisting is the 412 path: full marked exact verification, or a typed
 // collision.
-func (publisher *Publisher) reconcileExisting(ctx context.Context, key string, reservation output.ResolvedReservation, size int64) (output.PublishedObject, error) {
+func (publisher *Publisher) reconcileExisting(ctx context.Context, key string, reservation output.ObjectMarker, size int64) (output.PublishedObject, error) {
 	attrs, err := publisher.store.Object(publisher.namespace.Bucket(), key).Attrs(ctx)
 	if err != nil {
 		if errors.Is(err, objectstore.ErrNotFound) {
@@ -228,7 +239,7 @@ func (publisher *Publisher) reconcileExisting(ctx context.Context, key string, r
 }
 
 // reconcileAmbiguous is the lost-response path.
-func (publisher *Publisher) reconcileAmbiguous(ctx context.Context, key string, reservation output.ResolvedReservation, size int64, cause error) (output.PublishedObject, error) {
+func (publisher *Publisher) reconcileAmbiguous(ctx context.Context, key string, reservation output.ObjectMarker, size int64, cause error) (output.PublishedObject, error) {
 	attrs, err := publisher.store.Object(publisher.namespace.Bucket(), key).Attrs(ctx)
 	if err != nil {
 		if errors.Is(err, objectstore.ErrNotFound) {
@@ -261,7 +272,7 @@ func (publisher *Publisher) reconcileAmbiguous(ctx context.Context, key string, 
 // but a marker read back off the object is the only thing that proves the
 // metadata landed with it, and Req 26 says a receipt is signed over an exact
 // stat rather than over what the writer believed.
-func (publisher *Publisher) verifyExact(ctx context.Context, key string, reservation output.ResolvedReservation, generation, size int64) (output.PublishedObject, error) {
+func (publisher *Publisher) verifyExact(ctx context.Context, key string, reservation output.ObjectMarker, generation, size int64) (output.PublishedObject, error) {
 	if generation <= 0 {
 		return output.PublishedObject{}, fmt.Errorf("%w: the store reported no generation for "+
 			"%s; an object with no generation cannot be registered as a tree ref",
@@ -293,7 +304,7 @@ func (publisher *Publisher) verifyExact(ctx context.Context, key string, reserva
 // A size is not a digest, and this does not pretend otherwise: what it refuses
 // is a body that is not the same tree, and the store has no content hash this
 // role can read to do better. It is the check that was available and absent.
-func (publisher *Publisher) classify(attrs objectstore.Attrs, reservation output.ResolvedReservation, size int64) (output.PublishedObject, error) {
+func (publisher *Publisher) classify(attrs objectstore.Attrs, reservation output.ObjectMarker, size int64) (output.PublishedObject, error) {
 	marker, err := output.ParseObjectMarker(attrs.Metadata)
 	switch {
 	case errors.Is(err, output.ErrNotFound):
@@ -397,7 +408,7 @@ func (publisher *Publisher) StatExactObject(ctx context.Context, ref hangar.Tree
 	// paths that DO hold one -- create, dedup and the ambiguous retry -- and
 	// inventing an expectation here would be asserting a fact this role does
 	// not have.
-	return publisher.classify(attrs, output.ResolvedReservation{Digest: ref.Digest}, sizeUnknown)
+	return publisher.classify(attrs, output.ObjectMarker{Digest: ref.Digest}, sizeUnknown)
 }
 
 // Deferred: the publisher's read under a lease is the daemon end of the

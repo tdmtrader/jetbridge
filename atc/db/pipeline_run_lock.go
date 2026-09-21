@@ -218,6 +218,9 @@ func lockJobBuildAdmission(tx Tx, jobID, hydratedRunID int) (jobBuildAdmission, 
 			Status: lockedRun.Status(),
 		}
 	}
+	if lockedRun.CancellationRequested() {
+		return jobBuildAdmission{}, ErrPipelineRunCancelling
+	}
 	return admission, nil
 }
 

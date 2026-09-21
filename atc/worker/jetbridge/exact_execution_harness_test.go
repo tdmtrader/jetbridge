@@ -50,6 +50,8 @@ type outputDaemonHarness struct {
 	StepsDir string
 	Client   *OutputControlClient
 	Minter   *executioncontrol.CapabilityMinter
+	// PKI is set for a TLS daemon: what a real OutputSource needs to reach it.
+	PKI *harnessControlPKI
 
 	cmd *exec.Cmd
 }
@@ -195,8 +197,9 @@ func startOutputDaemonWith(secure bool) (*outputDaemonHarness, error) {
 		"--listen", fmt.Sprintf("127.0.0.1:%d", port),
 	)
 	transport := &http.Client{Timeout: 10 * time.Second}
+	var pki *harnessControlPKI
 	if secure {
-		pki, err := writeHarnessControlPKI(dir)
+		pki, err = writeHarnessControlPKI(dir)
 		if err != nil {
 			return nil, err
 		}
@@ -226,6 +229,7 @@ func startOutputDaemonWith(secure bool) (*outputDaemonHarness, error) {
 		Endpoint: endpoint,
 		StepsDir: filepath.Join(dir, "steps"),
 		Minter:   minter,
+		PKI:      pki,
 		Client:   NewOutputControlClient(endpoint, transport, minter, harnessEpoch),
 		cmd:      daemon,
 	}, nil
@@ -242,6 +246,8 @@ type harnessControlPKI struct {
 	caCert     string
 	serverCert string
 	serverKey  string
+	clientCert string
+	clientKey  string
 	client     *http.Client
 }
 
@@ -313,7 +319,7 @@ func writeHarnessControlPKI(dir string) (*harnessControlPKI, error) {
 	if err != nil {
 		return nil, err
 	}
-	_, _, clientPair, err := issue("harness-control-client", 3, false)
+	clientCert, clientKey, clientPair, err := issue("harness-control-client", 3, false)
 	if err != nil {
 		return nil, err
 	}
@@ -330,6 +336,8 @@ func writeHarnessControlPKI(dir string) (*harnessControlPKI, error) {
 		caCert:     caPath,
 		serverCert: serverCert,
 		serverKey:  serverKey,
+		clientCert: clientCert,
+		clientKey:  clientKey,
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 			Transport: &http.Transport{TLSClientConfig: &tls.Config{

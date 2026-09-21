@@ -111,7 +111,7 @@ func strictInputContainer(t *testing.T, cfg Config) *Container {
 //
 // So the comparison is in two halves, and the FIRST half is the one that
 // matters. The request the two renders encode is compared field by field --
-// the exact ref, the handle, the volume, and the warrant's own subject -- and
+// the tree ref, the handle, the volume, and the warrant's own subject -- and
 // only then is the encoded blob normalised away and the rest of the spec
 // compared for equality. An output plane that re-derived the volume name,
 // renamed the handle, reordered the inputs or signed a different ref would be
@@ -325,7 +325,7 @@ func TestAnInvalidStrictInputRefIsStillRefusedWithTheOutputPlaneOn(t *testing.T)
 		}
 		if _, err := container.buildPod(
 			runtime.ProcessSpec{Path: "/bin/sh"}, []string{"sh"}, nil); err == nil {
-			t.Errorf("a strict input with %s built a pod. An exact ref that does not validate "+
+			t.Errorf("a strict input with %s built a pod. A tree ref that does not validate "+
 				"is a materialization the daemon will refuse, and a pod that carries one "+
 				"turns a caller's mistake into an empty directory the task finds at runtime",
 				name)

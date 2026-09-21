@@ -44,12 +44,13 @@ const (
 // a coordinator with a memory would be a coordinator whose memory disagrees
 // with PostgreSQL after a restart, and the restart is the case this exists for.
 type Coordinator struct {
-	Transactor Transactor
-	Repository Repository
-	Dialer     SourceDialer
-	Drain      DrainConfirmer
-	Verifier   ReceiptChecker
-	Announcer  Announcer
+	Transactor   Transactor
+	Repository   Repository
+	Dialer       SourceDialer
+	Drain        DrainConfirmer
+	Verifier     ReceiptChecker
+	HoldVerifier CaptureChecker
+	Announcer    Announcer
 
 	// OwnerID identifies this process for the ownership lease. Two processes
 	// sharing one would be two owners the fence cannot tell apart.
@@ -224,6 +225,43 @@ func (coordinator *Coordinator) observe(ctx context.Context, handoff output.Hand
 	control, err := coordinator.Dialer.ForLocator(record.Source.Locator)
 	if err != nil {
 		return output.HandoffRecord{}, err
+	}
+
+	// A controller may have lost the answer after the node committed its hold.
+	// Recover that non-authorizing fact before considering a finish witness.
+	if !record.HoldAcknowledged && record.Disposition == nil {
+		hold, err := control.InspectHold(ctx, record.Execution, record.HandoffID)
+		if errors.Is(err, output.ErrNotFound) {
+			return record, nil
+		}
+		if err != nil {
+			return output.HandoffRecord{}, err
+		}
+		if err := hold.ValidateAs(output.CaptureHoldAcknowledged); err != nil {
+			return output.HandoffRecord{}, err
+		}
+		if coordinator.HoldVerifier == nil {
+			return output.HandoffRecord{}, fmt.Errorf("%w: no control-key verifier for source hold recovery", output.ErrIncomplete)
+		}
+		if err := coordinator.HoldVerifier.VerifyCapture(hold); err != nil {
+			return output.HandoffRecord{}, err
+		}
+		if hold.Execution != record.Execution || hold.ActivationEpoch != record.ActivationEpoch ||
+			hold.HandoffID != record.HandoffID || hold.SourceHoldID != record.SourceHoldID ||
+			hold.Incarnation != record.Source.Incarnation || hold.PodUID == "" {
+			return output.HandoffRecord{}, fmt.Errorf("%w: source hold does not match the reserved execution", output.ErrInvalidIdentity)
+		}
+		if err := coordinator.write(ctx, func(tx Transaction) error {
+			return coordinator.Repository.AcknowledgeSourceHold(ctx, tx, hold)
+		}); err != nil {
+			return output.HandoffRecord{}, err
+		}
+		record, err = coordinator.read(ctx, func(tx Transaction) (output.HandoffRecord, error) {
+			return coordinator.Repository.LoadHandoffRecord(ctx, tx, handoff)
+		})
+		if err != nil {
+			return output.HandoffRecord{}, err
+		}
 	}
 
 	// Before the arbiter is won, the question is the finish witness, and it is
@@ -487,6 +525,11 @@ func (coordinator *Coordinator) releaseFor(ctx context.Context, record output.Ha
 	})
 	if err != nil {
 		return err
+	}
+	if releaser, ok := coordinator.Drain.(DrainReleaser); ok {
+		if err := releaser.ReleaseDrain(ctx, record.Source.Locator, record.Execution, record.HandoffID); err != nil {
+			return err
+		}
 	}
 
 	return coordinator.write(ctx, func(tx Transaction) error {

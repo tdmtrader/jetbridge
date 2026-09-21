@@ -54,9 +54,6 @@ func HangarConsumerPrefixHeld(consumer string) (HangarConsumerPrefix, error) {
 	return HangarConsumerPrefix{consumer: consumer}, nil
 }
 
-// Consumer is the name the token carries.
-func (prefix HangarConsumerPrefix) Consumer() string { return prefix.consumer }
-
 // HangarLogicalKey is one server-derived (scope, digest) correlation.
 type HangarLogicalKey struct {
 	Scope  hangar.Scope
@@ -145,6 +142,13 @@ func LockHangarSuffix(ctx context.Context, tx output.Tx, prefix HangarConsumerPr
 	for _, key := range locks.Logical {
 		if _, err := tx.ExecContext(ctx, `
 			SELECT 1 FROM hangar_logical_reservations
+			WHERE scope = $1 AND digest = $2
+			ORDER BY reservation_id
+			FOR NO KEY UPDATE`, string(key.Scope), string(key.Digest)); err != nil {
+			return HangarLocks{}, hangarConflict(err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			SELECT 1 FROM hangar_input_publications
 			WHERE scope = $1 AND digest = $2
 			ORDER BY reservation_id
 			FOR NO KEY UPDATE`, string(key.Scope), string(key.Digest)); err != nil {
@@ -469,4 +473,33 @@ func sortedOpaque[T ~string](ids []T) []T {
 	sort.Slice(unique, func(i, j int) bool { return unique[i] < unique[j] })
 
 	return unique
+}
+
+// hangarLockEnabledEpoch belongs to the outer activation prefix, before any
+// consumer-domain or object-lifecycle lock. Keeping it beside the suffix locks
+// gives the guard one place to audit every Hangar row-lock acquisition.
+func hangarLockEnabledEpoch(ctx context.Context, tx output.Tx, epoch int64) (bool, error) {
+	base, capture, err := hangarLockEpochStates(ctx, tx, epoch)
+	return base == "enabled" && capture == "enabled", err
+}
+
+func hangarLockRecoverableEpoch(ctx context.Context, tx output.Tx, epoch int64) (bool, error) {
+	base, capture, err := hangarLockEpochStates(ctx, tx, epoch)
+	return (base == "enabled" || base == "draining") && (capture == "enabled" || capture == "draining"), err
+}
+
+func hangarLockEpochStates(ctx context.Context, tx output.Tx, epoch int64) (string, string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT base_state, output_state FROM hangar_output_activation_epochs WHERE epoch_id=$1 FOR SHARE`, epoch)
+	if err != nil {
+		return "", "", err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return "", "", rows.Err()
+	}
+	var base, capture string
+	if err := rows.Scan(&base, &capture); err != nil {
+		return "", "", err
+	}
+	return base, capture, rows.Err()
 }

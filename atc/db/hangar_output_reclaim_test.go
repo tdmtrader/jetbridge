@@ -271,7 +271,7 @@ var _ = Describe("reclaiming an exact generation", func() {
 			// stops new admission from detection onward and lets
 			// already-admitted conditional delete work finish.
 			in(func(tx db.HangarOutputTx) {
-				Expect(repository.RecordPolicySnapshot(ctx, tx, output.PolicySnapshot{
+				Expect(repository.RecordPolicyAttestation(ctx, tx, output.PolicySnapshot{
 					ProtocolVersion:      output.ProtocolVersion,
 					ActivationEpoch:      1,
 					BucketFingerprint:    "gs://output-bucket",
@@ -280,7 +280,7 @@ var _ = Describe("reclaiming an exact generation", func() {
 					LifecycleDeleteRules: 1,
 					State:                output.PolicyAtRisk,
 					ObservedAt:           output.NewTimestamp(time.Now()),
-				})).To(Succeed())
+				}, nil)).To(Succeed())
 			})
 
 			// New admission stops. The generation it would be admitted for is

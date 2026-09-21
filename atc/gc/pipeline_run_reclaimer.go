@@ -48,6 +48,9 @@ func (r *pipelineRunReclaimer) Run(ctx context.Context) error {
 	defer func() {
 		metric.PipelineRunReclaimDuration{Duration: r.now().Sub(start)}.Emit(logger)
 	}()
+	if err := r.lifecycle.ReleaseExpiredInputUploads(ctx, r.batchSize); err != nil {
+		return err
+	}
 
 	// Measured before the batch and unbounded by it: the pass's own candidate
 	// list is capped at batchSize, so it could never show the reclaimer

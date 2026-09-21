@@ -320,7 +320,10 @@ func (plan CheckPlan) IsResourceCheck() bool {
 
 type TaskPlan struct {
 	// The name of the step.
-	Name string `json:"name"`
+	Name      string     `json:"name"`
+	TaskID    string     `json:"task_id,omitempty"`
+	RunResult *RunResult `json:"run_result,omitempty"`
+	RunInputs []RunInput `json:"run_inputs,omitempty"`
 
 	// Run the task in 'privileged' mode. What this means depends on the
 	// platform, but typically you expose your workers to more risk by enabling

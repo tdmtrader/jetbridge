@@ -13,6 +13,14 @@ type RunIdentity struct {
 	ID     int
 }
 
+// RunDefinition retains both the template before interpolation and the exact
+// materialized graph admitted for a Run. Runtime credentials are not inputs to
+// materialization and must never be added to this value.
+type RunDefinition struct {
+	Template     Config `json:"template"`
+	Materialized Config `json:"materialized"`
+}
+
 type RunMaterialization struct {
 	Config             Config
 	CanonicalJSON      []byte

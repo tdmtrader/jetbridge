@@ -23,8 +23,8 @@ import (
 // claims about where a name appears rather than about what a package depends
 // on. Each asserts it matched something, so neither can pass on an empty walk.
 
-// walkGoFiles visits every non-test .go file in the tree, skipping dot
-// directories and vendor.
+// walkGoFiles visits production .go files in this module. Brine's nested
+// module contains behavioral fixtures, not additional production callers.
 func walkGoFiles(t *testing.T, visit func(relPath, contents string)) int {
 	t.Helper()
 
@@ -37,6 +37,13 @@ func walkGoFiles(t *testing.T, visit func(relPath, contents string)) int {
 			name := entry.Name()
 			if name != "." && (strings.HasPrefix(name, ".") || name == "vendor" || name == "node_modules") {
 				return filepath.SkipDir
+			}
+			if path != "." {
+				if _, err := os.Stat(filepath.Join(path, "go.mod")); err == nil {
+					return filepath.SkipDir
+				} else if !os.IsNotExist(err) {
+					return err
+				}
 			}
 
 			return nil

@@ -3,7 +3,7 @@
 The Kubernetes execution plane that replaces Concourse's Garden and
 BaggageClaim workers: the web node talks to the Kubernetes API directly and
 every step becomes a pod. It includes the per-node artifact daemon that holds
-step outputs and resource caches. Durable, exact-reference storage is not this
+step outputs and resource caches. Durable tree storage is not this
 context; it is [Hangar](../../../hangar/CONTEXT.md).
 
 ## Language
@@ -43,6 +43,30 @@ replacement still spends the one attempt.
 The in-pod shell wrapper a command runs under so a web restart resumes the
 run and replays its log instead of starting over.
 _Avoid_: task supervisor, supervisor script
+
+**Exit journal**:
+The start and exit records an exact execution's in-pod wrapper writes: the
+supervisor's for a task, the resource session's for a check, get or put. A
+resource session also journals the command's stdout and stderr, so a closed
+exec stream never reaches the command and a recovered outcome keeps the
+resource's answer. The signed start names where it is, so cancellation can interrupt and recover the
+command after the web is gone. Its start is claimed with one atomic creation,
+so of any racing claimants exactly one owns it. Only in-pod scripts write it;
+recovery reads it and never runs the command again.
+_Avoid_: outcome file
+
+**Undelivered start**:
+A signed start whose command never claimed its exit journal: the exec dial
+failed, or the node's answer was lost and nothing was sent. Whoever finds one
+closes it in the Pod by claiming the start and journaling the stopped exit
+(143 for a task, 130 for a resource command). A delivery that claimed first
+is left alone; one that arrives after never runs its producer.
+
+**Stopped delivery**:
+The one exec sent in place of the wrapper when the stop must precede the
+command and may not be a separate request: it writes the stop, closes the
+start and reports the journal's exit, and never names the producer. Used when
+the Run could not retain the start.
 
 **Exact execution**:
 An execution whose lifecycle (admitted, started, outcome) is durably

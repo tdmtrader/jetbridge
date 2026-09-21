@@ -32,6 +32,7 @@ var _ = Describe("RejectArchivedWrappa", func() {
 			atc.PausePipeline,
 			atc.UnpausePipeline,
 			atc.CreatePipelineRun,
+			atc.UploadPipelineRunInput,
 			atc.CreateJobBuild,
 			atc.ScheduleJob,
 			atc.CheckResource,

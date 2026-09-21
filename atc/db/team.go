@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -115,10 +116,20 @@ func (t *team) Delete() error {
 	}
 	defer Rollback(tx)
 
+	// The team comes first, as on every Run path (team FOR SHARE, then the
+	// Run). NO KEY UPDATE, not UPDATE: run creation inserts a payload under
+	// its template lock, and that insert's team foreign key takes KEY SHARE.
+	var id int
+	if err = tx.QueryRow(`SELECT id FROM teams WHERE id = $1 FOR NO KEY UPDATE`, t.id).Scan(&id); err != nil {
+		return err
+	}
 	if err = lockTeamPipelineRuns(tx, t.id); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(`SELECT set_config('concourse.pipeline_run_team_purge', 'on', true)`); err != nil {
+		return err
+	}
+	if err = purgeTeamRunEvidence(context.Background(), tx, t.id); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(`
@@ -521,6 +532,13 @@ func savePipelineWithOptions(
 	buildID sql.NullInt64,
 	options pipelineSaveOptions,
 ) (int, bool, error) {
+	declarations, err := atc.RunTaskDeclarations(config)
+	if err != nil {
+		return 0, false, err
+	}
+	if len(declarations) > 0 && !config.Template && !options.pipelineRunID.Valid {
+		return 0, false, fmt.Errorf("task_id and run_result are only valid on templates")
+	}
 
 	var instanceVars sql.NullString
 	if pipelineRef.InstanceVars != nil {
@@ -538,7 +556,6 @@ func savePipelineWithOptions(
 	}
 
 	var existingConfig bool
-	var err error
 	if options.strictPrecondition {
 		var current ConfigVersion
 		err = psql.Select("version").From("pipelines").Where(pipelineRefWhereClause).Suffix("FOR UPDATE").RunWith(tx).QueryRow().Scan(&current)
@@ -782,6 +799,12 @@ func savePipelineWithOptions(
 	err = savePrototypes(tx, config.Prototypes, pipelineID)
 	if err != nil {
 		return 0, false, err
+	}
+
+	if config.Template {
+		if err := saveRunTaskIdentities(tx, pipelineID, declarations); err != nil {
+			return 0, false, err
+		}
 	}
 
 	err = updateJobsName(tx, config.Jobs, pipelineID)

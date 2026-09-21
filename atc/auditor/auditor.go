@@ -102,8 +102,14 @@ func (a *auditor) ValidateAction(action string) bool {
 		atc.CreatePipelineBuild,
 		atc.PipelineBadge,
 		atc.CreatePipelineRun,
+		atc.CreatePipelineRunV2,
+		atc.UploadPipelineRunInput,
+		atc.HandoffPipelineRunCredentials,
+		atc.GetPipelineRunCredentialSession,
+		atc.CancelPipelineRun,
 		atc.ListPipelineRuns,
-		atc.GetPipelineRun:
+		atc.GetPipelineRun,
+		atc.GetPipelineRunResult:
 		return a.EnablePipelineAuditLog
 	case atc.ListAllResources,
 		atc.ListResources,
@@ -170,6 +176,22 @@ func (a *auditor) ValidateAction(action string) bool {
 
 func (a *auditor) Audit(action string, userName string, r *http.Request) {
 	action = atc.CanonicalAction(action)
+	if atc.RequestBodyIsSensitive(action) {
+		if a.ValidateAction(action) {
+			// This runs before authentication. Never parse the form here: it
+			// would copy a credential, bearer or upload into the log, and
+			// consume the body the authorized handler owns. Log only the
+			// parameters the route itself declares, which the router placed
+			// in the query ahead of anything the caller sent.
+			q := r.URL.Query()
+			parameters := map[string]string{}
+			for _, name := range atc.RouteParamNames(action) {
+				parameters[name] = q.Get(":" + name)
+			}
+			a.logger.Info("audit", lager.Data{"action": action, "user": userName, "parameters": parameters})
+		}
+		return
+	}
 	err := r.ParseForm()
 	if err == nil && a.ValidateAction(action) {
 		a.logger.Info("audit", lager.Data{"action": action, "user": userName, "parameters": r.Form})

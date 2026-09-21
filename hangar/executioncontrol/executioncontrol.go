@@ -18,7 +18,7 @@
 // Durable output capture is an *extension* of this protocol, in hangar/output.
 // It references the same Identity and ActivationEpoch rather than declaring its
 // own, so an execution has one truth however many optional gates hang off it.
-// A base acknowledgement carries no capture, source-lease, handle-generation or
+// A base acknowledgement carries no capture, source-hold, handle-generation or
 // output field; those live only on the extension's own acknowledgement.
 //
 // The wire contract is frozen, language-neutrally, in testdata/protocol-v1.

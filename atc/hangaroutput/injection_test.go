@@ -104,6 +104,11 @@ type injectingControl struct {
 	control *jetbridge.OutputControlClient
 }
 
+func (wrapper *injectingControl) InspectHold(ctx context.Context, id executioncontrol.Identity,
+	handoff output.HandoffID) (output.CaptureAcknowledgement, error) {
+	return wrapper.control.InspectHold(ctx, id, handoff)
+}
+
 func (wrapper *injectingControl) Observe(ctx context.Context, id executioncontrol.Identity,
 	wait time.Duration) (executioncontrol.ObserveFinishOrStopResult, error) {
 	return wrapper.control.Observe(ctx, id, wait)

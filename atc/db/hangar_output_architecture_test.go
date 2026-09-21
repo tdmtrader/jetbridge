@@ -9,7 +9,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -1198,18 +1200,21 @@ func TestEveryProductionHangarOutputTransactionIsTyped(t *testing.T) {
 // not, is the inversion. That is exactly the shape of the blocker this rule was
 // written for, and it reddens against it.
 
-// hangarTableClass is the suffix class each locked Hangar table belongs to.
+// hangarTableClass includes the outer activation prefix (0), followed by the
+// four object-lifecycle suffix classes. Activation must precede every suffix.
 //
 // It is checked against LockHangarSuffix's own statements below rather than
 // trusted, so a fifth class, or a table moving between classes, cannot leave
 // this list quietly stale.
 var hangarTableClass = map[string]int{
-	"hangar_logical_reservations": 1,
-	"hangar_exact_lifecycles":     2,
-	"hangar_capture_reservations": 3,
-	"hangar_output_receipts":      4,
-	"hangar_claims":               4,
-	"hangar_read_leases":          4,
+	"hangar_output_activation_epochs": 0,
+	"hangar_logical_reservations":     1,
+	"hangar_input_publications":       1,
+	"hangar_exact_lifecycles":         2,
+	"hangar_capture_reservations":     3,
+	"hangar_output_receipts":          4,
+	"hangar_claims":                   4,
+	"hangar_read_leases":              4,
 }
 
 // hangarRequestFieldClass maps a HangarLockRequest field to the class it names.
@@ -1386,6 +1391,16 @@ func hangarAcquisitionsByFunction(t *testing.T, roots ...string) map[string][]ha
 					if err != nil {
 						return true
 					}
+					// Explicit locks inside the sole helper declare their own
+					// classes. This includes the activation prefix, which has
+					// no object-lifecycle HangarLockRequest field.
+					if file.Relative == hangarLockHelper && hangarLocksARow(value) {
+						for table, class := range hangarTableClass {
+							if regexp.MustCompile(`(?i)\b` + table + `\b`).MatchString(value) {
+								record(hangarAcquisition{Class: class, Snippet: firstLine(value)}, expression.Pos())
+							}
+						}
+					}
 					if table := hangarWriteTable(value); table != "" {
 						record(hangarAcquisition{
 							Class:    hangarTableClass[table],
@@ -1507,10 +1522,13 @@ func hangarSortedClasses(acquisitions []hangarAcquisition) []hangarAcquisition {
 	}
 
 	var ordered []hangarAcquisition
-	for class := 1; class <= 4; class++ {
-		if acquisition, taken := seen[class]; taken {
-			ordered = append(ordered, acquisition)
-		}
+	classes := make([]int, 0, len(seen))
+	for class := range seen {
+		classes = append(classes, class)
+	}
+	sort.Ints(classes)
+	for _, class := range classes {
+		ordered = append(ordered, seen[class])
 	}
 
 	return ordered
