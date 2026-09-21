@@ -14,6 +14,7 @@ import (
 	"github.com/concourse/concourse/hangar/objectstore"
 	"github.com/concourse/concourse/hangar/output"
 	"github.com/concourse/concourse/hangar/output/inventory"
+	testsupport "github.com/concourse/concourse/hangar/output/testsupport"
 )
 
 // The sweep's page and cursor internals, against both substrates.
@@ -44,7 +45,7 @@ func startedCursor(t *testing.T) output.InventoryCursor {
 		ProtocolVersion: output.ProtocolVersion,
 		ActivationEpoch: testEpoch,
 		CursorFence:     1,
-		UpdatedAt:       output.NewTimestamp(fixedInstant),
+		UpdatedAt:       output.NewTimestamp(testsupport.FixedInstant),
 	}
 }
 
@@ -59,8 +60,8 @@ func publishTrees(t *testing.T, tier substrate, namespace output.OutputNamespace
 	published := make([]output.PublishedObject, 0, len(fills))
 	for index, fill := range fills {
 		body := canonicalBytes("tree " + fill)
-		reservation := reservationFor(t, namespace, output.ReservationID(
-			fmt.Sprintf("%08d-4444-4444-8444-444444444444", index+1)), digestOf(fill))
+		reservation := testsupport.Reservation(t, namespace, output.ReservationID(
+			fmt.Sprintf("%08d-4444-4444-8444-444444444444", index+1)), testsupport.Digest(fill))
 		object, err := role.EnsureObject(ctx, reservation, bytes.NewReader(body), int64(len(body)))
 		if err != nil {
 			t.Fatalf("publishing %s: %v", fill, err)
@@ -93,10 +94,10 @@ func sweepOver(t *testing.T, namespace output.OutputNamespace, store inventory.S
 func TestTheSweepContinuesLexicographicallyAndWrapsAtBucketEnd(t *testing.T) {
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := namespaceFor(t, tier.bucket)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 		publishTrees(t, tier, namespace, "1a", "2b", "3c", "4d", "5e")
 
-		clock := &stoppedClock{at: fixedInstant}
+		clock := &stoppedClock{at: testsupport.FixedInstant}
 		sweep := sweepOver(t, namespace, inventory.Restrict(tier.client), clock)
 
 		budget := output.PageBudget{
@@ -173,10 +174,10 @@ func sortedAscending(keys []string) bool {
 func TestAnObjectRecreatedAtTheSameKeyIsSweptAgain(t *testing.T) {
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := namespaceFor(t, tier.bucket)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 		published := publishTrees(t, tier, namespace, "1a", "2b")
 
-		clock := &stoppedClock{at: fixedInstant}
+		clock := &stoppedClock{at: testsupport.FixedInstant}
 		sweep := sweepOver(t, namespace, inventory.Restrict(tier.client), clock)
 
 		budget := output.PageBudget{
@@ -270,10 +271,10 @@ func describe(objects []output.InventoryObject) []string {
 func TestAnObjectInsertedBehindTheCursorIsSweptNextCycle(t *testing.T) {
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := namespaceFor(t, tier.bucket)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 		publishTrees(t, tier, namespace, "5e", "7f")
 
-		clock := &stoppedClock{at: fixedInstant}
+		clock := &stoppedClock{at: testsupport.FixedInstant}
 		sweep := sweepOver(t, namespace, inventory.Restrict(tier.client), clock)
 		budget := output.PageBudget{
 			MaxObjects:       1,
@@ -375,9 +376,9 @@ func publishedKeys(t *testing.T, tier substrate, namespace output.OutputNamespac
 func TestAnEmptyPrefixSweepsCleanlyAndDoesNotAdvanceIntoNothing(t *testing.T) {
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := namespaceFor(t, tier.bucket)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 
-		clock := &stoppedClock{at: fixedInstant}
+		clock := &stoppedClock{at: testsupport.FixedInstant}
 		sweep := sweepOver(t, namespace, inventory.Restrict(tier.client), clock)
 
 		page, err := sweep.ListPage(ctx, startedCursor(t), output.DefaultPageBudget())
@@ -408,7 +409,7 @@ func TestAnEmptyPrefixSweepsCleanlyAndDoesNotAdvanceIntoNothing(t *testing.T) {
 func TestPoisonedMetadataBecomesDebtAndTheSweepMovesPast(t *testing.T) {
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := namespaceFor(t, tier.bucket)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 		publishTrees(t, tier, namespace, "1a", "9f")
 
 		keys := publishedKeys(t, tier, namespace)
@@ -424,7 +425,7 @@ func TestPoisonedMetadataBecomesDebtAndTheSweepMovesPast(t *testing.T) {
 			output.MarkerKeyCreatedAt:     "not-a-time",
 		})
 
-		clock := &stoppedClock{at: fixedInstant}
+		clock := &stoppedClock{at: testsupport.FixedInstant}
 		sweep := sweepOver(t, namespace, inventory.Restrict(tier.client), clock)
 
 		page, err := sweep.ListPage(ctx, startedCursor(t), output.DefaultPageBudget())
@@ -485,7 +486,7 @@ func TestPoisonedMetadataBecomesDebtAndTheSweepMovesPast(t *testing.T) {
 func TestAWrongVersionMarkerIsDebtAndNeverRelabelled(t *testing.T) {
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := namespaceFor(t, tier.bucket)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 		publishTrees(t, tier, namespace, "1a")
 		keys := publishedKeys(t, tier, namespace)
 
@@ -493,7 +494,7 @@ func TestAWrongVersionMarkerIsDebtAndNeverRelabelled(t *testing.T) {
 			output.MarkerKeyVersion: "hangar-output-v99",
 		})
 
-		clock := &stoppedClock{at: fixedInstant}
+		clock := &stoppedClock{at: testsupport.FixedInstant}
 		sweep := sweepOver(t, namespace, inventory.Restrict(tier.client), clock)
 		page, err := sweep.ListPage(ctx, startedCursor(t), output.DefaultPageBudget())
 		if err != nil {
@@ -533,12 +534,12 @@ func TestAWrongVersionMarkerIsDebtAndNeverRelabelled(t *testing.T) {
 func TestAnUnmarkedObjectIsUnmanagedAndNotDebt(t *testing.T) {
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := namespaceFor(t, tier.bucket)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 		publishTrees(t, tier, namespace, "1a")
 		keys := publishedKeys(t, tier, namespace)
 		poisonAt(t, tier, keys[0], map[string]string{"unrelated": "metadata"})
 
-		clock := &stoppedClock{at: fixedInstant}
+		clock := &stoppedClock{at: testsupport.FixedInstant}
 		sweep := sweepOver(t, namespace, inventory.Restrict(tier.client), clock)
 		page, err := sweep.ListPage(ctx, startedCursor(t), output.DefaultPageBudget())
 		if err != nil {
@@ -590,7 +591,7 @@ func poisonAt(t *testing.T, tier substrate, key string, metadata map[string]stri
 func TestMetadataLargerThanAWholePassBecomesDebtRatherThanReplayingForever(t *testing.T) {
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := namespaceFor(t, tier.bucket)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 		publishTrees(t, tier, namespace, "1a", "9f")
 		keys := publishedKeys(t, tier, namespace)
 
@@ -618,7 +619,7 @@ func TestMetadataLargerThanAWholePassBecomesDebtRatherThanReplayingForever(t *te
 		}
 		poisonAt(t, tier, keys[0], bulky)
 
-		clock := &stoppedClock{at: fixedInstant}
+		clock := &stoppedClock{at: testsupport.FixedInstant}
 		sweep := sweepOver(t, namespace, inventory.Restrict(tier.client), clock)
 
 		page, err := sweep.ListPage(ctx, startedCursor(t), budget)
@@ -670,10 +671,10 @@ func TestMetadataLargerThanAWholePassBecomesDebtRatherThanReplayingForever(t *te
 func TestAPassStopsAtItsDurationBudgetWithoutLosingWhatItClassified(t *testing.T) {
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := namespaceFor(t, tier.bucket)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 		publishTrees(t, tier, namespace, "1a", "2b", "3c", "4d")
 
-		clock := &stoppedClock{at: fixedInstant}
+		clock := &stoppedClock{at: testsupport.FixedInstant}
 		sweep := sweepOver(t, namespace, inventory.Restrict(tier.client), clock)
 
 		// The control: with the clock stopped, the whole prefix fits in one
@@ -690,7 +691,7 @@ func TestAPassStopsAtItsDurationBudgetWithoutLosingWhatItClassified(t *testing.T
 		// Now a clock that runs 20 seconds per object against a 30-second
 		// budget: the pass classifies some and stops, and the cursor names the
 		// last one it actually classified.
-		ticking := &tickingClock{at: fixedInstant, per: 20 * time.Second}
+		ticking := &tickingClock{at: testsupport.FixedInstant, per: 20 * time.Second}
 		limited := sweepOver(t, namespace, inventory.Restrict(tier.client), ticking)
 		page, err := limited.ListPage(ctx, startedCursor(t), output.DefaultPageBudget())
 		if err != nil {
@@ -736,11 +737,11 @@ func (clock *tickingClock) Now() time.Time {
 // failure stops without advancing": a short list is not the end of a bucket.
 func TestAListOutageStopsThePassWithoutAdvancingTheCursor(t *testing.T) {
 	memory := gcstest.NewMemory()
-	namespace := namespaceFor(t, "outage-bucket")
+	namespace := testsupport.Namespace(t, "outage-bucket", testTenant, testEpoch)
 	tier := substrate{name: "tier-1 (fault injection)", bucket: "outage-bucket", client: memory, memory: memory}
 	publishTrees(t, tier, namespace, "1a", "2b")
 
-	clock := &stoppedClock{at: fixedInstant}
+	clock := &stoppedClock{at: testsupport.FixedInstant}
 	sweep := sweepOver(t, namespace, inventory.Restrict(memory), clock)
 
 	// The control first: the sweep works before the fault is armed.
@@ -776,11 +777,11 @@ func TestAListOutageStopsThePassWithoutAdvancingTheCursor(t *testing.T) {
 // whether the object is there.
 func TestAStatOutageIsDebtAndNotAbsence(t *testing.T) {
 	memory := gcstest.NewMemory()
-	namespace := namespaceFor(t, "stat-outage-bucket")
+	namespace := testsupport.Namespace(t, "stat-outage-bucket", testTenant, testEpoch)
 	tier := substrate{name: "tier-1 (fault injection)", bucket: "stat-outage-bucket", client: memory, memory: memory}
 	published := publishTrees(t, tier, namespace, "1a")
 
-	clock := &stoppedClock{at: fixedInstant}
+	clock := &stoppedClock{at: testsupport.FixedInstant}
 	sweep := sweepOver(t, namespace, inventory.Restrict(memory), clock)
 	ref := published[0].Attributes.Ref
 
@@ -810,8 +811,8 @@ func TestAStatOutageIsDebtAndNotAbsence(t *testing.T) {
 func TestAStaleEpochCursorOwnerCannotReserveAPage(t *testing.T) {
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := namespaceFor(t, tier.bucket)
-		clock := &stoppedClock{at: fixedInstant}
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
+		clock := &stoppedClock{at: testsupport.FixedInstant}
 		sweep := sweepOver(t, namespace, inventory.Restrict(tier.client), clock)
 
 		// The control: this epoch's cursor is accepted.
@@ -842,10 +843,10 @@ func TestAStaleEpochCursorOwnerCannotReserveAPage(t *testing.T) {
 func TestACorruptAfterKeyIsDebtAndRestartsAtTheOutputPrefix(t *testing.T) {
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := namespaceFor(t, tier.bucket)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 		publishTrees(t, tier, namespace, "1a", "2b")
 
-		clock := &stoppedClock{at: fixedInstant}
+		clock := &stoppedClock{at: testsupport.FixedInstant}
 		sweep := sweepOver(t, namespace, inventory.Restrict(tier.client), clock)
 
 		corrupt := startedCursor(t)
@@ -899,10 +900,10 @@ func TestACorruptAfterKeyIsDebtAndRestartsAtTheOutputPrefix(t *testing.T) {
 func TestContinuousArrivalsCannotStarveTheSweep(t *testing.T) {
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := namespaceFor(t, tier.bucket)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 		publishTrees(t, tier, namespace, "1a", "2b")
 
-		clock := &stoppedClock{at: fixedInstant}
+		clock := &stoppedClock{at: testsupport.FixedInstant}
 		sweep := sweepOver(t, namespace, inventory.Restrict(tier.client), clock)
 		budget := output.PageBudget{
 			MaxObjects:       1,
@@ -991,7 +992,7 @@ func TestAMissingBucketIsNotAnEmptyBucketOnThePathThatCanTell(t *testing.T) {
 func TestAValidMarkerAtAForeignKeyIsDebtRatherThanAnAdoptableObject(t *testing.T) {
 	eachSubstrate(t, func(t *testing.T, tier substrate) {
 		ctx := context.Background()
-		namespace := namespaceFor(t, tier.bucket)
+		namespace := testsupport.Namespace(t, tier.bucket, testTenant, testEpoch)
 		published := publishTrees(t, tier, namespace, "2a", "2b")
 		keys := publishedKeys(t, tier, namespace)
 
@@ -1014,7 +1015,7 @@ func TestAValidMarkerAtAForeignKeyIsDebtRatherThanAnAdoptableObject(t *testing.T
 		}
 		poisonAt(t, tier, victim, foreign)
 
-		clock := &stoppedClock{at: fixedInstant}
+		clock := &stoppedClock{at: testsupport.FixedInstant}
 		sweep := sweepOver(t, namespace, inventory.Restrict(tier.client), clock)
 		page, err := sweep.ListPage(ctx, startedCursor(t), output.DefaultPageBudget())
 		if err != nil {

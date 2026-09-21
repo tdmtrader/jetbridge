@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/concourse/concourse/hangar"
@@ -23,8 +22,8 @@ import (
 // atc/db.Tx satisfy. QueryRowContext is deliberately absent: atc/db.Tx returns a
 // squirrel.RowScanner from it, and Go method sets match exactly, so including it
 // would make this interface unsatisfiable by the very transaction it exists to
-// accept. Phase 1's atc/db package asserts the satisfaction; this package cannot,
-// because importing atc/db would stop it being a leaf.
+// accept. The atc/db package asserts the satisfaction through CaptureRepository;
+// this package cannot, because importing atc/db would stop it being a leaf.
 type Tx interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
@@ -120,30 +119,6 @@ func (object PublishedObject) Validate() error {
 	return nil
 }
 
-// Publisher creates and reads output objects. It cannot list and it cannot
-// delete, and its cloud principal holds neither permission.
-//
-// The role split is not decoration. A Kubernetes service account is Pod-wide,
-// so adding an output role to an existing daemon would give that daemon's
-// cache and strict-input identity the same role. Separate interfaces, separate
-// binaries and separate accounts are how the privilege boundary survives
-// somebody adding one convenient method.
-type Publisher interface {
-	// EnsureObject creates the canonical tree if absent and returns the exact
-	// generation either way. It takes a resolved reservation rather than a key
-	// or a bucket: the location is derived from authenticated deployment
-	// context, never chosen by a caller.
-	EnsureObject(ctx context.Context, reservation ResolvedReservation, canonical io.Reader, size int64) (PublishedObject, error)
-
-	// StatExactObject reads metadata for one exact generation.
-	StatExactObject(ctx context.Context, ref hangar.TreeRef) (PublishedObject, error)
-
-	// OpenExactObject reads the bytes, under an active read lease. The lease is
-	// a parameter rather than an ambient fact so the daemon cannot open an
-	// object it has not proved it may still read.
-	OpenExactObject(ctx context.Context, ref hangar.TreeRef, lease ReadLease) (io.ReadCloser, PublishedObject, error)
-}
-
 // PageBudget bounds one inventory pass. Every field is a stop condition.
 type PageBudget struct {
 	MaxObjects       int
@@ -211,30 +186,6 @@ type InventoryPage struct {
 	Debt     []InventoryDebt
 	Next     InventoryCursor
 	Complete bool
-}
-
-// Inventory lists and stats. It cannot create and it cannot delete.
-//
-// Note what the list method does *not* take: a prefix. Bucket-wide list
-// authority is a fact about GCS IAM that this code cannot narrow, so the
-// boundary is the dedicated bucket plus a server-derived prefix this
-// implementation applies itself -- and the honest way to say that is to give
-// the caller no way to ask for a different one.
-type Inventory interface {
-	ListPage(ctx context.Context, cursor InventoryCursor, budget PageBudget) (InventoryPage, error)
-	StatExactObject(ctx context.Context, ref hangar.TreeRef) (PublishedObject, error)
-}
-
-// Reclaimer is the only interface in this system that can delete a published
-// object, and architecture_test.go fails the test suite if a second one appears.
-//
-// GCS IAM cannot require a caller to send a generation precondition once delete
-// permission exists. So the requirement lives in the signature: there is one
-// method, it takes an exact registered ref and an explicit precondition, and
-// there is no key-only or unconditional route to fall back to. Only the
-// isolated reclaimer workload links an implementation.
-type Reclaimer interface {
-	DeleteExactGeneration(ctx context.Context, ref hangar.TreeRef, precondition DeletePrecondition) (DeleteOutcome, error)
 }
 
 // PrincipalRole is the closed set of cloud identities in the output plane.
@@ -696,43 +647,6 @@ func (challenge StatChallenge) Validate() error {
 	return nil
 }
 
-// ReceiptVerifier checks a receipt before anything is bound to it.
-//
-// Syntactic validity is explicitly not enough (Req 26). Verification checks the
-// signature against the activation epoch, matches every signed claim to the
-// durable checkpoint, reservation and fence, and performs an exact-generation
-// metadata stat for the strict attributes and marker.
-type ReceiptVerifier interface {
-	VerifyReceipt(ctx context.Context, receipt Receipt, challenge StatChallenge) (PublishedObject, error)
-}
-
-// ClaimRepository composes Hangar protection with a consumer's own writes.
-//
-// Both methods take the caller's transaction and return only an error, because
-// the outcomes worth distinguishing are already typed sentinels: ErrConflict
-// for the same claim id reused for another ref, ErrNotFound for an unregistered
-// ref, ErrAtRisk when policy trust is not currently provable. A parallel
-// outcome enum would have meant callers checking twice and eventually checking
-// once.
-type ClaimRepository interface {
-	// AcquireClaim is idempotent for the same id and tree ref.
-	AcquireClaim(ctx context.Context, tx Tx, acquisition ClaimAcquisition) error
-
-	// ReleaseClaim is idempotent, and tombstones the identity for the lifetime
-	// of the tree-ref lifecycle record.
-	ReleaseClaim(ctx context.Context, tx Tx, release ClaimRelease) error
-
-	// ReadClaims reports every claim recorded for one tree ref -- active and
-	// tombstoned -- in acquisition order.
-	//
-	// It is on the contract rather than left to callers' SQL because it is the
-	// only honest way to ask "how many claims protect this". A caller that
-	// selected the rows itself would be asserting about a table rather than
-	// about the repository, and a repository that wrote the right row through
-	// the wrong API would pass.
-	ReadClaims(ctx context.Context, tx Tx, ref hangar.TreeRef) ([]ClaimRecord, error)
-}
-
 // ReadLeaseRequest asks for the right to read one exact generation.
 //
 // MaterializationTimeout is on the request because the lease term is derived
@@ -824,31 +738,6 @@ func (request ReadLeaseRequest) Validate() error {
 // different opinions about the same risk.
 const MaxStatProofAge = MaxChallengeWindow
 
-// ReadLeaseRepository manages the reader's half of protection.
-//
-// Acquisition happens inside the caller's transaction, together with claim,
-// registration, policy and reclaim-exclusion revalidation. Only after that
-// transaction commits may a usable warrant be minted -- and minting is
-// deliberately not atomic with the database, because signing is not a database
-// operation and saying otherwise would be the atomic-commit claim this design
-// refuses to make anywhere else.
-type ReadLeaseRepository interface {
-	AcquireReadLease(ctx context.Context, tx Tx, request ReadLeaseRequest) (ReadLease, error)
-	RenewReadLease(ctx context.Context, tx Tx, lease ReadLease) (ReadLease, error)
-	ReleaseReadLease(ctx context.Context, tx Tx, lease ReadLease) error
-
-	// LoadReadLease reads a committed lease back by identity, for the minter
-	// that runs after the commit and for the recovery that runs after an
-	// ambiguous one.
-	LoadReadLease(ctx context.Context, tx Tx, id ReadLeaseID) (ReadLeaseRecord, error)
-
-	// ValidateReadLease answers the daemon's independent question. It is a
-	// separate method from LoadReadLease because it answers a different one: not
-	// "what does this row say" but "may this exact fenced lease authorize work
-	// that will take this long", measured on the database clock.
-	ValidateReadLease(ctx context.Context, tx Tx, validation ReadLeaseValidation) (ReadLeaseRecord, error)
-}
-
 // HandoffStatus is what a generic caller may learn about a capture.
 //
 // Disposition is a pointer because before the arbiter is won there is no
@@ -889,17 +778,6 @@ func (status HandoffStatus) Validate() error {
 	}
 
 	return nil
-}
-
-// CancelSettler is the product-neutral cancel and settle seam.
-//
-// A later consumer track may call these; Hangar owns their effects. Neither
-// operation can create a consumer binding, and neither takes a reason: the
-// reason a caller wants to stop is exactly the kind of meaning this package
-// exists not to learn.
-type CancelSettler interface {
-	ClassifyHandoff(ctx context.Context, tx Tx, handoff HandoffID) (HandoffStatus, error)
-	CancelOrSettle(ctx context.Context, tx Tx, handoff HandoffID) (HandoffStatus, error)
 }
 
 // DurableOutputCapture is the optional extension of one base execution.

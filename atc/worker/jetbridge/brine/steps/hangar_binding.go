@@ -5,7 +5,7 @@ package steps
 //
 // Every check over BoundOutput is a PRODUCTION read, never a raw SQL select —
 // a repository that writes the right row through the wrong API has to fail
-// these. The claim ledger comes back through ClaimRepository.ReadClaims, which
+// these. The claim ledger comes back through the repository's ReadClaims, which
 // exists for exactly this reason; the consumer's own binding comes back through
 // the neutral consumer's own reader, because a consumer's table is the
 // consumer's and Hangar may not read it.

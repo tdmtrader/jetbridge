@@ -790,7 +790,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			//
 			// LeaseControl runs ValidateReadLease first and would refuse both
 			// of these before RenewReadLease saw them -- but RenewReadLease is
-			// on the ReadLeaseRepository contract for any caller, and a method
+			// on the LeaseControlStore port for any caller, and a method
 			// whose error text says "released, expired or ..." should be the
 			// method that decides it. A renewal that resurrected an expired
 			// lease would re-pin a generation recovery had already released.

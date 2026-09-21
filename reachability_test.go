@@ -143,6 +143,10 @@ var deferredEntryPoints = []deferredEntryPoint{
 	// this phase did not land.
 	{name: "NewLeaseReadProfile", pkg: "hangar/output", why: managedReadHasNoConsumer},
 	{name: "Renew", pkg: "hangar/output", why: managedReadHasNoConsumer},
+	// The publisher's read-under-lease is the daemon end of the same half. It
+	// used to be credited through the leaf's Publisher interface, which no
+	// production code held; the interface is gone and the credit with it.
+	{name: "OpenExactObject", pkg: "hangar/output/publisher", why: readUnderLeaseHasNoConsumer},
 	{name: "ObserveExactAbsence", why: separateAbsenceStat},
 	{name: "Holds", why: runnerBeliefIsNotAuthority},
 
@@ -185,6 +189,10 @@ const (
 		"status surface; no running process decides anything from it, and a runner that " +
 		"decided from its own belief rather than from the lease would be the stale owner " +
 		"every fence in this plane exists to stop"
+	readUnderLeaseHasNoConsumer = "the publisher's read under a lease is the daemon end of the " +
+		"managed read, and the managed read has no consumer yet: the lease it would open " +
+		"under is acquired by the ATC before the Pod is built, and that acquisition is the " +
+		"half of the managed-read box this phase did not land"
 	managedReadHasNoConsumer = "a managed read reaches a consumer pod through a read lease " +
 		"the ATC acquires before the Pod is built, and that acquisition -- the claim, the " +
 		"lease transaction and the init-container route -- is the half of the Phase 8 " +
@@ -288,9 +296,10 @@ func collectExported(t *testing.T, dir, root, filePrefix string, into map[string
 			return err
 		}
 		if info.IsDir() {
-			// conformance is a test-only package: it declares the tier-2
-			// suite and nothing production links it.
-			if info.Name() == "conformance" || info.Name() == "testdata" {
+			// conformance and testsupport are test-only packages: one
+			// declares the tier-2 suite, the other the fixtures the role
+			// tests share, and nothing production links either.
+			if info.Name() == "conformance" || info.Name() == "testsupport" || info.Name() == "testdata" {
 				return filepath.SkipDir
 			}
 
@@ -613,13 +622,13 @@ var interfaceSatisfied = map[string]satisfiedEntry{
 	"RecordNoCaptureIntent":                  {pkg: "atc/db", port: "atc/hangaroutput.Repository and hangar/output.CaptureRepository"},
 	"RegisterReceipt":                        {pkg: "atc/db", port: "atc/hangaroutput.Repository and hangar/output.CaptureRepository"},
 	"ResolveLogicalReservation":              {pkg: "atc/db", port: "atc/hangaroutput.Repository and hangar/output.CaptureRepository"},
-	"CancelOrSettle":                         {pkg: "atc/db", port: "atc/hangaroutput.Repository and hangar/output.CancelSettler"},
+	"CancelOrSettle":                         {pkg: "atc/db", port: "atc/hangaroutput.Repository"},
 
 	// The read-lease ports, split so a holder of one cannot use the other.
-	"AcquireReadLease":  {pkg: "atc/db", port: "atc/hangaroutput.ReadLeaseStore and hangar/output.ReadLeaseRepository"},
-	"ReleaseReadLease":  {pkg: "atc/db", port: "atc/hangaroutput.LeaseControlStore and hangar/output.ReadLeaseRepository"},
-	"RenewReadLease":    {pkg: "atc/db", port: "atc/hangaroutput.LeaseControlStore and hangar/output.ReadLeaseRepository"},
-	"ValidateReadLease": {pkg: "atc/db", port: "atc/hangaroutput.LeaseControlStore and hangar/output.ReadLeaseRepository"},
+	"AcquireReadLease":  {pkg: "atc/db", port: "atc/hangaroutput.ReadLeaseStore"},
+	"ReleaseReadLease":  {pkg: "atc/db", port: "atc/hangaroutput.LeaseControlStore"},
+	"RenewReadLease":    {pkg: "atc/db", port: "atc/hangaroutput.LeaseControlStore"},
+	"ValidateReadLease": {pkg: "atc/db", port: "atc/hangaroutput.LeaseControlStore"},
 
 	"CloseAbandonedReadLeases": {pkg: "atc/db", port: "atc/hangaroutput.AbandonedReadLeases"},
 	"IncompleteHandoffs":       {pkg: "atc/db", port: "atc/hangaroutput.IncompleteReader"},
@@ -628,8 +637,6 @@ var interfaceSatisfied = map[string]satisfiedEntry{
 	// the same implementation without linking atc/db's package name.
 	"ClaimOperationLease": {pkg: "atc/db", port: "atc/hangaroutput/controller.Leases"},
 	"RenewOperationLease": {pkg: "atc/db", port: "atc/hangaroutput/controller.Leases"},
-
-	"OpenExactObject": {pkg: "hangar/output/publisher", port: "hangar/output.Publisher"},
 
 	// The operator status surface's read port. Its implementation is
 	// db.HangarOutputRepository, and atc/hangaroutput/status.go holds the port

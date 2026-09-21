@@ -103,8 +103,6 @@ func New(namespace output.OutputNamespace, store Store, timeout time.Duration) (
 	return &Publisher{namespace: namespace, store: store, timeout: timeout}, nil
 }
 
-var _ output.Publisher = (*Publisher)(nil)
-
 // EnsureObject creates the canonical tree if absent and reports the exact
 // generation either way.
 //
@@ -401,6 +399,11 @@ func (publisher *Publisher) StatExactObject(ctx context.Context, ref hangar.Tree
 	// not have.
 	return publisher.classify(attrs, output.ResolvedReservation{Digest: ref.Digest}, sizeUnknown)
 }
+
+// Deferred: the publisher's read under a lease is the daemon end of the
+// managed read, and the managed read has no consumer yet: the lease it would
+// open under is acquired by the ATC before the Pod is built, and that
+// acquisition is the half of the managed-read box this phase did not land
 
 // OpenExactObject reads the bytes, under an active read lease.
 func (publisher *Publisher) OpenExactObject(ctx context.Context, ref hangar.TreeRef, lease output.ReadLease) (io.ReadCloser, output.PublishedObject, error) {
