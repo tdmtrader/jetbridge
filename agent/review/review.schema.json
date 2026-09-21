@@ -1,0 +1,209 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "JetBridge detached review v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "verdict",
+    "provenance",
+    "assessment"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "review/v1"
+    },
+    "run_id": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1
+    },
+    "verdict": {
+      "enum": [
+        "no_findings",
+        "findings",
+        "incomplete"
+      ]
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "input_digest",
+        "base_commit",
+        "head_commit",
+        "profile_digest",
+        "model_requested",
+        "model_reported",
+        "codex_version",
+        "execution_policy"
+      ],
+      "properties": {
+        "input_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "base_commit": {
+          "type": "string",
+          "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"
+        },
+        "head_commit": {
+          "type": "string",
+          "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"
+        },
+        "profile_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "model_requested": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model_reported": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "codex_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "execution_policy": {
+          "const": "inspect-only"
+        }
+      }
+    },
+    "assessment": {
+      "$ref": "#/$defs/assessment"
+    }
+  },
+  "$defs": {
+    "location": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "side",
+        "path",
+        "start_line",
+        "end_line"
+      ],
+      "properties": {
+        "side": {
+          "enum": [
+            "base",
+            "head"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "description": "Repository-relative path from manifest.files[].path; do not prepend base/ or head/. The side field selects the tree.",
+          "minLength": 1
+        },
+        "start_line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "end_line": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "severity",
+        "dimension",
+        "title",
+        "explanation",
+        "recommendation",
+        "location"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "severity": {
+          "enum": [
+            "blocker",
+            "high",
+            "medium",
+            "low"
+          ]
+        },
+        "dimension": {
+          "enum": [
+            "correctness",
+            "security",
+            "intent",
+            "testing",
+            "maintainability"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "explanation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "recommendation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "location": {
+          "$ref": "#/$defs/location"
+        }
+      }
+    },
+    "assessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "summary",
+        "complete",
+        "reviewed_files",
+        "limitations",
+        "findings"
+      ],
+      "properties": {
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "reviewed_files": {
+          "type": "array",
+          "description": "Unique inspected repository paths from manifest.files[].path, without base/ or head/ prefixes. Exclude bundle control files (manifest.json, change.diff, external plan.md).",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/finding"
+          }
+        }
+      }
+    }
+  }
+}

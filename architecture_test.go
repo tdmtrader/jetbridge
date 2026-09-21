@@ -46,6 +46,10 @@ var agenticPackages = []string{
 	// an LLM drive Concourse. Deliberately kept when the rest of the agentic
 	// platform was stripped.
 	"atc/api/mcpserver",
+	// Dedicated agent executables are part of the agentic layer, not core
+	// composition roots. Neither is imported by the CI platform.
+	"cmd/jb",
+	"cmd/jb-review-worker",
 	"atc/mcp",
 	"internal/mcpclient",
 	"cmd/jb-mcp-client",
@@ -332,6 +336,14 @@ var agenticCoreReach = map[string][]string{
 	// and a listed import that is gone fails. So widening this is an edit with
 	// a reason, not an accident.
 	"atc/agent/composition": {"atc", "atc/runs"},
+	// Artifact-only review contract: it does not reach into the CI runtime.
+	"agent/review": {},
+	// Public Run values and the shared canonical archive verifier. No storage client.
+	"agent/review/client": {"atc", "hangar"},
+	// The command reuses the saved platform login; the shared client consumes
+	// only public wire types and never reaches the Run database or scheduler.
+	"cmd/jb":               {"fly/rc"},
+	"cmd/jb-review-worker": {},
 }
 
 // unpinnedAgenticPackages closes the opt-in hole in the ratchet below.
