@@ -90,6 +90,12 @@ var _ = Describe("ValidateIdentifier", func() {
 			identifier:  "running-((.:name))",
 			warning:     false,
 		},
+		{
+			description: "is a var from across step in run_pipeline",
+			context:     []string{".across", ".run_pipeline(((.:name)))"},
+			identifier:  "running-((.:name))",
+			warning:     false,
+		},
 	} {
 		test := test
 

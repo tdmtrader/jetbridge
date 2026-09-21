@@ -90,6 +90,38 @@ var _ = Describe("Template", func() {
 		Expect(string(result)).To(ContainSubstring("dotted: dotted-value"))
 	})
 
+	// run_pipeline's params carry credential references through to the run
+	// header verbatim, by excluding every reference whose source is not the
+	// build-local ".". That contract is only worth anything if an excluded
+	// reference comes out of Evaluate byte-for-byte as it went in, including
+	// when it shares a string with one that does resolve.
+	It("leaves a reference excluded by source untouched, and still resolves the local one", func() {
+		excludeNonLocal := func(reference Reference) bool { return reference.Source != "." }
+
+		template := NewTemplate([]byte("" +
+			"secret: ((vault/x))\n" +
+			"sourced: ((mysource:key))\n" +
+			"unqualified: ((plain))\n" +
+			"dotted: ((a.b))\n" +
+			"local: ((.:v))\n" +
+			"mixed: ((.:v))-((vault/x))\n"))
+
+		vars := NamedVariables{".": StaticVariables{"v": "local-value"}}
+
+		result, err := template.Evaluate(vars, EvaluateOpts{
+			ExpectAllKeys:    true,
+			ExcludeReference: excludeNonLocal,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(result)).To(Equal("" +
+			"dotted: ((a.b))\n" +
+			"local: local-value\n" +
+			"mixed: local-value-((vault/x))\n" +
+			"secret: ((vault/x))\n" +
+			"sourced: ((mysource:key))\n" +
+			"unqualified: ((plain))\n"))
+	})
+
 	It("can interpolate a different data types into a byte slice", func() {
 		hashValue := map[string]any{"key2": []string{"value1", "value2"}}
 		template := NewTemplate([]byte("name1: ((name1))\nname2: ((name2))\nname3: ((name3))\nname4: ((name4))\nname5: ((name5))\nname6: ((name6))\n1234: value\n"))

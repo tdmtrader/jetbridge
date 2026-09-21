@@ -193,6 +193,7 @@ type StepVisitor interface {
 	VisitPut(*PutStep) error
 	VisitRun(*RunStep) error
 	VisitSetPipeline(*SetPipelineStep) error
+	VisitRunPipeline(*RunPipelineStep) error
 	VisitLoadVar(*LoadVarStep) error
 	VisitTry(*TryStep) error
 	VisitDo(*DoStep) error
@@ -273,6 +274,10 @@ var StepPrecedence = []StepDetector{
 	{
 		Key: "set_pipeline",
 		New: func() StepConfig { return &SetPipelineStep{} },
+	},
+	{
+		Key: "run_pipeline",
+		New: func() StepConfig { return &RunPipelineStep{} },
 	},
 	{
 		Key: "load_var",
@@ -395,6 +400,18 @@ type SetPipelineStep struct {
 
 func (step *SetPipelineStep) Visit(v StepVisitor) error {
 	return v.VisitSetPipeline(step)
+}
+
+// RunPipelineStep starts one run of a template pipeline. There is deliberately
+// no `team:` field: a build may only call templates on its own team, which is
+// enforced by the run-admission port rather than here.
+type RunPipelineStep struct {
+	Name   string    `json:"run_pipeline"`
+	Params RunParams `json:"params,omitempty"`
+}
+
+func (step *RunPipelineStep) Visit(v StepVisitor) error {
+	return v.VisitRunPipeline(step)
 }
 
 type LoadVarStep struct {

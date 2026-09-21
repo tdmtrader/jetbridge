@@ -272,6 +272,28 @@ func (validator *StepValidator) VisitSetPipeline(step *SetPipelineStep) error {
 	return nil
 }
 
+// VisitRunPipeline validates only the name. Whether the template exists, and
+// whether the params match its declared schema, are admission-time facts, the
+// same way set_pipeline does not check that its file is there.
+func (validator *StepValidator) VisitRunPipeline(step *RunPipelineStep) error {
+	validator.pushContextf(".run_pipeline(%s)", step.Name)
+	defer validator.popContext()
+
+	warning, err := ValidateIdentifier(step.Name, validator.context...)
+	if err != nil {
+		validator.recordError(err.Error())
+	}
+	if warning != nil {
+		validator.recordWarning(*warning)
+	}
+
+	if step.Name == "" {
+		validator.recordError("no pipeline specified")
+	}
+
+	return nil
+}
+
 func (validator *StepValidator) VisitLoadVar(step *LoadVarStep) error {
 	validator.pushContextf(".load_var(%s)", step.Name)
 	defer validator.popContext()

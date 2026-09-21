@@ -2,8 +2,13 @@ package atc
 
 import "errors"
 
-// ErrPipelineRunCreationDisabled is the refusal a server answers when public
+// ErrPipelineRunCreationDisabled is the refusal a server answers when
 // creation of durable pipeline runs is held by the operator.
+//
+// It is answered on both of the paths that create one: the public HTTP route,
+// and atc/runs -- the in-process port a build's run_pipeline step admits
+// through. One sentinel for both is what lets the two agree; a gate the route
+// alone consulted would be a gate a build could walk around.
 //
 // It is declared here, in the API's own vocabulary package, rather than in
 // atc/db, for three reasons. atc/db must not learn that the gate exists, so

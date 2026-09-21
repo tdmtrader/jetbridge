@@ -294,6 +294,55 @@ var factoryTests = []StepTest{
 		},
 	},
 	{
+		Title: "run_pipeline step",
+
+		ConfigYAML: `
+			run_pipeline: some-pipeline
+			params:
+			  ref: some-ref
+			  nested:
+			    key: some-value
+			    list: [a, b]
+		`,
+
+		StepConfig: &atc.RunPipelineStep{
+			Name: "some-pipeline",
+			Params: atc.RunParams{
+				"ref": "some-ref",
+				"nested": map[string]any{
+					"key":  "some-value",
+					"list": []any{"a", "b"},
+				},
+			},
+		},
+	},
+	{
+		Title: "run_pipeline step without params",
+
+		ConfigYAML: `
+			run_pipeline: some-pipeline
+		`,
+
+		StepConfig: &atc.RunPipelineStep{
+			Name: "some-pipeline",
+		},
+	},
+	{
+		Title: "run_pipeline step under a modifier",
+
+		ConfigYAML: `
+			timeout: 1h
+			run_pipeline: some-pipeline
+		`,
+
+		StepConfig: &atc.TimeoutStep{
+			Duration: "1h",
+			Step: &atc.RunPipelineStep{
+				Name: "some-pipeline",
+			},
+		},
+	},
+	{
 		Title: "load_var step",
 
 		ConfigYAML: `
@@ -686,6 +735,24 @@ func (s *StepsSuite) TestFactory() {
 			test.Run(s)
 		})
 	}
+}
+
+// TestRunPipelinePrecedence pins run_pipeline's place in the precedence list.
+// It is a core step type, so it must be parsed after every modifier, and it
+// sits next to set_pipeline because the two are siblings.
+func (s *StepsSuite) TestRunPipelinePrecedence() {
+	var setPipelineIdx, runPipelineIdx = -1, -1
+	for i, detector := range atc.StepPrecedence {
+		switch detector.Key {
+		case "set_pipeline":
+			setPipelineIdx = i
+		case "run_pipeline":
+			runPipelineIdx = i
+		}
+	}
+
+	s.NotEqual(-1, setPipelineIdx)
+	s.Equal(setPipelineIdx+1, runPipelineIdx)
 }
 
 func rawMessage(s string) *json.RawMessage {
