@@ -44,6 +44,7 @@ import (
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/db/migration"
 	"github.com/concourse/concourse/atc/engine"
+	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/gc"
 	"github.com/concourse/concourse/atc/hangaroutput"
 	"github.com/concourse/concourse/atc/imageresolver"
@@ -1221,6 +1222,11 @@ func (cmd *RunCommand) backendComponents(
 
 	imgResolver := imageresolver.NewResolver(nil)
 
+	childRunAdmitter, err := cmd.constructChildRunAdmitter(dbConn, lockFactory, teamFactory)
+	if err != nil {
+		return nil, err
+	}
+
 	engine := cmd.constructEngine(
 		pool,
 		dbWorkerFactory,
@@ -1235,6 +1241,7 @@ func (cmd *RunCommand) backendComponents(
 		rateLimiter,
 		policyChecker,
 		imgResolver,
+		childRunAdmitter,
 	)
 
 	// In case that a user configures resource-checking-interval, but forgets to
@@ -2379,6 +2386,7 @@ func (cmd *RunCommand) constructEngine(
 	rateLimiter engine.RateLimiter,
 	policyChecker policy.Checker,
 	resolver imageresolver.Resolver,
+	childRunAdmitter exec.ChildRunAdmitter,
 ) engine.Engine {
 	return engine.NewEngine(
 		engine.NewStepperFactory(
@@ -2397,6 +2405,7 @@ func (cmd *RunCommand) constructEngine(
 				cmd.DefaultPutTimeout,
 				cmd.DefaultTaskTimeout,
 				engine.WithCoreImageResolver(resolver),
+				engine.WithChildRunAdmitter(childRunAdmitter),
 			),
 			cmd.ExternalURL.String(),
 			rateLimiter,

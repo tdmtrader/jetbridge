@@ -1396,6 +1396,10 @@ func (f leafStepFactory) SetPipelineStep(atc.Plan, exec.StepMetadata, engine.Del
 	return unexpectedStep("set_pipeline")
 }
 
+func (f leafStepFactory) RunPipelineStep(atc.Plan, exec.StepMetadata, engine.DelegateFactory) exec.Step {
+	return unexpectedStep("run_pipeline")
+}
+
 func (f leafStepFactory) ArtifactInputStep(atc.Plan, db.Build) exec.Step {
 	return unexpectedStep("artifact input")
 }

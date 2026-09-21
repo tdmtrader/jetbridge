@@ -42,6 +42,8 @@ func (df DelegateFactory) configureDelegate(d any) {
 		bsd, _ = v.BuildStepDelegate.(*buildStepDelegate)
 	case *setPipelineStepDelegate:
 		bsd = &v.buildStepDelegate
+	case *runPipelineStepDelegate:
+		bsd = &v.buildStepDelegate
 	}
 	if bsd != nil {
 		bsd.resourceConfigFactory = df.resourceConfigFactory
@@ -88,6 +90,12 @@ func (delegate DelegateFactory) BuildStepDelegate(state exec.RunState) exec.Buil
 
 func (delegate DelegateFactory) SetPipelineStepDelegate(state exec.RunState) exec.SetPipelineStepDelegate {
 	d := NewSetPipelineStepDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock(), delegate.policyChecker)
+	delegate.configureDelegate(d)
+	return d
+}
+
+func (delegate DelegateFactory) RunPipelineStepDelegate(state exec.RunState) exec.RunPipelineStepDelegate {
+	d := NewRunPipelineStepDelegate(delegate.build, delegate.plan.ID, state, clock.NewClock(), delegate.policyChecker)
 	delegate.configureDelegate(d)
 	return d
 }

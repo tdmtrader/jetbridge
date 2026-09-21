@@ -90,6 +90,19 @@ type FakeCoreStepFactory struct {
 	putStepReturnsOnCall map[int]struct {
 		result1 exec.Step
 	}
+	RunPipelineStepStub        func(atc.Plan, exec.StepMetadata, engine.DelegateFactory) exec.Step
+	runPipelineStepMutex       sync.RWMutex
+	runPipelineStepArgsForCall []struct {
+		arg1 atc.Plan
+		arg2 exec.StepMetadata
+		arg3 engine.DelegateFactory
+	}
+	runPipelineStepReturns struct {
+		result1 exec.Step
+	}
+	runPipelineStepReturnsOnCall map[int]struct {
+		result1 exec.Step
+	}
 	RunStepStub        func(atc.Plan, exec.StepMetadata, db.ContainerMetadata, engine.DelegateFactory) exec.Step
 	runStepMutex       sync.RWMutex
 	runStepArgsForCall []struct {
@@ -510,6 +523,69 @@ func (fake *FakeCoreStepFactory) PutStepReturnsOnCall(i int, result1 exec.Step) 
 		})
 	}
 	fake.putStepReturnsOnCall[i] = struct {
+		result1 exec.Step
+	}{result1}
+}
+
+func (fake *FakeCoreStepFactory) RunPipelineStep(arg1 atc.Plan, arg2 exec.StepMetadata, arg3 engine.DelegateFactory) exec.Step {
+	fake.runPipelineStepMutex.Lock()
+	ret, specificReturn := fake.runPipelineStepReturnsOnCall[len(fake.runPipelineStepArgsForCall)]
+	fake.runPipelineStepArgsForCall = append(fake.runPipelineStepArgsForCall, struct {
+		arg1 atc.Plan
+		arg2 exec.StepMetadata
+		arg3 engine.DelegateFactory
+	}{arg1, arg2, arg3})
+	stub := fake.RunPipelineStepStub
+	fakeReturns := fake.runPipelineStepReturns
+	fake.recordInvocation("RunPipelineStep", []interface{}{arg1, arg2, arg3})
+	fake.runPipelineStepMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3)
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeCoreStepFactory) RunPipelineStepCallCount() int {
+	fake.runPipelineStepMutex.RLock()
+	defer fake.runPipelineStepMutex.RUnlock()
+	return len(fake.runPipelineStepArgsForCall)
+}
+
+func (fake *FakeCoreStepFactory) RunPipelineStepCalls(stub func(atc.Plan, exec.StepMetadata, engine.DelegateFactory) exec.Step) {
+	fake.runPipelineStepMutex.Lock()
+	defer fake.runPipelineStepMutex.Unlock()
+	fake.RunPipelineStepStub = stub
+}
+
+func (fake *FakeCoreStepFactory) RunPipelineStepArgsForCall(i int) (atc.Plan, exec.StepMetadata, engine.DelegateFactory) {
+	fake.runPipelineStepMutex.RLock()
+	defer fake.runPipelineStepMutex.RUnlock()
+	argsForCall := fake.runPipelineStepArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+}
+
+func (fake *FakeCoreStepFactory) RunPipelineStepReturns(result1 exec.Step) {
+	fake.runPipelineStepMutex.Lock()
+	defer fake.runPipelineStepMutex.Unlock()
+	fake.RunPipelineStepStub = nil
+	fake.runPipelineStepReturns = struct {
+		result1 exec.Step
+	}{result1}
+}
+
+func (fake *FakeCoreStepFactory) RunPipelineStepReturnsOnCall(i int, result1 exec.Step) {
+	fake.runPipelineStepMutex.Lock()
+	defer fake.runPipelineStepMutex.Unlock()
+	fake.RunPipelineStepStub = nil
+	if fake.runPipelineStepReturnsOnCall == nil {
+		fake.runPipelineStepReturnsOnCall = make(map[int]struct {
+			result1 exec.Step
+		})
+	}
+	fake.runPipelineStepReturnsOnCall[i] = struct {
 		result1 exec.Step
 	}{result1}
 }

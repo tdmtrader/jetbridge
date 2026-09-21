@@ -68,14 +68,45 @@ var agenticPrefixes = []string{
 // point of the allowlist is that "somewhere" is one named place with a stated
 // justification, rather than wherever it was convenient.
 //
-// The web composition root mounts MCP around the complete API handler. The
-// adapter cannot fetch data directly or bypass API authorization and auditing.
+// There is exactly one entry, which is the rule stated at the top of this file
+// holding rather than the rule going unexercised, and it carries two
+// independent reasons.
+//
+// It has not always been this package, and the allowlist has not always had
+// anything in it. atc/api held the only entry while the MCP tool surface and
+// its route were registered there; removing that surface emptied the list,
+// and what is left of mcpserver is transport with no Concourse imports of its
+// own. An empty allowlist was never the goal -- an agentic layer nothing
+// constructs is a layer nothing runs -- and it is not the state now: the web
+// composition root mounts MCP on its own routes, and the run_pipeline step's
+// admitter is assembled in the same place.
 //
 // Adding an entry here is the moment to ask whether the dependency should be
 // inverted instead -- the agentic side depending on core costs nothing, and
-// core depending on the agentic side is what made v1/v2/v3 inseparable.
+// core depending on the agentic side is what made v1/v2/v3 inseparable. That
+// question was asked for the entry below and answered by inverting everything
+// that could be inverted: atc/exec declares the shape of the admitter it needs
+// and names nothing agentic, atc/engine takes that interface as an option, and
+// atc/agent/composition reaches back into core through atc/runs. What is left
+// is a constructor and a struct-to-struct translation, which is the
+// irreducible part -- something has to build the object graph.
+//
+// The second reason is MCP. The web composition root mounts the MCP handler on
+// the handful of paths MCP owns -- its endpoint and its OAuth metadata --
+// beside the web handler rather than around it, because MCP authenticates with
+// its own bearer credentials and consent cookies and an MCP 401 must not clear
+// an unrelated web login's. What it mounts is an adapter that cannot fetch
+// data directly or bypass API authorization and auditing. Both reasons name
+// the same package, so they are recorded together rather than as two entries.
 var wiringPoints = map[string]string{
-	"atc/atccmd": "web composition root mounts MCP over the fully wrapped API",
+	"atc/atccmd": "the composition root: it constructs runs.NewAdmitter and " +
+		"composition.NewService and adapts the result to exec.ChildRunAdmitter " +
+		"for the run_pipeline step, in atc/atccmd/child_run_admitter.go and " +
+		"nowhere else. See docs/superpowers/specs/2026-09-08-run-pipeline-step-design.md. " +
+		"It is also where the web composition root mounts the MCP handler on " +
+		"the paths MCP owns, beside the web handler rather than around it, in " +
+		"atc/atccmd/command.go; the adapter behind it cannot fetch data " +
+		"directly or bypass API authorization and auditing.",
 }
 
 type goListPackage struct {

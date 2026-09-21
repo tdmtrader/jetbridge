@@ -247,6 +247,12 @@ func (f setPipelineStepDelegateFactory) SetPipelineStepDelegate(state exec.RunSt
 	return f(state)
 }
 
+type runPipelineStepDelegateFactory func(exec.RunState) exec.RunPipelineStepDelegate
+
+func (f runPipelineStepDelegateFactory) RunPipelineStepDelegate(state exec.RunState) exec.RunPipelineStepDelegate {
+	return f(state)
+}
+
 type checkDelegateFactory func(exec.RunState) exec.CheckDelegate
 
 func (f checkDelegateFactory) CheckDelegate(state exec.RunState) exec.CheckDelegate {

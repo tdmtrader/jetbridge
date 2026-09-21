@@ -561,6 +561,21 @@ var _ = Describe("Builder", func() {
 						})
 					})
 
+					Context("that contains a run_pipeline step", func() {
+						BeforeEach(func() {
+							expectedPlan = planFactory.NewPlan(atc.RunPipelinePlan{
+								Name:   "some-template",
+								Params: atc.RunParams{"ref": "abc123"},
+							})
+						})
+
+						It("constructs run_pipeline correctly", func() {
+							plan, stepMetadata, _ := fakeCoreStepFactory.RunPipelineStepArgsForCall(0)
+							Expect(plan).To(Equal(expectedPlan))
+							Expect(stepMetadata).To(Equal(expectedMetadataWithoutCreatedBy))
+						})
+					})
+
 					Context("that contains a load_var step", func() {
 						BeforeEach(func() {
 							expectedPlan = planFactory.NewPlan(atc.LoadVarPlan{

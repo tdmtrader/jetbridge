@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -30,6 +32,7 @@ type coreStepFactory struct {
 	defaultPutTimeout     time.Duration
 	defaultTaskTimeout    time.Duration
 	imageResolver         imageresolver.Resolver
+	childRunAdmitter      exec.ChildRunAdmitter
 }
 
 // CoreStepFactoryOption configures optional fields on coreStepFactory.
@@ -39,6 +42,15 @@ type CoreStepFactoryOption func(*coreStepFactory)
 func WithCoreImageResolver(r imageresolver.Resolver) CoreStepFactoryOption {
 	return func(f *coreStepFactory) {
 		f.imageResolver = r
+	}
+}
+
+// WithChildRunAdmitter supplies the port the run_pipeline step admits through.
+// Only the composition root passes it, because only the composition root may
+// name the implementation; see atc/atccmd/child_run_admitter.go.
+func WithChildRunAdmitter(admitter exec.ChildRunAdmitter) CoreStepFactoryOption {
+	return func(f *coreStepFactory) {
+		f.childRunAdmitter = admitter
 	}
 }
 
@@ -239,6 +251,67 @@ func (factory *coreStepFactory) SetPipelineStep(
 		spStep = exec.RetryError(spStep, delegateFactory)
 	}
 	return spStep
+}
+
+func (factory *coreStepFactory) RunPipelineStep(
+	plan atc.Plan,
+	stepMetadata exec.StepMetadata,
+	delegateFactory DelegateFactory,
+) exec.Step {
+	rpStep := exec.NewRunPipelineStep(
+		plan.ID,
+		*plan.RunPipeline,
+		stepMetadata,
+		delegateFactory,
+		factory.admitterOrFallback(),
+	)
+
+	rpStep = exec.LogError(rpStep, delegateFactory)
+	if atc.EnableBuildRerunWhenWorkerDisappears {
+		rpStep = exec.RetryError(rpStep, delegateFactory)
+	}
+	return rpStep
+}
+
+// admitterOrFallback is the admitter the run_pipeline step is built over, or
+// a stand-in that refuses.
+//
+// The option is optional, and deliberately so: every test that builds a core
+// factory, and the brine harness that builds one to drive real plans through
+// the real engine, construct it without an admitter because they have no
+// composition root to get one from. Handing those a nil interface would turn
+// the first run_pipeline plan any of them ever carries into a nil dereference
+// inside the step, which reports the wiring gap as a panic rather than as an
+// errored step with a reason. So the fallback is a value, and it says what is
+// actually wrong.
+func (factory *coreStepFactory) admitterOrFallback() exec.ChildRunAdmitter {
+	if factory.childRunAdmitter == nil {
+		return unwiredChildRunAdmitter{}
+	}
+
+	return factory.childRunAdmitter
+}
+
+// unwiredChildRunAdmitter refuses every admission on a web node where the
+// run_pipeline port was never supplied.
+//
+// Its error is deliberately a plain one, which runs.IsRefusal classifies as a
+// fault, and that classification is the whole of the design here. A refusal is
+// a fact about what the pipeline's author asked for -- the wrong team, no such
+// template, a paused one -- and the author is the one who can act on it, which
+// is why exec prints a refusal on the build's stderr and fails the step. A
+// missing port is nothing of the kind: the config is fine, the same plan will
+// admit a run the moment the web node is wired correctly, and the person who
+// has to know is the operator, not whoever pushed the pipeline. So it travels
+// the engine's error path, where LogError and RetryError can see it and where
+// it does not land in a build log that is world-readable on a public pipeline.
+//
+// unwired_child_run_admitter_test.go pins the classification, so the code and
+// this comment cannot drift apart again.
+type unwiredChildRunAdmitter struct{}
+
+func (unwiredChildRunAdmitter) AdmitChildRun(context.Context, exec.ChildRunRequest) (exec.ChildRun, error) {
+	return exec.ChildRun{}, errors.New("run_pipeline is not wired on this web node")
 }
 
 func (factory *coreStepFactory) LoadVarStep(
