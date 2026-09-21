@@ -46,3 +46,4 @@ smallest method count first.
 
 | date | instance | outcome | note |
 |---|---|---|---|
+| 2026-09-21 | BuildLogRetentionCalculator@atc/gc | gate-failed | `make test-quick` red before the card's own gate, entirely in the nested brine module: TestEngineReleaseDrainsRealDaemon, TestDocumentOwnsSelection, TestDocumentCheckEchoesRoster, TestDocumentRefusals and TestHoldPreservesThenDrainsRealResources want a `brine` binary on PATH; TestBusyboxScriptOutcomeBoundary wants `.build/busybox`; TestTraceCaptureExportsAndDisposesRealCollector wants `otelcol`. All seven reproduce identically on unmodified origin/core in this clone (`ginkgo -r` descends into the nested module despite its own go.mod), so the collapse was reverted unmerged and nothing is left on the branch but this row. Blocks every category here until the prerequisites exist in /Users/tdmtrader/concourse/tidy |
