@@ -14,14 +14,14 @@ type buildLogCollector struct {
 	pipelineLifecycle           db.PipelineLifecycle
 	batchSize                   int
 	drainerConfigured           bool
-	buildLogRetentionCalculator BuildLogRetentionCalculator
+	buildLogRetentionCalculator *BuildLogRetentionCalculator
 }
 
 func NewBuildLogCollector(
 	pipelineFactory db.PipelineFactory,
 	pipelineLifecycle db.PipelineLifecycle,
 	batchSize int,
-	buildLogRetentionCalculator BuildLogRetentionCalculator,
+	buildLogRetentionCalculator *BuildLogRetentionCalculator,
 	drainerConfigured bool,
 ) *buildLogCollector {
 	return &buildLogCollector{

@@ -6,11 +6,7 @@ import (
 	"github.com/concourse/concourse/atc"
 )
 
-type BuildLogRetentionCalculator interface {
-	BuildLogsToRetain(atc.JobConfig) atc.BuildLogRetention
-}
-
-type buildLogRetentionCalculator struct {
+type BuildLogRetentionCalculator struct {
 	defaultBuildLogsToRetain     uint64
 	maxBuildLogsToRetain         uint64
 	defaultDaysToRetainBuildLogs uint64
@@ -22,8 +18,8 @@ func NewBuildLogRetentionCalculator(
 	maxBuildLogsToRetain uint64,
 	defaultDaysToRetainBuildLogs uint64,
 	maxDaysToRetainBuildLogs uint64,
-) BuildLogRetentionCalculator {
-	return &buildLogRetentionCalculator{
+) *BuildLogRetentionCalculator {
+	return &BuildLogRetentionCalculator{
 		defaultBuildLogsToRetain:     defaultBuildLogsToRetain,
 		maxBuildLogsToRetain:         maxBuildLogsToRetain,
 		defaultDaysToRetainBuildLogs: defaultDaysToRetainBuildLogs,
@@ -95,7 +91,7 @@ func boundDays(days int) int {
 	return days
 }
 
-func (blrc *buildLogRetentionCalculator) BuildLogsToRetain(jobConfig atc.JobConfig) atc.BuildLogRetention {
+func (blrc *BuildLogRetentionCalculator) BuildLogsToRetain(jobConfig atc.JobConfig) atc.BuildLogRetention {
 	// What does the job want?
 	var daysToRetainBuildLogs = 0
 	var buildLogsToRetain = 0

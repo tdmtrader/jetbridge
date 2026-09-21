@@ -30,7 +30,7 @@ type retentionBuild struct {
 
 type retentionScenario struct {
 	jobRetention        atc.JobConfig
-	calculator          BuildLogRetentionCalculator
+	calculator          *BuildLogRetentionCalculator
 	drainerConfigured   bool
 	pausedPipeline      bool
 	pausedJob           bool
@@ -875,7 +875,7 @@ func createNumberedLogBuild(template db.Pipeline, environment string, spec reten
 	return creation.Run, build
 }
 
-func runBuildLogCollector(batchSize int, calculator BuildLogRetentionCalculator, drainerConfigured bool) {
+func runBuildLogCollector(batchSize int, calculator *BuildLogRetentionCalculator, drainerConfigured bool) {
 	GinkgoHelper()
 	collector := NewBuildLogCollector(
 		db.NewPipelineFactory(dbConn, lockFactory),
