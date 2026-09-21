@@ -404,6 +404,9 @@ mapBuildPlan fn plan =
                 BuildStepSetPipeline _ _ _ ->
                     []
 
+                BuildStepRunPipeline _ ->
+                    []
+
                 BuildStepLoadVar _ ->
                     []
 
@@ -499,6 +502,7 @@ type alias ImageBuildPlans =
 type BuildStep
     = BuildStepTask StepName
     | BuildStepSetPipeline StepName (Maybe TeamName) InstanceVars
+    | BuildStepRunPipeline StepName
     | BuildStepLoadVar StepName
     | BuildStepArtifactInput StepName
     | BuildStepCheck StepName (Maybe ImageBuildPlans)
@@ -716,6 +720,8 @@ decodeBuildPlan =
                     lazy (\_ -> decodeBuildStepTimeout)
                 , Json.Decode.field "set_pipeline" <|
                     lazy (\_ -> decodeBuildSetPipeline)
+                , Json.Decode.field "run_pipeline" <|
+                    lazy (\_ -> decodeBuildStepRunPipeline)
                 , Json.Decode.field "load_var" <|
                     lazy (\_ -> decodeBuildStepLoadVar)
                 , Json.Decode.field "across" <|
@@ -885,6 +891,12 @@ decodeBuildSetPipeline =
                     )
             )
         |> andMap (defaultTo Dict.empty <| Json.Decode.field "instance_vars" decodeInstanceVars)
+
+
+decodeBuildStepRunPipeline : Json.Decode.Decoder BuildStep
+decodeBuildStepRunPipeline =
+    Json.Decode.succeed BuildStepRunPipeline
+        |> andMap (Json.Decode.field "name" Json.Decode.string)
 
 
 decodeBuildStepLoadVar : Json.Decode.Decoder BuildStep

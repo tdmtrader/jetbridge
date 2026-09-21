@@ -51,6 +51,7 @@ type StepTree
     | Run StepID
     | Put StepID
     | SetPipeline StepID
+    | RunPipeline StepID
     | LoadVar StepID
     | ArtifactInput StepID
     | ArtifactOutput StepID
@@ -288,6 +289,9 @@ activeStepIds model tree =
         SetPipeline stepId ->
             [ stepId ]
 
+        RunPipeline stepId ->
+            [ stepId ]
+
         LoadVar stepId ->
             [ stepId ]
 
@@ -369,6 +373,9 @@ updateTreeNodeAt id fn tree =
             updateSelf stepId
 
         SetPipeline stepId ->
+            updateSelf stepId
+
+        RunPipeline stepId ->
             updateSelf stepId
 
         LoadVar stepId ->

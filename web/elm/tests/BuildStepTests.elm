@@ -459,6 +459,13 @@ all =
                     >> when iAmLookingAtTheStepBody
                     >> then_ iDoNotSeeASeparator
             ]
+        , describe "run_pipeline step"
+            [ test "should show pipeline name" <|
+                given iVisitABuildWithARunPipelineStep
+                    >> given theRunPipelineStepIsExpanded
+                    >> when iAmLookingAtTheStepBody
+                    >> then_ iSeeTheRunPipelineName
+            ]
         , describe "load_var step"
             [ test "should show var name" <|
                 given iVisitABuildWithALoadVarStep
@@ -640,6 +647,12 @@ iVisitABuildWithASetPipelineStepWithInstanceVars =
         >> thePlanContainsASetPipelineStepWithInstanceVars
 
 
+iVisitABuildWithARunPipelineStep =
+    iOpenTheBuildPage
+        >> myBrowserFetchedTheBuild
+        >> thePlanContainsARunPipelineStep
+
+
 iVisitABuildWithACheckStep =
     iOpenTheBuildPage
         >> myBrowserFetchedTheBuild
@@ -680,6 +693,11 @@ theImageGetStepIsExpanded =
 theSetPipelineStepIsExpanded =
     Tuple.first
         >> Application.update (Update <| Message.Click <| StepHeader setPipelineStepId)
+
+
+theRunPipelineStepIsExpanded =
+    Tuple.first
+        >> Application.update (Update <| Message.Click <| StepHeader runPipelineStepId)
 
 
 theCheckStepIsExpanded =
@@ -993,6 +1011,25 @@ thePlanContainsASetPipelineStepWithInstanceVars =
 
 setPipelineStepId =
     "setPipelineStep"
+
+
+thePlanContainsARunPipelineStep =
+    Tuple.first
+        >> Application.handleCallback
+            (Callback.PlanAndResourcesFetched 1 <|
+                Ok
+                    ( { id = runPipelineStepId
+                      , step = Concourse.BuildStepRunPipeline "pipeline-name"
+                      }
+                    , { inputs = []
+                      , outputs = []
+                      }
+                    )
+            )
+
+
+runPipelineStepId =
+    "runPipelineStep"
 
 
 thePlanContainsACheckStep =
@@ -1417,6 +1454,10 @@ iSeeTheResourceName =
 
 iSeeTheLogOutput =
     Query.has [ text "the log output" ]
+
+
+iSeeTheRunPipelineName =
+    Query.has [ text "pipeline-name" ]
 
 
 iSeeTheLoadVarName =

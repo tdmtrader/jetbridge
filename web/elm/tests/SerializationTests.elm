@@ -157,4 +157,23 @@ all =
                     |> Concourse.encodeTeam
                     |> Json.Decode.decodeValue Concourse.decodeTeam
                     |> Expect.equal (Ok team)
+        , test "run_pipeline build plan decodes to BuildStepRunPipeline" <|
+            \_ ->
+                """
+                {"id":"1","run_pipeline":{"name":"my-pipeline"}}
+                """
+                    |> Json.Decode.decodeString Concourse.decodeBuildPlan
+                    |> Expect.equal
+                        (Ok
+                            { id = "1"
+                            , step = Concourse.BuildStepRunPipeline "my-pipeline"
+                            }
+                        )
+        , test "build plan with an unknown step kind fails to decode" <|
+            \_ ->
+                """
+                {"id":"1","some_unknown_step":{}}
+                """
+                    |> Json.Decode.decodeString Concourse.decodeBuildPlan
+                    |> Expect.err
         ]
