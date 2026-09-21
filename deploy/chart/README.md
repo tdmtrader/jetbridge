@@ -197,7 +197,7 @@ directories or ephemeral emptyDirs.
 | `artifactDaemon.hangar.scratchPath` | `/var/concourse/hangar-scratch` | Private daemon-only `emptyDir` mount, disjoint from `hostPath`. |
 | `artifactDaemon.hangar.maxContentBytes` | `10737418240` | Maximum regular-file content in one exact tree. |
 | `artifactDaemon.hangar.maxEntries` | `100000` | Maximum filesystem entries in one exact tree. |
-| `artifactDaemon.hangar.capabilityTTL` | `900s` | Shared web/daemon grant TTL in positive whole seconds, at most 900s. |
+| `artifactDaemon.hangar.capabilityTTL` | `900s` | Shared web/daemon warrant TTL in positive whole seconds, at most 900s. |
 
 `artifactDaemon` also carries `mirror`, `preemption`, `tls` and `networkPolicy`
 blocks; see [`values.yaml`](values.yaml) for those.

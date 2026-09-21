@@ -1,0 +1,28 @@
+# Build with: docker build -f deploy/Dockerfile.review-worker -t jb-review-worker:dev .
+# The runtime rejects any Codex version other than agent/review/codex-version.
+FROM golang:1.25.6-bookworm@sha256:f4490d7b261d73af4543c46ac6597d7d101b6e1755bcdd8c5159fda7046b6b3e AS build
+ARG TARGETARCH
+WORKDIR /src
+COPY go.mod go.sum ./
+COPY agent/review ./agent/review
+COPY cmd/jb-review-worker ./cmd/jb-review-worker
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -trimpath -o /out/jb-review-worker ./cmd/jb-review-worker
+RUN set -eu; \
+    case "${TARGETARCH}" in amd64) arch=x86_64 ;; arm64) arch=aarch64 ;; *) exit 1 ;; esac; \
+    version="$(cat agent/review/codex-version)"; \
+    cd /tmp; \
+    for binary in codex codex-code-mode-host; do \
+    asset="${binary}-${arch}-unknown-linux-musl.tar.gz"; \
+    curl -fsSL --retry 3 "https://github.com/openai/codex/releases/download/rust-v${version}/${asset}" -o "${asset}"; \
+    awk -v asset="${asset}" '$2 == asset { print; found=1 } END { if (!found) exit 1 }' /src/agent/review/codex-checksums.txt > selected.sha256; \
+    sha256sum -c selected.sha256; \
+    tar -xzf "${asset}"; \
+    mv "${binary}-${arch}-unknown-linux-musl" "/out/${binary}"; \
+    done
+
+FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
+COPY --from=build /etc/ssl/certs/ /etc/ssl/certs/
+COPY --from=build /out/ /usr/local/bin/
+# Hangar reserves task outputs as root-owned 0700 directories.
+USER 0:0
+ENTRYPOINT ["/usr/local/bin/jb-review-worker"]

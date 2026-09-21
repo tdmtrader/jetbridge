@@ -80,6 +80,18 @@ var typedModes = []struct {
 		floor: 34,
 	},
 	{
+		// Web capture renders the result-download scratch volume, and Run
+		// intake the signing key and the credential worker pins.
+		name: "web capture with Run intake and credential pins",
+		sets: append(append([]string{}, outputSets...),
+			"hangarOutput.webEnabled=true",
+			"web.runInputSigningKeySecret=review-input-key",
+			"web.runCredentialWorkerImages[0]=registry.example/review-worker@sha256:"+
+				"abababababababababababababababababababababababababababababababab",
+		),
+		floor: 25,
+	},
+	{
 		name: "activation Job, mode=attest facet=base",
 		sets: append(append([]string{}, outputSets...),
 			"hangarOutput.activation.job.mode=attest",

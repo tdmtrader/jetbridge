@@ -64,7 +64,7 @@ spec:
         - alert: HangarOutputPlaneAtRisk
           # `for` is deliberately short. At-risk is FAIL-CLOSED: from detection
           # onward the plane blocks new captures, claim acquires, managed-output
-          # grants, orphan adoption and reclaim admission. Waiting five minutes
+          # warrants, orphan adoption and reclaim admission. Waiting five minutes
           # to say so would be five minutes of refused builds with no alert.
           expr: concourse_hangar_output_at_risk > 0
           for: 1m
@@ -72,7 +72,7 @@ spec:
             severity: critical
           annotations:
             summary: "The Hangar output plane is at risk and has stopped admitting new work"
-            description: "The output plane cannot currently prove its bucket's lifetime policy safe ({{ `{{ $labels.reasons }}` }}). New captures, claim acquisitions, managed-output grants, orphan adoption and reclaim admission are all blocked; releases and diagnosis still work. Recovery needs a fresh safe attestation, and the open violations need reconciling separately -- a safe reading does not close them."
+            description: "The output plane cannot currently prove its bucket's lifetime policy safe ({{ `{{ $labels.reasons }}` }}). New captures, claim acquisitions, managed-output warrants, orphan adoption and reclaim admission are all blocked; releases and diagnosis still work. Recovery needs a fresh safe attestation, and the open violations need reconciling separately -- a safe reading does not close them."
         - alert: HangarOutputPolicyEvidenceStale
           # The attestation refreshes every 15 minutes at most (requirement 51).
           # Past that bound, "we have not checked" and "the check failed" are

@@ -17,9 +17,19 @@ rules:
     verbs: ["get"]
   # Resolve node names to IPs for artifact daemon communication
   # (DaemonClient uses node IP to reach the local daemon pod).
+  #
+  # Execution control adds list: web selects a Run execution's node, and the
+  # node serving a result read or input upload, by listing nodes on their
+  # readiness labels, and the read-lease handler lists them to resolve a node
+  # name. Without it every Run start is a 403. Nodes carry no secrets; list is
+  # granted only where that code is wired.
   - apiGroups: [""]
     resources: ["nodes"]
+    {{- if .Values.hangarOutput.executionControl.enabled }}
+    verbs: ["get", "list"]
+    {{- else }}
     verbs: ["get"]
+    {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

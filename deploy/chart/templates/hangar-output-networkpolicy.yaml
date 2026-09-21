@@ -53,6 +53,17 @@ spec:
         - protocol: TCP
           port: {{ $output.daemon.port }}
   egress:
+    {{- if .Values.web.tls.enabled }}
+    # The signed read-lease callback to the web API's native HTTPS listener.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "concourse.name" . }}
+              app.kubernetes.io/component: web
+      ports:
+        - protocol: TCP
+          port: {{ .Values.web.tls.bindPort }}
+    {{- end }}
     # DNS.
     - ports:
         - protocol: UDP

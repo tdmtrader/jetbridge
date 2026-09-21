@@ -1,0 +1,39 @@
+# Install with fly set-pipeline, supplying review_worker_image (repo@sha256:...)
+# and review_model. The ATC fills run_id separately for each admitted Run.
+template: true
+jobs:
+  - name: review
+    plan:
+      - task: review
+        timeout: 32m
+        task_id: e5c35b74-c6ad-4ad5-b4bd-8a703759301d
+        run_inputs:
+          - name: change
+            input: source
+        run_result:
+          name: findings
+          output: result
+        config:
+          platform: linux
+          rootfs_uri: docker:///((review_worker_image))
+          inputs:
+            - name: source
+          outputs:
+            - name: result
+          run:
+            path: /bin/sh
+            args:
+              - -ec
+              - |
+                umask 077
+                mkdir -p /dev/shm/jb-review
+                /usr/local/bin/jb-review-worker \
+                  --input source/bundle --output result/report \
+                  --runtime-dir /dev/shm/jb-review \
+                  --auth-socket /dev/shm/jb-review/auth.sock \
+                  --model "$1" "$2"
+                mv result/report/review.json result/report/review.md result/
+                rmdir result/report
+              - review-worker
+              - ((review_model))
+              - --run-id=((run_id))

@@ -1,0 +1,10 @@
+# Run using fly execute with a committed repo archive and the pinned Brine
+# module's Go download-cache files. The latter contain source, not credentials.
+platform: linux
+rootfs_uri: docker:///registry.home/concourse-kind-runner:v35
+inputs:
+- name: repo
+- name: brine-module
+run:
+  path: sh
+  args: [repo/hack/test-review-kubelet]

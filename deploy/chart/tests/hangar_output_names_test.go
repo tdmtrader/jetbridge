@@ -257,6 +257,7 @@ func TestTheActivationJobNameCarriesTheEpochAndTheMode(t *testing.T) {
 		sets := append(append([]string{}, outputSets...),
 			"hangarOutput.activationEpoch="+epoch,
 			"hangarOutput.receipt.publicKeys[0].epoch="+epoch,
+			"hangarOutput.executionControl.publicKeys[0].epoch="+epoch,
 			"hangarOutput.activation.job.mode="+mode,
 			"hangarOutput.activation.job.facet=base")
 

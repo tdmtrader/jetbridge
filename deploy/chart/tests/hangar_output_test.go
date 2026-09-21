@@ -61,6 +61,8 @@ var baseControlSets = []string{
 // outputSets add the OUTPUT capture facet on top of the base one.
 var outputSets = append(append([]string{}, baseControlSets...),
 	"hangarOutput.enabled=true",
+	"hangarOutput.executionControl.publicKeys[0].epoch=7",
+	"hangarOutput.executionControl.publicKeys[0].key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
 	"hangarOutput.bucket=jb-output",
 	"hangarOutput.prefix=cluster-a",
 	"hangarOutput.tenant=tenant-a",
@@ -619,7 +621,7 @@ func TestEveryOutputNetworkPolicyNamesItsOwnComponent(t *testing.T) {
 func TestNoExistingIdentityGainsAnOutputRole(t *testing.T) {
 	out := renderOutput(t)
 
-	// The read-grant key legitimately reaches the control plane -- web MINTS
+	// The read-warrant key legitimately reaches the control plane -- web MINTS
 	// grants -- so the rule is per secret and not "anything with the word
 	// output in it". What must not leave the daemon is the RECEIPT PRIVATE key
 	// and the bucket itself.

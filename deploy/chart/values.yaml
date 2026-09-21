@@ -121,6 +121,34 @@ web:
   # value ever changing. That is unsupported, not prevented.
   enablePipelineRunCreation: false
 
+  # -- Existing web-only Secret containing input.key (exactly 32 raw random
+  # bytes) for detached Run input grants. Requires hangarOutput.webEnabled.
+  # Use a separate key and Secret from all node capability/materialization keys.
+  # This is a service key, never a user's Codex auth.json.
+  runInputSigningKeySecret: ""
+
+  # -- Digest-qualified images (repository@sha256:<64 hex>) that a Run result
+  # producer must run for the owner's session credentials to be delivered into
+  # it, e.g. the review worker image the review template is installed with.
+  # Requires runInputSigningKeySecret. EMPTY REFUSES EVERY CREDENTIAL HANDOFF:
+  # the image comes from a template that any team member able to set it
+  # controls, so an unpinned deployment would hand the owner's credentials to
+  # whatever image that member names. Tags are refused; pin the digest.
+  runCredentialWorkerImages: []
+
+  # -- Run result downloads. Rendered only with hangarOutput.webEnabled.
+  runResults:
+    # -- sizeLimit of the disk-backed emptyDir web spools result downloads
+    # into (mounted at /var/concourse/run-result-scratch). Each read holds the
+    # fetched archive and its canonical copy, up to 256Mi each, until its
+    # response is written, so this must be at least readConcurrency x 512Mi;
+    # the chart refuses less. It counts against the Pod's ephemeral storage,
+    # not its memory.
+    scratchSizeLimit: "1536Mi"
+    # -- Result downloads in flight at once. Readers beyond this get 503 with
+    # Retry-After instead of queueing.
+    readConcurrency: 2
+
   # -- Extra volume mounts for the web container (e.g. custom CA bundles, credential files)
   extraVolumeMounts: []
   # -- Extra volumes for the web pod
@@ -823,6 +851,12 @@ hangarOutput:
     # value when you move the key, exactly as receipt.keyID is moved.
     keyID: ""
 
+    # -- Public node-control verification keys, required for output capture.
+    # One base64 Ed25519 public key per epoch. Retain old epochs while their
+    # handoffs remain unsettled. The private key stays on the output daemon.
+    # Example: [{epoch: 7, key: "<base64-public-key>"}]
+    publicKeys: []
+
   # -- Existing Secret holding capability.key: the raw 32 bytes control
   # capabilities are minted and verified with, shared between the control plane
   # and this daemon and with nothing else.
@@ -876,6 +910,7 @@ hangarOutput:
   publicationGrace: "192h"   # >= captureDeadline + 1h, <= 720h
   leaseTerm: "15m"           # at least 15m
   leaseRenewInterval: "1m"   # at most 1m
+  # Shared by the output daemon, managed-read leases and caller deadlines.
   operationTimeout: "1m"
 
   receipt:
@@ -904,6 +939,11 @@ hangarOutput:
   materializationKeySecret: ""
   # -- Key id for the above.
   materializationKeyID: "output-materialize-1"
+  # -- HTTPS URL of the web API, reachable from output daemons, for signed
+  # read-lease validation/release. Required to download retained Run results.
+  # The server certificate must chain to the system or output-daemon TLS CA.
+  # Empty leaves archive downloads disabled while capture remains available.
+  readControlURL: ""
 
   daemon:
     # -- Control API port.

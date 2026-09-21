@@ -61,7 +61,13 @@ func TestPipelineTaskInputsAreSatisfied(t *testing.T) {
 					if in.Optional {
 						continue
 					}
-					if !available[in.Name] {
+					bound := false
+					if pipeline.Template {
+						for _, route := range step.RunInputs {
+							bound = bound || route.Name != "" && route.Input == in.Name
+						}
+					}
+					if !available[in.Name] && !bound {
 						t.Errorf(
 							"%s: job %q, task %q declares input %q, "+
 								"which no earlier step in that job produces "+
@@ -417,12 +423,22 @@ func TestPipelineTaskScriptsAreValidShell(t *testing.T) {
 					continue
 				}
 
-				// args is ["-exc", "<script>"]; the script is the last element.
+				// The argument after -c (including combined flags such as -ec)
+				// is the script. Later arguments are its $0, $1, etc.
 				args := step.Config.Run.Args
-				if len(args) == 0 {
+				var script string
+				for i, arg := range args {
+					if !strings.HasPrefix(arg, "-") {
+						break
+					}
+					if strings.Contains(arg, "c") && i+1 < len(args) {
+						script = args[i+1]
+						break
+					}
+				}
+				if script == "" {
 					continue
 				}
-				script := args[len(args)-1]
 				if len(script) < 20 {
 					t.Errorf("%s: job %q, task %q has a suspiciously short script (%d bytes); "+
 						"this check would be vacuous", name, job.Name, step.Task, len(script))
@@ -577,13 +593,18 @@ func TestHangarRunnersNameTheFakeGCSEndpointOnlyWhereItIsReachable(t *testing.T)
 }
 
 type pipelineDoc struct {
-	Jobs []struct {
+	Template bool `json:"template"`
+	Jobs     []struct {
 		Name string `json:"name"`
 		Plan []step `json:"plan"`
 	} `json:"jobs"`
 }
 
 type step struct {
+	RunInputs []struct {
+		Name  string `json:"name"`
+		Input string `json:"input"`
+	} `json:"run_inputs"`
 	Get      string `json:"get"`
 	Put      string `json:"put"`
 	Task     string `json:"task"`

@@ -113,7 +113,6 @@ spec:
             - /usr/local/concourse/bin/hangar-output-daemon
             - --listen=0.0.0.0:{{ $output.daemon.port }}
             - --node-name=$(NODE_NAME)
-            - --node-uid=$(NODE_UID)
             - --control-dir={{ $output.daemon.controlPath }}
             - --steps-dir={{ $output.daemon.stepsPath }}
             - --scratch-dir={{ $output.daemon.scratch.path }}
@@ -141,19 +140,15 @@ spec:
             - --receipt-key-file=/etc/concourse/hangar-output/receipt/receipt.key
             - --materialization-key-id={{ $output.materializationKeyID }}
             - --materialization-key-file=/etc/concourse/hangar-output/materialize/materialize.key
+            {{- with $output.readControlURL }}
+            - --read-control-url={{ . }}
+            {{- end }}
             {{- end }}
           env:
             - name: NODE_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
-            - name: NODE_UID
-              valueFrom:
-                fieldRef:
-                  # The UID and not the name. A name can be reused for new
-                  # hardware, and a ledger sequence is only meaningful beside
-                  # the node that issued it.
-                  fieldPath: metadata.uid
           ports:
             # hostPort, and for the same reason artifact-daemon has one: every
             # client of this daemon dials the NODE IP. The ATC composes

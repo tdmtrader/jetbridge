@@ -213,6 +213,7 @@ spec:
             - --kubernetes-hangar-output-tls-key=/etc/concourse/hangar-output/tls/tls.key
             - --kubernetes-hangar-output-tls-ca-cert=/etc/concourse/hangar-output/tls/ca.crt
             - --kubernetes-hangar-output-tls-server-name={{ include "concourse.hangarOutput.daemonTLSServerName" . }}
+            - --kubernetes-hangar-output-operation-timeout={{ .Values.hangarOutput.operationTimeout }}
             - --kubernetes-hangar-output-seal-deadline={{ .Values.hangarOutput.sealDeadline }}
             - --kubernetes-hangar-output-capture-deadline={{ .Values.hangarOutput.captureDeadline }}
             - --kubernetes-hangar-output-lease-term={{ .Values.hangarOutput.leaseTerm }}
@@ -228,6 +229,7 @@ spec:
             - --kubernetes-hangar-output-activation-epoch={{ int .Values.hangarOutput.activationEpoch }}
             {{- if .Values.hangarOutput.enabled }}
             - --kubernetes-hangar-output-receipt-keys=/etc/concourse/hangar-output/receipt-keys/receipt-keys.json
+            - --kubernetes-hangar-output-control-keys=/etc/concourse/hangar-output/receipt-keys/control-keys.json
             - --kubernetes-hangar-output-materialization-key=/etc/concourse/hangar-output/materialize/materialize.key
             # The bucket and tenant reach web so the operator STATUS surface can
             # key a cursor by the same bucket the sweep does. They are server
@@ -237,7 +239,21 @@ spec:
             - --kubernetes-hangar-output-tenant={{ .Values.hangarOutput.tenant }}
             {{- if .Values.hangarOutput.webEnabled }}
             - --kubernetes-hangar-output-capture-enabled
+            {{- include "concourse.web.validateRunResults" . }}
+            # Result downloads spool into a disk-backed volume, not the 64Mi
+            # in-memory /tmp that is charged to this container's memory.
+            - --run-result-scratch-dir=/var/concourse/run-result-scratch
+            - --run-result-read-concurrency={{ int .Values.web.runResults.readConcurrency }}
             {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- include "concourse.web.validateRunCredentialWorkerImages" . }}
+            {{- if .Values.web.runInputSigningKeySecret }}
+            - --run-input-signing-key=/etc/concourse/run-input-signing/input.key
+            # Credential handoff delivers only into these digest-pinned
+            # images. None pinned refuses every handoff.
+            {{- range .Values.web.runCredentialWorkerImages }}
+            - --run-credential-worker-image={{ . }}
             {{- end }}
             {{- end }}
             # Kubernetes credential manager (resolve ((vars)) from k8s Secrets)
@@ -368,8 +384,17 @@ spec:
               readOnly: true
             {{- end }}
             {{- end }}
+            {{- if .Values.web.runInputSigningKeySecret }}
+            - name: run-input-signing
+              mountPath: /etc/concourse/run-input-signing
+              readOnly: true
+            {{- end }}
             - name: tmp
               mountPath: /tmp
+            {{- if include "concourse.web.runResultReads" . }}
+            - name: run-result-scratch
+              mountPath: /var/concourse/run-result-scratch
+            {{- end }}
             {{- with .Values.web.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -379,6 +404,11 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 64Mi
+        {{- if include "concourse.web.runResultReads" . }}
+        - name: run-result-scratch
+          emptyDir:
+            sizeLimit: {{ .Values.web.runResults.scratchSizeLimit }}
+        {{- end }}
         {{- /*
   secrets.create mints the session signing key into an emptyDir, so each pod
   gets its own: a restart invalidates every session, and two replicas reject
@@ -454,6 +484,14 @@ spec:
             # the receipt key, so holding it does not let web sign a receipt.
             secretName: {{ .Values.hangarOutput.materializationKeySecret }}
         {{- end }}
+        {{- end }}
+        {{- if .Values.web.runInputSigningKeySecret }}
+        - name: run-input-signing
+          secret:
+            secretName: {{ .Values.web.runInputSigningKeySecret }}
+            items:
+              - key: input.key
+                path: input.key
         {{- end }}
         {{- with .Values.web.extraVolumes }}
         {{- toYaml . | nindent 8 }}

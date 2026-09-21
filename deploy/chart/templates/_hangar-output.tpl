@@ -172,9 +172,25 @@ that "output enabled without base control" is refused rather than rendered as a
 daemon that would refuse itself at startup.
 */}}
 {{- define "concourse.hangarOutput.validate" -}}
+{{- with .Values.hangarOutput.readControlURL -}}
+{{- $url := urlParse . -}}
+{{- if or (ne $url.scheme "https") (empty $url.host) (not (empty $url.userinfo)) (not (empty $url.query)) (not (empty $url.fragment)) -}}
+{{- fail "hangarOutput.readControlURL must be an HTTPS web API URL without credentials, query or fragment" -}}
+{{- end -}}
+{{- end -}}
+
 {{- $output := .Values.hangarOutput -}}
 {{- $base := $output.executionControl.enabled | default false -}}
 {{- $capture := $output.enabled | default false -}}
+
+{{- with .Values.web.runInputSigningKeySecret -}}
+{{- if not $.Values.hangarOutput.webEnabled -}}
+{{- fail "web.runInputSigningKeySecret requires hangarOutput.webEnabled" -}}
+{{- end -}}
+{{- if or (eq . $output.capabilityKeySecret) (eq . $output.materializationKeySecret) (eq . $.Values.artifactDaemon.resolveCapability.existingSecret) (eq . $.Values.artifactDaemon.tls.existingSecret) -}}
+{{- fail "web.runInputSigningKeySecret must be separate from node capability and materialization Secrets" -}}
+{{- end -}}
+{{- end -}}
 
 {{- if and $capture (not $base) -}}
 {{- fail "hangarOutput.enabled requires hangarOutput.executionControl.enabled. Durable output capture is an EXTENSION of exact execution control, never a synonym for it: a capture pod requires both ready labels, and a cohort advertising output without base would be claiming a capture plane with no exact-execution protocol underneath. Output admission can never be true while base admission is false." -}}
@@ -200,7 +216,7 @@ daemon that would refuse itself at startup.
 {{- fail "hangarOutput.daemon.tls.existingSecret is required: the ATC calls this daemon's control API from another node, and a bearer capability over plaintext off-node is interceptable inside its TTL." -}}
 {{- end -}}
 {{- if not $output.daemon.tls.clientSecret -}}
-{{- fail "hangarOutput.daemon.tls.clientSecret is required: this daemon's control API is TLS-only and refuses every operation whose request carries no VERIFIED peer certificate, so an ATC with no client certificate of its own can hold no source, issue no writer ticket, seal nothing, publish nothing and grant no read. It is the OUTPUT plane's credential and not artifactDaemon.tls.enabled's: that switch belongs to a different daemon on a different bucket under a different identity, and a certificate from its CA handshakes here and is then refused by every route." -}}
+{{- fail "hangarOutput.daemon.tls.clientSecret is required: this daemon's control API is TLS-only and refuses every operation whose request carries no VERIFIED peer certificate, so an ATC with no client certificate of its own can hold no source, issue no writer ticket, seal nothing, publish nothing and issue no read warrant. It is the OUTPUT plane's credential and not artifactDaemon.tls.enabled's: that switch belongs to a different daemon on a different bucket under a different identity, and a certificate from its CA handshakes here and is then refused by every route." -}}
 {{- end -}}
 {{- if eq $output.daemon.tls.clientSecret $output.daemon.tls.existingSecret -}}
 {{- fail (printf "hangarOutput.daemon.tls.clientSecret and hangarOutput.daemon.tls.existingSecret are both %q. existingSecret holds tls.key -- the key this daemon SERVES with -- and it is mounted in the daemon Pod and nowhere else: whatever else held it could impersonate the output daemon to the ATC. A client needs a CLIENT certificate, issued by the same CA and kept in its own Secret." $output.daemon.tls.existingSecret) -}}
@@ -273,7 +289,7 @@ does not set is read once and believed.
 
 {{/*
 Three key roles, three ids. A receipt says an object exists in a bucket, a
-control statement says a process on a node did something, and a read grant
+control statement says a process on a node did something, and a read warrant
 authorizes one staged read; "which key checks this" has to have one answer per
 id, and a shared id makes it two.
 */}}
@@ -292,13 +308,26 @@ id, and a shared id makes it two.
 {{- range $role, $secret := dict "executionControl.keySecret" $output.executionControl.keySecret "capabilityKeySecret" $output.capabilityKeySecret "receipt.privateKeySecret" $output.receipt.privateKeySecret "materializationKeySecret" $output.materializationKeySecret -}}
 {{- if $secret -}}
 {{- if hasKey $secrets $secret -}}
-{{- fail (printf "hangarOutput.%s and hangarOutput.%s name the same Secret %q. They say different things -- a receipt says an object exists in a bucket, a control statement says a process on a node did something, a read grant authorizes one staged read -- and an activation epoch pins them separately, so one Secret for two roles means rotating either rotates both." (get $secrets $secret) $role $secret) -}}
+{{- fail (printf "hangarOutput.%s and hangarOutput.%s name the same Secret %q. They say different things -- a receipt says an object exists in a bucket, a control statement says a process on a node did something, a read warrant authorizes one staged read -- and an activation epoch pins them separately, so one Secret for two roles means rotating either rotates both." (get $secrets $secret) $role $secret) -}}
 {{- end -}}
 {{- $_ := set $secrets $secret $role -}}
 {{- end -}}
 {{- end -}}
 
-{{/* The public verification ring. */}}
+{{/* Source hold acknowledgements use the node control key, not the receipt key. */}}
+{{- $controlEpochs := dict -}}
+{{- range $entry := $output.executionControl.publicKeys -}}
+{{- $epoch := toString $entry.epoch -}}
+{{- if or (kindIs "string" $entry.epoch) (le (int $entry.epoch) 0) (hasKey $controlEpochs $epoch) (ne (len ($entry.key | default "" | b64dec)) 32) -}}
+{{- fail "hangarOutput.executionControl.publicKeys requires one base64 Ed25519 public key per positive integer epoch" -}}
+{{- end -}}
+{{- $_ := set $controlEpochs $epoch true -}}
+{{- end -}}
+{{- if not (hasKey $controlEpochs (toString $output.activationEpoch)) -}}
+{{- fail "hangarOutput.executionControl.publicKeys has no key for the active epoch; source hold recovery cannot verify node statements" -}}
+{{- end -}}
+
+{{/* The public receipt verification ring. */}}
 {{- $active := dict -}}
 {{- $byID := dict -}}
 {{- $epochs := dict -}}
@@ -381,6 +410,51 @@ id, and a shared id makes it two.
 {{- end -}}
 {{- if not (hasPrefix "/" (clean (toString $scratch.path))) -}}
 {{- fail "hangarOutput.daemon.scratch.path must be absolute" -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Run result downloads on web. Each read spools the fetched archive and its
+canonical copy -- up to 256Mi each -- until its response is written, and web
+refuses reads beyond readConcurrency. So the scratch volume must hold
+readConcurrency x 2 x 256Mi, or the bound web enforces is one the volume
+cannot keep.
+*/}}
+{{- define "concourse.web.runResultReads" -}}
+{{- if and .Values.hangarOutput.executionControl.enabled .Values.hangarOutput.enabled .Values.hangarOutput.webEnabled -}}true{{- end -}}
+{{- end }}
+
+{{- define "concourse.web.validateRunResults" -}}
+{{- $results := .Values.web.runResults -}}
+{{- $concurrency := int $results.readConcurrency -}}
+{{- if lt $concurrency 1 -}}
+{{- fail "web.runResults.readConcurrency must be at least 1; zero would refuse every result download." -}}
+{{- end -}}
+{{- if not $results.scratchSizeLimit -}}
+{{- fail "web.runResults.scratchSizeLimit is required: an emptyDir with no sizeLimit is bounded only by the node's disk." -}}
+{{- end -}}
+{{- $limit := atoi (include "concourse.quantityBytes" (dict "name" "web.runResults.scratchSizeLimit" "value" $results.scratchSizeLimit)) -}}
+{{- $needed := mul $concurrency 2 268435456 -}}
+{{- if gt (int64 $needed) (int64 $limit) -}}
+{{- fail (printf "web.runResults.readConcurrency is %d, so up to %d bytes of result archives may be spooled at once -- more than web.runResults.scratchSizeLimit %s (%d bytes). Raise the limit to at least readConcurrency x 512Mi or lower the concurrency." $concurrency $needed $results.scratchSizeLimit $limit) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Credential handoff delivers the owner's session credentials into the image a
+Run's result producer names, and a template author chooses that. Web refuses
+every handoff unless the operator pins the worker image by digest; a tag can
+be moved after it is pinned, so only repository@sha256:<64 hex> is accepted.
+*/}}
+{{- define "concourse.web.validateRunCredentialWorkerImages" -}}
+{{- $images := .Values.web.runCredentialWorkerImages | default list -}}
+{{- if and $images (not .Values.web.runInputSigningKeySecret) -}}
+{{- fail "web.runCredentialWorkerImages requires web.runInputSigningKeySecret: without Run input intake there is no credential handoff to pin." -}}
+{{- end -}}
+{{- range $images -}}
+{{- if not (regexMatch "^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[0-9a-f]{64}$" (toString .)) -}}
+{{- fail (printf "web.runCredentialWorkerImages entry %q is not a digest-qualified image reference (repository@sha256:<64 hex>). A tag can be moved after it is pinned." (toString .)) -}}
+{{- end -}}
 {{- end -}}
 {{- end }}
 
