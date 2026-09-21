@@ -147,12 +147,18 @@ jobs:
           # This list must match the --skip-package list in the Makefile's
           # test-unit target. Anything excluded here and not there is a suite
           # that passes locally and never runs in CI.
+          #
+          # The brine entry is a no-op here -- go list is module-scoped and
+          # never names a nested module -- but the Makefile drives ginkgo -r,
+          # which walks directories and does reach it. Kept so both lists read
+          # the same and the guard test agrees.
           PACKAGES=$(go list ./... \
             | grep -v /integration \
             | grep -v /testflight \
             | grep -v /topgun \
             | grep -v /fly/integration \
-            | grep -v /testhelpers/otel)
+            | grep -v /testhelpers/otel \
+            | grep -v /atc/worker/jetbridge/brine)
           echo "Testing packages:"
           echo "$PACKAGES" | head -20
           echo "... ($(echo "$PACKAGES" | wc -l | tr -d ' ') packages total)"

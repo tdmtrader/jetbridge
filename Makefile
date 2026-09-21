@@ -7,10 +7,18 @@
 # deploy/concourse-pipeline.yml. TestUnitExclusionsMatchThePipeline enforces it:
 # a package excluded there and not here is one that passes locally and never
 # runs in CI, which is how 52k lines of tests went unrun.
+#
+# atc/worker/jetbridge/brine is skipped for a different reason than the rest.
+# It is a nested module, so the pipeline's `go list ./...` never names it and
+# its entry in the grep chain is a no-op -- but ginkgo -r walks DIRECTORIES,
+# not modules, so without this entry the root run descends into it and fails
+# on prerequisites only the brine job has (a brine binary on PATH, .build/
+# busybox, otelcol). The brine job owns that tier; test-brine-guards below
+# owns the part that needs nothing.
 test-unit:
 	@echo "==> Running unit tests..."
 	ginkgo -r -p --keep-going --flake-attempts=1 \
-		--skip-package=./integration,testflight,topgun,fly/integration,testhelpers/otel
+		--skip-package=./integration,testflight,topgun,fly/integration,testhelpers/otel,atc/worker/jetbridge/brine
 
 # Elm frontend tests (~30 sec)
 # Requires: yarn install (elm-test comes from node_modules)
