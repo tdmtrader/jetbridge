@@ -1,0 +1,6 @@
+github.com/fatih/color
+github.com/Masterminds/squirrel
+github.com/onsi/ginkgo/v2
+github.com/onsi/gomega
+github.com/stretchr/testify
+golang.org/x/sync

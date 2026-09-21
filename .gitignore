@@ -51,7 +51,8 @@ package-lock.json
 # Local scratch: git worktrees and throwaway clusters live in the tree.
 .worktrees/
 .local-cluster/
-.claude/
+.claude/*
+!.claude/skills/
 
 # Build intermediate: `elm make` emits elm.js, uglifyjs minifies it to
 # elm.min.js, and index.html loads only the minified file. Committing it
