@@ -57,3 +57,4 @@ go build ./... && go vet ./...
 
 | date | instance | outcome | note |
 |---|---|---|---|
+| 2026-09-21 | instancePipeline@atc/api/present | gate-failed | ci-check unit-tests red on build 882228: TestHandler (atc/api/buildserver) failed dropping testdb in DeferCleanup, "database testdb is being accessed by other users" — a postgres teardown race, not touching atc/api/present; branch tidy/vocabulary/2026-09-21 left for the weekly digest |
