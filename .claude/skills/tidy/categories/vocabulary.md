@@ -57,4 +57,4 @@ go build ./... && go vet ./...
 
 | date | instance | outcome | note |
 |---|---|---|---|
-| 2026-09-21 | instancePipeline@atc/api/present | gate-failed | ci-check unit-tests red on build 882228: TestHandler (atc/api/buildserver) failed dropping testdb in DeferCleanup, "database testdb is being accessed by other users" — a postgres teardown race, not touching atc/api/present; branch tidy/vocabulary/2026-09-21 left for the weekly digest |
+| 2026-09-21 | instancePipeline@atc/api/present | renamed | renamed to `payload`; `durable key` skipped as ambiguous (content key vs. artifact key) across all its sites; first ci-check attempt hit a postgres testdb teardown race (build 882228), unrelated to this diff and since addressed by "test: make postgres test-port selection atomic and self-healing" — rebased onto core and rerun |

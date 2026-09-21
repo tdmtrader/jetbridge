@@ -13,7 +13,7 @@ type PipelineRunOptions struct {
 // PipelineRun presents a durable run with its separately loaded child snapshot.
 // A nil child is the only reclaimed state; this presenter never loads or builds
 // a child reference itself.
-func PipelineRun(savedRun db.PipelineRun, instancePipeline db.Pipeline, options PipelineRunOptions) atc.PipelineRun {
+func PipelineRun(savedRun db.PipelineRun, payload db.Pipeline, options PipelineRunOptions) atc.PipelineRun {
 	atcRun := atc.PipelineRun{
 		ID:                 savedRun.ID(),
 		TemplatePipelineID: savedRun.TemplatePipelineID(),
@@ -22,7 +22,7 @@ func PipelineRun(savedRun db.PipelineRun, instancePipeline db.Pipeline, options 
 		CreatedBy:          savedRun.CreatedBy(),
 		CreatedAt:          savedRun.CreatedAt(),
 		CompletedAt:        savedRun.CompletedAt(),
-		Reclaimed:          instancePipeline == nil,
+		Reclaimed:          payload == nil,
 	}
 
 	if options.AuthorizedForParams {
@@ -41,11 +41,11 @@ func PipelineRun(savedRun db.PipelineRun, instancePipeline db.Pipeline, options 
 		atcRun.ReclaimRetryAfter = savedRun.ReclaimRetryAfter()
 	}
 
-	if instancePipeline != nil && options.CanEnterPayload {
+	if payload != nil && options.CanEnterPayload {
 		atcRun.InstanceRef = &atc.PipelineIdentifier{
-			TeamName:     instancePipeline.TeamName(),
-			PipelineName: instancePipeline.Name(),
-			InstanceVars: instancePipeline.InstanceVars(),
+			TeamName:     payload.TeamName(),
+			PipelineName: payload.Name(),
+			InstanceVars: payload.InstanceVars(),
 		}
 	}
 
