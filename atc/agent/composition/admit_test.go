@@ -128,6 +128,65 @@ var _ = Describe("admitting a child run", func() {
 		})
 	})
 
+	// The number is what a person is shown -- fly and the web address a run by
+	// it, never by its id -- so the caller reports it, and it has to survive
+	// the replay path as well as the admitting one. The two paths get it from
+	// different places: the first off the run the port hands the before-commit
+	// hook, the second by asking the port to read the run back. Neither of
+	// them selects from pipeline_runs here, which is the point.
+	Describe("the run's number", func() {
+		It("reports the admitted run's own number", func() {
+			result, err := service.Admit(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Replayed).To(BeFalse())
+
+			// Against the core table, not against a constant: a service that
+			// reported a plausible number belonging to some other run would
+			// satisfy "equals 1" on a database with one run in it.
+			Expect(result.Number).To(Equal(runNumber(result.RunID)))
+			Expect(result.Number).To(Equal(1))
+		})
+
+		It("reports the same number when it re-attaches", func() {
+			first, err := service.Admit(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			second, err := service.Admit(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(second.Replayed).To(BeTrue())
+			Expect(second.RunID).To(Equal(first.RunID))
+			Expect(second.Number).To(Equal(first.Number))
+			Expect(second.Number).To(Equal(runNumber(second.RunID)))
+		})
+
+		// Two calls, two runs of one template, so the numbers differ -- and
+		// each call's replay reports its own. This is what makes the spec
+		// above falsifiable: a replay that looked up the wrong run, or read
+		// the template's latest number instead of the run's, agrees with a
+		// database holding a single run and disagrees here.
+		It("reports each call's own number, not the template's latest", func() {
+			first, err := service.Admit(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			sibling := req
+			sibling.BuildID = otherBuildID
+
+			second, err := service.Admit(ctx, sibling)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(second.Number).NotTo(Equal(first.Number))
+
+			firstReplayed, err := service.Admit(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(firstReplayed.Replayed).To(BeTrue())
+			Expect(firstReplayed.Number).To(Equal(first.Number))
+
+			secondReplayed, err := service.Admit(ctx, sibling)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(secondReplayed.Replayed).To(BeTrue())
+			Expect(secondReplayed.Number).To(Equal(second.Number))
+		})
+	})
+
 	Describe("the contract key it supplies to the port", func() {
 		It("is derived from the call identity alone, with no round trip", func() {
 			Expect(composition.ContractKey(buildID, atc.PlanID("1/2"))).

@@ -27,7 +27,23 @@ type Request struct {
 // Result is what the caller gets back: the child run, and whether this call
 // admitted it or re-attached to it.
 type Result struct {
-	RunID    int
+	RunID int
+
+	// Number is the run's number within its template -- the ordinal a person
+	// sees in the web and passes to fly, as distinct from RunID, which is a
+	// primary key nothing outside the database is addressed by. It is here
+	// because the caller reports the admitted run to a human and the id is the
+	// wrong thing to show them.
+	//
+	// It is filled on both paths, and neither path reads pipeline_runs from
+	// this package. On first admission it comes off the runs.Run the port
+	// hands the before-commit hook; on replay, where the only thing this
+	// package knows is a run id it recorded earlier, it comes from
+	// runs.Admitter.LookupRun. pipeline_runs is a core table, and a SELECT
+	// from here into it is exactly the coupling this package's reach guard
+	// exists to keep out -- so core publishes the read instead.
+	Number int
+
 	Replayed bool
 }
 
@@ -85,6 +101,14 @@ func (s *Service) Admit(ctx context.Context, req Request) (Result, error) {
 		return result, nil
 	}
 
+	// The number comes off the same runs.Run the iteration row is written
+	// from, in the same hook, so that the row recording the run and the number
+	// reported for it cannot come to describe two different runs. AdmitRun
+	// returns an equal value below and reading it from there would be correct
+	// today; it would stop being obviously correct the moment the hook stops
+	// being the only place the admitted run is handled.
+	var number int
+
 	run, err := s.admitter.AdmitRun(ctx, tx, runs.Admission{
 		Template:  req.Template,
 		Params:    req.Params,
@@ -101,6 +125,8 @@ func (s *Service) Admit(ctx context.Context, req Request) (Result, error) {
 		// atomic. Always the first ordinal: this drives no loop and admits no
 		// second iteration.
 		BeforeCommit: func(hookTx runs.Tx, created runs.Run) error {
+			number = created.Number
+
 			_, err := hookTx.ExecContext(ctx,
 				`INSERT INTO composition_iterations (call_id, ordinal, run_id) VALUES ($1, 1, $2)`,
 				callID, created.ID)
@@ -116,7 +142,7 @@ func (s *Service) Admit(ctx context.Context, req Request) (Result, error) {
 		return Result{}, err
 	}
 
-	return Result{RunID: run.ID, Replayed: false}, nil
+	return Result{RunID: run.ID, Number: number, Replayed: false}, nil
 }
 
 // claim takes ownership of the call, or reports that someone else has it.
@@ -155,7 +181,17 @@ func (s *Service) claim(ctx context.Context, tx runs.Tx, req Request) (int64, bo
 // The digest is compared, never keyed on: a moved digest is a typed conflict
 // and admits nothing. Note the order -- the conflict is returned before
 // anything is admitted, so an implementation that admitted on a moved digest
-// would show up as a second run row.
+// would show up as a second run row. The lookup that follows comes last for
+// the same reason it comes at all: a conflicting call has no run to report,
+// and reading one before deciding that would be a read taken on a caller who
+// is about to be refused.
+//
+// The run's number is not on the iteration row and will not be put there. It
+// lives on pipeline_runs, which is core's, and duplicating it into a table of
+// this package's own would be a copy that can go stale of a value core already
+// owns. So the number is read back through the port, inside this same
+// transaction -- the caller is holding its one connection, and a read that
+// went anywhere else would want a second.
 func (s *Service) replay(ctx context.Context, tx runs.Tx, req Request) (Result, error) {
 	var (
 		recordedDigest string
@@ -180,5 +216,10 @@ func (s *Service) replay(ctx context.Context, tx runs.Tx, req Request) (Result, 
 		return Result{}, DigestConflictError{Recorded: recordedDigest, Presented: req.InputDigest}
 	}
 
-	return Result{RunID: runID, Replayed: true}, nil
+	run, err := s.admitter.LookupRun(ctx, tx, runID)
+	if err != nil {
+		return Result{}, err
+	}
+
+	return Result{RunID: run.ID, Number: run.Number, Replayed: true}, nil
 }

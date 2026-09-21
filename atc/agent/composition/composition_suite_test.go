@@ -58,6 +58,18 @@ var fakeLogFunc = func(logger lager.Logger, id lock.LockID) {}
 var _ = postgresrunner.GinkgoRunner(&postgresRunner)
 
 var _ = BeforeEach(func() {
+	// These specs admit real runs through the real port, and the port now
+	// answers the operator's hold before anything else. The hold is off by
+	// default, so it is opened here and restored afterwards: it is a
+	// process-wide global, and leaking it would decide the behaviour of
+	// whatever ran next in the same binary. Nothing in this package is about
+	// the hold -- atc/runs/creation_gate_test.go owns that.
+	previousGate := atc.EnablePipelineRunCreation
+	atc.EnablePipelineRunCreation = true
+	DeferCleanup(func() {
+		atc.EnablePipelineRunCreation = previousGate
+	})
+
 	postgresRunner.CreateTestDBFromTemplate()
 	DeferCleanup(func() {
 		postgresRunner.DropTestDB()
@@ -260,6 +272,19 @@ func iterationRunID(buildID int, planID string) int {
 	`, buildID, planID).Scan(&runID)).To(Succeed())
 
 	return runID
+}
+
+// runNumber reads a run's number straight out of the core table, which is the
+// only way to assert the number the service reports is the run's own. The
+// service gets it from the port; a spec that got it the same way would agree
+// with the port about a value neither of them had checked.
+func runNumber(runID int) int {
+	GinkgoHelper()
+	var number int
+	Expect(dbConn.QueryRow("SELECT number FROM pipeline_runs WHERE id = $1", runID).
+		Scan(&number)).To(Succeed())
+
+	return number
 }
 
 func callDigest(buildID int, planID string) string {

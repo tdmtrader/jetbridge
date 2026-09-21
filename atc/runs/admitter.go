@@ -2,6 +2,7 @@ package runs
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 
 	"github.com/concourse/concourse/atc"
@@ -10,8 +11,11 @@ import (
 
 // Admitter is core's published run-admission surface.
 //
-// Two operations, and the pairing is the design: a consumer opens the
-// transaction, so it can commit its own rows in the same one as the run.
+// The first two operations are a pair, and the pairing is the design: a
+// consumer opens the transaction, so it can commit its own rows in the same
+// one as the run. The third is the read the pair implies -- a consumer that
+// recorded a run id and comes back later holds an id and nothing else, and
+// core will not have it read pipeline_runs for the rest.
 type Admitter interface {
 	// Begin opens a transaction the consumer owns and must finish.
 	Begin(context.Context) (Transaction, error)
@@ -19,6 +23,11 @@ type Admitter interface {
 	// AdmitRun admits one run of one template inside the caller's
 	// transaction. It does not commit and does not roll back.
 	AdmitRun(context.Context, Tx, Admission) (Run, error)
+
+	// LookupRun reads an already-admitted run by id, inside the caller's
+	// transaction. It is a read and nothing else: it creates nothing, decides
+	// no authorization, and refuses an id that names no row.
+	LookupRun(ctx context.Context, tx Tx, runID int) (Run, error)
 }
 
 type admitter struct {
@@ -92,6 +101,26 @@ func (a *admitter) Begin(ctx context.Context) (Transaction, error) {
 // exists at all. atc/runs/connection_budget_test.go pins the budget at one
 // connection.
 func (a *admitter) AdmitRun(ctx context.Context, tx Tx, adm Admission) (Run, error) {
+	// The operator's hold comes first, ahead of even the contract key, for the
+	// reason the HTTP create route gives for putting it ahead of reading the
+	// request body: the hold is a property of the server rather than of the
+	// call, so nothing about the call is weighed under a server that is not
+	// creating runs at all. atc.EnablePipelineRunCreation is a process-wide
+	// value assigned once in atccmd before anything is served, so reading it
+	// here is reading the same setting the route reads, not a second copy of
+	// it.
+	//
+	// It lives at the port rather than at each consumer because the route was
+	// the only thing consulting it, and a second creation path that forgot to
+	// is exactly the drift this package exists to make impossible. Refusing
+	// before the template is resolved and before CreateRunInTx is reached
+	// keeps "no row, no number, no payload, no notification" true of the
+	// in-process path as well: the caller's transaction is already open, and
+	// whatever it wrote before asking goes back with its rollback.
+	if !atc.EnablePipelineRunCreation {
+		return Run{}, atc.ErrPipelineRunCreationDisabled
+	}
+
 	if adm.ContractKey == "" {
 		return Run{}, ErrMissingContractKey
 	}
@@ -117,6 +146,13 @@ func (a *admitter) AdmitRun(ctx context.Context, tx Tx, adm Admission) (Run, err
 		return Run{}, err
 	}
 
+	// After the template is resolved, because the check is an identity
+	// comparison between it and the caller's own pipeline, and before
+	// anything is created, because a refused admission writes nothing.
+	if err := refuseDirectRecursion(auth, pipeline); err != nil {
+		return Run{}, err
+	}
+
 	createdBy := auth.createdBy
 
 	opts := db.RunCreationOpts{}
@@ -138,6 +174,64 @@ func (a *admitter) AdmitRun(ctx context.Context, tx Tx, adm Admission) (Run, err
 	}
 
 	return portRun(creation, createdBy), nil
+}
+
+// lookupRunQuery reads one run's identity, and the identity is all of it.
+//
+// The columns are exactly the fields of Run and no others: a consumer that
+// reads a run back learns what a consumer that admitted one learns, and the
+// status, the params and the timestamps stay on core's side of the boundary
+// where the model that interprets them lives. The left join is the same one
+// atc/db's own pipelineRunsQuery uses to reach the payload pipeline, which is
+// how a run with no payload row -- not a state admission produces, but not one
+// a read may crash on either -- comes back as a zero id rather than an error.
+const lookupRunQuery = `
+	SELECT r.id, r.number, r.template_pipeline_id, r.created_by, payload.id
+	FROM pipeline_runs r
+	LEFT JOIN pipelines payload ON payload.pipeline_run_id = r.id
+	WHERE r.id = $1
+`
+
+// LookupRun reads an already-admitted run by id.
+//
+// The read is a statement of this package's own rather than a call into
+// PipelineRunFactory, and the reason is the connection budget. The factory's
+// two by-id readers, GetRun and GetRunByID, run on the pool: called from here
+// they would want a second connection while the caller still holds the first,
+// which is the deadlock AdmitRun's doc comment describes at length. The
+// factory's transaction-scoped readers are unexported, so there is nothing to
+// reuse. Five columns through the caller's Tx is the whole of it.
+//
+// Unlike AdmitRun this does not bridge back to db.Tx and so does not refuse a
+// foreign transaction: it hands the handle to nothing, it just reads through
+// it. A Tx from somewhere else is a transaction the caller owns and a
+// perfectly good place to read from, and refusing it would be a rule with no
+// failure behind it.
+//
+// It decides no authorization, and that is not an omission. A consumer can
+// only reach this with an id the port itself handed back, on a run the port
+// itself authorized when it admitted it; there is no name to guess and no
+// existence oracle to protect, which is why an unknown id is ErrRunNotFound
+// and not ErrUnauthorized.
+func (a *admitter) LookupRun(ctx context.Context, tx Tx, runID int) (Run, error) {
+	var (
+		run       Run
+		payloadID sql.NullInt64
+	)
+
+	err := tx.QueryRowContext(ctx, lookupRunQuery, runID).
+		Scan(&run.ID, &run.Number, &run.TemplatePipelineID, &run.CreatedBy, &payloadID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Run{}, ErrRunNotFound
+		}
+
+		return Run{}, err
+	}
+
+	run.PayloadPipelineID = int(payloadID.Int64)
+
+	return run, nil
 }
 
 // resolveTemplate turns a reference into the pipeline to admit against.
@@ -173,6 +267,59 @@ func (a *admitter) resolveTemplate(tx db.Tx, auth authorization, ref TemplateRef
 	}
 
 	return pipeline, nil
+}
+
+// refuseDirectRecursion refuses the two loops a single admission can see.
+//
+// Both are identity comparisons against the resolved template's pipeline id,
+// made from facts the authorization step already read off the caller's build
+// row, so neither costs a read.
+//
+// The first is a build of the template itself asking for a run of it, which
+// atc/db makes unreachable today and which is enforced here anyway -- see
+// ErrCallerIsTemplate. The second is the one that actually happens: a
+// template whose entry job carries a `run_pipeline` naming itself, which reads
+// as harmless in the config and produces an unbounded chain of runs the first
+// time it is admitted -- the caller is then a build of a payload pipeline,
+// and that payload's run names the template it materialized from.
+//
+// Ids rather than team-and-name, although the rule is usually stated that way.
+// A pipeline id is the team and the name and the instance vars together, which
+// is what has to agree for two references to mean the same pipeline; comparing
+// names would need the fold and the instance vars restated here, and would get
+// one of them wrong eventually.
+//
+// This bounds direct recursion only -- one hop, from the facts one admission
+// can see. A cycle through two templates that call each other leaves no trace
+// on either build row, and nothing here can detect it. Detecting it needs the
+// causal chain, which is what Admission.CausedByRun is reserved for: the
+// run-contract track defines that edge and the refusals over it, and multi-hop
+// cycle detection lands with it. The one-hop case is not a down payment on
+// that work; it is the case a person writes by accident, and it is refused
+// today rather than left until the track that will generalize it.
+//
+// Only a build principal reaches either check. A person asking over HTTP has
+// no calling build, so there is no loop to be in -- creating a run of a
+// template from a job of that same template is a thing a person may do once,
+// deliberately, and nothing about it recurs.
+func refuseDirectRecursion(auth authorization, template db.Pipeline) error {
+	if auth.caller == nil {
+		return nil
+	}
+
+	// Zero means a one-off build, which belongs to no pipeline. It can be in
+	// neither loop, and comparing zero against a real id would be comparing
+	// "no pipeline" with a pipeline.
+	if auth.caller.pipelineID != 0 && auth.caller.pipelineID == template.ID() {
+		return ErrCallerIsTemplate
+	}
+
+	// Zero means the caller's pipeline is not a run's payload at all.
+	if auth.caller.templatePipelineID != 0 && auth.caller.templatePipelineID == template.ID() {
+		return ErrCallerIsRunOfTemplate
+	}
+
+	return nil
 }
 
 // refusal re-expresses the run factory's refusals as the port's own.
