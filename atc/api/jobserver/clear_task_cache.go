@@ -1,13 +1,13 @@
 package jobserver
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/errormap"
+	"github.com/concourse/concourse/atc/api/helpers"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/google/jsonapi"
 )
@@ -59,27 +59,6 @@ func (s *Server) ClearTaskCache(pipeline db.Pipeline) http.Handler {
 			return
 		}
 
-		s.writeJSONResponse(w, atc.ClearTaskCacheResponse{CachesRemoved: rowsDeleted})
+		helpers.WriteJSONResponse(s.logger, w, atc.ClearTaskCacheResponse{CachesRemoved: rowsDeleted})
 	})
-}
-
-func (s *Server) writeJSONResponse(w http.ResponseWriter, obj any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-
-	responseJSON, err := json.Marshal(obj)
-	if err != nil {
-		s.logger.Error("failed-to-marshal-response", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintf(w, "failed to generate error response: %s", err)
-		return
-	}
-
-	_, err = w.Write(responseJSON)
-	if err != nil {
-		s.logger.Error("failed-to-write-response", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-
 }

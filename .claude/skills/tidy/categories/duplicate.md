@@ -53,3 +53,4 @@ under `fly/`; plus `make test-elm && (cd web && yarn run build)` for Elm.
 
 | date | instance | outcome | note |
 |---|---|---|---|
+| 2026-09-22 | writeJSONResponse@atc/api/jobserver/clear_task_cache.go+3 | tidied | Three byte-identical `writeJSONResponse` methods on three different `*Server` types, all inside core's `atc/api`, so no boundary is crossed. `atc/api/helpers` already owns the sibling response writers (`HandleBadRequest`, `WriteErrorResponse`) and imports nothing but `atc`, so it is the lowest common home; the shared version takes the `lager.Logger` the receiver supplied, no mode parameter. All six call sites keep the same argument, status codes, headers and log messages |

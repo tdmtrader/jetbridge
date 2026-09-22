@@ -6,6 +6,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/api/helpers"
 	"github.com/concourse/concourse/atc/db"
 )
 
@@ -74,6 +75,6 @@ func (s *Server) CopyResourceVersions(pipeline db.Pipeline) http.Handler {
 			return
 		}
 
-		s.writeJSONResponse(w, atc.CopyVersionsResponse{VersionsCopied: copied})
+		helpers.WriteJSONResponse(s.logger, w, atc.CopyVersionsResponse{VersionsCopied: copied})
 	})
 }

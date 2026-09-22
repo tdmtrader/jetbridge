@@ -5,6 +5,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/api/helpers"
 	"github.com/concourse/concourse/atc/db"
 )
 
@@ -34,6 +35,6 @@ func (s *Server) ClearResourceTypeVersions(pipeline db.Pipeline) http.Handler {
 			return
 		}
 
-		s.writeJSONResponse(w, atc.ClearVersionsResponse{VersionsRemoved: versionsDeleted})
+		helpers.WriteJSONResponse(s.logger, w, atc.ClearVersionsResponse{VersionsRemoved: versionsDeleted})
 	})
 }
