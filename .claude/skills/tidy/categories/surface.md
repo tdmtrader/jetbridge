@@ -55,3 +55,4 @@ Elm: `make test-elm && (cd web && yarn run build)`; the tracked
 
 | date | instance | outcome | note |
 |---|---|---|---|
+| 2026-09-22 | AlgorithmOutput@atc/db/input_mapping.go | deleted | zero references anywhere in the tree besides its own declaration; not in an excluded path and not an interface |

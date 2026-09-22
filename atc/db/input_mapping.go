@@ -47,8 +47,3 @@ type AlgorithmInput struct {
 	AlgorithmVersion
 	FirstOccurrence bool
 }
-
-type AlgorithmOutput struct {
-	AlgorithmVersion
-	InputName string
-}
