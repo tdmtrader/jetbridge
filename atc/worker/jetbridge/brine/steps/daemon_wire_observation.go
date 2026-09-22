@@ -90,6 +90,26 @@ type daemonWireRequest struct {
 	sequence uint64
 }
 
+// captureAction freezes the requests sent by one synchronous action. Keep all
+// connection bytes: an existing keepalive connection may carry both setup and
+// action requests, so clearing connections would lose the action's writes.
+func (t *daemonWireObservation) captureAction(action func()) ([]daemonWireRequest, error) {
+	start := t.sequence.Load()
+	action()
+	end := t.sequence.Load()
+	requests, err := t.capturedRequests()
+	if err != nil {
+		return nil, err
+	}
+	var captured []daemonWireRequest
+	for _, req := range requests {
+		if req.sequence > start && req.sequence <= end {
+			captured = append(captured, req)
+		}
+	}
+	return captured, nil
+}
+
 // capturedRequests parses only bytes accepted by actual sockets. Keeping bodies
 // here lets the mirror contract share the read/probe observer without supplying
 // an HTTP response or replacing the real daemon.

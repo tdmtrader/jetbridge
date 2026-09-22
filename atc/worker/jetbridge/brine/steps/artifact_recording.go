@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -214,6 +215,7 @@ type ArtifactCluster struct {
 	mirrorRecorder *brine.Recorder
 	live           *liveArtifactDaemon
 	nodeReads      *execObservation
+	recordingWire  *daemonWireObservation
 	recording      *artifactRecordingObservation
 	Ctx            context.Context
 	Namespace      string
@@ -370,14 +372,26 @@ func wireArtifactCluster(in ArtifactCluster, executor jetbridge.PodExecutor) (Ar
 	in.Worker.SetVolumeRepo(in.DB.VolumeRepository)
 	in.Worker.SetExecutor(executor)
 	in.Locator = jetbridge.NewArtifactLocator()
-	client := jetbridge.NewDaemonClient(
-		lagertest.NewTestLogger("brine-artifact-recording"),
-		in.Clientset, in.Namespace, cfg.ArtifactDaemonService, cfg.ArtifactDaemonPort, nil,
-	)
-	in.Backend = jetbridge.NewDaemonSetBackend(cfg, in.Locator, jetbridge.NewNodeIPResolver(in.Clientset))
-	in.Backend.SetDaemonClient(client)
-	in.Worker.SetArtifactLocator(in.Locator)
-	in.Worker.SetDaemonClient(client)
+	addresses := map[string]bool{}
+	if in.Node != nil {
+		addresses[net.JoinHostPort(in.Node.host, strconv.Itoa(in.Node.port))] = true
+	}
+	// Both the backend and the discovery client retain transports built here.
+	// Observe their construction once; each recording action selects its own
+	// request interval without replacing any of the fixture's clients.
+	in.recordingWire, err = observeDaemonConstruction(addresses, func() {
+		client := jetbridge.NewDaemonClient(
+			lagertest.NewTestLogger("brine-artifact-recording"),
+			in.Clientset, in.Namespace, cfg.ArtifactDaemonService, cfg.ArtifactDaemonPort, nil,
+		)
+		in.Backend = jetbridge.NewDaemonSetBackend(cfg, in.Locator, jetbridge.NewNodeIPResolver(in.Clientset))
+		in.Backend.SetDaemonClient(client)
+		in.Worker.SetArtifactLocator(in.Locator)
+		in.Worker.SetDaemonClient(client)
+	})
+	if err != nil {
+		return ArtifactCluster{}, err
+	}
 	in.Outputs = map[string]string{}
 	in.ExpectedVolumes = map[string]string{}
 	in.ProducerDir = "/tmp/build"

@@ -3,20 +3,16 @@ package steps
 import (
 	"encoding/json"
 	"fmt"
-	"net"
 	"path/filepath"
 	"reflect"
-	"strconv"
 
-	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 )
 
-// Observe only the producing daemon's real requests during the action. Alias
-// clients are constructed lazily by RecordOutputs, so constructor-only tracing
-// cannot see them. Neither daemon responses nor Kubernetes state are supplied.
+// Retain only the producing daemon's real requests during the recording action,
+// excluding fixture setup and subsequent readback over the same connections.
 type artifactRecordingObservation struct {
-	wire     *daemonWireObservation
+	requests []daemonWireRequest
 	cacheKey string
 }
 
@@ -28,19 +24,14 @@ func (in *ArtifactCluster) observeRecording(cacheKey string, action func()) erro
 		action()
 		return nil
 	}
-	wire, err := observeDaemonTraffic(map[string]bool{
-		net.JoinHostPort(in.Node.host, strconv.Itoa(in.Node.port)): true,
-	}, func() {
-		in.Backend.SetDaemonClient(jetbridge.NewDaemonClient(
-			lagertest.NewTestLogger("brine-recording-wire"), in.Clientset,
-			in.Namespace, in.daemonService(), in.Node.port, nil,
-		))
-		action()
-	})
+	if in.recordingWire == nil {
+		return fmt.Errorf("producer clients were not observed during construction")
+	}
+	requests, err := in.recordingWire.captureAction(action)
 	if err != nil {
 		return err
 	}
-	in.recording = &artifactRecordingObservation{wire: wire, cacheKey: cacheKey}
+	in.recording = &artifactRecordingObservation{requests: requests, cacheKey: cacheKey}
 	return nil
 }
 
@@ -48,10 +39,7 @@ func (in ArtifactCluster) requireRecording() error {
 	if in.recording == nil {
 		return fmt.Errorf("no producer recording observation")
 	}
-	requests, err := in.recording.wire.capturedRequests()
-	if err != nil {
-		return err
-	}
+	requests := in.recording.requests
 	type output struct{ alias, directory string }
 	var outputs []output
 	if in.recording.cacheKey != "" {
@@ -77,25 +65,26 @@ func (in ArtifactCluster) requireRecording() error {
 		// canonical form is what the scenario expects on the wire.
 		key := filepath.Clean(in.Handle + "/" + out.directory)
 		localPath := filepath.Join(in.StoreRoot, "steps", key)
-		// A cache is registered through RegisterAlias (durable_key); an output
-		// through the worker's own volume registration, which always says
-		// whether the path is read-only (storage_daemonset.go) and for an
-		// output says false.
-		aliasBody := map[string]any{"key": out.alias, "local_path": localPath}
-		if in.recording.cacheKey != "" {
-			aliasBody["durable_key"] = ""
-		} else {
-			aliasBody["read_only"] = false
+		aliasBody := map[string]any{
+			"key": out.alias, "local_path": localPath,
+			"durable_key": "", "read_only": false,
 		}
 		register, mirror := -1, -1
 		for i, req := range requests {
-			// Decoded as any, not string: the worker's own volume registration
-			// (storage_daemonset.go, POST /register) carries a boolean
-			// `read_only`, and a string-only decode refused the whole request
-			// list on it (build 873827, three mirroring scenarios).
 			var body map[string]any
 			if err := json.Unmarshal(req.Body, &body); err != nil {
 				return fmt.Errorf("producer request JSON: %w", err)
+			}
+			// The shared wire client omits zero-valued registration flags.
+			// Normalize only absent optional fields; wrong values, types and
+			// unexpected fields must still fail the exact comparison.
+			if req.Method == "POST" && req.Path == "/register" && body != nil {
+				if _, present := body["durable_key"]; !present {
+					body["durable_key"] = ""
+				}
+				if _, present := body["read_only"]; !present {
+					body["read_only"] = false
+				}
 			}
 			if req.Method == "POST" && req.Path == "/register" && reflect.DeepEqual(body, aliasBody) {
 				if register >= 0 {
