@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"code.cloudfoundry.org/clock"
 	"github.com/concourse/concourse/atc"
@@ -123,6 +124,9 @@ var _ = Describe("LogErrorStep", func() {
 			var timedOut = fmt.Errorf("wrapped: %w", context.DeadlineExceeded)
 
 			BeforeEach(func() {
+				cancel()
+				ctx, cancel = context.WithTimeout(context.Background(), time.Nanosecond)
+				<-ctx.Done()
 				fakeStep.RunReturns(false, timedOut)
 			})
 
@@ -132,6 +136,33 @@ var _ = Describe("LogErrorStep", func() {
 
 			It("logs 'timeout exceeded'", func() {
 				Expect(execBuildErrorMessages(fixture, build)).To(Equal([]string{"timeout exceeded"}))
+			})
+		})
+
+		// Only the step's own context decides whether it timed out. A
+		// deadline from some budget underneath it is an error like any other,
+		// and an abort during one is still an abort.
+		Context("when the inner step reports a deadline that is not its own", func() {
+			var foreign = fmt.Errorf("recording the exact outcome: %w", context.DeadlineExceeded)
+
+			BeforeEach(func() {
+				fakeStep.RunReturns(false, foreign)
+			})
+
+			It("logs the error itself, not 'timeout exceeded'", func() {
+				Expect(execBuildErrorMessages(fixture, build)).To(Equal([]string{foreign.Error()}))
+			})
+		})
+
+		Context("when aborted while the inner step reports a deadline that is not its own", func() {
+			BeforeEach(func() {
+				cancel()
+				fakeStep.RunReturns(false, errors.Join(
+					fmt.Errorf("recording the exact outcome: %w", context.DeadlineExceeded), context.Canceled))
+			})
+
+			It("logs 'interrupted'", func() {
+				Expect(execBuildErrorMessages(fixture, build)).To(Equal([]string{"interrupted"}))
 			})
 		})
 

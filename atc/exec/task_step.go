@@ -412,7 +412,7 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 	}
 
 	if runErr != nil {
-		if errors.Is(runErr, context.DeadlineExceeded) {
+		if stepTimedOut(ctx) {
 			oteltrace.SpanFromContext(ctx).AddEvent("step.errored")
 			delegate.Errored(logger, TimeoutLogMessage)
 			return false, nil

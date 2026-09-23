@@ -2,7 +2,6 @@ package exec
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -276,7 +275,7 @@ func (step *GetStep) run(ctx context.Context, state RunState, delegate GetDelega
 		containerOwner,
 	)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
+		if isStepTimeout(err) {
 			trace.SpanFromContext(ctx).AddEvent("step.errored")
 			delegate.Errored(logger, TimeoutLogMessage)
 			return false, nil
@@ -487,7 +486,7 @@ func (step *GetStep) performGetAndInitCache(
 	containerSpec runtime.ContainerSpec,
 	containerOwner db.ContainerOwner,
 	worker runtime.Worker,
-) (runtime.Volume, resource.VersionResult, runtime.ProcessResult, error) {
+) (_ runtime.Volume, _ resource.VersionResult, _ runtime.ProcessResult, err error) {
 	logger = logger.Session("perform-get")
 	ctx = lagerctx.NewContext(ctx, logger)
 
@@ -498,6 +497,9 @@ func (step *GetStep) performGetAndInitCache(
 	ctx = lagerctx.NewContext(ctx, logger)
 
 	defer cancel()
+	// The caller holds a wider context than the one carrying the timeout, so
+	// the attribution is made here, where the timeout is.
+	defer func() { err = attributeStepTimeout(ctx, err) }()
 
 	container, mounts, err := worker.FindOrCreateContainer(ctx, containerOwner, step.containerMetadata, containerSpec, delegate)
 	if err != nil {

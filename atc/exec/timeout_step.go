@@ -2,7 +2,6 @@ package exec
 
 import (
 	"context"
-	"errors"
 	"time"
 )
 
@@ -39,7 +38,9 @@ func (ts *TimeoutStep) Run(ctx context.Context, state RunState) (bool, error) {
 	defer cancel()
 
 	ok, err := ts.step.Run(timeoutCtx, state)
-	if errors.Is(err, context.DeadlineExceeded) {
+	// Only this step's own deadline is a timeout; a deadline some budget
+	// underneath raised is the nested step's error like any other.
+	if err != nil && stepTimedOut(timeoutCtx) {
 		return false, nil
 	}
 

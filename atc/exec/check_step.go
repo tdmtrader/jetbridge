@@ -2,7 +2,6 @@ package exec
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -238,7 +237,7 @@ func (step *CheckStep) run(ctx context.Context, state RunState, delegate CheckDe
 				return false, fmt.Errorf("update check end time: %w", err)
 			}
 
-			if errors.Is(runErr, context.DeadlineExceeded) {
+			if isStepTimeout(runErr) {
 				oteltrace.SpanFromContext(ctx).AddEvent("step.errored")
 				delegate.Errored(logger, TimeoutLogMessage)
 				return false, nil
@@ -331,15 +330,18 @@ func (step *CheckStep) runCheck(
 
 	container, _, err := worker.FindOrCreateContainer(ctx, containerOwner, step.containerMetadata, containerSpec, delegate)
 	if err != nil {
-		return nil, runtime.ProcessResult{}, err
+		return nil, runtime.ProcessResult{}, attributeStepTimeout(ctx, err)
 	}
 
 	oteltrace.SpanFromContext(ctx).AddEvent("step.starting")
 	delegate.Starting(logger)
-	return resource.Resource{
+	versions, result, err := resource.Resource{
 		Source:  source,
 		Version: fromVersion,
 	}.Check(ctx, container, delegate.Stderr())
+	// The caller holds a wider context than the one carrying the timeout, so
+	// the attribution is made here, where the timeout is.
+	return versions, result, attributeStepTimeout(ctx, err)
 }
 
 // resolveNatively resolves a registry-image resource's digest via the OCI

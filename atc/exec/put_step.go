@@ -2,7 +2,6 @@ package exec
 
 import (
 	"context"
-	"errors"
 	"io"
 	"time"
 
@@ -208,7 +207,7 @@ func (step *PutStep) run(ctx context.Context, state RunState, delegate PutDelega
 		Params: params,
 	}.Put(ctx, container, delegate.Stderr())
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
+		if stepTimedOut(ctx) {
 			trace.SpanFromContext(ctx).AddEvent("step.errored")
 			delegate.Errored(logger, TimeoutLogMessage)
 			return false, nil

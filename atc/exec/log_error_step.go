@@ -34,10 +34,12 @@ func (step LogErrorStep) Run(ctx context.Context, state RunState) (bool, error) 
 	}
 
 	var message string
+	// The step's own context decides: a deadline its error carries may be
+	// some budget underneath it, which is not the step timing out.
 	switch {
-	case errors.Is(runErr, context.Canceled):
+	case errors.Is(runErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
 		message = AbortedLogMessage
-	case errors.Is(runErr, context.DeadlineExceeded):
+	case isStepTimeout(runErr) || stepTimedOut(ctx):
 		message = TimeoutLogMessage
 	default:
 		message = runErr.Error()

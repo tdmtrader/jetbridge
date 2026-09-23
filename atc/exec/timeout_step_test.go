@@ -3,6 +3,7 @@ package exec_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	. "github.com/concourse/concourse/atc/exec"
@@ -67,7 +68,11 @@ var _ = Describe("Timeout Step", func() {
 
 		Context("when the step exceeds the timeout", func() {
 			BeforeEach(func() {
-				fakeStep.RunReturns(true, context.DeadlineExceeded)
+				timeoutDuration = "1ms"
+				fakeStep.RunStub = func(ctx context.Context, _ RunState) (bool, error) {
+					<-ctx.Done()
+					return true, ctx.Err()
+				}
 			})
 
 			It("returns no error", func() {
@@ -76,6 +81,21 @@ var _ = Describe("Timeout Step", func() {
 
 			It("is not successful", func() {
 				Expect(stepOk).To(BeFalse())
+			})
+		})
+
+		// Only the timeout this step set is a timeout. A deadline raised
+		// underneath the step by some other budget is the step's error.
+		Context("when the step reports a deadline that is not this timeout's", func() {
+			var foreign error
+
+			BeforeEach(func() {
+				foreign = fmt.Errorf("recording the exact outcome: %w", context.DeadlineExceeded)
+				fakeStep.RunReturns(true, foreign)
+			})
+
+			It("returns the error", func() {
+				Expect(stepErr).To(Equal(foreign))
 			})
 		})
 

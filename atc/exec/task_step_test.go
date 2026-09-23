@@ -409,6 +409,35 @@ var _ = Describe("TaskStep", func() {
 			})
 		})
 
+		// A deadline that is not the step's own -- a ledger or witness budget
+		// that stalled underneath the process -- is not the step timing out. A
+		// step that failed on it would decide an outcome nobody proved.
+		Context("when the process reports a deadline that is not the step's own", func() {
+			BeforeEach(func() {
+				chosenContainer.ProcessDefs[0].Stub.Do = func(context.Context, *runtimetest.Process) error {
+					return fmt.Errorf("recording the exact outcome: %w", context.DeadlineExceeded)
+				}
+			})
+
+			It("errors rather than failing on a timeout", func() {
+				Expect(stepErr).To(MatchError(ContainSubstring("recording the exact outcome")))
+				Expect(execBuildErrorMessages(fixture, dbBuild)).NotTo(ContainElement(exec.TimeoutLogMessage))
+			})
+		})
+
+		Context("when aborted while the process reports a deadline that is not the step's own", func() {
+			BeforeEach(func() {
+				cancel()
+				chosenContainer.ProcessDefs[0].Stub.Do = func(ctx context.Context, _ *runtimetest.Process) error {
+					return errors.Join(fmt.Errorf("recording the exact outcome: %w", context.DeadlineExceeded), ctx.Err())
+				}
+			})
+
+			It("reports the abort", func() {
+				Expect(errors.Is(stepErr, context.Canceled)).To(BeTrue(), "%v", stepErr)
+			})
+		})
+
 		Context("when there is default task timeout", func() {
 			BeforeEach(func() {
 				defaultTaskTimeout = time.Minute * 30
