@@ -54,3 +54,4 @@ must not fall.
 
 | date | instance | outcome | note |
 |---|---|---|---|
+| 2026-09-23 | configFile@fly/integration/format_pipeline_test.go | tidied | The temp config file was created in the `format-pipeline` Describe's `BeforeEach` and removed by a separate `AfterEach` sixteen lines below, outliving nothing but the spec that used it, so a `DeferCleanup` registered at the creation site now owns it and the `AfterEach` node is gone. Cleanup semantics are unchanged: the same `os.RemoveAll(configFile.Name())` with the same `Expect(err).NotTo(HaveOccurred())`, and it is the only cleanup in the container so nothing reorders. Assertion count in the file is 27 before and after; `ginkgo -r ./fly/integration/` ran 600 of 600 specs green with 0 pending and 0 skipped |

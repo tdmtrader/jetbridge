@@ -22,6 +22,11 @@ var _ = Describe("format-pipeline", func() {
 		configFile, err = os.CreateTemp("", "format-pipeline-test-*.yml")
 		Expect(err).NotTo(HaveOccurred())
 
+		DeferCleanup(func() {
+			err := os.RemoveAll(configFile.Name())
+			Expect(err).NotTo(HaveOccurred())
+		})
+
 		inputYaml, err = os.ReadFile("fixtures/format-input.yml")
 		Expect(err).NotTo(HaveOccurred())
 
@@ -32,11 +37,6 @@ var _ = Describe("format-pipeline", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		err = configFile.Close()
-		Expect(err).NotTo(HaveOccurred())
-	})
-
-	AfterEach(func() {
-		err := os.RemoveAll(configFile.Name())
 		Expect(err).NotTo(HaveOccurred())
 	})
 
