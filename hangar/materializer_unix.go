@@ -413,6 +413,19 @@ func publishMaterializationAt(ctx context.Context, parent *os.File, stageName st
 		return false, cleanup(fmt.Errorf("hangar: sealed destination payload differs from anchored captured tree: %w", errors.Join(compareErr, ErrCorrupt)))
 	}
 	receiptMoved, err := renameIntoSealedDirectory(stage, materializationReceiptName, destination, materializationReceiptName)
+	if err != nil && !receiptMoved && os.Geteuid() != 0 && (errors.Is(err, unix.EACCES) || errors.Is(err, unix.EPERM)) {
+		// Without CAP_DAC_OVERRIDE the sealed root refuses its receipt. Open
+		// it to its owner alone for the one rename and reseal it, as the
+		// absent-destination path does for its stage: no other UID may write
+		// in the window, and the receipt is still published last.
+		if chmodErr := unix.Fchmod(int(destination.Fd()), 0700); chmodErr == nil {
+			receiptMoved, err = renameIntoSealedDirectory(stage, materializationReceiptName, destination, materializationReceiptName)
+			resealErr := errors.Join(unix.Fchmod(int(destination.Fd()), 0555), unix.Fsync(int(destination.Fd())))
+			if receiptMoved && resealErr != nil {
+				return false, fmt.Errorf("hangar: reseal materialization root after receipt publication: %w", resealErr)
+			}
+		}
+	}
 	if receiptMoved {
 		committed = true
 	}

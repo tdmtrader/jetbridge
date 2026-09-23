@@ -83,6 +83,53 @@ func TestMaterializerPreservesPreopenedEmptyDestination(t *testing.T) {
 	}
 }
 
+// A daemon without CAP_DAC_OVERRIDE -- any non-root daemon -- still publishes
+// into an existing destination. The root is sealed 0555 before the receipt,
+// so the receipt's rename briefly reopens the directory to its owner alone,
+// exactly as the absent-destination path does, and reseals it. Nothing but
+// the owner may write in that window, and the receipt remains the last thing
+// published.
+func TestMaterializerPublishesIntoExistingDestinationWithoutPrivilege(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes into a sealed directory regardless; this is the unprivileged path")
+	}
+	ref, canonical := canonicalTreeFixture(t, testTreeArchive(t, []testTreeEntry{{name: "result", mode: 0600, kind: tar.TypeReg, body: "ready"}}))
+	storage := t.TempDir()
+	cleanupMaterializedStorage(t, storage)
+	destination := filepath.Join(storage, "steps", "handle", "volume")
+	if err := os.MkdirAll(destination, 0755); err != nil {
+		t.Fatal(err)
+	}
+	var modeAtReceipt os.FileMode
+	hooks := materializerHooks{beforeReceipt: func() error {
+		info, err := os.Stat(destination)
+		if err != nil {
+			return err
+		}
+		modeAtReceipt = info.Mode().Perm()
+		return nil
+	}}
+	materializer := Materializer{Store: &strictMaterializerStore{want: ref, archive: canonical}, Canonicalizer: Canonicalizer{}, StoragePath: storage, MaxTreeBytes: 1 << 20, hooks: hooks}
+	if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err != nil {
+		t.Fatalf("an unprivileged daemon could not publish into an existing destination: %v", err)
+	}
+	if modeAtReceipt != 0555 {
+		t.Fatalf("destination mode before receipt = %#o, want 0555", modeAtReceipt)
+	}
+	info, err := os.Stat(destination)
+	if err != nil || info.Mode().Perm() != 0555 {
+		t.Fatalf("published destination is not resealed: %v %v", info.Mode().Perm(), err)
+	}
+	receipt, err := os.Stat(filepath.Join(destination, materializationReceiptName))
+	if err != nil || receipt.Mode().Perm() != 0444 {
+		t.Fatalf("no sealed receipt was published: %v", err)
+	}
+	// The retry path accepts its own completed publication.
+	if err := materializer.Materialize(context.Background(), ref, "handle", "volume"); err != nil {
+		t.Fatalf("a retry refused the completed publication: %v", err)
+	}
+}
+
 func TestMaterializerRejectsInvalidOrOccupiedDestinations(t *testing.T) {
 	ref, canonical := canonicalTreeFixture(t, testTreeArchive(t, []testTreeEntry{{name: "file", kind: tar.TypeReg, body: "data"}}))
 	storage := t.TempDir()
