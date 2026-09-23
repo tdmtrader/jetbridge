@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
+	"github.com/concourse/concourse/artifactwire"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
@@ -1277,5 +1278,42 @@ func TestFetchInputsScript_RetriesAServerErrorAndSaysWhatItWas(t *testing.T) {
 	}
 	if !strings.Contains(out, "rc-deadbeef") {
 		t.Errorf("the failure does not name the artifact:\n%s", out)
+	}
+}
+
+// The batch request is spliced into the fetch script. An artifact key or
+// destination carrying a quote, a command substitution or a space -- an
+// output a task was free to name -- must reach the daemon byte for byte, and
+// must never be parsed by the shell. A stub wget records the body it was
+// asked to post.
+func TestDaemonSetBackend_DaemonResolveBatchCommand_PostsHostileNamesVerbatim(t *testing.T) {
+	for _, name := range []string{"owner's-report", "report'$(printf wrong)'", `re"port $(touch pwned) ; x`} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			stub := filepath.Join(dir, "wget")
+			if err := os.WriteFile(stub, []byte("#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in --post-data=*) printf '%s' \"${a#--post-data=}\" > \"$STUB_OUT\";; esac; done\nprintf '{\"status\":\"ok\"}'\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			items := []artifactwire.ResolveRequest{{Key: "build-42/" + name, Dest: "/var/concourse/artifacts/steps/consume-42/" + name}}
+			cmd := testBackend(nil).daemonResolveBatchCommand(items)
+			run := exec.Command(cmd[0], cmd[1:]...)
+			run.Dir = dir
+			posted := filepath.Join(dir, "posted")
+			run.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "HOST_IP=127.0.0.1", "STUB_OUT="+posted)
+			if out, err := run.CombinedOutput(); err != nil {
+				t.Fatalf("the fetch script failed on a hostile output name: %v: %s", err, out)
+			}
+			got, err := os.ReadFile(posted)
+			if err != nil {
+				t.Fatalf("nothing was posted: %v", err)
+			}
+			want, _ := json.Marshal(artifactwire.BatchResolveRequest{Items: items})
+			if string(got) != string(want) {
+				t.Fatalf("posted %s, want %s", got, want)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "pwned")); err == nil {
+				t.Fatal("an output name was executed by the fetch script")
+			}
+		})
 	}
 }

@@ -413,14 +413,16 @@ func (b *DaemonSetBackend) daemonResolveCommand(key, hostDest string) []string {
 	}
 
 	// The body is the same ResolveRequest the daemon decodes, marshalled
-	// here rather than spelled out in shell.
+	// here rather than spelled out in shell, and every value spliced into the
+	// script is a single-quoted word: an output name is the task author's,
+	// and may carry a quote or a command substitution.
 	payload, _ := json.Marshal(artifactwire.ResolveRequest{Key: key, Dest: hostDest})
 
 	script := fmt.Sprintf(`
 set -e
-KEY="%s"
-DST="%s"
-%sPAYLOAD='%s'
+KEY=%s
+DST=%s
+%sPAYLOAD=%s
 echo "[artifact-fetch] resolving key=${KEY} dest=${DST} daemon=${DAEMON}" >&2
 # Retry up to 10 times with backoff — the daemon may not be reachable
 # immediately (hostPort iptables rules propagation, daemon restart after
@@ -438,7 +440,7 @@ while true; do
   sleep 2
 done
 echo "[artifact-fetch] resolved: ${RESP}" >&2
-`, key, hostDest, b.wire.ShellPrelude(), string(payload), artifactwire.Resolve.Path)
+`, shellQuote(key), shellQuote(hostDest), b.wire.ShellPrelude(), shellQuote(string(payload)), artifactwire.Resolve.Path)
 
 	return []string{"sh", "-c", script}
 }
@@ -462,7 +464,7 @@ func (b *DaemonSetBackend) daemonResolveBatchCommand(items []artifactwire.Resolv
 
 	script := fmt.Sprintf(`
 set -e
-%sPAYLOAD='%s'
+%sPAYLOAD=%s
 KEYS=%s
 echo "[artifact-fetch] batch resolving %d artifacts via ${DAEMON}%s: ${KEYS}" >&2
 ATTEMPT=0
@@ -494,7 +496,7 @@ echo "[artifact-fetch] batch resolved: ${RESP}" >&2
 case "${RESP}" in
   *'"status":"error"'*) echo "[artifact-fetch] batch had failures — see above" >&2; exit 1 ;;
 esac
-`, b.wire.ShellPrelude(), string(payload), shellQuote(strings.Join(keys, " ")), len(items), artifactwire.ResolveBatch.Path, artifactwire.ResolveBatch.Path)
+`, b.wire.ShellPrelude(), shellQuote(string(payload)), shellQuote(strings.Join(keys, " ")), len(items), artifactwire.ResolveBatch.Path, artifactwire.ResolveBatch.Path)
 
 	return []string{"sh", "-c", script}
 }
