@@ -191,14 +191,14 @@ func validateHangarControlSchema(body []byte) error {
 			return err
 		}
 		if _, composite := token.(json.Delim); composite {
-			return fmt.Errorf("expected scalar JSON value")
+			return errors.New("expected scalar JSON value")
 		}
 		return nil
 	}
 	parseObject = func(fields map[string]func() error) error {
 		start, err := decoder.Token()
 		if err != nil || start != json.Delim('{') {
-			return fmt.Errorf("expected JSON object")
+			return errors.New("expected JSON object")
 		}
 		seen := make(map[string]struct{})
 		for decoder.More() {
@@ -208,17 +208,17 @@ func validateHangarControlSchema(body []byte) error {
 			}
 			key, ok := keyToken.(string)
 			if !ok {
-				return fmt.Errorf("invalid JSON object key")
+				return errors.New("invalid JSON object key")
 			}
 			parse, allowed := fields[key]
 			if !allowed {
-				return fmt.Errorf("unknown or noncanonical JSON field")
+				return errors.New("unknown or noncanonical JSON field")
 			}
 			if _, duplicate := seen[key]; duplicate {
 				if key == "warrant" {
 					return errDuplicateHangarWarrant
 				}
-				return fmt.Errorf("duplicate JSON field")
+				return errors.New("duplicate JSON field")
 			}
 			seen[key] = struct{}{}
 			if err := parse(); err != nil {
@@ -227,7 +227,7 @@ func validateHangarControlSchema(body []byte) error {
 		}
 		end, err := decoder.Token()
 		if err != nil || end != json.Delim('}') {
-			return fmt.Errorf("invalid JSON object")
+			return errors.New("invalid JSON object")
 		}
 		return nil
 	}
@@ -240,7 +240,7 @@ func validateHangarControlSchema(body []byte) error {
 	parseItems := func() error {
 		start, err := decoder.Token()
 		if err != nil || start != json.Delim('[') {
-			return fmt.Errorf("expected items array")
+			return errors.New("expected items array")
 		}
 		for decoder.More() {
 			if err := parseItem(); err != nil {
@@ -249,7 +249,7 @@ func validateHangarControlSchema(body []byte) error {
 		}
 		end, err := decoder.Token()
 		if err != nil || end != json.Delim(']') {
-			return fmt.Errorf("invalid items array")
+			return errors.New("invalid items array")
 		}
 		return nil
 	}

@@ -56,3 +56,4 @@ under `fly/`.
 
 | date | instance | outcome | note |
 |---|---|---|---|
+| 2026-09-23 | errors.New:validateHangarControlSchema@cmd/artifact-daemon/hangar_handlers.go | rewritten | all 8 literal-only `fmt.Errorf` calls in the function have no `%` and no arguments; `errors` was already imported, `fmt` stays needed for the two literal-only calls remaining in `decodeHangarControl` in the same file |
