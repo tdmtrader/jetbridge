@@ -87,6 +87,8 @@ import (
 	"golang.org/x/crypto/acme/autocert"
 	"golang.org/x/oauth2"
 	"golang.org/x/time/rate"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 
 	// dynamically registered metric emitters
 	_ "github.com/concourse/concourse/atc/metric/emitter"
@@ -142,8 +144,13 @@ type RunCommand struct {
 	// k8sArtifactLocator is shared between the Reaper and every pool's worker
 	// factory. Only artifactLocator() reads or creates it.
 	k8sArtifactLocator *jetbridge.ArtifactLocator
+	// k8sRuntime is the runtime configuration and clientset every JetBridge
+	// consumer shares. Only jetbridgeConfig() reads or assembles it.
+	k8sRuntimeOnce sync.Once
+	k8sRuntime     jetbridgeRuntime
+	k8sRuntimeErr  error
 	// k8sHangarWarrantSigner is constructed once during startup validation and
-	// shared by every separately composed JetBridge Config.
+	// carried by the assembled JetBridge Config.
 	k8sHangarWarrantSigner *hangar.WarrantSigner
 
 	// hangarOutputReceiptKeys is the versioned receipt VERIFICATION ring, loaded
@@ -1386,61 +1393,12 @@ func (cmd *RunCommand) backendComponents(
 func (cmd *RunCommand) jetbridgeComponents(logger lager.Logger, dbConn db.DbConn, dbWorkerFactory db.WorkerFactory, dbBuildFactory db.BuildFactory) ([]RunnableComponent, error) {
 	var components []RunnableComponent
 	if cmd.Kubernetes.Namespace != "" {
-		k8sCfg := jetbridge.NewConfig(cmd.Kubernetes.Namespace, cmd.Kubernetes.Kubeconfig)
-		k8sCfg.PodStartupTimeout = cmd.Kubernetes.PodStartupTimeout
-		k8sCfg.PodSchedulingTimeout = cmd.Kubernetes.PodSchedulingTimeout
-		k8sCfg.ImagePullSecrets = cmd.Kubernetes.ImagePullSecrets
-		k8sCfg.ServiceAccount = cmd.Kubernetes.ServiceAccount
-		k8sCfg.CacheStore = cmd.Kubernetes.CacheStore
-		k8sCfg.CacheHostPath = cmd.Kubernetes.CacheHostPath
-		k8sCfg.ArtifactHelperImage = cmd.Kubernetes.ArtifactHelperImage
-		k8sCfg.ArtifactDaemonPort = cmd.Kubernetes.ArtifactDaemonPort
-		k8sCfg.ArtifactDaemonHostPath = cmd.Kubernetes.ArtifactDaemonHostPath
-		k8sCfg.ArtifactDaemonResolveCapabilityTTL = cmd.Kubernetes.ArtifactDaemonResolveCapabilityTTL
-		if key, err := cmd.loadArtifactResolveCapabilityKey(); err != nil {
-			return nil, err
-		} else {
-			k8sCfg.ArtifactDaemonResolveCapabilityKey = key
-		}
-		if err := jetbridge.ValidateResolveCapabilityConfig(k8sCfg); err != nil {
-			return nil, err
-		}
-		k8sCfg.ArtifactDaemonService = cmd.Kubernetes.ArtifactDaemonService
-		k8sCfg.ArtifactDaemonWarmTimeout = cmd.Kubernetes.ArtifactDaemonWarmTimeout
-		k8sCfg.ArtifactDaemonTLSCert = cmd.Kubernetes.ArtifactDaemonTLSCert
-		k8sCfg.ArtifactDaemonTLSKey = cmd.Kubernetes.ArtifactDaemonTLSKey
-		k8sCfg.ArtifactDaemonTLSCACert = cmd.Kubernetes.ArtifactDaemonTLSCACert
-		k8sCfg.ArtifactDaemonTLSEnabled = jetbridge.DaemonTLSConfigured(
-			cmd.Kubernetes.ArtifactDaemonTLSCert,
-			cmd.Kubernetes.ArtifactDaemonTLSKey,
-			cmd.Kubernetes.ArtifactDaemonTLSCACert,
-		)
-		k8sCfg.HangarEnabled = cmd.Kubernetes.HangarEnabled
-		k8sCfg.HangarWarrantSigner = cmd.k8sHangarWarrantSigner
-		k8sCfg.OutputPlaneEnabled = cmd.Kubernetes.OutputPlaneEnabled
-		k8sCfg.OutputActivationEpoch = cmd.Kubernetes.OutputActivationEpoch
-		k8sCfg.OutputOperationTimeout = cmd.Kubernetes.OutputOperationTimeout
-		k8sCfg.OutputDaemonPort = cmd.Kubernetes.OutputDaemonPort
-		k8sCfg.OutputDaemonTLSCert = cmd.Kubernetes.OutputDaemonTLSCert
-		k8sCfg.OutputDaemonTLSKey = cmd.Kubernetes.OutputDaemonTLSKey
-		k8sCfg.OutputDaemonTLSCACert = cmd.Kubernetes.OutputDaemonTLSCACert
-		k8sCfg.OutputDaemonTLSServerName = cmd.Kubernetes.OutputDaemonTLSServerName
-		if cmd.Kubernetes.CacheStore != "" && !jetbridge.ValidCacheStores[cmd.Kubernetes.CacheStore] {
-			return nil, fmt.Errorf("invalid --kubernetes-cache-store value %q (valid: hostpath, emptydir)", cmd.Kubernetes.CacheStore)
-		}
-		if cmd.Kubernetes.ImageRegistryPrefix != "" || cmd.Kubernetes.ImageRegistrySecret != "" {
-			k8sCfg.ImageRegistry = &jetbridge.ImageRegistryConfig{
-				Prefix:     cmd.Kubernetes.ImageRegistryPrefix,
-				SecretName: cmd.Kubernetes.ImageRegistrySecret,
-			}
-		}
-		if len(cmd.Kubernetes.BaseResourceTypes) > 0 {
-			k8sCfg.ResourceTypeImages = jetbridge.MergeResourceTypeImages(cmd.Kubernetes.BaseResourceTypes)
-		}
-		k8sClientset, err := jetbridge.NewClientset(k8sCfg)
+		rt, err := cmd.jetbridgeConfig()
 		if err != nil {
-			return nil, fmt.Errorf("creating k8s clientset for registrar: %w", err)
+			return nil, err
 		}
+		k8sCfg, k8sClientset := rt.config, rt.clientset
+
 		components = append(components, RunnableComponent{
 			Component: atc.Component{
 				Name: atc.ComponentK8sWorkerRegistrar,
@@ -1487,6 +1445,114 @@ func (cmd *RunCommand) compression() compression.Compression {
 
 func (cmd *RunCommand) streamer() worker.Streamer {
 	return worker.NewStreamer(cmd.compression())
+}
+
+// The shared clientset's client-side rate limit: three times client-go's
+// default (5 QPS, burst 10), one share for each clientset it replaced.
+const (
+	jetbridgeClientQPS   = 15
+	jetbridgeClientBurst = 30
+)
+
+// jetbridgeRuntime is the JetBridge runtime configuration, assembled once from
+// the --kubernetes-* flags, with the one clientset built from it.
+type jetbridgeRuntime struct {
+	config     jetbridge.Config
+	clientset  kubernetes.Interface
+	restConfig *rest.Config
+}
+
+// jetbridgeConfig returns the runtime configuration every JetBridge consumer
+// shares: both pools' worker factories, the registrar and the Reaper. It is
+// assembled, checked and given its clientset on the first call; later calls
+// get the same result, a failure included. Each caller gets its own copy of
+// the Config value.
+func (cmd *RunCommand) jetbridgeConfig() (jetbridgeRuntime, error) {
+	cmd.k8sRuntimeOnce.Do(func() {
+		cmd.k8sRuntime, cmd.k8sRuntimeErr = cmd.assembleJetbridgeRuntime()
+	})
+	return cmd.k8sRuntime, cmd.k8sRuntimeErr
+}
+
+func (cmd *RunCommand) assembleJetbridgeRuntime() (jetbridgeRuntime, error) {
+	cfg, err := cmd.assembleJetbridgeConfig()
+	if err != nil {
+		return jetbridgeRuntime{}, err
+	}
+	restConfig, err := jetbridge.RestConfig(cfg)
+	if err != nil {
+		return jetbridgeRuntime{}, fmt.Errorf("creating k8s rest config: %w", err)
+	}
+	// The ATC used to build three clientsets (one per pool, one for the
+	// registrar and Reaper), each with client-go's default rate limit of 5 QPS
+	// and burst 10. They are now one, so it carries their combined budget
+	// rather than a third of it.
+	restConfig.QPS = jetbridgeClientQPS
+	restConfig.Burst = jetbridgeClientBurst
+	clientset, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		return jetbridgeRuntime{}, fmt.Errorf("creating k8s clientset: %w", err)
+	}
+	return jetbridgeRuntime{config: cfg, clientset: clientset, restConfig: restConfig}, nil
+}
+
+// assembleJetbridgeConfig maps the flags onto a jetbridge.Config and runs the
+// startup guards that need the assembled value.
+func (cmd *RunCommand) assembleJetbridgeConfig() (jetbridge.Config, error) {
+	if cmd.Kubernetes.CacheStore != "" && !jetbridge.ValidCacheStores[cmd.Kubernetes.CacheStore] {
+		return jetbridge.Config{}, fmt.Errorf("invalid --kubernetes-cache-store value %q (valid: hostpath, emptydir)", cmd.Kubernetes.CacheStore)
+	}
+	key, err := cmd.loadArtifactResolveCapabilityKey()
+	if err != nil {
+		return jetbridge.Config{}, err
+	}
+
+	k8sCfg := jetbridge.NewConfig(cmd.Kubernetes.Namespace, cmd.Kubernetes.Kubeconfig)
+	k8sCfg.PodStartupTimeout = cmd.Kubernetes.PodStartupTimeout
+	k8sCfg.PodSchedulingTimeout = cmd.Kubernetes.PodSchedulingTimeout
+	k8sCfg.ImagePullSecrets = cmd.Kubernetes.ImagePullSecrets
+	k8sCfg.ServiceAccount = cmd.Kubernetes.ServiceAccount
+	k8sCfg.CacheStore = cmd.Kubernetes.CacheStore
+	k8sCfg.CacheHostPath = cmd.Kubernetes.CacheHostPath
+	k8sCfg.ArtifactHelperImage = cmd.Kubernetes.ArtifactHelperImage
+	k8sCfg.ArtifactDaemonPort = cmd.Kubernetes.ArtifactDaemonPort
+	k8sCfg.ArtifactDaemonHostPath = cmd.Kubernetes.ArtifactDaemonHostPath
+	k8sCfg.ArtifactDaemonResolveCapabilityKey = key
+	k8sCfg.ArtifactDaemonResolveCapabilityTTL = cmd.Kubernetes.ArtifactDaemonResolveCapabilityTTL
+	k8sCfg.ArtifactDaemonService = cmd.Kubernetes.ArtifactDaemonService
+	k8sCfg.ArtifactDaemonWarmTimeout = cmd.Kubernetes.ArtifactDaemonWarmTimeout
+	k8sCfg.ArtifactDaemonTLSCert = cmd.Kubernetes.ArtifactDaemonTLSCert
+	k8sCfg.ArtifactDaemonTLSKey = cmd.Kubernetes.ArtifactDaemonTLSKey
+	k8sCfg.ArtifactDaemonTLSCACert = cmd.Kubernetes.ArtifactDaemonTLSCACert
+	k8sCfg.ArtifactDaemonTLSEnabled = jetbridge.DaemonTLSConfigured(
+		cmd.Kubernetes.ArtifactDaemonTLSCert,
+		cmd.Kubernetes.ArtifactDaemonTLSKey,
+		cmd.Kubernetes.ArtifactDaemonTLSCACert,
+	)
+	k8sCfg.HangarEnabled = cmd.Kubernetes.HangarEnabled
+	k8sCfg.HangarWarrantSigner = cmd.k8sHangarWarrantSigner
+	k8sCfg.OutputPlaneEnabled = cmd.Kubernetes.OutputPlaneEnabled
+	k8sCfg.OutputActivationEpoch = cmd.Kubernetes.OutputActivationEpoch
+	k8sCfg.OutputOperationTimeout = cmd.Kubernetes.OutputOperationTimeout
+	k8sCfg.OutputDaemonPort = cmd.Kubernetes.OutputDaemonPort
+	k8sCfg.OutputDaemonTLSCert = cmd.Kubernetes.OutputDaemonTLSCert
+	k8sCfg.OutputDaemonTLSKey = cmd.Kubernetes.OutputDaemonTLSKey
+	k8sCfg.OutputDaemonTLSCACert = cmd.Kubernetes.OutputDaemonTLSCACert
+	k8sCfg.OutputDaemonTLSServerName = cmd.Kubernetes.OutputDaemonTLSServerName
+	if cmd.Kubernetes.ImageRegistryPrefix != "" || cmd.Kubernetes.ImageRegistrySecret != "" {
+		k8sCfg.ImageRegistry = &jetbridge.ImageRegistryConfig{
+			Prefix:     cmd.Kubernetes.ImageRegistryPrefix,
+			SecretName: cmd.Kubernetes.ImageRegistrySecret,
+		}
+	}
+	if len(cmd.Kubernetes.BaseResourceTypes) > 0 {
+		k8sCfg.ResourceTypeImages = jetbridge.MergeResourceTypeImages(cmd.Kubernetes.BaseResourceTypes)
+	}
+
+	if err := jetbridge.ValidateResolveCapabilityConfig(k8sCfg); err != nil {
+		return jetbridge.Config{}, err
+	}
+	return k8sCfg, nil
 }
 
 // artifactLocator is the one artifact locator of this web: every pool's worker
@@ -1541,62 +1607,12 @@ func (cmd *RunCommand) workerFactory(dbConn db.DbConn, lockFactory lock.LockFact
 	factory.K8sExecutionPreparer = executionStarter
 
 	if cmd.Kubernetes.Namespace != "" {
-		k8sCfg := jetbridge.NewConfig(cmd.Kubernetes.Namespace, cmd.Kubernetes.Kubeconfig)
-		k8sCfg.PodStartupTimeout = cmd.Kubernetes.PodStartupTimeout
-		k8sCfg.PodSchedulingTimeout = cmd.Kubernetes.PodSchedulingTimeout
-		k8sCfg.ImagePullSecrets = cmd.Kubernetes.ImagePullSecrets
-		k8sCfg.ServiceAccount = cmd.Kubernetes.ServiceAccount
-		k8sCfg.CacheStore = cmd.Kubernetes.CacheStore
-		k8sCfg.CacheHostPath = cmd.Kubernetes.CacheHostPath
-		k8sCfg.ArtifactHelperImage = cmd.Kubernetes.ArtifactHelperImage
-		k8sCfg.ArtifactDaemonPort = cmd.Kubernetes.ArtifactDaemonPort
-		k8sCfg.ArtifactDaemonHostPath = cmd.Kubernetes.ArtifactDaemonHostPath
-		k8sCfg.ArtifactDaemonResolveCapabilityTTL = cmd.Kubernetes.ArtifactDaemonResolveCapabilityTTL
-		if key, err := cmd.loadArtifactResolveCapabilityKey(); err != nil {
-			return worker.DefaultFactory{}, worker.DB{}, err
-		} else {
-			k8sCfg.ArtifactDaemonResolveCapabilityKey = key
-		}
-		if err := jetbridge.ValidateResolveCapabilityConfig(k8sCfg); err != nil {
+		rt, err := cmd.jetbridgeConfig()
+		if err != nil {
 			return worker.DefaultFactory{}, worker.DB{}, err
 		}
-		k8sCfg.ArtifactDaemonService = cmd.Kubernetes.ArtifactDaemonService
-		k8sCfg.ArtifactDaemonWarmTimeout = cmd.Kubernetes.ArtifactDaemonWarmTimeout
-		k8sCfg.ArtifactDaemonTLSCert = cmd.Kubernetes.ArtifactDaemonTLSCert
-		k8sCfg.ArtifactDaemonTLSKey = cmd.Kubernetes.ArtifactDaemonTLSKey
-		k8sCfg.ArtifactDaemonTLSCACert = cmd.Kubernetes.ArtifactDaemonTLSCACert
-		k8sCfg.ArtifactDaemonTLSEnabled = jetbridge.DaemonTLSConfigured(
-			cmd.Kubernetes.ArtifactDaemonTLSCert,
-			cmd.Kubernetes.ArtifactDaemonTLSKey,
-			cmd.Kubernetes.ArtifactDaemonTLSCACert,
-		)
-		k8sCfg.HangarEnabled = cmd.Kubernetes.HangarEnabled
-		k8sCfg.HangarWarrantSigner = cmd.k8sHangarWarrantSigner
-		k8sCfg.OutputPlaneEnabled = cmd.Kubernetes.OutputPlaneEnabled
-		k8sCfg.OutputActivationEpoch = cmd.Kubernetes.OutputActivationEpoch
-		k8sCfg.OutputOperationTimeout = cmd.Kubernetes.OutputOperationTimeout
-		k8sCfg.OutputDaemonPort = cmd.Kubernetes.OutputDaemonPort
-		k8sCfg.OutputDaemonTLSCert = cmd.Kubernetes.OutputDaemonTLSCert
-		k8sCfg.OutputDaemonTLSKey = cmd.Kubernetes.OutputDaemonTLSKey
-		k8sCfg.OutputDaemonTLSCACert = cmd.Kubernetes.OutputDaemonTLSCACert
-		k8sCfg.OutputDaemonTLSServerName = cmd.Kubernetes.OutputDaemonTLSServerName
-		if cmd.Kubernetes.ImageRegistryPrefix != "" || cmd.Kubernetes.ImageRegistrySecret != "" {
-			k8sCfg.ImageRegistry = &jetbridge.ImageRegistryConfig{
-				Prefix:     cmd.Kubernetes.ImageRegistryPrefix,
-				SecretName: cmd.Kubernetes.ImageRegistrySecret,
-			}
-		}
-		if len(cmd.Kubernetes.BaseResourceTypes) > 0 {
-			k8sCfg.ResourceTypeImages = jetbridge.MergeResourceTypeImages(cmd.Kubernetes.BaseResourceTypes)
-		}
-		k8sClientset, err := jetbridge.NewClientset(k8sCfg)
-		if err != nil {
-			return worker.DefaultFactory{}, worker.DB{}, fmt.Errorf("creating k8s clientset: %w", err)
-		}
-		k8sRestConfig, err := jetbridge.RestConfig(k8sCfg)
-		if err != nil {
-			return worker.DefaultFactory{}, worker.DB{}, fmt.Errorf("creating k8s rest config: %w", err)
-		}
+		k8sCfg, k8sClientset, k8sRestConfig := rt.config, rt.clientset, rt.restConfig
+
 		factory.K8sClientset = k8sClientset
 		factory.K8sConfig = &k8sCfg
 		factory.K8sExecutor = jetbridge.NewSPDYExecutor(k8sClientset, k8sRestConfig)
