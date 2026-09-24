@@ -562,7 +562,10 @@ var _ = Describe("An execProcess under exact control", func() {
 	DescribeTable("reads the ledger after the stop grace expires",
 		func(journaled bool) {
 			grace := exactStopGrace
-			exactStopGrace = 500 * time.Millisecond
+			// The grace also bounds the stop request itself, which here is a
+			// real `sh`: at 500ms a loaded CI node killed it before it wrote
+			// the stop marker, and the supervisor then ran to exit 0.
+			exactStopGrace = 2 * time.Second
 			DeferCleanup(func() { exactStopGrace = grace })
 
 			hold()
