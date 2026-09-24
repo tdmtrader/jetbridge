@@ -1,5 +1,11 @@
 # Concourse JetBridge Helm Chart
 
+The artifact daemon, daemon mTLS, signed resolution, and authenticated MCP are
+always configured. Supply certificate ownership, a resolve-key Secret and MCP
+client registrations before rendering. Hangar remains separately configured.
+See [migration instructions](MIGRATING.md) for existing clusters and 0.3.1 upgrades.
+
+
 Deploys Concourse CI with the JetBridge Kubernetes-native runtime. Instead of
 running tasks in Garden containers on dedicated worker VMs, JetBridge creates
 Kubernetes pods directly for every pipeline step.
@@ -23,8 +29,31 @@ default containerd runtime. For kind, load it with `kind load docker-image`.
 
 ### 2. Install
 
+Create `deployment-values.yaml` with your explicitly provisioned references
+and actual MCP client registrations (the names below are examples):
+
+```yaml
+artifactDaemon:
+  tls:
+    source: existingSecret
+    existingSecret: jetbridge-daemon-tls
+  resolveCapability:
+    existingSecret: jetbridge-resolve-key
+mcp:
+  clients:
+    - client_id: workstation
+      client_name: Workstation
+      redirect_uris: ["http://127.0.0.1:8964/callback"]
+```
+
+The TLS Secret needs `ca.crt`, `tls.crt`, `tls.key`, `client.crt`, and
+`client.key`. The resolve Secret needs exactly 32 random bytes under `resolve.key`.
+For a live Helm installation, `tls.source: generated` with an empty
+`tls.existingSecret` explicitly selects chart-managed certificates instead.
+
 ```bash
 helm install concourse ./deploy/chart \
+  -f deployment-values.yaml \
   --namespace concourse --create-namespace \
   --set image.repository=concourse-local \
   --set image.tag=latest \
@@ -65,6 +94,9 @@ spec:
     targetRevision: core
     path: deploy/chart
     helm:
+      # Merge the required certificate, resolve Secret, and mcp.clients settings
+      # from deployment-values.yaml above into this application's Helm values.
+      # Use source: existingSecret for Argo; never generated certificates.
       valueFiles:
         - values.yaml
       parameters:
@@ -187,7 +219,11 @@ directories or ephemeral emptyDirs.
 |-----------|---------|-------------|
 | `cacheStore` | `""` | Task cache backend: `hostpath` or `emptydir`. Empty auto-detects from `cacheHostPath`. |
 | `cacheHostPath` | `""` | Node directory for `hostpath` task caches. Empty falls back to emptyDir. |
-| `artifactDaemon.enabled` | `true` | Run the artifact DaemonSet. Artifact passing requires it. |
+| `artifactDaemon.tls.source` | `existingSecret` | Certificate ownership: `existingSecret` or live-Helm `generated`. mTLS is mandatory. |
+| `artifactDaemon.tls.existingSecret` | `""` | Required certificate Secret in existing-secret mode. |
+| `artifactDaemon.resolveCapability.existingSecret` | `""` | Required Secret holding `resolve.key`; no unsigned mode. |
+| `mcp.clients` | `[]` | Required public OAuth client registrations with exact redirects. |
+| `mcp.disabledOperations` | `[]` | Operation IDs refused regardless of user consent. |
 | `artifactDaemon.hostPath` | `/var/concourse/artifacts` | Node directory the daemon stores artifacts in. |
 | `artifactDaemon.port` | `7780` | Port the daemon serves on. |
 | `artifactDaemon.ttl` | `2h` | How long an artifact is retained before the daemon sweeps it. |
@@ -397,12 +433,11 @@ fails otherwise rather than producing a target that scrapes a web page.
 2. The `artifact-daemon` on that node stores the output under its hostPath and
    mirrors it to peer nodes per `artifactDaemon.mirror`.
 3. Step B's init container resolves which node holds the artifact and fetches
-   it over HTTP.
+   it over authenticated HTTPS.
 4. Step B runs with the fetched data available as input.
 
 Nothing is shared between nodes, so no `ReadWriteMany` storage class is needed.
-`artifactDaemon.enabled` must be true — without a configured artifact daemon
-host path the web node has no way to pass artifacts between steps.
+The chart always deploys the artifact daemon and wires its host path into web.
 
 ## Production Notes
 

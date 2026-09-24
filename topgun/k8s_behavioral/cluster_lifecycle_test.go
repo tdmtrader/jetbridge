@@ -328,7 +328,11 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		"--set", "postgresql.persistence.enabled=false",
 		"--set", "cachePvc.enabled=false",
 		"--set", "artifactStorePvc.enabled=false",
-		"--set", "artifactDaemon.enabled=true",
+		// Disposable live Helm cluster: explicitly own generated certificates.
+		"--set", "artifactDaemon.tls.source=generated",
+		"--set", "mcp.clients[0].client_id=integration-test",
+		"--set", "mcp.clients[0].client_name=Integration test",
+		"--set", "mcp.clients[0].redirect_uris[0]=http://127.0.0.1:8964/callback",
 		// Exercise the SIGNED resolve path; see createResolveCapabilitySecret.
 		"--set", "artifactDaemon.resolveCapability.existingSecret=" + resolveCapabilitySecretName,
 		"--timeout", "5m",

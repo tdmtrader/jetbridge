@@ -494,20 +494,17 @@ alertingRules:
   labels: {}
 
 # -- DaemonSet artifact cache configuration.
-# When enabled, deploys a DaemonSet on each node with a local HTTP file server
+# Deploys a DaemonSet on each node with an authenticated HTTPS file server
 # for artifact storage. Provides sub-second local reads and fast cross-node
 # transfers, replacing the PVC-based artifact store for improved performance.
 #
-# REQUIRED when the Kubernetes runtime is enabled (worker.kubernetes.enabled
-# or any mode that sets --kubernetes-namespace). The web deployment refuses to
+# Always deployed by this chart. The web deployment refuses to
 # start with an unset artifact-daemon host path because every step-produced
 # artifact must be read via HTTP from the DaemonSet rather than exec-ing into
 # a reaped producer pod. See track
 # route_artifact_reads_through_daemonset_remove_exec_backed_artifact_io_20260418.
 artifactDaemon:
-  # -- Enable the DaemonSet artifact cache.
-  # MUST be true for K8s-runtime deployments; web startup fails otherwise.
-  enabled: true
+  # The artifact daemon is always deployed by this chart.
   # -- HTTP server port (must match --kubernetes-artifact-daemon-port on the web node)
   port: 7780
   # -- Host path for artifact storage on each node
@@ -680,51 +677,19 @@ artifactDaemon:
     timeout: "5m"
   # -- TLS/mTLS configuration for encrypted and authenticated daemon communication
   tls:
-    # -- Enable TLS (HTTPS + mTLS) for the artifact daemon.
-    # When enabled, cross-node traffic (ATC→daemon, daemon→daemon) requires
-    # mutual TLS with client certificates. Init containers verify the daemon's
-    # server cert via the mounted CA. Health probes use HTTPS without client cert.
-    enabled: false
-    # -- Name of an existing Secret containing TLS certs. Keys expected:
-    # ca.crt, tls.crt, tls.key, client.crt, client.key; Hangar additionally
-    # selects hangar.key, whose decoded value must be exactly 32 raw bytes.
-    # When empty and tls.enabled=true, certs are auto-generated. That path is
-    # nondeterministic under offline/GitOps rendering because Helm lookup has
-    # no live Secret; use existingSecret for GitOps.
+    # -- Certificate ownership: existingSecret (recommended for GitOps) or generated.
+    # mTLS is always required. generated uses live Helm lookup and must not be
+    # used with offline/GitOps rendering, which cannot preserve key material.
+    source: existingSecret
+    # -- Secret containing ca.crt, tls.crt, tls.key, client.crt, client.key.
+    # Required for source: existingSecret; must be empty for source: generated.
+    # Hangar additionally requires hangar.key when explicitly enabled.
     existingSecret: ""
   # -- NetworkPolicy configuration for the artifact daemon
   resolveCapability:
-    # -- Name of a Secret holding `resolve.key`, exactly 32 random bytes shared
-    # by web and daemon. THIS VALUE IS THE SWITCH: set, both sides enforce
-    # signed resolve capabilities; empty, neither does.
-    #
-    # Create it once, yourself:
-    #
-    #   head -c 32 /dev/urandom > resolve.key
-    #   kubectl create secret generic concourse-resolve-capability \
-    #     --from-file=resolve.key -n <namespace>
-    #   rm resolve.key
-    #
-    # The chart deliberately does NOT generate this key, for the same reason it
-    # does not generate the session signing key. Generating it needs Helm
-    # `lookup` to carry the old value forward, `lookup` returns empty under
-    # `helm template`, and `helm template` is how Argo CD renders — so a
-    # generated key is fresh on EVERY reconcile. Argo sees a Secret diff every
-    # time and rewrites it; both processes read the key once at startup, so
-    # nothing breaks until the first asymmetric restart, after which each side
-    # rejects the other's capabilities and every build's input fetch 403s until
-    # web and every daemon pod have rolled. Argo CD has no chart-side
-    # "create once, never update" for a rendered resource, so the key stays out
-    # of the render entirely. (artifactDaemon.tls.existingSecret still carries
-    # that hazard; set it too under Argo CD.)
-    #
-    # Both sides are gated on this ONE value so they cannot disagree: a daemon
-    # given a key fails closed, so arming it while the web does not sign would
-    # 403 every resolve on the node with no diagnostic.
-    #
-    # UPGRADE NOTE: on the first rollout after enabling this, an old web that
-    # does not sign can meet a new daemon that requires — those resolves 403
-    # and their builds fail until web has rolled. Brief, and self-healing.
+    # -- Required existing Secret holding resolve.key (exactly 32 random bytes).
+    # Web always signs and the daemon always verifies resolve capabilities.
+    # Provision this key outside Helm; rendering must never rotate it.
     existingSecret: ""
     # -- Capability lifetime. Must exceed pod scheduling + startup + the init
     # container's retry budget, or a slow-to-schedule pod gets a 403 on a
@@ -953,9 +918,8 @@ hangarOutput:
     # This daemon is TLS-only. Its listener is wrapped unconditionally and its
     # control routes refuse any operation whose request carries no VERIFIED
     # peer certificate, so there is no plaintext mode to fall back to and no
-    # switch to turn it off. `artifactDaemon.tls.enabled` is a DIFFERENT
-    # daemon's switch, on a different bucket under a different identity, and it
-    # has nothing to say about this plane.
+    # switch to turn it off. The artifact daemon has a separate certificate
+    # configuration and trust domain; it has nothing to say about this plane.
     #
     # WHAT AN OPERATOR MUST PROVISION, and the chart cannot check any of it:
     #
@@ -1113,3 +1077,13 @@ hangarOutput:
   networkPolicy:
     # -- Enable NetworkPolicies for the four output workloads.
     enabled: false
+
+# -- Authenticated MCP is always available. Registration grants no user permissions;
+# OAuth consent, team roles and operation restrictions still govern each request.
+mcp:
+  # -- Registered public clients with exact redirect URIs; at least one required.
+  # Example: [{client_id: workstation, client_name: Workstation,
+  #            redirect_uris: ["http://127.0.0.1:8964/callback"]}]
+  clients: []
+  # -- Operation IDs denied to every client, regardless of user consent.
+  disabledOperations: []

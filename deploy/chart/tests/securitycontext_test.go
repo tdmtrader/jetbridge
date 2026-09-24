@@ -78,7 +78,7 @@ func renderChart(t *testing.T, sets ...string) string {
 	if err != nil {
 		t.Fatalf("resolve chart dir: %v", err)
 	}
-	args := []string{"template", "test-release", chartDir}
+	args := []string{"template", "test-release", chartDir, "-f", filepath.Join(chartDir, "tests/testdata/required-values.yaml")}
 	for _, s := range sets {
 		args = append(args, "--set", s)
 	}
@@ -163,7 +163,6 @@ func TestPostgresContainerSecurityContext(t *testing.T) {
 func TestHangarKeepsArtifactDaemonAtItsMinimalSecurityContext(t *testing.T) {
 	daemon := findDaemonSet(t, renderChart(t,
 		"artifactDaemon.hangar.enabled=true",
-		"artifactDaemon.tls.enabled=true",
 		"artifactDaemon.tls.existingSecret=operator-daemon-tls",
 		"artifactDaemon.durable.store=gcs",
 		"artifactDaemon.durable.bucket=b",
@@ -212,7 +211,7 @@ func renderChartSetString(t *testing.T, sets ...string) string {
 	if err != nil {
 		t.Fatalf("resolve chart dir: %v", err)
 	}
-	args := []string{"template", "test-release", chartDir}
+	args := []string{"template", "test-release", chartDir, "-f", filepath.Join(chartDir, "tests/testdata/required-values.yaml")}
 	for _, s := range sets {
 		args = append(args, "--set-string", s)
 	}

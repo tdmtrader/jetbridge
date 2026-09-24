@@ -9,7 +9,7 @@ artifactDaemon.networkPolicy.enabled (default false) LOST the policy on
 upgrade, and a pod selected by no NetworkPolicy is not default-deny, it is
 unrestricted.
 */}}
-{{- if and .Values.artifactDaemon.enabled (or .Values.networkPolicy.enabled (.Values.artifactDaemon.networkPolicy.enabled | default false)) }}
+{{- if or .Values.networkPolicy.enabled (.Values.artifactDaemon.networkPolicy.enabled | default false) }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

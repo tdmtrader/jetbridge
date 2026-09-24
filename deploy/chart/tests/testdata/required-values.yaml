@@ -1,0 +1,13 @@
+# Test-only infrastructure references, not deployment credentials or defaults.
+artifactDaemon:
+  tls:
+    source: existingSecret
+    existingSecret: test-daemon-tls
+  resolveCapability:
+    existingSecret: test-resolve-key
+mcp:
+  clients:
+    - client_id: test-client
+      client_name: Test client
+      redirect_uris:
+        - http://127.0.0.1:8964/callback

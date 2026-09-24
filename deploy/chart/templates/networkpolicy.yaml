@@ -54,7 +54,6 @@ spec:
 {{- end }}
 {{/*
 The artifact daemon's NetworkPolicy is NOT rendered here.
-
 It used to be, and it rendered `<fullname>-artifact-daemon` -- the same name
 templates/artifact-daemon-networkpolicy.yaml renders. Two NetworkPolicies with
 one name in one namespace are one object: whichever Helm sent last won, with no
@@ -63,7 +62,6 @@ order. The two copies disagreed, which made that a correctness fork and not
 only untidiness -- this copy selected task pods by `concourse.ci/pipeline
 Exists`, and a one-off build's pod carries no pipeline, so under this copy a
 one-off build could not fetch an artifact at all.
-
 The daemon's policy therefore lives in exactly one template, selects
 `concourse.ci/worker Exists` (which the K8s runtime puts on every task and check
 pod it builds) and is switched by `artifactDaemon.networkPolicy.enabled`.
@@ -115,7 +113,6 @@ spec:
           protocol: TCP
         - port: 988
           protocol: TCP
-    {{- if .Values.artifactDaemon.enabled }}
     # Artifact daemon on each node
     - to:
         - podSelector:
@@ -125,7 +122,6 @@ spec:
       ports:
         - port: {{ .Values.artifactDaemon.port | default 7780 }}
           protocol: TCP
-    {{- end }}
     # Operator-configured additional egress targets
     {{- range .Values.networkPolicy.taskEgressTo }}
     - to:

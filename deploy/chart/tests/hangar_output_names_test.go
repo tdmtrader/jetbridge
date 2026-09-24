@@ -41,7 +41,7 @@ var releaseNameLengths = []int{5, 20, 27, 28, 40, 53}
 func renderRelease(t *testing.T, release string, sets ...string) (string, error) {
 	t.Helper()
 
-	args := []string{"template", release, "deploy/chart"}
+	args := []string{"template", release, "deploy/chart", "-f", "deploy/chart/tests/testdata/required-values.yaml"}
 	for _, s := range sets {
 		args = append(args, "--set", s)
 	}

@@ -45,7 +45,6 @@ const (
 // else. It is a real deployment on its own: the sibling `exact_execution_control`
 // track schedules onto exactly this cohort.
 var baseControlSets = []string{
-	"artifactDaemon.enabled=true",
 	"hangarOutput.executionControl.enabled=true",
 	"hangarOutput.executionControl.keySecret=op-control-key",
 	"hangarOutput.executionControl.keyID=control-key-7",
@@ -271,7 +270,6 @@ func TestTheWebNodeIsGivenTheActivationEpochUnderTheBaseFacet(t *testing.T) {
 // startup: a render is what an operator reviews.
 func TestOutputEnablementRequiresBaseControl(t *testing.T) {
 	message := renderHangarError(t,
-		"artifactDaemon.enabled=true",
 		"hangarOutput.enabled=true",
 		"hangarOutput.bucket=jb-output",
 	)
@@ -1951,8 +1949,8 @@ func TestTheOutputPlaneRefusesToRenderWithoutTheArtifactDaemon(t *testing.T) {
 		t.Errorf("the output plane rendered with the artifact daemon disabled, or was "+
 			"refused by something else:\n%s", message)
 	}
-	if !strings.Contains(message, "concourse.dev/artifact-cache") {
-		t.Errorf("the refusal does not name the label that is the reason:\n%s", message)
+	if !strings.Contains(message, "has been removed") {
+		t.Errorf("the refusal does not identify the obsolete toggle:\n%s", message)
 	}
 }
 

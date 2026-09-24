@@ -239,14 +239,6 @@ func waitForCoreDNS(kubeconfig string) {
 }
 
 // helmDeployConcourse deploys Concourse via the local Helm chart.
-// artifactDaemonTLSEnabled reports whether the suite should deploy the artifact
-// daemon with mTLS hardening enabled. Opt-in via ARTIFACT_DAEMON_TLS so the
-// default suite run stays on plain HTTP; set it to verify the TLS data path.
-func artifactDaemonTLSEnabled() bool {
-	v := os.Getenv("ARTIFACT_DAEMON_TLS")
-	return v == "1" || strings.EqualFold(v, "true")
-}
-
 func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 	repo, tag := splitImageRef(image)
 
@@ -296,9 +288,11 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		// in the built binary yet. The artifact daemon approach is used instead.
 		"--set", "cachePvc.enabled=false",
 		"--set", "artifactStorePvc.enabled=false",
-		// Enable the DaemonSet artifact daemon — needed for artifact passing
-		// between steps. Default is false in values.yaml.
-		"--set", "artifactDaemon.enabled=true",
+		// Disposable live Helm cluster: explicitly own generated certificates.
+		"--set", "artifactDaemon.tls.source=generated",
+		"--set", "mcp.clients[0].client_id=integration-test",
+		"--set", "mcp.clients[0].client_name=Integration test",
+		"--set", "mcp.clients[0].redirect_uris[0]=http://127.0.0.1:8964/callback",
 		// Exercise the SIGNED resolve path. The chart deliberately generates no
 		// key (a generated one re-mints on every GitOps render), so without
 		// this the suite runs the unauthenticated path and a regression in ATC
@@ -306,13 +300,6 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		// plumbing passes CI silently.
 		"--set", "artifactDaemon.resolveCapability.existingSecret=" + resolveCapabilitySecretName,
 		"--timeout", "5m",
-	}
-	// Optionally harden the daemon with mTLS (opt-in via ARTIFACT_DAEMON_TLS).
-	// The chart auto-generates the CA + server/client certs; the web pod and
-	// init containers are wired for HTTPS automatically. Kept opt-in so the
-	// default suite run stays on plain HTTP and is unaffected.
-	if artifactDaemonTLSEnabled() {
-		helmArgs = append(helmArgs, "--set", "artifactDaemon.tls.enabled=true")
 	}
 	for i, arg := range extraArgs {
 		helmArgs = append(helmArgs, "--set", fmt.Sprintf("web.extraArgs[%d]=%s", i, arg))

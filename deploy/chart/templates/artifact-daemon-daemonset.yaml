@@ -3,16 +3,10 @@
 {{- if and $hangarWebEnabled (not $hangarEnabled) }}
   {{- fail "artifactDaemon.hangar.webEnabled requires artifactDaemon.hangar.enabled" }}
 {{- end }}
-{{- if and .Values.artifactDaemon.enabled (eq .Values.artifactDaemon.durable.store "gcs") (not (empty .Values.artifactDaemon.durable.existingSecret)) }}
+{{- if and (eq .Values.artifactDaemon.durable.store "gcs") (not (empty .Values.artifactDaemon.durable.existingSecret)) }}
   {{- fail "artifactDaemon.durable.existingSecret supplies s3 credentials and must be empty for gcs; use Workload Identity/Application Default Credentials" }}
 {{- end }}
 {{- if $hangarEnabled }}
-  {{- if not .Values.artifactDaemon.enabled }}
-    {{- fail "artifactDaemon.enabled must be true when artifactDaemon.hangar.enabled is true" }}
-  {{- end }}
-  {{- if not (.Values.artifactDaemon.tls.enabled | default false) }}
-    {{- fail "artifactDaemon.tls.enabled must be true when artifactDaemon.hangar.enabled is true" }}
-  {{- end }}
   {{- if ne .Values.artifactDaemon.durable.store "gcs" }}
     {{- fail "artifactDaemon.durable.store must be gcs when Hangar is enabled" }}
   {{- end }}
@@ -46,15 +40,12 @@
     {{- fail "artifactDaemon.hangar.capabilityTTL must be no greater than 900s" }}
   {{- end }}
 {{- end }}
-{{- if .Values.artifactDaemon.enabled }}
-{{- $tlsEnabled := .Values.artifactDaemon.tls.enabled | default false }}
 {{- $tlsSecretName := .Values.artifactDaemon.tls.existingSecret | default (printf "%s-artifact-daemon-tls" (include "concourse.fullname" .)) }}
 {{- /*
    Resolve mirror.replicas: numbers pass through (including the explicit
    value 0 = disabled); the literal "all" maps to -1 (the daemon's flag
    value for "every live peer"). Anything else is a misconfiguration and
    we let Helm fail loudly.
-
    Note: we read the value directly rather than using `default` because
    `default` treats Go's zero-value (int 0) as "unset" and would silently
    override an operator's intentional `replicas: 0` with the chart default.
@@ -113,14 +104,10 @@ spec:
             - --namespace={{ include "concourse.kubernetesNamespace" . }}
             - --service-name={{ include "concourse.artifactDaemonServiceName" . }}
             - --label-key=concourse.dev/artifact-cache
-            {{- if .Values.artifactDaemon.resolveCapability.existingSecret }}
             - --resolve-capability-key=/etc/concourse/resolve-capability/resolve.key
-            {{- end }}
-            {{- if $tlsEnabled }}
             - --tls-cert=/etc/concourse/daemon-tls/tls.crt
             - --tls-key=/etc/concourse/daemon-tls/tls.key
             - --tls-ca-cert=/etc/concourse/daemon-tls/ca.crt
-            {{- end }}
             {{- if $hangarEnabled }}
             # The daemon adds concourse.dev/hangar-v1=ready to its node only
             # after strict GCS, key, TLS, and scratch validation succeeds.
@@ -194,18 +181,14 @@ spec:
             httpGet:
               path: /healthz
               port: http
-              {{- if $tlsEnabled }}
               scheme: HTTPS
-              {{- end }}
             initialDelaySeconds: 5
             periodSeconds: 10
           readinessProbe:
             httpGet:
               path: /healthz
               port: http
-              {{- if $tlsEnabled }}
               scheme: HTTPS
-              {{- end }}
             initialDelaySeconds: 2
             periodSeconds: 5
           securityContext:
@@ -224,16 +207,12 @@ spec:
           volumeMounts:
             - name: artifact-storage
               mountPath: {{ .Values.artifactDaemon.hostPath | default "/var/concourse/artifacts" }}
-            {{- if $tlsEnabled }}
             - name: daemon-tls
               mountPath: /etc/concourse/daemon-tls
               readOnly: true
-            {{- end }}
-            {{- if .Values.artifactDaemon.resolveCapability.existingSecret }}
             - name: resolve-capability
               mountPath: /etc/concourse/resolve-capability
               readOnly: true
-            {{- end }}
             {{- if $hangarEnabled }}
             - name: hangar-scratch
               mountPath: {{ .Values.artifactDaemon.hangar.scratchPath }}
@@ -243,7 +222,6 @@ spec:
           hostPath:
             path: {{ .Values.artifactDaemon.hostPath | default "/var/concourse/artifacts" }}
             type: DirectoryOrCreate
-        {{- if $tlsEnabled }}
         - name: daemon-tls
           secret:
             secretName: {{ $tlsSecretName }}
@@ -258,7 +236,6 @@ spec:
               - key: hangar.key
                 path: hangar.key
               {{- end }}
-        {{- end }}
         {{- if $hangarEnabled }}
         - name: hangar-scratch
           {{- if .Values.artifactDaemon.hangar.scratchSizeLimit }}
@@ -285,4 +262,3 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-{{- end }}

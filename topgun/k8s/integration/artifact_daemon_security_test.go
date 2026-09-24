@@ -161,10 +161,8 @@ var _ = Describe("Artifact Daemon Security", func() {
 		}
 	})
 
-	It("enforces mTLS on protected paths when TLS is enabled", func() {
-		if !daemonServesTLS(daemonPod) {
-			Skip("daemon not deployed with TLS — set ARTIFACT_DAEMON_TLS=true to run this check")
-		}
+	It("enforces mTLS on protected paths", func() {
+		Expect(daemonServesTLS(daemonPod)).To(BeTrue(), "the chart always deploys daemon mTLS")
 
 		// Reaching this point already proves the HTTPS readiness/liveness
 		// probes pass: the suite waits for the daemon pod to become Ready,

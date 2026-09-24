@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "concourse.fullname" . }}-mcp-clients
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+data:
+  clients.json: {{ toJson .Values.mcp.clients | quote }}

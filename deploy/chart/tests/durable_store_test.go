@@ -22,7 +22,7 @@ func render(t *testing.T, sets ...string) string {
 func renderInNamespace(t *testing.T, namespace string, sets ...string) string {
 	t.Helper()
 
-	args := []string{"template", "jb", "deploy/chart"}
+	args := []string{"template", "jb", "deploy/chart", "-f", "deploy/chart/tests/testdata/required-values.yaml"}
 	if namespace != "" {
 		args = append(args, "--namespace", namespace)
 	}
@@ -93,7 +93,7 @@ func TestIncompleteDurableConfigFailsToRender(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			args := []string{"template", "jb", "deploy/chart"}
+			args := []string{"template", "jb", "deploy/chart", "-f", "deploy/chart/tests/testdata/required-values.yaml"}
 			for _, s := range tc.sets {
 				args = append(args, "--set", s)
 			}
@@ -168,7 +168,7 @@ func TestGCSNeedsNoCredentialFlags(t *testing.T) {
 }
 
 func TestGCSRejectsS3CredentialSecret(t *testing.T) {
-	args := []string{"template", "jb", "deploy/chart", "--set", "artifactDaemon.durable.store=gcs", "--set", "artifactDaemon.durable.bucket=b", "--set", "artifactDaemon.durable.existingSecret=s3-creds"}
+	args := []string{"template", "jb", "deploy/chart", "-f", "deploy/chart/tests/testdata/required-values.yaml", "--set", "artifactDaemon.durable.store=gcs", "--set", "artifactDaemon.durable.bucket=b", "--set", "artifactDaemon.durable.existingSecret=s3-creds"}
 	cmd := exec.Command("helm", args...)
 	cmd.Dir = repoRoot(t)
 	out, err := cmd.CombinedOutput()

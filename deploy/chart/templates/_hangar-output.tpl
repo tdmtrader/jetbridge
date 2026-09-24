@@ -200,9 +200,6 @@ daemon that would refuse itself at startup.
 {{- end -}}
 
 {{- if $base -}}
-{{- if not .Values.artifactDaemon.enabled -}}
-{{- fail "hangarOutput.executionControl.enabled requires artifactDaemon.enabled. Every pod this runtime builds -- capture-selected or ordinary -- carries a REQUIRED node affinity on concourse.dev/artifact-cache=ready before the two output labels are appended, and the artifact daemon is the only thing that sets that label. With it disabled no node ever carries it, so every pod sits Pending until its deadline expires and the failure names a timeout rather than a label: the plane would render complete and schedule nothing." -}}
-{{- end -}}
 {{- if not $output.executionControl.keySecret -}}
 {{- fail "hangarOutput.executionControl.keySecret is required: the node signs every execution and source ledger statement with it, and an unsigned acknowledgement is not proof." -}}
 {{- end -}}
@@ -216,7 +213,7 @@ daemon that would refuse itself at startup.
 {{- fail "hangarOutput.daemon.tls.existingSecret is required: the ATC calls this daemon's control API from another node, and a bearer capability over plaintext off-node is interceptable inside its TTL." -}}
 {{- end -}}
 {{- if not $output.daemon.tls.clientSecret -}}
-{{- fail "hangarOutput.daemon.tls.clientSecret is required: this daemon's control API is TLS-only and refuses every operation whose request carries no VERIFIED peer certificate, so an ATC with no client certificate of its own can hold no source, issue no writer ticket, seal nothing, publish nothing and issue no read warrant. It is the OUTPUT plane's credential and not artifactDaemon.tls.enabled's: that switch belongs to a different daemon on a different bucket under a different identity, and a certificate from its CA handshakes here and is then refused by every route." -}}
+{{- fail "hangarOutput.daemon.tls.clientSecret is required: this daemon's control API is TLS-only and refuses every operation whose request carries no VERIFIED peer certificate, so an ATC with no client certificate of its own can hold no source, issue no writer ticket, seal nothing, publish nothing and issue no read warrant. It is the OUTPUT plane's credential, separate from artifactDaemon.tls: that configuration belongs to a different daemon on a different bucket under a different identity, and a certificate from its CA handshakes here and is then refused by every route." -}}
 {{- end -}}
 {{- if eq $output.daemon.tls.clientSecret $output.daemon.tls.existingSecret -}}
 {{- fail (printf "hangarOutput.daemon.tls.clientSecret and hangarOutput.daemon.tls.existingSecret are both %q. existingSecret holds tls.key -- the key this daemon SERVES with -- and it is mounted in the daemon Pod and nowhere else: whatever else held it could impersonate the output daemon to the ATC. A client needs a CLIENT certificate, issued by the same CA and kept in its own Secret." $output.daemon.tls.existingSecret) -}}
@@ -558,12 +555,10 @@ interval above that bound guarantees the state it is supposed to prevent.
       "name" .Values.kubernetes.serviceAccount
       "annotations" dict) -}}
 {{- end -}}
-{{- if .Values.artifactDaemon.enabled -}}
 {{- $subjects = append $subjects (dict
       "path" "artifactDaemon"
       "name" (printf "%s-artifact-daemon" (include "concourse.fullname" .))
       "annotations" dict) -}}
-{{- end -}}
 
 {{- $accounts := dict -}}
 {{- range $subject := $subjects -}}

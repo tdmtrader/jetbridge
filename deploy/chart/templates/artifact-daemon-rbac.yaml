@@ -1,4 +1,3 @@
-{{- if .Values.artifactDaemon.enabled }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -41,4 +40,3 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "concourse.fullname" . }}-artifact-daemon
     namespace: {{ .Release.Namespace }}
-{{- end }}

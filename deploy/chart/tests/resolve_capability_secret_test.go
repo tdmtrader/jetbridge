@@ -41,16 +41,10 @@ func TestResolveCapabilityFlagsAreAllOrNothing(t *testing.T) {
 		webFlag    = "--kubernetes-artifact-daemon-resolve-capability-key="
 	)
 
-	t.Run("no secret named: neither side enforces", func(t *testing.T) {
-		out := render(t)
-		if strings.Contains(out, daemonFlag) {
-			t.Error("the daemon requires capabilities with no Secret configured; it will 403 every resolve")
-		}
-		if strings.Contains(out, webFlag) {
-			t.Error("the web signs capabilities with no Secret configured")
-		}
-		if strings.Contains(out, "/etc/concourse/resolve-capability") {
-			t.Error("a capability volume is mounted with no Secret configured; the pod cannot start")
+	t.Run("no secret named: render refused", func(t *testing.T) {
+		out := renderHangarError(t, "artifactDaemon.resolveCapability.existingSecret=")
+		if !strings.Contains(out, "resolveCapability.existingSecret is required") {
+			t.Fatalf("missing actionable prerequisite error: %s", out)
 		}
 	})
 
@@ -67,13 +61,10 @@ func TestResolveCapabilityFlagsAreAllOrNothing(t *testing.T) {
 		}
 	})
 
-	t.Run("daemon disabled: no capability wiring anywhere", func(t *testing.T) {
-		out := render(t,
-			"artifactDaemon.enabled=false",
-			"artifactDaemon.resolveCapability.existingSecret=jb-resolve-key",
-		)
-		if strings.Contains(out, webFlag) {
-			t.Error("the web signs capabilities for a daemon that is not deployed")
+	t.Run("daemon disabled: obsolete value refused", func(t *testing.T) {
+		out := renderHangarError(t, "artifactDaemon.enabled=false")
+		if !strings.Contains(out, "artifactDaemon.enabled has been removed") {
+			t.Fatalf("obsolete toggle was not rejected: %s", out)
 		}
 	})
 }
@@ -81,12 +72,7 @@ func TestResolveCapabilityFlagsAreAllOrNothing(t *testing.T) {
 // The TTL flag is worthless without the key flag: the ATC refuses to start when
 // the TTL is at or below its floor, and never signs at all without a key.
 func TestResolveCapabilityTTLTravelsWithTheKey(t *testing.T) {
-	out := render(t)
-	if strings.Contains(out, "resolve-capability-ttl") {
-		t.Error("a capability TTL is passed with no Secret configured")
-	}
-
-	out = render(t, "artifactDaemon.resolveCapability.existingSecret=jb-resolve-key")
+	out := render(t, "artifactDaemon.resolveCapability.existingSecret=jb-resolve-key")
 	if !strings.Contains(out, "--kubernetes-artifact-daemon-resolve-capability-ttl=2h") {
 		t.Errorf("expected the default 2h TTL alongside the key; got:\n%s", capabilityLines(out))
 	}

@@ -169,9 +169,8 @@ func containersOf(spec corev1.PodSpec) []corev1.Container {
 //
 // The shape this pins: the output plane has its own trust domain -- its own
 // client Secret, its own CA, its own server name -- and exactly one supported
-// mode, because the daemon can serve exactly one. `artifactDaemon.tls.enabled`
-// is deliberately varied in both directions below: the output plane's scheme
-// must not move with it.
+// mode, because the daemon can serve exactly one. Artifact daemon certificate
+// ownership is varied below: the output plane's trust must not move with it.
 
 var outputTLSModes = []struct {
 	name string
@@ -179,13 +178,13 @@ var outputTLSModes = []struct {
 }{
 	{name: "base control only", sets: baseControlSets},
 	{
-		name: "base control, artifact daemon TLS on",
-		sets: append(append([]string{}, baseControlSets...), "artifactDaemon.tls.enabled=true"),
+		name: "base control, generated artifact daemon certificates",
+		sets: append(append([]string{}, baseControlSets...), "artifactDaemon.tls.source=generated", "artifactDaemon.tls.existingSecret="),
 	},
 	{name: "output facet", sets: outputSets},
 	{
-		name: "output facet, artifact daemon TLS on",
-		sets: append(append([]string{}, outputSets...), "artifactDaemon.tls.enabled=true"),
+		name: "output facet, generated artifact daemon certificates",
+		sets: append(append([]string{}, outputSets...), "artifactDaemon.tls.source=generated", "artifactDaemon.tls.existingSecret="),
 	},
 }
 

@@ -1,3 +1,4 @@
+{{- include "concourse.standardCapabilities.validate" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -16,6 +17,8 @@ spec:
       {{- include "concourse.selectorLabels" . | nindent 6 }}
   template:
     metadata:
+      annotations:
+        checksum/mcp-clients: {{ toJson .Values.mcp.clients | sha256sum }}
       labels:
         {{- include "concourse.selectorLabels" . | nindent 8 }}
     spec:
@@ -131,6 +134,12 @@ spec:
             {{- if .Values.web.enablePipelineRunCreation }}
             - --enable-pipeline-run-creation
             {{- end }}
+            # Authenticated MCP
+            - --enable-mcp
+            - --mcp-client-config=/etc/concourse/mcp-clients/clients.json
+            {{- range .Values.mcp.disabledOperations }}
+            - {{ printf "--mcp-disable-operation=%s" . | quote }}
+            {{- end }}
             # Auth
             # localUsers is a comma-separated "user:pass,user2:pass2" list, but
             # Concourse's CLI map flag splits only on the first colon and does
@@ -174,24 +183,18 @@ spec:
             {{- if .Values.cacheHostPath }}
             - --kubernetes-cache-host-path={{ .Values.cacheHostPath }}
             {{- end }}
-            {{- if .Values.artifactDaemon.enabled }}
             - --kubernetes-artifact-daemon-port={{ .Values.artifactDaemon.port | default 7780 }}
             - --kubernetes-artifact-daemon-host-path={{ .Values.artifactDaemon.hostPath | default "/var/concourse/artifacts" }}
             - --kubernetes-artifact-daemon-service={{ include "concourse.artifactDaemonServiceName" . }}
-            {{- if .Values.artifactDaemon.resolveCapability.existingSecret }}
             - --kubernetes-artifact-daemon-resolve-capability-key=/etc/concourse/resolve-capability/resolve.key
             - --kubernetes-artifact-daemon-resolve-capability-ttl={{ .Values.artifactDaemon.resolveCapability.ttl | default "2h" }}
-            {{- end }}
-            {{- if .Values.artifactDaemon.tls.enabled }}
             - --kubernetes-artifact-daemon-tls-cert=/etc/concourse/daemon-tls/client.crt
             - --kubernetes-artifact-daemon-tls-key=/etc/concourse/daemon-tls/client.key
             - --kubernetes-artifact-daemon-tls-ca-cert=/etc/concourse/daemon-tls/ca.crt
-            {{- end }}
             {{- if .Values.artifactDaemon.hangar.webEnabled }}
             - --kubernetes-hangar-enabled
             - --kubernetes-hangar-warrant-key=/etc/concourse/daemon-tls/hangar.key
             - --kubernetes-hangar-warrant-ttl={{ .Values.artifactDaemon.hangar.capabilityTTL }}
-            {{- end }}
             {{- end }}
             {{- if .Values.hangarOutput.executionControl.enabled }}
             # The output plane's control-plane half. The web node mints control
@@ -204,11 +207,8 @@ spec:
             # daemon's server certificate carries. Unconditional, because the
             # output daemon is TLS-only: it has no plaintext branch and its
             # control routes refuse every operation whose request carries no
-            # verified peer certificate. This used to be derived from
-            # artifactDaemon.tls.enabled -- a different daemon's switch, false
-            # by default -- so the ATC dialed http:// at an HTTPS listener, and
-            # when that switch was on it presented the artifact daemon's
-            # certificate to a daemon that trusts a different CA.
+            # verified peer certificate. The output daemon and artifact daemon
+            # use separate trust domains and separate client certificates.
             - --kubernetes-hangar-output-tls-cert=/etc/concourse/hangar-output/tls/tls.crt
             - --kubernetes-hangar-output-tls-key=/etc/concourse/hangar-output/tls/tls.key
             - --kubernetes-hangar-output-tls-ca-cert=/etc/concourse/hangar-output/tls/ca.crt
@@ -350,6 +350,9 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           volumeMounts:
+            - name: mcp-clients
+              mountPath: /etc/concourse/mcp-clients
+              readOnly: true
             - name: keys
               mountPath: /keys
               readOnly: true
@@ -358,16 +361,12 @@ spec:
               mountPath: {{ .Values.web.tls.mountPath }}
               readOnly: true
             {{- end }}
-            {{- if and .Values.artifactDaemon.enabled (.Values.artifactDaemon.tls.enabled | default false) }}
             - name: daemon-tls
               mountPath: /etc/concourse/daemon-tls
               readOnly: true
-            {{- end }}
-            {{- if and .Values.artifactDaemon.enabled .Values.artifactDaemon.resolveCapability.existingSecret }}
             - name: resolve-capability
               mountPath: /etc/concourse/resolve-capability
               readOnly: true
-            {{- end }}
             {{- if .Values.hangarOutput.executionControl.enabled }}
             - name: hangar-output-capability
               mountPath: /etc/concourse/hangar-output/capability
@@ -400,6 +399,9 @@ spec:
             {{- end }}
       terminationGracePeriodSeconds: {{ .Values.web.terminationGracePeriodSeconds | default 120 }}
       volumes:
+        - name: mcp-clients
+          configMap:
+            name: {{ include "concourse.fullname" . }}-mcp-clients
         - name: tmp
           emptyDir:
             medium: Memory
@@ -416,7 +418,6 @@ spec:
   install and broken for anything else, so an explicit request for both is a
   contradiction and fails the render rather than deploying something that
   half-works.
-
   Deliberately NOT solved with Helm `lookup` + genPrivateKey: `lookup` returns
   nothing under `helm template`, which is ArgoCD's render mode, so every sync
   would mint a fresh key AND write the private key into the rendered manifest
@@ -439,7 +440,6 @@ spec:
           secret:
             secretName: {{ .Values.web.tls.secretName }}
         {{- end }}
-        {{- if and .Values.artifactDaemon.enabled (.Values.artifactDaemon.tls.enabled | default false) }}
         - name: daemon-tls
           secret:
             secretName: {{ .Values.artifactDaemon.tls.existingSecret | default (printf "%s-artifact-daemon-tls" (include "concourse.fullname" .)) }}
@@ -454,12 +454,9 @@ spec:
               - key: hangar.key
                 path: hangar.key
               {{- end }}
-        {{- end }}
-        {{- if and .Values.artifactDaemon.enabled .Values.artifactDaemon.resolveCapability.existingSecret }}
         - name: resolve-capability
           secret:
             secretName: {{ .Values.artifactDaemon.resolveCapability.existingSecret }}
-        {{- end }}
         {{- if .Values.hangarOutput.executionControl.enabled }}
         - name: hangar-output-capability
           secret:
