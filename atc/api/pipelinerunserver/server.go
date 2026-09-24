@@ -76,11 +76,21 @@ func (s *Server) pipelineRun(pipeline db.Pipeline, run db.PipelineRun, r *http.R
 }
 
 func (s *Server) writeRun(w http.ResponseWriter, pipeline db.Pipeline, run db.PipelineRun, r *http.Request, status int) {
+	s.writeAdmittedRun(w, pipeline, run, r, status, "")
+}
+
+// writeAdmittedRun writes the one presentation of a Run, stamped with the
+// admission outcome when the response answers a v2 create.
+func (s *Server) writeAdmittedRun(w http.ResponseWriter, pipeline db.Pipeline, run db.PipelineRun, r *http.Request, status int, outcome atc.RunAdmissionOutcome) {
 	presentable, err := s.pipelineRun(pipeline, run, r)
 	if err != nil {
 		s.logger.Error("failed-to-load-pipeline-run-payload", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
+	}
+	presentable.AdmissionOutcome = outcome
+	if outcome == atc.RunAdmissionReplayed {
+		w.Header().Set(atc.IdempotencyReplayedHeader, "true")
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "private, no-store")

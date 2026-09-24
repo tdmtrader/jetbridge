@@ -49,6 +49,10 @@ type PipelineRun struct {
 	Cancellation    *RunCancellationRequest `json:"cancellation,omitempty"`
 	ContractVersion RunContractVersion      `json:"run_contract_version"`
 	ActivationEpoch int64                   `json:"activation_epoch,omitempty"`
+	// AdmissionOutcome is set only on a v2 create response: created for a
+	// newly committed Run, replayed for an invocation that had already
+	// committed. A replay also carries the Idempotency-Replayed header.
+	AdmissionOutcome RunAdmissionOutcome `json:"admission_outcome,omitempty"`
 	// CausedByRun and Correlation are birth-time caller intent, presented only
 	// to callers authorized for the template's team history. A caused_by_run
 	// whose predecessor was purged is an unresolved-predecessor marker.
@@ -119,6 +123,19 @@ func pipelineRunTime(seconds *int64) *time.Time {
 	timestamp := time.Unix(*seconds, 0).UTC()
 	return &timestamp
 }
+
+// RunAdmissionOutcome says whether a v2 create committed a new Run or replayed
+// the Run its invocation had already committed.
+type RunAdmissionOutcome string
+
+const (
+	RunAdmissionCreated  RunAdmissionOutcome = "created"
+	RunAdmissionReplayed RunAdmissionOutcome = "replayed"
+)
+
+// IdempotencyReplayedHeader is set to "true" on a v2 create response that
+// replayed an already-committed invocation, and is absent otherwise.
+const IdempotencyReplayedHeader = "Idempotency-Replayed"
 
 // ValidRunInvocationToken reports whether value is 1 through 128 bytes of the
 // invocation alphabet: A-Z, a-z, 0-9, dot, underscore, tilde and hyphen. The

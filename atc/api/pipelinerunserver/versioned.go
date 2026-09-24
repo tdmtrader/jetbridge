@@ -90,11 +90,13 @@ func (s *Server) CreatePipelineRunV2(pipeline db.Pipeline) http.Handler {
 			return
 		}
 		_ = s.runFactory.AfterRunCreated(ctx, db.RunCreation{Run: run, Replayed: replayed})
-		status := http.StatusCreated
+		// A replay is 200 with the Idempotency-Replayed header and an explicit
+		// outcome, so a caller never has to infer replay from the status alone.
+		status, outcome := http.StatusCreated, atc.RunAdmissionCreated
 		if replayed {
-			status = http.StatusOK
+			status, outcome = http.StatusOK, atc.RunAdmissionReplayed
 		}
-		s.writeRun(w, pipeline, run, r, status)
+		s.writeAdmittedRun(w, pipeline, run, r, status, outcome)
 	})
 }
 

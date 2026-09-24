@@ -42,6 +42,7 @@ func exerciseRunInvocationAPI(in RunInputAdmission, mode string, rec *brine.Reco
 	if strings.HasPrefix(mode, "shared client") {
 		return exerciseSharedInvocationAPI(in, auth, mode == "shared client replay")
 	}
+	var header http.Header
 	send := func(path, token string, body []byte) (int, []byte, error) {
 		req, err := http.NewRequest(http.MethodPost, auth.URL+path, bytes.NewReader(body))
 		if err != nil {
@@ -55,6 +56,7 @@ func exerciseRunInvocationAPI(in RunInputAdmission, mode string, rec *brine.Reco
 			return 0, nil, err
 		}
 		defer response.Body.Close()
+		header = response.Header
 		data, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 		return response.StatusCode, data, err
 	}
@@ -143,6 +145,10 @@ func exerciseRunInvocationAPI(in RunInputAdmission, mode string, rec *brine.Reco
 		if strings.Contains(string(data), source.Bearer) {
 			return fmt.Errorf("Run response disclosed the input bearer")
 		}
+		// Requirement 20: a new Run says so and carries no replay header.
+		if first.AdmissionOutcome != atc.RunAdmissionCreated || header.Get(atc.IdempotencyReplayedHeader) != "" {
+			return fmt.Errorf("new Run signalled outcome %q with replay header %q", first.AdmissionOutcome, header.Get(atc.IdempotencyReplayedHeader))
+		}
 		if mode != "accepted" {
 			if mode == "replay without bearer" {
 				source.Bearer = ""
@@ -172,6 +178,9 @@ func exerciseRunInvocationAPI(in RunInputAdmission, mode string, rec *brine.Reco
 				var replay atc.PipelineRun
 				if json.Unmarshal(data, &replay) != nil || replay.ID != first.ID || replay.Number != first.Number {
 					return fmt.Errorf("replay returned another Run")
+				}
+				if replay.AdmissionOutcome != atc.RunAdmissionReplayed || header.Get(atc.IdempotencyReplayedHeader) != "true" {
+					return fmt.Errorf("replay signalled outcome %q with replay header %q", replay.AdmissionOutcome, header.Get(atc.IdempotencyReplayedHeader))
 				}
 			}
 		}
