@@ -56,7 +56,7 @@ func backendWith(t *testing.T, key []byte, ttl time.Duration) *DaemonSetBackend 
 		ArtifactDaemonResolveCapabilityTTL: ttl,
 		PodSchedulingTimeout:               DefaultPodSchedulingTimeout,
 		PodStartupTimeout:                  DefaultPodStartupTimeout,
-	}, nil, nil)
+	}, nil, nil, nil)
 }
 
 // oneInput returns an input plus the volume and mount that must accompany it;

@@ -80,9 +80,12 @@ func observeArtifactLookup(in ArtifactCluster, key, location, discovery string) 
 		return out, err
 	}
 	out.wire, err = observeDaemonTraffic(map[string]bool{out.address: true}, func() {
-		client := jetbridge.NewDaemonClient(lagertest.NewTestLogger("brine-lookup"),
+		// A fresh discovery client, built under observation, on a worker that
+		// is otherwise the fixture's: same locator, executor and volumes.
+		deps := in.workerDeps
+		deps.DaemonClient = jetbridge.NewDaemonClient(lagertest.NewTestLogger("brine-lookup"),
 			in.Clientset, in.Namespace, in.daemonService(), in.Node.port, nil)
-		in.Worker.SetDaemonClient(client)
+		in.Worker = jetbridge.NewWorker(in.WorkerRow, in.Clientset, in.workerConfig, deps)
 		out.volume, out.err = lookupVolume(in, key)
 	})
 	if err != nil {

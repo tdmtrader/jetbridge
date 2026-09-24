@@ -73,8 +73,9 @@ func TestLiveSidecarLogStreamTimeout(t *testing.T) {
 			t.Fatalf("persisting worker: %v", err)
 		}
 
-		worker := jetbridge.NewWorker(dbWorker, clientset, *cfg)
-		worker.SetExecutor(executor)
+		worker := jetbridge.NewWorker(dbWorker, clientset, *cfg, jetbridge.WorkerDeps{
+			Executor: executor,
+		})
 		cleanupPod(t, clientset, ns, handle)
 
 		container, _, err := worker.FindOrCreateContainer(

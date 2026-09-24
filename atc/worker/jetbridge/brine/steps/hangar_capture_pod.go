@@ -851,6 +851,7 @@ func withCohort(in CaptureDraft, res brine.Resources, rec *brine.Recorder,
 	in.Draft.Worker = ready.Worker
 	in.Draft.Clientset = ready.Clientset
 	in.Draft.MountExecutor = ready.ProducerExecutor
+	in.Draft.workerWith = ready.workerWith
 	in.Draft.Ctx = ready.Ctx
 	// The team the rebuilt worker's volumes hang off. The draft was carrying
 	// the team of the worker this one replaces, and an input volume created

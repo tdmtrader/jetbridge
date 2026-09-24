@@ -16,7 +16,10 @@ func sidecarSpecDefinitions() []brine.StepDefinition {
 				if in.MountExecutor == nil {
 					return ContainerDraft{}, fmt.Errorf("draft has no production execution transport")
 				}
-				in.Worker.SetExecutor(in.MountExecutor)
+				if in.workerWith == nil {
+					return ContainerDraft{}, fmt.Errorf("draft has no worker to hand the transport to")
+				}
+				in.Worker = in.workerWith(in.MountExecutor)
 				return in, nil
 			}),
 		refineSidecar("the sidecar {string} declares environment {string} as {string}",

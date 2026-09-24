@@ -104,10 +104,11 @@ func liveReviewReadOnlyInput(ctx context.Context, in RunOutputRuntime, executor 
 	if err != nil {
 		return err
 	}
-	worker := jetbridge.NewWorker(row, in.Client, config)
-	worker.SetExecutor(executor)
-	worker.SetOutputControls(jetbridge.NewOutputControls(config, jetbridge.NewNodeIPResolver(in.Client), in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch)))
-	worker.SetExecutionPreparer(starter)
+	worker := jetbridge.NewWorker(row, in.Client, config, jetbridge.WorkerDeps{
+		Executor:          executor,
+		OutputControls:    jetbridge.NewOutputControls(config, jetbridge.NewNodeIPResolver(in.Client), in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch)),
+		ExecutionPreparer: starter,
+	})
 	metadata := db.ContainerMetadata{BuildID: buildID, PipelineID: pipelineID, Type: db.ContainerTypeTask}
 	container, _, err := worker.FindOrCreateContainer(ctx, db.NewBuildStepContainerOwner(buildID, "read-input", team.ID()), metadata, spec, nil)
 	if err != nil {

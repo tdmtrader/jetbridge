@@ -86,8 +86,9 @@ var _ = Describe("Ledger-restored process contracts", func() {
 		shortCfg := cfg
 		shortCfg.PodSchedulingTimeout = 3 * time.Second
 		shortCfg.PodStartupTimeout = 2 * time.Second
-		shortWorker := jetbridge.NewWorker(dbWorker, fakeClientset, shortCfg)
-		shortWorker.SetExecutor(&fakeExecExecutor{})
+		shortWorker := jetbridge.NewWorker(dbWorker, fakeClientset, shortCfg, jetbridge.WorkerDeps{
+			Executor: &fakeExecExecutor{},
+		})
 
 		shortContainer, _, err := ledgerTask(shortWorker, ctx, "exec-sched-timeout-handle", db.ContainerTypeGet,
 			runtime.ContainerSpec{

@@ -67,7 +67,7 @@ func TestManagedInputDownloaderCoversTheConfiguredOperation(t *testing.T) {
 		HostPath: &corev1.HostPathVolumeSource{Path: "/artifacts/steps/consumer/input-0"},
 	}}}
 	mounts := []corev1.VolumeMount{{Name: "input-0", MountPath: input.DestinationPath}}
-	init, err := NewDaemonSetBackend(config, nil, nil).managedInputInit("consumer", input, volumes, mounts, 0)
+	init, err := NewDaemonSetBackend(config, nil, nil, nil).managedInputInit("consumer", input, volumes, mounts, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

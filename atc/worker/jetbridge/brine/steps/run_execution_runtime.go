@@ -81,7 +81,6 @@ func exerciseRunExecutionRuntime(in RunOutputRuntime, kind string, cancelFirst b
 	config := in.Config
 	config.OutputPlaneEnabled = true
 	config.OutputActivationEpoch = int64(hangarEpoch)
-	w := jetbridge.NewWorker(row, in.Client, config)
 	executor := runWitnessExecutor{localExecutor: localExecutor{client: in.Client, supervisorRoot: workspace}, conn: in.Start.DB.Conn}
 	if daemonLoss {
 		executor.afterCommand = func(ctx context.Context, namespace, pod string) error {
@@ -92,8 +91,6 @@ func exerciseRunExecutionRuntime(in RunOutputRuntime, kind string, cancelFirst b
 		}
 		in.OutcomeReader = executor.localExecutor
 	}
-	w.SetExecutor(executor)
-	w.SetOutputControls(jetbridge.NewOutputControls(config, jetbridge.NewNodeIPResolver(in.Client), in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch)))
 	factory := db.NewPipelineRunFactory(in.Start.DB.Conn, in.Start.DB.LockFactory)
 	keys := hangaroutput.ControlKeyRing{ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch), Keys: []hangaroutput.ControlKeyEntry{{Epoch: executioncontrol.ActivationEpoch(hangarEpoch), PublicKey: base64.StdEncoding.EncodeToString(in.Start.Daemon.ControlPublic)}}}
 	if operation == "untrusted signer" {
@@ -103,7 +100,11 @@ func exerciseRunExecutionRuntime(in RunOutputRuntime, kind string, cancelFirst b
 		}
 		keys.Keys[0].PublicKey = base64.StdEncoding.EncodeToString(public)
 	}
-	w.SetExecutionPreparer(&runs.ExecutionStarter{Conn: in.Start.DB.Conn, Factory: factory, Source: jetbridge.NewOutputSource(in.Client, config, in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch)), Epoch: executioncontrol.ActivationEpoch(hangarEpoch), Verifier: keys})
+	w := jetbridge.NewWorker(row, in.Client, config, jetbridge.WorkerDeps{
+		Executor:          executor,
+		OutputControls:    jetbridge.NewOutputControls(config, jetbridge.NewNodeIPResolver(in.Client), in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch)),
+		ExecutionPreparer: &runs.ExecutionStarter{Conn: in.Start.DB.Conn, Factory: factory, Source: jetbridge.NewOutputSource(in.Client, config, in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch)), Epoch: executioncontrol.ActivationEpoch(hangarEpoch), Verifier: keys},
+	})
 	build := in.Start.Creation.EntryBuilds[0]
 	if kind == "check" {
 		check, err := requestRunCheck(in.Start, "persisted")

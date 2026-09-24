@@ -49,8 +49,9 @@ var _ = Describe("Process (restored)", func() {
 	// merge-base). No both-red evidence exists for it.
 	It("supervised step teardown on context end deletes a supervised task's pause pod when context is cancelled", func() {
 		fakeExecutor := &fakeExecExecutor{}
-		execWorker := jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
-		execWorker.SetExecutor(fakeExecutor)
+		execWorker := jetbridge.NewWorker(dbWorker, fakeClientset, cfg, jetbridge.WorkerDeps{
+			Executor: fakeExecutor,
+		})
 
 		// A get step's command runs on the exec stream and dies with it, so a
 		// cancelled context leaves nothing running and the pod is worth

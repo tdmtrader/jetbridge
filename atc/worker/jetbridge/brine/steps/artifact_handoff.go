@@ -99,10 +99,11 @@ func handoff(in LiveTaskPlan, rec *brine.Recorder, name, content, encoding, faul
 	config.ArtifactDaemonService = liveArtifactDaemonService
 	config.ArtifactDaemonHostPath, config.ArtifactDaemonPort = store.root, int(daemon.port)
 	config.PodStartupTimeout, config.PodSchedulingTimeout = 30*time.Second, 30*time.Second
-	worker := jetbridge.NewWorker(dbWorker, store.cluster.Clientset, config)
-	worker.SetExecutor(store.executor)
-	// Discovery is restricted to this owned namespace, never production peers.
-	worker.SetDaemonClient(jetbridge.NewDaemonClient(lagertest.NewTestLogger("handoff-daemon"), store.cluster.Clientset, store.cluster.Namespace, config.ArtifactDaemonService, int(daemon.port), nil))
+	worker := jetbridge.NewWorker(dbWorker, store.cluster.Clientset, config, jetbridge.WorkerDeps{
+		Executor: store.executor,
+		// Discovery is restricted to this owned namespace, never production peers.
+		DaemonClient: jetbridge.NewDaemonClient(lagertest.NewTestLogger("handoff-daemon"), store.cluster.Clientset, store.cluster.Namespace, config.ArtifactDaemonService, int(daemon.port), nil),
+	})
 	team, err := in.Database.TeamFactory.CreateTeam(atc.Team{Name: "main"})
 	if err != nil {
 		return out, fmt.Errorf("create owned main team: %w", err)

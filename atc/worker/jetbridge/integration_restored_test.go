@@ -57,8 +57,9 @@ var _ = Describe("Integration", func() {
 		delegate = &noopDelegate{}
 		fakeExecutor = &fakeExecExecutor{}
 
-		worker = jetbridge.NewWorker(dbWorker, fakeClientset, jetbridge.NewConfig("ci-namespace", ""))
-		worker.SetExecutor(fakeExecutor)
+		worker = jetbridge.NewWorker(dbWorker, fakeClientset, jetbridge.NewConfig("ci-namespace", ""), jetbridge.WorkerDeps{
+			Executor: fakeExecutor,
+		})
 	})
 
 	// createContainer persists a container with the given handle and returns

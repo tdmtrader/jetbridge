@@ -76,8 +76,7 @@ func runLiveS3Put(in LiveTaskPlan, rec *brine.Recorder) (S3PutOutcome, error) {
 	w.Clientset = client
 	w.Config.ResourceTypeImages = jetbridge.MergeResourceTypeImages(nil)
 	w.Config.ResourceTypeImages["s3"] = liveS3ResourceImage
-	w = w.rebuild()
-	w.Worker.SetExecutor(jetbridge.NewSPDYExecutor(client, trace.config(config)))
+	w = w.rebuildWith(jetbridge.NewSPDYExecutor(client, trace.config(config)))
 	const handle = "put-multi-input"
 	names := []string{"compiled-binary", "release-notes"}
 	inputs := make([]runtime.Input, 0, len(names))

@@ -65,7 +65,10 @@ type DaemonSetBackend struct {
 	wire            *artifactwire.Client
 }
 
-func NewDaemonSetBackend(config Config, locator *ArtifactLocator, resolver *NodeIPResolver) *DaemonSetBackend {
+// NewDaemonSetBackend builds the backend with the daemon client it probes,
+// warms and aliases through. A nil client is a backend that cannot reach the
+// daemons, not one waiting for a client to arrive.
+func NewDaemonSetBackend(config Config, locator *ArtifactLocator, resolver *NodeIPResolver, daemonClient *DaemonClient) *DaemonSetBackend {
 	if config.ArtifactDaemonWarmTimeout <= 0 {
 		config.ArtifactDaemonWarmTimeout = defaultWarmTimeout
 	}
@@ -88,16 +91,10 @@ func NewDaemonSetBackend(config Config, locator *ArtifactLocator, resolver *Node
 		resolveSigner:   signer,
 		artifactLocator: locator,
 		nodeIPResolver:  resolver,
+		daemonClient:    daemonClient,
 		warmNegative:    newWarmNegativeCache(),
 		wire:            newWireClient(config),
 	}
-}
-
-// SetDaemonClient sets the DaemonClient used for probing daemon pods for
-// cached resources. Must be called after construction when the K8s clientset
-// is available.
-func (b *DaemonSetBackend) SetDaemonClient(client *DaemonClient) {
-	b.daemonClient = client
 }
 
 func (b *DaemonSetBackend) StepVolume(name, handle, subdir string) corev1.Volume {

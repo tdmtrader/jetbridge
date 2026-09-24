@@ -217,7 +217,7 @@ func runPauseRecovery(in LiveTaskPlan, rec *brine.Recorder, when, cause string) 
 			return fixtureErr
 		}}
 	})
-	w.Worker.SetExecutor(jetbridge.NewSPDYExecutor(client, execConfig))
+	w = w.rebuildWith(jetbridge.NewSPDYExecutor(client, execConfig))
 	container, _, err := w.Worker.FindOrCreateContainer(w.Ctx, db.NewFixedHandleContainerOwner(handle),
 		db.ContainerMetadata{Type: db.ContainerTypeTask},
 		runtime.ContainerSpec{TeamID: w.TeamID, Dir: "/workdir", ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"}}, nil)

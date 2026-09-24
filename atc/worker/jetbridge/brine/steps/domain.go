@@ -59,12 +59,16 @@ type ContainerDraft struct {
 	// MountExecutor is the transport used when creating deferred volumes.
 	// Real worker drafts retain the production SPDY executor.
 	MountExecutor jetbridge.PodExecutor
-	Ctx           context.Context
-	Handle        string
-	ImageURL      string
-	Dir           string
-	ContainerEnv  []string
-	ProcessEnv    []string
+	// workerWith builds the draft's worker again with a different executor.
+	// A worker takes its executor at construction, so a draft that hands the
+	// task a transport replaces Worker rather than changing it.
+	workerWith   func(jetbridge.PodExecutor) *jetbridge.Worker
+	Ctx          context.Context
+	Handle       string
+	ImageURL     string
+	Dir          string
+	ContainerEnv []string
+	ProcessEnv   []string
 
 	// Inputs are destination paths, each of which gets a real artifact volume
 	// when the container runs. There is no artifact-less form: production's

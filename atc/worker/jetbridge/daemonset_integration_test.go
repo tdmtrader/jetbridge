@@ -32,7 +32,7 @@ func TestDaemonSetMode_PodHasHostPathVolume(t *testing.T) {
 		ArtifactHelperImage:    "alpine:latest",
 	}
 
-	backend := NewDaemonSetBackend(cfg, nil, nil)
+	backend := NewDaemonSetBackend(cfg, nil, nil, nil)
 	c := &Container{
 		handle:         "test-handle",
 		podName:        "test-pod",
@@ -72,7 +72,7 @@ func TestDaemonSetMode_HardAffinity(t *testing.T) {
 		containerSpec:  runtime.ContainerSpec{Dir: "/tmp/build", Type: db.ContainerTypeTask},
 		config:         cfg,
 		properties:     make(map[string]string),
-		storageBackend: NewDaemonSetBackend(cfg, nil, nil),
+		storageBackend: NewDaemonSetBackend(cfg, nil, nil, nil),
 	}
 
 	affinity := c.buildAffinity()
@@ -147,7 +147,7 @@ func TestDaemonSetMode_StrictInputValidationFailsClosed(t *testing.T) {
 					Dir: "/work", Type: db.ContainerTypeTask,
 					ImageSpec: runtime.ImageSpec{ImageURL: "busybox"}, Inputs: test.inputs, Outputs: test.outputs,
 				},
-				config: test.cfg, storageBackend: NewDaemonSetBackend(test.cfg, nil, nil),
+				config: test.cfg, storageBackend: NewDaemonSetBackend(test.cfg, nil, nil, nil),
 			}
 			_, err := container.buildPod(runtime.ProcessSpec{}, []string{"sh", "-c", "true"}, nil)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
@@ -170,7 +170,7 @@ func TestDaemonSetMode_StrictInputAllowsSiblingOutput(t *testing.T) {
 			Inputs:  []runtime.Input{{HangarTree: &ref, DestinationPath: "/work/exact"}},
 			Outputs: runtime.OutputPaths{"result": "/work/exact2"},
 		},
-		config: cfg, storageBackend: NewDaemonSetBackend(cfg, nil, nil),
+		config: cfg, storageBackend: NewDaemonSetBackend(cfg, nil, nil, nil),
 	}
 	if err := container.validateInputs(); err != nil {
 		t.Fatalf("sibling output must not overlap strict input: %v", err)
@@ -202,7 +202,7 @@ func TestDaemonSetMode_StrictInputsAreReadOnlyEverywhereAndPodMountsResolve(t *t
 			Inputs:    []runtime.Input{{HangarTree: &ref, DestinationPath: "/work/exact"}},
 			Sidecars:  []atc.SidecarConfig{{Name: "observer", Image: "busybox"}},
 		},
-		config: cfg, storageBackend: NewDaemonSetBackend(cfg, nil, nil),
+		config: cfg, storageBackend: NewDaemonSetBackend(cfg, nil, nil, nil),
 	}
 
 	pod, err := container.buildPod(runtime.ProcessSpec{}, []string{"sh", "-c", "true"}, nil)
@@ -263,7 +263,7 @@ func TestDaemonSetMode_OrdinaryOverlappingInputRemainsWritable(t *testing.T) {
 			Inputs:    []runtime.Input{{Artifact: constructionArtifact("ordinary", "test-worker"), DestinationPath: "/work/shared"}},
 			Outputs:   runtime.OutputPaths{"result": "/work/shared/"},
 		},
-		config: cfg, storageBackend: NewDaemonSetBackend(cfg, nil, nil),
+		config: cfg, storageBackend: NewDaemonSetBackend(cfg, nil, nil, nil),
 	}
 	pod, err := container.buildPod(runtime.ProcessSpec{}, []string{"sh", "-c", "true"}, nil)
 	if err != nil {
@@ -287,7 +287,7 @@ func TestDaemonSetMode_BuildPodRejectsUnresolvedMounts(t *testing.T) {
 		handle: "task-handle", podName: "test-pod",
 		metadata:      db.ContainerMetadata{Type: db.ContainerTypeTask},
 		containerSpec: runtime.ContainerSpec{Dir: "/work", Type: db.ContainerTypeTask, ImageSpec: runtime.ImageSpec{ImageURL: "busybox"}},
-		config:        cfg, storageBackend: unresolvedMountBackend{NewDaemonSetBackend(cfg, nil, nil)},
+		config:        cfg, storageBackend: unresolvedMountBackend{NewDaemonSetBackend(cfg, nil, nil, nil)},
 	}
 	if _, err := container.buildPod(runtime.ProcessSpec{}, []string{"sh", "-c", "true"}, nil); err == nil || !strings.Contains(err.Error(), "missing") {
 		t.Fatalf("expected unresolved init mount to reject Pod construction, got %v", err)
@@ -331,7 +331,7 @@ func TestDaemonSetMode_SoftAffinity(t *testing.T) {
 		},
 		config:         cfg,
 		properties:     make(map[string]string),
-		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil, nil),
 	}
 
 	affinity := c.buildAffinity()
@@ -405,7 +405,7 @@ func TestDaemonSetMode_InitContainerResolveCommand(t *testing.T) {
 		},
 		config:         cfg,
 		properties:     make(map[string]string),
-		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil, nil),
 	}
 
 	// Build mounts to get volumeName
@@ -484,7 +484,7 @@ func TestDaemonSetMode_UploadOutputsIsNoop(t *testing.T) {
 		},
 		config:         cfg,
 		properties:     make(map[string]string),
-		storageBackend: NewDaemonSetBackend(cfg, nil, nil),
+		storageBackend: NewDaemonSetBackend(cfg, nil, nil, nil),
 	}
 
 	p := &execProcess{
@@ -527,7 +527,7 @@ func TestDaemonSetMode_LocatorRecordCalledAfterUpload(t *testing.T) {
 		config:         cfg,
 		properties:     make(map[string]string),
 		volumes:        []*Volume{vol},
-		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil, nil),
 	}
 
 	p := &execProcess{
@@ -579,7 +579,7 @@ func TestDaemonSetMode_RecordOutputLocationsWithEmptyNodeName(t *testing.T) {
 		config:         cfg,
 		properties:     make(map[string]string),
 		volumes:        []*Volume{vol},
-		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil, nil),
 	}
 
 	p := &execProcess{
@@ -634,7 +634,7 @@ func TestDaemonSetMode_OutputVolumesAreHostPath(t *testing.T) {
 		},
 		config:         cfg,
 		properties:     make(map[string]string),
-		storageBackend: NewDaemonSetBackend(cfg, nil, nil),
+		storageBackend: NewDaemonSetBackend(cfg, nil, nil, nil),
 	}
 
 	volumes, _ := c.buildVolumeMounts()
@@ -667,7 +667,7 @@ func TestDaemonSetMode_DirVolumeIsHostPath(t *testing.T) {
 		},
 		config:         cfg,
 		properties:     make(map[string]string),
-		storageBackend: NewDaemonSetBackend(cfg, nil, nil),
+		storageBackend: NewDaemonSetBackend(cfg, nil, nil, nil),
 	}
 
 	volumes, _ := c.buildVolumeMounts()
@@ -705,7 +705,7 @@ func TestDaemonSetMode_InputVolumesAreHostPath(t *testing.T) {
 		},
 		config:         cfg,
 		properties:     make(map[string]string),
-		storageBackend: NewDaemonSetBackend(cfg, nil, nil),
+		storageBackend: NewDaemonSetBackend(cfg, nil, nil, nil),
 	}
 
 	volumes, _ := c.buildVolumeMounts()
@@ -780,7 +780,7 @@ func TestDaemonSetMode_CachesAreDirectHostPath(t *testing.T) {
 		},
 		config:         cfg,
 		properties:     make(map[string]string),
-		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil, nil),
 	}
 
 	pod, err := c.buildPod(runtime.ProcessSpec{}, []string{"/bin/sh"}, nil)
@@ -856,7 +856,7 @@ func TestDaemonSetMode_InitContainerUsesDaemonResolve(t *testing.T) {
 		},
 		config:         cfg,
 		properties:     make(map[string]string),
-		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil, nil),
 	}
 
 	vols, mounts := c.buildVolumeMounts()
@@ -903,7 +903,7 @@ func TestDaemonSetMode_MissingLocatorFallsBackToVolumeHandle(t *testing.T) {
 		},
 		config:         cfg,
 		properties:     make(map[string]string),
-		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil, nil),
 	}
 
 	vols, mounts := c.buildVolumeMounts()
@@ -948,7 +948,7 @@ func TestDaemonSetMode_RecordAndLocateRoundTrip(t *testing.T) {
 		},
 		config:         cfg,
 		properties:     make(map[string]string),
-		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil, nil),
 	}
 
 	vols, mounts := c.buildVolumeMounts()
@@ -993,7 +993,7 @@ func TestDaemonSetMode_InitContainerUsesResolveCommand(t *testing.T) {
 		},
 		config:         cfg,
 		properties:     make(map[string]string),
-		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil, nil),
 	}
 
 	vols, mounts := c.buildVolumeMounts()
@@ -1042,7 +1042,7 @@ func TestDaemonSetMode_CleanupInitContainerOnReuse(t *testing.T) {
 		config:         cfg,
 		properties:     make(map[string]string),
 		reused:         true,
-		storageBackend: NewDaemonSetBackend(cfg, nil, nil),
+		storageBackend: NewDaemonSetBackend(cfg, nil, nil, nil),
 	}
 
 	cleanup, _ := c.buildCleanupInitContainer()
@@ -1098,7 +1098,7 @@ func TestDaemonSetMode_NoCleanupOnFreshContainer(t *testing.T) {
 		config:         cfg,
 		properties:     make(map[string]string),
 		reused:         false,
-		storageBackend: NewDaemonSetBackend(cfg, nil, nil),
+		storageBackend: NewDaemonSetBackend(cfg, nil, nil, nil),
 	}
 
 	cleanup, _ := c.buildCleanupInitContainer()
@@ -1145,7 +1145,7 @@ func TestDaemonSetMode_NoCleanupForCheckContainers(t *testing.T) {
 		config:         cfg,
 		properties:     make(map[string]string),
 		reused:         true,
-		storageBackend: NewDaemonSetBackend(cfg, nil, nil),
+		storageBackend: NewDaemonSetBackend(cfg, nil, nil, nil),
 	}
 
 	cleanup, _ := c.buildCleanupInitContainer()
@@ -1178,7 +1178,7 @@ func TestDaemonSetMode_CleanupPrecedesArtifactInits(t *testing.T) {
 		},
 		config:         cfg,
 		properties:     make(map[string]string),
-		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil, nil),
 		reused:         true,
 	}
 
@@ -1228,7 +1228,7 @@ func TestDaemonSetMode_NoAliasRegistrationWithoutNodeName(t *testing.T) {
 		config:         cfg,
 		properties:     make(map[string]string),
 		volumes:        []*Volume{vol},
-		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil, nil),
 	}
 
 	p := &execProcess{
@@ -1285,7 +1285,7 @@ func TestDaemonSetMode_CacheHitFlow(t *testing.T) {
 		},
 		config:         cfg,
 		properties:     make(map[string]string),
-		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil, nil),
 	}
 
 	vols, mounts := c.buildVolumeMounts()
@@ -1328,7 +1328,7 @@ func TestDaemonSetMode_CacheMissFlow(t *testing.T) {
 		config:         cfg,
 		properties:     make(map[string]string),
 		volumes:        []*Volume{producerVol},
-		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil, nil),
 	}
 	producerProcess := &execProcess{
 		id:             "get",
@@ -1366,7 +1366,7 @@ func TestDaemonSetMode_CacheMissFlow(t *testing.T) {
 		},
 		config:         cfg,
 		properties:     make(map[string]string),
-		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil, nil),
 	}
 
 	vols, mounts := consumer.buildVolumeMounts()
@@ -1427,7 +1427,7 @@ func TestDaemonSetMode_CacheHitATCRestart(t *testing.T) {
 		},
 		config:         cfg,
 		properties:     make(map[string]string),
-		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil, nil),
 	}
 
 	vols, mounts := c.buildVolumeMounts()
@@ -1484,7 +1484,7 @@ func TestDaemonSetMode_CacheHitDaemonRestartLimitation(t *testing.T) {
 		},
 		config:         cfg,
 		properties:     make(map[string]string),
-		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil, nil),
 	}
 
 	vols, mounts := c.buildVolumeMounts()
@@ -1528,7 +1528,7 @@ func TestDaemonSetMode_ConcurrentBuildsShareCache(t *testing.T) {
 		config:         cfg,
 		properties:     make(map[string]string),
 		volumes:        []*Volume{vol1},
-		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil, nil),
 	}
 	p1 := &execProcess{id: "get-1", podName: "get-pod-1", config: cfg, container: producer, storageBackend: producer.storageBackend}
 	p1.storageBackend.RecordOutputs(context.Background(), p1.container.handle, "node-a", p1.container.volumes, p1.container.containerSpec)
@@ -1550,7 +1550,7 @@ func TestDaemonSetMode_ConcurrentBuildsShareCache(t *testing.T) {
 		},
 		config:         cfg,
 		properties:     make(map[string]string),
-		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil, nil),
 	}
 
 	vols, mounts := consumer1.buildVolumeMounts()
@@ -1607,7 +1607,7 @@ func TestDaemonSetMode_OverlappingInputOutputRecordsInputVolume(t *testing.T) {
 		config:         cfg,
 		properties:     make(map[string]string),
 		volumes:        []*Volume{inputVol},
-		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil, nil),
 	}
 
 	p := &execProcess{
@@ -1664,7 +1664,7 @@ func TestDaemonSetMode_ProducerModifierConsumerChain(t *testing.T) {
 		config:         cfg,
 		properties:     make(map[string]string),
 		volumes:        []*Volume{producerVol},
-		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil, nil),
 	}
 
 	producerProcess := &execProcess{
@@ -1706,7 +1706,7 @@ func TestDaemonSetMode_ProducerModifierConsumerChain(t *testing.T) {
 		config:         cfg,
 		properties:     make(map[string]string),
 		volumes:        []*Volume{modifierInputVol}, // only input vol — no output vol
-		storageBackend: NewDaemonSetBackend(cfg, locator, nil),
+		storageBackend: NewDaemonSetBackend(cfg, locator, nil, nil),
 	}
 
 	modifierProcess := &execProcess{
@@ -1750,7 +1750,7 @@ func TestDaemonSetMode_OutputDirCreatedInPod(t *testing.T) {
 		},
 		config:         cfg,
 		properties:     make(map[string]string),
-		storageBackend: NewDaemonSetBackend(cfg, nil, nil),
+		storageBackend: NewDaemonSetBackend(cfg, nil, nil, nil),
 	}
 
 	volumes, mounts := c.buildVolumeMounts()
@@ -1805,7 +1805,7 @@ func TestDaemonSetMode_OverlappingOutputDirStillAccessible(t *testing.T) {
 		},
 		config:         cfg,
 		properties:     make(map[string]string),
-		storageBackend: NewDaemonSetBackend(cfg, nil, nil),
+		storageBackend: NewDaemonSetBackend(cfg, nil, nil, nil),
 	}
 
 	volumes, mounts := c.buildVolumeMounts()
@@ -1873,7 +1873,7 @@ func TestDaemonSetMode_SidecarGetsHostPathMounts(t *testing.T) {
 		},
 		config:         cfg,
 		properties:     make(map[string]string),
-		storageBackend: NewDaemonSetBackend(cfg, nil, nil),
+		storageBackend: NewDaemonSetBackend(cfg, nil, nil, nil),
 	}
 
 	volumes, mounts := c.buildVolumeMounts()
@@ -1954,7 +1954,7 @@ func TestDaemonSetMode_SidecarWithOverlappingInputOutput(t *testing.T) {
 		},
 		config:         cfg,
 		properties:     make(map[string]string),
-		storageBackend: NewDaemonSetBackend(cfg, nil, nil),
+		storageBackend: NewDaemonSetBackend(cfg, nil, nil, nil),
 	}
 
 	volumes, mounts := c.buildVolumeMounts()
@@ -2067,7 +2067,7 @@ func TestDaemonSetMode_RecordOutputsPointsTheCapturedOutputAtItsIncarnation(t *t
 	// first WARNING line and the whole register body -- including the read-only
 	// flag Req 16 depends on -- is never observed. That is the round-2 finding
 	// R2-2: the flag was set at a site no committed test could see.
-	backend := NewDaemonSetBackend(cfg, locator, nil)
+	backend := NewDaemonSetBackend(cfg, locator, nil, nil)
 	backend.nodeIPResolver = NewNodeIPResolver(fake.NewSimpleClientset(&corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-node"},
 		Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{

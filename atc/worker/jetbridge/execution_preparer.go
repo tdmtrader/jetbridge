@@ -18,8 +18,6 @@ type ExecutionPreparer interface {
 	RecordWitness(context.Context, db.ContainerOwner, executioncontrol.Acknowledgement) error
 }
 
-func (w *Worker) SetExecutionPreparer(preparer ExecutionPreparer) { w.executionPreparer = preparer }
-
 func (w *Worker) bindStartCheck(c *Container, owner db.ContainerOwner, spec runtime.ContainerSpec) {
 	if w.executionPreparer != nil {
 		c.checkStart = func(ctx context.Context) error { return w.executionPreparer.CheckStart(ctx, owner, spec) }

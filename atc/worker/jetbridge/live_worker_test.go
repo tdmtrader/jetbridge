@@ -108,18 +108,16 @@ func setupLiveWorkerWithLocatorAndDatabase(t *testing.T, _ string, locator *jetb
 		}
 	}
 
-	worker := jetbridge.NewWorker(dbWorker, clientset, *cfg)
-	executor := jetbridge.NewSPDYExecutor(clientset, restConfig)
-	worker.SetExecutor(executor)
-
 	// Set up artifact locator for DaemonSet mode volume passing.
 	// Share a single locator across all steps in a build (matches production behavior).
+	deps := jetbridge.WorkerDeps{Executor: jetbridge.NewSPDYExecutor(clientset, restConfig)}
 	if cfg.ArtifactDaemonHostPath != "" {
 		if locator == nil {
 			locator = jetbridge.NewArtifactLocator()
 		}
-		worker.SetArtifactLocator(locator)
+		deps.ArtifactLocator = locator
 	}
+	worker := jetbridge.NewWorker(dbWorker, clientset, *cfg, deps)
 
 	return worker, nil, locator, database
 }

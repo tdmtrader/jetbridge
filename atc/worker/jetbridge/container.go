@@ -88,6 +88,34 @@ type Container struct {
 	captureClass captureClassifier
 }
 
+// ContainerWiring is what a Container was built with: the collaborators its
+// worker handed it. It exists so the wiring can be asserted end to end, from
+// the pool's worker factory to a created container, rather than inferred from
+// a startup validation or a worker field nothing reads.
+type ContainerWiring struct {
+	Executor        PodExecutor
+	ArtifactLocator *ArtifactLocator
+	DaemonClient    *DaemonClient
+	OutputControls  OutputControlResolver
+	// StartChecked is true when an ExecutionPreparer admits this container's
+	// command before it starts.
+	StartChecked bool
+}
+
+// Wiring reports the collaborators this container holds.
+func (c *Container) Wiring() ContainerWiring {
+	wiring := ContainerWiring{
+		Executor:       c.executor,
+		OutputControls: c.outputControls,
+		StartChecked:   c.checkStart != nil,
+	}
+	if daemonSet, ok := c.storageBackend.(*DaemonSetBackend); ok {
+		wiring.ArtifactLocator = daemonSet.artifactLocator
+		wiring.DaemonClient = daemonSet.daemonClient
+	}
+	return wiring
+}
+
 func newContainer(
 	handle string,
 	metadata db.ContainerMetadata,

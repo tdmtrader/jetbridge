@@ -640,7 +640,7 @@ func TestCO04_BuildVolumeMounts_EmptyDir_NoDirMount(t *testing.T) {
 
 func TestCO10_PreferredInputNode_NoInputs_ReturnsEmpty(t *testing.T) {
 	locator := NewArtifactLocator()
-	backend := NewDaemonSetBackend(Config{ArtifactDaemonHostPath: "/artifacts"}, locator, nil)
+	backend := NewDaemonSetBackend(Config{ArtifactDaemonHostPath: "/artifacts"}, locator, nil, nil)
 
 	node := backend.preferredInputNode(nil)
 	if node != "" {
@@ -654,7 +654,7 @@ func TestCO10_PreferredInputNode_InputsOnDifferentNodes_ReturnsMostPopular(t *te
 	locator.Record(ArtifactKey("vol-b"), "node-2", "")
 	locator.Record(ArtifactKey("vol-c"), "node-2", "")
 
-	backend := NewDaemonSetBackend(Config{ArtifactDaemonHostPath: "/artifacts"}, locator, nil)
+	backend := NewDaemonSetBackend(Config{ArtifactDaemonHostPath: "/artifacts"}, locator, nil, nil)
 	inputs := []runtime.Input{
 		{Artifact: constructionArtifact("vol-a", "test-worker"), DestinationPath: "/in/a"},
 		{Artifact: constructionArtifact("vol-b", "test-worker"), DestinationPath: "/in/b"},
@@ -680,7 +680,7 @@ func TestCO10_BuildAffinity_WithoutArtifactDaemonHostPath_ReturnsNil(t *testing.
 }
 
 func TestCO10_PreferredInputNode_NilLocator_ReturnsEmpty(t *testing.T) {
-	backend := NewDaemonSetBackend(Config{ArtifactDaemonHostPath: "/artifacts"}, nil, nil)
+	backend := NewDaemonSetBackend(Config{ArtifactDaemonHostPath: "/artifacts"}, nil, nil, nil)
 	inputs := []runtime.Input{
 		{Artifact: constructionArtifact("vol-a", "test-worker"), DestinationPath: "/in/a"},
 	}
@@ -727,11 +727,7 @@ func newTestWorker(executor PodExecutor) *Worker {
 	cs := fake.NewSimpleClientset(node)
 	cfg := NewConfig("test-ns", "")
 
-	w := NewWorker(nameOnlyWorker{}, cs, cfg)
-	if executor != nil {
-		w.SetExecutor(executor)
-	}
-	return w
+	return NewWorker(nameOnlyWorker{}, cs, cfg, WorkerDeps{Executor: executor})
 }
 
 // fakeNodeIPResolver creates a NodeIPResolver backed by a fake K8s client

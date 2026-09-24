@@ -202,10 +202,11 @@ func liveSubmittedReview(ctx context.Context, in RunOutputRuntime, executor jetb
 		return err
 	}
 	controls := jetbridge.NewOutputControls(config, jetbridge.NewNodeIPResolver(in.Client), in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
-	worker := jetbridge.NewWorker(row, in.Client, config)
-	worker.SetExecutor(executor)
-	worker.SetOutputControls(controls)
-	worker.SetExecutionPreparer(starter)
+	worker := jetbridge.NewWorker(row, in.Client, config, jetbridge.WorkerDeps{
+		Executor:          executor,
+		OutputControls:    controls,
+		ExecutionPreparer: starter,
+	})
 	metadata := db.ContainerMetadata{BuildID: buildID, PipelineID: build.PipelineID(), Type: db.ContainerTypeTask}
 	container, _, err := worker.FindOrCreateContainer(ctx, db.NewBuildStepContainerOwner(buildID, "installed-review", team.ID()), metadata, spec, nil)
 	if err != nil {

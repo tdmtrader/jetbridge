@@ -110,10 +110,11 @@ func (in SidecarPlan) run(rec *brine.Recorder) (SidecarLogs, error) {
 	if err != nil {
 		return SidecarLogs{}, err
 	}
-	worker := jetbridge.NewWorker(dw, client, config)
+	var deps jetbridge.WorkerDeps
 	if in.Mode == "exec" {
-		worker.SetExecutor(jetbridge.NewSPDYExecutor(client, cluster.Config))
+		deps.Executor = jetbridge.NewSPDYExecutor(client, cluster.Config)
 	}
+	worker := jetbridge.NewWorker(dw, client, config, deps)
 	marker := "sidecar-" + cluster.Marker
 	expected := marker + "\n\n" + marker + "-tail"
 	handle := "sidecar-task"

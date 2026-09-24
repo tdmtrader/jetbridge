@@ -81,7 +81,7 @@ var _ = Describe("Container", func() {
 		cfg = jetbridge.NewConfig("test-namespace", "")
 		delegate = &noopDelegate{}
 
-		worker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
+		worker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg, jetbridge.WorkerDeps{})
 	})
 
 	// Successful task setup shares context and delegate, keeping the worker
@@ -101,8 +101,9 @@ var _ = Describe("Container", func() {
 		)
 
 		execExecutor = &fakeExecExecutor{}
-		execWorker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
-		execWorker.SetExecutor(execExecutor)
+		execWorker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg, jetbridge.WorkerDeps{
+			Executor: execExecutor,
+		})
 
 		execContainer, _ = createTaskOn(execWorker, "exec-task-handle", runtime.ContainerSpec{
 			Dir: "/workdir",
@@ -140,8 +141,9 @@ var _ = Describe("Container", func() {
 
 	It("Input streaming is a no-op (handled by init containers) does not exec any streaming commands for inputs", func() {
 		execExecutor := &fakeExecExecutor{}
-		execWorkerIS := jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
-		execWorkerIS.SetExecutor(execExecutor)
+		execWorkerIS := jetbridge.NewWorker(dbWorker, fakeClientset, cfg, jetbridge.WorkerDeps{
+			Executor: execExecutor,
+		})
 
 		artifact := &fakeArtifact{
 			handle:    "input-vol-1",
@@ -197,8 +199,9 @@ var _ = Describe("Container", func() {
 
 		BeforeEach(func() {
 			execExecutor = &fakeExecExecutor{}
-			execWorkerOE = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
-			execWorkerOE.SetExecutor(execExecutor)
+			execWorkerOE = jetbridge.NewWorker(dbWorker, fakeClientset, cfg, jetbridge.WorkerDeps{
+				Executor: execExecutor,
+			})
 
 			execContainer, volumeMounts = createTaskOn(execWorkerOE, "output-extract-handle", runtime.ContainerSpec{
 				Dir: "/tmp/build/workdir",
@@ -281,8 +284,9 @@ var _ = Describe("Container", func() {
 
 		BeforeEach(func() {
 			hijackExecutor = &fakeExecExecutor{}
-			hijackWorker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
-			hijackWorker.SetExecutor(hijackExecutor)
+			hijackWorker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg, jetbridge.WorkerDeps{
+				Executor: hijackExecutor,
+			})
 
 			// Simulate an existing pause pod (created by a previous task run).
 			pod := &corev1.Pod{
@@ -419,8 +423,9 @@ var _ = Describe("Container", func() {
 			var execContainer runtime.Container
 
 			{
-				execWorker := jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
-				execWorker.SetExecutor(&fakeExecExecutor{})
+				execWorker := jetbridge.NewWorker(dbWorker, fakeClientset, cfg, jetbridge.WorkerDeps{
+					Executor: &fakeExecExecutor{},
+				})
 
 				var err error
 				execContainer, _, err = execWorker.FindOrCreateContainer(

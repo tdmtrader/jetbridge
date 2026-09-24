@@ -110,9 +110,10 @@ func exerciseExecutionOutcomeRecovery(in RunOutputRuntime, workspace string, rec
 	if err != nil {
 		return err
 	}
-	worker := jetbridge.NewWorker(row, in.Client, config)
-	worker.SetExecutor(lostOutcomeExecutor{localExecutor: localExecutor{client: in.Client, supervisorRoot: workspace}, fault: fault})
-	worker.SetOutputControls(jetbridge.NewOutputControls(config, jetbridge.NewNodeIPResolver(in.Client), in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch)))
+	worker := jetbridge.NewWorker(row, in.Client, config, jetbridge.WorkerDeps{
+		Executor:       lostOutcomeExecutor{localExecutor: localExecutor{client: in.Client, supervisorRoot: workspace}, fault: fault},
+		OutputControls: jetbridge.NewOutputControls(config, jetbridge.NewNodeIPResolver(in.Client), in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch)),
+	})
 	identity := executioncontrol.Identity{ExecutionID: executioncontrol.ExecutionID(freshUUID()), Fence: 1}
 	client := jetbridge.NewOutputControlClient(in.Start.Daemon.Output.URL, in.Start.Daemon.HTTP, in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
 	grant, err := client.MintGrant(executioncontrol.BaseFacet, "observe", identity)

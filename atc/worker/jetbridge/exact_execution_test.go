@@ -1295,7 +1295,7 @@ var _ = Describe("Destructive operations over a capture-held source", func() {
 			containerSpec:  capturingSpec(admittedCapture()),
 			config:         container.config,
 			properties:     map[string]string{},
-			storageBackend: NewDaemonSetBackend(container.config, nil, nil),
+			storageBackend: NewDaemonSetBackend(container.config, nil, nil, nil),
 		}
 		built, err := builder.buildPod(runtime.ProcessSpec{Path: "/bin/sh"}, []string{"sh"}, nil)
 		Expect(err).ToNot(HaveOccurred())

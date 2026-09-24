@@ -49,22 +49,12 @@ func (f DefaultFactory) NewWorker(logger lager.Logger, dbWorker db.Worker) runti
 }
 
 func (f DefaultFactory) newK8sWorker(dbWorker db.Worker) *jetbridge.Worker {
-	w := jetbridge.NewWorker(dbWorker, f.K8sClientset, *f.K8sConfig)
-	if f.K8sExecutor != nil {
-		w.SetExecutor(f.K8sExecutor)
-	}
-	w.SetVolumeRepo(f.DB.VolumeRepo)
-	if f.K8sArtifactLocator != nil {
-		w.SetArtifactLocator(f.K8sArtifactLocator)
-	}
-	if f.K8sDaemonClient != nil {
-		w.SetDaemonClient(f.K8sDaemonClient)
-	}
-	if f.K8sOutputControls != nil {
-		w.SetOutputControls(f.K8sOutputControls)
-	}
-	if f.K8sExecutionPreparer != nil {
-		w.SetExecutionPreparer(f.K8sExecutionPreparer)
-	}
-	return w
+	return jetbridge.NewWorker(dbWorker, f.K8sClientset, *f.K8sConfig, jetbridge.WorkerDeps{
+		Executor:          f.K8sExecutor,
+		VolumeRepo:        f.DB.VolumeRepo,
+		ArtifactLocator:   f.K8sArtifactLocator,
+		DaemonClient:      f.K8sDaemonClient,
+		OutputControls:    f.K8sOutputControls,
+		ExecutionPreparer: f.K8sExecutionPreparer,
+	})
 }

@@ -70,7 +70,7 @@ func TestDaemonSetBackend_RecordOutputs_CallsDaemon(t *testing.T) {
 	cfg := testDaemonConfig()
 	// We need to work around the port being different from config. Just test locator recording.
 	locator := NewArtifactLocator()
-	b := NewDaemonSetBackend(cfg, locator, resolver)
+	b := NewDaemonSetBackend(cfg, locator, resolver, nil)
 
 	volumes := []*Volume{
 		NewStubVolume("vol-1", "worker", "/tmp/output"),
@@ -148,9 +148,8 @@ func TestDaemonSetBackend_RecordOutputs_TriggersMirrorAfterAlias(t *testing.T) {
 	cfg.ArtifactDaemonPort = port
 
 	locator := NewArtifactLocator()
-	b := NewDaemonSetBackend(cfg, locator, resolver)
 	logger := lagertest.NewTestLogger("test")
-	b.SetDaemonClient(NewDaemonClient(logger, clientset, "test-ns", "artifact-daemon", port, nil))
+	b := NewDaemonSetBackend(cfg, locator, resolver, NewDaemonClient(logger, clientset, "test-ns", "artifact-daemon", port, nil))
 
 	volumes := []*Volume{NewStubVolume("vol-1", "worker", "/tmp/output")}
 	spec := runtime.ContainerSpec{
@@ -254,9 +253,8 @@ func TestDaemonSetBackend_RecordOutputs_MultipleOutputs_TriggersMirrorForEach(t 
 	cfg.ArtifactDaemonPort = port
 
 	locator := NewArtifactLocator()
-	b := NewDaemonSetBackend(cfg, locator, resolver)
 	logger := lagertest.NewTestLogger("multi")
-	b.SetDaemonClient(NewDaemonClient(logger, clientset, "test-ns", "artifact-daemon", port, nil))
+	b := NewDaemonSetBackend(cfg, locator, resolver, NewDaemonClient(logger, clientset, "test-ns", "artifact-daemon", port, nil))
 
 	// Three outputs from the same step.
 	volumes := []*Volume{
@@ -332,9 +330,8 @@ func TestDaemonSetBackend_RecordOutputs_TriggerMirrorFailureDoesNotPanic(t *test
 	cfg.ArtifactDaemonPort = port
 
 	locator := NewArtifactLocator()
-	b := NewDaemonSetBackend(cfg, locator, resolver)
 	logger := lagertest.NewTestLogger("test")
-	b.SetDaemonClient(NewDaemonClient(logger, clientset, "test-ns", "artifact-daemon", port, nil))
+	b := NewDaemonSetBackend(cfg, locator, resolver, NewDaemonClient(logger, clientset, "test-ns", "artifact-daemon", port, nil))
 
 	volumes := []*Volume{NewStubVolume("vol-1", "worker", "/tmp/output")}
 	spec := runtime.ContainerSpec{
@@ -402,9 +399,8 @@ func TestDaemonSetBackend_RegisterResourceCache_TriggersMirrorBeforeAlias(t *tes
 	cfg.ArtifactDaemonPort = port
 
 	locator := NewArtifactLocator()
-	b := NewDaemonSetBackend(cfg, locator, resolver)
 	logger := lagertest.NewTestLogger("test")
-	b.SetDaemonClient(NewDaemonClient(logger, clientset, "test-ns", "artifact-daemon", port, nil))
+	b := NewDaemonSetBackend(cfg, locator, resolver, NewDaemonClient(logger, clientset, "test-ns", "artifact-daemon", port, nil))
 
 	if err := b.RegisterResourceCache(context.Background(), "rc-42", "", "container-handle-dir", "node-1"); err != nil {
 		t.Fatalf("RegisterResourceCache: %v", err)

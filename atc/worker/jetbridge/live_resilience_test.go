@@ -41,9 +41,8 @@ func setupLiveResilienceWorker(t *testing.T, handle string, podStartupTimeout ti
 		t.Fatalf("persisting worker: %v", err)
 	}
 
-	worker := jetbridge.NewWorker(dbWorker, clientset, *cfg)
 	executor := jetbridge.NewSPDYExecutor(clientset, restConfig)
-	worker.SetExecutor(executor)
+	worker := jetbridge.NewWorker(dbWorker, clientset, *cfg, jetbridge.WorkerDeps{Executor: executor})
 
 	return worker, nil, clientset, cfg, database
 }

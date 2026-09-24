@@ -258,7 +258,7 @@ cat /hold/.hold-request
 			ExecutionControl: control,
 		},
 		config:         cfg,
-		storageBackend: NewDaemonSetBackend(cfg, nil, nil),
+		storageBackend: NewDaemonSetBackend(cfg, nil, nil, nil),
 		properties:     map[string]string{},
 	}
 

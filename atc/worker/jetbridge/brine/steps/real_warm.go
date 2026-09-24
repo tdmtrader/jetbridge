@@ -116,8 +116,7 @@ func (p *WarmRollPlan) wireClient() {
 		Namespace: p.Namespace, ArtifactDaemonService: "artifact-daemon",
 		ArtifactDaemonPort: p.Port, ArtifactDaemonHostPath: "/artifact-store",
 		ArtifactDaemonWarmTimeout: 5 * time.Second,
-	}, jetbridge.NewArtifactLocator(), nil)
-	p.Backend.SetDaemonClient(p.Client)
+	}, jetbridge.NewArtifactLocator(), nil, p.Client)
 }
 
 // startDaemons brings up one daemon per address at one shared DaemonSet port,

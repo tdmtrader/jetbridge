@@ -59,9 +59,8 @@ func TestLiveSecretEnvRef(t *testing.T) {
 		t.Fatalf("creating rest config: %v", err)
 	}
 
-	worker := jetbridge.NewWorker(dbWorker, clientset, *cfg)
 	executor := jetbridge.NewSPDYExecutor(clientset, restConfig)
-	worker.SetExecutor(executor)
+	worker := jetbridge.NewWorker(dbWorker, clientset, *cfg, jetbridge.WorkerDeps{Executor: executor})
 
 	container, _, err := worker.FindOrCreateContainer(
 		ctx,

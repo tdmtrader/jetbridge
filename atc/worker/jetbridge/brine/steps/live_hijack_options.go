@@ -66,7 +66,7 @@ func HijackOptionDefinitions() []brine.StepDefinition {
 				}
 				// Only the SUT's transport is observed. Premise and cleanup exec remain
 				// on the original production transport and cannot inflate the count.
-				in.Worker.SetExecutor(jetbridge.NewSPDYExecutor(in.Clientset, trace.config(cfg)))
+				in = in.rebuildWith(jetbridge.NewSPDYExecutor(in.Clientset, trace.config(cfg)))
 				container, found, err := in.Worker.LookupContainer(in.Ctx, handle)
 				if err != nil {
 					return HijackOptionsOutcome{}, err

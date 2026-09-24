@@ -49,7 +49,7 @@ func TaskCommandDefinitions() []brine.StepDefinition {
 				}
 				trace := new(execObservation)
 				// Observe only task execution; premise and cleanup retain the original executor.
-				worker.Worker.SetExecutor(jetbridge.NewSPDYExecutor(worker.Clientset, trace.config(config)))
+				worker = worker.rebuildWith(jetbridge.NewSPDYExecutor(worker.Clientset, trace.config(config)))
 				return TaskCluster{WorkerReady: worker, execTrace: trace, image: image}, nil
 			},
 		),

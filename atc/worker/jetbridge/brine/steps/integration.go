@@ -218,7 +218,8 @@ func integrationClusterDefinitions() []brine.StepDefinition {
 			func(in IntegrationCluster, a Args) IntegrationCluster {
 				locator := jetbridge.NewArtifactLocator()
 				locator.Record(jetbridge.ArtifactKey(a.String(0)), a.String(1), "container/output")
-				in.Worker.SetArtifactLocator(locator)
+				in.Locator = locator
+				in.WorkerReady = in.WorkerReady.rebuild()
 				return in
 			}),
 
@@ -730,8 +731,9 @@ func integrationVolumeDefinitions() []brine.StepDefinition {
 			func(in IntegrationCluster, a Args) (IntegrationVolume, error) {
 				handle := a.String(0)
 
-				restarted := jetbridge.NewWorker(in.DBWorker, in.Clientset, in.Config)
-				restarted.SetVolumeRepo(db.NewVolumeRepository(in.DB.Conn))
+				restarted := jetbridge.NewWorker(in.DBWorker, in.Clientset, in.Config, jetbridge.WorkerDeps{
+					VolumeRepo: db.NewVolumeRepository(in.DB.Conn),
+				})
 				vol, found, err := restarted.LookupVolume(in.Ctx, handle)
 				out := IntegrationVolume{Cluster: in, Handle: handle, Found: found, Volume: vol}
 				if err != nil {

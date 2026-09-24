@@ -48,10 +48,8 @@ import (
 // PostgreSQL database. Most fixtures use a local API without a kubelet and
 // report pod state explicitly; live tasks/interception use real kubelets.
 // Each Given refines this state
-// and rebuilds the worker from it, because its collaborators are all
-// constructor- or setter-injected and several of the setters replace each other
-// (SetArtifactLocator swaps the whole storage backend, dropping the daemon
-// client — a real ordering hazard the ginkgo suite worked around by hand).
+// and rebuilds the worker from it, because the worker takes all of its
+// collaborators at construction.
 type WorkerReady struct {
 	DB        JetbridgeDB
 	Namespace string
@@ -355,8 +353,7 @@ func workerSetupDefinitions() []brine.StepDefinition {
 			}),
 
 		// A node roll leaves the locator naming a node that no longer exists.
-		// SetArtifactLocator replaces the storage backend, which drops the
-		// daemon client, so the rebuild re-applies it in that order.
+		// The rebuild keeps the daemon client beside the new locator.
 		Refine[WorkerReady]("the worker still remembers the resource cache {int} on a node that has been rolled away",
 			func(in WorkerReady, a Args) WorkerReady {
 				key := fmt.Sprintf("rc-%d", a.Int(0))
@@ -1304,8 +1301,8 @@ const (
 // configure applies the scenario's own configuration before the worker is
 // built, which is the only axis most Givens vary. A Given that needs a knob
 // rebuild() reads — an executor, a locator, a daemon client — sets it on the
-// returned state and rebuilds, because those setters replace each other and
-// the order they run in is rebuild()'s business rather than a caller's.
+// returned state and rebuilds, because the worker takes every collaborator at
+// construction and a changed knob means a new worker.
 //
 // teamName names the team row. An empty one takes the namespace's own
 // generated name, which is unique per call: the Hangar Givens build a second
@@ -1363,25 +1360,30 @@ func newWorkerReady(res brine.Resources, rec *brine.Recorder, workerName, teamNa
 	return ready.rebuild(), nil
 }
 
-// rebuild reconstructs the worker from the current knobs. The order matters and
-// is the reason this exists: SetArtifactLocator replaces the whole storage
-// backend, which silently drops a daemon client set before it.
+// rebuild reconstructs the worker from the current knobs. A worker takes every
+// collaborator at construction, so a changed knob means a new worker.
 func (w WorkerReady) rebuild() WorkerReady {
-	worker := jetbridge.NewWorker(w.DBWorker, w.Clientset, w.Config)
-	if w.VolumeRepo != nil {
-		worker.SetVolumeRepo(w.VolumeRepo)
-	}
-	if w.Executor != nil {
-		worker.SetExecutor(w.Executor)
-	}
-	if w.Locator != nil {
-		worker.SetArtifactLocator(w.Locator)
-	}
-	if w.DaemonClient != nil {
-		worker.SetDaemonClient(w.DaemonClient)
-	}
-	w.Worker = worker
+	return w.rebuildWith(w.Executor)
+}
+
+// rebuildWith reconstructs the worker from the current knobs but hands it
+// executor in place of the Executor knob. The knob keeps the fixture's own
+// transport, which premise and cleanup exec go on using, so only the calls of
+// the system under test travel through executor. A later rebuild() returns to
+// the knob.
+func (w WorkerReady) rebuildWith(executor jetbridge.PodExecutor) WorkerReady {
+	w.Worker = jetbridge.NewWorker(w.DBWorker, w.Clientset, w.Config, jetbridge.WorkerDeps{
+		Executor:        executor,
+		VolumeRepo:      w.VolumeRepo,
+		ArtifactLocator: w.Locator,
+		DaemonClient:    w.DaemonClient,
+	})
 	return w
+}
+
+// workerWith is rebuildWith for a holder that only keeps the worker.
+func (w WorkerReady) workerWith(executor jetbridge.PodExecutor) *jetbridge.Worker {
+	return w.rebuildWith(executor).Worker
 }
 
 // withDaemon runs the production artifact daemon with only the named artifacts.

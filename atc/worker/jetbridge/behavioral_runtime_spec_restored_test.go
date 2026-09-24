@@ -30,6 +30,7 @@ import (
 	"io"
 
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	. "github.com/onsi/ginkgo/v2"
@@ -43,16 +44,18 @@ var _ = Describe("Restored runtime contracts", func() {
 	var (
 		ctx       context.Context
 		clientset *fake.Clientset
+		dbWorker  db.Worker
 		worker    *jetbridge.Worker
 		delegate  runtime.BuildStepDelegate
 	)
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		dbWorker, err := persistNamedWorker(useJetbridgeDB(), "k8s-worker-1")
+		var err error
+		dbWorker, err = persistNamedWorker(useJetbridgeDB(), "k8s-worker-1")
 		Expect(err).NotTo(HaveOccurred())
 		clientset = fake.NewSimpleClientset()
-		worker = jetbridge.NewWorker(dbWorker, clientset, jetbridge.NewConfig("test-namespace", ""))
+		worker = jetbridge.NewWorker(dbWorker, clientset, jetbridge.NewConfig("test-namespace", ""), jetbridge.WorkerDeps{})
 		delegate = &noopDelegate{}
 	})
 
@@ -87,7 +90,7 @@ var _ = Describe("Restored runtime contracts", func() {
 		var executor *fakeExecExecutor
 		BeforeEach(func() {
 			executor = &fakeExecExecutor{}
-			worker.SetExecutor(executor)
+			worker = jetbridge.NewWorker(dbWorker, clientset, jetbridge.NewConfig("test-namespace", ""), jetbridge.WorkerDeps{Executor: executor})
 		})
 
 		DescribeTable("forwards the requested terminal mode",

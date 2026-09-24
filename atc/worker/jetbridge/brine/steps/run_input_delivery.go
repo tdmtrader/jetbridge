@@ -98,14 +98,15 @@ func exerciseRunInputDelivery(in RunInputAdmission, mode string, rec *brine.Reco
 	if err != nil {
 		return err
 	}
-	worker := jetbridge.NewWorker(row, client, config)
 	cluster, err := getRealCluster(res)
 	if err != nil {
 		return err
 	}
-	worker.SetExecutor(jetbridge.NewSPDYExecutor(client, cluster.env.Config))
-	worker.SetOutputControls(jetbridge.NewOutputControls(config, jetbridge.NewNodeIPResolver(client), in.Source.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch)))
-	worker.SetExecutionPreparer(starter)
+	worker := jetbridge.NewWorker(row, client, config, jetbridge.WorkerDeps{
+		Executor:          jetbridge.NewSPDYExecutor(client, cluster.env.Config),
+		OutputControls:    jetbridge.NewOutputControls(config, jetbridge.NewNodeIPResolver(client), in.Source.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch)),
+		ExecutionPreparer: starter,
+	})
 	owner := db.NewBuildStepContainerOwner(buildID, "consume-input", spec.TeamID)
 	metadata := db.ContainerMetadata{BuildID: buildID, PipelineID: pipelineID, Type: db.ContainerTypeTask}
 	container, _, err := worker.FindOrCreateContainer(ctx, owner, metadata, spec, nil)

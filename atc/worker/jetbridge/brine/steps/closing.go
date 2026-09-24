@@ -554,8 +554,7 @@ func closingLookup(p ClosingCachePlan, key, durableKey string, times int, sweep 
 	if err := p.ensureCache(); err != nil {
 		return ClosingCacheLookup{}, err
 	}
-	backend := jetbridge.NewDaemonSetBackend(p.closingConfig(), jetbridge.NewArtifactLocator(), nil)
-	backend.SetDaemonClient(p.CacheRuntime.client)
+	backend := jetbridge.NewDaemonSetBackend(p.closingConfig(), jetbridge.NewArtifactLocator(), nil, p.CacheRuntime.client)
 
 	// Drain whatever earlier scenarios left on the process-wide counters, so
 	// what follows is this scenario's own.

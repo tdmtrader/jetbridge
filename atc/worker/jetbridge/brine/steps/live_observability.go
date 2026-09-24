@@ -169,8 +169,7 @@ func newLiveStartupProcess(w WorkerReady, capture SpanCapture, rec *brine.Record
 	}
 	w.Config.PodStartupTimeout, w.Config.PodSchedulingTimeout = 45*time.Second, 45*time.Second
 	w.Clientset = client
-	w = w.rebuild()
-	w.Worker.SetExecutor(jetbridge.NewSPDYExecutor(client, config))
+	w = w.rebuildWith(jetbridge.NewSPDYExecutor(client, config))
 	container, _, err := w.Worker.FindOrCreateContainer(w.Ctx, db.NewFixedHandleContainerOwner(handle), metadata,
 		runtime.ContainerSpec{Type: db.ContainerTypeTask, ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox:1.37.0"}}, nil)
 	if err != nil {

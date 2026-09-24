@@ -234,7 +234,7 @@ func TestDaemonSetVolume_DaemonURLSchemeFollowsTLS(t *testing.T) {
 // which is not a cert SAN) and that NO CA volume is mounted — mounting a volume
 // the pod doesn't have previously made the pod spec invalid.
 func TestBuildFetchInitContainers_TLSWiring(t *testing.T) {
-	b := NewDaemonSetBackend(tlsDaemonConfig(t), nil, nil)
+	b := NewDaemonSetBackend(tlsDaemonConfig(t), nil, nil, nil)
 	inputs := []runtime.Input{
 		{Artifact: constructionArtifact("vol-a", "worker-1"), DestinationPath: "/tmp/input"},
 	}
@@ -273,7 +273,7 @@ func TestBuildFetchInitContainers_TLSWiring(t *testing.T) {
 // TestBuildFetchInitContainers_NoTLSMountWhenDisabled confirms the scheme stays
 // http and no TLS options are added when TLS is off.
 func TestBuildFetchInitContainers_NoTLSMountWhenDisabled(t *testing.T) {
-	b := NewDaemonSetBackend(testDaemonConfig(), nil, nil)
+	b := NewDaemonSetBackend(testDaemonConfig(), nil, nil, nil)
 	inputs := []runtime.Input{
 		{Artifact: constructionArtifact("vol-a", "worker-1"), DestinationPath: "/tmp/input"},
 	}

@@ -212,8 +212,9 @@ func (in LiveTaskPlan) interrupt(rec *brine.Recorder, failure string) (ProcessOu
 	if err != nil {
 		return ProcessOutcome{}, err
 	}
-	worker := jetbridge.NewWorker(dw, client, config)
-	worker.SetExecutor(executor)
+	worker := jetbridge.NewWorker(dw, client, config, jetbridge.WorkerDeps{
+		Executor: executor,
+	})
 	cpu, memory := uint64(250), uint64(64*1024*1024)
 	handle := "live-exec-task"
 	container, _, err := worker.FindOrCreateContainer(ctx, db.NewFixedHandleContainerOwner(handle), db.ContainerMetadata{Type: db.ContainerTypeTask}, runtime.ContainerSpec{ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox:1.37.0"}, Limits: runtime.ContainerLimits{CPU: &cpu, Memory: &memory}}, nil)
@@ -327,7 +328,7 @@ func (in LiveTaskPlan) interrupt(rec *brine.Recorder, failure string) (ProcessOu
 		if failure == "runs out of memory" {
 			// An explicitly executor-free worker exposes the compatibility
 			// watcher. Production task execution above remains execProcess.
-			compatibility := jetbridge.NewWorker(dw, cluster.Clientset, config)
+			compatibility := jetbridge.NewWorker(dw, cluster.Clientset, config, jetbridge.WorkerDeps{})
 			var found bool
 			result.compatibilityContainer, found, err = compatibility.LookupContainer(ctx, handle)
 			if err != nil || !found {

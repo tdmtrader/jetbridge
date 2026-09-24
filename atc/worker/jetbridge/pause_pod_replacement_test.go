@@ -96,8 +96,9 @@ var _ = Describe("Replacing a dead pause pod", func() {
 		cfg.PodSchedulingTimeout = 5 * time.Second
 
 		executor = &fakeExecExecutor{}
-		worker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg)
-		worker.SetExecutor(executor)
+		worker = jetbridge.NewWorker(dbWorker, fakeClientset, cfg, jetbridge.WorkerDeps{
+			Executor: executor,
+		})
 	})
 
 	// A task step: no stdin, so nothing is read from the step's own streams

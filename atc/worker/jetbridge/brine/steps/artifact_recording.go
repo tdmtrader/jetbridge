@@ -221,10 +221,14 @@ type ArtifactCluster struct {
 	Worker         *jetbridge.Worker
 	Clientset      kubernetes.Interface
 	Backend        *jetbridge.DaemonSetBackend
-	Locator        *jetbridge.ArtifactLocator
-	DB             JetbridgeDB
-	Team           db.Team
-	WorkerRow      db.Worker
+	// workerConfig and workerDeps are what Worker was built from, kept so a
+	// step that needs a differently-wired worker builds a whole new one.
+	workerConfig jetbridge.Config
+	workerDeps   jetbridge.WorkerDeps
+	Locator      *jetbridge.ArtifactLocator
+	DB           JetbridgeDB
+	Team         db.Team
+	WorkerRow    db.Worker
 
 	// Both stores are owned production-daemon filesystems.
 	StoreRoot string
@@ -367,9 +371,6 @@ func wireArtifactCluster(in ArtifactCluster, executor jetbridge.PodExecutor) (Ar
 		cfg.ArtifactHelperImage = "busybox:1.37.0"
 		cfg.PodStartupTimeout, cfg.PodSchedulingTimeout = 30*time.Second, 30*time.Second
 	}
-	in.Worker = jetbridge.NewWorker(in.WorkerRow, in.Clientset, cfg)
-	in.Worker.SetVolumeRepo(in.DB.VolumeRepository)
-	in.Worker.SetExecutor(executor)
 	in.Locator = jetbridge.NewArtifactLocator()
 	addresses := map[string]bool{}
 	if in.Node != nil {
@@ -383,10 +384,15 @@ func wireArtifactCluster(in ArtifactCluster, executor jetbridge.PodExecutor) (Ar
 			lagertest.NewTestLogger("brine-artifact-recording"),
 			in.Clientset, in.Namespace, cfg.ArtifactDaemonService, cfg.ArtifactDaemonPort, nil,
 		)
-		in.Backend = jetbridge.NewDaemonSetBackend(cfg, in.Locator, jetbridge.NewNodeIPResolver(in.Clientset))
-		in.Backend.SetDaemonClient(client)
-		in.Worker.SetArtifactLocator(in.Locator)
-		in.Worker.SetDaemonClient(client)
+		in.Backend = jetbridge.NewDaemonSetBackend(cfg, in.Locator, jetbridge.NewNodeIPResolver(in.Clientset), client)
+		in.workerConfig = cfg
+		in.workerDeps = jetbridge.WorkerDeps{
+			VolumeRepo:      in.DB.VolumeRepository,
+			Executor:        executor,
+			ArtifactLocator: in.Locator,
+			DaemonClient:    client,
+		}
+		in.Worker = jetbridge.NewWorker(in.WorkerRow, in.Clientset, cfg, in.workerDeps)
 	})
 	if err != nil {
 		return ArtifactCluster{}, err

@@ -78,6 +78,7 @@ func buildConsumerPod(in ConsumerDraft) (PodCreated, error) {
 		Worker:        in.Cluster.Worker,
 		Clientset:     in.Cluster.Clientset,
 		MountExecutor: in.Cluster.ProducerExecutor,
+		workerWith:    in.Cluster.workerWith,
 		Ctx:           in.Cluster.Ctx,
 		Handle:        "consumer-" + in.StepName,
 		StepName:      in.StepName,

@@ -142,9 +142,8 @@ func TestLiveSidecarViaWorkerAPI(t *testing.T) {
 		t.Fatalf("persisting worker: %v", err)
 	}
 
-	worker := jetbridge.NewWorker(dbWorker, clientset, *cfg)
 	executor := jetbridge.NewSPDYExecutor(clientset, restConfig)
-	worker.SetExecutor(executor)
+	worker := jetbridge.NewWorker(dbWorker, clientset, *cfg, jetbridge.WorkerDeps{Executor: executor})
 
 	cleanupPod(t, clientset, cfg.Namespace, handle)
 

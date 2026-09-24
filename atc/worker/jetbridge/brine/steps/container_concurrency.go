@@ -61,7 +61,7 @@ func containerConcurrencyDefinitions() []brine.StepDefinition {
 				concurrentCalls(n, func(i int) {
 					// Preserve independent workers sharing the real DB/API. No
 					// executor is configured: this checks submission, not execution.
-					worker := jetbridge.NewWorker(in.DBWorker, in.Clientset, in.Config)
+					worker := jetbridge.NewWorker(in.DBWorker, in.Clientset, in.Config, jetbridge.WorkerDeps{})
 					out.containers[i], _, out.createErrs[i] = worker.FindOrCreateContainer(
 						in.Ctx, db.NewFixedHandleContainerOwner(fmt.Sprintf("concurrent-run-%d", i)),
 						db.ContainerMetadata{Type: db.ContainerTypeTask},

@@ -66,7 +66,7 @@ func capturingContainer(t *testing.T, cfg Config, reused bool, control *runtime.
 		config:         cfg,
 		properties:     map[string]string{},
 		reused:         reused,
-		storageBackend: NewDaemonSetBackend(cfg, nil, nil),
+		storageBackend: NewDaemonSetBackend(cfg, nil, nil, nil),
 	}
 }
 
@@ -188,7 +188,7 @@ func TestTheOutputPlaneChangesNoOrdinaryPodWhenNothingIsCaptured(t *testing.T) {
 // unmanaged proceeds, held refuses, anything else refuses -- because an
 // unreadable ledger is not an empty one.
 func TestTheCleanupInitAsksTheLedgerBeforeRemovingAnything(t *testing.T) {
-	backend := NewDaemonSetBackend(capturePodConfig(true), nil, nil)
+	backend := NewDaemonSetBackend(capturePodConfig(true), nil, nil, nil)
 	cleanup, err := backend.BuildCleanupInitContainer("reused-handle", db.ContainerTypeTask, true)
 	if err != nil {
 		t.Fatalf("building the cleanup init: %v", err)
@@ -235,7 +235,7 @@ func TestTheCleanupInitAsksTheLedgerBeforeRemovingAnything(t *testing.T) {
 
 	// With the plane off there is nothing to ask and the script is the one
 	// this runtime has always emitted.
-	plain, err := NewDaemonSetBackend(capturePodConfig(false), nil, nil).
+	plain, err := NewDaemonSetBackend(capturePodConfig(false), nil, nil, nil).
 		BuildCleanupInitContainer("reused-handle", db.ContainerTypeTask, true)
 	if err != nil {
 		t.Fatalf("building the plain cleanup init: %v", err)
@@ -253,7 +253,7 @@ func TestTheCleanupInitAsksTheLedgerBeforeRemovingAnything(t *testing.T) {
 // pod that fails on a syntax error at the worst possible moment, and `sh -n`
 // catches that here rather than in a build log.
 func TestTheGeneratedCaptureScriptsAreSyntacticallyPOSIX(t *testing.T) {
-	backend := NewDaemonSetBackend(capturePodConfig(true), nil, nil)
+	backend := NewDaemonSetBackend(capturePodConfig(true), nil, nil, nil)
 	cleanup, err := backend.BuildCleanupInitContainer("reused-handle", db.ContainerTypeTask, true)
 	if err != nil {
 		t.Fatalf("building the cleanup init: %v", err)
@@ -575,7 +575,7 @@ func TestNoATCCodeComposesAnIncarnationName(t *testing.T) {
 // it must still get NO classifier, because the classifier's own refusal is fail
 // closed and a worker with no daemon to ask would refuse every reused handle.
 func TestEveryContainerTheWorkerBuildsCarriesTheLedgerClassifier(t *testing.T) {
-	off := NewDaemonSetBackend(capturePodConfig(false), NewArtifactLocator(), nil)
+	off := NewDaemonSetBackend(capturePodConfig(false), NewArtifactLocator(), nil, nil)
 	ordinary := newContainer("h", db.ContainerMetadata{Type: db.ContainerTypeTask},
 		runtime.ContainerSpec{}, nil, nil, capturePodConfig(false), "worker", nil, nil,
 		off, false, false)
@@ -585,7 +585,7 @@ func TestEveryContainerTheWorkerBuildsCarriesTheLedgerClassifier(t *testing.T) {
 			"not there")
 	}
 
-	on := NewDaemonSetBackend(capturePodConfig(true), NewArtifactLocator(), nil)
+	on := NewDaemonSetBackend(capturePodConfig(true), NewArtifactLocator(), nil, nil)
 	container := newContainer("h", db.ContainerMetadata{Type: db.ContainerTypeTask},
 		runtime.ContainerSpec{}, nil, nil, capturePodConfig(true), "worker", nil, nil,
 		on, false, false)

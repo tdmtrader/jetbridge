@@ -25,10 +25,11 @@ func CancellationSourcesDefinitions() []brine.StepDefinition {
 			if err != nil {
 				return err
 			}
-			worker := jetbridge.NewWorker(row, in.Client, in.Config)
 			factory := db.NewPipelineRunFactory(in.Start.DB.Conn, in.Start.DB.LockFactory)
 			keys := hangaroutput.ControlKeyRing{ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch), Keys: []hangaroutput.ControlKeyEntry{{Epoch: executioncontrol.ActivationEpoch(hangarEpoch), PublicKey: base64.StdEncoding.EncodeToString(in.Start.Daemon.ControlPublic)}}}
-			worker.SetExecutionPreparer(&runs.ExecutionStarter{Conn: in.Start.DB.Conn, Factory: factory, Source: in.source(), Epoch: executioncontrol.ActivationEpoch(hangarEpoch), Verifier: keys})
+			worker := jetbridge.NewWorker(row, in.Client, in.Config, jetbridge.WorkerDeps{
+				ExecutionPreparer: &runs.ExecutionStarter{Conn: in.Start.DB.Conn, Factory: factory, Source: in.source(), Epoch: executioncontrol.ActivationEpoch(hangarEpoch), Verifier: keys},
+			})
 			build := in.Start.Creation.EntryBuilds[0]
 			spec := in.Spec
 			spec.TeamID, spec.Type, spec.ExecutionControl = build.TeamID(), db.ContainerTypeTask, in.Control

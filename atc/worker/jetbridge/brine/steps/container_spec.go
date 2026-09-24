@@ -247,5 +247,6 @@ func workerContainerDraft(in WorkerReady, handle, image string, kind db.Containe
 		Namespace: in.Namespace, Worker: in.Worker, Clientset: in.Clientset,
 		Ctx: in.Ctx, TeamID: in.TeamID, Handle: handle, ImageURL: image,
 		Dir: "/workdir", ContainerType: kind, MountExecutor: in.ProducerExecutor,
+		workerWith: in.workerWith,
 	}, nil
 }

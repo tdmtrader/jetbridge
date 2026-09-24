@@ -250,7 +250,10 @@ func runExtraMountDefinitions() []brine.StepDefinition {
 				if executor == nil {
 					return RunExtraMounts{}, fmt.Errorf("draft has no production execution transport")
 				}
-				in.Worker.SetExecutor(executor)
+				if in.workerWith == nil {
+					return RunExtraMounts{}, fmt.Errorf("draft has no worker to hand the transport to")
+				}
+				in.Worker = in.workerWith(executor)
 
 				spec, err := containerSpecFromDraft(in)
 				if err != nil {
@@ -384,12 +387,12 @@ func runExtraMetricDefinitions() []brine.StepDefinition {
 				}
 				switch mode {
 				case "direct":
-					in.Worker.SetExecutor(nil)
+					in = in.rebuildWith(nil)
 				case "exec":
 					if in.ProducerExecutor == nil {
 						return RunExtraMetrics{}, fmt.Errorf("worker has no production execution transport")
 					}
-					in.Worker.SetExecutor(in.ProducerExecutor)
+					in = in.rebuildWith(in.ProducerExecutor)
 				default:
 					return RunExtraMetrics{}, fmt.Errorf("unknown pod creation mode %q", mode)
 				}

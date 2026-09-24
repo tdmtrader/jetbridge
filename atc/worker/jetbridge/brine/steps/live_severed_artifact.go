@@ -48,11 +48,13 @@ func severLiveArtifact(in LiveTaskPlan, rec *brine.Recorder, output string) (Sev
 	config.ArtifactDaemonHostPath, config.ArtifactDaemonPort = s.root, int(daemon.port)
 	config.PodStartupTimeout, config.PodSchedulingTimeout = 30*time.Second, 30*time.Second
 	locator := jetbridge.NewArtifactLocator()
-	worker := jetbridge.NewWorker(dw, s.cluster.Clientset, config)
-	worker.SetArtifactLocator(locator)
-	worker.SetVolumeRepo(in.Database.VolumeRepository)
-	worker.SetExecutor(s.executor)
-	worker.SetDaemonClient(jetbridge.NewDaemonClient(lagertest.NewTestLogger("severed-artifact-daemon"), s.cluster.Clientset, s.cluster.Namespace, config.ArtifactDaemonService, int(daemon.port), nil))
+	deps := jetbridge.WorkerDeps{
+		ArtifactLocator: locator,
+		VolumeRepo:      in.Database.VolumeRepository,
+		Executor:        s.executor,
+		DaemonClient:    jetbridge.NewDaemonClient(lagertest.NewTestLogger("severed-artifact-daemon"), s.cluster.Clientset, s.cluster.Namespace, config.ArtifactDaemonService, int(daemon.port), nil),
+	}
+	worker := jetbridge.NewWorker(dw, s.cluster.Clientset, config, deps)
 	path := "/tmp/build/workdir/" + output
 	spec := runtime.ContainerSpec{TeamID: team.ID(), TeamName: team.Name(), Type: db.ContainerTypeTask,
 		Dir: "/tmp/build/workdir", ImageSpec: runtime.ImageSpec{ImageURL: "busybox:1.37.0"}, Outputs: runtime.OutputPaths{output: path}}
@@ -89,7 +91,10 @@ func severLiveArtifact(in LiveTaskPlan, rec *brine.Recorder, output string) (Sev
 	if err != nil {
 		return SeveredExecOutcome{}, err
 	}
-	worker.SetExecutor(executor)
+	// The same worker wiring on the severable route: same locator, daemon
+	// client and volumes, so only the transport differs.
+	deps.Executor = executor
+	worker = jetbridge.NewWorker(dw, s.cluster.Clientset, config, deps)
 	out := &liveOutputBarrier{marker: "writing-" + s.cluster.Marker, started: make(chan struct{}), release: make(chan struct{}), ctx: ctx}
 	var once sync.Once
 	release := func() { once.Do(func() { close(out.release) }) }

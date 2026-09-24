@@ -64,7 +64,6 @@ func runTerminalProbe(in LiveTaskPlan, rec *brine.Recorder, withTTY bool) (Termi
 	}
 	config := jetbridge.NewConfig(cluster.Namespace, "")
 	config.PodStartupTimeout, config.PodSchedulingTimeout = time.Minute, time.Minute
-	worker := jetbridge.NewWorker(dw, cluster.Clientset, config)
 	cpu, memory := uint64(250), uint64(64*1024*1024)
 	out := TerminalOutcome{namespace: cluster.Namespace, withTTY: withTTY}
 	for _, kind := range []db.ContainerType{db.ContainerTypeGet, db.ContainerTypeTask} {
@@ -75,7 +74,9 @@ func runTerminalProbe(in LiveTaskPlan, rec *brine.Recorder, withTTY bool) (Termi
 			out.taskTrace = &execObservation{}
 			executorConfig = out.taskTrace.config(cluster.Config)
 		}
-		worker.SetExecutor(jetbridge.NewSPDYExecutor(cluster.Clientset, executorConfig))
+		worker := jetbridge.NewWorker(dw, cluster.Clientset, config, jetbridge.WorkerDeps{
+			Executor: jetbridge.NewSPDYExecutor(cluster.Clientset, executorConfig),
+		})
 		container, _, err := worker.FindOrCreateContainer(ctx, db.NewFixedHandleContainerOwner(handle),
 			db.ContainerMetadata{Type: kind},
 			runtime.ContainerSpec{Dir: "/tmp/build/probe", Type: kind,

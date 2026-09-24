@@ -42,7 +42,7 @@ func testDaemonConfig() Config {
 // These callers inspect layout, wrapping and locator state, not daemon I/O.
 // Real registration and mirroring are exercised in artifact-recording.feature.
 func testBackend(locator *ArtifactLocator) *DaemonSetBackend {
-	return NewDaemonSetBackend(testDaemonConfig(), locator, nil)
+	return NewDaemonSetBackend(testDaemonConfig(), locator, nil, nil)
 }
 
 // ---------------------------------------------------------------------------
@@ -96,7 +96,7 @@ func TestDaemonSetBackend_CacheVolume_ReturnsHostPathWithStableKey(t *testing.T)
 func TestDaemonSetBackend_CacheVolume_UsesCacheHostPathWhenSet(t *testing.T) {
 	cfg := testDaemonConfig()
 	cfg.CacheHostPath = "/custom-cache-dir"
-	b := NewDaemonSetBackend(cfg, nil, nil)
+	b := NewDaemonSetBackend(cfg, nil, nil, nil)
 
 	vol := b.CacheVolume("cache-0", atc.TaskCacheIdentity{JobID: 1}, "step", "/path")
 	if !strings.HasPrefix(vol.HostPath.Path, "/custom-cache-dir/") {
@@ -303,7 +303,7 @@ func TestDaemonSetBackend_BuildFetchInitContainers_AppendsExactHangarBatch(t *te
 	cfg := testDaemonConfig()
 	cfg.HangarEnabled = true
 	cfg.HangarWarrantSigner = signer
-	b := NewDaemonSetBackend(cfg, nil, nil)
+	b := NewDaemonSetBackend(cfg, nil, nil, nil)
 	ref := hangar.TreeRef{
 		Scope:      "builds",
 		Digest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -541,7 +541,7 @@ func runHangarInitShell(t *testing.T, ref hangar.TreeRef, fixture hangarShellFix
 	cfg := testDaemonConfig()
 	cfg.HangarEnabled = true
 	cfg.HangarWarrantSigner = signer
-	b := NewDaemonSetBackend(cfg, nil, nil)
+	b := NewDaemonSetBackend(cfg, nil, nil, nil)
 	inputs := []runtime.Input{{HangarTree: &ref, DestinationPath: "/work/exact"}}
 	mounts := []corev1.VolumeMount{{Name: "input-0", MountPath: "/work/exact", ReadOnly: true}}
 	volumes := []corev1.Volume{b.StepVolume("input-0", "task-handle", "input-0")}
@@ -670,7 +670,7 @@ func TestDaemonSetBackend_BuildFetchInitContainers_RejectsDisabledOrUnsignableHa
 		"missing signer": func() Config { c := testDaemonConfig(); c.HangarEnabled = true; return c }(),
 	} {
 		t.Run(name, func(t *testing.T) {
-			b := NewDaemonSetBackend(cfg, nil, nil)
+			b := NewDaemonSetBackend(cfg, nil, nil, nil)
 			volumes := []corev1.Volume{b.StepVolume("input-0", "task-handle", "input-0")}
 			if _, err := b.BuildFetchInitContainers("task-handle", inputs, volumes, mounts); err == nil {
 				t.Fatal("expected strict input construction to fail closed")
@@ -833,7 +833,7 @@ func TestDaemonSetBackend_RecordOutputs_RecordsInLocator(t *testing.T) {
 }
 
 func TestDaemonSetBackend_RecordOutputs_NilLocatorIsNoop(t *testing.T) {
-	b := NewDaemonSetBackend(testDaemonConfig(), nil, nil)
+	b := NewDaemonSetBackend(testDaemonConfig(), nil, nil, nil)
 	// Should not panic
 	b.RecordOutputs(context.Background(), "handle", "node", nil, runtime.ContainerSpec{})
 }
@@ -875,7 +875,7 @@ func TestDaemonSetBackend_WrapVolumeForLookup_WithLocator(t *testing.T) {
 }
 
 func TestDaemonSetBackend_WrapVolumeForLookup_WithoutLocator(t *testing.T) {
-	b := NewDaemonSetBackend(testDaemonConfig(), nil, nil)
+	b := NewDaemonSetBackend(testDaemonConfig(), nil, nil, nil)
 	vol := b.WrapVolumeForLookup(context.Background(), "key-1", "handle-1", "worker-1", nil)
 
 	dsv, ok := vol.(*DaemonSetVolume)
@@ -903,10 +903,7 @@ func TestDaemonSetBackend_WrapVolumeForLookup_PreservesDaemonClient(t *testing.T
 				client = NewDaemonClient(lagertest.NewTestLogger("lookup-construction"), clientset,
 					cfg.Namespace, cfg.ArtifactDaemonService, cfg.ArtifactDaemonPort, nil)
 			}
-			b := NewDaemonSetBackend(cfg, NewArtifactLocator(), NewNodeIPResolver(clientset))
-			if client != nil {
-				b.SetDaemonClient(client)
-			}
+			b := NewDaemonSetBackend(cfg, NewArtifactLocator(), NewNodeIPResolver(clientset), client)
 			vol := b.WrapVolumeForLookup(context.Background(), "artifact-key-1", "handle-1", "worker-1", nil)
 			dsv, ok := vol.(*DaemonSetVolume)
 			if !ok || dsv == nil {

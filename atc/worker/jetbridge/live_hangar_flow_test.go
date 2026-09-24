@@ -129,7 +129,7 @@ func TestLiveHangarGeneratedPodMaterializesStrictTree(t *testing.T) {
 			ImageSpec: atcruntime.ImageSpec{ImageURL: "busybox:latest"},
 			Inputs:    []atcruntime.Input{{HangarTree: &ref, DestinationPath: "/work/exact"}},
 		},
-		config: cfg, storageBackend: NewDaemonSetBackend(cfg, nil, nil), properties: map[string]string{},
+		config: cfg, storageBackend: NewDaemonSetBackend(cfg, nil, nil, nil), properties: map[string]string{},
 	}
 	receipt, err := json.Marshal(ref)
 	if err != nil {

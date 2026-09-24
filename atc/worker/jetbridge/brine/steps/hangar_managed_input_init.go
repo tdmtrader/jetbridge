@@ -36,7 +36,7 @@ func exerciseManagedInputInit(ctx context.Context, in BoundOutput, mode string, 
 	config.OutputPlaneEnabled = true
 	config.HangarEnabled = true
 	config.OutputDaemonPort = port
-	backend := jetbridge.NewDaemonSetBackend(config, nil, nil)
+	backend := jetbridge.NewDaemonSetBackend(config, nil, nil, nil)
 	request := output.ManagedReadRequest{Ref: in.Tree.Ref, Destination: warrant.Record.Destination, Warrant: warrant.Token}
 	// Before the new runtime field exists this same payload loses its read
 	// authority and reaches the old strict-input path: the red is behavioral.

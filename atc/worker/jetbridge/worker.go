@@ -33,69 +33,66 @@ type Worker struct {
 	executionPreparer ExecutionPreparer
 }
 
-// SetOutputControls gives the worker its resolver for the output daemon's
-// control API. It is a setter rather than a constructor argument for the same
-// reason SetDaemonClient is: the ATC builds the capability minter from key
-// material that is loaded after the worker exists.
-func (w *Worker) SetOutputControls(resolver OutputControlResolver) {
-	w.outputControls = resolver
-}
-
-// OutputControls is what this worker would reach the output daemon through.
+// WorkerDeps is everything a Worker reaches beyond its row, its clientset and
+// its config. The Worker takes all of it at construction and nothing replaces
+// it afterwards, so a built Worker is a complete one.
 //
-// Nil is the ordinary deployment and means every exact-execution call is
-// unreachable -- which is what it was on EVERY deployment, because nothing
-// called the setter. It is readable so that the wiring can be asserted where
-// the wiring happens, rather than inferred from a startup validation that
-// opened no file.
-func (w *Worker) OutputControls() OutputControlResolver {
-	return w.outputControls
+// Every field may be nil, and each nil has one meaning:
+//
+//   - Executor: no exec-mode I/O; a container bakes its command into the Pod.
+//   - VolumeRepo: LookupVolume finds no cache-backed volumes.
+//   - ArtifactLocator: with no ArtifactDaemonHostPath either, the worker has
+//     no storage backend. With a host path, a private locator is made.
+//   - DaemonClient: the storage backend cannot probe, warm or alias through
+//     the artifact daemons.
+//   - OutputControls: no output plane; no exact-execution call is reachable.
+//   - ExecutionPreparer: no admission gate before a container or its command.
+//
+// These were six setters. Two of them replaced each other -- setting the
+// locator rebuilt the storage backend and silently dropped a daemon client
+// set before it -- and one, the output-control resolver, was called by no
+// production line at all, so the output plane was unreachable on every
+// deployment. A field left out of this struct is visible where the struct is
+// built; a setter left uncalled was visible nowhere.
+type WorkerDeps struct {
+	Executor          PodExecutor
+	VolumeRepo        db.VolumeRepository
+	ArtifactLocator   *ArtifactLocator
+	DaemonClient      *DaemonClient
+	OutputControls    OutputControlResolver
+	ExecutionPreparer ExecutionPreparer
 }
 
-// NewWorker creates a new Worker backed by the given Kubernetes clientset.
-func NewWorker(dbWorker db.Worker, clientset kubernetes.Interface, config Config) *Worker {
+// NewWorker creates a Worker backed by the given Kubernetes clientset, with
+// every collaborator it will ever use.
+//
+// The storage backend exists when there is somewhere to keep artifacts: a
+// configured host path, or a locator the caller shares (production always
+// hands one in, so every production worker has a backend). The backend is
+// built once, with the daemon client, so the two cannot be applied in an
+// order that loses one.
+func NewWorker(dbWorker db.Worker, clientset kubernetes.Interface, config Config, deps WorkerDeps) *Worker {
 	nodeIPResolver := NewNodeIPResolver(clientset)
 
 	var backend StorageBackend
-	if config.ArtifactDaemonHostPath != "" {
-		backend = NewDaemonSetBackend(config, NewArtifactLocator(), nodeIPResolver)
+	if config.ArtifactDaemonHostPath != "" || deps.ArtifactLocator != nil {
+		locator := deps.ArtifactLocator
+		if locator == nil {
+			locator = NewArtifactLocator()
+		}
+		backend = NewDaemonSetBackend(config, locator, nodeIPResolver, deps.DaemonClient)
 	}
 
 	return &Worker{
-		dbWorker:       dbWorker,
-		clientset:      clientset,
-		config:         config,
-		storageBackend: backend,
-		nodeIPResolver: nodeIPResolver,
-	}
-}
-
-// SetExecutor sets the PodExecutor used for exec-mode I/O in containers.
-// When set, containers that receive ProcessIO with Stdin will use the
-// exec API to pipe stdin/stdout/stderr instead of baking the command
-// into the Pod spec.
-func (w *Worker) SetExecutor(executor PodExecutor) {
-	w.executor = executor
-}
-
-// SetVolumeRepo sets the VolumeRepository used by LookupVolume to find
-// cache-backed volumes in the database.
-func (w *Worker) SetVolumeRepo(repo db.VolumeRepository) {
-	w.volumeRepo = repo
-}
-
-// SetArtifactLocator sets the ArtifactLocator used for tracking artifact
-// locations in DaemonSet mode. It creates a DaemonSetBackend wrapping the
-// given locator and sets it as the storage backend.
-func (w *Worker) SetArtifactLocator(locator *ArtifactLocator) {
-	w.storageBackend = NewDaemonSetBackend(w.config, locator, w.nodeIPResolver)
-}
-
-// SetDaemonClient configures the DaemonClient on the storage backend for
-// probing daemon pods for cached resources.
-func (w *Worker) SetDaemonClient(client *DaemonClient) {
-	if dsb, ok := w.storageBackend.(*DaemonSetBackend); ok {
-		dsb.SetDaemonClient(client)
+		dbWorker:          dbWorker,
+		clientset:         clientset,
+		config:            config,
+		executor:          deps.Executor,
+		volumeRepo:        deps.VolumeRepo,
+		storageBackend:    backend,
+		nodeIPResolver:    nodeIPResolver,
+		outputControls:    deps.OutputControls,
+		executionPreparer: deps.ExecutionPreparer,
 	}
 }
 
