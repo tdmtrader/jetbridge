@@ -28,6 +28,10 @@ type RunCreationOpts struct {
 	SealedInputAuthority *runinput.Authority
 	Config               *atc.Config
 	BeforeCommit         func(Tx, RunCreation) error
+	// CausedByRun and Correlation are v2 caller intent and require Invocation.
+	// The cause must be an existing earlier Run of the template's team.
+	CausedByRun *int
+	Correlation string
 }
 
 type RunCreation struct {
@@ -117,7 +121,10 @@ func (f *pipelineRunFactory) CreateRunInTx(ctx context.Context, tx Tx, template 
 	if opts.Invocation != nil && (opts.ActivationEpoch <= 0 || opts.Config != nil || !opts.Invocation.valid()) {
 		return RunCreation{}, ErrInvalidRunInvocation
 	}
-	if len(opts.Inputs) > 0 && opts.Invocation == nil {
+	if (len(opts.Inputs) > 0 || opts.CausedByRun != nil || opts.Correlation != "") && opts.Invocation == nil {
+		return RunCreation{}, ErrInvalidRunInvocation
+	}
+	if opts.Correlation != "" && !atc.ValidRunInvocationToken(opts.Correlation) {
 		return RunCreation{}, ErrInvalidRunInvocation
 	}
 	version := atc.RunContractLegacyV1
@@ -141,8 +148,9 @@ func (f *pipelineRunFactory) CreateRunInTx(ctx context.Context, tx Tx, template 
 		}
 		return RunCreation{}, err
 	}
+	caller := runCaller{Params: params.Vars, Inputs: opts.Inputs, CausedByRun: opts.CausedByRun, Correlation: opts.Correlation}
 	if opts.Invocation != nil {
-		if replay, found, err := f.replayRunInvocation(ctx, tx, locked, params.Vars, opts.Inputs, *opts.Invocation); err != nil || found {
+		if replay, found, err := f.replayRunInvocation(ctx, tx, locked, caller, *opts.Invocation); err != nil || found {
 			return replay, err
 		}
 	}
@@ -171,8 +179,11 @@ func (f *pipelineRunFactory) CreateRunInTx(ctx context.Context, tx Tx, template 
 	var intent []byte
 	var inputs []pendingRunInput
 	if opts.Invocation != nil {
-		intent, err = runCallerIntent(effective.Params, params.Vars, opts.Inputs)
+		intent, err = runCallerIntent(effective.Params, caller)
 		if err != nil {
+			return RunCreation{}, err
+		}
+		if err = resolveRunCause(ctx, tx, locked.TeamID(), opts.CausedByRun); err != nil {
 			return RunCreation{}, err
 		}
 		inputs, err = resolveRunInputs(ctx, tx, runinput.Audience{TeamID: locked.TeamID(), TemplateID: locked.ID(), PrincipalDigest: opts.Invocation.PrincipalDigest, Epoch: opts.ActivationEpoch}, declarations, opts.Inputs, opts.SealedInputAuthority)
@@ -201,12 +212,21 @@ func (f *pipelineRunFactory) CreateRunInTx(ctx context.Context, tx Tx, template 
 	if err != nil {
 		return RunCreation{}, err
 	}
-	run := &pipelineRun{contractVersion: version, activationEpoch: opts.ActivationEpoch, id: runID, templatePipelineID: locked.ID(), number: number, params: atc.Params(normalized), status: atc.RunStatusRunning, createdBy: createdBy, configHash: hashText}
+	// Run ids come from one sequence and the cause was already visible, so it
+	// is strictly earlier; the schema refuses anything else as well.
+	if opts.CausedByRun != nil && *opts.CausedByRun >= runID {
+		return RunCreation{}, ErrRunCauseUnavailable
+	}
+	run := &pipelineRun{contractVersion: version, activationEpoch: opts.ActivationEpoch, id: runID, templatePipelineID: locked.ID(), number: number, params: atc.Params(normalized), status: atc.RunStatusRunning, createdBy: createdBy, configHash: hashText, causedByRun: opts.CausedByRun, correlation: opts.Correlation}
+	var correlation sql.NullString
+	if opts.Correlation != "" {
+		correlation = sql.NullString{String: opts.Correlation, Valid: true}
+	}
 	// New runs are not completed; retain the nullable header value in creation
 	// memory so it stays consistent with later header reads.
 	var completedAt sql.NullTime
-	if err = tx.QueryRow(`INSERT INTO pipeline_runs (id, template_pipeline_id, number, params, status, created_by, config_hash, run_contract_version, activation_epoch)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING created_at, completed_at`, runID, locked.ID(), number, paramsJSON, atc.RunStatusRunning, createdBy, hashText, version, birthEpoch).Scan(&run.createdAt, &completedAt); err != nil {
+	if err = tx.QueryRow(`INSERT INTO pipeline_runs (id, template_pipeline_id, number, params, status, created_by, config_hash, run_contract_version, activation_epoch, caused_by_run, correlation)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING created_at, completed_at`, runID, locked.ID(), number, paramsJSON, atc.RunStatusRunning, createdBy, hashText, version, birthEpoch, opts.CausedByRun, correlation).Scan(&run.createdAt, &completedAt); err != nil {
 		return RunCreation{}, err
 	}
 	if completedAt.Valid {

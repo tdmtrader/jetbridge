@@ -72,6 +72,7 @@ func (s *Server) CreatePipelineRunV2(pipeline db.Pipeline) http.Handler {
 			Template:  runs.TemplateRef{Team: pipeline.TeamName(), Pipeline: pipeline.PipelineRef()},
 			Principal: runs.Principal{Claims: claims}, ContractKey: request.InvocationKey,
 			Params: request.Vars, Inputs: request.Inputs,
+			CausedByRun: request.CausedByRun, Correlation: request.Correlation,
 		}, s.services.Epoch)
 		if err != nil {
 			writeVersionedRefusal(w, err)
@@ -104,7 +105,8 @@ func writeVersionedRefusal(w http.ResponseWriter, err error) {
 		w.WriteHeader(http.StatusForbidden)
 	case errors.Is(err, runs.ErrTemplateNotFound):
 		w.WriteHeader(http.StatusNotFound)
-	case errors.Is(err, runs.ErrInvalidInvocationKey), errors.Is(err, runs.ErrUnsupportedInvocation), errors.Is(err, atc.ErrInvalidRunInputs), errors.Is(err, atc.ErrRunInputUnavailable), errors.As(err, &invalid):
+	case errors.Is(err, runs.ErrInvalidInvocationKey), errors.Is(err, runs.ErrUnsupportedInvocation),
+		errors.Is(err, runs.ErrInvalidCorrelation), errors.Is(err, runs.ErrRunCauseUnavailable), errors.Is(err, atc.ErrInvalidRunInputs), errors.Is(err, atc.ErrRunInputUnavailable), errors.As(err, &invalid):
 		w.WriteHeader(http.StatusBadRequest)
 	case errors.Is(err, runs.ErrInvocationConflict), errors.Is(err, runs.ErrTemplatePaused), errors.Is(err, runs.ErrTemplateArchived), errors.Is(err, runs.ErrNotATemplate), errors.Is(err, runs.ErrTemplateInstanced):
 		w.WriteHeader(http.StatusConflict)

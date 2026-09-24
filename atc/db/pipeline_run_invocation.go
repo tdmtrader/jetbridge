@@ -31,9 +31,49 @@ func (identity RunInvocationIdentity) valid() bool {
 	return runInvocationDigestPattern.MatchString(identity.PrincipalDigest) && runInvocationDigestPattern.MatchString(identity.KeyDigest)
 }
 
+// runCaller is everything the caller states about one invocation. The
+// caller-intent digest covers exactly these facts.
+type runCaller struct {
+	Params      atc.RunParams
+	Inputs      map[string]atc.RunInputSource
+	CausedByRun *int
+	Correlation string
+}
+
+// ErrRunCauseUnavailable is one refusal for every caused_by_run that cannot be
+// linked -- missing, another team's, or not earlier -- so the answer never
+// discloses whether some other team's Run exists.
+var ErrRunCauseUnavailable = errors.New("caused_by_run does not name an earlier Run of this team")
+
+// resolveRunCause runs under the creation prefix's team FOR SHARE, which is
+// what makes one read enough: a predecessor Run leaves only through its team's
+// purge, and that waits for this transaction. It takes no Run lock, so creation
+// never reaches into the post-creation prefix.
+func resolveRunCause(ctx context.Context, tx Tx, teamID int, cause *int) error {
+	if cause == nil {
+		return nil
+	}
+	if *cause <= 0 {
+		return ErrRunCauseUnavailable
+	}
+	var linked bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pipeline_runs r JOIN pipelines t ON t.id = r.template_pipeline_id
+		WHERE r.id = $1 AND t.team_id = $2)`, *cause, teamID).Scan(&linked)
+	if err != nil {
+		return err
+	}
+	if !linked {
+		return ErrRunCauseUnavailable
+	}
+	return nil
+}
+
 // Preserve explicit presence (including null), while using the retained schema
 // to normalize scalar values. Applied defaults belong only to admitted facts.
-func runCallerIntent(schema []atc.ParamSchema, supplied atc.RunParams, inputs map[string]atc.RunInputSource) ([]byte, error) {
+// Cause and correlation are omitted when absent so records retained before
+// they existed canonicalize to the same bytes.
+func runCallerIntent(schema []atc.ParamSchema, caller runCaller) ([]byte, error) {
+	supplied, inputs := caller.Params, caller.Inputs
 	if len(inputs) > 64 {
 		return nil, atc.ErrInvalidRunInputs
 	}
@@ -66,16 +106,18 @@ func runCallerIntent(schema []atc.ParamSchema, supplied atc.RunParams, inputs ma
 		}
 	}
 	return json.Marshal(struct {
-		Params atc.RunParams                 `json:"params"`
-		Inputs map[string]atc.RunInputSource `json:"inputs"`
-	}{explicit, canonicalInputs})
+		Params      atc.RunParams                 `json:"params"`
+		Inputs      map[string]atc.RunInputSource `json:"inputs"`
+		CausedByRun *int                          `json:"caused_by_run,omitempty"`
+		Correlation string                        `json:"correlation,omitempty"`
+	}{explicit, canonicalInputs, caller.CausedByRun, caller.Correlation})
 }
 
 func runInvocationDocumentDigest(kind string, document []byte) string {
 	return fmt.Sprintf("%x", sha256.Sum256(append([]byte("run-invocation-"+kind+"/v1\x00"), document...)))
 }
 
-func (f *pipelineRunFactory) replayRunInvocation(ctx context.Context, tx Tx, template Pipeline, params atc.RunParams, inputs map[string]atc.RunInputSource, identity RunInvocationIdentity) (RunCreation, bool, error) {
+func (f *pipelineRunFactory) replayRunInvocation(ctx context.Context, tx Tx, template Pipeline, caller runCaller, identity RunInvocationIdentity) (RunCreation, bool, error) {
 	var runID int
 	var document, digest, admittedDigest, templateDigest string
 	err := tx.QueryRowContext(ctx, `SELECT i.run_id, i.caller_document, i.caller_digest, i.admitted_digest, d.template_digest
@@ -97,7 +139,7 @@ func (f *pipelineRunFactory) replayRunInvocation(ctx context.Context, tx Tx, tem
 	if !found {
 		return RunCreation{}, false, errors.New("retained invocation definition missing")
 	}
-	intent, err := runCallerIntent(definition.Template.Params, params, inputs)
+	intent, err := runCallerIntent(definition.Template.Params, caller)
 	if err != nil || !bytes.Equal(intent, []byte(document)) {
 		return RunCreation{}, false, ErrRunInvocationConflict
 	}
@@ -147,5 +189,7 @@ func runAdmittedInvocation(ctx context.Context, tx Tx, teamID int, run PipelineR
 		ConfigDigest   string                         `json:"config_digest"`
 		Params         atc.Params                     `json:"params"`
 		Inputs         map[string]atc.RunInputBinding `json:"inputs"`
-	}{run.ID(), teamID, run.TemplatePipelineID(), run.ActivationEpoch(), templateDigest, run.ConfigHash(), run.Params(), inputs})
+		CausedByRun    *int                           `json:"caused_by_run,omitempty"`
+		Correlation    string                         `json:"correlation,omitempty"`
+	}{run.ID(), teamID, run.TemplatePipelineID(), run.ActivationEpoch(), templateDigest, run.ConfigHash(), run.Params(), inputs, run.CausedByRun(), run.Correlation()})
 }

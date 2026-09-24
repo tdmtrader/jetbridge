@@ -15,6 +15,10 @@ var (
 	ErrInvalidInvocationKey  = errors.New("invalid invocation key")
 	ErrInvocationConflict    = errors.New("invocation conflict")
 	ErrUnsupportedInvocation = errors.New("unsupported invocation fields")
+	ErrInvalidCorrelation    = errors.New("invalid invocation correlation")
+	// ErrRunCauseUnavailable is the one answer for a caused_by_run that is
+	// missing, another team's, or not earlier, so it is no existence oracle.
+	ErrRunCauseUnavailable = errors.New("caused_by_run does not name an earlier Run of this team")
 )
 
 func (a *admitter) AdmitVersionedRun(ctx context.Context, tx Tx, adm Admission, epoch int64) (Run, bool, error) {
@@ -30,9 +34,8 @@ func (a *admitter) AdmitVersionedRun(ctx context.Context, tx Tx, adm Admission, 
 	if !ok || subject == "" {
 		return Run{}, false, ErrUnauthorized
 	}
-	// Causation is not silently discarded by this scalar admission checkpoint.
-	if adm.CausedByRun != nil {
-		return Run{}, false, ErrUnsupportedInvocation
+	if adm.Correlation != "" && !atc.ValidRunInvocationToken(adm.Correlation) {
+		return Run{}, false, ErrInvalidCorrelation
 	}
 	dbTx, ok := tx.(db.Tx)
 	if !ok {
@@ -46,7 +49,10 @@ func (a *admitter) AdmitVersionedRun(ctx context.Context, tx Tx, adm Admission, 
 	if err != nil {
 		return Run{}, false, err
 	}
-	opts := db.RunCreationOpts{ActivationEpoch: epoch, Inputs: adm.Inputs, SealedInputAuthority: a.sealedInputs, Invocation: &db.RunInvocationIdentity{
+	// The cause is authorized with the template: it must be a Run of the same
+	// team, which the principal was just authorized on. The factory resolves it
+	// under the creation prefix and refuses anything else without saying why.
+	opts := db.RunCreationOpts{ActivationEpoch: epoch, Inputs: adm.Inputs, SealedInputAuthority: a.sealedInputs, CausedByRun: adm.CausedByRun, Correlation: adm.Correlation, Invocation: &db.RunInvocationIdentity{
 		PrincipalDigest: runinput.PrincipalDigest(subject),
 		KeyDigest:       invocationDigest("key", adm.ContractKey),
 	}}
@@ -57,18 +63,7 @@ func invocationDigest(kind, value string) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte("run-invocation-"+kind+"/v1\x00"+value)))
 }
 
-func validInvocationKey(key string) bool {
-	if len(key) < 1 || len(key) > 128 {
-		return false
-	}
-	for _, c := range []byte(key) {
-		if c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '.' || c == '_' || c == '~' || c == '-' {
-			continue
-		}
-		return false
-	}
-	return true
-}
+func validInvocationKey(key string) bool { return atc.ValidRunInvocationToken(key) }
 
 func (a *admitter) authorizeActionLocked(ctx context.Context, dbTx db.Tx, team string, principal Principal, action string) (authorization, error) {
 	// Authorization and its supporting team rows stay current through commit.

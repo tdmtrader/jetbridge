@@ -224,6 +224,23 @@ var _ = Describe("the port's own checks", func() {
 		})
 	})
 
+	// A legacy_v1 Run has nowhere to retain v2 caller intent, so the legacy
+	// port refuses it rather than admitting a Run that silently dropped it.
+	Describe("v2 caller intent", func() {
+		It("refuses a cause or a correlation and creates no row", func() {
+			before := countRunRows()
+			cause := 1
+			for _, admission := range []runs.Admission{
+				{Template: templateRef, Principal: memberPrincipal, ContractKey: contractKey, CausedByRun: &cause},
+				{Template: templateRef, Principal: memberPrincipal, ContractKey: contractKey, Correlation: "batch-1"},
+			} {
+				_, err := admitWith(admitter, admission)
+				Expect(err).To(MatchError(runs.ErrUnsupportedInvocation))
+			}
+			Expect(countRunRows()).To(Equal(before))
+		})
+	})
+
 	Describe("the transaction handle", func() {
 		It("refuses a transaction it did not open rather than panicking", func() {
 			tx, err := admitter.Begin(ctx)

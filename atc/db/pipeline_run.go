@@ -26,6 +26,10 @@ type PipelineRun interface {
 	ReclaimRetryAfter() *time.Time
 	ConfigHash() string
 	InstancePipelineID() (int, bool)
+	// CausedByRun and Correlation are v2 birth-time caller intent. Legacy Runs
+	// carry neither.
+	CausedByRun() *int
+	Correlation() string
 }
 
 type pipelineRun struct {
@@ -43,6 +47,8 @@ type pipelineRun struct {
 	reclaimRetryAfter  *time.Time
 	configHash         string
 	instancePipelineID int
+	causedByRun        *int
+	correlation        string
 }
 
 func (r *pipelineRun) CancellationRequested() bool { return r.cancellation != nil }
@@ -65,10 +71,12 @@ func (r *pipelineRun) InstancePipelineID() (int, bool) {
 	return r.instancePipelineID, r.instancePipelineID != 0
 }
 func (r *pipelineRun) ReclaimRetryAfter() *time.Time { return r.reclaimRetryAfter }
+func (r *pipelineRun) CausedByRun() *int             { return r.causedByRun }
+func (r *pipelineRun) Correlation() string           { return r.correlation }
 
 var pipelineRunsQuery = psql.Select(
 	"r.cancel_requested_at", "r.cancel_requested_by", "r.cancel_reason", "r.run_contract_version", "coalesce(r.activation_epoch, 0)", "r.id", "r.template_pipeline_id", "r.number", "r.params", "r.status", "r.created_by",
-	"r.created_at", "r.completed_at", "r.reclaim_retry_after", "r.config_hash", "child.id",
+	"r.created_at", "r.completed_at", "r.reclaim_retry_after", "r.config_hash", "child.id", "r.caused_by_run", "coalesce(r.correlation, '')",
 ).From("pipeline_runs r").
 	LeftJoin("pipelines child ON child.pipeline_run_id = r.id")
 
@@ -79,8 +87,9 @@ func scanPipelineRun(run *pipelineRun, row scannable) error {
 	var completedAt sql.NullTime
 	var reclaimRetryAfter sql.NullTime
 	var instancePipelineID sql.NullInt64
+	var causedByRun sql.NullInt64
 	if err := row.Scan(&cancelAt, &cancelBy, &cancelReason, &run.contractVersion, &run.activationEpoch, &run.id, &run.templatePipelineID, &run.number, &params, &run.status, &run.createdBy,
-		&run.createdAt, &completedAt, &reclaimRetryAfter, &run.configHash, &instancePipelineID); err != nil {
+		&run.createdAt, &completedAt, &reclaimRetryAfter, &run.configHash, &instancePipelineID, &causedByRun, &run.correlation); err != nil {
 		return err
 	}
 	if cancelAt.Valid {
@@ -99,6 +108,10 @@ func scanPipelineRun(run *pipelineRun, row scannable) error {
 		run.completedAt = &completedAt.Time
 	}
 	run.instancePipelineID = int(instancePipelineID.Int64)
+	if causedByRun.Valid {
+		cause := int(causedByRun.Int64)
+		run.causedByRun = &cause
+	}
 	return nil
 }
 

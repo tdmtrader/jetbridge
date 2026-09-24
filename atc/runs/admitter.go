@@ -140,7 +140,9 @@ func (a *admitter) AdmitRun(ctx context.Context, tx Tx, adm Admission) (Run, err
 	if adm.ContractKey == "" {
 		return Run{}, ErrMissingContractKey
 	}
-	if len(adm.Inputs) != 0 {
+	// Inputs, causation and correlation are v2 caller intent. A legacy Run has
+	// nowhere to retain them, so they are refused rather than dropped.
+	if len(adm.Inputs) != 0 || adm.CausedByRun != nil || adm.Correlation != "" {
 		return Run{}, ErrUnsupportedInvocation
 	}
 
@@ -313,9 +315,10 @@ func (a *admitter) resolveTemplate(tx db.Tx, auth authorization, ref TemplateRef
 // This bounds direct recursion only -- one hop, from the facts one admission
 // can see. A cycle through two templates that call each other leaves no trace
 // on either build row, and nothing here can detect it. Detecting it needs the
-// causal chain, which is what Admission.CausedByRun is reserved for: the
-// run-contract track defines that edge and the refusals over it, and multi-hop
-// cycle detection lands with it. The one-hop case is not a down payment on
+// causal chain. Versioned admission now retains that edge
+// (Admission.CausedByRun), but this legacy path does not carry it, so
+// multi-hop detection waits until run_pipeline admits through the versioned
+// port. The one-hop case is not a down payment on
 // that work; it is the case a person writes by accident, and it is refused
 // today rather than left until the track that will generalize it.
 //
@@ -359,6 +362,8 @@ func refusal(err error) error {
 	switch {
 	case errors.Is(err, db.ErrRunInvocationConflict):
 		return ErrInvocationConflict
+	case errors.Is(err, db.ErrRunCauseUnavailable):
+		return ErrRunCauseUnavailable
 	case errors.Is(err, db.ErrPipelineRunNotTemplate):
 		return ErrNotATemplate
 	case errors.Is(err, db.ErrPipelineRunInstanced):

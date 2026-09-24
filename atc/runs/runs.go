@@ -169,9 +169,16 @@ type Admission struct {
 	// and owns replay scoped to team, base template and stable principal.
 	ContractKey string
 
-	// CausedByRun is reserved for the causal-parent Run. Versioned admission
-	// explicitly refuses it until authorization and durable retention are wired.
+	// CausedByRun is the id of an earlier Run of the template's team that
+	// caused this one. Versioned admission retains it immutably as caller
+	// intent; it causes no cascade, cancellation, retention, retry or claim.
+	// Legacy admission refuses it.
 	CausedByRun *int
+
+	// Correlation is an opaque, non-secret caller value in the invocation-key
+	// alphabet, retained immutably as caller intent by versioned admission and
+	// refused by legacy admission.
+	Correlation string
 
 	// BeforeCommit runs inside the caller's transaction after the run and its
 	// payload pipeline exist and before the caller commits. Returning an error

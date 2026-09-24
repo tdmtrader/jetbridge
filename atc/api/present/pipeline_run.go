@@ -47,6 +47,10 @@ func PipelineRun(savedRun db.PipelineRun, payload db.Pipeline, options PipelineR
 		// viewer of an exposed template could read the ATC's GC timing for
 		// every run of that template.
 		atcRun.ReclaimRetryAfter = savedRun.ReclaimRetryAfter()
+
+		// Caller intent is team history: redacted like params outside it.
+		atcRun.CausedByRun = savedRun.CausedByRun()
+		atcRun.Correlation = savedRun.Correlation()
 	}
 
 	if payload != nil && options.CanEnterPayload {

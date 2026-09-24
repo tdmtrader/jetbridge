@@ -120,6 +120,11 @@ then deletes its executions.
 - A run has exactly one payload while running, and at most one ever.
 - Run number is unique per template. Header fields (template, number,
   params, creator, config hash) are immutable once written.
+- A v2 run may carry one correlation value and one `caused_by_run` edge,
+  both immutable caller intent that a legacy_v1 run never has. The edge
+  points only at a strictly earlier run of the same team, so it cannot form
+  a cycle; it has no foreign key, so purging the predecessor leaves an
+  unresolved-predecessor marker and never cascades.
 - Run metadata on a job (expected, job key) exists only on payloads and is
   immutable.
 - A build's run identity (run, run job name, run job key) is all present or

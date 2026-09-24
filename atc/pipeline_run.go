@@ -44,23 +44,28 @@ const PipelineRunCompletedChannel = "pipeline_run_completed"
 type PipelineRun struct {
 	Captures []RunCaptureProgress `json:"captures,omitempty"`
 	// Terminal is included only in authorized detail responses, not listings.
-	Terminal           *RunTerminalResult      `json:"terminal,omitempty"`
-	CanCancel          bool                    `json:"can_cancel,omitempty"`
-	Cancellation       *RunCancellationRequest `json:"cancellation,omitempty"`
-	ContractVersion    RunContractVersion      `json:"run_contract_version"`
-	ActivationEpoch    int64                   `json:"activation_epoch,omitempty"`
-	ID                 int                     `json:"id"`
-	TemplatePipelineID int                     `json:"template_pipeline_id"`
-	Number             int                     `json:"number"`
-	Params             *Params                 `json:"params,omitempty"`
-	Status             RunStatus               `json:"status"`
-	CreatedBy          string                  `json:"created_by"`
-	CreatedAt          time.Time               `json:"created_at"`
-	CompletedAt        *time.Time              `json:"completed_at,omitempty"`
-	ReclaimRetryAfter  *time.Time              `json:"reclaim_retry_after,omitempty"`
-	ConfigHash         *string                 `json:"config_hash,omitempty"`
-	Reclaimed          bool                    `json:"reclaimed"`
-	InstanceRef        *PipelineIdentifier     `json:"instance_ref,omitempty"`
+	Terminal        *RunTerminalResult      `json:"terminal,omitempty"`
+	CanCancel       bool                    `json:"can_cancel,omitempty"`
+	Cancellation    *RunCancellationRequest `json:"cancellation,omitempty"`
+	ContractVersion RunContractVersion      `json:"run_contract_version"`
+	ActivationEpoch int64                   `json:"activation_epoch,omitempty"`
+	// CausedByRun and Correlation are birth-time caller intent, presented only
+	// to callers authorized for the template's team history. A caused_by_run
+	// whose predecessor was purged is an unresolved-predecessor marker.
+	CausedByRun        *int                `json:"caused_by_run,omitempty"`
+	Correlation        string              `json:"correlation,omitempty"`
+	ID                 int                 `json:"id"`
+	TemplatePipelineID int                 `json:"template_pipeline_id"`
+	Number             int                 `json:"number"`
+	Params             *Params             `json:"params,omitempty"`
+	Status             RunStatus           `json:"status"`
+	CreatedBy          string              `json:"created_by"`
+	CreatedAt          time.Time           `json:"created_at"`
+	CompletedAt        *time.Time          `json:"completed_at,omitempty"`
+	ReclaimRetryAfter  *time.Time          `json:"reclaim_retry_after,omitempty"`
+	ConfigHash         *string             `json:"config_hash,omitempty"`
+	Reclaimed          bool                `json:"reclaimed"`
+	InstanceRef        *PipelineIdentifier `json:"instance_ref,omitempty"`
 }
 
 type pipelineRunAlias PipelineRun
@@ -115,6 +120,22 @@ func pipelineRunTime(seconds *int64) *time.Time {
 	return &timestamp
 }
 
+// ValidRunInvocationToken reports whether value is 1 through 128 bytes of the
+// invocation alphabet: A-Z, a-z, 0-9, dot, underscore, tilde and hyphen. The
+// invocation key and the correlation value share it.
+func ValidRunInvocationToken(value string) bool {
+	if len(value) < 1 || len(value) > 128 {
+		return false
+	}
+	for _, c := range []byte(value) {
+		if c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '.' || c == '_' || c == '~' || c == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 type CreatePipelineRunRequest struct {
 	Vars map[string]any `json:"vars"`
 }
@@ -125,4 +146,10 @@ type CreatePipelineRunV2Request struct {
 	InvocationKey string                    `json:"invocation_key"`
 	Vars          RunParams                 `json:"vars,omitempty"`
 	Inputs        map[string]RunInputSource `json:"inputs,omitempty"`
+	// CausedByRun names an earlier Run of the same team by id. It is a causal
+	// link only: no cascade, cancellation, retention, retry or claim follows.
+	CausedByRun *int `json:"caused_by_run,omitempty"`
+	// Correlation is an opaque, non-secret caller value with no scheduling,
+	// cancellation, retry or retention meaning.
+	Correlation string `json:"correlation,omitempty"`
 }

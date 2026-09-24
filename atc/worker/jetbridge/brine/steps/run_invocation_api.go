@@ -107,7 +107,7 @@ func exerciseRunInvocationAPI(in RunInputAdmission, mode string, rec *brine.Reco
 		request["invocation_key"] = "bad key"
 		want = http.StatusBadRequest
 	case "unknown field":
-		request["caused_by_run"] = 1
+		request["unrecognized_intent"] = 1
 		want = http.StatusBadRequest
 	case "trailing JSON":
 		want = http.StatusBadRequest
