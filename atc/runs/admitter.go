@@ -13,8 +13,10 @@ import (
 
 // Admitter is core's published run-admission surface.
 //
-// A consumer opens the transaction, then chooses legacy or versioned admission,
-// so it can commit its own rows in the same transaction as the Run. LookupRun
+// A consumer opens the transaction, then admits a versioned Run inside it, so
+// it can commit its own rows in the same transaction as the Run. There is no
+// legacy admission: legacy_v1 Runs that already exist stay readable and keep
+// their original semantics, but nothing creates new ones. LookupRun
 // reads a previously admitted Run through that same transaction boundary.
 type Admitter interface {
 	SetCredentialHandoffConfig(CredentialHandoffConfig)
@@ -26,10 +28,6 @@ type Admitter interface {
 	SetSealedInputAuthority(*runinput.Authority)
 	// Begin opens a transaction the consumer owns and must finish.
 	Begin(context.Context) (Transaction, error)
-
-	// AdmitRun admits one run of one template inside the caller's
-	// transaction. It does not commit and does not roll back.
-	AdmitRun(context.Context, Tx, Admission) (Run, error)
 
 	// LookupRun reads an already-admitted run by id, inside the caller's
 	// transaction. It is a read and nothing else: it creates nothing, decides
@@ -92,92 +90,6 @@ func (a *admitter) Begin(ctx context.Context) (Transaction, error) {
 	return a.conn.BeginTx(ctx, nil)
 }
 
-// AdmitRun admits one run of the referenced template inside tx.
-//
-// The order of the first three steps is the contract, not an implementation
-// detail:
-//
-//  1. the contract key is checked before any row is touched, so an admission
-//     that could never be attributed to a call record does not create one;
-//  2. authorization is decided against the reference's team, before the
-//     template is resolved, so that an unauthorized principal learns nothing
-//     about whether the template exists;
-//  3. only then is the template resolved, which is what lets not-found be its
-//     own refusal rather than arriving as "not a template".
-//
-// Every read those steps make goes through tx, and that is a correctness
-// requirement rather than tidiness. The caller has held a pooled connection
-// since Begin and will hold it until it commits, so a read on the pool from
-// here would want a *second* connection while the first is still checked out.
-// N concurrent admissions against a pool of N would then each hold one and wait
-// for another that nobody is going to release, and because the factories' pool
-// reads take no context, nothing would time out: the process would stop rather
-// than fail. This is not the shape of the HTTP create path and cannot be --
-// there the accessor is built and the pipeline resolved before any transaction
-// exists at all. atc/runs/connection_budget_test.go pins the budget at one
-// connection.
-func (a *admitter) AdmitRun(ctx context.Context, tx Tx, adm Admission) (Run, error) {
-	// The operator's hold comes first, ahead of even the contract key, for the
-	// reason the HTTP create route gives for putting it ahead of reading the
-	// request body: the hold is a property of the server rather than of the
-	// call, so nothing about the call is weighed under a server that is not
-	// creating runs at all. atc.EnablePipelineRunCreation is a process-wide
-	// value assigned once in atccmd before anything is served, so reading it
-	// here is reading the same setting the route reads, not a second copy of
-	// it.
-	//
-	// It lives at the port rather than at each consumer because the route was
-	// the only thing consulting it, and a second creation path that forgot to
-	// is exactly the drift this package exists to make impossible. Refusing
-	// before the template is resolved and before CreateRunInTx is reached
-	// keeps "no row, no number, no payload, no notification" true of the
-	// in-process path as well: the caller's transaction is already open, and
-	// whatever it wrote before asking goes back with its rollback.
-	if !atc.EnablePipelineRunCreation {
-		return Run{}, atc.ErrPipelineRunCreationDisabled
-	}
-
-	if adm.ContractKey == "" {
-		return Run{}, ErrMissingContractKey
-	}
-	// Inputs, causation and correlation are v2 caller intent. A legacy Run has
-	// nowhere to retain them, so they are refused rather than dropped.
-	if len(adm.Inputs) != 0 || adm.CausedByRun != nil || adm.Correlation != "" {
-		return Run{}, ErrUnsupportedInvocation
-	}
-
-	// The one place the port bridges its own interface back to the concrete
-	// transaction type the run factory and the tx-scoped reads name. Keeping it
-	// to one line, and refusing rather than panicking, is what makes a foreign
-	// Tx a diagnosable mistake instead of a crash. It comes before the reads
-	// because they need it too, and a foreign transaction should be refused
-	// before anything is read on the caller's behalf.
-	dbTx, ok := tx.(db.Tx)
-	if !ok {
-		return Run{}, ForeignTransactionError{}
-	}
-
-	auth, err := a.authorize(dbTx, adm.Template.Team, adm.Principal)
-	if err != nil {
-		return Run{}, err
-	}
-
-	pipeline, err := a.resolveTemplate(dbTx, auth, adm.Template)
-	if err != nil {
-		return Run{}, err
-	}
-
-	// After the template is resolved, because the check is an identity
-	// comparison between it and the caller's own pipeline, and before
-	// anything is created, because a refused admission writes nothing.
-	if err := refuseDirectRecursion(auth, pipeline); err != nil {
-		return Run{}, err
-	}
-
-	run, _, err := a.createAdmission(ctx, dbTx, pipeline, adm, auth.createdBy, db.RunCreationOpts{})
-	return run, err
-}
-
 func (a *admitter) createAdmission(ctx context.Context, dbTx db.Tx, pipeline db.Pipeline, adm Admission, createdBy string, opts db.RunCreationOpts) (Run, bool, error) {
 	if adm.BeforeCommit != nil {
 		// The callback is handed the port's Tx and the port's Run. It runs
@@ -221,11 +133,11 @@ const lookupRunQuery = `
 // PipelineRunFactory, and the reason is the connection budget. The factory's
 // two by-id readers, GetRun and GetRunByID, run on the pool: called from here
 // they would want a second connection while the caller still holds the first,
-// which is the deadlock AdmitRun's doc comment describes at length. The
+// which is the deadlock AdmitVersionedRun's doc comment describes at length. The
 // factory's transaction-scoped readers are unexported, so there is nothing to
 // reuse. Five columns through the caller's Tx is the whole of it.
 //
-// Unlike AdmitRun this does not bridge back to db.Tx and so does not refuse a
+// Unlike AdmitVersionedRun this does not bridge back to db.Tx and so does not refuse a
 // foreign transaction: it hands the handle to nothing, it just reads through
 // it. A Tx from somewhere else is a transaction the caller owns and a
 // perfectly good place to read from, and refusing it would be a rule with no
@@ -364,6 +276,9 @@ func refusal(err error) error {
 		return ErrInvocationConflict
 	case errors.Is(err, db.ErrRunCauseUnavailable):
 		return ErrRunCauseUnavailable
+	case errors.Is(err, atc.ErrRunResultsUnavailable):
+		// The durable activation marker or the Hangar epoch does not admit.
+		return ErrVersionedAdmissionUnavailable
 	case errors.Is(err, db.ErrPipelineRunNotTemplate):
 		return ErrNotATemplate
 	case errors.Is(err, db.ErrPipelineRunInstanced):

@@ -242,7 +242,7 @@ var _ = Describe("RunPipelineStep", func() {
 	// anonymously readable on a public pipeline.
 	for name, fault := range map[string]error{
 		"an ambiguous principal":       runs.ErrPrincipalAmbiguous,
-		"a missing contract key":       runs.ErrMissingContractKey,
+		"an invalid contract key":      runs.ErrInvalidInvocationKey,
 		"a run id that names no row":   runs.ErrRunNotFound,
 		"a transaction from elsewhere": runs.ForeignTransactionError{},
 		"an operator role it will not honour": runs.CustomRolesInvalidError{

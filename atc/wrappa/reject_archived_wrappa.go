@@ -26,7 +26,6 @@ func (rw *RejectArchivedWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 		case
 			atc.PausePipeline,
 			atc.UnpausePipeline,
-			atc.CreatePipelineRun,
 			atc.UploadPipelineRunInput,
 			atc.CreateJobBuild,
 			atc.ScheduleJob,

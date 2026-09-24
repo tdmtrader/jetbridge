@@ -32,7 +32,6 @@ import (
 //	inert:          only reads, or has no persisted pipeline target at all.
 var templateRouteEffects = map[string][]string{
 	"native": {
-		atc.CreatePipelineRun,
 		atc.CreatePipelineRunV2,
 		atc.UploadPipelineRunInput,
 		atc.HandoffPipelineRunCredentials,
@@ -170,7 +169,6 @@ var _ = Describe("Pipeline template route effects", func() {
 		// This fails if a route that exists solely to drive templates and runs
 		// was filed under a bucket that hides it from the template question.
 		Expect(templateRouteEffects["native"]).To(ConsistOf(
-			atc.CreatePipelineRun,
 			atc.CreatePipelineRunV2,
 			atc.UploadPipelineRunInput,
 			atc.HandoffPipelineRunCredentials,

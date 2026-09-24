@@ -93,13 +93,6 @@ var (
 	// those are answers a caller is entitled to act on.
 	ErrUnauthorized = errors.New("not authorized to create runs for this team")
 
-	// ErrMissingContractKey means the admission carried no contract key.
-	//
-	// Presence is the whole of the port's check. It does not verify the key
-	// was recorded anywhere -- the record lives in a consumer table, and a
-	// SELECT from core into one would breach the boundary this package draws.
-	ErrMissingContractKey = errors.New("admission requires a non-empty contract key")
-
 	// ErrPrincipalAmbiguous means the principal set both of its forms, or
 	// neither.
 	//
@@ -163,7 +156,7 @@ func (e CustomRolesInvalidError) Unwrap() error { return e.Err }
 
 // ForeignTransactionError reports a Tx the port did not open.
 //
-// AdmitRun has to hand its Tx back to the run factory, which names the
+// AdmitVersionedRun has to hand its Tx back to the run factory, which names the
 // concrete transaction type, so there is exactly one place where the port
 // bridges its own interface back. A value that arrived from somewhere else
 // fails there. Refusing is better than panicking: a boundary that crashes the
@@ -200,13 +193,19 @@ type Refusal interface {
 // and its spec cannot drift apart. Everything absent from it -- and from the
 // two wrapping types IsRefusal names below -- is a fault.
 var refusalSentinels = []error{
-	// The operator's hold, which AdmitRun answers with before anything else.
+	// The operator's hold, which AdmitVersionedRun answers with before anything else.
 	// It is a refusal and not a fault even though nothing the pipeline's
 	// author wrote caused it: retrying does not open the gate, and the person
 	// reading the build's stderr is the one who has to go and ask an operator.
 	// A fault here would be an errored step retried against a server that is
 	// never going to say yes.
 	atc.ErrPipelineRunCreationDisabled,
+	// v2 admission held: no activation epoch, or the durable marker does not
+	// admit it. The same reasoning: only an operator can change it, and
+	// run_pipeline has no legacy path to fall back to.
+	ErrVersionedAdmissionUnavailable,
+	// The same invocation key presented with different caller intent.
+	ErrInvocationConflict,
 
 	ErrTemplateNotFound,
 	ErrNotATemplate,

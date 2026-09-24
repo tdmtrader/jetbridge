@@ -153,3 +153,8 @@ touched if the contract key is empty; authorization runs against the
 reference's team before the template is resolved, so an unauthorized caller
 learns nothing about existence. The caller's hook runs after the run and
 payload exist and before commit; its error aborts the whole creation.
+
+Every run is admitted as v2, through the port's one admission: the v2
+create route and the `run_pipeline` step both call it. There is no legacy
+admission; legacy_v1 runs created before it was retired stay readable with
+their original semantics.

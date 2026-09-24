@@ -27,7 +27,6 @@ var _ = Describe("Sensitive request bodies", func() {
 			atc.CancelPipelineRun,
 		))
 		Expect(atc.RequestBodyIsSensitive(atc.SaveConfig)).To(BeFalse())
-		Expect(atc.RequestBodyIsSensitive(atc.CreatePipelineRun)).To(BeFalse())
 	})
 
 	It("names each action's declared route parameters", func() {

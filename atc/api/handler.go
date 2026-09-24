@@ -161,7 +161,6 @@ func NewHandler(
 
 		atc.ListAllPipelines:                http.HandlerFunc(pipelineServer.ListAllPipelines),
 		atc.ListPipelines:                   http.HandlerFunc(pipelineServer.ListPipelines),
-		atc.CreatePipelineRun:               pipelineHandlerFactory.HandlerFor(pipelineRunServer.CreatePipelineRun),
 		atc.CreatePipelineRunV2:             pipelineHandlerFactory.HandlerFor(pipelineRunServer.CreatePipelineRunV2),
 		atc.CancelPipelineRun:               pipelineHandlerFactory.HandlerFor(pipelineRunServer.CancelPipelineRun),
 		atc.ListPipelineRuns:                pipelineHandlerFactory.HandlerFor(pipelineRunServer.ListPipelineRuns),

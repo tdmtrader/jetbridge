@@ -237,7 +237,7 @@ var _ = Describe("Handler", func() {
 
 	Describe("RequiredRole", func() {
 		It("falls back to the default role when the request has no custom mapping", func() {
-			Expect(accessor.RequiredRole(context.Background(), atc.CreatePipelineRun)).To(Equal(accessor.MemberRole))
+			Expect(accessor.RequiredRole(context.Background(), atc.CreatePipelineRunV2)).To(Equal(accessor.MemberRole))
 		})
 	})
 })

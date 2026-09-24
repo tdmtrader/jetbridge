@@ -1,7 +1,7 @@
 package api_test
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -21,13 +21,6 @@ var _ = Describe("Pipeline Runs API", func() {
 	)
 
 	BeforeEach(func() {
-		// These specs are about the run route and the run lifecycle, not about
-		// the operator gate: every one of them needs a run to exist. The gate
-		// itself is proven in atc/integration, against a real booted ATC in
-		// both states.
-		atc.EnablePipelineRunCreation = true
-		DeferCleanup(func() { atc.EnablePipelineRunCreation = false })
-
 		database = useRealDB()
 		template = database.SavePipeline(database.Main, "release", atc.Config{
 			Template: true,
@@ -40,14 +33,16 @@ var _ = Describe("Pipeline Runs API", func() {
 		server = database.Serve()
 	})
 
+	// create makes a run fixture and answers with its durable detail. The v1
+	// create route is retired; runs are admitted only through the v2 route,
+	// whose admission path is exercised by atc/runs, atc/api/pipelinerunserver
+	// and the brine run-invocation features. These specs are about history and
+	// presentation, which read every run the same way however it was made.
 	create := func(vars map[string]any) *http.Response {
 		GinkgoHelper()
-		body, err := json.Marshal(atc.CreatePipelineRunRequest{Vars: vars})
+		creation, err := database.Deps.pipelineRunFactory.CreateRun(context.Background(), template, db.RunParams{Vars: atc.RunParams(vars)}, "api-user")
 		Expect(err).NotTo(HaveOccurred())
-		request, err := http.NewRequest(http.MethodPost, pipelineRunsURL(server, template.Name()), bytes.NewReader(body))
-		Expect(err).NotTo(HaveOccurred())
-		request.Header.Set("Content-Type", "application/json")
-		response, err := client.Do(request)
+		response, err := client.Get(pipelineRunsURL(server, template.Name()) + "/" + strconv.Itoa(creation.Run.Number()))
 		Expect(err).NotTo(HaveOccurred())
 		return response
 	}
@@ -60,62 +55,12 @@ var _ = Describe("Pipeline Runs API", func() {
 		return run
 	}
 
-	assertMaterializationConflict := func(config atc.Config, expectedBody string) {
-		GinkgoHelper()
-		updated, _, err := database.Main.SavePipeline(template.PipelineRef(), config, template.ConfigVersion(), false)
-		Expect(err).NotTo(HaveOccurred())
-		template = updated
-
-		response := create(map[string]any{"environment": "prod"})
-		body, err := io.ReadAll(response.Body)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(response.Body.Close()).To(Succeed())
-		Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
-		Expect(string(body)).To(ContainSubstring(expectedBody))
-
-		var runCount int
-		Expect(database.Conn.QueryRow("SELECT count(*) FROM pipeline_runs WHERE template_pipeline_id = $1", template.ID()).Scan(&runCount)).To(Succeed())
-		Expect(runCount).To(BeZero())
-		found, err := template.Reload()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(found).To(BeTrue())
-		Expect(template.LastRunNumber()).To(BeZero())
-
-		updated, _, err = database.Main.SavePipeline(template.PipelineRef(), atc.Config{
-			Template: true,
-			Params:   config.Params,
-			Jobs:     atc.JobConfigs{{Name: "entry"}},
-		}, template.ConfigVersion(), false)
-		Expect(err).NotTo(HaveOccurred())
-		template = updated
-		Expect(decodeRun(create(map[string]any{"environment": "prod"})).Number).To(Equal(1))
-	}
-
-	It("creates a run and returns its committed actual payload reference", func() {
-		// This fails if creation emits a synthetic {run:N} reference or responds before the child commits.
-		response := create(map[string]any{"environment": "production"})
-		Expect(response.StatusCode).To(Equal(http.StatusCreated))
-		run := decodeRun(response)
-		Expect(run.Number).To(Equal(1))
-		Expect(run.CreatedBy).To(Equal("api-user"))
-		Expect(run.InstanceRef).NotTo(BeNil())
-		Expect(run.InstanceRef.TeamName).To(Equal("main"))
-		Expect(run.InstanceRef.PipelineName).To(Equal("release"))
-
-		payload, found, err := database.Main.Pipeline(atc.PipelineRef{Name: run.InstanceRef.PipelineName, InstanceVars: run.InstanceRef.InstanceVars})
-		Expect(err).NotTo(HaveOccurred())
-		Expect(found).To(BeTrue())
-		runID, hasRunID := payload.PipelineRunID()
-		Expect(hasRunID).To(BeTrue())
-		Expect(runID).To(Equal(run.ID))
-	})
-
 	It("writes a raw Unix-second created_at value in the server response", func() {
 		response := create(map[string]any{"environment": "production"})
 		body, err := io.ReadAll(response.Body)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(response.Body.Close()).To(Succeed())
-		Expect(response.StatusCode).To(Equal(http.StatusCreated))
+		Expect(response.StatusCode).To(Equal(http.StatusOK))
 
 		var wire struct {
 			CreatedAt json.RawMessage `json:"created_at"`
@@ -128,7 +73,7 @@ var _ = Describe("Pipeline Runs API", func() {
 		// This fails if the collection uses generic build pagination defaults or returns oldest-first history.
 		for number := 1; number <= 51; number++ {
 			response := create(map[string]any{"environment": "env-" + strconv.Itoa(number)})
-			Expect(response.StatusCode).To(Equal(http.StatusCreated))
+			Expect(response.StatusCode).To(Equal(http.StatusOK))
 			Expect(response.Body.Close()).To(Succeed())
 		}
 
@@ -162,16 +107,6 @@ var _ = Describe("Pipeline Runs API", func() {
 			request     func() *http.Request
 			reason      string
 		}{
-			{
-				description: "malformed create body",
-				request: func() *http.Request {
-					request, err := http.NewRequest(http.MethodPost, pipelineRunsURL(server, template.Name()), bytes.NewBufferString("not json"))
-					Expect(err).NotTo(HaveOccurred())
-					request.Header.Set("Content-Type", "application/json")
-					return request
-				},
-				reason: "invalid pipeline run request",
-			},
 			{
 				description: "malformed pagination limit",
 				request: func() *http.Request {
@@ -229,68 +164,6 @@ var _ = Describe("Pipeline Runs API", func() {
 		Expect(response.StatusCode).To(Equal(http.StatusNotFound))
 	})
 
-	It("maps invalid params and template creation holds to actionable client errors", func() {
-		// This fails if expected request failures are collapsed into a 500 without a useful body.
-		response := create(map[string]any{})
-		body, err := io.ReadAll(response.Body)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(response.Body.Close()).To(Succeed())
-		Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
-		Expect(string(body)).To(ContainSubstring("environment"))
-
-		Expect(template.Pause("api-user")).To(Succeed())
-		response = create(map[string]any{"environment": "production"})
-		body, err = io.ReadAll(response.Body)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(response.Body.Close()).To(Succeed())
-		Expect(response.StatusCode).To(Equal(http.StatusConflict))
-		Expect(string(body)).To(ContainSubstring("paused"))
-	})
-
-	It("names the defect when a stored template no longer validates", func() {
-		// This fails if a template row that predates save-time validation (an
-		// upgrade, a direct DB edit) answers a bare 500 instead of saying why
-		// it cannot produce a run. Saved through the DB layer, which is the
-		// only way such a row exists once the save route validates.
-		updated, _, err := database.Main.SavePipeline(template.PipelineRef(), atc.Config{
-			Template: true,
-			Params:   []atc.ParamSchema{{Name: "environment", Type: atc.ParamTypeString, Required: true}},
-		}, template.ConfigVersion(), false)
-		Expect(err).NotTo(HaveOccurred())
-		template = updated
-
-		response := create(map[string]any{"environment": "production"})
-		body, err := io.ReadAll(response.Body)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(response.Body.Close()).To(Succeed())
-		Expect(response.StatusCode).To(Equal(http.StatusConflict))
-		Expect(response.Header.Get("Content-Type")).To(Equal("application/json"))
-		Expect(string(body)).To(ContainSubstring("template must contain at least one entry job"))
-	})
-
-	It("rejects materialized job-name collisions as invalid run parameters", func() {
-		assertMaterializationConflict(atc.Config{
-			Template: true,
-			Params:   []atc.ParamSchema{{Name: "environment", Type: atc.ParamTypeString, Required: true}},
-			Jobs: atc.JobConfigs{
-				{Name: "deploy-((environment))"},
-				{Name: "deploy-prod"},
-			},
-		}, "duplicate job name deploy-prod")
-	})
-
-	It("rejects materialized resource-name collisions as invalid run parameters", func() {
-		assertMaterializationConflict(atc.Config{
-			Template: true,
-			Params:   []atc.ParamSchema{{Name: "environment", Type: atc.ParamTypeString, Required: true}},
-			Resources: atc.ResourceConfigs{
-				{Name: "source-((environment))", Type: "git", Source: atc.Source{"uri": "https://example.com/one"}},
-				{Name: "source-prod", Type: "git", Source: atc.Source{"uri": "https://example.com/two"}},
-			},
-			Jobs: atc.JobConfigs{{Name: "entry"}},
-		}, "same name ('source-prod')")
-	})
-
 	It("allows public durable history while redacting params and an inaccessible child", func() {
 		// This fails if template publicity leaks params or makes a private payload enterable.
 		Expect(template.Expose()).To(Succeed())
@@ -343,8 +216,8 @@ var _ = Describe("Pipeline Runs API", func() {
 		Expect(run.InstanceRef).NotTo(BeNil())
 	})
 
-	It("keeps archived history readable while refusing another run", func() {
-		// This fails if archive rejection is applied to history or skipped for creation.
+	It("keeps archived history readable", func() {
+		// This fails if archive rejection is applied to history.
 		decodeRun(create(map[string]any{"environment": "production"}))
 		Expect(template.Archive()).To(Succeed())
 
@@ -352,13 +225,6 @@ var _ = Describe("Pipeline Runs API", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(response.StatusCode).To(Equal(http.StatusOK))
 		Expect(response.Body.Close()).To(Succeed())
-
-		response = create(map[string]any{"environment": "production"})
-		body, err := io.ReadAll(response.Body)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(response.Body.Close()).To(Succeed())
-		Expect(response.StatusCode).To(Equal(http.StatusConflict))
-		Expect(string(body)).To(ContainSubstring("archived"))
 	})
 
 	It("rejects instanced pipeline references at each run route boundary", func() {
@@ -375,7 +241,6 @@ var _ = Describe("Pipeline Runs API", func() {
 		}{
 			{method: http.MethodGet, url: instanceRunsURL},
 			{method: http.MethodGet, url: instanceRunsPath + "/" + strconv.Itoa(created.Number) + "?" + instanceQuery},
-			{method: http.MethodPost, url: instanceRunsURL, body: bytes.NewBufferString(`{"vars":{}}`)},
 		} {
 			httpRequest, err := http.NewRequest(request.method, request.url, request.body)
 			Expect(err).NotTo(HaveOccurred())

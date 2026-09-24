@@ -100,42 +100,6 @@ func (s *Server) writeAdmittedRun(w http.ResponseWriter, pipeline db.Pipeline, r
 	}
 }
 
-func (s *Server) CreatePipelineRun(pipeline db.Pipeline) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// First, before the body is read and before any factory call: the
-		// operator hold is a property of the server, not of the request, and
-		// refusing here is what makes "no row, no number, no payload, no
-		// notification" true by construction rather than by assertion.
-		if !atc.EnablePipelineRunCreation {
-			errormap.Write(w, atc.ErrPipelineRunCreationDisabled)
-			return
-		}
-
-		if rejectInstancedPipelineRun(w, pipeline) {
-			return
-		}
-
-		var request atc.CreatePipelineRunRequest
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			helpers.HandleBadRequest(w, "invalid pipeline run request")
-			return
-		}
-
-		access := accessor.GetAccessor(r)
-		creation, err := s.runFactory.CreateRun(r.Context(), pipeline, db.RunParams{Vars: atc.RunParams(request.Vars)}, access.UserInfo().DisplayUserId)
-		if err != nil {
-			s.logger.Error("failed-to-create-pipeline-run", err)
-			if errormap.Write(w, err) {
-				return
-			}
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-
-		s.writeRun(w, pipeline, creation.Run, r, http.StatusCreated)
-	})
-}
-
 func (s *Server) ListPipelineRuns(pipeline db.Pipeline) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if rejectInstancedPipelineRun(w, pipeline) {

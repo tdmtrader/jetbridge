@@ -12,15 +12,18 @@ import (
 	"github.com/concourse/concourse/go-concourse/concourse/internal"
 )
 
-func (team *team) CreatePipelineRun(pipelineName string, vars map[string]any) (atc.PipelineRun, error) {
+// CreatePipelineRun admits a Run through the versioned create route. The
+// request carries the caller's invocation key: presenting the same key and
+// intent again replays the Run already admitted rather than creating another.
+func (team *team) CreatePipelineRun(pipelineName string, create atc.CreatePipelineRunV2Request) (atc.PipelineRun, error) {
 	var run atc.PipelineRun
 
-	body, err := json.Marshal(atc.CreatePipelineRunRequest{Vars: vars})
+	body, err := json.Marshal(create)
 	if err != nil {
-		return run, fmt.Errorf("marshalling pipeline run variables: %w", err)
+		return run, fmt.Errorf("marshalling pipeline run request: %w", err)
 	}
 
-	request, err := http.NewRequest(http.MethodPost, team.pipelineRunsURL(pipelineName), bytes.NewReader(body))
+	request, err := http.NewRequest(http.MethodPost, team.versionedPipelineRunsURL(pipelineName), bytes.NewReader(body))
 	if err != nil {
 		return run, err
 	}
@@ -88,6 +91,10 @@ func pipelineRunError(err error) error {
 
 func (team *team) pipelineRunsURL(pipelineName string) string {
 	return fmt.Sprintf("%s/api/v1/teams/%s/pipelines/%s/runs", team.connection.URL(), url.PathEscape(team.Name()), url.PathEscape(pipelineName))
+}
+
+func (team *team) versionedPipelineRunsURL(pipelineName string) string {
+	return fmt.Sprintf("%s/api/v2/teams/%s/pipelines/%s/runs", team.connection.URL(), url.PathEscape(team.Name()), url.PathEscape(pipelineName))
 }
 
 func (team *team) pipelineRunURL(pipelineName string, number int) string {

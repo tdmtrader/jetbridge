@@ -24,7 +24,7 @@ import (
 var _ = Describe("the operator's hold on run creation", func() {
 	var ctx context.Context
 
-	const contractKey = "creation-gate-test/some-call"
+	const contractKey = "creation-gate-test.some-call"
 
 	BeforeEach(func() {
 		ctx = context.Background()
@@ -45,7 +45,7 @@ var _ = Describe("the operator's hold on run creation", func() {
 			adm.ContractKey = contractKey
 		}
 
-		run, err := admitter.AdmitRun(ctx, tx, adm)
+		run, err := admitIn(ctx, admitter, tx, adm)
 		if err != nil {
 			return runs.Run{}, err
 		}

@@ -34,6 +34,7 @@ type Endpoint
     | Logout
     | InstanceGroup Concourse.InstanceGroupIdentifier InstanceGroupEndpoint
     | AgentFeedback
+    | PipelineRunsV2 Concourse.PipelineIdentifier
 
 
 type PipelineEndpoint
@@ -200,6 +201,9 @@ builder endpoint =
 
         AgentFeedback ->
             base |> appendPath [ "agent", "feedback" ]
+
+        PipelineRunsV2 id ->
+            ( [ "api", "v2" ], [] ) |> append (RouteBuilder.pipeline id) |> appendPath [ "runs" ]
 
 
 pipelineEndpoint : PipelineEndpoint -> RouteBuilder

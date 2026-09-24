@@ -120,7 +120,7 @@ var fakeLogFunc = func(logger lager.Logger, id lock.LockID) {}
 var _ = postgresrunner.GinkgoRunner(&postgresRunner)
 
 var _ = BeforeEach(func() {
-	// The operator's hold is off by default, and AdmitRun answers it before
+	// The operator's hold is off by default, and AdmitVersionedRun answers it before
 	// anything else, so every spec in this suite that is about something else
 	// needs it open. It is restored rather than left set: it is a
 	// process-wide global, and a suite that leaked it would decide the
@@ -162,6 +162,7 @@ var _ = BeforeEach(func() {
 	lockFactory = lock.NewLockFactory(lockConns, fakeLogFunc, fakeLogFunc)
 
 	teamFactory = db.NewTeamFactory(dbConn, lockFactory)
+	activateVersionedAdmission(dbConn)
 	runFactory = db.NewPipelineRunFactory(dbConn, lockFactory)
 	// The grace periods are the reaper's, and nothing here reaps; five minutes
 	// each is the value atccmd passes and is as arbitrary as it is irrelevant.

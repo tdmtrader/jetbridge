@@ -36,6 +36,8 @@ var _ = Describe("IsRefusal", func() {
 		// opens the operator's gate, and the person reading the build's
 		// stderr is the one who can go and ask for it to be opened.
 		Entry("the operator's hold on run creation", atc.ErrPipelineRunCreationDisabled),
+		Entry("versioned admission not activated", runs.ErrVersionedAdmissionUnavailable),
+		Entry("changed intent under the same invocation key", runs.ErrInvocationConflict),
 		Entry("no such template", runs.ErrTemplateNotFound),
 		Entry("not a template", runs.ErrNotATemplate),
 		Entry("an instanced pipeline", runs.ErrTemplateInstanced),
@@ -77,7 +79,7 @@ var _ = Describe("IsRefusal", func() {
 			Expect(runs.IsRefusal(err)).To(BeFalse())
 		},
 		Entry("a principal presenting both forms or neither", runs.ErrPrincipalAmbiguous),
-		Entry("a missing contract key", runs.ErrMissingContractKey),
+		Entry("an invalid contract key", runs.ErrInvalidInvocationKey),
 		Entry("a run id that names no row", runs.ErrRunNotFound),
 		Entry("an operator role mapping the port will not honour",
 			runs.CustomRolesInvalidError{Err: errors.New("viewer may create runs")}),

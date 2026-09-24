@@ -64,23 +64,21 @@ const (
 
 	GetCC = "GetCC"
 
-	ListAllPipelines          = "ListAllPipelines"
-	ListPipelines             = "ListPipelines"
-	GetPipeline               = "GetPipeline"
-	DeletePipeline            = "DeletePipeline"
-	OrderPipelines            = "OrderPipelines"
-	OrderPipelinesWithinGroup = "OrderPipelinesWithinGroup"
-	PausePipeline             = "PausePipeline"
-	ArchivePipeline           = "ArchivePipeline"
-	UnpausePipeline           = "UnpausePipeline"
-	ExposePipeline            = "ExposePipeline"
-	HidePipeline              = "HidePipeline"
-	RenamePipeline            = "RenamePipeline"
-	ListPipelineBuilds        = "ListPipelineBuilds"
-	CreatePipelineBuild       = "CreatePipelineBuild"
-	PipelineBadge             = "PipelineBadge"
-	CreatePipelineRun         = "CreatePipelineRun"
-	// Separate capability; the v2 admission route remains activation-held.
+	ListAllPipelines                = "ListAllPipelines"
+	ListPipelines                   = "ListPipelines"
+	GetPipeline                     = "GetPipeline"
+	DeletePipeline                  = "DeletePipeline"
+	OrderPipelines                  = "OrderPipelines"
+	OrderPipelinesWithinGroup       = "OrderPipelinesWithinGroup"
+	PausePipeline                   = "PausePipeline"
+	ArchivePipeline                 = "ArchivePipeline"
+	UnpausePipeline                 = "UnpausePipeline"
+	ExposePipeline                  = "ExposePipeline"
+	HidePipeline                    = "HidePipeline"
+	RenamePipeline                  = "RenamePipeline"
+	ListPipelineBuilds              = "ListPipelineBuilds"
+	CreatePipelineBuild             = "CreatePipelineBuild"
+	PipelineBadge                   = "PipelineBadge"
 	CreatePipelineRunV2             = "CreatePipelineRunV2"
 	UploadPipelineRunInput          = "UploadPipelineRunInput"
 	HandoffPipelineRunCredentials   = "HandoffPipelineRunCredentials"
@@ -170,7 +168,6 @@ var Routes = rata.Routes([]rata.Route{
 
 	{Path: "/api/v1/pipelines", Method: "GET", Name: ListAllPipelines},
 	{Path: "/api/v1/teams/:team_name/pipelines", Method: "GET", Name: ListPipelines},
-	{Path: "/api/v1/teams/:team_name/pipelines/:pipeline_name/runs", Method: "POST", Name: CreatePipelineRun},
 	{Path: "/api/v2/teams/:team_name/pipelines/:pipeline_name/runs", Method: "POST", Name: CreatePipelineRunV2},
 	{Path: "/api/v2/teams/:team_name/pipelines/:pipeline_name/runs/:number/credentials/:result_name", Method: "POST", Name: HandoffPipelineRunCredentials},
 	{Path: "/api/v2/teams/:team_name/pipelines/:pipeline_name/runs/:number/credentials/:result_name", Method: "GET", Name: GetPipelineRunCredentialSession},

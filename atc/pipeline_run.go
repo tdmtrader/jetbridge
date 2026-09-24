@@ -153,10 +153,6 @@ func ValidRunInvocationToken(value string) bool {
 	return true
 }
 
-type CreatePipelineRunRequest struct {
-	Vars map[string]any `json:"vars"`
-}
-
 // CreatePipelineRunV2Request carries invocation intent. The principal and
 // activation epoch come from the server; input bearers are never retained.
 type CreatePipelineRunV2Request struct {

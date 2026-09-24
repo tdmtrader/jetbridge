@@ -15,15 +15,17 @@ import (
 type recordingRunCreator struct {
 	calls int
 	name  string
+	key   string
 	vars  map[string]any
 	run   atc.PipelineRun
 	err   error
 }
 
-func (client *recordingRunCreator) CreatePipelineRun(name string, variables map[string]any) (atc.PipelineRun, error) {
+func (client *recordingRunCreator) CreatePipelineRun(name string, request atc.CreatePipelineRunV2Request) (atc.PipelineRun, error) {
 	client.calls++
 	client.name = name
-	client.vars = variables
+	client.key = request.InvocationKey
+	client.vars = map[string]any(request.Vars)
 	return client.run, client.err
 }
 
@@ -69,7 +71,7 @@ var _ = Describe("RunPipelineCommand", func() {
 		}))
 	})
 
-	It("names the created run and then the escaped ordinary URL for its payload", func() {
+	It("names the created run, its durable detail URL, and then the escaped ordinary URL for its payload", func() {
 		client := &recordingRunCreator{run: atc.PipelineRun{
 			Number: 7,
 			Status: atc.RunStatusRunning,
@@ -84,8 +86,46 @@ var _ = Describe("RunPipelineCommand", func() {
 		Expect(command.run(client, "https://ci.example", "ops team", output)).To(Succeed())
 		Expect(output.String()).To(Equal(
 			"started template run #7 (running)\n" +
-				"https://ci.example/teams/ops%20team/pipelines/payload%2Fname?vars.branch=%22a%5Cu0026b%22&vars.z=2\n",
+				"https://ci.example/teams/ops%20team/pipelines/template/runs/7\n" +
+				"payload: https://ci.example/teams/ops%20team/pipelines/payload%2Fname?vars.branch=%22a%5Cu0026b%22&vars.z=2\n",
 		))
+	})
+
+	It("presents the given invocation key, or mints a fresh valid one", func() {
+		client := &recordingRunCreator{run: atc.PipelineRun{InstanceRef: &atc.PipelineIdentifier{PipelineName: "payload"}}}
+		given := &RunPipelineCommand{Pipeline: flaghelpers.PipelineFlag{Name: "template"}, Key: "release.42"}
+		Expect(given.run(client, "https://ci.example", "main", new(bytes.Buffer))).To(Succeed())
+		Expect(client.key).To(Equal("release.42"))
+
+		minted := &RunPipelineCommand{Pipeline: flaghelpers.PipelineFlag{Name: "template"}}
+		Expect(minted.run(client, "https://ci.example", "main", new(bytes.Buffer))).To(Succeed())
+		first := client.key
+		Expect(first).To(HavePrefix("fly."))
+		Expect(atc.ValidRunInvocationToken(first)).To(BeTrue())
+		Expect(minted.run(client, "https://ci.example", "main", new(bytes.Buffer))).To(Succeed())
+		Expect(client.key).NotTo(Equal(first), "two deliberate commands are two invocations")
+	})
+
+	It("refuses an invocation key outside the alphabet without calling the client", func() {
+		client := &recordingRunCreator{}
+		command := &RunPipelineCommand{Pipeline: flaghelpers.PipelineFlag{Name: "template"}, Key: "has space"}
+		Expect(command.run(client, "https://ci.example", "main", new(bytes.Buffer))).To(MatchError(ContainSubstring("--invocation-key")))
+		Expect(client.calls).To(BeZero())
+	})
+
+	It("says when the server replayed a run the key already started", func() {
+		client := &recordingRunCreator{run: atc.PipelineRun{Number: 7, Status: atc.RunStatusRunning, AdmissionOutcome: atc.RunAdmissionReplayed,
+			InstanceRef: &atc.PipelineIdentifier{PipelineName: "payload"}}}
+		output := new(bytes.Buffer)
+		command := &RunPipelineCommand{Pipeline: flaghelpers.PipelineFlag{Name: "template"}, Key: "release.42"}
+		Expect(command.run(client, "https://ci.example", "main", output)).To(Succeed())
+		Expect(output.String()).To(HavePrefix("already started template run #7 (running)\n"))
+	})
+
+	It("names the key a retry must present when the response may have been lost", func() {
+		client := &recordingRunCreator{err: errors.New("connection reset")}
+		command := &RunPipelineCommand{Pipeline: flaghelpers.PipelineFlag{Name: "template"}, Key: "release.42"}
+		Expect(command.run(client, "https://ci.example", "main", new(bytes.Buffer))).To(MatchError(ContainSubstring("--invocation-key release.42")))
 	})
 
 	It("rejects an instanced template without calling the client", func() {
@@ -148,12 +188,33 @@ var _ = Describe("RunPipelineCommand", func() {
 		Expect(client.vars).To(Equal(map[string]any{"_count": "1", "Enabled2": true}))
 	})
 
-	It("fails when the server omits the returned payload reference", func() {
-		client := &recordingRunCreator{run: atc.PipelineRun{Number: 9}}
+	// Replaying an invocation whose Run has since been reclaimed answers with
+	// the Run's durable identity and no payload: there is none any more. That
+	// is a successful replay, not a malformed response.
+	It("reports a replay of a reclaimed run by its durable identity", func() {
+		client := &recordingRunCreator{run: atc.PipelineRun{Number: 9, Status: atc.RunStatusSucceeded,
+			AdmissionOutcome: atc.RunAdmissionReplayed, Reclaimed: true}}
+		output := new(bytes.Buffer)
+		command := &RunPipelineCommand{Pipeline: flaghelpers.PipelineFlag{Name: "template"}, Key: "release.42"}
+
+		Expect(command.run(client, "https://ci.example", "main", output)).To(Succeed())
+		Expect(client.calls).To(Equal(1))
+		Expect(output.String()).To(Equal(
+			"already started template run #9 (succeeded, payload reclaimed)\n" +
+				"https://ci.example/teams/main/pipelines/template/runs/9\n",
+		))
+	})
+
+	It("still names the run when a response carries no payload reference", func() {
+		client := &recordingRunCreator{run: atc.PipelineRun{Number: 9, Status: atc.RunStatusRunning}}
+		output := new(bytes.Buffer)
 		command := &RunPipelineCommand{Pipeline: flaghelpers.PipelineFlag{Name: "template"}}
 
-		Expect(command.run(client, "https://ci.example", "main", new(bytes.Buffer))).To(MatchError(ContainSubstring("instance_ref")))
-		Expect(client.calls).To(Equal(1))
+		Expect(command.run(client, "https://ci.example", "main", output)).To(Succeed())
+		Expect(output.String()).To(Equal(
+			"started template run #9 (running)\n" +
+				"https://ci.example/teams/main/pipelines/template/runs/9\n",
+		))
 	})
 
 	It("returns a client error unchanged", func() {

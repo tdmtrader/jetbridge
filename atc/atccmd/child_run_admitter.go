@@ -62,7 +62,8 @@ func (cmd *RunCommand) constructChildRunAdmitter(
 		customRoles,
 	)
 
-	return childRunAdmitter{service: composition.NewService(admitter)}, nil
+	// The epoch this control plane speaks for; zero refuses every admission.
+	return childRunAdmitter{service: composition.NewService(admitter, cmd.Kubernetes.OutputActivationEpoch)}, nil
 }
 
 // childRunAdmitter adapts composition's service to the port atc/exec declared.

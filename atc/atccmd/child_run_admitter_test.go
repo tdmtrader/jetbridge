@@ -53,7 +53,7 @@ func TestConstructChildRunAdmitterRejectsABadRoleMapping(t *testing.T) {
 	// Making run creation a viewer's capability is the inversion the port
 	// exists to refuse: it would make creating a run weaker than setting a
 	// pipeline config.
-	if err := os.WriteFile(path, []byte("viewer:\n- CreatePipelineRun\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("viewer:\n- CreatePipelineRunV2\n"), 0o600); err != nil {
 		t.Fatalf("writing the role mapping: %v", err)
 	}
 

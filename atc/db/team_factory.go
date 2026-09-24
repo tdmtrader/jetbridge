@@ -23,7 +23,7 @@ type TeamFactory interface {
 	// pool: its own connection is checked out for as long as the transaction
 	// lives, so a pool read from there needs a second one, and N such callers
 	// on a pool of N wait on each other forever. The reads take no context, so
-	// nothing would time out. atc/runs.AdmitRun is the caller this is for; see
+	// nothing would time out. atc/runs.AdmitVersionedRun is the caller this is for; see
 	// atc/runs/connection_budget_test.go.
 	GetTeamsInTx(Tx) ([]Team, error)
 	GetByID(teamID int) Team

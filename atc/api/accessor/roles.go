@@ -78,7 +78,6 @@ var DefaultRoles = map[string]string{
 	atc.ListPipelineBuilds:              ViewerRole,
 	atc.CreatePipelineBuild:             MemberRole,
 	atc.PipelineBadge:                   ViewerRole,
-	atc.CreatePipelineRun:               MemberRole,
 	atc.CreatePipelineRunV2:             MemberRole,
 	atc.UploadPipelineRunInput:          MemberRole,
 	atc.HandoffPipelineRunCredentials:   MemberRole,
@@ -141,7 +140,7 @@ func EffectiveRole(customRoles map[string]string, action string) string {
 // turn that equivalence into a privilege escalation.
 func ValidateCustomRoles(customRoles map[string]string) error {
 	saveRole := EffectiveRole(customRoles, atc.SaveConfig)
-	for _, action := range []string{atc.CreatePipelineRun, atc.CreatePipelineRunV2, atc.UploadPipelineRunInput} {
+	for _, action := range []string{atc.CreatePipelineRunV2, atc.UploadPipelineRunInput} {
 		runRole := EffectiveRole(customRoles, action)
 		if !RoleHasRequiredRole(runRole, saveRole) {
 			return fmt.Errorf(

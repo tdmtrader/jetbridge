@@ -88,8 +88,9 @@ defaultTo : a -> Json.Decode.Decoder a -> Json.Decode.Decoder a
 defaultTo default =
     Json.Decode.map (Maybe.withDefault default) << Json.Decode.maybe
 
-encodeCreatePipelineRun : InstanceVars -> Json.Encode.Value
-encodeCreatePipelineRun vars =
+encodeCreatePipelineRun : String -> InstanceVars -> Json.Encode.Value
+encodeCreatePipelineRun invocationKey vars =
     Json.Encode.object
-        [ ( "vars", Concourse.encodeInstanceVars vars )
+        [ ( "invocation_key", Json.Encode.string invocationKey )
+        , ( "vars", Concourse.encodeInstanceVars vars )
         ]

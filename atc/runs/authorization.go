@@ -31,11 +31,11 @@ type authorization struct {
 	// caller is the verified builds row behind a build principal, and nil for
 	// every other form. It is carried out of authorization because the step
 	// after it needs the same facts and must not pay for a second read: see
-	// AdmitRun on the connection budget.
+	// AdmitVersionedRun on the connection budget.
 	caller *callerBuild
 }
 
-// authorize decides whether the principal may create runs on the named team,
+// authorizeAction decides whether the principal may create runs on the named team,
 // and returns the display identity to record as the run's creator.
 //
 // It calls accessor rather than restating the role table, and that is the
@@ -43,7 +43,7 @@ type authorization struct {
 // entry, the same EffectiveRole override, the same ValidateCustomRoles bound,
 // the same RoleHasRequiredRole ordering and the same admin-team shortcut the
 // HTTP create route applies. An injected Authorizer interface, or a local copy
-// of "CreatePipelineRun requires member", would let the in-process path drift
+// of "run creation requires member", would let the in-process path drift
 // more permissive than the HTTP path silently -- which is exactly the drift
 // architecture_test.go records mcpserver committing when it talked to the
 // database instead of core's handlers.
@@ -53,13 +53,9 @@ type authorization struct {
 // generator, and the verdict it observes is the production verdict.
 //
 // It reads through the caller's transaction, which is the whole of the port's
-// connection budget: see AdmitRun. Both principal forms are decided from the
+// connection budget: see AdmitVersionedRun. Both principal forms are decided from the
 // one GetTeamsInTx read below and no other, so adding the build form did not
 // add a connection to the budget connection_budget_test.go pins.
-func (a *admitter) authorize(tx db.Tx, teamName string, principal Principal) (authorization, error) {
-	return a.authorizeAction(tx, teamName, principal, atc.CreatePipelineRun)
-}
-
 func (a *admitter) authorizeAction(tx db.Tx, teamName string, principal Principal, action string) (authorization, error) {
 	// The principal has to be one identity before anything else can be said
 	// about it, so this comes before any read and before the operator's role
@@ -84,7 +80,7 @@ func (a *admitter) authorizeAction(tx db.Tx, teamName string, principal Principa
 	}
 
 	if hasBuild {
-		return authorizeBuild(tx, teams, teamName, principal.Build, a.customRoles)
+		return authorizeBuild(tx, teams, teamName, principal.Build, a.customRoles, action)
 	}
 
 	// HasToken and IsTokenValid are true because the caller has already
@@ -138,9 +134,9 @@ func (a *admitter) authorizeAction(tx db.Tx, teamName string, principal Principa
 // from, but it does have a standing: it is running a config somebody saved,
 // and saving that config required exactly the SaveConfig role. That is the
 // most a build can be presumed to hold on its team, and it is the role held
-// against CreatePipelineRun here, through the same RoleHasRequiredRole the
+// against the create action here, through the same RoleHasRequiredRole the
 // accessor applies. With the stock table both are member and the check is a
-// tautology. When an operator raises CreatePipelineRun above SaveConfig --
+// tautology. When an operator raises the create action above SaveConfig --
 // the one direction ValidateCustomRoles permits -- a member can save a job
 // carrying run_pipeline but cannot create a run over HTTP, and without this
 // check the job's build would create the run for them. That is the escalation
@@ -174,14 +170,14 @@ func (a *admitter) authorizeAction(tx db.Tx, teamName string, principal Principa
 // another team's build are all "you have no standing here"; distinguishing
 // them would turn admission into an oracle over builds the caller cannot see,
 // for a distinction only a broken consumer could act on.
-func authorizeBuild(tx db.Tx, teams []db.Team, teamName string, build *BuildPrincipal, customRoles map[string]string) (authorization, error) {
+func authorizeBuild(tx db.Tx, teams []db.Team, teamName string, build *BuildPrincipal, customRoles map[string]string, action string) (authorization, error) {
 	if !strings.EqualFold(teamName, build.TeamName) {
 		return authorization{}, ErrUnauthorized
 	}
 
 	// Before the row is read: a mapping that refuses every build refuses
 	// this one without paying for a lookup that could only be refused too.
-	if !buildHasRequiredRole(customRoles) {
+	if !buildHasRequiredRole(customRoles, action) {
 		return authorization{}, ErrUnauthorized
 	}
 
@@ -229,11 +225,11 @@ func authorizeBuild(tx db.Tx, teams []db.Team, teamName string, build *BuildPrin
 
 // buildHasRequiredRole reports whether a build's standing on its team, the
 // SaveConfig role, satisfies what the operator's mapping asks of
-// CreatePipelineRun. See authorizeBuild.
-func buildHasRequiredRole(customRoles map[string]string) bool {
+// the create action. See authorizeBuild.
+func buildHasRequiredRole(customRoles map[string]string, action string) bool {
 	return accessor.RoleHasRequiredRole(
 		accessor.EffectiveRole(customRoles, atc.SaveConfig),
-		accessor.EffectiveRole(customRoles, atc.CreatePipelineRun),
+		accessor.EffectiveRole(customRoles, action),
 	)
 }
 

@@ -18,7 +18,7 @@ import (
 var _ = Describe("the port's own checks", func() {
 	var ctx context.Context
 
-	const contractKey = "admitter-test/some-call"
+	const contractKey = "admitter-test.some-call"
 
 	BeforeEach(func() {
 		ctx = context.Background()
@@ -38,7 +38,7 @@ var _ = Describe("the port's own checks", func() {
 		Expect(err).NotTo(HaveOccurred())
 		defer tx.Rollback()
 
-		run, err := port.AdmitRun(ctx, tx, adm)
+		run, err := admitIn(ctx, port, tx, adm)
 		if err != nil {
 			return runs.Run{}, err
 		}
@@ -89,7 +89,7 @@ var _ = Describe("the port's own checks", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			weakened := runs.NewAdmitter(dbConn, runFactory, teamFactory, displayUserIds,
-				map[string]string{atc.CreatePipelineRun: "viewer"})
+				map[string]string{atc.CreatePipelineRunV2: "viewer"})
 
 			before := countRunRows()
 
@@ -104,7 +104,7 @@ var _ = Describe("the port's own checks", func() {
 
 			var invalid runs.CustomRolesInvalidError
 			Expect(errors.As(err, &invalid)).To(BeTrue())
-			Expect(err.Error()).To(ContainSubstring(atc.CreatePipelineRun))
+			Expect(err.Error()).To(ContainSubstring(atc.CreatePipelineRunV2))
 			Expect(countRunRows()).To(Equal(before))
 		})
 	})
@@ -195,7 +195,7 @@ var _ = Describe("the port's own checks", func() {
 				Template:  templateRef,
 				Principal: memberPrincipal,
 			})
-			Expect(err).To(MatchError(runs.ErrMissingContractKey))
+			Expect(err).To(MatchError(runs.ErrInvalidInvocationKey))
 			Expect(countRunRows()).To(Equal(before))
 		})
 
@@ -207,14 +207,14 @@ var _ = Describe("the port's own checks", func() {
 				Principal:   memberPrincipal,
 				ContractKey: "",
 			})
-			Expect(err).To(MatchError(runs.ErrMissingContractKey))
+			Expect(err).To(MatchError(runs.ErrInvalidInvocationKey))
 			Expect(countRunRows()).To(Equal(before))
 		})
 
-		// The key is opaque and unrecorded: the port stores nothing and reads
-		// no consumer table to decide. A value no consumer would ever produce
-		// is admitted exactly like a real one.
-		It("accepts any non-empty key, because presence is the whole check", func() {
+		// The key is opaque: the port retains only its digest and reads no
+		// consumer table to decide. Any value in the invocation alphabet is
+		// admitted exactly like a real one.
+		It("accepts any key in the invocation alphabet", func() {
 			_, err := admitWith(admitter, runs.Admission{
 				Template:    templateRef,
 				Principal:   memberPrincipal,
@@ -224,30 +224,13 @@ var _ = Describe("the port's own checks", func() {
 		})
 	})
 
-	// A legacy_v1 Run has nowhere to retain v2 caller intent, so the legacy
-	// port refuses it rather than admitting a Run that silently dropped it.
-	Describe("v2 caller intent", func() {
-		It("refuses a cause or a correlation and creates no row", func() {
-			before := countRunRows()
-			cause := 1
-			for _, admission := range []runs.Admission{
-				{Template: templateRef, Principal: memberPrincipal, ContractKey: contractKey, CausedByRun: &cause},
-				{Template: templateRef, Principal: memberPrincipal, ContractKey: contractKey, Correlation: "batch-1"},
-			} {
-				_, err := admitWith(admitter, admission)
-				Expect(err).To(MatchError(runs.ErrUnsupportedInvocation))
-			}
-			Expect(countRunRows()).To(Equal(before))
-		})
-	})
-
 	Describe("the transaction handle", func() {
 		It("refuses a transaction it did not open rather than panicking", func() {
 			tx, err := admitter.Begin(ctx)
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Rollback()
 
-			_, err = admitter.AdmitRun(ctx, foreignTx{tx}, runs.Admission{
+			_, err = admitIn(ctx, admitter, foreignTx{tx}, runs.Admission{
 				Template:    templateRef,
 				Principal:   memberPrincipal,
 				ContractKey: contractKey,

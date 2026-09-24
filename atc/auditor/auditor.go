@@ -101,7 +101,6 @@ func (a *auditor) ValidateAction(action string) bool {
 		atc.ListPipelineBuilds,
 		atc.CreatePipelineBuild,
 		atc.PipelineBadge,
-		atc.CreatePipelineRun,
 		atc.CreatePipelineRunV2,
 		atc.UploadPipelineRunInput,
 		atc.HandoffPipelineRunCredentials,

@@ -24,7 +24,7 @@ import (
 var _ = Describe("verifying a build principal against the builds table", func() {
 	var ctx context.Context
 
-	const contractKey = "caller-build-test/some-call"
+	const contractKey = "caller-build-test.some-call"
 
 	BeforeEach(func() {
 		ctx = context.Background()
@@ -37,7 +37,7 @@ var _ = Describe("verifying a build principal against the builds table", func() 
 		Expect(err).NotTo(HaveOccurred())
 		defer tx.Rollback()
 
-		run, err := admitter.AdmitRun(ctx, tx, runs.Admission{
+		run, err := admitIn(ctx, admitter, tx, runs.Admission{
 			Template:    templateRef,
 			Principal:   runs.Principal{Build: principal},
 			ContractKey: contractKey,

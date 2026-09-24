@@ -14,7 +14,7 @@ import (
 // gatedAdmitter is the real port with a barrier in front of Begin.
 //
 // It embeds the real Admitter and overrides one method -- the house pattern
-// for injecting a condition without a double. AdmitRun, the claim, the
+// for injecting a condition without a double. AdmitVersionedRun, the claim, the
 // transaction and the connection underneath are all the production ones; the
 // only thing added is that neither goroutine issues its claim until both have
 // a transaction open.
@@ -80,7 +80,7 @@ var _ = Describe("two admissions of the same call, racing on two connections", f
 				Admitter:   newAdmitter(conn),
 				opened:     gates[i],
 				peerOpened: gates[1-i],
-			})
+			}, testEpoch)
 		}
 	})
 

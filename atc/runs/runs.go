@@ -53,9 +53,9 @@
 // admitted can be atomic. Begin is published for that reason and no other.
 //
 // It does not read any consumer's tables. A consumer's call record remains the
-// consumer's. Legacy admission requires only a non-empty contract key; versioned
-// admission additionally retains core's scoped invocation identity atomically
-// with its Run and repeats authorization before replay.
+// consumer's. Admission retains core's scoped invocation identity atomically
+// with its Run and repeats authorization before replay; there is no legacy
+// admission any more.
 package runs
 
 import (
@@ -70,7 +70,7 @@ import (
 //
 // It is deliberately structural rather than an adapter: db.Tx satisfies it
 // with no wrapper at the call site, so Begin can return the value BeginTx gave
-// it by plain interface assignment, and AdmitRun can pass it back down. That
+// it by plain interface assignment, and AdmitVersionedRun can pass it back down. That
 // assignment is the cheapest possible check that this interface is right --
 // widen it wrongly and the port stops compiling.
 //
@@ -88,7 +88,7 @@ type Tx interface {
 
 // Transaction is what a consumer holds: a Tx it may also finish.
 //
-// The split from Tx is not decoration. AdmitRun and the before-commit callback
+// The split from Tx is not decoration. AdmitVersionedRun and the before-commit callback
 // take a Tx, so neither can commit: the callback runs inside the caller's
 // transaction, and a callback that could commit there would take a lifecycle
 // the caller owns. Only the value Begin returned can be finished, and only by
@@ -164,20 +164,19 @@ type Admission struct {
 	Inputs    map[string]atc.RunInputSource
 	Principal Principal
 
-	// ContractKey is the caller's identity for this invocation. Legacy admission
-	// requires only presence. Versioned admission validates the bounded alphabet
-	// and owns replay scoped to team, base template and stable principal.
+	// ContractKey is the caller's identity for this invocation. Admission
+	// validates the bounded alphabet and owns replay scoped to team, base
+	// template and stable principal (a person's subject, or a build's team and
+	// calling pipeline).
 	ContractKey string
 
 	// CausedByRun is the id of an earlier Run of the template's team that
 	// caused this one. Versioned admission retains it immutably as caller
 	// intent; it causes no cascade, cancellation, retention, retry or claim.
-	// Legacy admission refuses it.
 	CausedByRun *int
 
 	// Correlation is an opaque, non-secret caller value in the invocation-key
-	// alphabet, retained immutably as caller intent by versioned admission and
-	// refused by legacy admission.
+	// alphabet, retained immutably as caller intent.
 	Correlation string
 
 	// BeforeCommit runs inside the caller's transaction after the run and its

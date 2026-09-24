@@ -31,7 +31,7 @@ var _ = Describe("a consumer that cannot see atc/db", func() {
 	// Any non-empty value will do. The port checks presence and nothing else
 	// (requirement 8): it does not verify the key was recorded anywhere,
 	// because the call row lives in a consumer table core must never read.
-	const contractKey = "a10-consumer/some-call"
+	const contractKey = "a10-consumer.some-call"
 
 	BeforeEach(func() {
 		ctx = context.Background()
@@ -42,7 +42,7 @@ var _ = Describe("a consumer that cannot see atc/db", func() {
 			adm.ContractKey = contractKey
 		}
 
-		return admitter.AdmitRun(ctx, tx, adm)
+		return admitIn(ctx, admitter, tx, adm)
 	}
 
 	Describe("the transaction lifecycle, through the port alone", func() {
@@ -305,11 +305,11 @@ var _ = Describe("a consumer that cannot see atc/db", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Rollback()
 
-			_, err = admitter.AdmitRun(ctx, tx, runs.Admission{
+			_, err = admitIn(ctx, admitter, tx, runs.Admission{
 				Template:  templateRef,
 				Principal: memberPrincipal,
 			})
-			Expect(err).To(MatchError(runs.ErrMissingContractKey))
+			Expect(err).To(MatchError(runs.ErrInvalidInvocationKey))
 		})
 	})
 })

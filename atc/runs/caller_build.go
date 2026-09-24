@@ -45,7 +45,7 @@ type callerBuild struct {
 	// the payload of, when it is one; zero when the caller's pipeline is an
 	// ordinary pipeline. It is read here, with the rest of the build's
 	// identity, because the recursion check needs it and a second read would
-	// want a second connection -- see AdmitRun on the port's connection
+	// want a second connection -- see AdmitVersionedRun on the port's connection
 	// budget.
 	templatePipelineID int
 }
@@ -88,7 +88,7 @@ const callerBuildQuery = `
 // Through the caller's transaction, like every other read admission makes: the
 // caller has held a pooled connection since Begin, and a read on the pool from
 // here would want a second one while the first is still checked out. See
-// AdmitRun for the deadlock that is, and connection_budget_test.go for the
+// AdmitVersionedRun for the deadlock that is, and connection_budget_test.go for the
 // budget it would break.
 func readCallerBuild(tx db.Tx, buildID int) (callerBuild, bool, error) {
 	var caller callerBuild

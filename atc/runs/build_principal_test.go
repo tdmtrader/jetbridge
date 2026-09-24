@@ -25,7 +25,7 @@ import (
 var _ = Describe("a build acting for itself", func() {
 	var ctx context.Context
 
-	const contractKey = "build-principal-test/some-call"
+	const contractKey = "build-principal-test.some-call"
 
 	BeforeEach(func() {
 		ctx = context.Background()
@@ -41,7 +41,7 @@ var _ = Describe("a build acting for itself", func() {
 			adm.ContractKey = contractKey
 		}
 
-		run, err := admitter.AdmitRun(ctx, tx, adm)
+		run, err := admitIn(ctx, admitter, tx, adm)
 		if err != nil {
 			return runs.Run{}, err
 		}
@@ -74,6 +74,43 @@ var _ = Describe("a build acting for itself", func() {
 		Expect(createdBy).To(Equal(buildCreatedBy))
 		Expect(createdBy).To(Equal(run.CreatedBy))
 		Expect(createdBy).To(HavePrefix("build:"))
+	})
+
+	// A build's invocation scope is its team plus the pipeline it runs in, read
+	// off the verified builds row. So another build of the same pipeline
+	// presenting the same key replays the Run -- which is what lets a parked
+	// run_pipeline step resume -- while a build of another pipeline, or a
+	// person, presenting that key gets a Run of its own.
+	It("scopes its invocation to its team and calling pipeline", func() {
+		first, err := admit(runs.Admission{Template: templateRef, Principal: buildPrincipal})
+		Expect(err).NotTo(HaveOccurred())
+
+		callerJob, found, err := callerPipeline.Job("release")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		sibling, err := callerJob.CreateBuild("someone")
+		Expect(err).NotTo(HaveOccurred())
+
+		tx, err := admitter.Begin(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		samePipeline, replayed, err := admitter.AdmitVersionedRun(ctx, tx, runs.Admission{
+			Template: templateRef, Principal: runs.Principal{Build: buildPrincipalFor(sibling)}, ContractKey: contractKey,
+		}, testEpoch)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(tx.Commit()).To(Succeed())
+		Expect(replayed).To(BeTrue())
+		Expect(samePipeline.ID).To(Equal(first.ID))
+
+		other := runningBuildOn(defaultTeam, "other-caller")
+		otherPipeline, err := admit(runs.Admission{Template: templateRef, Principal: runs.Principal{Build: buildPrincipalFor(other)}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(otherPipeline.ID).NotTo(Equal(first.ID))
+
+		person, err := admit(runs.Admission{Template: templateRef, Principal: memberPrincipal})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(person.ID).NotTo(Equal(first.ID))
+		Expect(person.ID).NotTo(Equal(otherPipeline.ID))
+		Expect(countRunRows()).To(Equal(3))
 	})
 
 	// The fold mirrors findTeam's, and not the accessor's, deliberately. The
@@ -157,7 +194,7 @@ var _ = Describe("a build acting for itself", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Rollback()
 
-			run, err := port.AdmitRun(ctx, tx, runs.Admission{
+			run, err := admitIn(ctx, port, tx, runs.Admission{
 				Template:    templateRef,
 				Principal:   buildPrincipal,
 				ContractKey: contractKey,
@@ -173,7 +210,7 @@ var _ = Describe("a build acting for itself", func() {
 		It("refuses a build when creating a run requires more than saving a config", func() {
 			before := countRunRows()
 
-			_, err := admitUnder(map[string]string{atc.CreatePipelineRun: "owner"})
+			_, err := admitUnder(map[string]string{atc.CreatePipelineRunV2: "owner"})
 
 			// A refusal, not the invalid-mapping fault: the mapping is one
 			// the operator is allowed to configure, and it is this build
@@ -186,7 +223,6 @@ var _ = Describe("a build acting for itself", func() {
 			before := countRunRows()
 
 			run, err := admitUnder(map[string]string{
-				atc.CreatePipelineRun:      "owner",
 				atc.CreatePipelineRunV2:    "owner",
 				atc.UploadPipelineRunInput: "owner",
 				atc.SaveConfig:             "owner",
@@ -265,11 +301,11 @@ var _ = Describe("a build acting for itself", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Rollback()
 
-			_, err = admitter.AdmitRun(ctx, tx, runs.Admission{
+			_, err = admitIn(ctx, admitter, tx, runs.Admission{
 				Template:  templateRef,
 				Principal: runs.Principal{},
 			})
-			Expect(err).To(MatchError(runs.ErrMissingContractKey))
+			Expect(err).To(MatchError(runs.ErrInvalidInvocationKey))
 		})
 	})
 })

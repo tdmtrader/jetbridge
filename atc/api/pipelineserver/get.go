@@ -28,7 +28,7 @@ func (s *Server) GetPipeline(pipeline db.Pipeline) http.Handler {
 func pipelineOptions(r *http.Request, acc accessor.Access, pipeline db.Pipeline) present.PipelineOptions {
 	return present.PipelineOptions{
 		AuthorizedForParams: acc.IsAuthorized(pipeline.TeamName()),
-		CanCreateRun:        canCreatePipelineRun(acc, pipeline.TeamName(), accessor.RequiredRole(r.Context(), atc.CreatePipelineRun)),
+		CanCreateRun:        canCreatePipelineRun(acc, pipeline.TeamName(), accessor.RequiredRole(r.Context(), atc.CreatePipelineRunV2)),
 	}
 }
 
@@ -36,6 +36,7 @@ func canCreatePipelineRun(acc accessor.Access, teamName string, requiredRole str
 	// The operator gate narrows this field and never widens it: with creation
 	// held, no role can create a run, so no caller may be told it can. One
 	// edit, three payloads -- this is the only place the field is computed.
+	// It answers for v2 admission, the only way a run is created.
 	if !atc.EnablePipelineRunCreation {
 		return false
 	}

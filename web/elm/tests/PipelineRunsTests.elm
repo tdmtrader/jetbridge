@@ -218,6 +218,63 @@ all =
                     |> Application.update (Update SubmitPipelineRun)
                     |> Tuple.second
                     |> Expect.equal []
+        , test "resubmits after a lost response under the same invocation key" <|
+            \_ ->
+                let
+                    firstKey =
+                        opened |> Application.update (Update SubmitPipelineRun) |> Tuple.second |> List.filterMap createdKey
+
+                    retryKey =
+                        submitted
+                            |> Application.handleCallback (PipelineRunCreated (Err Http.NetworkError))
+                            |> Tuple.first
+                            |> Application.update (Update SubmitPipelineRun)
+                            |> Tuple.second
+                            |> List.filterMap createdKey
+                in
+                Expect.all [ \_ -> Expect.equal 1 (List.length firstKey), \_ -> Expect.equal firstKey retryKey ] ()
+        , test "starts a new invocation once the server has definitively refused admission" <|
+            \_ ->
+                let
+                    firstKey =
+                        opened |> Application.update (Update SubmitPipelineRun) |> Tuple.second |> List.filterMap createdKey
+
+                    nextKey =
+                        submitted
+                            |> Application.handleCallback (PipelineRunCreated (Err (statusError 422)))
+                            |> Tuple.first
+                            |> Application.update (Update SubmitPipelineRun)
+                            |> Tuple.second
+                            |> List.filterMap createdKey
+                in
+                Expect.all [ \_ -> Expect.equal 1 (List.length nextKey), \_ -> Expect.notEqual firstKey nextKey ] ()
+        , describe "keeps the invocation key when the run may already exist" <|
+            List.map
+                (\( name, err ) ->
+                    test name <|
+                        \_ ->
+                            let
+                                firstKey =
+                                    opened |> Application.update (Update SubmitPipelineRun) |> Tuple.second |> List.filterMap createdKey
+
+                                retryKey =
+                                    submitted
+                                        |> Application.handleCallback (PipelineRunCreated (Err err))
+                                        |> Tuple.first
+                                        |> Application.update (Update SubmitPipelineRun)
+                                        |> Tuple.second
+                                        |> List.filterMap createdKey
+                            in
+                            Expect.all [ \_ -> Expect.equal 1 (List.length retryKey), \_ -> Expect.equal firstKey retryKey ] ()
+                )
+                [ ( "after a 500", serverError )
+                , ( "after a committed-but-failed 503", statusError 503 )
+                , ( "after a gateway timeout", statusError 504 )
+                , ( "after a request timeout status", statusError 408 )
+                , ( "after being rate limited", statusError 429 )
+                , ( "after a timeout", Http.Timeout )
+                , ( "after a response it could not decode", undecodable )
+                ]
         , test "disables editable controls while submission is pending" <|
             \_ ->
                 submitted
@@ -675,10 +732,51 @@ openedFor pipeline =
         |> Tuple.first
 
 
+createdKey : Effects.Effect -> Maybe String
+createdKey effect =
+    case effect of
+        Effects.CreatePipelineRun _ key _ ->
+            Just key
+
+        _ ->
+            Nothing
+
+
+serverError : Http.Error
+serverError =
+    Http.BadStatus
+        { url = "http://example.com"
+        , status = { code = 500, message = "Internal Server Error" }
+        , headers = Dict.empty
+        , body = ""
+        }
+
+
+statusError : Int -> Http.Error
+statusError code =
+    Http.BadStatus
+        { url = "http://example.com"
+        , status = { code = code, message = "" }
+        , headers = Dict.empty
+        , body = ""
+        }
+
+
+-- The server answered 201 and committed the run, but the body did not decode.
+undecodable : Http.Error
+undecodable =
+    Http.BadPayload "unexpected shape"
+        { url = "http://example.com"
+        , status = { code = 201, message = "Created" }
+        , headers = Dict.empty
+        , body = "{}"
+        }
+
+
 createdVars : Effects.Effect -> Maybe String
 createdVars effect =
     case effect of
-        Effects.CreatePipelineRun _ vars ->
+        Effects.CreatePipelineRun _ _ vars ->
             Just (Json.Encode.encode 0 (Concourse.encodeInstanceVars vars))
 
         _ ->

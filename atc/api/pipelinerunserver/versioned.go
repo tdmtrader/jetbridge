@@ -11,6 +11,7 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/errormap"
+	"github.com/concourse/concourse/atc/api/helpers"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runs"
 )
@@ -100,8 +101,14 @@ func (s *Server) CreatePipelineRunV2(pipeline db.Pipeline) http.Handler {
 	})
 }
 
+// writeVersionedRefusal answers a refused admission. Authorization and
+// existence refusals carry no body, so they disclose nothing; a refusal about
+// the call itself or the template's state, which only an authorized caller
+// reaches, carries its reason in the API's JSON error envelope so a client
+// (fly, the web UI) can say what to change.
 func writeVersionedRefusal(w http.ResponseWriter, err error) {
 	var invalid runs.InvalidParamsError
+	var templateInvalid runs.TemplateConfigInvalidError
 	switch {
 	case errors.Is(err, runs.ErrUnauthorized):
 		w.WriteHeader(http.StatusForbidden)
@@ -109,12 +116,18 @@ func writeVersionedRefusal(w http.ResponseWriter, err error) {
 		w.WriteHeader(http.StatusNotFound)
 	case errors.Is(err, runs.ErrInvalidInvocationKey), errors.Is(err, runs.ErrUnsupportedInvocation),
 		errors.Is(err, runs.ErrInvalidCorrelation), errors.Is(err, runs.ErrRunCauseUnavailable), errors.Is(err, atc.ErrInvalidRunInputs), errors.Is(err, atc.ErrRunInputUnavailable), errors.As(err, &invalid):
-		w.WriteHeader(http.StatusBadRequest)
-	case errors.Is(err, runs.ErrInvocationConflict), errors.Is(err, runs.ErrTemplatePaused), errors.Is(err, runs.ErrTemplateArchived), errors.Is(err, runs.ErrNotATemplate), errors.Is(err, runs.ErrTemplateInstanced):
-		w.WriteHeader(http.StatusConflict)
+		writeRefusalReason(w, http.StatusBadRequest, err)
+	case errors.Is(err, runs.ErrInvocationConflict), errors.Is(err, runs.ErrTemplatePaused), errors.Is(err, runs.ErrTemplateArchived), errors.Is(err, runs.ErrNotATemplate), errors.Is(err, runs.ErrTemplateInstanced), errors.As(err, &templateInvalid):
+		writeRefusalReason(w, http.StatusConflict, err)
 	default:
 		if !errormap.Write(w, err) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
 	}
+}
+
+func writeRefusalReason(w http.ResponseWriter, status int, err error) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	helpers.WriteErrorResponse(w, atc.SaveConfigResponse{Errors: []string{err.Error()}})
 }

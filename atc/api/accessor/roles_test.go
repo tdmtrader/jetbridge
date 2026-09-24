@@ -13,7 +13,7 @@ var _ = Describe("Pipeline run roles", func() {
 		matched := 0
 		for action, role := range accessor.DefaultRoles {
 			switch action {
-			case atc.CreatePipelineRun:
+			case atc.CreatePipelineRunV2:
 				matched++
 				Expect(role).To(Equal(accessor.MemberRole))
 			case atc.ListPipelineRuns, atc.GetPipelineRun:
@@ -32,14 +32,14 @@ var _ = Describe("Pipeline run roles", func() {
 
 		It("accepts a run creation role equal to or stronger than set-pipeline", func() {
 			Expect(accessor.ValidateCustomRoles(map[string]string{
-				atc.CreatePipelineRun: accessor.MemberRole,
+				atc.CreatePipelineRunV2: accessor.MemberRole,
 			})).To(Succeed())
 			Expect(accessor.ValidateCustomRoles(map[string]string{
-				atc.CreatePipelineRun: accessor.OwnerRole,
+				atc.CreatePipelineRunV2: accessor.OwnerRole,
 			})).To(Succeed())
 			Expect(accessor.ValidateCustomRoles(map[string]string{
-				atc.CreatePipelineRun: accessor.OperatorRole,
-				atc.SaveConfig:        accessor.OperatorRole,
+				atc.CreatePipelineRunV2: accessor.OperatorRole,
+				atc.SaveConfig:          accessor.OperatorRole,
 			})).To(Succeed())
 		})
 
@@ -47,16 +47,16 @@ var _ = Describe("Pipeline run roles", func() {
 			func(customRoles map[string]string, runRole, saveRole string) {
 				err := accessor.ValidateCustomRoles(customRoles)
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring(atc.CreatePipelineRun))
+				Expect(err.Error()).To(ContainSubstring(atc.CreatePipelineRunV2))
 				Expect(err.Error()).To(ContainSubstring(atc.SaveConfig))
 				Expect(err.Error()).To(ContainSubstring(runRole))
 				Expect(err.Error()).To(ContainSubstring(saveRole))
 			},
 			Entry("operator run creation against the default member set-pipeline",
-				map[string]string{atc.CreatePipelineRun: accessor.OperatorRole},
+				map[string]string{atc.CreatePipelineRunV2: accessor.OperatorRole},
 				accessor.OperatorRole, accessor.MemberRole),
 			Entry("viewer run creation against the default member set-pipeline",
-				map[string]string{atc.CreatePipelineRun: accessor.ViewerRole},
+				map[string]string{atc.CreatePipelineRunV2: accessor.ViewerRole},
 				accessor.ViewerRole, accessor.MemberRole),
 			Entry("default member run creation against a raised owner set-pipeline",
 				map[string]string{atc.SaveConfig: accessor.OwnerRole},

@@ -1,7 +1,9 @@
 package composition
 
 import (
+	"crypto/sha256"
 	"fmt"
+	"strconv"
 
 	"github.com/concourse/concourse/atc"
 )
@@ -15,14 +17,25 @@ import (
 // it.
 //
 // One exported function, because the value has to be the same in two places
-// that will not be written at the same time. When the run contract's
-// server-scoped key lands, the value this package already passes is the value
-// it will pass then, and the call table becomes a join rather than a second
-// dedup mechanism. That only works if there is one place the value is spelled.
+// that will not be written at the same time: it is the server-scoped key the
+// versioned port replays on, which is what makes the call table a join rather
+// than a second dedup mechanism. That only works if there is one place the
+// value is spelled.
 //
-// Deliberately not the digest of anything: keying on the sealed-input digest
-// would move the key when a prior step's pod is evicted, and one logical
-// invocation would be admitted twice.
+// So it is a valid invocation key (requirement 14's alphabet and length,
+// atc.ValidRunInvocationToken). A
+// plan id is usually short hex and is kept verbatim; one the alphabet cannot
+// carry (a derived id such as "5a/image-get" or a sidecar's) or one that would
+// overflow the bound is replaced by its digest under a distinct marker, so the
+// two spellings can never meet.
+//
+// Deliberately not the digest of anything the call sends: keying on the
+// sealed-input digest would move the key when a prior step's pod is evicted,
+// and one logical invocation would be admitted twice.
 func ContractKey(buildID int, planID atc.PlanID) string {
-	return fmt.Sprintf("composition/build/%d/plan/%s", buildID, planID)
+	prefix := "build." + strconv.Itoa(buildID)
+	if key := prefix + ".plan." + string(planID); atc.ValidRunInvocationToken(key) {
+		return key
+	}
+	return fmt.Sprintf("%s.plan-sha256.%x", prefix, sha256.Sum256([]byte(planID)))
 }

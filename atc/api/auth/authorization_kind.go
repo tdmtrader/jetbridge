@@ -104,7 +104,6 @@ func AuthorizationKindForAction(action string) (AuthorizationKind, bool) {
 		atc.CreateJobBuild,
 		atc.RerunJobBuild,
 		atc.CreatePipelineBuild,
-		atc.CreatePipelineRun,
 		atc.CreatePipelineRunV2,
 		atc.UploadPipelineRunInput,
 		atc.HandoffPipelineRunCredentials,

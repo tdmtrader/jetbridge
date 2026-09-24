@@ -1,7 +1,6 @@
 package composition
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/concourse/concourse/atc/runs"
@@ -40,28 +39,3 @@ func (e DigestConflictError) AdmissionRefusal() {}
 // pins: a pointer receiver here would compile and would silently stop
 // satisfying the interface at every call site that returns the value.
 var _ runs.Refusal = DigestConflictError{}
-
-// ErrCallRecordIncomplete reports a claimed call row with no iteration row for
-// its first ordinal.
-//
-// This should be unreachable, and saying so is the point. The claim only
-// returns no row when a conflicting call row is already committed, and the
-// call row, the iteration row and the run commit together -- so a committed
-// call without its iteration means that guarantee has been broken somewhere.
-// Reporting it is how the break becomes visible instead of surfacing as a
-// confusing nil run id.
-//
-// It is unreachable on one stated condition, and the condition is not the
-// consumer's to enforce, so it is written down here rather than assumed. The
-// two cascades are asymmetric: composition_iterations cascades from
-// pipeline_runs as well as from the call, while composition_calls cascades only
-// from builds. Delete a child run while its parent build survives and the
-// iteration goes with it, leaving a committed call row with nothing under it --
-// and from then on every Admit for that (build_id, plan_id) claims nothing,
-// finds no iteration, and returns this error rather than re-admitting. Today
-// the only production DELETE FROM pipeline_runs is team destruction
-// (atc/db/team.go), which takes the builds with it, so no such state exists.
-// Run retention is a named follow-on and would create one. Whoever adds it owns
-// the choice: keep the cascade symmetric, or make replay treat a call row with
-// no first iteration as re-claimable.
-var ErrCallRecordIncomplete = errors.New("call row exists with no iteration for its first ordinal")

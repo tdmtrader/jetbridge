@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/concourse/concourse/atc"
@@ -63,7 +65,7 @@ var _ = Describe("public run creation gate", func() {
 	})
 
 	It("refuses creation with a typed conflict, and writes nothing", func() {
-		_, err := memberClient.Team("run-team").CreatePipelineRun(runTemplateRef.Name, runVars)
+		_, err := memberClient.Team("run-team").CreatePipelineRun(runTemplateRef.Name, v2Request(runVars))
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(Equal(atc.ErrPipelineRunCreationDisabled.Error()))
 
@@ -139,7 +141,7 @@ var _ = Describe("public run creation gate", func() {
 		})
 
 		It("admits the identical request and records the run", func() {
-			run, err := memberClient.Team("run-team").CreatePipelineRun(runTemplateRef.Name, runVars)
+			run, err := memberClient.Team("run-team").CreatePipelineRun(runTemplateRef.Name, v2Request(runVars))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(run.Number).To(Equal(1))
 			Expect(run.InstanceRef).NotTo(BeNil())
@@ -157,7 +159,7 @@ var _ = Describe("public run creation gate", func() {
 			// This is what keeps the gate-off comparison above honest: it
 			// proves the constants compared against are the strings this
 			// server really sends, not dead values in a header file.
-			created, err := memberClient.Team("run-team").CreatePipelineRun(runTemplateRef.Name, runVars)
+			created, err := memberClient.Team("run-team").CreatePipelineRun(runTemplateRef.Name, v2Request(runVars))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(created.InstanceRef).NotTo(BeNil())
 
@@ -253,7 +255,7 @@ func authedHTTPClient(atcURL, username, password string) *http.Client {
 
 func runsPath(teamName, pipelineName string) string {
 	GinkgoHelper()
-	path, err := atc.Routes.CreatePathForRoute(atc.CreatePipelineRun, rata.Params{
+	path, err := atc.Routes.CreatePathForRoute(atc.CreatePipelineRunV2, rata.Params{
 		"team_name":     teamName,
 		"pipeline_name": pipelineName,
 	})
@@ -271,7 +273,7 @@ func postCreateRun(httpClient *http.Client, teamName, pipelineName string, vars 
 func postCreateRunAt(httpClient *http.Client, url string, vars map[string]any) capturedResponse {
 	GinkgoHelper()
 
-	body, err := json.Marshal(atc.CreatePipelineRunRequest{Vars: vars})
+	body, err := json.Marshal(v2Request(vars))
 	Expect(err).NotTo(HaveOccurred())
 
 	request, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
@@ -451,9 +453,9 @@ var _ = Describe("run creation surfaces and read paths", func() {
 		})
 
 		It("keeps reading them identically once the gate is closed again", func() {
-			first, err := memberClient.Team("run-team").CreatePipelineRun(runTemplateRef.Name, runVars)
+			first, err := memberClient.Team("run-team").CreatePipelineRun(runTemplateRef.Name, v2Request(runVars))
 			Expect(err).NotTo(HaveOccurred())
-			second, err := memberClient.Team("run-team").CreatePipelineRun(runTemplateRef.Name, map[string]any{"environment": "production"})
+			second, err := memberClient.Team("run-team").CreatePipelineRun(runTemplateRef.Name, v2Request(map[string]any{"environment": "production"}))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Let both runs reach a terminal state first. Their status moves
@@ -555,4 +557,15 @@ func restartATCWithGate(enabled bool) {
 		_, err := http.Get(atcURL + "/api/v1/info")
 		return err
 	}, 20*time.Second).ShouldNot(HaveOccurred())
+}
+
+var invocationSequence atomic.Int64
+
+// v2Request is one fresh invocation: every call is its own request, never a
+// replay of an earlier one, so each spec's second POST is a second attempt.
+func v2Request(vars map[string]any) atc.CreatePipelineRunV2Request {
+	return atc.CreatePipelineRunV2Request{
+		InvocationKey: fmt.Sprintf("integration.%d.%d", GinkgoParallelProcess(), invocationSequence.Add(1)),
+		Vars:          atc.RunParams(vars),
+	}
 }

@@ -18,16 +18,16 @@ import Time
 all : Test
 all =
     describe "pipeline run decoding"
-        [ test "encodes the create body with the typed vars envelope" <|
+        [ test "encodes the v2 create body with its invocation key and typed vars" <|
             \_ ->
-                PipelineRun.encodeCreatePipelineRun
+                PipelineRun.encodeCreatePipelineRun "web.1.0"
                     (Dict.fromList
                         [ ( "count", Concourse.JsonNumber 2 )
                         , ( "enabled", Concourse.JsonRaw <| Json.Encode.bool True )
                         ]
                     )
                     |> Json.Encode.encode 0
-                    |> Expect.equal "{\"vars\":{\"count\":2,\"enabled\":true}}"
+                    |> Expect.equal "{\"invocation_key\":\"web.1.0\",\"vars\":{\"count\":2,\"enabled\":true}}"
         , test "renders every run status in the API's vocabulary" <|
             \_ ->
                 [ BuildStatusStarted
@@ -214,17 +214,17 @@ all =
                             , callback = Effects.PipelineRunFetchedCallback
                             }
                         )
-        , test "create effect builds the vars POST body and callback" <|
+        , test "create effect posts the v2 body to the versioned create route" <|
             \_ ->
-                Effects.CreatePipelineRun pipelineId
+                Effects.CreatePipelineRun pipelineId "web.1.0"
                     (Dict.fromList [ ( "count", Concourse.JsonNumber 2 ) ])
                     |> Effects.pipelineRunRequest
                     |> Maybe.map requestSummary
                     |> Expect.equal
                         (Just
-                            { url = "/api/v1/teams/team/pipelines/pipeline/runs"
+                            { url = "/api/v2/teams/team/pipelines/pipeline/runs"
                             , method = "POST"
-                            , body = Just "{\"vars\":{\"count\":2}}"
+                            , body = Just "{\"invocation_key\":\"web.1.0\",\"vars\":{\"count\":2}}"
                             , callback = Effects.PipelineRunCreatedCallback
                             }
                         )

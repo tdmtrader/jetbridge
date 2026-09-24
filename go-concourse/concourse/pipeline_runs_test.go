@@ -15,9 +15,10 @@ import (
 
 var _ = Describe("Pipeline runs client", func() {
 	const collectionPath = "/api/v1/teams/some-team/pipelines/template/runs"
+	const createPath = "/api/v2/teams/some-team/pipelines/template/runs"
 
 	Describe("CreatePipelineRun", func() {
-		It("posts typed variables to the template pipeline and returns the committed child reference", func() {
+		It("posts the invocation key and typed variables to the versioned create route and returns the committed child reference", func() {
 			expected := pipelineRun(3)
 			expected.InstanceRef = &atc.PipelineIdentifier{
 				TeamName:     "child-team",
@@ -26,9 +27,9 @@ var _ = Describe("Pipeline runs client", func() {
 			}
 
 			atcServer.AppendHandlers(ghttp.CombineHandlers(
-				ghttp.VerifyRequest("POST", collectionPath),
+				ghttp.VerifyRequest("POST", createPath),
 				ghttp.VerifyHeaderKV("Content-Type", "application/json"),
-				ghttp.VerifyJSONRepresenting(map[string]any{"vars": map[string]any{
+				ghttp.VerifyJSONRepresenting(map[string]any{"invocation_key": "fly.some-key", "vars": map[string]any{
 					"enabled": true,
 					"retries": float64(2),
 					"branch":  "main",
@@ -36,10 +37,9 @@ var _ = Describe("Pipeline runs client", func() {
 				ghttp.RespondWithJSONEncoded(http.StatusCreated, expected),
 			))
 
-			run, err := team.CreatePipelineRun("template", map[string]any{
-				"enabled": true,
-				"retries": 2.0,
-				"branch":  "main",
+			run, err := team.CreatePipelineRun("template", atc.CreatePipelineRunV2Request{
+				InvocationKey: "fly.some-key",
+				Vars:          atc.RunParams{"enabled": true, "retries": 2.0, "branch": "main"},
 			})
 
 			Expect(err).NotTo(HaveOccurred())
@@ -54,13 +54,13 @@ var _ = Describe("Pipeline runs client", func() {
 			// wrapped in "Unexpected Response" instead of as its own message.
 			func(status int) {
 				atcServer.AppendHandlers(ghttp.CombineHandlers(
-					ghttp.VerifyRequest("POST", collectionPath),
+					ghttp.VerifyRequest("POST", createPath),
 					ghttp.RespondWithJSONEncoded(status, atc.SaveConfigResponse{
 						Errors: []string{"parameter environment is required", "unknown parameter colour"},
 					}),
 				))
 
-				_, err := team.CreatePipelineRun("template", map[string]any{})
+				_, err := team.CreatePipelineRun("template", atc.CreatePipelineRunV2Request{InvocationKey: "fly.some-key"})
 
 				Expect(err).To(Equal(concourse.InvalidPipelineRunError{
 					Errors: []string{"parameter environment is required", "unknown parameter colour"},
@@ -73,11 +73,11 @@ var _ = Describe("Pipeline runs client", func() {
 
 		It("preserves a failure body that is not the error envelope", func() {
 			atcServer.AppendHandlers(ghttp.CombineHandlers(
-				ghttp.VerifyRequest("POST", collectionPath),
+				ghttp.VerifyRequest("POST", createPath),
 				ghttp.RespondWith(http.StatusBadRequest, "invalid pipeline run request"),
 			))
 
-			_, err := team.CreatePipelineRun("template", map[string]any{})
+			_, err := team.CreatePipelineRun("template", atc.CreatePipelineRunV2Request{InvocationKey: "fly.some-key"})
 
 			Expect(err).To(Equal(internal.UnexpectedResponseError{
 				StatusCode: http.StatusBadRequest,

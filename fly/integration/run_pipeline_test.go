@@ -26,7 +26,7 @@ var _ = Describe("run-pipeline against a server holding run creation", func() {
 
 	BeforeEach(func() {
 		var err error
-		createPath, err = atc.Routes.CreatePathForRoute(atc.CreatePipelineRun, rata.Params{
+		createPath, err = atc.Routes.CreatePathForRoute(atc.CreatePipelineRunV2, rata.Params{
 			"team_name":     teamName,
 			"pipeline_name": "some-template",
 		})
@@ -96,6 +96,43 @@ var _ = Describe("run-pipeline against a server holding run creation", func() {
 
 			output := string(sess.Out.Contents()) + string(sess.Err.Contents())
 			Expect(output).To(ContainSubstring("Unexpected Response"))
+		})
+	})
+
+	Context("when the invocation replays a run that has since been reclaimed", func() {
+		BeforeEach(func() {
+			completed := time.Unix(1000060, 0)
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("POST", createPath),
+					ghttp.VerifyJSON(`{"invocation_key":"release.42"}`),
+					ghttp.RespondWithJSONEncoded(http.StatusOK, atc.PipelineRun{
+						ID:               3,
+						Number:           7,
+						Status:           atc.RunStatusSucceeded,
+						CreatedBy:        "someone",
+						CreatedAt:        time.Unix(1000000, 0),
+						CompletedAt:      &completed,
+						Reclaimed:        true,
+						ContractVersion:  atc.RunContractV2,
+						AdmissionOutcome: atc.RunAdmissionReplayed,
+					}, http.Header{"Idempotency-Replayed": []string{"true"}}),
+				),
+			)
+		})
+
+		It("reports the replayed run by its number and detail URL, with no payload", func() {
+			flyCmd := exec.Command(flyPath, "-t", targetName, "run-pipeline", "-p", "some-template", "--invocation-key", "release.42")
+
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0), string(sess.Err.Contents()))
+			Expect(string(sess.Out.Contents())).To(Equal(
+				"already started some-template run #7 (succeeded, payload reclaimed)\n" +
+					atcServer.URL() + "/teams/" + teamName + "/pipelines/some-template/runs/7\n",
+			))
 		})
 	})
 

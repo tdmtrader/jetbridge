@@ -141,7 +141,7 @@ type Effect
     | FetchPipelines String
     | FetchPipelineRuns Concourse.PipelineIdentifier Page
     | FetchPipelineRun Concourse.PipelineIdentifier Int
-    | CreatePipelineRun Concourse.PipelineIdentifier Concourse.InstanceVars
+    | CreatePipelineRun Concourse.PipelineIdentifier String Concourse.InstanceVars
     | FetchClusterInfo
     | FetchWall
     | FetchInputTo Concourse.VersionedResourceIdentifier
@@ -239,8 +239,8 @@ pipelineRunRequest effect =
         FetchPipelineRun id number ->
             Just { endpoint = Endpoints.PipelineRun number |> Endpoints.Pipeline id, method = "GET", page = Nothing, body = Nothing, callback = PipelineRunFetchedCallback }
 
-        CreatePipelineRun id vars ->
-            Just { endpoint = Endpoints.PipelineRunsList |> Endpoints.Pipeline id, method = "POST", page = Nothing, body = Just <| PipelineRun.encodeCreatePipelineRun vars, callback = PipelineRunCreatedCallback }
+        CreatePipelineRun id key vars ->
+            Just { endpoint = Endpoints.PipelineRunsV2 id, method = "POST", page = Nothing, body = Just <| PipelineRun.encodeCreatePipelineRun key vars, callback = PipelineRunCreatedCallback }
 
         _ ->
             Nothing
@@ -375,7 +375,7 @@ runNonPipelineRunEffect effect key csrfToken =
         FetchPipelineRun _ _ ->
             Cmd.none
 
-        CreatePipelineRun _ _ ->
+        CreatePipelineRun _ _ _ ->
             Cmd.none
 
         FetchAllResources ->

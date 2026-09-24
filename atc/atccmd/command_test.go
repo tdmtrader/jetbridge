@@ -198,11 +198,11 @@ func (s *CommandSuite) writeRBACConfig(body string) *atccmd.RunCommand {
 }
 
 func (s *CommandSuite) TestCustomRolesRefuseWeakerRunCreationThanSetPipeline() {
-	cmd := s.writeRBACConfig("pipeline-operator:\n- CreatePipelineRun\n")
+	cmd := s.writeRBACConfig("pipeline-operator:\n- CreatePipelineRunV2\n")
 
 	err := atccmd.ValidateCustomRolesForTest(cmd)
 	s.Error(err, "expected startup to refuse run creation weaker than set-pipeline")
-	s.Contains(err.Error(), atc.CreatePipelineRun)
+	s.Contains(err.Error(), atc.CreatePipelineRunV2)
 	s.Contains(err.Error(), atc.SaveConfig)
 	s.Contains(err.Error(), "pipeline-operator")
 	s.Contains(err.Error(), "member")
@@ -213,18 +213,18 @@ func (s *CommandSuite) TestCustomRolesRefuseRaisedSetPipelineWithDefaultRunCreat
 
 	err := atccmd.ValidateCustomRolesForTest(cmd)
 	s.Error(err, "raising set-pipeline alone leaves run creation weaker than it")
-	s.Contains(err.Error(), atc.CreatePipelineRun)
+	s.Contains(err.Error(), atc.CreatePipelineRunV2)
 	s.Contains(err.Error(), atc.SaveConfig)
 }
 
 func (s *CommandSuite) TestCustomRolesAcceptEqualOrStrongerRunCreation() {
-	equal := s.writeRBACConfig("member:\n- CreatePipelineRun\n")
+	equal := s.writeRBACConfig("member:\n- CreatePipelineRunV2\n")
 	s.NoError(atccmd.ValidateCustomRolesForTest(equal))
 
-	stronger := s.writeRBACConfig("owner:\n- CreatePipelineRun\n")
+	stronger := s.writeRBACConfig("owner:\n- CreatePipelineRunV2\n")
 	s.NoError(atccmd.ValidateCustomRolesForTest(stronger))
 
-	together := s.writeRBACConfig("pipeline-operator:\n- CreatePipelineRun\n- SaveConfig\n")
+	together := s.writeRBACConfig("pipeline-operator:\n- CreatePipelineRunV2\n- SaveConfig\n")
 	s.NoError(atccmd.ValidateCustomRolesForTest(together))
 }
 
@@ -241,11 +241,11 @@ func (s *CommandSuite) TestCustomRolesReloadWhenThePathChangesAfterAnEmptyLoad()
 }
 
 func (s *CommandSuite) TestCustomRolesRefuseDuplicateRunCreationAssignments() {
-	cmd := s.writeRBACConfig("owner:\n- CreatePipelineRun\npipeline-operator:\n- CreatePipelineRun\n")
+	cmd := s.writeRBACConfig("owner:\n- CreatePipelineRunV2\npipeline-operator:\n- CreatePipelineRunV2\n")
 
 	err := atccmd.ValidateCustomRolesForTest(cmd)
 	s.Error(err, "expected startup to refuse an action assigned to multiple roles")
-	s.Contains(err.Error(), atc.CreatePipelineRun)
+	s.Contains(err.Error(), atc.CreatePipelineRunV2)
 	s.Contains(err.Error(), "assigned more than once")
 }
 

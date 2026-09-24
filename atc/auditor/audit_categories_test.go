@@ -72,7 +72,6 @@ var auditCategories = map[string][]string{
 		atc.ListPipelineBuilds,
 		atc.CreatePipelineBuild,
 		atc.PipelineBadge,
-		atc.CreatePipelineRun,
 		atc.CreatePipelineRunV2,
 		atc.UploadPipelineRunInput,
 		atc.HandoffPipelineRunCredentials,

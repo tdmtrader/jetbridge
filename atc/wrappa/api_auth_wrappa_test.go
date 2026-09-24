@@ -76,12 +76,12 @@ var _ = Describe("APIAuthWrappa", func() {
 				checkBuildReadAccessHandlerFactory,
 				checkBuildWriteAccessHandlerFactory,
 				checkWorkerTeamAccessHandlerFactory,
-			).Wrap(rata.Handlers{atc.CreatePipelineRun: http.HandlerFunc(func(http.ResponseWriter, *http.Request) { served = true })})
+			).Wrap(rata.Handlers{atc.CreatePipelineRunV2: http.HandlerFunc(func(http.ResponseWriter, *http.Request) { served = true })})
 			req := httptest.NewRequest(http.MethodPost, "/", nil)
 			query := req.URL.Query()
 			query.Set(":team_name", "team")
 			req.URL.RawQuery = query.Encode()
-			accessor.NewHandler(lager.NewLogger("test"), atc.CreatePipelineRun, wrapped[atc.CreatePipelineRun], accessFactory, authRouteAuditor{}, nil).ServeHTTP(httptest.NewRecorder(), req)
+			accessor.NewHandler(lager.NewLogger("test"), atc.CreatePipelineRunV2, wrapped[atc.CreatePipelineRunV2], accessFactory, authRouteAuditor{}, nil).ServeHTTP(httptest.NewRecorder(), req)
 
 			Expect(served).To(BeTrue())
 			_, role := accessFactory.CreateArgsForCall(0)
@@ -92,14 +92,14 @@ var _ = Describe("APIAuthWrappa", func() {
 		It("classifies all run routes", func() {
 			// This fails if public template history becomes member-only, or creation inherits public access.
 			inputHandlers := rata.Handlers{
-				atc.CreatePipelineRun: &stupidHandler{},
-				atc.ListPipelineRuns:  &stupidHandler{},
-				atc.GetPipelineRun:    &stupidHandler{},
+				atc.CreatePipelineRunV2: &stupidHandler{},
+				atc.ListPipelineRuns:    &stupidHandler{},
+				atc.GetPipelineRun:      &stupidHandler{},
 			}
 			matched := 0
 			for name := range inputHandlers {
 				switch name {
-				case atc.CreatePipelineRun, atc.ListPipelineRuns, atc.GetPipelineRun:
+				case atc.CreatePipelineRunV2, atc.ListPipelineRuns, atc.GetPipelineRun:
 					matched++
 				}
 			}

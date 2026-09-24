@@ -26,7 +26,7 @@ import (
 var _ = Describe("bounding direct recursion", func() {
 	var ctx context.Context
 
-	const contractKey = "recursion-test/some-call"
+	const contractKey = "recursion-test.some-call"
 
 	BeforeEach(func() {
 		ctx = context.Background()
@@ -39,7 +39,7 @@ var _ = Describe("bounding direct recursion", func() {
 		Expect(err).NotTo(HaveOccurred())
 		defer tx.Rollback()
 
-		run, err := admitter.AdmitRun(ctx, tx, runs.Admission{
+		run, err := admitIn(ctx, admitter, tx, runs.Admission{
 			Template:    ref,
 			Principal:   principal,
 			ContractKey: contractKey,

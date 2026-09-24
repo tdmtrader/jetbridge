@@ -14,7 +14,7 @@ import (
 
 // The port's connection budget, asserted at the limit.
 //
-// AdmitRun runs inside a transaction the caller opened, and that transaction is
+// AdmitVersionedRun runs inside a transaction the caller opened, and that transaction is
 // holding a connection for as long as the caller holds it. So every read
 // admission needs has to go through that same transaction. A read that went to
 // the pool instead would want a *second* connection while the first is still
@@ -83,10 +83,10 @@ var _ = Describe("admission's connection budget", func() {
 			// The pool's one connection is checked out from here until the
 			// caller finishes the transaction. That is what Begin publishes,
 			// and admission has to live within it.
-			_, err = port.AdmitRun(ctx, tx, runs.Admission{
+			_, err = admitIn(ctx, port, tx, runs.Admission{
 				Template:    templateRef,
 				Principal:   memberPrincipal,
-				ContractKey: "connection-budget/one",
+				ContractKey: "connection-budget.one",
 			})
 			if err != nil {
 				admitted <- err

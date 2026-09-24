@@ -62,7 +62,7 @@ func Operations() []Operation {
 		metadata("resource_check", "resource", atc.CheckResource, mcpauth.ScopeBuilds, "Request a resource check. Not yet implemented through MCP."),
 		metadata("resource_pin", "resource", atc.PinResourceVersion, mcpauth.ScopePipelines, "Pin a resource version in a pipeline. Not yet implemented through MCP."),
 		metadata("resource_unpin", "resource", atc.UnpinResource, mcpauth.ScopePipelines, "Remove a resource version pin. Not yet implemented through MCP."),
-		metadata("pipeline_run_create", "pipeline", atc.CreatePipelineRun, mcpauth.ScopePipelines, "Create a parameterized run that can interpolate configuration. Not yet implemented through MCP."),
+		metadata("pipeline_run_create", "pipeline", atc.CreatePipelineRunV2, mcpauth.ScopePipelines, "Create a parameterized run that can interpolate configuration. Not yet implemented through MCP."),
 		metadata("build_create", "build", atc.CreateBuild, mcpauth.ScopePipelines, "Create a one-off build with an executable plan. Not yet implemented through MCP."),
 		metadata("container_exec", "container", atc.HijackContainer, mcpauth.ScopeHijack, "Execute in a build container. Container kind and target authorization still apply. Not yet implemented through MCP."),
 		metadata("team_set", "team", atc.SetTeam, mcpauth.ScopeAdmin, "Set team authorization subject to the account's team authority. Not yet implemented through MCP."),

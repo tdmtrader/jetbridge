@@ -3,6 +3,8 @@ package pipelinerunserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -105,6 +107,60 @@ func TestVersionedCreateSignalsReplay(t *testing.T) {
 			}
 			if run.AdmissionOutcome != tc.outcome || run.ID != 41 || run.Number != 3 {
 				t.Errorf("response = outcome %q, Run %d #%d; want %q, Run 41 #3", run.AdmissionOutcome, run.ID, run.Number, tc.outcome)
+			}
+		})
+	}
+}
+
+type refusingAdmitter struct {
+	replayAdmitter
+	err error
+}
+
+func (a refusingAdmitter) AdmitVersionedRun(context.Context, runs.Tx, runs.Admission, int64) (runs.Run, bool, error) {
+	return runs.Run{}, false, a.err
+}
+
+// A refusal about the call or the template's state carries its reason, so fly
+// and the web UI can say what to change; an authorization or existence refusal
+// carries nothing.
+func TestVersionedRefusalsCarryTheirReasonOnlyAfterAuthorization(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		err    error
+		status int
+		reason string
+	}{
+		{"invalid params", runs.InvalidParamsError{Err: errors.New("parameter environment is required")}, http.StatusBadRequest, "parameter environment is required"},
+		{"paused template", runs.ErrTemplatePaused, http.StatusConflict, runs.ErrTemplatePaused.Error()},
+		{"changed intent", runs.ErrInvocationConflict, http.StatusConflict, runs.ErrInvocationConflict.Error()},
+		{"held admission", runs.ErrVersionedAdmissionUnavailable, http.StatusConflict, "not activated"},
+		{"unauthorized", runs.ErrUnauthorized, http.StatusForbidden, ""},
+		{"not found", runs.ErrTemplateNotFound, http.StatusNotFound, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := NewServer(lagertest.NewTestLogger("test"), admittedRunFactory{}, "")
+			server.SetServices(Services{Admitter: refusingAdmitter{err: tc.err}, Epoch: 1})
+			request := httptest.NewRequest(http.MethodPost,
+				"/api/v2/teams/t/pipelines/review/runs?:team_name=t&:pipeline_name=review",
+				strings.NewReader(`{"invocation_key":"refused"}`))
+			request.Header.Set("Content-Type", "application/json")
+
+			response := serveSensitive(t, atc.CreatePipelineRunV2, server.CreatePipelineRunV2(templatePipeline{}), request)
+
+			if response.StatusCode != tc.status {
+				t.Fatalf("status = %d, want %d", response.StatusCode, tc.status)
+			}
+			body, _ := io.ReadAll(response.Body)
+			if tc.reason == "" {
+				if len(body) != 0 {
+					t.Errorf("refusal disclosed %q", body)
+				}
+				return
+			}
+			var envelope atc.SaveConfigResponse
+			if err := json.Unmarshal(body, &envelope); err != nil || len(envelope.Errors) != 1 || !strings.Contains(envelope.Errors[0], tc.reason) {
+				t.Errorf("body = %q, want an error envelope naming %q", body, tc.reason)
 			}
 		})
 	}

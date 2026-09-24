@@ -43,6 +43,8 @@ type alias Model =
     , error : Maybe String
     , validation : Maybe RunForm.ValidationError
     , now : Maybe Time.Posix
+    , invocation : Maybe String
+    , attempts : Int
     }
 
 pageLimit : Int
@@ -66,6 +68,8 @@ init flags =
       , error = Nothing
       , validation = Nothing
       , now = Nothing
+      , invocation = Nothing
+      , attempts = 0
       , isUserMenuExpanded = False
       }
     , [ FetchPipeline flags.id, FetchPipelineRuns flags.id page, GetCurrentTime ]
@@ -107,7 +111,7 @@ handleCallback callback ( model, effects ) =
         PipelineRunsFetched (Err err) ->
             ( { model | runs = RemoteData.Failure err, error = if model.refreshing then model.error else Just "Unable to load run history." }, effects )
         PipelineRunCreated (Ok run) ->
-            ( { model | pending = False, refreshing = False }
+            ( { model | pending = False, refreshing = False, invocation = Nothing, attempts = model.attempts + 1 }
             , effects ++ [ NavigateTo <| Routes.toString <| Routes.PipelineRun { template = model.pipelineId, number = run.number } ]
             )
         PipelineRunCreated (Err err) ->
@@ -115,7 +119,14 @@ handleCallback callback ( model, effects ) =
                 message =
                     httpMessage err "Unable to start a run."
             in
-            ( { model | pending = False, refreshing = refreshableError err, error = Just message, validation = Nothing }
+            ( { model
+                | pending = False
+                , refreshing = refreshableError err
+                , error = Just message
+                , validation = Nothing
+                , invocation = if answered err then Nothing else model.invocation
+                , attempts = if answered err then model.attempts + 1 else model.attempts
+              }
             , effects ++ (if refreshableError err then [ FetchPipeline model.pipelineId ] else []) ++ [ Focus "run-form-error" ]
             )
         GotCurrentTime now ->
@@ -165,8 +176,12 @@ submit model effects =
                     if creationHold template then
                         ( { model | error = Just (holdReason template), validation = Nothing }, effects ++ [ Focus "run-form-error" ] )
                     else
-                        ( { model | pending = True, error = Nothing, validation = Nothing }
-                        , effects ++ [ CreatePipelineRun model.pipelineId vars ]
+                        let
+                            key =
+                                Maybe.withDefault (invocationKey model) model.invocation
+                        in
+                        ( { model | pending = True, error = Nothing, validation = Nothing, invocation = Just key }
+                        , effects ++ [ CreatePipelineRun model.pipelineId key vars ]
                         )
         _ ->
             ( model, effects )
@@ -412,6 +427,28 @@ httpMessage err fallback =
 errorsDecoder : Json.Decode.Decoder (List String)
 errorsDecoder =
     Json.Decode.field "errors" (Json.Decode.list Json.Decode.string)
+-- invocationKey names one attempt to start a run. It is kept until the
+-- attempt's outcome is known, so resubmitting replays the run that attempt may
+-- already have started instead of starting a second one. Only a confirmed
+-- success or a definitive refusal of admission retires it, so the next
+-- submission is new.
+invocationKey : Model -> String
+invocationKey model =
+    "web."
+        ++ String.fromInt (model.now |> Maybe.map Time.posixToMillis |> Maybe.withDefault 0)
+        ++ "."
+        ++ String.fromInt model.attempts
+-- answered is True only for a definitive 4xx refusal: the server looked at
+-- the request and admitted nothing. A 5xx may follow a committed run (the
+-- server can fail after commit), a response that did not decode may be a
+-- created run, and a network error or timeout says nothing; so do 408 and 429,
+-- which ask for the same request again. All of those keep the key.
+answered : Http.Error -> Bool
+answered err =
+    case err of
+        Http.BadStatus { status } ->
+            status.code >= 400 && status.code < 500 && status.code /= 408 && status.code /= 429
+        _ -> False
 refreshableError : Http.Error -> Bool
 refreshableError err =
     case err of

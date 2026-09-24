@@ -17,7 +17,7 @@ import (
 var _ = Describe("looking an admitted run up by id", func() {
 	var ctx context.Context
 
-	const contractKey = "lookup-run-test/some-call"
+	const contractKey = "lookup-run-test.some-call"
 
 	BeforeEach(func() {
 		ctx = context.Background()
@@ -28,7 +28,7 @@ var _ = Describe("looking an admitted run up by id", func() {
 		Expect(err).NotTo(HaveOccurred())
 		defer tx.Rollback()
 
-		admitted, err := admitter.AdmitRun(ctx, tx, runs.Admission{
+		admitted, err := admitIn(ctx, admitter, tx, runs.Admission{
 			Template:    templateRef,
 			Principal:   memberPrincipal,
 			ContractKey: contractKey,
@@ -63,15 +63,16 @@ var _ = Describe("looking an admitted run up by id", func() {
 	// person is shown and what fly addresses a run by, and it is the one field
 	// on Run that a consumer cannot reconstruct from an id it recorded.
 	It("distinguishes the runs of one template by their number", func() {
+		// Three distinct invocations: one key would replay the first Run.
 		var admitted []runs.Run
-		for range 3 {
+		for _, call := range []string{"a", "b", "c"} {
 			tx, err := admitter.Begin(ctx)
 			Expect(err).NotTo(HaveOccurred())
 
-			run, err := admitter.AdmitRun(ctx, tx, runs.Admission{
+			run, err := admitIn(ctx, admitter, tx, runs.Admission{
 				Template:    templateRef,
 				Principal:   memberPrincipal,
-				ContractKey: contractKey,
+				ContractKey: contractKey + "." + call,
 			})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(tx.Commit()).To(Succeed())
@@ -101,7 +102,7 @@ var _ = Describe("looking an admitted run up by id", func() {
 		Expect(err).NotTo(HaveOccurred())
 		defer tx.Rollback()
 
-		admitted, err := admitter.AdmitRun(ctx, tx, runs.Admission{
+		admitted, err := admitIn(ctx, admitter, tx, runs.Admission{
 			Template:    templateRef,
 			Principal:   memberPrincipal,
 			ContractKey: contractKey,
@@ -139,7 +140,7 @@ var _ = Describe("looking an admitted run up by id", func() {
 			tx, err := admitter.Begin(ctx)
 			Expect(err).NotTo(HaveOccurred())
 
-			admitted, err := admitter.AdmitRun(ctx, tx, runs.Admission{
+			admitted, err := admitIn(ctx, admitter, tx, runs.Admission{
 				Template:    templateRef,
 				Principal:   memberPrincipal,
 				ContractKey: contractKey,
@@ -168,7 +169,7 @@ var _ = Describe("looking an admitted run up by id", func() {
 
 		// Admitted by a member of runs-team, read back by a caller presenting
 		// no identity at all -- there is nowhere in the signature to put one.
-		admitted, err := admitter.AdmitRun(ctx, tx, runs.Admission{
+		admitted, err := admitIn(ctx, admitter, tx, runs.Admission{
 			Template:    templateRef,
 			Principal:   memberPrincipal,
 			ContractKey: contractKey,
@@ -180,7 +181,7 @@ var _ = Describe("looking an admitted run up by id", func() {
 		Expect(looked.ID).To(Equal(admitted.ID))
 	})
 
-	// Unlike AdmitRun, which has to hand its Tx back to the run factory and so
+	// Unlike AdmitVersionedRun, which has to hand its Tx back to the run factory and so
 	// bridges to the concrete transaction type, this reads through the
 	// published interface and nothing else. A Tx the port did not open is a
 	// transaction its owner opened somewhere else, and a perfectly good place
@@ -190,7 +191,7 @@ var _ = Describe("looking an admitted run up by id", func() {
 		Expect(err).NotTo(HaveOccurred())
 		defer tx.Rollback()
 
-		admitted, err := admitter.AdmitRun(ctx, tx, runs.Admission{
+		admitted, err := admitIn(ctx, admitter, tx, runs.Admission{
 			Template:    templateRef,
 			Principal:   memberPrincipal,
 			ContractKey: contractKey,

@@ -2,6 +2,7 @@ package composition_test
 
 import (
 	"context"
+	"strings"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/agent/composition"
@@ -187,6 +188,46 @@ var _ = Describe("admitting a child run", func() {
 		})
 	})
 
+	// Requirement 46's acceptance row: exactly one dedup path exists. The
+	// server-scoped key record decides; the call and iteration rows are a join
+	// that follows it and can neither admit nor suppress a Run.
+	Describe("the call record is a join, not a dedup path", func() {
+		It("replays through the key when the call record is gone", func() {
+			first, err := service.Admit(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = dbConn.Exec(`DELETE FROM composition_calls`)
+			Expect(err).NotTo(HaveOccurred())
+
+			again, err := service.Admit(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(again.Replayed).To(BeTrue())
+			Expect(again.RunID).To(Equal(first.RunID))
+			Expect(countOf("SELECT count(*) FROM pipeline_runs")).To(Equal(1))
+			Expect(iterationRunID(buildID, "1/2")).To(Equal(first.RunID))
+		})
+
+		It("admits through the key even when a stale call record names another run", func() {
+			first, err := service.Admit(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			// A call record the key has never seen, pointing at the first run.
+			_, err = dbConn.Exec(`WITH c AS (INSERT INTO composition_calls (build_id, plan_id, input_digest)
+				VALUES ($1, '9/9', 'sha256:aaa') RETURNING id)
+				INSERT INTO composition_iterations (call_id, ordinal, run_id) SELECT id, 1, $2 FROM c`, buildID, first.RunID)
+			Expect(err).NotTo(HaveOccurred())
+
+			stale := req
+			stale.PlanID = atc.PlanID("9/9")
+			second, err := service.Admit(ctx, stale)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(second.Replayed).To(BeFalse())
+			Expect(second.RunID).NotTo(Equal(first.RunID))
+			Expect(countOf("SELECT count(*) FROM pipeline_runs")).To(Equal(2))
+			Expect(iterationRunID(buildID, "9/9")).To(Equal(second.RunID))
+		})
+	})
+
 	Describe("the contract key it supplies to the port", func() {
 		It("is derived from the call identity alone, with no round trip", func() {
 			Expect(composition.ContractKey(buildID, atc.PlanID("1/2"))).
@@ -196,6 +237,24 @@ var _ = Describe("admitting a child run", func() {
 			Expect(composition.ContractKey(buildID, atc.PlanID("1/2"))).
 				NotTo(Equal(composition.ContractKey(otherBuildID, atc.PlanID("1/2"))))
 			Expect(composition.ContractKey(buildID, atc.PlanID("1/2"))).NotTo(BeEmpty())
+		})
+
+		// Requirement 46: the build-side value must be a valid requirement-14
+		// key, so that moving run_pipeline onto versioned admission changes
+		// nothing a caller supplies.
+		It("is always a valid versioned invocation key, one per call identity", func() {
+			long := atc.PlanID(strings.Repeat("a", 200))
+			plans := []atc.PlanID{"5a", "5a/image-get", "5a/sidecar/db", "1/2", "has space", long, long + "b"}
+			seen := map[string]atc.PlanID{}
+			for _, build := range []int{buildID, otherBuildID, 2147483647} {
+				for _, plan := range plans {
+					key := composition.ContractKey(build, plan)
+					Expect(atc.ValidRunInvocationToken(key)).To(BeTrue(), key)
+					Expect(seen).NotTo(HaveKey(key))
+					seen[key] = plan
+				}
+			}
+			Expect(composition.ContractKey(7, "5a")).To(Equal("build.7.plan.5a"))
 		})
 	})
 })

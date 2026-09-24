@@ -106,7 +106,7 @@ var _ = Describe("Pipeline presenter matrix", func() {
 			response := httptest.NewRecorder()
 			customRoles := map[string]string{}
 			if tc.requiredRole != "" {
-				customRoles[atc.CreatePipelineRun] = tc.requiredRole
+				customRoles[atc.CreatePipelineRunV2] = tc.requiredRole
 			}
 			accessFactory := &accessorfakes.FakeAccessFactory{}
 			accessFactory.CreateReturns(access, nil)
@@ -185,7 +185,7 @@ var _ = Describe("Pipeline presenter matrix", func() {
 					tc.handler,
 					accessFactory,
 					auditor.NewAuditor(false, false, false, false, false, false, false, false, false, lagertest.NewTestLogger("audit")),
-					map[string]string{atc.CreatePipelineRun: accessor.OperatorRole},
+					map[string]string{atc.CreatePipelineRunV2: accessor.OperatorRole},
 				).ServeHTTP(response, tc.request)
 				Expect(response.Code).To(Equal(http.StatusOK))
 
