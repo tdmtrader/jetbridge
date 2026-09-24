@@ -8,6 +8,7 @@ import (
 	"mime"
 	"net/http"
 	"strconv"
+	"strings"
 	"unicode/utf8"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -22,6 +23,18 @@ func (s *Server) CancelPipelineRun(pipeline db.Pipeline) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The normal action-specific authorization wrapper runs before this handler
 		// and before the pipeline/Run lookup. Cancellation also works after archival.
+		// The first writer's requester is the caller's verified subject, not a
+		// display name two principals can share. The server's own requesters live
+		// under a reserved prefix no caller may claim.
+		requester, _ := accessor.VerifiedClaims(r)["sub"].(string)
+		if requester == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if strings.HasPrefix(requester, serverRequesterPrefix) {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
 		if rejectInstancedPipelineRun(w, pipeline) {
 			return
 		}
@@ -45,7 +58,6 @@ func (s *Server) CancelPipelineRun(pipeline db.Pipeline) http.Handler {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		requester := accessor.GetAccessor(r).UserInfo().DisplayUserId
 		outcome, err := s.runFactory.RequestRunCancellation(r.Context(), run.ID(), requester, reason)
 		if err != nil {
 			if errormap.Write(w, err) {
@@ -72,6 +84,10 @@ func (s *Server) CancelPipelineRun(pipeline db.Pipeline) http.Handler {
 		}
 	})
 }
+
+// serverRequesterPrefix namespaces requesters the server records itself, such
+// as a future deadline's, so no caller can pass for one.
+const serverRequesterPrefix = "system:"
 
 var errInvalidCancelRequest = errors.New("invalid pipeline run cancellation request")
 

@@ -206,8 +206,21 @@ func RunCancellationAPIDefinitions() []brine.StepDefinition {
 			if err != nil {
 				return err
 			}
-			if by == "" || reason != "first private reason" {
+			if reason != "first private reason" {
 				return fmt.Errorf("cancellation replay replaced the first request")
+			}
+			// The requester is the caller's verified subject, never a display name.
+			req, err := http.NewRequest(http.MethodGet, in.Auth.URL, nil)
+			if err != nil {
+				return err
+			}
+			req.Header.Set("Authorization", in.Token.Type+" "+in.Token.Value)
+			claims, err := in.Auth.Verifier.Verify(req)
+			if err != nil {
+				return err
+			}
+			if subject, _ := claims["sub"].(string); subject == "" || by != subject {
+				return fmt.Errorf("cancellation requester is not the caller's verified subject")
 			}
 			return nil
 		}),
