@@ -9,10 +9,12 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/db/encryption"
 	"github.com/concourse/concourse/atc/db/migration"
 )
@@ -100,7 +102,10 @@ func RunDefinitionDefinitions() []brine.StepDefinition {
 		brine.DefineMap[RetainedRunDefinition, RetainedRunDefinition]("its completed payload is reclaimed", func(in RetainedRunDefinition, _ brine.Params, _ *brine.Recorder) (RetainedRunDefinition, error) {
 			for _, query := range []string{
 				`UPDATE builds SET status = 'succeeded', completed = true, end_time = now() WHERE pipeline_run_id = $1`,
-				`UPDATE pipeline_runs SET status = 'succeeded', completed_at = now() - interval '2 days' WHERE id = $1`,
+				// A v2 terminal header, as the Run result finalizer writes one
+				// for a Run with no declared results, backdated past retention.
+				`UPDATE pipeline_runs SET status = 'succeeded', completed_at = now() - interval '2 days',
+					result_manifest = '{}', terminal_observation_version = 'brine-fixture' WHERE id = $1`,
 			} {
 				if _, err := in.DB.Conn.Exec(query, in.Creation.Run.ID()); err != nil {
 					return in, err
@@ -254,23 +259,43 @@ func retainedDefinitionFixture(res brine.Resources, rollback bool) (RetainedRunD
 	factory := db.NewPipelineRunFactory(jdb.Conn, jdb.LockFactory)
 	in := RetainedRunDefinition{DB: jdb, Team: team, Template: template}
 	if rollback {
-		tx, err := jdb.Conn.Begin()
+		// The fixture pool holds exactly one connection (postgresrunner), so
+		// nothing may use jdb.Conn while tx is open: that waits forever for a
+		// second connection. The deadline turns any such regression into a
+		// failure instead of a hung run.
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		// Admission is open, so the only thing refusing this Run is its owner.
+		// Opened before the transaction for the reason above.
+		if _, err := db.ReconcilePipelineRunActivation(ctx, jdb.Conn, dbtest.RunActivationEpoch); err != nil {
+			return in, err
+		}
+		tx, err := jdb.Conn.BeginTx(ctx, nil)
 		if err != nil {
 			return in, err
 		}
 		defer db.Rollback(tx)
 		refused := errors.New("owner rejected admission")
-		_, err = factory.CreateRunInTx(context.Background(), tx, template, db.RunParams{}, "brine", db.RunCreationOpts{BeforeCommit: func(db.Tx, db.RunCreation) error { return refused }})
+		_, err = factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "brine", db.RunCreationOpts{
+			ActivationEpoch: dbtest.RunActivationEpoch,
+			BeforeCommit:    func(db.Tx, db.RunCreation) error { return refused },
+		})
 		if !errors.Is(err, refused) {
 			return in, fmt.Errorf("expected owner refusal, got %v", err)
 		}
 		if err := tx.Rollback(); err != nil {
 			return in, err
 		}
+		// Leave admission held, as the fixture found it. That is also what an
+		// operator does before a downgrade: the run activation migration's down
+		// refuses while admission is enabled.
+		if _, err := db.ReconcilePipelineRunActivation(ctx, jdb.Conn, 0); err != nil {
+			return in, err
+		}
 		in.RolledBack = true
 		return in, nil
 	}
-	creation, err := factory.CreateRun(context.Background(), template, db.RunParams{}, "brine")
+	creation, err := dbtest.CreateRun(jdb.Conn, factory, context.Background(), template, db.RunParams{}, "brine")
 	if err != nil {
 		return in, err
 	}

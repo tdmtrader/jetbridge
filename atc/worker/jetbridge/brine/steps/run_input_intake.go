@@ -38,9 +38,9 @@ func RunInputIntakeDefinitions() []brine.StepDefinition {
 }
 
 func exerciseRunInputIntake(in HangarDaemon, jdb JetbridgeDB, mode string) error {
-	previousGate := atc.EnablePipelineRunCreation
-	atc.EnablePipelineRunCreation = true
-	defer func() { atc.EnablePipelineRunCreation = previousGate }()
+	previousGate := atc.PipelineRunActivationEpoch
+	atc.PipelineRunActivationEpoch = int64(hangarEpoch)
+	defer func() { atc.PipelineRunActivationEpoch = previousGate }()
 	display, err := skycmd.NewSkyDisplayUserIdGenerator(map[string]string{"local": "user_id"})
 	if err != nil {
 		return err
@@ -51,6 +51,7 @@ func exerciseRunInputIntake(in HangarDaemon, jdb JetbridgeDB, mode string) error
 		customRoles = map[string]string{atc.UploadPipelineRunInput: "owner"}
 	}
 	admitter := runs.NewAdmitter(jdb.Conn, factory, jdb.TeamFactory, display, customRoles)
+	admitter.SetOutputEpoch(int64(hangarEpoch))
 	intake, ok := any(admitter).(runInputIntakePort)
 	if !ok {
 		return fmt.Errorf("Run admission has no authenticated input intake")
@@ -58,7 +59,7 @@ func exerciseRunInputIntake(in HangarDaemon, jdb JetbridgeDB, mode string) error
 	if err := openActivationEpoch(jdb); err != nil {
 		return err
 	}
-	if _, err := jdb.Conn.Exec(`UPDATE pipeline_run_activation SET epoch=$1, admission_enabled=true WHERE singleton`, int64(hangarEpoch)); err != nil {
+	if _, err := db.ReconcilePipelineRunActivation(context.Background(), jdb.Conn, int64(hangarEpoch)); err != nil {
 		return err
 	}
 	team, err := jdb.TeamFactory.CreateTeam(atc.Team{Name: "input-intake"})
@@ -118,7 +119,7 @@ func exerciseRunInputIntake(in HangarDaemon, jdb JetbridgeDB, mode string) error
 			return err
 		}
 	case "held activation":
-		if _, err := jdb.Conn.Exec(`UPDATE pipeline_run_activation SET admission_enabled=false WHERE singleton`); err != nil {
+		if _, err := db.ReconcilePipelineRunActivation(context.Background(), jdb.Conn, 0); err != nil {
 			return err
 		}
 	case "wrong epoch":
@@ -233,7 +234,7 @@ func exerciseRunInputIntake(in HangarDaemon, jdb JetbridgeDB, mode string) error
 	}
 	if expires {
 		if mode == "expiry while held" {
-			if _, err := jdb.Conn.Exec(`UPDATE pipeline_run_activation SET admission_enabled=false WHERE singleton`); err != nil {
+			if _, err := db.ReconcilePipelineRunActivation(context.Background(), jdb.Conn, 0); err != nil {
 				return err
 			}
 		}

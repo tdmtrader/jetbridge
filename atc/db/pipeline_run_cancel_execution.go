@@ -36,7 +36,7 @@ func (f *pipelineRunFactory) cancellationRunExecution(ctx context.Context, tx Tx
 	if err != nil {
 		return in, err
 	}
-	if run.ContractVersion() != atc.RunContractV2 || !run.CancellationRequested() || run.Status() != atc.RunStatusRunning {
+	if !run.CancellationRequested() || run.Status() != atc.RunStatusRunning {
 		return in, ErrRunCancellationProgressStale
 	}
 	var build int

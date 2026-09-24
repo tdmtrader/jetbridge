@@ -23,9 +23,9 @@ import (
 // and generated initializer. Root inside the task must still be unable to
 // change the mounted tree; a Pod spec's readOnly bit alone is not this proof.
 func liveReviewReadOnlyInput(ctx context.Context, in RunOutputRuntime, executor jetbridge.PodExecutor, rec *brine.Recorder) error {
-	previousGate := atc.EnablePipelineRunCreation
-	atc.EnablePipelineRunCreation = true
-	defer func() { atc.EnablePipelineRunCreation = previousGate }()
+	previousGate := atc.PipelineRunActivationEpoch
+	atc.PipelineRunActivationEpoch = int64(hangarEpoch)
+	defer func() { atc.PipelineRunActivationEpoch = previousGate }()
 	jdb := in.Start.DB
 	factory := db.NewPipelineRunFactory(jdb.Conn, jdb.LockFactory)
 	source, signer, config, err := configureRunReadPlaneForClient(RunResultPublication{Start: in.Start}, rec, in.Client, in.Config)
@@ -52,6 +52,7 @@ func liveReviewReadOnlyInput(ctx context.Context, in RunOutputRuntime, executor 
 		return err
 	}
 	admitter := runs.NewAdmitter(jdb.Conn, factory, jdb.TeamFactory, display, nil)
+	admitter.SetOutputEpoch(int64(hangarEpoch))
 	authority, err := runinput.NewAuthority(bytes.Repeat([]byte{0x61}, 32), time.Now)
 	if err != nil {
 		return err

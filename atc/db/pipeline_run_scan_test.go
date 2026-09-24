@@ -5,6 +5,7 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -28,7 +29,7 @@ var _ = Describe("Pipeline run shared query scanners", func() {
 		}, 0, false)
 		Expect(err).NotTo(HaveOccurred())
 
-		creation, err := db.NewPipelineRunFactory(dbConn, lockFactory).CreateRun(context.Background(), template, db.RunParams{}, "creator")
+		creation, err := dbtest.CreateRun(dbConn, db.NewPipelineRunFactory(dbConn, lockFactory), context.Background(), template, db.RunParams{}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 
 		payload, found, err := defaultTeam.Pipeline(atc.PipelineRef{

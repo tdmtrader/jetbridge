@@ -20,6 +20,9 @@ import (
 
 // The spellings that must never reach an anonymous body, in any key or value.
 var gateSpellings = []string{
+	"pipeline-run-activation-epoch",
+	"PipelineRunActivationEpoch",
+	"pipelineRunActivationEpoch",
 	"enable-pipeline-run-creation",
 	"EnablePipelineRunCreation",
 	"enablePipelineRunCreation",

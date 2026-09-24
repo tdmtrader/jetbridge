@@ -32,14 +32,14 @@ func LoadRunCredentialTarget(ctx context.Context, tx Tx, templateID, number int,
 	target := RunCredentialTarget{RunCredentialSession: atc.RunCredentialSession{Result: result, Status: "waiting"}}
 	var owner string
 	err := tx.QueryRowContext(ctx, `SELECT r.id,i.principal_digest FROM pipeline_runs r JOIN pipeline_run_invocations i ON i.run_id=r.id
- WHERE r.template_pipeline_id=$1 AND r.number=$2 AND r.run_contract_version='v2'`, templateID, number).Scan(&target.RunID, &owner)
+ WHERE r.template_pipeline_id=$1 AND r.number=$2`, templateID, number).Scan(&target.RunID, &owner)
 	if err != nil {
 		return target, err
 	}
 	if owner != principal || principal == "" {
 		return target, ErrRunCredentialOwner
 	}
-	run, err := lockRunResultPublication(ctx, tx, target.RunID)
+	run, hangarEnabled, err := lockRunResultPublicationUnder(ctx, tx, target.RunID, epoch)
 	if err != nil {
 		return target, err
 	}
@@ -60,13 +60,17 @@ func LoadRunCredentialTarget(ctx context.Context, tx Tx, templateID, number int,
 	if err != sql.ErrNoRows {
 		return target, err
 	}
-	// The activation rows are already held by lockRunResultPublication. New
-	// delivery requires enabled/current activation; replay above retains facts
-	// even while an epoch drains or the Run has completed.
-	if err := lockRunActivation(ctx, tx, epoch); err != nil {
+	// The activation rows are already held by lockRunResultPublicationUnder.
+	// New delivery grants the owner's credentials to a producer, so it needs
+	// the Run contract admitting -- an operator's admission hold stops it, as
+	// the HTTP route does -- and the Hangar epoch this control plane speaks for
+	// enabled. Replay above retains facts even under a hold, while an epoch
+	// drains, or after the Run has completed.
+	marker, err := lockRunActivationMarker(ctx, tx)
+	if err != nil {
 		return target, err
 	}
-	if run.ActivationEpoch() != epoch {
+	if !marker.enabled || !hangarEnabled {
 		return target, atc.ErrRunResultsUnavailable
 	}
 	if run.CancellationRequested() {

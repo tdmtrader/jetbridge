@@ -31,7 +31,7 @@ func PipelineRun(savedRun db.PipelineRun, payload db.Pipeline, options PipelineR
 
 	if options.AuthorizedForCancellation {
 		atcRun.Cancellation = savedRun.CancellationRequest()
-		atcRun.CanCancel = options.CanCancel && savedRun.ContractVersion() == atc.RunContractV2 && savedRun.Status() == atc.RunStatusRunning && !savedRun.CancellationRequested()
+		atcRun.CanCancel = options.CanCancel && savedRun.Status() == atc.RunStatusRunning && !savedRun.CancellationRequested()
 	}
 	if options.AuthorizedForParams {
 		params := savedRun.Params()

@@ -381,14 +381,14 @@ type RunCommand struct {
 	// Deliberately not a member of the "Feature Flags" group above: the
 	// three fields in that group are exactly the keys of atc.FeatureFlags(),
 	// which atc/api/infoserver serves anonymously on atc.GetInfo. Whether
-	// this server holds durable run creation is not an anonymous fact.
+	// this server admits durable runs is not an anonymous fact.
 	// DisableRedactSecrets is the existing precedent for a process-wide
-	// boolean that is deliberately outside the group and outside the map.
-	EnablePipelineRunCreation bool     `long:"enable-pipeline-run-creation" description:"Admit public creation of durable pipeline runs. Off by default: run creation is held until the durable run contract lands."`
-	RunInputSigningKey        string   `long:"run-input-signing-key" description:"Path to a distinct raw 32-byte web-only key for temporary Run input grants. Never mount this service key in workers or node daemons."`
-	RunResultScratchDir       string   `long:"run-result-scratch-dir" description:"Absolute, existing directory for spooling Run result downloads. Each read holds about twice the archive size until its response is written. A private child is created in it at startup. Empty uses the process temporary directory."`
-	RunResultReadConcurrency  int      `long:"run-result-read-concurrency" default:"2" description:"Run result downloads in flight at once. Readers beyond this are refused with 503 and Retry-After rather than queued."`
-	RunCredentialWorkerImages []string `long:"run-credential-worker-image" description:"Digest-qualified image (repository@sha256:...) a Run result producer must run for session credentials to be delivered into it. Repeatable. Unset refuses every credential handoff."`
+	// setting that is deliberately outside the group and outside the map.
+	PipelineRunActivationEpoch int64    `long:"pipeline-run-activation-epoch" description:"The Run contract activation epoch this web node admits pipeline runs under (the v2 create route and the run_pipeline step). Zero admits none. At startup it is written into the durable Run activation marker, which only moves forward. It is independent of the Hangar output epoch: rotating that epoch leaves running Runs, their finalization and invocation-key replay alone."`
+	RunInputSigningKey         string   `long:"run-input-signing-key" description:"Path to a distinct raw 32-byte web-only key for temporary Run input grants. Never mount this service key in workers or node daemons."`
+	RunResultScratchDir        string   `long:"run-result-scratch-dir" description:"Absolute, existing directory for spooling Run result downloads. Each read holds about twice the archive size until its response is written. A private child is created in it at startup. Empty uses the process temporary directory."`
+	RunResultReadConcurrency   int      `long:"run-result-read-concurrency" default:"2" description:"Run result downloads in flight at once. Readers beyond this are refused with 503 and Retry-After rather than queued."`
+	RunCredentialWorkerImages  []string `long:"run-credential-worker-image" description:"Digest-qualified image (repository@sha256:...) a Run result producer must run for session credentials to be delivered into it. Repeatable. Unset refuses every credential handoff."`
 }
 
 type Migration struct {
@@ -667,7 +667,7 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 	atc.DefaultWebhookInterval = cmd.ResourceWithWebhookCheckingInterval
 	atc.DefaultResourceTypeInterval = cmd.ResourceTypeCheckingInterval
 	atc.DisableRedactSecrets = cmd.DisableRedactSecrets
-	atc.EnablePipelineRunCreation = cmd.EnablePipelineRunCreation
+	atc.PipelineRunActivationEpoch = cmd.PipelineRunActivationEpoch
 
 	if cmd.BaseResourceTypeDefaults.Path() != "" {
 		content, err := os.ReadFile(cmd.BaseResourceTypeDefaults.Path())
@@ -769,6 +769,13 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 
 	err = db.CacheWarmUp(backendConn)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := cmd.reconcilePipelineRunActivation(logger, backendConn); err != nil {
+		for _, conn := range []Closer{apiConn, backendConn, gcConn, workerConn} {
+			_ = conn.Close()
+		}
 		return nil, err
 	}
 
@@ -1369,6 +1376,7 @@ func (cmd *RunCommand) backendComponents(
 	components = append(components, k8sComponents...)
 
 	components = append(components, cmd.hangarOutputComponents(dbConn)...)
+	components = append(components, cmd.runResultsComponent())
 
 	if syslogDrainConfigured {
 		components = append(components, RunnableComponent{
@@ -1826,23 +1834,33 @@ func (cmd *RunCommand) hangarOutputCaptureComponent(dbConn db.DbConn) RunnableCo
 		},
 		Interval: time.Minute,
 	}
-	if cmd.runOutputStarter != nil || cmd.runResultFinalizer != nil {
+	if cmd.runOutputStarter != nil {
 		capture := result.Runnable
 		result.Runnable = component.RunFunc(func(ctx context.Context) error {
 			// Recover the dispatch answer before capture/cancellation inspects
 			// its source. A failed dispatch must not starve unrelated captures.
-			var dispatchErr, resultErr error
-			if cmd.runOutputStarter != nil {
-				dispatchErr = cmd.runOutputStarter.Run(ctx)
-			}
-			captureErr := capture.Run(ctx)
-			if cmd.runResultFinalizer != nil {
-				resultErr = cmd.runResultFinalizer.Run(ctx)
-			}
-			return errors.Join(dispatchErr, captureErr, resultErr)
+			dispatchErr := cmd.runOutputStarter.Run(ctx)
+			return errors.Join(dispatchErr, capture.Run(ctx))
 		})
 	}
 	return result
+}
+
+// runResultsComponent makes each settled Run's one terminal publication. It
+// is registered on every web node, with or without an output plane; a Run whose
+// captures are still unsettled is simply left for a later pass. Build
+// completion wakes it; the interval is the net under a lost wake-up.
+func (cmd *RunCommand) runResultsComponent() RunnableComponent {
+	return RunnableComponent{
+		Component: atc.Component{Name: atc.ComponentRunResults},
+		Runnable: component.RunFunc(func(ctx context.Context) error {
+			if cmd.runResultFinalizer == nil {
+				return nil
+			}
+			return cmd.runResultFinalizer.Run(ctx)
+		}),
+		Interval: 10 * time.Second,
+	}
 }
 
 // Cancellation has its own bounded pass and nonzero fallback. It shares the
@@ -2847,7 +2865,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		clock.NewClock(),
 		dbSigningKeyFactory,
 		dbConn,
-		cmd.pipelineRunServices(),
+		cmd.pipelineRunServices(dbConn, dbPipelineRunFactory, teamFactory),
 	)
 }
 

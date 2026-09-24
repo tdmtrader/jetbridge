@@ -28,6 +28,8 @@ Feature: Authenticated versioned Run admission over HTTP
       | "cross-team"                 |
       | "operator hold"              |
       | "database hold"              |
+      | "operator hold replay"       |
+      | "database hold replay"       |
       | "paused template"            |
       | "custom create role"         |
       | "shared client"              |

@@ -15,6 +15,7 @@ import (
 	"github.com/concourse/concourse/atc/builds"
 	"github.com/concourse/concourse/atc/configvalidate"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/google/uuid"
 )
 
@@ -77,7 +78,7 @@ func RunResultDeclarationDefinitions() []brine.StepDefinition {
 			if err := pipeline.Unpause(); err != nil {
 				return ResultRunAttempt{}, err
 			}
-			_, createErr := db.NewPipelineRunFactory(jdb.Conn, jdb.LockFactory).CreateRun(context.Background(), pipeline, db.RunParams{}, "brine")
+			_, createErr := dbtest.CreateRun(jdb.Conn, db.NewPipelineRunFactory(jdb.Conn, jdb.LockFactory), context.Background(), pipeline, db.RunParams{}, "brine")
 			answer := ResultRunAttempt{Err: createErr}
 			err = jdb.Conn.QueryRow(`SELECT last_run_number, (SELECT count(*) FROM pipeline_runs WHERE template_pipeline_id = $1) FROM pipelines WHERE id = $1`, pipeline.ID()).Scan(&answer.Number, &answer.Runs)
 			return answer, err

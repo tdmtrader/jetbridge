@@ -9,6 +9,7 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	. "github.com/concourse/concourse/atc/testhelpers"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -243,7 +244,7 @@ var _ = Describe("Volumes API", func() {
 							Template: true,
 							Jobs:     atc.JobConfigs{{Name: "entry"}},
 						})
-						_, err = db.NewPipelineRunFactory(realDatabase.Conn, realDatabase.LockFactory).CreateRun(
+						_, err = dbtest.CreateRun(realDatabase.Conn, db.NewPipelineRunFactory(realDatabase.Conn, realDatabase.LockFactory),
 							context.Background(), runTemplate, db.RunParams{}, "run-user",
 						)
 						Expect(err).NotTo(HaveOccurred())

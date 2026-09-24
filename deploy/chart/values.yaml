@@ -113,13 +113,20 @@ web:
   # -- Additional CLI args for the web command
   extraArgs: []
 
-  # -- Admit public creation of durable pipeline runs. Creation is held by
-  # default, and this committed value is the only supported way to enable it.
-  # Honest caveat: it is not the only *possible* way. Every flag has a
-  # CONCOURSE_-prefixed environment twin, and this chart accepts arbitrary
-  # `web.env`, so a cluster can be put into the admitting state without this
-  # value ever changing. That is unsupported, not prevented.
-  enablePipelineRunCreation: false
+  # -- The Run contract activation epoch every web node admits durable pipeline
+  # runs under -- the v2 create route, the web UI and fly run-pipeline, and the
+  # run_pipeline step. At startup each web node writes it into the durable Run
+  # activation marker, so every deploy turns the Run contract on. It is the Run
+  # contract's own epoch, independent of hangarOutput.activationEpoch: rotating
+  # the Hangar epoch leaves running Runs, their finalization and invocation-key
+  # replay alone. The marker only moves forward, so raise this value, never
+  # lower it; a web node configured below the recorded epoch refuses to start.
+  # Zero renders no flag and stops admission on the next web start, keeping the
+  # recorded epoch. A template that declares results (or a Run given inputs)
+  # is still admitted only while hangarOutput.webEnabled and its epoch's base
+  # and output facets are enabled; templates without results need no output
+  # plane.
+  pipelineRunActivationEpoch: 1
 
   # -- Existing web-only Secret containing input.key (exactly 32 raw random
   # bytes) for detached Run input grants. Requires hangarOutput.webEnabled.

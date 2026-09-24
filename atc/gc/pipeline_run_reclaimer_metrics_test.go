@@ -9,6 +9,7 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/gc"
 	"github.com/concourse/concourse/atc/metric"
 	. "github.com/onsi/ginkgo/v2"
@@ -92,12 +93,12 @@ var _ = Describe("PipelineRunReclaimer metrics", func() {
 
 		factory := db.NewPipelineRunFactory(dbConn, lockFactory)
 		for i := 0; i < count; i++ {
-			creation, err := factory.CreateRun(context.Background(), template, db.RunParams{}, "creator")
+			creation, err := dbtest.CreateRun(dbConn, factory, context.Background(), template, db.RunParams{}, "creator")
 			Expect(err).NotTo(HaveOccurred())
 
 			_, err = dbConn.Exec(`UPDATE builds SET status = 'succeeded', completed = true, end_time = now() WHERE pipeline_run_id = $1`, creation.Run.ID())
 			Expect(err).NotTo(HaveOccurred())
-			_, err = dbConn.Exec(`UPDATE pipeline_runs SET status = 'succeeded', completed_at = now() WHERE id = $1`, creation.Run.ID())
+			_, err = dbConn.Exec(`UPDATE pipeline_runs SET status = 'succeeded', completed_at = now(), result_manifest = '{}', terminal_observation_version = 'fixture' WHERE id = $1`, creation.Run.ID())
 			Expect(err).NotTo(HaveOccurred())
 		}
 	}

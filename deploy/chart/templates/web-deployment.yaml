@@ -131,8 +131,8 @@ spec:
             - --external-url={{ .Values.web.externalUrl }}
             - --cluster-name={{ .Values.web.clusterName }}
             - --log-level={{ .Values.web.logLevel }}
-            {{- if .Values.web.enablePipelineRunCreation }}
-            - --enable-pipeline-run-creation
+            {{- if gt (int .Values.web.pipelineRunActivationEpoch) 0 }}
+            - --pipeline-run-activation-epoch={{ int .Values.web.pipelineRunActivationEpoch }}
             {{- end }}
             # Authenticated MCP
             - --enable-mcp

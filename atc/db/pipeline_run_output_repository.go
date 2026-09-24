@@ -37,13 +37,18 @@ func NewRunOutputRepository(repository *HangarOutputRepository, verifier RunOutp
 }
 
 // lockRunOutputHandoff discovers ownership without a lock, then follows the
-// existing post-creation order. Completion can recover an outgoing epoch after
-// new admission is disabled; it cannot revive an epoch whose drain completed.
+// existing post-creation order. The Run and the capture each carry their own
+// epoch: the Run's activation marker must not have been downgraded below the
+// Run's birth epoch, and the capture's Hangar epoch -- the one it was
+// predeclared under, not the Run's -- must still be enabled or draining.
+// Completion can recover an outgoing Hangar epoch after new captures move to
+// another; it cannot revive one whose drain completed.
 func lockRunOutputHandoff(ctx context.Context, tx output.Tx, handoff output.HandoffID) (Tx, *runOutputOwner, error) {
 	var owner runOutputOwner
-	err := hangarQueryRow(ctx, tx, `SELECT s.run_id,s.build_id,r.activation_epoch,p.team_id
+	err := hangarQueryRow(ctx, tx, `SELECT s.run_id,s.build_id,r.activation_epoch,h.activation_epoch,p.team_id
   FROM pipeline_run_output_starts s JOIN pipeline_runs r ON r.id=s.run_id
-  JOIN pipelines p ON p.id=r.template_pipeline_id WHERE s.handoff_id=$1`, []any{string(handoff)}, &owner.runID, &owner.buildID, &owner.epoch, &owner.teamID)
+  JOIN hangar_handoff_predeclarations h ON h.handoff_id=s.handoff_id
+  JOIN pipelines p ON p.id=r.template_pipeline_id WHERE s.handoff_id=$1`, []any{string(handoff)}, &owner.runID, &owner.buildID, &owner.runEpoch, &owner.epoch, &owner.teamID)
 	if err == sql.ErrNoRows {
 		return nil, nil, nil
 	}
@@ -62,7 +67,7 @@ func lockRunOutputHandoff(ctx context.Context, tx output.Tx, handoff output.Hand
 	if err := runTx.QueryRowContext(ctx, `SELECT epoch FROM pipeline_run_activation WHERE singleton FOR SHARE`).Scan(&current); err != nil {
 		return nil, nil, err
 	}
-	if current < owner.epoch {
+	if current < owner.runEpoch {
 		return nil, nil, atc.ErrRunResultsUnavailable
 	}
 	ready, err := hangarLockRecoverableEpoch(ctx, tx, owner.epoch)
@@ -76,7 +81,7 @@ func lockRunOutputHandoff(ctx context.Context, tx output.Tx, handoff output.Hand
 	if err := scanPipelineRun(run, pipelineRunsQuery.Where(sq.Eq{"r.id": owner.runID}).Suffix("FOR NO KEY UPDATE OF r").RunWith(runTx).QueryRowContext(ctx)); err != nil {
 		return nil, nil, err
 	}
-	if run.ContractVersion() != atc.RunContractV2 || run.ActivationEpoch() != owner.epoch {
+	if run.ActivationEpoch() != owner.runEpoch {
 		return nil, nil, atc.ErrRunResultsUnavailable
 	}
 	if run.Status() != atc.RunStatusRunning {
@@ -102,10 +107,12 @@ func lockRunOutputHandoff(ctx context.Context, tx output.Tx, handoff output.Hand
 
 type runOutputOwner struct {
 	runID, buildID, teamID int
-	epoch                  int64
-	cancelled              bool
-	aborted                bool
-	completed              bool
+	// runEpoch is the Run's birth activation epoch; epoch is the Hangar
+	// epoch the capture was predeclared under.
+	runEpoch, epoch int64
+	cancelled       bool
+	aborted         bool
+	completed       bool
 }
 
 func (repository *RunOutputRepository) AcknowledgeSourceHold(ctx context.Context, tx output.Tx, ack output.CaptureAcknowledgement) error {

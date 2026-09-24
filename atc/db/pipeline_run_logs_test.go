@@ -6,6 +6,7 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/event"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -33,7 +34,7 @@ var _ = Describe("Run build log query", func() {
 
 	createRun := func(environment string) (db.PipelineRun, map[string]db.Build) {
 		GinkgoHelper()
-		creation, err := factory.CreateRun(context.Background(), template, db.RunParams{
+		creation, err := dbtest.CreateRun(dbConn, factory, context.Background(), template, db.RunParams{
 			Vars: atc.RunParams{"environment": environment},
 		}, "creator")
 		Expect(err).NotTo(HaveOccurred())
@@ -76,7 +77,7 @@ var _ = Describe("Run build log query", func() {
 			Jobs:     atc.JobConfigs{{Name: "deploy-((environment))"}},
 		}, 0, false)
 		Expect(err).NotTo(HaveOccurred())
-		other, err := factory.CreateRun(context.Background(), otherTemplate, db.RunParams{Vars: atc.RunParams{"environment": "other"}}, "creator")
+		other, err := dbtest.CreateRun(dbConn, factory, context.Background(), otherTemplate, db.RunParams{Vars: atc.RunParams{"environment": "other"}}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 
 		builds, _, err := template.ChronoRunBuilds("deploy-((environment))", db.Page{Limit: 20})
@@ -97,7 +98,7 @@ var _ = Describe("team-partition run events", func() {
 			Jobs:     atc.JobConfigs{{Name: "entry"}},
 		}, 0, false)
 		Expect(err).NotTo(HaveOccurred())
-		creation, err := db.NewPipelineRunFactory(dbConn, lockFactory).CreateRun(context.Background(), template, db.RunParams{}, "creator")
+		creation, err := dbtest.CreateRun(dbConn, db.NewPipelineRunFactory(dbConn, lockFactory), context.Background(), template, db.RunParams{}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 		target := creation.EntryBuilds[0]
 		Expect(target.SaveEvent(event.Log{Payload: "target"})).To(Succeed())
@@ -109,7 +110,7 @@ var _ = Describe("team-partition run events", func() {
 			Jobs:     atc.JobConfigs{{Name: "entry"}},
 		}, 0, false)
 		Expect(err).NotTo(HaveOccurred())
-		otherCreation, err := db.NewPipelineRunFactory(dbConn, lockFactory).CreateRun(context.Background(), otherTemplate, db.RunParams{}, "creator")
+		otherCreation, err := dbtest.CreateRun(dbConn, db.NewPipelineRunFactory(dbConn, lockFactory), context.Background(), otherTemplate, db.RunParams{}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 		foreign := otherCreation.EntryBuilds[0]
 		Expect(foreign.SaveEvent(event.Log{Payload: "foreign"})).To(Succeed())
@@ -165,7 +166,7 @@ var _ = Describe("Run job key of an uninterpolated job", func() {
 		}, 0, false)
 		Expect(err).NotTo(HaveOccurred())
 
-		creation, err := factory.CreateRun(context.Background(), template, db.RunParams{}, "creator")
+		creation, err := dbtest.CreateRun(dbConn, factory, context.Background(), template, db.RunParams{}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(creation.EntryBuilds).To(HaveLen(1))
 		build := creation.EntryBuilds[0]

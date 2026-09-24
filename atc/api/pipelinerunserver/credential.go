@@ -57,7 +57,7 @@ func (s *Server) credentialSession(pipeline db.Pipeline, deliver bool) http.Hand
 		defer cancel()
 		var state atc.RunCredentialSession
 		if deliver {
-			if !atc.EnablePipelineRunCreation {
+			if !atc.PipelineRunsActivated() {
 				errormap.Write(w, atc.ErrPipelineRunCreationDisabled)
 				return
 			}

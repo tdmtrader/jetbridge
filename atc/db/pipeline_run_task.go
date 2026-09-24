@@ -24,7 +24,7 @@ func LoadRunTask(ctx context.Context, tx Tx, buildID int, taskID string, epoch i
 	err := tx.QueryRowContext(ctx, `SELECT r.id,p.team_id,coalesce(b.run_job_name,'')
 		FROM builds b JOIN pipeline_runs r ON r.id=b.pipeline_run_id
 		JOIN pipelines p ON p.id=r.template_pipeline_id
-		WHERE b.id=$1 AND r.run_contract_version='v2'`, buildID).Scan(&result.RunID, &result.TeamID, &job)
+		WHERE b.id=$1`, buildID).Scan(&result.RunID, &result.TeamID, &job)
 	if err == sql.ErrNoRows || taskID == "" {
 		return result, atc.ErrRunResultsUnavailable
 	}

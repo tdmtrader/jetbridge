@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"encoding/base64"
+
 	"github.com/brine-dev/brine-go/pkg/brine"
 	reviewclient "github.com/concourse/concourse/agent/review/client"
 	"github.com/concourse/concourse/atc"
@@ -55,6 +56,7 @@ func exerciseRunCredential(in RunOutputRuntime, mode string, rec *brine.Recorder
 		return err
 	}
 	basePort := runs.NewAdmitter(in.Start.DB.Conn, factory, in.Start.DB.TeamFactory, display, nil)
+	basePort.SetOutputEpoch(int64(hangarEpoch))
 	port, ok := any(basePort).(credentialAdmitter)
 	if !ok {
 		return fmt.Errorf("Run admission has no owner-bound, one-use credential handoff")
@@ -105,7 +107,7 @@ func exerciseRunCredential(in RunOutputRuntime, mode string, rec *brine.Recorder
 	if err != nil {
 		return err
 	}
-	in.Start.Creation, err = factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "owner", db.RunCreationOpts{ActivationEpoch: int64(hangarEpoch), Invocation: &db.RunInvocationIdentity{PrincipalDigest: runinput.PrincipalDigest(ownerSubject), KeyDigest: strings.Repeat("a", 64)}})
+	in.Start.Creation, err = factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "owner", db.RunCreationOpts{ActivationEpoch: int64(hangarEpoch), HangarEpoch: int64(hangarEpoch), Invocation: &db.RunInvocationIdentity{PrincipalDigest: runinput.PrincipalDigest(ownerSubject), KeyDigest: strings.Repeat("a", 64)}})
 	if err != nil {
 		db.Rollback(tx)
 		return err
@@ -264,7 +266,7 @@ func exerciseRunCredential(in RunOutputRuntime, mode string, rec *brine.Recorder
 	case "aborted build":
 		_, err = in.Start.DB.Conn.Exec(`UPDATE builds SET aborted=true WHERE id=$1`, build.ID())
 	case "activation hold":
-		_, err = in.Start.DB.Conn.Exec(`UPDATE pipeline_run_activation SET admission_enabled=false WHERE singleton`)
+		_, err = db.ReconcilePipelineRunActivation(context.Background(), in.Start.DB.Conn, 0)
 	case "claimed replay":
 		_, err = in.Start.DB.Conn.Exec(`INSERT INTO pipeline_run_credential_handoffs(run_id,handoff_id) VALUES($1,$2)`, change.RunID, string(in.Start.Record.HandoffID))
 	}
@@ -410,9 +412,12 @@ func unpinnedCredentialImage(mode string) bool {
 }
 
 func exerciseCredentialHTTP(in RunOutputRuntime, auth *AuthFixture, port runs.Admitter, mode string, rec *brine.Recorder) error {
-	old := atc.EnablePipelineRunCreation
-	atc.EnablePipelineRunCreation = mode != "operator hold"
-	TrackDisposer(rec, "the pipeline-run creation setting", func() error { atc.EnablePipelineRunCreation = old; return nil })
+	old := atc.PipelineRunActivationEpoch
+	atc.PipelineRunActivationEpoch = 0
+	if mode != "operator hold" {
+		atc.PipelineRunActivationEpoch = int64(hangarEpoch)
+	}
+	TrackDisposer(rec, "the pipeline-run creation setting", func() error { atc.PipelineRunActivationEpoch = old; return nil })
 	team, _, err := in.Start.DB.TeamFactory.FindTeam("output-start")
 	if err != nil {
 		return err
@@ -444,6 +449,7 @@ func exerciseCredentialHTTP(in RunOutputRuntime, auth *AuthFixture, port runs.Ad
 			return err
 		}
 		port = runs.NewAdmitter(in.Start.DB.Conn, db.NewPipelineRunFactory(in.Start.DB.Conn, in.Start.DB.LockFactory), in.Start.DB.TeamFactory, display, map[string]string{atc.CreatePipelineRunV2: "owner"})
+		port.SetOutputEpoch(int64(hangarEpoch))
 	case "operator hold":
 		want = http.StatusConflict
 	}

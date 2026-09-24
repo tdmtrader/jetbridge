@@ -2312,12 +2312,20 @@ type startedBuildArgs struct {
 	ManuallyTriggered bool
 	SpanContext       SpanContext
 	ExtraValues       map[string]any
+	// NotRunOwned marks a check no Run owns even inside a payload: a
+	// prototype's, which names no resource or resource type for the Run's
+	// check admission to hold it against, and whose events therefore live in
+	// the team partition unstamped.
+	NotRunOwned bool
 }
 
 func createStartedBuild(tx Tx, build *build, args startedBuildArgs) error {
-	runID, err := admitRunCheck(tx, args.PipelineID)
-	if err != nil {
-		return err
+	var runID int
+	if !args.NotRunOwned {
+		var err error
+		if runID, err = admitRunCheck(tx, args.PipelineID); err != nil {
+			return err
+		}
 	}
 
 	spanContext, err := json.Marshal(args.SpanContext)

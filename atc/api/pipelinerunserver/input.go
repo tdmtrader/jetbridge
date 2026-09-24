@@ -29,7 +29,7 @@ func (s *Server) UploadPipelineRunInput(pipeline db.Pipeline) http.Handler {
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
-		if !atc.EnablePipelineRunCreation {
+		if !atc.PipelineRunsActivated() {
 			errormap.Write(w, atc.ErrPipelineRunCreationDisabled)
 			return
 		}

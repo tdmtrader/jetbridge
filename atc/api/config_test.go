@@ -20,6 +20,7 @@ import (
 	"github.com/concourse/concourse/atc/creds/dummy"
 	"github.com/concourse/concourse/atc/creds/noop"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/event"
 	. "github.com/concourse/concourse/atc/testhelpers"
 	"github.com/tedsuo/rata"
@@ -376,7 +377,7 @@ var _ = Describe("Config API", func() {
 				},
 				Jobs: atc.JobConfigs{{Name: "entry"}},
 			})
-			creation, err := db.NewPipelineRunFactory(realdb.Conn, realdb.LockFactory).CreateRun(
+			creation, err := dbtest.CreateRun(realdb.Conn, db.NewPipelineRunFactory(realdb.Conn, realdb.LockFactory),
 				context.Background(), template, db.RunParams{Vars: atc.RunParams{"environment": "production"}}, "api-user",
 			)
 			Expect(err).NotTo(HaveOccurred())

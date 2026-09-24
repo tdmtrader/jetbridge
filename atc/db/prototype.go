@@ -220,6 +220,7 @@ func (p *prototype) CreateBuild(ctx context.Context, manuallyTriggered bool, pla
 		Plan:              plan,
 		ManuallyTriggered: manuallyTriggered,
 		SpanContext:       NewSpanContext(ctx),
+		NotRunOwned:       true,
 	})
 	if err != nil {
 		return nil, false, err

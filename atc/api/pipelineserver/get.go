@@ -37,7 +37,7 @@ func canCreatePipelineRun(acc accessor.Access, teamName string, requiredRole str
 	// held, no role can create a run, so no caller may be told it can. One
 	// edit, three payloads -- this is the only place the field is computed.
 	// It answers for v2 admission, the only way a run is created.
-	if !atc.EnablePipelineRunCreation {
+	if !atc.PipelineRunsActivated() {
 		return false
 	}
 	if !acc.IsAuthenticated() {

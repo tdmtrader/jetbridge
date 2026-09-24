@@ -11,6 +11,7 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/event"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -50,7 +51,7 @@ var _ = Describe("run build admission", func() {
 		}, 0, false)
 		Expect(err).NotTo(HaveOccurred())
 
-		creation, err := factory.CreateRun(context.Background(), template, db.RunParams{}, "creator")
+		creation, err := dbtest.CreateRun(dbConn, factory, context.Background(), template, db.RunParams{}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 		run = creation.Run
 		payloadID, found := run.InstancePipelineID()
@@ -126,8 +127,7 @@ var _ = Describe("run build admission", func() {
 		// and `fly rerun-build` lands on RerunBuild.
 		pending, err := workJob.CreateBuild("manual-user")
 		Expect(err).NotTo(HaveOccurred())
-		_, err = dbConn.Exec("UPDATE pipeline_runs SET status = 'succeeded', completed_at = now() WHERE id = $1", run.ID())
-		Expect(err).NotTo(HaveOccurred())
+		forgeTerminalRun(run.ID(), "succeeded")
 
 		manual, err := workJob.CreateBuild("manual-user")
 		Expect(manual).To(BeNil())
@@ -157,6 +157,7 @@ var _ = Describe("run build admission", func() {
 	})
 
 	It("serializes admission behind a terminal transaction", func() {
+		settleRunBuilds(run.ID())
 		tx, err := dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(func() { _ = tx.Rollback() })
@@ -168,7 +169,7 @@ var _ = Describe("run build admission", func() {
 			result <- workJob.EnsurePendingBuildExists(context.Background())
 		}()
 		Consistently(result, 150*time.Millisecond).ShouldNot(Receive())
-		_, err = tx.Exec("UPDATE pipeline_runs SET status = 'failed', completed_at = now() WHERE id = $1", run.ID())
+		_, err = tx.Exec("UPDATE pipeline_runs SET status = 'failed', completed_at = now(), result_manifest = '{}', terminal_observation_version = 'fixture' WHERE id = $1", run.ID())
 		Expect(err).NotTo(HaveOccurred())
 		Expect(tx.Commit()).To(Succeed())
 		Eventually(result).WithTimeout(3 * time.Second).Should(Receive(MatchError("run #1 is complete (failed); run the template again")))
@@ -216,15 +217,18 @@ var _ = Describe("run build admission", func() {
 		Expect(stamped).To(BeFalse())
 	})
 
-	It("keeps checks in a payload unstamped", func() {
+	// A Run's checks are durable builds owned by the Run: stamped with it, and
+	// with no run job name, so they are never mistaken for a job's build.
+	It("stamps checks in a payload with their Run and no run job", func() {
 		resource, found, err := payload.Resource("source")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
 		check, created, err := resource.CreateBuild(context.Background(), false, atc.Plan{})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(created).To(BeTrue())
-		_, stamped := check.PipelineRunID()
-		Expect(stamped).To(BeFalse())
+		owner, stamped := check.PipelineRunID()
+		Expect(stamped).To(BeTrue())
+		Expect(owner).To(Equal(run.ID()))
 		Expect(check.RunJobName()).To(BeEmpty())
 		Expect(check.RunJobKey()).To(BeEmpty())
 		Expect(check.SaveEvent(event.Log{Payload: "check event"})).To(Succeed())
@@ -315,7 +319,7 @@ var _ = Describe("template checking and scheduling", func() {
 		}
 		template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "checking-template"}, config, 0, false)
 		Expect(err).NotTo(HaveOccurred())
-		creation, err := db.NewPipelineRunFactory(dbConn, lockFactory).CreateRun(context.Background(), template, db.RunParams{}, "creator")
+		creation, err := dbtest.CreateRun(dbConn, db.NewPipelineRunFactory(dbConn, lockFactory), context.Background(), template, db.RunParams{}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 		payloadID, found := creation.Run.InstancePipelineID()
 		Expect(found).To(BeTrue())

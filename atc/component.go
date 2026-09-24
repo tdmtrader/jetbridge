@@ -37,6 +37,13 @@ const (
 	// takeover safe.
 	ComponentHangarOutputCapture = "hangar_output_capture"
 
+	// ComponentRunResults completes pipeline runs. Every run is a v2 run, and a
+	// v2 run reaches a terminal status only through its one terminal
+	// publication, which this component makes once the run's builds and
+	// captures have settled. It runs whether or not a Hangar output plane is
+	// configured: a run that declares no result needs none.
+	ComponentRunResults = "run_results"
+
 	// ComponentHangarOutputReadLeaseCleanup closes read leases whose readers
 	// are gone.
 	//

@@ -74,8 +74,8 @@ var _ = Describe("public run creation gate", func() {
 		Expect(response.ContentType).To(Equal("application/json"))
 		Expect(errorsFrom(response)).To(ConsistOf(atc.ErrPipelineRunCreationDisabled.Error()))
 
-		// No row, no number, no payload pipeline. Refusing before the
-		// transaction opens is what makes all four observable at once.
+		// No row, no number, no payload pipeline: a held server refuses a
+		// new key before it allocates anything.
 		Expect(countRows("SELECT count(*) FROM pipeline_runs")).To(Equal(0))
 		Expect(countRows("SELECT count(*) FROM pipelines WHERE pipeline_run_id IS NOT NULL")).To(Equal(0))
 	})
@@ -86,6 +86,9 @@ var _ = Describe("public run creation gate", func() {
 		// It names the hold, not the operator's switch.
 		for _, spelling := range []string{
 			"--",
+			"pipeline-run-activation-epoch",
+			"PipelineRunActivationEpoch",
+			"pipelineRunActivationEpoch",
 			"enable-pipeline-run-creation",
 			"EnablePipelineRunCreation",
 			"enablePipelineRunCreation",
@@ -119,16 +122,17 @@ var _ = Describe("public run creation gate", func() {
 			Expect(gated).NotTo(ContainSubstring(shape))
 		}
 
-		// Archived is the exception: RejectArchivedWrappa answers ahead of the
-		// handler with a text/plain body and no errors array, so the gate never
-		// runs and the comparison is by status plus Content-Type.
+		// Archived is no exception on the v2 route: no wrappa answers ahead of
+		// the handler (admission itself refuses a new run of an archived
+		// template, and still replays one it admitted), so the hold answers
+		// first here as for every other template state.
 		owner := login(atcURL, "test", "test")
 		_, err := owner.Team("run-team").ArchivePipeline(runTemplateRef)
 		Expect(err).NotTo(HaveOccurred())
 
 		archived := postCreateRun(member, "run-team", runTemplateRef.Name, runVars)
 		Expect(archived.Status).To(Equal(http.StatusConflict))
-		Expect(archived.ContentType).To(HavePrefix("text/plain"))
+		Expect(errorsFrom(archived)).To(ConsistOf(gated))
 	})
 
 	It("reports a capability that agrees with its own admission decision", func() {
@@ -137,7 +141,7 @@ var _ = Describe("public run creation gate", func() {
 
 	Context("when the operator has enabled run creation", func() {
 		BeforeEach(func() {
-			cmd.EnablePipelineRunCreation = true
+			enableRunAdmission()
 		})
 
 		It("admits the identical request and records the run", func() {
@@ -166,7 +170,7 @@ var _ = Describe("public run creation gate", func() {
 			By("an instanced pipeline reference")
 			instanced := postCreateRunAt(
 				member,
-				runsPath("run-team", runTemplateRef.Name)+"?"+atc.PipelineRef{InstanceVars: created.InstanceRef.InstanceVars}.QueryParams().Encode(),
+				createRunsPath("run-team", runTemplateRef.Name)+"?"+atc.PipelineRef{InstanceVars: created.InstanceRef.InstanceVars}.QueryParams().Encode(),
 				runVars,
 			)
 			Expect(instanced.Status).To(Equal(http.StatusConflict))
@@ -255,6 +259,17 @@ func authedHTTPClient(atcURL, username, password string) *http.Client {
 
 func runsPath(teamName, pipelineName string) string {
 	GinkgoHelper()
+	path, err := atc.Routes.CreatePathForRoute(atc.ListPipelineRuns, rata.Params{
+		"team_name":     teamName,
+		"pipeline_name": pipelineName,
+	})
+	Expect(err).NotTo(HaveOccurred())
+	return atcURL + path
+}
+
+// createRunsPath is the v2 create route, the only one that admits a run.
+func createRunsPath(teamName, pipelineName string) string {
+	GinkgoHelper()
 	path, err := atc.Routes.CreatePathForRoute(atc.CreatePipelineRunV2, rata.Params{
 		"team_name":     teamName,
 		"pipeline_name": pipelineName,
@@ -267,13 +282,20 @@ func runsPath(teamName, pipelineName string) string {
 // shares. A7 is vacuous unless the sweep issues exactly this request.
 func postCreateRun(httpClient *http.Client, teamName, pipelineName string, vars map[string]any) capturedResponse {
 	GinkgoHelper()
-	return postCreateRunAt(httpClient, runsPath(teamName, pipelineName), vars)
+	return postCreateRunAt(httpClient, createRunsPath(teamName, pipelineName), vars)
 }
 
 func postCreateRunAt(httpClient *http.Client, url string, vars map[string]any) capturedResponse {
 	GinkgoHelper()
+	return postCreateRunRequest(httpClient, url, v2Request(vars))
+}
 
-	body, err := json.Marshal(v2Request(vars))
+// postCreateRunRequest posts one given invocation, so a spec can present the
+// same key twice.
+func postCreateRunRequest(httpClient *http.Client, url string, invocation atc.CreatePipelineRunV2Request) capturedResponse {
+	GinkgoHelper()
+
+	body, err := json.Marshal(invocation)
 	Expect(err).NotTo(HaveOccurred())
 
 	request, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
@@ -449,7 +471,7 @@ var _ = Describe("run creation surfaces and read paths", func() {
 
 	Context("when runs were created while the gate was open", func() {
 		BeforeEach(func() {
-			cmd.EnablePipelineRunCreation = true
+			enableRunAdmission()
 		})
 
 		It("keeps reading them identically once the gate is closed again", func() {
@@ -459,9 +481,9 @@ var _ = Describe("run creation surfaces and read paths", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Let both runs reach a terminal state first. Their status moves
-			// from running to succeeded on its own, and a body captured
-			// mid-flight would differ across the restart for a reason that has
-			// nothing to do with the gate.
+			// from running to succeeded on its own, through the Run results
+			// component, and a body captured mid-flight would differ across the
+			// restart for a reason that has nothing to do with the gate.
 			Eventually(func() int {
 				return countRows("SELECT count(*) FROM pipeline_runs WHERE completed_at IS NOT NULL")
 			}, time.Minute).Should(Equal(2), "the runs never settled; the comparison below would be measuring scheduler progress, not the gate")
@@ -546,7 +568,10 @@ func restartATCWithGate(enabled bool) {
 	// duplicate registration.
 	http.DefaultServeMux = new(http.ServeMux)
 
-	cmd.EnablePipelineRunCreation = enabled
+	cmd.PipelineRunActivationEpoch = 0
+	if enabled {
+		enableRunAdmission()
+	}
 
 	runner, err := cmd.Runner([]string{})
 	Expect(err).NotTo(HaveOccurred())
@@ -558,6 +583,145 @@ func restartATCWithGate(enabled bool) {
 		return err
 	}, 20*time.Second).ShouldNot(HaveOccurred())
 }
+
+// integrationEpoch is the Run activation epoch the enabled boots admit under.
+const integrationEpoch = 1
+
+// enableRunAdmission configures the next boot the one supported way: a Run
+// activation epoch, which the web node writes into the Run contract's own
+// activation marker at startup. No Hangar output plane is involved: these
+// templates declare no result and bind no input.
+func enableRunAdmission() {
+	cmd.PipelineRunActivationEpoch = integrationEpoch
+}
+
+// runActivation reads the durable marker the boot reconciled.
+func runActivation() (int64, bool) {
+	GinkgoHelper()
+	conn := postgresRunner.OpenSingleton()
+	defer conn.Close()
+	var epoch int64
+	var enabled bool
+	Expect(conn.QueryRow(`SELECT epoch, admission_enabled FROM pipeline_run_activation WHERE singleton`).Scan(&epoch, &enabled)).To(Succeed())
+	return epoch, enabled
+}
+
+// rebootWith stops the running ATC and boots another from cmd, returning the
+// Runner error instead of failing when the boot is refused. It leaves a
+// running ATC behind whenever it returns nil, so the suite's AfterEach can
+// stop it.
+func rebootWith(configure func()) error {
+	GinkgoHelper()
+	atcProcess.Signal(os.Interrupt)
+	Expect(<-atcProcess.Wait()).NotTo(HaveOccurred())
+	http.DefaultServeMux = new(http.ServeMux)
+	configure()
+	runner, err := cmd.Runner([]string{})
+	if err != nil {
+		return err
+	}
+	atcProcess = ifrit.Invoke(runner)
+	Eventually(func() error {
+		_, err := http.Get(atcURL + "/api/v1/info")
+		return err
+	}, 20*time.Second).ShouldNot(HaveOccurred())
+	return nil
+}
+
+var _ = Describe("pipeline run activation at startup", func() {
+	var member *http.Client
+
+	JustBeforeEach(func() {
+		givenARunnableTemplate()
+		member = authedHTTPClient(atcURL, "m-user", "m-user")
+	})
+
+	Context("with a Run activation epoch", func() {
+		BeforeEach(enableRunAdmission)
+
+		It("records the epoch as admitting, admits and completes a v2 run, and stops admitting at zero", func() {
+			epoch, enabled := runActivation()
+			Expect(epoch).To(BeEquivalentTo(integrationEpoch))
+			Expect(enabled).To(BeTrue())
+
+			created := postCreateRun(member, "run-team", runTemplateRef.Name, runVars)
+			Expect(created.Status).To(Equal(http.StatusCreated), string(created.Body))
+			var run atc.PipelineRun
+			Expect(json.Unmarshal(created.Body, &run)).To(Succeed())
+			Expect(run.ContractVersion).To(Equal(atc.RunContractV2))
+			Expect(run.AdmissionOutcome).To(Equal(atc.RunAdmissionCreated))
+
+			// No output plane is configured, and the Run still reaches its
+			// terminal publication: completion is the Run results component's,
+			// not the Hangar capture component's.
+			Eventually(func() int {
+				return countRows("SELECT count(*) FROM pipeline_runs WHERE completed_at IS NOT NULL")
+			}, time.Minute).Should(Equal(1))
+
+			Expect(rebootWith(func() { cmd.PipelineRunActivationEpoch = 0 })).To(Succeed())
+			member = authedHTTPClient(atcURL, "m-user", "m-user")
+
+			epoch, enabled = runActivation()
+			Expect(epoch).To(BeEquivalentTo(integrationEpoch), "turning admission off must not move the epoch backwards")
+			Expect(enabled).To(BeFalse())
+			Expect(postCreateRun(member, "run-team", runTemplateRef.Name, runVars).Status).To(Equal(http.StatusConflict))
+			Expect(countRows("SELECT count(*) FROM pipeline_runs")).To(Equal(1))
+		})
+
+		// A hold stops new Runs, not running ones: a caller whose response was
+		// lost across the hold retries its key and is told what it admitted.
+		It("replays an invocation admitted before the hold, and refuses a new one", func() {
+			request := v2Request(runVars)
+			created := postCreateRunRequest(member, createRunsPath("run-team", runTemplateRef.Name), request)
+			Expect(created.Status).To(Equal(http.StatusCreated), string(created.Body))
+			var run atc.PipelineRun
+			Expect(json.Unmarshal(created.Body, &run)).To(Succeed())
+
+			Expect(rebootWith(func() { cmd.PipelineRunActivationEpoch = 0 })).To(Succeed())
+			member = authedHTTPClient(atcURL, "m-user", "m-user")
+
+			replayed := postCreateRunRequest(member, createRunsPath("run-team", runTemplateRef.Name), request)
+			Expect(replayed.Status).To(Equal(http.StatusOK), string(replayed.Body))
+			var again atc.PipelineRun
+			Expect(json.Unmarshal(replayed.Body, &again)).To(Succeed())
+			Expect(again.ID).To(Equal(run.ID))
+			Expect(again.AdmissionOutcome).To(Equal(atc.RunAdmissionReplayed))
+
+			refused := postCreateRun(member, "run-team", runTemplateRef.Name, runVars)
+			Expect(refused.Status).To(Equal(http.StatusConflict))
+			Expect(errorsFrom(refused)).To(ConsistOf(atc.ErrPipelineRunCreationDisabled.Error()))
+			Expect(countRows("SELECT count(*) FROM pipeline_runs")).To(Equal(1))
+		})
+
+		It("refuses to start under an epoch older than the one recorded", func() {
+			conn := postgresRunner.OpenSingleton()
+			_, err := conn.Exec(`UPDATE pipeline_run_activation SET epoch = 5 WHERE singleton`)
+			conn.Close()
+			Expect(err).NotTo(HaveOccurred())
+
+			err = rebootWith(func() {})
+			Expect(err).To(MatchError(ContainSubstring("older than the recorded epoch 5")))
+
+			http.DefaultServeMux = new(http.ServeMux)
+			cmd.PipelineRunActivationEpoch = 5
+			runner, err := cmd.Runner([]string{})
+			Expect(err).NotTo(HaveOccurred())
+			atcProcess = ifrit.Invoke(runner)
+			Eventually(func() error {
+				_, err := http.Get(atcURL + "/api/v1/info")
+				return err
+			}, 20*time.Second).ShouldNot(HaveOccurred())
+		})
+	})
+
+	It("admits nothing by default", func() {
+		_, enabled := runActivation()
+		Expect(enabled).To(BeFalse())
+		refused := postCreateRun(member, "run-team", runTemplateRef.Name, runVars)
+		Expect(refused.Status).To(Equal(http.StatusConflict))
+		Expect(errorsFrom(refused)).To(ConsistOf(atc.ErrPipelineRunCreationDisabled.Error()))
+	})
+})
 
 var invocationSequence atomic.Int64
 

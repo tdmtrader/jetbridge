@@ -28,29 +28,57 @@ var (
 // AdmitVersionedRun admits one v2 Run of the referenced template inside tx,
 // or replays the Run the same scoped invocation already committed. It is the
 // port's only admission: the v2 HTTP route and the run_pipeline step both come
-// here, and nothing creates legacy_v1 Runs any more.
+// here.
 //
-// The order is the contract. The operator's hold and the activation epoch are
-// properties of the server, answered before anything about the call; the key
-// and the principal's shape are checked before any row is touched;
-// authorization is decided against the reference's team before the template
-// is resolved, so an unauthorized caller learns nothing about existence; and
-// the scoped replay lookup happens only after all of that, in the factory.
+// The order is the contract. The key and the principal's shape are checked
+// before any row is touched; authorization is decided against the reference's
+// team before the template is resolved, so an unauthorized caller learns
+// nothing about existence; and the scoped replay lookup happens only after all
+// of that, in the factory.
+//
+// The operator's hold stops new Runs, not running ones (durable Run contract,
+// amendment M-2), so it is answered after the replay lookup rather than before
+// it. A held server -- one that speaks for no activation epoch -- still
+// replays the Run an invocation already admitted, whose continuation needs
+// only the durable marker at or past that Run's epoch. Anything else it is
+// asked is refused with the hold, whatever else is wrong with the call: a held
+// server weighs a call only as far as finding what it already admitted.
 //
 // Every read goes through tx. The caller holds one pooled connection from
 // Begin to commit, and a read on the pool here would want a second one while
 // the first is checked out; atc/runs/connection_budget_test.go pins that.
 func (a *admitter) AdmitVersionedRun(ctx context.Context, tx Tx, adm Admission, epoch int64) (Run, bool, error) {
-	// Every admission obeys the operator's hold before validating the request
-	// or touching its transaction, including in-process callers.
-	if !atc.EnablePipelineRunCreation {
-		return Run{}, false, atc.ErrPipelineRunCreationDisabled
+	if atc.PipelineRunsActivated() && epoch > 0 {
+		return a.admitVersionedRun(ctx, tx, adm, epoch)
 	}
-	// A server that speaks for no activation epoch cannot admit a v2 Run at
-	// all, whatever the call says.
-	if epoch <= 0 {
+	// Epoch zero asks the factory for a replay and nothing else.
+	run, replayed, err := a.admitVersionedRun(ctx, tx, adm, 0)
+	switch {
+	case err == nil:
+		return run, replayed, nil
+	case errors.Is(err, ErrInvocationConflict):
+		// The key named an admitted Run; the caller changed its intent.
+		return Run{}, false, err
+	case errors.Is(err, db.ErrRunActivationEpochRequired), heldCallRefusal(err):
+		if !atc.PipelineRunsActivated() {
+			return Run{}, false, atc.ErrPipelineRunCreationDisabled
+		}
 		return Run{}, false, ErrVersionedAdmissionUnavailable
+	default:
+		return Run{}, false, err
 	}
+}
+
+// heldCallRefusal reports a refusal about the call itself, which a held server
+// answers with the hold: such a call cannot be the replay of an admitted
+// invocation. A fault is not a refusal and travels unchanged.
+func heldCallRefusal(err error) bool {
+	var foreign ForeignTransactionError
+	return IsRefusal(err) || errors.As(err, &foreign) || errors.Is(err, ErrPrincipalAmbiguous) ||
+		errors.Is(err, ErrInvalidInvocationKey) || errors.Is(err, ErrInvalidCorrelation)
+}
+
+func (a *admitter) admitVersionedRun(ctx context.Context, tx Tx, adm Admission, epoch int64) (Run, bool, error) {
 	if !validInvocationKey(adm.ContractKey) {
 		return Run{}, false, ErrInvalidInvocationKey
 	}
@@ -84,7 +112,7 @@ func (a *admitter) AdmitVersionedRun(ctx context.Context, tx Tx, adm Admission, 
 	// The cause is authorized with the template: it must be a Run of the same
 	// team, which the principal was just authorized on. The factory resolves it
 	// under the creation prefix and refuses anything else without saying why.
-	opts := db.RunCreationOpts{ActivationEpoch: epoch, Inputs: adm.Inputs, SealedInputAuthority: a.sealedInputs, CausedByRun: adm.CausedByRun, Correlation: adm.Correlation, Invocation: &db.RunInvocationIdentity{
+	opts := db.RunCreationOpts{ActivationEpoch: epoch, HangarEpoch: a.outputEpoch, Inputs: adm.Inputs, SealedInputAuthority: a.sealedInputs, CausedByRun: adm.CausedByRun, Correlation: adm.Correlation, Invocation: &db.RunInvocationIdentity{
 		PrincipalDigest: principalDigest(adm.Principal, auth),
 		KeyDigest:       invocationDigest("key", adm.ContractKey),
 	}}

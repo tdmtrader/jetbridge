@@ -11,6 +11,7 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/event"
 	. "github.com/concourse/concourse/atc/gc"
 
@@ -367,7 +368,7 @@ var _ = Describe("BuildLogCollector", func() {
 				}
 				builds[i] = build
 			}
-			_, err := dbConn.Exec("UPDATE pipeline_runs SET status = 'failed', completed_at = now() - interval '2 days' WHERE id = $1", oldestRun.ID())
+			_, err := dbConn.Exec("UPDATE pipeline_runs SET status = 'failed', completed_at = now() - interval '2 days', result_manifest = '{}', terminal_observation_version = 'fixture' WHERE id = $1", oldestRun.ID())
 			Expect(err).NotTo(HaveOccurred())
 			destroyed, err := db.NewPipelineRunReclaimLifecycle(dbConn).DestroyReclaimableRun(oldestRun.ID())
 			Expect(err).NotTo(HaveOccurred())
@@ -850,7 +851,7 @@ func saveRunLogTemplate(name string, job atc.JobConfig, retention *atc.RunRetent
 
 func createNumberedLogBuild(template db.Pipeline, environment string, spec retentionBuild) (db.PipelineRun, db.Build) {
 	GinkgoHelper()
-	creation, err := db.NewPipelineRunFactory(dbConn, lockFactory).CreateRun(context.Background(), template, db.RunParams{
+	creation, err := dbtest.CreateRun(dbConn, db.NewPipelineRunFactory(dbConn, lockFactory), context.Background(), template, db.RunParams{
 		Vars: atc.RunParams{"environment": environment},
 	}, "creator")
 	Expect(err).NotTo(HaveOccurred())

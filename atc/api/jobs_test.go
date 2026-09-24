@@ -299,7 +299,7 @@ func (fixture *jobsAPIFixture) ServePipeline(pipeline db.Pipeline) *httptest.Ser
 func createReclaimableJobsAPIRun(fixture *jobsAPIFixture) (db.Pipeline, db.PipelineRun, db.Job, db.Build) {
 	GinkgoHelper()
 
-	creation, err := db.NewPipelineRunFactory(fixture.Real.Conn, fixture.Real.LockFactory).CreateRun(
+	creation, err := dbtest.CreateRun(fixture.Real.Conn, db.NewPipelineRunFactory(fixture.Real.Conn, fixture.Real.LockFactory),
 		context.Background(), fixture.Pipeline, db.RunParams{}, "api-user",
 	)
 	Expect(err).NotTo(HaveOccurred())
@@ -319,7 +319,7 @@ func createReclaimableJobsAPIRun(fixture *jobsAPIFixture) (db.Pipeline, db.Pipel
 	Expect(err).NotTo(HaveOccurred())
 	_, err = fixture.Real.Conn.Exec(`UPDATE builds SET status = 'failed', completed = true, end_time = now() WHERE pipeline_run_id = $1`, creation.Run.ID())
 	Expect(err).NotTo(HaveOccurred())
-	_, err = fixture.Real.Conn.Exec(`UPDATE pipeline_runs SET status = 'failed', completed_at = now() - interval '2 days' WHERE id = $1`, creation.Run.ID())
+	_, err = fixture.Real.Conn.Exec(`UPDATE pipeline_runs SET status = 'failed', completed_at = now() - interval '2 days', result_manifest = '{}', terminal_observation_version = 'fixture' WHERE id = $1`, creation.Run.ID())
 	Expect(err).NotTo(HaveOccurred())
 
 	return payload, creation.Run, job, builds[0]

@@ -47,7 +47,7 @@ Feature: A template selects one stable task output for each Run result
     Then the second template is refused and the original declaration is intact
 
   @core-review
-  Scenario: Result declarations cannot fall back to legacy Run execution
+  Scenario: Result declarations need an enabled Hangar output epoch
     Given a Run result declaration with "one inline producer"
     When the existing Run creator receives the result-bearing template
     Then Run result execution is held without allocating a Run or number

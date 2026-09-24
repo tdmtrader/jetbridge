@@ -22,7 +22,7 @@ func (f *pipelineRunFactory) TerminalResult(ctx context.Context, runID int) (Run
 	var result RunTerminalResult
 	var body []byte
 	err := f.conn.QueryRowContext(ctx, `SELECT status,completed_at,result_manifest,terminal_observation_version FROM pipeline_runs
- WHERE id=$1 AND run_contract_version='v2' AND status<>'running'`, runID).Scan(&result.Status, &result.CompletedAt, &body, &result.Version)
+ WHERE id=$1 AND status<>'running'`, runID).Scan(&result.Status, &result.CompletedAt, &body, &result.Version)
 	if err == sql.ErrNoRows {
 		return result, false, nil
 	}
@@ -38,7 +38,7 @@ func (f *pipelineRunFactory) TerminalResult(ctx context.Context, runID int) (Run
 func (f *pipelineRunFactory) AfterRunCompleted() { announceRunCompletion(f.conn.Bus()) }
 
 func (f *pipelineRunFactory) PendingOutputRuns(ctx context.Context, tx Tx, afterID, limit int) ([]int, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT id FROM pipeline_runs WHERE run_contract_version='v2' AND status='running' AND id>$1 ORDER BY id LIMIT $2`, afterID, limit)
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM pipeline_runs WHERE status='running' AND id>$1 ORDER BY id LIMIT $2`, afterID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -66,8 +66,8 @@ func (f *pipelineRunFactory) finalizeOutputRun(ctx context.Context, tx Tx, runID
 	if err != nil {
 		return false, err
 	}
-	if run.ContractVersion() != atc.RunContractV2 || run.Status() != atc.RunStatusRunning {
-		if cancellation != nil && run.ContractVersion() == atc.RunContractV2 && run.Status() == atc.RunStatusAborted && run.CancellationRequested() {
+	if run.Status() != atc.RunStatusRunning {
+		if cancellation != nil && run.Status() == atc.RunStatusAborted && run.CancellationRequested() {
 			return true, cancellation.check(ctx, tx)
 		}
 		return false, nil
@@ -198,53 +198,63 @@ func (f *pipelineRunFactory) finalizeOutputRun(ctx context.Context, tx Tx, runID
 
 // Post-creation order excludes the base template lock. Reads of ownership only
 // discover the prefix; the immutable epoch/identity are rechecked under Run lock.
+//
+// The Run continues under its own birth epoch whatever happens to the Hangar
+// output epoch: publication needs only that the Run activation marker has not
+// been downgraded below it. A Hangar rotation therefore never strands a running
+// Run's finalization; its captures are settled or refused on their own epochs.
 func lockRunResultPublication(ctx context.Context, tx Tx, runID int) (*pipelineRun, error) {
+	run, _, err := lockRunResultPublicationUnder(ctx, tx, runID, 0)
+	return run, err
+}
+
+// lockRunResultPublicationUnder also takes the named Hangar epoch's row inside
+// the activation prefix, and reports whether that epoch is enabled, for work
+// that must deliver something new under it.
+func lockRunResultPublicationUnder(ctx context.Context, tx Tx, runID int, hangarEpoch int64) (*pipelineRun, bool, error) {
 	var teamID int
 	var epoch int64
 	if err := tx.QueryRowContext(ctx, `SELECT p.team_id,coalesce(r.activation_epoch,0) FROM pipeline_runs r JOIN pipelines p ON p.id=r.template_pipeline_id WHERE r.id=$1`, runID).Scan(&teamID, &epoch); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	var id int
 	if err := tx.QueryRowContext(ctx, `SELECT id FROM teams WHERE id=$1 FOR SHARE`, teamID).Scan(&id); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	var current int64
-	if err := tx.QueryRowContext(ctx, `SELECT epoch FROM pipeline_run_activation WHERE singleton FOR SHARE`).Scan(&current); err != nil {
-		return nil, err
+	if err := lockRunContinuation(ctx, tx, epoch); err != nil {
+		return nil, false, err
 	}
-	if epoch > 0 {
-		ready, err := hangarLockRecoverableEpoch(ctx, tx, epoch)
-		if err != nil {
-			return nil, err
-		}
-		if current < epoch || !ready {
-			return nil, atc.ErrRunResultsUnavailable
+	hangarEnabled := false
+	if hangarEpoch > 0 {
+		var err error
+		if hangarEnabled, err = hangarLockEnabledEpoch(ctx, tx, hangarEpoch); err != nil {
+			return nil, false, err
 		}
 	}
 	run := &pipelineRun{}
 	if err := scanPipelineRun(run, pipelineRunsQuery.Where(sq.Eq{"r.id": runID}).Suffix("FOR NO KEY UPDATE OF r").RunWith(tx).QueryRowContext(ctx)); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if run.ActivationEpoch() != epoch {
-		return nil, atc.ErrRunResultsUnavailable
+		return nil, false, atc.ErrRunResultsUnavailable
 	}
-	if run.Status() != atc.RunStatusRunning || run.ContractVersion() != atc.RunContractV2 {
-		return run, nil
+	if run.Status() != atc.RunStatusRunning {
+		return run, hangarEnabled, nil
 	}
 	payload, found := run.InstancePipelineID()
 	if !found {
-		return nil, ErrPipelineRunPayloadGone
+		return nil, false, ErrPipelineRunPayloadGone
 	}
 	if err := tx.QueryRowContext(ctx, `SELECT id FROM pipelines WHERE id=$1 FOR NO KEY UPDATE`, payload).Scan(&id); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if _, err := tx.ExecContext(ctx, `SELECT id FROM jobs WHERE pipeline_id=$1 ORDER BY id FOR UPDATE`, payload); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if _, err := tx.ExecContext(ctx, `SELECT id FROM builds WHERE pipeline_run_id=$1 ORDER BY id FOR UPDATE`, runID); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return run, nil
+	return run, hangarEnabled, nil
 }
 
 type runCandidate struct {

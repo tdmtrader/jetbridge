@@ -59,7 +59,7 @@ func TestRunResultScratchIsAPrivateChildOfTheConfiguredDirectory(t *testing.T) {
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Fatalf("a previous process's spool survived startup: %v", err)
 	}
-	if got := cmd.pipelineRunServices().ResultReadConcurrency; got != 3 {
+	if got := cmd.pipelineRunServices(nil, nil, nil).ResultReadConcurrency; got != 3 {
 		t.Fatalf("services result-read bound = %d, want 3", got)
 	}
 }

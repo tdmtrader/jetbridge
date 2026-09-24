@@ -65,7 +65,7 @@ func RunResultDefinitions() []brine.StepDefinition {
 			if err != nil {
 				return in, err
 			}
-			_, err = factory.CreateRunInTx(context.Background(), tx, template, db.RunParams{}, "brine-newer", db.RunCreationOpts{ActivationEpoch: int64(hangarEpoch)})
+			_, err = factory.CreateRunInTx(context.Background(), tx, template, db.RunParams{}, "brine-newer", db.RunCreationOpts{ActivationEpoch: int64(hangarEpoch), HangarEpoch: int64(hangarEpoch)})
 			if err == nil {
 				err = tx.Commit()
 			}

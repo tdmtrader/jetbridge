@@ -89,18 +89,21 @@ func RunOutputStartDefinitions() []brine.StepDefinition {
 			in.Err = nil
 			return checkRunOutputStart(in)
 		}),
-		CheckThat[RetainedRunDefinition]("the Run records an immutable legacy birth contract", func(in RetainedRunDefinition) error {
+		CheckThat[RetainedRunDefinition]("the Run records an immutable v2 birth contract", func(in RetainedRunDefinition) error {
 			var version string
 			var epoch *int64
 			if err := in.DB.Conn.QueryRow(`SELECT run_contract_version, activation_epoch FROM pipeline_runs WHERE id=$1`, in.Creation.Run.ID()).Scan(&version, &epoch); err != nil {
 				return err
 			}
-			if version != "legacy_v1" || epoch != nil {
-				return fmt.Errorf("legacy birth was misclassified: %q %v", version, epoch)
+			if version != "v2" || epoch == nil || *epoch <= 0 {
+				return fmt.Errorf("birth was misclassified: %q %v", version, epoch)
 			}
-			_, err := in.DB.Conn.Exec(`UPDATE pipeline_runs SET run_contract_version='v2', activation_epoch=1 WHERE id=$1`, in.Creation.Run.ID())
+			_, err := in.DB.Conn.Exec(`UPDATE pipeline_runs SET activation_epoch=activation_epoch+1 WHERE id=$1`, in.Creation.Run.ID())
 			if err == nil || !strings.Contains(err.Error(), "immutable") {
 				return fmt.Errorf("birth contract was mutable: %v", err)
+			}
+			if _, err = in.DB.Conn.Exec(`UPDATE pipeline_runs SET run_contract_version='legacy_v1' WHERE id=$1`, in.Creation.Run.ID()); err == nil {
+				return fmt.Errorf("a Run was reclassified out of the one contract class")
 			}
 			return nil
 		}),
@@ -273,6 +276,7 @@ func runOutputFixtureConfig(rec *brine.Recorder, res brine.Resources, activation
 	}
 	opts := db.RunCreationOpts{}
 	opts.ActivationEpoch = int64(hangarEpoch)
+	opts.HangarEpoch = int64(hangarEpoch)
 	if err := openActivationEpoch(jdb, cohort...); err != nil {
 		return in, err
 	}
@@ -280,7 +284,7 @@ func runOutputFixtureConfig(rec *brine.Recorder, res brine.Resources, activation
 	if activation == "stale" {
 		epoch++
 	}
-	if _, err := jdb.Conn.Exec(`UPDATE pipeline_run_activation SET epoch=$1, admission_enabled=$2 WHERE singleton`, epoch, activation != "disabled"); err != nil {
+	if _, err := db.ReconcilePipelineRunActivation(context.Background(), jdb.Conn, activationEpochUnless(activation == "disabled", epoch)); err != nil {
 		return in, err
 	}
 	tx, err := jdb.Conn.Begin()
@@ -393,4 +397,13 @@ func reserveRunSource(in RunOutputStart, replacement bool) (RunOutputStart, erro
 	}
 	in.Replay, err = in.start(in.Plan, int64(hangarEpoch), "brine-node", hangarNodeUID, false)
 	return in, err
+}
+
+// activationEpochUnless is the Run activation epoch a scenario configures, or
+// zero -- admission off -- when disabled is set.
+func activationEpochUnless(disabled bool, epoch int64) int64 {
+	if disabled {
+		return 0
+	}
+	return epoch
 }

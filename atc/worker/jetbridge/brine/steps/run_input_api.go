@@ -64,9 +64,12 @@ func configureRunInputAPI(in RunInputAdmission, caller string, rec *brine.Record
 		client, uid, err := outputSource.ForInputUpload(ctx, executioncontrol.ActivationEpoch(epoch))
 		return runs.InputUploadNode{UID: uid, Publisher: client, Verifier: verifier}, err
 	}})
-	oldEnabled := atc.EnablePipelineRunCreation
-	atc.EnablePipelineRunCreation = caller != "held"
-	TrackDisposer(rec, "the pipeline-run creation setting", func() error { atc.EnablePipelineRunCreation = oldEnabled; return nil })
+	oldEnabled := atc.PipelineRunActivationEpoch
+	atc.PipelineRunActivationEpoch = 0
+	if caller != "held" {
+		atc.PipelineRunActivationEpoch = int64(hangarEpoch)
+	}
+	TrackDisposer(rec, "the pipeline-run creation setting", func() error { atc.PipelineRunActivationEpoch = oldEnabled; return nil })
 	auth.mu.Lock()
 	auth.RunServices = pipelinerunserver.Services{Admitter: in.Port, Epoch: int64(hangarEpoch)}
 	auth.API, err = auth.apiHandler(auth.Verifier)

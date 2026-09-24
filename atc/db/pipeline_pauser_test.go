@@ -5,6 +5,7 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbtest"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -245,7 +246,7 @@ var _ = Describe("PipelinePauser", func() {
 			Expect(template.Paused()).To(BeFalse(), "a template must never be auto-paused: run creation would refuse and run log reaping would stop")
 
 			By("proving run creation still works")
-			_, err = db.NewPipelineRunFactory(dbConn, lockFactory).CreateRun(context.TODO(), template, db.RunParams{}, "creator")
+			_, err = dbtest.CreateRun(dbConn, db.NewPipelineRunFactory(dbConn, lockFactory), context.TODO(), template, db.RunParams{}, "creator")
 			Expect(err).NotTo(HaveOccurred())
 		})
 
@@ -261,7 +262,7 @@ var _ = Describe("PipelinePauser", func() {
 			)
 			Expect(err).NotTo(HaveOccurred())
 			runFactory := db.NewPipelineRunFactory(dbConn, lockFactory)
-			creation, err := runFactory.CreateRun(context.TODO(), template, db.RunParams{}, "creator")
+			creation, err := dbtest.CreateRun(dbConn, runFactory, context.TODO(), template, db.RunParams{}, "creator")
 			Expect(err).NotTo(HaveOccurred())
 
 			payload, found, err := defaultTeam.Pipeline(atc.PipelineRef{

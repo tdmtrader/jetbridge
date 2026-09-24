@@ -16,7 +16,7 @@ var _ = Describe("PipelineRun", func() {
 
 		tx, err := dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(tx.QueryRow(`INSERT INTO pipeline_runs(template_pipeline_id, number, params, status, created_by, config_hash) VALUES ($1, 1, '{}', 'running', 'creator', 'hash') RETURNING id`, templateID).Scan(&runID)).To(Succeed())
+		Expect(tx.QueryRow(`INSERT INTO pipeline_runs(template_pipeline_id, number, params, status, created_by, config_hash, run_contract_version, activation_epoch) VALUES ($1, 1, '{}', 'running', 'creator', 'hash', 'v2', 1) RETURNING id`, templateID).Scan(&runID)).To(Succeed())
 		Expect(tx.QueryRow(`INSERT INTO pipelines(team_id, name, instance_vars, pipeline_run_id, secondary_ordering) VALUES ($1, 'run-base', '{"run":1}', $2, 1) RETURNING id`, defaultTeam.ID(), runID).Scan(&childID)).To(Succeed())
 		Expect(tx.Commit()).To(Succeed())
 
@@ -59,7 +59,7 @@ var _ = Describe("PipelineRun", func() {
 
 		tx, err := dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(tx.QueryRow(`INSERT INTO pipeline_runs(template_pipeline_id, number, params, status, created_by, config_hash) VALUES ($1, 1, '{}', 'running', 'creator', 'hash') RETURNING id`, templateID).Scan(&runID)).To(Succeed())
+		Expect(tx.QueryRow(`INSERT INTO pipeline_runs(template_pipeline_id, number, params, status, created_by, config_hash, run_contract_version, activation_epoch) VALUES ($1, 1, '{}', 'running', 'creator', 'hash', 'v2', 1) RETURNING id`, templateID).Scan(&runID)).To(Succeed())
 		Expect(tx.QueryRow(`INSERT INTO pipelines(team_id, name, instance_vars, pipeline_run_id, secondary_ordering) VALUES ($1, 'detached-base', '{"run":1}', $2, 1) RETURNING id`, defaultTeam.ID(), runID).Scan(&childID)).To(Succeed())
 		Expect(tx.Commit()).To(Succeed())
 
@@ -93,7 +93,7 @@ var _ = Describe("PipelineRun", func() {
 
 		tx, err := dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(tx.QueryRow(`INSERT INTO pipeline_runs(template_pipeline_id, number, params, status, created_by, config_hash) VALUES ($1, 1, '{}', 'running', 'creator', 'hash') RETURNING id`, templateID).Scan(&runID)).To(Succeed())
+		Expect(tx.QueryRow(`INSERT INTO pipeline_runs(template_pipeline_id, number, params, status, created_by, config_hash, run_contract_version, activation_epoch) VALUES ($1, 1, '{}', 'running', 'creator', 'hash', 'v2', 1) RETURNING id`, templateID).Scan(&runID)).To(Succeed())
 		Expect(tx.QueryRow(`INSERT INTO pipelines(team_id, name, instance_vars, pipeline_run_id, secondary_ordering) VALUES ($1, 'live-base', '{"run":1}', $2, 1) RETURNING id`, defaultTeam.ID(), runID).Scan(&childID)).To(Succeed())
 		Expect(tx.Commit()).To(Succeed())
 
@@ -119,7 +119,7 @@ var _ = Describe("PipelineRun", func() {
 		Expect(dbConn.QueryRow(`INSERT INTO pipelines(team_id, name, template, secondary_ordering) VALUES ($1, 'listed-base', true, 1) RETURNING id`, defaultTeam.ID()).Scan(&templateID)).To(Succeed())
 		tx, err := dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(tx.QueryRow(`INSERT INTO pipeline_runs(template_pipeline_id, number, params, status, created_by, config_hash) VALUES ($1, 1, '{}', 'running', 'creator', 'hash') RETURNING id`, templateID).Scan(&runID)).To(Succeed())
+		Expect(tx.QueryRow(`INSERT INTO pipeline_runs(template_pipeline_id, number, params, status, created_by, config_hash, run_contract_version, activation_epoch) VALUES ($1, 1, '{}', 'running', 'creator', 'hash', 'v2', 1) RETURNING id`, templateID).Scan(&runID)).To(Succeed())
 		_, err = tx.Exec(`INSERT INTO pipelines(team_id, name, instance_vars, pipeline_run_id, secondary_ordering) VALUES ($1, 'listed-base', '{"run":1}', $2, 1)`, defaultTeam.ID(), runID)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(tx.Commit()).To(Succeed())
@@ -161,7 +161,7 @@ var _ = Describe("PipelineRun", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		var runID int
-		Expect(dbConn.QueryRow(`INSERT INTO pipeline_runs(template_pipeline_id, number, params, status, created_by, config_hash) VALUES ($1, 1, '{}', 'succeeded', 'creator', 'hash') RETURNING id`, template.ID()).Scan(&runID)).To(Succeed())
+		Expect(dbConn.QueryRow(`INSERT INTO pipeline_runs(template_pipeline_id, number, params, status, created_by, config_hash, run_contract_version, activation_epoch, completed_at, result_manifest, terminal_observation_version) VALUES ($1, 1, '{}', 'succeeded', 'creator', 'hash', 'v2', 1, now(), '{}', 'fixture') RETURNING id`, template.ID()).Scan(&runID)).To(Succeed())
 
 		var payloadID, payloadResourceID, payloadJobID int
 		Expect(dbConn.QueryRow(`INSERT INTO pipelines(team_id, name, instance_vars, pipeline_run_id, secondary_ordering) VALUES ($1, 'runtime-base', '{"run":1}', $2, 1) RETURNING id`, defaultTeam.ID(), runID).Scan(&payloadID)).To(Succeed())

@@ -192,6 +192,13 @@ daemon that would refuse itself at startup.
 {{- end -}}
 {{- end -}}
 
+{{- if hasKey .Values.web "enablePipelineRunCreation" -}}
+{{- fail "web.enablePipelineRunCreation has been removed; Run admission is set by web.pipelineRunActivationEpoch (default 1 admits; 0 admits nothing). Remove the old value and set the epoch." -}}
+{{- end -}}
+{{- if lt (int .Values.web.pipelineRunActivationEpoch) 0 -}}
+{{- fail "web.pipelineRunActivationEpoch must be zero (admit no pipeline runs) or a positive Run contract activation epoch." -}}
+{{- end -}}
+
 {{- if and $capture (not $base) -}}
 {{- fail "hangarOutput.enabled requires hangarOutput.executionControl.enabled. Durable output capture is an EXTENSION of exact execution control, never a synonym for it: a capture pod requires both ready labels, and a cohort advertising output without base would be claiming a capture plane with no exact-execution protocol underneath. Output admission can never be true while base admission is false." -}}
 {{- end -}}

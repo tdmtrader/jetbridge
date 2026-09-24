@@ -70,7 +70,7 @@ func exerciseCancellationPass(in RunOutputStart, mode string) error {
 			if err != nil {
 				return err
 			}
-			creation, err := factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "bounded-pass", db.RunCreationOpts{ActivationEpoch: int64(hangarEpoch)})
+			creation, err := factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "bounded-pass", db.RunCreationOpts{ActivationEpoch: int64(hangarEpoch), HangarEpoch: int64(hangarEpoch)})
 			if err == nil {
 				_, err = factory.AcceptRunCancellation(ctx, tx, creation.Run.ID(), "owner", nil)
 			}

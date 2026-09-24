@@ -12,10 +12,10 @@ import (
 var _ = Describe("the operator's hold on versioned run creation", func() {
 	BeforeEach(func() {
 		// The suite restores the process setting after each spec.
-		atc.EnablePipelineRunCreation = false
+		atc.PipelineRunActivationEpoch = 0
 	})
 
-	It("answers the hold before invocation validation or a transaction is needed", func() {
+	It("answers the hold over invocation validation and a missing transaction", func() {
 		for _, admission := range []runs.Admission{
 			{},
 			{ContractKey: "valid-key"},
@@ -61,7 +61,7 @@ var _ = Describe("the operator's hold on versioned run creation", func() {
 	})
 
 	It("resumes ordinary invocation validation once the operator opens the gate", func() {
-		atc.EnablePipelineRunCreation = true
+		atc.PipelineRunActivationEpoch = 1
 		_, _, err := admitter.AdmitVersionedRun(context.Background(), nil, runs.Admission{}, 1)
 		Expect(err).To(MatchError(runs.ErrInvalidInvocationKey))
 	})

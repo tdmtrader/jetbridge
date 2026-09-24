@@ -5,9 +5,10 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"github.com/concourse/concourse/hangar/output"
 	"path/filepath"
 	"time"
+
+	"github.com/concourse/concourse/hangar/output"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/atc"

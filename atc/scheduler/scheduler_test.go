@@ -258,7 +258,7 @@ var _ = Describe("Scheduler", func() {
 			}},
 		}, 0, false)
 		Expect(err).NotTo(HaveOccurred())
-		creation, err := db.NewPipelineRunFactory(fixture.Conn, fixture.LockFactory).CreateRun(context.Background(), template, db.RunParams{}, "creator")
+		creation, err := dbtest.CreateRun(fixture.Conn, db.NewPipelineRunFactory(fixture.Conn, fixture.LockFactory), context.Background(), template, db.RunParams{}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 		payload, found, err := team.Pipeline(atc.PipelineRef{Name: "run-payload", InstanceVars: atc.InstanceVars{"run": float64(creation.Run.Number())}})
 		Expect(err).NotTo(HaveOccurred())

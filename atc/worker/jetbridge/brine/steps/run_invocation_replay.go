@@ -39,9 +39,9 @@ type InvocationReplay struct {
 func RunInvocationReplayDefinitions() []brine.StepDefinition {
 	return []brine.StepDefinition{
 		brine.DefineMapUsing[brine.Empty, InvocationReplay]("a versioned invocation of a parameterized template", []string{"jetbridge-db"}, func(_ brine.Empty, _ brine.Params, rec *brine.Recorder, res brine.Resources) (InvocationReplay, error) {
-			previousGate := atc.EnablePipelineRunCreation
-			atc.EnablePipelineRunCreation = true
-			TrackDisposer(rec, "the invocation creation gate", func() error { atc.EnablePipelineRunCreation = previousGate; return nil })
+			previousGate := atc.PipelineRunActivationEpoch
+			atc.PipelineRunActivationEpoch = int64(hangarEpoch)
+			TrackDisposer(rec, "the invocation creation gate", func() error { atc.PipelineRunActivationEpoch = previousGate; return nil })
 			jdb, err := jetbridgeDBFrom(res)
 			if err != nil {
 				return InvocationReplay{}, err
@@ -59,7 +59,7 @@ func RunInvocationReplayDefinitions() []brine.StepDefinition {
 			if err = openActivationEpoch(jdb); err != nil {
 				return in, err
 			}
-			if _, err = jdb.Conn.Exec(`UPDATE pipeline_run_activation SET epoch=$1, admission_enabled=true WHERE singleton`, int64(hangarEpoch)); err != nil {
+			if _, err = db.ReconcilePipelineRunActivation(context.Background(), jdb.Conn, int64(hangarEpoch)); err != nil {
 				return in, err
 			}
 			display, err := skycmd.NewSkyDisplayUserIdGenerator(map[string]string{"local": "user_id"})
@@ -67,6 +67,7 @@ func RunInvocationReplayDefinitions() []brine.StepDefinition {
 				return in, err
 			}
 			in.Port = runs.NewAdmitter(jdb.Conn, db.NewPipelineRunFactory(jdb.Conn, jdb.LockFactory), jdb.TeamFactory, display, nil)
+			in.Port.SetOutputEpoch(int64(hangarEpoch))
 			in.Admission = runs.Admission{Template: runs.TemplateRef{Team: in.Team.Name(), Pipeline: in.Template.PipelineRef()}, Principal: invocationPrincipal("owner"), ContractKey: "review-request.1~a"}
 			return in, nil
 		}),
@@ -94,8 +95,9 @@ func RunInvocationReplayDefinitions() []brine.StepDefinition {
 						role = accessor.ViewerRole
 					}
 					in.Port = runs.NewAdmitter(in.DB.Conn, db.NewPipelineRunFactory(in.DB.Conn, in.DB.LockFactory), in.DB.TeamFactory, display, map[string]string{atc.CreatePipelineRunV2: role})
+					in.Port.SetOutputEpoch(int64(hangarEpoch))
 				case "disabled activation":
-					if _, err := in.DB.Conn.Exec(`UPDATE pipeline_run_activation SET admission_enabled=false WHERE singleton`); err != nil {
+					if _, err := db.ReconcilePipelineRunActivation(context.Background(), in.DB.Conn, 0); err != nil {
 						return in, err
 					}
 				case "an unavailable cause":

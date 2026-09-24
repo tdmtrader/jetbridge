@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc/api/pipelinerunserver"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runinput"
@@ -70,6 +71,7 @@ func (cmd *RunCommand) configureRunInputUploads(conn db.DbConn, factory db.Pipel
 		return err
 	}
 	cmd.runAdmitter = runs.NewAdmitter(conn, factory, teams, display, cmd.customRoles)
+	cmd.runAdmitter.SetOutputEpoch(cmd.outputEpoch())
 	cmd.runAdmitter.SetSealedInputAuthority(cmd.runInputAuthority)
 	cmd.runAdmitter.SetCredentialHandoffConfig(cmd.credentialHandoffConfig(source))
 	cmd.runAdmitter.SetInputUploadConfig(runs.InputUploadConfig{Source: func(ctx context.Context, epoch int64) (runs.InputUploadNode, error) {
@@ -97,7 +99,46 @@ func (cmd *RunCommand) credentialHandoffConfig(source runs.SessionTransport) run
 	}
 }
 
-func (cmd *RunCommand) pipelineRunServices() pipelinerunserver.Services {
-	return pipelinerunserver.Services{Results: cmd.runResultReader, Admitter: cmd.runAdmitter, Epoch: cmd.Kubernetes.OutputActivationEpoch,
+// pipelineRunServices is what the v2 routes admit and read through. The port
+// is built with the output plane when detached inputs and credential handoff
+// are configured; otherwise it is built here without them. It is built even
+// with admission off: a held node refuses new Runs through the port, and still
+// replays the Run an invocation key already admitted. The fallback is built
+// over this boot's connection and not kept on cmd, so a later boot of the same
+// command never serves through a closed one.
+func (cmd *RunCommand) pipelineRunServices(conn db.DbConn, factory db.PipelineRunFactory, teams db.TeamFactory) pipelinerunserver.Services {
+	admitter := cmd.runAdmitter
+	if admitter == nil {
+		if display, err := skycmd.NewSkyDisplayUserIdGenerator(cmd.DisplayUserIdPerConnector); err == nil {
+			admitter = runs.NewAdmitter(conn, factory, teams, display, cmd.customRoles)
+			admitter.SetOutputEpoch(cmd.outputEpoch())
+		}
+	}
+	return pipelinerunserver.Services{Results: cmd.runResultReader, Admitter: admitter, Epoch: cmd.Kubernetes.OutputActivationEpoch,
 		ResultReadConcurrency: cmd.RunResultReadConcurrency}
+}
+
+// outputEpoch is the Hangar output epoch Run admission may bind results and
+// inputs under, or zero on a node with no output plane. It is not the Run
+// activation epoch.
+func (cmd *RunCommand) outputEpoch() int64 {
+	if !cmd.Kubernetes.OutputPlaneEnabled {
+		return 0
+	}
+	return cmd.Kubernetes.OutputActivationEpoch
+}
+
+// reconcilePipelineRunActivation moves the Run contract's own activation
+// marker to agree with this web node's configuration: a positive
+// --pipeline-run-activation-epoch admits Runs born under it, zero stops
+// admission. It is the only supported writer of the marker, and the chart sets
+// the epoch on every deploy. An epoch older than the recorded one refuses to
+// start rather than admit under a downgraded capability.
+func (cmd *RunCommand) reconcilePipelineRunActivation(logger lager.Logger, conn db.DbConn) error {
+	state, err := db.ReconcilePipelineRunActivation(context.Background(), conn, cmd.PipelineRunActivationEpoch)
+	if err != nil {
+		return fmt.Errorf("reconciling pipeline run activation: %w", err)
+	}
+	logger.Info("pipeline-run-activation", lager.Data{"epoch": state.Epoch, "admitting": state.AdmissionEnabled})
+	return nil
 }

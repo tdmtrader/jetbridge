@@ -70,7 +70,7 @@ var _ = Describe("the run_pipeline step", func() {
 
 	Context("when the operator has enabled run creation", func() {
 		BeforeEach(func() {
-			cmd.EnablePipelineRunCreation = true
+			enableRunAdmission()
 		})
 
 		It("admits a run of the template and names it in the build's log", func() {

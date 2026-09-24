@@ -6,16 +6,11 @@ import (
 	"github.com/concourse/concourse/atc"
 )
 
-// A v2 Run cannot own an execution that disappears with an ATC process. Its
+// A Run cannot own an execution that disappears with an ATC process. Its
 // resource checks use ordinary durable builds and the same admission fence.
-func durableRunChecks(ctx context.Context, conn DbConn, checkable PipelineRef) (bool, error) {
-	runID, found := checkable.PipelineRunID()
-	if !found {
-		return false, nil
-	}
-	var durable bool
-	err := conn.QueryRowContext(ctx, `SELECT run_contract_version='v2' FROM pipeline_runs WHERE id=$1`, runID).Scan(&durable)
-	return durable, err
+func durableRunChecks(_ context.Context, _ DbConn, checkable PipelineRef) (bool, error) {
+	_, found := checkable.PipelineRunID()
+	return found, nil
 }
 
 func admitRunCheck(tx Tx, pipelineID int) (int, error) {
@@ -23,7 +18,7 @@ func admitRunCheck(tx Tx, pipelineID int) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if !found || run.ContractVersion() != atc.RunContractV2 {
+	if !found {
 		return 0, nil
 	}
 	if run.CancellationRequested() {

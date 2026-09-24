@@ -21,68 +21,20 @@ func announceRunCompletion(bus NotificationsBus) {
 	bus.Notify(atc.PipelineRunCompletedChannel)
 }
 
+// attemptRunCompletion wakes the Run result finalizer when one of a Run's
+// builds settles. Completion itself -- status, time and result manifest in one
+// terminal publication -- takes the activation and team prefix in a fresh
+// transaction through FinalizeOutputRun, which this caller, already holding
+// build or job locks, cannot. The finalizer polls even if this wake-up is
+// lost, so this never completes a Run itself and always answers false.
 func attemptRunCompletion(tx Tx, runID int) (bool, error) {
-	run, err := lockPipelineRun(tx, runID)
-	if err != nil {
+	if _, err := lockPipelineRun(tx, runID); err != nil {
 		return false, err
 	}
-	// V2 completion acquires the activation/team prefix in a fresh transaction
-	// through FinalizeOutputRun. This caller already holds build or job locks.
-	// The capture component polls even if its best-effort wakeup is lost.
-	if run.ContractVersion() == atc.RunContractV2 {
-		if _, err := tx.Exec("SELECT pg_notify($1, '')", atc.ComponentHangarOutputCapture); err != nil {
-			return false, err
-		}
-		return false, nil
-	}
-	if run.Status() != atc.RunStatusRunning {
-		return false, nil
-	}
-
-	var payloadCount, payloadID int
-	err = tx.QueryRow(`
-		SELECT count(*), COALESCE(min(id), 0)
-		FROM pipelines
-		WHERE pipeline_run_id = $1
-	`, runID).Scan(&payloadCount, &payloadID)
-	if err != nil {
+	if _, err := tx.Exec("SELECT pg_notify($1, '')", atc.ComponentRunResults); err != nil {
 		return false, err
 	}
-	if payloadCount != 1 {
-		return false, nil
-	}
-
-	completion, ready, err := inspectRunCompletion(tx, runID, payloadID)
-	if err != nil || !ready {
-		return false, err
-	}
-	status := completion.Status
-
-	result, err := tx.Exec(`
-		UPDATE pipeline_runs
-		SET status = $2, completed_at = now()
-		WHERE id = $1 AND status = 'running'
-	`, runID, status)
-	if err != nil {
-		return false, err
-	}
-	updated, err := result.RowsAffected()
-	if err != nil {
-		return false, err
-	}
-	if updated != 1 {
-		return false, nil
-	}
-
-	_, err = tx.Exec(`
-		UPDATE pipelines
-		SET paused = true, paused_at = now(), paused_by = 'run-completed'
-		WHERE id = $1 AND paused = false
-	`, payloadID)
-	if err != nil {
-		return false, err
-	}
-	return true, nil
+	return false, nil
 }
 
 func runStatusForBuild(status BuildStatus) (atc.RunStatus, int) {

@@ -7,6 +7,7 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/configvalidate"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -20,7 +21,7 @@ var _ = Describe("Task cache identity", func() {
 			Jobs:     atc.JobConfigs{{Name: "deploy"}},
 		}, 0, false)
 		Expect(err).NotTo(HaveOccurred())
-		creation, err := db.NewPipelineRunFactory(dbConn, lockFactory).CreateRun(context.Background(), template, db.RunParams{}, "creator")
+		creation, err := dbtest.CreateRun(dbConn, db.NewPipelineRunFactory(dbConn, lockFactory), context.Background(), template, db.RunParams{}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 		payload, found, err := defaultTeam.Pipeline(atc.PipelineRef{Name: "cache-clear-template", InstanceVars: atc.InstanceVars{"run": float64(creation.Run.Number())}})
 		Expect(err).NotTo(HaveOccurred())
@@ -59,7 +60,7 @@ var _ = Describe("Task cache identity", func() {
 		config := atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "deploy"}}}
 		template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "retained-run-cache-template"}, config, 0, false)
 		Expect(err).NotTo(HaveOccurred())
-		creation, err := db.NewPipelineRunFactory(dbConn, lockFactory).CreateRun(context.Background(), template, db.RunParams{}, "creator")
+		creation, err := dbtest.CreateRun(dbConn, db.NewPipelineRunFactory(dbConn, lockFactory), context.Background(), template, db.RunParams{}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 		identity := atc.TaskCacheIdentity{TeamID: defaultTeam.ID(), TemplatePipelineID: template.ID(), RunJobName: "deploy"}
 		_, err = taskCacheFactory.FindOrCreate(identity, "task", "cache")
@@ -120,7 +121,7 @@ var _ = Describe("Run task cache scope", func() {
 		template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: name}, config, 0, false)
 		Expect(err).NotTo(HaveOccurred())
 
-		creation, err := db.NewPipelineRunFactory(dbConn, lockFactory).CreateRun(context.Background(), template, db.RunParams{}, "creator")
+		creation, err := dbtest.CreateRun(dbConn, db.NewPipelineRunFactory(dbConn, lockFactory), context.Background(), template, db.RunParams{}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(creation.EntryBuilds).To(HaveLen(1))
 
@@ -173,7 +174,7 @@ var _ = Describe("Run task cache scope", func() {
 		}, 0, false)
 		Expect(err).NotTo(HaveOccurred())
 
-		creation, err := db.NewPipelineRunFactory(dbConn, lockFactory).CreateRun(context.Background(), template, db.RunParams{}, "creator")
+		creation, err := dbtest.CreateRun(dbConn, db.NewPipelineRunFactory(dbConn, lockFactory), context.Background(), template, db.RunParams{}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 		build, found, err := buildFactory.Build(creation.EntryBuilds[0].ID())
 		Expect(err).NotTo(HaveOccurred())
@@ -200,7 +201,7 @@ var _ = Describe("Run task cache scope", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(template.CacheScope()).To(Equal(atc.CacheScopeTemplate))
 
-		creation, err := db.NewPipelineRunFactory(dbConn, lockFactory).CreateRun(context.Background(), template, db.RunParams{}, "creator")
+		creation, err := dbtest.CreateRun(dbConn, db.NewPipelineRunFactory(dbConn, lockFactory), context.Background(), template, db.RunParams{}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(creation.Config.CacheScope).To(BeEmpty(), "a materialized payload config carries no cache scope of its own")
 

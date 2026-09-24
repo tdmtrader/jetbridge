@@ -31,7 +31,7 @@ var _ = Describe("the operator's hold on run creation", func() {
 
 		// The suite's BeforeEach opened the gate and registered its restore,
 		// so closing it here lasts exactly as long as this spec.
-		atc.EnablePipelineRunCreation = false
+		atc.PipelineRunActivationEpoch = 0
 	})
 
 	admit := func(adm runs.Admission) (runs.Run, error) {
@@ -92,11 +92,12 @@ var _ = Describe("the operator's hold on run creation", func() {
 		Expect(runs.IsRefusal(err)).To(BeTrue())
 	})
 
-	// Ahead of the contract key, ahead of the principal, ahead of the
-	// reference. Each of these admissions is malformed in a second way that
-	// the port would otherwise report first, and the hold is what comes back:
-	// a server that is not creating runs weighs nothing about the call.
-	DescribeTable("answering the hold before anything about the call",
+	// Over the contract key, the principal and the reference. Each of these
+	// admissions is malformed in a second way that the port would otherwise
+	// report, and the hold is what comes back: a server that is not creating
+	// runs weighs a call only as far as finding a replay, which a malformed
+	// call cannot be (replay_hold_test.go covers the replay).
+	DescribeTable("answering the hold over anything else wrong with the call",
 		func(adm runs.Admission) {
 			_, err := admit(adm)
 			Expect(err).To(MatchError(atc.ErrPipelineRunCreationDisabled))
@@ -116,7 +117,7 @@ var _ = Describe("the operator's hold on run creation", func() {
 
 	Context("when the operator has opened it again", func() {
 		BeforeEach(func() {
-			atc.EnablePipelineRunCreation = true
+			atc.PipelineRunActivationEpoch = 1
 		})
 
 		// The same admission, admitted. Without this the specs above would

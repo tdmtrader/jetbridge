@@ -14,18 +14,19 @@ Feature: A Run task receives its retained named inputs
     Then its consuming task prepares with "<case>"
 
     Examples:
-      | binding                       | case                 |
-      | a valid source                | retained inputs      |
-      | one source under two names    | retained inputs      |
-      | one name routed to two slots  | retained inputs      |
-      | a valid source                | changed route        |
-      | a valid source                | changed input path   |
-      | a valid source                | missing runtime slot |
-      | a valid source                | prebound raw tree    |
-      | a valid source                | wrong task           |
-      | a valid source                | wrong team           |
-      | a valid source                | wrong build          |
-      | a valid source                | aborted build        |
-      | a valid source                | disabled activation  |
-      | a valid source                | edited template      |
-      | a valid source                | repeated preparation |
+      | binding                      | case                    |
+      | a valid source               | retained inputs         |
+      | one source under two names   | retained inputs         |
+      | one name routed to two slots | retained inputs         |
+      | a valid source               | changed route           |
+      | a valid source               | changed input path      |
+      | a valid source               | missing runtime slot    |
+      | a valid source               | prebound raw tree       |
+      | a valid source               | wrong task              |
+      | a valid source               | wrong team              |
+      | a valid source               | wrong build             |
+      | a valid source               | aborted build           |
+      | a valid source               | a Run admission hold    |
+      | a valid source               | a disabled Hangar epoch |
+      | a valid source               | edited template         |
+      | a valid source               | repeated preparation    |

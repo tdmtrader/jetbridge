@@ -12,6 +12,7 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/engine"
 	"github.com/concourse/concourse/atc/event"
 	"github.com/concourse/concourse/atc/exec"
@@ -570,7 +571,7 @@ jobs:
 						atc.PipelineRef{Name: targetRef.Name}, templateConfig, 0, false,
 					)
 					Expect(err).NotTo(HaveOccurred())
-					creation, err := db.NewPipelineRunFactory(fixture.Conn, fixture.LockFactory).CreateRun(
+					creation, err := dbtest.CreateRun(fixture.Conn, db.NewPipelineRunFactory(fixture.Conn, fixture.LockFactory),
 						context.Background(), template, db.RunParams{}, "run-user",
 					)
 					Expect(err).NotTo(HaveOccurred())

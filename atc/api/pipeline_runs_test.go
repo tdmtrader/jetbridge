@@ -10,6 +10,7 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -40,7 +41,7 @@ var _ = Describe("Pipeline Runs API", func() {
 	// presentation, which read every run the same way however it was made.
 	create := func(vars map[string]any) *http.Response {
 		GinkgoHelper()
-		creation, err := database.Deps.pipelineRunFactory.CreateRun(context.Background(), template, db.RunParams{Vars: atc.RunParams(vars)}, "api-user")
+		creation, err := dbtest.CreateRun(database.Conn, database.Deps.pipelineRunFactory, context.Background(), template, db.RunParams{Vars: atc.RunParams(vars)}, "api-user")
 		Expect(err).NotTo(HaveOccurred())
 		response, err := client.Get(pipelineRunsURL(server, template.Name()) + "/" + strconv.Itoa(creation.Run.Number()))
 		Expect(err).NotTo(HaveOccurred())
@@ -283,7 +284,7 @@ var _ = Describe("Pipeline Runs API", func() {
 		Expect(err).NotTo(HaveOccurred())
 		_, err = database.Conn.Exec(`UPDATE builds SET status = 'failed', end_time = now() WHERE pipeline_run_id = $1`, created.ID)
 		Expect(err).NotTo(HaveOccurred())
-		_, err = database.Conn.Exec(`UPDATE pipeline_runs SET status = 'failed', completed_at = now() - interval '2 days' WHERE id = $1`, created.ID)
+		_, err = database.Conn.Exec(`UPDATE pipeline_runs SET status = 'failed', completed_at = now() - interval '2 days', result_manifest = '{}', terminal_observation_version = 'fixture' WHERE id = $1`, created.ID)
 		Expect(err).NotTo(HaveOccurred())
 		destroyed, err := db.NewPipelineRunReclaimLifecycle(database.Conn).DestroyReclaimableRun(created.ID)
 		Expect(err).NotTo(HaveOccurred())
@@ -307,7 +308,7 @@ var _ = Describe("Pipeline Runs API", func() {
 		Expect(err).NotTo(HaveOccurred())
 		_, err = database.Conn.Exec(`UPDATE builds SET status = 'failed', end_time = now() WHERE pipeline_run_id = $1`, second.ID)
 		Expect(err).NotTo(HaveOccurred())
-		_, err = database.Conn.Exec(`UPDATE pipeline_runs SET status = 'failed', completed_at = now() - interval '2 days' WHERE id = $1`, second.ID)
+		_, err = database.Conn.Exec(`UPDATE pipeline_runs SET status = 'failed', completed_at = now() - interval '2 days', result_manifest = '{}', terminal_observation_version = 'fixture' WHERE id = $1`, second.ID)
 		Expect(err).NotTo(HaveOccurred())
 		destroyed, err := db.NewPipelineRunReclaimLifecycle(database.Conn).DestroyReclaimableRun(second.ID)
 		Expect(err).NotTo(HaveOccurred())

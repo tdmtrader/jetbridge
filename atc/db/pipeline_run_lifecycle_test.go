@@ -9,6 +9,7 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -33,7 +34,7 @@ func createRunLifecycleFixture(config atc.Config) runLifecycleFixture {
 	Expect(err).NotTo(HaveOccurred())
 
 	factory := db.NewPipelineRunFactory(dbConn, lockFactory)
-	creation, err := factory.CreateRun(context.Background(), template, db.RunParams{}, "creator")
+	creation, err := dbtest.CreateRun(dbConn, factory, context.Background(), template, db.RunParams{}, "creator")
 	Expect(err).NotTo(HaveOccurred())
 	payload, found, err := defaultTeam.Pipeline(atc.PipelineRef{
 		Name:         template.Name(),
@@ -84,12 +85,23 @@ func (fixture runLifecycleFixture) settlement() runSettlement {
 	return runSettlement{status: run.Status(), completedAt: run.CompletedAt(), builds: builds}
 }
 
+// reloadRun reads the Run as a caller would after the Run results component
+// has had its pass: completion is that component's terminal publication, not
+// a side effect of the build that settled last.
 func (fixture runLifecycleFixture) reloadRun() db.PipelineRun {
 	GinkgoHelper()
+	fixture.finalize()
 	run, found, err := fixture.factory.GetRun(fixture.template, fixture.run.Number())
 	Expect(err).NotTo(HaveOccurred())
 	Expect(found).To(BeTrue())
 	return run
+}
+
+// finalize gives the Run results component its pass over this Run.
+func (fixture runLifecycleFixture) finalize() {
+	GinkgoHelper()
+	_, err := dbtest.FinalizeRun(context.Background(), dbConn, fixture.factory, fixture.run.ID())
+	Expect(err).NotTo(HaveOccurred())
 }
 
 func openRunLifecycleConn() db.DbConn {
@@ -385,6 +397,7 @@ var _ = Describe("Pipeline run lifecycle", func() {
 		entry := fixture.jobs["entry"]
 		consumeObservedSchedule(entry)
 		Expect(pendingRunBuild(entry).Finish(db.BuildStatusSucceeded)).To(Succeed())
+		fixture.finalize()
 
 		found, err := fixture.payload.Reload()
 		Expect(err).NotTo(HaveOccurred())
@@ -399,6 +412,7 @@ var _ = Describe("Pipeline run lifecycle", func() {
 		consumeObservedSchedule(entry)
 		Expect(fixture.payload.Pause("alice")).To(Succeed())
 		Expect(pendingRunBuild(entry).Finish(db.BuildStatusFailed)).To(Succeed())
+		fixture.finalize()
 
 		found, err := fixture.payload.Reload()
 		Expect(err).NotTo(HaveOccurred())
@@ -417,6 +431,7 @@ var _ = Describe("Pipeline run lifecycle", func() {
 				Expect(fixture.payload.Pause(pausedBy)).To(Succeed())
 			}
 			Expect(pendingRunBuild(entry).Finish(db.BuildStatusFailed)).To(Succeed())
+			fixture.finalize()
 
 			Expect(fixture.payload.Unpause()).To(MatchError(db.ErrPipelineRunNotRunning))
 			found, err := fixture.payload.Reload()
@@ -605,40 +620,6 @@ var _ = Describe("Pipeline run lifecycle", func() {
 		Eventually(admitted).WithTimeout(3 * time.Second).Should(Receive(BeNil()))
 		Eventually(finished).WithTimeout(3 * time.Second).Should(Receive(BeNil()))
 		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusRunning))
-	})
-
-	It("makes non-manual admission queued after completion conflict", func() {
-		fixture := createRunLifecycleFixture(basicRunConfig("entry"))
-		entry := fixture.jobs["entry"]
-		finishing := pendingRunBuild(entry)
-		consumeObservedSchedule(entry)
-		gateConn := openRunLifecycleConn()
-		admissionConn := openRunLifecycleConn()
-		finishConn := openRunLifecycleConn()
-		legacy := fixture.loadPayload(admissionConn).(interface {
-			CreateJobBuild(string) (db.Build, error)
-		})
-		finishing = loadRunLifecycleBuild(finishConn, finishing.ID())
-
-		gate, err := gateConn.Begin()
-		Expect(err).NotTo(HaveOccurred())
-		DeferCleanup(func() { _ = gate.Rollback() })
-		var locked int
-		Expect(gate.QueryRow("SELECT id FROM pipeline_runs WHERE id = $1 FOR UPDATE", fixture.run.ID()).Scan(&locked)).To(Succeed())
-
-		finished := make(chan error, 1)
-		go func() { finished <- finishing.Finish(db.BuildStatusSucceeded) }()
-		Consistently(finished, 100*time.Millisecond).ShouldNot(Receive())
-		admitted := make(chan error, 1)
-		go func() { _, err := legacy.CreateJobBuild("entry"); admitted <- err }()
-		Consistently(admitted, 100*time.Millisecond).ShouldNot(Receive())
-
-		Expect(gate.Rollback()).To(Succeed())
-		Eventually(finished).WithTimeout(3 * time.Second).Should(Receive(BeNil()))
-		var admissionErr error
-		Eventually(admitted).WithTimeout(3 * time.Second).Should(Receive(&admissionErr))
-		expectTerminalRefusal(admissionErr, fixture.run.Number(), atc.RunStatusSucceeded)
-		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusSucceeded))
 	})
 })
 

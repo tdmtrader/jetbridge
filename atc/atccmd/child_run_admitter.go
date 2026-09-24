@@ -62,8 +62,10 @@ func (cmd *RunCommand) constructChildRunAdmitter(
 		customRoles,
 	)
 
-	// The epoch this control plane speaks for; zero refuses every admission.
-	return childRunAdmitter{service: composition.NewService(admitter, cmd.Kubernetes.OutputActivationEpoch)}, nil
+	// Runs are admitted under the Run activation epoch; zero refuses every
+	// admission. The Hangar output epoch is only for templates that need it.
+	admitter.SetOutputEpoch(cmd.outputEpoch())
+	return childRunAdmitter{service: composition.NewService(admitter, cmd.PipelineRunActivationEpoch)}, nil
 }
 
 // childRunAdmitter adapts composition's service to the port atc/exec declared.

@@ -68,10 +68,16 @@ func resolveRunInputSource(ctx context.Context, tx Tx, audience runinput.Audienc
 		}
 		return atc.RunResultBinding{Ref: ref}, nil
 	}
+	// The result must have been published under the Hangar epoch this admission
+	// binds under. A Run's own activation epoch says nothing about it. After a
+	// Hangar rotation an earlier Run's result is therefore unavailable as an
+	// input -- a limit the owner accepted (M-2 decision 3), not an oversight.
 	var body []byte
 	err := tx.QueryRowContext(ctx, `SELECT r.result_manifest->$2 FROM pipeline_runs r
 		JOIN pipelines p ON p.id=r.template_pipeline_id
-		WHERE r.id=$1 AND p.team_id=$3 AND r.run_contract_version='v2' AND r.status='succeeded' AND r.activation_epoch=$4`, source.RunID, source.Result, audience.TeamID, audience.Epoch).Scan(&body)
+		WHERE r.id=$1 AND p.team_id=$3 AND r.status='succeeded'
+		AND EXISTS (SELECT 1 FROM hangar_claims c
+			WHERE c.claim_id::text = r.result_manifest->$2->>'claim_id' AND c.activation_epoch=$4)`, source.RunID, source.Result, audience.TeamID, audience.Epoch).Scan(&body)
 	if err == sql.ErrNoRows {
 		return atc.RunResultBinding{}, atc.ErrRunInputUnavailable
 	}

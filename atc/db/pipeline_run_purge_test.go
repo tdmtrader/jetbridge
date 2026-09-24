@@ -83,6 +83,7 @@ func admitRunEvidence(ctx context.Context, teamName string) admittedRunEvidence 
 	defer db.Rollback(tx)
 	creation, err := factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{
 		ActivationEpoch: 1,
+		HangarEpoch:     1,
 		Invocation:      &db.RunInvocationIdentity{PrincipalDigest: principal, KeyDigest: runEvidenceDigest("key")},
 	})
 	Expect(err).NotTo(HaveOccurred())

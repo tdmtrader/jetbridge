@@ -7,6 +7,7 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/present"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -23,7 +24,7 @@ var _ = Describe("Pipeline presenter matrix", func() {
 		}, db.ConfigVersion(0), false)
 		Expect(err).NotTo(HaveOccurred())
 
-		creation, err := db.NewPipelineRunFactory(dbConn, nil).CreateRun(context.Background(), template, db.RunParams{}, "creator")
+		creation, err := dbtest.CreateRun(dbConn, db.NewPipelineRunFactory(dbConn, nil), context.Background(), template, db.RunParams{}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(template.Reload()).To(BeTrue())
 
@@ -92,7 +93,7 @@ var _ = Describe("Pipeline presenter matrix", func() {
 			Jobs:     atc.JobConfigs{{Name: "entry"}},
 		}, db.ConfigVersion(0), false)
 		Expect(err).NotTo(HaveOccurred())
-		creation, err := db.NewPipelineRunFactory(dbConn, nil).CreateRun(context.Background(), template, db.RunParams{}, "creator")
+		creation, err := dbtest.CreateRun(dbConn, db.NewPipelineRunFactory(dbConn, nil), context.Background(), template, db.RunParams{}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 		childID, found := creation.Run.InstancePipelineID()
 		Expect(found).To(BeTrue())

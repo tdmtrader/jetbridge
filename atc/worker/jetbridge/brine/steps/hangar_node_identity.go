@@ -3,12 +3,13 @@ package steps
 import (
 	"context"
 	"fmt"
-	"github.com/brine-dev/brine-go/pkg/brine"
-	"k8s.io/client-go/tools/clientcmd"
-	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/brine-dev/brine-go/pkg/brine"
+	"k8s.io/client-go/tools/clientcmd"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
 func HangarNodeIdentityDefinitions() []brine.StepDefinition {

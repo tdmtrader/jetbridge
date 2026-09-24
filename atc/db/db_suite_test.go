@@ -152,6 +152,10 @@ var _ = BeforeEach(func() {
 
 	builder = dbtest.NewBuilder(dbConn, lockFactory)
 
+	// Runs are admitted under the Run contract's own activation epoch, the
+	// state every deploy reconciles to. Specs about a held marker turn it off.
+	Expect(dbtest.ActivateRuns(dbConn)).To(Succeed())
+
 	var err error
 	defaultTeam, err = teamFactory.CreateTeam(atc.Team{Name: "default-team"})
 	Expect(err).NotTo(HaveOccurred())

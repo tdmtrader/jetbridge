@@ -29,11 +29,10 @@ func (s *Server) CreatePipelineRunV2(pipeline db.Pipeline) http.Handler {
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
-		if !atc.EnablePipelineRunCreation {
-			errormap.Write(w, atc.ErrPipelineRunCreationDisabled)
-			return
-		}
-		if s.services.Admitter == nil || s.services.Epoch <= 0 {
+		// The operator's hold is the port's to answer: it stops new Runs, not
+		// the replay of one this key already admitted, which a caller whose
+		// response was lost still needs.
+		if s.services.Admitter == nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
@@ -74,7 +73,7 @@ func (s *Server) CreatePipelineRunV2(pipeline db.Pipeline) http.Handler {
 			Principal: runs.Principal{Claims: claims}, ContractKey: request.InvocationKey,
 			Params: request.Vars, Inputs: request.Inputs,
 			CausedByRun: request.CausedByRun, Correlation: request.Correlation,
-		}, s.services.Epoch)
+		}, atc.PipelineRunActivationEpoch)
 		if err != nil {
 			writeVersionedRefusal(w, err)
 			return

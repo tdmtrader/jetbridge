@@ -7,6 +7,7 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbtest"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -200,7 +201,7 @@ var _ = Describe("PipelineLifecycle", func() {
 				Expect(saveErr).ToNot(HaveOccurred())
 
 				factory := db.NewPipelineRunFactory(dbConn, lockFactory)
-				creation, runErr := factory.CreateRun(context.Background(), templatePipeline, db.RunParams{}, defaultBuildCreatedBy)
+				creation, runErr := dbtest.CreateRun(dbConn, factory, context.Background(), templatePipeline, db.RunParams{}, defaultBuildCreatedBy)
 				Expect(runErr).ToNot(HaveOccurred())
 
 				var found bool

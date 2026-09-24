@@ -1,6 +1,7 @@
 package db_test
 
 import (
+	"context"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -541,10 +542,10 @@ var _ = Describe("Pipeline run completion notifications", func() {
 		// successful commit can see it -- both orders look identical there.
 		//
 		// A DEFERRABLE INITIALLY DEFERRED constraint trigger is what makes the
-		// difference observable: it fires at COMMIT, long after
-		// attemptRunCompletion has already flipped the row inside the
-		// transaction, so an announce placed before tx.Commit() has already
-		// gone out by the time the commit is refused.
+		// difference observable: it fires at COMMIT, long after the terminal
+		// publication has already flipped the row inside the transaction, so
+		// an announce placed before tx.Commit() has already gone out by the
+		// time the commit is refused.
 		//
 		// Two connections, because that announce would otherwise be issued
 		// while this spec's own transaction still holds the suite's single
@@ -578,10 +579,17 @@ var _ = Describe("Pipeline run completion notifications", func() {
 
 		received := listenForCompletion()
 
-		err = pendingRunBuild(entry).Finish(db.BuildStatusSucceeded)
+		// The last build settles in its own transaction; the terminal
+		// publication is the Run results component's, and it is that commit
+		// the trigger refuses.
+		Expect(pendingRunBuild(entry).Finish(db.BuildStatusSucceeded)).To(Succeed())
+		_, err = dbtest.FinalizeRun(context.Background(), dbConn, fixture.factory, fixture.run.ID())
 		Expect(err).To(HaveOccurred(), "the commit must have been refused")
 		Expect(err.Error()).To(ContainSubstring("refusing terminal run at commit"))
-		Expect(fixture.reloadRun().Status()).To(Equal(atc.RunStatusRunning), "rolled back: the run is still running")
+		run, found, err := fixture.factory.GetRun(fixture.template, fixture.run.Number())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(run.Status()).To(Equal(atc.RunStatusRunning), "rolled back: the run is still running")
 
 		Expect(received()).To(BeFalse(), "a completion that never committed must not be announced")
 	})

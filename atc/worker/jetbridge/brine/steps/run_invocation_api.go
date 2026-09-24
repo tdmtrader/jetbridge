@@ -13,6 +13,7 @@ import (
 	"github.com/brine-dev/brine-go/pkg/brine"
 	reviewclient "github.com/concourse/concourse/agent/review/client"
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/db"
 	"golang.org/x/oauth2"
 )
 
@@ -97,10 +98,10 @@ func exerciseRunInvocationAPI(in RunInputAdmission, mode string, rec *brine.Reco
 		auth.mu.Unlock()
 		want = http.StatusForbidden
 	case "operator hold":
-		atc.EnablePipelineRunCreation = false
+		atc.PipelineRunActivationEpoch = 0
 		want = http.StatusConflict
 	case "database hold":
-		_, err = in.Source.Start.DB.Conn.Exec(`UPDATE pipeline_run_activation SET admission_enabled=false WHERE singleton`)
+		_, err = db.ReconcilePipelineRunActivation(context.Background(), in.Source.Start.DB.Conn, 0)
 		want = http.StatusConflict
 	case "paused template":
 		err = in.Template.Pause("brine")
@@ -161,6 +162,15 @@ func exerciseRunInvocationAPI(in RunInputAdmission, mode string, rec *brine.Reco
 					return err
 				}
 			}
+			// A hold stops new Runs, not running ones: the key still replays.
+			switch mode {
+			case "operator hold replay":
+				atc.PipelineRunActivationEpoch = 0
+			case "database hold replay":
+				if _, err := db.ReconcilePipelineRunActivation(context.Background(), in.Source.Start.DB.Conn, 0); err != nil {
+					return err
+				}
+			}
 			request["inputs"] = map[string]atc.RunInputSource{"change": source}
 			body, _ = json.Marshal(request)
 			// The first response may have been lost. A new HTTP connection still
@@ -181,6 +191,13 @@ func exerciseRunInvocationAPI(in RunInputAdmission, mode string, rec *brine.Reco
 				}
 				if replay.AdmissionOutcome != atc.RunAdmissionReplayed || header.Get(atc.IdempotencyReplayedHeader) != "true" {
 					return fmt.Errorf("replay signalled outcome %q with replay header %q", replay.AdmissionOutcome, header.Get(atc.IdempotencyReplayedHeader))
+				}
+			}
+			if strings.HasSuffix(mode, "hold replay") {
+				request["invocation_key"] = "brine-http-invocation-new"
+				body, _ = json.Marshal(request)
+				if status, _, err = send(path, token, body); err != nil || status != http.StatusConflict {
+					return fmt.Errorf("%s new key: HTTP %d, want %d; error=%v", mode, status, http.StatusConflict, err)
 				}
 			}
 		}

@@ -11,6 +11,7 @@ import (
 	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/event"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -37,7 +38,7 @@ func newReclaimTemplate(name string, keepLast, ttlDays *int) db.Pipeline {
 
 func newReclaimRun(template db.Pipeline, completedAt *time.Time) reclaimFixture {
 	GinkgoHelper()
-	creation, err := db.NewPipelineRunFactory(dbConn, lockFactory).CreateRun(context.Background(), template, db.RunParams{}, "creator")
+	creation, err := dbtest.CreateRun(dbConn, db.NewPipelineRunFactory(dbConn, lockFactory), context.Background(), template, db.RunParams{}, "creator")
 	Expect(err).NotTo(HaveOccurred())
 	payload, found, err := defaultTeam.Pipeline(atc.PipelineRef{
 		Name: template.Name(), InstanceVars: atc.InstanceVars{"run": float64(creation.Run.Number())},
@@ -51,7 +52,7 @@ func newReclaimRun(template db.Pipeline, completedAt *time.Time) reclaimFixture 
 	if completedAt != nil {
 		_, err = dbConn.Exec(`UPDATE builds SET status = 'succeeded', completed = true, end_time = $2 WHERE id = $1`, build.ID(), *completedAt)
 		Expect(err).NotTo(HaveOccurred())
-		_, err = dbConn.Exec(`UPDATE pipeline_runs SET status = 'succeeded', completed_at = $2 WHERE id = $1`, creation.Run.ID(), *completedAt)
+		_, err = dbConn.Exec(`UPDATE pipeline_runs SET status = 'succeeded', completed_at = $2, result_manifest = '{}', terminal_observation_version = 'fixture' WHERE id = $1`, creation.Run.ID(), *completedAt)
 		Expect(err).NotTo(HaveOccurred())
 		_, err = dbConn.Exec(`UPDATE pipelines SET paused = true, paused_by = 'run-completed', paused_at = $2 WHERE id = $1`, payload.ID(), *completedAt)
 		Expect(err).NotTo(HaveOccurred())
@@ -78,7 +79,7 @@ func reclaimRunPayloadForTest(template db.Pipeline, run db.PipelineRun) {
 	Expect(err).NotTo(HaveOccurred())
 	_, err = dbConn.Exec(`
 		UPDATE pipeline_runs
-		SET status = 'failed', completed_at = now() - interval '2 days'
+		SET status = 'failed', completed_at = now() - interval '2 days', result_manifest = '{}', terminal_observation_version = 'fixture'
 		WHERE id = $1
 	`, run.ID())
 	Expect(err).NotTo(HaveOccurred())
@@ -217,7 +218,7 @@ var _ = Describe("Pipeline run reclamation", func() {
 		Eventually(signal.C()).WithTimeout(3 * time.Second).Should(Receive())
 	})
 
-	It("notifies the reclaimer only after a run build commits the terminal transition", func() {
+	It("notifies the reclaimer only once the Run's terminal publication commits", func() {
 		keepLast := 1
 		template := newReclaimTemplate("completion-notify", &keepLast, nil)
 		fixture := newReclaimRun(template, nil)
@@ -236,7 +237,14 @@ var _ = Describe("Pipeline run reclamation", func() {
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(func() { Expect(dbConn.Bus().UnlistenSignal(atc.ComponentReclaimerPipelineRuns, signal)).To(Succeed()) })
 
+		// Finishing the last build does not complete the Run; it wakes the
+		// Run results component, whose terminal publication is what the
+		// reclaimer is told about.
 		Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
+		Consistently(signal.C(), 200*time.Millisecond).ShouldNot(Receive())
+		completed, err := dbtest.FinalizeRun(context.Background(), dbConn, db.NewPipelineRunFactory(dbConn, lockFactory), fixture.run.ID())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(completed).To(BeTrue())
 		Eventually(signal.C()).WithTimeout(3 * time.Second).Should(Receive())
 		stored, found, err := db.NewPipelineRunFactory(dbConn, lockFactory).GetRunByID(fixture.run.ID())
 		Expect(err).NotTo(HaveOccurred())
@@ -291,38 +299,6 @@ var _ = Describe("Pipeline run reclamation", func() {
 		expectPipelineExists(victim.payload.ID(), true)
 	})
 
-	It("rechecks a run that stopped being terminal after waiting for the template lock", func() {
-		keepLast := 1
-		template := newReclaimTemplate("revived-race", &keepLast, nil)
-		completed := time.Now().Add(-time.Hour)
-		victim := newReclaimRun(template, &completed)
-		newReclaimRun(template, &completed)
-
-		gateConn := openRunLifecycleConn()
-		reclaimConn := openRunLifecycleConn()
-		revivedConn := openRunLifecycleConn()
-		gate, err := gateConn.Begin()
-		Expect(err).NotTo(HaveOccurred())
-		DeferCleanup(func() { _ = gate.Rollback() })
-		var locked int
-		Expect(gate.QueryRow(`SELECT id FROM pipelines WHERE id = $1 FOR UPDATE`, template.ID()).Scan(&locked)).To(Succeed())
-		result := make(chan bool, 1)
-		go func() {
-			destroyed, _ := db.NewPipelineRunReclaimLifecycle(reclaimConn).DestroyReclaimableRun(victim.run.ID())
-			result <- destroyed
-		}()
-		Consistently(result, 150*time.Millisecond).ShouldNot(Receive())
-
-		revived, err := revivedConn.Begin()
-		Expect(err).NotTo(HaveOccurred())
-		_, err = revived.Exec(`UPDATE pipeline_runs SET status = 'running', completed_at = NULL WHERE id = $1`, victim.run.ID())
-		Expect(err).NotTo(HaveOccurred())
-		Expect(revived.Commit()).To(Succeed())
-		Expect(gate.Rollback()).To(Succeed())
-		Eventually(result).WithTimeout(3 * time.Second).Should(Receive(BeFalse()))
-		expectPipelineExists(victim.payload.ID(), true)
-	})
-
 	It("atomically detaches retained job builds and deletes only disposable payload data", func() {
 		keepLast := 1
 		template := newReclaimTemplate("atomic", &keepLast, nil)
@@ -363,7 +339,7 @@ var _ = Describe("Pipeline run reclamation", func() {
 		Expect(checkExists).To(BeFalse(), "disposable non-stamped checks follow the payload cascade")
 	})
 
-	It("treats policy withdrawal, a non-terminal run, active stamped builds, and a missing child as normal misses", func() {
+	It("treats policy withdrawal, active stamped builds, and a missing child as normal misses", func() {
 		keepLast := 1
 		completed := time.Now().Add(-time.Hour)
 
@@ -376,14 +352,8 @@ var _ = Describe("Pipeline run reclamation", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(destroyed).To(BeFalse())
 
-		revivedTemplate := newReclaimTemplate("revived", &keepLast, nil)
-		revived := newReclaimRun(revivedTemplate, &completed)
-		newReclaimRun(revivedTemplate, &completed)
-		_, err = dbConn.Exec(`UPDATE pipeline_runs SET status = 'running', completed_at = NULL WHERE id = $1`, revived.run.ID())
-		Expect(err).NotTo(HaveOccurred())
-		destroyed, err = lifecycle.DestroyReclaimableRun(revived.run.ID())
-		Expect(err).NotTo(HaveOccurred())
-		Expect(destroyed).To(BeFalse())
+		// A terminal Run never becomes non-terminal again -- its publication is
+		// immutable in the schema -- so there is no revived Run to miss.
 
 		blockedTemplate := newReclaimTemplate("blocked", &keepLast, nil)
 		blocked := newReclaimRun(blockedTemplate, &completed)
@@ -408,7 +378,7 @@ var _ = Describe("Pipeline run reclamation", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(candidateIDs).NotTo(ContainElement(missing.run.ID()), "headers without a live child must not consume the bounded batch")
 
-		for _, runID := range []int{withdrawn.run.ID(), revived.run.ID(), blocked.run.ID(), missing.run.ID()} {
+		for _, runID := range []int{withdrawn.run.ID(), blocked.run.ID(), missing.run.ID()} {
 			var retry sql.NullTime
 			Expect(dbConn.QueryRow(`SELECT reclaim_retry_after FROM pipeline_runs WHERE id = $1`, runID).Scan(&retry)).To(Succeed())
 			Expect(retry.Valid).To(BeFalse(), "ordinary recheck misses must not accrue retry debt")
@@ -665,7 +635,7 @@ var _ = Describe("team purge with pipeline runs", func() {
 		}, 0, false)
 		Expect(err).NotTo(HaveOccurred())
 		factory := db.NewPipelineRunFactory(dbConn, lockFactory)
-		existing, err := factory.CreateRun(context.Background(), template, db.RunParams{}, "creator")
+		existing, err := dbtest.CreateRun(dbConn, factory, context.Background(), template, db.RunParams{}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 
 		gateConn := openRunLifecycleConn()
@@ -692,7 +662,7 @@ var _ = Describe("team purge with pipeline runs", func() {
 		createFactory := db.NewPipelineRunFactory(createConn, lockFactory)
 		created := make(chan error, 1)
 		go func() {
-			_, err := createFactory.CreateRun(context.Background(), template, db.RunParams{}, "racer")
+			_, err := dbtest.CreateRun(createConn, createFactory, context.Background(), template, db.RunParams{}, "racer")
 			created <- err
 		}()
 		Consistently(created, 100*time.Millisecond).ShouldNot(Receive())
@@ -716,7 +686,7 @@ var _ = Describe("team purge with pipeline runs", func() {
 		factory := db.NewPipelineRunFactory(dbConn, lockFactory)
 		create := func(completed bool) (db.PipelineRun, db.Pipeline, db.Build) {
 			GinkgoHelper()
-			creation, err := factory.CreateRun(context.Background(), template, db.RunParams{}, "creator")
+			creation, err := dbtest.CreateRun(dbConn, factory, context.Background(), template, db.RunParams{}, "creator")
 			Expect(err).NotTo(HaveOccurred())
 			payload, found, err := team.Pipeline(atc.PipelineRef{Name: template.Name(), InstanceVars: atc.InstanceVars{"run": float64(creation.Run.Number())}})
 			Expect(err).NotTo(HaveOccurred())
@@ -728,7 +698,7 @@ var _ = Describe("team purge with pipeline runs", func() {
 			if completed {
 				_, err = dbConn.Exec(`UPDATE builds SET status = 'succeeded', completed = true, end_time = now() WHERE id = $1`, build.ID())
 				Expect(err).NotTo(HaveOccurred())
-				_, err = dbConn.Exec(`UPDATE pipeline_runs SET status = 'succeeded', completed_at = now() WHERE id = $1`, creation.Run.ID())
+				_, err = dbConn.Exec(`UPDATE pipeline_runs SET status = 'succeeded', completed_at = now(), result_manifest = '{}', terminal_observation_version = 'fixture' WHERE id = $1`, creation.Run.ID())
 				Expect(err).NotTo(HaveOccurred())
 			}
 			return creation.Run, payload, build

@@ -147,7 +147,7 @@ func (f *pipelineRunFactory) replayRunInvocation(ctx context.Context, tx Tx, tem
 	if err != nil {
 		return RunCreation{}, false, err
 	}
-	if run == nil || run.ContractVersion() != atc.RunContractV2 {
+	if run == nil {
 		return RunCreation{}, false, errors.New("retained invocation Run missing")
 	}
 	admitted, err := runAdmittedInvocation(ctx, tx, template.TeamID(), run, templateDigest)

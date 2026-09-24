@@ -11,6 +11,7 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/db/lock"
 	. "github.com/concourse/concourse/atc/scheduler"
 	"github.com/concourse/concourse/atc/scheduler/schedulerfakes"
@@ -186,7 +187,7 @@ var _ = Describe("Runner", func() {
 		}, 0, false)
 		Expect(err).NotTo(HaveOccurred())
 		runFactory := db.NewPipelineRunFactory(fixture.Conn, fixture.LockFactory)
-		creation, err := runFactory.CreateRun(context.Background(), template, db.RunParams{}, "creator")
+		creation, err := dbtest.CreateRun(fixture.Conn, runFactory, context.Background(), template, db.RunParams{}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 		payload, found, err := team.Pipeline(atc.PipelineRef{Name: template.Name(), InstanceVars: atc.InstanceVars{"run": float64(creation.Run.Number())}})
 		Expect(err).NotTo(HaveOccurred())
@@ -204,6 +205,12 @@ var _ = Describe("Runner", func() {
 		fakeScheduler.ScheduleReturns(ScheduleResult{}, nil)
 		Expect(newRunner(tracked, 1).Run(ctx)).To(Succeed())
 		waitObservedFactory(ctx, tracked, downstream.ID())
+
+		// Run completion only wakes the Run result finalizer; finalize as it
+		// would. Consuming the observed request is what leaves nothing owed.
+		completed, err := dbtest.FinalizeRun(context.Background(), fixture.Conn, runFactory, creation.Run.ID())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(completed).To(BeTrue())
 
 		run, found, err := runFactory.GetRun(template, creation.Run.Number())
 		Expect(err).NotTo(HaveOccurred())

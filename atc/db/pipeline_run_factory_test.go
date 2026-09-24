@@ -11,6 +11,7 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/configvalidate"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -39,6 +40,7 @@ var _ = Describe("PipelineRunFactory", func() {
 		defer tx.Rollback()
 
 		creation, err := factory.CreateRunInTx(context.Background(), tx, template, db.RunParams{Vars: atc.RunParams{"value": "one"}}, "creator", db.RunCreationOpts{
+			ActivationEpoch: 1,
 			BeforeCommit: func(callbackTx db.Tx, got db.RunCreation) error {
 				var headers, payloads, builds, nextBuildID, payloadID, payloadRunID int
 				var payloadTemplate bool
@@ -100,7 +102,7 @@ var _ = Describe("PipelineRunFactory", func() {
 		template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "paged-runs"}, atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "entry"}}}, 0, false)
 		Expect(err).NotTo(HaveOccurred())
 		for range 5 {
-			_, err = factory.CreateRun(context.Background(), template, db.RunParams{}, "creator")
+			_, err = dbtest.CreateRun(dbConn, factory, context.Background(), template, db.RunParams{}, "creator")
 			Expect(err).NotTo(HaveOccurred())
 		}
 
@@ -135,7 +137,7 @@ var _ = Describe("PipelineRunFactory", func() {
 		// This fails if presentation reconstructs {run:N} instead of using ownership indexed by pipeline_run_id.
 		template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "actual-run-child"}, atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "entry"}}}, 0, false)
 		Expect(err).NotTo(HaveOccurred())
-		creation, err := factory.CreateRun(context.Background(), template, db.RunParams{}, "creator")
+		creation, err := dbtest.CreateRun(dbConn, factory, context.Background(), template, db.RunParams{}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 
 		child, found, err := factory.InstancePipeline(creation.Run)
@@ -159,7 +161,7 @@ var _ = Describe("PipelineRunFactory", func() {
 			Jobs:         atc.JobConfigs{{Name: "entry-((environment))"}},
 		}, 0, false)
 		Expect(err).NotTo(HaveOccurred())
-		creation, err := factory.CreateRun(context.Background(), template, db.RunParams{Vars: atc.RunParams{"environment": "production"}}, "creator")
+		creation, err := dbtest.CreateRun(dbConn, factory, context.Background(), template, db.RunParams{Vars: atc.RunParams{"environment": "production"}}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 
 		child, found, err := factory.InstancePipeline(creation.Run)
@@ -191,7 +193,7 @@ var _ = Describe("PipelineRunFactory", func() {
 		tx, err := dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		defer tx.Rollback()
-		_, err = factory.CreateRunInTx(context.Background(), tx, template, db.RunParams{}, "creator", db.RunCreationOpts{})
+		_, err = factory.CreateRunInTx(context.Background(), tx, template, db.RunParams{}, "creator", db.RunCreationOpts{ActivationEpoch: 1})
 		Expect(err).To(MatchError(ContainSubstring("required")))
 		var number, runs int
 		Expect(tx.QueryRow("SELECT last_run_number FROM pipelines WHERE id = $1", template.ID()).Scan(&number)).To(Succeed())
@@ -205,7 +207,7 @@ var _ = Describe("PipelineRunFactory", func() {
 			tx, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Rollback()
-			_, err = factory.CreateRunInTx(context.Background(), tx, pipeline, db.RunParams{}, "creator", db.RunCreationOpts{})
+			_, err = factory.CreateRunInTx(context.Background(), tx, pipeline, db.RunParams{}, "creator", db.RunCreationOpts{ActivationEpoch: 1})
 			Expect(err).To(MatchError(expected))
 
 			var number, runs int
@@ -245,7 +247,7 @@ var _ = Describe("PipelineRunFactory", func() {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				creation, err := factory.CreateRun(context.Background(), template, db.RunParams{}, "creator")
+				creation, err := dbtest.CreateRun(dbConn, factory, context.Background(), template, db.RunParams{}, "creator")
 				results <- runResult{Creation: creation, Err: err}
 			}()
 		}
@@ -269,7 +271,7 @@ var _ = Describe("PipelineRunFactory", func() {
 		_, _, err = defaultTeam.SavePipeline(atc.PipelineRef{Name: "occupied-run", InstanceVars: atc.InstanceVars{"run": float64(1)}}, atc.Config{Jobs: atc.JobConfigs{{Name: "entry"}}}, 0, false)
 		Expect(err).NotTo(HaveOccurred())
 
-		creation, err := factory.CreateRun(context.Background(), template, db.RunParams{}, "creator")
+		creation, err := dbtest.CreateRun(dbConn, factory, context.Background(), template, db.RunParams{}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(creation.Run.Number()).To(Equal(2))
 		Expect(template.Reload()).To(BeTrue())
@@ -278,7 +280,7 @@ var _ = Describe("PipelineRunFactory", func() {
 	It("skips a run-shaped instance occupied by another template's payload", func() {
 		original, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "recycled-name"}, atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "entry"}}}, 0, false)
 		Expect(err).NotTo(HaveOccurred())
-		first, err := factory.CreateRun(context.Background(), original, db.RunParams{}, "creator")
+		first, err := dbtest.CreateRun(dbConn, factory, context.Background(), original, db.RunParams{}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(first.Run.Number()).To(Equal(1))
 
@@ -292,7 +294,7 @@ var _ = Describe("PipelineRunFactory", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(replacement.LastRunNumber()).To(Equal(0))
 
-		creation, err := factory.CreateRun(context.Background(), replacement, db.RunParams{}, "creator")
+		creation, err := dbtest.CreateRun(dbConn, factory, context.Background(), replacement, db.RunParams{}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(creation.Run.Number()).To(Equal(2), "the stale payload on {run: 1} must be skipped like any other occupant")
 
@@ -307,7 +309,7 @@ var _ = Describe("PipelineRunFactory", func() {
 	It("hydrates the durable run number only for payload pipelines", func() {
 		template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "run-number"}, atc.Config{Template: true, Jobs: atc.JobConfigs{{Name: "entry"}}}, 0, false)
 		Expect(err).NotTo(HaveOccurred())
-		creation, err := factory.CreateRun(context.Background(), template, db.RunParams{}, "creator")
+		creation, err := dbtest.CreateRun(dbConn, factory, context.Background(), template, db.RunParams{}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 
 		payload, found, err := defaultTeam.Pipeline(atc.PipelineRef{Name: "run-number", InstanceVars: atc.InstanceVars{"run": float64(creation.Run.Number())}})
@@ -331,7 +333,7 @@ var _ = Describe("PipelineRunFactory", func() {
 		}, 0, false)
 		Expect(err).NotTo(HaveOccurred())
 
-		creation, err := factory.CreateRun(context.Background(), template, db.RunParams{Vars: atc.RunParams{"count": "42"}}, "creator")
+		creation, err := dbtest.CreateRun(dbConn, factory, context.Background(), template, db.RunParams{Vars: atc.RunParams{"count": "42"}}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(creation.Config.Jobs[0].Name).To(Equal(fmt.Sprintf("entry-%d-42", creation.Run.ID())))
 		Expect(creation.Run.Params()).To(Equal(atc.Params{"count": float64(42)}))
@@ -355,7 +357,7 @@ var _ = Describe("PipelineRunFactory", func() {
 		tx, err := dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		defer tx.Rollback()
-		creation, err := factory.CreateRunInTx(context.Background(), tx, template, db.RunParams{Vars: atc.RunParams{"authoritative": "value"}}, "creator", db.RunCreationOpts{Config: &override})
+		creation, err := factory.CreateRunInTx(context.Background(), tx, template, db.RunParams{Vars: atc.RunParams{"authoritative": "value"}}, "creator", db.RunCreationOpts{ActivationEpoch: 1, Config: &override})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(creation.Config.Jobs[0].Name).To(Equal("override-value"))
 		Expect(creation.EntryJobs).To(Equal([]string{"override-value"}))
@@ -387,7 +389,7 @@ var _ = Describe("PipelineRunFactory", func() {
 		Expect(template.RunRetention()).To(BeNil())
 		Expect(updated.Template()).To(BeTrue())
 
-		creation, err := factory.CreateRun(context.Background(), updated, db.RunParams{}, "creator")
+		creation, err := dbtest.CreateRun(dbConn, factory, context.Background(), updated, db.RunParams{}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(creation.Run.Number()).To(Equal(1))
 		resaved, _, err := defaultTeam.SavePipeline(ref, withoutMetadata, updated.ConfigVersion(), false)
@@ -446,7 +448,7 @@ var _ = Describe("PipelineRunFactory", func() {
 		Expect(err).NotTo(HaveOccurred())
 		failingFactory := db.NewPipelineRunFactory(notificationFailingConn{DbConn: dbConn}, lockFactory)
 
-		creation, err := failingFactory.CreateRun(context.Background(), template, db.RunParams{}, "creator")
+		creation, err := dbtest.CreateRun(dbConn, failingFactory, context.Background(), template, db.RunParams{}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 		stored, found, err := factory.GetRun(template, creation.Run.Number())
 		Expect(err).NotTo(HaveOccurred())
@@ -462,7 +464,7 @@ var _ = Describe("PipelineRunFactory", func() {
 		bus := &notificationRecordingBus{NotificationsBus: dbConn.Bus(), failChannel: atc.ComponentLidarScanner}
 		recordingFactory := db.NewPipelineRunFactory(notificationRecordingConn{DbConn: dbConn, bus: bus}, lockFactory)
 
-		creation, err := recordingFactory.CreateRun(context.Background(), template, db.RunParams{}, "creator")
+		creation, err := dbtest.CreateRun(dbConn, recordingFactory, context.Background(), template, db.RunParams{}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(bus.notifications).To(Equal([]string{atc.ComponentLidarScanner, atc.ComponentScheduler}))
 		Expect(recordingFactory.AfterRunCreated(context.Background(), creation)).To(MatchError("notification unavailable"))
@@ -480,7 +482,7 @@ var _ = Describe("PipelineRunFactory", func() {
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(func() { Expect(bus.UnlistenSignal(atc.ComponentScheduler, scheduler)).To(Succeed()) })
 
-		creation, err := factory.CreateRun(context.Background(), template, db.RunParams{}, "creator")
+		creation, err := dbtest.CreateRun(dbConn, factory, context.Background(), template, db.RunParams{}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 		Eventually(scanner.C(), 10*time.Second).Should(Receive())
 		Eventually(scheduler.C(), 10*time.Second).Should(Receive())
@@ -496,7 +498,7 @@ var _ = Describe("PipelineRunFactory", func() {
 		tx, err := dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		defer tx.Rollback()
-		_, err = factory.CreateRunInTx(context.Background(), tx, template, db.RunParams{}, "creator", db.RunCreationOpts{BeforeCommit: func(db.Tx, db.RunCreation) error { return fmt.Errorf("stop") }})
+		_, err = factory.CreateRunInTx(context.Background(), tx, template, db.RunParams{}, "creator", db.RunCreationOpts{ActivationEpoch: 1, BeforeCommit: func(db.Tx, db.RunCreation) error { return fmt.Errorf("stop") }})
 		Expect(err).To(MatchError("stop"))
 		var visibleRows, one int
 		Expect(tx.QueryRow("SELECT count(*) FROM pipeline_runs WHERE template_pipeline_id = $1", template.ID()).Scan(&visibleRows)).To(Succeed())

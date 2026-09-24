@@ -40,7 +40,14 @@ func validateRunnableTemplate(locked *pipeline) error {
 // effective declarations on that same connection.
 func (f *pipelineRunFactory) InputUploadAudience(ctx context.Context, tx Tx, template Pipeline, input string, epoch int64, principal string) (runinput.Audience, error) {
 	var audience runinput.Audience
-	if err := lockRunActivation(ctx, tx, epoch); err != nil {
+	// An upload is published under the Hangar epoch (epoch), while Run
+	// admission is open under its own marker; both are the activation prefix.
+	if marker, err := lockRunActivationMarker(ctx, tx); err != nil {
+		return audience, err
+	} else if !marker.enabled {
+		return audience, atc.ErrRunResultsUnavailable
+	}
+	if err := lockEnabledHangarEpoch(ctx, tx, epoch); err != nil {
 		return audience, err
 	}
 	locked := newPipeline(f.conn, f.lockFactory)

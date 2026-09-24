@@ -53,13 +53,13 @@ func (s *Server) pipelineRun(pipeline db.Pipeline, run db.PipelineRun, r *http.R
 	}
 	presented := s.presentRun(pipeline, run, instance, r)
 	access := accessor.GetAccessor(r)
-	if run.ContractVersion() == atc.RunContractV2 && access.IsAuthenticated() && access.IsAuthorized(pipeline.TeamName()) {
+	if access.IsAuthenticated() && access.IsAuthorized(pipeline.TeamName()) {
 		presented.Captures, err = s.runFactory.CaptureProgress(r.Context(), run.ID())
 		if err != nil {
 			return atc.PipelineRun{}, err
 		}
 	}
-	if run.ContractVersion() == atc.RunContractV2 && run.Status() != atc.RunStatusRunning && access.IsAuthenticated() && access.IsAuthorized(pipeline.TeamName()) {
+	if run.Status() != atc.RunStatusRunning && access.IsAuthenticated() && access.IsAuthorized(pipeline.TeamName()) {
 		// Terminal headers are immutable. Read only after observing terminal
 		// status, so a concurrent completion cannot mix a running header with
 		// a published result. The payload is not needed to resolve the result.

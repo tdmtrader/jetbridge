@@ -51,6 +51,7 @@ var _ = Describe("Run credential target worker image", func() {
 			defer db.Rollback(tx)
 			creation, err := factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "owner", db.RunCreationOpts{
 				ActivationEpoch: 1,
+				HangarEpoch:     1,
 				Invocation:      &db.RunInvocationIdentity{PrincipalDigest: owner, KeyDigest: strings.Repeat(key, 64)},
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -82,5 +83,51 @@ var _ = Describe("Run credential target worker image", func() {
 		Expect(err).NotTo(HaveOccurred())
 		third := create("c")
 		Expect(target(third.Run.Number()).WorkerImage).To(BeEmpty())
+	})
+
+	// A new delivery grants a running Run's producer the owner's credentials.
+	// It needs both the Run contract admitting (an operator's admission hold
+	// stops it, as it does on the wire) and the Hangar epoch the control plane
+	// speaks for enabled.
+	It("refuses a new delivery under an admission hold or a disabled Hangar epoch", func() {
+		ctx := context.Background()
+		consumer, err := db.HangarConsumerPrefixHeld("credential-hold-test")
+		Expect(err).NotTo(HaveOccurred())
+		hangarActivateEpoch(ctx, db.NewHangarOutputRepository(consumer))
+		_, err = db.ReconcilePipelineRunActivation(ctx, dbConn, 1)
+		Expect(err).NotTo(HaveOccurred())
+
+		factory := db.NewPipelineRunFactory(dbConn, lockFactory)
+		template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "review"}, config(pinned, ""), 0, false)
+		Expect(err).NotTo(HaveOccurred())
+		tx, err := dbConn.Begin()
+		Expect(err).NotTo(HaveOccurred())
+		creation, err := factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "owner", db.RunCreationOpts{
+			ActivationEpoch: 1, HangarEpoch: 1,
+			Invocation: &db.RunInvocationIdentity{PrincipalDigest: owner, KeyDigest: strings.Repeat("d", 64)},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(tx.Commit()).To(Succeed())
+		load := func() error {
+			GinkgoHelper()
+			tx, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(tx)
+			_, err = db.LoadRunCredentialTarget(ctx, tx, template.ID(), creation.Run.Number(), owner, "findings", 1, false)
+			return err
+		}
+
+		Expect(load()).To(Succeed())
+
+		_, err = db.ReconcilePipelineRunActivation(ctx, dbConn, 0)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(load()).To(MatchError(atc.ErrRunResultsUnavailable), "an admission hold stops new delivery")
+
+		_, err = db.ReconcilePipelineRunActivation(ctx, dbConn, 1)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(load()).To(Succeed())
+		_, err = dbConn.Exec(`UPDATE hangar_output_activation_epochs SET output_state='disabled', base_state='disabled', revision=revision+1 WHERE epoch_id=1`)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(load()).To(MatchError(atc.ErrRunResultsUnavailable), "a disabled Hangar epoch stops new delivery")
 	})
 })

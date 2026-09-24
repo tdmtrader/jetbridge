@@ -25,8 +25,8 @@ var _ = Describe("Pipeline presenter matrix", func() {
 		// is admitted. The `gate: false` rows below them are this track's
 		// check -- the gate narrows the field for every caller, whatever
 		// their role.
-		original := atc.EnablePipelineRunCreation
-		DeferCleanup(func() { atc.EnablePipelineRunCreation = original })
+		original := atc.PipelineRunActivationEpoch
+		DeferCleanup(func() { atc.PipelineRunActivationEpoch = original })
 
 		for i, tc := range []struct {
 			name         string
@@ -55,7 +55,10 @@ var _ = Describe("Pipeline presenter matrix", func() {
 		} {
 			tc := tc
 			By(tc.name)
-			atc.EnablePipelineRunCreation = tc.gate
+			atc.PipelineRunActivationEpoch = 0
+			if tc.gate {
+				atc.PipelineRunActivationEpoch = 1
+			}
 			auth := atc.TeamAuth{tc.role: {"users": {"test:user"}}}
 			if tc.unauth {
 				auth = atc.TeamAuth{accessor.ViewerRole: {}}
@@ -131,8 +134,8 @@ var _ = Describe("Pipeline presenter matrix", func() {
 		// Both collections, in both gate states: a change that gates the
 		// detail payload while the two list payloads keep answering true is
 		// the failure this spec exists to catch.
-		original := atc.EnablePipelineRunCreation
-		DeferCleanup(func() { atc.EnablePipelineRunCreation = original })
+		original := atc.PipelineRunActivationEpoch
+		DeferCleanup(func() { atc.PipelineRunActivationEpoch = original })
 
 		team, err := teamFactory.CreateTeam(atc.Team{
 			Name: "operator-team",
@@ -157,7 +160,10 @@ var _ = Describe("Pipeline presenter matrix", func() {
 		listRequest.Form = url.Values{":team_name": {team.Name()}}
 
 		for _, gate := range []bool{true, false} {
-			atc.EnablePipelineRunCreation = gate
+			atc.PipelineRunActivationEpoch = 0
+			if gate {
+				atc.PipelineRunActivationEpoch = 1
+			}
 			By(fmt.Sprintf("with run creation admitted: %t", gate))
 
 			for _, tc := range []struct {

@@ -92,6 +92,15 @@ var typedModes = []struct {
 		floor: 25,
 	},
 	{
+		// The Run epoch is rendered beside, and independently of, the Hangar epoch.
+		name: "web capture with a raised Run activation epoch",
+		sets: append(append([]string{}, outputSets...),
+			"hangarOutput.webEnabled=true",
+			"web.pipelineRunActivationEpoch=4",
+		),
+		floor: 25,
+	},
+	{
 		name: "activation Job, mode=attest facet=base",
 		sets: append(append([]string{}, outputSets...),
 			"hangarOutput.activation.job.mode=attest",

@@ -21,9 +21,9 @@ Feature: A Run owns admission of its exact output producer
     Then the original start remains immutable
 
   @core-review
-  Scenario: A legacy Run is never presented as a v2 invocation
+  Scenario: Every Run is born under the one v2 contract and cannot leave it
     Given a Run admitted from a parameterized template
-    Then the Run records an immutable legacy birth contract
+    Then the Run records an immutable v2 birth contract
 
   @core-review
   Scenario Outline: V2 admission requires the current activated contract

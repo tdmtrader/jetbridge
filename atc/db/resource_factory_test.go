@@ -5,6 +5,7 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -104,7 +105,7 @@ var _ = Describe("Resource Factory run payload exclusion", func() {
 		}, db.ConfigVersion(0), false)
 		Expect(err).NotTo(HaveOccurred())
 
-		_, err = db.NewPipelineRunFactory(dbConn, lockFactory).CreateRun(
+		_, err = dbtest.CreateRun(dbConn, db.NewPipelineRunFactory(dbConn, lockFactory),
 			context.Background(), template, db.RunParams{Vars: atc.RunParams{"value": "one"}}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 	})

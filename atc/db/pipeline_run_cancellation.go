@@ -11,9 +11,8 @@ import (
 )
 
 var (
-	ErrPipelineRunCancelling              = errors.New("pipeline run cancellation has been requested")
-	ErrPipelineRunCancellationUnsupported = errors.New("pipeline run contract does not support cancellation")
-	ErrPipelineRunCancelReason            = errors.New("cancellation reason must be 1 to 512 UTF-8 bytes without control characters")
+	ErrPipelineRunCancelling   = errors.New("pipeline run cancellation has been requested")
+	ErrPipelineRunCancelReason = errors.New("cancellation reason must be 1 to 512 UTF-8 bytes without control characters")
 )
 
 // AcceptRunCancellation only records the command. Its caller commits before
@@ -41,9 +40,6 @@ func acceptRunCancellation(ctx context.Context, tx Tx, runID int, requester stri
 	run, err := lockPipelineRun(tx, runID)
 	if err != nil {
 		return "", err
-	}
-	if run.ContractVersion() != atc.RunContractV2 {
-		return "", ErrPipelineRunCancellationUnsupported
 	}
 	// Request metadata wins over terminal status, including a lost-response retry
 	// after convergence has published the aborted outcome.

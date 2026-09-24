@@ -128,10 +128,10 @@ var _ = BeforeEach(func() {
 	//
 	// creation_gate_test.go turns it back off for the specs that are about
 	// the hold itself.
-	previousGate := atc.EnablePipelineRunCreation
-	atc.EnablePipelineRunCreation = true
+	previousGate := atc.PipelineRunActivationEpoch
+	atc.PipelineRunActivationEpoch = 1
 	DeferCleanup(func() {
-		atc.EnablePipelineRunCreation = previousGate
+		atc.PipelineRunActivationEpoch = previousGate
 	})
 
 	postgresRunner.CreateTestDBFromTemplate()

@@ -2,12 +2,15 @@ package pipelinerunserver
 
 import "github.com/concourse/concourse/atc/runs"
 
-// Services are configured at startup. A missing admission service or epoch
-// keeps public input intake unavailable.
+// Services are configured at startup. A missing admission service keeps Run
+// creation unavailable; a missing Hangar epoch keeps input intake and
+// credential delivery unavailable. Runs are admitted under the separate Run
+// activation epoch (atc.PipelineRunActivationEpoch).
 type Services struct {
 	Results  ResultReader
 	Admitter runs.Admitter
-	Epoch    int64
+	// Epoch is the Hangar output epoch this control plane speaks for.
+	Epoch int64
 	// ResultReadConcurrency bounds result reads in flight. Each spools the
 	// whole archive, twice, into web scratch until its response is written,
 	// so readers past the bound are refused rather than queued. Zero or less

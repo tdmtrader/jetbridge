@@ -14,10 +14,9 @@ import (
 // Admitter is core's published run-admission surface.
 //
 // A consumer opens the transaction, then admits a versioned Run inside it, so
-// it can commit its own rows in the same transaction as the Run. There is no
-// legacy admission: legacy_v1 Runs that already exist stay readable and keep
-// their original semantics, but nothing creates new ones. LookupRun
-// reads a previously admitted Run through that same transaction boundary.
+// it can commit its own rows in the same transaction as the Run. Every Run is
+// v2; there is no other class. LookupRun reads a previously admitted Run
+// through that same transaction boundary.
 type Admitter interface {
 	SetCredentialHandoffConfig(CredentialHandoffConfig)
 	InspectCredentialHandoff(context.Context, TemplateRef, Principal, int, string, int64) (atc.RunCredentialSession, error)
@@ -26,6 +25,10 @@ type Admitter interface {
 	UploadInput(context.Context, TemplateRef, Principal, string, int64, io.Reader) (atc.RunInputSource, error)
 	// SetSealedInputAuthority is startup wiring; it supplies no public mint route.
 	SetSealedInputAuthority(*runinput.Authority)
+	// SetOutputEpoch is startup wiring: the Hangar output epoch this control
+	// plane speaks for, or zero without an output plane. A Run that declares
+	// results or binds inputs is admitted only while it is enabled.
+	SetOutputEpoch(int64)
 	// Begin opens a transaction the consumer owns and must finish.
 	Begin(context.Context) (Transaction, error)
 
@@ -46,6 +49,7 @@ type admitter struct {
 	displayUserIds    atc.DisplayUserIdGenerator
 	customRoles       map[string]string
 	sealedInputs      *runinput.Authority
+	outputEpoch       int64
 	inputUploads      InputUploadConfig
 	credentialHandoff CredentialHandoffConfig
 }
@@ -78,6 +82,8 @@ func NewAdmitter(
 }
 
 func (a *admitter) SetSealedInputAuthority(authority *runinput.Authority) { a.sealedInputs = authority }
+
+func (a *admitter) SetOutputEpoch(epoch int64) { a.outputEpoch = epoch }
 
 // Begin opens the transaction admission runs in.
 //

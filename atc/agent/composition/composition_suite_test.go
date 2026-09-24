@@ -62,15 +62,16 @@ var _ = postgresrunner.GinkgoRunner(&postgresRunner)
 
 var _ = BeforeEach(func() {
 	// These specs admit real runs through the real port, and the port now
-	// answers the operator's hold before anything else. The hold is off by
+	// refuses new Runs under the operator's hold. The hold is on by
 	// default, so it is opened here and restored afterwards: it is a
 	// process-wide global, and leaking it would decide the behaviour of
-	// whatever ran next in the same binary. Nothing in this package is about
-	// the hold -- atc/runs/creation_gate_test.go owns that.
-	previousGate := atc.EnablePipelineRunCreation
-	atc.EnablePipelineRunCreation = true
+	// whatever ran next in the same binary. Apart from a resumed step's
+	// re-attach (replay_hold_test.go), nothing here is about the hold --
+	// atc/runs/creation_gate_test.go owns that.
+	previousGate := atc.PipelineRunActivationEpoch
+	atc.PipelineRunActivationEpoch = 1
 	DeferCleanup(func() {
-		atc.EnablePipelineRunCreation = previousGate
+		atc.PipelineRunActivationEpoch = previousGate
 	})
 
 	postgresRunner.CreateTestDBFromTemplate()

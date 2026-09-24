@@ -6,6 +6,7 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/runinput"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -44,6 +45,7 @@ var _ = Describe("Run causation and correlation", func() {
 		defer db.Rollback(tx)
 		creation, err := factory.CreateRunInTx(ctx, tx, on, db.RunParams{}, "owner", db.RunCreationOpts{
 			ActivationEpoch: 1,
+			HangarEpoch:     1,
 			Invocation:      &db.RunInvocationIdentity{PrincipalDigest: owner, KeyDigest: strings.Repeat(key, 64)},
 			CausedByRun:     cause,
 			Correlation:     correlation,
@@ -143,7 +145,7 @@ var _ = Describe("Run causation and correlation", func() {
 		Expect(runs).To(BeZero())
 	})
 
-	It("keeps causation and correlation off legacy Runs and bounds the correlation", func() {
+	It("requires an invocation for causation and correlation, and bounds both in the schema", func() {
 		// The suite's pool may hold one connection; finish this transaction
 		// before create() asks for another.
 		tx, err := dbConn.Begin()
@@ -162,7 +164,7 @@ var _ = Describe("Run causation and correlation", func() {
 		_, err = create(template, "e", nil, strings.Repeat("x", 128))
 		Expect(err).NotTo(HaveOccurred())
 
-		legacy, err := factory.CreateRun(ctx, template, db.RunParams{}, "owner")
+		plain, err := dbtest.CreateRun(dbConn, factory, ctx, template, db.RunParams{}, "owner")
 		Expect(err).NotTo(HaveOccurred())
 		_, err = dbConn.Exec(`ALTER TABLE pipeline_runs DISABLE TRIGGER run_causation_immutable`)
 		Expect(err).NotTo(HaveOccurred())
@@ -170,9 +172,9 @@ var _ = Describe("Run causation and correlation", func() {
 			_, err := dbConn.Exec(`ALTER TABLE pipeline_runs ENABLE TRIGGER run_causation_immutable`)
 			Expect(err).NotTo(HaveOccurred())
 		}()
-		_, err = dbConn.Exec(`UPDATE pipeline_runs SET correlation='forged' WHERE id=$1`, legacy.Run.ID())
-		Expect(err).To(MatchError(ContainSubstring("pipeline_run_correlation")), "a legacy_v1 row can never look like v2 caller intent")
-		_, err = dbConn.Exec(`UPDATE pipeline_runs SET caused_by_run=id WHERE id=$1`, legacy.Run.ID())
+		_, err = dbConn.Exec(`UPDATE pipeline_runs SET correlation='not/allowed' WHERE id=$1`, plain.Run.ID())
+		Expect(err).To(MatchError(ContainSubstring("pipeline_run_correlation")), "a correlation outside the alphabet is refused by the schema")
+		_, err = dbConn.Exec(`UPDATE pipeline_runs SET caused_by_run=id WHERE id=$1`, plain.Run.ID())
 		Expect(err).To(MatchError(ContainSubstring("pipeline_run_causation")))
 	})
 })

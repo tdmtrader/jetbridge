@@ -19,12 +19,17 @@ func FeatureFlags() map[string]bool {
 var (
 	DisableRedactSecrets bool
 
-	// EnablePipelineRunCreation admits public creation of durable pipeline
-	// runs. It is deliberately absent from FeatureFlags() above:
+	// PipelineRunActivationEpoch is the Run contract activation epoch this
+	// server admits pipeline runs under, or zero when it admits none. It is
+	// the Run contract's own and independent of the Hangar output epoch.
+	// It is deliberately absent from FeatureFlags() above:
 	// atc/api/infoserver serves that map on atc.GetInfo, which the auth wrappa
 	// leaves in its unauthenticated case, and whether this server holds run
 	// creation is not a fact an anonymous caller may read. It lives here, with
 	// DisableRedactSecrets, for the same reason -- a process-wide operator
 	// setting that is not published.
-	EnablePipelineRunCreation bool
+	PipelineRunActivationEpoch int64
 )
+
+// PipelineRunsActivated reports whether this server admits pipeline runs.
+func PipelineRunsActivated() bool { return PipelineRunActivationEpoch > 0 }

@@ -8,8 +8,10 @@ import (
 type RunContractVersion string
 
 const (
-	RunContractLegacyV1 RunContractVersion = "legacy_v1"
-	RunContractV2       RunContractVersion = "v2"
+	// RunContractV2 is the one Run contract class. The column and this type stay
+	// so a future class can be named without a migration; nothing branches on
+	// it to relax finality.
+	RunContractV2 RunContractVersion = "v2"
 )
 
 type RunStatus string

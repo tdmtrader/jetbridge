@@ -30,7 +30,7 @@ func (f *pipelineRunFactory) RunExecution(ctx context.Context, tx Tx, buildID in
 func (f *pipelineRunFactory) RunExecutionOwner(ctx context.Context, tx Tx, buildID int) (int, bool, error) {
 	var runID int
 	err := tx.QueryRowContext(ctx, `SELECT r.id FROM builds b JOIN pipeline_runs r ON r.id=b.pipeline_run_id
- WHERE b.id=$1 AND r.run_contract_version='v2'`, buildID).Scan(&runID)
+ WHERE b.id=$1`, buildID).Scan(&runID)
 	if err == sql.ErrNoRows {
 		return 0, false, nil
 	}
@@ -42,7 +42,7 @@ func (f *pipelineRunFactory) RunExecutionOwner(ctx context.Context, tx Tx, build
 func (f *pipelineRunFactory) RunExecutionContainer(ctx context.Context, tx Tx, handle string) (bool, error) {
 	var owned bool
 	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM containers c JOIN builds b ON b.id=c.build_id
- JOIN pipeline_runs r ON r.id=b.pipeline_run_id WHERE c.handle=$1 AND r.run_contract_version='v2')`, handle).Scan(&owned)
+ JOIN pipeline_runs r ON r.id=b.pipeline_run_id WHERE c.handle=$1)`, handle).Scan(&owned)
 	return owned, err
 }
 
@@ -97,22 +97,29 @@ func (f *pipelineRunFactory) AdmitRunExecution(ctx context.Context, tx Tx, req R
 	return a, true, err
 }
 
+// lockRunExecutionBuild admits an exact execution: the Run continues under its
+// own birth epoch, and the execution is controlled under the Hangar epoch this
+// control plane speaks for now, which must be enabled.
 func lockRunExecutionBuild(ctx context.Context, tx Tx, runID, buildID int, epoch int64) error {
 	var teamID int
-	if err := tx.QueryRowContext(ctx, `SELECT p.team_id FROM pipeline_runs r JOIN pipelines p ON p.id=r.template_pipeline_id WHERE r.id=$1`, runID).Scan(&teamID); err != nil {
+	var runEpoch int64
+	if err := tx.QueryRowContext(ctx, `SELECT p.team_id, r.activation_epoch FROM pipeline_runs r JOIN pipelines p ON p.id=r.template_pipeline_id WHERE r.id=$1`, runID).Scan(&teamID, &runEpoch); err != nil {
 		return err
 	}
 	if err := tx.QueryRowContext(ctx, `SELECT id FROM teams WHERE id=$1 FOR SHARE`, teamID).Scan(&teamID); err != nil {
 		return err
 	}
-	if err := lockRunActivation(ctx, tx, epoch); err != nil {
+	if err := lockRunContinuation(ctx, tx, runEpoch); err != nil {
+		return err
+	}
+	if err := lockEnabledHangarEpoch(ctx, tx, epoch); err != nil {
 		return err
 	}
 	run := &pipelineRun{}
 	if err := scanPipelineRun(run, pipelineRunsQuery.Where(sq.Eq{"r.id": runID}).Suffix("FOR NO KEY UPDATE OF r").RunWith(tx).QueryRowContext(ctx)); err != nil {
 		return err
 	}
-	if run.ContractVersion() != atc.RunContractV2 || run.ActivationEpoch() != epoch {
+	if run.ActivationEpoch() != runEpoch {
 		return atc.ErrRunResultsUnavailable
 	}
 	if run.CancellationRequested() {

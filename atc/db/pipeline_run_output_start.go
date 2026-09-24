@@ -13,16 +13,57 @@ import (
 	"github.com/google/uuid"
 )
 
-// lockRunActivation precedes every Run-domain lock in a v2 transaction. The
-// marker is disabled by migration; public admission also requires the operator
-// creation switch and configured versioned services.
-func lockRunActivation(ctx context.Context, tx Tx, epoch int64) error {
-	var current int64
-	var enabled bool
-	if err := tx.QueryRowContext(ctx, `SELECT epoch, admission_enabled FROM pipeline_run_activation WHERE singleton FOR SHARE`).Scan(&current, &enabled); err != nil {
+// The Run contract has its own activation marker, independent of the Hangar
+// output epoch (durable Run contract, amendment M-2 decision 3). Every Run
+// transaction locks it first, before any Run-domain lock; a transaction that
+// also needs a Hangar epoch locks that epoch's row next, still inside the
+// activation prefix.
+
+// runActivationMarker is the Run activation marker as a transaction locked it.
+type runActivationMarker struct {
+	epoch   int64
+	enabled bool
+}
+
+// admits is admission's test: the marker must admit, at exactly the epoch the
+// new Run is born under.
+func (m runActivationMarker) admits(epoch int64) error {
+	if epoch <= 0 || !m.enabled || m.epoch != epoch {
+		return atc.ErrRunResultsUnavailable
+	}
+	return nil
+}
+
+// continues is the test for work on a Run that already exists: the marker
+// must not have been downgraded below the Run's birth epoch. It need not
+// admit -- turning admission off stops new Runs, not running ones -- and it is
+// indifferent to any Hangar epoch rotation.
+func (m runActivationMarker) continues(runEpoch int64) error {
+	if runEpoch <= 0 || m.epoch < runEpoch {
+		return atc.ErrRunResultsUnavailable
+	}
+	return nil
+}
+
+// lockRunContinuation is the prefix for work on a Run that already exists.
+func lockRunContinuation(ctx context.Context, tx Tx, runEpoch int64) error {
+	marker, err := lockRunActivationMarker(ctx, tx)
+	if err != nil {
 		return err
 	}
-	if epoch <= 0 || !enabled || current != epoch {
+	return marker.continues(runEpoch)
+}
+
+func lockRunActivationMarker(ctx context.Context, tx Tx) (runActivationMarker, error) {
+	var marker runActivationMarker
+	err := tx.QueryRowContext(ctx, `SELECT epoch, admission_enabled FROM pipeline_run_activation WHERE singleton FOR SHARE`).Scan(&marker.epoch, &marker.enabled)
+	return marker, err
+}
+
+// lockEnabledHangarEpoch requires the Hangar epoch new capture or input work
+// speaks for to be enabled on both facets.
+func lockEnabledHangarEpoch(ctx context.Context, tx Tx, epoch int64) error {
+	if epoch <= 0 {
 		return atc.ErrRunResultsUnavailable
 	}
 	ready, err := hangarLockEnabledEpoch(ctx, tx, epoch)
@@ -160,9 +201,10 @@ func (f *pipelineRunFactory) lockOutputProducer(ctx context.Context, tx Tx, buil
 	// definition supplies producer identity; post-creation work never reaches
 	// back to lock the base template.
 	var runID, teamID int
-	if err := tx.QueryRowContext(ctx, `SELECT r.id, p.team_id FROM builds b
+	var runEpoch int64
+	if err := tx.QueryRowContext(ctx, `SELECT r.id, p.team_id, r.activation_epoch FROM builds b
 		JOIN pipeline_runs r ON r.id=b.pipeline_run_id
-		JOIN pipelines p ON p.id=r.template_pipeline_id WHERE b.id=$1`, buildID).Scan(&runID, &teamID); err != nil {
+		JOIN pipelines p ON p.id=r.template_pipeline_id WHERE b.id=$1`, buildID).Scan(&runID, &teamID, &runEpoch); err != nil {
 		if err == sql.ErrNoRows {
 			return 0, fmt.Errorf("%w: build has no owning Run", output.ErrInvalidIdentity)
 		}
@@ -171,7 +213,12 @@ func (f *pipelineRunFactory) lockOutputProducer(ctx context.Context, tx Tx, buil
 	if err := tx.QueryRowContext(ctx, `SELECT id FROM teams WHERE id=$1 FOR SHARE`, teamID).Scan(&teamID); err != nil {
 		return 0, err
 	}
-	if err := lockRunActivation(ctx, tx, epoch); err != nil {
+	// The Run continues under its own epoch; the capture is admitted under
+	// the Hangar epoch this control plane speaks for now.
+	if err := lockRunContinuation(ctx, tx, runEpoch); err != nil {
+		return 0, err
+	}
+	if err := lockEnabledHangarEpoch(ctx, tx, epoch); err != nil {
 		return 0, err
 	}
 	run := &pipelineRun{}
@@ -179,7 +226,7 @@ func (f *pipelineRunFactory) lockOutputProducer(ctx context.Context, tx Tx, buil
 	if err != nil {
 		return 0, err
 	}
-	if run.ContractVersion() != atc.RunContractV2 || run.ActivationEpoch() != epoch {
+	if run.ActivationEpoch() != runEpoch {
 		return 0, atc.ErrRunResultsUnavailable
 	}
 	if run.CancellationRequested() {

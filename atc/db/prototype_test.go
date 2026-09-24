@@ -319,7 +319,7 @@ var _ = Describe("Prototype", func() {
 
 			tx, err := dbConn.Begin()
 			Expect(err).ToNot(HaveOccurred())
-			Expect(tx.QueryRow(`INSERT INTO pipeline_runs(template_pipeline_id, number, params, status, created_by, config_hash) VALUES ($1, 1, '{}', 'running', 'creator', 'hash') RETURNING id`, templateID).Scan(&runID)).To(Succeed())
+			Expect(tx.QueryRow(`INSERT INTO pipeline_runs(template_pipeline_id, number, params, status, created_by, config_hash, run_contract_version, activation_epoch) VALUES ($1, 1, '{}', 'running', 'creator', 'hash', 'v2', 1) RETURNING id`, templateID).Scan(&runID)).To(Succeed())
 			Expect(tx.QueryRow(`INSERT INTO pipelines(team_id, name, instance_vars, pipeline_run_id, secondary_ordering) VALUES ($1, 'proto-template', '{"run":1}', $2, 1) RETURNING id`, defaultTeam.ID(), runID).Scan(&payloadID)).To(Succeed())
 			Expect(tx.Commit()).To(Succeed())
 

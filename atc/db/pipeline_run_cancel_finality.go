@@ -114,7 +114,7 @@ func (c *runCancellationCommit) lockRun(ctx context.Context, tx Tx) error {
 	if err != nil {
 		return err
 	}
-	if run.ContractVersion() != atc.RunContractV2 || !run.CancellationRequested() || run.Status() != atc.RunStatusRunning {
+	if !run.CancellationRequested() || run.Status() != atc.RunStatusRunning {
 		return ErrRunCancellationProgressStale
 	}
 	return nil

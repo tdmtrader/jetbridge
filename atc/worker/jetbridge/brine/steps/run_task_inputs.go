@@ -70,8 +70,13 @@ func RunTaskInputDefinitions() []brine.StepDefinition {
 			buildID = in.Source.Start.Creation.EntryBuilds[0].ID()
 		case "aborted build":
 			_, err = in.Source.Start.DB.Conn.Exec(`UPDATE builds SET aborted=true WHERE id=$1`, buildID)
-		case "disabled activation":
-			_, err = in.Source.Start.DB.Conn.Exec(`UPDATE pipeline_run_activation SET admission_enabled=false WHERE singleton`)
+		case "a Run admission hold":
+			// Holding admission stops new Runs, not running ones.
+			_, err = db.ReconcilePipelineRunActivation(context.Background(), in.Source.Start.DB.Conn, 0)
+		case "a disabled Hangar epoch":
+			// Reading a bound input is Hangar work under the input's epoch.
+			_, err = in.Source.Start.DB.Conn.Exec(`UPDATE hangar_output_activation_epochs
+				SET output_state='disabled', base_state='disabled', revision=revision+1, updated_at=now() WHERE epoch_id=$1`, int64(hangarEpoch))
 		case "edited template":
 			updated := definition.Template
 			updated.Jobs[0].PlanSequence[0].Config.(*atc.TaskStep).Config.Inputs[0].Path = "new-template-path"
@@ -87,7 +92,7 @@ func RunTaskInputDefinitions() []brine.StepDefinition {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		got, err := port.PrepareTask(ctx, buildID, plan, spec)
-		valid := mode == "retained inputs" || mode == "edited template" || mode == "repeated preparation"
+		valid := mode == "retained inputs" || mode == "edited template" || mode == "repeated preparation" || mode == "a Run admission hold"
 		if !valid {
 			if err == nil {
 				return fmt.Errorf("task preparation accepted %s", mode)

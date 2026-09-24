@@ -8,6 +8,7 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5/pgconn"
 	. "github.com/onsi/ginkgo/v2"
@@ -108,7 +109,7 @@ var _ = Describe("Team purge lock order", func() {
 		ctx := context.Background()
 		team, err := teamFactory.CreateTeam(atc.Team{Name: "purge-meets-run-path"})
 		Expect(err).NotTo(HaveOccurred())
-		creation, err := db.NewPipelineRunFactory(dbConn, lockFactory).CreateRun(ctx, lockOrderTemplate(team, nil), db.RunParams{}, "creator")
+		creation, err := dbtest.CreateRun(dbConn, db.NewPipelineRunFactory(dbConn, lockFactory), ctx, lockOrderTemplate(team, nil), db.RunParams{}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 
 		// Run paths (execution admission, result publication, input upload,
@@ -120,31 +121,6 @@ var _ = Describe("Team purge lock order", func() {
 		purge := blockedTeamDelete(team.Name())
 		step(runPath, "the Run path", `SELECT id FROM pipeline_runs WHERE id=$1 FOR NO KEY UPDATE`, creation.Run.ID())
 		Expect(runPath.Commit()).To(Succeed())
-
-		expectFinished(purge, "Team.Delete")
-		expectTeamGone(team.Name())
-	})
-
-	It("does not deadlock with run creation holding its template", func() {
-		ctx := context.Background()
-		team, err := teamFactory.CreateTeam(atc.Team{Name: "purge-meets-run-creation"})
-		Expect(err).NotTo(HaveOccurred())
-		template := lockOrderTemplate(team, nil)
-
-		// Creation without an activation epoch locks the template FOR UPDATE
-		// and then inserts the payload, whose team foreign key takes KEY SHARE
-		// on the team. The purge's team lock must not conflict with that.
-		conn := openRunLifecycleConn()
-		creation, err := conn.Begin()
-		Expect(err).NotTo(HaveOccurred())
-		defer db.Rollback(creation)
-		step(creation, "run creation", `SELECT id FROM pipelines WHERE id=$1 FOR UPDATE`, template.ID())
-		purge := blockedTeamDelete(team.Name())
-		createCtx, cancel := context.WithTimeout(ctx, lockOrderWait)
-		defer cancel()
-		_, err = db.NewPipelineRunFactory(conn, lockFactory).CreateRunInTx(createCtx, creation, template, db.RunParams{}, "creator", db.RunCreationOpts{})
-		expectNoDeadlock(err, "run creation")
-		Expect(creation.Commit()).To(Succeed())
 
 		expectFinished(purge, "Team.Delete")
 		expectTeamGone(team.Name())
@@ -198,7 +174,7 @@ var _ = Describe("Run reclamation lock order", func() {
 		tx, err = dbConn.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		defer db.Rollback(tx)
-		_, err = f.factory.CreateRunInTx(f.ctx, tx, f.template, db.RunParams{}, "creator", db.RunCreationOpts{ActivationEpoch: 1})
+		_, err = f.factory.CreateRunInTx(f.ctx, tx, f.template, db.RunParams{}, "creator", db.RunCreationOpts{ActivationEpoch: 1, HangarEpoch: 1})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(tx.Commit()).To(Succeed())
 

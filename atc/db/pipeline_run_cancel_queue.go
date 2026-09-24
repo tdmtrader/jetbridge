@@ -49,7 +49,7 @@ func (f *pipelineRunFactory) PendingRunCancellations(ctx context.Context, tx Tx,
 		return nil, err
 	}
 	for cycle := 0; cycle < 2; cycle++ {
-		rows, err := tx.QueryContext(ctx, `SELECT id FROM pipeline_runs WHERE run_contract_version='v2' AND cancel_requested_at IS NOT NULL AND status='running' AND id>$1 AND id<=$2 ORDER BY id LIMIT $3`, after, high, limit)
+		rows, err := tx.QueryContext(ctx, `SELECT id FROM pipeline_runs WHERE cancel_requested_at IS NOT NULL AND status='running' AND id>$1 AND id<=$2 ORDER BY id LIMIT $3`, after, high, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -73,7 +73,7 @@ func (f *pipelineRunFactory) PendingRunCancellations(ctx context.Context, tx Tx,
 		}
 		if cycle == 0 {
 			after = 0
-			if err := tx.QueryRowContext(ctx, `SELECT coalesce(max(id),0) FROM pipeline_runs WHERE run_contract_version='v2' AND cancel_requested_at IS NOT NULL AND status='running'`).Scan(&high); err != nil {
+			if err := tx.QueryRowContext(ctx, `SELECT coalesce(max(id),0) FROM pipeline_runs WHERE cancel_requested_at IS NOT NULL AND status='running'`).Scan(&high); err != nil {
 				return nil, err
 			}
 			if _, err := tx.ExecContext(ctx, `UPDATE pipeline_run_cancellation_worker SET last_run_id=0,run_high_water=$1 WHERE singleton`, high); err != nil {
@@ -245,12 +245,12 @@ func lockCancellingRun(ctx context.Context, tx Tx, runID int) error {
 }
 
 func lockRunCancellationState(ctx context.Context, tx Tx, runID int, terminalReplay bool) error {
-	var version, status string
+	var status string
 	var requested bool
-	if err := tx.QueryRowContext(ctx, `SELECT run_contract_version,status,cancel_requested_at IS NOT NULL FROM pipeline_runs WHERE id=$1 FOR NO KEY UPDATE`, runID).Scan(&version, &status, &requested); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT status,cancel_requested_at IS NOT NULL FROM pipeline_runs WHERE id=$1 FOR NO KEY UPDATE`, runID).Scan(&status, &requested); err != nil {
 		return err
 	}
-	if version != string(atc.RunContractV2) || !requested || (status != string(atc.RunStatusRunning) && !(terminalReplay && status == string(atc.RunStatusAborted))) {
+	if !requested || (status != string(atc.RunStatusRunning) && !(terminalReplay && status == string(atc.RunStatusAborted))) {
 		return ErrPipelineRunNotRunning
 	}
 	return nil

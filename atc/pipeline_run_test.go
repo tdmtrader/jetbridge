@@ -14,7 +14,7 @@ var _ = Describe("PipelineRun JSON", func() {
 		completedAt := time.Unix(1700000011, 0).UTC()
 		reclaimRetryAfter := time.Unix(1700000022, 0).UTC()
 		run := atc.PipelineRun{
-			ContractVersion:    atc.RunContractLegacyV1,
+			ContractVersion:    atc.RunContractV2,
 			ID:                 42,
 			TemplatePipelineID: 7,
 			Number:             3,
@@ -29,7 +29,7 @@ var _ = Describe("PipelineRun JSON", func() {
 
 		Expect(err).NotTo(HaveOccurred())
 		Expect(string(encoded)).To(MatchJSON(`{
-			"run_contract_version": "legacy_v1",
+			"run_contract_version": "v2",
 			"id": 42,
 			"template_pipeline_id": 7,
 			"number": 3,
@@ -46,7 +46,7 @@ var _ = Describe("PipelineRun JSON", func() {
 		completedAt := time.Unix(1700000011, 0).UTC()
 		reclaimRetryAfter := time.Unix(1700000022, 0).UTC()
 		run := atc.PipelineRun{
-			ContractVersion:    atc.RunContractLegacyV1,
+			ContractVersion:    atc.RunContractV2,
 			ID:                 42,
 			TemplatePipelineID: 7,
 			Number:             3,

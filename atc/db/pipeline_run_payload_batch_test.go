@@ -7,6 +7,7 @@ import (
 	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -44,7 +45,7 @@ var _ = Describe("PipelineRunFactory payload batching", func() {
 		factory := db.NewPipelineRunFactory(dbConn, lockFactory)
 		var runs []db.PipelineRun
 		for i := 0; i < 5; i++ {
-			creation, createErr := factory.CreateRun(context.Background(), template, db.RunParams{}, "creator")
+			creation, createErr := dbtest.CreateRun(dbConn, factory, context.Background(), template, db.RunParams{}, "creator")
 			Expect(createErr).NotTo(HaveOccurred())
 			runs = append(runs, creation.Run)
 		}

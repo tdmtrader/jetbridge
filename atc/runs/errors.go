@@ -193,7 +193,7 @@ type Refusal interface {
 // and its spec cannot drift apart. Everything absent from it -- and from the
 // two wrapping types IsRefusal names below -- is a fault.
 var refusalSentinels = []error{
-	// The operator's hold, which AdmitVersionedRun answers with before anything else.
+	// The operator's hold, which AdmitVersionedRun answers a new admission with.
 	// It is a refusal and not a fault even though nothing the pipeline's
 	// author wrote caused it: retrying does not open the gate, and the person
 	// reading the build's stderr is the one who has to go and ask an operator.

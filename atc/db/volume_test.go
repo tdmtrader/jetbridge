@@ -919,7 +919,7 @@ var _ = Describe("Volume", func() {
 				Jobs:     atc.JobConfigs{{Name: "entry"}},
 			}, 0, false)
 			Expect(err).NotTo(HaveOccurred())
-			_, err = db.NewPipelineRunFactory(dbConn, lockFactory).CreateRun(context.Background(), template, db.RunParams{}, "run-user")
+			_, err = dbtest.CreateRun(dbConn, db.NewPipelineRunFactory(dbConn, lockFactory), context.Background(), template, db.RunParams{}, "run-user")
 			Expect(err).NotTo(HaveOccurred())
 
 			taskCache, err := taskCacheFactory.FindOrCreate(atc.TaskCacheIdentity{

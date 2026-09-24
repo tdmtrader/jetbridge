@@ -12,6 +12,10 @@ import (
 )
 
 // RunResultRead is a retained binding, not a caller-supplied tree or claim.
+// Epoch is the Hangar epoch the result's claim was acquired under -- the one
+// a read is leased in -- and never the Run's own activation epoch. A result
+// published under a Hangar epoch that has since been disabled may be
+// unreadable; the owner accepted that (M-2 decision 3).
 type RunResultRead struct {
 	Binding atc.RunResultBinding
 	Epoch   executioncontrol.ActivationEpoch
@@ -21,7 +25,8 @@ func LoadRunResultRead(ctx context.Context, conn DbConn, runID int, name string)
 	var result RunResultRead
 	var body []byte
 	var status atc.RunStatus
-	err := conn.QueryRowContext(ctx, `SELECT status, result_manifest->$2, activation_epoch FROM pipeline_runs WHERE id=$1 AND run_contract_version='v2'`, runID, name).Scan(&status, &body, &result.Epoch)
+	err := conn.QueryRowContext(ctx, `SELECT r.status, r.result_manifest->$2, coalesce(c.activation_epoch, 0) FROM pipeline_runs r
+		LEFT JOIN hangar_claims c ON c.claim_id::text = r.result_manifest->$2->>'claim_id' WHERE r.id=$1`, runID, name).Scan(&status, &body, &result.Epoch)
 	if errors.Is(err, sql.ErrNoRows) {
 		return result, output.ErrNotFound
 	}
@@ -48,7 +53,7 @@ func LockRunResultRead(ctx context.Context, tx Tx, runID int, name string, expec
 	if err != nil {
 		return err
 	}
-	if run.Status() != atc.RunStatusSucceeded || run.ContractVersion() != atc.RunContractV2 || run.ActivationEpoch() != int64(expected.Epoch) {
+	if run.Status() != atc.RunStatusSucceeded {
 		return atc.ErrRunResultsUnavailable
 	}
 	var body []byte
