@@ -246,6 +246,10 @@ func (f *pipelineRunFactory) RecordRunCancellationProgress(ctx context.Context, 
 	if n != 1 {
 		return ErrRunCancellationProgressStale
 	}
+	if debt == CancellationDone {
+		// Whichever of a closure's operations completes last closes it.
+		return closeOpenBuildClosures(ctx, tx, op.RunID)
+	}
 	return nil
 }
 

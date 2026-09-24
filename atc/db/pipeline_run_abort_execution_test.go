@@ -110,6 +110,152 @@ var _ = Describe("Finishing an aborted Run build with an unclosed execution", fu
 		return ids
 	}
 
+
+	// finishExecution retains the node's signed finish for an admitted
+	// execution: the node's own report that the process is gone.
+	finishExecution := func(b db.Build, admission db.RunExecutionAdmission) {
+		tx, err := dbConn.Begin()
+		Expect(err).NotTo(HaveOccurred())
+		defer db.Rollback(tx)
+		finish, err := signer.Sign(executioncontrol.Acknowledgement{
+			ProtocolVersion: executioncontrol.ProtocolVersion, Kind: executioncontrol.AcknowledgementFinish,
+			Identity: admission.Identity, ActivationEpoch: 1, LedgerSequence: 2,
+			NodeUID: "node-uid", PodUID: "pod-uid", ProcessIdentity: "task-process",
+			ObservedAt: output.NewTimestamp(time.Now()), Outcome: &executioncontrol.ExitOutcome{ExitCode: 143},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(factory.RecordRunExecutionWitness(ctx, tx, b.ID(), admission.PlanID, finish, verifier)).To(Succeed())
+		Expect(tx.Commit()).To(Succeed())
+	}
+
+	inTx := func(fn func(db.Tx) error) error {
+		tx, err := dbConn.Begin()
+		Expect(err).NotTo(HaveOccurred())
+		defer db.Rollback(tx)
+		if err := fn(tx); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+
+	// closurePass is one cancellation-worker pass with the node replaced by
+	// what the database already knows: an execution is closed only once its
+	// finish is retained. Held kinds answer pending, as a slow node would.
+	// Backed-off operations are made due first, so each pass sees everything.
+	closurePass := func(owner string, held ...db.RunCancellationKind) {
+		_, err := dbConn.Exec(`UPDATE pipeline_run_cancellation_operations SET next_at=now() - interval '1 second' WHERE completed_at IS NULL`)
+		Expect(err).NotTo(HaveOccurred())
+		var lease db.RunCancellationLease
+		Expect(inTx(func(tx db.Tx) error {
+			var owned bool
+			lease, owned, err = factory.ClaimRunCancellationLease(ctx, tx, owner, time.Minute)
+			Expect(owned).To(BeTrue())
+			return err
+		})).To(Succeed())
+		execute := func(op db.RunCancellationOperation) db.RunCancellationDebt {
+			for _, kind := range held {
+				if op.Kind == kind {
+					return db.CancellationPending
+				}
+			}
+			switch op.Kind {
+			case db.CancelExecution:
+				var in db.RunCancellationExecution
+				if err := inTx(func(tx db.Tx) error {
+					var err error
+					in, err = factory.CancellationRunExecution(ctx, tx, lease, op)
+					return err
+				}); err != nil {
+					return db.CancellationUnavailable
+				}
+				if in.Closed {
+					return db.CancellationDone
+				}
+				return db.CancellationPending
+			case db.CancelSchedulerDebt:
+				debt, _ := factory.ExecuteCancellationOperation(ctx, lease, op)
+				return debt
+			case db.CancelBuild, db.CancelCandidate, db.CancelTerminalize:
+				debt, _ := factory.ExecuteCancellationFinality(ctx, lease, op)
+				return debt
+			default:
+				return db.CancellationUnavailable
+			}
+		}
+		for visit := 0; visit < db.RunCancellationOperationLimit; visit++ {
+			var pending []int
+			Expect(inTx(func(tx db.Tx) error {
+				var err error
+				pending, err = factory.PendingRunCancellations(ctx, tx, lease, 1)
+				return err
+			})).To(Succeed())
+			if len(pending) == 0 {
+				return
+			}
+			var op db.RunCancellationOperation
+			var found bool
+			Expect(inTx(func(tx db.Tx) error {
+				if _, err := factory.DiscoverRunCancellation(ctx, tx, lease, pending[0], db.RunCancellationOperationLimit); err != nil {
+					return err
+				}
+				var err error
+				op, found, err = factory.ClaimRunCancellationOperation(ctx, tx, lease, pending[0])
+				return err
+			})).To(Succeed())
+			if !found {
+				return
+			}
+			debt := execute(op)
+			Expect(inTx(func(tx db.Tx) error { return factory.RecordRunCancellationProgress(ctx, tx, lease, op, debt) })).To(Succeed())
+		}
+	}
+
+	closureClosed := func() bool {
+		var closed bool
+		Expect(dbConn.QueryRow(`SELECT closed_at IS NOT NULL FROM pipeline_run_build_closures WHERE build_id=$1`, build.ID()).Scan(&closed)).To(Succeed())
+		return closed
+	}
+
+	buildState := func(b db.Build) (bool, string) {
+		var completed bool
+		var status string
+		Expect(dbConn.QueryRow(`SELECT completed,status FROM builds WHERE id=$1`, b.ID()).Scan(&completed, &status)).To(Succeed())
+		return completed, status
+	}
+
+	finalize := func() bool {
+		var ready bool
+		Expect(inTx(func(tx db.Tx) error {
+			var err error
+			ready, err = factory.FinalizeOutputRun(ctx, tx, creation.Run.ID())
+			return err
+		})).To(Succeed())
+		return ready
+	}
+
+	// schedulerCaughtUp stands in for the scheduler, which no db test runs:
+	// the payload's jobs have no schedule request left to serve.
+	schedulerCaughtUp := func() {
+		_, err := dbConn.Exec(`UPDATE jobs SET last_scheduled=schedule_requested WHERE pipeline_id=(SELECT id FROM pipelines WHERE pipeline_run_id=$1)`, creation.Run.ID())
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	runStatus := func() string {
+		var status string
+		Expect(dbConn.QueryRow(`SELECT status FROM pipeline_runs WHERE id=$1`, creation.Run.ID()).Scan(&status)).To(Succeed())
+		return status
+	}
+
+	// abortOverOpenExecution leaves the aborted build with an execution only
+	// the node can close, so finishing it records its build closure.
+	abortOverOpenExecution := func() db.RunExecutionAdmission {
+		execution := admitStarted()
+		Expect(build.MarkAsAborted()).To(Succeed())
+		Expect(build.Finish(db.BuildStatusAborted)).To(MatchError(atc.ErrRunOutputPending))
+		Expect(closures()).To(Equal([]int{build.ID()}))
+		return execution
+	}
+
 	BeforeEach(func() {
 		ctx = context.Background()
 		consumer, err := db.HangarConsumerPrefixHeld("abort-execution-test")
@@ -186,6 +332,124 @@ var _ = Describe("Finishing an aborted Run build with an unclosed execution", fu
 			Expect(subjects).NotTo(ContainElement(siblingExecution), "%s reached another build's execution", kind)
 			Expect(subjects).NotTo(ContainElement(strconv.Itoa(other.ID())), "%s reached another build", kind)
 		}
+	})
+
+	It("closes the closure only once its last operation completes, and only then lets the Run finish", func() {
+		Expect(other.Finish(db.BuildStatusSucceeded)).To(Succeed())
+		execution := abortOverOpenExecution()
+
+		closurePass("worker")
+		Expect(closureClosed()).To(BeFalse(), "the closure closed while the node still held the execution")
+		completed, _ := buildState(build)
+		Expect(completed).To(BeFalse())
+
+		finishExecution(build, execution)
+		closurePass("worker", db.CancelExecution)
+		completed, status := buildState(build)
+		Expect(completed).To(BeTrue(), "the build did not finish once its execution was closed")
+		Expect(status).To(Equal(string(db.BuildStatusAborted)))
+		Expect(closureClosed()).To(BeFalse(), "the closure closed before its execution operation completed")
+		Expect(finalize()).To(BeFalse(), "the Run was published while its build closure was open")
+		Expect(runStatus()).To(Equal(string(atc.RunStatusRunning)))
+
+		closurePass("worker")
+		Expect(closureClosed()).To(BeTrue(), "the closure stayed open after its last operation completed")
+		schedulerCaughtUp()
+		Expect(finalize()).To(BeTrue())
+		Expect(runStatus()).To(Equal(string(atc.RunStatusAborted)), "an effective aborted build makes the Run aborted (M-3)")
+		requested, _ := cancellationRequested()
+		Expect(requested).To(BeFalse(), "the Run was aborted by cancellation, not by ordinary completion")
+	})
+
+	It("hands its completed operations over to a later Run cancellation without repeating them", func() {
+		execution := abortOverOpenExecution()
+		finishExecution(build, execution)
+		closurePass("worker", db.CancelBuild)
+		var doneAt time.Time
+		var attempts int
+		Expect(dbConn.QueryRow(`SELECT completed_at,attempt_count FROM pipeline_run_cancellation_operations WHERE run_id=$1 AND kind=$2`,
+			creation.Run.ID(), string(db.CancelExecution)).Scan(&doneAt, &attempts)).To(Succeed())
+
+		Expect(inTx(func(tx db.Tx) error {
+			_, err := factory.AcceptRunCancellation(ctx, tx, creation.Run.ID(), "operator", nil)
+			return err
+		})).To(Succeed())
+		for pass := 0; pass < 4 && runStatus() == string(atc.RunStatusRunning); pass++ {
+			closurePass("worker")
+		}
+		Expect(runStatus()).To(Equal(string(atc.RunStatusAborted)))
+		var laterAt time.Time
+		var laterAttempts int
+		Expect(dbConn.QueryRow(`SELECT completed_at,attempt_count FROM pipeline_run_cancellation_operations WHERE run_id=$1 AND kind=$2 AND subject=$3`,
+			creation.Run.ID(), string(db.CancelExecution), fmt.Sprintf("%s/%d", execution.Identity.ExecutionID, execution.Identity.Fence)).Scan(&laterAt, &laterAttempts)).To(Succeed())
+		Expect(laterAt).To(BeTemporally("==", doneAt), "Run cancellation repeated an operation the closure had completed")
+		Expect(laterAttempts).To(Equal(attempts))
+		Expect(closureClosed()).To(BeTrue())
+	})
+
+	It("refuses closure progress from an expired worker epoch", func() {
+		abortOverOpenExecution()
+		var stale db.RunCancellationLease
+		var op db.RunCancellationOperation
+		Expect(inTx(func(tx db.Tx) error {
+			var err error
+			stale, _, err = factory.ClaimRunCancellationLease(ctx, tx, "first", time.Minute)
+			if err != nil {
+				return err
+			}
+			if _, err = factory.DiscoverRunCancellation(ctx, tx, stale, creation.Run.ID(), db.RunCancellationOperationLimit); err != nil {
+				return err
+			}
+			var found bool
+			op, found, err = factory.ClaimRunCancellationOperation(ctx, tx, stale, creation.Run.ID())
+			Expect(found).To(BeTrue())
+			return err
+		})).To(Succeed())
+		_, err := dbConn.Exec(`UPDATE pipeline_run_cancellation_worker SET renewed_at=now() - interval '2 minutes', expires_at=now() - interval '1 second'`)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(inTx(func(tx db.Tx) error {
+			_, owned, err := factory.ClaimRunCancellationLease(ctx, tx, "second", time.Minute)
+			Expect(owned).To(BeTrue())
+			return err
+		})).To(Succeed())
+
+		err = inTx(func(tx db.Tx) error { return factory.RecordRunCancellationProgress(ctx, tx, stale, op, db.CancellationDone) })
+		Expect(err).To(HaveOccurred(), "an expired worker recorded closure progress")
+		var completed int
+		Expect(dbConn.QueryRow(`SELECT count(*) FROM pipeline_run_cancellation_operations WHERE run_id=$1 AND completed_at IS NOT NULL`, creation.Run.ID()).Scan(&completed)).To(Succeed())
+		Expect(completed).To(BeZero())
+		Expect(closureClosed()).To(BeFalse())
+	})
+
+	It("closes, completes and reclaims a Run whose Hangar epoch was disabled by a rotation", func() {
+		Expect(other.Finish(db.BuildStatusSucceeded)).To(Succeed())
+		execution := abortOverOpenExecution()
+		finishExecution(build, execution)
+		_, err := dbConn.Exec(`UPDATE hangar_output_activation_epochs SET output_state='disabled', base_state='disabled', revision=revision+1 WHERE epoch_id=1`)
+		Expect(err).NotTo(HaveOccurred())
+
+		closurePass("worker")
+		closurePass("worker")
+		Expect(closureClosed()).To(BeTrue(), "a Hangar epoch rotation stranded the build closure")
+		schedulerCaughtUp()
+		Expect(finalize()).To(BeTrue(), "a Hangar epoch rotation stranded ordinary completion")
+		Expect(runStatus()).To(Equal(string(atc.RunStatusAborted)))
+
+		_, err = dbConn.Exec(`UPDATE pipelines SET run_retention_ttl_days=1 WHERE id=(SELECT template_pipeline_id FROM pipeline_runs WHERE id=$1)`, creation.Run.ID())
+		Expect(err).NotTo(HaveOccurred())
+		// Age the published Run past its TTL. Its terminal publication is
+		// immutable by trigger, so the fixture steps around it the way a
+		// clock would, and only for this one column.
+		Expect(inTx(func(tx db.Tx) error {
+			if _, err := tx.Exec(`SET LOCAL session_replication_role = replica`); err != nil {
+				return err
+			}
+			_, err := tx.Exec(`UPDATE pipeline_runs SET completed_at=completed_at - interval '2 days' WHERE id=$1`, creation.Run.ID())
+			return err
+		})).To(Succeed())
+		destroyed, err := db.NewPipelineRunReclaimLifecycle(dbConn).DestroyReclaimableRun(creation.Run.ID())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(destroyed).To(BeTrue(), "a Hangar epoch rotation stranded reclamation")
 	})
 
 	It("records no closure and nothing for the worker when no build was aborted", func() {

@@ -36,7 +36,7 @@ func (f *pipelineRunFactory) cancellationRunExecution(ctx context.Context, tx Tx
 	if err != nil {
 		return in, err
 	}
-	if !run.CancellationRequested() || run.Status() != atc.RunStatusRunning {
+	if run.Status() != atc.RunStatusRunning {
 		return in, ErrRunCancellationProgressStale
 	}
 	var build int
@@ -44,7 +44,21 @@ func (f *pipelineRunFactory) cancellationRunExecution(ctx context.Context, tx Tx
 	err = tx.QueryRowContext(ctx, `SELECT build_id,plan_id FROM pipeline_run_executions
  WHERE run_id=$1 AND execution_id::text||'/'||execution_fence::text=$2 AND handoff_id IS NULL`, op.RunID, op.Subject).Scan(&build, &plan)
 	if err == sql.ErrNoRows {
+		if !run.CancellationRequested() {
+			return in, ErrRunCancellationProgressStale
+		}
 		return in, collectedRunExecution(ctx, tx, op, &in)
+	}
+	if err == nil && !run.CancellationRequested() {
+		// Without Run cancellation, only an open build closure may close an
+		// execution, and only its own build's.
+		open, openErr := buildHasOpenClosure(ctx, tx, build)
+		if openErr != nil {
+			return in, openErr
+		}
+		if !open {
+			return in, ErrRunCancellationProgressStale
+		}
 	}
 	if err != nil {
 		return in, err

@@ -80,6 +80,11 @@ func (f *pipelineRunFactory) finalizeOutputRun(ctx context.Context, tx Tx, runID
 	if cancellation != nil && !run.CancellationRequested() {
 		return false, ErrRunCancellationProgressStale
 	}
+	// A build closure still settling an aborted build's work holds back both
+	// publications; the finalizer retries on its next pass.
+	if open, err := runHasOpenBuildClosure(ctx, tx, runID); err != nil || open {
+		return false, err
+	}
 	payload, found := run.InstancePipelineID()
 	if !found {
 		return false, ErrPipelineRunPayloadGone

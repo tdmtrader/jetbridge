@@ -27,6 +27,42 @@ func runHasOpenBuildClosure(ctx context.Context, tx Tx, runID int) (bool, error)
 	return open, err
 }
 
+// buildHasOpenClosure reports whether the build's closure is still open.
+func buildHasOpenClosure(ctx context.Context, tx Tx, buildID int) (bool, error) {
+	var open bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pipeline_run_build_closures WHERE build_id=$1 AND closed_at IS NULL)`, buildID).Scan(&open)
+	return open, err
+}
+
+// closeOpenBuildClosures closes every open closure of the Run whose work is
+// done. It runs in the transaction that records an operation as completed.
+func closeOpenBuildClosures(ctx context.Context, tx Tx, runID int) error {
+	rows, err := tx.QueryContext(ctx, openBuildClosures, runID)
+	if err != nil {
+		return err
+	}
+	var builds []int
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			Close(rows)
+			return err
+		}
+		builds = append(builds, id)
+	}
+	err = rows.Err()
+	Close(rows)
+	if err != nil {
+		return err
+	}
+	for _, id := range builds {
+		if _, err := closeBuildClosure(ctx, tx, runID, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // buildClosureSubjects returns the subject query for one operation kind,
 // restricted to the builds that the SQL fragment builds selects. $1 is always
 // the Run. A kind a build closure never owns has no query.
@@ -53,8 +89,6 @@ func buildClosureSubjects(kind RunCancellationKind, builds string) (string, bool
 // openBuildClosures selects the Run's open closure builds for discovery.
 const openBuildClosures = `SELECT build_id FROM pipeline_run_build_closures WHERE run_id=$1 AND closed_at IS NULL`
 
-// deferred: called from RecordRunCancellationProgress in phase 2 (T9).
-//
 // closeBuildClosure closes the build's closure once the build has finished
 // and none of its closure operations is still incomplete. It runs in the
 // transaction that records an operation's progress, so whichever of the

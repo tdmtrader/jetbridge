@@ -114,7 +114,26 @@ func (c *runCancellationCommit) lockRun(ctx context.Context, tx Tx) error {
 	if err != nil {
 		return err
 	}
-	if !run.CancellationRequested() || run.Status() != atc.RunStatusRunning {
+	if run.Status() != atc.RunStatusRunning {
+		return ErrRunCancellationProgressStale
+	}
+	if run.CancellationRequested() {
+		return nil
+	}
+	// Without Run cancellation, only an open build closure may finish its own
+	// build. Candidates and terminal publication still need the cancellation.
+	if c.op.Kind != CancelBuild {
+		return ErrRunCancellationProgressStale
+	}
+	id, err := strconv.Atoi(c.op.Subject)
+	if err != nil {
+		return output.ErrInvalidIdentity
+	}
+	open, err := buildHasOpenClosure(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if !open {
 		return ErrRunCancellationProgressStale
 	}
 	return nil
@@ -180,6 +199,7 @@ func inspectRunCancellationQuiescence(ctx context.Context, tx Tx, runID, payload
 	var ready bool
 	err := tx.QueryRowContext(ctx, `SELECT NOT EXISTS(
  SELECT 1 FROM builds WHERE pipeline_run_id=$1 AND (NOT completed OR status IN ('pending','started'))
- ) AND NOT EXISTS(SELECT 1 FROM jobs WHERE pipeline_id=$2 AND schedule_requested>last_scheduled)`, runID, payloadID).Scan(&ready)
+ ) AND NOT EXISTS(SELECT 1 FROM jobs WHERE pipeline_id=$2 AND schedule_requested>last_scheduled)
+ AND NOT EXISTS(SELECT 1 FROM pipeline_run_build_closures WHERE run_id=$1 AND closed_at IS NULL)`, runID, payloadID).Scan(&ready)
 	return ready, err
 }
