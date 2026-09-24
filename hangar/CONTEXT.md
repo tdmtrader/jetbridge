@@ -162,8 +162,8 @@ moves through initial, attesting, attested, enabled, draining and disabled.
 Output may leave initial only once base is attested.
 
 **At risk**:
-The policy state recorded when the bucket's lifetime-policy trust check
-fails. It is a finding about the bucket, not an activation state.
+The durable integrity finding recorded after unexpected object absence or
+runtime authorization failure. It is not an activation state.
 
 **Claim**:
 A consumer's opaque, idempotent hold on a tree ref. Hangar never interprets
@@ -175,13 +175,12 @@ claim and refuses reclamation while active.
 
 **Operation lease**:
 The fenced, database-clock lease a controller must hold for the operation
-kinds that contend: inventory, reclaim admission, reclaim delete and policy
-attestation. The other kinds run without one.
+kinds that contend: inventory, reclaim admission and reclaim delete. The other kinds run without one.
 
 **Operation kind**:
-One of the nine durable units of background work: capture recovery,
+One of the eight durable units of background work: capture recovery,
 no-capture release, inventory, adoption, reclaim admission, reclaim delete,
-reclaim finalization, read-lease cleanup and policy attestation.
+reclaim finalization and read-lease cleanup.
 
 **Pass**:
 One bounded execution of a controller's work for one operation kind.
@@ -208,13 +207,8 @@ Deleting a published object. Admission is the decision; delete is the act;
 each has its own lease.
 
 **Role**:
-One cloud-permission persona with its own binary and service account:
-publisher, inventory, reclaimer, policy attestor.
-
-**Policy attestor**:
-The role that reads bucket lifecycle policy and IAM and touches no object.
-Activation requires its finding.
-_Avoid_: attestor (alone)
+One storage-permission persona with its own binary and credentials:
+publisher, inventory or reclaimer. Strict inputs have a separate identity.
 
 **Source ledger**:
 The output daemon's durable record of source paths, which the artifact

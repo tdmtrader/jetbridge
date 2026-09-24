@@ -1,19 +1,21 @@
 # Hangar exact tree storage
 
-Hangar is an opt-in, GCS-backed path for immutable filesystem-tree task
+Hangar is an opt-in storage path for immutable filesystem-tree task
 inputs. It publishes canonical trees under tree refs containing an
-opaque scope, a SHA-256 logical-content digest, and a GCS generation. Task
+opaque scope, a SHA-256 logical-content digest, and an immutable object generation. Task
 inputs name that complete reference; Hangar never substitutes a newer
 generation or different content.
 
-This first slice supports native Google Cloud Storage only. The resource-cache
-S3-compatible and filesystem stores do not yet satisfy the strict Hangar
-contract and are unsupported for Hangar.
+Hangar supports native Google Cloud Storage and a dedicated persistent-disk
+service. Both implement the same immutable, exact-generation contract. The
+resource-cache S3-compatible and filesystem stores remain separate and are
+unsupported for Hangar. A GCS emulator is useful for tests; the disk service is
+the supported deployment option when no GCS is available.
 
 ## Enablement
 
-Hangar requires the artifact DaemonSet, artifact-daemon TLS, a native GCS
-durable store and bucket, positive content and entry limits, a whole-second
+Hangar requires the artifact DaemonSet, artifact-daemon TLS, a configured GCS bucket or disk
+namespace, positive content and entry limits, a whole-second
 warrant TTL from `1s` through `900s`, and a private absolute scratch path
 disjoint from the artifact hostPath:
 
@@ -38,7 +40,11 @@ artifactDaemon:
     capabilityTTL: 900s
 ```
 
-Hangar reuses `durable.bucket`, `prefix`, `endpoint`, and `timeout`. On GKE,
+With `artifactDaemon.hangar.store` unset, Hangar inherits the legacy durable
+GCS configuration. Set `hangar.store: gcs` and `hangar.bucket` explicitly to
+configure strict-input storage independently, with an optional `hangar.prefix`.
+Only an unset store selector inherits `durable.prefix`; timeout still uses
+`durable.timeout`. On GKE,
 grant the artifact-daemon ServiceAccount bucket access with Workload Identity
 and leave `durable.existingSecret` empty. There is no separate Hangar cloud
 credential block and task Pods never receive bucket credentials.
@@ -81,7 +87,7 @@ key is never placed in a task Pod command, environment, or volume.
 
 ## Runtime and failure semantics
 
-After validating TLS, GCS access, the key, limits, and private scratch, each
+After validating TLS, storage access, the key, limits, and private scratch, each
 daemon adds `concourse.dev/hangar-v1=ready` to its node. Strict tasks require
 that label as well as the existing artifact-cache readiness label. A task init
 container requests the exact tree and the task and all sidecars receive the
@@ -139,8 +145,8 @@ new exact inputs onto nodes that cannot materialize them.
 
 To disable without changing resource-cache behavior, set
 `artifactDaemon.hangar.enabled=false` and follow the downgrade order. Existing
-immutable GCS objects remain inert; lifecycle and reclamation for Hangar trees
-are outside this first slice.
+immutable objects remain stored. Strict-input objects have no automatic
+reclaimer; output reclamation follows claims and read leases.
 
 The daemon container is explicitly UID 0, non-privileged, unable to escalate,
 under `RuntimeDefault`, and drops all capabilities except `DAC_OVERRIDE`. A
@@ -149,19 +155,15 @@ needed. A custom non-root daemon image or pre-chowned destination fails closed
 rather than widening capabilities. Container-level root settings are not
 applied to task or init containers.
 
-## Durable output publication (contracts only, not enabled)
+## Durable output publication
 
-A second plane is being built beside the strict-input one: turning a task's
-declared ordinary output into durable content a consumer can protect for as
-long as it needs it. Nothing described in this section is enabled, or usable,
-or reachable from any route. What exists today is the product-neutral contract:
-`hangar/executioncontrol` and `hangar/output`, with their language-neutral wire
-fixtures under each package's `testdata/protocol-v1`. Storage, persistence,
-workers, chart identities and activation come later, each behind its own gate.
-
-The contract is documented here rather than in a design note because two of the
-things it says are easy to lose, and both of them are limits rather than
-features.
+The output plane captures selected successful outputs, registers exact tree
+refs, and protects them with claims and read leases. It has its own daemon,
+inventory controller, reclaimer and activation epoch. It remains opt-in:
+`hangarOutput.executionControl.enabled` enables the base facet;
+`hangarOutput.enabled` enables the output facet. Configure keys, mutual TLS,
+database identities and activation as described in `deploy/chart/values.yaml`.
+Changing the storage selector does not bypass these gates.
 
 ### The ordinary-task cost of a durable capture
 
@@ -186,82 +188,132 @@ Resource-cache routes, the fail-open durable cache tier, and the original
 `concourse.dev/hangar-v1` strict-input capability are untouched, and the output
 plane deliberately does not reuse any of them.
 
-### The lifetime promise is conditional, and says so
+### Storage configuration belongs to the operator
 
-Hangar can serialize its own publishers, claimants, readers and reclaimers. It
-cannot prevent a cloud administrator, or a changed bucket lifecycle rule, from
-deleting an object out of band.
+Hangar does not read, attest or manage GCS IAM and lifecycle configuration.
+There is no policy-attestor process and no periodic policy evidence to refresh.
+Runtime identities need their object permissions, not IAM or lifecycle read
+permissions. Provision the bucket and permissions outside the chart:
 
-So the promise is stated conditionally. Activation requires an authoritative
-whole-bucket lifecycle-policy read proving no Delete rule, refreshed at least
-every 15 minutes and recorded with the bucket identity, metageneration, policy
-hash and observation time. That is a **bounded-staleness trust check, not
-prevention**: a functioning monitor detects a policy change within the refresh
-window, and does not stop a deletion inside it.
+| Identity | Object operations |
+| --- | --- |
+| Strict-input daemon | create, get in the strict-input bucket |
+| Output publisher/materializer | create, get in the output bucket |
+| Inventory | list, get in the output bucket |
+| Reclaimer | get, delete in the output bucket |
 
-On a stale, failed, unreadable or unsafe check — or an unexpected exact absence,
-or a platform-principal mismatch — Hangar enters a durable `at-risk` state,
-marks affected refs at risk in status and read outcomes, and alerts. From that
-point it blocks new captures, claim acquires, managed-output warrants, orphan
-adoption and reclaim admission. Releases and diagnosis stay possible, existing
-claims and read leases stay recorded, and already-admitted conditional delete
-work may finish. Recovery needs a fresh safe attestation *and* reconciliation
-of the violation: re-attesting alone never rewrites an out-of-band absence as
-normal reclamation.
+Keep output objects in a dedicated bucket, separate from strict inputs and
+resource caches. Do not configure lifecycle deletion, external cleanup or
+retention rules that prevent Hangar's admitted deletes. GCS `get` covers both
+metadata and body access; inventory and reclaimer code deliberately expose
+only metadata operations, but IAM cannot separate those reads. Never give the
+publisher delete permission: replacing an existing GCS object requires both
+create and delete. Separate workload identities keep these roles isolated.
+These are deployment requirements, not properties that Hangar can prove by
+periodically inspecting a bucket policy.
 
-The enforceable half of the promise covers the isolated JetBridge principals
-and the provider configuration Hangar can inspect. Everything outside that —
-organization- and project-level credentials, and administrator behaviour — is
-outside it, and failure of that precondition is typed and visible rather than
-silently accepted.
+Actual unexpected absence and runtime authorization failures remain durable
+integrity findings. They block new capture, claims, managed read warrants,
+adoption and reclaim admission; releases and diagnosis remain possible.
+Already-admitted exact deletes can finish. Repair the cause and investigate
+lost content before acknowledging one exact finding with:
 
-### Storage profiles: native GCS only, in a bucket of its own
+```sh
+hangar-output-activate --mode=reconcile-integrity \
+  --epoch=7 --integrity-violation=runtime_principal_denied \
+  --integrity-subject='<exact subject from the finding>' \
+  --database='<activation database connection>'
+```
 
-Only the strict native-GCS profile supports output capture. The
-S3-compatible and filesystem stores cannot advertise this capability, and this
-is a refusal rather than a to-do: the plane depends on generation-conditioned
-deletes, exact-generation metadata stats and immutable-at-creation object
-metadata, and a profile that emulates those has emulated the one property the
-lifetime promise rests on.
+The other supported class is `out_of_band_absence`. Acknowledgement does not
+restore bytes, change generations or make a missing reference readable. The
+activation database role needs SELECT and UPDATE(`resolved_at`) on
+`hangar_policy_violations` for this operator command. Historical policy
+snapshots remain in the database for audit but no longer control admission.
 
-Output capture uses a **dedicated** native-GCS bucket containing only
-Hangar-managed output-plane objects. It is never the durable cache bucket and
-never the strict-input bucket. The reason is a fact about GCS IAM rather than a
-preference: `storage.objects.get` authorizes both metadata and body reads, and
-`storage.objects.list` covers the whole bucket with no caller-visible prefix
-boundary. There is no permission that grants metadata-only access, and none
-that scopes a list to a prefix. Prefix-only isolation inside a shared bucket is
-therefore not a substitute, and configuring one is an activation failure rather
-than a supported alternative. Trust domains needing IAM isolation get separate
-output buckets.
+## Persistent disk without GCS
 
-The bucket, its opaque scope and its key prefix are derived from authenticated
-deployment context alone. No task, consumer, path parameter or receipt can
-select or broaden them, and no API in `hangar/output` accepts a bucket, object
-key, absolute path, hostPath or caller-chosen scope — a guard in
-`hangar/output/architecture_test.go` fails the test suite if one appears.
+The disk backend uses one `hangar-store` process owning one PVC. Immutable blob
+files and a bbolt index live together under `/data/store`; the index assigns
+monotonic generations, persists creation metadata and journals exact deletes.
+Uploads are synced before their index transaction commits. Restart removes
+uncommitted uploads and completes pending deletes. Missing or corrupt committed
+content fails closed. A second owner is refused by the index lock.
 
-### External responsibility
+This is a single-owner local-filesystem service. Use a block-backed CSI volume
+with working file locks, atomic filesystem operations, fsync and `fsGroup`
+support. NFS, shared multi-writer storage, replicas and automatic failover are
+not supported. The Deployment uses one replica and `Recreate`; replacement
+may interrupt storage until the volume reattaches. `ReadWriteOncePod` is an
+option where the CSI driver supports it.
 
-The chart does not create cloud buckets, lifecycle rules or GCP IAM, and will
-not. An operator or external infrastructure provisions the dedicated output
-bucket, the cloud principals, the Workload Identity bindings and the bucket
-IAM; the chart renders explicit identities and refuses activation until the
-attestor proves the externally provisioned policy.
+Provision two Secrets in the release namespace:
 
-Four distinct identities are required because a Kubernetes service account is
-Pod-wide, so any output permission added to an existing daemon would also be
-granted to that daemon's cache and strict-input identity:
+- A TLS Secret with `tls.crt`, `tls.key`, `ca.crt`. The server certificate must
+  include `<rendered-storage-Service-name>.<namespace>.svc` in its DNS SANs.
+  Use the name from `helm template`, which accounts for long release names.
+- A credential Secret with four distinct random tokens, each at least 32
+  characters, under `input`, `publisher`, `inventory`, `reclaimer`, plus
+  `server.json`, a JSON object mapping those same four names to the same tokens.
+  For example, `openssl rand -hex 32` generates a suitable token. Only the
+  server receives `server.json`; clients receive their own token and CA.
 
-- the publisher/materializer daemon may create and get objects, never list or
-  delete;
-- inventory may list and get bucket-wide, never create or delete;
-- the reclaimer may get and delete, never create or list; and
-- the policy attestor may read bucket lifecycle and IAM, and has no object
-  access at all.
+The storage link verifies the TLS server identity and the initialized store
+ID on every request. Its fixed roles have the permissions above, except disk
+inventory and reclaimer cannot read object bodies. There is no general IAM
+engine, overwrite API or unconditional delete API.
 
-Shared service accounts, shared Workload Identity principals, task credentials,
-or granting delete to the daemon or cache identity are activation failures. No
-runtime principal holds lifecycle or IAM mutation authority: policy
-administration stays an operator trust root, which is the same boundary the
-conditional promise above describes.
+Example strict-input configuration, retaining your existing artifact-daemon
+TLS/key configuration:
+
+```yaml
+hangarStorage:
+  disk:
+    enabled: true
+    storeID: production-hangar-01
+    size: 100Gi
+    # storageClass: your-block-storage-class
+    initialize: true
+    tls:
+      existingSecret: hangar-store-tls
+    credentials:
+      existingSecret: hangar-store-credentials
+artifactDaemon:
+  hangar:
+    enabled: true
+    webEnabled: false
+    store: disk
+    bucket: inputs
+```
+
+Initialization is explicit and only for a new, empty store. With
+`initialize: true`, the chart stops the storage Deployment and runs a one-shot
+initialization Job. Wait for that Job to succeed, then upgrade with
+`initialize: false` to start the service. Keep this value false thereafter;
+a normal restart refuses an uninitialized or wrong-identity volume. The Job
+and chart-created PVC are retained on removal. `existingClaim` can select a
+pre-provisioned PVC instead. Do not rerun initialization on a replacement
+volume under an existing identity.
+
+For durable outputs, add `hangarOutput.store: disk` and
+`hangarOutput.bucket: outputs` to the existing enabled output-plane
+configuration. The input and output logical namespaces must differ; their
+names are lowercase scope identifiers, not filesystem paths. The chart wires
+the internal HTTPS endpoint, identity and role credentials automatically.
+Resource-cache storage remains independently configured; GCS is unnecessary
+when both Hangar planes use disk and resource caches use a non-GCS backend.
+
+`maxObjectBytes` defaults to 16 GiB and `maxConcurrent` to four. These bound
+individual transfers and concurrent work; they do not reserve free space.
+Size and monitor the PVC, including temporary uploads, index growth and retained
+strict inputs. Full disk returns an infrastructure failure. Output objects
+become reclaimable only through the existing claim/read-lease protocol.
+
+Back up the whole storage directory while the owner is stopped or using a
+consistent volume snapshot. The index and blobs are one unit. Restore it in
+coordination with the control-plane database while writers and reclaimers are
+stopped. Never roll back the generation counter beneath references already
+issued, clone a live store into two owners, or reuse its ID for an empty volume.
+There is no online GCS-to-disk migration: provider and store ID participate in
+output identity, so changing backends requires draining and a new activation
+configuration. Existing references are not retargeted.

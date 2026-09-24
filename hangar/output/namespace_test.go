@@ -66,12 +66,12 @@ func TestDeriveNamespaceRefusesEveryConfigurationRequirement20Forbids(t *testing
 		"a store that is not native GCS": {
 			mutate:   func(c *NamespaceConfig) { c.Store = "filesystem" },
 			sentinel: ErrUnsupportedProtocol,
-			says:     "strict native-GCS profile",
+			says:     "unsupported output store",
 		},
 		"an S3-compatible store": {
 			mutate:   func(c *NamespaceConfig) { c.Store = "s3" },
 			sentinel: ErrUnsupportedProtocol,
-			says:     "strict native-GCS profile",
+			says:     "unsupported output store",
 		},
 		"an absolute prefix": {
 			mutate:   func(c *NamespaceConfig) { c.DeploymentPrefix = "/deployments/blue" },

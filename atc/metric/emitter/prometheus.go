@@ -63,7 +63,6 @@ type PrometheusEmitter struct {
 	// somebody is already scraping -- a status page nobody has open at three in
 	// the morning is the same as no status page.
 	hangarOutputAtRisk         *prometheus.GaugeVec
-	hangarOutputEvidenceAge    *prometheus.GaugeVec
 	hangarOutputViolations     *prometheus.GaugeVec
 	hangarOutputInventoryCycle *prometheus.GaugeVec
 	hangarOutputInventoryDebt  *prometheus.GaugeVec
@@ -842,25 +841,16 @@ func (config *PrometheusConfig) NewEmitter(attributes map[string]string) (metric
 		Namespace:   "concourse",
 		Subsystem:   "hangar_output",
 		Name:        "at_risk",
-		Help:        "1 while the Hangar output plane's lifetime-policy trust cannot be proved safe, with the classes that put it there",
+		Help:        "1 while unresolved Hangar storage integrity findings block admission, with the classes that put it there",
 		ConstLabels: attributes,
 	}, []string{"reasons"})
 	prometheus.MustRegister(hangarOutputAtRisk)
-
-	hangarOutputEvidenceAge := prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace:   "concourse",
-		Subsystem:   "hangar_output",
-		Name:        "policy_evidence_age_seconds",
-		Help:        "Age of the newest whole-bucket lifetime-policy attestation",
-		ConstLabels: attributes,
-	}, []string{"stale"})
-	prometheus.MustRegister(hangarOutputEvidenceAge)
 
 	hangarOutputViolations := prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace:   "concourse",
 		Subsystem:   "hangar_output",
 		Name:        "policy_violations",
-		Help:        "Open, unreconciled Hangar output policy violations by class",
+		Help:        "Open, unreconciled Hangar runtime storage integrity findings by class",
 		ConstLabels: attributes,
 	}, []string{"violation"})
 	prometheus.MustRegister(hangarOutputViolations)
@@ -986,7 +976,6 @@ func (config *PrometheusConfig) NewEmitter(attributes map[string]string) (metric
 		pipelineRunReclaimBacklog:                     pipelineRunReclaimBacklog,
 
 		hangarOutputAtRisk:         hangarOutputAtRisk,
-		hangarOutputEvidenceAge:    hangarOutputEvidenceAge,
 		hangarOutputViolations:     hangarOutputViolations,
 		hangarOutputInventoryCycle: hangarOutputInventoryCycle,
 		hangarOutputInventoryDebt:  hangarOutputInventoryDebt,
@@ -1171,9 +1160,6 @@ func (emitter *PrometheusEmitter) Emit(logger lager.Logger, event metric.Event) 
 	case "hangar output at risk":
 		emitter.hangarOutputAtRisk.
 			WithLabelValues(event.Attributes["reasons"]).Set(event.Value)
-	case "hangar output policy evidence age":
-		emitter.hangarOutputEvidenceAge.
-			WithLabelValues(event.Attributes["stale"]).Set(event.Value)
 	case "hangar output policy violations":
 		emitter.hangarOutputViolations.
 			WithLabelValues(event.Attributes["violation"]).Set(event.Value)

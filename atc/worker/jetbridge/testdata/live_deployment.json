@@ -32,7 +32,7 @@
     },
     "web.hangar": {
       "expect": "off",
-      "note": "Strict Hangar inputs are off here. Turning them on is a deployment change, not a test one: artifactDaemon.durable (store gcs, endpoint the fake-gcs emulator), artifactDaemon.hangar.enabled/webEnabled, and a hangar.key in the pinned daemon TLS Secret. The home-infra values still set artifactDaemon.hangar.bucket/endpoint and agentSnapshots, which the chart no longer reads. Hangar is covered by the hangar_live contracts in the k8s-e2e pipeline, on a throwaway K3s cluster, and the output plane's tier-2 conformance runs in unit-tests against the deployed fake-gcs."
+      "note": "Strict Hangar inputs are off here. Turning them on is a deployment change, not a test one: artifactDaemon.hangar.enabled/webEnabled, a store (artifactDaemon.hangar.store gcs with the durable bucket pointed at the fake-gcs emulator, or disk via hangarStorage.disk), and a hangar.key in the pinned daemon TLS Secret. home-infra sets no artifactDaemon.hangar value since 5db877d. Hangar is covered by the hangar_live contracts in the k8s-e2e pipeline, on a throwaway K3s cluster, and the output plane's tier-2 conformance runs in unit-tests against the deployed fake-gcs."
     },
     "web.hangarOutput": {
       "expect": "off",
@@ -60,7 +60,7 @@
     },
     "daemon.hangar": {
       "expect": "off",
-      "note": "See web.hangar. The persistent-disk Hangar store (codex/hangar-disk-backend) will be off here on arrival too; its live coverage is a hangar_live job in k8s-e2e, not a flag flipped on this cluster."
+      "note": "See web.hangar. The persistent-disk Hangar store (hangarStorage.disk, cmd/hangar-store) is off here too. It has unit and chart-render coverage only: its live coverage is owed as a hangar_live job in k8s-e2e, not a flag flipped on this cluster."
     },
     "daemon.preemption": {
       "expect": "off",

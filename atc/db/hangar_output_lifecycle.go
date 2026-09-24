@@ -555,7 +555,7 @@ func (repository *HangarOutputRepository) upsertLifecycle(ctx context.Context, t
 // into its own transaction MUST pass its commit error through
 // db.HangarCommitError (or commit through db.HangarOutputTx, which is that
 // function with a Commit around it). A consumer that does not will read a
-// policy denial as an ambiguous commit and retry a refusal that never clears.
+// integrity denial as an ambiguous commit and retry a refusal that never clears.
 // ReleaseClaim says the same, for the same reason.
 func (repository *HangarOutputRepository) AcquireClaim(ctx context.Context, tx output.Tx, acquisition output.ClaimAcquisition) error {
 	if err := acquisition.Validate(); err != nil {
@@ -938,7 +938,7 @@ func (repository *HangarOutputRepository) ReleaseReadLease(ctx context.Context, 
 // Every exclusion is rechecked here under the exact-lifecycle lock, and the
 // schema rechecks them again at commit: elapsed publication grace, no active
 // claim, no active read lease, no unresolved reservation for the same content,
-// and a currently provable safe policy. A reclaimer that arrives second
+// and no unresolved runtime integrity findings. A reclaimer that arrives second
 // recognises the claimant and skips.
 //
 // Grace is a PARAMETER and the instant it is measured against is not. The

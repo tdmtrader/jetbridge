@@ -192,10 +192,9 @@ type InventoryPage struct {
 type PrincipalRole string
 
 const (
-	PrincipalPublisher      PrincipalRole = "publisher"
-	PrincipalInventory      PrincipalRole = "inventory"
-	PrincipalReclaimer      PrincipalRole = "reclaimer"
-	PrincipalPolicyAttestor PrincipalRole = "policy_attestor"
+	PrincipalPublisher PrincipalRole = "publisher"
+	PrincipalInventory PrincipalRole = "inventory"
+	PrincipalReclaimer PrincipalRole = "reclaimer"
 )
 
 // Validate refuses a role outside the closed set.
@@ -210,7 +209,7 @@ func (role PrincipalRole) Validate() error {
 		}
 	}
 
-	return fmt.Errorf("%w: %q is not one of this plane's four principals %v",
+	return fmt.Errorf("%w: %q is not one of this plane's principals %v",
 		ErrUnknownMember, role, PrincipalRoles())
 }
 
@@ -219,33 +218,7 @@ func PrincipalRoles() []PrincipalRole {
 		PrincipalPublisher,
 		PrincipalInventory,
 		PrincipalReclaimer,
-		PrincipalPolicyAttestor,
 	}
-}
-
-// PrincipalBindings is what the attestor observed about who may do what.
-//
-// Permissions is deliberately the raw observed grant list rather than a set of
-// booleans this code computed. Requirement 41 is explicit that IAM does not
-// provide a metadata-only object permission or a prefix-scoped list, and a
-// struct with a `CanReadMetadataOnly` field would quietly assert the opposite.
-type PrincipalBindings struct {
-	BucketFingerprint string
-	Permissions       map[PrincipalRole][]string
-
-	// UnrecognisedRoles is every IAM role name the translation could not
-	// expand into permissions, per principal that holds it.
-	//
-	// It is a separate field and not an entry in Permissions, and the
-	// difference is the whole of R1-F5. An unknown role folded in as a
-	// pseudo-permission matches nothing the matrix forbids, so a publisher
-	// bound roles/storage.objectCreator PLUS a custom role carrying
-	// storage.objects.delete satisfied its required set, tripped no excess
-	// finding, and attested SAFE. The matrix cannot know what a custom role
-	// contains -- only the project that defined it does -- so the honest
-	// answer is not "harmless", it is "unknown, therefore unsafe", and that is
-	// a finding rather than an omission.
-	UnrecognisedRoles map[PrincipalRole][]string
 }
 
 // WriterAdmission is one writer's ticket over a source incarnation.

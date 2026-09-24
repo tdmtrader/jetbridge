@@ -22,5 +22,5 @@ guards reject an unconditional or key-only delete route anywhere else.
             - --interval={{ $values.interval }}
             - --delete-timeout={{ $values.deleteTimeout }}
             - --batch={{ int $values.batch }}
-{{- include "concourse.hangarOutput.controllerTail" (dict "root" . "values" $values) }}
+{{- include "concourse.hangarOutput.controllerTail" (dict "root" . "values" $values "role" "reclaimer") }}
 {{- end }}

@@ -29,4 +29,4 @@ Feature: Registering an uploaded input before granting ownership
       | "reservation late commit"    |
       | "database nonce mutation"    |
       | "database receipt mutation"  |
-      | "policy at risk"             |
+      | "storage integrity at risk"             |

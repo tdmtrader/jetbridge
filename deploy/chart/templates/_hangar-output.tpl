@@ -1,34 +1,4 @@
-{{/*
-The Hangar output plane's names, its duration arithmetic, and its refusals.
-
-Every rule here refuses a RENDER rather than letting a workload start and fail.
-A render is what an operator reviews and what GitOps diffs; a configuration that
-only a pod's startup rejects is one that reaches a cluster, CrashLoopBackOffs,
-and is diagnosed from logs at three in the morning.
-*/}}
-
-{{/* ------------------------------------------------------------------ names */}}
-
-{{/*
-qualifiedName composes `<fullname>-<suffix>` inside the 63-character bound by
-truncating the FULLNAME, never the composed string.
-
-Truncating the composed string is what the four workload names used to do, and
-the four suffixes share a 14-character `-hangar-output` prefix: once the
-fullname reached 49 characters there were fewer than 14 distinguishing
-characters left and all four collapsed to ONE name. validatePrincipals then
-refused the render -- correctly, and with a message about service accounts --
-for a problem the operator can only fix by renaming the release. The fullname is
-`<release>-concourse-jetbridge`, so the chart was unusable at any release name
-of 28 characters or more, and Helm permits 53.
-
-Reserving the suffix instead keeps the four distinct at every length, because
-the part that distinguishes them is the part that survives. Names stay
-byte-identical for any fullname short enough not to need truncating, which is
-every release name in use.
-
-Expects a dict: root, suffix.
-*/}}
+{{/* Reserve suffix length so long release names cannot collapse distinct workload names. */}}
 {{- define "concourse.hangarOutput.qualifiedName" -}}
 {{- $suffix := .suffix -}}
 {{- $budget := int (sub 62 (len $suffix)) -}}
@@ -50,9 +20,6 @@ Expects a dict: root, suffix.
 {{- include "concourse.hangarOutput.qualifiedName" (dict "root" . "suffix" "hangar-output-reclaimer") }}
 {{- end }}
 
-{{- define "concourse.hangarOutput.attestorName" -}}
-{{- include "concourse.hangarOutput.qualifiedName" (dict "root" . "suffix" "hangar-output-policy-attestor") }}
-{{- end }}
 
 {{- define "concourse.hangarOutput.receiptKeysName" -}}
 {{- include "concourse.hangarOutput.qualifiedName" (dict "root" . "suffix" "hangar-output-receipt-keys") }}
@@ -62,11 +29,6 @@ Expects a dict: root, suffix.
 {{- include "concourse.hangarOutput.qualifiedName" (dict "root" . "suffix" "hangar-output-activation") }}
 {{- end }}
 
-{{/*
-Service-account names. Each role's own value wins; otherwise the workload's
-name. Four distinct names by construction, and the validation below refuses two
-that an operator made equal.
-*/}}
 {{- define "concourse.hangarOutput.daemonServiceAccount" -}}
 {{- default (include "concourse.hangarOutput.daemonName" .) .Values.hangarOutput.daemon.serviceAccount.name }}
 {{- end }}
@@ -79,44 +41,15 @@ that an operator made equal.
 {{- default (include "concourse.hangarOutput.reclaimerName" .) .Values.hangarOutput.reclaimer.serviceAccount.name }}
 {{- end }}
 
-{{- define "concourse.hangarOutput.attestorServiceAccount" -}}
-{{- default (include "concourse.hangarOutput.attestorName" .) .Values.hangarOutput.policyAttestor.serviceAccount.name }}
-{{- end }}
 
 {{- define "concourse.hangarOutput.activationServiceAccount" -}}
 {{- default (include "concourse.hangarOutput.activationName" .) .Values.hangarOutput.activation.serviceAccount.name }}
 {{- end }}
 
-{{/*
-daemonTLSServerName is the name the ATC verifies the output daemon's SERVER
-certificate against.
-
-The daemon is dialed at `<node InternalIP>:<port>` and renders no Service, so
-there is no name in the dial at all -- and a node IP cannot be a SAN in a
-certificate issued before that node existed. Verification is therefore against
-a name the operator puts in the certificate, and this is the one place the
-chart spells it: the same string reaches the ATC's flag and values.yaml's
-instruction to the operator.
-*/}}
 {{- define "concourse.hangarOutput.daemonTLSServerName" -}}
 {{- default (printf "%s.%s.svc" (include "concourse.hangarOutput.daemonName" .) .Release.Namespace) .Values.hangarOutput.daemon.tls.serverName }}
 {{- end }}
 
-{{/* -------------------------------------------------------------- durations */}}
-
-{{/*
-durationSeconds parses a Go-style duration of whole hours, minutes and seconds.
-
-Helm has no duration arithmetic, and the relationships between the capture
-deadline, the publication grace and the lease term are the ones a mistake is
-expensive in: a grace that does not exceed the maximum capture deadline lets
-inventory adopt an object a capture is still entitled to register. So the chart
-does the arithmetic rather than documenting the rule and hoping.
-
-Sub-second precision is deliberately not accepted. No value in this plane is
-expressed in milliseconds, and admitting "1500ms" would mean either parsing it
-or silently reading it as 1500.
-*/}}
 {{- define "concourse.durationSeconds" -}}
 {{- $name := .name -}}
 {{- $value := toString .value -}}
@@ -139,11 +72,6 @@ or silently reading it as 1500.
 {{- $total -}}
 {{- end }}
 
-{{/*
-quantityBytes turns a Kubernetes quantity (32Gi, 500Mi, 1073741824) into bytes,
-so the scratch volume's size limit can be compared with the content limit it has
-to hold.
-*/}}
 {{- define "concourse.quantityBytes" -}}
 {{- $name := .name -}}
 {{- $value := toString .value -}}
@@ -164,13 +92,6 @@ to hold.
 {{- mul (atoi $digits) $multiplier -}}
 {{- end }}
 
-{{/* ------------------------------------------------------------- validation */}}
-
-{{/*
-validate is invoked UNCONDITIONALLY by the output plane's first template, so
-that "output enabled without base control" is refused rather than rendered as a
-daemon that would refuse itself at startup.
-*/}}
 {{- define "concourse.hangarOutput.validate" -}}
 {{- with .Values.hangarOutput.readControlURL -}}
 {{- $url := urlParse . -}}
@@ -231,15 +152,6 @@ daemon that would refuse itself at startup.
 {{- if le (int $output.activationEpoch) 0 -}}
 {{- fail "hangarOutput.activationEpoch is required and must be positive: a stale or absent epoch authorizes nothing, and zero is the absence." -}}
 {{- end -}}
-{{/*
-validateScratch belongs to the BASE switch, not the output one. The DaemonSet,
-its hangar-output-scratch emptyDir and its --scratch-dir flag all render under
-$base, so with the check under $capture a base-control-only deployment rendered
-`sizeLimit:` -- an explicit null, i.e. unbounded -- beneath a comment asserting
-the limit was required and validated. Nothing writes that volume in base-only
-mode today, so the exposure was the CLAIM; a render that documents a bound it
-does not set is read once and believed.
-*/}}
 {{- include "concourse.hangarOutput.validateScratch" . -}}
 {{- end -}}
 
@@ -250,7 +162,7 @@ does not set is read once and believed.
 {{- include "concourse.hangarOutput.validateDurations" . -}}
 {{- include "concourse.hangarOutput.validateControllers" . -}}
 {{- include "concourse.hangarOutput.validatePrincipals" . -}}
-{{- include "concourse.hangarOutput.validateCloudIdentities" . -}}
+
 {{- if not $output.database.existingSecret -}}
 {{- fail "hangarOutput.database.existingSecret is required: the activation and drain Jobs use a PostgreSQL role of their own, distinct from the web pod's, which is what makes \"only the activation command writes hangar_output_activation_epochs\" enforceable rather than aspirational." -}}
 {{- end -}}
@@ -274,7 +186,7 @@ does not set is read once and believed.
 {{- if and $output.strictInputBucket (eq $output.bucket $output.strictInputBucket) -}}
 {{- fail (printf "hangarOutput.bucket is %q, which is hangarOutput.strictInputBucket. The output plane needs a DEDICATED bucket; the strict-input bucket is caller-published and attests inputs." $output.bucket) -}}
 {{- end -}}
-{{- if and .Values.artifactDaemon.durable.bucket (eq $output.bucket .Values.artifactDaemon.durable.bucket) -}}
+{{- if and (eq $output.store "gcs") .Values.artifactDaemon.durable.bucket (eq $output.bucket .Values.artifactDaemon.durable.bucket) -}}
 {{- fail (printf "hangarOutput.bucket is %q, which is artifactDaemon.durable.bucket. The output plane needs a DEDICATED bucket and never the durable cache one." $output.bucket) -}}
 {{- end -}}
 {{- end }}
@@ -291,12 +203,6 @@ does not set is read once and believed.
 {{- fail "hangarOutput.materializationKeySecret is required: output read warrants use their own key and their own domain, never the receipt key." -}}
 {{- end -}}
 
-{{/*
-Three key roles, three ids. A receipt says an object exists in a bucket, a
-control statement says a process on a node did something, and a read warrant
-authorizes one staged read; "which key checks this" has to have one answer per
-id, and a shared id makes it two.
-*/}}
 {{- $ids := dict -}}
 {{- range $role, $id := dict "executionControl.keyID" $output.executionControl.keyID "receipt.keyID" $output.receipt.keyID "materializationKeyID" $output.materializationKeyID -}}
 {{- if $id -}}
@@ -307,7 +213,6 @@ id, and a shared id makes it two.
 {{- end -}}
 {{- end -}}
 
-{{/* Three key roles, three Secrets. One Secret for two of them means rotating either rotates both. */}}
 {{- $secrets := dict -}}
 {{- range $role, $secret := dict "executionControl.keySecret" $output.executionControl.keySecret "capabilityKeySecret" $output.capabilityKeySecret "receipt.privateKeySecret" $output.receipt.privateKeySecret "materializationKeySecret" $output.materializationKeySecret -}}
 {{- if $secret -}}
@@ -318,7 +223,6 @@ id, and a shared id makes it two.
 {{- end -}}
 {{- end -}}
 
-{{/* Source hold acknowledgements use the node control key, not the receipt key. */}}
 {{- $controlEpochs := dict -}}
 {{- range $entry := $output.executionControl.publicKeys -}}
 {{- $epoch := toString $entry.epoch -}}
@@ -331,7 +235,6 @@ id, and a shared id makes it two.
 {{- fail "hangarOutput.executionControl.publicKeys has no key for the active epoch; source hold recovery cannot verify node statements" -}}
 {{- end -}}
 
-{{/* The public receipt verification ring. */}}
 {{- $active := dict -}}
 {{- $byID := dict -}}
 {{- $epochs := dict -}}
@@ -417,13 +320,6 @@ id, and a shared id makes it two.
 {{- end -}}
 {{- end }}
 
-{{/*
-Run result downloads on web. Each read spools the fetched archive and its
-canonical copy -- up to 256Mi each -- until its response is written, and web
-refuses reads beyond readConcurrency. So the scratch volume must hold
-readConcurrency x 2 x 256Mi, or the bound web enforces is one the volume
-cannot keep.
-*/}}
 {{- define "concourse.web.runResultReads" -}}
 {{- if and .Values.hangarOutput.executionControl.enabled .Values.hangarOutput.enabled .Values.hangarOutput.webEnabled -}}true{{- end -}}
 {{- end }}
@@ -444,12 +340,6 @@ cannot keep.
 {{- end -}}
 {{- end }}
 
-{{/*
-Credential handoff delivers the owner's session credentials into the image a
-Run's result producer names, and a template author chooses that. Web refuses
-every handoff unless the operator pins the worker image by digest; a tag can
-be moved after it is pinned, so only repository@sha256:<64 hex> is accepted.
-*/}}
 {{- define "concourse.web.validateRunCredentialWorkerImages" -}}
 {{- $images := .Values.web.runCredentialWorkerImages | default list -}}
 {{- if and $images (not .Values.web.runInputSigningKeySecret) -}}
@@ -464,7 +354,7 @@ be moved after it is pinned, so only repository@sha256:<64 hex> is accepted.
 
 {{- define "concourse.hangarOutput.validateControllers" -}}
 {{- $output := .Values.hangarOutput -}}
-{{- range $name, $controller := dict "inventory" $output.inventory "reclaimer" $output.reclaimer "policyAttestor" $output.policyAttestor -}}
+{{- range $name, $controller := dict "inventory" $output.inventory "reclaimer" $output.reclaimer -}}
 {{- if not $controller.enabled -}}
 {{- fail (printf "hangarOutput.%s.enabled is false while hangarOutput.enabled is true. An activation epoch attests compatible migrations AND the recovery, inventory and reclaim workers: a controller that is not deployed is a facet that cannot be attested, and a plane with no reclaimer keeps every published object forever while its status says it does not." $name) -}}
 {{- end -}}
@@ -474,65 +364,11 @@ be moved after it is pinned, so only repository@sha256:<64 hex> is accepted.
 {{- end -}}
 {{- end }}
 
-{{/*
-validatePrincipals covers EVERY service account this chart renders, not only the
-four output roles.
-
-It used to cover four of seven, and the three it did not were the three an
-operator can actually reach by accident:
-
-  - hangarOutput.activation.serviceAccount.name pointed at the reclaimer's
-    account rendered TWO ServiceAccount objects with one name. Which one the
-    apply leaves standing decides whether the reclaimer keeps its Workload
-    Identity annotation -- and a reclaimer whose annotation was stripped has no
-    delete authority, so the plane keeps every published object forever while
-    its status says it reclaims;
-  - the reclaimer's cloud principal on the activation account's annotation is
-    the same union-of-grants defect the four-role check already refuses, one
-    account over;
-  - serviceAccount.name -- the TOP-LEVEL one -- set to the reclaimer's account
-    makes the *web* Deployment run as the delete-holding identity. Req 54 is
-    explicit that web/control-plane, task, cache and strict-input identities
-    have no role on the output bucket, and this is the one values override that
-    gives web all of them;
-  - kubernetes.serviceAccount is the TASK pods' account, and it is the worst of
-    the four. Task pods run arbitrary user-supplied code; the reclaimer holds
-    the only storage.objects.delete on the output bucket. Req 54 names this
-    case by hand -- "shared KSAs, shared Workload Identity principals,
-    prefix-only isolation in a mixed bucket, OR TASK CREDENTIALS are activation
-    failures". An empty value needs nothing: it means "the web SA", which the
-    serviceAccount subject already covers.
-
-That this list has now been extended four times is the argument for the guard
-that reads it. deploy/chart/tests/hangar_output_principals_test.go enumerates
-every `.Values.…serviceAccount[.name]` any template consults, points each at
-another workload's account and requires the refusal, so a fifth override cannot
-be added without either landing here or turning that rule red.
-
-The web account is checked by NAME even when serviceAccount.create is false: a
-pre-provisioned account named after the reclaimer's is the same Pod running as
-the same identity, and the chart not rendering the object does not make that
-untrue. Its PRINCIPAL is only checked when the chart renders the annotation,
-because that is the only case where the chart is the thing asserting it.
-*/}}
-{{/*
-validateIntervals checks the three controllers' cadences, which nothing checked.
-
-Every other duration in this plane is parsed and bounded at render time. The
-attestor's was not, and it is the one whose bound has a consequence written into
-the SCHEMA: a policy snapshot older than fifteen minutes is stale, a stale
-snapshot puts the plane at-risk, and at-risk blocks five kinds of admission. An
-interval above that bound guarantees the state it is supposed to prevent.
-*/}}
 {{- define "concourse.hangarOutput.validateIntervals" -}}
 {{- $output := .Values.hangarOutput -}}
 {{- $_ := include "concourse.durationSeconds" (dict "name" "hangarOutput.inventory.interval" "value" $output.inventory.interval) -}}
 {{- $_ = include "concourse.durationSeconds" (dict "name" "hangarOutput.reclaimer.interval" "value" $output.reclaimer.interval) -}}
 {{- $_ = include "concourse.durationSeconds" (dict "name" "hangarOutput.reclaimer.deleteTimeout" "value" $output.reclaimer.deleteTimeout) -}}
-{{- $attest := atoi (include "concourse.durationSeconds" (dict "name" "hangarOutput.policyAttestor.interval" "value" $output.policyAttestor.interval)) -}}
-{{- if gt $attest 900 -}}
-{{- fail (printf "hangarOutput.policyAttestor.interval is %s; the maximum is 15m. Policy evidence older than fifteen minutes is stale, the schema enforces that bound on every admission, and a stale snapshot puts the plane at-risk -- so a longer refresh interval does not make detection slower, it makes the plane at-risk between every pass." $output.policyAttestor.interval) -}}
-{{- end -}}
 {{- end }}
 
 {{- define "concourse.hangarOutput.validatePrincipals" -}}
@@ -546,9 +382,6 @@ interval above that bound guarantees the state it is supposed to prevent.
   (dict "path" "hangarOutput.reclaimer"
         "name" (include "concourse.hangarOutput.reclaimerServiceAccount" .)
         "annotations" .Values.hangarOutput.reclaimer.serviceAccount.annotations)
-  (dict "path" "hangarOutput.policyAttestor"
-        "name" (include "concourse.hangarOutput.attestorServiceAccount" .)
-        "annotations" .Values.hangarOutput.policyAttestor.serviceAccount.annotations)
   (dict "path" "hangarOutput.activation"
         "name" (include "concourse.hangarOutput.activationServiceAccount" .)
         "annotations" .Values.hangarOutput.activation.serviceAccount.annotations)
@@ -571,7 +404,7 @@ interval above that bound guarantees the state it is supposed to prevent.
 {{- range $subject := $subjects -}}
 {{- $name := $subject.name -}}
 {{- if hasKey $accounts $name -}}
-{{- fail (printf "%s and %s render the same Kubernetes service account %q. A service account is Pod-wide: two workloads sharing one are ONE cloud identity holding both sets of permissions, and no care inside either process takes that back. The publisher must not be able to list or delete; the reclaimer must not be able to create; the attestor must hold no object permission at all; and web, task, cache and strict-input identities hold no output role whatsoever." (get $accounts $name) $subject.path $name) -}}
+{{- fail (printf "%s and %s render the same Kubernetes service account %q. A service account is Pod-wide: two workloads sharing one are ONE cloud identity holding both sets of permissions, and no care inside either process takes that back. The publisher must not be able to list or delete; the reclaimer must not be able to create; and web, task, cache and strict-input identities hold no output role whatsoever." (get $accounts $name) $subject.path $name) -}}
 {{- end -}}
 {{- $_ := set $accounts $name $subject.path -}}
 {{- end -}}
@@ -588,81 +421,22 @@ interval above that bound guarantees the state it is supposed to prevent.
 {{- end -}}
 {{- end }}
 
-{{/*
-cloudIdentity is the IAM member bound to one output role's Kubernetes service
-account, read off the Workload Identity annotation the chart renders on that
-account.
-
-It is not the service account's NAME. The policy attestor compares the bucket's
-IAM policy against these four values and the matcher normalises an IAM member
-("serviceAccount:a@b" and "a@b" are one identity), so a Kubernetes name here
-matches no binding on any real bucket: every role attests insufficient_role,
-every real principal on the bucket becomes a stranger, and the epoch goes
-permanently at risk. It fails CLOSED, which is why nothing noticed -- and it
-means Req 54's "activation verifies the KSA-to-cloud identity bindings" could
-never succeed as deployed.
-
-An empty annotation fails the render rather than rendering an empty identity,
-because an empty member matches no binding either and is indistinguishable from
-a principal that really has no role: the operator would be shown a plane whose
-publisher holds nothing, for a deployment whose Workload Identity is correct
-and merely undeclared.
-*/}}
-{{- define "concourse.hangarOutput.cloudIdentity" -}}
-{{- $principal := get (.annotations | default dict) "iam.gke.io/gcp-service-account" -}}
-{{- if not $principal -}}
-{{- fail (printf "%s.serviceAccount.annotations has no iam.gke.io/gcp-service-account. The policy attestor compares the output bucket's IAM policy against the four principals this plane claims to have, and a Kubernetes service account name -- or an empty one -- matches no member on any real bucket: all four roles attest insufficient_role, every real principal becomes a stranger and the epoch goes permanently at risk. The chart cannot verify the binding; activation does. It does need to be told what it is." .path) -}}
-{{- end -}}
-{{- $principal -}}
-{{- end }}
-
-{{/*
-validateCloudIdentities requires all four before anything renders, so the
-refusal names the value rather than arriving from whichever template happened
-to be first.
-*/}}
-{{- define "concourse.hangarOutput.validateCloudIdentities" -}}
-{{- $output := .Values.hangarOutput -}}
-{{- range $path, $values := dict "hangarOutput.daemon" $output.daemon "hangarOutput.inventory" $output.inventory "hangarOutput.reclaimer" $output.reclaimer "hangarOutput.policyAttestor" $output.policyAttestor -}}
-{{- $_ := include "concourse.hangarOutput.cloudIdentity" (dict "path" $path "annotations" $values.serviceAccount.annotations) -}}
-{{- end -}}
-{{- end }}
-
-{{/* ------------------------------------------------- shared container pieces */}}
-
-{{/*
-outputNamespaceFlags are the derived-namespace flags every output workload that
-addresses objects is given. One include, so a controller cannot be pointed at a
-namespace the daemon does not publish into.
-*/}}
 {{- define "concourse.hangarOutput.namespaceFlags" -}}
-- --output-store=gcs
+- --output-store={{ .Values.hangarOutput.store }}
 - --output-bucket={{ .Values.hangarOutput.bucket }}
 - --output-prefix={{ .Values.hangarOutput.prefix }}
 - --output-tenant={{ .Values.hangarOutput.tenant }}
 - --activation-epoch={{ int .Values.hangarOutput.activationEpoch }}
-{{- if .Values.hangarOutput.endpoint }}
+{{- if eq .Values.hangarOutput.store "disk" }}
+- --output-endpoint={{ include "concourse.hangarStorage.endpoint" . }}
+- --output-store-id={{ .Values.hangarStorage.disk.storeID }}
+- --output-token-file=/etc/concourse/hangar-disk/token
+- --output-ca-cert=/etc/concourse/hangar-disk/ca.crt
+{{- else if .Values.hangarOutput.endpoint }}
 - --output-endpoint={{ .Values.hangarOutput.endpoint }}
 {{- end }}
 {{- end }}
 
-{{/*
-controllerPodSpec is the body every one of the three controllers shares:
-database credential, security context, probes-by-liveness-of-process. Each is a
-single bounded worker with no HTTP surface, so there is no readiness probe to
-write -- the Deployment's one replica IS the readiness the lease enforces.
-*/}}
-{{/*
-No liveness probe, and that is a gap rather than a decision.
-
-The absent READINESS probe is argued above and is right: these three serve
-nothing, and the one replica is the readiness the lease enforces. Liveness is a
-different question -- a wedged worker holding a lease is exactly what a liveness
-probe exists for, and this plane's status surface already knows how to say "the
-sweep has stalled". What it needs is a heartbeat the controller loop writes, and
-that loop lives in atc/hangaroutput/controller rather than here. Recorded so
-that the absence is not read as a considered one.
-*/}}
 {{- define "concourse.hangarOutput.controllerSecurityContext" -}}
 securityContext:
   runAsNonRoot: true

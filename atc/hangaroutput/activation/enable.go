@@ -2,8 +2,6 @@ package activation
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -18,24 +16,13 @@ import (
 // it from. If the migration is ever renumbered, this is the one other place
 // that has to move, and the enable step refuses loudly rather than quietly
 // admitting a plane whose schema it cannot find.
-const HangarOutputMigration int64 = 1788936403
-
-// PolicyDetectionBound is the freshness bound the schema's own deferred
-// admission gate applies to a lifetime-policy attestation.
-//
-// Stated here as an interval literal because the check below has to be the SAME
-// bound: a precondition that admitted a staler attestation than the gate does
-// would let an operator enable a facet that refuses its first admission, which
-// is the failure mode this whole step exists to move earlier.
-const PolicyDetectionBound = "15 minutes"
+const HangarOutputMigration int64 = 1789793149
 
 // Precondition is one thing that has to be true before a facet goes into
 // service, together with what was actually found.
 //
-// It carries WHY, in the same spirit as Residue: a refusal an operator cannot
-// act on is a refusal they will work around. "policy attestation: not met" is a
-// shrug; "the most recent attestation for this epoch is 41 minutes old, past the
-// 15-minute detection bound -- the attestor is not running" is an instruction.
+// Each result names the unmet condition and explains what the operator needs
+// to repair before enabling the facet.
 type Precondition struct {
 	Name   string
 	Met    bool
@@ -51,28 +38,8 @@ func (precondition Precondition) String() string {
 var ErrEnableRefused = fmt.Errorf("%w: the facet's activation preconditions are not met",
 	output.ErrIncomplete)
 
-// EnablePreconditions reports every precondition for putting one facet into
-// service, met or not.
-//
-// IT EXISTS BECAUSE THERE WAS NOTHING. `--mode=enable --facet=output` was held
-// by a written instruction and by nothing in the code: the command never read a
-// policy snapshot, never checked which migration the database is at, never
-// asked whether a policy attestor is deployed and holding its lease, and never
-// looked at the identity facts the epoch row itself carries. An operator could
-// attest and enable with no conformance run and no attestor anywhere in the
-// cluster.
-//
-// The plane still failed CLOSED -- the schema's deferred
-// hangar_policy_admits_new_protection refuses the first admission, and the
-// receipt trigger refuses a receipt whose key the epoch does not attest -- so
-// this is not a hole through which anything unsafe passed. What it was is a
-// refusal arriving at the wrong moment, in the wrong vocabulary, to the wrong
-// person: a JB002 on some build's commit, hours later, rather than a sentence
-// at the operator's terminal naming the thing that is missing.
-//
-// It is a READ, and like DrainResidue it returns EVERYTHING rather than
-// stopping at the first unmet one. An operator enabling a plane wants the whole
-// list in one pass.
+// EnablePreconditions reports schema, cohort, identity and runtime integrity
+// preconditions. Bucket IAM and lifecycle configuration are operator-managed.
 func (epochs Epochs) EnablePreconditions(ctx context.Context,
 	epoch executioncontrol.ActivationEpoch, facet Facet) ([]Precondition, error) {
 	if _, err := facet.Column(); err != nil {
@@ -148,7 +115,7 @@ func (epochs Epochs) EnablePreconditions(ctx context.Context,
 	add("base facet ready", state.Base == "attested" || state.Base == "enabled",
 		fmt.Sprintf("the base facet is %q", state.Base),
 		"output admission is the conjunction of base readiness, the output facet and the "+
-			"current policy. The schema's hangar_output_epoch_needs_base says the same thing "+
+			"storage integrity. The schema's hangar_output_epoch_needs_base says the same thing "+
 			"and would refuse the write")
 
 	// 3. THE IDENTITY FACTS THE EPOCH ATTESTS. These are what every later
@@ -174,7 +141,7 @@ func (epochs Epochs) EnablePreconditions(ctx context.Context,
 
 	identity := present(receiptKey) && present(materializeKey) && present(bucket) &&
 		present(namespace)
-	add("cloud identity attested", identity,
+	add("storage identity attested", identity,
 		fmt.Sprintf("receipt key %s, materialization key %s, bucket %s, namespace %s",
 			quoted(receiptKey), quoted(materializeKey), quoted(bucket), quoted(namespace)),
 		"these four facts are what every later refusal is measured against: the receipt "+
@@ -186,65 +153,14 @@ func (epochs Epochs) EnablePreconditions(ctx context.Context,
 		"a facet enabled outside its receipt key's validity window can sign nothing, so every "+
 			"capture under it reaches the publish point and then fails to register")
 
-	// 4. THE POLICY EVIDENCE, against the same bound the schema's deferred gate
-	// applies. "We have not checked" and "the check failed" are the same amount
-	// of evidence, and both of them arrive at the operator here rather than at
-	// a build's commit.
-	var (
-		snapshotState  *string
-		snapshotAge    *string
-		snapshotBucket *string
-		fresh          *bool
-	)
-	if err := epochs.DB.QueryRowContext(ctx, `
-		SELECT snapshot.state, (now() - snapshot.observed_at)::text,
-		       snapshot.bucket_fingerprint,
-		       now() - snapshot.observed_at <= interval '`+PolicyDetectionBound+`'
-		  FROM hangar_policy_snapshots snapshot
-		 WHERE snapshot.activation_epoch = $1
-		 ORDER BY snapshot.observed_at DESC, snapshot.id DESC LIMIT 1`,
-		int64(epoch)).Scan(&snapshotState, &snapshotAge, &snapshotBucket, &fresh); err != nil &&
-		!errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("%w: reading the lifetime-policy attestation for epoch %d: %v",
-			output.ErrInfrastructure, epoch, err)
+	var unresolved int
+	if err := epochs.DB.QueryRowContext(ctx, `SELECT count(*) FROM hangar_policy_violations
+        WHERE activation_epoch = $1 AND resolved_at IS NULL
+          AND violation IN ('out_of_band_absence', 'runtime_principal_denied')`, int64(epoch)).Scan(&unresolved); err != nil {
+		return nil, fmt.Errorf("%w: reading storage integrity findings: %v", output.ErrInfrastructure, err)
 	}
-
-	safe := snapshotState != nil && *snapshotState == "safe"
-	add("lifetime policy attested safe", safe,
-		describeSnapshot(snapshotState),
-		"the bucket's lifetime policy is what stands between this plane's objects and a "+
-			"provider rule that deletes them out from under a claim. The schema refuses every "+
-			"admission without a safe attestation, deferred, at the consumer's commit")
-
-	add("lifetime policy attestation is fresh", fresh != nil && *fresh,
-		describeFreshness(fresh, snapshotAge),
-		"the same "+PolicyDetectionBound+" detection bound the schema's own admission gate "+
-			"applies. A stale check is not a safe one, and an epoch enabled on one stops "+
-			"admitting the moment the bound passes")
-
-	add("the attestation is of the attested bucket",
-		snapshotBucket != nil && bucket != nil && *snapshotBucket == *bucket,
-		fmt.Sprintf("the attestation reads %s and the epoch attests %s",
-			quoted(snapshotBucket), quoted(bucket)),
-		"a policy reading of another bucket is no evidence about this one, and the two are "+
-			"stored in different tables with nothing joining them")
-
-	// 5. AND SOMEBODY TO KEEP IT FRESH. A snapshot is a moment; the attestor is
-	// what makes the next one exist.
-	var attestorHeld bool
-	if err := epochs.DB.QueryRowContext(ctx, `
-		SELECT EXISTS (SELECT 1 FROM hangar_operation_leases
-		                WHERE kind = $2 AND activation_epoch = $1 AND expires_at > now())`,
-		int64(epoch), string(output.OperationPolicyAttestation)).Scan(&attestorHeld); err != nil {
-		return nil, fmt.Errorf("%w: reading the policy attestation lease for epoch %d: %v",
-			output.ErrInfrastructure, epoch, err)
-	}
-	add("a policy attestor is running", attestorHeld,
-		metOrNot(attestorHeld, "a policy-attestation lease is held and unexpired",
-			"no unexpired policy-attestation lease exists for this epoch"),
-		"the attestation above is one moment. Without a controller renewing it the epoch stops "+
-			"admitting anything "+PolicyDetectionBound+" after the last reading, and the "+
-			"operator who enabled the facet will not be the one who finds out")
+	add("storage integrity", unresolved == 0, fmt.Sprintf("%d unresolved runtime findings", unresolved),
+		"observed object loss or denied storage operations require repair and explicit reconciliation")
 
 	return preconditions, nil
 }
@@ -347,24 +263,4 @@ func describeKeyWindow(covers *bool) string {
 	}
 
 	return "the current instant is OUTSIDE the attested receipt key's validity window"
-}
-
-func describeSnapshot(state *string) string {
-	if state == nil {
-		return "no lifetime-policy attestation exists for this epoch"
-	}
-
-	return fmt.Sprintf("the most recent lifetime-policy attestation is %q", *state)
-}
-
-func describeFreshness(fresh *bool, age *string) string {
-	if fresh == nil || age == nil {
-		return "there is no attestation to be stale"
-	}
-	if *fresh {
-		return fmt.Sprintf("the most recent attestation is %s old", *age)
-	}
-
-	return fmt.Sprintf("the most recent attestation is %s old, past the %s detection bound",
-		*age, PolicyDetectionBound)
 }

@@ -95,6 +95,9 @@ this comment is why the `}}` below is not `-}}`.
                   name: {{ $root.Values.hangarOutput.database.existingSecret }}
                   key: dsn
           volumeMounts:
+            {{- if eq $root.Values.hangarOutput.store "disk" }}
+            {{- include "concourse.hangarStorage.clientMount" $root | nindent 12 }}
+            {{- end }}
             # readOnlyRootFilesystem with nowhere to write is a runtime error
             # waiting for the first operation that wants a temp file -- the GCS
             # client spools resumable uploads -- on a Pod that passed every
@@ -107,6 +110,9 @@ this comment is why the `}}` below is not `-}}`.
           {{- end }}
           {{- include "concourse.hangarOutput.controllerSecurityContext" $root | nindent 10 }}
       volumes:
+        {{- if eq $root.Values.hangarOutput.store "disk" }}
+        {{- include "concourse.hangarStorage.clientVolume" (dict "root" $root "role" .role) | nindent 8 }}
+        {{- end }}
         - name: tmp
           emptyDir:
             sizeLimit: 64Mi

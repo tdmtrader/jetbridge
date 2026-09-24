@@ -50,8 +50,8 @@ var flagSurfaces = []flagSurface{
 	// binary accepts, and the rule would go either vacuous or permanently red.
 	{template: "hangar-output-daemon.yaml", pkg: "./cmd/hangar-output-daemon"},
 	{template: "hangar-output-inventory.yaml", pkg: "./cmd/hangar-output-inventory"},
+	{template: "hangar-store.yaml", pkg: "./cmd/hangar-store"},
 	{template: "hangar-output-reclaimer.yaml", pkg: "./cmd/hangar-output-reclaimer"},
-	{template: "hangar-output-policy-attestor.yaml", pkg: "./cmd/hangar-output-policy-attestor"},
 	{template: "hangar-output-activation-job.yaml", pkg: "./cmd/hangar-output-activate"},
 }
 

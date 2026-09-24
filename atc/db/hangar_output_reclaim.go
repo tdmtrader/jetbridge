@@ -566,7 +566,7 @@ func (repository *HangarOutputRepository) HangarDatabaseNow(ctx context.Context,
 //
 // It is what the admission pass selects and nothing it decides: every exclusion
 // named here is rechecked by AdmitReclaim under the exact-lifecycle lock, and
-// the schema rechecks the policy half again at commit. Selecting on them here as
+// the schema rechecks runtime integrity at commit. Selecting on them here as
 // well is not a second copy of the rule -- it is the bound that stops a pass
 // from opening a transaction per protected generation in the deployment.
 type HangarReclaimCandidate struct {

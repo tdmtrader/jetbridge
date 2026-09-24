@@ -25,9 +25,7 @@ import (
 	"github.com/concourse/concourse/hangar/output"
 )
 
-// One activation epoch and one fresh, safe policy attestation: without
-// both, nothing in the plane admits anything, which is the held state the
-// migration leaves behind.
+// One activation epoch. Storage policy configuration is operator-owned.
 func hangarActivateEpoch(ctx context.Context, repository *db.HangarOutputRepository) {
 	GinkgoHelper()
 	_, err := dbConn.Exec(`
@@ -40,20 +38,6 @@ func hangarActivateEpoch(ctx context.Context, repository *db.HangarOutputReposit
 			'materialize-key-1', 'gs://output-bucket', 'deployment/ns')`)
 	Expect(err).NotTo(HaveOccurred())
 
-	tx, err := dbConn.Begin()
-	Expect(err).NotTo(HaveOccurred())
-	defer db.Rollback(tx)
-	Expect(repository.RecordPolicyAttestation(ctx, tx, output.PolicySnapshot{
-		ProtocolVersion:      output.ProtocolVersion,
-		ActivationEpoch:      1,
-		BucketFingerprint:    "gs://output-bucket",
-		Metageneration:       3,
-		PolicyHash:           "policy-hash-1",
-		LifecycleDeleteRules: 0,
-		State:                output.PolicySafe,
-		ObservedAt:           output.NewTimestamp(time.Now()),
-	}, nil)).To(Succeed())
-	Expect(tx.Commit()).To(Succeed())
 }
 
 func hangarIdentity() executioncontrol.Identity {

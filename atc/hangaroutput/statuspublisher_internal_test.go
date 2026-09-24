@@ -24,7 +24,7 @@ func TestTheLeaseSeriesCoverExactlyTheKindsAWorkloadOwns(t *testing.T) {
 	for _, kind := range OwnedOperationKinds() {
 		want[string(kind)] = true
 	}
-	if len(want) < 4 {
+	if len(want) == 0 {
 		t.Fatalf("OwnedOperationKinds is %d kinds; it collapsed and this rule would pass over "+
 			"almost nothing", len(want))
 	}

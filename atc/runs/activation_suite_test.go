@@ -2,11 +2,9 @@ package runs_test
 
 import (
 	"context"
-	"time"
 
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runs"
-	"github.com/concourse/concourse/hangar/output"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -31,23 +29,6 @@ func activateVersionedAdmission(conn db.DbConn) {
 			now() - interval '1 day', now() + interval '30 days',
 			'materialize-key-1', 'gs://output-bucket', 'deployment/ns')`, testEpoch)
 	Expect(err).NotTo(HaveOccurred())
-
-	prefix, err := db.HangarConsumerPrefixHeld("runs-suite-activation")
-	Expect(err).NotTo(HaveOccurred())
-	tx, err := conn.Begin()
-	Expect(err).NotTo(HaveOccurred())
-	defer db.Rollback(tx)
-	Expect(db.NewHangarOutputRepository(prefix).RecordPolicyAttestation(context.Background(), tx, output.PolicySnapshot{
-		ProtocolVersion:      output.ProtocolVersion,
-		ActivationEpoch:      1,
-		BucketFingerprint:    "gs://output-bucket",
-		Metageneration:       3,
-		PolicyHash:           "policy-hash-1",
-		LifecycleDeleteRules: 0,
-		State:                output.PolicySafe,
-		ObservedAt:           output.NewTimestamp(time.Now()),
-	}, nil)).To(Succeed())
-	Expect(tx.Commit()).To(Succeed())
 
 	_, err = conn.Exec(`UPDATE pipeline_run_activation SET epoch=$1, admission_enabled=true WHERE singleton`, testEpoch)
 	Expect(err).NotTo(HaveOccurred())

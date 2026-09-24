@@ -153,3 +153,24 @@ func TestFacetAllCarriesBothTheFlagAndAFacet(t *testing.T) {
 			"nothing", config.Facet)
 	}
 }
+
+func TestIntegrityReconciliationRequiresOneRuntimeFinding(t *testing.T) {
+	valid := Config{DSN: "postgres://localhost/test", Epoch: 1, Mode: ModeReconcileIntegrity,
+		IntegrityViolation: "out_of_band_absence", IntegritySubject: "gs://bucket/key@generation"}
+	if err := valid.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, mutate := range []func(*Config){
+		func(c *Config) { c.Epoch = 0 },
+		func(c *Config) { c.IntegrityViolation = "lifecycle_delete_rule" },
+		func(c *Config) { c.IntegrityViolation = "" },
+		func(c *Config) { c.IntegritySubject = "" },
+		func(c *Config) { c.Mode = ModeBegin },
+	} {
+		invalid := valid
+		mutate(&invalid)
+		if err := invalid.Validate(); err == nil {
+			t.Errorf("accepted unscoped reconciliation: %+v", invalid)
+		}
+	}
+}

@@ -1,25 +1,4 @@
-// Package objectstore is the object-level seam the output plane's four cloud
-// roles share.
-//
-// It exists for two reasons the foundation's own adapter could not serve.
-//
-// First, packaging. hangar/gcsstore declares the same shape unexported, so
-// hangar/output/{publisher,inventory,reclaimer,policy} could not reach it, and each would have grown its own fake and its own
-// conformance suite -- four descriptions of one API, drifting.
-//
-// Second, direction. This package names no cloud SDK type. hangar/gcs,
-// hangar/gcsstore and hangar/gcsdelete stay the only importers of
-// cloud.google.com/go/storage in this half of the repository, the role
-// packages depend on an interface instead of a client, and ./cmd/concourse does
-// not regain a hundred megabytes of transitive dependency because somebody
-// wired a role package into the ATC.
-//
-// The precondition vocabulary is deliberately the GCS one -- DoesNotExist,
-// GenerationMatch, MetagenerationMatch -- rather than a generic abstraction.
-// Requirement 19 admits the strict native-GCS profile and only that profile,
-// because create-if-absent at an exact generation is the whole basis of the
-// collision guarantee. An interface that could be implemented by a store
-// without those preconditions would be an interface that let one in.
+// Package objectstore defines immutable object operations shared by Hangar backends.
 package objectstore
 
 import (
@@ -72,43 +51,6 @@ var (
 	// history on the control plane, not this error.
 	ErrBucketNotFound = errors.New("hangar/objectstore: bucket not found")
 )
-
-// Conditions is the precondition set an operation runs under.
-//
-// The zero value is "unconditional", which no output-plane role may use: every
-// create names DoesNotExist and every stat, read and delete names an exact
-// GenerationMatch. Validate says so, so a role that forgot is refused by its
-// own adapter rather than by the bucket's contents.
-type Conditions struct {
-	DoesNotExist        bool
-	GenerationMatch     int64
-	MetagenerationMatch int64
-}
-
-// IsUnconditional reports the shape no role may issue.
-func (conditions Conditions) IsUnconditional() bool {
-	return !conditions.DoesNotExist &&
-		conditions.GenerationMatch == 0 &&
-		conditions.MetagenerationMatch == 0
-}
-
-func (conditions Conditions) Validate() error {
-	if conditions.IsUnconditional() {
-		return fmt.Errorf("%w: an unconditional object operation. Every output-plane operation "+
-			"names a precondition: a create names DoesNotExist, and a stat, read or delete names "+
-			"the exact generation it is about", ErrPreconditionFailed)
-	}
-	if conditions.DoesNotExist && conditions.GenerationMatch != 0 {
-		return fmt.Errorf("%w: an operation cannot require both that the object is absent and "+
-			"that it is at generation %d", ErrPreconditionFailed, conditions.GenerationMatch)
-	}
-	if conditions.GenerationMatch < 0 || conditions.MetagenerationMatch < 0 {
-		return fmt.Errorf("%w: a negative generation or metageneration precondition",
-			ErrPreconditionFailed)
-	}
-
-	return nil
-}
 
 // Attrs is what a store reports about one object.
 type Attrs struct {
@@ -163,69 +105,29 @@ type Page struct {
 	Done    bool
 }
 
-// Client is the whole surface. A role is given a narrower interface than this;
-// this is what an adapter implements.
+// Client exposes immutable creation, inspection and reading. Deletion is a
+// separate capability so publisher and inventory clients cannot remove data.
 type Client interface {
-	Object(bucket, key string) Handle
+	CreateAbsent(ctx context.Context, bucket, key string, metadata map[string]string, body io.Reader) (Attrs, error)
+	StatCurrent(ctx context.Context, bucket, key string) (Attrs, error)
+	StatExact(ctx context.Context, bucket, key string, generation int64) (Attrs, error)
+	OpenExact(ctx context.Context, bucket, key string, generation int64) (io.ReadCloser, error)
 	List(ctx context.Context, bucket string, request ListRequest) (Page, error)
 }
 
-// Handle is one object, possibly at one generation, possibly under
-// preconditions.
-//
-// There is no Delete here, and its absence is the point. GCS IAM cannot require
-// a caller to send a generation precondition once delete permission exists
-// (Req 55), so the boundary has to be that exactly one process can make the
-// call at all -- and while Delete was a method on this interface, every root
-// that took an adapter held the capability whether or not it linked the
-// reclaimer role. A guard over role linkage measured the import; this measures
-// the capability. Deletion is DeleteClient below, constructed by one package
-// that one binary links.
-type Handle interface {
-	If(Conditions) Handle
-	Generation(int64) Handle
-	NewWriter(ctx context.Context) Writer
-	NewReader(ctx context.Context) (io.ReadCloser, error)
-	Attrs(ctx context.Context) (Attrs, error)
-}
-
-// DeleteClient is the separate seam the capability lives on.
-//
-// The interface is declared here, beside the one it was carved out of, because
-// both are the shared vocabulary and an interface is not a capability. What is
-// a capability is an implementation of this over a real cloud client, and there
-// is exactly one -- hangar/gcsdelete -- which exists as its own package so that
-// "who can delete" is a question the toolchain answers about a binary's
-// dependency graph rather than a question a reviewer answers by reading.
+// DeleteClient can inspect and delete exact generations, but cannot read bodies
+// or publish objects. DeleteExact must never remove a replacement generation.
 type DeleteClient interface {
-	ObjectToDelete(bucket, key string) DeleteHandle
+	StatExact(ctx context.Context, bucket, key string, generation int64) (Attrs, error)
+	DeleteExact(ctx context.Context, bucket, key string, generation int64) error
 }
 
-// DeleteHandle is one object, pinned to a generation, under a precondition.
-//
-// Attrs is here beside Delete because the reclaimer's two questions -- "is it
-// gone" and "remove exactly this" -- are about the same object and neither may
-// broaden into a read of its bytes. There is no reader and no writer: a
-// reclaimer that could read could exfiltrate, and one that could write could
-// resurrect.
-type DeleteHandle interface {
-	If(Conditions) DeleteHandle
-	Generation(int64) DeleteHandle
-	Attrs(ctx context.Context) (Attrs, error)
-	Delete(ctx context.Context) error
-}
-
-// Writer is one upload.
-//
-// Abort exists because an upload that failed halfway must be cancelled rather
-// than closed: closing commits, and committing half a tree at a key that
-// create-if-absent will then refuse forever is the one ambiguity this plane
-// cannot recover from cheaply.
-type Writer interface {
-	io.WriteCloser
-	Abort(err error) error
-	SetMetadata(metadata map[string]string)
-	Attrs() Attrs
+// ValidateGeneration rejects accidental current-object operations on exact paths.
+func ValidateGeneration(generation int64) error {
+	if generation <= 0 {
+		return fmt.Errorf("%w: exact generation must be positive", ErrPreconditionFailed)
+	}
+	return nil
 }
 
 // Operation is one RPC an adapter issued, for the role-honesty assertion.

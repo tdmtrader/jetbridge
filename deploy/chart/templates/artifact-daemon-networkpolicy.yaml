@@ -63,6 +63,16 @@ spec:
           port: {{ . }}
     {{- end }}
   egress:
+    {{- if $.Values.hangarStorage.disk.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ $.Release.Name }}
+              app.kubernetes.io/component: hangar-store
+      ports:
+        - protocol: TCP
+          port: 7783
+    {{- end }}
     # DNS resolution
     - ports:
         - protocol: UDP

@@ -509,7 +509,6 @@ func TestEveryOutputWorkloadKeepsItsCommandAndItsEnvironment(t *testing.T) {
 		outputDaemonComponent:    false,
 		outputInventoryComponent: false,
 		outputReclaimerComponent: false,
-		outputAttestorComponent:  false,
 	}
 
 	for _, chunk := range splitDocuments(out) {

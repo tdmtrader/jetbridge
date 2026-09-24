@@ -262,16 +262,6 @@ func classOf(err error) string {
 // would strand eligible work until a restart. The value is a function rather
 // than a constant so that a caller cannot pass zero by forgetting a field:
 // there is one spelling and it is nonzero by construction.
-//
-// The ceiling is the KIND's, not one number for all of them. Req 50 puts a
-// one-minute fallback on capture recovery, inventory and reclaim -- the workers
-// whose backlog is work waiting -- and Req 51 puts fifteen minutes on the
-// policy attestation, whose bound is a detection window and whose every pass
-// costs a whole-bucket lifecycle and IAM read. One ceiling for both meant the
-// attestor's validated, configured, five-minute interval was silently clamped
-// to sixty seconds and the deployment read IAM fifteen times more often than
-// anyone asked: compliant with "at least every 15 minutes", and not what was
-// configured or reviewed.
 func Interval(kind output.OperationKind, configured time.Duration) time.Duration {
 	ceiling := CeilingFor(kind)
 	if configured <= 0 || configured > ceiling {
@@ -283,16 +273,5 @@ func Interval(kind output.OperationKind, configured time.Duration) time.Duration
 
 // CeilingFor is the slowest periodic wake a kind may be configured with.
 func CeilingFor(kind output.OperationKind) time.Duration {
-	if kind == output.OperationPolicyAttestation {
-		// The detection bound itself. The attestor refuses a configured
-		// interval at or above it before a runner is built -- an attestation
-		// replaced exactly at the bound is stale for an instant beforehand, and
-		// admission is blocked for that instant every cycle -- so this ceiling
-		// never clamps a value that reached it through the binary. It is here
-		// for the caller that builds a Runner some other way, and it clamps to
-		// the worst PERMISSIBLE wake rather than silently to sixty seconds.
-		return output.MaxPolicyEvidenceAge
-	}
-
 	return output.WorkerFallbackInterval
 }

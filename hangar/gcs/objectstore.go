@@ -1,18 +1,6 @@
-// Package gcs is the Hangar OUTPUT plane's Cloud Storage seam: the object
-// adapter its four roles share, and the bucket-metadata source the attestor
-// reads.
-//
-// It opens every client it hands out and hands out none. A constructor here
-// takes an endpoint, never a *storage.Client, because the third round of one
-// finding showed what an exported client constructor costs: three non-reclaimer
-// command roots held the raw client in a local variable, and
-// `client.Bucket(b).Object("any/key").Delete(ctx)` compiled in all three with no
-// new import and every architecture guard green. The client is now opened by
-// hangar/internal/gcsclient, which nothing outside hangar/ can import at all.
-//
-// The artifact daemon's strict-input store used to live in this package and is
-// now hangar/gcsstore, so an output root that links this seam cannot name
-// GCSStore.DeleteTree either.
+// Package gcs implements Hangar immutable object operations over Cloud Storage.
+// Clients expose no raw SDK handle or delete capability; deletion is isolated
+// in hangar/gcsdelete.
 package gcs
 
 import (
@@ -24,6 +12,8 @@ import (
 	"cloud.google.com/go/storage"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/iterator"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/concourse/concourse/hangar/internal/gcsclient"
 	"github.com/concourse/concourse/hangar/objectstore"
@@ -38,20 +28,6 @@ import (
 func NormalizeStorageEndpoint(endpoint string) (string, error) {
 	return gcsclient.NormalizeEndpoint(endpoint)
 }
-
-// The exported object adapter, for the output plane's four cloud roles.
-//
-// It is a second adapter beside the unexported one GCSStore uses, and that is
-// deliberate. GCSStore is the strict-input foundation and its behaviour is
-// frozen byte-for-byte; re-expressing it through a new interface to save sixty
-// lines would put the one store this repository already depends on inside the
-// blast radius of an output-plane change. The two adapters wrap the same
-// *storage.ObjectHandle and are therefore the same behaviour, and the tier-2
-// conformance suite is what keeps that claim honest.
-//
-// Nothing here interprets a key. The bucket and key arrive already derived from
-// authenticated configuration (hangar/output.OutputNamespace), and this file's
-// only judgement is turning a transport status into a typed sentinel.
 
 // NewObjectClient opens a client for the shared object seam and owns it.
 //
@@ -70,16 +46,67 @@ func NewObjectClient(ctx context.Context, endpoint string) (objectstore.Client, 
 
 type outputObjectClient struct{ client *storage.Client }
 
-func (client outputObjectClient) Object(bucket, key string) objectstore.Handle {
-	return outputObjectHandle{handle: client.client.Bucket(bucket).Object(key)}
+func (client outputObjectClient) CreateAbsent(ctx context.Context, bucket, key string, metadata map[string]string, body io.Reader) (objectstore.Attrs, error) {
+	writer := client.client.Bucket(bucket).Object(key).If(storage.Conditions{DoesNotExist: true}).NewWriter(ctx)
+	writer.Metadata = metadata
+	if _, err := io.Copy(writer, body); err != nil {
+		_ = writer.CloseWithError(err)
+		return objectstore.Attrs{}, translate(err)
+	}
+	if err := writer.Close(); err != nil {
+		return objectstore.Attrs{}, translate(err)
+	}
+	return outputAttrs(writer.Attrs()), nil
 }
+
+func (client outputObjectClient) StatCurrent(ctx context.Context, bucket, key string) (objectstore.Attrs, error) {
+	attrs, err := client.client.Bucket(bucket).Object(key).Attrs(ctx)
+	if err != nil {
+		return objectstore.Attrs{}, translate(err)
+	}
+	return outputAttrs(attrs), nil
+}
+
+func (client outputObjectClient) StatExact(ctx context.Context, bucket, key string, generation int64) (objectstore.Attrs, error) {
+	if err := objectstore.ValidateGeneration(generation); err != nil {
+		return objectstore.Attrs{}, err
+	}
+	attrs, err := client.client.Bucket(bucket).Object(key).Generation(generation).Attrs(ctx)
+	if err != nil {
+		return objectstore.Attrs{}, translate(err)
+	}
+	return outputAttrs(attrs), nil
+}
+
+func (client outputObjectClient) OpenExact(ctx context.Context, bucket, key string, generation int64) (io.ReadCloser, error) {
+	if err := objectstore.ValidateGeneration(generation); err != nil {
+		return nil, err
+	}
+	reader, err := client.client.Bucket(bucket).Object(key).Generation(generation).NewReader(ctx)
+	if err != nil {
+		return nil, translate(err)
+	}
+	return translatedReader{ReadCloser: reader}, nil
+}
+
+// Translate stream errors as well as open errors: authorization can fail while
+// reading a resumed download, after OpenExact has already returned successfully.
+type translatedReader struct{ io.ReadCloser }
+
+func (reader translatedReader) Read(body []byte) (int, error) {
+	n, err := reader.ReadCloser.Read(body)
+	if errors.Is(err, io.EOF) {
+		return n, err
+	}
+	return n, translate(err)
+}
+func (reader translatedReader) Close() error { return translate(reader.ReadCloser.Close()) }
 
 // List is bucket-wide with a caller-applied prefix.
 //
 // GCS grants storage.objects.list on the bucket and cannot scope it to a
 // prefix, so the prefix here narrows *what is read*, not what may be read. The
-// policy attestor is what says the bucket contains only this plane's objects;
-// this method cannot and does not claim it.
+// operator provisions a dedicated bucket; this method does not enforce that.
 func (client outputObjectClient) List(ctx context.Context, bucket string, request objectstore.ListRequest) (objectstore.Page, error) {
 	if request.PageSize <= 0 {
 		return objectstore.Page{}, fmt.Errorf("%w: a list page size must be positive",
@@ -150,64 +177,6 @@ func (client outputObjectClient) List(ctx context.Context, bucket string, reques
 	return page, nil
 }
 
-type outputObjectHandle struct{ handle *storage.ObjectHandle }
-
-func (handle outputObjectHandle) If(conditions objectstore.Conditions) objectstore.Handle {
-	return outputObjectHandle{handle: handle.handle.If(storage.Conditions{
-		DoesNotExist:        conditions.DoesNotExist,
-		GenerationMatch:     conditions.GenerationMatch,
-		MetagenerationMatch: conditions.MetagenerationMatch,
-	})}
-}
-
-func (handle outputObjectHandle) Generation(generation int64) objectstore.Handle {
-	return outputObjectHandle{handle: handle.handle.Generation(generation)}
-}
-
-func (handle outputObjectHandle) NewWriter(ctx context.Context) objectstore.Writer {
-	return &outputObjectWriter{writer: handle.handle.NewWriter(ctx)}
-}
-
-func (handle outputObjectHandle) NewReader(ctx context.Context) (io.ReadCloser, error) {
-	reader, err := handle.handle.NewReader(ctx)
-	if err != nil {
-		return nil, translate(err)
-	}
-
-	return reader, nil
-}
-
-func (handle outputObjectHandle) Attrs(ctx context.Context) (objectstore.Attrs, error) {
-	attrs, err := handle.handle.Attrs(ctx)
-	if err != nil {
-		return objectstore.Attrs{}, translate(err)
-	}
-
-	return outputAttrs(attrs), nil
-}
-
-type outputObjectWriter struct{ writer *storage.Writer }
-
-func (writer *outputObjectWriter) Write(content []byte) (int, error) {
-	count, err := writer.writer.Write(content)
-
-	return count, translate(err)
-}
-
-func (writer *outputObjectWriter) Close() error { return translate(writer.writer.Close()) }
-
-func (writer *outputObjectWriter) Abort(cause error) error {
-	return writer.writer.CloseWithError(cause)
-}
-
-func (writer *outputObjectWriter) SetMetadata(metadata map[string]string) {
-	writer.writer.Metadata = metadata
-}
-
-func (writer *outputObjectWriter) Attrs() objectstore.Attrs {
-	return outputAttrs(writer.writer.Attrs())
-}
-
 // OutputAttrs and TranslateObjectError are exported for hangar/gcsdelete, which
 // is the delete capability's own package and therefore cannot be this one.
 //
@@ -254,23 +223,31 @@ func translate(err error) error {
 	// answered "already absent" for every object in a registered set that was
 	// entirely intact.
 	if errors.Is(err, storage.ErrBucketNotExist) {
-		return fmt.Errorf("%w: %v", objectstore.ErrBucketNotFound, err)
+		return fmt.Errorf("%w: %w", objectstore.ErrBucketNotFound, err)
 	}
 	if errors.Is(err, storage.ErrObjectNotExist) {
-		return fmt.Errorf("%w: %v", objectstore.ErrNotFound, err)
+		return fmt.Errorf("%w: %w", objectstore.ErrNotFound, err)
 	}
 
+	switch status.Code(err) {
+	case codes.NotFound:
+		return fmt.Errorf("%w: %w", objectstore.ErrNotFound, err)
+	case codes.Unauthenticated, codes.PermissionDenied:
+		return fmt.Errorf("%w: %w", objectstore.ErrUnauthorized, err)
+	case codes.FailedPrecondition:
+		return fmt.Errorf("%w: %w", objectstore.ErrPreconditionFailed, err)
+	}
 	var api *googleapi.Error
 	if errors.As(err, &api) {
 		switch api.Code {
 		case 404:
-			return fmt.Errorf("%w: %v", objectstore.ErrNotFound, err)
+			return fmt.Errorf("%w: %w", objectstore.ErrNotFound, err)
 		case 403, 401:
-			return fmt.Errorf("%w: %v", objectstore.ErrUnauthorized, err)
+			return fmt.Errorf("%w: %w", objectstore.ErrUnauthorized, err)
 		case 412:
-			return fmt.Errorf("%w: %v", objectstore.ErrPreconditionFailed, err)
+			return fmt.Errorf("%w: %w", objectstore.ErrPreconditionFailed, err)
 		}
 	}
 
-	return fmt.Errorf("%w: %v", objectstore.ErrInfrastructure, err)
+	return fmt.Errorf("%w: %w", objectstore.ErrInfrastructure, err)
 }

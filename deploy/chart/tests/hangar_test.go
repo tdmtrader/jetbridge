@@ -92,7 +92,7 @@ func TestHangarRejectsInvalidPrerequisitesAtRender(t *testing.T) {
 		{"daemon disabled", []string{"artifactDaemon.enabled=false", "artifactDaemon.hangar.enabled=true"}, "artifactDaemon.enabled"},
 		{"web without daemon support", []string{"artifactDaemon.hangar.webEnabled=true"}, "hangar.enabled"},
 		{"TLS disabled", []string{"artifactDaemon.tls.enabled=false", "artifactDaemon.hangar.enabled=true", "artifactDaemon.durable.store=gcs", "artifactDaemon.durable.bucket=b"}, "tls.enabled"},
-		{"non-GCS", []string{"artifactDaemon.hangar.enabled=true", "artifactDaemon.durable.store=s3", "artifactDaemon.durable.bucket=b"}, "durable.store must be gcs"},
+		{"non-GCS", []string{"artifactDaemon.hangar.enabled=true", "artifactDaemon.durable.store=s3", "artifactDaemon.durable.bucket=b"}, "hangar.store must be gcs or disk"},
 		{"missing bucket", []string{"artifactDaemon.hangar.enabled=true", "artifactDaemon.durable.store=gcs"}, "durable.bucket"},
 		{"relative scratch", append(append([]string{}, enabledHangarSets...), "artifactDaemon.hangar.scratchPath=relative"), "absolute"},
 		{"scratch below artifacts", append(append([]string{}, enabledHangarSets...), "artifactDaemon.hangar.scratchPath=/var/concourse/artifacts/scratch"), "disjoint"},

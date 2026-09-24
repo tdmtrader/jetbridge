@@ -173,10 +173,10 @@ var outputResidueQueries = []residueQuery{
 	{
 		class: "open policy violations",
 		sql: `SELECT count(*) FROM hangar_policy_violations
-		       WHERE activation_epoch = $1 AND resolved_at IS NULL`,
-		why: "the plane is at risk under this epoch and the reconciliation is an operator's. " +
-			"Disabling the facet would close the record of a bucket whose lifetime policy " +
-			"could not be proved safe, which is the one thing this plane exists to notice",
+		       WHERE activation_epoch = $1 AND resolved_at IS NULL
+		         AND violation IN ('out_of_band_absence', 'runtime_principal_denied')`,
+		why: "observed object loss or denied storage access remains unresolved. Repair the " +
+			"cause and explicitly reconcile the runtime finding before disabling this facet",
 	},
 	{
 		class: "inventory debt",

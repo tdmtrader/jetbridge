@@ -29,12 +29,8 @@ const (
 	// would agree by accident.
 	ScopeDomain = "hangar-output-scope-v1"
 
-	// StoreGCS is the only store that may advertise output capture. Req 19
-	// admits the strict native-GCS profile and nothing else: filesystem and
-	// S3-compatible stores cannot offer create-if-absent with an exact
-	// generation, and a profile that cannot refuse an overwrite cannot make
-	// the collision guarantee Req 23 states.
-	StoreGCS = "gcs"
+	StoreGCS  = "gcs"
+	StoreDisk = "disk"
 
 	// scopeHexBytes is the width of the derived scope's hash half. Twenty
 	// bytes is 160 bits of second-preimage resistance on a value whose only
@@ -53,7 +49,8 @@ const (
 // compared only when set.
 type NamespaceConfig struct {
 	// Store is the store profile the output plane runs against.
-	Store string
+	Store   string
+	StoreID string
 
 	// Bucket is the dedicated output bucket.
 	Bucket string
@@ -90,19 +87,27 @@ type NamespaceConfig struct {
 // returned by value: there is no way to build one except by deriving it, and no
 // way to widen one after the fact.
 type OutputNamespace struct {
-	bucket string
-	prefix string
-	scope  hangar.Scope
-	epoch  executioncontrol.ActivationEpoch
+	bucket  string
+	storeID string
+	prefix  string
+	scope   hangar.Scope
+	epoch   executioncontrol.ActivationEpoch
 }
 
 // DeriveNamespace is the only constructor.
 func DeriveNamespace(config NamespaceConfig) (OutputNamespace, error) {
-	if config.Store != StoreGCS {
-		return OutputNamespace{}, fmt.Errorf("%w: output capture requires the strict native-GCS "+
-			"profile; %q cannot offer create-if-absent at an exact generation, so it cannot make "+
-			"the collision guarantee", ErrUnsupportedProtocol, config.Store)
+	if config.Store != StoreGCS && config.Store != StoreDisk {
+		return OutputNamespace{}, fmt.Errorf("%w: unsupported output store %q", ErrUnsupportedProtocol, config.Store)
 	}
+	if config.Store == StoreDisk {
+		if err := hangar.Scope(config.StoreID).Validate(); err != nil {
+			return OutputNamespace{}, fmt.Errorf("%w: invalid disk storage identity: %v", ErrIncomplete, err)
+		}
+		if err := hangar.Scope(config.Bucket).Validate(); err != nil {
+			return OutputNamespace{}, fmt.Errorf("%w: invalid disk namespace: %v", ErrIncomplete, err)
+		}
+	}
+
 	if strings.TrimSpace(config.Bucket) == "" {
 		return OutputNamespace{}, fmt.Errorf("%w: no output bucket is configured", ErrIncomplete)
 	}
@@ -136,11 +141,18 @@ func DeriveNamespace(config NamespaceConfig) (OutputNamespace, error) {
 		return OutputNamespace{}, fmt.Errorf("%w: no active activation epoch", ErrIncomplete)
 	}
 
+	tenant := config.TenantID
+	storeID := ""
+	if config.Store == StoreDisk {
+		storeID = config.StoreID
+		tenant = "disk\x00" + storeID + "\x00" + config.Bucket + "\x00" + tenant
+	}
 	return OutputNamespace{
-		bucket: config.Bucket,
-		prefix: config.DeploymentPrefix,
-		scope:  deriveScope(config.TenantID, config.ActivationEpoch),
-		epoch:  config.ActivationEpoch,
+		storeID: storeID,
+		bucket:  config.Bucket,
+		prefix:  config.DeploymentPrefix,
+		scope:   deriveScope(tenant, config.ActivationEpoch),
+		epoch:   config.ActivationEpoch,
 	}, nil
 }
 
@@ -174,6 +186,9 @@ func deriveScope(tenant string, epoch executioncontrol.ActivationEpoch) hangar.S
 // checkNoAPIAcceptsAStorageLocation rejects an exported function in this package
 // that takes a bucket, and it found this one when it was first written that way.
 func (namespace OutputNamespace) BucketFingerprint() string {
+	if namespace.storeID != "" {
+		return "disk://" + namespace.storeID + "/" + namespace.bucket
+	}
 	if namespace.bucket == "" || strings.HasPrefix(namespace.bucket, BucketFingerprintScheme) {
 		return namespace.bucket
 	}

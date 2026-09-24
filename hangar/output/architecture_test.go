@@ -27,11 +27,11 @@ import (
 //  3. Output code is never routed through the durable *cache* tier, which is a
 //     fail-open, name-keyed cache whose every method swallows its errors.
 //     (Reqs 20, 59)
-//  4. The privilege split between the four roles. Each role is one binary and
+//  4. The privilege split between the three roles. Each role is one binary and
 //     one cloud service account, and the split only means something while
 //     each role's exported method set stays its own: the publisher never
-//     lists or deletes, the inventory never creates or deletes, the policy
-//     attestor touches no object at all, and a delete exists only on the
+//     lists or deletes, the inventory never creates or deletes, and a delete
+//     exists only on the
 //     reclaimer's role type, takes a tree ref and a generation
 //     precondition, and has no key-only route beside it. GCS IAM cannot
 //     require a caller to send a precondition once delete permission exists,
@@ -55,7 +55,7 @@ import (
 // scannedPackages are the leaf directories this file inventories.
 var scannedPackages = []string{".", "../executioncontrol"}
 
-// role is a package under this rule: one of the four cloud-permission
+// role is a package under this rule: one of the three storage-permission
 // personas, or the leaf they all depend on.
 type role string
 
@@ -64,13 +64,12 @@ const (
 	publisherRole role = "publisher"
 	inventoryRole role = "inventory"
 	reclaimerRole role = "reclaimer"
-	policyRole    role = "policy"
 )
 
-// roles are the four role packages: one binary and one service account each.
+// roles are the three role packages: one binary and one service account each.
 // They are inventoried separately from the leaf because the rules over them
 // are about what a process holds, not about what the leaf declares.
-var roles = []role{publisherRole, inventoryRole, reclaimerRole, policyRole}
+var roles = []role{publisherRole, inventoryRole, reclaimerRole}
 
 // roleDirs are the directories the role packages live in, relative to this
 // file.
@@ -472,16 +471,14 @@ var deleteVocabularyExemptions = map[string]string{
 const (
 	deleteRole     = reclaimerRole
 	deleteRoleType = "Reclaimer"
-	deleteSeamType = "Handle"
+	deleteSeamType = "Store"
 )
 
-// checkOnlyTheReclaimerDeletes is stated over the leaf and the four roles at
+// checkOnlyTheReclaimerDeletes is stated over the leaf and the three roles at
 // once: every callable whose name says delete is in package reclaimer, and in
-// there it is one of exactly two things -- the role type's conditional delete,
-// which takes a tree ref and a precondition and no string, or the store
-// seam's Delete on Handle, which is reachable only through a handle the role
-// pinned. A delete on the Store seam, on a package function, or anywhere in
-// another role is a key-only route around the precondition.
+// there it is either the role's conditional delete over a tree ref and
+// precondition, or Store.DeleteExact with a generation argument. A different
+// store method, package function or role must not offer another delete route.
 func checkOnlyTheReclaimerDeletes(found surface) []string {
 	var problems []string
 
@@ -519,11 +516,17 @@ func checkOnlyTheReclaimerDeletes(found surface) []string {
 
 		switch callable.Owner {
 		case deleteSeamType:
-			// The adapter seam: Delete(ctx) on a handle the role already pinned
-			// with Generation and If. Its narrowness is asserted by the
-			// conformance suite's method-set case; here it only has to be the
-			// sole route beside the role type's.
+			hasGeneration := false
+			for _, param := range callable.Params {
+				if param.Type == "int64" {
+					hasGeneration = true
+				}
+			}
+			if callable.Name != "DeleteExact" || !hasGeneration {
+				problems = append(problems, callable.File+": "+describe(callable)+" is not an exact-generation delete on Store")
+			}
 			seamDeletes++
+
 		case deleteRoleType:
 			roleDeletes++
 			hasRef, hasPrecondition := false, false
@@ -611,12 +614,6 @@ var roleVerbs = map[role]struct {
 		because: "a reclaimer that could read could exfiltrate and one that could write could " +
 			"resurrect; it deletes what it was told to delete and does not go looking",
 	},
-	policyRole: {
-		forbidden: []string{"object", "list", "create", "ensure", "write", "writer", "read", "reader", "stat"},
-		because: "the attestor is the workload whose word the plane trusts about whether the " +
-			"bucket is safe. One that could also touch an object would be a workload whose " +
-			"compromise costs the data rather than the assessment",
-	},
 }
 
 func checkEachRoleOffersOnlyItsOwnVerbs(found surface) []string {
@@ -652,77 +649,16 @@ func checkEachRoleOffersOnlyItsOwnVerbs(found surface) []string {
 	return problems
 }
 
-// objectTypes are the spellings through which a signature reaches an object:
-// the store seam, the tree ref, the published object and a byte stream.
-var objectTypes = []string{"objectstore.", "hangar.TreeRef", "PublishedObject", "io.Read"}
-
-// objectImports are the packages through which a role reaches an object.
-var objectImports = []string{
-	"github.com/concourse/concourse/hangar/objectstore",
-	"github.com/concourse/concourse/hangar/gcs",
-	"cloud.google.com/go/storage",
-}
-
-// checkTheAttestorTouchesNoObject is the stronger half of the policy row above:
-// not only does no verb say object, but no import and no signature names one,
-// so an object cannot be reached through a helper either.
-func checkTheAttestorTouchesNoObject(found surface) []string {
-	var problems []string
-
-	imports, callables := 0, 0
-	for _, edge := range found.Imports {
-		if roleOf(edge.File) != policyRole {
-			continue
-		}
-		imports++
-		for _, forbidden := range objectImports {
-			if edge.Path == forbidden || strings.HasPrefix(edge.Path, forbidden+"/") {
-				problems = append(problems, edge.File+" imports "+edge.Path+
-					": the policy attestor reads bucket policy and IAM and touches no object; an "+
-					"object-store import is the first half of an object method.")
-			}
-		}
-	}
-	for _, callable := range found.Callables {
-		if roleOf(callable.File) != policyRole {
-			continue
-		}
-		callables++
-		for _, param := range append(append([]declaredParam{}, callable.Params...), callable.Results...) {
-			for _, forbidden := range objectTypes {
-				if strings.Contains(param.Type, forbidden) {
-					problems = append(problems, callable.File+": policy."+describe(callable)+
-						" names "+param.Type+" in its signature. The attestor's whole value is that "+
-						"its compromise costs the assessment rather than the data.")
-				}
-			}
-		}
-	}
-	if imports == 0 {
-		problems = append(problems, "the inventory found no import in package policy; this rule "+
-			"would pass vacuously")
-	}
-	if callables == 0 {
-		problems = append(problems, "the inventory found no exported callable in package policy; "+
-			"this rule would pass vacuously")
-	}
-
-	return problems
-}
-
 // storeSeams are the exported interfaces through which an object role hands
-// its derived location to the store: `Object(bucket, key string)` is where the
-// role gives the store the key it derived itself. They are the adapter's
+// its derived location to explicit store operations. The role gives the store
+// the key it derived itself. These interfaces are the adapter's
 // narrowed view of hangar/objectstore, so the bare-string rule stops at them.
 // Each must exist as an interface in its package, or the exemption is guarding
 // a seam somebody renamed.
 var storeSeams = map[string]string{
-	"publisher/Store":  "the publisher's create-and-read view of the store",
-	"publisher/Handle": "one object under the publisher's view",
-	"inventory/Store":  "the inventory's list-and-stat view of the store",
-	"inventory/Handle": "one object under the inventory's view",
-	"reclaimer/Store":  "the reclaimer's stat-and-conditional-delete view of the store",
-	"reclaimer/Handle": "one object under the reclaimer's view, pinned before its delete",
+	"publisher/Store": "the publisher's create-and-read view of the store",
+	"inventory/Store": "the inventory's list-and-stat view of the store",
+	"reclaimer/Store": "the reclaimer's stat-and-conditional-delete view of the store",
 }
 
 // checkRoleTypesTakeNoCallerChosenLocation is the bare-string rule over the
@@ -754,7 +690,7 @@ func checkRoleTypesTakeNoCallerChosenLocation(found surface) []string {
 	checked := 0
 	for _, callable := range found.Callables {
 		owner := roleOf(callable.File)
-		if owner == leafRole || owner == policyRole {
+		if owner == leafRole {
 			continue
 		}
 		if _, seam := storeSeams[string(owner)+"/"+callable.Owner]; seam {
@@ -789,12 +725,11 @@ func checkRoleTypesTakeNoCallerChosenLocation(found surface) []string {
 	return problems
 }
 
-// principalBinaries are the four cmd/ roots and the one role each may link.
+// principalBinaries are the three cmd/ roots and the one role each may link.
 var principalBinaries = map[string]role{
-	"cmd/hangar-output-daemon":          publisherRole,
-	"cmd/hangar-output-inventory":       inventoryRole,
-	"cmd/hangar-output-reclaimer":       reclaimerRole,
-	"cmd/hangar-output-policy-attestor": policyRole,
+	"cmd/hangar-output-daemon":    publisherRole,
+	"cmd/hangar-output-inventory": inventoryRole,
+	"cmd/hangar-output-reclaimer": reclaimerRole,
 }
 
 const rolePackagePrefix = "github.com/concourse/concourse/hangar/output/"
@@ -1080,7 +1015,6 @@ func TestArchitecture(t *testing.T) {
 
 	report(t, "delete isolation", checkOnlyTheReclaimerDeletes(union(leafSurface, personas)))
 	report(t, "role verbs", checkEachRoleOffersOnlyItsOwnVerbs(personas))
-	report(t, "attestor touches no object", checkTheAttestorTouchesNoObject(personas))
 	report(t, "role types take no location", checkRoleTypesTakeNoCallerChosenLocation(personas))
 	report(t, "principal binaries", checkEachPrincipalLinksExactlyItsRole(principalLinks(t)))
 }
@@ -1100,7 +1034,6 @@ func TestArchitectureGuardsAreNotVacuous(t *testing.T) {
 		"leaf packages":                     checkPackagesAreLeaves,
 		"delete isolation":                  checkOnlyTheReclaimerDeletes,
 		"role verbs":                        checkEachRoleOffersOnlyItsOwnVerbs,
-		"attestor touches no object":        checkTheAttestorTouchesNoObject,
 		"role types take no location":       checkRoleTypesTakeNoCallerChosenLocation,
 	}
 
@@ -1128,7 +1061,6 @@ func TestArchitectureGuardsAreNotVacuous(t *testing.T) {
 			{File: "output.go", Path: "github.com/concourse/concourse/cmd/artifact-daemon/durable"},
 			{File: "output.go", Path: "github.com/concourse/concourse/atc/db"},
 			{File: "output.go", Path: "cloud.google.com/go/storage"},
-			{File: "policy/policy.go", Path: "github.com/concourse/concourse/hangar/objectstore"},
 		},
 		Types: []declaredType{
 			{File: "output.go", Name: "TreeRef", Kind: "struct"},
@@ -1141,9 +1073,6 @@ func TestArchitectureGuardsAreNotVacuous(t *testing.T) {
 			// A list on the publisher, and a create on the inventory.
 			{File: "publisher/publisher.go", Owner: "Publisher", Name: "ListPage"},
 			{File: "inventory/inventory.go", Owner: "Inventory", Name: "EnsureObject"},
-			// The attestor reaching an object through a signature.
-			{File: "policy/attestation.go", Name: "DeriveSnapshot",
-				Params: []declaredParam{{Name: "attrs", Type: "objectstore.Attrs"}}},
 			// A bucket handed to the leaf's source ledger seam.
 			{File: "output.go", Owner: "SourceControl", Name: "BeginSeal",
 				Params: []declaredParam{{Name: "bucket", Type: "string"}, {Name: "scope", Type: "hangar.Scope"}}},
@@ -1158,7 +1087,6 @@ func TestArchitectureGuardsAreNotVacuous(t *testing.T) {
 		"leaf packages":                     "atc/db",
 		"delete isolation":                  "publisher.Publisher.DeleteObject offers a delete",
 		"role verbs":                        "publisher.Publisher.ListPage names list",
-		"attestor touches no object":        "hangar/objectstore",
 		"role types take no location":       "publisher.Publisher.DeleteObject takes a bare string parameter key",
 	}
 
@@ -1182,13 +1110,11 @@ func TestArchitectureGuardsAreNotVacuous(t *testing.T) {
 		problems := checkEachRoleOffersOnlyItsOwnVerbs(surface{Callables: []declaredCallable{
 			{File: "inventory/inventory.go", Owner: "Inventory", Name: "NewWriter"},
 			{File: "reclaimer/reclaimer.go", Owner: "Reclaimer", Name: "NewReader"},
-			{File: "policy/attestation.go", Name: "StatObject"},
 		}})
 		joined := strings.Join(problems, "\n")
 		for _, expected := range []string{
 			"inventory.Inventory.NewWriter names writer",
 			"reclaimer.Reclaimer.NewReader names reader",
-			"policy.StatObject names object",
 		} {
 			if !strings.Contains(joined, expected) {
 				t.Errorf("the rule did not object to %q. It reported:\n%s", expected, joined)
@@ -1206,8 +1132,8 @@ func TestArchitectureGuardsAreNotVacuous(t *testing.T) {
 					{Name: "ref", Type: "hangar.TreeRef"},
 					{Name: "precondition", Type: "output.DeletePrecondition"},
 				}},
-			{File: "reclaimer/reclaimer.go", Owner: "Handle", Name: "Delete",
-				Params: []declaredParam{{Name: "ctx", Type: "context.Context"}}},
+			{File: "reclaimer/reclaimer.go", Owner: "Store", Name: "DeleteExact",
+				Params: []declaredParam{{Name: "ctx", Type: "context.Context"}, {Name: "generation", Type: "int64"}}},
 			{File: "outcomes.go", Name: "DeleteOutcomes"},
 			{File: "outcomes.go", Name: "ParseDeleteOutcome",
 				Params: []declaredParam{{Name: "s", Type: "string"}}},
@@ -1225,7 +1151,7 @@ func TestArchitectureGuardsAreNotVacuous(t *testing.T) {
 		)}
 		joined := strings.Join(checkOnlyTheReclaimerDeletes(routes), "\n")
 		for _, expected := range []string{
-			"Store.DeleteObject is a delete on Store",
+			"Store.DeleteObject is not an exact-generation delete on Store",
 			"DeleteAll is a delete on a package function",
 			"offers more than one delete",
 			"Reclaimer.DeleteByKey takes a bare string parameter key",
@@ -1305,10 +1231,9 @@ func TestArchitectureGuardsAreNotVacuous(t *testing.T) {
 			t.Fatal("the principal rule passed over an empty listing")
 		}
 		listing := map[string][]string{
-			"cmd/hangar-output-daemon":          {rolePackagePrefix + "publisher", rolePackagePrefix + "reclaimer"},
-			"cmd/hangar-output-inventory":       {"fmt"},
-			"cmd/hangar-output-reclaimer":       {rolePackagePrefix + "reclaimer"},
-			"cmd/hangar-output-policy-attestor": {rolePackagePrefix + "policy"},
+			"cmd/hangar-output-daemon":    {rolePackagePrefix + "publisher", rolePackagePrefix + "reclaimer"},
+			"cmd/hangar-output-inventory": {"fmt"},
+			"cmd/hangar-output-reclaimer": {rolePackagePrefix + "reclaimer"},
 		}
 		joined := strings.Join(checkEachPrincipalLinksExactlyItsRole(listing), "\n")
 		for _, expected := range []string{

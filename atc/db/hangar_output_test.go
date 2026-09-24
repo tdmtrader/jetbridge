@@ -545,16 +545,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			tx, err := dbConn.Begin()
 			Expect(err).NotTo(HaveOccurred())
 			defer db.Rollback(tx)
-			Expect(repository.RecordPolicyAttestation(ctx, tx, output.PolicySnapshot{
-				ProtocolVersion:      output.ProtocolVersion,
-				ActivationEpoch:      1,
-				BucketFingerprint:    "gs://output-bucket",
-				Metageneration:       4,
-				PolicyHash:           "policy-hash-2",
-				LifecycleDeleteRules: 1,
-				State:                output.PolicyAtRisk,
-				ObservedAt:           output.NewTimestamp(time.Now()),
-			}, nil)).To(Succeed())
+			Expect(repository.RecordRuntimeAtRisk(ctx, tx, 1, output.PolicyFinding{Violation: output.ViolationOutOfBandAbsence, Subject: "missing-generation", Detail: "unexpected object loss"})).To(Succeed())
 			Expect(tx.Commit()).To(Succeed())
 
 			// The refusal is DEFERRED: it fires at the commit, not at the
@@ -563,7 +554,7 @@ var _ = Describe("the Hangar output lock suffix", func() {
 			// substring on the message could not tell the two apart.
 			_, err = admit(readLeaseRequest(output.ReadLeaseID(uuid.NewString()), claimID, ref))
 			Expect(err).To(MatchError(output.ErrAtRisk))
-			Expect(err.Error()).To(ContainSubstring("lifetime policy"))
+			Expect(err.Error()).To(ContainSubstring("storage integrity"))
 		})
 
 		// The daemon's independent question, asked of the committed row rather

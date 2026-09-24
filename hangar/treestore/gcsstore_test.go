@@ -1,4 +1,4 @@
-package gcsstore
+package treestore
 
 import (
 	"bytes"
@@ -334,7 +334,7 @@ func TestGCSOfficialClientConditionalUploadWriteConflictVerifiesExistingGenerati
 	store, closeStore, err := NewGCSStore(context.Background(), server.URL+"/storage/v1/", GCSConfig{Bucket: bucket, Prefix: "deployment/blue", ScratchDir: scratch, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, closeStore()) })
-	writeObserver := &writeErrorObservingObjectClient{objectClient: store.objects}
+	writeObserver := &writeErrorObservingObjectClient{Client: store.objects}
 	store.objects = writeObserver
 
 	attrs, created, ensureErr := store.EnsureTree(context.Background(), testScope, digest, bytes.NewReader(content), int64(len(content)))

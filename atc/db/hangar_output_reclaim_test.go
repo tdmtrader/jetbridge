@@ -271,16 +271,7 @@ var _ = Describe("reclaiming an exact generation", func() {
 			// stops new admission from detection onward and lets
 			// already-admitted conditional delete work finish.
 			in(func(tx db.HangarOutputTx) {
-				Expect(repository.RecordPolicyAttestation(ctx, tx, output.PolicySnapshot{
-					ProtocolVersion:      output.ProtocolVersion,
-					ActivationEpoch:      1,
-					BucketFingerprint:    "gs://output-bucket",
-					Metageneration:       4,
-					PolicyHash:           "policy-hash-changed",
-					LifecycleDeleteRules: 1,
-					State:                output.PolicyAtRisk,
-					ObservedAt:           output.NewTimestamp(time.Now()),
-				}, nil)).To(Succeed())
+				Expect(repository.RecordRuntimeAtRisk(ctx, tx, 1, output.PolicyFinding{Violation: output.ViolationOutOfBandAbsence, Subject: "missing-generation", Detail: "unexpected object loss"})).To(Succeed())
 			})
 
 			// New admission stops. The generation it would be admitted for is
@@ -298,7 +289,7 @@ var _ = Describe("reclaiming an exact generation", func() {
 			err := tx.Commit()
 			db.Rollback(tx)
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("at_risk"))
+			Expect(err.Error()).To(ContainSubstring("storage integrity"))
 
 			// The admitted job finishes: the delete record, its outcome and the
 			// finalization all go through.

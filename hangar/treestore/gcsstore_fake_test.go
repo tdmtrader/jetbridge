@@ -1,8 +1,14 @@
-package gcsstore
+package treestore
 
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"github.com/concourse/concourse/hangar"
+	"github.com/concourse/concourse/hangar/gcs"
+	"github.com/concourse/concourse/hangar/gcsdelete"
+	"github.com/concourse/concourse/hangar/objectstore"
 	"io"
 	"sync"
 	"time"
@@ -362,56 +368,24 @@ func cloneMetadata(metadata map[string]string) map[string]string {
 }
 
 type writeErrorObservingObjectClient struct {
-	objectClient
+	objectstore.Client
 	mu     sync.Mutex
 	errors []error
 }
 
-func (client *writeErrorObservingObjectClient) Object(bucket, key string) objectHandle {
-	return writeErrorObservingObjectHandle{objectHandle: client.objectClient.Object(bucket, key), client: client}
-}
-
-func (client *writeErrorObservingObjectClient) record(err error) {
-	if err == nil {
-		return
+func (client *writeErrorObservingObjectClient) CreateAbsent(ctx context.Context, bucket, key string, metadata map[string]string, body io.Reader) (objectstore.Attrs, error) {
+	attrs, err := client.Client.CreateAbsent(ctx, bucket, key, metadata, body)
+	if err != nil {
+		client.mu.Lock()
+		client.errors = append(client.errors, err)
+		client.mu.Unlock()
 	}
-	client.mu.Lock()
-	client.errors = append(client.errors, err)
-	client.mu.Unlock()
+	return attrs, err
 }
-
 func (client *writeErrorObservingObjectClient) snapshot() []error {
 	client.mu.Lock()
 	defer client.mu.Unlock()
 	return append([]error(nil), client.errors...)
-}
-
-type writeErrorObservingObjectHandle struct {
-	objectHandle
-	client *writeErrorObservingObjectClient
-}
-
-func (handle writeErrorObservingObjectHandle) If(conditions storage.Conditions) objectHandle {
-	return writeErrorObservingObjectHandle{objectHandle: handle.objectHandle.If(conditions), client: handle.client}
-}
-
-func (handle writeErrorObservingObjectHandle) Generation(generation int64) objectHandle {
-	return writeErrorObservingObjectHandle{objectHandle: handle.objectHandle.Generation(generation), client: handle.client}
-}
-
-func (handle writeErrorObservingObjectHandle) NewWriter(ctx context.Context) objectWriter {
-	return &writeErrorObservingObjectWriter{objectWriter: handle.objectHandle.NewWriter(ctx), client: handle.client}
-}
-
-type writeErrorObservingObjectWriter struct {
-	objectWriter
-	client *writeErrorObservingObjectClient
-}
-
-func (writer *writeErrorObservingObjectWriter) Write(buffer []byte) (int, error) {
-	count, err := writer.objectWriter.Write(buffer)
-	writer.client.record(err)
-	return count, err
 }
 
 // manualTimeout is the operation deadline a test arms by hand. The store's
@@ -478,3 +452,135 @@ func manualTimeouts(store *GCSStore) <-chan *manualTimeout {
 	}
 	return armed
 }
+
+type objectClient interface {
+	Object(bucket, key string) objectHandle
+}
+type objectHandle interface {
+	If(storage.Conditions) objectHandle
+	Generation(int64) objectHandle
+	NewWriter(context.Context) objectWriter
+	NewReader(context.Context) (io.ReadCloser, error)
+	Attrs(context.Context) (objectAttrs, error)
+	Delete(context.Context) error
+}
+type objectWriter interface {
+	io.WriteCloser
+	Abort(error) error
+	SetMetadata(map[string]string)
+	Attrs() objectAttrs
+}
+type objectAttrs struct {
+	Generation, Metageneration, Size int64
+	Created                          time.Time
+	Metadata                         map[string]string
+}
+
+type GCSConfig = Config
+type GCSStore struct {
+	*Store
+	deleter objectstore.DeleteClient
+}
+
+func newGCSStore(objects objectClient, config Config) (*GCSStore, error) {
+	adapter := fixtureAdapter{objects}
+	store, err := New(adapter, config)
+	return &GCSStore{Store: store, deleter: adapter}, err
+}
+func NewGCSStore(ctx context.Context, endpoint string, config Config) (*GCSStore, func() error, error) {
+	objects, closeObjects, err := gcs.NewObjectClient(ctx, endpoint)
+	if err != nil {
+		return nil, nil, err
+	}
+	deleter, closeDelete, err := gcsdelete.NewDeleteClient(ctx, endpoint)
+	if err != nil {
+		_ = closeObjects()
+		return nil, nil, err
+	}
+	closeAll := func() error { return errors.Join(closeObjects(), closeDelete()) }
+	store, err := New(objects, config)
+	if err != nil {
+		_ = closeAll()
+		return nil, nil, err
+	}
+	return &GCSStore{Store: store, deleter: deleter}, closeAll, nil
+}
+
+type fixtureAdapter struct{ objectClient }
+
+func (adapter fixtureAdapter) CreateAbsent(ctx context.Context, bucket, key string, metadata map[string]string, body io.Reader) (objectstore.Attrs, error) {
+	writer := adapter.Object(bucket, key).If(storage.Conditions{DoesNotExist: true}).NewWriter(ctx)
+	writer.SetMetadata(metadata)
+	if _, err := io.Copy(writer, body); err != nil {
+		abort := writer.Abort(err)
+		return objectstore.Attrs{}, translateFixture(errors.Join(err, abort))
+	}
+	if err := writer.Close(); err != nil {
+		return objectstore.Attrs{}, translateFixture(err)
+	}
+	return fixtureAttrs(writer.Attrs()), nil
+}
+func (adapter fixtureAdapter) StatCurrent(ctx context.Context, bucket, key string) (objectstore.Attrs, error) {
+	attrs, err := adapter.Object(bucket, key).Attrs(ctx)
+	return fixtureAttrs(attrs), translateFixture(err)
+}
+func (adapter fixtureAdapter) StatExact(ctx context.Context, bucket, key string, generation int64) (objectstore.Attrs, error) {
+	attrs, err := adapter.Object(bucket, key).Generation(generation).Attrs(ctx)
+	return fixtureAttrs(attrs), translateFixture(err)
+}
+func (adapter fixtureAdapter) OpenExact(ctx context.Context, bucket, key string, generation int64) (io.ReadCloser, error) {
+	reader, err := adapter.Object(bucket, key).Generation(generation).NewReader(ctx)
+	if err != nil {
+		return nil, translateFixture(err)
+	}
+	return fixtureReader{reader}, nil
+}
+func (adapter fixtureAdapter) DeleteExact(ctx context.Context, bucket, key string, generation int64) error {
+	return translateFixture(adapter.Object(bucket, key).If(storage.Conditions{GenerationMatch: generation}).Delete(ctx))
+}
+func (adapter fixtureAdapter) List(context.Context, string, objectstore.ListRequest) (objectstore.Page, error) {
+	panic("strict tree store never lists")
+}
+func fixtureAttrs(attrs objectAttrs) objectstore.Attrs {
+	return objectstore.Attrs{Generation: attrs.Generation, Metageneration: attrs.Metageneration, Size: attrs.Size, Created: attrs.Created, Metadata: attrs.Metadata}
+}
+func translateFixture(err error) error { return gcs.TranslateObjectError(err) }
+
+// Legacy cleanup fixture exercises the separate exact-delete adapter. Strict
+// tree storage intentionally has no production delete method.
+func (store *GCSStore) DeleteTree(ctx context.Context, ref hangar.TreeRef) error {
+	if store.deleter == nil {
+		return fmt.Errorf("%w: strict tree deletion was not configured", hangar.ErrUnauthorized)
+	}
+	if err := ref.Validate(); err != nil {
+		return fmt.Errorf("hangar: delete tree reference: %w", err)
+	}
+	key, err := hangar.TreeKey(store.config.Prefix, ref.Scope, ref.Digest)
+	if err != nil {
+		return fmt.Errorf("hangar: delete tree identity: %w", err)
+	}
+	ctx, cancel := store.withTimeout(ctx, store.config.WriteTimeout)
+	defer cancel()
+	err = store.deleter.DeleteExact(ctx, store.config.Bucket, key, ref.Generation)
+	if err == nil || isNotFound(err) {
+		return nil
+	}
+	if isPreconditionFailed(err) {
+		return wrapSentinel(hangar.ErrConflict, "delete generation no longer matches", err)
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	return infrastructure("delete tree", err)
+}
+
+type fixtureReader struct{ io.ReadCloser }
+
+func (reader fixtureReader) Read(body []byte) (int, error) {
+	n, err := reader.ReadCloser.Read(body)
+	if err == io.EOF {
+		return n, err
+	}
+	return n, translateFixture(err)
+}
+func (reader fixtureReader) Close() error { return translateFixture(reader.ReadCloser.Close()) }

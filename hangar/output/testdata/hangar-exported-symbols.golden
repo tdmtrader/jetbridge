@@ -28,7 +28,7 @@ type Digest string
 type Materializer struct { Store Store Canonicalizer Canonicalizer StoragePath string MaxTreeBytes int64 }
 type OutputReadProfile interface { Admit(ctx context.Context, ref TreeRef, handle, volume string) (time.Duration, error) Renew(ctx context.Context) error Release(ctx context.Context, staged error) error }
 type Scope string
-type Store interface { EnsureTree(context.Context, Scope, Digest, io.Reader, int64) (TreeAttributes, bool, error) InspectTree(context.Context, Scope, Digest, int64) (TreeAttributes, error) OpenTree(context.Context, TreeRef, int64) (io.ReadCloser, TreeAttributes, error) DeleteTree(context.Context, TreeRef) error }
+type Store interface { EnsureTree(context.Context, Scope, Digest, io.Reader, int64) (TreeAttributes, bool, error) InspectTree(context.Context, Scope, Digest, int64) (TreeAttributes, error) OpenTree(context.Context, TreeRef, int64) (io.ReadCloser, TreeAttributes, error) }
 type TreeAttributes struct { Ref TreeRef StoredBytes int64 LogicalBytes int64 CreatedAt time.Time }
 type TreeLimits struct { MaxContentBytes int64 MaxEntries int64 }
 type TreeRef struct { Scope Scope Digest Digest Generation int64 }

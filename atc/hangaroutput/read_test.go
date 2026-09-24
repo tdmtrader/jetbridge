@@ -361,17 +361,8 @@ func TestAWarrantIsNeverMintedForAnotherReadsLease(t *testing.T) {
 
 // A refusal the SCHEMA makes at COMMIT is a refusal, not a lost answer.
 //
-// The at-risk lifetime policy is checked by a DEFERRED trigger on the lease
-// insert, so it fires at commit and nowhere earlier: there is no Go check ahead
-// of it and there could not be one, because the snapshot it reads may be
-// written by another transaction between the check and the commit. What arrives
-// is a driver error carrying SQLSTATE JB002, and whether the caller is told
-// "refused" or "your answer was lost, retry with the same identity" is decided
-// entirely by whether the transaction adapter maps it.
-//
-// Told the second, a consumer retries forever: the same identity produces the
-// same refusal, and the attestor is the only thing that can change the answer.
-// AC 12 lists at-risk as a REFUSAL, and this is where that is true or not.
+// The integrity gate runs at commit. Its typed refusal must not become an
+// ambiguous answer that the caller retries indefinitely with the same identity.
 func TestAManagedReadUnderAnAtRiskPolicyIsRefusedRatherThanLeftUnresolved(t *testing.T) {
 	h := newHarness(t)
 	ref := registeredRef(t, h)
@@ -382,11 +373,11 @@ func TestAManagedReadUnderAnAtRiskPolicyIsRefusedRatherThanLeftUnresolved(t *tes
 
 	_, err := admission.Admit(context.Background(), readRequest(t, claimID, ref))
 	if !errors.Is(err, output.ErrAtRisk) {
-		t.Fatalf("a read refused at commit by the at-risk policy was answered %v", err)
+		t.Fatalf("a read refused at commit by the integrity gate was answered %v", err)
 	}
 	if errors.Is(err, output.ErrUnresolved) {
 		t.Error("a refusal the database made was reported as a lost commit answer; the caller " +
-			"would retry with the same identity until the attestor changed its mind")
+			"would retry with the same identity until an operator reconciled the finding")
 	}
 	if minter.calls != 0 {
 		t.Errorf("the signer ran %d times for a refused admission", minter.calls)
@@ -514,9 +505,7 @@ func TestATermPastTheBoundIsRefusedByTheRequestAndNotByTheColumn(t *testing.T) {
 	}
 }
 
-// recordAtRiskPolicy writes the lifetime-policy attestation the schema refuses
-// a new protection under. It is the production repository method; the state is
-// a fact an attestor records, not a flag this spec flips.
+// recordAtRiskPolicy records unexpected object loss through the runtime seam.
 func recordAtRiskPolicy(t *testing.T, h *harness) {
 	t.Helper()
 
@@ -526,17 +515,8 @@ func recordAtRiskPolicy(t *testing.T, h *harness) {
 	}
 	defer db.Rollback(tx)
 
-	if err := h.Repository.RecordPolicyAttestation(context.Background(), tx, output.PolicySnapshot{
-		ProtocolVersion:      output.ProtocolVersion,
-		ActivationEpoch:      harnessEpoch,
-		BucketFingerprint:    "gs://harness-output",
-		Metageneration:       4,
-		PolicyHash:           "policy-hash-at-risk",
-		LifecycleDeleteRules: 1,
-		State:                output.PolicyAtRisk,
-		ObservedAt:           output.NewTimestamp(time.Now()),
-	}, nil); err != nil {
-		t.Fatalf("recording the at-risk snapshot: %v", err)
+	if err := h.Repository.RecordRuntimeAtRisk(context.Background(), tx, int64(harnessEpoch), output.PolicyFinding{Violation: output.ViolationOutOfBandAbsence, Subject: "missing-generation", Detail: "unexpected object loss"}); err != nil {
+		t.Fatalf("recording the runtime finding: %v", err)
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("commit: %v", err)

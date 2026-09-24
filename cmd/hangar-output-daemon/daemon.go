@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/x509"
 	"fmt"
+	"github.com/concourse/concourse/hangar/diskclient"
 	"io"
 	"time"
 
@@ -69,12 +70,9 @@ type Daemon struct {
 
 // Build constructs the daemon from a validated configuration.
 //
-// It deliberately does not probe the bucket. The foundation's publisher startup
-// calls Bucket.Attrs to fail fast on a misconfigured bucket, and copying that
-// here would require storage.buckets.get on this principal -- a bucket-policy
-// permission the output publisher must not have. The policy attestor owns
-// bucket verification, and activation is gated on its attestation rather than
-// on a probe from the principal whose honesty is being attested.
+// GCS construction does not inspect bucket policy: the publisher needs object
+// operations, and storage configuration is the operator's responsibility.
+// Actual storage failures remain typed errors rather than successful admission.
 func Build(ctx context.Context, config Config) (*Daemon, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
@@ -119,7 +117,12 @@ func Build(ctx context.Context, config Config) (*Daemon, error) {
 		// constructor and hands back an interface with no delete on it, which
 		// is what makes `client.Bucket(b).Object(k).Delete(ctx)` here a compile
 		// error rather than a line that built and passed every guard.
-		objects, _, err := hangargcs.NewObjectClient(ctx, config.OutputEndpoint)
+		var objects objectstore.Client
+		if config.OutputStore == output.StoreDisk {
+			objects, err = diskclient.New(diskclient.Config{Endpoint: config.OutputEndpoint, StoreID: config.OutputStoreID, TokenFile: config.OutputTokenFile, CACert: config.OutputCACert, Timeout: config.OperationTimeout})
+		} else {
+			objects, _, err = hangargcs.NewObjectClient(ctx, config.OutputEndpoint)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("%w: building the output object client: %v",
 				output.ErrInfrastructure, err)

@@ -1,11 +1,9 @@
 package composition_test
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"testing"
-	"time"
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
@@ -14,7 +12,6 @@ import (
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/postgresrunner"
 	"github.com/concourse/concourse/atc/runs"
-	"github.com/concourse/concourse/hangar/output"
 	"github.com/concourse/concourse/skymarshal/skycmd"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -160,16 +157,6 @@ func activateVersionedAdmission(conn db.DbConn) {
 			now() - interval '1 day', now() + interval '30 days',
 			'materialize-key-1', 'gs://output-bucket', 'deployment/ns')`, testEpoch)
 	Expect(err).NotTo(HaveOccurred())
-	prefix, err := db.HangarConsumerPrefixHeld("composition-suite-activation")
-	Expect(err).NotTo(HaveOccurred())
-	tx, err := conn.Begin()
-	Expect(err).NotTo(HaveOccurred())
-	defer db.Rollback(tx)
-	Expect(db.NewHangarOutputRepository(prefix).RecordPolicyAttestation(context.Background(), tx, output.PolicySnapshot{
-		ProtocolVersion: output.ProtocolVersion, ActivationEpoch: 1, BucketFingerprint: "gs://output-bucket",
-		Metageneration: 3, PolicyHash: "policy-hash-1", State: output.PolicySafe, ObservedAt: output.NewTimestamp(time.Now()),
-	}, nil)).To(Succeed())
-	Expect(tx.Commit()).To(Succeed())
 	_, err = conn.Exec(`UPDATE pipeline_run_activation SET epoch=$1, admission_enabled=true WHERE singleton`, testEpoch)
 	Expect(err).NotTo(HaveOccurred())
 }

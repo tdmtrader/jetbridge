@@ -55,10 +55,6 @@ const (
 	// reclaim for the life of the deployment, and it closes a lease only after
 	// the DATABASE clock says it expired.
 	OperationReadLeaseCleanup OperationKind = "read_lease_cleanup"
-
-	// OperationPolicyAttestation re-reads the bucket's lifetime policy and IAM
-	// at least every MaxPolicyEvidenceAge. Its principal touches no object.
-	OperationPolicyAttestation OperationKind = "policy_attestation"
 )
 
 // OperationKinds is the closed set, in the order the schema names them.
@@ -105,10 +101,6 @@ const (
 //	Acceleration: read_lease_cleanup -- none. A lease becomes abandoned by
 //	expiring, on the database clock, and expiry is not a write.
 //
-//	Acceleration: policy_attestation -- none. It re-reads the bucket at least
-//	every MaxPolicyEvidenceAge; the schedule IS the requirement, and a wake on
-//	some other event would not make the evidence fresher.
-//
 // The three below DO have a database-write trigger and are still not
 // accelerated. Their reason used to name Phase 5, which was already closed when
 // it was written -- a deferral addressed to a phase whose boxes do not contain
@@ -153,7 +145,6 @@ func OperationKinds() []OperationKind {
 		OperationReclaimDelete,
 		OperationReclaimFinalization,
 		OperationReadLeaseCleanup,
-		OperationPolicyAttestation,
 	}
 }
 

@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	hangargcs "github.com/concourse/concourse/hangar/gcs"
 	"github.com/concourse/concourse/hangar/output/inventory"
 	"github.com/concourse/concourse/hangar/output/publisher"
 	"github.com/concourse/concourse/hangar/output/reclaimer"
@@ -62,59 +61,23 @@ func TestEachRolesStoreInterfaceHasOnlyItsRolesMethods(t *testing.T) {
 		forbidden []string
 		because   string
 	}{
-		"publisher's handle": {
-			prototype: (*publisher.Handle)(nil),
-			want:      []string{"Attrs", "Generation", "If", "NewReader", "NewWriter"},
-			forbidden: []string{"Delete", "Update", "SetMetadata"},
-			because: "the publisher creates and reads. A delete method here would be a delete " +
-				"permission on the identity that also creates, and the marker's " +
-				"immutability rests on there being no way to rewrite metadata after creation",
-		},
-		"publisher's store": {
+		"publisher": {
 			prototype: (*publisher.Store)(nil),
-			want:      []string{"Object"},
-			forbidden: []string{"List"},
-			because: "objects.list is bucket-wide and cannot be narrowed by IAM; the publisher " +
-				"has no reason to enumerate a bucket and every reason not to be able to",
+			want:      []string{"CreateAbsent", "OpenExact", "StatCurrent", "StatExact"},
+			forbidden: []string{"DeleteExact", "List"},
+			because:   "publishers create and read without deletion or enumeration",
 		},
-		"inventory's handle": {
-			prototype: (*inventory.Handle)(nil),
-			want:      []string{"Attrs", "Generation"},
-			forbidden: []string{"Delete", "NewWriter", "NewReader", "If"},
-			because:   "inventory lists and stats. It cannot create and it cannot delete",
-		},
-		"inventory's store": {
+		"inventory": {
 			prototype: (*inventory.Store)(nil),
-			want:      []string{"List", "Object"},
-			because:   "inventory is the one role that lists",
+			want:      []string{"List", "StatExact"},
+			forbidden: []string{"CreateAbsent", "DeleteExact", "OpenExact"},
+			because:   "inventory inspects metadata without reading or changing bodies",
 		},
-		"reclaimer's handle": {
-			prototype: (*reclaimer.Handle)(nil),
-			want:      []string{"Attrs", "Delete", "Generation", "If"},
-			forbidden: []string{"NewWriter", "NewReader"},
-			because: "a reclaimer that could read could exfiltrate and one that could write " +
-				"could resurrect. Delete is reachable only through a generation pin and a " +
-				"precondition, because IAM cannot require one once delete permission exists",
-		},
-		"reclaimer's store": {
+		"reclaimer": {
 			prototype: (*reclaimer.Store)(nil),
-			want:      []string{"Object"},
-			forbidden: []string{"List"},
-			because:   "a reclaimer deletes what it was told to delete; it does not go looking",
-		},
-		"the policy attestor's source": {
-			// The PRODUCTION type, not a role-package interface. The interface
-			// this used to name had no implementation and no consumer: the
-			// wired composition reads bucket metadata through
-			// hangar/gcs.BucketPolicySource directly, so an interface nothing
-			// satisfied was a guard over a shape that could be correct while
-			// the shape in the process was not.
-			prototype: (*hangargcs.BucketPolicySource)(nil),
-			want:      []string{"ReadLifetimePolicy", "ReadPrincipalBindings"},
-			forbidden: []string{"Object", "List", "Delete", "NewWriter", "NewReader", "Attrs"},
-			because: "the attestor is the workload whose word the plane trusts about whether the " +
-				"bucket is safe. One that could also touch an object would be a workload whose " +
-				"compromise costs the data rather than the assessment",
+			want:      []string{"DeleteExact", "StatExact"},
+			forbidden: []string{"CreateAbsent", "OpenExact", "List"},
+			because:   "reclaimers delete exact registered objects without publication authority",
 		},
 	} {
 		got := methodNames(t, expectation.prototype)
@@ -133,53 +96,13 @@ func TestEachRolesStoreInterfaceHasOnlyItsRolesMethods(t *testing.T) {
 	}
 }
 
-func TestThePolicyAttestorNamesNoObjectStoreAtAll(t *testing.T) {
-	// The stronger statement, and the reason it is a source scan rather than a
-	// type check: the attestor must not be able to reach an object *by any
-	// route*, including one added later through a helper that takes a client.
-	_, thisFile, _, _ := runtime.Caller(0)
-	directory := filepath.Join(filepath.Dir(thisFile), "..", "policy")
-
-	sources, err := filepath.Glob(filepath.Join(directory, "*.go"))
-	if err != nil {
-		t.Fatalf("globbing the policy package: %v", err)
-	}
-	if len(sources) == 0 {
-		t.Fatal("the policy package has no Go file; this rule would pass vacuously")
-	}
-
-	fileSet := token.NewFileSet()
-	scanned := 0
-	for _, source := range sources {
-		parsed, err := parser.ParseFile(fileSet, source, nil, parser.ImportsOnly)
-		if err != nil {
-			t.Fatalf("parsing %s: %v", source, err)
-		}
-		scanned++
-
-		for _, imported := range parsed.Imports {
-			path := strings.Trim(imported.Path.Value, `"`)
-			if strings.Contains(path, "objectstore") ||
-				strings.Contains(path, "hangar/gcs") ||
-				strings.Contains(path, "cloud.google.com/go/storage") {
-				t.Errorf("%s imports %s. The policy attestor reads bucket policy and IAM and "+
-					"touches no object; an object-store import is the first half of an object "+
-					"method", filepath.Base(source), path)
-			}
-		}
-	}
-	if scanned == 0 {
-		t.Fatal("nothing was scanned")
-	}
-}
-
-// TestNoRolePackageIsImportedByTheOtherRoles keeps the four principals from
-// becoming one library with four entry points.
+// TestNoRolePackageIsImportedByTheOtherRoles keeps the three principals from
+// becoming one library with three entry points.
 func TestNoRolePackageIsImportedByTheOtherRoles(t *testing.T) {
 	_, thisFile, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(thisFile), "..")
 
-	roles := []string{"publisher", "inventory", "reclaimer", "policy"}
+	roles := []string{"publisher", "inventory", "reclaimer"}
 	fileSet := token.NewFileSet()
 
 	checked := 0

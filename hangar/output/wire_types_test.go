@@ -61,7 +61,6 @@ var fixturedTypes = map[string]string{
 	outputPackageDir + ":DeletePrecondition":              "delete-precondition.json",
 	outputPackageDir + ":InventoryCursor":                 "inventory-cursor.json",
 	outputPackageDir + ":InventoryDebt":                   "inventory-debt.json",
-	outputPackageDir + ":PolicySnapshot":                  "policy-snapshot.json",
 	outputPackageDir + ":ExtensionHandshake":              "capture-extension-handshake.json",
 	outputPackageDir + ":CallerNamespaceRequest":          "caller-namespace-request.json",
 	outputPackageDir + ":WriterAdmission":                 "writer-admission.json",

@@ -640,6 +640,26 @@ func TestHangarConfigRequiresStrictPrerequisitesBeforeStoreConstruction(t *testi
 	if err := os.WriteFile(base.WarrantKey, bytes.Repeat([]byte{1}, 32), 0600); err != nil {
 		t.Fatal(err)
 	}
+	disk := base
+	disk.Store = "disk"
+	disk.StoreID = "disk-1"
+	disk.Endpoint = "https://hangar-store.example"
+	disk.TokenFile = "input-token"
+	disk.DurableKind = "filesystem"
+	if err := validateHangarOptions(disk, t.TempDir()); err != nil {
+		t.Fatalf("independent disk storage required GCS cache: %v", err)
+	}
+	for _, mutate := range []func(*hangarOptions){
+		func(o *hangarOptions) { o.StoreID = "" },
+		func(o *hangarOptions) { o.Endpoint = "" },
+		func(o *hangarOptions) { o.TokenFile = "" },
+	} {
+		invalid := disk
+		mutate(&invalid)
+		if err := validateHangarOptions(invalid, t.TempDir()); err == nil {
+			t.Fatal("incomplete disk configuration accepted")
+		}
+	}
 	tests := []struct {
 		name   string
 		mutate func(*hangarOptions)

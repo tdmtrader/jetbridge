@@ -74,12 +74,6 @@ const (
 	MaxInventoryPageMetadataBytes = 8 << 20
 	MaxInventoryPassDuration      = 30 * time.Second
 
-	// MaxPolicyEvidenceAge is the bounded staleness of the lifetime-policy
-	// attestation. It is explicitly a detection window and not prevention: a
-	// functioning monitor notices a changed lifecycle rule within it, and
-	// cannot stop a deletion inside it.
-	MaxPolicyEvidenceAge = 15 * time.Minute
-
 	// WorkerFallbackInterval is the slowest acceptable periodic wake for every
 	// worker in this plane. NOTIFY accelerates work; it is never the only way
 	// work is found, because component.Runner with a zero interval wakes only
@@ -195,17 +189,4 @@ func ValidateMaterializationTimeout(timeout time.Duration) error {
 // materialization from starting under authority it will outlive.
 func MayStartWork(remaining, operationTimeout time.Duration) bool {
 	return remaining >= operationTimeout+LeaseStartMargin
-}
-
-// ValidatePolicyEvidenceAge fails closed on stale attestation.
-func ValidatePolicyEvidenceAge(age time.Duration) error {
-	if age < 0 {
-		return fmt.Errorf("%w: policy evidence is dated in the future by %s", ErrIncomplete, -age)
-	}
-	if age > MaxPolicyEvidenceAge {
-		return fmt.Errorf("%w: policy evidence is %s old, the bound is %s",
-			ErrAtRisk, age, MaxPolicyEvidenceAge)
-	}
-
-	return nil
 }

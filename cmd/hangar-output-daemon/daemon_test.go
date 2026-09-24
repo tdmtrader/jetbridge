@@ -411,7 +411,7 @@ func TestTheDaemonNeverProbesTheBucketAtStartup(t *testing.T) {
 	// The foundation's publisher calls Bucket.Attrs to fail fast. Copying it
 	// here would need storage.buckets.get on the publisher principal, which is
 	// a bucket-policy permission the output publisher must not hold; the
-	// attestor owns bucket verification. So a bucket that does not exist must
+	// operator provisions the dedicated bucket. So a bucket that does not exist must
 	// still build, and fail on the first publish instead.
 	server, _ := emulator(t)
 	config := validConfig(t, server.URL(), "a-bucket-that-was-never-created")
@@ -428,11 +428,11 @@ func TestTheDaemonHoldsOnlyThePublisherRole(t *testing.T) {
 	// interfaces' own method sets are asserted in hangar/output/conformance;
 	// what is checked here is that THIS daemon's field is that narrow role and
 	// not a full client that happens to be used narrowly.
-	handle := reflect.TypeOf((*publisher.Handle)(nil)).Elem()
+	handle := reflect.TypeOf((*publisher.Store)(nil)).Elem()
 	for index := 0; index < handle.NumMethod(); index++ {
 		switch name := handle.Method(index).Name; name {
-		case "Delete", "List":
-			t.Errorf("the publisher handle this daemon holds offers %s. Its Pod's service "+
+		case "DeleteExact", "List":
+			t.Errorf("the publisher store this daemon holds offers %s. Its Pod's service "+
 				"account is the output publisher; a method here is a permission there", name)
 		}
 	}

@@ -18,6 +18,8 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"github.com/concourse/concourse/hangar/diskclient"
+	"github.com/concourse/concourse/hangar/objectstore"
 	"os"
 	"time"
 
@@ -57,7 +59,13 @@ func run(ctx context.Context, config controllerConfig) error {
 	// holds a *storage.Client, so an object handle -- and the delete on it --
 	// is not reachable from anything in scope. Everything below holds an
 	// interface with List and a stat and nothing else.
-	objects, closeObjects, err := hangargcs.NewObjectClient(ctx, config.Endpoint)
+	var objects objectstore.Client
+	closeObjects := func() error { return nil }
+	if config.Store == output.StoreDisk {
+		objects, err = diskclient.New(diskclient.Config{Endpoint: config.Endpoint, StoreID: config.StoreID, TokenFile: config.TokenFile, CACert: config.CACert, Timeout: 2 * time.Minute})
+	} else {
+		objects, closeObjects, err = hangargcs.NewObjectClient(ctx, config.Endpoint)
+	}
 	if err != nil {
 		return err
 	}

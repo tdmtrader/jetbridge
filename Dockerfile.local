@@ -15,7 +15,7 @@ COPY artifact-daemon-linux-arm64 /usr/local/concourse/bin/artifact-daemon
 COPY hangar-output-daemon-linux-arm64 /usr/local/concourse/bin/hangar-output-daemon
 COPY hangar-output-inventory-linux-arm64 /usr/local/concourse/bin/hangar-output-inventory
 COPY hangar-output-reclaimer-linux-arm64 /usr/local/concourse/bin/hangar-output-reclaimer
-COPY hangar-output-policy-attestor-linux-arm64 /usr/local/concourse/bin/hangar-output-policy-attestor
+COPY hangar-store-linux-arm64 /usr/local/concourse/bin/hangar-store
 COPY hangar-output-activate-linux-arm64 /usr/local/concourse/bin/hangar-output-activate
 COPY fly-assets /usr/local/concourse/fly-assets
 RUN chmod +x /usr/local/concourse/bin/*

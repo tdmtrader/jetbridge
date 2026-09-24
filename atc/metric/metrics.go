@@ -761,9 +761,6 @@ type HangarOutputSnapshot struct {
 	AtRisk  bool
 	Reasons string
 
-	EvidenceAgeSeconds float64
-	EvidenceStale      bool
-
 	InventoryCycle        int64
 	InventoryAtCycleStart bool
 
@@ -799,13 +796,6 @@ func (event HangarOutputStatus) Emit(logger lager.Logger) {
 		Value: boolValue(event.Status.AtRisk),
 		Attributes: map[string]string{
 			"reasons": event.Status.Reasons,
-		},
-	})
-	Metrics.emit(session, Event{
-		Name:  "hangar output policy evidence age",
-		Value: event.Status.EvidenceAgeSeconds,
-		Attributes: map[string]string{
-			"stale": boolAttribute(event.Status.EvidenceStale),
 		},
 	})
 	for violation, count := range event.Status.Violations {

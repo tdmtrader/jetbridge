@@ -65,6 +65,13 @@ func main() {
 
 	// Hangar is a strict immutable-tree service composed beside the fail-open
 	// cache tier. It deliberately reuses only the GCS connection settings.
+	hangarStore := flag.String("hangar-store", "", "Strict-input storage profile: gcs or disk; empty inherits durable store settings")
+	hangarBucket := flag.String("hangar-bucket", "", "Strict-input bucket or disk namespace")
+	hangarEndpoint := flag.String("hangar-endpoint", "", "Strict-input storage endpoint")
+	hangarPrefix := flag.String("hangar-prefix", "", "Strict-input object prefix; empty selector inherits durable prefix")
+	hangarStoreID := flag.String("hangar-store-id", "", "Expected persistent disk storage identity")
+	hangarTokenFile := flag.String("hangar-token-file", "", "Disk storage input credential file")
+	hangarCACert := flag.String("hangar-ca-cert", "", "Disk storage CA certificate")
 	hangarEnabled := flag.Bool("hangar-enabled", false, "Enable strict Hangar tree publication and materialization")
 	hangarScratchDir := flag.String("hangar-scratch-dir", "/var/concourse/hangar-scratch", "Absolute private scratch directory for Hangar verification")
 	hangarWarrantKey := flag.String("hangar-warrant-key", "", "Path to the raw 32-byte materialization warrant key")
@@ -270,10 +277,22 @@ func main() {
 		}
 	}
 
+	if *hangarStore == "" {
+		*hangarStore = *durableStore
+		if *hangarBucket == "" {
+			*hangarBucket = *durableBucket
+		}
+		if *hangarEndpoint == "" {
+			*hangarEndpoint = *durableEndpoint
+		}
+		if *hangarPrefix == "" {
+			*hangarPrefix = *durablePrefix
+		}
+	}
 	hangarService, hangarClose, err := buildHangarService(context.Background(), logger, *storagePath, hangarOptions{
 		Enabled: *hangarEnabled, ScratchDir: *hangarScratchDir, WarrantKey: *hangarWarrantKey,
 		MaxContentBytes: *hangarMaxContentBytes, MaxEntries: *hangarMaxEntries, WarrantTTL: *hangarWarrantTTL,
-		DurableKind: *durableStore, Bucket: *durableBucket, Prefix: *durablePrefix, Endpoint: *durableEndpoint, Timeout: *durableTimeout,
+		DurableKind: *durableStore, Store: *hangarStore, StoreID: *hangarStoreID, TokenFile: *hangarTokenFile, CACert: *hangarCACert, Bucket: *hangarBucket, Prefix: *hangarPrefix, Endpoint: *hangarEndpoint, Timeout: *durableTimeout,
 		TLSCert: *tlsCert, TLSKey: *tlsKey, TLSCACert: *tlsCACert,
 	})
 	if err != nil {

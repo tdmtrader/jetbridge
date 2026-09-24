@@ -365,33 +365,8 @@ func openActivationEpoch(jdb JetbridgeDB, cohort ...string) error {
 		return fmt.Errorf("opening the activation epoch: %w", err)
 	}
 
-	ctx := context.Background()
-	prefix, err := db.HangarConsumerPrefixHeld("brine-capture")
-	if err != nil {
-		return err
-	}
+	return nil
 
-	tx, err := jdb.Conn.Begin()
-	if err != nil {
-		return err
-	}
-	defer db.Rollback(tx)
-
-	if err := db.NewHangarOutputRepository(prefix).RecordPolicyAttestation(ctx, tx,
-		hangaroutputleaf.PolicySnapshot{
-			ProtocolVersion:      hangaroutputleaf.ProtocolVersion,
-			ActivationEpoch:      executioncontrol.ActivationEpoch(hangarEpoch),
-			BucketFingerprint:    "gs://brine-output",
-			Metageneration:       3,
-			PolicyHash:           "brine-policy-1",
-			LifecycleDeleteRules: 0,
-			State:                hangaroutputleaf.PolicySafe,
-			ObservedAt:           hangaroutputleaf.NewTimestamp(time.Now()),
-		}, nil); err != nil {
-		return fmt.Errorf("attesting the bucket policy: %w", err)
-	}
-
-	return tx.Commit()
 }
 
 // jetbridgeClientFor is the production client bound to this fixture's output

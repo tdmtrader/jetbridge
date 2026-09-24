@@ -7,12 +7,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/hangar/output"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -119,21 +117,10 @@ func createV2Run(database *realDB, template db.Pipeline) db.PipelineRun {
 			now() - interval '1 day', now() + interval '30 days',
 			'materialize-key-1', 'gs://output-bucket', 'deployment/ns')`)
 	Expect(err).NotTo(HaveOccurred())
-	consumer, err := db.HangarConsumerPrefixHeld("cancel-api-test")
-	Expect(err).NotTo(HaveOccurred())
-	tx, err := database.Conn.Begin()
-	Expect(err).NotTo(HaveOccurred())
-	defer db.Rollback(tx)
-	Expect(db.NewHangarOutputRepository(consumer).RecordPolicyAttestation(ctx, tx, output.PolicySnapshot{
-		ProtocolVersion: output.ProtocolVersion, ActivationEpoch: 1, BucketFingerprint: "gs://output-bucket",
-		Metageneration: 3, PolicyHash: "policy-hash-1", State: output.PolicySafe,
-		ObservedAt: output.NewTimestamp(time.Now()),
-	}, nil)).To(Succeed())
-	Expect(tx.Commit()).To(Succeed())
 	_, err = database.Conn.Exec(`UPDATE pipeline_run_activation SET epoch=1, admission_enabled=true WHERE singleton`)
 	Expect(err).NotTo(HaveOccurred())
 
-	tx, err = database.Conn.Begin()
+	tx, err := database.Conn.Begin()
 	Expect(err).NotTo(HaveOccurred())
 	defer db.Rollback(tx)
 	creation, err := db.NewPipelineRunFactory(database.Conn, database.LockFactory).CreateRunInTx(ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{ActivationEpoch: 1})

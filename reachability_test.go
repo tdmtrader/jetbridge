@@ -88,7 +88,6 @@ var reachabilityTrees = []string{
 
 	"atc/hangaroutput/inventorypass",
 	"atc/hangaroutput/reclaimpass",
-	"atc/hangaroutput/attestpass",
 	"atc/hangaroutput/controller",
 }
 
@@ -122,15 +121,12 @@ var deferredEntryPoints = []deferredEntryPoint{
 	// and a per-job term would be a series per object.
 	{name: "Remaining", pkg: "atc/db", why: reclaimJobDetailHasNoReader},
 	{name: "LoadReclaimJob", pkg: "atc/db", why: reclaimJobDetailHasNoReader},
-	{name: "ReconcilePolicyViolation", why: operatorReconciliationHasNoAPI},
 
 	// The consumer half: verifying a warrant, a receipt or a lease answer that
 	// this plane issued. This phase issues them and reads none of them back.
 	{name: "KeyIDs", why: consumerHalf},
 	{name: "ConstantTimeKeyIDEqual", why: consumerHalf},
 	{name: "ReceiptEnvelopeIsUnaltered", why: consumerHalf},
-
-	{name: "DeriveCohortFindings", why: cohortIdentities},
 
 	{name: "Rotate", pkg: "atc/hangaroutput/activation", why: rotationHasNoOperatorPath},
 
@@ -161,11 +157,6 @@ const (
 		"a count, because a series per in-flight object is cardinality nobody can alert on. " +
 		"Loading one job and reading its remaining term is a diagnosis of a SPECIFIC object, " +
 		"and this track ships no API that names one"
-	operatorReconciliationHasNoAPI = "reconciling a policy violation is a deliberate operator " +
-		"act with its own record, and this track ships no API for it. The status surface is " +
-		"deliberately read-only: a surface with a write in its port is one an operator can be " +
-		"persuaded to \"just clear\", and a cleared violation is the record of what was wrong " +
-		"while the plane refused work"
 	consumerHalf = "the consumer-side verification half needs a consumer: these five verify a " +
 		"receipt or a key id some process read BACK, and the process that does that is the " +
 		"ATC's receipt registration. Three names this reason once covered -- ValidateLease, " +
@@ -653,7 +644,6 @@ var interfaceSatisfied = map[string]satisfiedEntry{
 	// rather than the package -- which is the same shape every other entry here
 	// has, and the reason the reads below are reached without an atc/db import.
 	"CountOutputPlaneState":       {pkg: "atc/db", port: "atc/hangaroutput.StatusStore"},
-	"LatestPolicySnapshot":        {pkg: "atc/db", port: "atc/hangaroutput.StatusStore"},
 	"ReadInventoryCursorProgress": {pkg: "atc/db", port: "atc/hangaroutput.StatusStore"},
 	"HangarDatabaseNow":           {pkg: "atc/db", port: "atc/hangaroutput.StatusStore"},
 	"ReadOperationLease":          {pkg: "atc/db", port: "atc/hangaroutput.StatusStore"},

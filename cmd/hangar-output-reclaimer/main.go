@@ -23,6 +23,8 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
+	"github.com/concourse/concourse/hangar/diskdelete"
+	"github.com/concourse/concourse/hangar/objectstore"
 	"os"
 	"time"
 
@@ -64,7 +66,13 @@ func run(ctx context.Context, config controllerConfig) error {
 	// other three roots hold has no Delete at all, and no file under cmd/ --
 	// this one included -- names cloud.google.com/go/storage, so not even this
 	// root can reach the SDK around the capability package.
-	objects, closeObjects, err := gcsdelete.NewDeleteClient(ctx, config.Endpoint)
+	var objects objectstore.DeleteClient
+	closeObjects := func() error { return nil }
+	if config.Store == output.StoreDisk {
+		objects, err = diskdelete.New(diskdelete.Config{Endpoint: config.Endpoint, StoreID: config.StoreID, TokenFile: config.TokenFile, CACert: config.CACert, Timeout: config.DeleteTimeout})
+	} else {
+		objects, closeObjects, err = gcsdelete.NewDeleteClient(ctx, config.Endpoint)
+	}
 	if err != nil {
 		return err
 	}

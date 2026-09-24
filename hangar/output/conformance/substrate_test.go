@@ -14,6 +14,7 @@ import (
 	"github.com/fsouza/fake-gcs-server/fakestorage"
 	"google.golang.org/api/option"
 
+	"github.com/concourse/concourse/hangar/disk"
 	hangargcs "github.com/concourse/concourse/hangar/gcs"
 	"github.com/concourse/concourse/hangar/gcsdelete"
 	"github.com/concourse/concourse/hangar/gcstest"
@@ -98,7 +99,7 @@ type substrate struct {
 	client objectstore.Client
 
 	// deleter is the capability, and it arrives separately because it IS
-	// separate: Delete is not a method on objectstore.Handle, and the only
+	// separate: DeleteExact is not a method on objectstore.Client, and the only
 	// constructor of one over a real cloud client lives in hangar/gcsdelete,
 	// which exactly one binary links. A suite that drives the reclaimer has to
 	// be handed one, which is the whole point.
@@ -113,11 +114,8 @@ type substrate struct {
 	// claims. See probeCapabilities.
 	can capabilities
 
-	// endpoint is the HTTP address of a tier-2 substrate, and empty for tier
-	// 1, which has no API server at all. A case that needs to open a SECOND
-	// production seam against the same store -- the policy attestor's bucket
-	// handle, which is not an objectstore.Client -- needs the address rather
-	// than the adapter.
+	// endpoint is the HTTP address of the GCS API substrate, and empty for
+	// substrates with no API server.
 	endpoint string
 }
 
@@ -147,25 +145,18 @@ func probeCapabilities(t *testing.T, tier substrate) capabilities {
 	measured := capabilities{}
 
 	write := func(key string) objectstore.Attrs {
-		writer := tier.client.Object(tier.bucket, key).NewWriter(ctx)
-		if _, err := writer.Write([]byte("capability probe")); err != nil {
+		attrs, err := tier.client.CreateAbsent(ctx, tier.bucket, key, nil, strings.NewReader("capability probe"))
+		if err != nil {
 			t.Fatalf("probing %s: %v", key, err)
 		}
-		if err := writer.Close(); err != nil {
-			t.Fatalf("probing %s: %v", key, err)
-		}
-
-		return writer.Attrs()
+		return attrs
 	}
 
 	// Delete preconditions: delete a generation that is not there and see
 	// whether the object survives.
 	victim := write("capability-probe/delete")
-	_ = tier.deleter.ObjectToDelete(tier.bucket, "capability-probe/delete").
-		Generation(victim.Generation + 1).
-		If(objectstore.Conditions{GenerationMatch: victim.Generation + 1}).
-		Delete(ctx)
-	if _, err := tier.client.Object(tier.bucket, "capability-probe/delete").Attrs(ctx); err == nil {
+	_ = tier.deleter.DeleteExact(ctx, tier.bucket, "capability-probe/delete", victim.Generation+1)
+	if _, err := tier.client.StatCurrent(ctx, tier.bucket, "capability-probe/delete"); err == nil {
 		measured.EnforcesDeletePreconditions = true
 	}
 
@@ -187,7 +178,9 @@ func probeCapabilities(t *testing.T, tier substrate) capabilities {
 		"capability-probe/delete",
 		"capability-probe/page/a", "capability-probe/page/b", "capability-probe/page/c",
 	} {
-		_ = tier.deleter.ObjectToDelete(tier.bucket, key).Delete(ctx)
+		if attrs, err := tier.client.StatCurrent(ctx, tier.bucket, key); err == nil {
+			_ = tier.deleter.DeleteExact(ctx, tier.bucket, key, attrs.Generation)
+		}
 	}
 
 	return measured
@@ -379,7 +372,7 @@ func deleteBucket(t *testing.T, client objectstore.Client, deleter objectstore.D
 			return
 		}
 		for _, object := range page.Objects {
-			_ = deleter.ObjectToDelete(bucket, object.Key).Delete(ctx)
+			_ = deleter.DeleteExact(ctx, bucket, object.Key, object.Generation)
 		}
 		if page.Done || page.LastKey == "" {
 			break
@@ -415,7 +408,7 @@ func uniqueBucket(prefix string) string {
 	return fmt.Sprintf("%s-%d-%d", prefix, time.Now().UnixNano(), bucketCounter)
 }
 
-// eachSubstrate runs one case against both tiers.
+// eachSubstrate runs one case against memory, GCS emulator, and persistent disk.
 //
 // The tier name is in the subtest name so a failure says which substrate
 // refused, which is the difference between "the code is wrong" and "this fake
@@ -423,7 +416,7 @@ func uniqueBucket(prefix string) string {
 func eachSubstrate(t *testing.T, run func(*testing.T, substrate)) {
 	t.Helper()
 
-	for _, build := range []func(*testing.T) substrate{tier1, tier2} {
+	for _, build := range []func(*testing.T) substrate{tier1, tier2, diskSubstrate} {
 		build := build
 		substrate := build(t)
 		t.Run(substrate.name, func(t *testing.T) { run(t, substrate) })
@@ -454,4 +447,30 @@ func closedEndpoint(t *testing.T) string {
 	}
 
 	return "http://" + address
+}
+
+// diskSubstrate runs the same publication, inventory and reclamation contract
+// against a real filesystem and transactional index, without a storage fake.
+func diskSubstrate(t *testing.T) substrate {
+	t.Helper()
+	root := t.TempDir()
+	const id = "conformance-store"
+	if err := disk.Initialize(root, id); err != nil {
+		t.Fatal(err)
+	}
+	store, err := disk.Open(root, id, 64<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	tier := substrate{name: "disk (persistent filesystem)", bucket: "output", client: store, deleter: store}
+	tier.can = probeCapabilities(t, tier)
+	if !tier.can.EnforcesDeletePreconditions || !tier.can.Paginates {
+		t.Fatal("disk does not satisfy the immutable object contract")
+	}
+	return tier
 }

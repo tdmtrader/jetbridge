@@ -22,18 +22,21 @@ import (
 type Mode string
 
 const (
-	ModeBegin  Mode = "begin"
-	ModeAttest Mode = "attest"
-	ModeEnable Mode = "enable"
-	ModeDrain  Mode = "drain"
+	ModeBegin              Mode = "begin"
+	ModeAttest             Mode = "attest"
+	ModeEnable             Mode = "enable"
+	ModeDrain              Mode = "drain"
+	ModeReconcileIntegrity Mode = "reconcile-integrity"
 )
 
 // Config is what one activation Job was told.
 type Config struct {
-	DSN   string
-	Epoch int64
-	Mode  Mode
-	Facet activation.Facet
+	DSN                string
+	Epoch              int64
+	Mode               Mode
+	Facet              activation.Facet
+	IntegrityViolation string
+	IntegritySubject   string
 
 	// All is --facet=all, which drain alone accepts.
 	All bool
@@ -63,17 +66,20 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 		"PostgreSQL connection string. It is the ACTIVATION role's, distinct from the web pod's: the architecture guard saying only this command writes hangar_output_activation_epochs is enforceable only while that is true of the credential as well as of the code.")
 	flags.Int64Var(&config.Epoch, "epoch", 0,
 		"The activation epoch to act on. Rotation creates a NEW epoch rather than replacing a key in place, so this is the one being brought up or taken down.")
-	flags.Func("mode", "One of begin, attest, enable, drain.", func(value string) error {
+	flags.Func("mode", "One of begin, attest, enable, drain, reconcile-integrity.", func(value string) error {
 		switch Mode(strings.TrimSpace(value)) {
-		case ModeBegin, ModeAttest, ModeEnable, ModeDrain:
+		case ModeBegin, ModeAttest, ModeEnable, ModeDrain, ModeReconcileIntegrity:
 			config.Mode = Mode(strings.TrimSpace(value))
 
 			return nil
 		}
 
-		return fmt.Errorf("%w: --mode %q; there are four: begin, attest, enable, drain",
+		return fmt.Errorf("%w: --mode %q; choose: begin, attest, enable, drain, reconcile-integrity",
 			output.ErrUnknownMember, value)
 	})
+	flags.StringVar(&config.IntegrityViolation, "integrity-violation", "", "Runtime finding class to reconcile: out_of_band_absence or runtime_principal_denied. Repair the cause first; this acknowledges it and does not restore objects.")
+	flags.StringVar(&config.IntegritySubject, "integrity-subject", "", "Exact subject of one open finding in the selected epoch. No wildcard or blanket reconciliation.")
+
 	flags.Func("facet", "One of base, output, or (for drain) all.", func(value string) error {
 		trimmed := strings.TrimSpace(value)
 		if trimmed == "all" {
@@ -125,9 +131,22 @@ func (config Config) Validate() error {
 			"of an epoch", output.ErrIncomplete)
 	}
 	if config.Mode == "" {
-		return fmt.Errorf("%w: --mode is required; there are four: begin, attest, enable, drain",
+		return fmt.Errorf("%w: --mode is required; choose: begin, attest, enable, drain, reconcile-integrity",
 			output.ErrIncomplete)
 	}
+	if config.Mode == ModeReconcileIntegrity {
+		if _, err := output.ParsePolicyViolation(config.IntegrityViolation); err != nil {
+			return err
+		}
+		if strings.TrimSpace(config.IntegritySubject) == "" {
+			return fmt.Errorf("%w: --integrity-subject is required", output.ErrIncomplete)
+		}
+		return nil
+	}
+	if config.IntegrityViolation != "" || config.IntegritySubject != "" {
+		return fmt.Errorf("%w: integrity flags require --mode=reconcile-integrity", output.ErrIncomplete)
+	}
+
 	if config.Mode == ModeBegin {
 		// begin creates the row; both facets start in `initial` and neither is
 		// named. A --facet here would read as "begin this facet", which is not

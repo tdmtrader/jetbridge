@@ -1,12 +1,12 @@
 {{/*
-NetworkPolicies for the output plane's four workloads.
+NetworkPolicies for the output plane's three workloads.
 
 Every name here is distinct and distinct from every other policy this chart
 renders: two NetworkPolicies with one name in one namespace are one object, and
 which one survives is decided by apply order. tests/networkpolicy_test.go
 asserts uniqueness over the whole render in every supported mode.
 
-The three controllers accept NO ingress at all. They serve nothing -- each is a
+The two controllers accept NO ingress at all. They serve nothing -- each is a
 bounded worker woken by a ticker and a NOTIFY -- so an ingress rule would be
 permission for a connection nothing makes.
 */}}
@@ -53,6 +53,16 @@ spec:
         - protocol: TCP
           port: {{ $output.daemon.port }}
   egress:
+    {{- if $.Values.hangarStorage.disk.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ $.Release.Name }}
+              app.kubernetes.io/component: hangar-store
+      ports:
+        - protocol: TCP
+          port: 7783
+    {{- end }}
     {{- if .Values.web.tls.enabled }}
     # The signed read-lease callback to the web API's native HTTPS listener.
     - to:
@@ -103,14 +113,14 @@ The component used to be re-derived by trimming the fullname prefix off the
 object's name -- and the name is truncated, so once truncation bit the label
 disagreed with the literal the Deployments set and the podSelector matched
 nothing. A NetworkPolicy that selects no pod is not an error and is not a deny:
-the three controllers simply had no policy, silently, from a render that reads
+the two controllers simply had no policy, silently, from a render that reads
 correctly. The literal is now the same value in the selector, in the label and
 in the workload.
 */}}
 {{- range $controller := list
   (dict "name" (include "concourse.hangarOutput.inventoryName" .) "component" "hangar-output-inventory")
   (dict "name" (include "concourse.hangarOutput.reclaimerName" .) "component" "hangar-output-reclaimer")
-  (dict "name" (include "concourse.hangarOutput.attestorName" .) "component" "hangar-output-policy-attestor") }}
+ }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -121,7 +131,7 @@ metadata:
     {{- /*
       commonLabels, not labels: `concourse.labels` appends
       `app.kubernetes.io/component: web`, and these three NetworkPolicies are
-      the inventory, reclaimer and policy-attestor controllers. The label is
+      the inventory and reclaimer controllers. The label is
       inert at the API server -- nothing selects a NetworkPolicy -- but an
       operator filtering `component=web` to see what governs the web pod would
       be shown three policies that govern the output controllers, which is the
@@ -140,6 +150,16 @@ spec:
   # No ingress rules at all: these workloads serve nothing.
   ingress: []
   egress:
+    {{- if $.Values.hangarStorage.disk.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ $.Release.Name }}
+              app.kubernetes.io/component: hangar-store
+      ports:
+        - protocol: TCP
+          port: 7783
+    {{- end }}
     - ports:
         - protocol: UDP
           port: 53

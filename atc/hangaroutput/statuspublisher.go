@@ -62,8 +62,6 @@ func statusEvent(status Status) metric.HangarOutputSnapshot {
 	snapshot := metric.HangarOutputSnapshot{
 		AtRisk:                 status.AtRisk,
 		Reasons:                strings.Join(status.Why, ","),
-		EvidenceAgeSeconds:     status.EvidenceAge.Seconds(),
-		EvidenceStale:          status.EvidenceStale,
 		InventoryCycle:         status.Cycle,
 		InventoryAtCycleStart:  status.AtCycleStart,
 		DebtTruncated:          status.DebtTruncated,

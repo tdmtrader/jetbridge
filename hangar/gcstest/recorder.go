@@ -69,94 +69,42 @@ func (recorder *Recorder) Reset() {
 	recorder.calls = nil
 }
 
-func (recorder *Recorder) Object(bucket, key string) objectstore.Handle {
-	return recordingHandle{recorder: recorder, handle: recorder.client.Object(bucket, key)}
+func (recorder *Recorder) CreateAbsent(ctx context.Context, bucket, key string, metadata map[string]string, body io.Reader) (objectstore.Attrs, error) {
+	recorder.note(objectstore.OpCreate)
+	return recorder.client.CreateAbsent(ctx, bucket, key, metadata, body)
 }
-
+func (recorder *Recorder) StatCurrent(ctx context.Context, bucket, key string) (objectstore.Attrs, error) {
+	recorder.note(objectstore.OpStat)
+	return recorder.client.StatCurrent(ctx, bucket, key)
+}
+func (recorder *Recorder) StatExact(ctx context.Context, bucket, key string, generation int64) (objectstore.Attrs, error) {
+	recorder.note(objectstore.OpStat)
+	return recorder.client.StatExact(ctx, bucket, key, generation)
+}
+func (recorder *Recorder) OpenExact(ctx context.Context, bucket, key string, generation int64) (io.ReadCloser, error) {
+	recorder.note(objectstore.OpRead)
+	return recorder.client.OpenExact(ctx, bucket, key, generation)
+}
 func (recorder *Recorder) List(ctx context.Context, bucket string, request objectstore.ListRequest) (objectstore.Page, error) {
 	recorder.note(objectstore.OpList)
-
 	return recorder.client.List(ctx, bucket, request)
 }
 
-type recordingHandle struct {
-	recorder *Recorder
-	handle   objectstore.Handle
-}
-
-func (handle recordingHandle) If(conditions objectstore.Conditions) objectstore.Handle {
-	return recordingHandle{recorder: handle.recorder, handle: handle.handle.If(conditions)}
-}
-
-func (handle recordingHandle) Generation(generation int64) objectstore.Handle {
-	return recordingHandle{recorder: handle.recorder, handle: handle.handle.Generation(generation)}
-}
-
-func (handle recordingHandle) NewWriter(ctx context.Context) objectstore.Writer {
-	handle.recorder.note(objectstore.OpCreate)
-
-	return handle.handle.NewWriter(ctx)
-}
-
-func (handle recordingHandle) NewReader(ctx context.Context) (io.ReadCloser, error) {
-	handle.recorder.note(objectstore.OpRead)
-
-	return handle.handle.NewReader(ctx)
-}
-
-func (handle recordingHandle) Attrs(ctx context.Context) (objectstore.Attrs, error) {
-	handle.recorder.note(objectstore.OpStat)
-
-	return handle.handle.Attrs(ctx)
-}
-
-// The delete seam, recorded separately because it IS separate: Delete is no
-// longer a method on objectstore.Handle, so a recorder that wrapped the full
-// client would have nothing to record. A Recorder therefore wraps a delete
-// client as well, and a test that wants both passes both.
 type recordingDeleteClient struct {
 	recorder *Recorder
 	client   objectstore.DeleteClient
 }
 
-// RecordDeletes wraps a delete client so its calls land in the same log.
 func (recorder *Recorder) RecordDeletes(client objectstore.DeleteClient) objectstore.DeleteClient {
 	return recordingDeleteClient{recorder: recorder, client: client}
 }
-
-func (client recordingDeleteClient) ObjectToDelete(bucket, key string) objectstore.DeleteHandle {
-	return recordingDeleteHandle{
-		recorder: client.recorder,
-		handle:   client.client.ObjectToDelete(bucket, key),
-	}
+func (client recordingDeleteClient) StatExact(ctx context.Context, bucket, key string, generation int64) (objectstore.Attrs, error) {
+	client.recorder.note(objectstore.OpStat)
+	return client.client.StatExact(ctx, bucket, key, generation)
 }
-
-type recordingDeleteHandle struct {
-	recorder *Recorder
-	handle   objectstore.DeleteHandle
-}
-
-func (handle recordingDeleteHandle) If(conditions objectstore.Conditions) objectstore.DeleteHandle {
-	return recordingDeleteHandle{recorder: handle.recorder, handle: handle.handle.If(conditions)}
-}
-
-func (handle recordingDeleteHandle) Generation(generation int64) objectstore.DeleteHandle {
-	return recordingDeleteHandle{
-		recorder: handle.recorder,
-		handle:   handle.handle.Generation(generation),
-	}
-}
-
-func (handle recordingDeleteHandle) Attrs(ctx context.Context) (objectstore.Attrs, error) {
-	handle.recorder.note(objectstore.OpStat)
-
-	return handle.handle.Attrs(ctx)
-}
-
-func (handle recordingDeleteHandle) Delete(ctx context.Context) error {
-	handle.recorder.note(objectstore.OpDelete)
-
-	return handle.handle.Delete(ctx)
+func (client recordingDeleteClient) DeleteExact(ctx context.Context, bucket, key string, generation int64) error {
+	client.recorder.note(objectstore.OpDelete)
+	return client.client.DeleteExact(ctx, bucket, key, generation)
 }
 
 var (

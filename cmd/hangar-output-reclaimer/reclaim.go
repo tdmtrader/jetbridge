@@ -13,6 +13,9 @@ type controllerConfig struct {
 	DSN             string
 	Endpoint        string
 	Store           string
+	StoreID         string
+	TokenFile       string
+	CACert          string
 	Bucket          string
 	Prefix          string
 	Tenant          string
@@ -29,7 +32,10 @@ func (config *controllerConfig) bind(flags *flag.FlagSet) {
 	flags.StringVar(&config.Endpoint, "output-endpoint", "",
 		"Object-store endpoint. Empty means real GCS with ambient credentials.")
 	flags.StringVar(&config.Store, "output-store", output.StoreGCS,
-		"Object-store profile. Only the strict native GCS profile is admitted.")
+		"Object-store profile. Supported profiles: gcs and disk.")
+	flags.StringVar(&config.StoreID, "output-store-id", "", "Expected persistent disk storage identity.")
+	flags.StringVar(&config.TokenFile, "output-token-file", "", "Disk storage role credential file.")
+	flags.StringVar(&config.CACert, "output-ca-cert", "", "Disk storage CA certificate.")
 	flags.StringVar(&config.Bucket, "output-bucket", "",
 		"The dedicated output bucket. It is never the durable cache bucket or the strict-input bucket.")
 	flags.StringVar(&config.Prefix, "output-prefix", "",
@@ -51,6 +57,7 @@ func (config *controllerConfig) bind(flags *flag.FlagSet) {
 func (config controllerConfig) namespace() (output.OutputNamespace, error) {
 	return output.DeriveNamespace(output.NamespaceConfig{
 		Store:            config.Store,
+		StoreID:          config.StoreID,
 		Bucket:           config.Bucket,
 		DeploymentPrefix: config.Prefix,
 		TenantID:         config.Tenant,

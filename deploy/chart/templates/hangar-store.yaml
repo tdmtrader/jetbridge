@@ -1,0 +1,188 @@
+{{- $disk := .Values.hangarStorage.disk }}
+{{- $input := and .Values.artifactDaemon.hangar.enabled (eq .Values.artifactDaemon.hangar.store "disk") }}
+{{- $output := and .Values.hangarOutput.enabled (eq .Values.hangarOutput.store "disk") }}
+{{- if and (or $input $output) (not $disk.enabled) }}
+{{- fail "disk Hangar storage requires hangarStorage.disk.enabled" }}
+{{- end }}
+{{- if $disk.enabled }}
+{{- $inputNamespace := ternary .Values.artifactDaemon.hangar.bucket "inputs" $input }}
+{{- $outputNamespace := ternary .Values.hangarOutput.bucket "outputs" $output }}
+{{- if eq $inputNamespace $outputNamespace }}
+{{- fail "disk strict-input and output namespaces must be distinct" }}
+{{- end }}
+{{- if or (empty $disk.storeID) (empty $disk.tls.existingSecret) (empty $disk.credentials.existingSecret) }}
+{{- fail "hangarStorage.disk requires storeID, tls.existingSecret and credentials.existingSecret" }}
+{{- end }}
+{{- if not (has $disk.accessMode (list "ReadWriteOnce" "ReadWriteOncePod")) }}
+{{- fail "hangarStorage.disk.accessMode must be ReadWriteOnce or ReadWriteOncePod" }}
+{{- end }}
+{{- if not $disk.existingClaim }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "concourse.hangarStorage.name" . }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [{{ $disk.accessMode }}]
+  {{- if $disk.storageClass }}
+  storageClassName: {{ $disk.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $disk.size }}
+---
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "concourse.hangarStorage.name" . }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: hangar-store
+  ports:
+    - name: https
+      port: 7783
+      targetPort: https
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "concourse.hangarStorage.name" . }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: {{ ternary 0 1 $disk.initialize }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: hangar-store
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: hangar-store
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 65534
+      containers:
+        - name: hangar-store
+          image: {{ include "concourse.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /usr/local/concourse/bin/hangar-store
+            - --root=/data/store
+            - --listen=:7783
+            - --store-id={{ $disk.storeID }}
+            - --tls-cert=/etc/hangar/tls/tls.crt
+            - --tls-key=/etc/hangar/tls/tls.key
+            - --credentials-file=/etc/hangar/credentials/server.json
+            - --input-namespace={{  $inputNamespace }}
+            - --output-namespace={{ $outputNamespace }}
+            - --max-object-bytes={{ int64 $disk.maxObjectBytes }}
+            - --max-concurrent={{ int $disk.maxConcurrent }}
+          ports:
+            - name: https
+              containerPort: 7783
+          readinessProbe:
+            tcpSocket:
+              port: https
+          {{- include "concourse.hangarOutput.controllerSecurityContext" . | nindent 10 }}
+          {{- with $disk.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tls
+              mountPath: /etc/hangar/tls
+              readOnly: true
+            - name: credentials
+              mountPath: /etc/hangar/credentials
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "concourse.hangarStorage.claim" . }}
+        - name: tls
+          secret:
+            secretName: {{ $disk.tls.existingSecret }}
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+        - name: credentials
+          secret:
+            secretName: {{ $disk.credentials.existingSecret }}
+            items:
+              - key: server.json
+                path: server.json
+{{- if $disk.initialize }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "concourse.hangarOutput.qualifiedName" (dict "root" . "suffix" "hangar-store-initialize") }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 65534
+      containers:
+        - name: initialize
+          image: {{ include "concourse.image" . }}
+          command:
+            - /usr/local/concourse/bin/hangar-store
+            - --initialize-only
+            - --root=/data/store
+            - --store-id={{ $disk.storeID }}
+          {{- include "concourse.hangarOutput.controllerSecurityContext" . | nindent 10 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "concourse.hangarStorage.claim" . }}
+{{- end }}
+{{- end }}
+{{- if and .Values.hangarStorage.disk.enabled (or .Values.hangarOutput.networkPolicy.enabled .Values.networkPolicy.enabled (.Values.artifactDaemon.networkPolicy.enabled | default false)) }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "concourse.hangarStorage.name" . }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: hangar-store
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "concourse.name" . }}
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values: [artifact-daemon, hangar-output-daemon, hangar-output-inventory, hangar-output-reclaimer]
+      ports:
+        - protocol: TCP
+          port: 7783
+  egress: []
+{{- end }}

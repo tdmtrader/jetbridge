@@ -2,12 +2,9 @@ package runs_test
 
 import (
 	"context"
-	"time"
 
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runs"
-	"github.com/concourse/concourse/hangar/output"
 	"github.com/concourse/concourse/skymarshal/skycmd"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
@@ -89,22 +86,6 @@ var _ = Describe("a Hangar output epoch rotation", func() {
 				now() - interval '1 day', now() + interval '30 days',
 				'materialize-key-2', 'gs://output-bucket', 'deployment/ns')`, rotatedTo)
 		Expect(err).NotTo(HaveOccurred())
-		prefix, err := db.HangarConsumerPrefixHeld("runs-suite-rotation")
-		Expect(err).NotTo(HaveOccurred())
-		tx, err := dbConn.Begin()
-		Expect(err).NotTo(HaveOccurred())
-		defer db.Rollback(tx)
-		Expect(db.NewHangarOutputRepository(prefix).RecordPolicyAttestation(ctx, tx, output.PolicySnapshot{
-			ProtocolVersion:      output.ProtocolVersion,
-			ActivationEpoch:      rotatedTo,
-			BucketFingerprint:    "gs://output-bucket",
-			Metageneration:       4,
-			PolicyHash:           "policy-hash-2",
-			LifecycleDeleteRules: 0,
-			State:                output.PolicySafe,
-			ObservedAt:           output.NewTimestamp(time.Now()),
-		}, nil)).To(Succeed())
-		Expect(tx.Commit()).To(Succeed())
 	}
 
 	status := func(id int) (string, bool) {

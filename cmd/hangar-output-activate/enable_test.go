@@ -31,10 +31,10 @@ func TestEveryPreconditionReachesTheOperatorMetOrNot(t *testing.T) {
 			Why:    "the plane's tables, triggers and typed SQLSTATEs are this migration",
 		},
 		{
-			Name:   "a policy attestor is running",
+			Name:   "storage integrity",
 			Met:    false,
-			Detail: "no unexpired policy_attestation lease is held",
-			Why: "an attestation nobody is refreshing goes stale, and a stale one is how a " +
+			Detail: "1 unresolved runtime finding",
+			Why: "unresolved storage loss blocks new work, and it requires an operator to " +
 				"lifecycle rule that deletes this plane's objects goes unnoticed",
 		},
 	}
@@ -47,8 +47,8 @@ func TestEveryPreconditionReachesTheOperatorMetOrNot(t *testing.T) {
 	for _, want := range []string{
 		"schema migration",
 		"migration 1788936403 is applied",
-		"a policy attestor is running",
-		"no unexpired policy_attestation lease is held",
+		"storage integrity",
+		"1 unresolved runtime finding",
 	} {
 		if !strings.Contains(printed, want) {
 			t.Errorf("the operator is never told %q:\n%s", want, printed)
@@ -60,7 +60,7 @@ func TestEveryPreconditionReachesTheOperatorMetOrNot(t *testing.T) {
 	// scans past.
 	unmetLine := ""
 	for _, line := range strings.Split(printed, "\n") {
-		if strings.Contains(line, "a policy attestor is running") {
+		if strings.Contains(line, "storage integrity") {
 			unmetLine = line
 		}
 	}

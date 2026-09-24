@@ -114,12 +114,12 @@ var _ = Describe("the output-plane controller passes", func() {
 
 	policyStateOf := func(epoch int64) string {
 		GinkgoHelper()
-		var state string
-		Expect(dbConn.QueryRow(`
-			SELECT state FROM hangar_policy_snapshots WHERE activation_epoch = $1
-			 ORDER BY observed_at DESC, id DESC LIMIT 1`, epoch).Scan(&state)).To(Succeed())
-
-		return state
+		var count int
+		Expect(dbConn.QueryRow(`SELECT count(*) FROM hangar_policy_violations WHERE activation_epoch = $1 AND resolved_at IS NULL AND violation IN ('out_of_band_absence', 'runtime_principal_denied')`, epoch).Scan(&count)).To(Succeed())
+		if count > 0 {
+			return "at_risk"
+		}
+		return "healthy"
 	}
 
 	// admissionRefusal asks the GATE rather than the snapshot table: a state
@@ -345,41 +345,17 @@ var _ = Describe("the output-plane controller passes", func() {
 
 			key, err := hangar.TreeKey(namespace.Prefix(), gone.Scope, gone.Digest)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(store.ObjectToDelete(namespace.Bucket(), key).Delete(ctx)).To(Succeed())
+			current, statErr := store.StatCurrent(ctx, namespace.Bucket(), key)
+			Expect(statErr).NotTo(HaveOccurred())
+			Expect(store.DeleteExact(ctx, namespace.Bucket(), key, current.Generation)).To(Succeed())
 
 			reconciled, err := newSweep().Reconcile(ctx)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(reconciled).To(Equal(1))
 			Expect(openViolations()).To(ContainElement(string(output.ViolationOutOfBandAbsence)))
 
-			// A fresh safe attestation. The rest of the plane is open again --
-			// that is the ruling -- and the violation is still open, because
-			// re-attesting never erases one.
-			attest := func() {
-				GinkgoHelper()
-				tx, err := dbConn.Begin()
-				Expect(err).NotTo(HaveOccurred())
-				defer db.Rollback(tx)
-				Expect(repository.RecordPolicyAttestation(ctx, db.HangarOutputTx{Tx: tx},
-					output.PolicySnapshot{
-						ProtocolVersion:   output.ProtocolVersion,
-						ActivationEpoch:   1,
-						BucketFingerprint: "gs://output-bucket",
-						Metageneration:    4,
-						PolicyHash:        "policy-hash-2",
-						State:             output.PolicySafe,
-						ObservedAt:        output.NewTimestamp(time.Now()),
-					}, nil)).To(Succeed())
-				Expect(tx.Commit()).To(Succeed())
-			}
-			attest()
-			Expect(policyStateOf(1)).To(Equal("safe"))
-			Expect(admissionRefusal(probe)).To(BeEmpty(),
-				"a fresh safe attestation did not reopen ordinary admission; a twenty-minute "+
-					"network blip must not need a human before the plane resumes")
-			Expect(openViolations()).To(ContainElement(string(output.ViolationOutOfBandAbsence)),
-				"re-attesting erased the violation, which is a reconciliation that never "+
-					"happened")
+			Expect(policyStateOf(1)).To(Equal("at_risk"))
+			Expect(admissionRefusal(probe)).NotTo(BeEmpty())
 
 			// And reclaim admission, which is the half that waits.
 			admitted, err := newAdmission().Run(ctx, leaseFor(output.OperationReclaimAdmission))
@@ -485,7 +461,7 @@ var _ = Describe("the output-plane controller passes", func() {
 				"the sweep adopted an object carrying no Hangar marker; Req 45 says an "+
 					"unmarked object is unmanaged and is never automatically relabelled")
 
-			_, err = store.Object(namespace.Bucket(), unmarkedKey).Attrs(ctx)
+			_, err = store.StatCurrent(ctx, namespace.Bucket(), unmarkedKey)
 			Expect(err).NotTo(HaveOccurred(),
 				"the unmarked object was deleted by a sweep with no authority over it")
 
@@ -658,7 +634,9 @@ var _ = Describe("the output-plane controller passes", func() {
 
 			// Somebody else's lifecycle rule, which is the case Req 52 names.
 			// Nothing in this plane admitted a delete for it.
-			Expect(store.ObjectToDelete(namespace.Bucket(), key).Delete(ctx)).To(Succeed())
+			current, statErr := store.StatCurrent(ctx, namespace.Bucket(), key)
+			Expect(statErr).NotTo(HaveOccurred())
+			Expect(store.DeleteExact(ctx, namespace.Bucket(), key, current.Generation)).To(Succeed())
 
 			reconciled, err := sweep.Reconcile(ctx)
 			Expect(err).NotTo(HaveOccurred())
@@ -675,7 +653,7 @@ var _ = Describe("the output-plane controller passes", func() {
 			// something else is deleting from.
 			Expect(openViolations()).To(ConsistOf(string(output.ViolationOutOfBandAbsence)))
 			Expect(policyStateOf(1)).To(Equal("at_risk"))
-			Expect(admissionRefusal(healthy)).To(ContainSubstring("at_risk"),
+			Expect(admissionRefusal(healthy)).To(ContainSubstring("storage integrity"),
 				"the plane went on admitting new protection beside an unexplained deleter")
 		})
 
@@ -743,7 +721,9 @@ var _ = Describe("the output-plane controller passes", func() {
 
 			// Somebody else's deletion, between the admission and the delete.
 			// This plane has admitted a job and made no call at all.
-			Expect(store.ObjectToDelete(namespace.Bucket(), key).Delete(ctx)).To(Succeed())
+			current, statErr := store.StatCurrent(ctx, namespace.Bucket(), key)
+			Expect(statErr).NotTo(HaveOccurred())
+			Expect(store.DeleteExact(ctx, namespace.Bucket(), key, current.Generation)).To(Succeed())
 
 			_, err = newDeletes().Run(ctx, leaseFor(output.OperationReclaimDelete))
 			Expect(err).To(MatchError(output.ErrAtRisk),
@@ -757,7 +737,7 @@ var _ = Describe("the output-plane controller passes", func() {
 			Expect(lifecycleStateOf(ref)).To(Equal("missing_out_of_band"))
 			Expect(openViolations()).To(ConsistOf(string(output.ViolationOutOfBandAbsence)))
 			Expect(policyStateOf(1)).To(Equal("at_risk"))
-			Expect(admissionRefusal(healthy)).To(ContainSubstring("at_risk"),
+			Expect(admissionRefusal(healthy)).To(ContainSubstring("storage integrity"),
 				"the plane went on admitting new protection into a bucket whose objects are "+
 					"disappearing")
 		})
@@ -786,7 +766,9 @@ var _ = Describe("the output-plane controller passes", func() {
 			// It really did land: the object is gone, and the next pass finds
 			// it absent with a lost response of its own behind it.
 			store.Inject(gcstest.Faults{})
-			Expect(store.ObjectToDelete(namespace.Bucket(), key).Delete(ctx)).To(Succeed())
+			current, statErr := store.StatCurrent(ctx, namespace.Bucket(), key)
+			Expect(statErr).NotTo(HaveOccurred())
+			Expect(store.DeleteExact(ctx, namespace.Bucket(), key, current.Generation)).To(Succeed())
 
 			advanced, err := newDeletes().Run(ctx, leaseFor(output.OperationReclaimDelete))
 			Expect(err).NotTo(HaveOccurred())
@@ -824,7 +806,7 @@ var _ = Describe("the output-plane controller passes", func() {
 			Expect(openViolations()).
 				To(ConsistOf(string(output.ViolationRuntimePrincipalDenied)))
 			Expect(policyStateOf(1)).To(Equal("at_risk"))
-			Expect(admissionRefusal(ref)).To(ContainSubstring("at_risk"),
+			Expect(admissionRefusal(ref)).To(ContainSubstring("storage integrity"),
 				"the plane finalized one job and carried on admitting new work under an "+
 					"identity the store had just refused")
 		})

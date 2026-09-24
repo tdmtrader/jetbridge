@@ -208,44 +208,6 @@ func (memory *Memory) Body(bucket, key string) ([]byte, bool) {
 	return object.body, found
 }
 
-func (memory *Memory) Object(bucket, key string) objectstore.Handle {
-	return &memoryHandle{memory: memory, bucket: bucket, key: key}
-}
-
-// ObjectToDelete is the delete seam, which is a separate interface from the
-// one above for the same reason it is in production: Delete is not a method on
-// objectstore.Handle any more, so a role that can delete has to have been handed
-// something that can. The tier-1 substrate implements both over the same
-// objects, which is what lets one spec publish through the publisher and reclaim
-// through the reclaimer.
-func (memory *Memory) ObjectToDelete(bucket, key string) objectstore.DeleteHandle {
-	return &memoryDeleteHandle{handle: &memoryHandle{memory: memory, bucket: bucket, key: key}}
-}
-
-type memoryDeleteHandle struct{ handle *memoryHandle }
-
-func (handle *memoryDeleteHandle) If(conditions objectstore.Conditions) objectstore.DeleteHandle {
-	copied := *handle.handle
-	copied.conditions = conditions
-
-	return &memoryDeleteHandle{handle: &copied}
-}
-
-func (handle *memoryDeleteHandle) Generation(generation int64) objectstore.DeleteHandle {
-	copied := *handle.handle
-	copied.generation = generation
-
-	return &memoryDeleteHandle{handle: &copied}
-}
-
-func (handle *memoryDeleteHandle) Attrs(ctx context.Context) (objectstore.Attrs, error) {
-	return handle.handle.Attrs(ctx)
-}
-
-func (handle *memoryDeleteHandle) Delete(ctx context.Context) error {
-	return handle.handle.Delete(ctx)
-}
-
 func (memory *Memory) List(ctx context.Context, bucket string, request objectstore.ListRequest) (objectstore.Page, error) {
 	if err := ctx.Err(); err != nil {
 		return objectstore.Page{}, err
@@ -300,203 +262,131 @@ func (memory *Memory) List(ctx context.Context, bucket string, request objectsto
 	return page, nil
 }
 
-type memoryHandle struct {
-	memory      *Memory
-	bucket, key string
-	conditions  objectstore.Conditions
-	generation  int64
-}
-
-func (handle *memoryHandle) If(conditions objectstore.Conditions) objectstore.Handle {
-	copied := *handle
-	copied.conditions = conditions
-
-	return &copied
-}
-
-func (handle *memoryHandle) Generation(generation int64) objectstore.Handle {
-	copied := *handle
-	copied.generation = generation
-
-	return &copied
-}
-
-func (handle *memoryHandle) NewWriter(ctx context.Context) objectstore.Writer {
-	return &memoryWriter{ctx: ctx, handle: handle}
-}
-
-func (handle *memoryHandle) NewReader(ctx context.Context) (io.ReadCloser, error) {
+func (memory *Memory) OpenExact(ctx context.Context, bucket, key string, generation int64) (io.ReadCloser, error) {
+	if err := objectstore.ValidateGeneration(generation); err != nil {
+		return nil, err
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	handle.memory.mu.Lock()
-	defer handle.memory.mu.Unlock()
-
-	if handle.memory.faults.Unauthorized {
-		return nil, fmt.Errorf("%w: injected", objectstore.ErrUnauthorized)
+	memory.mu.Lock()
+	defer memory.mu.Unlock()
+	if memory.faults.Unauthorized {
+		return nil, objectstore.ErrUnauthorized
 	}
-	if handle.memory.faults.ReadTimeout {
+	if memory.faults.ReadTimeout {
 		return nil, context.DeadlineExceeded
 	}
-
-	object, err := handle.memory.lookupLocked(handle.bucket, handle.key, handle.generation, handle.conditions)
+	object, err := memory.lookupLocked(bucket, key, generation, false)
 	if err != nil {
 		return nil, err
 	}
-
 	body := object.body
-	if handle.memory.faults.CorruptBodyBytes {
+	if memory.faults.CorruptBodyBytes {
 		body = append([]byte("corrupt"), body...)
 	}
-	if limit := handle.memory.faults.TruncateReadAfter; limit > 0 && limit < len(body) {
+	if limit := memory.faults.TruncateReadAfter; limit > 0 && limit < len(body) {
 		body = body[:limit]
 	}
-
 	return io.NopCloser(bytes.NewReader(body)), nil
 }
 
-func (handle *memoryHandle) Attrs(ctx context.Context) (objectstore.Attrs, error) {
+func (memory *Memory) StatCurrent(ctx context.Context, bucket, key string) (objectstore.Attrs, error) {
+	return memory.stat(ctx, bucket, key, 0)
+}
+func (memory *Memory) StatExact(ctx context.Context, bucket, key string, generation int64) (objectstore.Attrs, error) {
+	if err := objectstore.ValidateGeneration(generation); err != nil {
+		return objectstore.Attrs{}, err
+	}
+	return memory.stat(ctx, bucket, key, generation)
+}
+func (memory *Memory) stat(ctx context.Context, bucket, key string, generation int64) (objectstore.Attrs, error) {
 	if err := ctx.Err(); err != nil {
 		return objectstore.Attrs{}, err
 	}
-	handle.memory.mu.Lock()
-	defer handle.memory.mu.Unlock()
-
-	if handle.memory.faults.Unauthorized {
-		return objectstore.Attrs{}, fmt.Errorf("%w: injected", objectstore.ErrUnauthorized)
+	memory.mu.Lock()
+	defer memory.mu.Unlock()
+	if memory.faults.Unauthorized {
+		return objectstore.Attrs{}, objectstore.ErrUnauthorized
 	}
-	if handle.memory.faults.StatTimeout {
+	if memory.faults.StatTimeout {
 		return objectstore.Attrs{}, context.DeadlineExceeded
 	}
-
-	object, err := handle.memory.lookupLocked(handle.bucket, handle.key, handle.generation, handle.conditions)
+	object, err := memory.lookupLocked(bucket, key, generation, false)
 	if err != nil {
 		return objectstore.Attrs{}, err
 	}
-
 	return attrsOf(object), nil
 }
-
-func (handle *memoryHandle) Delete(ctx context.Context) error {
+func (memory *Memory) DeleteExact(ctx context.Context, bucket, key string, generation int64) error {
+	if err := objectstore.ValidateGeneration(generation); err != nil {
+		return err
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	handle.memory.mu.Lock()
-	defer handle.memory.mu.Unlock()
-
-	if handle.memory.faults.Unauthorized {
-		return fmt.Errorf("%w: injected", objectstore.ErrUnauthorized)
+	memory.mu.Lock()
+	defer memory.mu.Unlock()
+	if memory.faults.Unauthorized {
+		return objectstore.ErrUnauthorized
 	}
-	if handle.memory.faults.DeleteTimeout {
+	if memory.faults.DeleteTimeout {
 		return context.DeadlineExceeded
 	}
-
-	if _, err := handle.memory.lookupLocked(handle.bucket, handle.key, handle.generation, handle.conditions); err != nil {
+	if _, err := memory.lookupLocked(bucket, key, generation, true); err != nil {
 		return err
 	}
-	delete(handle.memory.objects[handle.bucket], handle.key)
-
-	if handle.memory.faults.DeleteResponseLost {
+	delete(memory.objects[bucket], key)
+	if memory.faults.DeleteResponseLost {
 		return fmt.Errorf("%w: injected lost delete response", objectstore.ErrInfrastructure)
 	}
-
 	return nil
 }
 
-// lookupLocked applies the generation pin and the preconditions in the order a
-// real store does: absence first, then the exact generation, then
-// metageneration.
-func (memory *Memory) lookupLocked(bucket, key string, generation int64, conditions objectstore.Conditions) (storedObject, error) {
+// lookupLocked distinguishes an absent exact read from a refused stale delete.
+func (memory *Memory) lookupLocked(bucket, key string, generation int64, deletion bool) (storedObject, error) {
 	object, found := memory.objects[bucket][key]
 	if !found {
 		return storedObject{}, fmt.Errorf("%w: no object at %s/%s", objectstore.ErrNotFound, bucket, key)
 	}
 	if generation != 0 && object.generation != generation {
-		return storedObject{}, fmt.Errorf("%w: %s/%s is at generation %d, not %d",
-			objectstore.ErrNotFound, bucket, key, object.generation, generation)
-	}
-	if conditions.DoesNotExist {
-		return storedObject{}, fmt.Errorf("%w: %s/%s already exists at generation %d",
-			objectstore.ErrPreconditionFailed, bucket, key, object.generation)
-	}
-	if conditions.GenerationMatch != 0 && object.generation != conditions.GenerationMatch {
-		return storedObject{}, fmt.Errorf("%w: %s/%s is at generation %d, the precondition names %d",
-			objectstore.ErrPreconditionFailed, bucket, key, object.generation, conditions.GenerationMatch)
-	}
-	if conditions.MetagenerationMatch != 0 && object.metageneration != conditions.MetagenerationMatch {
-		return storedObject{}, fmt.Errorf("%w: %s/%s is at metageneration %d, the precondition names %d",
-			objectstore.ErrPreconditionFailed, bucket, key, object.metageneration, conditions.MetagenerationMatch)
+		sentinel := objectstore.ErrNotFound
+		if deletion {
+			sentinel = objectstore.ErrPreconditionFailed
+		}
+		return storedObject{}, fmt.Errorf("%w: %s/%s is at generation %d, not %d", sentinel, bucket, key, object.generation, generation)
 	}
 
 	return object, nil
 }
 
-type memoryWriter struct {
-	ctx      context.Context
-	handle   *memoryHandle
-	buffer   bytes.Buffer
-	metadata map[string]string
-	attrs    objectstore.Attrs
-	aborted  bool
-}
-
-func (writer *memoryWriter) Write(content []byte) (int, error) {
-	if err := writer.ctx.Err(); err != nil {
-		return 0, err
+func (memory *Memory) CreateAbsent(ctx context.Context, bucket, key string, metadata map[string]string, body io.Reader) (objectstore.Attrs, error) {
+	if err := ctx.Err(); err != nil {
+		return objectstore.Attrs{}, err
 	}
-
-	return writer.buffer.Write(content)
-}
-
-func (writer *memoryWriter) SetMetadata(metadata map[string]string) {
-	writer.metadata = cloneMetadata(metadata)
-}
-
-func (writer *memoryWriter) Attrs() objectstore.Attrs { return writer.attrs }
-
-func (writer *memoryWriter) Abort(cause error) error {
-	writer.aborted = true
-
-	return nil
-}
-
-func (writer *memoryWriter) Close() error {
-	if writer.aborted {
-		return nil
+	content, err := io.ReadAll(body)
+	if err != nil {
+		return objectstore.Attrs{}, err
 	}
-	if err := writer.ctx.Err(); err != nil {
-		return err
+	if err := ctx.Err(); err != nil {
+		return objectstore.Attrs{}, err
 	}
-
-	memory := writer.handle.memory
 	memory.mu.Lock()
 	defer memory.mu.Unlock()
-
 	if memory.faults.Unauthorized {
-		return fmt.Errorf("%w: injected", objectstore.ErrUnauthorized)
+		return objectstore.Attrs{}, objectstore.ErrUnauthorized
 	}
 	if memory.faults.CreateTimeout {
-		return context.DeadlineExceeded
+		return objectstore.Attrs{}, context.DeadlineExceeded
 	}
-
-	if writer.handle.conditions.DoesNotExist {
-		if existing, found := memory.objects[writer.handle.bucket][writer.handle.key]; found {
-			return fmt.Errorf("%w: %s/%s already exists at generation %d",
-				objectstore.ErrPreconditionFailed, writer.handle.bucket, writer.handle.key,
-				existing.generation)
-		}
+	if _, found := memory.objects[bucket][key]; found {
+		return objectstore.Attrs{}, objectstore.ErrPreconditionFailed
 	}
-
-	writer.attrs = memory.putLocked(writer.handle.bucket, writer.handle.key,
-		writer.buffer.Bytes(), writer.metadata)
-
+	attrs := memory.putLocked(bucket, key, content, metadata)
 	if memory.faults.CreateResponseLost {
-		// The object is committed and the caller is told it failed. This is
-		// the ambiguous upload, and the only honest way out is a stat.
-		return fmt.Errorf("%w: injected lost create response", objectstore.ErrInfrastructure)
+		return objectstore.Attrs{}, fmt.Errorf("%w: injected lost create response", objectstore.ErrInfrastructure)
 	}
-
-	return nil
+	return attrs, nil
 }
 
 func attrsOf(object storedObject) objectstore.Attrs {

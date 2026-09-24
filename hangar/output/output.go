@@ -160,11 +160,11 @@ var (
 	// broadens into an unconditional delete.
 	ErrGenerationConflict = errors.New("hangar/output: generation conflict")
 
-	// ErrAtRisk is the fail-closed state entered when the bucket's lifetime
-	// policy cannot currently be proved safe. It blocks new captures, claims,
-	// warrants, adoption and reclaim admission while leaving releases and
+	// ErrAtRisk indicates an unresolved failure observed during storage operations.
+	// It blocks new captures, claims, warrants, adoption and reclaim admission
+	// while leaving releases and
 	// diagnosis possible.
-	ErrAtRisk = errors.New("hangar/output: policy trust is at risk")
+	ErrAtRisk = errors.New("hangar/output: storage integrity is at risk")
 
 	// ErrUnknownMember is a closed vocabulary asked to accept a member it does
 	// not have.
@@ -192,21 +192,9 @@ var (
 	ErrCaptureDisabled = errors.New("hangar/output: durable output capture is not enabled here")
 )
 
-// BucketFingerprintScheme is the one prefix a bucket fingerprint carries.
-//
-// A fingerprint rather than the bare name, because it is compared between
-// components that were configured separately -- the attestor's expectation, the
-// daemon's handshake, the inventory cursor's key -- and two spellings of one
-// bucket is how a cursor ends up scoped to a bucket nobody is publishing into.
-//
-// It is a CONSTANT and not a function taking a bucket name, deliberately. A
-// function here would be an exported API in this package that accepts a
-// caller-chosen storage location, which is the shape checkNoAPIAcceptsAStorageLocation
-// exists to reject; the guard found it when it was written that way, and the
-// right answer was to stop writing it that way rather than to rename the
-// parameter past the rule. The server-derived side reads
-// OutputNamespace.BucketFingerprint, which takes nothing; the attestor, whose
-// bucket is its own authenticated flag, composes the same two parts.
+// BucketFingerprintScheme identifies GCS buckets in stored namespace identities.
+// The daemon handshake, activation epoch and inventory cursor must agree on
+// that identity. Disk namespaces use a separately pinned storage identity.
 const BucketFingerprintScheme = "gs://"
 
 func validateProtocol(version string) error {

@@ -589,6 +589,9 @@ var hangarStoreImporters = map[string]string{
 // they depend on hangar/objectstore, which names no cloud SDK type, and that
 // is what keeps the cloud client out of anything that links a role.
 var hangarGCSImporters = map[string]string{
+	"hangar/gcsstore":  "the strict-input constructor composes the shared GCS object adapter with provider-neutral tree verification",
+	"hangar/treestore": "TEST-ONLY: regression fixtures verify strict tree behavior against the real GCS adapter; production imports only objectstore",
+
 	"cmd/hangar-output-daemon": "the output daemon is the only process that talks to the output " +
 		"bucket, under its own service account; a Kubernetes service account is Pod-wide, so this " +
 		"is a second binary precisely so the first one's identity gains no output role",
@@ -599,9 +602,6 @@ var hangarGCSImporters = map[string]string{
 		"re-deriving it -- a second reading of those three codes is where a delete eventually " +
 		"gets told that 412 means \"already gone\". Which binaries link it is the subject of " +
 		"TestOnlyTheReclaimerBinaryCanInvokeAnOutputDelete, and the answer is one",
-	"cmd/hangar-output-policy-attestor": "the attestor is the bucket-metadata principal: it " +
-		"reads lifecycle and IAM and holds no object permission, which is why its compromise " +
-		"costs the assessment rather than the data",
 	"hangar/output/conformance": "the tier-2 conformance suite drives the real adapter against " +
 		"fake-gcs-server, because a conformance claim proved through a hand-written fake is a " +
 		"claim about the fake. It is a test-only import: the package has no non-test file that " +
@@ -616,11 +616,12 @@ var hangarGCSImporters = map[string]string{
 // testOnlyGCSImporters are the exemptions above whose reason says TEST-ONLY, and
 // the check that follows is what makes the words true.
 var testOnlyGCSImporters = map[string]bool{
+	"hangar/treestore":          true,
 	"hangar/output/conformance": true,
 	"atc/hangaroutput":          true,
 }
 
-// outputRolePackages are the four cloud-facing roles of the Hangar output plane.
+// outputRolePackages are the three storage-facing roles of the Hangar output plane.
 //
 // Each is a separate binary with a separate Kubernetes service account, and the
 // isolation only means something while no other process links one. The
@@ -632,16 +633,15 @@ var outputRolePackages = []string{
 	"hangar/output/publisher",
 	"hangar/output/inventory",
 	"hangar/output/reclaimer",
-	"hangar/output/policy",
 }
 
 // outputRoleImporters are the packages allowed to link one, with the reason.
 var outputRoleImporters = map[string]string{
-	"cmd/hangar-output-daemon":          "the output daemon is the publisher principal",
-	"cmd/hangar-output-inventory":       "the inventory controller is the inventory principal",
-	"cmd/hangar-output-reclaimer":       "the reclaimer is the reclaimer principal",
-	"cmd/hangar-output-policy-attestor": "the attestor is the policy principal",
-	"hangar/output/conformance": "the shared conformance suite drives all four roles against " +
+	"hangar/diskserver":           "TEST-ONLY: real TLS integration tests exercise publication through the disk adapter; production server code links no output role",
+	"cmd/hangar-output-daemon":    "the output daemon is the publisher principal",
+	"cmd/hangar-output-inventory": "the inventory controller is the inventory principal",
+	"cmd/hangar-output-reclaimer": "the reclaimer is the reclaimer principal",
+	"hangar/output/conformance": "the shared conformance suite drives all three roles against " +
 		"both substrate tiers; it is a test-only package that links into no binary",
 	"atc/hangaroutput": "TEST-ONLY: the managed-read specs admit a read against the REAL " +
 		"publisher's exact-generation stat over the same bucket the daemon published into, " +
@@ -660,9 +660,6 @@ var outputRoleImporters = map[string]string{
 	"atc/hangaroutput/reclaimpass": "the reclaimer's two bounded units, lifted out of its " +
 		"main so they can be driven; they link the reclaimer role and no other, and only " +
 		"cmd/hangar-output-reclaimer links them",
-	"atc/hangaroutput/attestpass": "the attestor's bounded unit, lifted out of its main so it " +
-		"can be driven; it links the policy role and no other, and only " +
-		"cmd/hangar-output-policy-attestor links it",
 
 	"atc/db": "TEST-ONLY: the controller-pass specs drive the real inventory and reclaimer " +
 		"roles against real PostgreSQL and the tier-1 store, because the composition -- which " +
@@ -684,6 +681,7 @@ var outputRoleImporters = map[string]string{
 // check reads the non-test import graph, so a production file that named one of
 // these would fail here even though the exemption is still listed.
 var testOnlyRoleImporters = map[string]bool{
+	"hangar/diskserver":         true,
 	"hangar/output/conformance": true,
 	"atc/hangaroutput":          true,
 	"atc/db":                    true,
@@ -730,7 +728,7 @@ func TestTheOutputRolesAreLinkedOnlyByTheirOwnPrincipals(t *testing.T) {
 
 				continue
 			}
-			t.Errorf("%s links %s.\n\nThe four output roles are four Kubernetes service "+
+			t.Errorf("%s links %s.\n\nThe three output roles are three Kubernetes service "+
 				"accounts. A Pod's identity is Pod-wide, so a process that links a role has "+
 				"that role's cloud permission for everything else it does -- which is exactly "+
 				"why cmd/artifact-daemon, the ATC and the web node link none of them. Depend "+
@@ -916,7 +914,7 @@ func TestTheHangarStoreIsLinkedOnlyByTheArtifactDaemon(t *testing.T) {
 	// the roots that link the OUTPUT seam must not link the store.
 	for _, root := range []string{
 		"./cmd/hangar-output-daemon", "./cmd/hangar-output-inventory",
-		"./cmd/hangar-output-policy-attestor", "./cmd/hangar-output-reclaimer",
+		"./cmd/hangar-output-reclaimer",
 	} {
 		if linksPackage(t, root, modulePrefix+hangarStorePackage) {
 			t.Errorf("%s links %s, whose DeleteTree is a delete by key from a root that is not "+
@@ -1330,7 +1328,7 @@ func assertSharedHandleHasNoDelete(t *testing.T) {
 	found := false
 	ast.Inspect(file, func(node ast.Node) bool {
 		spec, ok := node.(*ast.TypeSpec)
-		if !ok || spec.Name.Name != "Handle" {
+		if !ok || spec.Name.Name != "Client" {
 			return true
 		}
 		iface, ok := spec.Type.(*ast.InterfaceType)
@@ -1340,12 +1338,12 @@ func assertSharedHandleHasNoDelete(t *testing.T) {
 		found = true
 		for _, method := range iface.Methods.List {
 			for _, name := range method.Names {
-				if name.Name == "Delete" {
-					t.Errorf("objectstore.Handle declares Delete.\n\nEvery root that takes an "+
+				if name.Name == "Delete" || name.Name == "DeleteExact" {
+					t.Errorf("objectstore.Client declares Delete.\n\nEvery root that takes an "+
 						"object adapter then holds the delete capability, whatever role it "+
 						"links -- which is exactly the state a live objects.delete was "+
 						"demonstrated from cmd/hangar-output-daemon in. Deletion belongs on "+
-						"objectstore.DeleteHandle, whose only implementation over a real cloud "+
+						"objectstore.DeleteClient, whose only implementation over a real cloud "+
 						"client is %s.", outputDeleteCapability)
 				}
 			}
@@ -1354,7 +1352,7 @@ func assertSharedHandleHasNoDelete(t *testing.T) {
 		return false
 	})
 	if !found {
-		t.Fatal("objectstore.Handle was not found; this rule would pass vacuously")
+		t.Fatal("objectstore.Client was not found; this rule would pass vacuously")
 	}
 }
 
@@ -1422,13 +1420,12 @@ func TestEachOutputControllerLinksOnlyItsOwnRole(t *testing.T) {
 	const prefix = "github.com/concourse/concourse/hangar/output/"
 
 	expected := map[string]string{
-		"./cmd/hangar-output-daemon":          prefix + "publisher",
-		"./cmd/hangar-output-inventory":       prefix + "inventory",
-		"./cmd/hangar-output-reclaimer":       prefix + "reclaimer",
-		"./cmd/hangar-output-policy-attestor": prefix + "policy",
+		"./cmd/hangar-output-daemon":    prefix + "publisher",
+		"./cmd/hangar-output-inventory": prefix + "inventory",
+		"./cmd/hangar-output-reclaimer": prefix + "reclaimer",
 	}
 	all := []string{
-		prefix + "publisher", prefix + "inventory", prefix + "reclaimer", prefix + "policy",
+		prefix + "publisher", prefix + "inventory", prefix + "reclaimer",
 	}
 
 	for root, own := range expected {
@@ -1502,7 +1499,7 @@ func TestOnlyTheActivationCommandWritesTheEpochRow(t *testing.T) {
 			return walkErr
 		}
 		if entry.IsDir() {
-			if entry.Name() == "vendor" || entry.Name() == ".git" || entry.Name() == "node_modules" {
+			if entry.Name() == "vendor" || entry.Name() == ".git" || entry.Name() == ".claude" || entry.Name() == "node_modules" {
 				return filepath.SkipDir
 			}
 
@@ -1650,8 +1647,7 @@ var cloudStorageSDKImporters = map[string]string{
 	"hangar/gcs": "the output plane's object and bucket-policy seams. Each capability it " +
 		"hands back is an interface carrying only the operations its role may issue, and none " +
 		"of them carries Delete",
-	"hangar/gcsstore": "the artifact daemon's strict-input store. Its DeleteTree is a delete " +
-		"BY KEY, which is why it is a separate package with a separate importer rule below",
+	"hangar/treestore": "TEST-ONLY: existing strict-tree fixtures drive GCS conditions and error translations; production remains SDK-free",
 	"hangar/gcsdelete": "the object-delete capability's own package. It names the SDK because " +
 		"it IS the adapter, and exactly one binary links it",
 	"cmd/artifact-daemon/durable": "the durable CACHE tier's own GCS and S3 backends, which " +
@@ -1685,8 +1681,15 @@ func TestNoPackageOutsideTheCapabilityPackagesNamesACloudStorageSDK(t *testing.T
 			return walkErr
 		}
 		if entry.IsDir() {
+			// Nested git checkouts are independent repositories, not this build's source.
+			if path != root {
+				if _, err := os.Lstat(filepath.Join(path, ".git")); err == nil {
+					return filepath.SkipDir
+				}
+			}
+
 			switch entry.Name() {
-			case "vendor", ".git", "node_modules":
+			case "vendor", ".git", ".claude", "node_modules":
 				return filepath.SkipDir
 			}
 
@@ -1718,6 +1721,10 @@ func TestNoPackageOutsideTheCapabilityPackagesNamesACloudStorageSDK(t *testing.T
 			}
 			named++
 			if reason, ok := cloudStorageSDKImporters[pkg]; ok {
+				if pkg == "hangar/treestore" && !strings.HasSuffix(relative, "_test.go") {
+					t.Errorf("%s imports a cloud SDK in provider-neutral production code", relative)
+				}
+
 				exercised[pkg] = true
 				t.Logf("allowed: %s names %s — %s", relative, imported, reason)
 
@@ -2005,7 +2012,7 @@ func TestNoPackageAddressesACloudStorageEndpointOverRawHTTP(t *testing.T) {
 		}
 		if entry.IsDir() {
 			switch entry.Name() {
-			case "vendor", ".git", "node_modules", "elm-stuff":
+			case "vendor", ".git", ".claude", "node_modules", "elm-stuff":
 				return filepath.SkipDir
 			}
 
@@ -2268,7 +2275,7 @@ func TestTheDurableCacheTierIsLinkedOnlyByTheArtifactDaemon(t *testing.T) {
 	// no output root links it, however many intermediaries it went through.
 	for _, root := range []string{
 		"./cmd/hangar-output-daemon", "./cmd/hangar-output-inventory",
-		"./cmd/hangar-output-policy-attestor", "./cmd/hangar-output-reclaimer",
+		"./cmd/hangar-output-reclaimer",
 		"./cmd/hangar-output-activate", "./cmd/concourse",
 	} {
 		if linksPackage(t, root, modulePrefix+durableCacheTier) {

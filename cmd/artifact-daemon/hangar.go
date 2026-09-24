@@ -13,7 +13,9 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 
 	"github.com/concourse/concourse/hangar"
+	"github.com/concourse/concourse/hangar/diskclient"
 	hangargcs "github.com/concourse/concourse/hangar/gcsstore"
+	"github.com/concourse/concourse/hangar/treestore"
 )
 
 const (
@@ -41,6 +43,10 @@ type hangarOptions struct {
 	MaxEntries      int64
 	WarrantTTL      time.Duration
 	DurableKind     string
+	Store           string
+	StoreID         string
+	TokenFile       string
+	CACert          string
 	Bucket          string
 	Prefix          string
 	Endpoint        string
@@ -117,11 +123,17 @@ func validateHangarOptions(opts hangarOptions, storagePath string) error {
 	if opts.TLSCert == "" || opts.TLSKey == "" || opts.TLSCACert == "" {
 		return fmt.Errorf("Hangar requires --tls-cert, --tls-key, and --tls-ca-cert")
 	}
-	if opts.DurableKind != "gcs" {
-		return fmt.Errorf("Hangar requires --durable-store=gcs")
+	if opts.Store == "" {
+		opts.Store = opts.DurableKind
+	}
+	if opts.Store != "gcs" && opts.Store != "disk" {
+		return fmt.Errorf("Hangar requires --hangar-store=gcs or disk (legacy --durable-store=gcs)")
+	}
+	if opts.Store == "disk" && (opts.StoreID == "" || opts.Endpoint == "" || opts.TokenFile == "") {
+		return fmt.Errorf("disk Hangar requires --hangar-store-id, --hangar-endpoint and --hangar-token-file")
 	}
 	if opts.Bucket == "" {
-		return fmt.Errorf("Hangar requires --durable-bucket")
+		return fmt.Errorf("Hangar requires --hangar-bucket (or legacy --durable-bucket)")
 	}
 	if !filepath.IsAbs(opts.ScratchDir) {
 		return fmt.Errorf("--hangar-scratch-dir must be absolute")
@@ -170,24 +182,32 @@ func buildHangarService(ctx context.Context, logger lager.Logger, storagePath st
 	if err != nil {
 		return nil, nil, err
 	}
-	// The store opens and owns its client. This root used to hold the
-	// *storage.Client the constructor was handed, which is a delete on any key
-	// in any bucket one method call away in a function that has no business
-	// deleting anything.
-	store, closeClient, err := hangargcs.NewGCSStore(ctx, opts.Endpoint, hangargcs.GCSConfig{
-		Bucket: opts.Bucket, Prefix: opts.Prefix, ScratchDir: opts.ScratchDir,
-		ReadTimeout: opts.Timeout, WriteTimeout: opts.Timeout,
-	})
+	var store hangar.Store
+	closeClient := func() error { return nil }
+	if opts.Store == "" {
+		opts.Store = opts.DurableKind
+	}
+	if opts.Store == "disk" {
+		objects, openErr := diskclient.New(diskclient.Config{Endpoint: opts.Endpoint, StoreID: opts.StoreID, TokenFile: opts.TokenFile, CACert: opts.CACert, Timeout: opts.Timeout})
+		if openErr != nil {
+			return nil, nil, openErr
+		}
+		store, err = treestore.New(objects, treestore.Config{Bucket: opts.Bucket, Prefix: opts.Prefix, ScratchDir: opts.ScratchDir, ReadTimeout: opts.Timeout, WriteTimeout: opts.Timeout})
+	} else {
+		var gcsStore *hangargcs.GCSStore
+		gcsStore, closeClient, err = hangargcs.NewGCSStore(ctx, opts.Endpoint, hangargcs.GCSConfig{Bucket: opts.Bucket, Prefix: opts.Prefix, ScratchDir: opts.ScratchDir, ReadTimeout: opts.Timeout, WriteTimeout: opts.Timeout})
+		if err == nil {
+			validationCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+			err = gcsStore.ValidateBucket(validationCtx)
+			cancel()
+			store = gcsStore
+		}
+	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("create Hangar GCS store: %w", err)
-	}
-	validationCtx, cancelValidation := context.WithTimeout(ctx, opts.Timeout)
-	validationErr := store.ValidateBucket(validationCtx)
-	cancelValidation()
-	if validationErr != nil {
 		_ = closeClient()
-		return nil, nil, fmt.Errorf("validate Hangar GCS bucket: %w", validationErr)
+		return nil, nil, fmt.Errorf("create Hangar store: %w", err)
 	}
+
 	canonicalizer := hangar.Canonicalizer{TempDir: opts.ScratchDir, MaxContentBytes: opts.MaxContentBytes, MaxEntries: opts.MaxEntries}
 	service := &HangarService{
 		Store: store, Canonicalizer: canonicalizer, WarrantVerifier: verifier,

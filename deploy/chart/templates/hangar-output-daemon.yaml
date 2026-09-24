@@ -197,6 +197,9 @@ spec:
               add:
                 - DAC_OVERRIDE
           volumeMounts:
+            {{- if and .Values.hangarOutput.enabled (eq .Values.hangarOutput.store "disk") }}
+            {{- include "concourse.hangarStorage.clientMount" . | nindent 12 }}
+            {{- end }}
             - name: artifact-storage
               mountPath: {{ .Values.artifactDaemon.hostPath | default "/var/concourse/artifacts" }}
             - name: hangar-output-scratch
@@ -219,6 +222,9 @@ spec:
               readOnly: true
             {{- end }}
       volumes:
+        {{- if and .Values.hangarOutput.enabled (eq .Values.hangarOutput.store "disk") }}
+        {{- include "concourse.hangarStorage.clientVolume" (dict "root" . "role" "publisher") | nindent 8 }}
+        {{- end }}
         - name: artifact-storage
           hostPath:
             path: {{ .Values.artifactDaemon.hostPath | default "/var/concourse/artifacts" }}

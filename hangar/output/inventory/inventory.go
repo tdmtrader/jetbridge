@@ -20,40 +20,13 @@ import (
 	"github.com/concourse/concourse/hangar/output"
 )
 
-// Store is the inventory's view: list a page, stat an exact generation.
+// Store is the inventory's view of object operations.
 type Store interface {
-	List(ctx context.Context, bucket string, request objectstore.ListRequest) (objectstore.Page, error)
-	Object(bucket, key string) Handle
+	List(context.Context, string, objectstore.ListRequest) (objectstore.Page, error)
+	StatExact(context.Context, string, string, int64) (objectstore.Attrs, error)
 }
 
-// Handle offers a stat and nothing else.
-type Handle interface {
-	Generation(int64) Handle
-	Attrs(ctx context.Context) (objectstore.Attrs, error)
-}
-
-// Restrict narrows a full client to the inventory's role.
-func Restrict(client objectstore.Client) Store { return restricted{client: client} }
-
-type restricted struct{ client objectstore.Client }
-
-func (store restricted) List(ctx context.Context, bucket string, request objectstore.ListRequest) (objectstore.Page, error) {
-	return store.client.List(ctx, bucket, request)
-}
-
-func (store restricted) Object(bucket, key string) Handle {
-	return restrictedHandle{handle: store.client.Object(bucket, key)}
-}
-
-type restrictedHandle struct{ handle objectstore.Handle }
-
-func (handle restrictedHandle) Generation(generation int64) Handle {
-	return restrictedHandle{handle: handle.handle.Generation(generation)}
-}
-
-func (handle restrictedHandle) Attrs(ctx context.Context) (objectstore.Attrs, error) {
-	return handle.handle.Attrs(ctx)
-}
+func Restrict(client objectstore.Client) Store { return client }
 
 // Inventory sweeps one namespace.
 type Inventory struct {
@@ -358,9 +331,7 @@ func (inventory *Inventory) StatExactObject(ctx context.Context, ref hangar.Tree
 		return output.PublishedObject{}, err
 	}
 
-	attrs, err := inventory.store.Object(inventory.namespace.Bucket(), key).
-		Generation(ref.Generation).
-		Attrs(ctx)
+	attrs, err := inventory.store.StatExact(ctx, inventory.namespace.Bucket(), key, ref.Generation)
 	if err != nil {
 		return output.PublishedObject{}, translate(err)
 	}

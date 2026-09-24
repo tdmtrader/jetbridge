@@ -31,11 +31,14 @@ import (
 // Config is what the daemon was told, before anything is built from it.
 type Config struct {
 	// The output plane's own storage identity.
-	OutputStore    string
-	OutputEndpoint string
-	OutputBucket   string
-	OutputPrefix   string
-	OutputTenant   string
+	OutputStore     string
+	OutputStoreID   string
+	OutputTokenFile string
+	OutputCACert    string
+	OutputEndpoint  string
+	OutputBucket    string
+	OutputPrefix    string
+	OutputTenant    string
 
 	// The two buckets this one may not be. They are configuration rather than
 	// inference: a deployment that has a durable cache and a strict-input
@@ -115,7 +118,10 @@ type Config struct {
 func BindFlags(flags *flag.FlagSet, config *Config) {
 	flags.StringVar(&config.ReadControlURL, "read-control-url", "", "HTTPS control-plane base URL for validating and releasing managed-output read leases. Empty disables archive downloads.")
 	flags.StringVar(&config.OutputStore, "output-store", output.StoreGCS,
-		"Store profile for the output plane. Only \"gcs\" is admissible: the strict native-GCS profile is the one that offers create-if-absent at an exact generation, and a store that cannot refuse an overwrite cannot make the collision guarantee.")
+		"Store profile for the output plane. Supported profiles: gcs and disk.")
+	flags.StringVar(&config.OutputStoreID, "output-store-id", "", "Expected persistent disk storage identity.")
+	flags.StringVar(&config.OutputTokenFile, "output-token-file", "", "Disk storage publisher credential file.")
+	flags.StringVar(&config.OutputCACert, "output-ca-cert", "", "Disk storage CA certificate.")
 	flags.StringVar(&config.OutputEndpoint, "output-endpoint", "",
 		"Endpoint override for the output bucket's store. Empty means real GCS; set it for an emulator. It is a different flag from the artifact daemon's --durable-endpoint because it serves a different bucket under a different identity.")
 	flags.StringVar(&config.OutputBucket, "output-bucket", "",
@@ -251,6 +257,9 @@ func (config Config) validateOutputFacet() error {
 			{"--output-prefix", config.OutputPrefix},
 			{"--output-tenant", config.OutputTenant},
 			{"--output-endpoint", config.OutputEndpoint},
+			{"--output-store-id", config.OutputStoreID},
+			{"--output-token-file", config.OutputTokenFile},
+			{"--output-ca-cert", config.OutputCACert},
 			{"--receipt-key-id", config.ReceiptKeyID},
 			{"--receipt-key-file", config.ReceiptKeyFile},
 			{"--materialization-key-id", config.MaterializationKeyID},
@@ -392,6 +401,7 @@ func (config Config) validateTLS() error {
 func (config Config) Namespace() (output.OutputNamespace, error) {
 	return output.DeriveNamespace(output.NamespaceConfig{
 		Store:                           config.OutputStore,
+		StoreID:                         config.OutputStoreID,
 		Bucket:                          config.OutputBucket,
 		DeploymentPrefix:                config.OutputPrefix,
 		TenantID:                        config.OutputTenant,

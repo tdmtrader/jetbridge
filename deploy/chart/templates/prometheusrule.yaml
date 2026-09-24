@@ -138,19 +138,7 @@ every artifact_daemon_ name here against cmd/artifact-daemon/metrics.go.
             severity: critical
           annotations:
             summary: "The Hangar output plane is at risk and has stopped admitting new work"
-            description: "The output plane cannot currently prove its bucket's lifetime policy safe ({{ `{{ $labels.reasons }}` }}). New captures, claim acquisitions, managed-output warrants, orphan adoption and reclaim admission are all blocked; releases and diagnosis still work. Recovery needs a fresh safe attestation, and the open violations need reconciling separately -- a safe reading does not close them."
-        - alert: HangarOutputPolicyEvidenceStale
-          # The attestation refreshes every 15 minutes at most (requirement 51).
-          # Past that bound, "we have not checked" and "the check failed" are
-          # the same amount of evidence -- which is why this fires on the AGE
-          # rather than on a failed read.
-          expr: concourse_hangar_output_policy_evidence_age_seconds > 900
-          for: 5m
-          labels:
-            severity: warning
-          annotations:
-            summary: "The Hangar output bucket's lifetime-policy attestation is stale"
-            description: "The newest whole-bucket policy reading is {{ `{{ $value }}` }}s old and the bound is 900s. The monitor detects a policy change within the refresh window; it does not prevent a deletion inside it, so a stale reading is a window nobody is watching."
+            description: "The output plane has unresolved runtime integrity failures ({{ `{{ $labels.reasons }}` }}). New captures, claim acquisitions, managed-output warrants, orphan adoption and reclaim admission are all blocked; releases and diagnosis still work. Reconcile missing objects or denied runtime operations before explicitly resolving the recorded findings."
         - alert: HangarOutputInventorySweepStalled
           # The cursor's cycle counter is what moves. A sweep that stopped shows
           # a flat counter, and `changes(...) == 0` over an hour is that

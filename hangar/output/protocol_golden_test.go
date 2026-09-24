@@ -232,7 +232,6 @@ var protocolFixtures = map[string]func(*testing.T, []byte){
 	"delete-precondition.json": func(t *testing.T, raw []byte) { roundTrip[DeletePrecondition](t, raw) },
 	"inventory-cursor.json":    func(t *testing.T, raw []byte) { roundTrip[InventoryCursor](t, raw) },
 	"inventory-debt.json":      func(t *testing.T, raw []byte) { roundTrip[InventoryDebt](t, raw) },
-	"policy-snapshot.json":     func(t *testing.T, raw []byte) { roundTrip[PolicySnapshot](t, raw) },
 	"gcs-marker-metadata.json": roundTripMarker,
 
 	"capture-extension-handshake.json": func(t *testing.T, raw []byte) {
@@ -262,15 +261,11 @@ var protocolFixtures = map[string]func(*testing.T, []byte){
 	"capture-acknowledgement-kinds.json": assertClosedCaptureAcknowledgementKinds,
 	"no-capture-reasons.json":            assertClosedNoCaptureReasons,
 	"debt-reasons.json":                  assertClosedDebtReasons,
-	"policy-states.json":                 assertClosedPolicyStates,
 	"lease-operations.json":              assertClosedLeaseOperations,
 	"lease-refusals.json":                assertClosedLeaseRefusals,
 
 	"refusal-unknown-disposition.json": func(t *testing.T, raw []byte) {
 		refuse[NoCaptureDisposition](t, raw)
-	},
-	"refusal-unknown-policy-state.json": func(t *testing.T, raw []byte) {
-		refuse[PolicySnapshot](t, raw)
 	},
 	"refusal-unknown-marker-version.json":   refuseMarker,
 	"refusal-unmarked-object-metadata.json": refuseMarker,
@@ -311,10 +306,6 @@ func assertClosedNoCaptureReasons(t *testing.T, raw []byte) {
 
 func assertClosedDebtReasons(t *testing.T, raw []byte) {
 	assertClosedEnum(t, raw, DebtReasons(), "DebtReasons()")
-}
-
-func assertClosedPolicyStates(t *testing.T, raw []byte) {
-	assertClosedEnum(t, raw, PolicyStates(), "PolicyStates()")
 }
 
 func assertClosedLeaseOperations(t *testing.T, raw []byte) {

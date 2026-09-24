@@ -1,15 +1,5 @@
-// Package publisher is the only output-plane role that creates an object.
-//
-// It cannot list and it cannot delete, and that is structural rather than
-// documented: the store interface it accepts has no List method and its handle
-// has no Delete, so there is no call to write by accident. The adapter call log
-// says the same thing at run time, and the two together are what the role
-// honesty assertion reads. Neither is evidence about IAM -- no fake enforces a
-// binding -- and the review note beside the conformance suite says so.
-//
-// It also never updates metadata. The ownership marker is written once, at
-// creation, and the handle offers no way to change it afterwards; that is what
-// makes the marker evidence rather than a label (Req 22).
+// Package publisher creates and reads immutable output objects. Its store
+// interface cannot list or delete; ownership metadata is committed with bytes.
 package publisher
 
 import (
@@ -24,55 +14,15 @@ import (
 	"github.com/concourse/concourse/hangar/output"
 )
 
-// Store is the publisher's whole view of the object store: create and read, at
-// one key, under preconditions. There is deliberately no List and no Delete.
+// Store is the publisher's view of object operations.
 type Store interface {
-	Object(bucket, key string) Handle
+	CreateAbsent(context.Context, string, string, map[string]string, io.Reader) (objectstore.Attrs, error)
+	StatCurrent(context.Context, string, string) (objectstore.Attrs, error)
+	StatExact(context.Context, string, string, int64) (objectstore.Attrs, error)
+	OpenExact(context.Context, string, string, int64) (io.ReadCloser, error)
 }
 
-// Handle is one object. Note the absent methods.
-type Handle interface {
-	If(objectstore.Conditions) Handle
-	Generation(int64) Handle
-	NewWriter(ctx context.Context) objectstore.Writer
-	NewReader(ctx context.Context) (io.ReadCloser, error)
-	Attrs(ctx context.Context) (objectstore.Attrs, error)
-}
-
-// Restrict narrows a full client to the publisher's role.
-//
-// It is the one place the wide client and the narrow one meet, so "the
-// publisher cannot delete" is a fact about a type rather than about
-// everybody's discipline.
-func Restrict(client objectstore.Client) Store { return restricted{client: client} }
-
-type restricted struct{ client objectstore.Client }
-
-func (store restricted) Object(bucket, key string) Handle {
-	return restrictedHandle{handle: store.client.Object(bucket, key)}
-}
-
-type restrictedHandle struct{ handle objectstore.Handle }
-
-func (handle restrictedHandle) If(conditions objectstore.Conditions) Handle {
-	return restrictedHandle{handle: handle.handle.If(conditions)}
-}
-
-func (handle restrictedHandle) Generation(generation int64) Handle {
-	return restrictedHandle{handle: handle.handle.Generation(generation)}
-}
-
-func (handle restrictedHandle) NewWriter(ctx context.Context) objectstore.Writer {
-	return handle.handle.NewWriter(ctx)
-}
-
-func (handle restrictedHandle) NewReader(ctx context.Context) (io.ReadCloser, error) {
-	return handle.handle.NewReader(ctx)
-}
-
-func (handle restrictedHandle) Attrs(ctx context.Context) (objectstore.Attrs, error) {
-	return handle.handle.Attrs(ctx)
-}
+func Restrict(client objectstore.Client) Store { return client }
 
 // sizeUnknown says a caller holds no canonical size to compare an object's body
 // against. Only the stat path passes it: every publish path canonicalized the
@@ -188,35 +138,13 @@ func (publisher *Publisher) EnsurePublication(ctx context.Context, reservation o
 }
 
 func (publisher *Publisher) create(ctx context.Context, key string, reservation output.ObjectMarker, canonical io.Reader) (objectstore.Attrs, error) {
-	conditions := objectstore.Conditions{DoesNotExist: true}
-	if err := conditions.Validate(); err != nil {
-		return objectstore.Attrs{}, err
-	}
-
-	writer := publisher.store.Object(publisher.namespace.Bucket(), key).
-		If(conditions).
-		NewWriter(ctx)
-	writer.SetMetadata(reservation.Metadata())
-
-	if _, err := io.Copy(writer, canonical); err != nil {
-		// Abort rather than Close: closing commits, and committing a truncated
-		// tree at a key create-if-absent will then refuse forever is the one
-		// ambiguity that is expensive to walk back.
-		_ = writer.Abort(err)
-
-		return objectstore.Attrs{}, err
-	}
-	if err := writer.Close(); err != nil {
-		return objectstore.Attrs{}, err
-	}
-
-	return writer.Attrs(), nil
+	return publisher.store.CreateAbsent(ctx, publisher.namespace.Bucket(), key, reservation.Metadata(), canonical)
 }
 
 // reconcileExisting is the 412 path: full marked exact verification, or a typed
 // collision.
 func (publisher *Publisher) reconcileExisting(ctx context.Context, key string, reservation output.ObjectMarker, size int64) (output.PublishedObject, error) {
-	attrs, err := publisher.store.Object(publisher.namespace.Bucket(), key).Attrs(ctx)
+	attrs, err := publisher.store.StatCurrent(ctx, publisher.namespace.Bucket(), key)
 	if err != nil {
 		if errors.Is(err, objectstore.ErrNotFound) {
 			// It was there for the create and gone for the stat. That is an
@@ -240,7 +168,7 @@ func (publisher *Publisher) reconcileExisting(ctx context.Context, key string, r
 
 // reconcileAmbiguous is the lost-response path.
 func (publisher *Publisher) reconcileAmbiguous(ctx context.Context, key string, reservation output.ObjectMarker, size int64, cause error) (output.PublishedObject, error) {
-	attrs, err := publisher.store.Object(publisher.namespace.Bucket(), key).Attrs(ctx)
+	attrs, err := publisher.store.StatCurrent(ctx, publisher.namespace.Bucket(), key)
 	if err != nil {
 		if errors.Is(err, objectstore.ErrNotFound) {
 			// Nothing landed. The capture may retry, and it is not past its
@@ -279,9 +207,7 @@ func (publisher *Publisher) verifyExact(ctx context.Context, key string, reserva
 			output.ErrInfrastructure, key)
 	}
 
-	attrs, err := publisher.store.Object(publisher.namespace.Bucket(), key).
-		Generation(generation).
-		Attrs(ctx)
+	attrs, err := publisher.store.StatExact(ctx, publisher.namespace.Bucket(), key, generation)
 	if err != nil {
 		return output.PublishedObject{}, translate(err, key)
 	}
@@ -395,9 +321,7 @@ func (publisher *Publisher) StatExactObject(ctx context.Context, ref hangar.Tree
 	ctx, cancel := context.WithTimeout(ctx, publisher.timeout)
 	defer cancel()
 
-	attrs, err := publisher.store.Object(publisher.namespace.Bucket(), key).
-		Generation(ref.Generation).
-		Attrs(ctx)
+	attrs, err := publisher.store.StatExact(ctx, publisher.namespace.Bucket(), key, ref.Generation)
 	if err != nil {
 		return output.PublishedObject{}, translate(err, key)
 	}
@@ -438,9 +362,7 @@ func (publisher *Publisher) OpenExactObject(ctx context.Context, ref hangar.Tree
 		return nil, output.PublishedObject{}, err
 	}
 
-	body, err := publisher.store.Object(publisher.namespace.Bucket(), key).
-		Generation(ref.Generation).
-		NewReader(ctx)
+	body, err := publisher.store.OpenExact(ctx, publisher.namespace.Bucket(), key, ref.Generation)
 	if err != nil {
 		return nil, output.PublishedObject{}, translate(err, key)
 	}

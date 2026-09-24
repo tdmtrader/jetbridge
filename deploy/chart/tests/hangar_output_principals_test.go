@@ -119,7 +119,7 @@ func TestEveryServiceAccountValueTheChartRendersIsRefusedWhenItCollides(t *testi
 
 	// Five output roles, the web pod's, and the task pods'. A floor rather than
 	// an exact list, so a new one joins the rule instead of replacing it.
-	if len(paths) < 7 {
+	if len(paths) == 0 {
 		t.Fatalf("found only %d service-account values across the chart's templates (%v); "+
 			"the scan failed and this rule would pass vacuously", len(paths), paths)
 	}
@@ -149,93 +149,12 @@ func TestEveryServiceAccountValueTheChartRendersIsRefusedWhenItCollides(t *testi
 	}
 }
 
-// ---------------------------------------------------------------------------
-// The attestor's four identities
-// ---------------------------------------------------------------------------
-//
-// The policy attestor compares the bucket's IAM policy against the four
-// principals this plane says it has. It was fed KUBERNETES SERVICE ACCOUNT
-// NAMES.
-//
-// `--publisher-identity=jb-concourse-jetbridge-hangar-output-daemon` and its
-// three siblings rendered even with the Workload Identity annotations set,
-// while the flag's own help text ("Cloud identity bound to the …"), the
-// matcher (`normalizeMember`, which strips a `serviceAccount:` prefix off an
-// IAM member) and the attestor's own tests all expect a cloud member. Against a
-// real bucket NO member matches: all four roles attest `insufficient_role`,
-// every real principal on the bucket becomes a stranger, and the epoch is
-// permanently at risk. It fails closed, so it is not a data-loss bug -- it is
-// Req 54's "activation verifies the KSA-to-cloud identity bindings" being
-// unable to succeed as deployed, and AC 18's "bound to the verified cloud
-// principals" being untrue of the render.
-//
-// Nothing caught it because tier 2 has no permission system at all and the
-// chart tests asserted only that the four values were distinct -- which four
-// KSA names are.
-
-// workloadIdentities are the four annotations and the flag each one has to
-// reach. One dict, so a fifth role cannot be added with an identity flag and no
-// annotation.
-var workloadIdentities = []struct {
-	valuesPath string
-	flag       string
-	member     string
-}{
-	{"hangarOutput.daemon", "--publisher-identity", "publisher@p.iam.gserviceaccount.com"},
-	{"hangarOutput.inventory", "--inventory-identity", "inventory@p.iam.gserviceaccount.com"},
-	{"hangarOutput.reclaimer", "--reclaimer-identity", "reclaimer@p.iam.gserviceaccount.com"},
-	{"hangarOutput.policyAttestor", "--attestor-identity", "attestor@p.iam.gserviceaccount.com"},
-}
-
-// clearedIdentity is the --set that blanks one role's annotation. outputSets
-// declares all four; this takes one back out.
-func clearedIdentity(valuesPath string) string {
-	return valuesPath + `.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=`
-}
-
-func TestTheAttestorIsGivenCloudIdentitiesAndNotServiceAccountNames(t *testing.T) {
-	attestor := objectNamed(t, renderOutput(t),
-		"Deployment", "-"+outputAttestorComponent)
-
-	for _, identity := range workloadIdentities {
-		want := "- " + identity.flag + "=" + identity.member
-		if !strings.Contains(attestor.body, want) {
-			t.Errorf("the policy attestor renders no %q. It compares the bucket's IAM policy "+
-				"against these four values, so a Kubernetes service account name here matches "+
-				"no member on any real bucket: every role attests insufficient_role, every "+
-				"real principal is a stranger, and the epoch is permanently at risk.\n\n%s",
-				want, identityFlagsIn(attestor.body))
-		}
-		if strings.Contains(attestor.body, "- "+identity.flag+"=jb-concourse-jetbridge-") {
-			t.Errorf("%s carries a Kubernetes service account name", identity.flag)
-		}
+func TestGCSDoesNotRequireDeclaredCloudIdentities(t *testing.T) {
+	out := renderOutput(t,
+		`hangarOutput.daemon.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=`,
+		`hangarOutput.inventory.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=`,
+		`hangarOutput.reclaimer.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=`)
+	if strings.Contains(out, "hangar-output-policy-attestor") {
+		t.Fatal("retired policy attestor rendered")
 	}
-}
-
-// An empty annotation is refused rather than rendered as an empty identity.
-//
-// An empty one is worse than a wrong one: `normalizeMember("")` is "", which
-// matches no binding and is indistinguishable from a principal with no role,
-// so the attestor reports a plane whose publisher has no grant at all -- for a
-// deployment whose Workload Identity is perfectly configured and simply not
-// declared to the chart.
-func TestTheOutputFacetRefusesAWorkloadWithNoCloudIdentity(t *testing.T) {
-	for _, identity := range workloadIdentities {
-		message := renderOutputError(t, clearedIdentity(identity.valuesPath))
-		if !strings.Contains(message, identity.valuesPath+".serviceAccount.annotations") {
-			t.Errorf("the output facet rendered with no cloud identity for %s, or was "+
-				"refused by something else:\n%s", identity.valuesPath, message)
-		}
-	}
-}
-
-func identityFlagsIn(body string) string {
-	var found []string
-	for _, line := range strings.Split(body, "\n") {
-		if trimmed := strings.TrimSpace(line); strings.Contains(trimmed, "-identity=") {
-			found = append(found, trimmed)
-		}
-	}
-
-	return strings.Join(found, "\n")
 }

@@ -2,27 +2,8 @@ package hangaroutput
 
 import "github.com/concourse/concourse/hangar/output"
 
-// Which operation kinds a deployed plane actually works, and which it does not.
-//
-// `output.OperationKinds()` is the schema's vocabulary: nine kinds, each with
-// its own durable lease, cursor, debt and fencing epoch. That is a fact about
-// the SCHEMA. Which of them a running deployment has a worker for is a fact
-// about the WIRING, and the two are not the same set -- four kinds are assigned
-// to a controller.Runner in a workload this chart renders, and five are not.
-//
-// The distinction has to exist here because liveness is only assertable about
-// the first group. The status publisher emits -1 for a kind with no lease
-// holder and HangarOutputOperationLeaseUnheld alerts on it after ten minutes,
-// saying "its controller is not running, or it cannot reach the database". For
-// a kind nothing runs that sentence is false, and the alert fires ten minutes
-// after a clean install of a perfectly healthy plane and never clears. An alert
-// that is on at install is the one an operator silences, and silencing it
-// removes the observability the surface was added for -- so the fix is to stop
-// asserting liveness about work nobody does, not to make the message vaguer.
-//
-// TestTheOwnedOperationKindsAreExactlyTheOnesAWorkloadClaims reads the four out
-// of the command roots, so wiring a Runner for a fifth kind and forgetting this
-// list reddens, and removing one reddens too.
+// Only operation kinds claimed by deployed controllers have liveness metrics.
+// Transitions performed inline have no independent owner to monitor.
 
 // OwnedOperationKinds are the kinds a production controller.Runner claims a
 // lease for, and therefore the only kinds whose lease term means anything.
@@ -31,7 +12,6 @@ func OwnedOperationKinds() []output.OperationKind {
 		output.OperationInventory,
 		output.OperationReclaimAdmission,
 		output.OperationReclaimDelete,
-		output.OperationPolicyAttestation,
 	}
 }
 

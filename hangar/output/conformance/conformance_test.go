@@ -995,16 +995,19 @@ func seed(t *testing.T, tier substrate, key string, body []byte, metadata map[st
 		return tier.memory.Seed(tier.bucket, key, body, metadata)
 	}
 
-	writer := tier.client.Object(tier.bucket, key).NewWriter(context.Background())
-	writer.SetMetadata(metadata)
-	if _, err := writer.Write(body); err != nil {
+	ctx := context.Background()
+	if current, err := tier.client.StatCurrent(ctx, tier.bucket, key); err == nil {
+		if err := tier.deleter.DeleteExact(ctx, tier.bucket, key, current.Generation); err != nil {
+			t.Fatal(err)
+		}
+	} else if !errors.Is(err, objectstore.ErrNotFound) {
+		t.Fatal(err)
+	}
+	attrs, err := tier.client.CreateAbsent(ctx, tier.bucket, key, metadata, bytes.NewReader(body))
+	if err != nil {
 		t.Fatalf("seeding %s: %v", key, err)
 	}
-	if err := writer.Close(); err != nil {
-		t.Fatalf("seeding %s: %v", key, err)
-	}
-
-	return writer.Attrs()
+	return attrs
 }
 
 func read(t *testing.T, tier substrate, key string) ([]byte, bool) {
@@ -1014,7 +1017,14 @@ func read(t *testing.T, tier substrate, key string) ([]byte, bool) {
 		return tier.memory.Body(tier.bucket, key)
 	}
 
-	body, err := tier.client.Object(tier.bucket, key).NewReader(context.Background())
+	attrs, err := tier.client.StatCurrent(context.Background(), tier.bucket, key)
+	if errors.Is(err, objectstore.ErrNotFound) {
+		return nil, false
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := tier.client.OpenExact(context.Background(), tier.bucket, key, attrs.Generation)
 	if errors.Is(err, objectstore.ErrNotFound) {
 		return nil, false
 	}

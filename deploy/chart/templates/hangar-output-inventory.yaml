@@ -20,5 +20,5 @@ no create and no delete: those calls do not exist for it to make.
             {{- include "concourse.hangarOutput.namespaceFlags" . | nindent 12 }}
             - --publication-grace={{ .Values.hangarOutput.publicationGrace }}
             - --interval={{ $values.interval }}
-{{- include "concourse.hangarOutput.controllerTail" (dict "root" . "values" $values) }}
+{{- include "concourse.hangarOutput.controllerTail" (dict "root" . "values" $values "role" "inventory") }}
 {{- end }}

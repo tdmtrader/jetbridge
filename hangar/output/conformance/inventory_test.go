@@ -229,7 +229,6 @@ func TestAnObjectRecreatedAtTheSameKeyIsSweptAgain(t *testing.T) {
 func recreateAt(t *testing.T, tier substrate, key string, published []output.PublishedObject) int64 {
 	t.Helper()
 
-	ctx := context.Background()
 	var marker output.ObjectMarker
 	for _, object := range published {
 		if strings.HasSuffix(key, string(object.Attributes.Ref.Digest)[len("sha256:"):]) {
@@ -240,16 +239,7 @@ func recreateAt(t *testing.T, tier substrate, key string, published []output.Pub
 		marker = published[0].Marker
 	}
 
-	writer := tier.client.Object(tier.bucket, key).NewWriter(ctx)
-	writer.SetMetadata(marker.Metadata())
-	if _, err := writer.Write(canonicalBytes("recreated at the same key")); err != nil {
-		t.Fatalf("recreating %s: %v", key, err)
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatalf("recreating %s: %v", key, err)
-	}
-
-	return writer.Attrs().Generation
+	return seed(t, tier, key, canonicalBytes("recreated at the same key"), marker.Metadata()).Generation
 }
 
 func describe(objects []output.InventoryObject) []string {
@@ -570,15 +560,7 @@ func TestAnUnmarkedObjectIsUnmanagedAndNotDebt(t *testing.T) {
 func poisonAt(t *testing.T, tier substrate, key string, metadata map[string]string) {
 	t.Helper()
 
-	ctx := context.Background()
-	writer := tier.client.Object(tier.bucket, key).NewWriter(ctx)
-	writer.SetMetadata(metadata)
-	if _, err := writer.Write(canonicalBytes("rewritten out of band")); err != nil {
-		t.Fatalf("poisoning %s: %v", key, err)
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatalf("poisoning %s: %v", key, err)
-	}
+	seed(t, tier, key, canonicalBytes("rewritten out of band"), metadata)
 }
 
 // TestMetadataLargerThanAWholePassBecomesDebtRatherThanReplayingForever is the

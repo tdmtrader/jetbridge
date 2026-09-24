@@ -117,7 +117,7 @@ type Acceleration interface {
 // Commit is mapped through the caller's own classifier, because two of this
 // plane's constraint triggers are DEFERRED and their refusals therefore arrive
 // at COMMIT and nowhere earlier. A controller handed an unclassified commit
-// failure would read a denial -- the policy gate, say -- as an ambiguous commit
+// failure would read a denial -- the integrity gate, say -- as an ambiguous commit
 // and retry it forever.
 type SQLTransactor struct {
 	DB *sql.DB

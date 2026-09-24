@@ -543,11 +543,16 @@ artifactDaemon:
     port: ""
 
   # -- Strict, exact immutable tree storage for task inputs. Hangar is
-  # fail-closed and therefore remains opt-in. It reuses the durable GCS
-  # bucket, prefix, endpoint, timeout, and Workload Identity configuration.
+  # fail-closed and therefore remains opt-in. Empty store inherits legacy durable
+  # GCS configuration; explicit gcs/disk selects strict-input storage separately.
   hangar:
-    # -- Enable the GCS-only Hangar foundation. Requires daemon TLS and a
-    # configured artifactDaemon.durable GCS bucket.
+    # -- Empty inherits durable GCS configuration. Explicit gcs/disk is independent of resource caches.
+    store: ""
+    bucket: ""
+    endpoint: ""
+    # -- Object prefix for explicit storage. Unset store inherits durable.prefix.
+    prefix: ""
+    # -- Enable strict inputs. Requires daemon TLS and configured object storage.
     enabled: false
     # -- Enable web emission/signing of strict inputs after every eligible
     # daemon node has advertised Hangar readiness. Requires enabled: true.
@@ -747,8 +752,8 @@ artifactDaemon:
 # exist and are what they claim -- the chart renders identities and refuses
 # configurations, it enforces nothing in the cloud.
 #
-# THE HONEST PERMISSION MATRIX. Four workloads, four Kubernetes service
-# accounts, four cloud principals, because a Kubernetes service account is
+# THE HONEST PERMISSION MATRIX. Three workloads, three Kubernetes service
+# accounts, three cloud principals, because a Kubernetes service account is
 # Pod-wide: a process that holds a role has that role for everything else it
 # does. The minimum roles are
 #
@@ -758,8 +763,6 @@ artifactDaemon:
 #     storage.objects.list, storage.objects.get
 #   reclaimer
 #     storage.objects.get, storage.objects.delete
-#   policy attestor
-#     storage.buckets.get, storage.buckets.getIamPolicy
 #
 # and three of those grants are weaker than they read, so they are written down
 # here rather than discovered:
@@ -774,17 +777,9 @@ artifactDaemon:
 #     application-level property and not an IAM one. That is why inventory is
 #     the only workload granted list at all, and why the output bucket contains
 #     nothing but output-plane objects.
-#   * storage.objects.create IS THE OVERWRITE PERMISSION. GCS has no create-only
-#     object permission: a principal that may create an object at a key may also
-#     replace the object already at that key, so the publisher can DESTROY a
-#     published object without holding storage.objects.delete. What stops it is
-#     not IAM. It is the code -- every publish is conditional on the object not
-#     existing (ifGenerationMatch=0), so a second create at a live key is
-#     refused by the store rather than allowed to overwrite -- together with the
-#     dedicated bucket, which is why the bucket holds nothing but this plane's
-#     objects. An operator approving "create only" for the publisher is
-#     approving overwrite, and the argument that it is safe lives in the
-#     publisher role, not here.
+#   * Replacing an existing object requires BOTH storage.objects.create and
+#     storage.objects.delete. The publisher holds only create/get. Its
+#     create-if-absent precondition additionally protects against overwrite.
 #
 # PERMISSIONS NO RUNTIME PRINCIPAL HOLDS. An absent grant is a promise, and a
 # promise nobody wrote down is one the next role addition breaks by accident.
@@ -795,7 +790,7 @@ artifactDaemon:
 #     ownership marker. Requirement 22's "the publisher cannot update the
 #     marker" is what the whole immutable-marker argument rests on: a marker
 #     that can be rewritten is not evidence of who created an object. It is
-#     forbidden to all four principals -- including the publisher, which is the
+#     forbidden to all runtime principals -- including the publisher, which is the
 #     one that would want it -- and note that roles/storage.objectAdmin and
 #     roles/storage.objectUser GRANT it, so "the reclaimer just has objectAdmin"
 #     is not a compatible binding.
@@ -804,15 +799,14 @@ artifactDaemon:
 #     plane and the entire reason the reclaimer is a separate Pod under a
 #     separate identity.
 #   storage.buckets.update, storage.buckets.setIamPolicy
-#     Lifecycle rules and IAM policy. The attestor READS the policy and can
-#     change nothing; a monitor that can rewrite what it monitors is not one.
+#     Bucket lifecycle and IAM administration belong to operators.
 #
-# Policy administration stays an operator trust root, and requirement 53's
-# residual boundary is exactly that: Hangar cannot attest every
-# organization-level credential, and a cloud administrator can delete objects it
-# manages. What it can do is notice, within the 15-minute attestation bound, and
-# say so.
+# Hangar does not inspect IAM or lifecycle settings. Operators must provision
+# dedicated buckets without external expiry or deletion of protected objects.
+# Unexpected loss and corruption are recorded as runtime integrity failures.
 hangarOutput:
+  # -- Object storage profile: gcs or disk.
+  store: gcs
   # -- The BASE facet: exact execution control.
   #
   # A node whose daemon, runtime and control key are a homogeneous attested
@@ -1010,19 +1004,9 @@ hangarOutput:
       # -- Override the rendered name. Leave empty for
       # <fullname>-hangar-output-daemon.
       name: ""
-      # -- Workload Identity annotation. REQUIRED for all four output roles
-      # when the output facet is on:
-      #
-      #   annotations:
-      #     iam.gke.io/gcp-service-account: publisher@project.iam.gserviceaccount.com
-      #
-      # The policy attestor compares the output bucket's IAM policy against
-      # these four CLOUD members -- they are what --publisher-identity and its
-      # three siblings carry. The chart cannot verify the binding; activation
-      # does, and it can only do so if it is told what the binding is. An
-      # undeclared one is refused rather than rendered, because an empty member
-      # matches no binding and is indistinguishable from a principal that
-      # genuinely holds nothing.
+      # -- Optional GCS Workload Identity annotation. Provision its binding externally.
+      #   iam.gke.io/gcp-service-account: publisher@project.iam.gserviceaccount.com
+      # Disk uses projected role credentials and needs no GCP identity.
       annotations: {}
     resources: {}
     nodeSelector: {}
@@ -1053,20 +1037,6 @@ hangarOutput:
     deleteTimeout: "2m"
     # -- How many jobs one pass may admit or advance.
     batch: 10
-    serviceAccount:
-      name: ""
-      annotations: {}
-    resources: {}
-
-  policyAttestor:
-    enabled: true
-    replicas: 1
-    # -- Refresh interval for the whole-bucket lifecycle-policy read. Evidence
-    # older than 15 minutes is stale and the plane goes at-risk, so this is a
-    # third of that by default and the chart refuses anything above 15m: a
-    # longer interval does not make detection slower, it makes the plane
-    # at-risk between every pass.
-    interval: "5m"
     serviceAccount:
       name: ""
       annotations: {}
@@ -1105,7 +1075,7 @@ hangarOutput:
       ttlSecondsAfterFinished: 86400
 
   networkPolicy:
-    # -- Enable NetworkPolicies for the four output workloads.
+    # -- Enable NetworkPolicies for the output workloads.
     enabled: false
 
 # -- Authenticated MCP is always available. Registration grants no user permissions;
@@ -1117,3 +1087,24 @@ mcp:
   clients: []
   # -- Operation IDs denied to every client, regardless of user consent.
   disabledOperations: []
+
+# One durable disk owner. Provision TLS and fixed-role credentials separately.
+hangarStorage:
+  disk:
+    enabled: false
+    storeID: ""
+    existingClaim: ""
+    size: 100Gi
+    storageClass: ""
+    accessMode: ReadWriteOnce
+    # Explicit one-shot provisioning Job; never initialize automatically on restart.
+    initialize: false
+    tls:
+      # tls.crt/tls.key for the storage Service DNS name; ca.crt for clients.
+      existingSecret: ""
+    credentials:
+      # input, publisher, inventory, reclaimer, server.json (role-to-token JSON).
+      existingSecret: ""
+    maxObjectBytes: 17179869184
+    maxConcurrent: 4
+    resources: {}

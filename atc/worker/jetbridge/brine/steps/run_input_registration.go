@@ -85,14 +85,14 @@ func exerciseInputRegistration(in HangarDaemon, jdb JetbridgeDB, mode string) er
 		return db.HangarCommitError(tx.Commit())
 	}
 	reserve := func(tx db.Tx) error { return port.ReserveInputPublication(in.Ctx, tx, stage, nonce) }
-	if mode == "policy at risk" {
+	if mode == "storage integrity at risk" {
 		if err := transact(false, func(tx db.Tx) error {
-			return repository.RecordPolicyAttestation(in.Ctx, tx, output.PolicySnapshot{ProtocolVersion: output.ProtocolVersion, ActivationEpoch: stage.ActivationEpoch, BucketFingerprint: "gs://brine-output", Metageneration: 4, PolicyHash: "unsafe-input-policy", LifecycleDeleteRules: 1, State: output.PolicyAtRisk, ObservedAt: output.NewTimestamp(time.Now())}, nil)
+			return repository.RecordRuntimeAtRisk(in.Ctx, tx, int64(stage.ActivationEpoch), output.PolicyFinding{Violation: output.ViolationOutOfBandAbsence, Subject: "input-generation", Detail: "unexpected object loss"})
 		}); err != nil {
 			return err
 		}
 		if err := transact(false, reserve); !errors.Is(err, output.ErrAtRisk) {
-			return fmt.Errorf("unsafe policy did not refuse upload intent: %v", err)
+			return fmt.Errorf("unresolved integrity finding did not refuse upload intent: %v", err)
 		}
 		return assertInputObjectCount(in, 0)
 	}

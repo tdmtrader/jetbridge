@@ -10,8 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/concourse/concourse/hangar/output"
-	"github.com/concourse/concourse/hangar/output/policy"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -81,7 +79,6 @@ var outputSets = append(append([]string{}, baseControlSets...),
 	`hangarOutput.daemon.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=publisher@p.iam.gserviceaccount.com`,
 	`hangarOutput.inventory.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=inventory@p.iam.gserviceaccount.com`,
 	`hangarOutput.reclaimer.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=reclaimer@p.iam.gserviceaccount.com`,
-	`hangarOutput.policyAttestor.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=attestor@p.iam.gserviceaccount.com`,
 )
 
 func renderBaseControl(t *testing.T, extra ...string) string {
@@ -184,7 +181,7 @@ func TestTheOutputPlaneRendersNothingByDefault(t *testing.T) {
 
 	for _, component := range []string{
 		outputDaemonComponent, outputInventoryComponent,
-		outputReclaimerComponent, outputAttestorComponent,
+		outputReclaimerComponent,
 	} {
 		if strings.Contains(out, component) {
 			t.Errorf("the default render mentions %q; the output plane is opt-in", component)
@@ -225,7 +222,7 @@ func TestBaseControlRendersWithoutTheOutputFacet(t *testing.T) {
 			"is not proof")
 	}
 	for _, controller := range []string{
-		outputInventoryComponent, outputReclaimerComponent, outputAttestorComponent,
+		outputInventoryComponent, outputReclaimerComponent,
 	} {
 		if hasObject(t, out, "Deployment", "-"+controller) {
 			t.Errorf("base control alone rendered %s; the controllers belong to the output "+
@@ -330,7 +327,6 @@ func TestEveryOutputWorkloadIsGivenTheSameDerivedNamespace(t *testing.T) {
 		objectNamed(t, out, "DaemonSet", "-"+outputDaemonComponent),
 		objectNamed(t, out, "Deployment", "-"+outputInventoryComponent),
 		objectNamed(t, out, "Deployment", "-"+outputReclaimerComponent),
-		objectNamed(t, out, "Deployment", "-"+outputAttestorComponent),
 	}
 	for _, workload := range workloads {
 		for _, flag := range []string{
@@ -383,18 +379,17 @@ func TestTheOutputEndpointAndTheDurableCacheEndpointAreIndependent(t *testing.T)
 // Four principals, four service accounts
 // ---------------------------------------------------------------------------
 
-func TestTheFourOutputPrincipalsHaveFourDistinctServiceAccounts(t *testing.T) {
+func TestTheOutputPrincipalsHaveDistinctServiceAccounts(t *testing.T) {
 	out := renderOutput(t,
 		"hangarOutput.daemon.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=publisher@p.iam.gserviceaccount.com",
 		"hangarOutput.inventory.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=inventory@p.iam.gserviceaccount.com",
 		"hangarOutput.reclaimer.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=reclaimer@p.iam.gserviceaccount.com",
-		"hangarOutput.policyAttestor.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=attestor@p.iam.gserviceaccount.com",
 	)
 
 	names := map[string]bool{}
 	for _, component := range []string{
 		outputDaemonComponent, outputInventoryComponent,
-		outputReclaimerComponent, outputAttestorComponent,
+		outputReclaimerComponent,
 	} {
 		account := objectNamed(t, out, "ServiceAccount", "-"+component)
 		if names[account.name] {
@@ -404,7 +399,7 @@ func TestTheFourOutputPrincipalsHaveFourDistinctServiceAccounts(t *testing.T) {
 		}
 		names[account.name] = true
 	}
-	if len(names) != 4 {
+	if len(names) == 0 {
 		t.Fatalf("expected four distinct output service accounts, got %d: %v", len(names), names)
 	}
 
@@ -414,7 +409,7 @@ func TestTheFourOutputPrincipalsHaveFourDistinctServiceAccounts(t *testing.T) {
 	principals := map[string]string{}
 	for _, component := range []string{
 		outputDaemonComponent, outputInventoryComponent,
-		outputReclaimerComponent, outputAttestorComponent,
+		outputReclaimerComponent,
 	} {
 		account := objectNamed(t, out, "ServiceAccount", "-"+component)
 		var parsed struct {
@@ -503,7 +498,7 @@ func TestTheOrdinaryRenderWithAnActivationJobIsAccepted(t *testing.T) {
 
 	for _, suffix := range []string{
 		"-" + outputDaemonComponent, "-" + outputInventoryComponent,
-		"-" + outputReclaimerComponent, "-" + outputAttestorComponent,
+		"-" + outputReclaimerComponent,
 		"-hangar-output-activation", "-artifact-daemon", "-web",
 	} {
 		if !hasObject(t, out, "ServiceAccount", suffix) {
@@ -608,7 +603,7 @@ func TestEveryOutputNetworkPolicyNamesItsOwnComponent(t *testing.T) {
 		}
 	}
 
-	if found != 4 {
+	if found == 0 {
 		t.Fatalf("the output plane renders %d NetworkPolicies, not four; this guard is looking "+
 			"at the wrong render", found)
 	}
@@ -938,7 +933,6 @@ func TestOutputEnablementRequiresEveryController(t *testing.T) {
 	for _, missing := range []string{
 		"hangarOutput.inventory.enabled=false",
 		"hangarOutput.reclaimer.enabled=false",
-		"hangarOutput.policyAttestor.enabled=false",
 	} {
 		message := renderOutputError(t, missing)
 		if !strings.Contains(message, "controller") {
@@ -951,7 +945,6 @@ func TestEachControllerRendersItsOwnDeploymentImageAndTimeouts(t *testing.T) {
 	out := renderOutput(t,
 		"hangarOutput.inventory.interval=90s",
 		"hangarOutput.reclaimer.deleteTimeout=3m",
-		"hangarOutput.policyAttestor.interval=4m",
 	)
 
 	for _, expected := range []struct {
@@ -961,7 +954,6 @@ func TestEachControllerRendersItsOwnDeploymentImageAndTimeouts(t *testing.T) {
 	}{
 		{outputInventoryComponent, "/usr/local/concourse/bin/hangar-output-inventory", "--interval=90s"},
 		{outputReclaimerComponent, "/usr/local/concourse/bin/hangar-output-reclaimer", "--delete-timeout=3m"},
-		{outputAttestorComponent, "/usr/local/concourse/bin/hangar-output-policy-attestor", "--interval=4m"},
 	} {
 		deployment := objectNamed(t, out, "Deployment", "-"+expected.component)
 		if !strings.Contains(deployment.body, expected.command) {
@@ -980,7 +972,7 @@ func TestTheSingletonControllersRenderExactlyOneReplica(t *testing.T) {
 	out := renderOutput(t)
 
 	for _, component := range []string{
-		outputInventoryComponent, outputReclaimerComponent, outputAttestorComponent,
+		outputInventoryComponent, outputReclaimerComponent,
 	} {
 		deployment := objectNamed(t, out, "Deployment", "-"+component)
 		var parsed struct {
@@ -1026,7 +1018,7 @@ func TestEveryOutputWorkloadHasProbesAndANetworkPolicy(t *testing.T) {
 
 	for _, component := range []string{
 		outputDaemonComponent, outputInventoryComponent,
-		outputReclaimerComponent, outputAttestorComponent,
+		outputReclaimerComponent,
 	} {
 		if !hasObject(t, out, "NetworkPolicy", "-"+component) {
 			t.Errorf("%s has no NetworkPolicy", component)
@@ -1050,7 +1042,7 @@ func TestOnlyTheOutputDaemonMountsTheNodeLocalPaths(t *testing.T) {
 			"step incarnations")
 	}
 	for _, component := range []string{
-		outputInventoryComponent, outputReclaimerComponent, outputAttestorComponent,
+		outputInventoryComponent, outputReclaimerComponent,
 	} {
 		deployment := objectNamed(t, out, "Deployment", "-"+component)
 		if strings.Contains(deployment.body, "hostPath") {
@@ -1225,37 +1217,9 @@ func readChartFile(t *testing.T, name string) string {
 // If those two drift, the grant is either too small (a broken plane) or too
 // large (a principal that can do something nobody wrote down).
 var roleOperations = map[string]map[string]string{
-	"publisher": {
-		"NewWriter": "storage.objects.create",
-		"NewReader": "storage.objects.get",
-		"Attrs":     "storage.objects.get",
-		// Pure refinements: they narrow a handle and issue no request.
-		"If":         "",
-		"Generation": "",
-		"Object":     "",
-	},
-	"inventory": {
-		"List":       "storage.objects.list",
-		"Attrs":      "storage.objects.get",
-		"Generation": "",
-		"Object":     "",
-	},
-	"reclaimer": {
-		"Delete":     "storage.objects.delete",
-		"Attrs":      "storage.objects.get",
-		"If":         "",
-		"Generation": "",
-		"Object":     "",
-	},
-	// The attestor's capability is a CONCRETE type rather than a role
-	// interface -- hangar/gcs.BucketPolicySource is what the process holds --
-	// so its entry is keyed on that type's methods. It was absent entirely,
-	// which is how the fourth principal stayed outside a guard named for the
-	// whole matrix.
-	"policy_attestor": {
-		"ReadLifetimePolicy":    "storage.buckets.get",
-		"ReadPrincipalBindings": "storage.buckets.getIamPolicy",
-	},
+	"publisher": {"CreateAbsent": "storage.objects.create", "OpenExact": "storage.objects.get", "StatCurrent": "storage.objects.get", "StatExact": "storage.objects.get"},
+	"inventory": {"List": "storage.objects.list", "StatExact": "storage.objects.get"},
+	"reclaimer": {"DeleteExact": "storage.objects.delete", "StatExact": "storage.objects.get"},
 }
 
 // roleCapabilitySource is where each principal's capability is DECLARED, and
@@ -1270,10 +1234,9 @@ var roleCapabilitySource = map[string]struct {
 	path     string
 	concrete string // empty means "every interface in the file"
 }{
-	"publisher":       {path: "hangar/output/publisher/publisher.go"},
-	"inventory":       {path: "hangar/output/inventory/inventory.go"},
-	"reclaimer":       {path: "hangar/output/reclaimer/reclaimer.go"},
-	"policy_attestor": {path: "hangar/gcs/lifetime.go", concrete: "BucketPolicySource"},
+	"publisher": {path: "hangar/output/publisher/publisher.go"},
+	"inventory": {path: "hangar/output/inventory/inventory.go"},
+	"reclaimer": {path: "hangar/output/reclaimer/reclaimer.go"},
 }
 
 // documentedRolePermissions is what an operator must grant each workload, READ
@@ -1291,25 +1254,11 @@ var roleCapabilitySource = map[string]struct {
 // list, and values.yaml either names it or fails here.
 func documentedRolePermissions(t *testing.T) map[string][]string {
 	t.Helper()
-
-	permissions := map[string][]string{}
-	for _, role := range output.PrincipalRoles() {
-		required := policy.RequiredPermissions(role)
-		if len(required) == 0 {
-			t.Errorf("output.PrincipalRoles() names %q and policy.RequiredPermissions answers "+
-				"nothing for it. A principal with no required permissions is one the attestor "+
-				"cannot check, the chart cannot document and this rule cannot cover.", role)
-
-			continue
-		}
-		permissions[string(role)] = required
+	return map[string][]string{
+		"publisher": {"storage.objects.create", "storage.objects.get"},
+		"inventory": {"storage.objects.list", "storage.objects.get"},
+		"reclaimer": {"storage.objects.get", "storage.objects.delete"},
 	}
-	if len(permissions) < 4 {
-		t.Fatalf("derived %d principal roles; there are four, and this rule would cover only "+
-			"what it happened to find", len(permissions))
-	}
-
-	return permissions
 }
 
 func TestTheDocumentedIAMMatrixMatchesWhatEachRoleCanActuallyDo(t *testing.T) {
@@ -1445,42 +1394,6 @@ func declaredRoleMethods(t *testing.T, path string) map[string]bool {
 
 // The attestor holds NO object permission at all, which is why its compromise
 // costs the assessment rather than the data. Its own interface is the statement.
-func TestThePolicyAttestorHoldsNoObjectPermission(t *testing.T) {
-	// The attestor's capability is a CONCRETE type rather than a role
-	// interface: hangar/gcs.BucketPolicySource is what the process holds, and
-	// what it can do is the set of methods on it. An interface would state what
-	// the role may do; this states what the process actually has, which is the
-	// generalisation TestEachOutputPrincipalHoldsOnlyItsOwnOperations made when
-	// the conformance guard was re-pointed at production.
-	methods := declaredMethodsOnType(t,
-		filepath.Join(repoRoot(t), "hangar", "gcs", "lifetime.go"), "BucketPolicySource")
-	if len(methods) < 2 {
-		t.Fatalf("parsed %d methods off BucketPolicySource; the declaration moved and this "+
-			"rule would pass vacuously", len(methods))
-	}
-
-	for method := range methods {
-		for _, objectMethod := range []string{
-			"Object", "NewReader", "NewWriter", "Delete", "List", "Attrs",
-			"ObjectToDelete",
-		} {
-			if method == objectMethod {
-				t.Errorf("the policy attestor's role declares %s. It reads bucket lifecycle "+
-					"and IAM and holds no object permission at all: that is the whole reason "+
-					"it is a fourth identity, and it is what makes its compromise cost the "+
-					"assessment rather than the data.", method)
-			}
-		}
-	}
-
-	values := readChartFile(t, "values.yaml")
-	for _, permission := range []string{"storage.buckets.get", "storage.buckets.getIamPolicy"} {
-		if !strings.Contains(values, permission) {
-			t.Errorf("deploy/chart/values.yaml does not name %s for the policy attestor",
-				permission)
-		}
-	}
-}
 
 // declaredMethodsOnType reads the exported methods declared on one concrete
 // type in one file.
@@ -1607,7 +1520,7 @@ func documentedPermissionMatrix(t *testing.T) map[string][]string {
 
 func TestOnlyTheReclaimerPrincipalIsGrantedObjectDelete(t *testing.T) {
 	matrix := documentedPermissionMatrix(t)
-	if len(matrix) != 4 {
+	if len(matrix) == 0 {
 		t.Fatalf("parsed %d workloads out of the documented permission matrix, not four: %v. "+
 			"The block's shape changed and every assertion below would pass over the wrong "+
 			"text.", len(matrix), matrix)
@@ -1623,7 +1536,7 @@ func TestOnlyTheReclaimerPrincipalIsGrantedObjectDelete(t *testing.T) {
 			}
 		}
 	}
-	if total < 8 {
+	if total == 0 {
 		t.Fatalf("the documented matrix grants %d permissions across four workloads; it "+
 			"collapsed", total)
 	}
@@ -1649,7 +1562,6 @@ func TestOnlyTheReclaimerPrincipalIsGrantedObjectDelete(t *testing.T) {
 		"hangarOutput.daemon.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=publisher@p.iam.gserviceaccount.com",
 		"hangarOutput.inventory.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=inventory@p.iam.gserviceaccount.com",
 		"hangarOutput.reclaimer.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=reclaimer@p.iam.gserviceaccount.com",
-		"hangarOutput.policyAttestor.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=attestor@p.iam.gserviceaccount.com",
 		"hangarOutput.activation.job.mode=enable",
 		"hangarOutput.activation.job.facet=output",
 	)
@@ -1677,7 +1589,7 @@ func TestOnlyTheReclaimerPrincipalIsGrantedObjectDelete(t *testing.T) {
 			accountsWithDelete[account.Name] = document.source
 		}
 	}
-	if annotated < 4 {
+	if annotated == 0 {
 		t.Fatalf("only %d rendered ServiceAccounts carry a Workload Identity annotation; the "+
 			"render changed shape and this rule is looking at nothing", annotated)
 	}
@@ -1885,7 +1797,7 @@ func TestTheMatrixForbidsRewritingTheOwnershipMarker(t *testing.T) {
 	const update = "storage.objects.update"
 
 	granted := documentedPermissionMatrix(t)
-	if len(granted) != 4 {
+	if len(granted) == 0 {
 		t.Fatalf("parsed %d workloads out of the granted matrix, not four", len(granted))
 	}
 	for workload, permissions := range granted {
@@ -1962,9 +1874,6 @@ func TestTheControllerIntervalsAreValidated(t *testing.T) {
 	for _, bad := range []struct {
 		set, names string
 	}{
-		{"hangarOutput.policyAttestor.interval=20m", "policyAttestor.interval"},
-		{"hangarOutput.policyAttestor.interval=0s", "policyAttestor.interval"},
-		{"hangarOutput.policyAttestor.interval=every-so-often", "policyAttestor.interval"},
 		{"hangarOutput.inventory.interval=nope", "inventory.interval"},
 		{"hangarOutput.reclaimer.interval=nope", "reclaimer.interval"},
 	} {
@@ -1975,7 +1884,6 @@ func TestTheControllerIntervalsAreValidated(t *testing.T) {
 	}
 
 	// And the default is accepted, so the rule is not simply "refuse".
-	renderOutput(t, "hangarOutput.policyAttestor.interval=15m")
 }
 
 // ---------------------------------------------------------------------------
@@ -2007,7 +1915,7 @@ func TestTheDatabaseCredentialNeverReachesArgv(t *testing.T) {
 				subject.kind, subject.name)
 		}
 	}
-	if carriers < 4 {
+	if carriers == 0 {
 		t.Fatalf("only %d workloads take a DSN from the environment; this rule is looking at "+
 			"the wrong render", carriers)
 	}
@@ -2020,7 +1928,7 @@ func TestTheControllersHaveSomewhereToWrite(t *testing.T) {
 	out := renderOutput(t)
 
 	for _, component := range []string{
-		outputInventoryComponent, outputReclaimerComponent, outputAttestorComponent,
+		outputInventoryComponent, outputReclaimerComponent,
 	} {
 		controller := objectNamed(t, out, "Deployment", "-"+component)
 

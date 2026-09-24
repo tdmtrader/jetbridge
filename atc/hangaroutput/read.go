@@ -187,11 +187,11 @@ func (admission *ReadAdmission) commitLease(ctx context.Context, request ReadReq
 		//
 		// The refusals this commit can carry are not only the ones raised while
 		// the statements ran. hangar_policy_admits_new_protection and
-		// hangar_reclaim_exclusion are DEFERRED, so an at-risk lifetime policy
+		// hangar_reclaim_exclusion are DEFERRED, so an unresolved runtime finding
 		// and a racing reclaim both refuse HERE, at the commit, and they are
 		// the two the ambiguity rule would misfile most expensively: a caller
 		// told "your answer was lost, retry with the same identity" against a
-		// policy only an attestor can change retries until something else
+		// finding only an operator can reconcile retries until something else
 		// stops it.
 		//
 		// What makes the difference visible is the transactor: every adapter

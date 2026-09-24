@@ -219,7 +219,7 @@ func TestExactlyOneProductionTypeImplementsTheOutputReadProfile(t *testing.T) {
 		}
 		if entry.IsDir() {
 			switch entry.Name() {
-			case "vendor", ".git", "node_modules", "brine":
+			case "vendor", ".git", ".claude", "node_modules", "brine":
 				return filepath.SkipDir
 			}
 

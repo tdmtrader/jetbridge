@@ -74,9 +74,9 @@ service. It has two **facets**, base and output, each moving through
 initial, attesting, attested, enabled, draining, disabled. Disabled is
 terminal; rotation creates a new epoch. Output may leave initial only once
 base is attested. Every transition compares a revision and refuses a stale
-one. Draining goes output first, then base. The **policy attestor** reads
-bucket lifecycle policy and IAM and touches no object; a failed trust check
-records **at risk**, a policy state.
+one. Draining goes output first, then base. Unresolved runtime integrity
+findings (unexpected absence or authorization failure) block admission. IAM
+and lifecycle configuration belong to the operator, not an attestation loop.
 
 ## Claims, leases and reclamation
 
@@ -98,10 +98,10 @@ Consumer ──claim──▶ tree ref ◀──read lease── reader
 
 ## Operation kinds and leases
 
-Nine kinds: capture recovery, no-capture release, inventory, adoption,
+Eight kinds: capture recovery, no-capture release, inventory, adoption,
 reclaim admission, reclaim delete, reclaim finalization, read-lease
-cleanup, policy attestation. Only four contend and hold an **operation
-lease**: inventory, reclaim admission, reclaim delete, policy attestation.
+cleanup. Only three contend and hold an **operation
+lease**: inventory, reclaim admission, reclaim delete.
 The rest run unleased for stated reasons: recovery and release are the web
 node's own pass; adoption runs inside inventory's lease; finalization
 records an object already gone; read-lease cleanup is clock-driven. Only
@@ -116,7 +116,16 @@ the keys after it.
 
 ## Roles
 
-Four cloud-permission personas, each its own binary and service account:
-publisher, inventory, reclaimer, policy attestor. Delete exists only on the
+Three output storage roles, each its own binary and credentials:
+publisher, inventory, reclaimer. Strict inputs use a separate storage identity. Delete exists only on the
 reclaimer and only against a tree ref with a precondition. No interface
 accepts a storage location; scope is the only namespace a caller can name.
+
+## Storage backends
+
+GCS and disk implement explicit immutable object operations. Tree verification,
+publication, inventory and reclamation share the same algorithms. Disk uses a
+single PVC owner, bbolt generation/index transactions and synced immutable
+blobs. Fixed namespace-scoped credentials over verified TLS separate storage
+roles. Only the reclaimer client exposes exact deletion; only the storage
+service links the local index. See [ADR-0005](../adr/0005-hangar-storage-and-operator-responsibility.md).

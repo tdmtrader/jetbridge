@@ -51,12 +51,11 @@ type StatusReader struct {
 // StatusStore is the read surface a status pass needs.
 //
 // Reads only. A status surface with a write in its port is one an operator can
-// be persuaded to "just clear", and the reconciliation of a policy violation is
+// be persuaded to "just clear", and reconciliation of a runtime finding is
 // a deliberate operator act with its own record.
 type StatusStore interface {
 	HangarDatabaseNow(ctx context.Context, tx output.Tx) (output.Timestamp, error)
 	OpenPolicyViolations(ctx context.Context, tx output.Tx, epoch int64) ([]output.PolicyFinding, error)
-	LatestPolicySnapshot(ctx context.Context, tx output.Tx, epoch int64) (output.PolicySnapshot, error)
 	ReadInventoryCursorProgress(ctx context.Context, tx output.Tx, bucket string, epoch int64) (output.InventoryCursor, error)
 	ReadInventoryDebt(ctx context.Context, tx output.Tx, bucket string, epoch int64, limit int) ([]output.InventoryDebt, error)
 	ReadOperationLease(ctx context.Context, tx output.Tx, kind output.OperationKind, epoch int64) (output.OperationLease, error)
@@ -79,15 +78,6 @@ type Status struct {
 
 	// Violations counts open, unreconciled violations by class.
 	Violations map[output.PolicyViolation]int
-
-	// EvidenceAge is how old the newest policy attestation is. Requirement 51
-	// bounds it at MaxPolicyEvidenceAge; past that, "we have not checked" and
-	// "the check failed" are the same amount of evidence.
-	EvidenceAge time.Duration
-
-	// EvidenceStale is that comparison, made with the same function the
-	// enforcing path uses rather than with a literal repeated here.
-	EvidenceStale bool
 
 	// Cycle and AtCycleStart are the inventory sweep's progress. A cursor that
 	// is at the start of a cycle has either just wrapped or never moved, and
@@ -142,27 +132,6 @@ func (reader *StatusReader) Read(ctx context.Context) (Status, error) {
 	for _, finding := range violations {
 		status.Violations[finding.Violation]++
 		reasons[string(finding.Violation)] = true
-	}
-
-	snapshot, err := reader.Repository.LatestPolicySnapshot(ctx, tx, reader.Epoch)
-	if err != nil {
-		return Status{}, err
-	}
-	if !snapshot.ObservedAt.Time.IsZero() {
-		status.EvidenceAge = status.At.Time.Sub(snapshot.ObservedAt.Time)
-	}
-	// The SAME bound the enforcing path uses. A literal repeated here would be
-	// a second description of requirement 51 and the one that drifts.
-	status.EvidenceStale = output.ValidatePolicyEvidenceAge(status.EvidenceAge) != nil
-	if status.EvidenceStale {
-		reasons["evidence_stale"] = true
-	}
-	// And the same predicate, not a comparison of our own: AdmitsNewWork is
-	// what every admission path asks, so a status surface that answered
-	// differently would be telling an operator the plane is fine while it
-	// refuses work.
-	if !snapshot.State.AdmitsNewWork() {
-		reasons["policy_"+string(snapshot.State)] = true
 	}
 
 	status.AtRisk = len(reasons) != 0

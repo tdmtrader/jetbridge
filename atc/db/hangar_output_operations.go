@@ -331,124 +331,7 @@ func (repository *HangarOutputRepository) ReadInventoryDebt(ctx context.Context,
 	return owed, nil
 }
 
-// RecordPolicyAttestation stores one reading and everything it concluded, in
-// one transaction.
-//
-// The two halves go together because a snapshot that said `at_risk` with no
-// finding beside it is an operator being told something is wrong and nothing
-// else. The snapshot is superseded by the next reading; the findings are not,
-// because Req 52's recovery needs a fresh safe attestation AND violation
-// reconciliation, and a finding stored on the snapshot would vanish with it.
-//
-// A repeated finding bumps nothing and adds nothing: the open row is keyed on
-// (epoch, violation, subject), so a monitor running every fifteen minutes
-// against an unfixed bucket leaves one row rather than ninety-six a day.
-func (repository *HangarOutputRepository) RecordPolicyAttestation(ctx context.Context, tx output.Tx, snapshot output.PolicySnapshot, findings []output.PolicyFinding) error {
-	if err := snapshot.Validate(); err != nil {
-		return err
-	}
-	if err := hangarPolicyObservationOnTheDatabaseClock(ctx, tx, snapshot); err != nil {
-		return err
-	}
-
-	var id int64
-	if err := hangarQueryRow(ctx, tx, `
-		INSERT INTO hangar_policy_snapshots
-			(activation_epoch, bucket_fingerprint, metageneration, policy_hash,
-			 lifecycle_delete_rules, state, observed_at)
-		VALUES ($1, $2, $3, $4, $5, $6, least(now(), $7))
-		RETURNING id`,
-		[]any{
-			int64(snapshot.ActivationEpoch), snapshot.BucketFingerprint, snapshot.Metageneration,
-			snapshot.PolicyHash, snapshot.LifecycleDeleteRules, string(snapshot.State),
-			snapshot.ObservedAt.Time,
-		}, &id); err != nil {
-		return hangarConflict(err)
-	}
-
-	for _, finding := range findings {
-		if err := finding.Validate(); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO hangar_policy_violations
-				(activation_epoch, snapshot_id, violation, subject, detail)
-			VALUES ($1, $2, $3, $4, $5)
-			ON CONFLICT (activation_epoch, violation, subject) WHERE resolved_at IS NULL
-			DO NOTHING`,
-			int64(snapshot.ActivationEpoch), id, string(finding.Violation),
-			finding.Subject, finding.Detail); err != nil {
-			return hangarConflict(err)
-		}
-	}
-
-	return nil
-}
-
-// hangarPolicyObservationOnTheDatabaseClock refuses an attestation dated well
-// ahead of the database, and is half of why observed_at is stored as
-// least(now(), the attestor's stamp).
-//
-// THE FRESHNESS BOUND COMPARED TWO CLOCKS. `hangar_check_policy_admission` asks
-// whether now() - observed_at is inside MaxPolicyEvidenceAge; now() is
-// PostgreSQL's and observed_at was stamped by the attestor PROCESS, from the
-// clock wired into its BucketPolicySource. An attestor whose clock ran fast by
-// more than the bound therefore made stale evidence look permanently fresh --
-// which is the whole of Req 51/52's bounded-staleness promise, defeated by NTP
-// rather than by anything an attacker had to do.
-//
-// Both halves are needed and they do different jobs. The `least` is what makes
-// the deployment SAFE: a fast clock gains nothing at all, because no
-// observation can be dated after the transaction that recorded it, and the gate
-// then compares two values from one clock. This refusal is what makes the
-// broken clock VISIBLE: silently correcting a two-hour skew leaves an attestor
-// that is wrong about everything else it timestamps and an operator who is
-// never told. A slow clock is not refused -- its observation is older than the
-// truth, evidence expires early, and the plane fails closed, which is the
-// direction this whole gate exists to fail in.
-//
-// The tolerance is MaxPolicyEvidenceAge itself, matching hangarStatProofFresh's
-// symmetric window: milliseconds of skew between two hosts must never be a
-// refusal, and a stamp minutes into the future is the same broken clock a stale
-// one is.
-func hangarPolicyObservationOnTheDatabaseClock(ctx context.Context, tx output.Tx,
-	snapshot output.PolicySnapshot) error {
-	var ahead bool
-	if err := hangarQueryRow(ctx, tx, `
-		SELECT $1::timestamptz > now() + $2::interval`,
-		[]any{snapshot.ObservedAt.Time, hangarInterval(output.MaxPolicyEvidenceAge)},
-		&ahead); err != nil {
-		return err
-	}
-	if ahead {
-		return fmt.Errorf("%w: the lifetime-policy attestation is dated more than %s ahead of "+
-			"the database clock. The attestor stamps its own observation and the admission "+
-			"gate measures that stamp against the database's clock, so a reading from a clock "+
-			"this far out cannot be evidence of anything: fix the attestor's time source",
-			output.ErrIncomplete, output.MaxPolicyEvidenceAge)
-	}
-
-	return nil
-}
-
-// RecordRuntimeAtRisk is how the two non-attestation triggers of Req 52 enter
-// the same durable at-risk state the policy trigger does.
-//
-// Req 52 names three ways in: a stale, failed, unreadable or unsafe policy
-// check, an unexpected exact absence, and a platform-principal mismatch. Only
-// the first is a reading of the bucket's policy. The other two are observed by
-// a controller doing its work -- an object that is not there, a store that says
-// 403 -- and until this existed they moved one lifecycle row and stopped: no
-// violation, no state change, no operator alert, and a plane that carried on
-// admitting new work beside an unexplained deleter.
-//
-// It writes both halves in one transaction because they answer different
-// questions and both are needed. The VIOLATION is the durable record of what
-// was found and it outlives the next attestation, which is why recovery needs
-// reconciliation as well as a fresh reading. The SNAPSHOT is what the admission
-// gate reads, and it is marked `runtime_observation` so that nobody mistakes it
-// for a policy read: this plane did not read the bucket's policy here, it
-// watched the bucket behave.
+// RecordRuntimeAtRisk preserves a storage failure until explicit operator reconciliation.
 func (repository *HangarOutputRepository) RecordRuntimeAtRisk(ctx context.Context, tx output.Tx, epoch int64, finding output.PolicyFinding) error {
 	if err := finding.Validate(); err != nil {
 		return err
@@ -461,13 +344,6 @@ func (repository *HangarOutputRepository) RecordRuntimeAtRisk(ctx context.Contex
 			"from", output.ErrConflict, finding.Violation)
 	}
 
-	var fingerprint string
-	if err := hangarQueryRow(ctx, tx, `
-		SELECT bucket_fingerprint FROM hangar_output_activation_epochs WHERE epoch_id = $1`,
-		[]any{epoch}, &fingerprint); err != nil {
-		return err
-	}
-
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO hangar_policy_violations (activation_epoch, violation, subject, detail)
 		VALUES ($1, $2, $3, $4)
@@ -477,32 +353,17 @@ func (repository *HangarOutputRepository) RecordRuntimeAtRisk(ctx context.Contex
 		return hangarConflict(err)
 	}
 
-	// Metageneration 1 and a hash that says what it is. Both columns exist to
-	// describe a policy READING and there was none; inventing a plausible hash
-	// would make a runtime observation indistinguishable from an attestation
-	// in the one table an operator goes to for that distinction.
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO hangar_policy_snapshots
-			(activation_epoch, bucket_fingerprint, metageneration, policy_hash,
-			 lifecycle_delete_rules, state, observed_at, source)
-		VALUES ($1, $2, 1, 'sha256:runtime-observation', 0, 'at_risk', now(),
-			'runtime_observation')`,
-		epoch, fingerprint); err != nil {
-		return hangarConflict(err)
-	}
-
 	return nil
 }
 
 // OpenPolicyViolations reads what is still unreconciled for one epoch.
 //
-// A fresh safe attestation does not close these, and that is the whole reason
-// this read exists: an operator who fixed the bucket and re-attested has a
-// plane that admits work again and a list of what was wrong while it did not.
+// Historical configuration observations remain archived but do not affect admission.
 func (repository *HangarOutputRepository) OpenPolicyViolations(ctx context.Context, tx output.Tx, epoch int64) ([]output.PolicyFinding, error) {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT violation, subject, detail FROM hangar_policy_violations
 		 WHERE activation_epoch = $1 AND resolved_at IS NULL
+           AND violation IN ('out_of_band_absence', 'runtime_principal_denied')
 		 ORDER BY observed_at, id`, epoch)
 	if err != nil {
 		return nil, hangarConflict(err)
@@ -530,12 +391,6 @@ func (repository *HangarOutputRepository) OpenPolicyViolations(ctx context.Conte
 	return findings, nil
 }
 
-// Deferred: reconciling a policy violation is a deliberate operator act with
-// its own record, and this track ships no API for it. The status surface is
-// deliberately read-only: a surface with a write in its port is one an operator
-// can be persuaded to "just clear", and a cleared violation is the record of
-// what was wrong while the plane refused work
-//
 // ReconcilePolicyViolation closes one finding.
 //
 // It is one-way and the schema says so: a reopened finding is a reconciliation
@@ -563,55 +418,6 @@ func (repository *HangarOutputRepository) ReconcilePolicyViolation(ctx context.C
 	}
 
 	return nil
-}
-
-// LatestPolicySnapshot is the newest lifetime-policy attestation for an epoch.
-//
-// Newest by OBSERVATION time and not by insertion order: a snapshot is evidence
-// of a reading, and an attestor whose row arrived late still read the bucket
-// when it read it. A reader that took the last inserted row would call a
-// re-inserted old reading fresh.
-//
-// A missing snapshot is not an error here. "Nothing has attested this epoch
-// yet" is a real state -- it is the state every epoch starts in -- and the
-// caller's own staleness check is what turns it into a refusal, because "we
-// have not checked" and "the check failed" are the same amount of evidence.
-func (repository *HangarOutputRepository) LatestPolicySnapshot(ctx context.Context, tx output.Tx,
-	epoch int64) (output.PolicySnapshot, error) {
-	rows, err := tx.QueryContext(ctx, `
-		SELECT bucket_fingerprint, metageneration, policy_hash, lifecycle_delete_rules,
-		       state, observed_at
-		  FROM hangar_policy_snapshots
-		 WHERE activation_epoch = $1
-		 ORDER BY observed_at DESC, id DESC
-		 LIMIT 1`, epoch)
-	if err != nil {
-		return output.PolicySnapshot{}, hangarConflict(err)
-	}
-	defer Close(rows)
-
-	if !rows.Next() {
-		if err := rows.Err(); err != nil {
-			return output.PolicySnapshot{}, hangarConflict(err)
-		}
-
-		return output.PolicySnapshot{}, nil
-	}
-
-	var snapshot output.PolicySnapshot
-	var observed time.Time
-	var state string
-	if err := rows.Scan(&snapshot.BucketFingerprint, &snapshot.Metageneration,
-		&snapshot.PolicyHash, &snapshot.LifecycleDeleteRules, &state, &observed); err != nil {
-		return output.PolicySnapshot{}, hangarConflict(err)
-	}
-
-	snapshot.ProtocolVersion = output.ProtocolVersion
-	snapshot.ActivationEpoch = executioncontrol.ActivationEpoch(epoch)
-	snapshot.State = output.PolicyState(state)
-	snapshot.ObservedAt = output.NewTimestamp(observed)
-
-	return snapshot, nil
 }
 
 // CountOutputPlaneState counts what this plane is holding, in ONE statement.

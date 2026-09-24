@@ -286,32 +286,6 @@ func activate(t *testing.T, conn db.DbConn, daemon *daemonProcess) {
 		t.Fatalf("activating: %v", err)
 	}
 
-	tx, err := conn.Begin()
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer tx.Rollback()
-
-	prefix, err := db.HangarConsumerPrefixHeld("hangaroutput-harness")
-	if err != nil {
-		t.Fatalf("prefix: %v", err)
-	}
-	if err := db.NewHangarOutputRepository(prefix).RecordPolicyAttestation(
-		context.Background(), tx, output.PolicySnapshot{
-			ProtocolVersion:      output.ProtocolVersion,
-			ActivationEpoch:      harnessEpoch,
-			BucketFingerprint:    "gs://harness-output",
-			Metageneration:       3,
-			PolicyHash:           "policy-hash-1",
-			LifecycleDeleteRules: 0,
-			State:                output.PolicySafe,
-			ObservedAt:           output.NewTimestamp(time.Now()),
-		}, nil); err != nil {
-		t.Fatalf("attesting: %v", err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatalf("commit: %v", err)
-	}
 }
 
 // connTransactor adapts the real connection to the coordinator's port.

@@ -34,10 +34,8 @@ func drainFixture(t *testing.T, epoch executioncontrol.ActivationEpoch) (activat
 	mustAttestAndEnableBase(t, epochs, epoch)
 	mustAttestAndEnableOutput(t, epochs, epoch)
 
-	// A safe policy reading. The schema refuses a predeclaration under an epoch
-	// with no lifetime-policy attestation -- "we have not checked" and "the
-	// check failed" are the same amount of evidence -- so a fixture that seeded
-	// live state without one would be testing that refusal instead.
+	// Retain a historical policy observation to exercise compatibility with
+	// epochs created before runtime integrity replaced policy admission.
 	if _, err := conn.Exec(`
 		INSERT INTO hangar_policy_snapshots
 			(activation_epoch, bucket_fingerprint, metageneration, policy_hash,
@@ -406,5 +404,58 @@ func TestDrainFacetsTakesOutputDownBeforeBase(t *testing.T) {
 	one := activation.DrainFacets(false, activation.FacetBase)
 	if len(one) != 1 || one[0] != activation.FacetBase {
 		t.Errorf("a single-facet drain took %v", one)
+	}
+}
+
+func TestDrainIgnoresRetiredPolicyEvidenceAndLeases(t *testing.T) {
+	const epoch = executioncontrol.ActivationEpoch(91)
+	epochs, conn := drainFixture(t, epoch)
+	mustExec(t, conn, `INSERT INTO hangar_policy_violations
+   (activation_epoch, snapshot_id, violation, subject, detail)
+   SELECT $1, id, 'evidence_stale', 'legacy-policy', 'old attestor finding'
+     FROM hangar_policy_snapshots WHERE activation_epoch = $1 LIMIT 1`, int64(epoch))
+	mustExec(t, conn, `INSERT INTO hangar_operation_leases
+   (kind, activation_epoch, owner_id, lease_fence, expires_at)
+   VALUES ('policy_attestation', $1, gen_random_uuid(), 1, now() + interval '1 hour')`, int64(epoch))
+	outcome, err := epochs.DrainStep(context.Background(), epoch, activation.FacetOutput, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.Disabled {
+		t.Fatalf("retired policy evidence prevented drain: %+v", outcome)
+	}
+	var count int
+	if err := conn.QueryRow(`SELECT count(*) FROM hangar_policy_violations WHERE activation_epoch = $1`, int64(epoch)).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("historical finding was erased: count=%d", count)
+	}
+}
+
+func TestDrainRequiresRuntimeFindingReconciliation(t *testing.T) {
+	for _, violation := range output.PolicyViolations() {
+		t.Run(string(violation), func(t *testing.T) {
+			const epoch = executioncontrol.ActivationEpoch(92)
+			epochs, conn := drainFixture(t, epoch)
+			mustExec(t, conn, `INSERT INTO hangar_policy_violations
+       (activation_epoch, violation, subject, detail) VALUES ($1, $2, 'runtime-subject', 'observed failure')`, int64(epoch), string(violation))
+			outcome, err := epochs.DrainStep(context.Background(), epoch, activation.FacetOutput, true)
+			if !errors.Is(err, activation.ErrDrainRefused) {
+				t.Fatalf("unresolved runtime finding was not refused: %v", err)
+			}
+			if outcome.Disabled {
+				t.Fatal("disabled despite unresolved runtime finding")
+			}
+			mustExec(t, conn, `UPDATE hangar_policy_violations SET resolved_at = now()
+       WHERE activation_epoch = $1 AND violation = $2 AND subject = 'runtime-subject'`, int64(epoch), string(violation))
+			outcome, err = epochs.DrainStep(context.Background(), epoch, activation.FacetOutput, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !outcome.Disabled {
+				t.Fatalf("reconciled finding still prevented drain: %+v", outcome)
+			}
+		})
 	}
 }

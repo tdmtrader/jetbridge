@@ -183,8 +183,8 @@ func hangarConflict(err error) error {
 // That is not a cosmetic difference. Every caller in this plane distinguishes a
 // REFUSAL (an answer: stop, or change something first) from a LOST ANSWER (ask
 // again with the same identity). An unmapped JB002 at commit reads as the
-// second, and the caller retries the same identity against a policy only an
-// attestor can change -- a loop with no exit. Mapping it here, once, in the
+// second, and the caller retries the same identity against an integrity finding only an
+// operator can reconcile -- a loop with no exit. Mapping it here, once, in the
 // adapter every transactor hands out, is what makes "at risk is a refusal" true
 // of the whole path rather than of the statements that happen to fail early.
 //

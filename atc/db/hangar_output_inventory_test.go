@@ -437,7 +437,7 @@ var _ = Describe("the Hangar operation leases", func() {
 		in(func(tx db.HangarOutputTx) {
 			var err error
 			held, err = repository.ClaimOperationLease(ctx, tx,
-				output.OperationPolicyAttestation, epoch, ownerA, output.MinLeaseTerm)
+				output.OperationInventory, epoch, ownerA, output.MinLeaseTerm)
 			Expect(err).NotTo(HaveOccurred())
 		})
 
@@ -445,7 +445,7 @@ var _ = Describe("the Hangar operation leases", func() {
 			UPDATE hangar_operation_leases
 			   SET renewed_at = now() - interval '10 minutes',
 			       expires_at = now() + interval '5 minutes'
-			 WHERE kind = 'policy_attestation' AND activation_epoch = $1`, epoch)
+			 WHERE kind = 'inventory' AND activation_epoch = $1`, epoch)
 		Expect(err).NotTo(HaveOccurred())
 
 		in(func(tx db.HangarOutputTx) {

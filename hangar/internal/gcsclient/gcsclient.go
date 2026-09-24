@@ -1,27 +1,10 @@
 // Package gcsclient opens this repository's one Cloud Storage client, and it is
 // importable only from within hangar/.
 //
-// The package exists because of what a third round of one finding taught. Delete
-// was first a method on the shared object handle; narrowing that closed the
-// route that had been demonstrated and left open a cheaper one, because
-// hangar/gcs.NewStorageClient was exported and handed the raw *storage.Client to
-// three non-reclaimer command roots, each of which held it in a local variable.
-// A method call on an already-typed value needs no import, so
-//
-//	storageClient.Bucket(bucket).Object("any/key").Delete(ctx)
-//
-// built in the daemon, the inventory controller and the attestor alike, added
-// nothing to any dependency graph, and passed every architecture guard in the
-// tree. That was demonstrated in all three.
-//
-// The lesson is that a guard which names a route guards that route, not the
-// capability. So the capability stops being handed out: nothing outside hangar/
-// can obtain a *storage.Client through this repository's own seam, because Go's
-// internal rule is enforced by the toolchain rather than by a rule a reviewer
-// has to read. Each capability package above this one -- hangar/gcs,
-// hangar/gcsstore, hangar/gcsdelete -- opens and owns its own client behind a
-// (ctx, endpoint) constructor and returns an interface with exactly the
-// operations its role may issue.
+// Raw SDK clients remain inside Hangar's storage adapters. Returning one to a
+// command would let that command call arbitrary SDK operations without adding
+// an import that the dependency guards could detect. Go's internal-package
+// boundary and the adapters' restricted interfaces preserve that separation.
 package gcsclient
 
 import (

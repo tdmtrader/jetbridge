@@ -30,6 +30,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
+	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/hangaroutput/activation"
 	"github.com/concourse/concourse/atc/hangaroutput/controller"
 	"github.com/concourse/concourse/hangar/executioncontrol"
@@ -83,6 +84,22 @@ func run(ctx context.Context, config Config, out *os.File) error {
 		if err := enable(ctx, epochs, epoch, config, out); err != nil {
 			return err
 		}
+
+	case ModeReconcileIntegrity:
+		tx, err := conn.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		repository := &db.HangarOutputRepository{}
+		if err := repository.ReconcilePolicyViolation(ctx, tx, config.Epoch,
+			output.PolicyViolation(config.IntegrityViolation), config.IntegritySubject); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "reconciled %s for %q in epoch %d; history retained. This acknowledgement does not restore lost objects or repair storage permissions.\n", config.IntegrityViolation, config.IntegritySubject, config.Epoch)
 
 	case ModeDrain:
 		if err := drain(ctx, epochs, epoch, config, out); err != nil {

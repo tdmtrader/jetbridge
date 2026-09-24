@@ -380,7 +380,6 @@ func TestTheProductVocabularyGuardIsNotVacuous(t *testing.T) {
 			// receipt, claim and bucket are its own words there.
 			declaredField{outputPackageDir, "CaptureAdmission", "Output", "output", "OutputName"},
 			declaredField{outputPackageDir, "Receipt", "Claims", "claims", "ReceiptClaims"},
-			declaredField{outputPackageDir, "PolicySnapshot", "BucketFingerprint", "bucket_fingerprint", "string"},
 			// and words that merely contain a forbidden one are not it.
 			declaredField{basePackageDir, "Acknowledgement", "ProcessIdentity", "process_identity", "ProcessIdentity"},
 			declaredField{outputPackageDir, "InventoryDebt", "Attempts", "attempts", "int"},

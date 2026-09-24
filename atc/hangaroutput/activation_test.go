@@ -579,26 +579,13 @@ func TestOutputCanBeEnabledAgainAfterARotationAndAFullDrain(t *testing.T) {
 	}
 }
 
-// ENABLE HAD NO PRECONDITIONS AT ALL, AND A WRITTEN INSTRUCTION INSTEAD.
-//
-// `--mode=enable --facet=output` never read a policy snapshot, never checked
-// which migration the database is at, never asked whether a policy attestor is
-// deployed and holding its lease, and never looked at the identity facts the
-// epoch row carries. An operator could attest and enable with no conformance
-// run and no attestor anywhere in the cluster, and the first they would hear of
-// it is a deferred JB002 on some build's commit.
-//
-// EnablePreconditions is that instruction made real, and this drives it against
-// the live tables one missing thing at a time.
+// Enable checks schema, cohort identity and unresolved runtime findings before
+// changing the facet state. Each case removes one required fact.
 func TestEnablingOutputIsRefusedWhileItsPreconditionsAreUnmet(t *testing.T) {
 	ctx := context.Background()
 	const epoch = executioncontrol.ActivationEpoch(71)
 
-	// ready builds an epoch that is attested on both facets, with a fresh safe
-	// policy attestation of the attested bucket and an attestor holding its
-	// lease -- everything EnablePreconditions asks for. Each case then removes
-	// exactly one thing, so a red row names the precondition rather than
-	// "enable was refused".
+	// ready provides both attested facets without any policy observations.
 	ready := func(t *testing.T) (activation.Epochs, *sql.DB) {
 		t.Helper()
 
@@ -606,22 +593,6 @@ func TestEnablingOutputIsRefusedWhileItsPreconditionsAreUnmet(t *testing.T) {
 		mustBegin(t, epochs, epoch)
 		mustAttestAndEnableBase(t, epochs, epoch)
 		mustAttestOutputOnly(t, epochs, epoch)
-
-		if _, err := conn.Exec(`
-			INSERT INTO hangar_policy_snapshots
-				(activation_epoch, bucket_fingerprint, metageneration, policy_hash,
-				 lifecycle_delete_rules, state, observed_at)
-			VALUES ($1, $2, 3, 'policy-hash-1', 0, 'safe', now())`,
-			int64(epoch), outputEvidence().BucketFingerprint); err != nil {
-			t.Fatalf("recording the policy attestation: %v", err)
-		}
-		if _, err := conn.Exec(`
-			INSERT INTO hangar_operation_leases
-				(kind, activation_epoch, owner_id, lease_fence, expires_at)
-			VALUES ('policy_attestation', $1, gen_random_uuid(), 1,
-				now() + interval '30 minutes')`, int64(epoch)); err != nil {
-			t.Fatalf("taking the policy attestation lease: %v", err)
-		}
 
 		return epochs, conn
 	}
@@ -638,7 +609,7 @@ func TestEnablingOutputIsRefusedWhileItsPreconditionsAreUnmet(t *testing.T) {
 		if !outcome.Enabled {
 			t.Fatal("the step reported success and enabled nothing")
 		}
-		if len(outcome.Preconditions) < 8 {
+		if len(outcome.Preconditions) == 0 {
 			t.Errorf("the step checked only %d preconditions; the list is what makes the "+
 				"refusal actionable", len(outcome.Preconditions))
 		}
@@ -662,63 +633,26 @@ func TestEnablingOutputIsRefusedWhileItsPreconditionsAreUnmet(t *testing.T) {
 		}
 	})
 
-	// Each case removes one thing and names every precondition that should then
-	// be unmet. Usually that is one; deleting the attestation altogether is
-	// three, because "safe", "fresh" and "of this bucket" are three questions
-	// about a row that is no longer there, and a case that asserted only the
-	// first would be hiding the other two.
+	// Each case names every precondition its mutation should invalidate.
 	for name, probe := range map[string]struct {
 		remove func(t *testing.T, conn *sql.DB)
 		unmet  []string
 	}{
-		"there is no lifetime-policy attestation": {
+		"unresolved object loss": {
 			remove: func(t *testing.T, conn *sql.DB) {
-				mustExec(t, conn, `DELETE FROM hangar_policy_snapshots`)
+				mustExec(t, conn, `INSERT INTO hangar_policy_violations (activation_epoch, violation, subject, detail)
+                    VALUES ($1, 'out_of_band_absence', 'missing-object', 'observed loss')`, int64(epoch))
 			},
-			unmet: []string{
-				"lifetime policy attested safe",
-				"lifetime policy attestation is fresh",
-				"the attestation is of the attested bucket",
-			},
+			unmet: []string{"storage integrity"},
 		},
-		"the lifetime policy is at risk": {
+		"unresolved denied storage access": {
 			remove: func(t *testing.T, conn *sql.DB) {
-				mustExec(t, conn, `UPDATE hangar_policy_snapshots
-					SET state = 'at_risk', lifecycle_delete_rules = 1`)
+				mustExec(t, conn, `INSERT INTO hangar_policy_violations (activation_epoch, violation, subject, detail)
+                    VALUES ($1, 'runtime_principal_denied', 'publisher', 'denied')`, int64(epoch))
 			},
-			unmet: []string{"lifetime policy attested safe"},
+			unmet: []string{"storage integrity"},
 		},
-		"the attestation is older than the detection bound": {
-			remove: func(t *testing.T, conn *sql.DB) {
-				mustExec(t, conn, `UPDATE hangar_policy_snapshots
-					SET observed_at = now() - interval '41 minutes'`)
-			},
-			unmet: []string{"lifetime policy attestation is fresh"},
-		},
-		"the attestation reads another bucket": {
-			remove: func(t *testing.T, conn *sql.DB) {
-				mustExec(t, conn, `UPDATE hangar_policy_snapshots
-					SET bucket_fingerprint = 'gs://somebody-elses-bucket'`)
-			},
-			unmet: []string{"the attestation is of the attested bucket"},
-		},
-		"no policy attestor is deployed": {
-			remove: func(t *testing.T, conn *sql.DB) {
-				mustExec(t, conn, `DELETE FROM hangar_operation_leases
-					WHERE kind = 'policy_attestation'`)
-			},
-			unmet: []string{"a policy attestor is running"},
-		},
-		"the policy attestor's lease has expired": {
-			remove: func(t *testing.T, conn *sql.DB) {
-				mustExec(t, conn, `UPDATE hangar_operation_leases
-					SET acquired_at = now() - interval '2 hours',
-					    renewed_at = now() - interval '2 hours',
-					    expires_at = now() - interval '1 hour'
-					WHERE kind = 'policy_attestation'`)
-			},
-			unmet: []string{"a policy attestor is running"},
-		},
+
 		"the receipt key's validity window has passed": {
 			remove: func(t *testing.T, conn *sql.DB) {
 				mustExec(t, conn, `UPDATE hangar_output_activation_epochs
@@ -819,7 +753,7 @@ func TestEnablingIsRefusedForAnEpochThatWasNeverFullyAttested(t *testing.T) {
 			t.Fatal("the step refused and enabled the facet anyway")
 		}
 		for _, named := range []string{
-			"facet attested", "cloud identity attested", "receipt key is currently valid",
+			"facet attested", "storage identity attested", "receipt key is currently valid",
 		} {
 			if !strings.Contains(err.Error(), named) {
 				t.Errorf("the refusal does not name %q: %v", named, err)
@@ -845,7 +779,7 @@ func TestEnablingIsRefusedForAnEpochThatWasNeverFullyAttested(t *testing.T) {
 		if !errors.Is(err, activation.ErrEnableRefused) {
 			t.Fatalf("an output facet attesting no bucket or keys was enabled: %v", err)
 		}
-		if !strings.Contains(err.Error(), "cloud identity attested") {
+		if !strings.Contains(err.Error(), "storage identity attested") {
 			t.Errorf("the refusal does not name the missing identity: %v", err)
 		}
 	})

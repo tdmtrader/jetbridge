@@ -26,51 +26,13 @@ import (
 	"github.com/concourse/concourse/hangar/output"
 )
 
-// Store is the reclaimer's view: stat and conditional delete.
+// Store is the reclaimer's view of object operations.
 type Store interface {
-	Object(bucket, key string) Handle
+	StatExact(context.Context, string, string, int64) (objectstore.Attrs, error)
+	DeleteExact(context.Context, string, string, int64) error
 }
 
-// Handle offers a generation pin, a precondition, a stat and a delete. There is
-// no writer and no reader: a reclaimer that could read could exfiltrate, and a
-// reclaimer that could write could resurrect.
-type Handle interface {
-	If(objectstore.Conditions) Handle
-	Generation(int64) Handle
-	Attrs(ctx context.Context) (objectstore.Attrs, error)
-	Delete(ctx context.Context) error
-}
-
-// Restrict narrows a delete client to the reclaimer's role.
-//
-// It takes objectstore.DeleteClient and NOT the full client, which is the point
-// of the split: the full client no longer carries a delete at all, so a root
-// that holds one cannot reach this call however it is narrowed afterwards.
-func Restrict(client objectstore.DeleteClient) Store { return restricted{client: client} }
-
-type restricted struct{ client objectstore.DeleteClient }
-
-func (store restricted) Object(bucket, key string) Handle {
-	return restrictedHandle{handle: store.client.ObjectToDelete(bucket, key)}
-}
-
-type restrictedHandle struct{ handle objectstore.DeleteHandle }
-
-func (handle restrictedHandle) If(conditions objectstore.Conditions) Handle {
-	return restrictedHandle{handle: handle.handle.If(conditions)}
-}
-
-func (handle restrictedHandle) Generation(generation int64) Handle {
-	return restrictedHandle{handle: handle.handle.Generation(generation)}
-}
-
-func (handle restrictedHandle) Attrs(ctx context.Context) (objectstore.Attrs, error) {
-	return handle.handle.Attrs(ctx)
-}
-
-func (handle restrictedHandle) Delete(ctx context.Context) error {
-	return handle.handle.Delete(ctx)
-}
+func Restrict(client objectstore.DeleteClient) Store { return client }
 
 // Reclaimer deletes exact generations in one namespace.
 type Reclaimer struct {
@@ -123,17 +85,7 @@ func (reclaimer *Reclaimer) DeleteExactGeneration(ctx context.Context, ref hanga
 	// metadata change moves it without moving the generation, and a delete
 	// conditioned on the recorded value 412s forever against an object nobody
 	// has touched the bytes of. See DeletePrecondition.
-	conditions := objectstore.Conditions{
-		GenerationMatch: precondition.Generation,
-	}
-	if err := conditions.Validate(); err != nil {
-		return output.DeleteInfrastructure, err
-	}
-
-	err = reclaimer.store.Object(reclaimer.namespace.Bucket(), key).
-		Generation(ref.Generation).
-		If(conditions).
-		Delete(ctx)
+	err = reclaimer.store.DeleteExact(ctx, reclaimer.namespace.Bucket(), key, ref.Generation)
 
 	switch {
 	case err == nil:
@@ -202,9 +154,7 @@ func (reclaimer *Reclaimer) ObserveExactAbsence(ctx context.Context, ref hangar.
 		return false, err
 	}
 
-	_, err = reclaimer.store.Object(reclaimer.namespace.Bucket(), key).
-		Generation(ref.Generation).
-		Attrs(ctx)
+	_, err = reclaimer.store.StatExact(ctx, reclaimer.namespace.Bucket(), key, ref.Generation)
 	switch {
 	case err == nil:
 		return false, nil
