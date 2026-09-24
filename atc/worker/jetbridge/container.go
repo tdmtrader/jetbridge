@@ -708,15 +708,6 @@ func (c *Container) buildArtifactStoreVolume() *corev1.Volume {
 	return c.storageBackend.ArtifactStoreVolume(c.containerSpec.Type)
 }
 
-// artifactVolumeName returns the volume name for the artifact store via the
-// storage backend, or empty string if no backend is configured.
-func (c *Container) artifactVolumeName() string {
-	if c.storageBackend == nil {
-		return ""
-	}
-	return c.storageBackend.ArtifactStoreVolumeName()
-}
-
 // buildArtifactInitContainers creates init containers for fetching input
 // artifacts via the storage backend. Returns nil when no backend is configured.
 func (c *Container) buildArtifactInitContainers(podVolumes []corev1.Volume, mainMounts []corev1.VolumeMount) ([]corev1.Container, error) {

@@ -112,7 +112,7 @@ func requireApplicationPod(in TaskCluster, pod *corev1.Pod) error {
 }
 
 // This is an explicit application premise, not automatic artifact staging:
-// production streamInputs is a no-op. Real Volume.StreamIn writes to the
+// the exec path stages no inputs. Real Volume.StreamIn writes to the
 // kubelet-mounted input before the real npm command runs. Setup and readiness
 // use the original SPDY executor so they cannot satisfy the task-exec oracle.
 func prepareMountedApplication(in TaskCluster, pod *corev1.Pod) error {

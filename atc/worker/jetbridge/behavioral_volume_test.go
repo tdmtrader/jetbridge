@@ -164,7 +164,6 @@ func TestVT06_DaemonSetVolume_StreamOut_RetrySucceeds(t *testing.T) {
 		handle:         "retry-handle",
 		workerName:     "w1",
 		sourceNode:     "node-1",
-		config:         Config{Namespace: "test-ns", ArtifactDaemonPort: 7780},
 		nodeIPResolver: resolver,
 	}
 	vol.wire = plainWire(t, 7780, rewriteTransport{url: srv.URL})
@@ -203,7 +202,6 @@ func TestVT06_DaemonSetVolume_StreamOut_GivesUpAfter3Failures(t *testing.T) {
 		handle:         "fail-handle",
 		workerName:     "w1",
 		sourceNode:     "node-1",
-		config:         Config{Namespace: "test-ns", ArtifactDaemonPort: 7780},
 		nodeIPResolver: resolver,
 	}
 	vol.wire = plainWire(t, 7780, rewriteTransport{url: srv.URL})
@@ -228,7 +226,6 @@ func TestVT06_DaemonSetVolume_StreamOut_Non200Status(t *testing.T) {
 		handle:         "err-handle",
 		workerName:     "w1",
 		sourceNode:     "node-1",
-		config:         Config{Namespace: "test-ns", ArtifactDaemonPort: 7780},
 		nodeIPResolver: resolver,
 	}
 	vol.wire = plainWire(t, 7780, rewriteTransport{url: srv.URL})
@@ -279,7 +276,6 @@ func TestVT08_DaemonSetVolume_StreamOut_PassesRawBody(t *testing.T) {
 		handle:         "raw-handle",
 		workerName:     "w1",
 		sourceNode:     "node-1",
-		config:         Config{Namespace: "test-ns", ArtifactDaemonPort: 7780},
 		nodeIPResolver: resolver,
 	}
 	vol.wire = plainWire(t, 7780, rewriteTransport{url: srv.URL})

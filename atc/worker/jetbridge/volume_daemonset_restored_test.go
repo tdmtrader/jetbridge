@@ -87,7 +87,6 @@ func newPeerFallbackTestRig(t *testing.T, producerNode, producerIP string, trans
 		handle:         "h",
 		workerName:     "w",
 		sourceNode:     producerNode,
-		config:         Config{ArtifactDaemonPort: 7780},
 		wire:           dc.wire,
 		nodeIPResolver: resolver,
 		daemonClient:   dc,

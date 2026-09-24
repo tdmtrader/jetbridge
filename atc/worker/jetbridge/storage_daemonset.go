@@ -172,10 +172,6 @@ func (b *DaemonSetBackend) ArtifactStoreVolume(containerType db.ContainerType) *
 	}
 }
 
-func (b *DaemonSetBackend) ArtifactStoreVolumeName() string {
-	return artifactDaemonHostPathVolumeName
-}
-
 // artifactwire.ResolveRequest is a single key/dest pair for the /resolve-batch endpoint.
 // wireTreeRef converts at this edge: the wire module carries a shape-only
 // TreeRef because it cannot import hangar (ADR-0002), and the daemon
@@ -436,45 +432,6 @@ verify_receipt() {
 }
 %sexit 0
 `, b.wire.ShellPrelude(), request, artifactwire.HangarMaterializations.Path, receiptChecks.String())
-	return []string{"sh", "-c", script}
-}
-
-func (b *DaemonSetBackend) daemonResolveCommand(key, hostDest string) []string {
-	if key == "" {
-		script := `echo "ERROR: artifact key is empty — producing step did not record its output location" >&2; exit 1`
-		return []string{"sh", "-c", script}
-	}
-
-	// The body is the same ResolveRequest the daemon decodes, marshalled
-	// here rather than spelled out in shell, and every value spliced into the
-	// script is a single-quoted word: an output name is the task author's,
-	// and may carry a quote or a command substitution.
-	payload, _ := json.Marshal(artifactwire.ResolveRequest{Key: key, Dest: hostDest})
-
-	script := fmt.Sprintf(`
-set -e
-KEY=%s
-DST=%s
-%sPAYLOAD=%s
-echo "[artifact-fetch] resolving key=${KEY} dest=${DST} daemon=${DAEMON}" >&2
-# Retry up to 10 times with backoff — the daemon may not be reachable
-# immediately (hostPort iptables rules propagation, daemon restart after
-# eviction, etc.).
-ATTEMPT=0
-MAX=10
-while true; do
-  ATTEMPT=$((ATTEMPT + 1))
-  RESP=$(wget ${WGET_OPTS} -qO- -T 180 --header='Content-Type: application/json' --post-data="${PAYLOAD}" "${DAEMON}%s" 2>&1) && break
-  if [ "$ATTEMPT" -ge "$MAX" ]; then
-    echo "[artifact-fetch] FAILED after ${MAX} attempts: ${RESP}" >&2
-    exit 1
-  fi
-  echo "[artifact-fetch] attempt ${ATTEMPT}/${MAX} failed, retrying in 2s..." >&2
-  sleep 2
-done
-echo "[artifact-fetch] resolved: ${RESP}" >&2
-`, shellQuote(key), shellQuote(hostDest), b.wire.ShellPrelude(), shellQuote(string(payload)), artifactwire.Resolve.Path)
-
 	return []string{"sh", "-c", script}
 }
 

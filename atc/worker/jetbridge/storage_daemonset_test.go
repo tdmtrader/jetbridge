@@ -160,14 +160,6 @@ func TestDaemonSetBackend_ArtifactStoreVolume_CheckReturnsNil(t *testing.T) {
 	}
 }
 
-func TestDaemonSetBackend_ArtifactStoreVolumeName(t *testing.T) {
-	b := testBackend(nil)
-	name := b.ArtifactStoreVolumeName()
-	if name != "artifact-daemon-hostpath" {
-		t.Errorf("expected artifact-daemon-hostpath, got %s", name)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // BuildFetchInitContainers
 // ---------------------------------------------------------------------------
@@ -938,61 +930,6 @@ func TestNilBackend_StepVolumeReturnsEmptyDir(t *testing.T) {
 	}
 	if vol.Name != "test-vol" {
 		t.Errorf("expected name test-vol, got %s", vol.Name)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// daemonResolveCommand
-// ---------------------------------------------------------------------------
-
-func TestDaemonSetBackend_DaemonResolveCommand_EmptyKey(t *testing.T) {
-	b := testBackend(nil)
-	cmd := b.daemonResolveCommand("", "/dest")
-	cmdStr := strings.Join(cmd, " ")
-	if !strings.Contains(cmdStr, "exit 1") {
-		t.Errorf("expected exit 1 for empty key, got: %s", cmdStr)
-	}
-}
-
-func TestDaemonSetBackend_DaemonResolveCommand_ValidKey(t *testing.T) {
-	b := testBackend(nil)
-	cmd := b.daemonResolveCommand("handle/result", "/dest/path")
-	cmdStr := strings.Join(cmd, " ")
-	if !strings.Contains(cmdStr, "handle/result") {
-		t.Errorf("expected key in command, got: %s", cmdStr)
-	}
-	if !strings.Contains(cmdStr, "/dest/path") {
-		t.Errorf("expected dest in command, got: %s", cmdStr)
-	}
-	if !strings.Contains(cmdStr, "/resolve") {
-		t.Errorf("expected /resolve endpoint in command, got: %s", cmdStr)
-	}
-}
-
-func TestDaemonSetBackend_DaemonResolveCommand_Timeout180s(t *testing.T) {
-	b := testBackend(nil)
-	cmd := b.daemonResolveCommand("handle/result", "/dest/path")
-	cmdStr := strings.Join(cmd, " ")
-
-	// Must use 180s timeout to accommodate cross-node large artifact transfers.
-	if !strings.Contains(cmdStr, "-T 180") {
-		t.Errorf("expected wget timeout -T 180 for cross-node reliability, got: %s", cmdStr)
-	}
-	// Must NOT use the old 5s timeout.
-	if strings.Contains(cmdStr, "-T 5") {
-		t.Errorf("wget -T 5 is too short for cross-node transfers, got: %s", cmdStr)
-	}
-}
-
-func TestDaemonSetBackend_DaemonResolveCommand_DefaultPort(t *testing.T) {
-	cfg := testDaemonConfig()
-	cfg.ArtifactDaemonPort = 0
-	b := NewDaemonSetBackend(cfg, nil, nil)
-
-	cmd := b.daemonResolveCommand("key", "/dest")
-	cmdStr := strings.Join(cmd, " ")
-	if !strings.Contains(cmdStr, "7780") {
-		t.Errorf("expected default port 7780, got: %s", cmdStr)
 	}
 }
 

@@ -922,23 +922,6 @@ func TestDaemonSetMode_MissingLocatorFallsBackToVolumeHandle(t *testing.T) {
 	}
 }
 
-// TestDaemonSetMode_EmptyKeyFailsFast verifies that
-// daemonResolveCommand generates an exit-1 script when the key is empty.
-func TestDaemonSetMode_EmptyKeyFailsFast(t *testing.T) {
-	cfg := daemonSetConfig()
-	backend := NewDaemonSetBackend(cfg, nil, nil)
-	_ = &Container{config: cfg, storageBackend: backend}
-
-	cmd := backend.daemonResolveCommand("", "/tmp/build/input")
-	script := strings.Join(cmd, " ")
-	if !strings.Contains(script, "exit 1") {
-		t.Errorf("expected exit 1 for empty key, got: %s", script)
-	}
-	if strings.Contains(script, "wget") {
-		t.Errorf("empty key should NOT generate wget command, got: %s", script)
-	}
-}
-
 // TestDaemonSetMode_RecordAndLocateRoundTrip verifies that recording
 // an artifact location and looking it up produces correct init containers.
 func TestDaemonSetMode_RecordAndLocateRoundTrip(t *testing.T) {
@@ -984,32 +967,6 @@ func TestDaemonSetMode_RecordAndLocateRoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(cmd, "/resolve") {
 		t.Errorf("expected /resolve endpoint in command, got: %s", cmd)
-	}
-}
-
-// --- Daemon resolve command tests ---
-
-// TestDaemonSetMode_DaemonResolveCommand verifies that daemonResolveCommand
-// generates a wget-based script that calls the local daemon's /resolve endpoint.
-func TestDaemonSetMode_DaemonResolveCommand(t *testing.T) {
-	cfg := daemonSetConfig()
-	backend := NewDaemonSetBackend(cfg, nil, nil)
-	_ = &Container{config: cfg, storageBackend: backend}
-
-	cmd := backend.daemonResolveCommand("producer-handle/result", "/var/concourse/artifacts/steps/consumer/input-0")
-	script := strings.Join(cmd, " ")
-
-	if !strings.Contains(script, "wget") {
-		t.Errorf("expected wget in resolve command, got: %s", script)
-	}
-	if !strings.Contains(script, "HOST_IP") {
-		t.Errorf("expected HOST_IP reference in resolve command, got: %s", script)
-	}
-	if !strings.Contains(script, "/resolve") {
-		t.Errorf("expected /resolve endpoint in command, got: %s", script)
-	}
-	if !strings.Contains(script, "producer-handle/result") {
-		t.Errorf("expected daemon key in command, got: %s", script)
 	}
 }
 

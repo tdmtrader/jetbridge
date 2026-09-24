@@ -33,7 +33,6 @@ type StorageBackend interface {
 	ReservedIncarnationVolume(name, reservedDir string) corev1.Volume
 	CacheVolume(name string, identity atc.TaskCacheIdentity, stepName, cachePath string) corev1.Volume
 	ArtifactStoreVolume(containerType db.ContainerType) *corev1.Volume
-	ArtifactStoreVolumeName() string
 	BuildFetchInitContainers(handle string, inputs []runtime.Input, podVolumes []corev1.Volume, mainMounts []corev1.VolumeMount) ([]corev1.Container, error)
 	BuildCleanupInitContainer(handle string, containerType db.ContainerType, reused bool) (*corev1.Container, error)
 	BuildAffinity(inputs []runtime.Input, control *runtime.ExecutionControl) *corev1.Affinity

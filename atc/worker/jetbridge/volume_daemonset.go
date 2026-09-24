@@ -27,7 +27,6 @@ type DaemonSetVolume struct {
 	dbVolume       db.CreatedVolume
 	sourceNode     string
 	sourceIP       string // when set, used directly instead of resolving sourceNode
-	config         Config
 	wire           *artifactwire.Client
 	nodeIPResolver *NodeIPResolver
 	daemonClient   *DaemonClient // for discovering daemon pods when sourceNode is empty
@@ -41,7 +40,6 @@ func NewDaemonSetVolume(key, handle, workerName string, dbVolume db.CreatedVolum
 		workerName:     workerName,
 		dbVolume:       dbVolume,
 		sourceNode:     sourceNode,
-		config:         config,
 		wire:           newWireClient(config),
 		nodeIPResolver: nodeIPResolver,
 	}
@@ -56,7 +54,6 @@ func NewDaemonSetVolumeFromIP(key, handle, workerName string, daemonIP string, c
 		handle:     handle,
 		workerName: workerName,
 		sourceIP:   daemonIP,
-		config:     config,
 		wire:       newWireClient(config),
 	}
 }

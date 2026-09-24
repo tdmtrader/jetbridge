@@ -899,18 +899,8 @@ func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, r
 	}
 	tracing.End(waitSpan, nil)
 
-	// Stream input artifacts into the pod before executing the command.
-	streamCtx, streamSpan := tracing.StartSpan(ctx, "k8s.exec-process.stream-inputs", tracing.Attrs{
-		"pod-name": p.podName,
-	})
-	if err := p.streamInputs(streamCtx); err != nil {
-		tracing.End(streamSpan, err)
-		logger.Error("failed-to-stream-inputs", err)
-		fetchPodFailureContext(ctx, p.clientset, p.config.Namespace, p.podName, p.processIO.Stderr)
-		spanErr = err
-		return runtime.ProcessResult{}, wrapIfTransient(fmt.Errorf("streaming inputs: %w", err))
-	}
-	tracing.End(streamSpan, nil)
+	// Inputs are already in the pod: the fetch init containers staged them
+	// before the main container started.
 
 	// Stream sidecar container logs in parallel with the exec command. A
 	// sidecar with a dedicated per-sidecar event writer streams to it, so fly
@@ -1132,11 +1122,9 @@ func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, r
 			// fresh Pod or by sending the launch command again.
 			break
 		}
-		// Only retry on transient SPDY exec errors (container not found,
-		// unable to upgrade connection). These indicate the pod's container
+		// Only retry on transient SPDY exec errors: the pod's container
 		// terminated between our readiness check and the exec attempt.
-		msg := err.Error()
-		if !strings.Contains(msg, "container not found") && !strings.Contains(msg, "unable to upgrade connection") {
+		if !isTransientExecError(err) {
 			break
 		}
 		if attempt == maxExecRetries {
@@ -1455,12 +1443,6 @@ func (p *execProcess) deleteAbandonedPod(logger lager.Logger) {
 	if err != nil && !apierrors.IsNotFound(err) {
 		logger.Error("failed-to-delete-abandoned-pod", err)
 	}
-}
-
-// streamInputs is a no-op — all inputs are handled by init containers
-// that fetch from the DaemonSet hostPath.
-func (p *execProcess) streamInputs(ctx context.Context) error {
-	return nil
 }
 
 // uploadOutputsToArtifactStore records artifact locations via the storage

@@ -63,15 +63,16 @@ func isTransientK8sError(err error) bool {
 		return true
 	}
 
-	// SPDY exec failures caused by container lifecycle races. When a check
-	// pod completes before the exec connection is established, the SPDY
-	// upgrade fails with "container not found". This is transient because
-	// the next attempt will create a fresh pause pod.
-	msg := err.Error()
-	if strings.Contains(msg, "container not found") ||
-		strings.Contains(msg, "unable to upgrade connection") {
-		return true
-	}
+	return isTransientExecError(err)
+}
 
-	return false
+// isTransientExecError reports an SPDY exec failure caused by a container
+// lifecycle race: the step pod's container terminated between the readiness
+// check and the exec dial, so the upgrade fails with "container not found"
+// or "unable to upgrade connection". Nothing of the command ran, and the
+// next attempt will use a fresh pause pod.
+func isTransientExecError(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "container not found") ||
+		strings.Contains(msg, "unable to upgrade connection")
 }

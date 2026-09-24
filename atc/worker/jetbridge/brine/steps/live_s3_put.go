@@ -120,7 +120,8 @@ func runLiveS3Put(in LiveTaskPlan, rec *brine.Recorder) (S3PutOutcome, error) {
 		return S3PutOutcome{}, err
 	}
 	// Explicit real-volume uploads establish the premise. This is not a claim
-	// that streamInputs (a no-op) or daemon init containers performed staging.
+	// that the exec path (which stages nothing) or daemon init containers
+	// performed staging.
 	for i, file := range []struct{ name, body string }{{"app.tar.gz", string(payload)}, {"notes.txt", "notes-" + w.Namespace}} {
 		tar, err := plainTarOfOneFile(file.name, file.body)
 		if err != nil {
