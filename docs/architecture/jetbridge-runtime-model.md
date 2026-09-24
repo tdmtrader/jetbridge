@@ -87,5 +87,6 @@ A Run retains the node's signed start before any outcome is recorded. When
 it could not -- its database was down, or cancellation closed admission
 first -- Run cancellation reads the start from the node that signed it,
 retains it, and interrupts and closes the execution from the Pod's journal.
-An aborted Run build that cannot finish over an execution nothing else will
-close asks for its Run's cancellation, which the Run's abort implies anyway.
+Aborting a Run build is scoped to that build and never cancels its Run. An
+aborted build stays unfinished while its execution is open, and the Run
+keeps running.

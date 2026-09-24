@@ -751,31 +751,29 @@ func (b *build) finish(ctx context.Context, status BuildStatus, cancellation *ru
 		// Non-success requires exact source-release closure. A successful
 		// capture also requires its retained hidden candidate. Aggregate result
 		// publication remains the Run terminalizer's separate transaction.
-		if outputPending {
+		// Aborting a build is scoped to that build: open work it cannot close
+		// itself becomes its build closure, never its Run's cancellation.
+		requestClosure := func() error {
+			if !aborted || status != BuildStatusAborted || cancellation != nil || run.CancellationRequested() {
+				return atc.ErrRunOutputPending
+			}
+			if err := recordBuildClosure(ctx, tx, int(runID.Int64), b.id); err != nil {
+				return err
+			}
+			if err := tx.Commit(); err != nil {
+				return err
+			}
 			return atc.ErrRunOutputPending
+		}
+		if outputPending {
+			return requestClosure()
 		}
 		var executionClosed bool
 		if err = tx.QueryRow(`SELECT run_execution_closed($1)`, b.id).Scan(&executionClosed); err != nil {
 			return err
 		}
 		if !executionClosed {
-			// An aborted build that could not close its own execution -- no
-			// web was tracking it, or its in-band stop proved no outcome --
-			// has nothing left that would: its replays are refused admission.
-			// Run cancellation interrupts and closes an execution on the
-			// node's evidence, and the Run aborts with this build anyway, so
-			// the refusal asks for it. Finishing still waits for the closure.
-			if aborted && status == BuildStatusAborted && cancellation == nil &&
-				run.ContractVersion() == atc.RunContractV2 && !run.CancellationRequested() {
-				reason := fmt.Sprintf("build %d was aborted with an execution it could not close", b.id)
-				if _, err = acceptRunCancellation(ctx, tx, int(runID.Int64), AbortedBuildCancellationRequester, &reason); err != nil {
-					return err
-				}
-				if err = tx.Commit(); err != nil {
-					return err
-				}
-			}
-			return atc.ErrRunOutputPending
+			return requestClosure()
 		}
 	}
 

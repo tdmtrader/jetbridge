@@ -601,7 +601,8 @@ func (e runWitnessExecutor) ExecInPod(ctx context.Context, namespace, pod, conta
 // executing. Nothing the Run holds names it, and cancellation used to leave it
 // pending for ever. It must read the start from the node, retain it, and close
 // the execution on the journal's evidence, never running the command. An
-// aborted build that cannot finish over it asks for that cancellation itself.
+// aborted build that cannot finish over it stays unfinished and never asks
+// for its Run's cancellation: aborting a build is scoped to that build.
 func exerciseUnretainedStart(ctx context.Context, in RunOutputRuntime, a db.RunExecutionAdmission, aborted bool, process runtime.Process, client *jetbridge.OutputControlClient, marker string, build db.Build) error {
 	if _, err := in.Start.DB.Conn.Exec(`CREATE FUNCTION brine_reject_execution_start() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'brine unavailable start witness'; END; $$;
  CREATE TRIGGER brine_reject_execution_start BEFORE INSERT ON pipeline_run_execution_starts FOR EACH ROW EXECUTE FUNCTION brine_reject_execution_start()`); err != nil {
@@ -639,8 +640,8 @@ func exerciseUnretainedStart(ctx context.Context, in RunOutputRuntime, a db.RunE
 		if err = in.Start.DB.Conn.QueryRow(`SELECT coalesce(cancel_requested_by,'') FROM pipeline_runs WHERE id=$1`, a.RunID).Scan(&by); err != nil {
 			return err
 		}
-		if by != db.AbortedBuildCancellationRequester {
-			return fmt.Errorf("the stranded aborted build did not ask for its Run's cancellation: %q", by)
+		if by != "" {
+			return fmt.Errorf("aborting one build cancelled its whole Run (requested by %q)", by)
 		}
 	}
 	if err = exerciseBaseExecutionCancellation(in, a, executioncontrol.ClassificationAuthoritativeFinish); err != nil {

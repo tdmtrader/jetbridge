@@ -198,6 +198,13 @@ The gate deciding whether a build may be created at all on a template or a
 payload: templates never build, payloads take no one-off builds, and a
 terminal run refuses everything.
 
+**Build closure**:
+An aborted run build's request to settle the output handoffs and close the
+execution it left open, without cancelling its run. It is open until that
+work is settled and the build finishes aborted; the run then completes
+through ordinary run completion.
+_Avoid_: build cancellation, partial run cancellation
+
 **Run retention**:
 The template-declared policy (`keep_last`, `ttl_days`) that decides when a
 completed run's payload may be destroyed.

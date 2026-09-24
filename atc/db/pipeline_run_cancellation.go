@@ -23,11 +23,6 @@ func (f *pipelineRunFactory) AcceptRunCancellation(ctx context.Context, tx Tx, r
 	return acceptRunCancellation(ctx, tx, runID, requester, reason)
 }
 
-// AbortedBuildCancellationRequester is who asks for a Run's cancellation when
-// one of its aborted builds cannot finish over an execution nothing else will
-// close (build.finish).
-const AbortedBuildCancellationRequester = "system:aborted-build"
-
 func acceptRunCancellation(ctx context.Context, tx Tx, runID int, requester string, reason *string) (atc.RunCancelOutcome, error) {
 	if requester == "" {
 		return "", errors.New("cancellation requires an authenticated requester")

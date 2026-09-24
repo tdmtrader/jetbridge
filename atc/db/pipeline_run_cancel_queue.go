@@ -34,6 +34,11 @@ var cancellationSources = []struct {
 	{CancelTerminalize, `SELECT id::text AS subject FROM pipeline_runs WHERE id=$1`},
 }
 
+// runNeedsCancellationWork selects a running Run the worker must converge:
+// one whose cancellation was requested, or one with an open build closure.
+const runNeedsCancellationWork = `r.status='running' AND (r.cancel_requested_at IS NOT NULL OR
+ EXISTS(SELECT 1 FROM pipeline_run_build_closures bc WHERE bc.run_id=r.id AND bc.closed_at IS NULL))`
+
 // PendingRunCancellations advances a finite, persisted global cycle. A failed Run
 // cannot pin a page; Runs discovered above its high-water enter the next cycle.
 // This transaction acquires only the worker row, never a Run/domain lock.
@@ -49,7 +54,7 @@ func (f *pipelineRunFactory) PendingRunCancellations(ctx context.Context, tx Tx,
 		return nil, err
 	}
 	for cycle := 0; cycle < 2; cycle++ {
-		rows, err := tx.QueryContext(ctx, `SELECT id FROM pipeline_runs WHERE cancel_requested_at IS NOT NULL AND status='running' AND id>$1 AND id<=$2 ORDER BY id LIMIT $3`, after, high, limit)
+		rows, err := tx.QueryContext(ctx, `SELECT id FROM pipeline_runs r WHERE `+runNeedsCancellationWork+` AND id>$1 AND id<=$2 ORDER BY id LIMIT $3`, after, high, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -73,7 +78,7 @@ func (f *pipelineRunFactory) PendingRunCancellations(ctx context.Context, tx Tx,
 		}
 		if cycle == 0 {
 			after = 0
-			if err := tx.QueryRowContext(ctx, `SELECT coalesce(max(id),0) FROM pipeline_runs WHERE cancel_requested_at IS NOT NULL AND status='running'`).Scan(&high); err != nil {
+			if err := tx.QueryRowContext(ctx, `SELECT coalesce(max(id),0) FROM pipeline_runs r WHERE `+runNeedsCancellationWork).Scan(&high); err != nil {
 				return nil, err
 			}
 			if _, err := tx.ExecContext(ctx, `UPDATE pipeline_run_cancellation_worker SET last_run_id=0,run_high_water=$1 WHERE singleton`, high); err != nil {
@@ -100,12 +105,25 @@ func (f *pipelineRunFactory) DiscoverRunCancellation(ctx context.Context, tx Tx,
 	if err := tx.QueryRowContext(ctx, `SELECT next_discovery_kind FROM pipeline_run_cancellation_progress WHERE run_id=$1`, runID).Scan(&first); err != nil {
 		return 0, err
 	}
+	var cancelled bool
+	if err := tx.QueryRowContext(ctx, `SELECT cancel_requested_at IS NOT NULL FROM pipeline_runs WHERE id=$1`, runID).Scan(&cancelled); err != nil {
+		return 0, err
+	}
 	count := 0
 	for offset := 0; offset < len(cancellationSources) && count < limit; offset++ {
 		index := (first + offset) % len(cancellationSources)
 		source := cancellationSources[index]
+		owned := source.query
+		if !cancelled {
+			// Only open build closures: that build's own work, and nothing
+			// that would fence or finish the Run.
+			var ok bool
+			if owned, ok = buildClosureSubjects(source.kind, openBuildClosures); !ok {
+				continue
+			}
+		}
 		query := `INSERT INTO pipeline_run_cancellation_operations(run_id,kind,subject)
- SELECT $1,$2,owned.subject FROM (` + source.query + `) owned
+ SELECT $1,$2,owned.subject FROM (` + owned + `) owned
  WHERE NOT EXISTS(SELECT 1 FROM pipeline_run_cancellation_operations op WHERE op.run_id=$1 AND op.kind=$2 AND op.subject=owned.subject)
  ORDER BY owned.subject LIMIT $3 ON CONFLICT DO NOTHING`
 		result, err := tx.ExecContext(ctx, query, runID, string(source.kind), limit-count)
@@ -249,6 +267,13 @@ func lockRunCancellationState(ctx context.Context, tx Tx, runID int, terminalRep
 	var requested bool
 	if err := tx.QueryRowContext(ctx, `SELECT status,cancel_requested_at IS NOT NULL FROM pipeline_runs WHERE id=$1 FOR NO KEY UPDATE`, runID).Scan(&status, &requested); err != nil {
 		return err
+	}
+	if !requested && status == string(atc.RunStatusRunning) {
+		open, err := runHasOpenBuildClosure(ctx, tx, runID)
+		if err != nil {
+			return err
+		}
+		requested = open
 	}
 	if !requested || (status != string(atc.RunStatusRunning) && !(terminalReplay && status == string(atc.RunStatusAborted))) {
 		return ErrPipelineRunNotRunning
