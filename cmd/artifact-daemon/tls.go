@@ -7,9 +7,40 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/concourse/concourse/atc"
 )
+
+// daemonTLSMode reads the --tls-cert / --tls-key / --tls-ca-cert triple. All
+// three named is mTLS; none is plaintext. A partial triple has no honest
+// reading and is refused: this used to require all three and otherwise serve
+// plaintext without a word, so an operator who dropped one flag got a daemon
+// listening in the clear for an ATC and peers that dial https — the same rule
+// the ATC (jetbridge.ValidateDaemonTLSFlags) and the Hangar output daemon
+// enforce on their halves.
+func daemonTLSMode(cert, key, ca string) (bool, error) {
+	var missing []string
+	for _, f := range []struct{ name, value string }{
+		{"--tls-cert", cert},
+		{"--tls-key", key},
+		{"--tls-ca-cert", ca},
+	} {
+		if f.value == "" {
+			missing = append(missing, f.name)
+		}
+	}
+	switch len(missing) {
+	case 0:
+		return true, nil
+	case 3:
+		return false, nil
+	}
+	return false, fmt.Errorf("TLS is partially configured: %s must also be set. "+
+		"mTLS needs the server certificate, its key and the client CA together; with only part of "+
+		"them this daemon would listen in plaintext for callers that dial https",
+		strings.Join(missing, " and "))
+}
 
 // BuildTLSConfig creates a TLS configuration for the daemon server with mTLS
 // support. The server cert/key are used for the TLS listener. The CA cert is

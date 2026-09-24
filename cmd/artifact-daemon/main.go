@@ -80,6 +80,25 @@ func main() {
 	logger := lager.NewLogger("artifact-daemon")
 	logger.RegisterSink(lager.NewWriterSink(os.Stdout, lager.INFO))
 
+	// Decided before anything with a side effect — the node labels below —
+	// so a refused configuration has nothing to clean up.
+	tlsEnabled, err := daemonTLSMode(*tlsCert, *tlsKey, *tlsCACert)
+	if err != nil {
+		logger.Error("tls-config-invalid", err)
+		os.Exit(1)
+	}
+
+	// Loaded before the node is labelled for the same reason. Build pods are
+	// scheduled only onto nodes carrying the readiness label, so a daemon that
+	// labelled first and then died on an unreadable key kept attracting pods
+	// through every restart of its crash loop — and exited without removing
+	// the label, since this exit ran no cleanup.
+	resolveCapabilityKey, err := loadResolveCapabilityKey(*resolveCapabilityKeyFile)
+	if err != nil {
+		logger.Error("failed-to-load-resolve-capability-key", err)
+		os.Exit(1)
+	}
+
 	// How the daemon reaches the cluster is an INPUT, resolved once here and
 	// handed to everything that needs it: the node labelers and, below, peer
 	// discovery. Two adapters sit on this one seam — the in-cluster config in a
@@ -144,27 +163,28 @@ func main() {
 	aliasStore := NewAliasStore(logger, *storagePath, server.Root())
 	server.Registry().SetAliasStore(aliasStore)
 
-	// Scan hostPath at startup to populate registry with existing artifacts.
 	// /resolve and /resolve-batch are mTLS-exempt by design, so this key is
 	// their only authentication. Absent, they are open to anything that can
 	// reach the port — said once, loudly, rather than left to be inferred.
-	if *resolveCapabilityKeyFile == "" {
+	if resolveCapabilityKey == nil {
 		logger.Info("resolve-unauthenticated", lager.Data{
 			"detail": "no --resolve-capability-key: POST /resolve and /resolve-batch accept any caller",
 		})
 	} else {
-		key, err := artifactcap.LoadKeyFile(*resolveCapabilityKeyFile)
-		if err != nil {
-			logger.Error("failed-to-load-resolve-capability-key", err)
-			os.Exit(1)
-		}
-		if err := server.SetResolveCapabilityKey(key); err != nil {
+		if err := server.SetResolveCapabilityKey(resolveCapabilityKey); err != nil {
+			// Unreachable while loadResolveCapabilityKey checks the same
+			// thing, but the node is labelled by now, so a failure here
+			// must take the label down with it.
 			logger.Error("failed-to-configure-resolve-capability", err)
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			_ = cleanupDaemonServices(cleanupCtx, hangarLabeler, labeler, nil, closeHangar)
+			cleanupCancel()
 			os.Exit(1)
 		}
 		logger.Info("resolve-capability-required")
 	}
 
+	// Scan hostPath at startup to populate registry with existing artifacts.
 	if err := server.Registry().ScanHostPath(*storagePath); err != nil {
 		logger.Error("failed-to-scan-hostpath", err)
 		// Non-fatal — daemon can still serve explicitly registered artifacts.
@@ -236,7 +256,6 @@ func main() {
 		}
 	}
 
-	tlsEnabled := *tlsCert != "" && *tlsKey != "" && *tlsCACert != ""
 	var tlsCfg *tls.Config
 	if tlsEnabled {
 		var err error
@@ -500,6 +519,24 @@ func buildMirrorHTTPClient(logger lager.Logger, peerTLS *PeerTLSConfig, timeout 
 		Transport: transport,
 		Timeout:   timeout,
 	}
+}
+
+// loadResolveCapabilityKey reads --resolve-capability-key and checks it is a
+// key a verifier will accept, so every way it can be wrong surfaces before the
+// daemon advertises itself. An empty path is not an error: it means resolve is
+// unauthenticated, and returns a nil key.
+func loadResolveCapabilityKey(path string) ([]byte, error) {
+	if path == "" {
+		return nil, nil
+	}
+	key, err := artifactcap.LoadKeyFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := artifactcap.NewVerifier(key); err != nil {
+		return nil, err
+	}
+	return key, nil
 }
 
 // daemonClientNeeded reports whether the daemon must talk to the Kubernetes
