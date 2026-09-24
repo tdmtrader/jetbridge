@@ -41,7 +41,7 @@ version alignment, then yarn dedupe, then one patch bump.
 
 ## Gate
 
-Pipeline YAML: `fly -t loupe-local validate-pipeline -c <file>` and a diff of
+Pipeline YAML: `fly -t home validate-pipeline -c <file>` and a diff of
 the rendered config. Chart: `helm template deploy/chart` diffed, plus the chart
 tests. Go: `go build ./... && go vet ./...` in the root and in
 `atc/worker/jetbridge/brine`. Yarn: `(cd web && yarn install --immutable && yarn run build) && make test-elm`.

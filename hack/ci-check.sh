@@ -27,13 +27,15 @@
 #   job   pipeline jobs to run, in order (default: build-and-vet unit-tests)
 #
 # Environment:
-#   FLY_TARGET   fly target to execute against (default: loupe-local)
+#   FLY_TARGET   fly target to execute against (default: home)
 #   KUBECONFIG   defaults to $HOME/.kube/config
 #   PORT_FORWARD_NS / PORT_FORWARD_SVC / FLY_PORT  where to point the tunnel
 #
-# Two runs at once share the tunnel: whichever one opened it takes it down on
-# exit, and the other loses its log stream mid-build. The build itself survives
-# on the cluster -- re-attach with `fly -t <target> watch -b <id>`.
+# The tunnel is opened only when the target's API is 127.0.0.1:$FLY_PORT (a
+# port-forwarded target); `home` reaches concourse.home directly. Two runs at
+# once share a tunnel: whichever one opened it takes it down on exit, and the
+# other loses its log stream mid-build. The build itself survives on the
+# cluster -- re-attach with `fly -t <target> watch -b <id>`.
 #
 # Jobs whose task config interpolates pipeline vars (`((name))`) need those
 # values passed explicitly -- `fly execute` has no credential manager behind it.
@@ -43,7 +45,7 @@
 
 set -euo pipefail
 
-FLY_TARGET="${FLY_TARGET:-loupe-local}"
+FLY_TARGET="${FLY_TARGET:-home}"
 FLY_PORT="${FLY_PORT:-18080}"
 PORT_FORWARD_NS="${PORT_FORWARD_NS:-cicd}"
 PORT_FORWARD_SVC="${PORT_FORWARD_SVC:-svc/concourse-web}"
@@ -78,7 +80,19 @@ port_is_open() {
   (exec 3<>"/dev/tcp/127.0.0.1/$FLY_PORT") 2>/dev/null
 }
 
+target_is_tunnelled() {
+  local api
+  api="$(fly targets 2>/dev/null | awk -v t="$FLY_TARGET" '$1 == t { print $2 }')"
+  case "$api" in
+    http://127.0.0.1:"$FLY_PORT" | http://localhost:"$FLY_PORT") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 ensure_tunnel() {
+  if ! target_is_tunnelled; then
+    return
+  fi
   if port_is_open; then
     log "port $FLY_PORT already open; leaving it alone"
     return

@@ -56,8 +56,9 @@ This runs the pipeline's own `build-and-vet` and `unit-tests` tasks — lifted v
 the ref (never the working tree). It exists because the local tiers are macOS and two classes of
 failure only appear in CI: process-environment assumptions (signal dispositions, PATH, uid — a
 SIGHUP trap passes here and fails under a CI shell that inherited SIGHUP ignored), and anything
-needing the cluster (`live`-tagged suites are skipped on darwin). It opens the `loupe-local`
-port-forward itself. Jobs whose task config interpolates `((var))` need the value exported
+needing the cluster (`live`-tagged suites are skipped on darwin). It runs against the `home`
+fly target (concourse.home) by default, opening a port-forward only for a 127.0.0.1 target.
+Jobs whose task config interpolates `((var))` need the value exported
 (`github-token` → `GITHUB_TOKEN`); it does not reproduce `attempts: 2` or the pipeline `timeout:`.
 
 ### Key Notes
