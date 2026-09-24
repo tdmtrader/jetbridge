@@ -139,8 +139,8 @@ type RunCommand struct {
 	customRoles     map[string]string
 	customRolesPath string
 
-	// k8sArtifactLocator is shared between the Reaper and Worker factory
-	// for DaemonSet mode. Created in backendComponents, used in constructPool.
+	// k8sArtifactLocator is shared between the Reaper and every pool's worker
+	// factory. Only artifactLocator() reads or creates it.
 	k8sArtifactLocator *jetbridge.ArtifactLocator
 	// k8sHangarWarrantSigner is constructed once during startup validation and
 	// shared by every separately composed JetBridge Config.
@@ -967,12 +967,6 @@ func (cmd *RunCommand) constructAPIMembers(
 
 	dbResourceConfigFactory := db.NewResourceConfigFactory(dbConn, lockFactory)
 
-	// Create shared ArtifactLocator for DaemonSet mode BEFORE constructPool,
-	// so the pool's worker factory receives the locator.
-	if cmd.k8sArtifactLocator == nil {
-		cmd.k8sArtifactLocator = jetbridge.NewArtifactLocator()
-	}
-
 	pool, err := cmd.constructPool(dbConn, lockFactory, workerCache)
 	if err != nil {
 		return nil, err
@@ -1211,13 +1205,6 @@ func (cmd *RunCommand) backendComponents(
 
 	alg := algorithm.New(db.NewVersionsDB(dbConn, algorithmLimitRows, schedulerCache))
 
-	// Create shared ArtifactLocator for DaemonSet mode BEFORE constructPool,
-	// so the pool's worker factory receives the locator. Without this, workers
-	// have a nil locator and recordOutputLocations silently skips.
-	if cmd.k8sArtifactLocator == nil {
-		cmd.k8sArtifactLocator = jetbridge.NewArtifactLocator()
-	}
-
 	pool, err := cmd.constructPool(dbConn, lockFactory, workerCache)
 	if err != nil {
 		return nil, err
@@ -1367,10 +1354,37 @@ func (cmd *RunCommand) backendComponents(
 		f.SetSigningKeyFactory(dbSigningKeyFactory)
 	})
 
-	// Create shared ArtifactLocator for DaemonSet mode — used by both
-	// Reaper (here) and Worker factory (constructPool).
-	cmd.k8sArtifactLocator = jetbridge.NewArtifactLocator()
+	k8sComponents, err := cmd.jetbridgeComponents(logger, dbConn, dbWorkerFactory, dbBuildFactory)
+	if err != nil {
+		return nil, err
+	}
+	components = append(components, k8sComponents...)
 
+	components = append(components, cmd.hangarOutputComponents(dbConn)...)
+
+	if syslogDrainConfigured {
+		components = append(components, RunnableComponent{
+			Component: atc.Component{
+				Name: atc.ComponentSyslogDrainer,
+			},
+			Runnable: syslog.NewDrainer(
+				cmd.Syslog.Transport,
+				cmd.Syslog.Address,
+				cmd.Syslog.Hostname,
+				cmd.Syslog.CACerts,
+				dbBuildFactory,
+			),
+		})
+	}
+
+	return components, err
+}
+
+// jetbridgeComponents builds the JetBridge runtime's own components: the
+// registrar that heartbeats the synthetic worker and the Reaper. None when the
+// runtime is off.
+func (cmd *RunCommand) jetbridgeComponents(logger lager.Logger, dbConn db.DbConn, dbWorkerFactory db.WorkerFactory, dbBuildFactory db.BuildFactory) ([]RunnableComponent, error) {
+	var components []RunnableComponent
 	if cmd.Kubernetes.Namespace != "" {
 		k8sCfg := jetbridge.NewConfig(cmd.Kubernetes.Namespace, cmd.Kubernetes.Kubeconfig)
 		k8sCfg.PodStartupTimeout = cmd.Kubernetes.PodStartupTimeout
@@ -1439,9 +1453,9 @@ func (cmd *RunCommand) backendComponents(
 		k8sVolumeRepo := db.NewVolumeRepository(dbConn)
 		k8sDestroyer := gc.NewDestroyer(logger, k8sContainerRepo, k8sVolumeRepo)
 		k8sReaper := jetbridge.NewReaper(logger.Session(atc.ComponentK8sWorkerReaper), k8sClientset, k8sCfg, k8sContainerRepo, k8sDestroyer)
-		if cmd.k8sArtifactLocator != nil {
-			k8sReaper.SetArtifactLocator(cmd.k8sArtifactLocator)
-		}
+		// The workers' locator, never a fresh one: the Reaper can only drop,
+		// and forget, the keys the workers recorded.
+		k8sReaper.SetArtifactLocator(cmd.artifactLocator())
 		// The reaper reaps a completed step's pod only once its build is no
 		// longer running: until then the pod's exit-status annotation is the
 		// only thing that lets a restarted web resume the plan instead of
@@ -1455,24 +1469,7 @@ func (cmd *RunCommand) backendComponents(
 		})
 	}
 
-	components = append(components, cmd.hangarOutputComponents(dbConn)...)
-
-	if syslogDrainConfigured {
-		components = append(components, RunnableComponent{
-			Component: atc.Component{
-				Name: atc.ComponentSyslogDrainer,
-			},
-			Runnable: syslog.NewDrainer(
-				cmd.Syslog.Transport,
-				cmd.Syslog.Address,
-				cmd.Syslog.Hostname,
-				cmd.Syslog.CACerts,
-				dbBuildFactory,
-			),
-		})
-	}
-
-	return components, err
+	return components, nil
 }
 
 func (cmd *RunCommand) compression() compression.Compression {
@@ -1492,7 +1489,29 @@ func (cmd *RunCommand) streamer() worker.Streamer {
 	return worker.NewStreamer(cmd.compression())
 }
 
+// artifactLocator is the one artifact locator of this web: every pool's worker
+// factory records into it and the Reaper drops from it. It is the only place a
+// locator is created. Without one, workers skip recording output locations.
+func (cmd *RunCommand) artifactLocator() *jetbridge.ArtifactLocator {
+	if cmd.k8sArtifactLocator == nil {
+		cmd.k8sArtifactLocator = jetbridge.NewArtifactLocator()
+	}
+	return cmd.k8sArtifactLocator
+}
+
 func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFactory, workerCache *db.WorkerCache) (worker.Pool, error) {
+	factory, workerDB, err := cmd.workerFactory(dbConn, lockFactory, workerCache)
+	if err != nil {
+		return worker.Pool{}, err
+	}
+	return worker.NewPool(factory, workerDB), nil
+}
+
+// workerFactory builds the worker factory a pool hands its workers, and the
+// worker DB beside it. It is split from constructPool so the collaborators the
+// factory carries (the artifact locator above all) can be checked against the
+// ones the Reaper is given.
+func (cmd *RunCommand) workerFactory(dbConn db.DbConn, lockFactory lock.LockFactory, workerCache *db.WorkerCache) (worker.DefaultFactory, worker.DB, error) {
 	dbResourceCacheFactory := db.NewResourceCacheFactory(dbConn, lockFactory)
 	dbWorkerBaseResourceTypeFactory := db.NewWorkerBaseResourceTypeFactory(dbConn)
 	dbTaskCacheFactory := db.NewTaskCacheFactory(dbConn)
@@ -1534,12 +1553,12 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 		k8sCfg.ArtifactDaemonHostPath = cmd.Kubernetes.ArtifactDaemonHostPath
 		k8sCfg.ArtifactDaemonResolveCapabilityTTL = cmd.Kubernetes.ArtifactDaemonResolveCapabilityTTL
 		if key, err := cmd.loadArtifactResolveCapabilityKey(); err != nil {
-			return worker.Pool{}, err
+			return worker.DefaultFactory{}, worker.DB{}, err
 		} else {
 			k8sCfg.ArtifactDaemonResolveCapabilityKey = key
 		}
 		if err := jetbridge.ValidateResolveCapabilityConfig(k8sCfg); err != nil {
-			return worker.Pool{}, err
+			return worker.DefaultFactory{}, worker.DB{}, err
 		}
 		k8sCfg.ArtifactDaemonService = cmd.Kubernetes.ArtifactDaemonService
 		k8sCfg.ArtifactDaemonWarmTimeout = cmd.Kubernetes.ArtifactDaemonWarmTimeout
@@ -1572,16 +1591,16 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 		}
 		k8sClientset, err := jetbridge.NewClientset(k8sCfg)
 		if err != nil {
-			return worker.Pool{}, fmt.Errorf("creating k8s clientset: %w", err)
+			return worker.DefaultFactory{}, worker.DB{}, fmt.Errorf("creating k8s clientset: %w", err)
 		}
 		k8sRestConfig, err := jetbridge.RestConfig(k8sCfg)
 		if err != nil {
-			return worker.Pool{}, fmt.Errorf("creating k8s rest config: %w", err)
+			return worker.DefaultFactory{}, worker.DB{}, fmt.Errorf("creating k8s rest config: %w", err)
 		}
 		factory.K8sClientset = k8sClientset
 		factory.K8sConfig = &k8sCfg
 		factory.K8sExecutor = jetbridge.NewSPDYExecutor(k8sClientset, k8sRestConfig)
-		factory.K8sArtifactLocator = cmd.k8sArtifactLocator
+		factory.K8sArtifactLocator = cmd.artifactLocator()
 		if k8sCfg.OutputPlaneEnabled && cmd.hangarOutputCapabilityMinter != nil {
 			// Both dispatch and recovery use the same node plane and epoch.
 			factory.K8sOutputControls = jetbridge.NewOutputControls(k8sCfg,
@@ -1592,10 +1611,10 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 			source.SetExecutor(factory.K8sExecutor)
 			cmd.runCancellationSource = source
 			if err := cmd.configureOutputReads(dbConn, source); err != nil {
-				return worker.Pool{}, err
+				return worker.DefaultFactory{}, worker.DB{}, err
 			}
 			if err := cmd.configureRunInputUploads(dbConn, runFactory, dbTeamFactory, source); err != nil {
-				return worker.Pool{}, err
+				return worker.DefaultFactory{}, worker.DB{}, err
 			}
 			executionStarter.Source = source
 			executionStarter.Epoch = executioncontrol.ActivationEpoch(k8sCfg.OutputActivationEpoch)
@@ -1638,10 +1657,7 @@ func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFact
 		}
 	}
 
-	return worker.NewPool(
-		factory,
-		db,
-	), nil
+	return factory, db, nil
 }
 
 func (cmd *RunCommand) gcComponents(
