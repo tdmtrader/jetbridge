@@ -27,7 +27,8 @@ var (
 )
 
 // ClaimRunCancellationLease owns no Run/domain locks and makes no external call.
-// A live owner's retry preserves its epoch. Reacquisition after expiry always
+// A live owner's retry preserves its epoch and renews its term, which is how a
+// worker renews: the term outlasts a pass. Reacquisition after expiry always
 // advances it, so an old request from that same process cannot become current.
 func (f *pipelineRunFactory) ClaimRunCancellationLease(ctx context.Context, tx Tx, owner string, term time.Duration) (RunCancellationLease, bool, error) {
 	interval, err := cancellationLeaseInterval(owner, term)
@@ -61,27 +62,6 @@ func (f *pipelineRunFactory) ClaimRunCancellationLease(ctx context.Context, tx T
 	}
 	lease.DatabaseNow, lease.ExpiresAt = lease.DatabaseNow.UTC(), lease.ExpiresAt.UTC()
 	return lease, err == nil, err
-}
-
-func (f *pipelineRunFactory) RenewRunCancellationLease(ctx context.Context, tx Tx, lease RunCancellationLease, term time.Duration) (RunCancellationLease, error) {
-	interval, err := cancellationLeaseInterval(lease.OwnerID, term)
-	if err != nil || lease.Epoch <= 0 {
-		return RunCancellationLease{}, ErrRunCancellationLeaseInvalid
-	}
-	if err := lockCancellationWorker(ctx, tx); err != nil {
-		return RunCancellationLease{}, err
-	}
-	var renewed RunCancellationLease
-	err = tx.QueryRowContext(ctx, `WITH lease_time AS MATERIALIZED (SELECT clock_timestamp() AS now)
- UPDATE pipeline_run_cancellation_worker SET renewed_at=t.now,expires_at=t.now+$3::interval
- FROM lease_time t WHERE singleton AND owner_id=$1 AND worker_epoch=$2 AND expires_at>t.now
- RETURNING owner_id,worker_epoch,renewed_at,expires_at`, lease.OwnerID, lease.Epoch, interval).
-		Scan(&renewed.OwnerID, &renewed.Epoch, &renewed.DatabaseNow, &renewed.ExpiresAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return RunCancellationLease{}, ErrRunCancellationLeaseLost
-	}
-	renewed.DatabaseNow, renewed.ExpiresAt = renewed.DatabaseNow.UTC(), renewed.ExpiresAt.UTC()
-	return renewed, err
 }
 
 func lockCancellationWorker(ctx context.Context, tx Tx) error {

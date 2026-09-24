@@ -10,10 +10,10 @@ Feature: Cancellation cleanup survives worker replacement
       | first claim             |
       | competing owner         |
       | racing owners           |
-      | renewal                 |
+      | live owner reclaim      |
       | rollback                |
       | takeover                |
       | same owner after expiry |
-      | expired renewal         |
-      | renewal blocked past expiry |
+      | expired lease use       |
+      | lease use blocked past expiry |
       | claim blocked past expiry   |

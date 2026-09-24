@@ -73,7 +73,6 @@ type PipelineRunFactory interface {
 	ClaimRunCancellationOperation(context.Context, Tx, RunCancellationLease, int) (RunCancellationOperation, bool, error)
 	RecordRunCancellationProgress(context.Context, Tx, RunCancellationLease, RunCancellationOperation, RunCancellationDebt) error
 	ClaimRunCancellationLease(context.Context, Tx, string, time.Duration) (RunCancellationLease, bool, error)
-	RenewRunCancellationLease(context.Context, Tx, RunCancellationLease, time.Duration) (RunCancellationLease, error)
 	RequestRunCancellation(context.Context, int, string, *string) (atc.RunCancelOutcome, error)
 	AcceptRunCancellation(context.Context, Tx, int, string, *string) (atc.RunCancelOutcome, error)
 	FinalizeOutputRun(context.Context, Tx, int) (bool, error)

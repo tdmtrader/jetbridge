@@ -13,7 +13,7 @@ import (
 
 type cancellationLeaseStore interface {
 	ClaimRunCancellationLease(context.Context, db.Tx, string, time.Duration) (db.RunCancellationLease, bool, error)
-	RenewRunCancellationLease(context.Context, db.Tx, db.RunCancellationLease, time.Duration) (db.RunCancellationLease, error)
+	PendingRunCancellations(context.Context, db.Tx, db.RunCancellationLease, int) ([]int, error)
 }
 
 type CancellationLeaseResult struct{ Err error }
@@ -46,17 +46,16 @@ func exerciseCancellationLease(in RunOutputStart, mode string) error {
 		}
 		return lease, found, err
 	}
-	renew := func(lease db.RunCancellationLease) (db.RunCancellationLease, error) {
+	// use is the worker's first lease-guarded step in a pass. It is refused
+	// once the lease has expired or another claim has superseded it.
+	use := func(lease db.RunCancellationLease) error {
 		tx, err := in.DB.Conn.BeginTx(ctx, nil)
 		if err != nil {
-			return db.RunCancellationLease{}, err
+			return err
 		}
 		defer db.Rollback(tx)
-		result, err := store.RenewRunCancellationLease(ctx, tx, lease, time.Minute)
-		if err == nil {
-			err = tx.Commit()
-		}
-		return result, err
+		_, err = store.PendingRunCancellations(ctx, tx, lease, 1)
+		return err
 	}
 	if mode == "racing owners" {
 		in.DB.Conn.SetMaxOpenConns(4)
@@ -99,7 +98,7 @@ func exerciseCancellationLease(in RunOutputStart, mode string) error {
 		return fmt.Errorf("lease does not carry its server-derived owner, epoch and bounded DB term")
 	}
 	switch mode {
-	case "renewal blocked past expiry", "claim blocked past expiry":
+	case "lease use blocked past expiry", "claim blocked past expiry":
 		return exerciseDelayedCancellationLease(in, store, lease, mode == "claim blocked past expiry")
 	case "first claim":
 		return nil
@@ -112,12 +111,13 @@ func exerciseCancellationLease(in RunOutputStart, mode string) error {
 			return fmt.Errorf("second worker stole an unexpired lease")
 		}
 		return nil
-	case "renewal":
-		next, err := renew(lease)
+	case "live owner reclaim":
+		// A live owner's repeat claim is how its lease is renewed.
+		next, found, err := claim(lease.OwnerID, false)
 		if err != nil {
 			return err
 		}
-		if next.OwnerID != lease.OwnerID || next.Epoch != lease.Epoch || next.DatabaseNow.Before(lease.DatabaseNow) || next.ExpiresAt.Before(lease.ExpiresAt) {
+		if !found || next.OwnerID != lease.OwnerID || next.Epoch != lease.Epoch || next.DatabaseNow.Before(lease.DatabaseNow) || next.ExpiresAt.Before(lease.ExpiresAt) {
 			return fmt.Errorf("renewal changed ownership or moved the DB deadline backwards")
 		}
 		return nil
@@ -130,13 +130,13 @@ func exerciseCancellationLease(in RunOutputStart, mode string) error {
 			return fmt.Errorf("rolled-back lease fenced the next worker")
 		}
 		return nil
-	case "takeover", "same owner after expiry", "expired renewal":
+	case "takeover", "same owner after expiry", "expired lease use":
 		if _, err := in.DB.Conn.Exec(`UPDATE pipeline_run_cancellation_worker SET renewed_at=clock_timestamp()-interval '2 seconds',expires_at=clock_timestamp()-interval '1 second'`); err != nil {
 			return err
 		}
-		if mode == "expired renewal" {
-			if _, err := renew(lease); err == nil {
-				return fmt.Errorf("expired lease was resurrected by renewal")
+		if mode == "expired lease use" {
+			if err := use(lease); !errors.Is(err, db.ErrRunCancellationLeaseLost) {
+				return fmt.Errorf("expired lease still admitted work: %v", err)
 			}
 			return nil
 		}
@@ -151,8 +151,8 @@ func exerciseCancellationLease(in RunOutputStart, mode string) error {
 		if !found || next.Epoch <= lease.Epoch || next.OwnerID != owner {
 			return fmt.Errorf("takeover did not advance the persisted worker epoch")
 		}
-		if _, err := renew(lease); err == nil {
-			return fmt.Errorf("superseded worker renewed after takeover")
+		if err := use(lease); !errors.Is(err, db.ErrRunCancellationLeaseLost) {
+			return fmt.Errorf("superseded worker still admitted work after takeover: %v", err)
 		}
 		return nil
 	default:
@@ -199,7 +199,7 @@ func exerciseDelayedCancellationLease(in RunOutputStart, store cancellationLease
 		if claim {
 			out.Lease, out.Found, out.Err = store.ClaimRunCancellationLease(ctx, tx, lease.OwnerID, time.Minute)
 		} else {
-			out.Lease, out.Err = store.RenewRunCancellationLease(ctx, tx, lease, time.Minute)
+			_, out.Err = store.PendingRunCancellations(ctx, tx, lease, 1)
 		}
 		if out.Err == nil {
 			out.Err = tx.Commit()
@@ -240,7 +240,7 @@ func exerciseDelayedCancellationLease(in RunOutputStart, store cancellationLease
 	case out := <-done:
 		if !claim {
 			if !errors.Is(out.Err, db.ErrRunCancellationLeaseLost) {
-				return fmt.Errorf("blocked renewal resurrected expired ownership: %v", out.Err)
+				return fmt.Errorf("blocked lease use resurrected expired ownership: %v", out.Err)
 			}
 			return nil
 		}
