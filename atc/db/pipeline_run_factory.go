@@ -185,7 +185,9 @@ func (f *pipelineRunFactory) CreateRunInTx(ctx context.Context, tx Tx, template 
 		return RunCreation{}, ErrPipelineTemplateInvalid{Err: err}
 	}
 	// A Run that declares results or binds exact inputs needs the output plane
-	// serving an enabled Hangar epoch; any other Run needs no Hangar at all.
+	// serving an enabled Hangar epoch to be admitted; any other Run is admitted
+	// without one. Executing any Run's steps still needs the output plane's
+	// execution control (runs.ExecutionStarter), which is not checked here.
 	if (len(declarations) > 0 || len(opts.Inputs) > 0) && !hangarReady {
 		return RunCreation{}, atc.ErrRunResultsUnavailable
 	}

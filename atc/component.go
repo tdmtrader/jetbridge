@@ -41,7 +41,9 @@ const (
 	// v2 run reaches a terminal status only through its one terminal
 	// publication, which this component makes once the run's builds and
 	// captures have settled. It runs whether or not a Hangar output plane is
-	// configured: a run that declares no result needs none.
+	// configured: a run that declares no result has no capture to wait for.
+	// (Executing a run's steps is another matter: every step needs the output
+	// plane's execution control; see runs.ExecutionStarter.)
 	ComponentRunResults = "run_results"
 
 	// ComponentHangarOutputReadLeaseCleanup closes read leases whose readers

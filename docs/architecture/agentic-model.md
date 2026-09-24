@@ -40,9 +40,11 @@ Build ─ step ──▶ Composition call ──1:n──▶ Composition iterati
   identity is derived, never minted, and is deliberately not a digest of
   the inputs: keying on inputs would move the key on pod eviction and admit
   one invocation twice.
-- Admission is claim-first inside one transaction: the call row is
-  inserted before the run is admitted, so a concurrent loser blocks on the
-  unique key and then re-reads the winner. That is a **replay**.
+- The identity is the contract key core's versioned admission scopes and
+  replays on (the build's team and calling pipeline are the principal
+  scope), so the port alone decides whether an admission creates a run or
+  is a **replay**. The call and iteration rows are written after it
+  decides, in the same transaction, and follow its decision.
 - The **input digest** is recorded on first admission and verified on every
   replay. A mismatch is refused; it is never part of the key.
 - A **composition iteration** records which child run an admission
@@ -50,8 +52,8 @@ Build ─ step ──▶ Composition call ──1:n──▶ Composition iterati
 
 ## Invariants the store enforces
 
-- One call per (build, plan). No status column: the unique key is the only
-  dedupe.
+- One call per (build, plan). No status column, and the unique key is not
+  a dedupe: core's invocation record is the only one.
 - An iteration names an existing run; ordinals are positive; one row per
   (call, ordinal).
 - Every foreign key cascades on delete and never restricts, so this context

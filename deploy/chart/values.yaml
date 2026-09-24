@@ -124,8 +124,14 @@ web:
   # Zero renders no flag and stops admission on the next web start, keeping the
   # recorded epoch. A template that declares results (or a Run given inputs)
   # is still admitted only while hangarOutput.webEnabled and its epoch's base
-  # and output facets are enabled; templates without results need no output
-  # plane.
+  # and output facets are enabled. Admission checks nothing more, but
+  # EXECUTING any Run, with or without results, needs the output plane's
+  # execution control (hangarOutput.executionControl), with the output
+  # capability key configured and the node's Hangar output epoch enabled by
+  # the activation Job: every step of a Run build starts through the
+  # exact-execution check. Without all three, Runs are
+  # admitted and every step fails with "Run result execution is not
+  # activated" -- set this to 0 on such a deploy to keep admission closed.
   pipelineRunActivationEpoch: 1
 
   # -- Existing web-only Secret containing input.key (exactly 32 raw random

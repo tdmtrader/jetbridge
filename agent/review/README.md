@@ -64,10 +64,11 @@ its two validated files into the named result before successful completion.
 Intake additionally requires `web.runInputSigningKeySecret`, naming a separate
 web-only Secret with `input.key` containing exactly 32 random raw bytes. This
 service key signs input grants; it is unrelated to Codex credentials and must
-not be shared with node keys. Both Hangar facets, `hangarOutput.webEnabled`, a
-matching database activation epoch and `web.enablePipelineRunCreation` must be
-configured. The creation switch remains off by default. Do not activate this
-feature until the remaining acceptance checks pass.
+not be shared with node keys. Both Hangar facets and `hangarOutput.webEnabled`
+must be configured: a review template declares results, so its Runs are
+admitted only while the web node's Hangar output epoch is enabled. Run
+admission itself is on at every deploy (`web.pipelineRunActivationEpoch`). Do
+not activate this feature until the remaining acceptance checks pass.
 
 ## Checking a Run
 

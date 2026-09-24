@@ -102,6 +102,21 @@ Reclamation, when a run is terminal and past its retention:
    job, pipeline, resource or resource type.
 3. Delete the payload. The header and detached builds stay.
 
+### What a v2 run fixes, and what it does not
+
+A v2 run's reproducibility is deliberately bounded. It fixes, for the life
+of its header: the retained definition revision it was admitted against,
+the explicit params and the defaults applied to them, its exact named
+Hangar inputs and their routes to task slots, and its immutable terminal
+result manifest. Nothing else. Ordinary resource versions, registry tags,
+task images, credentials and any other ambient input are not pinned, and
+are not recoverable after the payload is reclaimed. Re-running the same
+definition, params and inputs is not a claim to reproduce the same result.
+There is no other class: migration 1789793147 dropped every legacy_v1 run
+with its payload, definition, builds and events, and the schema admits only
+`v2`. `run_contract_version` stays as a birth-time field so a future class
+can be named without a migration; nothing branches on it.
+
 ### Lock order
 
 Everything that touches a run locks in one order: the team, then the
@@ -121,7 +136,7 @@ then deletes its executions.
 - Run number is unique per template. Header fields (template, number,
   params, creator, config hash) are immutable once written.
 - A v2 run may carry one correlation value and one `caused_by_run` edge,
-  both immutable caller intent that a legacy_v1 run never has. The edge
+  both immutable caller intent. The edge
   points only at a strictly earlier run of the same team, so it cannot form
   a cycle; it has no foreign key, so purging the predecessor leaves an
   unresolved-predecessor marker and never cascades.
@@ -149,12 +164,49 @@ then deletes its executions.
 
 The one seam through which anything outside core creates a run. Its method
 signatures name no store types. An admission is refused before any row is
-touched if the contract key is empty; authorization runs against the
-reference's team before the template is resolved, so an unauthorized caller
-learns nothing about existence. The caller's hook runs after the run and
+touched if the contract key is outside the invocation alphabet; authorization
+runs against the reference's team before the template is resolved, so an
+unauthorized caller learns nothing about existence. The scoped replay lookup
+comes next, before any activation check: a server that holds creation or
+speaks for no activation epoch still replays the run an invocation already
+admitted, and refuses everything else with the hold, whatever else is wrong
+with the call. The caller's hook runs after the run and
 payload exist and before commit; its error aborts the whole creation.
 
 Every run is admitted as v2, through the port's one admission: the v2
-create route and the `run_pipeline` step both call it. There is no legacy
-admission; legacy_v1 runs created before it was retired stay readable with
-their original semantics.
+create route and the `run_pipeline` step both call it. Terminal publication
+has one writer, the Run result finalizer (component `run_results`); build
+completion only wakes it.
+
+Admission is activated by configuration, not by hand, and the Run contract
+has its own activation, separate from the Hangar output epoch. Every web
+node, at startup, reconciles the run activation marker from
+`--pipeline-run-activation-epoch`, which the chart sets at every deploy: a
+positive epoch admits at that epoch, zero stops admitting and keeps the
+epoch. An epoch older than the recorded one refuses to start. Inside each
+admission the marker must admit the epoch. A template that declares results,
+or a run given inputs, additionally needs the node's Hangar output epoch
+enabled (base and output facets, which only the Hangar output activation Job
+enables). Admission checks nothing more, but executing any run -- with or
+without results -- needs the Hangar output plane's execution control
+(`hangarOutput.executionControl`) with the node's output capability key
+configured and its Hangar output epoch enabled, because every step of a run
+build starts through the exact-execution check. On a deploy missing any of
+these, a run of a
+template without results is admitted and every step then fails with "Run
+result execution is not activated"; such a deploy sets
+`web.pipelineRunActivationEpoch: 0` to keep admission closed.
+
+A run is born under the Run epoch; its captures, credential deliveries and
+bound inputs carry the Hangar epoch they were admitted under. Continuing a
+running run -- starting its builds and producers, finalizing it, replaying its
+invocation key -- needs the marker at or past the run's epoch, not the Hangar
+epoch it was admitted under, so a Hangar rotation strands nothing. New Hangar
+work (a capture, a credential delivery, an input upload) still needs its own
+Hangar epoch enabled, and a new credential delivery also needs the marker
+admitting: an admission hold stops new Runs and new credential grants, not
+running Runs. Two limits are accepted and deferred: outputs published
+under a Hangar epoch that is later disabled may become unreadable, and a
+prior-run input bound across a rotation may be refused, because a prior
+run's result is admitted as an input only under the Hangar epoch its claim
+carries.

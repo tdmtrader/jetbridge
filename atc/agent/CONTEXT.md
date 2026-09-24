@@ -50,7 +50,9 @@ any grant.
 
 **Composition call**:
 One step of one build asking for a child pipeline run, identified by build
-id and plan id and deduplicated by that identity alone.
+id and plan id. Its identity is the contract key core's run admission port
+replays on; the call row is a join to the run the port admitted, never a
+second dedup.
 _Avoid_: node
 
 **Composition iteration**:

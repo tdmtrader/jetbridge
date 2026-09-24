@@ -228,20 +228,51 @@ core.
 
 **Admission**:
 One request through the port: a template ref, run params, a principal, a
-contract key, optionally the run that caused it, and a hook that runs inside
-the transaction before it commits.
+contract key, optionally the run that caused it and a correlation, and a hook
+that runs inside the transaction before it commits. Every admission creates
+or replays a v2 run, the one Run class there is.
 
 **Template ref**:
 A team-qualified reference to the template to run. The team is part of the
 reference, never derived from the principal.
 
 **Principal**:
-The caller's already-verified claims, from which the port derives the role
-verdict and the recorded creator.
+The caller's already-verified claims, or a build acting for itself, from
+which the port derives the role verdict, the recorded creator and the
+principal part of the invocation scope: a person's token subject, or a
+build's team and calling pipeline.
 
 **Contract key**:
-The caller's opaque idempotency identity for one admission. The port only
-requires that it is present.
+The caller's opaque idempotency identity for one admission: 1-128 bytes of
+A-Z a-z 0-9 . _ ~ -, scoped by the server to team, template and principal.
+Presenting it again with the same caller intent replays the run it admitted;
+with changed intent it is an invocation conflict. The wire name is
+`invocation_key`; a build-side caller derives it from its build id and plan
+id. The spec calls it the idempotency key.
+
+**Correlation**:
+An opaque, non-secret caller value retained on a v2 run as caller intent. It
+means nothing to scheduling, cancellation, retry or retention.
+
+**Caused-by run**:
+The earlier run of the same team a v2 run names as its cause. An immutable
+link with no cascade; a purged predecessor leaves its id as an
+unresolved-predecessor marker.
+
+**Run activation**:
+The Run contract's own durable marker (`pipeline_run_activation`): the epoch
+runs are born under and whether admission is on. Each web node writes it at
+startup from `--pipeline-run-activation-epoch` (chart
+`web.pipelineRunActivationEpoch`); it only moves forward. It is independent of
+the Hangar output epoch: a run's captures and bound inputs carry the Hangar
+epoch they were admitted under, and a Hangar rotation leaves running runs,
+their finalization and invocation-key replay alone. Admitting a template that
+declares results, or a run given inputs, still needs an enabled Hangar epoch.
+Executing any run needs the output plane's execution control, with the
+node's output capability key configured and its Hangar output epoch enabled;
+admission checks none of these, so without them a run is admitted and its
+steps fail.
+_Avoid_: run creation gate, creation flag.
 
 ### Sidecar
 
