@@ -101,7 +101,11 @@ spec:
             - --storage-path={{ .Values.artifactDaemon.hostPath | default "/var/concourse/artifacts" }}
             - --ttl={{ .Values.artifactDaemon.ttl | default "2h" }}
             - --node-name=$(NODE_NAME)
-            - --namespace={{ include "concourse.kubernetesNamespace" . }}
+            # The daemon's OWN namespace, not kubernetes.namespace (where step
+            # pods run): its headless Service, EndpointSlices and TLS
+            # certificate all live in the release namespace, and it verifies
+            # peers against <service-name>.<namespace>.svc.
+            - --namespace={{ .Release.Namespace }}
             - --service-name={{ include "concourse.artifactDaemonServiceName" . }}
             - --label-key=concourse.dev/artifact-cache
             - --resolve-capability-key=/etc/concourse/resolve-capability/resolve.key

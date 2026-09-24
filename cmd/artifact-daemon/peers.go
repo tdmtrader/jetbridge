@@ -41,6 +41,48 @@ type PeerTLSConfig struct {
 	CertPath   string
 	KeyPath    string
 	CACertPath string
+
+	// ServerName is the name every peer's server certificate is verified
+	// against. Peers are dialed by pod IP — EndpointSlice addresses — and a
+	// pod IP cannot be a SAN on a certificate issued before the pod exists;
+	// the chart's certificate names the headless service instead. Left empty,
+	// Go verifies against the dialed IP and every peer fails verification.
+	ServerName string
+}
+
+// peerTLSServerName is the name a peer daemon's certificate is verified
+// against: the headless service's in-cluster DNS name, <service>.<namespace>.svc,
+// which the chart puts on the daemon certificate. The ATC verifies the daemon
+// against the same name (atc/worker/jetbridge/daemon_tls.go). Empty when
+// either part is unknown.
+func peerTLSServerName(service, namespace string) string {
+	if service == "" || namespace == "" {
+		return ""
+	}
+	return service + "." + namespace + ".svc"
+}
+
+// clientTLS is the one place the peer client's TLS config is built, for the
+// probe and fetch clients and for the mirror client alike, so none of them can
+// drift from the others on what it verifies a peer against.
+func (c *PeerTLSConfig) clientTLS() (*tls.Config, error) {
+	clientCert, err := tls.LoadX509KeyPair(c.CertPath, c.KeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("load peer client cert: %w", err)
+	}
+	caCertPEM, err := os.ReadFile(c.CACertPath)
+	if err != nil {
+		return nil, fmt.Errorf("read peer CA cert: %w", err)
+	}
+	caPool := x509.NewCertPool()
+	if !caPool.AppendCertsFromPEM(caCertPEM) {
+		return nil, fmt.Errorf("no CA certificate parsed from %s", c.CACertPath)
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{clientCert},
+		RootCAs:      caPool,
+		ServerName:   c.ServerName,
+	}, nil
 }
 
 // NewPeerResolver creates a PeerResolver that discovers peers via the
@@ -51,25 +93,14 @@ func NewPeerResolver(logger lager.Logger, clientset kubernetes.Interface, namesp
 	var probeTransport, fetchTransport http.RoundTripper
 
 	if tlsCfg != nil && tlsCfg.CertPath != "" {
-		clientCert, err := tls.LoadX509KeyPair(tlsCfg.CertPath, tlsCfg.KeyPath)
+		tlsConfig, err := tlsCfg.clientTLS()
 		if err != nil {
-			logger.Error("failed-to-load-peer-client-cert", err)
+			logger.Error("failed-to-configure-peer-mtls", err)
 		} else {
-			caCertPEM, err := os.ReadFile(tlsCfg.CACertPath)
-			if err != nil {
-				logger.Error("failed-to-read-peer-ca-cert", err)
-			} else {
-				caPool := x509.NewCertPool()
-				caPool.AppendCertsFromPEM(caCertPEM)
-				tlsConfig := &tls.Config{
-					Certificates: []tls.Certificate{clientCert},
-					RootCAs:      caPool,
-				}
-				probeTransport = &http.Transport{TLSClientConfig: tlsConfig}
-				fetchTransport = &http.Transport{TLSClientConfig: tlsConfig.Clone()}
-				scheme = "https"
-				logger.Info("peer-mtls-enabled")
-			}
+			probeTransport = &http.Transport{TLSClientConfig: tlsConfig}
+			fetchTransport = &http.Transport{TLSClientConfig: tlsConfig.Clone()}
+			scheme = "https"
+			logger.Info("peer-mtls-enabled", lager.Data{"server-name": tlsConfig.ServerName})
 		}
 	}
 
@@ -204,11 +235,7 @@ func (p *PeerResolver) Fetch(ctx context.Context, peerIP, key, destPath string) 
 func (p *PeerResolver) FetchInto(ctx context.Context, peerIP, key string, parent *os.Root, base string) error {
 	logger := p.logger.Session("peer-fetch", lager.Data{"key": key, "peer": peerIP, "dest": base})
 
-	// NOTE: the hardcoded "http" here is a known defect — Probe uses
-	// p.scheme, so peer FETCH cannot work with TLS enabled. It is out of scope
-	// for this track by explicit review decision and is preserved verbatim; only
-	// the escaping changes.
-	url := peerURL("http", peerIP, p.port, "/artifacts/steps/", key)
+	url := peerURL(p.scheme, peerIP, p.port, "/artifacts/steps/", key)
 
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {

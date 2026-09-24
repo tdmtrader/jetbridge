@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"flag"
 	"fmt"
@@ -286,6 +285,9 @@ func main() {
 				CertPath:   *tlsCert, // daemon uses its own server cert as client cert for peers
 				KeyPath:    *tlsKey,
 				CACertPath: *tlsCACert,
+				// Peers are dialed by pod IP; their certificate names the
+				// headless service, so that is what they are verified against.
+				ServerName: peerTLSServerName(*serviceName, *namespace),
 			}
 		}
 
@@ -479,27 +481,18 @@ func buildK8sClient(kubeconfig string) (kubernetes.Interface, error) {
 
 // buildMirrorHTTPClient constructs the http.Client used by the Mirror
 // manager for PUT /stream-in to peers. When peerTLS is configured, the
-// client uses mTLS (same client cert as the peer probe path).
+// client uses mTLS, built by the same PeerTLSConfig.clientTLS as the peer
+// probe and fetch clients, so it verifies peers against the same name.
 func buildMirrorHTTPClient(logger lager.Logger, peerTLS *PeerTLSConfig, timeout time.Duration) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 
 	if peerTLS != nil && peerTLS.CertPath != "" {
-		clientCert, err := tls.LoadX509KeyPair(peerTLS.CertPath, peerTLS.KeyPath)
+		tlsConfig, err := peerTLS.clientTLS()
 		if err != nil {
-			logger.Error("mirror-load-client-cert-failed", err)
+			logger.Error("mirror-configure-mtls-failed", err)
 		} else {
-			caCertPEM, err := os.ReadFile(peerTLS.CACertPath)
-			if err != nil {
-				logger.Error("mirror-read-ca-cert-failed", err)
-			} else {
-				caPool := x509.NewCertPool()
-				caPool.AppendCertsFromPEM(caCertPEM)
-				transport.TLSClientConfig = &tls.Config{
-					Certificates: []tls.Certificate{clientCert},
-					RootCAs:      caPool,
-				}
-				logger.Info("mirror-mtls-enabled")
-			}
+			transport.TLSClientConfig = tlsConfig
+			logger.Info("mirror-mtls-enabled", lager.Data{"server-name": tlsConfig.ServerName})
 		}
 	}
 
