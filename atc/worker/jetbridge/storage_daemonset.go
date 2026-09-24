@@ -26,6 +26,27 @@ import (
 
 const artifactDaemonHostPathVolumeName = "artifact-daemon-hostpath"
 
+// stepHostPath is where the artifact daemon keeps the step output registered
+// under key: <root>/steps/<key>. The result is clean whatever spelling the
+// operator gave the root.
+func stepHostPath(root, key string) string {
+	return filepath.Join(root, "steps", key)
+}
+
+// stepKeyFromHostPath is stepHostPath's inverse: the key a host path under
+// <root>/steps/ is stored as. It refuses a path that is not strictly below
+// that directory -- the directory itself, a sibling, or one that climbs out
+// with "..". Both sides are compared cleaned, so a root flag with a trailing
+// slash or a doubled separator still recognises its own paths.
+func stepKeyFromHostPath(root, hostPath string) (string, bool) {
+	rel, err := filepath.Rel(filepath.Join(root, "steps"), hostPath)
+	if err != nil || rel == "." || rel == ".." || filepath.IsAbs(rel) ||
+		strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return rel, true
+}
+
 const (
 	maxHangarMaterializationItems = 64
 	maxHangarMaterializationBytes = 64 << 10
@@ -998,19 +1019,18 @@ func (b *DaemonSetBackend) RegisterResourceCache(ctx context.Context, cacheKey, 
 	var diskPath string
 	if b.artifactLocator != nil {
 		if loc, found := b.artifactLocator.Locate(ArtifactKey(volumeHandle)); found {
-			diskPath = filepath.Join(b.config.ArtifactDaemonHostPath, "steps", loc.HostDir)
+			diskPath = stepHostPath(b.config.ArtifactDaemonHostPath, loc.HostDir)
 		}
 	}
 	if diskPath == "" {
 		containerHandle := strings.TrimSuffix(volumeHandle, "-dir")
-		diskPath = filepath.Join(b.config.ArtifactDaemonHostPath, "steps", containerHandle, "dir")
+		diskPath = stepHostPath(b.config.ArtifactDaemonHostPath, filepath.Join(containerHandle, "dir"))
 	}
 
 	// Trigger mirror BEFORE the alias broadcast so peers have the
 	// underlying step output by the time RegisterAlias requires the path
-	// to exist on disk. The daemonKey is the path under steps/ on disk —
-	// derived from diskPath by stripping the storage hostPath prefix.
-	if daemonKey := strings.TrimPrefix(diskPath, b.config.ArtifactDaemonHostPath+"/steps/"); daemonKey != diskPath {
+	// to exist on disk. The daemonKey is the path under steps/ on disk.
+	if daemonKey, ok := stepKeyFromHostPath(b.config.ArtifactDaemonHostPath, diskPath); ok {
 		b.triggerMirror(nodeName, daemonKey)
 	}
 
