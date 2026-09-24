@@ -1,7 +1,6 @@
 package tarfs_test
 
 import (
-	"archive/tar"
 	"io"
 	"os"
 	"path/filepath"
@@ -15,7 +14,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("ExtractEntry", func() {
+var _ = Describe("Extract", func() {
 	var extractionSrc io.Reader
 	var extractionDest string
 
@@ -69,24 +68,7 @@ var _ = Describe("ExtractEntry", func() {
 	})
 
 	JustBeforeEach(func() {
-		tarReader := tar.NewReader(extractionSrc)
-
-		chown := os.Getuid() == 0
-
-		for {
-			hdr, err := tarReader.Next()
-			if err == io.EOF {
-				break
-			}
-
-			Expect(err).NotTo(HaveOccurred())
-
-			if hdr.Name == "." {
-				continue
-			}
-
-			Expect(tarfs.ExtractEntry(hdr, extractionDest, tarReader, chown)).To(Succeed())
-		}
+		Expect(tarfs.Extract(extractionSrc, extractionDest)).To(Succeed())
 	})
 
 	It("writes the entries out, generating directories, and honoring file permissions and symlinks", func() {

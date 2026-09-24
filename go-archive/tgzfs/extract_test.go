@@ -3,7 +3,6 @@ package tgzfs_test
 import (
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 
@@ -108,33 +107,5 @@ var _ = Describe("Extract", func() {
 		}
 	}
 
-	Context("when 'tar' is on the PATH", func() {
-		BeforeEach(func() {
-			if runtime.GOOS == "windows" {
-				Skip("use go archive library only for windows")
-			}
-			_, err := exec.LookPath("tar")
-			Expect(err).NotTo(HaveOccurred())
-		})
-
-		It("extracts the TGZ's files, generating directories, and honoring file permissions and symlinks", extractionTest)
-	})
-
-	Context("when 'tar' is not in the PATH", func() {
-		var oldPATH string
-
-		BeforeEach(func() {
-			oldPATH = os.Getenv("PATH")
-			Expect(os.Setenv("PATH", "/dev/null")).To(Succeed())
-
-			_, err := exec.LookPath("tar")
-			Expect(err).To(HaveOccurred())
-		})
-
-		AfterEach(func() {
-			Expect(os.Setenv("PATH", oldPATH)).To(Succeed())
-		})
-
-		It("extracts the TGZ's files, generating directories, and honoring file permissions and symlinks", extractionTest)
-	})
+	It("extracts the TGZ's files, generating directories, and honoring file permissions and symlinks", extractionTest)
 })
