@@ -186,6 +186,11 @@ spec:
             - --kubernetes-artifact-daemon-port={{ .Values.artifactDaemon.port | default 7780 }}
             - --kubernetes-artifact-daemon-host-path={{ .Values.artifactDaemon.hostPath | default "/var/concourse/artifacts" }}
             - --kubernetes-artifact-daemon-service={{ include "concourse.artifactDaemonServiceName" . }}
+            # The daemon's OWN namespace, not kubernetes.namespace (where step
+            # pods run): its Service, EndpointSlices and TLS certificate live
+            # in the release namespace, and the web discovers daemons there
+            # and verifies them against <service>.<namespace>.svc.
+            - --kubernetes-artifact-daemon-namespace={{ .Release.Namespace }}
             - --kubernetes-artifact-daemon-resolve-capability-key=/etc/concourse/resolve-capability/resolve.key
             - --kubernetes-artifact-daemon-resolve-capability-ttl={{ .Values.artifactDaemon.resolveCapability.ttl | default "2h" }}
             - --kubernetes-artifact-daemon-tls-cert=/etc/concourse/daemon-tls/client.crt

@@ -56,17 +56,18 @@ func ValidateDaemonTLSFlags(certPath, keyPath, caCertPath string) error {
 // headless service DNS name. Setting this as the TLS ServerName makes Go verify
 // against that SAN regardless of the IP dialed. Returns "" when the service or
 // namespace is unknown (verification then falls back to the dial host). The
-// daemon's namespace can differ from the namespace where this config schedules
-// task pods; an unset override preserves the colocated deployment behavior.
+// namespace is Config.DaemonNamespace, the same one discovery lists.
 func daemonTLSServerName(cfg Config) string {
-	namespace := cfg.ArtifactDaemonNamespace
-	if namespace == "" {
-		namespace = cfg.Namespace
-	}
-	if cfg.ArtifactDaemonService == "" || namespace == "" {
+	return daemonServerName(cfg.ArtifactDaemonService, cfg.DaemonNamespace())
+}
+
+// daemonServerName composes <service>.<namespace>.svc, or "" when either part
+// is unknown.
+func daemonServerName(service, namespace string) string {
+	if service == "" || namespace == "" {
 		return ""
 	}
-	return fmt.Sprintf("%s.%s.svc", cfg.ArtifactDaemonService, namespace)
+	return fmt.Sprintf("%s.%s.svc", service, namespace)
 }
 
 // wireTLS is the one adapter from Config to the wire module's triple.

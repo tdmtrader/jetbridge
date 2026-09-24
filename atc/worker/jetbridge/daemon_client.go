@@ -47,9 +47,7 @@ func NewDaemonClient(logger lager.Logger, clientset kubernetes.Interface, namesp
 	triple := artifactwire.TLS{}
 	if tlsCfg != nil {
 		triple = artifactwire.TLS{CertPath: tlsCfg.CertPath, KeyPath: tlsCfg.KeyPath, CACertPath: tlsCfg.CACertPath}
-		if service != "" && namespace != "" {
-			triple.ServerName = fmt.Sprintf("%s.%s.svc", service, namespace)
-		}
+		triple.ServerName = daemonServerName(service, namespace)
 	}
 	// A triple that cannot be loaded is not a plaintext client: every request
 	// is refused naming the reason, so the misconfiguration surfaces rather
@@ -69,6 +67,47 @@ func NewDaemonClient(logger lager.Logger, clientset kubernetes.Interface, namesp
 		service:   service,
 		wire:      wire,
 	}
+}
+
+// DaemonNamespace is the namespace the artifact daemon's headless Service, its
+// EndpointSlices and its server certificate's SANs live in:
+// ArtifactDaemonNamespace, or Namespace when that is unset (the daemon
+// colocated with step pods). Every web-side use of the daemon's namespace -
+// discovery and certificate verification - goes through it, so the two can
+// never name different daemons.
+func (c Config) DaemonNamespace() string {
+	if c.ArtifactDaemonNamespace != "" {
+		return c.ArtifactDaemonNamespace
+	}
+	return c.Namespace
+}
+
+// defaultArtifactDaemonPort is dialed when the Config names no port; it
+// matches the --kubernetes-artifact-daemon-port default.
+const defaultArtifactDaemonPort = 7780
+
+// NewDaemonClientFromConfig builds the web node's DaemonClient from the
+// assembled Config: discovery in DaemonNamespace, the configured Service and
+// port, and mTLS exactly when the Config asks for it.
+//
+// It exists so the caller cannot pick the namespace. atccmd used to pass
+// Namespace - where step pods run - so with the daemon in another namespace
+// the client listed EndpointSlices holding none of its pods and found no
+// daemon at all.
+func NewDaemonClientFromConfig(logger lager.Logger, clientset kubernetes.Interface, cfg Config) *DaemonClient {
+	port := cfg.ArtifactDaemonPort
+	if port == 0 {
+		port = defaultArtifactDaemonPort
+	}
+	var tlsCfg *DaemonClientTLSConfig
+	if cfg.ArtifactDaemonTLSEnabled {
+		tlsCfg = &DaemonClientTLSConfig{
+			CertPath:   cfg.ArtifactDaemonTLSCert,
+			KeyPath:    cfg.ArtifactDaemonTLSKey,
+			CACertPath: cfg.ArtifactDaemonTLSCACert,
+		}
+	}
+	return NewDaemonClient(logger, clientset, cfg.DaemonNamespace(), cfg.ArtifactDaemonService, port, tlsCfg)
 }
 
 // daemonEndpoint is one artifact-daemon pod: where to reach it, and which node
@@ -113,22 +152,20 @@ func (d *DaemonClient) daemonEndpoints(ctx context.Context) ([]daemonEndpoint, e
 	return eps, nil
 }
 
-// daemonIPs returns the IP addresses of all artifact-daemon pods.
+// daemonIPs returns the IP addresses of every ready artifact-daemon pod. It
+// is a projection of daemonEndpoints so the two can never disagree about
+// which daemons may be asked: a not-ready or terminating pod is no more a
+// place to register an alias or stream an upload into than it is a source
+// to bind to.
 func (d *DaemonClient) daemonIPs(ctx context.Context) ([]string, error) {
-	slices, err := d.clientset.DiscoveryV1().EndpointSlices(d.namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: discoveryv1.LabelServiceName + "=" + d.service,
-	})
+	eps, err := d.daemonEndpoints(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("list endpoint slices for %s: %w", d.service, err)
+		return nil, err
 	}
 
-	var ips []string
-	for _, slice := range slices.Items {
-		for _, ep := range slice.Endpoints {
-			for _, addr := range ep.Addresses {
-				ips = append(ips, addr)
-			}
-		}
+	ips := make([]string, 0, len(eps))
+	for _, ep := range eps {
+		ips = append(ips, ep.IP)
 	}
 	return ips, nil
 }

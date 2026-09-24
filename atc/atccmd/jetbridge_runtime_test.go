@@ -131,9 +131,7 @@ func TestTheReaperSharesTheWorkersArtifactLocator(t *testing.T) {
 // Config fields no flag reaches, each with the reason. A field added to
 // jetbridge.Config without a flag mapping fails the completeness check below
 // until it is mapped or listed here.
-var jetbridgeConfigFieldsWithoutAFlag = map[string]string{
-	"ArtifactDaemonNamespace": "no flag sets it; the daemon is looked up in the step namespace",
-}
+var jetbridgeConfigFieldsWithoutAFlag = map[string]string{}
 
 // Every flag the runtime reads reaches the one assembled Config, and every
 // Config field is either set from a flag or listed as flagless.
@@ -163,6 +161,7 @@ func TestTheJetbridgeConfigIsAssembledFromTheFlags(t *testing.T) {
 		"--kubernetes-artifact-daemon-resolve-capability-key", resolveKey,
 		"--kubernetes-artifact-daemon-resolve-capability-ttl", "3h",
 		"--kubernetes-artifact-daemon-service", "artifacts",
+		"--kubernetes-artifact-daemon-namespace", "ci-daemons",
 		"--kubernetes-artifact-daemon-warm-timeout", "45s",
 		"--kubernetes-artifact-daemon-tls-cert", "/tls/artifact/cert.pem",
 		"--kubernetes-artifact-daemon-tls-key", "/tls/artifact/key.pem",
@@ -224,6 +223,7 @@ func TestTheJetbridgeConfigIsAssembledFromTheFlags(t *testing.T) {
 		ArtifactDaemonWarmTimeout:          45 * time.Second,
 		ArtifactDaemonHostPath:             "/var/lib/jb-artifacts",
 		ArtifactDaemonService:              "artifacts",
+		ArtifactDaemonNamespace:            "ci-daemons",
 		ArtifactDaemonTLSCert:              "/tls/artifact/cert.pem",
 		ArtifactDaemonTLSKey:               "/tls/artifact/key.pem",
 		ArtifactDaemonTLSCACert:            "/tls/artifact/ca.pem",

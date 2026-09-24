@@ -104,6 +104,6 @@ func flagValue(t *testing.T, args []string, name string) string {
 			return v
 		}
 	}
-	t.Fatalf("artifact-daemon is not passed %s", name)
+	t.Fatalf("the container is not passed %s", name)
 	return ""
 }

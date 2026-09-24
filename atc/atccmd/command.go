@@ -238,6 +238,7 @@ type RunCommand struct {
 		ArtifactDaemonResolveCapabilityKey string        `long:"kubernetes-artifact-daemon-resolve-capability-key" description:"Path to the raw 32-byte key used to authorize artifact resolve operations. The artifact daemon must be started with the same key."`
 		ArtifactDaemonResolveCapabilityTTL time.Duration `long:"kubernetes-artifact-daemon-resolve-capability-ttl" default:"2h" description:"Lifetime of operation-bound resolve capabilities; must exceed pod scheduling plus startup plus the init retry budget."`
 		ArtifactDaemonService              string        `long:"kubernetes-artifact-daemon-service"   default:"artifact-daemon" description:"Headless Service name for DaemonSet per-pod DNS."`
+		ArtifactDaemonNamespace            string        `long:"kubernetes-artifact-daemon-namespace" description:"Namespace the artifact daemon's Service, EndpointSlices and server certificate live in. Empty means --kubernetes-namespace."`
 		ArtifactDaemonWarmTimeout          time.Duration `long:"kubernetes-artifact-daemon-warm-timeout" default:"90s" description:"How long to wait for a daemon to restore a resource cache from durable storage. A miss or timeout costs a re-download, never a failed build."`
 		ArtifactDaemonTLSCert              string        `long:"kubernetes-artifact-daemon-tls-cert"    description:"Path to client certificate for mTLS with the artifact daemon."`
 		ArtifactDaemonTLSKey               string        `long:"kubernetes-artifact-daemon-tls-key"     description:"Path to client private key for mTLS with the artifact daemon."`
@@ -1520,6 +1521,7 @@ func (cmd *RunCommand) assembleJetbridgeConfig() (jetbridge.Config, error) {
 	k8sCfg.ArtifactDaemonResolveCapabilityKey = key
 	k8sCfg.ArtifactDaemonResolveCapabilityTTL = cmd.Kubernetes.ArtifactDaemonResolveCapabilityTTL
 	k8sCfg.ArtifactDaemonService = cmd.Kubernetes.ArtifactDaemonService
+	k8sCfg.ArtifactDaemonNamespace = cmd.Kubernetes.ArtifactDaemonNamespace
 	k8sCfg.ArtifactDaemonWarmTimeout = cmd.Kubernetes.ArtifactDaemonWarmTimeout
 	k8sCfg.ArtifactDaemonTLSCert = cmd.Kubernetes.ArtifactDaemonTLSCert
 	k8sCfg.ArtifactDaemonTLSKey = cmd.Kubernetes.ArtifactDaemonTLSKey
@@ -1646,30 +1648,12 @@ func (cmd *RunCommand) workerFactory(dbConn db.DbConn, lockFactory lock.LockFact
 		}
 
 		if k8sCfg.ArtifactDaemonService != "" {
-			daemonPort := k8sCfg.ArtifactDaemonPort
-			if daemonPort == 0 {
-				daemonPort = 7780
-			}
 			dcLogger := lager.NewLogger("daemon-client")
 			dcLogger.RegisterSink(lager.NewWriterSink(os.Stderr, lager.INFO))
 
-			var daemonTLSCfg *jetbridge.DaemonClientTLSConfig
-			if k8sCfg.ArtifactDaemonTLSEnabled {
-				daemonTLSCfg = &jetbridge.DaemonClientTLSConfig{
-					CertPath:   k8sCfg.ArtifactDaemonTLSCert,
-					KeyPath:    k8sCfg.ArtifactDaemonTLSKey,
-					CACertPath: k8sCfg.ArtifactDaemonTLSCACert,
-				}
-			}
-
-			factory.K8sDaemonClient = jetbridge.NewDaemonClient(
-				dcLogger,
-				k8sClientset,
-				k8sCfg.Namespace,
-				k8sCfg.ArtifactDaemonService,
-				daemonPort,
-				daemonTLSCfg,
-			)
+			// The Config picks the daemon's namespace, not this call site:
+			// the daemon may live apart from the step-pod namespace.
+			factory.K8sDaemonClient = jetbridge.NewDaemonClientFromConfig(dcLogger, k8sClientset, k8sCfg)
 		}
 	}
 
