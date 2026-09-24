@@ -193,6 +193,8 @@ func (b *Body) Read(p []byte) (int, error) {
 		if code := b.Response.Trailer.Get(ErrorTrailer); code != "ok" {
 			return n, DecodeError(code)
 		}
+	} else if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		return n, fmt.Errorf("%w: %w", objectstore.ErrInfrastructure, err)
 	}
 	return n, err
 }

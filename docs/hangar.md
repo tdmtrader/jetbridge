@@ -263,8 +263,8 @@ ID on every request. Its fixed roles have the permissions above, except disk
 inventory and reclaimer cannot read object bodies. There is no general IAM
 engine, overwrite API or unconditional delete API.
 
-Example strict-input configuration, retaining your existing artifact-daemon
-TLS/key configuration:
+First provision the disk service, retaining your existing artifact-daemon
+TLS/key configuration and leaving client features disabled:
 
 ```yaml
 hangarStorage:
@@ -280,7 +280,7 @@ hangarStorage:
       existingSecret: hangar-store-credentials
 artifactDaemon:
   hangar:
-    enabled: true
+    enabled: false
     webEnabled: false
     store: disk
     bucket: inputs
@@ -289,7 +289,9 @@ artifactDaemon:
 Initialization is explicit and only for a new, empty store. With
 `initialize: true`, the chart stops the storage Deployment and runs a one-shot
 initialization Job. Wait for that Job to succeed, then upgrade with
-`initialize: false` to start the service. Keep this value false thereafter;
+`initialize: false` and `artifactDaemon.hangar.enabled: true` to start the
+service and its strict-input clients. Enable web emission after the daemon
+rollout as described above. Keep `initialize` false thereafter;
 a normal restart refuses an uninitialized or wrong-identity volume. The Job
 and chart-created PVC are retained on removal. `existingClaim` can select a
 pre-provisioned PVC instead. Do not rerun initialization on a replacement

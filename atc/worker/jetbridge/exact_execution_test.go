@@ -83,10 +83,12 @@ var _ = Describe("An execProcess under exact control", func() {
 		podUID    types.UID
 	)
 
+	// Resource journals use host-global paths. Parallel Ginkgo workers must
+	// not clear one another's journal while a command is being dispatched.
+	executionID := executioncontrol.ExecutionID(fmt.Sprintf("%08x-aaaa-4aaa-8aaa-aaaaaaaaaaaa", os.Getpid()))
 	const (
-		executionID = executioncontrol.ExecutionID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
-		handoffID   = hangaroutput.HandoffID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
-		leaseID     = hangaroutput.SourceHoldID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+		handoffID = hangaroutput.HandoffID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+		leaseID   = hangaroutput.SourceHoldID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
 	)
 
 	identity := executioncontrol.Identity{ExecutionID: executionID, Fence: 1}
@@ -155,7 +157,7 @@ var _ = Describe("An execProcess under exact control", func() {
 	BeforeEach(func() {
 		ctx = context.Background()
 
-		// Every spec here shares one identity, so a resource command's
+		// Every spec in this worker shares one identity, so a resource command's
 		// journal, which is named after it, is cleared on both sides.
 		resourceJournal := exactResourceStateDir(identity)
 		Expect(os.RemoveAll(resourceJournal)).To(Succeed())
