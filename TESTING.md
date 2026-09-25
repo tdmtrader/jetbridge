@@ -67,6 +67,12 @@ In CI this tier is the `k8s-e2e` pipeline (`deploy/k8s-e2e-pipeline.yml`): `buil
 The jetbridge pipeline's `k8s-live-tests` job is a different thing: the `-tags live` suites in
 `atc/worker/jetbridge`, which run after `self-upgrade` against the cluster's *deployed* artifact
 daemon (hostPath, node-IP dialing, mTLS SANs, capability key) as a post-upgrade acceptance check.
+`TestMain` reads the deployed web pod and daemon once and stops the run if either is missing or
+unreadable, and `TestLiveDeployedFeatureSet` fails unless the deployment has exactly the features
+`atc/worker/jetbridge/testdata/live_deployment.json` says it has. That manifest is also the live
+coverage map: each feature that is on names the `live` tests covering it, or says why none can.
+Changing a feature in home-infra's `apps/concourse.yaml` therefore means changing the manifest too
+(another deployment passes its own via `K8S_LIVE_DEPLOYMENT_MANIFEST`).
 
 Two properties of the CI node these tiers depend on, both learned the hard way on 2026-09-04:
 every `dockerd` started inside a pod (the DinD builders and the in-task daemon here) must run with

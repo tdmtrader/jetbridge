@@ -70,7 +70,7 @@ var clusterScopeReadOnlyAllowed = map[string]map[string]bool{
 	"Namespaces": {"Get": true},
 }
 
-// liveGuardFileFloor is a non-vacuity floor, not a count. There are 10 files
+// liveGuardFileFloor is a non-vacuity floor, not a count. There are 15 files
 // under `//go:build live` in this package today. If a refactor drops the scan
 // below this, the guard has stopped guarding and should fail loudly rather than
 // pass over an empty set.

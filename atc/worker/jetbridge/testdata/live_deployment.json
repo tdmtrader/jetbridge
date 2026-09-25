@@ -1,0 +1,78 @@
+{
+  "deployment": "theborg cicd namespace (concourse.home), configured by home-infra apps/concourse.yaml",
+  "prometheus": {
+    "namespace": "monitoring",
+    "service": "prometheus-kube-prometheus-prometheus",
+    "port": "9090"
+  },
+  "features": {
+    "web.mcp": {
+      "expect": "on",
+      "coveredBy": ["TestLiveWebMCPIsMounted"]
+    },
+    "web.credentialManager": {
+      "expect": "concourse-",
+      "coveredBy": ["TestLiveCredentialManagerResolvesVars"]
+    },
+    "web.taskCache": {
+      "expect": "hostpath",
+      "coveredBy": ["TestLiveHostPathTaskCacheSurvivesPodRestart"]
+    },
+    "web.metrics": {
+      "expect": "9391",
+      "coveredBy": ["TestLiveWebMetricsAreScraped"]
+    },
+    "web.tracing": {
+      "expect": "on",
+      "uncovered": "Spans go to the cluster's Tempo; the tier has no reader for them. testhelpers/otel asserts export end to end and is kept out of CI because it needs tempo.home and loki.home."
+    },
+    "web.tls": {
+      "expect": "off",
+      "note": "TLS terminates at the Traefik ingress."
+    },
+    "web.hangar": {
+      "expect": "off",
+      "note": "Strict Hangar inputs are off here. Turning them on is a deployment change, not a test one: artifactDaemon.durable (store gcs, endpoint the fake-gcs emulator), artifactDaemon.hangar.enabled/webEnabled, and a hangar.key in the pinned daemon TLS Secret. The home-infra values still set artifactDaemon.hangar.bucket/endpoint and agentSnapshots, which the chart no longer reads. Hangar is covered by the hangar_live contracts in the k8s-e2e pipeline, on a throwaway K3s cluster, and the output plane's tier-2 conformance runs in unit-tests against the deployed fake-gcs."
+    },
+    "web.hangarOutput": {
+      "expect": "off",
+      "note": "The Hangar output plane (publisher, reclaimer, execution control) is not deployed here; see web.hangar."
+    },
+    "web.hangarOutputCapture": {
+      "expect": "off",
+      "note": "Needs the output plane; see web.hangarOutput."
+    },
+    "web.runResults": {
+      "expect": "off",
+      "note": "Rendered only with hangarOutput.webEnabled."
+    },
+    "daemon.mtls": {
+      "expect": "on",
+      "coveredBy": ["TestLiveVolumePassingGetToTask", "TestLiveVolumePassingTaskChain", "TestLiveVolumeDataIntegrity"]
+    },
+    "daemon.resolveCapability": {
+      "expect": "on",
+      "coveredBy": ["TestLiveVolumePassingGetToTask", "TestLiveVolumePassingTaskChain", "TestLiveVolumeDataIntegrity"]
+    },
+    "daemon.hangar": {
+      "expect": "off",
+      "note": "See web.hangar. The persistent-disk Hangar store (codex/hangar-disk-backend) will be off here on arrival too; its live coverage is a hangar_live job in k8s-e2e, not a flag flipped on this cluster."
+    },
+    "daemon.preemption": {
+      "expect": "off",
+      "note": "GCP spot preemption watch reads the GCP metadata server. There is no GCP here, so it cannot be covered live on this cluster at all."
+    },
+    "daemon.durableStore": {
+      "expect": "off",
+      "note": "No durable resource-cache store is configured here; cmd/artifact-daemon/durable covers the stores against real filesystems and fakes."
+    },
+    "daemon.mirrorReplicas": {
+      "expect": "2",
+      "uncovered": "Mirroring copies each output to a peer daemon, and this cluster has one node (daemon.nodes), so there is no peer: the default-on feature does nothing here. Cross-node mirroring is covered by cmd/artifact-daemon's behavioral_cross_node_test.go with two daemons on one host."
+    },
+    "daemon.nodes": {
+      "expect": "1",
+      "uncovered": "Not a feature: asserted so a second node, which would make mirroring live, fails this test until it is covered."
+    }
+  }
+}
