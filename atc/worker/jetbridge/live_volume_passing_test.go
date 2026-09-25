@@ -21,7 +21,6 @@ import (
 func TestLiveVolumePassingGetToTask(t *testing.T) {
 	ctx := context.Background()
 	clientset, cfg := kubeClient(t)
-	requireArtifactBackend(t, cfg)
 	ts := time.Now().Format("150405")
 
 	// --- Step 1: Simulate a "get" step that produces output ---
@@ -136,7 +135,6 @@ func TestLiveVolumePassingGetToTask(t *testing.T) {
 func TestLiveVolumePassingTaskChain(t *testing.T) {
 	ctx := context.Background()
 	clientset, cfg := kubeClient(t)
-	requireArtifactBackend(t, cfg)
 	ts := time.Now().Format("150405")
 
 	// --- Task 1: Produce output ---
@@ -256,7 +254,6 @@ func TestLiveVolumePassingTaskChain(t *testing.T) {
 func TestLiveVolumeDataIntegrity(t *testing.T) {
 	ctx := context.Background()
 	clientset, cfg := kubeClient(t)
-	requireArtifactBackend(t, cfg)
 	ts := time.Now().Format("150405")
 
 	// --- Step 1: Write known data ---

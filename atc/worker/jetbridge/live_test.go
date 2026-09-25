@@ -8,7 +8,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -20,7 +19,6 @@ import (
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"github.com/onsi/gomega"
 	"github.com/tedsuo/ifrit"
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -50,6 +48,28 @@ func runLive(m *testing.M) int {
 	// -- this process takes its temp root with it -- is spelled in both.
 	before := jetbridge.TempSuspects()
 
+	// The deployment is a precondition of the whole tier, not something each
+	// test may find missing and quietly work around. Discovery runs before the
+	// postmaster so a missing or unreadable deployment costs one message, and
+	// its credentials directory is gone again before the temp guard looks.
+	tlsRoot, err := os.MkdirTemp("", "jetbridge-live-daemon-tls-")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "live tier precondition:", err)
+		return 1
+	}
+	defer os.RemoveAll(tlsRoot)
+	clientset, err := jetbridge.NewClientset(jetbridge.NewConfig(liveTestNamespace(), liveKubeconfig()))
+	if err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		deployed, err = discoverDeployment(ctx, clientset, releaseNamespace(), tlsRoot)
+		cancel()
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "live tier precondition: no usable JetBridge deployment:", err)
+		return 1
+	}
+	fmt.Println("live tier runs against", deployed)
+
 	livePostgresRunner = postgresrunner.Runner{Port: postgresrunner.PickPort()}
 	process := ifrit.Invoke(livePostgresRunner)
 	livePostgresRunner.InitializeTestDBTemplate()
@@ -58,6 +78,7 @@ func runLive(m *testing.M) int {
 
 	process.Signal(os.Interrupt)
 	<-process.Wait()
+	os.RemoveAll(tlsRoot)
 
 	if leaks := jetbridge.TempLeaks(before); len(leaks) != 0 {
 		for _, leak := range leaks {
@@ -149,177 +170,13 @@ func liveTestNamespace() string {
 func kubeClient(t *testing.T) (kubernetes.Interface, *jetbridge.Config) {
 	t.Helper()
 
-	kubeconfig := os.Getenv("KUBECONFIG")
-	if kubeconfig == "" {
-		// Check if the default kubeconfig file exists; if not, leave it
-		// empty so NewConfig/NewClientset will fall back to in-cluster config.
-		home, _ := os.UserHomeDir()
-		candidate := home + "/.kube/config"
-		if _, err := os.Stat(candidate); err == nil {
-			kubeconfig = candidate
-		}
-	}
-
-	// When running inside a K8s pod (SA token exists) but the standard
-	// KUBERNETES_SERVICE_HOST env var isn't set (some container runtimes
-	// don't inject it), set it to the well-known in-cluster DNS name so
-	// that rest.InClusterConfig() succeeds.
-	if kubeconfig == "" {
-		if _, err := os.Stat("/var/run/secrets/kubernetes.io/serviceaccount/token"); err == nil {
-			if os.Getenv("KUBERNETES_SERVICE_HOST") == "" {
-				os.Setenv("KUBERNETES_SERVICE_HOST", "kubernetes.default.svc")
-				os.Setenv("KUBERNETES_SERVICE_PORT", "443")
-			}
-		}
-	}
-
-	ns := liveTestNamespace()
-	cfg := jetbridge.NewConfig(ns, kubeconfig)
+	cfg := jetbridge.NewConfig(liveTestNamespace(), liveKubeconfig())
 	clientset, err := jetbridge.NewClientset(cfg)
 	if err != nil {
 		t.Fatalf("creating clientset: %v", err)
 	}
-	adoptDaemonTLS(t, clientset, &cfg)
+	deployed.configure(&cfg)
 	return clientset, &cfg
-}
-
-// daemonNamespace is where the artifact daemon actually runs, which is not the
-// namespace these tests schedule their own pods into (K8S_TEST_NAMESPACE).
-func daemonNamespace() string {
-	if ns := os.Getenv("K8S_ARTIFACT_DAEMON_NAMESPACE"); ns != "" {
-		return ns
-	}
-	return "cicd"
-}
-
-// adoptDaemonTLS makes the live config describe the daemon the cluster actually
-// runs: where it stores artifacts, which port and service name address it, and
-// whether it speaks HTTP or mTLS.
-//
-// Every one of those is a silent failure when guessed wrong, and they fail in
-// different places. An unset host path is the worst: it leaves the worker with
-// no storage backend at all, so no fetch-inputs init container is ever built.
-// Nothing errors — the step pod just starts without its inputs and fails later
-// on a missing file, pointing at the daemon rather than at the config that
-// never asked it for anything. A wrong protocol is louder but just as
-// misleading: the daemon serves HTTPS with mTLS whenever artifactDaemon.tls is
-// set, which the chart REQUIRES once agentSnapshots is enabled, and a
-// plain-HTTP caller gets 400 on every request.
-//
-// So the deployed DaemonSet is the source of truth for all of it, read from its
-// own flags rather than assumed or passed in. Enabling TLS, renaming the
-// service, or moving the storage path needs no change here and no change to
-// whatever invokes these tests.
-//
-// Absent or unreadable daemon state leaves the config untouched: a cluster
-// without the daemon, or a caller without permission to read it, still runs
-// every test that does not talk to the daemon.
-func adoptDaemonTLS(t *testing.T, clientset kubernetes.Interface, cfg *jetbridge.Config) {
-	t.Helper()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	dsNamespace := daemonNamespace()
-	daemons, err := clientset.AppsV1().DaemonSets(dsNamespace).List(ctx, metav1.ListOptions{
-		LabelSelector: "app.kubernetes.io/component=artifact-daemon",
-	})
-	if err != nil || len(daemons.Items) == 0 {
-		return
-	}
-	daemon := daemons.Items[0]
-
-	adoptDaemonAddressing(t, cfg, dsNamespace, daemon)
-
-	var secretName string
-	for _, volume := range daemon.Spec.Template.Spec.Volumes {
-		if volume.Name == "daemon-tls" && volume.Secret != nil {
-			secretName = volume.Secret.SecretName
-			break
-		}
-	}
-	if secretName == "" {
-		// TLS is off; the default plain-HTTP config is already correct.
-		return
-	}
-
-	secret, err := clientset.CoreV1().Secrets(dsNamespace).Get(ctx, secretName, metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("daemon TLS is enabled but its secret %s/%s is unreadable: %v", dsNamespace, secretName, err)
-	}
-
-	dir := t.TempDir()
-	paths := map[string]string{}
-	for _, key := range []string{"ca.crt", "client.crt", "client.key"} {
-		data, found := secret.Data[key]
-		if !found {
-			t.Fatalf("daemon TLS secret %s/%s has no %s", dsNamespace, secretName, key)
-		}
-		path := dir + "/" + key
-		if err := os.WriteFile(path, data, 0o600); err != nil {
-			t.Fatalf("writing %s: %v", path, err)
-		}
-		paths[key] = path
-	}
-
-	// The daemon authenticates every resolve with an HMAC capability the
-	// caller mints, so a config without the signing key produces tokens the
-	// daemon rejects and the fetch returns nothing. The real web gets this key
-	// from the same Secret the chart mounts; adopt it here for the same reason
-	// the certificates are adopted.
-	adoptResolveCapability(t, clientset, cfg, dsNamespace, daemon)
-
-	cfg.ArtifactDaemonTLSEnabled = true
-	cfg.ArtifactDaemonTLSCACert = paths["ca.crt"]
-	cfg.ArtifactDaemonTLSCert = paths["client.crt"]
-	cfg.ArtifactDaemonTLSKey = paths["client.key"]
-
-	t.Logf("daemon mTLS adopted from %s/%s (server name %s.%s.svc)",
-		dsNamespace, secretName, cfg.ArtifactDaemonService, dsNamespace)
-}
-
-// adoptDaemonAddressing copies the deployed daemon's own storage path, port and
-// service identity into the live config.
-//
-// These are read from the daemon's command line because that is what the daemon
-// is actually running with; a value derived from the chart's defaults or from a
-// caller's environment is a guess that happens to be right. In particular the
-// storage path decides whether the worker gets a DaemonSet storage backend at
-// all — empty means artifact passing is silently disabled rather than broken —
-// and the service name decides which SAN the daemon's server certificate is
-// verified against, so a stale name fails every ATC-side mTLS call while the
-// init containers (which skip hostname verification) keep working.
-//
-// The namespace is the daemon's own, which is not the namespace these tests
-// schedule their pods into: daemons are dialed by node IP, never a cert SAN, so
-// verification has to name the headless service where the daemon actually runs.
-func adoptDaemonAddressing(
-	t *testing.T,
-	cfg *jetbridge.Config,
-	namespace string,
-	daemon appsv1.DaemonSet,
-) {
-	t.Helper()
-
-	cfg.ArtifactDaemonNamespace = namespace
-	cfg.ArtifactDaemonService = daemon.Name
-
-	container := daemon.Spec.Template.Spec.Containers[0]
-	for _, arg := range append(append([]string{}, container.Command...), container.Args...) {
-		switch {
-		case strings.HasPrefix(arg, "--storage-path="):
-			cfg.ArtifactDaemonHostPath = strings.TrimPrefix(arg, "--storage-path=")
-		case strings.HasPrefix(arg, "--service-name="):
-			cfg.ArtifactDaemonService = strings.TrimPrefix(arg, "--service-name=")
-		case strings.HasPrefix(arg, "--port="):
-			if port, err := strconv.Atoi(strings.TrimPrefix(arg, "--port=")); err == nil {
-				cfg.ArtifactDaemonPort = port
-			}
-		}
-	}
-
-	t.Logf("daemon addressing adopted from %s/%s (storage path %q, service %s, port %d)",
-		namespace, daemon.Name, cfg.ArtifactDaemonHostPath, cfg.ArtifactDaemonService, cfg.ArtifactDaemonPort)
 }
 
 // cleanupPod registers a t.Cleanup that deletes the named pod. This is used
@@ -369,22 +226,6 @@ func logInitContainers(t *testing.T, clientset kubernetes.Interface, namespace, 
 			continue
 		}
 		t.Logf("pod %s: init container %s logs:\n%s", podName, container.Name, string(logs))
-	}
-}
-
-// requireArtifactBackend fails before a test that passes artifacts between
-// steps can reach its confusing symptom.
-//
-// Without a storage backend the worker builds pods that never fetch their
-// inputs, and the test that follows fails several steps later on a file that
-// was never going to be there. That reads as a broken daemon rather than a
-// cluster this suite could not find one in.
-func requireArtifactBackend(t *testing.T, cfg *jetbridge.Config) {
-	t.Helper()
-	if cfg.ArtifactDaemonHostPath == "" {
-		t.Fatalf("no artifact daemon found in namespace %s (set K8S_ARTIFACT_DAEMON_NAMESPACE): "+
-			"artifact passing is unconfigured, so this test would fail on a missing input rather than on the behavior it covers",
-			daemonNamespace())
 	}
 }
 
@@ -591,61 +432,4 @@ func isExecExitError(err error, target **jetbridge.ExecExitError) bool {
 		return true
 	}
 	return false
-}
-
-// adoptResolveCapability copies the daemon's resolve-capability HMAC key into
-// the live config.
-//
-// The daemon authenticates every /resolve-batch with a short-lived capability
-// the caller signs, so a config with no key mints tokens the daemon refuses.
-// The failure is quiet in the worst way: the init container still exits 0 and
-// the step pod still starts, but the requested artifact never lands, so the
-// step fails later with a missing file rather than a fetch error.
-//
-// The key name comes from the daemon's own --resolve-capability-key flag so
-// this follows a chart rename, and the Secret is found via the daemon's
-// resolve-capability volume rather than a hardcoded name.
-func adoptResolveCapability(
-	t *testing.T,
-	clientset kubernetes.Interface,
-	cfg *jetbridge.Config,
-	namespace string,
-	daemon appsv1.DaemonSet,
-) {
-	t.Helper()
-
-	var secretName string
-	for _, volume := range daemon.Spec.Template.Spec.Volumes {
-		if volume.Name == "resolve-capability" && volume.Secret != nil {
-			secretName = volume.Secret.SecretName
-			break
-		}
-	}
-	if secretName == "" {
-		return
-	}
-
-	keyName := "resolve.key"
-	for _, arg := range daemon.Spec.Template.Spec.Containers[0].Command {
-		if rest, found := strings.CutPrefix(arg, "--resolve-capability-key="); found {
-			if base := rest[strings.LastIndex(rest, "/")+1:]; base != "" {
-				keyName = base
-			}
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	secret, err := clientset.CoreV1().Secrets(namespace).Get(ctx, secretName, metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("daemon resolve capability secret %s/%s is unreadable: %v", namespace, secretName, err)
-	}
-	key, found := secret.Data[keyName]
-	if !found {
-		t.Fatalf("resolve capability secret %s/%s has no %s", namespace, secretName, keyName)
-	}
-
-	cfg.ArtifactDaemonResolveCapabilityKey = key
-	t.Logf("resolve capability adopted from %s/%s (%s, %d bytes)", namespace, secretName, keyName, len(key))
 }
