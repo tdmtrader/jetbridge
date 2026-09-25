@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"slices"
 	"sort"
+	"sync"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -153,14 +155,29 @@ type Migrator interface {
 //go:embed migrations
 var migrationsEmbed embed.FS
 
-func NewMigrator(db *sql.DB, lockFactory lock.LockFactory) Migrator {
+// The embedded migration files are immutable for the lifetime of the binary.
+// Parse them once, while still checking the database and taking migration locks
+// on every open. Caller-supplied filesystems are deliberately not cached.
+var embeddedMigrations = sync.OnceValues(func() ([]migration, error) {
 	migrationsFS, err := fs.Sub(migrationsEmbed, "migrations")
 	if err != nil {
-		// impossible due to const value arg
-		panic(err)
+		panic(err) // impossible for this constant path
 	}
+	return readMigrations(migrationsFS)
+})
 
-	return NewMigratorForMigrations(db, lockFactory, migrationsFS)
+func NewMigrator(db *sql.DB, lockFactory lock.LockFactory) Migrator {
+	return &migrator{
+		db,
+		lockFactory,
+		lager.NewLogger("migrations"),
+		func() ([]migration, error) {
+			migrations, err := embeddedMigrations()
+			// Migrations historically returned a fresh slice. Keep callers from
+			// changing the definitions seen by later opens or other migrators.
+			return slices.Clone(migrations), err
+		},
+	}
 }
 
 func NewMigratorForMigrations(db *sql.DB, lockFactory lock.LockFactory, migrationsFS fs.FS) Migrator {
@@ -168,26 +185,30 @@ func NewMigratorForMigrations(db *sql.DB, lockFactory lock.LockFactory, migratio
 		db,
 		lockFactory,
 		lager.NewLogger("migrations"),
-		migrationsFS,
+		func() ([]migration, error) { return readMigrations(migrationsFS) },
 	}
 }
 
 type migrator struct {
-	db           *sql.DB
-	lockFactory  lock.LockFactory
-	logger       lager.Logger
-	migrationsFS fs.FS
+	db             *sql.DB
+	lockFactory    lock.LockFactory
+	logger         lager.Logger
+	loadMigrations func() ([]migration, error)
 }
 
 func (helper *migrator) Migrations() ([]migration, error) {
+	return helper.loadMigrations()
+}
+
+func readMigrations(migrationsFS fs.FS) ([]migration, error) {
 	migrationList := []migration{}
 
-	assets, err := fs.ReadDir(helper.migrationsFS, ".")
+	assets, err := fs.ReadDir(migrationsFS, ".")
 	if err != nil {
 		return nil, err
 	}
 
-	var parser = NewParser(helper.migrationsFS)
+	var parser = NewParser(migrationsFS)
 	for _, asset := range assets {
 		if asset.Name() == "migrations.go" {
 			// special file declaring type for Go migrations

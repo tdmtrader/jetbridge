@@ -22,6 +22,8 @@ import (
 
 type Runner struct {
 	Port int
+
+	fileCopy bool
 }
 
 func (runner Runner) Run(signals <-chan os.Signal, ready chan<- struct{}) error {
@@ -212,46 +214,43 @@ func (runner *Runner) dataSourceName(dbName string) string {
 	return fmt.Sprintf("host=/tmp user=postgres dbname=%s sslmode=disable port=%d", dbName, runner.Port)
 }
 
-func (runner *Runner) psqlf(c string, args ...any) int {
-	return runner.psql(fmt.Sprintf(c, args...))
-}
+// execSQL uses a fresh connection for each fixture operation, just as the psql
+// invocation it replaces did. Closing it before returning is essential: a
+// connection left on the template prevents cloning, and one left on testdb
+// prevents dropping it. Administrative commands still run outside a transaction.
+func (runner *Runner) execSQL(dbName, query string) error {
+	conn, err := sql.Open("pgx", runner.dataSourceName(dbName))
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
 
-// psql runs c against the "postgres" database. libpq defaults dbname to the
-// user name, so this is what the no-dbname form always connected to; naming it
-// keeps the distinction from psqlIn visible, because anything schema-shaped run
-// here finds no Concourse tables and still exits 0.
-func (runner *Runner) psql(c string) int {
-	return runner.psqlIn("postgres", c)
-}
-
-func (runner *Runner) psqlIn(dbName string, c string) int {
-	cmd := exec.Command("psql", "-h", "/tmp", "-U", "postgres", "-p", strconv.Itoa(runner.Port), dbName, "-q", "-t", "-c", c)
-	session, err := gexec.Start(cmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
-	Expect(err).NotTo(HaveOccurred())
-
-	<-session.Exited
-
-	return session.ExitCode()
+	_, err = conn.Exec(query)
+	return err
 }
 
 func (runner *Runner) InitializeTestDBTemplate() {
 	createTemplate := "CREATE DATABASE testdb_template IS_TEMPLATE = true;"
-	exitCode := runner.psql(createTemplate)
-	if exitCode != 0 {
-		exitCode = runner.psql("DROP DATABASE IF EXISTS testdb_template;")
-		Expect(exitCode).To(Equal(0), "drop testdb_template")
-
-		exitCode = runner.psql(createTemplate)
-		Expect(exitCode).To(Equal(0), "create testdb_template")
+	err := runner.execSQL("postgres", createTemplate)
+	if err != nil {
+		Expect(runner.execSQL("postgres", "DROP DATABASE IF EXISTS testdb_template;")).To(Succeed(), "drop testdb_template")
+		Expect(runner.execSQL("postgres", createTemplate)).To(Succeed(), "create testdb_template")
 	}
 
 	// to run the migration
 	conn := runner.openConn("testdb_template")
-	err := conn.Close()
+	var serverVersion int
+	Expect(conn.QueryRow("SHOW server_version_num").Scan(&serverVersion)).To(Succeed())
+	// PostgreSQL 15 added WAL_LOG as the default cloning strategy. This
+	// migrated template is large enough that directory copying is cheaper.
+	// Each runner owns its postmaster, so the required checkpoints do not
+	// interrupt other suites. Older servers already use directory copying.
+	runner.fileCopy = serverVersion >= 150000
+	err = conn.Close()
 	Expect(err).ToNot(HaveOccurred())
 
 	// Optimize for non-durability: https://www.postgresql.org/docs/13/non-durability.html
-	exitCode = runner.psql(`
+	err = runner.execSQL("postgres", `
 			SET client_min_messages TO WARNING;
 			CREATE OR REPLACE FUNCTION mark_tables_as_unlogged() RETURNS void AS $$
 			DECLARE
@@ -267,10 +266,9 @@ func (runner *Runner) InitializeTestDBTemplate() {
 
 			SELECT mark_tables_as_unlogged();
 	`)
-	Expect(exitCode).To(Equal(0), "mark tables as unlogged")
+	Expect(err).To(Succeed(), "mark tables as unlogged")
 
-	exitCode = runner.psqlIn("testdb_template", spreadIDSequencesSQL)
-	Expect(exitCode).To(Equal(0), "spread id sequences")
+	Expect(runner.execSQL("testdb_template", spreadIDSequencesSQL)).To(Succeed(), "spread id sequences")
 
 	runner.terminateIdleConnections("testdb_template")
 }
@@ -311,30 +309,30 @@ const spreadIDSequencesSQL = `
 `
 
 func (runner *Runner) CreateEmptyTestDB() {
-	exitCode := runner.psql("CREATE DATABASE testdb;")
-	Expect(exitCode).To(Equal(0), "create empty testdb")
+	Expect(runner.execSQL("postgres", "CREATE DATABASE testdb;")).To(Succeed(), "create empty testdb")
 }
 
 func (runner *Runner) CreateTestDBFromTemplate() {
-	exitCode := runner.psql("CREATE DATABASE testdb TEMPLATE testdb_template;")
-	Expect(exitCode).To(Equal(0), "create testdb from template")
+	query := "CREATE DATABASE testdb TEMPLATE testdb_template"
+	if runner.fileCopy {
+		query += " STRATEGY FILE_COPY"
+	}
+	Expect(runner.execSQL("postgres", query)).To(Succeed(), "create testdb from template")
 }
 
 func (runner *Runner) DropTestDB() {
 	runner.terminateIdleConnections("testdb")
 
-	exitCode := runner.psql("DROP DATABASE IF EXISTS testdb;")
-	Expect(exitCode).To(Equal(0), "drop testdb")
+	Expect(runner.execSQL("postgres", "DROP DATABASE IF EXISTS testdb;")).To(Succeed(), "drop testdb")
 }
 
 func (runner *Runner) terminateIdleConnections(dbName string) {
-	exitCode := runner.psqlf("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND datname = '%s' AND state = 'idle';", dbName)
-	Expect(exitCode).To(Equal(0), "terminate idle connections")
+	query := fmt.Sprintf("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND datname = '%s' AND state = 'idle';", dbName)
+	Expect(runner.execSQL("postgres", query)).To(Succeed(), "terminate idle connections")
 }
 
 func (runner *Runner) Truncate() {
-	exitCode := runner.psqlIn("testdb", truncateSQL+spreadIDSequencesSQL)
-	Expect(exitCode).To(Equal(0), "truncate testdb")
+	Expect(runner.execSQL("testdb", truncateSQL+spreadIDSequencesSQL)).To(Succeed(), "truncate testdb")
 }
 
 // TRUNCATE ... RESTART IDENTITY rewinds every sequence to its start value, so
