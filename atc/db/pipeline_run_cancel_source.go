@@ -46,6 +46,15 @@ func (f *pipelineRunFactory) CancellationOutputTask(ctx context.Context, tx Tx, 
 	if err != nil {
 		return in, err
 	}
+	// Without Run cancellation, only an open build closure may act on a
+	// source, and only its own build's.
+	owned, err := runCancellationOwnsBuild(ctx, tx, op.RunID, build)
+	if err != nil {
+		return in, err
+	}
+	if !owned {
+		return in, ErrRunCancellationProgressStale
+	}
 	var found bool
 	in.Task, found, err = f.OutputTask(ctx, tx, build, task)
 	if err != nil {

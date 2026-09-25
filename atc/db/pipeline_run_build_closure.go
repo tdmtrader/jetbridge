@@ -27,6 +27,17 @@ func runHasOpenBuildClosure(ctx context.Context, tx Tx, runID int) (bool, error)
 	return open, err
 }
 
+// runCancellationOwnsBuild reports whether cancellation work may act on the
+// build's subjects: any build's under Run cancellation, and otherwise only an
+// open closure's own build.
+func runCancellationOwnsBuild(ctx context.Context, tx Tx, runID, buildID int) (bool, error) {
+	var owns bool
+	err := tx.QueryRowContext(ctx, `SELECT r.cancel_requested_at IS NOT NULL OR EXISTS(
+ SELECT 1 FROM pipeline_run_build_closures bc WHERE bc.build_id=$2 AND bc.run_id=r.id AND bc.closed_at IS NULL)
+ FROM pipeline_runs r WHERE r.id=$1`, runID, buildID).Scan(&owns)
+	return owns, err
+}
+
 // buildHasOpenClosure reports whether the build's closure is still open.
 func buildHasOpenClosure(ctx context.Context, tx Tx, buildID int) (bool, error) {
 	var open bool

@@ -44,8 +44,17 @@ func (f *pipelineRunFactory) cancellationRunExecution(ctx context.Context, tx Tx
 	err = tx.QueryRowContext(ctx, `SELECT build_id,plan_id FROM pipeline_run_executions
  WHERE run_id=$1 AND execution_id::text||'/'||execution_fence::text=$2 AND handoff_id IS NULL`, op.RunID, op.Subject).Scan(&build, &plan)
 	if err == sql.ErrNoRows {
+		// With no base execution row there is no build to scope to. An open
+		// closure discovered only its own build's subjects, so it resolves
+		// the subject as Run cancellation does.
 		if !run.CancellationRequested() {
-			return in, ErrRunCancellationProgressStale
+			open, openErr := runHasOpenBuildClosure(ctx, tx, op.RunID)
+			if openErr != nil {
+				return in, openErr
+			}
+			if !open {
+				return in, ErrRunCancellationProgressStale
+			}
 		}
 		return in, collectedRunExecution(ctx, tx, op, &in)
 	}
