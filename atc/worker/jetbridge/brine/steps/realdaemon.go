@@ -654,6 +654,10 @@ func (d *realDaemon) launch(cmd *exec.Cmd, output *daemonOutput) error {
 func awaitDaemon(d *realDaemon, command string, ready func(url string) error,
 	output *daemonOutput) (bool, error) {
 	deadline := time.Now().Add(20 * time.Second)
+	// Fast local daemons often become ready between the first probe and a
+	// fixed 100ms retry. Probe sooner at startup, backing off to the original
+	// interval for slow starts. The readiness check and deadline stay intact.
+	delay := time.Millisecond
 	for time.Now().Before(deadline) {
 		select {
 		case err := <-d.done:
@@ -665,7 +669,14 @@ func awaitDaemon(d *realDaemon, command string, ready func(url string) error,
 		if err := ready(d.URL); err == nil {
 			return false, nil
 		}
-		time.Sleep(100 * time.Millisecond)
+		timer := time.NewTimer(delay)
+		select {
+		case err := <-d.done:
+			timer.Stop()
+			return true, fmt.Errorf("%s exited during startup: %w%s", command, err, output.report())
+		case <-timer.C:
+		}
+		delay = min(2*delay, 100*time.Millisecond)
 	}
 	_ = d.stop()
 

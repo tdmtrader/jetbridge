@@ -43,6 +43,21 @@ func TestMain(m *testing.M) {
 			os.RemoveAll(dir)
 			os.Exit(1)
 		}
+		// Keep every launcher guard invocation, but compile its test binary
+		// once from the same source as this suite's fresh adapter. Results and
+		// feature-file reads are never cached; the binary dies with this suite.
+		guards := filepath.Join(dir, "guards.test")
+		guardBuild := exec.Command("go", "test", "-c", "-o", guards, "../../steps")
+		guardBuild.Stdout, guardBuild.Stderr = os.Stdout, os.Stderr
+		if err := guardBuild.Run(); err != nil {
+			os.RemoveAll(dir)
+			os.Exit(1)
+		}
+		if err := os.Setenv("BRINE_GUARD_TEST_BINARY", guards); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.RemoveAll(dir)
+			os.Exit(1)
+		}
 		protocolBinary = launcher
 	}
 	code := m.Run()

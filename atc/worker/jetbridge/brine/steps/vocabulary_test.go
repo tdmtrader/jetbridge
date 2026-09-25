@@ -88,9 +88,19 @@ func TestEveryStepDefinitionIsUsedByAScenario(t *testing.T) {
 	registry := brine.NewStepRegistry(defs)
 
 	used := map[string]bool{}
+	// The registry is immutable for this check. Repeated scenario sentences
+	// have the same match; retain every occurrence but resolve its text once.
+	matches := map[string]string{}
 	for _, line := range allStepLines(t) {
-		if def, _, ok := registry.Lookup(line); ok {
-			used[def.Pattern()] = true
+		pattern, cached := matches[line]
+		if !cached {
+			if def, _, ok := registry.Lookup(line); ok {
+				pattern = def.Pattern()
+			}
+			matches[line] = pattern
+		}
+		if pattern != "" {
+			used[pattern] = true
 		}
 	}
 
@@ -115,9 +125,15 @@ func TestEveryScenarioStepResolvesToADefinition(t *testing.T) {
 	registry := brine.NewStepRegistry(Definitions())
 
 	seen := map[string]bool{}
+	resolved := map[string]bool{}
 	var undefined []string
 	for _, line := range allStepLines(t) {
-		if _, _, ok := registry.Lookup(line); !ok && !seen[line] {
+		ok, cached := resolved[line]
+		if !cached {
+			_, _, ok = registry.Lookup(line)
+			resolved[line] = ok
+		}
+		if !ok && !seen[line] {
 			seen[line] = true
 			undefined = append(undefined, line)
 		}
@@ -141,12 +157,16 @@ func TestNoStepLineMatchesTwoDefinitions(t *testing.T) {
 		singles[i] = brine.NewStepRegistry([]brine.StepDefinition{d})
 	}
 
+	matches := map[string][]string{}
 	for _, line := range allStepLines(t) {
-		var matched []string
-		for i, d := range defs {
-			if _, _, ok := singles[i].Lookup(line); ok {
-				matched = append(matched, d.Pattern())
+		matched, cached := matches[line]
+		if !cached {
+			for i, d := range defs {
+				if _, _, ok := singles[i].Lookup(line); ok {
+					matched = append(matched, d.Pattern())
+				}
 			}
+			matches[line] = matched
 		}
 		if len(matched) > 1 {
 			sort.Strings(matched)

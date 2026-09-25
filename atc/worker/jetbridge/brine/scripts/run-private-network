@@ -10,7 +10,22 @@ cd "$(dirname "$0")/.."
 # tests parse it as JSON events) and its stderr is the adapter's diagnostic
 # channel, which a clean `catalog` must leave empty. So a passing guard run
 # says nothing at all; only a failing one is shown, on stderr.
-if ! guard_output=$(go test ./steps/ -run 'Guard|Import|TempDir|Pending|Definition|NoStepLine|CitesARequirement' -count=1 2>&1); then
+run_guards() {
+    brine_guard_pattern='Guard|Import|TempDir|Pending|Definition|NoStepLine|CitesARequirement'
+    if [ -n "${BRINE_GUARD_TEST_BINARY:-}" ]; then
+        case "$BRINE_GUARD_TEST_BINARY" in
+            /*) ;;
+            *) echo "Guard test binary must be an absolute path." >&2; return 2 ;;
+        esac
+        # The protocol suite compiles this from its current source once per
+        # suite. Execute the guards every time, with fresh feature-file reads
+        # and the same working directory as go test ./steps/.
+        (cd steps && "$BRINE_GUARD_TEST_BINARY" -test.run "$brine_guard_pattern" -test.count=1 -test.timeout=10m)
+    else
+        go test ./steps/ -run "$brine_guard_pattern" -count=1
+    fi
+}
+if ! guard_output=$(run_guards 2>&1); then
     printf '%s\n' "$guard_output" >&2
     echo "Guard tests failed; aborting before running scenarios" >&2
     exit 1
