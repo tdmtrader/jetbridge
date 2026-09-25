@@ -1010,16 +1010,23 @@ jobs:
           done
           echo ""
 
-          export ARTIFACT_DAEMON_HOST_PATH=/var/concourse/artifacts
-          export ARTIFACT_DAEMON_PORT=7780
-          export ARTIFACT_DAEMON_SERVICE=artifact-daemon
-
+          # The suite reads the deployed web and artifact daemon itself (the
+          # daemon's storage path, port, service, mTLS bundle and resolve key)
+          # and stops before any test if it cannot, so nothing about the daemon
+          # is passed in here. It also asserts that deployment against the
+          # committed atc/worker/jetbridge/testdata/live_deployment.json: a
+          # feature switched on or off in home-infra turns this job red until
+          # the manifest says so and names what covers it.
           cd repo
           echo "=== Running jetbridge live integration tests ==="
           echo "These tests create real K8s pods against the live cluster."
-          echo "Artifact daemon: hostPath=$ARTIFACT_DAEMON_HOST_PATH port=$ARTIFACT_DAEMON_PORT"
           echo ""
-          go test -tags live -v -count=1 -timeout 5m ./atc/worker/jetbridge/...
+          # -timeout bounds the test binary, which here runs the package's unit
+          # suite as well as the live tests. A green run takes ~4 minutes of a
+          # binary's time; at 5m a slow node or image pull reads as a product
+          # failure (the panic names whichever test happened to be running).
+          # 15m still ends a genuine hang well inside the task's 45m.
+          go test -tags live -v -count=1 -timeout 15m ./atc/worker/jetbridge/...
           echo "=== Live integration tests passed ==="
 
 - name: release
