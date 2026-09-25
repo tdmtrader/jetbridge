@@ -122,7 +122,7 @@ func (s *Server) ListPipelineRuns(pipeline db.Pipeline) http.Handler {
 		// One query for the whole page. Resolving payloads run-by-run made this
 		// unauthenticated-reachable route issue up to atc.PaginationAPIMaxLimit
 		// round trips per request.
-		payloads, err := s.runFactory.InstancePipelines(runs)
+		payloads, err := s.runFactory.Payloads(runs)
 		if err != nil {
 			s.logger.Error("failed-to-load-pipeline-run-payload", err)
 			w.WriteHeader(http.StatusInternalServerError)

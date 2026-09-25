@@ -53,7 +53,7 @@ var _ = Describe("PipelineRunFactory payload batching", func() {
 		reclaimRunPayloadForTest(template, reclaimed)
 
 		counting := &payloadBatchCountingConn{DbConn: dbConn}
-		payloads, err := db.NewPipelineRunFactory(counting, lockFactory).InstancePipelines(runs)
+		payloads, err := db.NewPipelineRunFactory(counting, lockFactory).Payloads(runs)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(counting.queries).To(Equal(1), "a page of runs must cost one payload query, not one per run")
 
@@ -84,7 +84,7 @@ var _ = Describe("PipelineRunFactory payload batching", func() {
 
 	It("returns an empty map without querying for an empty page", func() {
 		counting := &payloadBatchCountingConn{DbConn: dbConn}
-		payloads, err := db.NewPipelineRunFactory(counting, lockFactory).InstancePipelines(nil)
+		payloads, err := db.NewPipelineRunFactory(counting, lockFactory).Payloads(nil)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(payloads).To(BeEmpty())
 		Expect(counting.queries).To(BeZero())

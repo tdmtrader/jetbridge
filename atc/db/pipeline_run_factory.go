@@ -93,7 +93,7 @@ type PipelineRunFactory interface {
 	GetRunByID(int) (PipelineRun, bool, error)
 	Runs(Pipeline, Page) ([]PipelineRun, Pagination, error)
 	InstancePipeline(PipelineRun) (Pipeline, bool, error)
-	InstancePipelines([]PipelineRun) (map[int]Pipeline, error)
+	Payloads([]PipelineRun) (map[int]Pipeline, error)
 }
 
 type pipelineRunFactory struct {
@@ -457,7 +457,7 @@ func (f *pipelineRunFactory) InstancePipeline(run PipelineRun) (Pipeline, bool, 
 	return pipeline, true, nil
 }
 
-// InstancePipelines resolves the payloads of a whole page of runs in one query,
+// Payloads resolves the payloads of a whole page of runs in one query,
 // keyed by run ID. The runs listing is reachable by an unauthenticated viewer on
 // an exposed template, so resolving payloads one run at a time made the page an
 // amplifier bounded only by atc.PaginationAPIMaxLimit.
@@ -467,7 +467,7 @@ func (f *pipelineRunFactory) InstancePipeline(run PipelineRun) (Pipeline, bool, 
 // nil interface -- which is the same value the single-run path hands the
 // presenter for a reclaimed run. pipelines_pipeline_run_id_unique guarantees at
 // most one payload row per run, so no entry is ever overwritten.
-func (f *pipelineRunFactory) InstancePipelines(runs []PipelineRun) (map[int]Pipeline, error) {
+func (f *pipelineRunFactory) Payloads(runs []PipelineRun) (map[int]Pipeline, error) {
 	payloads := make(map[int]Pipeline, len(runs))
 	if len(runs) == 0 {
 		return payloads, nil
