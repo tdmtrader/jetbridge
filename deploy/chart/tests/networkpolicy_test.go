@@ -424,3 +424,43 @@ func sortedNames(names map[string]bool) []string {
 
 	return out
 }
+
+// The daemon's policy lists every port it admits, so a metrics listener the
+// policy does not name is a scrape the policy drops: Prometheus reports the
+// target down and nothing says the policy was the cause. Prometheus lives in
+// another namespace under labels this chart cannot know, so the port is
+// admitted from anywhere -- it answers /metrics and nothing else.
+func TestTheDaemonPolicyAdmitsTheMetricsListener(t *testing.T) {
+	out := render(t,
+		"artifactDaemon.networkPolicy.enabled=true",
+		"artifactDaemon.metrics.port=9392",
+	)
+
+	var policy *networkingv1.NetworkPolicy
+	for _, document := range splitDocuments(out) {
+		var candidate networkingv1.NetworkPolicy
+		if err := yaml.Unmarshal([]byte(document), &candidate); err != nil {
+			continue
+		}
+		if candidate.Kind == "NetworkPolicy" && strings.HasSuffix(candidate.Name, "-artifact-daemon") {
+			policy = &candidate
+		}
+	}
+	if policy == nil {
+		t.Fatal("no artifact-daemon NetworkPolicy was rendered; this rule would pass vacuously")
+	}
+
+	for _, rule := range policy.Spec.Ingress {
+		for _, port := range rule.Ports {
+			if port.Port != nil && port.Port.IntValue() == 9392 {
+				if len(rule.From) != 0 {
+					t.Errorf("the metrics port is admitted only from %v; Prometheus runs in "+
+						"its own namespace under labels this chart does not set", rule.From)
+				}
+				return
+			}
+		}
+	}
+	t.Error("artifactDaemon.metrics.port=9392 but the daemon's NetworkPolicy admits no " +
+		"ingress on 9392: every scrape is dropped and the target reads as down")
+}

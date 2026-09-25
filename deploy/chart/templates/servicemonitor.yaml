@@ -13,6 +13,9 @@ metadata:
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
   selector:
     matchLabels:
       {{- include "concourse.selectorLabels" . | nindent 6 }}
@@ -20,4 +23,44 @@ spec:
     - port: metrics
       interval: {{ .Values.serviceMonitor.interval }}
       path: /metrics
+{{- /*
+The artifact daemon, one target per node. Rendered only with
+artifactDaemon.metrics.port, because that is what opens the plain-HTTP
+listener: the daemon's own port is mTLS and Prometheus cannot complete its
+handshake. Without the listener there is nothing here to scrape, and a
+ServiceMonitor naming a port the Service lacks yields no target at all --
+which is how the daemon went unscraped, silently, until this existed.
+*/}}
+{{- if .Values.artifactDaemon.metrics.port }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "concourse.fullname" . }}-artifact-daemon
+  namespace: {{ .Values.serviceMonitor.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "concourse.commonLabels" . | nindent 4 }}
+    app.kubernetes.io/component: artifact-daemon
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "concourse.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: artifact-daemon
+  endpoints:
+    - port: metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+      path: /metrics
+      # The daemon is per node and its store is node-local, so the node is
+      # the label an operator reads a daemon series by.
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: node
+{{- end }}
 {{- end }}

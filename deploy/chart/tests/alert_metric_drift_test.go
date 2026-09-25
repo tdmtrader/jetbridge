@@ -30,26 +30,39 @@ import (
 //
 // So resolve the names against their actual definition rather than against
 // anyone's memory of them. Every Prometheus metric this project publishes is
-// declared as a prometheus.*Opts literal in atc/metric/emitter/prometheus.go,
-// so the AST of that file is the oracle -- the same move
-// TestChartRendersOnlyFlagsTheBinaryAccepts makes by reading --help instead of
-// trusting the chart.
+// declared as a prometheus.*Opts literal -- the ATC's in
+// atc/metric/emitter/prometheus.go, the artifact daemon's in
+// cmd/artifact-daemon/metrics.go -- so the AST of those files is the oracle,
+// the same move TestChartRendersOnlyFlagsTheBinaryAccepts makes by reading
+// --help instead of trusting the chart.
 func TestAlertRulesReferenceMetricsTheBinaryEmits(t *testing.T) {
-	declared := declaredPrometheusMetrics(t)
-	if len(declared) < 20 {
-		t.Fatalf("only %d metric declarations parsed out of prometheus.go; the "+
-			"literals moved and this test is no longer reading anything. Fix the "+
-			"parse -- an oracle that finds nothing passes everything.", len(declared))
+	// Each prefix is resolved only against the binary that owns it: a daemon
+	// rule naming an ATC series is as dead as one naming nothing.
+	oracles := map[string]map[string]bool{
+		"concourse":       declaredPrometheusMetrics(t, "atc", "metric", "emitter", "prometheus.go"),
+		"artifact_daemon": declaredPrometheusMetrics(t, "cmd", "artifact-daemon", "metrics.go"),
+	}
+	for prefix, minimum := range map[string]int{"concourse": 20, "artifact_daemon": 8} {
+		if len(oracles[prefix]) < minimum {
+			t.Fatalf("only %d %s_ metric declarations parsed; the literals moved and "+
+				"this test is no longer reading anything. Fix the parse -- an oracle "+
+				"that finds nothing passes everything.", len(oracles[prefix]), prefix)
+		}
 	}
 
 	// The output plane's rules are rendered too, and that matters more than it
 	// looks: they are behind `{{- if .Values.hangarOutput.enabled }}`, so a
 	// default render would check none of them and this guard would report
 	// coverage it does not have -- which is the exact shape of the defect it
-	// was written for, one level up.
+	// was written for, one level up. The artifact daemon's rules are gated the
+	// same way, on its metrics listener and its durable store.
 	rendered := renderChart(t,
 		append([]string{
 			"alertingRules.enabled=true",
+			"serviceMonitor.enabled=true",
+			"artifactDaemon.metrics.port=9392",
+			"artifactDaemon.durable.store=filesystem",
+			"artifactDaemon.durable.path=/durable",
 			"kubernetes.artifactHelperImage=alpine@sha256:aaaa",
 		}, outputSets...)...,
 	)
@@ -63,15 +76,20 @@ func TestAlertRulesReferenceMetricsTheBinaryEmits(t *testing.T) {
 	// Histograms publish _bucket/_sum/_count; counters conventionally end
 	// _total and are declared that way. Strip only the histogram suffixes.
 	histogramSuffix := regexp.MustCompile(`_(bucket|sum|count)$`)
-	metricRef := regexp.MustCompile(`\bconcourse_[a-zA-Z0-9_]+`)
+	metricRef := regexp.MustCompile(`\b(concourse|artifact_daemon)_[a-zA-Z0-9_]+`)
 
+	daemonRules := 0
 	for alert, expr := range exprs {
-		for _, ref := range metricRef.FindAllString(expr, -1) {
+		for _, match := range metricRef.FindAllStringSubmatch(expr, -1) {
+			ref, declared := match[0], oracles[match[1]]
+			if match[1] == "artifact_daemon" {
+				daemonRules++
+			}
 			base := histogramSuffix.ReplaceAllString(ref, "")
 			if declared[ref] || declared[base] {
 				continue
 			}
-			t.Errorf("alert %s references %q, which the ATC never emits.\n"+
+			t.Errorf("alert %s references %q, which its binary never emits.\n"+
 				"  expression: %s\n"+
 				"  This rule cannot fire: PromQL returns an empty vector for an "+
 				"unknown series, so the alert stays Inactive forever while looking "+
@@ -80,15 +98,19 @@ func TestAlertRulesReferenceMetricsTheBinaryEmits(t *testing.T) {
 				alert, ref, expr, nearestMetrics(declared, ref))
 		}
 	}
+	if daemonRules < 2 {
+		t.Errorf("only %d artifact_daemon_ references in the rendered rules; the daemon's "+
+			"rules did not render and none of them was checked", daemonRules)
+	}
 }
 
 // declaredPrometheusMetrics builds the set of fully-qualified metric names from
 // the prometheus.*Opts composite literals, joining Namespace, Subsystem and
 // Name the way the client library does.
-func declaredPrometheusMetrics(t *testing.T) map[string]bool {
+func declaredPrometheusMetrics(t *testing.T, relPath ...string) map[string]bool {
 	t.Helper()
 
-	path := filepath.Join(repoRoot(t), "atc", "metric", "emitter", "prometheus.go")
+	path := filepath.Join(append([]string{repoRoot(t)}, relPath...)...)
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, nil, 0)
 	if err != nil {

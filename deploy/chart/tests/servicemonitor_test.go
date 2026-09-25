@@ -29,24 +29,21 @@ func TestServiceMonitorScrapesTheMetricsListener(t *testing.T) {
 		"serviceMonitor.enabled=true",
 		"metrics.enabled=true",
 		"metrics.port=9391",
+		"artifactDaemon.metrics.port=9392",
 		"kubernetes.artifactHelperImage=alpine@sha256:aaaa",
 	)
 
 	docs := splitYAMLDocs(rendered)
 
-	bindPort, containerPorts := webListener(t, docs)
-	if bindPort == "" {
-		t.Fatal("no CONCOURSE_PROMETHEUS_BIND_PORT in the web container: the ATC " +
-			"registers its Prometheus emitter only when both bind flags are set " +
-			"(IsConfigured in atc/metric/emitter/prometheus.go), so nothing is " +
-			"listening for a ServiceMonitor to scrape")
-	}
-
+	// Two: the web and the artifact daemon. The daemon went unscraped for as
+	// long as it published metrics because the only ServiceMonitor selected
+	// the web's Service, so a monitor going missing is itself the failure.
 	monitors := serviceMonitors(docs)
-	if len(monitors) == 0 {
-		t.Fatal("serviceMonitor.enabled=true rendered no ServiceMonitor. If the " +
-			"gate moved, move this test with it -- a test that finds nothing to " +
-			"check is how the http/metrics mismatch survived in the first place.")
+	if len(monitors) != 2 {
+		t.Fatalf("serviceMonitor.enabled=true with artifactDaemon.metrics.port rendered %d "+
+			"ServiceMonitors, want 2 (web and artifact daemon). If the gate moved, move this "+
+			"test with it -- a test that finds nothing to check is how the http/metrics "+
+			"mismatch survived in the first place.", len(monitors))
 	}
 
 	for _, m := range monitors {
@@ -54,6 +51,16 @@ func TestServiceMonitorScrapesTheMetricsListener(t *testing.T) {
 		if svc.name == "" {
 			t.Errorf("ServiceMonitor selector %v matched no rendered Service; it can "+
 				"never produce a target", m.selector)
+			continue
+		}
+
+		bindPort, containerPorts := metricsListenerBehind(t, docs, svc.podSelector)
+		if bindPort == "" {
+			t.Errorf("nothing behind Service %s binds a metrics listener: the ATC "+
+				"registers its Prometheus emitter only when both bind flags are set "+
+				"(IsConfigured in atc/metric/emitter/prometheus.go), and the artifact "+
+				"daemon opens its plain-HTTP listener only with --metrics-port, so "+
+				"nothing is listening for this ServiceMonitor to scrape", svc.name)
 			continue
 		}
 
@@ -75,18 +82,21 @@ func TestServiceMonitorScrapesTheMetricsListener(t *testing.T) {
 
 			if resolved != bindPort {
 				t.Errorf("ServiceMonitor scrapes Service %s port %q -> container port %s, "+
-					"but the ATC binds its metrics listener on %s. Prometheus will scrape "+
-					"whatever else answers there (the web UI returns HTML) and every "+
-					"alerting rule in this chart evaluates against no data.",
+					"but the workload binds its metrics listener on %s. Prometheus will "+
+					"scrape whatever else answers there (the web UI returns HTML, the "+
+					"daemon's own port is mTLS) and every alerting rule in this chart "+
+					"evaluates against no data.",
 					svc.name, scraped, resolved, bindPort)
 			}
 		}
 	}
 }
 
-// webListener returns the ATC's configured Prometheus bind port and a map of
-// container port names to their numbers.
-func webListener(t *testing.T, docs []string) (bindPort string, byName map[string]string) {
+// metricsListenerBehind finds the Deployment or DaemonSet whose pods the
+// Service selects and returns the port it binds its metrics listener on -- the
+// ATC's CONCOURSE_PROMETHEUS_BIND_PORT or the daemon's --metrics-port -- and a
+// map of container port names to their numbers.
+func metricsListenerBehind(t *testing.T, docs []string, podSelector map[string]string) (bindPort string, byName map[string]string) {
 	t.Helper()
 	byName = map[string]string{}
 
@@ -95,10 +105,15 @@ func webListener(t *testing.T, docs []string) (bindPort string, byName map[strin
 			Kind string `yaml:"kind"`
 			Spec struct {
 				Template struct {
+					Metadata struct {
+						Labels map[string]string `yaml:"labels"`
+					} `yaml:"metadata"`
 					Spec struct {
 						Containers []struct {
-							Name string `yaml:"name"`
-							Env  []struct {
+							Name    string   `yaml:"name"`
+							Command []string `yaml:"command"`
+							Args    []string `yaml:"args"`
+							Env     []struct {
 								Name  string `yaml:"name"`
 								Value string `yaml:"value"`
 							} `yaml:"env"`
@@ -111,7 +126,13 @@ func webListener(t *testing.T, docs []string) (bindPort string, byName map[strin
 				} `yaml:"template"`
 			} `yaml:"spec"`
 		}
-		if err := yaml.Unmarshal([]byte(doc), &obj); err != nil || obj.Kind != "Deployment" {
+		if err := yaml.Unmarshal([]byte(doc), &obj); err != nil {
+			continue
+		}
+		if obj.Kind != "Deployment" && obj.Kind != "DaemonSet" {
+			continue
+		}
+		if !labelsMatch(obj.Spec.Template.Metadata.Labels, podSelector) {
 			continue
 		}
 		for _, c := range obj.Spec.Template.Spec.Containers {
@@ -120,22 +141,26 @@ func webListener(t *testing.T, docs []string) (bindPort string, byName map[strin
 					bindPort = e.Value
 				}
 			}
+			for _, arg := range append(append([]string{}, c.Command...), c.Args...) {
+				if v, ok := strings.CutPrefix(arg, "--metrics-port="); ok {
+					bindPort = v
+				}
+			}
 			for _, p := range c.Ports {
 				if p.Name != "" {
 					byName[p.Name] = fmt.Sprint(p.ContainerPort)
 				}
 			}
 		}
-		if bindPort != "" {
-			return bindPort, byName
-		}
+		return bindPort, byName
 	}
 	return bindPort, byName
 }
 
 type renderedService struct {
-	name  string
-	ports map[string]string // port name -> targetPort (name or number)
+	name        string
+	podSelector map[string]string
+	ports       map[string]string // port name -> targetPort (name or number)
 }
 
 func (s renderedService) portNames() []string {
@@ -156,7 +181,8 @@ func serviceMatching(t *testing.T, docs []string, selector map[string]string) re
 				Labels map[string]string `yaml:"labels"`
 			} `yaml:"metadata"`
 			Spec struct {
-				Ports []struct {
+				Selector map[string]string `yaml:"selector"`
+				Ports    []struct {
 					Name       string    `yaml:"name"`
 					TargetPort yaml.Node `yaml:"targetPort"`
 				} `yaml:"ports"`
@@ -168,7 +194,7 @@ func serviceMatching(t *testing.T, docs []string, selector map[string]string) re
 		if !labelsMatch(obj.Metadata.Labels, selector) {
 			continue
 		}
-		svc := renderedService{name: obj.Metadata.Name, ports: map[string]string{}}
+		svc := renderedService{name: obj.Metadata.Name, podSelector: obj.Spec.Selector, ports: map[string]string{}}
 		for _, p := range obj.Spec.Ports {
 			svc.ports[p.Name] = p.TargetPort.Value
 		}
@@ -229,6 +255,40 @@ func TestMetricsPortIsActuallyServed(t *testing.T) {
 	if !strings.Contains(rendered, `value: "9391"`) {
 		t.Error("the bind port does not carry metrics.port, so the Service and the " +
 			"listener can disagree")
+	}
+}
+
+// --metrics-port is a flag a daemon image older than it exits on, and this
+// chart can sync ahead of its image (the home cluster's Argo ignores the image
+// field). So nothing about the daemon's metrics listener may render until an
+// operator asks for it: not the flag, not the container or Service port, not
+// the ServiceMonitor, not the rules that would evaluate against its series.
+func TestDaemonMetricsListenerIsOptIn(t *testing.T) {
+	rendered := renderChart(t,
+		"serviceMonitor.enabled=true",
+		"alertingRules.enabled=true",
+		"artifactDaemon.networkPolicy.enabled=true",
+		"kubernetes.artifactHelperImage=alpine@sha256:aaaa",
+	)
+
+	if strings.Contains(rendered, "--metrics-port") {
+		t.Error("artifactDaemon.metrics.port is unset but --metrics-port rendered; a daemon " +
+			"image older than the flag exits on it and every node loses its artifact store")
+	}
+	if strings.Contains(rendered, "alert: ArtifactDaemon") {
+		t.Error("artifact daemon alerts rendered with no metrics listener to feed them; " +
+			"ArtifactDaemonNotScraped would fire forever and the rest can never fire")
+	}
+	docs := splitYAMLDocs(rendered)
+	if n := len(serviceMonitors(docs)); n != 1 {
+		t.Errorf("rendered %d ServiceMonitors without artifactDaemon.metrics.port, want only the web's", n)
+	}
+	daemonSvc := serviceMatching(t, docs, map[string]string{"app.kubernetes.io/component": "artifact-daemon"})
+	if daemonSvc.name == "" {
+		t.Fatal("no artifact daemon Service rendered")
+	}
+	if _, ok := daemonSvc.ports["metrics"]; ok {
+		t.Error("the daemon Service has a metrics port with no listener behind it")
 	}
 }
 

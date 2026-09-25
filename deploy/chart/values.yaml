@@ -525,6 +525,23 @@ artifactDaemon:
   # -- TTL for automatic artifact cleanup (Go duration)
   ttl: "2h"
 
+  # -- Prometheus metrics for the artifact daemon.
+  #
+  # The daemon's own port is mTLS, and a Prometheus scraper holds neither a
+  # client certificate nor the daemon's CA, so /metrics there is unreachable to
+  # it. Setting `port` opens a second, plain-HTTP listener that serves
+  # /metrics and nothing else, names it `metrics` on the daemon's headless
+  # Service, and -- with serviceMonitor.enabled -- scrapes it.
+  #
+  # Empty by default because it renders a flag (--metrics-port) that a daemon
+  # image older than the flag exits on. A deployment whose image can lag its
+  # chart (Argo ignoring the image field, `kubectl set image` upgrades) sets
+  # this only once the image carrying the flag is running.
+  metrics:
+    # -- Port for the plain-HTTP metrics listener, e.g. 9392. Empty: no
+    # listener, no Service port, no scrape.
+    port: ""
+
   # -- Strict, exact immutable tree storage for task inputs. Hangar is
   # fail-closed and therefore remains opt-in. It reuses the durable GCS
   # bucket, prefix, endpoint, timeout, and Workload Identity configuration.

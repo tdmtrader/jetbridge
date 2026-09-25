@@ -112,6 +112,9 @@ spec:
             - --tls-cert=/etc/concourse/daemon-tls/tls.crt
             - --tls-key=/etc/concourse/daemon-tls/tls.key
             - --tls-ca-cert=/etc/concourse/daemon-tls/ca.crt
+            {{- with .Values.artifactDaemon.metrics.port }}
+            - --metrics-port={{ . }}
+            {{- end }}
             {{- if $hangarEnabled }}
             # The daemon adds concourse.dev/hangar-v1=ready to its node only
             # after strict GCS, key, TLS, and scratch validation succeeds.
@@ -181,6 +184,12 @@ spec:
               containerPort: {{ .Values.artifactDaemon.port | default 7780 }}
               hostPort: {{ .Values.artifactDaemon.port | default 7780 }}
               protocol: TCP
+            {{- with .Values.artifactDaemon.metrics.port }}
+            # No hostPort: only Prometheus dials this, by pod IP.
+            - name: metrics
+              containerPort: {{ . }}
+              protocol: TCP
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz

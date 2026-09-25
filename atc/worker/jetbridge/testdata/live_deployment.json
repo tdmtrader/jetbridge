@@ -54,6 +54,10 @@
       "expect": "on",
       "coveredBy": ["TestLiveVolumePassingGetToTask", "TestLiveVolumePassingTaskChain", "TestLiveVolumeDataIntegrity"]
     },
+    "daemon.metrics": {
+      "expect": "9392",
+      "coveredBy": ["TestLiveDaemonMetricsAreScraped"]
+    },
     "daemon.hangar": {
       "expect": "off",
       "note": "See web.hangar. The persistent-disk Hangar store (codex/hangar-disk-backend) will be off here on arrival too; its live coverage is a hangar_live job in k8s-e2e, not a flag flipped on this cluster."

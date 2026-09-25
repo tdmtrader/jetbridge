@@ -432,6 +432,18 @@ func (s *Server) Handler(opts ...HandlerOption) http.Handler {
 	return mux
 }
 
+// MetricsHandler serves /metrics and nothing else. It is the handler for the
+// plain-HTTP listener --metrics-port opens: a Prometheus scraper holds no
+// client certificate and no CA for the daemon's TLS port, and a listener that
+// can only answer /metrics hands it nothing a certificate would have guarded.
+func (s *Server) MetricsHandler() http.Handler {
+	mux := http.NewServeMux()
+	if s.metrics != nil {
+		mux.Handle(artifactwire.Metrics.Pattern(), s.metrics.handler())
+	}
+	return mux
+}
+
 // HandlerOption configures the HTTP handler.
 type HandlerOption func(*handlerConfig)
 

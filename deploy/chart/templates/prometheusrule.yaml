@@ -55,6 +55,72 @@ spec:
           annotations:
             summary: "A worker is stalled"
             description: "{{ `{{ $value }}` }} worker(s) have stopped re-registering and are marked stalled; steps scheduled to them will not run."
+{{- /*
+The artifact daemon. Its rules render only with artifactDaemon.metrics.port,
+which is what makes the daemon scrapeable at all: without it every one of these
+would evaluate against no data and sit Inactive looking like coverage.
+
+The rules this chart once carried for the daemon watched the old Hangar store's
+residency (artifact_daemon_hangar_*). That instrumentation is gone and those
+series no longer exist, so the rules are not coming back as they were; these
+watch what the daemon publishes now. tests/alert_metric_drift_test.go resolves
+every artifact_daemon_ name here against cmd/artifact-daemon/metrics.go.
+*/}}
+{{- if .Values.artifactDaemon.metrics.port }}
+{{- $daemonTarget := printf "namespace=\"%s\", service=\"%s\"" .Release.Namespace (include "concourse.artifactDaemonServiceName" .) }}
+{{- if .Values.serviceMonitor.enabled }}
+        - alert: ArtifactDaemonNotScraped
+          # absent(), because an unscraped target has no `up` series to be 0.
+          # This is the state the daemon's metrics were in for their whole life
+          # before the metrics listener: every series published, none collected,
+          # nothing able to fire. It is also what an unselected ServiceMonitor
+          # looks like from here.
+          expr: absent(up{ {{- $daemonTarget -}} })
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Prometheus is not scraping the artifact daemon"
+            description: "No artifact daemon target exists. The ServiceMonitor is missing, not selected by this Prometheus, or names a port the daemon's Service does not have; every artifact daemon alert is blind until it is fixed."
+        - alert: ArtifactDaemonScrapeFailing
+          expr: up{ {{- $daemonTarget -}} } == 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "An artifact daemon is not answering its metrics scrape"
+            description: "The daemon on {{ `{{ $labels.node }}` }} ({{ `{{ $labels.pod }}` }}) has failed every scrape for ten minutes: the listener is configured but not answering, so look for a NetworkPolicy dropping the scrape or a daemon that keeps restarting."
+{{- end }}
+        - alert: ArtifactDaemonRefusingForLoad
+          # `overloaded` is the one refusal reason that is the daemon's own
+          # state rather than a caller's mistake. Only Hangar materialization
+          # records it today (hangar_handlers.go, when every hangarSem slot is
+          # taken), so where Hangar is off this rule loads but cannot fire.
+          # Every other reason names what the caller did wrong and is
+          # answered by fixing the caller.
+          expr: sum by (namespace, pod, node) (increase(artifact_daemon_refusals_total{reason="overloaded"}[10m])) > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "An artifact daemon is refusing work for load"
+            description: "The daemon on {{ `{{ $labels.node }}` }} has refused {{ `{{ $value }}` }} Hangar materialization(s) as overloaded in the last ten minutes, for ten minutes running. Each is a step whose strict inputs could not be materialized on that node."
+{{- if .Values.artifactDaemon.durable.store }}
+        - alert: ArtifactDaemonDurableStoreErrors
+          # The durable tier fails open, so an error is never a failed build --
+          # it is a warm that became a miss, or a cache that was not kept, and
+          # nothing else reports it. The counter is per node's own work, so
+          # sum() across nodes is correct (its Help says so; the store-size
+          # gauges are the ones that must never be summed).
+          expr: sum by (namespace, op) (increase(artifact_daemon_durable_operations_total{outcome="error"}[30m])) > 0
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "The artifact daemons' durable store is failing"
+            description: "Durable {{ `{{ $labels.op }}` }} operations have errored for thirty minutes. Resource caches are silently not being restored or kept; builds still pass, and pay for it in fetch time."
+{{- end }}
+{{- end }}
 {{- if .Values.hangarOutput.enabled }}
         # The Hangar output plane. Requirement 52 asks the plane to ALERT when
         # its lifetime-policy trust cannot be proved safe, and these are that

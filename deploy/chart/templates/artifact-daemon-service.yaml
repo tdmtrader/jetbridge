@@ -15,3 +15,12 @@ spec:
       port: {{ .Values.artifactDaemon.port | default 7780 }}
       targetPort: http
       protocol: TCP
+    {{- if .Values.artifactDaemon.metrics.port }}
+    # Peer discovery and the web read only this Service's EndpointSlice
+    # addresses and dial their own configured port, so a second port here
+    # changes nothing for them.
+    - name: metrics
+      port: {{ .Values.artifactDaemon.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}

@@ -394,10 +394,19 @@ web port -- `/metrics` there returns the UI's HTML. `metrics.enabled` is what
 opens that listener, so `serviceMonitor.enabled` requires it and the render
 fails otherwise rather than producing a target that scrapes a web page.
 
+The artifact daemon's own port is mTLS, which a Prometheus scraper cannot
+complete. `artifactDaemon.metrics.port` opens a second, plain-HTTP listener on
+each daemon that serves `/metrics` and nothing else; with
+`serviceMonitor.enabled` it gets its own ServiceMonitor (one target per node,
+labelled `node`), and with `alertingRules.enabled` its own rules. It is empty
+by default because it renders `--metrics-port`, which a daemon image older than
+the flag exits on: set it once the image carrying the flag is running.
+
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `metrics.enabled` | `true` | Expose Prometheus metrics on a dedicated port. |
 | `metrics.port` | `9391` | Port for the metrics listener. |
+| `artifactDaemon.metrics.port` | `""` | Plain-HTTP metrics-only listener on the artifact daemon, e.g. `9392`. Empty: none, and nothing scrapes the daemon. |
 | `serviceMonitor.enabled` | `false` | Create ServiceMonitor CRD (requires prometheus-operator). |
 | `serviceMonitor.interval` | `30s` | Scrape interval. |
 | `serviceMonitor.labels` | `{}` | Labels for Prometheus discovery. |

@@ -106,6 +106,14 @@ var liveFeatures = map[string]func(d *liveDeployment) string{
 	"daemon.resolveCapability": func(d *liveDeployment) string { return onOff(d.daemonFlag("resolve-capability-key")) },
 	"daemon.hangar":            func(d *liveDeployment) string { return onOff(d.daemonFlag("hangar-enabled")) },
 	"daemon.preemption":        func(d *liveDeployment) string { return onOff(d.daemonFlag("preemption-watch")) },
+	// The plain-HTTP listener Prometheus scrapes; without it the daemon's
+	// metrics exist only behind mTLS and nothing collects them.
+	"daemon.metrics": func(d *liveDeployment) string {
+		if port, ok := d.daemonFlag("metrics-port"); ok && port != "" && port != "0" {
+			return port
+		}
+		return "off"
+	},
 	"daemon.durableStore": func(d *liveDeployment) string {
 		if store, _ := d.daemonFlag("durable-store"); store != "" {
 			return store

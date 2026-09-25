@@ -25,6 +25,7 @@ import (
 func main() {
 	port := flag.Int("port", 7780, "HTTP server port")
 	listenAddress := flag.String("listen-address", "", "Address to bind the HTTP server to. Empty means every address, which is what the daemon does in a pod: one network namespace, one address, one daemon. Set it to hold a single address instead — for running two daemons on one host, where the kernel will only let two listeners share a port if each holds a different, specific address.")
+	metricsPort := flag.Int("metrics-port", 0, "Port for a plain-HTTP listener that serves /metrics and nothing else, for a Prometheus scraper that cannot complete the mTLS port's handshake. 0 opens no listener. Bound on --listen-address, like --port.")
 	storagePath := flag.String("storage-path", "/var/concourse/artifacts", "Path to artifact storage directory")
 	ttl := flag.Duration("ttl", 2*time.Hour, "TTL for artifact cleanup sweep")
 	resolveCapabilityKeyFile := flag.String("resolve-capability-key", "", "Path to the raw 32-byte key required to authorize resolve operations")
@@ -395,6 +396,27 @@ func main() {
 		httpServer.TLSConfig = tlsCfg
 	}
 
+	// Bound before the node is labelled, so a taken metrics port stops the
+	// daemon at startup instead of leaving it ready and unscrapeable -- which
+	// is how the daemon went unmonitored before this listener existed.
+	var metricsServer *http.Server
+	var metricsListener net.Listener
+	if *metricsPort != 0 {
+		metricsServer = &http.Server{
+			Addr:              net.JoinHostPort(*listenAddress, strconv.Itoa(*metricsPort)),
+			Handler:           server.MetricsHandler(),
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+		metricsListener, err = net.Listen("tcp", metricsServer.Addr)
+		if err != nil {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			cleanupErr := cleanupDaemonServices(cleanupCtx, hangarLabeler, labeler, nil, closeHangar)
+			cleanupCancel()
+			logger.Error("failed-to-bind-metrics-listener", errors.Join(err, cleanupErr))
+			os.Exit(1)
+		}
+	}
+
 	var readinessLabeler *NodeLabeler
 	if hangarService != nil {
 		readinessLabeler = hangarLabeler
@@ -413,7 +435,15 @@ func main() {
 		logger.Info("hangar-node-labeled", lager.Data{"node": *nodeName, "label": HangarReadyLabel})
 	}
 
-	errCh := make(chan error, 1)
+	// One slot per server, so the one that fails second never blocks on a
+	// send nobody receives.
+	errCh := make(chan error, 2)
+	if metricsServer != nil {
+		go func() {
+			logger.Info("serving-metrics", lager.Data{"address": metricsServer.Addr})
+			errCh <- metricsServer.Serve(metricsListener)
+		}()
+	}
 	go func() {
 		logger.Info("starting", lager.Data{
 			"port":           *port,
@@ -460,7 +490,13 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cleanupErr := cleanupDaemonServices(ctx, hangarLabeler, labeler, func() error { return httpServer.Shutdown(ctx) }, closeHangar)
+	cleanupErr := cleanupDaemonServices(ctx, hangarLabeler, labeler, func() error {
+		err := httpServer.Shutdown(ctx)
+		if metricsServer != nil {
+			err = errors.Join(err, metricsServer.Shutdown(ctx))
+		}
+		return err
+	}, closeHangar)
 	if cleanupErr != nil {
 		logger.Error("shutdown-error", cleanupErr)
 		os.Exit(1)
