@@ -458,6 +458,24 @@ var _ = Describe("Finishing an aborted Run build with an unclosed execution", fu
 		Expect(destroyed).To(BeTrue(), "a Hangar epoch rotation stranded reclamation")
 	})
 
+	It("lets a rerun finish while the aborted build it reruns is still closing", func() {
+		abortOverOpenExecution()
+		pipeline, found, err := build.Pipeline()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		job, found, err := pipeline.Job(build.JobName())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		rerun, err := job.RerunBuild(build, "rerun")
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(rerun.Finish(db.BuildStatusSucceeded)).To(Succeed(), "a rerun finishing before its original broke the job's completion bookkeeping")
+		var latest int
+		Expect(dbConn.QueryRow(`SELECT latest_completed_build_id FROM jobs WHERE id=$1`, job.ID()).Scan(&latest)).To(Succeed())
+		Expect(latest).To(Equal(rerun.ID()), "the job's latest completed build is not the rerun that completed")
+		Expect(closureClosed()).To(BeFalse())
+	})
+
 	It("records no closure and nothing for the worker when no build was aborted", func() {
 		admitStarted()
 		Expect(build.Finish(db.BuildStatusFailed)).To(MatchError(atc.ErrRunOutputPending))

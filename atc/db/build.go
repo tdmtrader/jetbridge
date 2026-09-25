@@ -2434,6 +2434,24 @@ func updateNextBuildForJob(tx Tx, jobID int, latestNonRerunId int) error {
 }
 
 func updateLatestCompletedBuildForJob(tx Tx, jobID int, latestNonRerunId int) error {
+	if latestNonRerunId == 0 {
+		// Only reruns have completed: a rerun can finish while the build it
+		// reruns is still settling, as an aborted Run build does under its
+		// build closure. The latest completed build is then the latest
+		// completed rerun, ordered as a rerun sorts next to its original.
+		_, err := tx.Exec(`
+			UPDATE jobs AS j
+			SET latest_completed_build_id = (
+				SELECT b.id FROM builds b
+				WHERE b.job_id = $1 AND b.status NOT IN ('pending', 'started')
+				ORDER BY COALESCE(b.rerun_of, b.rerun_of_old, b.id) DESC, b.id DESC
+				LIMIT 1
+			)
+			WHERE j.id = $1
+		`, jobID)
+		return err
+	}
+
 	var latestRerunId sql.NullString
 
 	var rerunOfCheck any
