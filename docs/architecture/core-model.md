@@ -43,6 +43,11 @@ pending ──▶ started ──▶ succeeded | failed | errored | aborted
   first, so run completion and build completion never race.
 - Aborting requires pipeline-operator on any team the build is associated
   with.
+- Aborting a v2 run build is scoped to that build. If it cannot finish over
+  an open execution or an unsettled output handoff, finishing records its
+  build closure and leaves it unfinished; the run keeps running and a rerun
+  of its job is admitted. The build finishes aborted when the closure has
+  settled that work, and the run completes through ordinary completion.
 
 ## Checks
 
@@ -83,8 +88,9 @@ Creation, under a lock on the template:
 Completion, under the run lock, whenever a run build finishes:
 
 1. Only a running run completes.
-2. Blocked while any run build is pending or started, or while the payload
-   has a job with scheduling requested and not yet performed.
+2. Blocked while any run build is pending or started, while any build
+   closure of the run is open, or while the payload has a job with
+   scheduling requested and not yet performed.
 3. Take the latest terminal build of each job. Status is the worst of them:
    errored over aborted over failed over succeeded.
 4. A would-be success is refused while any expected job has no terminal
