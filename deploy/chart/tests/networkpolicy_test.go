@@ -464,3 +464,49 @@ func TestTheDaemonPolicyAdmitsTheMetricsListener(t *testing.T) {
 	t.Error("artifactDaemon.metrics.port=9392 but the daemon's NetworkPolicy admits no " +
 		"ingress on 9392: every scrape is dropped and the target reads as down")
 }
+
+// The web's policy lists the ports it admits, and the ATC's Prometheus
+// listener was not one of them: with networkPolicy.enabled every scrape of the
+// web was dropped, the target read as down, and every rule in the chart's
+// PrometheusRule evaluated against no data. Prometheus runs in another
+// namespace under labels this chart cannot know, so the port is admitted from
+// anywhere -- the listener serves metrics and nothing else.
+func TestTheWebPolicyAdmitsTheMetricsListener(t *testing.T) {
+	// ingressFrom is set so that folding the metrics port into the UI's rule,
+	// which it restricts, fails here rather than in a scrape.
+	out := render(t,
+		"networkPolicy.enabled=true",
+		"networkPolicy.ingressFrom[0].podSelector.matchLabels.app=ingress",
+		"metrics.enabled=true",
+		"metrics.port=9391",
+	)
+
+	var policy *networkingv1.NetworkPolicy
+	for _, document := range splitDocuments(out) {
+		var candidate networkingv1.NetworkPolicy
+		if err := yaml.Unmarshal([]byte(document), &candidate); err != nil {
+			continue
+		}
+		if candidate.Kind == "NetworkPolicy" && strings.HasSuffix(candidate.Name, "-web") {
+			policy = &candidate
+		}
+	}
+	if policy == nil {
+		t.Fatal("no web NetworkPolicy was rendered; this rule would pass vacuously")
+	}
+
+	for _, rule := range policy.Spec.Ingress {
+		for _, port := range rule.Ports {
+			if port.Port != nil && port.Port.IntValue() == 9391 {
+				if len(rule.From) != 0 {
+					t.Errorf("the metrics port is admitted only from %v; Prometheus runs in "+
+						"its own namespace under labels this chart does not set", rule.From)
+				}
+				return
+			}
+		}
+	}
+	t.Error("metrics.port=9391 but the web's NetworkPolicy admits no ingress on 9391: " +
+		"every scrape is dropped, the target reads as down, and every alerting rule " +
+		"evaluates against no data")
+}
