@@ -828,7 +828,9 @@ func (b *DaemonSetBackend) RecordOutputs(ctx context.Context, handle, nodeName s
 			// exists to refuse.
 			readOnly = true
 		}
-		b.artifactLocator.Record(key, nodeName, daemonKey)
+		// Filed under the container handle, which names steps/<handle> -- the
+		// directory the Reaper deletes when this container is destroyed.
+		b.artifactLocator.RecordStepOutput(handle, key, nodeName, daemonKey)
 
 		if nodeName != "" {
 			diskPath := filepath.Join(b.config.ArtifactDaemonHostPath, "steps", daemonKey)
@@ -996,9 +998,16 @@ func (b *DaemonSetBackend) RegisterResourceCache(ctx context.Context, cacheKey, 
 		return fmt.Errorf("register resource cache alias: %w", err)
 	}
 
-	// Record in locator for affinity on downstream steps.
-	if b.artifactLocator != nil && nodeName != "" {
-		b.artifactLocator.Record(cacheKey, nodeName, cacheKey)
+	// Record in locator for affinity on downstream steps, and record which
+	// step directory the alias resolves into: that directory now backs a
+	// resource cache, which outlives the get's container, so reaping the
+	// container must not delete it.
+	if b.artifactLocator != nil {
+		var stepDir string
+		if daemonKey, ok := stepKeyFromHostPath(b.config.ArtifactDaemonHostPath, diskPath); ok {
+			stepDir, _, _ = strings.Cut(filepath.ToSlash(daemonKey), "/")
+		}
+		b.artifactLocator.RecordAlias(cacheKey, nodeName, stepDir)
 	}
 
 	return nil

@@ -122,9 +122,13 @@ func TestTheReaperSharesTheWorkersArtifactLocator(t *testing.T) {
 	}
 
 	// And the sharing is the point: what a worker records, the Reaper finds.
-	backendFactory.K8sArtifactLocator.Record("step-handle", "node-a", "/var/lib/artifacts/steps/step-handle")
-	if node, found := reaperLocator.LocateNode("step-handle"); !found || node != "node-a" {
-		t.Fatalf("the Reaper cannot locate a key a worker recorded: node %q, found %v", node, found)
+	// A worker records a step's outputs under their VOLUME handles; the Reaper
+	// is handed the CONTAINER handle and finds the step through the index.
+	backendFactory.K8sArtifactLocator.RecordStepOutput("step-handle", "step-handle-output-result", "node-a", "step-handle/result")
+	step := reaperLocator.Step("step-handle")
+	if len(step.Keys) != 1 || step.Keys[0] != "step-handle-output-result" ||
+		len(step.Nodes) != 1 || step.Nodes[0] != "node-a" {
+		t.Fatalf("the Reaper cannot find, by container handle, what a worker recorded: %+v", step)
 	}
 }
 

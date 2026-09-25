@@ -73,7 +73,7 @@ func TestARefusedArtifactDeleteKeepsTheLocatorEntrySoTheNextSweepRetries(t *test
 		})
 
 		locator := NewArtifactLocator()
-		locator.Record("held-handle", "node-1", "held-handle/result")
+		locator.RecordStepOutput("held-handle", "held-handle-output-result", "node-1", "held-handle/result")
 
 		reaper := &Reaper{
 			logger:          lagertest.NewTestLogger("reaper"),
@@ -91,7 +91,7 @@ func TestARefusedArtifactDeleteKeepsTheLocatorEntrySoTheNextSweepRetries(t *test
 			t.Errorf("%s: the reaper asked %v", name, asked)
 		}
 
-		_, stillKnown := locator.LocateNode(ArtifactKey("held-handle"))
+		_, stillKnown := locator.LocateNode(ArtifactKey("held-handle-output-result"))
 		if row.forgotten && stillKnown {
 			t.Errorf("%s: the locator still names the handle after a delete that finished; "+
 				"the entry is never retired and the map grows forever", name)

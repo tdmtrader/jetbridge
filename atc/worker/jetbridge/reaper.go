@@ -207,9 +207,22 @@ func (r *Reaper) Run(ctx context.Context) error {
 	return nil
 }
 
-// cleanupDaemonSetArtifacts sends HTTP DELETE requests to DaemonSet pods
-// for destroyed container artifacts. Best-effort — failures are logged
-// but don't block GC.
+// cleanupDaemonSetArtifacts asks the artifact daemon to drop each destroyed
+// container's step directory, steps/<handle>, and retires the locator keys
+// recorded for it. Best-effort — failures are logged but don't block GC.
+//
+// The Reaper is handed container handles and the locator is keyed by volume
+// handle ("<h>-dir", "<h>-input-N", "<h>-output-<name>"), so the step is found
+// through the locator's per-step index, never by looking the handle up as a
+// key: no writer records the bare handle.
+//
+// A step directory a resource cache alias resolves into is never deleted
+// here. The cache outlives the get's container by design -- a later build's
+// get is a hit because the container is gone and the bytes are not -- and a
+// delete would leave the daemon's alias naming nothing. The directory stays
+// for the daemon's sweeper, which reclaims it and the aliases into it together
+// once nothing has read it for the TTL; only the container's own volume keys
+// are forgotten.
 func (r *Reaper) cleanupDaemonSetArtifacts(ctx context.Context, logger lager.Logger, handles []string) {
 	if len(handles) == 0 || r.artifactLocator == nil || r.wire == nil {
 		return
@@ -219,64 +232,100 @@ func (r *Reaper) cleanupDaemonSetArtifacts(ctx context.Context, logger lager.Log
 		if strings.HasPrefix(handle, "/") || strings.Contains(handle, "..") || handle == "" {
 			continue
 		}
-		key := ArtifactKey(handle)
-		sourceNode, found := r.artifactLocator.LocateNode(key)
-		if !found {
+		step := r.artifactLocator.Step(handle)
+		if len(step.Keys) == 0 {
+			// Nothing this web recorded: another web's step, or one from
+			// before a restart. The daemon's sweeper reclaims it.
 			continue
 		}
 
-		if r.nodeIPResolver == nil {
-			logger.Error("no-node-ip-resolver", nil, lager.Data{"handle": handle})
+		if len(step.AliasedBy) > 0 {
+			logger.Info("keeping-step-dir-a-resource-cache-resolves-into", lager.Data{
+				"handle": handle, "aliases": step.AliasedBy,
+			})
+			r.artifactLocator.ForgetStep(handle)
+
 			continue
 		}
 
-		nodeIP, err := r.nodeIPResolver.Resolve(ctx, sourceNode)
-		if err != nil {
-			logger.Error("failed-to-resolve-node-ip", err, lager.Data{"node": sourceNode, "handle": handle})
+		if len(step.Nodes) == 0 {
+			// Recorded before its node was known: no daemon to ask, and an
+			// entry naming no node is only growth.
+			logger.Info("forgetting-step-recorded-without-a-node", lager.Data{"handle": handle})
+			r.artifactLocator.ForgetStep(handle)
+
 			continue
 		}
 
-		// Delete the step directory (not a tar file), bounded per daemon so
-		// one silent node cannot stall the whole sweep.
-		deleteCtx, cancel := context.WithTimeout(ctx, reaperDeleteTimeout)
-		err = r.wire.Delete(deleteCtx, nodeIP, artifactwire.StepsPrefix+handle)
-		cancel()
-
-		var refusal *artifactwire.Refusal
-		switch {
-		case err == nil:
-		case errors.As(err, &refusal):
-			// A REFUSED delete is not a done delete. The daemon answers 409
-			// when a durable output capture still holds the source, which is
-			// the whole point of that refusal -- and the Reaper used to drop
-			// the key anyway, so the one caller that could come back and try
-			// again forgot the handle instead. The source is not leaked (once
-			// the capture releases, the classifier answers unmanaged and the
-			// sweeper's TTL reclaims it), but nothing retries, and "the Reaper
-			// will clean it up" stops being true for exactly the sources that
-			// most need cleaning up. A 5xx is the same: not done, try again.
-			if errors.Is(err, artifactwire.ErrHeld) || errors.Is(err, artifactwire.ErrUnavailable) {
-				logger.Info("delete-refused-keeping-locator-entry", lager.Data{
-					"handle": handle, "node": sourceNode, "status": refusal.Status,
-				})
-
-				continue
+		done := true
+		for _, node := range step.Nodes {
+			if !r.deleteStepDir(ctx, logger, handle, node) {
+				done = false
 			}
-			// Any other refusal is the daemon's final word about this key: the
-			// bytes will not be found under it again, so the entry can go.
-			logger.Info("delete-refused-forgetting", lager.Data{
+		}
+		if done {
+			r.artifactLocator.ForgetStep(handle)
+		}
+	}
+}
+
+// deleteStepDir DELETEs steps/<handle> on one node's daemon and reports
+// whether the daemon is finished with it -- deleted, or its final word that
+// the bytes are not there. Anything else keeps the locator entries so the next
+// sweep retries.
+func (r *Reaper) deleteStepDir(ctx context.Context, logger lager.Logger, handle, sourceNode string) bool {
+	if r.nodeIPResolver == nil {
+		logger.Error("no-node-ip-resolver", nil, lager.Data{"handle": handle})
+		return false
+	}
+
+	nodeIP, err := r.nodeIPResolver.Resolve(ctx, sourceNode)
+	if err != nil {
+		logger.Error("failed-to-resolve-node-ip", err, lager.Data{"node": sourceNode, "handle": handle})
+		return false
+	}
+
+	// Delete the step directory (not a tar file), bounded per daemon so
+	// one silent node cannot stall the whole sweep.
+	deleteCtx, cancel := context.WithTimeout(ctx, reaperDeleteTimeout)
+	err = r.wire.Delete(deleteCtx, nodeIP, artifactwire.StepsPrefix+handle)
+	cancel()
+
+	var refusal *artifactwire.Refusal
+	switch {
+	case err == nil:
+		return true
+	case errors.As(err, &refusal):
+		// A REFUSED delete is not a done delete. The daemon answers 409
+		// when a durable output capture still holds the source, which is
+		// the whole point of that refusal -- and the Reaper used to drop
+		// the key anyway, so the one caller that could come back and try
+		// again forgot the handle instead. The source is not leaked (once
+		// the capture releases, the classifier answers unmanaged and the
+		// sweeper's TTL reclaims it), but nothing retries, and "the Reaper
+		// will clean it up" stops being true for exactly the sources that
+		// most need cleaning up. A 5xx is the same: not done, try again.
+		if errors.Is(err, artifactwire.ErrHeld) || errors.Is(err, artifactwire.ErrUnavailable) {
+			logger.Info("delete-refused-keeping-locator-entry", lager.Data{
 				"handle": handle, "node": sourceNode, "status": refusal.Status,
 			})
-		default:
-			logger.Error("failed-to-delete-artifact", err, lager.Data{"handle": handle, "node": sourceNode})
 
-			// The bytes are still there and the locator is the only thing that
-			// knows where. Forgetting the key now would leave a source no
-			// sweep of ours can find again, so the next sweep retries.
-			continue
+			return false
 		}
+		// Any other refusal is the daemon's final word about this key: the
+		// bytes will not be found under it again, so the entry can go.
+		logger.Info("delete-refused-forgetting", lager.Data{
+			"handle": handle, "node": sourceNode, "status": refusal.Status,
+		})
 
-		r.artifactLocator.Remove(key)
+		return true
+	default:
+		logger.Error("failed-to-delete-artifact", err, lager.Data{"handle": handle, "node": sourceNode})
+
+		// The bytes are still there and the locator is the only thing that
+		// knows where. Forgetting the key now would leave a source no
+		// sweep of ours can find again, so the next sweep retries.
+		return false
 	}
 }
 
