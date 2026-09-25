@@ -601,8 +601,9 @@ func (e runWitnessExecutor) ExecInPod(ctx context.Context, namespace, pod, conta
 // executing. Nothing the Run holds names it, and cancellation used to leave it
 // pending for ever. It must read the start from the node, retain it, and close
 // the execution on the journal's evidence, never running the command. An
-// aborted build that cannot finish over it stays unfinished and never asks
-// for its Run's cancellation: aborting a build is scoped to that build.
+// aborted build that cannot finish over it never asks for its Run's
+// cancellation: its build closure closes the execution the same way, and the
+// Run keeps running.
 func exerciseUnretainedStart(ctx context.Context, in RunOutputRuntime, a db.RunExecutionAdmission, aborted bool, process runtime.Process, client *jetbridge.OutputControlClient, marker string, build db.Build) error {
 	if _, err := in.Start.DB.Conn.Exec(`CREATE FUNCTION brine_reject_execution_start() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'brine unavailable start witness'; END; $$;
  CREATE TRIGGER brine_reject_execution_start BEFORE INSERT ON pipeline_run_execution_starts FOR EACH ROW EXECUTE FUNCTION brine_reject_execution_start()`); err != nil {
@@ -630,21 +631,26 @@ func exerciseUnretainedStart(ctx context.Context, in RunOutputRuntime, a db.RunE
 		return fmt.Errorf("the refused start witness was retained anyway")
 	}
 	if aborted {
-		if err = build.MarkAsAborted(); err != nil {
+		// The build closure, not Run cancellation, closes it: the real
+		// worker reads the start from the node and closes the execution on
+		// the journal's evidence, then finishes the build aborted.
+		if err = abortOverOpenWork(in, build); err != nil {
 			return err
 		}
-		if err = build.Finish(db.BuildStatusAborted); !errors.Is(err, atc.ErrRunOutputPending) {
-			return fmt.Errorf("an aborted build finished over an unclosed execution: %v", err)
-		}
-		var by string
-		if err = in.Start.DB.Conn.QueryRow(`SELECT coalesce(cancel_requested_by,'') FROM pipeline_runs WHERE id=$1`, a.RunID).Scan(&by); err != nil {
+		closing, stop := context.WithTimeout(context.Background(), 45*time.Second)
+		defer stop()
+		if err = convergeBuildClosure(closing, in, build, func() runs.CancellationWorker {
+			return buildClosureWorker(in, newRecordingSource(in), "closure-worker")
+		}); err != nil {
 			return err
 		}
-		if by != "" {
-			return fmt.Errorf("aborting one build cancelled its whole Run (requested by %q)", by)
+		if err = checkExecutionClosedByNode(ctx, in, a); err != nil {
+			return err
 		}
-	}
-	if err = exerciseBaseExecutionCancellation(in, a, executioncontrol.ClassificationAuthoritativeFinish); err != nil {
+		if err = checkRunUncancelled(ctx, in); err != nil {
+			return err
+		}
+	} else if err = exerciseBaseExecutionCancellation(in, a, executioncontrol.ClassificationAuthoritativeFinish); err != nil {
 		return err
 	}
 	classified, err = client.Classify(ctx, a.Identity)
