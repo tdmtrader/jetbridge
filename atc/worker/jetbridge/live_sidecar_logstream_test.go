@@ -31,10 +31,14 @@ import (
 // must return within ~5s of the (fast) main command completing.
 //
 // Strategy:
-//   - "control" run: same long-running sidecar, but NO dedicated SidecarWriter.
-//     No streaming goroutine is started, so no bounded wait engages. This run's
-//     duration is approximately pod-startup + exec, and is used to factor out
-//     startup time so the ~5s bounded wait can be isolated.
+//   - "control" run: same long-running sidecar, but NO dedicated SidecarWriter
+//     and NO step stdout. A sidecar without its own writer falls back to the
+//     step's stdout under a "[name] " prefix (fac7758a4b), so a control run that
+//     keeps stdout streams the sidecar too and pays the same 5s bound -- the
+//     delta collapses to zero and this test reads it as the bound never
+//     engaging. With neither writer, no streaming goroutine is started. This
+//     run's duration is approximately pod-startup + exec, and is used to factor
+//     out startup time so the ~5s bounded wait can be isolated.
 //   - "test" run: identical, but WITH a dedicated SidecarWriter. Its duration is
 //     approximately pod-startup + exec + 5s.
 //
@@ -102,11 +106,11 @@ func TestLiveSidecarLogStreamTimeout(t *testing.T) {
 		}
 		requirePersistedContainer(t, database, "live-sc11-worker", handle)
 
-		pio := runtime.ProcessIO{
-			Stdout: &bytes.Buffer{},
-			Stderr: &bytes.Buffer{},
-		}
+		// The control run has no writer for the sidecar to fall back to: see
+		// the strategy above.
+		pio := runtime.ProcessIO{Stderr: &bytes.Buffer{}}
 		if withSidecarWriter {
+			pio.Stdout = &bytes.Buffer{}
 			pio.SidecarWriters = map[string]io.Writer{"slow-sidecar": &bytes.Buffer{}}
 		}
 
