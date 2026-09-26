@@ -24,10 +24,6 @@ type Generator interface {
 	GenerateAccessToken(claims db.Claims) (string, error)
 }
 
-type ClaimsParser interface {
-	ParseClaims(idToken string) (db.Claims, error)
-}
-
 func StoreAccessToken(
 	logger lager.Logger,
 	handler http.Handler,
@@ -125,13 +121,13 @@ func copyResponseHeaders(w http.ResponseWriter, res *http.Response) {
 }
 
 func NewClaimsParser() ClaimsParser {
-	return claimsParserNoVerify{}
+	return ClaimsParser{}
 }
 
-type claimsParserNoVerify struct {
+type ClaimsParser struct {
 }
 
-func (claimsParserNoVerify) ParseClaims(idToken string) (db.Claims, error) {
+func (ClaimsParser) ParseClaims(idToken string) (db.Claims, error) {
 	// RSA256 is the alg that Dex uses. They don't export this from any package.
 	// I had to look through their code to figure out which alg they were using.
 	token, err := jwt.ParseSigned(idToken, []jose.SignatureAlgorithm{jose.RS256})
