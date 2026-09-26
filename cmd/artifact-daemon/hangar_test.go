@@ -795,6 +795,31 @@ func TestHangarScratchRejectsSymlinkWithoutChangingItsTarget(t *testing.T) {
 	}
 }
 
+// The chart mounts the scratch directory as an emptyDir, which kubelet creates
+// 0777 without the sticky bit. The daemon owns that mount outright, so it must
+// make it private rather than refuse it: refusing crash-looped every
+// Hangar-enabled artifact daemon the chart rendered (found by
+// TestLiveHangarDiskStoreRoundTripSurvivesRestart).
+func TestHangarScratchMakesAWorldWritableMountPrivate(t *testing.T) {
+	scratch := filepath.Join(t.TempDir(), "scratch")
+	if err := os.Mkdir(scratch, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(scratch, 0777); err != nil {
+		t.Fatal(err)
+	}
+	if err := validatePrivateHangarScratch(scratch, t.TempDir()); err != nil {
+		t.Fatalf("refused a 0777 scratch mount: %v", err)
+	}
+	info, err := os.Lstat(scratch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0700 {
+		t.Fatalf("scratch mode = %04o, want 0700", info.Mode().Perm())
+	}
+}
+
 func TestHangarScratchPathsRejectRootsAndContainmentBeforeMutation(t *testing.T) {
 	for _, tc := range []struct{ scratch, storage string }{
 		{"/", filepath.Join(t.TempDir(), "storage")},

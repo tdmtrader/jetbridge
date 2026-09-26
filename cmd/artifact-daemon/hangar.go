@@ -244,11 +244,15 @@ func validatePrivateHangarScratch(scratch, storage string) error {
 			return err
 		}
 	}
-	if err := hangar.ValidateTempDir(resolvedScratch); err != nil {
-		return err
-	}
+	// Private before validated, not after: the chart's scratch is an emptyDir,
+	// which kubelet creates 0777 without the sticky bit, and ValidateTempDir
+	// rightly refuses that. The symlink and containment checks above have
+	// already established this is the daemon's own directory to tighten.
 	if err := os.Chmod(cleanScratch, 0700); err != nil {
 		return fmt.Errorf("set Hangar scratch directory permissions: %w", err)
+	}
+	if err := hangar.ValidateTempDir(resolvedScratch); err != nil {
+		return err
 	}
 	info, err = os.Lstat(cleanScratch)
 	if err != nil || !info.IsDir() || info.Mode().Perm() != 0700 {
