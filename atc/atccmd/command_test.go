@@ -14,6 +14,7 @@ import (
 	"github.com/concourse/concourse/atc/atccmd"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/gc"
+	"github.com/concourse/concourse/atc/runs"
 	"github.com/concourse/flag/v2"
 	"github.com/jessevdk/go-flags"
 	"github.com/stretchr/testify/require"
@@ -467,19 +468,15 @@ func (s *CommandSuite) TestTheOutputPlanesComponentsRunOnlyWhereThePlaneIsEnable
 	// has been activated.
 	on := &atccmd.RunCommand{}
 	on.Kubernetes.OutputPlaneEnabled = true
-	for _, component := range atccmd.HangarOutputComponentsForTest(on, nil) {
-		if component.Component.Name == atc.ComponentRunCancellation {
-			s.True(component.Interval > 0 && component.Interval <= 30*time.Second, "cancellation must have a periodic fallback no slower than 30 seconds")
-		}
-	}
 	s.ElementsMatch([]string{
 		atc.ComponentHangarOutputCapture,
 		atc.ComponentHangarOutputReadLeaseCleanup,
-		atc.ComponentRunCancellation,
 	}, names(atccmd.HangarOutputComponentsForTest(on, nil)))
 
-	// And with one, all three -- without which the assertions above would
-	// pass against a plane that registers nothing at all.
+	// And with one, all three of the plane's own -- capture, read-lease
+	// cleanup and status -- without which the assertions above would pass
+	// against a plane that registers nothing at all. Run cancellation is not
+	// among them; every web node registers it (runComponents).
 	activated := &atccmd.RunCommand{}
 	activated.Kubernetes.OutputPlaneEnabled = true
 	activated.Kubernetes.OutputActivationEpoch = 7
@@ -489,7 +486,6 @@ func (s *CommandSuite) TestTheOutputPlanesComponentsRunOnlyWhereThePlaneIsEnable
 		atc.ComponentHangarOutputCapture,
 		atc.ComponentHangarOutputReadLeaseCleanup,
 		atc.ComponentHangarOutputStatus,
-		atc.ComponentRunCancellation,
 	}, names(atccmd.HangarOutputComponentsForTest(activated, nil)))
 }
 
@@ -559,4 +555,42 @@ func (s *CommandSuite) TestTheOutputCapabilityKeyIsReadAtStartupAndNotMerelyName
 	off := &atccmd.RunCommand{}
 	off.Kubernetes.OutputWarrantKey = "/does/not/exist"
 	s.NoError(atccmd.ValidateHangarOutputPlaneForTest(off))
+}
+
+// AN ACCEPTED FENCE THAT NOTHING WOULD EVER CONVERGE.
+//
+// The cancellation worker was registered only inside the output plane's
+// components, while the cancel route answers on every web node and Run
+// activation zero stops admission but leaves running Runs running. On a node
+// with no output plane, or one that has turned admission off, an accepted
+// cancellation was a durable fence with no worker to converge it: the Run
+// stayed running forever. The worker's own operations (scheduler debt, build
+// abort, candidate settlement, terminalization) need no output plane, and a
+// source operation it cannot reach stays typed debt with the Run running.
+func (s *CommandSuite) TestTheRunCancellationWorkerRunsWithOrWithoutAnOutputPlane() {
+	// runComponents reads neither the activation epoch nor the plane flag, so
+	// one configuration stands for all of them; what this pins is that the
+	// worker lives there and not among the plane's components. That
+	// backendComponents appends runComponents is not asserted here: building
+	// the full backend list needs a live database and runtime.
+	cmd := &atccmd.RunCommand{}
+	cmd.Kubernetes.OutputPlaneEnabled = true
+
+	var found []atccmd.RunnableComponent
+	for _, component := range atccmd.RunComponentsForTest(cmd, nil) {
+		if component.Component.Name == atc.ComponentRunCancellation {
+			found = append(found, component)
+		}
+	}
+	s.Require().Len(found, 1, "the cancellation worker must be registered exactly once")
+	s.True(found[0].Interval > 0 && found[0].Interval <= 30*time.Second, "cancellation must have a periodic fallback no slower than 30 seconds")
+	worker, ok := found[0].Runnable.(*runs.CancellationWorker)
+	s.Require().True(ok, "the component must run the cancellation worker")
+	s.NotEmpty(worker.OwnerID)
+	s.NotNil(worker.Actions)
+
+	for _, component := range atccmd.HangarOutputComponentsForTest(cmd, nil) {
+		s.NotEqual(atc.ComponentRunCancellation, component.Component.Name,
+			"the output plane registers the cancellation worker a second time")
+	}
 }

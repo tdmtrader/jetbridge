@@ -40,6 +40,13 @@ func HangarOutputComponentsForTest(cmd *RunCommand, dbConn db.DbConn) []Runnable
 	return cmd.hangarOutputComponents(dbConn)
 }
 
+// RunComponentsForTest exports the private runComponents method: the Run
+// components every web node registers, with or without an output plane. As
+// above, a nil connection is enough to build the list.
+func RunComponentsForTest(cmd *RunCommand, dbConn db.DbConn) []RunnableComponent {
+	return cmd.runComponents(dbConn)
+}
+
 // ValidateHangarOutputPlaneForTest exports the private
 // validateHangarOutputPlane method for external test packages.
 func ValidateHangarOutputPlaneForTest(cmd *RunCommand) error {

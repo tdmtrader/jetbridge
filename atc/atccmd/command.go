@@ -1376,7 +1376,7 @@ func (cmd *RunCommand) backendComponents(
 	components = append(components, k8sComponents...)
 
 	components = append(components, cmd.hangarOutputComponents(dbConn)...)
-	components = append(components, cmd.runResultsComponent())
+	components = append(components, cmd.runComponents(dbConn)...)
 
 	if syslogDrainConfigured {
 		components = append(components, RunnableComponent{
@@ -1754,7 +1754,6 @@ func (cmd *RunCommand) hangarOutputComponents(dbConn db.DbConn) []RunnableCompon
 	components := []RunnableComponent{
 		cmd.hangarOutputCaptureComponent(dbConn),
 		cmd.hangarOutputReadLeaseCleanupComponent(dbConn),
-		cmd.runCancellationComponent(dbConn),
 	}
 	if status := cmd.hangarOutputStatusComponent(dbConn); status != nil {
 		components = append(components, *status)
@@ -1844,6 +1843,28 @@ func (cmd *RunCommand) hangarOutputCaptureComponent(dbConn db.DbConn) RunnableCo
 		})
 	}
 	return result
+}
+
+// runComponents is what every web node registers for Runs, with or without an
+// output plane and whatever its Run activation epoch.
+//
+// The cancellation worker is here and not among the output plane's components
+// because the cancel route answers on every node, and activation zero stops
+// admission while leaving running Runs running: a fence accepted where the
+// worker is absent would never converge. Its own operations (scheduler debt,
+// build abort, candidate settlement, terminalization) need no output plane.
+// Without one the node admits no execution, so no source operation arises.
+//
+// The web fleet must agree on the output plane. The worker's lease is one
+// row that a live owner renews on every pass, so a node without the plane
+// that holds it keeps it; a source operation admitted by a node with the
+// plane is then retried as typed Unavailable debt, its Run staying running,
+// until the lease holder stops. The chart renders every web node alike.
+func (cmd *RunCommand) runComponents(dbConn db.DbConn) []RunnableComponent {
+	return []RunnableComponent{
+		cmd.runResultsComponent(),
+		cmd.runCancellationComponent(dbConn),
+	}
 }
 
 // runResultsComponent makes each settled Run's one terminal publication. It
