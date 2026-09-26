@@ -130,7 +130,7 @@ func implementResult(ctx context.Context, f *flag.FlagSet, args []string, out io
 	var destination implementDestination
 	destination.flags(f)
 	number := f.Int("run", 0, "Run number (required)")
-	name := f.String("result", implementclient.ChangeResult, "named result containing change.patch and summary.json")
+	name := f.String("result", implementclient.ChangeResult, "named result: the change (change.patch and summary.json) or \"validation\"")
 	output := f.String("output", "", "optional new directory to write the verified change.patch and summary.json into")
 	format := f.String("format", "json", "output format: json or markdown")
 	if err := f.Parse(args); err != nil {
@@ -139,7 +139,23 @@ func implementResult(ctx context.Context, f *flag.FlagSet, args []string, out io
 	if f.NArg() != 0 || destination.target == "" || destination.template == "" || *number < 1 || *name == "" || (*format != "json" && *format != "markdown") {
 		return errors.New("result requires --target, a positive --run number, and json or markdown format")
 	}
-	change, err := fetchChange(ctx, destination, *number, *name)
+	validation := *name == implementclient.ValidationResult
+	if validation && *output != "" {
+		return errors.New("--output writes a change; it does not apply to --result validation")
+	}
+	client, handle, err := destination.handle(*number)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	// A validation is only meaningful for the change it ran against, so it
+	// is always read together with, and checked against, the Run's change.
+	changeName := *name
+	if validation {
+		changeName = implementclient.ChangeResult
+	}
+	change, err := client.Result(ctx, handle, changeName)
 	if err != nil {
 		return err
 	}
@@ -148,21 +164,46 @@ func implementResult(ctx context.Context, f *flag.FlagSet, args []string, out io
 			return err
 		}
 	}
-	if *format == "markdown" {
+	var attested *implement.Validation
+	if validation || *format == "markdown" {
+		attested, err = client.Validation(ctx, handle, change)
+		if errors.Is(err, implementclient.ErrNoValidation) && !validation {
+			err = nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+	switch {
+	case *format == "markdown" && attested != nil:
+		_, err = io.WriteString(out, change.ValidatedMarkdown(attested))
+		return err
+	case *format == "markdown":
 		_, err = io.WriteString(out, change.Markdown())
 		return err
+	case validation:
+		return json.NewEncoder(out).Encode(attested)
+	default:
+		return json.NewEncoder(out).Encode(change)
 	}
-	return json.NewEncoder(out).Encode(change)
+}
+
+func (d implementDestination) handle(number int) (*implementclient.Client, implementclient.Handle, error) {
+	client, team, err := d.client()
+	if err != nil {
+		return nil, implementclient.Handle{}, err
+	}
+	return client, implementclient.Handle{Team: team, Template: d.template, Number: number}, nil
 }
 
 func fetchChange(ctx context.Context, destination implementDestination, number int, name string) (*implementclient.Change, error) {
-	client, team, err := destination.client()
+	client, handle, err := destination.handle(number)
 	if err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	return client.Result(ctx, implementclient.Handle{Team: team, Template: destination.template, Number: number}, name)
+	return client.Result(ctx, handle, name)
 }
 
 func implementApply(ctx context.Context, f *flag.FlagSet, args []string, out io.Writer) error {

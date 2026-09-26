@@ -63,6 +63,60 @@ func parseChange(tree fs.FS) (detached.RunIdentified, error) {
 	return &Change{Summary: summary, Patch: string(patch), raw: raw}, nil
 }
 
+// ErrNoValidation reports a Run that bound no validation result, such as one
+// admitted from a template without a validate task.
+var ErrNoValidation = errors.New("Run has no validation result")
+
+// ValidatedMarkdown renders the change with the validation that attests it.
+func (c *Change) ValidatedMarkdown(v *implement.Validation) string {
+	return c.Summary.ValidatedMarkdown([]byte(c.Patch), v)
+}
+
+// Validation retrieves the validation a completed Run published and binds it
+// to change, which must be that Run's verified change. The shared client
+// verifies the archive against the Run's immutable binding and the run_id
+// against the Run; the validation must then name the change's snapshot and
+// exactly its patch, or it attests something else and is refused.
+func (c *Client) Validation(ctx context.Context, handle Handle, change *Change) (*implement.Validation, error) {
+	if change == nil || change.raw == nil {
+		return nil, errors.New("a validation is only checked against a change retrieved from its Run")
+	}
+	run, err := c.Status(ctx, handle)
+	if err != nil {
+		return nil, err
+	}
+	if run.Terminal != nil {
+		if _, bound := run.Terminal.Results[ValidationResult]; !bound {
+			return nil, ErrNoValidation
+		}
+	}
+	parsed, err := c.Client.Result(ctx, handle, ValidationResult, parseValidation)
+	if err != nil {
+		return nil, err
+	}
+	validation := parsed.(validationResult).Validation
+	if err := validation.Attests(change.Summary, []byte(change.Patch)); err != nil {
+		return nil, err
+	}
+	return validation, nil
+}
+
+type validationResult struct{ *implement.Validation }
+
+func (v validationResult) RunID() int { return v.Validation.RunID }
+
+func parseValidation(tree fs.FS) (detached.RunIdentified, error) {
+	raw, err := detached.ReadResultFile(tree, implement.ValidationFile, implement.MaxValidationBytes)
+	if err != nil {
+		return nil, err
+	}
+	validation, err := implement.ParseValidation(raw)
+	if err != nil {
+		return nil, err
+	}
+	return validationResult{validation}, nil
+}
+
 // WriteDir publishes the verified change.patch and summary.json, byte for byte
 // as the Run published them, into output, which must not exist. The files are
 // staged beside it and published with one rename, then read back the way

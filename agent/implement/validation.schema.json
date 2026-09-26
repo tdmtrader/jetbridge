@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "JetBridge detached implementation validation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "input_digest",
+    "patch_digest",
+    "applied",
+    "command",
+    "exit_code",
+    "outcome",
+    "log_tail"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "implement-validation/v1"
+    },
+    "run_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "input_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "patch_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "applied": {
+      "type": "boolean"
+    },
+    "command": {
+      "type": "string",
+      "minLength": 1
+    },
+    "exit_code": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 255
+    },
+    "outcome": {
+      "enum": [
+        "passed",
+        "failed",
+        "not_applied"
+      ]
+    },
+    "log_tail": {
+      "type": "string"
+    }
+  }
+}

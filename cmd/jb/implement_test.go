@@ -44,11 +44,12 @@ func cliGit(t *testing.T, repo string, args ...string) string {
 // cliPlatform serves the public Run routes of one implement Run, requiring
 // the saved login's bearer on every request.
 type cliPlatform struct {
-	server  *httptest.Server
-	mu      sync.Mutex
-	run     atc.PipelineRun
-	archive []byte
-	handoff []byte
+	server *httptest.Server
+	mu     sync.Mutex
+	run    atc.PipelineRun
+	// archives are the Run's published results by name.
+	archives map[string][]byte
+	handoff  []byte
 	// credential is the state the credential session reports until handoff.
 	credential string
 }
@@ -82,16 +83,18 @@ func (p *cliPlatform) serve(w http.ResponseWriter, r *http.Request) {
 		reply(http.StatusOK, atc.RunCredentialSession{RunID: cliRunID, Result: "change", Status: p.credential})
 	case r.Method == http.MethodGet && r.URL.Path == v1+run:
 		reply(http.StatusOK, p.run)
-	case r.Method == http.MethodGet && r.URL.Path == v1+run+"/results/change":
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, v1+run+"/results/") && p.archives[strings.TrimPrefix(r.URL.Path, v1+run+"/results/")] != nil:
+		archive := p.archives[strings.TrimPrefix(r.URL.Path, v1+run+"/results/")]
 		w.Header().Set("Content-Type", "application/x-tar")
-		w.Header().Set("Content-Length", strconv.Itoa(len(p.archive)))
-		_, _ = w.Write(p.archive)
+		w.Header().Set("Content-Length", strconv.Itoa(len(archive)))
+		_, _ = w.Write(archive)
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
 }
 
-// complete publishes the worker's change as the Run's bound change result.
+// complete publishes the worker's change and the template's validation of
+// it as the Run's two bound results.
 func (p *cliPlatform) complete(t *testing.T, s *implement.Snapshot, base string) {
 	t.Helper()
 	before := implement.Tree{"parser.go": {Data: []byte(base), Mode: "100644"}}
@@ -107,29 +110,44 @@ func (p *cliPlatform) complete(t *testing.T, s *implement.Snapshot, base string)
 		t.Fatal(err)
 	}
 	summaryJSON, _ := json.Marshal(summary)
-	var raw bytes.Buffer
-	tw := tar.NewWriter(&raw)
-	for name, data := range map[string][]byte{implement.SummaryFile: summaryJSON, implement.PatchFile: patch} {
-		_ = tw.WriteHeader(&tar.Header{Name: name, Mode: 0o600, Size: int64(len(data)), Typeflag: tar.TypeReg})
-		_, _ = tw.Write(data)
-	}
-	_ = tw.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	tree, err := (hangar.Canonicalizer{MaxContentBytes: 1 << 20, MaxEntries: 32}).Capture(ctx, &raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tree.Close()
-	archive, err := os.ReadFile(tree.ArchivePath)
-	if err != nil {
-		t.Fatal(err)
+	failed := 1
+	validation, _ := json.Marshal(implement.Validation{
+		SchemaVersion: implement.ValidationVersion, RunID: cliRunID, InputDigest: s.Digest, PatchDigest: capture.Digest(patch),
+		Applied: true, Command: "go test ./...", ExitCode: &failed, Outcome: implement.ValidationFailed, LogTail: "FAIL\n",
+	})
+	bindings := map[string]atc.RunResultBinding{}
+	p.archives = map[string][]byte{}
+	for name, files := range map[string]map[string][]byte{
+		"change":     {implement.SummaryFile: summaryJSON, implement.PatchFile: patch},
+		"validation": {implement.ValidationFile: validation},
+	} {
+		var raw bytes.Buffer
+		tw := tar.NewWriter(&raw)
+		for file, data := range files {
+			_ = tw.WriteHeader(&tar.Header{Name: file, Mode: 0o600, Size: int64(len(data)), Typeflag: tar.TypeReg})
+			_, _ = tw.Write(data)
+		}
+		_ = tw.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		tree, err := (hangar.Canonicalizer{MaxContentBytes: 1 << 20, MaxEntries: 32}).Capture(ctx, &raw)
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+		archive, err := os.ReadFile(tree.ArchivePath)
+		tree.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.mu.Lock()
+		p.archives[name] = archive
+		p.mu.Unlock()
+		bindings[name] = atc.RunResultBinding{Ref: hangar.TreeRef{Digest: tree.Digest}}
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.archive = archive
 	p.run.Status = atc.RunStatusSucceeded
-	p.run.Terminal = &atc.RunTerminalResult{Status: atc.RunStatusSucceeded, Results: map[string]atc.RunResultBinding{"change": {Ref: hangar.TreeRef{Digest: tree.Digest}}}}
+	p.run.Terminal = &atc.RunTerminalResult{Status: atc.RunStatusSucceeded, Results: bindings}
 }
 
 func jb(t *testing.T, args ...string) (string, error) {
@@ -224,8 +242,21 @@ func TestImplementCommandsDriveADetachedRun(t *testing.T) {
 		t.Fatalf("result --output did not write an appliable change: %v", err)
 	}
 	out, err = jb(t, append([]string{"implement", "result", "--format", "markdown"}, destination...)...)
-	if err != nil || !strings.Contains(out, "```diff\n") || !strings.Contains(out, "Run: 41") {
-		t.Fatalf("markdown result: %s %v", out, err)
+	if err != nil || !strings.Contains(out, "```diff\n") || !strings.Contains(out, "Run: 41") || !strings.Contains(out, "## Validation: failed") {
+		t.Fatalf("markdown result does not show the change with its validation: %s %v", out, err)
+	}
+	// A failing validation is retrievable beside the change it tested.
+	out, err = jb(t, append([]string{"implement", "result", "--result", "validation"}, destination...)...)
+	var validation implement.Validation
+	if err != nil || json.Unmarshal([]byte(out), &validation) != nil || validation.Outcome != implement.ValidationFailed || validation.PatchDigest != change.Summary.PatchDigest {
+		t.Fatalf("validation result: %s %v", out, err)
+	}
+	out, err = jb(t, append([]string{"implement", "result", "--result", "validation", "--format", "markdown"}, destination...)...)
+	if err != nil || !strings.Contains(out, "## Validation: failed") || !strings.Contains(out, "```diff\n") {
+		t.Fatalf("validation markdown does not show both results: %s %v", out, err)
+	}
+	if _, err := jb(t, append([]string{"implement", "result", "--result", "validation", "--output", filepath.Join(root, "validation")}, destination...)...); err == nil {
+		t.Fatal("result --output wrote a validation as if it were a change")
 	}
 
 	if _, err := jb(t, append([]string{"implement", "apply", "--repo", repo, "--result-dir", retrieved}, destination...)...); err == nil {

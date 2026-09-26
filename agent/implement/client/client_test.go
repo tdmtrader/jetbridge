@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -88,15 +89,15 @@ type platform struct {
 	server *httptest.Server
 	mu     sync.Mutex
 	run    atc.PipelineRun
-	// archive is the published change result.
-	archive []byte
+	// archives are the published results by name.
+	archives map[string][]byte
 	// uploads records each input name and archive received.
 	uploads     map[string][]byte
 	credentials []string
 }
 
 func newPlatform(t *testing.T) *platform {
-	p := &platform{uploads: map[string][]byte{}}
+	p := &platform{uploads: map[string][]byte{}, archives: map[string][]byte{}}
 	p.run = atc.PipelineRun{ID: runID, Number: number, ContractVersion: atc.RunContractV2, ActivationEpoch: 1, Status: atc.RunStatusRunning}
 	p.server = httptest.NewServer(http.HandlerFunc(p.serve))
 	t.Cleanup(p.server.Close)
@@ -136,10 +137,11 @@ func (p *platform) serve(w http.ResponseWriter, r *http.Request) {
 		reply(atc.RunCredentialSession{RunID: runID, Result: result, Status: "ready"})
 	case r.Method == http.MethodGet && r.URL.Path == v1+run:
 		reply(p.run)
-	case r.Method == http.MethodGet && r.URL.Path == v1+run+"/results/"+ChangeResult:
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, v1+run+"/results/") && p.archives[strings.TrimPrefix(r.URL.Path, v1+run+"/results/")] != nil:
+		archive := p.archives[strings.TrimPrefix(r.URL.Path, v1+run+"/results/")]
 		w.Header().Set("Content-Type", "application/x-tar")
-		w.Header().Set("Content-Length", strconv.Itoa(len(p.archive)))
-		_, _ = w.Write(p.archive)
+		w.Header().Set("Content-Length", strconv.Itoa(len(archive)))
+		_, _ = w.Write(archive)
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
@@ -149,35 +151,47 @@ func (p *platform) serve(w http.ResponseWriter, r *http.Request) {
 // way the platform binds a captured output.
 func (p *platform) publish(t *testing.T, files map[string][]byte) {
 	t.Helper()
-	var raw bytes.Buffer
-	tw := tar.NewWriter(&raw)
-	for name, data := range files {
-		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o600, Size: int64(len(data)), Typeflag: tar.TypeReg}); err != nil {
+	p.publishResults(t, map[string]map[string][]byte{ChangeResult: files})
+}
+
+// publishResults makes the Run succeed with every named result bound.
+func (p *platform) publishResults(t *testing.T, results map[string]map[string][]byte) {
+	t.Helper()
+	bindings := map[string]atc.RunResultBinding{}
+	archives := map[string][]byte{}
+	for name, files := range results {
+		var raw bytes.Buffer
+		tw := tar.NewWriter(&raw)
+		for file, data := range files {
+			if err := tw.WriteHeader(&tar.Header{Name: file, Mode: 0o600, Size: int64(len(data)), Typeflag: tar.TypeReg}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tw.Write(data); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := tw.Close(); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tw.Write(data); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		tree, err := (hangar.Canonicalizer{MaxContentBytes: 2 << 20, MaxEntries: 32}).Capture(ctx, &raw)
+		cancel()
+		if err != nil {
 			t.Fatal(err)
 		}
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	tree, err := (hangar.Canonicalizer{MaxContentBytes: 1 << 20, MaxEntries: 32}).Capture(ctx, &raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tree.Close()
-	archive, err := os.ReadFile(tree.ArchivePath)
-	if err != nil {
-		t.Fatal(err)
+		archive, err := os.ReadFile(tree.ArchivePath)
+		tree.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		archives[name] = archive
+		bindings[name] = atc.RunResultBinding{Ref: hangar.TreeRef{Digest: tree.Digest}}
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.archive = archive
+	p.archives = archives
 	p.run.Status = atc.RunStatusSucceeded
-	p.run.Terminal = &atc.RunTerminalResult{Status: atc.RunStatusSucceeded, Results: map[string]atc.RunResultBinding{ChangeResult: {Ref: hangar.TreeRef{Digest: tree.Digest}}}}
+	p.run.Terminal = &atc.RunTerminalResult{Status: atc.RunStatusSucceeded, Results: bindings}
 }
 
 func handle() Handle { return Handle{Team: team, Template: template, Number: number} }
@@ -310,4 +324,106 @@ func TestWorkloadIsFixed(t *testing.T) {
 	if again := Workload(); again.Name != "implement" || again.Input != SnapshotInput || again.CredentialResult != ChangeResult || again.Load == nil {
 		t.Fatalf("the implement workload changed: %+v", again)
 	}
+}
+
+// publishedValidation is validation.json as the template's validate task
+// writes it for a change.
+func publishedValidation(t *testing.T, summary, patch []byte, edit func(map[string]any)) []byte {
+	t.Helper()
+	var s implement.Summary
+	if err := json.Unmarshal(summary, &s); err != nil {
+		t.Fatal(err)
+	}
+	v := map[string]any{
+		"schema_version": implement.ValidationVersion, "run_id": *s.RunID,
+		"input_digest": s.Provenance.InputDigest, "patch_digest": capture.Digest(patch),
+		"applied": true, "command": "go test ./...", "exit_code": 1, "outcome": "failed",
+		"log_tail": "--- FAIL: TestFirst\nFAIL\n",
+	}
+	if edit != nil {
+		edit(v)
+	}
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(data, '\n')
+}
+
+func TestValidationIsBoundToTheRunsChange(t *testing.T) {
+	s := sealedSnapshot(t)
+	summary, patch := publishedChange(t, s, runID)
+	p := newPlatform(t)
+	p.publishResults(t, map[string]map[string][]byte{
+		ChangeResult:     {implement.SummaryFile: summary, implement.PatchFile: patch},
+		ValidationResult: {implement.ValidationFile: publishedValidation(t, summary, patch, nil)},
+	})
+	c := p.client(t)
+	change, err := c.Result(context.Background(), handle(), ChangeResult)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validation, err := c.Validation(context.Background(), handle(), change)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A failing command is a result, not an error: the Run succeeded and
+	// both the change and its failing validation are retrievable.
+	if validation.Outcome != implement.ValidationFailed || validation.ExitCode == nil || *validation.ExitCode != 1 || validation.PatchDigest != change.Summary.PatchDigest {
+		t.Fatalf("unexpected validation: %+v", validation)
+	}
+	markdown := change.ValidatedMarkdown(validation)
+	if !strings.Contains(markdown, "## Validation: failed") || !strings.Contains(markdown, "--- FAIL: TestFirst") || strings.Index(markdown, "## Validation") > strings.Index(markdown, "## Patch") {
+		t.Fatalf("markdown does not show the validation before the patch:\n%s", markdown)
+	}
+	if _, err := c.Validation(context.Background(), handle(), &Change{Summary: change.Summary, Patch: change.Patch}); err == nil {
+		t.Fatal("a validation was checked against a change not retrieved from a Run")
+	}
+}
+
+func TestValidationRefusals(t *testing.T) {
+	s := sealedSnapshot(t)
+	summary, patch := publishedChange(t, s, runID)
+	for name, c := range map[string]struct {
+		edit func(map[string]any)
+		want string
+	}{
+		"another patch":      {func(v map[string]any) { v["patch_digest"] = strings.Repeat("0", 64) }, "patch digest"},
+		"another snapshot":   {func(v map[string]any) { v["input_digest"] = strings.Repeat("0", 64) }, "different snapshot"},
+		"another Run":        {func(v map[string]any) { v["run_id"] = runID + 1 }, "different Run"},
+		"passed with a fail": {func(v map[string]any) { v["outcome"] = "passed" }, "exit code"},
+		"not applied but ran": {func(v map[string]any) {
+			v["outcome"], v["applied"] = "not_applied", false
+		}, "did not apply"},
+		"unknown field": {func(v map[string]any) { v["extra"] = true }, "schema"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := newPlatform(t)
+			p.publishResults(t, map[string]map[string][]byte{
+				ChangeResult:     {implement.SummaryFile: summary, implement.PatchFile: patch},
+				ValidationResult: {implement.ValidationFile: publishedValidation(t, summary, patch, c.edit)},
+			})
+			client := p.client(t)
+			change, err := client.Result(context.Background(), handle(), ChangeResult)
+			if err != nil {
+				t.Fatal(err)
+			}
+			validation, err := client.Validation(context.Background(), handle(), change)
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("validation was not refused with %q: %+v %v", c.want, validation, err)
+			}
+		})
+	}
+	t.Run("a Run without a validate task", func(t *testing.T) {
+		p := newPlatform(t)
+		p.publish(t, map[string][]byte{implement.SummaryFile: summary, implement.PatchFile: patch})
+		client := p.client(t)
+		change, err := client.Result(context.Background(), handle(), ChangeResult)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := client.Validation(context.Background(), handle(), change); !errors.Is(err, ErrNoValidation) {
+			t.Fatalf("a Run without validation was not reported as such: %v", err)
+		}
+	})
 }

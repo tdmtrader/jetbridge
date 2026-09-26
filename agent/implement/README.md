@@ -1,8 +1,9 @@
 # Implement worker
 
 A developer submits a repository snapshot and a brief, closes the laptop, and
-later retrieves a patch against the snapshot's base plus a summary of what the
-agent did. The agent is edit-only: Codex changes a writable copy of the
+later retrieves a patch against the snapshot's base, a summary of what the
+agent did, and a validation the template produced by running the operator's
+command against the patch. The agent is edit-only: Codex changes a writable copy of the
 snapshot through its file-edit tool, with shell, exec, network and web search
 disabled, and never runs repository code or tests. The patch is applied locally
 as one commit on a new branch, whose `base..branch` range is exactly what
@@ -57,6 +58,20 @@ binding, then checks that `summary.json` is schema-valid `implement/v1`, that
 byte as published, into a new directory. Pending, failed, unauthorized and
 missing results are explicit errors.
 
+```sh
+jb implement result --target YOUR_TARGET --team YOUR_TEAM --run 1 --result validation
+```
+
+`--result validation` returns the `validation` result, `validation.json`
+(`implement-validation/v1`, [schema](validation.schema.json)): the command as
+installed, whether the patch applied, the command's exit code, an outcome of
+`passed`, `failed` or `not_applied`, and the last 64 KiB of its output. It is
+read together with the Run's change and refused unless it names the same Run,
+the same snapshot (`input_digest`) and exactly the change's patch
+(`patch_digest`). `--format markdown`, for either result, shows the change
+with its validation before the patch. A failing command is a result, not a
+failed Run: the patch still downloads and applies.
+
 ## Applying the change
 
 ```sh
@@ -82,20 +97,47 @@ reviews exactly what the agent wrote.
 
 ## Operator template
 
-The [implement template](../../deploy/implement-template.yml) has one inline
-task, `author`, with input `snapshot` and result `change`. It runs the same
-worker image as review, in its `implement` mode. Install it with fixed operator
-choices:
+The [implement template](../../deploy/implement-template.yml) has two inline
+tasks. `author` takes input `snapshot` and publishes result `change`; it runs
+the same worker image as review, in its `implement` mode. `validate` routes the
+same `snapshot` input, reads the author's `change` output, and publishes result
+`validation`. Install it with fixed operator choices:
 
 ```sh
 fly -t YOUR_TARGET set-pipeline --team YOUR_TEAM -p implement -c deploy/implement-template.yml \
   -v review_worker_image=YOUR_REGISTRY/review-worker@sha256:YOUR_DIGEST \
-  -v implement_model=YOUR_CODEX_MODEL
+  -v implement_model=YOUR_CODEX_MODEL \
+  -v validate_image=YOUR_REGISTRY/toolchain@sha256:YOUR_DIGEST \
+  -v validate_command='go test ./...'
 fly -t YOUR_TARGET unpause-pipeline --team YOUR_TEAM -p implement
 ```
 
-The image digest and model are fixed at installation; a submission chooses
-neither. The default criteria are embedded from `implement-profile.md`.
+The image digests, model and validation command are fixed at installation; a
+submission chooses none of them. The default criteria are embedded from
+`implement-profile.md`.
+
+`validate` copies the snapshot's base tree, applies `change.patch` with
+`git apply` (an empty patch is validated against the unchanged base), and runs
+`validate_command` with `/bin/sh -c` in that copy, at most 30 minutes when the
+image has `timeout`. Its script is inline in the template, takes no `file:`
+and no `vars:`, and reads nothing from the change except the patch it
+applies, so nothing the agent writes decides what runs. A Run publishes its
+results all or nothing, so the script always records the outcome and exits 0
+once it has written `validation.json`; a failing or unappliable change is
+recorded, never lost. `validate_image` must provide `/bin/sh`, `git`,
+`sha256sum`, `cp`, `tail`, `tr` and `sed`, and run as root, since Hangar
+reserves task outputs as root-owned directories. A Run input does not carry Git
+modes: the script restores executable bits from the manifest, but symlinks are
+plain files holding their target, as in every capture. `validate` never
+receives the owner's credentials: the platform delivers one handoff per Run, to
+the `change` producer, and its image is not the credential pin.
+
+The validation attests what the operator's command reported, not that the
+change is benign. The command necessarily executes code the agent wrote, in the
+same container that writes `validation.json`; a hostile change can leave a
+process behind that rewrites the file after the script finishes, with digests
+that still cross-check. Treat `passed` as evidence against honest mistakes,
+and review the patch before trusting it.
 
 **The credential pin is per image** ([ADR-0006](../../docs/adr/0006-credential-pin-per-image.md)).
 Web delivers credentials only into a result producer whose `rootfs_uri` is
@@ -141,4 +183,7 @@ go test -count=1 -run TestAgentic .
 ```
 
 Brine covers the worker (`features/implement-worker.feature`) and the detached
-path (`features/implement-submit.feature`); both need Linux tmpfs and run in CI.
+path (`features/implement-submit.feature`, including the validate task as the
+Run's second result producer); both need Linux tmpfs and run in CI. The
+template's validate script itself runs in `go test ./agent/implement/client`
+wherever `git` and `sha256sum` exist.

@@ -1,7 +1,17 @@
-# Install with fly set-pipeline, supplying review_worker_image (repo@sha256:...)
-# and implement_model. The image is the same worker image, and the same
-# credential pin, as the review template. The ATC fills run_id separately for
-# each admitted Run.
+# Install with fly set-pipeline, supplying review_worker_image (repo@sha256:...),
+# implement_model, validate_image and validate_command. The author task runs
+# the same worker image, and the same credential pin, as the review template.
+# The validate task runs the operator's own toolchain image and command, never
+# receives credentials, and records the command's outcome instead of failing
+# on it: a Run publishes its results all or nothing, so a failing test suite
+# must not lose the change it tested. The ATC fills run_id separately for each
+# admitted Run.
+#
+# validate_image must provide /bin/sh, git, sha256sum, cp, tail, tr and sed,
+# and run as root: Hangar reserves task outputs as root-owned directories.
+# validate_command runs with /bin/sh -c in a fresh copy of the snapshot's base
+# tree with the change applied. Pin validate_image by digest so what validates
+# a change cannot move after installation.
 template: true
 jobs:
   - name: implement
@@ -38,4 +48,88 @@ jobs:
                 rmdir change/report
               - implement-worker
               - ((implement_model))
+              - --run-id=((run_id))
+      - task: validate
+        timeout: 40m
+        task_id: 23480164-00bf-488a-82ce-f7a5889124ca
+        run_inputs:
+          - name: snapshot
+            input: source
+        run_result:
+          name: validation
+          output: validation
+        config:
+          platform: linux
+          rootfs_uri: docker:///((validate_image))
+          inputs:
+            - name: source
+            - name: change
+          outputs:
+            - name: validation
+          run:
+            path: /bin/sh
+            args:
+              - -ec
+              - |
+                umask 077
+                validate_command=$1
+                run_id=${2#--run-id=}
+                case $run_id in ''|*[!0-9]*) echo "validate: invalid Run ID" >&2; exit 1;; esac
+                [ -n "$validate_command" ] || { echo "validate: validate_command is empty" >&2; exit 1; }
+                for tool in git sha256sum; do
+                  command -v "$tool" >/dev/null || { echo "validate: validate_image has no $tool" >&2; exit 1; }
+                done
+                digest() { sha256sum "$1" | cut -d ' ' -f 1; }
+                # A JSON string body: control characters dropped, then
+                # backslash, quote, tab and newline escaped. Bytes, not text.
+                text() {
+                  soh=$(printf '\001')
+                  tab=$(printf '\t')
+                  LC_ALL=C tr -d '\000-\010\013-\037\177' | LC_ALL=C tr '\n' '\001' |
+                    LC_ALL=C sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e "s/$tab/\\\\t/g" -e "s/$soh/\\\\n/g" |
+                    LC_ALL=C tr -d '\n'
+                }
+                top=$(pwd)
+                patch=$top/change/change.patch
+                # The uploaded manifest is the snapshot's canonical encoding,
+                # so its digest is the snapshot's input digest.
+                input_digest=$(digest source/snapshot/manifest.json)
+                patch_digest=$(digest "$patch")
+                work=$(mktemp -d)
+                log=$(mktemp)
+                cp -R source/snapshot/base/. "$work/"
+                # A Run input does not carry Git modes; restore executable
+                # bits from the manifest where the path needs no JSON escape.
+                LC_ALL=C tr '{' '\n' < source/snapshot/manifest.json |
+                  LC_ALL=C sed -n 's/^"side":"base","path":"\([^"\\]*\)","mode":"100755".*/\1/p' |
+                  while IFS= read -r path; do chmod 0755 "$work/$path" || true; done
+                limit=
+                if timeout -k 1 5 true >/dev/null 2>&1; then limit="timeout -k 30 1800"; fi
+                applied=true
+                exit_code=null
+                if [ -s "$patch" ] && ! (cd "$work" && GIT_CEILING_DIRECTORIES=$(dirname "$work") GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git apply --whitespace=nowarn "$patch") >"$log" 2>&1; then
+                  applied=false
+                  outcome=not_applied
+                else
+                  set +e
+                  (cd "$work" && exec $limit /bin/sh -c "$validate_command") >"$log" 2>&1 </dev/null
+                  exit_code=$?
+                  set -e
+                  outcome=failed
+                  if [ "$exit_code" -eq 0 ]; then outcome=passed; fi
+                  if [ -n "$limit" ] && [ "$exit_code" -eq 124 ]; then echo "validate: validate_command exceeded 30 minutes" >>"$log"; fi
+                fi
+                {
+                  printf '{"schema_version":"implement-validation/v1","run_id":%s,' "$run_id"
+                  printf '"input_digest":"%s","patch_digest":"%s",' "$input_digest" "$patch_digest"
+                  printf '"applied":%s,"command":"' "$applied"
+                  printf '%s' "$validate_command" | text
+                  printf '","exit_code":%s,"outcome":"%s","log_tail":"' "$exit_code" "$outcome"
+                  tail -c 65536 "$log" | text
+                  printf '"}\n'
+                } >validation/.validation.json
+                mv validation/.validation.json validation/validation.json
+                rm -rf "$work" "$log" || true
+              - validate
+              - ((validate_command))
               - --run-id=((run_id))

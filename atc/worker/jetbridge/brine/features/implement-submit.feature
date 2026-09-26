@@ -9,6 +9,12 @@ Feature: A local receipt preserves a detached implement invocation
   mode, and are retrieved and applied from fresh processes. Only the model
   process is substituted.
 
+  The template's validate task routes the same snapshot input and is the
+  Run's second result producer. It runs the installed template's own script
+  against the author's published change, records the operator command's
+  outcome instead of failing on it, and is refused any credential handoff.
+  The Run succeeds and binds both results whatever the command did.
+
   Background:
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
@@ -18,7 +24,7 @@ Feature: A local receipt preserves a detached implement invocation
     And its other Run jobs finish as "succeeded"
     And its scheduler consumes all requested Run work
     And the aggregate Run completion is attempted
-    And its result is admitted as a named input with "an implement input and result"
+    And its result is admitted as a named input with "an implement input and two results"
 
   Scenario Outline: Interrupting submission keeps the same durable Run
     Then a saved implement submission encounters <case>
@@ -31,4 +37,6 @@ Feature: A local receipt preserves a detached implement invocation
       | "a changed input" |
       | "a receipt replayed by another workload" |
       | "the installed implement template" |
-      | "ready CLI" |
+      | "ready CLI, validation passes" |
+      | "ready CLI, validation fails" |
+      | "ready CLI, patch does not apply" |

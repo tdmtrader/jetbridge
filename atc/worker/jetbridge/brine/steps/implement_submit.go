@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -26,6 +27,7 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"golang.org/x/oauth2"
+	"sigs.k8s.io/yaml"
 )
 
 func ImplementSubmitDefinitions() []brine.StepDefinition {
@@ -73,11 +75,12 @@ func exerciseImplementSubmit(in RunInputAdmission, mode string, rec *brine.Recor
 	// newImplementChange wrote the synthetic owner auth file beside the repository.
 	options := implementclient.SubmitOptions{Team: "output-start", Template: "input-review", Input: r.Input, Receipt: filepath.Join(r.Workspace.Root, "request.json"), AuthFile: filepath.Join(r.Workspace.Root, "auth.json")}
 	if mode == "the installed implement template" {
-		if _, err := auth.fly("set-pipeline", "--non-interactive", "--team", options.Team, "-p", options.Template, "-c", filepath.Join(repoRoot(), "deploy", "implement-template.yml"), "-v", "review_worker_image=example.test/reviewer@sha256:"+strings.Repeat("a", 64), "-v", "implement_model=brine-model"); err != nil {
+		if _, err := auth.fly("set-pipeline", "--non-interactive", "--team", options.Team, "-p", options.Template, "-c", filepath.Join(repoRoot(), "deploy", "implement-template.yml"), "-v", "review_worker_image=example.test/reviewer@sha256:"+strings.Repeat("a", 64), "-v", "implement_model=brine-model", "-v", "validate_image=example.test/toolchain@sha256:"+strings.Repeat("b", 64), "-v", "validate_command="+installedValidateCommand); err != nil {
 			return err
 		}
 	}
-	if mode == "ready CLI" {
+	expected, ready := readyValidation(mode)
+	if ready {
 		// The author task receives the owner's credentials only from the
 		// operator-pinned worker image the Run snapshots at admission.
 		if in.Template, err = pinProducerImage(in.Source.Start.DB.TeamFactory, in.Template, brineCredentialWorkerImage); err != nil {
@@ -145,9 +148,10 @@ func exerciseImplementSubmit(in RunInputAdmission, mode string, rec *brine.Recor
 		return fmt.Errorf("local receipt is unsafe, incomplete or names another workload")
 	}
 
+	if ready {
+		return finishSubmittedImplement(in, auth, client, change, options, first.result, expected, rec, res)
+	}
 	switch mode {
-	case "ready CLI":
-		return finishSubmittedImplement(in, auth, change, options, first.result, rec, res)
 	case "a fresh CLI replay":
 		if err := exerciseSubmitCLI(auth, change.Review, "implement", options, first.result); err != nil {
 			return err
@@ -193,18 +197,36 @@ func exerciseImplementSubmit(in RunInputAdmission, mode string, rec *brine.Recor
 	return nil
 }
 
+// installedValidateCommand is the operator's validation command the
+// installed-template row sets; it is passed to the validate task unchanged.
+const installedValidateCommand = "go test ./..."
+
 func checkInstalledImplementTemplate(in RunInputAdmission, runID int) error {
 	definition, found, err := db.NewPipelineRunFactory(in.Source.Start.DB.Conn, in.Source.Start.DB.LockFactory).Definition(runID)
-	if err != nil || !found || len(definition.Materialized.Jobs) != 1 || len(definition.Materialized.Jobs[0].PlanSequence) != 1 {
-		return fmt.Errorf("installed implement template has no single-task definition: %v", err)
+	if err != nil || !found || len(definition.Materialized.Jobs) != 1 || len(definition.Materialized.Jobs[0].PlanSequence) != 2 {
+		return fmt.Errorf("installed implement template has no author and validate definition: %v", err)
 	}
-	task, ok := definition.Materialized.Jobs[0].PlanSequence[0].Config.(*atc.TaskStep)
-	if !ok || task.RunResult == nil || task.RunResult.Name != implementclient.ChangeResult || len(task.RunInputs) != 1 || task.RunInputs[0].Name != implementclient.SnapshotInput || task.Config.Run.Path != "/bin/sh" {
+	author, ok := definition.Materialized.Jobs[0].PlanSequence[0].Config.(*atc.TaskStep)
+	if !ok || author.RunResult == nil || author.RunResult.Name != implementclient.ChangeResult || len(author.RunInputs) != 1 || author.RunInputs[0].Name != implementclient.SnapshotInput || author.Config.Run.Path != "/bin/sh" {
 		return fmt.Errorf("installed template lost its snapshot input, change result or launcher")
 	}
-	args := task.Config.Run.Args
+	args := author.Config.Run.Args
 	if len(args) != 5 || !strings.Contains(args[1], "jb-review-worker implement") || args[3] != "brine-model" || args[4] != fmt.Sprintf("--run-id=%d", runID) {
 		return fmt.Errorf("installed template did not preserve the implement mode, operator model and admitted Run ID: %v", args)
+	}
+	// The validate task routes the same snapshot input, publishes the
+	// validation result, and runs the operator's command on the operator's
+	// image: never the pinned worker image that receives credentials.
+	validate, ok := definition.Materialized.Jobs[0].PlanSequence[1].Config.(*atc.TaskStep)
+	if !ok || validate.RunResult == nil || validate.RunResult.Name != implementclient.ValidationResult || len(validate.RunInputs) != 1 || validate.RunInputs[0].Name != implementclient.SnapshotInput || validate.Config.Run.Path != "/bin/sh" {
+		return fmt.Errorf("installed template lost its validate task's snapshot input, validation result or launcher")
+	}
+	if image := atc.RunTaskImage(definition.Materialized, validate.TaskID); image != "docker:///example.test/toolchain@sha256:"+strings.Repeat("b", 64) {
+		return fmt.Errorf("installed validate task runs %q, not the operator's validate image", image)
+	}
+	args = validate.Config.Run.Args
+	if len(args) != 5 || args[3] != installedValidateCommand || args[4] != fmt.Sprintf("--run-id=%d", runID) {
+		return fmt.Errorf("installed template did not preserve the operator's validate command and admitted Run ID: %v", args)
 	}
 	return nil
 }
@@ -248,14 +270,42 @@ func replayUnderAnotherWorkload(auth *AuthFixture, change ImplementChange, optio
 	return nil
 }
 
+// validationCase is what one ready row's validate task runs and must record.
+type validationCase struct {
+	// Command is the operator's validate_command.
+	Command string
+	// Tamper replaces the validate container's copy of the snapshot's base so
+	// the published change cannot apply to it.
+	Tamper  bool
+	Outcome string
+	// Exit is the command's recorded exit code; -1 when it did not run.
+	Exit int
+}
+
+// readyValidation selects the validate outcome of a ready row. Every command
+// first proves the change was applied: the edit added parser_test.go.
+func readyValidation(mode string) (validationCase, bool) {
+	switch mode {
+	case "ready CLI, validation passes":
+		return validationCase{Command: `test -f parser_test.go && test ! -e deleted.txt && grep -q 's\[0\]' parser.go`, Outcome: implement.ValidationPassed}, true
+	case "ready CLI, validation fails":
+		return validationCase{Command: `test -f parser_test.go && echo "FAIL: parser_test.go" && exit 7`, Outcome: implement.ValidationFailed, Exit: 7}, true
+	case "ready CLI, patch does not apply":
+		return validationCase{Command: "touch ran", Tamper: true, Outcome: implement.ValidationNotApplied, Exit: -1}, true
+	}
+	return validationCase{}, false
+}
+
 // finishSubmittedImplement drives the ready Run through the real worker in
-// implement mode, then retrieves and applies its change from fresh processes.
-func finishSubmittedImplement(in RunInputAdmission, auth *AuthFixture, change ImplementChange, options implementclient.SubmitOptions, pending implementclient.Submission, rec *brine.Recorder, res brine.Resources) error {
+// implement mode, then the template's own validate script as the Run's second
+// result producer, and retrieves and applies its change from fresh processes.
+func finishSubmittedImplement(in RunInputAdmission, auth *AuthFixture, client *implementclient.Client, change ImplementChange, options implementclient.SubmitOptions, pending implementclient.Submission, expected validationCase, rec *brine.Recorder, res brine.Resources) error {
 	r := change.Review
 	original, err := implement.LoadSnapshot(r.Input)
 	if err != nil {
 		return err
 	}
+	published := filepath.Join(r.Workspace.Root, "published-change")
 	return finishSubmittedRun(in, auth, r, pending, submittedWorkload{
 		Input: implementclient.SnapshotInput,
 		Receive: func(materialized string) (string, string, error) {
@@ -277,13 +327,142 @@ func finishSubmittedImplement(in RunInputAdmission, auth *AuthFixture, change Im
 			}
 			return result, json.Unmarshal(out, &result)
 		},
+		// The author's output is what the validate task's change input
+		// receives; keep it as published for that container.
+		Published: func(directory string) error {
+			return os.CopyFS(published, os.DirFS(directory))
+		},
+		Then: func(ctx context.Context, run submittedRun) error {
+			return runValidateTask(ctx, run, client, pending, published, filepath.Join(r.Workspace.Root, "validate-task"), expected, rec)
+		},
 		Read: func(ctx context.Context) error {
-			return readCompletedImplementation(ctx, auth, change, options, pending, original)
+			return readCompletedImplementation(ctx, in, auth, change, options, pending, original, expected)
 		},
 	}, rec, res)
 }
 
-func readCompletedImplementation(ctx context.Context, auth *AuthFixture, change ImplementChange, options implementclient.SubmitOptions, pending implementclient.Submission, original *implement.Snapshot) error {
+// runValidateTask drives the validate task as the build's second result
+// producer: its own Run start, execution and capture on the same node. Its
+// container is laid out as the template declares it -- the materialized Run
+// input as source, the author's published change as change, an empty
+// validation output -- and the installed template's own inline script runs
+// in it with the row's command.
+func runValidateTask(ctx context.Context, run submittedRun, client *implementclient.Client, pending implementclient.Submission, published, container string, expected validationCase, rec *brine.Recorder) error {
+	var task *atc.TaskStep
+	for _, step := range run.Definition.Jobs[0].PlanSequence {
+		if t, ok := step.Config.(*atc.TaskStep); ok && t.RunResult != nil && t.RunResult.Name == implementclient.ValidationResult {
+			task = t
+		}
+	}
+	if task == nil {
+		return fmt.Errorf("submitted Run has no %s producer", implementclient.ValidationResult)
+	}
+	script, err := installedValidateScript()
+	if err != nil {
+		return err
+	}
+	runtime := run.Runtime
+	runtime.Start.Plan = atc.TaskPlan{Name: task.Name, TaskID: task.TaskID, RunInputs: task.RunInputs, RunResult: task.RunResult, Config: task.Config}
+	runtime.Spec.Outputs = map[string]string{task.RunResult.Output: "/workspace/" + task.RunResult.Output}
+	_, err = driveSubmittedProducer(ctx, runtime, run.Factory, run.BuildID, "submitted-validate", run.Keys, rec, func(directory string) error {
+		if err := refuseValidationHandoff(ctx, run, client, pending); err != nil {
+			return err
+		}
+		if err := os.CopyFS(filepath.Join(container, "source"), os.DirFS(run.Input)); err != nil {
+			return err
+		}
+		if err := os.CopyFS(filepath.Join(container, "change"), os.DirFS(published)); err != nil {
+			return err
+		}
+		if err := os.Mkdir(filepath.Join(container, "validation"), 0700); err != nil {
+			return err
+		}
+		if expected.Tamper {
+			if err := os.WriteFile(filepath.Join(container, "source", implement.RunInputSnapshotDir, "base", "parser.go"), []byte("package parser\n"), 0600); err != nil {
+				return err
+			}
+		}
+		cmd := exec.CommandContext(ctx, "/bin/sh", "-ec", script, "validate", expected.Command, "--run-id="+strconv.Itoa(run.RunID))
+		cmd.Dir = container
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("validate task failed instead of recording its outcome: %w: %s", err, out)
+		}
+		if _, err := os.Stat(filepath.Join(container, "ran")); expected.Tamper && err == nil {
+			return fmt.Errorf("the validate command ran against a change that did not apply")
+		}
+		entries, err := os.ReadDir(filepath.Join(container, "validation"))
+		if err != nil || len(entries) != 1 || entries[0].Name() != implement.ValidationFile {
+			return fmt.Errorf("validate task did not publish exactly %s: %v", implement.ValidationFile, err)
+		}
+		// The container and the reserved output need not share a filesystem.
+		data, err := os.ReadFile(filepath.Join(container, "validation", implement.ValidationFile))
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(directory, implement.ValidationFile), data, 0600)
+	})
+	return err
+}
+
+// installedValidateScript is the validate task's inline script exactly as
+// deploy/implement-template.yml installs it.
+func installedValidateScript() (string, error) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(), "deploy", "implement-template.yml"))
+	if err != nil {
+		return "", err
+	}
+	var config atc.Config
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		return "", err
+	}
+	for _, step := range config.Jobs[0].PlanSequence {
+		if task, ok := step.Config.(*atc.TaskStep); ok && task.Name == "validate" && task.Config != nil && len(task.Config.Run.Args) == 5 {
+			return task.Config.Run.Args[1], nil
+		}
+	}
+	return "", fmt.Errorf("implement template has no validate script")
+}
+
+// refuseValidationHandoff runs while the validate task is executing. The
+// owner's credentials went to the change producer; the platform refuses a
+// session or a delivery naming the validation producer, and records nothing.
+func refuseValidationHandoff(ctx context.Context, run submittedRun, client *implementclient.Client, pending implementclient.Submission) error {
+	if _, err := client.CredentialSession(ctx, pending.Handle, implementclient.ValidationResult); !isHTTPStatus(err, http.StatusConflict) {
+		return fmt.Errorf("a credential session for the validation producer was not refused: %v", err)
+	}
+	body := io.NopCloser(strings.NewReader(reviewSyntheticAuth))
+	if _, err := client.HandoffCredentials(ctx, pending.Handle, implementclient.ValidationResult, body); !isHTTPStatus(err, http.StatusConflict) {
+		return fmt.Errorf("a credential handoff to the validation producer was not refused: %v", err)
+	}
+	rows, err := run.Runtime.Start.DB.Conn.QueryContext(ctx, `SELECT s.result_name FROM pipeline_run_credential_handoffs h
+ JOIN pipeline_run_output_starts s USING(handoff_id) WHERE h.run_id=$1`, run.RunID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var results []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return err
+		}
+		results = append(results, name)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(results) != 1 || results[0] != implementclient.ChangeResult {
+		return fmt.Errorf("the Run's credential handoffs name %v, want only %s", results, implementclient.ChangeResult)
+	}
+	return nil
+}
+
+func isHTTPStatus(err error, status int) bool {
+	var refused detached.HTTPError
+	return errors.As(err, &refused) && refused.StatusCode == status
+}
+
+func readCompletedImplementation(ctx context.Context, in RunInputAdmission, auth *AuthFixture, change ImplementChange, options implementclient.SubmitOptions, pending implementclient.Submission, original *implement.Snapshot, expected validationCase) error {
 	r := change.Review
 	destination := []string{"--target", "auth", "--team", options.Team, "--template", options.Template, "--run", strconv.Itoa(pending.Handle.Number)}
 	out, err := jbCommand(ctx, auth, r.Binaries.CLI, append([]string{"implement", "status"}, destination...)...)
@@ -297,8 +476,20 @@ func readCompletedImplementation(ctx context.Context, auth *AuthFixture, change 
 	if run.ID != pending.RunID || run.Terminal == nil || run.Terminal.Status != atc.RunStatusSucceeded {
 		return fmt.Errorf("fresh status lost the submitted Run's terminal observation")
 	}
-	if _, bound := run.Terminal.Results[implementclient.ChangeResult]; !bound {
-		return fmt.Errorf("the Run bound no %s result", implementclient.ChangeResult)
+	// Two result producers in one build: the Run binds both entries, each
+	// with its own active claim, even when the validation records a failure.
+	if len(run.Terminal.Results) != 2 {
+		return fmt.Errorf("the Run bound %d results, want %s and %s", len(run.Terminal.Results), implementclient.ChangeResult, implementclient.ValidationResult)
+	}
+	for _, name := range []string{implementclient.ChangeResult, implementclient.ValidationResult} {
+		binding, bound := run.Terminal.Results[name]
+		if !bound {
+			return fmt.Errorf("the Run bound no %s result", name)
+		}
+		var active bool
+		if err := in.Source.Start.DB.Conn.QueryRow(`SELECT released_at IS NULL FROM hangar_claims WHERE claim_id=$1`, string(binding.ClaimID)).Scan(&active); err != nil || !active {
+			return fmt.Errorf("the %s result has no active claim: %v", name, err)
+		}
 	}
 	retrieved := filepath.Join(r.Workspace.Root, "retrieved")
 	out, err = jbCommand(ctx, auth, r.Binaries.CLI, append([]string{"implement", "result", "--output", retrieved}, destination...)...)
@@ -334,11 +525,48 @@ func readCompletedImplementation(ctx context.Context, auth *AuthFixture, change 
 	if _, err := implement.ParseChange(summaryJSON, patch, original); err != nil {
 		return fmt.Errorf("retrieved change does not apply to its snapshot: %v", err)
 	}
+	if err := readCompletedValidation(ctx, auth, r, destination, s, original, expected); err != nil {
+		return err
+	}
 	out, err = jbCommand(ctx, auth, r.Binaries.CLI, append([]string{"implement", "apply", "--repo", r.Repo}, destination...)...)
 	if err != nil {
 		return err
 	}
 	return checkAppliedCommit(r, out, fmt.Sprintf("impl/run-%d", pending.RunID), original.Digest, pending.RunID)
+}
+
+// readCompletedValidation retrieves the validation from a fresh process and
+// requires it to record the row's outcome against exactly the retrieved change.
+func readCompletedValidation(ctx context.Context, auth *AuthFixture, r ReviewChange, destination []string, change *implement.Summary, original *implement.Snapshot, expected validationCase) error {
+	out, err := jbCommand(ctx, auth, r.Binaries.CLI, append([]string{"implement", "result", "--result", implementclient.ValidationResult}, destination...)...)
+	if err != nil {
+		return err
+	}
+	var v implement.Validation
+	if err := json.Unmarshal(out, &v); err != nil {
+		return fmt.Errorf("fresh result has no typed validation: %v", err)
+	}
+	if change.RunID == nil || v.RunID != *change.RunID || v.PatchDigest != change.PatchDigest || v.InputDigest != original.Digest || v.Command != expected.Command {
+		return fmt.Errorf("validation does not name the Run, change, snapshot and command it ran: %+v", v)
+	}
+	switch {
+	case v.Outcome != expected.Outcome:
+		return fmt.Errorf("validation recorded %s, want %s: %s", v.Outcome, expected.Outcome, v.LogTail)
+	case expected.Exit < 0 && (v.Applied || v.ExitCode != nil):
+		return fmt.Errorf("validation ran a command against a change that did not apply: %+v", v)
+	case expected.Exit >= 0 && (!v.Applied || v.ExitCode == nil || *v.ExitCode != expected.Exit):
+		return fmt.Errorf("validation did not record the command's exit %d: %+v", expected.Exit, v)
+	case expected.Outcome == implement.ValidationFailed && !strings.Contains(v.LogTail, "FAIL: parser_test.go"):
+		return fmt.Errorf("validation did not keep the failing command's output: %q", v.LogTail)
+	}
+	out, err = jbCommand(ctx, auth, r.Binaries.CLI, append([]string{"implement", "result", "--result", implementclient.ValidationResult, "--format", "markdown"}, destination...)...)
+	if err != nil {
+		return err
+	}
+	if heading := "## Validation: " + strings.ReplaceAll(expected.Outcome, "_", " "); !strings.Contains(string(out), heading) || !strings.Contains(string(out), "## Patch") {
+		return fmt.Errorf("markdown does not show the change with its validation:\n%s", out)
+	}
+	return nil
 }
 
 // jbCommand runs the jb CLI under the saved fly login and returns its stdout.

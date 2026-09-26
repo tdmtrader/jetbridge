@@ -62,13 +62,29 @@ func RunInputBindingDefinitions() []brine.StepDefinition {
 				task.RunResult = &result
 				task.Config.Outputs = []atc.TaskOutputConfig{{Name: result.Output}}
 			}
-			if in.Case == "an implement input and result" {
-				// The implement template's shape: the snapshot input routed to
-				// source, and the change result its producer publishes.
+			if in.Case == "an implement input and two results" {
+				// The implement template's shape: one snapshot input routed to
+				// source in both tasks, the change the author publishes, and
+				// the validation the validate task publishes from source and
+				// the author's change.
 				task := config.Jobs[0].PlanSequence[0].Config.(*atc.TaskStep)
+				task.Name = "author"
 				task.RunInputs = []atc.RunInput{{Name: "snapshot", Input: "source"}}
 				task.RunResult = &atc.RunResult{Name: "change", Output: "change"}
 				task.Config.Outputs = []atc.TaskOutputConfig{{Name: "change"}}
+				config.Jobs[0].PlanSequence = append(config.Jobs[0].PlanSequence, atc.Step{Config: &atc.TaskStep{
+					Name: "validate", TaskID: freshUUID(), RunInputs: []atc.RunInput{{Name: "snapshot", Input: "source"}},
+					RunResult: &atc.RunResult{Name: "validation", Output: "validation"},
+					Config:    &atc.TaskConfig{Platform: "linux", Inputs: []atc.TaskInputConfig{{Name: "source"}, {Name: "change"}}, Outputs: []atc.TaskOutputConfig{{Name: "validation"}}, Run: atc.TaskRunConfig{Path: "true"}},
+				}})
+			}
+			if in.Case == "one name routed to two tasks" {
+				// A second task of the same job routes the same named input to
+				// its own slot: one binding, delivered to each task that asks.
+				config.Jobs[0].PlanSequence = append(config.Jobs[0].PlanSequence, atc.Step{Config: &atc.TaskStep{
+					Name: "consume-again", TaskID: freshUUID(), RunInputs: []atc.RunInput{{Name: "change", Input: "source"}},
+					Config: &atc.TaskConfig{Platform: "linux", Inputs: []atc.TaskInputConfig{{Name: "source"}}, Run: atc.TaskRunConfig{Path: "true"}},
+				}})
 			}
 			if in.Case == "one source under two names" || in.Case == "one name routed to two slots" {
 				task := config.Jobs[0].PlanSequence[0].Config.(*atc.TaskStep)
@@ -98,7 +114,7 @@ func RunInputBindingDefinitions() []brine.StepDefinition {
 			if in.Case == "one source under two names" {
 				in.Inputs["also-change"] = in.Inputs["change"]
 			}
-			if in.Case == "an implement input and result" {
+			if in.Case == "an implement input and two results" {
 				in.Inputs = map[string]map[string]any{"snapshot": in.Inputs["change"]}
 			}
 			switch in.Case {

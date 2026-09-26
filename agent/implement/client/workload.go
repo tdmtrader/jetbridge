@@ -19,6 +19,10 @@ const (
 	// ChangeResult is the result the implement template publishes and whose
 	// producer, the author task, receives the owner's credentials.
 	ChangeResult = "change"
+	// ValidationResult is the result the template's validate task publishes:
+	// the operator's command run against the change. It never receives
+	// credentials.
+	ValidationResult = "validation"
 )
 
 // Workload returns the implement workload. It is a function so no caller can

@@ -48,6 +48,12 @@ type submittedWorkload struct {
 	Submit func(context.Context) (detached.Submission, error)
 	// Read retrieves and checks the completed result from a fresh local process.
 	Read func(context.Context) error
+	// Published, when set, sees the result directory once the worker's files
+	// are in it, before the capture seals it.
+	Published func(directory string) error
+	// Then, when set, drives the template's later result producers of the
+	// same build after the credential-receiving producer is released.
+	Then func(context.Context, submittedRun) error
 }
 
 // Join the actual upload, admitted Run, local client process, private worker
@@ -80,7 +86,8 @@ func finishSubmittedReview(in RunInputAdmission, auth *AuthFixture, change Revie
 }
 
 func finishSubmittedRun(in RunInputAdmission, auth *AuthFixture, change ReviewChange, pending detached.Submission, workload submittedWorkload, rec *brine.Recorder, res brine.Resources) error {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	// A template may have later result producers to drive and read back.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	runtime := in.Source.Candidate.Runtime
 	jdb := runtime.Start.DB
@@ -108,6 +115,8 @@ func finishSubmittedRun(in RunInputAdmission, auth *AuthFixture, change ReviewCh
 	}
 	runtime.Start.Creation = db.RunCreation{Run: run, Config: definition.Materialized, EntryBuilds: []db.Build{build}}
 	runtime.Start.Plan = atc.TaskPlan{Name: task.Name, TaskID: task.TaskID, RunInputs: task.RunInputs, RunResult: task.RunResult, Config: task.Config}
+	// The producer's container declares the output its template selects.
+	runtime.Spec.Outputs = map[string]string{task.RunResult.Output: "/workspace/" + task.RunResult.Output}
 	keys := hangaroutput.ControlKeyRing{ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch), Keys: []hangaroutput.ControlKeyEntry{{Epoch: executioncontrol.ActivationEpoch(hangarEpoch), PublicKey: base64.StdEncoding.EncodeToString(runtime.Start.Daemon.ControlPublic)}}}
 	source, signer, _, err := configureRunReadPlane(in.Source, rec, res)
 	if err != nil {
@@ -129,55 +138,13 @@ func finishSubmittedRun(in RunInputAdmission, auth *AuthFixture, change ReviewCh
 	source.SetExecutor(localExecutor{client: runtime.Client})
 	in.Port.SetCredentialHandoffConfig(runs.CredentialHandoffConfig{Source: source, Helper: change.Binaries.Worker, Socket: socket, Lifetime: time.Minute, WorkerImages: []string{brineCredentialWorkerImage}})
 
-	candidate, err := publishRunCandidateStarted(runtime, rec, func(directory string, start executioncontrol.Acknowledgement) error {
-		record, err := runtime.readSource()
-		if err != nil {
-			return err
-		}
-		tx, err := jdb.Conn.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		defer db.Rollback(tx)
-		a, _, err := factory.AdmitRunExecution(ctx, tx, db.RunExecutionRequest{BuildID: buildID, PlanID: "submitted-review", Kind: db.ContainerTypeTask, Epoch: int64(hangarEpoch), NodeName: runtime.Node.Name, NodeUID: string(runtime.Node.UID), HandoffID: record.HandoffID})
-		if err != nil {
-			return err
-		}
-		if a.Identity != start.Identity {
-			return fmt.Errorf("submission started a different execution")
-		}
-		if err = factory.RecordRunExecutionWitness(ctx, tx, buildID, a.PlanID, start, keys); err != nil {
-			return err
-		}
-		if err = tx.Commit(); err != nil {
-			return err
-		}
-		pods, err := runtime.Client.CoreV1().Pods("default").List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return err
-		}
-		matched := false
-		for _, pod := range pods.Items {
-			if string(pod.UID) != string(start.PodUID) {
-				continue
-			}
-			matched = true
-			now := metav1.Now()
-			pod.Status.Phase, pod.Status.StartTime = corev1.PodRunning, &now
-			pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "main", ContainerID: "brine://" + freshUUID(), State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: now}}}}
-			if _, err = runtime.Client.CoreV1().Pods(pod.Namespace).UpdateStatus(ctx, &pod, metav1.UpdateOptions{}); err != nil {
-				return err
-			}
-		}
-		if !matched {
-			return fmt.Errorf("submitted worker has no original Pod")
-		}
+	candidate, err := driveSubmittedProducer(ctx, runtime, factory, buildID, "submitted-review", keys, rec, func(directory string) error {
 		change.Output = filepath.Join(directory, "report")
 		args := append(append([]string{}, workload.Mode...), "--input", change.Input, "--output", change.Output, "--runtime-dir", change.Workspace.Runtime, "--codex", change.Binaries.Provider, "--model", workload.Model, "--timeout", "45s", "--auth-socket", socket, "--handoff-timeout", "30s", "--run-id", strconv.Itoa(run.ID()))
 		worker := exec.CommandContext(ctx, change.Binaries.Worker, args...)
 		var stderr bytes.Buffer
 		worker.Stderr = &stderr
-		if err = worker.Start(); err != nil {
+		if err := worker.Start(); err != nil {
 			return err
 		}
 		joined := false
@@ -221,33 +188,21 @@ func finishSubmittedRun(in RunInputAdmission, auth *AuthFixture, change ReviewCh
 				return err
 			}
 		}
-		return os.Remove(change.Output)
+		if err = os.Remove(change.Output); err != nil {
+			return err
+		}
+		if workload.Published != nil {
+			return workload.Published(directory)
+		}
+		return nil
 	})
 	if err != nil {
 		return err
 	}
-	control := jetbridge.NewOutputControlClient(runtime.Start.Daemon.Output.URL, runtime.Start.Daemon.HTTP, runtime.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
-	finished, err := control.Classify(ctx, candidate.Record.Execution)
-	if err != nil || finished.Acknowledgement == nil {
-		return fmt.Errorf("worker left no actual finish: %v", err)
-	}
-	tx, err := jdb.Conn.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer db.Rollback(tx)
-	if err = factory.RecordRunExecutionWitness(ctx, tx, buildID, "submitted-review", *finished.Acknowledgement, keys); err != nil {
-		return err
-	}
-	if err = tx.Commit(); err != nil {
-		return err
-	}
-	candidate.Finish.Release, err = candidate.Finish.daemonRelease()
-	if err != nil {
-		return err
-	}
-	if err = candidate.Finish.recordRelease(candidate.Finish.Release, false); err != nil {
-		return err
+	if workload.Then != nil {
+		if err = workload.Then(ctx, submittedRun{Runtime: runtime, Factory: factory, BuildID: buildID, RunID: run.ID(), Definition: definition.Materialized, Keys: keys, Input: input}); err != nil {
+			return err
+		}
 	}
 	if err = build.Finish(db.BuildStatusSucceeded); err != nil {
 		return err
@@ -276,6 +231,99 @@ func finishSubmittedRun(in RunInputAdmission, auth *AuthFixture, change ReviewCh
 		return fmt.Errorf("resumption duplicated delivery or admission: %d, %d", claims, invocations)
 	}
 	return nil
+}
+
+// submittedRun is what a later result producer of a submitted Run's build
+// needs to be driven the way the first one was.
+type submittedRun struct {
+	// Runtime is the first producer's runtime; a later producer replaces its
+	// plan and container outputs.
+	Runtime    RunOutputRuntime
+	Factory    db.PipelineRunFactory
+	BuildID    int
+	RunID      int
+	Definition atc.Config
+	Keys       hangaroutput.ControlKeyRing
+	// Input is the Run input as the node materialized it.
+	Input string
+}
+
+// driveSubmittedProducer takes one result producer of a submitted Run's build
+// through the real capture plane: its exact execution admitted and witnessed
+// at start, its original Pod running, work filling the reserved output, then
+// the actual finish witnessed and the capture's release recorded. Envtest
+// supplies Pod identity; the live tier supplies kubelet enforcement.
+func driveSubmittedProducer(ctx context.Context, runtime RunOutputRuntime, factory db.PipelineRunFactory, buildID int, planID atc.PlanID, keys hangaroutput.ControlKeyRing, rec *brine.Recorder, work func(directory string) error) (RunOutputCandidate, error) {
+	jdb := runtime.Start.DB
+	candidate, err := publishRunCandidateStarted(runtime, rec, func(directory string, start executioncontrol.Acknowledgement) error {
+		record, err := runtime.readSource()
+		if err != nil {
+			return err
+		}
+		tx, err := jdb.Conn.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer db.Rollback(tx)
+		a, _, err := factory.AdmitRunExecution(ctx, tx, db.RunExecutionRequest{BuildID: buildID, PlanID: planID, Kind: db.ContainerTypeTask, Epoch: int64(hangarEpoch), NodeName: runtime.Node.Name, NodeUID: string(runtime.Node.UID), HandoffID: record.HandoffID})
+		if err != nil {
+			return err
+		}
+		if a.Identity != start.Identity {
+			return fmt.Errorf("submission started a different execution")
+		}
+		if err = factory.RecordRunExecutionWitness(ctx, tx, buildID, a.PlanID, start, keys); err != nil {
+			return err
+		}
+		if err = tx.Commit(); err != nil {
+			return err
+		}
+		pods, err := runtime.Client.CoreV1().Pods("default").List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return err
+		}
+		matched := false
+		for _, pod := range pods.Items {
+			if string(pod.UID) != string(start.PodUID) {
+				continue
+			}
+			matched = true
+			now := metav1.Now()
+			pod.Status.Phase, pod.Status.StartTime = corev1.PodRunning, &now
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "main", ContainerID: "brine://" + freshUUID(), State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: now}}}}
+			if _, err = runtime.Client.CoreV1().Pods(pod.Namespace).UpdateStatus(ctx, &pod, metav1.UpdateOptions{}); err != nil {
+				return err
+			}
+		}
+		if !matched {
+			return fmt.Errorf("submitted worker has no original Pod")
+		}
+		return work(directory)
+	})
+	if err != nil {
+		return candidate, err
+	}
+	control := jetbridge.NewOutputControlClient(runtime.Start.Daemon.Output.URL, runtime.Start.Daemon.HTTP, runtime.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
+	finished, err := control.Classify(ctx, candidate.Record.Execution)
+	if err != nil || finished.Acknowledgement == nil {
+		return candidate, fmt.Errorf("worker left no actual finish: %v", err)
+	}
+	tx, err := jdb.Conn.BeginTx(ctx, nil)
+	if err != nil {
+		return candidate, err
+	}
+	defer db.Rollback(tx)
+	if err = factory.RecordRunExecutionWitness(ctx, tx, buildID, planID, *finished.Acknowledgement, keys); err != nil {
+		return candidate, err
+	}
+	if err = tx.Commit(); err != nil {
+		return candidate, err
+	}
+	candidate.Finish.Release, err = candidate.Finish.daemonRelease()
+	if err != nil {
+		return candidate, err
+	}
+	return candidate, candidate.Finish.recordRelease(candidate.Finish.Release, false)
 }
 
 func submittedRunInput(ctx context.Context, start RunOutputStart, source *jetbridge.OutputSource, signer *output.ReadWarrantSigner, name string) (string, error) {
