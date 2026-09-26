@@ -326,6 +326,170 @@ jobs:
           kill $DOCKERD_PID 2>/dev/null || true
           exit "${STATUS}"
 
+# The persistent-disk Hangar store's live coverage
+# (live_hangar_disk_test.go). Unlike the generated-Pod contracts above, nothing
+# here is stood in: the contract renders the chart's hangar-store.yaml and the
+# artifact daemon's templates from this checkout with `helm template`, runs
+# hangar-store on a K3s local-path PVC through the chart's own initialize Job,
+# points the artifact daemon's strict inputs at it, publishes a tree, has a
+# generated step pod materialize it, deletes the hangar-store pod, and proves
+# the replacement still serves the same tree ref and never reissues a
+# generation.
+#
+# A separate job with its own cluster, rather than a third contract in
+# hangar-generated-pod-contract: that job is what k8s-integration-tests is
+# `passed:` on, so a red here would hold back the whole behavioral half, and
+# this contract needs an image build and a PVC the other two do not. It is off
+# the gating chain on purpose -- nothing is `passed:` on it -- and shares
+# serial_groups: [k8s-tests] only so two DinD clusters never share a worker.
+#
+# The image is built here, not pulled: static artifact-daemon and hangar-store
+# binaries on busybox at the chart's /usr/local/concourse/bin paths, imported
+# into the cluster's containerd with busybox (the step pod's main container)
+# and alpine (the chart's artifactHelperImage, which runs the materialization
+# init). The contract reads the image name from HANGAR_DISK_IMAGE and renders
+# the chart with image.pullPolicy=Never.
+- name: hangar-disk-store-contract
+  serial: true
+  serial_groups: [k8s-tests]
+  plan:
+  - get: trigger
+    trigger: true
+    passed: [build-kind-runner]
+  - get: repo
+    passed: [build-kind-runner]
+  - task: hangar-disk-store-contract
+    privileged: true
+    timeout: 40m
+    attempts: 2
+    config:
+      platform: linux
+      inputs:
+      - name: repo
+      rootfs_uri: docker:///registry.home/concourse-kind-runner:v35
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          cd repo
+          K3S_IMAGE="rancher/k3s:v1.31.6-k3s1"
+          CLUSTER="hangar-disk-k3s"
+          KUBECONFIG_PATH=/tmp/hangar-disk-kubeconfig
+          STORE_IMAGE="concourse-hangar-disk:contract"
+
+          echo "=== Pre-compiling before Docker (avoids CPU contention with containerd) ==="
+          go mod download
+          go test -c -tags hangar_live -o /dev/null ./atc/worker/jetbridge/
+          mkdir -p /tmp/hangar-disk-image
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/hangar-disk-image/artifact-daemon ./cmd/artifact-daemon
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/hangar-disk-image/hangar-store ./cmd/hangar-store
+
+          echo "=== Starting Docker daemon (DinD) ==="
+          killall -9 dockerd containerd 2>/dev/null || true
+          sleep 1
+          rm -rf /var/run/docker.pid /var/run/docker /var/run/containerd /run/containerd 2>/dev/null || true
+          mkdir -p /var/lib/docker /run/containerd
+          mount -t tmpfs -o size=8G tmpfs /var/lib/docker 2>/dev/null || true
+          /usr/local/bin/dockerd --host=unix:///var/run/docker.sock --mtu=1450 \
+                  --dns=8.8.8.8 \
+                  --log-level=warn &
+          DOCKERD_PID=$!
+
+          echo "Waiting for Docker daemon..."
+          for i in $(seq 1 30); do
+            if docker info >/dev/null 2>&1; then
+              echo "Docker daemon ready"
+              break
+            fi
+            sleep 2
+          done
+          docker info >/dev/null
+
+          echo "=== Pulling images ==="
+          docker pull ${K3S_IMAGE}
+          docker pull busybox:latest
+          docker pull alpine:latest
+
+          echo "=== Building the artifact-daemon + hangar-store image ==="
+          printf 'FROM busybox:latest\nCOPY artifact-daemon hangar-store /usr/local/concourse/bin/\n' \
+            > /tmp/hangar-disk-image/Dockerfile
+          docker build -t ${STORE_IMAGE} /tmp/hangar-disk-image
+
+          echo "=== Creating the disposable K3s cluster ==="
+          # Same shape as hangar-generated-pod-contract. The local-path
+          # provisioner stays enabled: it is the StorageClass the chart's PVC
+          # binds to.
+          docker rm -f ${CLUSTER} >/dev/null 2>&1 || true
+          docker run -d --name ${CLUSTER} \
+            --privileged --cgroupns=host \
+            --tmpfs /run --tmpfs /var/run \
+            -e K3S_KUBECONFIG_MODE=644 \
+            -p 127.0.0.1:6443:6443 \
+            ${K3S_IMAGE} \
+            server --disable=traefik --disable=metrics-server --tls-san=127.0.0.1
+
+          echo "Waiting for the node controller to sync..."
+          READY=0
+          for i in $(seq 1 90); do
+            if docker logs ${CLUSTER} 2>&1 | grep -q "Node controller sync successful"; then
+              READY=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "${READY}" -ne 1 ]; then
+            echo "K3s never reported a synced node controller:"
+            docker logs ${CLUSTER} 2>&1 | tail -80
+            docker rm -f ${CLUSTER} >/dev/null 2>&1 || true
+            kill $DOCKERD_PID 2>/dev/null || true
+            exit 1
+          fi
+
+          docker cp ${CLUSTER}:/etc/rancher/k3s/k3s.yaml ${KUBECONFIG_PATH}
+          chmod 600 ${KUBECONFIG_PATH}
+          kubectl --kubeconfig ${KUBECONFIG_PATH} get nodes -o wide
+
+          echo "=== Loading images into the cluster's containerd ==="
+          docker save busybox:latest alpine:latest ${STORE_IMAGE} -o /tmp/hangar-disk-images.tar
+          docker cp /tmp/hangar-disk-images.tar ${CLUSTER}:/tmp/hangar-disk-images.tar
+          docker exec ${CLUSTER} ctr -n=k8s.io images import --all-platforms /tmp/hangar-disk-images.tar
+
+          export KUBECONFIG=${KUBECONFIG_PATH}
+          export HANGAR_DISK_IMAGE=${STORE_IMAGE}
+          echo "KUBECONFIG=$KUBECONFIG HANGAR_DISK_IMAGE=$HANGAR_DISK_IMAGE"
+
+          echo "=== Running the Hangar disk-store contract ==="
+          # A renamed test silently matches nothing and `go test` exits 0.
+          FOUND=$(grep -c -E 'func TestLiveHangarDiskStoreRoundTripSurvivesRestart\(' \
+            atc/worker/jetbridge/live_hangar_disk_test.go || true)
+          if [ "${FOUND}" -ne 1 ]; then
+            echo "the -run regex names one contract and ${FOUND} were found; a rename went one way" >&2
+            exit 1
+          fi
+
+          STATUS=0
+          go test -tags hangar_live -v -count=1 -timeout 15m \
+            -run '^TestLiveHangarDiskStoreRoundTripSurvivesRestart$' \
+            ./atc/worker/jetbridge/ || STATUS=1
+
+          if [ "${STATUS}" -ne 0 ]; then
+            # The contract logs pods, container logs and events itself before
+            # its namespace goes; this is the cluster around it.
+            echo "=== CONTRACT FAILED -- dumping diagnostics ==="
+            kubectl --kubeconfig ${KUBECONFIG_PATH} get pods,pvc -A -o wide || true
+            kubectl --kubeconfig ${KUBECONFIG_PATH} get nodes --show-labels || true
+            kubectl --kubeconfig ${KUBECONFIG_PATH} get events -A --sort-by=.lastTimestamp | tail -40 || true
+            docker logs ${CLUSTER} 2>&1 | tail -80 || true
+            echo "--- End diagnostics ---"
+          else
+            echo "=== Hangar disk-store contract passed on K3s ==="
+          fi
+
+          docker rm -f ${CLUSTER} >/dev/null 2>&1 || true
+          kill $DOCKERD_PID 2>/dev/null || true
+          exit "${STATUS}"
+
 - name: k8s-integration-tests
   serial: true
   serial_groups: [k8s-tests]

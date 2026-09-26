@@ -60,7 +60,7 @@
     },
     "daemon.hangar": {
       "expect": "off",
-      "note": "See web.hangar. The persistent-disk Hangar store (hangarStorage.disk, cmd/hangar-store) is off here too. It has unit and chart-render coverage only: its live coverage is owed as a hangar_live job in k8s-e2e, not a flag flipped on this cluster."
+      "note": "See web.hangar. The persistent-disk Hangar store (hangarStorage.disk, cmd/hangar-store) is off here too, by decision: its live coverage is the hangar_live contract TestLiveHangarDiskStoreRoundTripSurvivesRestart (live_hangar_disk_test.go), run by the hangar-disk-store-contract job in deploy/k8s-e2e-pipeline.yml on a throwaway K3s cluster, not a flag flipped on this cluster. It deploys the chart-rendered hangar-store on a PVC and the artifact daemon with strict inputs on disk, and proves publish, materialization by a generated step pod, and a hangar-store pod restart that keeps the tree ref and never reissues a generation."
     },
     "daemon.preemption": {
       "expect": "off",
