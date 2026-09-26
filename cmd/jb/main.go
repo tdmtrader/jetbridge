@@ -24,9 +24,15 @@ func main() {
 	}
 }
 
-const usage = "usage: jb review capture|submit|render|schema|status|result|mcp [options]\n       jb implement capture|submit|status|result|apply [options]"
+const usage = "usage: jb review capture|submit|render|schema|status|result|mcp [options]\n       jb implement capture|submit|status|result|apply [options]\n       jb mcp [options]"
 
 func run(ctx context.Context, args []string, out, stderr io.Writer) error {
+	if len(args) >= 1 && args[0] == "mcp" {
+		// One stdio MCP server for every detached workload.
+		f := flag.NewFlagSet("jb mcp", flag.ContinueOnError)
+		f.SetOutput(stderr)
+		return serveMCP(ctx, detachedMCPServer, f, args[1:])
+	}
 	if len(args) < 2 {
 		return errors.New(usage)
 	}
@@ -47,7 +53,7 @@ func reviewCommand(ctx context.Context, args []string, out, stderr io.Writer) er
 	case "submit":
 		return reviewSubmit(ctx, f, args[2:], out)
 	case "mcp":
-		return reviewMCP(ctx, f, args[2:])
+		return serveMCP(ctx, reviewMCPServer, f, args[2:])
 	case "result":
 		return reviewResult(ctx, f, args[2:], out)
 	case "status":

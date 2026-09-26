@@ -348,15 +348,14 @@ var agenticCoreReach = map[string][]string{
 	// Artifact-only implementation contract: snapshot, edit-only worker,
 	// patch and local apply. Like agent/review, no core reach.
 	"agent/implement": {},
-	// The workload-neutral detached Run client: public Run values and the shared
-	// canonical archive verifier. No storage client.
+	// The workload-neutral detached Run client: public Run values, including
+	// the Run observation every workload's MCP status tool returns, and the
+	// shared canonical archive verifier. No storage client.
 	"agent/detached": {"atc", "hangar"},
-	// The review adapter over agent/detached. Public Run values for its MCP
-	// status projection only; archive verification stays in the shared client.
-	"agent/review/client": {"atc"},
-	// The implement adapter over agent/detached. Handles, Run status and
-	// archive verification all come through the shared client, so it names no
-	// core package itself.
+	// The review and implement adapters over agent/detached. Handles, Run
+	// status, the MCP status projection and archive verification all come
+	// through the shared client, so neither names a core package itself.
+	"agent/review/client":    {},
 	"agent/implement/client": {},
 	// The command reuses the saved platform login; the shared client consumes
 	// only public wire types and never reaches the Run database or scheduler.

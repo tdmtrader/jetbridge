@@ -4,47 +4,36 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/concourse/concourse/agent/review"
 	"time"
 
-	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/agent/detached"
+	"github.com/concourse/concourse/agent/review"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-type statusInput struct {
-	Run int `json:"run" jsonschema:"Positive Run number returned by submission"`
+// MCPOptions is fixed when the local process starts. Tool calls cannot replace
+// the destination, its authentication or the owner's credentials.
+type MCPOptions struct {
+	// Team and Template select the installed review template.
+	Team, Template string
+	// AuthFile is the owner-selected local Codex auth.json. Without it
+	// review_submit refuses.
+	AuthFile string
 }
 
-// A compact projection has a schema matching its JSON representation. The
-// larger PipelineRun HTTP type has custom Unix timestamp encoding and is not
-// suitable for reflection-derived MCP schemas.
-type statusOutput struct {
-	ID              int                      `json:"id"`
-	Number          int                      `json:"number"`
-	ContractVersion atc.RunContractVersion   `json:"run_contract_version"`
-	Status          atc.RunStatus            `json:"status"`
-	Reclaimed       bool                     `json:"reclaimed"`
-	Terminal        *atc.RunTerminalResult   `json:"terminal,omitempty"`
-	Captures        []atc.RunCaptureProgress `json:"captures,omitempty"`
-}
-
-// MCPServer exposes the same remote operations as the human CLI. The target,
-// team and template are selected when starting the local process; tool calls
-// cannot replace its authentication or redirect it to another server.
-func (c *Client) MCPServer(team, template string, options ...MCPOptions) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "jetbridge-review", Version: "1"}, nil)
-	var local MCPOptions
-	if len(options) > 0 {
-		local = options[0]
-	}
+// RegisterTools adds review_submit, review_status and review_result to s. They
+// perform the same remote operations as the human CLI, and are the same
+// whether s serves only review or every detached workload.
+func RegisterTools(s *mcp.Server, c *Client, options MCPOptions) {
+	team, template := options.Team, options.Template
 	mcp.AddTool(s, &mcp.Tool{Name: "review_submit", Description: "Submit a captured review bundle using a saved local receipt. Reuse the same receipt after interruption. Only ready=true confirms that the detached worker accepted credentials. Credentials come from local startup configuration, never tool arguments."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, input submitInput) (*mcp.CallToolResult, Submission, error) {
-			if local.AuthFile == "" {
+			if options.AuthFile == "" {
 				return nil, Submission{}, errors.New("submission requires --auth-file when starting the local review MCP")
 			}
 			ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 			defer cancel()
-			result, err := c.Submit(ctx, SubmitOptions{Team: team, Template: template, Input: input.Input, Receipt: input.Receipt, AuthFile: local.AuthFile})
+			result, err := c.Submit(ctx, SubmitOptions{Team: team, Template: template, Input: input.Input, Receipt: input.Receipt, AuthFile: options.AuthFile})
 			if err != nil && result.RunID == 0 {
 				return nil, Submission{}, err
 			}
@@ -57,18 +46,11 @@ func (c *Client) MCPServer(team, template string, options ...MCPOptions) *mcp.Se
 		Name:        "review_status",
 		Description: "Read a detached review Run. A pending Run has no terminal observation. A terminal observation retains result references after build cleanup; it does not contain the report files.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input statusInput) (*mcp.CallToolResult, statusOutput, error) {
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input statusInput) (*mcp.CallToolResult, detached.RunObservation, error) {
 		ctx, cancel := context.WithTimeout(ctx, time.Minute)
 		defer cancel()
-		run, err := c.Status(ctx, Handle{Team: team, Template: template, Number: input.Run})
-		if err != nil {
-			return nil, statusOutput{}, err
-		}
-		return nil, statusOutput{
-			ID: run.ID, Number: run.Number, ContractVersion: run.ContractVersion,
-			Status: run.Status, Reclaimed: run.Reclaimed, Terminal: run.Terminal,
-			Captures: run.Captures,
-		}, nil
+		run, err := c.Observe(ctx, Handle{Team: team, Template: template, Number: input.Run})
+		return nil, run, err
 	})
 	mcp.AddTool(s, &mcp.Tool{Name: "review_result", Description: "Retrieve the typed review report for a completed Run, including after build cleanup.",
 		OutputSchema: json.RawMessage(review.Schema()), Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}},
@@ -85,7 +67,10 @@ func (c *Client) MCPServer(team, template string, options ...MCPOptions) *mcp.Se
 			}
 			return nil, *report, nil
 		})
-	return s
+}
+
+type statusInput struct {
+	Run int `json:"run" jsonschema:"Positive Run number returned by submission"`
 }
 
 type resultInput struct {
@@ -93,7 +78,6 @@ type resultInput struct {
 	Result string `json:"result,omitempty" jsonschema:"Named result; defaults to findings"`
 }
 
-type MCPOptions struct{ AuthFile string }
 type submitInput struct {
 	Input   string `json:"input" jsonschema:"Local captured review bundle directory"`
 	Receipt string `json:"receipt" jsonschema:"Local receipt path outside the bundle; reuse it for retries"`

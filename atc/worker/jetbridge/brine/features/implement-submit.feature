@@ -15,6 +15,10 @@ Feature: A local receipt preserves a detached implement invocation
   outcome instead of failing on it, and is refused any credential handoff.
   The Run succeeds and binds both results whatever the command did.
 
+  A local agent reaches the same submission through `jb mcp`, the one stdio
+  MCP server that serves the review and implement tools together; an
+  existing `jb review mcp` configuration still serves only review's.
+
   Background:
     Given a Run producer and a ready output node
     When its runtime producer publishes a successful review
@@ -34,9 +38,11 @@ Feature: A local receipt preserves a detached implement invocation
       | "interruption before readiness" |
       | "a fresh client replay" |
       | "a fresh CLI replay" |
+      | "a fresh MCP replay" |
       | "a changed input" |
       | "a receipt replayed by another workload" |
       | "the installed implement template" |
       | "ready CLI, validation passes" |
       | "ready CLI, validation fails" |
       | "ready CLI, patch does not apply" |
+      | "ready MCP, validation fails" |

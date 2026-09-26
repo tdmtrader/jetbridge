@@ -79,7 +79,7 @@ func exerciseImplementSubmit(in RunInputAdmission, mode string, rec *brine.Recor
 			return err
 		}
 	}
-	expected, ready := readyValidation(mode)
+	expected, surface, ready := readyValidation(mode)
 	if ready {
 		// The author task receives the owner's credentials only from the
 		// operator-pinned worker image the Run snapshots at admission.
@@ -149,11 +149,15 @@ func exerciseImplementSubmit(in RunInputAdmission, mode string, rec *brine.Recor
 	}
 
 	if ready {
-		return finishSubmittedImplement(in, auth, client, change, options, first.result, expected, rec, res)
+		return finishSubmittedImplement(in, auth, client, change, options, first.result, surface, expected, rec, res)
 	}
 	switch mode {
 	case "a fresh CLI replay":
 		if err := exerciseSubmitCLI(auth, change.Review, "implement", options, first.result); err != nil {
+			return err
+		}
+	case "a fresh MCP replay":
+		if err := exerciseImplementSubmitMCP(auth, change, options, data, receipt.RunID, receipt.Number); err != nil {
 			return err
 		}
 	case "a receipt replayed by another workload":
@@ -282,24 +286,31 @@ type validationCase struct {
 	Exit int
 }
 
-// readyValidation selects the validate outcome of a ready row. Every command
+// readyValidation selects the surface ("CLI" or "MCP") a ready row submits
+// and reads through, and the validate outcome it must record. Every command
 // first proves the change was applied: the edit added parser_test.go.
-func readyValidation(mode string) (validationCase, bool) {
-	switch mode {
-	case "ready CLI, validation passes":
-		return validationCase{Command: `test -f parser_test.go && test ! -e deleted.txt && grep -q 's\[0\]' parser.go`, Outcome: implement.ValidationPassed}, true
-	case "ready CLI, validation fails":
-		return validationCase{Command: `test -f parser_test.go && echo "FAIL: parser_test.go" && exit 7`, Outcome: implement.ValidationFailed, Exit: 7}, true
-	case "ready CLI, patch does not apply":
-		return validationCase{Command: "touch ran", Tamper: true, Outcome: implement.ValidationNotApplied, Exit: -1}, true
+func readyValidation(mode string) (validationCase, string, bool) {
+	surface, outcome, found := strings.Cut(strings.TrimPrefix(mode, "ready "), ", ")
+	if !strings.HasPrefix(mode, "ready ") || !found || (surface != "CLI" && surface != "MCP") {
+		return validationCase{}, "", false
 	}
-	return validationCase{}, false
+	switch outcome {
+	case "validation passes":
+		return validationCase{Command: `test -f parser_test.go && test ! -e deleted.txt && grep -q 's\[0\]' parser.go`, Outcome: implement.ValidationPassed}, surface, true
+	case "validation fails":
+		return validationCase{Command: `test -f parser_test.go && echo "FAIL: parser_test.go" && exit 7`, Outcome: implement.ValidationFailed, Exit: 7}, surface, true
+	case "patch does not apply":
+		return validationCase{Command: "touch ran", Tamper: true, Outcome: implement.ValidationNotApplied, Exit: -1}, surface, true
+	}
+	return validationCase{}, "", false
 }
 
 // finishSubmittedImplement drives the ready Run through the real worker in
 // implement mode, then the template's own validate script as the Run's second
 // result producer, and retrieves and applies its change from fresh processes.
-func finishSubmittedImplement(in RunInputAdmission, auth *AuthFixture, client *implementclient.Client, change ImplementChange, options implementclient.SubmitOptions, pending implementclient.Submission, expected validationCase, rec *brine.Recorder, res brine.Resources) error {
+// The surface, "CLI" or "MCP", is what resumes the submission and reads the
+// results; the change is applied by the CLI either way.
+func finishSubmittedImplement(in RunInputAdmission, auth *AuthFixture, client *implementclient.Client, change ImplementChange, options implementclient.SubmitOptions, pending implementclient.Submission, surface string, expected validationCase, rec *brine.Recorder, res brine.Resources) error {
 	r := change.Review
 	original, err := implement.LoadSnapshot(r.Input)
 	if err != nil {
@@ -321,6 +332,17 @@ func finishSubmittedImplement(in RunInputAdmission, auth *AuthFixture, client *i
 		Results: []string{implement.PatchFile, implement.SummaryFile},
 		Submit: func(ctx context.Context) (detached.Submission, error) {
 			var result detached.Submission
+			if surface == "MCP" {
+				session, err := jbMCP(ctx, auth, r.Binaries.CLI, "brine-detached", options, options.AuthFile)
+				if err != nil {
+					return result, err
+				}
+				defer session.Close()
+				if err := callJBTool(ctx, session, "implement_submit", map[string]any{"input": options.Input, "receipt": options.Receipt}, &result); err != nil {
+					return result, err
+				}
+				return result, session.Close()
+			}
 			out, err := jbCommand(ctx, auth, r.Binaries.CLI, "implement", "submit", "--target", "auth", "--team", options.Team, "--template", options.Template, "--input", options.Input, "--receipt", options.Receipt, "--auth-file", options.AuthFile)
 			if err != nil {
 				return result, err
@@ -336,6 +358,9 @@ func finishSubmittedImplement(in RunInputAdmission, auth *AuthFixture, client *i
 			return runValidateTask(ctx, run, client, pending, published, filepath.Join(r.Workspace.Root, "validate-task"), expected, rec)
 		},
 		Read: func(ctx context.Context) error {
+			if surface == "MCP" {
+				return readCompletedImplementationMCP(ctx, in, auth, change, options, pending, original, expected)
+			}
 			return readCompletedImplementation(ctx, in, auth, change, options, pending, original, expected)
 		},
 	}, rec, res)
@@ -473,23 +498,8 @@ func readCompletedImplementation(ctx context.Context, in RunInputAdmission, auth
 	if err := json.Unmarshal(out, &run); err != nil {
 		return err
 	}
-	if run.ID != pending.RunID || run.Terminal == nil || run.Terminal.Status != atc.RunStatusSucceeded {
-		return fmt.Errorf("fresh status lost the submitted Run's terminal observation")
-	}
-	// Two result producers in one build: the Run binds both entries, each
-	// with its own active claim, even when the validation records a failure.
-	if len(run.Terminal.Results) != 2 {
-		return fmt.Errorf("the Run bound %d results, want %s and %s", len(run.Terminal.Results), implementclient.ChangeResult, implementclient.ValidationResult)
-	}
-	for _, name := range []string{implementclient.ChangeResult, implementclient.ValidationResult} {
-		binding, bound := run.Terminal.Results[name]
-		if !bound {
-			return fmt.Errorf("the Run bound no %s result", name)
-		}
-		var active bool
-		if err := in.Source.Start.DB.Conn.QueryRow(`SELECT released_at IS NULL FROM hangar_claims WHERE claim_id=$1`, string(binding.ClaimID)).Scan(&active); err != nil || !active {
-			return fmt.Errorf("the %s result has no active claim: %v", name, err)
-		}
+	if err := checkImplementTerminal(in, pending, run.ID, run.Terminal); err != nil {
+		return err
 	}
 	retrieved := filepath.Join(r.Workspace.Root, "retrieved")
 	out, err = jbCommand(ctx, auth, r.Binaries.CLI, append([]string{"implement", "result", "--output", retrieved}, destination...)...)
@@ -504,6 +514,50 @@ func readCompletedImplementation(ctx context.Context, in RunInputAdmission, auth
 		return fmt.Errorf("fresh result has no typed change: %v", err)
 	}
 	s := fetched.Summary
+	written, patch, err := implement.ReadResult(retrieved)
+	if err != nil || written.PatchDigest != s.PatchDigest || string(patch) != fetched.Patch {
+		return fmt.Errorf("retrieved change was not written as published: %v", err)
+	}
+	summaryJSON, err := os.ReadFile(filepath.Join(retrieved, implement.SummaryFile))
+	if err != nil {
+		return err
+	}
+	if err := checkRetrievedChange(pending, original, s, summaryJSON, patch); err != nil {
+		return err
+	}
+	if err := readCompletedValidation(ctx, auth, r, destination, s, original, expected); err != nil {
+		return err
+	}
+	return applyRetrievedChange(ctx, auth, r, destination, original, pending)
+}
+
+// checkImplementTerminal requires a fresh observation of the submitted Run to
+// be its succeeded terminal state with both results bound.
+func checkImplementTerminal(in RunInputAdmission, pending implementclient.Submission, id int, terminal *atc.RunTerminalResult) error {
+	if id != pending.RunID || terminal == nil || terminal.Status != atc.RunStatusSucceeded {
+		return fmt.Errorf("fresh status lost the submitted Run's terminal observation")
+	}
+	// Two result producers in one build: the Run binds both entries, each
+	// with its own active claim, even when the validation records a failure.
+	if len(terminal.Results) != 2 {
+		return fmt.Errorf("the Run bound %d results, want %s and %s", len(terminal.Results), implementclient.ChangeResult, implementclient.ValidationResult)
+	}
+	for _, name := range []string{implementclient.ChangeResult, implementclient.ValidationResult} {
+		binding, bound := terminal.Results[name]
+		if !bound {
+			return fmt.Errorf("the Run bound no %s result", name)
+		}
+		var active bool
+		if err := in.Source.Start.DB.Conn.QueryRow(`SELECT released_at IS NULL FROM hangar_claims WHERE claim_id=$1`, string(binding.ClaimID)).Scan(&active); err != nil || !active {
+			return fmt.Errorf("the %s result has no active claim: %v", name, err)
+		}
+	}
+	return nil
+}
+
+// checkRetrievedChange requires a retrieved change to be the submitted Run's
+// edit of its snapshot, and to still apply to that snapshot.
+func checkRetrievedChange(pending implementclient.Submission, original *implement.Snapshot, s *implement.Summary, summaryJSON, patch []byte) error {
 	if s.RunID == nil || *s.RunID != pending.RunID || s.Provenance.InputDigest != original.Digest || s.Provenance.ExecutionPolicy != "edit-only" {
 		return fmt.Errorf("fresh result lost the Run identity or snapshot provenance")
 	}
@@ -514,21 +568,16 @@ func readCompletedImplementation(ctx context.Context, in RunInputAdmission, auth
 	if got := strings.Join(changed, ", "); got != "deleted deleted.txt, modified parser.go, added parser_test.go" {
 		return fmt.Errorf("retrieved change touches %s", got)
 	}
-	written, patch, err := implement.ReadResult(retrieved)
-	if err != nil || written.PatchDigest != s.PatchDigest || string(patch) != fetched.Patch {
-		return fmt.Errorf("retrieved change was not written as published: %v", err)
-	}
-	summaryJSON, err := os.ReadFile(filepath.Join(retrieved, implement.SummaryFile))
-	if err != nil {
-		return err
-	}
 	if _, err := implement.ParseChange(summaryJSON, patch, original); err != nil {
 		return fmt.Errorf("retrieved change does not apply to its snapshot: %v", err)
 	}
-	if err := readCompletedValidation(ctx, auth, r, destination, s, original, expected); err != nil {
-		return err
-	}
-	out, err = jbCommand(ctx, auth, r.Binaries.CLI, append([]string{"implement", "apply", "--repo", r.Repo}, destination...)...)
+	return nil
+}
+
+// applyRetrievedChange applies the Run's change from a fresh CLI process and
+// requires one commit on the base carrying the Run's provenance.
+func applyRetrievedChange(ctx context.Context, auth *AuthFixture, r ReviewChange, destination []string, original *implement.Snapshot, pending implementclient.Submission) error {
+	out, err := jbCommand(ctx, auth, r.Binaries.CLI, append([]string{"implement", "apply", "--repo", r.Repo}, destination...)...)
 	if err != nil {
 		return err
 	}
@@ -546,6 +595,22 @@ func readCompletedValidation(ctx context.Context, auth *AuthFixture, r ReviewCha
 	if err := json.Unmarshal(out, &v); err != nil {
 		return fmt.Errorf("fresh result has no typed validation: %v", err)
 	}
+	if err := checkValidation(&v, change, original, expected); err != nil {
+		return err
+	}
+	out, err = jbCommand(ctx, auth, r.Binaries.CLI, append([]string{"implement", "result", "--result", implementclient.ValidationResult, "--format", "markdown"}, destination...)...)
+	if err != nil {
+		return err
+	}
+	if heading := "## Validation: " + strings.ReplaceAll(expected.Outcome, "_", " "); !strings.Contains(string(out), heading) || !strings.Contains(string(out), "## Patch") {
+		return fmt.Errorf("markdown does not show the change with its validation:\n%s", out)
+	}
+	return nil
+}
+
+// checkValidation requires a retrieved validation to record the row's outcome
+// against exactly the retrieved change.
+func checkValidation(v *implement.Validation, change *implement.Summary, original *implement.Snapshot, expected validationCase) error {
 	if change.RunID == nil || v.RunID != *change.RunID || v.PatchDigest != change.PatchDigest || v.InputDigest != original.Digest || v.Command != expected.Command {
 		return fmt.Errorf("validation does not name the Run, change, snapshot and command it ran: %+v", v)
 	}
@@ -558,13 +623,6 @@ func readCompletedValidation(ctx context.Context, auth *AuthFixture, r ReviewCha
 		return fmt.Errorf("validation did not record the command's exit %d: %+v", expected.Exit, v)
 	case expected.Outcome == implement.ValidationFailed && !strings.Contains(v.LogTail, "FAIL: parser_test.go"):
 		return fmt.Errorf("validation did not keep the failing command's output: %q", v.LogTail)
-	}
-	out, err = jbCommand(ctx, auth, r.Binaries.CLI, append([]string{"implement", "result", "--result", implementclient.ValidationResult, "--format", "markdown"}, destination...)...)
-	if err != nil {
-		return err
-	}
-	if heading := "## Validation: " + strings.ReplaceAll(expected.Outcome, "_", " "); !strings.Contains(string(out), heading) || !strings.Contains(string(out), "## Patch") {
-		return fmt.Errorf("markdown does not show the change with its validation:\n%s", out)
 	}
 	return nil
 }

@@ -1,0 +1,460 @@
+[
+  {
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "description": "Retrieve the typed review report for a completed Run, including after build cleanup.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "result": {
+          "description": "Named result; defaults to findings",
+          "type": "string"
+        },
+        "run": {
+          "description": "Positive Run number returned by submission",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "run"
+      ],
+      "type": "object"
+    },
+    "name": "review_result",
+    "outputSchema": {
+      "$defs": {
+        "assessment": {
+          "additionalProperties": false,
+          "properties": {
+            "complete": {
+              "type": "boolean"
+            },
+            "findings": {
+              "items": {
+                "$ref": "#/$defs/finding"
+              },
+              "type": "array"
+            },
+            "limitations": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "reviewed_files": {
+              "description": "Unique inspected repository paths from manifest.files[].path, without base/ or head/ prefixes. Exclude bundle control files (manifest.json, change.diff, external plan.md).",
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "summary": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "summary",
+            "complete",
+            "reviewed_files",
+            "limitations",
+            "findings"
+          ],
+          "type": "object"
+        },
+        "finding": {
+          "additionalProperties": false,
+          "properties": {
+            "dimension": {
+              "enum": [
+                "correctness",
+                "security",
+                "intent",
+                "testing",
+                "maintainability"
+              ]
+            },
+            "explanation": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "location": {
+              "$ref": "#/$defs/location"
+            },
+            "recommendation": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "severity": {
+              "enum": [
+                "blocker",
+                "high",
+                "medium",
+                "low"
+              ]
+            },
+            "title": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "severity",
+            "dimension",
+            "title",
+            "explanation",
+            "recommendation",
+            "location"
+          ],
+          "type": "object"
+        },
+        "location": {
+          "additionalProperties": false,
+          "properties": {
+            "end_line": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "path": {
+              "description": "Repository-relative path from manifest.files[].path; do not prepend base/ or head/. The side field selects the tree.",
+              "minLength": 1,
+              "type": "string"
+            },
+            "side": {
+              "enum": [
+                "base",
+                "head"
+              ]
+            },
+            "start_line": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "side",
+            "path",
+            "start_line",
+            "end_line"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "assessment": {
+          "$ref": "#/$defs/assessment"
+        },
+        "provenance": {
+          "additionalProperties": false,
+          "properties": {
+            "base_commit": {
+              "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$",
+              "type": "string"
+            },
+            "codex_version": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "execution_policy": {
+              "const": "inspect-only"
+            },
+            "head_commit": {
+              "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$",
+              "type": "string"
+            },
+            "input_digest": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "model_reported": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "model_requested": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "profile_digest": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "input_digest",
+            "base_commit",
+            "head_commit",
+            "profile_digest",
+            "model_requested",
+            "model_reported",
+            "codex_version",
+            "execution_policy"
+          ],
+          "type": "object"
+        },
+        "run_id": {
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "schema_version": {
+          "const": "review/v1"
+        },
+        "verdict": {
+          "enum": [
+            "no_findings",
+            "findings",
+            "incomplete"
+          ]
+        }
+      },
+      "required": [
+        "schema_version",
+        "run_id",
+        "verdict",
+        "provenance",
+        "assessment"
+      ],
+      "title": "JetBridge detached review v1",
+      "type": "object"
+    }
+  },
+  {
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "description": "Read a detached review Run. A pending Run has no terminal observation. A terminal observation retains result references after build cleanup; it does not contain the report files.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "run": {
+          "description": "Positive Run number returned by submission",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "run"
+      ],
+      "type": "object"
+    },
+    "name": "review_status",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "captures": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "build_id": {
+                "type": "integer"
+              },
+              "events": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "disposition": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                },
+                "type": [
+                  "null",
+                  "array"
+                ]
+              },
+              "result": {
+                "type": "string"
+              },
+              "task_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "task_id",
+              "build_id",
+              "result",
+              "events"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "id": {
+          "type": "integer"
+        },
+        "number": {
+          "type": "integer"
+        },
+        "reclaimed": {
+          "type": "boolean"
+        },
+        "run_contract_version": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "terminal": {
+          "additionalProperties": false,
+          "properties": {
+            "completed_at": {
+              "type": "string"
+            },
+            "results": {
+              "additionalProperties": {
+                "additionalProperties": false,
+                "properties": {
+                  "claim_id": {
+                    "type": "string"
+                  },
+                  "ref": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "digest": {
+                        "type": "string"
+                      },
+                      "generation": {
+                        "type": "integer"
+                      },
+                      "scope": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "scope",
+                      "digest",
+                      "generation"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "ref",
+                  "claim_id"
+                ],
+                "type": "object"
+              },
+              "type": "object"
+            },
+            "status": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "completed_at",
+            "results",
+            "version"
+          ],
+          "type": [
+            "null",
+            "object"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "number",
+        "run_contract_version",
+        "status",
+        "reclaimed"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Submit a captured review bundle using a saved local receipt. Reuse the same receipt after interruption. Only ready=true confirms that the detached worker accepted credentials. Credentials come from local startup configuration, never tool arguments.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "input": {
+          "description": "Local captured review bundle directory",
+          "type": "string"
+        },
+        "receipt": {
+          "description": "Local receipt path outside the bundle; reuse it for retries",
+          "type": "string"
+        }
+      },
+      "required": [
+        "input",
+        "receipt"
+      ],
+      "type": "object"
+    },
+    "name": "review_submit",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "handle": {
+          "additionalProperties": false,
+          "properties": {
+            "number": {
+              "type": "integer"
+            },
+            "team": {
+              "type": "string"
+            },
+            "template": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "team",
+            "template",
+            "number"
+          ],
+          "type": "object"
+        },
+        "message": {
+          "type": "string"
+        },
+        "ready": {
+          "type": "boolean"
+        },
+        "run_id": {
+          "type": "integer"
+        },
+        "state": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "handle",
+        "ready",
+        "state"
+      ],
+      "type": "object"
+    }
+  }
+]

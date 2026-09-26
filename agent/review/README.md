@@ -110,6 +110,13 @@ does not change the Run. The server selects its target, team and template at
 startup; tool arguments cannot replace its platform credentials. Only the local auth file path is part of startup configuration; its contents never enter tool arguments. Omit `--auth-file` to expose status/result access without allowing submission. Call `review_result` with `{"run": 1}` to retrieve the
 schema-validated report, including typed findings and provenance. Call `review_submit` with `{"input":"/path/to/change","receipt":"/path/to/request.json"}`. The same stdio configuration works for Codex, Claude and other MCP clients.
 
+`jb mcp --target YOUR_TARGET --team YOUR_TEAM --review-template review
+--implement-template implement --auth-file /owner/selected/auth.json` is one
+server that serves these tools unchanged beside the implement workload's
+`implement_*` tools (see the [implement README](../implement/README.md#local-mcp)).
+`review mcp` stays the same server with only the review tools, so existing
+configurations keep working.
+
 Retrieve the same report from a fresh human CLI process:
 
 ```sh

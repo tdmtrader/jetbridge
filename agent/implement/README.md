@@ -95,6 +95,42 @@ jb review capture --repo /path/to/repo --base BASE_COMMIT --head impl/run-41 \
 
 reviews exactly what the agent wrote.
 
+## Local MCP
+
+One stdio MCP server serves both detached workloads to a local agent. Configure
+command `jb` with arguments:
+
+```json
+{
+  "mcpServers": {
+    "jetbridge": {
+      "command": "jb",
+      "args": ["mcp", "--target", "YOUR_TARGET", "--team", "YOUR_TEAM",
+               "--review-template", "review", "--implement-template", "implement",
+               "--auth-file", "/owner/selected/auth.json"]
+    }
+  }
+}
+```
+
+It serves the `review_*` tools exactly as `jb review mcp` does, and:
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `implement_submit` | `{"input": "/path/to/snapshot", "receipt": "/path/to/implement-request.json"}` | the submission, as `jb implement submit` prints it |
+| `implement_status` | `{"run": 1}` | the Run observation `review_status` returns |
+| `implement_result` | `{"run": 1}` or `{"run": 1, "result": "validation"}` | `{"result": "change", "summary": …, "patch": "…"}` or `{"result": "validation", "validation": …}` |
+
+The target, team, both templates and the auth file are fixed when the server
+starts; tool arguments cannot change them, and the auth file's contents never
+enter a tool call. Without `--auth-file` the submit tools refuse and the rest
+still work. Results are verified exactly as `jb implement result` verifies
+them, and a validation only against its Run's change; a failed validation is a
+result, not a tool error. The output schema is built from the published
+[summary](implement.schema.json) and [validation](validation.schema.json)
+schemas. There is no apply tool: apply a Run's change with
+`jb implement apply --run`.
+
 ## Operator template
 
 The [implement template](../../deploy/implement-template.yml) has two inline
@@ -184,6 +220,7 @@ go test -count=1 -run TestAgentic .
 
 Brine covers the worker (`features/implement-worker.feature`) and the detached
 path (`features/implement-submit.feature`, including the validate task as the
-Run's second result producer); both need Linux tmpfs and run in CI. The
+Run's second result producer and the `jb mcp` rows); both need Linux tmpfs and
+run in CI. The
 template's validate script itself runs in `go test ./agent/implement/client`
 wherever `git` and `sha256sum` exist.

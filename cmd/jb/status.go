@@ -11,26 +11,7 @@ import (
 
 	reviewclient "github.com/concourse/concourse/agent/review/client"
 	"github.com/concourse/concourse/fly/rc"
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
-
-func reviewMCP(ctx context.Context, flags *flag.FlagSet, args []string) error {
-	authFile := flags.String("auth-file", "", "owner-selected local Codex auth.json; required for submission")
-	targetName := flags.String("target", "", "saved fly login target (required)")
-	team := flags.String("team", "", "team name; defaults to the target's team")
-	template := flags.String("template", "review", "base review template name")
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	if flags.NArg() != 0 || *targetName == "" || *template == "" {
-		return errors.New("mcp requires --target and a nonempty template")
-	}
-	client, selectedTeam, err := platformClient(*targetName, *team)
-	if err != nil {
-		return err
-	}
-	return client.MCPServer(selectedTeam, *template, reviewclient.MCPOptions{AuthFile: *authFile}).Run(ctx, &mcp.StdioTransport{})
-}
 
 func reviewStatus(ctx context.Context, flags *flag.FlagSet, args []string, out io.Writer) error {
 	targetName := flags.String("target", "", "saved fly login target (required)")

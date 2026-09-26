@@ -1,7 +1,7 @@
 // Package client is the implement adapter over the workload-neutral detached
 // Run client. It fixes what makes a submission an implementation: the sealed
 // snapshot, the input and result names, and the verified change it trusts on
-// read-back. The human CLI shares it.
+// read-back. The human CLI and the local stdio MCP server share it.
 package client
 
 import (
