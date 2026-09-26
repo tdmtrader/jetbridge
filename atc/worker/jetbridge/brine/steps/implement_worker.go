@@ -217,6 +217,14 @@ func checkImplementApplies(in ImplementChange) error {
 	if err != nil {
 		return fmt.Errorf("apply: %w: %s", err, stderr)
 	}
+	return checkAppliedCommit(r, out, "impl/local-"+summary.PatchDigest[:12], s.Digest, 0)
+}
+
+// checkAppliedCommit inspects what `jb implement apply` reported and did: one
+// commit on the named new branch, parented on the base, holding exactly the
+// fixture edit, with the worktree switched to it and clean. A change from a
+// Run also records the Run in the commit.
+func checkAppliedCommit(r ReviewChange, out []byte, branch, inputDigest string, runID int) error {
 	var applied struct {
 		Branch     string `json:"branch"`
 		Commit     string `json:"commit"`
@@ -225,8 +233,8 @@ func checkImplementApplies(in ImplementChange) error {
 	if err := json.Unmarshal(out, &applied); err != nil {
 		return err
 	}
-	if applied.Branch != "impl/local-"+summary.PatchDigest[:12] || applied.BaseCommit != r.Base {
-		return fmt.Errorf("applied %+v", applied)
+	if applied.Branch != branch || applied.BaseCommit != r.Base {
+		return fmt.Errorf("applied %+v, want branch %s on %s", applied, branch, r.Base)
 	}
 	for _, c := range []struct {
 		args []string
@@ -250,8 +258,11 @@ func checkImplementApplies(in ImplementChange) error {
 	if err != nil {
 		return err
 	}
-	if !strings.Contains(message, "JetBridge-Input: "+s.Digest) {
+	if !strings.Contains(message, "JetBridge-Input: "+inputDigest) {
 		return errors.New("commit does not record the snapshot it came from")
+	}
+	if runID > 0 && !strings.Contains(message, fmt.Sprintf("JetBridge-Run: %d\n", runID)) {
+		return errors.New("commit does not record the Run it came from")
 	}
 	parser, err := os.ReadFile(filepath.Join(r.Repo, "parser.go"))
 	if err != nil || !strings.Contains(string(parser), "s[0]") {

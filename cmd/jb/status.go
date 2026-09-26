@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"io"
+	"net/http"
 	"time"
 
 	reviewclient "github.com/concourse/concourse/agent/review/client"
@@ -56,15 +57,25 @@ func reviewStatus(ctx context.Context, flags *flag.FlagSet, args []string, out i
 }
 
 func platformClient(name, team string) (*reviewclient.Client, string, error) {
-	target, err := rc.LoadTarget(rc.TargetName(name), false)
+	url, transport, team, err := savedLogin(name, team)
 	if err != nil {
 		return nil, "", err
+	}
+	client, err := reviewclient.New(url, transport)
+	return client, team, err
+}
+
+// savedLogin resolves a saved fly target to its URL, authenticated HTTP client
+// and team, defaulting to the target's team.
+func savedLogin(name, team string) (string, *http.Client, string, error) {
+	target, err := rc.LoadTarget(rc.TargetName(name), false)
+	if err != nil {
+		return "", nil, "", err
 	}
 	if team == "" {
 		team = target.Team().Name()
 	}
-	client, err := reviewclient.New(target.URL(), target.Client().HTTPClient())
-	return client, team, err
+	return target.URL(), target.Client().HTTPClient(), team, nil
 }
 
 func reviewResult(ctx context.Context, flags *flag.FlagSet, args []string, out io.Writer) error {

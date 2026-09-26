@@ -24,7 +24,7 @@ func main() {
 	}
 }
 
-const usage = "usage: jb review capture|submit|render|schema|status|result|mcp [options]\n       jb implement capture|apply [options]"
+const usage = "usage: jb review capture|submit|render|schema|status|result|mcp [options]\n       jb implement capture|submit|status|result|apply [options]"
 
 func run(ctx context.Context, args []string, out, stderr io.Writer) error {
 	if len(args) < 2 {

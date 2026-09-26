@@ -62,6 +62,14 @@ func RunInputBindingDefinitions() []brine.StepDefinition {
 				task.RunResult = &result
 				task.Config.Outputs = []atc.TaskOutputConfig{{Name: result.Output}}
 			}
+			if in.Case == "an implement input and result" {
+				// The implement template's shape: the snapshot input routed to
+				// source, and the change result its producer publishes.
+				task := config.Jobs[0].PlanSequence[0].Config.(*atc.TaskStep)
+				task.RunInputs = []atc.RunInput{{Name: "snapshot", Input: "source"}}
+				task.RunResult = &atc.RunResult{Name: "change", Output: "change"}
+				task.Config.Outputs = []atc.TaskOutputConfig{{Name: "change"}}
+			}
 			if in.Case == "one source under two names" || in.Case == "one name routed to two slots" {
 				task := config.Jobs[0].PlanSequence[0].Config.(*atc.TaskStep)
 				task.Config.Inputs = append(task.Config.Inputs, atc.TaskInputConfig{Name: "second"})
@@ -89,6 +97,9 @@ func RunInputBindingDefinitions() []brine.StepDefinition {
 			in.Inputs = map[string]map[string]any{"change": {"run_id": source.Start.Creation.Run.ID(), "result": source.Start.Plan.RunResult.Name}}
 			if in.Case == "one source under two names" {
 				in.Inputs["also-change"] = in.Inputs["change"]
+			}
+			if in.Case == "an implement input and result" {
+				in.Inputs = map[string]map[string]any{"snapshot": in.Inputs["change"]}
 			}
 			switch in.Case {
 			case "no required input":

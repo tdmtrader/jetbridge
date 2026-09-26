@@ -12,8 +12,11 @@ import (
 	"github.com/pmezard/go-difflib/difflib"
 )
 
-// MaxPatchBytes bounds a published patch.
-const MaxPatchBytes = 32 << 20
+// MaxPatchBytes bounds a published patch. With summary.json bounded by
+// capture.MaxFileBytes, a published change stays within the 32 MiB of
+// content agent/detached accepts for one result, so anything the worker
+// publishes can also be retrieved.
+const MaxPatchBytes = 16 << 20
 
 // TreeFile is one file of a tree: its bytes and its Git mode.
 type TreeFile struct {

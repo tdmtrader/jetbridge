@@ -58,7 +58,10 @@ result producer must declare exactly `rootfs_uri: docker:///<pin>`, with no
 reports an unacknowledged delivery and the Run receives no credentials. The pin
 covers the image, not the task script: a member who can set the template can
 still change what that image runs, so restrict who holds that role on the
-review team. The ATC fills `run_id` per Run.
+review team. The pin is per image, not per template: the
+[implement template](../implement/README.md) runs the same image and is admitted
+by the same pin ([ADR-0006](../../docs/adr/0006-credential-pin-per-image.md)).
+The ATC fills `run_id` per Run.
 The worker stages a complete report below the output mount, then the task moves
 its two validated files into the named result before successful completion.
 

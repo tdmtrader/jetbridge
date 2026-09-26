@@ -125,3 +125,19 @@ func TestReadResultRequiresExactlyTwoFiles(t *testing.T) {
 		t.Fatal("accepted an extra file")
 	}
 }
+
+func TestMarkdownFencesThePatch(t *testing.T) {
+	_, s := snapshotFixture(t)
+	run := 7
+	_, summary, patch := publish(t, s, &run)
+	md := summary.Markdown(patch)
+	for _, want := range []string{"# Implementation: complete", "Run: 7", "Base: " + s.Manifest.BaseCommit, "- modified parser.go", "not executed", "```diff\n" + string(patch) + "```\n"} {
+		if !strings.Contains(md, want) {
+			t.Fatalf("markdown lacks %q:\n%s", want, md)
+		}
+	}
+	fenced := (&Summary{Summary: "s"}).Markdown([]byte("+```\n"))
+	if !strings.Contains(fenced, "````diff\n+```\n````\n") {
+		t.Fatalf("a patch line closed the fence:\n%s", fenced)
+	}
+}

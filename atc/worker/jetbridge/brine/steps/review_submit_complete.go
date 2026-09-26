@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
+	"github.com/concourse/concourse/agent/detached"
 	"github.com/concourse/concourse/agent/review"
 	reviewclient "github.com/concourse/concourse/agent/review/client"
 	"github.com/concourse/concourse/atc"
@@ -28,10 +29,57 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// submittedWorkload is what differs between detached workloads when a
+// submitted Run is driven through its real worker to a published result.
+type submittedWorkload struct {
+	// Input is the run_inputs name the submission uploaded.
+	Input string
+	// Receive verifies the input the Run materialized against the local
+	// original, and returns the directory the worker reads and its digest.
+	Receive func(materialized string) (string, string, error)
+	// Mode is the worker's mode argument, if any, and Model the provider
+	// fixture's mode. The model must wait for release after the handoff.
+	Mode  []string
+	Model string
+	// Results are the files the worker publishes; the template moves them
+	// from its report directory into the result root.
+	Results []string
+	// Submit resumes the saved submission from a fresh local process.
+	Submit func(context.Context) (detached.Submission, error)
+	// Read retrieves and checks the completed result from a fresh local process.
+	Read func(context.Context) error
+}
+
 // Join the actual upload, admitted Run, local client process, private worker
 // session and capture/read plane. Envtest supplies Pod identity; real kubelet
 // transport and mount enforcement are independently required by the live tier.
 func finishSubmittedReview(in RunInputAdmission, auth *AuthFixture, change ReviewChange, options reviewclient.SubmitOptions, pending reviewclient.Submission, surface string, rec *brine.Recorder, res brine.Resources) error {
+	return finishSubmittedRun(in, auth, change, pending, submittedWorkload{
+		Input: "change",
+		Receive: func(materialized string) (string, string, error) {
+			original, err := review.LoadBundle(change.Input)
+			if err != nil {
+				return "", "", err
+			}
+			path := filepath.Join(materialized, review.RunInputBundleDir)
+			received, err := review.LoadBundle(path)
+			if err != nil || received.Digest != original.Digest {
+				return "", "", fmt.Errorf("uploaded review changed in transit: %v", err)
+			}
+			return path, received.Digest, nil
+		},
+		Model:   "handoff-finding",
+		Results: []string{"review.json", "review.md"},
+		Submit: func(ctx context.Context) (detached.Submission, error) {
+			return submitReviewFromProcess(ctx, auth, change, options, surface)
+		},
+		Read: func(ctx context.Context) error {
+			return readCompletedSubmission(ctx, auth, change, options, pending, surface)
+		},
+	}, rec, res)
+}
+
+func finishSubmittedRun(in RunInputAdmission, auth *AuthFixture, change ReviewChange, pending detached.Submission, workload submittedWorkload, rec *brine.Recorder, res brine.Resources) error {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	runtime := in.Source.Candidate.Runtime
@@ -65,20 +113,15 @@ func finishSubmittedReview(in RunInputAdmission, auth *AuthFixture, change Revie
 	if err != nil {
 		return err
 	}
-	input, err := submittedReviewInput(ctx, runtime.Start, source, signer)
+	input, err := submittedRunInput(ctx, runtime.Start, source, signer, workload.Input)
 	if err != nil {
 		return err
 	}
-	original, err := review.LoadBundle(change.Input)
+	change.Input, change.Digest, err = workload.Receive(input)
 	if err != nil {
 		return err
 	}
-	change.Input = filepath.Join(input, review.RunInputBundleDir)
-	received, err := review.LoadBundle(change.Input)
-	if err != nil || received.Digest != original.Digest {
-		return fmt.Errorf("uploaded review changed in transit: %v", err)
-	}
-	change.Digest, change.RunID = received.Digest, run.ID()
+	change.RunID = run.ID()
 	if err = change.memoryRuntime(); err != nil {
 		return err
 	}
@@ -130,7 +173,8 @@ func finishSubmittedReview(in RunInputAdmission, auth *AuthFixture, change Revie
 			return fmt.Errorf("submitted worker has no original Pod")
 		}
 		change.Output = filepath.Join(directory, "report")
-		worker := exec.CommandContext(ctx, change.Binaries.Worker, "--input", change.Input, "--output", change.Output, "--runtime-dir", change.Workspace.Runtime, "--codex", change.Binaries.Provider, "--model", "handoff-finding", "--timeout", "45s", "--auth-socket", socket, "--handoff-timeout", "30s", "--run-id", strconv.Itoa(run.ID()))
+		args := append(append([]string{}, workload.Mode...), "--input", change.Input, "--output", change.Output, "--runtime-dir", change.Workspace.Runtime, "--codex", change.Binaries.Provider, "--model", workload.Model, "--timeout", "45s", "--auth-socket", socket, "--handoff-timeout", "30s", "--run-id", strconv.Itoa(run.ID()))
+		worker := exec.CommandContext(ctx, change.Binaries.Worker, args...)
 		var stderr bytes.Buffer
 		worker.Stderr = &stderr
 		if err = worker.Start(); err != nil {
@@ -144,7 +188,7 @@ func finishSubmittedReview(in RunInputAdmission, auth *AuthFixture, change Revie
 			}
 		}()
 		// The helper also waits for the actual socket, covering startup ordering.
-		ready, err := submitReviewFromProcess(ctx, auth, change, options, surface)
+		ready, err := workload.Submit(ctx)
 		if err != nil {
 			return err
 		}
@@ -172,7 +216,7 @@ func finishSubmittedReview(in RunInputAdmission, auth *AuthFixture, change Revie
 		if err = reviewNoCredentials(change); err != nil {
 			return err
 		}
-		for _, name := range []string{"review.json", "review.md"} {
+		for _, name := range workload.Results {
 			if err = os.Rename(filepath.Join(change.Output, name), filepath.Join(directory, name)); err != nil {
 				return err
 			}
@@ -218,7 +262,7 @@ func finishSubmittedReview(in RunInputAdmission, auth *AuthFixture, change Revie
 	if err = configureRunDownload(result, auth, rec, res); err != nil {
 		return err
 	}
-	if err = readCompletedSubmission(ctx, auth, change, options, pending, surface); err != nil {
+	if err = workload.Read(ctx); err != nil {
 		return err
 	}
 	var claims, invocations int
@@ -234,7 +278,7 @@ func finishSubmittedReview(in RunInputAdmission, auth *AuthFixture, change Revie
 	return nil
 }
 
-func submittedReviewInput(ctx context.Context, start RunOutputStart, source *jetbridge.OutputSource, signer *output.ReadWarrantSigner) (string, error) {
+func submittedRunInput(ctx context.Context, start RunOutputStart, source *jetbridge.OutputSource, signer *output.ReadWarrantSigner, name string) (string, error) {
 	tx, err := start.DB.Conn.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
@@ -244,9 +288,9 @@ func submittedReviewInput(ctx context.Context, start RunOutputStart, source *jet
 	if err != nil {
 		return "", err
 	}
-	binding, ok := selected.Inputs["change"]
+	binding, ok := selected.Inputs[name]
 	if !ok {
-		return "", fmt.Errorf("submitted Run has no change input")
+		return "", fmt.Errorf("submitted Run has no %s input", name)
 	}
 	node, err := source.ForResultRead(ctx, executioncontrol.ActivationEpoch(hangarEpoch))
 	if err != nil {

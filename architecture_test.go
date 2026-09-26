@@ -354,6 +354,10 @@ var agenticCoreReach = map[string][]string{
 	// The review adapter over agent/detached. Public Run values for its MCP
 	// status projection only; archive verification stays in the shared client.
 	"agent/review/client": {"atc"},
+	// The implement adapter over agent/detached. Handles, Run status and
+	// archive verification all come through the shared client, so it names no
+	// core package itself.
+	"agent/implement/client": {},
 	// The command reuses the saved platform login; the shared client consumes
 	// only public wire types and never reaches the Run database or scheduler.
 	"cmd/jb":               {"fly/rc"},

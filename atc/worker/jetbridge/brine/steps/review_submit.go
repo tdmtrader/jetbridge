@@ -167,7 +167,7 @@ func exerciseReviewSubmit(in RunInputAdmission, mode string, rec *brine.Recorder
 		return finishSubmittedReview(in, auth, change, options, first.result, strings.TrimPrefix(mode, "ready "), rec, res)
 	}
 	if mode == "a fresh CLI replay" {
-		if err := exerciseSubmitCLI(auth, change, options, first.result); err != nil {
+		if err := exerciseSubmitCLI(auth, change, "review", options, first.result); err != nil {
 			return err
 		}
 	} else if mode == "a changed input through MCP" {
@@ -208,10 +208,12 @@ func exerciseReviewSubmit(in RunInputAdmission, mode string, rec *brine.Recorder
 	return nil
 }
 
-func exerciseSubmitCLI(auth *AuthFixture, change ReviewChange, options reviewclient.SubmitOptions, want reviewclient.Submission) error {
+// exerciseSubmitCLI interrupts `jb <workload> submit` once it holds the
+// receipt lock, and requires it to report the saved Run.
+func exerciseSubmitCLI(auth *AuthFixture, change ReviewChange, workload string, options reviewclient.SubmitOptions, want reviewclient.Submission) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	command := exec.CommandContext(ctx, change.Binaries.CLI, "review", "submit", "--target", "auth", "--team", options.Team, "--template", options.Template, "--input", options.Input, "--receipt", options.Receipt, "--auth-file", options.AuthFile)
+	command := exec.CommandContext(ctx, change.Binaries.CLI, workload, "submit", "--target", "auth", "--team", options.Team, "--template", options.Template, "--input", options.Input, "--receipt", options.Receipt, "--auth-file", options.AuthFile)
 	command.Env = append(os.Environ(), "FLY_HOME="+auth.Home)
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr

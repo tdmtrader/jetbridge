@@ -38,7 +38,7 @@ func main() {
 	if b, err := os.ReadFile(filepath.Join(home, "auth.json")); err != nil || !strings.Contains(string(b), "synthetic-access") {
 		os.Exit(42)
 	}
-	if mode == "handoff-wait" || mode == "handoff-finding" {
+	if mode == "handoff-wait" || mode == "handoff-finding" || mode == "handoff-edit" {
 		for {
 			if _, err := os.Stat(filepath.Join(home, "continue-review")); err == nil {
 				break
@@ -115,7 +115,9 @@ func main() {
 // Implement modes edit the workspace (the working directory) the way Codex's
 // file-edit tool does, then report the edit. The refused modes make the same
 // edits, so only the worker's policy can keep them from being published.
-var implementModes = map[string]bool{"edit": true, "edit-outside-scratch": true, "forbidden-shell": true, "malformed-edit": true}
+// handoff-edit is edit, released only once the detached submission has
+// disconnected, like handoff-finding.
+var implementModes = map[string]bool{"edit": true, "handoff-edit": true, "edit-outside-scratch": true, "forbidden-shell": true, "malformed-edit": true}
 
 func implement(mode, cd, out string) {
 	if cd == "" {

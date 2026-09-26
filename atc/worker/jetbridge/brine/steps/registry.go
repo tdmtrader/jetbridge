@@ -111,6 +111,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, BoundSessionDefinitions()...)
 	defs = append(defs, RunCredentialDefinitions()...)
 	defs = append(defs, ReviewSubmitDefinitions()...)
+	defs = append(defs, ImplementSubmitDefinitions()...)
 	defs = append(defs, ReviewKubeletDefinitions()...)
 	defs = append(defs, ReviewKubeletSubmitDefinitions()...)
 	defs = append(defs, RunDefinitionDefinitions()...)
