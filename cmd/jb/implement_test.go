@@ -52,6 +52,10 @@ type cliPlatform struct {
 	handoff  []byte
 	// credential is the state the credential session reports until handoff.
 	credential string
+	// review is a completed review Run of the review template, whose
+	// findings result is reviewArchive.
+	review        atc.PipelineRun
+	reviewArchive []byte
 }
 
 func (p *cliPlatform) serve(w http.ResponseWriter, r *http.Request) {
@@ -83,6 +87,12 @@ func (p *cliPlatform) serve(w http.ResponseWriter, r *http.Request) {
 		reply(http.StatusOK, atc.RunCredentialSession{RunID: cliRunID, Result: "change", Status: p.credential})
 	case r.Method == http.MethodGet && r.URL.Path == v1+run:
 		reply(http.StatusOK, p.run)
+	case p.review.ID != 0 && r.Method == http.MethodGet && r.URL.Path == reviewRunPath(p.review.Number):
+		reply(http.StatusOK, p.review)
+	case p.review.ID != 0 && r.Method == http.MethodGet && r.URL.Path == reviewRunPath(p.review.Number)+"/results/findings":
+		w.Header().Set("Content-Type", "application/x-tar")
+		w.Header().Set("Content-Length", strconv.Itoa(len(p.reviewArchive)))
+		_, _ = w.Write(p.reviewArchive)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, v1+run+"/results/") && p.archives[strings.TrimPrefix(r.URL.Path, v1+run+"/results/")] != nil:
 		archive := p.archives[strings.TrimPrefix(r.URL.Path, v1+run+"/results/")]
 		w.Header().Set("Content-Type", "application/x-tar")
@@ -116,38 +126,52 @@ func (p *cliPlatform) complete(t *testing.T, s *implement.Snapshot, base string)
 		Applied: true, Command: "go test ./...", ExitCode: &failed, Outcome: implement.ValidationFailed, LogTail: "FAIL\n",
 	})
 	bindings := map[string]atc.RunResultBinding{}
+	p.mu.Lock()
 	p.archives = map[string][]byte{}
+	p.mu.Unlock()
 	for name, files := range map[string]map[string][]byte{
 		"change":     {implement.SummaryFile: summaryJSON, implement.PatchFile: patch},
 		"validation": {implement.ValidationFile: validation},
 	} {
-		var raw bytes.Buffer
-		tw := tar.NewWriter(&raw)
-		for file, data := range files {
-			_ = tw.WriteHeader(&tar.Header{Name: file, Mode: 0o600, Size: int64(len(data)), Typeflag: tar.TypeReg})
-			_, _ = tw.Write(data)
-		}
-		_ = tw.Close()
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		tree, err := (hangar.Canonicalizer{MaxContentBytes: 1 << 20, MaxEntries: 32}).Capture(ctx, &raw)
-		cancel()
-		if err != nil {
-			t.Fatal(err)
-		}
-		archive, err := os.ReadFile(tree.ArchivePath)
-		tree.Close()
-		if err != nil {
-			t.Fatal(err)
-		}
+		archive, binding := resultArchive(t, files)
 		p.mu.Lock()
 		p.archives[name] = archive
 		p.mu.Unlock()
-		bindings[name] = atc.RunResultBinding{Ref: hangar.TreeRef{Digest: tree.Digest}}
+		bindings[name] = binding
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.run.Status = atc.RunStatusSucceeded
 	p.run.Terminal = &atc.RunTerminalResult{Status: atc.RunStatusSucceeded, Results: bindings}
+}
+
+func reviewRunPath(number int) string {
+	return "/api/v1/teams/main/pipelines/review/runs/" + strconv.Itoa(number)
+}
+
+// resultArchive is a Run result as the platform serves it: the canonical
+// archive of files and the binding the Run retains for it.
+func resultArchive(t *testing.T, files map[string][]byte) ([]byte, atc.RunResultBinding) {
+	t.Helper()
+	var raw bytes.Buffer
+	tw := tar.NewWriter(&raw)
+	for file, data := range files {
+		_ = tw.WriteHeader(&tar.Header{Name: file, Mode: 0o600, Size: int64(len(data)), Typeflag: tar.TypeReg})
+		_, _ = tw.Write(data)
+	}
+	_ = tw.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	tree, err := (hangar.Canonicalizer{MaxContentBytes: 1 << 20, MaxEntries: 32}).Capture(ctx, &raw)
+	cancel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, err := os.ReadFile(tree.ArchivePath)
+	tree.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return archive, atc.RunResultBinding{Ref: hangar.TreeRef{Digest: tree.Digest}}
 }
 
 func jb(t *testing.T, args ...string) (string, error) {

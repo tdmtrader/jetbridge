@@ -81,13 +81,24 @@ func run(ctx context.Context, args []string) error {
 	case "workspace-tools":
 		f := flag.NewFlagSet("workspace-tools", flag.ContinueOnError)
 		root := f.String("root", "", "the session's writable workspace")
+		snapshot := f.String("snapshot", "", "sealed snapshot whose prior change and review findings are served read-only")
 		if err := f.Parse(args[1:]); err != nil {
 			return err
 		}
 		if *root == "" || f.NArg() != 0 {
 			return errors.New("workspace-tools requires --root")
 		}
-		return implement.ServeWorkspaceTools(*root, os.Stdin, os.Stdout)
+		var inputs map[string][]byte
+		if *snapshot != "" {
+			s, err := implement.LoadSnapshot(*snapshot)
+			if err != nil {
+				return err
+			}
+			if inputs, err = s.ReadOnlyInputs(); err != nil {
+				return err
+			}
+		}
+		return implement.ServeWorkspaceTools(*root, inputs, os.Stdin, os.Stdout)
 	case "implement":
 		var opts implement.WorkerOptions
 		f := flag.NewFlagSet("implement", flag.ContinueOnError)

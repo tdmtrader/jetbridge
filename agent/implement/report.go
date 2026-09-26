@@ -73,6 +73,12 @@ type Provenance struct {
 	CodexVersion    string `json:"codex_version"`
 	ModelRequested  string `json:"model_requested"`
 	ExecutionPolicy string `json:"execution_policy"`
+	// PriorRun and FindingsRun name the Runs whose change and review
+	// findings the snapshot carried, copied from its manifest. They are
+	// omitted when the snapshot carried neither, so earlier summaries parse
+	// unchanged.
+	PriorRun    *int `json:"prior_run,omitempty"`
+	FindingsRun *int `json:"findings_run,omitempty"`
 }
 
 // Summary is summary.json, implement/v1.
@@ -134,6 +140,7 @@ func BuildSummary(s *Snapshot, patch []byte, changes []ChangedFile, assessmentJS
 		Provenance: Provenance{
 			InputDigest: s.Digest, BaseCommit: s.Manifest.BaseCommit, ProfileDigest: capture.Digest(meta.Profile),
 			Provider: providerName, CodexVersion: meta.CodexVersion, ModelRequested: meta.ModelRequested, ExecutionPolicy: editOnly,
+			PriorRun: s.Manifest.PriorRun, FindingsRun: s.Manifest.FindingsRun,
 		},
 		Summary: a.Summary, Complete: a.Complete, ChangedFiles: changes, Limitations: a.Limitations,
 		PatchDigest: capture.Digest(patch),
@@ -185,7 +192,8 @@ func ParseChange(summaryJSON, patch []byte, snapshot *Snapshot) (*Summary, error
 	if err != nil {
 		return nil, err
 	}
-	if s.Provenance.InputDigest != snapshot.Digest || s.Provenance.BaseCommit != snapshot.Manifest.BaseCommit {
+	if s.Provenance.InputDigest != snapshot.Digest || s.Provenance.BaseCommit != snapshot.Manifest.BaseCommit ||
+		!sameRun(s.Provenance.PriorRun, snapshot.Manifest.PriorRun) || !sameRun(s.Provenance.FindingsRun, snapshot.Manifest.FindingsRun) {
 		return nil, errors.New("summary provenance does not match the snapshot")
 	}
 	base, err := snapshot.tree()
@@ -201,6 +209,8 @@ func ParseChange(summaryJSON, patch []byte, snapshot *Snapshot) (*Summary, error
 	}
 	return s, nil
 }
+
+func sameRun(a, b *int) bool { return (a == nil) == (b == nil) && (a == nil || *a == *b) }
 
 // ReadResult reads a published change directory: exactly change.patch and
 // summary.json, both bounded regular files, verified against each other.

@@ -64,6 +64,16 @@
         },
         "execution_policy": {
           "const": "edit-only"
+        },
+        "prior_run": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Run ID (the run_id its results carry) of the implement Run whose verified change the snapshot carried as prior.patch. Absent when there was none, or when the change was read from disk rather than verified against its Run."
+        },
+        "findings_run": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Run ID (the run_id its report carries) of the review Run whose verified findings the snapshot carried as findings.json. Absent when there were none."
         }
       }
     },

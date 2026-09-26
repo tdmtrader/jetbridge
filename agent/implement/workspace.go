@@ -88,22 +88,65 @@ func readWorkspace(dir string) (Tree, error) {
 
 var errBinaryWorkspace = errors.New("binary file: its content cannot be read or edited in this session; report this limitation")
 
+// The read-only inputs a snapshot may carry are served beside the workspace
+// under absolute names. A workspace path is always relative, so no
+// repository file can shadow them, and the file-edit tool, confined to the
+// workspace, cannot change them.
+const (
+	PriorInputPath    = "/input/" + PriorFile
+	FindingsInputPath = "/input/" + FindingsFile
+)
+
+// ReadOnlyInputs returns the snapshot's prior change and review findings,
+// verified again, keyed by the names the workspace tools serve them under.
+func (s *Snapshot) ReadOnlyInputs() (map[string][]byte, error) {
+	inputs := map[string][]byte{}
+	prior, err := s.Prior()
+	if err != nil {
+		return nil, err
+	}
+	if prior != nil {
+		inputs[PriorInputPath] = prior
+	}
+	findings, err := s.Findings()
+	if err != nil {
+		return nil, err
+	}
+	if findings != nil {
+		inputs[FindingsInputPath] = findings
+	}
+	return inputs, nil
+}
+
 // WorkspaceReader serves the live workspace to the provider through list,
 // read and search. It never opens a path outside the workspace root, never
 // follows a link, and has no write operation: edits go through the
-// provider's own file-edit tool, which the session's trace confines.
-type WorkspaceReader struct{ root *os.Root }
+// provider's own file-edit tool, which the session's trace confines. It also
+// serves the snapshot's read-only inputs, held in memory.
+type WorkspaceReader struct {
+	root   *os.Root
+	inputs map[string][]byte
+}
 
-func NewWorkspaceReader(dir string) (*WorkspaceReader, error) {
+// NewWorkspaceReader serves dir and, under their absolute names, inputs.
+func NewWorkspaceReader(dir string, inputs map[string][]byte) (*WorkspaceReader, error) {
 	st, err := os.Stat(dir)
 	if err != nil || !st.IsDir() || !filepath.IsAbs(dir) {
 		return nil, errors.New("workspace must be an absolute directory")
+	}
+	for name, data := range inputs {
+		if name != PriorInputPath && name != FindingsInputPath {
+			return nil, fmt.Errorf("unknown read-only input %q", name)
+		}
+		if !capture.Text(data) {
+			return nil, fmt.Errorf("read-only input %s is not text", name)
+		}
 	}
 	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return nil, err
 	}
-	return &WorkspaceReader{root: root}, nil
+	return &WorkspaceReader{root: root, inputs: inputs}, nil
 }
 
 func (w *WorkspaceReader) Close() error { return w.root.Close() }
@@ -119,11 +162,17 @@ func (w *WorkspaceReader) paths() ([]string, error) {
 		}
 		return nil
 	})
+	for name := range w.inputs {
+		names = append(names, name)
+	}
 	sort.Strings(names)
 	return names, err
 }
 
 func (w *WorkspaceReader) read(name string) ([]byte, error) {
+	if data, ok := w.inputs[name]; ok {
+		return data, nil
+	}
 	if !capture.SafePath(name) {
 		return nil, errors.New("path is outside the workspace")
 	}
@@ -146,15 +195,16 @@ func (w *WorkspaceReader) Call(tool string, args json.RawMessage) (any, error) {
 }
 
 var workspaceTools = session.TextTools(session.TextToolDescriptions{
-	List:   "List files in the writable workspace: the repository at the snapshot's base commit, including your edits so far.",
-	Read:   "Read numbered UTF-8 lines from a workspace file, reflecting your edits so far. Binary files return a limitation. Use next_line to continue.",
-	Search: "Find literal text in workspace files; returns file/line locations. Binary files are skipped. Use prefix to narrow and next_offset when more is true.",
+	List:   "List files in the writable workspace: the repository at the snapshot's base commit, including your edits so far. Read-only inputs, when present, are listed under /input/ and are not in the workspace.",
+	Read:   "Read numbered UTF-8 lines from a workspace file, reflecting your edits so far, or from a read-only input under /input/. Binary files return a limitation. Use next_line to continue.",
+	Search: "Find literal text in workspace files and read-only inputs; returns file/line locations. Binary files are skipped. Use prefix to narrow and next_offset when more is true.",
 })
 
 // ServeWorkspaceTools is the private stdio MCP server the provider uses to
-// inspect the workspace. It has no credentials, execution or write operations.
-func ServeWorkspaceTools(dir string, in io.Reader, out io.Writer) error {
-	w, err := NewWorkspaceReader(dir)
+// inspect the workspace and the snapshot's read-only inputs. It has no
+// credentials, execution or write operations.
+func ServeWorkspaceTools(dir string, inputs map[string][]byte, in io.Reader, out io.Writer) error {
+	w, err := NewWorkspaceReader(dir, inputs)
 	if err != nil {
 		return err
 	}

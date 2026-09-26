@@ -65,7 +65,7 @@ func TestEditOnlyTraceVocabulary(t *testing.T) {
 
 func TestImplementCommandIsEditOnly(t *testing.T) {
 	opts := WorkerOptions{Model: "model-x", ToolsCommand: "/usr/local/bin/jb-review-worker"}
-	args := strings.Join(session.Codex{}.Command(implementPolicy(opts, "/rt/s/workspace", "/rt/s/schema.json", "/rt/s/assessment.json")), " ")
+	args := strings.Join(session.Codex{}.Command(implementPolicy(opts, "/rt/s/workspace", "", "/rt/s/schema.json", "/rt/s/assessment.json")), " ")
 	for _, want := range []string{
 		"--sandbox workspace-write", "--cd /rt/s/workspace", `features.apply_patch_freeform=true`,
 		`features.shell_tool=false`, `features.unified_exec=false`, `features.js_repl=false`, `web_search="disabled"`,
@@ -90,7 +90,7 @@ func TestWorkspaceReaderIsConfined(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(dir, "escape")); err != nil {
 		t.Fatal(err)
 	}
-	w, err := NewWorkspaceReader(dir)
+	w, err := NewWorkspaceReader(dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestWorkspaceToolsFraming(t *testing.T) {
 		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read","arguments":{"path":"parser.go"}}}`,
 	}, "\n") + "\n"
 	var out bytes.Buffer
-	if err := ServeWorkspaceTools(dir, strings.NewReader(input), &out); err != nil {
+	if err := ServeWorkspaceTools(dir, nil, strings.NewReader(input), &out); err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")

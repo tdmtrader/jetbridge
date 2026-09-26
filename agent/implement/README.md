@@ -30,8 +30,11 @@ jb implement submit --target YOUR_TARGET --team YOUR_TEAM --template implement \
 files. The snapshot holds `manifest.json`, `brief.md` and the full base tree
 under `base/`, read from raw Git objects with the same rules and limits as a
 review capture (no submodules or LFS pointers, 16 MiB per file, 256 MiB in
-total, a 256 KiB brief). Submission packages it under `snapshot/` in the Run
-input; the template reads `source/snapshot`.
+total, a 256 KiB brief), plus `prior.patch` and `findings.json` when it
+carries a prior change or review findings (see
+[Iterating](#iterating-a-prior-change-and-review-findings)). Submission
+packages it under `snapshot/` in the Run input; the template reads
+`source/snapshot`.
 
 The submission receipt behaves as it does for review: it must be outside the
 snapshot, it keeps only the destination, the input digest, the workload name
@@ -94,6 +97,43 @@ jb review capture --repo /path/to/repo --base BASE_COMMIT --head impl/run-41 \
 ```
 
 reviews exactly what the agent wrote.
+
+## Iterating: a prior change and review findings
+
+A Run is never reopened. To iterate, capture a new snapshot of the same base
+that carries what came before:
+
+```sh
+jb implement capture --repo /path/to/repo --base BASE_COMMIT --brief /path/to/brief.md \
+  --output /path/outside/repo/snapshot-2 \
+  --target YOUR_TARGET --team YOUR_TEAM --template implement --prior-run 1 \
+  --review-template review --findings-run 3
+```
+
+`--prior-run` retrieves an implement Run's change exactly as `jb implement
+result` does, and `--findings-run` a review Run's report exactly as `jb review
+result` does: each archive is verified against its Run's immutable binding and
+its `run_id` against the Run before anything is sealed. `--prior-dir` takes a
+change already on disk instead (from `result --output`, or a local worker
+run), read as `apply --result-dir` reads it. Capture refuses a prior change
+whose base is not `--base` or whose patch does not apply exactly to it, and
+findings from a review whose range neither starts nor ends at `--base`.
+
+The snapshot then also holds `prior.patch` (the change, byte for byte) and
+`findings.json` (the review's `assessment.findings`, in the published
+`review/v1` encoding; this workload reads nothing else of the review). Their
+digests, and the IDs of the Runs they were verified against (`prior_run`,
+`findings_run`), are in the manifest, so they are part of the input digest. A
+prior change read from disk records no Run. A snapshot carrying neither has
+exactly the manifest, and so the digest, it had before these fields existed.
+
+The session starts from the base with the prior change already applied, and
+the workspace tools serve both files read-only as `/input/prior.patch` and
+`/input/findings.json`, outside the workspace, where no edit can reach them.
+The published patch is still against the base: it carries the prior change
+forward, and applies and validates on its own. The summary's provenance
+records `prior_run` and `findings_run` from the manifest, and a summary whose
+Runs differ from its snapshot's is refused.
 
 ## Local MCP
 

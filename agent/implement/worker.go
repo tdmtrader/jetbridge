@@ -115,9 +115,13 @@ func runInRuntime(ctx context.Context, opts WorkerOptions) (*Summary, error) {
 	if err != nil {
 		return nil, err
 	}
+	start, err := snapshot.start(base)
+	if err != nil {
+		return nil, err
+	}
 	ctx, stop := session.Bound(ctx, opts.Timeout, opts.Auth)
 	defer stop()
-	edited, assessment, version, err := implementSession(ctx, opts, base, brief, runtimeDir)
+	edited, assessment, version, err := implementSession(ctx, opts, snapshot, start, brief, runtimeDir)
 	if err != nil {
 		return nil, err
 	}
@@ -169,14 +173,38 @@ func runInRuntime(ctx context.Context, opts WorkerOptions) (*Summary, error) {
 	return summary, nil
 }
 
-const implementInstructions = "\n\nUse only the workspace MCP list/read/search tools to inspect the repository, and only your file-edit tool to change it. If Code Mode is the tool interface, use it only to call these tools and read their results; never evaluate repository code. Paths are relative to the workspace root, which is your working directory. Do not invoke any shell, repository code execution, web or other tools. Finish with the assessment using the supplied schema.\n\n## Brief\n\n"
+const implementInstructions = "\n\nUse only the workspace MCP list/read/search tools to inspect the repository, and only your file-edit tool to change it. If Code Mode is the tool interface, use it only to call these tools and read their results; never evaluate repository code. Paths are relative to the workspace root, which is your working directory. Do not invoke any shell, repository code execution, web or other tools. Finish with the assessment using the supplied schema.\n"
+
+const (
+	priorInstructions    = "\nThe workspace already contains a prior change, applied to the base: read it as the patch " + PriorInputPath + ". Build on it; your patch is published against the base and carries it forward.\n"
+	findingsInstructions = "\nA review of the prior work reported findings: read them as the JSON array " + FindingsInputPath + ". Address each one, or say in limitations why it was not addressed.\n"
+)
+
+// instructions are the fixed session instructions, naming the read-only
+// inputs the snapshot carries.
+func instructions(s *Snapshot) string {
+	text := implementInstructions
+	if s.Manifest.PriorPatchDigest != nil {
+		text += priorInstructions
+	}
+	if s.Manifest.FindingsDigest != nil {
+		text += findingsInstructions
+	}
+	return text + "\n## Brief\n\n"
+}
 
 // implementPolicy is edit-only: the file-edit tool confined to the
-// workspace, plus the workspace reader. Nothing executes.
-func implementPolicy(opts WorkerOptions, workspace, schema, output string) session.Policy {
+// workspace, plus the workspace reader. Nothing executes. When the snapshot
+// carries a prior change or review findings, the reader also serves them,
+// read-only, from the sealed snapshot at snapshotDir.
+func implementPolicy(opts WorkerOptions, workspace, snapshotDir, schema, output string) session.Policy {
+	args := []string{"workspace-tools", "--root", workspace}
+	if snapshotDir != "" {
+		args = append(args, "--snapshot", snapshotDir)
+	}
 	return session.Policy{
 		Model: opts.Model, WorkDir: workspace, Edit: true,
-		Tools:        session.ToolServer{Name: WorkspaceServer, Command: opts.ToolsCommand, Args: []string{"workspace-tools", "--root", workspace}, Tools: []string{"list", "read", "search"}},
+		Tools:        session.ToolServer{Name: WorkspaceServer, Command: opts.ToolsCommand, Args: args, Tools: []string{"list", "read", "search"}},
 		OutputSchema: schema, LastMessage: output,
 	}
 }
@@ -184,7 +212,7 @@ func implementPolicy(opts WorkerOptions, workspace, schema, output string) sessi
 // implementSession returns the edited workspace and the model's assessment.
 // Both are read into memory before the session, and with it the credential
 // and the workspace, is destroyed.
-func implementSession(ctx context.Context, opts WorkerOptions, base Tree, brief []byte, parent string) (edited Tree, assessment []byte, version string, err error) {
+func implementSession(ctx context.Context, opts WorkerOptions, snapshot *Snapshot, start Tree, brief []byte, parent string) (edited Tree, assessment []byte, version string, err error) {
 	s, err := session.Open(ctx, session.Options{RuntimeDir: parent, Provider: session.Codex{}, Executable: opts.Codex, Auth: opts.Auth})
 	if err != nil {
 		return nil, nil, "", err
@@ -199,7 +227,7 @@ func implementSession(ctx context.Context, opts WorkerOptions, base Tree, brief 
 	if err != nil {
 		return nil, nil, "", err
 	}
-	if err := populateWorkspace(workspace, base); err != nil {
+	if err := populateWorkspace(workspace, start); err != nil {
 		return nil, nil, "", err
 	}
 	schemaPath := filepath.Join(s.Dir, "assessment.schema.json")
@@ -207,8 +235,12 @@ func implementSession(ctx context.Context, opts WorkerOptions, base Tree, brief 
 	if err := os.WriteFile(schemaPath, AssessmentSchema(), 0600); err != nil {
 		return nil, nil, "", err
 	}
-	prompt := string(opts.Profile) + implementInstructions + string(brief)
-	if err := s.Run(ctx, implementPolicy(opts, workspace, schemaPath, assessmentPath), prompt, editItem(workspace)); err != nil {
+	snapshotDir := ""
+	if snapshot.Manifest.PriorPatchDigest != nil || snapshot.Manifest.FindingsDigest != nil {
+		snapshotDir = snapshot.Dir
+	}
+	prompt := string(opts.Profile) + instructions(snapshot) + string(brief)
+	if err := s.Run(ctx, implementPolicy(opts, workspace, snapshotDir, schemaPath, assessmentPath), prompt, editItem(workspace)); err != nil {
 		return nil, nil, "", err
 	}
 	assessment, err = capture.ReadFileBounded(assessmentPath, capture.MaxFileBytes)

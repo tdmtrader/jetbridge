@@ -34,3 +34,12 @@ Feature: Producing a patch from an edit-only session without retaining session c
     When the implement worker receives model output "edit"
     Then the published change applies as a local commit on a new branch
     And the existing change is protected from a second invocation
+
+  Scenario: A session reads review findings it was given and records the review Run
+    Given the implementation snapshot is recaptured carrying the findings of review Run 3
+    When the implement worker receives model output "edit"
+    Then the published change applies as a local commit on a new branch
+    And the model read the review findings through the workspace tools
+    And the published change records review Run 3 as the findings it addresses
+    And the implement session leaves no credential files or credential-bearing output
+    And the captured implementation snapshot is unchanged

@@ -2,10 +2,13 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -126,7 +129,11 @@ func implement(mode, cd, out string) {
 	os.WriteFile(filepath.Join(cd, "parser.go"), []byte("package parser\nfunc First(s string) byte { return s[0] }\n"), 0600)
 	os.WriteFile(filepath.Join(cd, "parser_test.go"), []byte("package parser\n\nimport \"testing\"\n\nfunc TestFirst(t *testing.T) {\n\tif First(\"ab\") != 'a' {\n\t\tt.Fatal(\"wrong byte\")\n\t}\n}\n"), 0644)
 	os.Remove(filepath.Join(cd, "deleted.txt"))
-	assessment, _ := json.Marshal(map[string]any{"summary": "Return the first byte and cover it with a test.", "complete": true, "limitations": []string{}})
+	summary := "Return the first byte and cover it with a test."
+	if addressed := readFindings(); addressed != "" {
+		summary += " Addressed review finding: " + addressed + "."
+	}
+	assessment, _ := json.Marshal(map[string]any{"summary": summary, "complete": true, "limitations": []string{}})
 	os.WriteFile(out, assessment, 0600)
 	fmt.Println(`{"type":"thread.started","thread_id":"fixture"}`)
 	fmt.Println(`{"type":"turn.started"}`)
@@ -148,4 +155,79 @@ func implement(mode, cd, out string) {
 	fmt.Println(string(event))
 	fmt.Println(`{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"Done."}}`)
 	fmt.Println(`{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}`)
+}
+
+// readFindings reads review findings the way the model would: it starts the
+// workspace tool server exactly as the worker configured it and reads
+// /input/findings.json through its read tool. It returns the first finding's
+// title, or "" when the worker served no read-only inputs. A server that
+// fails, or lists findings it cannot read, stops the provider so the worker
+// publishes nothing.
+func readFindings() string {
+	command, args := "", []string(nil)
+	for i, a := range os.Args {
+		if i == 0 || os.Args[i-1] != "-c" {
+			continue
+		}
+		if v, ok := strings.CutPrefix(a, "mcp_servers.workspace.command="); ok {
+			json.Unmarshal([]byte(v), &command)
+		}
+		if v, ok := strings.CutPrefix(a, "mcp_servers.workspace.args="); ok {
+			json.Unmarshal([]byte(v), &args)
+		}
+	}
+	if !slices.Contains(args, "--snapshot") {
+		return ""
+	}
+	server := exec.Command(command, args...)
+	in, _ := server.StdinPipe()
+	out, _ := server.StdoutPipe()
+	if server.Start() != nil {
+		os.Exit(44)
+	}
+	defer func() { in.Close(); server.Wait() }()
+	replies := bufio.NewScanner(out)
+	replies.Buffer(make([]byte, 1<<20), 16<<20)
+	call := func(id int, method string, params any) json.RawMessage {
+		request, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+		fmt.Fprintf(in, "%s\n", request)
+		if !replies.Scan() {
+			os.Exit(45)
+		}
+		var reply struct {
+			Result json.RawMessage `json:"result"`
+		}
+		json.Unmarshal(replies.Bytes(), &reply)
+		return reply.Result
+	}
+	tool := func(id int, name string, arguments map[string]any) string {
+		var result struct {
+			Content []struct{ Text string } `json:"content"`
+			IsError bool                    `json:"isError"`
+		}
+		json.Unmarshal(call(id, "tools/call", map[string]any{"name": name, "arguments": arguments}), &result)
+		if result.IsError || len(result.Content) != 1 {
+			os.Exit(46)
+		}
+		return result.Content[0].Text
+	}
+	call(1, "initialize", map[string]any{"protocolVersion": "2025-06-18"})
+	var listed struct{ Paths []string }
+	json.Unmarshal([]byte(tool(2, "list", map[string]any{"prefix": "/input/"})), &listed)
+	if !slices.Contains(listed.Paths, "/input/findings.json") {
+		return ""
+	}
+	var read struct{ Text string }
+	json.Unmarshal([]byte(tool(3, "read", map[string]any{"path": "/input/findings.json", "limit": 500})), &read)
+	// read numbers each line; strip "N: " to recover the JSON.
+	var text strings.Builder
+	for _, line := range strings.Split(strings.TrimSuffix(read.Text, "\n"), "\n") {
+		_, rest, _ := strings.Cut(line, ": ")
+		text.WriteString(rest + "\n")
+	}
+	var findings []struct{ Title string }
+	if json.Unmarshal([]byte(text.String()), &findings) != nil || len(findings) == 0 || findings[0].Title == "" {
+		os.Exit(47)
+	}
+	return findings[0].Title
 }

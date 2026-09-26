@@ -38,6 +38,13 @@ func (s *Snapshot) WriteRunInputArchive(ctx context.Context, destination io.Writ
 		return err
 	}
 	expected := map[string]string{"manifest.json": capture.Digest(manifest), "brief.md": current.Manifest.BriefDigest}
+	limits := map[string]int64{"brief.md": MaxBriefBytes}
+	if d := current.Manifest.PriorPatchDigest; d != nil {
+		expected[PriorFile], limits[PriorFile] = *d, MaxPatchBytes
+	}
+	if d := current.Manifest.FindingsDigest; d != nil {
+		expected[FindingsFile], limits[FindingsFile] = *d, MaxFindingsBytes
+	}
 	for _, file := range current.Manifest.Files {
 		expected["base/"+file.Path] = file.Digest
 	}
@@ -53,9 +60,9 @@ func (s *Snapshot) WriteRunInputArchive(ctx context.Context, destination io.Writ
 		}
 		data := manifest
 		if name != "manifest.json" {
-			limit := int64(capture.MaxFileBytes)
-			if name == "brief.md" {
-				limit = MaxBriefBytes
+			limit, bounded := limits[name]
+			if !bounded {
+				limit = capture.MaxFileBytes
 			}
 			data, err = capture.ReadRootFile(root, name, limit)
 			if err != nil {

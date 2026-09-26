@@ -18,6 +18,7 @@ import (
 
 	"github.com/brine-dev/brine-go/pkg/brine"
 	"github.com/concourse/concourse/agent/implement"
+	"github.com/concourse/concourse/agent/review"
 )
 
 type ImplementChange struct {
@@ -52,6 +53,13 @@ func ImplementWorkerDefinitions() []brine.StepDefinition {
 			r.Digest = reply.Digest
 			return in, nil
 		}),
+		brine.DefineMap[ImplementChange, ImplementChange](recaptureWithFindings, func(in ImplementChange, p brine.Params, _ *brine.Recorder) (ImplementChange, error) {
+			run, err := intAt(recaptureWithFindings, p, 0)
+			if err != nil {
+				return in, err
+			}
+			return in.recaptureWithFindings(run)
+		}),
 		brine.DefineMap[ImplementChange, ImplementChange]("the implement worker receives model output {string}", func(in ImplementChange, p brine.Params, _ *brine.Recorder) (ImplementChange, error) {
 			mode, _ := p.GetString(0)
 			return in.runWorker(mode)
@@ -73,6 +81,32 @@ func ImplementWorkerDefinitions() []brine.StepDefinition {
 		CheckThat[ImplementChange]("the captured implementation snapshot is unchanged", func(in ImplementChange) error {
 			_, err := in.snapshot()
 			return err
+		}),
+		CheckThat[ImplementChange]("the model read the review findings through the workspace tools", func(in ImplementChange) error {
+			summary, _, err := implement.ReadResult(in.Review.Output)
+			if err != nil {
+				return err
+			}
+			// The fake provider reads /input/findings.json from the tool
+			// server the worker configured and echoes the first title.
+			if want := "Addressed review finding: " + brineFindingTitle + "."; !strings.Contains(summary.Summary, want) {
+				return fmt.Errorf("summary %q does not show the findings were read", summary.Summary)
+			}
+			return nil
+		}),
+		check[ImplementChange](recordsFindingsRun, func(in ImplementChange, p brine.Params) error {
+			run, err := intAt(recordsFindingsRun, p, 0)
+			if err != nil {
+				return err
+			}
+			summary, _, err := implement.ReadResult(in.Review.Output)
+			if err != nil {
+				return err
+			}
+			if got := summary.Provenance.FindingsRun; got == nil || *got != run || summary.Provenance.PriorRun != nil {
+				return fmt.Errorf("provenance records findings_run %v and prior_run %v, want %d and none", got, summary.Provenance.PriorRun, run)
+			}
+			return nil
 		}),
 		CheckThat[ImplementChange]("the existing change is protected from a second invocation", func(in ImplementChange) error {
 			before := map[string][]byte{}
@@ -102,6 +136,43 @@ func ImplementWorkerDefinitions() []brine.StepDefinition {
 			return reviewNoCredentials(after.Review)
 		}),
 	}
+}
+
+const (
+	recaptureWithFindings = "the implementation snapshot is recaptured carrying the findings of review Run {int}"
+	recordsFindingsRun    = "the published change records review Run {int} as the findings it addresses"
+	brineFindingTitle     = "Incorrect first-byte handling"
+)
+
+// recaptureWithFindings replaces the snapshot with one of the same base and
+// brief that also carries one review/v1 finding from review Run run.
+// Retrieving and verifying findings from a review Run needs a platform, which
+// this tier does not have; `jb implement capture --findings-run` is covered by
+// the jb command's tests. The verified findings are sealed here through the
+// same capture function the command calls.
+func (in ImplementChange) recaptureWithFindings(run int) (ImplementChange, error) {
+	r := &in.Review
+	if err := os.RemoveAll(r.Input); err != nil {
+		return in, err
+	}
+	findings, err := json.MarshalIndent([]review.Finding{{
+		ID: "f-001", Severity: "high", Dimension: "correctness", Title: brineFindingTitle,
+		Explanation: "First returns the second byte.", Recommendation: "Return s[0].",
+		Location: review.Location{Side: "head", Path: "parser.go", StartLine: 2, EndLine: 2},
+	}}, "", "  ")
+	if err != nil {
+		return in, err
+	}
+	s, err := implement.CaptureSnapshot(context.Background(), implement.CaptureOptions{Repo: r.Repo, Base: r.Base, Brief: in.Brief, Output: r.Input,
+		Findings: &implement.ReviewFindings{JSON: findings, RunID: run, ReviewedBase: r.Base, ReviewedHead: r.Head}})
+	if err != nil {
+		return in, err
+	}
+	if s.Manifest.FindingsRun == nil || *s.Manifest.FindingsRun != run {
+		return in, errors.New("snapshot does not bind the review Run")
+	}
+	r.Digest = s.Digest
+	return in, nil
 }
 
 func newImplementChange(res brine.Resources) (ImplementChange, error) {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/concourse/concourse/agent/implement"
 	implementclient "github.com/concourse/concourse/agent/implement/client"
+	reviewclient "github.com/concourse/concourse/agent/review/client"
 )
 
 func implementCommand(ctx context.Context, args []string, out, stderr io.Writer) error {
@@ -39,17 +41,104 @@ func implementCapture(ctx context.Context, f *flag.FlagSet, args []string, out i
 	f.StringVar(&opts.Base, "base", "HEAD", "base commit/ref the change is made against")
 	f.StringVar(&opts.Brief, "brief", "", "local brief describing the change (required)")
 	f.StringVar(&opts.Output, "output", "", "new snapshot directory outside the repository (required)")
+	// A later submission carries what came before as inputs; no Run is
+	// reopened. Both are verified before they are sealed into the snapshot.
+	var destination implementDestination
+	destination.flags(f)
+	priorRun := f.Int("prior-run", 0, "number of a completed implement Run whose verified change this snapshot builds on (needs --target)")
+	priorDir := f.String("prior-dir", "", "published change directory (change.patch and summary.json) this snapshot builds on")
+	findingsRun := f.Int("findings-run", 0, "number of a completed review Run whose verified findings this snapshot addresses (needs --target)")
+	reviewTemplate := f.String("review-template", "review", "installed review template --findings-run names a Run of")
 	if err := f.Parse(args); err != nil {
 		return err
 	}
 	if f.NArg() != 0 || opts.Brief == "" || opts.Output == "" {
 		return errors.New("capture requires --brief and --output and takes no positional arguments")
 	}
+	if *priorRun < 0 || *findingsRun < 0 || (*priorRun > 0 && *priorDir != "") {
+		return errors.New("capture takes at most one of --prior-run or --prior-dir, and positive Run numbers")
+	}
+	if (*priorRun > 0 || *findingsRun > 0) && (destination.target == "" || destination.template == "" || *reviewTemplate == "") {
+		return errors.New("--prior-run and --findings-run require --target")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	var err error
+	switch {
+	case *priorRun > 0:
+		opts.Prior, err = priorFromRun(ctx, destination, *priorRun)
+	case *priorDir != "":
+		opts.Prior, err = priorFromDir(*priorDir)
+	}
+	if err != nil {
+		return err
+	}
+	if *findingsRun > 0 {
+		if opts.Findings, err = findingsFromRun(ctx, destination.target, destination.team, *reviewTemplate, *findingsRun); err != nil {
+			return err
+		}
+	}
 	snapshot, err := implement.CaptureSnapshot(ctx, opts)
 	if err != nil {
 		return err
 	}
-	return json.NewEncoder(out).Encode(map[string]string{"input": snapshot.Dir, "input_digest": snapshot.Digest, "base_commit": snapshot.Manifest.BaseCommit})
+	captured := map[string]any{"input": snapshot.Dir, "input_digest": snapshot.Digest, "base_commit": snapshot.Manifest.BaseCommit}
+	if m := snapshot.Manifest; m.PriorPatchDigest != nil {
+		captured["prior_patch_digest"] = *m.PriorPatchDigest
+		if m.PriorRun != nil {
+			captured["prior_run"] = *m.PriorRun
+		}
+	}
+	if m := snapshot.Manifest; m.FindingsDigest != nil {
+		captured["findings_digest"], captured["findings_run"] = *m.FindingsDigest, *m.FindingsRun
+	}
+	return json.NewEncoder(out).Encode(captured)
+}
+
+// priorFromRun retrieves an implement Run's change exactly as `jb implement
+// result` does: verified against the Run's binding, its run_id and its patch
+// digest. The snapshot records the Run's ID.
+func priorFromRun(ctx context.Context, destination implementDestination, number int) (*implement.PriorChange, error) {
+	change, err := fetchChange(ctx, destination, number, implementclient.ChangeResult)
+	if err != nil {
+		return nil, fmt.Errorf("prior change from Run %d: %w", number, err)
+	}
+	id := change.RunID()
+	return &implement.PriorChange{Summary: change.Summary, Patch: []byte(change.Patch), RunID: &id}, nil
+}
+
+// priorFromDir reads a published change from disk as `jb implement apply
+// --result-dir` does. Nothing confirms which Run wrote it, so the snapshot
+// records none.
+func priorFromDir(dir string) (*implement.PriorChange, error) {
+	summary, patch, err := implement.ReadResult(dir)
+	if err != nil {
+		return nil, fmt.Errorf("prior change: %w", err)
+	}
+	return &implement.PriorChange{Summary: summary, Patch: patch}, nil
+}
+
+// findingsFromRun retrieves a review Run's report exactly as `jb review
+// result` does, verified against the Run's binding and its run_id, and keeps
+// only its findings in the published review/v1 encoding.
+func findingsFromRun(ctx context.Context, target, team, template string, number int) (*implement.ReviewFindings, error) {
+	client, selectedTeam, err := platformClient(target, team)
+	if err != nil {
+		return nil, err
+	}
+	report, err := client.Result(ctx, reviewclient.Handle{Team: selectedTeam, Template: template, Number: number}, reviewclient.FindingsResult)
+	if err != nil {
+		return nil, fmt.Errorf("review findings from Run %d: %w", number, err)
+	}
+	if report.RunID == nil {
+		return nil, errors.New("review report does not name its Run")
+	}
+	findings, err := json.MarshalIndent(report.Assessment.Findings, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return &implement.ReviewFindings{JSON: append(findings, '\n'), RunID: *report.RunID,
+		ReviewedBase: report.Provenance.BaseCommit, ReviewedHead: report.Provenance.HeadCommit}, nil
 }
 
 // implementDestination is the platform selection every remote implement
