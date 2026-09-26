@@ -980,8 +980,8 @@ jobs:
           # pipeline access.
           #
           # The ATC's redactor does not help here. It masks values it saw being
-          # interpolated from a credential manager (that is what makes
-          # ((github-token)) safe in the release task); a token read off the
+          # interpolated from a credential manager (that is what makes the
+          # release task's github-token var safe); a token read off the
           # projected volume at runtime was never interpolated, so the tracker
           # has never seen the string and cannot mask it.
           #
