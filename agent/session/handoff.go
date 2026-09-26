@@ -1,4 +1,4 @@
-package review
+package session
 
 import (
 	"bufio"
@@ -24,7 +24,7 @@ func ListenCredentialHandoff(ctx context.Context, runtimeDir, path string, runID
 	if runID <= 0 || timeout <= 0 {
 		return nil, errors.New("positive Run ID and handoff timeout are required")
 	}
-	if err := requireMemoryRuntime(runtimeDir); err != nil {
+	if err := RequireMemoryRuntime(runtimeDir); err != nil {
 		return nil, err
 	}
 	parent, err := filepath.EvalSymlinks(runtimeDir)
@@ -168,7 +168,7 @@ func SendCredentialHandoff(ctx context.Context, path string, runID int, auth io.
 	defer stop()
 	data, err := io.ReadAll(io.LimitReader(auth, (64<<10)+1))
 	defer clear(data)
-	if err != nil || len(data) > 64<<10 || !subscriptionAuth(data) {
+	if err != nil || len(data) > 64<<10 || (Codex{}).CheckAuth(data) != nil {
 		return errors.New("valid Codex subscription auth.json required")
 	}
 	// A signed execution start can precede the worker opening its socket.

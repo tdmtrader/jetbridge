@@ -49,7 +49,7 @@ func ReviewResourceDefinitions() []brine.ResourceDefinition {
 					return nil, err
 				}
 				for {
-					if _, err := os.Stat(filepath.Join(root, "agent/review/codex-version")); err == nil {
+					if _, err := os.Stat(filepath.Join(root, "agent/session/codex-version")); err == nil {
 						break
 					}
 					parent := filepath.Dir(root)

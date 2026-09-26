@@ -17,7 +17,7 @@ func main() {
 		fmt.Println("codex-cli " + review.CodexVersion())
 		return
 	}
-	mode, out := "", ""
+	mode, out, cd := "", "", ""
 	for i, a := range os.Args {
 		if i+1 < len(os.Args) {
 			if a == "--model" {
@@ -25,6 +25,9 @@ func main() {
 			}
 			if a == "--output-last-message" {
 				out = os.Args[i+1]
+			}
+			if a == "--cd" {
+				cd = os.Args[i+1]
 			}
 		}
 	}
@@ -67,6 +70,10 @@ func main() {
 		fmt.Println(`{"type":"turn.completed"}`)
 		return
 	}
+	if implementModes[mode] {
+		implement(mode, cd, out)
+		return
+	}
 	if mode == "forbidden" {
 		fmt.Println(`{"type":"item.started","item":{"type":"command_execution","command":"go test ./..."}}`)
 	}
@@ -103,4 +110,40 @@ func main() {
 	fmt.Println(`{"type":"turn.started"}`)
 	fmt.Println(`{"type":"item.completed","item":{"type":"mcp_tool_call","server":"review_input","tool":"read","status":"completed"}}`)
 	fmt.Println(`{"type":"turn.completed"}`)
+}
+
+// Implement modes edit the workspace (the working directory) the way Codex's
+// file-edit tool does, then report the edit. The refused modes make the same
+// edits, so only the worker's policy can keep them from being published.
+var implementModes = map[string]bool{"edit": true, "edit-outside-scratch": true, "forbidden-shell": true, "malformed-edit": true}
+
+func implement(mode, cd, out string) {
+	if cd == "" {
+		os.Exit(43)
+	}
+	os.WriteFile(filepath.Join(cd, "parser.go"), []byte("package parser\nfunc First(s string) byte { return s[0] }\n"), 0600)
+	os.WriteFile(filepath.Join(cd, "parser_test.go"), []byte("package parser\n\nimport \"testing\"\n\nfunc TestFirst(t *testing.T) {\n\tif First(\"ab\") != 'a' {\n\t\tt.Fatal(\"wrong byte\")\n\t}\n}\n"), 0644)
+	os.Remove(filepath.Join(cd, "deleted.txt"))
+	assessment, _ := json.Marshal(map[string]any{"summary": "Return the first byte and cover it with a test.", "complete": true, "limitations": []string{}})
+	os.WriteFile(out, assessment, 0600)
+	fmt.Println(`{"type":"thread.started","thread_id":"fixture"}`)
+	fmt.Println(`{"type":"turn.started"}`)
+	fmt.Println(`{"type":"item.completed","item":{"id":"item_0","type":"mcp_tool_call","server":"workspace","tool":"read","status":"completed"}}`)
+	changes := []map[string]string{
+		{"path": filepath.Join(cd, "parser.go"), "kind": "update"},
+		{"path": "parser_test.go", "kind": "add"},
+		{"path": filepath.Join(cd, "deleted.txt"), "kind": "delete"},
+	}
+	switch mode {
+	case "edit-outside-scratch":
+		changes = append(changes, map[string]string{"path": filepath.Join(cd, "..", "codex", "auth.json"), "kind": "update"})
+	case "forbidden-shell":
+		fmt.Println(`{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"go test ./...","status":"in_progress"}}`)
+	case "malformed-edit":
+		changes = append(changes, map[string]string{"kind": "update"})
+	}
+	event, _ := json.Marshal(map[string]any{"type": "item.completed", "item": map[string]any{"id": "item_2", "type": "file_change", "changes": changes, "status": "completed"}})
+	fmt.Println(string(event))
+	fmt.Println(`{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"Done."}}`)
+	fmt.Println(`{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}`)
 }

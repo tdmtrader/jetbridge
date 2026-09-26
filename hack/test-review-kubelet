@@ -42,7 +42,7 @@ docker pull "$test_image"
 docker build --build-arg TARGETARCH=amd64 -f "$root/repo/deploy/Dockerfile.review-worker" \
   -t brine-review-worker:production "$root/repo"
 version=$(docker run --rm --entrypoint /usr/local/bin/codex brine-review-worker:production --version)
-test "$version" = "codex-cli $(cat "$root/repo/agent/review/codex-version")"
+test "$version" = "codex-cli $(cat "$root/repo/agent/session/codex-version")"
 docker run --rm --read-only --entrypoint /usr/local/bin/codex-code-mode-host \
   brine-review-worker:production --help >/dev/null
 mkdir -p "$work/fixture"

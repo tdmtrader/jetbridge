@@ -338,6 +338,16 @@ var agenticCoreReach = map[string][]string{
 	"atc/agent/composition": {"atc", "atc/runs"},
 	// Artifact-only review contract: it does not reach into the CI runtime.
 	"agent/review": {},
+	// Sealed Git capture shared by every detached input format. Git and the
+	// filesystem only.
+	"agent/capture": {},
+	// The provider session: tmpfs credential staging, the pinned Codex, the
+	// closed event vocabulary. It runs inside the worker image and knows
+	// nothing of Runs.
+	"agent/session": {},
+	// Artifact-only implementation contract: snapshot, edit-only worker,
+	// patch and local apply. Like agent/review, no core reach.
+	"agent/implement": {},
 	// The workload-neutral detached Run client: public Run values and the shared
 	// canonical archive verifier. No storage client.
 	"agent/detached": {"atc", "hangar"},

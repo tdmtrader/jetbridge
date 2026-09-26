@@ -1,4 +1,4 @@
-package review
+package session
 
 import "os/exec"
 

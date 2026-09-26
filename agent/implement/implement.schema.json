@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "JetBridge detached implementation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "provenance",
+    "summary",
+    "complete",
+    "changed_files",
+    "limitations",
+    "patch_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "implement/v1"
+    },
+    "run_id": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "input_digest",
+        "base_commit",
+        "profile_digest",
+        "provider",
+        "codex_version",
+        "model_requested",
+        "execution_policy"
+      ],
+      "properties": {
+        "input_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "base_commit": {
+          "type": "string",
+          "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"
+        },
+        "profile_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "provider": {
+          "enum": [
+            "codex"
+          ]
+        },
+        "codex_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model_requested": {
+          "type": "string",
+          "minLength": 1
+        },
+        "execution_policy": {
+          "const": "edit-only"
+        }
+      }
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "complete": {
+      "type": "boolean"
+    },
+    "changed_files": {
+      "type": "array",
+      "description": "Derived by the worker from the patch, never from the model.",
+      "items": {
+        "$ref": "#/$defs/changed_file"
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "patch_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 of change.patch, published beside this summary."
+    }
+  },
+  "$defs": {
+    "changed_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "status"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "enum": [
+            "added",
+            "modified",
+            "deleted"
+          ]
+        }
+      }
+    },
+    "assessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "summary",
+        "complete",
+        "limitations"
+      ],
+      "properties": {
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "description": "What you changed and why, for the developer who will review and apply the patch."
+        },
+        "complete": {
+          "type": "boolean",
+          "description": "False if the brief was not fully carried out; explain why in limitations."
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

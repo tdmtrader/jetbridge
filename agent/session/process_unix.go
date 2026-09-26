@@ -1,6 +1,6 @@
 //go:build !windows
 
-package review
+package session
 
 import (
 	"os"

@@ -151,8 +151,10 @@ review inventory. Local capture and worker paths remain unchanged.
 
 ## Running one review
 
-`codex-version` and `codex-checksums.txt` pin the supported Codex release. The
-Dockerfile verifies the release archive and uses immutable base-image digests.
+[`codex-version`](../session/codex-version) and
+[`codex-checksums.txt`](../session/codex-checksums.txt) pin the supported Codex
+release for every worker mode; the provider session in `agent/session` checks the
+pin on each run. The Dockerfile verifies the release archive and uses immutable base-image digests.
 The worker requires an explicit model; it does not choose billing or another model.
 
 ```sh
@@ -288,7 +290,7 @@ call and consumes subscription usage; never run it as an ordinary CI test.
 
 Prepare a directory with a host `jb`, Linux `jb-review-worker`, and the pinned
 Linux `codex` and companion `codex-code-mode-host` binaries verified against
-`codex-checksums.txt`. The review instructions restrict Code Mode to calls to the
+`agent/session/codex-checksums.txt`. The review instructions restrict Code Mode to calls to the
 input reader and prohibit evaluating repository code. Shell tools remain disabled,
 and the worker validates the same closed event stream.
 Build the Linux Brine

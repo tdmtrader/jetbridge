@@ -1,4 +1,5 @@
-// jb contains the artifact and remote client operations for JetBridge reviews.
+// jb contains the artifact and remote client operations for JetBridge's
+// detached agent workloads: review and implement.
 package main
 
 import (
@@ -23,10 +24,23 @@ func main() {
 	}
 }
 
+const usage = "usage: jb review capture|submit|render|schema|status|result|mcp [options]\n       jb implement capture|apply [options]"
+
 func run(ctx context.Context, args []string, out, stderr io.Writer) error {
-	if len(args) < 2 || args[0] != "review" {
-		return errors.New("usage: jb review capture|submit|render|schema|status|result|mcp [options]")
+	if len(args) < 2 {
+		return errors.New(usage)
 	}
+	switch args[0] {
+	case "review":
+		return reviewCommand(ctx, args, out, stderr)
+	case "implement":
+		return implementCommand(ctx, args, out, stderr)
+	default:
+		return errors.New(usage)
+	}
+}
+
+func reviewCommand(ctx context.Context, args []string, out, stderr io.Writer) error {
 	f := flag.NewFlagSet("jb review "+args[1], flag.ContinueOnError)
 	f.SetOutput(stderr)
 	switch args[1] {
