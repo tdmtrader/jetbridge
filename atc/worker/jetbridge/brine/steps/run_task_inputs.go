@@ -116,6 +116,42 @@ func RunTaskInputDefinitions() []brine.StepDefinition {
 				return fmt.Errorf("repeated preparation changed the inputs: %v", err)
 			}
 		}
+		if mode == "retained inputs" {
+			// Every other task of the job that routes a named input receives
+			// the same retained binding at its own slot.
+			for _, step := range definition.Materialized.Jobs[0].PlanSequence[1:] {
+				other, ok := step.Config.(*atc.TaskStep)
+				if !ok || len(other.RunInputs) == 0 {
+					continue
+				}
+				if err := prepareRoutedTask(ctx, port, buildID, in, other, spec); err != nil {
+					return fmt.Errorf("task %s: %w", other.Name, err)
+				}
+			}
+		}
 		return nil
 	})}
+}
+
+func prepareRoutedTask(ctx context.Context, port interface {
+	PrepareTask(context.Context, int, atc.TaskPlan, runtime.ContainerSpec) (runtime.ContainerSpec, error)
+}, buildID int, in RunInputAdmission, task *atc.TaskStep, base runtime.ContainerSpec) error {
+	plan := atc.TaskPlan{Name: task.Name, TaskID: task.TaskID, RunInputs: task.RunInputs, RunResult: task.RunResult, Config: task.Config}
+	spec := runtime.ContainerSpec{TeamID: base.TeamID, Dir: base.Dir, Type: base.Type}
+	for _, route := range task.RunInputs {
+		spec.Inputs = append(spec.Inputs, runtime.Input{RunInput: route.Name, DestinationPath: filepath.Join(spec.Dir, route.Input)})
+	}
+	got, err := port.PrepareTask(ctx, buildID, plan, spec)
+	if err != nil {
+		return err
+	}
+	if len(got.Inputs) != len(task.RunInputs) || got.RunTaskID != task.TaskID {
+		return fmt.Errorf("task preparation lost input routes")
+	}
+	for i, input := range got.Inputs {
+		if input.HangarTree == nil || *input.HangarTree != in.Source.Candidate.Record.Ref || input.DestinationPath != spec.Inputs[i].DestinationPath {
+			return fmt.Errorf("prepared task did not receive the exact retained input at its slot")
+		}
+	}
+	return nil
 }

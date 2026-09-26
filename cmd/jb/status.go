@@ -6,30 +6,12 @@ import (
 	"errors"
 	"flag"
 	"io"
+	"net/http"
 	"time"
 
 	reviewclient "github.com/concourse/concourse/agent/review/client"
 	"github.com/concourse/concourse/fly/rc"
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
-
-func reviewMCP(ctx context.Context, flags *flag.FlagSet, args []string) error {
-	authFile := flags.String("auth-file", "", "owner-selected local Codex auth.json; required for submission")
-	targetName := flags.String("target", "", "saved fly login target (required)")
-	team := flags.String("team", "", "team name; defaults to the target's team")
-	template := flags.String("template", "review", "base review template name")
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	if flags.NArg() != 0 || *targetName == "" || *template == "" {
-		return errors.New("mcp requires --target and a nonempty template")
-	}
-	client, selectedTeam, err := platformClient(*targetName, *team)
-	if err != nil {
-		return err
-	}
-	return client.MCPServer(selectedTeam, *template, reviewclient.MCPOptions{AuthFile: *authFile}).Run(ctx, &mcp.StdioTransport{})
-}
 
 func reviewStatus(ctx context.Context, flags *flag.FlagSet, args []string, out io.Writer) error {
 	targetName := flags.String("target", "", "saved fly login target (required)")
@@ -56,15 +38,25 @@ func reviewStatus(ctx context.Context, flags *flag.FlagSet, args []string, out i
 }
 
 func platformClient(name, team string) (*reviewclient.Client, string, error) {
-	target, err := rc.LoadTarget(rc.TargetName(name), false)
+	url, transport, team, err := savedLogin(name, team)
 	if err != nil {
 		return nil, "", err
+	}
+	client, err := reviewclient.New(url, transport)
+	return client, team, err
+}
+
+// savedLogin resolves a saved fly target to its URL, authenticated HTTP client
+// and team, defaulting to the target's team.
+func savedLogin(name, team string) (string, *http.Client, string, error) {
+	target, err := rc.LoadTarget(rc.TargetName(name), false)
+	if err != nil {
+		return "", nil, "", err
 	}
 	if team == "" {
 		team = target.Team().Name()
 	}
-	client, err := reviewclient.New(target.URL(), target.Client().HTTPClient())
-	return client, team, err
+	return target.URL(), target.Client().HTTPClient(), team, nil
 }
 
 func reviewResult(ctx context.Context, flags *flag.FlagSet, args []string, out io.Writer) error {
@@ -72,7 +64,7 @@ func reviewResult(ctx context.Context, flags *flag.FlagSet, args []string, out i
 	team := flags.String("team", "", "team name; defaults to the target's team")
 	template := flags.String("template", "review", "base review template name")
 	number := flags.Int("run", 0, "Run number (required)")
-	name := flags.String("result", "findings", "named result containing review.json")
+	name := flags.String("result", reviewclient.FindingsResult, "named result containing review.json")
 	format := flags.String("format", "json", "output format: json or markdown")
 	if err := flags.Parse(args); err != nil {
 		return err

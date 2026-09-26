@@ -1,4 +1,5 @@
-// jb contains the artifact and remote client operations for JetBridge reviews.
+// jb contains the artifact and remote client operations for JetBridge's
+// detached agent workloads: review and implement.
 package main
 
 import (
@@ -23,17 +24,36 @@ func main() {
 	}
 }
 
+const usage = "usage: jb review capture|submit|render|schema|status|result|mcp [options]\n       jb implement capture|submit|status|result|apply [options]\n       jb mcp [options]"
+
 func run(ctx context.Context, args []string, out, stderr io.Writer) error {
-	if len(args) < 2 || args[0] != "review" {
-		return errors.New("usage: jb review capture|submit|render|schema|status|result|mcp [options]")
+	if len(args) >= 1 && args[0] == "mcp" {
+		// One stdio MCP server for every detached workload.
+		f := flag.NewFlagSet("jb mcp", flag.ContinueOnError)
+		f.SetOutput(stderr)
+		return serveMCP(ctx, detachedMCPServer, f, args[1:])
 	}
+	if len(args) < 2 {
+		return errors.New(usage)
+	}
+	switch args[0] {
+	case "review":
+		return reviewCommand(ctx, args, out, stderr)
+	case "implement":
+		return implementCommand(ctx, args, out, stderr)
+	default:
+		return errors.New(usage)
+	}
+}
+
+func reviewCommand(ctx context.Context, args []string, out, stderr io.Writer) error {
 	f := flag.NewFlagSet("jb review "+args[1], flag.ContinueOnError)
 	f.SetOutput(stderr)
 	switch args[1] {
 	case "submit":
 		return reviewSubmit(ctx, f, args[2:], out)
 	case "mcp":
-		return reviewMCP(ctx, f, args[2:])
+		return serveMCP(ctx, reviewMCPServer, f, args[2:])
 	case "result":
 		return reviewResult(ctx, f, args[2:], out)
 	case "status":

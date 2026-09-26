@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
+	"github.com/concourse/concourse/agent/detached"
 	"github.com/concourse/concourse/agent/review"
 	reviewclient "github.com/concourse/concourse/agent/review/client"
 	"github.com/concourse/concourse/atc"
@@ -28,11 +29,65 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// submittedWorkload is what differs between detached workloads when a
+// submitted Run is driven through its real worker to a published result.
+type submittedWorkload struct {
+	// Input is the run_inputs name the submission uploaded.
+	Input string
+	// Receive verifies the input the Run materialized against the local
+	// original, and returns the directory the worker reads and its digest.
+	Receive func(materialized string) (string, string, error)
+	// Mode is the worker's mode argument, if any, and Model the provider
+	// fixture's mode. The model must wait for release after the handoff.
+	Mode  []string
+	Model string
+	// Results are the files the worker publishes; the template moves them
+	// from its report directory into the result root.
+	Results []string
+	// Submit resumes the saved submission from a fresh local process.
+	Submit func(context.Context) (detached.Submission, error)
+	// Read retrieves and checks the completed result from a fresh local process.
+	Read func(context.Context) error
+	// Published, when set, sees the result directory once the worker's files
+	// are in it, before the capture seals it.
+	Published func(directory string) error
+	// Then, when set, drives the template's later result producers of the
+	// same build after the credential-receiving producer is released.
+	Then func(context.Context, submittedRun) error
+}
+
 // Join the actual upload, admitted Run, local client process, private worker
 // session and capture/read plane. Envtest supplies Pod identity; real kubelet
 // transport and mount enforcement are independently required by the live tier.
 func finishSubmittedReview(in RunInputAdmission, auth *AuthFixture, change ReviewChange, options reviewclient.SubmitOptions, pending reviewclient.Submission, surface string, rec *brine.Recorder, res brine.Resources) error {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	return finishSubmittedRun(in, auth, change, pending, submittedWorkload{
+		Input: "change",
+		Receive: func(materialized string) (string, string, error) {
+			original, err := review.LoadBundle(change.Input)
+			if err != nil {
+				return "", "", err
+			}
+			path := filepath.Join(materialized, review.RunInputBundleDir)
+			received, err := review.LoadBundle(path)
+			if err != nil || received.Digest != original.Digest {
+				return "", "", fmt.Errorf("uploaded review changed in transit: %v", err)
+			}
+			return path, received.Digest, nil
+		},
+		Model:   "handoff-finding",
+		Results: []string{"review.json", "review.md"},
+		Submit: func(ctx context.Context) (detached.Submission, error) {
+			return submitReviewFromProcess(ctx, auth, change, options, surface)
+		},
+		Read: func(ctx context.Context) error {
+			return readCompletedSubmission(ctx, auth, change, options, pending, surface)
+		},
+	}, rec, res)
+}
+
+func finishSubmittedRun(in RunInputAdmission, auth *AuthFixture, change ReviewChange, pending detached.Submission, workload submittedWorkload, rec *brine.Recorder, res brine.Resources) error {
+	// A template may have later result producers to drive and read back.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	runtime := in.Source.Candidate.Runtime
 	jdb := runtime.Start.DB
@@ -60,25 +115,22 @@ func finishSubmittedReview(in RunInputAdmission, auth *AuthFixture, change Revie
 	}
 	runtime.Start.Creation = db.RunCreation{Run: run, Config: definition.Materialized, EntryBuilds: []db.Build{build}}
 	runtime.Start.Plan = atc.TaskPlan{Name: task.Name, TaskID: task.TaskID, RunInputs: task.RunInputs, RunResult: task.RunResult, Config: task.Config}
+	// The producer's container declares the output its template selects.
+	runtime.Spec.Outputs = map[string]string{task.RunResult.Output: "/workspace/" + task.RunResult.Output}
 	keys := hangaroutput.ControlKeyRing{ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch), Keys: []hangaroutput.ControlKeyEntry{{Epoch: executioncontrol.ActivationEpoch(hangarEpoch), PublicKey: base64.StdEncoding.EncodeToString(runtime.Start.Daemon.ControlPublic)}}}
 	source, signer, _, err := configureRunReadPlane(in.Source, rec, res)
 	if err != nil {
 		return err
 	}
-	input, err := submittedReviewInput(ctx, runtime.Start, source, signer)
+	input, err := submittedRunInput(ctx, runtime.Start, source, signer, workload.Input)
 	if err != nil {
 		return err
 	}
-	original, err := review.LoadBundle(change.Input)
+	change.Input, change.Digest, err = workload.Receive(input)
 	if err != nil {
 		return err
 	}
-	change.Input = filepath.Join(input, review.RunInputBundleDir)
-	received, err := review.LoadBundle(change.Input)
-	if err != nil || received.Digest != original.Digest {
-		return fmt.Errorf("uploaded review changed in transit: %v", err)
-	}
-	change.Digest, change.RunID = received.Digest, run.ID()
+	change.RunID = run.ID()
 	if err = change.memoryRuntime(); err != nil {
 		return err
 	}
@@ -86,6 +138,123 @@ func finishSubmittedReview(in RunInputAdmission, auth *AuthFixture, change Revie
 	source.SetExecutor(localExecutor{client: runtime.Client})
 	in.Port.SetCredentialHandoffConfig(runs.CredentialHandoffConfig{Source: source, Helper: change.Binaries.Worker, Socket: socket, Lifetime: time.Minute, WorkerImages: []string{brineCredentialWorkerImage}})
 
+	candidate, err := driveSubmittedProducer(ctx, runtime, factory, buildID, "submitted-review", keys, rec, func(directory string) error {
+		change.Output = filepath.Join(directory, "report")
+		args := append(append([]string{}, workload.Mode...), "--input", change.Input, "--output", change.Output, "--runtime-dir", change.Workspace.Runtime, "--codex", change.Binaries.Provider, "--model", workload.Model, "--timeout", "45s", "--auth-socket", socket, "--handoff-timeout", "30s", "--run-id", strconv.Itoa(run.ID()))
+		worker := exec.CommandContext(ctx, change.Binaries.Worker, args...)
+		var stderr bytes.Buffer
+		worker.Stderr = &stderr
+		if err := worker.Start(); err != nil {
+			return err
+		}
+		joined := false
+		defer func() {
+			if !joined {
+				_ = worker.Process.Signal(os.Interrupt)
+				_ = worker.Wait()
+			}
+		}()
+		// The helper also waits for the actual socket, covering startup ordering.
+		ready, err := workload.Submit(ctx)
+		if err != nil {
+			return err
+		}
+		if !ready.Ready || ready.RunID != pending.RunID || ready.Handle != pending.Handle {
+			return fmt.Errorf("resumed client lost its original ready Run")
+		}
+		if err = reviewAbsent(change.Output); err != nil {
+			return fmt.Errorf("model completed before the submission client disconnected")
+		}
+		files, err := filepath.Glob(filepath.Join(change.Workspace.Runtime, "*", "codex", "auth.json"))
+		if err != nil || len(files) != 1 {
+			return fmt.Errorf("ready Run has no single private credential session: %v", err)
+		}
+		// Only the deterministic model is released. Both submission transports
+		// have already exited/closed; no client connection keeps the worker alive.
+		if err = os.WriteFile(filepath.Join(filepath.Dir(files[0]), "continue-review"), nil, 0600); err != nil {
+			return err
+		}
+		err = worker.Wait()
+		joined = true
+		if err != nil {
+			return fmt.Errorf("detached worker: %w: %s", err, stderr.Bytes())
+		}
+		change.Stderr = stderr.Bytes()
+		if err = reviewNoCredentials(change); err != nil {
+			return err
+		}
+		for _, name := range workload.Results {
+			if err = os.Rename(filepath.Join(change.Output, name), filepath.Join(directory, name)); err != nil {
+				return err
+			}
+		}
+		if err = os.Remove(change.Output); err != nil {
+			return err
+		}
+		if workload.Published != nil {
+			return workload.Published(directory)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if workload.Then != nil {
+		if err = workload.Then(ctx, submittedRun{Runtime: runtime, Factory: factory, BuildID: buildID, RunID: run.ID(), Definition: definition.Materialized, Keys: keys, Input: input}); err != nil {
+			return err
+		}
+	}
+	if err = build.Finish(db.BuildStatusSucceeded); err != nil {
+		return err
+	}
+	if err = consumeRunScheduling(runtime.Start); err != nil {
+		return err
+	}
+	result := finalizeRunResult(RunResultPublication{Start: runtime.Start, Candidate: &candidate}, false)
+	if result.Err != nil || !result.Completed {
+		return fmt.Errorf("submitted Run did not complete: %v", result.Err)
+	}
+	if err = configureRunDownload(result, auth, rec, res); err != nil {
+		return err
+	}
+	if err = workload.Read(ctx); err != nil {
+		return err
+	}
+	var claims, invocations int
+	if err = jdb.Conn.QueryRow(`SELECT count(*) FROM pipeline_run_credential_handoffs WHERE run_id=$1 AND ready_at IS NOT NULL`, run.ID()).Scan(&claims); err != nil {
+		return err
+	}
+	if err = jdb.Conn.QueryRow(`SELECT count(*) FROM pipeline_run_invocations WHERE template_pipeline_id=$1`, in.Template.ID()).Scan(&invocations); err != nil {
+		return err
+	}
+	if claims != 1 || invocations != initialInvocations {
+		return fmt.Errorf("resumption duplicated delivery or admission: %d, %d", claims, invocations)
+	}
+	return nil
+}
+
+// submittedRun is what a later result producer of a submitted Run's build
+// needs to be driven the way the first one was.
+type submittedRun struct {
+	// Runtime is the first producer's runtime; a later producer replaces its
+	// plan and container outputs.
+	Runtime    RunOutputRuntime
+	Factory    db.PipelineRunFactory
+	BuildID    int
+	RunID      int
+	Definition atc.Config
+	Keys       hangaroutput.ControlKeyRing
+	// Input is the Run input as the node materialized it.
+	Input string
+}
+
+// driveSubmittedProducer takes one result producer of a submitted Run's build
+// through the real capture plane: its exact execution admitted and witnessed
+// at start, its original Pod running, work filling the reserved output, then
+// the actual finish witnessed and the capture's release recorded. Envtest
+// supplies Pod identity; the live tier supplies kubelet enforcement.
+func driveSubmittedProducer(ctx context.Context, runtime RunOutputRuntime, factory db.PipelineRunFactory, buildID int, planID atc.PlanID, keys hangaroutput.ControlKeyRing, rec *brine.Recorder, work func(directory string) error) (RunOutputCandidate, error) {
+	jdb := runtime.Start.DB
 	candidate, err := publishRunCandidateStarted(runtime, rec, func(directory string, start executioncontrol.Acknowledgement) error {
 		record, err := runtime.readSource()
 		if err != nil {
@@ -96,7 +265,7 @@ func finishSubmittedReview(in RunInputAdmission, auth *AuthFixture, change Revie
 			return err
 		}
 		defer db.Rollback(tx)
-		a, _, err := factory.AdmitRunExecution(ctx, tx, db.RunExecutionRequest{BuildID: buildID, PlanID: "submitted-review", Kind: db.ContainerTypeTask, Epoch: int64(hangarEpoch), NodeName: runtime.Node.Name, NodeUID: string(runtime.Node.UID), HandoffID: record.HandoffID})
+		a, _, err := factory.AdmitRunExecution(ctx, tx, db.RunExecutionRequest{BuildID: buildID, PlanID: planID, Kind: db.ContainerTypeTask, Epoch: int64(hangarEpoch), NodeName: runtime.Node.Name, NodeUID: string(runtime.Node.UID), HandoffID: record.HandoffID})
 		if err != nil {
 			return err
 		}
@@ -129,112 +298,35 @@ func finishSubmittedReview(in RunInputAdmission, auth *AuthFixture, change Revie
 		if !matched {
 			return fmt.Errorf("submitted worker has no original Pod")
 		}
-		change.Output = filepath.Join(directory, "report")
-		worker := exec.CommandContext(ctx, change.Binaries.Worker, "--input", change.Input, "--output", change.Output, "--runtime-dir", change.Workspace.Runtime, "--codex", change.Binaries.Provider, "--model", "handoff-finding", "--timeout", "45s", "--auth-socket", socket, "--handoff-timeout", "30s", "--run-id", strconv.Itoa(run.ID()))
-		var stderr bytes.Buffer
-		worker.Stderr = &stderr
-		if err = worker.Start(); err != nil {
-			return err
-		}
-		joined := false
-		defer func() {
-			if !joined {
-				_ = worker.Process.Signal(os.Interrupt)
-				_ = worker.Wait()
-			}
-		}()
-		// The helper also waits for the actual socket, covering startup ordering.
-		ready, err := submitReviewFromProcess(ctx, auth, change, options, surface)
-		if err != nil {
-			return err
-		}
-		if !ready.Ready || ready.RunID != pending.RunID || ready.Handle != pending.Handle {
-			return fmt.Errorf("resumed client lost its original ready Run")
-		}
-		if err = reviewAbsent(change.Output); err != nil {
-			return fmt.Errorf("model completed before the submission client disconnected")
-		}
-		files, err := filepath.Glob(filepath.Join(change.Workspace.Runtime, "*", "codex", "auth.json"))
-		if err != nil || len(files) != 1 {
-			return fmt.Errorf("ready Run has no single private credential session: %v", err)
-		}
-		// Only the deterministic model is released. Both submission transports
-		// have already exited/closed; no client connection keeps the worker alive.
-		if err = os.WriteFile(filepath.Join(filepath.Dir(files[0]), "continue-review"), nil, 0600); err != nil {
-			return err
-		}
-		err = worker.Wait()
-		joined = true
-		if err != nil {
-			return fmt.Errorf("detached worker: %w: %s", err, stderr.Bytes())
-		}
-		change.Stderr = stderr.Bytes()
-		if err = reviewNoCredentials(change); err != nil {
-			return err
-		}
-		for _, name := range []string{"review.json", "review.md"} {
-			if err = os.Rename(filepath.Join(change.Output, name), filepath.Join(directory, name)); err != nil {
-				return err
-			}
-		}
-		return os.Remove(change.Output)
+		return work(directory)
 	})
 	if err != nil {
-		return err
+		return candidate, err
 	}
 	control := jetbridge.NewOutputControlClient(runtime.Start.Daemon.Output.URL, runtime.Start.Daemon.HTTP, runtime.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch))
 	finished, err := control.Classify(ctx, candidate.Record.Execution)
 	if err != nil || finished.Acknowledgement == nil {
-		return fmt.Errorf("worker left no actual finish: %v", err)
+		return candidate, fmt.Errorf("worker left no actual finish: %v", err)
 	}
 	tx, err := jdb.Conn.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return candidate, err
 	}
 	defer db.Rollback(tx)
-	if err = factory.RecordRunExecutionWitness(ctx, tx, buildID, "submitted-review", *finished.Acknowledgement, keys); err != nil {
-		return err
+	if err = factory.RecordRunExecutionWitness(ctx, tx, buildID, planID, *finished.Acknowledgement, keys); err != nil {
+		return candidate, err
 	}
 	if err = tx.Commit(); err != nil {
-		return err
+		return candidate, err
 	}
 	candidate.Finish.Release, err = candidate.Finish.daemonRelease()
 	if err != nil {
-		return err
+		return candidate, err
 	}
-	if err = candidate.Finish.recordRelease(candidate.Finish.Release, false); err != nil {
-		return err
-	}
-	if err = build.Finish(db.BuildStatusSucceeded); err != nil {
-		return err
-	}
-	if err = consumeRunScheduling(runtime.Start); err != nil {
-		return err
-	}
-	result := finalizeRunResult(RunResultPublication{Start: runtime.Start, Candidate: &candidate}, false)
-	if result.Err != nil || !result.Completed {
-		return fmt.Errorf("submitted Run did not complete: %v", result.Err)
-	}
-	if err = configureRunDownload(result, auth, rec, res); err != nil {
-		return err
-	}
-	if err = readCompletedSubmission(ctx, auth, change, options, pending, surface); err != nil {
-		return err
-	}
-	var claims, invocations int
-	if err = jdb.Conn.QueryRow(`SELECT count(*) FROM pipeline_run_credential_handoffs WHERE run_id=$1 AND ready_at IS NOT NULL`, run.ID()).Scan(&claims); err != nil {
-		return err
-	}
-	if err = jdb.Conn.QueryRow(`SELECT count(*) FROM pipeline_run_invocations WHERE template_pipeline_id=$1`, in.Template.ID()).Scan(&invocations); err != nil {
-		return err
-	}
-	if claims != 1 || invocations != initialInvocations {
-		return fmt.Errorf("resumption duplicated delivery or admission: %d, %d", claims, invocations)
-	}
-	return nil
+	return candidate, candidate.Finish.recordRelease(candidate.Finish.Release, false)
 }
 
-func submittedReviewInput(ctx context.Context, start RunOutputStart, source *jetbridge.OutputSource, signer *output.ReadWarrantSigner) (string, error) {
+func submittedRunInput(ctx context.Context, start RunOutputStart, source *jetbridge.OutputSource, signer *output.ReadWarrantSigner, name string) (string, error) {
 	tx, err := start.DB.Conn.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
@@ -244,9 +336,9 @@ func submittedReviewInput(ctx context.Context, start RunOutputStart, source *jet
 	if err != nil {
 		return "", err
 	}
-	binding, ok := selected.Inputs["change"]
+	binding, ok := selected.Inputs[name]
 	if !ok {
-		return "", fmt.Errorf("submitted Run has no change input")
+		return "", fmt.Errorf("submitted Run has no %s input", name)
 	}
 	node, err := source.ForResultRead(ctx, executioncontrol.ActivationEpoch(hangarEpoch))
 	if err != nil {

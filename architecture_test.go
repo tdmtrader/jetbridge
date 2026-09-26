@@ -338,8 +338,25 @@ var agenticCoreReach = map[string][]string{
 	"atc/agent/composition": {"atc", "atc/runs"},
 	// Artifact-only review contract: it does not reach into the CI runtime.
 	"agent/review": {},
-	// Public Run values and the shared canonical archive verifier. No storage client.
-	"agent/review/client": {"atc", "hangar"},
+	// Sealed Git capture shared by every detached input format. Git and the
+	// filesystem only.
+	"agent/capture": {},
+	// The provider session: tmpfs credential staging, the pinned Codex, the
+	// closed event vocabulary. It runs inside the worker image and knows
+	// nothing of Runs.
+	"agent/session": {},
+	// Artifact-only implementation contract: snapshot, edit-only worker,
+	// patch and local apply. Like agent/review, no core reach.
+	"agent/implement": {},
+	// The workload-neutral detached Run client: public Run values, including
+	// the Run observation every workload's MCP status tool returns, and the
+	// shared canonical archive verifier. No storage client.
+	"agent/detached": {"atc", "hangar"},
+	// The review and implement adapters over agent/detached. Handles, Run
+	// status, the MCP status projection and archive verification all come
+	// through the shared client, so neither names a core package itself.
+	"agent/review/client":    {},
+	"agent/implement/client": {},
 	// The command reuses the saved platform login; the shared client consumes
 	// only public wire types and never reaches the Run database or scheduler.
 	"cmd/jb":               {"fly/rc"},
