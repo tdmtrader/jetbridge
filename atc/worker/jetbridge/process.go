@@ -840,9 +840,9 @@ func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, r
 	// collects it, and until it does, fly hijack can exec into it.
 	//
 	// A supervised step whose context has ended is the exception. Its
-	// command was started in a background subshell with SIGHUP ignored, so
-	// that a web restart cannot kill it (see supervisor.go) — which means
-	// the teardown of the exec stream does not kill it either. When the
+	// command was started in a session of its own, so that a web restart
+	// cannot kill it (see supervisor.go) — which means the teardown of the
+	// exec stream does not kill it either. When the
 	// context ends the step has been abandoned (abort) or has run out of
 	// time (timeout), nobody is coming back for it, and the reaper's fast
 	// path skips it because it never recorded an exit status. Left alone it

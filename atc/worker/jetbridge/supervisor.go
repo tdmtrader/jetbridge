@@ -17,9 +17,9 @@ import (
 // (possibly alongside a survivor).
 //
 // The supervisor makes re-exec idempotent and resumptive:
-//   - fresh start: launch the command in a background subshell with SIGHUP
-//     ignored (survives pty teardown), record its pid, tee output to a log
-//     file, and record the exit code to an exit file on completion.
+//   - fresh start: launch the command detached from the exec session (see
+//     below), record the runner's pid, send output to a log file, and record
+//     the exit code to an exit file on completion.
 //   - re-exec while the command is still running (web restarted): do NOT
 //     restart; replay the log from the beginning and wait for the exit file.
 //   - re-exec after completion: replay the log and exit with the recorded
@@ -28,8 +28,30 @@ import (
 // State lives under /tmp inside the pod, which survives web restarts because
 // the pod itself does, and is reclaimed when the pod is deleted.
 //
+// Detached means a session of its own. The pty's hangup SIGHUPs the exec
+// session's foreground process group, and ignoring SIGHUP in the runner only
+// protects a command that keeps it ignored: any program that installs its own
+// handler hands its children SIGHUP at the default action again. dockerd is
+// one -- it reloads config on SIGHUP -- and the docker-proxy processes it
+// starts died with the exec session while containerd, which it starts under
+// setsid, survived. So the command runs under setsid, as the exact supervisor
+// already does, and only the runner -- plain sh, which waits for it and writes
+// its exit -- stays in the exec session with SIGHUP ignored. Nothing else
+// signals an ordinary task's command: an abort or timeout deletes the whole
+// pod (process.go), which reaches every session in it.
+//
+// setsid is started as a non-job-controlled background child so it cannot
+// already be a process group leader and fork away from the status the runner
+// waits for (BusyBox setsid has no --wait), as in resource_process.go.
+//
+// An image without setsid (BusyBox and util-linux both provide it, and
+// util-linux is in Debian's essential set) falls back to the runner's SIGHUP
+// shield alone, and says so once in the step's log: its command survives a
+// web restart only if it and its children leave SIGHUP ignored.
+//
 // Like pauseCommand, this requires only POSIX sh built-ins plus tail/mv,
-// which are present in busybox and coreutils images.
+// which are present in busybox and coreutils images, and setsid where it
+// can get it.
 // Note: the runner-liveness check must go through alive() — busybox
 // `kill -0 ""` exits 0, so a bare kill on the (possibly empty) pid file
 // would misread "never started" as "running".
@@ -41,7 +63,17 @@ alive() {
 mkdir -p "$S"
 : >>"$S/log"
 if [ ! -f "$S/exit" ] && ! alive; then
-  ( trap '' HUP; __COMMAND__ >>"$S/log" 2>&1; echo $? >"$S/exit.tmp" && mv "$S/exit.tmp" "$S/exit" ) &
+  (
+    trap '' HUP
+    if command -v setsid >/dev/null 2>&1; then
+      setsid sh -c __DETACHED_COMMAND__ </dev/null >>"$S/log" 2>&1 &
+    else
+      echo "` + supervisorNoSetsidNotice + `" >>"$S/log"
+      __COMMAND__ </dev/null >>"$S/log" 2>&1 &
+    fi
+    wait "$!"
+    echo $? >"$S/exit.tmp" && mv "$S/exit.tmp" "$S/exit"
+  ) &
   echo $! >"$S/pid"
 fi
 tail -n +1 -f "$S/log" 2>/dev/null &
@@ -52,6 +84,11 @@ kill "$T" 2>/dev/null
 wait "$T" 2>/dev/null
 if [ -f "$S/exit" ]; then exit "$(cat "$S/exit")"; fi
 exit 255`
+
+// supervisorNoSetsidNotice is the line an image without setsid gets in its
+// step log, once, when the command is launched.
+const supervisorNoSetsidNotice = "[supervisor] setsid is not in this image; " +
+	"the command stays in the exec session and survives a web restart only while it and its children keep SIGHUP ignored"
 
 // The exact-execution supervisor is the same script with one more durable
 // record and one more refusal.

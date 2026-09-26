@@ -4,14 +4,17 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	goruntime "runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/concourse/concourse/atc/runtime"
+	"github.com/creack/pty"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -247,6 +250,102 @@ var _ = Describe("Task exec supervisor script execution", func() {
 		Expect(ordinary).ToNot(ContainSubstring("exit " + strconv.Itoa(ExactUnresolvedExitCode)))
 	})
 
+	Context("Detached from the exec session on Linux", func() {
+		BeforeEach(func() {
+			if goruntime.GOOS != "linux" {
+				Skip("detaching a task command requires Linux setsid; exercised by the Linux CI tier")
+			}
+			_, err := exec.LookPath("setsid")
+			Expect(err).NotTo(HaveOccurred(), "the Linux test image has no setsid")
+		})
+
+		It("keeps a command that takes SIGHUP back, and its children, through the exec session's hangup", func() {
+			// The shape that failed on a web restart: dockerd takes SIGHUP for
+			// config reload, so the docker-proxy processes it starts have
+			// SIGHUP at its default action again, and they died with the exec
+			// session. hupreload does the same with a shell child.
+			helper, err := buildHupReload()
+			Expect(err).NotTo(HaveOccurred())
+			command := "echo run-marker; exec " + shellQuote(helper) +
+				" sh -c 'echo child-started; sleep 5; echo child-finished; exit 6'"
+
+			// web 1 runs the supervisor the way the kubelet runs a TTY exec:
+			// session leader of a fresh pty, which is its controlling terminal.
+			cmd := supervisorCommand(stateID, runtime.ProcessSpec{Path: "sh", Args: []string{"-c", command}})
+			web1 := exec.Command(cmd[0], cmd[1], cmd[2])
+			ptmx, err := startWithHUPDefault(web1)
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func() { _ = ptmx.Close() })
+
+			// Read only until the child has started, then stop. The terminal
+			// is closed below with no read outstanding on it: closed under a
+			// blocked read, the hangup still kills the session leader but
+			// never reaches its process group, and the old script passes.
+			started := make(chan struct{})
+			go func() {
+				var seen []byte
+				buf := make([]byte, 4096)
+				for !strings.Contains(string(seen), "child-started") {
+					n, err := ptmx.Read(buf)
+					if err != nil {
+						return
+					}
+					seen = append(seen, buf[:n]...)
+				}
+				close(started)
+			}()
+			Eventually(started, 10*time.Second).Should(BeClosed())
+
+			// Web 1's own tail is the witness: it is in the exec session's
+			// foreground group with SIGHUP at its default action, so it dies
+			// if and only if the hangup reached that group.
+			tails := func() []int { return liveInSession(web1.Process.Pid, "tail") }
+			Expect(tails()).NotTo(BeEmpty(), "web 1's supervisor has no tail following the log")
+
+			// The web goes away: its end of the terminal closes, and the
+			// kernel hangs the pty up -- SIGHUP to the session leader and,
+			// as it exits, to the foreground process group, which is every
+			// process of the session the command did not leave.
+			Expect(ptmx.Close()).To(Succeed())
+			err = web1.Wait()
+			Expect(err).To(HaveOccurred())
+			status, ok := web1.ProcessState.Sys().(syscall.WaitStatus)
+			Expect(ok && status.Signaled() && status.Signal() == syscall.SIGHUP).To(BeTrue(),
+				"web 1's supervisor did not die of the hangup: %v", web1.ProcessState)
+			Eventually(tails, 5*time.Second, 50*time.Millisecond).Should(BeEmpty(),
+				"the hangup never reached the exec session's process group, so this spec proves nothing")
+
+			// web 2 takes over and sees the child finish: nothing of the
+			// command died with the session.
+			out, code := runSupervisor(command)
+			Expect(out).To(ContainSubstring("child-finished"))
+			Expect(out).NotTo(ContainSubstring("child killed"))
+			Expect(code).To(Equal(6))
+			Expect(strings.Count(out, "run-marker")).To(Equal(1), "command must not be restarted on takeover")
+		})
+	})
+
+	It("falls back to the SIGHUP shield, and says so, in an image without setsid", func() {
+		// A PATH holding what the supervisor needs and not setsid.
+		bin := filepath.Join(tempRoot, fmt.Sprintf("no-setsid-%d", GinkgoParallelProcess()))
+		Expect(os.MkdirAll(bin, 0o755)).To(Succeed())
+		DeferCleanup(os.RemoveAll, bin)
+		for _, tool := range []string{"sh", "cat", "tail", "mv", "mkdir", "sleep"} {
+			path, err := exec.LookPath(tool)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(os.Symlink(path, filepath.Join(bin, tool))).To(Succeed())
+		}
+
+		cmd := supervisorCommand(stateID, runtime.ProcessSpec{Path: "sh", Args: []string{"-c", "echo fallback-ran; exit 8"}})
+		supervisor := exec.Command(filepath.Join(bin, "sh"), cmd[1], cmd[2])
+		supervisor.Env = []string{"PATH=" + bin}
+		out, err := supervisor.CombinedOutput()
+		Expect(err).To(HaveOccurred())
+		Expect(supervisor.ProcessState.ExitCode()).To(Equal(8), "output: %s", out)
+		Expect(string(out)).To(ContainSubstring("fallback-ran"))
+		Expect(string(out)).To(ContainSubstring(supervisorNoSetsidNotice))
+	})
+
 	It("shields the command from SIGHUP so pty teardown cannot kill it", func() {
 		// Send HUP to the runner subshell directly; a HUP-shielded runner
 		// keeps going and records its exit code.
@@ -269,3 +368,70 @@ var _ = Describe("Task exec supervisor script execution", func() {
 		Expect(web.ProcessState.ExitCode()).To(Equal(9))
 	})
 })
+
+var (
+	hupReloadBuild    sync.Once
+	hupReloadBinary   string
+	hupReloadBuildErr error
+)
+
+// buildHupReload builds testdata/hupreload once per test process, the way
+// buildOutputDaemon does.
+func buildHupReload() (string, error) {
+	hupReloadBuild.Do(func() {
+		binary := filepath.Join(tempRoot, "hupreload")
+		build := exec.Command("go", "build", "-o", binary, "./atc/worker/jetbridge/testdata/hupreload")
+		build.Dir = repositoryRoot()
+		build.Env = append(os.Environ(), "TMPDIR="+tempRoot)
+		if out, err := build.CombinedOutput(); err != nil {
+			hupReloadBuildErr = fmt.Errorf("building hupreload: %w\n%s", err, out)
+
+			return
+		}
+		hupReloadBinary = binary
+	})
+
+	return hupReloadBinary, hupReloadBuildErr
+}
+
+// startWithHUPDefault starts cmd the way the kubelet starts a TTY exec:
+// session leader of a fresh pty, with SIGHUP at its default action. A CI task
+// shell may hand this process SIGHUP ignored, and an ignored signal stays
+// ignored in a child, where no shell can undo it -- the supervisor would then
+// ride out the hangup and the spec would test nothing. A signal Go handles is
+// reset to the default in a child, so SIGHUP is handled, briefly, around the
+// start.
+func startWithHUPDefault(cmd *exec.Cmd) (*os.File, error) {
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	defer signal.Reset(syscall.SIGHUP)
+
+	return pty.Start(cmd)
+}
+
+// liveInSession lists the processes named comm in session sid that have not
+// exited. A zombie counts as exited: nothing may reap it where PID 1 does not.
+func liveInSession(sid int, comm string) []int {
+	stats, _ := filepath.Glob("/proc/[0-9]*/stat")
+	var pids []int
+	for _, path := range stats {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		stat := string(raw)
+		open, closing := strings.IndexByte(stat, '('), strings.LastIndexByte(stat, ')')
+		if open < 0 || closing < open {
+			continue
+		}
+		// After "(comm) ": state, ppid, pgrp, session.
+		fields := strings.Fields(stat[closing+1:])
+		if len(fields) < 4 || stat[open+1:closing] != comm || fields[0] == "Z" || fields[3] != strconv.Itoa(sid) {
+			continue
+		}
+		pid, _ := strconv.Atoi(strings.TrimSpace(stat[:open]))
+		pids = append(pids, pid)
+	}
+
+	return pids
+}

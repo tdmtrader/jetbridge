@@ -28,7 +28,12 @@ looked-up one never recreated.
 ## Pause pod and replacement
 
 A pause pod is created first and the step's command is exec'd into it; the
-supervisor makes the command survive a web restart. Under exact execution
+supervisor makes the command survive a web restart. The command runs detached
+in a session of its own, so the hangup of a dead web's exec session reaches
+neither it nor anything it starts, and a new web re-execs the same supervisor
+to take it over or read its recorded exit
+([ADR-0006](../adr/0006-supervised-commands-leave-the-exec-session.md)). Under
+exact execution
 control the supervisor, and for a check, get or put the resource session,
 keeps an exit journal the Run's signed start names, so a lost web can be
 recovered from and a Run can interrupt the command. The journal's start is

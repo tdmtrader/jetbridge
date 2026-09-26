@@ -56,6 +56,14 @@ var _ = Describe("Task exec supervisor", func() {
 			Expect(command[2]).To(ContainSubstring(`trap '' HUP`))
 		})
 
+		It("detaches the command into a session of its own, and falls back explicitly without setsid", func() {
+			Expect(command[2]).To(ContainSubstring(`if command -v setsid >/dev/null 2>&1; then`))
+			Expect(command[2]).To(ContainSubstring(`setsid sh -c ` + shellQuote(`'/bin/sh' '-c' 'echo hello && exit 0'`) +
+				` </dev/null >>"$S/log" 2>&1 &`))
+			Expect(command[2]).To(ContainSubstring(supervisorNoSetsidNotice))
+			Expect(command[2]).To(ContainSubstring(`wait "$!"`))
+		})
+
 		It("records pid and exit code and replays the log from the start", func() {
 			Expect(command[2]).To(ContainSubstring(`echo $! >"$S/pid"`))
 			Expect(command[2]).To(ContainSubstring(`mv "$S/exit.tmp" "$S/exit"`))

@@ -41,7 +41,9 @@ replacement still spends the one attempt.
 
 **Supervisor**:
 The in-pod shell wrapper a command runs under so a web restart resumes the
-run and replays its log instead of starting over.
+run and replays its log instead of starting over. The command runs in a
+session of its own, so the exec session's hangup never reaches it or its
+children (ADR-0006); only pod deletion or an exact stop record ends it early.
 _Avoid_: task supervisor, supervisor script
 
 **Exit journal**:

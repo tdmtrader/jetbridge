@@ -38,6 +38,19 @@ func setupLiveWorkerWithLocator(t *testing.T, handle string, locator *jetbridge.
 
 func setupLiveWorkerWithLocatorAndDatabase(t *testing.T, _ string, locator *jetbridge.ArtifactLocator) (*jetbridge.Worker, runtime.BuildStepDelegate, *jetbridge.ArtifactLocator, jetbridgeDB) {
 	t.Helper()
+	return newLiveWorker(t, locator, nil)
+}
+
+// setupLiveWorkerWithExecutor is setupLiveWorker with the worker's exec
+// transport wrapped, so a test can act on the step's exec stream itself.
+func setupLiveWorkerWithExecutor(t *testing.T, wrap func(jetbridge.PodExecutor) jetbridge.PodExecutor) *jetbridge.Worker {
+	t.Helper()
+	worker, _, _, _ := newLiveWorker(t, nil, wrap)
+	return worker
+}
+
+func newLiveWorker(t *testing.T, locator *jetbridge.ArtifactLocator, wrap func(jetbridge.PodExecutor) jetbridge.PodExecutor) (*jetbridge.Worker, runtime.BuildStepDelegate, *jetbridge.ArtifactLocator, jetbridgeDB) {
+	t.Helper()
 
 	clientset, cfg := kubeClient(t)
 
@@ -72,7 +85,11 @@ func setupLiveWorkerWithLocatorAndDatabase(t *testing.T, _ string, locator *jetb
 	if locator == nil {
 		locator = jetbridge.NewArtifactLocator()
 	}
-	deps := jetbridge.WorkerDeps{Executor: jetbridge.NewSPDYExecutor(clientset, restConfig), ArtifactLocator: locator}
+	var executor jetbridge.PodExecutor = jetbridge.NewSPDYExecutor(clientset, restConfig)
+	if wrap != nil {
+		executor = wrap(executor)
+	}
+	deps := jetbridge.WorkerDeps{Executor: executor, ArtifactLocator: locator}
 	worker := jetbridge.NewWorker(dbWorker, clientset, *cfg, deps)
 
 	return worker, nil, locator, database
