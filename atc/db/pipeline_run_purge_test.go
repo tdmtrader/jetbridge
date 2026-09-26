@@ -269,3 +269,173 @@ var _ = Describe("Run evidence and team purge", func() {
 		}
 	})
 })
+
+var _ = Describe("A cancelled Run's header after payload reclamation", func() {
+	It("keeps the request, the empty aborted publication, the definition, the input claims and the cause, and cancellation itself deleted nothing", func() {
+		ctx := context.Background()
+		consumer, err := db.HangarConsumerPrefixHeld("cancelled-header-test")
+		Expect(err).NotTo(HaveOccurred())
+		repository := db.NewHangarOutputRepository(consumer)
+		hangarActivateEpoch(ctx, repository)
+		_, err = dbConn.Exec(`UPDATE pipeline_run_activation SET epoch=1, admission_enabled=true WHERE singleton`)
+		Expect(err).NotTo(HaveOccurred())
+
+		keepLast := 1
+		template, _, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "cancelled-header"}, atc.Config{
+			Template: true, RunRetention: &atc.RunRetentionConfig{KeepLast: &keepLast}, Jobs: atc.JobConfigs{{Name: "entry"}},
+		}, 0, false)
+		Expect(err).NotTo(HaveOccurred())
+		factory := db.NewPipelineRunFactory(dbConn, lockFactory)
+		inTx := func(fn func(db.Tx) error) {
+			GinkgoHelper()
+			tx, err := dbConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			defer db.Rollback(tx)
+			Expect(fn(tx)).To(Succeed())
+			Expect(tx.Commit()).To(Succeed())
+		}
+		create := func(key string, cause *int, correlation string) db.PipelineRun {
+			GinkgoHelper()
+			var creation db.RunCreation
+			inTx(func(tx db.Tx) error {
+				var err error
+				creation, err = factory.CreateRunInTx(ctx, tx, template, db.RunParams{}, "creator", db.RunCreationOpts{
+					ActivationEpoch: 1, HangarEpoch: 1,
+					Invocation:  &db.RunInvocationIdentity{PrincipalDigest: runEvidenceDigest("principal"), KeyDigest: runEvidenceDigest(key)},
+					CausedByRun: cause, Correlation: correlation,
+				})
+				return err
+			})
+			return creation.Run
+		}
+
+		cause := create("cause", nil, "")
+		causeID := cause.ID()
+		run := create("cancelled", &causeID, "change-42")
+		definition, found, err := factory.Definition(run.ID())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+
+		// A bound input holding its own Hangar claim for the life of the header.
+		_, ref := hangarPublish(ctx, repository, hangarDigest(146), 1725830823000146)
+		claim := output.ClaimID(uuid.NewString())
+		inTx(func(tx db.Tx) error {
+			if err := repository.AcquireClaim(ctx, tx, output.ClaimAcquisition{
+				ProtocolVersion: output.ProtocolVersion, ClaimID: claim, Ref: ref,
+				ConsumerBindingID: output.OpaqueID(claim), RequestedAt: output.NewTimestamp(time.Now()),
+			}); err != nil {
+				return err
+			}
+			_, err := tx.Exec(`INSERT INTO pipeline_run_inputs(run_id,name,source_id,scope,digest,generation,claim_id,activation_epoch)
+				VALUES ($1,'input',$2,$3,$4,$5,$6,1)`, run.ID(), "input-v1-"+runEvidenceDigest("cancelled-input"), string(ref.Scope), string(ref.Digest), ref.Generation, string(claim))
+			return err
+		})
+		inputClaimHeld := func() bool {
+			GinkgoHelper()
+			var held bool
+			Expect(dbConn.QueryRow(`SELECT count(*)=1 AND bool_and(c.released_at IS NULL) FROM pipeline_run_inputs i
+				JOIN hangar_claims c ON c.claim_id=i.claim_id WHERE i.run_id=$1`, run.ID()).Scan(&held)).To(Succeed())
+			return held
+		}
+
+		reason := "operator stop"
+		outcome, err := factory.RequestRunCancellation(ctx, run.ID(), "operator", &reason)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(outcome).To(Equal(atc.RunCancelAccepted))
+		requested, found, err := factory.GetRunByID(run.ID())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		request := requested.CancellationRequest()
+		Expect(request).NotTo(BeNil())
+
+		// The worker's own operations converge a Run with no execution; a
+		// source kind here would need a node and fails the fixture.
+		var lease db.RunCancellationLease
+		inTx(func(tx db.Tx) error {
+			var owned bool
+			var err error
+			lease, owned, err = factory.ClaimRunCancellationLease(ctx, tx, "cancelled-header-test", time.Minute)
+			Expect(owned).To(BeTrue())
+			return err
+		})
+		Eventually(func() atc.RunStatus {
+			_, err := dbConn.Exec(`UPDATE pipeline_run_cancellation_operations SET next_at=now() - interval '1 second' WHERE completed_at IS NULL AND run_id=$1`, run.ID())
+			Expect(err).NotTo(HaveOccurred())
+			var op db.RunCancellationOperation
+			var claimed bool
+			inTx(func(tx db.Tx) error {
+				if _, err := factory.DiscoverRunCancellation(ctx, tx, lease, run.ID(), db.RunCancellationOperationLimit); err != nil {
+					return err
+				}
+				var err error
+				op, claimed, err = factory.ClaimRunCancellationOperation(ctx, tx, lease, run.ID())
+				return err
+			})
+			if claimed {
+				var debt db.RunCancellationDebt
+				switch op.Kind {
+				case db.CancelSchedulerDebt:
+					debt, err = factory.ExecuteCancellationOperation(ctx, lease, op)
+				case db.CancelBuild, db.CancelCandidate, db.CancelTerminalize:
+					debt, err = factory.ExecuteCancellationFinality(ctx, lease, op)
+				default:
+					Fail("a Run with no execution discovered " + string(op.Kind))
+				}
+				Expect(err).NotTo(HaveOccurred())
+				inTx(func(tx db.Tx) error { return factory.RecordRunCancellationProgress(ctx, tx, lease, op, debt) })
+			}
+			reloaded, _, err := factory.GetRunByID(run.ID())
+			Expect(err).NotTo(HaveOccurred())
+			return reloaded.Status()
+		}).WithTimeout(10 * time.Second).Should(Equal(atc.RunStatusAborted))
+
+		published, found, err := factory.TerminalResult(ctx, run.ID())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(published.Results).To(Equal(map[string]atc.RunResultBinding{}), "cancellation publishes an explicit empty result map")
+		Expect(published.Version).NotTo(BeEmpty())
+
+		// Cancellation itself deleted nothing: the payload and the input claim
+		// outlive the aborted publication.
+		aborted, _, err := factory.GetRunByID(run.ID())
+		Expect(err).NotTo(HaveOccurred())
+		_, found, err = factory.InstancePipeline(aborted)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue(), "cancellation deleted the Run's payload")
+		Expect(inputClaimHeld()).To(BeTrue(), "cancellation released the Run's input claim")
+
+		// A later Run makes the cancelled one fall outside keep_last.
+		create("successor", nil, "")
+		destroyed, err := db.NewPipelineRunReclaimLifecycle(dbConn).DestroyReclaimableRun(run.ID())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(destroyed).To(BeTrue())
+
+		header, found, err := factory.GetRunByID(run.ID())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue(), "reclamation destroyed the Run header")
+		_, found, err = factory.InstancePipeline(header)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse(), "the fixture did not reclaim the payload")
+
+		Expect(header.CancellationRequest()).To(Equal(request))
+		Expect(header.CancellationRequest().RequestedBy).To(Equal("operator"))
+		Expect(header.CancellationRequest().Reason).To(Equal(&reason))
+		Expect(header.ContractVersion()).To(Equal(atc.RunContractV2))
+		Expect(header.Status()).To(Equal(atc.RunStatusAborted))
+		Expect(header.CompletedAt()).NotTo(BeNil())
+		Expect(*header.CompletedAt()).To(BeTemporally("==", published.CompletedAt))
+		Expect(header.ConfigHash()).To(Equal(run.ConfigHash()))
+		Expect(header.CausedByRun()).To(Equal(&causeID))
+		Expect(header.Correlation()).To(Equal("change-42"))
+
+		retained, found, err := factory.TerminalResult(ctx, run.ID())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(retained).To(Equal(published), "reclamation changed the immutable aborted publication")
+		kept, found, err := factory.Definition(run.ID())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue(), "reclamation dropped the Run's definition")
+		Expect(kept).To(Equal(definition))
+		Expect(inputClaimHeld()).To(BeTrue(), "reclamation released the Run's input claim")
+	})
+})
