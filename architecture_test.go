@@ -338,8 +338,12 @@ var agenticCoreReach = map[string][]string{
 	"atc/agent/composition": {"atc", "atc/runs"},
 	// Artifact-only review contract: it does not reach into the CI runtime.
 	"agent/review": {},
-	// Public Run values and the shared canonical archive verifier. No storage client.
-	"agent/review/client": {"atc", "hangar"},
+	// The workload-neutral detached Run client: public Run values and the shared
+	// canonical archive verifier. No storage client.
+	"agent/detached": {"atc", "hangar"},
+	// The review adapter over agent/detached. Public Run values for its MCP
+	// status projection only; archive verification stays in the shared client.
+	"agent/review/client": {"atc"},
 	// The command reuses the saved platform login; the shared client consumes
 	// only public wire types and never reaches the Run database or scheduler.
 	"cmd/jb":               {"fly/rc"},

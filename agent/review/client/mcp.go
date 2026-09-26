@@ -77,7 +77,7 @@ func (c *Client) MCPServer(team, template string, options ...MCPOptions) *mcp.Se
 			defer cancel()
 			name := input.Result
 			if name == "" {
-				name = "findings"
+				name = FindingsResult
 			}
 			report, err := c.Result(ctx, Handle{Team: team, Template: template, Number: input.Run}, name)
 			if err != nil {

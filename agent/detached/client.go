@@ -1,6 +1,12 @@
-// Package client is the shared remote review client for the human CLI and MCP.
+// Package detached is the workload-neutral client for detached Runs, shared by
+// every workload and by both the human CLI and the local stdio MCP server. It
+// owns input upload, Run admission, credential handoff, the local submission
+// receipt and the verify-then-parse result fetch. A workload supplies only
+// what differs: the input it seals, the result whose producer receives
+// credentials, and how its published result is parsed.
+//
 // Platform authentication is supplied by the caller's configured HTTP client.
-package client
+package detached
 
 import (
 	"context"

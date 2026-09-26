@@ -1,4 +1,4 @@
-package client
+package detached
 
 import (
 	"context"
@@ -13,10 +13,20 @@ import (
 	"github.com/google/uuid"
 )
 
-// This local receipt intentionally has no field capable of holding auth or a
-// grant bearer. A source ID alone permits replay, never new input admission.
+const (
+	receiptVersion = "detached-invocation/v1"
+	// A receipt written before the client was shared by more than one
+	// workload. It keeps resuming, as the review submission it always was.
+	legacyReviewReceiptVersion = "review-invocation/v1"
+	legacyReviewWorkload       = "review"
+)
+
+// This local submission receipt intentionally has no field capable of holding
+// auth or a grant bearer. A source ID alone permits replay, never new input
+// admission.
 type submissionReceipt struct {
 	Version       string `json:"version"`
+	Workload      string `json:"workload,omitempty"`
 	Server        string `json:"server"`
 	Team          string `json:"team"`
 	Template      string `json:"template"`
@@ -58,7 +68,7 @@ func openReceipt(ctx context.Context, path, input string) (*receiptFile, error) 
 		return nil, err
 	}
 	if rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return nil, errors.New("receipt must be outside the review input")
+		return nil, errors.New("receipt must be outside the submitted input")
 	}
 	root, err := os.OpenRoot(parent)
 	if err != nil {
@@ -96,6 +106,9 @@ func (f *receiptFile) Close() {
 	f.root.Close()
 }
 
+// Load returns a receipt in the current version. A legacy review receipt is
+// read as the review workload and is rewritten in the current version the next
+// time submission saves progress.
 func (f *receiptFile) Load() (submissionReceipt, bool, error) {
 	var receipt submissionReceipt
 	st, err := f.root.Lstat(f.name)
@@ -116,13 +129,20 @@ func (f *receiptFile) Load() (submissionReceipt, bool, error) {
 	d := json.NewDecoder(io.LimitReader(file, 16385))
 	d.DisallowUnknownFields()
 	if err := d.Decode(&receipt); err != nil {
-		return receipt, false, errors.New("invalid saved review receipt")
+		return receipt, false, errors.New("invalid saved submission receipt")
 	}
 	if err := d.Decode(new(any)); err != io.EOF {
-		return receipt, false, errors.New("invalid saved review receipt")
+		return receipt, false, errors.New("invalid saved submission receipt")
 	}
-	if receipt.Version != "review-invocation/v1" || receipt.InvocationKey == "" || receipt.RunID < 0 || receipt.Number < 0 || (receipt.RunID == 0) != (receipt.Number == 0) || (receipt.RunID > 0 && receipt.SourceID == "") {
-		return receipt, false, errors.New("incomplete saved review receipt")
+	switch {
+	case receipt.Version == receiptVersion && receipt.Workload != "":
+	case receipt.Version == legacyReviewReceiptVersion && receipt.Workload == "":
+		receipt.Version, receipt.Workload = receiptVersion, legacyReviewWorkload
+	default:
+		return receipt, false, errors.New("incomplete saved submission receipt")
+	}
+	if receipt.InvocationKey == "" || receipt.RunID < 0 || receipt.Number < 0 || (receipt.RunID == 0) != (receipt.Number == 0) || (receipt.RunID > 0 && receipt.SourceID == "") {
+		return receipt, false, errors.New("incomplete saved submission receipt")
 	}
 	return receipt, true, nil
 }

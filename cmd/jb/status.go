@@ -72,7 +72,7 @@ func reviewResult(ctx context.Context, flags *flag.FlagSet, args []string, out i
 	team := flags.String("team", "", "team name; defaults to the target's team")
 	template := flags.String("template", "review", "base review template name")
 	number := flags.Int("run", 0, "Run number (required)")
-	name := flags.String("result", "findings", "named result containing review.json")
+	name := flags.String("result", reviewclient.FindingsResult, "named result containing review.json")
 	format := flags.String("format", "json", "output format: json or markdown")
 	if err := flags.Parse(args); err != nil {
 		return err

@@ -3,7 +3,8 @@
 A human, Codex, Claude, or another MCP client can submit the same detached,
 inspection-only review. The CLI and stdio MCP use one shared client and the
 platform's durable Run, input and result contracts. No additional job store is
-involved.
+involved. The client is the workload-neutral `agent/detached`; `agent/review/client`
+binds it to review's bundle, `change` input, `findings` result and report.
 
 ## Capture and submit
 
