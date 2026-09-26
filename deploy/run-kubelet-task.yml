@@ -1,0 +1,15 @@
+# The Brine disposable-kubelet tier (atc/worker/jetbridge/brine/kubelet/.brine).
+# Run with fly execute against a committed repo archive:
+#   fly -t home execute -c deploy/run-kubelet-task.yml --privileged \
+#     -i repo=<archive dir> -v github-token="$GITHUB_TOKEN"
+# It creates and destroys its own single-node K3s cluster; nothing reaches the
+# deployed one.
+platform: linux
+rootfs_uri: docker:///registry.home/concourse-kind-runner:v35
+inputs:
+- name: repo
+params:
+  GITHUB_TOKEN: ((github-token))
+run:
+  path: sh
+  args: [repo/hack/test-run-kubelet]

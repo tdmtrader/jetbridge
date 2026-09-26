@@ -62,6 +62,26 @@ a current, stripped, static Linux `artifact-daemon` build — see
 selects `BRINE_KUBE_CONTEXT=in-cluster` and supplies these as pipeline
 variables; the live tier itself has never run in CI (see V5-MIGRATION.md).
 
+## Disposable-kubelet tier
+
+Scenarios that need a real kubelet *and* the Hangar output plane on its node
+(a node labelled into the ready cohort, a node-local output daemon) cannot run
+in the live tier, which must not change the deployed cluster's nodes. They
+live in `features/kubelet/` and run against a single-node K3s cluster that a
+privileged CI task creates and destroys:
+
+```sh
+fly -t home execute -c deploy/run-kubelet-task.yml --privileged \
+  -i repo=<git archive of the ref> -v github-token="$GITHUB_TOKEN"
+```
+
+`hack/test-run-kubelet` marks the node `brine.dev/run-kubelet=owned-ci` and
+runs `kubelet/.brine` (Run cancellation). The steps refuse any cluster that is
+not that loopback, single, marked node. The review scenarios in the same
+directory have their own runner, `hack/test-review-kubelet`. The Run tier's CI
+home is the `run-cancellation-kubelet` job in `deploy/k8s-e2e-pipeline.yml`
+(live once that pipeline is set); the review tier is in no pipeline.
+
 ## Guard tests and vet
 
 ```sh

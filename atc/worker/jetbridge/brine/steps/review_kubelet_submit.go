@@ -240,7 +240,7 @@ func liveSubmittedReview(ctx context.Context, in RunOutputRuntime, executor jetb
 	}
 	// The client process is gone. The model fixture still waits in the real Pod.
 	name := jetbridge.GeneratePodName(metadata, container.DBContainer().Handle())
-	if err = reviewProbe(ctx, executor, config.Namespace, name, `test ! -e /workspace/result/review.json; test "$(find /dev/shm/jb-review -name auth.json | wc -l)" -eq 1; find /dev/shm/jb-review -name auth.json -exec sh -c 'touch "${1%/*}/continue-review"' sh {} \;`); err != nil {
+	if err = kubeletProbe(ctx, executor, config.Namespace, name, `test ! -e /workspace/result/review.json; test "$(find /dev/shm/jb-review -name auth.json | wc -l)" -eq 1; find /dev/shm/jb-review -name auth.json -exec sh -c 'touch "${1%/*}/continue-review"' sh {} \;`); err != nil {
 		return fmt.Errorf("disconnected worker was not waiting for the model: %w", err)
 	}
 	select {
@@ -251,7 +251,7 @@ func liveSubmittedReview(ctx context.Context, in RunOutputRuntime, executor jetb
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	if err = reviewProbe(ctx, executor, config.Namespace, name, `test -s /workspace/result/review.json; test -s /workspace/result/review.md; test -z "$(find /dev/shm/jb-review -name 'auth.json*' -print)"`); err != nil {
+	if err = kubeletProbe(ctx, executor, config.Namespace, name, `test -s /workspace/result/review.json; test -s /workspace/result/review.md; test -z "$(find /dev/shm/jb-review -name 'auth.json*' -print)"`); err != nil {
 		return fmt.Errorf("worker failed to publish or clean credentials: %w", err)
 	}
 	if err = settleLiveReview(ctx, in, controls, keys); err != nil {

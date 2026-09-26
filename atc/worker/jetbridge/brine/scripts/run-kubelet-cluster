@@ -1,0 +1,15 @@
+#!/bin/sh
+# The disposable-kubelet tier reaches the K3s API and node over the host's own
+# network, so unlike the local tier it gets no private network namespace.
+set -eu
+cd "$(dirname "$0")/.."
+: "${BRINE_KUBELET_CONFIG:?Set BRINE_KUBELET_CONFIG to the disposable K3s kubeconfig (hack/test-run-kubelet)}"
+brine_adapter=${BRINE_ADAPTER_BINARY:-$PWD/.build/brine-adapter-jetbridge}
+case "$brine_adapter" in /*) ;; *) echo "Adapter path must be absolute" >&2; exit 2 ;; esac
+test -x "$brine_adapter"
+# PostgreSQL refuses uid 0. Map only this process tree to nobody; do not alter
+# host identities, interfaces or filesystem permissions.
+if [ "$(id -u)" = 0 ]; then
+    exec unshare --user --map-user=65534 --map-group=65534 "$brine_adapter" "$@"
+fi
+exec "$brine_adapter" "$@"

@@ -9,14 +9,20 @@ import (
 
 // A document has already resolved selection; inspect its sources, never read or
 // filter feature files again. Unknown paths conservatively select the local tier.
+// The live and disposable-kubelet tiers bring their own cluster; neither needs
+// envtest.
 func planNeedsRealCluster(plan brine.ExecutionPlan) bool {
 	for _, feature := range plan.Features {
 		source := filepath.ToSlash(filepath.Clean(feature.Source))
-		if !strings.HasPrefix(source, "features/live/") && !strings.Contains(source, "/features/live/") {
+		if !ownsCluster(source, "live") && !ownsCluster(source, "kubelet") {
 			return true
 		}
 	}
 	return false
+}
+
+func ownsCluster(source, tier string) bool {
+	return strings.HasPrefix(source, "features/"+tier+"/") || strings.Contains(source, "/features/"+tier+"/")
 }
 
 func prepareRun(plan brine.ExecutionPlan, state *brine.ResourceState, start func(brine.Resources) error) error {

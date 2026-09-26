@@ -4,11 +4,9 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,17 +14,10 @@ import (
 	"time"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
-	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/hangaroutput"
-	"github.com/concourse/concourse/atc/runs"
-	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"github.com/concourse/concourse/hangar/executioncontrol"
-	"github.com/concourse/concourse/hangar/output"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/clientcmd"
 )
 
 // These scenarios are explicitly selected in Linux CI. They never substitute
@@ -43,7 +34,7 @@ func ReviewKubeletDefinitions() []brine.StepDefinition {
 		if mode == "read-only named input" {
 			err = liveReviewReadOnlyInput(ctx, in, executor, rec)
 		} else if strings.Contains(mode, "cancellation") {
-			err = liveReviewCancellation(ctx, in, executor, mode)
+			err = kubeletActiveCancellation(ctx, in, executor, mode == "TERM-resistant cancellation")
 		} else {
 			err = liveReviewCredentialLoss(ctx, in, executor, mode, res)
 		}
@@ -51,179 +42,10 @@ func ReviewKubeletDefinitions() []brine.StepDefinition {
 	})}
 }
 
+// liveReviewRuntime is the disposable kubelet runtime under the review
+// tier's own node marker.
 func liveReviewRuntime(ctx context.Context, rec *brine.Recorder, res brine.Resources) (RunOutputRuntime, jetbridge.PodExecutor, error) {
-	var in RunOutputRuntime
-	path := os.Getenv("BRINE_KUBELET_CONFIG")
-	if path == "" {
-		return in, nil, fmt.Errorf("live review scenarios require BRINE_KUBELET_CONFIG from the disposable CI cluster")
-	}
-	cfg, err := clientcmd.BuildConfigFromFlags("", path)
-	if err != nil {
-		return in, nil, err
-	}
-	u, err := url.Parse(cfg.Host)
-	if err != nil || u.Scheme != "https" || u.Hostname() != "127.0.0.1" {
-		return in, nil, fmt.Errorf("live review accepts only the disposable loopback K3s API")
-	}
-	client, err := kubernetes.NewForConfig(cfg)
-	if err != nil {
-		return in, nil, err
-	}
-	nodes, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return in, nil, err
-	}
-	if len(nodes.Items) != 1 || nodes.Items[0].Labels["brine.dev/review-kubelet"] != "owned-ci" {
-		return in, nil, fmt.Errorf("cluster is not marked as the single disposable review CI node")
-	}
-	node := nodes.Items[0].DeepCopy()
-	for _, key := range []string{"concourse.dev/artifact-cache", "concourse.dev/hangar-v1", executioncontrol.ReadyLabel, output.ReadyLabel} {
-		node.Labels[key] = "ready"
-	}
-	node, err = client.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
-	if err != nil {
-		return in, nil, err
-	}
-	ns, err := client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "brine-review-"}}, metav1.CreateOptions{})
-	if err != nil {
-		return in, nil, err
-	}
-	TrackDisposer(rec, "the review namespace "+ns.Name, func() error {
-		return releasedIfGone(client.CoreV1().Namespaces().Delete(context.Background(), ns.Name, metav1.DeleteOptions{}))
-	})
-	in.Client, in.Node = client, node
-	in.Start, err = runOutputFixtureConfig(rec, res, "current", string(node.UID), false, node.Name)
-	if err != nil {
-		return in, nil, err
-	}
-	if in.Start.Err != nil {
-		return in, nil, in.Start.Err
-	}
-	d := in.Start.Daemon.Output
-	if err = d.crash(); err != nil {
-		return in, nil, err
-	}
-	listenArgs := 0
-	for i, arg := range d.cmd.Args {
-		if arg == "--listen" && i+1 < len(d.cmd.Args) {
-			listenArgs++
-			d.cmd.Args[i+1] = strings.Replace(d.cmd.Args[i+1], "127.0.0.1:", "0.0.0.0:", 1)
-		}
-	}
-	if listenArgs != 1 {
-		return in, nil, fmt.Errorf("live daemon has no single listen address")
-	}
-	if err = d.restart(ctx, in.Start.Daemon.HTTP); err != nil {
-		return in, nil, err
-	}
-	in.Config = jetbridge.NewConfig(ns.Name, "")
-	in.Config.OutputPlaneEnabled = true
-	in.Config.ArtifactHelperImage = "busybox:1.37"
-	in.Config.OutputActivationEpoch = int64(hangarEpoch)
-	in.Config.OutputDaemonPort, err = hangarDaemonPort(d.URL)
-	if err != nil {
-		return in, nil, err
-	}
-	in.Config.OutputDaemonTLSCert = filepath.Join(in.Start.Daemon.CertDir, "client.crt")
-	in.Config.OutputDaemonTLSKey = filepath.Join(in.Start.Daemon.CertDir, "client.key")
-	in.Config.OutputDaemonTLSCACert = filepath.Join(in.Start.Daemon.CertDir, "ca.crt")
-	in.Config.OutputDaemonTLSServerName = "artifact-daemon"
-	executor := jetbridge.NewSPDYExecutor(client, cfg)
-	in.OutcomeReader = executor
-	return in, executor, nil
-}
-
-func liveReviewCancellation(ctx context.Context, in RunOutputRuntime, executor jetbridge.PodExecutor, mode string) error {
-	row, err := in.Start.DB.PersistNamedWorker("review-kubelet")
-	if err != nil {
-		return err
-	}
-	factory := db.NewPipelineRunFactory(in.Start.DB.Conn, in.Start.DB.LockFactory)
-	keys := hangaroutput.ControlKeyRing{ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch), Keys: []hangaroutput.ControlKeyEntry{{Epoch: executioncontrol.ActivationEpoch(hangarEpoch), PublicKey: base64.StdEncoding.EncodeToString(in.Start.Daemon.ControlPublic)}}}
-	w := jetbridge.NewWorker(row, in.Client, in.Config, jetbridge.WorkerDeps{
-		Executor:          executor,
-		OutputControls:    jetbridge.NewOutputControls(in.Config, jetbridge.NewNodeIPResolver(in.Client), in.Start.Daemon.Minter, executioncontrol.ActivationEpoch(hangarEpoch)),
-		ExecutionPreparer: &runs.ExecutionStarter{Conn: in.Start.DB.Conn, Factory: factory, Source: in.source(), Epoch: executioncontrol.ActivationEpoch(hangarEpoch), Verifier: keys},
-	})
-	build := in.Start.Creation.EntryBuilds[0]
-	metadata := db.ContainerMetadata{BuildID: build.ID(), PipelineID: build.PipelineID(), Type: db.ContainerTypeTask}
-	spec := runtime.ContainerSpec{TeamID: build.TeamID(), Type: db.ContainerTypeTask, ImageSpec: runtime.ImageSpec{ImageURL: "busybox:1.37"}}
-	c, _, err := w.FindOrCreateContainer(ctx, db.NewBuildStepContainerOwner(build.ID(), "live-review", build.TeamID()), metadata, spec, nil)
-	if err != nil {
-		return err
-	}
-	tx, err := in.Start.DB.Conn.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	a, found, err := factory.RunExecution(ctx, tx, build.ID(), "live-review")
-	db.Rollback(tx)
-	if err != nil || !found {
-		return fmt.Errorf("missing live execution: %v", err)
-	}
-	script := `printf x >> /tmp/review-started; sleep 180 & C=$!; printf '%s\n' "$C" > /tmp/review-child; wait "$C"`
-	if mode == "TERM-resistant cancellation" {
-		script = "trap '' TERM; " + script
-	}
-	process, err := c.Run(ctx, runtime.ProcessSpec{ID: "review-live-command", Path: "sh", Args: []string{"-c", script}}, runtime.ProcessIO{})
-	if err != nil {
-		return err
-	}
-	waitCtx, stopWait := context.WithCancel(ctx)
-	done := make(chan error, 1)
-	joined := false
-	go func() { _, err := process.Wait(waitCtx); done <- err }()
-	defer func() {
-		stopWait()
-		if !joined {
-			select {
-			case <-done:
-			case <-time.After(5 * time.Second):
-			}
-		}
-	}()
-	name := jetbridge.GeneratePodName(metadata, c.DBContainer().Handle())
-	if err = waitReviewProbe(ctx, executor, in.Config.Namespace, name, "test -s /tmp/review-child"); err != nil {
-		return err
-	}
-	pod, err := in.Client.CoreV1().Pods(in.Config.Namespace).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		return err
-	}
-	if err = exerciseBaseExecutionCancellation(in, a, executioncontrol.ClassificationAuthoritativeFinish); err != nil {
-		return err
-	}
-	select {
-	case err = <-done:
-		joined = true
-		if err != nil {
-			return err
-		}
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	current, err := in.Client.CoreV1().Pods(in.Config.Namespace).Get(ctx, name, metav1.GetOptions{})
-	if err != nil || current.UID != pod.UID || current.DeletionTimestamp != nil {
-		return fmt.Errorf("cancellation destroyed the original Pod/source: %v", err)
-	}
-	return reviewProbe(ctx, executor, in.Config.Namespace, name, `test "$(cat /tmp/review-started)" = x; P=$(cat /tmp/review-child); test ! -f /proc/$P/stat || awk '$3 != "Z" { exit 1 }' /proc/$P/stat`)
-}
-
-func reviewProbe(ctx context.Context, executor jetbridge.PodExecutor, namespace, name, script string) error {
-	return executor.ExecInPod(ctx, namespace, name, "main", []string{"sh", "-ec", script}, nil, nil, nil, false, jetbridge.ExecAttrs{Purpose: "brine-live-review-probe"})
-}
-
-func waitReviewProbe(ctx context.Context, executor jetbridge.PodExecutor, namespace, name, script string) error {
-	for {
-		if err := reviewProbe(ctx, executor, namespace, name, script); err == nil {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(250 * time.Millisecond):
-		}
-	}
+	return disposableKubeletRuntime(ctx, rec, res, "brine.dev/review-kubelet", "brine-review-", false)
 }
 
 func liveReviewCredentialLoss(ctx context.Context, in RunOutputRuntime, executor jetbridge.PodExecutor, mode string, res brine.Resources) error {
@@ -238,7 +60,7 @@ func liveReviewCredentialLoss(ctx context.Context, in RunOutputRuntime, executor
 	if err != nil {
 		return err
 	}
-	if err = waitReviewProbe(ctx, executor, pod.Namespace, pod.Name, "mkdir -p /tmp/review/input /dev/shm/jb-review; chmod 700 /dev/shm/jb-review"); err != nil {
+	if err = waitKubeletProbe(ctx, executor, pod.Namespace, pod.Name, "mkdir -p /tmp/review/input /dev/shm/jb-review; chmod 700 /dev/shm/jb-review"); err != nil {
 		return err
 	}
 	// Exec can work before kubelet has published Running/ContainerID. The
@@ -282,7 +104,7 @@ func liveReviewCredentialLoss(ctx context.Context, in RunOutputRuntime, executor
 	if err = copyReviewPodFiles(ctx, executor, pod, change); err != nil {
 		return err
 	}
-	if err = reviewProbe(ctx, executor, pod.Namespace, pod.Name, `/tmp/review/jb-review-worker --input /tmp/review/input --output /tmp/review/report --runtime-dir /dev/shm/jb-review --codex /tmp/review/provider --model handoff-wait --timeout 3m --auth-socket /dev/shm/jb-review/auth.sock --handoff-timeout 1m --run-id 417 </dev/null >/tmp/review/stdout 2>/tmp/review/stderr & echo $! > /tmp/review/worker.pid`); err != nil {
+	if err = kubeletProbe(ctx, executor, pod.Namespace, pod.Name, `/tmp/review/jb-review-worker --input /tmp/review/input --output /tmp/review/report --runtime-dir /dev/shm/jb-review --codex /tmp/review/provider --model handoff-wait --timeout 3m --auth-socket /dev/shm/jb-review/auth.sock --handoff-timeout 1m --run-id 417 </dev/null >/tmp/review/stdout 2>/tmp/review/stderr & echo $! > /tmp/review/worker.pid`); err != nil {
 		return err
 	}
 	source := in.source()
@@ -349,7 +171,7 @@ func liveReviewCredentialLoss(ctx context.Context, in RunOutputRuntime, executor
 		return loseReviewNodeRuntime(ctx, cluster, shm, nodeAuth)
 	}
 	if mode == "a killed worker" {
-		if err = reviewProbe(ctx, executor, pod.Namespace, pod.Name, `kill -KILL "$(cat /tmp/review/worker.pid)"`); err != nil {
+		if err = kubeletProbe(ctx, executor, pod.Namespace, pod.Name, `kill -KILL "$(cat /tmp/review/worker.pid)"`); err != nil {
 			return err
 		}
 		if err = exec.CommandContext(ctx, "docker", "exec", cluster, "test", "-f", nodeAuth).Run(); err != nil {

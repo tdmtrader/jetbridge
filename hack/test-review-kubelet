@@ -6,31 +6,12 @@ root=$(pwd)
 cluster=brine-review-k3s
 runner=brine-review-tests
 work=$(mktemp -d /tmp/brine-review-ci.XXXXXX)
-docker_pid=""
-cleanup() {
-  status=$?
-  if [ "$status" -ne 0 ]; then
-    docker logs --tail 100 "$cluster" 2>&1 || true
-    docker exec "$cluster" kubectl get nodes,pods -A -o wide 2>&1 || true
-  fi
-  docker rm -f "$runner" "$cluster" >/dev/null 2>&1 || true
-  if [ -n "$docker_pid" ]; then
-    kill "$docker_pid" 2>/dev/null || true
-    wait "$docker_pid" 2>/dev/null || true
-  fi
-  rm -rf "$work"
-}
-trap cleanup EXIT INT TERM
+. "$root/repo/hack/lib/disposable-k3s.sh"
+trap dk3s_cleanup EXIT INT TERM
 # This task owns its Docker daemon and entire storage directory.
 mkdir -p "$work/docker" "$work/download" "$work/shared"
 cp -R "$root/brine-module/." "$work/download/"
-dockerd --host=unix:///var/run/docker.sock --data-root="$work/docker" --mtu=1450 --insecure-registry=registry.home --log-level=warn >"$work/docker.log" 2>&1 &
-docker_pid=$!
-for attempt in $(seq 1 60); do
-  if docker info >/dev/null 2>&1; then break; fi
-  sleep 1
-done
-docker info >/dev/null
+dk3s_start_dockerd
 k3s_image=rancher/k3s:v1.31.6-k3s1
 busybox_image=busybox:1.37
 test_image=registry.home/concourse-test-runner:v10
@@ -54,34 +35,9 @@ FROM brine-review-worker:production
 COPY codex /usr/local/bin/codex
 EOF
 docker build -t brine-review-worker:fixture "$work/fixture"
-# All networks are inside this disposable CI task Pod. A distinct Pod/service
-# CIDR avoids the outer cluster's routes. No production kubeconfig is mounted.
-docker run -d --name "$cluster" --privileged --cgroupns=host --network=host \
-  --tmpfs /run --tmpfs /var/run \
-  -v "$work/shared:/tmp/review-shared" \
-  "$k3s_image" server --disable=traefik --disable=metrics-server \
-  --snapshotter=native --tls-san=127.0.0.1 \
-  --cluster-cidr=10.250.0.0/16 --service-cidr=10.251.0.0/16
-for attempt in $(seq 1 120); do
-  # kubectl succeeds on an empty list while the kubelet is still registering.
-  nodes=$(docker exec "$cluster" kubectl get node -o name 2>/dev/null) || nodes=""
-  if [ -n "$nodes" ]; then break; fi
-  sleep 2
-done
-if [ -z "$nodes" ]; then
-  echo 'The disposable kubelet did not register a node.' >&2
-  exit 1
-fi
-docker exec "$cluster" kubectl wait --for=condition=Ready node --all --timeout=120s
-docker exec "$cluster" kubectl label node --all brine.dev/review-kubelet=owned-ci
-docker cp "$cluster:/etc/rancher/k3s/k3s.yaml" "$work/kubeconfig"
-chmod 600 "$work/kubeconfig"
-docker save "$busybox_image" -o "$work/busybox.tar"
-docker cp "$work/busybox.tar" "$cluster:/tmp/busybox.tar"
-docker exec "$cluster" ctr -n=k8s.io images import --all-platforms /tmp/busybox.tar
-docker save brine-review-worker:fixture -o "$work/review.tar"
-docker cp "$work/review.tar" "$cluster:/tmp/review.tar"
-docker exec "$cluster" ctr -n=k8s.io images import --all-platforms /tmp/review.tar
+dk3s_start_cluster "$k3s_image" "$work/shared" /tmp/review-shared brine.dev/review-kubelet=owned-ci
+dk3s_import_image "$busybox_image" busybox.tar
+dk3s_import_image brine-review-worker:fixture review.tar
 docker run --name "$runner" --network=host \
   -v "$root/repo:/workspace" \
   -v "$work/download:/go/pkg/mod/cache/download" \

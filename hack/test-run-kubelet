@@ -1,0 +1,53 @@
+#!/bin/sh
+# Disposable single-node K3s for the Brine disposable-kubelet tier
+# (atc/worker/jetbridge/brine/kubelet/.brine). Invoke through
+# deploy/run-kubelet-task.yml; never point this at a real cluster. The node is
+# labelled into the output plane's ready cohort and a node-local output daemon
+# runs beside it -- cluster-scoped changes the deployed cluster's live tier
+# must not make, which is why this tier owns its cluster.
+set -eu
+root=$(pwd)
+cluster=brine-run-k3s
+runner=brine-run-tests
+work=$(mktemp -d /tmp/brine-run-ci.XXXXXX)
+. "$root/repo/hack/lib/disposable-k3s.sh"
+trap dk3s_cleanup EXIT INT TERM
+: "${GITHUB_TOKEN:?the pinned Brine module is private; set GITHUB_TOKEN}"
+mkdir -p "$work/shared"
+dk3s_start_dockerd
+k3s_image=rancher/k3s:v1.31.6-k3s1
+busybox_image=busybox:1.37
+test_image=registry.home/concourse-test-runner:v11
+docker pull "$k3s_image"
+docker pull "$busybox_image"
+docker pull "$test_image"
+# The shared directory is the output daemon's node root: the daemon runs in
+# the runner container and the kubelet mounts its reservations as hostPaths.
+dk3s_start_cluster "$k3s_image" "$work/shared" /tmp/run-shared brine.dev/run-kubelet=owned-ci
+dk3s_import_image "$busybox_image" busybox.tar
+# Privileged only so the adapter can drop to an unprivileged user namespace
+# (PostgreSQL refuses uid 0): Docker's default seccomp denies unshare. The
+# daemon and the container both live and die with this task.
+docker run --name "$runner" --network=host --privileged \
+  -v "$root/repo:/workspace" \
+  -v "$work/kubeconfig:/tmp/run-kubeconfig:ro" \
+  -v "$work/shared:/tmp/run-shared" \
+  -e GITHUB_TOKEN \
+  -e TMPDIR=/tmp/run-shared \
+  -e BRINE_KUBELET_CONFIG=/tmp/run-kubeconfig \
+  -e CGO_ENABLED=0 -e GOMAXPROCS=4 \
+  -e GOPRIVATE=github.com/MarkDucommun/* \
+  -w /workspace/atc/worker/jetbridge/brine "$test_image" sh -ec '
+    set +x
+    git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
+    unset GITHUB_TOKEN
+    mkdir -p .build
+    go build -o .build/brine-adapter-jetbridge ./cmd/brine-adapter-jetbridge
+    (cd ../../../.. && go build -o atc/worker/jetbridge/brine/.build/brine-artifact-daemon ./cmd/artifact-daemon)
+    export BRINE_ARTIFACT_DAEMON_BINARY="$PWD/.build/brine-artifact-daemon"
+    # The unprivileged adapter must own what it writes under the shared root.
+    chmod 1777 /tmp/run-shared
+    go test ./steps -run "TestEveryStepDefinitionIsUsedByAScenario|TestEveryScenarioStepResolvesToADefinition|TestNoStepLineMatchesTwoDefinitions" -count=1
+    cd kubelet
+    brine run --no-engine --mode sync --format brief
+  '

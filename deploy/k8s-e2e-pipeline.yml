@@ -490,6 +490,28 @@ jobs:
           kill $DOCKERD_PID 2>/dev/null || true
           exit "${STATUS}"
 
+# Durable Run cancellation on a real kubelet (the brine disposable-kubelet
+# tier, atc/worker/jetbridge/brine/kubelet/.brine). Like the Hangar contracts
+# above it relabels a node into the output-plane cohort and runs a node-local
+# output daemon, so it owns its cluster: hack/test-run-kubelet starts a
+# single-node K3s inside this task and destroys it with the task.
+- name: run-cancellation-kubelet
+  serial: true
+  serial_groups: [k8s-tests]
+  plan:
+  - get: trigger
+    trigger: true
+    passed: [build-kind-runner]
+  - get: repo
+    passed: [build-kind-runner]
+  - task: run-cancellation-kubelet
+    privileged: true
+    timeout: 40m
+    attempts: 2
+    file: repo/deploy/run-kubelet-task.yml
+    params:
+      GITHUB_TOKEN: ((github-token))
+
 - name: k8s-integration-tests
   serial: true
   serial_groups: [k8s-tests]

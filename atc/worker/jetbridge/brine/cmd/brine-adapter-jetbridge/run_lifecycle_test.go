@@ -16,6 +16,8 @@ func TestLifecycleDocumentWarmsLocalAndMixedRunsBeforeSteps(t *testing.T) {
 	}{
 		{"local", []string{"features/task.feature"}, true},
 		{"live only", []string{"features/live/task.feature", "/repo/features/live/pod.feature"}, false},
+		{"kubelet only", []string{"features/kubelet/run-cancellation.feature", "/repo/features/kubelet/run.feature"}, false},
+		{"kubelet and local", []string{"features/kubelet/run-cancellation.feature", "features/exec.feature"}, true},
 		{"mixed", []string{"features/live/task.feature", "features/exec.feature"}, true},
 		{"cleaned local", []string{"features/live/../exec.feature"}, true},
 		{"unknown", []string{""}, true},

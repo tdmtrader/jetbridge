@@ -1,0 +1,21 @@
+# The disposable-kubelet tier: scenarios that need a real kubelet AND the
+# output plane on its node, which the deployed cluster's live tier may not
+# create (no node labels, no privileged node-local daemon). hack/test-run-kubelet
+# creates one single-node K3s cluster inside a privileged CI task, marks it
+# brine.dev/run-kubelet=owned-ci and points BRINE_KUBELET_CONFIG at it; the
+# steps refuse any other cluster. Never part of the local or live tiers.
+# Kept out of the suite root's recursive walk: a plain `brine run` from
+# atc/worker/jetbridge/brine (the CI brine job) must not reach this tier, whose
+# runner refuses without the disposable cluster. It still runs from this
+# directory, which is how hack/test-run-kubelet invokes it.
+discover: false
+runner:
+  name: jetbridge
+  binary: ../scripts/run-kubelet-cluster
+  contract: 5
+contract: 5
+features: ../features/kubelet/run-cancellation.feature
+budgets:
+  undefined: 0
+  # Counted out of ../features/kubelet/run-cancellation.feature on 2026-09-26.
+  scenarios_min: 5
