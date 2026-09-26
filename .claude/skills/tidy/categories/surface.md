@@ -56,3 +56,4 @@ Elm: `make test-elm && (cd web && yarn run build)`; the tracked
 | date | instance | outcome | note |
 |---|---|---|---|
 | 2026-09-22 | AlgorithmOutput@atc/db/input_mapping.go | deleted | zero references anywhere in the tree besides its own declaration; not in an excluded path and not an interface |
+| 2026-09-26 | AssetDir@atc/db/migration/bindata.go | deleted | zero references anywhere in the tree besides its own declaration; a go-bindata stub file, not under the excluded `atc/db/migration/migrations/` path; `Asset`/`MustAsset`/`AssetInfo`/`AssetNames`/`RestoreAsset`/`RestoreAssets` in the same file are also unreferenced (or, for bare `Asset`, blocked from the scan by an unrelated Elm `Asset` type collision) but stay untouched since the file doesn't collapse to empty — a future day's instances |
