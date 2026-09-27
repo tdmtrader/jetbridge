@@ -113,15 +113,6 @@ func (resource Resource) Put(ctx context.Context, container runtime.Container, s
 	return versionResult, processResult, nil
 }
 
-func attachOrRun(ctx context.Context, container runtime.Container, spec runtime.ProcessSpec, io runtime.ProcessIO) (runtime.Process, error) {
-	process, err := container.Attach(ctx, spec.ID, io)
-	if err == nil {
-		return process, nil
-	}
-
-	return container.Run(ctx, spec, io)
-}
-
 func (resource Resource) run(ctx context.Context, container runtime.Container, spec runtime.ProcessSpec, stderr io.Writer, attach bool, output any) (runtime.ProcessResult, error) {
 	input, err := resource.Signature()
 	if err != nil {
@@ -137,7 +128,7 @@ func (resource Resource) run(ctx context.Context, container runtime.Container, s
 
 	var process runtime.Process
 	if attach {
-		process, err = attachOrRun(ctx, container, spec, io)
+		process, err = runtime.AttachOrRun(ctx, container, spec, io)
 	} else {
 		process, err = container.Run(ctx, spec, io)
 	}

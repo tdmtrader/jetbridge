@@ -163,6 +163,17 @@ type Container interface {
 	DBContainer() db.CreatedContainer
 }
 
+// AttachOrRun attaches to the Process named by the spec's ID, and starts it
+// when no such Process is there to attach to.
+func AttachOrRun(ctx context.Context, container Container, spec ProcessSpec, io ProcessIO) (Process, error) {
+	process, err := container.Attach(ctx, spec.ID, io)
+	if err == nil {
+		return process, nil
+	}
+
+	return container.Run(ctx, spec, io)
+}
+
 // ContainerSpec defines how to construct a container.
 type ContainerSpec struct {
 	// RunTaskID is populated only by retained Run task preparation.
