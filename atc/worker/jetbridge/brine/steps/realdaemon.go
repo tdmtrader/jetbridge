@@ -685,8 +685,15 @@ func awaitDaemon(d *realDaemon, command string, ready func(url string) error,
 
 // crash preserves the node's storage and joins the real daemon process. The
 // original launcher remains the sole owner of Wait.
+//
+// A crashed node takes what it spawned with it. Killing the leader alone
+// could not be joined at all: a child still holding the daemon's output pipe
+// keeps Wait from returning until that child exits, so crash timed out with
+// "daemon did not exit after interruption" whenever the daemon had forked
+// before the kill landed (CI brine build 917400). A surviving child would also
+// hold the port and the root the restarted daemon needs.
 func (d *realDaemon) crash() error {
-	if err := d.cmd.Process.Kill(); err != nil {
+	if err := d.kill(); err != nil {
 		return err
 	}
 	select {
@@ -780,24 +787,29 @@ func registerDaemonArtifact(ctx context.Context, client *http.Client, baseURL, k
 	return nil
 }
 
+// kill sends SIGKILL to the daemon and everything it spawned.
+//
+// The GROUP, not the process. launch gave the daemon its own process group
+// with itself as leader, so the negated pid names the daemon and every child
+// it started. Killing the leader alone left those children holding the
+// listening socket and the storage root: a scenario that passed, a root that
+// could not be removed, and a port that the NEXT daemon could not bind.
+func (d *realDaemon) kill() error {
+	if err := syscall.Kill(-d.cmd.Process.Pid, syscall.SIGKILL); err != nil {
+		// A group that is not ours to signal, or that has already gone: fall
+		// back to the one process we certainly own. Killing one that already
+		// exited is harmless; skipping it on ESRCH left a daemon running that
+		// had no group of its own.
+		return d.cmd.Process.Kill()
+	}
+	return nil
+}
+
 func (d *realDaemon) stop() error {
 	if d.cmd != nil && d.cmd.Process != nil {
 		// The goroutine started in launchDaemon owns Wait; calling it here
 		// too would race for the same exit status.
-		//
-		// The GROUP, not the process. startDaemonProcess gave the daemon its
-		// own process group with itself as leader, so the negated pid names
-		// the daemon and every child it started. Killing the leader alone left
-		// those children holding the listening socket and the storage root: a
-		// scenario that passed, a root that could not be removed, and a port
-		// that the NEXT daemon could not bind.
-		if err := syscall.Kill(-d.cmd.Process.Pid, syscall.SIGKILL); err != nil {
-			// A group that is not ours to signal, or that has already gone:
-			// fall back to the one process we certainly own. Killing one that
-			// already exited is harmless; skipping it on ESRCH left a daemon
-			// running that had no group of its own.
-			_ = d.cmd.Process.Kill()
-		}
+		_ = d.kill()
 		if d.done != nil {
 			select {
 			case <-d.done:

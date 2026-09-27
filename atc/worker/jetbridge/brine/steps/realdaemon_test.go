@@ -364,7 +364,8 @@ func TestARestartedDaemonIsStoppedWithWhatItSpawned(t *testing.T) {
 	}))
 	defer ready.Close()
 
-	cmd := exec.Command("/bin/sh", "-c", `sleep 300 & echo "$!" > "$0"; wait`, t.TempDir()+"/first")
+	firstFile := t.TempDir() + "/first"
+	cmd := exec.Command("/bin/sh", "-c", `sleep 300 & echo "$!" > "$0"; wait`, firstFile)
 	daemon := &realDaemon{URL: ready.URL}
 	if err := daemon.launch(cmd, newDaemonOutput()); err != nil {
 		t.Fatalf("starting a stand-in daemon: %v", err)
@@ -375,9 +376,14 @@ func TestARestartedDaemonIsStoppedWithWhatItSpawned(t *testing.T) {
 			_ = daemon.cmd.Process.Kill()
 		}
 	})
+	// Crash only once the daemon has spawned: a child holding its output pipe
+	// is what kept a leader-only kill from being joined. Crashing before the
+	// fork passed, and made this spec a race (CI brine build 917400).
+	first := awaitChild(t, firstFile, "the daemon's child never ran")
 	if err := daemon.crash(); err != nil {
 		t.Fatalf("crashing the daemon: %v", err)
 	}
+	awaitGone(t, first, "the crashed daemon's child %d outlived the crash")
 
 	childFile := t.TempDir() + "/child"
 	daemon.cmd.Args[len(daemon.cmd.Args)-1] = childFile
@@ -386,17 +392,7 @@ func TestARestartedDaemonIsStoppedWithWhatItSpawned(t *testing.T) {
 	if err := daemon.restart(ctx, ready.Client()); err != nil {
 		t.Fatalf("restarting the daemon: %v", err)
 	}
-	child := 0
-	for deadline := time.Now().Add(10 * time.Second); child == 0 && time.Now().Before(deadline); {
-		if data, err := os.ReadFile(childFile); err == nil {
-			child, _ = strconv.Atoi(strings.TrimSpace(string(data)))
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if child <= 0 || !processAlive(child) {
-		t.Fatalf("the restarted daemon's child never ran")
-	}
-	t.Cleanup(func() { _ = syscall.Kill(child, syscall.SIGKILL) })
+	child := awaitChild(t, childFile, "the restarted daemon's child never ran")
 
 	started := time.Now()
 	if err := daemon.stop(); err != nil {
@@ -405,11 +401,34 @@ func TestARestartedDaemonIsStoppedWithWhatItSpawned(t *testing.T) {
 	if waited := time.Since(started); waited > 5*time.Second {
 		t.Fatalf("stopping the restarted daemon took %v", waited)
 	}
-	for deadline := time.Now().Add(5 * time.Second); processAlive(child) && time.Now().Before(deadline); {
+	awaitGone(t, child, "the restarted daemon's child %d outlived the stop")
+}
+
+// awaitChild reads the pid a stand-in daemon wrote for the child it spawned,
+// and arranges for that child to be killed however the spec ends.
+func awaitChild(t *testing.T, pidFile, failure string) int {
+	t.Helper()
+	child := 0
+	for deadline := time.Now().Add(10 * time.Second); child == 0 && time.Now().Before(deadline); {
+		if data, err := os.ReadFile(pidFile); err == nil {
+			child, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if processAlive(child) {
-		t.Fatalf("the restarted daemon's child %d outlived the stop", child)
+	if child <= 0 || !processAlive(child) {
+		t.Fatal(failure)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(child, syscall.SIGKILL) })
+	return child
+}
+
+func awaitGone(t *testing.T, pid int, failure string) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); processAlive(pid) && time.Now().Before(deadline); {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if processAlive(pid) {
+		t.Fatalf(failure, pid)
 	}
 }
 
