@@ -4,6 +4,7 @@ package review
 
 import (
 	"context"
+	"github.com/concourse/concourse/agent/session"
 	"io"
 	"os"
 	"path/filepath"
@@ -13,7 +14,7 @@ import (
 )
 
 func TestLinuxMemoryCredentialCleanup(t *testing.T) {
-	if err := requireMemoryRuntime("/dev/shm"); err != nil {
+	if err := session.RequireMemoryRuntime("/dev/shm"); err != nil {
 		t.Fatal(err)
 	}
 	dir, err := os.MkdirTemp("/dev/shm", "review-test-")

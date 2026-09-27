@@ -28,5 +28,6 @@ Feature: Versioned admission retains authorized named input claims
       | a generic claim release |
       | one source under two names |
       | one name routed to two slots |
+      | one name routed to two tasks |
       | immutable input bindings |
       | a reclaimed payload |

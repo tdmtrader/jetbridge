@@ -3,7 +3,8 @@
 A human, Codex, Claude, or another MCP client can submit the same detached,
 inspection-only review. The CLI and stdio MCP use one shared client and the
 platform's durable Run, input and result contracts. No additional job store is
-involved.
+involved. The client is the workload-neutral `agent/detached`; `agent/review/client`
+binds it to review's bundle, `change` input, `findings` result and report.
 
 ## Capture and submit
 
@@ -57,7 +58,10 @@ result producer must declare exactly `rootfs_uri: docker:///<pin>`, with no
 reports an unacknowledged delivery and the Run receives no credentials. The pin
 covers the image, not the task script: a member who can set the template can
 still change what that image runs, so restrict who holds that role on the
-review team. The ATC fills `run_id` per Run.
+review team. The pin is per image, not per template: the
+[implement template](../implement/README.md) runs the same image and is admitted
+by the same pin ([ADR-0006](../../docs/adr/0006-credential-pin-per-image.md)).
+The ATC fills `run_id` per Run.
 The worker stages a complete report below the output mount, then the task moves
 its two validated files into the named result before successful completion.
 
@@ -106,6 +110,13 @@ does not change the Run. The server selects its target, team and template at
 startup; tool arguments cannot replace its platform credentials. Only the local auth file path is part of startup configuration; its contents never enter tool arguments. Omit `--auth-file` to expose status/result access without allowing submission. Call `review_result` with `{"run": 1}` to retrieve the
 schema-validated report, including typed findings and provenance. Call `review_submit` with `{"input":"/path/to/change","receipt":"/path/to/request.json"}`. The same stdio configuration works for Codex, Claude and other MCP clients.
 
+`jb mcp --target YOUR_TARGET --team YOUR_TEAM --review-template review
+--implement-template implement --auth-file /owner/selected/auth.json` is one
+server that serves these tools unchanged beside the implement workload's
+`implement_*` tools (see the [implement README](../implement/README.md#local-mcp)).
+`review mcp` stays the same server with only the review tools, so existing
+configurations keep working.
+
 Retrieve the same report from a fresh human CLI process:
 
 ```sh
@@ -150,8 +161,10 @@ review inventory. Local capture and worker paths remain unchanged.
 
 ## Running one review
 
-`codex-version` and `codex-checksums.txt` pin the supported Codex release. The
-Dockerfile verifies the release archive and uses immutable base-image digests.
+[`codex-version`](../session/codex-version) and
+[`codex-checksums.txt`](../session/codex-checksums.txt) pin the supported Codex
+release for every worker mode; the provider session in `agent/session` checks the
+pin on each run. The Dockerfile verifies the release archive and uses immutable base-image digests.
 The worker requires an explicit model; it does not choose billing or another model.
 
 ```sh
@@ -287,7 +300,7 @@ call and consumes subscription usage; never run it as an ordinary CI test.
 
 Prepare a directory with a host `jb`, Linux `jb-review-worker`, and the pinned
 Linux `codex` and companion `codex-code-mode-host` binaries verified against
-`codex-checksums.txt`. The review instructions restrict Code Mode to calls to the
+`agent/session/codex-checksums.txt`. The review instructions restrict Code Mode to calls to the
 input reader and prohibit evaluating repository code. Shell tools remain disabled,
 and the worker validates the same closed event stream.
 Build the Linux Brine

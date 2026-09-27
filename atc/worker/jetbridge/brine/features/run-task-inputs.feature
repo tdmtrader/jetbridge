@@ -18,6 +18,7 @@ Feature: A Run task receives its retained named inputs
       | a valid source               | retained inputs         |
       | one source under two names   | retained inputs         |
       | one name routed to two slots | retained inputs         |
+      | one name routed to two tasks | retained inputs         |
       | a valid source               | changed route           |
       | a valid source               | changed input path      |
       | a valid source               | missing runtime slot    |
