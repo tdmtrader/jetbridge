@@ -394,7 +394,7 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 
 	oteltrace.SpanFromContext(ctx).AddEvent("step.starting")
 	delegate.Starting(logger)
-	process, err := attachOrRun(
+	process, err := runtime.AttachOrRun(
 		ctx,
 		container,
 		runtime.ProcessSpec{
@@ -442,14 +442,6 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 	oteltrace.SpanFromContext(ctx).AddEvent("step.finished")
 	delegate.Finished(logger, ExitStatus(result.ExitStatus))
 	return result.ExitStatus == 0, nil
-}
-
-func attachOrRun(ctx context.Context, container runtime.Container, spec runtime.ProcessSpec, io runtime.ProcessIO) (runtime.Process, error) {
-	process, err := container.Attach(ctx, spec.ID, io)
-	if err == nil {
-		return process, nil
-	}
-	return container.Run(ctx, spec, io)
 }
 
 func (step *TaskStep) imageSpec(ctx context.Context, logger lager.Logger, state RunState, delegate TaskDelegate, config atc.TaskConfig) (runtime.ImageSpec, error) {
