@@ -250,6 +250,8 @@ var _ = Describe("Check Lifecycle", func() {
 })
 
 func numBuildEventsForCheck(check db.Build) int {
+	GinkgoHelper()
+
 	var count int
 	err := psql.Select("COUNT(*)").
 		From("check_build_events").
