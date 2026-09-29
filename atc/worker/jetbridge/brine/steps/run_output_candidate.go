@@ -150,11 +150,23 @@ func publishRunCandidate(in RunOutputRuntime, rec *brine.Recorder, publish ...fu
 		if len(publish) > 0 {
 			return publish[0](directory)
 		}
-		return os.WriteFile(filepath.Join(directory, "findings.json"), []byte("{\"findings\":[]}\n"), 0600)
+		return writeRunFindings(directory)
 	})
 }
 
+func writeRunFindings(directory string) error {
+	return os.WriteFile(filepath.Join(directory, "findings.json"), []byte("{\"findings\":[]}\n"), 0600)
+}
+
 func publishRunCandidateStarted(in RunOutputRuntime, rec *brine.Recorder, publish func(string, executioncontrol.Acknowledgement) error) (RunOutputCandidate, error) {
+	return advanceRunCapture(in, rec, publish, func(_ hangaroutput.Decision, r output.HandoffRecord) bool {
+		return r.State == output.CaptureStateRegistered && r.Receipt != nil
+	})
+}
+
+// advanceRunCapture runs the producer and then its capture coordinator, one
+// bounded transition at a time, until the durable record satisfies until.
+func advanceRunCapture(in RunOutputRuntime, rec *brine.Recorder, publish func(string, executioncontrol.Acknowledgement) error, until func(hangaroutput.Decision, output.HandoffRecord) bool) (RunOutputCandidate, error) {
 	out := RunOutputCandidate{Runtime: in}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -223,31 +235,48 @@ func publishRunCandidateStarted(in RunOutputRuntime, rec *brine.Recorder, publis
 	if !found {
 		return out, fmt.Errorf("source hold names no real producing Pod")
 	}
-	keys := hangaroutput.ReceiptKeyRing{ActiveKeyID: hangarReceiptKeyID, ActivationEpoch: r.ActivationEpoch, Keys: []hangaroutput.ReceiptKeyEntry{{ID: hangarReceiptKeyID, Epoch: r.ActivationEpoch, PublicKey: base64.StdEncoding.EncodeToString(in.Start.Daemon.ReceiptPublic)}}}
-	verifier, err := keys.SignatureVerifier(output.ClockFunc(func() time.Time { return time.Now().UTC() }))
+	coordinator, err := runOutputCoordinator(in, freshUUID())
 	if err != nil {
 		return out, err
 	}
-	controls := jetbridge.NewOutputControls(in.Config, jetbridge.NewNodeIPResolver(in.Client), in.Start.Daemon.Minter, r.ActivationEpoch)
-	repository := out.Finish.repository()
-	coordinator := &hangaroutput.Coordinator{
-		Transactor: brineTransactor{conn: in.Start.DB.Conn}, Repository: repository,
-		Dialer:   hangaroutput.SourceDialerFunc(func(node string) (hangaroutput.SourceControl, error) { return controls.ForNode(ctx, node) }),
-		Drain:    &jetbridge.OutputDrain{Client: in.Client, Controls: controls, Namespace: "default"},
-		Verifier: verifier, HoldVerifier: hangaroutput.ControlKeyRing{ActivationEpoch: r.ActivationEpoch, Keys: []hangaroutput.ControlKeyEntry{{Epoch: r.ActivationEpoch, PublicKey: base64.StdEncoding.EncodeToString(in.Start.Daemon.ControlPublic)}}},
-		Announcer: hangaroutput.AnnouncerFunc(repository.RecordAnnouncement), OwnerID: freshUUID(), ReceiptKeyID: hangarReceiptKeyID,
-	}
 	for i := 0; i < 15; i++ {
-		if _, err := coordinator.Advance(ctx, r.HandoffID); err != nil {
+		decision, err := coordinator.Advance(ctx, r.HandoffID)
+		if err != nil {
 			return out, err
 		}
 		out.Record, err = in.readSource()
 		if err != nil {
 			return out, err
 		}
-		if out.Record.State == output.CaptureStateRegistered && out.Record.Receipt != nil {
+		if until(decision, out.Record) {
 			return out, nil
 		}
 	}
-	return out, fmt.Errorf("Run capture did not reach a verified receipt")
+	return out, fmt.Errorf("Run capture did not reach its stopping transition; it is %s", out.Record.State)
+}
+
+// runOutputCoordinator is atccmd's hangarOutputCoordinator over this fixture:
+// every field production sets, over the node's real controls and drain and
+// the activation-pinned receipt and control rings. The lease and seal terms
+// are production's defaults, as the chart's are.
+func runOutputCoordinator(in RunOutputRuntime, owner string) (*hangaroutput.Coordinator, error) {
+	epoch := executioncontrol.ActivationEpoch(hangarEpoch)
+	keys := hangaroutput.ReceiptKeyRing{ActiveKeyID: hangarReceiptKeyID, ActivationEpoch: epoch, Keys: []hangaroutput.ReceiptKeyEntry{{ID: hangarReceiptKeyID, Epoch: epoch, PublicKey: base64.StdEncoding.EncodeToString(in.Start.Daemon.ReceiptPublic)}}}
+	verifier, err := keys.SignatureVerifier(output.ClockFunc(func() time.Time { return time.Now().UTC() }))
+	if err != nil {
+		return nil, err
+	}
+	controls := jetbridge.NewOutputControls(in.Config, jetbridge.NewNodeIPResolver(in.Client), in.Start.Daemon.Minter, epoch)
+	repository := (RunOutputFinish{Start: in.Start}).repository()
+	return &hangaroutput.Coordinator{
+		Transactor: brineTransactor{conn: in.Start.DB.Conn}, Repository: repository,
+		Dialer: hangaroutput.SourceDialerFunc(func(node string) (hangaroutput.SourceControl, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			return controls.ForNode(ctx, node)
+		}),
+		Drain:    &jetbridge.OutputDrain{Client: in.Client, Controls: controls, Namespace: "default"},
+		Verifier: verifier, HoldVerifier: closureControlKeys(in),
+		Announcer: hangaroutput.AnnouncerFunc(repository.RecordAnnouncement), OwnerID: owner, ReceiptKeyID: hangarReceiptKeyID,
+	}, nil
 }

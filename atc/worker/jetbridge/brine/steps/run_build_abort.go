@@ -842,24 +842,34 @@ func closureControlKeys(in RunOutputRuntime) hangaroutput.ControlKeyRing {
 	return hangaroutput.ControlKeyRing{ActivationEpoch: executioncontrol.ActivationEpoch(hangarEpoch), Keys: []hangaroutput.ControlKeyEntry{{Epoch: executioncontrol.ActivationEpoch(hangarEpoch), PublicKey: base64.StdEncoding.EncodeToString(in.Start.Daemon.ControlPublic)}}}
 }
 
-// buildClosureWorker is the production cancellation worker: factory,
-// sources, executions and finality, in atccmd's order, over the given node
-// source.
+// buildClosureWorker is the production cancellation worker over the given
+// node source, with a coordinator that holds only its owner and hold
+// verifier: the closures here never reach a capture past its reservation.
 func buildClosureWorker(in RunOutputRuntime, source runs.CancellationSourcePlane, owner string) runs.CancellationWorker {
+	return cancellationWorkerOver(in, source, &hangaroutput.Coordinator{OwnerID: owner, HoldVerifier: closureControlKeys(in)})
+}
+
+// cancellationWorkerOver is the production cancellation worker: factory,
+// sources, executions and finality, in atccmd's order, over the given node
+// source and capture coordinator. Like atccmd, it owns its lease under the
+// coordinator's owner.
+func cancellationWorkerOver(in RunOutputRuntime, source runs.CancellationSourcePlane, coordinator *hangaroutput.Coordinator) runs.CancellationWorker {
 	factory := db.NewPipelineRunFactory(in.Start.DB.Conn, in.Start.DB.LockFactory)
 	keys := closureControlKeys(in)
-	sources := &runs.CancellationSources{Conn: in.Start.DB.Conn, Factory: factory, Repository: (RunOutputFinish{Start: in.Start}).repository(), Source: source, Coordinator: &hangaroutput.Coordinator{OwnerID: owner, HoldVerifier: keys}, Verifier: keys}
+	sources := &runs.CancellationSources{Conn: in.Start.DB.Conn, Factory: factory, Repository: (RunOutputFinish{Start: in.Start}).repository(), Source: source, Coordinator: coordinator, Verifier: keys}
 	executions := &runs.CancellationExecutions{Conn: in.Start.DB.Conn, Factory: factory, Source: source, Verifier: keys}
-	return runs.CancellationWorker{Conn: in.Start.DB.Conn, Factory: factory, OwnerID: owner,
+	return runs.CancellationWorker{Conn: in.Start.DB.Conn, Factory: factory, OwnerID: coordinator.OwnerID,
 		Actions: runs.CancellationActionSet{factory, sources, executions, runs.CancellationActionFunc(factory.ExecuteCancellationFinality)}}
 }
 
 // recordingSource is the real node source, with every node call it makes
-// recorded in order against the execution it names.
+// recorded in order against the execution it names. A probed source also
+// asks, before each call, whether any transaction holds the Run's lock.
 type recordingSource struct {
 	*jetbridge.OutputSource
 	mu    *sync.Mutex
 	calls *[]recordedNodeCall
+	probe *runLockProbe
 }
 
 type recordedNodeCall struct {
@@ -875,6 +885,9 @@ func (s recordingSource) note(execution executioncontrol.ExecutionID, call strin
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	*s.calls = append(*s.calls, recordedNodeCall{execution, call})
+	if s.probe != nil {
+		s.probe.observe(call)
+	}
 }
 
 func (s recordingSource) callsFor(execution executioncontrol.ExecutionID) []string {
@@ -949,4 +962,36 @@ func (c recordingCapture) Observe(ctx context.Context, id executioncontrol.Ident
 func (c recordingCapture) AcknowledgeRelease(ctx context.Context, intent output.ReleaseIntent) (output.ReleaseAcknowledgement, error) {
 	c.source.note(intent.Execution.ExecutionID, "release")
 	return c.SourceControl.AcknowledgeRelease(ctx, intent)
+}
+
+func (c recordingCapture) InspectSeal(ctx context.Context, handoff output.HandoffID, id executioncontrol.Identity) (output.SealStarted, error) {
+	c.source.note(id.ExecutionID, "inspect-seal")
+	return c.SourceControl.InspectSeal(ctx, handoff, id)
+}
+
+func (c recordingCapture) BeginSeal(ctx context.Context, request output.SealRequest) (output.SealStarted, error) {
+	c.source.note(request.Execution.ExecutionID, "begin-seal")
+	return c.SourceControl.BeginSeal(ctx, request)
+}
+
+func (c recordingCapture) ConfirmSeal(ctx context.Context, confirmation output.SealConfirmation) (output.CaptureAcknowledgement, error) {
+	c.source.note(confirmation.Started.Acknowledgement.Execution.ExecutionID, "confirm-seal")
+	return c.SourceControl.ConfirmSeal(ctx, confirmation)
+}
+
+func (c recordingCapture) Canonicalize(ctx context.Context, request output.PublicationRequest) (output.CanonicalizationResult, error) {
+	c.source.note(request.Execution.ExecutionID, "canonicalize")
+	return c.SourceControl.Canonicalize(ctx, request)
+}
+
+// Publish is where the store is written: the daemon creates the object in
+// its output bucket inside this call and nowhere else.
+func (c recordingCapture) Publish(ctx context.Context, request output.PublicationRequest) (output.PublicationResult, error) {
+	c.source.note(request.Execution.ExecutionID, "publish")
+	return c.SourceControl.Publish(ctx, request)
+}
+
+func (c recordingCapture) Attest(ctx context.Context, challenge output.StatChallenge, claims output.ReceiptClaims) (output.Receipt, error) {
+	c.source.note(claims.Execution.ExecutionID, "attest")
+	return c.SourceControl.Attest(ctx, challenge, claims)
 }

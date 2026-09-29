@@ -138,6 +138,7 @@ func Definitions() []brine.StepDefinition {
 	defs = append(defs, CancellationClassificationDefinitions()...)
 	defs = append(defs, CancellationSourcesDefinitions()...)
 	defs = append(defs, RunCancellationFinalityDefinitions()...)
+	defs = append(defs, RunCancellationGCSDefinitions()...)
 	defs = append(defs, RunBuildAbortDefinitions()...)
 	defs = append(defs, ExecutionOutcomeRecoveryDefinitions()...)
 	defs = append(defs, RunExecutionAdmissionDefinitions()...)

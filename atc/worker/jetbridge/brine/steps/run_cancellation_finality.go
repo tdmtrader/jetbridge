@@ -133,6 +133,12 @@ func cancellationFinalityWorker(in RunOutputRuntime) runs.CancellationWorker {
 }
 
 func exerciseRunCancellationFinality(in RunOutputRuntime, mode string) error {
+	return exerciseRunCancellationFinalityWith(in, mode, func() runs.CancellationWorker { return cancellationFinalityWorker(in) })
+}
+
+// exerciseRunCancellationFinalityWith drives workers from newWorker to the
+// Run's one aborted publication and proves it complete, empty and immutable.
+func exerciseRunCancellationFinalityWith(in RunOutputRuntime, mode string, newWorker func() runs.CancellationWorker) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
 	if mode == "owned check" {
@@ -159,7 +165,7 @@ func exerciseRunCancellationFinality(in RunOutputRuntime, mode string) error {
 		return err
 	}
 	if mode == "expired worker" {
-		worker := cancellationFinalityWorker(in)
+		worker := newWorker()
 		actions := worker.Actions
 		fired := false
 		worker.Actions = runs.CancellationActionFunc(func(ctx context.Context, lease db.RunCancellationLease, op db.RunCancellationOperation) (db.RunCancellationDebt, error) {
@@ -189,7 +195,7 @@ func exerciseRunCancellationFinality(in RunOutputRuntime, mode string) error {
 	// An abandoned claim keeps its original ten-second operation deadline;
 	// the terminal operation also retains its independently bounded backoff.
 	for pass := 0; pass < 30; pass++ {
-		worker := cancellationFinalityWorker(in)
+		worker := newWorker()
 		if err := worker.Run(ctx); err != nil && !onlyExternalCancellationWork(err) {
 			return err
 		}
@@ -224,7 +230,7 @@ func exerciseRunCancellationFinality(in RunOutputRuntime, mode string) error {
 				return fmt.Errorf("publication left open builds or changed a completed outcome")
 			}
 			before, _ := json.Marshal(result)
-			worker = cancellationFinalityWorker(in)
+			worker = newWorker()
 			if err = worker.Run(ctx); err != nil {
 				return err
 			}

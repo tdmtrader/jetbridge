@@ -8,6 +8,7 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/util"
+	"github.com/concourse/concourse/hangar/output"
 )
 
 type RunCheckAdmission struct {
@@ -110,18 +111,7 @@ func RunCancellationBoundaryDefinitions() []brine.StepDefinition {
 			if err != nil {
 				return err
 			}
-			if len(claims) != 0 || !record.Settled {
-				return fmt.Errorf("cancelled Run retained a new result candidate or lost settlement")
-			}
-			var reason string
-			err = in.Finish.Start.DB.Conn.QueryRow(`SELECT reason FROM pipeline_run_output_discards WHERE handoff_id=$1`, string(in.Record.HandoffID)).Scan(&reason)
-			if err != nil {
-				return err
-			}
-			if reason != "run_cancelled" {
-				return fmt.Errorf("discard lost its Run cancellation reason")
-			}
-			return nil
+			return assertCancelledDiscard(in.Finish.Start.DB.Conn, record, claims)
 		}),
 		CheckThat[RunCancellation]("direct changes cannot remove or replace the cancellation request", func(in RunCancellation) error {
 			if in.Err != nil {
@@ -135,6 +125,25 @@ func RunCancellationBoundaryDefinitions() []brine.StepDefinition {
 			return nil
 		}),
 	}
+}
+
+// assertCancelledDiscard proves a cancelled Run's settled capture became a
+// run_cancelled discard: no candidate and no claim on its generation.
+func assertCancelledDiscard(conn db.DbConn, record output.HandoffRecord, claims []output.ClaimRecord) error {
+	var candidates int
+	var reason string
+	err := conn.QueryRow(`SELECT (SELECT count(*) FROM pipeline_run_output_candidates WHERE handoff_id=$1),
+ coalesce((SELECT reason FROM pipeline_run_output_discards WHERE handoff_id=$1),'')`, string(record.HandoffID)).Scan(&candidates, &reason)
+	if err != nil {
+		return err
+	}
+	if len(claims) != 0 || candidates != 0 || !record.Settled {
+		return fmt.Errorf("cancelled Run retained %d candidates and %d claims, settled=%t", candidates, len(claims), record.Settled)
+	}
+	if reason != "run_cancelled" {
+		return fmt.Errorf("discard lost its Run cancellation reason: %q", reason)
+	}
+	return nil
 }
 
 func requestRunCheck(in RunOutputStart, kind string) (RunCheckAdmission, error) {
