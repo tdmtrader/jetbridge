@@ -57,3 +57,4 @@ under `fly/`.
 | date | instance | outcome | note |
 |---|---|---|---|
 | 2026-09-23 | errors.New:validateHangarControlSchema@cmd/artifact-daemon/hangar_handlers.go | rewritten | all 8 literal-only `fmt.Errorf` calls in the function have no `%` and no arguments; `errors` was already imported, `fmt` stays needed for the two literal-only calls remaining in `decodeHangarControl` in the same file |
+| 2026-09-29 | else-drop:ClearResourceCache@go-concourse/concourse/resource.go | rewritten | the `if err != nil` branch ends in an unconditional `return`, and `crcResponse` (the variable scoped inside the `else`) is never used after it, so the `else` was dropped in favor of a direct trailing return |

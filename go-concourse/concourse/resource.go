@@ -84,9 +84,9 @@ func (team *team) ClearResourceCache(pipelineRef atc.PipelineRef, ResourceName s
 
 	if err != nil {
 		return 0, err
-	} else {
-		return crcResponse.CachesRemoved, nil
 	}
+
+	return crcResponse.CachesRemoved, nil
 }
 
 func (team *team) ListSharedForResource(pipelineRef atc.PipelineRef, resourceName string) (atc.ResourcesAndTypes, bool, error) {
