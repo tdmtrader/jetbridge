@@ -2140,3 +2140,50 @@ func TestDaemonSetMode_RecordOutputsPointsTheCapturedOutputAtItsIncarnation(t *t
 			capturedAlias.LocalPath, want)
 	}
 }
+
+// AN OUTPUT NAME WAS A PATH ONTO THE NODE.
+//
+// A step's output becomes the hostPath `<root>/steps/<handle>/<output name>`,
+// and filepath.Join cleans `..` away, so an output named `../../../../../etc`
+// mounted the node's /etc read-write into an unprivileged task. Every hostPath
+// in a step pod must stay inside the places the runtime itself derives.
+func TestDaemonSetMode_BuildPodRefusesAHostPathOutsideItsStep(t *testing.T) {
+	cfg := daemonSetConfig()
+	for _, name := range []string{"../../../../../etc", "x/../../other-handle/dir", ".."} {
+		container := &Container{
+			handle: "task-handle", podName: "test-pod",
+			metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
+			containerSpec: runtime.ContainerSpec{
+				Dir: "/work", Type: db.ContainerTypeTask, ImageSpec: runtime.ImageSpec{ImageURL: "busybox"},
+				Outputs: runtime.OutputPaths{name: "/work/out"},
+			},
+			config: cfg, storageBackend: NewDaemonSetBackend(cfg, nil, nil, nil),
+		}
+		pod, err := container.buildPod(runtime.ProcessSpec{}, []string{"sh", "-c", "true"}, nil)
+		if err == nil || !strings.Contains(err.Error(), "outside") {
+			var paths []string
+			if pod != nil {
+				for _, v := range pod.Spec.Volumes {
+					if v.HostPath != nil {
+						paths = append(paths, v.HostPath.Path)
+					}
+				}
+			}
+			t.Errorf("output %q: expected the Pod to be refused, got err=%v hostPaths=%v", name, err, paths)
+		}
+	}
+
+	// The control: an ordinary output and the runtime's own volumes pass.
+	container := &Container{
+		handle: "task-handle", podName: "test-pod",
+		metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
+		containerSpec: runtime.ContainerSpec{
+			Dir: "/work", Type: db.ContainerTypeTask, ImageSpec: runtime.ImageSpec{ImageURL: "busybox"},
+			Outputs: runtime.OutputPaths{"result": "/work/result"},
+		},
+		config: cfg, storageBackend: NewDaemonSetBackend(cfg, nil, nil, nil),
+	}
+	if _, err := container.buildPod(runtime.ProcessSpec{}, []string{"sh", "-c", "true"}, nil); err != nil {
+		t.Fatalf("an ordinary output was refused: %v", err)
+	}
+}

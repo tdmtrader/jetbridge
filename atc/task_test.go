@@ -366,6 +366,21 @@ run: {path: a/file}
 				})
 			})
 
+			// An output's name becomes a directory on the node, so it must be
+			// one path segment: `../../etc` once mounted the node's /etc.
+			for _, name := range []string{"../../../../../etc", "a/b", ".", "..", `a\b`} {
+				name := name
+				Context("when output.name is "+name, func() {
+					BeforeEach(func() {
+						invalidConfig.Outputs = append(invalidConfig.Outputs, TaskOutputConfig{Name: name})
+					})
+
+					It("returns an error", func() {
+						Expect(invalidConfig.Validate()).To(MatchError(ContainSubstring("output in position 0 must be a single path segment")))
+					})
+				})
+			}
+
 			Context("when output.name is missing multiple times", func() {
 				BeforeEach(func() {
 					invalidConfig.Outputs = append(

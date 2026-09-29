@@ -115,8 +115,12 @@ func (config TaskConfig) validateOutputContainsNames() []string {
 	var messages []string
 
 	for i, output := range config.Outputs {
-		if output.Name == "" {
+		switch {
+		case output.Name == "":
 			messages = append(messages, fmt.Sprintf("  output in position %d is missing a name", i))
+		case output.Name == "." || output.Name == ".." || strings.ContainsAny(output.Name, `/\`):
+			// The name becomes a directory on the node that runs the step.
+			messages = append(messages, fmt.Sprintf("  output in position %d must be a single path segment, not %q", i, output.Name))
 		}
 	}
 
