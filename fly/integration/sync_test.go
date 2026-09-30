@@ -27,7 +27,8 @@ var _ = Describe("sync", func() {
 	)
 
 	BeforeEach(func() {
-		copiedFlyDir, err := os.MkdirTemp("", "fly_sync")
+		var err error
+		copiedFlyDir, err = os.MkdirTemp("", "fly_sync")
 		Expect(err).ToNot(HaveOccurred())
 
 		copiedFly, err := os.Create(filepath.Join(copiedFlyDir, filepath.Base(flyPath)))
@@ -68,6 +69,7 @@ var _ = Describe("sync", func() {
 	})
 
 	AfterEach(func() {
+		Expect(os.Chmod(copiedFlyDir, 0700)).To(Succeed())
 		Expect(os.RemoveAll(copiedFlyDir)).To(Succeed())
 	})
 
