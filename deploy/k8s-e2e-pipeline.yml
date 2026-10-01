@@ -186,7 +186,7 @@ jobs:
       platform: linux
       inputs:
       - name: repo
-      rootfs_uri: docker:///registry.home/concourse-kind-runner:v35
+      rootfs_uri: &kind_runner_image docker:///registry.home/concourse-kind-runner:v35
       run:
         path: sh
         args:
@@ -366,7 +366,7 @@ jobs:
       platform: linux
       inputs:
       - name: repo
-      rootfs_uri: docker:///registry.home/concourse-kind-runner:v35
+      rootfs_uri: *kind_runner_image
       run:
         path: sh
         args:
@@ -532,7 +532,7 @@ jobs:
       platform: linux
       inputs:
       - name: repo
-      rootfs_uri: docker:///registry.home/concourse-kind-runner:v35
+      rootfs_uri: *kind_runner_image
       run:
         path: sh
         args:
@@ -642,7 +642,7 @@ jobs:
       platform: linux
       inputs:
       - name: repo
-      rootfs_uri: docker:///registry.home/concourse-kind-runner:v35
+      rootfs_uri: *kind_runner_image
       run:
         path: sh
         args:
