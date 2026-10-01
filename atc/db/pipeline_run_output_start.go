@@ -235,7 +235,7 @@ func (f *pipelineRunFactory) lockOutputProducer(ctx context.Context, tx Tx, buil
 	if run.Status() != atc.RunStatusRunning {
 		return 0, ErrPipelineRunNotRunning
 	}
-	payload, found := run.InstancePipelineID()
+	payload, found := run.PayloadID()
 	if !found {
 		return 0, ErrPipelineRunPayloadGone
 	}

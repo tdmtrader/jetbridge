@@ -95,7 +95,7 @@ var _ = Describe("Pipeline presenter matrix", func() {
 		Expect(err).NotTo(HaveOccurred())
 		creation, err := dbtest.CreateRun(dbConn, db.NewPipelineRunFactory(dbConn, nil), context.Background(), template, db.RunParams{}, "creator")
 		Expect(err).NotTo(HaveOccurred())
-		childID, found := creation.Run.InstancePipelineID()
+		childID, found := creation.Run.PayloadID()
 		Expect(found).To(BeTrue())
 		_, err = dbConn.Exec("UPDATE pipelines SET name = $1 WHERE id = $2", "after-rename", template.ID())
 		Expect(err).NotTo(HaveOccurred())

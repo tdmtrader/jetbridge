@@ -624,7 +624,7 @@ func (b *build) start(tx Tx, plan atc.Plan) (bool, error) {
 		if run.CancellationRequested() {
 			return false, ErrPipelineRunCancelling
 		}
-		payloadID, found := run.InstancePipelineID()
+		payloadID, found := run.PayloadID()
 		if !found || payloadID != b.pipelineID {
 			return false, ErrPipelineRunPayloadGone
 		}
