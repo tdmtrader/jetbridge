@@ -85,7 +85,7 @@ func (f *pipelineRunFactory) finalizeOutputRun(ctx context.Context, tx Tx, runID
 	if open, err := runHasOpenBuildClosure(ctx, tx, runID); err != nil || open {
 		return false, err
 	}
-	payload, found := run.InstancePipelineID()
+	payload, found := run.PayloadID()
 	if !found {
 		return false, ErrPipelineRunPayloadGone
 	}
@@ -246,7 +246,7 @@ func lockRunResultPublicationUnder(ctx context.Context, tx Tx, runID int, hangar
 	if run.Status() != atc.RunStatusRunning {
 		return run, hangarEnabled, nil
 	}
-	payload, found := run.InstancePipelineID()
+	payload, found := run.PayloadID()
 	if !found {
 		return nil, false, ErrPipelineRunPayloadGone
 	}

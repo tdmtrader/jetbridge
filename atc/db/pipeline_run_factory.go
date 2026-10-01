@@ -274,7 +274,7 @@ func (f *pipelineRunFactory) CreateRunInTx(ctx context.Context, tx Tx, template 
 	if err != nil {
 		return RunCreation{}, err
 	}
-	run.instancePipelineID = childID
+	run.payloadID = childID
 
 	entryBuilds := make([]Build, 0, len(materialized.EntryJobNames))
 	for _, name := range materialized.EntryJobNames {

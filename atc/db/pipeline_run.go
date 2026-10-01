@@ -25,7 +25,7 @@ type PipelineRun interface {
 	CompletedAt() *time.Time
 	ReclaimRetryAfter() *time.Time
 	ConfigHash() string
-	InstancePipelineID() (int, bool)
+	PayloadID() (int, bool)
 	// CausedByRun and Correlation are v2 birth-time caller intent. Legacy Runs
 	// carry neither.
 	CausedByRun() *int
@@ -46,7 +46,7 @@ type pipelineRun struct {
 	completedAt        *time.Time
 	reclaimRetryAfter  *time.Time
 	configHash         string
-	instancePipelineID int
+	payloadID int
 	causedByRun        *int
 	correlation        string
 }
@@ -67,8 +67,8 @@ func (r *pipelineRun) CreatedBy() string       { return r.createdBy }
 func (r *pipelineRun) CreatedAt() time.Time    { return r.createdAt }
 func (r *pipelineRun) CompletedAt() *time.Time { return r.completedAt }
 func (r *pipelineRun) ConfigHash() string      { return r.configHash }
-func (r *pipelineRun) InstancePipelineID() (int, bool) {
-	return r.instancePipelineID, r.instancePipelineID != 0
+func (r *pipelineRun) PayloadID() (int, bool) {
+	return r.payloadID, r.payloadID != 0
 }
 func (r *pipelineRun) ReclaimRetryAfter() *time.Time { return r.reclaimRetryAfter }
 func (r *pipelineRun) CausedByRun() *int             { return r.causedByRun }
@@ -86,10 +86,10 @@ func scanPipelineRun(run *pipelineRun, row scannable) error {
 	var params sql.NullString
 	var completedAt sql.NullTime
 	var reclaimRetryAfter sql.NullTime
-	var instancePipelineID sql.NullInt64
+	var payloadID sql.NullInt64
 	var causedByRun sql.NullInt64
 	if err := row.Scan(&cancelAt, &cancelBy, &cancelReason, &run.contractVersion, &run.activationEpoch, &run.id, &run.templatePipelineID, &run.number, &params, &run.status, &run.createdBy,
-		&run.createdAt, &completedAt, &reclaimRetryAfter, &run.configHash, &instancePipelineID, &causedByRun, &run.correlation); err != nil {
+		&run.createdAt, &completedAt, &reclaimRetryAfter, &run.configHash, &payloadID, &causedByRun, &run.correlation); err != nil {
 		return err
 	}
 	if cancelAt.Valid {
@@ -107,7 +107,7 @@ func scanPipelineRun(run *pipelineRun, row scannable) error {
 	if completedAt.Valid {
 		run.completedAt = &completedAt.Time
 	}
-	run.instancePipelineID = int(instancePipelineID.Int64)
+	run.payloadID = int(payloadID.Int64)
 	if causedByRun.Valid {
 		cause := int(causedByRun.Int64)
 		run.causedByRun = &cause

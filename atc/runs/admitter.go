@@ -306,7 +306,7 @@ func refusal(err error) error {
 }
 
 func portRun(creation db.RunCreation) Run {
-	payloadID, _ := creation.Run.InstancePipelineID()
+	payloadID, _ := creation.Run.PayloadID()
 
 	return Run{
 		ID:                 creation.Run.ID(),

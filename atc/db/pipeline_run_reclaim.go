@@ -159,7 +159,7 @@ func (l *pipelineRunReclaimLifecycle) DestroyReclaimableRun(runID int) (bool, er
 	if run.Status() == atc.RunStatusRunning {
 		return false, nil
 	}
-	payloadID, found := run.InstancePipelineID()
+	payloadID, found := run.PayloadID()
 	if !found {
 		return false, nil
 	}

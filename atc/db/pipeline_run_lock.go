@@ -141,7 +141,7 @@ func lockJobBuildAdmission(tx Tx, jobID, hydratedRunID int) (jobBuildAdmission, 
 		if err != nil {
 			return jobBuildAdmission{}, err
 		}
-		if _, found := lockedRun.InstancePipelineID(); !found {
+		if _, found := lockedRun.PayloadID(); !found {
 			return jobBuildAdmission{}, ErrPipelineRunPayloadGone
 		}
 	}
@@ -201,7 +201,7 @@ func lockJobBuildAdmission(tx Tx, jobID, hydratedRunID int) (jobBuildAdmission, 
 	if lockedRun == nil || lockedRun.ID() != admission.runID {
 		return jobBuildAdmission{}, ErrPipelineRunPayloadGone
 	}
-	payloadID, found := lockedRun.InstancePipelineID()
+	payloadID, found := lockedRun.PayloadID()
 	if !found || payloadID != admission.pipelineID {
 		return jobBuildAdmission{}, ErrPipelineRunPayloadGone
 	}
@@ -246,7 +246,7 @@ func lockPipelineRunForPayload(tx Tx, pipelineID, hydratedRunID int) (PipelineRu
 	if err != nil {
 		return nil, false, err
 	}
-	payloadID, found := run.InstancePipelineID()
+	payloadID, found := run.PayloadID()
 	if !found || payloadID != pipelineID {
 		return nil, false, ErrPipelineRunPayloadGone
 	}

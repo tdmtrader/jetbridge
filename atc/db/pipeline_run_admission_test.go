@@ -54,7 +54,7 @@ var _ = Describe("run build admission", func() {
 		creation, err := dbtest.CreateRun(dbConn, factory, context.Background(), template, db.RunParams{}, "creator")
 		Expect(err).NotTo(HaveOccurred())
 		run = creation.Run
-		payloadID, found := run.InstancePipelineID()
+		payloadID, found := run.PayloadID()
 		Expect(found).To(BeTrue())
 		payload, found, err = defaultTeam.Pipeline(atc.PipelineRef{Name: template.Name(), InstanceVars: atc.InstanceVars{"run": float64(run.Number())}})
 		Expect(err).NotTo(HaveOccurred())
@@ -321,7 +321,7 @@ var _ = Describe("template checking and scheduling", func() {
 		Expect(err).NotTo(HaveOccurred())
 		creation, err := dbtest.CreateRun(dbConn, db.NewPipelineRunFactory(dbConn, lockFactory), context.Background(), template, db.RunParams{}, "creator")
 		Expect(err).NotTo(HaveOccurred())
-		payloadID, found := creation.Run.InstancePipelineID()
+		payloadID, found := creation.Run.PayloadID()
 		Expect(found).To(BeTrue())
 
 		ordinaryConfig := config

@@ -87,7 +87,7 @@ func lockRunOutputHandoff(ctx context.Context, tx output.Tx, handoff output.Hand
 	if run.Status() != atc.RunStatusRunning {
 		return nil, nil, ErrPipelineRunNotRunning
 	}
-	payload, found := run.InstancePipelineID()
+	payload, found := run.PayloadID()
 	if !found {
 		return nil, nil, ErrPipelineRunPayloadGone
 	}

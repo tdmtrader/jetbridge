@@ -30,7 +30,7 @@ var _ = Describe("Pipeline run presenter", func() {
 		run, found, err := factory.GetRun(template, creation.Run.Number())
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
-		childID, found := run.InstancePipelineID()
+		childID, found := run.PayloadID()
 		Expect(found).To(BeTrue())
 		child, found, err := db.NewPipelineRef(childID, "", nil, dbConn, nil).Pipeline()
 		Expect(err).NotTo(HaveOccurred())

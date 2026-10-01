@@ -128,7 +128,7 @@ func lockRunExecutionBuild(ctx context.Context, tx Tx, runID, buildID int, epoch
 	if run.Status() != atc.RunStatusRunning {
 		return ErrPipelineRunNotRunning
 	}
-	payload, found := run.InstancePipelineID()
+	payload, found := run.PayloadID()
 	if !found {
 		return ErrPipelineRunPayloadGone
 	}
