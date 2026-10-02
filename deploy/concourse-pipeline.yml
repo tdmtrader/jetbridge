@@ -828,6 +828,15 @@ jobs:
           # built artifact-daemon binary never actually reached a node.
           kubectl set image daemonset/concourse-artifact-daemon '*='"${IMAGE}" -n cicd
 
+          # The Hangar workloads run web's image too. Each exists only once the
+          # Hangar rollout has created it, so a missing one is skipped.
+          for workload in deployment/concourse-hangar-store daemonset/concourse-hangar-output-daemon \
+              deployment/concourse-hangar-output-inventory deployment/concourse-hangar-output-reclaimer; do
+            if kubectl get "${workload}" -n cicd >/dev/null 2>&1; then
+              kubectl set image "${workload}" '*='"${IMAGE}" -n cicd
+            fi
+          done
+
           kubectl rollout restart deployment/concourse-web -n cicd
           kubectl rollout restart daemonset/concourse-artifact-daemon -n cicd
 
@@ -911,6 +920,31 @@ jobs:
             echo "  ${component}: ${RUNNING}"
           done
 
+          # Every Hangar workload the rollout has created runs the same image.
+          # None is required before it exists; each present one is waited on
+          # first, since a rolling pod still Running on the old image would
+          # otherwise be sampled.
+          for workload in deployment/concourse-hangar-store:hangar-store \
+              daemonset/concourse-hangar-output-daemon:hangar-output-daemon \
+              deployment/concourse-hangar-output-inventory:hangar-output-inventory \
+              deployment/concourse-hangar-output-reclaimer:hangar-output-reclaimer; do
+            name=${workload%%:*}; component=${workload#*:}
+            kubectl get "${name}" -n cicd >/dev/null 2>&1 || continue
+            kubectl rollout status "${name}" -n cicd --timeout=180s
+            RUNNING=$(kubectl get pods -n cicd \
+              -l app.kubernetes.io/component=${component} \
+              --field-selector=status.phase=Running \
+              -o jsonpath='{range .items[*]}{range .spec.containers[*]}{.image}{"\n"}{end}{end}' \
+              | sort -u)
+            if [ "${RUNNING}" != "${EXPECTED_IMAGE}" ]; then
+              echo "FATAL: ${component} is running:" >&2
+              echo "${RUNNING}" | sed 's/^/  /' >&2
+              echo "expected exactly: ${EXPECTED_IMAGE}" >&2
+              exit 1
+            fi
+            echo "  ${component}: ${RUNNING}"
+          done
+
           echo "=== Letting service endpoints settle (15s) ==="
           sleep 15
 
@@ -964,6 +998,11 @@ jobs:
       rootfs_uri: docker:///registry.home/concourse-test-runner:v11
       inputs:
       - name: repo
+      params:
+        # The live-tests local user's password (team main), from
+        # concourse-main/live-tests-password. The Hangar Run tests log in as
+        # it; nothing else in the live tier authenticates.
+        CONCOURSE_LIVE_PASSWORD: ((live-tests-password))
       run:
         path: sh
         args:
@@ -1274,6 +1313,15 @@ jobs:
           # same image -- on the previous build.
           kubectl set image deployment/concourse-web '*='"${IMAGE}" -n cicd
           kubectl set image daemonset/concourse-artifact-daemon '*='"${IMAGE}" -n cicd
+
+          # The Hangar workloads run web's image too. Each exists only once the
+          # Hangar rollout has created it, so a missing one is skipped.
+          for workload in deployment/concourse-hangar-store daemonset/concourse-hangar-output-daemon \
+              deployment/concourse-hangar-output-inventory deployment/concourse-hangar-output-reclaimer; do
+            if kubectl get "${workload}" -n cicd >/dev/null 2>&1; then
+              kubectl set image "${workload}" '*='"${IMAGE}" -n cicd
+            fi
+          done
           kubectl rollout restart deployment/concourse-web -n cicd
           kubectl rollout restart daemonset/concourse-artifact-daemon -n cicd
 

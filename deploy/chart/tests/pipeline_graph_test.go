@@ -869,3 +869,60 @@ func normalizeExclusion(pkg string) string {
 	pkg = strings.TrimPrefix(pkg, "/")
 	return pkg
 }
+
+// TestThePipelineKeepsTheHangarWorkloadsOnWebsImage holds stores T7: the
+// Hangar workloads run web's image, so every job that moves web's image moves
+// theirs, verify-upgrade asserts them, and the live tier gets the password the
+// Hangar Run tests log in with.
+func TestThePipelineKeepsTheHangarWorkloadsOnWebsImage(t *testing.T) {
+	workloads := []string{
+		"deployment/concourse-hangar-store",
+		"daemonset/concourse-hangar-output-daemon",
+		"deployment/concourse-hangar-output-inventory",
+		"deployment/concourse-hangar-output-reclaimer",
+	}
+	root := repoRoot(t)
+	pipeline := loadPipeline(t, filepath.Join(root, "deploy", "concourse-pipeline.yml"))
+
+	scripts := map[string]string{"self-upgrade": "", "release": "", "verify-upgrade": ""}
+	livePassword, liveFound := "", false
+	for _, job := range pipeline.Jobs {
+		for _, step := range flattenPlan(job.Plan) {
+			if _, wanted := scripts[job.Name]; wanted && step.Task != "" {
+				scripts[job.Name] += stripShellComments(strings.Join(step.Config.Run.Args, "\n"))
+			}
+			if step.Task == "k8s-live-integration-tests" {
+				livePassword, liveFound = step.Config.Params["CONCOURSE_LIVE_PASSWORD"], true
+			}
+		}
+	}
+
+	for job, script := range scripts {
+		if script == "" {
+			t.Errorf("job %q has no task script; this check would pass vacuously", job)
+			continue
+		}
+		for _, workload := range workloads {
+			if !strings.Contains(script, workload) {
+				t.Errorf("job %q never names %s; it would leave that Hangar workload on the old image",
+					job, workload)
+			}
+		}
+	}
+	for _, job := range []string{"self-upgrade", "release"} {
+		if !strings.Contains(scripts[job], `kubectl set image "${workload}"`) {
+			t.Errorf("job %q names the Hangar workloads but never sets their image", job)
+		}
+	}
+	if !strings.Contains(scripts["verify-upgrade"], `kubectl rollout status "${name}"`) {
+		t.Error("verify-upgrade samples the Hangar workloads' images without waiting for their rollout")
+	}
+
+	if !liveFound {
+		t.Fatal("task k8s-live-integration-tests was not found; this check would pass vacuously")
+	}
+	if livePassword != "((live-tests-password))" {
+		t.Errorf("k8s-live-integration-tests sets CONCOURSE_LIVE_PASSWORD=%q, want ((live-tests-password))",
+			livePassword)
+	}
+}
