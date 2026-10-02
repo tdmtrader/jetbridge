@@ -1493,6 +1493,13 @@ func TestOnlyTheActivationCommandWritesTheEpochRow(t *testing.T) {
 	// what an authority is for.
 	writes := regexp.MustCompile(`(?is)\b(UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+` + activationTable + `\b`)
 
+	// And no production code changes who may write it: a GRANT, a SET ROLE or
+	// a DROP TRIGGER in SQL would be web granting itself the role's authority,
+	// borrowing its identity, or removing the guard. Case-sensitive and
+	// SQL-shaped, so prose about a step pod grant does not match.
+	authorityStatements := regexp.MustCompile(`\bGRANT\s+[A-Z][A-Z_, ()]*\bON\b|\bSET\s+(LOCAL\s+)?ROLE\b|\bDROP\s+TRIGGER\b`)
+	authorityExercised := false
+
 	scanned, readers, exercised := 0, 0, map[string]bool{}
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -1513,16 +1520,24 @@ func TestOnlyTheActivationCommandWritesTheEpochRow(t *testing.T) {
 			return readErr
 		}
 		scanned++
-		if !strings.Contains(string(body), activationTable) {
-			return nil
-		}
-		readers++
-
 		relative, relErr := filepath.Rel(root, path)
 		if relErr != nil {
 			return relErr
 		}
 		pkg := filepath.ToSlash(filepath.Dir(relative))
+		if found := authorityStatements.FindString(string(body)); found != "" {
+			if testHelperPackage(t, root, pkg) {
+				authorityExercised = true
+			} else if _, nested := nestedTestModules[pkg]; !nested {
+				t.Errorf("%s issues %q. No production code may grant privileges, borrow a role, or "+
+					"drop a trigger: the activation database role and its guard are the migrations' "+
+					"to define (hangar_activation_db_role R2).", filepath.ToSlash(relative), found)
+			}
+		}
+		if !strings.Contains(string(body), activationTable) {
+			return nil
+		}
+		readers++
 		if !writes.MatchString(string(body)) {
 			return nil
 		}
@@ -1549,6 +1564,10 @@ func TestOnlyTheActivationCommandWritesTheEpochRow(t *testing.T) {
 	if scanned < 500 {
 		t.Fatalf("scanned only %d non-test Go files; the walk failed and this rule would pass "+
 			"vacuously", scanned)
+	}
+	if !authorityExercised {
+		t.Error("no test helper package issues a role or trigger statement; the exemption for " +
+			"them is stale, or the pattern no longer matches what they issue")
 	}
 	if readers < 2 {
 		t.Fatalf("only %d non-test files name %s at all. Half this plane reads the epoch row, "+
@@ -2882,4 +2901,28 @@ func TestTheRunContractGuardsFailOnAnEmptyScan(t *testing.T) {
 			t.Errorf("the Kubernetes rule objected to a clean listing: %v", problems)
 		}
 	})
+}
+
+// testHelperPackage reports whether pkg is a test-support package: one whose
+// non-test files import Ginkgo, which nothing this repository ships links.
+// It is a checked property rather than a comment that says so.
+func testHelperPackage(t *testing.T, root, pkg string) bool {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(root, filepath.FromSlash(pkg)))
+	if err != nil {
+		t.Fatalf("reading %s: %v", pkg, err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(pkg), entry.Name()))
+		if err != nil {
+			t.Fatalf("reading %s/%s: %v", pkg, entry.Name(), err)
+		}
+		if strings.Contains(string(body), `"github.com/onsi/ginkgo/v2"`) {
+			return true
+		}
+	}
+	return false
 }
