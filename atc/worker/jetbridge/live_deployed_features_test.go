@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -106,6 +107,10 @@ var liveFeatures = map[string]func(d *liveDeployment) string{
 	"daemon.resolveCapability": func(d *liveDeployment) string { return onOff(d.daemonFlag("resolve-capability-key")) },
 	"daemon.hangar":            func(d *liveDeployment) string { return onOff(d.daemonFlag("hangar-enabled")) },
 	"daemon.preemption":        func(d *liveDeployment) string { return onOff(d.daemonFlag("preemption-watch")) },
+	// The output plane's own DaemonSet, and the disk store behind both
+	// namespaces: workloads, not flags, so they are read by presence.
+	"daemon.hangarOutput": func(d *liveDeployment) string { return onOff("", d.outputDaemons > 0) },
+	"store.disk":          func(d *liveDeployment) string { return onOff("", d.diskStorePods > 0) },
 	// The plain-HTTP listener Prometheus scrapes; without it the daemon's
 	// metrics exist only behind mTLS and nothing collects them.
 	"daemon.metrics": func(d *liveDeployment) string {
@@ -194,6 +199,50 @@ func TestLiveManifestNamesRealCoverage(t *testing.T) {
 		for _, test := range feature.CoveredBy {
 			if !tests[test] {
 				t.Errorf("%s claims coverage by %s, which is not a `live` test in this package", name, test)
+			}
+		}
+	}
+}
+
+// liveBehaviouralFeatures are the features a configuration flag cannot prove:
+// each one on is only working if a live test drives traffic through it, so
+// none may be on with a reason instead of a test, and each must name the
+// tests that exercise it.
+var liveBehaviouralFeatures = map[string][]string{
+	"web.hangar":              {"TestLiveHangarStrictInputFromTheInputNamespace"},
+	"daemon.hangar":           {"TestLiveHangarStrictInputFromTheInputNamespace"},
+	"store.disk":              {"TestLiveHangarStrictInputFromTheInputNamespace", "TestLiveHangarRunConsumesAManagedInputAndDownloadsItsResult"},
+	"web.hangarOutput":        {"TestLiveHangarRunConsumesAManagedInputAndDownloadsItsResult"},
+	"web.hangarOutputCapture": {"TestLiveHangarRunConsumesAManagedInputAndDownloadsItsResult"},
+	"web.runResults":          {"TestLiveHangarRunConsumesAManagedInputAndDownloadsItsResult"},
+	"daemon.hangarOutput":     {"TestLiveHangarRunConsumesAManagedInputAndDownloadsItsResult"},
+}
+
+// TestLiveBehaviouralFeaturesNameTheirTests holds the Hangar features to
+// their tests: once one expects on, an `uncovered` reason is an error and its
+// coverage must include every test in liveBehaviouralFeatures for it.
+func TestLiveBehaviouralFeaturesNameTheirTests(t *testing.T) {
+	manifest := loadLiveManifest(t)
+	tests := liveTestFunctions(t)
+	for name, required := range liveBehaviouralFeatures {
+		if _, observed := liveFeatures[name]; !observed {
+			t.Errorf("%s is a behavioural feature with no observer in liveFeatures", name)
+		}
+		for _, test := range required {
+			if !tests[test] {
+				t.Errorf("%s requires %s, which is not a `live` test in this package", name, test)
+			}
+		}
+		feature := manifest.Features[name]
+		if feature.Expect == "off" || feature.Expect == "" {
+			continue
+		}
+		if feature.Uncovered != "" {
+			t.Errorf("%s expects %q with a reason for no test; a behavioural feature needs its tests", name, feature.Expect)
+		}
+		for _, test := range required {
+			if !slices.Contains(feature.CoveredBy, test) {
+				t.Errorf("%s expects %q but its coverage %v does not name %s", name, feature.Expect, feature.CoveredBy, test)
 			}
 		}
 	}

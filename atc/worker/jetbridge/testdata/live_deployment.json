@@ -46,6 +46,14 @@
       "expect": "off",
       "note": "Rendered only with hangarOutput.webEnabled."
     },
+    "daemon.hangarOutput": {
+      "expect": "off",
+      "note": "The Hangar output daemon DaemonSet is created by rollout step S6 of hangar_stores_enabled_in_cluster; see web.hangarOutput."
+    },
+    "store.disk": {
+      "expect": "off",
+      "note": "The Hangar disk store (hangarStorage.disk) is initialized at rollout step S2 and runs from S3; see web.hangar."
+    },
     "daemon.mtls": {
       "expect": "on",
       "coveredBy": ["TestLiveVolumePassingGetToTask", "TestLiveVolumePassingTaskChain", "TestLiveVolumeDataIntegrity"]
