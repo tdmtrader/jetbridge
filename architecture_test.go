@@ -2645,6 +2645,88 @@ func TestTheRunPackagesSpeakNoMethodology(t *testing.T) {
 	}
 }
 
+// No step configuration can ask for an added capability or a host namespace,
+// because nothing that builds a step pod sets one and a sidecar has no field
+// to carry one (step_pod_privilege_gate, spec amendment B1 §1). The admission
+// still refuses such a pod; this keeps the request itself unexpressible.
+func TestNoStepPodCodeSetsACapabilityOrAHostNamespace(t *testing.T) {
+	files := productionGoFiles(t, func(rel string) bool {
+		return filepath.ToSlash(filepath.Dir(rel)) == "atc/worker/jetbridge"
+	})
+	for _, problem := range podEscalationFieldsSet(files) {
+		t.Error(problem + ". Step pods never add capabilities or join a host namespace.")
+	}
+
+	sidecar := productionGoFiles(t, func(rel string) bool { return filepath.ToSlash(rel) == "atc/sidecar.go" })
+	for _, problem := range sidecarSecurityFields(sidecar) {
+		t.Error(problem + ". A sidecar's security comes from the runtime, never from its config.")
+	}
+}
+
+var podEscalationField = map[string]bool{"Capabilities": true, "HostNetwork": true, "HostPID": true, "HostIPC": true}
+
+// podEscalationFieldsSet reports every composite-literal key or assignment
+// that sets a capability set or a host namespace.
+func podEscalationFieldsSet(files []goSourceFile) []string {
+	if len(files) == 0 {
+		return []string{"the step pod scan matched no file; the rule would pass vacuously"}
+	}
+	var problems []string
+	for _, source := range files {
+		ast.Inspect(source.file, func(node ast.Node) bool {
+			switch n := node.(type) {
+			case *ast.KeyValueExpr:
+				if key, ok := n.Key.(*ast.Ident); ok && podEscalationField[key.Name] {
+					problems = append(problems, fmt.Sprintf("%s sets %s", source.rel, key.Name))
+				}
+			case *ast.AssignStmt:
+				for _, lhs := range n.Lhs {
+					if sel, ok := lhs.(*ast.SelectorExpr); ok && podEscalationField[sel.Sel.Name] {
+						problems = append(problems, fmt.Sprintf("%s sets %s", source.rel, sel.Sel.Name))
+					}
+				}
+			}
+			return true
+		})
+	}
+	sort.Strings(problems)
+
+	return problems
+}
+
+var securityFieldName = regexp.MustCompile(`(?i)privileg|capabilit|securitycontext|hostnetwork|hostpid|hostipc|runas|seccomp|apparmor|selinux`)
+
+// sidecarSecurityFields reports a SidecarConfig field that could carry a
+// security request.
+func sidecarSecurityFields(files []goSourceFile) []string {
+	var problems []string
+	found := false
+	for _, source := range files {
+		ast.Inspect(source.file, func(node ast.Node) bool {
+			spec, ok := node.(*ast.TypeSpec)
+			if !ok || spec.Name.Name != "SidecarConfig" {
+				return true
+			}
+			found = true
+			if st, ok := spec.Type.(*ast.StructType); ok {
+				for _, field := range st.Fields.List {
+					for _, name := range field.Names {
+						if securityFieldName.MatchString(name.Name) {
+							problems = append(problems, fmt.Sprintf("%s: SidecarConfig.%s", source.rel, name.Name))
+						}
+					}
+				}
+			}
+			return false
+		})
+	}
+	if !found {
+		return []string{"no SidecarConfig type was found; the rule would pass vacuously"}
+	}
+
+	return problems
+}
+
 // kubernetesReach reports every run package whose linked dependencies include
 // a Kubernetes client or the JetBridge runtime. deps maps each run package to
 // its `go list -deps` listing.
@@ -2756,6 +2838,30 @@ func TestTheRunContractGuardsFailOnAnEmptyScan(t *testing.T) {
 		}
 		if problems := methodologyWordsIn([]goSourceFile{parse("a.go", "package a\n// agent workflow\nvar run = 1\n")}); len(problems) != 0 {
 			t.Errorf("the methodology rule objected to a comment: %v", problems)
+		}
+	})
+
+	t.Run("pod escalation fields", func(t *testing.T) {
+		if problems := podEscalationFieldsSet(nil); len(problems) == 0 {
+			t.Error("the escalation rule passed on a scan of no file")
+		}
+		for name, src := range map[string]string{
+			"capabilities": "package a\nvar c = corev1.SecurityContext{Capabilities: &corev1.Capabilities{}}\n",
+			"host network": "package a\nvar s = corev1.PodSpec{HostNetwork: true}\n",
+			"assigned PID": "package a\nfunc f(s *corev1.PodSpec) { s.HostPID = true }\n",
+		} {
+			if problems := podEscalationFieldsSet([]goSourceFile{parse("a.go", src)}); len(problems) == 0 {
+				t.Errorf("the escalation rule missed %s", name)
+			}
+		}
+		if problems := sidecarSecurityFields(nil); len(problems) == 0 {
+			t.Error("the sidecar rule passed with no SidecarConfig")
+		}
+		if problems := sidecarSecurityFields([]goSourceFile{parse("s.go", "package a\ntype SidecarConfig struct { Name string; Privileged bool }\n")}); len(problems) == 0 {
+			t.Error("the sidecar rule missed a Privileged field")
+		}
+		if problems := sidecarSecurityFields([]goSourceFile{parse("s.go", "package a\ntype SidecarConfig struct { Name string; Image string }\n")}); len(problems) != 0 {
+			t.Errorf("the sidecar rule objected to ordinary fields: %v", problems)
 		}
 	})
 
