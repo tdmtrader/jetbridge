@@ -161,6 +161,15 @@ spec:
             {{- if .Values.kubernetes.serviceAccount }}
             - --kubernetes-service-account={{ .Values.kubernetes.serviceAccount }}
             {{- end }}
+            {{- range $i, $grant := .Values.kubernetes.stepPodGrants }}
+            {{- range $field := list "name" "owner" "serviceAccount" }}
+            {{- $value := toString (index $grant $field) }}
+            {{- if or (not $value) (contains "," $value) (contains "=" $value) }}
+            {{- fail (printf "kubernetes.stepPodGrants[%d].%s must be set and hold no ',' or '=' (got %q)" $i $field $value) }}
+            {{- end }}
+            {{- end }}
+            - {{ printf "--kubernetes-step-pod-grant=name=%s,owner=%s,service-account=%s" $grant.name $grant.owner $grant.serviceAccount | quote }}
+            {{- end }}
             {{- if .Values.kubernetes.podStartupTimeout }}
             - --kubernetes-pod-startup-timeout={{ .Values.kubernetes.podStartupTimeout }}
             {{- end }}

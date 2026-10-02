@@ -204,6 +204,14 @@ kubernetes:
   # SA: the web command passes the value through as-is).
   serviceAccount: ""
 
+  # -- Step pod grants: each maps a build's owner to the ServiceAccount its
+  # step pods run under. owner is <team>/<pipeline>/<job> of a non-instanced
+  # pipeline, or main/one-off for team main's one-off builds. Every other
+  # build's pods run as serviceAccount above, the default step pod identity.
+  # Only this configuration selects a grant; nothing in a pipeline can.
+  # e.g. [{name: brine-live, owner: main/one-off, serviceAccount: concourse-brine-live}]
+  stepPodGrants: []
+
   # -- Pod startup timeout
   podStartupTimeout: 5m
 
