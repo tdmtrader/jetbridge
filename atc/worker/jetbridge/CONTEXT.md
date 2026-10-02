@@ -29,6 +29,20 @@ The pod that runs one step's container, its init containers and its
 sidecars.
 _Avoid_: task pod (a step pod may be running a check or a get)
 
+**Step pod grant**:
+An operator-set mapping from a build's authoritative owner (an exact
+team/pipeline/job of a non-instanced pipeline, or a one-off build of team
+`main`) to the step pod identity its pods run under. Only web's
+configuration sets one; check builds, instanced pipelines and other teams'
+builds match none, and nothing a pipeline or API caller supplies can select
+one.
+_Avoid_: grant (alone; that is the agentic context's MCP authorization),
+service account mapping
+
+**Default step pod identity**:
+What a step pod outside every step pod grant runs as: the configured
+ServiceAccount, with no Kubernetes permissions and no API token mounted.
+
 **Pause pod**:
 A step pod started with a trap-and-sleep command so the web can exec the real
 command into it, and `fly intercept` can exec a shell later.

@@ -65,7 +65,8 @@ and variable interpolation (`vars`). They carry no vocabulary of their own.
   published object in Hangar. Context makes it clear; do not coin a third
   word.
 - **Grant** is an MCP authorization in the agentic context. Hangar's
-  capability is a warrant, never a grant.
+  capability is a warrant, never a grant. JetBridge's **step pod grant**
+  maps a build's owner to a step pod identity; always qualify it.
 - **Materialization** is a template resolving into a payload in core and
   the daemon capturing a tree in Hangar. Qualify it when both are near.
 - **Scope** is a resource config scope in core, an MCP grant's scope in the
