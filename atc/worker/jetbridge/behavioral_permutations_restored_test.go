@@ -63,6 +63,7 @@ func makeContainer(handle string, metadata db.ContainerMetadata, spec runtime.Co
 		nil, // executor
 		nil, // volumes
 		backend,
+		stepPodIdentities{defaultAccount: cfg.ServiceAccount},
 		reused,
 		false,
 	)

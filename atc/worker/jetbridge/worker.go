@@ -31,6 +31,9 @@ type Worker struct {
 	// without an ExecutionControl on the spec anyway.
 	outputControls    OutputControlResolver
 	executionPreparer ExecutionPreparer
+
+	// identities resolves which ServiceAccount a container's pods run as.
+	identities stepPodIdentities
 }
 
 // WorkerDeps is everything a Worker reaches beyond its row, its clientset and
@@ -61,6 +64,10 @@ type WorkerDeps struct {
 	DaemonClient      *DaemonClient
 	OutputControls    OutputControlResolver
 	ExecutionPreparer ExecutionPreparer
+	// StepPodBuilds is how a container finds the build that owns it, to
+	// resolve its step pod grant. Nil means every pod runs as the default
+	// step pod identity.
+	StepPodBuilds StepPodBuilds
 }
 
 // NewWorker creates a Worker backed by the given Kubernetes clientset, with
@@ -93,6 +100,11 @@ func NewWorker(dbWorker db.Worker, clientset kubernetes.Interface, config Config
 		nodeIPResolver:    nodeIPResolver,
 		outputControls:    deps.OutputControls,
 		executionPreparer: deps.ExecutionPreparer,
+		identities: stepPodIdentities{
+			grants:         config.StepPodGrants,
+			builds:         deps.StepPodBuilds,
+			defaultAccount: config.ServiceAccount,
+		},
 	}
 }
 
@@ -165,7 +177,7 @@ func (w *Worker) FindOrCreateContainer(
 	// Mark it as reused so Run() can clean up stale hostPath data.
 	if createdContainer != nil {
 		mounts, volumes := w.buildVolumeMountsForSpec(containerHandle, containerSpec)
-		container := newContainer(containerHandle, metadata, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes, w.storageBackend, true, false)
+		container := newContainer(containerHandle, metadata, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes, w.storageBackend, w.identities, true, false)
 		container.outputControls = w.outputControls
 		w.bindStartCheck(container, owner, containerSpec)
 		return container, mounts, nil
@@ -182,7 +194,7 @@ func (w *Worker) FindOrCreateContainer(
 	}
 
 	mounts, volumes := w.buildVolumeMountsForSpec(containerHandle, containerSpec)
-	container := newContainer(containerHandle, metadata, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes, w.storageBackend, false, false)
+	container := newContainer(containerHandle, metadata, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes, w.storageBackend, w.identities, false, false)
 	container.outputControls = w.outputControls
 	w.bindStartCheck(container, owner, containerSpec)
 	return container, mounts, nil
@@ -255,7 +267,7 @@ func (w *Worker) LookupContainer(ctx context.Context, handle string) (runtime.Co
 	// pod the step actually created (<pipeline>-<job>-b<n>-<type>-<suffix>)
 	// rather than the raw handle, which is only ever a real pod name when the
 	// metadata was too sparse to generate a readable one.
-	container := newContainer(handle, dbContainer.Metadata(), runtime.ContainerSpec{}, dbContainer, w.clientset, w.config, w.Name(), w.executor, nil, w.storageBackend, false, true)
+	container := newContainer(handle, dbContainer.Metadata(), runtime.ContainerSpec{}, dbContainer, w.clientset, w.config, w.Name(), w.executor, nil, w.storageBackend, w.identities, false, true)
 	// There is no ContainerSpec behind a lookup, so this Container must never
 	// create or replace a pod — it exists only to attach to one.
 	container.lookedUp = true

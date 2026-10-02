@@ -149,6 +149,11 @@ type Config struct {
 	// created pods. If empty, the namespace's default SA is used.
 	ServiceAccount string
 
+	// StepPodGrants map a build's authoritative owner to the ServiceAccount
+	// its step pods run under (--kubernetes-step-pod-grant). A pod outside
+	// every grant runs as ServiceAccount, the default step pod identity.
+	StepPodGrants []StepPodGrant
+
 	// CacheStore selects the task cache backend explicitly. Valid values:
 	// "hostpath" (node-local directories), "emptydir" (ephemeral).
 	// When empty, the backend is auto-selected based on which config

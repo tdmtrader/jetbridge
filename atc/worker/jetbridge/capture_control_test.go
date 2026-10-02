@@ -578,7 +578,7 @@ func TestEveryContainerTheWorkerBuildsCarriesTheLedgerClassifier(t *testing.T) {
 	off := NewDaemonSetBackend(capturePodConfig(false), NewArtifactLocator(), nil, nil)
 	ordinary := newContainer("h", db.ContainerMetadata{Type: db.ContainerTypeTask},
 		runtime.ContainerSpec{}, nil, nil, capturePodConfig(false), "worker", nil, nil,
-		off, false, false)
+		off, stepPodIdentities{}, false, false)
 	if ordinary.captureClass != nil {
 		t.Error("a deployment with no output plane was given a ledger classifier; every reused " +
 			"handle would then be refused by a guard that fails closed on a daemon that is " +
@@ -588,7 +588,7 @@ func TestEveryContainerTheWorkerBuildsCarriesTheLedgerClassifier(t *testing.T) {
 	on := NewDaemonSetBackend(capturePodConfig(true), NewArtifactLocator(), nil, nil)
 	container := newContainer("h", db.ContainerMetadata{Type: db.ContainerTypeTask},
 		runtime.ContainerSpec{}, nil, nil, capturePodConfig(true), "worker", nil, nil,
-		on, false, false)
+		on, stepPodIdentities{}, false, false)
 	if container.captureClass == nil {
 		t.Fatal("the worker built a Container with no ledger classifier, so refuseIfCaptureHeld " +
 			"returns nil on every path: pause pod recreation and hijack over a capture-held " +
@@ -599,7 +599,7 @@ func TestEveryContainerTheWorkerBuildsCarriesTheLedgerClassifier(t *testing.T) {
 	// has nothing to ask and must not pretend otherwise.
 	none := newContainer("h", db.ContainerMetadata{Type: db.ContainerTypeTask},
 		runtime.ContainerSpec{}, nil, nil, capturePodConfig(true), "worker", nil, nil,
-		nil, false, false)
+		nil, stepPodIdentities{}, false, false)
 	if none.captureClass != nil {
 		t.Error("a worker with no storage backend was given a ledger classifier")
 	}

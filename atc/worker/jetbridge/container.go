@@ -86,6 +86,10 @@ type Container struct {
 	// step directory, for the two operations that cannot take a writer ticket:
 	// hijacking a looked-up container and replacing a terminal pause Pod.
 	captureClass captureClassifier
+
+	// identities resolves the ServiceAccount this container's pods run as,
+	// from the build its metadata names and nothing else.
+	identities stepPodIdentities
 }
 
 // ContainerWiring is what a Container was built with: the collaborators its
@@ -127,6 +131,7 @@ func newContainer(
 	executor PodExecutor,
 	volumes []*Volume,
 	storageBackend StorageBackend,
+	identities stepPodIdentities,
 	reused bool,
 	lookedUp bool,
 ) *Container {
@@ -160,6 +165,7 @@ func newContainer(
 		executor:       executor,
 		volumes:        volumes,
 		storageBackend: storageBackend,
+		identities:     identities,
 		lookedUp:       lookedUp,
 		reused:         reused,
 	}
@@ -633,6 +639,13 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 
 	affinity := c.buildAffinity()
 
+	// The pod's identity comes from the build that owns it, resolved here so
+	// no path to a pod can skip it.
+	identity, err := c.identities.resolve(c.metadata)
+	if err != nil {
+		return nil, err
+	}
+
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        c.podName,
@@ -644,7 +657,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 			RestartPolicy:      corev1.RestartPolicyNever,
 			SecurityContext:    buildPodSecurityContext(privileged),
 			ImagePullSecrets:   buildImagePullSecrets(c.config.ImagePullSecrets, c.config.ImageRegistry),
-			ServiceAccountName: c.config.ServiceAccount,
+			ServiceAccountName: identity.serviceAccount,
 			InitContainers:     initContainers,
 			Volumes:            volumes,
 			Containers:         containers,

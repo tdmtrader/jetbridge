@@ -135,7 +135,9 @@ func TestTheReaperSharesTheWorkersArtifactLocator(t *testing.T) {
 // Config fields no flag reaches, each with the reason. A field added to
 // jetbridge.Config without a flag mapping fails the completeness check below
 // until it is mapped or listed here.
-var jetbridgeConfigFieldsWithoutAFlag = map[string]string{}
+var jetbridgeConfigFieldsWithoutAFlag = map[string]string{
+	"StepPodGrants": "deferred: --kubernetes-step-pod-grant lands in the next commit",
+}
 
 // Every flag the runtime reads reaches the one assembled Config, and every
 // Config field is either set from a flag or listed as flagless.
