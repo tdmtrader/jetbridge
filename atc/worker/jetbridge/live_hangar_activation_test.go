@@ -94,10 +94,10 @@ func TestLiveHangarActivationJobRecreatedAfterItsTransitionIsANoOp(t *testing.T)
 	if committed.output != "initial" || committed.revision <= attested.revision {
 		t.Fatalf("the committed enable-base row is %+v (attest left %+v)", committed, attested)
 	}
+	// The row commits a moment before the command prints that it did.
 	held := cluster.runningJob(enableJob)
-	if logs := cluster.jobLogsFor(held); !strings.Contains(logs, fmt.Sprintf("enabled epoch %d's base facet", liveClusterEpoch)) {
-		t.Fatalf("the held enable Job's log does not record the transition:\n%s", logs)
-	}
+	cluster.waitJobLogged(held, fmt.Sprintf("enabled epoch %d's base facet", liveClusterEpoch))
+	held = cluster.runningJob(enableJob)
 	cluster.deleteJob(enableJob, held)
 
 	recreated := cluster.createRendered(interrupted.only(t, "Job", enableJob))
@@ -179,6 +179,22 @@ func (cluster *liveCluster) waitEpochRow(what string, done func(liveEpochRow) bo
 // recreated under the same name is a different Job.
 func (cluster *liveCluster) jobLogsFor(uid types.UID) string {
 	return cluster.podLogs("batch.kubernetes.io/controller-uid=" + string(uid))
+}
+
+func (cluster *liveCluster) waitJobLogged(uid types.UID, line string) {
+	t := cluster.t
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		logs := cluster.jobLogsFor(uid)
+		if strings.Contains(logs, line) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the Job did not log %q:\n%s", line, logs)
+		}
+		liveDiskPause(t, cluster.ctx, "the Job to log "+line)
+	}
 }
 
 func (cluster *liveCluster) assertJobLogged(result liveSyncResult, name, line string) {
