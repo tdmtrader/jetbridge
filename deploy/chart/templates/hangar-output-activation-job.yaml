@@ -145,6 +145,12 @@ spec:
             - --tls-cert=/etc/concourse/hangar-output/tls/tls.crt
             - --tls-key=/etc/concourse/hangar-output/tls/tls.key
             - --tls-ca-cert=/etc/concourse/hangar-output/tls/ca.crt
+            # The cohort is dialed by pod IP; the certificate names the
+            # daemon's DNS name, so verification is against that.
+            - --tls-server-name={{ include "concourse.hangarOutput.daemonTLSServerName" . }}
+            {{- if eq $facet "output" }}
+            - --receipt-key-lifetime={{ .Values.hangarOutput.activation.receiptKeyLifetime }}
+            {{- end }}
             {{- end }}
             {{- if .Values.hangarOutput.activation.job.finalize }}
             - --finalize
