@@ -65,9 +65,9 @@ func TestAStepPodGrantFieldCannotCarryASeparator(t *testing.T) {
 
 func webDeployment(t *testing.T, rendered string) string {
 	t.Helper()
-	for _, chunk := range strings.Split(rendered, "\n---") {
-		if strings.Contains(chunk, "kind: Deployment") && strings.Contains(chunk, "name: jb-concourse-jetbridge-web") {
-			return chunk
+	for _, doc := range documentsIn(t, rendered) {
+		if doc.kind == "Deployment" && strings.HasSuffix(doc.name, "-web") {
+			return doc.body
 		}
 	}
 	t.Fatal("render has no web Deployment")

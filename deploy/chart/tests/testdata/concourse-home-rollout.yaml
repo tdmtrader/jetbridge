@@ -1,0 +1,25 @@
+# The non-credential shape of concourse.home's values at the start of the
+# hangar_stores_enabled_in_cluster runbook. Never a copy of home-infra's
+# apps/concourse.yaml: that repository is private and holds plaintext
+# passwords, and this one is public. Local users are placeholders.
+fullnameOverride: concourse
+web:
+  localUsers: "admin:placeholder-admin-password,live-tests:placeholder-bcrypt-hash"
+  mainTeamLocalUser: "admin,live-tests"
+kubernetes:
+  namespace: cicd
+artifactDaemon:
+  tls:
+    source: existingSecret
+    existingSecret: concourse-artifact-daemon-tls-pinned
+  resolveCapability:
+    existingSecret: concourse-artifact-daemon-resolve-capability
+mcp:
+  clients:
+    - client_id: test-client
+      client_name: Test client
+      redirect_uris:
+        - http://127.0.0.1:8964/callback
+postgresql:
+  existingSecret: concourse-postgresql-connection
+  passwordSecretKey: POSTGRES_PASSWORD
