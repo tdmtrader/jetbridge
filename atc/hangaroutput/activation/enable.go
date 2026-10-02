@@ -16,7 +16,7 @@ import (
 // it from. If the migration is ever renumbered, this is the one other place
 // that has to move, and the enable step refuses loudly rather than quietly
 // admitting a plane whose schema it cannot find.
-const HangarOutputMigration int64 = 1789793149
+const HangarOutputMigration int64 = 1789793151
 
 // Precondition is one thing that has to be true before a facet goes into
 // service, together with what was actually found.
