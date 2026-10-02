@@ -24,6 +24,7 @@ import (
 var bootstrapSets = []string{
 	"hangarBootstrap.enabled=true",
 	"hangarBootstrap.database.enabled=true",
+	"postgresql.existingSecret=op-db-password",
 	"hangarOutput.executionControl.enabled=true",
 	"hangarOutput.executionControl.keySecret=op-control-key",
 	"hangarOutput.executionControl.keyID=control-key-1",
@@ -254,8 +255,21 @@ func TestTheBootstrapRendersNoPrivateValue(t *testing.T) {
 		}
 	}
 	for _, doc := range documentsIn(t, out) {
-		if strings.HasPrefix(doc.name, bootstrapName) && strings.Contains(strings.ToLower(doc.body), "password") {
-			t.Errorf("bootstrap object %s %s mentions a password", doc.kind, doc.name)
+		if !strings.HasPrefix(doc.name, bootstrapName) {
+			continue
+		}
+		if strings.Contains(doc.body, "password=") {
+			t.Errorf("bootstrap object %s %s renders a password into a connection string", doc.kind, doc.name)
+		}
+		if doc.kind == "Job" {
+			_, pod := podOf(t, doc)
+			for _, container := range pod.Containers {
+				for _, env := range container.Env {
+					if strings.Contains(strings.ToUpper(env.Name), "PASSWORD") && env.ValueFrom == nil {
+						t.Errorf("bootstrap Job %s renders %s as a literal value", doc.name, env.Name)
+					}
+				}
+			}
 		}
 	}
 	base64Value := regexp.MustCompile(`[A-Za-z0-9+/]{43}=`)
@@ -367,4 +381,49 @@ func (store *chartTestStore) Get(_ context.Context, name string) (bootstrap.Secr
 func (store *chartTestStore) Create(_ context.Context, secret bootstrap.Secret) error {
 	store.secrets[secret.Name] = secret
 	return nil
+}
+
+// The database step is a PostSync hook, reading web's password from its
+// Secret and never from a rendered value; off, it is not rendered at all.
+func TestTheDatabaseStepIsAPostSyncHookReadingWebsSecret(t *testing.T) {
+	if strings.Contains(render(t, "hangarBootstrap.enabled=true"), bootstrapName+"-database") {
+		t.Error("the database Job renders with hangarBootstrap.database off")
+	}
+
+	out := render(t, bootstrapSets...)
+	var job batchv1.Job
+	decodeNamed(t, out, "Job", bootstrapName+"-database", &job)
+	if job.Annotations["argocd.argoproj.io/hook"] != "PostSync" {
+		t.Errorf("the database Job is hook %q, want PostSync", job.Annotations["argocd.argoproj.io/hook"])
+	}
+	var password *corev1.EnvVar
+	for i, env := range job.Spec.Template.Spec.Containers[0].Env {
+		if env.Name == "PGPASSWORD" {
+			password = &job.Spec.Template.Spec.Containers[0].Env[i]
+		}
+	}
+	if password == nil || password.ValueFrom == nil || password.ValueFrom.SecretKeyRef == nil ||
+		password.ValueFrom.SecretKeyRef.Name != "op-db-password" {
+		t.Errorf("PGPASSWORD is %+v, want it from postgresql.existingSecret", password)
+	}
+
+	msg := renderHangarError(t, "hangarBootstrap.enabled=true", "hangarBootstrap.database.enabled=true",
+		"hangarOutput.database.existingSecret=op-activation-db")
+	if !strings.Contains(msg, "requires postgresql.existingSecret") {
+		t.Errorf("the database step rendered without postgresql.existingSecret: %s", firstLines(msg, 3))
+	}
+}
+
+// The chart's own PostgreSQL reads the same Secret when it is set, so the
+// database step works on a fresh install with it.
+func TestTheBundledPostgreSQLReadsTheExistingSecret(t *testing.T) {
+	out := render(t, "postgresql.existingSecret=op-db-password")
+	var database appsv1.Deployment
+	decodeNamed(t, out, "Deployment", "jb-concourse-jetbridge-db", &database)
+	for _, env := range database.Spec.Template.Spec.Containers[0].Env {
+		if env.Name == "POSTGRES_PASSWORD" && (env.ValueFrom == nil || env.ValueFrom.SecretKeyRef == nil ||
+			env.ValueFrom.SecretKeyRef.Name != "op-db-password" || env.Value != "") {
+			t.Errorf("the bundled PostgreSQL's POSTGRES_PASSWORD is %+v, want it from postgresql.existingSecret", env)
+		}
+	}
 }
