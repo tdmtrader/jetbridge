@@ -2759,24 +2759,34 @@ func TestNoRunCodeBranchesOnTheContractClass(t *testing.T) {
 	}
 }
 
-// contractClassBranches reports every comparison with, or switch on, a Run's
-// contract class: ContractVersion() or a RunContract* constant on either side
-// of == or !=, a switch whose tag is ContractVersion(), and a case naming a
-// RunContract* constant.
+// contractClassBranches reports every comparison with, switch on, or lookup
+// keyed by a Run's contract class. The class is ContractVersion() or a
+// contractVersion/ContractVersion field or variable, a RunContract* constant,
+// or any of these through a conversion or parentheses. It appears on either
+// side of == or !=, as a switch tag, in a case, or as a map or slice index.
+// The schema half of the rule is the spec in atc/db/run_contract_class_schema_test.go.
 func contractClassBranches(files []goSourceFile) []string {
 	if len(files) == 0 {
 		return []string{"the contract-class scan matched no file; the rule would pass vacuously"}
 	}
-	isClass := func(expr ast.Expr) bool {
+	isClassName := func(name string) bool {
+		return name == "ContractVersion" || name == "contractVersion" || strings.HasPrefix(name, "RunContract")
+	}
+	var isClass func(ast.Expr) bool
+	isClass = func(expr ast.Expr) bool {
 		switch e := expr.(type) {
+		case *ast.ParenExpr:
+			return isClass(e.X)
 		case *ast.CallExpr:
-			if sel, ok := e.Fun.(*ast.SelectorExpr); ok {
-				return sel.Sel.Name == "ContractVersion"
+			if sel, ok := e.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "ContractVersion" {
+				return true
 			}
+			// A conversion such as string(r.ContractVersion()) is still the class.
+			return len(e.Args) == 1 && isClass(e.Args[0])
 		case *ast.SelectorExpr:
-			return strings.HasPrefix(e.Sel.Name, "RunContract")
+			return isClassName(e.Sel.Name)
 		case *ast.Ident:
-			return strings.HasPrefix(e.Name, "RunContract")
+			return isClassName(e.Name)
 		}
 		return false
 	}
@@ -2797,6 +2807,10 @@ func contractClassBranches(files []goSourceFile) []string {
 					if isClass(value) {
 						problems = append(problems, fmt.Sprintf("%s has a case for a Run contract class", source.rel))
 					}
+				}
+			case *ast.IndexExpr:
+				if isClass(n.Index) {
+					problems = append(problems, fmt.Sprintf("%s looks up by a Run's contract class", source.rel))
 				}
 			}
 			return true
@@ -2954,6 +2968,12 @@ func TestTheRunContractGuardsFailOnAnEmptyScan(t *testing.T) {
 			"negation":   "package a\nfunc f(r R) bool { return atc.RunContractV2 != r.ContractVersion() }\n",
 			"switch":     "package a\nfunc f(r R) { switch r.ContractVersion() { default: } }\n",
 			"case":       "package a\nfunc f(v V) { switch v { case RunContractV2: } }\n",
+			"conversion": "package a\nfunc f(r R) bool { return string(r.ContractVersion()) == \"v2\" }\n",
+			"field":      "package a\nfunc f(p P) bool { return p.ContractVersion == \"v2\" }\n",
+			"unexported": "package a\nfunc f(r R) bool { return r.contractVersion != \"v2\" }\n",
+			"local copy": "package a\nfunc f(r R) bool { contractVersion := r.ContractVersion(); return contractVersion == \"v2\" }\n",
+			"lookup":     "package a\nfunc f(r R) H { return byClass[r.ContractVersion()] }\n",
+			"parens":     "package a\nfunc f(r R) bool { return (r.ContractVersion()) == \"v2\" }\n",
 		} {
 			if problems := contractClassBranches([]goSourceFile{parse("a.go", src)}); len(problems) == 0 {
 				t.Errorf("the contract-class rule missed a %s", name)
