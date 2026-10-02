@@ -49,7 +49,9 @@ func setupLiveWorkerWithExecutor(t *testing.T, wrap func(jetbridge.PodExecutor) 
 	return worker
 }
 
-func newLiveWorker(t *testing.T, locator *jetbridge.ArtifactLocator, wrap func(jetbridge.PodExecutor) jetbridge.PodExecutor) (*jetbridge.Worker, runtime.BuildStepDelegate, *jetbridge.ArtifactLocator, jetbridgeDB) {
+// newLiveWorker builds the worker; each configure function then adjusts the
+// deployed configuration before the worker is made from it.
+func newLiveWorker(t *testing.T, locator *jetbridge.ArtifactLocator, wrap func(jetbridge.PodExecutor) jetbridge.PodExecutor, configure ...func(*jetbridge.Config)) (*jetbridge.Worker, runtime.BuildStepDelegate, *jetbridge.ArtifactLocator, jetbridgeDB) {
 	t.Helper()
 
 	clientset, cfg := kubeClient(t)
@@ -88,6 +90,9 @@ func newLiveWorker(t *testing.T, locator *jetbridge.ArtifactLocator, wrap func(j
 	var executor jetbridge.PodExecutor = jetbridge.NewSPDYExecutor(clientset, restConfig)
 	if wrap != nil {
 		executor = wrap(executor)
+	}
+	for _, apply := range configure {
+		apply(cfg)
 	}
 	deps := jetbridge.WorkerDeps{Executor: executor, ArtifactLocator: locator}
 	worker := jetbridge.NewWorker(dbWorker, clientset, *cfg, deps)
