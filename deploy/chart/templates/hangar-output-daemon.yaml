@@ -149,6 +149,14 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            {{- with .Values.hangarOutput.readControlCA.configMap }}
+            # The CA that signs readControlURL's certificate. On Linux it
+            # replaces the system roots, so it must cover every HTTPS endpoint
+            # the daemon calls with the system pool; the store and the control
+            # API carry their own CAs.
+            - name: SSL_CERT_FILE
+              value: /etc/concourse/read-control-ca/{{ $.Values.hangarOutput.readControlCA.key }}
+            {{- end }}
           ports:
             # hostPort, and for the same reason artifact-daemon has one: every
             # client of this daemon dials the NODE IP. The ATC composes
@@ -200,6 +208,11 @@ spec:
             {{- if and .Values.hangarOutput.enabled (eq .Values.hangarOutput.store "disk") }}
             {{- include "concourse.hangarStorage.clientMount" . | nindent 12 }}
             {{- end }}
+            {{- if .Values.hangarOutput.readControlCA.configMap }}
+            - name: read-control-ca
+              mountPath: /etc/concourse/read-control-ca
+              readOnly: true
+            {{- end }}
             - name: artifact-storage
               mountPath: {{ .Values.artifactDaemon.hostPath | default "/var/concourse/artifacts" }}
             - name: hangar-output-scratch
@@ -224,6 +237,14 @@ spec:
       volumes:
         {{- if and .Values.hangarOutput.enabled (eq .Values.hangarOutput.store "disk") }}
         {{- include "concourse.hangarStorage.clientVolume" (dict "root" . "role" "publisher") | nindent 8 }}
+        {{- end }}
+        {{- with .Values.hangarOutput.readControlCA.configMap }}
+        - name: read-control-ca
+          configMap:
+            name: {{ . }}
+            items:
+              - key: {{ required "hangarOutput.readControlCA.key names the CA's key in the ConfigMap" $.Values.hangarOutput.readControlCA.key }}
+                path: {{ $.Values.hangarOutput.readControlCA.key }}
         {{- end }}
         - name: artifact-storage
           hostPath:
