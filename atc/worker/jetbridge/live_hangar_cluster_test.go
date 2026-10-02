@@ -126,8 +126,8 @@ const (
 //     on a route that requires one; the artifact daemon publishes into the
 //     disk store as `input` and verifies a materialization warrant signed with
 //     the generated warrant key; the disk store serves `publisher` a create
-//     and a read, the inventory controller's first sweep records the unmarked
-//     object that create left, the reclaimer controller's passes run, and
+//     and a read, the inventory controller's first sweep records as debt the
+//     foreign-marked object that create left, the reclaimer controller's passes run, and
 //     `reclaimer` stats and deletes the object.
 func TestLiveHangarBootstrapHoldsAcrossSyncsAndEveryConsumerUsesIt(t *testing.T) {
 	cluster := newLiveCluster(t, "hc", 40*time.Minute)
@@ -1426,8 +1426,13 @@ func (cluster *liveCluster) assertArtifactDaemonUsesWarrantKey() {
 	liveDiskMaterialize(t, cluster.ctx, cluster.client, cfg, "bootstrap-warrant-"+liveDiskRandomHex(t, 3), published.Ref)
 }
 
-// liveStoreProbe is the unmarked object the publisher round trip leaves in the
-// output namespace for the inventory controller's first sweep to find.
+// liveStoreProbe is the object the publisher round trip leaves in the output
+// namespace for the inventory controller's first sweep to find. It carries a
+// marker of a version this cohort does not accept, which the sweep must
+// record as marker_mismatch debt. An object with no marker at all would be
+// the obvious probe, but the sweep records nothing for one: classify returns
+// it as an unmanaged object, not as unmanaged_object debt, so its sighting
+// leaves no durable trace to observe.
 type liveStoreProbe struct {
 	key        string
 	generation int64
@@ -1467,7 +1472,7 @@ func (cluster *liveCluster) store() *liveStore {
 		client: &http.Client{Transport: transport, Timeout: time.Minute}, storeID: liveClusterStoreID, tokens: tokens, shutdown: stop}
 }
 
-func (store *liveStore) do(role, method, operation string, query url.Values, body []byte) (int, []byte) {
+func (store *liveStore) do(role, method, operation string, query url.Values, body []byte, headers ...string) (int, []byte) {
 	t := store.t
 	t.Helper()
 	var reader io.Reader
@@ -1480,6 +1485,9 @@ func (store *liveStore) do(role, method, operation string, query url.Values, bod
 	}
 	request.Header.Set("Authorization", "Bearer "+store.tokens[role])
 	request.Header.Set("X-Hangar-Store-ID", store.storeID)
+	for index := 0; index+1 < len(headers); index += 2 {
+		request.Header.Set(headers[index], headers[index+1])
+	}
 	response, err := store.client.Do(request)
 	if err != nil {
 		t.Fatalf("%s %s as %s: %v", method, operation, role, err)
@@ -1495,8 +1503,8 @@ func (store *liveStore) do(role, method, operation string, query url.Values, bod
 	return response.StatusCode, answer
 }
 
-// storePublisherRoundTrip creates an unmarked object under the prefix the
-// inventory sweeps and reads it back, as `publisher`.
+// storePublisherRoundTrip creates the probe under the prefix the inventory
+// sweeps and reads it back, as `publisher`.
 func (cluster *liveCluster) storePublisherRoundTrip() liveStoreProbe {
 	t := cluster.t
 	t.Helper()
@@ -1504,9 +1512,14 @@ func (cluster *liveCluster) storePublisherRoundTrip() liveStoreProbe {
 	defer store.shutdown()
 	namespace := cluster.outputNamespace()
 	key := namespace.ListPrefix() + "hangar-cluster-contract/" + liveDiskRandomHex(t, 4)
-	content := []byte("an object with no marker: the inventory owes it a disposition")
+	content := []byte("an object under a foreign marker: the inventory owes it a disposition")
+	metadata, err := json.Marshal(map[string]string{output.MarkerKeyVersion: "hangar-output-v0"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	query := url.Values{"bucket": {"outputs"}, "key": {key}}
-	status, body := store.do("publisher", http.MethodPost, "create", query, content)
+	status, body := store.do("publisher", http.MethodPost, "create", query, content,
+		"X-Hangar-Metadata", base64.StdEncoding.EncodeToString(metadata))
 	if status != http.StatusOK && status != http.StatusCreated {
 		t.Fatalf("create as publisher: %d %s", status, body)
 	}
@@ -1553,8 +1566,8 @@ func (cluster *liveCluster) assertControllersSwept(probe liveStoreProbe) {
 		var reason string
 		err := db.QueryRowContext(cluster.ctx, `SELECT reason FROM hangar_inventory_debt WHERE activation_epoch = $1 AND object_key = $2`, liveClusterEpoch, probe.key).Scan(&reason)
 		if err == nil {
-			if reason != string(output.DebtUnmanagedObject) {
-				t.Fatalf("the inventory recorded the unmarked probe as %q, want %q", reason, output.DebtUnmanagedObject)
+			if reason != string(output.DebtMarkerMismatch) {
+				t.Fatalf("the inventory recorded the foreign-marked probe as %q, want %q", reason, output.DebtMarkerMismatch)
 			}
 			break
 		}
