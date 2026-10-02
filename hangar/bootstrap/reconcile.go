@@ -96,6 +96,12 @@ type Entry struct {
 	// epoch and receipt key id.
 	ActiveEpoch int64  `json:"activeEpoch,omitempty"`
 	ActiveKeyID string `json:"activeKeyID,omitempty"`
+
+	// Purposes says what each data key is for, and Consumers which components
+	// mount the Secret. Reconcile does not act on them; they are the
+	// inventory's record, checked against the chart's mounts by its tests.
+	Purposes  map[string]string `json:"purposes,omitempty"`
+	Consumers []string          `json:"consumers,omitempty"`
 }
 
 // Secret is the part of a Kubernetes Secret the bootstrap reads and writes.
