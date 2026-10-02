@@ -12,6 +12,8 @@ type ConcourseCommand struct {
 	Migrate atccmd.Migration `command:"migrate" description:"Run database migrations."`
 
 	GenerateKey GenerateKeyCommand `command:"generate-key" description:"Generate RSA key for use with Concourse components."`
+
+	HangarBootstrap HangarBootstrapCommand `command:"hangar-bootstrap" description:"Create the absent Secrets of a Hangar bootstrap inventory; never change an existing one."`
 }
 
 func (cmd ConcourseCommand) LessenRequirements(parser *flags.Parser) {
