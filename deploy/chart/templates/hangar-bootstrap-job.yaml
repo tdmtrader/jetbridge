@@ -1,0 +1,175 @@
+{{/*
+The Hangar bootstrap: creates the absent Secrets of the bootstrap inventory at
+the start of every Argo sync, before any consumer, and never changes one.
+
+Ordering is load-bearing. The admission policy and its binding, then the
+ServiceAccount, Role, RoleBinding and inventory ConfigMap, are plain persistent
+resources at earlier sync waves: Argo deletes and recreates every hook on each
+sync, and a hook-managed policy would be absent for a moment while an older Role
+still granted `create`. Only the Job is a hook, so it runs after them each time.
+
+The Job's identity may `get` the inventory's Secrets by name and `create`
+Secrets, and nothing else. `create` cannot be restricted by name in RBAC, so
+the policy does it: the bootstrap identity may create only an inventory name,
+of type Opaque or kubernetes.io/tls, carrying the bootstrap label -- never a
+service-account token Secret that would hand it another identity's token.
+*/}}
+{{- if .Values.hangarBootstrap.enabled }}
+{{- $name := include "concourse.hangarBootstrap.name" . }}
+{{- $names := include "concourse.hangarBootstrap.secretNames" . | fromJsonArray }}
+{{- $subject := printf "system:serviceaccount:%s:%s" .Release.Namespace $name }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["secrets"]
+  matchConditions:
+    - name: the-bootstrap-identity
+      expression: request.userInfo.username == {{ $subject | quote }}
+  validations:
+    - expression: object.metadata.name in {{ $names | toJson }}
+      message: the Hangar bootstrap may create only a Secret of its inventory
+    - expression: object.type in ["Opaque", "kubernetes.io/tls"]
+      message: the Hangar bootstrap may create only Opaque or kubernetes.io/tls Secrets
+    - expression: >-
+        has(object.metadata.labels) &&
+        object.metadata.labels['app.kubernetes.io/managed-by'] == {{ include "concourse.hangarBootstrap.labelValue" . | quote }}
+      message: a Secret the Hangar bootstrap creates carries its label
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+spec:
+  policyName: {{ $name }}
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: {{ $names | toJson }}
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-inventory
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+data:
+  inventory.json: {{ include "concourse.hangarBootstrap.inventory" . | quote }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hangar-bootstrap
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        {{- include "concourse.labels" . | nindent 8 }}
+        app.kubernetes.io/component: hangar-bootstrap
+    spec:
+      serviceAccountName: {{ $name }}
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: bootstrap
+          image: {{ include "concourse.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - hangar-bootstrap
+            - --inventory=/etc/concourse/hangar-bootstrap/inventory.json
+            - --namespace={{ .Release.Namespace }}
+          terminationMessagePolicy: FallbackToLogsOnError
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: inventory
+              mountPath: /etc/concourse/hangar-bootstrap
+              readOnly: true
+      volumes:
+        - name: inventory
+          configMap:
+            name: {{ $name }}-inventory
+{{- end }}
