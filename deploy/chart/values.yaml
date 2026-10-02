@@ -577,6 +577,11 @@ artifactDaemon:
     # Secret. Offline/GitOps rendering must leave this false and provide
     # tls.existingSecret with all TLS keys plus an exact raw-32-byte hangar.key.
     allowGeneratedKey: false
+    # -- Secret holding hangar.key, the raw 32-byte strict-input warrant key,
+    # on its own. When set, web and the artifact daemon mount it from here
+    # instead of from artifactDaemon.tls.existingSecret, and the Hangar
+    # bootstrap creates it if it is absent.
+    keySecret: ""
     # -- Private transient canonicalization scratch. This must be an absolute
     # path disjoint from artifactDaemon.hostPath; the chart mounts a dedicated
     # emptyDir here only in the artifact-daemon Pod.
@@ -819,6 +824,36 @@ artifactDaemon:
 # Hangar does not inspect IAM or lifecycle settings. Operators must provision
 # dedicated buckets without external expiry or deletion of protected objects.
 # Unexpected loss and corruption are recorded as runtime integrity failures.
+# -- The Hangar bootstrap: a Job at the start of every Argo sync that creates
+# the absent Secrets of the bootstrap inventory and never changes one.
+# An entry joins the inventory once its values key names a Secret (for
+# example hangarOutput.receipt.privateKeySecret), so the operator turns each
+# Secret on by naming it. Off renders nothing.
+#
+# Trusted readers (proposal amendments M-4 and M-5): the inventory's
+# consumers, web, the cluster administrators the operator lists, and every
+# step pod grant identity that holds privilege or may create pods. Nobody
+# else may read an inventory Secret, create a pod that mounts one, or reach
+# the node; the step pod grants and the privilege gate keep that set closed.
+hangarBootstrap:
+  enabled: false
+  secretNames:
+    # -- The output-plane CA, kept so an interrupted run can still issue a
+    # missing leaf. Default <fullname>-hangar-output-ca.
+    outputCA: ""
+    # -- The Run input signing key. Default <fullname>-run-input-signing-key.
+    # Set web.runInputSigningKeySecret to this name once
+    # hangarOutput.webEnabled is on.
+    runInputSigningKey: ""
+  # -- Earlier activation epochs whose publication receipt and node-control
+  # keys the rings must keep: [{epoch, receiptSecret, receiptKeyID,
+  # controlSecret}]. The bootstrap reads them and never creates one.
+  referencedKeys: []
+  database:
+    # -- Create the activation database role and its connection-string
+    # Secret (hangar_activation_db_role), as a PostSync Job.
+    enabled: false
+
 hangarOutput:
   # -- Object storage profile: gcs or disk.
   store: gcs
