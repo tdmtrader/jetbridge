@@ -842,3 +842,66 @@ func TestTheSchemaIsWhatMakesTheBaseReadinessLineTrue(t *testing.T) {
 		t.Errorf("the refusal comes from somewhere other than the readiness constraint: %v", err)
 	}
 }
+
+// A recreated activation Job replays its transition. At exactly its target the
+// replay is a typed no-op that writes nothing; beyond it the refusal stays
+// (hangar_stores_enabled_in_cluster R3).
+func TestAReplayAtTheTargetWritesNothing(t *testing.T) {
+	ctx := context.Background()
+	epochs, conn := activationFixture(t)
+	const epoch = executioncontrol.ActivationEpoch(95)
+
+	snapshot := func() (int64, time.Time) {
+		t.Helper()
+		var revision int64
+		var updated time.Time
+		if err := conn.QueryRow(`SELECT revision, updated_at FROM hangar_output_activation_epochs WHERE epoch_id = $1`,
+			int64(epoch)).Scan(&revision, &updated); err != nil {
+			t.Fatal(err)
+		}
+		return revision, updated
+	}
+	replay := func(name string, step func() error) {
+		t.Helper()
+		revision, updated := snapshot()
+		if err := step(); !errors.Is(err, activation.ErrAlreadyAtTarget) {
+			t.Fatalf("replaying %s: got %v, want ErrAlreadyAtTarget", name, err)
+		}
+		if r, u := snapshot(); r != revision || !u.Equal(updated) {
+			t.Errorf("replaying %s wrote the row: revision %d -> %d", name, revision, r)
+		}
+	}
+
+	mustBegin(t, epochs, epoch)
+	replay("begin", func() error { return epochs.Begin(ctx, epoch) })
+
+	mustAttestBase(t, epochs, epoch)
+	replay("attest base", func() error { return epochs.Attest(ctx, epoch, activation.FacetBase, baseEvidence()) })
+
+	if err := epochs.Enable(ctx, epoch, activation.FacetBase); err != nil {
+		t.Fatal(err)
+	}
+	replay("enable base", func() error { return epochs.Enable(ctx, epoch, activation.FacetBase) })
+	replay("enable base through EnableStep", func() error {
+		_, err := epochs.EnableStep(ctx, epoch, activation.FacetBase, true)
+		return err
+	})
+
+	// Beyond the target is still a refusal: attest after enable, enable after drain.
+	if err := epochs.Attest(ctx, epoch, activation.FacetBase, baseEvidence()); errors.Is(err, activation.ErrAlreadyAtTarget) || err == nil {
+		t.Errorf("attesting an enabled facet: got %v, want a refusal", err)
+	}
+	mustAttestOutputOnly(t, epochs, epoch)
+	if err := epochs.Enable(ctx, epoch, activation.FacetOutput); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := epochs.DrainStep(ctx, epoch, activation.FacetOutput, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := epochs.Enable(ctx, epoch, activation.FacetOutput); !errors.Is(err, activation.ErrStaleEpoch) {
+		t.Errorf("enabling a draining facet: got %v, want ErrStaleEpoch", err)
+	}
+	if err := epochs.Begin(ctx, epoch); errors.Is(err, activation.ErrAlreadyAtTarget) || !errors.Is(err, output.ErrConflict) {
+		t.Errorf("beginning an epoch past initial: got %v, want the conflict refusal", err)
+	}
+}

@@ -208,6 +208,20 @@ func (epochs Epochs) EnableStep(ctx context.Context, epoch executioncontrol.Acti
 	facet Facet, enable bool) (EnableOutcome, error) {
 	outcome := EnableOutcome{Facet: facet}
 
+	// An enabled facet replayed is a no-op, whether or not every precondition
+	// still holds today: nothing is enabled again.
+	if state, readErr := epochs.Read(ctx, epoch); readErr == nil {
+		current := state.Base
+		if facet == FacetOutput {
+			current = state.Output
+		}
+		if current == "enabled" {
+			outcome.Enabled = true
+			return outcome, fmt.Errorf("%w: epoch %d's %s facet is already enabled; no transition made",
+				ErrAlreadyAtTarget, epoch, facet)
+		}
+	}
+
 	var err error
 	outcome.Preconditions, err = epochs.EnablePreconditions(ctx, epoch, facet)
 	if err != nil {

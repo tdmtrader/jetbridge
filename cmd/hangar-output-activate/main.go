@@ -19,6 +19,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -65,7 +66,7 @@ func run(ctx context.Context, config Config, out *os.File) error {
 	switch config.Mode {
 	case ModeBegin:
 		if err := epochs.Begin(ctx, epoch); err != nil {
-			return err
+			return alreadyDone(out, err)
 		}
 		fmt.Fprintf(out, "began activation epoch %d (base=initial output=initial)\n", epoch)
 
@@ -75,14 +76,14 @@ func run(ctx context.Context, config Config, out *os.File) error {
 			return err
 		}
 		if err := epochs.Attest(ctx, epoch, config.Facet, evidence); err != nil {
-			return err
+			return alreadyDone(out, err)
 		}
 		fmt.Fprintf(out, "attested epoch %d's %s facet over the cohort digest %s\n",
 			epoch, config.Facet, evidence.CohortDigest)
 
 	case ModeEnable:
 		if err := enable(ctx, epochs, epoch, config, out); err != nil {
-			return err
+			return alreadyDone(out, err)
 		}
 
 	case ModeReconcileIntegrity:
@@ -148,6 +149,17 @@ func enable(ctx context.Context, epochs activation.Epochs,
 	fmt.Fprintf(out, "enabled epoch %d's %s facet\n", epoch, config.Facet)
 
 	return nil
+}
+
+// alreadyDone turns a replay at the target into success: a recreated
+// activation Job reruns its step, the row is already where the step leads, and
+// nothing was written. Every other error stands.
+func alreadyDone(out io.Writer, err error) error {
+	if errors.Is(err, activation.ErrAlreadyAtTarget) {
+		fmt.Fprintf(out, "%v\n", err)
+		return nil
+	}
+	return err
 }
 
 // reportPreconditions prints every precondition, met and unmet, with what was
@@ -324,6 +336,7 @@ func newHandshaker(config Config) (*httpHandshaker, error) {
 				MinVersion:   tls.VersionTLS12,
 				Certificates: []tls.Certificate{certificate},
 				RootCAs:      pool,
+				ServerName:   config.TLSServerName,
 			}},
 		},
 	}, nil

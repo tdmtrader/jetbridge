@@ -48,6 +48,13 @@ const (
 // epoch is a `begin` that never happened, and retrying will never help.
 var ErrStaleEpoch = errors.New("hangar/activation: stale epoch")
 
+// ErrAlreadyAtTarget is a transition replayed when its facet is already
+// exactly where the transition leads. Nothing is written: the compare-and-set
+// still forbids a repeat, and a facet beyond the target keeps its refusal. A
+// recreated activation Job replays its step, and this lets it say so and
+// succeed rather than fail the sync.
+var ErrAlreadyAtTarget = errors.New("hangar/activation: already at target")
+
 // Column returns the state column this facet moves.
 func (facet Facet) Column() (string, error) {
 	switch facet {
@@ -176,6 +183,13 @@ func (epochs Epochs) Begin(ctx context.Context, epoch executioncontrol.Activatio
 		return fmt.Errorf("%w: beginning epoch %d: %v", output.ErrInfrastructure, epoch, err)
 	}
 	if affected == 0 {
+		state, readErr := epochs.Read(ctx, epoch)
+		if readErr == nil && state.Base == "initial" && state.Output == "initial" {
+			// Still the typed conflict callers rely on, and also at target: a
+			// recreated begin Job may treat it as done.
+			return fmt.Errorf("%w (%w): epoch %d already exists in initial/initial; no transition made",
+				ErrAlreadyAtTarget, output.ErrConflict, epoch)
+		}
 		return fmt.Errorf("%w: epoch %d already exists. An epoch row's identity is immutable "+
 			"and a facet never moves backwards, so beginning an existing epoch would either "+
 			"be a no-op an operator read as progress or a rewrite the schema refuses",
@@ -392,6 +406,10 @@ func (epochs Epochs) apply(ctx context.Context, epoch executioncontrol.Activatio
 	current := state.Base
 	if facet == FacetOutput {
 		current = state.Output
+	}
+	if string(current) == target {
+		return fmt.Errorf("%w: epoch %d's %s facet is already %s; no transition made",
+			ErrAlreadyAtTarget, epoch, facet, target)
 	}
 
 	return fmt.Errorf("%w: epoch %d's %s facet is %q and this transition needs it elsewhere "+

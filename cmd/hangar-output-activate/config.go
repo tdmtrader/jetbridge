@@ -57,6 +57,9 @@ type Config struct {
 	TLSCert   string
 	TLSKey    string
 	TLSCACert string
+	// TLSServerName is the DNS name the daemon's server certificate carries.
+	// The cohort is dialed by pod IP, which no certificate can name.
+	TLSServerName string
 
 	ReceiptKeyLifetime time.Duration
 }
@@ -111,6 +114,8 @@ func BindFlags(flags *flag.FlagSet, config *Config) {
 	flags.StringVar(&config.TLSKey, "tls-key", "", "Client private key.")
 	flags.StringVar(&config.TLSCACert, "tls-ca-cert", "",
 		"CA certificate the daemon's server certificate is verified against.")
+	flags.StringVar(&config.TLSServerName, "tls-server-name", "",
+		"DNS name the daemon's server certificate is verified against. The cohort is dialed by pod IP, which a certificate issued before the pod existed cannot name.")
 	flags.DurationVar(&config.ReceiptKeyLifetime, "receipt-key-lifetime", 90*24*time.Hour,
 		"How long this epoch's receipt key is valid for. It bounds the window in which a receipt signed under this epoch verifies; the key material itself is retained for as long as any durable state references the epoch.")
 }
