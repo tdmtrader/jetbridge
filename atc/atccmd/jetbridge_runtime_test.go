@@ -135,9 +135,7 @@ func TestTheReaperSharesTheWorkersArtifactLocator(t *testing.T) {
 // Config fields no flag reaches, each with the reason. A field added to
 // jetbridge.Config without a flag mapping fails the completeness check below
 // until it is mapped or listed here.
-var jetbridgeConfigFieldsWithoutAFlag = map[string]string{
-	"StepPodGrants": "deferred: --kubernetes-step-pod-grant lands in the next commit",
-}
+var jetbridgeConfigFieldsWithoutAFlag = map[string]string{}
 
 // Every flag the runtime reads reaches the one assembled Config, and every
 // Config field is either set from a flag or listed as flagless.
@@ -185,6 +183,8 @@ func TestTheJetbridgeConfigIsAssembledFromTheFlags(t *testing.T) {
 		"--kubernetes-image-registry-secret", "registry-auth",
 		"--kubernetes-base-resource-type", "git=registry.example/git:2",
 		"--kubernetes-base-resource-type", "custom=registry.example/custom:1",
+		"--kubernetes-step-pod-grant", "name=brine-live,owner=main/one-off,service-account=concourse-brine-live",
+		"--kubernetes-step-pod-grant", "name=release,owner=main/jetbridge/release,service-account=jetbridge-releaser",
 	}); err != nil {
 		// Required flags unrelated to the runtime (the session signing key and
 		// the like) are checked after every given flag has been applied.
@@ -246,6 +246,10 @@ func TestTheJetbridgeConfigIsAssembledFromTheFlags(t *testing.T) {
 		OutputActivationEpoch:              9,
 		HangarEnabled:                      true,
 		HangarWarrantSigner:                signer,
+		StepPodGrants: []jetbridge.StepPodGrant{
+			{Name: "brine-live", Owner: jetbridge.StepPodOwner{Team: "main", OneOff: true}, ServiceAccount: "concourse-brine-live"},
+			{Name: "release", Owner: jetbridge.StepPodOwner{Team: "main", Pipeline: "jetbridge", Job: "release"}, ServiceAccount: "jetbridge-releaser"},
+		},
 	}
 	if !reflect.DeepEqual(rt.config, want) {
 		got, wanted := reflect.ValueOf(rt.config), reflect.ValueOf(want)
@@ -318,5 +322,36 @@ func TestTheJetbridgeConfigIsAssembledOnce(t *testing.T) {
 	broken.Kubernetes.CacheStore = jetbridge.CacheStoreHostPath
 	if _, err := broken.jetbridgeConfig(); err == nil {
 		t.Fatal("a failed assembly was retried: the configuration must be assembled exactly once")
+	}
+}
+
+// Only web's configuration sets a step pod grant, and a configuration that
+// would make the identity depend on flag order does not start.
+func TestAStepPodGrantThatCannotBeResolvedRefusesStartup(t *testing.T) {
+	for name, grants := range map[string][]string{
+		"malformed":       {"name=release,owner=main/jetbridge,service-account=jetbridge-releaser"},
+		"duplicate name":  {"name=a,owner=main/p/j,service-account=sa-one", "name=a,owner=main/p/k,service-account=sa-two"},
+		"duplicate owner": {"name=a,owner=main/p/j,service-account=sa-one", "name=b,owner=main/p/j,service-account=sa-two"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cmd := jetbridgeCommand(t)
+			cmd.Kubernetes.StepPodGrants = grants
+			if _, err := cmd.assembleJetbridgeConfig(); err == nil || !strings.Contains(err.Error(), "--kubernetes-step-pod-grant") {
+				t.Fatalf("assembled a config from %q (err %v); want a startup refusal naming the flag", grants, err)
+			}
+		})
+	}
+}
+
+// Every worker the factory builds can look its containers' builds up; without
+// the port every pod would run as the default identity whatever the grants say.
+func TestTheWorkerFactoryHandsWorkersTheBuildLookup(t *testing.T) {
+	cmd := jetbridgeCommand(t)
+	factory, _, err := cmd.workerFactory(nil, nil, nil)
+	if err != nil {
+		t.Fatalf("worker factory: %v", err)
+	}
+	if factory.K8sStepPodBuilds == nil {
+		t.Fatal("the worker factory has no build lookup for step pod grants")
 	}
 }

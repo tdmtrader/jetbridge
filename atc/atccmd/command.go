@@ -230,6 +230,7 @@ type RunCommand struct {
 		PodSchedulingTimeout               time.Duration `long:"kubernetes-pod-scheduling-timeout"   default:"15m" description:"Maximum time to wait for an Unschedulable pod to be scheduled before failing the task. Set to 0 to fail immediately (old behavior)."`
 		ImagePullSecrets                   []string      `long:"kubernetes-image-pull-secret"      description:"Kubernetes Secret name to use as imagePullSecrets on task Pods. Can be specified multiple times."`
 		ServiceAccount                     string        `long:"kubernetes-service-account"        description:"Kubernetes ServiceAccount name to set on task Pods. Defaults to the namespace default SA."`
+		StepPodGrants                      []string      `long:"kubernetes-step-pod-grant"         description:"Map a build's owner to the ServiceAccount its step pods run under: name=<grant>,owner=<team>/<pipeline>/<job>|main/one-off,service-account=<sa>. Can be specified multiple times. Every other build's pods run as --kubernetes-service-account." value-name:"GRANT"`
 		CacheStore                         string        `long:"kubernetes-cache-store"            description:"Task cache backend: hostpath (node-local dirs) or emptydir (ephemeral). Empty = auto-detect."`
 		CacheHostPath                      string        `long:"kubernetes-cache-host-path"        description:"Base directory on host node for persistent task caches. Caches are node-local and survive pod restarts."`
 		ArtifactHelperImage                string        `long:"kubernetes-artifact-helper-image"     description:"Container image for artifact init containers. Defaults to alpine:latest."`
@@ -1521,6 +1522,16 @@ func (cmd *RunCommand) assembleJetbridgeConfig() (jetbridge.Config, error) {
 	k8sCfg.PodSchedulingTimeout = cmd.Kubernetes.PodSchedulingTimeout
 	k8sCfg.ImagePullSecrets = cmd.Kubernetes.ImagePullSecrets
 	k8sCfg.ServiceAccount = cmd.Kubernetes.ServiceAccount
+	for _, value := range cmd.Kubernetes.StepPodGrants {
+		grant, err := jetbridge.ParseStepPodGrant(value)
+		if err != nil {
+			return jetbridge.Config{}, fmt.Errorf("--kubernetes-step-pod-grant: %w", err)
+		}
+		k8sCfg.StepPodGrants = append(k8sCfg.StepPodGrants, grant)
+	}
+	if err := jetbridge.ValidateStepPodGrants(k8sCfg.StepPodGrants); err != nil {
+		return jetbridge.Config{}, fmt.Errorf("--kubernetes-step-pod-grant: %w", err)
+	}
 	k8sCfg.CacheStore = cmd.Kubernetes.CacheStore
 	k8sCfg.CacheHostPath = cmd.Kubernetes.CacheHostPath
 	k8sCfg.ArtifactHelperImage = cmd.Kubernetes.ArtifactHelperImage
@@ -1597,6 +1608,7 @@ func (cmd *RunCommand) workerFactory(dbConn db.DbConn, lockFactory lock.LockFact
 	dbTeamFactory := db.NewTeamFactory(dbConn, lockFactory)
 	runFactory := db.NewPipelineRunFactory(dbConn, lockFactory)
 	cmd.runResultFinalizer = &runs.ResultFinalizer{Conn: dbConn, Factory: runFactory}
+	stepPodBuilds := db.NewBuildFactory(dbConn, lockFactory, cmd.GC.OneOffBuildGracePeriod, cmd.GC.FailedGracePeriod)
 
 	db := worker.NewDB(
 		dbWorkerFactory,
@@ -1627,6 +1639,7 @@ func (cmd *RunCommand) workerFactory(dbConn db.DbConn, lockFactory lock.LockFact
 		factory.K8sConfig = &k8sCfg
 		factory.K8sExecutor = jetbridge.NewSPDYExecutor(k8sClientset, k8sRestConfig)
 		factory.K8sArtifactLocator = cmd.artifactLocator()
+		factory.K8sStepPodBuilds = stepPodBuilds
 		if k8sCfg.OutputPlaneEnabled && cmd.hangarOutputCapabilityMinter != nil {
 			// Both dispatch and recovery use the same node plane and epoch.
 			factory.K8sOutputControls = jetbridge.NewOutputControls(k8sCfg,

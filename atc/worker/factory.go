@@ -42,6 +42,10 @@ type DefaultFactory struct {
 	// reachable without an ExecutionControl on the spec.
 	K8sOutputControls    jetbridge.OutputControlResolver
 	K8sExecutionPreparer jetbridge.ExecutionPreparer
+
+	// K8sStepPodBuilds is how a worker's containers find the build that owns
+	// them, to resolve their step pod grant.
+	K8sStepPodBuilds jetbridge.StepPodBuilds
 }
 
 func (f DefaultFactory) NewWorker(logger lager.Logger, dbWorker db.Worker) runtime.Worker {
@@ -56,5 +60,6 @@ func (f DefaultFactory) newK8sWorker(dbWorker db.Worker) *jetbridge.Worker {
 		DaemonClient:      f.K8sDaemonClient,
 		OutputControls:    f.K8sOutputControls,
 		ExecutionPreparer: f.K8sExecutionPreparer,
+		StepPodBuilds:     f.K8sStepPodBuilds,
 	})
 }
