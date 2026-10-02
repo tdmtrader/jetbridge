@@ -1,0 +1,152 @@
+#!/bin/sh
+# Read-only audit of step pod identities on a cluster (task_service_account_isolation).
+# It changes nothing: every call is a kubectl get, kubectl auth can-i or fly curl.
+#
+#   hack/step-pod-audit bindings <ns>:<sa> [namespace...]
+#       Every RoleBinding and ClusterRoleBinding naming the account, then what
+#       `kubectl auth can-i --list` grants it in cicd, loupe, concourse,
+#       concourse-test, each namespace a binding names, and any given. Fails on
+#       anything beyond the discovery defaults every authenticated subject has.
+#
+#   hack/step-pod-audit verbs <ns>:<sa> <file>
+#       Each line of <file> is "<verb> <resource> <namespace>" (namespace "-"
+#       for cluster scope); fails on any the account cannot do. This proves an
+#       identity's verbs without running its job.
+#
+#   hack/step-pod-audit pods [--non-step]
+#       Every step pod in $STEP_POD_NAMESPACE (default cicd): derives its
+#       build's owner as the runtime does (fly curl /api/v1/builds/<id>) and the
+#       grant web's own --kubernetes-step-pod-grant args give it, and fails on a
+#       wrong ServiceAccount or a token outside a grant. With --non-step it also
+#       fails on any other pod there running under `default` with a token.
+#
+# The runtime is the authority on identities; this reads the same rules from
+# outside to produce evidence. FLY_TARGET (default home) and WEB_DEPLOYMENT
+# (default concourse-web) select what it reads.
+set -eu
+
+ns=${STEP_POD_NAMESPACE:-cicd}
+fly_target=${FLY_TARGET:-home}
+web=${WEB_DEPLOYMENT:-concourse-web}
+failed=0
+
+fail() { echo "FAIL: $*"; failed=1; }
+
+split_account() {
+	case "$1" in
+	*:*) account_ns=${1%%:*}; account=${1#*:} ;;
+	*) echo "want <namespace>:<serviceaccount>, got $1" >&2; exit 2 ;;
+	esac
+}
+
+bindings() {
+	split_account "$1"; shift
+	subject="system:serviceaccount:$account_ns:$account"
+	echo "== bindings naming $subject"
+	listed=$(kubectl get rolebindings,clusterrolebindings -A -o json | jq -r --arg ns "$account_ns" --arg sa "$account" '
+		.items[] | select(any(.subjects[]?; .kind == "ServiceAccount" and .name == $sa and (.namespace // "") == $ns))
+		| "\(.kind) \(.metadata.namespace // "-") \(.metadata.name) -> \(.roleRef.kind) \(.roleRef.name)"')
+	if [ -n "$listed" ]; then
+		echo "$listed"
+		fail "$subject is named by $(echo "$listed" | wc -l | tr -d ' ') binding(s)"
+	fi
+	namespaces=$(printf '%s\n' cicd loupe concourse concourse-test "$@" \
+		$(echo "$listed" | awk '$2 != "-" {print $2}') | sort -u)
+	for n in $namespaces; do
+		extra=$(kubectl auth can-i --list --as="$subject" -n "$n" 2>/dev/null | awk 'NR > 1' | grep -vE \
+			'^(selfsubjectaccessreviews\.authorization\.k8s\.io|selfsubjectrulesreviews\.authorization\.k8s\.io|selfsubjectreviews\.authentication\.k8s\.io) |^ +\[/' || true)
+		if [ -n "$extra" ]; then
+			echo "-- $n"
+			echo "$extra"
+			fail "$subject holds more than the discovery defaults in $n"
+		fi
+	done
+}
+
+verbs() {
+	split_account "$1"
+	subject="system:serviceaccount:$account_ns:$account"
+	echo "== verbs of $subject from $2"
+	grep -vE '^[[:space:]]*(#|$)' "$2" | while read -r verb resource namespace; do
+		if [ "$namespace" = "-" ]; then
+			answer=$(kubectl auth can-i "$verb" "$resource" --as="$subject" 2>/dev/null || true)
+		else
+			answer=$(kubectl auth can-i "$verb" "$resource" -n "$namespace" --as="$subject" 2>/dev/null || true)
+		fi
+		[ "$answer" = yes ] || echo "FAIL: $subject cannot $verb $resource in $namespace"
+	done | tee /dev/stderr | grep -q '^FAIL' && failed=1
+	return 0
+}
+
+# owner_of prints a build's owner the way the runtime derives it, or nothing.
+owner_of() {
+	fly -t "$fly_target" curl "/api/v1/builds/$1" 2>/dev/null | jq -r '
+		if .name == "check" or (.resource_name // "") != "" then empty
+		elif ((.pipeline_instance_vars // {}) | length) > 0 then empty
+		elif (.job_name // "") != "" then "\(.team_name)/\(.pipeline_name)/\(.job_name)"
+		elif .team_name == "main" then "main/one-off"
+		else empty end'
+}
+
+pods() {
+	non_step=${1:-}
+	args=$(kubectl get deployment "$web" -n "$ns" -o json | jq -r '.spec.template.spec.containers[0].args[]?')
+	default_sa=$(echo "$args" | sed -n 's/^--kubernetes-service-account=//p')
+	[ -n "$default_sa" ] || default_sa=default
+	grants=$(echo "$args" | sed -n 's/^--kubernetes-step-pod-grant=//p')
+	echo "== step pods in $ns (default identity: $default_sa; $(echo "$grants" | grep -c . || true) grant(s))"
+
+	kubectl get pods -n "$ns" -l concourse.ci/handle -o json | jq -r '.items[] | [
+		.metadata.name,
+		(.metadata.labels["concourse.ci/build-id"] // "0"),
+		(.metadata.labels["concourse.ci/type"] // ""),
+		(.spec.serviceAccountName // "default"),
+		(if .spec.automountServiceAccountToken == false then "no" else "yes" end),
+		(if any(.spec.volumes[]?; .projected.sources[]?.serviceAccountToken) then "yes" else "no" end)
+	] | @tsv' | while IFS="$(printf '\t')" read -r pod build kind sa automount projected; do
+		want=$default_sa
+		grant=""
+		if [ "$kind" != check ] && [ "$build" != 0 ]; then
+			owner=$(owner_of "$build")
+			if [ -n "$owner" ]; then
+				line=$(echo "$grants" | grep -E ",owner=$owner," || true)
+				if [ -n "$line" ]; then
+					grant=$(echo "$line" | sed -n 's/^name=\([^,]*\),.*/\1/p')
+					want=$(echo "$line" | sed -n 's/.*,service-account=\([^,]*\)$/\1/p')
+				fi
+			fi
+		fi
+		token=no
+		[ "$automount" = yes ] && token=yes
+		[ "$projected" = yes ] && token=yes
+		if [ "$sa" != "$want" ]; then
+			echo "FAIL: $pod (build $build) runs as $sa, its build resolves to $want"
+		elif [ -z "$grant" ] && [ "$token" = yes ]; then
+			echo "FAIL: $pod (build $build) has an API token outside any grant"
+		else
+			echo "ok:   $pod (build $build) $sa${grant:+ via grant $grant}"
+		fi
+	done | tee /dev/stderr | grep -q '^FAIL' && failed=1
+
+	if [ "$non_step" = --non-step ]; then
+		echo "== other pods in $ns under default with a token"
+		others=$(kubectl get pods -n "$ns" -o json | jq -r '.items[]
+			| select((.metadata.labels["concourse.ci/handle"] // "") == "")
+			| select((.spec.serviceAccountName // "default") == "default")
+			| select(.spec.automountServiceAccountToken != false)
+			| .metadata.name')
+		if [ -n "$others" ]; then
+			echo "$others"
+			fail "pods run under default with a token"
+		fi
+	fi
+}
+
+case "${1:-}" in
+bindings) shift; [ $# -ge 1 ] || { echo "usage: $0 bindings <ns>:<sa> [namespace...]" >&2; exit 2; }; bindings "$@" ;;
+verbs) shift; [ $# -eq 2 ] || { echo "usage: $0 verbs <ns>:<sa> <file>" >&2; exit 2; }; verbs "$@" ;;
+pods) shift; pods "${1:-}" ;;
+*) sed -n '2,24p' "$0"; exit 2 ;;
+esac
+
+exit $failed
