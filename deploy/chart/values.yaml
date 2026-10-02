@@ -35,7 +35,8 @@ web:
   # pair (Concourse's CLI flag does not itself split on commas).
   localUsers: "test:test"
 
-  # -- Main team local user (granted admin on the main team)
+  # -- Main team local user(s), granted admin on the main team. A
+  # comma-separated list renders one --main-team-local-user each.
   mainTeamLocalUser: test
 
   # -- Pod-level security context (applied to the pod spec)
@@ -983,6 +984,12 @@ hangarOutput:
   # The server certificate must chain to the system or output-daemon TLS CA.
   # Empty leaves archive downloads disabled while capture remains available.
   readControlURL: ""
+  # -- A ConfigMap holding the CA readControlURL's certificate chains to, when
+  # the system roots do not cover it (concourse.home's local CA). Mounted into
+  # the output daemon, and SSL_CERT_FILE points at it.
+  readControlCA:
+    configMap: ""
+    key: ""
 
   daemon:
     # -- Control API port.
@@ -1123,6 +1130,10 @@ hangarOutput:
       # mode per epoch, without this. A day is long enough to read the logs.
       # Empty or 0 keeps them forever.
       ttlSecondsAfterFinished: 86400
+    # -- How long an attested output facet's publication receipt key is valid.
+    # Receipts outside the window are refused, and there is no rotation path
+    # yet (spark hangar_receipt_key_rotation), so the default is five years.
+    receiptKeyLifetime: 43800h
 
   networkPolicy:
     # -- Enable NetworkPolicies for the output workloads.
