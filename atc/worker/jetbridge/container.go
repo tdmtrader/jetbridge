@@ -669,42 +669,10 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 	if err := validatePodVolumeMounts(pod); err != nil {
 		return nil, err
 	}
-	if err := c.validateHostPaths(pod); err != nil {
+	if err := admitStepPod(pod, stepPodRootsFor(c.config, c.handle, captureReservedDirectory(c.containerSpec))); err != nil {
 		return nil, err
 	}
 	return pod, nil
-}
-
-// validateHostPaths refuses a step pod with a hostPath volume outside the
-// directories the runtime derives for it. A step output's name becomes a
-// path segment under `steps/<handle>/`, and filepath.Join cleans `..` away,
-// so an unvalidated name could otherwise mount any path on the node.
-func (c *Container) validateHostPaths(pod *corev1.Pod) error {
-	root := filepath.Clean(c.config.ArtifactDaemonHostPath)
-	cacheRoot := filepath.Clean(c.config.CacheHostPath)
-	if c.config.CacheHostPath == "" {
-		cacheRoot = filepath.Join(root, "caches")
-	}
-	steps := filepath.Join(root, "steps")
-	var reserved string
-	if dir := captureReservedDirectory(c.containerSpec); dir != "" {
-		reserved = filepath.Join(steps, dir)
-	}
-	for _, volume := range pod.Spec.Volumes {
-		if volume.HostPath == nil {
-			continue
-		}
-		path := filepath.Clean(volume.HostPath.Path)
-		switch {
-		case path == root && volume.Name == artifactDaemonHostPathVolumeName:
-		case c.handle != "" && strictlyWithin(filepath.Join(steps, c.handle), path):
-		case reserved != "" && path == reserved && strictlyWithin(steps, path):
-		case strictlyWithin(cacheRoot, path):
-		default:
-			return fmt.Errorf("volume %q mounts host path %q, outside the step's own directories", volume.Name, volume.HostPath.Path)
-		}
-	}
-	return nil
 }
 
 func strictlyWithin(parent, child string) bool {
